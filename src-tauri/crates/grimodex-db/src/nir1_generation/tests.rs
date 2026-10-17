@@ -329,6 +329,11 @@ fn message_input(version: &MessageVersion) -> InputReference {
             version_id: version.id.clone(),
             parent_attempt_id: version.parent_attempt_id.clone(),
         },
+        input_use: if version.origin == MessageOrigin::Human {
+            InputUse::CurrentTurn
+        } else {
+            InputUse::AdoptedHistory
+        },
     }
 }
 
@@ -378,13 +383,14 @@ fn two_level_lineage_keeps_only_adopted_inputs_and_qualification_refs() {
             source_key: "scene:source-x".into(),
             revision_token: "source-v1".into(),
         },
+        input_use: InputUse::SelectedMaterial,
     };
-    let qualification = QualificationReference {
-        input_ordinal: 1,
-        kind: QualificationKind::Source,
-        identity: "scene:source-x".into(),
-        version: "source-v1".into(),
-    };
+    let qualification = QualificationReference::present(
+        1,
+        QualificationKind::Source,
+        "scene:source-x",
+        "source-v1",
+    );
     let m1 = create_attempt(
         &db,
         request(
@@ -1511,12 +1517,8 @@ fn changed_or_deleted_body_cannot_rebind_existing_version_or_receipt() {
 fn frozen_order_and_joint_child_budget_are_checked_before_claim() {
     let db = database(Path::new(":memory:"));
     let human = human(&db, "budget-human", "input");
-    let qualification = QualificationReference {
-        input_ordinal: 0,
-        kind: QualificationKind::Source,
-        identity: "source".into(),
-        version: "version".into(),
-    };
+    let qualification =
+        QualificationReference::present(0, QualificationKind::Source, "source", "version");
     let attempt = create_attempt(
         &db,
         request(vec![message_input(&human)], vec![qualification]),
@@ -1842,6 +1844,7 @@ fn terminal_rejects_cross_project_output_version_and_child_reference() {
             version_id: cross_project_version.id,
             parent_attempt_id: Some(attempt.id.clone()),
         },
+        input_use: InputUse::AdoptedHistory,
     };
     let error = create_attempt(&db, request(vec![child_input], vec![]))
         .expect_err("cross-project child reference");
@@ -3149,6 +3152,7 @@ mod capture {
                 version_id: capture.message_version_id().into(),
                 parent_attempt_id: None,
             },
+            input_use: InputUse::CurrentTurn,
         }];
         request
     }
@@ -3516,13 +3520,14 @@ fn s4_scene_request(db: &Database) -> NewAttempt {
                 source_key: source_key.clone(),
                 revision_token: token.clone(),
             },
+            input_use: InputUse::SelectedMaterial,
         }],
-        vec![QualificationReference {
-            input_ordinal: 0,
-            kind: QualificationKind::Source,
-            identity: source_key,
-            version: token,
-        }],
+        vec![QualificationReference::present(
+            0,
+            QualificationKind::Source,
+            source_key,
+            token,
+        )],
     );
     attempt.binding.scene = db
         .with_read_transaction(|conn| {
@@ -3849,6 +3854,131 @@ fn dt3_dispatcher_reads_v1_and_v2_and_rejects_unknown_versions_keys_and_slots() 
     assert_error_code(
         parse_attempt_binding(&duplicated),
         "NIR1_GENERATION_BINDING_INVALID",
+    );
+}
+
+#[test]
+fn dfa1_legacy_v1_reference_rows_are_terminalized_but_never_claimed() {
+    let workspace = bounded::BoundedWorkspace::new();
+    let snapshot = workspace.snapshot();
+    let pinned = workspace.db();
+    let db = pinned.db();
+    let human = human(db, "legacy-ref-human", "input");
+    let make = |source: &str| {
+        create_attempt(
+            db,
+            request(
+                vec![message_input(&human)],
+                vec![QualificationReference::present(
+                    0,
+                    QualificationKind::Source,
+                    source,
+                    "digest",
+                )],
+            ),
+        )
+        .expect("attempt")
+    };
+    let claimed_probe = make("legacy-ref-probe");
+    let recovered = make("legacy-ref-recovered");
+    for attempt in [&claimed_probe, &recovered] {
+        let legacy_input = LegacyInputReferenceV1 {
+            role: attempt.inputs[0].role.clone(),
+            target: attempt.inputs[0].target.clone(),
+        };
+        let legacy_qualification = LegacyQualificationReferenceV1 {
+            input_ordinal: 0,
+            kind: QualificationKind::Source,
+            identity: attempt.qualifications[0]
+                .identity()
+                .expect("present")
+                .to_string(),
+            version: attempt.qualifications[0]
+                .version()
+                .expect("present")
+                .to_string(),
+        };
+        let legacy_digest = canonical_json_digest(&json!({
+            "domain":"nir1-generation-inputs@1",
+            "inputs":[legacy_input],"qualifications":[legacy_qualification]}))
+        .expect("legacy digest");
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE nir1_generation_input_refs SET reference_json=?2 WHERE attempt_id=?1",
+                params![
+                    attempt.id,
+                    canonical_json_string(&serde_json::to_value(&legacy_input)?)?
+                ],
+            )?;
+            conn.execute(
+                "UPDATE nir1_generation_qualification_refs SET reference_json=?2 WHERE attempt_id=?1",
+                params![
+                    attempt.id,
+                    canonical_json_string(&serde_json::to_value(&legacy_qualification)?)?
+                ],
+            )?;
+            conn.execute(
+                "UPDATE nir1_generation_attempts SET input_digest=?2 WHERE id=?1",
+                params![attempt.id, legacy_digest],
+            )?;
+            Ok(())
+        })
+        .expect("rewrite the rows as v1");
+        let stored = read_attempt(db, &attempt.id, budget()).expect("v1 rows stay readable");
+        assert_eq!(stored.reference_format, ReferenceFormat::LegacyV1);
+        assert!(stored.inputs.is_empty() && stored.qualifications.is_empty());
+        // The unbounded claim and the production claim both refuse; neither
+        // validates zero references and then writes claimed_at_ms.
+        assert_error_code(
+            claim_attempt(db, &attempt.id, &attempt.binding, 1_500, budget()),
+            "NIR1_GENERATION_REFERENCE_LEGACY_TERMINAL_ONLY",
+        );
+        let refused = claim_attempt_bounded(
+            &snapshot,
+            &bounded::expected(&stored),
+            &bounded::admission(),
+            &mut || Ok(()),
+        )
+        .expect_err("a v1 reference row is never claimed by the production writer");
+        assert_eq!(refused.commit(), Nir1CommitState::NotCommitted);
+        assert!(
+            format!("{:#}", refused.source)
+                .contains("NIR1_GENERATION_REFERENCE_LEGACY_TERMINAL_ONLY"),
+            "{:#}",
+            refused.source
+        );
+    }
+    db.with_conn(|conn| {
+        assert_eq!(
+            conn.query_row(
+                "SELECT count(*) FROM nir1_generation_attempts WHERE claimed_at_ms IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0),
+            )?,
+            0
+        );
+        Ok(())
+    })
+    .expect("no claim was written");
+    // Recovery and a body-less terminal still work for a v1 reference row.
+    let terminal = recover_attempt_bounded(
+        &snapshot,
+        &recovered.id,
+        2_000,
+        ParticipantSqlOperationBudget::new(
+            Arc::new(AtomicBool::new(false)),
+            Instant::now() + NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT,
+            NIR1_GENERATION_SQLITE_BUSY_LIMIT,
+        ),
+    )
+    .expect("v1 reference recovery");
+    assert!(terminal.message_version.is_none());
+    let cancellation = OutputObserver::new().finish(Completion::Cancelled);
+    let cancelled = finish_attempt(db, &claimed_probe.id, &cancellation, None, 2_000)
+        .expect("v1 reference cancel");
+    assert_eq!(
+        cancelled.failure_classification,
+        Some(FailureClassification::Cancelled)
     );
 }
 
@@ -4530,5 +4660,1286 @@ mod dt3_bounded {
             recovered.failure_classification,
             Some(FailureClassification::InterruptedUnknown)
         );
+    }
+}
+
+/// DF+-a (K4/3 sections 2, 3 and 13): the closed reference types, the
+/// versioned reference rows and the pure completeness rule.
+mod df_plus_reference_format {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const Q: &str = "scene-q";
+
+    fn context() -> CompletenessContext<'static> {
+        CompletenessContext {
+            target_scene_id: Q,
+            expected_targets: None,
+        }
+    }
+
+    fn message(role: InputRole, input_use: InputUse, version: &str) -> InputReference {
+        let parent_attempt_id = (role == InputRole::Assistant).then(|| "parent-attempt".to_owned());
+        InputReference {
+            role,
+            target: InputTarget::Message {
+                version_id: version.into(),
+                parent_attempt_id,
+            },
+            input_use,
+        }
+    }
+
+    fn raw(source_key: &str) -> InputReference {
+        InputReference {
+            role: InputRole::Context,
+            target: InputTarget::RawSource {
+                source_key: source_key.into(),
+                revision_token: "raw-token".into(),
+            },
+            input_use: InputUse::SelectedMaterial,
+        }
+    }
+
+    fn revision(id: &str) -> InputReference {
+        InputReference {
+            role: InputRole::Context,
+            target: InputTarget::AcceptedRevision {
+                revision_id: id.into(),
+                bundle_digest: test_digest(id),
+            },
+            input_use: InputUse::SelectedMaterial,
+        }
+    }
+
+    fn na(
+        ordinal: usize,
+        kind: QualificationKind,
+        reason: NotApplicableReason,
+    ) -> QualificationReference {
+        QualificationReference::not_applicable(ordinal, kind, reason)
+    }
+
+    fn scope(ordinal: usize, role: ScopeRole, components: &[&str]) -> QualificationReference {
+        QualificationReference::scope(
+            ordinal,
+            role,
+            scope_identity(role, components).expect("identity"),
+            "scope-token",
+        )
+    }
+
+    fn scene_scope(ordinal: usize) -> Vec<QualificationReference> {
+        vec![
+            scope(ordinal, ScopeRole::QuerySceneScope, &[Q]),
+            scope(ordinal, ScopeRole::QuerySceneIncarnation, &[Q]),
+        ]
+    }
+
+    fn d1(ordinal: usize) -> QualificationReference {
+        d1_selection_reference(ordinal, &test_digest("selection"))
+    }
+
+    fn message_refs(
+        ordinal: usize,
+        version: &str,
+        decision: NotApplicableReason,
+        d1_cell: Option<NotApplicableReason>,
+    ) -> Vec<QualificationReference> {
+        use NotApplicableReason as N;
+        use QualificationKind as K;
+        let mut refs = vec![
+            QualificationReference::present(ordinal, K::Source, version, "body-digest"),
+            na(ordinal, K::Revision, N::NotARevision),
+            na(ordinal, K::Decision, decision),
+            na(ordinal, K::Freshness, N::ImmutableMessageVersion),
+            na(ordinal, K::Index, N::NotIndexDerived),
+        ];
+        refs.extend(scene_scope(ordinal));
+        refs.push(match d1_cell {
+            Some(reason) => na(ordinal, K::D1, reason),
+            None => d1(ordinal),
+        });
+        refs
+    }
+
+    fn current_human_refs(ordinal: usize) -> Vec<QualificationReference> {
+        message_refs(
+            ordinal,
+            "human-v",
+            NotApplicableReason::HumanAuthored,
+            Some(NotApplicableReason::FixedUserSlot),
+        )
+    }
+
+    fn raw_refs(
+        ordinal: usize,
+        source_key: &str,
+        freshness: NotApplicableReason,
+    ) -> Vec<QualificationReference> {
+        use NotApplicableReason as N;
+        use QualificationKind as K;
+        let mut refs = vec![
+            QualificationReference::present(ordinal, K::Source, source_key, "raw-token"),
+            na(ordinal, K::Revision, N::NotARevision),
+            na(ordinal, K::Decision, N::ManuscriptSource),
+            na(ordinal, K::Freshness, freshness),
+            na(ordinal, K::Index, N::NotIndexDerived),
+            d1(ordinal),
+        ];
+        refs.extend(scene_scope(ordinal));
+        refs
+    }
+
+    fn revision_refs(
+        ordinal: usize,
+        id: &str,
+        sources: &[&str],
+        proofs: &[(&str, &str)],
+        typed_scopes: usize,
+    ) -> Vec<QualificationReference> {
+        use QualificationKind as K;
+        let mut refs = vec![
+            QualificationReference::present(ordinal, K::Revision, id, "bundle"),
+            QualificationReference::present(ordinal, K::Decision, "decision-1", "decision-token"),
+            QualificationReference::present(ordinal, K::Freshness, id, "freshness-token"),
+            na(ordinal, K::Index, NotApplicableReason::NotIndexDerived),
+            d1(ordinal),
+        ];
+        for source in sources {
+            refs.push(QualificationReference::present(
+                ordinal,
+                K::Source,
+                *source,
+                "source-token",
+            ));
+        }
+        refs.push(scope(ordinal, ScopeRole::ProjectAuthority, &["project"]));
+        refs.push(scope(ordinal, ScopeRole::QuerySceneScope, &[Q]));
+        refs.push(scope(ordinal, ScopeRole::QuerySceneSource, &[Q]));
+        refs.push(scope(ordinal, ScopeRole::QuerySceneIncarnation, &[Q]));
+        refs.push(scope(ordinal, ScopeRole::RevealState, &[Q]));
+        refs.push(scope(ordinal, ScopeRole::ScopeAxis, &[Q]));
+        for index in 0..typed_scopes {
+            refs.push(scope(
+                ordinal,
+                ScopeRole::TypedScope,
+                &[id, &index.to_string()],
+            ));
+        }
+        for (anchor, incarnation) in proofs {
+            refs.push(scope(
+                ordinal,
+                ScopeRole::MaterialSceneProof,
+                &[anchor, incarnation],
+            ));
+        }
+        refs
+    }
+
+    fn table_inputs() -> Vec<InputReference> {
+        vec![
+            message(InputRole::User, InputUse::CurrentTurn, "human-v"),
+            message(InputRole::User, InputUse::AdoptedHistory, "past-human-v"),
+            message(
+                InputRole::Assistant,
+                InputUse::AdoptedHistory,
+                "generated-v",
+            ),
+            raw("project:scene:scene-q"),
+            revision("revision-1"),
+        ]
+    }
+
+    fn table_refs() -> Vec<QualificationReference> {
+        let mut refs = current_human_refs(0);
+        refs.extend(message_refs(
+            1,
+            "past-human-v",
+            NotApplicableReason::HumanAuthored,
+            None,
+        ));
+        refs.extend(message_refs(
+            2,
+            "generated-v",
+            NotApplicableReason::DerivedFromParents,
+            None,
+        ));
+        refs.extend(raw_refs(
+            3,
+            "project:scene:scene-q",
+            NotApplicableReason::TargetSceneBodyNotADependency,
+        ));
+        refs.extend(revision_refs(
+            4,
+            "revision-1",
+            &["project:scene:scene-q", "evidence:e1"],
+            &[("anchor", "incarnation-a")],
+            2,
+        ));
+        refs
+    }
+
+    fn check(
+        inputs: &[InputReference],
+        refs: &[QualificationReference],
+    ) -> std::result::Result<(), CompletenessViolation> {
+        check_attempt_completeness(inputs, refs, &context())
+    }
+
+    fn reason_of(inputs: &[InputReference], refs: &[QualificationReference]) -> CompletenessReason {
+        check(inputs, refs).expect_err("incomplete").reason
+    }
+
+    #[test]
+    fn completeness_requires_exactly_one_current_turn_at_ordinal_zero() {
+        // A past Human first and the current turn second: the D1 selection
+        // would start from the wrong input.
+        let reordered = vec![
+            message(InputRole::User, InputUse::AdoptedHistory, "past-human-v"),
+            message(InputRole::User, InputUse::CurrentTurn, "human-v"),
+        ];
+        let mut refs = message_refs(0, "past-human-v", NotApplicableReason::HumanAuthored, None);
+        refs.extend(current_human_refs(1));
+        assert_eq!(
+            check(&reordered, &refs),
+            Err(CompletenessViolation {
+                input_ordinal: Some(0),
+                kind: None,
+                scope_role: None,
+                reason: CompletenessReason::InputUseMismatch,
+            })
+        );
+        // Two current-turn inputs.
+        let doubled = vec![
+            message(InputRole::User, InputUse::CurrentTurn, "human-v"),
+            message(InputRole::User, InputUse::CurrentTurn, "human-v-2"),
+        ];
+        let mut refs = current_human_refs(0);
+        refs.extend(current_human_refs(1));
+        assert_eq!(
+            reason_of(&doubled, &refs),
+            CompletenessReason::InputUseMismatch
+        );
+        // A conversation attempt without a current turn.
+        let history_only = vec![message(
+            InputRole::User,
+            InputUse::AdoptedHistory,
+            "past-human-v",
+        )];
+        let refs = message_refs(0, "past-human-v", NotApplicableReason::HumanAuthored, None);
+        assert_eq!(
+            reason_of(&history_only, &refs),
+            CompletenessReason::InputUseMismatch
+        );
+        // The intended order stays complete.
+        assert_eq!(check(&table_inputs(), &table_refs()), Ok(()));
+    }
+
+    #[test]
+    fn completeness_accepts_every_table_row() {
+        assert_eq!(check(&table_inputs(), &table_refs()), Ok(()));
+    }
+
+    #[test]
+    fn completeness_rejects_missing_kind_and_empty_input() {
+        let inputs = table_inputs();
+        // An input without any row fails on its first kind.
+        let mut refs = table_refs();
+        refs.retain(|reference| reference.input_ordinal != 4);
+        let violation = check(&inputs, &refs).expect_err("empty input");
+        assert_eq!(violation.reason, CompletenessReason::MissingKind);
+        assert_eq!(violation.input_ordinal, Some(4));
+        assert_eq!(violation.kind, Some(QualificationKind::Source));
+        // Every one of the 7 kinds is reported individually.
+        for kind in ALL_QUALIFICATION_KINDS {
+            for ordinal in 0..inputs.len() {
+                let mut refs = table_refs();
+                refs.retain(|reference| {
+                    !(reference.input_ordinal == ordinal && reference.kind == kind)
+                });
+                let violation = check(&inputs, &refs).expect_err("missing kind");
+                assert_eq!(
+                    violation.reason,
+                    CompletenessReason::MissingKind,
+                    "{ordinal} {kind:?}"
+                );
+                assert_eq!(violation.input_ordinal, Some(ordinal));
+                assert_eq!(violation.kind, Some(kind));
+            }
+        }
+        let mut refs = table_refs();
+        refs.push(QualificationReference::present(
+            9,
+            QualificationKind::Source,
+            "x",
+            "y",
+        ));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::QualificationInputMissing
+        );
+    }
+
+    #[test]
+    fn completeness_rejects_duplicate_kind_target() {
+        let inputs = table_inputs();
+        for version in ["source-token", "another-version"] {
+            let mut refs = table_refs();
+            refs.push(QualificationReference::present(
+                4,
+                QualificationKind::Source,
+                "evidence:e1",
+                version,
+            ));
+            assert_eq!(
+                reason_of(&inputs, &refs),
+                CompletenessReason::DuplicateTarget
+            );
+        }
+        let mut refs = table_refs();
+        refs.push(scope(
+            4,
+            ScopeRole::MaterialSceneProof,
+            &["anchor", "incarnation-a"],
+        ));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::DuplicateTarget
+        );
+        let mut refs = table_refs();
+        refs.push(scope(4, ScopeRole::TypedScope, &["revision-1", "0"]));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::DuplicateTarget
+        );
+        let mut refs = table_refs();
+        refs.push(QualificationReference::present(
+            4,
+            QualificationKind::Revision,
+            "revision-1",
+            "another-bundle",
+        ));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::DuplicateTarget
+        );
+    }
+
+    #[test]
+    fn completeness_rejects_collapsing_to_one_ref_per_kind() {
+        let inputs = vec![revision("revision-1")];
+        let full = revision_refs(
+            0,
+            "revision-1",
+            &["project:scene:scene-q", "evidence:e1", "evidence:e2"],
+            &[("anchor-a", "inc-a"), ("anchor-b", "inc-b")],
+            2,
+        );
+        assert_eq!(check(&inputs, &full), Ok(()));
+        let expected: BTreeSet<TypedTarget> = full
+            .iter()
+            .filter_map(|reference| typed_target(reference).expect("target"))
+            .collect();
+        let expected_map = BTreeMap::from([(0usize, expected)]);
+        let with_expected = CompletenessContext {
+            target_scene_id: Q,
+            expected_targets: Some(&expected_map),
+        };
+        assert_eq!(
+            check_attempt_completeness(&inputs, &full, &with_expected),
+            Ok(())
+        );
+
+        // Source collapsed to one reference: only the expected set sees it.
+        let mut collapsed = full.clone();
+        collapsed.retain(|reference| reference.identity() != Some("evidence:e2"));
+        assert_eq!(check(&inputs, &collapsed), Ok(()));
+        let violation = check_attempt_completeness(&inputs, &collapsed, &with_expected)
+            .expect_err("collapsed Source");
+        assert_eq!(violation.reason, CompletenessReason::ExpectedTargetMissing);
+        assert_eq!(violation.kind, Some(QualificationKind::Source));
+
+        // Scope collapsed to one reference: the closed roles are missing.
+        let mut collapsed = full.clone();
+        let kept = collapsed
+            .iter()
+            .position(|reference| reference.scope_role() == Some(ScopeRole::QuerySceneScope))
+            .expect("kept");
+        let kept = collapsed[kept].clone();
+        collapsed.retain(|reference| reference.kind != QualificationKind::Scope);
+        collapsed.push(kept);
+        assert_eq!(
+            check(&inputs, &collapsed),
+            Err(CompletenessViolation {
+                input_ordinal: Some(0),
+                kind: Some(QualificationKind::Scope),
+                scope_role: Some(ScopeRole::ProjectAuthority),
+                reason: CompletenessReason::ScopeRoleMissing,
+            })
+        );
+
+        // A reference outside the expected set is incomplete as well.
+        let mut extra = full.clone();
+        extra.push(QualificationReference::present(
+            0,
+            QualificationKind::Source,
+            "evidence:unexpected",
+            "t",
+        ));
+        let violation = check_attempt_completeness(&inputs, &extra, &with_expected)
+            .expect_err("unexpected Source");
+        assert_eq!(violation.reason, CompletenessReason::UnexpectedTarget);
+    }
+
+    #[test]
+    fn typed_target_not_fooled_by_colon_in_ids() {
+        // A joined string cannot tell these apart; the typed tuple can.
+        let first = scope_identity(ScopeRole::MaterialSceneProof, &["a:b", "c"]).expect("first");
+        let second = scope_identity(ScopeRole::MaterialSceneProof, &["a", "b:c"]).expect("second");
+        assert_ne!(first, second);
+        assert_eq!(
+            parse_scope_identity(ScopeRole::MaterialSceneProof, &first),
+            Some(vec!["a:b".to_owned(), "c".to_owned()])
+        );
+        assert_eq!(
+            parse_scope_identity(ScopeRole::MaterialSceneProof, &second),
+            Some(vec!["a".to_owned(), "b:c".to_owned()])
+        );
+        // A Scene named "x:y" is not the proof of anchor "x" in incarnation "y".
+        let scene_named = scope_identity(ScopeRole::QuerySceneScope, &["x:y"]).expect("scene");
+        let proof = scope_identity(ScopeRole::MaterialSceneProof, &["x", "y"]).expect("proof");
+        assert_ne!(scene_named, proof);
+        assert_eq!(
+            parse_scope_identity(ScopeRole::MaterialSceneProof, &scene_named),
+            None
+        );
+        assert_eq!(
+            parse_scope_identity(ScopeRole::QuerySceneScope, &proof),
+            None
+        );
+        // The naive unescaped join of the pair collides; the typed targets do not.
+        let naive = |a: &str, b: &str| format!("scene:{a}:{b}");
+        assert_eq!(naive("a:b", "c"), naive("a", "b:c"));
+        let reference = |identity: &str| {
+            QualificationReference::scope(0, ScopeRole::MaterialSceneProof, identity, "t")
+        };
+        assert_ne!(
+            typed_target(&reference(&first)).expect("first"),
+            typed_target(&reference(&second)).expect("second")
+        );
+        // Both proofs live in one Revision input without a duplicate.
+        let inputs = vec![revision("revision-1")];
+        let refs = revision_refs(
+            0,
+            "revision-1",
+            &["project:scene:scene-q"],
+            &[("a:b", "c"), ("a", "b:c")],
+            0,
+        );
+        assert_eq!(check(&inputs, &refs), Ok(()));
+        // A Scene or revision ID that contains `%` and `:` round-trips.
+        let weird = "id%3A:%25";
+        let identity = scope_identity(ScopeRole::TypedScope, &[weird, "7"]).expect("typed");
+        assert_eq!(
+            parse_scope_identity(ScopeRole::TypedScope, &identity),
+            Some(vec![weird.to_owned(), "7".to_owned()])
+        );
+        // An unescaped colon in a component is malformed.
+        assert_eq!(
+            parse_scope_identity(ScopeRole::QuerySceneScope, "scene:a%zz"),
+            None
+        );
+        assert_eq!(
+            parse_scope_identity(ScopeRole::QuerySceneScope, "scene:"),
+            None
+        );
+        assert_eq!(
+            parse_scope_identity(ScopeRole::QuerySceneScope, "scene:a:b"),
+            None
+        );
+        // Source keys keep their own colons: the whole identity is the target.
+        let source =
+            QualificationReference::present(0, QualificationKind::Source, "project:scene:a:b", "t");
+        assert_eq!(
+            typed_target(&source)
+                .expect("source")
+                .expect("present")
+                .components,
+            vec!["project:scene:a:b".to_owned()]
+        );
+        assert!(scope_identity(ScopeRole::QuerySceneScope, &["a", "b"]).is_err());
+        // A malformed Scope identity is incomplete.
+        let mut refs = table_refs();
+        let position = refs
+            .iter()
+            .position(|reference| {
+                reference.input_ordinal == 0
+                    && reference.scope_role() == Some(ScopeRole::QuerySceneScope)
+            })
+            .expect("scope");
+        refs[position] =
+            QualificationReference::scope(0, ScopeRole::QuerySceneScope, "scene:a:b", "t");
+        assert_eq!(
+            reason_of(&table_inputs(), &refs),
+            CompletenessReason::MalformedTarget
+        );
+    }
+
+    #[test]
+    fn typed_na_rejects_forged_cells() {
+        use NotApplicableReason as N;
+        use QualificationKind as K;
+        let inputs = table_inputs();
+        let replace = |ordinal: usize, kind: K, replacement: Vec<QualificationReference>| {
+            let mut refs = table_refs();
+            refs.retain(|reference| {
+                !(reference.input_ordinal == ordinal && reference.kind == kind)
+            });
+            refs.extend(replacement);
+            refs
+        };
+        // An N/A where the table requires a reference.
+        let refs = replace(0, K::Source, vec![na(0, K::Source, N::HumanAuthored)]);
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        let refs = replace(0, K::Scope, vec![na(0, K::Scope, N::HumanAuthored)]);
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        // The right cell with a reason the table does not give it.
+        let refs = replace(
+            0,
+            K::Decision,
+            vec![na(0, K::Decision, N::DerivedFromParents)],
+        );
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        let refs = replace(2, K::Decision, vec![na(2, K::Decision, N::HumanAuthored)]);
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        let refs = replace(0, K::D1, vec![na(0, K::D1, N::NotIndexDerived)]);
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        // A past Human has a D1 selection, not the fixed slot.
+        let refs = replace(1, K::D1, vec![na(1, K::D1, N::FixedUserSlot)]);
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        // A reference together with a typed N/A.
+        let mut refs = table_refs();
+        refs.push(QualificationReference::present(
+            0,
+            K::Revision,
+            "revision-x",
+            "bundle",
+        ));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ReferenceAndNotApplicable
+        );
+        let mut refs = table_refs();
+        refs.push(na(4, K::Index, N::NotIndexDerived));
+        refs.push(QualificationReference::present(
+            4,
+            K::Index,
+            "sealed-graph-index",
+            "g1",
+        ));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ReferenceAndNotApplicable
+        );
+        // A reference where the table puts an N/A.
+        let refs = replace(
+            0,
+            K::Revision,
+            vec![QualificationReference::present(
+                0,
+                K::Revision,
+                "revision-x",
+                "bundle",
+            )],
+        );
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ReferenceNotInTable
+        );
+        // Two N/A rows of one kind.
+        let mut refs = table_refs();
+        refs.push(na(0, K::Revision, N::NotARevision));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::DuplicateNotApplicable
+        );
+        // Graph-derived input has no N/A for the Index (Pending).
+        let graph = InputReference {
+            role: InputRole::Context,
+            target: InputTarget::GraphEvidence {
+                evidence_ref: "evidence-1".into(),
+                source_key: "project:scene:other".into(),
+                revision_token: "t".into(),
+            },
+            input_use: InputUse::SelectedMaterial,
+        };
+        let mut graph_refs = revision_refs(0, "revision-1", &["project:scene:other"], &[], 0);
+        graph_refs.retain(|reference| reference.kind != K::Index);
+        graph_refs.push(na(0, K::Index, N::NotIndexDerived));
+        assert_eq!(
+            reason_of(std::slice::from_ref(&graph), &graph_refs),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        graph_refs.pop();
+        assert_eq!(
+            reason_of(std::slice::from_ref(&graph), &graph_refs),
+            CompletenessReason::MissingKind
+        );
+        graph_refs.push(QualificationReference::present(
+            0,
+            K::Index,
+            "sealed-graph-index",
+            "g1",
+        ));
+        assert_eq!(check(&[graph], &graph_refs), Ok(()));
+        // Artifact is unsupported, with or without rows.
+        let artifact = InputReference {
+            role: InputRole::Context,
+            target: InputTarget::Artifact {
+                artifact_id: "artifact-1".into(),
+                payload_digest: test_digest("artifact"),
+            },
+            input_use: InputUse::SelectedMaterial,
+        };
+        assert_eq!(
+            reason_of(std::slice::from_ref(&artifact), &[]),
+            CompletenessReason::UnsupportedInput
+        );
+        assert_eq!(
+            reason_of(&[artifact], &revision_refs(0, "revision-1", &["s"], &[], 0)),
+            CompletenessReason::UnsupportedInput
+        );
+        // An unknown reason or role is not a value of the closed types.
+        let unknown_reason = json!({"referenceVersion":2,"state":"not-applicable",
+            "inputOrdinal":0,"kind":"revision","reason":"made-up"});
+        assert!(serde_json::from_value::<QualificationReference>(unknown_reason).is_err());
+        let unknown_role = json!({"referenceVersion":2,"state":"present","inputOrdinal":0,
+            "kind":"scope","identity":"scene:x","version":"v","scopeRole":"made-up"});
+        assert!(serde_json::from_value::<QualificationReference>(unknown_role).is_err());
+        // A Scope role on a non-Scope reference, or none on a Scope reference.
+        let mut refs = table_refs();
+        refs.push(QualificationReference {
+            input_ordinal: 0,
+            kind: K::Source,
+            body: QualificationBody::Present {
+                identity: "x".into(),
+                version: "v".into(),
+                scope_role: Some(ScopeRole::ScopeAxis),
+            },
+        });
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ScopeRoleInvalid
+        );
+        let mut refs = table_refs();
+        refs.push(QualificationReference::present(0, K::Scope, "scene:x", "v"));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ScopeRoleInvalid
+        );
+        // Input-use that does not fit the input.
+        let misuse = vec![message(
+            InputRole::User,
+            InputUse::SelectedMaterial,
+            "human-v",
+        )];
+        assert_eq!(
+            reason_of(&misuse, &[]),
+            CompletenessReason::InputUseMismatch
+        );
+    }
+
+    #[test]
+    fn raw_freshness_na_reason_follows_source_key() {
+        use NotApplicableReason as N;
+        // The target Scene's body is not a dependency of the output.
+        let target = vec![raw("project:scene:scene-q")];
+        assert_eq!(
+            check(
+                &target,
+                &raw_refs(0, "project:scene:scene-q", N::TargetSceneBodyNotADependency)
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            reason_of(
+                &target,
+                &raw_refs(0, "project:scene:scene-q", N::ExactSourceToken)
+            ),
+            CompletenessReason::NotApplicableReasonMismatch
+        );
+        // Any other Raw is covered by its exact source token.
+        let other = vec![raw("project:scene:another-scene")];
+        assert_eq!(
+            check(
+                &other,
+                &raw_refs(0, "project:scene:another-scene", N::ExactSourceToken)
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            reason_of(
+                &other,
+                &raw_refs(
+                    0,
+                    "project:scene:another-scene",
+                    N::TargetSceneBodyNotADependency
+                )
+            ),
+            CompletenessReason::NotApplicableReasonMismatch
+        );
+        // Another reason is outside the cell altogether.
+        assert_eq!(
+            reason_of(
+                &other,
+                &raw_refs(0, "project:scene:another-scene", N::ImmutableMessageVersion)
+            ),
+            CompletenessReason::NotApplicableNotInTable
+        );
+        // The writer accepts both reasons for a Raw; the rule picks one.
+        assert!(validate_reference_shapes(
+            &target,
+            &raw_refs(0, "project:scene:scene-q", N::ExactSourceToken)
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn scope_role_requirements_follow_the_input_type() {
+        // A Human carries exactly its Scene's scope and incarnation.
+        let inputs = vec![message(InputRole::User, InputUse::CurrentTurn, "human-v")];
+        let mut refs = current_human_refs(0);
+        refs.push(scope(0, ScopeRole::RevealState, &[Q]));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ScopeRoleNotAllowed
+        );
+        let mut refs = current_human_refs(0);
+        refs.retain(|reference| reference.scope_role() != Some(ScopeRole::QuerySceneIncarnation));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ScopeRoleMissing
+        );
+        // A query-Scene role must name the attempt's target Scene.
+        let mut refs = current_human_refs(0);
+        refs.retain(|reference| reference.scope_role() != Some(ScopeRole::QuerySceneScope));
+        refs.push(scope(0, ScopeRole::QuerySceneScope, &["other-scene"]));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::ScopeSceneMismatch
+        );
+        // A singleton role cannot repeat for a Revision.
+        let inputs = vec![revision("revision-1")];
+        let mut refs = revision_refs(0, "revision-1", &["s"], &[], 0);
+        refs.push(scope(0, ScopeRole::RevealState, &[Q]));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::DuplicateTarget
+        );
+        let mut refs = revision_refs(0, "revision-1", &["s"], &[], 0);
+        refs.push(QualificationReference::scope(
+            0,
+            ScopeRole::ScopeAxis,
+            scope_identity(ScopeRole::ScopeAxis, &[Q]).expect("axis"),
+            "other-axis-token",
+        ));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::DuplicateTarget
+        );
+        // A D1 reference must carry the selection identity.
+        let mut refs = revision_refs(0, "revision-1", &["s"], &[], 0);
+        refs.retain(|reference| reference.kind != QualificationKind::D1);
+        refs.push(QualificationReference::present(
+            0,
+            QualificationKind::D1,
+            "selection",
+            "v",
+        ));
+        assert_eq!(
+            reason_of(&inputs, &refs),
+            CompletenessReason::MalformedTarget
+        );
+    }
+
+    #[test]
+    fn scope_role_classification_is_by_kind_and_role_not_identity_string() {
+        use QualificationKind as K;
+        use ReferenceClass as C;
+        use ScopeRole as R;
+        let table = [
+            (K::Source, None, C::Dependency),
+            (K::Revision, None, C::Dependency),
+            (K::Decision, None, C::Dependency),
+            (K::Index, None, C::Dependency),
+            (K::Freshness, None, C::RequestContext),
+            (K::D1, None, C::D1Selection),
+            (K::Scope, Some(R::TypedScope), C::Dependency),
+            (K::Scope, Some(R::ProjectAuthority), C::RequestContext),
+            (K::Scope, Some(R::RevealState), C::RequestContext),
+            (K::Scope, Some(R::QuerySceneSource), C::RequestContext),
+            (K::Scope, Some(R::MaterialSceneProof), C::RequestContext),
+            (K::Scope, Some(R::QuerySceneScope), C::TurnContext),
+            (K::Scope, Some(R::QuerySceneIncarnation), C::TurnContext),
+            (K::Scope, Some(R::ScopeAxis), C::TurnContext),
+        ];
+        for (kind, role, class) in table {
+            assert_eq!(
+                classify_reference(kind, role),
+                Some(class),
+                "{kind:?} {role:?}"
+            );
+            // The class never depends on the identity text.
+            for identity in [
+                "scene:x",
+                "project:scope-authority:p",
+                "revision:r:typed-scope:0",
+                "",
+            ] {
+                let reference = QualificationReference {
+                    input_ordinal: 0,
+                    kind,
+                    body: QualificationBody::Present {
+                        identity: identity.into(),
+                        version: "v".into(),
+                        scope_role: role,
+                    },
+                };
+                assert_eq!(
+                    classify_reference(reference.kind, reference.scope_role()),
+                    Some(class)
+                );
+            }
+        }
+        // Eight roles, all classified; a Scope reference without a role is not.
+        assert_eq!(
+            table.iter().filter(|(kind, ..)| *kind == K::Scope).count(),
+            8
+        );
+        assert_eq!(classify_reference(K::Scope, None), None);
+    }
+
+    #[test]
+    fn reference_json_v2_roundtrip_and_v1_still_readable() -> Result<()> {
+        let input = message(InputRole::User, InputUse::CurrentTurn, "human-v");
+        let value = serde_json::to_value(&input)?;
+        assert_eq!(value["referenceVersion"], json!(2));
+        assert_eq!(value["inputUse"], json!("current-turn"));
+        let json = canonical_json_string(&value)?;
+        assert_eq!(serde_json::from_str::<InputReference>(&json)?, input);
+        let present = scope(0, ScopeRole::ProjectAuthority, &["project:1"]);
+        let not_applicable = na(
+            0,
+            QualificationKind::Revision,
+            NotApplicableReason::NotARevision,
+        );
+        let source = QualificationReference::present(0, QualificationKind::Source, "k", "t");
+        for reference in [&present, &not_applicable, &source] {
+            let value = serde_json::to_value(reference)?;
+            assert_eq!(value["referenceVersion"], json!(2));
+            let json = canonical_json_string(&value)?;
+            assert_eq!(
+                &serde_json::from_str::<QualificationReference>(&json)?,
+                reference
+            );
+        }
+        assert_eq!(serde_json::to_value(&present)?["state"], json!("present"));
+        assert_eq!(
+            serde_json::to_value(&present)?["scopeRole"],
+            json!("project-authority")
+        );
+        assert_eq!(
+            serde_json::to_value(&not_applicable)?["state"],
+            json!("not-applicable")
+        );
+        assert_eq!(
+            serde_json::to_value(&not_applicable)?["reason"],
+            json!("not-a-revision")
+        );
+        assert!(serde_json::to_value(&source)?.get("scopeRole").is_none());
+        // Unknown fields and unknown versions are rejected.
+        let mut extra = serde_json::to_value(&input)?;
+        extra["extra"] = json!(1);
+        assert!(serde_json::from_value::<InputReference>(extra).is_err());
+        let mut extra = serde_json::to_value(&not_applicable)?;
+        extra["identity"] = json!("x");
+        assert!(serde_json::from_value::<QualificationReference>(extra).is_err());
+        let mut unknown = serde_json::to_value(&input)?;
+        unknown["referenceVersion"] = json!(3);
+        assert!(serde_json::from_value::<InputReference>(unknown.clone()).is_err());
+        assert_error_code(
+            parse_versioned_reference::<InputReference, LegacyInputReferenceV1>(
+                &unknown.to_string(),
+            )
+            .map(|_| ()),
+            REFERENCE_VERSION_UNSUPPORTED_ERROR,
+        );
+        let null_version = r#"{"referenceVersion":null,"role":"user","target":{"kind":"message","versionId":"v","parentAttemptId":null}}"#;
+        assert!(
+            parse_versioned_reference::<InputReference, LegacyInputReferenceV1>(null_version)
+                .is_err()
+        );
+        // Stored rows: v2 is written; v1 stays readable but is not exposed.
+        let db = database(Path::new(":memory:"));
+        let human = human(&db, "reference-human", "input");
+        let current = create_attempt(
+            &db,
+            request(
+                vec![message_input(&human)],
+                vec![QualificationReference::present(
+                    0,
+                    QualificationKind::Source,
+                    "reference-human",
+                    "digest",
+                )],
+            ),
+        )?;
+        assert_eq!(current.reference_format, ReferenceFormat::V2);
+        let read = read_attempt(&db, &current.id, budget())?;
+        assert_eq!(read.reference_format, ReferenceFormat::V2);
+        assert_eq!(read.inputs, current.inputs);
+        let raw_rows = |db: &Database, table: &str| -> Vec<String> {
+            db.with_conn(|conn| {
+                let mut statement = conn.prepare(&format!(
+                    "SELECT reference_json FROM {table} WHERE attempt_id=?1 ORDER BY ordinal"
+                ))?;
+                let rows = statement
+                    .query_map([&current.id], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("rows")
+        };
+        let input_rows = raw_rows(&db, "nir1_generation_input_refs");
+        assert!(input_rows[0].contains("\"referenceVersion\":2"));
+        let set_rows = |db: &Database, table: &str, json: &str, digest: Option<&str>| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    &format!(
+                        "UPDATE {table} SET reference_json=?2 WHERE attempt_id=?1 AND ordinal=0"
+                    ),
+                    params![current.id, json],
+                )?;
+                if let Some(digest) = digest {
+                    conn.execute(
+                        "UPDATE nir1_generation_attempts SET input_digest=?2 WHERE id=?1",
+                        params![current.id, digest],
+                    )?;
+                }
+                Ok(())
+            })
+            .expect("set rows");
+        };
+        let legacy_input = LegacyInputReferenceV1 {
+            role: current.inputs[0].role.clone(),
+            target: current.inputs[0].target.clone(),
+        };
+        let legacy_qualification = LegacyQualificationReferenceV1 {
+            input_ordinal: 0,
+            kind: QualificationKind::Source,
+            identity: "reference-human".into(),
+            version: "digest".into(),
+        };
+        let legacy_digest = canonical_json_digest(&json!({
+            "domain":"nir1-generation-inputs@1",
+            "inputs":[legacy_input],"qualifications":[legacy_qualification]}))?;
+        assert_ne!(legacy_digest, current.input_digest);
+        // Mixed formats are refused.
+        set_rows(
+            &db,
+            "nir1_generation_input_refs",
+            &canonical_json_string(&serde_json::to_value(&legacy_input)?)?,
+            None,
+        );
+        assert_error_code(
+            read_attempt(&db, &current.id, budget()),
+            REFERENCE_FORMAT_MIXED_ERROR,
+        );
+        // All rows v1, digest in the v1 domain: readable, flagged, not exposed.
+        set_rows(
+            &db,
+            "nir1_generation_qualification_refs",
+            &canonical_json_string(&serde_json::to_value(&legacy_qualification)?)?,
+            Some(&legacy_digest),
+        );
+        let legacy = read_attempt(&db, &current.id, budget())?;
+        assert_eq!(legacy.reference_format, ReferenceFormat::LegacyV1);
+        assert!(legacy.inputs.is_empty() && legacy.qualifications.is_empty());
+        assert_eq!(legacy.input_digest, legacy_digest);
+        // The v1 rows do not verify against the v2 domain digest.
+        set_rows(
+            &db,
+            "nir1_generation_input_refs",
+            &canonical_json_string(&serde_json::to_value(&legacy_input)?)?,
+            Some(&current.input_digest),
+        );
+        assert_error_code(
+            read_attempt(&db, &current.id, budget()),
+            "NIR1_GENERATION_INPUT_DIGEST_MISMATCH",
+        );
+        // A row with an unknown version is refused outright.
+        set_rows(
+            &db,
+            "nir1_generation_input_refs",
+            &unknown.to_string(),
+            Some(&legacy_digest),
+        );
+        assert_error_code(
+            read_attempt(&db, &current.id, budget()),
+            REFERENCE_VERSION_UNSUPPORTED_ERROR,
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn writer_rejects_open_shapes_but_stores_incomplete_attempts() -> Result<()> {
+        use NotApplicableReason as N;
+        use QualificationKind as K;
+        let db = database(Path::new(":memory:"));
+        let human = human(&db, "shape-human", "input");
+        let current = message_input(&human);
+        let create = |inputs: Vec<InputReference>, refs: Vec<QualificationReference>| {
+            create_attempt(&db, request(inputs, refs))
+        };
+        // An N/A the table does not give this cell, an unknown pairing of
+        // input-use, and a role on the wrong kind are refused.
+        for (refs, code) in [
+            (
+                vec![na(0, K::Source, N::HumanAuthored)],
+                "NIR1_GENERATION_NOT_APPLICABLE_NOT_IN_TABLE",
+            ),
+            (
+                vec![na(0, K::Revision, N::HumanAuthored)],
+                "NIR1_GENERATION_NOT_APPLICABLE_NOT_IN_TABLE",
+            ),
+            (
+                vec![na(0, K::D1, N::NotIndexDerived)],
+                "NIR1_GENERATION_NOT_APPLICABLE_NOT_IN_TABLE",
+            ),
+            (
+                vec![QualificationReference::present(0, K::Scope, "scene:x", "v")],
+                "NIR1_GENERATION_SCOPE_ROLE_MISMATCH",
+            ),
+            (
+                vec![QualificationReference {
+                    input_ordinal: 0,
+                    kind: K::Source,
+                    body: QualificationBody::Present {
+                        identity: "x".into(),
+                        version: "v".into(),
+                        scope_role: Some(ScopeRole::ScopeAxis),
+                    },
+                }],
+                "NIR1_GENERATION_SCOPE_ROLE_MISMATCH",
+            ),
+            (
+                vec![na(1, K::Revision, N::NotARevision)],
+                "NIR1_GENERATION_QUALIFICATION_INPUT_MISSING",
+            ),
+        ] {
+            assert_error_code(create(vec![current.clone()], refs), code);
+        }
+        let mut misused = current.clone();
+        misused.input_use = InputUse::SelectedMaterial;
+        assert_error_code(
+            create(vec![misused], vec![]),
+            "NIR1_GENERATION_INPUT_USE_MISMATCH",
+        );
+        let mut wrong_role = current.clone();
+        wrong_role.role = InputRole::Context;
+        assert_error_code(
+            create(vec![wrong_role], vec![]),
+            "NIR1_GENERATION_INPUT_USE_MISMATCH",
+        );
+        let rows: i64 = db.with_conn(|conn| {
+            Ok(
+                conn.query_row("SELECT count(*) FROM nir1_generation_attempts", [], |row| {
+                    row.get(0)
+                })?,
+            )
+        })?;
+        assert_eq!(rows, 0, "a refused shape stores nothing");
+        // Attempts that break the completeness rule are stored (and then not
+        // used as history): missing kinds, a reference with an N/A,
+        // a duplicate target.
+        let incomplete = vec![
+            vec![],
+            vec![QualificationReference::present(
+                0,
+                K::Source,
+                "shape-human",
+                "d",
+            )],
+            vec![
+                QualificationReference::present(0, K::Source, "shape-human", "d"),
+                QualificationReference::present(0, K::Source, "shape-human", "another"),
+                na(0, K::Revision, N::NotARevision),
+                QualificationReference::present(0, K::Revision, "r", "b"),
+            ],
+        ];
+        for refs in incomplete {
+            let stored = create(vec![current.clone()], refs.clone())?;
+            let read = read_attempt(&db, &stored.id, budget())?;
+            assert_eq!(read.qualifications, refs);
+            assert!(check_attempt_completeness(
+                &read.inputs,
+                &read.qualifications,
+                &CompletenessContext {
+                    target_scene_id: GENERATION_SCENE_ID,
+                    expected_targets: None
+                }
+            )
+            .is_err());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn d1_selection_digest_is_recomputable_from_stored_rows() -> Result<()> {
+        let db = database(Path::new(":memory:"));
+        let human = human(&db, "d1-human", "input");
+        let inputs = vec![message_input(&human), raw("project:scene:generation-scene")];
+        let parameters = D1SelectionParameters {
+            estimator_version: "nir1-context-estimator-v1".into(),
+            selector_budget_tokens: 1_000,
+            used_tokens: 640,
+            remaining_tokens: 360,
+        };
+        let selection = d1_selection_digest(&parameters, &inputs)?;
+        let stored = create_attempt(
+            &db,
+            request(inputs.clone(), vec![d1_selection_reference(1, &selection)]),
+        )?;
+        let read = read_attempt(&db, &stored.id, budget())?;
+        let recorded = read
+            .qualifications
+            .iter()
+            .find(|reference| reference.kind == QualificationKind::D1)
+            .and_then(|reference| reference.version())
+            .expect("D1 reference")
+            .to_owned();
+        assert_eq!(d1_selection_digest(&parameters, &read.inputs)?, recorded);
+        // Every component is bound.
+        let changed = |parameters: D1SelectionParameters| {
+            d1_selection_digest(&parameters, &read.inputs).expect("digest")
+        };
+        for other in [
+            D1SelectionParameters {
+                estimator_version: "other".into(),
+                ..parameters.clone()
+            },
+            D1SelectionParameters {
+                selector_budget_tokens: 1_001,
+                remaining_tokens: 361,
+                ..parameters.clone()
+            },
+            D1SelectionParameters {
+                used_tokens: 641,
+                remaining_tokens: 359,
+                ..parameters.clone()
+            },
+        ] {
+            assert_ne!(changed(other), recorded);
+        }
+        let mut other_target = read.inputs.clone();
+        other_target[1].target = InputTarget::RawSource {
+            source_key: "project:scene:generation-scene".into(),
+            revision_token: "changed-token".into(),
+        };
+        assert_ne!(d1_selection_digest(&parameters, &other_target)?, recorded);
+        let mut reordered = read.inputs.clone();
+        reordered.push(raw("project:scene:later"));
+        assert_ne!(d1_selection_digest(&parameters, &reordered)?, recorded);
+        let mut other_use = read.inputs.clone();
+        other_use[1].input_use = InputUse::AdoptedHistory;
+        assert_ne!(d1_selection_digest(&parameters, &other_use)?, recorded);
+        // The current Human has a fixed slot and is not part of the selection.
+        let mut other_human = read.inputs.clone();
+        other_human[0].target = InputTarget::Message {
+            version_id: "another-human-version".into(),
+            parent_attempt_id: None,
+        };
+        assert_eq!(d1_selection_digest(&parameters, &other_human)?, recorded);
+        // Usage and remainder must add up to the budget.
+        assert_error_code(
+            d1_selection_digest(
+                &D1SelectionParameters {
+                    remaining_tokens: 1,
+                    ..parameters.clone()
+                },
+                &read.inputs,
+            ),
+            "NIR1_GENERATION_D1_SELECTION_INVALID",
+        );
+        assert_error_code(
+            d1_selection_digest(
+                &D1SelectionParameters {
+                    estimator_version: String::new(),
+                    ..parameters
+                },
+                &read.inputs,
+            ),
+            "NIR1_GENERATION_D1_SELECTION_INVALID",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn input_digest_domain_is_v2_and_matches_node_final_digest() -> Result<()> {
+        assert_eq!(INPUT_DIGEST_DOMAIN, "nir1-generation-inputs@2");
+        let inputs = table_inputs();
+        let refs = table_refs();
+        // The node `final_input_digest` builds this exact JSON with this domain.
+        let expected = canonical_json_digest(&json!({
+            "domain": "nir1-generation-inputs@2",
+            "inputs": inputs,
+            "qualifications": refs,
+        }))?;
+        assert_eq!(input_digest(&inputs, &refs)?, expected);
+        let old_domain = canonical_json_digest(&json!({
+            "domain": "nir1-generation-inputs@1",
+            "inputs": inputs,
+            "qualifications": refs,
+        }))?;
+        assert_ne!(old_domain, expected);
+        // A stored attempt carries the v2 digest.
+        let db = database(Path::new(":memory:"));
+        let human = human(&db, "digest-human", "input");
+        let stored = create_attempt(
+            &db,
+            request(
+                vec![message_input(&human)],
+                vec![QualificationReference::present(
+                    0,
+                    QualificationKind::Source,
+                    "digest-human",
+                    "d",
+                )],
+            ),
+        )?;
+        assert_eq!(
+            stored.input_digest,
+            input_digest(&stored.inputs, &stored.qualifications)?
+        );
+        Ok(())
     }
 }

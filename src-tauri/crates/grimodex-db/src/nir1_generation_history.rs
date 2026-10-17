@@ -18,33 +18,65 @@ fn valid_ref(value: &str) -> bool {
     !value.is_empty() && value.trim() == value
 }
 
-/// The seven qualification kinds already present in D2b storage.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum QualificationKind {
-    Source,
-    Revision,
-    Decision,
-    Freshness,
-    Index,
-    Scope,
-    D1,
-}
+use crate::nir1_generation::{
+    check_input_completeness, CompletenessContext, InputReference, InputRole, InputTarget,
+    QualificationReference as StoredQualificationReference,
+};
+pub use crate::nir1_generation::{
+    CompletenessReason, CompletenessViolation, InputUse, QualificationBody, QualificationKind,
+    ReferenceFormat,
+};
+#[cfg(test)]
+use crate::nir1_generation::{NotApplicableReason, ScopeRole};
 
-const REQUIRED_QUALIFICATIONS: [QualificationKind; 7] = [
-    QualificationKind::Source,
-    QualificationKind::Revision,
-    QualificationKind::Decision,
-    QualificationKind::Freshness,
-    QualificationKind::Index,
-    QualificationKind::Scope,
-    QualificationKind::D1,
-];
-
+/// One qualification row of an adopted input: a present reference
+/// (identity, version and, for Scope, its closed role) or a typed N/A with a
+/// closed reason (K4/3 section 3). The kinds, roles and reasons are the
+/// storage types, so the checker and the D-final finalizer share one rule.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QualificationReference {
     pub kind: QualificationKind,
-    pub identity: OpaqueRef,
-    pub version: OpaqueRef,
+    pub body: QualificationBody,
+}
+
+#[cfg(test)]
+impl QualificationReference {
+    pub fn present(
+        kind: QualificationKind,
+        identity: impl Into<OpaqueRef>,
+        version: impl Into<OpaqueRef>,
+    ) -> Self {
+        Self {
+            kind,
+            body: QualificationBody::Present {
+                identity: identity.into(),
+                version: version.into(),
+                scope_role: None,
+            },
+        }
+    }
+
+    pub fn scope(
+        role: ScopeRole,
+        identity: impl Into<OpaqueRef>,
+        version: impl Into<OpaqueRef>,
+    ) -> Self {
+        Self {
+            kind: QualificationKind::Scope,
+            body: QualificationBody::Present {
+                identity: identity.into(),
+                version: version.into(),
+                scope_role: Some(role),
+            },
+        }
+    }
+
+    pub fn not_applicable(kind: QualificationKind, reason: NotApplicableReason) -> Self {
+        Self {
+            kind,
+            body: QualificationBody::NotApplicable { reason },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -53,30 +85,55 @@ pub struct QualificationSet {
 }
 
 impl QualificationSet {
-    fn validate_complete(&self) -> Result<(), Failure> {
-        let mut seen = BTreeSet::new();
+    /// The completeness rule of K4/3 section 3 for one adopted input: each of
+    /// the 7 kinds has one or more references or the typed N/A of the table,
+    /// never both; no `(kind, target)` repeats; an N/A outside the table, a
+    /// reference where the table puts an N/A and an unsupported input are
+    /// incomplete. The rule is the storage module's pure function, so the
+    /// D-final finalizer and this checker cannot drift. There is no
+    /// exemption: a Human message is checked like every other input.
+    ///
+    /// Rule 3 (the set equals the one derived from the current state) needs
+    /// the current authorities and is the `CurrentQualifier`'s concern.
+    fn validate_complete(
+        &self,
+        input: &InputReference,
+        target_scene_id: &str,
+    ) -> Result<(), Failure> {
         for reference in &self.references {
-            if reference.identity.trim() != reference.identity
-                || reference.identity.is_empty()
-                || reference.version.trim() != reference.version
-                || reference.version.is_empty()
+            if let QualificationBody::Present {
+                identity, version, ..
+            } = &reference.body
             {
-                return Err(Failure::incomplete(IncompleteReason::InvalidQualification));
-            }
-            if !seen.insert(reference.kind) {
-                return Err(Failure::incomplete(
-                    IncompleteReason::DuplicateQualification(reference.kind),
-                ));
-            }
-        }
-        for kind in REQUIRED_QUALIFICATIONS {
-            if !seen.contains(&kind) {
-                return Err(Failure::incomplete(IncompleteReason::MissingQualification(
-                    kind,
-                )));
+                if identity.trim() != identity
+                    || identity.is_empty()
+                    || version.trim() != version
+                    || version.is_empty()
+                {
+                    return Err(Failure::incomplete(IncompleteReason::InvalidQualification));
+                }
             }
         }
-        Ok(())
+        let rows: Vec<StoredQualificationReference> = self
+            .references
+            .iter()
+            .map(|reference| StoredQualificationReference {
+                input_ordinal: 0,
+                kind: reference.kind,
+                body: reference.body.clone(),
+            })
+            .collect();
+        let rows: Vec<&StoredQualificationReference> = rows.iter().collect();
+        check_input_completeness(
+            0,
+            input,
+            &rows,
+            &CompletenessContext {
+                target_scene_id,
+                expected_targets: None,
+            },
+        )
+        .map_err(|violation| Failure::incomplete(IncompleteReason::from_completeness(violation)))
     }
 }
 
@@ -209,7 +266,87 @@ pub enum HistoryInputKind {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HistoryInput {
     pub kind: HistoryInputKind,
+    /// How the stored attempt used this input (K4/3 section 5). It selects the
+    /// row of the typed N/A table together with the kind.
+    pub input_use: InputUse,
     pub qualifications: QualificationSet,
+}
+
+impl HistoryInput {
+    /// The stored input row this input stands for, derived from its kind and
+    /// input-use. `None` for an invalid message binding, which never
+    /// qualifies and so has no row of the table.
+    fn input_reference(&self) -> Option<InputReference> {
+        let (role, target) = match &self.kind {
+            HistoryInputKind::GeneratedMessage {
+                version_id,
+                parent_attempt_id,
+                ..
+            } => (
+                InputRole::Assistant,
+                InputTarget::Message {
+                    version_id: version_id.clone(),
+                    parent_attempt_id: parent_attempt_id.clone(),
+                },
+            ),
+            HistoryInputKind::HumanMessage { version_id, .. } => (
+                InputRole::User,
+                InputTarget::Message {
+                    version_id: version_id.clone(),
+                    parent_attempt_id: None,
+                },
+            ),
+            HistoryInputKind::InvalidMessageBinding { .. } => return None,
+            HistoryInputKind::Artifact {
+                artifact_id,
+                payload_digest,
+                ..
+            } => (
+                InputRole::Context,
+                InputTarget::Artifact {
+                    artifact_id: artifact_id.clone(),
+                    payload_digest: payload_digest.clone(),
+                },
+            ),
+            HistoryInputKind::AcceptedRevision {
+                revision_id,
+                bundle_digest,
+            } => (
+                InputRole::Context,
+                InputTarget::AcceptedRevision {
+                    revision_id: revision_id.clone(),
+                    bundle_digest: bundle_digest.clone(),
+                },
+            ),
+            HistoryInputKind::RawSource {
+                source_key,
+                revision_token,
+            } => (
+                InputRole::Context,
+                InputTarget::RawSource {
+                    source_key: source_key.clone(),
+                    revision_token: revision_token.clone(),
+                },
+            ),
+            HistoryInputKind::GraphEvidence {
+                evidence_ref,
+                source_key,
+                revision_token,
+            } => (
+                InputRole::Context,
+                InputTarget::GraphEvidence {
+                    evidence_ref: evidence_ref.clone(),
+                    source_key: source_key.clone(),
+                    revision_token: revision_token.clone(),
+                },
+            ),
+        };
+        Some(InputReference {
+            role,
+            target,
+            input_use: self.input_use,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -220,6 +357,13 @@ pub struct AttemptSnapshot {
     pub terminal: Option<TerminalReceipt>,
     pub project_id: Option<OpaqueRef>,
     pub session_id: Option<OpaqueRef>,
+    /// The attempt's target Scene (`AttemptBinding.scene.scene_id`). The
+    /// completeness rule needs it for the query-Scene Scope roles and the Raw
+    /// Freshness reason; `None` fails closed.
+    pub target_scene_id: Option<OpaqueRef>,
+    /// How the attempt's reference rows were written. A version 1 attempt has
+    /// no readable inputs and is never used as history.
+    pub reference_format: ReferenceFormat,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -346,8 +490,19 @@ pub enum IncompleteReason {
     ReceiptMismatch(AttemptId),
     InvalidQualification,
     InvalidReference,
+    /// Two references (or two typed N/A rows) with the same `(kind, target)`.
     DuplicateQualification(QualificationKind),
+    /// Neither a reference nor a typed N/A for this kind.
     MissingQualification(QualificationKind),
+    /// Any other violation of the completeness rule (forged N/A, a reference
+    /// and an N/A together, a Scope role problem, an unsupported input, ...).
+    QualificationRule(CompletenessViolation),
+    /// The attempt's references were written in the version 1 format. They are
+    /// read for terminalization and recovery only (K4/3 section 2).
+    LegacyReferenceFormat,
+    /// The attempt's target Scene is unknown, so the completeness rule cannot
+    /// be applied.
+    TargetSceneUnavailable,
     InvalidInputOrdinal(usize),
     DuplicateInputOrdinal(usize),
     EmptyAdoption,
@@ -357,6 +512,20 @@ pub enum IncompleteReason {
     LegacyMessage,
     PendingAuthority,
     AuthorityUnavailable,
+}
+
+impl IncompleteReason {
+    /// Map a violation of the shared completeness rule.
+    fn from_completeness(violation: CompletenessViolation) -> Self {
+        match (violation.reason, violation.kind) {
+            (CompletenessReason::MissingKind, Some(kind)) => Self::MissingQualification(kind),
+            (
+                CompletenessReason::DuplicateTarget | CompletenessReason::DuplicateNotApplicable,
+                Some(kind),
+            ) => Self::DuplicateQualification(kind),
+            _ => Self::QualificationRule(violation),
+        }
+    }
 }
 
 /// A request-wide stop. These conditions must not be represented as an
@@ -476,6 +645,12 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
             .ok_or_else(|| Failure::incomplete(IncompleteReason::MissingAttempt(id.into())))?;
         self.budget.consume_node()?;
         let result = match attempt.tuple.as_ref() {
+            _ if attempt.reference_format == ReferenceFormat::LegacyV1 => {
+                // Version 1 rows have no input-use or typed N/A. The attempt
+                // and every descendant that adopts it are excluded; the turn
+                // goes on (K4/3 section 2).
+                Err(Failure::incomplete(IncompleteReason::LegacyReferenceFormat))
+            }
             None => Err(Failure::incomplete(
                 IncompleteReason::CurrentTupleUnavailable,
             )),
@@ -515,17 +690,19 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
             attempt.inputs.get(ordinal).cloned().ok_or_else(|| {
                 Failure::incomplete(IncompleteReason::InvalidInputOrdinal(ordinal))
             })?;
-        let direct_human = matches!(
-            input.kind,
-            HistoryInputKind::HumanMessage {
-                explicitly_bound: true,
-                ..
-            }
-        );
-        if !direct_human {
-            self.budget
-                .consume_qualification_refs(input.qualifications.references.len())?;
-            input.qualifications.validate_complete()?;
+        self.budget
+            .consume_qualification_refs(input.qualifications.references.len())?;
+        // The completeness rule applies to every input, a Human message
+        // included. An invalid message binding has no row of the table; it
+        // is excluded by its lineage below.
+        if let Some(reference) = input.input_reference() {
+            let target_scene_id = attempt
+                .target_scene_id
+                .as_deref()
+                .ok_or_else(|| Failure::incomplete(IncompleteReason::TargetSceneUnavailable))?;
+            input
+                .qualifications
+                .validate_complete(&reference, target_scene_id)?;
         }
         let result = match self
             .qualifier
@@ -841,7 +1018,7 @@ mod generation_storage_adapter {
     use crate::nir1_generation::{
         with_generation_history_snapshot, GenerationHistoryReadBudget,
         GenerationHistorySnapshotCancellation, GenerationHistorySnapshotReader, InputRole,
-        InputTarget, MessageOrigin, QualificationKind as StoredKind, StoredAttempt, StoredTerminal,
+        InputTarget, MessageOrigin, StoredAttempt, StoredTerminal,
     };
     use crate::state::ActiveWorkspaceSnapshot;
 
@@ -924,18 +1101,8 @@ mod generation_storage_adapter {
         ensure_not_cancelled(cancelled)
     }
 
-    fn qualification_kind(kind: &StoredKind) -> QualificationKind {
-        match kind {
-            StoredKind::Source => QualificationKind::Source,
-            StoredKind::Revision => QualificationKind::Revision,
-            StoredKind::Decision => QualificationKind::Decision,
-            StoredKind::Freshness => QualificationKind::Freshness,
-            StoredKind::Index => QualificationKind::Index,
-            StoredKind::Scope => QualificationKind::Scope,
-            StoredKind::D1 => QualificationKind::D1,
-        }
-    }
-
+    /// The rows of one input, present references and typed N/A alike. The
+    /// completeness rule (not this mapping) decides what they are worth.
     fn qualifications(attempt: &StoredAttempt, ordinal: usize) -> QualificationSet {
         QualificationSet {
             references: attempt
@@ -943,9 +1110,8 @@ mod generation_storage_adapter {
                 .iter()
                 .filter(|reference| reference.input_ordinal == ordinal)
                 .map(|reference| QualificationReference {
-                    kind: qualification_kind(&reference.kind),
-                    identity: reference.identity.clone(),
-                    version: reference.version.clone(),
+                    kind: reference.kind,
+                    body: reference.body.clone(),
                 })
                 .collect(),
         }
@@ -1029,6 +1195,7 @@ mod generation_storage_adapter {
                         kind: HistoryInputKind::InvalidMessageBinding {
                             version_id: version_id.clone(),
                         },
+                        input_use: input.input_use,
                         qualifications,
                     });
                 }
@@ -1123,6 +1290,7 @@ mod generation_storage_adapter {
         };
         Ok(HistoryInput {
             kind,
+            input_use: input.input_use,
             qualifications,
         })
     }
@@ -1151,6 +1319,8 @@ mod generation_storage_adapter {
             terminal: terminal_receipt(stored.terminal.as_ref()),
             project_id: Some(stored.binding.project_id.clone()),
             session_id: Some(stored.binding.chat_session_id.clone()),
+            target_scene_id: Some(stored.binding.scene.scene_id.clone()),
+            reference_format: stored.reference_format,
         })
     }
 
@@ -1391,7 +1561,7 @@ mod generation_storage_adapter {
         use super::*;
         use crate::narrative_extraction::{ValidationTerminated, ValidationTerminationReason};
         use crate::nir1_generation::{
-            create_attempt, read_attempt_scene_binding_in_tx, AttemptBinding,
+            create_attempt, read_attempt_scene_binding_in_tx, scope_identity, AttemptBinding,
             AttemptBindingVersion, AttemptCallerBinding, GenerationHistorySnapshotSqlBudget,
             GenerationHistorySqlLedger, GenerationPurpose, NewAttempt, ReadBudget,
         };
@@ -1402,6 +1572,7 @@ mod generation_storage_adapter {
         };
         use crate::workspace_lifecycle::{LiveBinding, WorkspaceLifecycleCompatibilityView};
         use crate::Database;
+        use serde_json::json;
         use std::path::Path;
         use std::sync::{
             atomic::{AtomicBool, Ordering},
@@ -1531,6 +1702,14 @@ mod generation_storage_adapter {
         }
 
         fn storage_attempt(snapshot: &ActiveWorkspaceSnapshot) -> String {
+            storage_attempt_with(snapshot, Vec::new(), Vec::new())
+        }
+
+        fn storage_attempt_with(
+            snapshot: &ActiveWorkspaceSnapshot,
+            inputs: Vec<InputReference>,
+            qualifications: Vec<crate::nir1_generation::QualificationReference>,
+        ) -> String {
             let db = snapshot.db().db();
             db.with_conn(|connection| {
                 connection.execute(
@@ -1596,12 +1775,12 @@ mod generation_storage_adapter {
                         durable_workspace_identity: None,
                     },
                     payload_digest: digest,
-                    inputs: Vec::new(),
-                    qualifications: Vec::new(),
+                    inputs,
+                    qualifications,
                     created_at_ms: 1,
                     expires_at_ms: 2,
                     budget: ReadBudget {
-                        max_references: 8,
+                        max_references: 16,
                         max_reference_bytes: 16_384,
                     },
                 },
@@ -1794,6 +1973,235 @@ mod generation_storage_adapter {
             .expect("missing parent receipt is candidate-local");
             assert_eq!(outcome, valid_attempt_id);
         }
+
+        const STORAGE_SCENE: &str = "generation-scene";
+
+        fn raw_input() -> InputReference {
+            InputReference {
+                role: InputRole::Context,
+                target: InputTarget::RawSource {
+                    source_key: format!("project:scene:{STORAGE_SCENE}"),
+                    revision_token: "v0@2026-10-11 00:00:00".into(),
+                },
+                input_use: InputUse::SelectedMaterial,
+            }
+        }
+
+        /// The K4/3 section 3 row of a target-Scene Raw input, as stored.
+        fn raw_rows() -> Vec<crate::nir1_generation::QualificationReference> {
+            use crate::nir1_generation::QualificationReference as Row;
+            let scope = |role, component: &str, version: &str| {
+                Row::scope(
+                    0,
+                    role,
+                    scope_identity(role, &[component]).expect("scope identity"),
+                    version,
+                )
+            };
+            vec![
+                Row::present(
+                    0,
+                    QualificationKind::Source,
+                    format!("project:scene:{STORAGE_SCENE}"),
+                    "v0@2026-10-11 00:00:00",
+                ),
+                Row::not_applicable(
+                    0,
+                    QualificationKind::Revision,
+                    NotApplicableReason::NotARevision,
+                ),
+                Row::not_applicable(
+                    0,
+                    QualificationKind::Decision,
+                    NotApplicableReason::ManuscriptSource,
+                ),
+                Row::not_applicable(
+                    0,
+                    QualificationKind::Freshness,
+                    NotApplicableReason::TargetSceneBodyNotADependency,
+                ),
+                Row::not_applicable(
+                    0,
+                    QualificationKind::Index,
+                    NotApplicableReason::NotIndexDerived,
+                ),
+                scope(ScopeRole::QuerySceneScope, STORAGE_SCENE, "scope-token"),
+                scope(
+                    ScopeRole::QuerySceneIncarnation,
+                    STORAGE_SCENE,
+                    "incarnation-1",
+                ),
+                Row::present(0, QualificationKind::D1, "d1-selection", "d1-digest"),
+            ]
+        }
+
+        fn read_snapshot_attempt(snapshot: &ActiveWorkspaceSnapshot, id: &str) -> AttemptSnapshot {
+            let mut caller_budget = budget();
+            with_generation_history_snapshot(
+                snapshot,
+                ParticipantSqlControl::default(),
+                &mut caller_budget,
+                |reader, shared_budget, _cancellation| {
+                    let stored = reader.read_attempt(shared_budget, id)?;
+                    attempt(reader, shared_budget, &stored, false)
+                },
+            )
+            .expect("snapshot attempt")
+        }
+
+        fn run_checker(attempt: AttemptSnapshot) -> CandidateDisposition {
+            let mut attempt = attempt;
+            attempt.tuple = Some(complete_tuple());
+            let id = attempt.id.clone();
+            let history = HistorySnapshot::from_attempts([attempt]).expect("unique attempt");
+            let candidate = Candidate {
+                id: "candidate".into(),
+                root_attempt_id: id,
+                adopted_input_ordinals: vec![0],
+            };
+            let mut ledger = HistoryBudget::new(8, 8, 32);
+            let mut qualifier = AllowCurrent;
+            let mut cancelled = || false;
+            reauthorize_history(
+                &history,
+                &[candidate],
+                &complete_tuple(),
+                &mut ledger,
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .expect("history run")
+            .candidates
+            .remove(0)
+            .disposition
+        }
+
+        #[test]
+        fn adapter_maps_v2_rows_and_marks_v1_rows_incomplete() {
+            let (_state, snapshot) = workspace_snapshot();
+            // A version 2 attempt: present references keep their Scope role,
+            // typed N/A rows arrive as N/A, and the shared rule accepts them.
+            let v2_id = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            let mapped = read_snapshot_attempt(&snapshot, &v2_id);
+            assert_eq!(mapped.reference_format, ReferenceFormat::V2);
+            assert_eq!(mapped.target_scene_id.as_deref(), Some(STORAGE_SCENE));
+            assert_eq!(mapped.inputs.len(), 1);
+            let input = &mapped.inputs[0];
+            assert_eq!(input.input_use, InputUse::SelectedMaterial);
+            assert_eq!(input.qualifications.references.len(), 8);
+            let na: Vec<_> = input
+                .qualifications
+                .references
+                .iter()
+                .filter_map(|reference| match &reference.body {
+                    QualificationBody::NotApplicable { reason } => Some((reference.kind, *reason)),
+                    QualificationBody::Present { .. } => None,
+                })
+                .collect();
+            assert_eq!(
+                na,
+                vec![
+                    (
+                        QualificationKind::Revision,
+                        NotApplicableReason::NotARevision
+                    ),
+                    (
+                        QualificationKind::Decision,
+                        NotApplicableReason::ManuscriptSource
+                    ),
+                    (
+                        QualificationKind::Freshness,
+                        NotApplicableReason::TargetSceneBodyNotADependency
+                    ),
+                    (
+                        QualificationKind::Index,
+                        NotApplicableReason::NotIndexDerived
+                    ),
+                ]
+            );
+            let roles: Vec<_> = input
+                .qualifications
+                .references
+                .iter()
+                .filter_map(|reference| match &reference.body {
+                    QualificationBody::Present { scope_role, .. } => *scope_role,
+                    QualificationBody::NotApplicable { .. } => None,
+                })
+                .collect();
+            assert_eq!(
+                roles,
+                vec![ScopeRole::QuerySceneScope, ScopeRole::QuerySceneIncarnation]
+            );
+            assert_eq!(run_checker(mapped.clone()), CandidateDisposition::Qualified);
+
+            // A version 1 attempt is read, carries no inputs, and is the
+            // reason the candidate (and any descendant) is excluded.
+            let v1_id = storage_attempt_with(
+                &snapshot,
+                vec![raw_input()],
+                raw_rows().into_iter().take(1).collect(),
+            );
+            let legacy_input = json!({
+                "role": raw_input().role,
+                "target": raw_input().target,
+            });
+            let legacy_qualification = json!({
+                "inputOrdinal": 0,
+                "kind": "source",
+                "identity": format!("project:scene:{STORAGE_SCENE}"),
+                "version": "v0@2026-10-11 00:00:00",
+            });
+            let legacy_digest = grimodex_core::canonical_json_digest(&json!({
+                "domain": "nir1-generation-inputs@1",
+                "inputs": [legacy_input],
+                "qualifications": [legacy_qualification],
+            }))
+            .expect("legacy digest");
+            snapshot
+                .db()
+                .db()
+                .with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE nir1_generation_input_refs SET reference_json=?2 WHERE attempt_id=?1",
+                        rusqlite::params![
+                            v1_id,
+                            grimodex_core::canonical_json_string(&legacy_input)?
+                        ],
+                    )?;
+                    conn.execute(
+                        "UPDATE nir1_generation_qualification_refs SET reference_json=?2 WHERE attempt_id=?1",
+                        rusqlite::params![
+                            v1_id,
+                            grimodex_core::canonical_json_string(&legacy_qualification)?
+                        ],
+                    )?;
+                    conn.execute(
+                        "UPDATE nir1_generation_attempts SET input_digest=?2 WHERE id=?1",
+                        rusqlite::params![v1_id, legacy_digest],
+                    )?;
+                    Ok(())
+                })
+                .expect("rewrite the rows as version 1");
+            let legacy = read_snapshot_attempt(&snapshot, &v1_id);
+            assert_eq!(legacy.reference_format, ReferenceFormat::LegacyV1);
+            assert!(legacy.inputs.is_empty());
+            let mut legacy_with_input = legacy.clone();
+            // Even if a caller supplied an adoptable input, the format alone
+            // excludes the attempt.
+            legacy_with_input.inputs = mapped.inputs.clone();
+            assert_eq!(
+                run_checker(legacy_with_input),
+                CandidateDisposition::Excluded(Failure::Incomplete(
+                    IncompleteReason::LegacyReferenceFormat
+                ))
+            );
+            assert_eq!(
+                run_checker(legacy),
+                CandidateDisposition::Excluded(Failure::Incomplete(
+                    IncompleteReason::LegacyReferenceFormat
+                ))
+            );
+        }
     }
 }
 
@@ -1803,6 +2211,7 @@ pub(crate) use generation_storage_adapter::reauthorize_from_generation_snapshot;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nir1_generation::scope_identity;
 
     struct AllowCurrent {
         pending_graph: bool,
@@ -1889,16 +2298,113 @@ mod tests {
         }
     }
 
-    fn qualifications() -> QualificationSet {
-        QualificationSet {
-            references: REQUIRED_QUALIFICATIONS
-                .into_iter()
-                .map(|kind| QualificationReference {
-                    kind,
-                    identity: format!("{kind:?}:identity"),
-                    version: format!("{kind:?}:v1"),
-                })
-                .collect(),
+    const REVISION_SCOPE_ROLES: [ScopeRole; 6] = [
+        ScopeRole::ProjectAuthority,
+        ScopeRole::QuerySceneScope,
+        ScopeRole::QuerySceneSource,
+        ScopeRole::QuerySceneIncarnation,
+        ScopeRole::RevealState,
+        ScopeRole::ScopeAxis,
+    ];
+
+    /// The target Scene of every test attempt.
+    const TARGET_SCENE: &str = "scene-q";
+
+    fn scope_ref(role: ScopeRole) -> QualificationReference {
+        let components: &[&str] = match role {
+            ScopeRole::ProjectAuthority => &["project-1"],
+            ScopeRole::TypedScope => &["revision-1", "0"],
+            ScopeRole::MaterialSceneProof => &["anchor", "incarnation-a"],
+            _ => &[TARGET_SCENE],
+        };
+        QualificationReference::scope(
+            role,
+            scope_identity(role, components).expect("scope identity"),
+            format!("{role:?}:v1"),
+        )
+    }
+
+    fn na(kind: QualificationKind, reason: NotApplicableReason) -> QualificationReference {
+        QualificationReference::not_applicable(kind, reason)
+    }
+
+    fn present(kind: QualificationKind) -> QualificationReference {
+        QualificationReference::present(kind, format!("{kind:?}:identity"), format!("{kind:?}:v1"))
+    }
+
+    /// A set that follows the K4/3 section 3 table for the input.
+    fn qualifications_for(kind: &HistoryInputKind, input_use: InputUse) -> QualificationSet {
+        use NotApplicableReason as Na;
+        use QualificationKind as K;
+        let d1 = if input_use == InputUse::CurrentTurn {
+            na(K::D1, Na::FixedUserSlot)
+        } else {
+            QualificationReference::present(K::D1, "d1-selection", "d1:v1")
+        };
+        let references = match kind {
+            HistoryInputKind::GeneratedMessage { .. } | HistoryInputKind::HumanMessage { .. } => {
+                let decision = if matches!(kind, HistoryInputKind::HumanMessage { .. }) {
+                    Na::HumanAuthored
+                } else {
+                    Na::DerivedFromParents
+                };
+                vec![
+                    present(K::Source),
+                    na(K::Revision, Na::NotARevision),
+                    na(K::Decision, decision),
+                    na(K::Freshness, Na::ImmutableMessageVersion),
+                    na(K::Index, Na::NotIndexDerived),
+                    scope_ref(ScopeRole::QuerySceneScope),
+                    scope_ref(ScopeRole::QuerySceneIncarnation),
+                    d1,
+                ]
+            }
+            HistoryInputKind::RawSource { source_key, .. } => {
+                let freshness = if *source_key == format!("project:scene:{TARGET_SCENE}") {
+                    Na::TargetSceneBodyNotADependency
+                } else {
+                    Na::ExactSourceToken
+                };
+                vec![
+                    present(K::Source),
+                    na(K::Revision, Na::NotARevision),
+                    na(K::Decision, Na::ManuscriptSource),
+                    na(K::Freshness, freshness),
+                    na(K::Index, Na::NotIndexDerived),
+                    scope_ref(ScopeRole::QuerySceneScope),
+                    scope_ref(ScopeRole::QuerySceneIncarnation),
+                    d1,
+                ]
+            }
+            // Revision, Graph-derived (Index is a reference there) and the
+            // unsupported Artifact input.
+            _ => {
+                let index = if matches!(kind, HistoryInputKind::GraphEvidence { .. }) {
+                    present(K::Index)
+                } else {
+                    na(K::Index, Na::NotIndexDerived)
+                };
+                let mut references = vec![
+                    present(K::Source),
+                    present(K::Revision),
+                    present(K::Decision),
+                    present(K::Freshness),
+                    index,
+                ];
+                references.extend(REVISION_SCOPE_ROLES.map(scope_ref));
+                references.push(d1);
+                references
+            }
+        };
+        QualificationSet { references }
+    }
+
+    fn history_input(kind: HistoryInputKind, input_use: InputUse) -> HistoryInput {
+        let qualifications = qualifications_for(&kind, input_use);
+        HistoryInput {
+            kind,
+            input_use,
+            qualifications,
         }
     }
 
@@ -1913,8 +2419,8 @@ mod tests {
     }
 
     fn generated(version_id: &str, parent_attempt_id: &str, receipt_digest: &str) -> HistoryInput {
-        HistoryInput {
-            kind: HistoryInputKind::GeneratedMessage {
+        history_input(
+            HistoryInputKind::GeneratedMessage {
                 version_id: version_id.into(),
                 parent_attempt_id: Some(parent_attempt_id.into()),
                 receipt: Some(ReceiptRef {
@@ -1922,18 +2428,18 @@ mod tests {
                     receipt_digest: receipt_digest.into(),
                 }),
             },
-            qualifications: qualifications(),
-        }
+            InputUse::AdoptedHistory,
+        )
     }
 
     fn raw(source: &str) -> HistoryInput {
-        HistoryInput {
-            kind: HistoryInputKind::RawSource {
+        history_input(
+            HistoryInputKind::RawSource {
                 source_key: source.into(),
                 revision_token: "source:v1".into(),
             },
-            qualifications: qualifications(),
-        }
+            InputUse::SelectedMaterial,
+        )
     }
 
     fn artifact(
@@ -1941,8 +2447,8 @@ mod tests {
         producer_attempt_id: Option<&str>,
         receipt_digest: Option<&str>,
     ) -> HistoryInput {
-        HistoryInput {
-            kind: HistoryInputKind::Artifact {
+        history_input(
+            HistoryInputKind::Artifact {
                 artifact_id: artifact_id.into(),
                 payload_digest: "sha256:artifact".into(),
                 producer_attempt_id: producer_attempt_id.map(str::to_owned),
@@ -1951,8 +2457,8 @@ mod tests {
                     receipt_digest: receipt_digest.into(),
                 }),
             },
-            qualifications: qualifications(),
-        }
+            InputUse::AdoptedHistory,
+        )
     }
 
     fn attempt(
@@ -1967,6 +2473,8 @@ mod tests {
             terminal,
             project_id: None,
             session_id: None,
+            target_scene_id: Some(TARGET_SCENE.into()),
+            reference_format: ReferenceFormat::V2,
         }
     }
 
@@ -1980,7 +2488,9 @@ mod tests {
 
     #[test]
     fn traversal_debits_the_caller_owned_shared_ledger() {
-        let graph = snapshot(vec![attempt("root", vec![raw("source")], None)]);
+        let input = raw("source");
+        let rows = input.qualifications.references.len();
+        let graph = snapshot(vec![attempt("root", vec![input], None)]);
         let candidate = Candidate {
             id: "shared-ledger".into(),
             root_attempt_id: "root".into(),
@@ -1992,7 +2502,7 @@ mod tests {
         let mut ledger = SharedLedger {
             nodes: 1,
             edges: 1,
-            qualification_refs: 7,
+            qualification_refs: rows,
         };
         let mut cancelled = || false;
         let outcome = reauthorize_history(
@@ -2192,14 +2702,14 @@ mod tests {
 
     #[test]
     fn graph_pending_is_not_treated_as_current_index_qualification() {
-        let graph_input = HistoryInput {
-            kind: HistoryInputKind::GraphEvidence {
+        let graph_input = history_input(
+            HistoryInputKind::GraphEvidence {
                 evidence_ref: "evidence".into(),
                 source_key: "source".into(),
                 revision_token: "source:v1".into(),
             },
-            qualifications: qualifications(),
-        };
+            InputUse::SelectedMaterial,
+        );
         let graph = snapshot(vec![attempt("root", vec![graph_input], None)]);
         let candidate = Candidate {
             id: "graph".into(),
@@ -2261,7 +2771,7 @@ mod tests {
     }
 
     #[test]
-    fn artifact_without_existing_producer_receipt_cannot_create_lineage() {
+    fn artifact_without_existing_producer_receipt_is_unsupported() {
         let graph = snapshot(vec![attempt(
             "root",
             vec![artifact("artifact", None, None)],
@@ -2287,16 +2797,23 @@ mod tests {
         )
         .expect("history run should complete");
 
+        // Artifact is unsupported (K4/3 section 3): the candidate is excluded
+        // by the completeness rule before any producer lineage is looked at.
         assert_eq!(
             outcome.candidates[0].disposition,
-            CandidateDisposition::Excluded(Failure::Incomplete(IncompleteReason::MissingParent(
-                String::new()
-            )))
+            CandidateDisposition::Excluded(Failure::Incomplete(
+                IncompleteReason::QualificationRule(CompletenessViolation {
+                    input_ordinal: Some(0),
+                    kind: None,
+                    scope_role: None,
+                    reason: CompletenessReason::UnsupportedInput,
+                })
+            ))
         );
     }
 
     #[test]
-    fn artifact_payload_must_match_the_producer_terminal() {
+    fn artifact_with_a_mismatching_producer_receipt_is_still_unsupported() {
         let mut producer_terminal = receipt("producer", "receipt-producer", None);
         producer_terminal.payload_digest = Some("sha256:other".into());
         let graph = snapshot(vec![
@@ -2331,11 +2848,16 @@ mod tests {
         )
         .expect("history run should complete");
 
+        // A producer receipt whose payload differs is irrelevant: Artifact is
+        // unsupported and never reaches the lineage check.
         assert!(matches!(
             outcome.candidates[0].disposition,
-            CandidateDisposition::Excluded(Failure::Incomplete(IncompleteReason::ReceiptMismatch(
-                _
-            )))
+            CandidateDisposition::Excluded(Failure::Incomplete(
+                IncompleteReason::QualificationRule(CompletenessViolation {
+                    reason: CompletenessReason::UnsupportedInput,
+                    ..
+                })
+            ))
         ));
     }
 
@@ -2386,13 +2908,13 @@ mod tests {
 
     #[test]
     fn explicit_current_human_input_uses_its_separate_binding_path() {
-        let human = HistoryInput {
-            kind: HistoryInputKind::HumanMessage {
+        let human = history_input(
+            HistoryInputKind::HumanMessage {
                 version_id: "human:v1".into(),
                 explicitly_bound: true,
             },
-            qualifications: QualificationSet::default(),
-        };
+            InputUse::CurrentTurn,
+        );
         let graph = snapshot(vec![attempt("root", vec![human], None)]);
         let candidate = Candidate {
             id: "current-human".into(),
@@ -2426,7 +2948,8 @@ mod tests {
             kind: HistoryInputKind::InvalidMessageBinding {
                 version_id: "message:v1".into(),
             },
-            qualifications: qualifications(),
+            input_use: InputUse::AdoptedHistory,
+            qualifications: QualificationSet::default(),
         };
         let graph = snapshot(vec![attempt("root", vec![input], None)]);
         let candidate = Candidate {
@@ -2459,13 +2982,13 @@ mod tests {
     fn tuple_mismatch_and_unbound_legacy_message_fail_closed() {
         let mut stale = attempt("stale", vec![raw("source")], None);
         stale.tuple.as_mut().unwrap().scope = Some("old-scope:v0".into());
-        let legacy = HistoryInput {
-            kind: HistoryInputKind::HumanMessage {
+        let legacy = history_input(
+            HistoryInputKind::HumanMessage {
                 version_id: "legacy".into(),
                 explicitly_bound: false,
             },
-            qualifications: qualifications(),
-        };
+            InputUse::AdoptedHistory,
+        );
         let graph = snapshot(vec![stale, attempt("legacy-root", vec![legacy], None)]);
         let candidates = [
             Candidate {
@@ -2576,5 +3099,659 @@ mod tests {
         );
 
         assert_eq!(run, Err(HistoryRunError::Cancelled));
+    }
+
+    // ---- the completeness rule (K4/3 section 3), checker side ----
+
+    const ALL_KINDS: [QualificationKind; 7] = [
+        QualificationKind::Source,
+        QualificationKind::Revision,
+        QualificationKind::Decision,
+        QualificationKind::Freshness,
+        QualificationKind::Index,
+        QualificationKind::Scope,
+        QualificationKind::D1,
+    ];
+
+    fn current_human() -> HistoryInput {
+        history_input(
+            HistoryInputKind::HumanMessage {
+                version_id: "human:v1".into(),
+                explicitly_bound: true,
+            },
+            InputUse::CurrentTurn,
+        )
+    }
+
+    fn target_raw() -> HistoryInput {
+        raw(&format!("project:scene:{TARGET_SCENE}"))
+    }
+
+    fn revision_input() -> HistoryInput {
+        history_input(
+            HistoryInputKind::AcceptedRevision {
+                revision_id: "revision-1".into(),
+                bundle_digest: "bundle:v1".into(),
+            },
+            InputUse::SelectedMaterial,
+        )
+    }
+
+    fn graph_input() -> HistoryInput {
+        history_input(
+            HistoryInputKind::GraphEvidence {
+                evidence_ref: "evidence".into(),
+                source_key: "source".into(),
+                revision_token: "source:v1".into(),
+            },
+            InputUse::SelectedMaterial,
+        )
+    }
+
+    fn disposition_of_attempt(root: AttemptSnapshot) -> CandidateDisposition {
+        let graph = snapshot(vec![root]);
+        let candidate = Candidate {
+            id: "candidate".into(),
+            root_attempt_id: "root".into(),
+            adopted_input_ordinals: vec![0],
+        };
+        let mut current = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut remaining = budget();
+        let mut cancelled = || false;
+        reauthorize_history(
+            &graph,
+            &[candidate],
+            &tuple(),
+            &mut remaining,
+            &mut current,
+            &mut cancelled,
+        )
+        .expect("history run should complete")
+        .candidates
+        .remove(0)
+        .disposition
+    }
+
+    fn disposition(input: HistoryInput) -> CandidateDisposition {
+        disposition_of_attempt(attempt("root", vec![input], None))
+    }
+
+    fn excluded(reason: IncompleteReason) -> CandidateDisposition {
+        CandidateDisposition::Excluded(Failure::Incomplete(reason))
+    }
+
+    fn rule(
+        reason: CompletenessReason,
+        kind: Option<QualificationKind>,
+        scope_role: Option<ScopeRole>,
+    ) -> CandidateDisposition {
+        excluded(IncompleteReason::QualificationRule(CompletenessViolation {
+            input_ordinal: Some(0),
+            kind,
+            scope_role,
+            reason,
+        }))
+    }
+
+    fn without_kind(mut input: HistoryInput, kind: QualificationKind) -> HistoryInput {
+        input
+            .qualifications
+            .references
+            .retain(|reference| reference.kind != kind);
+        input
+    }
+
+    fn replace_kind(
+        mut input: HistoryInput,
+        kind: QualificationKind,
+        replacement: QualificationReference,
+    ) -> HistoryInput {
+        input = without_kind(input, kind);
+        input.qualifications.references.push(replacement);
+        input
+    }
+
+    fn every_table_input() -> Vec<(&'static str, HistoryInput)> {
+        vec![
+            ("current human", current_human()),
+            (
+                "past human",
+                history_input(
+                    HistoryInputKind::HumanMessage {
+                        version_id: "past:v1".into(),
+                        explicitly_bound: true,
+                    },
+                    InputUse::AdoptedHistory,
+                ),
+            ),
+            ("target raw", target_raw()),
+            ("other raw", raw("source")),
+            ("revision", revision_input()),
+            ("graph", graph_input()),
+        ]
+    }
+
+    #[test]
+    fn checker_accepts_complete_set_with_na() {
+        for (name, input) in every_table_input() {
+            let has_na =
+                input.qualifications.references.iter().any(|reference| {
+                    matches!(reference.body, QualificationBody::NotApplicable { .. })
+                });
+            assert!(
+                has_na || name == "graph",
+                "{name} exercises the typed N/A path"
+            );
+            assert_eq!(
+                disposition(input),
+                CandidateDisposition::Qualified,
+                "{name}"
+            );
+        }
+        // A generated output follows its table row through the parent chain.
+        let graph = snapshot(vec![
+            attempt(
+                "root",
+                vec![generated("m1", "parent", "receipt-parent")],
+                None,
+            ),
+            attempt(
+                "parent",
+                vec![raw("source")],
+                Some(receipt("parent", "receipt-parent", Some("m1"))),
+            ),
+        ]);
+        let candidate = Candidate {
+            id: "generated".into(),
+            root_attempt_id: "root".into(),
+            adopted_input_ordinals: vec![0],
+        };
+        let mut current = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut remaining = budget();
+        let mut cancelled = || false;
+        let outcome = reauthorize_history(
+            &graph,
+            &[candidate],
+            &tuple(),
+            &mut remaining,
+            &mut current,
+            &mut cancelled,
+        )
+        .expect("history run should complete");
+        assert_eq!(
+            outcome.candidates[0].disposition,
+            CandidateDisposition::Qualified
+        );
+        // Several Source and typed-scope references stay complete: the rule
+        // accepts one or more references per kind.
+        let mut many = revision_input();
+        for index in 0..3 {
+            many.qualifications
+                .references
+                .push(QualificationReference::present(
+                    QualificationKind::Source,
+                    format!("evidence:e{index}"),
+                    "token",
+                ));
+            many.qualifications
+                .references
+                .push(QualificationReference::scope(
+                    ScopeRole::TypedScope,
+                    scope_identity(ScopeRole::TypedScope, &["revision-1", &index.to_string()])
+                        .expect("typed scope identity"),
+                    "typed:v1",
+                ));
+        }
+        assert_eq!(disposition(many), CandidateDisposition::Qualified);
+    }
+
+    #[test]
+    fn checker_rejects_missing_kind_for_every_table_row() {
+        for (name, input) in every_table_input() {
+            for kind in ALL_KINDS {
+                assert_eq!(
+                    disposition(without_kind(input.clone(), kind)),
+                    excluded(IncompleteReason::MissingQualification(kind)),
+                    "{name} without {kind:?}"
+                );
+            }
+            assert_eq!(
+                disposition(HistoryInput {
+                    qualifications: QualificationSet::default(),
+                    ..input
+                }),
+                excluded(IncompleteReason::MissingQualification(
+                    QualificationKind::Source
+                )),
+                "{name} with no rows"
+            );
+        }
+        // Dropping one of the required Scope roles leaves the kind present
+        // but the role missing.
+        let mut revision = revision_input();
+        revision.qualifications.references.retain(|reference| {
+            !matches!(
+                reference.body,
+                QualificationBody::Present {
+                    scope_role: Some(ScopeRole::RevealState),
+                    ..
+                }
+            )
+        });
+        assert_eq!(
+            disposition(revision),
+            rule(
+                CompletenessReason::ScopeRoleMissing,
+                Some(QualificationKind::Scope),
+                Some(ScopeRole::RevealState)
+            )
+        );
+    }
+
+    #[test]
+    fn checker_rejects_duplicate_kind_target() {
+        for version in ["same-version", "another-version"] {
+            let mut input = revision_input();
+            input
+                .qualifications
+                .references
+                .push(QualificationReference::present(
+                    QualificationKind::Source,
+                    "Source:identity",
+                    version,
+                ));
+            assert_eq!(
+                disposition(input),
+                excluded(IncompleteReason::DuplicateQualification(
+                    QualificationKind::Source
+                )),
+                "the same target with version {version}"
+            );
+        }
+        let mut input = target_raw();
+        input.qualifications.references.push(na(
+            QualificationKind::Revision,
+            NotApplicableReason::NotARevision,
+        ));
+        assert_eq!(
+            disposition(input),
+            excluded(IncompleteReason::DuplicateQualification(
+                QualificationKind::Revision
+            ))
+        );
+        let mut input = revision_input();
+        let duplicate = scope_ref(ScopeRole::RevealState);
+        input.qualifications.references.push(duplicate);
+        assert_eq!(
+            disposition(input),
+            excluded(IncompleteReason::DuplicateQualification(
+                QualificationKind::Scope
+            ))
+        );
+    }
+
+    #[test]
+    fn checker_rejects_forged_na() {
+        use NotApplicableReason as Na;
+        use QualificationKind as K;
+        // A cell that requires a reference cannot be declared not applicable.
+        assert_eq!(
+            disposition(replace_kind(
+                revision_input(),
+                K::Source,
+                na(K::Source, Na::ExactSourceToken)
+            )),
+            rule(
+                CompletenessReason::NotApplicableNotInTable,
+                Some(K::Source),
+                None
+            )
+        );
+        // A reason the table does not give to this input.
+        assert_eq!(
+            disposition(replace_kind(
+                current_human(),
+                K::Decision,
+                na(K::Decision, Na::DerivedFromParents)
+            )),
+            rule(
+                CompletenessReason::NotApplicableNotInTable,
+                Some(K::Decision),
+                None
+            )
+        );
+        // Graph-derived input needs an Index reference; N/A is not allowed.
+        assert_eq!(
+            disposition(replace_kind(
+                graph_input(),
+                K::Index,
+                na(K::Index, Na::NotIndexDerived)
+            )),
+            rule(
+                CompletenessReason::NotApplicableNotInTable,
+                Some(K::Index),
+                None
+            )
+        );
+        // The Raw Freshness reason follows the source key, both ways.
+        assert_eq!(
+            disposition(replace_kind(
+                target_raw(),
+                K::Freshness,
+                na(K::Freshness, Na::ExactSourceToken)
+            )),
+            rule(
+                CompletenessReason::NotApplicableReasonMismatch,
+                Some(K::Freshness),
+                None
+            )
+        );
+        assert_eq!(
+            disposition(replace_kind(
+                raw("source"),
+                K::Freshness,
+                na(K::Freshness, Na::TargetSceneBodyNotADependency)
+            )),
+            rule(
+                CompletenessReason::NotApplicableReasonMismatch,
+                Some(K::Freshness),
+                None
+            )
+        );
+        // A reference where the table puts a typed N/A.
+        assert_eq!(
+            disposition(replace_kind(
+                current_human(),
+                K::D1,
+                QualificationReference::present(K::D1, "d1-selection", "d1:v1")
+            )),
+            rule(CompletenessReason::ReferenceNotInTable, Some(K::D1), None)
+        );
+        // An N/A on an Artifact input does not make it supported.
+        assert_eq!(
+            disposition(artifact("artifact", None, None)),
+            rule(CompletenessReason::UnsupportedInput, None, None)
+        );
+    }
+
+    #[test]
+    fn checker_rejects_ref_and_na_together() {
+        use NotApplicableReason as Na;
+        use QualificationKind as K;
+        let mut revision = revision_input();
+        revision
+            .qualifications
+            .references
+            .push(na(K::Revision, Na::NotARevision));
+        assert_eq!(
+            disposition(revision),
+            rule(
+                CompletenessReason::ReferenceAndNotApplicable,
+                Some(K::Revision),
+                None
+            )
+        );
+        let mut human = current_human();
+        human.qualifications.references.push(present(K::Revision));
+        assert_eq!(
+            disposition(human),
+            rule(
+                CompletenessReason::ReferenceAndNotApplicable,
+                Some(K::Revision),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn checker_rejects_target_pair_collision() {
+        // Two typed targets whose joined strings would collide if the IDs were
+        // not escaped are two different targets.
+        let mut input = revision_input();
+        for components in [["a:b", "c"], ["a", "b:c"]] {
+            input
+                .qualifications
+                .references
+                .push(QualificationReference::scope(
+                    ScopeRole::TypedScope,
+                    scope_identity(ScopeRole::TypedScope, &components).expect("identity"),
+                    "typed:v1",
+                ));
+        }
+        assert_eq!(disposition(input), CandidateDisposition::Qualified);
+        // An identity that was joined without escaping does not follow its role.
+        let mut forged = revision_input();
+        forged
+            .qualifications
+            .references
+            .push(QualificationReference::scope(
+                ScopeRole::TypedScope,
+                "revision:a:b:typed-scope:c",
+                "typed:v1",
+            ));
+        assert_eq!(
+            disposition(forged),
+            rule(
+                CompletenessReason::MalformedTarget,
+                Some(QualificationKind::Scope),
+                Some(ScopeRole::TypedScope)
+            )
+        );
+        // The same typed target twice is a duplicate whatever the version.
+        let mut twice = revision_input();
+        for version in ["typed:v1", "typed:v2"] {
+            twice
+                .qualifications
+                .references
+                .push(QualificationReference::scope(
+                    ScopeRole::TypedScope,
+                    scope_identity(ScopeRole::TypedScope, &["a:b", "c"]).expect("identity"),
+                    version,
+                ));
+        }
+        assert_eq!(
+            disposition(twice),
+            excluded(IncompleteReason::DuplicateQualification(
+                QualificationKind::Scope
+            ))
+        );
+        // A query-Scene role that names another Scene is rejected.
+        let other_scene = replace_scope_role(
+            current_human(),
+            ScopeRole::QuerySceneScope,
+            scope_identity(ScopeRole::QuerySceneScope, &["another-scene"]).expect("identity"),
+        );
+        assert_eq!(
+            disposition(other_scene),
+            rule(
+                CompletenessReason::ScopeSceneMismatch,
+                Some(QualificationKind::Scope),
+                Some(ScopeRole::QuerySceneScope)
+            )
+        );
+    }
+
+    fn replace_scope_role(
+        mut input: HistoryInput,
+        role: ScopeRole,
+        identity: String,
+    ) -> HistoryInput {
+        for reference in &mut input.qualifications.references {
+            if let QualificationBody::Present {
+                identity: current,
+                scope_role: Some(current_role),
+                ..
+            } = &mut reference.body
+            {
+                if *current_role == role {
+                    *current = identity.clone();
+                }
+            }
+        }
+        input
+    }
+
+    #[test]
+    fn explicit_human_no_longer_skips_completeness() {
+        // The exemption for an explicitly bound Human is gone: with no rows,
+        // or with one kind missing, the candidate is excluded.
+        let bare = HistoryInput {
+            qualifications: QualificationSet::default(),
+            ..current_human()
+        };
+        assert_eq!(
+            disposition(bare),
+            excluded(IncompleteReason::MissingQualification(
+                QualificationKind::Source
+            ))
+        );
+        for kind in ALL_KINDS {
+            assert_eq!(
+                disposition(without_kind(current_human(), kind)),
+                excluded(IncompleteReason::MissingQualification(kind)),
+                "{kind:?}"
+            );
+        }
+        // The qualification rows are also debited from the shared ledger.
+        let human = current_human();
+        let rows = human.qualifications.references.len();
+        let graph = snapshot(vec![attempt("root", vec![human], None)]);
+        let candidate = Candidate {
+            id: "human".into(),
+            root_attempt_id: "root".into(),
+            adopted_input_ordinals: vec![0],
+        };
+        let mut current = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut ledger = SharedLedger {
+            nodes: 1,
+            edges: 1,
+            qualification_refs: rows,
+        };
+        let mut cancelled = || false;
+        let outcome = reauthorize_history(
+            &graph,
+            &[candidate],
+            &tuple(),
+            &mut ledger,
+            &mut current,
+            &mut cancelled,
+        )
+        .expect("the ledger covers the Human rows");
+        assert_eq!(
+            outcome.candidates[0].disposition,
+            CandidateDisposition::Qualified
+        );
+        assert_eq!(ledger.qualification_refs, 0);
+    }
+
+    #[test]
+    fn checker_excludes_version_1_attempt_and_its_descendants() {
+        let mut legacy_parent = attempt(
+            "parent",
+            Vec::new(),
+            Some(receipt("parent", "receipt-parent", Some("m1"))),
+        );
+        legacy_parent.reference_format = ReferenceFormat::LegacyV1;
+        let graph = snapshot(vec![
+            attempt(
+                "child",
+                vec![generated("m1", "parent", "receipt-parent")],
+                None,
+            ),
+            legacy_parent,
+            attempt("independent", vec![raw("source")], None),
+        ]);
+        let candidates = [
+            Candidate {
+                id: "child".into(),
+                root_attempt_id: "child".into(),
+                adopted_input_ordinals: vec![0],
+            },
+            Candidate {
+                id: "parent".into(),
+                root_attempt_id: "parent".into(),
+                adopted_input_ordinals: vec![0],
+            },
+            Candidate {
+                id: "independent".into(),
+                root_attempt_id: "independent".into(),
+                adopted_input_ordinals: vec![0],
+            },
+        ];
+        let mut current = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut remaining = budget();
+        let mut cancelled = || false;
+        let outcome = reauthorize_history(
+            &graph,
+            &candidates,
+            &tuple(),
+            &mut remaining,
+            &mut current,
+            &mut cancelled,
+        )
+        .expect("the turn is not stopped");
+        assert_eq!(
+            outcome.candidates[0].disposition,
+            excluded(IncompleteReason::LegacyReferenceFormat),
+            "a descendant of a version 1 attempt"
+        );
+        assert_eq!(
+            outcome.candidates[1].disposition,
+            excluded(IncompleteReason::LegacyReferenceFormat)
+        );
+        assert_eq!(
+            outcome.candidates[2].disposition,
+            CandidateDisposition::Qualified,
+            "an independent candidate survives"
+        );
+    }
+
+    #[test]
+    fn checker_fails_closed_without_a_target_scene() {
+        let mut root = attempt("root", vec![raw("source")], None);
+        root.target_scene_id = None;
+        assert_eq!(
+            disposition_of_attempt(root),
+            excluded(IncompleteReason::TargetSceneUnavailable)
+        );
+    }
+
+    #[test]
+    fn checker_input_use_selects_the_table_row() {
+        // The same Human message is a different row as current-turn (D1 N/A)
+        // and as adopted-history (D1 reference).
+        let past = HistoryInput {
+            input_use: InputUse::AdoptedHistory,
+            ..current_human()
+        };
+        assert_eq!(
+            disposition(past),
+            rule(
+                CompletenessReason::NotApplicableNotInTable,
+                Some(QualificationKind::D1),
+                None
+            )
+        );
+        let current = HistoryInput {
+            input_use: InputUse::CurrentTurn,
+            qualifications: qualifications_for(&current_human().kind, InputUse::AdoptedHistory),
+            ..current_human()
+        };
+        assert_eq!(
+            disposition(current),
+            rule(
+                CompletenessReason::ReferenceNotInTable,
+                Some(QualificationKind::D1),
+                None
+            )
+        );
     }
 }

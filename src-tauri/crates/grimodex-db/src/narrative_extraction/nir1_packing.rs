@@ -16,6 +16,8 @@ use grimodex_core::{canonical_json_digest, canonical_json_string};
 use rusqlite::Connection;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+#[cfg(feature = "native-current-human-capture")]
+use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
 
@@ -33,8 +35,11 @@ use super::retrieval_admission::{RetrievalSceneSourceBinding, RetrievalSceneSour
 use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
 #[cfg(feature = "native-current-human-capture")]
 use crate::nir1_generation::{
-    read_current_chat_input_capture_in_tx, AcceptedChatInputCapture, InputReference, InputRole,
-    InputTarget, MessageVersion, QualificationKind, QualificationReference,
+    check_attempt_completeness, d1_selection_digest, d1_selection_reference,
+    read_current_chat_input_capture_in_tx, scope_identity, AcceptedChatInputCapture,
+    CompletenessContext, CompletenessViolation, D1SelectionParameters, InputReference, InputRole,
+    InputTarget, InputUse, MessageVersion, NotApplicableReason, QualificationBody,
+    QualificationKind, QualificationReference, ScopeRole, TypedTarget, D1_SELECTION_IDENTITY,
 };
 #[cfg(feature = "native-current-human-capture")]
 use crate::state::ActiveWorkspaceSnapshot;
@@ -701,6 +706,56 @@ impl NativeNir1PreparedContextItem {
     }
 }
 
+/// Why D-final left one accepted Revision out of the request (K4/3 section
+/// 3, rule 2). The set is closed; the other inputs and the attempt context
+/// are kept.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NativeNir1RevisionExclusionReason {
+    /// The sealed material basis (`source_basis` and `evidence_set`) holds the
+    /// same source key with two different revision tokens.
+    MaterialBasisSourceTokenConflict,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NativeNir1RevisionExclusionReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::MaterialBasisSourceTokenConflict => "material-basis-source-token-conflict",
+        }
+    }
+}
+
+/// An accepted Revision that D-final did not adopt, with its closed reason.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeNir1ExcludedRevision {
+    revision_id: String,
+    reason: NativeNir1RevisionExclusionReason,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NativeNir1ExcludedRevision {
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub fn reason(&self) -> NativeNir1RevisionExclusionReason {
+        self.reason
+    }
+}
+
+/// The final qualification rows of a prepared request: the producer's rows
+/// plus the D1 selection references, with the parameters the selection digest
+/// was computed from (K4/3 section 2; a history slot stores these fields).
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeNir1FinalQualifications {
+    pub qualifications: Vec<QualificationReference>,
+    pub d1_selection: D1SelectionParameters,
+    pub d1_selection_digest: String,
+}
+
 /// Request-local DB projection. It is neither a wire DTO nor a dispatch or
 /// attempt capability. Private prompt/context text has no Debug/Serialize
 /// implementation and is dropped with the preparing owner.
@@ -716,6 +771,7 @@ pub struct NativeNir1PreparedInputs {
     context_items: Vec<NativeNir1PreparedContextItem>,
     raw_source_binding: NativeNir1RawSourceBinding,
     authority_bindings: Vec<NativeNir1AuthorityBinding>,
+    excluded_revisions: Vec<NativeNir1ExcludedRevision>,
 }
 
 #[cfg(feature = "native-current-human-capture")]
@@ -759,6 +815,178 @@ impl NativeNir1PreparedInputs {
     pub fn authority_bindings(&self) -> &[NativeNir1AuthorityBinding] {
         &self.authority_bindings
     }
+
+    /// Accepted Revisions that were consulted but not adopted, each with its
+    /// closed reason. Their input rows, references and context are absent.
+    pub fn excluded_revisions(&self) -> &[NativeNir1ExcludedRevision] {
+        &self.excluded_revisions
+    }
+
+    /// The `(kind, target)` set that the current state derives for every
+    /// adopted input, including the D1 selection of the non-current inputs.
+    /// It is derived from the bindings and the Human version, not from the
+    /// qualification rows, so a producer that drops or collapses a reference
+    /// is detected (K4/3 section 3, rule 3).
+    pub fn expected_qualification_targets(&self) -> Result<BTreeMap<usize, BTreeSet<TypedTarget>>> {
+        let scope_target = |role: ScopeRole, components: &[&str]| TypedTarget {
+            kind: QualificationKind::Scope,
+            scope_role: Some(role),
+            components: components.iter().map(|part| (*part).to_owned()).collect(),
+        };
+        let plain = |kind: QualificationKind, identity: &str| TypedTarget {
+            kind,
+            scope_role: None,
+            components: vec![identity.to_owned()],
+        };
+        let scene_scopes = |targets: &mut BTreeSet<TypedTarget>| {
+            for role in [ScopeRole::QuerySceneScope, ScopeRole::QuerySceneIncarnation] {
+                targets.insert(scope_target(role, &[&self.query_scene_id]));
+            }
+        };
+        let mut expected = BTreeMap::new();
+        for (ordinal, input) in self.input_references.iter().enumerate() {
+            let mut targets = BTreeSet::new();
+            match &input.target {
+                InputTarget::Message { version_id, .. } => {
+                    targets.insert(plain(QualificationKind::Source, version_id));
+                    scene_scopes(&mut targets);
+                }
+                InputTarget::RawSource { source_key, .. } => {
+                    targets.insert(plain(QualificationKind::Source, source_key));
+                    scene_scopes(&mut targets);
+                }
+                InputTarget::AcceptedRevision { revision_id, .. } => {
+                    let binding = self
+                        .authority_bindings
+                        .iter()
+                        .find(|binding| binding.revision_id() == revision_id)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
+                        })?;
+                    targets.insert(plain(QualificationKind::Revision, revision_id));
+                    targets.insert(plain(QualificationKind::Decision, binding.decision().id()));
+                    targets.insert(plain(QualificationKind::Freshness, revision_id));
+                    let basis = &binding.revision().material_basis;
+                    for key in basis
+                        .source_basis
+                        .iter()
+                        .map(|source| &source.source_key)
+                        .chain(
+                            basis
+                                .evidence_set
+                                .iter()
+                                .map(|evidence| &evidence.source_key),
+                        )
+                    {
+                        targets.insert(plain(QualificationKind::Source, key));
+                    }
+                    let scope = binding.scope();
+                    let scene = scope.query_scene_id();
+                    targets.insert(scope_target(
+                        ScopeRole::ProjectAuthority,
+                        &[&self.project_id],
+                    ));
+                    for role in [
+                        ScopeRole::QuerySceneScope,
+                        ScopeRole::QuerySceneSource,
+                        ScopeRole::QuerySceneIncarnation,
+                        ScopeRole::RevealState,
+                        ScopeRole::ScopeAxis,
+                    ] {
+                        targets.insert(scope_target(role, &[scene]));
+                    }
+                    for index in 0..scope.typed_scope_bindings().len() {
+                        targets.insert(scope_target(
+                            ScopeRole::TypedScope,
+                            &[revision_id, &index.to_string()],
+                        ));
+                    }
+                    for proof in scope.material_scene_proofs() {
+                        targets.insert(scope_target(
+                            ScopeRole::MaterialSceneProof,
+                            &[&proof.scene_id, &proof.scene_incarnation_id],
+                        ));
+                    }
+                }
+                InputTarget::Artifact { .. } | InputTarget::GraphEvidence { .. } => {
+                    anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL")
+                }
+            }
+            if input.input_use != InputUse::CurrentTurn {
+                targets.insert(plain(QualificationKind::D1, D1_SELECTION_IDENTITY));
+            }
+            expected.insert(ordinal, targets);
+        }
+        Ok(expected)
+    }
+
+    /// Detect a D-final output that breaks the completeness rule (K4/3
+    /// section 3). A violation means the history slot of the attempt is
+    /// `d-final-incomplete`; this function writes no slot.
+    pub fn check_completeness(
+        &self,
+        qualifications: &[QualificationReference],
+    ) -> std::result::Result<(), CompletenessViolation> {
+        let expected =
+            self.expected_qualification_targets()
+                .map_err(|_| CompletenessViolation {
+                    input_ordinal: None,
+                    kind: None,
+                    scope_role: None,
+                    reason: crate::nir1_generation::CompletenessReason::UnsupportedInput,
+                })?;
+        check_attempt_completeness(
+            &self.input_references,
+            qualifications,
+            &CompletenessContext {
+                target_scene_id: &self.query_scene_id,
+                expected_targets: Some(&expected),
+            },
+        )
+    }
+
+    /// Add the D1 selection references once the rendered usage is known and
+    /// check the complete output against the rule. `selector_budget_tokens` is
+    /// the context budget the selector was given; the usage is the estimate of
+    /// the adopted context texts, which is what the selector counted. An
+    /// incomplete output is refused (`NIR1_NATIVE_PREPARED_QUALIFICATION_INCOMPLETE`).
+    pub fn finalize_qualifications(
+        &self,
+        selector_budget_tokens: usize,
+    ) -> Result<NativeNir1FinalQualifications> {
+        let mut used_tokens = 0usize;
+        for item in &self.context_items {
+            used_tokens = used_tokens
+                .checked_add(estimate_nir1_context_tokens(&item.text))
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_D1_USAGE_OVERFLOW"))?;
+        }
+        let remaining_tokens = selector_budget_tokens
+            .checked_sub(used_tokens)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_D1_USAGE_EXCEEDS_BUDGET"))?;
+        let d1_selection = D1SelectionParameters {
+            estimator_version: grimodex_core::narrative_nir1::NIR1_CONTEXT_TOKEN_ESTIMATOR_VERSION
+                .to_owned(),
+            selector_budget_tokens: u64::try_from(selector_budget_tokens)?,
+            used_tokens: u64::try_from(used_tokens)?,
+            remaining_tokens: u64::try_from(remaining_tokens)?,
+        };
+        let digest = d1_selection_digest(&d1_selection, &self.input_references)?;
+        let mut qualifications = self.qualifications.clone();
+        for (ordinal, input) in self.input_references.iter().enumerate() {
+            if input.input_use != InputUse::CurrentTurn {
+                qualifications.push(d1_selection_reference(ordinal, &digest));
+            }
+        }
+        self.check_completeness(&qualifications)
+            .map_err(|violation| {
+                anyhow::anyhow!("NIR1_NATIVE_PREPARED_QUALIFICATION_INCOMPLETE: {violation}")
+            })?;
+        Ok(NativeNir1FinalQualifications {
+            qualifications,
+            d1_selection,
+            d1_selection_digest: digest,
+        })
+    }
 }
 
 /// Read the exact Human version, current Scene Source, accepted typed
@@ -768,6 +996,7 @@ impl NativeNir1PreparedInputs {
 #[cfg(feature = "native-current-human-capture")]
 pub fn read_and_pack_native_nir1_prepared_inputs(
     workspace: &ActiveWorkspaceSnapshot,
+    purpose: PackingPurpose,
     expected_session_id: &str,
     capture: &AcceptedChatInputCapture,
     query_scene_id: &str,
@@ -849,7 +1078,7 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
                     revision_ids: &unique_revision_ids,
                     query_scene_id,
                     budget_tokens: context_budget_tokens,
-                    purpose: PackingPurpose::Writing,
+                    purpose,
                 },
                 &mut input_budget,
                 &mut reserve_retained_binding,
@@ -887,6 +1116,8 @@ fn build_native_nir1_prepared_inputs(
     let mut selected_revision_ids = Vec::new();
     let mut context_references = Vec::new();
     let mut accepted_ir_count = 0usize;
+    let mut excluded_revisions = Vec::<NativeNir1ExcludedRevision>::new();
+    let mut excluded_revision_ids = HashSet::<String>::new();
 
     for selected in &pooled.selected_items {
         checkpoint()?;
@@ -903,10 +1134,10 @@ fn build_native_nir1_prepared_inputs(
                         source_key: raw_source_binding.binding.source_key.clone(),
                         revision_token: raw_source_binding.binding.revision_token.clone(),
                     },
+                    input_use: InputUse::SelectedMaterial,
                 });
             }
             ContextItemKind::AcceptedIr { .. } => {
-                accepted_ir_count += 1;
                 ensure!(
                     selected.atomic_part().is_some() && selected.candidate_binding().is_some(),
                     "NIR1_NATIVE_PREPARED_ACCEPTED_IR_BINDING_MISSING"
@@ -914,6 +1145,9 @@ fn build_native_nir1_prepared_inputs(
                 let revision_id = selected.owner_revision_id.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_OWNER_MISSING")
                 })?;
+                if excluded_revision_ids.contains(revision_id) {
+                    continue;
+                }
                 if !revision_ordinals.contains_key(revision_id) {
                     let binding = pooled
                         .bindings
@@ -922,6 +1156,18 @@ fn build_native_nir1_prepared_inputs(
                         .ok_or_else(|| {
                             anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
                         })?;
+                    // A Revision whose sealed material basis disagrees with
+                    // itself is left out alone; the Human, the Raw, the other
+                    // Revisions and the attempt context stay (K4/3 section 3,
+                    // rule 2).
+                    if let Some(reason) = revision_exclusion_reason(binding) {
+                        excluded_revision_ids.insert(revision_id.to_owned());
+                        excluded_revisions.push(NativeNir1ExcludedRevision {
+                            revision_id: revision_id.to_owned(),
+                            reason,
+                        });
+                        continue;
+                    }
                     let ordinal = context_references.len() + 1;
                     revision_ordinals.insert(revision_id.to_owned(), ordinal);
                     selected_revision_ids.push(revision_id.to_owned());
@@ -931,8 +1177,10 @@ fn build_native_nir1_prepared_inputs(
                             revision_id: revision_id.to_owned(),
                             bundle_digest: binding.bundle_digest().to_owned(),
                         },
+                        input_use: InputUse::SelectedMaterial,
                     });
                 }
+                accepted_ir_count += 1;
             }
             _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
         }
@@ -949,6 +1197,7 @@ fn build_native_nir1_prepared_inputs(
             version_id: user_message_version.id.clone(),
             parent_attempt_id: None,
         },
+        input_use: InputUse::CurrentTurn,
     });
     input_references.extend(context_references);
 
@@ -957,11 +1206,17 @@ fn build_native_nir1_prepared_inputs(
         checkpoint()?;
         let input_ordinal = match selected.item() {
             ContextItemKind::Raw { .. } => raw_ordinal.expect("validated above"),
-            ContextItemKind::AcceptedIr { .. } => *revision_ordinals
-                .get(selected.owner_revision_id.as_deref().ok_or_else(|| {
+            ContextItemKind::AcceptedIr { .. } => {
+                let owner = selected.owner_revision_id.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_OWNER_MISSING")
-                })?)
-                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_ORDINAL_MISSING"))?,
+                })?;
+                if excluded_revision_ids.contains(owner) {
+                    continue;
+                }
+                *revision_ordinals.get(owner).ok_or_else(|| {
+                    anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_ORDINAL_MISSING")
+                })?
+            }
             _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
         };
         context_items.push(NativeNir1PreparedContextItem {
@@ -982,12 +1237,94 @@ fn build_native_nir1_prepared_inputs(
                 .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?,
         );
     }
-    let mut qualifications = vec![QualificationReference {
-        input_ordinal: raw_ordinal.expect("validated above"),
-        kind: QualificationKind::Source,
-        identity: raw_source_binding.binding.source_key.clone(),
-        version: raw_source_binding.binding.revision_token.clone(),
-    }];
+    // The Human and the Raw carry the target Scene's Scope binding. The
+    // Revisions of one snapshot all read the same Scene, so their query-Scene
+    // tokens must agree; any difference means the snapshot is inconsistent.
+    let scene_scope = selected_bindings
+        .first()
+        .map(NativeNir1AuthorityBinding::scope)
+        .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REQUIRED_CONTEXT_MISSING"))?;
+    for binding in &selected_bindings {
+        let other = binding.scope();
+        ensure!(
+            other.query_scene_id() == query_scene_id
+                && other.query_scene_scope_token() == scene_scope.query_scene_scope_token()
+                && other.query_scene_incarnation_id() == scene_scope.query_scene_incarnation_id(),
+            "NIR1_NATIVE_PREPARED_SCENE_SCOPE_INCONSISTENT"
+        );
+    }
+    let mut qualifications = Vec::new();
+    // Current Human (ordinal 0): Source and Scope references, five typed N/A.
+    qualifications.push(QualificationReference::present(
+        0,
+        QualificationKind::Source,
+        user_message_version.id.clone(),
+        user_message_version.body_digest.clone(),
+    ));
+    add_scene_scope_references(&mut qualifications, 0, &query_scene_id, scene_scope)?;
+    for (kind, reason) in [
+        (
+            QualificationKind::Revision,
+            NotApplicableReason::NotARevision,
+        ),
+        (
+            QualificationKind::Decision,
+            NotApplicableReason::HumanAuthored,
+        ),
+        (
+            QualificationKind::Freshness,
+            NotApplicableReason::ImmutableMessageVersion,
+        ),
+        (
+            QualificationKind::Index,
+            NotApplicableReason::NotIndexDerived,
+        ),
+        (QualificationKind::D1, NotApplicableReason::FixedUserSlot),
+    ] {
+        qualifications.push(QualificationReference::not_applicable(0, kind, reason));
+    }
+    // Target Scene body (Raw): Source and Scope references, four typed N/A
+    // (D1 is added after the render).
+    let raw_ordinal = raw_ordinal.expect("validated above");
+    qualifications.push(QualificationReference::present(
+        raw_ordinal,
+        QualificationKind::Source,
+        raw_source_binding.binding.source_key.clone(),
+        raw_source_binding.binding.revision_token.clone(),
+    ));
+    add_scene_scope_references(
+        &mut qualifications,
+        raw_ordinal,
+        &query_scene_id,
+        scene_scope,
+    )?;
+    let raw_freshness_reason =
+        if raw_source_binding.binding.source_key == format!("project:scene:{query_scene_id}") {
+            NotApplicableReason::TargetSceneBodyNotADependency
+        } else {
+            NotApplicableReason::ExactSourceToken
+        };
+    for (kind, reason) in [
+        (
+            QualificationKind::Revision,
+            NotApplicableReason::NotARevision,
+        ),
+        (
+            QualificationKind::Decision,
+            NotApplicableReason::ManuscriptSource,
+        ),
+        (QualificationKind::Freshness, raw_freshness_reason),
+        (
+            QualificationKind::Index,
+            NotApplicableReason::NotIndexDerived,
+        ),
+    ] {
+        qualifications.push(QualificationReference::not_applicable(
+            raw_ordinal,
+            kind,
+            reason,
+        ));
+    }
     for (revision_id, binding) in selected_revision_ids.iter().zip(&selected_bindings) {
         checkpoint()?;
         let input_ordinal = revision_ordinals[revision_id];
@@ -1012,7 +1349,61 @@ fn build_native_nir1_prepared_inputs(
         context_items,
         raw_source_binding,
         authority_bindings: selected_bindings,
+        excluded_revisions,
     })
+}
+
+/// The sealed material basis disagrees with itself when `source_basis` and
+/// `evidence_set` hold one source key with two revision tokens. The same key
+/// with the same token (the usual overlap) is one Source.
+#[cfg(feature = "native-current-human-capture")]
+fn revision_exclusion_reason(
+    binding: &NativeNir1AuthorityBinding,
+) -> Option<NativeNir1RevisionExclusionReason> {
+    let basis = &binding.revision().material_basis;
+    let mut tokens = HashMap::<&str, &str>::new();
+    for (key, token) in basis
+        .source_basis
+        .iter()
+        .map(|source| (&source.source_key, &source.revision_token))
+        .chain(
+            basis
+                .evidence_set
+                .iter()
+                .map(|evidence| (&evidence.source_key, &evidence.revision_token)),
+        )
+    {
+        if let Some(existing) = tokens.insert(key.as_str(), token.as_str()) {
+            if existing != token.as_str() {
+                return Some(NativeNir1RevisionExclusionReason::MaterialBasisSourceTokenConflict);
+            }
+        }
+    }
+    None
+}
+
+/// The query-Scene Scope references of a Human or Raw input: the Scene's
+/// Scope binding token and its incarnation.
+#[cfg(feature = "native-current-human-capture")]
+fn add_scene_scope_references(
+    qualifications: &mut Vec<QualificationReference>,
+    input_ordinal: usize,
+    query_scene_id: &str,
+    scope: &NativeNir1ScopeBinding,
+) -> Result<()> {
+    qualifications.push(QualificationReference::scope(
+        input_ordinal,
+        ScopeRole::QuerySceneScope,
+        scope_identity(ScopeRole::QuerySceneScope, &[query_scene_id])?,
+        scope.query_scene_scope_token().to_owned(),
+    ));
+    qualifications.push(QualificationReference::scope(
+        input_ordinal,
+        ScopeRole::QuerySceneIncarnation,
+        scope_identity(ScopeRole::QuerySceneIncarnation, &[query_scene_id])?,
+        scope.query_scene_incarnation_id().to_owned(),
+    ));
+    Ok(())
 }
 
 #[cfg(feature = "native-current-human-capture")]
@@ -1024,38 +1415,43 @@ fn add_revision_qualifications(
     binding: &NativeNir1AuthorityBinding,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<()> {
-    let mut seen = HashSet::<(&'static str, String, String)>::new();
-    let mut add = |kind: QualificationKind, identity: String, version: String| {
-        let kind_key = match &kind {
-            QualificationKind::Source => "source",
-            QualificationKind::Revision => "revision",
-            QualificationKind::Decision => "decision",
-            QualificationKind::Freshness => "freshness",
-            QualificationKind::Index => "index",
-            QualificationKind::Scope => "scope",
-            QualificationKind::D1 => "d1",
-        };
-        if seen.insert((kind_key, identity.clone(), version.clone())) {
+    // An exact repeat (same kind, role, identity and version) is one
+    // reference. The same target with another version is kept, so the
+    // completeness rule reports the duplicate instead of one version being
+    // hidden. A Source conflict inside the material basis never reaches this
+    // point: the Revision is excluded earlier.
+    let mut seen = HashSet::<(QualificationKind, Option<ScopeRole>, String, String)>::new();
+    let mut add = |kind: QualificationKind,
+                   scope_role: Option<ScopeRole>,
+                   identity: String,
+                   version: String| {
+        if seen.insert((kind, scope_role, identity.clone(), version.clone())) {
             qualifications.push(QualificationReference {
                 input_ordinal,
                 kind,
-                identity,
-                version,
+                body: QualificationBody::Present {
+                    identity,
+                    version,
+                    scope_role,
+                },
             });
         }
     };
     add(
         QualificationKind::Revision,
+        None,
         revision_id.to_owned(),
         binding.bundle_digest().to_owned(),
     );
     add(
         QualificationKind::Decision,
+        None,
         binding.decision().id().to_owned(),
         binding.decision_token().to_owned(),
     );
     add(
         QualificationKind::Freshness,
+        None,
         revision_id.to_owned(),
         binding.freshness_token().to_owned(),
     );
@@ -1063,6 +1459,7 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Source,
+            None,
             source.source_key.clone(),
             source.revision_token.clone(),
         );
@@ -1071,38 +1468,46 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Source,
+            None,
             evidence.source_key.clone(),
             evidence.revision_token.clone(),
         );
     }
+    let query_scene_id = binding.scope().query_scene_id();
     add(
         QualificationKind::Scope,
-        format!("project:scope-authority:{project_id}"),
+        Some(ScopeRole::ProjectAuthority),
+        scope_identity(ScopeRole::ProjectAuthority, &[project_id])?,
         binding.scope().scope_authority_revision().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scene:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::QuerySceneScope),
+        scope_identity(ScopeRole::QuerySceneScope, &[query_scene_id])?,
         binding.scope().query_scene_scope_token().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scene-source:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::QuerySceneSource),
+        scope_identity(ScopeRole::QuerySceneSource, &[query_scene_id])?,
         binding.scope().query_scene_source_token().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scene-incarnation:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::QuerySceneIncarnation),
+        scope_identity(ScopeRole::QuerySceneIncarnation, &[query_scene_id])?,
         binding.scope().query_scene_incarnation_id().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("reveal-state:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::RevealState),
+        scope_identity(ScopeRole::RevealState, &[query_scene_id])?,
         binding.scope().reveal_state_token().to_owned(),
     );
     add(
         QualificationKind::Scope,
-        format!("scope-axis:{}", binding.scope().query_scene_id()),
+        Some(ScopeRole::ScopeAxis),
+        scope_identity(ScopeRole::ScopeAxis, &[query_scene_id])?,
         canonical_json_digest(&json!({
             "axis": binding.scope().effective_axis(),
             "fallbackReason": binding.scope().axis_fallback_reason(),
@@ -1112,7 +1517,8 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Scope,
-            format!("revision:{revision_id}:typed-scope:{index}"),
+            Some(ScopeRole::TypedScope),
+            scope_identity(ScopeRole::TypedScope, &[revision_id, &index.to_string()])?,
             canonical_json_digest(&serde_json::to_value(typed_scope)?)?,
         );
     }
@@ -1120,10 +1526,21 @@ fn add_revision_qualifications(
         checkpoint()?;
         add(
             QualificationKind::Scope,
-            format!("scene:{}:{}", proof.scene_id, proof.scene_incarnation_id),
+            Some(ScopeRole::MaterialSceneProof),
+            scope_identity(
+                ScopeRole::MaterialSceneProof,
+                &[&proof.scene_id, &proof.scene_incarnation_id],
+            )?,
             proof.scene_scope_token.clone(),
         );
     }
+    // The kind is "not index-derived" only because no Graph Index is read for
+    // an accepted Revision (the Graph-derived input is Pending).
+    qualifications.push(QualificationReference::not_applicable(
+        input_ordinal,
+        QualificationKind::Index,
+        NotApplicableReason::NotIndexDerived,
+    ));
     Ok(())
 }
 

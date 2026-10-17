@@ -100,23 +100,12 @@ export function createChatTurnLifecycle(
   >();
   let stopGenerationVersion = 0;
 
+  // Native accepts only 127.0.0.1 and [::1] IP literals (no localhost, other
+  // 127/8 address, or alternate spelling); this mirrors that check up front.
   const isCaptureLoopbackEndpoint = (baseUrl: string): boolean => {
     const match =
-      /^http:\/\/(localhost|127(?:\.\d{1,3}){3}|\[::1\]):([1-9]\d*)\/v1\/?$/i.exec(
-        baseUrl,
-      );
-    if (!match) return false;
-    const port = Number(match[2]);
-    if (!Number.isInteger(port) || port < 1 || port > 65535) return false;
-    const host = match[1]!.toLowerCase();
-    if (host.startsWith("127.")) {
-      const octets = host.split(".");
-      return octets.slice(1).every((part) => {
-        const octet = Number(part);
-        return octet >= 0 && octet <= 255 && String(octet) === part;
-      });
-    }
-    return true;
+      /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9]\d{0,4})\/v1\/?$/.exec(baseUrl);
+    return match !== null && Number(match[1]) <= 65535;
   };
 
   const captureRouteIsEligible = (
