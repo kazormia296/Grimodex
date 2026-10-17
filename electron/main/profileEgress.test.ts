@@ -4,6 +4,7 @@ import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
   D2A_TYPED_RESULT_POLICY,
+  d2aRouteLedgersForTest,
 } from "./profileEgress.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { NAPI_COMMANDS, type NapiBackendLike } from "../shared/ipcContract.js";
@@ -99,6 +100,7 @@ describe("D2a profile egress gate", () => {
       ["deactivate_license", {}],
       ["vivliostyle_build", {}],
       ["vivliostyle_preview_start", {}],
+      ["vivliostyle_detect", {}],
     ] as const) {
       expect(() => gate.assertInvoke(command, args), command).not.toThrow();
     }
@@ -1048,11 +1050,9 @@ describe("D2a profile egress gate", () => {
     ["send_cli_chat_stream", {}],
     ["codex_app_start_turn", {}],
     ["codex_app_get_status", {}],
-    ["activate_license", { key: "arbitrary-plaintext-license-key" }],
-    ["revalidate_license", {}],
-    ["deactivate_license", {}],
     ["vivliostyle_build", {}],
     ["vivliostyle_preview_start", {}],
+    ["vivliostyle_detect", {}],
     ["nir1_pack_context", {}],
     ["fts_search", {}],
     ["narrative_extraction_claim_task", { payload: {} }],
@@ -1076,6 +1076,111 @@ describe("D2a profile egress gate", () => {
     expect(() => gate.assertInvoke(command, args)).toThrow(
       new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`),
     );
+  });
+
+  describe("license-control (K3/2 L-1)", () => {
+    const LICENSE_COMMANDS = [
+      ["activate_license", { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" }],
+      ["revalidate_license", {}],
+      ["deactivate_license", {}],
+    ] as const;
+
+    it.each(LICENSE_COMMANDS)(
+      "passes %s in a restricted profile with a main-issued identity",
+      async (command, args) => {
+        const gate = await createProfileEgressGate(backend());
+        expect(gate.restricted).toBe(true);
+        expect(gate.unavailable).toBe(false);
+        const callerIdentity = gate.issueCallerIdentity(11);
+        expect(() =>
+          gate.assertInvoke(command, { ...args, callerIdentity }),
+        ).not.toThrow();
+      },
+    );
+
+    it.each(LICENSE_COMMANDS)(
+      "passes %s while a first activation is in flight",
+      async (command, args) => {
+        const release = deferred<string>();
+        const gate = await createProfileEgressGate({
+          ...backend({ restricted: false, handlesInvalidated: false }),
+          activateProfileEgress: vi.fn(() => release.promise),
+        });
+        const activation = gate.activateFirstRestrictedPublication!();
+        expect(gate.restricted).toBe(true);
+        expect(() => gate.assertInvoke(command, args)).not.toThrow();
+        release.resolve(await backend().initializeProfileEgress!());
+        await activation;
+      },
+    );
+
+    it.each(LICENSE_COMMANDS)(
+      "denies %s when the Native profile gate is unavailable",
+      async (command, args) => {
+        const gate = await createProfileEgressGate(null);
+        expect(gate.unavailable).toBe(true);
+        expect(() => gate.assertInvoke(command, args)).toThrow(
+          new RegExp(`^${D2A_EGRESS_DENIED_MARKER} license-control:`),
+        );
+      },
+    );
+
+    it("keeps get_license_state internal and the three mutations out of every other ledger", async () => {
+      const gate = await createProfileEgressGate(null);
+      expect(() => gate.assertInvoke("get_license_state", {})).not.toThrow();
+      const ledgers = d2aRouteLedgersForTest();
+      expect(ledgers.licenseControl).toEqual([
+        "activate_license",
+        "revalidate_license",
+        "deactivate_license",
+      ]);
+      for (const [command] of LICENSE_COMMANDS) {
+        expect(ledgers.denied).not.toContain(command);
+        expect(ledgers.internal).not.toContain(command);
+        expect(ledgers.typedResult).not.toContain(command);
+      }
+      expect(ledgers.internal).toContain("get_license_state");
+    });
+  });
+
+  it("closes the Vivliostyle CLI probe as external-url in a restricted profile", async () => {
+    const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
+    for (const command of [
+      "vivliostyle_build",
+      "vivliostyle_preview_start",
+      "vivliostyle_detect",
+    ]) {
+      expect(
+        () => gate.assertInvoke(command, { callerIdentity }),
+        command,
+      ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER} external-url:`));
+    }
+    // Abort/save of an already-admitted build stay internal.
+    expect(() =>
+      gate.assertInvoke("vivliostyle_abort_build", { callerIdentity }),
+    ).not.toThrow();
+  });
+
+  it("keeps the route ledgers disjoint (K3/2 Negative (20))", () => {
+    const ledgers = d2aRouteLedgersForTest();
+    const names = ["denied", "internal", "licenseControl", "typedResult"] as const;
+    for (let i = 0; i < names.length; i += 1) {
+      for (let j = i + 1; j < names.length; j += 1) {
+        const overlap = ledgers[names[i]].filter((command) =>
+          ledgers[names[j]].includes(command),
+        );
+        expect(overlap, `${names[i]} / ${names[j]}`).toEqual([]);
+      }
+    }
+    for (const name of names) {
+      expect(new Set(ledgers[name]).size, name).toBe(ledgers[name].length);
+    }
+    // The license ledger is compile-time bound to NAPI_COMMANDS; check it at
+    // run time too.
+    for (const command of ledgers.licenseControl) {
+      expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
+    }
   });
 
   it("allows the typed foreshadow anchor projection while denying prose reads", async () => {

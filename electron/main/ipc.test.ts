@@ -3298,6 +3298,7 @@ describe("NIR-1 router sender binding", () => {
     const childDispatches: string[] = [];
     const vivliostyleBuild = vi.fn(async () => "run-id");
     const vivliostylePreviewStart = vi.fn(async () => null);
+    const vivliostyleDetect = vi.fn(async () => null);
     const cliManager = createCliAiManager(() => undefined, {
       runner: {
         run: async () => {
@@ -3320,6 +3321,7 @@ describe("NIR-1 router sender binding", () => {
         ...cliManager.handlers,
         vivliostyle_build: vivliostyleBuild,
         vivliostyle_preview_start: vivliostylePreviewStart,
+        vivliostyle_detect: vivliostyleDetect,
       },
       undefined,
       undefined,
@@ -3348,14 +3350,12 @@ describe("NIR-1 router sender binding", () => {
       ["codex_app_get_status", { sessionId: undefined }],
       ["codex_app_list_models", { workspaceId: "other", retry: true }],
       ["codex_app_test_connection", { redirect: true }],
-      ["activate_license", { key: "arbitrary-plaintext-license-key" }],
-      ["revalidate_license", {}],
-      ["deactivate_license", {}],
       [
         "vivliostyle_build",
         { files: [{ path: "sentinel.md", content: "sentinel" }] },
       ],
       ["vivliostyle_preview_start", { url: "https://sentinel.invalid" }],
+      ["vivliostyle_detect", {}],
       [
         "narrative_extraction_claim_task",
         {
@@ -3401,6 +3401,7 @@ describe("NIR-1 router sender binding", () => {
     expect(childDispatches).toEqual([]);
     expect(vivliostyleBuild).not.toHaveBeenCalled();
     expect(vivliostylePreviewStart).not.toHaveBeenCalled();
+    expect(vivliostyleDetect).not.toHaveBeenCalled();
 
     const save = await invokeHandler()(
       { sender: { id: 42 } },

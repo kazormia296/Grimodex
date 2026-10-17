@@ -292,6 +292,14 @@ impl ProfileEgressState {
         status_locked(&self.lock())
     }
 
+    /// Whether the profile is restricted right now. `license-control` selects
+    /// its client by this at call time (K3/2 N-1): a restricted profile uses
+    /// the fixed-origin, proxy-less, redirect-less client; an unrestricted
+    /// one keeps the existing client.
+    pub fn is_restricted(&self) -> bool {
+        self.lock().restricted
+    }
+
     /// Reserve one legacy Native dispatch while it performs its local work.
     /// The state mutex closes the check/increment race with the startup
     /// transition: after restriction, only the current main-issued epoch can
@@ -301,8 +309,37 @@ impl ProfileEgressState {
         identity: Option<&CallerIdentity>,
     ) -> anyhow::Result<ProfileDispatchPermit> {
         let state = self.lock();
+        self.begin_dispatch_locked(&state, identity)
+    }
+
+    /// Reserve a lease for a legacy provider-egress Native entry (the eight
+    /// pre-D2a AI entries: post-effect runs, chat send/stream, inline stream,
+    /// agent send, model listing, connection test). These entries send the
+    /// manuscript or credentials to a remote provider and have no
+    /// D2a-eligible route, so a restricted profile denies them outright,
+    /// even for a registered, quiesced caller (K3/2 G-2). The check and the
+    /// lease increment happen under the same state mutex as the first
+    /// restricted-publication transition, so no permit can be issued after
+    /// the profile becomes restricted. Unrestricted behaviour is unchanged.
+    pub fn begin_legacy_provider_dispatch(
+        &self,
+        identity: Option<&CallerIdentity>,
+    ) -> anyhow::Result<ProfileDispatchPermit> {
+        let state = self.lock();
+        anyhow::ensure!(
+            !state.restricted,
+            "{D2A_EGRESS_DENIED_MARKER} provider egress is closed while the profile is restricted"
+        );
+        self.begin_dispatch_locked(&state, identity)
+    }
+
+    fn begin_dispatch_locked(
+        &self,
+        state: &State,
+        identity: Option<&CallerIdentity>,
+    ) -> anyhow::Result<ProfileDispatchPermit> {
         if state.restricted {
-            authorize_locked(&state, identity)?;
+            authorize_locked(state, identity)?;
             anyhow::ensure!(
                 state.in_flight_stopped,
                 "{D2A_EGRESS_DENIED_MARKER} dispatch admissions are closed during startup quiescence"
@@ -1345,6 +1382,130 @@ mod tests {
 
         let restarted = ProfileEgressState::new(path.clone()).expect("restart");
         assert!(restarted.begin_dispatch(Some(&identity)).is_err());
+        let _ = fs::remove_file(path);
+    }
+    fn registered_stopped_caller(state: &ProfileEgressState) -> CallerIdentity {
+        let status = state.status();
+        let identity = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 31,
+            workspace_id: None,
+            session_id: "session-1".to_string(),
+        };
+        state.register_caller(&identity).expect("register caller");
+        identity
+    }
+
+    #[test]
+    fn legacy_provider_dispatch_is_unchanged_while_unrestricted() {
+        let path = temp_path("legacy-unrestricted");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        assert!(!state.is_restricted());
+        // Both with and without an identity, exactly like `begin_dispatch`.
+        drop(
+            state
+                .begin_legacy_provider_dispatch(None)
+                .expect("no identity"),
+        );
+        let ghost = CallerIdentity {
+            profile_id: "p".into(),
+            caller_id: "c".into(),
+            caller_epoch: 9,
+            sender_id: 1,
+            workspace_id: None,
+            session_id: "s".into(),
+        };
+        drop(
+            state
+                .begin_legacy_provider_dispatch(Some(&ghost))
+                .expect("unrestricted ignores identity"),
+        );
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
+        let _ = fs::remove_file(path);
+    }
+
+    /// G-2: a registered, quiesced caller still cannot obtain a legacy
+    /// provider-egress permit, although the same identity gets a generic
+    /// `begin_dispatch` permit. No lease is left behind by the refusal.
+    #[test]
+    fn legacy_provider_dispatch_refuses_a_registered_stopped_caller_when_restricted() {
+        let path = temp_path("legacy-restricted");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        assert!(state.is_restricted());
+        let identity = registered_stopped_caller(&state);
+
+        drop(
+            state
+                .begin_dispatch(Some(&identity))
+                .expect("the same identity is admitted for local dispatch"),
+        );
+        let error = state
+            .begin_legacy_provider_dispatch(Some(&identity))
+            .expect_err("legacy provider egress is closed");
+        let text = format!("{error:#}");
+        assert!(text.starts_with(D2A_EGRESS_DENIED_MARKER), "{text}");
+        assert!(text.contains("provider egress is closed"), "{text}");
+        assert!(state.begin_legacy_provider_dispatch(None).is_err());
+        assert_eq!(
+            state.active_dispatches.load(Ordering::SeqCst),
+            0,
+            "a refusal must not leave a lease"
+        );
+        assert!(state.admissions_open.load(Ordering::SeqCst));
+        let _ = fs::remove_file(path);
+    }
+
+    /// The restart case: the profile was restricted by an earlier process, so
+    /// nothing in this process ever ran a stop barrier; the entries are
+    /// refused all the same.
+    #[test]
+    fn legacy_provider_dispatch_refuses_after_restart_on_a_restricted_profile() {
+        let path = temp_path("legacy-restart");
+        {
+            let first = ProfileEgressState::new(path.clone()).expect("state");
+            first
+                .activate_first_restricted_publication(true)
+                .expect("activate");
+        }
+        let restarted = ProfileEgressState::new(path.clone()).expect("restart");
+        assert!(restarted.is_restricted());
+        let identity = registered_stopped_caller(&restarted);
+        assert!(restarted.begin_dispatch(Some(&identity)).is_ok());
+        assert!(restarted
+            .begin_legacy_provider_dispatch(Some(&identity))
+            .is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    /// Activation racing a legacy begin (the sync point is the state mutex):
+    /// a lease issued before the transition is revoked by it, and no lease is
+    /// issued once the profile is restricted, even before the barrier
+    /// completes and without any identity check.
+    #[test]
+    fn no_legacy_permit_is_issued_after_the_restricting_transition() {
+        let path = temp_path("legacy-race");
+        let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
+        let before = state
+            .begin_legacy_provider_dispatch(None)
+            .expect("pre-restriction");
+        let activator = std::sync::Arc::clone(&state);
+        let transition = std::thread::spawn(move || {
+            activator
+                .activate_first_restricted_publication(false)
+                .expect("activate")
+        });
+        transition.join().expect("transition");
+        assert!(state.is_restricted());
+        for _ in 0..8 {
+            assert!(state.begin_legacy_provider_dispatch(None).is_err());
+        }
+        assert!(before.ensure_open().is_err());
+        drop(before);
         let _ = fs::remove_file(path);
     }
 }

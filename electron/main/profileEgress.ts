@@ -43,6 +43,7 @@ type D2aRoute =
   | "old-external-ai"
   | "old-local-ai"
   | "plaintext-publication"
+  | "license-control"
   | "external-url"
   | "native-mutation"
   | "internal"
@@ -67,6 +68,22 @@ export const D2A_TYPED_RESULT_POLICY = {
   Record<keyof typeof NAPI_COMMANDS, D2aTypedResultPolicy>
 >;
 
+/**
+ * `license-control` (K3/2 L-1): the three license mutations carry no
+ * manuscript, chat or AI plaintext (the only renderer-supplied value is the
+ * `activate_license` key, which Native checks against an exact grammar while
+ * restricted) and go to the fixed license origin only. They pass in both
+ * unrestricted and restricted profiles and are refused while unavailable.
+ * `get_license_state` stays `internal`. The `satisfies` check keeps a
+ * stale/nonexistent command out of this ledger at compile time; a command
+ * belongs here or in `DENIED_COMMANDS` / `INTERNAL_COMMANDS`, never two.
+ */
+const LICENSE_CONTROL_COMMANDS = [
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
+] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
+
 const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["send_chat_message", "old-external-ai"],
   ["send_chat_message_stream", "old-external-ai"],
@@ -74,9 +91,6 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["send_agent_message", "old-external-ai"],
   ["list_ai_models", "old-external-ai"],
   ["test_ai_connection", "external-url"],
-  ["activate_license", "external-url"],
-  ["revalidate_license", "external-url"],
-  ["deactivate_license", "external-url"],
   ["start_post_effect_run", "old-external-ai"],
   ["start_post_effect_run_multi", "old-external-ai"],
   ["send_cli_chat_stream", "old-external-ai"],
@@ -93,6 +107,9 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["codex_app_set_thread_name", "old-external-ai"],
   ["vivliostyle_build", "external-url"],
   ["vivliostyle_preview_start", "external-url"],
+  // The CLI probe runs a login shell and the CLI's `--version` on a
+  // restricted-restarted process, so it is as closed as build/preview.
+  ["vivliostyle_detect", "external-url"],
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_claim_task", "plaintext-publication"],
   ["narrative_extraction_get_run_review_bundle", "plaintext-publication"],
@@ -157,7 +174,6 @@ const INTERNAL_COMMANDS = new Set([
   "abort_cli_chat_stream",
   "abort_inline_ai_stream",
   "abort_post_effect_run",
-  "activate_license",
   "agent_accept_prose_stage",
   "agent_apply_undo_journal",
   "agent_chronicle_bulk_mutate",
@@ -201,7 +217,6 @@ const INTERNAL_COMMANDS = new Set([
   "codex_update",
   "db_execute",
   "db_execute_batch",
-  "deactivate_license",
   "delete_api_key",
   "editor_sticky_create",
   "editor_sticky_delete",
@@ -328,7 +343,6 @@ const INTERNAL_COMMANDS = new Set([
   "restore_backup",
   "restore_recovery_candidate",
   "retry_narrative_legacy_backfill",
-  "revalidate_license",
   "revision_scene_restore",
   "runtime_performance_seed",
   "save_ai_settings",
@@ -377,9 +391,6 @@ const INTERNAL_COMMANDS = new Set([
   "verify_narrative_dependency_graph",
   "verify_recovery_candidate",
   "vivliostyle_abort_build",
-  "vivliostyle_build",
-  "vivliostyle_detect",
-  "vivliostyle_preview_start",
   "vivliostyle_preview_stop",
   "vivliostyle_save_output",
 ]);
@@ -499,6 +510,9 @@ function commandRoute(
   if (typedResult) return typedResult;
   const explicit = DENIED_COMMANDS.get(command);
   if (explicit) return explicit;
+  if ((LICENSE_CONTROL_COMMANDS as readonly string[]).includes(command)) {
+    return "license-control";
+  }
   if (ALLOWED_STOP_COMMANDS.has(command)) return "native-mutation";
   const hasBoundCaller =
     args.callerIdentity !== undefined && args.callerIdentity !== null;
@@ -523,6 +537,26 @@ function commandRoute(
       : "native-mutation";
   }
   return INTERNAL_COMMANDS.has(command) ? "internal" : "unclassified";
+}
+
+/**
+ * Read-only view of the route ledgers for the "no command is in two ledgers"
+ * invariant test (K3/2 Negative (20)). Not used by production code.
+ */
+export function d2aRouteLedgersForTest(): {
+  readonly denied: readonly string[];
+  readonly internal: readonly string[];
+  readonly licenseControl: readonly string[];
+  readonly typedResult: readonly string[];
+  readonly stop: readonly string[];
+} {
+  return {
+    denied: [...DENIED_COMMANDS.keys()],
+    internal: [...INTERNAL_COMMANDS],
+    licenseControl: [...LICENSE_CONTROL_COMMANDS],
+    typedResult: Object.keys(D2A_TYPED_RESULT_POLICY),
+    stop: [...ALLOWED_STOP_COMMANDS],
+  };
 }
 
 function denied(route: D2aRoute, detail: string): Error {
@@ -697,6 +731,12 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       );
     }
     this.assertIssuedCallerIdentity(callerIdentity, command);
+    if (route === "license-control" && this.unavailable) {
+      throw denied(
+        route,
+        `route ${command} is unavailable until the Native profile gate is ready`,
+      );
+    }
     if (
       route === "old-external-ai" ||
       route === "old-local-ai" ||
