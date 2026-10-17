@@ -1369,3 +1369,828 @@ fn prepared_projection_rejects_empty_context_budget_before_selecting_material() 
     );
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// DF+-a: the D-final output follows the completeness rule (K4/3 section 3)
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "native-current-human-capture")]
+struct DfFinalFixture {
+    _workspace: PreparedWorkspace,
+    snapshot: crate::state::ActiveWorkspaceSnapshot,
+    revisions: Vec<String>,
+    capture: crate::nir1_generation::AcceptedChatInputCapture,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl DfFinalFixture {
+    fn new() -> Result<Self> {
+        let db = current_schema_memory()?;
+        let storage = json!({
+            "type": "doc",
+            "content": [{"type":"paragraph","content":[{"type":"text","text":"Current Source body."}]}]
+        })
+        .to_string();
+        let revisions = fixture_with_query_source(&db, Some(&storage))?;
+        let workspace = PreparedWorkspace::new(db)?;
+        let snapshot = workspace.snapshot()?;
+        let capture =
+            add_prepared_human_message(&snapshot, "Captured human request for the current scene.")?;
+        Ok(Self {
+            _workspace: workspace,
+            snapshot,
+            revisions,
+            capture,
+        })
+    }
+
+    /// The public D-final projection.
+    fn project(&self) -> Result<NativeNir1PreparedInputs> {
+        crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
+            &self.snapshot,
+            "nir1-prepared-db-session",
+            &self.capture,
+            RAW_SOURCE_SCENE,
+            &self.revisions,
+            prepared_sql_budget(),
+            |_| Ok(100_000),
+        )
+    }
+
+    /// The same read as `read_and_pack_native_nir1_prepared_inputs`, with a
+    /// hook on the packed bindings (to model a Revision-side inconsistency
+    /// that the A2 reader would otherwise catch first).
+    fn project_with_bindings(
+        &self,
+        mutate: impl FnOnce(&mut Vec<NativeNir1AuthorityBinding>),
+    ) -> Result<NativeNir1PreparedInputs> {
+        let mut mutate = Some(mutate);
+        let mut input_budget = NativePackingInputBudget::default();
+        self.snapshot
+            .db()
+            .with_participant_read_transaction_bounded(
+                self.snapshot.participant(),
+                prepared_sql_budget(),
+                |conn| {
+                    let (version, message) = read_current_chat_input_capture_in_tx(
+                        conn,
+                        &self.capture,
+                        self.capture.owner(),
+                        |version_id_bytes, body_bytes| {
+                            input_budget.reserve_lengths(version_id_bytes, body_bytes, 0)
+                        },
+                    )?;
+                    let project_id = version.project_id.clone();
+                    let mut reserve = |_bytes| Ok(());
+                    let mut pooled = read_and_pack_native_a2_context_with_current_source_in_tx(
+                        conn,
+                        NativeNir1SourcePooledPackingRequest {
+                            project_id: &project_id,
+                            revision_ids: &self.revisions,
+                            query_scene_id: RAW_SOURCE_SCENE,
+                            budget_tokens: 100_000,
+                            purpose: PackingPurpose::Writing,
+                        },
+                        &mut input_budget,
+                        &mut reserve,
+                        &mut || Ok(()),
+                    )?;
+                    (mutate.take().expect("single use"))(&mut pooled.bindings);
+                    build_native_nir1_prepared_inputs(
+                        self.capture.clone(),
+                        project_id,
+                        RAW_SOURCE_SCENE.to_owned(),
+                        version,
+                        message,
+                        pooled,
+                        &mut || Ok(()),
+                    )
+                },
+            )
+    }
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn rows_of(
+    qualifications: &[QualificationReference],
+    ordinal: usize,
+) -> Vec<&QualificationReference> {
+    qualifications
+        .iter()
+        .filter(|row| row.input_ordinal == ordinal)
+        .collect()
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn revision_ordinals(projection: &NativeNir1PreparedInputs) -> Vec<(usize, String)> {
+    projection
+        .input_references()
+        .iter()
+        .enumerate()
+        .filter_map(|(ordinal, input)| match &input.target {
+            InputTarget::AcceptedRevision { revision_id, .. } => {
+                Some((ordinal, revision_id.clone()))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn binding_for<'a>(
+    projection: &'a NativeNir1PreparedInputs,
+    revision_id: &str,
+) -> &'a NativeNir1AuthorityBinding {
+    projection
+        .authority_bindings()
+        .iter()
+        .find(|binding| binding.revision_id() == revision_id)
+        .expect("binding of the adopted Revision")
+}
+
+/// Distinct source keys of the sealed material basis.
+#[cfg(feature = "native-current-human-capture")]
+fn basis_source_keys(binding: &NativeNir1AuthorityBinding) -> Vec<(String, String)> {
+    let basis = &binding.revision().material_basis;
+    let mut keys: Vec<(String, String)> = basis
+        .source_basis
+        .iter()
+        .map(|source| (source.source_key.clone(), source.revision_token.clone()))
+        .chain(
+            basis
+                .evidence_set
+                .iter()
+                .map(|evidence| (evidence.source_key.clone(), evidence.revision_token.clone())),
+        )
+        .collect();
+    keys.sort();
+    keys.dedup();
+    keys
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn df_final_output_satisfies_completeness_rule() -> Result<()> {
+    use crate::nir1_generation::CompletenessReason;
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    // Human, Raw and the two fixture Revisions.
+    assert_eq!(projection.input_references().len(), 4);
+    assert!(projection.excluded_revisions().is_empty());
+    // The producer's rows lack only the D1 selection, which the render adds.
+    let violation = projection
+        .check_completeness(projection.qualifications())
+        .expect_err("D1 is added after the render");
+    assert_eq!(violation.kind, Some(QualificationKind::D1));
+    assert_eq!(violation.reason, CompletenessReason::MissingKind);
+    let finalized = projection.finalize_qualifications(100_000)?;
+    projection
+        .check_completeness(&finalized.qualifications)
+        .map_err(|violation| anyhow::anyhow!("{violation}"))?;
+    // One D1 selection reference for every input but the current Human.
+    let d1_rows = finalized
+        .qualifications
+        .iter()
+        .filter(|row| row.kind == QualificationKind::D1 && row.identity().is_some())
+        .count();
+    assert_eq!(d1_rows, projection.input_references().len() - 1);
+    // S6 measured 0 (Human), 1 (Raw) and 16 (each Revision) rows; the rule
+    // adds Human 8 (Source, 2 Scope, 5 N/A), Raw 8 (Source, 2 Scope, 4 N/A,
+    // D1) and, per Revision, the Index N/A and D1: 11 + 2E + Rel + 2.
+    assert_eq!(rows_of(&finalized.qualifications, 0).len(), 8);
+    assert_eq!(rows_of(&finalized.qualifications, 1).len(), 8);
+    for (ordinal, revision_id) in revision_ordinals(&projection) {
+        let binding = binding_for(&projection, &revision_id);
+        let bundle = &binding.revision().bundle;
+        let (entities, relations) = (bundle.entities.len(), bundle.relations.len());
+        assert_eq!(
+            rows_of(&finalized.qualifications, ordinal).len(),
+            11 + 2 * entities + relations + 2,
+            "Revision {revision_id} (E={entities}, Rel={relations})"
+        );
+    }
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn df_final_human_has_source_scope_and_five_typed_na() -> Result<()> {
+    use crate::nir1_generation::{NotApplicableReason as Na, ScopeRole};
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    assert_eq!(
+        projection.input_references()[0].input_use,
+        InputUse::CurrentTurn
+    );
+    let human = rows_of(projection.qualifications(), 0);
+    let version = projection.user_message_version();
+    let source = human
+        .iter()
+        .filter(|row| row.kind == QualificationKind::Source)
+        .collect::<Vec<_>>();
+    assert_eq!(source.len(), 1);
+    assert_eq!(source[0].identity(), Some(version.id.as_str()));
+    assert_eq!(source[0].version(), Some(version.body_digest.as_str()));
+    let scene_scope = projection.authority_bindings()[0].scope();
+    let scope = human
+        .iter()
+        .filter(|row| row.kind == QualificationKind::Scope)
+        .map(|row| {
+            (
+                row.scope_role(),
+                row.identity().map(str::to_owned),
+                row.version().map(str::to_owned),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        scope,
+        vec![
+            (
+                Some(ScopeRole::QuerySceneScope),
+                Some(format!("scene:{RAW_SOURCE_SCENE}")),
+                Some(scene_scope.query_scene_scope_token().to_owned())
+            ),
+            (
+                Some(ScopeRole::QuerySceneIncarnation),
+                Some(format!("scene-incarnation:{RAW_SOURCE_SCENE}")),
+                Some(scene_scope.query_scene_incarnation_id().to_owned())
+            ),
+        ]
+    );
+    let mut na = human
+        .iter()
+        .filter_map(|row| row.not_applicable_reason().map(|reason| (row.kind, reason)))
+        .collect::<Vec<_>>();
+    na.sort();
+    let mut expected = vec![
+        (QualificationKind::Revision, Na::NotARevision),
+        (QualificationKind::Decision, Na::HumanAuthored),
+        (QualificationKind::Freshness, Na::ImmutableMessageVersion),
+        (QualificationKind::Index, Na::NotIndexDerived),
+        (QualificationKind::D1, Na::FixedUserSlot),
+    ];
+    expected.sort();
+    assert_eq!(na, expected);
+    assert_eq!(human.len(), 8);
+
+    // The target Scene body (Raw): Source and Scope, four typed N/A (the D1
+    // selection follows the render).
+    let raw = rows_of(projection.qualifications(), 1);
+    let raw_binding = projection.raw_source_binding().binding();
+    assert!(raw.iter().any(|row| row.kind == QualificationKind::Source
+        && row.identity() == Some(raw_binding.source_key.as_str())
+        && row.version() == Some(raw_binding.revision_token.as_str())));
+    assert_eq!(
+        raw_binding.source_key,
+        format!("project:scene:{RAW_SOURCE_SCENE}")
+    );
+    let mut raw_na = raw
+        .iter()
+        .filter_map(|row| row.not_applicable_reason().map(|reason| (row.kind, reason)))
+        .collect::<Vec<_>>();
+    raw_na.sort();
+    let mut raw_expected = vec![
+        (QualificationKind::Revision, Na::NotARevision),
+        (QualificationKind::Decision, Na::ManuscriptSource),
+        (
+            QualificationKind::Freshness,
+            Na::TargetSceneBodyNotADependency,
+        ),
+        (QualificationKind::Index, Na::NotIndexDerived),
+    ];
+    raw_expected.sort();
+    assert_eq!(raw_na, raw_expected);
+    assert_eq!(
+        raw.iter()
+            .filter(|row| row.kind == QualificationKind::Scope)
+            .count(),
+        2
+    );
+    assert_eq!(
+        projection.input_references()[1].input_use,
+        InputUse::SelectedMaterial
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn df_final_revision_keeps_all_sources_and_scopes() -> Result<()> {
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    let finalized = projection.finalize_qualifications(100_000)?;
+    let revisions = revision_ordinals(&projection);
+    assert_eq!(revisions.len(), 2);
+    for (ordinal, revision_id) in revisions {
+        let binding = binding_for(&projection, &revision_id);
+        let rows = rows_of(&finalized.qualifications, ordinal);
+        // Every distinct Source of the material basis and Evidence stays.
+        let mut sources = rows
+            .iter()
+            .filter(|row| row.kind == QualificationKind::Source)
+            .map(|row| {
+                (
+                    row.identity().expect("present").to_owned(),
+                    row.version().expect("present").to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        sources.sort();
+        let expected_sources = basis_source_keys(binding);
+        assert!(
+            expected_sources.len() > 1,
+            "the fixture must have several Sources"
+        );
+        assert_eq!(sources, expected_sources);
+        // All Scope references: six singletons, one typed scope per Entity and
+        // one proof per material Scene proof; none collapsed.
+        let scope = binding.scope();
+        let scope_count = rows
+            .iter()
+            .filter(|row| row.kind == QualificationKind::Scope)
+            .count();
+        assert_eq!(
+            scope_count,
+            6 + scope.typed_scope_bindings().len() + scope.material_scene_proofs().len()
+        );
+        assert!(scope.typed_scope_bindings().len() > 1);
+        // The other kinds: one reference each, the Index as a typed N/A.
+        for (kind, count) in [
+            (QualificationKind::Revision, 1usize),
+            (QualificationKind::Decision, 1),
+            (QualificationKind::Freshness, 1),
+            (QualificationKind::D1, 1),
+        ] {
+            assert_eq!(
+                rows.iter()
+                    .filter(|row| row.kind == kind && row.identity().is_some())
+                    .count(),
+                count,
+                "{kind:?}"
+            );
+        }
+        assert!(rows.iter().any(|row| row.kind == QualificationKind::Index
+            && row.not_applicable_reason()
+                == Some(crate::nir1_generation::NotApplicableReason::NotIndexDerived)));
+    }
+    // Collapsing a Revision's Sources to one reference is incomplete.
+    let (ordinal, _) = revision_ordinals(&projection)[0].clone();
+    let mut collapsed = finalized.qualifications.clone();
+    let mut kept_one = false;
+    collapsed.retain(|row| {
+        if row.input_ordinal == ordinal && row.kind == QualificationKind::Source {
+            let keep = !kept_one;
+            kept_one = true;
+            keep
+        } else {
+            true
+        }
+    });
+    let violation = projection
+        .check_completeness(&collapsed)
+        .expect_err("a collapsed Source set is incomplete");
+    assert_eq!(
+        violation.reason,
+        crate::nir1_generation::CompletenessReason::ExpectedTargetMissing
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn df_final_scope_refs_carry_closed_role() -> Result<()> {
+    use crate::nir1_generation::{classify_reference, parse_scope_identity, ReferenceClass};
+    use std::collections::BTreeSet;
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    for (ordinal, _) in revision_ordinals(&projection) {
+        let mut roles = BTreeSet::new();
+        for row in rows_of(projection.qualifications(), ordinal) {
+            if row.kind != QualificationKind::Scope {
+                assert_eq!(row.scope_role(), None, "a role only on Scope references");
+                continue;
+            }
+            let role = row.scope_role().context("a Scope reference has a role")?;
+            roles.insert(role);
+            // The identity follows the role's grammar, not the other way round.
+            assert!(
+                parse_scope_identity(role, row.identity().context("present")?).is_some(),
+                "{role:?} {:?}",
+                row.identity()
+            );
+            assert!(classify_reference(QualificationKind::Scope, Some(role)).is_some());
+        }
+        let expected: BTreeSet<ScopeRole> = [
+            ScopeRole::ProjectAuthority,
+            ScopeRole::QuerySceneScope,
+            ScopeRole::QuerySceneSource,
+            ScopeRole::QuerySceneIncarnation,
+            ScopeRole::RevealState,
+            ScopeRole::ScopeAxis,
+            ScopeRole::TypedScope,
+        ]
+        .into_iter()
+        .chain(
+            (!projection.authority_bindings()[0]
+                .scope()
+                .material_scene_proofs()
+                .is_empty())
+            .then_some(ScopeRole::MaterialSceneProof),
+        )
+        .collect();
+        assert_eq!(roles, expected);
+    }
+    // The classification of Section 13: dependency, request context, turn context.
+    assert_eq!(
+        classify_reference(QualificationKind::Scope, Some(ScopeRole::TypedScope)),
+        Some(ReferenceClass::Dependency)
+    );
+    assert_eq!(
+        classify_reference(QualificationKind::Scope, Some(ScopeRole::ProjectAuthority)),
+        Some(ReferenceClass::RequestContext)
+    );
+    assert_eq!(
+        classify_reference(QualificationKind::Scope, Some(ScopeRole::ScopeAxis)),
+        Some(ReferenceClass::TurnContext)
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn revision_with_inconsistent_material_basis_is_excluded_only_that_revision() -> Result<()> {
+    let fixture = DfFinalFixture::new()?;
+    let baseline = fixture.project()?;
+    let target = fixture.revisions[1].clone();
+    let kept = fixture.revisions[0].clone();
+    let projection = fixture.project_with_bindings(|bindings| {
+        let binding = bindings
+            .iter_mut()
+            .find(|binding| binding.revision_id() == target)
+            .expect("fixture Revision binding");
+        let first = binding.revision.material_basis.source_basis[0].clone();
+        let mut conflicting = first.clone();
+        conflicting.revision_token = format!("{}-other", first.revision_token);
+        binding
+            .revision
+            .material_basis
+            .source_basis
+            .push(conflicting);
+    })?;
+    assert_eq!(projection.excluded_revisions().len(), 1);
+    let excluded = &projection.excluded_revisions()[0];
+    assert_eq!(excluded.revision_id(), target);
+    assert_eq!(
+        excluded.reason(),
+        NativeNir1RevisionExclusionReason::MaterialBasisSourceTokenConflict
+    );
+    assert_eq!(
+        excluded.reason().code(),
+        "material-basis-source-token-conflict"
+    );
+    // Only that Revision is gone: Human, Raw and the other Revision stay, with
+    // the same attempt context (Scene, Human version, Raw binding).
+    assert_eq!(projection.input_references().len(), 3);
+    assert_eq!(
+        revision_ordinals(&projection)
+            .into_iter()
+            .map(|(_, id)| id)
+            .collect::<Vec<_>>(),
+        vec![kept.clone()]
+    );
+    assert_eq!(projection.authority_bindings().len(), 1);
+    assert_eq!(projection.authority_bindings()[0].revision_id(), kept);
+    assert_eq!(projection.query_scene_id(), baseline.query_scene_id());
+    assert_eq!(
+        projection.user_message_version(),
+        baseline.user_message_version()
+    );
+    assert_eq!(
+        projection.raw_source_binding(),
+        baseline.raw_source_binding()
+    );
+    assert!(projection
+        .context_items()
+        .iter()
+        .all(|item| item.input_ordinal() < projection.input_references().len()));
+    assert!(projection.qualifications().iter().all(|row| {
+        row.input_ordinal < 3
+            && !(row.identity() == Some(target.as_str())
+                && matches!(
+                    row.kind,
+                    QualificationKind::Revision | QualificationKind::Freshness
+                ))
+    }));
+    // The remaining output is complete.
+    let finalized = projection.finalize_qualifications(100_000)?;
+    projection
+        .check_completeness(&finalized.qualifications)
+        .map_err(|violation| anyhow::anyhow!("{violation}"))?;
+    // The kept Revision's rows are exactly what the full projection gave it.
+    let baseline_ordinal = revision_ordinals(&baseline)
+        .into_iter()
+        .find(|(_, id)| *id == kept)
+        .context("baseline ordinal")?
+        .0;
+    let kept_ordinal = revision_ordinals(&projection)[0].0;
+    let strip = |rows: Vec<&QualificationReference>| {
+        rows.into_iter()
+            .map(|row| {
+                (
+                    row.kind,
+                    row.scope_role(),
+                    row.identity().map(str::to_owned),
+                    row.version().map(str::to_owned),
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        strip(rows_of(projection.qualifications(), kept_ordinal)),
+        strip(rows_of(baseline.qualifications(), baseline_ordinal))
+    );
+
+    // The same key with the same token (the usual overlap) is one Source and
+    // is not an inconsistency.
+    let overlapping = fixture.project_with_bindings(|bindings| {
+        let basis = &mut bindings[0].revision.material_basis;
+        let first = basis.source_basis[0].clone();
+        basis.source_basis.push(first);
+    })?;
+    assert!(overlapping.excluded_revisions().is_empty());
+    assert_eq!(overlapping.input_references().len(), 4);
+
+    // When every Revision is inconsistent, the request has no Revision left
+    // and is refused instead of sending the Raw alone.
+    let error = fixture
+        .project_with_bindings(|bindings| {
+            for binding in bindings.iter_mut() {
+                let first = binding.revision.material_basis.source_basis[0].clone();
+                let mut conflicting = first.clone();
+                conflicting.revision_token = format!("{}-other", first.revision_token);
+                binding
+                    .revision
+                    .material_basis
+                    .source_basis
+                    .push(conflicting);
+            }
+        })
+        .err()
+        .context("a request without any Revision was prepared")?;
+    assert_eq!(
+        error.to_string(),
+        "NIR1_NATIVE_PREPARED_REQUIRED_CONTEXT_MISSING"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn df_final_incomplete_output_is_detected() -> Result<()> {
+    use crate::nir1_generation::{CompletenessReason as Reason, NotApplicableReason as Na};
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    let complete = projection.finalize_qualifications(100_000)?.qualifications;
+    let (revision_ordinal, _) = revision_ordinals(&projection)[0].clone();
+    let detect = |qualifications: &[QualificationReference]| {
+        projection
+            .check_completeness(qualifications)
+            .expect_err("a broken D-final output must be detected")
+    };
+
+    // A reference dropped from a kind that has several.
+    let mut dropped = complete.clone();
+    let position = dropped
+        .iter()
+        .position(|row| {
+            row.input_ordinal == revision_ordinal && row.scope_role() == Some(ScopeRole::TypedScope)
+        })
+        .context("typed scope row")?;
+    dropped.remove(position);
+    assert_eq!(detect(&dropped).reason, Reason::ExpectedTargetMissing);
+
+    // A kind with neither a reference nor an N/A (the Human's Freshness).
+    let mut missing = complete.clone();
+    missing.retain(|row| !(row.input_ordinal == 0 && row.kind == QualificationKind::Freshness));
+    let violation = detect(&missing);
+    assert_eq!(
+        (violation.input_ordinal, violation.kind, violation.reason),
+        (
+            Some(0),
+            Some(QualificationKind::Freshness),
+            Reason::MissingKind
+        )
+    );
+
+    // The same target twice with two versions.
+    let mut duplicated = complete.clone();
+    let mut other_version = duplicated
+        .iter()
+        .find(|row| row.input_ordinal == revision_ordinal && row.kind == QualificationKind::Source)
+        .cloned()
+        .context("source row")?;
+    if let crate::nir1_generation::QualificationBody::Present { version, .. } =
+        &mut other_version.body
+    {
+        version.push_str("-stale");
+    }
+    duplicated.push(other_version);
+    assert_eq!(detect(&duplicated).reason, Reason::DuplicateTarget);
+
+    // A forged N/A: the Raw's Freshness reason follows its source key.
+    let mut forged = complete.clone();
+    for row in &mut forged {
+        if row.input_ordinal == 1 && row.kind == QualificationKind::Freshness {
+            *row = QualificationReference::not_applicable(
+                1,
+                QualificationKind::Freshness,
+                Na::ExactSourceToken,
+            );
+        }
+    }
+    assert_eq!(detect(&forged).reason, Reason::NotApplicableReasonMismatch);
+
+    // A reference and an N/A for the same kind.
+    let mut both = complete.clone();
+    both.push(QualificationReference::not_applicable(
+        revision_ordinal,
+        QualificationKind::Index,
+        Na::NotIndexDerived,
+    ));
+    both.push(QualificationReference::present(
+        revision_ordinal,
+        QualificationKind::Index,
+        "index",
+        "1",
+    ));
+    assert!(matches!(
+        detect(&both).reason,
+        Reason::ReferenceAndNotApplicable | Reason::DuplicateNotApplicable
+    ));
+
+    // The finalizer refuses to hand out such an output.
+    let mut broken = fixture.project()?;
+    broken
+        .qualifications
+        .retain(|row| !(row.input_ordinal == 0 && row.kind == QualificationKind::Source));
+    let error = broken
+        .finalize_qualifications(100_000)
+        .err()
+        .context("finalizer accepted an incomplete output")?;
+    assert!(
+        error
+            .to_string()
+            .starts_with("NIR1_NATIVE_PREPARED_QUALIFICATION_INCOMPLETE"),
+        "{error}"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn d1_selection_follows_stored_rows_and_usage() -> Result<()> {
+    use crate::nir1_generation::d1_selection_digest;
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    let finalized = projection.finalize_qualifications(100_000)?;
+    let params = &finalized.d1_selection;
+    assert_eq!(
+        params.estimator_version,
+        grimodex_core::narrative_nir1::NIR1_CONTEXT_TOKEN_ESTIMATOR_VERSION
+    );
+    assert_eq!(params.selector_budget_tokens, 100_000);
+    let used: usize = projection
+        .context_items()
+        .iter()
+        .map(|item| estimate_nir1_context_tokens(item.text()))
+        .sum();
+    assert_eq!(params.used_tokens, used as u64);
+    assert_eq!(params.used_tokens + params.remaining_tokens, 100_000);
+    assert_eq!(
+        d1_selection_digest(params, projection.input_references())?,
+        finalized.d1_selection_digest
+    );
+    for row in finalized
+        .qualifications
+        .iter()
+        .filter(|row| row.kind == QualificationKind::D1 && row.identity().is_some())
+    {
+        assert_eq!(row.version(), Some(finalized.d1_selection_digest.as_str()));
+    }
+    // A smaller budget changes the digest; a budget below the usage is refused.
+    let tighter = projection.finalize_qualifications(used + 7)?;
+    assert_ne!(tighter.d1_selection_digest, finalized.d1_selection_digest);
+    let error = projection
+        .finalize_qualifications(used - 1)
+        .err()
+        .context("usage above the selector budget was accepted")?;
+    assert_eq!(
+        error.to_string(),
+        "NIR1_NATIVE_PREPARED_D1_USAGE_EXCEEDS_BUDGET"
+    );
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn revalidation_still_rejects_stale_identity_with_new_ref_shape() -> Result<()> {
+    use crate::narrative_extraction::revalidate_native_nir1_prepared_inputs;
+
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    revalidate_native_nir1_prepared_inputs(
+        &fixture.snapshot,
+        "nir1-prepared-db-session",
+        &projection,
+        prepared_sql_budget(),
+    )?;
+    // The Decision a Revision reference names changed after preparation: the
+    // new reference rows (with typed N/A and roles) do not make the check weaker.
+    fixture.snapshot.db().db().with_conn(|conn| {
+        let changed = conn.execute(
+            "UPDATE narrative_proposal_decisions SET decision_json=?1 WHERE revision_id=?2",
+            params![
+                json!({"reviewerNote":"changed after preparation"}).to_string(),
+                fixture.revisions[0]
+            ],
+        )?;
+        ensure!(changed == 1, "Decision row missing");
+        Ok(())
+    })?;
+    let error = revalidate_native_nir1_prepared_inputs(
+        &fixture.snapshot,
+        "nir1-prepared-db-session",
+        &projection,
+        prepared_sql_budget(),
+    )
+    .err()
+    .context("a changed Decision was accepted")?;
+    assert_eq!(error.to_string(), "NIR1_NATIVE_PREPARED_REVISION_STALE");
+    Ok(())
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn resource_estimate_for_102_revisions() -> Result<()> {
+    // Per Revision the producer writes 11 + 2E + Rel references (E Entities,
+    // Rel Relations; S6-1), and the completeness rule adds the Index N/A and
+    // the D1 selection: 13 + 2E + Rel. The current Human adds 8 and the Raw 8.
+    // Packing admits at most 512 items, 5 per Entity or Relation and 1 for the
+    // Raw, so 102 Revisions carry one Entity each (E = 1, Rel = 0).
+    const MAX_REVISIONS: usize = 102;
+    const HUMAN_AND_RAW_ROWS: usize = 16;
+    fn per_revision(entities: usize, relations: usize) -> usize {
+        13 + 2 * entities + relations
+    }
+    let fixture = DfFinalFixture::new()?;
+    let projection = fixture.project()?;
+    let finalized = projection.finalize_qualifications(100_000)?;
+    let row_bytes =
+        |row: &QualificationReference| -> Result<usize> { Ok(serde_json::to_string(row)?.len()) };
+    let mut measured_revision_rows = 0usize;
+    let mut measured_revision_bytes = 0usize;
+    for (ordinal, revision_id) in revision_ordinals(&projection) {
+        let bundle = &binding_for(&projection, &revision_id).revision().bundle;
+        let rows = rows_of(&finalized.qualifications, ordinal);
+        assert_eq!(
+            rows.len(),
+            per_revision(bundle.entities.len(), bundle.relations.len()),
+            "the per-Revision formula holds on the real fixture"
+        );
+        measured_revision_rows += rows.len();
+        for row in rows {
+            measured_revision_bytes += row_bytes(row)?;
+        }
+    }
+    let human_raw_bytes = [0usize, 1]
+        .into_iter()
+        .flat_map(|ordinal| rows_of(&finalized.qualifications, ordinal))
+        .map(row_bytes)
+        .sum::<Result<usize>>()?;
+    assert_eq!(
+        rows_of(&finalized.qualifications, 0).len() + rows_of(&finalized.qualifications, 1).len(),
+        HUMAN_AND_RAW_ROWS
+    );
+    // The maximum request: 102 Revisions of one Entity each.
+    let rows_102 = HUMAN_AND_RAW_ROWS + MAX_REVISIONS * per_revision(1, 0);
+    assert_eq!(rows_102, 1546, "S6-1 estimated about 1,544");
+    // Bytes at the measured average row size of the real fixture. S6-1
+    // estimated about 200 KB from version 1 rows (about 150 bytes each);
+    // version 2 rows carry `referenceVersion` and `state` (about 200 bytes
+    // each), so the measure is larger. No production limit exists yet (the
+    // per-turn budget is chosen from the HC-1a measurement under K1b), so this
+    // pins the measured size instead of changing any limit.
+    let average = measured_revision_bytes as f64 / measured_revision_rows as f64;
+    let bytes_102 = human_raw_bytes as f64 + average * (MAX_REVISIONS * per_revision(1, 0)) as f64;
+    assert!(
+        (150.0..260.0).contains(&average) && bytes_102 < 330_000.0,
+        "estimated {bytes_102:.0} bytes for {rows_102} rows, average row {average:.1} bytes"
+    );
+    Ok(())
+}

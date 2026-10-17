@@ -17,11 +17,13 @@ use grimodex_core::narrative_nir1::{estimate_nir1_context_tokens, MAX_PACKING_IT
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
     read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
-    NativeNir1AuthorityBinding, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    NativeNir1AuthorityBinding, NativeNir1ExcludedRevision, NativeNir1PreparedInputs,
+    NativeNir1RawSourceBinding,
 };
 use grimodex_db::nir1_generation::{
-    self as generation_storage, AcceptedChatInputCapture, ChatInputCaptureOwner, GenerationPurpose,
-    InputReference, NewChatInputSubmission, QualificationReference,
+    self as generation_storage, AcceptedChatInputCapture, ChatInputCaptureOwner,
+    D1SelectionParameters, GenerationPurpose, InputReference, NewChatInputSubmission,
+    QualificationReference,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
@@ -220,9 +222,11 @@ pub(crate) struct NativePreparedRequest {
     input_digest: String,
     input_references: Vec<InputReference>,
     qualifications: Vec<QualificationReference>,
+    d1_selection: D1SelectionParameters,
     render_correspondence: Vec<PreparedRenderCorrespondence>,
     bound_source: NativeNir1RawSourceBinding,
     authority_bindings: Vec<NativeNir1AuthorityBinding>,
+    excluded_revisions: Vec<NativeNir1ExcludedRevision>,
     purpose: GenerationPurpose,
     route: SupportedLocalChatRoute,
     budget: PreparedBudgetUsage,
@@ -237,9 +241,11 @@ pub(crate) struct PrivateDTransportHandoff {
     input_digest: String,
     input_references: Vec<InputReference>,
     qualifications: Vec<QualificationReference>,
+    d1_selection: D1SelectionParameters,
     render_correspondence: Vec<PreparedRenderCorrespondence>,
     bound_source: NativeNir1RawSourceBinding,
     authority_bindings: Vec<NativeNir1AuthorityBinding>,
+    excluded_revisions: Vec<NativeNir1ExcludedRevision>,
     purpose: GenerationPurpose,
     route: SupportedLocalChatRoute,
     budget: PreparedBudgetUsage,
@@ -252,6 +258,7 @@ struct RenderedLocalPlainChatPayload {
     input_digest: String,
     input_references: Vec<InputReference>,
     qualifications: Vec<QualificationReference>,
+    d1_selection: D1SelectionParameters,
     render_correspondence: Vec<PreparedRenderCorrespondence>,
     budget_usage: PreparedBudgetUsage,
 }
@@ -296,9 +303,11 @@ impl NativePreparedRequest {
             input_digest: self.input_digest,
             input_references: self.input_references,
             qualifications: self.qualifications,
+            d1_selection: self.d1_selection,
             render_correspondence: self.render_correspondence,
             bound_source: self.bound_source,
             authority_bindings: self.authority_bindings,
+            excluded_revisions: self.excluded_revisions,
             purpose: self.purpose,
             route: self.route,
             budget: self.budget,
@@ -338,6 +347,17 @@ impl PrivateDTransportHandoff {
 
     pub(crate) fn authority_bindings(&self) -> &[NativeNir1AuthorityBinding] {
         &self.authority_bindings
+    }
+
+    /// The D1 selection parameters that the D1 selection references were
+    /// computed from (a history slot stores these fields).
+    pub(crate) fn d1_selection(&self) -> &D1SelectionParameters {
+        &self.d1_selection
+    }
+
+    /// Accepted Revisions left out of this request, each with its closed reason.
+    pub(crate) fn excluded_revisions(&self) -> &[NativeNir1ExcludedRevision] {
+        &self.excluded_revisions
     }
 
     pub(crate) fn purpose(&self) -> &GenerationPurpose {
@@ -519,7 +539,12 @@ fn prepare_local_chat_request_inner(
     after_initial_read_before_render()?;
     sql_budget.check_workspace(&workspace)?;
     let mut checkpoint = || sql_budget.check_workspace(&workspace);
-    let rendered = render_local_plain_chat_payload(&route, &projection, &mut checkpoint)?;
+    let rendered = render_local_plain_chat_payload(
+        &route,
+        &projection,
+        packing_context_budget_tokens,
+        &mut checkpoint,
+    )?;
     checkpoint()?;
     ensure!(
         rendered.canonical_payload.len() <= MAX_PREPARED_PAYLOAD_BYTES,
@@ -567,9 +592,11 @@ fn prepare_local_chat_request_inner(
                     input_digest: rendered.input_digest,
                     input_references: rendered.input_references,
                     qualifications: rendered.qualifications,
+                    d1_selection: rendered.d1_selection,
                     render_correspondence: rendered.render_correspondence,
                     bound_source: projection.raw_source_binding().clone(),
                     authority_bindings: projection.authority_bindings().to_vec(),
+                    excluded_revisions: projection.excluded_revisions().to_vec(),
                     purpose: GenerationPurpose::Writing,
                     route,
                     budget,
@@ -1093,9 +1120,10 @@ fn final_plain_chat_request_tokens(
 fn render_local_plain_chat_payload(
     route: &SupportedLocalChatRoute,
     projection: &NativeNir1PreparedInputs,
+    selector_budget_tokens: usize,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<RenderedLocalPlainChatPayload> {
-    use grimodex_db::nir1_generation::{InputTarget, QualificationKind};
+    use grimodex_db::nir1_generation::InputTarget;
 
     checkpoint()?;
     ensure!(
@@ -1135,29 +1163,6 @@ fn render_local_plain_chat_payload(
     }
     let raw = raw.context("NIR1_PREPARED_RAW_INPUT_MISSING")?;
     ensure!(!accepted_ir.is_empty(), "NIR1_PREPARED_ACCEPTED_IR_MISSING");
-    ensure!(
-        projection
-            .qualifications()
-            .iter()
-            .any(|qualification| qualification.kind == QualificationKind::Source)
-            && projection
-                .qualifications()
-                .iter()
-                .any(|qualification| qualification.kind == QualificationKind::Revision)
-            && projection
-                .qualifications()
-                .iter()
-                .any(|qualification| qualification.kind == QualificationKind::Decision)
-            && projection
-                .qualifications()
-                .iter()
-                .any(|qualification| qualification.kind == QualificationKind::Freshness)
-            && projection
-                .qualifications()
-                .iter()
-                .any(|qualification| qualification.kind == QualificationKind::Scope),
-        "NIR1_PREPARED_TYPED_QUALIFICATIONS_MISSING"
-    );
     checkpoint()?;
     let body = render_plain_chat_payload_from_material(
         route,
@@ -1169,7 +1174,11 @@ fn render_local_plain_chat_payload(
     checkpoint()?;
     let input_references = projection.input_references().to_vec();
     checkpoint()?;
-    let qualifications = projection.qualifications().to_vec();
+    // The usage of the adopted context is known now: add the D1 selection
+    // references and check the whole output against the completeness rule.
+    // An incomplete output is refused before it has a digest (K4/3 section 3).
+    let final_qualifications = projection.finalize_qualifications(selector_budget_tokens)?;
+    let qualifications = final_qualifications.qualifications;
     let input_digest =
         crate::nir1_generation::final_input_digest(&input_references, &qualifications)?;
     checkpoint()?;
@@ -1179,6 +1188,7 @@ fn render_local_plain_chat_payload(
         input_digest,
         input_references,
         qualifications,
+        d1_selection: final_qualifications.d1_selection,
         render_correspondence,
         budget_usage: body.budget_usage,
     })
@@ -1339,6 +1349,21 @@ fn is_reserved_prompt_tag_start(after_open: &str, reserved: &[&str]) -> bool {
 
 #[cfg(test)]
 mod tests {
+    /// The producer's rows: the final rows without the D1 selection
+    /// references that the render adds.
+    fn without_d1(
+        qualifications: &[grimodex_db::nir1_generation::QualificationReference],
+    ) -> Vec<grimodex_db::nir1_generation::QualificationReference> {
+        qualifications
+            .iter()
+            .filter(|qualification| {
+                qualification.kind != grimodex_db::nir1_generation::QualificationKind::D1
+                    || qualification.not_applicable_reason().is_some()
+            })
+            .cloned()
+            .collect()
+    }
+
     use super::{
         canonical_json_string, context_budget_for_user, ensure_route_unchanged,
         escape_reserved_prompt_tags, final_plain_chat_request_tokens, fixed_system_prompt,
@@ -2351,6 +2376,26 @@ mod tests {
         assert_eq!(handoff.bound_source(), &expected_source);
         assert!(handoff.authority_bindings() == expected_authority_bindings.as_slice());
         assert_eq!(handoff.purpose(), &GenerationPurpose::Writing);
+        assert!(handoff.excluded_revisions().is_empty());
+        // The D1 selection digest is recomputed from the stored input rows and
+        // the d1 parameters alone (K4/3 section 2).
+        let d1_digest = grimodex_db::nir1_generation::d1_selection_digest(
+            handoff.d1_selection(),
+            handoff.input_references(),
+        )?;
+        let d1_rows = handoff
+            .qualifications()
+            .iter()
+            .filter(|qualification| {
+                qualification.kind == QualificationKind::D1
+                    && qualification.not_applicable_reason().is_none()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(d1_rows.len(), handoff.input_references().len() - 1);
+        assert!(d1_rows
+            .iter()
+            .all(|row| row.version() == Some(d1_digest.as_str())
+                && row.identity() == Some(grimodex_db::nir1_generation::D1_SELECTION_IDENTITY)));
         let metadata = handoff.request_metadata();
         assert_eq!(metadata.fixed_template_ref, super::FIXED_TEMPLATE_REF);
         assert_eq!(
@@ -2379,6 +2424,18 @@ mod tests {
                 handoff.input_references(),
                 handoff.qualifications(),
             )?
+        );
+        // Native and storage compute one digest over the same version 2 rows.
+        assert_eq!(
+            handoff.input_digest(),
+            grimodex_db::nir1_generation::input_digest(
+                handoff.input_references(),
+                handoff.qualifications(),
+            )?
+        );
+        assert!(
+            serde_json::to_value(handoff.input_references())?[0]["referenceVersion"] == 2,
+            "rows are written as reference version 2"
         );
         assert!(
             matches!(
@@ -2436,8 +2493,8 @@ mod tests {
             assert!(handoff.qualifications().iter().any(|qualification| {
                 qualification.input_ordinal == revision_ordinal
                     && qualification.kind == kind
-                    && qualification.identity == identity
-                    && qualification.version == version
+                    && qualification.identity() == Some(identity.as_str())
+                    && qualification.version() == Some(version.as_str())
             }));
         }
         for dependency in revision_binding
@@ -2463,15 +2520,15 @@ mod tests {
             assert!(handoff.qualifications().iter().any(|qualification| {
                 qualification.input_ordinal == revision_ordinal
                     && qualification.kind == QualificationKind::Source
-                    && qualification.identity == dependency.0
-                    && qualification.version == dependency.1
+                    && qualification.identity() == Some(dependency.0)
+                    && qualification.version() == Some(dependency.1)
             }));
         }
         assert!(handoff.qualifications().iter().any(|qualification| {
             qualification.input_ordinal == revision_ordinal
                 && qualification.kind == QualificationKind::Decision
-                && qualification.identity == revision_binding.decision().id()
-                && qualification.version == revision_binding.decision_token()
+                && qualification.identity() == Some(revision_binding.decision().id())
+                && qualification.version() == Some(revision_binding.decision_token())
         }));
         assert!(handoff.qualifications().iter().any(|qualification| {
             qualification.input_ordinal == revision_ordinal
@@ -3717,14 +3774,25 @@ mod tests {
         for qualification in &prepared.qualifications {
             assert!(qualification.input_ordinal < prepared.input_references.len());
             assert_ne!(
-                qualification.input_ordinal, 0,
-                "Human has no material qualification"
-            );
-            assert_ne!(
                 prepared.input_references[qualification.input_ordinal].role,
                 InputRole::Assistant
             );
         }
+        // The current Human carries its own Source and Scope references and
+        // five typed N/A, and nothing of the material (K4/3 section 3).
+        let human_rows = prepared
+            .qualifications
+            .iter()
+            .filter(|qualification| qualification.input_ordinal == 0)
+            .collect::<Vec<_>>();
+        assert_eq!(human_rows.len(), 8);
+        assert_eq!(
+            human_rows
+                .iter()
+                .filter(|qualification| qualification.not_applicable_reason().is_some())
+                .count(),
+            5
+        );
         assert!(!prepared.qualifications.iter().any(|qualification| {
             matches!(
                 prepared.input_references.get(qualification.input_ordinal).map(|input| &input.target),
@@ -3746,8 +3814,8 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(selected_qualifications.iter().any(|qualification| {
             qualification.kind == QualificationKind::Revision
-                && qualification.identity == fixture.revision_id
-                && qualification.version == selected_bundle_digest
+                && qualification.identity() == Some(fixture.revision_id.as_str())
+                && qualification.version() == Some(selected_bundle_digest.as_str())
         }));
         let disclosure = snapshot.db().db().with_read_transaction(|conn| {
             match narrative_extraction::evaluate_nir1_entity_relation_disclosure(
@@ -3766,12 +3834,12 @@ mod tests {
         })?;
         assert!(selected_qualifications.iter().any(|qualification| {
             qualification.kind == QualificationKind::Decision
-                && qualification.version == disclosure.decision_token
+                && qualification.version() == Some(disclosure.decision_token.as_str())
         }));
         assert!(selected_qualifications.iter().any(|qualification| {
             qualification.kind == QualificationKind::Freshness
-                && qualification.identity == fixture.revision_id
-                && qualification.version == disclosure.freshness_token
+                && qualification.identity() == Some(fixture.revision_id.as_str())
+                && qualification.version() == Some(disclosure.freshness_token.as_str())
         }));
         for (identity, version) in [
             (
@@ -3797,8 +3865,8 @@ mod tests {
         ] {
             assert!(selected_qualifications.iter().any(|qualification| {
                 qualification.kind == QualificationKind::Scope
-                    && qualification.identity == identity
-                    && qualification.version == version
+                    && qualification.identity() == Some(identity.as_str())
+                    && qualification.version() == Some(version.as_str())
             }));
         }
         let scope_axis_digest = grimodex_core::canonical_json_digest(&json!({
@@ -3807,25 +3875,31 @@ mod tests {
         }))?;
         assert!(selected_qualifications.iter().any(|qualification| {
             qualification.kind == QualificationKind::Scope
-                && qualification.identity == format!("scope-axis:{SCENE_ID}")
-                && qualification.version == scope_axis_digest
+                && qualification.identity() == Some(format!("scope-axis:{SCENE_ID}").as_str())
+                && qualification.version() == Some(scope_axis_digest.as_str())
         }));
         for (index, entity) in disclosure.revision.bundle.entities.iter().enumerate() {
             let typed_scope_digest =
                 grimodex_core::canonical_json_digest(&serde_json::to_value(&entity.scope)?)?;
             assert!(selected_qualifications.iter().any(|qualification| {
                 qualification.kind == QualificationKind::Scope
-                    && qualification.identity
-                        == format!("revision:{}:typed-scope:{index}", fixture.revision_id)
-                    && qualification.version == typed_scope_digest
+                    && qualification.identity()
+                        == Some(
+                            format!("revision:{}:typed-scope:{index}", fixture.revision_id)
+                                .as_str(),
+                        )
+                    && qualification.version() == Some(typed_scope_digest.as_str())
             }));
         }
         for proof in &disclosure.material_scene_proofs {
             assert!(selected_qualifications.iter().any(|qualification| {
                 qualification.kind == QualificationKind::Scope
-                    && qualification.identity
-                        == format!("scene:{}:{}", proof.scene_id, proof.scene_incarnation_id)
-                    && qualification.version == proof.scene_scope_token
+                    && qualification.identity()
+                        == Some(
+                            format!("scene:{}:{}", proof.scene_id, proof.scene_incarnation_id)
+                                .as_str(),
+                        )
+                    && qualification.version() == Some(proof.scene_scope_token.as_str())
             }));
         }
         let mut expected_source_dependencies = disclosure
@@ -3849,8 +3923,8 @@ mod tests {
             assert!(prepared.qualifications.iter().any(|qualification| {
                 qualification.input_ordinal == selected_revision_ordinal
                     && qualification.kind == QualificationKind::Source
-                    && qualification.identity == *identity
-                    && qualification.version == *version
+                    && qualification.identity() == Some(identity.as_str())
+                    && qualification.version() == Some(version.as_str())
             }));
         }
         let unprojected_evidence = disclosure
@@ -3889,7 +3963,7 @@ mod tests {
         );
         assert_eq!(
             bounded_projection.qualifications(),
-            prepared.qualifications.as_slice()
+            without_d1(&prepared.qualifications).as_slice()
         );
         let projected_raw = bounded_projection
             .context_items()
@@ -4624,7 +4698,7 @@ mod tests {
                 "the minimum whole IR group retains its direct Revision reference"
             );
             assert_eq!(
-                prepared.qualifications,
+                without_d1(&prepared.qualifications),
                 full_projection.qualifications(),
                 "packing does not drop whole-Revision Source/Evidence qualifications"
             );
@@ -4786,10 +4860,20 @@ mod tests {
             projection.input_references(),
             prepared.input_references.as_slice()
         );
+        // The producer's rows are a prefix of the final rows; the render adds
+        // exactly the D1 selection references of the adopted inputs.
+        let selector_budget = context_budget_for_user(&route, projection.user_message())?;
+        let finalized = projection.finalize_qualifications(selector_budget)?;
         assert_eq!(
-            projection.qualifications(),
-            prepared.qualifications.as_slice()
+            &finalized.qualifications[..projection.qualifications().len()],
+            projection.qualifications()
         );
+        assert_eq!(
+            finalized.qualifications.len(),
+            projection.qualifications().len() + projection.input_references().len() - 1
+        );
+        assert_eq!(finalized.qualifications, prepared.qualifications);
+        assert_eq!(&finalized.d1_selection, &prepared.d1_selection);
         let raw_item = projection
             .context_items()
             .iter()
@@ -4829,15 +4913,24 @@ mod tests {
         );
         let mut exact_route = route.clone();
         exact_route.context_window_tokens = exact_after_escaping;
-        let exact =
-            super::render_local_plain_chat_payload(&exact_route, &projection, &mut || Ok(()))?;
+        let exact = super::render_local_plain_chat_payload(
+            &exact_route,
+            &projection,
+            selector_budget,
+            &mut || Ok(()),
+        )?;
         assert_eq!(exact.canonical_payload, prepared.canonical_payload());
+        assert_eq!(exact.input_digest, prepared.input_digest);
 
         exact_route.context_window_tokens = exact_after_escaping - 1;
-        let one_token_short =
-            super::render_local_plain_chat_payload(&exact_route, &projection, &mut || Ok(()))
-                .err()
-                .context("post-escape Native budget accepted N-1")?;
+        let one_token_short = super::render_local_plain_chat_payload(
+            &exact_route,
+            &projection,
+            selector_budget,
+            &mut || Ok(()),
+        )
+        .err()
+        .context("post-escape Native budget accepted N-1")?;
         assert_eq!(
             one_token_short.to_string(),
             "NIR1_PREPARED_CONTEXT_WINDOW_EXCEEDED"
@@ -4923,6 +5016,7 @@ mod tests {
         let expected_render = super::render_local_plain_chat_payload(
             &render_route,
             &minimum_projection,
+            minimum_context_tokens,
             &mut || Ok(()),
         )?;
         let expected_payload: Value = serde_json::from_str(&expected_render.canonical_payload)?;
@@ -5004,6 +5098,7 @@ mod tests {
         let at_limit_render = super::render_local_plain_chat_payload(
             &render_route,
             &minimum_projection,
+            minimum_context_tokens,
             &mut || Ok(()),
         )?;
         let at_limit_payload: Value = serde_json::from_str(&at_limit_render.canonical_payload)?;
@@ -5014,7 +5109,9 @@ mod tests {
         );
         assert_eq!(
             at_limit_render.qualifications,
-            minimum_projection.qualifications()
+            minimum_projection
+                .finalize_qualifications(minimum_context_tokens)?
+                .qualifications
         );
         let at_limit_messages = at_limit_payload["messages"]
             .as_array()
@@ -5037,12 +5134,14 @@ mod tests {
         render_route.context_window_tokens = expected_required
             .checked_sub(1)
             .context("post-render N-1 boundary underflow")?;
-        let one_token_short =
-            super::render_local_plain_chat_payload(&render_route, &minimum_projection, &mut || {
-                Ok(())
-            })
-            .err()
-            .context("final renderer accepted a request one token above its context window")?;
+        let one_token_short = super::render_local_plain_chat_payload(
+            &render_route,
+            &minimum_projection,
+            minimum_context_tokens,
+            &mut || Ok(()),
+        )
+        .err()
+        .context("final renderer accepted a request one token above its context window")?;
         assert_eq!(
             one_token_short.to_string(),
             "NIR1_PREPARED_CONTEXT_WINDOW_EXCEEDED"

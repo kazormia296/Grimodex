@@ -1070,7 +1070,7 @@ pub(crate) fn final_input_digest(
     qualifications: &[QualificationReference],
 ) -> Result<String> {
     Ok(canonical_json_digest(&json!({
-        "domain": "nir1-generation-inputs@2",
+        "domain": grimodex_db::nir1_generation::INPUT_DIGEST_DOMAIN,
         "inputs": inputs,
         "qualifications": qualifications,
     }))?)
