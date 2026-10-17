@@ -1849,11 +1849,16 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
     });
 
     expect(env.ok).toBe(true);
-    expect(method).toHaveBeenCalledExactlyOnceWith({
-      expectedWorkspacePath: args.expectedWorkspacePath,
-      projectId: args.projectId,
-      sceneId: args.sceneId,
-    });
+    // The request keeps its deny-unknown-fields shape; the Main-issued
+    // identity is the trailing wire argument (K3/2 Scope Native admission).
+    expect(method).toHaveBeenCalledExactlyOnceWith(
+      {
+        expectedWorkspacePath: args.expectedWorkspacePath,
+        projectId: args.projectId,
+        sceneId: args.sceneId,
+      },
+      JSON.stringify(args.callerIdentity),
+    );
   });
 
   it("A1 scene scope mutation は未知の引数を拒否し、typed payloadを一度だけ渡す", async () => {
@@ -1917,7 +1922,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
         binding: { projectId: "project-1", sceneId: "scene-1", version: 2 },
       },
     });
-    expect(method).toHaveBeenCalledExactlyOnceWith(nativeArgs);
+    expect(method).toHaveBeenCalledExactlyOnceWith(
+      nativeArgs,
+      JSON.stringify(args.callerIdentity),
+    );
 
     const rejected = await dispatchInvoke(
       "narrative_scene_scope_update",
@@ -1925,7 +1933,10 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       { backend, shell: noShell },
     );
     expect(rejected.ok).toBe(false);
-    expect(method).toHaveBeenCalledExactlyOnceWith(nativeArgs);
+    expect(method).toHaveBeenCalledExactlyOnceWith(
+      nativeArgs,
+      JSON.stringify(args.callerIdentity),
+    );
   });
 
   it("semantic per-entity commands forward workspace/project authority before the entity id", async () => {

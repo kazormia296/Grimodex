@@ -2,7 +2,14 @@
 // persistence; AI transport tests remain responsible for provider behavior.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -98,6 +105,32 @@ test("D2a startup stays dormant until explicit activation, then survives restart
       // the caller (it used to fail on the missing identity).
       /D2A_EGRESS_DENIED:.*provider egress is closed while the profile is restricted/,
     );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the retrieval harness's restricted state file starts Native as a restricted, quiesced profile", async () => {
+  // NIR-1 DA-1 ST4: `run-nir1-retrieval.mjs --d2a-mode restricted` places this
+  // file before Electron starts (it is not an activation). Native must read it
+  // as the already restricted profile the R / R+IR parity is measured in.
+  const { restrictedProfileEgressState } = await import(
+    "../../../../scripts/quality/run-nir1-retrieval.mjs"
+  );
+  const root = mkdtempSync(join(tmpdir(), "grimodex-node-d2a-harness-"));
+  const appData = join(root, "app-data");
+  try {
+    mkdirSync(appData, { recursive: true });
+    const state = restrictedProfileEgressState("harness-profile");
+    writeFileSync(join(appData, "profile-egress.json"), JSON.stringify(state));
+    const backend = new Backend(appData);
+    const status = JSON.parse(
+      await boundedStartup(backend.initializeProfileEgress(), "harness startup"),
+    );
+    assert.equal(status.profileId, "harness-profile");
+    assert.equal(status.callerEpoch, state.callerEpoch);
+    assert.equal(status.restricted, true);
+    assert.equal(status.inFlightStopped, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

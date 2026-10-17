@@ -2,6 +2,7 @@
 //! Main owns sender identities; persisted source and runtime authority are
 //! revalidated here before every result and every Evidence navigation.
 use crate::{
+    publication_guard::PublicationGuard,
     related_scenes_build_registry::RelatedScenesBuildRegistry,
     related_scenes_context::RelatedScenesSourceContext,
     related_scenes_registry::{RelatedScenesLease, RelatedScenesRegistry, SnapshotEligibility},
