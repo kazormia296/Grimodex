@@ -1394,6 +1394,25 @@ fn failure_mapping_matches_the_dsn_table() {
         prepare_failure(F::StartupRegistrationRefused),
         (GraphUnavailable::RegistrationUnavailable, E::Count)
     );
+    // CQ-LIM-2: the worker's startup marker for a registration that ends before
+    // READY because an approved Revision is over the per-Revision limit is
+    // classified as that same refusal, so Native reports the existing
+    // `registration-unavailable` reason and counts it toward the backoff. No new
+    // reason joins the closed set.
+    let over_limit = anyhow::anyhow!(
+        "NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT"
+    );
+    assert_eq!(
+        grimodex_db::narrative_extraction::nir1_graph::c_query_worker::classify_c_query_failure(
+            &over_limit
+        ),
+        F::StartupRegistrationRefused
+    );
+    assert_eq!(GraphUnavailable::ALL.len(), 14);
+    assert_eq!(
+        GraphUnavailable::RegistrationUnavailable.as_str(),
+        "registration-unavailable"
+    );
     assert_eq!(
         prepare_failure(F::BindingLost),
         (GraphUnavailable::Invalidated, E::DoNotCount)

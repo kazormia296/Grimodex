@@ -855,7 +855,7 @@
                   "additionalProperties": false,
                   "properties": {
                     "discoveredEntities": { "type": "integer", "minimum": 0 },
-                    "limit": { "const": 12 }
+                    "limit": { "const": 50 }
                   }
                 }
               }

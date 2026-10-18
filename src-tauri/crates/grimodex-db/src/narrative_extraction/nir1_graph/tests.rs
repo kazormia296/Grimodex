@@ -3,8 +3,8 @@ use crate::narrative_extraction::incremental_freshness::run_incremental_freshnes
 use crate::narrative_extraction::nir1_entity_relation::{
     create_nir1_entity_relation_revision, read_nir1_entity_relation_revision,
     tests::{
-        approve_typed_revision, bounded_writer_bundle, prepare_a3_scope_fixture, request,
-        seed_run_and_catalog, writer_input_bytes,
+        approve_typed_revision, bounded_writer_bundle, envelope_bundle_of,
+        prepare_a3_scope_fixture, request, seed_run_and_catalog, writer_input_bytes,
     },
     Nir1EntityRelationRevisionRead,
 };
@@ -19,7 +19,9 @@ use crate::workspace_lifecycle::{
     AdmissionKind, AdmissionOutcome, AdmissionTicket, LiveBinding,
     WorkspaceLifecycleCompatibilityView, WorkspaceLifecycleCore,
 };
-use grimodex_core::narrative_nir1::{EntityRelationBundle, EvidenceInput, ScopeValue};
+use grimodex_core::narrative_nir1::{
+    EntityRelationBundle, EvidenceInput, ScopeValue, MAX_GRAPH_RECORDS,
+};
 use std::{
     path::PathBuf,
     sync::{
@@ -129,6 +131,23 @@ impl Fixture {
     }
 
     fn build(direction: &str, extra_relation: bool, scenes: &[String]) -> Result<Self> {
+        Self::build_shaped(direction, extra_relation, scenes, None)
+    }
+
+    /// The seed Revision as R2-5's payload shape: the typed writer's long string
+    /// (an Evidence identifier no Relation references) makes the writer count
+    /// `counted_bytes`, and the Revision's A2 admission is about three times that,
+    /// split across the payload, the envelope and the approval.
+    fn with_payload_shape(counted_bytes: usize) -> Result<Self> {
+        Self::build_shaped("directed", false, &[], Some(counted_bytes))
+    }
+
+    fn build_shaped(
+        direction: &str,
+        extra_relation: bool,
+        scenes: &[String],
+        payload_counted_bytes: Option<usize>,
+    ) -> Result<Self> {
         let directory = TestDirectory(
             std::env::temp_dir().join(format!("nir1-c-graph-{}", uuid::Uuid::new_v4())),
         );
@@ -176,6 +195,16 @@ impl Fixture {
             relation.source_token = "v1@2026-09-12T00:00:00Z:relation:nir1-edge-b".into();
             typed.bundle.relations.push(relation);
         }
+        if let Some(counted_bytes) = payload_counted_bytes {
+            let base = writer_input_bytes(&bounded_writer_bundle(&typed.bundle, 507, 0));
+            typed.bundle = bounded_writer_bundle(
+                &typed.bundle,
+                507,
+                counted_bytes
+                    .checked_sub(base)
+                    .ok_or_else(|| anyhow::anyhow!("target is below the base count"))?,
+            );
+        }
         crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(&db, &mut typed)?;
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
@@ -221,25 +250,7 @@ impl Fixture {
     /// prepared as the worker binary prepares it. The connection is then
     /// query-only, so fixture writes must precede this call.
     fn worker_reader(&self) -> Result<Nir1GraphReader> {
-        self.authority.db().with_conn(|conn| {
-            conn.busy_timeout(Duration::ZERO)?;
-            conn.execute_batch(
-                "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
-                 CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
-                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
-                 );",
-            )?;
-            conn.execute(
-                "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
-                [uuid::Uuid::new_v4().to_string()],
-            )?;
-            conn.execute_batch("PRAGMA query_only=ON")?;
-            Ok(())
-        })?;
-        let mut reader = Nir1GraphReader::open_for_worker(
-            Arc::clone(&self.authority),
-            self.lifecycle.begin_workspace_participant()?,
-        )?;
+        let mut reader = self.open_worker_reader()?;
         ensure!(
             reader.register_with_worker_maintenance(PROJECT, || true)?,
             "worker registration was refused"
@@ -359,7 +370,7 @@ impl Fixture {
             &conn,
             PROJECT,
             &self.revision,
-            MAX_GRAPH_RECORDS,
+            MAX_GRAPH_QUERY_RECORDS,
             MAX_GRAPH_INPUT_BYTES,
         )?
         .ok_or_else(|| anyhow::anyhow!("seed Revision did not pass A2"))?;
@@ -371,7 +382,7 @@ impl Fixture {
             PROJECT,
             &self.revision,
             "nir1",
-            MAX_GRAPH_RECORDS - a2.rows,
+            MAX_GRAPH_QUERY_RECORDS - a2.rows,
             MAX_GRAPH_INPUT_BYTES - a2.bytes,
         )?;
         let total_steps = steps.load(Ordering::Relaxed);
@@ -501,7 +512,11 @@ fn graph_request(seed: &str) -> Nir1GraphRequest {
 // Functional contracts have their own generous deadline; production's 100ms
 // limit is independently tested and deterministic exhaustion stays separate.
 fn query(reader: &mut Nir1GraphReader, seed: &str) -> Result<Nir1GraphResponse> {
-    reader.query_with_deadline(&graph_request(seed), Duration::from_secs(2), 100_000)
+    reader.query_with_deadline(
+        &graph_request(seed),
+        Duration::from_secs(2),
+        QUERY_SQL_STEPS,
+    )
 }
 
 /// Measurement-only probe for the production deadline. Functional fixtures
@@ -4183,9 +4198,15 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
 // (`input::preflight_project_reads` once, `preflight_disclosure_revision` per
 // Revision). Each fixture is sized so that the seed's candidate rows, its A2
 // rows and these add up to 511, and the traversal's own first row makes 512.
+// Those fixtures were sized for the former query limit of 512 and are bound to
+// their dataset hash, so they stay as they are: a 512-record load is now an
+// ordinary query well inside `MAX_GRAPH_QUERY_RECORDS` (2,048), and the
+// query-side boundary is probed by adding unrelated reverse-index rows to the
+// same project (`unrelated_seed_edges`), not by the fixture's own size.
 // Q512 is a project of 62 Scenes (60 of them hold no material) and 82
 // Entities; the registry33 fixture keeps the two Scenes, a 33-row registry
 // and 144 Entities, the heavier Entity work for the same 512.
+const CANONICAL_CHARGED_ROWS: usize = 512;
 const Q512_ENTITIES: usize = 82;
 const Q512_REGISTRY_ROWS: usize = 6;
 const Q512_SHARED_ROWS: usize = 263;
@@ -4203,7 +4224,7 @@ fn native_worker_returns_canonical_512_a3_eligible_seed_local_graph() -> Result<
         registry_rows: Q512_REGISTRY_ROWS,
         shared_rows: Q512_SHARED_ROWS,
         revision_rows: Q512_REVISION_ROWS,
-        add_unrelated_seed_edge: false,
+        unrelated_seed_edges: 0,
         native_runs: 1,
     })
 }
@@ -4217,21 +4238,22 @@ fn native_worker_practical_retention_q512_30x() -> Result<()> {
         registry_rows: Q512_REGISTRY_ROWS,
         shared_rows: Q512_SHARED_ROWS,
         revision_rows: Q512_REVISION_ROWS,
-        add_unrelated_seed_edge: false,
+        unrelated_seed_edges: 0,
         native_runs: 30,
     })
 }
 
 #[test]
 #[ignore = "requires official Q512 preseed and normal worker binary"]
-fn native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge() -> Result<()> {
+fn native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges() -> Result<()> {
     run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(Canonical512FixtureCase {
-        label: "Q513-unrelated-seed-edge",
+        label: "Q2049-unrelated-seed-edges",
         entity_count: Q512_ENTITIES,
         registry_rows: Q512_REGISTRY_ROWS,
         shared_rows: Q512_SHARED_ROWS,
         revision_rows: Q512_REVISION_ROWS,
-        add_unrelated_seed_edge: true,
+        // 512 charged rows + 1,537 = 2,049: one over the query limit.
+        unrelated_seed_edges: MAX_GRAPH_QUERY_RECORDS + 1 - CANONICAL_CHARGED_ROWS,
         native_runs: 1,
     })
 }
@@ -4245,7 +4267,7 @@ fn native_worker_returns_canonical_512_a3_eligible_registry33_seed_local_graph()
         registry_rows: 33,
         shared_rows: REGISTRY33_SHARED_ROWS,
         revision_rows: REGISTRY33_REVISION_ROWS,
-        add_unrelated_seed_edge: false,
+        unrelated_seed_edges: 0,
         native_runs: 1,
     })
 }
@@ -4261,7 +4283,9 @@ struct Canonical512FixtureCase {
     /// A3 rows bound to the one Revision: its Decision and its Entities' Codex
     /// rows.
     revision_rows: usize,
-    add_unrelated_seed_edge: bool,
+    /// Reverse-index rows of a kind no Graph reads, added on the seed's source
+    /// key: each is one more candidate row the query must charge.
+    unrelated_seed_edges: usize,
     native_runs: usize,
 }
 
@@ -4367,7 +4391,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         &source_db,
         PROJECT,
         QUERY_SCENE,
-        MAX_GRAPH_RECORDS - charged_rows,
+        MAX_GRAPH_QUERY_RECORDS - charged_rows,
         MAX_GRAPH_INPUT_BYTES,
     )?;
     assert_eq!(shared.rows, case.shared_rows);
@@ -4396,7 +4420,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             &source_db,
             PROJECT,
             revision_id,
-            MAX_GRAPH_RECORDS - charged_rows,
+            MAX_GRAPH_QUERY_RECORDS - charged_rows,
             MAX_GRAPH_INPUT_BYTES,
         )?
         .ok_or_else(|| anyhow::anyhow!("official {} Revision did not pass A2", case.label))?;
@@ -4409,7 +4433,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             revision_id,
             a2.payload_bytes,
             shared.bytes,
-            MAX_GRAPH_RECORDS - charged_rows,
+            MAX_GRAPH_QUERY_RECORDS - charged_rows,
             MAX_GRAPH_INPUT_BYTES - shared.bytes - a2.bytes,
         )?;
         a3_rows += a3.rows;
@@ -4418,10 +4442,14 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
     assert_eq!(material_rows, 2 * case.entity_count);
     assert_eq!(a2_rows, 2 * case.entity_count);
     assert_eq!(a3_rows, case.revision_rows);
-    assert_eq!(charged_rows, MAX_GRAPH_RECORDS - 1);
+    // The fixtures charge the former limit's 511 + 1 rows; the limits they now
+    // run under are the query's (2,048 records, 600,000 steps) and the
+    // Revision's own 512 (the one Revision here is well inside it).
+    assert_eq!(charged_rows, CANONICAL_CHARGED_ROWS - 1);
+    assert_eq!(MAX_GRAPH_QUERY_RECORDS, 2_048);
     assert_eq!(MAX_GRAPH_RECORDS, 512);
     assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
-    assert_eq!(QUERY_SQL_STEPS, 100_000);
+    assert_eq!(QUERY_SQL_STEPS, 600_000);
     assert_eq!(QUERY_DEADLINE, Duration::from_millis(100));
     drop(source_db);
     if observe_practical {
@@ -4532,7 +4560,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
 
     let canonical_gold_frame = if matches!(case.label, "Q512" | "Q512-retention-30x") {
         ensure!(
-            case.native_runs > 0 && !case.add_unrelated_seed_edge,
+            case.native_runs > 0 && case.unrelated_seed_edges == 0,
             "Q512 Gold applies only to the official positive fixture"
         );
         let entity = canonical_gold_bundle
@@ -4575,31 +4603,31 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         snapshot,
         worker_path.clone(),
     ));
-    if case.add_unrelated_seed_edge {
-        let edge_id = format!("q513-seed-decoy-{}", uuid::Uuid::new_v4());
+    if case.unrelated_seed_edges > 0 {
         let source_identity = format!("codex:{SEED}");
+        let decoy_prefix = format!("q2049-seed-decoy-{}", uuid::Uuid::new_v4());
         authority.with_conn(|conn| {
             let tx = conn.unchecked_transaction()?;
-            let inserted = tx.execute(
-                "INSERT INTO narrative_dependency_edges
-                    (id,project_id,consumer_kind,consumer_key,source_object_identity,created_at)
-                 VALUES (?1,?2,'graph-test-unrelated',?1,?3,'2026-10-01T00:00:00Z')",
-                rusqlite::params![edge_id, PROJECT, source_identity],
-            )?;
-            ensure!(
-                inserted == 1,
-                "Q513 decoy edge was not inserted exactly once"
-            );
+            for index in 0..case.unrelated_seed_edges {
+                let edge_id = format!("{decoy_prefix}-{index}");
+                let inserted = tx.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id,project_id,consumer_kind,consumer_key,source_object_identity,created_at)
+                     VALUES (?1,?2,'graph-test-unrelated',?1,?3,'2026-10-01T00:00:00Z')",
+                    rusqlite::params![edge_id, PROJECT, source_identity],
+                )?;
+                ensure!(inserted == 1, "decoy edge was not inserted exactly once");
+            }
             let count: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM narrative_dependency_edges
-                  WHERE id=?1 AND project_id=?2 AND consumer_kind='graph-test-unrelated'
-                    AND consumer_key=?1 AND source_object_identity=?3",
-                rusqlite::params![edge_id, PROJECT, source_identity],
+                  WHERE project_id=?1 AND consumer_kind='graph-test-unrelated'
+                    AND source_object_identity=?2",
+                rusqlite::params![PROJECT, source_identity],
                 |row| row.get(0),
             )?;
             ensure!(
-                count == 1,
-                "Q513 disposable DB must contain exactly one decoy edge"
+                usize::try_from(count)? == case.unrelated_seed_edges,
+                "the disposable DB must contain exactly the decoy edges"
             );
             tx.commit()?;
             Ok(())
@@ -4615,16 +4643,16 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             usage.admit(0, super::candidates::source_input_bytes(SEED)?)?;
             // Mirror the production loop: an exhausted record budget ends
             // paging before a zero-row page could repeat forever.
-            if usage.rows == MAX_GRAPH_RECORDS {
+            if usage.rows == MAX_GRAPH_QUERY_RECORDS {
                 break;
             }
-            let page_limit = (MAX_GRAPH_RECORDS - usage.rows).min(16);
+            let page_limit = (MAX_GRAPH_QUERY_RECORDS - usage.rows).min(16);
             let page = super::candidates::read_candidate_page(
                 conn,
                 PROJECT,
                 SEED,
                 cursor,
-                MAX_GRAPH_RECORDS - usage.rows,
+                MAX_GRAPH_QUERY_RECORDS - usage.rows,
                 MAX_GRAPH_INPUT_BYTES - usage.bytes,
             )?;
             let count = page.len();
@@ -4656,7 +4684,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 conn,
                 PROJECT,
                 revision_id,
-                MAX_GRAPH_RECORDS - usage.rows,
+                MAX_GRAPH_QUERY_RECORDS - usage.rows,
                 MAX_GRAPH_INPUT_BYTES - usage.bytes,
             ) {
                 Ok(Some(admission)) => admission,
@@ -4680,7 +4708,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                     conn,
                     PROJECT,
                     QUERY_SCENE,
-                    MAX_GRAPH_RECORDS - usage.rows,
+                    MAX_GRAPH_QUERY_RECORDS - usage.rows,
                     MAX_GRAPH_INPUT_BYTES - usage.bytes,
                 ) {
                     Ok(admission) => admission,
@@ -4703,7 +4731,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 revision_id,
                 a2.payload_bytes,
                 shared_bytes,
-                MAX_GRAPH_RECORDS - usage.rows,
+                MAX_GRAPH_QUERY_RECORDS - usage.rows,
                 MAX_GRAPH_INPUT_BYTES - usage.bytes,
             ) {
                 Ok(admission) => admission,
@@ -4739,10 +4767,8 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         post_maintenance.5,
         post_maintenance.6
     );
-    let extra = if case.add_unrelated_seed_edge { 1 } else { 0 };
-    let expected_refusal = case
-        .add_unrelated_seed_edge
-        .then(|| "A3: NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT".to_owned());
+    let extra = case.unrelated_seed_edges;
+    let expected_refusal = (extra > 0).then(|| "A3: NIR1_GRAPH_DISCLOSURE_RECORD_LIMIT".to_owned());
     // One more candidate row (the decoy) leaves the Revision's own A3 rows one
     // short of the budget: the shared rows were admitted, the Revision's were
     // refused, and nothing of them stays admitted.
@@ -4755,7 +4781,7 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             case.shared_rows,
             if extra == 0 { case.revision_rows } else { 0 },
             if extra == 0 {
-                MAX_GRAPH_RECORDS
+                CANONICAL_CHARGED_ROWS
             } else {
                 2 + extra + 2 * case.entity_count + case.shared_rows
             },
@@ -4771,15 +4797,15 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
         query_scene_id: QUERY_SCENE.to_owned(),
         seed_entity_id: SEED.to_owned(),
     };
-    if case.add_unrelated_seed_edge {
+    if case.unrelated_seed_edges > 0 {
         const REFUSAL: &str =
             "query-worker-work-disclosure-record-limit-pre-cleanup-work-failed-disclosure-record-limit";
-        let mut owner = owner.take().expect("initial Q513 worker owner exists");
+        let mut owner = owner.take().expect("initial Q2049 worker owner exists");
         let started = Instant::now();
         let error = match owner.query_once(&request) {
             Ok(lease) => {
                 drop(lease);
-                anyhow::bail!("Q513 worker unexpectedly returned a result lease")
+                anyhow::bail!("Q2049 worker unexpectedly returned a result lease")
             }
             Err(error) => error,
         };
@@ -4789,15 +4815,15 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
             error_text.contains("NIR1_GRAPH_WORKER_UNAVAILABLE")
                 && error_text.contains(REFUSAL)
                 && !error_text.contains("NIR1_GRAPH_WORKER_CLEANUP_UNPROVED"),
-            "Native Q513 refusal cause or cleanup proof changed: {error_text}"
+            "Native Q2049 refusal cause or cleanup proof changed: {error_text}"
         );
         ensure!(
             owner.cleanup_proved_for_test(),
-            "Q513 reloan preceded child exit + stdout EOF + reader join"
+            "Q2049 reloan preceded child exit + stdout EOF + reader join"
         );
         let claim = authority
             .claim_c_query_child()
-            .ok_or_else(|| anyhow::anyhow!("Q513 retirement did not release the child claim"))?;
+            .ok_or_else(|| anyhow::anyhow!("Q2049 retirement did not release the child claim"))?;
         claim.release();
         drop(owner);
         ensure!(
@@ -4806,10 +4832,10 @@ fn run_native_worker_returns_canonical_512_a3_eligible_seed_local_graph(
                 .core()
                 .workspace_participant_count()?
                 == 0,
-            "Q513 owner retained its workspace participant after retirement"
+            "Q2049 owner retained its workspace participant after retirement"
         );
         eprintln!(
-            "Native Q513 unrelated reverse-index refusal: reason={REFUSAL}; call-including-cleanup={returned_elapsed:?}; retirement=exit+EOF+reader-join"
+            "Native Q2049 unrelated reverse-index refusal: reason={REFUSAL}; call-including-cleanup={returned_elapsed:?}; retirement=exit+EOF+reader-join"
         );
         return Ok(());
     }
@@ -4973,7 +4999,8 @@ fn registered_graph_preserves_multi_edge_order_and_bindings() -> Result<()> {
 fn fixed_worker_arena_replaces_only_the_transient_reader_reserve() -> Result<()> {
     assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
     assert_eq!(MAX_GRAPH_RECORDS, 512);
-    assert_eq!(QUERY_SQL_STEPS, 100_000);
+    assert_eq!(MAX_GRAPH_QUERY_RECORDS, 2_048);
+    assert_eq!(QUERY_SQL_STEPS, 600_000);
     assert_eq!(QUERY_DEADLINE, Duration::from_millis(100));
     let estimate = transient_material_reserve(0, 1)?;
     let retained = MAX_GRAPH_INPUT_BYTES - estimate + 1;
@@ -5136,7 +5163,7 @@ fn missing_source_or_decision_cannot_reuse_published_binding() -> Result<()> {
 #[test]
 fn unrelated_reverse_dependencies_do_not_consume_seed_local_budget() -> Result<()> {
     let fixture = Fixture::new()?;
-    fixture.add_decoys(513, "codex:unrelated-entity")?;
+    fixture.add_decoys(MAX_GRAPH_QUERY_RECORDS + 1, "codex:unrelated-entity")?;
     let mut reader = fixture.registered_reader()?;
     let response = query(&mut reader, "nir1-alice")?;
     assert_eq!(response.status, "available", "{:?}", response.reason);
@@ -5147,7 +5174,7 @@ fn unrelated_reverse_dependencies_do_not_consume_seed_local_budget() -> Result<(
 #[test]
 fn oversized_seed_candidate_set_is_refused_without_partial_graph() -> Result<()> {
     let fixture = Fixture::new()?;
-    fixture.add_decoys(513, "codex:nir1-alice")?;
+    fixture.add_decoys(MAX_GRAPH_QUERY_RECORDS + 1, "codex:nir1-alice")?;
     let mut reader = fixture.registered_reader()?;
     assert_unavailable(
         &query(&mut reader, "nir1-alice")?,
@@ -5165,14 +5192,14 @@ fn oversized_seed_candidate_set_is_refused_without_partial_graph() -> Result<()>
 fn oversized_hop1_candidate_set_is_refused_at_a_partial_page_boundary() -> Result<()> {
     // Seed paging plus its A2/A3 admission leaves a charged row count that is
     // not a multiple of the 16-row page, so the hop-1 frontier reaches the
-    // 512-record limit inside a short page. Its remaining rows must still be
+    // 2,048-record limit inside a short page. Its remaining rows must still be
     // probed and refused instead of silently truncating the graph.
     let fixture = Fixture::new()?;
     let mut reader = fixture.registered_reader()?;
     let baseline = query(&mut reader, "nir1-alice")?;
     assert_eq!(baseline.status, "available", "{:?}", baseline.reason);
     drop(reader);
-    fixture.add_decoys(600, "codex:nir1-bob")?;
+    fixture.add_decoys(MAX_GRAPH_QUERY_RECORDS + 88, "codex:nir1-bob")?;
     let mut reader = fixture.registered_reader()?;
     assert_unavailable(
         &query(&mut reader, "nir1-alice")?,
@@ -5186,7 +5213,10 @@ fn oversized_hop1_candidate_set_is_refused_at_a_partial_page_boundary() -> Resul
 fn exhausted_deadline_or_sql_budget_rolls_back_actual_connection() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut reader = fixture.registered_reader()?;
-    for (duration, steps) in [(Duration::ZERO, 100_000), (Duration::from_secs(2), 0)] {
+    for (duration, steps) in [
+        (Duration::ZERO, QUERY_SQL_STEPS),
+        (Duration::from_secs(2), 0),
+    ] {
         let response = reader.query_with_deadline(&graph_request("nir1-alice"), duration, steps)?;
         assert_unavailable(&response, "query-budget-or-validation-failed");
         assert!(reader.connection.as_ref().unwrap().is_autocommit());
@@ -5393,7 +5423,7 @@ fn diagnostic_stage_observation_reports_deadline_and_stamp_flags_only() -> Resul
     let (result, observation) = reader.query_with_stage_observation_and_deadline(
         &graph_request("nir1-alice"),
         Duration::ZERO,
-        100_000,
+        QUERY_SQL_STEPS,
     );
     assert_unavailable(&result?, "query-budget-or-validation-failed");
     assert!(observation.work_result_error);
@@ -5969,7 +5999,7 @@ fn scene_join_budget_is_graph_wide_not_per_entity() -> Result<()> {
     assert_eq!((total, fresh.rows), (18, 18 + MAX_GRAPH_SCENES));
     // Each Entity's nine pins fit in 15 rows; together they do not.
     let mut usage = QueryUsage {
-        rows: MAX_GRAPH_RECORDS - 15,
+        rows: MAX_GRAPH_QUERY_RECORDS - 15,
         ..QueryUsage::default()
     };
     let error = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)
@@ -5995,14 +6025,14 @@ fn scene_join_rows_n_available_n_plus_one_limit() -> Result<()> {
     let needed = fresh.rows;
     assert_eq!(needed, 20 + MAX_GRAPH_SCENES);
     let mut usage = QueryUsage {
-        rows: MAX_GRAPH_RECORDS - needed,
+        rows: MAX_GRAPH_QUERY_RECORDS - needed,
         ..QueryUsage::default()
     };
     let (total, associations) = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)?;
     assert_eq!((total, associations), (20, expected));
-    assert_eq!(usage.rows, MAX_GRAPH_RECORDS);
+    assert_eq!(usage.rows, MAX_GRAPH_QUERY_RECORDS);
     let mut usage = QueryUsage {
-        rows: MAX_GRAPH_RECORDS - needed + 1,
+        rows: MAX_GRAPH_QUERY_RECORDS - needed + 1,
         ..QueryUsage::default()
     };
     let error = run_join(&db, &nodes, &edges, &mut usage, &mut RegistrationOwner)
@@ -6499,7 +6529,7 @@ fn reader_and_worker_return_scene_associations_with_the_graph() -> Result<()> {
 
 #[test]
 fn graph_with_pin_overflow_is_unavailable_without_partial_graph() -> Result<()> {
-    // Seed reverse-index decoys take most of the shared 512 rows and 32
+    // Seed reverse-index decoys take most of the shared 2,048 rows and 128
     // pages, so the reached Entity's pins cannot all be enumerated.
     let scenes = (0..64)
         .map(|index| format!("overflow-{index:02}"))
@@ -6520,7 +6550,7 @@ fn graph_with_pin_overflow_is_unavailable_without_partial_graph() -> Result<()> 
     let graph_rows = usize::try_from(candidate_rows)? + seed.a2_rows + seed.a3_rows;
     const REMAINING_ROWS: usize = 24;
     fixture.add_decoys(
-        MAX_GRAPH_RECORDS - graph_rows - REMAINING_ROWS,
+        MAX_GRAPH_QUERY_RECORDS - graph_rows - REMAINING_ROWS,
         "codex:nir1-alice",
     )?;
     let baseline = query(&mut fixture.registered_reader()?, "nir1-alice")?;
@@ -6767,7 +6797,9 @@ fn measure_scene_join_capacity_and_frame_bytes() -> Result<()> {
     }
     let mut nodes = vec![synthetic_node("s", 0)];
     let mut edges = Vec::new();
-    let entities = (0..MAX_GRAPH_NODES - 1)
+    // Eleven: the former Entity limit (12) less the seed. A measurement of the
+    // CP-1 shape, not a boundary, so it does not follow the limit.
+    let entities = (0..11)
         .map(|index| format!("e{index:02}"))
         .collect::<Vec<_>>();
     for entity in &entities {
@@ -6867,6 +6899,25 @@ fn evidence_id_for(entity: &str) -> String {
 
 fn worker_query(reader: &mut Nir1GraphReader, seed: &str) -> Result<Nir1GraphResponse> {
     reader.query_for_worker_with_maintenance_deadline(&graph_request(seed), Duration::from_secs(2))
+}
+
+/// The lease for the large-N tests (records, pages, Entities, edges at their
+/// limits). Whether a limit admits or refuses is decided by counts, never by
+/// time, so a positive at a limit takes a lease long enough that machine load
+/// cannot turn it into a deadline refusal. The production deadline
+/// (`QUERY_DEADLINE`, 100 ms) is not changed.
+const LARGE_N_LEASE: Duration = Duration::from_secs(10);
+
+fn worker_query_large(reader: &mut Nir1GraphReader, seed: &str) -> Result<Nir1GraphResponse> {
+    reader.query_for_worker_with_maintenance_deadline(&graph_request(seed), LARGE_N_LEASE)
+}
+
+fn query_large(
+    reader: &mut Nir1GraphReader,
+    seed: &str,
+    sql_steps: u64,
+) -> Result<Nir1GraphResponse> {
+    reader.query_with_deadline(&graph_request(seed), LARGE_N_LEASE, sql_steps)
 }
 
 fn assert_refused_without_graph(response: &Nir1GraphResponse) {
@@ -6996,7 +7047,7 @@ impl Fixture {
                 conn,
                 PROJECT,
                 revision,
-                MAX_GRAPH_RECORDS,
+                MAX_GRAPH_QUERY_RECORDS,
                 MAX_GRAPH_INPUT_BYTES,
             )?
             .ok_or_else(|| anyhow::anyhow!("candidate is not a typed Revision"))?;
@@ -7134,19 +7185,10 @@ fn parallel_plan(count: usize) -> GraphPlan {
 
 /// SQL step budget large enough that the cap never binds. A refusal under it
 /// can only come from a semantic limit; the production budget is
-/// `QUERY_SQL_STEPS`. Only the G-4 Entity and edge limits use it, on the
-/// ordinary reader: it separates their semantic refusal from the step cap, and
-/// the 144-edge fan exceeds the production budget before its edge limit. The
+/// `QUERY_SQL_STEPS`. Only the G-4 Entity and edge limits use it (through
+/// `query_large`): it separates their semantic refusal from the step cap. The
 /// G-1 and G-2 tests stay within the production budget.
 const UNCAPPED_SQL_STEPS: u64 = 10_000_000;
-
-fn query_with_steps(
-    reader: &mut Nir1GraphReader,
-    seed: &str,
-    sql_steps: u64,
-) -> Result<Nir1GraphResponse> {
-    reader.query_with_deadline(&graph_request(seed), Duration::from_secs(2), sql_steps)
-}
 
 // G-1 (RB-1): a Revision of 2.5 MiB counted bytes, above the C-query preflight
 // (2 MiB) and below the writer limit, is saved, read by the A2 reader, and
@@ -7211,8 +7253,73 @@ fn b_publishes_a_revision_within_its_component_guard_that_the_c_query_refuses() 
             .contains("NIR1_GRAPH_REVISION_INPUT_LIMIT"),
         "{refusal}"
     );
-    let mut worker = fixture.worker_reader()?;
-    assert_refused_within_budget(&worker_query(&mut worker, "nir1-alice")?);
+    // CQ-LIM-2: the worker's registration counts the Revision's A2 admission bytes
+    // before it parses it, finds them over the per-Revision limit, and ends with
+    // the typed refusal before READY. No query is answered for the project, so
+    // none reaches the Revision: the C-query refuses it earlier than the preflight
+    // (cq-lim-decisions.md, DR-CQL-4).
+    let mut worker = fixture.open_worker_reader()?;
+    let error = worker
+        .register_with_worker_maintenance(PROJECT, || true)
+        .expect_err("a Revision over the per-Revision limit must not register");
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(PER_REVISION_PREFLIGHT_BYTES),
+        "{error:#}"
+    );
+    Ok(())
+}
+
+// proposal/7 RB-1 (G-1): the contract's positive near the upper end. A Revision
+// the writer stores with a reconciliation envelope of exactly 6,291,456 B (the
+// largest the writer now stores; its payload is about half of that for this
+// shape) is read by the A2 reader and published by the B build: B's component
+// guard admits what the writer stores, and the whole set (payload, envelope and
+// the seed Revision together) stays inside 16 MiB.
+#[test]
+fn b_publishes_a_revision_whose_stored_envelope_is_exactly_the_writer_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let db = fixture.authority.db();
+    let mut payload = request(db);
+    seed_scope_edits(&mut payload.bundle);
+    crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+        db,
+        &mut payload,
+    )?;
+    let (run_id, bundle) = envelope_bundle_of(db, &payload.bundle, MAX_GRAPH_INPUT_BYTES)?;
+    payload.proposal_key = "nir1:review:writer-limit".into();
+    payload.run_id = run_id.clone();
+    payload.bundle = bundle;
+    let created = create_nir1_entity_relation_revision(db, payload)?;
+    let revision = created["revisionId"].as_str().unwrap().to_owned();
+    let envelope_bytes: i64 = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT octet_length(reconciliation_envelope_json)
+               FROM narrative_proposal_revisions WHERE id = ?1",
+            [&revision],
+            |row| row.get(0),
+        )?)
+    })?;
+    assert_eq!(envelope_bytes, i64::try_from(MAX_GRAPH_INPUT_BYTES)?);
+    approve_typed_revision(db, &run_id, &created)?;
+    let read = fixture.authority.with_read_transaction(|conn| {
+        read_nir1_entity_relation_revision(conn, PROJECT, &revision)
+    })?;
+    assert!(
+        matches!(read, Nir1EntityRelationRevisionRead::Available(_)),
+        "the Revision must be readable by the A2 reader"
+    );
+    fixture.republish_graph_index()?;
+    let source = fixture
+        .authority
+        .with_read_transaction(|conn| read_eligibility_source(conn, PROJECT))?;
+    assert!(
+        source
+            .roster
+            .iter()
+            .any(|entry| entry.revision_id == revision),
+        "B must publish the Revision's material"
+    );
     Ok(())
 }
 
@@ -7672,65 +7779,629 @@ fn two_hop_limit_stops_before_a_third_hop() -> Result<()> {
     Ok(())
 }
 
-// G-4 (RB-8): the discovered-Entity limit is 12 including the seed. Twelve are
-// admitted at the production budget. The thirteenth is refused with no partial
-// Graph at the production budget, and the same refusal repeats with the step
-// cap uncapped, so it does not depend on the step cap. The ordinary reader
-// checks the limit's logic; the worker-shaped reader repeats both cases on the
-// production worker configuration (`worker_query`), where the thirteenth is
-// refused for a reason other than steps or the deadline. Both fixtures are one
-// approved Revision and fit the production step budget.
+// G-4 (RB-8, proposal/7): the discovered-Entity limit is 50 including the seed
+// (it was 12). Fifty are admitted at the production budget. The fifty-first is
+// refused with no partial Graph (never the first fifty), at the production
+// budget and with the step cap uncapped, so it does not depend on the step cap.
+// The ordinary reader checks the limit's logic; the worker-shaped reader repeats
+// both cases on the production worker configuration (`worker_query`), where the
+// fifty-first is refused for a reason other than steps or the deadline. Both
+// fixtures are one approved Revision (50 Entities, 50 Evidence, 49 Relations and
+// the Revision itself are 150 of its 512 records).
 #[test]
-fn twelve_discovered_entities_are_admitted_and_the_thirteenth_is_refused() -> Result<()> {
-    let twelve = Fixture::with_graph(&star_plan(10))?;
-    let mut reader = twelve.registered_reader()?;
-    let response = query(&mut reader, "nir1-alice")?;
+fn graph_entities_at_50_is_available() -> Result<()> {
+    assert_eq!(MAX_GRAPH_NODES, 50);
+    // alice and bob are always there: 48 more make fifty.
+    let fifty = Fixture::with_graph(&star_plan(MAX_GRAPH_NODES - 2))?;
+    let mut reader = fifty.registered_reader()?;
+    let response = query_large(&mut reader, "nir1-alice", QUERY_SQL_STEPS)?;
     assert_eq!(response.status, "available", "{:?}", response.reason);
-    assert_eq!(response.graph.unwrap().nodes.len(), 12);
-    let mut worker = twelve.worker_reader()?;
-    let response = worker_query(&mut worker, "nir1-alice")?;
+    assert_eq!(response.graph.unwrap().nodes.len(), MAX_GRAPH_NODES);
+    let mut worker = fifty.worker_reader()?;
+    let response = worker_query_large(&mut worker, "nir1-alice")?;
     assert_eq!(response.status, "available", "{:?}", response.reason);
-    assert_eq!(response.graph.unwrap().nodes.len(), 12);
-
-    let thirteen = Fixture::with_graph(&star_plan(11))?;
-    let mut reader = thirteen.registered_reader()?;
-    assert_unavailable(
-        &query_with_steps(&mut reader, "nir1-alice", UNCAPPED_SQL_STEPS)?,
-        "query-budget-or-validation-failed",
-    );
-    assert_unavailable(
-        &query(&mut reader, "nir1-alice")?,
-        "query-budget-or-validation-failed",
-    );
-    let mut worker = thirteen.worker_reader()?;
-    assert_refused_within_budget(&worker_query(&mut worker, "nir1-alice")?);
+    assert_eq!(response.graph.unwrap().nodes.len(), MAX_GRAPH_NODES);
     Ok(())
 }
 
-// G-4 (RB-8): the distinct-edge limit is 144. With the step cap uncapped, the
-// 144th distinct edge is admitted and the 145th is refused with no partial
-// Graph. At the production 100,000-step budget this 144-edge fan exceeds the
-// step cap before the edge limit is reached, so the edge limit itself is tested
-// with the cap lifted. The 145-edge fan is refused at the production budget too.
 #[test]
-fn one_hundred_forty_four_distinct_edges_are_admitted_and_the_145th_is_refused() -> Result<()> {
-    let at_limit = Fixture::with_graph(&parallel_plan(143))?;
-    let mut reader = at_limit.registered_reader()?;
-    let response = query_with_steps(&mut reader, "nir1-alice", UNCAPPED_SQL_STEPS)?;
+fn graph_entities_at_51_refuses_the_whole_graph() -> Result<()> {
+    let fifty_one = Fixture::with_graph(&star_plan(MAX_GRAPH_NODES - 1))?;
+    let mut reader = fifty_one.registered_reader()?;
+    assert_unavailable(
+        &query_large(&mut reader, "nir1-alice", UNCAPPED_SQL_STEPS)?,
+        "query-budget-or-validation-failed",
+    );
+    assert_unavailable(
+        &query_large(&mut reader, "nir1-alice", QUERY_SQL_STEPS)?,
+        "query-budget-or-validation-failed",
+    );
+    let mut worker = fifty_one.worker_reader()?;
+    assert_refused_within_budget(&worker_query_large(&mut worker, "nir1-alice")?);
+    Ok(())
+}
+
+/// A Graph of `edges` distinct edges between alice and bob. One Revision holds
+/// at most 507 Relations (its 512 records less alice, bob, their two Evidence
+/// and itself), so the rest is one Relation per further approved Revision.
+/// Distinct edges are counted per (Revision, edge), so these are all distinct.
+fn distinct_edges_fixture(edges: usize) -> Result<Fixture> {
+    const SEED_REVISION_RELATIONS: usize = 507;
+    let in_seed = edges.min(SEED_REVISION_RELATIONS);
+    // `nir1-edge` is one of the seed Revision's Relations.
+    let fixture = Fixture::with_graph(&parallel_plan(in_seed - 1))?;
+    for serial in 1..=(edges - in_seed) {
+        fixture.add_candidate_revision(serial, 0)?;
+    }
+    if edges > in_seed {
+        fixture.republish_graph_index()?;
+    }
+    Ok(fixture)
+}
+
+// G-4 (RB-8, proposal/7): the distinct-edge limit is 512 (it was 144). The 512th
+// distinct edge is admitted at the production step budget and the 513th refuses
+// the whole Graph with the worker's edge-limit reason; Entities stay at two, so
+// only the edge limit can bind. The worker-shaped reader is the production
+// configuration. The ordinary reader's own transient reserve (8 x the raw bytes
+// + 4 KiB per row) is over the 6,291,456 B ledger for a 507-Relation Revision
+// before the edge limit is reached, and it is not a product path, so the edge
+// limit is not probed on it.
+#[test]
+fn graph_edges_at_512_is_available() -> Result<()> {
+    assert_eq!(MAX_GRAPH_EDGES, 512);
+    let at_limit = distinct_edges_fixture(MAX_GRAPH_EDGES)?;
+    let mut worker = at_limit.worker_reader()?;
+    let response = worker_query_large(&mut worker, "nir1-alice")?;
     assert_eq!(response.status, "available", "{:?}", response.reason);
     let graph = response.graph.unwrap();
-    assert_eq!(graph.edges.len(), 144);
+    assert_eq!(graph.edges.len(), MAX_GRAPH_EDGES);
     assert_eq!(graph.nodes.len(), 2);
+    Ok(())
+}
 
-    let over_limit = Fixture::with_graph(&parallel_plan(144))?;
-    let mut reader = over_limit.registered_reader()?;
-    assert_unavailable(
-        &query_with_steps(&mut reader, "nir1-alice", UNCAPPED_SQL_STEPS)?,
-        "query-budget-or-validation-failed",
-    );
-    assert_unavailable(
-        &query(&mut reader, "nir1-alice")?,
-        "query-budget-or-validation-failed",
+#[test]
+fn graph_edges_at_513_refuses_the_whole_graph() -> Result<()> {
+    let over_limit = distinct_edges_fixture(MAX_GRAPH_EDGES + 1)?;
+    let mut worker = over_limit.worker_reader()?;
+    let response = worker_query_large(&mut worker, "nir1-alice")?;
+    assert_refused_without_graph(&response);
+    assert_eq!(
+        response.reason.as_deref(),
+        Some("query-worker-work-edge-limit-pre-cleanup-work-failed-edge-limit")
     );
     Ok(())
+}
+
+// Pages are the query's second budget: 128 of at most 16 rows each (it was 32).
+// Records (2,048) and pages are not one limit. An Entity's reverse-index list of
+// c rows costs `c / 16 + 1` pages (the last, short or empty one included), and
+// every one of the 49 Entities around the seed that the traversal expands costs
+// at least one page of its own, however few rows it has. So a Graph of 50
+// Entities whose seed has a long list reaches 128 pages while the records are
+// still well inside 2,048. The decoys are rows of a kind no Graph reads, on the
+// seed's source key. When the page budget is exhausted the query still reads on
+// if nothing is left to read (the Scene pins here), and refuses the whole Graph
+// if there is: the 49th Entity's own row is what needs the 129th page.
+//
+// Candidate stage pages: 49 for the Entities around the seed, and for the seed
+// `c / 16 + 1`; at most 128, so the seed's list may be up to 16 x 79 - 1 rows.
+const PAGES_SEED_ROWS_AT_LIMIT: usize = 16 * (QUERY_MAX_PAGES - (MAX_GRAPH_NODES - 1)) - 1;
+
+fn pages_fixture(seed_rows: usize) -> Result<Fixture> {
+    let fixture = Fixture::with_graph(&star_plan(MAX_GRAPH_NODES - 2))?;
+    let stored = fixture.authority.with_conn(|conn| {
+        Ok(usize::try_from(conn.query_row(
+            "SELECT COUNT(*) FROM narrative_dependency_edges
+              WHERE project_id=?1 AND source_object_identity='codex:nir1-alice'",
+            [PROJECT],
+            |row| row.get::<_, i64>(0),
+        )?)?)
+    })?;
+    fixture.add_decoys(seed_rows - stored, "codex:nir1-alice")?;
+    Ok(fixture)
+}
+
+#[test]
+fn query_pages_at_128_is_available() -> Result<()> {
+    assert_eq!(QUERY_MAX_PAGES, 128);
+    let fixture = pages_fixture(PAGES_SEED_ROWS_AT_LIMIT)?;
+    let mut worker = fixture.worker_reader()?;
+    LAST_QUERY_PAGES.take();
+    LAST_QUERY_ROWS.take();
+    let response = worker_query_large(&mut worker, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    assert_eq!(response.graph.unwrap().nodes.len(), MAX_GRAPH_NODES);
+    assert_eq!(LAST_QUERY_PAGES.take(), Some(QUERY_MAX_PAGES));
+    // Pages bind alone: a whole further page of records still fits.
+    let rows = LAST_QUERY_ROWS.take().expect("the query recorded its rows");
+    assert!(rows + 16 <= MAX_GRAPH_QUERY_RECORDS, "{rows} rows");
+    Ok(())
+}
+
+#[test]
+fn query_pages_at_129_refuses_the_whole_graph() -> Result<()> {
+    let fixture = pages_fixture(PAGES_SEED_ROWS_AT_LIMIT + 1)?;
+    let mut worker = fixture.worker_reader()?;
+    let response = worker_query_large(&mut worker, "nir1-alice")?;
+    assert_refused_without_graph(&response);
+    assert_eq!(
+        response.reason.as_deref(),
+        Some("query-worker-work-candidate-record-limit-pre-cleanup-work-failed-candidate-record-limit")
+    );
+    Ok(())
+}
+// ---------------------------------------------------------------------------
+// CQ-LIM-2: the worker's registration counts each Revision's A2 admission bytes
+// (the scalar lengths of payload, envelope and metadata, no JSON function)
+// before it parses or loads that Revision into Q. An approved Revision over the
+// per-Revision preflight (2,097,152 B) ends the registration with a typed
+// refusal before READY. It is the fail-safe of proposal/7 "P7 案 4": a Revision
+// that is not loaded cannot contribute to the roster whose digest the stored
+// index is checked against, so the registration cannot be proven without it
+// (cq-lim-decisions.md, DR-CQL-4).
+// ---------------------------------------------------------------------------
+
+/// The registration's limit on a Revision's A2 admission bytes.
+const REGISTRATION_A2_LIMIT: usize = PER_REVISION_PREFLIGHT_BYTES;
+
+/// The writer's counted bytes of R2-5's payload-shaped Revision whose A2
+/// admission is 2,034,294 B (just under the preflight), and one whose A2 is over
+/// the limit and whose registration peak (about 5.8 times its A2) is past what
+/// the worker's Q holds.
+const PAYLOAD_SHAPED_COUNTED_BYTES: usize = 600_000;
+const PAYLOAD_SHAPED_OVER_COUNTED_BYTES: usize = 1_000_000;
+
+impl Fixture {
+    /// The A2 admission bytes the worker's registration counts for `revision`:
+    /// the three scalar lengths of the C-query preflight's first query. They are
+    /// a subset of the preflight's admission (which adds the related rows), so a
+    /// Revision over this count is over the preflight as well.
+    fn registration_a2_bytes(&self, revision: &str) -> Result<usize> {
+        use crate::narrative_extraction::nir1_entity_relation::{
+            NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
+        };
+        self.authority.with_conn(|conn| {
+            let (payload, envelope, metadata): (i64, i64, i64) = conn.query_row(
+                super::input::LENGTH_SQL,
+                params![
+                    revision,
+                    PROJECT,
+                    NIR1_ENTITY_RELATION_SET_KIND,
+                    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            Ok(usize::try_from(payload + envelope + metadata)?)
+        })
+    }
+
+    /// Decision padding that makes a candidate's registration count exactly
+    /// `target` (one padding byte is one counted byte).
+    fn registration_padding_for(target: usize) -> Result<usize> {
+        let calibration = Self::new()?;
+        let probe = calibration.add_candidate_revision(1, 0)?;
+        let base = calibration.registration_a2_bytes(&probe)?;
+        let grown = calibration.add_candidate_revision(2, 1000)?;
+        ensure!(
+            calibration.registration_a2_bytes(&grown)? - base == 1000,
+            "one decision byte must add exactly one counted byte"
+        );
+        target
+            .checked_sub(base)
+            .ok_or_else(|| anyhow::anyhow!("target is below the base count"))
+    }
+
+    /// A worker reader prepared as the worker binary prepares it, before it
+    /// registers.
+    fn open_worker_reader(&self) -> Result<Nir1GraphReader> {
+        self.authority.db().with_conn(|conn| {
+            conn.busy_timeout(Duration::ZERO)?;
+            conn.execute_batch(
+                "PRAGMA temp_store=MEMORY; PRAGMA cache_size=-128; PRAGMA mmap_size=0;
+                 CREATE TEMP TABLE IF NOT EXISTS grimodex_connection_meta(
+                     singleton INTEGER PRIMARY KEY CHECK(singleton=1), epoch TEXT NOT NULL
+                 );",
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO temp.grimodex_connection_meta VALUES(1,?1)",
+                [uuid::Uuid::new_v4().to_string()],
+            )?;
+            conn.execute_batch("PRAGMA query_only=ON")?;
+            Ok(())
+        })?;
+        Nir1GraphReader::open_for_worker(
+            Arc::clone(&self.authority),
+            self.lifecycle.begin_workspace_participant()?,
+        )
+    }
+
+    /// One more approved typed Revision for the seed Entities whose payload is
+    /// padded through the typed writer (an evidence identifier no Relation
+    /// references), so that the writer counts `counted_bytes`. The padding is
+    /// split by the writer's copies across the payload, the envelope and the
+    /// approval, which makes the Revision's A2 admission about three times as
+    /// large (R2-5's payload shape).
+    fn add_payload_shaped_candidate(&self, serial: usize, counted_bytes: usize) -> Result<String> {
+        let db = self.authority.db();
+        let template = request(db).bundle;
+        let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
+        let mut payload = request(db);
+        payload.proposal_key = format!("nir1:review:payload-{serial:04}");
+        payload.bundle = bounded_writer_bundle(
+            &template,
+            507,
+            counted_bytes
+                .checked_sub(base)
+                .ok_or_else(|| anyhow::anyhow!("target is below the base count"))?,
+        );
+        seed_scope_edits(&mut payload.bundle);
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+            db,
+            &mut payload,
+        )?;
+        let created = create_nir1_entity_relation_revision(db, payload)?;
+        approve_typed_revision(db, "nir1-run", &created)?;
+        Ok(created["revisionId"].as_str().unwrap().to_owned())
+    }
+}
+
+/// The registration refusal an error carries, if it is that one.
+fn registration_input_limit(error: &anyhow::Error) -> Option<usize> {
+    error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<Nir1GraphRegistrationRevisionInputLimit>())
+        .map(|refusal| refusal.limit)
+}
+
+// B7 (in-process): an approved Revision of exactly the limit registers, and the
+// preflight still refuses the whole query that reaches it (its admission adds
+// the related rows to the counted bytes). One byte more ends the registration
+// before READY with the typed refusal, for the ordinary reader and the worker's.
+#[test]
+fn registration_admits_an_approved_revision_at_exactly_the_a2_registration_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let candidate = fixture
+        .add_candidate_revision(1, Fixture::registration_padding_for(REGISTRATION_A2_LIMIT)?)?;
+    assert_eq!(
+        fixture.registration_a2_bytes(&candidate)?,
+        REGISTRATION_A2_LIMIT
+    );
+    fixture.republish_graph_index()?;
+    let mut reader = fixture.worker_reader()?;
+    // The Revision registered; the query that reaches it is refused as a whole by
+    // the unchanged per-Revision preflight.
+    assert_refused_within_budget(&worker_query(&mut reader, "nir1-alice")?);
+    Ok(())
+}
+
+#[test]
+fn registration_refuses_an_approved_revision_one_byte_over_the_a2_registration_limit() -> Result<()>
+{
+    let fixture = Fixture::new()?;
+    let mut baseline = fixture.registered_reader()?;
+    assert_eq!(query(&mut baseline, "nir1-alice")?.status, "available");
+
+    let candidate = fixture.add_candidate_revision(
+        1,
+        Fixture::registration_padding_for(REGISTRATION_A2_LIMIT + 1)?,
+    )?;
+    assert_eq!(
+        fixture.registration_a2_bytes(&candidate)?,
+        REGISTRATION_A2_LIMIT + 1
+    );
+    // B is unchanged: it builds and publishes with the Revision (it admits a
+    // component up to 6 MiB), and its complete-registration check passes.
+    fixture.republish_graph_index()?;
+    assert!(fixture.authority.with_read_transaction(|conn| {
+        crate::narrative_extraction::nir1_entity_relation_index::is_complete_registered(
+            conn,
+            PROJECT,
+            crate::narrative_extraction::nir1_entity_relation_index::INDEX_KEY,
+        )
+    })?);
+
+    // The worker's registration ends with the typed refusal.
+    let mut worker = fixture.open_worker_reader()?;
+    let error = worker
+        .register_with_worker_maintenance(PROJECT, || true)
+        .expect_err("a Revision over the limit must not register");
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(REGISTRATION_A2_LIMIT),
+        "{error:#}"
+    );
+    // So does the ordinary reader's, which shares the registration.
+    let mut ordinary = fixture.reader()?;
+    let error = ordinary
+        .register_with_control(PROJECT, &mut RegistrationOwner)
+        .expect_err("a Revision over the limit must not register");
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(REGISTRATION_A2_LIMIT)
+    );
+    // A reader that did not register answers no query.
+    assert_refused_without_graph(&worker_query(&mut worker, "nir1-alice")?);
+    Ok(())
+}
+
+// A Revision that is not approved is never part of a roster, whatever its size:
+// the registration skips it before any of it is parsed, as B's component guard
+// does, so it neither refuses nor loads it. A query that reaches it is still
+// refused as a whole by the preflight, which charges every candidate it reads
+// (ineligible ones included) before it knows the Revision is not approved.
+#[test]
+fn registration_skips_a_revision_that_is_not_approved_whatever_its_size() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let db = fixture.authority.db();
+    let mut payload = request(db);
+    payload.proposal_key = "nir1:review:rejected-0001".into();
+    seed_scope_edits(&mut payload.bundle);
+    crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+        db,
+        &mut payload,
+    )?;
+    let created = create_nir1_entity_relation_revision(db, payload)?;
+    let revision = created["revisionId"].as_str().unwrap().to_owned();
+    narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: "nir1-run".into(),
+            project_id: PROJECT.into(),
+            proposal_id: created["proposalId"].as_str().unwrap().into(),
+            revision_id: revision.clone(),
+            decision: "rejected".into(),
+            decision_json: Some(serde_json::json!({
+                "pad": "p".repeat(REGISTRATION_A2_LIMIT + 4096)
+            })),
+            created_by: Some("renderer-reviewer".into()),
+        },
+    )?;
+    assert!(fixture.registration_a2_bytes(&revision)? > REGISTRATION_A2_LIMIT);
+    fixture.republish_graph_index()?;
+    // Registration admits the project: the oversized rejection is not loaded.
+    let mut reader = fixture.worker_reader()?;
+    assert_refused_within_budget(&worker_query(&mut reader, "nir1-alice")?);
+    Ok(())
+}
+
+// B2 (in-process): a payload-shaped Revision (R2-5: the writer's long string, A2
+// about three times the padding) just under the preflight registers and is an
+// ordinary Graph contribution. The registration and the preflight both admit it.
+// The real worker binary runs the same construction in the lifecycle lane
+// (`native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit`).
+#[test]
+fn worker_query_admits_a_payload_shaped_revision_near_the_preflight_limit() -> Result<()> {
+    let fixture = Fixture::with_payload_shape(PAYLOAD_SHAPED_COUNTED_BYTES)?;
+    let admitted = fixture.a2_admission(&fixture.revision)?;
+    assert!(
+        (2_000_000..=PER_REVISION_PREFLIGHT_BYTES).contains(&admitted),
+        "R2-5's 2,034,294 B shape: {admitted}"
+    );
+    assert!(fixture.registration_a2_bytes(&fixture.revision)? <= admitted);
+    let mut reader = fixture.worker_reader()?;
+    let response = worker_query_large(&mut reader, "nir1-alice")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let graph = response
+        .graph
+        .expect("an available response carries the Graph");
+    assert!(graph
+        .edges
+        .iter()
+        .any(|edge| edge.binding.revision_id == fixture.revision));
+    Ok(())
+}
+
+// B7 (in-process), the payload shape over the limit: the same construction with
+// the writer counting more is refused by the registration, which counts its A2
+// admission before the JSON functions that reach a registration's peak of about
+// 5.8 times that (R2-5).
+#[test]
+fn registration_refuses_a_payload_shaped_revision_over_the_a2_registration_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let candidate = fixture.add_payload_shaped_candidate(1, PAYLOAD_SHAPED_OVER_COUNTED_BYTES)?;
+    assert!(fixture.registration_a2_bytes(&candidate)? > REGISTRATION_A2_LIMIT);
+    fixture.republish_graph_index()?;
+    let mut worker = fixture.open_worker_reader()?;
+    let error = worker
+        .register_with_worker_maintenance(PROJECT, || true)
+        .expect_err("a payload-shaped Revision over the limit must not register");
+    assert_eq!(
+        registration_input_limit(&error),
+        Some(REGISTRATION_A2_LIMIT)
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CQ-LIM-2: the real worker binary (Q 16 MiB, Native area 3 MiB) over a project.
+// ---------------------------------------------------------------------------
+
+/// Run `body` over a Native owner for the real worker binary on `fixture`'s
+/// database, then prove the owner's cleanup: child exit, stdout EOF and reader
+/// join before the claim is released, and no participant left behind.
+fn with_real_worker(
+    fixture: &Fixture,
+    body: impl FnOnce(&mut super::c_query_worker::CQueryWorkerOwner) -> Result<()>,
+) -> Result<()> {
+    let worker_path = PathBuf::from(
+        std::env::var_os("NIR1_C_QUERY_WORKER_BIN")
+            .ok_or_else(|| anyhow::anyhow!("NIR1_C_QUERY_WORKER_BIN missing"))?,
+    );
+    let authority = Arc::clone(&fixture.authority);
+    let native_state = WorkspaceState {
+        inner: Mutex::new(Some(ActiveWorkspace::new(Arc::clone(&authority)))),
+        safe_mode: crate::recovery::SafeModeState::default(),
+        switching: WorkspaceLifecycleCompatibilityView::new(false),
+        open_lock: Mutex::new(Default::default()),
+    };
+    native_state.switching.core().set_ready(
+        LiveBinding::new(
+            authority.path().to_string_lossy(),
+            format!("test-workspace:{}", authority.identity()),
+            authority.identity(),
+            0,
+        )
+        .with_main_database_file_identity(authority.main_database_file_identity()?),
+    )?;
+    let mut owner = super::c_query_worker::CQueryWorkerOwner::new(
+        active_workspace_snapshot(&native_state)?,
+        worker_path,
+    );
+    body(&mut owner)?;
+    ensure!(
+        owner.cleanup_proved_for_test(),
+        "the owner returned before child exit, stdout EOF and reader join"
+    );
+    let claim = authority
+        .claim_c_query_child()
+        .ok_or_else(|| anyhow::anyhow!("retirement did not release the child claim"))?;
+    claim.release();
+    drop(owner);
+    ensure!(
+        native_state
+            .switching
+            .core()
+            .workspace_participant_count()?
+            == 0,
+        "the owner retained its workspace participant after retirement"
+    );
+    Ok(())
+}
+
+/// The worker must not reach READY, and must say why with the registration
+/// refusal's closed marker: it ended with exit 1 (the marker is written by the
+/// startup path that returns `ExitCode::FAILURE`; a signal writes nothing), and
+/// the registration did not run out of memory (no NOMEM marker).
+fn run_native_worker_refuses_registration_of_a_revision_over_the_limit(
+    fixture: &Fixture,
+) -> Result<()> {
+    with_real_worker(fixture, |owner| {
+        let error = owner
+            .prepare(PROJECT)
+            .err()
+            .ok_or_else(|| anyhow::anyhow!("a Revision over the limit reached READY"))?;
+        let text = format!("{error:#}");
+        ensure!(
+            text.contains("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY")
+                && text.contains("NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT"),
+            "the worker's refusal changed: {text}"
+        );
+        ensure!(
+            !text.to_ascii_lowercase().contains("nomem"),
+            "the registration ran out of memory: {text}"
+        );
+        ensure!(
+            super::c_query_worker::classify_c_query_failure(&error)
+                == super::c_query_worker::CQueryFailure::StartupRegistrationRefused,
+            "the refusal is not the closed registration refusal: {text}"
+        );
+        Ok(())
+    })
+}
+
+// B7 (real worker): an approved Revision one byte over the A2 registration limit
+// (counted in the approval's bytes, so the same counted bytes as the in-process
+// test) ends the worker's registration before READY with the typed refusal.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_registration_does_not_load_a_revision_over_the_preflight_limit() -> Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.add_candidate_revision(
+        1,
+        Fixture::registration_padding_for(REGISTRATION_A2_LIMIT + 1)?,
+    )?;
+    fixture.republish_graph_index()?;
+    run_native_worker_refuses_registration_of_a_revision_over_the_limit(&fixture)
+}
+
+// B7 (real worker), the payload shape: R2-5's shape past the limit needs a
+// registration peak of about 5.8 times its A2 (more than the 16 MiB Q holds
+// from A2 of about 2.8 MB), which used to end the worker with a NOMEM. The
+// registration now counts the A2 admission first and refuses with the typed
+// refusal, not a NOMEM.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_registration_refuses_a_payload_shaped_revision_before_it_runs_out_of_memory(
+) -> Result<()> {
+    let fixture = Fixture::new()?;
+    let candidate = fixture.add_payload_shaped_candidate(1, PAYLOAD_SHAPED_OVER_COUNTED_BYTES)?;
+    eprintln!(
+        "payload-shaped Revision over the limit: counted {PAYLOAD_SHAPED_OVER_COUNTED_BYTES} B, registration count {} B",
+        fixture.registration_a2_bytes(&candidate)?
+    );
+    ensure!(fixture.registration_a2_bytes(&candidate)? > REGISTRATION_A2_LIMIT);
+    fixture.republish_graph_index()?;
+    run_native_worker_refuses_registration_of_a_revision_over_the_limit(&fixture)
+}
+
+// B2 (real worker): R2-5's payload shape just under the limit (A2 about
+// 2.03 MB, a registration peak of about 11.9 MB) reaches READY on Q 16 MiB, which
+// Q 8 MiB could not hold, and answers its query.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit() -> Result<()> {
+    let fixture = Fixture::with_payload_shape(PAYLOAD_SHAPED_COUNTED_BYTES)?;
+    eprintln!(
+        "payload-shaped seed Revision: counted {PAYLOAD_SHAPED_COUNTED_BYTES} B, A2 admission {} B",
+        fixture.a2_admission(&fixture.revision)?
+    );
+    with_real_worker(&fixture, |owner| {
+        owner.prepare(PROJECT)?;
+        let request = graph_request("nir1-alice");
+        let lease = owner.query_once(&request)?;
+        {
+            let frame = lease.frame()?;
+            let graph = *frame
+                .graph()
+                .ok_or_else(|| anyhow::anyhow!("the worker frame was unavailable"))?;
+            assert_eq!(graph.seed(), "nir1-alice");
+            assert_eq!((graph.node_count(), graph.edge_count()), (2, 1));
+        }
+        drop(lease);
+        Ok(())
+    })
+}
+
+// B4 (real worker): a project with several payload-shaped Revisions, each just
+// under the limit, reaches READY on Q 16 MiB. The registration reads one
+// Revision at a time and keeps only its roster in S, so the peak stays that of
+// one Revision. They are not reached by a query here (the candidates carry
+// other content than the seed), so the test is the registration's.
+#[test]
+#[ignore = "requires a normal-build worker binary; runs in the lifecycle lane"]
+fn native_worker_registers_multiple_payload_shaped_revisions() -> Result<()> {
+    let fixture = Fixture::with_payload_shape(PAYLOAD_SHAPED_COUNTED_BYTES)?;
+    for serial in 1..=2 {
+        let candidate =
+            fixture.add_payload_shaped_candidate(serial, PAYLOAD_SHAPED_COUNTED_BYTES)?;
+        ensure!(fixture.a2_admission(&candidate)? <= PER_REVISION_PREFLIGHT_BYTES);
+    }
+    fixture.republish_graph_index()?;
+    with_real_worker(&fixture, |owner| {
+        owner.prepare(PROJECT)?;
+        // The query that reaches the Revisions is a Graph of several Revisions
+        // of one Entity set; whether it is answered is the query's concern
+        // (their A2 sum is over the input ledger), not the registration's. The
+        // worker must have answered with a frame or a typed refusal, and exit.
+        let request = graph_request("nir1-alice");
+        match owner.query_once(&request) {
+            Ok(lease) => drop(lease),
+            // A refusal is typed: a deadline or a closed-set unavailable reason,
+            // never a crash or an unclassified failure.
+            Err(error) => {
+                let failure = super::c_query_worker::classify_c_query_failure(&error);
+                ensure!(
+                    matches!(
+                        failure,
+                        super::c_query_worker::CQueryFailure::Deadline
+                            | super::c_query_worker::CQueryFailure::Unavailable(_)
+                    ),
+                    "query after READY failed untyped ({failure:?}): {error:#}"
+                );
+                eprintln!("query after READY: {error:#}");
+            }
+        }
+        Ok(())
+    })
 }

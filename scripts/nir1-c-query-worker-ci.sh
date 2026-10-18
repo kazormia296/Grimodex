@@ -46,6 +46,13 @@ trap cleanup_fixture EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# A name filter that matches nothing makes cargo exit 0 with "0 passed". Every
+# `--ignored` real-worker case below tees its output here and must have run.
+ignored_log="$fixture_dir/ignored-test.log"
+assert_ignored_test_ran() {
+  grep -Eq 'test result: ok\. [1-9][0-9]* passed; 0 failed;' "$ignored_log"
+}
+
 printf '%s' \
   '{"schemaVersion":"nir1-capacity/1","diagnosticOnly":true,"fixtures":[{"id":"Q2/R1/D0-local","qualifiedMaterials":2,"qualifiedRevisions":1,"ineligibleCandidates":0},{"id":"Q512/R2/A3-eligible-shared","qualifiedMaterials":164,"qualifiedRevisions":1,"ineligibleCandidates":0}]}' \
   > "$fixture_dir/manifest.json"
@@ -135,7 +142,8 @@ if [[ "${1:-}" == frame-lifecycle ]]; then
   NIR1_C_QUERY_WORKER_BIN="$worker_path" \
     cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
       -p grimodex-db --lib native_worker_rejects_declared_q2_frame_with_partial_body \
-      -- --ignored --nocapture --test-threads=1
+      -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+  assert_ignored_test_ran
   test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
   assert_closed_fixture "$q2_test_fixture_file"
   test "$(cksum < "$q2_fixture_file")" = "$q2_fixture_checksum"
@@ -145,7 +153,8 @@ if [[ "${1:-}" == frame-lifecycle ]]; then
     NIR1_C_QUERY_WORKER_BIN="$worker_path" \
       cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
         -p grimodex-db --lib native_worker_refuses_committed_q2_frame_without_eof \
-        -- --ignored --nocapture --test-threads=1
+        -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+    assert_ignored_test_ran
     test "$(cksum < "$q2_missing_eof_test_fixture_file")" = "$q2_fixture_checksum"
     assert_closed_fixture "$q2_missing_eof_test_fixture_file"
     test "$(cksum < "$q2_fixture_file")" = "$q2_fixture_checksum"
@@ -155,7 +164,8 @@ if [[ "${1:-}" == frame-lifecycle ]]; then
   # Keep it last and in its own test process on every OS.
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib request_writer_panic_keeps_claim_quarantined_after_handle_consumption \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+  assert_ignored_test_ran
   exit 0
 fi
 
@@ -249,6 +259,19 @@ if [[ "${1:-}" == lifecycle ]]; then
     native_worker_refuses_the_whole_graph_when_a_candidate_envelope_is_one_byte_over; do
     run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
   done
+  # The worker's registration on Q 16 MiB and Native 3 MiB (CQ-LIM-2): R2-5's
+  # payload shape just under the limit and several of them reach READY; product
+  # shapes with several Revisions reach READY; an approved Revision over the
+  # limit, in either shape, ends the registration before READY with the typed
+  # refusal, not a NOMEM. Each test builds its own project.
+  for name in \
+    native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit \
+    native_worker_registers_multiple_payload_shaped_revisions \
+    cq_avail::native_worker_registers_multiple_product_shaped_revisions \
+    native_worker_registration_does_not_load_a_revision_over_the_preflight_limit \
+    native_worker_registration_refuses_a_payload_shaped_revision_before_it_runs_out_of_memory; do
+    run_lifecycle_case "$name" "$q2_fixture_file" "$q2_fixture_checksum"
+  done
 
   cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
@@ -281,7 +304,8 @@ if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusa
     NIR1_C_QUERY_WORKER_BIN="$worker_path" \
       cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
         -p grimodex-db --lib native_worker_cancels_after_request_admission_and_retires_before_reloan \
-        -- --ignored --nocapture --test-threads=1
+        -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+    assert_ignored_test_ran
   elif [[ "${1:-}" == trailing-data ]]; then
     cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
       -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
@@ -290,7 +314,8 @@ if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusa
     NIR1_C_QUERY_WORKER_BIN="$worker_path" \
       cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
         -p grimodex-db --lib native_worker_rejects_committed_q2_frame_with_trailing_data \
-        -- --ignored --nocapture --test-threads=1
+        -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+    assert_ignored_test_ran
   elif [[ "${1:-}" == partial-terminal-marker ]]; then
     cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
       -p grimodex-db --features nir1-c-query-test-seam --bin nir1-c-query-worker
@@ -299,7 +324,8 @@ if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusa
     NIR1_C_QUERY_WORKER_BIN="$worker_path" \
       cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
         -p grimodex-db --lib native_worker_rejects_complete_q2_frame_with_partial_terminal_marker \
-        -- --ignored --nocapture --test-threads=1
+        -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+    assert_ignored_test_ran
   else
     cargo build --locked --release --manifest-path src-tauri/Cargo.toml \
       -p grimodex-db --bin nir1-c-query-worker
@@ -308,7 +334,8 @@ if [[ "${1:-}" == caller-cancellation || "${1:-}" == startup-registration-refusa
     NIR1_C_QUERY_WORKER_BIN="$worker_path" \
       cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
         -p grimodex-db --lib native_worker_reports_canonical_registration_refusal_before_ready \
-        -- --ignored --nocapture --test-threads=1
+        -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+    assert_ignored_test_ran
   fi
 
   test "$(cksum < "$q2_test_fixture_file")" = "$q2_fixture_checksum"
@@ -351,7 +378,8 @@ if [[ "${1:-}" == practical-retention ]]; then
   NIR1_C_QUERY_PRACTICAL_OBSERVE=1 \
     cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
       -p grimodex-db --lib native_worker_practical_retention_q512_30x \
-      -- --ignored --nocapture --test-threads=1
+      -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+  assert_ignored_test_ran
   test "$(cksum < "$q512_test_fixture_file")" = "$q512_fixture_checksum"
   test "$(cksum < "$q512_fixture_file")" = "$q512_fixture_checksum"
   assert_closed_fixture "$q512_fixture_file"
@@ -360,7 +388,8 @@ if [[ "${1:-}" == practical-retention ]]; then
   NIR1_C_QUERY_PRACTICAL_OBSERVE=1 \
     cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
       -p grimodex-db --lib native_worker_returns_canonical_512_a3_eligible_seed_local_graph \
-      -- --ignored --nocapture --test-threads=1
+      -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+  assert_ignored_test_ran
   test "$(cksum < "$q512_max_test_fixture_file")" = "$q512_fixture_checksum"
   test "$(cksum < "$q512_fixture_file")" = "$q512_fixture_checksum"
   assert_closed_fixture "$q512_fixture_file"
@@ -406,27 +435,31 @@ NIR1_Q2_FIXTURE_PATH="$q2_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib native_worker_returns_fixed_q2_frame_from_real_workspace_owner \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 
 # This test intentionally quarantines process-global worker capacity; keep it in its own process.
 NIR1_Q2_FIXTURE_PATH="$q2_quarantine_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib native_worker_quarantines_live_request_writer_after_cleanup_timeout \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 
 NIR1_Q2_FIXTURE_PATH="$q512_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib native_worker_returns_canonical_512_a3_eligible_seed_local_graph \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 assert_q512_source_unchanged
 
 NIR1_Q2_FIXTURE_PATH="$q513_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
-    -p grimodex-db --lib native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge \
-    -- --ignored --nocapture --test-threads=1
+    -p grimodex-db --lib native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges \
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 assert_q512_source_unchanged
 
 # Keep the post-commit retirement case separate from ordinary-worker fixtures and runs.
@@ -450,7 +483,8 @@ NIR1_Q2_FIXTURE_PATH="$q2_post_admission_crash_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib native_worker_crashes_after_q2_ack_before_frame \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 test "$(cksum < "$q2_post_admission_crash_test_fixture_file")" = "$q2_fixture_checksum"
 assert_closed_fixture "$q2_post_admission_crash_test_fixture_file"
 
@@ -458,7 +492,8 @@ NIR1_Q2_FIXTURE_PATH="$q2_sql_steps_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib native_worker_refuses_after_actual_sql_steps_over_cap \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 test "$(cksum < "$q2_sql_steps_test_fixture_file")" = "$q2_fixture_checksum"
 assert_closed_fixture "$q2_sql_steps_test_fixture_file"
 
@@ -466,7 +501,8 @@ NIR1_Q2_FIXTURE_PATH="$q2_boundary_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib native_worker_rejects_request_and_frame_length_n_plus_one \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 test "$(cksum < "$q2_boundary_test_fixture_file")" = "$q2_fixture_checksum"
 assert_closed_fixture "$q2_boundary_test_fixture_file"
 
@@ -474,7 +510,8 @@ NIR1_Q2_FIXTURE_PATH="$q2_postcommit_worker_fixture_path" \
 NIR1_C_QUERY_WORKER_BIN="$worker_path" \
   cargo test --locked --release --manifest-path src-tauri/Cargo.toml \
     -p grimodex-db --lib native_worker_accepts_committed_q2_frame_before_nonzero_exit \
-    -- --ignored --nocapture --test-threads=1
+    -- --ignored --nocapture --test-threads=1 2>&1 | tee "$ignored_log"
+assert_ignored_test_ran
 test "$(cksum < "$q2_postcommit_test_fixture_file")" = "$q2_fixture_checksum"
 assert_closed_fixture "$q2_postcommit_test_fixture_file"
 

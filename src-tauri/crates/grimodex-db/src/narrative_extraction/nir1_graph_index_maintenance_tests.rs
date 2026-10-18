@@ -23,10 +23,8 @@ use crate::narrative_extraction::nir1_chronicle_index::invalidate::suspend_proje
 use crate::narrative_extraction::nir1_entity_relation::{
     create_nir1_entity_relation_revision,
     tests::{
-        append_typed_decision, approve_typed_revision, bounded_writer_bundle,
-        prepare_a3_scope_fixture, rebind_scope_tokens, request, request_for_run,
-        seed_run_and_catalog,
-        writer_input_bytes,
+        append_typed_decision, approve_typed_revision, prepare_a3_scope_fixture, rebind_scope_tokens,
+        request, request_for_run, seed_run_and_catalog,
     },
 };
 use crate::narrative_extraction::nir1_entity_relation_index::{
@@ -582,21 +580,30 @@ fn add_revision_with_oversized_payload(
     Ok(created)
 }
 
-/// A new typed Revision, left a draft, that the A2 writer accepts as it is (3 MiB
-/// of counted bytes, half the 6 MiB writer limit) but whose stored
-/// reconciliation envelope is over B's 6 MiB per-component limit: the
-/// envelope carries about twice the counted bytes for this shape.
+/// A new typed Revision, left a draft, whose stored reconciliation envelope is
+/// over B's 6 MiB per-component limit. The writer no longer stores such a
+/// Revision (RB-1 refuses a stored payload or envelope over that limit), so this
+/// stands for one stored before that check: the envelope, which a trigger keeps
+/// immutable, is padded with the trigger removed from this database.
 fn add_revision_with_oversized_envelope(
     db: &Database,
     proposal_key: &str,
 ) -> Result<serde_json::Value> {
     let mut typed = request_for_run(db, "nir1-run", proposal_key);
     qualified_scope(db, &mut typed);
-    let template = typed.bundle.clone();
-    let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
-    typed.bundle = bounded_writer_bundle(&template, 507, 3 * 1024 * 1024 - base);
     let created = create_nir1_entity_relation_revision(db, typed)?;
     let revision_id = revision_id_of(&created)?;
+    db.with_conn(|conn| {
+        conn.execute_batch("DROP TRIGGER IF EXISTS narrative_revision_envelope_immutable_update")?;
+        conn.execute(
+            "UPDATE narrative_proposal_revisions
+                SET reconciliation_envelope_json =
+                    reconciliation_envelope_json || printf('%.*c', ?1, ' ')
+              WHERE id = ?2",
+            params![i64::try_from(MAX_GRAPH_INPUT_BYTES)? + 1, revision_id],
+        )?;
+        Ok(())
+    })?;
     let (payload_bytes, envelope_bytes): (i64, i64) = db.with_conn(|conn| {
         Ok(conn.query_row(
             "SELECT octet_length(payload_json), octet_length(reconciliation_envelope_json)

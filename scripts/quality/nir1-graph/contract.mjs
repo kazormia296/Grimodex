@@ -8,7 +8,7 @@
 // Rule sources (repository documents):
 //   - docs/plans/nir1-l6-l9-execution-plan.md: G-01..G-08 table, L6 profile
 //     evaluation (exact / any / unresolved / unknown), L7 (directed = stored
-//     direction, symmetric = both; 2 hops, 12 discovered Entities, 144
+//     direction, symmetric = both; 2 hops, 50 discovered Entities, 512
 //     qualified edge expansions, 8 returned Scenes; R+IR membership kept,
 //     Graph uses path attachment and the shared one-scene slot only),
 //     graph-limited-binding (limit exceeded / stale / unqualified => Graph
@@ -65,8 +65,8 @@ export const NIR1_GRAPH_OBSERVATION_POLICY =
 
 export const GRAPH_RULES = Object.freeze({
   maxHops: 2,
-  maxDiscoveredEntities: 12,
-  maxQualifiedEdgeExpansions: 144,
+  maxDiscoveredEntities: 50,
+  maxQualifiedEdgeExpansions: 512,
   maxReturnedScenes: 8,
   fusionMaxScenes: 8,
   maxAdditionalScenes: 1,
@@ -536,12 +536,15 @@ export function evaluateGraphCaseVariant(fixture, variant) {
     seedId,
   );
   const discovered = hop.size - 1;
-  computed.frontier = { discoveredEntities: discovered, limit: 12 };
+  computed.frontier = {
+    discoveredEntities: discovered,
+    limit: GRAPH_RULES.maxDiscoveredEntities,
+  };
   const limitExceeded =
     discovered > GRAPH_RULES.maxDiscoveredEntities ||
     expansions > GRAPH_RULES.maxQualifiedEdgeExpansions;
   if (limitExceeded) {
-    // Both "12 excluding the seed" and "12 including the seed" must agree.
+    // Both "50 excluding the seed" and "50 including the seed" must agree.
     if (discovered < GRAPH_RULES.maxDiscoveredEntities + 1)
       errors.push(`${label} frontier is in the ambiguous counting zone`);
     computed.graph.status = "unavailable";
@@ -551,7 +554,7 @@ export function evaluateGraphCaseVariant(fixture, variant) {
   if (hop.size > GRAPH_RULES.maxDiscoveredEntities)
     errors.push(`${label} frontier is in the ambiguous counting zone`);
   if (expansions > 100)
-    errors.push(`${label} keeps edge expansions far below 144 only by design`);
+    errors.push(`${label} keeps edge expansions far below 512 only by design`);
 
   computed.graph.nodes = [...hop.entries()]
     .map(([entityId, depth]) => ({ entityId, hop: depth }))

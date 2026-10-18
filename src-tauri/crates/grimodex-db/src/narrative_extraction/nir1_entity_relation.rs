@@ -1707,6 +1707,26 @@ pub fn create_nir1_entity_relation_revision(
     })
 }
 
+/// RB-1 (proposal/7): the writer refuses a typed Revision whose stored
+/// `payload_json` or `reconciliation_envelope_json` is over the same
+/// 6,291,456 B that B's component guard applies to what is stored. The counted
+/// input check in `validate_entity_relation_bundle` stays as it is; this one
+/// measures the stored form, which the counted bytes do not bound (the envelope
+/// repeats Evidence identifiers and quotes). Nothing has been written when it
+/// refuses.
+fn ensure_stored_component_within_limit(
+    code: &str,
+    column: &str,
+    stored_bytes: usize,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        stored_bytes <= narrative_nir1::MAX_GRAPH_INPUT_BYTES,
+        "{code}: stored {column} is {stored_bytes} B, over {} B",
+        narrative_nir1::MAX_GRAPH_INPUT_BYTES
+    );
+    Ok(())
+}
+
 fn create_in_tx(
     conn: &Connection,
     request: Nir1EntityRelationRevisionRequest,
@@ -1781,6 +1801,13 @@ fn create_in_tx_with(
     };
     let payload_value = serde_json::to_value(&payload)?;
     let payload_json = serde_json::to_string(&payload_value)?;
+    // RB-1: the stored form is what B and the readers later measure, so it is
+    // checked here, before anything is written.
+    ensure_stored_component_within_limit(
+        "NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT",
+        "payload_json",
+        payload_json.len(),
+    )?;
     let payload_digest = canonical_json_digest(&payload_value)?;
     let bundle_digest = canonical_json_digest(&serde_json::to_value(&bundle)?)?;
     let proposal_set_id = Uuid::new_v4().to_string();
@@ -1796,6 +1823,11 @@ fn create_in_tx_with(
         component_contract_digest,
     )?;
     let envelope_json = canonical_json_string(&envelope)?;
+    ensure_stored_component_within_limit(
+        "NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT",
+        "reconciliation_envelope_json",
+        envelope_json.len(),
+    )?;
     let envelope_digest = canonical_json_digest(&envelope)?;
     let summary_json = serde_json::to_string(&json!({
         "kind": "nir1.entity-relation.revision-summary@1",
@@ -4553,8 +4585,14 @@ pub(super) mod tests {
         NarrativeScopeCompatibilityMarkerV1, NarrativeScopeConstraintV1, NarrativeScopePrincipalV1,
         NARRATIVE_SCENE_SCOPE_REGISTRY_CONTRACT_ID,
     };
+    use grimodex_core::{canonical_json_digest, canonical_json_string};
     use rusqlite::params;
     use serde_json::{json, Value};
+
+    use super::{
+        build_typed_envelope, build_typed_material_basis, validate_live_sources,
+        StoredNir1EntityRelationPayload, ENTITY_RELATION_PRODUCER,
+    };
 
     fn valid_bundle(project_id: &str, authority_revision: String) -> EntityRelationBundle {
         EntityRelationBundle {
@@ -6550,10 +6588,48 @@ pub(super) mod tests {
         })
     }
 
-    // proposal/6 RB-1 (G-1): the writer admits exactly 512 records and
-    // 6,291,456 counted input bytes, and nothing above them.
+    // proposal/6 RB-1 (G-1): the writer admits exactly 512 records. The counted
+    // 6,291,456 B limit is still checked by `validate_entity_relation_bundle`,
+    // but since proposal/7 (RB-1) a stored payload or envelope over 6,291,456 B
+    // is refused too, and the stored payload is always larger than the counted
+    // bytes, so a Revision at exactly 6,291,456 counted bytes is no longer
+    // stored (`typed_writer_refuses_the_counted_limit_because_the_stored_payload_is_larger`).
     #[test]
-    fn typed_writer_saves_512_records_at_exactly_6_291_456_input_bytes() -> anyhow::Result<()> {
+    fn typed_writer_saves_512_records() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let template = request(&db).bundle;
+        let at_limit = bounded_writer_bundle(&template, 507, 0);
+        assert_eq!(writer_record_count(&at_limit), 512);
+        grimodex_core::narrative_nir1::validate_entity_relation_bundle(&at_limit)
+            .expect("512 records are admitted");
+
+        let mut payload = request(&db);
+        payload.bundle = at_limit;
+        let created = create_nir1_entity_relation_revision(&db, payload)
+            .expect("the 512-record typed Revision is saved");
+        let revision_id = created["revisionId"]
+            .as_str()
+            .expect("the 512-record Revision has an identity")
+            .to_owned();
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let read = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
+        })?;
+        assert!(
+            matches!(read, Nir1EntityRelationRevisionRead::Available(_)),
+            "the 512-record Revision must be readable by the A2 reader"
+        );
+        Ok(())
+    }
+
+    // proposal/7 RB-1: the counted limit still admits 6,291,456 B in the core
+    // validator, and the writer then refuses the Revision, because the stored
+    // payload (the counted strings plus the JSON around them) is over the same
+    // number. Nothing is written.
+    #[test]
+    fn typed_writer_refuses_the_counted_limit_because_the_stored_payload_is_larger(
+    ) -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
         let template = request(&db).bundle;
@@ -6562,24 +6638,20 @@ pub(super) mod tests {
         assert_eq!(writer_record_count(&at_limit), 512);
         assert_eq!(writer_input_bytes(&at_limit), MAX_GRAPH_INPUT_BYTES);
         grimodex_core::narrative_nir1::validate_entity_relation_bundle(&at_limit)
-            .expect("512 records at the exact input byte limit are admitted");
+            .expect("512 records at the exact counted limit pass the counted check");
+        let before = writer_table_counts(&db)?;
 
         let mut payload = request(&db);
         payload.bundle = at_limit;
-        let created = create_nir1_entity_relation_revision(&db, payload)
-            .expect("the exact-limit typed Revision is saved");
-        let revision_id = created["revisionId"]
-            .as_str()
-            .expect("the exact-limit Revision has an identity")
-            .to_owned();
-        approve_typed_revision(&db, "nir1-run", &created)?;
-        let read = db.with_read_transaction(|conn| {
-            read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
-        })?;
+        let error = create_nir1_entity_relation_revision(&db, payload)
+            .expect_err("the counted limit leaves a stored payload over the limit");
         assert!(
-            matches!(read, Nir1EntityRelationRevisionRead::Available(_)),
-            "the exact-limit Revision must be readable by the A2 reader"
+            error
+                .to_string()
+                .contains("NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT"),
+            "{error}"
         );
+        assert_eq!(writer_table_counts(&db)?, before);
         Ok(())
     }
 
@@ -6644,6 +6716,241 @@ pub(super) mod tests {
             assert!(conn.is_autocommit(), "a refused writer call must roll back");
             Ok(())
         })?;
+        Ok(())
+    }
+
+    /// The `payload_json` the writer would store for `bundle`: the writer
+    /// replaces the Revision identity with a 36-byte UUID, so a 36-byte stand-in
+    /// has the same length.
+    fn stored_payload_len(bundle: &EntityRelationBundle) -> anyhow::Result<usize> {
+        let mut bundle = bundle.clone();
+        bundle.revision_id = "r".repeat(36);
+        let payload = StoredNir1EntityRelationPayload {
+            schema_version: 1,
+            kind: NIR1_ENTITY_RELATION_PROPOSAL_KIND.into(),
+            producer: ENTITY_RELATION_PRODUCER.into(),
+            project_id: bundle.project_id.clone(),
+            revision_id: bundle.revision_id.clone(),
+            bundle,
+        };
+        Ok(serde_json::to_string(&serde_json::to_value(&payload)?)?.len())
+    }
+
+    /// The `reconciliation_envelope_json` the writer would store for `bundle`
+    /// under `run_id`, built by the writer's own functions.
+    fn stored_envelope_len(
+        db: &crate::Database,
+        run_id: &str,
+        bundle: &EntityRelationBundle,
+    ) -> anyhow::Result<usize> {
+        let mut bundle = bundle.clone();
+        bundle.revision_id = "r".repeat(36);
+        let payload = StoredNir1EntityRelationPayload {
+            schema_version: 1,
+            kind: NIR1_ENTITY_RELATION_PROPOSAL_KIND.into(),
+            producer: ENTITY_RELATION_PRODUCER.into(),
+            project_id: bundle.project_id.clone(),
+            revision_id: bundle.revision_id.clone(),
+            bundle: bundle.clone(),
+        };
+        let payload_value = serde_json::to_value(&payload)?;
+        let bundle_digest = canonical_json_digest(&serde_json::to_value(&bundle)?)?;
+        db.with_conn(|conn| {
+            let authority = validate_live_sources(conn, "default-project", &bundle, None)?;
+            let material = build_typed_material_basis(
+                conn,
+                "default-project",
+                &bundle,
+                &authority,
+                "2026-10-18T00:00:00.000Z",
+            )?;
+            let envelope = build_typed_envelope(
+                run_id,
+                &bundle.revision_id,
+                &payload_value,
+                &bundle_digest,
+                &material,
+                &super::typed_component_contract_digest(super::TYPED_MATERIAL_CONTRACT_VERSION)?,
+            )?;
+            Ok(canonical_json_string(&envelope)?.len())
+        })
+    }
+
+    /// Grows Alice's label by `padding` bytes, and her Codex name with it (the
+    /// writer requires the label to equal the live name). The label is in the
+    /// stored payload and nowhere in the envelope, and every padding byte is
+    /// counted once.
+    fn pad_alice_label(
+        db: &crate::Database,
+        bundle: &mut EntityRelationBundle,
+        padding: usize,
+    ) -> anyhow::Result<()> {
+        bundle.entities[0].label.push_str(&"p".repeat(padding));
+        let (label, entity_id) = (
+            bundle.entities[0].label.clone(),
+            bundle.entities[0].entity_id.clone(),
+        );
+        db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE codex_entries SET name = ?1 WHERE id = ?2",
+                params![label, entity_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// A run identity and a bundle whose stored envelope is exactly `target`
+    /// bytes. The padded Evidence identifier is stored twice in the envelope
+    /// (the Evidence reference and the dependency identifier), so a padding step
+    /// moves the envelope by two; the run identity, stored once and outside the
+    /// payload, fixes the parity.
+    pub(crate) fn envelope_bundle_of(
+        db: &crate::Database,
+        template: &EntityRelationBundle,
+        target: usize,
+    ) -> anyhow::Result<(String, EntityRelationBundle)> {
+        create_typed_run(db, "nir1-runx")?;
+        for run_id in ["nir1-run", "nir1-runx"] {
+            let base = stored_envelope_len(db, run_id, &bounded_writer_bundle(template, 2, 0))?;
+            let stepped =
+                stored_envelope_len(db, run_id, &bounded_writer_bundle(template, 2, 1000))?;
+            assert_eq!(
+                stepped - base,
+                2000,
+                "an Evidence identifier is stored twice"
+            );
+            if (target - base).is_multiple_of(2) {
+                let bundle = bounded_writer_bundle(template, 2, (target - base) / 2);
+                assert_eq!(stored_envelope_len(db, run_id, &bundle)?, target);
+                return Ok((run_id.to_owned(), bundle));
+            }
+        }
+        anyhow::bail!("no run identity reaches an envelope of {target} B")
+    }
+
+    fn stored_lengths(db: &crate::Database, revision_id: &str) -> anyhow::Result<(i64, i64)> {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT octet_length(payload_json), octet_length(reconciliation_envelope_json)
+                   FROM narrative_proposal_revisions WHERE id = ?1",
+                [revision_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+    }
+
+    // proposal/7 RB-1 (C1): a stored payload one byte over 6,291,456 B is not
+    // saved, although the counted bytes and records are inside their limits.
+    // The refused call leaves every table and the existing Revision unchanged.
+    #[test]
+    fn writer_rejects_a_stored_payload_over_6291456_bytes() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let existing = create_nir1_entity_relation_revision(&db, request(&db))?;
+        let existing_id = existing["revisionId"].as_str().unwrap().to_owned();
+        let existing_payload = writer_stored_payload(&db, &existing_id)?;
+
+        let mut bundle = request(&db).bundle;
+        let base = stored_payload_len(&bundle)?;
+        pad_alice_label(&db, &mut bundle, MAX_GRAPH_INPUT_BYTES + 1 - base)?;
+        assert_eq!(stored_payload_len(&bundle)?, MAX_GRAPH_INPUT_BYTES + 1);
+        assert!(writer_input_bytes(&bundle) <= MAX_GRAPH_INPUT_BYTES);
+        assert!(writer_record_count(&bundle) <= 512);
+        let before = writer_table_counts(&db)?;
+
+        let mut payload = request(&db);
+        payload.bundle = bundle;
+        let error = create_nir1_entity_relation_revision(&db, payload)
+            .expect_err("a stored payload over the limit must not be saved");
+        assert!(
+            error
+                .to_string()
+                .contains("NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT"),
+            "{error}"
+        );
+        assert_eq!(writer_table_counts(&db)?, before, "no partial rows");
+        assert_eq!(writer_stored_payload(&db, &existing_id)?, existing_payload);
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit(), "a refused writer call must roll back");
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    // proposal/7 RB-1 (C1): a stored envelope one byte over 6,291,456 B is not
+    // saved. The payload of this shape is about half the limit.
+    #[test]
+    fn writer_rejects_a_stored_envelope_over_6291456_bytes() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let existing = create_nir1_entity_relation_revision(&db, request(&db))?;
+        let existing_id = existing["revisionId"].as_str().unwrap().to_owned();
+        let existing_payload = writer_stored_payload(&db, &existing_id)?;
+
+        let template = request(&db).bundle;
+        let (run_id, bundle) = envelope_bundle_of(&db, &template, MAX_GRAPH_INPUT_BYTES + 1)?;
+        assert!(stored_payload_len(&bundle)? <= MAX_GRAPH_INPUT_BYTES);
+        assert!(writer_input_bytes(&bundle) <= MAX_GRAPH_INPUT_BYTES);
+        let before = writer_table_counts(&db)?;
+
+        let mut payload = request_for_run(&db, &run_id, "nir1:review:envelope-over");
+        payload.bundle = bundle;
+        let error = create_nir1_entity_relation_revision(&db, payload)
+            .expect_err("a stored envelope over the limit must not be saved");
+        assert!(
+            error
+                .to_string()
+                .contains("NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT"),
+            "{error}"
+        );
+        assert_eq!(writer_table_counts(&db)?, before, "no partial rows");
+        assert_eq!(writer_stored_payload(&db, &existing_id)?, existing_payload);
+        db.with_conn(|conn| {
+            assert!(conn.is_autocommit(), "a refused writer call must roll back");
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    // proposal/7 RB-1 (C2): a Revision whose stored payload and stored envelope
+    // are each exactly 6,291,456 B is saved, and the A2 reader reads it.
+    #[test]
+    fn writer_stores_a_payload_and_envelope_at_exactly_6291456_bytes() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let template = request(&db).bundle;
+        let (run_id, mut bundle) = envelope_bundle_of(&db, &template, MAX_GRAPH_INPUT_BYTES)?;
+        let base = stored_payload_len(&bundle)?;
+        assert!(base <= MAX_GRAPH_INPUT_BYTES);
+        pad_alice_label(&db, &mut bundle, MAX_GRAPH_INPUT_BYTES - base)?;
+        assert_eq!(stored_payload_len(&bundle)?, MAX_GRAPH_INPUT_BYTES);
+        assert_eq!(
+            stored_envelope_len(&db, &run_id, &bundle)?,
+            MAX_GRAPH_INPUT_BYTES,
+            "the label is not in the envelope"
+        );
+        assert!(writer_input_bytes(&bundle) <= MAX_GRAPH_INPUT_BYTES);
+
+        let mut payload = request_for_run(&db, &run_id, "nir1:review:exact");
+        payload.bundle = bundle;
+        let created = create_nir1_entity_relation_revision(&db, payload)
+            .expect("a payload and envelope of exactly the limit are saved");
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        assert_eq!(
+            stored_lengths(&db, &revision_id)?,
+            (
+                i64::try_from(MAX_GRAPH_INPUT_BYTES)?,
+                i64::try_from(MAX_GRAPH_INPUT_BYTES)?
+            )
+        );
+        approve_typed_revision(&db, &run_id, &created)?;
+        let read = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
+        })?;
+        assert!(
+            matches!(read, Nir1EntityRelationRevisionRead::Available(_)),
+            "the exact-limit Revision must be readable by the A2 reader"
+        );
         Ok(())
     }
 
@@ -11311,20 +11618,35 @@ pub(super) mod tests {
         assert!(!baseline.roster.is_empty());
 
         // A draft whose payload is over the component limit, and a rejected
-        // Revision that the writer accepted as it is (3 MiB of counted bytes,
-        // half of the writer limit) whose stored envelope is over it: the
-        // envelope carries about twice the counted bytes for this shape.
-        // Neither is ever qualified, whatever its size.
+        // Revision whose stored envelope is over it. Neither is ever
+        // qualified, whatever its size. The writer no longer produces either
+        // shape (RB-1 refuses a stored payload or envelope over the limit), so
+        // both stand for Revisions stored before that check: the payload is
+        // padded by `pad_payload`, and the envelope, which a trigger keeps
+        // immutable, is padded with the trigger removed from this database.
         let draft = create_nir1_entity_relation_revision(
             &db,
             request_for_run(&db, "nir1-run", "nir1:review:oversized-draft"),
         )?;
         pad_payload(&revision_id(&draft)?)?;
-        let mut oversized = request_for_run(&db, "nir1-run", "nir1:review:oversized-rejected");
-        let template = oversized.bundle.clone();
-        let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
-        oversized.bundle = bounded_writer_bundle(&template, 507, 3 * 1024 * 1024 - base);
-        let rejected = create_nir1_entity_relation_revision(&db, oversized)?;
+        let rejected = create_nir1_entity_relation_revision(
+            &db,
+            request_for_run(&db, "nir1-run", "nir1:review:oversized-rejected"),
+        )?;
+        db.with_conn(|conn| {
+            conn.execute_batch("DROP TRIGGER narrative_revision_envelope_immutable_update")?;
+            conn.execute(
+                "UPDATE narrative_proposal_revisions
+                    SET reconciliation_envelope_json =
+                        reconciliation_envelope_json || printf('%.*c', ?1, ' ')
+                  WHERE id = ?2",
+                params![
+                    i64::try_from(MAX_GRAPH_INPUT_BYTES)? + 1,
+                    revision_id(&rejected)?
+                ],
+            )?;
+            Ok::<_, anyhow::Error>(())
+        })?;
         let (payload_bytes, envelope_bytes): (i64, i64) = db.with_conn(|conn| {
             conn.query_row(
                 "SELECT octet_length(payload_json), octet_length(reconciliation_envelope_json)
@@ -12613,6 +12935,7 @@ pub(super) mod tests {
                 "default-project",
                 &mut control,
                 &mut scope,
+                None,
             )
         })?;
         db.with_conn(|conn| {

@@ -26,7 +26,7 @@ use super::{
     Nir1GraphRequest, QUERY_DEADLINE,
 };
 
-const PARENT_BYTES: usize = 1_572_864;
+const PARENT_BYTES: usize = 3 * 1024 * 1024;
 pub const REQUEST_BYTES: usize = 8_192;
 const REQUEST_CAPACITY_BYTES: usize = REQUEST_BYTES;
 const START_TIMEOUT: Duration = Duration::from_secs(30);
@@ -180,6 +180,9 @@ fn startup_exit_error_from_bytes(bytes: &[u8]) -> anyhow::Error {
         }
         b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED\n" => {
             "NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED"
+        }
+        b"NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT\n" => {
+            "NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT"
         }
         _ => return anyhow!("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY"),
     };
@@ -3002,7 +3005,9 @@ pub fn classify_c_query_failure(error: &anyhow::Error) -> CQueryFailure {
     {
         return CQueryFailure::CapacityBusy;
     }
-    if text.contains("NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED") {
+    if text.contains("NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED")
+        || text.contains("NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT")
+    {
         return CQueryFailure::StartupRegistrationRefused;
     }
     if error
@@ -3885,6 +3890,26 @@ mod tests {
                 b"NIR1_C_QUERY_STARTUP_CANONICAL_REGISTRATION_REFUSED\n"
             )),
             CQueryFailure::StartupRegistrationRefused
+        );
+        // CQ-LIM-2: a registration that ends before READY because an approved
+        // Revision is over the per-Revision limit is the same closed refusal,
+        // from a fixed marker only: nothing else the worker writes is passed on.
+        let over_limit = startup_exit_error_from_bytes(
+            b"NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT\n",
+        );
+        assert!(format!("{over_limit:#}")
+            .contains("NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT"));
+        assert_eq!(
+            classify_c_query_failure(&over_limit),
+            CQueryFailure::StartupRegistrationRefused
+        );
+        let forged = startup_exit_error_from_bytes(
+            b"NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT secret\n",
+        );
+        assert!(!format!("{forged:#}").contains("secret"));
+        assert_eq!(
+            classify_c_query_failure(&forged),
+            CQueryFailure::WorkerStartup
         );
         assert_eq!(
             classify_c_query_failure(&startup_exit_error_from_bytes(b"")),

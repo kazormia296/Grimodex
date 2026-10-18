@@ -886,7 +886,7 @@ test("C-query opt-in scripts fail closed and preserve the original default comma
     "native_worker_returns_fixed_q2_frame_from_real_workspace_owner",
     "native_worker_quarantines_live_request_writer_after_cleanup_timeout",
     "native_worker_returns_canonical_512_a3_eligible_seed_local_graph",
-    "native_worker_refuses_exact_513_seed_local_unrelated_reverse_index_edge",
+    "native_worker_refuses_exact_2049_seed_local_unrelated_reverse_index_edges",
     "native_worker_crashes_after_q2_ack_before_frame",
     "native_worker_refuses_after_actual_sql_steps_over_cap",
     "native_worker_rejects_request_and_frame_length_n_plus_one",
@@ -959,6 +959,8 @@ else if (args[0] === 'run') {
       if (process.env.FAIL_PHASE === 'sidecar') fs.writeFileSync(file + '-wal', 'sidecar');
     }
   }
+  // Real cargo prints this per test binary; a filter that matches nothing prints "0 passed".
+  console.log(process.env.MOCK_ZERO_TESTS === '1' ? 'test result: ok. 0 passed; 0 failed;' : 'test result: ok. 1 passed; 0 failed;');
 } else process.exit(96);
 `;
     for (const command of ["uname", "cygpath", "mktemp", "cargo"]) {
@@ -1010,6 +1012,12 @@ else if (args[0] === 'run') {
       const failedTests = (await recorded()).filter(({ command, args }) => command === "cargo" && args[0] === "test");
       assert.deepEqual(failedTests.map(({ args }) => args[args.indexOf("--") - 1]), [...frameLifecycleCases.slice(0, runnerOS === "Linux" ? 2 : 1), requestWriterPanic]);
       assert.deepEqual(await readdir(fixtureRoot), [], "final panic-test failure must retain owned EXIT cleanup");
+    }
+    // A name filter that matches no test makes cargo pass with "0 passed": the script must fail.
+    for (const args of [[], ...optInArgs.map((arg) => [arg])]) {
+      await writeFile(calls, "");
+      await assert.rejects(shell(args, { MOCK_ZERO_TESTS: "1" }), (error) => error.code === 1, `${args[0] ?? "default"} accepted a filter that ran 0 tests`);
+      assert.deepEqual(await readdir(fixtureRoot), []);
     }
     for (const arg of optInArgs) {
       for (const phase of ["report", "build", "test", "input", "source", ...(arg === "practical-retention" ? [] : ["sidecar"])]) {
@@ -1074,6 +1082,24 @@ test("the lifecycle lane runs the real-worker per-Revision preflight boundary on
   }
   // The runner gives each case its own input copy and the normal-build worker path.
   assert.match(normalBuildRegion, /run_lifecycle_case "\$name" "\$q2_fixture_file" "\$q2_fixture_checksum"/u);
+  // CQ-LIM-2: the registration cases on the worker's Q 16 MiB and Native 3 MiB. A
+  // filter that matched nothing would pass with zero tests, so each name is run
+  // exactly once, after the registry33 case and before the seam build, and is an
+  // ignored test of the file that defines it.
+  const registrationCases = [
+    ["native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit", "tests.rs"],
+    ["native_worker_registers_multiple_payload_shaped_revisions", "tests.rs"],
+    ["cq_avail::native_worker_registers_multiple_product_shaped_revisions", "tests/cq_avail.rs"],
+    ["native_worker_registration_does_not_load_a_revision_over_the_preflight_limit", "tests.rs"],
+    ["native_worker_registration_refuses_a_payload_shaped_revision_before_it_runs_out_of_memory", "tests.rs"],
+  ];
+  for (const [name, file] of registrationCases) {
+    assert.equal(lifecycle.split(name).length - 1, 1, `${name} is run exactly once`);
+    assert.ok(normalBuildRegion.includes(name), `${name} runs after the registry33 case and before the seam build`);
+    const definingFile = await readFile(path.join(repoRoot, "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph", file), "utf8");
+    const bare = name.replace(/^cq_avail::/u, "");
+    assert.match(definingFile, new RegExp(`#\\[test\\]\\s*#\\[ignore = "[^"]*"\\]\\s*fn ${bare}\\(\\s*\\)`, "u"));
+  }
 });
 
 test("grouped setup observations preserve contracts/defaults and exclude other profiles", async () => {

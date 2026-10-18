@@ -20,7 +20,7 @@ case の class は [l6-l9 実行計画](../../docs/plans/nir1-l6-l9-execution-pl
 | ---- | -------------------------------------------- | ---------- | ---------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------- |
 | G-01 | 実在Entity seedの1-hop direct                | 補完可能   | 事前指定改善（`g01-mira` の追加）              | 名前だけの seed、未知 ID                                         | `evals/nir1-g01/fixture.v1.json`         |
 | G-02 | directed Relationの向き                      | 補完可能   | 保存方向の `trained`、symmetric の両方向       | 逆向き edge、承認後に型を変えた edge                             | `g02-directed-relation.v1.json`          |
-| G-03 | bounded 2-hop path                           | Raw満杯    | 1hop と 2hop の path 付加                      | 3hop、frontier 超過（発見 16 件）                                | `g03-bounded-two-hop.v1.json`            |
+| G-03 | bounded 2-hop path                           | Raw満杯    | 1hop と 2hop の path 付加                      | 3hop、frontier 超過（発見 54 件）                                | `g03-bounded-two-hop.v1.json`            |
 | G-04 | Scope exact／unknown                         | IR補完済み | 全軸 exact 一致                                | worldline 不一致、unresolved、unknown marker、character holder   | `g04-scope-exact-unknown.v1.json`        |
 | G-05 | current Revision／Freshness                  | IR補完済み | 現行・承認済み・Fresh、再承認後の現行 Evidence | stale、旧 Revision だけの承認、却下、置換前 Revision の Evidence | `g05-current-revision-freshness.v1.json` |
 | G-06 | Evidence anchor／path                        | Raw満杯    | Evidence 付きの 1hop／2hop path                | Revision のない Relation、名前だけの言及、同名の別 Entity        | `g06-evidence-anchor-path.v1.json`       |
@@ -122,7 +122,7 @@ Raw と IR の membership は入力（設計上の予測）として扱い、計
 | 不適格 Revision                 | 上の規則で資格を得ない Revision は、その Revision だけを除外し、frontier に寄与させない。Graph 全体を unavailable にはしない。製品の Disclosure read が Revision ごとに Unavailable を返しても、その Revision の除外と読む                                                                                                                                     | l6-l9 L7（seed-local query は適格 frontier に接続する行だけを取得し、不適格行は read／admission を消費するだけ）                                                                        |
 | 向き                            | directed は保存方向だけ、symmetric は両方向に辿る                                                                                                                                                                                                                                                                                                              | l6-l9 L7                                                                                                                                                                                |
 | 範囲                            | 最大 2hop。不適格な edge や Entity を橋にしない                                                                                                                                                                                                                                                                                                                | l6-l9 L7、post-B §6.2                                                                                                                                                                   |
-| 上限                            | 発見 Entity が 12、適格 edge 展開が 144 を超えたら、Graph 全体を unavailable にする。上位 12 件への切り詰めも部分 Graph とみなす                                                                                                                                                                                                                               | graph-limited-binding、post-B §6.2                                                                                                                                                      |
+| 上限                            | 発見 Entity が 50、適格 edge 展開が 512 を超えたら、Graph 全体を unavailable にする。上位 50 件への切り詰めも部分 Graph とみなす                                                                                                                                                                                                                               | graph-limited-binding、post-B §6.2                                                                                                                                                      |
 | 対応付け                        | 到達した非 seed Entity の明示 pin だけを Scene に対応付ける。名前の一致や本文中の言及は使わない                                                                                                                                                                                                                                                                | 接続候補 §1・§6                                                                                                                                                                         |
 | frame と資格判定の順（K1 既定） | 到達 Entity（hop 1 以上）の pin を予算内で全件列挙し、Scene ごとに tuple 最小の path を代表にする。tuple＝（hop、traversal 順の edge ID 列、到達 Entity ID、Scene ID）を UTF-8 byte 順に並べ、先頭 8 件（N_F＝8）を parent に渡す。parent は先頭から資格を判定し、R+IR の Scene に path を付け、追加できるときは最初に Eligible になった Scene を 1 件追加する | DSN（`docs/plans/nir1-dsn-2026-10.md`）§2.2〜§2.3、接続候補 §6。K1 は逸脱案（N_F＞8）なしで確認済み                                                                                     |
 | 融合                            | R+IR を保持する。追加は R+IR が 8 件未満で、IR が共通追加枠を使っていないときの 1 件だけ。excerpt は最初の非空行。「IR が共通追加枠を使っていない」とは IR 種別の行が無いことで、R+IR の kind（raw／fused）は問わない                                                                                                                                          | 接続候補 §2・§6、post-B §7.2、SPIKE S1 §5                                                                                                                                               |
@@ -149,9 +149,10 @@ K1 既定規則の適用範囲：
    - 通常 writer が承認済み Relation の型編集を拒否したら refused-at-setup とし、寄与 0 のままとする。
 3. **G-03 の frontier 超過**（採用）：文書の「limit 超過は Graph 寄与 0」と「部分 Graph を返さない」から、Graph 全体の unavailable とした。
    - 製品の traversal も、上限に達すると切り詰めずに Err を返す（`nir1_graph.rs` の `NIR1_GRAPH_NODE_LIMIT`）。
-   - 12 件の数え方（seed を含めるかどうか）に依存しないよう、発見数は 2（base）と 16（超過）にした。
-   - 16 は規則から導いた説明値で、runtime とは比較しない。製品は上限で止まるので、16 は観測されない。
-   - 上位 12 件に切り詰めて部分 Graph を返す実装が現れたら Hold とし、規則を観測後に読み替えない。
+   - 50 件の数え方（seed を含めるかどうか）に依存しないよう、発見数は 2（base）と 54（超過）にした。54 は上限 50 に 4 を足した値で、seed を含めても除いても 50 を超える。edge 展開は 54 で、上限 512 の内にある。
+   - 54 は規則から導いた説明値で、runtime とは比較しない。製品は上限で止まるので、54 は観測されない。
+   - 上限の値は proposal/7（`graph-limited-binding` の改訂。2026-10-17 の Session B2 で確認済み）による。以前の 12 件と 144 展開（発見 16 件）の期待値は置き換えた。
+   - 上位 50 件に切り詰めて部分 Graph を返す実装が現れたら Hold とし、規則を観測後に読み替えない。
 4. **G-07 の開示済み secret**（採用）：A6「秘密は既存reveal規則の範囲」の正本は `read_a3_reveal_state` である。validator の判定はこの規則（上の表の secret／reveal 行）に揃えた。
    - G-07 の 3 配置では、作成時の保守的な判定と結論が変わらない。Rhea は payoff が 30 で S2 より前かつ確定、Hask は payoff が 120 で S2 より後、Nim は payoff Scene がなく未確定である。
    - payoff が S2 自身、未確定の payoff Scene が S2 より前、payoff Scene なしで確定、abandoned の各分岐は、`contract.test.mjs` で検査する。
@@ -232,7 +233,7 @@ K1 既定規則の適用範囲：
 ## 独立期待値レビューと freeze
 
 - **レビューの担当**：fixture の作成者でも、要求された変更を反映した担当でもない、read-only の担当である。
-  - 2 回とも、文書の規則と fixture から期待値を導き直した。一部の規則は製品コードで裏付けた。
+  - 3 回とも、文書の規則と fixture から期待値を導き直した。3 回目は作成者の判断記録（`cq-lim-decisions.md`）も読んでいない。一部の規則は製品コードで裏付けた。
   - 候補の worktree は編集していない。Graph runtime を実行しておらず、その出力（worker の frame、Graph 付きの Related Scenes の結果、`.artifacts` の Graph 出力）と CP-1 の worktree も読んでいない。
   - model と effort は freeze の記録にある。
 - **1 回目**：changes-required。G-02、G-03、G-06、G-07、G-08 は approve で、G-04 と G-05 には IR admission を前提条件にすることを求めた。要求は 10 件である。
@@ -240,14 +241,19 @@ K1 既定規則の適用範囲：
   - 要求はすべて反映した。fixture の本体は変えず、変えたのは前提条件の field と `measurementBoundary` の文言だけである。
 - **2 回目**：approve。G-02〜G-08 のすべてを approve とし、残る要求はない。
   - case ごとの判定と導出、解釈についての判断は、[`freeze.v1.json`](freeze.v1.json) の `independentExpectationReview` にレビューの結果のまま記録した。承認した時点の各ファイルの sha256 も同じところにある。
+- **3 回目**：approve。G-03 を proposal/7 の Entity 上限 50 に合わせて作り直した（frontier-exceeded は発見 54 件・limit 50。正例と他の負例は同一）。
+  - G-03 の期待値を規則だけから導き直し、fixture と一致した。P0〜P2 の欠陥はなく、残る要求もない。
+  - 発見が 2 件の base と 54 件の超過は、上限の値（50）そのものは判別しない。上限ちょうど（50 は available、51 は unavailable）の N／N+1 は CQ-LIM-1 の製品側の試験で見る（P3、今回は直さない）。
+  - G-02 と G-04〜G-08 は、2 回目が承認した bytes のまま変えていないので、3 回目の記録では 2 回目の approve を引き継いだ（case の `notes` に明記）。
+  - 3 回目の reviewer は Graph runtime を実行しておらず、その出力も読んでいない。
 - **承認の後の変更**：期待値を持たない部分だけを変えた。
-  - manifest は `independentExpectationReview` の欄だけで、判定を approve にし、2 回の経緯を書いた。
-  - README は「CP-0 で行わなかった作業」とこの節だけである。
-  - validator には、承認と freeze の整合の検査を足した。
-  - fixture、`schema.v1.json`、1 回目のレビュー記録は、承認した時点の bytes のままである。
+  - manifest は `independentExpectationReview` の欄だけで、3 回の経緯を書いた。
+  - README はこの節だけである。
+  - validator は 3 回目の承認の後に変えていない（3 回目のレビューが読んだ版のまま）。
+  - fixture、`schema.v1.json`、1 回目のレビュー記録は、3 回目が承認した時点の bytes のままである。
 - **freeze**：[`freeze.v1.json`](freeze.v1.json)（`nir1-graph-freeze/1`）が次を束縛する。
   - manifest、G-01〜G-08 の fixture、`schema.v1.json`、この README の sha256。
-  - 1 回目のレビュー記録とその sha256。2 回目（承認）の記録、承認した時点の sha256、承認の後に変えた範囲。
+  - 1 回目のレビュー記録とその sha256。最後（3 回目、承認）の記録、承認した時点の sha256、承認の後に変えた範囲。2 回目までの記録も残す。
   - reviewer、`reviewVerdict`、`frozenAt`、`baselineHead`（a153743b）、IR admission probe の状態、`graphRuntimeObservedBeforeFreeze: false`。
 - **validator の検査**：
   - freeze がある場合は、次を求める。

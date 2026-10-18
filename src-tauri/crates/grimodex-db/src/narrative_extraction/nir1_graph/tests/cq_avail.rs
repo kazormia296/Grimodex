@@ -21,6 +21,9 @@ const UNCAPPED_SQL_STEPS: u64 = 100_000_000;
 /// Generous on purpose: the shapes must not depend on the 100 ms production
 /// lease, which is tested on its own.
 const DEADLINE: Duration = Duration::from_secs(30);
+/// The number of shapes in `cq_opt::shapes()`. Fixed so that dropping one fails
+/// the comparison test instead of shrinking it.
+const SHAPES_COUNT: usize = 15;
 
 /// How the review Scene of each approved Codex review is chosen.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -40,8 +43,46 @@ impl ReviewMode {
     }
 }
 
+/// The cast and summary length of a novel-shaped project. `DEFAULT` is the
+/// CQ-AVAIL original (five main and fifteen minor characters, short summaries);
+/// the larger casts and 2,000-character summaries are proposal/7's unmeasured
+/// combination (CQ-LIM-2 B5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NovelShape {
+    mains: usize,
+    minors: usize,
+    /// Characters of each Entity's summary; 0 keeps the original short ones.
+    summary_chars: usize,
+}
+
+impl NovelShape {
+    const DEFAULT: Self = Self {
+        mains: 5,
+        minors: 15,
+        summary_chars: 0,
+    };
+
+    /// An Entity's summary: `base` as it was, grown to `summary_chars`.
+    fn summary(self, base: &str) -> String {
+        if self.summary_chars <= base.chars().count() {
+            return base.to_owned();
+        }
+        let filler = "彼女は静かに窓の外を見つめ、過去の約束と未来への不安を胸に抱きながら、物語の行方を思い描いていた。";
+        let mut text = base.to_owned();
+        while text.chars().count() < self.summary_chars {
+            text.push_str(filler);
+        }
+        text.chars().take(self.summary_chars).collect()
+    }
+}
+
 /// Characters appearing in Scene `index` (deterministic, protagonist-centric).
 fn scene_cast(index: usize) -> Vec<String> {
+    scene_cast_for(index, NovelShape::DEFAULT)
+}
+
+fn scene_cast_for(index: usize, shape: NovelShape) -> Vec<String> {
+    let NovelShape { mains, minors, .. } = shape;
     let mut cast = Vec::new();
     if index % 5 != 4 {
         cast.push("m1".to_owned());
@@ -58,12 +99,23 @@ fn scene_cast(index: usize) -> Vec<String> {
     if matches!(index % 10, 4 | 9) {
         cast.push("m5".to_owned());
     }
-    cast.push(format!("c{:02}", index % 15 + 1));
+    for extra in 6..=mains {
+        if (index + extra).is_multiple_of(4) {
+            cast.push(format!("m{extra}"));
+        }
+    }
+    cast.push(format!("c{:02}", index % minors + 1));
+    if (mains, minors) != (5, 15) {
+        cast.push(format!("c{:02}", (index * 7 + 3) % minors + 1));
+        cast.dedup();
+    }
     cast
 }
 
-/// Seven main-main Relations and one main for each of fifteen minor characters.
-fn novel_relations() -> Vec<(String, String, String)> {
+/// Seven main-main Relations, one for each main past the fifth, and one main for
+/// each minor character.
+fn novel_relations_for(shape: NovelShape) -> Vec<(String, String, String)> {
+    let NovelShape { mains, minors, .. } = shape;
     let mut relations = Vec::new();
     for (from, to) in [
         ("m1", "m2"),
@@ -76,8 +128,13 @@ fn novel_relations() -> Vec<(String, String, String)> {
     ] {
         relations.push((format!("r-{from}-{to}"), from.to_owned(), to.to_owned()));
     }
-    for minor in 1..=15usize {
-        let main = format!("m{}", (minor - 1) / 3 + 1);
+    for extra in 6..=mains {
+        let from = format!("m{extra}");
+        let to = format!("m{}", extra - 1);
+        relations.push((format!("r-{from}-{to}"), from, to));
+    }
+    for minor in 1..=minors {
+        let main = format!("m{}", (minor - 1) * mains / minors + 1);
         let minor = format!("c{minor:02}");
         relations.push((format!("r-{main}-{minor}"), main, minor));
     }
@@ -165,6 +222,15 @@ impl Novel {
 /// Returns the fixture, the number of reviews each character appears in and
 /// every review.
 fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Novel> {
+    novel_fixture_shaped(scenes, chapters, mode, NovelShape::DEFAULT)
+}
+
+fn novel_fixture_shaped(
+    scenes: usize,
+    chapters: usize,
+    mode: ReviewMode,
+    shape: NovelShape,
+) -> Result<Novel> {
     use crate::narrative_extraction::nir1_entity_relation::prepare_nir1_entity_relation_revision;
     use crate::narrative_extraction::Nir1EntityRelationRevisionPrepareRequest;
     let directory = TestDirectory(
@@ -206,25 +272,25 @@ fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Nov
                 scene_ids.push(scene_id);
             }
         }
-        for main in 1..=5 {
+        for main in 1..=shape.mains {
             conn.execute(
                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
                  VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
                 params![
                     format!("m{main}"),
                     format!("主要人物{main}"),
-                    format!("主要人物{main}の要約。物語の中心にいる。")
+                    shape.summary(&format!("主要人物{main}の要約。物語の中心にいる。"))
                 ],
             )?;
         }
-        for minor in 1..=15 {
+        for minor in 1..=shape.minors {
             conn.execute(
                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
                  VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
                 params![
                     format!("c{minor:02}"),
                     format!("脇役{minor:02}"),
-                    format!("脇役{minor:02}の要約。")
+                    shape.summary(&format!("脇役{minor:02}の要約。"))
                 ],
             )?;
         }
@@ -243,7 +309,7 @@ fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Nov
                      '2026-09-12T00:00:00Z')",
             [],
         )?;
-        for (edge, from, to) in novel_relations() {
+        for (edge, from, to) in novel_relations_for(shape) {
             conn.execute(
                 "INSERT INTO codex_relations
                     (id, project_id, from_codex_id, to_codex_id, relation_type,
@@ -259,14 +325,14 @@ fn novel_fixture(scenes: usize, chapters: usize, mode: ReviewMode) -> Result<Nov
         explicit_scope(&db, scene_id, ordinal)?;
     }
     drain_freshness(&db)?;
-    let relations = novel_relations();
+    let relations = novel_relations_for(shape);
     let mut appearances = BTreeMap::new();
     let mut made = Vec::new();
     let mut first_revision = String::new();
     // (review Scene, entity ids, relation ids)
     let mut reviews: Vec<(String, Vec<String>, Vec<String>)> = Vec::new();
     for (index, scene_id) in scene_ids.iter().enumerate() {
-        let cast = scene_cast(index);
+        let cast = scene_cast_for(index, shape);
         let relation_ids = relations
             .iter()
             .filter(|(_, from, to)| cast.contains(from) && cast.contains(to))
@@ -1244,6 +1310,17 @@ fn run_measured(
 fn shared_reads_return_the_response_of_reading_per_revision_on_every_shape() -> Result<()> {
     use super::cq_opt::{request_variants, shapes};
     let mut compared = 0;
+    // A shape dropped from shapes() must not shrink the comparison unnoticed:
+    // the derived count below follows shapes(), so the count of shapes is fixed
+    // here as well.
+    assert_eq!(shapes().len(), SHAPES_COUNT, "the shape list changed");
+    // Every shape on both lanes: the plain seed query, and every request
+    // variant for the shapes that fix those too.
+    let expected: usize = shapes()
+        .iter()
+        .map(|shape| if shape.all_requests { request_variants().len() } else { 1 })
+        .sum::<usize>()
+        * 2;
     for shape in shapes() {
         let fixture = (shape.build)()?;
         for lane in [Lane::Reader, Lane::Worker] {
@@ -1260,7 +1337,7 @@ fn shared_reads_return_the_response_of_reading_per_revision_on_every_shape() -> 
             }
         }
     }
-    assert_eq!(compared, 44);
+    assert_eq!(compared, expected);
     Ok(())
 }
 
@@ -1494,51 +1571,72 @@ fn rows_charged_by_the_seed_query(fixture: &Fixture) -> Result<(usize, usize)> {
     })
 }
 
-// The record budget is read/admission 512, counted over everything the query
-// reads: the rows of the candidates it pages through, of each Revision, and
-// the project-level rows of the Revisions once. Exactly 512 is admitted and
-// 513 refuses the whole Graph, wherever the extra row comes from.
+// The record budget is read/admission 2,048 (proposal/7; one Revision's own 512
+// is the writer's and A2's bound, not this one), counted over everything the
+// query reads: the rows of the candidates it pages through, of each Revision,
+// and the project-level rows of the Revisions once. Exactly 2,048 is admitted
+// and 2,049 refuses the whole Graph, wherever the extra row comes from. The
+// two are separate tests: the limit's refusal does not stand in for its
+// admission.
+//
+// The worker's reader only: it is the production configuration, whose fixed
+// arena replaces the ordinary reader's transient reserve (8 x the raw bytes +
+// 4 KiB per row), and that estimate alone is over the 6,291,456 B ledger before
+// 2,048 rows, so the ordinary reader refuses for it first. The ordinary reader
+// is not a product path.
+const BUDGET_REVISIONS: usize = 10;
+
+fn record_budget_query(decoys_over: usize) -> Result<(usize, Nir1GraphResponse)> {
+    let (base, shared) = rows_charged_by_the_seed_query(&budget_fixture(BUDGET_REVISIONS, 0)?)?;
+    assert!(
+        base + 300 < MAX_GRAPH_QUERY_RECORDS,
+        "{base} rows to start from"
+    );
+    let decoys = MAX_GRAPH_QUERY_RECORDS - base + decoys_over;
+    let fixture = budget_fixture(BUDGET_REVISIONS, decoys)?;
+    let (rows, shared_rows) = rows_charged_by_the_seed_query(&fixture)?;
+    assert_eq!(
+        rows,
+        MAX_GRAPH_QUERY_RECORDS + decoys_over,
+        "the fixture is at the boundary"
+    );
+    assert_eq!(shared_rows, shared);
+    let response = run_query(&fixture, Lane::Worker, &request_for("nir1-alice", "nir1"))?;
+    Ok((rows, response))
+}
+
 #[test]
-fn the_record_budget_admits_512_and_refuses_513_with_the_shared_rows_counted_once() -> Result<()> {
-    const REVISIONS: usize = 10;
-    let (base, shared) = rows_charged_by_the_seed_query(&budget_fixture(REVISIONS, 0)?)?;
-    assert!(base + 300 < MAX_GRAPH_RECORDS, "{base} rows to start from");
-    let request = request_for("nir1-alice", "nir1");
-    for (decoys_over, expected) in [(0usize, "available"), (1, "unavailable")] {
-        for lane in [Lane::Reader, Lane::Worker] {
-            let decoys = MAX_GRAPH_RECORDS - base + decoys_over;
-            let fixture = budget_fixture(REVISIONS, decoys)?;
-            let (rows, shared_rows) = rows_charged_by_the_seed_query(&fixture)?;
-            assert_eq!(
-                rows,
-                MAX_GRAPH_RECORDS + decoys_over,
-                "the fixture is at the boundary"
-            );
-            assert_eq!(shared_rows, shared);
-            let response = run_query(&fixture, lane, &request)?;
-            assert_eq!(
-                response.status, expected,
-                "{lane:?}: {rows} rows: {:?}",
-                response.reason
-            );
-            if expected == "unavailable" {
-                assert!(response.graph.is_none());
-                if lane == Lane::Worker {
-                    assert!(
-                        response.reason.as_deref().is_some_and(|reason| {
-                            reason.starts_with("query-worker-work-")
-                                && reason.contains("record-limit")
-                        }),
-                        "{:?}",
-                        response.reason
-                    );
-                }
-            } else {
-                let graph = response.graph.as_ref().expect("an available Graph");
-                assert_eq!((graph.nodes.len(), graph.edges.len()), (2, REVISIONS));
-            }
-        }
-    }
+fn query_records_at_2048_is_available() -> Result<()> {
+    let (rows, response) = record_budget_query(0)?;
+    assert_eq!(
+        response.status, "available",
+        "{rows} rows: {:?}",
+        response.reason
+    );
+    let graph = response.graph.as_ref().expect("an available Graph");
+    assert_eq!(
+        (graph.nodes.len(), graph.edges.len()),
+        (2, BUDGET_REVISIONS)
+    );
+    Ok(())
+}
+
+#[test]
+fn query_records_at_2049_refuses_the_whole_graph() -> Result<()> {
+    let (rows, response) = record_budget_query(1)?;
+    assert_eq!(
+        response.status, "unavailable",
+        "{rows} rows: {:?}",
+        response.reason
+    );
+    assert!(response.graph.is_none());
+    assert!(
+        response.reason.as_deref().is_some_and(|reason| {
+            reason.starts_with("query-worker-work-") && reason.contains("record-limit")
+        }),
+        "{:?}",
+        response.reason
+    );
     Ok(())
 }
 
@@ -1688,7 +1786,11 @@ fn a_broken_scope_authority_leaves_every_revision_unavailable_shared_or_not() ->
         for revision in revisions {
             let own = evaluate_nir1_entity_relation_disclosure(conn, PROJECT, &revision, "nir1")?;
             let shared = evaluate_nir1_entity_relation_disclosure_for_graph(
-                conn, PROJECT, &revision, "nir1", Some(&shared),
+                conn,
+                PROJECT,
+                &revision,
+                "nir1",
+                Some(&shared),
             )?;
             match (own, shared) {
                 (
@@ -1790,5 +1892,352 @@ fn native_worker_answers_a_project_reviewed_scene_by_scene() -> Result<()> {
             .workspace_participant_count()?,
         0
     );
+    Ok(())
+}
+
+// A node reserves both of its binding Vecs at the query's record limit when it
+// is created, so that no later push can grow them. With the limit at 2,048 and
+// 50 nodes that is 2,048 x 16 B x 50 = 1,638,400 B up front, 26% of the
+// 6,291,456 B ledger, which is unchanged. A node past what the ledger holds is
+// refused with the retained-limit marker, not allowed to push the peak over.
+#[test]
+fn query_retained_reservation_at_2048_stays_within_the_peak_ledger() -> Result<()> {
+    let per_node = MAX_GRAPH_QUERY_RECORDS
+        * (std::mem::size_of::<Arc<Nir1GraphMaterialBinding>>()
+            + std::mem::size_of::<Arc<ScopeBinding>>());
+    assert_eq!(per_node, 32_768);
+    let worst = MAX_GRAPH_NODES * per_node;
+    assert_eq!(worst, 1_638_400);
+    assert_eq!(MAX_GRAPH_INPUT_BYTES, 6_291_456);
+    assert!(worst * 100 / MAX_GRAPH_INPUT_BYTES <= 26);
+
+    // Fifty nodes, each created with its reservation, fit the ledger.
+    let mut nodes = BTreeMap::new();
+    let mut usage = QueryUsage::default();
+    for index in 0..MAX_GRAPH_NODES {
+        add_node(
+            &mut nodes,
+            &mut usage,
+            Arc::new(node_entity(&format!("entity-{index:02}"))),
+            1,
+            node_binding("r1"),
+        )?;
+    }
+    assert_eq!(nodes.len(), MAX_GRAPH_NODES);
+    assert!(usage.retained_bytes >= worst, "{}", usage.retained_bytes);
+    assert!(usage.retained_bytes <= MAX_GRAPH_INPUT_BYTES);
+
+    // One byte short of the ledger for the next node: refused, nothing added.
+    let mut nodes = BTreeMap::new();
+    let mut usage = QueryUsage::default();
+    usage.admit_retained(MAX_GRAPH_INPUT_BYTES - per_node)?;
+    let error = add_node(
+        &mut nodes,
+        &mut usage,
+        Arc::new(node_entity("entity-over")),
+        1,
+        node_binding("r1"),
+    )
+    .expect_err("the reservation does not fit the ledger");
+    assert!(
+        error.to_string().contains("NIR1_GRAPH_RETAINED_LIMIT"),
+        "{error:#}"
+    );
+    assert!(nodes.is_empty());
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// CQ-LIM-2 (proposal/7): the peak and the frame of the largest casts, and the
+// worker's registration of projects with many Revisions.
+// ---------------------------------------------------------------------------
+
+// B5: a large cast (8 main and 40 minor, or 12 main and 80 minor characters)
+// with 2,000-character summaries over 50 Scenes, the combination proposal/7 did
+// not measure. The peak ledger (6,291,456 B, unchanged) may stop a query before
+// the counts do; the frame limit (3 MiB) may stop one after. Either is the typed
+// refusal of the whole Graph, never a partial one or a crash; a query that is
+// answered returns a frame inside the limit. What each seed got is printed for
+// the record (DR-CQL-10); time is not a verdict (the lease is long).
+#[test]
+fn query_large_cast_with_2000_char_summaries_stays_within_peak_and_frame() -> Result<()> {
+    use super::super::worker_frame;
+    for (mains, minors) in [(8, 40), (12, 80)] {
+        let shape = NovelShape {
+            mains,
+            minors,
+            summary_chars: 2000,
+        };
+        let novel = novel_fixture_shaped(50, 5, ReviewMode::Scene, shape)?;
+        let mut reader = novel.fixture.worker_reader()?;
+        let mut answered = 0usize;
+        for seed in ["m1", "m2", "c01", "m5"] {
+            let response = reader.query_for_worker_with_maintenance_deadline(
+                &request_for(seed, "nir1"),
+                LARGE_N_LEASE,
+            )?;
+            match response.status {
+                "available" => {
+                    let frame = worker_frame::encode(&response)?;
+                    let graph = response.graph.as_ref().unwrap();
+                    eprintln!(
+                        "cast {mains}+{minors}, 2000 chars, 50 Scenes, seed {seed}: available, \
+                         {} nodes, {} edges, {} bindings, frame {} of {} B",
+                        graph.nodes.len(),
+                        graph.edges.len(),
+                        graph
+                            .nodes
+                            .iter()
+                            .map(|node| node.bindings.len())
+                            .sum::<usize>(),
+                        frame.len(),
+                        worker_frame::FRAME_BYTES,
+                    );
+                    assert!(frame.len() <= worker_frame::FRAME_BYTES);
+                    answered += 1;
+                }
+                _ => {
+                    assert_refused_without_graph(&response);
+                    let reason = response.reason.as_deref().unwrap_or_default();
+                    eprintln!(
+                        "cast {mains}+{minors}, 2000 chars, 50 Scenes, seed {seed}: refused ({reason})"
+                    );
+                    assert!(
+                        !reason.contains("deadline"),
+                        "the refusal is a deadline artifact: {reason}"
+                    );
+                }
+            }
+        }
+        // A seed with a Graph of its own node only is always answered.
+        assert!(answered >= 1, "cast {mains}+{minors}: no seed was answered");
+    }
+    Ok(())
+}
+
+// The goal of the proposal/7 limits: on a project of 50 Scenes with one review
+// per Scene, every seed a writer reaches for (the main characters m1 to m5 and
+// a minor one, c01) is answered, not refused, on the default cast (5 + 15) and
+// on both large casts (8 + 40, 12 + 80). The summaries keep their original short
+// length: the 2,000-character combination is the looser test above, where the
+// peak ledger may refuse. A change that raises the cost of A2 or A3 or of the
+// retained estimate until a main character is refused again fails here.
+fn assert_fifty_scene_seeds_are_available(mains: usize, minors: usize) -> Result<()> {
+    let shape = NovelShape {
+        mains,
+        minors,
+        summary_chars: 0,
+    };
+    let novel = novel_fixture_shaped(50, 5, ReviewMode::Scene, shape)?;
+    let mut reader = novel.fixture.worker_reader()?;
+    for seed in ["m1", "m2", "m3", "m4", "m5", "c01"] {
+        let response = reader.query_for_worker_with_maintenance_deadline(
+            &request_for(seed, "nir1"),
+            LARGE_N_LEASE,
+        )?;
+        assert_eq!(
+            response.status, "available",
+            "cast {mains}+{minors}, 50 Scenes, seed {seed}: {:?}",
+            response.reason
+        );
+        let graph = response.graph.as_ref().expect("an available Graph");
+        assert!(!graph.nodes.is_empty());
+    }
+    Ok(())
+}
+
+#[test]
+fn query_fifty_scene_protagonists_are_available_on_the_default_cast() -> Result<()> {
+    assert_fifty_scene_seeds_are_available(5, 15)
+}
+
+#[test]
+fn query_fifty_scene_protagonists_are_available_on_the_8_plus_40_cast() -> Result<()> {
+    assert_fifty_scene_seeds_are_available(8, 40)
+}
+
+#[test]
+fn query_fifty_scene_protagonists_are_available_on_the_12_plus_80_cast() -> Result<()> {
+    assert_fifty_scene_seeds_are_available(12, 80)
+}
+
+/// A project of `revisions` approved Codex reviews of the same twelve
+/// Entities, one per Scene (R2-4's shape: the product's `prepare` path, Japanese
+/// summaries of about `total_summary_bytes` across the Entities).
+fn same_entity_product_fixture(revisions: usize, total_summary_bytes: usize) -> Result<Fixture> {
+    use crate::narrative_extraction::nir1_entity_relation::prepare_nir1_entity_relation_revision;
+    use crate::narrative_extraction::Nir1EntityRelationRevisionPrepareRequest;
+    let entity_count = 12usize;
+    let per_entity_chars = (total_summary_bytes / entity_count / 3).max(1);
+    let directory = TestDirectory(
+        std::env::temp_dir().join(format!("nir1-cq-lim-product-{}", uuid::Uuid::new_v4())),
+    );
+    std::fs::create_dir_all(&directory.0)?;
+    let db = crate::Database::new(&directory.0.join("grimodex.db"))?;
+    db.migrate()?;
+    seed_run_and_catalog(&db)?;
+    prepare_a3_scope_fixture(&db)?;
+    let scene_ids: Vec<String> = (0..revisions).map(|n| format!("s{n:03}")).collect();
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, content, sort_order)
+             VALUES ('ch00', 'default-project', 'folder', 'ch00', '{}', 'a0c00')",
+            [],
+        )?;
+        for scene_id in &scene_ids {
+            conn.execute(
+                "INSERT INTO tree_nodes
+                    (id, project_id, parent_id, node_type, title, content, sort_order)
+                 VALUES (?1, 'default-project', 'ch00', 'scene', ?1, '{}', ?1)",
+                [scene_id],
+            )?;
+            crate::narrative_extraction::ensure_scene_scope_binding_in_tx(
+                conn,
+                PROJECT,
+                scene_id,
+                "2026-09-17T00:00:00.000Z",
+            )?;
+        }
+        let body: String = "物語".repeat(per_entity_chars / 2 + 1);
+        for index in 0..entity_count {
+            conn.execute(
+                "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
+                 VALUES (?1, 'default-project', 'character', ?2, ?3, '2026-09-12T00:00:00Z')",
+                params![
+                    format!("v{index:02}"),
+                    format!("人物{index:02}"),
+                    format!("{index:02}{body}")
+                ],
+            )?;
+        }
+        for index in 1..entity_count {
+            conn.execute(
+                "INSERT INTO codex_relations
+                    (id, project_id, from_codex_id, to_codex_id, relation_type,
+                     directionality, version, updated_at)
+                 VALUES (?1, 'default-project', 'v00', ?2, 'knows', 'symmetric', 1,
+                         '2026-09-12T00:00:00Z')",
+                params![format!("rv-{index:02}"), format!("v{index:02}")],
+            )?;
+        }
+        Ok(())
+    })?;
+    let mut first_revision = String::new();
+    for (ordinal, scene_id) in scene_ids.iter().enumerate() {
+        explicit_scope(&db, scene_id, ordinal)?;
+        drain_freshness(&db)?;
+        let prepared = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: PROJECT.into(),
+                scene_id: scene_id.clone(),
+                proposal_key: Some(format!("codex-ui:selection:cq-lim-product-{ordinal}")),
+                entity_ids: (0..entity_count)
+                    .map(|index| format!("v{index:02}"))
+                    .collect(),
+                relation_ids: (1..entity_count)
+                    .map(|index| format!("rv-{index:02}"))
+                    .collect(),
+            },
+        )?;
+        let run_id = prepared["runId"].as_str().unwrap().to_owned();
+        let revision = prepared["result"]["revisionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        approve_typed_revision(
+            &db,
+            &run_id,
+            &serde_json::json!({
+                "proposalId": prepared["result"]["proposalId"],
+                "revisionId": revision,
+            }),
+        )?;
+        if first_revision.is_empty() {
+            first_revision = revision;
+        }
+    }
+    drain_freshness(&db)?;
+    let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
+    publish_graph_index(&authority)?;
+    Ok(Fixture {
+        authority,
+        lifecycle: WorkspaceLifecycleCore::new(),
+        revision: first_revision,
+        _directory: directory,
+    })
+}
+
+// B3 (in-process): projects with several product-shaped Revisions register on
+// the worker's configuration, whether the twelve Entities are the same in every
+// Revision or differ from Scene to Scene (the novel project's cast). Every
+// Revision is inside the registration's limit, so the registration admits them
+// all and a query that reaches them is answered or refused by its own limits.
+#[test]
+fn worker_registers_projects_of_several_product_shaped_revisions() -> Result<()> {
+    let same = same_entity_product_fixture(4, 300_000)?;
+    let mut reader = same.worker_reader()?;
+    let response = worker_query_large(&mut reader, "v00")?;
+    assert_eq!(response.status, "available", "{:?}", response.reason);
+    let varying = novel_fixture(30, 5, ReviewMode::Scene)?;
+    let mut reader = varying.fixture.worker_reader()?;
+    for seed in ["m1", "c01", "m5"] {
+        let response = reader.query_for_worker_with_maintenance_deadline(
+            &request_for(seed, "nir1"),
+            LARGE_N_LEASE,
+        )?;
+        assert_eq!(
+            response.status, "available",
+            "{seed}: {:?}",
+            response.reason
+        );
+    }
+    Ok(())
+}
+
+// B3 (real worker): the same projects reach READY on the real worker's Q 16 MiB,
+// the product-shaped Revisions of 948,772 B (four of them), of the limit's
+// 2,094,880 B (two of them), and the 30 Scenes whose casts differ. The query
+// that follows is the 100 ms production lease and a large project's protagonist
+// can miss it, so the verdict here is the registration (READY) and a seed whose
+// Graph is its own pair; what the protagonist query got is printed.
+#[test]
+#[ignore = "requires a built normal worker binary (NIR1_C_QUERY_WORKER_BIN); builds its own projects"]
+fn native_worker_registers_multiple_product_shaped_revisions() -> Result<()> {
+    let projects: Vec<(&str, Fixture, &str)> = vec![
+        (
+            "4 same-Entity reviews of 948,772 B",
+            same_entity_product_fixture(4, 300_000)?,
+            "v00",
+        ),
+        (
+            "2 same-Entity reviews of 2,094,880 B",
+            same_entity_product_fixture(2, 682_000)?,
+            "v00",
+        ),
+        (
+            "30 Scenes with differing casts",
+            novel_fixture(30, 5, ReviewMode::Scene)?.fixture,
+            "x1",
+        ),
+    ];
+    for (label, fixture, seed) in &projects {
+        with_real_worker(fixture, |owner| {
+            owner.prepare(PROJECT)?;
+            let request = request_for(seed, "nir1");
+            match owner.query_once(&request) {
+                Ok(lease) => {
+                    let frame = lease.frame()?;
+                    let graph = frame
+                        .graph()
+                        .map(|graph| (graph.node_count(), graph.edge_count()));
+                    eprintln!("{label}: READY; seed {seed} answered {graph:?}");
+                    drop(lease);
+                }
+                Err(error) => eprintln!("{label}: READY; seed {seed} refused: {error:#}"),
+            }
+            Ok(())
+        })?;
+    }
     Ok(())
 }

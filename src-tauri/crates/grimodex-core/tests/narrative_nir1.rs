@@ -3,7 +3,8 @@ use grimodex_core::narrative_nir1::{
     bounded_graph, estimate_nir1_context_tokens, pack_candidate_context, pack_context,
     validate_entity_relation_bundle, AtomicPart, CandidateContextItem, CandidatePackingRequest,
     ContextItemKind, EntityInput, EntityRelationBundle, EvidenceInput, GraphEdgeInput, GraphLimits,
-    PackingPurpose, PackingRequest, ScopeBinding, ScopeValue,
+    PackingPurpose, PackingRequest, ScopeBinding, ScopeValue, MAX_GRAPH_EDGES, MAX_GRAPH_HOPS,
+    MAX_GRAPH_NODES, MAX_GRAPH_QUERY_RECORDS, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
 };
 use serde_json::json;
 
@@ -825,4 +826,73 @@ fn scope_requires_purpose_for_any_and_never_accepts_unresolved() {
 
     binding.reading = ScopeValue::Unresolved;
     assert!(binding.validate().is_err());
+}
+
+// proposal/7: a Graph query may reach 50 Entities and 512 distinct edges and
+// read 2,048 records; one stored Revision still holds 512 records. The hop (2)
+// and Scene (8) bounds are unchanged.
+#[test]
+fn graph_query_limits_are_distinct_from_the_revision_record_limit() {
+    assert_eq!(MAX_GRAPH_NODES, 50);
+    assert_eq!(MAX_GRAPH_EDGES, 512);
+    assert_eq!(MAX_GRAPH_QUERY_RECORDS, 2_048);
+    assert_eq!(MAX_GRAPH_RECORDS, 512);
+    assert_eq!(MAX_GRAPH_HOPS, 2);
+    assert_eq!(MAX_GRAPH_SCENES, 8);
+    assert_eq!(
+        GraphLimits::default(),
+        GraphLimits {
+            max_hops: 2,
+            max_nodes: 50,
+            max_edges: 512,
+        }
+    );
+}
+
+#[test]
+fn bounded_graph_admits_50_nodes_and_512_edges_and_refuses_beyond() {
+    let bundle = EntityRelationBundle {
+        project_id: "project-a".into(),
+        revision_id: "revision-1".into(),
+        producer: "nir1-reviewed-entity-relation-v1".into(),
+        entities: (0..3).map(|i| entity(&format!("entity:{i}"))).collect(),
+        relations: vec![],
+    };
+    let limits = |max_nodes, max_edges| GraphLimits {
+        max_hops: 2,
+        max_nodes,
+        max_edges,
+    };
+    bounded_graph(
+        &bundle,
+        "entity:0",
+        limits(MAX_GRAPH_NODES, MAX_GRAPH_EDGES),
+    )
+    .expect("the largest requested limits are inside the envelope");
+    for over in [
+        limits(MAX_GRAPH_NODES + 1, MAX_GRAPH_EDGES),
+        limits(MAX_GRAPH_NODES, MAX_GRAPH_EDGES + 1),
+    ] {
+        let error = bounded_graph(&bundle, "entity:0", over).expect_err("beyond the envelope");
+        assert!(error.to_string().contains("exceed"), "{error}");
+    }
+}
+
+// One Revision's records stay at 512 whatever the query may read: its object,
+// relation, revision and Evidence rows.
+#[test]
+fn a_bundle_of_513_records_is_refused_although_a_query_may_read_2048() {
+    let bundle = |entities: usize| EntityRelationBundle {
+        project_id: "project-a".into(),
+        revision_id: "revision-1".into(),
+        producer: "nir1-reviewed-entity-relation-v1".into(),
+        entities: (0..entities)
+            .map(|i| entity(&format!("entity:{i}")))
+            .collect(),
+        relations: vec![],
+    };
+    // 1 revision + n entities + n Evidence = 2n + 1.
+    assert_eq!(2 * 255 + 1, MAX_GRAPH_RECORDS - 1);
+    validate_entity_relation_bundle(&bundle(255)).expect("511 records");
+    validate_entity_relation_bundle(&bundle(256)).expect_err("513 records");
 }

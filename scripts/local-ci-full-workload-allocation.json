@@ -89,7 +89,7 @@
     },
     {
       "path": "scripts/nir1-c-query-worker-ci.sh",
-      "sha256": "e5a1b50bd3a9321db844211b5a7f40ec49b1a123e4b4c3fd41251473efb728a9"
+      "sha256": "e7a96d5cba13cab96fba10a594eb7eefbbdb71c05136f2973b2b86340062a055"
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",

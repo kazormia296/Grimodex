@@ -22,7 +22,7 @@ use super::{
 use anyhow::{anyhow, bail, ensure, Result};
 use grimodex_core::narrative_nir1::{
     EntityInput, EvidenceInput, GraphEdgeInput, ScopeBinding, ScopeValue, MAX_GRAPH_EDGES,
-    MAX_GRAPH_HOPS, MAX_GRAPH_NODES, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
+    MAX_GRAPH_HOPS, MAX_GRAPH_NODES, MAX_GRAPH_QUERY_RECORDS, MAX_GRAPH_RECORDS, MAX_GRAPH_SCENES,
 };
 
 pub const FRAME_BYTES: usize = super::c_query_worker::FRAME_BYTES;
@@ -189,7 +189,7 @@ impl Writer {
         // binding comes with the Scope its Entity has in that Revision.
         ensure!(
             !n.bindings.is_empty()
-                && n.bindings.len() <= MAX_GRAPH_RECORDS
+                && n.bindings.len() <= MAX_GRAPH_QUERY_RECORDS
                 && n.binding_scopes.len() == n.bindings.len(),
             "NIR1_GRAPH_FRAME_COUNT"
         );
@@ -281,7 +281,7 @@ fn scene_section_bytes(
     edge_count: usize,
 ) -> Result<usize> {
     ensure!(
-        scene_total <= MAX_GRAPH_RECORDS && scenes.len() == scene_total.min(MAX_GRAPH_SCENES),
+        scene_total <= MAX_GRAPH_QUERY_RECORDS && scenes.len() == scene_total.min(MAX_GRAPH_SCENES),
         "NIR1_GRAPH_FRAME_SCENE_COUNT"
     );
     let mut total = SCENE_SECTION_HEADER_BYTES;
@@ -402,9 +402,9 @@ pub enum WorkerCause {
     DisclosureRecordLimit,
     ReadRecordLimit,
     SceneLimit,
-    /// More than `MAX_GRAPH_NODES` Entities reached (Entity 12).
+    /// More than `MAX_GRAPH_NODES` Entities reached (Entity 50).
     NodeLimit,
-    /// More than `MAX_GRAPH_EDGES` distinct edges expanded (edge 144).
+    /// More than `MAX_GRAPH_EDGES` distinct edges expanded (edge 512).
     EdgeLimit,
     /// Two qualified Revisions carry the same Entity ID with different
     /// identity fields (type, label, source token, Evidence). A different
@@ -1193,9 +1193,10 @@ impl<'a> Cursor<'a> {
     fn run<T>(
         &mut self,
         count: usize,
+        limit: usize,
         parse: fn(&mut Cursor<'a>) -> Result<T>,
     ) -> Result<RecordRun<'a>> {
-        ensure!(count <= MAX_GRAPH_RECORDS, "NIR1_GRAPH_FRAME_COUNT");
+        ensure!(count <= limit, "NIR1_GRAPH_FRAME_COUNT");
         let start = *self;
         for _ in 0..count {
             parse(self)?;
@@ -1209,7 +1210,7 @@ impl<'a> Cursor<'a> {
         let source = self.text()?;
         let scope = self.scope()?;
         let count = self.u16()?;
-        let evidence = self.run(count, Cursor::evidence)?;
+        let evidence = self.run(count, MAX_GRAPH_RECORDS, Cursor::evidence)?;
         Ok(EntityView {
             id,
             kind,
@@ -1244,7 +1245,7 @@ impl<'a> Cursor<'a> {
         ensure!(hop <= MAX_GRAPH_HOPS, "NIR1_GRAPH_FRAME_HOP");
         let count = self.u16()?;
         ensure!(count > 0, "NIR1_GRAPH_FRAME_NODE_BINDING");
-        let bindings = self.run(count, Cursor::node_binding)?;
+        let bindings = self.run(count, MAX_GRAPH_QUERY_RECORDS, Cursor::node_binding)?;
         // The node's Entity is the one its first binding's Revision carries.
         let first = bindings
             .records(Cursor::node_binding)
@@ -1269,7 +1270,7 @@ impl<'a> Cursor<'a> {
         };
         let source_token = self.text()?;
         let count = self.u16()?;
-        let evidence_ids = self.run(count, Cursor::text)?;
+        let evidence_ids = self.run(count, MAX_GRAPH_RECORDS, Cursor::text)?;
         Ok(RelationView {
             edge_id,
             from_entity_id,
@@ -1380,7 +1381,7 @@ fn validate_graph<'a>(c: &mut Cursor<'a>) -> Result<GraphView<'a>> {
         count: 0,
     };
     // The Revisions one node is bound to, reused by every node.
-    let mut revisions = [""; MAX_GRAPH_RECORDS];
+    let mut revisions = [""; MAX_GRAPH_QUERY_RECORDS];
     for _ in 0..node_count {
         let node = c.node()?;
         // A path endpoint must name exactly one node and therefore one hop.
@@ -1390,16 +1391,21 @@ fn validate_graph<'a>(c: &mut Cursor<'a>) -> Result<GraphView<'a>> {
         );
         // A node keeps one Scope per binding, and a Revision gives it one
         // Scope: a Revision bound twice has no single Scope. At most
-        // MAX_GRAPH_RECORDS bindings per node (the run is already bounded), so
-        // this is a bounded comparison over borrowed text.
-        for (position, binding) in node.bindings().enumerate() {
-            let revision_id = binding?.binding.revision_id;
-            ensure!(
-                !revisions[..position].contains(&revision_id),
-                "NIR1_GRAPH_FRAME_NODE_BINDING_DUPLICATE"
-            );
-            revisions[position] = revision_id;
+        // MAX_GRAPH_QUERY_RECORDS bindings per node (the run is already bounded).
+        // The borrowed ids are sorted in place and compared with their
+        // neighbours: O(n log n), no allocation, and a forged frame of many
+        // 2,048-binding nodes cannot cost a quadratic comparison.
+        let mut bound = 0;
+        for binding in node.bindings() {
+            revisions[bound] = binding?.binding.revision_id;
+            bound += 1;
         }
+        let bound_revisions = &mut revisions[..bound];
+        bound_revisions.sort_unstable();
+        ensure!(
+            bound_revisions.windows(2).all(|pair| pair[0] != pair[1]),
+            "NIR1_GRAPH_FRAME_NODE_BINDING_DUPLICATE"
+        );
         nodes.ids[nodes.count] = node.entity.id;
         nodes.hops[nodes.count] = node.hop;
         nodes.count += 1;
@@ -1414,7 +1420,7 @@ fn validate_graph<'a>(c: &mut Cursor<'a>) -> Result<GraphView<'a>> {
     let scene_total = c.u16()?;
     let scene_count = c.u16()?;
     ensure!(
-        scene_total <= MAX_GRAPH_RECORDS && scene_count == scene_total.min(MAX_GRAPH_SCENES),
+        scene_total <= MAX_GRAPH_QUERY_RECORDS && scene_count == scene_total.min(MAX_GRAPH_SCENES),
         "NIR1_GRAPH_FRAME_SCENE_COUNT"
     );
     let graph = GraphView {
@@ -2241,10 +2247,11 @@ mod tests {
         frame
     }
 
-    // A node holds at most MAX_GRAPH_RECORDS bindings: 512 pass encode and
-    // validate and are read back one by one; a 513th is refused on both sides.
+    // A node holds at most MAX_GRAPH_QUERY_RECORDS bindings: 2,048 pass encode
+    // and validate and are read back one by one; a 2,049th is refused on both
+    // sides. (One Revision's own records stay at MAX_GRAPH_RECORDS, 512.)
     #[test]
-    fn nqg3_node_binding_cap_admits_512_and_refuses_513() -> Result<()> {
+    fn nqg3_node_binding_cap_admits_2048_and_refuses_2049() -> Result<()> {
         let response_with = |count: usize| {
             let revisions = revision_ids(count);
             let refs = revisions.iter().map(String::as_str).collect::<Vec<_>>();
@@ -2252,25 +2259,164 @@ mod tests {
             response.graph.as_mut().unwrap().nodes[1] = node("x", 1, &refs);
             response
         };
-        let at_cap = revision_ids(MAX_GRAPH_RECORDS);
-        let bytes = encode(&response_with(MAX_GRAPH_RECORDS))?;
+        let at_cap = revision_ids(MAX_GRAPH_QUERY_RECORDS);
+        let bytes = encode(&response_with(MAX_GRAPH_QUERY_RECORDS))?;
         assert_eq!(bytes, frame_with_x_bound_by(&at_cap));
         let view = validate(&bytes)?;
         let nodes = view.graph().unwrap().nodes().collect::<Result<Vec<_>>>()?;
         let x = nodes.iter().find(|node| node.entity.id == "x").unwrap();
-        assert_eq!(x.binding_count(), MAX_GRAPH_RECORDS);
+        assert_eq!(x.binding_count(), MAX_GRAPH_QUERY_RECORDS);
         let listed = x
             .bindings()
             .map(|item| item.map(|item| item.binding.revision_id.to_owned()))
             .collect::<Result<Vec<_>>>()?;
         assert_eq!(listed, at_cap);
+        // The parent's projection accepts the same 2,048 bindings.
+        let projected = super::super::worker_projection::Nir1GraphProjection::from_frame(
+            &view,
+            std::time::Duration::ZERO,
+        )?
+        .into_response();
+        let projected = projected.graph.expect("an available Graph");
+        let x = projected
+            .nodes
+            .iter()
+            .find(|node| node.entity.entity_id == "x")
+            .expect("node x");
+        assert_eq!(x.bindings.len(), MAX_GRAPH_QUERY_RECORDS);
+        assert_eq!(x.binding_scopes.len(), MAX_GRAPH_QUERY_RECORDS);
 
         assert_eq!(
-            error_text(encode(&response_with(MAX_GRAPH_RECORDS + 1))),
+            error_text(encode(&response_with(MAX_GRAPH_QUERY_RECORDS + 1))),
             "NIR1_GRAPH_FRAME_COUNT"
         );
-        let forged = frame_with_x_bound_by(&revision_ids(MAX_GRAPH_RECORDS + 1));
+        let forged = frame_with_x_bound_by(&revision_ids(MAX_GRAPH_QUERY_RECORDS + 1));
         assert_eq!(error_text(validate(&forged)), "NIR1_GRAPH_FRAME_COUNT");
+        Ok(())
+    }
+
+    /// A Graph of `nodes` Entities (the seed and `nodes - 1` at hop 1) and
+    /// `edges` distinct edges from the seed, no Scene. Written through
+    /// `raw_frame` so the counts the parent's `validate` checks can be forged
+    /// past what `encode` allows.
+    fn graph_of(nodes: usize, edges: usize) -> Nir1GraphResponse {
+        let mut response = sample_response();
+        let graph = response.graph.as_mut().unwrap();
+        graph.nodes = std::iter::once(node("s", 0, &["r1"]))
+            .chain((1..nodes).map(|index| node(&format!("n{index:02}"), 1, &["r1"])))
+            .collect();
+        graph.edges = (0..edges)
+            .map(|index| {
+                edge(
+                    &format!("e{index:03}"),
+                    "s",
+                    &format!("n{:02}", 1 + index % (nodes - 1)),
+                    "directed",
+                    "r1",
+                )
+            })
+            .collect();
+        graph.scene_total = 0;
+        graph.scenes.clear();
+        response
+    }
+
+    // The Graph holds at most MAX_GRAPH_NODES Entities and MAX_GRAPH_EDGES
+    // distinct edges (proposal/7: 50 and 512, they were 12 and 144): the
+    // largest Graph encodes, validates and projects, the one past either count
+    // is refused on both sides.
+    #[test]
+    fn nqg3_graph_counts_admit_50_nodes_and_512_edges_and_refuse_51_and_513() -> Result<()> {
+        use super::super::worker_projection::Nir1GraphProjection;
+        let at_limit = graph_of(MAX_GRAPH_NODES, MAX_GRAPH_EDGES);
+        let bytes = encode(&at_limit)?;
+        assert!(
+            bytes.len() < FRAME_BYTES,
+            "{} of {FRAME_BYTES}",
+            bytes.len()
+        );
+        assert_eq!(
+            bytes,
+            raw_frame(&at_limit, 7, 0, &[]),
+            "encode writes the layout the forging helper does"
+        );
+        let view = validate(&bytes)?;
+        let graph = view.graph().unwrap();
+        assert_eq!((graph.node_count(), graph.edge_count()), (50, 512));
+        let projected =
+            Nir1GraphProjection::from_frame(&view, std::time::Duration::ZERO)?.into_response();
+        let projected = projected.graph.expect("an available Graph");
+        assert_eq!((projected.nodes.len(), projected.edges.len()), (50, 512));
+
+        for (nodes, edges) in [(MAX_GRAPH_NODES + 1, 1), (2, MAX_GRAPH_EDGES + 1)] {
+            let over = graph_of(nodes, edges);
+            assert_eq!(error_text(encode(&over)), "NIR1_GRAPH_FRAME_COUNT");
+            assert_eq!(
+                error_text(validate(&raw_frame(&over, 7, 0, &[]))),
+                "NIR1_GRAPH_FRAME_COUNT",
+                "{nodes} nodes, {edges} edges"
+            );
+        }
+        Ok(())
+    }
+
+    // The frame is at most FRAME_BYTES (proposal/7: the Native area is 3 MiB, so
+    // the frame limit follows it; it was 1.5 MiB). A frame of exactly that size
+    // encodes and validates, and one byte more is refused on both sides with
+    // the frame-limit reason, the reason the parent maps to an unavailable Graph.
+    // The project identifier is free text here, so it carries the padding.
+    #[test]
+    fn frame_of_exactly_frame_bytes_is_admitted_and_one_more_byte_is_refused() -> Result<()> {
+        let padded = |project_bytes: usize| {
+            let mut response = sample_response();
+            response.project_id = "p".repeat(project_bytes);
+            response
+        };
+        let base = encode(&padded(0))?.len();
+        let at_limit = encode(&padded(FRAME_BYTES - base))?;
+        assert_eq!(at_limit.len(), FRAME_BYTES);
+        let view = validate(&at_limit)?;
+        assert_eq!(view.project().len(), FRAME_BYTES - base);
+        assert_eq!(
+            error_text(encode(&padded(FRAME_BYTES - base + 1))),
+            "NIR1_GRAPH_FRAME_LIMIT"
+        );
+        let mut over = at_limit.clone();
+        over.push(0);
+        assert_eq!(error_text(validate(&over)), "NIR1_GRAPH_FRAME_LIMIT");
+        Ok(())
+    }
+
+    // The largest Graph the query limits allow (50 Entities, 512 edges, and 2,000
+    // distinct Revisions bound across the nodes, about the 2,048 records a query
+    // may read) with every string short: it fits the frame limit with room, so the
+    // frame limit is reached by the content (long quotes, many Scenes), not by the
+    // counts. The size is printed for the record (CQ-LIM-2, DR-CQL-10).
+    #[test]
+    fn frame_of_the_largest_counts_fits_the_frame_limit() -> Result<()> {
+        use super::super::worker_projection::Nir1GraphProjection;
+        let mut response = graph_of(MAX_GRAPH_NODES, MAX_GRAPH_EDGES);
+        let graph = response.graph.as_mut().unwrap();
+        for (index, node) in graph.nodes.iter_mut().enumerate() {
+            let revisions: Vec<String> = std::iter::once("r1".to_owned())
+                .chain((0..40).map(|local| format!("x{index:02}-{local:02}")))
+                .collect();
+            let refs: Vec<&str> = revisions.iter().map(String::as_str).collect();
+            *node = self::node(&node.entity.entity_id.clone(), node.hop, &refs);
+        }
+        let bytes = encode(&response)?;
+        let view = validate(&bytes)?;
+        assert_eq!(view.graph().unwrap().node_count(), MAX_GRAPH_NODES);
+        let projected = Nir1GraphProjection::from_frame(&view, std::time::Duration::ZERO)?;
+        assert_eq!(
+            projected.into_response().graph.unwrap().nodes.len(),
+            MAX_GRAPH_NODES
+        );
+        eprintln!(
+            "NQG3 frame of 50 nodes, 512 edges, 2,050 bindings: {} of {FRAME_BYTES} B",
+            bytes.len()
+        );
+        assert!(bytes.len() < FRAME_BYTES);
         Ok(())
     }
 
@@ -2283,8 +2429,8 @@ mod tests {
         let duplicate = "NIR1_GRAPH_FRAME_NODE_BINDING_DUPLICATE";
         let twice = frame_with_x_bound_by(&["r1".to_owned(), "r1".to_owned()]);
         assert_eq!(error_text(validate(&twice)), duplicate);
-        for repeat_at in [1, MAX_GRAPH_RECORDS / 2, MAX_GRAPH_RECORDS - 1] {
-            let mut revisions = revision_ids(MAX_GRAPH_RECORDS);
+        for repeat_at in [1, MAX_GRAPH_QUERY_RECORDS / 2, MAX_GRAPH_QUERY_RECORDS - 1] {
+            let mut revisions = revision_ids(MAX_GRAPH_QUERY_RECORDS);
             revisions[repeat_at] = revisions[0].clone();
             assert_eq!(
                 error_text(validate(&frame_with_x_bound_by(&revisions))),
@@ -2292,7 +2438,7 @@ mod tests {
                 "the first Revision repeated at {repeat_at}"
             );
         }
-        let distinct = frame_with_x_bound_by(&revision_ids(MAX_GRAPH_RECORDS));
+        let distinct = frame_with_x_bound_by(&revision_ids(MAX_GRAPH_QUERY_RECORDS));
         validate(&distinct)?;
         // r1 binds s, x and y in the sample.
         validate(&encode(&sample_response())?)?;
@@ -2338,9 +2484,9 @@ mod tests {
                 "NIR1_GRAPH_FRAME_SCENE_COUNT",
             ),
             (
-                "total over 512",
+                "total over 2048",
                 7,
-                MAX_GRAPH_RECORDS + 1,
+                MAX_GRAPH_QUERY_RECORDS + 1,
                 nine[..8].to_vec(),
                 "NIR1_GRAPH_FRAME_SCENE_COUNT",
             ),

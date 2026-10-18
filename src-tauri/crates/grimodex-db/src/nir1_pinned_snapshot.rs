@@ -5,7 +5,7 @@
 //! presence check walks all schema rows (thousands of VM steps in a migrated
 //! workspace database). The C-query repeats it 13 times per Revision (Scene
 //! Scope, declaration set, Scope authority and C2-ZC marker reads), and those
-//! steps are charged to its 100,000-step budget although they validate nothing
+//! steps are charged to its 600,000-step budget although they validate nothing
 //! about the Revision.
 //!
 //! Inside a read transaction in which an ordinary statement that reads a table

@@ -4419,11 +4419,12 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
   for (const [id, state] of [
     [
       "G-1",
-      /一部充足。writer の N／N\+1、上限ちょうどの保存、A2 の読取は充足。B の上限近傍の publish は \[precheck\]（§7\.1）で、HOLD のまま \|$/,
+      // proposal/6's state stays, followed by the proposal/7 outcome (CQ-LIM-3).
+      /一部充足。writer の N／N\+1、上限ちょうどの保存、A2 の読取は充足。B の上限近傍の publish は \[precheck\]（§7\.1）で、HOLD のまま。\*\*proposal\/7 の後（CQ-LIM-3、2026-10-18）：充足。[^\n]*\*\* \|$/,
     ],
     [
       "G-2",
-      /一部充足。[^\n]*固定 allocator の実 worker での正例は \[precheck\]（§7\.2）で、HOLD のまま \|$/,
+      /一部充足。[^\n]*固定 allocator の実 worker での正例は \[precheck\]（§7\.2）で、HOLD のまま。\*\*proposal\/7 の後（CQ-LIM-2、3）：充足。[^\n]*\*\* \|$/,
     ],
     [
       "G-3",
@@ -5431,4 +5432,212 @@ test("the Heavy runner never selects a Windows command shell from the environmen
     executable: "pnpm",
     commandArgs: ["test:node"],
   });
+});
+
+// proposal/7 (confirmed 2026-10-17, Session B2) revised the proposal/6 values of
+// `graph-limited-binding`. The proposal/6 section and tests above keep the
+// confirmed history; these assertions record the proposal/7 values beside it and
+// tie them to the code, so a value cannot move in one place only (CQ-LIM-3).
+test("the proposal/7 graph limits are recorded beside the proposal/6 history and match the code", async () => {
+  const executionPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
+  const appendStart = executionPlan.indexOf(
+    "2026-10-17追記（Session B2、proposal/7）: 上のproposal/6の固定値",
+  );
+  assert.ok(appendStart > 0, "the proposal/7 append must follow proposal/6");
+  const appendEnd = executionPlan.indexOf(
+    "#### nir1-defensive-resource-limits",
+    appendStart,
+  );
+  assert.ok(appendEnd > appendStart);
+  const append = executionPlan.slice(appendStart, appendEnd);
+  assert.ok(
+    append.indexOf("この節の本文と表はproposal/6の確認時点の履歴") > 0,
+    "the proposal/7 append must keep proposal/6 as history",
+  );
+  for (const row of [
+    "| seed-local queryのread／admission | `512`→`2,048` |",
+    "| seed-local queryのbatch | `16x32`→`16x128`（1 page 16件のまま、query全体で32 pageから128 pageまで） |",
+    "| seed-local queryのSQL | `100,000 VM steps`→`600,000 VM steps`（`1,000` stepsごとの取消の確認は変えない） |",
+    "| seed-local queryの2hop／Entity／edge展開／Scene | 2hop／`12`／`144`／`8`→2hop／`50`／`512`／`8`（2hopとSceneは変えない） |",
+    "| seed-local queryのlease、reader／busy wait | `100 ms`、`0`（変えない） |",
+    "| workerの固定allocatorのquery（実装上の防御上限） | `4,718,592 B`→`16 MiB` |",
+    "| Native領域（実装上の防御上限） | `1,572,864 B`→`3 MiB` |",
+  ]) {
+    assert.ok(append.includes(row), `proposal/7 append must record ${row}`);
+  }
+  assert.ok(
+    append.includes(
+      "| Entity／Relation Revision bundle、C-queryのper-Revision preflight、registration scratch（S）、query全体の入力と保持見積り、whole-project B build、Packing | 変えない（`512 records`／`6,291,456 B`、`2,097,152 B`、`64 MiB`、`6,291,456 B` など） |",
+    ),
+    "proposal/7 must keep the Revision, preflight and S values",
+  );
+
+  // The proposal/7 ledger row is the second `graph-limited-binding` row; the
+  // first stays the proposal/6 row.
+  const ledgerRows = executionPlan
+    .split("\n")
+    .filter((line) => line.startsWith("| `graph-limited-binding` |"));
+  assert.equal(ledgerRows.length, 2, "proposal/6 and proposal/7 rows");
+  assert.match(
+    ledgerRows[0],
+    /^\| `graph-limited-binding` \| `nir1-l6-l9-contract-proposal\/6` \|/,
+  );
+  const proposal7Row = ledgerRows[1];
+  assert.match(
+    proposal7Row,
+    /^\| `graph-limited-binding` \| `nir1-l6-l9-contract-proposal\/7` \| `nir1-l6-l9-contract-proposal\/7#graph-limited-binding` \|/,
+  );
+  for (const value of [
+    "read／admission `512`→`2,048`",
+    "batch `16x32`→`16x128`",
+    "SQL `100,000 VM steps`→`600,000 VM steps`",
+    "`2hop／12／144／8`→`2hop／50／512／8`",
+    "`4,718,592 B`→`16 MiB`",
+    "`1,572,864 B`→`3 MiB`",
+    "lease `100 ms`",
+    "C-queryのper-Revision preflight `2,097,152 B`",
+    "保存するpayload_jsonとenvelope_jsonがそれぞれ `6,291,456 B` 以下",
+  ]) {
+    assert.ok(
+      proposal7Row.includes(value),
+      `the proposal/7 ledger row must record ${value}`,
+    );
+  }
+
+  // The code carries the same values. `MAX_GRAPH_RECORDS` stays the Revision
+  // limit; the query has its own.
+  const core = await read(
+    "src-tauri/crates/grimodex-core/src/narrative_nir1.rs",
+  );
+  for (const declaration of [
+    /pub const MAX_GRAPH_NODES: usize = 50;/,
+    /pub const MAX_GRAPH_EDGES: usize = 512;/,
+    /pub const MAX_GRAPH_RECORDS: usize = 512;/,
+    /pub const MAX_GRAPH_QUERY_RECORDS: usize = 2_048;/,
+    /pub const MAX_GRAPH_INPUT_BYTES: usize = 6_291_456;/,
+  ]) {
+    assert.match(core, declaration);
+  }
+  const graph = await read(
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs",
+  );
+  assert.match(graph, /pub\(crate\) const QUERY_SQL_STEPS: u64 = 600_000;/);
+  assert.match(graph, /const QUERY_MAX_PAGES: usize = 128;/);
+  const worker = await read(
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs",
+  );
+  assert.match(worker, /const PARENT_BYTES: usize = 3 \* 1024 \* 1024;/);
+  const allocator = await read(
+    "src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs",
+  );
+  assert.match(allocator, /pub const QUERY_BYTES: usize = 16 \* 1024 \* 1024;/);
+
+  // RB-1: the writer measures the stored payload and envelope against the same
+  // 6,291,456 B before anything is written.
+  const writer = await read(
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs",
+  );
+  assert.match(writer, /stored_bytes <= narrative_nir1::MAX_GRAPH_INPUT_BYTES/);
+  for (const code of [
+    "NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT",
+    "NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT",
+  ]) {
+    assert.ok(
+      writer.includes(`"${code}"`),
+      `the writer must refuse with ${code}`,
+    );
+  }
+  assert.ok(
+    writer.indexOf("NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT") <
+      writer.indexOf('"INSERT INTO narrative_proposal_sets'),
+    "the stored-form checks must come before the first INSERT",
+  );
+});
+
+test("the acceptance ledger and the HOLD table record the proposal/7 outcome without rewriting proposal/6", async () => {
+  const acceptance = await read(
+    "docs/plans/nir1-c-query-acceptance-2026-10.md",
+  );
+  const executionPlan = await read("docs/plans/nir1-l6-l9-execution-plan.md");
+
+  // The proposal/6 judgments stay as history inside the section text and the
+  // G table; the proposal/7 judgments are added after them.
+  assert.match(
+    acceptance,
+    /判定：一部充足。writer の 512／513 records と 6,291,456／6,291,457 B の N／N\+1、上限ちょうどの保存と A2 の読取は充足（CR-2）。/,
+  );
+  assert.match(
+    acceptance,
+    /\| RB-1 \| Revision の上限（512 records／6,291,456 B）の N／N\+1 と正例 \| 充足（proposal\/7 の後、CQ-LIM-3。G-1。/,
+  );
+  assert.match(
+    acceptance,
+    /\| RB-2 \| per-Revision preflight（2,097,152 B）の N／N\+1 と query 全体の拒否 \| 充足（proposal\/7 の後、CQ-LIM-2、3。G-2。/,
+  );
+  for (const heading of [
+    "#### proposal/7 の後（2026-10-18、CQ-LIM-3）：G-1 は解消",
+    "#### proposal/7 の後（2026-10-18、CQ-LIM-2、3）：G-2 の [precheck] は解消。registration は fail-safe",
+  ]) {
+    assert.ok(acceptance.includes(heading), `acceptance must have ${heading}`);
+  }
+  const g1 = acceptance.slice(
+    acceptance.indexOf(
+      "#### proposal/7 の後（2026-10-18、CQ-LIM-3）：G-1 は解消",
+    ),
+    acceptance.indexOf("### 7.2. [precheck] G-2"),
+  );
+  for (const value of [
+    "NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT",
+    "NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT",
+    "6,291,456 B",
+    "counted の 512 records／6,291,456 B の検査",
+  ]) {
+    assert.ok(g1.includes(value), `G-1 (proposal/7) must record ${value}`);
+  }
+  const g2 = acceptance.slice(
+    acceptance.indexOf("#### proposal/7 の後（2026-10-18、CQ-LIM-2、3）"),
+    acceptance.indexOf("### 7.3. G-4"),
+  );
+  for (const value of [
+    "16,777,216 B",
+    "3,145,728 B",
+    "3,129,112 B",
+    "NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT",
+    "P7 案 4 の効果は未達",
+  ]) {
+    assert.ok(g2.includes(value), `G-2 (proposal/7) must record ${value}`);
+  }
+
+  // The HOLD table rows name the implemented writer check and the fail-safe, and
+  // keep the HOLD until the CQ-LIM PR merges after the re-measurement.
+  const holdRows = executionPlan
+    .split("\n")
+    .filter(
+      (line) =>
+        line.startsWith(
+          "| C-resourceのBの上限近傍のpublish（台帳§7.1のG-1）",
+        ) ||
+        line.startsWith(
+          "| C-resourceの実workerでの上限近傍の候補（台帳§7.2のG-2）",
+        ),
+    );
+  assert.equal(holdRows.length, 2);
+  assert.ok(holdRows[0].includes("NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT"));
+  assert.ok(holdRows[0].includes("CQ-LIM-3（branch `claude/nir1-cq-lim`）"));
+  assert.ok(holdRows[1].includes("CQ-LIM-2（branch `claude/nir1-cq-lim`）"));
+  assert.ok(holdRows[1].includes("fail-safe"));
+  for (const row of holdRows) {
+    assert.match(
+      row,
+      /X1-3のmergeの後の再測[^|]*を終えるまでmergeしない/,
+      "the HOLD stays until the CQ-LIM PR merges after the re-measurement",
+    );
+  }
+
+  const decisions = await read(
+    "docs/plans/nir1-lane-decisions/cq-lim-decisions.md",
+  );
+  for (const id of ["DR-CQL-5", "DR-CQL-6"]) {
+    assert.ok(decisions.includes(`| ${id} |`), `${id} must be recorded`);
+  }
 });

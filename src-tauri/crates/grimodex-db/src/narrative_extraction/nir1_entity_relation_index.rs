@@ -474,6 +474,32 @@ struct RevisionInputStats {
     material_records: usize,
 }
 
+/// The worker's registration refuses a project whose approved Revision has more
+/// A2 admission bytes than the per-Revision preflight allows (CQ-LIM-2). It is
+/// raised from the length query, before any JSON function runs or any of the
+/// Revision is parsed, so the registration never loads that Revision into Q.
+/// Registration cannot be proven complete without it: the stored source digest
+/// covers the roster of every qualified Revision, and that roster comes from
+/// the parsed bundle. The worker therefore ends before READY with a typed
+/// refusal instead of reaching an allocation failure.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+pub struct RegistrationRevisionInputLimit {
+    pub limit: usize,
+}
+
+impl std::fmt::Display for RegistrationRevisionInputLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "NIR1_GRAPH_REGISTRATION_REVISION_INPUT_LIMIT: A2 admission bytes exceed {}",
+            self.limit
+        )
+    }
+}
+
+impl std::error::Error for RegistrationRevisionInputLimit {}
+
 pub(crate) fn graph_source_from_roster(
     project: &str,
     roster: Vec<GraphObjectRosterEntry>,
@@ -646,11 +672,14 @@ pub(crate) fn read_eligibility_source_with_control(
     })
 }
 
+/// `registration_a2_limit` is `Some` only for the worker's registration. B's
+/// build, publish, Verify and Rebuild pass `None` and behave as before.
 pub(crate) fn read_eligibility_source_with_control_and_scratch(
     conn: &Connection,
     project: &str,
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+    registration_a2_limit: Option<usize>,
 ) -> Result<GraphEligibilitySource> {
     with_capacity_scope(conn, None, control, |_, control| {
         read_eligibility_source_counted(
@@ -659,7 +688,10 @@ pub(crate) fn read_eligibility_source_with_control_and_scratch(
             None,
             Some(control),
             Some(scratch_scope),
-            &mut SourceCapacity::default(),
+            &mut SourceCapacity {
+                registration_a2_limit,
+                ..SourceCapacity::default()
+            },
         )
     })
 }
@@ -897,7 +929,9 @@ fn read_eligibility_source_counted(
             capacity.input(proposal_id_bytes)?;
             capacity.input(revision_id_bytes)?;
             // Lengths are charged above; only String materialization enters S.
-            let (proposal_id, revision_id) = if let Some(scratch_scope) = scratch_scope.as_deref_mut() {
+            let (proposal_id, revision_id) = if let Some(scratch_scope) =
+                scratch_scope.as_deref_mut()
+            {
                 let mut decoded_row: Option<rusqlite::Result<(String, String)>> = None;
                 let mut decode_row = || {
                     decoded_row = Some((|| -> rusqlite::Result<(String, String)> {
@@ -910,9 +944,7 @@ fn read_eligibility_source_counted(
                     scratch_scope(&mut decode_row),
                     "NIR1_GRAPH_SCRATCH_SCOPE_REFUSED"
                 );
-                decoded_row.ok_or_else(|| {
-                    anyhow::anyhow!("NIR1_GRAPH_SCRATCH_SCOPE_SKIPPED")
-                })??
+                decoded_row.ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCRATCH_SCOPE_SKIPPED"))??
             } else {
                 (row.get::<_, String>(2)?, row.get::<_, String>(3)?)
             };
@@ -1089,9 +1121,10 @@ fn read_revision_input_stats(
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
     let envelope_bytes = usize::try_from(envelope_bytes)
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_INPUT_LIMIT"))?;
+    let metadata_bytes = usize::try_from(metadata_bytes)?;
     capacity.input(payload_bytes)?;
     capacity.input(envelope_bytes)?;
-    capacity.input(usize::try_from(metadata_bytes)?)?;
+    capacity.input(metadata_bytes)?;
     // B admits each stored Revision component up to 6 MiB
     // (MAX_GRAPH_INPUT_BYTES); the whole-set scan is separately charged above
     // against the 16 MiB INPUT_BYTES budget. The 2 MiB figure is only the
@@ -1120,6 +1153,25 @@ fn read_revision_input_stats(
             ));
         }
         return Ok(None);
+    }
+    if let Some(limit) = capacity.registration_a2_limit {
+        // The worker's registration counts the A2 admission bytes (the scalar
+        // lengths of the C-query preflight's first query, no JSON) before any JSON
+        // function runs or any of the Revision is parsed, after B's component
+        // guard above has handled a component over 6 MiB as it always has.
+        // Checked arithmetic: an overflow is over the limit. An approved Revision
+        // over the limit cannot be loaded into Q, and the registration cannot be
+        // proven without it, so it refuses (CQ-LIM-2). A Revision that is not
+        // approved is never part of a roster: skip it, as the guard above does.
+        let a2_bytes = payload_bytes
+            .checked_add(envelope_bytes)
+            .and_then(|bytes| bytes.checked_add(metadata_bytes));
+        if a2_bytes.is_none_or(|bytes| bytes > limit) {
+            if revision_is_approved(conn, revision_id)? {
+                return Err(anyhow::Error::new(RegistrationRevisionInputLimit { limit }));
+            }
+            return Ok(None);
+        }
     }
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
@@ -1300,45 +1352,26 @@ fn revision_is_approved(conn: &Connection, revision_id: &str) -> Result<bool> {
     Ok(approved.unwrap_or(true))
 }
 
-/// Confirm that the sealed payload names exactly the material Sources bound by
-/// the persisted basis before any live Source body is read. SQLite's JSON
-/// operators inspect only the already-size-bounded payload and return scalar
-/// ids/tokens; the Rust A2 reader therefore cannot allocate a large live body
-/// for a Source whose basis row was deleted or replaced.
-fn preflight_revision_source_basis(
-    conn: &Connection,
-    _project: &str,
-    revision_id: &str,
-    admission: Option<&GraphReadAdmission<'_>>,
-) -> Result<bool> {
-    if let Some(admission) = admission {
-        admission.ensure_current(conn)?;
-    }
-    // A version-2 basis binds one Scene Scope projection row per distinct anchor
-    // Scene and no `project-scope-authority` row. A version-1 basis (the old
-    // project-token row) is an ordinary A2-unavailable Revision: it is skipped
-    // here and never read as a project token.
-    // query_row finalizes its statement before the relation statement is prepared.
-    let (
-        entity_payload_count,
-        basis_count,
-        projection_basis_count,
-        legacy_authority_basis_count,
-        entity_matched_payload_count,
-        entity_matched_basis_count,
-        anchor_count,
-        payload_scope_count,
-        matched_scope_count,
-        matched_projection_basis_count,
-        invalid_entity_count,
-    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
-        "WITH payload_root AS MATERIALIZED (
+/// The Entity statement of [`preflight_revision_source_basis`].
+///
+/// `entity_items` is MATERIALIZED: each Entity's scalars (ids, tokens, the
+/// anchor key and the JSON types) are extracted from the payload once into a
+/// small ephemeral table, and the rollup, the two LEFT JOINs and the
+/// correlated `EXISTS` subqueries read those scalars. Left NOT MATERIALIZED,
+/// SQLite substitutes the whole per-Entity expression (each `json_extract` of
+/// `entity.value`, a copy of the Entity subtree) into every use site, so the
+/// anchor key of X1-3 (seven references to `entity.value`, used at three
+/// sites) kept that many more Entity-sized copies alive in Q during
+/// registration (CQ-LIM DR-CQL-13: for the payload-shaped Revision of A2
+/// 1,434,267 B this statement reached 14,096,880 B of Q, and 8,093,806 B
+/// materialized). The values and the verdict are the same either way.
+const SOURCE_BASIS_ENTITY_PREFLIGHT_SQL: &str = "WITH payload_root AS MATERIALIZED (
     SELECT CASE WHEN json_valid(revision.payload_json)
                 THEN jsonb(revision.payload_json)
                 ELSE '[]' END AS payload_json
       FROM narrative_proposal_revisions revision
      WHERE revision.id = ?1
-), entity_items AS NOT MATERIALIZED (
+), entity_items AS MATERIALIZED (
     SELECT entity.type AS element_type,
            CASE WHEN entity.type = 'object'
                 THEN json_extract(entity.value, '$.entityId') END AS material_id,
@@ -1433,7 +1466,41 @@ SELECT entity.payload_count,
        entity.matched_scope_count,
        entity.matched_projection_basis_count,
        entity.invalid_count
-  FROM entity_rollup AS entity",
+  FROM entity_rollup AS entity";
+
+/// Confirm that the sealed payload names exactly the material Sources bound by
+/// the persisted basis before any live Source body is read. SQLite's JSON
+/// operators inspect only the already-size-bounded payload and return scalar
+/// ids/tokens; the Rust A2 reader therefore cannot allocate a large live body
+/// for a Source whose basis row was deleted or replaced.
+fn preflight_revision_source_basis(
+    conn: &Connection,
+    _project: &str,
+    revision_id: &str,
+    admission: Option<&GraphReadAdmission<'_>>,
+) -> Result<bool> {
+    if let Some(admission) = admission {
+        admission.ensure_current(conn)?;
+    }
+    // A version-2 basis binds one Scene Scope projection row per distinct anchor
+    // Scene and no `project-scope-authority` row. A version-1 basis (the old
+    // project-token row) is an ordinary A2-unavailable Revision: it is skipped
+    // here and never read as a project token.
+    // query_row finalizes its statement before the relation statement is prepared.
+    let (
+        entity_payload_count,
+        basis_count,
+        projection_basis_count,
+        legacy_authority_basis_count,
+        entity_matched_payload_count,
+        entity_matched_basis_count,
+        anchor_count,
+        payload_scope_count,
+        matched_scope_count,
+        matched_projection_basis_count,
+        invalid_entity_count,
+    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
+        SOURCE_BASIS_ENTITY_PREFLIGHT_SQL,
         params![revision_id],
         |row| {
             Ok((
@@ -1609,14 +1676,7 @@ pub(crate) fn source_capacity_usage(conn: &Connection, project: &str) -> Result<
         None,
         &mut ForegroundValidationControl,
         |_, control| {
-            read_eligibility_source_counted(
-                conn,
-                project,
-                None,
-                Some(control),
-                None,
-                &mut usage,
-            )
+            read_eligibility_source_counted(conn, project, None, Some(control), None, &mut usage)
         },
     )?;
     Ok((usage.input_bytes, usage.roster_bytes))
@@ -1629,6 +1689,9 @@ struct SourceCapacity {
     materials: usize,
     input_bytes: usize,
     roster_bytes: usize,
+    /// The worker registration's per-Revision A2 admission limit. `None` for
+    /// every other reader, including all of B.
+    registration_a2_limit: Option<usize>,
 }
 
 /// The typed capacity failure of the whole-project build. `field` names the
@@ -2108,23 +2171,40 @@ pub(crate) fn is_complete_registered_with_control(
         operation();
         true
     };
-    is_complete_registered_with_scratch(conn, project, key, control, &mut current_heap)
+    is_complete_registered_with_scratch(conn, project, key, control, &mut current_heap, None)
 }
 
 /// Worker variant whose callback scopes temporary source-page and comparison allocations.
+/// `registration_a2_limit` is `Some` only for the Graph reader's registration
+/// (CQ-LIM-2); every other caller passes `None`.
 pub(crate) fn is_complete_registered_with_scratch(
     conn: &Connection,
     project: &str,
     key: &str,
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+    registration_a2_limit: Option<usize>,
 ) -> Result<bool> {
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
+        return is_complete_registered_with_scratch(
+            &tx,
+            project,
+            key,
+            control,
+            scratch_scope,
+            registration_a2_limit,
+        );
     }
     with_capacity_scope(conn, None, control, |_, control| {
-        is_complete_registered_with_control_unmetered(conn, project, key, control, scratch_scope)
+        is_complete_registered_with_control_unmetered(
+            conn,
+            project,
+            key,
+            control,
+            scratch_scope,
+            registration_a2_limit,
+        )
     })
 }
 
@@ -2134,13 +2214,21 @@ fn is_complete_registered_with_control_unmetered(
     key: &str,
     control: &mut dyn GraphWorkControl,
     scratch_scope: &mut dyn FnMut(&mut dyn FnMut()) -> bool,
+    registration_a2_limit: Option<usize>,
 ) -> Result<bool> {
     if key != INDEX_KEY {
         return Ok(false);
     }
     if conn.is_autocommit() {
         let tx = conn.unchecked_transaction()?;
-        return is_complete_registered_with_scratch(&tx, project, key, control, scratch_scope);
+        return is_complete_registered_with_scratch(
+            &tx,
+            project,
+            key,
+            control,
+            scratch_scope,
+            registration_a2_limit,
+        );
     }
     control.check(GraphWorkStage::CompleteRegistration)?;
     let BindingRead::Registered(binding) = read_with_control(conn, project, control)? else {
@@ -2157,6 +2245,7 @@ fn is_complete_registered_with_control_unmetered(
         project,
         control,
         scratch_scope,
+        registration_a2_limit,
     )?;
     if binding.source_digest != source.digest {
         return Ok(false);
@@ -3003,6 +3092,31 @@ mod tests {
             )?;
             assert_eq!(stats.is_some(), admitted, "{name}");
         }
+        Ok(())
+    }
+
+    // CQ-LIM DR-CQL-13: the Entity statement of the source-basis preflight
+    // extracts each Entity's scalars once. A NOT MATERIALIZED `entity_items`
+    // copied the Entity subtree into Q at every use site of the anchor key.
+    #[test]
+    fn source_basis_preflight_materializes_the_entity_items_once() -> Result<()> {
+        let conn = Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE narrative_proposal_revisions (id TEXT, payload_json TEXT);
+             CREATE TABLE narrative_revision_source_basis (
+                 revision_id TEXT, source_kind TEXT, source_key TEXT, revision_token TEXT
+             );",
+        )?;
+        let mut statement = conn.prepare(&format!(
+            "EXPLAIN QUERY PLAN {SOURCE_BASIS_ENTITY_PREFLIGHT_SQL}"
+        ))?;
+        let plan = statement
+            .query_map(params!["revision-1"], |row| row.get::<_, String>(3))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert!(
+            plan.iter().any(|line| line == "MATERIALIZE entity_items"),
+            "{plan:#?}"
+        );
         Ok(())
     }
 

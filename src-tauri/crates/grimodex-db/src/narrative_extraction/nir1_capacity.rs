@@ -962,17 +962,20 @@ mod tests {
     }
 
     #[test]
-    fn fixed_graph_sql_budget_admits_100000_steps_and_refuses_100001() {
+    fn fixed_graph_sql_budget_admits_600000_steps_and_refuses_600001() {
         let limit = super::super::nir1_graph::QUERY_SQL_STEPS;
-        assert_eq!(limit, 100_000);
-        let (used, succeeded) = run_sql(limit, 4_346, 5);
+        assert_eq!(limit, 600_000);
+        // The recursive insert costs 23 steps a row and 17 more, and each
+        // padding statement 4 (the first 9): 26,082 rows and 23 statements are
+        // exactly 600,000 steps.
+        let (used, succeeded) = run_sql(limit, 26_082, 23);
         assert!(succeeded, "the exact-cap workload must commit");
         assert_eq!(
             used, limit,
-            "successful work must use exactly 100,000 steps"
+            "successful work must use exactly 600,000 steps"
         );
 
-        let (used, succeeded) = run_sql(limit, 50_000, 0);
+        let (used, succeeded) = run_sql(limit, 60_000, 0);
         assert!(
             !succeeded,
             "the recursive statement must exceed the fixed budget"
@@ -980,7 +983,7 @@ mod tests {
         assert_eq!(
             used,
             limit + 1,
-            "only the 100,001st progress callback refuses"
+            "only the 600,001st progress callback refuses"
         );
     }
 
