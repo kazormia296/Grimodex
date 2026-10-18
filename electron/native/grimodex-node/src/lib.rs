@@ -29,6 +29,7 @@ mod nir1_generation_owner;
 #[cfg(test)]
 mod nir1_graph_activation_tests;
 mod nir1_graph_product;
+mod nir1_local_attempt;
 mod nir1_local_send_policy;
 mod nir1_local_transport;
 mod nir1_prepared_request;
