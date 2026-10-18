@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use super::commit_outcome::test_hooks as reread_hooks;
 use super::writer::{test_hooks as write_hooks, Stage};
-use super::writer_test_support::*;
+use super::writer_support_tests::*;
 use super::*;
 use crate::nir1_generation::Nir1GenerationFailpoint;
 use crate::workspace_lifecycle::{AdmissionKind, AdmissionOutcome, LifecycleError};

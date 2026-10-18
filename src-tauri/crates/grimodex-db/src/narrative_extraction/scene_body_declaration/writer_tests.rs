@@ -10,7 +10,7 @@ use rusqlite::{params, Connection};
 use serde_json::json;
 
 use super::writer::{test_hooks, Stage};
-use super::writer_test_support::*;
+use super::writer_support_tests::*;
 use super::*;
 use crate::domain_writes::{tree_node_patch, TreeNodePatchPayload};
 use crate::narrative_extraction::change_feed::NarrativeChangeOrigin;
@@ -200,6 +200,37 @@ fn scope_digest(env: &Env) -> String {
     })
 }
 
+fn save_body_for_test(env: &Env, scene: &str, updated_at: &str) {
+    let request = uuid::Uuid::new_v4().to_string();
+    let payload = serde_json::from_value(json!({
+        "sceneId": scene,
+        "projectId": PROJECT,
+        "requestId": request,
+        "sessionId": "session",
+        "eventUid": request,
+        "origin": "human",
+        "timelapseSteps": null,
+        "includeSidecars": false,
+        "baseVersion": null,
+        "updatedAt": updated_at,
+        "contentJson": body_json("Mira closed the door."),
+        "charCount": 0,
+        "placedBeatPreview": null,
+        "unplacedBeatsDoc": "[]",
+        "unplacedBeatPreview": null,
+        "authorshipSpans": [],
+        "foreshadowSetups": [],
+        "foreshadowPayoffs": [],
+        "foreshadowBaseVersions": {},
+        "annotationAnchors": [],
+        "beatMentions": [],
+        "beatPovOverrides": [],
+        "docContentSize": 0,
+    }))
+    .expect("body save payload");
+    crate::scene_body::save_scene_body_bundle(env.db().db(), payload).expect("save scene body");
+}
+
 #[test]
 fn v1_readers_and_writers_keep_working_after_declare_and_revoke() {
     let env = Env::new();
@@ -256,6 +287,14 @@ fn v1_readers_and_writers_keep_working_after_declare_and_revoke() {
         },
     )
     .expect("registry change after a declaration");
+    // A body save (a different refresh path from the A1 and registry writes)
+    // does not fail with NEX_SCENE_SCOPE_SOURCE_TOKEN_INVALID either.
+    save_body_for_test(&env, SCENE, "2026-10-18T06:30:00.000Z");
+    env.with_conn(|conn| {
+        let read = read_narrative_scene_scope(conn, PROJECT, SCENE)?;
+        assert!(read.binding.version >= 1);
+        Ok(())
+    });
     // The row is still a valid v1 row and the Scene can be declared again.
     declare_ok(&env, SCENE);
 }
@@ -369,6 +408,34 @@ fn declaration_does_not_touch_revisions_or_indexes() {
         "revoke leaves the Index metadata alone"
     );
     assert_eq!(scope_digest(&env), authority);
+
+    // The feed events the writers appended are declaration-kind events: they
+    // name no source identity (so no Revision becomes pending) and do not move
+    // the project's Scope authority. The pending judgement itself and the
+    // sealed Graph binding are exercised with the same event kind in
+    // `pending_and_indexes` (tests.rs).
+    let events = env.with_conn(|conn| {
+        crate::narrative_extraction::change_feed::get_changes_since(conn, PROJECT, 0, 500)
+    });
+    let declaration_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.object_key["kind"] == SCENE_BODY_DECLARATION_OBJECT_KIND)
+        .cloned()
+        .collect();
+    assert_eq!(declaration_events.len(), 2, "one declare and one revoke");
+    assert!(
+        crate::narrative_extraction::incremental_freshness::affected_source_identities(
+            PROJECT,
+            &declaration_events
+        )
+        .unwrap()
+        .is_empty()
+    );
+    assert!(declaration_events.iter().all(|event| {
+        !crate::narrative_extraction::incremental_freshness::event_changes_project_scope_authority(
+            event,
+        )
+    }));
 
     // Control: the metadata rows do react to a transaction of another kind.
     set_a1(env.db().db(), PROJECT, EMPTY_SCENE, true);
@@ -997,6 +1064,15 @@ fn idempotent_resend_returns_recorded_response() {
     assert!(again.replayed);
     assert_eq!(again.response, DeclareResponse::Declared);
     assert_eq!(declared_token(&env, SCENE), Some(token));
+    assert_eq!(counts(&env), after_first);
+
+    // A resend that starts from a fresh preview (what Main does) ends at the
+    // preview: the Scene is declared now, so the OCC of the old screen is out
+    // of date and no grant is issued (DR-CB2-6 addendum).
+    assert_eq!(
+        preview_scene_body_declaration(&env.snapshot(), &request, &budget()).unwrap_err(),
+        DeclareRefusal::StateChanged(StateComponent::DeclarationToken)
+    );
     assert_eq!(counts(&env), after_first);
 
     // The same request ID with another payload is a conflict.

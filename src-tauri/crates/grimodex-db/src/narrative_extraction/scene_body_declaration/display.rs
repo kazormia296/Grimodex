@@ -1,6 +1,8 @@
 //! The confirmation text of a body declaration, built by Native.
 //!
-//! The text is a fixed allowlist of strings plus two values Native itself
+//! The text is a fixed allowlist of strings (including three lines that state
+//! the meaning of the values the author declares: non-secret reveal, and
+//! independent POV, story, auto and phase) plus two values Native itself
 //! prepared: the Scene's title, made safe to show, and the body's character
 //! count. Nothing from the renderer and nothing derived from the body is
 //! used. The title is the only author-controlled text, and it can come from
@@ -33,6 +35,12 @@ const LINE_TITLE_OPEN: char = '「';
 const LINE_TITLE_CLOSE: char = '」';
 const LINE_TARGET_PREFIX: &str = "対象：本文の全体（";
 const LINE_TARGET_SUFFIX: &str = " 文字）と title";
+const LINE_VALUE_REVEAL: &str =
+    "宣言する値：本文の全体に、まだ明かしていない秘密を含まないこと（reveal：non-secret）。";
+const LINE_VALUE_POV: &str =
+    "宣言する値：視点（POV）に限られず、どの視点の query にも表示してよいこと（POV：independent）。";
+const LINE_VALUE_STORY: &str =
+    "宣言する値：story time と phase に限られず表示してよいこと（story・auto・phase：independent）。";
 const LINE_EFFECT: &str = "効果：関連シーンでの本文の先頭の行（excerpt）の表示と、その位置への移動だけです。AI には送りません。";
 const LINE_EXPIRY_SCENE: &str = "失効：本文、title、シーンの範囲設定（A1）の変更、restore、workspace の移動、この Scene を含む章（folder）の移動や archive で、この宣言は無効になります。";
 const LINE_EXPIRY_REGISTRY: &str =
@@ -128,6 +136,9 @@ pub fn build_body_declaration_display(
             shown.text
         ),
         format!("{LINE_TARGET_PREFIX}{body_chars}{LINE_TARGET_SUFFIX}"),
+        LINE_VALUE_REVEAL.to_owned(),
+        LINE_VALUE_POV.to_owned(),
+        LINE_VALUE_STORY.to_owned(),
         LINE_EFFECT.to_owned(),
         LINE_EXPIRY_SCENE.to_owned(),
         LINE_EXPIRY_REGISTRY.to_owned(),

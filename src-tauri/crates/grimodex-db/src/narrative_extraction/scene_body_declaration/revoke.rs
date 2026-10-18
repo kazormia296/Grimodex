@@ -95,6 +95,7 @@ pub fn revoke_scene_body(
     };
     let event_uid = Uuid::new_v4().hyphenated().to_string();
     let ready = Cell::new(false);
+    let replay_response: Cell<Option<RevokeResponse>> = Cell::new(None);
 
     let participant = workspace.participant();
     let sql_budget = budget.sql_budget();
@@ -116,7 +117,14 @@ pub fn revoke_scene_body(
                         return refuse(DeclareRefusal::Internal);
                     };
                     ready.set(true);
+                    replay_response.set(Some(response));
                     return Ok(Written::Replayed(response));
+                }
+                if workspace
+                    .durable_workspace_identity()
+                    .is_some_and(is_scene_body_declaration_quarantined)
+                {
+                    return refuse(DeclareRefusal::RestartRequired);
                 }
                 if workspace.check_current_binding().is_err() {
                     return refuse(DeclareRefusal::WorkspaceMismatch);
@@ -233,6 +241,7 @@ pub fn revoke_scene_body(
         event_uid: &event_uid,
         token_before: Some(&request.declaration_token),
         token_after: None,
+        replayed: replay_response.get().is_some(),
     };
     match settle(workspace, &ids, result) {
         Settled::Committed { value, evidence } => Ok(match value {
@@ -249,6 +258,18 @@ pub fn revoke_scene_body(
                 evidence,
             },
         }),
+        Settled::ReplayedAfterUnknown { evidence } => match replay_response.get() {
+            Some(response) => Ok(RevokeOutcome {
+                response,
+                replayed: true,
+                recovered_after_unknown_commit: false,
+                evidence,
+            }),
+            None => Err(DeclareFailure {
+                refusal: DeclareRefusal::Internal,
+                evidence: Some(evidence),
+            }),
+        },
         Settled::Recovered { evidence } => Ok(RevokeOutcome {
             response: RevokeResponse::Revoked,
             replayed: false,

@@ -4,7 +4,7 @@
 
 use super::commit_outcome::test_hooks as reread_hooks;
 use super::writer::test_hooks as write_hooks;
-use super::writer_test_support::*;
+use super::writer_support_tests::*;
 use super::*;
 use crate::nir1_generation::Nir1GenerationFailpoint;
 
@@ -308,4 +308,47 @@ fn terminal_evidence_is_unforgeable() {
     // Every success and every refusal that ran a transaction carries evidence.
     let _: fn(&DeclareOutcome) -> &DeclarationTerminalEvidence = |outcome| &outcome.evidence;
     let _: fn(&RevokeOutcome) -> &DeclarationTerminalEvidence = |outcome| &outcome.evidence;
+}
+
+#[test]
+fn a_replay_whose_empty_commit_is_unknown_does_not_quarantine() {
+    write_hooks::reset();
+    reread_hooks::reset();
+    let env = Env::new();
+    let request = scene_request(&env);
+    let consumed = consumed_for(&env, &request).expect("preview");
+    let stale = consumed.binding().clone();
+    declare_scene_body(&env.snapshot(), consumed, request.clone(), &budget()).unwrap();
+    let token = env.declaration_token(SCENE);
+    assert!(token.is_some());
+
+    // The same request again: the recorded response is found, nothing is
+    // written, and COMMIT of that empty transaction reports Unknown.
+    let again = declare_scene_body(
+        &env.snapshot(),
+        ConsumedBodyDeclarationBinding::from_consumed_grant(stale),
+        request.clone(),
+        &with_failpoint(Nir1GenerationFailpoint::ErrorAfterCommit),
+    )
+    .unwrap();
+    assert!(again.replayed);
+    assert_eq!(again.response, DeclareResponse::Declared);
+    assert_eq!(again.evidence.kind(), TerminalKind::Committed);
+    assert_eq!(reread_hooks::rereads(), 0, "nothing to reread");
+    assert!(!is_scene_body_declaration_quarantined(&env.identity()));
+    assert_eq!(env.declaration_token(SCENE), token);
+
+    // The same holds for a revoke replay.
+    let token = token.unwrap();
+    let revoke = revoke_request(PROJECT, SCENE, &token);
+    revoke_scene_body(&env.snapshot(), revoke.clone(), &budget()).unwrap();
+    let again = revoke_scene_body(
+        &env.snapshot(),
+        revoke,
+        &with_failpoint(Nir1GenerationFailpoint::ErrorAfterCommit),
+    )
+    .unwrap();
+    assert!(again.replayed);
+    assert_eq!(again.response, RevokeResponse::Revoked);
+    assert!(!is_scene_body_declaration_quarantined(&env.identity()));
 }

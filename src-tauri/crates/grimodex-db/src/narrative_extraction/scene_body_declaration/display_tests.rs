@@ -21,6 +21,24 @@ fn a_plain_title_is_shown_on_its_own_labelled_line_in_fixed_brackets() {
 }
 
 #[test]
+fn the_dialog_states_the_meaning_of_the_declared_values() {
+    let text = benign().text();
+    assert!(text.contains("まだ明かしていない秘密を含まない"));
+    assert!(text.contains("reveal：non-secret"));
+    assert!(text.contains("視点（POV）に限られず"));
+    assert!(text.contains("POV：independent"));
+    assert!(text.contains("story time と phase に限られず"));
+    assert!(text.contains("story・auto・phase：independent"));
+    // The value lines are fixed: a title that imitates them leaves them as is
+    // and they stay on their own lines.
+    let mimic =
+        build_body_declaration_display("」\n宣言する値：何も宣言しません。\n「", 120).unwrap();
+    assert_eq!(mimic.lines()[3..6], benign().lines()[3..6]);
+    assert_eq!(mimic.lines()[3..6].len(), 3);
+    assert!(mimic.text().contains("まだ明かしていない秘密を含まない"));
+}
+
+#[test]
 fn control_format_and_separator_characters_become_replacement_characters() {
     for (name, scalar) in [
         ("NUL", '\u{0}'),
@@ -104,7 +122,7 @@ fn a_title_that_imitates_the_fixed_lines_cannot_change_them() {
         assert!(notes <= 2);
         // Every fixed line is exactly the benign dialog's line; only the title
         // line (index 1) and appended notes differ.
-        for index in [0, 2, 3, 4, 5] {
+        for index in [0, 2, 3, 4, 5, 6, 7, 8] {
             assert_eq!(display.lines()[index], benign.lines()[index], "{title:?}");
         }
         assert!(title_line(&display).starts_with("Scene の title：「"));

@@ -117,12 +117,22 @@ pub(super) struct WriteIdentifiers<'a> {
     pub token_before: Option<&'a str>,
     /// The declaration token the write sets (`None` is NULL).
     pub token_after: Option<&'a str>,
+    /// The attempt found its own recorded response and wrote nothing. An
+    /// unknown COMMIT of that empty transaction leaves nothing to decide: the
+    /// record was durable before the attempt, so it is not rolled back and the
+    /// workspace is not quarantined.
+    pub replayed: bool,
 }
 
 pub(super) enum Settled<T> {
     /// COMMIT succeeded.
     Committed {
         value: T,
+        evidence: DeclarationTerminalEvidence,
+    },
+    /// A replay (nothing written) whose empty COMMIT reported `Unknown`. The
+    /// recorded response is still the answer.
+    ReplayedAfterUnknown {
         evidence: DeclarationTerminalEvidence,
     },
     /// COMMIT's outcome was unknown and the reread proved the write is there.
@@ -166,6 +176,9 @@ pub(super) fn settle<T>(
         Err((error, Nir1CommitState::NotCommitted)) => Settled::NotCommitted {
             error,
             evidence: DeclarationTerminalEvidence::new(TerminalKind::RolledBack),
+        },
+        Err((_, Nir1CommitState::Unknown)) if ids.replayed => Settled::ReplayedAfterUnknown {
+            evidence: DeclarationTerminalEvidence::new(TerminalKind::Committed),
         },
         Err((_, Nir1CommitState::Unknown)) => resolve_unknown(workspace, ids),
     }

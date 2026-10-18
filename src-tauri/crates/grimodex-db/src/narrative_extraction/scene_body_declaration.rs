@@ -622,6 +622,6 @@ mod tests;
 #[cfg(test)]
 mod veto_tests;
 #[cfg(test)]
-mod writer_test_support;
+mod writer_support_tests;
 #[cfg(test)]
 mod writer_tests;

@@ -290,6 +290,7 @@ pub fn declare_scene_body(
     let event_uid = Uuid::new_v4().hyphenated().to_string();
     let token_after: RefCell<Option<String>> = RefCell::new(None);
     let ready = Cell::new(false);
+    let replay_response: Cell<Option<DeclareResponse>> = Cell::new(None);
 
     let sql_budget = budget.sql_budget();
     let checkpoint_budget = sql_budget.clone();
@@ -309,7 +310,13 @@ pub fn declare_scene_body(
                         return refuse(DeclareRefusal::Internal);
                     };
                     ready.set(true);
+                    replay_response.set(Some(response));
                     return Ok(Written::Replayed(response));
+                }
+                // A write that queued behind one with an unknown COMMIT must not
+                // start once that one quarantined the workspace.
+                if let Err(refusal) = ensure_not_quarantined(workspace) {
+                    return refuse(refusal);
                 }
                 if workspace.check_current_binding().is_err() {
                     return refuse(DeclareRefusal::WorkspaceMismatch);
@@ -438,6 +445,7 @@ pub fn declare_scene_body(
         event_uid: &event_uid,
         token_before: bound.declaration_token.as_deref(),
         token_after: token_after.as_deref(),
+        replayed: replay_response.get().is_some(),
     };
     match settle(workspace, &ids, result) {
         Settled::Committed { value, evidence } => Ok(match value {
@@ -454,6 +462,18 @@ pub fn declare_scene_body(
                 evidence,
             },
         }),
+        Settled::ReplayedAfterUnknown { evidence } => match replay_response.get() {
+            Some(response) => Ok(DeclareOutcome {
+                response,
+                replayed: true,
+                recovered_after_unknown_commit: false,
+                evidence,
+            }),
+            None => Err(DeclareFailure {
+                refusal: DeclareRefusal::Internal,
+                evidence: Some(evidence),
+            }),
+        },
         Settled::Recovered { evidence } => Ok(DeclareOutcome {
             response: DeclareResponse::Declared,
             replayed: false,
