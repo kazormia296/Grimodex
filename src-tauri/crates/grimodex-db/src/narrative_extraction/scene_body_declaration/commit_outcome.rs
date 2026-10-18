@@ -74,6 +74,23 @@ pub fn clear_scene_body_declaration_quarantine_for_test(identity: &DurableWorksp
     quarantined_set().remove(&quarantine_key(identity));
 }
 
+/// Test support for the Native entries (D12): quarantines, and releases, the
+/// workspace a snapshot was taken from, as an unknown COMMIT and a restart
+/// would. A product build has neither.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub fn quarantine_scene_body_declaration_workspace_for_test(workspace: &ActiveWorkspaceSnapshot) {
+    quarantine_workspace(workspace);
+}
+
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub fn clear_scene_body_declaration_workspace_quarantine_for_test(
+    workspace: &ActiveWorkspaceSnapshot,
+) {
+    if let Some(identity) = workspace.durable_workspace_identity() {
+        quarantined_set().remove(&quarantine_key(identity));
+    }
+}
+
 /// How a write ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TerminalKind {

@@ -2568,6 +2568,9 @@ pub struct AppState {
     pub(crate) related_scenes: crate::related_scenes::RelatedScenesService,
     /// Process-local C-query product owner (CP-2a). Never activated before PUB-G (A-1).
     pub(crate) nir1_graph: crate::nir1_graph_product::Nir1GraphProductOwner,
+    /// MG-1 (CB-2): Main's one-time confirmation slot and the closed-by-default
+    /// pre-publication gate. Process-local; nothing here persists.
+    pub(crate) main_grant: crate::main_grant::MainGrantState,
     /// Gate 2 cross-encoder cache shared by diagnostic shadow and opt-in apply.
     /// The outer mutex is both the non-queuing native concurrency=1 guard and
     /// Session::run's mutable owner. Callers must use `try_lock` and return the
@@ -2750,6 +2753,7 @@ impl AppState {
         let switching = grimodex_db::WorkspaceLifecycleCompatibilityView::default();
         let lifecycle_core = switching.core();
         let nir1_graph = crate::nir1_graph_product::Nir1GraphProductOwner::new(&lifecycle_core);
+        let main_grant = crate::main_grant::MainGrantState::new(&lifecycle_core);
         Ok(Self {
             ws: WorkspaceState {
                 inner: Mutex::new(None),
@@ -2780,6 +2784,7 @@ impl AppState {
             semantic,
             related_scenes: crate::related_scenes::RelatedScenesService::default(),
             nir1_graph,
+            main_grant,
             semantic_reranker: Mutex::new(grimodex_semantic::reranker::RerankerRuntime::new(
                 reranker_resource_root,
             )),

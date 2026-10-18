@@ -594,7 +594,11 @@ mod writer;
     feature = "native-current-human-capture",
     any(test, feature = "workspace-maintenance-test-support")
 ))]
-pub use commit_outcome::clear_scene_body_declaration_quarantine_for_test;
+pub use commit_outcome::{
+    clear_scene_body_declaration_quarantine_for_test,
+    clear_scene_body_declaration_workspace_quarantine_for_test,
+    quarantine_scene_body_declaration_workspace_for_test,
+};
 #[cfg(feature = "native-current-human-capture")]
 pub use commit_outcome::{
     is_scene_body_declaration_quarantined, is_workspace_scene_body_declaration_quarantined,

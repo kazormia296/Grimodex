@@ -14,11 +14,15 @@
 //! - エラーは `AppError` の Display 文字列をそのまま reason に載せる (§5.2 の
 //!   文字列ワイヤ契約。convert.rs 参照)。
 
+mod body_declaration_entry;
+#[cfg(test)]
+mod body_declaration_entry_tests;
 mod convert;
 mod lifecycle_failure_diagnostics;
 #[cfg(feature = "legacy-keyring-migration")]
 mod legacy_keyring;
 mod license_mode;
+mod main_grant;
 mod narrative_maintenance;
 mod nir1_generation;
 mod nir1_generation_owner;
@@ -6621,6 +6625,8 @@ impl Backend {
     /// quiescence barrier used for a restricted-profile restart.
     #[napi]
     pub async fn activate_profile_egress(&self) -> Result<String> {
+        // A change of the D2a epoch revokes any pending Main grant.
+        self.state.main_grant.registry.revoke_all();
         self.state
             .profile_egress
             .activate_first_restricted_publication(false)
@@ -6642,9 +6648,81 @@ impl Backend {
 
     /// Main-only invalidation when the trusted workspace binding changes.
     /// Renderer-provided identities cannot clear or retain Native registrations.
+    /// A change of the D2a caller epoch also revokes any pending Main grant.
     #[napi]
     pub fn invalidate_profile_egress_callers(&self) {
+        self.state.main_grant.registry.revoke_all();
         self.state.profile_egress.invalidate_callers();
+    }
+
+    // ───────────── MG-1: Main's one-time confirmation (CB-2) ─────────────
+    // Main-only. None of these is in `NAPI_COMMANDS`, so the renderer's IPC
+    // cannot reach them (the same treatment as `activateProfileEgress`).
+
+    /// Reads the Scene and stores a preview in the process-wide grant slot.
+    /// Returns `{ previewId, display, expiresInMs }`. A closed pre-publication
+    /// gate refuses before the database is read.
+    #[napi]
+    pub async fn main_grant_preview(
+        &self,
+        kind: String,
+        request_json: String,
+        sender_id: u32,
+        window_id: u32,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            body_declaration_entry::grant_preview(
+                &state,
+                &kind,
+                &request_json,
+                sender_id,
+                window_id,
+                caller_identity,
+            )
+        })
+        .await
+    }
+
+    /// Turns an approved preview into a grant (`{ grantId }`), after reading the
+    /// Scene again.
+    #[napi]
+    pub async fn main_grant_issue(
+        &self,
+        preview_id: String,
+        sender_id: u32,
+        window_id: u32,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            body_declaration_entry::grant_issue(&state, &preview_id, sender_id, window_id)
+        })
+        .await
+    }
+
+    /// Revokes the grant named by a previewId or a grantId. An unknown or ended
+    /// id is not an error.
+    #[napi]
+    pub fn main_grant_revoke(&self, id: String) {
+        self.state.main_grant.registry.revoke(&id);
+    }
+
+    /// Revokes the grant bound to a sender (destroyed, navigated, crashed).
+    #[napi]
+    pub fn main_grant_revoke_sender(&self, sender_id: u32) {
+        self.state.main_grant.registry.revoke_sender(sender_id);
+    }
+
+    /// Opens one pre-publication entry for the life of this process. Main calls
+    /// it once at startup, and only when the evaluation CI seam is active. It
+    /// is not persisted and there is no call that closes it.
+    #[napi]
+    pub fn main_open_pre_publication_gate(&self, kind: String) -> Result<()> {
+        let entry = main_grant::PrePublicationEntry::parse(&kind)
+            .ok_or_else(|| Error::from_reason("MAIN_GATE_KIND"))?;
+        self.state.main_grant.gate.open(entry);
+        Ok(())
     }
 
     // ─────────────────────── license (Phase 3e) ──────────────────────────
@@ -12107,6 +12185,36 @@ impl Backend {
             Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
         })
         .await
+    }
+
+    /// Declare a Scene's whole body (title included) as disclosed (CB-2, K2/4).
+    /// A typed entry apart from the A1 save. It needs the one-time grant Main
+    /// attached as the trailing sidecar and is closed by the pre-publication
+    /// gate until PUB-G; the grant is consumed before the writer's transaction.
+    #[napi]
+    pub async fn narrative_scene_body_declaration_declare(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+        grant: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            body_declaration_entry::declare(&state, payload, caller_identity, grant)
+        })
+        .await
+    }
+
+    /// Revoke a Scene's body declaration. It needs no grant (K2-3) and is
+    /// closed by the same gate.
+    #[napi]
+    pub async fn narrative_scene_body_declaration_revoke(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || body_declaration_entry::revoke(&state, payload, caller_identity)).await
     }
 
     /// Atomically update the project Scope vocabulary registry. Scene bindings
