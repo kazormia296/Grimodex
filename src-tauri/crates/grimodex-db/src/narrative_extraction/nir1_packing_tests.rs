@@ -2908,6 +2908,231 @@ fn native_selection_excludes_candidates_that_a3_reports_unavailable() -> Result<
     Ok(())
 }
 
+/// A real, approved Revision added to the fixture after it was built. The
+/// caller may change the request first (a different bundle, Scope or run).
+#[cfg(feature = "native-current-human-capture")]
+fn add_real_revision(
+    fixture: &DfFinalFixture,
+    name: &str,
+    customize: impl FnOnce(
+        &Database,
+        &mut crate::narrative_extraction::nir1_entity_relation::Nir1EntityRelationRevisionRequest,
+    ) -> Result<()>,
+) -> Result<String> {
+    let db = fixture.snapshot.db().db();
+    let run_id = format!("extra-run-{name}");
+    create_typed_run(db, &run_id)?;
+    let mut request = request_for_run(db, &run_id, &format!("extra-proposal-{name}"));
+    customize(db, &mut request)?;
+    let created = create_nir1_entity_relation_revision(db, request)?;
+    approve_typed_revision(db, &run_id, &created)?;
+    Ok(created["revisionId"]
+        .as_str()
+        .context("extra Revision ID missing")?
+        .to_owned())
+}
+
+/// A-8: the other families of A2/A3 reasons also leave out only the candidates
+/// they hit (source change, Freshness, restore invalidation, Scope future).
+/// Each case breaks some candidates and keeps the others, and the excluded
+/// ones appear with their closed reason and nowhere else in the request.
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn native_selection_leaves_out_only_the_candidates_each_reason_family_hits() -> Result<()> {
+    use crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens;
+    use grimodex_core::narrative_nir1::ScopeValue;
+
+    // Freshness: the canonical Freshness row of one Revision is gone.
+    let fixture = DfFinalFixture::new()?;
+    let sorted = fixture.sorted_revisions();
+    fixture.sql(
+        "DELETE FROM narrative_consumer_freshness
+          WHERE project_id='default-project' AND consumer_kind='proposal-revision'
+            AND consumer_key=?1",
+        params![sorted[1]],
+    )?;
+    let selected = fixture.select()?;
+    assert_eq!(adopted_revision_ids(&selected), vec![sorted[0].clone()]);
+    assert_eq!(
+        excluded_pairs(&selected),
+        vec![(sorted[1].clone(), "canonical-freshness-unavailable")]
+    );
+    assert_revision_absent_from_request(&selected, &sorted[1])?;
+
+    // Restore: the epoch is rotated, so the two Revisions of the old epoch are
+    // invalidated for good, and a Revision prepared and approved in the new
+    // epoch stays.
+    let fixture = DfFinalFixture::new()?;
+    let sorted = fixture.sorted_revisions();
+    fixture.snapshot.db().db().with_conn(|conn| {
+        crate::narrative_extraction::semantic_epoch::create_epoch_in_tx(
+            conn,
+            "default-project",
+            "restore",
+            Some("restore-event-native-selection"),
+        )
+    })?;
+    let after_restore = add_real_revision(&fixture, "after-restore", |_, _| Ok(()))?;
+    let selected = fixture.select()?;
+    assert_eq!(adopted_revision_ids(&selected), vec![after_restore.clone()]);
+    let mut left_out = excluded_pairs(&selected);
+    left_out.sort();
+    assert_eq!(
+        left_out,
+        vec![
+            (sorted[0].clone(), "revision-restore-invalidated"),
+            (sorted[1].clone(), "revision-restore-invalidated"),
+        ]
+    );
+    for revision_id in &sorted {
+        assert_revision_absent_from_request(&selected, revision_id)?;
+    }
+
+    // Source change: a third Revision holds only Bob; Alice changes after all
+    // three were approved, so the two Revisions that hold Alice are left out
+    // and the one that does not stays.
+    let fixture = DfFinalFixture::new()?;
+    let sorted = fixture.sorted_revisions();
+    let bob_only = add_real_revision(&fixture, "bob-only", |_, request| {
+        request
+            .bundle
+            .entities
+            .retain(|entity| entity.entity_id == "nir1-bob");
+        request.bundle.relations.clear();
+        Ok(())
+    })?;
+    fixture.sql(
+        "UPDATE codex_entries SET summary='Alicia'
+          WHERE id='nir1-alice' AND project_id='default-project'",
+        [],
+    )?;
+    let selected = fixture.select()?;
+    assert_eq!(adopted_revision_ids(&selected), vec![bob_only.clone()]);
+    let mut left_out = excluded_pairs(&selected);
+    left_out.sort();
+    assert_eq!(
+        left_out,
+        vec![
+            (sorted[0].clone(), "source-revision-changed"),
+            (sorted[1].clone(), "source-revision-changed"),
+        ]
+    );
+    for revision_id in &sorted {
+        assert_revision_absent_from_request(&selected, revision_id)?;
+    }
+
+    // Scope future: a third Revision names a Scene whose story time is after
+    // the query Scene's. The other two have no story constraint.
+    let _relaxed =
+        crate::narrative_extraction::nir1_entity_relation::tests_scope_shape::RelaxedScopeShape::hold();
+    let fixture = DfFinalFixture::new()?;
+    let sorted = fixture.sorted_revisions();
+    fixture.sql(
+        "UPDATE tree_nodes
+            SET story_time_order = CASE id WHEN 'a3-source' THEN 'z0' ELSE 'a0' END
+          WHERE project_id='default-project' AND id IN ('a3-source', 'a3-future')",
+        [],
+    )?;
+    run_incremental_freshness_cycle(fixture.snapshot.db().db())?;
+    let future = add_real_revision(&fixture, "story-future", |db, request| {
+        for entity in &mut request.bundle.entities {
+            entity.scope.reading = ScopeValue::Exact {
+                value: "scene:a3-source".into(),
+            };
+            entity.scope.story = ScopeValue::Exact {
+                value: "story:a3-source".into(),
+            };
+        }
+        rebind_scope_tokens(db, request)
+    })?;
+    let selected = fixture.select()?;
+    assert_eq!(adopted_revision_ids(&selected), sorted);
+    assert_eq!(
+        excluded_pairs(&selected),
+        vec![(future.clone(), "a3-story-scope-future")]
+    );
+    assert_revision_absent_from_request(&selected, &future)?;
+    Ok(())
+}
+
+/// The effective bound of a Native selection is the projected item count of
+/// the adopted Revisions (`MAX_PACKING_ITEMS`), not the candidate count.
+/// Candidates that A2/A3 leave out cost nothing; adopted ones are never
+/// trimmed: once they do not fit, the whole request fails (not a partial
+/// request), and the failure is the packing error, not an exclusion.
+/// DI-1b / HC-1 decide how a project with that many eligible Revisions is
+/// served.
+#[cfg(feature = "native-current-human-capture")]
+#[test]
+fn native_selection_item_cap_fails_the_whole_request_and_never_trims_eligible_revisions(
+) -> Result<()> {
+    let fixture = DfFinalFixture::new()?;
+    // One real Revision holds two Entities and one Relation: three groups of
+    // five items each. Find how many Revisions fit next to the Raw items.
+    let mut fitting = fixture.revisions.len();
+    loop {
+        let name = format!("fill-{fitting}");
+        add_real_revision(&fixture, &name, |_, _| Ok(()))?;
+        fitting += 1;
+        match fixture.select() {
+            Ok(selected) => {
+                assert_eq!(adopted_revision_ids(&selected).len(), fitting);
+                assert!(selected.prepared().excluded_revisions().is_empty());
+            }
+            Err(error) => {
+                let message = error.to_string();
+                assert!(
+                    message.contains("projected item count")
+                        && message
+                            .ends_with(&format!("exceeds MAX_PACKING_ITEMS {MAX_PACKING_ITEMS}")),
+                    "{message}"
+                );
+                fitting -= 1;
+                break;
+            }
+        }
+        assert!(fitting < MAX_PACKING_ITEMS, "the cap must be reached");
+    }
+    // 34 Revisions are 510 items; the Raw items bring it to the cap.
+    assert_eq!(fitting, 34);
+    // The count is the one the cap implies: three groups of five items each.
+    assert!(fitting * 15 < MAX_PACKING_ITEMS && (fitting + 1) * 15 + 1 >= MAX_PACKING_ITEMS);
+    // The Revision that did not fit is still there as a candidate; the request
+    // fails as a whole each time, never with fewer Revisions.
+    assert!(fixture.select().is_err());
+
+    // Ineligible candidates do not use the cap: break one Revision and the
+    // request returns to `fitting` adopted Revisions with exactly that one left
+    // out.
+    let all = {
+        let mut ids = Vec::new();
+        fixture.snapshot.db().db().with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT current_revision_id FROM narrative_proposals
+                      ORDER BY current_revision_id ASC",
+            )?;
+            for row in statement.query_map([], |row| row.get::<_, String>(0))? {
+                ids.push(row?);
+            }
+            Ok(())
+        })?;
+        ids
+    };
+    assert_eq!(all.len(), fitting + 1);
+    let broken = all.last().cloned().context("a candidate")?;
+    fixture.sql(
+        "UPDATE narrative_proposal_revisions SET payload_json='{' WHERE id=?1",
+        params![broken],
+    )?;
+    let selected = fixture.select()?;
+    assert_eq!(adopted_revision_ids(&selected).len(), fitting);
+    assert_eq!(
+        excluded_pairs(&selected),
+        vec![(broken.clone(), "revision-payload-invalid")]
+    );
+    Ok(())
+}
+
 /// A-8b: when no accepted IR remains the request is rejected as before, and
 /// the failures that are not an `Unavailable` reason are not exclusions.
 #[cfg(feature = "native-current-human-capture")]
