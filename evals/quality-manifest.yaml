@@ -520,6 +520,7 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/types.rs
       - experiments/lfm25-encoder-phase0/data/public/gate2/chunk-qrels.json
@@ -568,7 +569,9 @@ requirements:
       - src/features/ai-context/finalizeTurnPayload.test.ts
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - src-tauri/crates/grimodex-core/tests/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
       - experiments/lfm25-encoder-phase0/tests/test_reranker_gate2.py
@@ -603,8 +606,10 @@ requirements:
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_reads.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history/generation_storage_adapter/session_run.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/candidates.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs
@@ -651,6 +656,7 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission/types.rs
       - src-tauri/crates/grimodex-db/tests/narrative_nir1_retrieval_admission.rs
@@ -659,13 +665,17 @@ requirements:
       - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_reads.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history/generation_storage_adapter/session_run.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/agent/toolExecutors.test.ts
@@ -916,8 +926,10 @@ requirements:
       - src-tauri/crates/grimodex-core/src/lib.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_reads.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history/generation_storage_adapter/session_run.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/candidates.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/input.rs
@@ -929,6 +941,7 @@ requirements:
       - src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - docs/adr/005-narrative-semantic-core-boundary.md
       - docs/adr/006-narrative-mutation-authority-routes.md
       - docs/adr/009-narrative-scope-relation-contract.md
@@ -1085,12 +1098,16 @@ requirements:
       - src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/tests.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/history_context.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation/history_reads.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history/generation_storage_adapter/session_run.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - scripts/quality/validate-semantic-core-boundary.test.mjs
       - scripts/quality/validate-narrative-ir-contract.test.mjs
       - scripts/quality/nir1-packing/contract.test.mjs

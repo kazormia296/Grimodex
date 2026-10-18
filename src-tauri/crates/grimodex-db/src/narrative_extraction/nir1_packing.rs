@@ -840,96 +840,13 @@ impl NativeNir1PreparedInputs {
     /// qualification rows, so a producer that drops or collapses a reference
     /// is detected (K4/3 section 3, rule 3).
     pub fn expected_qualification_targets(&self) -> Result<BTreeMap<usize, BTreeSet<TypedTarget>>> {
-        let scope_target = |role: ScopeRole, components: &[&str]| TypedTarget {
-            kind: QualificationKind::Scope,
-            scope_role: Some(role),
-            components: components.iter().map(|part| (*part).to_owned()).collect(),
-        };
-        let plain = |kind: QualificationKind, identity: &str| TypedTarget {
-            kind,
-            scope_role: None,
-            components: vec![identity.to_owned()],
-        };
-        let scene_scopes = |targets: &mut BTreeSet<TypedTarget>| {
-            for role in [ScopeRole::QuerySceneScope, ScopeRole::QuerySceneIncarnation] {
-                targets.insert(scope_target(role, &[&self.query_scene_id]));
-            }
-        };
-        let mut expected = BTreeMap::new();
-        for (ordinal, input) in self.input_references.iter().enumerate() {
-            let mut targets = BTreeSet::new();
-            match &input.target {
-                InputTarget::Message { version_id, .. } => {
-                    targets.insert(plain(QualificationKind::Source, version_id));
-                    scene_scopes(&mut targets);
-                }
-                InputTarget::RawSource { source_key, .. } => {
-                    targets.insert(plain(QualificationKind::Source, source_key));
-                    scene_scopes(&mut targets);
-                }
-                InputTarget::AcceptedRevision { revision_id, .. } => {
-                    let binding = self
-                        .authority_bindings
-                        .iter()
-                        .find(|binding| binding.revision_id() == revision_id)
-                        .ok_or_else(|| {
-                            anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
-                        })?;
-                    targets.insert(plain(QualificationKind::Revision, revision_id));
-                    targets.insert(plain(QualificationKind::Decision, binding.decision().id()));
-                    targets.insert(plain(QualificationKind::Freshness, revision_id));
-                    let basis = &binding.revision().material_basis;
-                    for key in basis
-                        .source_basis
-                        .iter()
-                        .map(|source| &source.source_key)
-                        .chain(
-                            basis
-                                .evidence_set
-                                .iter()
-                                .map(|evidence| &evidence.source_key),
-                        )
-                    {
-                        targets.insert(plain(QualificationKind::Source, key));
-                    }
-                    let scope = binding.scope();
-                    let scene = scope.query_scene_id();
-                    targets.insert(scope_target(
-                        ScopeRole::ProjectAuthority,
-                        &[&self.project_id],
-                    ));
-                    for role in [
-                        ScopeRole::QuerySceneScope,
-                        ScopeRole::QuerySceneSource,
-                        ScopeRole::QuerySceneIncarnation,
-                        ScopeRole::RevealState,
-                        ScopeRole::ScopeAxis,
-                    ] {
-                        targets.insert(scope_target(role, &[scene]));
-                    }
-                    for index in 0..scope.typed_scope_bindings().len() {
-                        targets.insert(scope_target(
-                            ScopeRole::TypedScope,
-                            &[revision_id, &index.to_string()],
-                        ));
-                    }
-                    for proof in scope.material_scene_proofs() {
-                        targets.insert(scope_target(
-                            ScopeRole::MaterialSceneProof,
-                            &[&proof.scene_id, &proof.scene_incarnation_id],
-                        ));
-                    }
-                }
-                InputTarget::Artifact { .. } | InputTarget::GraphEvidence { .. } => {
-                    anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL")
-                }
-            }
-            if input.input_use != InputUse::CurrentTurn {
-                targets.insert(plain(QualificationKind::D1, D1_SELECTION_IDENTITY));
-            }
-            expected.insert(ordinal, targets);
-        }
-        Ok(expected)
+        let bindings: Vec<&NativeNir1AuthorityBinding> = self.authority_bindings.iter().collect();
+        expected_targets_for_inputs(
+            &self.project_id,
+            &self.query_scene_id,
+            &self.input_references,
+            &bindings,
+        )
     }
 
     /// Detect a D-final output that breaks the completeness rule (K4/3
@@ -1022,6 +939,108 @@ impl NativeNir1PreparedInputs {
             d1_selection_digest: digest,
         })
     }
+}
+
+/// The `(kind, target)` set that the current state derives for every input
+/// (K4/3 section 3, rule 3). `bindings` are the authority bindings of the
+/// accepted Revisions among `inputs`. D-final calls it for the inputs it
+/// adopted; the history requalifier (HC1-3) calls it for the inputs of a
+/// stored attempt with the bindings of the current A3 evaluations, so the two
+/// derive the expected set by one function (the D-final output is unchanged).
+#[cfg(feature = "native-current-human-capture")]
+pub(super) fn expected_targets_for_inputs(
+    project_id: &str,
+    query_scene_id: &str,
+    input_references: &[InputReference],
+    bindings: &[&NativeNir1AuthorityBinding],
+) -> Result<BTreeMap<usize, BTreeSet<TypedTarget>>> {
+    let scope_target = |role: ScopeRole, components: &[&str]| TypedTarget {
+        kind: QualificationKind::Scope,
+        scope_role: Some(role),
+        components: components.iter().map(|part| (*part).to_owned()).collect(),
+    };
+    let plain = |kind: QualificationKind, identity: &str| TypedTarget {
+        kind,
+        scope_role: None,
+        components: vec![identity.to_owned()],
+    };
+    let scene_scopes = |targets: &mut BTreeSet<TypedTarget>| {
+        for role in [ScopeRole::QuerySceneScope, ScopeRole::QuerySceneIncarnation] {
+            targets.insert(scope_target(role, &[query_scene_id]));
+        }
+    };
+    let mut expected = BTreeMap::new();
+    for (ordinal, input) in input_references.iter().enumerate() {
+        let mut targets = BTreeSet::new();
+        match &input.target {
+            InputTarget::Message { version_id, .. } => {
+                targets.insert(plain(QualificationKind::Source, version_id));
+                scene_scopes(&mut targets);
+            }
+            InputTarget::RawSource { source_key, .. } => {
+                targets.insert(plain(QualificationKind::Source, source_key));
+                scene_scopes(&mut targets);
+            }
+            InputTarget::AcceptedRevision { revision_id, .. } => {
+                let binding = bindings
+                    .iter()
+                    .copied()
+                    .find(|binding| binding.revision_id() == revision_id)
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
+                    })?;
+                targets.insert(plain(QualificationKind::Revision, revision_id));
+                targets.insert(plain(QualificationKind::Decision, binding.decision().id()));
+                targets.insert(plain(QualificationKind::Freshness, revision_id));
+                let basis = &binding.revision().material_basis;
+                for key in basis
+                    .source_basis
+                    .iter()
+                    .map(|source| &source.source_key)
+                    .chain(
+                        basis
+                            .evidence_set
+                            .iter()
+                            .map(|evidence| &evidence.source_key),
+                    )
+                {
+                    targets.insert(plain(QualificationKind::Source, key));
+                }
+                let scope = binding.scope();
+                let scene = scope.query_scene_id();
+                targets.insert(scope_target(ScopeRole::ProjectAuthority, &[project_id]));
+                for role in [
+                    ScopeRole::QuerySceneScope,
+                    ScopeRole::QuerySceneSource,
+                    ScopeRole::QuerySceneIncarnation,
+                    ScopeRole::RevealState,
+                    ScopeRole::ScopeAxis,
+                ] {
+                    targets.insert(scope_target(role, &[scene]));
+                }
+                for index in 0..scope.typed_scope_bindings().len() {
+                    targets.insert(scope_target(
+                        ScopeRole::TypedScope,
+                        &[revision_id, &index.to_string()],
+                    ));
+                }
+                for proof in scope.material_scene_proofs() {
+                    targets.insert(scope_target(
+                        ScopeRole::MaterialSceneProof,
+                        &[&proof.scene_id, &proof.scene_incarnation_id],
+                    ));
+                }
+            }
+            InputTarget::Artifact { .. } | InputTarget::GraphEvidence { .. } => {
+                anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL")
+            }
+        }
+        if input.input_use != InputUse::CurrentTurn {
+            targets.insert(plain(QualificationKind::D1, D1_SELECTION_IDENTITY));
+        }
+        expected.insert(ordinal, targets);
+    }
+    Ok(expected)
 }
 
 /// Read the exact Human version, current Scene Source, accepted typed
@@ -1759,7 +1778,7 @@ fn decision_binding(
     })
 }
 
-fn authority_binding(
+pub(super) fn authority_binding(
     disclosure: &Nir1EntityRelationDisclosure,
 ) -> Result<NativeNir1AuthorityBinding> {
     let revision = &disclosure.revision;
@@ -2471,4 +2490,9 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
 
 #[cfg(test)]
 #[path = "nir1_packing_tests.rs"]
-mod tests;
+pub(super) mod tests;
+
+// HC1-4: the session history run, end to end.
+#[cfg(all(test, feature = "native-current-human-capture"))]
+#[path = "nir1_packing_session_tests.rs"]
+mod session_history_tests;

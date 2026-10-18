@@ -14,8 +14,8 @@ use crate::test_support::current_schema_memory;
 use anyhow::Context;
 use rusqlite::params;
 
-const RAW_SOURCE_PROJECT: &str = "default-project";
-const RAW_SOURCE_SCENE: &str = "a3-future";
+pub(in crate::narrative_extraction) const RAW_SOURCE_PROJECT: &str = "default-project";
+pub(in crate::narrative_extraction) const RAW_SOURCE_SCENE: &str = "a3-future";
 
 fn fixture(db: &Database) -> Result<Vec<String>> {
     fixture_with_query_source(db, None)
@@ -1094,14 +1094,14 @@ fn pooled_unqualified_revision_input_is_bounded_before_read_control() -> Result<
 }
 
 #[cfg(feature = "native-current-human-capture")]
-struct PreparedWorkspace {
+pub(in crate::narrative_extraction) struct PreparedWorkspace {
     state: crate::state::WorkspaceState,
     path: std::path::PathBuf,
 }
 
 #[cfg(feature = "native-current-human-capture")]
 impl PreparedWorkspace {
-    fn new(db: Database) -> Result<Self> {
+    pub(in crate::narrative_extraction) fn new(db: Database) -> Result<Self> {
         Self::with_identity(
             db,
             Some(
@@ -1149,7 +1149,9 @@ impl PreparedWorkspace {
         Ok(Self { state, path })
     }
 
-    fn snapshot(&self) -> Result<crate::state::ActiveWorkspaceSnapshot> {
+    pub(in crate::narrative_extraction) fn snapshot(
+        &self,
+    ) -> Result<crate::state::ActiveWorkspaceSnapshot> {
         Ok(crate::state::active_workspace_snapshot(&self.state)?)
     }
 }
@@ -1162,7 +1164,8 @@ impl Drop for PreparedWorkspace {
 }
 
 #[cfg(feature = "native-current-human-capture")]
-fn prepared_sql_budget() -> crate::ParticipantSqlOperationBudget {
+pub(in crate::narrative_extraction) fn prepared_sql_budget() -> crate::ParticipantSqlOperationBudget
+{
     use std::sync::atomic::AtomicBool;
     use std::sync::Arc;
     use std::time::{Duration, Instant};
@@ -1474,16 +1477,16 @@ fn prepared_projection_rejects_empty_context_budget_before_selecting_material() 
 // ---------------------------------------------------------------------------
 
 #[cfg(feature = "native-current-human-capture")]
-struct DfFinalFixture {
-    _workspace: PreparedWorkspace,
-    snapshot: crate::state::ActiveWorkspaceSnapshot,
-    revisions: Vec<String>,
-    capture: crate::nir1_generation::AcceptedChatInputCapture,
+pub(in crate::narrative_extraction) struct DfFinalFixture {
+    pub(in crate::narrative_extraction) _workspace: PreparedWorkspace,
+    pub(in crate::narrative_extraction) snapshot: crate::state::ActiveWorkspaceSnapshot,
+    pub(in crate::narrative_extraction) revisions: Vec<String>,
+    pub(in crate::narrative_extraction) capture: crate::nir1_generation::AcceptedChatInputCapture,
 }
 
 #[cfg(feature = "native-current-human-capture")]
 impl DfFinalFixture {
-    fn new() -> Result<Self> {
+    pub(in crate::narrative_extraction) fn new() -> Result<Self> {
         let db = current_schema_memory()?;
         let storage = json!({
             "type": "doc",
@@ -1504,7 +1507,7 @@ impl DfFinalFixture {
     }
 
     /// The public D-final projection.
-    fn project(&self) -> Result<NativeNir1PreparedInputs> {
+    pub(in crate::narrative_extraction) fn project(&self) -> Result<NativeNir1PreparedInputs> {
         crate::narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &self.snapshot,
             PackingPurpose::Writing,

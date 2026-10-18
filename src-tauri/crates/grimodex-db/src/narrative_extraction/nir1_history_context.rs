@@ -39,21 +39,30 @@ use crate::nir1_generation::history_context::{
     HistoryStoryTimeUnavailable, HistoryTargetScope, HistoryTurnContextV1,
     HistoryUnavailableReason, HistoryViewpoint, HistoryViewpointUnavailable,
 };
-use crate::nir1_generation::{d1_selection_digest, D1SelectionParameters, InputReference};
+use crate::nir1_generation::{
+    d1_selection_digest, D1SelectionParameters, GenerationPurpose, InputReference,
+};
+use crate::nir1_generation_history::{
+    CurrentHistoryContext, HistoryComparisonContext, HistoryRange,
+};
 
 /// The context minus `eligibleUntilMs` (the writer derives it from the stored
 /// row) and the D1 selection fields (known after the render).
+///
+/// `pub(crate)` since HC1-2: the history reader compares the current turn's
+/// body (the value D-final's snapshot built, not a second derivation) with the
+/// recorded contexts.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct HistoryContextBody {
-    pub(super) send_classification: HistorySendClassification,
-    pub(super) restore_epoch: HistoryRestoreEpoch,
-    pub(super) target: HistoryTargetScope,
-    pub(super) axes: HistoryAxes,
+pub(crate) struct HistoryContextBody {
+    pub(crate) send_classification: HistorySendClassification,
+    pub(crate) restore_epoch: HistoryRestoreEpoch,
+    pub(crate) target: HistoryTargetScope,
+    pub(crate) axes: HistoryAxes,
 }
 
 /// What the snapshot could build.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum HistoryContextOutcome {
+pub(crate) enum HistoryContextOutcome {
     Context(Box<HistoryContextBody>),
     Unavailable(HistoryUnavailableReason),
 }
@@ -82,6 +91,42 @@ impl HistoryContextStage {
     #[cfg(test)]
     pub(super) fn outcome(&self) -> &HistoryContextOutcome {
         &self.outcome
+    }
+
+    /// The current turn's context for the history reader (K4/3 section 4),
+    /// from the value this stage already holds: the body the builder made
+    /// inside D-final's snapshot and the durable workspace identity it
+    /// observed. `range` and `purpose` are the prepared request's (the DB's
+    /// chat session, the target Scene's id and incarnation, the purpose).
+    /// There is no second derivation: an unavailable stage stays unavailable.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "the history run entry that receives the current context is DI-1b's"
+        )
+    )]
+    pub(crate) fn current_history_context(
+        &self,
+        range: HistoryRange,
+        purpose: GenerationPurpose,
+    ) -> CurrentHistoryContext {
+        match &self.outcome {
+            HistoryContextOutcome::Unavailable(reason) => {
+                CurrentHistoryContext::Unavailable(*reason)
+            }
+            HistoryContextOutcome::Context(body) => {
+                CurrentHistoryContext::Known(Box::new(HistoryComparisonContext {
+                    range,
+                    purpose,
+                    durable_identity: self.durable_workspace_identity.clone(),
+                    send_classification: body.send_classification,
+                    restore_epoch: body.restore_epoch.clone(),
+                    target: body.target.clone(),
+                    axes: body.axes.clone(),
+                }))
+            }
+        }
     }
 }
 
@@ -1181,6 +1226,201 @@ mod tests {
         // (the storage side recomputes it from the stored rows).
         let reference = d1_selection_reference(1, &digest);
         assert_eq!(reference.kind, QualificationKind::D1);
+        Ok(())
+    }
+
+    // ---- HC1-2: the current turn's context is the builder's value ----
+
+    use crate::nir1_generation::history_context::HISTORY_ELIGIBILITY_WINDOW_MS;
+    use crate::nir1_generation_history::{
+        compare_context, ContextMismatch, CurrentContextUnavailable, HistoryAxisName,
+        RecordedHistoryContext,
+    };
+
+    fn range() -> HistoryRange {
+        HistoryRange {
+            project_id: PROJECT.into(),
+            chat_session_id: "chat-session".into(),
+            scene_id: TARGET.into(),
+            scene_incarnation_id: "incarnation".into(),
+        }
+    }
+
+    fn current_of(stage: &HistoryContextStage) -> CurrentHistoryContext {
+        stage.current_history_context(range(), GenerationPurpose::Writing)
+    }
+
+    /// The context an attempt created at `created_at_ms` would record from
+    /// this stage: the finished draft's context and the stage's durable
+    /// identity, read back the way the history reader reads a stored binding.
+    fn recorded_of(stage: &HistoryContextStage, created_at_ms: i64) -> RecordedHistoryContext {
+        let inputs = inputs();
+        let (parameters, digest) = selection(&inputs, "nir1-context-estimator-v1");
+        let draft = finish_history_draft(stage, true, &parameters, &digest, &inputs);
+        let HistoryContextSlot::Context(recorded_slot) = draft.slot else {
+            panic!("a complete output records a context");
+        };
+        let CurrentHistoryContext::Known(mut comparison) = current_of(stage) else {
+            panic!("a context stage is known");
+        };
+        comparison.durable_identity = draft.durable_workspace_identity;
+        RecordedHistoryContext {
+            context: *comparison,
+            created_at_ms,
+            // The storage writer sets `eligibleUntilMs` from the row.
+            eligible_until_ms: (created_at_ms + HISTORY_ELIGIBILITY_WINDOW_MS) as u64,
+            d1: recorded_slot.d1,
+        }
+    }
+
+    #[test]
+    fn current_context_is_the_value_the_builder_made_in_the_snapshot() -> Result<()> {
+        let db = base_db()?;
+        all_keys(&db)?;
+        set_pov(&db, Some("nir1-alice"))?;
+        let stage = build(&db)?;
+        let CurrentHistoryContext::Known(current) = current_of(&stage) else {
+            panic!("a context stage is known");
+        };
+        // The same body, the same durable identity: no second derivation.
+        let context = body(&stage);
+        assert_eq!(current.axes, context.axes);
+        assert_eq!(current.target, context.target);
+        assert_eq!(current.restore_epoch, context.restore_epoch);
+        assert_eq!(current.send_classification, context.send_classification);
+        assert_eq!(current.durable_identity, Some(sample_identity()));
+        assert_eq!(current.range, range());
+        assert_eq!(current.purpose, GenerationPurpose::Writing);
+        // Every compared value is present, so history can be used.
+        let current = current_of(&stage);
+        assert!(current.available().is_ok());
+
+        // A recorded context from the same snapshot matches the same turn.
+        let recorded = recorded_of(&stage, 100);
+        let known = current.available().expect("available");
+        assert_eq!(compare_context(known, &recorded, 200), Ok(()));
+        Ok(())
+    }
+
+    #[test]
+    fn a_change_after_recording_is_reported_on_its_own_item() -> Result<()> {
+        let db = base_db()?;
+        all_keys(&db)?;
+        set_pov(&db, Some("nir1-alice"))?;
+        let recorded = recorded_of(&build(&db)?, 100);
+
+        let compare = |db: &Database| -> Result<Result<(), ContextMismatch>> {
+            let current = current_of(&build(db)?);
+            let known = current.available().expect("available").clone();
+            Ok(compare_context(&known, &recorded, 200))
+        };
+        assert_eq!(compare(&db)?, Ok(()));
+        // The Scene's own story key.
+        set_story_keys(&db, &[(TARGET, Some("k-3-moved"))])?;
+        assert_eq!(
+            compare(&db)?,
+            Err(ContextMismatch::AxisChanged(HistoryAxisName::StoryTime))
+        );
+        set_story_keys(&db, &[(TARGET, Some("k-3"))])?;
+        assert_eq!(compare(&db)?, Ok(()), "a non-monotone value that returns");
+        // The point of view.
+        set_pov(&db, Some("nir1-bob"))?;
+        assert_eq!(
+            compare(&db)?,
+            Err(ContextMismatch::AxisChanged(HistoryAxisName::Viewpoint))
+        );
+        // The project's phase setting changes the effective axis.
+        set_pov(&db, Some("nir1-alice"))?;
+        set_mode(&db, "reading")?;
+        assert_eq!(
+            compare(&db)?,
+            Err(ContextMismatch::AxisChanged(HistoryAxisName::Auto))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_unavailable_current_axis_makes_the_current_context_unavailable() -> Result<()> {
+        let db = base_db()?;
+        all_keys(&db)?;
+        set_pov(&db, Some("nir1-alice"))?;
+        // viewpoint: no POV.
+        set_pov(&db, None)?;
+        assert_eq!(
+            current_of(&build(&db)?).available().unwrap_err(),
+            CurrentContextUnavailable::Axis(HistoryAxisName::Viewpoint)
+        );
+        // storyTime: the key repeats in the project.
+        set_pov(&db, Some("nir1-alice"))?;
+        set_story_keys(&db, &[("a3-source", Some("k-3"))])?;
+        assert_eq!(
+            current_of(&build(&db)?).available().unwrap_err(),
+            CurrentContextUnavailable::Axis(HistoryAxisName::StoryTime)
+        );
+        // The builder had no context at all: no Scope binding row.
+        let db = base_db()?;
+        sql(
+            &db,
+            "DELETE FROM narrative_scene_scope_bindings WHERE scene_id = 'a3-future';",
+        )?;
+        assert_eq!(
+            current_of(&build(&db)?).available().unwrap_err(),
+            CurrentContextUnavailable::Turn(HistoryUnavailableReason::SceneScopeUnavailable)
+        );
+        // No durable identity: the builder read nothing.
+        let db = base_db()?;
+        let stage = db.with_read_transaction(|conn| {
+            build_history_context_stage(conn, PROJECT, TARGET, None, LOCAL)
+        })?;
+        assert_eq!(
+            current_of(&stage).available().unwrap_err(),
+            CurrentContextUnavailable::Turn(HistoryUnavailableReason::WorkspaceIdentityUnavailable)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn an_archived_ancestor_folder_makes_reading_story_and_auto_unavailable() -> Result<()> {
+        let db = base_db()?;
+        all_keys(&db)?;
+        set_pov(&db, Some("nir1-alice"))?;
+        sql(
+            &db,
+            "INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order)
+             VALUES ('chapter', 'default-project', 'folder', 'Chapter', 'a9');
+             UPDATE tree_nodes SET parent_id = 'chapter'
+              WHERE id = 'a3-future' AND project_id = 'default-project';
+             UPDATE tree_nodes SET archived_at = '2026-10-01T00:00:00Z'
+              WHERE id = 'chapter' AND project_id = 'default-project';",
+        )?;
+        let stage = build(&db)?;
+        let context = body(&stage);
+        assert_eq!(
+            context.axes.reading_order,
+            HistoryAxis::Unavailable(HistoryReadingOrderUnavailable::SceneNotInAuthorityMapping)
+        );
+        assert_eq!(
+            context.axes.story_time,
+            HistoryAxis::Unavailable(HistoryStoryTimeUnavailable::SceneNotInAuthorityMapping)
+        );
+        assert_eq!(
+            context.axes.auto,
+            HistoryAxis::Unavailable(HistoryAutoUnavailable::SceneNotInAuthorityMapping)
+        );
+        // The first unavailable axis in the compared order is reported, and
+        // history is unusable in this turn.
+        let current = current_of(&stage);
+        assert_eq!(
+            current.available().unwrap_err(),
+            CurrentContextUnavailable::Axis(HistoryAxisName::ReadingOrder)
+        );
+        // Unarchived, the axes are available again.
+        sql(
+            &db,
+            "UPDATE tree_nodes SET archived_at = NULL WHERE id = 'chapter';",
+        )?;
+        let back = current_of(&build(&db)?);
+        assert!(back.available().is_ok());
         Ok(())
     }
 }
