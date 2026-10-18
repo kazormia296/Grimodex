@@ -90,66 +90,9 @@ pub fn scene_body_declaration_veto(
     scene_id: &str,
     limits: VetoLimits,
 ) -> Result<Option<BodyDeclarationVeto>> {
-    let mut remaining = limits.max_rows;
-
-    // Foreshadows: the secret flag is the author's record. A legacy foreshadow
-    // (the column was added with default 0) is not secret.
-    for sql in [
-        "SELECT f.secret FROM foreshadows f
-          WHERE f.project_id = ?1 AND f.payoff_scene_id = ?2 LIMIT ?3",
-        "SELECT f.secret FROM foreshadow_setups s
-           JOIN foreshadows f ON f.id = s.foreshadow_id
-          WHERE f.project_id = ?1 AND s.scene_id = ?2 LIMIT ?3",
-        "SELECT f.secret FROM foreshadow_payoffs p
-           JOIN foreshadows f ON f.id = p.foreshadow_id
-          WHERE f.project_id = ?1 AND p.scene_id = ?2 LIMIT ?3",
-    ] {
-        if secret_row_found(conn, sql, project_id, scene_id, &mut remaining)? {
-            return Ok(Some(BodyDeclarationVeto::SecretForeshadow));
-        }
-    }
-
-    if secret_row_found(
-        conn,
-        "SELECT e.secret FROM events e
-          WHERE e.project_id = ?1 AND e.reveal_scene_id = ?2 LIMIT ?3",
-        project_id,
-        scene_id,
-        &mut remaining,
-    )? {
-        return Ok(Some(BodyDeclarationVeto::SecretEventReveal));
-    }
-    if secret_row_found(
-        conn,
-        "SELECT e.secret FROM scene_events se
-           JOIN events e ON e.id = se.event_id
-          WHERE se.scene_id = ?2 AND e.project_id = ?1 LIMIT ?3",
-        project_id,
-        scene_id,
-        &mut remaining,
-    )? {
-        return Ok(Some(BodyDeclarationVeto::SecretEventLink));
-    }
-
-    // POV records. A non-NULL value is a POV whatever it holds (fail closed).
-    let scene_pov: Option<Option<String>> = conn
-        .query_row(
-            "SELECT pov_character_id FROM tree_nodes
-              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
-            params![scene_id, project_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if matches!(scene_pov, Some(Some(_))) {
-        return Ok(Some(BodyDeclarationVeto::Pov));
-    }
-    let cached: bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM scene_beat_pov_cache WHERE scene_id = ?1)",
-        params![scene_id],
-        |row| row.get(0),
-    )?;
-    if cached {
-        return Ok(Some(BodyDeclarationVeto::Pov));
+    let records = scene_body_declaration_veto_records(conn, project_id, scene_id, limits.max_rows)?;
+    if records.veto.is_some() {
+        return Ok(records.veto);
     }
 
     // A beat's `pov` attribute in the saved body. The length is measured
@@ -175,6 +118,102 @@ pub fn scene_body_declaration_veto(
         |row| row.get(0),
     )?;
     if saved_body_has_beat_pov(&content)? {
+        return Ok(Some(BodyDeclarationVeto::Pov));
+    }
+    Ok(None)
+}
+
+/// What the records of a Scene say, without the saved body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct VetoRecordsRead {
+    pub veto: Option<BodyDeclarationVeto>,
+    /// Rows of the secret queries that were looked at (the POV records are
+    /// single-row lookups and are not counted, as in the full veto).
+    pub rows_looked_at: usize,
+}
+
+/// The part of [`scene_body_declaration_veto`] that looks only at records: the
+/// secret foreshadows and Chronicle events that name the Scene, the Scene's
+/// own POV and the POV cache. It never reads the saved body (`content`), so
+/// the reader can run it for every candidate without a body read. More than
+/// `max_rows` rows is an `Err` carrying [`VETO_ROW_LIMIT_MARKER`].
+pub(crate) fn scene_body_declaration_veto_records(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+    max_rows: usize,
+) -> Result<VetoRecordsRead> {
+    let mut remaining = max_rows;
+    let veto = veto_from_records(conn, project_id, scene_id, &mut remaining)?;
+    Ok(VetoRecordsRead {
+        veto,
+        rows_looked_at: max_rows - remaining,
+    })
+}
+
+fn veto_from_records(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+    remaining: &mut usize,
+) -> Result<Option<BodyDeclarationVeto>> {
+    // Foreshadows: the secret flag is the author's record. A legacy foreshadow
+    // (the column was added with default 0) is not secret.
+    for sql in [
+        "SELECT f.secret FROM foreshadows f
+          WHERE f.project_id = ?1 AND f.payoff_scene_id = ?2 LIMIT ?3",
+        "SELECT f.secret FROM foreshadow_setups s
+           JOIN foreshadows f ON f.id = s.foreshadow_id
+          WHERE f.project_id = ?1 AND s.scene_id = ?2 LIMIT ?3",
+        "SELECT f.secret FROM foreshadow_payoffs p
+           JOIN foreshadows f ON f.id = p.foreshadow_id
+          WHERE f.project_id = ?1 AND p.scene_id = ?2 LIMIT ?3",
+    ] {
+        if secret_row_found(conn, sql, project_id, scene_id, remaining)? {
+            return Ok(Some(BodyDeclarationVeto::SecretForeshadow));
+        }
+    }
+
+    if secret_row_found(
+        conn,
+        "SELECT e.secret FROM events e
+          WHERE e.project_id = ?1 AND e.reveal_scene_id = ?2 LIMIT ?3",
+        project_id,
+        scene_id,
+        remaining,
+    )? {
+        return Ok(Some(BodyDeclarationVeto::SecretEventReveal));
+    }
+    if secret_row_found(
+        conn,
+        "SELECT e.secret FROM scene_events se
+           JOIN events e ON e.id = se.event_id
+          WHERE se.scene_id = ?2 AND e.project_id = ?1 LIMIT ?3",
+        project_id,
+        scene_id,
+        remaining,
+    )? {
+        return Ok(Some(BodyDeclarationVeto::SecretEventLink));
+    }
+
+    // POV records. A non-NULL value is a POV whatever it holds (fail closed).
+    let scene_pov: Option<Option<String>> = conn
+        .query_row(
+            "SELECT pov_character_id FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
+            params![scene_id, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if matches!(scene_pov, Some(Some(_))) {
+        return Ok(Some(BodyDeclarationVeto::Pov));
+    }
+    let cached: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM scene_beat_pov_cache WHERE scene_id = ?1)",
+        params![scene_id],
+        |row| row.get(0),
+    )?;
+    if cached {
         return Ok(Some(BodyDeclarationVeto::Pov));
     }
     Ok(None)

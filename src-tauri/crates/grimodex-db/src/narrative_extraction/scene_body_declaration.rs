@@ -576,6 +576,8 @@ pub use limits::{
     SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES, SCENE_BODY_TITLE_MAX_BYTES,
     SCENE_BODY_VETO_MAX_ROWS, VETO_CONTENT_LIMIT_MARKER, VETO_ROW_LIMIT_MARKER,
 };
+#[cfg(feature = "native-current-human-capture")]
+pub(in crate::narrative_extraction) use veto::scene_body_declaration_veto_records;
 pub use veto::{scene_body_declaration_veto, BodyDeclarationVeto, VetoLimits};
 
 // The writers need the bounded Scene reader, which exists only in the Electron
@@ -605,6 +607,8 @@ pub use commit_outcome::{
     DeclarationTerminalEvidence, TerminalKind,
 };
 #[cfg(feature = "native-current-human-capture")]
+pub(in crate::narrative_extraction) use facts::archived_in_chain;
+#[cfg(feature = "native-current-human-capture")]
 pub use facts::{preview_scene_body_declaration, BodyDeclarationPreview};
 #[cfg(feature = "native-current-human-capture")]
 pub use revoke::{revoke_scene_body, RevokeOutcome};
@@ -628,6 +632,6 @@ mod tests;
 #[cfg(test)]
 mod veto_tests;
 #[cfg(test)]
-mod writer_support_tests;
+pub(crate) mod writer_support_tests;
 #[cfg(test)]
 mod writer_tests;

@@ -73,6 +73,12 @@ pub use nir1_entity_relation::{
     NIR1_ENTITY_RELATION_DECISION_LOCKED, NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
     NIR1_ENTITY_RELATION_SET_KIND,
 };
+#[cfg(feature = "native-current-human-capture")]
+pub use nir1_graph::{
+    evaluate_graph_only_append, AppendSlot, GraphDisclosureQuery, GraphDisclosureWorkspace,
+    GraphOnlyCandidate, GraphOnlyScan, GraphOnlyScanInput, GraphPathRevalidator, NotAppended,
+    COMMON_SLOT_RAW_LIMIT,
+};
 pub use nir1_graph::{read_nir1_graph, Nir1GraphReader, Nir1GraphRequest, Nir1GraphResponse};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::project_lifecycle_namespace_for_database;
