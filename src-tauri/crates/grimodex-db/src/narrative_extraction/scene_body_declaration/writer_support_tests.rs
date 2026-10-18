@@ -294,6 +294,24 @@ impl Env {
         self.authority = Some(authority);
     }
 
+    /// Closes the workspace and opens the database found through `root` (a
+    /// symlink to the workspace directory, or a copy of it) with the same
+    /// workspace ID, as Open does for a path the author chose. `self.path`
+    /// keeps naming the original directory, which `Drop` removes.
+    pub fn reopen_via(&mut self, root: &Path) {
+        self.close();
+        let db = Database::new(&root.join("workspace.db")).expect("reopen database");
+        let (state, authority) = ready_state(db, root, &self.workspace_id, true);
+        self.state = Some(state);
+        self.authority = Some(authority);
+    }
+
+    /// Drops the workspace state and the database handle (a closed workspace).
+    pub fn close(&mut self) {
+        self.state = None;
+        self.authority = None;
+    }
+
     /// Runs `f` on the database through the ordinary connection.
     pub fn with_conn<T>(&self, f: impl FnOnce(&Connection) -> anyhow::Result<T>) -> T {
         self.db().db().with_conn(f).expect("with_conn")

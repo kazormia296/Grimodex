@@ -7016,11 +7016,6 @@ function callerIdentityWire(args: CommandArgs): string | undefined {
 }
 
 /**
- * Call a `nir1-publication` / Scope Native entry with the Main-issued caller
- * identity as the trailing argument. Without an identity (a standalone caller
- * before D2a startup) the call keeps its original arity.
- */
-/**
  * Key under which Electron main attaches the one-time grant (MG-1) to the
  * dispatch args of the declaration entry: `{ grantId, senderId, windowId }`.
  * A symbol, defined non-enumerable by `electron/main/mainGrant.ts` after the
@@ -7126,6 +7121,11 @@ function requireBodyDeclarationRequest(
   };
 }
 
+/**
+ * Call a `nir1-publication` / Scope Native entry with the Main-issued caller
+ * identity as the trailing argument. Without an identity (a standalone caller
+ * before D2a startup) the call keeps its original arity.
+ */
 function callPublicationEntry1<A>(
   call: (a: A, callerIdentity?: string) => Promise<string>,
   a: A,

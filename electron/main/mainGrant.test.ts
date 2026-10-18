@@ -493,6 +493,50 @@ describe("F4 a confirmation ends when its owner goes away", () => {
     expect(mocks.showMessageBox).not.toHaveBeenCalled();
   });
 
+  it("revokes the preview Native creates after the sender went away", async () => {
+    let resolvePreview: (json: string) => void = () => undefined;
+    const backend = fakeBackend({
+      mainGrantPreview: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            resolvePreview = resolve;
+          }),
+      ),
+    });
+    const sender = fakeSender();
+    const invoke = registerRouter(backend, fakeWindow());
+    const pending = invoke({ sender }, DECLARE, DECLARE_ARGS());
+    await flush();
+    sender.emit("destroyed");
+    // Nothing existed in Native's slot yet, so this revoke found no preview.
+    expect(backend.mainGrantRevoke).not.toHaveBeenCalled();
+    resolvePreview(
+      JSON.stringify({
+        previewId: "late-preview",
+        display: DISPLAY,
+        expiresInMs: 60_000,
+      }),
+    );
+    expect(await pending).toEqual({ ok: false, error: MAIN_GRANT_REVOKED });
+    expect(backend.mainGrantRevoke).toHaveBeenCalledWith("late-preview");
+    expect(mocks.showMessageBox).not.toHaveBeenCalled();
+    expect(backend.mainGrantIssue).not.toHaveBeenCalled();
+  });
+
+  it("revokes the grant when the writer answers with a failure envelope", async () => {
+    const backend = fakeBackend({
+      narrativeSceneBodyDeclarationDeclare: vi.fn(async () => {
+        throw new Error("D2A_EGRESS_DENIED: admission");
+      }),
+    });
+    const invoke = registerRouter(backend, fakeWindow());
+    answerDialog(1);
+    const env = await invoke({ sender: fakeSender() }, DECLARE, DECLARE_ARGS());
+    expect(env.ok).toBe(false);
+    expect(backend.mainGrantRevoke).toHaveBeenCalledWith("preview-secret");
+    expect(backend.mainGrantRevokeSender).toHaveBeenCalledWith(7);
+  });
+
   it("removes its listeners when the confirmation ends", async () => {
     const backend = fakeBackend();
     const sender = fakeSender();

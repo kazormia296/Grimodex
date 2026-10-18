@@ -1,4 +1,5 @@
 // CB-2 / S3 F7: the evaluation CI seam of the body declaration.
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -212,6 +213,82 @@ describe("startBodyDeclarationCiSeam", () => {
       userDataDir: userData,
     });
     expect(handle).toBeNull();
+    error.mockRestore();
+  });
+
+  it("does not open the gate when the first receipt cannot be written", async () => {
+    const backend = fakeBackend();
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const handle = await startBodyDeclarationCiSeam({
+      seam: { active: true, nonce: NONCE },
+      backend,
+      isPackaged: false,
+      userDataDir: path.join(userData, "missing", "nowhere"),
+    });
+    expect(handle).toBeNull();
+    expect(backend.mainOpenPrePublicationGate).not.toHaveBeenCalled();
+    error.mockRestore();
+  });
+
+  it("records that it is about to open the gate before it opens it", async () => {
+    const order: string[] = [];
+    const backend = {
+      mainOpenPrePublicationGate: vi.fn(() => {
+        order.push("open");
+        const receipt = readFileSync(
+          bodyDeclarationCiReceiptPath(userData, NONCE),
+          "utf8",
+        );
+        order.push(`receipt-gateOpened-${JSON.parse(receipt).gateOpened}`);
+      }),
+    };
+    await startBodyDeclarationCiSeam({
+      seam: { active: true, nonce: NONCE },
+      backend,
+      isPackaged: false,
+      userDataDir: userData,
+    });
+    expect(order).toEqual(["open", "receipt-gateOpened-false"]);
+  });
+
+  it("refuses every approval when the receipt that says the gate opened cannot be written", async () => {
+    const backend = {
+      mainOpenPrePublicationGate: vi.fn(() => {
+        // Make the second write fail: replace the receipt directory by a file.
+        const dir = path.dirname(bodyDeclarationCiReceiptPath(userData, NONCE));
+        rmSync(dir, { recursive: true, force: true });
+        writeFileSync(dir, "x");
+      }),
+    };
+    const error = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    const handle = await startBodyDeclarationCiSeam({
+      seam: { active: true, nonce: NONCE },
+      backend,
+      isPackaged: false,
+      userDataDir: userData,
+    });
+    expect(backend.mainOpenPrePublicationGate).toHaveBeenCalledOnce();
+    expect(handle).not.toBeNull();
+    expect(
+      await handle!.confirm({
+        kind: "body-declaration",
+        display: "D",
+        win: {
+          id: 1,
+          isDestroyed: () => false,
+          on: () => 0,
+          removeListener: () => 0,
+        },
+        senderId: 7,
+        windowId: 1,
+        approvalDigest: "a".repeat(64),
+        signal: new AbortController().signal,
+      }),
+    ).toBe(false);
     error.mockRestore();
   });
 

@@ -84,7 +84,8 @@ export interface BodyDeclarationCiReceipt {
   readonly nonceDigest: string;
   readonly isPackaged: false;
   readonly gateEntry: typeof BODY_DECLARATION_CI_GATE_ENTRY;
-  readonly gateOpened: true;
+  /** false: written just before Native's gate is opened; true: after. */
+  readonly gateOpened: boolean;
   readonly approvedGrantKinds: readonly ["body-declaration"];
   readonly approvedGrantCount: number;
   /** Digests of what Main bound each approval to, newest last. */
@@ -174,8 +175,8 @@ export interface BodyDeclarationCiSeamHandle {
 }
 
 /**
- * Starts the seam for this launch: opens Native's gate once, writes the first
- * receipt, and returns the replacement confirmation. Returns null for an
+ * Starts the seam for this launch: writes the first receipt, opens Native's
+ * gate once, writes the receipt that says it opened, and returns the replacement confirmation. Returns null for an
  * inactive launch without touching the backend. If the gate cannot be opened
  * the seam is not started and the gate stays closed.
  */
@@ -196,6 +197,7 @@ export async function startBodyDeclarationCiSeam(options: {
   const receiptFor = (
     count: number,
     approved: readonly string[],
+    gateOpened = true,
   ): BodyDeclarationCiReceipt => ({
     version: BODY_DECLARATION_CI_SEAM_VERSION,
     type: BODY_DECLARATION_CI_RECEIPT_TYPE,
@@ -208,14 +210,32 @@ export async function startBodyDeclarationCiSeam(options: {
     nonceDigest: bodyDeclarationCiNonceDigest(seam.nonce),
     isPackaged: false,
     gateEntry: BODY_DECLARATION_CI_GATE_ENTRY,
-    gateOpened: true,
+    gateOpened,
     approvedGrantKinds: ["body-declaration"],
     approvedGrantCount: count,
     approvedBindingDigests: [...approved],
   });
 
+  // The receipt comes first: a gate is never opened without evidence that this
+  // seam was about to open it. If this write fails the gate stays closed.
   try {
+    sequence += 1;
+    await writeReceipt(
+      userDataDir,
+      seam.nonce,
+      receiptFor(0, [], false),
+      sequence,
+    );
     backend.mainOpenPrePublicationGate(BODY_DECLARATION_CI_GATE_ENTRY);
+  } catch (error) {
+    console.error(
+      "[body-declaration-ci-seam] startup failed; the seam is not started:",
+      error instanceof Error ? error.message : String(error),
+    );
+    return null;
+  }
+  const receiptPath = bodyDeclarationCiReceiptPath(userDataDir, seam.nonce);
+  try {
     sequence += 1;
     await writeReceipt(
       userDataDir,
@@ -224,11 +244,14 @@ export async function startBodyDeclarationCiSeam(options: {
       sequence,
     );
   } catch (error) {
+    // The gate is open but the "opened" receipt failed. Return a handle that
+    // refuses every approval, so an open gate never reaches the product's own
+    // dialog in a launch whose evidence is incomplete.
     console.error(
-      "[body-declaration-ci-seam] startup failed; the seam is not started:",
+      "[body-declaration-ci-seam] receipt failed after the gate opened; every approval is refused:",
       error instanceof Error ? error.message : String(error),
     );
-    return null;
+    return { confirm: async () => false, receiptPath };
   }
 
   const confirm: MainGrantConfirm = async (confirmation) => {
@@ -260,8 +283,5 @@ export async function startBodyDeclarationCiSeam(options: {
     }
   };
 
-  return {
-    confirm,
-    receiptPath: bodyDeclarationCiReceiptPath(userDataDir, seam.nonce),
-  };
+  return { confirm, receiptPath };
 }

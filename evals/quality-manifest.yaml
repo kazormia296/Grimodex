@@ -358,7 +358,17 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/src/execute.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
+      - electron/main/mainGrant.ts
+      - electron/main/bodyDeclarationCiSeam.ts
+      - electron/native/grimodex-node/src/main_grant.rs
+      - electron/native/grimodex-node/src/body_declaration_entry.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/writer.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/revoke.rs
     lightTests:
+      - electron/main/mainGrant.test.ts
+      - electron/main/bodyDeclarationCiSeam.test.ts
+      - electron/main/bodyDeclaration.pipeline.spec.ts
+      - electron/native/grimodex-node/test/body-declaration.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
       - scripts/quality/validate-change-feed-writers.test.mjs

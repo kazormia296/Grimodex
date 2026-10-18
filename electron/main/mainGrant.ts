@@ -382,6 +382,19 @@ export function createMainGrantController(
         return failure(mainGrantErrorCode(error));
       } finally {
         if (expiry !== null) clearTimeout(expiry);
+        // Every path ends the confirmation. `endConfirmation` is idempotent;
+        // when it already ran before the preview resolved (previewId was
+        // still null), the preview Native created afterwards is revoked
+        // here, so Native's slot never outlives Main's record. Revoking a
+        // consumed grant is a no-op in Native.
+        endConfirmation();
+        if (previewId !== null) {
+          try {
+            revoke(previewId);
+          } catch {
+            // Same as above: Native refuses the next preview while held.
+          }
+        }
         sender.removeListener("destroyed", onSenderGone);
         sender.removeListener("render-process-gone", onSenderGone);
         sender.removeListener("did-start-navigation", onNavigation);

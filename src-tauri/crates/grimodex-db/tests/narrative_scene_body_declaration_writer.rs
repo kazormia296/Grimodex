@@ -208,3 +208,42 @@ fn the_writer_does_not_touch_the_v1_columns_or_other_tables_directly() {
         }
     }
 }
+
+/// The proof of a consumed grant is a `pub` constructor, so this scan pins who
+/// may call it: in production source only the definition and the grant code of
+/// the Electron Native crate (`main_grant.rs`, after it consumed a grant).
+/// Any other production caller would bypass Main's dialog.
+#[test]
+fn only_the_native_grant_code_makes_a_consumed_binding() {
+    let root = repo_root();
+    let mut files = Vec::new();
+    for crate_src in ["src-tauri/crates", "electron/native"] {
+        collect(&root.join(crate_src), ".rs", &mut files);
+    }
+    let allowed = [
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/binding.rs",
+        "electron/native/grimodex-node/src/main_grant.rs",
+    ];
+    let mut callers = Vec::new();
+    for file in files {
+        if is_test_source(&file) {
+            continue;
+        }
+        let relative = file
+            .strip_prefix(&root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/");
+        if read(&file).contains("from_consumed_grant") {
+            callers.push(relative);
+        }
+    }
+    callers.sort();
+    let mut expected: Vec<String> = allowed.iter().map(|path| path.to_string()).collect();
+    expected.sort();
+    assert_eq!(
+        callers, expected,
+        "`ConsumedBodyDeclarationBinding::from_consumed_grant` may only be called by the Native \
+         grant code"
+    );
+}
