@@ -983,7 +983,7 @@ fn history_snapshot_reader_returns_owned_rows_and_reuses_attempt_reads() {
         let cached = reader.read_attempt(budget, &attempt.id)?;
         assert_eq!(first, cached);
         let message = reader.read_message(budget, &input.id)?;
-        Ok((first.id, message.content, message.chat_role))
+        Ok((first.id().to_owned(), message.content, message.chat_role))
     })
     .expect("same-snapshot typed reads");
     assert_eq!(owned.0, attempt.id);
@@ -1093,7 +1093,7 @@ fn history_snapshot_reader_negative_caches_missing_attempt_for_shared_candidates
                 .to_string()
                 .contains("NIR1_GENERATION_ATTEMPT_MISSING"));
         }
-        assert_eq!(reader.read_attempt(budget, &valid.id)?.id, valid.id);
+        assert_eq!(reader.read_attempt(budget, &valid.id)?.id(), valid.id);
         Ok(())
     })
     .expect("a shared missing root must not consume the valid candidate's read");
@@ -1127,7 +1127,7 @@ fn history_snapshot_reader_negative_caches_missing_terminal_for_shared_candidate
                 .to_string()
                 .contains("NIR1_GENERATION_ATTEMPT_MISSING"));
         }
-        assert_eq!(reader.read_attempt(budget, &valid.id)?.id, valid.id);
+        assert_eq!(reader.read_attempt(budget, &valid.id)?.id(), valid.id);
         Ok(())
     })
     .expect("a shared missing parent must not consume the valid candidate's read");
@@ -4187,13 +4187,20 @@ fn dt3_legacy_v1_receipt_stays_readable_but_cannot_parent_or_feed_history() {
         create_attempt(&db, request(vec![message_input(&parent_version)], vec![])),
         "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY",
     );
+    // HC-1 (K4/3 section 6): the history reader no longer fails the whole
+    // snapshot on a legacy binding. It returns the row's closed-reason header
+    // and reads no reference row. Claim and create above still refuse it.
     let mut caller_budget = history_budget();
-    assert_error_code(
-        with_snapshot(&db, &mut caller_budget, |reader, budget| {
-            reader.read_attempt(budget, &parent.id).map(|_| ())
-        }),
-        "NIR1_GENERATION_BINDING_LEGACY_TERMINAL_ONLY",
+    let read = with_snapshot(&db, &mut caller_budget, |reader, budget| {
+        reader.read_attempt(budget, &parent.id)
+    })
+    .expect("a legacy binding is excluded, not a snapshot failure");
+    assert_eq!(read.id(), parent.id);
+    assert_eq!(
+        read.history_gate(),
+        Some(HistoryContextGateReason::LegacyBinding)
     );
+    assert!(matches!(read, GenerationHistoryAttempt::Excluded(_)));
 }
 
 #[test]
@@ -7027,6 +7034,9 @@ mod hs1_gate {
                 reader.read_attempt(budget, &attempt.id)
             })
             .unwrap_or_else(|error| panic!("{label}: {error:#}"));
+            let read = read
+                .into_stored()
+                .expect("a slot-gated row keeps its header");
             assert_eq!(read.history_gate(), Some(reason), "{label}");
             assert_eq!(read.id, attempt.id);
             assert!(read.inputs.is_empty() && read.qualifications.is_empty());
@@ -7129,3 +7139,8 @@ mod hs1_gate {
         );
     }
 }
+
+/// HC1-1 (K4/3 section 6): the history snapshot reader's enumeration, capture
+/// and ordinal-0 reads, and the exclusion of legacy and unknown-version
+/// bindings.
+mod hc1_reads;

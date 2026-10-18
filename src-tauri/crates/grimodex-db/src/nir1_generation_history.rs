@@ -1052,6 +1052,7 @@ mod generation_storage_adapter {
 
     use crate::narrative_extraction::{validation_terminated, ValidationTerminationReason};
     use crate::narrative_maintenance_connection::ParticipantSqlControl;
+    use crate::nir1_generation::history_reads::{ExcludedHistoryAttempt, GenerationHistoryAttempt};
     use crate::nir1_generation::{
         with_generation_history_snapshot, GenerationHistoryReadBudget,
         GenerationHistorySnapshotCancellation, GenerationHistorySnapshotReader, InputRole,
@@ -1369,8 +1370,27 @@ mod generation_storage_adapter {
         })
     }
 
+    /// The snapshot of an attempt the reader excluded by its binding (a
+    /// legacy or unknown-version row, HC-1). Nothing but the row's identity is
+    /// known: no input, no terminal and no target Scene. The closed reason is
+    /// checked before everything else, so the other fields are never used.
+    fn excluded_attempt(excluded: &ExcludedHistoryAttempt) -> AttemptSnapshot {
+        AttemptSnapshot {
+            id: excluded.id.clone(),
+            tuple: None,
+            inputs: Vec::new(),
+            terminal: None,
+            project_id: Some(excluded.project_id.clone()),
+            session_id: Some(excluded.chat_session_id.clone()),
+            target_scene_id: None,
+            reference_format: ReferenceFormat::V2,
+            context: HistoryContextState::Gated(excluded.reason),
+        }
+    }
+
     struct LoadedAttempt {
-        stored: StoredAttempt,
+        /// `None` for an attempt excluded by its binding: it has no rows.
+        stored: Option<StoredAttempt>,
         snapshot: AttemptSnapshot,
         enriched_ordinals: BTreeSet<usize>,
     }
@@ -1384,14 +1404,22 @@ mod generation_storage_adapter {
         if attempts.contains_key(id) {
             return Ok(());
         }
-        let stored = match reader.read_attempt(budget, id) {
-            Ok(stored) => stored,
+        let read = match reader.read_attempt(budget, id) {
+            Ok(read) => read,
             Err(error) if is_missing_row(&error) => return Ok(()),
             Err(error) => return Err(error),
         };
-        let snapshot = attempt(reader, budget, &stored, false)?;
+        let (key, stored, snapshot) = match read {
+            GenerationHistoryAttempt::Stored(stored) => {
+                let snapshot = attempt(reader, budget, &stored, false)?;
+                (stored.id.clone(), Some(stored), snapshot)
+            }
+            GenerationHistoryAttempt::Excluded(excluded) => {
+                (excluded.id.clone(), None, excluded_attempt(&excluded))
+            }
+        };
         attempts.insert(
-            stored.id.clone(),
+            key,
             LoadedAttempt {
                 stored,
                 snapshot,
@@ -1415,10 +1443,13 @@ mod generation_storage_adapter {
             if loaded.enriched_ordinals.contains(&ordinal) {
                 return Ok(());
             }
-            let Some(input_ref) = loaded.stored.inputs.get(ordinal).cloned() else {
+            let Some(stored) = loaded.stored.as_ref() else {
                 return Ok(());
             };
-            (loaded.stored.clone(), input_ref)
+            let Some(input_ref) = stored.inputs.get(ordinal).cloned() else {
+                return Ok(());
+            };
+            (stored.clone(), input_ref)
         };
         let mapped = input(reader, budget, &stored, ordinal, &input_ref, true)?;
         let loaded = attempts
@@ -1461,7 +1492,8 @@ mod generation_storage_adapter {
         load_attempt(reader, budget, id, attempts)?;
         let input_count = attempts
             .get(id)
-            .map_or(0, |loaded| loaded.stored.inputs.len());
+            .and_then(|loaded| loaded.stored.as_ref())
+            .map_or(0, |stored| stored.inputs.len());
         for ordinal in 0..input_count {
             ensure_snapshot_not_cancelled(cancellation, cancelled)?;
             enrich_input(reader, budget, id, ordinal, attempts)?;
@@ -2019,7 +2051,10 @@ mod generation_storage_adapter {
                     let missing =
                         parent_receipt(reader, shared_budget, Some("missing-parent-receipt"))?;
                     assert!(missing.is_none());
-                    Ok(reader.read_attempt(shared_budget, &valid_attempt_id)?.id)
+                    Ok(reader
+                        .read_attempt(shared_budget, &valid_attempt_id)?
+                        .id()
+                        .to_owned())
                 },
             )
             .expect("missing parent receipt is candidate-local");
@@ -2094,7 +2129,7 @@ mod generation_storage_adapter {
                 ParticipantSqlControl::default(),
                 &mut caller_budget,
                 |reader, shared_budget, _cancellation| {
-                    let stored = reader.read_attempt(shared_budget, id)?;
+                    let stored = reader.read_attempt(shared_budget, id)?.into_stored()?;
                     attempt(reader, shared_budget, &stored, false)
                 },
             )
@@ -2282,6 +2317,114 @@ mod generation_storage_adapter {
                     IncompleteReason::CurrentTupleUnavailable
                 )),
                 "a known context keeps the existing behaviour: HS-1 does not fill the tuple"
+            );
+        }
+
+        /// HC-1 (K4/3 section 6, section 8): a legacy (version 1) binding and a
+        /// binding of an unknown version exclude their candidate with a closed
+        /// reason. They no longer fail the snapshot, so an independent
+        /// candidate in the same turn is still judged.
+        #[test]
+        fn history_legacy_and_unknown_binding_versions_exclude_the_candidate_not_the_turn() {
+            let (_state, snapshot) = workspace_snapshot();
+            let legacy = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            let future = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            let control = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            let store_binding = |id: &str, edit: &dyn Fn(&mut serde_json::Value)| {
+                snapshot
+                    .db()
+                    .db()
+                    .with_conn(|conn| {
+                        let stored: String = conn.query_row(
+                            "SELECT binding_json FROM nir1_generation_attempts WHERE id=?1",
+                            [id],
+                            |row| row.get(0),
+                        )?;
+                        let mut binding: serde_json::Value = serde_json::from_str(&stored)?;
+                        edit(&mut binding);
+                        conn.execute(
+                            "UPDATE nir1_generation_attempts SET binding_json=?2 WHERE id=?1",
+                            rusqlite::params![id, grimodex_core::canonical_json_string(&binding)?],
+                        )?;
+                        Ok(())
+                    })
+                    .expect("store the binding");
+            };
+            // Version 1 never wrote `bindingVersion` and had one `sessionId`.
+            store_binding(&legacy, &|binding| {
+                let v2 = binding.clone();
+                *binding = json!({
+                    "projectId": v2["projectId"],
+                    "sessionId": v2["chatSessionId"],
+                    "profileId": v2["caller"]["profileId"],
+                    "callerId": v2["caller"]["callerId"],
+                    "callerEpoch": v2["caller"]["callerEpoch"],
+                    "workspaceBindingDigest": v2["workspaceBindingDigest"],
+                    "purpose": v2["purpose"],
+                    "scopeDigest": v2["scopeDigest"],
+                    "materialDigest": v2["materialDigest"],
+                    "d1Digest": v2["d1Digest"],
+                    "routeRevision": v2["routeRevision"],
+                    "provider": v2["provider"],
+                    "model": v2["model"],
+                    "api": v2["api"],
+                    "endpointIdentity": v2["endpointIdentity"],
+                });
+            });
+            store_binding(&future, &|binding| {
+                binding["bindingVersion"] = json!(3);
+                binding["historyTurnContext"] = json!({"turn": "a later writer"});
+            });
+            corrupt_reference_rows(&snapshot, &legacy);
+            corrupt_reference_rows(&snapshot, &future);
+            let candidates = [
+                ("legacy", legacy.clone()),
+                ("future", future.clone()),
+                ("control", control),
+            ]
+            .map(|(name, id)| Candidate {
+                id: name.into(),
+                root_attempt_id: id,
+                adopted_input_ordinals: vec![0],
+            });
+            let mut caller_budget = budget();
+            caller_budget.max_candidates = candidates.len();
+            caller_budget.max_attempts = candidates.len();
+            let mut qualifier = AllowCurrent;
+            let mut cancelled = || false;
+            let outcome = reauthorize_from_generation_snapshot(
+                &snapshot,
+                ParticipantSqlControl::default(),
+                &mut caller_budget,
+                &candidates,
+                &complete_tuple(),
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .expect("a legacy or unknown-version binding never stops the turn");
+            let dispositions = outcome
+                .candidates
+                .iter()
+                .map(|result| result.disposition.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                dispositions,
+                [
+                    CandidateDisposition::Excluded(Failure::Incomplete(
+                        IncompleteReason::HistoryContextUnusable(
+                            HistoryContextGateReason::LegacyBinding
+                        )
+                    )),
+                    CandidateDisposition::Excluded(Failure::Incomplete(
+                        IncompleteReason::HistoryContextUnusable(
+                            HistoryContextGateReason::UnsupportedBindingVersion
+                        )
+                    )),
+                    CandidateDisposition::Excluded(Failure::Incomplete(
+                        IncompleteReason::CurrentTupleUnavailable
+                    )),
+                ],
+                "the control reaches the same point as before HC-1"
             );
         }
 

@@ -465,6 +465,14 @@ pub enum HistoryContextGateReason {
     UnknownContract,
     /// The writer or builder recorded a closed unavailable reason.
     Unavailable(HistoryUnavailableReason),
+    /// The row's binding is the legacy version 1 format, which has no slot.
+    /// It is read for terminalization and recovery only (HC-1, K4/3
+    /// section 6); [`Self::of`] never returns it, the snapshot reader does.
+    LegacyBinding,
+    /// The row's `bindingVersion` is one this build does not know, so its
+    /// slot is not read. Like [`Self::LegacyBinding`], only the snapshot
+    /// reader returns it.
+    UnsupportedBindingVersion,
 }
 
 impl HistoryContextGateReason {

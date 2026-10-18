@@ -56,10 +56,12 @@ pub use local_audit_writer::{
 use local_audit_writer::{close_execution_in_tx, finish_attempt_bounded_with, AuditClose};
 pub use project_ai_policy::{read_project_ai_policy_bounded, Nir1ProjectAiPolicyRead};
 pub mod history_context;
+pub(crate) mod history_reads;
 use history_context::{
     eligible_until_ms, DurableWorkspaceIdentity, HistoryContextGateReason, HistoryContextSlot,
     HistoryUnavailableReason, SLOT_UNWRITABLE_ERROR,
 };
+use history_reads::{ExcludedHistoryAttempt, GenerationHistoryAttempt};
 
 // These are storage safety ceilings for malformed/imported rows. They bound
 // one Native materialization; they are not the owning turn's history or
@@ -1715,6 +1717,13 @@ impl GenerationHistoryReadBudget {
         Ok(())
     }
 
+    /// Debit `count` attempt rows at once from the same whole-turn ledger.
+    fn consume_attempts(&mut self, count: usize) -> Result<()> {
+        ensure!(self.max_attempts >= count, "NIR1_GENERATION_HISTORY_LIMIT");
+        self.max_attempts -= count;
+        Ok(())
+    }
+
     fn reserve_body_bytes(&mut self, bytes: usize) -> Result<()> {
         ensure!(
             bytes <= self.max_resolved_body_bytes,
@@ -2202,6 +2211,27 @@ fn validate_legacy_binding(binding: &LegacyAttemptBindingV1) -> Result<()> {
 /// unknown fields. A later version adds an arm here; until then it is
 /// rejected.
 fn parse_attempt_binding(json: &str) -> Result<VersionedAttemptBinding> {
+    match parse_attempt_binding_lenient(json)? {
+        LenientAttemptBinding::Versioned(binding) => Ok(binding),
+        LenientAttemptBinding::UnsupportedVersion => {
+            anyhow::bail!(BINDING_VERSION_UNSUPPORTED_ERROR)
+        }
+    }
+}
+
+/// A stored binding whose `bindingVersion` this build may not know. Only the
+/// history snapshot reader keeps the unknown-version case as a value (HC-1);
+/// every other reader goes through `parse_attempt_binding`, which rejects it.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "a transient parse result, matched at once; the versioned variant is the common case"
+)]
+enum LenientAttemptBinding {
+    Versioned(VersionedAttemptBinding),
+    UnsupportedVersion,
+}
+
+fn parse_attempt_binding_lenient(json: &str) -> Result<LenientAttemptBinding> {
     let probe: AttemptBindingVersionProbe =
         serde_json::from_str(json).context("NIR1_GENERATION_BINDING_INVALID")?;
     match probe.binding_version {
@@ -2211,15 +2241,19 @@ fn parse_attempt_binding(json: &str) -> Result<VersionedAttemptBinding> {
             let legacy: LegacyAttemptBindingV1 =
                 serde_json::from_str(json).context("NIR1_GENERATION_BINDING_INVALID")?;
             validate_legacy_binding(&legacy)?;
-            Ok(VersionedAttemptBinding::LegacyV1(legacy))
+            Ok(LenientAttemptBinding::Versioned(
+                VersionedAttemptBinding::LegacyV1(legacy),
+            ))
         }
         Some(Value::Number(version)) if version.as_u64() == Some(ATTEMPT_BINDING_VERSION) => {
             let binding: AttemptBinding =
                 serde_json::from_str(json).context("NIR1_GENERATION_BINDING_INVALID")?;
             validate_binding(&binding)?;
-            Ok(VersionedAttemptBinding::Current(binding))
+            Ok(LenientAttemptBinding::Versioned(
+                VersionedAttemptBinding::Current(binding),
+            ))
         }
-        Some(_) => anyhow::bail!(BINDING_VERSION_UNSUPPORTED_ERROR),
+        Some(_) => Ok(LenientAttemptBinding::UnsupportedVersion),
     }
 }
 
@@ -2257,6 +2291,22 @@ fn read_stored_binding(
 ) -> Result<VersionedAttemptBinding> {
     let binding = parse_attempt_binding(binding_json)?;
     binding.ensure_attempt_row_identity(project_id, session_id)?;
+    Ok(binding)
+}
+
+/// The history snapshot reader's variant of `read_stored_binding`: a legacy
+/// or unknown-version row is returned as a value so the reader can exclude
+/// it. A malformed binding, or a binding that disagrees with its row, is still
+/// an error and fails the whole read.
+fn read_stored_binding_lenient(
+    binding_json: &str,
+    project_id: &str,
+    session_id: &str,
+) -> Result<LenientAttemptBinding> {
+    let binding = parse_attempt_binding_lenient(binding_json)?;
+    if let LenientAttemptBinding::Versioned(versioned) = &binding {
+        versioned.ensure_attempt_row_identity(project_id, session_id)?;
+    }
     Ok(binding)
 }
 
@@ -2992,7 +3042,20 @@ fn read_attempt_in_tx_with_remaining(
     remaining: &mut ReadBudget,
 ) -> Result<StoredAttempt> {
     let mut no_reserve = |_bytes: usize| Ok(());
-    read_attempt_in_tx_with_remaining_and_reserve(conn, id, remaining, &mut no_reserve, None, false)
+    match read_attempt_in_tx_with_remaining_and_reserve(
+        conn,
+        id,
+        remaining,
+        &mut no_reserve,
+        None,
+        false,
+    )? {
+        GenerationHistoryAttempt::Stored(stored) => Ok(stored),
+        // Only the history gate returns a header, and it is off here.
+        GenerationHistoryAttempt::Excluded(_) => {
+            anyhow::bail!("NIR1_GENERATION_HISTORY_ATTEMPT_UNUSABLE")
+        }
+    }
 }
 
 /// The closed reason a history reader does not use this attempt, decided from
@@ -3033,7 +3096,7 @@ fn read_attempt_in_tx_with_remaining_and_reserve<F>(
     reserve: &mut F,
     cancellation: Option<&GenerationHistorySnapshotCancellation>,
     history_gate: bool,
-) -> Result<StoredAttempt>
+) -> Result<GenerationHistoryAttempt>
 where
     F: FnMut(usize) -> Result<()>,
 {
@@ -3044,22 +3107,47 @@ where
     // The history gate reads the binding before any reference row. A slot
     // that is not a known-version context returns the header alone: no
     // reference row is read and neither the reference budget nor the body
-    // byte reservation is debited. A legacy (version 1) binding is not a
-    // slot state; it keeps the full read and its terminal-only refusal.
+    // byte reservation is debited. A legacy (version 1) binding and a
+    // binding of an unknown version are excluded the same way (HC-1, K4/3
+    // section 6): the closed reason is returned and nothing else is read. A
+    // malformed binding is still an error. Every other reader keeps the full
+    // read and its terminal-only refusal.
     let prefetched = if history_gate {
         let stored = read_attempt_metadata_in_tx(conn, id)?;
         if let Some(cancellation) = cancellation {
             cancellation.checkpoint()?;
         }
-        let binding =
-            read_stored_binding(&stored.binding_json, &stored.project_id, &stored.session_id)?;
+        let binding = read_stored_binding_lenient(
+            &stored.binding_json,
+            &stored.project_id,
+            &stored.session_id,
+        )?;
+        let excluded = |reason| {
+            GenerationHistoryAttempt::Excluded(ExcludedHistoryAttempt::new(
+                id,
+                &stored.project_id,
+                &stored.session_id,
+                stored.created_at_ms,
+                reason,
+            ))
+        };
         match binding {
-            VersionedAttemptBinding::Current(current)
+            LenientAttemptBinding::UnsupportedVersion => {
+                return Ok(excluded(
+                    HistoryContextGateReason::UnsupportedBindingVersion,
+                ));
+            }
+            LenientAttemptBinding::Versioned(VersionedAttemptBinding::LegacyV1(_)) => {
+                return Ok(excluded(HistoryContextGateReason::LegacyBinding));
+            }
+            LenientAttemptBinding::Versioned(VersionedAttemptBinding::Current(current))
                 if history_gate_reason(&current).is_some() =>
             {
-                return Ok(gated_history_attempt(id, stored, current));
+                return Ok(GenerationHistoryAttempt::Stored(gated_history_attempt(
+                    id, stored, current,
+                )));
             }
-            binding => Some((stored, binding)),
+            LenientAttemptBinding::Versioned(binding) => Some((stored, binding)),
         }
     } else {
         None
@@ -3141,7 +3229,7 @@ where
     // Claims, parent lineage and history read attempts through this function,
     // so a legacy row is reachable only through terminalization.
     let binding = binding.into_current()?;
-    Ok(StoredAttempt {
+    Ok(GenerationHistoryAttempt::Stored(StoredAttempt {
         id: id.to_owned(),
         binding,
         payload_digest: stored.payload_digest,
@@ -3153,7 +3241,7 @@ where
         expires_at_ms: stored.expires_at_ms,
         claimed_at_ms: stored.claimed_at_ms,
         terminal: read_terminal_in_tx_with_reserve(conn, id, reserve, false, cancellation)?,
-    })
+    }))
 }
 
 fn read_attempt_in_tx(conn: &Connection, id: &str, budget: ReadBudget) -> Result<StoredAttempt> {
@@ -3356,10 +3444,16 @@ pub(crate) struct GenerationHistorySnapshotReader<'connection> {
     connection: &'connection Connection,
     cancellation: GenerationHistorySnapshotCancellation,
     capacity: Arc<CapacityBudget>,
-    attempts: BTreeMap<String, std::result::Result<StoredAttempt, String>>,
+    attempts: BTreeMap<String, std::result::Result<GenerationHistoryAttempt, String>>,
     messages: BTreeMap<String, std::result::Result<GenerationHistoryMessage, String>>,
     terminals: BTreeMap<String, std::result::Result<Option<StoredTerminal>, String>>,
     artifacts: BTreeMap<(String, String), std::result::Result<GenerationHistoryArtifact, String>>,
+    /// HC-1 reads (`history_reads`): one enumeration, capture row and
+    /// ordinal-0 index per key for the whole snapshot, so a repeated call is
+    /// never charged to the turn ledger again.
+    enumerations: history_reads::EnumerationCache,
+    captures: history_reads::CaptureCache,
+    ordinal_zero: history_reads::OrdinalZeroCache,
 }
 
 impl<'connection> GenerationHistorySnapshotReader<'connection> {
@@ -3376,6 +3470,9 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
             messages: BTreeMap::new(),
             terminals: BTreeMap::new(),
             artifacts: BTreeMap::new(),
+            enumerations: BTreeMap::new(),
+            captures: BTreeMap::new(),
+            ordinal_zero: BTreeMap::new(),
         }
     }
 
@@ -3397,7 +3494,7 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
         &mut self,
         budget: &mut GenerationHistoryReadBudget,
         id: &str,
-    ) -> Result<StoredAttempt> {
+    ) -> Result<GenerationHistoryAttempt> {
         identity(id)?;
         self.checkpoint()?;
         if let Some(cached) = self.attempts.get(id) {
@@ -3418,11 +3515,13 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
             budget.apply_child_reference_budget(references);
             let value = value?;
             self.checkpoint()?;
-            // A gated attempt returns before its terminal is read, so
-            // `terminal: None` is not the stored terminal and is not cached.
-            if value.history_gate().is_none() {
-                self.terminals
-                    .insert(id.to_owned(), Ok(value.terminal.clone()));
+            // A gated or excluded attempt returns before its terminal is read,
+            // so `terminal: None` is not the stored terminal and is not cached.
+            if let GenerationHistoryAttempt::Stored(stored) = &value {
+                if stored.history_gate().is_none() {
+                    self.terminals
+                        .insert(id.to_owned(), Ok(stored.terminal.clone()));
+                }
             }
             Ok(value)
         })() {
