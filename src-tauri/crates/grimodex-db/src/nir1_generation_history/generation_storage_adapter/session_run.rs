@@ -49,6 +49,20 @@ use rusqlite::Connection;
 pub(crate) struct SessionHistoryRequest<'a> {
     pub current: &'a CurrentHistoryContext,
     pub now_ms: i64,
+    /// The turn's own attempt, when it was created after the request was
+    /// prepared (the re-confirmation at dispatch). It is left out of the
+    /// session's enumeration after the reader checked that it is the attempt
+    /// of the current Human; `None` for a preparation, where it does not exist.
+    pub in_flight: Option<InFlightAttempt<'a>>,
+}
+
+/// The attempt a turn has just created, named so that the run does not count
+/// it as part of the session's history.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InFlightAttempt<'a> {
+    pub attempt_id: &'a str,
+    /// The current Human's message version: the attempt's ordinal 0 input.
+    pub human_version_id: &'a str,
 }
 
 /// What a result stands for.
@@ -458,6 +472,14 @@ fn run_session_history<C: FnMut() -> bool>(
     };
     let project_id = current.range.project_id.as_str();
     let session_id = current.range.chat_session_id.as_str();
+    if let Some(in_flight) = request.in_flight {
+        reader.exclude_in_flight_attempt(
+            project_id,
+            session_id,
+            in_flight.attempt_id,
+            in_flight.human_version_id,
+        )?;
+    }
 
     // The session's attempts, from the session column and its index only. A
     // session that cannot be listed within the budget leaves every candidate

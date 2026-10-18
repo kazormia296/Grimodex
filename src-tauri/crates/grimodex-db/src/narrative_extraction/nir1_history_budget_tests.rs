@@ -166,6 +166,7 @@ fn spike_outer_snapshot_survives_a_spent_history_sql_ledger() -> Result<()> {
                                 &SessionHistoryRequest {
                                     current: &current,
                                     now_ms: wall_clock_ms(),
+                                    in_flight: None,
                                 },
                                 &mut || {
                                     std::thread::sleep(Duration::from_millis(15));
@@ -437,6 +438,7 @@ fn sql_capacity_and_deadline_continue_without_history() -> Result<()> {
                 wall_clock_ms(),
                 &prepare,
                 budget,
+                None,
                 owner_check,
             )
         };
@@ -448,6 +450,7 @@ fn sql_capacity_and_deadline_continue_without_history() -> Result<()> {
             wall_clock_ms(),
             started,
             &prepare,
+            None,
             never_stops,
         )?;
         assert_eq!(baseline.without_history, None);
@@ -493,6 +496,7 @@ fn sql_capacity_and_deadline_continue_without_history() -> Result<()> {
             wall_clock_ms(),
             Instant::now(),
             &tight,
+            None,
             never_stops,
         )?;
         assert_eq!(outcome.without_history, Some(NoHistory::SqlDeadlineElapsed));
@@ -513,6 +517,7 @@ fn sql_capacity_and_deadline_continue_without_history() -> Result<()> {
             wall_clock_ms(),
             Instant::now(),
             &prepare,
+            None,
             never_stops,
         )?;
         assert_eq!(again, baseline);
@@ -539,6 +544,7 @@ fn cancel_stops_the_turn() -> Result<()> {
                 wall_clock_ms(),
                 Instant::now(),
                 prepare,
+                None,
                 owner_check,
             )
         };
@@ -617,6 +623,7 @@ fn sqlite_error_stops_the_turn() -> Result<()> {
             wall_clock_ms(),
             Instant::now(),
             &prepared_sql_budget(),
+            None,
             &mut || Ok(()),
         )
         .map(|_| ())
@@ -682,6 +689,7 @@ fn busy_wait_n_and_n_plus_one() -> Result<()> {
                 &SessionHistoryRequest {
                     current: &current,
                     now_ms: wall_clock_ms(),
+                    in_flight: None,
                 },
                 &mut || false,
             );
@@ -807,6 +815,7 @@ fn history_run_writes_nothing_in_the_d_final_snapshot() -> Result<()> {
             wall_clock_ms(),
             Instant::now(),
             &prepared_sql_budget(),
+            None,
             &mut probe,
         )?;
         for turn in &turns {
@@ -840,6 +849,7 @@ fn entry_outcome(
             wall_clock_ms(),
             &prepared_sql_budget(),
             budget,
+            None,
             &mut || Ok(()),
         )
     })

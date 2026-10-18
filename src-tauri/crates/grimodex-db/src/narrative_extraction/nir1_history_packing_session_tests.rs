@@ -10,6 +10,7 @@ use super::*;
 use crate::nir1_generation::{
     d1_selection_digest, InputRole, InputTarget, InputUse, QualificationKind,
 };
+use crate::nir1_generation_history::InFlightAttempt;
 use anyhow::Context as _;
 
 const ENVELOPE: usize = 4;
@@ -746,6 +747,17 @@ fn confirm_history_alone(
     prepared: &NativeNir1PreparedInputs,
     now: i64,
 ) -> Result<()> {
+    confirm_history_alone_after(session, prepared, now, None)
+}
+
+/// [`confirm_history_alone`] for the check after the create, with the created
+/// attempt named.
+fn confirm_history_alone_after(
+    session: &SessionFixture,
+    prepared: &NativeNir1PreparedInputs,
+    now: i64,
+    created_attempt_id: Option<&str>,
+) -> Result<()> {
     let history = prepared.history.as_ref().expect("history");
     let budget = prepared_sql_budget();
     let checkpoint_budget = budget.clone();
@@ -760,6 +772,7 @@ fn confirm_history_alone(
                 history,
                 &session.snapshot,
                 now,
+                created_attempt_id,
                 &checkpoint_budget,
                 &mut checkpoint,
             )
@@ -932,4 +945,348 @@ fn three_turn_chain_through_the_native_history_adopts_all_ancestors() -> Result<
         }));
     }
     Ok(())
+}
+
+// ---- the turn's own attempt at the dispatch re-check (DI1B-3 review) ----
+
+/// A turn at the edge of the budget, between its create and its dispatch: the
+/// session holds `prior` settled attempts (failed turns, whose Humans are
+/// history), the next request is prepared with its history, created as an
+/// attempt by the product writer and left in flight. Returns the session, the
+/// prepared value that was returned to the caller, the in-flight attempt and
+/// the clock of the turn.
+fn prepared_then_created(
+    prior: usize,
+) -> Result<(SessionFixture, NativeNir1PreparedInputs, Turn, i64)> {
+    let mut session = SessionFixture::new()?;
+    for index in 0..prior {
+        session.turn(&format!("Failed turn {index}."), &[], None)?;
+    }
+    let now = wall_clock_ms();
+    let (capture, message_id) = session.accept(&format!("di1b3-edge-{prior}"), "The next one.")?;
+    let prepared = prepare(
+        &session,
+        &capture,
+        PackingPurpose::Writing,
+        Some(NativeNir1HistoryRequest {
+            now_ms: now,
+            message_envelope_tokens: ENVELOPE,
+        }),
+        BIG_BUDGET,
+    )?;
+    let observation = prepared.history_observation().expect("asked for");
+    assert_eq!(observation.without_history, None, "{observation:?}");
+    assert_eq!(
+        observation.adopted_turns, 16,
+        "the window is the newest 16 turns of a session of {prior}: {observation:?}"
+    );
+    // The return-time check, before the create, sees the session the
+    // preparation saw.
+    revalidate_native_nir1_prepared_inputs(
+        &session.snapshot,
+        SESSION,
+        &prepared,
+        prepared_sql_budget(),
+        now,
+    )?;
+    let own = session.run_turn(
+        TurnSpec::new("The next one.")
+            .capture(capture, message_id)
+            .native_history(now, ENVELOPE)
+            .in_flight(),
+    )?;
+    Ok((session, prepared, own, now))
+}
+
+fn revalidate_after_create(
+    session: &SessionFixture,
+    prepared: &NativeNir1PreparedInputs,
+    now: i64,
+    attempt_id: &str,
+) -> Result<()> {
+    revalidate_native_nir1_prepared_inputs_after_create(
+        &session.snapshot,
+        SESSION,
+        prepared,
+        prepared_sql_budget(),
+        now,
+        attempt_id,
+    )
+}
+
+/// A session at the edge of the candidate limit adopts its history at
+/// preparation and must still be able to send: the attempt the turn creates is
+/// the 129th row of the session, which is not history and is not counted. The
+/// product create, not a hand-made row, writes it.
+#[test]
+fn reconfirmation_after_the_create_does_not_count_the_turns_own_attempt() -> Result<()> {
+    // 127 prior attempts: 128 with the created one, still inside the limit.
+    // 128 prior attempts: the created one is the 129th, over the candidate
+    // limit of 128 that the preparation accepted.
+    for prior in [127, 128] {
+        let (session, prepared, own, now) = prepared_then_created(prior)?;
+        revalidate_after_create(&session, &prepared, now, &own.attempt_id)
+            .with_context(|| format!("{prior} prior attempts"))?;
+        if prior == 128 {
+            // Counting the created attempt as history is what refused the
+            // turn: this is the case the exclusion exists for.
+            let counted = revalidate_native_nir1_prepared_inputs(
+                &session.snapshot,
+                SESSION,
+                &prepared,
+                prepared_sql_budget(),
+                now,
+            )
+            .expect_err("the created attempt counted as the 129th candidate");
+            assert!(
+                format!("{counted:#}").contains("NIR1_NATIVE_PREPARED_HISTORY_STALE"),
+                "{counted:#}"
+            );
+        }
+        // The exclusion does not weaken the check: a change that takes the
+        // history's authority away after the create still stops the turn.
+        let moved = format!("{}x", session.sort_order_of(SCENE)?);
+        session.patch_node(
+            SCENE,
+            &format!("di1b3-edge-move-{prior}"),
+            "sortOrder",
+            json!(moved),
+        )?;
+        // (The Raw check of the full re-check fails first on this change with
+        // its own code; the history confirmation alone shows it rejects it.)
+        let stale = confirm_history_alone_after(&session, &prepared, now, Some(&own.attempt_id))
+            .expect_err("history that no longer qualifies");
+        assert!(
+            format!("{stale:#}").contains("NIR1_NATIVE_PREPARED_HISTORY_STALE"),
+            "{stale:#}"
+        );
+    }
+    Ok(())
+}
+
+/// The run that leaves the created attempt out spends exactly what the run
+/// before the create spent, in every dimension of the ledger, and finds the
+/// same candidates. Without the exclusion it spends more (the attempt's
+/// header, its reference rows and edges, its candidate).
+#[test]
+fn the_created_attempt_costs_the_reconfirmation_nothing_in_any_dimension() -> Result<()> {
+    let mut session = SessionFixture::new()?;
+    let first = session.turn("First.", &[], Some("First answer."))?;
+    session.turn(
+        "Second.",
+        &[Adopt::human(&first), Adopt::output(&first)],
+        Some("Second answer."),
+    )?;
+    let now = wall_clock_ms();
+    let (capture, message_id) = session.accept("di1b3-cost", "Third.")?;
+    let prepared = prepare(
+        &session,
+        &capture,
+        PackingPurpose::Writing,
+        Some(NativeNir1HistoryRequest {
+            now_ms: now,
+            message_envelope_tokens: ENVELOPE,
+        }),
+        BIG_BUDGET,
+    )?;
+    assert_eq!(prepared.history_messages().len(), 4);
+    let human_version = prepared.user_message_version().id.clone();
+
+    let spent = |budget: &GenerationHistoryReadBudget| {
+        [
+            budget.max_attempts,
+            budget.max_candidates,
+            budget.max_reference_count,
+            budget.max_reference_bytes,
+            budget.max_resolved_body_bytes,
+            budget.remaining_nodes,
+            budget.remaining_edges,
+            budget.remaining_qualification_refs,
+        ]
+    };
+    let before_create = {
+        let mut budget = SessionFixture::generous_budget();
+        let outcome = run_with_in_flight(&session, &mut budget, None)?;
+        (spent(&budget), outcome)
+    };
+    let own = session.run_turn(
+        TurnSpec::new("Third.")
+            .capture(capture, message_id)
+            .native_history(now, ENVELOPE)
+            .in_flight(),
+    )?;
+    let after_create_excluded = {
+        let mut budget = SessionFixture::generous_budget();
+        let in_flight = InFlightAttempt {
+            attempt_id: &own.attempt_id,
+            human_version_id: &human_version,
+        };
+        let outcome = run_with_in_flight(&session, &mut budget, Some(in_flight))?;
+        (spent(&budget), outcome)
+    };
+    assert_eq!(after_create_excluded.0, before_create.0);
+    assert_eq!(after_create_excluded.1, before_create.1);
+    let after_create_counted = {
+        let mut budget = SessionFixture::generous_budget();
+        run_with_in_flight(&session, &mut budget, None)?;
+        spent(&budget)
+    };
+    // Every dimension the attempt touches is charged: smaller means spent.
+    for (counted, free) in after_create_counted.iter().zip(before_create.0.iter()) {
+        assert!(counted <= free);
+    }
+    assert!(
+        after_create_counted[0] < before_create.0[0]
+            && after_create_counted[2] < before_create.0[2]
+            && after_create_counted[5] < before_create.0[5]
+            && after_create_counted[6] < before_create.0[6],
+        "the created attempt costs attempts, references, nodes and edges when it is counted: \
+         {after_create_counted:?} against {:?}",
+        before_create.0
+    );
+    Ok(())
+}
+
+/// Only the turn's own attempt may be left out; anything else stops the turn
+/// (hiding another attempt could hide a second holder of a past Human).
+#[test]
+fn only_the_attempt_of_the_current_human_may_be_left_out() -> Result<()> {
+    let mut session = SessionFixture::new()?;
+    let first = session.turn("First.", &[], Some("First answer."))?;
+    let now = wall_clock_ms();
+    let (capture, message_id) = session.accept("di1b3-who", "Second.")?;
+    let prepared = prepare(
+        &session,
+        &capture,
+        PackingPurpose::Writing,
+        Some(NativeNir1HistoryRequest {
+            now_ms: now,
+            message_envelope_tokens: ENVELOPE,
+        }),
+        BIG_BUDGET,
+    )?;
+    let own = session.run_turn(
+        TurnSpec::new("Second.")
+            .capture(capture, message_id)
+            .native_history(now, ENVELOPE)
+            .in_flight(),
+    )?;
+    revalidate_after_create(&session, &prepared, now, &own.attempt_id)?;
+    // A settled earlier attempt of the session is history, not the turn's own.
+    for wrong in [first.attempt_id.as_str(), "no-such-attempt"] {
+        let error = revalidate_after_create(&session, &prepared, now, wrong)
+            .expect_err("another attempt cannot be left out");
+        assert!(
+            format!("{error:#}").contains("NIR1_GENERATION_HISTORY_IN_FLIGHT_ATTEMPT_MISMATCH"),
+            "{wrong}: {error:#}"
+        );
+    }
+    // The right attempt with another Human version is not the current turn's.
+    let other = session.snapshot.db().with_read_transaction(|conn| {
+        Ok(conn.query_row(
+            "SELECT id FROM nir1_generation_attempts WHERE id<>?1 LIMIT 1",
+            [&own.attempt_id],
+            |row| row.get::<_, String>(0),
+        )?)
+    })?;
+    assert_eq!(other, first.attempt_id);
+    let error = session
+        .snapshot
+        .db()
+        .with_participant_read_transaction_bounded(
+            session.snapshot.participant(),
+            prepared_sql_budget(),
+            |conn| {
+                let stage = build_history_context_stage(
+                    conn,
+                    PROJECT,
+                    SCENE,
+                    session.snapshot.durable_workspace_identity(),
+                    HistorySendClassification::LocalOnly,
+                )?;
+                let scene = read_attempt_scene_binding_in_tx(conn, PROJECT, SCENE)?;
+                let current = stage.current_history_context(
+                    HistoryRange {
+                        project_id: PROJECT.into(),
+                        chat_session_id: SESSION.into(),
+                        scene_id: SCENE.into(),
+                        scene_incarnation_id: scene.scene_incarnation_id,
+                    },
+                    GenerationPurpose::Writing,
+                );
+                let mut budget = SessionFixture::generous_budget();
+                run_in_with(
+                    conn,
+                    &current,
+                    &mut budget,
+                    Some(InFlightAttempt {
+                        attempt_id: &own.attempt_id,
+                        human_version_id: &first.human_version_id,
+                    }),
+                )
+            },
+        )
+        .expect_err("the attempt holds another Human version");
+    assert!(
+        format!("{error:#}").contains("NIR1_GENERATION_HISTORY_IN_FLIGHT_ATTEMPT_MISMATCH"),
+        "{error:#}"
+    );
+    Ok(())
+}
+
+fn run_in_with(
+    conn: &Connection,
+    current: &CurrentHistoryContext,
+    budget: &mut GenerationHistoryReadBudget,
+    in_flight: Option<InFlightAttempt<'_>>,
+) -> Result<SessionHistoryOutcome> {
+    let cancellation =
+        GenerationHistorySnapshotCancellation::from_control(&ParticipantSqlControl::default());
+    reauthorize_session_history_in_tx(
+        conn,
+        &cancellation,
+        budget,
+        &SessionHistoryRequest {
+            current,
+            now_ms: wall_clock_ms(),
+            in_flight,
+        },
+        &mut || false,
+    )
+}
+
+/// The history run of the next turn in one read snapshot, with the turn's own
+/// attempt named or not.
+fn run_with_in_flight(
+    session: &SessionFixture,
+    budget: &mut GenerationHistoryReadBudget,
+    in_flight: Option<InFlightAttempt<'_>>,
+) -> Result<SessionHistoryOutcome> {
+    session
+        .snapshot
+        .db()
+        .with_participant_read_transaction_bounded(
+            session.snapshot.participant(),
+            prepared_sql_budget(),
+            |conn| {
+                let stage = build_history_context_stage(
+                    conn,
+                    PROJECT,
+                    SCENE,
+                    session.snapshot.durable_workspace_identity(),
+                    HistorySendClassification::LocalOnly,
+                )?;
+                let scene = read_attempt_scene_binding_in_tx(conn, PROJECT, SCENE)?;
+                let current = stage.current_history_context(
+                    HistoryRange {
+                        project_id: PROJECT.into(),
+                        chat_session_id: SESSION.into(),
+                        scene_id: SCENE.into(),
+                        scene_incarnation_id: scene.scene_incarnation_id,
+                    },
+                    GenerationPurpose::Writing,
+                );
+                run_in_with(conn, &current, budget, in_flight)
+            },
+        )
 }

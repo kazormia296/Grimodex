@@ -19,9 +19,10 @@ use grimodex_core::nir1_local_wire::RequestTarget;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
     read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
-    revalidate_native_nir1_prepared_inputs, NativeNir1AuthorityBinding, NativeNir1ExcludedRevision,
-    NativeNir1GraphBinding, NativeNir1HistoryDraft, NativeNir1PreparedInputs,
-    NativeNir1RawSourceBinding, Nir1GraphCandidates,
+    revalidate_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs_after_create,
+    NativeNir1AuthorityBinding, NativeNir1ExcludedRevision, NativeNir1GraphBinding,
+    NativeNir1HistoryDraft, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    Nir1GraphCandidates,
 };
 use grimodex_db::nir1_generation::history_context::HistorySendClassification;
 use grimodex_db::nir1_generation::{
@@ -747,6 +748,7 @@ pub(crate) fn reobserve_prepared_for_dispatch(
     route: &SupportedLocalChatRoute,
     route_revocation_generation: u64,
     witness: &PreparedInputsWitness,
+    created_attempt_id: &str,
 ) -> Result<()> {
     ensure!(
         !state
@@ -761,12 +763,16 @@ pub(crate) fn reobserve_prepared_for_dispatch(
     );
     let sql_budget = participant_sql_budget_for(Arc::clone(&submission.stop));
     sql_budget.check_workspace(&workspace)?;
-    revalidate_native_nir1_prepared_inputs(
+    // The attempt just created is part of the session now but is not history:
+    // the re-check leaves it out, so a turn whose history was adopted at the
+    // edge of the budget is not refused for its own attempt (DR-DI1B-9c).
+    revalidate_native_nir1_prepared_inputs_after_create(
         &workspace,
         submission.capture.chat_session_id(),
         &witness.inputs,
         sql_budget.clone(),
         now_ms()?,
+        created_attempt_id,
     )?;
     sql_budget.check_workspace(&workspace)?;
     ensure_workspace_unchanged(state, &workspace, &live_binding)?;

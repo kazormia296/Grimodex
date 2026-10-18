@@ -179,9 +179,9 @@ pub use nir1_packing::{
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_packing::{
     read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
-    revalidate_native_nir1_prepared_inputs, NativeNir1ExcludedRevision,
-    NativeNir1FinalQualifications, NativeNir1GraphBinding, NativeNir1GraphExclusion,
-    NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome,
+    revalidate_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs_after_create,
+    NativeNir1ExcludedRevision, NativeNir1FinalQualifications, NativeNir1GraphBinding,
+    NativeNir1GraphExclusion, NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome,
     NativeNir1HistoryObservation, NativeNir1HistoryRequest, NativeNir1PreparedContextItem,
     NativeNir1PreparedHistoryMessage, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
     NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs, Nir1GraphCandidateBinding,

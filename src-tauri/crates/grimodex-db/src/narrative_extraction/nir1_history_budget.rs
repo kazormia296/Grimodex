@@ -43,7 +43,8 @@ use crate::nir1_generation::{
     GenerationHistorySqlLedger, GenerationPurpose, ReadBudget,
 };
 use crate::nir1_generation_history::{
-    reauthorize_session_history_for_turn_in_tx, SessionHistoryOutcome, SessionHistoryRequest,
+    reauthorize_session_history_for_turn_in_tx, InFlightAttempt, SessionHistoryOutcome,
+    SessionHistoryRequest,
 };
 
 // ---- the positive envelope (what the values must keep accepting) ----
@@ -348,6 +349,12 @@ pub(crate) fn production_history_read_budget(
 /// * `owner_check` is D-final's own checkpoint (the participant, the stop
 ///   flag and the operation deadline). Its error is the turn's error and is
 ///   returned as it is, never as "no history": a cancel stops the turn.
+/// * `in_flight` is the turn's own attempt when the request has already been
+///   created as one (the re-confirmation at dispatch): it is not history, so
+///   the run does not count it against the budget (see
+///   `GenerationHistorySnapshotReader::exclude_in_flight_attempt`, which
+///   checks that it is the attempt of the current Human). `None` at
+///   preparation.
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub(crate) fn reauthorize_turn_history_in_tx(
     conn: &Connection,
@@ -357,6 +364,7 @@ pub(crate) fn reauthorize_turn_history_in_tx(
     now_ms: i64,
     started: Instant,
     prepare: &ParticipantSqlOperationBudget,
+    in_flight: Option<InFlightAttempt<'_>>,
     owner_check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<SessionHistoryOutcome> {
     reauthorize_turn_history_with_budget_in_tx(
@@ -367,6 +375,7 @@ pub(crate) fn reauthorize_turn_history_in_tx(
         now_ms,
         prepare,
         production_history_read_budget(HistoryBudgetWindow::new(started, prepare)),
+        in_flight,
         owner_check,
     )
 }
@@ -383,6 +392,7 @@ pub(crate) fn reauthorize_turn_history_with_budget_in_tx(
     now_ms: i64,
     prepare: &ParticipantSqlOperationBudget,
     mut budget: GenerationHistoryReadBudget,
+    in_flight: Option<InFlightAttempt<'_>>,
     owner_check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<SessionHistoryOutcome> {
     let current = stage.current_history_context_for_turn(range, purpose);
@@ -407,6 +417,7 @@ pub(crate) fn reauthorize_turn_history_with_budget_in_tx(
         &SessionHistoryRequest {
             current: &current,
             now_ms,
+            in_flight,
         },
         &mut cancelled,
     );

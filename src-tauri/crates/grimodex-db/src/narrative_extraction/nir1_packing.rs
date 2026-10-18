@@ -63,7 +63,7 @@ use crate::nir1_generation::{
 };
 #[cfg(feature = "native-current-human-capture")]
 use crate::nir1_generation_history::{
-    CandidateDisposition, SessionCandidateKind, SessionHistoryOutcome,
+    CandidateDisposition, InFlightAttempt, SessionCandidateKind, SessionHistoryOutcome,
 };
 #[cfg(feature = "native-current-human-capture")]
 use crate::state::ActiveWorkspaceSnapshot;
@@ -1895,6 +1895,7 @@ fn attach_history_in_snapshot(
         request.now_ms,
         Instant::now(),
         prepare,
+        None,
         &mut *checkpoint,
     )?;
     checkpoint()?;
@@ -2013,12 +2014,14 @@ fn attach_history_in_snapshot(
 /// goes on", because nothing was adopted yet; here the history was adopted and
 /// is about to be sent, so what cannot be confirmed must not be sent.)
 #[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 fn confirm_history_in_snapshot(
     conn: &Connection,
     expected: &NativeNir1PreparedInputs,
     history: &PreparedHistory,
     workspace: &ActiveWorkspaceSnapshot,
     now_ms: i64,
+    created_attempt_id: Option<&str>,
     prepare: &ParticipantSqlOperationBudget,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<()> {
@@ -2042,6 +2045,10 @@ fn confirm_history_in_snapshot(
         now_ms,
         Instant::now(),
         prepare,
+        created_attempt_id.map(|attempt_id| InFlightAttempt {
+            attempt_id,
+            human_version_id: &expected.user_message_version.id,
+        }),
         &mut *checkpoint,
     )?;
     checkpoint()?;
@@ -2753,6 +2760,11 @@ fn add_revision_qualifications(
 /// with `NIR1_NATIVE_PREPARED_HISTORY_STALE`. `now_ms` is the Native clock's
 /// value now (the 30-day validity is decided against it); it is not used when
 /// no history was adopted.
+///
+/// This is the form for a request that has not been created as an attempt yet
+/// (the return of the preparation): the session holds only the attempts of the
+/// turns before it. Once the attempt exists, use
+/// [`revalidate_native_nir1_prepared_inputs_after_create`].
 #[cfg(feature = "native-current-human-capture")]
 pub fn revalidate_native_nir1_prepared_inputs(
     workspace: &ActiveWorkspaceSnapshot,
@@ -2760,6 +2772,59 @@ pub fn revalidate_native_nir1_prepared_inputs(
     expected: &NativeNir1PreparedInputs,
     sql_budget: ParticipantSqlOperationBudget,
     now_ms: i64,
+) -> Result<()> {
+    revalidate_prepared_inputs(
+        workspace,
+        expected_session_id,
+        expected,
+        sql_budget,
+        now_ms,
+        None,
+    )
+}
+
+/// [`revalidate_native_nir1_prepared_inputs`] for the check right before the
+/// claim, after the request was created as the attempt `created_attempt_id`
+/// (DI1B-3 review, DR-DI1B-9c).
+///
+/// The created attempt is now a row of the session, but it is not history: the
+/// preparation, which ran before it existed, never counted it, so counting it
+/// here would charge the turn's own attempt to its own history budget and
+/// refuse (`NIR1_NATIVE_PREPARED_HISTORY_STALE`) a turn whose history was
+/// adopted within the budget, at the edge of every dimension (128 attempts,
+/// 128 nodes, its own reference rows and edges). The run therefore leaves that
+/// one attempt out of the enumeration, after checking that it is the attempt
+/// of the turn's own Human (same project, same chat session, ordinal 0 is the
+/// current Human message version as a current-turn use). Any other id is an
+/// error and stops the turn. No value of the budget is larger than the
+/// preparation's.
+#[cfg(feature = "native-current-human-capture")]
+pub fn revalidate_native_nir1_prepared_inputs_after_create(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_session_id: &str,
+    expected: &NativeNir1PreparedInputs,
+    sql_budget: ParticipantSqlOperationBudget,
+    now_ms: i64,
+    created_attempt_id: &str,
+) -> Result<()> {
+    revalidate_prepared_inputs(
+        workspace,
+        expected_session_id,
+        expected,
+        sql_budget,
+        now_ms,
+        Some(created_attempt_id),
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn revalidate_prepared_inputs(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_session_id: &str,
+    expected: &NativeNir1PreparedInputs,
+    sql_budget: ParticipantSqlOperationBudget,
+    now_ms: i64,
+    created_attempt_id: Option<&str>,
 ) -> Result<()> {
     ensure!(
         expected.capture.chat_session_id() == expected_session_id,
@@ -2885,6 +2950,7 @@ pub fn revalidate_native_nir1_prepared_inputs(
                     history,
                     workspace,
                     now_ms,
+                    created_attempt_id,
                     &checkpoint_budget,
                     &mut checkpoint,
                 )?;

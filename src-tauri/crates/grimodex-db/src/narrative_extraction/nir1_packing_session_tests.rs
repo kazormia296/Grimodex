@@ -160,6 +160,9 @@ struct TurnSpec {
     history: Option<NativeNir1HistoryRequest>,
     /// The selector's context budget in tokens.
     context_budget: usize,
+    /// Leave the created attempt as it is (no claim, no finish): the state a
+    /// turn is in between its create and its dispatch (DI1B-3 review).
+    settle: bool,
 }
 
 impl TurnSpec {
@@ -178,12 +181,19 @@ impl TurnSpec {
             create_budget: None,
             history: None,
             context_budget: 100_000,
+            settle: true,
         }
     }
 
     /// A turn whose D-final input carries Graph-derived inputs.
     fn with_graph(mut self) -> Self {
         self.graph = true;
+        self
+    }
+
+    /// Stop after the create: the attempt is in flight, not settled.
+    fn in_flight(mut self) -> Self {
+        self.settle = false;
         self
     }
 
@@ -839,6 +849,16 @@ impl SessionFixture {
             }
             Writer::TestSupport { .. } => create_attempt(self.db(), request)?,
         };
+        if !spec.settle {
+            return Ok(Turn {
+                attempt_id: stored.id,
+                capture,
+                human_message_id,
+                human_version_id,
+                human_digest,
+                output: None,
+            });
+        }
         let expected = Nir1ExpectedAttempt::from_stored(&stored, create_budget);
         let output = match &spec.reply {
             Some(reply) => {
@@ -1198,7 +1218,11 @@ fn run_in(
         conn,
         &cancellation,
         budget,
-        &SessionHistoryRequest { current, now_ms },
+        &SessionHistoryRequest {
+            current,
+            now_ms,
+            in_flight: None,
+        },
         &mut || false,
     )
 }
@@ -3039,6 +3063,7 @@ fn cancellation_stops_the_whole_turn_without_partial_results() -> Result<()> {
                     &SessionHistoryRequest {
                         current: &current,
                         now_ms: wall_clock_ms(),
+                        in_flight: None,
                     },
                     &mut || {
                         polls += 1;
@@ -3081,6 +3106,7 @@ fn cancellation_stops_the_whole_turn_without_partial_results() -> Result<()> {
                     &SessionHistoryRequest {
                         current: &current,
                         now_ms: wall_clock_ms(),
+                        in_flight: None,
                     },
                     &mut || false,
                 )
@@ -3610,6 +3636,7 @@ fn positive_the_self_transaction_form_decides_like_the_in_snapshot_form() -> Res
         &SessionHistoryRequest {
             current: &current,
             now_ms,
+            in_flight: None,
         },
         &mut || false,
     )?;

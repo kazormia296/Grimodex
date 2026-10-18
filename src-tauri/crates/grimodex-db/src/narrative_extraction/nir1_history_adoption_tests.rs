@@ -217,6 +217,41 @@ fn equal_creation_times_are_ordered_by_the_attempt_id_bytes() {
     assert_eq!(adoption, adopt(&outcome, "now", limits()));
 }
 
+/// The tie rule is this module's own, not the reverse of HC-1's order (DR-DI1B-5,
+/// review): the messages are rendered by attempt time ascending and, at the
+/// same time, attempt id bytes ascending; the window is taken from the other
+/// end, so when the budget holds one of two same-time turns it keeps the one
+/// with the larger id, the one rendered last. Pinned for both ids.
+#[test]
+fn equal_creation_times_keep_the_larger_attempt_id_when_the_window_holds_one() {
+    for specs in [
+        [
+            spec("a", 5_000, "Ha", Some("Ma")),
+            spec("b", 5_000, "Hb", Some("Mb")),
+        ],
+        [
+            spec("b", 5_000, "Hb", Some("Mb")),
+            spec("a", 5_000, "Ha", Some("Ma")),
+        ],
+    ] {
+        let outcome = outcome_of(&specs);
+        let mut one = limits();
+        one.max_turns = 1;
+        let adoption = adopt(&outcome, "now", one);
+        let ids: Vec<&str> = adoption
+            .turns
+            .iter()
+            .map(|turn| turn.attempt_id.as_str())
+            .collect();
+        assert_eq!(ids, ["b"]);
+        assert_eq!(
+            rendered(&adoption),
+            vec![user("Hb"), assistant("Mb")],
+            "the input order does not decide"
+        );
+    }
+}
+
 #[test]
 fn failed_turn_human_is_adopted_in_place() {
     // (a) The Human of a turn with no output is a user message of its own, in

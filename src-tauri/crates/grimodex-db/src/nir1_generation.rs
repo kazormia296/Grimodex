@@ -3515,6 +3515,12 @@ pub(crate) struct GenerationHistorySnapshotReader<'connection> {
     enumerations: history_reads::EnumerationCache,
     captures: history_reads::CaptureCache,
     ordinal_zero: history_reads::OrdinalZeroCache,
+    /// The turn's own attempt, created after the request was prepared, left
+    /// out of the session enumeration (DI1B-3 review): it is not history, and
+    /// counting it would charge the turn's own attempt to its own history
+    /// budget. Set once, before the first enumeration, by
+    /// `exclude_in_flight_attempt`, which checks that it is that attempt.
+    in_flight_attempt: Option<String>,
 }
 
 impl<'connection> GenerationHistorySnapshotReader<'connection> {
@@ -3534,6 +3540,7 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
             enumerations: BTreeMap::new(),
             captures: BTreeMap::new(),
             ordinal_zero: BTreeMap::new(),
+            in_flight_attempt: None,
         }
     }
 
