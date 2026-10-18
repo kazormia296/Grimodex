@@ -1,7 +1,7 @@
 /**
  * 起動の順序の試験の runner（K3/3 R12。診断用で製品を変えない）。
  *
- *   node electron/scripts/webrtc-block-probe-order.mjs --mode <permission-first|nc1-first> --env <none|ip|localhost>
+ *   node electron/scripts/webrtc-block-probe-order.mjs --mode <permission-first|nc1-first|protocol-first|nc1-then-protocol> --env <none|ip|localhost>
  *        [--pre-delay <ms>] [--nc1-delay <ms>] [--repeat <n>] [--tunnel] [--rules 0|1] --out <file>
  *
  * 環境: none = OS／環境の proxy なし。ip = http_proxy／https_proxy が http://127.0.0.1:<port>。
@@ -112,7 +112,7 @@ async function once(i) {
   try { result = JSON.parse(fs.readFileSync(env.ORD_RESULT, "utf8")); } catch { /* 結果なし */ }
   const nl = parseNetLog(netlog);
   const t = Object.fromEntries((result?.timeline ?? []).map((e) => [e.name, e.at]));
-  const touchAt = t["permission-policy applied (defaultSession touched)"];
+  const touchAt = t["permission-policy applied (defaultSession touched)"] ?? t["protocol.handle applied (defaultSession touched implicitly)"];
   const setProxyDone = t["setProxy done"];
   const row = {
     run: i, mode, env: envKind, preDelay: Number(preDelay), nc1Delay: Number(nc1Delay), tunnel, rules,

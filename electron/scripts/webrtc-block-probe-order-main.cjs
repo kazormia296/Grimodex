@@ -8,11 +8,14 @@
  *   permission-first: default session を先に触り（setPermissionRequestHandler など）、ORD_PRE_DELAY ms 後に NC-1 を当てる
  *                     （ORD_PRE_DELAY=0 は K3/3 の以前の順序「applySessionPermissionPolicy の直後」）
  *   nc1-first:        NC-1 を default session の最初の接触にする（setProxy が最初の接触）。その後に permission 相当の接触
+ *   protocol-first:   registerAppProtocolHandler に相当する protocol.handle を最初に呼び（Electron は内部で
+ *                     session.defaultSession.protocol に委譲する＝default session の暗黙の接触）、ORD_PRE_DELAY ms 後に NC-1（K3/3 R13）
+ *   nc1-then-protocol: NC-1 の後に protocol.handle と permission 相当の接触（K3/3 R13。製品の起動順序で NC-1 を最初にした形）
  * ORD_NC1_DELAY: NC-1 の開始を遅らせる ms（setProxy の余裕の測定用）
  * ORD_USERDATA: userData。ORD_RULES=0 で host-resolver-rules を当てない。ORD_WAIT: 窓の作成後の待ち ms。
  * 時刻は Date.now()（net log の timeTickOffset と合わせて比べる）。
  */
-const { app, session, BrowserWindow } = require("electron");
+const { app, session, BrowserWindow, protocol } = require("electron");
 const net = require("node:net");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -35,6 +38,12 @@ function touchPermissionPolicy() {
   ses.setPermissionCheckHandler(() => false);
   ses.on("will-download", () => {});
   mark("permission-policy applied (defaultSession touched)");
+}
+
+function touchProtocolHandle() {
+  // registerAppProtocolHandler（protocol.ts の protocol.handle）に相当。製品の session.defaultSession の getter を通らない暗黙の接触
+  protocol.handle("app", () => new Response("ok"));
+  mark("protocol.handle applied (defaultSession touched implicitly)");
 }
 
 async function applyNc1() {
@@ -64,7 +73,16 @@ async function applyNc1() {
 app.whenReady().then(async () => {
   mark("ready");
   let nc1;
-  if (MODE === "permission-first") {
+  if (MODE === "protocol-first") {
+    touchProtocolHandle();
+    if (PRE_DELAY > 0) await new Promise((r) => setTimeout(r, PRE_DELAY));
+    nc1 = await applyNc1();
+    touchPermissionPolicy();
+  } else if (MODE === "nc1-then-protocol") {
+    nc1 = await applyNc1();
+    touchProtocolHandle();
+    touchPermissionPolicy();
+  } else if (MODE === "permission-first") {
     touchPermissionPolicy();
     if (PRE_DELAY > 0) await new Promise((r) => setTimeout(r, PRE_DELAY));
     nc1 = await applyNc1();
