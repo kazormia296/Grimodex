@@ -299,6 +299,25 @@ vi.doMock("./narrativeMaintenanceCiSeam.js", () =>
 
 const MAIN_DIR = path.dirname(fileURLToPath(import.meta.url));
 
+/**
+ * 書き換えの対象の index.ts。git の設定（autocrlf）に依らず同じ書き換えが当たるよう、改行を LF にそろえる。
+ */
+function readIndexSource(): string {
+  return readFileSync(path.join(MAIN_DIR, "index.ts"), "utf8").replace(
+    /\r\n/g,
+    "\n",
+  );
+}
+
+/**
+ * 絶対 path を import の指定の文字列リテラルにする。Windows の path（`C:\Users\...`）を
+ * そのまま `"..."` に入れると `\u` などが escape として読まれて壊れるので、区切りを `/` に
+ * そろえ（vite の module id と同じ形で、doMock の解決先と一致する）、JSON の文字列として書く。
+ */
+function moduleSpecifierLiteral(absolutePath: string): string {
+  return JSON.stringify(absolutePath.split(path.sep).join("/"));
+}
+
 /** 起動順序の不変条件。違反すると throw する。 */
 function assertStartupOrder(entries: readonly string[]): void {
   const at = (label: string, from = 0): number => {
@@ -400,13 +419,16 @@ async function runIndex(
     if (options.sourceTransform) {
       // 書き換えた index.ts の写し。相対 import は元の絶対 path に直して同じ mock に当てる。
       tmpDir = mkdtempSync(path.join(os.tmpdir(), "nc1-order-"));
-      const original = readFileSync(path.join(MAIN_DIR, "index.ts"), "utf8");
+      const original = readIndexSource();
       const transformed = options.sourceTransform(original);
       expect(transformed, "書き換えで source が変わる").not.toBe(original);
       const absolute = transformed.replace(
         /(from |import\()"\.\/([^"]+)"/g,
         (_m, head: string, rel: string) =>
-          `${head}"${path.join(MAIN_DIR, rel)}"`,
+          `${head}${moduleSpecifierLiteral(path.join(MAIN_DIR, rel))}`,
+      );
+      expect(absolute, "相対 import が残らない").not.toMatch(
+        /(from |import\()"\.\.?\//,
       );
       const copy = path.join(tmpDir, "index.mutated.ts");
       writeFileSync(copy, absolute);
@@ -673,9 +695,10 @@ describe("対照: 順序を動かすとこの試験が赤になる", () => {
 
   for (const mutation of mutations) {
     it(`index.ts の書き換え: ${mutation.name}`, async () => {
-      expect(readFileSync(path.join(MAIN_DIR, "index.ts"), "utf8")).toContain(
-        START,
-      );
+      const source = readIndexSource();
+      expect(source).toContain(START);
+      // 書き換えが実際に当たる（置換の文字列が改行の違いなどで外れて、無変更のまま走らない）。
+      expect(mutation.transform(source)).not.toBe(source);
       const run = await runIndex({}, { sourceTransform: mutation.transform });
       // 書き換えた写しが実際に最後まで起動している（import の失敗で偽の赤にならない）。
       expect(run.entries).toContain("createMainWindow");
