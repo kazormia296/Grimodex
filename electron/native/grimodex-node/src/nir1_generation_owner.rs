@@ -49,11 +49,11 @@ use grimodex_core::narrative_nir1_receipt::TerminalObservation;
 use grimodex_core::nir1_local_send_policy::Nir1LocalSendPurpose;
 use grimodex_db::nir1_generation::{
     self as storage, AcceptedChatInputCapture, AttemptBinding, AttemptBindingVersion,
-    AttemptCallerBinding, NewAttempt, NewCaptureAttempt, NewMessageBody, Nir1AdmissionProbe,
-    Nir1AdmissionSqlBudget, Nir1ClaimOutcome, Nir1CommitState, Nir1ExpectedAttempt,
-    Nir1ExpectedClaim, Nir1ExpectedScope, Nir1LocalAuditObserved, Nir1LocalAuditStart,
-    Nir1LocalAuditStarted, Nir1PinnedSqlBudget, Nir1StoreFailure, Nir1ZeroSendCompletion,
-    StoredTerminal,
+    AttemptCallerBinding, ChatInputCaptureOwner, NewAttempt, NewCaptureAttempt, NewMessageBody,
+    Nir1AdmissionProbe, Nir1AdmissionSqlBudget, Nir1ClaimOutcome, Nir1CommitState,
+    Nir1ExpectedAttempt, Nir1ExpectedClaim, Nir1ExpectedScope, Nir1LocalAuditObserved,
+    Nir1LocalAuditStart, Nir1LocalAuditStarted, Nir1PinnedSqlBudget, Nir1StoreFailure,
+    Nir1ZeroSendCompletion, StoredTerminal,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
@@ -186,11 +186,67 @@ pub(crate) struct Nir1SessionKey {
     chat_session_id: String,
 }
 
+/// The accepted submission an in-flight slot serves (DI-1c R-7). A capture
+/// cancellation reaches the slot's owner only when it names this exact
+/// submission under the same capture incarnation; the values are identifiers
+/// only (no body, no key).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Nir1SubmissionIdentity {
+    capture_owner: ChatInputCaptureOwner,
+    project_id: String,
+    chat_session_id: String,
+    submission_id: String,
+    message_id: String,
+    scene_id: String,
+}
+
+impl Nir1SubmissionIdentity {
+    fn of(capture: &AcceptedChatInputCapture, capture_owner: &ChatInputCaptureOwner) -> Self {
+        Self {
+            capture_owner: capture_owner.clone(),
+            project_id: capture.project_id().to_owned(),
+            chat_session_id: capture.chat_session_id().to_owned(),
+            submission_id: capture.submission_id().to_owned(),
+            message_id: capture.message_id().to_owned(),
+            scene_id: capture.scene_id().to_owned(),
+        }
+    }
+
+    fn is_named_by(&self, lookup: &Nir1CancelLookup<'_>) -> bool {
+        self.capture_owner
+            .same_capture_incarnation(lookup.capture_owner)
+            && lookup
+                .project_id
+                .is_none_or(|project_id| project_id == self.project_id)
+            && lookup.chat_session_id == self.chat_session_id
+            && lookup.submission_id == self.submission_id
+            && lookup.message_id == self.message_id
+            && lookup.scene_id == self.scene_id
+    }
+}
+
+/// What a capture-cancellation entry knows about the submission it cancels.
+/// The owner is looked up by the capture owner and every identifier together;
+/// `project_id` is absent for the entry that is given only a submission key.
+pub(crate) struct Nir1CancelLookup<'a> {
+    pub(crate) capture_owner: &'a ChatInputCaptureOwner,
+    pub(crate) project_id: Option<&'a str>,
+    pub(crate) chat_session_id: &'a str,
+    pub(crate) submission_id: &'a str,
+    pub(crate) message_id: &'a str,
+    pub(crate) scene_id: &'a str,
+}
+
 enum Nir1SessionSlot {
     InFlight {
         submission_id: String,
         attempt_id: String,
         token: u64,
+        /// The owner's cancel handle and the submission it serves. They live
+        /// exactly as long as the in-flight slot: a slot that became
+        /// `Unresolved` has no owner left that could start a transport.
+        cancel: Nir1OwnerCancel,
+        identity: Box<Nir1SubmissionIdentity>,
     },
     Unresolved {
         attempt_id: String,
@@ -219,10 +275,12 @@ impl Nir1GenerationRegistry {
     fn reserve(
         &self,
         key: Nir1SessionKey,
-        submission_id: &str,
+        identity: Nir1SubmissionIdentity,
+        cancel: Nir1OwnerCancel,
         attempt_id: &str,
         open_entry_epoch: Option<u64>,
     ) -> Result<Nir1SessionSlotGuard, Nir1GenerationRefusal> {
+        let submission_id = identity.submission_id.as_str();
         let mut state = self
             .inner
             .lock()
@@ -262,6 +320,8 @@ impl Nir1GenerationRegistry {
                 submission_id: submission_id.to_owned(),
                 attempt_id: attempt_id.to_owned(),
                 token,
+                cancel,
+                identity: Box::new(identity),
             },
         ));
         Ok(Nir1SessionSlotGuard {
@@ -269,6 +329,42 @@ impl Nir1GenerationRegistry {
             token,
             armed: true,
         })
+    }
+
+    /// The cancel handle of the in-flight owner that serves exactly the named
+    /// submission under the same capture incarnation, in the same Ready
+    /// workspace. Another caller's, another session's or another submission's
+    /// slot is never returned. The registry lock is held only to clone the
+    /// handle; the caller cancels after this returns.
+    pub(crate) fn cancel_handle_for(
+        &self,
+        binding: &LiveBinding,
+        lookup: &Nir1CancelLookup<'_>,
+    ) -> Option<Nir1OwnerCancel> {
+        let state = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        state.slots.iter().find_map(|(key, slot)| match slot {
+            Nir1SessionSlot::InFlight {
+                cancel, identity, ..
+            } if key.binding == *binding && identity.is_named_by(lookup) => Some(cancel.clone()),
+            _ => None,
+        })
+    }
+
+    /// Ask the matching owner to stop before it starts a transport. Returns
+    /// whether an owner was reached. `cancel` is idempotent, so a retry of a
+    /// capture cancellation that failed after this call calls it again.
+    pub(crate) fn cancel_owner_for(
+        &self,
+        binding: &LiveBinding,
+        lookup: &Nir1CancelLookup<'_>,
+    ) -> bool {
+        match self.cancel_handle_for(binding, lookup) {
+            Some(cancel) => {
+                cancel.cancel();
+                true
+            }
+            None => false,
+        }
     }
 
     #[cfg(test)]
@@ -719,9 +815,13 @@ impl Nir1GenerationOwner {
             chat_session_id: capture.chat_session_id().to_owned(),
         };
         let open_entry_epoch = gate.open_entry_epoch();
+        let control = Arc::new(Nir1OwnerControl::new());
         let slot = state.nir1_generation_registry.reserve(
             key,
-            capture.submission_id(),
+            Nir1SubmissionIdentity::of(&capture, submission.capture_owner()),
+            Nir1OwnerCancel {
+                control: Arc::clone(&control),
+            },
             &attempt_id,
             open_entry_epoch,
         )?;
@@ -736,7 +836,7 @@ impl Nir1GenerationOwner {
                 route_revision: route,
                 capture,
                 attempt_id,
-                control: Arc::new(Nir1OwnerControl::new()),
+                control,
                 workspace,
                 _operation: operation,
             },

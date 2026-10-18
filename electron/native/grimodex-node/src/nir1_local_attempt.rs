@@ -267,8 +267,10 @@ impl Nir1LocalAttempt {
     }
 }
 
-/// `capture` and `run` in one call, for a caller that has nothing to check in
-/// between.
+/// `capture` and `run` in one call. Test only: a product caller (DD-1) must
+/// check the AI use policy between `capture` and `run`, and this function
+/// leaves no place for that check, so it does not exist outside tests.
+#[cfg(test)]
 pub(crate) fn start_local_attempt(
     state: Arc<AppState>,
     caller: CallerIdentity,

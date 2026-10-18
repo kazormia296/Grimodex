@@ -61,6 +61,16 @@ impl Recorder {
         self.sends.load(Ordering::SeqCst)
     }
 
+    /// Count what a finished run would send: a `Start` is the only send
+    /// authority, so any other result is a send of zero. The transport is
+    /// dropped unsent (its drop writes the conservative terminal), so this
+    /// observes a run without finishing it.
+    fn observe(&self, result: &RunResult) {
+        if matches!(result, Ok(Nir1LocalAttemptOutcome::Start(_))) {
+            self.sends.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
     /// Record the send of a `Start` and settle it with an answer; every other
     /// outcome sends nothing.
     fn send(&self, outcome: Nir1LocalAttemptOutcome, message_id: &str) {
@@ -158,6 +168,7 @@ fn final_request(
 #[derive(Clone)]
 struct Target {
     state: Arc<AppState>,
+    caller: CallerIdentity,
     revision_id: String,
 }
 
@@ -165,6 +176,7 @@ impl Target {
     fn of(fixture: &Fixture) -> Self {
         Self {
             state: Arc::clone(&fixture.state),
+            caller: fixture.caller.clone(),
             revision_id: fixture.revision_id.clone(),
         }
     }
@@ -577,7 +589,10 @@ fn run_with_change(
     let fixture = ready_fixture();
     let (attempt, seen) = attempt_with_change(&fixture, point, change);
     let result = attempt.run();
-    (fixture, Recorder::default(), seen, result)
+    // The recorder is the only sink: it counts a `Start`, nothing else.
+    let recorder = Recorder::default();
+    recorder.observe(&result);
+    (fixture, recorder, seen, result)
 }
 
 fn abandoned_reason(result: &RunResult) -> &str {
@@ -709,6 +724,187 @@ fn a9_a_scope_save_just_before_the_claim_stops_the_claim() {
     assert_eq!(recorder.sends(), 0);
 }
 
+// ---------------------------------------------------------------------------
+// A-18 and the claim-side residual: observed, not required (R-8).
+// ---------------------------------------------------------------------------
+
+/// What a run did, for the observation tests: whether a transport was
+/// started, and the terminal of an attempt that was not.
+fn observed_outcome(fixture: &Fixture, result: &RunResult) -> String {
+    match result {
+        Ok(Nir1LocalAttemptOutcome::Start(_)) => "started (one send)".into(),
+        Ok(Nir1LocalAttemptOutcome::NotStarted(settlement)) => {
+            format!("stopped by the claim: {}", settlement_kind(settlement))
+        }
+        Ok(Nir1LocalAttemptOutcome::Abandoned { reason, settlement }) => {
+            format!(
+                "abandoned by the re-observation ({reason}): {}",
+                settlement_kind(settlement)
+            )
+        }
+        Err(refusal) => format!(
+            "refused: {} (attempt rows: {})",
+            refusal.reason(),
+            attempt_ids(fixture).len()
+        ),
+    }
+}
+
+fn settlement_kind(settlement: &Nir1Settlement) -> &'static str {
+    match settlement {
+        Nir1Settlement::ZeroSend(_) => "one zero-send terminal",
+        Nir1Settlement::AlreadySettled => "already settled",
+        Nir1Settlement::ClaimLost => "claim lost",
+        Nir1Settlement::Unresolved { .. } => "unresolved",
+    }
+}
+
+/// The window between the re-observation and the claim COMMIT (the claim's
+/// own transaction reads the capture, the Scope token and the restore epoch).
+/// The Scope save, the route rewrite and the revocation are stopped there by
+/// design and asserted. The other four (source, revision, Decision,
+/// freshness) are not read by the claim: they are observed and recorded in
+/// the decisions (DR-DI1C-9), not required. In every case the run sends at
+/// most once and a stopped attempt has one transport-less terminal.
+#[test]
+fn a18_before_the_claim_the_claim_stops_what_it_reads_and_the_rest_is_observed() {
+    let mut observations = Vec::new();
+    for change in CHANGES {
+        let (fixture, recorder, seen, result) =
+            run_with_change(Nir1LocalAttemptProbe::BeforeClaim, change);
+        assert!(seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim));
+        let started = matches!(result, Ok(Nir1LocalAttemptOutcome::Start(_)));
+        assert_eq!(recorder.sends(), usize::from(started), "{change:?}");
+        let by_design = matches!(change, Change::Scope | Change::Route | Change::Revocation);
+        if by_design {
+            assert!(!started, "{change:?}: the claim stops what it reads");
+        }
+        if !started {
+            assert_zero_send_settlement(&result);
+            let ids = attempt_ids(&fixture);
+            assert_eq!(ids.len(), 1, "{change:?}");
+            assert_eq!(stored(&fixture, &ids[0]).claimed_at_ms, None, "{change:?}");
+        }
+        observations.push(format!(
+            "BeforeClaim {change:?}: {}",
+            observed_outcome(&fixture, &result)
+        ));
+    }
+    for line in observations {
+        eprintln!("A-18 observation: {line}");
+    }
+}
+
+/// Changes after the claim COMMIT, before the start decision (K4/3 "after
+/// COMMIT"): the start decision reads no database, so none of these is read
+/// there. Recorded as residual (A-18); nothing here is a pass condition other
+/// than "at most one send" and a consistent ledger.
+#[derive(Clone, Copy, Debug)]
+enum AfterCommitChange {
+    /// The target Scene's Scope setting is saved (the token moves).
+    ScopeToken,
+    /// The Scene body is saved.
+    BodySave,
+    /// A new user message becomes the session's current capture.
+    NewUserRow,
+    /// The target Scene row is deleted.
+    SceneDelete,
+    /// The project row is deleted.
+    ProjectDelete,
+}
+
+fn inject_after_commit(target: &Target, change: AfterCommitChange) -> String {
+    let result: Result<usize> =
+        match change {
+            AfterCommitChange::ScopeToken => {
+                save_scene_scope(target, SCENE_ID, "a18-scope-save");
+                Ok(1)
+            }
+            AfterCommitChange::BodySave => {
+                inject(target, Change::Source);
+                Ok(1)
+            }
+            AfterCommitChange::NewUserRow => {
+                let submission = generation_storage::NewChatInputSubmission::new(
+                    "a18-new-user-submission".into(),
+                    "a18-new-user-message".into(),
+                    SESSION_ID.into(),
+                    SCENE_ID.into(),
+                    "A newer user turn".into(),
+                    "2026-10-18T00:00:00.000Z".into(),
+                )
+                .expect("submission");
+                crate::nir1_prepared_request::accept_current_chat_submission(
+                    Arc::clone(&target.state),
+                    target.caller.clone(),
+                    &submission,
+                )
+                .map(|_| 1)
+            }
+            AfterCommitChange::SceneDelete => target.workspace().db().db().with_conn(|conn| {
+                Ok(conn.execute(
+                    "DELETE FROM tree_nodes WHERE project_id=?1 AND id=?2",
+                    (PROJECT_ID, SCENE_ID),
+                )?)
+            }),
+            AfterCommitChange::ProjectDelete => target.workspace().db().db().with_conn(|conn| {
+                Ok(conn.execute("DELETE FROM projects WHERE id=?1", [PROJECT_ID])?)
+            }),
+        };
+    match result {
+        Ok(rows) => format!("injected ({rows} row)"),
+        Err(error) => format!("not injected ({error:#})"),
+    }
+}
+
+#[test]
+fn a18_after_the_claim_commit_the_residual_changes_are_observed() {
+    use crate::nir1_generation_owner::Nir1OwnerProbePoint;
+    let mut observations = Vec::new();
+    for change in [
+        AfterCommitChange::ScopeToken,
+        AfterCommitChange::BodySave,
+        AfterCommitChange::NewUserRow,
+        AfterCommitChange::SceneDelete,
+        AfterCommitChange::ProjectDelete,
+    ] {
+        let fixture = ready_fixture();
+        let target = Target::of(&fixture);
+        let attempt = capture(&fixture);
+        let note = Arc::new(std::sync::Mutex::new(String::new()));
+        let probe_note = Arc::clone(&note);
+        attempt
+            .owner()
+            .hooks()
+            .test_hooks()
+            .on(Nir1OwnerProbePoint::AfterCommit, move || {
+                *probe_note.lock().expect("note") = inject_after_commit(&target, change);
+            });
+        let result = attempt.run();
+        let recorder = Recorder::default();
+        recorder.observe(&result);
+        assert!(recorder.sends() <= 1, "{change:?}: at most one send");
+        let injected = note.lock().expect("note").clone();
+        let outcome = observed_outcome(&fixture, &result);
+        observations.push(format!("AfterCommit {change:?}: {injected} -> {outcome}"));
+        drop(result);
+        // Observed too: a deleted project can leave the slot unresolved until
+        // the next Ready entry's sweep (the terminal write needs the rows).
+        let tracked = fixture.state.nir1_generation_registry.tracked_sessions();
+        let unresolved = fixture
+            .state
+            .nir1_generation_registry
+            .unresolved_attempts()
+            .len();
+        observations.push(format!(
+            "AfterCommit {change:?}: slots left {tracked} (unresolved {unresolved})"
+        ));
+    }
+    for line in observations {
+        eprintln!("A-18 observation: {line}");
+    }
+}
+
 /// A-11: a refusal before the create leaves no attempt row, and one after it
 /// leaves a transport-less terminal and nothing claimed.
 #[test]
@@ -830,22 +1026,55 @@ fn a19_no_lease_or_lock_spans_the_stages() {
     assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
 }
 
-/// The product path (the owner and the coordinator) calls only the capture
-/// forms of the create and the claim, which re-read the capture, the Scope
-/// binding and the restore epoch. The forms that do not (`claim_attempt_bounded`
-/// for the storage tests and a second claimer) stay unreachable from here.
+/// The product code of every top-level `nir1_*.rs` file (everything before
+/// its trailing `#[cfg(test)] mod`) with its comments removed.
+fn product_code(text: &str) -> String {
+    let lines = text.lines().collect::<Vec<_>>();
+    let mut end = lines.len();
+    for (index, line) in lines.iter().enumerate() {
+        if *line != "#[cfg(test)]" {
+            continue;
+        }
+        let item = lines[index + 1..]
+            .iter()
+            .find(|next| !next.trim_start().starts_with("#["))
+            .copied()
+            .unwrap_or("");
+        if item.starts_with("mod ")
+            || item.starts_with("pub(crate) mod ")
+            || item.starts_with("pub mod ")
+        {
+            end = index;
+            break;
+        }
+    }
+    lines[..end]
+        .iter()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .copied()
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The product path calls only the capture forms of the create and the
+/// claim, which re-read the capture, the Scope binding and the restore epoch.
+/// The forms that do not (`claim_attempt_bounded` for the storage tests and a
+/// second claimer, the test-support creates) must not be called from the
+/// product code of any `nir1_*.rs` file of this crate, so that a later slice
+/// (DD-1, DT-5) cannot drop the K4/3 re-reads by calling them.
 #[test]
 fn the_product_path_uses_only_the_capture_forms() {
-    for (name, source) in [
-        (
-            "nir1_generation_owner.rs",
-            include_str!("nir1_generation_owner.rs"),
-        ),
-        (
-            "nir1_local_attempt.rs",
-            include_str!("nir1_local_attempt.rs"),
-        ),
-    ] {
+    let directory = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut scanned = Vec::new();
+    for entry in std::fs::read_dir(&directory).expect("source directory") {
+        let path = entry.expect("entry").path();
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !(name.starts_with("nir1_") && name.ends_with(".rs") && !name.ends_with("_tests.rs")) {
+            continue;
+        }
+        let code = product_code(&std::fs::read_to_string(&path).expect("source"));
         for forbidden in [
             "claim_attempt_bounded(",
             "create_attempt_bounded(",
@@ -853,12 +1082,18 @@ fn the_product_path_uses_only_the_capture_forms() {
             "create_attempt_with_id_bounded(",
         ] {
             assert!(
-                !source
-                    .lines()
-                    .filter(|line| !line.trim_start().starts_with("//"))
-                    .any(|line| line.contains(forbidden)),
-                "{name} must not call {forbidden}"
+                !code.contains(forbidden),
+                "{name} must not call {forbidden} outside its tests"
             );
         }
+        scanned.push(name.to_owned());
     }
+    // The scan really covers the owner and the coordinator.
+    for required in ["nir1_generation_owner.rs", "nir1_local_attempt.rs"] {
+        assert!(scanned.iter().any(|name| name == required), "{required}");
+    }
+    assert!(
+        scanned.len() >= 6,
+        "the scan covers the nir1 files: {scanned:?}"
+    );
 }

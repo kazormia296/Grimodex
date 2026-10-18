@@ -33,6 +33,7 @@ use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
 use grimodex_db::ParticipantSqlOperationBudget;
 use serde_json::json;
 
+use crate::nir1_generation_owner::Nir1CancelLookup;
 use crate::profile_egress::CallerIdentity;
 use crate::state::AppState;
 
@@ -284,6 +285,26 @@ pub(crate) struct NativeAcceptedChatSubmission {
 impl NativeAcceptedChatSubmission {
     pub(crate) fn message_version_id(&self) -> &str {
         self.capture.message_version_id()
+    }
+
+    /// The capture owner (caller, Native workspace incarnation) that accepted
+    /// this submission. The generation registry stores it with the owner's
+    /// cancel handle so a cancellation reaches only this submission's owner.
+    pub(crate) fn capture_owner(&self) -> &ChatInputCaptureOwner {
+        &self.owner
+    }
+
+    /// Everything the registry needs to find this submission's owner: the
+    /// capture owner and the accepted identifiers, with the project included.
+    pub(crate) fn cancel_lookup(&self) -> Nir1CancelLookup<'_> {
+        Nir1CancelLookup {
+            capture_owner: &self.owner,
+            project_id: Some(self.capture.project_id()),
+            chat_session_id: self.capture.chat_session_id(),
+            submission_id: self.capture.submission_id(),
+            message_id: self.capture.message_id(),
+            scene_id: self.capture.scene_id(),
+        }
     }
 }
 
@@ -1014,6 +1035,22 @@ pub(crate) fn cancel_current_chat_input(
                 Ok(state.profile_egress.revocation_generation())
             })?;
     let owner = capture_owner(&caller, &binding, revocation_generation)?;
+    // A cancellation the user asked for stops the capture's generation owner
+    // first, so an owner past the claim cannot start a transport after the
+    // capture is cancelled (K4/3, the window after COMMIT). Only the owner of
+    // this exact submission is reached; a failure of the writer below is
+    // returned, never reported as a cancellation, and a retry cancels again.
+    state.nir1_generation_registry.cancel_owner_for(
+        &binding,
+        &Nir1CancelLookup {
+            capture_owner: &owner,
+            project_id: None,
+            chat_session_id: &request.chat_session_id,
+            submission_id: &request.submission_id,
+            message_id: &request.message_id,
+            scene_id: &request.scene_id,
+        },
+    );
     let outcome = generation_storage::cancel_current_human_chat_input_by_submission(
         &workspace,
         &owner,
@@ -1145,6 +1182,11 @@ pub(crate) fn cancel_current_chat_submission(
     accepted
         .stop
         .store(true, std::sync::atomic::Ordering::Release);
+    // The owner of this accepted submission stops before the capture changes
+    // (DI-1c R-7). `cancel` is idempotent, so a failed writer is retried.
+    state
+        .nir1_generation_registry
+        .cancel_owner_for(&binding, &accepted.cancel_lookup());
     generation_storage::cancel_current_human_chat_input(
         &workspace,
         &accepted.capture,
