@@ -153,6 +153,8 @@ struct TurnSpec {
     mutate: Option<RowMutation>,
     /// Read D-final with the Native selection and a Graph (DI-1a).
     graph: bool,
+    /// The create's read budget; `SessionFixture::read_budget()` when `None`.
+    create_budget: Option<ReadBudget>,
 }
 
 impl TurnSpec {
@@ -168,12 +170,20 @@ impl TurnSpec {
             writer: Writer::Product,
             mutate: None,
             graph: false,
+            create_budget: None,
         }
     }
 
     /// A turn whose D-final input carries Graph-derived inputs.
     fn with_graph(mut self) -> Self {
         self.graph = true;
+        self
+    }
+
+    /// Create the attempt with this read budget (the Native one for a test
+    /// that sizes a history window against the create).
+    fn create_budget(mut self, budget: ReadBudget) -> Self {
+        self.create_budget = Some(budget);
         self
     }
 
@@ -676,6 +686,7 @@ impl SessionFixture {
     fn run_turn(&mut self, spec: TurnSpec) -> Result<Turn> {
         self.turns += 1;
         let key = self.turns;
+        let create_budget = spec.create_budget.unwrap_or_else(Self::read_budget);
         let (capture, human_message_id) = match spec.capture {
             Some(accepted) => accepted,
             None => self.accept(&format!("{key}"), &spec.text)?,
@@ -781,7 +792,7 @@ impl SessionFixture {
             qualifications,
             created_at_ms,
             expires_at_ms: wall_clock_ms() + 600_000,
-            budget: Self::read_budget(),
+            budget: create_budget,
         };
         let stored = match spec.writer {
             Writer::Product => {
@@ -810,7 +821,7 @@ impl SessionFixture {
             }
             Writer::TestSupport { .. } => create_attempt(self.db(), request)?,
         };
-        let expected = Nir1ExpectedAttempt::from_stored(&stored, Self::read_budget());
+        let expected = Nir1ExpectedAttempt::from_stored(&stored, create_budget);
         let output = match &spec.reply {
             Some(reply) => {
                 match claim_attempt_bounded(
@@ -3646,3 +3657,7 @@ fn graph_derived_attempts_stay_pending_and_leave_the_next_turn() -> Result<()> {
     assert_turn_adopted(&outcome, &plain_turn);
     Ok(())
 }
+
+// DI1B-1: the production history budget and the entry for the D-final snapshot.
+#[path = "nir1_history_budget_tests.rs"]
+mod history_budget_tests;

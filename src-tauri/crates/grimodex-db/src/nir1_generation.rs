@@ -98,6 +98,19 @@ impl GenerationHistorySnapshotCancellation {
         }
     }
 
+    /// The owner view of a read that runs inside a bounded participant
+    /// operation's own transaction: its stop flag and its deadline.
+    #[cfg_attr(
+        not(feature = "native-current-human-capture"),
+        expect(
+            dead_code,
+            reason = "only the D-final history entry (feature native-current-human-capture) uses it"
+        )
+    )]
+    pub(crate) fn from_operation_budget(budget: &ParticipantSqlOperationBudget) -> Self {
+        Self::from_control(&budget.control())
+    }
+
     pub(crate) fn is_cancelled(&self) -> bool {
         self.stop.load(Ordering::Acquire)
             || self
@@ -1620,14 +1633,14 @@ pub(crate) struct GenerationHistorySqlLedger {
     capacity: Arc<CapacityBudget>,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the turn owner that measures and supplies history SQL limits is not wired yet"
-    )
-)]
 impl GenerationHistorySqlLedger {
+    #[cfg_attr(
+        all(not(test), not(feature = "native-current-human-capture")),
+        expect(
+            dead_code,
+            reason = "only the production history budget (feature native-current-human-capture) makes one"
+        )
+    )]
     pub(crate) fn new(limits: GenerationHistorySnapshotSqlBudget) -> Self {
         Self {
             limits,
@@ -1635,6 +1648,10 @@ impl GenerationHistorySqlLedger {
         }
     }
 
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "the measurement harness and the tests read it")
+    )]
     pub(crate) fn sql_steps_used(&self) -> u64 {
         self.capacity.sql_steps_used()
     }
@@ -2870,6 +2887,45 @@ fn read_ref_locations_in_tx(
     remaining.max_references -= locations.len();
     remaining.max_reference_bytes -= page_bytes;
     Ok(locations)
+}
+
+/// What reading one stored attempt costs a create that adopts its output: the
+/// reference rows (inputs and qualifications) and their stored JSON bytes,
+/// exactly as `read_ref_locations_in_tx` debits them from the create's parent
+/// read budget (DI1B-1 review, DR-DI1B-2). Counts only; no row is decoded.
+#[cfg_attr(
+    not(feature = "native-current-human-capture"),
+    expect(
+        dead_code,
+        reason = "only the history budget (feature native-current-human-capture) sizes a window with it"
+    )
+)]
+pub(crate) fn attempt_reference_read_cost_in_tx(
+    conn: &Connection,
+    id: &str,
+) -> Result<(usize, usize)> {
+    let mut rows = 0usize;
+    let mut bytes = 0usize;
+    for table in [
+        "nir1_generation_input_refs",
+        "nir1_generation_qualification_refs",
+    ] {
+        let (count, length): (i64, i64) = conn.query_row(
+            &format!(
+                "SELECT COUNT(*),COALESCE(SUM(octet_length(reference_json)),0)
+                 FROM {table} WHERE attempt_id=?1"
+            ),
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        rows = rows
+            .checked_add(usize::try_from(count)?)
+            .context("NIR1_GENERATION_REF_LIMIT")?;
+        bytes = bytes
+            .checked_add(usize::try_from(length)?)
+            .context("NIR1_GENERATION_REF_LIMIT")?;
+    }
+    Ok((rows, bytes))
 }
 
 fn materialize_refs_in_tx<T>(

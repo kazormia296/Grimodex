@@ -156,7 +156,7 @@ pub struct HistoryRange {
 }
 
 impl HistoryRange {
-    fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         [
             &self.project_id,
             &self.chat_session_id,
@@ -3842,7 +3842,8 @@ pub(crate) use generation_storage_adapter::reauthorize_from_generation_snapshot;
 #[cfg(feature = "native-current-human-capture")]
 #[allow(unused_imports)]
 pub(crate) use generation_storage_adapter::session_run::{
-    reauthorize_session_history, reauthorize_session_history_in_tx, NoHistory,
+    reauthorize_session_history, reauthorize_session_history_for_turn,
+    reauthorize_session_history_for_turn_in_tx, reauthorize_session_history_in_tx, NoHistory,
     SessionCandidateKind, SessionCandidateResult, SessionHistoryOutcome, SessionHistoryRequest,
 };
 

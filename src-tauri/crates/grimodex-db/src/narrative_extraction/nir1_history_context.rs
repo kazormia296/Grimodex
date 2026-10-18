@@ -40,7 +40,8 @@ use crate::nir1_generation::history_context::{
     HistoryUnavailableReason, HistoryViewpoint, HistoryViewpointUnavailable,
 };
 use crate::nir1_generation::{
-    d1_selection_digest, D1SelectionParameters, GenerationPurpose, InputReference,
+    d1_selection_digest, AcceptedChatInputCapture, AttemptSceneBinding, D1SelectionParameters,
+    GenerationPurpose, InputReference,
 };
 use crate::nir1_generation_history::{
     CurrentHistoryContext, HistoryComparisonContext, HistoryRange,
@@ -96,17 +97,31 @@ impl HistoryContextStage {
     /// The current turn's context for the history reader (K4/3 section 4),
     /// from the value this stage already holds: the body the builder made
     /// inside D-final's snapshot and the durable workspace identity it
-    /// observed. `range` and `purpose` are the prepared request's (the DB's
-    /// chat session, the target Scene's id and incarnation, the purpose).
-    /// There is no second derivation: an unavailable stage stays unavailable.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "the history run entry that receives the current context is DI-1b's"
-        )
-    )]
+    /// observed. `range` is the turn's own ([`TurnHistoryRange`]: the
+    /// capture's project and chat session and the target Scene with the
+    /// incarnation read in the same snapshot), `purpose` the prepared
+    /// request's. There is no second derivation: an unavailable stage stays
+    /// unavailable.
+    pub(crate) fn current_history_context_for_turn(
+        &self,
+        range: &TurnHistoryRange,
+        purpose: GenerationPurpose,
+    ) -> CurrentHistoryContext {
+        self.context_for(range.0.clone(), purpose)
+    }
+
+    /// The same value with a range a test names directly. Production code
+    /// cannot call it: the range of a real turn is [`TurnHistoryRange`].
+    #[cfg(test)]
     pub(crate) fn current_history_context(
+        &self,
+        range: HistoryRange,
+        purpose: GenerationPurpose,
+    ) -> CurrentHistoryContext {
+        self.context_for(range, purpose)
+    }
+
+    fn context_for(
         &self,
         range: HistoryRange,
         purpose: GenerationPurpose,
@@ -127,6 +142,51 @@ impl HistoryContextStage {
                 }))
             }
         }
+    }
+}
+
+/// The range of one turn's history (K4/3 section 6): the project and the chat
+/// session of the capture the D-final snapshot accepted, and the target
+/// Scene with the incarnation the snapshot read for the attempt's Scene
+/// binding. It has one constructor and takes only those two snapshot values,
+/// so neither an IPC request, a renderer's selection nor a caller's claim of
+/// a session can fill it (DR-HC1-24 (2)).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct TurnHistoryRange(HistoryRange);
+
+impl TurnHistoryRange {
+    /// The capture and the Scene binding must describe the same Scene: the
+    /// capture was accepted for the target Scene, and the binding was read for
+    /// it in the same snapshot. Any other pair is a mismatch that stops the
+    /// turn.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "DI1B-3 builds the range inside the D-final snapshot"
+        )
+    )]
+    pub(crate) fn from_snapshot(
+        capture: &AcceptedChatInputCapture,
+        scene: &AttemptSceneBinding,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            capture.scene_id() == scene.scene_id,
+            "NIR1_HISTORY_RANGE_SCENE_MISMATCH"
+        );
+        let range = HistoryRange {
+            project_id: capture.project_id().to_owned(),
+            chat_session_id: capture.chat_session_id().to_owned(),
+            scene_id: scene.scene_id.clone(),
+            scene_incarnation_id: scene.scene_incarnation_id.clone(),
+        };
+        anyhow::ensure!(range.is_complete(), "NIR1_HISTORY_RANGE_INCOMPLETE");
+        Ok(Self(range))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn range(&self) -> &HistoryRange {
+        &self.0
     }
 }
 

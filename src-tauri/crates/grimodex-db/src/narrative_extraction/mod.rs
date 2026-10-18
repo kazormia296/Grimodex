@@ -122,6 +122,8 @@ mod human_materialization;
 mod material_membership;
 mod material_membership_root;
 #[cfg(feature = "native-current-human-capture")]
+mod nir1_history_budget;
+#[cfg(feature = "native-current-human-capture")]
 mod nir1_history_context;
 #[cfg(feature = "native-current-human-capture")]
 mod nir1_history_requalification;
@@ -143,6 +145,8 @@ mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
 mod project_scope_authority;
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) use project_scope_authority::PROJECT_SCOPE_AUTHORITY_SNAPSHOT;
 mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;
