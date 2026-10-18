@@ -3957,6 +3957,7 @@ mod tests {
         let projected = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
