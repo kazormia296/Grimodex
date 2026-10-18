@@ -1,13 +1,13 @@
 # NIR-1 続行計画の作業記録（2026-10）
 
-更新日: 2026-10-18（初版: 2026-10-12）
+更新日: 2026-10-19（初版: 2026-10-12）
 
 | 項目 | 値 |
 |---|---|
 | 状態 | NIR-1 続行計画は 2026-10-12 にユーザーが承認済み。本書は G0 で作成した作業記録 |
 | 計画 | `~/.claude/plans/610-pr-c-query-nir-valiant-thunder.md`（repo 外）。承認時（21:51 JST）の本文の SHA-256 は `0bfb2a90a0b1b0e13b39b99de825674647d88621afe30855d5bed2151efb474e` で、会話記録の承認本文と一致することを G0 で照合した。23:05 JST の改訂後は `f712102e78ca4e3dc217a6e6b1fc637e6a9085050d24e7b586fb6c179ee2e335`。改訂は、Ralph から Workflow subagent への切替（§1 の U3 変更）を記録する1行の追加だけで、その行を除いた本文の SHA-256 が承認時の値と一致することで照合した。2026-10-13 00:46 JST に、B-ROUTE の行と merge 列への B-ROUTE の挿入を足した。G0 の freeze の前には、B-ROUTE の扱い（C-product の前提、§3.1）の文言を直した。その時点の SHA-256 は `408a7a48d47e0f593b1a7c1e77620b8f11b77f40a7cfee3ec37a432645d03f8c`。承認後の改訂は integrator の運用上の記録で、ユーザーが承認したのは承認時の本文（`0bfb2a90…`）である |
 | 基点 | `origin/master@a153743b3f672b7274bdd748f15ef9c216dc9961`（#629） |
-| 現在地（2026-10-18 JST） | master は `a789039a`（#678）。2026-10-17 の Session B2 の記録（#668）の後、2026-10-18 までに次の PR が merge された（squash commit。詳細は §6）: #669 DF+、#670 X1-2、#671 DT-4、#672 決定の `created_at` を厳密に後にする修正（Full の揺れ）、#673 CB-1（schema v43）、#674 X1-3、#675 HS-1、#676 DA-1（`own-data-read` の開放 commit を除く。WebRTC の finding で止めた）、#677 DP-H（harness まで。evidence は HOLD）、#678 CQ-LIM-1〜4。master の canonical Full は `a789039a` で green だった（run 39102745768、基点 `01238cfc`）。Session B1（K3/2、K4/3、K5/3、K6/2、X1/1。K6/2 の条件付きの2行は事前の確認のみで、条件の成立後に改めて確認を求める）と Session B2（K2/4 の2文と proposal/7 の1文）は 2026-10-17 に、Session B3（K3/3。`caller-profile-egress`）は 2026-10-18 に確認済みで、それぞれ §10.3、§10.4、§10.5 と確認台帳に記録した（Session B3 はこの記録の PR）。K3/3 は、DA-1 の ST1 の Y-1 の試走が見つけた renderer の外向き通信（WebRTC の接続と名前解決）を Main の network 層で塞ぐ設計で、実装（NC-1）は未着手である。`own-data-read` の開放 commit（DA-1 の ST3）は、NC-1 の merge と G-open（Linux の実機）の後に入れる（未実装）。PUB-G／PUB-L は Session C で確認する |
+| 現在地（2026-10-19 JST） | master は `b8a0bb7c`（#684）。2026-10-17 の Session B2 の記録（#668）の後、2026-10-19 までに次の PR が merge された（squash commit。詳細は §6）: #669 DF+、#670 X1-2、#671 DT-4、#672 決定の `created_at` を厳密に後にする修正（Full の揺れ）、#673 CB-1（schema v43）、#674 X1-3、#675 HS-1、#676 DA-1（`own-data-read` の開放 commit を除く。WebRTC の finding で止めた）、#677 DP-H（harness まで。evidence は HOLD）、#678 CQ-LIM-1〜4、#679 Session B3（K3/3）の確認の記録、#680 DT-5、#681 HC-1、#682 CB-2（＋MG-1）、#683 NC-1（K3/3 の実装）、#684 DI-1c。master の canonical Full は `a8ee82d5`（#683）まで green（run 39150424373）で、`b8a0bb7c` の Full は run 39154324262 で実行中（この記録の時点）。Session B1（K3/2、K4/3、K5/3、K6/2、X1/1。K6/2 の条件付きの2行は事前の確認のみで、条件の成立後に改めて確認を求める）と Session B2（K2/4 の2文と proposal/7 の1文）は 2026-10-17 に、Session B3（K3/3。`caller-profile-egress`）は 2026-10-18 に確認済みで、それぞれ §10.3、§10.4、§10.5 と確認台帳に記録した。K3/3 は、DA-1 の ST1 の Y-1 の試走が見つけた renderer の外向き通信（WebRTC の接続と名前解決）を Main の network 層で塞ぐ設計で、実装（NC-1）は #683 で master に入り、G-open の記録（Linux の実機）を [`nir1-lane-decisions/nc1-g-open/`](nir1-lane-decisions/nc1-g-open/README.md) に置いた。`own-data-read` の開放 commit（DA-1 の ST3）は、NC-1 の merge と G-open の記録の条件を満たしたが未実施で、実施の前にユーザーの確認を得る（§10.5）。PUB-G／PUB-L は Session C で確認する |
 | 位置づけ | ユーザー決定、委任判断、レーン、merge 列、worktree 台帳の記録。契約の批准、閾値の変更、製品公開の根拠にはしない |
 | 正本 | 契約と確認台帳は [L6〜L9実行計画](nir1-l6-l9-execution-plan.md)、残工程の依存と受入れは [post-B実行計画](nir1-post-b-execution-plan.md)、委任の規則は [GDX-PRECHECK-001](../../policies/quality/iron-laws.md#GDX-PRECHECK-001) |
 
@@ -56,11 +56,11 @@ U3 変更で選ばれた選択肢の提示文は「Ralph の代わりに、こ�
 | K1 | `nir1-l6-l9-contract-proposal/6`：`graph-limited-binding`、`nir1-defensive-resource-limits` | CR-REC の HOLD 解除、Graph の根拠、HC-1、DT-5、CB-4、CP-1 の数値 | 確認済み（2026-10-12、Session A。2行とも。§10.1） |
 | K2 | `nir1-c-body-disclosure-proposal/4`：`graph-target-scene-body-disclosure`、`scope-storage-authority` の差分（/2 と /3 は確認を求めず superseded） | CB-1〜4、CP-3 の Graph-only 追加、G-01、PUB-G | 2026-10-17 の Session B2 で2文とも確認された（§10.4） |
 | K3 | `nir1-d2a-activation-proposal/2`：`caller-profile-egress` の差分（/1 は確認を求めず superseded） | DA-1／2、CP-3a、PUB-G、DD-1 | 2026-10-17 の Session B1 で確認された（§10.3） |
-| K3/3 | `nir1-d2a-activation-proposal/3`：`caller-profile-egress`（K3/2 と同じ contractId の新しい draftRef。renderer の外向き通信〔WebRTC の接続と名前解決〕を Main の network 層で塞ぐ設計。SB-6） | NC-1、DA-1 の ST3 の開放 commit、CP-2b、PUB-G、DD-1 | 2026-10-18 の Session B3 で確認された（§10.5）。実装（NC-1）は未着手 |
+| K3/3 | `nir1-d2a-activation-proposal/3`：`caller-profile-egress`（K3/2 と同じ contractId の新しい draftRef。renderer の外向き通信〔WebRTC の接続と名前解決〕を Main の network 層で塞ぐ設計。SB-6） | NC-1、DA-1 の ST3 の開放 commit、CP-2b、PUB-G、DD-1 | 2026-10-18 の Session B3 で確認された（§10.5）。実装（NC-1）は #683 で master。DA-1 の ST3 の開放 commit は未実施 |
 | K4 | `nir1-d2b-history-mapping-proposal/3`：`history-reauthorization` の差分（/1 と /2 は確認を求めず superseded） | DF+-a、HS-1、HC-1、DI-1b／c | 2026-10-17 の Session B1 で確認された（§10.3） |
 | K5 | `nir1-d2b-local-send-proposal/3`：`nir1-local-product-send` と、`caller-profile-egress` の差分（B-1〜B-4）の2文 | DF+-b、DT-4／5、DD-1、PUB-L | 2026-10-17 の Session B1 で2文とも確認された（§10.3） |
 | K6 | `nir1-final-request-eval-proposal/2`：`nir1-final-request-packing-eval`（条件付きで `g01-eval-revision`、`graph-eval-procedure`）（/1 は確認を求めず superseded） | DP-H、DD-1、PUB-L、条件付きで CP-4 | `nir1-final-request-packing-eval` は 2026-10-17 の Session B1 で確認された。条件付きの2行は事前の確認のみで、条件は未成立のため効かず、条件の成立後に receipt を添えて改めて確認を求める（§10.3） |
-| P7 | `nir1-l6-l9-contract-proposal/7`：`graph-limited-binding`（proposal/6 の資源の値の改訂。SB-4、SB-5。`nir1-defensive-resource-limits` は規則を変えず、確認文はない） | CQ-LIM-1〜4、C の受入れ（G-1、G-2）、PUB-G | 2026-10-17 の Session B2 で確認された（§10.4）。実装は X1-3 の merge の後の再測を終えてから merge する |
+| P7 | `nir1-l6-l9-contract-proposal/7`：`graph-limited-binding`（proposal/6 の資源の値の改訂。SB-4、SB-5。`nir1-defensive-resource-limits` は規則を変えず、確認文はない） | CQ-LIM-1〜4、C の受入れ（G-1、G-2）、PUB-G | 2026-10-17 の Session B2 で確認された（§10.4）。実装（CQ-LIM-1〜4）は X1-3 の merge の後の再測を終えて、#678 で master |
 | X1 | `nir1-scene-scope-projection-proposal/1`：`scope-storage-authority` と `typed-revision-material` の差分（本文の保存で承認済みの Revision を失効させない。SB-3） | X1-2／3／4、K4 の前提 XP、CP-4 | 2026-10-17 の Session B1 で2文とも確認された（§10.3） |
 
 確認は、確認台帳の protocol（[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の Confirmation protocol）に従い、1つの contractId につき exact draftRef を名指した1文で行う。draft は契約ごとに別ファイルにし、merge しない branch で SHA を固定する。確認された draft は byte 同一で台帳へ取り込む。
@@ -109,6 +109,7 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 - CQ-LIM の registration の増幅の修正（DR-CQL-13、14。2026-10-18）: X1-3 が足した preflight の Entity の文で `entity_items` が `NOT MATERIALIZED` のため anchor の key の式が3か所に展開され、Entity の部分木の写しが Q に残っていた。`MATERIALIZED` にして解消した（返す値と判定の式は同じ）。proposal/7 の値は変えない。ユーザーの選択は §1 の SB-7。
 - 決定の `created_at` の修正（#672。2026-10-18）: 承認と取消が同じミリ秒でも取消が効くように、決定の時刻を厳密に後にする。Full の揺れが見つけた不具合で、契約と上限は変えない。
 - NC-1（K3/3 の実装。2026-10-18 追加）: K3/3 の確認の範囲の内側にある技術判断（module の構成、試験の形、段の割当てなど）は §3.2 の形式で記録して進める。範囲の外（許可先や名前解決を許す名前の追加、閉じた集合の外の network 設定、閉じ込めを止める入口、新しい authority）は委任しない `[precheck]` で、新しい draftRef を求める。
+- DT-5、HC-1、CB-2（＋MG-1）、NC-1、DI-1c（2026-10-18〜19 に #680〜#684 で merge）: 確認済み契約の範囲内の技術判断は、各レーンの decisions 文書（[索引](nir1-lane-decisions/README.md)）に記録した。新しい数値（K1b の規則5）の記録は、DT-5 の DR-DT5-26（byte の上限と期限。draft の初期案のまま確定し、実在の local server の実測の根拠は無い）、CB-2 の DR-CB2-7 とその訂正、DI-1c の DR-DI1C-14（attempt の寿命 60 秒）、NC-1 の DR-NC1-3（LS-1 は確認済みの上限 256 接続・5000 ms のまま）。HC-1 は 1 turn の予算の数値を決めず、HC-1a の実測と推奨値（DR-HC1-12）を integrator に渡した。
 
 
 ### 3.3. レーンの判断記録の置き場所
@@ -134,17 +135,18 @@ DOC-REC（2026-10-14）で、それまで worktree の `.ralph/agent/decisions.m
 | K2〜K6 の起案 | Session B 用の契約 draft | Workflow で起案し adversarial review | 即時。K2 と K4 を先に出す |
 | CP-1、CP-2a | worker 内の pin join と NQG2、製品 owner | Workflow subagent | CR-1 の merge 後 |
 | B-ROUTE（2026-10-13 追加） | B の whole-project build／publish を製品の maintenance 経路に配線する。自動実行は PUB-G まで閉じる | Workflow subagent | C-product の前提として U3 の委任で進める（§3.1）。Session B で通知する。CP-4 の前に merge |
-| LEDGER-1 | Session B で確認された draft の台帳取り込み | integrator | Session B の後。Session B1 は #667、Session B2 は #668、Session B3 はこの記録の PR（`claude/nir1-b3-record`。§10.5）。NC-1 の merge はこの PR の merge の後 |
-| CB-1〜4（MG-1 を含む） | C-body v1 | CB-1／3／4 は Workflow subagent、CB-2 の writer と MG-1 は integrator | K2（2026-10-17 の Session B2 で確認済み）、DT-3、CP-1（どちらも master）の後。CB-1 は着手でき、merge は LEDGER-1 の後。CB-2 は CB-1 の後、CB-3 は CB-2 と並行、CB-4 は CB-1 と CP-1 の後に作り CB-2 の後に merge する（詳細は §10.4） |
-| DA-1／2 | D2a の route 区分と activation | integrator | K3（2026-10-17 に確認済み。K3/3 を 2026-10-18 に確認）の後。DA-1: ST1・ST2・ST4 と ST3 の開放の前は #676 で master。ST3 の開放 commit（`own-data-read` を有効にする commit）は NC-1 の merge と G-open（Linux の実機）の後で、未実装。DA-2 は DA-1 の merge、MG-1（CB-2）の merge、CP-3a の merge の後 |
-| NC-1（2026-10-18 追加。K3/3 の実装。名前はこの記録の仮の名前） | Main の network 閉じ込め（NC-1）、LS-1 の listener、FC-1、MD-1、`host-resolver-rules`（K3/3 の設計）。工数は約7日（推定。G-open の再走の幅を含む。harness の CI 化、更新経路の定期 CI、CP-2b の追加分は含まない） | Workflow subagent。高リスクの PR（起動の順序、network、listener）なので lifecycle とセキュリティの reviewer を2名にする（§5） | 開始条件: K3/3 の確認（2026-10-18）。DA-1 の ST1（#676）は master。merge は DA-1 の開放 commit（ST3）の前。ゲート G-open（Linux の実機。DA-1 の ST3 の開放 commit の条件）と G-pub（3 OS の packaged smoke。PUB-G の条件。CP-2b に Y-1 を各 OS で行うことを加える）。条件は K3/3 の draft のゲート表が正本（詳細は §10.5）。NC-1 は未実装 |
-| DF+-a／b | D-final 追補 | Workflow subagent | K4（a）、K5（b）の後 |
-| DT-4 | audit、route、consent | integrator | K5 の後 |
-| DT-5a／b | transport | Workflow subagent | K5、DF+-b、DT-1〜3 の後 |
-| HS-1、HC-1a／b | history の保存と再認可 | Workflow subagent | K4、DF+-a、HP-1 の後 |
+| LEDGER-1 | Session B で確認された draft の台帳取り込み | integrator | Session B の後。Session B1 は #667、Session B2 は #668、Session B3 は #679（§10.5） |
+| CB-1〜4（MG-1 を含む） | C-body v1 | CB-1／3／4 は Workflow subagent、CB-2 の writer と MG-1 は integrator | K2（2026-10-17 の Session B2 で確認済み）、DT-3、CP-1（どちらも master）の後。CB-1 は着手でき、merge は LEDGER-1 の後。CB-2 は CB-1 の後、CB-3 は CB-2 と並行、CB-4 は CB-1 と CP-1 の後に作り CB-2 の後に merge する（詳細は §10.4）。現状: CB-1 は #673、CB-2（＋MG-1）は #682 で master。CB-3 と CB-4 は着手できる |
+| DA-1／2 | D2a の route 区分と activation | integrator | K3（2026-10-17 に確認済み。K3/3 を 2026-10-18 に確認）の後。DA-1: ST1・ST2・ST4 と ST3 の開放の前は #676 で master。ST3 の開放 commit（`own-data-read` を有効にする commit）は、NC-1 の merge と G-open の記録の後に入れる。条件は満たした（NC-1 は #683 で master、G-open の記録は `nir1-lane-decisions/nc1-g-open/`）。実施の前にユーザーの確認を得る（未実施。§10.5）。DA-2 は DA-1 の merge、MG-1（CB-2）の merge、CP-3a の merge の後（MG-1 は #682 で master） |
+| NC-1（2026-10-18 追加。K3/3 の実装。名前はこの記録の仮の名前） | Main の network 閉じ込め（NC-1）、LS-1 の listener、FC-1、MD-1、`host-resolver-rules`（K3/3 の設計）。工数は約7日（推定。G-open の再走の幅を含む。harness の CI 化、更新経路の定期 CI、CP-2b の追加分は含まない） | Workflow subagent。高リスクの PR（起動の順序、network、listener）なので lifecycle とセキュリティの reviewer を2名にする（§5） | 開始条件: K3/3 の確認（2026-10-18）。DA-1 の ST1（#676）は master。merge は DA-1 の開放 commit（ST3）の前。ゲート G-open（Linux の実機。DA-1 の ST3 の開放 commit の条件）と G-pub（3 OS の packaged smoke。PUB-G の条件。CP-2b に Y-1 を各 OS で行うことを加える）。条件は K3/3 の draft のゲート表が正本（詳細は §10.5）。現状: #683（`a8ee82d5`）で master。G-open の記録は Linux の実機（`nir1-lane-decisions/nc1-g-open/`）。G-pub は CP-2b の範囲で未実施 |
+| DF+-a／b | D-final 追補 | Workflow subagent | K4（a）、K5（b）の後。#669 で master |
+| DT-4 | audit、route、consent | integrator | K5 の後。#671 で master |
+| DT-5a／b | transport | Workflow subagent | K5、DF+-b、DT-1〜3 の後。DT-5 は #680 で master。DT-5a の主要な local server の実測は未実施（§11） |
+| HS-1、HC-1a／b | history の保存と再認可 | Workflow subagent | K4、DF+-a、HP-1 の後。HS-1 は #675、HC-1 は #681 で master。HC-1a の実測は推奨値まで（数値は integrator が K1b の規則5で決める。§11） |
 | DP-H | 最終 request 評価 harness | Workflow subagent | K6 の後。harness は #677 で master（2026-10-18）。evidence は HOLD: 観測により失効した版 1 の fixture を、別の作者が X1-3 の後のコードから導き直す置換 fixture と、独立 review の後に実行する |
-| CP-3a／b | wire、IPC、seed の UX | Workflow subagent | CP-2a（master）、CB-4、DA-1 の merge の後（CB-4 は K2/4 の確認で着手できる） |
-| DI-1c／a／b | D1 最終統合（3分割） | Workflow subagent | c は DF+、DT-1〜3、HS-1 の後。a は CP-1／2a の後。b は HC-1 の後 |
+| CP-3a／b | wire、IPC、seed の UX | Workflow subagent | CP-2a（master）、CB-4、DA-1 の merge の後（CB-4 は K2/4 の確認で着手できる）。CP-2a と DA-1（#676）は master で、残るのは CB-4 の merge |
+| DI-1c／a／b | D1 最終統合（3分割） | Workflow subagent | c は DF+、DT-1〜3、HS-1 の後。a は CP-1／2a の後。b は HC-1 の後。現状: c は #684 で master。a は CP-1／2a の後に着手できる（どちらも master）。b は HC-1 の後に着手できる（HC-1 は #681 で master） |
+| X1-1〜4（X1/1） | 本文の保存で承認済みの Revision を失効させない（SB-3） | integrator が割り当てる | X1/1 の確認（2026-10-17）。X1-1 は #662、X1-2 は #670、X1-3 は #674 で master。X1-4 は着手できる。列には置かない（§6） |
 | CQ-LIM-1〜4（2026-10-17 追加。名前は proposal/7 の draft の仮の名前。2026-10-18 に #678 で master） | proposal/7 の実装（C-resource の追補）。CQ-LIM-1：`MAX_GRAPH_RECORDS` を Revision 用と query 用に分け、records・pages・steps・Entity・edge を変える（約2日）。CQ-LIM-2：Q 16 MiB、Native 領域 3 MiB、registration の検査（約3.5日）。CQ-LIM-3：RB-1 の writer の検査と台帳・試験の期待値の同期（約1日）。CQ-LIM-4：G-03 の作り直しと再 freeze（約1.5日）。合計は約8日（推定） | 未指定（integrator が割り当てる） | proposal/7 の確認（2026-10-17）。着手は X1-3 と並行してよい。merge は X1-3 の merge の後の再測を終えてから。CQ-LIM-4 は CP-4 の G-03 の観測の前と、CP-4 の観測前の commit の前に終える。現状: #678（`a789039a`）で master。X1-3 の後の再測で registration の使用量が Q の 85% を超えて `[precheck]` で止まったが、ユーザーが「まず実装で直す（推奨）」を選び（§1 の SB-7）、実装で解消した（DR-CQL-13）ので proposal/8 は不要だった。G-03 の re-freeze は独立 reviewer の approve を得て、`evals/nir1-graph/freeze.v1.json` の sha256 は `6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7`（K2/4 の addendum はこの sha を引く） |
 | CP-2b | worker の同梱と 3-OS packaged smoke | 未指定 | audit 例外が解消されていれば単独。解消されていなければ PUB-G に同梱し、Session C-1 でリスク判断を求める。K3/3（2026-10-18）で範囲が広がる: 3 OS の packaged smoke に Negative (34) を加え（G-pub）、Y-1 を各 OS で行う。観測の道具（packaged への CDP の注入、net log の取得、canary の受信 socket）の方式は CP-2b の着手時に決める。更新経路の定期 CI（K3/3 の引き継ぎ H1）の担当も CP-2b の担当が決める（条件ではない） |
 | CP-4 | G-01〜G-08、24件、P の計測と A3 consumer activation の証跡 | 未指定 | CP-3a／b の後。計測窓で行う。X1-2 と X1-3 の merge、CQ-LIM-4（G-03 の再 freeze。Graph の観測の前）、観測前の commit（K2/4 の addendum。Graph arm の最初の観測の前）が開始条件（詳細は §10.4） |
@@ -171,11 +173,11 @@ DOC-REC（2026-10-14）で、それまで worktree の `.ralph/agent/decisions.m
 
 G0 → CR-1 → CR-REC → CP-0 → DT-1 → DT-2 → DT-3 → HP-1 → CP-1 → CP-2a → LEDGER-1 → B-ROUTE → CB-1 → DA-1（開放 commit を除く。#676）→ NC-1 → DA-1（開放 commit）→ CB-2（＋MG-1）→ DF+-a/b → HS-1 → DT-4 → DP-H → CB-3 → CP-3a → DA-2 → CB-4 → CP-3b → DT-5a/b → HC-1a/b → DI-1c → DI-1a → DI-1b → CQ-LIM-1/2/3 → CQ-LIM-4 → CP-2b → CP-4 → PUB-G → DD-1 → PUB-L → E-1 → E-2
 
-NC-1（K3/3 の実装。2026-10-18 に追加）は DA-1 の開放 commit の前に merge する（開放 commit は NC-1 の merge と G-open の後）。DA-1 の ST1・ST2・ST4 と ST3 の開放の前は #676 で先に merge 済みなので、列の DA-1 を2つに分けた。CB-2 など他の lane との前後は、準備できた順に入れ替えてよい。
+NC-1（K3/3 の実装。2026-10-18 に追加）は DA-1 の開放 commit の前に merge する（開放 commit は NC-1 の merge と G-open の後）。NC-1 は #683 で merge 済みで、開放 commit は未実施。DA-1 の ST1・ST2・ST4 と ST3 の開放の前は #676 で先に merge 済みなので、列の DA-1 を2つに分けた。CB-2 など他の lane との前後は、準備できた順に入れ替えてよい。
 
 CQ-LIM-1〜4（proposal/7 の実装。2026-10-17 に追加）は、X1-3 の merge の後の再測を終えてから merge するので、列では DI-1b の後、CP-4 の前に置いた（実際は 2026-10-18 に #678 で merge 済み）。列は準備できた順に入れ替えてよい（下記）が、CQ-LIM-4 は CP-4 の G-03 の観測の前に終える。CQ-LIM-1〜3 の merge と CP-4 の順序は CP-4 の TASK.md を作るときに integrator が決めて記録する（proposal/7 の draft に定めがない）。X1-2／X1-3／X1-4（X1/1。2026-10-17 に確認済み）はこの列に置いていない。CB-1 と並行に作り、後に merge する側が先に入った側の試験を通す。§6 の列では CP-3a が CB-4 の前にあるが、§4 の依存は CP-3a／b に CB-4 の merge を求めるので、CP-3a の merge は CB-4 の後でよい。
 
-2026-10-18 までの merge の実績（squash commit）:
+2026-10-19 までの merge の実績（squash commit）:
 
 | PR | lane | squash commit |
 |---|---|---|
@@ -189,8 +191,14 @@ CQ-LIM-1〜4（proposal/7 の実装。2026-10-17 に追加）は、X1-3 の merg
 | #676 | DA-1（`own-data-read` の開放 commit を除く。WebRTC の finding で止めた） | `2b68fd4df67599ca2f277fc94f94956de463381e` |
 | #677 | DP-H（harness まで。evidence は HOLD。版 1 の fixture は観測により失効） | `01238cfcd2cb8b0125bc493655a4a16888b6cd57` |
 | #678 | CQ-LIM-1〜4（G-03 の re-freeze は独立 reviewer の approve。`freeze.v1.json` の sha256 は `6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7`） | `a789039a779eb4df0dec2b8b3be5e29d2bff5a5c` |
+| #679 | Session B3（K3/3）の確認の記録（LEDGER-1。docs だけ） | `7c3d31106f2897016d5c146c5f1f3247a2d39f9a` |
+| #680 | DT-5（local 生成の transport と、成功の監査の終端） | `5cfb38a8116d30cd60e2759cfbf24f1787d48ebe` |
+| #681 | HC-1（history の再認可。`CurrentQualifier` と lineage） | `17bde2867bc1ecb3c12de085902a8d9caced1bdd` |
+| #682 | CB-2（Scene 本文の宣言と取消の writer、MG-1 の grant と gate） | `739793eacfacb35320b4500b0e42969a29dcf47c` |
+| #683 | NC-1（K3/3 の実装。renderer の外向き通信を Main の network 層で塞ぐ。G-open の記録は Linux の実機） | `a8ee82d5a9e339e4ddf3899fe5f23fee093e6f86` |
+| #684 | DI-1c（create と claim の防御、Native の Revision 選択、取消の結束） | `b8a0bb7cd74bf51d0377169b84d694bac4bd09b1` |
 
-master の canonical Full は `a789039a` で green だった（run 39102745768、基点 `01238cfc`）。
+master の canonical Full は `a789039a` で green だった（run 39102745768、基点 `01238cfc`）。その後、`a8ee82d5`（#683）で green（run 39150424373）。`b8a0bb7c`（#684）の Full は run 39154324262 で実行中（この記録の時点。完了の見届けは integrator）。#680〜#684 の merge の順は #681、#682、#680、#683、#684 で、PR 番号の順と違う。DT-5、HC-1、CB-2、DI-1c の4レーンの PR と NC-1 は、[nir1-lane-decisions の README](nir1-lane-decisions/README.md) の索引の衝突を避けるため、索引の行を足さずに merge し、後の docs の同期の PR（`claude/nir1-sync2`）で足した。
 
 各 PR の手順（U4。merge の条件は U7 で変更した。CI の実態は #627 以降の hosted 実行に合わせる。規則の正本は [GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)、手順は `/ship-branch`）:
 
@@ -241,12 +249,36 @@ U5（計画外）への依存: M0（CI 保守。期限と Dependabot への対�
 | `claude-nir1-b1rec` | `claude/nir1-b1-record` | `df40eec8`（`origin/master`） | Session B1 の確認の記録（K3/2、K4/3、K5/3、K6/2、X1/1 の取り込み、確認台帳、本書。docs だけ） |
 | `claude-nir1-b2rec` | `claude/nir1-b2-record` | `a7666048`（`origin/master`） | Session B2 の確認の記録（K2/4、proposal/7 と測定の記録の取り込み、確認台帳、本書。docs だけ） |
 | `claude-nir1-b3-record` | `claude/nir1-b3-record` | `a789039a`（`origin/master`） | Session B3 の確認の記録（K3/3 と測定の記録の取り込み、確認台帳、本書。docs だけ） |
+| `claude-nir1-measure` | `claude/nir1-measure` | `df40eec8`（`origin/master`） | proposal/7 の測定の実行（merge しない。harness は `nir1-lane-decisions/proposal7-measurement/` に取り込み済み） |
+| `claude-nir1-df-plus` | `claude/nir1-df-plus` | `a7666048`（`origin/master`） | DF+（#669） |
+| `claude-nir1-dt4` | `claude/nir1-dt4` | `a7666048`（`origin/master`） | DT-4（#671） |
+| `claude-nir1-x1-2` | `claude/nir1-x1-2` | `a7666048`（`origin/master`） | X1-2（#670） |
+| `claude-nir1-cb1` | `claude/nir1-cb1` | `a0ce11aa`（`origin/master`） | CB-1（#673） |
+| `claude-nir1-cq-lim` | `claude/nir1-cq-lim` | `a0ce11aa`（`origin/master`） | CQ-LIM-1〜4（#678） |
+| `claude-nir1-da1` | `claude/nir1-da1` | `a0ce11aa`（`origin/master`） | DA-1（#676。開放 commit を除く） |
+| `claude-nir1-dp-h` | `claude/nir1-dp-h` | `a0ce11aa`（`origin/master`） | DP-H（#677。harness まで） |
+| `claude-nir1-x1-3` | `claude/nir1-x1-3` | `e249a516`（`origin/master`） | X1-3（#674） |
+| `claude-nir1-hs1` | `claude/nir1-hs1` | `e249a516`（`origin/master`） | HS-1（#675） |
+| `claude-fix-graph-oversized-flake` | `claude/fix-graph-oversized-flake` | `d6666ca9`（`origin/master`） | 決定の `created_at` を厳密に後にする修正（#672） |
+| `claude-nir1-webrtc-proto` | `claude/nir1-webrtc-proto` | `b99f018d`（DA-1 の ST1 の commit） | K3/3 の試作と測定（merge しない。記録は `nir1-lane-decisions/webrtc-closure-measurement/` に取り込み済み） |
+| `claude-nir1-dt5` | `claude/nir1-dt5` | `01238cfc`（`origin/master`） | DT-5（#680） |
+| `claude-nir1-hc1` | `claude/nir1-hc1` | `01238cfc`（`origin/master`） | HC-1（#681） |
+| `claude-nir1-cb2` | `claude/nir1-cb2` | `01238cfc`（`origin/master`） | CB-2（＋MG-1。#682） |
+| `claude-nir1-di1c` | `claude/nir1-di1c` | `01238cfc`（`origin/master`） | DI-1c（#684） |
+| `claude-nir1-nc1` | `claude/nir1-nc1` | `7c3d3110`（`origin/master`） | NC-1（#683） |
+| `claude-nir1-sync2` | `claude/nir1-sync2` | `b8a0bb7c`（`origin/master`） | #679〜#684 の後の docs の同期（README の索引と本書。docs だけ） |
+| `claude-nir1-cb4` | `claude/nir1-cb4` | `b8a0bb7c`（`origin/master`） | CB-4 |
+| `claude-nir1-di1a` | `claude/nir1-di1a` | `b8a0bb7c`（`origin/master`） | DI-1a |
+| `claude-nir1-di1b` | `claude/nir1-di1b` | `b8a0bb7c`（`origin/master`） | DI-1b |
+| `claude-nir1-x1-4` | `claude/nir1-x1-4` | `b8a0bb7c`（`origin/master`） | X1-4 |
 
 `origin/master` の基点はいずれも `a153743b3f672b7274bdd748f15ef9c216dc9961`（#629）。`claude-nir1-dt2` は 2026-10-12 23:17 JST に、`claude/nir1-dt1` の DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-dt3` は 2026-10-12 23:34 JST に、同じ DT-1 commit `3688a0633537818e80a88e40f056604ffa496e8a` から作った。`claude-nir1-cp1` は 2026-10-13 00:11 JST に、`claude/nir1-cres` の CR-1b commit `0e041537e8c56c43be38afea490c26857bb488a7` から作った。`claude-nir1-broute` は 2026-10-13 00:47 JST に `origin/master` の `a153743b` から作った（SPIKE S1 で、製品に B の sealed binding を publish する経路が無いことが分かったため、B-ROUTE レーンを追加した）。`claude-nir1-crrec` は 2026-10-13 22:07 JST に `origin/master` の `dabbed14711561693b0a86de0241873a9beafa04`（#649）から作り、CR-1 の merge の後に、その squash commit `750741183cf4d75ccf18b3904a5751b762284bda`（#636）へ載せ替えた。作成時刻は各 branch の reflog（`git reflog show --date=iso <branch>`）の作成記録で確かめた。以後に作る worktree は、作成時に本表へ追記する。merge 済みのレーンの worktree は、この計画で作ったものに限って片付ける。
 
 `claude-nir1-crrec` より後の行は、DOC-REC（2026-10-14）でまとめて追記した。作成時刻（JST）は各 branch の reflog の作成記録で確かめた：`claude/nir1-cp2a` 10-13 22:13、`claude/merge-gate-quick` 22:27、`claude/nir1-cr2` 23:03、`claude/ci-pin-c2zc-base` 23:34、`claude/flaky-runtime-sampler-pid` 10-14 01:47、`claude/nir1-cqopt` 02:13、`claude/journey-idempotent-create` 02:23、`claude/flaky-x` と `claude/flaky-y` 04:34、`claude/nir1-bguard` 10:13、`claude/nir1-x1a` 12:20、`claude/nir1-cqavail` と `claude/nir1-cqmem` 12:36、`claude/nir1-docrec` 14:10。
 
 2026-10-14 に、merge 済みのレーンの worktree を片付けた。対象は、HEAD が merge 済みの PR の head と一致し、追跡されるファイルに未 commit の変更が無いものに限った。12:25 に `claude-ci-pin`、`claude-flaky-sampler`、`claude-flaky-x`、`claude-journey-create`、`claude-merge-gate`、`claude-nir1-broute`、`claude-nir1-cp0`、`claude-nir1-cp1`、`claude-nir1-cp2a`、`claude-nir1-cr2`、`claude-nir1-cres`、`claude-nir1-crrec`、`claude-nir1-dt1`、`claude-nir1-dt2`、`claude-nir1-dt3`、`claude-nir1-hp` を、13:17 に `claude-flaky-y` と `claude-nir1-cqopt` を片付けた（時刻は会話記録の timestamp）。branch は残した。このとき、gitignore の対象（`.ralph/`）に置かれていた lane の判断記録（DT-1、DT-2、DT-3、CR-1、HP-1、CP-1、B-ROUTE の `.ralph/agent/decisions.md`）も一緒に消えた。消えた記録は会話記録から復元し、§3.3 の記録先に置いた。以後は、worktree を片付ける前に `git status --porcelain --ignored` で ignore 対象を確かめ、記録を退避してから消す。
+
+`claude-nir1-b3-record` より後の行は、docs の同期（`claude/nir1-sync2`。2026-10-19）でまとめて追記した。作成時刻（JST）は各 branch の reflog の作成記録で確かめた：`claude/nir1-measure` 10-17 12:08、`claude/nir1-df-plus`・`claude/nir1-dt4`・`claude/nir1-x1-2` 14:31、`claude/nir1-cb1`・`claude/nir1-cq-lim`・`claude/nir1-da1`・`claude/nir1-dp-h` 19:18、`claude/nir1-x1-3`・`claude/nir1-hs1` 20:31、`claude/fix-graph-oversized-flake` 22:51、`claude/nir1-webrtc-proto` 10-18 02:08、`claude/nir1-dt5`・`claude/nir1-hc1`・`claude/nir1-cb2`・`claude/nir1-di1c` 13:01、`claude/nir1-nc1` 19:24、`claude/nir1-sync2` 10-19 03:29、`claude/nir1-cb4`・`claude/nir1-di1a`・`claude/nir1-di1b`・`claude/nir1-x1-4` 03:30。U5（CI 保守。計画外）の worktree は載せない。merge 済みのレーンの worktree は、この時点ではまだ片付けていない。
 
 ## 8. 2026-09-25/26 の off-master 承認と WIP（不採用・参照のみ）
 
@@ -434,6 +466,12 @@ Session B3 の後の lane の開始条件（契約の上での待ち。実装前
 | PUB-G | Session C-1 の承認の後 | CP-4、CP-2b、DA-2、A3＋B＋C＋D2a、G-pub（3 OS の packaged smoke で Negative (34)）。CQ-LIM-1〜4 は #678 で master |
 | DD-1 | K6 の確認者が、K6/2 の DD-1 の分類と K3/3 が加えた「続く通信」の2項目の両立を判断した後（K3/3 の引き継ぎ H4。契約の条件ではない integrator の運用） | 両立しなければ K6 の新しい draftRef を起案する |
 
+2026-10-19 追記（#679〜#684 の merge の後。上の記録と表は直さない）:
+
+- Session B3 の記録は #679（`7c3d3110`）で master に入った。
+- NC-1 は #683（`a8ee82d5`）で master に入った。判断の記録は [nc1-decisions.md](nir1-lane-decisions/nc1-decisions.md)（DR-NC1-1〜49）。G-open の記録は Linux の実機で採った（[`nir1-lane-decisions/nc1-g-open/`](nir1-lane-decisions/nc1-g-open/README.md)。採取時の head は `fd549d4c`、Electron 43.5.0）。Windows／macOS と packaged の build は G-pub（CP-2b）の範囲で、この記録に含まない。採取時の head の製品コードと harness が master と同一であることは、PR の時に git diff で確かめた。この同期で `fd549d4c` と `b8a0bb7c` の差を見直した結果: NC-1 の module（`electron/main/rendererContainment*.ts`。試験を除く）と harness（`electron/scripts/webrtc-block-probe*`）には差が無い。ただし `electron/main` の全体では、NC-1 より先に merge した CB-2（#682）の MG-1 の配線（`index.ts`、`ipc.ts`、`mainGrant.ts`、`bodyDeclarationCiSeam.ts`、`profileEgress.ts`）とその試験の差がある。DR-NC1-46 (b) の検査（`git diff <記録の head> HEAD -- electron/main electron/scripts/webrtc-block-probe*` が空）は字義のままでは満たさないので、この差の扱い（再走するか、閉じ込めに影響しないことを確かめるか）を開放 commit の PR で決める。
+- DA-1 の開放 commit（ST3。`own-data-read` を有効にする commit）の前提は、NC-1 の merge、G-open の記録、master の canonical Full の green である。NC-1 の merge と G-open の記録は満たした。master の Full は `a8ee82d5` まで green（run 39150424373）で、`b8a0bb7c` の Full（run 39154324262）は実行中（この記録の時点）。開放 commit は未実施で、実施の前にユーザーの確認を得る。開放の後も、PUB-G と Session C-1（Graph の公開、activation UI の公開、開示の文言）は別の承認である。
+
 ## 11. 未解決事項
 
 - `[precheck]` DT-2 の再試行の上限（sweep の recover の再試行 0 回→最大2回、送信していない終端の書込みの再試行 1 回→最大3回。K1b の規則7の再確認の対象）の再確認は、Session B1 の9文のどれにも含まれず、未解決である。手段は DSN §9 のとおり（新しい draftRef を起案するか、1件1回への締め直し）。台帳の残 HOLD 表の D-transport の行（DT-1〜3）からここへ向ける。
@@ -441,7 +479,13 @@ Session B3 の後の lane の開始条件（契約の上での待ち。実装前
 - proposal/7 の実装（CQ-LIM-1〜4）の merge 条件（X1-3 の merge の後の再測を終えること）は、2026-10-18 に満たされた。最初の再測が §10.4 の条件（registration の使用量が Q の 85% を超える）を割って `[precheck]` で止まり、ユーザーが「まず実装で直す（推奨）」を選んで（§1 の SB-7）実装で解消し（DR-CQL-13）、proposal/8 は不要だった。CQ-LIM-1〜4 は #678 で master にある。
 - CQ-LIM-1〜3 の merge と CP-4 の順序は、proposal/7 の draft に定めがなかった。CQ-LIM-1〜4 は CP-4 の前に #678 で merge 済みで、CQ-LIM-4（G-03 の再 freeze）も済んだ。CP-4 の TASK.md を作るときに、観測前の commit が引く freeze の sha256（`6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7`）を確かめる。
 - 取り込んだ K2/4 の K2/3 への link は切れたままである（bytes を変えない）。
-- `[precheck]` DA-1 の ST3 の開放 commit（`own-data-read` を有効にする commit）は、K3/3 の確認で設計が確定したが、NC-1 の実装と merge、G-open（Linux の実機）の通過まで入れない（§10.5）。開放は未実装である。
+- `[precheck]` DA-1 の ST3 の開放 commit（`own-data-read` を有効にする commit）は、K3/3 の確認で設計が確定し、NC-1 は #683 で master に入り、G-open の記録（Linux の実機）もある。開放 commit は未実施で、実施の前にユーザーの確認を得る。G-open の記録の head と master の `electron/main` の差（CB-2 の MG-1 の配線）の扱いは、開放 commit の PR で決める（§10.5 の 2026-10-19 追記）。
 - K3/3 の引き継ぎ H4: K6/2 の DD-1 の分類が、K3/3 が「続く通信」に加えた2項目（Chromium から LS-1 への接続と、blackhole された辞書の要求の試み）を「一覧の項目への試み」として扱えるか、K6/2 の「loopback の接続の試みは、一覧に項目がないのですべてそれ以外」とする文面と両立するかは、K6 の確認者の判断のまま残る。DD-1 の着手の前に決める（契約の条件ではない integrator の運用。照合では済ませない）。両立しなければ K6 の新しい draftRef を起案する。
 - K3/3 の引き継ぎ H2: 止めた辞書の自動取得の代わり（Main 側での取得、同梱、取得先を exact host に固定する案）は、未検証で別の draftRef が要る。別の課題として残る。
 - K3/3 の引き継ぎ H1: 更新経路の定期 CI（公開 release の asset の redirect 先の host が RS-1 に含まれるかの週1回の CI と、RS-1 起因の更新の失敗が updater の error として surface されることの試験）は CP-2b の担当が決める（条件ではない。新しい workflow を要する）。
+- DT-5 の引き継ぎ（#680。[dt5-decisions.md](nir1-lane-decisions/dt5-decisions.md)）: (1) 主要な local server（llama.cpp の server、Ollama、LM Studio、vLLM、SGLang）の実測（K5/3 の DT-5a）は未実施（DR-DT5-13、27）。model の重みの取得は新しい外部通信とディスクの消費になるので、委任の外として行っていない。数値の確定（DR-DT5-26）は draft の初期案のままで、実測の根拠を持たない。(2) Windows の `SO_RCVTIMEO`／`SO_SNDTIMEO` の timeout の後の socket の状態は、Winsock の文書では不定である（DR-DT5-30。未解決。安全性ではなく Windows での成功率の問題）。(3) 取消の close と join の有界性は 3 OS の手当て（DR-DT5-24）を入れたが、macOS の CI の経路が無く、macOS では実行されていない。(4) `Nir1LocalGenerationInput.config` が `pub(crate)` のままである。(5) DD-1、PUB-L、integrator への引継ぎは decisions 文書の末尾のとおり。
+- HC-1 の引き継ぎ（#681。[hc1-decisions.md](nir1-lane-decisions/hc1-decisions.md)）: (1) 1 turn の予算の数値は integrator が K1b の規則5で決める（HC-1 は production code に固定値を足していない）。(2) HC-1a の実測の推奨値は DR-HC1-12 にある。(3) SQL VM steps、deadline、busy の枯渇と cancel は、run が部分的な outcome を返せず型付き error になる。この扱いは DI-1b と integrator への申し送り（DR-HC1-24）。
+- DI-1c の引き継ぎ（#684。[di1c-decisions.md](nir1-lane-decisions/di1c-decisions.md)）: (1) Revision・Decision・Freshness の変更が、再観測の後から claim の COMMIT の前までに入ると、旧い request が1回送られる（残余。DR-DI1C-9 の A-18 の観測）。(2) Native 選択の可用性の上限（513 件／約 34 件）。(3) 旧い claim の API が `pub` のまま残る。
+- CB-2 の引き継ぎ（#682。[cb2-decisions.md](nir1-lane-decisions/cb2-decisions.md)）: (1) workspace 不一致の message が絶対 path を含む。(2) 取消は半端な行（JSON 列だけが入り token 列が NULL の行）を消さない（DR-CB2-1 の追記）。(3) D2a の epoch の変化の `revoke_all` の順序（DR-CB2-10）。(4) Windows／macOS では locator が未実行。(5) 高リスクの判断（DR-CB2-3、-4）の advisor の結論は、decisions 文書では「未取得（integrator の作業）」のままである。
+- NC-1 の引き継ぎ（#683。[nc1-decisions.md](nir1-lane-decisions/nc1-decisions.md)）: (1) K3/3 の引き継ぎ H1〜H11 の扱いは DR-NC1-40 のとおり（G-pub と H7 の所要の記録は CP-2b、H11 は記録の `verdicts.txt` で不活性の行を列挙。ほかは実装に触れない）。(2) 実行中の失敗の webContents の破棄は、同期の破棄が Electron 43.5.0 で SIGSEGV するため、handler の外の次の tick で行う（DR-NC1-18。draft の FC-1 の「その場で破棄」との差）。(3) G-open の記録は採取時の head に束縛され、`electron/main` か harness の変更で無効になる。検出は開放 commit の PR の git diff で行う（DR-NC1-46 (b)。§10.5 の 2026-10-19 追記）。(4) DR-NC1-46 (c) で未解決とした `chat-stream-workspace-switch` と、未実行だった C2-ZC の journey は、canonical Full で確認済み。
+- DP-H の引き継ぎ（#677。[dp-h-decisions.md](nir1-lane-decisions/dp-h-decisions.md)）: evidence は HOLD のまま（DR-DPH-75）。(1) 置換 fixture の担当と版が未定である。(2) gate の `FIXTURE_PATH`／`FREEZE_PATH` が版 1 に固定されている。(3) freeze record の commit 数の上限が 16 である。
