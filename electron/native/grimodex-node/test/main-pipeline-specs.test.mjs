@@ -12,6 +12,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import { test } from "node:test";
 
 const repoRoot = path.resolve(
@@ -36,10 +37,14 @@ test("Electron main の pipeline 試験（vitest.electron-native.config.ts）が
       encoding: "utf8",
       timeout: 600_000,
       maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, CI: "1" },
+      // vitest は CI で色を付け、`Test Files` と件数の間に色の符号が入る
+      // （hosted の GitHub Actions で実測）。色を止め、残っても照合の前に除く。
+      env: { ...process.env, CI: "1", NO_COLOR: "1", FORCE_COLOR: undefined },
     },
   );
-  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
+  const output = stripVTControlCharacters(
+    `${result.stdout ?? ""}\n${result.stderr ?? ""}`,
+  );
   assert.equal(result.error, undefined, String(result.error));
   assert.equal(result.status, 0, `vitest が失敗した\n${output}`);
   assert.match(output, /Test Files\s+\d+ passed/, output);
