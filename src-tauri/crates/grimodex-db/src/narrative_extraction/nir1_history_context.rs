@@ -1257,7 +1257,7 @@ mod tests {
         let inputs = inputs();
         let (parameters, digest) = selection(&inputs, "nir1-context-estimator-v1");
         let draft = finish_history_draft(stage, true, &parameters, &digest, &inputs);
-        let HistoryContextSlot::Context(_) = draft.slot else {
+        let HistoryContextSlot::Context(recorded_slot) = draft.slot else {
             panic!("a complete output records a context");
         };
         let CurrentHistoryContext::Known(mut comparison) = current_of(stage) else {
@@ -1269,6 +1269,7 @@ mod tests {
             created_at_ms,
             // The storage writer sets `eligibleUntilMs` from the row.
             eligible_until_ms: (created_at_ms + HISTORY_ELIGIBILITY_WINDOW_MS) as u64,
+            d1: recorded_slot.d1,
         }
     }
 

@@ -113,6 +113,8 @@ mod material_membership;
 mod material_membership_root;
 #[cfg(feature = "native-current-human-capture")]
 mod nir1_history_context;
+#[cfg(feature = "native-current-human-capture")]
+mod nir1_history_requalification;
 mod nir1_packing;
 pub use material_membership::{
     read_revision_material_membership, MaterialMembershipRead, RevisionMaterialMembership,

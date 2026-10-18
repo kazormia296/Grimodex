@@ -20,8 +20,8 @@ fn valid_ref(value: &str) -> bool {
 
 use crate::nir1_generation::history_context::{
     DurableWorkspaceIdentity, HistoryAxes, HistoryAxis, HistoryContextGateReason,
-    HistoryContextSlot, HistoryRestoreEpoch, HistorySendClassification, HistoryTargetScope,
-    HistoryUnavailableReason, HISTORY_ELIGIBILITY_WINDOW_MS,
+    HistoryContextSlot, HistoryD1Selection, HistoryRestoreEpoch, HistorySendClassification,
+    HistoryTargetScope, HistoryUnavailableReason, HISTORY_ELIGIBILITY_WINDOW_MS,
 };
 use crate::nir1_generation::{
     check_input_completeness, CompletenessContext, GenerationPurpose, InputReference, InputRole,
@@ -209,6 +209,10 @@ pub struct RecordedHistoryContext {
     pub created_at_ms: i64,
     /// The stored `eligibleUntilMs`.
     pub eligible_until_ms: u64,
+    /// The stored D1 selection fields. They are not compared with the current
+    /// turn (the D1 selection is today's); the requalifier recomputes the
+    /// selection digest from them and the stored input rows (HC1-3).
+    pub d1: HistoryD1Selection,
 }
 
 /// Why the current turn's context cannot be compared. The turn goes on
@@ -532,7 +536,7 @@ impl HistoryInput {
     /// The stored input row this input stands for, derived from its kind and
     /// input-use. `None` for an invalid message binding, which never
     /// qualifies and so has no row of the table.
-    fn input_reference(&self) -> Option<InputReference> {
+    pub(crate) fn input_reference(&self) -> Option<InputReference> {
         let (role, target) = match &self.kind {
             HistoryInputKind::GeneratedMessage {
                 version_id,
@@ -723,16 +727,83 @@ impl HistoryBudget {
     }
 }
 
+/// Why the production `CurrentQualifier` (HC1-3) excludes a candidate and its
+/// descendants (K4/3 sections 3 and 13). A closed set; no plaintext, no
+/// identity or token.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    not(feature = "native-current-human-capture"),
+    expect(
+        dead_code,
+        reason = "only the production requalifier (feature native-current-human-capture) constructs these reasons"
+    )
+)]
+pub enum RequalificationReason {
+    /// The message version is missing or was invalidated.
+    MessageVersionInvalid,
+    /// The message version belongs to another project or chat session.
+    MessageVersionScopeMismatch,
+    /// The message version's origin is not the one the input uses.
+    MessageOriginMismatch,
+    /// The message version's body digest is not the recorded one.
+    MessageDigestChanged,
+    /// A Source is not current (changed, missing, or not the recorded token).
+    SourceStale,
+    /// No current resolver exists for the Source's kind (unknown, excluded).
+    SourceResolverMissing,
+    /// The Revision is not the current approved one (bundle digest or id).
+    RevisionStale,
+    /// A2 reads the Revision as unavailable (for example the version 1 form).
+    RevisionUnavailableByA2,
+    DecisionStale,
+    /// The canonical Freshness is not fresh now.
+    FreshnessNotFresh,
+    /// A typed-scope digest differs from the Revision's current one.
+    ScopeDependencyChanged,
+    /// The current A3 evaluation is not Eligible.
+    DisclosureIneligible,
+    /// A Scope reference that names the turn's own context (Scene Scope
+    /// token, incarnation) is not the context the attempt was compared with.
+    SceneScopeInconsistent,
+    /// The recorded `(kind, target)` set is not the set the current state
+    /// derives (rule 3 of the completeness rule).
+    ExpectedSetMismatch(CompletenessViolation),
+    /// A typed N/A does not follow the table that the input's type, use and
+    /// source key derive (a forged or missing N/A, a reference where the
+    /// table puts an N/A, the Raw Freshness reason).
+    NotApplicableMismatch(CompletenessViolation),
+    /// Another violation of the completeness rule found while requalifying.
+    CompletenessViolated(CompletenessViolation),
+    /// The D1 selection digest does not recompute from the stored rows, or a
+    /// D1 reference is not the attempt's.
+    D1RecomputeMismatch,
+    /// The stored input rows do not form one current turn at ordinal 0.
+    InputShapeInvalid,
+    /// An Artifact input (unsupported).
+    ArtifactUnsupported,
+    /// The input cannot be mapped to a stored input row.
+    InvalidInput,
+}
+
+/// What a `CurrentQualifier` says about an attempt or an input.
+///
+/// `Unavailable` is a stop of the whole run, not a typed absence: it means a
+/// read failed (SQLite or IO, a malformed row, a validation stop such as a
+/// cancel or a deadline), so a partial history must not be adopted. A typed
+/// absence (no resolver for a Source kind, a Revision A2 reads as
+/// unavailable, a Scene that is not in the mapping) is `Excluded` with a
+/// closed reason, which drops that candidate and its descendants only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[expect(
     dead_code,
-    reason = "current-authority mapping remains incomplete; no production qualifier is activated"
+    reason = "the production qualifier (HC1-3) is activated by the run entry of HC1-4"
 )]
 pub enum QualificationStatus {
     Current,
     Pending,
     Unavailable,
     Ineligible,
+    Excluded(RequalificationReason),
 }
 
 /// The storage adapter implements this with the existing current readers. A
@@ -824,6 +895,8 @@ pub enum IneligibleReason {
     /// The recorded context differs from the current turn's in one item.
     Context(ContextMismatch),
     AuthorityRejected,
+    /// The production qualifier excluded the candidate for a closed reason.
+    Requalification(RequalificationReason),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -958,6 +1031,9 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
                         QualificationStatus::Ineligible => {
                             Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
                         }
+                        QualificationStatus::Excluded(reason) => Err(Failure::ineligible(
+                            IneligibleReason::Requalification(reason),
+                        )),
                     },
                 },
             }
@@ -1007,6 +1083,9 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
             QualificationStatus::Ineligible => {
                 Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
             }
+            QualificationStatus::Excluded(reason) => Err(Failure::ineligible(
+                IneligibleReason::Requalification(reason),
+            )),
         };
         self.input_cache
             .insert((attempt.id.clone(), ordinal), result.clone());
@@ -1639,6 +1718,7 @@ mod generation_storage_adapter {
             },
             created_at_ms: stored.created_at_ms,
             eligible_until_ms: context.eligible_until_ms.get(),
+            d1: context.d1.clone(),
         })
     }
 
@@ -2041,6 +2121,7 @@ mod generation_storage_adapter {
                     context: context.clone(),
                     created_at_ms: 1,
                     eligible_until_ms: 1_000_000,
+                    d1: history_context_testing::sample_context().d1,
                 },
                 CurrentHistoryContext::Known(Box::new(context)),
             )
@@ -3456,6 +3537,7 @@ mod tests {
             context: comparison_context(),
             created_at_ms: CREATED_AT_MS,
             eligible_until_ms: (CREATED_AT_MS + HISTORY_ELIGIBILITY_WINDOW_MS) as u64,
+            d1: crate::nir1_generation::history_context::testing::sample_context().d1,
         }
     }
 

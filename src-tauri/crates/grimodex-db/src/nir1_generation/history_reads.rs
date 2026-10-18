@@ -31,7 +31,11 @@ use super::{
     InputReference, InputTarget, LegacyInputReferenceV1, LenientAttemptBinding, StoredAttempt,
     VersionedAttemptBinding, VersionedReference, MAX_BINDING_JSON_BYTES, MAX_ID_BYTES,
 };
+#[cfg(feature = "native-current-human-capture")]
+use super::{MessageOrigin, MAX_DIGEST_BYTES};
 use anyhow::{ensure, Context, Result};
+#[cfg(feature = "native-current-human-capture")]
+use rusqlite::Connection;
 use rusqlite::{params, OptionalExtension};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -552,4 +556,132 @@ impl GenerationHistorySnapshotReader<'_> {
         }
         Ok(index)
     }
+}
+
+/// The snapshot's read transaction, handed to the current-authority readers of
+/// the history requalifier (HC1-3, K4/3 section 3). It is the one connection
+/// the snapshot reader already owns, so every authority read the qualifier
+/// makes (the current Source resolvers, the exact Revision reader, the A3
+/// evaluation) is part of the same participant read transaction and the same
+/// whole-turn SQL ledger as the attempt reads.
+///
+/// The only way to get one is [`GenerationHistorySnapshotReader::authority_connection`],
+/// and the value is `Copy` and borrows the transaction, so it cannot outlive
+/// the snapshot, open another transaction, or reach a writer: the transaction
+/// is the participant's read transaction, which is rolled back and never
+/// committed. The existing readers need a `&Connection`, so the borrow is
+/// exposed read-only through [`HistoryAuthorityConnection::connection`]; the
+/// requalifier writes nothing (a test fixes zero writes over a whole run).
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Copy)]
+pub(crate) struct HistoryAuthorityConnection<'connection> {
+    connection: &'connection Connection,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl<'connection> HistoryAuthorityConnection<'connection> {
+    /// A wrapper over a connection that is inside a read transaction. Tests of
+    /// the requalifier build it on their own read transaction; production gets
+    /// it from the snapshot reader.
+    pub(crate) fn connection(&self) -> &'connection Connection {
+        self.connection
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(connection: &'connection Connection) -> Self {
+        Self { connection }
+    }
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl<'connection> GenerationHistorySnapshotReader<'connection> {
+    /// The current-authority view of this snapshot's read transaction (see
+    /// [`HistoryAuthorityConnection`]).
+    pub(crate) fn authority_connection(&self) -> HistoryAuthorityConnection<'connection> {
+        HistoryAuthorityConnection {
+            connection: self.connection,
+        }
+    }
+}
+
+/// The scalar columns of one live message version row. No body is read: the
+/// snapshot reader has already verified the chat body against the row's
+/// digest when it loaded the message (`read_message`), so comparing a
+/// recorded digest with this column compares it with the verified body.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryMessageVersionFacts {
+    pub project_id: String,
+    pub chat_session_id: String,
+    pub origin: MessageOrigin,
+    pub body_digest: String,
+    pub parent_attempt_id: Option<String>,
+}
+
+/// Read the live (not invalidated) message version row by id, `None` when it
+/// does not exist or was invalidated. Column lengths are bounded before any
+/// string is fetched; a row outside them or with an unknown origin is an
+/// error, as in the other history reads.
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) fn read_history_message_version_facts(
+    authority: &HistoryAuthorityConnection<'_>,
+    version_id: &str,
+) -> Result<Option<HistoryMessageVersionFacts>> {
+    identity(version_id)?;
+    let connection = authority.connection();
+    let lengths: Option<(i64, i64, i64, i64, Option<i64>)> = connection
+        .query_row(
+            "SELECT octet_length(project_id),octet_length(session_id),
+                    octet_length(origin),octet_length(body_digest),
+                    octet_length(parent_attempt_id)
+             FROM nir1_generation_message_versions WHERE id=?1 AND invalidated=0",
+            [version_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some(lengths) = lengths else {
+        return Ok(None);
+    };
+    const LIMIT: &str = "NIR1_GENERATION_MESSAGE_VERSION_LIMIT";
+    bounded_sqlite_length(lengths.0, MAX_ID_BYTES, LIMIT)?;
+    bounded_sqlite_length(lengths.1, MAX_ID_BYTES, LIMIT)?;
+    bounded_sqlite_length(lengths.2, MAX_ID_BYTES, LIMIT)?;
+    bounded_sqlite_length(lengths.3, MAX_DIGEST_BYTES, "NIR1_GENERATION_DIGEST_LIMIT")?;
+    if let Some(parent) = lengths.4 {
+        bounded_sqlite_length(parent, MAX_ID_BYTES, LIMIT)?;
+    }
+    let row: (String, String, String, String, Option<String>) = connection.query_row(
+        "SELECT project_id,session_id,origin,body_digest,parent_attempt_id
+         FROM nir1_generation_message_versions WHERE id=?1 AND invalidated=0",
+        [version_id],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    let origin = match row.2.as_str() {
+        "human" => MessageOrigin::Human,
+        "generated" => MessageOrigin::Generated,
+        _ => anyhow::bail!("NIR1_GENERATION_MESSAGE_ORIGIN_INVALID"),
+    };
+    Ok(Some(HistoryMessageVersionFacts {
+        project_id: row.0,
+        chat_session_id: row.1,
+        origin,
+        body_digest: row.3,
+        parent_attempt_id: row.4,
+    }))
 }
