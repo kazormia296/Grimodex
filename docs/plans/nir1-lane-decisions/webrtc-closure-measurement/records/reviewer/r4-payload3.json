@@ -1,0 +1,212 @@
+{
+  "label": "r4-payload3",
+  "electron": "43.5.0",
+  "cm": {
+    "r4": [
+      "payload3"
+    ],
+    "target": "default",
+    "policy": "disable_non_proxied_udp",
+    "proxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "socks5://PROXYHOSTPORT",
+      "proxyBypassRules": "<-loopback>;https://*.gvt1.com:CANARYP"
+    },
+    "resolverSwitch": "MAP leak?-* 127.0.0.1, MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost"
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "setProxy applied to window"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 4,
+    "probes": 13,
+    "canaryHits": 22,
+    "unattributed": 0,
+    "proxyHits": 6
+  },
+  "rows": [
+    {
+      "id": "control.same-origin-fetch",
+      "outcome": "status:200",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "control.bundled-worker",
+      "outcome": "worker-ok:x",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "control.rtc-defined",
+      "outcome": "function",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.payload3.turn-tcp-allowedport",
+      "outcome": "gathering:complete",
+      "leaked": 6,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 4
+      },
+      "leakHeads": [
+        "p-127.0.0.1:tcp-data:....!..BeqttN9WZY0dc........",
+        "p-127.0.0.1:tcp-data:....!..BRrKgoleghme7........",
+        "p-127.0.0.1:tcp-data:...P!..BCPUBFnxfU562............SECRET-user-<n>......r4realm.....r4nonce.....'KdV..6xB%.0.......-"
+      ],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.payload3.turn-tcp-allowedport-300",
+      "outcome": "gathering:complete",
+      "leaked": 6,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 4
+      },
+      "leakHeads": [
+        "p-127.0.0.1:tcp-data:....!..BxdYA11x3Xzc7........",
+        "p-127.0.0.1:tcp-data:....!..BHK5W5/L7l4d8........",
+        "p-127.0.0.1:tcp-data:...p!..BuWSRhMnUEARt...........2NNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNNN"
+      ],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.payload3.turn-tcp-allowedport-500",
+      "outcome": "gathering:complete",
+      "leaked": 6,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 4
+      },
+      "leakHeads": [
+        "p-127.0.0.1:tcp-data:....!..BYmIIzuIU+EW0........",
+        "p-127.0.0.1:tcp-data:....!..BBaf6wdg9ONzr........",
+        "p-127.0.0.1:tcp-data:...8!..BY8PMXeufRiZy............OOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOOO"
+      ],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.payload3.turns-allowedport",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 2
+      },
+      "leakHeads": [
+        "p-127.0.0.1:tcp-data:............&1...0..i...V..$oA.>...H..'....  .;.E.g.}.Q.!.;..S|....8|>.;9..I. .........+./.,.0............./.5...<.....3.............f[....:Y..i...0..=7{%..4...<..Y.ls.zK...<..,.{.....GS.DCP...S..}.l..SWb...o..4.v.......^fK.g4..a..,..8.2...0.DG..y.fP.Ik..y..-ai%..5...,.u....\\+U...T..j..J.e.u.U. ..V.",
+        "p-127.0.0.1:tcp-data:...............$..!..t..'.CL....>.......... ..Y..X...N....I.97.. +s.`1..*..(. .........+./.,.0............./.5...<.....3...............1..u..a.G...J\\.g%....s^|..qz.9.?.EV..N.Lf...<...)<...e.]H#.D...P.f\\zF..l....es.%..$.|....\\..L6.t....w...D.T[R...O.....p...I<<dB.G..w,_i\\[;/...H...I`;..@)..A.F.*..9.."
+      ],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.payload3.turn-tcp-otherport",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 2,
+      "proxyHeads": [
+        "...",
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [],
+  "netLog": null,
+  "dnsAll": null,
+  "dnsRowCount": null,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

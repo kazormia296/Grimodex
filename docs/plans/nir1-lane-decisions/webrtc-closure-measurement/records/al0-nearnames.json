@@ -1,0 +1,138 @@
+{
+  "label": "al0-nearnames",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "target": "default",
+    "policy": "disable_non_proxied_udp",
+    "proxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "socks5://PROXYHOSTPORT",
+      "proxyBypassRules": "<-loopback>"
+    },
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+    "resolveHostTests": [
+      "gvt1.com",
+      "xgvt1.com",
+      "a.gvt1.com",
+      "a.b.github.com",
+      "github.com.",
+      "github.com.evil.test",
+      "evil.release-assets.githubusercontent.com",
+      "api.github.com",
+      "x.localhost",
+      "localhost.",
+      "foo.local",
+      "127.1",
+      "0x7f.0.0.1",
+      "2130706433",
+      "127.0.0.1.",
+      "[::1]",
+      "169.254.169.254"
+    ]
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "setProxy applied to window",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:44991",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:44991",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:44991",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:44991",
+    "updaterSession.resolveProxy(https://github.com/) => DIRECT",
+    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
+    "resolveHost(gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(xgvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(a.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(a.b.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(github.com.) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(github.com.evil.test) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(evil.release-assets.githubusercontent.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(x.localhost) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(localhost.) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(foo.local) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(127.1) => [\"127.0.0.1\"]",
+    "resolveHost(0x7f.0.0.1) => [\"127.0.0.1\"]",
+    "resolveHost(2130706433) => [\"127.0.0.1\"]",
+    "resolveHost(127.0.0.1.) => [\"127.0.0.1\"]",
+    "resolveHost([::1]) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(169.254.169.254) => error:net::ERR_NAME_NOT_RESOLVED",
+    "policy readback => disable_non_proxied_udp"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 5,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 4
+  },
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [],
+  "netLog": null,
+  "dnsAll": null,
+  "dnsRowCount": null,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

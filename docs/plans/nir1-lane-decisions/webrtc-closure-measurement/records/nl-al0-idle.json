@@ -1,0 +1,180 @@
+{
+  "label": "nl-al0-idle",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "spellcheck": true,
+    "waitMs": 6000,
+    "target": "default",
+    "policy": "disable_non_proxied_udp",
+    "proxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "socks5://PROXYHOSTPORT",
+      "proxyBypassRules": "<-loopback>"
+    },
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+    "resolveHostTests": [
+      "grimodex-rule-sentinel.invalid",
+      "example.org",
+      "redirector.gvt1.com",
+      "github.com",
+      "release-assets.githubusercontent.com",
+      "api.github.com",
+      "localhost",
+      "127.0.0.1",
+      "127.0.0.2",
+      "1.1.1.1"
+    ]
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "setProxy applied to window",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:44233",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:44233",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:44233",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:44233",
+    "updaterSession.resolveProxy(https://github.com/) => DIRECT",
+    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
+    "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
+    "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(redirector.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(github.com) => [\"20.27.177.113\"]",
+    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.109.133\",\"185.199.111.133\",\"185.199.110.133\",\"185.199.108.133\"]",
+    "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]",
+    "resolveHost(127.0.0.1) => [\"127.0.0.1\"]",
+    "resolveHost(127.0.0.2) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(1.1.1.1) => error:net::ERR_NAME_NOT_RESOLVED",
+    "policy readback => disable_non_proxied_udp"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 5,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 4
+  },
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1,
+      "dnsNames": []
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [],
+  "netLog": {
+    "hostResolver": {
+      "requestHosts": {
+        "127.0.0.1": 6,
+        "github.com": 1,
+        "localhost": 1,
+        "release-assets.githubusercontent.com": 1,
+        "~notfound": 14
+      },
+      "jobHosts": {
+        "github.com": 1,
+        "release-assets.githubusercontent.com": 1
+      },
+      "rawRequestHosts": {
+        "127.0.0.1:0": 2,
+        "127.0.0.1:44233": 4,
+        "github.com:0": 2,
+        "http://~notfound:43347": 5,
+        "https://~notfound": 4,
+        "localhost:0": 1,
+        "release-assets.githubusercontent.com:0": 2,
+        "~NOTFOUND:0": 5
+      },
+      "nonceBearing": 0
+    },
+    "alerts": [],
+    "gvt": [
+      "CORS_REQUEST:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "REQUEST_ALIVE:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "TRANSPORT_SECURITY_STATE_SHOULD_UPGRADE_TO_SSL:redirector.gvt1.com",
+      "URL_REQUEST_START_JOB:gvt1.com https://gvt1.com",
+      "URL_REQUEST_START_JOB:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "SIMPLE_CACHE_ENTRY_SET_KEY:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "HTTP_STREAM_JOB_CONTROLLER:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "HTTP_STREAM_JOB:redirector.gvt1.com",
+      "TCP_CLIENT_SOCKET_POOL_REQUESTED_SOCKET:redirector.gvt1.com",
+      "SOCKET_POOL_CONNECT_JOB_CREATED:redirector.gvt1.com",
+      "QUIC_SESSION_POOL_JOB:redirector.gvt1.com"
+    ],
+    "urls": [
+      "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic"
+    ],
+    "proxyInfos": [
+      "SOCKS5 127.0.0.1:44233",
+      "DIRECT"
+    ]
+  },
+  "dnsAll": [
+    "github.com[rc0]",
+    "release-assets.githubusercontent.com[rc0]"
+  ],
+  "dnsRowCount": 0,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

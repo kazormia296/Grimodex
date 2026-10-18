@@ -1,0 +1,154 @@
+{
+  "args": {
+    "mode": "protocol-first",
+    "env": "localhost",
+    "preDelay": "3000",
+    "nc1Delay": "0",
+    "repeat": 3,
+    "tunnel": false,
+    "rules": "1"
+  },
+  "rows": [
+    {
+      "run": 0,
+      "mode": "protocol-first",
+      "env": "localhost",
+      "preDelay": 3000,
+      "nc1Delay": 0,
+      "tunnel": false,
+      "rules": "1",
+      "timelineMsFromReady": {
+        "ready": 0,
+        "protocol.handle applied (defaultSession touched implicitly)": 7,
+        "listener up": 3015,
+        "setProxy start": 3015,
+        "setProxy done": 3015,
+        "closeAllConnections done": 3016,
+        "permission-policy applied (defaultSession touched)": 3016,
+        "window loaded": 3112
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "startMsFromReady": 48,
+          "startBeforeSetProxyDone": true,
+          "proxyInfo": [
+            "PROXY localhost:44305"
+          ],
+          "hostResolver": [],
+          "netError": -111
+        }
+      ],
+      "envProxyConnects": [
+        {
+          "msFromReady": 53,
+          "line": "CONNECT redirector.gvt1.com:443"
+        }
+      ],
+      "blackholeHits": 0,
+      "dictionaries": [],
+      "spellcheck": {
+        "enabled": true,
+        "langs": [
+          "en-US"
+        ]
+      },
+      "electron": "43.5.0",
+      "ok": true
+    },
+    {
+      "run": 1,
+      "mode": "protocol-first",
+      "env": "localhost",
+      "preDelay": 3000,
+      "nc1Delay": 0,
+      "tunnel": false,
+      "rules": "1",
+      "timelineMsFromReady": {
+        "ready": 0,
+        "protocol.handle applied (defaultSession touched implicitly)": 4,
+        "listener up": 3014,
+        "setProxy start": 3014,
+        "setProxy done": 3015,
+        "closeAllConnections done": 3015,
+        "permission-policy applied (defaultSession touched)": 3015,
+        "window loaded": 3130
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "startMsFromReady": 49,
+          "startBeforeSetProxyDone": true,
+          "proxyInfo": [
+            "PROXY localhost:39881"
+          ],
+          "hostResolver": [],
+          "netError": -111
+        }
+      ],
+      "envProxyConnects": [
+        {
+          "msFromReady": 52,
+          "line": "CONNECT redirector.gvt1.com:443"
+        }
+      ],
+      "blackholeHits": 0,
+      "dictionaries": [],
+      "spellcheck": {
+        "enabled": true,
+        "langs": [
+          "en-US"
+        ]
+      },
+      "electron": "43.5.0",
+      "ok": true
+    },
+    {
+      "run": 2,
+      "mode": "protocol-first",
+      "env": "localhost",
+      "preDelay": 3000,
+      "nc1Delay": 0,
+      "tunnel": false,
+      "rules": "1",
+      "timelineMsFromReady": {
+        "ready": 0,
+        "protocol.handle applied (defaultSession touched implicitly)": 11,
+        "listener up": 3019,
+        "setProxy start": 3020,
+        "setProxy done": 3020,
+        "closeAllConnections done": 3020,
+        "permission-policy applied (defaultSession touched)": 3020,
+        "window loaded": 3116
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "startMsFromReady": 49,
+          "startBeforeSetProxyDone": true,
+          "proxyInfo": [
+            "PROXY localhost:46227"
+          ],
+          "hostResolver": [],
+          "netError": -111
+        }
+      ],
+      "envProxyConnects": [
+        {
+          "msFromReady": 53,
+          "line": "CONNECT redirector.gvt1.com:443"
+        }
+      ],
+      "blackholeHits": 0,
+      "dictionaries": [],
+      "spellcheck": {
+        "enabled": true,
+        "langs": [
+          "en-US"
+        ]
+      },
+      "electron": "43.5.0",
+      "ok": true
+    }
+  ]
+}

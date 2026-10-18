@@ -1,0 +1,334 @@
+## ll-al0-final (--baseline ll-baseline.json)
+ll-al0-final: 行 135（判定 112: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 0、対象外 23〔うち .local 0、不活性 8〕、区分: 活性 43／canary 不可 57／不活性 8）合格 112 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+
+## ll-al0-no-neg-loopback (--baseline ll-baseline.json)
+ll-al0-no-neg-loopback: 行 135（判定 112: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 0、対象外 23〔うち .local 0、不活性 8〕、区分: 活性 30／canary 不可 57／不活性 8）合格 89 不合格 23 記録全体の不合格 2
+  FAIL main.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL main.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo4 [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.lo4b [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns.lo4b [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns-tcp.lo4b [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turn-tcp.lo6 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns.lo6 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns-tcp.lo6 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turn-tcp.localhost [tcp] canary へ 8 件到達
+  FAIL main.turns.localhost [tcp] canary へ 4 件到達
+  FAIL main.turns-tcp.localhost [tcp] canary へ 4 件到達
+  FAIL main.remote-candidate-tcp.lo4 [tcp] canary へ 35 件到達
+  FAIL ll.turn-tcp.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL ll.turns.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL ll.turns-tcp.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL ll.remote-candidate-tcp.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-html.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-html.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-blank.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-blank.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-srcdoc.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-srcdoc.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL(記録全体) 記録全体で canary 到達 77 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 13 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+
+## ll-al0-no-policy (--baseline ll-baseline.json)
+ll-al0-no-policy: 行 135（判定 112: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 0、対象外 23〔うち .local 0、不活性 8〕、区分: 活性 26／canary 不可 57／不活性 8）合格 91 不合格 21 記録全体の不合格 2
+  FAIL main.stun.lo4 [udp] canary へ 3 件到達
+  FAIL main.stuns.lo4 [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo4 [udp] canary へ 6 件到達
+  FAIL main.stun.lo4b [udp] canary へ 3 件到達
+  FAIL main.stuns.lo4b [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo4b [udp] canary へ 6 件到達
+  FAIL main.stun.lo6 [udp] canary へ 3 件到達
+  FAIL main.stuns.lo6 [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo6 [udp] canary へ 6 件到達
+  FAIL main.stun.lan [udp] canary へ 3 件到達
+  FAIL main.stuns.lan [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lan [udp] canary へ 6 件到達
+  FAIL main.remote-candidate-udp.lo4 [udp] canary へ 36 件到達
+  FAIL main.remote-candidate-udp.lan [udp] canary へ 36 件到達
+  FAIL ll.stun.ll4 [udp] ICE が止まっていない（gathering:gathering）
+  FAIL ll.stuns.ll4 [udp] ICE が止まっていない（gathering:gathering）
+  FAIL ll.turn-udp.ll4 [udp] ICE が止まっていない（gathering:gathering）
+  FAIL ll.remote-candidate-udp.ll4 [udp] ICE が止まっていない（ice:checking）
+  FAIL realm.iframe-html.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-blank.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-srcdoc.stun.lo4 [udp] canary へ 3 件到達
+  FAIL(記録全体) 記録全体で canary 到達 129 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 17 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+
+## ll-baseline (--baseline ll-baseline.json)
+ll-baseline: 行 135（判定 112: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 0、対象外 23〔うち .local 0、不活性 8〕、区分: 活性 0／canary 不可 57／不活性 8）合格 29 不合格 83 記録全体の不合格 2
+  FAIL main.turn-tcp.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns-tcp.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turn-tcp.allowed [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns.allowed [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns-tcp.allowed [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turn-tcp.allowedp [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns.allowedp [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns-tcp.allowedp [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turn-tcp.ext [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns.ext [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.turns-tcp.ext [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL main.stun.lo4 [udp] canary へ 3 件到達
+  FAIL main.stuns.lo4 [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo4 [udp] canary へ 6 件到達
+  FAIL main.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL main.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo4 [tcp] canary へ 2 件到達
+  FAIL main.stun.lo4b [udp] canary へ 3 件到達
+  FAIL main.stuns.lo4b [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo4b [udp] canary へ 6 件到達
+  FAIL main.turn-tcp.lo4b [tcp] canary へ 4 件到達
+  FAIL main.turns.lo4b [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo4b [tcp] canary へ 2 件到達
+  FAIL main.stun.lo6 [udp] canary へ 3 件到達
+  FAIL main.stuns.lo6 [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo6 [udp] canary へ 6 件到達
+  FAIL main.turn-tcp.lo6 [tcp] canary へ 4 件到達
+  FAIL main.turns.lo6 [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo6 [tcp] canary へ 2 件到達
+  FAIL main.stun.lan [udp] canary へ 3 件到達
+  FAIL main.stuns.lan [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lan [udp] canary へ 6 件到達
+  FAIL main.turn-tcp.lan [tcp] canary へ 4 件到達
+  FAIL main.turns.lan [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lan [tcp] canary へ 2 件到達
+  FAIL main.stun.localhost [udp] canary へ 3 件到達
+  FAIL main.stuns.localhost [udp] canary へ 3 件到達
+  FAIL main.turn-udp.localhost [udp] canary へ 6 件到達
+  FAIL main.turn-tcp.localhost [tcp] canary へ 8 件到達
+  FAIL main.turns.localhost [tcp] canary へ 4 件到達
+  FAIL main.turns-tcp.localhost [tcp] canary へ 4 件到達
+  FAIL main.remote-candidate-udp.lo4 [udp] canary へ 36 件到達
+  FAIL main.remote-candidate-tcp.lo4 [tcp] canary へ 35 件到達
+  FAIL main.remote-candidate-udp.lan [udp] canary へ 36 件到達
+  FAIL main.remote-candidate-tcp.lan [tcp] canary へ 35 件到達
+  FAIL ll.stun.ll4 [udp] ICE が止まっていない（gathering:gathering）
+  FAIL ll.stuns.ll4 [udp] ICE が止まっていない（gathering:gathering）
+  FAIL ll.turn-udp.ll4 [udp] ICE が止まっていない（gathering:gathering）
+  FAIL ll.turn-tcp.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL ll.turns.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL ll.turns-tcp.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL ll.remote-candidate-udp.ll4 [udp] ICE が止まっていない（ice:checking）
+  FAIL ll.remote-candidate-tcp.ll4 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-html.turn-tcp.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-html.turns.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-html.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-html.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-html.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-blank.turn-tcp.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-blank.turns.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-blank.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-blank.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-blank.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-srcdoc.turn-tcp.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-srcdoc.turns.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-srcdoc.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-srcdoc.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-srcdoc.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-json.turn-tcp.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-json.turns.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-notfound.turn-tcp.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL realm.iframe-notfound.turns.name [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL gvt1.turn-tcp.443 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL gvt1.turns.443 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL gvt1.turn-tcp.8443 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL gvt1.turns.8443 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL dns.many-turn-tcp30 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL dns.many-turns8 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL dns.long-name190 [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL dns.gvt1-label [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL dns.github-label [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL dns.public-example [tcp] proxy 宛 0（blackhole に届いていない。DIRECT か未接続）
+  FAIL(記録全体) 記録全体で canary 到達 277 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 43 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+
+## 対照の受入れ判定: ll-al0-no-neg-loopback --expect-min-fail 1
+ll-al0-no-neg-loopback: 行 135（判定 112: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 0、対象外 23〔うち .local 0、不活性 8〕、区分: 活性 30／canary 不可 57／不活性 8）合格 89 不合格 23 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 77 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 13 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+対照: 不合格 23 行＋記録全体 2 件 >= 1 → 検出できた（期待どおり）
+
+## 対照の受入れ判定（合成）: ll-synthetic-leaks（対象外の行への到達 2 行と unattributed 5）--expect-min-fail 3
+ll-synthetic-leaks（合成。ll-al0-final の複製で、Main 側の行に3、blob iframe の SecurityError の行に2、unattributed に5 を書き込んだもの。実機の記録ではない）: 行 135（判定 114: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 2、対象外 21〔うち .local 0、不活性 8〕、区分: 活性 43／canary 不可 57／不活性 8）合格 112 不合格 2 記録全体の不合格 1
+  FAIL realm.iframe-blob.turn-tcp.name [excluded-leak] 対象外の行（行が成立していない（error:SecurityError:Failed to read a nam））に canary へ 2 件到達
+  FAIL main.net-fetch.window-session [excluded-leak] 対象外の行（Main 側の通信の確認）に canary へ 3 件到達
+  FAIL(記録全体) どの行にも帰属しない canary 到達 5 件（totals.unattributed）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+対照: 不合格 2 行＋記録全体 1 件 >= 3 → 検出できた（期待どおり）
+
+## 既存の記録への適用（参考）
+# al0-final-real (--baseline z12-baseline-real-dns.json)
+al0-final-real: 行 119（判定 104: tcp 55／udp 37／hint 12／unclassified 0／対象外の行への到達 0、対象外 15〔うち .local 0、不活性 0〕、区分: 活性 43／canary 不可 49／不活性 0）合格 104 不合格 0 記録全体の不合格 0
+# z8-final-no-neg-loopback (--baseline z12-baseline-real-dns.json)
+z8-final-no-neg-loopback: 行 101（判定 86: tcp 49／udp 37／hint 0／unclassified 0／対象外の行への到達 0、対象外 15〔うち .local 0、不活性 0〕、区分: 活性 24／canary 不可 43／不活性 0）合格 65 不合格 21 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 93 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 19 行（totals.leakedProbes）
+# z9-final-no-policy (--baseline z12-baseline-real-dns.json)
+z9-final-no-policy: 行 101（判定 86: tcp 49／udp 37／hint 0／unclassified 0／対象外の行への到達 0、対象外 15〔うち .local 0、不活性 0〕、区分: 活性 26／canary 不可 43／不活性 0）合格 67 不合格 19 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 129 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 17 行（totals.leakedProbes）
+# z11-final-no-proxy (--baseline z12-baseline-real-dns.json)
+z11-final-no-proxy: 行 101（判定 86: tcp 49／udp 37／hint 0／unclassified 0／対象外の行への到達 0、対象外 15〔うち .local 0、不活性 0〕、区分: 活性 20／canary 不可 24／不活性 0）合格 37 不合格 49 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 244 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 42 行（totals.leakedProbes）
+# nl-al0-final (--baseline nl-baseline.json)
+nl-al0-final: 行 139（判定 122: tcp 61／udp 45／hint 16／unclassified 0／対象外の行への到達 0、対象外 17〔うち .local 0、不活性 2〕、区分: 活性 43／canary 不可 63／不活性 2）合格 122 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）2 行: rs1.turn-tcp.localhost, rs1.turns.localhost
+# al0-closed-proxy (--no-listener --baseline z12-baseline-real-dns.json。listener なしの試験は TCP の行を canary 0 だけで見る)
+al0-closed-proxy: 行 119（判定 104: tcp 55／udp 37／hint 12／unclassified 0／対象外の行への到達 0、対象外 15〔うち .local 0、不活性 0〕、区分: 活性 43／canary 不可 49／不活性 0）合格 104 不合格 0 記録全体の不合格 0
+
+## 対照の受入れ判定（合成。K3/3 R14）: ll-synthetic-hint-not-in-baseline（baseline にない DNS だけの行を 1 行足したもの）--expect-min-fail 1
+# ll-synthetic-hint-not-in-baseline は ll-al0-final の複製に、ll-baseline にない行 dns.new-hint-not-in-baseline（outcome link:preconnect、leaked 0、proxied 0）を 1 行足した合成の記録（実機の記録ではない）。足す前の道具は合格 113 不合格 0 で終了コード 0 だった
+ll-synthetic-hint-not-in-baseline: 行 136（判定 113: tcp 59／udp 41／hint 13／unclassified 0／対象外の行への到達 0、対象外 23〔うち .local 0、不活性 8〕、区分: 活性 43／canary 不可 57／不活性 8）合格 112 不合格 1 記録全体の不合格 0
+  FAIL dns.new-hint-not-in-baseline [hint] 対照（baseline）の行列にない行（fail-safe）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+対照: 不合格 1 行＋記録全体 0 件 >= 1 → 検出できた（期待どおり）
+
+## FQDN の remote candidate と 3 区分（K3/3 R15）: fq-al0-final（--baseline fq-baseline.json。実 DNS）
+fq-al0-final: 行 140（判定 112: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 0、不活性 13〕、区分: 活性 43／canary 不可 57／不活性 13）合格 112 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）13 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6, main.remote-candidate-udp.fqdn, main.remote-candidate-tcp.fqdn, main.remote-candidate-tcp.fqdn-so, main.remote-candidate-udp.fqdn-relay, main.remote-candidate-udp.fqdn-srflx
+
+## 対照の受入れ判定（合成。K3/3 R15）: fq-synthetic-fqdn-leaks（fq-al0-final の複製に、不活性の FQDN の行へ許容集合の外の名前の解決 1 行と canary 到達 2 件を書き込んだもの。実機の記録ではない）--expect-min-fail 3
+fq-synthetic-fqdn-leaks: 行 140（判定 114: tcp 60／udp 42／hint 12／unclassified 0／対象外の行への到達 0、対象外 26〔うち .local 0、不活性 11〕、区分: 活性 43／canary 不可 57／不活性 12）合格 112 不合格 2 記録全体の不合格 2
+  FAIL main.remote-candidate-tcp.fqdn [tcp] 不活性の行で名前が許容集合の外へ解決された（NL）: rct-<n>.probe.test
+  FAIL main.remote-candidate-udp.fqdn-srflx [udp] canary へ 2 件到達
+  FAIL(記録全体) 記録全体で canary 到達 2 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 1 行（totals.leakedProbes）
+  不活性の行（合否に数えない）11 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6, main.remote-candidate-udp.fqdn, main.remote-candidate-tcp.fqdn-so, main.remote-candidate-udp.fqdn-relay
+対照: 不合格 2 行＋記録全体 2 件 >= 3 → 検出できた（期待どおり）
+
+## FQDN の remote candidate と名前の UDP を活性にした (23a) の形（K3/3 R16。名前を末尾 dot つきも含めて canary に写す。--baseline fm-baseline.json）
+# fm-final
+fm-final: 行 106（判定 78: tcp 44／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 0、不活性 13〕、区分: 活性 78／canary 不可 0／不活性 13）合格 78 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）13 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443
+
+# fm-no-policy
+fm-no-policy: 行 106（判定 78: tcp 44／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 0、不活性 13〕、区分: 活性 44／canary 不可 0／不活性 13）合格 44 不合格 34 記録全体の不合格 2
+  FAIL main.stun.name [udp] canary へ 3 件到達
+  FAIL main.stuns.name [udp] canary へ 3 件到達
+  FAIL main.turn-udp.name [udp] canary へ 6 件到達
+  FAIL main.stun.allowed [udp] canary へ 3 件到達
+  FAIL main.stuns.allowed [udp] canary へ 3 件到達
+  FAIL main.turn-udp.allowed [udp] canary へ 6 件到達
+  FAIL main.stun.allowedp [udp] canary へ 3 件到達
+  FAIL main.stuns.allowedp [udp] canary へ 3 件到達
+  FAIL main.turn-udp.allowedp [udp] canary へ 6 件到達
+  FAIL main.stun.lo4 [udp] canary へ 3 件到達
+  FAIL main.stuns.lo4 [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo4 [udp] canary へ 6 件到達
+  FAIL main.stun.lo4b [udp] canary へ 3 件到達
+  FAIL main.stuns.lo4b [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo4b [udp] canary へ 6 件到達
+  FAIL main.stun.lo6 [udp] canary へ 3 件到達
+  FAIL main.stuns.lo6 [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lo6 [udp] canary へ 6 件到達
+  FAIL main.stun.lan [udp] canary へ 3 件到達
+  FAIL main.stuns.lan [udp] canary へ 3 件到達
+  FAIL main.turn-udp.lan [udp] canary へ 6 件到達
+  FAIL main.remote-candidate-udp.lo4 [udp] canary へ 36 件到達
+  FAIL main.remote-candidate-udp.lan [udp] canary へ 36 件到達
+  FAIL main.remote-candidate-udp.fqdn [udp] canary へ 36 件到達
+  FAIL main.remote-candidate-udp.fqdn-relay [udp] canary へ 36 件到達
+  FAIL main.remote-candidate-udp.fqdn-srflx [udp] canary へ 36 件到達
+  FAIL realm.iframe-html.stun.name [udp] canary へ 3 件到達
+  FAIL realm.iframe-html.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-blank.stun.name [udp] canary へ 3 件到達
+  FAIL realm.iframe-blank.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-srcdoc.stun.name [udp] canary へ 3 件到達
+  FAIL realm.iframe-srcdoc.stun.lo4 [udp] canary へ 3 件到達
+  FAIL realm.iframe-json.stun.name [udp] canary へ 3 件到達
+  FAIL realm.iframe-notfound.stun.name [udp] canary へ 3 件到達
+  FAIL(記録全体) 記録全体で canary 到達 288 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 34 行（totals.leakedProbes）
+  不活性の行（合否に数えない）13 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443
+
+# fm-no-proxy
+fm-no-proxy: 行 106（判定 78: tcp 44／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 0、不活性 13〕、区分: 活性 34／canary 不可 0／不活性 13）合格 34 不合格 44 記録全体の不合格 2
+  FAIL main.turn-tcp.name [tcp] canary へ 8 件到達
+  FAIL main.turns.name [tcp] canary へ 4 件到達
+  FAIL main.turns-tcp.name [tcp] canary へ 4 件到達
+  FAIL main.turn-tcp.allowed [tcp] canary へ 8 件到達
+  FAIL main.turns.allowed [tcp] canary へ 4 件到達
+  FAIL main.turns-tcp.allowed [tcp] canary へ 4 件到達
+  FAIL main.turn-tcp.allowedp [tcp] canary へ 8 件到達
+  FAIL main.turns.allowedp [tcp] canary へ 4 件到達
+  FAIL main.turns-tcp.allowedp [tcp] canary へ 4 件到達
+  FAIL main.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL main.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo4 [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.lo4b [tcp] canary へ 4 件到達
+  FAIL main.turns.lo4b [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo4b [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.lo6 [tcp] canary へ 4 件到達
+  FAIL main.turns.lo6 [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo6 [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.lan [tcp] canary へ 4 件到達
+  FAIL main.turns.lan [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lan [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.localhost [tcp] canary へ 8 件到達
+  FAIL main.turns.localhost [tcp] canary へ 4 件到達
+  FAIL main.turns-tcp.localhost [tcp] canary へ 4 件到達
+  FAIL main.remote-candidate-tcp.lo4 [tcp] canary へ 35 件到達
+  FAIL main.remote-candidate-tcp.lan [tcp] canary へ 35 件到達
+  FAIL main.remote-candidate-tcp.fqdn [tcp] canary へ 35 件到達
+  FAIL main.remote-candidate-tcp.fqdn-so [tcp] canary へ 35 件到達
+  FAIL realm.iframe-html.turn-tcp.name [tcp] canary へ 8 件到達
+  FAIL realm.iframe-html.turns.name [tcp] canary へ 4 件到達
+  FAIL realm.iframe-html.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-html.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-blank.turn-tcp.name [tcp] canary へ 8 件到達
+  FAIL realm.iframe-blank.turns.name [tcp] canary へ 4 件到達
+  FAIL realm.iframe-blank.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-blank.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-srcdoc.turn-tcp.name [tcp] canary へ 8 件到達
+  FAIL realm.iframe-srcdoc.turns.name [tcp] canary へ 4 件到達
+  FAIL realm.iframe-srcdoc.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-srcdoc.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-json.turn-tcp.name [tcp] canary へ 8 件到達
+  FAIL realm.iframe-json.turns.name [tcp] canary へ 4 件到達
+  FAIL realm.iframe-notfound.turn-tcp.name [tcp] canary へ 8 件到達
+  FAIL realm.iframe-notfound.turns.name [tcp] canary へ 4 件到達
+  FAIL(記録全体) 記録全体で canary 到達 314 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 44 行（totals.leakedProbes）
+  不活性の行（合否に数えない）13 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443
+
+# fm-no-neg-loopback
+fm-no-neg-loopback: 行 106（判定 78: tcp 44／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 0、不活性 13〕、区分: 活性 59／canary 不可 0／不活性 13）合格 59 不合格 19 記録全体の不合格 2
+  FAIL main.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL main.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo4 [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.lo4b [tcp] canary へ 4 件到達
+  FAIL main.turns.lo4b [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo4b [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.lo6 [tcp] canary へ 4 件到達
+  FAIL main.turns.lo6 [tcp] canary へ 2 件到達
+  FAIL main.turns-tcp.lo6 [tcp] canary へ 2 件到達
+  FAIL main.turn-tcp.localhost [tcp] canary へ 8 件到達
+  FAIL main.turns.localhost [tcp] canary へ 4 件到達
+  FAIL main.turns-tcp.localhost [tcp] canary へ 4 件到達
+  FAIL main.remote-candidate-tcp.lo4 [tcp] canary へ 35 件到達
+  FAIL realm.iframe-html.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-html.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-blank.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-blank.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL realm.iframe-srcdoc.turn-tcp.lo4 [tcp] canary へ 4 件到達
+  FAIL realm.iframe-srcdoc.turns.lo4 [tcp] canary へ 2 件到達
+  FAIL(記録全体) 記録全体で canary 到達 93 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 19 行（totals.leakedProbes）
+  不活性の行（合否に数えない）13 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443
+
+## 独立のレビューが足した行（sx.*。K3/3 R16。大文字小文字、数値形式の literal、pool／relay、複数 URL、setConfiguration、WebTransport。--baseline sx-baseline.json）
+# sx-al0-final
+sx-al0-final: 行 198（判定 156: tcp 89／udp 54／hint 13／unclassified 0／対象外の行への到達 0、対象外 42〔うち .local 0、不活性 24〕、区分: 活性 83／canary 不可 60／不活性 24）合格 156 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）24 行: sx.stun.case0, sx.stun.case1, sx.stun.case2, sx.stun.case3, sx.stun.case4, sx.stun.case5, sx.stun.case6, sx.stun.case8, sx.turn-tcp.lo6zone, sx.turns.lo6zone, sx.stun.lo6zone, sx.turn-udp.lo6zone, sx.turn-tcp.llz, sx.turns.llz, sx.stun.llz, sx.turn-udp.llz, sx.turn-tcp.llnz, sx.turns.llnz, sx.stun.llnz, sx.turn-udp.llnz, sx.turn-tcp.llz2, sx.turns.llz2, sx.stun.llz2, sx.turn-udp.llz2
+
+## 単体試験
+ℹ tests 21
+ℹ pass 21
+ℹ fail 0

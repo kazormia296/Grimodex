@@ -1,0 +1,124 @@
+{
+  "label": "al0-selfcheck-final",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "target": "default",
+    "policy": "disable_non_proxied_udp",
+    "proxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "socks5://PROXYHOSTPORT",
+      "proxyBypassRules": "<-loopback>"
+    },
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+    "resolveHostTests": [
+      "grimodex-rule-sentinel.invalid",
+      "example.org",
+      "redirector.gvt1.com",
+      "github.com",
+      "release-assets.githubusercontent.com",
+      "api.github.com",
+      "localhost",
+      "127.0.0.1",
+      "127.0.0.2",
+      "1.1.1.1"
+    ]
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "setProxy applied to window",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:39789",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:39789",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:39789",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:39789",
+    "updaterSession.resolveProxy(https://github.com/) => DIRECT",
+    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
+    "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
+    "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(redirector.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(github.com) => [\"20.27.177.113\"]",
+    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.108.133\",\"185.199.109.133\",\"185.199.110.133\",\"185.199.111.133\"]",
+    "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]",
+    "resolveHost(127.0.0.1) => [\"127.0.0.1\"]",
+    "resolveHost(127.0.0.2) => error:net::ERR_NAME_NOT_RESOLVED",
+    "resolveHost(1.1.1.1) => error:net::ERR_NAME_NOT_RESOLVED",
+    "policy readback => disable_non_proxied_udp"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 5,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 4
+  },
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [],
+  "netLog": null,
+  "dnsAll": null,
+  "dnsRowCount": null,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}
