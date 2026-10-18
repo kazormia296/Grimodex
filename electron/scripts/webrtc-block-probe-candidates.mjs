@@ -36,7 +36,9 @@ const RULES_FINAL = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOU
 const RULES_FINAL_NO_LOCALHOST = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1";
 // 製品の関数 buildHostResolverRules(prefixRules) の試験用の組立て: 試験の prefix（名前の写しと literal の EXCLUDE）を先頭に置き、
 // 製品の規則を後ろに足して 1 つの switch にする（appendSwitch は command line の値を置き換えるため、1 回で当てる）
-const HARNESS_PREFIX = "MAP *.probe.test 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE ::1, EXCLUDE [::1], EXCLUDE LANADDR, ";
+// K3/3 R16: WebRTC は FQDN の remote candidate と STUN／TURN-UDP の名前を末尾 dot つき（rcu-N.probe.test.）で事前解決する。
+// 末尾 dot なしの MAP だけでは一致せず、名前が MAP * ~NOTFOUND で拒否されて FQDN の経路が不活性に見えた（R15 までの誤り）。dot つきも写す
+const HARNESS_PREFIX = "MAP *.probe.test 127.0.0.1, MAP *.probe.test. 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE ::1, EXCLUDE [::1], EXCLUDE LANADDR, ";
 const RULES_MIN = "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com";
 const CONN = { "Connection-Allowlist": "()" };
 // K3/3（第 6 版）の推奨 AL-0: renderer の Chromium の通信に許可先を置かない（bypass は <-loopback> だけ。rules に gvt1 を含めない）
@@ -182,8 +184,18 @@ export const CANDIDATES = {
   "ll-baseline": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true }, args: [], realNetwork: true, dnsLog: true },
   // ── K3/3 R15: FQDN の remote candidate の行（非 mDNS の FQDN。接続を試みない行）を足した再走 ──
   "fq-baseline": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, fqdn: true }, args: [], realNetwork: true, dnsLog: true },
-  "fq-baseline-mapped": { cm: { gvt1: true, localhostRows: true, fqdn: true }, args: [], dnsLog: true },
+  // fq-baseline-mapped は R16 で取り下げた（名前の写しが末尾 dot つきの名前に一致せず FQDN が解決されなかった）。fm-baseline が後継
   "fq-al0-final": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, fqdn: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
+  // ── K3/3 R16: 名前を 127.0.0.1 へ写す構成（末尾 dot つきも写す）で、FQDN の remote candidate と名前の UDP を活性にした対照と、機構を 1 つずつ外した構成 ──
+  // fm-baseline は閉じ込めなし（非 real-network。既定の rules が MAP を持つ）。fm-final は proxy＋policy＋AL-0 の rules を、名前の写しを prefix にして 1 つの switch にした形（(23a)）
+  "fm-baseline": { cm: { gvt1: true, localhostRows: true, fqdn: true }, args: [], dnsLog: true },
+  "fm-final": { cm: { gvt1: true, localhostRows: true, fqdn: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: HARNESS_PREFIX + RULES_AL0 }, args: [], realNetwork: true, dnsLog: true },
+  "fm-no-policy": { cm: { gvt1: true, localhostRows: true, fqdn: true, target: "default", proxy: AL0_PROXY, resolverSwitch: HARNESS_PREFIX + RULES_AL0 }, args: [], realNetwork: true, dnsLog: true },
+  "fm-no-proxy": { cm: { gvt1: true, localhostRows: true, fqdn: true, policy: POLICY, resolverSwitch: HARNESS_PREFIX + RULES_AL0 }, args: [], realNetwork: true, dnsLog: true },
+  "fm-no-neg-loopback": { cm: { gvt1: true, localhostRows: true, fqdn: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT" }, resolverSwitch: HARNESS_PREFIX + RULES_AL0 }, args: [], realNetwork: true, dnsLog: true },
+  // 独立のレビューの追加行（大文字小文字、数値形式の literal、pool／relay、複数 URL、setConfiguration、WebTransport）。secx を足した 2 構成
+  "sx-baseline": { cm: { dns: true, secx: true, localhostRows: true }, args: [], realNetwork: true, dnsLog: true },
+  "sx-al0-final": { cm: { dns: true, secx: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, netLog: true },
   "f7-app-setproxy": { cm: { appSetProxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT" } }, args: [] },
 };
 

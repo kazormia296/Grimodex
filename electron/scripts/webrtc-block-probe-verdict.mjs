@@ -21,9 +21,10 @@
  *   活性の行          = 対照で canary に届いた行。上の TCP／UDP の規則で判定する
  *   canary 不可の行   = 対照で canary には届かないが、接続の試みが観測できた行（ICE が進行中、または ICE server の行の名前の解決。
  *                       link-local、未解決名など）。TCP／UDP の規則は同じ。canary 0 は見かけの 0 なので、合否は proxy 宛と ICE の状態だけが担う
- *   不活性の行        = 対照でも接続を試みない行（[fe80::1]、localhost の TURN-TCP、FQDN の remote candidate など）。合否に数えず、列挙して理由を出す。
- *                       canary への到達があれば不合格のまま。remote candidate の行は名前の解決を試みに数えない。FQDN の remote candidate（行 id が *.fqdn*）は名前の解決だけが起きる行で、
- *                       名前が許容集合（NL の A）の外へ解決されていない（getaddrinfo の記録 dnsNames）ことだけをここで見る
+ *   不活性の行        = 対照でも接続を試みない行（[fe80::1]、localhost の TURN-TCP など。名前を宛先とする remote candidate の行も、対照が名前を canary に
+ *                       解決させない環境〔実 DNS の NXDOMAIN など〕ではここに入る。対照が名前を canary に写す環境では活性の行になる〕。合否に数えず、列挙して理由を出す。
+ *                       canary への到達があれば不合格のまま。remote candidate の行は名前の解決だけでは試みに数えない。不活性の行には、
+ *                       名前が許容集合（NL の A）の外へ解決されていない（getaddrinfo の記録 dnsNames）ことだけを、行の種類に関わらず見る（K3/3 R16: 特例を行 id で分けない）
  *
  * 不合格だけを足す必要条件（合格の根拠にはしない。K3/3 R13）:
  *   記録全体で canary 到達が 0。対象外の行（control、Main 側、outcome が error:／no-window／rtc-undefined／setRemoteDescription-failed の行、
@@ -54,14 +55,20 @@ export function classify(row) {
   // .local（mDNS）の行は proxy へ向かないので、行ごとの proxy 宛では判定しない。合否は draft の「.local の規則」（UDP 5353 の観測）だけ
   if (/(^|[.-])(local-name|mdns)([.-]|$)|\.local\b/.test(id)) return { kind: "mdns", why: ".local の規則（UDP 5353 の multicast の観測）で判定する行" };
   if (TCP_EXTRA.test(id)) return { kind: "tcp" };
+  // K3/3 R16: 独立のレビューが足した行（sx.*）。WebTransport と worker は ICE の行ではない（CSP と handler の対照）。
+  // 複数 URL を混ぜた行（TURN-TCP を含む）は TCP の行として判定する
+  if (/^sx\.(webtransport|bundled-worker-rtc)\b/.test(id)) return { kind: "n/a", why: "WebTransport／worker（ICE の行ではない。CSP と handler の対照）" };
+  if (/^sx\.multi-url\b/.test(id)) return { kind: "tcp" };
+  // setConfiguration の STUN の行は ICE の状態を outcome に記録しないので、canary 0 だけを見る（DNS だけの行と同じ扱い）
+  if (/^sx\.setconfiguration\.stun\b/.test(id)) return { kind: "hint" };
   if (/^(link:|img$|fetch:|ws$|a-ping$|iframe-http$|form$)/.test(outcome) || /-pf$/.test(id)) return { kind: "hint" };
   const parts = id.split(".");
   // 名前の途中に proto が入る形（main.<proto>.<form>、realm.<name>.<proto>.<form>、rv.lit.<tag>.<proto>、ll.<proto>.<form> など）
   const proto = parts.find((p) => TCP_PROTOS.has(p) || UDP_PROTOS.has(p) || /^remote-candidate-(tcp|udp)$/.test(p));
-  // remote candidate の行。address が IP literal の行は名前を持たず、FQDN の行（非 mDNS。行 id が *.fqdn*）は名前の解決だけが起き接続は試みない。
-  // どちらも名前の解決は接続の試みに数えない（rc）。FQDN の行（fqdn）は、不活性のとき名前が許容集合の外へ解決されていないことを見る
+  // remote candidate の行（address が IP literal か非 mDNS の FQDN）。名前の解決は接続の試みに数えない（rc）。
+  // FQDN の行は、対照が名前を canary に写す環境（末尾 dot つきも写す）では対照で canary に届いて活性の行になる（K3/3 R16）。
   if (proto && /^remote-candidate-(tcp|udp)$/.test(proto)) {
-    return { kind: proto.endsWith("tcp") ? "tcp" : "udp", rc: true, fqdn: parts.some((p) => /^fqdn/.test(p)) };
+    return { kind: proto.endsWith("tcp") ? "tcp" : "udp", rc: true };
   }
   if (proto && TCP_PROTOS.has(proto)) return { kind: "tcp" };
   if (proto && UDP_PROTOS.has(proto)) return { kind: "udp" };
@@ -138,16 +145,13 @@ export function judgeRecord(record, options = {}) {
     const b = baseById.get(r.id);
     // 対照にない行は不合格（fail-safe）
     if (!b) return { ...j, verdict: "fail", why: "対照（baseline）の行列にない行（fail-safe）" };
-    const { rc, fqdn } = classify(r);
+    const { rc } = classify(r);
     // 対照でも接続を試みない行は「不活性の行」。合否に数えず、列挙して理由を出す
     if (!attemptObserved(b, { rc: !!rc })) {
-      const why = fqdn
-        ? `不活性の行（FQDN の remote candidate。対照でも名前の解決だけで接続を試みない: ${b.outcome}）`
-        : `不活性の行（対照でも接続を試みない: ${b.outcome}）`;
-      // FQDN の行は、名前が許容集合の外へ解決されていないこと（NL の getaddrinfo の分）だけを見る
-      const outside = fqdn ? nlOutside(r.dnsNames) : [];
+      // 不活性の行は、名前が許容集合の外へ解決されていないこと（NL の getaddrinfo の分）だけを、行の種類に関わらず見る
+      const outside = nlOutside(r.dnsNames);
       if (outside.length) return { id: r.id, kind: j.kind, verdict: "fail", region: "inert", why: `不活性の行で名前が許容集合の外へ解決された（NL）: ${outside.slice(0, 3).join(", ")}` };
-      return { id: r.id, kind: j.kind, verdict: "n/a", region: "inert", why, inert: true };
+      return { id: r.id, kind: j.kind, verdict: "n/a", region: "inert", why: `不活性の行（対照でも接続を試みない: ${b.outcome}）`, inert: true };
     }
     return { ...j, region: regionOf(b) };
   });

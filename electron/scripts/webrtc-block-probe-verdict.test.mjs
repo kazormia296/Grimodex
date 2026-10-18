@@ -128,7 +128,7 @@ test("対照なし（--baseline なし）の DNS だけの行は canary 0 で合
 const closedTotals = { leakedProbes: 0, canaryHits: 0, unattributed: 0 };
 const withNames = (r, names) => ({ ...r, dnsNames: names });
 
-test("FQDN の remote candidate は、対照でも名前の解決だけなら不活性の行で、proxy 宛 0 でも不合格にならない", () => {
+test("名前を宛先とする remote candidate は、対照が名前を canary に解決させない（名前の解決だけで到達 0）なら不活性の行で、proxy 宛 0 でも不合格にならない", () => {
   const baseline = {
     rows: [
       withNames(row("main.remote-candidate-tcp.fqdn", "ice:new"), ["rct-<n>.probe.test"]),
@@ -145,7 +145,7 @@ test("FQDN の remote candidate は、対照でも名前の解決だけなら不
   assert.equal(out.byKind.tcp, 0);
 });
 
-test("不活性の FQDN の行で、名前が許容集合の外へ解決されたら不合格（NL）", () => {
+test("不活性の行（名前を宛先とする remote candidate）で、名前が許容集合の外へ解決されたら不合格（NL）", () => {
   const baseline = { rows: [withNames(row("main.remote-candidate-tcp.fqdn", "ice:new"), ["rct-<n>.probe.test"])] };
   const out = judgeRecord(
     { label: "x", totals: closedTotals, rows: [withNames(row("main.remote-candidate-tcp.fqdn", "ice:new"), ["rct-<n>.probe.test"])] },
@@ -155,7 +155,7 @@ test("不活性の FQDN の行で、名前が許容集合の外へ解決され�
   assert.match(out.failing[0].why, /NL/);
 });
 
-test("不活性の FQDN の行で、許容集合の名前（github.com など）の解決は不合格にしない", () => {
+test("不活性の行で、許容集合の名前（github.com など）の解決は不合格にしない", () => {
   const baseline = { rows: [withNames(row("main.remote-candidate-udp.fqdn", "ice:new"), ["x-<n>.probe.test"])] };
   const out = judgeRecord(
     { label: "x", totals: closedTotals, rows: [withNames(row("main.remote-candidate-udp.fqdn", "ice:new"), ["github.com.", "localhost[rc0]"])] },
@@ -220,4 +220,54 @@ test("IP literal の remote candidate の行も、隣の行の名前が時間窓
   );
   assert.equal(out.fail, 0);
   assert.equal(out.inert.length, 1);
+});
+
+// ── K3/3 R16: 対照が名前を canary に写す環境では、FQDN の remote candidate は活性の行 ──
+test("対照が名前を canary に写す環境（対照で canary に届く）の FQDN の remote candidate は活性の行で、TCP は proxy 宛 1 以上、UDP は ICE が止まった形で合格する", () => {
+  const baseline = {
+    rows: [
+      row("main.remote-candidate-tcp.fqdn", "ice:checking", 35),
+      row("main.remote-candidate-udp.fqdn", "ice:checking", 36),
+    ],
+  };
+  const out = judgeRecord(
+    { label: "x", totals: closedTotals, rows: [row("main.remote-candidate-tcp.fqdn", "ice:new", 0, 1), row("main.remote-candidate-udp.fqdn", "ice:new")] },
+    { baseline },
+  );
+  assert.equal(out.fail, 0);
+  assert.deepEqual(out.byRegion, { active: 2, canaryless: 0, inert: 0 });
+  assert.equal(out.byKind.tcp, 1);
+  assert.equal(out.byKind.udp, 1);
+});
+
+test("活性の FQDN の remote candidate で、proxy 宛 0（proxy を外した形）や ICE の進行（policy を外した形）は不合格になる", () => {
+  const baseline = {
+    rows: [
+      row("main.remote-candidate-tcp.fqdn", "ice:checking", 35),
+      row("main.remote-candidate-udp.fqdn", "ice:checking", 36),
+      row("main.remote-candidate-udp.fqdn-relay", "ice:checking", 36),
+    ],
+  };
+  const out = judgeRecord(
+    {
+      label: "x",
+      totals: closedTotals,
+      rows: [
+        row("main.remote-candidate-tcp.fqdn", "ice:new", 0, 0),
+        row("main.remote-candidate-udp.fqdn", "ice:checking", 0, 0),
+        row("main.remote-candidate-udp.fqdn-relay", "ice:checking", 0, 0),
+      ],
+    },
+    { baseline },
+  );
+  assert.equal(out.fail, 3);
+});
+
+test("活性の FQDN の remote candidate が canary に届けば不合格", () => {
+  const baseline = { rows: [row("main.remote-candidate-udp.fqdn", "ice:checking", 36)] };
+  const out = judgeRecord(
+    { label: "x", totals: { leakedProbes: 1, canaryHits: 36, unattributed: 0 }, rows: [row("main.remote-candidate-udp.fqdn", "ice:checking", 36)] },
+    { baseline },
+  );
+  assert.equal(out.fail, 1);
 });

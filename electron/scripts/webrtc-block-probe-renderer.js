@@ -306,5 +306,56 @@
     await many("dns.public-example", () => [{
       urls: `turn:example.org:443?transport=tcp`, username: "u", credential: "c" }], 1);
   }
+
+  // ── reviewer の追加行（K3/3 R15 の独立レビュー。大文字小文字、数値形式、pool／relay、setConfiguration、WebTransport）──
+  if (globalThis.__probe.secx) {
+    const names = ["GitHub.com", "GITHUB.COM", "gItHuB.cOm", "Release-Assets.GitHubUserContent.com", "LOCALHOST", "LocalHost", "Grimodex-Rule-Sentinel.INVALID", "github.com.", "GITHUB.COM."];
+    for (const [i, h] of names.entries()) {
+      for (const proto of ["turn-tcp", "stun", "turns"]) {
+        await settle(`sx.${proto}.case${i}`, () => rtcAttempt(RTCPeerConnection, proto, h, ports.p));
+      }
+    }
+    const lanParts = lan.split(".").map(Number);
+    const lanDec = String(((lanParts[0] * 256 + lanParts[1]) * 256 + lanParts[2]) * 256 + lanParts[3]);
+    const forms2 = { lanDec, lanHex: "0x" + Number(lanDec).toString(16), lo0: "0.0.0.0", lo7f1: "127.1", loHex: "0x7f.1", loMapped: "[::ffff:7f00:1]", lanMapped: `[::ffff:${lan}]`, lo6long: "[0:0:0:0:0:0:0:1]", lo6zone: "[::1%251]", llz: "[fe80::e45:bfe9:94f1:7281%25enp5s0]", llnz: "[fe80::e45:bfe9:94f1:7281]", llz2: "[fe80::e45:bfe9:94f1:7281%2]" };
+    for (const [k, h] of Object.entries(forms2)) {
+      const port = k.startsWith("lan") ? ports.t : (k === "lo6long" || k === "lo6zone" ? ports.s : (k.startsWith("ll") ? 3478 : ports.q));
+      for (const proto of ["turn-tcp", "turns", "stun", "turn-udp"]) {
+        await settle(`sx.${proto}.${k}`, () => rtcAttempt(RTCPeerConnection, proto, h, port));
+      }
+    }
+    // pool と relay-only、複数 URL、setConfiguration、iceRestart
+    await settle("sx.pool.turn-tcp.lo4", async () => {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: `turn:127.0.0.1:${ports.q}?transport=tcp`, username: "u", credential: "c" }], iceCandidatePoolSize: 10 });
+      await wait(1700); pc.close(); return "pool";
+    });
+    await settle("sx.relay.turns.lo4", () => rtcAttempt(RTCPeerConnection, "turns", "127.0.0.1", ports.q, { iceTransportPolicy: "relay" }));
+    await settle("sx.multi-url.lo4", async () => {
+      const pc = new RTCPeerConnection({ iceServers: [{ urls: [`stun:127.0.0.1:${ports.q}`, `turn:127.0.0.1:${ports.q}?transport=udp`, `turn:127.0.0.1:${ports.q}?transport=tcp`, `turns:127.0.0.1:${ports.q}`], username: "u", credential: "c" }] });
+      pc.createDataChannel("x"); await pc.setLocalDescription(await pc.createOffer()); await wait(1700); pc.close(); return "multi";
+    });
+    await settle("sx.setconfiguration.turn-tcp.lo4", async () => {
+      const pc = new RTCPeerConnection({});
+      pc.createDataChannel("x"); await pc.setLocalDescription(await pc.createOffer()); await wait(500);
+      pc.setConfiguration({ iceServers: [{ urls: `turn:127.0.0.1:${ports.q}?transport=tcp`, username: "u", credential: "c" }] });
+      pc.restartIce(); await pc.setLocalDescription(await pc.createOffer({ iceRestart: true })); await wait(1700); pc.close(); return "setconf";
+    });
+    await settle("sx.setconfiguration.stun.lo4", async () => {
+      const pc = new RTCPeerConnection({});
+      pc.createDataChannel("x"); await pc.setLocalDescription(await pc.createOffer()); await wait(500);
+      pc.setConfiguration({ iceServers: [{ urls: `stun:127.0.0.1:${ports.q}` }] });
+      pc.restartIce(); await pc.setLocalDescription(await pc.createOffer({ iceRestart: true })); await wait(1700); pc.close(); return "setconf";
+    });
+    await settle("sx.webtransport.lo4", async () => {
+      try { const wt = new WebTransport(`https://127.0.0.1:${ports.q}/x`); await Promise.race([wt.ready, wait(1500)]); } catch (e) { return `wt:${e.name}`; } return "wt";
+    }, 4000);
+    await settle("sx.webtransport.name", async () => {
+      try { const wt = new WebTransport(`https://wt-${nonce}.dnsprobe.test/x`); await Promise.race([wt.ready, wait(1500)]); } catch (e) { return `wt:${e.name}`; } return "wt";
+    }, 4000);
+    // DedicatedWorker（同梱 script）で RTCPeerConnection が定義されているか
+    await settle("sx.bundled-worker-rtc", () => new Promise((resolve) => {
+      try { const w = new Worker("/assets/probe-worker.js"); w.onmessage = (e) => resolve(`w:${e.data}`); w.onerror = () => resolve("worker-error"); w.postMessage("rtc?"); } catch (e) { resolve(`throw:${e.name}`); }
+    }));
+  }
   return results;
 })()

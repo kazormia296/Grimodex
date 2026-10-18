@@ -284,7 +284,7 @@ function runElectron({ work, bundle, cfg, args }) {
     ...(args.realNetwork ? [] : [
       args.cm.resolverRules
         ? `--host-resolver-rules=${args.cm.resolverRules.replaceAll("LANADDR", cfg.lan)}`
-        : `--host-resolver-rules=MAP *.probe.test 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE [::1], EXCLUDE ::1, EXCLUDE ${cfg.lan}, EXCLUDE localhost`,
+        : `--host-resolver-rules=MAP *.probe.test 127.0.0.1, MAP *.probe.test. 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE [::1], EXCLUDE ::1, EXCLUDE ${cfg.lan}, EXCLUDE localhost`,
     ]),
     ...(args.netLog ? [`--log-net-log=${netLog}`, "--net-log-capture-mode=Everything"] : []),
     path.join(bundle, "main.cjs"),
