@@ -65,6 +65,7 @@ test("Scene Scope projection journey has one dependency-free contract", () => {
     "close-and-relaunch-electron",
     "restore-typed-run-through-ui",
     "move-anchor-through-canonical-tree-writer",
+    "edit-scope-through-canonical-writers-and-observe-cold-reader",
   ]);
   assert.deepEqual(NIR1_SCENE_SCOPE_PROJECTION_STEPS, [
     "e1-prepare-approve",
@@ -72,6 +73,21 @@ test("Scene Scope projection journey has one dependency-free contract", () => {
     "e1-body-saves-keep-available",
     "e1-cold-reopen-available",
     "e1-anchor-move-invalidates-anchor-only",
+    "f9-body-save-keeps-revisions-available",
+    "display-patches-keep-projection",
+    "pov-patch-invalidates-anchor-only",
+    "unversioned-patch-never-returns-body-token",
+    "anchor-reorder-reparent-invalidates-anchor-only",
+    "folder-roundtrip-does-not-return",
+    "empty-folder-and-note-keep-everything",
+    "anchor-scope-roundtrip-stays-invalid",
+    "anchor-archive-roundtrip-stays-invalid",
+    "story-time-order-roundtrip-stays-invalid",
+    "other-scene-scope-change-keeps-anchor",
+    "anchor-delete-recreate-stays-invalid",
+    "trash-restore-stays-invalid",
+    "body-event-does-not-make-pending",
+    "scope-event-pends-anchor-only",
   ]);
 });
 
@@ -83,6 +99,15 @@ test("journey sends only the declared renderer-bridge commands and no Graph, Pac
     "nir1_entity_relation_revision_read_current",
     "narrative_extraction_append_human_decision",
     "tree_node_patch",
+    "tree_node_create",
+    "tree_node_delete",
+    "save_scene_body_bundle",
+    "chronicle_bulk_mutate",
+    "temporal_scene_patch",
+    "narrative_scene_scope_read",
+    "narrative_scene_scope_update",
+    "trash_bin_create",
+    "trash_bin_restore",
   ]);
   const source = await readFile(journeySourcePath, "utf8");
   const quoted = new Set(
@@ -150,6 +175,34 @@ test("journey never hands Native a token, key or incarnation", async () => {
       false,
       `journey payloads must not carry ${forbidden}`,
     );
+  }
+});
+
+test("journey changes state only through real writers, never a direct SQL write", async () => {
+  const source = await readFile(journeySourcePath, "utf8");
+  const sqlStatements = [...source.matchAll(/`([^`]*)`/gu)]
+    .map(([, text]) => text)
+    .filter((text) => /\b(SELECT|UPDATE|INSERT|DELETE)\b/u.test(text));
+  assert.ok(sqlStatements.length > 0);
+  for (const statement of sqlStatements) {
+    assert.match(
+      statement.trim(),
+      /^SELECT\b/u,
+      "every SQL the journey sends is a SELECT observation",
+    );
+  }
+  // The edit matrix uses the canonical writers the product uses.
+  for (const writer of [
+    "save_scene_body_bundle",
+    "tree_node_patch",
+    "tree_node_create",
+    "tree_node_delete",
+    "chronicle_bulk_mutate",
+    "temporal_scene_patch",
+    "narrative_scene_scope_update",
+    "trash_bin_restore",
+  ]) {
+    assert.ok(source.includes(`"${writer}"`), `matrix uses ${writer}`);
   }
 });
 
