@@ -3,8 +3,9 @@
 //! The wire layer ([`crate::nir1_local_wire`]) is pure. The few operations of
 //! the transport whose behaviour depends on the operating system live here
 //! instead, with no owner, no database and no attempt: a socket shutdown that
-//! must wake a blocked read or write, and a join that must be bounded although
-//! `std` has no timed join. The node crate calls them, and the tests below run
+//! wakes a blocked read or write where the OS allows it (Linux does; Winsock
+//! does not promise it for a `recv` already blocked, DR-DT5-29), and a join
+//! that must be bounded although `std` has no timed join. The node crate calls them, and the tests below run
 //! in the `src-tauri` workspace so that Linux, macOS and Windows CI can run
 //! them without building the Electron binding.
 //!

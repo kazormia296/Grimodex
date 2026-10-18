@@ -832,7 +832,8 @@ struct IoSide {
 
 impl IoSide {
     /// Stop the I/O thread: tell it to abort, close the `GO` channel, shut the
-    /// socket down (which wakes a blocked read or write) and join it for at
+    /// socket down (which wakes a blocked read or write where the OS allows it;
+    /// otherwise the `IO_SLICE` timeout ends it, DR-DT5-29) and join it for at
     /// most `limit`. On an overrun the thread is detached and every later
     /// message is thrown away with the receiver.
     fn stop(&mut self, limit: Duration) -> JoinOutcome {

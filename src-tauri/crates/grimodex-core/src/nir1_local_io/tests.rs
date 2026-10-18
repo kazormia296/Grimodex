@@ -1,6 +1,7 @@
-//! The OS-dependent part of the DT-5b cancellation: a shutdown wakes a blocked
-//! read, a blocked write ends within a bound, and the join is bounded. These
-//! run on Linux, macOS and Windows (CI), and only use `std`.
+//! The OS-dependent part of the DT-5b cancellation: a cancelled read and a
+//! blocked write end within a bound set by `IO_SLICE` (whether or not the OS
+//! lets `shutdown` wake them), and the join is bounded. These run on Linux,
+//! macOS and Windows (CI), and only use `std`.
 
 use super::*;
 use std::io::{self, Read, Write};
@@ -69,50 +70,118 @@ fn io1b_join_bounded_gives_up_on_a_stuck_thread_within_the_limit() {
         .expect("the detached thread ends by itself");
 }
 
+/// The bound on the end of a cancelled reader (DR-DT5-29): one [`IO_SLICE`]
+/// plus a margin for timer granularity, CI scheduling and the reported
+/// Winsock habit of returning a short `SO_RCVTIMEO` up to about 500 ms late.
+/// It is half of the node's `join_limit` (2 s, DR-DT5-21), so a reader that
+/// keeps it is joined, not quarantined, on every OS.
+const CANCELLED_READ_END_BOUND: Duration = IO_SLICE.saturating_add(Duration::from_millis(900));
+
+/// What the slice-reading thread of io2 reports.
+enum ReaderEvent {
+    Bytes(Vec<u8>),
+    Ended(String),
+}
+
 #[test]
-fn io2_shutdown_wakes_a_blocked_read() {
-    let Some((client, server)) = pair() else {
+fn io2_a_blocked_read_ends_within_the_slice_bound_after_cancel() {
+    // The product's read (node `io_run`): every `read` has a timeout of at most
+    // `IO_SLICE`, a timeout is not an end, and the abort flag is looked at
+    // before each slice. Whether `shutdown` also wakes a blocked `recv` is up
+    // to the OS (Linux: yes; Winsock: not promised, and the Windows CI showed
+    // it does not), so the assertion is the bound, not the way it ended.
+    let Some((client, mut server)) = pair() else {
         return;
     };
-    // The server side stays idle and open: only the shutdown can wake the read.
     let reader = client.try_clone().expect("clone");
-    // A long timeout is only a backstop so that a failure cannot hang CI. It
-    // is far above the bound asserted below.
     reader
-        .set_read_timeout(Some(Duration::from_secs(20)))
-        .expect("backstop timeout");
-    let (started_tx, started_rx) = mpsc::channel();
-    let (result_tx, result_rx) = mpsc::channel::<(io::Result<usize>, Duration)>();
-    let handle = thread::spawn(move || {
-        let mut reader = reader;
-        let mut buffer = [0u8; 16];
+        .set_read_timeout(Some(IO_SLICE))
+        .expect("slice timeout");
+    let abort = Arc::new(AtomicBool::new(false));
+    let slices = Arc::new(AtomicUsize::new(0));
+    let (event_tx, event_rx) = mpsc::channel::<ReaderEvent>();
+    let handle = {
+        let abort = Arc::clone(&abort);
+        let slices = Arc::clone(&slices);
+        thread::spawn(move || {
+            let mut stream = reader;
+            let mut buffer = [0u8; 64];
+            let how = loop {
+                if abort.load(Ordering::Acquire) {
+                    break "abort-flag".to_owned();
+                }
+                match stream.read(&mut buffer) {
+                    Ok(0) => break "end-of-stream".to_owned(),
+                    Ok(n) => {
+                        let _ = event_tx.send(ReaderEvent::Bytes(buffer[..n].to_vec()));
+                    }
+                    Err(error)
+                        if matches!(
+                            error.kind(),
+                            io::ErrorKind::Interrupted
+                                | io::ErrorKind::WouldBlock
+                                | io::ErrorKind::TimedOut
+                        ) =>
+                    {
+                        slices.fetch_add(1, Ordering::AcqRel);
+                    }
+                    Err(error) => break format!("io-error:{:?}", error.kind()),
+                }
+            };
+            let _ = event_tx.send(ReaderEvent::Ended(how));
+        })
+    };
+    let wait_for_slices = |at_least: usize| {
         let started = Instant::now();
-        started_tx.send(()).expect("started");
-        let result = reader.read(&mut buffer);
-        let _ = result_tx.send((result, started.elapsed()));
-    });
-    started_rx.recv().expect("the reader started");
-    thread::sleep(Duration::from_millis(200));
+        while slices.load(Ordering::Acquire) < at_least {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "the read timeout never fired"
+            );
+            thread::sleep(Duration::from_millis(5));
+        }
+        started.elapsed()
+    };
+
+    // A slice timeout is not an end: the reader keeps blocking on an idle peer,
+    // and bytes that arrive after several timeouts are read whole.
+    let idle = wait_for_slices(3);
+    eprintln!("io2: 3 slice timeouts of {IO_SLICE:?} took {idle:?}");
+    server.write_all(b"ping").expect("peer writes");
+    let mut received = Vec::new();
+    while received.len() < 4 {
+        match event_rx.recv_timeout(Duration::from_secs(5)) {
+            Ok(ReaderEvent::Bytes(bytes)) => received.extend(bytes),
+            Ok(ReaderEvent::Ended(how)) => panic!("the reader ended on an idle peer: {how}"),
+            Err(error) => panic!("the bytes after the timeouts never arrived: {error}"),
+        }
+    }
+    assert_eq!(received, b"ping");
+    let seen = slices.load(Ordering::Acquire);
+    wait_for_slices(seen + 2);
     assert!(
-        result_rx.try_recv().is_err(),
+        event_rx.try_recv().is_err(),
         "the read blocks while the peer is idle"
     );
-    let shutdown_at = Instant::now();
+
+    // Cancel as the supervisor does (node `IoSide::stop`): the flag, then the
+    // shutdown. The reader ends by the shutdown or by its next slice.
+    let cancel_at = Instant::now();
+    abort.store(true, Ordering::Release);
     shutdown_both(&client);
-    let (result, _) = result_rx
-        .recv_timeout(Duration::from_secs(5))
-        .expect("the shutdown woke the blocked read");
-    let woke_after = shutdown_at.elapsed();
-    match &result {
-        Ok(0) => {}
-        Err(error)
-            if !matches!(
-                error.kind(),
-                io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
-            ) => {}
-        other => panic!("the read must end by the shutdown, not a timeout: {other:?}"),
-    }
-    eprintln!("io2: blocked read woke {woke_after:?} after shutdown with {result:?}");
+    let how = match event_rx.recv_timeout(CANCELLED_READ_END_BOUND) {
+        Ok(ReaderEvent::Ended(how)) => how,
+        Ok(ReaderEvent::Bytes(bytes)) => panic!("unexpected bytes after cancel: {bytes:?}"),
+        Err(error) => {
+            panic!("the cancelled reader did not end within {CANCELLED_READ_END_BOUND:?}: {error}")
+        }
+    };
+    let elapsed = cancel_at.elapsed();
+    eprintln!("io2: cancelled read ended {elapsed:?} after cancel via {how}");
+    assert!(
+        elapsed < CANCELLED_READ_END_BOUND,
+        "bounded by the slice, not by the shutdown: {elapsed:?}"
+    );
     assert_eq!(
         join_bounded(handle, Duration::from_secs(5)),
         JoinOutcome::Joined
