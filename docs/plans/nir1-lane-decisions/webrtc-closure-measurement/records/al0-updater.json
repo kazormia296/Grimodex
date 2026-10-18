@@ -1,0 +1,133 @@
+{
+  "label": "al0-updater",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "realUpdater": true,
+    "realRedirect": "https://github.com/electron/electron/releases/download/v43.5.0/SHASUMS256.txt",
+    "target": "default",
+    "policy": "disable_non_proxied_udp",
+    "proxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "socks5://PROXYHOSTPORT",
+      "proxyBypassRules": "<-loopback>"
+    },
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost"
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "setProxy applied to window",
+    "policy readback => disable_non_proxied_udp"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 7,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 4
+  },
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1,
+      "dnsNames": []
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": [
+        "github.com[rc0]"
+      ]
+    },
+    {
+      "id": "main.updater-session-github-asset",
+      "outcome": "status:200 hops:release-assets.githubusercontent.com",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "github.com[rc0]",
+        "release-assets.githubusercontent.com[rc0]"
+      ]
+    },
+    {
+      "id": "main.real-electron-updater-check",
+      "outcome": "error:404 ",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "release-assets.githubusercontent.com[rc0]"
+      ]
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [],
+  "netLog": null,
+  "dnsAll": [
+    "github.com[rc0]",
+    "release-assets.githubusercontent.com[rc0]"
+  ],
+  "dnsRowCount": 3,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

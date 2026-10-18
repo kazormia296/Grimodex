@@ -1,0 +1,139 @@
+{
+  "label": "d1-dictionary-wild-socks+rules",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "spellcheck": true,
+    "waitMs": 9000,
+    "target": "default",
+    "policy": "disable_non_proxied_udp",
+    "proxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "socks5://PROXYHOSTPORT",
+      "proxyBypassRules": "<-loopback>;https://*.gvt1.com:443"
+    },
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE 127.0.0.1, EXCLUDE localhost"
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "setProxy applied to window"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 5,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 3
+  },
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": [
+        "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]"
+      ]
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1,
+      "dnsNames": []
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    }
+  ],
+  "webRequestSeen": null,
+  "envProxyConnects": null,
+  "dictionaries": [
+    "Dictionaries/en-US-10-1.bdic"
+  ],
+  "netLog": {
+    "alerts": [],
+    "gvt": [
+      "PROXY_CONFIG_CHANGED:.gvt1.com:443",
+      "CORS_REQUEST:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "REQUEST_ALIVE:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "TRANSPORT_SECURITY_STATE_SHOULD_UPGRADE_TO_SSL:redirector.gvt1.com",
+      "URL_REQUEST_START_JOB:gvt1.com https://gvt1.com",
+      "URL_REQUEST_START_JOB:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "SIMPLE_CACHE_ENTRY_SET_KEY:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "HTTP_STREAM_JOB_CONTROLLER:redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "HTTP_STREAM_JOB:redirector.gvt1.com",
+      "QUIC_SESSION_POOL_JOB:redirector.gvt1.com",
+      "HOST_RESOLVER_MANAGER_REQUEST:redirector.gvt1.com",
+      "HOST_RESOLVER_MANAGER_JOB:redirector.gvt1.com",
+      "TCP_CLIENT_SOCKET_POOL_REQUESTED_SOCKET:redirector.gvt1.com",
+      "SOCKET_POOL_CONNECT_JOB_CREATED:redirector.gvt1.com",
+      "CERT_VERIFIER_JOB:redirector.gvt1.com",
+      "HTTP2_SESSION:redirector.gvt1.com:443",
+      "HTTP2_SESSION_RECV_ACCEPT_CH:redirector.gvt1.com",
+      "HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS:redirector.gvt1.com",
+      "HTTP2_SESSION_SEND_HEADERS:redirector.gvt1.com",
+      "HTTP2_SESSION_RECV_HEADERS:rr8---sn-3v2upjvh-3pme7.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic?cms_redirect=yes&met=1792264241,&mh=7g&mip=<redacted>&mm=28&mn"
+    ],
+    "urls": [
+      "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "https://rr8---sn-3v2upjvh-3pme7.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic"
+    ],
+    "proxyInfos": [
+      "DIRECT",
+      "SOCKS5 127.0.0.1:35239"
+    ]
+  },
+  "dnsAll": [
+    "redirector.gvt1.com[rc0]",
+    "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]"
+  ],
+  "dnsRowCount": 1,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}
