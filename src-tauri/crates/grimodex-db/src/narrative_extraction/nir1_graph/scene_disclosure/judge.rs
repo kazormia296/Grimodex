@@ -123,11 +123,52 @@ pub(super) fn scan(
     not_appended(Count::NoCandidate)
 }
 
+/// A cell whose bytes cannot be read as the type asked for (for example text
+/// that is not UTF-8). It is a problem of one Scene's data, not of storage, so
+/// the candidate is skipped instead of the whole Graph failing.
+fn is_cell_conversion_failure(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..)
+            | rusqlite::Error::Utf8Error(..)
+    )
+}
+
 pub(super) fn is_storage_failure(error: &anyhow::Error) -> bool {
+    let data_problem = error.chain().any(|cause| {
+        cause
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(is_cell_conversion_failure)
+    });
+    if data_problem {
+        return false;
+    }
     error
         .chain()
         .any(|cause| cause.is::<rusqlite::Error>() || cause.is::<std::io::Error>())
         || classify_store_error(error, false) != Nir1StoreFailure::Invalid
+}
+
+/// The Scene's title, read as bytes (so a cell that is not UTF-8 is `None`
+/// instead of an error) and only when it fits `SCENE_BODY_TITLE_MAX_BYTES`.
+/// `None` also for a Scene that is not in the project.
+pub(super) fn read_title(conn: &Connection, project: &str, scene: &str) -> Result<Option<String>> {
+    let bytes: Option<Vec<u8>> = conn
+        .query_row(
+            "SELECT CAST(title AS BLOB) FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'
+                AND octet_length(title) <= ?3",
+            params![
+                scene,
+                project,
+                i64::try_from(SCENE_BODY_TITLE_MAX_BYTES).unwrap_or(i64::MAX)
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(bytes.and_then(|bytes| String::from_utf8(bytes).ok()))
 }
 
 fn valid_identity(value: &str) -> bool {
@@ -250,7 +291,7 @@ impl Judge<'_> {
         let declared = match read_scene_body_declaration(conn, project, scene) {
             Ok(SceneBodyDeclarationRead::Declared(declared)) => declared,
             Ok(_) => return Ok(Verdict::Skip(Count::DeclarationUnavailable)),
-            Err(error) => return Err(error),
+            Err(error) => return self.absorb(error, Count::DeclarationUnavailable),
         };
         self.checkpoint()?;
 
@@ -279,12 +320,11 @@ impl Judge<'_> {
         if !title_fits {
             return Ok(Verdict::Skip(Count::BindingMismatch));
         }
-        let title: String = conn.query_row(
-            "SELECT title FROM tree_nodes
-              WHERE id = ?1 AND project_id = ?2 AND node_type = 'scene'",
-            params![scene, project],
-            |row| row.get(0),
-        )?;
+        // A title that is not valid UTF-8 cannot match the declared digest:
+        // the candidate is skipped, the scan goes on.
+        let Some(title) = read_title(conn, project, scene)? else {
+            return Ok(Verdict::Skip(Count::BindingMismatch));
+        };
         let title_digest = scene_body_title_digest(&title)?;
 
         // The binding, against the current values. The body's digests are not
@@ -326,7 +366,7 @@ impl Judge<'_> {
             Err(error) if error_chain_contains(&error, VETO_ROW_LIMIT_MARKER) => {
                 return Ok(Verdict::Stop(Count::ResourceLimit));
             }
-            Err(error) => return Err(error),
+            Err(error) => return self.absorb(error, Count::Veto),
         }
         self.checkpoint()?;
 

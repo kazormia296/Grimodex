@@ -40,6 +40,10 @@ use grimodex_core::narrative_nir1::MAX_GRAPH_SCENES;
 mod body;
 #[cfg(test)]
 mod body_tests;
+#[cfg(test)]
+mod exit_tests;
+#[cfg(test)]
+mod invalidation_tests;
 mod click;
 mod counters;
 mod eligible;
@@ -310,7 +314,7 @@ pub fn evaluate_graph_only_append(
     judge::scan(conn, input, path, check, MAX_GRAPH_SCENES)
 }
 
-pub use self::body::{disclose_graph_only_candidate, evaluate_graph_only_scene};
+pub use self::body::evaluate_graph_only_scene;
 pub use self::click::requalify_graph_only_scene_disclosure;
 pub use self::eligible::{
     EligibleGraphScene, GraphOnlyClick, GraphOnlySceneBinding, GraphOnlySceneDisclosure,

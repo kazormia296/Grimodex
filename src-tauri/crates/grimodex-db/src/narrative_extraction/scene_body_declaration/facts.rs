@@ -198,9 +198,11 @@ fn unresolved_material(constraint: &NarrativeSceneMaterialConstraintV1) -> bool 
         || is_unresolved(&constraint.narrative_layer)
 }
 
-/// True when the Scene, or a folder above it (up to 256 levels), is archived.
-/// The writer's preview and CB-4's reader share it, so the two cannot judge
-/// liveness differently.
+/// True when the Scene, or a folder above it, is archived. The chain is
+/// followed for 256 levels; a chain that is still going after that (or that
+/// loops) counts as archived, so a truncated walk can only refuse, never
+/// declare a Scene live. The writer's preview and CB-4's reader share it, so
+/// the two cannot judge liveness differently.
 pub(in crate::narrative_extraction) fn archived_in_chain(
     conn: &Connection,
     project_id: &str,
@@ -215,7 +217,8 @@ pub(in crate::narrative_extraction) fn archived_in_chain(
                FROM tree_nodes t JOIN chain c ON t.id = c.parent_id
               WHERE t.project_id = ?2 AND c.depth < 256
          )
-         SELECT COALESCE(MAX(archived), 0) FROM chain",
+         SELECT COALESCE(MAX(archived OR (depth >= 256 AND parent_id IS NOT NULL)), 0)
+           FROM chain",
         params![scene_id, project_id],
         |row| row.get(0),
     )?)

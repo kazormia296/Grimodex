@@ -196,6 +196,21 @@ pub(super) fn query(env: &Env) -> GraphDisclosureQuery {
     GraphDisclosureQuery::from_retrieval_query_context(&context(env))
 }
 
+/// The query as a caller would get it: a query context that is not available
+/// (for example after a writer changed the reading authority) gives a query
+/// without values, with which the reader adds nothing.
+pub(super) fn query_or_unavailable(env: &Env) -> GraphDisclosureQuery {
+    let read = env.db().db().with_read_transaction(|conn| {
+        read_retrieval_query_context(conn, PROJECT, QUERY)
+    });
+    match read {
+        Ok(RetrievalQueryContextRead::Available(context)) => {
+            GraphDisclosureQuery::from_retrieval_query_context(&context)
+        }
+        _ => GraphDisclosureQuery { parts: None },
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Answer {
     Yes,

@@ -620,7 +620,7 @@ mod commit_outcome_tests;
 #[cfg(test)]
 mod display_tests;
 #[cfg(test)]
-mod invalidation_tests;
+pub(crate) mod invalidation_tests;
 #[cfg(test)]
 mod lifecycle_tests;
 #[cfg(test)]

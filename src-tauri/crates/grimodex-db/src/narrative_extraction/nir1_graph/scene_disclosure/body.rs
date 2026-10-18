@@ -17,7 +17,7 @@ use rusqlite::Connection;
 
 use super::counters::{record, Count};
 use super::eligible::{BodyFacts, EligibleGraphScene, GraphOnlySceneBinding};
-use super::judge::is_storage_failure;
+use super::judge::{is_storage_failure, read_title};
 use super::{
     evaluate_graph_only_append, GraphDisclosureQuery, GraphDisclosureWorkspace, GraphOnlyCandidate,
     GraphOnlyScan, GraphOnlyScanInput, GraphOnlySceneDisclosure, GraphPathRevalidator, NotAppended,
@@ -27,8 +27,10 @@ use crate::narrative_extraction::nir1_graph::scenes::first_non_empty_anchor;
 use crate::narrative_extraction::retrieval_admission::{
     read_retrieval_scene_source_bounded, RetrievalSceneSourceRead,
 };
+use crate::narrative_extraction::read_narrative_scene_scope;
 use crate::narrative_extraction::scene_body_declaration::{
-    scene_body_declaration_binding_mismatches, scene_body_declaration_veto,
+    read_scene_body_declaration, scene_body_declaration_binding_mismatches,
+    SceneBodyDeclarationRead, scene_body_declaration_veto,
     scene_body_title_digest, SceneBodyDeclarationCurrentFacts, VetoLimits,
     SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES, VETO_CONTENT_LIMIT_MARKER,
     VETO_ROW_LIMIT_MARKER,
@@ -241,8 +243,60 @@ pub fn evaluate_graph_only_scene(
     }
 }
 
-/// The body step for a candidate the scan adopted (the same read transaction).
-pub fn disclose_graph_only_candidate(
+/// The scan's cached values, read again now. A candidate is only valid in the
+/// read transaction that made it; this makes that a property of the code
+/// instead of a rule for the caller: a candidate that is carried into another
+/// transaction is compared with the declaration, the Scope token and the title
+/// as they are at this moment, and any difference rejects it (a revoked or
+/// replaced declaration, a changed A1, a changed title).
+fn reverify_candidate(
+    conn: &Connection,
+    project: &str,
+    candidate: &GraphOnlyCandidate,
+    control_failed: &Cell<bool>,
+) -> Result<Option<Count>> {
+    let scene = candidate.association.scene_id.as_str();
+    let declared = match read_scene_body_declaration(conn, project, scene) {
+        Ok(SceneBodyDeclarationRead::Declared(declared)) => declared,
+        Ok(_) => return Ok(Some(Count::DeclarationUnavailable)),
+        Err(error) => return absorb_count(error, control_failed, Count::DeclarationUnavailable),
+    };
+    if declared.token != candidate.declaration.token
+        || declared.declaration.declaration_id != candidate.declaration.declaration.declaration_id
+    {
+        return Ok(Some(Count::BindingMismatch));
+    }
+    let scope = match read_narrative_scene_scope(conn, project, scene) {
+        Ok(read) => read.binding,
+        Err(error) => return absorb_count(error, control_failed, Count::ScopeRejected),
+    };
+    if scope.source_token != candidate.scope_source_token
+        || scope.scene_incarnation_id != candidate.scene_incarnation_id
+    {
+        return Ok(Some(Count::BindingMismatch));
+    }
+    match read_title(conn, project, scene) {
+        Ok(Some(title)) if title == candidate.title => Ok(None),
+        Ok(_) => Ok(Some(Count::BindingMismatch)),
+        Err(error) => absorb_count(error, control_failed, Count::BindingMismatch),
+    }
+}
+
+fn absorb_count(
+    error: anyhow::Error,
+    control_failed: &Cell<bool>,
+    count: Count,
+) -> Result<Option<Count>> {
+    if control_failed.get() || is_storage_failure(&error) {
+        return Err(error);
+    }
+    Ok(Some(count))
+}
+
+/// The body step for a candidate the scan adopted. Not part of the public
+/// surface: the one public way to a body is [`evaluate_graph_only_scene`],
+/// which scans and discloses in one read transaction.
+pub(super) fn disclose_graph_only_candidate(
     conn: &Connection,
     workspace: &GraphDisclosureWorkspace,
     query: &GraphDisclosureQuery,
@@ -256,7 +310,24 @@ pub fn disclose_graph_only_candidate(
     let (Some(workspace_parts), Some(query_parts)) = (workspace.parts(), query.parts()) else {
         return Ok(not_appended(Count::WorkspaceUnavailable));
     };
-    let body = match read_body(conn, workspace_parts, query_parts, &candidate, check)? {
+    let control_failed = Cell::new(false);
+    let mut guarded = || -> Result<()> {
+        let result = check();
+        if result.is_err() {
+            control_failed.set(true);
+        }
+        result
+    };
+    guarded()?;
+    if let Some(count) = reverify_candidate(
+        conn,
+        &query_parts.project_id,
+        &candidate,
+        &control_failed,
+    )? {
+        return Ok(not_appended(count));
+    }
+    let body = match read_body(conn, workspace_parts, query_parts, &candidate, &mut guarded)? {
         BodyStep::Read(body) => *body,
         BodyStep::Rejected(count) => return Ok(not_appended(count)),
     };

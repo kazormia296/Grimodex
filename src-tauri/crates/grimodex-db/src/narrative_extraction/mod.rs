@@ -75,8 +75,7 @@ pub use nir1_entity_relation::{
 };
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_graph::{
-    disclose_graph_only_candidate, evaluate_graph_only_append, evaluate_graph_only_scene,
-    requalify_graph_only_scene_disclosure, AppendSlot, EligibleGraphScene, GraphDisclosureQuery,
+    evaluate_graph_only_append, evaluate_graph_only_scene, requalify_graph_only_scene_disclosure, AppendSlot, EligibleGraphScene, GraphDisclosureQuery,
     GraphDisclosureWorkspace, GraphOnlyCandidate, GraphOnlyClick, GraphOnlyScan,
     GraphOnlyScanInput, GraphOnlySceneBinding, GraphOnlySceneDisclosure, GraphPathRevalidator,
     GraphSceneRange, GraphSceneRevalidationRefused, NotAppended, COMMON_SLOT_RAW_LIMIT,

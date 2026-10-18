@@ -22,8 +22,8 @@ use grimodex_core::narrative_scene_body_declaration::{
 use super::body::{body_reads, reset_body_reads};
 use super::counters::local_counts;
 use super::tests::{
-    add_pin, association, associations, context, counts, execute, fixture, query, raw_cells,
-    restrict, unrestrict, workspace, Path, OPEN,
+    add_pin, association, associations, context, counts, execute, fixture, query,
+    query_or_unavailable, raw_cells, restrict, unrestrict, workspace, Path, OPEN,
 };
 use super::*;
 use crate::narrative_extraction::retrieval_admission::{
@@ -43,7 +43,7 @@ use crate::narrative_extraction::task_leases::with_immediate_transaction;
 
 // ---- fixture ----------------------------------------------------------------
 
-fn set_content(env: &Env, scene: &str, content: &str) {
+pub(super) fn set_content(env: &Env, scene: &str, content: &str) {
     env.with_conn(|conn| {
         conn.execute(
             "UPDATE tree_nodes SET content = ?2 WHERE id = ?1",
@@ -56,7 +56,7 @@ fn set_content(env: &Env, scene: &str, content: &str) {
 /// Declares the Scene's body as it is read now: real digests, the Ready
 /// workspace's values, and `tamper` applied to the binding before it is placed.
 /// Fails when the body cannot be read within the limits.
-fn try_place_real(
+pub(super) fn try_place_real(
     env: &Env,
     scene: &str,
     tamper: impl Fn(&mut NarrativeSceneBodyDeclarationBindingV1),
@@ -117,18 +117,18 @@ fn try_place_real(
     })
 }
 
-fn place_real(env: &Env, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
+pub(super) fn place_real(env: &Env, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
     try_place_real(env, scene, |_| {}).expect("a readable body")
 }
 
-fn disclose_with(
+pub(super) fn disclose_with(
     env: &Env,
     candidates: &[Nir1GraphSceneAssociation],
     path: &mut Path,
     check: &mut dyn FnMut() -> Result<()>,
 ) -> Result<GraphOnlySceneDisclosure> {
     let workspace = workspace(env);
-    let query = query(env);
+    let query = query_or_unavailable(env);
     let existing = BTreeSet::new();
     let input = GraphOnlyScanInput {
         workspace: &workspace,
@@ -142,19 +142,19 @@ fn disclose_with(
         .with_read_transaction(|conn| evaluate_graph_only_scene(conn, &input, path, check))
 }
 
-fn disclose(env: &Env, scenes: &[&str]) -> GraphOnlySceneDisclosure {
+pub(super) fn disclose(env: &Env, scenes: &[&str]) -> GraphOnlySceneDisclosure {
     let candidates = associations(env, scenes);
     disclose_with(env, &candidates, &mut Path::yes(), &mut || Ok(())).unwrap()
 }
 
-fn eligible(disclosure: GraphOnlySceneDisclosure) -> EligibleGraphScene {
+pub(super) fn eligible(disclosure: GraphOnlySceneDisclosure) -> EligibleGraphScene {
     match disclosure {
         GraphOnlySceneDisclosure::Eligible(scene) => *scene,
         GraphOnlySceneDisclosure::NotAppended(_) => panic!("an eligible Scene was expected"),
     }
 }
 
-fn assert_nothing_added(disclosure: &GraphOnlySceneDisclosure) {
+pub(super) fn assert_nothing_added(disclosure: &GraphOnlySceneDisclosure) {
     assert!(
         matches!(
             disclosure,
@@ -164,17 +164,17 @@ fn assert_nothing_added(disclosure: &GraphOnlySceneDisclosure) {
     );
 }
 
-fn click(env: &Env, binding: &GraphOnlySceneBinding) -> Result<GraphOnlyClick> {
+pub(super) fn click(env: &Env, binding: &GraphOnlySceneBinding) -> Result<GraphOnlyClick> {
     click_with(env, binding, &mut Path::yes())
 }
 
-fn click_with(
+pub(super) fn click_with(
     env: &Env,
     binding: &GraphOnlySceneBinding,
     path: &mut Path,
 ) -> Result<GraphOnlyClick> {
     let workspace = workspace(env);
-    let query = query(env);
+    let query = query_or_unavailable(env);
     env.db().db().with_read_transaction(|conn| {
         requalify_graph_only_scene_disclosure(conn, &workspace, &query, binding, path, &mut || {
             Ok(())
@@ -182,7 +182,7 @@ fn click_with(
     })
 }
 
-fn assert_refused(env: &Env, binding: &GraphOnlySceneBinding, what: &str) {
+pub(super) fn assert_refused(env: &Env, binding: &GraphOnlySceneBinding, what: &str) {
     let result = click(env, binding).unwrap_or_else(|error| panic!("{what}: {error:#}"));
     assert!(
         matches!(
