@@ -15,6 +15,12 @@
  *
  *   .local（mDNS）の行: 判定しない（draft の「.local の規則」だけで判定する）
  *   分類できない行: 不合格（fail-safe）
+ *
+ * 不合格だけを足す必要条件（合格の根拠にはしない。K3/3 R13）:
+ *   記録全体で canary 到達が 0。対象外の行（control、Main 側、outcome が error:／no-window／rtc-undefined／setRemoteDescription-failed の行、
+ *   対照不成立の行、.local の行）に帰属した到達と、どの行にも帰属しない到達（totals.unattributed）を含む。1 件でもあれば不合格。
+ *   - 対象外の行でも leaked>0 なら行として不合格（judge。対照不成立に変換しない）
+ *   - totals.unattributed／canaryHits／leakedProbes が 0 でなければ記録として不合格（recordFailures）
  *   --baseline <record.json>: 閉じ込めなしの同じ行列の記録。対照で試みが観測できない行（canary 到達、ICE の進行中、名前の解決のどれもない）は
  *     判定できないので「対照不成立」として列挙し（未検証）、対照にない行は不合格にする
  *   --no-listener: blackhole の listener を置かない試験。TCP の行は canary 0 だけを見る
@@ -51,6 +57,10 @@ export function classify(row) {
 
 export function judge(row, { noListener = false } = {}) {
   const c = classify(row);
+  // 対象外（n/a、.local）の行でも canary への到達は不合格（合否の根拠にはしないが、到達は見逃さない）
+  if ((c.kind === "n/a" || c.kind === "mdns") && row.leaked > 0) {
+    return { id: row.id, kind: "excluded-leak", verdict: "fail", why: `対象外の行（${c.why}）に canary へ ${row.leaked} 件到達` };
+  }
   if (c.kind === "n/a" || c.kind === "mdns") return { id: row.id, kind: c.kind, verdict: "n/a", why: c.why };
   // 分類できない行は不合格（DA-1 が行を足しても、判定の規則に載らない行は通さない）
   if (c.kind === "unclassified") return { id: row.id, kind: c.kind, verdict: "fail", why: c.why + "（fail-safe）" };
@@ -85,6 +95,8 @@ export function judgeRecord(record, options = {}) {
     const j = judge(r, options);
     // hint（DNS だけが起きる行）は名前の合否が NL の述語なので、対照の試みの観測は要求しない（canary 0 だけを見る）
     if (!options.baseline || j.verdict === "n/a" || j.kind === "hint") return j;
+    // canary へ到達した行は、対照不成立でも未検証にしない（到達は不合格のまま）
+    if (j.verdict === "fail" && r.leaked > 0) return j;
     const b = baseById.get(r.id);
     // 対照にない行は不合格（fail-safe）。対照で試みが観測できない行は判定できない（未検証として列挙する）
     if (!b) return { ...j, verdict: "fail", why: "対照（baseline）の行列にない行（fail-safe）" };
@@ -92,7 +104,17 @@ export function judgeRecord(record, options = {}) {
     return j;
   });
   const count = (v) => rows.filter((r) => r.verdict === v).length;
+  // 記録全体の必要条件: どの行にも帰属しない到達（遅れて届いた接続が次の行の窓や対象外の行に入る場合を含む）を見逃さない
+  const t = record.totals ?? {};
+  const recordFailures = [];
+  if (!(typeof t.unattributed === "number")) recordFailures.push("totals.unattributed がない（記録が不完全。fail-safe）");
+  else if (t.unattributed > 0) recordFailures.push(`どの行にも帰属しない canary 到達 ${t.unattributed} 件（totals.unattributed）`);
+  if (t.canaryHits > 0) recordFailures.push(`記録全体で canary 到達 ${t.canaryHits} 件（totals.canaryHits）`);
+  if (t.leakedProbes > 0) recordFailures.push(`canary に届いた probe ${t.leakedProbes} 行（totals.leakedProbes）`);
+  // 種類の内訳は判定した行（verdict が n/a でない行）だけを数える
+  const judged = rows.filter((r) => r.verdict !== "n/a");
   return {
+    recordFailures,
     label: record.label,
     rows: rows.length,
     pass: count("pass"),
@@ -100,7 +122,8 @@ export function judgeRecord(record, options = {}) {
     na: count("n/a"),
     failing: rows.filter((r) => r.verdict === "fail"),
     unverified: rows.filter((r) => r.unverified),
-    byKind: Object.fromEntries(["tcp", "udp", "hint", "mdns", "unclassified"].map((k) => [k, rows.filter((r) => r.kind === k).length])),
+    byKind: Object.fromEntries(["tcp", "udp", "hint", "mdns", "unclassified", "excluded-leak"].map((k) => [k, judged.filter((r) => r.kind === k).length])),
+    mdnsRows: rows.filter((r) => r.kind === "mdns").length,
     results: rows,
   };
 }
@@ -115,14 +138,17 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const baselineIdx = argv.indexOf("--baseline");
   const baseline = baselineIdx >= 0 ? JSON.parse(fs.readFileSync(argv[baselineIdx + 1], "utf8")) : null;
   const out = judgeRecord(JSON.parse(fs.readFileSync(file, "utf8")), { noListener: argv.includes("--no-listener"), baseline });
-  console.log(`${out.label}: 行 ${out.rows}（判定 ${out.pass + out.fail}: tcp ${out.byKind.tcp}／udp ${out.byKind.udp}／hint ${out.byKind.hint}／.local ${out.byKind.mdns}、対象外 ${out.na - out.byKind.mdns}）合格 ${out.pass} 不合格 ${out.fail}`);
+  console.log(`${out.label}: 行 ${out.rows}（判定 ${out.pass + out.fail}: tcp ${out.byKind.tcp}／udp ${out.byKind.udp}／hint ${out.byKind.hint}／unclassified ${out.byKind.unclassified}／対象外の行への到達 ${out.byKind["excluded-leak"]}、対象外 ${out.na}〔うち .local ${out.mdnsRows}、対照不成立 ${out.unverified.length}〕）合格 ${out.pass} 不合格 ${out.fail} 記録全体の不合格 ${out.recordFailures.length}`);
   if (!quiet) for (const f of out.failing) console.log(`  FAIL ${f.id} [${f.kind}] ${f.why}`);
+  for (const f of out.recordFailures) console.log(`  FAIL(記録全体) ${f}`);
   if (out.unverified.length) console.log(`  対照不成立（未検証）${out.unverified.length} 行: ${out.unverified.map((u) => u.id).join(", ")}`);
   if (minFail != null) {
-    const ok = out.fail >= minFail;
-    console.log(`対照: 不合格 ${out.fail} 行 ${ok ? ">=" : "<"} ${minFail} → ${ok ? "検出できた（期待どおり）" : "検出できていない（試験の欠陥）"}`);
+    // 対照の検出は、行の不合格と記録全体の不合格の合計で数える
+    const detected = out.fail + out.recordFailures.length;
+    const ok = detected >= minFail;
+    console.log(`対照: 不合格 ${out.fail} 行＋記録全体 ${out.recordFailures.length} 件 ${ok ? ">=" : "<"} ${minFail} → ${ok ? "検出できた（期待どおり）" : "検出できていない（試験の欠陥）"}`);
     process.exitCode = ok ? 0 : 1;
   } else {
-    process.exitCode = out.fail === 0 ? 0 : 1;
+    process.exitCode = out.fail === 0 && out.recordFailures.length === 0 ? 0 : 1;
   }
 }
