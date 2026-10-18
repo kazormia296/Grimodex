@@ -26,7 +26,6 @@
 | [hs1-decisions.md](hs1-decisions.md) | HS-1（DR-HS1-1〜。HS1-1〜HS1-4） | 確認済み契約 K4/3 の「実装で決めること」の記録 |
 | [x1-3-decisions.md](x1-3-decisions.md) | X1-3（DR-X1-3-1〜20。投影 Source の定義・解決・登録・feed routing、型付き Revision の版 2、B の preflight、Scope の形の検査、doc-sync） | 確認済み契約 X1/1 の「実装で決めること」の記録 |
 | [da1-decisions.md](da1-decisions.md) | DA-1（DR-DA1-0〜。ST1: 隔離の固定と書出し経路の遮断〔SF-1、E-3、窓の title、Y-1〕、ST2: 外へ出す経路の閉鎖と `license-control`、ST3: 読取の開放の実装〔開放の commit を除く〕、ST4: NIR の区分・Scope の Native の検査・parity の道具・文書） | 確認済み契約 K3/2 の「DA-1 が決める」ことの記録（mutation の前の記録と、subtask ごとの追記） |
-| [dt5-decisions.md](dt5-decisions.md) | DT-5（DR-DT5-1〜。T0: owner／lifecycle matrix・threat model・範囲の確定、T1: 前提の修正と owner への入口、T2〜T4: wire 層・client／thread／取消・実測と数値） | 確認済み契約 K5/3 の「DT-5 の owner/lifecycle matrix が満たす条件」と「実装で決めること」の記録（mutation の前の記録） |
 
 復元した7本は、2026-10-14 の worktree の片付けで、gitignore の対象（`.ralph/`）の置き場所ごと消えたものである。PROVENANCE.md に、ファイルごとの最終版の根拠、確からしさ、PR 本文との差を書いた。PR 本文との差は、decisions 文書が最後に書かれた後の修正か、PR の側の書き足しによるもので、復元の誤りではない。
 
