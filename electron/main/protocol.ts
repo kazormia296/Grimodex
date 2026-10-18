@@ -4,7 +4,8 @@
  * - `app://bundle/<path>` を `dist/`（vite build 成果物）から配信する。
  *   URL は main しか組み立てない（windows.ts / windowChrome.buildPanelUrl）。
  * - Content-Security-Policy は Electron production document の正本をここに置き、
- *   HTML レスポンスへ付ける（protocol.test.ts が許可schemeと主要directiveをgateする）。
+ *   全レスポンス（HTML 以外と 404・405 を含む）へ付ける（protocol.test.ts が
+ *   許可schemeと主要directiveをgateする）。
  * - 純関数部（resolveAppRequestPath / contentTypeForPath /
  *   createAppProtocolHandler）は electron 実行時 API に依存せず、
  *   vitest node 環境（vitest.electron.config.ts）で単体テストする。
@@ -111,35 +112,54 @@ export function resolveAppRequestPath(
 }
 
 /**
+ * `app://bundle` の全応答に付ける header。HTML だけでなく、HTML 以外の content type と
+ * 404・405 の応答にも同じ CSP を付ける（K3/2「renderer の隔離」(f)）。CSP のない
+ * 同一 origin の realm（HTML 以外の応答や 404 を開いた iframe）を作らせないため。
+ * worker の CSP は worker の script の応答で決まる。
+ */
+function responseHeaders(contentType: string): Record<string, string> {
+  return {
+    "Content-Type": contentType,
+    "Content-Security-Policy": APP_CONTENT_SECURITY_POLICY,
+  };
+}
+
+/**
  * `protocol.handle` に渡すハンドラ（fetch 互換の Request → Response）。
  * electron に依存しないので単体テストはこれを直接呼ぶ。
  * - GET 以外は 405
  * - 解決不能 / 読めない（存在しない・ディレクトリ）は 404
- * - HTML には Content-Security-Policy を付ける（ドキュメント単位で効く層）
+ * - 200・404・405 のすべてに Content-Security-Policy を付ける
  */
 export function createAppProtocolHandler(
   distRoot: string,
 ): (request: Request) => Promise<Response> {
   return async (request) => {
     if (request.method !== "GET") {
-      return new Response("method not allowed", { status: 405 });
+      return new Response("method not allowed", {
+        status: 405,
+        headers: responseHeaders("text/plain; charset=utf-8"),
+      });
     }
+    const notFound = (): Response =>
+      new Response("not found", {
+        status: 404,
+        headers: responseHeaders("text/plain; charset=utf-8"),
+      });
     const filePath = resolveAppRequestPath(request.url, distRoot);
     if (!filePath) {
-      return new Response("not found", { status: 404 });
+      return notFound();
     }
     let body: Uint8Array;
     try {
       body = await readFile(filePath);
     } catch {
-      return new Response("not found", { status: 404 });
+      return notFound();
     }
-    const contentType = contentTypeForPath(filePath);
-    const headers: Record<string, string> = { "Content-Type": contentType };
-    if (contentType.startsWith("text/html")) {
-      headers["Content-Security-Policy"] = APP_CONTENT_SECURITY_POLICY;
-    }
-    return new Response(body, { status: 200, headers });
+    return new Response(body, {
+      status: 200,
+      headers: responseHeaders(contentTypeForPath(filePath)),
+    });
   };
 }
 

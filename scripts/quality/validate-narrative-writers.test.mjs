@@ -543,11 +543,43 @@ describe("validate-narrative-writers", () => {
         "",
       ].join("\n"),
     );
+    const mainDir = path.join(root, "electron/main");
+    mkdirSync(mainDir, { recursive: true });
+    writeFileSync(
+      path.join(mainDir, "example.pipeline.spec.ts"),
+      [
+        "import { narrativeProtectedFixture } from '@/db/schema';",
+        "await db.delete(narrativeProtectedFixture);",
+        "",
+      ].join("\n"),
+    );
 
     const result = validateNarrativeWriters({
       repoRoot: root,
       registryPath,
     });
     assert.equal(result.violations.length, 0);
+  });
+
+  it("keeps scanning a .spec.ts that is not a Main pipeline test", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "narrative-writers-"));
+    const registryPath = writeActiveFixtureRegistry(root);
+    const mainDir = path.join(root, "electron/main");
+    mkdirSync(mainDir, { recursive: true });
+    writeFileSync(
+      path.join(mainDir, "example.spec.ts"),
+      [
+        "import { narrativeProtectedFixture } from '@/db/schema';",
+        "await db.delete(narrativeProtectedFixture);",
+        "",
+      ].join("\n"),
+    );
+
+    const result = validateNarrativeWriters({
+      repoRoot: root,
+      registryPath,
+    });
+    assert.equal(result.violations.length, 1);
+    assert.equal(result.violations[0].file, "electron/main/example.spec.ts");
   });
 });

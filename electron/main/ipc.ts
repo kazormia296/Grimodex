@@ -20,6 +20,7 @@ import {
 
 import {
   bindCanonicalAuthorityContext,
+  D2A_DB_OWN_DATA_READ,
   dispatchInvoke,
   IPC,
   IPC_BACKEND_UNAVAILABLE_MARKER,
@@ -2041,6 +2042,29 @@ export function bindRendererAuthorityForIpc(
 }
 
 /**
+ * Release the pending Related Scenes operation of a `related_scenes_begin`
+ * result the D2a completion check refused to publish (K3/2 `nir1-publication`).
+ * Best effort: a failure leaves the lease to its fixed TTL and the owner
+ * cleanup on sender destruction, and never reaches the renderer.
+ */
+function releaseUnpublishedRelatedScenesOperation(
+  backend: NapiBackendLike | null | undefined,
+  ownerKey: string,
+  value: unknown,
+): void {
+  if (!isRecord(value) || !isRecord(value.ir)) return;
+  const ticket = value.ir.operationTicket;
+  if (typeof ticket !== "string" || !backend?.relatedScenesRelease) return;
+  try {
+    Promise.resolve(backend.relatedScenesRelease(ownerKey, ticket)).catch(() =>
+      console.warn("[related-scenes] unpublished operation release failed"),
+    );
+  } catch {
+    console.warn("[related-scenes] unpublished operation release failed");
+  }
+}
+
+/**
  * app ready 後に 1 回だけ呼ぶ。`backend` は .node ロード失敗時 null
  * （napi コマンドは IPC_BACKEND_UNAVAILABLE の明示エラーで落ちる）。
  * `extraShellHandlers` は per-invoke に再生成できないステートフルな main-TS
@@ -2165,6 +2189,24 @@ export function registerIpcRouter(
           profileEgress?.assertInvoke(cmd, dispatchArgs);
         } catch (error) {
           return { ok: false, error: toErrorString(error) };
+        }
+        // `own-data-read` (K3/2): Main's own classification of a generic DB
+        // statement travels to Native as a non-enumerable, symbol-keyed
+        // sidecar so Native can require a read-only statement. Any value of
+        // that key a caller supplied is discarded first; it is never used.
+        if (cmd === "db_execute" || cmd === "db_execute_batch") {
+          Reflect.deleteProperty(dispatchArgs, D2A_DB_OWN_DATA_READ);
+          const ownDataRead = profileEgress?.classifyOwnDataRead?.(
+            cmd,
+            dispatchArgs,
+          );
+          if (ownDataRead !== undefined) {
+            Object.defineProperty(dispatchArgs, D2A_DB_OWN_DATA_READ, {
+              value: ownDataRead,
+              enumerable: false,
+              configurable: true,
+            });
+          }
         }
         const dispatch = (): Promise<Envelope> =>
           dispatchInvoke(cmd, dispatchArgs, {
@@ -2434,6 +2476,7 @@ export function registerIpcRouter(
               error: "D2A_EGRESS_DENIED: invalid native database result kind",
             };
           } else if (!isOpaqueCommittedDbMutationReceipt(cmd, envelope.value)) {
+            const admittedValue = envelope.value;
             try {
               // A result admitted before activation may finish after the
               // profile gate closes. Re-check only plaintext publication
@@ -2454,6 +2497,20 @@ export function registerIpcRouter(
                 // protected RETURNING/plaintext data.
                 envelope = { ok: true, value: { rows: [], committed: true } };
               } else {
+                if (
+                  cmd === "related_scenes_begin" &&
+                  typeof boundArgs.ownerKey === "string"
+                ) {
+                  // Native created the pending operation before this check
+                  // refused its result. Nothing was tracked or returned, so
+                  // release it here instead of leaving an owner/ticket that
+                  // only the lease TTL would reclaim.
+                  releaseUnpublishedRelatedScenesOperation(
+                    backend,
+                    boundArgs.ownerKey,
+                    admittedValue,
+                  );
+                }
                 envelope = { ok: false, error: toErrorString(error) };
               }
             }

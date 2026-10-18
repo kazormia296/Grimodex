@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createLicenseValidationScheduler } from "./licenseValidation.js";
+import {
+  createLicenseValidationScheduler,
+  shouldStartLicenseValidation,
+} from "./licenseValidation.js";
 
 const INITIAL_DELAY_MS = 5_000;
 const VALIDATION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
@@ -83,6 +86,27 @@ describe("createLicenseValidationScheduler", () => {
 
     expect(runLicenseValidateCycle).not.toHaveBeenCalled();
     expect(broadcast).not.toHaveBeenCalled();
+  });
+
+  it("license-control: restrictedでも定期確認を始め、unavailableでは始めない（K3/2 L-1）", async () => {
+    // unrestricted / restricted（unavailableでない）/ unavailable の3状態。
+    expect(shouldStartLicenseValidation({ unavailable: false })).toBe(true);
+    expect(shouldStartLicenseValidation({ unavailable: true })).toBe(false);
+
+    for (const gate of [{ unavailable: false }, { unavailable: true }]) {
+      const runLicenseValidateCycle = vi.fn().mockResolvedValue(null);
+      const scheduler = createLicenseValidationScheduler(
+        { runLicenseValidateCycle },
+        vi.fn(),
+        { warn: vi.fn(), startEnabled: shouldStartLicenseValidation(gate) },
+      );
+      schedulers.push(scheduler);
+      scheduler.start();
+      await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + 1);
+      expect(runLicenseValidateCycle).toHaveBeenCalledTimes(
+        gate.unavailable ? 0 : 1,
+      );
+    }
   });
 
   it("次のcycleは前回cycleの完了時点から6時間後に実行する", async () => {

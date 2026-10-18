@@ -27,11 +27,36 @@ interface NativeProfileEgressStatus {
   sqlPolicy?: unknown;
 }
 
-const PROFILE_EGRESS_POLICY_VERSION = 1;
+/** Native `sqlPolicy` wire version (K3/2 "表の台帳"). Unknown versions are unavailable. */
+const PROFILE_EGRESS_POLICY_VERSION = 2;
+
+/**
+ * Whether Electron main routes `own-data-read` (the read-open reading of the
+ * author's own data) as such in a restricted profile.  While `false` every
+ * `own-data-read` classification is routed as `plaintext-publication`, i.e.
+ * rejected, which is the a153743b behavior.  Native's matching switch is
+ * `PROFILE_EGRESS_READ_OPEN_ENABLED` in `grimodex-db`'s
+ * `profile_egress_policy.rs`; both are flipped by the single opening commit,
+ * which is held back until the renderer-isolation finding in
+ * `docs/plans/nir1-lane-decisions/da1-decisions.md` (Y-1) is resolved.
+ */
+export const D2A_OWN_DATA_READ_OPEN = false;
 
 interface NativeProfileEgressPolicy {
-  readonly protectedTables: ReadonlySet<string>;
-  readonly protectedColumns: ReadonlySet<string>;
+  /** `closed`: neither readable nor writable through generic SQL. */
+  readonly closedTables: ReadonlySet<string>;
+  /** `read-open`: readable as `own-data-read` once opened; never writable. */
+  readonly readOpenTables: ReadonlySet<string>;
+  /** `table.column` references of read-open columns on unlisted tables. */
+  readonly readOpenColumns: ReadonlySet<string>;
+}
+
+function emptyNativeProfileEgressPolicy(): NativeProfileEgressPolicy {
+  return {
+    closedTables: new Set(),
+    readOpenTables: new Set(),
+    readOpenColumns: new Set(),
+  };
 }
 
 type MainProfileEgressBackend = NapiBackendLike & {
@@ -39,33 +64,125 @@ type MainProfileEgressBackend = NapiBackendLike & {
   activateProfileEgress?: () => Promise<string>;
 };
 
-type D2aRoute =
+/**
+ * Route classes (K3/2 "restricted 下の route 区分"). The five publication
+ * classes are `nir1-publication`, `nir1-restricted-only`, `own-data-read`,
+ * `license-control` and `plaintext-publication`; the rest are the existing
+ * deny/allow classes.
+ */
+export type D2aRoute =
   | "old-external-ai"
   | "old-local-ai"
   | "plaintext-publication"
+  | "nir1-publication"
+  | "nir1-restricted-only"
+  | "own-data-read"
+  | "license-control"
   | "external-url"
   | "native-mutation"
   | "internal"
   | "unclassified";
 
 /**
- * Renderer-visible typed results that are not safe to expose while D2a is
- * restricted.  The `satisfies` key check makes adding a stale/nonexistent
- * command to this small exception ledger a compile-time error; all other
- * commands remain covered by the route ledger below.
+ * `own-data-read` (K3/2): typed reads of the author's own data that publish
+ * nothing outside the profile.  39 commands, each checked by K3/2 to have no
+ * write in its function body.  A command belongs here, in `DENIED_COMMANDS`,
+ * in `INTERNAL_COMMANDS`, in the license ledger or in the typed-result
+ * ledger, never two; adding or removing a command here needs a new draftRef.
+ * Typed reads carry no Native re-authorization or Main completion check
+ * (Q-1).  Unrestricted passes them unchecked.
  */
-export type D2aTypedResultPolicy = "plaintext-publication";
-export const D2A_TYPED_RESULT_POLICY = {
-  project_snapshot_restore_context: "plaintext-publication",
-  lint_ignore_list: "plaintext-publication",
-  lint_ignore_list_scene: "plaintext-publication",
-  lint_term_dictionary_list: "plaintext-publication",
-  nir1_entity_relation_revision_read: "plaintext-publication",
-  nir1_entity_relation_revision_read_current: "plaintext-publication",
-  nir1_entity_relation_revision_restore: "plaintext-publication",
-} as const satisfies Partial<
-  Record<keyof typeof NAPI_COMMANDS, D2aTypedResultPolicy>
->;
+const OWN_DATA_READ_COMMANDS = [
+  // Search (7)
+  "fts_search",
+  "semantic_search",
+  "semantic_chunk_context",
+  "semantic_debug_dump",
+  "codex_semantic_search",
+  "events_semantic_search",
+  "chat_message_search",
+  // Codex analysis (3)
+  "codex_match_text",
+  "extract_codex_candidates",
+  "extract_codex_entity_seeds",
+  // Foreshadows (9)
+  "foreshadow_list_with_labels",
+  "foreshadow_list_open_for_context",
+  "foreshadow_get_scene_info",
+  "foreshadow_get_scene_context",
+  "foreshadow_list_by_codex_entry",
+  "foreshadow_get_chapter_stats",
+  "foreshadow_get_setup",
+  "foreshadow_get",
+  "foreshadow_list_linked_codex",
+  // Plot (2)
+  "plot_thread_list",
+  "plot_thread_list_links",
+  // Lint (3)
+  "lint_ignore_list",
+  "lint_ignore_list_scene",
+  "lint_term_dictionary_list",
+  // Trash and snapshot-restore context (2)
+  "trash_bin_list",
+  "project_snapshot_restore_context",
+  // AI records (6)
+  "ai_audit_read_snapshot",
+  "ai_audit_verify",
+  "list_post_effect_runs",
+  "list_scene_lens_for_project",
+  "list_annotations_for_scene",
+  "list_annotations_for_project",
+  // Extraction review and maintenance inbox (7)
+  "narrative_extraction_get_run",
+  "narrative_extraction_get_run_review_bundle",
+  "narrative_extraction_list_resumable_runs",
+  "narrative_extraction_is_run_resumable_for_review",
+  "narrative_extraction_list_chronicle_task_resume_candidates",
+  "narrative_extraction_get_commit_status",
+  "narrative_maintenance_inbox_list",
+] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
+
+/**
+ * `nir1-publication` (K3/2): the NIR plaintext a restricted profile may still
+ * publish to the renderer, each behind a Native admission at start and at
+ * return (`publication_guard.rs`) and a Main completion check.  Related Scenes
+ * R/IR and Evidence navigation (3) and the A2 review reads (3).  Unrestricted
+ * passes them unchecked.  `related_scenes_release` and
+ * `related_scenes_release_owner` carry no plaintext and stay `internal`; the
+ * Graph listener is CP-3a.
+ *
+ * `nir1-restricted-only` is empty here: K5's D-dispatch commands are added by
+ * DD-1.  Both ledgers are `satisfies`-bound to `NAPI_COMMANDS`, and a command
+ * is in at most one ledger (`d2aRouteLedgersForTest`).
+ */
+const NIR1_PUBLICATION_COMMANDS = [
+  // Related Scenes R/IR and Evidence navigation
+  "related_scenes_begin",
+  "related_scenes_continue",
+  "nir1_evidence_qualify",
+  // A2 review reads
+  "nir1_entity_relation_revision_read",
+  "nir1_entity_relation_revision_read_current",
+  "nir1_entity_relation_revision_restore",
+] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
+const NIR1_RESTRICTED_ONLY_COMMANDS =
+  [] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
+
+/**
+ * `license-control` (K3/2 L-1): the three license mutations carry no
+ * manuscript, chat or AI plaintext (the only renderer-supplied value is the
+ * `activate_license` key, which Native checks against an exact grammar while
+ * restricted) and go to the fixed license origin only. They pass in both
+ * unrestricted and restricted profiles and are refused while unavailable.
+ * `get_license_state` stays `internal`. The `satisfies` check keeps a
+ * stale/nonexistent command out of this ledger at compile time; a command
+ * belongs here or in `DENIED_COMMANDS` / `INTERNAL_COMMANDS`, never two.
+ */
+const LICENSE_CONTROL_COMMANDS = [
+  "activate_license",
+  "revalidate_license",
+  "deactivate_license",
+] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
 const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["send_chat_message", "old-external-ai"],
@@ -74,9 +191,6 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["send_agent_message", "old-external-ai"],
   ["list_ai_models", "old-external-ai"],
   ["test_ai_connection", "external-url"],
-  ["activate_license", "external-url"],
-  ["revalidate_license", "external-url"],
-  ["deactivate_license", "external-url"],
   ["start_post_effect_run", "old-external-ai"],
   ["start_post_effect_run_multi", "old-external-ai"],
   ["send_cli_chat_stream", "old-external-ai"],
@@ -93,53 +207,12 @@ const DENIED_COMMANDS = new Map<string, D2aRoute>([
   ["codex_app_set_thread_name", "old-external-ai"],
   ["vivliostyle_build", "external-url"],
   ["vivliostyle_preview_start", "external-url"],
+  // The CLI probe runs a login shell and the CLI's `--version` on a
+  // restricted-restarted process, so it is as closed as build/preview.
+  ["vivliostyle_detect", "external-url"],
   ["get_mcp_config", "old-external-ai"],
   ["narrative_extraction_claim_task", "plaintext-publication"],
-  ["narrative_extraction_get_run_review_bundle", "plaintext-publication"],
-  ["ai_audit_read_snapshot", "plaintext-publication"],
-  ["ai_audit_verify", "plaintext-publication"],
-  ["list_post_effect_runs", "plaintext-publication"],
-  ["list_scene_lens_for_project", "plaintext-publication"],
-  ["list_annotations_for_scene", "plaintext-publication"],
-  ["list_annotations_for_project", "plaintext-publication"],
-  ["codex_index_entry", "plaintext-publication"],
-  ["codex_semantic_search", "plaintext-publication"],
-  ["codex_match_text", "plaintext-publication"],
-  ["extract_codex_candidates", "plaintext-publication"],
-  ["extract_codex_entity_seeds", "plaintext-publication"],
-  ["semantic_search", "plaintext-publication"],
-  ["semantic_chunk_context", "plaintext-publication"],
-  ["semantic_debug_dump", "plaintext-publication"],
-  ["fts_search", "plaintext-publication"],
-  ["nir1_evidence_qualify", "plaintext-publication"],
   ["nir1_pack_context", "plaintext-publication"],
-  ["related_scenes_begin", "plaintext-publication"],
-  ["related_scenes_continue", "plaintext-publication"],
-  ["events_index_entry", "plaintext-publication"],
-  ["events_semantic_search", "plaintext-publication"],
-  ["chat_index_message", "plaintext-publication"],
-  ["chat_message_search", "plaintext-publication"],
-  ["plot_thread_list", "plaintext-publication"],
-  ["plot_thread_list_links", "plaintext-publication"],
-  ["foreshadow_list_with_labels", "plaintext-publication"],
-  ["foreshadow_list_open_for_context", "plaintext-publication"],
-  ["foreshadow_get_scene_info", "plaintext-publication"],
-  ["foreshadow_get_scene_context", "plaintext-publication"],
-  ["foreshadow_list_by_codex_entry", "plaintext-publication"],
-  ["foreshadow_get_chapter_stats", "plaintext-publication"],
-  ["foreshadow_get_setup", "plaintext-publication"],
-  ["foreshadow_get", "plaintext-publication"],
-  ["foreshadow_list_linked_codex", "plaintext-publication"],
-  ["narrative_extraction_get_run", "plaintext-publication"],
-  ["narrative_extraction_list_resumable_runs", "plaintext-publication"],
-  ["narrative_extraction_is_run_resumable_for_review", "plaintext-publication"],
-  [
-    "narrative_extraction_list_chronicle_task_resume_candidates",
-    "plaintext-publication",
-  ],
-  ["narrative_extraction_get_commit_status", "plaintext-publication"],
-  ["narrative_maintenance_inbox_list", "plaintext-publication"],
-  ["trash_bin_list", "plaintext-publication"],
 ]);
 
 const ALLOWED_STOP_COMMANDS = new Set([
@@ -157,7 +230,6 @@ const INTERNAL_COMMANDS = new Set([
   "abort_cli_chat_stream",
   "abort_inline_ai_stream",
   "abort_post_effect_run",
-  "activate_license",
   "agent_accept_prose_stage",
   "agent_apply_undo_journal",
   "agent_chronicle_bulk_mutate",
@@ -188,6 +260,12 @@ const INTERNAL_COMMANDS = new Set([
   "cancel_current_chat_input",
   "retire_current_chat_input",
   "chat_index_status",
+  // Derived-index updates (K3/2 "派生 index の更新"): they take ids only and
+  // return counts only, like `semantic_index_scene` and the `*_reindex_all`
+  // commands, so they publish no plaintext and stay available while restricted.
+  "chat_index_message",
+  "codex_index_entry",
+  "events_index_entry",
   "chat_reindex_all",
   "chronicle_bulk_mutate",
   "codex_create",
@@ -201,7 +279,6 @@ const INTERNAL_COMMANDS = new Set([
   "codex_update",
   "db_execute",
   "db_execute_batch",
-  "deactivate_license",
   "delete_api_key",
   "editor_sticky_create",
   "editor_sticky_delete",
@@ -328,7 +405,6 @@ const INTERNAL_COMMANDS = new Set([
   "restore_backup",
   "restore_recovery_candidate",
   "retry_narrative_legacy_backfill",
-  "revalidate_license",
   "revision_scene_restore",
   "runtime_performance_seed",
   "save_ai_settings",
@@ -377,9 +453,6 @@ const INTERNAL_COMMANDS = new Set([
   "verify_narrative_dependency_graph",
   "verify_recovery_candidate",
   "vivliostyle_abort_build",
-  "vivliostyle_build",
-  "vivliostyle_detect",
-  "vivliostyle_preview_start",
   "vivliostyle_preview_stop",
   "vivliostyle_save_output",
 ]);
@@ -399,14 +472,14 @@ function sqlTableNames(sql: string): Array<string | undefined> {
   ].map((match) => normalizeSqlTableName(match[1] ?? ""));
 }
 
-function hasProtectedColumnReference(
+function hasReadOpenColumnReference(
   sql: string,
   tableNames: ReadonlyArray<string | undefined>,
   policy: NativeProfileEgressPolicy,
 ): boolean {
   // This is an early route classification only. Native's SQLite authorizer
   // consumes the same policy and remains the enforcement authority.
-  return [...policy.protectedColumns].some((reference) => {
+  return [...policy.readOpenColumns].some((reference) => {
     const [table, column] = reference.split(".");
     if (!table || !column) return false;
     if (!tableNames.some((name) => name === table)) return false;
@@ -416,44 +489,49 @@ function hasProtectedColumnReference(
   });
 }
 
-function dbReadRoute(
-  sql: unknown,
-  hasBoundCaller = false,
-  policy: NativeProfileEgressPolicy,
-): D2aRoute {
-  if (typeof sql !== "string") return "unclassified";
-  const tableNames = sqlTableNames(sql);
-  if (
-    tableNames.some((table) => table && policy.protectedTables.has(table)) ||
-    hasProtectedColumnReference(sql, tableNames, policy)
-  ) {
-    return "plaintext-publication";
-  }
-  if (
-    /^\s*(?:select|pragma|with)\b/i.test(sql) &&
-    tableNames.length > 0 &&
-    hasBoundCaller
-  ) {
-    return "internal";
-  }
-  return "unclassified";
-}
-
+/**
+ * Early classification of one generic-SQL statement (K3/2 "区分の規則" 汎用 DB).
+ * Main only advises; Native's authorizer and, for `own-data-read`, its
+ * read-only check are the authority.
+ *
+ *  - touches a `closed` table: `plaintext-publication`
+ *  - touches a `read-open` table or column:
+ *      - SELECT / WITH (decided by the first keyword, so `WITH ... INSERT` is
+ *        also here and Native's checks reject the write): `own-data-read`
+ *      - anything else (DML on the ledger, a comment-prefixed statement,
+ *        EXPLAIN, ...): `plaintext-publication`
+ *  - otherwise the pre-D2a classification (`internal` / `native-mutation` /
+ *    `unclassified`).
+ * The classification deliberately is not "reads only read-open tables": Main's
+ * extraction cannot tell a read from a write target.
+ *
+ * While the own-data-read opening is off, `own-data-read` is reported as
+ * `plaintext-publication`, which is what every read-open reference was.
+ */
 function dbStatementRoute(
   sql: unknown,
-  hasBoundCaller = false,
+  hasBoundCaller: boolean,
   policy: NativeProfileEgressPolicy,
+  ownDataReadOpen: boolean,
 ): D2aRoute {
   if (typeof sql !== "string") return "unclassified";
   const tableNames = sqlTableNames(sql);
-  if (
-    tableNames.some((table) => table && policy.protectedTables.has(table)) ||
-    hasProtectedColumnReference(sql, tableNames, policy)
-  ) {
+  if (tableNames.some((table) => table && policy.closedTables.has(table))) {
     return "plaintext-publication";
   }
-  if (/^\s*(select|pragma|with)\b/i.test(sql)) {
-    return dbReadRoute(sql, hasBoundCaller, policy);
+  const touchesReadOpen =
+    tableNames.some((table) => table && policy.readOpenTables.has(table)) ||
+    hasReadOpenColumnReference(sql, tableNames, policy);
+  if (touchesReadOpen) {
+    if (/^\s*(?:select|with)\b/i.test(sql)) {
+      return ownDataReadOpen ? "own-data-read" : "plaintext-publication";
+    }
+    return "plaintext-publication";
+  }
+  if (/^\s*(?:select|pragma|with)\b/i.test(sql)) {
+    return tableNames.length > 0 && hasBoundCaller
+      ? "internal"
+      : "unclassified";
   }
   if (
     /^\s*(insert|update|delete|replace|create|alter|drop)\b/i.test(sql) &&
@@ -463,12 +541,6 @@ function dbStatementRoute(
     return "native-mutation";
   }
   return "unclassified";
-}
-
-function typedResultRoute(command: string): D2aRoute | undefined {
-  return D2A_TYPED_RESULT_POLICY[
-    command as keyof typeof D2A_TYPED_RESULT_POLICY
-  ];
 }
 
 const ALLOWED_BACKEND_EVENTS = new Set([
@@ -490,20 +562,38 @@ const ALLOWED_BACKEND_EVENTS = new Set([
   "vivliostyle:error",
 ]);
 
+/** Reports an `own-data-read` route as `plaintext-publication` while closed. */
+function effectiveRoute(route: D2aRoute, ownDataReadOpen: boolean): D2aRoute {
+  return route === "own-data-read" && !ownDataReadOpen
+    ? "plaintext-publication"
+    : route;
+}
+
 function commandRoute(
   command: string,
   args: CommandArgs,
   policy: NativeProfileEgressPolicy,
+  ownDataReadOpen: boolean,
 ): D2aRoute {
-  const typedResult = typedResultRoute(command);
-  if (typedResult) return typedResult;
   const explicit = DENIED_COMMANDS.get(command);
   if (explicit) return explicit;
+  if ((LICENSE_CONTROL_COMMANDS as readonly string[]).includes(command)) {
+    return "license-control";
+  }
+  if ((OWN_DATA_READ_COMMANDS as readonly string[]).includes(command)) {
+    return effectiveRoute("own-data-read", ownDataReadOpen);
+  }
+  if ((NIR1_PUBLICATION_COMMANDS as readonly string[]).includes(command)) {
+    return "nir1-publication";
+  }
+  if ((NIR1_RESTRICTED_ONLY_COMMANDS as readonly string[]).includes(command)) {
+    return "nir1-restricted-only";
+  }
   if (ALLOWED_STOP_COMMANDS.has(command)) return "native-mutation";
   const hasBoundCaller =
     args.callerIdentity !== undefined && args.callerIdentity !== null;
   if (command === "db_execute") {
-    return dbStatementRoute(args.sql, hasBoundCaller, policy);
+    return dbStatementRoute(args.sql, hasBoundCaller, policy, ownDataReadOpen);
   }
   if (command === "db_execute_batch") {
     const statements = args.statements;
@@ -513,16 +603,172 @@ function commandRoute(
         return "unclassified" as const;
       }
       const sql = (statement as Record<string, unknown>).sql;
-      return dbStatementRoute(sql, hasBoundCaller, policy);
+      return dbStatementRoute(sql, hasBoundCaller, policy, ownDataReadOpen);
     });
     if (routes.some((route) => route === "plaintext-publication")) {
       return "plaintext-publication";
     }
-    return routes.some((route) => route === "unclassified")
-      ? "unclassified"
+    if (routes.some((route) => route === "unclassified")) return "unclassified";
+    return routes.some((route) => route === "own-data-read")
+      ? "own-data-read"
       : "native-mutation";
   }
   return INTERNAL_COMMANDS.has(command) ? "internal" : "unclassified";
+}
+
+/**
+ * Per-statement `own-data-read` classification of a generic DB command, for
+ * Native's read-only check.  Computed by Main from the gate's own policy and
+ * attached by the router; a value a renderer sends is never used.
+ */
+function dbOwnDataReadClassification(
+  command: string,
+  args: CommandArgs,
+  policy: NativeProfileEgressPolicy,
+): boolean | boolean[] | undefined {
+  if (command === "db_execute") {
+    return dbStatementRoute(args.sql, true, policy, true) === "own-data-read";
+  }
+  if (command === "db_execute_batch") {
+    const statements = args.statements;
+    if (!Array.isArray(statements)) return undefined;
+    return statements.map((statement) => {
+      if (statement === null || typeof statement !== "object") return false;
+      return (
+        dbStatementRoute(
+          (statement as Record<string, unknown>).sql,
+          true,
+          policy,
+          true,
+        ) === "own-data-read"
+      );
+    });
+  }
+  return undefined;
+}
+
+/**
+ * Read-only view of the route ledgers for the "no command is in two ledgers"
+ * invariant test (K3/2 Negative (20)). Not used by production code.
+ */
+export function d2aRouteLedgersForTest(): {
+  readonly denied: readonly string[];
+  readonly internal: readonly string[];
+  readonly licenseControl: readonly string[];
+  readonly ownDataRead: readonly string[];
+  readonly nir1Publication: readonly string[];
+  readonly nir1RestrictedOnly: readonly string[];
+  readonly stop: readonly string[];
+} {
+  return {
+    denied: [...DENIED_COMMANDS.keys()],
+    internal: [...INTERNAL_COMMANDS],
+    licenseControl: [...LICENSE_CONTROL_COMMANDS],
+    ownDataRead: [...OWN_DATA_READ_COMMANDS],
+    nir1Publication: [...NIR1_PUBLICATION_COMMANDS],
+    nir1RestrictedOnly: [...NIR1_RESTRICTED_ONLY_COMMANDS],
+    stop: [...ALLOWED_STOP_COMMANDS],
+  };
+}
+
+/**
+ * The route a command takes under `policy` with the own-data-read opening in
+ * the given state. Exposed for tests so the ledger and the SQL classifier can
+ * be pinned without a gate.
+ */
+export function d2aCommandRouteForTest(
+  command: string,
+  args: CommandArgs,
+  policy: {
+    readonly closedTables: readonly string[];
+    readonly readOpenTables: readonly string[];
+    readonly readOpenColumns: readonly string[];
+  },
+  ownDataReadOpen: boolean,
+): D2aRoute {
+  return commandRoute(
+    command,
+    args,
+    {
+      closedTables: new Set(policy.closedTables),
+      readOpenTables: new Set(policy.readOpenTables),
+      readOpenColumns: new Set(policy.readOpenColumns),
+    },
+    ownDataReadOpen,
+  );
+}
+
+export interface D2aRouteCondition {
+  readonly restricted: boolean;
+  readonly unavailable: boolean;
+  /** A first-restricted activation is in flight (its Native step is pending). */
+  readonly activating: boolean;
+  /** The call carries a caller identity Main issued and still holds. */
+  readonly identityIssued: boolean;
+}
+
+export type D2aRouteDecision =
+  | { readonly allow: true }
+  | { readonly allow: false; readonly reason: string };
+
+/**
+ * Invoke-time decision for one route (K3/2 "区分の意味"). One exhaustive
+ * switch: adding a route class without deciding it is a compile error.
+ *
+ *  - unrestricted: everything passes except `nir1-restricted-only`
+ *  - unavailable: only `internal` and `native-mutation` pass
+ *  - restricted: `internal`, `native-mutation`, `license-control` pass; the
+ *    three identity-bound classes pass only with a Main-issued identity and
+ *    outside an activation; the rest are refused
+ */
+export function d2aRouteDecision(
+  route: D2aRoute,
+  condition: D2aRouteCondition,
+): D2aRouteDecision {
+  const allow: D2aRouteDecision = { allow: true };
+  const refuse = (reason: string): D2aRouteDecision => ({
+    allow: false,
+    reason,
+  });
+  const localOnly = "is unavailable in profile local-only mode";
+  const closed = condition.restricted || condition.unavailable;
+  if (!closed) {
+    return route === "nir1-restricted-only"
+      ? refuse("is only available in profile local-only mode")
+      : allow;
+  }
+  switch (route) {
+    case "internal":
+    case "native-mutation":
+      return allow;
+    case "license-control":
+      return condition.unavailable
+        ? refuse("is unavailable until the Native profile gate is ready")
+        : allow;
+    case "own-data-read":
+    case "nir1-publication":
+    case "nir1-restricted-only":
+      if (condition.unavailable) {
+        return refuse("is unavailable until the Native profile gate is ready");
+      }
+      if (condition.activating) {
+        return refuse("is unavailable while the profile is being restricted");
+      }
+      if (!condition.identityIssued) {
+        return refuse("requires a main-issued caller identity");
+      }
+      return allow;
+    case "old-external-ai":
+    case "old-local-ai":
+    case "plaintext-publication":
+    case "external-url":
+    case "unclassified":
+      return refuse(localOnly);
+    default: {
+      const exhaustive: never = route;
+      return refuse(`unknown route ${String(exhaustive)}`);
+    }
+  }
 }
 
 function denied(route: D2aRoute, detail: string): Error {
@@ -534,6 +780,17 @@ export interface ProfileEgressGate {
   readonly unavailable: boolean;
   issueCallerIdentity(senderId: number): MainIssuedCallerIdentity;
   assertInvoke(command: string, args: CommandArgs): void;
+  /**
+   * `own-data-read` classification of a generic DB command, for Native's
+   * read-only check: `true` / `false` for `db_execute`, one flag per statement
+   * for `db_execute_batch`. `undefined` when no classification applies (not a
+   * generic DB command, an unrestricted or unavailable profile, or the
+   * own-data-read opening is off). Call after `assertInvoke` succeeded.
+   */
+  classifyOwnDataRead?(
+    command: string,
+    args: CommandArgs,
+  ): boolean | boolean[] | undefined;
   /** Re-authorize a result admitted before profile restriction began. */
   assertPlaintextPublication(command: string, args: CommandArgs): void;
   allowsBackendEvent(channel: string): boolean;
@@ -605,6 +862,8 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     return this._unavailable;
   }
 
+  private readonly ownDataReadOpen: boolean;
+
   constructor(
     status: NativeProfileEgressStatus | null,
     unavailable: boolean,
@@ -612,7 +871,9 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     registerCaller?: (identity: MainIssuedCallerIdentity) => void,
     invalidateCallers?: () => void,
     activateProfileEgress?: () => Promise<string>,
+    ownDataReadOpen: boolean = D2A_OWN_DATA_READ_OPEN,
   ) {
+    this.ownDataReadOpen = ownDataReadOpen;
     const profileId = status?.profileId;
     const callerEpoch = status?.callerEpoch;
     this._restricted = unavailable || status?.restricted === true;
@@ -673,7 +934,28 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   }
 
   assertInvoke(command: string, args: CommandArgs): void {
-    if (!this.restricted && !this.unavailable) return;
+    if (!this.restricted && !this.unavailable) {
+      // Unrestricted: nothing is checked, except that a restricted-only
+      // command is refused (K3/2 `nir1-restricted-only`). Decided by command
+      // name so ordinary SQL is not classified on the unrestricted hot path.
+      if (
+        (NIR1_RESTRICTED_ONLY_COMMANDS as readonly string[]).includes(command)
+      ) {
+        const decision = d2aRouteDecision("nir1-restricted-only", {
+          restricted: false,
+          unavailable: false,
+          activating: false,
+          identityIssued: false,
+        });
+        if (!decision.allow) {
+          throw denied(
+            "nir1-restricted-only",
+            `route ${command} ${decision.reason}`,
+          );
+        }
+      }
+      return;
+    }
     if (
       this.unavailable &&
       (command === "db_execute" || command === "db_execute_batch")
@@ -683,7 +965,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         `route ${command} is unavailable until the Native profile gate is ready`,
       );
     }
-    const route = commandRoute(command, args, this.policy);
+    const route = this.route(command, args);
     const callerIdentity = args.callerIdentity;
     const requiresBoundCaller =
       command === "db_execute" || command === "db_execute_batch";
@@ -697,22 +979,58 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       );
     }
     this.assertIssuedCallerIdentity(callerIdentity, command);
-    if (
-      route === "old-external-ai" ||
-      route === "old-local-ai" ||
-      route === "plaintext-publication" ||
-      route === "external-url" ||
-      route === "unclassified"
-    ) {
-      throw denied(
-        route,
-        `route ${command} is unavailable in profile local-only mode`,
-      );
+    const decision = d2aRouteDecision(route, {
+      restricted: this.restricted,
+      unavailable: this.unavailable,
+      activating: this.activationPromise !== null,
+      identityIssued: callerIdentity !== undefined && callerIdentity !== null,
+    });
+    if (!decision.allow) {
+      throw denied(route, `route ${command} ${decision.reason}`);
     }
   }
 
+  classifyOwnDataRead(
+    command: string,
+    args: CommandArgs,
+  ): boolean | boolean[] | undefined {
+    if (!this.ownDataReadOpen || !this.restricted || this.unavailable) {
+      return undefined;
+    }
+    return dbOwnDataReadClassification(command, args, this.policy);
+  }
+
+  private route(command: string, args: CommandArgs): D2aRoute {
+    return commandRoute(command, args, this.policy, this.ownDataReadOpen);
+  }
+
   assertPlaintextPublication(command: string, args: CommandArgs): void {
-    if (commandRoute(command, args, this.policy) !== "plaintext-publication") {
+    const route = this.route(command, args);
+    if (route === "own-data-read") {
+      // Q-1: a typed read of the author's own data publishes nothing outside
+      // the profile, so a result admitted before activation may complete
+      // after it. No Native re-authorization and no completion check.
+      return;
+    }
+    if (route === "nir1-publication" || route === "nir1-restricted-only") {
+      // The issued identity must still be the one the request was admitted
+      // with: activation and workspace changes clear/rotate it.
+      this.assertIssuedCallerIdentity(args.callerIdentity, command);
+      if (!this.restricted && !this.unavailable) return;
+      if (
+        this.unavailable ||
+        this.activationPromise !== null ||
+        args.callerIdentity === undefined ||
+        args.callerIdentity === null
+      ) {
+        throw denied(
+          route,
+          `route ${command} completed after profile restriction began`,
+        );
+      }
+      return;
+    }
+    if (route !== "plaintext-publication") {
       return;
     }
 
@@ -1216,33 +1534,31 @@ function parseNativeProfileEgressPolicy(
     return null;
   }
   const policy = status.sqlPolicy as Record<string, unknown>;
+  // Unknown keys and unknown versions are unavailable (fail closed).
   if (
     Object.keys(policy).some(
       (key) =>
         key !== "version" &&
-        key !== "protectedTables" &&
-        key !== "protectedColumns",
+        key !== "closedTables" &&
+        key !== "readOpenTables" &&
+        key !== "readOpenColumns",
     )
   ) {
     return null;
   }
   if (policy.version !== PROFILE_EGRESS_POLICY_VERSION) return null;
-  if (!Array.isArray(policy.protectedTables)) return null;
-  if (!Array.isArray(policy.protectedColumns)) return null;
 
-  const protectedTables = new Set<string>();
-  for (const value of policy.protectedTables) {
-    if (typeof value !== "string" || value.trim() !== value || value === "") {
-      return null;
-    }
-    const normalized = value.toLowerCase();
-    if (protectedTables.has(normalized)) return null;
-    protectedTables.add(normalized);
+  const closedTables = parseTableSet(policy.closedTables);
+  const readOpenTables = parseTableSet(policy.readOpenTables);
+  if (closedTables === null || readOpenTables === null) return null;
+  // A table is declared in exactly one class.
+  for (const table of readOpenTables) {
+    if (closedTables.has(table)) return null;
   }
-  if (protectedTables.size === 0) return null;
 
-  const protectedColumns = new Set<string>();
-  for (const value of policy.protectedColumns) {
+  if (!Array.isArray(policy.readOpenColumns)) return null;
+  const readOpenColumns = new Set<string>();
+  for (const value of policy.readOpenColumns) {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       return null;
     }
@@ -1265,10 +1581,24 @@ function parseNativeProfileEgressPolicy(
       return null;
     }
     const key = `${table.toLowerCase()}.${column.toLowerCase()}`;
-    if (protectedColumns.has(key)) return null;
-    protectedColumns.add(key);
+    if (readOpenColumns.has(key)) return null;
+    readOpenColumns.add(key);
   }
-  return { protectedTables, protectedColumns };
+  return { closedTables, readOpenTables, readOpenColumns };
+}
+
+function parseTableSet(value: unknown): Set<string> | null {
+  if (!Array.isArray(value)) return null;
+  const tables = new Set<string>();
+  for (const entry of value) {
+    if (typeof entry !== "string" || entry.trim() !== entry || entry === "") {
+      return null;
+    }
+    const normalized = entry.toLowerCase();
+    if (tables.has(normalized)) return null;
+    tables.add(normalized);
+  }
+  return tables.size === 0 ? null : tables;
 }
 
 function isValidNativeProfileEgressStatus(
@@ -1291,34 +1621,59 @@ function isValidNativeProfileEgressStatus(
   );
 }
 
+export interface ProfileEgressGateOptions {
+  /**
+   * Test seam for the own-data-read opening. Production code does not pass it:
+   * the gate follows `D2A_OWN_DATA_READ_OPEN`.
+   */
+  readonly ownDataReadOpen?: boolean;
+}
+
 export async function createProfileEgressGate(
   backend: MainProfileEgressBackend | null,
+  options: ProfileEgressGateOptions = {},
 ): Promise<ProfileEgressGate> {
+  const ownDataReadOpen = options.ownDataReadOpen ?? D2A_OWN_DATA_READ_OPEN;
   if (
     !backend?.initializeProfileEgress ||
     !backend.registerProfileEgressCaller ||
     !backend.invalidateProfileEgressCallers
   ) {
-    return new NativeBoundProfileEgressGate(null, true, {
-      protectedTables: new Set(),
-      protectedColumns: new Set(),
-    });
+    return new NativeBoundProfileEgressGate(
+      null,
+      true,
+      emptyNativeProfileEgressPolicy(),
+      undefined,
+      undefined,
+      undefined,
+      ownDataReadOpen,
+    );
   }
   try {
     const raw = await backend.initializeProfileEgress!();
     const status = JSON.parse(raw) as NativeProfileEgressStatus;
     const policy = parseNativeProfileEgressPolicy(status);
     if (!isValidNativeProfileEgressStatus(status, policy, false)) {
-      return new NativeBoundProfileEgressGate(null, true, {
-        protectedTables: new Set(),
-        protectedColumns: new Set(),
-      });
+      return new NativeBoundProfileEgressGate(
+        null,
+        true,
+        emptyNativeProfileEgressPolicy(),
+        undefined,
+        undefined,
+        undefined,
+        ownDataReadOpen,
+      );
     }
     if (!policy) {
-      return new NativeBoundProfileEgressGate(null, true, {
-        protectedTables: new Set(),
-        protectedColumns: new Set(),
-      });
+      return new NativeBoundProfileEgressGate(
+        null,
+        true,
+        emptyNativeProfileEgressPolicy(),
+        undefined,
+        undefined,
+        undefined,
+        ownDataReadOpen,
+      );
     }
     return new NativeBoundProfileEgressGate(
       status,
@@ -1331,14 +1686,20 @@ export async function createProfileEgressGate(
       backend.activateProfileEgress
         ? () => backend.activateProfileEgress!()
         : undefined,
+      ownDataReadOpen,
     );
   } catch (error) {
     console.error(
       `[grimodex-electron] D2a profile egress startup failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return new NativeBoundProfileEgressGate(null, true, {
-      protectedTables: new Set(),
-      protectedColumns: new Set(),
-    });
+    return new NativeBoundProfileEgressGate(
+      null,
+      true,
+      emptyNativeProfileEgressPolicy(),
+      undefined,
+      undefined,
+      undefined,
+      ownDataReadOpen,
+    );
   }
 }

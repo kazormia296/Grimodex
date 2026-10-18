@@ -197,15 +197,23 @@ export declare class Backend {
    * は "run" | "get" | "all" | "values"。
    * 返り値: mainが消費する内部種別marker付きのJSON文字列。mainはrendererへ
    * 渡す前に `__grimodexDbResultKind` を除去する。
+   *
+   * `own_data_read` は Electron main だけが付ける分類（K3/2 `own-data-read`）。
+   * true のとき、restricted profile では prepare 後の文が読取専用
+   * （`stmt.readonly()`）でなければ実行前に拒否する。renderer の値は main が
+   * 捨てる。None は分類なし（従来どおり）。unrestricted では使わない。
    */
-  dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null): Promise<string>
+  dbExecute(sql: string, params: any, method: string, callerIdentity?: string | undefined | null, ownDataRead?: boolean | undefined | null): Promise<string>
   /**
    * 複数文を単一トランザクションで実行 (BEGIN IMMEDIATE、途中失敗で全
    * ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
    * `statements` は `[{ sql, params, method }, …]`。
    * 返り値: 最終文のrowsと、mainが消費する内部種別markerを載せたJSON文字列。
+   *
+   * `own_data_read` は `db_execute` と同じ分類を文ごとに渡す（長さは
+   * `statements` と一致しなければ拒否する）。
    */
-  dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null): Promise<string>
+  dbExecuteBatch(statements: any, callerIdentity?: string | undefined | null, ownDataRead?: Array<boolean> | undefined | null): Promise<string>
   /** Read Native-owned Narrative runtime policy (Release Gate B Foundation). */
   narrativeRuntimePolicyGet(): Promise<string>
   /** CAS update for Native-owned Narrative runtime policy. */
@@ -597,12 +605,18 @@ export declare class Backend {
    * 返り値: camelCase `CodexCandidate[]` の JSON 文字列。
    */
   extractCodexCandidates(projectId: string, minCount?: number | undefined | null): Promise<string>
-  relatedScenesBegin(payload: any): Promise<string>
-  relatedScenesContinue(ownerKey: string, operationTicket: string): Promise<string>
+  /**
+   * `nir1-publication` (K3/2). `caller_identity` is the Main-issued wire
+   * identity; a restricted profile admits the call only for the exact
+   * registered caller at start and again at return (the result and the
+   * operation it created are discarded on failure).
+   */
+  relatedScenesBegin(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  relatedScenesContinue(ownerKey: string, operationTicket: string, callerIdentity?: string | undefined | null): Promise<string>
   relatedScenesRelease(ownerKey: string, operationTicket: string): Promise<string>
   relatedScenesReleaseOwner(ownerKey: string): Promise<string>
   relatedScenesReconcile(): Promise<string>
-  nir1EvidenceQualify(ownerKey: string, navigationIdentity: string): Promise<string>
+  nir1EvidenceQualify(ownerKey: string, navigationIdentity: string, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * The product Graph route stays closed until C-query/C-product acceptance.
    * Internal canonical reader tests do not authorize this exported entry.
@@ -632,36 +646,36 @@ export declare class Backend {
    * The workspace path is an authority check only; the project and
    * Revision identities are rechecked inside the same read transaction.
    */
-  nir1EntityRelationRevisionRead(payload: any): Promise<string>
+  nir1EntityRelationRevisionRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Read the current draft or explicitly human-approved typed Revision for
    * one dedicated review Run after a cold reopen.  Generic review bundle
    * storage is intentionally not consulted.
    */
-  nir1EntityRelationRevisionReadCurrent(payload: any): Promise<string>
+  nir1EntityRelationRevisionReadCurrent(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Find and reopen the current typed review Run for a launcher target.
    * Native filters the sealed typed Revision metadata before any ordering
    * limit, then publishes only the dedicated renderer projection (or the
    * target Run's unavailable reason).
    */
-  nir1EntityRelationRevisionRestore(payload: any): Promise<string>
+  nir1EntityRelationRevisionRestore(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Read the Native-owned A1 scene Scope binding and registry from the
    * workspace selected at IPC arrival. The renderer supplies identity only;
    * the active workspace path remains the Native authority check.
    */
-  narrativeSceneScopeRead(payload: any): Promise<string>
+  narrativeSceneScopeRead(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Atomically update one A1 scene Scope binding with Native OCC and the
    * existing Change Feed/invalidation writer.
    */
-  narrativeSceneScopeUpdate(payload: any): Promise<string>
+  narrativeSceneScopeUpdate(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Atomically update the project Scope vocabulary registry. Scene bindings
    * are revalidated against the new registry inside the same transaction.
    */
-  narrativeSceneScopeRegistryUpdate(payload: any): Promise<string>
+  narrativeSceneScopeRegistryUpdate(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Rebuild可能なsemantic background indexingを協調停止する。
    * 4-cache epochをrotateし、既にpin済みのscene/bulk jobはitem/chunk境界で

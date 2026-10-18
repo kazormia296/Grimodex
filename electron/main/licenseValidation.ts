@@ -9,6 +9,18 @@
 const INITIAL_DELAY_MS = 5_000;
 const VALIDATION_INTERVAL_MS = 6 * 60 * 60 * 1_000;
 
+/**
+ * The periodic confirmation is `license-control` (K3/2 L-1): it carries no
+ * plaintext, so it runs in unrestricted and restricted profiles. Only an
+ * unavailable Native gate keeps it off (the license commands are refused there
+ * too).
+ */
+export function shouldStartLicenseValidation(gate: {
+  readonly unavailable: boolean;
+}): boolean {
+  return !gate.unavailable;
+}
+
 export interface LicenseValidationBackendLike {
   /** JSON DTO。検証不要/disabled/in-flight skip は null。 */
   runLicenseValidateCycle?(): Promise<string | null>;

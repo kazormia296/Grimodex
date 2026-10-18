@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { invoke } from "@/lib/tauri";
+import { invoke, isD2aEgressDenied } from "@/lib/tauri";
 import type { LicenseStateDto } from "./types";
 
 /**
@@ -85,8 +85,12 @@ export const useLicenseStore = create<LicenseStoreState>()((set) => ({
       set({ ...dto, initialized: true, staleConfirmed: false });
     } catch (error) {
       // 手動再検証の失敗 = validate 試行を経た確認。stale 表示中なら
-      // ここから制限が確定する（§3）。
-      set({ staleConfirmed: true });
+      // ここから制限が確定する（§3）。ただし D2a の拒否（unavailable など）
+      // は validate を試行していないので確認に数えない。数えると、通信して
+      // いないのに license の理由で編集が閉じる（K3/2 L-1）。
+      if (!isD2aEgressDenied(error)) {
+        set({ staleConfirmed: true });
+      }
       throw error;
     }
   },

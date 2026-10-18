@@ -4,13 +4,16 @@ const {
   setPermissionRequestHandler,
   setPermissionCheckHandler,
   openExternal,
+  appState,
 } = vi.hoisted(() => ({
   setPermissionRequestHandler: vi.fn(),
   setPermissionCheckHandler: vi.fn(),
   openExternal: vi.fn(),
+  appState: { isPackaged: false },
 }));
 
 vi.mock("electron", () => ({
+  app: appState,
   protocol: {
     registerSchemesAsPrivileged: vi.fn(),
     handle: vi.fn(),
@@ -36,6 +39,7 @@ import {
 const savedRendererUrl = process.env.ELECTRON_RENDERER_URL;
 
 beforeEach(() => {
+  appState.isPackaged = false;
   delete process.env.ELECTRON_RENDERER_URL;
   setPermissionRequestHandler.mockClear();
   setPermissionCheckHandler.mockClear();
@@ -152,9 +156,7 @@ describe("isAllowedNavigation", () => {
   it("development は ELECTRON_RENDERER_URL と同一 origin だけを許可する", () => {
     process.env.ELECTRON_RENDERER_URL = "http://localhost:1430";
     expect(isAllowedNavigation("http://localhost:1430/")).toBe(true);
-    expect(isAllowedNavigation("http://localhost:1430/?reload=1")).toBe(
-      true,
-    );
+    expect(isAllowedNavigation("http://localhost:1430/?reload=1")).toBe(true);
     expect(isAllowedNavigation("http://localhost:1431/")).toBe(false);
     expect(isAllowedNavigation("app://bundle/index.html")).toBe(false);
   });
@@ -235,9 +237,7 @@ describe("external egress gate", () => {
     };
     const createdHandler = app.on.mock.calls.find(
       ([event]) => event === "web-contents-created",
-    )?.[1] as
-      | ((event: unknown, contents: FakeContents) => void)
-      | undefined;
+    )?.[1] as ((event: unknown, contents: FakeContents) => void) | undefined;
     expect(createdHandler).toBeDefined();
     createdHandler?.({}, contents);
     const openHandler = contents.setWindowOpenHandler.mock.calls[0]?.[0] as
@@ -248,5 +248,37 @@ describe("external egress gate", () => {
       action: "deny",
     });
     expect(openExternal).not.toHaveBeenCalled();
+  });
+});
+
+describe("packaged build は ELECTRON_RENDERER_URL を無視する（K3/2「renderer の隔離」(e)）", () => {
+  const DEV_URL = "http://localhost:1430";
+
+  it("packaged: env に dev server があっても production の app://bundle だけを許可する", () => {
+    appState.isPackaged = true;
+    process.env.ELECTRON_RENDERER_URL = DEV_URL;
+    // will-navigate の許可
+    expect(isAllowedNavigation(`${DEV_URL}/`)).toBe(false);
+    expect(isAllowedNavigation(`${DEV_URL}/?reload=1`)).toBe(false);
+    expect(isAllowedNavigation("app://bundle/index.html")).toBe(true);
+    // trusted の判定
+    expect(isTrustedRendererUrl(`${DEV_URL}/?window=panel`)).toBe(false);
+    expect(isTrustedRendererUrl("app://bundle/index.html")).toBe(true);
+    // permission の判定
+    expect(
+      isAllowedRendererPermission({
+        permission: "clipboard-sanitized-write",
+        requestingUrl: `${DEV_URL}/`,
+        isMainFrame: true,
+        topLevelUrl: `${DEV_URL}/`,
+      }),
+    ).toBe(false);
+  });
+
+  it("非 packaged: dev server の origin を許可する（dev と journey の起動は変えない）", () => {
+    appState.isPackaged = false;
+    process.env.ELECTRON_RENDERER_URL = DEV_URL;
+    expect(isAllowedNavigation(`${DEV_URL}/`)).toBe(true);
+    expect(isTrustedRendererUrl(`${DEV_URL}/`)).toBe(true);
   });
 });
