@@ -49,7 +49,7 @@ use grimodex_core::narrative_nir1_receipt::TerminalObservation;
 use grimodex_core::nir1_local_send_policy::Nir1LocalSendPurpose;
 use grimodex_db::nir1_generation::{
     self as storage, AcceptedChatInputCapture, AttemptBinding, AttemptBindingVersion,
-    AttemptCallerBinding, ChatInputCaptureOwner, NewAttempt, NewCaptureAttempt, NewMessageBody,
+    AttemptCallerBinding, ChatInputCaptureOwner, NewCaptureAttempt, NewMessageBody,
     Nir1AdmissionProbe, Nir1AdmissionSqlBudget, Nir1ClaimOutcome, Nir1CommitState,
     Nir1ExpectedAttempt, Nir1ExpectedClaim, Nir1ExpectedScope, Nir1LocalAuditObserved,
     Nir1LocalAuditStart, Nir1LocalAuditStarted, Nir1PinnedSqlBudget, Nir1StoreFailure,

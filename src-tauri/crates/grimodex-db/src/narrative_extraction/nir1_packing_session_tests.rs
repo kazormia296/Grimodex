@@ -770,14 +770,30 @@ impl SessionFixture {
             budget: Self::read_budget(),
         };
         let stored = match spec.writer {
-            Writer::Product => create_attempt_for_capture_bounded(
-                &self.snapshot,
-                &capture,
-                request,
-                &Self::admission(),
-                &mut || Ok(()),
-            )
-            .map_err(|error| anyhow::anyhow!("create: {error:?}"))?,
+            Writer::Product => {
+                // The product create decides the times itself (DI-1c): the
+                // request carries a lifetime and the Scope binding and restore
+                // epoch the D-final snapshot read.
+                let capture_request = crate::nir1_generation::NewCaptureAttempt {
+                    lifetime_ms: crate::nir1_generation::NIR1_ATTEMPT_MAX_LIFETIME_MS,
+                    expected_scope: self.db().with_read_transaction(|conn| {
+                        crate::nir1_generation::read_expected_scope_in_tx(conn, PROJECT, SCENE)
+                    })?,
+                    binding: request.binding.clone(),
+                    payload_digest: request.payload_digest.clone(),
+                    inputs: request.inputs.clone(),
+                    qualifications: request.qualifications.clone(),
+                    budget: request.budget,
+                };
+                create_attempt_for_capture_bounded(
+                    &self.snapshot,
+                    &capture,
+                    &capture_request,
+                    &Self::admission(),
+                    &mut || Ok(()),
+                )
+                .map_err(|error| anyhow::anyhow!("create: {error:?}"))?
+            }
             Writer::TestSupport { .. } => create_attempt(self.db(), request)?,
         };
         let expected = Nir1ExpectedAttempt::from_stored(&stored, Self::read_budget());
@@ -2838,7 +2854,10 @@ fn order_is_deterministic_for_equal_created_at_ms() -> Result<()> {
     for index in 0..3 {
         let spec = TurnSpec::new(&format!("request {index}"))
             .reply(&format!("answer {index}"))
-            .created_at(same);
+            .created_at(same)
+            // The product create decides the time from Native's clock (DI-1c),
+            // so equal creation times need the test-support writer.
+            .writer(Writer::TestSupport { null_slot: false });
         turns.push(session.run_turn(spec)?);
     }
     session.accept("next", "next")?;
