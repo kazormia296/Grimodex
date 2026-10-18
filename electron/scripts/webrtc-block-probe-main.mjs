@@ -83,7 +83,7 @@ async function main() {
   }
 
   if (cm.resolveHostTests) {
-    for (const u of ["https://turn.attacker.invalid:443/", "https://redirector.gvt1.com/edgedl/chrome/dict/x", "https://example.invalid:8443/", "http://127.0.0.1:1/"]) {
+    for (const u of ["https://turn.attacker.invalid:443/", "https://redirector.gvt1.com/edgedl/chrome/dict/x", "https://example.invalid:8443/", "http://127.0.0.1:1/", "https://169.254.169.254/", "https://[fe80::1]/"]) {
       try { events.push(`resolveProxy(${u}) => ${await ses.resolveProxy(u)}`); } catch (e) { events.push(`resolveProxy(${u}) error ${e.message}`); }
     }
     for (const u of ["https://github.com/", "https://redirector.gvt1.com/edgedl/chrome/dict/x"]) {
@@ -173,7 +173,7 @@ async function main() {
   const prefs = contents.getLastWebPreferences();
 
   await contents.executeJavaScript(
-    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1, localhost: !!cm.localhostRows, rs1: !!cm.rs1 })}`,
+    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1, localhost: !!cm.localhostRows, rs1: !!cm.rs1, linklocal: !!cm.linklocal })}`,
   );
   const script = fs.readFileSync(env.PROBE_RENDERER_SCRIPT, "utf8");
   let rendererResults;

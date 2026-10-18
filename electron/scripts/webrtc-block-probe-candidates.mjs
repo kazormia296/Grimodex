@@ -175,6 +175,11 @@ export const CANDIDATES = {
   "w3-envproxy-127-final": { cm: { noProbes: true, realUpdater: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_FINAL, resolveHostTests: ["github.com", "localhost"] }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "127.0.0.1" },
   "w4-envproxy-lan-final": { cm: { noProbes: true, realUpdater: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_FINAL, resolveHostTests: ["github.com", "localhost"] }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "lan" },
   "w5-envproxy-hostname-final": { cm: { noProbes: true, realUpdater: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: FINAL_PROXY, resolverSwitch: RULES_FINAL, resolveHostTests: ["github.com", "localhost"] }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "hostname" },
+  // ── K3/3 R12: 行ごとの合否の根拠。link-local の行（canary を置けない宛先）を足した AL-0 の最終構成と、機構を 1 つずつ外した対照 ──
+  "ll-al0-final": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
+  "ll-al0-no-neg-loopback": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT" }, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
+  "ll-al0-no-policy": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, target: "default", proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
+  "ll-baseline": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true }, args: [], realNetwork: true, dnsLog: true },
   "f7-app-setproxy": { cm: { appSetProxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT" } }, args: [] },
 };
 

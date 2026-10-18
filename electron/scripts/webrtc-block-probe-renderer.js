@@ -130,6 +130,22 @@
       remoteCandidate(RTCPeerConnection, `a=candidate:2 1 tcp 1518280447 ${ip} ${port} typ host tcptype passive`), 6000);
   }
 
+  // ── link-local（K3/3 R12）: canary を置けない宛先。合否は行ごとの proxy 宛の数と ICE の状態で決める ──
+  // 169.254.169.254（IPv4 の link-local）と [fe80::1]（IPv6 の link-local）。受け手を置けないので leaked は常に 0 になる
+  if (globalThis.__probe.linklocal) {
+    for (const [form, h] of [["ll4", "169.254.169.254"], ["ll6", "[fe80::1]"]]) {
+      for (const proto of protos) {
+        await settle(`ll.${proto}.${form}`, () => rtcAttempt(RTCPeerConnection, proto, h, 3478));
+      }
+    }
+    for (const [form, ip] of [["ll4", "169.254.169.254"], ["ll6", "fe80::1"]]) {
+      await settle(`ll.remote-candidate-udp.${form}`, () =>
+        remoteCandidate(RTCPeerConnection, `a=candidate:1 1 udp 2113937151 ${ip} 3478 typ host`), 6000);
+      await settle(`ll.remote-candidate-tcp.${form}`, () =>
+        remoteCandidate(RTCPeerConnection, `a=candidate:2 1 tcp 1518280447 ${ip} 3478 typ host tcptype passive`), 6000);
+    }
+  }
+
   // ── 新しい realm（iframe、about:blank、srcdoc、blob、window.open）──────────────
   const realmRtc = async (id, getWindow, forms2 = ["name", "lo4"]) => {
     for (const form of forms2) {
