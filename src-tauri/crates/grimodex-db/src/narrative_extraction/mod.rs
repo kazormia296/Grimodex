@@ -182,7 +182,8 @@ pub use nir1_packing::{
     revalidate_native_nir1_prepared_inputs, NativeNir1ExcludedRevision,
     NativeNir1FinalQualifications, NativeNir1GraphBinding, NativeNir1GraphExclusion,
     NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome,
-    NativeNir1PreparedContextItem, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    NativeNir1HistoryObservation, NativeNir1HistoryRequest, NativeNir1PreparedContextItem,
+    NativeNir1PreparedHistoryMessage, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
     NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs, Nir1GraphCandidateBinding,
     Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason,
 };

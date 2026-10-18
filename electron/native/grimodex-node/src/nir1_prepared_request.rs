@@ -34,6 +34,7 @@ use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
 use grimodex_db::ParticipantSqlOperationBudget;
 use serde_json::json;
 
+use crate::nir1_generation::now_ms;
 use crate::nir1_generation_owner::Nir1CancelLookup;
 use crate::nir1_graph_dfinal::{
     request_graph, DFinalGraphOutcome, GraphRequest, GraphRequestContext,
@@ -765,6 +766,7 @@ pub(crate) fn reobserve_prepared_for_dispatch(
         submission.capture.chat_session_id(),
         &witness.inputs,
         sql_budget.clone(),
+        now_ms()?,
     )?;
     sql_budget.check_workspace(&workspace)?;
     ensure_workspace_unchanged(state, &workspace, &live_binding)?;
@@ -971,6 +973,10 @@ fn prepare_local_chat_request_inner(
                 &workspace,
                 packing_purpose(&generation.purpose),
                 send_classification,
+                // No history yet: DI1B-4 renders the adopted messages and
+                // passes the request (with the Native clock) here. Until
+                // then a request carries none, as before history existed.
+                None,
                 message_version_id.capture.chat_session_id(),
                 &message_version_id.capture,
                 query_scene_id,
@@ -986,6 +992,7 @@ fn prepare_local_chat_request_inner(
                     &workspace,
                     packing_purpose(&generation.purpose),
                     send_classification,
+                    None, // See above: DI1B-4 passes the history request.
                     message_version_id.capture.chat_session_id(),
                     &message_version_id.capture,
                     query_scene_id,
@@ -1043,6 +1050,7 @@ fn prepare_local_chat_request_inner(
         projection.chat_session_id(),
         &projection,
         sql_budget.clone(),
+        now_ms()?,
     )?;
     checkpoint()?;
     ensure_workspace_unchanged(&state, &workspace, &live_binding)?;
@@ -4393,6 +4401,7 @@ pub(crate) mod tests {
             &workspace,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             "not-the-chat-session",
             &fixture.message_version_id,
             SCENE_ID,
@@ -4664,6 +4673,7 @@ pub(crate) mod tests {
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -4777,6 +4787,7 @@ pub(crate) mod tests {
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -5137,6 +5148,7 @@ pub(crate) mod tests {
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -5232,6 +5244,7 @@ pub(crate) mod tests {
             SESSION_ID,
             &bounded_projection,
             super::participant_sql_budget(),
+            0,
         )?;
 
         let journal_mode = writer.with_conn(|conn| {
@@ -5252,6 +5265,7 @@ pub(crate) mod tests {
             SESSION_ID,
             &bounded_projection,
             super::participant_sql_budget(),
+            0,
         )
         .err()
         .context("freshness recheck accepted a mutated unprojected Revision Evidence Source")?;
@@ -5792,6 +5806,7 @@ pub(crate) mod tests {
                 &snapshot,
                 grimodex_core::narrative_nir1::PackingPurpose::Writing,
                 grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+                None,
                 SESSION_ID,
                 &message_version_id,
                 SCENE_ID,
@@ -6041,6 +6056,7 @@ pub(crate) mod tests {
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -6142,6 +6158,7 @@ pub(crate) mod tests {
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -6194,6 +6211,7 @@ pub(crate) mod tests {
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,
@@ -6373,6 +6391,7 @@ pub(crate) mod tests {
             &snapshot,
             grimodex_core::narrative_nir1::PackingPurpose::Writing,
             grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             SESSION_ID,
             &fixture.message_version_id,
             SCENE_ID,

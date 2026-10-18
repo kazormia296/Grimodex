@@ -474,6 +474,8 @@ fn revalidation_requalifies_the_graph_inputs_against_the_seal() -> Result<()> {
             prepared.chat_session_id(),
             prepared,
             super::tests::prepared_sql_budget(),
+            // No history was adopted: the Native clock is not read.
+            0,
         )
     };
     revalidate(prepared)?;

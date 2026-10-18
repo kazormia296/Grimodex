@@ -159,13 +159,6 @@ impl TurnHistoryRange {
     /// capture was accepted for the target Scene, and the binding was read for
     /// it in the same snapshot. Any other pair is a mismatch that stops the
     /// turn.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "DI1B-3 builds the range inside the D-final snapshot"
-        )
-    )]
     pub(crate) fn from_snapshot(
         capture: &AcceptedChatInputCapture,
         scene: &AttemptSceneBinding,

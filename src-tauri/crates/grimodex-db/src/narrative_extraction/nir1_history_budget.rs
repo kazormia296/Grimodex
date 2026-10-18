@@ -175,7 +175,10 @@ pub(crate) const CREATE_PARENT_READ_BYTES: usize =
 /// The create's parent read budget as a storage `ReadBudget`.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "DI1B-3 builds the create budget it sizes against")
+    expect(
+        dead_code,
+        reason = "DI1B-4 asserts the Native create budget equals it"
+    )
 )]
 pub(crate) const fn create_parent_read_budget() -> ReadBudget {
     ReadBudget {
@@ -195,10 +198,6 @@ pub(crate) struct ParentReadCost {
 /// The cost of reading `attempt_id` as the parent of an adopted output, from
 /// the stored rows (counts only; nothing is decoded). Read in the snapshot
 /// the packing runs in.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DI1B-3 sizes the window with it")
-)]
 pub(crate) fn parent_read_cost_in_tx(
     conn: &Connection,
     attempt_id: &str,
@@ -214,7 +213,10 @@ pub(crate) fn parent_read_cost_in_tx(
 /// The first turn that does not fit ends the window.
 #[cfg_attr(
     not(test),
-    expect(dead_code, reason = "DI1B-3 sizes the window with it")
+    expect(
+        dead_code,
+        reason = "the adoption sizes its window with the same rule; tests pin the two together"
+    )
 )]
 pub(crate) fn adoptable_turn_count(newest_first: &[ParentReadCost]) -> usize {
     let (mut rows, mut bytes) = (0usize, 0usize);
@@ -346,10 +348,6 @@ pub(crate) fn production_history_read_budget(
 /// * `owner_check` is D-final's own checkpoint (the participant, the stop
 ///   flag and the operation deadline). Its error is the turn's error and is
 ///   returned as it is, never as "no history": a cancel stops the turn.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DI1B-3 calls the entry from the D-final snapshot")
-)]
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub(crate) fn reauthorize_turn_history_in_tx(
     conn: &Connection,

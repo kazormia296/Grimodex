@@ -45,11 +45,6 @@
 //! skipped and the window goes on, the way a turn whose candidate was excluded
 //! is already absent.
 
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DI1B-3 adopts the turns into the final request")
-)]
-
 use std::collections::BTreeMap;
 
 use anyhow::Result;
@@ -242,6 +237,7 @@ impl HistoryAdoption {
     }
 
     /// The closed code a turn was left out with, when it was.
+    #[cfg(test)]
     pub(crate) fn reason_for(&self, attempt_id: &str) -> Option<NotAdoptedReason> {
         self.not_adopted
             .iter()

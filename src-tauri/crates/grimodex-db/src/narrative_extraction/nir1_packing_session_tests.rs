@@ -155,6 +155,11 @@ struct TurnSpec {
     graph: bool,
     /// The create's read budget; `SessionFixture::read_budget()` when `None`.
     create_budget: Option<ReadBudget>,
+    /// DI1B-3: ask D-final for the turn's own history instead of adopting
+    /// `adopt` by hand.
+    history: Option<NativeNir1HistoryRequest>,
+    /// The selector's context budget in tokens.
+    context_budget: usize,
 }
 
 impl TurnSpec {
@@ -171,12 +176,24 @@ impl TurnSpec {
             mutate: None,
             graph: false,
             create_budget: None,
+            history: None,
+            context_budget: 100_000,
         }
     }
 
     /// A turn whose D-final input carries Graph-derived inputs.
     fn with_graph(mut self) -> Self {
         self.graph = true;
+        self
+    }
+
+    /// Let D-final adopt the turn's history (the Native clock's `now_ms` and
+    /// the envelope of a chat message).
+    fn native_history(mut self, now_ms: i64, message_envelope_tokens: usize) -> Self {
+        self.history = Some(NativeNir1HistoryRequest {
+            now_ms,
+            message_envelope_tokens,
+        });
         self
     }
 
@@ -700,18 +717,19 @@ impl SessionFixture {
             GenerationPurpose::Review => PackingPurpose::Review,
         };
         let mut projection = if spec.graph {
-            self.read_graph_projection(&capture, purpose)?
+            self.read_graph_projection(&capture, purpose, spec.history)?
         } else {
             read_and_pack_native_nir1_prepared_inputs(
                 &self.snapshot,
                 purpose,
                 HistorySendClassification::LocalOnly,
+                spec.history,
                 SESSION,
                 &capture,
                 SCENE,
                 &revisions,
                 prepared_sql_budget(),
-                |_| Ok(100_000),
+                |_| Ok(spec.context_budget),
             )?
         };
         let human_version_id = projection.user_message_version().id.clone();
@@ -748,7 +766,7 @@ impl SessionFixture {
                 .qualifications
                 .extend(Self::history_rows(ordinal, item, &scope)?);
         }
-        let finalized = projection.finalize_qualifications(100_000)?;
+        let finalized = projection.finalize_qualifications(spec.context_budget)?;
         let draft = projection.history_draft(&finalized);
         let mut qualifications = finalized.qualifications.clone();
         if let Some(mutate) = spec.mutate {
@@ -886,6 +904,7 @@ impl SessionFixture {
         &self,
         capture: &AcceptedChatInputCapture,
         purpose: PackingPurpose,
+        history: Option<NativeNir1HistoryRequest>,
     ) -> Result<NativeNir1PreparedInputs> {
         use super::tests::di1a_graph::{candidates_from, write_seal, GENERATION};
 
@@ -895,6 +914,7 @@ impl SessionFixture {
                 &self.snapshot,
                 purpose,
                 HistorySendClassification::LocalOnly,
+                history,
                 SESSION,
                 capture,
                 SCENE,
@@ -3683,3 +3703,7 @@ mod history_budget_tests;
 // DI1B-2: the adoption rule on the outcome of a real session.
 #[path = "nir1_history_adoption_session_tests.rs"]
 mod history_adoption_session_tests;
+
+// DI1B-3: the history in D-final.
+#[path = "nir1_history_packing_session_tests.rs"]
+mod history_packing_session_tests;

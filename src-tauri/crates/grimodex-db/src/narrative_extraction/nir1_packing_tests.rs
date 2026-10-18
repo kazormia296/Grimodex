@@ -1254,6 +1254,7 @@ fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisi
         &snapshot,
         PackingPurpose::Writing,
         crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        None,
         "nir1-prepared-db-session",
         &message_version_id,
         RAW_SOURCE_SCENE,
@@ -1315,6 +1316,7 @@ fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisi
         "nir1-prepared-db-session",
         &projection,
         prepared_sql_budget(),
+        0,
     )?;
 
     snapshot.db().db().with_conn(|conn| {
@@ -1335,6 +1337,7 @@ fn prepared_projection_uses_captured_human_current_raw_and_typed_approved_revisi
         "nir1-prepared-db-session",
         &projection,
         prepared_sql_budget(),
+        0,
     )
     .err()
     .context("fresh transaction accepted stale Source")?;
@@ -1367,6 +1370,7 @@ fn prepared_projection_revalidates_large_captured_human_after_single_charge() ->
         &snapshot,
         PackingPurpose::Writing,
         crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        None,
         "nir1-prepared-db-session",
         &capture,
         RAW_SOURCE_SCENE,
@@ -1401,6 +1405,7 @@ fn prepared_projection_revalidates_large_captured_human_after_single_charge() ->
         "nir1-prepared-db-session",
         &projection,
         prepared_sql_budget(),
+        0,
     )?;
     Ok(())
 }
@@ -1424,6 +1429,7 @@ fn prepared_projection_rejects_human_over_one_copy_input_byte_limit() -> Result<
         &snapshot,
         PackingPurpose::Writing,
         crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        None,
         "nir1-prepared-db-session",
         &capture,
         RAW_SOURCE_SCENE,
@@ -1457,6 +1463,7 @@ fn prepared_projection_rejects_empty_context_budget_before_selecting_material() 
         &snapshot,
         PackingPurpose::Writing,
         crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        None,
         "nir1-prepared-db-session",
         &message_version_id,
         RAW_SOURCE_SCENE,
@@ -1513,6 +1520,7 @@ impl DfFinalFixture {
             &self.snapshot,
             PackingPurpose::Writing,
             crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             "nir1-prepared-db-session",
             &self.capture,
             RAW_SOURCE_SCENE,
@@ -2409,6 +2417,7 @@ fn prepared_inputs_without_a_durable_identity_record_the_closed_reason() -> Resu
         &snapshot,
         PackingPurpose::Writing,
         crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        None,
         "nir1-prepared-db-session",
         &capture,
         RAW_SOURCE_SCENE,
@@ -2437,6 +2446,7 @@ fn revalidation_still_rejects_stale_identity_with_new_ref_shape() -> Result<()> 
         "nir1-prepared-db-session",
         &projection,
         prepared_sql_budget(),
+        0,
     )?;
     // The Decision a Revision reference names changed after preparation: the
     // new reference rows (with typed N/A and roles) do not make the check weaker.
@@ -2456,6 +2466,7 @@ fn revalidation_still_rejects_stale_identity_with_new_ref_shape() -> Result<()> 
         "nir1-prepared-db-session",
         &projection,
         prepared_sql_budget(),
+        0,
     )
     .err()
     .context("a changed Decision was accepted")?;
@@ -2554,6 +2565,7 @@ impl DfFinalFixture {
             &self.snapshot,
             PackingPurpose::Writing,
             crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             NATIVE_SESSION,
             &self.capture,
             RAW_SOURCE_SCENE,
@@ -2645,6 +2657,7 @@ fn native_selection_adopts_every_current_approved_revision_in_id_order() -> Resu
         &fixture.snapshot,
         PackingPurpose::Writing,
         crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        None,
         NATIVE_SESSION,
         &fixture.capture,
         RAW_SOURCE_SCENE,
@@ -2731,6 +2744,7 @@ fn native_selection_reads_the_expectations_when_the_history_slot_is_unavailable(
         &snapshot,
         PackingPurpose::Writing,
         crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+        None,
         NATIVE_SESSION,
         &capture,
         RAW_SOURCE_SCENE,
@@ -2833,6 +2847,7 @@ fn native_selection_leaves_out_only_the_unavailable_revision() -> Result<()> {
             &fixture.snapshot,
             PackingPurpose::Writing,
             crate::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            None,
             NATIVE_SESSION,
             &fixture.capture,
             RAW_SOURCE_SCENE,

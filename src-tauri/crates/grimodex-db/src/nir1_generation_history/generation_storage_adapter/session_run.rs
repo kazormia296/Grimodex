@@ -100,6 +100,20 @@ pub(crate) enum NoHistory {
     SqlBusy,
 }
 
+impl NoHistory {
+    /// A closed code for evidence and tests. It names the kind only: no
+    /// identifier, no text.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::CurrentContextUnavailable(_) => "current-context-unavailable",
+            Self::SessionOverBudget => "session-over-budget",
+            Self::SqlCapacityExhausted => "sql-capacity-exhausted",
+            Self::SqlDeadlineElapsed => "sql-deadline-elapsed",
+            Self::SqlBusy => "sql-busy",
+        }
+    }
+}
+
 /// A message the run read and authenticated for a qualified candidate: the
 /// message version and the body whose digest the reader verified. This is the
 /// reader's own value, handed on; nothing re-reads it (DI1B-2).
