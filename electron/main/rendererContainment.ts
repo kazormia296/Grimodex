@@ -120,3 +120,42 @@ export const NC_RUNTIME_FAILURE_CODES = [
 
 export type NcStartupFailureCode = (typeof NC_STARTUP_FAILURE_CODES)[number];
 export type NcRuntimeFailureCode = (typeof NC_RUNTIME_FAILURE_CODES)[number];
+
+/** FC-1: 起動前の共有の期限（ms）。K1b の規則 1。起動手順 (2)〜(4) が 1 つで共有し、緩めるには新しい draftRef が要る。 */
+export const NC_STARTUP_DEADLINE_MS = 5000;
+
+/** 自己確認 (b): `EXCLUDE` していない IP literal。`resolveHost` が `ERR_NAME_NOT_RESOLVED` で失敗しなければならない。 */
+export const SELF_CHECK_UNRESOLVABLE_LITERALS = [
+  "1.1.1.1",
+  "127.0.0.2",
+] as const;
+
+/** 自己確認 (b) の失敗の印（Chromium の error 名）。 */
+export const SELF_CHECK_NAME_NOT_RESOLVED = "ERR_NAME_NOT_RESOLVED";
+
+/** 自己確認 (c): 固定の 3 URL。どれも blackhole の proxy へ向かなければならない。 */
+export const SELF_CHECK_URLS_FOR_PROXY: readonly string[] = [
+  "https://turn.attacker.invalid:443/",
+  "https://example.invalid:8443/",
+  "http://127.0.0.1:1/",
+];
+
+/** 自己確認 (c) の期待値。 */
+export function expectedBlackholeProxyString(listenerPort: number): string {
+  return `SOCKS5 ${LOOPBACK_ADDRESS}:${listenerPort}`;
+}
+
+const FAILURE_LINE_PREFIX = "[grimodex-electron]";
+
+/**
+ * FC-1: 起動前の失敗の 1 行（固定の文言。固定コードと「原稿は変更されていません」。
+ * renderer や設定の値、error の message を含めない）。
+ */
+export function formatStartupFailureLine(code: NcStartupFailureCode): string {
+  return `${FAILURE_LINE_PREFIX} ${code}: renderer の外向き通信を閉じられなかったため起動を中止しました。原稿は変更されていません。`;
+}
+
+/** FC-1: 実行中の失敗の 1 行（コードだけ。未保存の原稿を既存の経路で保存するので「変更されていません」とは書かない）。 */
+export function formatRuntimeFailureLine(code: NcRuntimeFailureCode): string {
+  return `${FAILURE_LINE_PREFIX} ${code}`;
+}

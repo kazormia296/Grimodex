@@ -62,6 +62,7 @@ import {
   registerAppProtocolScheme,
 } from "./protocol.js";
 import { getDefaultProfileDataGuard } from "./profileDataGuardDefault.js";
+import { createRendererContainment } from "./rendererContainmentStartup.js";
 import { showSavePathDialog } from "./shellCommands.js";
 import { configureAppUserData } from "./userData.js";
 import {
@@ -205,6 +206,15 @@ const configuredUserDataDir = configureAppUserData(app);
 // dev（ELECTRON_RENDERER_URL あり）でも登録自体は無害 — ハンドラは本番のみ。
 registerAppProtocolScheme();
 
+// NC-1（K3/3）: renderer の外向き通信を Main の network 層で塞ぐ。`app://bundle` を
+// 読む起動（packaged は常に。dev server を読む非 packaged の起動だけ除く）にだけ適用し、
+// 除くときは policy の handler も登録しない。`host-resolver-rules` は ready の前にしか
+// 当てられない。
+const rendererContainment = shouldRegisterAppProtocol()
+  ? createRendererContainment()
+  : null;
+rendererContainment?.appendResolverSwitch();
+
 const gotSingleInstanceLock = app.requestSingleInstanceLock();
 
 if (!gotSingleInstanceLock) {
@@ -235,9 +245,15 @@ if (!gotSingleInstanceLock) {
   });
 
   registerSecurityHandlers(app);
+  // NC-1: 最初の webContents が作られる前に、全 webContents への policy の handler を登録する。
+  rendererContainment?.registerWebContentsPolicy();
 
   void app.whenReady().then(async () => {
     performance.mark("grimodex:electron-when-ready");
+    // NC-1: default session の最初の接触。listener → setProxy → closeAllConnections →
+    // 自己確認を 5 秒の共有の期限で包み、(A)(B) の接触と initBackend と最初の窓より前に
+    // 完了させる。失敗は固定コードを stderr に出して app.quit() し、窓を作らない。
+    if (rendererContainment && !(await rendererContainment.start())) return;
     // Migration / audit metadata must see the desktop app version, not the
     // grimodex-db crate version. Prefer an explicit override when present.
     const { resolveAppVersion } = await import("./shellCommands.js");
