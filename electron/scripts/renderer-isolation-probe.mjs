@@ -458,7 +458,9 @@ async function main() {
         classified.ipv6ReachabilityProbe.push(`${host} (${types.join("+")})`);
       else if (/^(0\.0\.0\.0|\[::\]):\d+$/.test(host))
         classified.localUdpSockets += 1;
-      else if (host === "https://~notfound" || host === "~notfound") continue;
+      // 規則（`~NOTFOUND` への書換え）で拒否された名前。外向きの観測ではない。NC-1 の下では
+      // net log の host が `~NOTFOUND:<port>` の形で出る
+      else if (/^(https:\/\/)?~notfound(:\d+)?$/i.test(host)) continue;
       else classified.other.push(host);
     }
     classified.spellcheckerDictionary.sort();

@@ -494,6 +494,7 @@ rules:
       - electron/main/profileDataGuard*.ts
       - electron/main/protocol.ts
       - electron/main/protocol.test.ts
+      - electron/main/rendererContainment*.ts
       - electron/main/rendererIsolation*.ts
       - electron/main/security.ts
       - electron/main/security.test.ts
@@ -506,6 +507,7 @@ rules:
       - electron/main/windows.test.ts
       - electron/main/windows.panel.test.ts
       - electron/scripts/renderer-isolation-probe*
+      - electron/scripts/webrtc-block-probe*
       - electron/native/grimodex-node/src/profile_egress.rs
       - electron/native/grimodex-node/src/license_mode.rs
       - electron/native/grimodex-node/src/publication_guard.rs

@@ -1,0 +1,166 @@
+{
+  "args": {
+    "mode": "product-none",
+    "env": "none",
+    "preDelay": "0",
+    "nc1Delay": "0",
+    "repeat": 3,
+    "tunnel": false,
+    "rules": "1"
+  },
+  "rows": [
+    {
+      "run": 0,
+      "mode": "product-none",
+      "env": "none",
+      "preDelay": 0,
+      "nc1Delay": 0,
+      "tunnel": false,
+      "rules": "1",
+      "timelineMsFromReady": {
+        "registerSecurityHandlers (before ready)": -49,
+        "ready": 0,
+        "applySessionPermissionPolicy done": 3,
+        "installProductDownloadGuard done": 3,
+        "registerAppProtocolHandler done": 3,
+        "BrowserWindow created": 22,
+        "window loaded": 109
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "startMsFromReady": 42,
+          "startBeforeSetProxyDone": null,
+          "proxyInfo": [
+            "DIRECT"
+          ],
+          "hostResolver": [],
+          "netError": -105
+        }
+      ],
+      "nc1Ms": null,
+      "nc1Marks": {
+        "registerSecurityHandlers (before ready)": -49,
+        "applySessionPermissionPolicy done": 3,
+        "installProductDownloadGuard done": 3,
+        "registerAppProtocolHandler done": 3,
+        "BrowserWindow created": 22,
+        "window loaded": 109
+      },
+      "readyToWindowLoadedMs": 109,
+      "envProxyConnects": [],
+      "blackholeHits": 0,
+      "dictionaries": [],
+      "spellcheck": {
+        "enabled": true,
+        "langs": [
+          "en-US"
+        ]
+      },
+      "electron": "43.5.0",
+      "ok": true
+    },
+    {
+      "run": 1,
+      "mode": "product-none",
+      "env": "none",
+      "preDelay": 0,
+      "nc1Delay": 0,
+      "tunnel": false,
+      "rules": "1",
+      "timelineMsFromReady": {
+        "registerSecurityHandlers (before ready)": -52,
+        "ready": 0,
+        "applySessionPermissionPolicy done": 3,
+        "installProductDownloadGuard done": 3,
+        "registerAppProtocolHandler done": 3,
+        "BrowserWindow created": 27,
+        "window loaded": 109
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "startMsFromReady": 48,
+          "startBeforeSetProxyDone": null,
+          "proxyInfo": [
+            "DIRECT"
+          ],
+          "hostResolver": [],
+          "netError": -105
+        }
+      ],
+      "nc1Ms": null,
+      "nc1Marks": {
+        "registerSecurityHandlers (before ready)": -52,
+        "applySessionPermissionPolicy done": 3,
+        "installProductDownloadGuard done": 3,
+        "registerAppProtocolHandler done": 3,
+        "BrowserWindow created": 27,
+        "window loaded": 109
+      },
+      "readyToWindowLoadedMs": 109,
+      "envProxyConnects": [],
+      "blackholeHits": 0,
+      "dictionaries": [],
+      "spellcheck": {
+        "enabled": true,
+        "langs": [
+          "en-US"
+        ]
+      },
+      "electron": "43.5.0",
+      "ok": true
+    },
+    {
+      "run": 2,
+      "mode": "product-none",
+      "env": "none",
+      "preDelay": 0,
+      "nc1Delay": 0,
+      "tunnel": false,
+      "rules": "1",
+      "timelineMsFromReady": {
+        "registerSecurityHandlers (before ready)": -49,
+        "ready": 0,
+        "applySessionPermissionPolicy done": 2,
+        "installProductDownloadGuard done": 3,
+        "registerAppProtocolHandler done": 3,
+        "BrowserWindow created": 22,
+        "window loaded": 104
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "startMsFromReady": 43,
+          "startBeforeSetProxyDone": null,
+          "proxyInfo": [
+            "DIRECT"
+          ],
+          "hostResolver": [],
+          "netError": -105
+        }
+      ],
+      "nc1Ms": null,
+      "nc1Marks": {
+        "registerSecurityHandlers (before ready)": -49,
+        "applySessionPermissionPolicy done": 2,
+        "installProductDownloadGuard done": 3,
+        "registerAppProtocolHandler done": 3,
+        "BrowserWindow created": 22,
+        "window loaded": 104
+      },
+      "readyToWindowLoadedMs": 104,
+      "envProxyConnects": [],
+      "blackholeHits": 0,
+      "dictionaries": [],
+      "spellcheck": {
+        "enabled": true,
+        "langs": [
+          "en-US"
+        ]
+      },
+      "electron": "43.5.0",
+      "ok": true
+    }
+  ]
+}

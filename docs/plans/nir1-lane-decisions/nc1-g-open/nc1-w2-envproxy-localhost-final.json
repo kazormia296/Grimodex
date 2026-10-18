@@ -1,0 +1,171 @@
+{
+  "label": "nc1-w2-envproxy-localhost-final",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "realUpdater": true,
+    "spellcheck": true,
+    "waitMs": 9000,
+    "resolveHostTests": [
+      "github.com",
+      "localhost"
+    ],
+    "nc1": {}
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "nc1 orchestrator start => true in 35 ms",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:34795",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:34795",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:34795",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:34795",
+    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:34795",
+    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:34795",
+    "updaterSession.resolveProxy(https://github.com/) => PROXY localhost:39535",
+    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => PROXY localhost:39535",
+    "resolveHost(github.com) => [\"20.27.177.113\"]",
+    "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 7,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 4,
+    "mdnsQueries": null,
+    "ctlHits": 1
+  },
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "nc1": {
+    "config": {
+      "drop": [],
+      "prefixRules": [],
+      "proxyBypassRules": "<-loopback>",
+      "policy": "disable_non_proxied_udp"
+    },
+    "startOk": true,
+    "startMs": 35,
+    "listenerPort": 34795,
+    "listenerHits": 4,
+    "overLimit": 0,
+    "maxActive": 3,
+    "failures": [],
+    "quitCalls": 0,
+    "beforeQuit": false,
+    "willQuit": false,
+    "uncaught": [],
+    "created": [],
+    "wc": []
+  },
+  "extra": {
+    "loadOutcome": "loaded"
+  },
+  "appRequests": [
+    "/index.html"
+  ],
+  "httpdHits": 0,
+  "mdns": null,
+  "rows": [
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        ""
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        ""
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "status:502",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1,
+      "dnsNames": []
+    },
+    {
+      "id": "main.node-fetch.loopback-socket",
+      "outcome": "connected",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 1,
+      "proxyHeads": [
+        ""
+      ],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.real-electron-updater-check",
+      "outcome": "error:net::ERR_TUNNEL_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": [
+    "CONNECT redirector.gvt1.com:443 HTTP/1.1",
+    "GET http://updater-<n>.probe.test:38153/ctl HTTP/1.1",
+    "CONNECT github.com:443 HTTP/1.1"
+  ],
+  "dictionaries": [],
+  "netLog": null,
+  "dnsAll": [
+    "github.com[rc0]"
+  ],
+  "dnsRowCount": 0,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

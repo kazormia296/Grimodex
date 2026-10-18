@@ -9,12 +9,11 @@
  *   probe をやり直して記録を更新する（K3/2 の版上げの規則）。
  * - WebRTC の ICE server を除く外向きの試みが 0 件であること、窓の title が固定されること、
  *   `<a download>` の攻撃が状態ファイルを変えないことを固定する。
- * - 未解決の finding（OPEN_FINDINGS）は、記録のとおり WebRTC の ICE server（TURN の TCP／TLS）
- *   だけである。CSP は ICE server の URL を制限せず、Main の設定で塞げなかった
- *   （docs/plans/nir1-lane-decisions/da1-decisions.md の DR-DA1-7 の追記）。
- *   `own-data-read` の開放を有効にする commit の前に解消し、この許可を空にする。
- *   OPEN_FINDINGS を空にすると下の試験は `violationsViaWebRtc` が 0 件であることを要求する
- *   向きに切り替わる（反転の編集忘れで有効化 commit が通らなくならないようにする）。
+ * - 未解決の finding（OPEN_FINDINGS）は空で、WebRTC の経路（`violationsViaWebRtc`）も 0 件であることを固定する。
+ *   WebRTC の ICE server の finding（TURN の TCP／TLS の接続と名前解決。CSP は ICE server の URL を
+ *   制限しない）は、NC-1（K3/3）が Main の network 層で塞いだ。記録の採取では probe の main が製品の
+ *   NC-1 の module を `index.ts` と同じ順序で適用する（対照の legacy-control には当てない）。
+ *   `own-data-read` の開放 commit は別（G-open の記録 `nc1-g-open/` を引く）。
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -74,14 +73,47 @@ const pkg = readJson<{ devDependencies: Record<string, string> }>(
   "../../package.json",
 );
 
-/** 未解決の finding。解消したら空にする。 */
-const OPEN_FINDINGS: readonly string[] = [
-  "WebRTC の ICE server（turn:?transport=tcp、turns:）への TCP 接続と名前解決が、CSP と permission で止まらない",
-];
+/**
+ * 未解決の finding。空にすると下の試験は `violationsViaWebRtc` が 0 件であることを要求する。
+ * WebRTC の ICE server の finding は NC-1（K3/3。Main の network 層で接続と名前解決を塞ぐ）で解消した。
+ * 記録は製品の NC-1 の module を `renderer-isolation-probe-main.mjs` が適用して採り直した
+ * （docs/plans/nir1-lane-decisions/nc1-decisions.md の DR-NC1-12 と実装後の追記）。
+ */
+const OPEN_FINDINGS: readonly string[] = [];
 
 function outcome(r: ProbeRecord, id: string): string | undefined {
   return r.renderer.find((entry) => entry.id === id)?.outcome;
 }
+
+describe("Y-1 の記録: NC-1 の適用", () => {
+  const main = readFileSync(
+    fileURLToPath(
+      new URL("../scripts/renderer-isolation-probe-main.mjs", import.meta.url),
+    ),
+    "utf8",
+  );
+
+  it("probe の main は製品の NC-1 の orchestrator を index.ts と同じ順序で当て、対照（legacy）には当てない", () => {
+    expect(main).toContain('from "../main/rendererContainmentStartup.ts"');
+    expect(main).toMatch(
+      /legacyControl\s*\?\s*null\s*:\s*createRendererContainment/,
+    );
+    const order = [
+      "containment?.appendResolverSwitch()",
+      "registerSecurityHandlers(app)",
+      "containment?.registerWebContentsPolicy()",
+      "await containment.start()",
+      "applySessionPermissionPolicy()",
+    ].map((token) => main.indexOf(token));
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  it("対照の記録は NC-1 なしの挙動で、CSP のない realm の外向きが網に届く（NC-1 の記録と同じ probe の検出力を示す）", () => {
+    expect(control.variant).toBe("legacy-control");
+    expect(control.reachedNetwork.length).toBeGreaterThan(0);
+  });
+});
 
 describe("Y-1 の記録の版", () => {
   it("記録の Electron の版が package.json の版と一致する（版上げの PR は probe をやり直す）", () => {

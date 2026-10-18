@@ -7,13 +7,15 @@
  * (b) buildWebPreferences() に禁止の option を加えず、既存の 4 つだけを持つ。
  * (c) CSP の script-src が unsafe と外部 origin を含まない。
  * (d) webRequest、proxy、host resolver、WebRTC、spellchecker の設定 API を呼ばない
- *     （Y-1 の対処として記録したものだけを下の許可表に置く。今は空）。
+ *     （Y-1 の対処として記録したものだけを下の許可表に置く。NC-1 の 1 エントリ）。
  * (e) packaged で ELECTRON_RENDERER_URL を見ない（devRendererUrl.ts だけが読む）。
+ * (f) NC-1（K3/3。renderer の外向き通信を Main の network 層で塞ぐ）の閉じた集合
+ *     （Negative (31)）と、unrestricted への影響の表の静的に確かめられる項目（5・7・9）。
  * 実装の挙動は windows.test.ts、protocol.test.ts、security.test.ts、devRendererUrl.test.ts が固定する。
  */
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -54,11 +56,19 @@ function stripComments(text: string): string {
 
 /**
  * Y-1 の対処として記録した設定。file ごとに許可する API 名の一覧。
- * 今は対処を加えていないので空（DR-DA1-7）。加えるときは対処として記録し、
- * その設定を固定する試験も足す。
+ * 対処は K3/3 の NC-1（`rendererContainmentStartup.ts` の 1 エントリ）だけで、許す名前は
+ * `setProxy / resolveProxy`、`host resolver`、`WebRTC` の 3 つ。`proxy switch` と
+ * `spellchecker` は許可しない（K3/3 の「補助の層」。`--proxy-server` なども足さない）。
+ * 加えるときは対処として記録し、その設定を固定する試験も足す（DR-DA1-7、DR-NC1-2）。
  */
 const RECORDED_Y1_COUNTERMEASURES: Readonly<Record<string, readonly string[]>> =
-  {};
+  {
+    "rendererContainmentStartup.ts": [
+      "setProxy / resolveProxy",
+      "host resolver",
+      "WebRTC",
+    ],
+  };
 
 describe("(a)(b) BrowserWindow と webPreferences", () => {
   const sources = mainSources();
@@ -184,11 +194,25 @@ describe("(d) 外向きの設定 API を呼ばない", () => {
     expect(violations).toEqual([]);
   });
 
-  it("appendSwitch は GPU の設定（linuxGraphics.ts）だけが呼ぶ", () => {
+  it("appendSwitch は GPU の設定（linuxGraphics.ts）と NC-1 の module（host-resolver-rules だけ）だけが呼ぶ", () => {
     const callers = mainSources()
       .filter(({ text }) => /\.appendSwitch\s*\(/.test(stripComments(text)))
       .map(({ file }) => file);
-    expect(callers).toEqual(["linuxGraphics.ts"]);
+    expect(callers).toEqual([
+      "linuxGraphics.ts",
+      "rendererContainmentStartup.ts",
+    ]);
+    // NC-1 の module が当てる switch は host-resolver-rules の 1 つだけ。
+    const nc1 = stripComments(
+      readFileSync(
+        path.join(MAIN_DIR, "rendererContainmentStartup.ts"),
+        "utf8",
+      ),
+    );
+    const switches = [...nc1.matchAll(/appendSwitch\(\s*"([^"]+)"/g)].map(
+      (m) => m[1],
+    );
+    expect(switches).toEqual(["host-resolver-rules"]);
   });
 });
 
@@ -257,6 +281,282 @@ describe("SF-1 と E-3 の配線", () => {
           /will-download|setSavePath/.test(stripComments(text)),
       )
       .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+});
+
+describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
+  const product = () =>
+    mainSources().filter(({ file }) => !/\.(test|spec)\./.test(file));
+  const codeOf = (file: string): string =>
+    stripComments(readFileSync(path.join(MAIN_DIR, file), "utf8"));
+  const filesMatching = (pattern: RegExp): string[] =>
+    product()
+      .filter(({ text }) => pattern.test(stripComments(text)))
+      .map(({ file }) => file)
+      .sort();
+
+  it("RS-1 の定数・AL-0・規則・policy・LS-1 の上界が固定どおり（順序まで exact）", async () => {
+    const containment = await import("./rendererContainment.js");
+    const listener = await import("./rendererContainmentListener.js");
+    expect([...containment.RS1_RESOLVABLE_NAMES]).toEqual([
+      "github.com",
+      "objects.githubusercontent.com",
+      "release-assets.githubusercontent.com",
+      "localhost",
+    ]);
+    expect(containment.RESOLVER_SENTINEL_HOST).toBe(
+      "grimodex-rule-sentinel.invalid",
+    );
+    // AL-0: 直接通信を許す先は 0 件で、proxyBypassRules は <-loopback> だけ。
+    expect(containment.AL0_DIRECT_ALLOWLIST).toEqual([]);
+    expect(containment.PROXY_BYPASS_RULES).toBe("<-loopback>");
+    expect(containment.buildProxyConfig(4321)).toEqual({
+      mode: "fixed_servers",
+      proxyRules: "socks5://127.0.0.1:4321",
+      proxyBypassRules: "<-loopback>",
+    });
+    expect(containment.buildHostResolverRules()).toBe(
+      "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+    );
+    expect(containment.WEBRTC_IP_HANDLING_POLICY).toBe(
+      "disable_non_proxied_udp",
+    );
+    // LS-1 と起動前の期限の上界（確認済みの上限。超えたら赤。exact には固定しない）。
+    expect(listener.LS1_MAX_CONCURRENT_CONNECTIONS).toBeLessThanOrEqual(256);
+    expect(listener.LS1_MAX_HOLD_MS).toBeLessThanOrEqual(5000);
+    expect(containment.NC_STARTUP_DEADLINE_MS).toBeLessThanOrEqual(5000);
+  });
+
+  it("buildHostResolverRules の製品の呼出しは起動の 1 箇所で、引数なし（prefixRules は試験だけ）", () => {
+    const calls: Array<{ file: string; args: string }> = [];
+    for (const { file, text } of product()) {
+      const code = stripComments(text);
+      for (const match of code.matchAll(
+        /buildHostResolverRules\s*\(([^)]*)\)/g,
+      )) {
+        // 定義（export function … (prefixRules …)）は呼出しでない。
+        const before = code.slice(Math.max(0, match.index! - 20), match.index!);
+        if (/function\s*$/.test(before)) continue;
+        calls.push({ file, args: match[1].trim() });
+      }
+    }
+    expect(calls).toEqual([
+      { file: "rendererContainmentStartup.ts", args: "" },
+    ]);
+  });
+
+  it("NC-1 の module と設定の部品は env・起動引数・IPC を読まない。orchestrator の製品の呼出しは index.ts の引数なし", () => {
+    for (const file of [
+      "rendererContainment.ts",
+      "rendererContainmentListener.ts",
+      "rendererContainmentStartup.ts",
+    ]) {
+      const code = codeOf(file);
+      expect(code, file).not.toMatch(
+        /process\.env|process\.argv|ipcMain|ipcRenderer|\.handle\(|app\.commandLine\.(hasSwitch|getSwitchValue)/,
+      );
+    }
+    const calls: Array<{ file: string; args: string }> = [];
+    for (const { file, text } of product()) {
+      const code = stripComments(text);
+      for (const match of code.matchAll(
+        /createRendererContainment\s*\(([^)]*)\)/g,
+      )) {
+        const before = code.slice(Math.max(0, match.index! - 20), match.index!);
+        if (/function\s*$/.test(before)) continue;
+        calls.push({ file, args: match[1].trim() });
+      }
+    }
+    expect(calls).toEqual([{ file: "index.ts", args: "" }]);
+    const index = codeOf("index.ts");
+    for (const method of [
+      "appendResolverSwitch",
+      "registerWebContentsPolicy",
+      "start",
+    ]) {
+      const invocations = [
+        ...index.matchAll(
+          new RegExp(`rendererContainment\\??\\.${method}\\(([^)]*)\\)`, "g"),
+        ),
+      ];
+      expect(invocations.length, method).toBe(1);
+      expect(invocations[0][1], method).toBe("");
+    }
+  });
+
+  it("listener の製品の呼出しは NC-1 の module の 1 箇所で、上界を渡さない（確認済みの上限をそのまま使う）", () => {
+    const calls = filesMatching(/startBlackholeListener\s*\(/);
+    // 定義の file と NC-1 の module（呼出し）。
+    expect(calls).toEqual([
+      "rendererContainmentListener.ts",
+      "rendererContainmentStartup.ts",
+    ]);
+    expect(codeOf("rendererContainmentStartup.ts")).not.toMatch(
+      /maxConnections|holdMs/,
+    );
+  });
+
+  it("listener は受けた bytes を検査・保存・log・書込みに渡さず、返事をしない", () => {
+    const code = codeOf("rendererContainmentListener.ts");
+    expect(code).not.toMatch(
+      /["']data["']|\.read\(|\.write\(|\.end\(|\.pipe\(|\.setEncoding\(|\.on\(\s*["']readable["']|console\.|writeFile|appendFile|\bfs\b/,
+    );
+    expect(code).toMatch(/socket\.resume\(\)/);
+  });
+
+  it("session.defaultSession の出現は NC-1 の module と applySessionPermissionPolicy と installProductDownloadGuard だけ", () => {
+    expect(filesMatching(/\bdefaultSession\b/)).toEqual([
+      "downloadGuardElectron.ts",
+      "rendererContainmentStartup.ts",
+      "security.ts",
+    ]);
+    expect(filesMatching(/\bsession\.defaultSession\b/)).toEqual([
+      "downloadGuardElectron.ts",
+      "rendererContainmentStartup.ts",
+      "security.ts",
+    ]);
+  });
+
+  it("protocol.* の暗黙の default session の接触は registerAppProtocolHandler（protocol.ts）だけ", () => {
+    expect(
+      filesMatching(
+        /\bprotocol\.(handle|unhandle|isProtocolHandled|isProtocolRegistered|isProtocolIntercepted|register\w*Protocol|intercept\w*Protocol|unintercept\w*|unregisterProtocol)\b/,
+      ),
+    ).toEqual(["protocol.ts"]);
+  });
+
+  it("proxy・WebRTC・host resolver の設定、専用 partition、listener の出現が NC-1 の許可した箇所だけ", () => {
+    // setProxy／app.setProxy／resolveProxy／setWebRTC*／host-resolver-rules は NC-1 の module だけ。
+    expect(filesMatching(/\bsetProxy\b/)).toEqual([
+      "rendererContainmentStartup.ts",
+    ]);
+    expect(filesMatching(/\bresolveProxy\b/)).toEqual([
+      "rendererContainmentStartup.ts",
+    ]);
+    expect(filesMatching(/\bapp\.setProxy\b/)).toEqual([]);
+    expect(filesMatching(/setWebRTC\w*|getWebRTC\w*/)).toEqual([
+      "rendererContainmentStartup.ts",
+    ]);
+    expect(filesMatching(/host-resolver-rules/)).toEqual([
+      "rendererContainmentStartup.ts",
+    ]);
+    expect(filesMatching(/\bwebRequest\b/)).toEqual([]);
+    expect(filesMatching(/proxy-server|proxy-pac-url|no-proxy-server/)).toEqual(
+      [],
+    );
+    // 専用の partition を作らない（NC-1 は default session の 1 箇所）。
+    expect(filesMatching(/fromPartition|["'`]persist:/)).toEqual([]);
+    // `.listen(` は NC-1 の listener の file だけ（codexAppServer の argv の "--listen" は対象外）。
+    expect(filesMatching(/\.listen\s*\(/)).toEqual([
+      "rendererContainmentListener.ts",
+    ]);
+    // default session の net.fetch／net.request を足さない（影響表 9。electron/main は 0 件）。
+    expect(filesMatching(/\bnet\.(fetch|request)\b/)).toEqual([]);
+    expect(filesMatching(/\bnet\b[^;\n]*from\s+["']electron["']/)).toEqual([]);
+  });
+
+  it("閉じ込めを止める・弱める名前を export しない", () => {
+    for (const file of [
+      "rendererContainment.ts",
+      "rendererContainmentListener.ts",
+      "rendererContainmentStartup.ts",
+    ]) {
+      const names = [
+        ...codeOf(file).matchAll(
+          /export\s+(?:const|function|async function|class)\s+(\w+)/g,
+        ),
+      ].map((m) => m[1]);
+      expect(names.length, file).toBeGreaterThan(0);
+      for (const name of names) {
+        expect(name, `${file}: ${name}`).not.toMatch(
+          /disable(?!_)|enableContainment|skip|turnOff|unrestrict|unsafe|insecure/i,
+        );
+      }
+    }
+  });
+
+  it("名前解決の記録層と DoH の canary は製品の source に入らない", () => {
+    expect(
+      filesMatching(
+        /LD_PRELOAD|PROBE_DNSLOG|dnslog|dns-canary|doh-canary|canary/i,
+      ),
+    ).toEqual([]);
+  });
+
+  it("名前解決の記録層と DoH の canary は製品の bundle（main と preload の esbuild の出力）に入らない（electron/shared と preload 経由の混入も見る）", async () => {
+    // pnpm electron:build と同じ設定（electron/scripts/build.mjs の bundleConfigs）を、書き出さずに in-memory で束ねて走査する。
+    // 'canary' 単独は依存 package の文字列に当たりうるので、記録層と DoH の canary の固有の名前だけを見る。
+    const buildModule = (await import(
+      pathToFileURL(path.join(MAIN_DIR, "..", "scripts", "build.mjs")).href
+    )) as { bundleConfigs: Array<Record<string, unknown>> };
+    const esbuild = (await import("esbuild")).default;
+    const forbidden =
+      /LD_PRELOAD|PROBE_DNSLOG|dnslog|dns-canary|doh-canary|webrtc-block-probe/i;
+    expect(buildModule.bundleConfigs.length).toBe(2);
+    for (const config of buildModule.bundleConfigs) {
+      const result = await esbuild.build({
+        ...config,
+        outfile: undefined,
+        outdir: "out",
+        write: false,
+        sourcemap: false,
+        logLevel: "silent",
+      });
+      expect(result.outputFiles.length).toBe(1);
+      const text = result.outputFiles[0].text;
+      // 束ねた出力が空でない（走査が何も見ていないわけではない）。NC-1 の module が main に入っている。
+      const isMain = /electron[\\/]main[\\/]/.test(String(config.entryPoints));
+      expect(text.length).toBeGreaterThan(isMain ? 1_000_000 : 1_000);
+      expect(text.match(forbidden), String(config.entryPoints)).toBeNull();
+      if (isMain) expect(text).toContain("grimodex-rule-sentinel.invalid");
+    }
+  }, 60_000);
+
+  it("NC-1 の適用は shouldRegisterAppProtocol() が true のときだけで、packaged は env があっても適用する", async () => {
+    const index = codeOf("index.ts");
+    expect(index).toMatch(
+      /const rendererContainment\s*=\s*shouldRegisterAppProtocol\(\)\s*\?\s*createRendererContainment\(\)\s*:\s*null/,
+    );
+    const { shouldRegisterAppProtocolFor, resolveDevRendererUrl } =
+      await import("./devRendererUrl.js");
+    const env = { ELECTRON_RENDERER_URL: "http://127.0.0.1:5173" };
+    // packaged: env があっても true（dev URL を読まない）。
+    expect(shouldRegisterAppProtocolFor({ isPackaged: true, env })).toBe(true);
+    expect(resolveDevRendererUrl({ isPackaged: true, env })).toBeUndefined();
+    // 非 packaged で env あり（dev server）だけが除外。
+    expect(shouldRegisterAppProtocolFor({ isPackaged: false, env })).toBe(
+      false,
+    );
+    expect(shouldRegisterAppProtocolFor({ isPackaged: false, env: {} })).toBe(
+      true,
+    );
+  });
+
+  it("影響表 7: src、electron/main、electron/preload は RTCPeerConnection を使わない", () => {
+    const roots = ["../../src", ".", "../preload"].map((rel) =>
+      path.resolve(MAIN_DIR, rel),
+    );
+    const offenders: string[] = [];
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules") continue;
+          walk(full);
+        } else if (
+          /\.(ts|tsx|mts|cts|js|jsx|mjs|cjs)$/.test(entry.name) &&
+          !/\.(test|spec)\./.test(entry.name) &&
+          // この file 自身ではない製品 source だけを見る。
+          /RTCPeerConnection|webkitRTCPeerConnection/.test(
+            stripComments(readFileSync(full, "utf8")),
+          )
+        ) {
+          offenders.push(path.relative(path.resolve(MAIN_DIR, "../.."), full));
+        }
+      }
+    };
+    for (const root of roots) walk(root);
     expect(offenders).toEqual([]);
   });
 });

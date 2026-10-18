@@ -1,0 +1,168 @@
+# NC-1 G-open の判定の出力（electron/scripts/webrtc-block-probe-verdict.mjs と webrtc-block-probe-nc1.mjs）
+
+## 行ごとの合否 RJ（最終構成。終了コード 0 が合格）
+nc1-fm-final: 行 123（判定 87: tcp 53／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 36〔うち .local 0、不活性 20〕、区分: 活性 87／canary 不可 0／不活性 20）合格 87 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）20 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, main.stun.sentinel, main.stuns.sentinel, main.turn-udp.sentinel, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443, main.stun.reload-localhost, main.turn-udp.reload-localhost, main.stun.nav-localhost, main.turn-udp.nav-localhost
+  exit=0
+nc1-ll-final: 行 154（判定 126: tcp 66／udp 48／hint 12／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 4、不活性 8〕、区分: 活性 51／canary 不可 63／不活性 8）合格 126 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+  exit=0
+nc1-fq-final: 行 141（判定 112: tcp 59／udp 41／hint 12／unclassified 0／対象外の行への到達 0、対象外 29〔うち .local 0、不活性 13〕、区分: 活性 43／canary 不可 57／不活性 13）合格 112 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）13 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6, main.remote-candidate-udp.fqdn, main.remote-candidate-tcp.fqdn, main.remote-candidate-tcp.fqdn-so, main.remote-candidate-udp.fqdn-relay, main.remote-candidate-udp.fqdn-srflx
+  exit=0
+nc1-nl-final: 行 140（判定 122: tcp 61／udp 45／hint 16／unclassified 0／対象外の行への到達 0、対象外 18〔うち .local 0、不活性 2〕、区分: 活性 43／canary 不可 63／不活性 2）合格 122 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）2 行: rs1.turn-tcp.localhost, rs1.turns.localhost
+  exit=0
+nc1-sx-final: 行 199（判定 156: tcp 89／udp 54／hint 13／unclassified 0／対象外の行への到達 0、対象外 43〔うち .local 0、不活性 24〕、区分: 活性 83／canary 不可 60／不活性 24）合格 156 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）24 行: sx.stun.case0, sx.stun.case1, sx.stun.case2, sx.stun.case3, sx.stun.case4, sx.stun.case5, sx.stun.case6, sx.stun.case8, sx.turn-tcp.lo6zone, sx.turns.lo6zone, sx.stun.lo6zone, sx.turn-udp.lo6zone, sx.turn-tcp.llz, sx.turns.llz, sx.stun.llz, sx.turn-udp.llz, sx.turn-tcp.llnz, sx.turns.llnz, sx.stun.llnz, sx.turn-udp.llnz, sx.turn-tcp.llz2, sx.turns.llz2, sx.stun.llz2, sx.turn-udp.llz2
+  exit=0
+nc1-doh-final: 行 140（判定 122: tcp 61／udp 45／hint 16／unclassified 0／対象外の行への到達 0、対象外 18〔うち .local 0、不活性 2〕、区分: 活性 43／canary 不可 63／不活性 2）合格 122 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）2 行: rs1.turn-tcp.localhost, rs1.turns.localhost
+  exit=0
+nc1-ll-kill: 行 154（判定 126: tcp 66／udp 48／hint 12／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 4、不活性 8〕、区分: 活性 51／canary 不可 63／不活性 8）合格 126 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+  exit=0
+
+## 対照（閉じ込めなし。終了コード 1 が期待）
+nc1-fm-baseline: 行 123（判定 87: tcp 53／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 36〔うち .local 0、不活性 20〕、区分: 活性 0／canary 不可 0／不活性 20）合格 0 不合格 87 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 12196 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 87 行（totals.leakedProbes）
+  不活性の行（合否に数えない）20 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, main.stun.sentinel, main.stuns.sentinel, main.turn-udp.sentinel, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443, main.stun.reload-localhost, main.turn-udp.reload-localhost, main.stun.nav-localhost, main.turn-udp.nav-localhost
+  exit=1
+nc1-ll-baseline: 行 154（判定 126: tcp 66／udp 48／hint 12／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 4、不活性 8〕、区分: 活性 0／canary 不可 63／不活性 8）合格 32 不合格 94 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 319 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 51 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+  exit=1
+
+## 対照（機構を 1 つずつ外した構成。終了コード 1 が期待。nl-no-rules は RJ では合格し、NL で検出する）
+nc1-fm-no-policy: 行 123（判定 87: tcp 53／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 36〔うち .local 0、不活性 20〕、区分: 活性 53／canary 不可 0／不活性 20）合格 53 不合格 34 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 288 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 34 行（totals.leakedProbes）
+  不活性の行（合否に数えない）20 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, main.stun.sentinel, main.stuns.sentinel, main.turn-udp.sentinel, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443, main.stun.reload-localhost, main.turn-udp.reload-localhost, main.stun.nav-localhost, main.turn-udp.nav-localhost
+  exit=1
+nc1-fm-no-proxy: 行 123（判定 87: tcp 53／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 36〔うち .local 0、不活性 20〕、区分: 活性 34／canary 不可 0／不活性 20）合格 34 不合格 53 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 9829 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 53 行（totals.leakedProbes）
+  不活性の行（合否に数えない）20 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, main.stun.sentinel, main.stuns.sentinel, main.turn-udp.sentinel, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443, main.stun.reload-localhost, main.turn-udp.reload-localhost, main.stun.nav-localhost, main.turn-udp.nav-localhost
+  exit=1
+nc1-fm-no-neg-loopback: 行 123（判定 87: tcp 53／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 36〔うち .local 0、不活性 20〕、区分: 活性 62／canary 不可 0／不活性 20）合格 62 不合格 25 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 8545 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 25 行（totals.leakedProbes）
+  不活性の行（合否に数えない）20 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, main.stun.sentinel, main.stuns.sentinel, main.turn-udp.sentinel, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443, main.stun.reload-localhost, main.turn-udp.reload-localhost, main.stun.nav-localhost, main.turn-udp.nav-localhost
+  exit=1
+nc1-ll-no-proxy: 行 154（判定 126: tcp 66／udp 48／hint 12／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 4、不活性 8〕、区分: 活性 34／canary 不可 60／不活性 8）合格 60 不合格 66 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 117 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 20 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+  exit=1
+nc1-ll-no-neg-loopback: 行 154（判定 126: tcp 66／udp 48／hint 12／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 4、不活性 8〕、区分: 活性 34／canary 不可 63／不活性 8）合格 99 不合格 27 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 101 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 17 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+  exit=1
+nc1-ll-no-policy: 行 154（判定 126: tcp 66／udp 48／hint 12／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 4、不活性 8〕、区分: 活性 34／canary 不可 63／不活性 8）合格 105 不合格 21 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 129 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 17 行（totals.leakedProbes）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+  exit=1
+nc1-nl-no-rules: 行 140（判定 122: tcp 61／udp 45／hint 16／unclassified 0／対象外の行への到達 0、対象外 18〔うち .local 0、不活性 2〕、区分: 活性 43／canary 不可 63／不活性 2）合格 122 不合格 0 記録全体の不合格 0
+  不活性の行（合否に数えない）2 行: rs1.turn-tcp.localhost, rs1.turns.localhost
+  exit=0
+
+## (29) 外した機構ごとの期待カテゴリ（行 id で、方向・必須の行・その機構のカテゴリでない行を固定。judgeControlCategories）
+nc1-fm-no-proxy (proxy): pass=true 漏れた行 53 件
+nc1-ll-no-proxy (proxy): pass=true 漏れた行 20 件
+nc1-fm-no-policy (policy): pass=true 漏れた行 34 件
+nc1-ll-no-policy (policy): pass=true 漏れた行 17 件
+nc1-fm-no-neg-loopback (neg-loopback): pass=true 漏れた行 25 件
+nc1-ll-no-neg-loopback (neg-loopback): pass=true 漏れた行 17 件
+nc1-fm-no-proxy: sentinel 名の TCP の canary 到達 main.turn-tcp.sentinel=8 main.turns.sentinel=4 main.turns-tcp.sentinel=4
+nc1-ll-no-proxy: sentinel 名の TCP の canary 到達 main.turn-tcp.sentinel=8 main.turns.sentinel=4 main.turns-tcp.sentinel=4
+nc1-fm-final: sentinel 名の TCP の canary 到達／proxy 宛 main.turn-tcp.sentinel=0/2 main.turns.sentinel=0/2 main.turns-tcp.sentinel=0/2
+nc1-ll-final: sentinel 名の TCP の canary 到達／proxy 宛 main.turn-tcp.sentinel=0/2 main.turns.sentinel=0/2 main.turns-tcp.sentinel=0/2
+nc1-ll-kill: sentinel 名の TCP の canary 到達／proxy 宛 main.turn-tcp.sentinel=0/2 main.turns.sentinel=0/2 main.turns-tcp.sentinel=0/2
+
+## 近い名前・特殊な literal の resolveHost（製品の rules。judgeNearNames）
+nc1-nearnames: pass=true 観測 19 件
+  resolveHost(2130706433) => ["127.0.0.1"]
+  resolveHost(gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(xgvt1.com) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(a.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(a.b.github.com) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(github.com.) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(github.com.evil.test) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(evil.release-assets.githubusercontent.com) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(x.localhost) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(localhost.) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(foo.local) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost([::1]) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(169.254.169.254) => error:net::ERR_NAME_NOT_RESOLVED
+  resolveHost(127.1) => ["127.0.0.1"]
+  resolveHost(0x7f.0.0.1) => ["127.0.0.1"]
+  resolveHost(127.0.0.1.) => ["127.0.0.1"]
+  resolveHost(127.0.0.1) => ["127.0.0.1"]
+  resolveHost(grimodex-rule-sentinel.invalid) => ["127.0.0.1"]
+
+## 合成の記録（最終構成の記録に漏れを書き込んだもの。--expect-min-fail で検出できること）
+nc1-ll-final-synthetic-leaks（合成。実機の記録ではない）: 行 154（判定 128: tcp 66／udp 48／hint 12／unclassified 0／対象外の行への到達 2、対象外 26〔うち .local 4、不活性 8〕、区分: 活性 51／canary 不可 63／不活性 8）合格 126 不合格 2 記録全体の不合格 1
+  FAIL(記録全体) どの行にも帰属しない canary 到達 5 件（totals.unattributed）
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+対照: 不合格 2 行＋記録全体 1 件 >= 3 → 検出できた（期待どおり）
+  exit=0（期待 0）
+nc1-ll-final-synthetic-hint-not-in-baseline（合成。実機の記録ではない）: 行 155（判定 127: tcp 66／udp 48／hint 13／unclassified 0／対象外の行への到達 0、対象外 28〔うち .local 4、不活性 8〕、区分: 活性 51／canary 不可 63／不活性 8）合格 126 不合格 1 記録全体の不合格 0
+  不活性の行（合否に数えない）8 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6
+対照: 不合格 1 行＋記録全体 0 件 >= 1 → 検出できた（期待どおり）
+  exit=0（期待 0）
+nc1-fq-final-synthetic-fqdn-leaks（合成。実機の記録ではない）: 行 141（判定 114: tcp 60／udp 42／hint 12／unclassified 0／対象外の行への到達 0、対象外 27〔うち .local 0、不活性 11〕、区分: 活性 43／canary 不可 57／不活性 12）合格 112 不合格 2 記録全体の不合格 2
+  FAIL(記録全体) 記録全体で canary 到達 2 件（totals.canaryHits）
+  FAIL(記録全体) canary に届いた probe 1 行（totals.leakedProbes）
+  不活性の行（合否に数えない）11 行: ll.stun.ll6, ll.stuns.ll6, ll.turn-udp.ll6, ll.turn-tcp.ll6, ll.turns.ll6, ll.turns-tcp.ll6, ll.remote-candidate-udp.ll6, ll.remote-candidate-tcp.ll6, main.remote-candidate-udp.fqdn, main.remote-candidate-tcp.fqdn-so, main.remote-candidate-udp.fqdn-relay
+対照: 不合格 2 行＋記録全体 2 件 >= 3 → 検出できた（期待どおり）
+  exit=0（期待 0）
+
+## 名前の漏れ NL（許容集合 A の外の名前の件数。0 が合格）
+nc1-ll-final: pass=true 許容集合の外 0 件 channels={"getaddrinfo":2,"doh":null,"netLog":null}
+nc1-fq-final: pass=true 許容集合の外 0 件 channels={"getaddrinfo":2,"doh":null,"netLog":null}
+nc1-nl-final: pass=true 許容集合の外 0 件 channels={"getaddrinfo":3,"doh":null,"netLog":6}
+nc1-doh-final: pass=true 許容集合の外 0 件 channels={"getaddrinfo":null,"doh":4,"netLog":6}
+nc1-sx-final: pass=true 許容集合の外 0 件 channels={"getaddrinfo":2,"doh":null,"netLog":5}
+nc1-ll-kill: pass=true 許容集合の外 0 件 channels={"getaddrinfo":2,"doh":null,"netLog":null}
+nc1-nl-no-rules: pass=false 許容集合の外 81 件 channels={"getaddrinfo":82,"doh":null,"netLog":12} 例=getaddrinfo:turntcpname-<n>.probe.test., getaddrinfo:turnsname-<n>.probe.test., getaddrinfo:turnstcpname-<n>.probe.test.
+
+## NL の正の対照（閉じ込めなしで名前が観測されること）
+getaddrinfo(fq-baseline): {"ok":true,"channel":"getaddrinfo","missing":[],"observed":{"stun":true,"turn-udp":true,"turn-tcp":true,"turns":true,"dns-prefetch":true,"fqdn-remote-candidate":true}}
+doh(doh-baseline): {"ok":true,"channel":"doh","missing":[],"observed":{"stun":true,"turn-udp":true,"turn-tcp":true,"turns":true,"dns-prefetch":true}}
+netLog(nl-baseline): {"ok":true,"channel":"netLog","missing":[],"observed":72}
+
+## .local の規則
+ll-final: {"status":"pass","reason":"対照で観測した .local の問合せが最終構成で 0","baselineQueries":6,"finalQueries":0}
+ll-kill: {"status":"pass","reason":"対照で観測した .local の問合せが最終構成で 0","baselineQueries":6,"finalQueries":0}
+
+## Positive (9)(i)(ii)(iii)(v)
+ll-final: {"pass":true,"failures":[]}
+
+## (30b) listener の頑健性
+fm-final: {"pass":true,"failures":[],"exercised":true,"overLimit":2058,"maxActive":256}
+
+## 再読込・遷移の後の localhost
+fm: {"pass":true,"failures":[]}
+ll: {"pass":true,"failures":[]}
+
+## (33) 更新と env の proxy
+nc1-w0-envproxy-localhost-baseline (baseline): {"pass":true,"failures":[]}
+nc1-w2-envproxy-localhost-final (localhost): {"pass":true,"failures":[]}
+nc1-w3-envproxy-127-final (127.0.0.1): {"pass":true,"failures":[]}
+nc1-w4-envproxy-lan-final (lan): {"pass":true,"failures":[]}
+nc1-w5-envproxy-hostname-final (hostname): {"pass":true,"failures":[]}
+
+## 実機の観測
+NC-SESSION: {"pass":true,"failures":[]}
+NC-POLICY: {"pass":true,"failures":[]}
+DevTools: {"pass":true,"failures":[]}
+
+## 起動順序（env の proxy なし／ip／localhost × 各 5 回）
+product-nc1: {"pass":true,"failures":[],"runs":15}
+NC-1 の所要 nc1Ms: min 36 中央値 37 max 44（n=15）／ready から窓の読込の完了: NC-1 あり min 140 中央値 145 max 158、product-none min 104 中央値 108 max 128（n=9）
+product-none（対照。赤が期待）: {"pass":false}

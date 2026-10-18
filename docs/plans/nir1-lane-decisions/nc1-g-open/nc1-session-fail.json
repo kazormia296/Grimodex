@@ -1,0 +1,77 @@
+{
+  "label": "nc1-session-fail",
+  "electron": "43.5.0",
+  "cm": {
+    "noProbes": true,
+    "ncSession": true,
+    "nc1": {}
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "nc1 orchestrator start => true in 33.1 ms",
+    "ncSession window loadURL => error:ERR_FAILED (did-start-loading x1)"
+  ],
+  "webPreferences": {},
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 0,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 1,
+    "mdnsQueries": null,
+    "ctlHits": 0
+  },
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "nc1": {
+    "config": {
+      "drop": [],
+      "prefixRules": [],
+      "proxyBypassRules": "<-loopback>",
+      "policy": "disable_non_proxied_udp"
+    },
+    "startOk": true,
+    "startMs": 33.1,
+    "listenerPort": 38929,
+    "listenerHits": 1,
+    "overLimit": 0,
+    "maxActive": 1,
+    "failures": [
+      "[grimodex-electron] NC-SESSION"
+    ],
+    "quitCalls": 1,
+    "beforeQuit": true,
+    "willQuit": true,
+    "uncaught": [],
+    "created": [],
+    "wc": [
+      {
+        "at": 1792336965200,
+        "type": "window",
+        "isDefaultSession": false
+      }
+    ]
+  },
+  "extra": {
+    "ncSession": {
+      "loadOutcome": "error:ERR_FAILED",
+      "startedLoading": 1
+    }
+  },
+  "appRequests": [],
+  "httpdHits": 0,
+  "mdns": null,
+  "rows": [],
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [],
+  "netLog": null,
+  "dnsAll": null,
+  "dnsRowCount": null,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}
