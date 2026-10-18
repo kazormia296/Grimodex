@@ -123,7 +123,7 @@ pub(super) fn scan(
     not_appended(Count::NoCandidate)
 }
 
-fn is_storage_failure(error: &anyhow::Error) -> bool {
+pub(super) fn is_storage_failure(error: &anyhow::Error) -> bool {
     error
         .chain()
         .any(|cause| cause.is::<rusqlite::Error>() || cause.is::<std::io::Error>())
@@ -386,9 +386,8 @@ impl Judge<'_> {
         self.checkpoint()?;
 
         Ok(Verdict::Adopt(Box::new(GraphOnlyCandidate {
-            scene_id: association.scene_id.clone(),
+            association: association.clone(),
             title,
-            pin,
             scene_incarnation_id: scope.scene_incarnation_id,
             scope_source_token: scope.source_token,
             scene_source_token: frame.source_token,

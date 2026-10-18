@@ -43,11 +43,11 @@ use crate::narrative_extraction::{
 
 /// The Scene the Related Scenes query is made from. It sorts after every
 /// Scene the tests declare ("b*", "s1", "s5"), so they are read earlier.
-const QUERY: &str = SECOND_SCENE;
+pub(super) const QUERY: &str = SECOND_SCENE;
 
 // ---- fixture ----------------------------------------------------------------
 
-fn add_scene(env: &Env, id: &str, parent: Option<&str>, resolved_a1: bool) {
+pub(super) fn add_scene(env: &Env, id: &str, parent: Option<&str>, resolved_a1: bool) {
     env.with_conn(|conn| {
         conn.execute(
             "INSERT INTO tree_nodes (id, project_id, parent_id, node_type, title, sort_order, content)
@@ -60,7 +60,7 @@ fn add_scene(env: &Env, id: &str, parent: Option<&str>, resolved_a1: bool) {
     set_a1(env.db().db(), PROJECT, id, resolved_a1);
 }
 
-fn add_pin(env: &Env, scene: &str, created_at: &str) {
+pub(super) fn add_pin(env: &Env, scene: &str, created_at: &str) {
     env.with_conn(|conn| {
         conn.execute(
             "INSERT INTO scene_codex_pins (scene_id, entry_id, created_at) VALUES (?1, 'c1', ?2)",
@@ -71,7 +71,7 @@ fn add_pin(env: &Env, scene: &str, created_at: &str) {
 }
 
 /// Three declarable Scenes before the query, each pinned to the Entity.
-fn fixture() -> Env {
+pub(super) fn fixture() -> Env {
     reset_local_counts();
     let env = Env::new();
     for (index, id) in ["b1", "b2", "b3"].into_iter().enumerate() {
@@ -81,7 +81,7 @@ fn fixture() -> Env {
     env
 }
 
-fn association(env: &Env, scene: &str) -> Nir1GraphSceneAssociation {
+pub(super) fn association(env: &Env, scene: &str) -> Nir1GraphSceneAssociation {
     env.with_conn(|conn| {
         let (incarnation, scope_token): (Option<String>, Option<String>) = conn
             .query_row(
@@ -115,18 +115,18 @@ fn association(env: &Env, scene: &str) -> Nir1GraphSceneAssociation {
     })
 }
 
-fn associations(env: &Env, scenes: &[&str]) -> Vec<Nir1GraphSceneAssociation> {
+pub(super) fn associations(env: &Env, scenes: &[&str]) -> Vec<Nir1GraphSceneAssociation> {
     scenes.iter().map(|scene| association(env, scene)).collect()
 }
 
 /// A declaration bound to the Scene as it is now, with the workspace values
 /// of the Ready binding. The body's digests are placeholders: the scan does
 /// not read the body.
-fn place(env: &Env, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
+pub(super) fn place(env: &Env, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
     place_in(env, PROJECT, scene)
 }
 
-fn place_in(env: &Env, project: &str, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
+pub(super) fn place_in(env: &Env, project: &str, scene: &str) -> NarrativeSceneBodyDeclarationV1 {
     let workspace = GraphDisclosureWorkspace::from_snapshot(&env.snapshot());
     let parts = workspace.parts().expect("workspace values");
     env.with_conn(|conn| {
@@ -169,17 +169,17 @@ fn place_in(env: &Env, project: &str, scene: &str) -> NarrativeSceneBodyDeclarat
     })
 }
 
-fn place_all(env: &Env, scenes: &[&str]) {
+pub(super) fn place_all(env: &Env, scenes: &[&str]) {
     for scene in scenes {
         place(env, scene);
     }
 }
 
-fn workspace(env: &Env) -> GraphDisclosureWorkspace {
+pub(super) fn workspace(env: &Env) -> GraphDisclosureWorkspace {
     GraphDisclosureWorkspace::from_snapshot(&env.snapshot())
 }
 
-fn context(env: &Env) -> RetrievalQueryContext {
+pub(super) fn context(env: &Env) -> RetrievalQueryContext {
     env.db()
         .db()
         .with_read_transaction(
@@ -192,12 +192,12 @@ fn context(env: &Env) -> RetrievalQueryContext {
 }
 
 /// The query context as it is right now.
-fn query(env: &Env) -> GraphDisclosureQuery {
+pub(super) fn query(env: &Env) -> GraphDisclosureQuery {
     GraphDisclosureQuery::from_retrieval_query_context(&context(env))
 }
 
 #[derive(Clone, Copy, Debug)]
-enum Answer {
+pub(super) enum Answer {
     Yes,
     No,
     DataFailure,
@@ -205,14 +205,14 @@ enum Answer {
 }
 
 /// A path revalidation that answers per Scene and remembers what was asked.
-struct Path {
+pub(super) struct Path {
     answers: BTreeMap<String, Answer>,
     default: Answer,
-    calls: Vec<String>,
+    pub(super) calls: Vec<String>,
 }
 
 impl Path {
-    fn yes() -> Self {
+    pub(super) fn yes() -> Self {
         Self {
             answers: BTreeMap::new(),
             default: Answer::Yes,
@@ -220,7 +220,7 @@ impl Path {
         }
     }
 
-    fn answering(mut self, scene: &str, answer: Answer) -> Self {
+    pub(super) fn answering(mut self, scene: &str, answer: Answer) -> Self {
         self.answers.insert(scene.to_owned(), answer);
         self
     }
@@ -250,13 +250,13 @@ impl GraphPathRevalidator for Path {
 /// Named changes a test makes to one value, one at a time.
 type Tampering<T> = Vec<(&'static str, Box<dyn Fn(&mut T)>)>;
 
-const OPEN: AppendSlot = AppendSlot {
+pub(super) const OPEN: AppendSlot = AppendSlot {
     ir_uses_common_slot: false,
     raw_count: 3,
 };
 
 #[allow(clippy::too_many_arguments)]
-fn scan_with(
+pub(super) fn scan_with(
     env: &Env,
     workspace: &GraphDisclosureWorkspace,
     query: &GraphDisclosureQuery,
@@ -279,7 +279,11 @@ fn scan_with(
 }
 
 /// The scan with a fresh query context, an open slot and no R+IR Scenes.
-fn scan(env: &Env, candidates: &[Nir1GraphSceneAssociation], path: &mut Path) -> GraphOnlyScan {
+pub(super) fn scan(
+    env: &Env,
+    candidates: &[Nir1GraphSceneAssociation],
+    path: &mut Path,
+) -> GraphOnlyScan {
     scan_with(
         env,
         &workspace(env),
@@ -293,27 +297,27 @@ fn scan(env: &Env, candidates: &[Nir1GraphSceneAssociation], path: &mut Path) ->
     .unwrap()
 }
 
-fn adopted(result: &GraphOnlyScan) -> &str {
+pub(super) fn adopted(result: &GraphOnlyScan) -> &str {
     match result {
-        GraphOnlyScan::Candidate(candidate) => &candidate.scene_id,
+        GraphOnlyScan::Candidate(candidate) => &candidate.association.scene_id,
         GraphOnlyScan::NotAppended(_) => panic!("a candidate was expected"),
     }
 }
 
-fn assert_not_appended(result: &GraphOnlyScan) {
+pub(super) fn assert_not_appended(result: &GraphOnlyScan) {
     assert!(
         matches!(result, GraphOnlyScan::NotAppended(NotAppended)),
         "no Scene should be added, got {result:?}"
     );
 }
 
-fn counts() -> Vec<(&'static str, u64)> {
+pub(super) fn counts() -> Vec<(&'static str, u64)> {
     local_counts()
 }
 
 /// While installed, every statement the closure rejects fails to prepare, so
 /// a scan that succeeds did not issue one.
-fn restrict(env: &Env, deny: impl Fn(&AuthAction<'_>) -> bool + Send + 'static) {
+pub(super) fn restrict(env: &Env, deny: impl Fn(&AuthAction<'_>) -> bool + Send + 'static) {
     env.with_conn(|conn| {
         conn.authorizer(Some(move |context: AuthContext<'_>| {
             if deny(&context.action) {
@@ -326,34 +330,34 @@ fn restrict(env: &Env, deny: impl Fn(&AuthAction<'_>) -> bool + Send + 'static) 
     });
 }
 
-fn unrestrict(env: &Env) {
+pub(super) fn unrestrict(env: &Env) {
     env.with_conn(|conn| {
         conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
         Ok(())
     });
 }
 
-fn deny_every_read(env: &Env) {
+pub(super) fn deny_every_read(env: &Env) {
     restrict(env, |action| {
         matches!(action, AuthAction::Read { .. } | AuthAction::Select)
     });
 }
 
-fn deny_body_reads(env: &Env) {
+pub(super) fn deny_body_reads(env: &Env) {
     restrict(env, |action| {
         matches!(action, AuthAction::Read { table_name, column_name }
             if *table_name == "tree_nodes" && *column_name == "content")
     });
 }
 
-fn execute(env: &Env, sql: &str) {
+pub(super) fn execute(env: &Env, sql: &str) {
     env.with_conn(|conn| {
         conn.execute_batch(sql)?;
         Ok(())
     });
 }
 
-fn stored_declaration(env: &Env, scene: &str) -> (String, String) {
+pub(super) fn stored_declaration(env: &Env, scene: &str) -> (String, String) {
     env.with_conn(|conn| {
         Ok(conn.query_row(
             "SELECT body_declaration_json, body_declaration_token
@@ -364,7 +368,7 @@ fn stored_declaration(env: &Env, scene: &str) -> (String, String) {
     })
 }
 
-fn raw_cells(env: &Env, scene: &str, json: SqlValue, token: SqlValue) {
+pub(super) fn raw_cells(env: &Env, scene: &str, json: SqlValue, token: SqlValue) {
     env.with_conn(|conn| set_raw_declaration_cells_for_test(conn, PROJECT, scene, json, token));
 }
 
@@ -393,7 +397,7 @@ fn a_declaration_made_by_the_production_writer_is_accepted() {
         unreachable!()
     };
     assert_eq!(candidate.title, "One");
-    assert_eq!(candidate.pin.scene_id, SCENE);
+    assert_eq!(candidate.association.scene_id, SCENE);
 }
 
 // ---- A1: the declaration is read from its row -------------------------------
@@ -1012,7 +1016,7 @@ fn a6_a_declaration_bound_to_another_workspace_or_locator_does_not_hold() {
 
 // ---- A7: veto ----------------------------------------------------------------
 
-fn foreshadow(env: &Env, id: &str, secret: i64, payoff_scene: Option<&str>) {
+pub(super) fn foreshadow(env: &Env, id: &str, secret: i64, payoff_scene: Option<&str>) {
     env.with_conn(|conn| {
         conn.execute(
             "INSERT INTO foreshadows (id, project_id, title, payoff_scene_id, secret, abandoned,
@@ -1024,7 +1028,7 @@ fn foreshadow(env: &Env, id: &str, secret: i64, payoff_scene: Option<&str>) {
     });
 }
 
-fn event(env: &Env, id: &str, secret: i64, reveal_scene: Option<&str>) {
+pub(super) fn event(env: &Env, id: &str, secret: i64, reveal_scene: Option<&str>) {
     env.with_conn(|conn| {
         conn.execute(
             "INSERT INTO events (id, project_id, secret, reveal_scene_id) VALUES (?1, 'p1', ?2, ?3)",
@@ -1508,6 +1512,10 @@ fn b4_the_diagnostic_is_a_closed_list_of_outcome_counts() {
             "resource-limit",
             "adopted",
             "no-candidate",
+            "body-unreadable",
+            "disclosed",
+            "click-allowed",
+            "click-refused",
         ]
     );
     assert!(totals

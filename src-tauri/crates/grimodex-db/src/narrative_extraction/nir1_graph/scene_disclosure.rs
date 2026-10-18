@@ -28,7 +28,6 @@ use anyhow::{ensure, Result};
 use grimodex_core::narrative_scene_scope::NarrativeScopePrincipalV1;
 use rusqlite::Connection;
 
-use super::scenes::ScenePinLocator;
 use super::Nir1GraphSceneAssociation;
 use crate::narrative_extraction::scene_body_declaration::{
     is_scene_body_declaration_quarantined, StoredSceneBodyDeclaration,
@@ -38,7 +37,12 @@ use crate::nir1_generation::history_context::DurableWorkspaceIdentity;
 use crate::state::ActiveWorkspaceSnapshot;
 use grimodex_core::narrative_nir1::MAX_GRAPH_SCENES;
 
+mod body;
+#[cfg(test)]
+mod body_tests;
+mod click;
 mod counters;
+mod eligible;
 mod judge;
 #[cfg(test)]
 mod tests;
@@ -265,12 +269,12 @@ pub enum GraphOnlyScan {
 /// A Scene that passed the judgements that do not read the body. It holds the
 /// values the body step compares with and is neither serializable nor
 /// printable with its contents.
-#[allow(dead_code, reason = "the body step (CB-4 S2) reads these fields")]
 pub struct GraphOnlyCandidate {
-    scene_id: String,
+    /// The frame's association, kept so a click can be revalidated with the
+    /// very same pin and path (it is request-local and never persisted).
+    association: Nir1GraphSceneAssociation,
     /// The Scene's current title; its digest equals the declaration's.
     title: String,
-    pin: ScenePinLocator,
     scene_incarnation_id: String,
     scope_source_token: String,
     scene_source_token: String,
@@ -305,3 +309,10 @@ pub fn evaluate_graph_only_append(
     );
     judge::scan(conn, input, path, check, MAX_GRAPH_SCENES)
 }
+
+pub use self::body::{disclose_graph_only_candidate, evaluate_graph_only_scene};
+pub use self::click::requalify_graph_only_scene_disclosure;
+pub use self::eligible::{
+    EligibleGraphScene, GraphOnlyClick, GraphOnlySceneBinding, GraphOnlySceneDisclosure,
+    GraphSceneRange, GraphSceneRevalidationRefused,
+};

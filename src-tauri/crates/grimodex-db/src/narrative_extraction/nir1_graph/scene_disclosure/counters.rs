@@ -46,10 +46,19 @@ pub(crate) enum Count {
     Adopted,
     /// The scan ended without a candidate.
     NoCandidate,
+    /// The body could not be read as a Scene source (missing, unreadable, not
+    /// JSON, empty), or the first non-empty line could not be taken.
+    BodyUnreadable,
+    /// A candidate passed the body step too: a Graph-only Scene was added.
+    Disclosed,
+    /// A click was revalidated and allowed.
+    ClickAllowed,
+    /// A click was refused.
+    ClickRefused,
 }
 
 impl Count {
-    const ALL: [Self; 17] = [
+    const ALL: [Self; 21] = [
         Self::SlotUnavailable,
         Self::WorkspaceUnavailable,
         Self::Quarantined,
@@ -67,6 +76,10 @@ impl Count {
         Self::ResourceLimit,
         Self::Adopted,
         Self::NoCandidate,
+        Self::BodyUnreadable,
+        Self::Disclosed,
+        Self::ClickAllowed,
+        Self::ClickRefused,
     ];
 
     pub(crate) const fn code(self) -> &'static str {
@@ -88,6 +101,10 @@ impl Count {
             Self::ResourceLimit => "resource-limit",
             Self::Adopted => "adopted",
             Self::NoCandidate => "no-candidate",
+            Self::BodyUnreadable => "body-unreadable",
+            Self::Disclosed => "disclosed",
+            Self::ClickAllowed => "click-allowed",
+            Self::ClickRefused => "click-refused",
         }
     }
 

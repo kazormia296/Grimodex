@@ -725,7 +725,7 @@ pub(super) fn read_scene_source_bounded(
     })
 }
 
-fn first_non_empty_anchor(
+pub(super) fn first_non_empty_anchor(
     canonical: &str,
     check: &mut dyn FnMut() -> Result<()>,
     admit_excerpt: &mut dyn FnMut(usize) -> Result<()>,
