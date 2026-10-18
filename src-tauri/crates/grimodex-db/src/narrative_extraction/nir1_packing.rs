@@ -42,10 +42,12 @@ use crate::nir1_generation::history_context::HistorySendClassification;
 #[cfg(feature = "native-current-human-capture")]
 use crate::nir1_generation::{
     check_attempt_completeness, d1_selection_digest, d1_selection_reference,
-    read_current_chat_input_capture_in_tx, scope_identity, AcceptedChatInputCapture,
+    read_attempt_scene_binding_in_tx, read_current_chat_input_capture_in_tx,
+    read_expected_scope_in_tx, scope_identity, AcceptedChatInputCapture, AttemptSceneBinding,
     CompletenessContext, CompletenessViolation, D1SelectionParameters, InputReference, InputRole,
-    InputTarget, InputUse, MessageVersion, NotApplicableReason, QualificationBody,
-    QualificationKind, QualificationReference, ScopeRole, TypedTarget, D1_SELECTION_IDENTITY,
+    InputTarget, InputUse, MessageVersion, Nir1ExpectedScope, NotApplicableReason,
+    QualificationBody, QualificationKind, QualificationReference, ScopeRole, TypedTarget,
+    D1_SELECTION_IDENTITY,
 };
 #[cfg(feature = "native-current-human-capture")]
 use crate::state::ActiveWorkspaceSnapshot;
@@ -391,6 +393,26 @@ pub(super) struct NativeNir1PooledPackedContext {
     pub bindings: Vec<NativeNir1AuthorityBinding>,
     #[cfg(feature = "native-current-human-capture")]
     pub raw_source_binding: Option<NativeNir1RawSourceBinding>,
+    /// Candidates the Native selection left out because A2 or A3 reported them
+    /// unavailable, in candidate order. They are not in `bindings`, the
+    /// candidate items or the packed context. Empty under `Reject`.
+    #[cfg(feature = "native-current-human-capture")]
+    pub excluded: Vec<NativeNir1ExcludedRevision>,
+}
+
+/// What the pooled reader does with a Revision that A2 or A3 reports
+/// unavailable (DI-1c R-1).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RevisionUnavailablePolicy {
+    /// The whole request fails with `NIR1_NATIVE_A2_UNAVAILABLE:<reason>`. The
+    /// caller-supplied Revision list, the single-Revision wrapper and the
+    /// DP-H rejection variant use this.
+    Reject,
+    /// The candidate alone is left out, with a closed reason. Only the Native
+    /// selection uses this. An unknown reason, a request-level reason, a SQL
+    /// error, a cancel and a budget stop still fail the whole request.
+    #[cfg(feature = "native-current-human-capture")]
+    Exclude,
 }
 
 fn require_non_empty(value: &str, field: &str) -> Result<()> {
@@ -633,6 +655,25 @@ pub(super) fn read_and_pack_native_a2_context_with_source_raw_in_tx(
         request,
         raw,
         raw_source_binding,
+        RevisionUnavailablePolicy::Reject,
+        input_budget,
+        reserve_retained_binding,
+        checkpoint,
+    )
+}
+
+#[cfg(all(test, feature = "native-current-human-capture"))]
+pub(super) fn read_and_pack_native_a2_context_with_current_source_in_tx(
+    conn: &Connection,
+    request: NativeNir1SourcePooledPackingRequest<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1PooledPackedContext> {
+    read_and_pack_native_a2_context_with_current_source_and_policy_in_tx(
+        conn,
+        request,
+        RevisionUnavailablePolicy::Reject,
         input_budget,
         reserve_retained_binding,
         checkpoint,
@@ -640,9 +681,10 @@ pub(super) fn read_and_pack_native_a2_context_with_source_raw_in_tx(
 }
 
 #[cfg(feature = "native-current-human-capture")]
-pub(super) fn read_and_pack_native_a2_context_with_current_source_in_tx(
+pub(super) fn read_and_pack_native_a2_context_with_current_source_and_policy_in_tx(
     conn: &Connection,
     request: NativeNir1SourcePooledPackingRequest<'_>,
+    policy: RevisionUnavailablePolicy,
     input_budget: &mut NativePackingInputBudget,
     reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
     checkpoint: &mut impl FnMut() -> Result<()>,
@@ -660,6 +702,7 @@ pub(super) fn read_and_pack_native_a2_context_with_current_source_in_tx(
         request,
         raw,
         raw_source_binding,
+        policy,
         input_budget,
         reserve_retained_binding,
         checkpoint,
@@ -667,11 +710,13 @@ pub(super) fn read_and_pack_native_a2_context_with_current_source_in_tx(
 }
 
 #[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // The Raw read, its binding and the policy are separate values.
 fn pool_native_source_and_context(
     conn: &Connection,
     request: NativeNir1SourcePooledPackingRequest<'_>,
     raw: NativeNir1RawContextItem,
     raw_source_binding: NativeNir1RawSourceBinding,
+    policy: RevisionUnavailablePolicy,
     input_budget: &mut NativePackingInputBudget,
     reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
     checkpoint: &mut impl FnMut() -> Result<()>,
@@ -689,6 +734,7 @@ fn pool_native_source_and_context(
         pooled_request,
         input_budget,
         RawBudgetCharge::AlreadyCharged,
+        policy,
         reserve_retained_binding,
         checkpoint,
     )?;
@@ -716,22 +762,167 @@ impl NativeNir1PreparedContextItem {
 }
 
 /// Why D-final left one accepted Revision out of the request (K4/3 section
-/// 3, rule 2). The set is closed; the other inputs and the attempt context
-/// are kept.
+/// 3, rule 2; DI-1c R-1). The set is closed; the other inputs and the attempt
+/// context are kept.
+///
+/// `MaterialBasisSourceTokenConflict` is decided from a Revision that A2 and
+/// A3 already accepted. Every other variant is one `reason` that the A2
+/// current reader or the A3 disclosure check reports for a single candidate
+/// (`Nir1EntityRelationDisclosureRead::Unavailable`), with the same code
+/// string. Only the Native selection excludes on them; a caller-supplied
+/// Revision list still rejects the whole request. A reason that has no
+/// variant here, and the four query-Scene reasons of
+/// [`REQUEST_LEVEL_UNAVAILABLE_REASONS`], fail the whole request.
 #[cfg(feature = "native-current-human-capture")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum NativeNir1RevisionExclusionReason {
     /// The sealed material basis (`source_basis` and `evidence_set`) holds the
     /// same source key with two different revision tokens.
     MaterialBasisSourceTokenConflict,
+    // A2: identity, approval, restore, payload and envelope.
+    RevisionNotFound,
+    RevisionNotCurrent,
+    RevisionKindMismatch,
+    RevisionNotHumanApproved,
+    RevisionDecisionAmbiguous,
+    RevisionRestoreInvalidated,
+    RevisionPayloadInvalid,
+    RevisionPayloadBindingInvalid,
+    RevisionEnvelopeInvalid,
+    // A2: material contract, live sources and Freshness.
+    RevisionMaterialContractSuperseded,
+    RevisionMaterialContractMixed,
+    RevisionMaterialContractUnsupported,
+    SourceRevisionChanged,
+    RevisionMaterialMismatch,
+    RevisionMaterialAuthorityMismatch,
+    CanonicalFreshnessUnavailable,
+    // A3: Scope authority, reading order and material Scenes.
+    A3ScopeAuthorityStale,
+    A3ReadingScopeUnavailable,
+    A3ReadingBeforeQueryViolation,
+    A3MaterialScopeUnavailable,
+    A3MaterialScopeMismatch,
+    // A3: axes, reveal, POV and phase.
+    A3ScopeAxisUnavailable,
+    A3StoryScopeUnavailable,
+    A3StoryScopeFuture,
+    A3AutoScopeUnavailable,
+    A3AutoScopeFuture,
+    A3RevealUnavailable,
+    A3PovUnavailable,
+    A3PovMismatch,
+    A3PhaseUnavailable,
+    A3PhaseAmbiguous,
+    A3PhaseAnchorUnavailable,
+    A3PhaseStoryUnavailable,
+    A3PhaseFuture,
+    A3PhaseContextUnavailable,
 }
+
+/// The A3 reasons that are about the query Scene, not about the candidate
+/// (`load_a3_query_context`): every candidate meets the same one. They are not
+/// exclusions; the request fails with the reason, as the caller-list entry
+/// does.
+#[cfg(feature = "native-current-human-capture")]
+const REQUEST_LEVEL_UNAVAILABLE_REASONS: [&str; 4] = [
+    "a3-query-scene-unavailable",
+    "a3-query-axis-unavailable",
+    "a3-query-scope-unavailable",
+    "a3-query-viewpoint-unavailable",
+];
 
 #[cfg(feature = "native-current-human-capture")]
 impl NativeNir1RevisionExclusionReason {
+    /// Every variant, in declaration order.
+    pub const ALL: [Self; 36] = [
+        Self::MaterialBasisSourceTokenConflict,
+        Self::RevisionNotFound,
+        Self::RevisionNotCurrent,
+        Self::RevisionKindMismatch,
+        Self::RevisionNotHumanApproved,
+        Self::RevisionDecisionAmbiguous,
+        Self::RevisionRestoreInvalidated,
+        Self::RevisionPayloadInvalid,
+        Self::RevisionPayloadBindingInvalid,
+        Self::RevisionEnvelopeInvalid,
+        Self::RevisionMaterialContractSuperseded,
+        Self::RevisionMaterialContractMixed,
+        Self::RevisionMaterialContractUnsupported,
+        Self::SourceRevisionChanged,
+        Self::RevisionMaterialMismatch,
+        Self::RevisionMaterialAuthorityMismatch,
+        Self::CanonicalFreshnessUnavailable,
+        Self::A3ScopeAuthorityStale,
+        Self::A3ReadingScopeUnavailable,
+        Self::A3ReadingBeforeQueryViolation,
+        Self::A3MaterialScopeUnavailable,
+        Self::A3MaterialScopeMismatch,
+        Self::A3ScopeAxisUnavailable,
+        Self::A3StoryScopeUnavailable,
+        Self::A3StoryScopeFuture,
+        Self::A3AutoScopeUnavailable,
+        Self::A3AutoScopeFuture,
+        Self::A3RevealUnavailable,
+        Self::A3PovUnavailable,
+        Self::A3PovMismatch,
+        Self::A3PhaseUnavailable,
+        Self::A3PhaseAmbiguous,
+        Self::A3PhaseAnchorUnavailable,
+        Self::A3PhaseStoryUnavailable,
+        Self::A3PhaseFuture,
+        Self::A3PhaseContextUnavailable,
+    ];
+
     pub fn code(self) -> &'static str {
         match self {
             Self::MaterialBasisSourceTokenConflict => "material-basis-source-token-conflict",
+            Self::RevisionNotFound => "revision-not-found",
+            Self::RevisionNotCurrent => "revision-not-current",
+            Self::RevisionKindMismatch => "revision-kind-mismatch",
+            Self::RevisionNotHumanApproved => "revision-not-human-approved",
+            Self::RevisionDecisionAmbiguous => "revision-decision-ambiguous",
+            Self::RevisionRestoreInvalidated => "revision-restore-invalidated",
+            Self::RevisionPayloadInvalid => "revision-payload-invalid",
+            Self::RevisionPayloadBindingInvalid => "revision-payload-binding-invalid",
+            Self::RevisionEnvelopeInvalid => "revision-envelope-invalid",
+            Self::RevisionMaterialContractSuperseded => "revision-material-contract-superseded",
+            Self::RevisionMaterialContractMixed => "revision-material-contract-mixed",
+            Self::RevisionMaterialContractUnsupported => "revision-material-contract-unsupported",
+            Self::SourceRevisionChanged => "source-revision-changed",
+            Self::RevisionMaterialMismatch => "revision-material-mismatch",
+            Self::RevisionMaterialAuthorityMismatch => "revision-material-authority-mismatch",
+            Self::CanonicalFreshnessUnavailable => "canonical-freshness-unavailable",
+            Self::A3ScopeAuthorityStale => "a3-scope-authority-stale",
+            Self::A3ReadingScopeUnavailable => "a3-reading-scope-unavailable",
+            Self::A3ReadingBeforeQueryViolation => "a3-reading-before-query-violation",
+            Self::A3MaterialScopeUnavailable => "a3-material-scope-unavailable",
+            Self::A3MaterialScopeMismatch => "a3-material-scope-mismatch",
+            Self::A3ScopeAxisUnavailable => "a3-scope-axis-unavailable",
+            Self::A3StoryScopeUnavailable => "a3-story-scope-unavailable",
+            Self::A3StoryScopeFuture => "a3-story-scope-future",
+            Self::A3AutoScopeUnavailable => "a3-auto-scope-unavailable",
+            Self::A3AutoScopeFuture => "a3-auto-scope-future",
+            Self::A3RevealUnavailable => "a3-reveal-unavailable",
+            Self::A3PovUnavailable => "a3-pov-unavailable",
+            Self::A3PovMismatch => "a3-pov-mismatch",
+            Self::A3PhaseUnavailable => "a3-phase-unavailable",
+            Self::A3PhaseAmbiguous => "a3-phase-ambiguous",
+            Self::A3PhaseAnchorUnavailable => "a3-phase-anchor-unavailable",
+            Self::A3PhaseStoryUnavailable => "a3-phase-story-unavailable",
+            Self::A3PhaseFuture => "a3-phase-future",
+            Self::A3PhaseContextUnavailable => "a3-phase-context-unavailable",
         }
+    }
+
+    /// The variant for one A2/A3 `Unavailable` reason, or `None` for a reason
+    /// that is not a closed per-candidate reason (the caller then fails the
+    /// request). The material-basis variant is not an A2/A3 reason.
+    fn from_a2_a3_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .filter(|reason| *reason != Self::MaterialBasisSourceTokenConflict)
+            .find(|reason| reason.code() == code)
     }
 }
 
@@ -1047,6 +1238,10 @@ pub(super) fn expected_targets_for_inputs(
 /// revisions, and their adopted references in one participant-owned WAL
 /// snapshot. The Native-owned callback computes remaining context capacity
 /// from the re-read Human body and the current fixed route/prompt budget.
+///
+/// The Revisions are the caller's list, and one that A2 or A3 reports
+/// unavailable fails the whole request (the DP-H rejection variant). The
+/// Native selection is [`read_and_pack_native_nir1_selected_inputs`].
 #[cfg(feature = "native-current-human-capture")]
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub fn read_and_pack_native_nir1_prepared_inputs(
@@ -1096,6 +1291,207 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
         "NIR1_NATIVE_PREPARED_REVISION_BYTES_LIMIT"
     );
 
+    read_prepared_inputs_in_snapshot(
+        workspace,
+        purpose,
+        send_classification,
+        capture,
+        query_scene_id,
+        RevisionSelection::Caller(&unique_revision_ids),
+        sql_budget,
+        context_budget_for_user,
+    )
+    .map(|(prepared, _)| prepared)
+}
+
+/// The D-final inputs of a Native-selected request, with the values a later
+/// create and claim compare, all read in the one snapshot (DI-1c R-1, R-5).
+///
+/// `scene_binding` is the exact target Scene incarnation (the value the
+/// attempt binding carries). `expected_scope` is the target Scene's Scope
+/// binding token and the project's restore epoch as the rows hold them: it is
+/// read whether or not the history slot could be built, so an attempt that
+/// stores no context is checked the same way. Neither is a send authority.
+#[cfg(feature = "native-current-human-capture")]
+pub struct NativeNir1SelectedInputs {
+    prepared: NativeNir1PreparedInputs,
+    scene_binding: AttemptSceneBinding,
+    expected_scope: Nir1ExpectedScope,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NativeNir1SelectedInputs {
+    pub fn prepared(&self) -> &NativeNir1PreparedInputs {
+        &self.prepared
+    }
+
+    pub fn scene_binding(&self) -> &AttemptSceneBinding {
+        &self.scene_binding
+    }
+
+    pub fn expected_scope(&self) -> &Nir1ExpectedScope {
+        &self.expected_scope
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        NativeNir1PreparedInputs,
+        AttemptSceneBinding,
+        Nir1ExpectedScope,
+    ) {
+        (self.prepared, self.scene_binding, self.expected_scope)
+    }
+}
+
+/// The Native selection of D-final (DI-1c R-1; DSN section 5.1: the trusted
+/// Native chooses the Revisions). Inside the one participant read snapshot it
+/// lists the project's current human-approved typed Revisions (at most
+/// `MAX_PACKING_ITEMS`, read as N and N+1, in Revision ID order), evaluates
+/// each with A2 and A3, and leaves out one that is unavailable with a closed
+/// reason (`excluded_revisions`) while the others continue. The request fails
+/// as a whole for a SQL error, a cancel or a budget stop, an unknown or
+/// query-level reason, more than `MAX_PACKING_ITEMS` candidates, or when no
+/// accepted IR remains (`NIR1_NATIVE_PREPARED_REQUIRED_CONTEXT_MISSING`). The
+/// caller supplies no Revision ID.
+#[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
+pub fn read_and_pack_native_nir1_selected_inputs(
+    workspace: &ActiveWorkspaceSnapshot,
+    purpose: PackingPurpose,
+    send_classification: HistorySendClassification,
+    expected_session_id: &str,
+    capture: &AcceptedChatInputCapture,
+    query_scene_id: &str,
+    sql_budget: ParticipantSqlOperationBudget,
+    context_budget_for_user: impl FnOnce(&str) -> Result<usize>,
+) -> Result<NativeNir1SelectedInputs> {
+    require_non_empty(expected_session_id, "sessionId")?;
+    require_non_empty(query_scene_id, "querySceneId")?;
+    ensure!(
+        capture.chat_session_id() == expected_session_id,
+        "NIR1_CHAT_CAPTURE_SESSION_MISMATCH"
+    );
+    ensure!(
+        capture.scene_id() == query_scene_id,
+        "NIR1_CHAT_CAPTURE_SCOPE_MISMATCH"
+    );
+    let (prepared, expectations) = read_prepared_inputs_in_snapshot(
+        workspace,
+        purpose,
+        send_classification,
+        capture,
+        query_scene_id,
+        RevisionSelection::Native,
+        sql_budget,
+        context_budget_for_user,
+    )?;
+    let (scene_binding, expected_scope) =
+        expectations.ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_EXPECTATIONS_MISSING"))?;
+    Ok(NativeNir1SelectedInputs {
+        prepared,
+        scene_binding,
+        expected_scope,
+    })
+}
+
+/// Where the Revisions of one D-final read come from.
+#[cfg(feature = "native-current-human-capture")]
+enum RevisionSelection<'a> {
+    /// The caller's validated, de-duplicated list. A2/A3 `Unavailable` rejects.
+    Caller(&'a [String]),
+    /// Listed inside the snapshot. A2/A3 `Unavailable` excludes the candidate.
+    Native,
+}
+
+/// The values the Native selection reads beside the inputs, in the same
+/// snapshot.
+#[cfg(feature = "native-current-human-capture")]
+type SnapshotExpectations = (AttemptSceneBinding, Nir1ExpectedScope);
+
+/// The current human-approved typed Revisions of the project that the Native
+/// selection takes as candidates, in Revision ID order. The set is the one
+/// the capacity diagnostics count (`current_revision_id` of the typed
+/// Entity/Relation review surface) narrowed to the proposals the A2 reader
+/// accepts as approved (`proposal.status = 'approved'`); a Revision that is
+/// not approved is not a candidate and is not counted as excluded. The read is
+/// bounded as N and N+1: more than `MAX_PACKING_ITEMS` candidates is refused,
+/// never silently cut.
+#[cfg(feature = "native-current-human-capture")]
+fn list_native_revision_candidates_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<Vec<String>> {
+    use super::nir1_entity_relation::{
+        NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
+    };
+
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1_NATIVE_PACKING_REQUIRES_READ_TRANSACTION"
+    );
+    let limit = i64::try_from(MAX_PACKING_ITEMS + 1)?;
+    let mut statement = conn.prepare(
+        "SELECT DISTINCT proposal.current_revision_id
+           FROM narrative_proposal_sets proposal_set
+           JOIN narrative_extraction_runs extraction_run
+             ON extraction_run.id = proposal_set.run_id
+            AND extraction_run.project_id = proposal_set.project_id
+           JOIN narrative_proposals proposal ON proposal.proposal_set_id = proposal_set.id
+          WHERE proposal_set.project_id = ?1
+            AND proposal_set.set_kind = ?2
+            AND extraction_run.surface_path_id = ?3
+            AND proposal.current_revision_id IS NOT NULL
+            AND proposal.status = 'approved'
+          ORDER BY proposal.current_revision_id ASC
+          LIMIT ?4",
+    )?;
+    let mut rows = statement.query(rusqlite::params![
+        project_id,
+        NIR1_ENTITY_RELATION_SET_KIND,
+        NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+        limit,
+    ])?;
+    let mut ids = Vec::new();
+    let mut id_bytes = 0usize;
+    while let Some(row) = rows.next()? {
+        checkpoint()?;
+        let id: String = row.get(0)?;
+        ensure!(
+            !id.is_empty() && id.trim() == id,
+            "NIR1_NATIVE_PREPARED_REVISION_ID_INVALID"
+        );
+        id_bytes = id_bytes
+            .checked_add(id.len())
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BYTES_OVERFLOW"))?;
+        ensure!(
+            id_bytes <= MAX_PACKING_INPUT_BYTES,
+            "NIR1_NATIVE_PREPARED_REVISION_BYTES_LIMIT"
+        );
+        ids.push(id);
+        // The N+1st row is the proof that the set exceeds the limit.
+        ensure!(
+            ids.len() <= MAX_PACKING_ITEMS,
+            "NIR1_NATIVE_PREPARED_REVISION_CANDIDATES_LIMIT {MAX_PACKING_ITEMS}"
+        );
+    }
+    checkpoint()?;
+    Ok(ids)
+}
+
+#[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
+fn read_prepared_inputs_in_snapshot(
+    workspace: &ActiveWorkspaceSnapshot,
+    purpose: PackingPurpose,
+    send_classification: HistorySendClassification,
+    capture: &AcceptedChatInputCapture,
+    query_scene_id: &str,
+    selection: RevisionSelection<'_>,
+    sql_budget: ParticipantSqlOperationBudget,
+    context_budget_for_user: impl FnOnce(&str) -> Result<usize>,
+) -> Result<(NativeNir1PreparedInputs, Option<SnapshotExpectations>)> {
     let mut input_budget = NativePackingInputBudget::default();
     let checkpoint_budget = sql_budget.clone();
     workspace.db().with_participant_read_transaction_bounded(
@@ -1127,15 +1523,25 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
                 );
                 Ok(())
             };
-            let pooled = read_and_pack_native_a2_context_with_current_source_in_tx(
+            let listed;
+            let (revision_ids, policy) = match &selection {
+                RevisionSelection::Caller(ids) => (*ids, RevisionUnavailablePolicy::Reject),
+                RevisionSelection::Native => {
+                    listed =
+                        list_native_revision_candidates_in_tx(conn, &project_id, &mut checkpoint)?;
+                    (listed.as_slice(), RevisionUnavailablePolicy::Exclude)
+                }
+            };
+            let pooled = read_and_pack_native_a2_context_with_current_source_and_policy_in_tx(
                 conn,
                 NativeNir1SourcePooledPackingRequest {
                     project_id: &project_id,
-                    revision_ids: &unique_revision_ids,
+                    revision_ids,
                     query_scene_id,
                     budget_tokens: context_budget_tokens,
                     purpose,
                 },
+                policy,
                 &mut input_budget,
                 &mut reserve_retained_binding,
                 &mut checkpoint,
@@ -1151,7 +1557,22 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
                 send_classification,
             )?;
             checkpoint()?;
-            build_native_nir1_prepared_inputs(
+            // The Native selection also reads, in this snapshot, what a create
+            // and a claim compare. The Scope token and the restore epoch are
+            // read even when the history slot is unavailable.
+            let expectations = match selection {
+                RevisionSelection::Caller(_) => None,
+                RevisionSelection::Native => {
+                    let scene_binding =
+                        read_attempt_scene_binding_in_tx(conn, &project_id, query_scene_id)?;
+                    checkpoint()?;
+                    let expected_scope =
+                        read_expected_scope_in_tx(conn, &project_id, query_scene_id)?;
+                    checkpoint()?;
+                    Some((scene_binding, expected_scope))
+                }
+            };
+            let prepared = build_native_nir1_prepared_inputs(
                 capture.clone(),
                 project_id,
                 query_scene_id.to_owned(),
@@ -1160,7 +1581,8 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
                 pooled,
                 history_context,
                 &mut checkpoint,
-            )
+            )?;
+            Ok((prepared, expectations))
         },
     )
 }
@@ -1173,7 +1595,7 @@ fn build_native_nir1_prepared_inputs(
     query_scene_id: String,
     user_message_version: MessageVersion,
     user_message: String,
-    pooled: NativeNir1PooledPackedContext,
+    mut pooled: NativeNir1PooledPackedContext,
     history_context: HistoryContextStage,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<NativeNir1PreparedInputs> {
@@ -1185,7 +1607,9 @@ fn build_native_nir1_prepared_inputs(
     let mut selected_revision_ids = Vec::new();
     let mut context_references = Vec::new();
     let mut accepted_ir_count = 0usize;
-    let mut excluded_revisions = Vec::<NativeNir1ExcludedRevision>::new();
+    // Candidates A2 or A3 left out in the pooled read come first, in candidate
+    // order; the sealed-basis conflicts found below follow.
+    let mut excluded_revisions = std::mem::take(&mut pooled.excluded);
     let mut excluded_revision_ids = HashSet::<String>::new();
 
     for selected in &pooled.selected_items {
@@ -2357,6 +2781,7 @@ pub(super) fn read_and_pack_native_a2_context_in_tx(
         request,
         input_budget,
         RawBudgetCharge::Charge,
+        RevisionUnavailablePolicy::Reject,
         reserve_retained_binding,
         checkpoint,
     )
@@ -2367,6 +2792,7 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
     request: NativeNir1PooledPackingRequest<'_>,
     input_budget: &mut NativePackingInputBudget,
     raw_budget_charge: RawBudgetCharge,
+    policy: RevisionUnavailablePolicy,
     reserve_retained_binding: &mut impl FnMut(usize) -> Result<()>,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<NativeNir1PooledPackedContext> {
@@ -2388,9 +2814,17 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         revision_id_bytes <= MAX_PACKING_INPUT_BYTES,
         "NIR-1 Native Revision IDs exceed MAX_PACKING_INPUT_BYTES {MAX_PACKING_INPUT_BYTES}"
     );
+    // The Native selection may find no candidate; the caller then meets the
+    // required-context rule (a Raw and at least one accepted IR). A caller list
+    // is never empty.
+    let empty_list_allowed = match policy {
+        RevisionUnavailablePolicy::Reject => false,
+        #[cfg(feature = "native-current-human-capture")]
+        RevisionUnavailablePolicy::Exclude => true,
+    };
     ensure!(
         !request.project_id.trim().is_empty()
-            && !request.revision_ids.is_empty()
+            && (empty_list_allowed || !request.revision_ids.is_empty())
             && request.revision_ids.iter().all(|id| !id.trim().is_empty())
             && !request.query_scene_id.trim().is_empty(),
         "NIR-1 Native packing request identity is incomplete"
@@ -2421,6 +2855,8 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
     let mut seen = HashSet::new();
     let mut candidate_owners = HashMap::new();
     let mut bindings = Vec::new();
+    #[cfg(feature = "native-current-human-capture")]
+    let mut excluded = Vec::<NativeNir1ExcludedRevision>::new();
     for revision_id in request.revision_ids {
         checkpoint()?;
         if !seen.insert(revision_id.as_str()) {
@@ -2433,9 +2869,29 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
             request.query_scene_id,
         )? {
             Nir1EntityRelationDisclosureRead::Eligible(disclosure) => disclosure,
-            Nir1EntityRelationDisclosureRead::Unavailable { reason } => {
-                anyhow::bail!("NIR1_NATIVE_A2_UNAVAILABLE:{reason}")
-            }
+            Nir1EntityRelationDisclosureRead::Unavailable { reason } => match policy {
+                RevisionUnavailablePolicy::Reject => {
+                    anyhow::bail!("NIR1_NATIVE_A2_UNAVAILABLE:{reason}")
+                }
+                // Only a closed per-candidate reason leaves the candidate out.
+                // A query-Scene reason is about the request, and an unknown one
+                // is not understood: both fail the whole request.
+                #[cfg(feature = "native-current-human-capture")]
+                RevisionUnavailablePolicy::Exclude => {
+                    if REQUEST_LEVEL_UNAVAILABLE_REASONS.contains(&reason.as_str()) {
+                        anyhow::bail!("NIR1_NATIVE_A2_UNAVAILABLE:{reason}")
+                    }
+                    let Some(reason) = NativeNir1RevisionExclusionReason::from_a2_a3_code(&reason)
+                    else {
+                        anyhow::bail!("NIR1_NATIVE_A2_UNAVAILABLE_REASON_UNKNOWN")
+                    };
+                    excluded.push(NativeNir1ExcludedRevision {
+                        revision_id: revision_id.clone(),
+                        reason,
+                    });
+                    continue;
+                }
+            },
         };
         checkpoint()?;
         preflight_projected_item_count(
@@ -2485,6 +2941,8 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         bindings,
         #[cfg(feature = "native-current-human-capture")]
         raw_source_binding: None,
+        #[cfg(feature = "native-current-human-capture")]
+        excluded,
     })
 }
 

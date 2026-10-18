@@ -156,9 +156,10 @@ pub use nir1_packing::{
 };
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_packing::{
-    read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
-    NativeNir1ExcludedRevision, NativeNir1FinalQualifications, NativeNir1PreparedContextItem,
-    NativeNir1PreparedInputs, NativeNir1RawSourceBinding, NativeNir1RevisionExclusionReason,
+    read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
+    revalidate_native_nir1_prepared_inputs, NativeNir1ExcludedRevision,
+    NativeNir1FinalQualifications, NativeNir1PreparedContextItem, NativeNir1PreparedInputs,
+    NativeNir1RawSourceBinding, NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs,
 };
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,
