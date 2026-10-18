@@ -577,7 +577,11 @@ impl OwnerFixture {
         submission: &NativeAcceptedChatSubmission,
         history: NativeNir1HistoryDraft,
     ) -> FinalDispatchRequest {
-        let now = now_ms().expect("clock");
+        let expected_scope = self
+            .authority
+            .db()
+            .with_read_transaction(|conn| storage::read_expected_scope_in_tx(conn, PROJECT, SCENE))
+            .expect("expected scope");
         let digest = canonical_json_digest(&json!("owner-fixture")).expect("digest");
         FinalDispatchRequest {
             project_id: PROJECT.into(),
@@ -603,8 +607,8 @@ impl OwnerFixture {
             }],
             qualifications: vec![],
             history,
-            created_at_ms: now,
-            expires_at_ms: now + 60_000,
+            lifetime_ms: 60_000,
+            expected_scope,
             budget: READ_BUDGET,
         }
     }
@@ -2814,29 +2818,10 @@ fn owner_unknown_commit_reread_accepts_the_downgraded_binding() {
     );
     assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
 
-    // The creation time leaves the eligibility range: `eligibility-overflow`.
-    let submission = fixture.accept(1, "hs1-reread-overflow");
-    let owner = fixture.owner(1, &submission).expect("owner");
-    owner
-        .hooks()
-        .test_hooks()
-        .fail_next("create", Nir1GenerationFailpoint::ErrorAfterCommit);
-    let mut request = context_request(&fixture, &owner, &submission);
-    request.created_at_ms = i64::MAX - 1;
-    request.expires_at_ms = i64::MAX;
-    let prepared = owner
-        .create(request)
-        .expect("the reread matches the downgraded form");
-    assert_eq!(
-        fixture
-            .attempt(prepared.attempt_id())
-            .binding
-            .history_turn_context,
-        Some(HistoryContextSlot::Unavailable(
-            HistoryUnavailableReason::EligibilityOverflow
-        ))
-    );
-    assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+    // `eligibility-overflow` needs a creation time near `i64::MAX`. A product
+    // create reads Native's clock and takes no absolute time (DI-1c R-6), so
+    // no owner request can reach it; grimodex-db's test-support writer covers
+    // it (`eligibility_overflow` in nir1_generation/tests.rs).
 }
 
 // ---------------------------------------------------------------------------

@@ -2960,7 +2960,9 @@ pub(super) mod tests {
             generation_storage::read_attempt_scene_binding_in_tx(conn, PROJECT_ID, SCENE_ID)
         })?;
         let digest = grimodex_core::canonical_json_digest(&json!("hs1-end-to-end"))?;
-        let now = crate::nir1_generation::now_ms()?;
+        let expected_scope = workspace.db().db().with_read_transaction(|conn| {
+            generation_storage::read_expected_scope_in_tx(conn, PROJECT_ID, SCENE_ID)
+        })?;
         let request = FinalDispatchRequest {
             project_id: PROJECT_ID.into(),
             chat_session_id: SESSION_ID.into(),
@@ -2978,8 +2980,8 @@ pub(super) mod tests {
             inputs: handoff.input_references().to_vec(),
             qualifications: handoff.qualifications().to_vec(),
             history: handoff.history_draft().clone(),
-            created_at_ms: now,
-            expires_at_ms: now + 60_000,
+            lifetime_ms: 60_000,
+            expected_scope,
             budget: READ_BUDGET_FOR_TEST,
         };
         let created = owner

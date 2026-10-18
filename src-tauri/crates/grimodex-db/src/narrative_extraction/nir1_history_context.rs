@@ -1054,6 +1054,26 @@ mod tests {
                 version: HistoryInt::from_i64(scope.binding.version)?,
             }
         );
+        // The create/claim re-read (DI-1c) compares the two values this
+        // context records, read by one reader: the same digests and numbers.
+        let expected = db.with_read_transaction(|conn| {
+            crate::nir1_generation::read_expected_scope_in_tx(conn, PROJECT, TARGET)
+        })?;
+        let scope_state = expected.scope_binding.expect("scope binding");
+        assert_eq!(
+            scope_state.token_digest,
+            context.target.binding_token_digest
+        );
+        assert_eq!(
+            HistoryInt::from_i64(scope_state.version)?,
+            context.target.version
+        );
+        let epoch_state = expected.restore_epoch.expect("restore epoch");
+        assert_eq!(epoch_state.id_digest, context.restore_epoch.id_digest);
+        assert_eq!(
+            HistoryInt::from_i64(epoch_state.number)?,
+            context.restore_epoch.number
+        );
         // No epoch: a closed slot reason, not a stopped turn.
         sql(
             &db,
@@ -1063,6 +1083,13 @@ mod tests {
         assert_eq!(
             reason(&build(&db)?),
             HistoryUnavailableReason::RestoreEpochUnavailable
+        );
+        assert_eq!(
+            db.with_read_transaction(|conn| {
+                crate::nir1_generation::read_expected_scope_in_tx(conn, PROJECT, TARGET)
+            })?
+            .restore_epoch,
+            None
         );
         // No Scope binding row: a closed slot reason.
         let db = base_db()?;

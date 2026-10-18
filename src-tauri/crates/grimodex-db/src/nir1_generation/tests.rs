@@ -3126,7 +3126,7 @@ mod bounded {
 /// and workspace incarnation.
 #[cfg(feature = "native-current-human-capture")]
 mod capture {
-    use super::bounded::{admission, BoundedWorkspace};
+    use super::bounded::{admission, expected, pinned_budget, BoundedWorkspace};
     use super::*;
 
     const SESSION: &str = "generation-session";
@@ -3189,18 +3189,217 @@ mod capture {
         request
     }
 
+    const PROJECT: &str = "generation-project";
+
+    /// The Scope binding and restore epoch the D-final snapshot would read.
+    fn expected_scope(workspace: &crate::state::ActiveWorkspaceSnapshot) -> Nir1ExpectedScope {
+        workspace
+            .db()
+            .db()
+            .with_read_transaction(|conn| read_expected_scope_in_tx(conn, PROJECT, SCENE))
+            .expect("expected scope")
+    }
+
+    /// A product create request from a test-support request: the times become
+    /// a lifetime (the writer decides the times) and the expectation is read
+    /// from the database now.
+    fn product_request(
+        workspace: &crate::state::ActiveWorkspaceSnapshot,
+        request: NewAttempt,
+    ) -> NewCaptureAttempt {
+        let request = production_slots(request);
+        NewCaptureAttempt {
+            lifetime_ms: request.expires_at_ms - request.created_at_ms,
+            expected_scope: expected_scope(workspace),
+            binding: request.binding,
+            payload_digest: request.payload_digest,
+            inputs: request.inputs,
+            qualifications: request.qualifications,
+            budget: request.budget,
+        }
+    }
+
+    fn create_product(
+        workspace: &crate::state::ActiveWorkspaceSnapshot,
+        capture: &AcceptedChatInputCapture,
+        request: &NewCaptureAttempt,
+    ) -> std::result::Result<StoredAttempt, Nir1GenerationStoreError> {
+        create_attempt_for_capture_bounded(
+            workspace,
+            capture,
+            request,
+            &admission(),
+            &mut || Ok(()),
+        )
+    }
+
     fn create_for(
         workspace: &crate::state::ActiveWorkspaceSnapshot,
         capture: &AcceptedChatInputCapture,
         request: NewAttempt,
     ) -> std::result::Result<StoredAttempt, Nir1GenerationStoreError> {
-        create_attempt_for_capture_bounded(
+        create_product(workspace, capture, &product_request(workspace, request))
+    }
+
+    fn claim_for(
+        workspace: &crate::state::ActiveWorkspaceSnapshot,
+        capture: &AcceptedChatInputCapture,
+        scope: &Nir1ExpectedScope,
+        attempt: &StoredAttempt,
+    ) -> std::result::Result<Nir1ClaimOutcome, Nir1GenerationStoreError> {
+        claim_attempt_for_capture_bounded(
             workspace,
             capture,
-            production_slots(request),
+            scope,
+            &expected(attempt),
             &admission(),
             &mut || Ok(()),
         )
+    }
+
+    fn cancel_capture(
+        workspace: &crate::state::ActiveWorkspaceSnapshot,
+        capture: &AcceptedChatInputCapture,
+    ) {
+        cancel_current_human_chat_input(
+            workspace,
+            capture,
+            &owner(workspace),
+            ParticipantSqlOperationBudget::new(
+                Arc::new(AtomicBool::new(false)),
+                Instant::now() + Duration::from_secs(5),
+                Duration::from_millis(100),
+            ),
+        )
+        .expect("cancel capture");
+    }
+
+    /// The fixture rewrites the Scene's incarnation after the Native writer
+    /// minted its Scope token, so its token no longer matches its state. A
+    /// scope test first stores the token that the state gives, as every
+    /// product writer leaves it.
+    fn repair_scope_token(workspace: &crate::state::ActiveWorkspaceSnapshot) {
+        workspace
+            .db()
+            .db()
+            .with_conn(|conn| {
+                let (marker, query, material, holder, audience, version, updated_at, incarnation): (
+                    String,
+                    String,
+                    String,
+                    String,
+                    String,
+                    i64,
+                    String,
+                    String,
+                ) = conn.query_row(
+                    "SELECT compatibility_marker, query_identity_json,
+                            material_constraint_json, knowledge_holder_json,
+                            audience_json, version, updated_at, scene_incarnation_id
+                       FROM narrative_scene_scope_bindings
+                      WHERE project_id=?1 AND scene_id=?2",
+                    params![PROJECT, SCENE],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                        ))
+                    },
+                )?;
+                let (registry_version, timelines, worldlines, layers): (
+                    String,
+                    String,
+                    String,
+                    String,
+                ) = conn.query_row(
+                    "SELECT registry_version, timeline_refs_json, worldline_refs_json,
+                            narrative_layer_refs_json
+                       FROM narrative_scope_registries WHERE project_id=?1",
+                    [PROJECT],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )?;
+                let registry =
+                    grimodex_core::narrative_scene_scope::NarrativeSceneScopeRegistryV1 {
+                        registry_version,
+                        timeline_refs: serde_json::from_str(&timelines)?,
+                        worldline_refs: serde_json::from_str(&worldlines)?,
+                        narrative_layer_refs: serde_json::from_str(&layers)?,
+                    };
+                let binding = grimodex_core::narrative_scene_scope::NarrativeSceneScopeBindingV1 {
+                    schema_version: 1,
+                    project_id: PROJECT.into(),
+                    scene_id: SCENE.into(),
+                    scene_incarnation_id: incarnation,
+                    compatibility_marker: serde_json::from_value(Value::String(marker))?,
+                    query_identity: serde_json::from_str(&query)?,
+                    material_constraint: serde_json::from_str(&material)?,
+                    knowledge_holder: serde_json::from_str(&holder)?,
+                    audience: serde_json::from_str(&audience)?,
+                    version,
+                    source_token: String::new(),
+                    updated_at,
+                };
+                let token =
+                    grimodex_core::narrative_scene_scope::source_token(&registry, &binding)?;
+                conn.execute(
+                    "UPDATE narrative_scene_scope_bindings SET source_token=?3
+                      WHERE project_id=?1 AND scene_id=?2",
+                    params![PROJECT, SCENE, token],
+                )?;
+                Ok(())
+            })
+            .expect("store the token the state gives");
+    }
+
+    /// A Scope save through the product writer: the binding's version and
+    /// Source token advance.
+    fn save_scene_scope(workspace: &crate::state::ActiveWorkspaceSnapshot, request_id: &str) {
+        let db = workspace.db().db();
+        let current = db
+            .with_read_transaction(|conn| {
+                crate::narrative_extraction::read_narrative_scene_scope(conn, PROJECT, SCENE)
+            })
+            .expect("scope read");
+        crate::narrative_extraction::update_narrative_scene_scope(
+            db,
+            crate::narrative_extraction::NarrativeSceneScopeUpdatePayload {
+                project_id: PROJECT.into(),
+                scene_id: SCENE.into(),
+                request_id: request_id.into(),
+                session_id: "scope-session".into(),
+                event_uid: format!("event-{request_id}"),
+                base_version: current.binding.version,
+                updated_at: "2026-10-18T00:00:00.000Z".into(),
+                scope: crate::narrative_extraction::NarrativeSceneScopeUpdateV1 {
+                    schema_version: 1,
+                    compatibility_marker: current.binding.compatibility_marker,
+                    query_identity: current.binding.query_identity,
+                    material_constraint: current.binding.material_constraint,
+                    knowledge_holder: current.binding.knowledge_holder,
+                    audience: current.binding.audience,
+                },
+            },
+        )
+        .expect("scene scope save");
+    }
+
+    /// A new Semantic Epoch, as a snapshot restore or an integrity repair
+    /// mints it.
+    fn advance_restore_epoch(workspace: &crate::state::ActiveWorkspaceSnapshot) {
+        workspace
+            .db()
+            .db()
+            .with_conn(|conn| {
+                crate::narrative_extraction::create_epoch_in_tx(conn, PROJECT, "restore", None)?;
+                Ok(())
+            })
+            .expect("restore epoch");
     }
 
     fn attempt_count(snapshot: &crate::state::ActiveWorkspaceSnapshot) -> i64 {
@@ -3409,6 +3608,398 @@ mod capture {
                 .expect_err("cancelled capture")
                 .failure(),
             Nir1StoreFailure::NotCurrent
+        );
+    }
+
+    fn stored(
+        snapshot: &crate::state::ActiveWorkspaceSnapshot,
+        attempt: &StoredAttempt,
+    ) -> StoredAttempt {
+        read_attempt(snapshot.db().db(), &attempt.id, budget()).expect("stored attempt")
+    }
+
+    fn assert_not_current(error: &Nir1GenerationStoreError, code: &str) {
+        assert_eq!(
+            error.failure(),
+            Nir1StoreFailure::NotCurrent,
+            "{error}: {:#}",
+            error.source
+        );
+        assert_eq!(error.commit(), Nir1CommitState::NotCommitted, "{code}");
+        assert!(
+            error_chain_contains(&error.source, code),
+            "{code}: {:#}",
+            error.source
+        );
+    }
+
+    /// The product claim consumes the right of a current capture exactly once.
+    #[test]
+    fn capture_claim_claims_the_current_capture_once() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "claim-once");
+        let scope = expected_scope(&snapshot);
+        let attempt = create_for(&snapshot, &capture, capture_request(&capture)).expect("create");
+        let outcome = claim_for(&snapshot, &capture, &scope, &attempt).expect("claim");
+        let Nir1ClaimOutcome::Claimed { claimed_at_ms } = outcome else {
+            panic!("the current capture claims: {outcome:?}");
+        };
+        assert_eq!(
+            stored(&snapshot, &attempt).claimed_at_ms,
+            Some(claimed_at_ms)
+        );
+        assert_eq!(
+            claim_for(&snapshot, &capture, &scope, &attempt).expect("second claim"),
+            Nir1ClaimOutcome::AlreadyClaimed { claimed_at_ms }
+        );
+        // Another submission's capture cannot claim this attempt.
+        let other = accept(&snapshot, "claim-other");
+        let error = claim_for(&snapshot, &other, &scope, &attempt).expect_err("other capture");
+        assert_eq!(error.failure(), Nir1StoreFailure::Conflict);
+        assert_eq!(error.commit(), Nir1CommitState::NotCommitted);
+    }
+
+    /// A-1 (R-4): a capture that is cancelled before the claim is not claimed;
+    /// the right stays unconsumed and the zero-send terminal is written once.
+    #[test]
+    fn a1_claim_refuses_a_cancelled_capture_and_the_zero_send_terminal_is_written_once() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "a1");
+        let scope = expected_scope(&snapshot);
+        let attempt = create_for(&snapshot, &capture, capture_request(&capture)).expect("create");
+        cancel_capture(&snapshot, &capture);
+
+        let error = claim_for(&snapshot, &capture, &scope, &attempt).expect_err("cancelled");
+        assert_not_current(&error, "NIR1_GENERATION_CAPTURE_NOT_CURRENT");
+        let after = stored(&snapshot, &attempt);
+        assert_eq!(after.claimed_at_ms, None, "the right is not consumed");
+        assert!(after.terminal.is_none());
+
+        let finish = || {
+            finish_pretransport_attempt_bounded(
+                &snapshot,
+                &expected(&attempt),
+                Nir1ExpectedClaim::Unclaimed,
+                Nir1ZeroSendCompletion::DispatchFailure,
+                &pinned_budget(),
+            )
+            .expect("zero-send terminal")
+        };
+        let first = finish();
+        let second = finish();
+        assert_eq!(first, second, "the terminal is written exactly once");
+        let after = stored(&snapshot, &attempt);
+        assert_eq!(after.claimed_at_ms, None);
+        assert_eq!(after.terminal.as_ref(), Some(&first));
+        assert_eq!(
+            claim_for(&snapshot, &capture, &scope, &attempt).expect("after the terminal"),
+            Nir1ClaimOutcome::AlreadyTerminal
+        );
+    }
+
+    /// A-2 (R-4): a second capture in the session supersedes the first, so the
+    /// first's claim stops; a create after the supersede writes nothing.
+    #[test]
+    fn a2_a_superseding_capture_stops_the_claim_and_the_create() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let first = accept(&snapshot, "a2-first");
+        let scope = expected_scope(&snapshot);
+        let attempt = create_for(&snapshot, &first, capture_request(&first)).expect("create");
+        let _second = accept(&snapshot, "a2-second");
+        let error = claim_for(&snapshot, &first, &scope, &attempt).expect_err("superseded");
+        assert_not_current(&error, "NIR1_GENERATION_CAPTURE_NOT_CURRENT");
+        assert_eq!(stored(&snapshot, &attempt).claimed_at_ms, None);
+
+        let third = accept(&snapshot, "a2-third");
+        let request = product_request(&snapshot, capture_request(&third));
+        let _fourth = accept(&snapshot, "a2-fourth");
+        let error = create_product(&snapshot, &third, &request).expect_err("superseded create");
+        assert_not_current(&error, "NIR1_GENERATION_CAPTURE_NOT_CURRENT");
+        assert_eq!(attempt_count(&snapshot), 1, "only the first attempt exists");
+    }
+
+    /// A-3 (R-5): a Scope save through the product writer moves the target
+    /// Scene's Scope token; a create before and a claim before COMMIT stop.
+    #[test]
+    fn a3_a_scope_save_stops_the_create_and_the_claim() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        repair_scope_token(&snapshot);
+        let capture = accept(&snapshot, "a3");
+        let request = product_request(&snapshot, capture_request(&capture));
+        let before = expected_scope(&snapshot);
+        save_scene_scope(&snapshot, "a3-create");
+        let moved = expected_scope(&snapshot);
+        assert_ne!(moved.scope_binding, before.scope_binding, "the token moved");
+        assert_eq!(moved.restore_epoch, before.restore_epoch);
+
+        let error = create_product(&snapshot, &capture, &request).expect_err("old scope");
+        assert_not_current(&error, "NIR1_GENERATION_SCOPE_BINDING_NOT_CURRENT");
+        assert_eq!(attempt_count(&snapshot), 0, "no attempt was created");
+
+        // The same capture creates once the expectation is read again, and a
+        // Scope save after the create stops the claim.
+        let attempt = create_for(&snapshot, &capture, capture_request(&capture)).expect("create");
+        let scope = expected_scope(&snapshot);
+        save_scene_scope(&snapshot, "a3-claim");
+        let error = claim_for(&snapshot, &capture, &scope, &attempt).expect_err("old scope");
+        assert_not_current(&error, "NIR1_GENERATION_SCOPE_BINDING_NOT_CURRENT");
+        assert_eq!(stored(&snapshot, &attempt).claimed_at_ms, None);
+        // With the current expectation the claim goes through.
+        let scope = expected_scope(&snapshot);
+        assert!(matches!(
+            claim_for(&snapshot, &capture, &scope, &attempt).expect("claim"),
+            Nir1ClaimOutcome::Claimed { .. }
+        ));
+    }
+
+    /// A-4 (R-5): a new restore epoch stops the create and the claim.
+    #[test]
+    fn a4_a_restore_epoch_advance_stops_the_create_and_the_claim() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "a4");
+        let request = product_request(&snapshot, capture_request(&capture));
+        assert!(request.expected_scope.restore_epoch.is_none());
+        advance_restore_epoch(&snapshot);
+        let error = create_product(&snapshot, &capture, &request).expect_err("old epoch");
+        assert_not_current(&error, "NIR1_GENERATION_RESTORE_EPOCH_NOT_CURRENT");
+        assert_eq!(attempt_count(&snapshot), 0);
+
+        let attempt = create_for(&snapshot, &capture, capture_request(&capture)).expect("create");
+        let scope = expected_scope(&snapshot);
+        assert!(scope.restore_epoch.is_some());
+        advance_restore_epoch(&snapshot);
+        let newer = expected_scope(&snapshot);
+        assert_eq!(
+            newer.restore_epoch.as_ref().map(|epoch| epoch.number),
+            scope.restore_epoch.as_ref().map(|epoch| epoch.number + 1)
+        );
+        let error = claim_for(&snapshot, &capture, &scope, &attempt).expect_err("old epoch");
+        assert_not_current(&error, "NIR1_GENERATION_RESTORE_EPOCH_NOT_CURRENT");
+        assert_eq!(stored(&snapshot, &attempt).claimed_at_ms, None);
+        assert!(matches!(
+            claim_for(&snapshot, &capture, &newer, &attempt).expect("claim"),
+            Nir1ClaimOutcome::Claimed { .. }
+        ));
+    }
+
+    /// A request whose binding is over 64 KiB with its history slots, so the
+    /// writer stores `binding-limit` and no context.
+    fn binding_limit_request(capture: &AcceptedChatInputCapture) -> NewAttempt {
+        let mut request = known_context(capture_request(capture));
+        let control = '\u{1}'.to_string();
+        request.binding.provider = control.repeat(MAX_ID_BYTES);
+        request.binding.model = control.repeat(MAX_ID_BYTES);
+        let json_len = |request: &NewAttempt| {
+            canonical_json_string(&serde_json::to_value(&request.binding).expect("value"))
+                .expect("canonical")
+                .len()
+        };
+        // Grow `api` until the binding fits only without its slots.
+        let mut bare = request.clone();
+        bare.binding.history_turn_context = None;
+        bare.binding.durable_workspace_identity = None;
+        let base = json_len(&bare);
+        assert!(base < MAX_BINDING_JSON_BYTES - 1_000, "{base}");
+        let fill = (MAX_BINDING_JSON_BYTES - 100 - base) / 6;
+        request.binding.api = control.repeat(fill.min(MAX_ID_BYTES));
+        bare.binding.api = request.binding.api.clone();
+        assert!(json_len(&bare) <= MAX_BINDING_JSON_BYTES);
+        assert!(json_len(&request) > MAX_BINDING_JSON_BYTES);
+        request
+    }
+
+    /// A-5 (R-5): an attempt that stores no context (an unavailable slot, or
+    /// `binding-limit`) is checked against the same expectation.
+    #[test]
+    fn a5_attempts_without_a_stored_context_are_checked_too() {
+        for variant in ["unavailable", "binding-limit"] {
+            let workspace = BoundedWorkspace::new();
+            let snapshot = workspace.snapshot();
+            repair_scope_token(&snapshot);
+            let make = |capture: &AcceptedChatInputCapture| match variant {
+                "unavailable" => capture_request(capture),
+                _ => binding_limit_request(capture),
+            };
+            let capture = accept(&snapshot, "a5");
+            let request = product_request(&snapshot, make(&capture));
+            save_scene_scope(&snapshot, "a5-create");
+            let error = create_product(&snapshot, &capture, &request).expect_err(variant);
+            assert_not_current(&error, "NIR1_GENERATION_SCOPE_BINDING_NOT_CURRENT");
+            assert_eq!(attempt_count(&snapshot), 0, "{variant}");
+
+            let attempt = create_for(&snapshot, &capture, make(&capture)).expect(variant);
+            let slot = attempt.binding.history_turn_context.clone();
+            assert!(
+                matches!(slot, Some(HistoryContextSlot::Unavailable(_))),
+                "{variant}: no context is stored: {slot:?}"
+            );
+            if variant == "binding-limit" {
+                assert_eq!(
+                    slot,
+                    Some(HistoryContextSlot::Unavailable(
+                        HistoryUnavailableReason::BindingLimit
+                    ))
+                );
+            }
+            let scope = expected_scope(&snapshot);
+            advance_restore_epoch(&snapshot);
+            let error = claim_for(&snapshot, &capture, &scope, &attempt).expect_err(variant);
+            assert_not_current(&error, "NIR1_GENERATION_RESTORE_EPOCH_NOT_CURRENT");
+            assert_eq!(stored(&snapshot, &attempt).claimed_at_ms, None, "{variant}");
+        }
+    }
+
+    /// A-6 (R-6): the create decides the times from Native's clock. The request
+    /// has no field for an absolute time, so a caller cannot back-date or
+    /// post-date an attempt; the lifetime is the only input and is bounded.
+    #[test]
+    fn a6_the_create_decides_the_times_from_the_native_clock() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "a6");
+        let mut request = product_request(&snapshot, known_context(capture_request(&capture)));
+        request.lifetime_ms = 45_000;
+        let before = wall_clock_ms().expect("clock");
+        let attempt = create_product(&snapshot, &capture, &request).expect("create");
+        let after = wall_clock_ms().expect("clock");
+        assert!(
+            (before..=after).contains(&attempt.created_at_ms),
+            "{before} <= {} <= {after}",
+            attempt.created_at_ms
+        );
+        assert_eq!(attempt.expires_at_ms, attempt.created_at_ms + 45_000);
+        let reread = stored(&snapshot, &attempt);
+        assert_eq!(reread.created_at_ms, attempt.created_at_ms);
+        assert_eq!(reread.expires_at_ms, attempt.expires_at_ms);
+        // The history eligibility follows the same creation time (30 days).
+        let binding = effective_attempt_binding(&NewAttempt {
+            binding: known_context(capture_request(&capture)).binding,
+            payload_digest: request.payload_digest.clone(),
+            inputs: request.inputs.clone(),
+            qualifications: request.qualifications.clone(),
+            created_at_ms: attempt.created_at_ms,
+            expires_at_ms: attempt.expires_at_ms,
+            budget: request.budget,
+        })
+        .expect("effective");
+        assert_eq!(
+            request
+                .effective_binding_at(attempt.created_at_ms)
+                .expect("effective"),
+            binding
+        );
+        assert_eq!(reread.binding, binding);
+    }
+
+    #[test]
+    fn a6_the_lifetime_bounds_are_exact() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "a6-bounds");
+        for lifetime in [i64::MIN, -1, 0, NIR1_ATTEMPT_MAX_LIFETIME_MS + 1, i64::MAX] {
+            let mut request = product_request(&snapshot, capture_request(&capture));
+            request.lifetime_ms = lifetime;
+            let error = create_product(&snapshot, &capture, &request).expect_err("lifetime");
+            assert_eq!(error.failure(), Nir1StoreFailure::Invalid, "{lifetime}");
+            assert_eq!(error.commit(), Nir1CommitState::NotCommitted);
+            assert!(error_chain_contains(
+                &error.source,
+                "NIR1_GENERATION_LIFETIME_INVALID"
+            ));
+            assert_eq!(attempt_count(&snapshot), 0, "{lifetime}");
+        }
+        let mut request = product_request(&snapshot, capture_request(&capture));
+        request.lifetime_ms = NIR1_ATTEMPT_MAX_LIFETIME_MS;
+        let attempt = create_product(&snapshot, &capture, &request).expect("longest lifetime");
+        assert_eq!(
+            attempt.expires_at_ms - attempt.created_at_ms,
+            NIR1_ATTEMPT_MAX_LIFETIME_MS
+        );
+    }
+
+    /// The stored expiry is the claim's boundary: a claim at or after
+    /// `expires_at_ms` is `Expired`, before it the same attempt claims.
+    #[test]
+    fn a6_the_claim_refuses_an_attempt_past_its_native_lifetime() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "a6-expiry");
+        let mut request = product_request(&snapshot, capture_request(&capture));
+        request.lifetime_ms = 1;
+        let attempt = create_product(&snapshot, &capture, &request).expect("create");
+        while wall_clock_ms().expect("clock") < attempt.expires_at_ms {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        let scope = request.expected_scope.clone();
+        let error = claim_for(&snapshot, &capture, &scope, &attempt).expect_err("expired");
+        assert_eq!(error.failure(), Nir1StoreFailure::Expired);
+        assert_eq!(error.commit(), Nir1CommitState::NotCommitted);
+        assert_eq!(stored(&snapshot, &attempt).claimed_at_ms, None);
+
+        let capture = accept(&snapshot, "a6-live");
+        let request = product_request(&snapshot, capture_request(&capture));
+        let attempt = create_product(&snapshot, &capture, &request).expect("create");
+        assert!(matches!(
+            claim_for(&snapshot, &capture, &request.expected_scope, &attempt).expect("claim"),
+            Nir1ClaimOutcome::Claimed { .. }
+        ));
+    }
+
+    /// A-7 (R-6): after a COMMIT whose result is unknown, the owner's reread
+    /// compares the stored row with the binding that the stored creation time
+    /// gives (a downgraded history slot included), and with nothing else.
+    #[test]
+    fn a7_an_unknown_commit_reread_matches_the_binding_at_the_stored_time() {
+        let workspace = BoundedWorkspace::new();
+        let snapshot = workspace.snapshot();
+        let capture = accept(&snapshot, "a7");
+        let request = product_request(&snapshot, known_context(capture_request(&capture)));
+        let requested_slot = request.binding.history_turn_context.clone();
+        let budget_with_failpoint =
+            admission().with_failpoint(Nir1GenerationFailpoint::ErrorAfterCommit);
+        let error = create_attempt_for_capture_bounded(
+            &snapshot,
+            &capture,
+            &request,
+            &budget_with_failpoint,
+            &mut || Ok(()),
+        )
+        .expect_err("the result is unknown");
+        assert_eq!(error.commit(), Nir1CommitState::Unknown);
+        let id = attempt_id_for_capture(&capture).expect("attempt id");
+        let reread = read_attempt_exact_bounded(&snapshot, &id, budget(), &pinned_budget())
+            .expect("reread")
+            .expect("the attempt is durable");
+        // The Human-only input structure is incomplete, so the writer
+        // downgraded the context that the request carried.
+        assert_ne!(reread.binding.history_turn_context, requested_slot);
+        assert_eq!(
+            reread.binding.history_turn_context,
+            Some(HistoryContextSlot::Unavailable(
+                HistoryUnavailableReason::DFinalIncomplete
+            ))
+        );
+        assert!(request.matches_stored(&reread));
+        // Anything but this request's lifetime, payload or binding differs.
+        let mut longer = request.clone();
+        longer.lifetime_ms += 1;
+        assert!(!longer.matches_stored(&reread));
+        let mut other_payload = request.clone();
+        other_payload.payload_digest = test_digest("another payload");
+        assert!(!other_payload.matches_stored(&reread));
+        let mut other_route = request.clone();
+        other_route.binding.route_revision = "another-route".into();
+        assert!(!other_route.matches_stored(&reread));
+        let mut shifted = reread.clone();
+        shifted.created_at_ms += 1;
+        assert!(
+            !request.matches_stored(&shifted),
+            "the expiry no longer follows the stored creation time"
         );
     }
 }
@@ -6025,7 +6616,6 @@ mod df_plus_reference_format {
     }
 }
 
-
 // ---------------------------------------------------------------------------
 // DT-4 T2: bounded read of `projects.ai_policy` (K5/3 B-2). The reader reports
 // what the cell holds and decides nothing.
@@ -6309,7 +6899,6 @@ mod project_ai_policy_read {
         }
     }
 }
-
 
 /// HS-1 (K4/3 section 2): the history slots of the v2 binding and the storage
 /// writer that fixes them. Nothing here builds a context from a database; the
