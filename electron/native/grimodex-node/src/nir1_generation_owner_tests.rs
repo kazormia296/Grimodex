@@ -284,10 +284,10 @@ mod loopback {
     }
 }
 
-const PROJECT: &str = "owner-project";
-const SCENE: &str = "owner-scene";
-const SESSIONS: [&str; 3] = ["owner-session-a", "owner-session-b", "owner-session-c"];
-const READ_BUDGET: ReadBudget = ReadBudget {
+pub(crate) const PROJECT: &str = "owner-project";
+pub(crate) const SCENE: &str = "owner-scene";
+pub(crate) const SESSIONS: [&str; 3] = ["owner-session-a", "owner-session-b", "owner-session-c"];
+pub(crate) const READ_BUDGET: ReadBudget = ReadBudget {
     max_references: 16,
     max_reference_bytes: 16 * 1024,
 };
@@ -363,21 +363,21 @@ fn create_scene(db: &grimodex_db::Database, tag: &str) {
 /// published by the real adapter), its startup gate Open after a real sweep,
 /// and one registered main caller per chat session. A caller's Main session
 /// is a random UUID; the chat session of caller `i` is `SESSIONS[i]`.
-struct OwnerFixture {
-    root: PathBuf,
-    state: Arc<AppState>,
-    authority: PinnedWorkspaceDb,
-    callers: Vec<CallerIdentity>,
+pub(crate) struct OwnerFixture {
+    pub(crate) root: PathBuf,
+    pub(crate) state: Arc<AppState>,
+    pub(crate) authority: PinnedWorkspaceDb,
+    pub(crate) callers: Vec<CallerIdentity>,
     owns_root: bool,
 }
 
 impl OwnerFixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let root = workspace_root();
         Self::open(root, "app", true)
     }
 
-    fn open(root: PathBuf, app: &str, owns_root: bool) -> Self {
+    pub(crate) fn open(root: PathBuf, app: &str, owns_root: bool) -> Self {
         let backend =
             crate::Backend::new(root.join(app).to_string_lossy().into_owned(), None, None)
                 .expect("Native backend");
@@ -434,20 +434,20 @@ impl OwnerFixture {
         }
     }
 
-    fn gate(&self) -> &Nir1StartupAdmissionGate {
+    pub(crate) fn gate(&self) -> &Nir1StartupAdmissionGate {
         self.state.workspace_lifecycle.nir1_startup_gate()
     }
 
-    fn binding(&self) -> LiveBinding {
+    pub(crate) fn binding(&self) -> LiveBinding {
         ready_binding(&self.state).expect("Ready binding")
     }
 
-    fn accept(&self, session: usize, key: &str) -> NativeAcceptedChatSubmission {
+    pub(crate) fn accept(&self, session: usize, key: &str) -> NativeAcceptedChatSubmission {
         self.accept_as(&self.callers[session], SESSIONS[session], key)
     }
 
     /// Accept one current Human submission by `caller` in `chat_session`.
-    fn accept_as(
+    pub(crate) fn accept_as(
         &self,
         caller: &CallerIdentity,
         chat_session: &str,
@@ -468,7 +468,7 @@ impl OwnerFixture {
 
     /// One more scene-bound chat session of the project, with its own
     /// registered main caller (and that caller's own Main session).
-    fn add_session(&self, index: usize) -> (CallerIdentity, String) {
+    pub(crate) fn add_session(&self, index: usize) -> (CallerIdentity, String) {
         let session = format!("owner-session-extra-{index:02}");
         self.authority
             .db()
@@ -496,7 +496,7 @@ impl OwnerFixture {
 
     /// The current Scene binding, read the way the coordinator reads it: in
     /// one read transaction.
-    fn scene_binding(&self) -> AttemptSceneBinding {
+    pub(crate) fn scene_binding(&self) -> AttemptSceneBinding {
         self.authority
             .db()
             .with_read_transaction(|conn| {
@@ -508,7 +508,7 @@ impl OwnerFixture {
     /// Delete and recreate the Scene with the same id and body, both through
     /// the Native tree writer: the A1 writer mints a new incarnation for the
     /// recreated row. `tag` keeps the writer's request keys unique.
-    fn replace_scene(&self, tag: &str) {
+    pub(crate) fn replace_scene(&self, tag: &str) {
         tree_node_delete(
             self.authority.db(),
             TreeNodeDeletePayload {
@@ -528,7 +528,7 @@ impl OwnerFixture {
     }
 
     /// A tree patch may change the body without a new token.
-    fn edit_scene_body_in_place(&self) {
+    pub(crate) fn edit_scene_body_in_place(&self) {
         self.authority
             .db()
             .with_conn(|conn| {
@@ -545,7 +545,7 @@ impl OwnerFixture {
             .expect("edit the Scene body");
     }
 
-    fn owner(
+    pub(crate) fn owner(
         &self,
         session: usize,
         submission: &NativeAcceptedChatSubmission,
@@ -557,7 +557,7 @@ impl OwnerFixture {
         )
     }
 
-    fn request(
+    pub(crate) fn request(
         &self,
         owner: &Nir1GenerationOwner,
         submission: &NativeAcceptedChatSubmission,
@@ -571,7 +571,7 @@ impl OwnerFixture {
         self.request_with_history(owner, submission, history)
     }
 
-    fn request_with_history(
+    pub(crate) fn request_with_history(
         &self,
         owner: &Nir1GenerationOwner,
         submission: &NativeAcceptedChatSubmission,
@@ -609,18 +609,18 @@ impl OwnerFixture {
         }
     }
 
-    fn prepared(&self, session: usize, key: &str) -> Nir1PreparedAttempt {
+    pub(crate) fn prepared(&self, session: usize, key: &str) -> Nir1PreparedAttempt {
         let submission = self.accept(session, key);
         let owner = self.owner(session, &submission).expect("owner");
         let request = self.request(&owner, &submission);
         owner.create(request).expect("durable attempt")
     }
 
-    fn attempt(&self, id: &str) -> StoredAttempt {
+    pub(crate) fn attempt(&self, id: &str) -> StoredAttempt {
         storage::read_attempt(self.authority.db(), id, READ_BUDGET).expect("attempt row")
     }
 
-    fn attempt_count(&self) -> i64 {
+    pub(crate) fn attempt_count(&self) -> i64 {
         self.authority
             .db()
             .with_conn(|conn| {
@@ -633,7 +633,7 @@ impl OwnerFixture {
             .expect("attempt count")
     }
 
-    fn publish_new_ready_entry(&self) -> (LiveBinding, u64) {
+    pub(crate) fn publish_new_ready_entry(&self) -> (LiveBinding, u64) {
         match self
             .state
             .workspace_lifecycle
@@ -657,7 +657,7 @@ impl OwnerFixture {
         (self.binding(), view.revision)
     }
 
-    fn admission_budget(&self) -> Nir1AdmissionSqlBudget {
+    pub(crate) fn admission_budget(&self) -> Nir1AdmissionSqlBudget {
         Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), Arc::new(|| true))
             .for_untimed_test()
     }
@@ -717,7 +717,9 @@ fn zero_send(decision: Nir1TransportDecision) -> StoredTerminal {
 }
 
 /// Hold the connection mutex on another thread until `release` fires.
-fn hold_connection(authority: &PinnedWorkspaceDb) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
+pub(crate) fn hold_connection(
+    authority: &PinnedWorkspaceDb,
+) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
     let (held_tx, held_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let holder = Arc::clone(authority);
@@ -737,7 +739,7 @@ fn hold_connection(authority: &PinnedWorkspaceDb) -> (mpsc::Sender<()>, thread::
     (release_tx, worker)
 }
 
-fn wait_for(condition: impl Fn() -> bool, what: &str) {
+pub(crate) fn wait_for(condition: impl Fn() -> bool, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !condition() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -2536,39 +2538,33 @@ fn dt4_audit_start_records_the_exact_canonical_body_and_the_owner_terminal_close
         sent_bytes
     );
     assert_eq!(prepared.payload["credentialsExcluded"], true);
-    // The owner's own terminal (no audit data) closes the execution with the
-    // attempt.
+    // The success goes through the audit-aware terminal: the attempt terminal
+    // and `response.completed` / `execution.succeeded` commit together. The
+    // data-less `finish` refuses a success of a started execution (T1-a).
     let terminal = transport
-        .finish(
+        .finish_with_audit(
             &completed("answer"),
             Some(NewMessageBody {
                 message_id: "dt4-audit-output".into(),
                 content: "answer".into(),
                 thinking: String::new(),
             }),
+            &Nir1LocalAuditObserved {
+                text: "answer".into(),
+                finish_reason: Some("stop".into()),
+                ..Default::default()
+            },
         )
         .expect("terminal");
     assert_eq!(fixture.attempt(&id).terminal, Some(terminal));
-    let types: Vec<String> = fixture
-        .authority
-        .db()
-        .with_conn(|conn| {
-            Ok(
-                read_ai_audit_snapshot_for_scope(conn, Some(PROJECT), None, None, Some(100))?
-                    .events,
-            )
-        })
-        .expect("events")
-        .into_iter()
-        .map(|event| event.event_type)
-        .collect();
     assert_eq!(
-        types,
+        audit_types(&fixture),
         [
             "execution.started",
             "request.prepared",
             "request.dispatched",
-            "execution.failed"
+            "response.completed",
+            "execution.succeeded"
         ]
     );
 }
@@ -2583,7 +2579,6 @@ fn a1_owner_has_no_napi_entry() {
 // DT-4 T2: AI usage policy check of the local send route, on this fixture.
 #[path = "nir1_local_send_policy_tests.rs"]
 mod nir1_local_send_policy_tests;
-
 
 fn history_digest(domain: HistoryDigestDomain, value: &str) -> HistoryDigest {
     HistoryDigest::of(domain, value).expect("digest")
@@ -2842,4 +2837,677 @@ fn owner_unknown_commit_reread_accepts_the_downgraded_binding() {
         ))
     );
     assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+}
+
+// ---------------------------------------------------------------------------
+// DT-5 (T1): the owner's entries for a transport.
+// ---------------------------------------------------------------------------
+
+pub(crate) fn audit_events(fixture: &OwnerFixture) -> Vec<grimodex_db::ai_audit::AiAuditEvent> {
+    use grimodex_db::ai_audit::read_ai_audit_snapshot_for_scope;
+    fixture
+        .authority
+        .db()
+        .with_conn(|conn| {
+            Ok(
+                read_ai_audit_snapshot_for_scope(conn, Some(PROJECT), None, None, Some(100))?
+                    .events,
+            )
+        })
+        .expect("audit events")
+}
+
+pub(crate) fn audit_types(fixture: &OwnerFixture) -> Vec<String> {
+    audit_events(fixture)
+        .into_iter()
+        .map(|event| event.event_type)
+        .collect()
+}
+
+/// The audit start of `transport` exactly as a transport would write it.
+fn audit_start_for(fixture: &OwnerFixture, transport: &Nir1TransportOwner) -> Nir1LocalAuditStart {
+    use grimodex_core::nir1_local_send_policy::{decide, Nir1LocalSendPolicyDecision};
+    let stored = fixture.attempt(transport.attempt_id());
+    let Nir1LocalSendPolicyDecision::Allowed(policy_basis) =
+        decide(None, Nir1LocalSendPurpose::Writing)
+    else {
+        panic!("an unset policy allows");
+    };
+    Nir1LocalAuditStart {
+        request: serde_json::from_str(transport.canonical_payload()).expect("canonical JSON"),
+        payload_digest: stored.payload_digest,
+        socket: "127.0.0.1:11434".into(),
+        policy_basis,
+        timestamp_ms: now_ms().expect("clock"),
+    }
+}
+
+fn started_transport(
+    fixture: &OwnerFixture,
+    session: usize,
+    key: &str,
+) -> (Nir1TransportOwner, Arc<Nir1OwnerControl>) {
+    let prepared = fixture.prepared(session, key);
+    let control = prepared.hooks();
+    match prepared.claim_for_transport() {
+        Nir1TransportDecision::Start(transport) => (transport, control),
+        Nir1TransportDecision::NotStarted(settlement) => panic!("{settlement:?}"),
+    }
+}
+
+fn success_body(id: &str) -> Option<NewMessageBody> {
+    Some(NewMessageBody {
+        message_id: id.into(),
+        content: "answer".into(),
+        thinking: String::new(),
+    })
+}
+
+pub(crate) fn chat_message_exists(fixture: &OwnerFixture, id: &str) -> bool {
+    fixture
+        .authority
+        .db()
+        .with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT count(*) FROM chat_messages WHERE id=?1",
+                [id],
+                |row| row.get::<_, i64>(0),
+            )? > 0)
+        })
+        .expect("message lookup")
+}
+
+pub(crate) fn set_project_ai_policy(fixture: &OwnerFixture, value: &str) {
+    fixture
+        .authority
+        .db()
+        .with_conn(|conn| {
+            conn.execute(
+                "UPDATE projects SET ai_policy=?1 WHERE id=?2",
+                [value, PROJECT],
+            )?;
+            Ok(())
+        })
+        .expect("set the AI usage policy");
+}
+
+/// T1-a: a started execution has no data-less success. The transaction is
+/// rejected as a whole, the owner's failure path closes the execution
+/// conservatively, and no success (body, version, audit success) is durable.
+#[test]
+fn t1a_a_started_success_cannot_be_written_without_audit_data() {
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1a");
+    let id = transport.attempt_id().to_owned();
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    let refusal = transport
+        .finish(&completed("answer"), success_body("t1a-output"))
+        .expect_err("a started success without audit data is refused");
+    assert_eq!(
+        refusal,
+        Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid)
+    );
+    let terminal = fixture.attempt(&id).terminal.expect("recovered terminal");
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::InterruptedUnknown)
+    );
+    assert!(terminal.message_version.is_none());
+    assert!(!chat_message_exists(&fixture, "t1a-output"));
+    let events = audit_events(&fixture);
+    assert_eq!(
+        events
+            .iter()
+            .map(|event| event.event_type.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "execution.started",
+            "request.prepared",
+            "request.dispatched",
+            "execution.failed"
+        ]
+    );
+    let closing = &events.last().unwrap().payload;
+    assert_eq!(closing["conservative"], true);
+    assert_eq!(closing["source"], "recovery");
+    assert_ne!(closing["classification"], "audit-data-missing");
+    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+
+    // The same success through the audit-aware terminal is durable.
+    let (transport, _control) = started_transport(&fixture, 1, "t1a-audited");
+    let id = transport.attempt_id().to_owned();
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    let terminal = transport
+        .finish_with_audit(
+            &completed("answer"),
+            success_body("t1a-audited-output"),
+            &Nir1LocalAuditObserved {
+                text: "answer".into(),
+                finish_reason: Some("stop".into()),
+                ..Default::default()
+            },
+        )
+        .expect("audited success");
+    assert_eq!(fixture.attempt(&id).terminal, Some(terminal));
+    assert!(chat_message_exists(&fixture, "t1a-audited-output"));
+    assert!(audit_types(&fixture).ends_with(&[
+        "execution.started".to_owned(),
+        "request.prepared".to_owned(),
+        "request.dispatched".to_owned(),
+        "response.completed".to_owned(),
+        "execution.succeeded".to_owned()
+    ]));
+}
+
+/// T1-a: the audit start is a fenced, bounded write: a cancel, a failpoint or
+/// a lost entry all fail it typed and write no audit event.
+#[test]
+fn t1a_audit_start_failures_are_typed_and_write_nothing() {
+    // A failure at COMMIT.
+    let fixture = OwnerFixture::new();
+    let (transport, control) = started_transport(&fixture, 0, "t1a-start-veto");
+    control
+        .test_hooks()
+        .fail_next("audit-start", Nir1GenerationFailpoint::VetoCommit);
+    let start = audit_start_for(&fixture, &transport);
+    assert!(transport.append_audit_start(&start).is_err());
+    assert!(audit_types(&fixture).is_empty());
+    // The zero-send terminal then writes no audit event either (no started
+    // execution) and is the DispatchFailure.
+    let Nir1Settlement::ZeroSend(terminal) = transport.settle_without_send() else {
+        panic!("zero-send terminal");
+    };
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::DispatchUnavailable)
+    );
+    assert!(audit_types(&fixture).is_empty());
+
+    // A cancel fences the start.
+    let (transport, _control) = started_transport(&fixture, 1, "t1a-start-cancel");
+    transport.cancel_handle().cancel();
+    assert_eq!(
+        transport.append_audit_start(&audit_start_for(&fixture, &transport)),
+        Err(Nir1StoreFailure::Cancelled)
+    );
+    assert!(audit_types(&fixture).is_empty());
+    let Nir1Settlement::ZeroSend(terminal) = transport.settle_without_send() else {
+        panic!("zero-send terminal");
+    };
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::Cancelled)
+    );
+
+    // A lost entry fences the start.
+    let (transport, _control) = started_transport(&fixture, 2, "t1a-start-entry");
+    fixture
+        .gate()
+        .on_lifecycle_edge(&LifecycleEdge::Unavailable { revision: u64::MAX });
+    assert!(transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .is_err());
+    assert!(audit_types(&fixture).is_empty());
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+
+    // An unknown COMMIT that became durable is closed by the zero-send
+    // terminal (`not-sent`), never left open.
+    let fixture = OwnerFixture::new();
+    let (transport, control) = started_transport(&fixture, 0, "t1a-start-unknown");
+    control
+        .test_hooks()
+        .fail_next("audit-start", Nir1GenerationFailpoint::ErrorAfterCommit);
+    assert!(transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .is_err());
+    assert_eq!(audit_types(&fixture).len(), 3, "the start became durable");
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+    let events = audit_events(&fixture);
+    assert_eq!(events.last().unwrap().event_type, "execution.failed");
+    assert_eq!(events.last().unwrap().payload["remoteOutcome"], "not-sent");
+}
+
+/// T1-b: the send decision looks at values only. With the database mutex
+/// held by another thread, the decision and a concurrent cancel both return
+/// at once.
+#[test]
+fn t1b_send_decision_reads_no_database_and_never_delays_cancel() {
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1b");
+    let policy = transport.read_send_policy(Nir1LocalSendPurpose::Writing);
+    assert!(policy.permits(), "an unset AI usage policy allows");
+    let (release, holder) = hold_connection(&fixture.authority);
+    let cancel = transport.cancel_handle();
+    let (done_tx, done_rx) = mpsc::channel();
+    thread::scope(|scope| {
+        let tx = done_tx.clone();
+        let (transport, policy) = (&transport, &policy);
+        scope.spawn(move || {
+            let decision = transport.decide_send(policy);
+            tx.send(("decision", Some(decision))).expect("decision");
+        });
+        let tx = done_tx.clone();
+        scope.spawn(move || {
+            cancel.cancel();
+            tx.send(("cancel", None)).expect("cancel");
+        });
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let (name, _) = done_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("neither the decision nor the cancel waits on the database");
+            seen.push(name);
+        }
+        seen.sort_unstable();
+        assert_eq!(seen, ["cancel", "decision"]);
+    });
+    release.send(()).expect("release the connection");
+    holder.join().expect("connection holder");
+    assert_eq!(
+        transport.decide_send(&policy),
+        Nir1SendDecision::Refused(Nir1SendRefusal::Cancelled)
+    );
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+}
+
+/// T1-c: the decision refuses for each lost condition and allows only when
+/// none is lost.
+#[test]
+fn t1c_send_decision_refuses_each_lost_condition() {
+    // Everything holds.
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1c-go");
+    let policy = transport.read_send_policy(Nir1LocalSendPurpose::Writing);
+    assert_eq!(transport.decide_send(&policy), Nir1SendDecision::Go);
+    assert_eq!(transport.decide_send(&policy), Nir1SendDecision::Go);
+    assert!(!transport.should_stop() && transport.permit_is_open());
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+
+    // The policy was read as not allowing: a false toggle, an unreadable
+    // value.
+    for (name, value) in [
+        (
+            "chat false",
+            r#"{"preset":"custom","toggles":{"chat":false,"bodyWrite":true,"analysis":true,"structureWrite":true,"knowledgeWrite":true}}"#,
+        ),
+        ("not JSON", "not json"),
+    ] {
+        let fixture = OwnerFixture::new();
+        let (transport, _control) = started_transport(&fixture, 0, "t1c-policy");
+        set_project_ai_policy(&fixture, value);
+        let policy = transport.read_send_policy(Nir1LocalSendPurpose::Writing);
+        assert!(!policy.permits(), "{name}");
+        assert_eq!(
+            transport.decide_send(&policy),
+            Nir1SendDecision::Refused(Nir1SendRefusal::PolicyDenied),
+            "{name}"
+        );
+        assert!(matches!(
+            transport.settle_without_send(),
+            Nir1Settlement::ZeroSend(_)
+        ));
+    }
+
+    // Cancel is reported before the other reasons.
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1c-cancel");
+    let policy = transport.read_send_policy(Nir1LocalSendPurpose::Writing);
+    transport.cancel_handle().cancel();
+    assert_eq!(
+        transport.decide_send(&policy),
+        Nir1SendDecision::Refused(Nir1SendRefusal::Cancelled)
+    );
+    assert!(transport.should_stop());
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+
+    // A revoked permit.
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1c-permit");
+    let policy = transport.read_send_policy(Nir1LocalSendPurpose::Writing);
+    fixture.state.profile_egress.invalidate_callers();
+    assert!(!transport.permit_is_open());
+    assert_eq!(
+        transport.decide_send(&policy),
+        Nir1SendDecision::Refused(Nir1SendRefusal::PermitClosed)
+    );
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+
+    // A replaced gate entry (a lifecycle edge).
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1c-entry");
+    let policy = transport.read_send_policy(Nir1LocalSendPurpose::Writing);
+    fixture
+        .gate()
+        .on_lifecycle_edge(&LifecycleEdge::Unavailable { revision: u64::MAX });
+    assert!(transport.should_stop());
+    assert_eq!(
+        transport.decide_send(&policy),
+        Nir1SendDecision::Refused(Nir1SendRefusal::EntryLost)
+    );
+    // Holding no lease: the owner never kept the drain waiting.
+    assert_eq!(fixture.gate().active_lease_count(), 0);
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+}
+
+/// T1-c: a started owner holds no lease and neither the decision nor the
+/// audit start takes one.
+#[test]
+fn t1c_started_owner_entries_hold_no_lease() {
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1c-lease");
+    assert_eq!(fixture.gate().active_lease_count(), 0);
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    let policy = transport.read_send_policy(Nir1LocalSendPurpose::Writing);
+    assert_eq!(transport.decide_send(&policy), Nir1SendDecision::Go);
+    assert_eq!(fixture.gate().active_lease_count(), 0);
+    // A drain finds nothing to wait for while the transport is in flight.
+    assert!(transport.quarantine_gate());
+    assert!(fixture.gate().is_closed());
+    assert!(!transport.quarantine_gate(), "already closed");
+    // The pinned terminal still writes after the gate closed.
+    assert!(matches!(
+        transport.settle_without_send(),
+        Nir1Settlement::ZeroSend(_)
+    ));
+    assert_eq!(audit_types(&fixture).last().unwrap(), "execution.failed");
+}
+
+/// T1-d: when the terminal write fails, the durable terminal that the
+/// conservative recovery made (or the earlier one it kept) is returned.
+#[test]
+fn t1d_a_failed_finish_returns_the_durable_terminal() {
+    // COMMIT applied but reported ambiguous: the success is the durable
+    // terminal, found again by the recovery.
+    let fixture = OwnerFixture::new();
+    let (transport, control) = started_transport(&fixture, 0, "t1d-after-commit");
+    let id = transport.attempt_id().to_owned();
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    control
+        .test_hooks()
+        .fail_next("finish", Nir1GenerationFailpoint::ErrorAfterCommit);
+    let failure = transport
+        .finish_with_audit(
+            &completed("answer"),
+            success_body("t1d-output"),
+            &Nir1LocalAuditObserved {
+                text: "answer".into(),
+                finish_reason: Some("stop".into()),
+                ..Default::default()
+            },
+        )
+        .expect_err("the write reported an ambiguous error");
+    let durable = failure.durable.expect("the success is durable");
+    assert_eq!(fixture.attempt(&id).terminal, Some(*durable.clone()));
+    assert_eq!(durable.failure_classification, None, "the success itself");
+    assert!(chat_message_exists(&fixture, "t1d-output"));
+    assert_eq!(audit_types(&fixture).last().unwrap(), "execution.succeeded");
+    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+
+    // COMMIT vetoed: the recovery writes the conservative terminal and
+    // returns it; no body is saved and the execution closes conservatively.
+    let (transport, control) = started_transport(&fixture, 1, "t1d-veto");
+    let id = transport.attempt_id().to_owned();
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    control
+        .test_hooks()
+        .fail_next("finish", Nir1GenerationFailpoint::VetoCommit);
+    let failure = transport
+        .finish_with_audit(
+            &completed("answer"),
+            success_body("t1d-veto-output"),
+            &Nir1LocalAuditObserved {
+                text: "answer".into(),
+                finish_reason: Some("stop".into()),
+                ..Default::default()
+            },
+        )
+        .expect_err("vetoed");
+    let durable = failure.durable.expect("the recovery terminal is durable");
+    assert_eq!(
+        durable.failure_classification,
+        Some(FailureClassification::InterruptedUnknown)
+    );
+    assert_eq!(fixture.attempt(&id).terminal, Some(*durable));
+    assert!(!chat_message_exists(&fixture, "t1d-veto-output"));
+    let events = audit_events(&fixture);
+    assert_eq!(events.last().unwrap().event_type, "execution.failed");
+    assert_eq!(events.last().unwrap().payload["conservative"], true);
+
+    // The data-less `finish` keeps its old shape (a refusal) over the same
+    // machinery.
+    let (transport, control) = started_transport(&fixture, 2, "t1d-plain");
+    control
+        .test_hooks()
+        .fail_next("finish", Nir1GenerationFailpoint::VetoCommit);
+    assert_eq!(
+        transport
+            .finish(&completed("answer"), success_body("t1d-plain-output"))
+            .err(),
+        Some(Nir1GenerationRefusal::Store(
+            control
+                .test_hooks()
+                .failures()
+                .iter()
+                .find(|(stage, _)| *stage == "finish")
+                .map(|(_, failure)| *failure)
+                .expect("recorded finish failure")
+        ))
+    );
+
+    // Neither write can be made: no durable terminal is reported, the slot is
+    // unresolved and the gate stays Open.
+    let fixture = OwnerFixture::new();
+    let (transport, control) = started_transport(&fixture, 0, "t1d-both");
+    let id = transport.attempt_id().to_owned();
+    control
+        .test_hooks()
+        .fail_next("finish", Nir1GenerationFailpoint::VetoCommit);
+    control
+        .test_hooks()
+        .fail_next("recover", Nir1GenerationFailpoint::VetoCommit);
+    let failure = transport
+        .finish(&completed("answer"), success_body("t1d-both-output"))
+        .expect_err("both writes fail");
+    assert!(matches!(failure, Nir1GenerationRefusal::Store(_)));
+    assert!(fixture.attempt(&id).terminal.is_none());
+    assert_eq!(
+        fixture.state.nir1_generation_registry.unresolved_attempts(),
+        [id]
+    );
+    assert!(!fixture.gate().is_closed());
+}
+
+/// T1-e: the zero-send terminal is written once; the audit closes with
+/// `not-sent` and a cancel closes as cancelled.
+#[test]
+fn t1e_zero_send_terminal_is_written_once_and_the_audit_closes_not_sent() {
+    let fixture = OwnerFixture::new();
+    let (transport, _control) = started_transport(&fixture, 0, "t1e-failure");
+    let id = transport.attempt_id().to_owned();
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    let Nir1Settlement::ZeroSend(terminal) = transport.settle_without_send() else {
+        panic!("zero-send terminal");
+    };
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::DispatchUnavailable)
+    );
+    assert_eq!(fixture.attempt(&id).terminal, Some(*terminal));
+    let events = audit_events(&fixture);
+    assert_eq!(events.len(), 4);
+    let closing = events.last().unwrap();
+    assert_eq!(closing.event_type, "execution.failed");
+    assert_eq!(closing.payload["remoteOutcome"], "not-sent");
+    assert_eq!(closing.payload["responseObserved"], false);
+    assert_eq!(closing.payload["classification"], "dispatch-unavailable");
+    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+
+    let (transport, _control) = started_transport(&fixture, 1, "t1e-cancel");
+    let id = transport.attempt_id().to_owned();
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    transport.cancel_handle().cancel();
+    let Nir1Settlement::ZeroSend(terminal) = transport.settle_without_send() else {
+        panic!("zero-send terminal");
+    };
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::Cancelled)
+    );
+    assert_eq!(fixture.attempt(&id).terminal, Some(*terminal));
+    let events = audit_events(&fixture);
+    assert_eq!(events.len(), 8);
+    assert_eq!(events.last().unwrap().event_type, "execution.cancelled");
+    assert_eq!(events.last().unwrap().payload["remoteOutcome"], "not-sent");
+}
+
+/// T1-f: an owner dropped while its thread unwinds writes the one
+/// conservative recovery and does not panic twice; a panic inside the write
+/// is contained and leaves the slot unresolved.
+#[test]
+fn t1f_drop_while_unwinding_writes_one_recovery_without_a_double_panic() {
+    let fixture = OwnerFixture::new();
+    let (transport, control) = started_transport(&fixture, 0, "t1f-unwind");
+    let id = transport.attempt_id().to_owned();
+    transport
+        .append_audit_start(&audit_start_for(&fixture, &transport))
+        .expect("audit start");
+    let joined = thread::Builder::new()
+        .name("t1f-unwind".into())
+        .spawn(move || {
+            let _transport = transport;
+            panic!("the transport thread panics");
+        })
+        .expect("spawn")
+        .join();
+    assert!(joined.is_err(), "the panic ended only that thread");
+    let terminal = fixture.attempt(&id).terminal.expect("one recovery");
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::InterruptedUnknown)
+    );
+    assert_eq!(control.test_hooks().recover_threads().len(), 1);
+    let events = audit_events(&fixture);
+    assert_eq!(events.last().unwrap().event_type, "execution.failed");
+    assert_eq!(events.len(), 4);
+    assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+
+    // A panic inside the recovery write itself, while unwinding.
+    let (transport, control) = started_transport(&fixture, 1, "t1f-double");
+    let id = transport.attempt_id().to_owned();
+    control
+        .test_hooks()
+        .on(Nir1OwnerProbePoint::BeforeRecover, || {
+            panic!("the recovery write panics")
+        });
+    let joined = thread::Builder::new()
+        .name("t1f-double".into())
+        .spawn(move || {
+            let _transport = transport;
+            panic!("the transport thread panics");
+        })
+        .expect("spawn")
+        .join();
+    assert!(joined.is_err(), "no abort, only the thread ended");
+    assert!(fixture.attempt(&id).terminal.is_none());
+    assert_eq!(
+        fixture.state.nir1_generation_registry.unresolved_attempts(),
+        std::slice::from_ref(&id)
+    );
+    // A panic in a normal (non-unwinding) Drop is contained the same way.
+    let (transport, control) = started_transport(&fixture, 2, "t1f-normal");
+    let id2 = transport.attempt_id().to_owned();
+    control
+        .test_hooks()
+        .on(Nir1OwnerProbePoint::BeforeRecover, || {
+            panic!("the recovery write panics")
+        });
+    drop(transport);
+    assert!(fixture.attempt(&id2).terminal.is_none());
+    assert!(fixture
+        .state
+        .nir1_generation_registry
+        .unresolved_attempts()
+        .contains(&id2));
+}
+
+/// T1-g: the owner's Drop writes on the dropping thread when that is a plain
+/// thread (the supervisor's blocking thread) and never on a tokio runtime
+/// thread, where it hands the one recovery to a short-lived plain thread.
+#[test]
+fn t1g_drop_never_writes_on_a_tokio_runtime_thread() {
+    let fixture = OwnerFixture::new();
+
+    // A plain thread writes the recovery itself.
+    let (transport, control) = started_transport(&fixture, 0, "t1g-plain");
+    let id = transport.attempt_id().to_owned();
+    drop(transport);
+    assert!(fixture.attempt(&id).terminal.is_some());
+    assert_eq!(
+        control.test_hooks().recover_threads(),
+        [thread::current().id()]
+    );
+
+    // A runtime worker hands it over.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .build()
+        .expect("runtime");
+    let (transport, control) = started_transport(&fixture, 1, "t1g-worker");
+    let id = transport.attempt_id().to_owned();
+    let (worker_tx, worker_rx) = mpsc::channel();
+    runtime.spawn(async move {
+        worker_tx.send(thread::current().id()).expect("worker id");
+        drop(transport);
+    });
+    let worker = worker_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the runtime ran the task");
+    wait_for(
+        || fixture.attempt(&id).terminal.is_some(),
+        "the handed-over recovery terminalizes the attempt",
+    );
+    let threads = control.test_hooks().recover_threads();
+    assert_eq!(threads.len(), 1, "exactly one recovery");
+    assert_ne!(threads[0], worker, "not on the runtime worker");
+    assert_ne!(threads[0], thread::current().id());
+    wait_for(
+        || fixture.state.nir1_generation_registry.tracked_sessions() == 0,
+        "the slot is released after the handed-over recovery",
+    );
+    drop(runtime);
 }

@@ -1,9 +1,10 @@
 //! AI usage policy check of the NIR-1 local send route (K5/3, B-2).
 //!
-//! A thin, internal module. It has no N-API entry, no IPC route and no caller
+//! A thin, internal module. It has no N-API entry, no IPC route and no production caller
 //! yet: DD-1 decides whether the check before an attempt runs before or after
-//! `capture`, and DT-5 calls the check right before a send. It is not wired to
-//! the DT-2 owner here.
+//! `capture`; the DT-2 owner (`Nir1TransportOwner::read_send_policy`, DT-5)
+//! calls only the read right before a send. The check before an attempt is not
+//! wired to the owner.
 //!
 //! The Native side reads the conversation's project `projects.ai_policy` from
 //! the pinned workspace's own database, fresh on every call (no cache, nothing

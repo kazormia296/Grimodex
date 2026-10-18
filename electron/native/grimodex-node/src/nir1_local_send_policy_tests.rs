@@ -332,11 +332,15 @@ fn nir1_local_send_policy_a_slow_pre_send_read_does_not_delay_the_owner_cancel()
     holder.join().expect("holder");
 }
 
-/// The module has no N-API or IPC entry and does not touch the owner.
+/// The module has no N-API or IPC entry. DT-5 wires only the read right
+/// before a send into the owner (`read_before_send` and the plain-data
+/// `Nir1PreSendPolicy`); the check before an attempt is created stays DD-1's.
 #[test]
-fn nir1_local_send_policy_has_no_napi_entry_and_is_not_wired_to_the_owner() {
+fn nir1_local_send_policy_has_no_napi_entry_and_only_the_pre_send_read_is_wired_to_the_owner() {
     let source = include_str!("nir1_local_send_policy.rs");
     assert!(!source.contains(&format!("#[{}", "napi")));
     let owner = include_str!("nir1_generation_owner.rs");
-    assert!(!owner.contains("nir1_local_send_policy"));
+    assert!(owner.contains("read_before_send"));
+    assert!(!owner.contains("check_before_attempt"));
+    assert!(!owner.contains("Nir1LocalSendPolicyOutcome"));
 }

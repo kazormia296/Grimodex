@@ -28,18 +28,30 @@
 //! by an exact bounded reread; if that also fails the gate entry is
 //! quarantined and the session slot stays unresolved until a later Ready
 //! entry's sweep has terminalized the attempt.
+//!
+//! DT-5 (T1) adds, on `Nir1TransportOwner` and without any new IPC or N-API
+//! entry: the bounded audit start; the send decision, taken under the phase
+//! mutex shared with `cancel` from values only (policy result, cancel flag,
+//! permit, witness); the audit-aware terminal and the zero-send terminal; a
+//! failed `finish` that returns the durable terminal its recovery made; the gate
+//! quarantine for a join overrun; and a Drop that never blocks a tokio runtime
+//! thread on the database and never panics twice while unwinding.
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
+use std::thread;
 
 use grimodex_core::canonical_json_digest;
 use grimodex_core::narrative_nir1_receipt::TerminalObservation;
+use grimodex_core::nir1_local_send_policy::Nir1LocalSendPurpose;
 use grimodex_db::nir1_generation::{
     self as storage, AcceptedChatInputCapture, AttemptBinding, AttemptBindingVersion,
     AttemptCallerBinding, NewAttempt, NewMessageBody, Nir1AdmissionProbe, Nir1AdmissionSqlBudget,
-    Nir1ClaimOutcome, Nir1CommitState, Nir1ExpectedAttempt, Nir1ExpectedClaim, Nir1PinnedSqlBudget,
+    Nir1ClaimOutcome, Nir1CommitState, Nir1ExpectedAttempt, Nir1ExpectedClaim,
+    Nir1LocalAuditObserved, Nir1LocalAuditStart, Nir1LocalAuditStarted, Nir1PinnedSqlBudget,
     Nir1StoreFailure, Nir1ZeroSendCompletion, StoredTerminal,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
@@ -48,6 +60,7 @@ use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
 use crate::nir1_generation::{
     canonical_final_payload, final_input_digest, now_ms, route_revision, FinalDispatchRequest,
 };
+use crate::nir1_local_send_policy::{read_before_send, Nir1PreSendPolicy};
 use crate::nir1_prepared_request::NativeAcceptedChatSubmission;
 use crate::nir1_startup_barrier::{Nir1EntryWitness, Nir1StartupAdmissionGate, Nir1StartupLease};
 use crate::profile_egress::{CallerIdentity, ProfileDispatchPermit};
@@ -119,6 +132,40 @@ pub(crate) enum Nir1Settlement {
         attempt_id: String,
         gate_quarantined: bool,
     },
+}
+
+/// Why the send decision refused. Every variant means: nothing was sent, and
+/// the caller settles with a zero-send terminal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum Nir1SendRefusal {
+    /// Cancel was requested (the zero-send terminal is `Cancelled`).
+    Cancelled,
+    /// The startup-gate entry the transport started under was replaced.
+    EntryLost,
+    /// The profile dispatch permit is no longer open.
+    PermitClosed,
+    /// The AI usage policy read right before the send does not allow it.
+    PolicyDenied,
+}
+
+/// The decision taken right before a connection and right before the first
+/// byte. `Go` is a point-in-time answer under the phase mutex; a later cancel
+/// is a cancel of a send that may have begun.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[must_use]
+pub(crate) enum Nir1SendDecision {
+    Go,
+    Refused(Nir1SendRefusal),
+}
+
+/// A post-transport terminal that could not be written. `failure` is why;
+/// `durable` is the terminal the owner's conservative recovery made durable
+/// (or the earlier terminal it kept), or `None` when recovery did not produce
+/// one and the session slot is unresolved until the next Ready entry's sweep.
+#[derive(Debug)]
+pub(crate) struct Nir1FinishFailure {
+    pub(crate) failure: Nir1StoreFailure,
+    pub(crate) durable: Option<Box<StoredTerminal>>,
 }
 
 pub(crate) enum Nir1TransportDecision {
@@ -385,9 +432,18 @@ impl OwnerCore {
     fn admission_budget(
         &self,
         lease: &Nir1StartupLease,
+        stage: &'static str,
+    ) -> Nir1AdmissionSqlBudget {
+        self.admission_budget_for_witness(lease.witness(), stage)
+    }
+
+    /// The same budget fenced by an entry witness instead of a lease, for the
+    /// writes of an owner that holds no lease (a started transport owner).
+    fn admission_budget_for_witness(
+        &self,
+        witness: Nir1EntryWitness,
         _stage: &'static str,
     ) -> Nir1AdmissionSqlBudget {
-        let witness = lease.witness();
         let permit = self.permit.clone();
         let probe: Nir1AdmissionProbe =
             Arc::new(move || witness.is_current() && permit.ensure_open().is_ok());
@@ -401,6 +457,15 @@ impl OwnerCore {
         let budget = Nir1PinnedSqlBudget::new();
         #[cfg(test)]
         let budget = self.control.hooks.decorate_pinned(budget);
+        budget
+    }
+
+    /// The pinned budget of a named terminal write (`finish`, `recover`), so a
+    /// test can arm a failpoint for exactly that write.
+    fn pinned_budget_for(&self, _stage: &'static str) -> Nir1PinnedSqlBudget {
+        let budget = Nir1PinnedSqlBudget::new();
+        #[cfg(test)]
+        let budget = self.control.hooks.decorate_pinned_stage(_stage, budget);
         budget
     }
 
@@ -1104,6 +1169,22 @@ impl Nir1TransportOwner {
         self.inner().claimed_at_ms
     }
 
+    /// The endpoint identity digest the attempt's binding carries. The
+    /// transport compares it with its own target before it connects.
+    pub(crate) fn bound_endpoint_identity(&self) -> &str {
+        &self.inner().expected.binding.endpoint_identity
+    }
+
+    /// The payload digest the attempt stored (the canonical payload's).
+    pub(crate) fn bound_payload_digest(&self) -> &str {
+        &self.inner().expected.payload_digest
+    }
+
+    /// The purpose the attempt's binding carries.
+    pub(crate) fn bound_purpose(&self) -> &grimodex_db::nir1_generation::GenerationPurpose {
+        &self.inner().expected.binding.purpose
+    }
+
     pub(crate) fn cancel_handle(&self) -> Nir1OwnerCancel {
         Nir1OwnerCancel {
             control: Arc::clone(&self.inner().core.control),
@@ -1117,70 +1198,310 @@ impl Nir1TransportOwner {
         inner.core.control.cancel_requested() || !inner.witness.is_current()
     }
 
-    /// Write the post-transport terminal through the pinned writer. On
-    /// failure the attempt is conservatively recovered as
-    /// `InterruptedUnknown` (an existing terminal is kept).
-    pub(crate) fn finish(
+    /// Whether the counted profile dispatch permit is still open (atomics
+    /// only; the supervisor watches it beside `should_stop`).
+    pub(crate) fn permit_is_open(&self) -> bool {
+        self.inner().core.permit.ensure_open().is_ok()
+    }
+
+    /// Write the audit start (`execution.started`, `request.prepared`,
+    /// `request.dispatched`) in one bounded transaction. It holds no lease:
+    /// the Admission fence is cancel, the permit and the witness, and the same
+    /// three are checked right before COMMIT. Any failure is typed and means
+    /// the caller connects to nothing and sends nothing; it then settles with
+    /// [`Self::settle_without_send`], whose terminal closes an execution that
+    /// became durable after all (unknown COMMIT).
+    pub(crate) fn append_audit_start(
+        &self,
+        start: &Nir1LocalAuditStart,
+    ) -> Result<Nir1LocalAuditStarted, Nir1StoreFailure> {
+        let inner = self.inner();
+        let core = &inner.core;
+        let budget = core.admission_budget_for_witness(inner.witness.clone(), "audit-start");
+        let witness = inner.witness.clone();
+        let mut pre_commit = || -> anyhow::Result<()> {
+            anyhow::ensure!(
+                !core.control.cancel_requested(),
+                "NIR1_GENERATION_CANCELLED"
+            );
+            anyhow::ensure!(witness.is_current(), "NIR1_GENERATION_LEASE_LOST");
+            core.permit.ensure_open()
+        };
+        match storage::append_local_audit_start_bounded(
+            &core.workspace,
+            &inner.expected,
+            start,
+            &budget,
+            &mut pre_commit,
+        ) {
+            Ok(started) => {
+                #[cfg(test)]
+                core.fire(Nir1OwnerProbePoint::AfterAuditStart);
+                Ok(started)
+            }
+            Err(error) => {
+                core.record_failure("audit-start", error.failure());
+                Err(error.failure())
+            }
+        }
+    }
+
+    /// Read the AI usage policy right before the send (after the audit start,
+    /// before the connection), fresh from the database. It takes no owner
+    /// lock: call it outside [`Self::decide_send`]. The value is plain data.
+    pub(crate) fn read_send_policy(&self, purpose: Nir1LocalSendPurpose) -> Nir1PreSendPolicy {
+        let inner = self.inner();
+        let budget = inner
+            .core
+            .admission_budget_for_witness(inner.witness.clone(), "policy");
+        read_before_send(
+            &inner.core.workspace,
+            &inner.expected.binding.project_id,
+            purpose,
+            &budget,
+        )
+    }
+
+    /// The send decision, taken right before the connection and again right
+    /// before the first byte. It runs under the phase mutex shared with
+    /// `cancel` and looks at values only: the cancel flag, the witness, the
+    /// permit and `policy.permits()`. It reads no database, takes no lease and
+    /// touches no socket, so a slow database never delays a cancel.
+    pub(crate) fn decide_send(&self, policy: &Nir1PreSendPolicy) -> Nir1SendDecision {
+        let inner = self.inner();
+        #[cfg(test)]
+        inner.core.fire(Nir1OwnerProbePoint::BeforeSendDecision);
+        let decision = {
+            let _phase = inner.core.control.lock_phase();
+            if inner.core.control.cancel_requested() {
+                Nir1SendDecision::Refused(Nir1SendRefusal::Cancelled)
+            } else if !inner.witness.is_current() {
+                Nir1SendDecision::Refused(Nir1SendRefusal::EntryLost)
+            } else if inner.core.permit.ensure_open().is_err() {
+                Nir1SendDecision::Refused(Nir1SendRefusal::PermitClosed)
+            } else if !policy.permits() {
+                Nir1SendDecision::Refused(Nir1SendRefusal::PolicyDenied)
+            } else {
+                Nir1SendDecision::Go
+            }
+        };
+        #[cfg(test)]
+        inner.core.fire(Nir1OwnerProbePoint::AfterSendDecision);
+        decision
+    }
+
+    /// Close the startup-gate entry this transport started under (the join of
+    /// the transport thread overran). Returns false when it was not the Open
+    /// entry any more. Call it before the terminal write so the quarantine does
+    /// not depend on that write; the pinned terminal writers ignore the gate.
+    pub(crate) fn quarantine_gate(&self) -> bool {
+        let inner = self.inner();
+        inner.core.gate().quarantine_entry(&inner.witness)
+    }
+
+    /// Settle with the zero-send terminal of the claimed attempt, once:
+    /// `Cancelled` if cancel was requested, otherwise `DispatchFailure`. Use it
+    /// only when the first byte was never released (no `Go`), so the audit
+    /// closes with `remoteOutcome: not-sent`. Consumes the owner; the
+    /// participant, permit and slot are released after the terminal.
+    pub(crate) fn settle_without_send(mut self) -> Nir1Settlement {
+        let TransportInner {
+            core,
+            slot,
+            expected,
+            claimed_at_ms,
+            ..
+        } = *self
+            .inner
+            .take()
+            .expect("a transport owner finishes exactly once");
+        core.settle_zero_send(slot, &expected, Nir1ExpectedClaim::ClaimedAt(claimed_at_ms))
+    }
+
+    /// Write the post-transport terminal through the pinned writer with what
+    /// the transport observed; the attempt terminal and the audit terminal
+    /// (`response.completed`/`response.partial` and the execution end) commit in
+    /// one transaction. This is the only way to record a success of an
+    /// audited attempt.
+    pub(crate) fn finish_with_audit(
         mut self,
         observation: &TerminalObservation,
         body: Option<NewMessageBody>,
-    ) -> Result<StoredTerminal, Nir1GenerationRefusal> {
+        observed: &Nir1LocalAuditObserved,
+    ) -> Result<StoredTerminal, Nir1FinishFailure> {
         let inner = self
             .inner
             .take()
             .expect("a transport owner finishes exactly once");
-        let result = now_ms()
-            .map_err(|_| Nir1StoreFailure::Invalid)
-            .and_then(|now| {
-                storage::finish_attempt_bounded(
-                    &inner.core.workspace,
-                    &inner.expected,
-                    observation,
-                    body,
-                    now,
-                    &inner.core.pinned_budget(),
-                )
-                .map_err(|error| error.failure())
-            });
-        match result {
-            Ok(terminal) => Ok(terminal),
-            Err(failure) => {
-                inner.core.record_failure("finish", failure);
-                inner.recover_or_mark_unresolved();
-                Err(Nir1GenerationRefusal::Store(failure))
-            }
-        }
+        inner.finish_with(|inner, now| {
+            storage::finish_attempt_with_audit_bounded(
+                &inner.core.workspace,
+                &inner.expected,
+                observation,
+                body,
+                now,
+                observed,
+                &inner.core.pinned_budget_for("finish"),
+            )
+        })
+    }
+
+    /// Write the post-transport terminal through the pinned writer without
+    /// audit data. A started execution refuses a success written this way (the
+    /// whole transaction is rejected); a failure or cancel closes the
+    /// execution conservatively. On failure the attempt is conservatively
+    /// recovered as `InterruptedUnknown` (an existing terminal is kept).
+    pub(crate) fn finish(
+        self,
+        observation: &TerminalObservation,
+        body: Option<NewMessageBody>,
+    ) -> Result<StoredTerminal, Nir1GenerationRefusal> {
+        self.finish_without_audit(observation, body)
+            .map_err(|failure| Nir1GenerationRefusal::Store(failure.failure))
+    }
+
+    /// [`Self::finish`] that keeps the durable terminal of a failed write.
+    pub(crate) fn finish_without_audit(
+        mut self,
+        observation: &TerminalObservation,
+        body: Option<NewMessageBody>,
+    ) -> Result<StoredTerminal, Nir1FinishFailure> {
+        let inner = self
+            .inner
+            .take()
+            .expect("a transport owner finishes exactly once");
+        inner.finish_with(|inner, now| {
+            storage::finish_attempt_bounded(
+                &inner.core.workspace,
+                &inner.expected,
+                observation,
+                body,
+                now,
+                &inner.core.pinned_budget_for("finish"),
+            )
+        })
     }
 }
 
 impl TransportInner {
-    fn recover_or_mark_unresolved(self: Box<Self>) {
+    /// Run the terminal writer once. On failure the attempt is recovered
+    /// conservatively and the durable terminal that made (or the earlier
+    /// terminal it kept) is returned beside the failure.
+    fn finish_with(
+        self: Box<Self>,
+        write: impl FnOnce(
+            &TransportInner,
+            i64,
+        ) -> Result<
+            StoredTerminal,
+            grimodex_db::nir1_generation::Nir1GenerationStoreError,
+        >,
+    ) -> Result<StoredTerminal, Nir1FinishFailure> {
+        let result = now_ms()
+            .map_err(|_| Nir1StoreFailure::Invalid)
+            .and_then(|now| write(&self, now).map_err(|error| error.failure()));
+        match result {
+            Ok(terminal) => Ok(terminal),
+            Err(failure) => {
+                self.core.record_failure("finish", failure);
+                let durable = self.recover_or_mark_unresolved();
+                Err(Nir1FinishFailure {
+                    failure,
+                    durable: durable.map(Box::new),
+                })
+            }
+        }
+    }
+
+    /// Conservatively terminalize the claimed attempt (`InterruptedUnknown`,
+    /// or the terminal that is already durable), once. The slot is released
+    /// when a terminal is durable and stays unresolved otherwise. A panic in
+    /// the write is contained here, so a Drop that runs while the thread is
+    /// already unwinding cannot panic twice.
+    fn recover_or_mark_unresolved(self: Box<Self>) -> Option<StoredTerminal> {
         let TransportInner {
             core,
             slot,
             expected,
             ..
         } = *self;
-        if let Err(error) = storage::recover_claimed_attempt_bounded(
-            &core.workspace,
-            &expected,
-            &core.pinned_budget(),
-        ) {
-            core.record_failure("recover", error.failure());
-            // The gate stays Open: nothing new is in doubt for the gate, and
-            // the next Ready entry's sweep terminalizes the attempt.
-            core.mark_unresolved(slot);
+        #[cfg(test)]
+        core.control.hooks.record_recover_thread();
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            #[cfg(test)]
+            core.fire(Nir1OwnerProbePoint::BeforeRecover);
+            storage::recover_claimed_attempt_bounded(
+                &core.workspace,
+                &expected,
+                &core.pinned_budget_for("recover"),
+            )
+        }));
+        match outcome {
+            Ok(Ok(terminal)) => Some(terminal),
+            Ok(Err(error)) => {
+                core.record_failure("recover", error.failure());
+                // The gate stays Open: nothing new is in doubt for the gate, and
+                // the next Ready entry's sweep terminalizes the attempt.
+                core.mark_unresolved(slot);
+                None
+            }
+            Err(_) => {
+                core.record_failure("recover-panic", Nir1StoreFailure::Invalid);
+                core.mark_unresolved(slot);
+                None
+            }
         }
     }
 }
 
+/// Whether this thread belongs to a tokio runtime (a worker, or a blocking
+/// pool thread). The owner's Drop must not run its database write there.
+fn on_tokio_runtime_thread() -> bool {
+    napi::tokio::runtime::Handle::try_current().is_ok()
+}
+
 impl Drop for Nir1TransportOwner {
+    /// An owner dropped without a terminal records `InterruptedUnknown` once.
+    /// The write is blocking, so it runs on the dropping thread only when that
+    /// is a plain thread (the supervisor's own blocking thread, which is how
+    /// the owner is meant to be dropped). Dropped on a tokio runtime thread it
+    /// is handed to a short-lived plain thread instead, so a runtime worker is
+    /// never held on the database. While unwinding, the write is the same
+    /// single recovery and contains its own panics.
     fn drop(&mut self) {
-        if let Some(inner) = self.inner.take() {
-            inner.recover_or_mark_unresolved();
+        let Some(inner) = self.inner.take() else {
+            return;
+        };
+        if !on_tokio_runtime_thread() {
+            let _ = inner.recover_or_mark_unresolved();
+            return;
+        }
+        // The cell lets the Drop recover the owner if the thread cannot be
+        // spawned (then it writes here: a blocked worker is better than an
+        // attempt left claimed with a released slot).
+        let cell = Arc::new(Mutex::new(Some(inner)));
+        let moved = Arc::clone(&cell);
+        let spawned = thread::Builder::new()
+            .name("nir1-owner-recover".into())
+            .spawn(move || {
+                let inner = moved.lock().unwrap_or_else(PoisonError::into_inner).take();
+                if let Some(inner) = inner {
+                    let _ = inner.recover_or_mark_unresolved();
+                }
+            });
+        if spawned.is_err() {
+            let inner = cell.lock().unwrap_or_else(PoisonError::into_inner).take();
+            if let Some(inner) = inner {
+                let _ = inner.recover_or_mark_unresolved();
+            }
         }
     }
 }
+
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<Nir1TransportOwner>();
+};
 
 /// Synchronization points for tests only.
 #[cfg(test)]
@@ -1192,6 +1513,14 @@ pub(crate) enum Nir1OwnerProbePoint {
     AfterCommit,
     BeforeDecision,
     BeforeZeroSend,
+    /// The audit start is durable; the policy has not been read yet.
+    AfterAuditStart,
+    /// Right before the send decision takes the phase mutex.
+    BeforeSendDecision,
+    /// The send decision has returned and the phase mutex is released.
+    AfterSendDecision,
+    /// Inside the contained recovery write of a dropped or failed owner.
+    BeforeRecover,
 }
 
 #[cfg(test)]
@@ -1207,6 +1536,8 @@ pub(crate) mod test_hooks {
         probes: Mutex<Vec<(Nir1OwnerProbePoint, Probe)>>,
         failpoints: Mutex<Vec<(&'static str, Nir1GenerationFailpoint)>>,
         failures: Mutex<Vec<(&'static str, Nir1StoreFailure)>>,
+        /// The thread of each owner recovery (`Drop` or a failed finish).
+        recover_threads: Mutex<Vec<thread::ThreadId>>,
         /// Set by a test of the per-operation limit, or of which limit takes
         /// effect first: the owner keeps the plan's per-operation limit
         /// instead of the widened one for tests that do not examine it.
@@ -1260,6 +1591,20 @@ pub(crate) mod test_hooks {
             *current = probes;
         }
 
+        pub(crate) fn recover_threads(&self) -> Vec<thread::ThreadId> {
+            self.recover_threads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+
+        pub(super) fn record_recover_thread(&self) {
+            self.recover_threads
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(thread::current().id());
+        }
+
         pub(super) fn record_failure(&self, stage: &'static str, failure: Nir1StoreFailure) {
             self.failures
                 .lock()
@@ -1277,6 +1622,22 @@ pub(crate) mod test_hooks {
             } else {
                 budget.for_untimed_test()
             };
+            let mut failpoints = self
+                .failpoints
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            match failpoints.iter().position(|(armed, _)| *armed == stage) {
+                Some(index) => budget.with_failpoint(failpoints.remove(index).1),
+                None => budget,
+            }
+        }
+
+        pub(super) fn decorate_pinned_stage(
+            &self,
+            stage: &'static str,
+            budget: Nir1PinnedSqlBudget,
+        ) -> Nir1PinnedSqlBudget {
+            let budget = self.decorate_pinned(budget);
             let mut failpoints = self
                 .failpoints
                 .lock()
@@ -1317,8 +1678,19 @@ pub(crate) mod test_hooks {
             &self.hooks
         }
     }
+
+    impl Nir1TransportOwner {
+        /// Replace the in-process payload (not the stored digest), to test that
+        /// a transport refuses a payload that is not the one the attempt bound.
+        pub(crate) fn replace_canonical_payload_for_test(&mut self, payload: String) {
+            self.inner
+                .as_mut()
+                .expect("a transport owner finishes exactly once")
+                .canonical_payload = payload;
+        }
+    }
 }
 
 #[cfg(test)]
 #[path = "nir1_generation_owner_tests.rs"]
-mod tests;
+pub(crate) mod tests;
