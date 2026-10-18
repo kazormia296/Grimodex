@@ -703,11 +703,11 @@ mod tests {
     use crate::narrative_extraction::nir1_packing::tests::{
         prepared_sql_budget, DfFinalFixture, RAW_SOURCE_PROJECT, RAW_SOURCE_SCENE,
     };
+    use crate::narrative_extraction::scope_storage_authority_tests::{patch, save_body};
     use crate::narrative_extraction::{NativeNir1FinalQualifications, NativeNir1PreparedInputs};
     use crate::nir1_generation::history_context::HistoryContextSlot;
     use crate::nir1_generation::{
-        d1_selection_reference, GenerationPurpose, InputRole, InputTarget, NotApplicableReason,
-        ReferenceFormat,
+        GenerationPurpose, InputTarget, NotApplicableReason, ReferenceFormat,
     };
     use crate::nir1_generation_history::{
         CurrentHistoryContext, HistoryContextState, HistoryRange, QualificationReference,
@@ -942,8 +942,6 @@ mod tests {
 
     #[test]
     fn requalify_source_message_version_checks_the_live_row() -> Result<()> {
-        use crate::nir1_generation::MessageOrigin as Origin;
-
         let fixture = DfFinalFixture::new()?;
         let past = past(&fixture)?;
         // A changed recorded digest is not the live row's.
@@ -990,7 +988,6 @@ mod tests {
             input_status(&fixture, &past, &generated, HUMAN)?,
             QualificationStatus::Excluded(_)
         ));
-        let _ = Origin::Human;
         // A renderer edit of the chat message invalidates the version.
         fixture.snapshot.db().db().with_conn(|conn| {
             conn.execute(
@@ -1028,21 +1025,24 @@ mod tests {
             input_status(&fixture, &past, &changed, RAW)?,
             QualificationStatus::Current
         );
-        fixture.snapshot.db().db().with_conn(|conn| {
-            conn.execute(
-                "UPDATE tree_nodes SET content=?1, version=version+1,
-                        updated_at='2026-10-01T00:00:00.000Z'
-                  WHERE project_id=?2 AND id=?3 AND node_type='scene'",
-                rusqlite::params![
-                    serde_json::json!({"type":"doc","content":[{"type":"paragraph",
-                        "content":[{"type":"text","text":"Edited later."}]}]})
-                    .to_string(),
-                    RAW_SOURCE_PROJECT,
-                    RAW_SOURCE_SCENE
-                ],
-            )?;
-            Ok(())
-        })?;
+        // The product writers: a body save, then a metadata patch of the
+        // target Scene itself (the Scene's own Source token moves).
+        let db = fixture.snapshot.db().db();
+        save_body(
+            db,
+            RAW_SOURCE_SCENE,
+            "edited-later",
+            "2026-10-18T01:00:00.000Z",
+        )?;
+        patch(
+            db,
+            RAW_SOURCE_SCENE,
+            "target-title",
+            "title",
+            serde_json::json!("Retitled target"),
+            true,
+            "2026-10-18T01:00:01.000Z",
+        )?;
         assert_eq!(
             input_status(&fixture, &past, &past.attempt, RAW)?,
             QualificationStatus::Current,
@@ -1177,6 +1177,183 @@ mod tests {
                 excluded(reason),
                 "{name}"
             );
+        }
+        Ok(())
+    }
+
+    /// The statuses of the attempt and of its four inputs, with the stop flag.
+    fn full_statuses(
+        fixture: &DfFinalFixture,
+        past: &Past,
+    ) -> Result<(Vec<QualificationStatus>, bool)> {
+        with_qualifier(fixture, |qualifier| {
+            let mut statuses = vec![qualifier.qualify_attempt(&past.attempt, &past.current)];
+            for ordinal in 0..past.attempt.inputs.len() {
+                statuses.push(qualifier.qualify_input(
+                    &past.attempt,
+                    ordinal,
+                    &past.attempt.inputs[ordinal],
+                    &past.current,
+                ));
+            }
+            (statuses, qualifier.has_stopped())
+        })
+    }
+
+    fn settle_freshness(db: &crate::Database) -> Result<()> {
+        use crate::narrative_extraction::incremental_freshness::{
+            run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
+        };
+        while matches!(
+            run_incremental_freshness_cycle(db)?,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ) {}
+        Ok(())
+    }
+
+    const REVISION_B: usize = 3;
+
+    #[test]
+    fn requalify_freshness_ignores_feed_position_only_writes() -> Result<()> {
+        let fixture = DfFinalFixture::new()?;
+        let past = past(&fixture)?;
+        let current = vec![QualificationStatus::Current; 5];
+        assert_eq!(full_statuses(&fixture, &past)?, (current.clone(), false));
+        let db = fixture.snapshot.db().db();
+        // Body saves of the evidence Scene, the target Scene and the anchor Scene
+        // move the Feed position (and the Scenes' own body Source tokens) but
+        // not the canonical Freshness of the approved Revisions.
+        save_body(
+            db,
+            "a3-source",
+            "fresh-evidence",
+            "2026-10-18T03:00:00.000Z",
+        )?;
+        save_body(
+            db,
+            RAW_SOURCE_SCENE,
+            "fresh-target",
+            "2026-10-18T03:00:01.000Z",
+        )?;
+        save_body(db, "nir1", "fresh-anchor", "2026-10-18T03:00:02.000Z")?;
+        assert_eq!(
+            full_statuses(&fixture, &past)?,
+            (current.clone(), false),
+            "before the Freshness cycle"
+        );
+        settle_freshness(db)?;
+        assert_eq!(
+            full_statuses(&fixture, &past)?,
+            (current, false),
+            "after the Freshness cycle"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn requalify_freshness_follows_a_real_source_change_without_stopping() -> Result<()> {
+        use crate::domain_writes::{
+            apply_codex_rename, CodexRenameApplyPayload, CodexRenameUndoUpdate,
+        };
+
+        let fixture = DfFinalFixture::new()?;
+        let past = past(&fixture)?;
+        let db = fixture.snapshot.db().db();
+        let entry_version: i64 = db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT version FROM codex_entries WHERE id = 'nir1-bob'",
+                [],
+                |row| row.get(0),
+            )?)
+        })?;
+        // A Codex edit of an Entity both Revisions name.
+        apply_codex_rename(
+            db,
+            CodexRenameApplyPayload {
+                request_id: "hc1-fresh-rename-request".into(),
+                project_id: RAW_SOURCE_PROJECT.into(),
+                session_id: "hc1-fresh-rename-session".into(),
+                surface: Some("hc1".into()),
+                entry_id: "nir1-bob".into(),
+                updated_at: "2026-10-18T04:00:00.000Z".into(),
+                updates: vec![CodexRenameUndoUpdate {
+                    kind: "codex-summary".into(),
+                    ref_id: "nir1-bob".into(),
+                    detail_definition_id: None,
+                    base_version: entry_version,
+                    value: "Robert".into(),
+                    char_count: None,
+                    placed_beat_preview: None,
+                }],
+                event_summary: "{}".into(),
+                event_uid: "hc1-fresh-rename-event".into(),
+                timestamp: 1,
+                redo: false,
+                original_transaction_id: None,
+                undo_journal_id: None,
+            },
+        )?;
+        for phase in ["before the Freshness cycle", "after the Freshness cycle"] {
+            let (statuses, stopped) = full_statuses(&fixture, &past)?;
+            assert!(!stopped, "{phase}: an excluded input does not stop the run");
+            assert_eq!(statuses[0], QualificationStatus::Current, "{phase}");
+            assert_eq!(statuses[1 + HUMAN], QualificationStatus::Current, "{phase}");
+            assert_eq!(statuses[1 + RAW], QualificationStatus::Current, "{phase}");
+            for ordinal in [REVISION, REVISION_B] {
+                assert_eq!(
+                    statuses[1 + ordinal],
+                    excluded(RequalificationReason::SourceStale),
+                    "{phase}: Revision input {ordinal}"
+                );
+            }
+            settle_freshness(db)?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn requalify_freshness_follows_an_anchor_scene_delete_without_stopping() -> Result<()> {
+        use crate::domain_writes::{tree_node_delete, TreeNodeDeletePayload};
+        use crate::narrative_extraction::change_feed::NarrativeChangeOrigin;
+
+        let fixture = DfFinalFixture::new()?;
+        let past = past(&fixture)?;
+        let db = fixture.snapshot.db().db();
+        tree_node_delete(
+            db,
+            TreeNodeDeletePayload {
+                project_id: RAW_SOURCE_PROJECT.into(),
+                request_id: "hc1-fresh-delete-request".into(),
+                session_id: "hc1-fresh-delete-session".into(),
+                event_uid: "hc1-fresh-delete-event".into(),
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                node_id: "nir1".into(),
+                canonical_payload: None,
+            },
+        )?;
+        for phase in ["before the Freshness cycle", "after the Freshness cycle"] {
+            let (statuses, stopped) = full_statuses(&fixture, &past)?;
+            assert!(!stopped, "{phase}");
+            assert_eq!(statuses[0], QualificationStatus::Current, "{phase}");
+            assert_eq!(statuses[1 + HUMAN], QualificationStatus::Current, "{phase}");
+            assert_eq!(statuses[1 + RAW], QualificationStatus::Current, "{phase}");
+            for ordinal in [REVISION, REVISION_B] {
+                assert!(
+                    matches!(
+                        statuses[1 + ordinal],
+                        QualificationStatus::Excluded(
+                            RequalificationReason::SourceStale
+                                | RequalificationReason::RevisionStale
+                                | RequalificationReason::DisclosureIneligible
+                        )
+                    ),
+                    "{phase}: Revision input {ordinal}: {:?}",
+                    statuses[1 + ordinal]
+                );
+            }
+            settle_freshness(db)?;
         }
         Ok(())
     }
@@ -1401,8 +1578,6 @@ mod tests {
             input_status(&fixture, &past, &reference, RAW)?,
             excluded(RequalificationReason::D1RecomputeMismatch)
         );
-        // The selection reference of the finalized rows is the digest.
-        let _ = d1_selection_reference(0, &past.finalized.d1_selection_digest);
         Ok(())
     }
 
@@ -1485,12 +1660,12 @@ mod tests {
             .revision_id()
             .to_owned();
         let direct = fixture.snapshot.db().with_read_transaction(|conn| {
-            Ok(evaluate_nir1_entity_relation_disclosure(
+            evaluate_nir1_entity_relation_disclosure(
                 conn,
                 RAW_SOURCE_PROJECT,
                 &revision,
                 early_scene,
-            )?)
+            )
         })?;
         let Nir1EntityRelationDisclosureRead::Unavailable { reason } = direct else {
             panic!("the Revision is not disclosable for the earliest Scene");
@@ -1559,22 +1734,38 @@ mod tests {
 
     #[test]
     fn history_requalification_never_calls_revalidate() {
-        let source = include_str!("nir1_history_requalification.rs");
-        let production = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("production part");
-        for line in production.lines() {
-            let code = line.trim_start();
-            if code.starts_with("//") {
-                continue;
+        // The whole history path (the traversal, the snapshot reads and this
+        // requalifier) never names a `revalidate` function, directly or
+        // through a wrapper written in these files.
+        for (name, source) in [
+            (
+                "nir1_history_requalification.rs",
+                include_str!("nir1_history_requalification.rs"),
+            ),
+            (
+                "nir1_generation_history.rs",
+                include_str!("../nir1_generation_history.rs"),
+            ),
+            (
+                "nir1_generation/history_reads.rs",
+                include_str!("../nir1_generation/history_reads.rs"),
+            ),
+        ] {
+            let production = source
+                .split("#[cfg(test)]")
+                .next()
+                .expect("production part");
+            for line in production.lines() {
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                assert!(
+                    !code.to_ascii_lowercase().contains("revalidate"),
+                    "{name}: revalidate must not be used: {line}"
+                );
             }
-            assert!(
-                !code.contains("revalidate_nir1_entity_relation_disclosure"),
-                "revalidate must not be used: {line}"
-            );
         }
-        let _ = InputRole::User;
     }
 
     #[test]

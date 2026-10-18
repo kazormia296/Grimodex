@@ -567,11 +567,12 @@ impl GenerationHistorySnapshotReader<'_> {
 ///
 /// The only way to get one is [`GenerationHistorySnapshotReader::authority_connection`],
 /// and the value is `Copy` and borrows the transaction, so it cannot outlive
-/// the snapshot, open another transaction, or reach a writer: the transaction
-/// is the participant's read transaction, which is rolled back and never
-/// committed. The existing readers need a `&Connection`, so the borrow is
-/// exposed read-only through [`HistoryAuthorityConnection::connection`]; the
-/// requalifier writes nothing (a test fixes zero writes over a whole run).
+/// the snapshot or open another transaction. It is the participant's read
+/// transaction (opened deferred and committed when the callback succeeds; no
+/// `PRAGMA query_only`), so the type and the database do not stop a write
+/// through it: the requalifier writes nothing by discipline, and a test fixes
+/// zero writes over a whole run. The existing readers need a `&Connection`,
+/// so the borrow is exposed through [`HistoryAuthorityConnection::connection`].
 #[cfg(feature = "native-current-human-capture")]
 #[derive(Clone, Copy)]
 pub(crate) struct HistoryAuthorityConnection<'connection> {
