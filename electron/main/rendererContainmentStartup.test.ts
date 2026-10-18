@@ -32,7 +32,9 @@ const {
 const { createRendererContainment } =
   await import("./rendererContainmentStartup.js");
 const { dialog } = await import("electron");
+const { createCloseVetoController } = await import("./windowChrome.js");
 
+import type { CloseVetoController } from "./windowChrome.js";
 import type {
   ContainmentSession,
   ContainmentWebContents,
@@ -663,8 +665,7 @@ describe("実行中の 3 コード", () => {
 
   it("実行中の失敗の終了は app.quit() の 1 回だけで、deps に exit がなく、新しい timer も足さない", () => {
     // この試験が主張する範囲: 独自の終了手段（app.exit）を持たず、quit は 1 回、timer は 0。
-    // flush の待ち（close-veto、strict persistence drain、will-quit の finalizer）そのものは
-    // この層の外の既存の経路で、windowChrome／close-veto の既存の試験と S3 の実機の観測で示す。
+    // flush の待ちそのもの（実物の close-veto と renderer の代役）は次の describe で固定する。
     vi.useFakeTimers();
     const h = makeHarness();
     expect(Object.keys(h.deps)).not.toContain("exit");
@@ -676,6 +677,127 @@ describe("実行中の 3 コード", () => {
     h.flush();
     expect(h.quit).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+/**
+ * K3/3 Negative (30a) の「未保存の状態を持つ renderer の代役が close の要求を受けて
+ * 保存（flush）を終えてから終了する」。実物の `createCloseVetoController`（windowChrome。
+ * `windows.ts` の main 窓と同じ配線）と、close を受けて flush を終えるまで返事をしない
+ * renderer の代役を使う。`app.quit()` の代役は全窓へ `close` を要求する（Electron と同じ）。
+ */
+describe("実行中の失敗の graceful な終了は、未保存の renderer の flush を待つ", () => {
+  function makeMainWindowModel(log: string[]) {
+    let replyAfterFlush: (() => void) | undefined;
+    let closed = false;
+    const controller: CloseVetoController = createCloseVetoController({
+      requestClose: () => {
+        log.push("close-requested");
+        // 代役の renderer: 未保存の状態を持ち、flush が終わってから veto=false を返す。
+        replyAfterFlush = () => {
+          log.push("flush-done");
+          controller.onReply(false);
+        };
+      },
+      forceClose: () => requestWindowClose(),
+    });
+    controller.setHandlerRegistered(true);
+    function requestWindowClose(): void {
+      if (closed) return;
+      if (!controller.onCloseEvent()) return; // preventDefault 相当
+      closed = true;
+      log.push("closed");
+    }
+    return {
+      requestWindowClose,
+      /** 代役の renderer が flush を終える。 */
+      finishFlush: () => replyAfterFlush?.(),
+      isClosed: () => closed,
+      /** 対照: 閉じ込めの失敗の経路が close-veto を飛ばして窓を直接破棄した場合。 */
+      destroyDirectly: () => {
+        closed = true;
+        log.push("closed");
+      },
+    };
+  }
+
+  type Trigger = (h: Harness) => Promise<void> | void;
+  const triggers: Array<[string, Trigger]> = [
+    [
+      "NC-SESSION",
+      (h) => {
+        const containment = createRendererContainment(h.deps);
+        containment.registerWebContentsPolicy();
+        h.webContentsListeners[0](
+          fakeContents({ session: { other: true } }).contents,
+        );
+      },
+    ],
+    [
+      "NC-POLICY",
+      (h) => {
+        const containment = createRendererContainment(h.deps);
+        containment.registerWebContentsPolicy();
+        h.webContentsListeners[0](
+          fakeContents({
+            session: h.session,
+            getWebRTCIPHandlingPolicy: () => "default",
+          }).contents,
+        );
+      },
+    ],
+    [
+      "NC-LISTENER-LOST",
+      async (h) => {
+        const containment = createRendererContainment(h.deps);
+        containment.appendResolverSwitch();
+        containment.registerWebContentsPolicy();
+        await containment.start();
+        h.listenerClosed();
+      },
+    ],
+  ];
+
+  it.each(triggers)(
+    "%s: app.quit() は全窓へ close を要求するだけで、flush が終わるまで main 窓は閉じず、終わると閉じる",
+    async (_code, trigger) => {
+      const log: string[] = [];
+      const win = makeMainWindowModel(log);
+      const h = makeHarness();
+      h.deps.quit = () => {
+        log.push("quit");
+        win.requestWindowClose();
+      };
+      await trigger(h);
+      expect(log).toEqual([]); // handler の中では何も起きない
+      h.flush();
+      expect(log).toEqual(["quit", "close-requested"]);
+      expect(win.isClosed()).toBe(false); // flush 前は閉じていない
+      win.finishFlush();
+      expect(log).toEqual(["quit", "close-requested", "flush-done", "closed"]);
+      expect(win.isClosed()).toBe(true);
+    },
+  );
+
+  it("対照: 失敗の経路が close-veto を飛ばして窓を直接破棄すると、flush 前に closed が出て赤になる", async () => {
+    const log: string[] = [];
+    const win = makeMainWindowModel(log);
+    const h = makeHarness();
+    h.deps.quit = () => {
+      log.push("quit");
+      win.destroyDirectly();
+    };
+    await triggers[0][1](h);
+    h.flush();
+    expect(log.indexOf("closed")).toBeGreaterThanOrEqual(0);
+    expect(log).not.toContain("flush-done");
+    // 本体の試験が要求する順序（flush-done が closed より前）を満たさない。
+    expect(log).not.toEqual([
+      "quit",
+      "close-requested",
+      "flush-done",
+      "closed",
+    ]);
   });
 });
 
