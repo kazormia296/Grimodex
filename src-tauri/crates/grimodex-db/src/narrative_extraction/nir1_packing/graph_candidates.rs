@@ -1,0 +1,705 @@
+//! Text-free Graph candidates and their requalification in D-final's snapshot
+//! (DI-1a, K6/2 `nir1-final-request-packing-eval`, DSN section 5.1).
+//!
+//! A worker returns a Graph with Entity labels, Evidence quotes and relation
+//! types. D-final takes none of that text. [`Nir1GraphCandidates`] keeps only
+//! identifiers and tokens: the project, the query Scene, the seed, B's
+//! generation and scope revision, and for each edge its Revision, edge ID, hop
+//! and the nine binding tokens the Graph reader recorded.
+//!
+//! [`pool_graph_candidates`] runs inside the participant read that already
+//! evaluated A2 and A3 for the accepted IR. It
+//!
+//! 1. checks once that B's seal in this snapshot is the generation the worker
+//!    answered under,
+//! 2. takes each candidate Revision from the A2/A3 results of this snapshot
+//!    (a Revision A2 or A3 left out, or one the Native selection did not list,
+//!    contributes nothing),
+//! 3. compares every binding token with the one this snapshot derives, and
+//! 4. builds the `GraphEvidence` group of each admitted relation from the
+//!    Revision bundle this snapshot read. The group text is the text of the
+//!    relation's accepted IR group; the worker's text is never an input.
+//!
+//! A Graph group takes the place of the accepted IR group of the same
+//! relation, so one relation is never sent twice and the item count does not
+//! grow. It costs a few bytes more than the IR group (a longer group ID); when
+//! the shared 2 MiB envelope cannot hold that, the Graph group and the later
+//! ones are not added and the IR groups stay.
+
+use std::collections::{HashMap, HashSet};
+
+use anyhow::{ensure, Result};
+use grimodex_core::narrative_nir1::{
+    adapt_candidate_context_item, estimate_nir1_context_tokens, pack_candidate_context,
+    CandidateContextItem, CandidatePackingRequest, ContextItemKind, EntityInput, PackedContext,
+    PackingPurpose, MAX_GRAPH_EDGES, MAX_PACKING_ITEMS,
+};
+use rusqlite::Connection;
+
+use super::{
+    candidate_binding_digest, group_parts, material_evidence_map, reader_part_name,
+    relation_group_material, NativeNir1AuthorityBinding, NativeNir1ExcludedRevision,
+    NativeNir1RevisionExclusionReason, NativePackingInputBudget,
+};
+use crate::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
+use crate::narrative_extraction::nir1_graph::{read_nir1_graph_seal, Nir1GraphSealRead};
+
+const GRAPH_CANDIDATE_BINDING_KIND: &str = "nir1.native.graph-evidence@1";
+
+/// The nine tokens the Graph reader recorded for the Revision of an edge. They
+/// are equality keys only: the pooled reader derives the same nine values from
+/// its own A2/A3 result and compares them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Nir1GraphCandidateBinding {
+    pub revision_id: String,
+    pub decision_id: String,
+    pub decision_token: String,
+    pub freshness_token: String,
+    pub scope_authority_revision: String,
+    pub query_scene_source_token: String,
+    pub query_scene_scope_token: String,
+    pub query_scene_incarnation_id: String,
+    pub reveal_state_token: String,
+}
+
+/// One relation the worker's Graph reached: its identity and the tokens it was
+/// qualified under. It carries no relation type, no Entity and no quote.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Nir1GraphCandidateEdge {
+    pub edge_id: String,
+    /// The shortest-path distance of the edge from the seed (0 for an edge
+    /// that leaves the seed).
+    pub hop: u8,
+    pub binding: Nir1GraphCandidateBinding,
+}
+
+impl Nir1GraphCandidateEdge {
+    pub fn revision_id(&self) -> &str {
+        &self.binding.revision_id
+    }
+}
+
+/// Everything D-final keeps of a worker's Graph. The edges are in the Graph's
+/// traversal order (Revision ID, then edge ID).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Nir1GraphCandidates {
+    project_id: String,
+    query_scene_id: String,
+    seed_entity_id: String,
+    generation: i64,
+    scope_revision: Option<String>,
+    edges: Vec<Nir1GraphCandidateEdge>,
+}
+
+impl Nir1GraphCandidates {
+    pub fn new(
+        project_id: String,
+        query_scene_id: String,
+        seed_entity_id: String,
+        generation: i64,
+        scope_revision: Option<String>,
+        edges: Vec<Nir1GraphCandidateEdge>,
+    ) -> Result<Self> {
+        ensure!(
+            edges.len() <= MAX_GRAPH_EDGES,
+            "NIR1_GRAPH_CANDIDATE_EDGE_LIMIT"
+        );
+        Ok(Self {
+            project_id,
+            query_scene_id,
+            seed_entity_id,
+            generation,
+            scope_revision,
+            edges,
+        })
+    }
+
+    /// Keep the identifiers and tokens of a validated worker projection and
+    /// drop everything else. No label, quote, relation type, Scene
+    /// association or pin is read.
+    pub fn from_projection(projection: &Nir1GraphProjection) -> Result<Self> {
+        let graph = &projection.graph;
+        let hops = graph
+            .nodes
+            .iter()
+            .map(|node| (node.entity.entity_id.as_str(), node.hop))
+            .collect::<HashMap<_, _>>();
+        let mut edges = Vec::with_capacity(graph.edges.len().min(MAX_GRAPH_EDGES));
+        ensure!(
+            graph.edges.len() <= MAX_GRAPH_EDGES,
+            "NIR1_GRAPH_CANDIDATE_EDGE_LIMIT"
+        );
+        for edge in &graph.edges {
+            let from = hops.get(edge.from.entity_id.as_str());
+            let to = hops.get(edge.to.entity_id.as_str());
+            let (Some(from), Some(to)) = (from, to) else {
+                anyhow::bail!("NIR1_GRAPH_CANDIDATE_ENDPOINT_MISSING");
+            };
+            let binding = &edge.binding;
+            edges.push(Nir1GraphCandidateEdge {
+                edge_id: edge.relation.edge_id.clone(),
+                hop: (*from).min(*to),
+                binding: Nir1GraphCandidateBinding {
+                    revision_id: binding.revision_id.clone(),
+                    decision_id: binding.decision_id.clone(),
+                    decision_token: binding.decision_token.clone(),
+                    freshness_token: binding.freshness_token.clone(),
+                    scope_authority_revision: binding.scope_authority_revision.clone(),
+                    query_scene_source_token: binding.query_scene_source_token.clone(),
+                    query_scene_scope_token: binding.query_scene_scope_token.clone(),
+                    query_scene_incarnation_id: binding.query_scene_incarnation_id.clone(),
+                    reveal_state_token: binding.reveal_state_token.clone(),
+                },
+            });
+        }
+        Self::new(
+            projection.project_id.clone(),
+            projection.query_scene_id.clone(),
+            graph.seed_entity_id.clone(),
+            graph.generation,
+            projection.scope_revision.clone(),
+            edges,
+        )
+    }
+
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn query_scene_id(&self) -> &str {
+        &self.query_scene_id
+    }
+
+    pub fn seed_entity_id(&self) -> &str {
+        &self.seed_entity_id
+    }
+
+    pub fn generation(&self) -> i64 {
+        self.generation
+    }
+
+    pub fn scope_revision(&self) -> Option<&str> {
+        self.scope_revision.as_deref()
+    }
+
+    pub fn edges(&self) -> &[Nir1GraphCandidateEdge] {
+        &self.edges
+    }
+}
+
+/// Why the whole Graph contributed nothing to this request. The set is closed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nir1GraphDropReason {
+    /// The request is not the Native selection (a caller-supplied Revision
+    /// list never carries a Graph).
+    NotNativeSelection,
+    /// The candidate was made for another project or another query Scene.
+    ProjectOrSceneMismatch,
+    /// B has no current seal in this snapshot (dirty, stale or not built).
+    SealUnavailable,
+    /// B is sealed at another generation than the one the worker answered
+    /// under.
+    SealMismatch,
+    /// With the Graph groups, the budget would have selected no accepted IR
+    /// item, which D-final requires. The accepted IR groups stay.
+    WouldRemoveRequiredAcceptedIr,
+}
+
+impl Nir1GraphDropReason {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NotNativeSelection => "not-native-selection",
+            Self::ProjectOrSceneMismatch => "project-or-scene-mismatch",
+            Self::SealUnavailable => "seal-unavailable",
+            Self::SealMismatch => "seal-mismatch",
+            Self::WouldRemoveRequiredAcceptedIr => "would-remove-required-accepted-ir",
+        }
+    }
+}
+
+/// Why one candidate Revision contributed no Graph group. The set is closed;
+/// the request continues with the other Revisions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Nir1GraphExclusionReason {
+    /// A2 or A3 reported the Revision unavailable in this snapshot.
+    RevisionUnavailable(NativeNir1RevisionExclusionReason),
+    /// The Native selection did not list the Revision (another project, not
+    /// current, not approved, not a typed Revision, or unknown).
+    RevisionNotSelected,
+    /// At least one of the nine tokens (or the scope revision) differs from
+    /// the value this snapshot derives.
+    BindingMismatch,
+    /// The Revision this snapshot read has no relation with that edge ID.
+    EdgeUnknown,
+}
+
+impl Nir1GraphExclusionReason {
+    pub fn code(self) -> String {
+        match self {
+            Self::RevisionUnavailable(reason) => {
+                format!("revision-unavailable:{}", reason.code())
+            }
+            Self::RevisionNotSelected => "revision-not-selected".into(),
+            Self::BindingMismatch => "binding-mismatch".into(),
+            Self::EdgeUnknown => "edge-unknown".into(),
+        }
+    }
+}
+
+/// One Revision left out of the Graph, with the closed reason.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeNir1GraphExclusion {
+    revision_id: String,
+    reason: Nir1GraphExclusionReason,
+}
+
+impl NativeNir1GraphExclusion {
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub fn reason(&self) -> Nir1GraphExclusionReason {
+        self.reason
+    }
+}
+
+/// One relation whose Graph group is in the candidate set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeNir1GraphGroup {
+    revision_id: String,
+    edge_id: String,
+    group_id: String,
+}
+
+impl NativeNir1GraphGroup {
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub fn edge_id(&self) -> &str {
+        &self.edge_id
+    }
+
+    pub fn group_id(&self) -> &str {
+        &self.group_id
+    }
+}
+
+/// What the Graph candidates did in the snapshot. It holds identifiers and
+/// closed reasons only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeNir1GraphOutcome {
+    dropped: Option<Nir1GraphDropReason>,
+    seal: Option<Nir1GraphSealRead>,
+    groups: Vec<NativeNir1GraphGroup>,
+    excluded: Vec<NativeNir1GraphExclusion>,
+    limited: usize,
+}
+
+impl NativeNir1GraphOutcome {
+    fn dropped(reason: Nir1GraphDropReason) -> Self {
+        Self {
+            dropped: Some(reason),
+            seal: None,
+            groups: Vec::new(),
+            excluded: Vec::new(),
+            limited: 0,
+        }
+    }
+
+    /// Set when no Graph group was made at all.
+    pub fn dropped_reason(&self) -> Option<Nir1GraphDropReason> {
+        self.dropped
+    }
+
+    /// B's seal as this snapshot read it (None when it was not read, or B has
+    /// none).
+    pub fn seal(&self) -> Option<&Nir1GraphSealRead> {
+        self.seal.as_ref()
+    }
+
+    /// The relations whose Graph group is in the candidate set, in pool order
+    /// (hop, then traversal).
+    pub fn groups(&self) -> &[NativeNir1GraphGroup] {
+        &self.groups
+    }
+
+    /// The Revisions left out, in the order the Graph first named them.
+    pub fn excluded(&self) -> &[NativeNir1GraphExclusion] {
+        &self.excluded
+    }
+
+    /// The qualified relations that were not added because the shared input
+    /// envelope was full. Their accepted IR groups stay.
+    pub fn limited_count(&self) -> usize {
+        self.limited
+    }
+}
+
+pub(super) struct GraphPoolContext<'a> {
+    pub candidates: &'a Nir1GraphCandidates,
+    pub project_id: &'a str,
+    pub query_scene_id: &'a str,
+    pub native_selection: bool,
+    /// Number of Raw items at the head of the candidate list.
+    pub raw_item_count: usize,
+    pub budget_tokens: usize,
+    pub purpose: PackingPurpose,
+    /// The Revisions A2 or A3 left out of the pooled read, with their reason.
+    pub excluded: &'a [NativeNir1ExcludedRevision],
+    /// The A2/A3 results of this snapshot (eligible Revisions only).
+    pub bindings: &'a [NativeNir1AuthorityBinding],
+    pub authority_digests: &'a HashMap<String, [u8; 32]>,
+}
+
+/// The nine tokens plus the scope revision of the worker's frame, against the
+/// ones this snapshot derived for the Revision.
+fn tokens_match(
+    edge: &Nir1GraphCandidateEdge,
+    binding: &NativeNir1AuthorityBinding,
+    scope_revision: Option<&str>,
+    query_scene_id: &str,
+) -> bool {
+    let candidate = &edge.binding;
+    let scope = binding.scope();
+    candidate.revision_id == binding.revision_id()
+        && candidate.decision_id == binding.decision().id()
+        && candidate.decision_token == binding.decision_token()
+        && candidate.freshness_token == binding.freshness_token()
+        && candidate.scope_authority_revision == scope.scope_authority_revision()
+        && candidate.query_scene_source_token == scope.query_scene_source_token()
+        && candidate.query_scene_scope_token == scope.query_scene_scope_token()
+        && candidate.query_scene_incarnation_id == scope.query_scene_incarnation_id()
+        && candidate.reveal_state_token == scope.reveal_state_token()
+        && scope.query_scene_id() == query_scene_id
+        && scope_revision == Some(scope.scope_authority_revision())
+}
+
+/// What `reserve_group` charges for a group, without charging it.
+fn group_input_bytes(
+    group_id: &str,
+    parts: &[(grimodex_core::narrative_nir1::AtomicPart, String)],
+) -> Result<usize> {
+    let mut total = 0usize;
+    for (part, text) in parts {
+        let id_len = group_id
+            .len()
+            .checked_add(1)
+            .and_then(|length| length.checked_add(reader_part_name(*part).len()))
+            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native packing input byte count overflow"))?;
+        total = total
+            .checked_add(id_len)
+            .and_then(|bytes| bytes.checked_add(text.len()))
+            .and_then(|bytes| bytes.checked_add(group_id.len()))
+            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native packing input byte count overflow"))?;
+    }
+    Ok(total)
+}
+
+struct RevisionLookup<'a> {
+    evidence_by_id:
+        HashMap<String, crate::narrative_extraction::human_material_basis::MaterialEvidenceEntry>,
+    entities_by_id: HashMap<&'a str, &'a EntityInput>,
+}
+
+/// Requalify the Graph candidates in this snapshot and, for each relation that
+/// passes, replace the relation's accepted IR group with its Graph group.
+///
+/// Nothing here fails the request for a Graph reason: a seal mismatch, a token
+/// mismatch, an unavailable Revision and a full envelope all leave the IR
+/// groups as they were and are reported in the outcome. Only a SQL error, a
+/// cancel and a defect (a Revision this snapshot cannot project) return `Err`.
+pub(super) fn pool_graph_candidates(
+    conn: &Connection,
+    ctx: GraphPoolContext<'_>,
+    input_budget: &mut NativePackingInputBudget,
+    items: &mut Vec<CandidateContextItem>,
+    candidate_owners: &mut HashMap<String, String>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<NativeNir1GraphOutcome> {
+    let candidates = ctx.candidates;
+    if !ctx.native_selection {
+        return Ok(NativeNir1GraphOutcome::dropped(
+            Nir1GraphDropReason::NotNativeSelection,
+        ));
+    }
+    if candidates.project_id != ctx.project_id || candidates.query_scene_id != ctx.query_scene_id {
+        return Ok(NativeNir1GraphOutcome::dropped(
+            Nir1GraphDropReason::ProjectOrSceneMismatch,
+        ));
+    }
+    checkpoint()?;
+    let seal = read_nir1_graph_seal(conn, ctx.project_id)?;
+    checkpoint()?;
+    let Some(seal) = seal else {
+        return Ok(NativeNir1GraphOutcome::dropped(
+            Nir1GraphDropReason::SealUnavailable,
+        ));
+    };
+    if seal.generation != candidates.generation {
+        let mut outcome = NativeNir1GraphOutcome::dropped(Nir1GraphDropReason::SealMismatch);
+        outcome.seal = Some(seal);
+        return Ok(outcome);
+    }
+    let mut outcome = NativeNir1GraphOutcome {
+        dropped: None,
+        seal: Some(seal),
+        groups: Vec::new(),
+        excluded: Vec::new(),
+        limited: 0,
+    };
+
+    // Each (Revision, edge) once, grouped by Revision in first-named order.
+    let mut revision_order = Vec::<&str>::new();
+    let mut edges_by_revision = HashMap::<&str, Vec<(usize, &Nir1GraphCandidateEdge)>>::new();
+    let mut seen_edges = HashSet::<(&str, &str)>::new();
+    for (position, edge) in candidates.edges.iter().enumerate() {
+        if !seen_edges.insert((edge.revision_id(), edge.edge_id.as_str())) {
+            continue;
+        }
+        let entry = edges_by_revision.entry(edge.revision_id()).or_default();
+        if entry.is_empty() {
+            revision_order.push(edge.revision_id());
+        }
+        entry.push((position, edge));
+    }
+    let bindings_by_revision = ctx
+        .bindings
+        .iter()
+        .map(|binding| (binding.revision_id(), binding))
+        .collect::<HashMap<_, _>>();
+    let unavailable_by_revision = ctx
+        .excluded
+        .iter()
+        .map(|excluded| (excluded.revision_id(), excluded.reason()))
+        .collect::<HashMap<_, _>>();
+
+    // A2/A3 and the binding tokens decide per Revision.
+    let mut admitted = Vec::<(u8, usize, &Nir1GraphCandidateEdge)>::new();
+    for revision_id in revision_order {
+        checkpoint()?;
+        let exclude = |outcome: &mut NativeNir1GraphOutcome, reason| {
+            outcome.excluded.push(NativeNir1GraphExclusion {
+                revision_id: revision_id.to_owned(),
+                reason,
+            });
+        };
+        let Some(binding) = bindings_by_revision.get(revision_id) else {
+            let reason = match unavailable_by_revision.get(revision_id) {
+                Some(reason) => Nir1GraphExclusionReason::RevisionUnavailable(*reason),
+                None => Nir1GraphExclusionReason::RevisionNotSelected,
+            };
+            exclude(&mut outcome, reason);
+            continue;
+        };
+        let edges = &edges_by_revision[revision_id];
+        if !edges.iter().all(|(_, edge)| {
+            tokens_match(
+                edge,
+                binding,
+                candidates.scope_revision.as_deref(),
+                ctx.query_scene_id,
+            )
+        }) {
+            exclude(&mut outcome, Nir1GraphExclusionReason::BindingMismatch);
+            continue;
+        }
+        let relation_ids = binding
+            .revision()
+            .bundle
+            .relations
+            .iter()
+            .map(|relation| relation.edge_id.as_str())
+            .collect::<HashSet<_>>();
+        if !edges
+            .iter()
+            .all(|(_, edge)| relation_ids.contains(edge.edge_id.as_str()))
+        {
+            exclude(&mut outcome, Nir1GraphExclusionReason::EdgeUnknown);
+            continue;
+        }
+        admitted.extend(
+            edges
+                .iter()
+                .map(|(position, edge)| (edge.hop, *position, *edge)),
+        );
+    }
+    // Hop first, then the Graph's own traversal order.
+    admitted.sort_by_key(|(hop, position, _)| (*hop, *position));
+
+    struct Replacement {
+        accepted_ir_group_id: String,
+        items: Vec<CandidateContextItem>,
+        group: NativeNir1GraphGroup,
+    }
+    let mut lookups = HashMap::<&str, RevisionLookup<'_>>::new();
+    let mut replacements = Vec::<Replacement>::new();
+    let mut reserved_extra = 0usize;
+    let admitted_count = admitted.len();
+    for (index, (_, _, edge)) in admitted.iter().enumerate() {
+        checkpoint()?;
+        let revision_id = edge.revision_id();
+        let binding = bindings_by_revision[revision_id];
+        let revision = binding.revision();
+        if !lookups.contains_key(revision_id) {
+            let entities_by_id = revision
+                .bundle
+                .entities
+                .iter()
+                .map(|entity| (entity.entity_id.as_str(), entity))
+                .collect::<HashMap<_, _>>();
+            ensure!(
+                entities_by_id.len() == revision.bundle.entities.len(),
+                "NIR-1 Native typed Entity IDs are not unique"
+            );
+            lookups.insert(
+                revision_id,
+                RevisionLookup {
+                    evidence_by_id: material_evidence_map(&revision.material_basis.evidence_set)?,
+                    entities_by_id,
+                },
+            );
+        }
+        let lookup = &lookups[revision_id];
+        let relation = revision
+            .bundle
+            .relations
+            .iter()
+            .find(|relation| relation.edge_id == edge.edge_id)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_GRAPH_RELATION_LOST"))?;
+        let (projection, evidence) =
+            relation_group_material(relation, &lookup.entities_by_id, &lookup.evidence_by_id)?;
+        let parts = group_parts(binding, &relation.edge_id, projection, evidence)?;
+        let group_id = format!(
+            "nir1:graph-evidence:{}:relation:{}",
+            revision.revision_id, relation.edge_id
+        );
+        let accepted_ir_group_id = format!(
+            "nir1:accepted-ir:{}:relation:{}",
+            revision.revision_id, relation.edge_id
+        );
+        // The IR group's bytes are already charged. Only the difference is new.
+        let extra = group_input_bytes(&group_id, &parts)?
+            .saturating_sub(group_input_bytes(&accepted_ir_group_id, &parts)?);
+        if !input_budget.try_reserve_additional(extra) {
+            // A prefix in Graph order is kept; the rest stay accepted IR.
+            outcome.limited = admitted_count - index;
+            break;
+        }
+        reserved_extra += extra;
+        let authority_digest = *ctx
+            .authority_digests
+            .get(revision_id)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_GRAPH_AUTHORITY_DIGEST_LOST"))?;
+        let candidate_binding = candidate_binding_digest(
+            GRAPH_CANDIDATE_BINDING_KIND,
+            authority_digest,
+            &group_id,
+            &parts,
+        )?;
+        let group_items = parts
+            .into_iter()
+            .map(|(part, text)| {
+                adapt_candidate_context_item(
+                    ContextItemKind::GraphEvidence {
+                        id: format!("{group_id}:{}", reader_part_name(part)),
+                        tokens: estimate_nir1_context_tokens(&text),
+                        text,
+                        atomic_group: group_id.clone(),
+                    },
+                    part,
+                    candidate_binding,
+                )
+                .map_err(anyhow::Error::from)
+            })
+            .collect::<Result<Vec<_>>>()?;
+        replacements.push(Replacement {
+            accepted_ir_group_id,
+            items: group_items,
+            group: NativeNir1GraphGroup {
+                revision_id: revision.revision_id.clone(),
+                edge_id: relation.edge_id.clone(),
+                group_id,
+            },
+        });
+    }
+    if replacements.is_empty() {
+        return Ok(outcome);
+    }
+
+    // The swap in a trial list: the replaced accepted IR groups leave, and the
+    // Graph groups follow the Raw items, ahead of the IR groups.
+    let replaced = replacements
+        .iter()
+        .map(|replacement| replacement.accepted_ir_group_id.as_str())
+        .collect::<HashSet<_>>();
+    let mut removed_ids = Vec::new();
+    let mut trial = Vec::with_capacity(items.len());
+    trial.extend(items.iter().take(ctx.raw_item_count).cloned());
+    for replacement in &replacements {
+        trial.extend(replacement.items.iter().cloned());
+    }
+    for candidate in items.iter().skip(ctx.raw_item_count) {
+        match candidate.item() {
+            ContextItemKind::AcceptedIr {
+                id, atomic_group, ..
+            } if replaced.contains(atomic_group.as_str()) => removed_ids.push(id.clone()),
+            _ => trial.push(candidate.clone()),
+        }
+    }
+    ensure!(
+        removed_ids.len() == replacements.len() * super::NATIVE_ATOMIC_PART_COUNT
+            && trial.len() == items.len(),
+        "NIR1_NATIVE_GRAPH_REPLACEMENT_LOST_GROUP"
+    );
+    ensure!(
+        trial.len() <= MAX_PACKING_ITEMS,
+        "NIR-1 Native projected item count {} exceeds MAX_PACKING_ITEMS {MAX_PACKING_ITEMS}",
+        trial.len()
+    );
+
+    // D-final needs at least one accepted IR item in the request. A Graph
+    // group outranks the IR groups, so on a very small budget it could take
+    // the room the only selected IR group had. The Graph never turns a request
+    // that was acceptable into a rejected one: then the IR groups stay.
+    let pack = |list: &[CandidateContextItem]| {
+        pack_candidate_context(CandidatePackingRequest {
+            budget_tokens: ctx.budget_tokens,
+            purpose: ctx.purpose,
+            items: list.to_vec(),
+        })
+        .map_err(anyhow::Error::from)
+    };
+    let has_accepted_ir = |list: &[CandidateContextItem], packed: &PackedContext| {
+        let selected = packed
+            .selected_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        list.iter().any(|candidate| {
+            matches!(candidate.item(), ContextItemKind::AcceptedIr { .. })
+                && selected.contains(super::item_id(candidate.item()))
+        })
+    };
+    checkpoint()?;
+    if !has_accepted_ir(&trial, &pack(&trial)?) && has_accepted_ir(items, &pack(items)?) {
+        input_budget.release_additional(reserved_extra);
+        outcome.dropped = Some(Nir1GraphDropReason::WouldRemoveRequiredAcceptedIr);
+        return Ok(outcome);
+    }
+
+    *items = trial;
+    for id in removed_ids {
+        candidate_owners.remove(&id);
+    }
+    for replacement in replacements {
+        for candidate in &replacement.items {
+            candidate_owners.insert(
+                super::item_id(candidate.item()).to_owned(),
+                replacement.group.revision_id.clone(),
+            );
+        }
+        outcome.groups.push(replacement.group);
+    }
+    Ok(outcome)
+}

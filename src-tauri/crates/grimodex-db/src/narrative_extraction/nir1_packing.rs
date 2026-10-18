@@ -55,6 +55,14 @@ use crate::Database;
 
 #[cfg(feature = "nir1-final-request-eval")]
 pub mod final_request_eval;
+#[cfg(feature = "native-current-human-capture")]
+pub mod graph_candidates;
+#[cfg(feature = "native-current-human-capture")]
+pub use graph_candidates::{
+    NativeNir1GraphExclusion, NativeNir1GraphGroup, NativeNir1GraphOutcome,
+    Nir1GraphCandidateBinding, Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason,
+    Nir1GraphExclusionReason,
+};
 
 const NATIVE_ATOMIC_PART_COUNT: usize = 5;
 
@@ -336,6 +344,10 @@ pub(super) struct NativeNir1PooledPackingRequest<'a> {
     pub budget_tokens: usize,
     pub purpose: PackingPurpose,
     pub raw_items: &'a [NativeNir1RawContextItem],
+    /// Text-free Graph candidates (DI-1a). Only the Native selection attaches
+    /// them; the pooled reader requalifies them in its own snapshot.
+    #[cfg(feature = "native-current-human-capture")]
+    pub graph: Option<&'a Nir1GraphCandidates>,
 }
 
 /// Internal request for the product-side candidate composition. It has no
@@ -347,6 +359,7 @@ pub(super) struct NativeNir1SourcePooledPackingRequest<'a> {
     pub query_scene_id: &'a str,
     pub budget_tokens: usize,
     pub purpose: PackingPurpose,
+    pub graph: Option<&'a Nir1GraphCandidates>,
 }
 
 /// Request-local reference to a persisted Scene Source. The binding is the
@@ -398,6 +411,10 @@ pub(super) struct NativeNir1PooledPackedContext {
     /// candidate items or the packed context. Empty under `Reject`.
     #[cfg(feature = "native-current-human-capture")]
     pub excluded: Vec<NativeNir1ExcludedRevision>,
+    /// What the Graph candidates did in this snapshot; `None` when the request
+    /// carried none.
+    #[cfg(feature = "native-current-human-capture")]
+    pub graph: Option<NativeNir1GraphOutcome>,
 }
 
 /// What the pooled reader does with a Revision that A2 or A3 reports
@@ -486,6 +503,26 @@ impl NativePackingInputBudget {
             "NIR1_NATIVE_RAW_SOURCE_PEAK_LIMIT {MAX_PACKING_INPUT_BYTES}"
         );
         Ok(())
+    }
+
+    /// Charge `bytes` more if the shared envelope still holds them; otherwise
+    /// charge nothing. The Graph swap uses this: a Graph group replaces an
+    /// accepted IR group that is already charged and only adds the difference.
+    #[cfg(feature = "native-current-human-capture")]
+    fn try_reserve_additional(&mut self, bytes: usize) -> bool {
+        match self.used_bytes.checked_add(bytes) {
+            Some(next) if next <= MAX_PACKING_INPUT_BYTES => {
+                self.used_bytes = next;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Give back bytes `try_reserve_additional` charged.
+    #[cfg(feature = "native-current-human-capture")]
+    fn release_additional(&mut self, bytes: usize) {
+        self.used_bytes = self.used_bytes.saturating_sub(bytes);
     }
 
     fn reserve_group(&mut self, group_id: &str, parts: &[(AtomicPart, String)]) -> Result<()> {
@@ -728,6 +765,7 @@ fn pool_native_source_and_context(
         budget_tokens: request.budget_tokens,
         purpose: request.purpose,
         raw_items: std::slice::from_ref(&raw),
+        graph: request.graph,
     };
     let mut packed = read_and_pack_native_a2_context_in_tx_with_raw_charge(
         conn,
@@ -972,6 +1010,9 @@ pub struct NativeNir1PreparedInputs {
     raw_source_binding: NativeNir1RawSourceBinding,
     authority_bindings: Vec<NativeNir1AuthorityBinding>,
     excluded_revisions: Vec<NativeNir1ExcludedRevision>,
+    /// What the Graph candidates did in this snapshot (None when the request
+    /// carried none). It is a record of the read, not an input of the request.
+    graph_outcome: Option<NativeNir1GraphOutcome>,
     /// The history turn context built in the same snapshot, without the D1
     /// fields (K4/3 section 2). `history_draft` completes it.
     history_context: HistoryContextStage,
@@ -1023,6 +1064,14 @@ impl NativeNir1PreparedInputs {
     /// closed reason. Their input rows, references and context are absent.
     pub fn excluded_revisions(&self) -> &[NativeNir1ExcludedRevision] {
         &self.excluded_revisions
+    }
+
+    /// What the Graph candidates did in the D-final snapshot, if the request
+    /// carried any: the groups that took the place of their accepted IR
+    /// groups, the Revisions left out with a closed reason, and a whole-Graph
+    /// drop reason.
+    pub fn graph_outcome(&self) -> Option<&NativeNir1GraphOutcome> {
+        self.graph_outcome.as_ref()
     }
 
     /// The `(kind, target)` set that the current state derives for every
@@ -1540,6 +1589,8 @@ fn read_prepared_inputs_in_snapshot(
                     query_scene_id,
                     budget_tokens: context_budget_tokens,
                     purpose,
+                    // The Graph is requested by a later D-final step (DI-1a S3).
+                    graph: None,
                 },
                 policy,
                 &mut input_budget,
@@ -1607,6 +1658,7 @@ fn build_native_nir1_prepared_inputs(
     let mut selected_revision_ids = Vec::new();
     let mut context_references = Vec::new();
     let mut accepted_ir_count = 0usize;
+    let graph_outcome = pooled.graph.take();
     // Candidates A2 or A3 left out in the pooled read come first, in candidate
     // order; the sealed-basis conflicts found below follow.
     let mut excluded_revisions = std::mem::take(&mut pooled.excluded);
@@ -1843,6 +1895,7 @@ fn build_native_nir1_prepared_inputs(
         raw_source_binding,
         authority_bindings: selected_bindings,
         excluded_revisions,
+        graph_outcome,
         history_context,
     })
 }
@@ -2393,12 +2446,13 @@ fn authority_binding_digest_and_size(
 }
 
 fn candidate_binding_digest(
+    kind: &str,
     authority_digest: [u8; 32],
     group_id: &str,
     parts: &[(AtomicPart, String)],
 ) -> Result<[u8; 32]> {
     let value = json!({
-        "kind": "nir1.native.accepted-ir@1",
+        "kind": kind,
         "groupId": group_id,
         "authorityDigest": format!("sha256:{}", hex::encode(authority_digest)),
         // Keep the exact ordered five-part material bytes in the binding.
@@ -2521,16 +2575,16 @@ fn reader_part_name(part: AtomicPart) -> &'static str {
     }
 }
 
-fn accepted_ir_group(
+/// The five ordered parts of one typed record's group. Both the accepted IR
+/// group and the Graph group of the same relation are made from this, so their
+/// text is the same bytes (DI-1a: the Graph adds no text of its own).
+fn group_parts(
     binding: &NativeNir1AuthorityBinding,
-    authority_digest: [u8; 32],
-    input_budget: &mut NativePackingInputBudget,
-    group_id: &str,
     record_id: &str,
     projection: Value,
     evidence: Value,
-) -> Result<Vec<CandidateContextItem>> {
-    let parts = [
+) -> Result<[(AtomicPart, String); NATIVE_ATOMIC_PART_COUNT]> {
+    Ok([
         (AtomicPart::Statement, canonical_value(&projection)?),
         (AtomicPart::Negation, closed_marker(AtomicPart::Negation)?),
         (
@@ -2542,9 +2596,26 @@ fn accepted_ir_group(
             AtomicPart::Qualification,
             qualification_text(binding, record_id)?,
         ),
-    ];
+    ])
+}
+
+fn accepted_ir_group(
+    binding: &NativeNir1AuthorityBinding,
+    authority_digest: [u8; 32],
+    input_budget: &mut NativePackingInputBudget,
+    group_id: &str,
+    record_id: &str,
+    projection: Value,
+    evidence: Value,
+) -> Result<Vec<CandidateContextItem>> {
+    let parts = group_parts(binding, record_id, projection, evidence)?;
     input_budget.reserve_group(group_id, &parts)?;
-    let candidate_binding = candidate_binding_digest(authority_digest, group_id, &parts)?;
+    let candidate_binding = candidate_binding_digest(
+        "nir1.native.accepted-ir@1",
+        authority_digest,
+        group_id,
+        &parts,
+    )?;
     parts
         .into_iter()
         .map(|(part, text)| {
@@ -2557,6 +2628,63 @@ fn accepted_ir_group(
             adapt_candidate_context_item(item, part, candidate_binding).map_err(Into::into)
         })
         .collect()
+}
+
+/// The statement projection and the Evidence projection of one relation, from
+/// the Revision the snapshot read. The accepted IR group and the Graph group of
+/// the same relation share this function, so a Graph group cannot differ from
+/// the IR group in text.
+fn relation_group_material(
+    relation: &grimodex_core::narrative_nir1::GraphEdgeInput,
+    entities_by_id: &HashMap<&str, &grimodex_core::narrative_nir1::EntityInput>,
+    evidence_by_id: &HashMap<String, MaterialEvidenceEntry>,
+) -> Result<(Value, Value)> {
+    let from = entities_by_id
+        .get(relation.from_entity_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("NIR-1 Native relation source Entity is missing"))?;
+    let to = entities_by_id
+        .get(relation.to_entity_id.as_str())
+        .ok_or_else(|| anyhow::anyhow!("NIR-1 Native relation target Entity is missing"))?;
+    // Resolve relation evidence against the global Material Basis map,
+    // rather than only looking at endpoint-local evidence lists.
+    let relation_evidence = material_evidence_for_ids(&relation.evidence_ids, evidence_by_id)?;
+    let from_evidence = material_evidence_for_ids(
+        &from
+            .evidence
+            .iter()
+            .map(|item| item.evidence_id.clone())
+            .collect::<Vec<_>>(),
+        evidence_by_id,
+    )?;
+    let to_evidence = material_evidence_for_ids(
+        &to.evidence
+            .iter()
+            .map(|item| item.evidence_id.clone())
+            .collect::<Vec<_>>(),
+        evidence_by_id,
+    )?;
+    Ok((
+        json!({
+            "family": "nir1.entity-relation@1",
+            "kind": "relation",
+            "relation": relation,
+            "from": {
+                "entity": from,
+                "materialEvidence": from_evidence,
+            },
+            "to": {
+                "entity": to,
+                "materialEvidence": to_evidence,
+            },
+            "materialEvidence": relation_evidence.clone(),
+        }),
+        json!({
+            "family": "nir1.entity-relation@1",
+            "kind": "relation-evidence",
+            "relationId": relation.edge_id,
+            "materialEvidence": relation_evidence,
+        }),
+    ))
 }
 
 fn adapt_typed_revision_candidates(
@@ -2623,30 +2751,8 @@ fn adapt_typed_revision_candidates(
     }
     for relation in &revision.bundle.relations {
         checkpoint()?;
-        let from = entities_by_id
-            .get(relation.from_entity_id.as_str())
-            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native relation source Entity is missing"))?;
-        let to = entities_by_id
-            .get(relation.to_entity_id.as_str())
-            .ok_or_else(|| anyhow::anyhow!("NIR-1 Native relation target Entity is missing"))?;
-        // Resolve relation evidence against the global Material Basis map,
-        // rather than only looking at endpoint-local evidence lists.
-        let relation_evidence = material_evidence_for_ids(&relation.evidence_ids, &evidence_by_id)?;
-        let from_evidence = material_evidence_for_ids(
-            &from
-                .evidence
-                .iter()
-                .map(|item| item.evidence_id.clone())
-                .collect::<Vec<_>>(),
-            &evidence_by_id,
-        )?;
-        let to_evidence = material_evidence_for_ids(
-            &to.evidence
-                .iter()
-                .map(|item| item.evidence_id.clone())
-                .collect::<Vec<_>>(),
-            &evidence_by_id,
-        )?;
+        let (projection, evidence) =
+            relation_group_material(relation, &entities_by_id, &evidence_by_id)?;
         let group_id = format!(
             "nir1:accepted-ir:{}:relation:{}",
             revision.revision_id, relation.edge_id
@@ -2657,26 +2763,8 @@ fn adapt_typed_revision_candidates(
             input_budget,
             &group_id,
             &relation.edge_id,
-            json!({
-                "family": "nir1.entity-relation@1",
-                "kind": "relation",
-                "relation": relation,
-                "from": {
-                    "entity": from,
-                    "materialEvidence": from_evidence,
-                },
-                "to": {
-                    "entity": to,
-                    "materialEvidence": to_evidence,
-                },
-                "materialEvidence": relation_evidence.clone(),
-            }),
-            json!({
-                "family": "nir1.entity-relation@1",
-                "kind": "relation-evidence",
-                "relationId": relation.edge_id,
-                "materialEvidence": relation_evidence,
-            }),
+            projection,
+            evidence,
         )?;
         for candidate in &group {
             candidate_owners.insert(
@@ -2742,6 +2830,8 @@ pub fn read_and_pack_native_a2_context(
                 budget_tokens: request.budget_tokens,
                 purpose: request.purpose,
                 raw_items: &request.raw_items,
+                #[cfg(feature = "native-current-human-capture")]
+                graph: None,
             },
             &mut input_budget,
             &mut |_| Ok(()),
@@ -2857,6 +2947,8 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
     let mut bindings = Vec::new();
     #[cfg(feature = "native-current-human-capture")]
     let mut excluded = Vec::<NativeNir1ExcludedRevision>::new();
+    #[cfg(feature = "native-current-human-capture")]
+    let mut authority_digests = HashMap::<String, [u8; 32]>::new();
     for revision_id in request.revision_ids {
         checkpoint()?;
         if !seen.insert(revision_id.as_str()) {
@@ -2901,6 +2993,8 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         )?;
         let binding = authority_binding(&disclosure)?;
         let (authority_digest, binding_bytes) = authority_binding_digest_and_size(&binding)?;
+        #[cfg(feature = "native-current-human-capture")]
+        authority_digests.insert(binding.revision_id.clone(), authority_digest);
         let retained_binding_bytes = input_budget
             .retained_binding_bytes
             .checked_add(binding_bytes)
@@ -2918,6 +3012,32 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         )?;
         bindings.push(binding);
     }
+    checkpoint()?;
+    // The Graph is requalified in this same snapshot, after the IR groups: a
+    // relation the Graph qualifies takes the place of its IR group (DI-1a).
+    #[cfg(feature = "native-current-human-capture")]
+    let graph = match request.graph {
+        Some(candidates) => Some(graph_candidates::pool_graph_candidates(
+            conn,
+            graph_candidates::GraphPoolContext {
+                candidates,
+                project_id: request.project_id,
+                query_scene_id: request.query_scene_id,
+                native_selection: policy_is_native_selection(policy),
+                raw_item_count: request.raw_items.len(),
+                budget_tokens: request.budget_tokens,
+                purpose: request.purpose,
+                excluded: &excluded,
+                bindings: &bindings,
+                authority_digests: &authority_digests,
+            },
+            input_budget,
+            &mut items,
+            &mut candidate_owners,
+            checkpoint,
+        )?),
+        None => None,
+    };
     checkpoint()?;
     #[cfg(feature = "nir1-final-request-eval")]
     final_request_eval::observe_candidate_set(
@@ -2943,7 +3063,14 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         raw_source_binding: None,
         #[cfg(feature = "native-current-human-capture")]
         excluded,
+        #[cfg(feature = "native-current-human-capture")]
+        graph,
     })
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn policy_is_native_selection(policy: RevisionUnavailablePolicy) -> bool {
+    matches!(policy, RevisionUnavailablePolicy::Exclude)
 }
 
 #[cfg(test)]

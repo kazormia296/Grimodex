@@ -482,6 +482,7 @@ pub fn prepared_inputs_for_baseline(
         bindings: set.bindings.clone(),
         raw_source_binding: Some(base.raw_source_binding.clone()),
         excluded: Vec::new(),
+        graph: None,
     };
     build_native_nir1_prepared_inputs(
         base.capture.clone(),
