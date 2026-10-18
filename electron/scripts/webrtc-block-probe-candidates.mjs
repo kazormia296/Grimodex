@@ -50,7 +50,71 @@ const AL3_PROXY = { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT",
 // 自己確認の入力（FC-1）。IP literal の resolveHost は、規則（MAP * ~NOTFOUND）が欠けると解決されるので、規則の部分欠落の検出に使う
 const SELFCHECK_HOSTS = ["grimodex-rule-sentinel.invalid", "example.org", "redirector.gvt1.com", "github.com", "release-assets.githubusercontent.com", "api.github.com", "localhost", "127.0.0.1", "127.0.0.2", "1.1.1.1"];
 
+// ── NC-1（K3/3。NC-1 の lane、S3）: 製品の NC-1 の module を import した試験 main での G-open の構成 ──
+// `nc1` は probe の main が製品の module を適用する指定。drop が空なら製品の orchestrator を index.ts と同じ順序で当てる。
+// drop に policy／proxy／neg-loopback／rules を入れた構成は、機構を 1 つ外した制御の構成（probe の main だけが持つ）。
+// prefixRules は製品の buildHostResolverRules(prefixRules) に渡す試験専用の差し込み口（名前の写し。製品の呼出しは引数なし）。
+// 閉じ込めなしの対照は同じ行列の `*-baseline`（cm に nc1 を書かない）。行列は対照と最終で同じにする（RJ は対照にない行を不合格にする）。
+const NC1_PREFIX_RULES = HARNESS_PREFIX.split(", ").filter((rule) => rule.length > 0);
+// (23a) の形: 名前を末尾 dot つきも含めて canary に写す。(30b) の churn と再読込・遷移の localhost の行を足す
+const NC1_ROWS_FM = { gvt1: true, localhostRows: true, fqdn: true, reload: true, churn: true };
+// (23b) の形: 実 DNS。link-local、`.local`（UDP 5353 の観測）、再読込・遷移の localhost の行を足す
+const NC1_ROWS_LL = { dns: true, gvt1: true, localhostRows: true, linklocal: true, local: true, reload: true };
+const NC1_ROWS_FQ = { dns: true, gvt1: true, localhostRows: true, linklocal: true, fqdn: true };
+const NC1_ROWS_NL = { dns: true, gvt1: true, localhostRows: true, rs1: true };
+const NC1_ROWS_SX = { dns: true, secx: true, localhostRows: true };
+// (33): 更新（electron-updater 方式）と env の proxy。noProbes の行列なし
+const NC1_UPDATER = { noProbes: true, realUpdater: true, spellcheck: true, waitMs: 9000, resolveHostTests: ["github.com", "localhost"] };
+const nc1Final = (rows, extra = {}) => ({ cm: { ...rows, nc1: {}, resolveHostTests: SELFCHECK_HOSTS, ...extra.cm }, args: [], realNetwork: true, dnsLog: true, ...extra.cand });
+const NC1_DEFS = {
+  // ── (23a): 名前の写し（prefix）を当てた proxy と policy の層の単独の合否 ──
+  "nc1-fm-baseline": { cm: { ...NC1_ROWS_FM }, args: [], dnsLog: true },
+  "nc1-fm-final": { cm: { ...NC1_ROWS_FM, nc1: { prefixRules: NC1_PREFIX_RULES } }, args: [], realNetwork: true, dnsLog: true },
+  // (29): 機構を 1 つずつ外した (23a) の形
+  "nc1-fm-no-policy": { cm: { ...NC1_ROWS_FM, nc1: { drop: ["policy"], prefixRules: NC1_PREFIX_RULES } }, args: [], realNetwork: true, dnsLog: true },
+  "nc1-fm-no-proxy": { cm: { ...NC1_ROWS_FM, nc1: { drop: ["proxy"], prefixRules: NC1_PREFIX_RULES } }, args: [], realNetwork: true, dnsLog: true },
+  "nc1-fm-no-neg-loopback": { cm: { ...NC1_ROWS_FM, nc1: { drop: ["neg-loopback"], prefixRules: NC1_PREFIX_RULES } }, args: [], realNetwork: true, dnsLog: true },
+  // ── (23b): 実 DNS の rules（prefix なし）。ll／fq／nl／sx の 4 つの形 ──
+  "nc1-ll-baseline": { cm: { ...NC1_ROWS_LL }, args: [], realNetwork: true, dnsLog: true, mdns: true },
+  "nc1-ll-final": { ...nc1Final(NC1_ROWS_LL), mdns: true },
+  "nc1-fq-baseline": { cm: { ...NC1_ROWS_FQ }, args: [], realNetwork: true, dnsLog: true },
+  "nc1-fq-final": nc1Final(NC1_ROWS_FQ),
+  "nc1-nl-baseline": { cm: { ...NC1_ROWS_NL }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  "nc1-nl-final": { ...nc1Final(NC1_ROWS_NL), netLog: true },
+  "nc1-sx-baseline": { cm: { ...NC1_ROWS_SX }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  "nc1-sx-final": { ...nc1Final(NC1_ROWS_SX), netLog: true },
+  // ── (32): DoH の canary による名前の観測（getaddrinfo を使わない。nl の行列、net log つき）──
+  "nc1-doh-baseline": { cm: { ...NC1_ROWS_NL, doh: true }, args: [], realNetwork: true, doh: true, netLog: true },
+  "nc1-doh-final": { ...nc1Final(NC1_ROWS_NL, { cm: { doh: true } }), doh: true, dnsLog: false, netLog: true },
+  // ── (23c): (23b) の途中で network service を SIGKILL して再起動させた後 ──
+  "nc1-ll-kill": { ...nc1Final(NC1_ROWS_LL, { cm: { killNetworkService: true } }), mdns: true },
+  // ── (29): 機構を 1 つずつ外した (23b) の形（<-loopback> と policy は link-local の行で「canary 0 のまま不合格」を示す。rules は名前の観測で示す）──
+  "nc1-ll-no-neg-loopback": { cm: { ...NC1_ROWS_LL, nc1: { drop: ["neg-loopback"] }, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, mdns: true },
+  "nc1-ll-no-policy": { cm: { ...NC1_ROWS_LL, nc1: { drop: ["policy"] }, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, mdns: true },
+  "nc1-nl-no-rules": { cm: { ...NC1_ROWS_NL, nc1: { drop: ["rules"] } }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  // ── (33): 更新と OS／env の proxy（AL-0 の構成で取り直す）。w0 は閉じ込めなしの対照 ──
+  "nc1-w0-envproxy-localhost-baseline": { cm: { ...NC1_UPDATER }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "localhost" },
+  "nc1-w2-envproxy-localhost-final": { cm: { ...NC1_UPDATER, nc1: {} }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "localhost" },
+  "nc1-w3-envproxy-127-final": { cm: { ...NC1_UPDATER, nc1: {} }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "127.0.0.1" },
+  "nc1-w4-envproxy-lan-final": { cm: { ...NC1_UPDATER, nc1: {} }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "lan" },
+  "nc1-w5-envproxy-hostname-final": { cm: { ...NC1_UPDATER, nc1: {} }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "hostname" },
+  // 外部網に依存する更新の確認と asset の取得（合否にせず、結果と日時を記録する）
+  "nc1-upd-baseline": { cm: { noProbes: true, realUpdater: true, realRedirect: "https://github.com/electron/electron/releases/download/v43.5.0/SHASUMS256.txt" }, args: [], realNetwork: true, dnsLog: true },
+  "nc1-upd-final": { cm: { noProbes: true, realUpdater: true, realRedirect: "https://github.com/electron/electron/releases/download/v43.5.0/SHASUMS256.txt", nc1: {} }, args: [], realNetwork: true, dnsLog: true },
+  // ── 実機の観測（DR-NC1-9／18 の引き継ぎ）──
+  // DevTools の webContents は default session か（NC-SESSION を誤って起こさないか）
+  "nc1-devtools": { cm: { noProbes: true, devtools: true, nc1: {} }, args: [], realNetwork: true },
+  // NC-SESSION: default session でない窓。製品は何も読み込ませず破棄し、graceful な終了に入る（SIGSEGV しない）。none は閉じ込めなしの対照（server に届く）
+  "nc1-session-fail": { cm: { noProbes: true, ncSession: true, nc1: {} }, args: [], realNetwork: true },
+  "nc1-session-none": { cm: { noProbes: true, ncSession: true }, args: [], realNetwork: true },
+  // NC-POLICY の注入（実 webContents の policy の適用を失敗させる）。ok は policy が当たって script が走る正の対照、none は閉じ込めなし（script が走り UDP が canary に届く）
+  "nc1-policy-fail": { cm: { noProbes: true, pageRan: true, nc1: { failPolicy: true } }, args: [], realNetwork: true },
+  "nc1-policy-ok": { cm: { noProbes: true, pageRan: true, nc1: {} }, args: [], realNetwork: true },
+  "nc1-policy-none": { cm: { noProbes: true, pageRan: true }, args: [], realNetwork: true },
+};
+
 export const CANDIDATES = {
+  ...NC1_DEFS,
   baseline: { cm: {}, args: [] },
   // (a) default session の PAC
   "a1-default-pac": { cm: { target: "default", proxy: { mode: "pac_script", pacScript: pacUrl(PAC) } }, args: [], netLog: true },
@@ -219,6 +283,7 @@ if (import.meta.url === `file://${process.argv[1]}` && argv.length > 0) {
       ...(cand.proxyMode ? ["--proxy-mode", cand.proxyMode] : []),
       ...(cand.realNetwork ? ["--real-network"] : []),
       ...(cand.doh ? ["--doh"] : []),
+      ...(cand.mdns ? ["--mdns"] : []),
       ...(cand.fakeHttpProxy ? ["--fake-http-proxy"] : []),
       ...(cand.fakeProxyForm ? ["--fake-proxy-form", cand.fakeProxyForm] : []),
       ...(cand.clearDesktop ? ["--clear-desktop"] : []),

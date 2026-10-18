@@ -7,6 +7,9 @@
  * 環境: none = OS／環境の proxy なし。ip = http_proxy／https_proxy が http://127.0.0.1:<port>。
  *       localhost = http://localhost:<port>（どちらも CONNECT を記録する小さな proxy。既定は 502 を返し外へは出さない。
  *       --tunnel のときだけ CONNECT 先へ中継する＝実網の Google の辞書 URL へ GET が出る。Electron の通常の動作と同じ）。
+ * NC-1（S3）の追記: mode に product-nc1（製品の NC-1 の module を index.ts と同じ順序で呼ぶ）と product-none（同じ順序で
+ *       NC-1 だけを呼ばない対照）を足した。製品の module を使うので、main を esbuild で束ねてから Electron で起動する。
+ *       行に nc1Ms（start() の所要。自己確認を含む）、readyToWindowLoadedMs（ready から窓の読込の完了まで）を足す。
  * 出力: 実行ごとの timeline、辞書の要求（net log の URL_REQUEST_START_JOB の gvt1.com）の開始時刻と行き先、
  *       env の proxy が受けた CONNECT、blackhole の listener への接続、Dictionaries/ の file。
  */
@@ -17,6 +20,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import esbuild from "esbuild";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, "..", "..");
@@ -69,7 +73,23 @@ function parseNetLog(file) {
   return { requests: [...reqs.values()].map((r) => ({ ...r, proxyInfo: [...new Set(r.proxyInfo)], hostResolver: [...new Set(r.hostResolver)] })) };
 }
 
+/** 製品の module を import する main を 1 度だけ束ねる（実行ごとの work には置かない） */
+let bundledMain = null;
+async function bundleMain() {
+  if (bundledMain) return bundledMain;
+  const dir = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "grimodex-ord-bundle-"));
+  const outfile = path.join(dir, "main.cjs");
+  await esbuild.build({
+    entryPoints: [path.join(here, "webrtc-block-probe-order-main.cjs")],
+    outfile, bundle: true, platform: "node", format: "cjs", target: "node22", external: ["electron", "*.node"], logLevel: "error",
+  });
+  fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "ord-probe", version: "0.0.1", main: "main.cjs" }));
+  bundledMain = { dir, outfile };
+  return bundledMain;
+}
+
 async function once(i) {
+  const bundle = await bundleMain();
   const work = fs.mkdtempSync(path.join(process.env.TMPDIR ?? os.tmpdir(), "grimodex-ord-"));
   const connects = [];
   const proxy = http.createServer((req, res) => { connects.push({ at: Date.now(), line: `${req.method} ${req.url}` }); res.statusCode = 502; res.end(); });
@@ -100,7 +120,7 @@ async function once(i) {
   const electronDir = path.join(root, "node_modules/electron");
   const bin = path.join(electronDir, "dist", fs.readFileSync(path.join(electronDir, "path.txt"), "utf8").trim());
   const netlog = path.join(work, "netlog.json");
-  const child = spawn(process.execPath, [path.join(root, "scripts/local-ci-xvfb.mjs"), bin, `--log-net-log=${netlog}`, "--net-log-capture-mode=Everything", path.join(here, "webrtc-block-probe-order-main.cjs")], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  const child = spawn(process.execPath, [path.join(root, "scripts/local-ci-xvfb.mjs"), bin, `--log-net-log=${netlog}`, "--net-log-capture-mode=Everything", bundle.outfile], { env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   let out = "";
   child.stdout.on("data", (d) => (out += d)); child.stderr.on("data", (d) => (out += d));
   const timer = setTimeout(() => { try { process.kill(-child.pid, "SIGTERM"); } catch {} }, 90000);
@@ -123,6 +143,9 @@ async function once(i) {
       startBeforeSetProxyDone: setProxyDone != null ? r.startAt < setProxyDone : null,
       proxyInfo: r.proxyInfo, hostResolver: r.hostResolver, netError: r.netError,
     })),
+    nc1Ms: t["nc1 start begin"] != null && t["nc1 start done"] != null ? t["nc1 start done"] - t["nc1 start begin"] : null,
+    nc1Marks: Object.fromEntries(["appendSwitch host-resolver-rules (before ready)", "registerSecurityHandlers (before ready)", "registerWebContentsPolicy (before ready)", "nc1 start begin", "listener up", "defaultSession first touch", "setProxy start", "setProxy done", "closeAllConnections done", "nc1 start done", "applySessionPermissionPolicy done", "installProductDownloadGuard done", "registerAppProtocolHandler done", "BrowserWindow created", "window loaded"].filter((k) => t[k] != null).map((k) => [k, t[k] - t.ready])),
+    readyToWindowLoadedMs: t["window loaded"] != null ? t["window loaded"] - t.ready : null,
     envProxyConnects: connects.map((c) => ({ msFromReady: c.at - t.ready, line: c.line })),
     blackholeHits: (result?.blackholeHits ?? []).length,
     dictionaries: result?.dictionaries ?? null,
@@ -139,6 +162,11 @@ const rows = [];
 for (let i = 0; i < repeat; i += 1) rows.push(await once(i));
 const outText = JSON.stringify({ args: { mode, env: envKind, preDelay, nc1Delay, repeat, tunnel, rules }, rows }, null, 2);
 if (outFile) fs.writeFileSync(outFile, outText + "\n");
+const stat = (xs) => { const v = xs.filter((x) => x != null).sort((a, b) => a - b); return v.length ? `min ${v[0]}／中央 ${v[Math.floor(v.length / 2)]}／max ${v[v.length - 1]}（${v.length} 回）` : "なし"; };
+if (mode.startsWith("product-")) {
+  console.log(`NC-1 の所要（start() 全体。自己確認を含む）ms: ${stat(rows.map((r) => r.nc1Ms))}`);
+  console.log(`ready から窓の読込の完了まで ms: ${stat(rows.map((r) => r.readyToWindowLoadedMs))}`);
+}
 for (const r of rows) {
   console.log(`mode=${r.mode} env=${r.env} preDelay=${r.preDelay} #${r.run}: dict要求 ${r.dictionaryRequests.length} 件 ${JSON.stringify(r.dictionaryRequests.map((d) => ({ at: Math.round(d.startMsFromReady), beforeSetProxy: d.startBeforeSetProxyDone, proxy: d.proxyInfo, err: d.netError })))} envProxy:${JSON.stringify(r.envProxyConnects.map((c) => c.line))} blackhole:${r.blackholeHits} files:${JSON.stringify(r.dictionaries)}`);
 }

@@ -14,6 +14,14 @@
  *   proxy の listener への到達 = 「proxy へ向けた」。
  * 起動の規則: WAYLAND_DISPLAY、XDG_SESSION_TYPE、DBUS_SESSION_BUS_ADDRESS、env の proxy を外す。
  * `unshare -n` は使わない。
+ *
+ * NC-1（K3/3。NC-1 の lane、S3）の追記:
+ * - `--mdns`: `.local` の観測。UDP 5353 の multicast（224.0.0.251）に参加する受信 socket を立て、nonce を含む
+ *   問合せ（`.local` の行の名前）を行の時間窓ごとに数える（`rows[].mdnsQueries`、`mdns`）。参加できなければ
+ *   `mdns.joined=false`（観測できない環境。draft の `.local` の規則では「未検証」）。
+ * - 製品の NC-1 の listener（Main が持つ）への接続は、probe の main が数えて result.nc1.listenerHits で返す。
+ *   行の proxied はそれを runner の listener の hits と合わせて数える。
+ * - Main（Node）から loopback の受信 socket への接続の確認用に、`ctl` の TCP socket を立てる（canary ではない）。
  */
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -53,6 +61,7 @@ function parseArgs(argv) {
     else if (a === "--out") args.out = path.resolve(argv[++i]);
     else if (a === "--keep") args.keep = true;
     else if (a === "--net-log") args.netLog = true;
+    else if (a === "--mdns") args.mdns = true;
     else if (a === "--real-network") args.realNetwork = true;
     else if (a === "--doh") args.doh = true;
     else if (a === "--fake-http-proxy") args.fakeHttpProxy = true;
@@ -175,6 +184,51 @@ async function startProxyListener() {
   };
 }
 
+/** Main（Node）から loopback の受信 socket への接続の確認用（canary ではない）。接続を数えるだけ */
+async function startCtlSocket() {
+  const hits = [];
+  const server = net.createServer((socket) => {
+    hits.push({ at: Date.now() });
+    socket.on("error", () => {});
+    socket.setTimeout(2000, () => socket.destroy());
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { port: server.address().port, hits, close: () => new Promise((r) => server.close(() => r())) };
+}
+
+/**
+ * `.local` の観測: UDP 5353 の multicast（224.0.0.251）の受信 socket。nonce を含む問合せだけを数える
+ * （同じ LAN の他の mDNS の通信を数えない）。参加できなければ joined=false（観測できない環境）。
+ */
+async function startMdnsObserver(nonce, lan) {
+  const packets = [];
+  let all = 0;
+  const state = { joined: false, error: null, iface: lan };
+  const socket = dgram.createSocket({ type: "udp4", reuseAddr: true });
+  socket.on("error", (error) => { state.error = String(error?.message ?? error); });
+  socket.on("message", (message) => {
+    all += 1;
+    if (message.toString("latin1").includes(nonce)) packets.push({ at: Date.now() });
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      socket.once("error", reject);
+      socket.bind(5353, "0.0.0.0", () => { socket.off("error", reject); resolve(); });
+    });
+    socket.setMulticastLoopback(true);
+    socket.addMembership("224.0.0.251", lan ?? undefined);
+    state.joined = true;
+  } catch (error) {
+    state.error = String(error?.message ?? error);
+  }
+  return {
+    state,
+    packets,
+    seenAll: () => all,
+    close: () => new Promise((r) => { try { socket.close(() => r()); } catch { r(); } }),
+  };
+}
+
 async function startHttp(pageHeader) {
   const hits = [];
   const server = http.createServer((req, res) => {
@@ -186,7 +240,7 @@ async function startHttp(pageHeader) {
       res.end("<!doctype html><title>Grimodex</title><p>page</p>");
       return;
     }
-    hits.push({ at: Date.now(), host: req.headers.host });
+    hits.push({ at: Date.now(), host: req.headers.host, url: String(req.url).slice(0, 60) });
     res.end("ok");
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -197,7 +251,7 @@ async function startHttp(pageHeader) {
   };
 }
 
-async function buildBundles(work) {
+async function buildBundles(work, ports) {
   const bundle = path.join(work, "bundle");
   const dist = path.join(work, "dist");
   fs.mkdirSync(path.join(dist, "assets"), { recursive: true });
@@ -243,6 +297,19 @@ import ${JSON.stringify(path.join(root, "electron", "preload", "index.ts"))};
   fs.writeFileSync(path.join(dist, "assets", "data.json"), "{}");
   fs.writeFileSync(path.join(dist, "assets", "app.js"), "// no-op");
   fs.writeFileSync(path.join(dist, "assets", "probe-worker.js"), "self.onmessage = (e) => self.postMessage('worker-ok:' + e.data);");
+  // NC-POLICY の観測用ページ: 読み込まれて script が走れば beacon を app:// の handler に送り、STUN（UDP）を canary q へ試みる。
+  // 窓が破棄されて script が走らなければ、どちらも起きない（policy が当たっていない窓で何かが走るかの対照）
+  fs.writeFileSync(path.join(dist, "page-ran.html"), '<!doctype html><html><head><meta charset=utf-8><title>ran</title></head><body><script src="/assets/ran.js"></script></body></html>');
+  fs.writeFileSync(
+    path.join(dist, "assets", "ran.js"),
+    `fetch('/beacon-ran').catch(() => {});
+try {
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:${ports.q}' }] });
+  pc.createDataChannel('x');
+  pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => {});
+} catch (e) { /* 無視 */ }
+`,
+  );
   return { bundle, dist };
 }
 
@@ -387,6 +454,8 @@ async function main() {
     args.env = { ...(args.env ?? {}), https_proxy: `http://${hostPart}:${fakeHttp.port}`, http_proxy: `http://${hostPart}:${fakeHttp.port}` };
   }
   const httpd = await startHttp(args.cm.pageHeader);
+  const ctl = await startCtlSocket();
+  const mdns = args.mdns ? await startMdnsObserver(nonce, lan) : null;
   let proxyPort = proxy.port;
   if (args.proxyMode === "closed") {
     // 閉じた port（listener なし）を proxy として使う
@@ -404,12 +473,12 @@ async function main() {
     lan: lan ?? "192.0.2.1",
     ports: {
       p: canaries[0].port, q: canaries[1].port, r: canaries[2].port,
-      s: canaries[3].port, t: canaries[4]?.port ?? 1, proxy: proxyPort, http: httpd.port, doh: doh?.port ?? 0, fake: fakeHttp?.port ?? 0,
+      s: canaries[3].port, t: canaries[4]?.port ?? 1, proxy: proxyPort, http: httpd.port, doh: doh?.port ?? 0, fake: fakeHttp?.port ?? 0, ctl: ctl.port,
     },
   };
   fs.mkdirSync(cfg.userData, { recursive: true });
   try {
-    const { bundle } = await buildBundles(work);
+    const { bundle } = await buildBundles(work, cfg.ports);
     const run = await runElectron({ work, bundle, cfg, args });
     if (!fs.existsSync(cfg.resultPath)) {
       console.error(run.output.slice(-3000));
@@ -420,10 +489,12 @@ async function main() {
     const all = [...result.rendererResults, ...result.mainSide].filter((r) => r.startedAt);
     const rows = [];
     const owned = new Set();
+    // 製品の NC-1 の listener は Main が持つ。probe の main が数えた接続の時刻を、runner の listener の hits と合わせる
+    const proxyHits = [...proxy.hits, ...(result.nc1?.listenerHits ?? []).map((at) => ({ at, head: "" }))];
     for (const r of all) {
       const direct = canaries.flatMap((c) => c.hits)
         .filter((h) => h.at >= r.startedAt && h.at <= r.endedAt);
-      const prox = proxy.hits.filter((h) => h.at >= r.startedAt && h.at <= r.endedAt);
+      const prox = proxyHits.filter((h) => h.at >= r.startedAt && h.at <= r.endedAt);
       const hh = httpd.hits.filter((h) => h.at >= r.startedAt && h.at <= r.endedAt);
       direct.forEach((h) => owned.add(h));
       const byLabel = {};
@@ -454,6 +525,12 @@ async function main() {
         row.dohNames = [...new Set(doh.queries.filter((q) => q.at >= r.startedAt - 50 && q.at <= r.endedAt + 50).map((q) => `${q.name.split(nonce).join("<n>")}/${q.qtype}`))];
       }
     }
+    if (mdns) {
+      for (const row of rows) {
+        const r = all.find((x) => x.id === row.id);
+        row.mdnsQueries = mdns.packets.filter((p) => p.at >= r.startedAt - 50 && p.at <= r.endedAt + 50).length;
+      }
+    }
     if (dnsEvents) {
       for (const row of rows) {
         const r = all.find((x) => x.id === row.id);
@@ -475,8 +552,16 @@ async function main() {
         probes: rows.length,
         canaryHits: canaries.flatMap((c) => c.hits).length,
         unattributed: unattributed.length,
-        proxyHits: proxy.hits.length,
+        proxyHits: proxyHits.length,
+        mdnsQueries: mdns ? mdns.packets.length : null,
+        ctlHits: ctl.hits.length,
       },
+      exit: { code: run.code, signal: run.signal },
+      nc1: result.nc1 ? { ...result.nc1, listenerHits: result.nc1.listenerHits.length } : null,
+      extra: result.extra ?? null,
+      appRequests: result.appRequests ?? null,
+      httpdHits: httpd.hits.filter((h) => /ctl-ncsession/.test(h.url ?? "")).length,
+      mdns: mdns ? { ...mdns.state, seenAll: mdns.seenAll(), nonceBearing: mdns.packets.length } : null,
       rows,
       webRequestSeen: result.webRequestSeen,
       dohAll: doh ? [...new Set(doh.queries.map((q) => q.name.split(nonce).join("<n>")))] : null,
@@ -489,7 +574,10 @@ async function main() {
       timedOut: run.timedOut,
       runStdoutTail: run.output.slice(-400),
     };
-    const text = JSON.stringify(out, null, 2).split(nonce).join("<n>");
+    // 記録に残す前に、この機の LAN の IPv4 と hostname を伏せる（測定の記録と同じ表記: <lan>、<host>）
+    let text = JSON.stringify(out, null, 2).split(nonce).join("<n>");
+    if (lan) text = text.split(lan).join("<lan>");
+    if (cfg.hostname) text = text.split(cfg.hostname).join("<host>");
     if (args.out) fs.writeFileSync(args.out, text + "\n");
     // 要約
     console.log(`== ${args.label} (electron ${result.electron}) ${result.events.join("; ")}`);
@@ -501,6 +589,9 @@ async function main() {
         `${tag} ${r.id.padEnd(34)} ${JSON.stringify(r.leakDetail)}${r.proxied ? ` proxied=${r.proxied} ${JSON.stringify(r.proxyHeads[0] ?? "")}` : ""}${r.httpHits ? ` httpHits=${r.httpHits}` : ""} -> ${r.outcome.slice(0, 60)}`,
       );
     }
+    if (out.nc1) console.log(`nc1: startOk=${out.nc1.startOk} startMs=${out.nc1.startMs} listenerHits=${out.nc1.listenerHits} overLimit=${out.nc1.overLimit} maxActive=${out.nc1.maxActive} failures=${JSON.stringify(out.nc1.failures)} uncaught=${out.nc1.uncaught.length} exit=${JSON.stringify(out.exit)}`);
+    if (out.mdns) console.log(`mdns: ${JSON.stringify(out.mdns)}`);
+    if (out.extra && Object.keys(out.extra).length) console.log(`extra: ${JSON.stringify(out.extra).slice(0, 600)}`);
     console.log(`unattributed canary hits: ${unattributed.length} ${JSON.stringify(unattributed.map((h) => `${h.label}:${h.proto}`))}`);
     console.log(`proxy listener heads (all): ${JSON.stringify(proxy.hits.map((h) => h.head.replace(/[^\x20-\x7e]/g, ".").split("..")[0].slice(0, 70)).filter((h) => !/probe\.test|blocked\.invalid/.test(h)).slice(0, 12))}`);
     if (out.netLog) console.log(`netlog urls: ${JSON.stringify(out.netLog.urls)} proxyInfos: ${JSON.stringify(out.netLog.proxyInfos)}`);
@@ -508,7 +599,7 @@ async function main() {
     if (result.webRequestSeen) console.log(`webRequest saw: ${JSON.stringify(result.webRequestSeen)}`);
     if (args.keep) console.log(`work dir kept: ${work}`);
   } finally {
-    await Promise.all([...canaries.map((c) => c.close()), proxy.close(), ...(doh ? [doh.close()] : []), httpd.close(), ...(fakeHttp ? [fakeHttp.close()] : [])]);
+    await Promise.all([...canaries.map((c) => c.close()), proxy.close(), ...(doh ? [doh.close()] : []), httpd.close(), ctl.close(), ...(mdns ? [mdns.close()] : []), ...(fakeHttp ? [fakeHttp.close()] : [])]);
     if (!args.keep) fs.rmSync(work, { recursive: true, force: true });
   }
 }

@@ -65,6 +65,16 @@
     return `gathering:${state}`;
   };
 
+  // ── 再読込・遷移の後の localhost の TURN／STUN（NC-1 の DA-1 が足す行。policy と proxy の持続）──
+  // main が窓を再読込（persist=reload）または遷移（persist=nav）した後に、この script を persist つきで再実行する
+  if (globalThis.__probe.persist) {
+    const tag = globalThis.__probe.persist;
+    for (const proto of ["stun", "turn-udp", "turn-tcp", "turns"]) {
+      await settle(`main.${proto}.${tag}-localhost`, () => rtcAttempt(RTCPeerConnection, proto, "localhost", ports.p));
+    }
+    return results;
+  }
+
   // ── 対照 ─────────────────────────────────────────────────────────────
   await settle("control.same-origin-fetch", async () => {
     const res = await fetch("/index.html");
@@ -159,6 +169,56 @@
     ]) {
       await settle(`main.${id}`, () => remoteCandidate(RTCPeerConnection, line), 6000);
     }
+  }
+
+  // ── `.local`（mDNS）の行（NC-1 の DA-1 が足す行）: dns-prefetch と TURN／STUN の `.local`。
+  // 観測は runner の UDP 5353 の multicast の受信 socket（`mdnsQueries`）。判定は draft の `.local` の規則だけ。
+  // 行 id は道具の classify が `mdns`（判定しない行）として扱う形（`local-name`）にする
+  if (globalThis.__probe.local) {
+    const lname = (tag) => `${tag}-${nonce}.local`;
+    await settle("local-name.dns-prefetch", async () => {
+      const l = document.createElement("link");
+      l.rel = "dns-prefetch";
+      l.href = `//${lname("dnspf")}`;
+      document.head.append(l);
+      await wait(900);
+      return "link:dns-prefetch";
+    }, 3000);
+    for (const proto of ["stun", "turn-udp", "turn-tcp"]) {
+      await settle(`local-name.${proto}`, () => rtcAttempt(RTCPeerConnection, proto, lname(proto.replace(/[^a-z]/g, "")), ports.p));
+    }
+  }
+
+  // ── (30b) RTCPeerConnection の開閉の反復（NC-1 の listener の頑健性）──────────────
+  // 同時 256 の上限を超える数の TURN-TCP の接続を、開閉を繰り返して起こす。上限超過の接続は Main の listener が受けた直後に切る。
+  // 切断が続く間も canary への到達が 0（Chromium が DIRECT へ落ちない）で、窓が生きていること。
+  // 行 id は道具の classify が TCP の行として扱う形（`main.turn-tcp.*`）にする: 合格 = canary 0 かつ listener への接続 1 以上
+  if (globalThis.__probe.churn) {
+    const dests = [
+      `127.0.0.1:${ports.q}`, `127.0.0.1:${ports.p}`, `127.0.0.2:${ports.r}`, `[::1]:${ports.s}`,
+      `${lan}:${ports.t}`, `localhost:${ports.p}`, `127.1:${ports.q}`, `0x7f.1:${ports.p}`,
+    ];
+    await settle("main.turn-tcp.churn", async () => {
+      const t0 = Date.now();
+      let opened = 0;
+      while (Date.now() - t0 < 6000) {
+        const batch = [];
+        for (let i = 0; i < 50; i += 1) {
+          const iceServers = dests.map((d) => ({ urls: `turn:${d}?transport=tcp`, username: "u", credential: "c" }));
+          const pc = new RTCPeerConnection({ iceServers });
+          pc.createDataChannel("churn");
+          pc.createOffer().then((o) => pc.setLocalDescription(o)).catch(() => {});
+          batch.push(pc);
+          opened += 1;
+        }
+        await wait(700);
+        for (const pc of batch) pc.close();
+        await wait(100);
+      }
+      return `churn:${opened}`;
+    }, 20000);
+    // churn の後も新しい接続が blackhole へ向く（窓が生きている）
+    await settle("main.turn-tcp.after-churn", () => rtcAttempt(RTCPeerConnection, "turn-tcp", "127.0.0.1", ports.q));
   }
 
   // ── 新しい realm（iframe、about:blank、srcdoc、blob、window.open）──────────────
