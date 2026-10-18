@@ -51,6 +51,9 @@ use crate::nir1_generation::{
 use crate::state::ActiveWorkspaceSnapshot;
 use crate::Database;
 
+#[cfg(feature = "nir1-final-request-eval")]
+pub mod final_request_eval;
+
 const NATIVE_ATOMIC_PART_COUNT: usize = 5;
 
 /// Raw context supplied to the request-local Native packing boundary. Reader
@@ -2441,6 +2444,14 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         bindings.push(binding);
     }
     checkpoint()?;
+    #[cfg(feature = "nir1-final-request-eval")]
+    final_request_eval::observe_candidate_set(
+        &request,
+        &items,
+        &candidate_owners,
+        &bindings,
+        &raw_budget_charge,
+    );
     let packed = pack_candidate_context(CandidatePackingRequest {
         budget_tokens: request.budget_tokens,
         purpose: request.purpose,

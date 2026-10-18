@@ -143,6 +143,8 @@ mod scene_scope_projection_tests;
 mod scope_storage_authority_tests;
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_history_context::{HistoryContextStage, NativeNir1HistoryDraft};
+#[cfg(feature = "nir1-final-request-eval")]
+pub use nir1_packing::final_request_eval;
 pub use nir1_packing::{
     read_and_pack_native_a2_context, NativeNir1AuthorityBinding, NativeNir1DecisionBinding,
     NativeNir1PackedContext, NativeNir1PackingRequest, NativeNir1RawContextItem,

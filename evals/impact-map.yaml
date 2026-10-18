@@ -461,6 +461,8 @@ rules:
       - src-tauri/crates/grimodex-db/src/bin/nir1-*.rs
       - src-tauri/crates/grimodex-db/src/bin/support/c_query_*.rs
       - src-tauri/crates/grimodex-db/tests/nir1_*.rs
+      - src/features/chat/chatApi.createSessionStatement.test.ts
+      - electron/scripts/verify-release-native.mjs
     requirements:
       - GDX-NARR-SEMANTIC-CONTRACT-001
       - GDX-ARTIFACT-001

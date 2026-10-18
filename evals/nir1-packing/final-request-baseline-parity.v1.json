@@ -1,0 +1,873 @@
+{
+  "schemaVersion": "nir1-final-request-baseline-parity/1",
+  "source": {
+    "selector": "src/features/ai-context/budgetSelector.ts selectContextItems",
+    "kindTable": "src/features/ai-context/nir1Packing.ts authorityForKind and priorityForKind",
+    "measure": "item-estimate-sum",
+    "producedBy": "src/features/ai-context/nir1PackingBaselineParity.test.ts with NIR1_PARITY_UPDATE=1",
+    "draftRef": "nir1-final-request-eval-proposal/2",
+    "note": "Synthetic items only (no fixture material). Each item is its own group. measureSelectionTokens is the sum of the item tokens and measureItemTokens is the item's tokens. The Rust baseline arm must return the same selectedKeys, decisions and usage. The pure selector removes Raw last, and also removes it when Raw alone exceeds the budget; the Rust baseline arm and the TS Packing path check Raw against the budget before selecting and return the typed input-reduction-required result, which is the vector's inputReductionRequired flag."
+  },
+  "kindTable": {
+    "raw": {
+      "authority": "author_instruction",
+      "priority": 100
+    },
+    "accepted-ir": {
+      "authority": "canonical",
+      "priority": 80
+    },
+    "graph-evidence": {
+      "authority": "derived",
+      "priority": 70
+    },
+    "author-declared": {
+      "authority": "canonical",
+      "priority": 60
+    },
+    "unreviewed-for-review": {
+      "authority": "episodic",
+      "priority": 10
+    }
+  },
+  "authorityRetentionRank": {
+    "episodic": 0,
+    "retrieved": 1,
+    "derived": 2,
+    "canonical": 3,
+    "author_instruction": 4
+  },
+  "cases": [
+    {
+      "name": "fits-within-budget-keeps-every-item",
+      "budgetTokens": 100,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 10
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 20
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 15
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a",
+          "graph-a"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 10,
+            "tokensAfter": 10
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "graph-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 15,
+            "tokensAfter": 15
+          }
+        ],
+        "usage": {
+          "candidateTokens": 45,
+          "selectedTokens": 45,
+          "trimmedTokens": 0,
+          "budgetTokens": 100
+        }
+      }
+    },
+    {
+      "name": "lowest-authority-yields-first",
+      "budgetTokens": 100,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 30
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 40
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 30
+        },
+        {
+          "key": "review-a",
+          "kind": "unreviewed-for-review",
+          "tokens": 20
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a",
+          "graph-a"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 30,
+            "tokensAfter": 30
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 40,
+            "tokensAfter": 40
+          },
+          {
+            "key": "graph-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 30,
+            "tokensAfter": 30
+          },
+          {
+            "key": "review-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 20,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 120,
+          "selectedTokens": 100,
+          "trimmedTokens": 20,
+          "budgetTokens": 100
+        }
+      }
+    },
+    {
+      "name": "removal-stops-at-the-first-fit",
+      "budgetTokens": 70,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 30
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 40
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 30
+        },
+        {
+          "key": "review-a",
+          "kind": "unreviewed-for-review",
+          "tokens": 20
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 30,
+            "tokensAfter": 30
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 40,
+            "tokensAfter": 40
+          },
+          {
+            "key": "graph-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 30,
+            "tokensAfter": 0
+          },
+          {
+            "key": "review-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 20,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 120,
+          "selectedTokens": 70,
+          "trimmedTokens": 50,
+          "budgetTokens": 70
+        }
+      }
+    },
+    {
+      "name": "priority-orders-within-the-same-authority",
+      "budgetTokens": 60,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 20
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 30
+        },
+        {
+          "key": "declared-a",
+          "kind": "author-declared",
+          "tokens": 30
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 30,
+            "tokensAfter": 30
+          },
+          {
+            "key": "declared-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 30,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 80,
+          "selectedTokens": 50,
+          "trimmedTokens": 30,
+          "budgetTokens": 60
+        }
+      }
+    },
+    {
+      "name": "original-order-breaks-a-full-tie",
+      "budgetTokens": 40,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 20
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 10
+        },
+        {
+          "key": "graph-b",
+          "kind": "graph-evidence",
+          "tokens": 10
+        },
+        {
+          "key": "graph-c",
+          "kind": "graph-evidence",
+          "tokens": 10
+        },
+        {
+          "key": "graph-d",
+          "kind": "graph-evidence",
+          "tokens": 10
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "graph-c",
+          "graph-d"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "graph-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          },
+          {
+            "key": "graph-b",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          },
+          {
+            "key": "graph-c",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 10,
+            "tokensAfter": 10
+          },
+          {
+            "key": "graph-d",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 10,
+            "tokensAfter": 10
+          }
+        ],
+        "usage": {
+          "candidateTokens": 60,
+          "selectedTokens": 40,
+          "trimmedTokens": 20,
+          "budgetTokens": 40
+        }
+      }
+    },
+    {
+      "name": "raw-alone-over-budget-is-removed-last-by-the-pure-selector",
+      "budgetTokens": 25,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 30
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 10
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 10
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": true,
+        "selectedKeys": [],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 30,
+            "tokensAfter": 0
+          },
+          {
+            "key": "ir-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          },
+          {
+            "key": "graph-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 50,
+          "selectedTokens": 0,
+          "trimmedTokens": 50,
+          "budgetTokens": 25
+        }
+      }
+    },
+    {
+      "name": "exact-budget-boundary-removes-nothing",
+      "budgetTokens": 60,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 20
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 20
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 20
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a",
+          "graph-a"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "graph-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          }
+        ],
+        "usage": {
+          "candidateTokens": 60,
+          "selectedTokens": 60,
+          "trimmedTokens": 0,
+          "budgetTokens": 60
+        }
+      }
+    },
+    {
+      "name": "one-token-over-removes-the-lowest-ranked-item",
+      "budgetTokens": 59,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 20
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 20
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 20
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "graph-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 20,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 60,
+          "selectedTokens": 40,
+          "trimmedTokens": 20,
+          "budgetTokens": 59
+        }
+      }
+    },
+    {
+      "name": "zero-token-items-are-removed-by-rank-but-free",
+      "budgetTokens": 40,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 20
+        },
+        {
+          "key": "graph-zero",
+          "kind": "graph-evidence",
+          "tokens": 0
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 30
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "graph-zero",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 0,
+            "tokensAfter": 0
+          },
+          {
+            "key": "ir-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 30,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 50,
+          "selectedTokens": 20,
+          "trimmedTokens": 30,
+          "budgetTokens": 40
+        }
+      }
+    },
+    {
+      "name": "selected-items-keep-their-original-order",
+      "budgetTokens": 75,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 15
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 20
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 20
+        },
+        {
+          "key": "graph-b",
+          "kind": "graph-evidence",
+          "tokens": 20
+        },
+        {
+          "key": "ir-b",
+          "kind": "accepted-ir",
+          "tokens": 20
+        },
+        {
+          "key": "review-a",
+          "kind": "unreviewed-for-review",
+          "tokens": 20
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a",
+          "graph-b",
+          "ir-b"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 15,
+            "tokensAfter": 15
+          },
+          {
+            "key": "graph-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 20,
+            "tokensAfter": 0
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "graph-b",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "ir-b",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "review-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 20,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 115,
+          "selectedTokens": 75,
+          "trimmedTokens": 40,
+          "budgetTokens": 75
+        }
+      }
+    },
+    {
+      "name": "every-non-raw-item-removed-leaves-raw-only",
+      "budgetTokens": 20,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 20
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 10
+        },
+        {
+          "key": "ir-b",
+          "kind": "accepted-ir",
+          "tokens": 10
+        },
+        {
+          "key": "graph-a",
+          "kind": "graph-evidence",
+          "tokens": 10
+        },
+        {
+          "key": "declared-a",
+          "kind": "author-declared",
+          "tokens": 10
+        },
+        {
+          "key": "review-a",
+          "kind": "unreviewed-for-review",
+          "tokens": 10
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "ir-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          },
+          {
+            "key": "ir-b",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          },
+          {
+            "key": "graph-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          },
+          {
+            "key": "declared-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          },
+          {
+            "key": "review-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 10,
+            "tokensAfter": 0
+          }
+        ],
+        "usage": {
+          "candidateTokens": 70,
+          "selectedTokens": 20,
+          "trimmedTokens": 50,
+          "budgetTokens": 20
+        }
+      }
+    },
+    {
+      "name": "canonical-kinds-share-a-rank-and-split-on-priority",
+      "budgetTokens": 80,
+      "items": [
+        {
+          "key": "raw",
+          "kind": "raw",
+          "tokens": 20
+        },
+        {
+          "key": "declared-a",
+          "kind": "author-declared",
+          "tokens": 20
+        },
+        {
+          "key": "ir-a",
+          "kind": "accepted-ir",
+          "tokens": 20
+        },
+        {
+          "key": "declared-b",
+          "kind": "author-declared",
+          "tokens": 20
+        },
+        {
+          "key": "ir-b",
+          "kind": "accepted-ir",
+          "tokens": 20
+        }
+      ],
+      "expected": {
+        "inputReductionRequired": false,
+        "selectedKeys": [
+          "raw",
+          "ir-a",
+          "declared-b",
+          "ir-b"
+        ],
+        "decisions": [
+          {
+            "key": "raw",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "declared-a",
+            "status": "trimmed",
+            "reason": "budget-priority",
+            "tokensBefore": 20,
+            "tokensAfter": 0
+          },
+          {
+            "key": "ir-a",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "declared-b",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          },
+          {
+            "key": "ir-b",
+            "status": "selected",
+            "reason": "within-budget",
+            "tokensBefore": 20,
+            "tokensAfter": 20
+          }
+        ],
+        "usage": {
+          "candidateTokens": 100,
+          "selectedTokens": 80,
+          "trimmedTokens": 20,
+          "budgetTokens": 80
+        }
+      }
+    }
+  ]
+}

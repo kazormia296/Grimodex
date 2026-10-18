@@ -1,0 +1,241 @@
+{
+  "schemaVersion": "nir1-final-request-freeze/1",
+  "contractId": "nir1-final-request-packing-eval",
+  "draftRef": "nir1-final-request-eval-proposal/2",
+  "fixtureVersion": 1,
+  "status": "pending-review",
+  "nativeOutputObservedBeforeFreeze": true,
+  "nativeObservations": [
+    {
+      "by": "dph-4 builder (harness, setup, registration; a harness implementer, not the fixture author)",
+      "commit": "DPH-4 commit a14eac73 (5bca62cb after the rebase onto 50a40557)",
+      "what": "Before this record was frozen, the harness's cargo tests ran every variant of all nine cases of this fixture's materials through Native (setup with product writers, the real D-final, packer and renderer) on every run of `cargo test ... nir1_final_request_eval`, and an ignored development dump wrote receipts without the freeze gate. The DPH-4 builder scored the dump with the scorer and reported per-case verdicts to the integrator; a prototype run showed every positive failing with other-case-material (DR-DPH-57), which led to the project_create change in the harness, not to a change of the fixture.",
+      "materialsObserved": "all nine cases (P-01, P-02, P-04, P-05, P-06, P-07, P-08, P-10, P-11), every variant",
+      "disposition": "Recorded here and in dp-h-decisions.md (DR-DPH-69..72). The harness no longer runs this fixture without the freeze gate (the mechanics tests use a synthetic fixture). Under the draft's rule on observed materials this fixture version must not be frozen as is: the contract refuses a frozen record with nativeOutputObservedBeforeFreeze true. Its expectations are also stale after X1-3 (#674). The integrator replaces the materials (new logical IDs and texts) and the expectations through a separate fixture author, with a new independent review, before freezing."
+    }
+  ],
+  "frozenAt": "2026-10-17T22:55:04Z",
+  "reviewVerdict": "pending",
+  "note": "Pending the independent expectation review, and not freezable as it stands: Native observed this fixture's materials before the freeze (see nativeObservations). A replacement fixture (new materials, author separate from the harness implementers) with a new review record is required; its record sets nativeOutputObservedBeforeFreeze false and no observations before the integrator rewrites it with status frozen, reviewVerdict approve, the review record's new sha256 and a new frozenAt, and commits it before any Native run of the new fixture's material.",
+  "fixture": {
+    "path": "evals/nir1-packing/final-request.v1.json",
+    "sha256": "0d277e0cc00dc42f61ad583b7bb59a6b2f9f038a2932684d9bc823ac8dc9ac49"
+  },
+  "reviewRecord": {
+    "path": "evals/nir1-packing/final-request.expectation-review.v1.json",
+    "sha256": "368e9aae16a263d7cff1143f6a3f19aef24ca20bdce1c8de8b296e4d8ff4d828"
+  },
+  "readme": {
+    "path": "evals/nir1-packing/final-request.README.md",
+    "sha256": "db37884ba3fd7b0c0a7d563e130dde08def3923b8abd372dc6ffc455da3a0858"
+  },
+  "parityVector": {
+    "path": "evals/nir1-packing/final-request-baseline-parity.v1.json",
+    "sha256": "9a6daf65e4d7cec70ca760f1ad06432585711fae50d981d46044bb39f74caf31"
+  },
+  "scorer": {
+    "files": [
+      {
+        "path": "scripts/quality/nir1-packing/final-request/scorer.mjs",
+        "sha256": "3c7db6adc57dbe8a481e1c0c8d5bb332e478f6b49e56cec772440be01c7b097a"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/contract.mjs",
+        "sha256": "ce252444569136bdbfa03e0957868a21d24417b6a505ec1205852d85c7827515"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/receipt.mjs",
+        "sha256": "5bac0b6984c465f5278a0a4b119cd37841306a34332a852b6309b4a1ac9e22a6"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/payload.mjs",
+        "sha256": "52aba5f1aa8114d1c49cb0c46d07e23873992befbbd4cc780cee94baf92ae84d"
+      }
+    ]
+  },
+  "contextBudget": {
+    "formula": "contextBudgetTokens = contextWindowTokens - (fixedSystemTokens + userTokens + envelopeTokens + outputTokens + safetyMarginTokens + separatorReserveTokens); selectedTokens = estimateTokens(rawText) + sum(estimateTemplateTokens(entry.text)) with each placeholder counted as maxLength ASCII characters (36 for ids, 128 for tokens); marginTokens = contextBudgetTokens - selectedTokens. Estimator: nir1-context-estimator-v1 (ceil((utf16Length + 2 * cjkCount) / 3)) applied by hand to the template files and the fixture strings; no Native packer, renderer or D-final was run.",
+    "terms": {
+      "route": {
+        "model": "dph-fixture-local-model",
+        "contextWindowTokens": 16384,
+        "outputTokens": 1024
+      },
+      "fixedSystemTokens": 531,
+      "fixedTemplate": {
+        "version": "nir1-local-chat-system-ja-v1",
+        "ref": "src/prompts/ja/chatSystemBase.txt+src/prompts/ja/chatSystemDataBoundaryReminder.txt"
+      },
+      "envelopeTokens": 10,
+      "safetyMarginTokens": 32,
+      "separatorReserveTokens": 171,
+      "userTokensByCase": {
+        "P-01": 31,
+        "P-02": 25,
+        "P-04": 32,
+        "P-05": 31,
+        "P-06": 26,
+        "P-07": 36,
+        "P-08": 30,
+        "P-10": 27,
+        "P-11": 34
+      },
+      "source": "route values equal the existing D-final test route (16384 / 1024); they are fixture values, not product limits"
+    },
+    "perRequest": [
+      {
+        "caseId": "P-01",
+        "variantId": "p01-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14585,
+        "selectedTokens": 1982,
+        "marginTokens": 12603
+      },
+      {
+        "caseId": "P-02",
+        "variantId": "p02-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14591,
+        "selectedTokens": 1978,
+        "marginTokens": 12613
+      },
+      {
+        "caseId": "P-04",
+        "variantId": "p04-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14584,
+        "selectedTokens": 1987,
+        "marginTokens": 12597
+      },
+      {
+        "caseId": "P-05",
+        "variantId": "p05-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14585,
+        "selectedTokens": 1961,
+        "marginTokens": 12624
+      },
+      {
+        "caseId": "P-06",
+        "variantId": "p06-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14590,
+        "selectedTokens": 1960,
+        "marginTokens": 12630
+      },
+      {
+        "caseId": "P-07",
+        "variantId": "p07-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14580,
+        "selectedTokens": 2001,
+        "marginTokens": 12579
+      },
+      {
+        "caseId": "P-08",
+        "variantId": "p08-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14586,
+        "selectedTokens": 1990,
+        "marginTokens": 12596
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-scope",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-scope",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-reject-old-revision-after-scope",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-source",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-source",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1001,
+        "marginTokens": 13588
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-reject-old-revision-after-source",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-decision",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-positive-decision",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "p10-reject-old-revision-after-decision",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 995,
+        "marginTokens": 13594
+      },
+      {
+        "caseId": "P-11",
+        "variantId": "p11-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14582,
+        "selectedTokens": 2932,
+        "marginTokens": 11650
+      }
+    ]
+  },
+  "authorSeparation": {
+    "fixtureAuthor": {
+      "agent": "dph-2-fixture-author (Claude Sonnet 5.5, Workflow subagent)",
+      "role": "writes the fixture; no harness, baseline, capture or scorer code"
+    },
+    "expectationReviewer": {
+      "agent": "dph-expectation-reviewer (unassigned)",
+      "role": "independent, read-only, has not seen Native output"
+    },
+    "harnessImplementers": [
+      "dph-1-builder (contract, scorer, parity vector)",
+      "dph-1b-builder (template placeholders)",
+      "dph-3-builder (evaluation feature, capture, baseline)",
+      "dph-4-builder (harness, setup, registration)"
+    ],
+    "nativeReceiptProvidedToAuthor": false
+  }
+}

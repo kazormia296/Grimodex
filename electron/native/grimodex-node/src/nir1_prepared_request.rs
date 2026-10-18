@@ -34,6 +34,13 @@ use serde_json::json;
 use crate::profile_egress::CallerIdentity;
 use crate::state::AppState;
 
+// Evaluation-only capture and baseline arm (DP-H). A child module so that the
+// private renderer and the rendered value stay private; absent from every
+// product build (the feature is never in `default`).
+#[cfg(feature = "nir1-final-request-eval")]
+#[path = "nir1_final_request_eval/mod.rs"]
+mod nir1_final_request_eval;
+
 const CHAT_SYSTEM_BASE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../src/prompts/ja/chatSystemBase.txt"
@@ -636,6 +643,14 @@ fn prepare_local_chat_request_inner(
         &mut checkpoint,
     )?;
     checkpoint()?;
+    #[cfg(feature = "nir1-final-request-eval")]
+    nir1_final_request_eval::observe_rendered(
+        message_version_id,
+        &projection,
+        &route,
+        &packing_context_budget_tokens,
+        &rendered,
+    );
     ensure!(
         rendered.canonical_payload.len() <= MAX_PREPARED_PAYLOAD_BYTES,
         "NIR1_PREPARED_PAYLOAD_SIZE_LIMIT"
@@ -1499,7 +1514,7 @@ fn is_reserved_prompt_tag_start(after_open: &str, reserved: &[&str]) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     /// The producer's rows: the final rows without the D1 selection
     /// references that the render adds.
     fn without_d1(
@@ -1556,17 +1571,17 @@ mod tests {
 
     const PROJECT_ID: &str = "default-project";
     const SESSION_ID: &str = "nir1-prepared-session";
-    const SCENE_ID: &str = "nir1-prepared-scene";
+    pub(super) const SCENE_ID: &str = "nir1-prepared-scene";
     const REVISION_SCENE_ID: &str = "nir1-prepared-revision-scene";
     const MESSAGE_ID: &str = "nir1-prepared-human-message";
     const DECISION_CANARY: &str = "PREPARED_PRIVATE_DECISION_NOTE_MUST_NOT_ESCAPE";
-    const NO_UNSUPPORTED_INPUTS: super::UnsupportedInputIntent =
+    pub(super) const NO_UNSUPPORTED_INPUTS: super::UnsupportedInputIntent =
         super::UnsupportedInputIntent::empty();
 
     /// Writing with no key and the fixture endpoint id: the pre-DF+-b shape of
     /// every existing test. Purpose, key, and endpoint tests call
     /// `prepare_local_chat_request_with_intent` directly.
-    fn prepare_local_chat_request(
+    pub(super) fn prepare_local_chat_request(
         state: Arc<AppState>,
         caller: CallerIdentity,
         query_scene_id: &str,
@@ -1585,16 +1600,16 @@ mod tests {
         )
     }
 
-    struct Fixture {
-        root: std::path::PathBuf,
-        state: Arc<AppState>,
-        caller: CallerIdentity,
-        revision_id: String,
-        message_version_id: NativeAcceptedChatSubmission,
+    pub(super) struct Fixture {
+        pub(super) root: std::path::PathBuf,
+        pub(super) state: Arc<AppState>,
+        pub(super) caller: CallerIdentity,
+        pub(super) revision_id: String,
+        pub(super) message_version_id: NativeAcceptedChatSubmission,
     }
 
     impl Fixture {
-        fn new() -> anyhow::Result<Self> {
+        pub(super) fn new() -> anyhow::Result<Self> {
             Self::with_query_scene_body(
                 "The rain stopped. Alice looked at Bob and waited for his answer.",
             )
@@ -1699,7 +1714,7 @@ mod tests {
     }
 
     impl Fixture {
-        fn add_human_message(
+        pub(super) fn add_human_message(
             &self,
             key: &str,
             content: &str,
@@ -1720,7 +1735,7 @@ mod tests {
             )
         }
 
-        fn generation_storage_counts(&self) -> anyhow::Result<[i64; 5]> {
+        pub(super) fn generation_storage_counts(&self) -> anyhow::Result<[i64; 5]> {
             let workspace = active_workspace_snapshot(&self.state.ws)?;
             workspace.db().db().with_read_transaction(|conn| {
                 conn.query_row(
@@ -1744,7 +1759,7 @@ mod tests {
             })
         }
 
-        fn attempt_count(&self) -> anyhow::Result<i64> {
+        pub(super) fn attempt_count(&self) -> anyhow::Result<i64> {
             Ok(self.generation_storage_counts()?[2])
         }
     }

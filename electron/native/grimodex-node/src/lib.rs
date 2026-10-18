@@ -6680,6 +6680,7 @@ impl Backend {
         Ok(serde_json::json!({
             "licensing": cfg!(feature = "licensing"),
             "legacyKeyringMigration": cfg!(feature = "legacy-keyring-migration"),
+            "nir1FinalRequestEval": cfg!(feature = "nir1-final-request-eval"),
         })
         .to_string())
     }

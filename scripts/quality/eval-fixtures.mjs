@@ -3,6 +3,7 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
+import { validateNir1FinalRequestFixtures } from "./nir1-packing/final-request/contract.mjs";
 import { validateNir1GraphCases } from "./nir1-graph/contract.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "../..");
@@ -892,6 +893,26 @@ export async function buildNir1GraphCaseReport({
   };
 }
 
+/**
+ * NIR-1 final-request (DP-H) fixture: shape, freeze record, independent review
+ * and sha256 bindings. Until the fixture file is placed the state is
+ * `not-placed` (not an error). No Native, Raw, IR or model result is read.
+ */
+export async function buildNir1FinalRequestFixtureReport({
+  repoRoot = DEFAULT_REPO_ROOT,
+} = {}) {
+  const result = await validateNir1FinalRequestFixtures({ repoRoot });
+  return {
+    status: result.errors.length === 0 ? "passed" : "failed",
+    state: result.status,
+    scope:
+      "Fixture shape, freeze-record and independent-review bindings only; no Native packer, renderer, D-final or model result is read, and a missing fixture is reported as not-placed.",
+    cases: result.cases,
+    freeze: result.freeze,
+    errors: result.errors,
+  };
+}
+
 async function main() {
   const model = await loadQualityModel();
   const validation = await validateQualityModel(model);
@@ -899,6 +920,7 @@ async function main() {
   const heavy = buildHeavyEvaluationReport(model);
   const blocked = buildBlockedEvaluationReport(model);
   const nir1Graph = await buildNir1GraphCaseReport();
+  const nir1FinalRequest = await buildNir1FinalRequestFixtureReport();
   const report = {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -916,12 +938,14 @@ async function main() {
     heavy,
     blocked,
     nir1Graph,
+    nir1FinalRequest,
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (
     validation.errors.length > 0 ||
     fixtureContracts.failed > 0 ||
-    nir1Graph.errors.length > 0
+    nir1Graph.errors.length > 0 ||
+    nir1FinalRequest.errors.length > 0
   )
     process.exitCode = 1;
 }

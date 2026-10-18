@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 
 import {
   buildHeavyEvaluationReport,
+  buildNir1FinalRequestFixtureReport,
   buildNir1GraphCaseReport,
   evaluateFixtureContracts,
   loadQualityModel,
@@ -195,4 +196,25 @@ test("NIR-1 Graph cases G-01..G-08 are part of the fixture gate without runtime 
       report.freeze.status,
     ),
   );
+});
+
+test("NIR-1 final-request fixture is part of the fixture gate and reports not-placed until it is placed", async () => {
+  const report = await buildNir1FinalRequestFixtureReport({ repoRoot });
+
+  assert.equal(report.status, "passed");
+  assert.deepEqual(report.errors, []);
+  assert.ok(["not-placed", "pending-review", "frozen"].includes(report.state));
+  assert.match(
+    report.scope,
+    /no Native packer, renderer, D-final or model result/,
+  );
+  if (report.state === "not-placed") {
+    assert.deepEqual(report.cases, []);
+    assert.equal(report.freeze.status, "not-placed");
+  } else {
+    assert.deepEqual(
+      report.cases.map((entry) => entry.caseId),
+      ["P-01", "P-02", "P-04", "P-05", "P-06", "P-07", "P-08", "P-10", "P-11"],
+    );
+  }
 });

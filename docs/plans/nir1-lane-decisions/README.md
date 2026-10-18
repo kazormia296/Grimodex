@@ -17,6 +17,7 @@
 | [cqmem-decisions.md](cqmem-decisions.md) | CQ-MEM（DR-CQM-1〜2。実装中） | 同上 |
 | [x1-2-decisions.md](x1-2-decisions.md) | X1-2（DR-X1-2-1〜14。S1〜S4: T 方式、Scope 世代の条件つき進行、POV の NULL 化、方式 J1、writer 網羅の manifest） | 確認済み契約 X1/1 の「実装で決めること」の記録 |
 | [cb1-decisions.md](cb1-decisions.md) | CB-1（DR-CB1-1〜11。S1〜S4 実装済み） | 同上（mutation の前の記録。K2/4 の `scope-storage-authority`） |
+| [dp-h-decisions.md](dp-h-decisions.md) | DP-H（DR-DPH-1〜76。DPH-1 の契約・scorer・parity ベクトル、DPH-1b の期待値 template とそのレビュー修正、DPH-2 の fixture・期待値・freeze〔pending-review〕、DPH-3 の評価 feature・capture・baseline arm・置き場の検査・build capabilities、DPH-4 の harness・case の setup・receipt・runner・登録、DPH-4 レビュー修正〔freeze の前の Native 観測の遮断と記録、gate の強化、X1-3 後の base〕まで。版 1 は観測済みで freeze できない。evidence の実行は新しい fixture と freeze 待ちの HOLD。実装中） | 同上（mutation の前の記録と、実装後の追記） |
 | [proposal7-measurement/](proposal7-measurement/measurement-record.md) | proposal/7 の測定の記録（`harness/`、`raw.tar.gz`、`SHA256SUMS`）。CQ-LIM-1〜4 の再測はこの harness で行う | `claude/nir1-contracts` の `40d10adf` を byte 同一で取り込み（Session B2。[確認台帳](../nir1-l6-l9-execution-plan.md)）。委任判断の記録ではなく、確認された draft が引く測定の記録 |
 | [df-plus-decisions.md](df-plus-decisions.md) | DF+（DR-DFP-1〜26） | 同上（mutation の前の記録） |
 | [dt4-decisions.md](dt4-decisions.md) | DT-4（DR-DT4-1〜9a。T1〜T4: 予約 namespace と汎用 append の閉鎖、AI 使用ポリシーの検査〔B-2〕、bounded な監査 writer と終端・sweep の同梱〔S16〕、route 登録と文書・分類） | 同上（mutation の前の記録） |

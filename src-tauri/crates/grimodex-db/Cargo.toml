@@ -40,6 +40,12 @@ test-failpoints = []
 workspace-maintenance-test-support = []
 # Test-only worker exit seam. Never enable in production builds.
 nir1-c-query-test-seam = []
+# Evaluation-only observation of the final-request packing candidate set
+# (DP-H, K6/2 nir1-final-request-packing-eval). It enables no other feature,
+# is never in `default`, and is never enabled by the normal N-API build or
+# release packaging. It needs `native-current-human-capture`, which
+# grimodex-node always enables.
+nir1-final-request-eval = []
 
 [[bin]]
 name = "migration-crash-harness"
