@@ -1,0 +1,481 @@
+{
+  "schema": 1,
+  "electron": "43.5.0",
+  "chrome": "150.0.7871.250",
+  "platform": "linux",
+  "variant": "product",
+  "processSandbox": true,
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "nodeIntegration": false,
+    "webSecurity": true
+  },
+  "reachedNetwork": [
+    "realm.encoded-traversal.rtc",
+    "realm.html.rtc",
+    "realm.js.rtc",
+    "realm.json.rtc",
+    "realm.md.rtc",
+    "realm.notfound.rtc",
+    "realm.png.rtc",
+    "realm.unknownext.rtc",
+    "webrtc.turn-tcp",
+    "webrtc.turns-tls"
+  ],
+  "reachedNetworkDetail": {
+    "realm.encoded-traversal.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "realm.html.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "realm.js.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "realm.json.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "realm.md.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "realm.notfound.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "realm.png.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "realm.unknownext.rtc": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 6,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "webrtc.turn-tcp": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 8,
+        "udpPackets": 0
+      },
+      "netLog": null
+    },
+    "webrtc.turns-tls": {
+      "canary": {
+        "tcpConnections": 2,
+        "tcpPayloads": 2,
+        "udpPackets": 0
+      },
+      "netLog": null
+    }
+  },
+  "canary": {
+    "tcpConnections": 20,
+    "tcpPayloads": 58,
+    "udpPackets": 0,
+    "unattributed": 0,
+    "secretsSeen": false,
+    "markers": [
+      "turns"
+    ]
+  },
+  "unattributed": {
+    "spellcheckerDictionary": [
+      "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+      "redirector.gvt1.com"
+    ],
+    "ipv6ReachabilityProbe": [
+      "[2001:4860:4860::8888]:443 (SOCKET_CONNECT+UDP_CONNECT)"
+    ],
+    "localUdpSockets": 26,
+    "other": []
+  },
+  "title": {
+    "lockedStaysProduct": true,
+    "unlockedControlChanged": true,
+    "panelOpenOptionStaysProduct": true
+  },
+  "navigation": {
+    "willNavigateHosts": 1,
+    "windowOpenHosts": 1,
+    "newWindows": 1,
+    "windowCount": 1
+  },
+  "downloads": {
+    "observed": [
+      {
+        "filename": "data.unknownext",
+        "savePathSetSynchronously": true,
+        "savePathInsideUserData": false
+      },
+      {
+        "filename": "data.unknownext",
+        "savePathSetSynchronously": true,
+        "savePathInsideUserData": false
+      },
+      {
+        "filename": "profile-egress.json",
+        "savePathSetSynchronously": true,
+        "savePathInsideUserData": false
+      },
+      {
+        "filename": "export.txt",
+        "savePathSetSynchronously": true,
+        "savePathInsideUserData": false
+      }
+    ],
+    "results": [
+      {
+        "id": "download.attack-state-file",
+        "stateFileUnchanged": true,
+        "destinationWritten": null
+      },
+      {
+        "id": "download.control-normal-destination",
+        "stateFileUnchanged": true,
+        "destinationWritten": true
+      }
+    ],
+    "notices": [
+      "rejected-destination",
+      "rejected-destination",
+      "rejected-destination"
+    ]
+  },
+  "fileSystemAccessPicker": {
+    "outcome": "pending-after-4s",
+    "stateFileUnchanged": true
+  },
+  "windowPrint": {
+    "outcome": "pending-after-4s"
+  },
+  "runCompleted": true,
+  "renderer": [
+    {
+      "id": "control.same-origin-fetch",
+      "outcome": "status:200"
+    },
+    {
+      "id": "net.fetch",
+      "outcome": "error:TypeError"
+    },
+    {
+      "id": "net.fetch-no-cors",
+      "outcome": "error:TypeError"
+    },
+    {
+      "id": "net.xhr",
+      "outcome": "onerror"
+    },
+    {
+      "id": "net.websocket",
+      "outcome": "onerror"
+    },
+    {
+      "id": "net.eventsource",
+      "outcome": "onerror"
+    },
+    {
+      "id": "net.send-beacon",
+      "outcome": "queued"
+    },
+    {
+      "id": "net.img",
+      "outcome": "onerror"
+    },
+    {
+      "id": "net.css-import",
+      "outcome": "onerror"
+    },
+    {
+      "id": "net.script-tag",
+      "outcome": "onerror"
+    },
+    {
+      "id": "net.iframe-external",
+      "outcome": "onload"
+    },
+    {
+      "id": "net.media",
+      "outcome": "loadstart"
+    },
+    {
+      "id": "net.form-submit",
+      "outcome": "submitted"
+    },
+    {
+      "id": "net.meta-refresh",
+      "outcome": "inserted"
+    },
+    {
+      "id": "net.window-open",
+      "outcome": "null"
+    },
+    {
+      "id": "net.a-ping",
+      "outcome": "clicked"
+    },
+    {
+      "id": "hint.dns-prefetch",
+      "outcome": "inserted"
+    },
+    {
+      "id": "hint.preconnect",
+      "outcome": "inserted"
+    },
+    {
+      "id": "hint.prefetch",
+      "outcome": "inserted"
+    },
+    {
+      "id": "hint.prerender",
+      "outcome": "inserted"
+    },
+    {
+      "id": "hint.preload",
+      "outcome": "inserted"
+    },
+    {
+      "id": "hint.modulepreload",
+      "outcome": "inserted"
+    },
+    {
+      "id": "webrtc.stun-udp",
+      "outcome": "gathering:complete;candidateTypes:host"
+    },
+    {
+      "id": "webrtc.turn-udp",
+      "outcome": "gathering:complete;candidateTypes:host"
+    },
+    {
+      "id": "webrtc.turn-tcp",
+      "outcome": "gathering:gathering;candidateTypes:host"
+    },
+    {
+      "id": "webrtc.turns-tls",
+      "outcome": "gathering:gathering;candidateTypes:host"
+    },
+    {
+      "id": "webrtc.relay-only",
+      "outcome": "gathering:complete;candidateTypes:"
+    },
+    {
+      "id": "realm.json",
+      "outcome": "{\"status\":200,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.json.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "realm.png",
+      "outcome": "{\"status\":200,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.png.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "realm.js",
+      "outcome": "{\"status\":200,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.js.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "realm.md",
+      "outcome": "{\"status\":200,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.md.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "realm.unknownext",
+      "outcome": "{\"status\":200,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.unknownext.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "realm.notfound",
+      "outcome": "{\"status\":404,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.notfound.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "realm.encoded-traversal",
+      "outcome": "{\"status\":404,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.encoded-traversal.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "realm.html",
+      "outcome": "{\"status\":200,\"cspHeader\":true,\"fetch\":\"attempted\",\"beacon\":\"attempted\",\"img\":\"attempted\",\"ws\":\"attempted\",\"xhr\":\"attempted\"}"
+    },
+    {
+      "id": "realm.html.rtc",
+      "outcome": "attempted"
+    },
+    {
+      "id": "worker.bundled-classic",
+      "outcome": "{\"realm\":\"classic\",\"fetch\":\"error:TypeError\",\"ws\":\"constructed\",\"importScripts\":\"error:NetworkError\"}"
+    },
+    {
+      "id": "worker.bundled-module",
+      "outcome": "{\"realm\":\"module\",\"fetch\":\"error:TypeError\",\"ws\":\"constructed\",\"importScripts\":\"error:TypeError\"}"
+    },
+    {
+      "id": "worker.force-layout",
+      "outcome": "done:3"
+    },
+    {
+      "id": "worker.blob",
+      "outcome": "onerror"
+    },
+    {
+      "id": "worker.data-url",
+      "outcome": "onerror"
+    },
+    {
+      "id": "worker.external",
+      "outcome": "throw:SecurityError"
+    },
+    {
+      "id": "worker.service-worker",
+      "outcome": "rejected:TypeError"
+    },
+    {
+      "id": "os.clipboard-write",
+      "outcome": "error:NotAllowedError"
+    },
+    {
+      "id": "os.notification",
+      "outcome": "permission:granted"
+    },
+    {
+      "id": "permission.geolocation",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.camera",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.microphone",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.clipboard-read",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.midi",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.persistent-storage",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.background-sync",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.screen-wake-lock",
+      "outcome": "denied"
+    },
+    {
+      "id": "permission.get-user-media",
+      "outcome": "error:NotAllowedError"
+    },
+    {
+      "id": "permission.geolocation-request",
+      "outcome": "denied:1"
+    },
+    {
+      "id": "os.media-session",
+      "outcome": "metadata-set"
+    },
+    {
+      "id": "os.app-badge",
+      "outcome": "badge-set"
+    },
+    {
+      "id": "os.share",
+      "outcome": "unavailable"
+    },
+    {
+      "id": "fsa.showSaveFilePicker",
+      "outcome": "present"
+    },
+    {
+      "id": "fsa.showOpenFilePicker",
+      "outcome": "present"
+    },
+    {
+      "id": "fsa.showDirectoryPicker",
+      "outcome": "present"
+    },
+    {
+      "id": "title.document-title-set",
+      "outcome": "TITLE-<nonce>"
+    }
+  ],
+  "violations": 10,
+  "violationsViaWebRtc": [
+    "realm.encoded-traversal.rtc",
+    "realm.html.rtc",
+    "realm.js.rtc",
+    "realm.json.rtc",
+    "realm.md.rtc",
+    "realm.notfound.rtc",
+    "realm.png.rtc",
+    "realm.unknownext.rtc",
+    "webrtc.turn-tcp",
+    "webrtc.turns-tls"
+  ],
+  "violationsOutsideWebRtc": []
+}

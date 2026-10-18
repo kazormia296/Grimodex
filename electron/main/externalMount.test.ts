@@ -4,14 +4,28 @@
  * Tauri commands/external_mount.rs + watch.rs の registry / overlap / rollback /
  * debounce / broadcast parity を gate する。
  */
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { ExternalMountManager } from "./externalMount.js";
+import {
+  EXTERNAL_MOUNT_RESTRICTED_EXTENSION_CODE,
+  ExternalMountManager,
+} from "./externalMount.js";
 import type { MountWatcher, WatcherFactory } from "./externalMount.js";
+import {
+  PROFILE_DATA_GUARD_ERROR_CODE,
+  createProfileDataGuard,
+} from "./profileDataGuard.js";
 
 // ── fake watcher ──────────────────────────────────────────────────────────────
 
@@ -64,6 +78,14 @@ function withFiles(name: string): string {
   return dir;
 }
 
+/** root と重ならない profile data directory を指す guard（SF-1 の通常の構成）。 */
+function guardOptions(): {
+  profileDataGuard: ReturnType<typeof createProfileDataGuard>;
+} {
+  const profileDir = tempDir("profile");
+  return { profileDataGuard: createProfileDataGuard(() => profileDir) };
+}
+
 const tick = (ms = 20): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -89,7 +111,7 @@ function build(debounceMs = 5): {
   const manager = new ExternalMountManager(
     (channel, payload) =>
       events.push({ channel, payload: payload as Captured["payload"] }),
-    { watcherFactory: factory, debounceMs },
+    { watcherFactory: factory, debounceMs, ...guardOptions() },
   );
   return { manager, events, watchers };
 }
@@ -130,7 +152,7 @@ describe("register", () => {
     };
     const manager = new ExternalMountManager(
       (c, p) => events.push({ channel: c, payload: p as Captured["payload"] }),
-      { watcherFactory: boomFactory, debounceMs: 5 },
+      { watcherFactory: boomFactory, debounceMs: 5, ...guardOptions() },
     );
     const dir = withFiles("rollback");
     await expect(manager.register("r", dir, "R")).rejects.toThrow(
@@ -319,5 +341,198 @@ describe("buildHandlers", () => {
     await expect(
       handlers.external_mount_read_file({ rootId: "r", relPath: 42 }),
     ).rejects.toThrow(/expected a string/);
+  });
+});
+
+// ── SF-1: profile data directory の保護 ─────────────────────────────────────
+
+function buildWithProfile(
+  profileDir: string,
+  isProfileRestricted?: () => boolean,
+): ExternalMountManager {
+  const { factory } = makeFactory();
+  return new ExternalMountManager(() => {}, {
+    watcherFactory: factory,
+    debounceMs: 5,
+    profileDataGuard: createProfileDataGuard(() => profileDir),
+    isProfileRestricted,
+  });
+}
+
+describe("SF-1: profile data directory に届かない", () => {
+  it("等しい／含む／含まれる root は登録できず、registry と scan に残らない", async () => {
+    const parent = tempDir("sf1-parent");
+    const profile = path.join(parent, "userData");
+    mkdirSync(path.join(profile, "sub"), { recursive: true });
+    writeFileSync(path.join(profile, "profile-egress.json"), "{}");
+    writeFileSync(path.join(profile, "note.md"), "# n");
+    const manager = buildWithProfile(profile);
+    for (const root of [profile, parent, path.join(profile, "sub")]) {
+      await expect(manager.register("r", root, "R")).rejects.toThrow(
+        new RegExp(PROFILE_DATA_GUARD_ERROR_CODE),
+      );
+      await expect(manager.scan("r")).rejects.toThrow(/unknown external root/);
+    }
+  });
+
+  it("拒否の理由に path を含めない", async () => {
+    const parent = tempDir("sf1-msg");
+    const profile = path.join(parent, "userData-secret-name");
+    mkdirSync(profile);
+    const manager = buildWithProfile(profile);
+    const error = await manager.register("r", profile, "R").then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(error?.message).toContain(PROFILE_DATA_GUARD_ERROR_CODE);
+    expect(error?.message).not.toContain("userData-secret-name");
+    expect(error?.message).not.toContain(parent);
+  });
+
+  it("登録後に root の下の symlink で profile data directory へ抜けても read／write／mtime を拒否する", async () => {
+    const parent = tempDir("sf1-late");
+    const profile = path.join(parent, "userData");
+    mkdirSync(profile);
+    writeFileSync(path.join(profile, "profile-egress.json"), '{"a":1}');
+    const root = path.join(parent, "root");
+    mkdirSync(root);
+    writeFileSync(path.join(root, "ok.md"), "ok");
+    const manager = buildWithProfile(profile);
+    await manager.register("r", root, "R");
+    // 登録の後に root の下へ profile data directory への symlink が現れる。
+    symlinkSync(profile, path.join(root, "link"), "dir");
+    // 既存の包含検査が root の外への解決を拒否する。
+    await expect(
+      manager.readFile("r", "link/profile-egress.json"),
+    ).rejects.toThrow();
+    // 登録の後に root の下の .md が profile data directory の file への symlink になる。
+    writeFileSync(path.join(profile, "danger.md"), "danger");
+    symlinkSync(path.join(profile, "danger.md"), path.join(root, "evil.md"));
+    await expect(manager.readFile("r", "evil.md")).rejects.toThrow();
+    await expect(manager.writeFile("r", "evil.md", "x")).rejects.toThrow();
+    await expect(manager.fileMtime("r", "evil.md")).rejects.toThrow();
+    expect(readFileSync(path.join(profile, "danger.md"), "utf8")).toBe(
+      "danger",
+    );
+  });
+
+  it("scan は symlink を辿らず、profile data directory の中を読まない", async () => {
+    const parent = tempDir("sf1-scan");
+    const profile = path.join(parent, "userData");
+    mkdirSync(profile);
+    writeFileSync(path.join(profile, "secret.md"), "secret");
+    const root = path.join(parent, "root");
+    mkdirSync(root);
+    writeFileSync(path.join(root, "ok.md"), "ok");
+    symlinkSync(profile, path.join(root, "link"), "dir");
+    symlinkSync(path.join(profile, "secret.md"), path.join(root, "s.md"));
+    const manager = buildWithProfile(profile);
+    const scan = await manager.register("r", root, "R");
+    expect(scan.files.map((f) => f.relPath)).toEqual(["ok.md"]);
+    expect(JSON.stringify(scan)).not.toContain("secret");
+  });
+
+  it("guard を構成しない manager は何も登録しない（fail closed）", async () => {
+    const dir = withFiles("sf1-noguard");
+    const manager = new ExternalMountManager(() => {}, {
+      watcherFactory: makeFactory().factory,
+    });
+    await expect(manager.register("r", dir, "R")).rejects.toThrow(
+      new RegExp(PROFILE_DATA_GUARD_ERROR_CODE),
+    );
+  });
+});
+
+// ── E-3: restricted の間は .md だけ ─────────────────────────────────────────
+
+describe("E-3: restricted の間の read／write／mtime は .md に限る", () => {
+  const FILES = [
+    "noext",
+    "a.json",
+    "run.sh",
+    "app.desktop",
+    "UPPER.MD",
+    "mixed.Md",
+  ];
+
+  async function prepared(restricted: () => boolean) {
+    const profile = tempDir("e3-profile");
+    const root = tempDir("e3-root");
+    writeFileSync(path.join(root, "a.md"), "md");
+    for (const name of FILES) writeFileSync(path.join(root, name), name);
+    const manager = buildWithProfile(profile, restricted);
+    await manager.register("r", root, "R");
+    return { manager, root };
+  }
+
+  it.each(FILES)(
+    "restricted: %s の read／write／mtime を typed に拒否する",
+    async (name) => {
+      const { manager, root } = await prepared(() => true);
+      const pattern = new RegExp(EXTERNAL_MOUNT_RESTRICTED_EXTENSION_CODE);
+      await expect(manager.readFile("r", name)).rejects.toThrow(pattern);
+      await expect(manager.writeFile("r", name, "x")).rejects.toThrow(pattern);
+      await expect(manager.fileMtime("r", name)).rejects.toThrow(pattern);
+      expect(readFileSync(path.join(root, name), "utf8")).toBe(name);
+    },
+  );
+
+  it("restricted: .md は read／write／mtime が通る", async () => {
+    const { manager, root } = await prepared(() => true);
+    expect(await manager.readFile("r", "a.md")).toBe("md");
+    await manager.writeFile("r", "a.md", "changed");
+    expect(readFileSync(path.join(root, "a.md"), "utf8")).toBe("changed");
+    expect(await manager.fileMtime("r", "a.md")).toMatch(/^\d{4}-/);
+  });
+
+  it("restricted: 拒否の理由に file 名と path を含めない", async () => {
+    const { manager, root } = await prepared(() => true);
+    const error = await manager.readFile("r", "a.json").then(
+      () => null,
+      (e: unknown) => e as Error,
+    );
+    expect(error?.message).not.toContain("a.json");
+    expect(error?.message).not.toContain(root);
+  });
+
+  it("restricted: 拡張子は解決した最終 path で見る（.md の名前の symlink が .json を指しても拒否）", async () => {
+    const { manager, root } = await prepared(() => true);
+    symlinkSync(path.join(root, "a.json"), path.join(root, "alias.md"));
+    await expect(manager.readFile("r", "alias.md")).rejects.toThrow(
+      new RegExp(EXTERNAL_MOUNT_RESTRICTED_EXTENSION_CODE),
+    );
+  });
+
+  it("unrestricted: 拡張子を問わず通る（挙動を変えない）", async () => {
+    const { manager, root } = await prepared(() => false);
+    for (const name of FILES) {
+      expect(await manager.readFile("r", name)).toBe(name);
+      await manager.writeFile("r", name, `new-${name}`);
+      expect(readFileSync(path.join(root, name), "utf8")).toBe(`new-${name}`);
+      expect(await manager.fileMtime("r", name)).toMatch(/^\d{4}-/);
+    }
+  });
+
+  it("gate の状態は呼出しごとに読む（unrestricted → restricted の切替が次の呼出しから効く）", async () => {
+    let restricted = false;
+    const { manager } = await prepared(() => restricted);
+    expect(await manager.readFile("r", "a.json")).toBe("a.json");
+    restricted = true;
+    await expect(manager.readFile("r", "a.json")).rejects.toThrow(
+      new RegExp(EXTERNAL_MOUNT_RESTRICTED_EXTENSION_CODE),
+    );
+  });
+
+  it("restricted でも root の選択と登録時の scan は変わらない", async () => {
+    const profile = tempDir("e3-profile2");
+    const root = withFiles("e3-scan");
+    writeFileSync(path.join(root, "x.json"), "{}");
+    const manager = buildWithProfile(profile, () => true);
+    const scan = await manager.register("r", root, "R");
+    expect(scan.files.map((f) => f.relPath).sort()).toEqual([
+      "a.md",
+      "chapter/01.md",
+    ]);
+    expect((await manager.scan("r")).files).toHaveLength(2);
   });
 });

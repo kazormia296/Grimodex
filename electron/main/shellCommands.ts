@@ -37,7 +37,10 @@ import type {
 } from "../shared/ipcContract.js";
 import { readUtf8FileWithLimit } from "./boundedFileRead.js";
 import { FsScope } from "./fsScope.js";
+import type { ProfileDataGuard } from "./profileDataGuard.js";
+import { getDefaultProfileDataGuard } from "./profileDataGuardDefault.js";
 import type { ProfileEgressGate } from "./profileEgress.js";
+import { sanitizeSuggestedName } from "./suggestedName.js";
 import { isWebGl2GpuBlocked } from "./webgl2GpuStatus.js";
 
 // 64 MiB SQLite payloadはbase64で約85.34 MiBになる。最大メタデータを含む
@@ -615,15 +618,22 @@ function appendSemanticShadowRecord(
 export async function showSavePathDialog(
   win: BrowserWindow | null,
   options: SavePathDialogOptions,
+  guard: ProfileDataGuard = getDefaultProfileDataGuard(),
 ): Promise<string | null> {
   const dialogOptions = {
-    defaultPath: options.suggestedName,
+    // SF-1: renderer の `suggestedName` は単一のファイル名にしてから渡す
+    // （絶対 path は dialog を保存先を事前に選んだ状態で開かせる）。
+    defaultPath: sanitizeSuggestedName(options.suggestedName),
     filters: [{ name: options.filterName, extensions: options.extensions }],
   };
   const result = win
     ? await dialog.showSaveDialog(win, dialogOptions)
     : await dialog.showSaveDialog(dialogOptions);
-  return result.canceled || !result.filePath ? null : result.filePath;
+  if (result.canceled || !result.filePath) return null;
+  // SF-1: 書く前に、返却 path の実体が profile data directory の中なら拒否する。
+  // vivliostyle_save_output を含む保存 dialog の共通の入口。
+  await guard.assertOutside(result.filePath);
+  return result.filePath;
 }
 
 async function promptSavePath(

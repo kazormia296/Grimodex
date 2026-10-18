@@ -75,6 +75,18 @@ thread_local! {
     /// The ordinary renderer policy remains backwards-compatible; D2a adds a
     /// publication guard on top of the same SQLite authorizer.
     static PROFILE_EGRESS_SQL_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    /// Whether the active D2a authorizer lets generic SQL read the `read-open`
+    /// ledger class.  Set from [`crate::profile_egress_policy::read_open_enabled`]
+    /// each time the adapter starts (tests may override it).
+    static PROFILE_EGRESS_READ_OPEN: Cell<bool> = const { Cell::new(false) };
+    /// Test-only override of the read-open switch.
+    static PROFILE_EGRESS_READ_OPEN_OVERRIDE: Cell<Option<bool>> = const { Cell::new(None) };
+    /// The statement being prepared was classified `own-data-read` by Electron
+    /// main: SQLite must report it read-only (`stmt.readonly()`) or it is
+    /// rejected before execution.
+    static PROFILE_EGRESS_READ_ONLY_REQUIRED: Cell<bool> = const { Cell::new(false) };
+    /// Per-statement `own-data-read` classification of the running batch.
+    static PROFILE_EGRESS_READ_ONLY_PLAN: RefCell<Option<Vec<bool>>> = const { RefCell::new(None) };
     /// Only the batch runner may issue transaction controls. Payload SQL is
     /// always evaluated with this disabled, even while the runner-owned
     /// BEGIN/COMMIT/ROLLBACK is executing under the same authorizer.
@@ -407,6 +419,11 @@ fn d2a_table_name(table_name: &str) -> &str {
 // published to Electron main. SQLite authorizer callbacks are the authority;
 // main's SQL classification is only an early, fail-closed advisory.
 fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String> {
+    use crate::profile_egress_policy::{
+        is_protected_table, is_read_open_column, is_write_protected_feed_table, table_class,
+        ProfileEgressTableClass,
+    };
+
     if !PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get) {
         return None;
     }
@@ -416,34 +433,42 @@ fn renderer_profile_egress_sql_rejection(ctx: &AuthContext<'_>) -> Option<String
             ctx.database_name
         ));
     }
+    let read_open = PROFILE_EGRESS_READ_OPEN.with(Cell::get);
     match &ctx.action {
         AuthAction::Read {
             table_name,
             column_name,
-        } if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name)) =>
-        {
-            Some(format!(
-                "{RENDERER_PROFILE_EGRESS_ERROR}: protected plaintext read from {table_name}.{column_name}"
-            ))
+        } => {
+            let table = d2a_table_name(table_name);
+            // `closed` is never readable through generic SQL.  `read-open`
+            // tables and columns are readable only once the opening switch is
+            // on; until then they are rejected exactly like `closed`.
+            let rejected = match table_class(table) {
+                Some(ProfileEgressTableClass::Closed) => true,
+                Some(ProfileEgressTableClass::ReadOpen) => !read_open,
+                None => !read_open && is_read_open_column(table, column_name),
+            };
+            if rejected {
+                if is_read_open_column(table, column_name) && table_class(table).is_none() {
+                    Some(format!(
+                        "{RENDERER_PROFILE_EGRESS_ERROR}: {table_name}.{column_name} is not published through generic SQL"
+                    ))
+                } else {
+                    Some(format!(
+                        "{RENDERER_PROFILE_EGRESS_ERROR}: protected plaintext read from {table_name}.{column_name}"
+                    ))
+                }
+            } else {
+                None
+            }
         }
-        AuthAction::Read {
-            table_name,
-            column_name,
-        } if crate::profile_egress_policy::is_protected_column(
-            d2a_table_name(table_name),
-            column_name,
-        ) =>
-        {
-            Some(format!(
-                "{RENDERER_PROFILE_EGRESS_ERROR}: {table_name}.{column_name} is not published through generic SQL"
-            ))
-        }
+        // DML is rejected on every ledger table (closed and read-open) and on
+        // the two feed tables as a whole, independent of the opening switch.
         AuthAction::Delete { table_name }
         | AuthAction::Insert { table_name }
         | AuthAction::Update { table_name, .. }
-            if crate::profile_egress_policy::is_protected_table(d2a_table_name(table_name))
-                || d2a_table_name(table_name).eq_ignore_ascii_case("change_events")
-                || d2a_table_name(table_name).eq_ignore_ascii_case("state_snapshots") =>
+            if is_protected_table(d2a_table_name(table_name))
+                || is_write_protected_feed_table(d2a_table_name(table_name)) =>
         {
             Some(format!(
                 "{RENDERER_PROFILE_EGRESS_ERROR}: protected DML target {table_name}"
@@ -459,9 +484,64 @@ fn with_profile_egress_sql<T>(operation: impl FnOnce() -> T) -> T {
         active.set(true);
         previous
     });
+    let previous_read_open = PROFILE_EGRESS_READ_OPEN.with(|read_open| {
+        let previous = read_open.get();
+        read_open.set(
+            PROFILE_EGRESS_READ_OPEN_OVERRIDE
+                .with(Cell::get)
+                .unwrap_or_else(crate::profile_egress_policy::read_open_enabled),
+        );
+        previous
+    });
     let result = operation();
+    PROFILE_EGRESS_READ_OPEN.with(|read_open| read_open.set(previous_read_open));
     PROFILE_EGRESS_SQL_ACTIVE.with(|active| active.set(previous));
     result
+}
+
+/// Restores the previous `own-data-read` read-only requirement on drop.
+struct ReadOnlyRequiredScope {
+    previous_required: bool,
+    previous_plan: Option<Vec<bool>>,
+}
+
+impl ReadOnlyRequiredScope {
+    fn single(required: bool) -> Self {
+        let previous_required =
+            PROFILE_EGRESS_READ_ONLY_REQUIRED.with(|cell| cell.replace(required));
+        let previous_plan = PROFILE_EGRESS_READ_ONLY_PLAN.with(|plan| plan.borrow_mut().take());
+        Self {
+            previous_required,
+            previous_plan,
+        }
+    }
+
+    fn batch(plan: Vec<bool>) -> Self {
+        let previous_required = PROFILE_EGRESS_READ_ONLY_REQUIRED.with(|cell| cell.replace(false));
+        let previous_plan =
+            PROFILE_EGRESS_READ_ONLY_PLAN.with(|slot| slot.borrow_mut().replace(plan));
+        Self {
+            previous_required,
+            previous_plan,
+        }
+    }
+}
+
+impl Drop for ReadOnlyRequiredScope {
+    fn drop(&mut self) {
+        PROFILE_EGRESS_READ_ONLY_REQUIRED.with(|cell| cell.set(self.previous_required));
+        PROFILE_EGRESS_READ_ONLY_PLAN.with(|plan| *plan.borrow_mut() = self.previous_plan.take());
+    }
+}
+
+/// Within a batch run, the `own-data-read` requirement for statement `index`.
+fn read_only_required_for_batch_statement(index: usize) -> bool {
+    PROFILE_EGRESS_READ_ONLY_PLAN.with(|plan| {
+        plan.borrow()
+            .as_ref()
+            .and_then(|plan| plan.get(index).copied())
+            .unwrap_or(false)
+    })
 }
 
 fn with_runner_transaction_controls<T>(operation: impl FnOnce() -> T) -> T {
@@ -815,7 +895,13 @@ impl Database {
             statement_may_mutate: false,
         };
         let result = (|| -> anyhow::Result<_> {
-            for stmt in statements {
+            let batch_plan_active =
+                PROFILE_EGRESS_READ_ONLY_PLAN.with(|plan| plan.borrow().is_some());
+            for (index, stmt) in statements.iter().enumerate() {
+                if batch_plan_active {
+                    PROFILE_EGRESS_READ_ONLY_REQUIRED
+                        .with(|cell| cell.set(read_only_required_for_batch_statement(index)));
+                }
                 let execution =
                     Self::execute_with_conn_result(conn, &stmt.sql, &stmt.params, &stmt.method)?;
                 last_result.statement_may_mutate |= execution.statement_may_mutate;
@@ -979,6 +1065,18 @@ impl Database {
         }
         let mut stmt = conn.prepare(sql)?;
         let statement_may_mutate = !stmt.readonly();
+        // `own-data-read` (K3/2): Electron main classified this statement as a
+        // read of the author's own data.  The authorizer cannot see that a
+        // `WITH ... INSERT INTO <unlisted table>` writes, but SQLite's own
+        // prepared statement can, so require it to be read-only before running.
+        if PROFILE_EGRESS_SQL_ACTIVE.with(Cell::get)
+            && PROFILE_EGRESS_READ_ONLY_REQUIRED.with(Cell::get)
+            && statement_may_mutate
+        {
+            anyhow::bail!(
+                "{RENDERER_PROFILE_EGRESS_ERROR}: own-data-read statement is not read-only"
+            );
+        }
         // SQLite itself is the parser for DML result shape. Checking
         // `readonly` plus `column_count` rejects every DML `RETURNING` form
         // (including CTE variants) before execution without a pseudo parser.
@@ -1117,6 +1215,40 @@ impl Database {
         method: &str,
     ) -> anyhow::Result<SqlExecutionResult> {
         with_profile_egress_sql(|| self.execute_impl(sql, params, method, SqlOrigin::Renderer))
+    }
+
+    /// [`Self::execute_renderer_profile_egress_with_result`] for a statement
+    /// whose `own-data-read` classification Electron main supplied.  When
+    /// `read_only_required` is true the prepared statement must be read-only.
+    pub fn execute_renderer_profile_egress_classified_with_result(
+        &self,
+        sql: &str,
+        params: &[Value],
+        method: &str,
+        read_only_required: bool,
+    ) -> anyhow::Result<SqlExecutionResult> {
+        with_profile_egress_sql(|| {
+            let _scope = ReadOnlyRequiredScope::single(read_only_required);
+            self.execute_impl(sql, params, method, SqlOrigin::Renderer)
+        })
+    }
+
+    /// Batch form of [`Self::execute_renderer_profile_egress_classified_with_result`]:
+    /// `read_only_required[i]` is the classification of `statements[i]`.  A
+    /// length mismatch is rejected before anything runs.
+    pub fn execute_batch_tx_renderer_profile_egress_classified_with_result(
+        &self,
+        statements: &[BatchStatement],
+        read_only_required: &[bool],
+    ) -> anyhow::Result<SqlExecutionResult> {
+        anyhow::ensure!(
+            statements.len() == read_only_required.len(),
+            "{RENDERER_PROFILE_EGRESS_ERROR}: own-data-read classification does not match the batch"
+        );
+        with_profile_egress_sql(|| {
+            let _scope = ReadOnlyRequiredScope::batch(read_only_required.to_vec());
+            self.execute_batch_tx_impl(statements, SqlOrigin::Renderer)
+        })
     }
 
     pub fn execute_with_origin(
@@ -2234,12 +2366,14 @@ mod tests {
     #[test]
     fn profile_egress_protects_every_native_inventory_table_in_a_real_database() {
         let db = test_db();
-        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+        for entry in crate::profile_egress_policy::PROFILE_EGRESS_TABLES {
+            let table = entry.name;
             db.execute(&format!("CREATE TABLE {table} (value TEXT)"), &[], "run")
                 .unwrap_or_else(|error| panic!("create protected table {table}: {error}"));
         }
 
-        for table in crate::profile_egress_policy::PROFILE_EGRESS_PROTECTED_TABLES {
+        for entry in crate::profile_egress_policy::PROFILE_EGRESS_TABLES {
+            let table = entry.name;
             let error = db
                 .execute_renderer_profile_egress(&format!("SELECT * FROM {table}"), &[], "all")
                 .expect_err("every inventory table must be denied through generic SQL");
@@ -4171,5 +4305,718 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("trusted update {table}: {error}"));
         }
+    }
+
+    // ---- D2a policy version 2 (K3/2 "表の台帳"): closed / read-open ----
+
+    /// Runs `operation` with the read-open switch forced to `open` (the
+    /// production switch is `PROFILE_EGRESS_READ_OPEN_ENABLED`).
+    fn with_read_open<T>(open: bool, operation: impl FnOnce() -> T) -> T {
+        let previous = PROFILE_EGRESS_READ_OPEN_OVERRIDE.with(|cell| cell.replace(Some(open)));
+        let result = operation();
+        PROFILE_EGRESS_READ_OPEN_OVERRIDE.with(|cell| cell.set(previous));
+        result
+    }
+
+    fn d2a_denied(error: &anyhow::Error) -> bool {
+        error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR)
+    }
+
+    /// A migrated database with one project / session / message so that the
+    /// own-data reads and the DML probes have rows to touch.
+    fn d2a_seeded_db() -> Database {
+        let db = test_db();
+        db.migrate().expect("migrate current schema");
+        // The legacy closed table is not created by the migrations; create it
+        // as the older tests do so DML/read probes reach the authorizer.
+        db.execute("CREATE TABLE messages (content TEXT NOT NULL)", &[], "run")
+            .expect("legacy closed table");
+        db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO projects(id,title) VALUES ('d2a-project','Project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_sessions(id,project_id) VALUES ('d2a-session','d2a-project')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO chat_messages(id,session_id,role,content,created_at)
+                 VALUES ('d2a-message','d2a-session','user','private chat body','2026-10-18T00:00:00.000Z')",
+                [],
+            )?;
+            Ok(())
+        })
+        .expect("seed own data");
+        db
+    }
+
+    fn migrated_table_names(db: &Database) -> BTreeSet<String> {
+        db.with_conn(|conn| {
+            let mut statement = conn.prepare(
+                "SELECT name FROM sqlite_master
+                 WHERE type IN ('table', 'virtual') AND name NOT LIKE 'sqlite_%'",
+            )?;
+            let names = statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            Ok(names)
+        })
+        .expect("read migrated schema")
+    }
+
+    /// Tables of the current schema that the D2a ledger deliberately does not
+    /// list ("上記以外の表"; K3/2 keeps them readable and, apart from the
+    /// protected-writer layer, writable).  Pinned by name so that a schema
+    /// change which adds a table fails here until its author decides whether
+    /// the table belongs in the ledger as `closed` or `read-open`
+    /// (profile_egress_policy.rs) or is pinned here as unlisted.
+    const D2A_UNLISTED_SCHEMA_TABLES: &[&str] = &[
+        "ai_usage",
+        "app_settings",
+        "authorship_spans",
+        "change_events",
+        "chat_session_pinned_codex",
+        "chat_summary_messages",
+        "codex_detail_definitions",
+        "codex_detail_semantic_bindings",
+        "codex_detail_values",
+        "codex_dismissed_relations",
+        "codex_entries",
+        "codex_entry_phases",
+        "codex_entry_tags",
+        "codex_fts",
+        "codex_fts_config",
+        "codex_fts_data",
+        "codex_fts_docsize",
+        "codex_fts_en",
+        "codex_fts_en_config",
+        "codex_fts_en_content",
+        "codex_fts_en_data",
+        "codex_fts_en_docsize",
+        "codex_fts_en_idx",
+        "codex_fts_idx",
+        "codex_phase_detail_overrides",
+        "codex_quick_pins",
+        "codex_relations",
+        "codex_tags",
+        "codex_types",
+        "editor_stickies",
+        "event_participants",
+        "event_relations",
+        "events",
+        "fts_meta",
+        "generic_extraction_schemas",
+        "import_capture_blobs",
+        "import_capture_entries",
+        "import_captures",
+        "import_commits",
+        "import_decoded_resources",
+        "import_evidence_bindings",
+        "import_sessions",
+        "import_source_baselines",
+        "import_source_mappings",
+        "import_source_packages",
+        "labels",
+        "lint_action_log",
+        "map_ai_branches",
+        "map_boards",
+        "map_edges",
+        "map_frames",
+        "map_node_positions",
+        "map_stickies",
+        "narrative_application_contributions",
+        "narrative_change_cursors",
+        "narrative_change_events",
+        "narrative_change_object_heads",
+        "narrative_change_sets",
+        "narrative_change_transactions",
+        "narrative_dependency_declaration_entries",
+        "narrative_dependency_declaration_heads",
+        "narrative_dependency_declaration_sets",
+        "narrative_dependency_edge_states",
+        "narrative_dependency_edges",
+        "narrative_extraction_task_edges",
+        "narrative_field_authority",
+        "narrative_maintenance_repair_leases",
+        "narrative_maintenance_wake_outbox",
+        "narrative_nir1_chronicle_vectors",
+        "narrative_projection_dependencies",
+        "narrative_projection_freshness",
+        "narrative_revision_source_basis",
+        "narrative_runtime_policy",
+        "narrative_scene_scope_bindings",
+        "narrative_scope_registries",
+        "narrative_semantic_epochs",
+        "narrative_semantic_index_metadata",
+        "narrative_temporal_constraints",
+        "narrative_temporal_nodes",
+        "narrative_temporal_projections",
+        "project_calendar",
+        "project_settings",
+        "project_snapshot_entries",
+        "project_snapshots",
+        "projects",
+        "prompt_templates",
+        "scene_beat_pov_cache",
+        "scene_codex_mentions",
+        "scene_codex_pins",
+        "scene_events",
+        "schema_data_migrations",
+        "snippet_entry_tags",
+        "snippets",
+        "snippets_fts",
+        "snippets_fts_config",
+        "snippets_fts_data",
+        "snippets_fts_docsize",
+        "snippets_fts_en",
+        "snippets_fts_en_config",
+        "snippets_fts_en_content",
+        "snippets_fts_en_data",
+        "snippets_fts_en_docsize",
+        "snippets_fts_en_idx",
+        "snippets_fts_idx",
+        "state_snapshots",
+        "tree_node_labels",
+        "tree_nodes",
+        "tree_nodes_fts",
+        "tree_nodes_fts_config",
+        "tree_nodes_fts_data",
+        "tree_nodes_fts_docsize",
+        "tree_nodes_fts_en",
+        "tree_nodes_fts_en_config",
+        "tree_nodes_fts_en_content",
+        "tree_nodes_fts_en_data",
+        "tree_nodes_fts_en_docsize",
+        "tree_nodes_fts_en_idx",
+        "tree_nodes_fts_idx",
+    ];
+
+    #[test]
+    fn profile_egress_ledger_declares_every_schema_table_or_pins_it_as_unlisted() {
+        let db = test_db();
+        db.migrate().expect("migrate current schema");
+        let existing = migrated_table_names(&db);
+
+        // Every ledger entry names a table of the current schema, except the
+        // legacy `messages` table: it is closed defensively (K3/2 "表の台帳")
+        // although the migrated schema does not create it.
+        let absent = crate::profile_egress_policy::PROFILE_EGRESS_TABLES
+            .iter()
+            .filter(|entry| !existing.contains(entry.name))
+            .map(|entry| entry.name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            absent,
+            vec!["messages"],
+            "ledger tables missing from the migrated schema"
+        );
+
+        // Everything else is pinned.  A table that is neither declared in the
+        // ledger nor pinned here fails this test.
+        let unlisted = existing
+            .iter()
+            .filter(|name| crate::profile_egress_policy::table_class(name).is_none())
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let pinned = D2A_UNLISTED_SCHEMA_TABLES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect::<BTreeSet<_>>();
+        let undeclared = unlisted.difference(&pinned).collect::<Vec<_>>();
+        let stale = pinned.difference(&unlisted).collect::<Vec<_>>();
+        assert!(
+            undeclared.is_empty(),
+            "schema tables that are neither in the D2a ledger (closed / read-open) nor pinned as unlisted: {undeclared:?}"
+        );
+        assert!(
+            stale.is_empty(),
+            "pinned unlisted tables that no longer exist or are now in the ledger: {stale:?}"
+        );
+        assert_eq!(
+            existing.len() + absent.len(),
+            crate::profile_egress_policy::PROFILE_EGRESS_TABLES.len() + unlisted.len()
+        );
+    }
+
+    #[test]
+    fn profile_egress_ledger_keeps_the_confirmed_counts_and_does_not_widen_closed() {
+        use crate::profile_egress_policy::{
+            is_closed_table, is_read_open_table, PROFILE_EGRESS_TABLES,
+        };
+        let closed = PROFILE_EGRESS_TABLES
+            .iter()
+            .filter(|table| is_closed_table(table.name))
+            .count();
+        let read_open = PROFILE_EGRESS_TABLES
+            .iter()
+            .filter(|table| is_read_open_table(table.name))
+            .count();
+        assert_eq!((closed, read_open), (26, 58));
+
+        // The `narrative_` tables outside the ledger stay
+        // "unlisted" (K3/2: 27 at schema 41).  They are not closed by prefix
+        // and are not widened into the ledger by this change.
+        let narrative_unlisted = D2A_UNLISTED_SCHEMA_TABLES
+            .iter()
+            .filter(|name| name.starts_with("narrative_"))
+            .collect::<Vec<_>>();
+        for name in &narrative_unlisted {
+            assert!(!is_closed_table(name), "{name}");
+            assert!(!is_read_open_table(name), "{name}");
+        }
+        assert_eq!(
+            narrative_unlisted.len(),
+            27,
+            "K3/2 pins the 27 unlisted narrative_ tables"
+        );
+
+        // Unlisted tables stay readable and writable exactly as at a153743b.
+        let db = d2a_seeded_db();
+        for open in [false, true] {
+            with_read_open(open, || {
+                db.execute_renderer_profile_egress(
+                    "INSERT INTO app_settings (key, value) VALUES ('d2a-ledger-regression', 'v')",
+                    &[],
+                    "run",
+                )
+                .expect("unlisted DML stays available");
+                db.execute_renderer_profile_egress(
+                    "SELECT value FROM app_settings WHERE key = 'd2a-ledger-regression'",
+                    &[],
+                    "all",
+                )
+                .expect("unlisted reads stay available");
+                db.execute_renderer_profile_egress(
+                    "DELETE FROM app_settings WHERE key = 'd2a-ledger-regression'",
+                    &[],
+                    "run",
+                )
+                .expect("unlisted DML stays available");
+            });
+        }
+    }
+
+    #[test]
+    fn profile_egress_read_open_switch_is_closed_by_default_and_matches_the_old_inventory() {
+        // With the production switch (false) a read-open table or column is
+        // rejected exactly like a closed one (a153743b behavior).
+        assert!(!crate::profile_egress_policy::read_open_enabled());
+        let db = d2a_seeded_db();
+        for entry in crate::profile_egress_policy::PROFILE_EGRESS_TABLES {
+            let error = db
+                .execute_renderer_profile_egress(
+                    &format!("SELECT * FROM \"{}\" LIMIT 0", entry.name),
+                    &[],
+                    "all",
+                )
+                .expect_err("closed switch: every ledger table read is rejected");
+            assert!(d2a_denied(&error), "{}: {error}", entry.name);
+        }
+        for sql in [
+            "SELECT payload FROM change_events",
+            "SELECT * FROM change_events",
+            "SELECT payload FROM state_snapshots",
+        ] {
+            let error = db
+                .execute_renderer_profile_egress(sql, &[], "all")
+                .expect_err("closed switch: payload columns are rejected");
+            assert!(d2a_denied(&error), "{sql}: {error}");
+        }
+        db.execute_renderer_profile_egress("SELECT domain FROM change_events", &[], "all")
+            .expect("feed metadata stays readable");
+    }
+
+    #[test]
+    fn profile_egress_open_switch_reads_read_open_and_still_rejects_closed_dml_returning_temp() {
+        use crate::profile_egress_policy::{
+            is_closed_table, is_read_open_table, PROFILE_EGRESS_TABLES,
+        };
+        let db = d2a_seeded_db();
+        with_read_open(true, || {
+            for entry in PROFILE_EGRESS_TABLES {
+                let table = entry.name;
+                let read = db.execute_renderer_profile_egress(
+                    &format!("SELECT * FROM \"{table}\" LIMIT 0"),
+                    &[],
+                    "all",
+                );
+                let count = db.execute_renderer_profile_egress(
+                    &format!("SELECT count(*) FROM \"{table}\""),
+                    &[],
+                    "all",
+                );
+                if is_read_open_table(table) {
+                    read.unwrap_or_else(|error| panic!("read-open read {table}: {error}"));
+                    count.unwrap_or_else(|error| panic!("read-open count {table}: {error}"));
+                } else {
+                    assert!(is_closed_table(table));
+                    let error = read.expect_err("closed read must stay rejected");
+                    assert!(d2a_denied(&error), "closed read {table}: {error}");
+                    let error = count.expect_err("closed count must stay rejected");
+                    assert!(d2a_denied(&error), "closed count {table}: {error}");
+                }
+                // DML is rejected for both classes, whatever the switch.
+                for dml in [
+                    format!("DELETE FROM \"{table}\" WHERE 0"),
+                    format!("UPDATE \"{table}\" SET rowid = rowid WHERE 0"),
+                    format!("INSERT INTO \"{table}\" SELECT * FROM \"{table}\" WHERE 0"),
+                ] {
+                    let error = db
+                        .execute_renderer_profile_egress(&dml, &[], "run")
+                        .expect_err("ledger DML must be rejected");
+                    // SQLite itself refuses to modify FTS shadow tables before
+                    // the authorizer runs; any rejection is the invariant.
+                    let sqlite_shadow = table.contains("_fts_");
+                    assert!(sqlite_shadow || d2a_denied(&error), "{dml}: {error}");
+                }
+            }
+
+            // The two feed payload columns are read-open; the tables are
+            // never writable through generic SQL.
+            db.execute_renderer_profile_egress("SELECT payload FROM change_events", &[], "all")
+                .expect("read-open column");
+            db.execute_renderer_profile_egress("SELECT * FROM change_events", &[], "all")
+                .expect("read-open column via *");
+            db.execute_renderer_profile_egress("SELECT payload FROM state_snapshots", &[], "all")
+                .expect("read-open column");
+            for dml in [
+                "DELETE FROM change_events WHERE 0",
+                "UPDATE state_snapshots SET domain = domain WHERE 0",
+            ] {
+                let error = db
+                    .execute_renderer_profile_egress(dml, &[], "run")
+                    .expect_err("feed table DML must be rejected");
+                assert!(d2a_denied(&error), "{dml}: {error}");
+            }
+
+            // RETURNING, temp and attached stay rejected (unchanged).
+            let error = db
+                .execute_renderer_profile_egress(
+                    "INSERT INTO app_settings (key, value) VALUES ('r', 'v') RETURNING value",
+                    &[],
+                    "all",
+                )
+                .expect_err("RETURNING stays rejected");
+            assert!(d2a_denied(&error), "{error}");
+            let error = db
+                .execute_renderer_profile_egress("SELECT * FROM temp.sqlite_master", &[], "all")
+                .expect_err("temp stays rejected");
+            assert!(d2a_denied(&error), "{error}");
+            let attached = temp_sqlite_path("d2a-open-attach");
+            let error = db
+                .execute_renderer_profile_egress(
+                    "ATTACH DATABASE ?1 AS other",
+                    &[Value::String(attached.to_string_lossy().into_owned())],
+                    "run",
+                )
+                .expect_err("attach stays rejected");
+            assert!(!error.to_string().is_empty());
+            assert!(!attached.exists());
+        });
+        // Back to closed: nothing leaked out of the override.
+        let error = db
+            .execute_renderer_profile_egress("SELECT content FROM chat_messages", &[], "all")
+            .expect_err("override must not outlive its scope");
+        assert!(d2a_denied(&error));
+    }
+
+    /// K3/2 Negative (18): DML on `chat_sessions` and UPDATE on `chat_messages`
+    /// must be rejected by the DML arm, not by the (open) read arm.  Fixed with
+    /// the read-open ledger open so the read arm lets the statement through to
+    /// the DML arm.
+    #[test]
+    fn profile_egress_open_rejects_chat_dml_in_the_dml_arm() {
+        let db = d2a_seeded_db();
+        with_read_open(true, || {
+            for sql in [
+                "INSERT INTO chat_sessions(id,project_id) VALUES ('d2a-new','d2a-project')",
+                "UPDATE chat_sessions SET project_id = project_id WHERE id = 'd2a-session'",
+                "UPDATE chat_sessions SET project_id = 'other'",
+                "DELETE FROM chat_sessions WHERE id = 'd2a-session'",
+                "DELETE FROM chat_sessions",
+                // SET and WHERE that read columns.
+                "UPDATE chat_messages SET content = content || 'x' WHERE id = 'd2a-message'",
+                "UPDATE chat_messages SET content = (SELECT content FROM chat_messages LIMIT 1)",
+                // Constants only (no column read).
+                "UPDATE chat_messages SET content = 'x'",
+                "UPDATE chat_messages SET content = 'x' WHERE 1",
+                "UPDATE chat_messages SET is_starred = 1",
+                "UPDATE chat_messages SET is_starred = 1 - is_starred WHERE session_id = 'd2a-session'",
+                // chat_sessions.node_id (the scene anchor), constant and
+                // column-reading forms.
+                "UPDATE chat_sessions SET node_id = NULL",
+                "UPDATE chat_sessions SET node_id = 'n' WHERE id = 'd2a-session'",
+                "UPDATE chat_sessions SET node_id = node_id WHERE id = 'd2a-session'",
+            ] {
+                let error = db
+                    .execute_renderer_profile_egress(sql, &[], "run")
+                    .expect_err("chat DML must be rejected");
+                let message = error.to_string();
+                assert!(d2a_denied(&error), "{sql}: {message}");
+                assert!(
+                    message.contains("protected DML target"),
+                    "must be the DML arm for {sql}, got: {message}"
+                );
+            }
+        });
+        // Nothing changed.
+        let rows = db
+            .execute(
+                "SELECT content FROM chat_messages WHERE id = 'd2a-message'",
+                &[],
+                "all",
+            )
+            .expect("trusted read");
+        assert_eq!(rows[0]["content"], Value::from("private chat body"));
+        let rows = db
+            .execute("SELECT count(*) AS n FROM chat_sessions", &[], "all")
+            .expect("trusted read");
+        assert_eq!(rows[0]["n"], Value::from(1));
+    }
+
+    #[test]
+    fn profile_egress_open_rejects_dml_through_cte_upsert_batch_and_trigger() {
+        let db = d2a_seeded_db();
+        // A trusted trigger on an unlisted table that writes a read-open table.
+        db.execute(
+            "CREATE TRIGGER d2a_probe_trigger AFTER INSERT ON app_settings
+             BEGIN INSERT INTO chat_sessions(id,project_id) VALUES ('d2a-via-trigger','d2a-project'); END",
+            &[],
+            "run",
+        )
+        .expect("trusted trigger setup");
+        with_read_open(true, || {
+            for sql in [
+                // CTE-prefixed DML on ledger tables.
+                "WITH s AS (SELECT id FROM chat_sessions) DELETE FROM chat_sessions WHERE id IN (SELECT id FROM s)",
+                "WITH s AS (SELECT 1 AS n) INSERT INTO chat_sessions(id,project_id) SELECT 'x','d2a-project' FROM s",
+                "WITH s AS (SELECT 1 AS n) UPDATE chat_messages SET content = 'x' WHERE (SELECT n FROM s)",
+                // Upsert.
+                "INSERT INTO chat_sessions(id,project_id) VALUES ('d2a-session','d2a-project')
+                 ON CONFLICT(id) DO UPDATE SET project_id = excluded.project_id",
+                // Replace.
+                "REPLACE INTO chat_sessions(id,project_id) VALUES ('d2a-session','d2a-project')",
+                // A closed table, written from a read-open source.
+                "INSERT INTO messages(content) SELECT content FROM chat_messages",
+                // Through the trigger above.
+                "INSERT INTO app_settings(key,value) VALUES ('d2a-trigger','v')",
+            ] {
+                let error = db
+                    .execute_renderer_profile_egress(sql, &[], "run")
+                    .expect_err("ledger DML must be rejected");
+                assert!(d2a_denied(&error), "{sql}: {error}");
+            }
+            // A batch with a ledger DML anywhere rolls back as a whole.
+            let error = db
+                .execute_batch_tx_renderer_profile_egress_with_result(&[
+                    BatchStatement {
+                        sql: "INSERT INTO app_settings(key,value) VALUES ('d2a-batch','v')".into(),
+                        params: vec![],
+                        method: "run".into(),
+                    },
+                    BatchStatement {
+                        sql: "DELETE FROM chat_sessions".into(),
+                        params: vec![],
+                        method: "run".into(),
+                    },
+                ])
+                .expect_err("batch with ledger DML must be rejected");
+            assert!(d2a_denied(&error), "{error}");
+        });
+        let rows = db
+            .execute(
+                "SELECT key FROM app_settings WHERE key LIKE 'd2a-%'",
+                &[],
+                "all",
+            )
+            .expect("trusted read");
+        assert!(rows.is_empty(), "rejected statements must not persist");
+        let rows = db
+            .execute("SELECT count(*) AS n FROM chat_sessions", &[], "all")
+            .expect("trusted read");
+        assert_eq!(rows[0]["n"], Value::from(1));
+    }
+
+    #[test]
+    fn profile_egress_own_data_read_requires_a_read_only_statement() {
+        let db = d2a_seeded_db();
+        let leak = "WITH s AS (SELECT content FROM chat_messages)
+                    INSERT INTO app_settings(key,value) SELECT 'd2a-leak', content FROM s";
+        with_read_open(true, || {
+            // Unclassified (the comma-join form Main's table extraction cannot
+            // see): the authorizer lets the write to an unlisted table through,
+            // exactly as K3/2 documents.
+            db.execute_renderer_profile_egress_classified_with_result(leak, &[], "run", false)
+                .expect("unclassified statement is not the read-only check's business");
+            db.execute(
+                "DELETE FROM app_settings WHERE key = 'd2a-leak'",
+                &[],
+                "run",
+            )
+            .expect("cleanup");
+
+            // Classified own-data-read: SQLite itself must call it read-only.
+            let error = db
+                .execute_renderer_profile_egress_classified_with_result(leak, &[], "run", true)
+                .expect_err("a write cannot ride on an own-data-read classification");
+            assert!(d2a_denied(&error), "{error}");
+            assert!(error.to_string().contains("not read-only"), "{error}");
+            let rows = db
+                .execute(
+                    "SELECT key FROM app_settings WHERE key = 'd2a-leak'",
+                    &[],
+                    "all",
+                )
+                .expect("trusted read");
+            assert!(rows.is_empty(), "the write must not have run");
+
+            // Every other write shape is rejected when classified, too.
+            for sql in [
+                "INSERT INTO app_settings(key,value) VALUES ('d2a-leak','v')",
+                "UPDATE app_settings SET value = 'v'",
+                "DELETE FROM app_settings",
+                "REPLACE INTO app_settings(key,value) VALUES ('d2a-leak','v')",
+                "WITH s AS (SELECT 1) DELETE FROM app_settings",
+            ] {
+                let error = db
+                    .execute_renderer_profile_egress_classified_with_result(sql, &[], "run", true)
+                    .expect_err("classified statement must be read-only");
+                assert!(d2a_denied(&error), "{sql}: {error}");
+            }
+
+            // A real read passes and returns the author's own data.
+            let result = db
+                .execute_renderer_profile_egress_classified_with_result(
+                    "WITH m AS (SELECT content FROM chat_messages) SELECT content FROM m",
+                    &[],
+                    "all",
+                    true,
+                )
+                .expect("own-data-read");
+            assert!(!result.statement_may_mutate);
+            assert_eq!(result.rows[0]["content"], Value::from("private chat body"));
+        });
+        // The requirement does not leak into the next, unclassified call.
+        with_read_open(true, || {
+            db.execute_renderer_profile_egress_with_result(
+                "INSERT INTO app_settings(key,value) VALUES ('d2a-after','v')",
+                &[],
+                "run",
+            )
+            .expect("requirement is scoped to its call");
+        });
+    }
+
+    #[test]
+    fn profile_egress_own_data_read_classification_applies_per_batch_statement() {
+        fn stmt(sql: &str, method: &str) -> BatchStatement {
+            BatchStatement {
+                sql: sql.into(),
+                params: vec![],
+                method: method.into(),
+            }
+        }
+        let select = "SELECT content FROM chat_messages";
+        let leak = "WITH s AS (SELECT content FROM chat_messages)
+                    INSERT INTO app_settings(key,value) SELECT 'd2a-batch-leak', content FROM s";
+        let db = d2a_seeded_db();
+        with_read_open(true, || {
+            // The classified read and an unclassified, ordinary write share a
+            // batch: only the classified statement is held to read-only.
+            db.execute_batch_tx_renderer_profile_egress_classified_with_result(
+                &[
+                    stmt(
+                        "INSERT INTO app_settings(key,value) VALUES ('d2a-batch-ok','v')",
+                        "run",
+                    ),
+                    stmt(select, "all"),
+                ],
+                &[false, true],
+            )
+            .expect("mixed batch");
+
+            // A classified statement that writes rolls the whole batch back.
+            let error = db
+                .execute_batch_tx_renderer_profile_egress_classified_with_result(
+                    &[
+                        stmt(
+                            "INSERT INTO app_settings(key,value) VALUES ('d2a-batch-rolled','v')",
+                            "run",
+                        ),
+                        stmt(leak, "run"),
+                    ],
+                    &[false, true],
+                )
+                .expect_err("classified write in a batch");
+            assert!(error.to_string().contains("not read-only"), "{error}");
+
+            // A classification that does not match the batch is rejected
+            // before anything runs.
+            let error = db
+                .execute_batch_tx_renderer_profile_egress_classified_with_result(
+                    &[stmt(select, "all"), stmt(select, "all")],
+                    &[true],
+                )
+                .expect_err("length mismatch");
+            assert!(d2a_denied(&error), "{error}");
+        });
+        let rows = db
+            .execute(
+                "SELECT key FROM app_settings WHERE key LIKE 'd2a-batch-%' ORDER BY key",
+                &[],
+                "all",
+            )
+            .expect("trusted read");
+        let keys = rows
+            .iter()
+            .map(|row| row["key"].as_str().unwrap_or_default().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(keys, vec!["d2a-batch-ok".to_string()]);
+    }
+
+    /// FK parent-key and trigger-body reads happen inside DML statements on
+    /// tables the ledger does not list; with the read-open class open they must
+    /// still pass (S3 T3), which is why the read-only check is applied only to
+    /// statements Main classified `own-data-read` and never to Native as a whole.
+    #[test]
+    fn profile_egress_open_allows_trigger_body_reads_inside_unlisted_dml() {
+        let db = d2a_seeded_db();
+        db.execute("CREATE TABLE d2a_probe_log (note TEXT)", &[], "run")
+            .expect("trusted unlisted table");
+        db.execute(
+            "CREATE TRIGGER d2a_probe_read_trigger AFTER INSERT ON app_settings
+             BEGIN INSERT INTO d2a_probe_log(note)
+                   SELECT count(*) FROM chat_messages; END",
+            &[],
+            "run",
+        )
+        .expect("trusted trigger setup");
+
+        // Closed: the trigger's read of a read-open table is rejected like any
+        // other read of it.
+        let error = with_read_open(false, || {
+            db.execute_renderer_profile_egress(
+                "INSERT INTO app_settings(key,value) VALUES ('d2a-trigger-read','v')",
+                &[],
+                "run",
+            )
+        })
+        .expect_err("closed class: trigger read rejected");
+        assert!(d2a_denied(&error), "{error}");
+
+        // Open: the read passes, the unclassified DML is not held to read-only.
+        with_read_open(true, || {
+            db.execute_renderer_profile_egress(
+                "INSERT INTO app_settings(key,value) VALUES ('d2a-trigger-read','v')",
+                &[],
+                "run",
+            )
+            .expect("trigger-body read of a read-open table is allowed in an unlisted DML");
+        });
+        let rows = db
+            .execute("SELECT count(*) AS n FROM d2a_probe_log", &[], "all")
+            .expect("trusted read");
+        assert_eq!(rows[0]["n"], Value::from(1));
     }
 }

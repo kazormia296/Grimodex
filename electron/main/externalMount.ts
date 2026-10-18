@@ -55,6 +55,8 @@ import {
   scanRoot,
 } from "./externalMountFs.js";
 import type { ScanResult } from "./externalMountFs.js";
+import { ProfileDataGuardError } from "./profileDataGuard.js";
+import type { ProfileDataGuard } from "./profileDataGuard.js";
 
 /** watcher イベントを batch する debounce（Rust watch.rs `DEBOUNCE_MS`）。 */
 const DEBOUNCE_MS = 500;
@@ -112,9 +114,31 @@ const defaultWatcherFactory: WatcherFactory = (rootPath) =>
     atomic: false,
   }) as unknown as MountWatcher;
 
+/** restricted の間に `.md` 以外を拒否したときの typed な理由（path を含まない）。 */
+export const EXTERNAL_MOUNT_RESTRICTED_EXTENSION_CODE =
+  "EXTERNAL_MOUNT_RESTRICTED_EXTENSION";
+
+/** 構成されていない guard は何も通さない（fail closed）。 */
+const FAIL_CLOSED_GUARD: ProfileDataGuard = {
+  assertOutside: () =>
+    Promise.reject(new ProfileDataGuardError("unresolvable")),
+  assertNoOverlap: () =>
+    Promise.reject(new ProfileDataGuardError("unresolvable")),
+};
+
 export interface ExternalMountManagerOptions {
   watcherFactory?: WatcherFactory;
   debounceMs?: number;
+  /**
+   * SF-1: profile data directory に重なる root と対象を拒否する guard。
+   * 製品は `getDefaultProfileDataGuard()` を渡す。省略すると何も通さない。
+   */
+  profileDataGuard?: ProfileDataGuard;
+  /**
+   * E-3: profile が restricted または unavailable のとき true を返す（呼出しごとに
+   * 読む）。true の間、read／write／mtime は `.md` だけを通す。省略は false。
+   */
+  isProfileRestricted?: () => boolean;
 }
 
 /**
@@ -132,6 +156,8 @@ export class ExternalMountManager {
   >();
   private readonly watcherFactory: WatcherFactory;
   private readonly debounceMs: number;
+  private readonly profileDataGuard: ProfileDataGuard;
+  private readonly isProfileRestricted: () => boolean;
 
   constructor(
     private readonly broadcast: (channel: string, payload: unknown) => void,
@@ -139,6 +165,8 @@ export class ExternalMountManager {
   ) {
     this.watcherFactory = options.watcherFactory ?? defaultWatcherFactory;
     this.debounceMs = options.debounceMs ?? DEBOUNCE_MS;
+    this.profileDataGuard = options.profileDataGuard ?? FAIL_CLOSED_GUARD;
+    this.isProfileRestricted = options.isProfileRestricted ?? (() => false);
   }
 
   // ── コマンド本体（Tauri external_mount_* の写像） ──────────────────────────
@@ -154,6 +182,9 @@ export class ExternalMountManager {
     if (!st || !st.isDirectory()) {
       throw new Error(`mount path is not a directory: ${mountPath}`);
     }
+    // SF-1: profile data directory と等しい、含む、含まれる root は、scan（内容を
+    // renderer に返す）と registry への登録の前に拒否する。
+    await this.profileDataGuard.assertNoOverlap(mountPath);
     // scan は木を walk して全 .md を読むため、registry の同期区間の外で実行する。
     const scan = await scanRoot(mountPath);
     const canonical = await realpath(mountPath);
@@ -178,6 +209,7 @@ export class ExternalMountManager {
 
   async readFile(rootId: string, relPath: string): Promise<string> {
     const abs = await resolveUnderRoot(this.lookupCanonical(rootId), relPath);
+    await this.assertFileReachable(abs);
     return readTextFile(abs);
   }
 
@@ -187,11 +219,14 @@ export class ExternalMountManager {
     content: string,
   ): Promise<void> {
     const abs = await resolveUnderRoot(this.lookupCanonical(rootId), relPath);
+    // SF-1: 書込みの直前に、解決した最終 path を検査する。
+    await this.assertFileReachable(abs);
     await atomicWriteText(abs, content);
   }
 
   async fileMtime(rootId: string, relPath: string): Promise<string> {
     const abs = await resolveUnderRoot(this.lookupCanonical(rootId), relPath);
+    await this.assertFileReachable(abs);
     return fileMtimeIso(abs);
   }
 
@@ -228,6 +263,21 @@ export class ExternalMountManager {
       }
     }
     this.roots.set(rootId, { id: rootId, path: mountPath, label, canonical });
+  }
+
+  /**
+   * read／write／mtime の対象（解決した最終 path）の検査。
+   * - E-3: restricted または unavailable の間は拡張子が `.md`（大文字小文字を区別する。
+   *   scan と watcher と同じ規則）のときだけ通す。
+   * - SF-1: mode を問わず、profile data directory の中なら拒否する。
+   */
+  private async assertFileReachable(abs: string): Promise<void> {
+    if (this.isProfileRestricted() && path.extname(abs) !== ".md") {
+      throw new Error(
+        `${EXTERNAL_MOUNT_RESTRICTED_EXTENSION_CODE}: only .md files are reachable while the profile is restricted`,
+      );
+    }
+    await this.profileDataGuard.assertOutside(abs);
   }
 
   private lookupCanonical(rootId: string): string {

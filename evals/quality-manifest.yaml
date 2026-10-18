@@ -169,6 +169,7 @@ requirements:
       - src/features/ai-policy/policyGuard.ts
     lightTests:
       - scripts/quality/nir1-retrieval/standard-build.test.mjs
+      - scripts/quality/nir1-retrieval/d2a-mode.test.mjs
       - scripts/local-ci-process-supervisor.test.mjs
       - scripts/quality/quality-workflow.test.mjs
       - src/features/chat/turn/resolveTurnRoute.test.ts
@@ -319,6 +320,30 @@ requirements:
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - electron/main/ipc.ts
       - electron/main/profileEgress.ts
+      - electron/main/d2aSqlPolicyFixture.ts
+      - electron/main/devRendererUrl.ts
+      - electron/main/downloadGuard.ts
+      - electron/main/downloadGuardElectron.ts
+      - electron/main/externalMount.ts
+      - electron/main/licenseValidation.ts
+      - electron/main/profileDataGuard.ts
+      - electron/main/profileDataGuardDefault.ts
+      - electron/main/protocol.ts
+      - electron/main/security.ts
+      - electron/main/shellCommands.ts
+      - electron/main/suggestedName.ts
+      - electron/main/windows.ts
+      - electron/scripts/renderer-isolation-probe.mjs
+      - electron/scripts/renderer-isolation-probe-main.mjs
+      - electron/scripts/renderer-isolation-probe-renderer.js
+      - electron/scripts/renderer-isolation-probe.record.json
+      - electron/scripts/renderer-isolation-probe.legacy-control.record.json
+      - electron/native/grimodex-node/src/profile_egress.rs
+      - electron/native/grimodex-node/src/license_mode.rs
+      - electron/native/grimodex-node/src/publication_guard.rs
+      - src-tauri/crates/grimodex-db/src/profile_egress_policy.rs
+      - src-tauri/crates/grimodex-license/src/lib.rs
+      - src/features/license/store.ts
       - src/features/codex/CodexEntityRelationReviewDialog.tsx
       - src/features/codex/CodexEntityRelationReviewSelectors.tsx
       - src/features/codex/CodexEntityRelationRevisionReviewDecisionControls.tsx
@@ -357,6 +382,35 @@ requirements:
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - electron/main/ipc.test.ts
       - electron/main/profileEgress.test.ts
+      - electron/main/d2aRouteClasses.test.ts
+      - electron/main/d2aNirPublication.test.ts
+      - electron/main/devRendererUrl.test.ts
+      - electron/main/downloadGuard.test.ts
+      - electron/main/externalMount.test.ts
+      - electron/main/externalMount.integration.test.ts
+      - electron/main/licenseValidation.test.ts
+      - electron/main/profileDataGuard.test.ts
+      - electron/main/protocol.test.ts
+      - electron/main/rendererIsolation.static.test.ts
+      - electron/main/rendererIsolationProbeRecord.test.ts
+      - electron/main/security.test.ts
+      - electron/main/shellCommands.test.ts
+      - electron/main/stateFileReach.integration.test.ts
+      - electron/main/suggestedName.test.ts
+      - electron/main/vivliostyle.test.ts
+      - electron/main/windows.test.ts
+      - electron/main/windows.panel.test.ts
+      - electron/main/d2aEgressRows.pipeline.spec.ts
+      - electron/main/d2aOwnDataPaths.pipeline.spec.ts
+      - electron/main/d2aOwnDataRead.pipeline.spec.ts
+      - vitest.electron-native.config.ts
+      - electron/native/grimodex-node/test/egress-closure.test.mjs
+      - electron/native/grimodex-node/test/own-data-read.test.mjs
+      - electron/native/grimodex-node/test/main-pipeline-specs.test.mjs
+      - electron/native/grimodex-node/test/nir1-publication.test.mjs
+      - electron/native/grimodex-node/test/profile-egress.test.mjs
+      - src-tauri/crates/grimodex-license/tests/restricted.rs
+      - src/features/license/store.test.ts
       - electron/main/narrativeMaintenanceDelivery.test.ts
       - electron/main/workspaceLifecycleView.test.ts
       - scripts/quality/validate-lifecycle-contract.mjs

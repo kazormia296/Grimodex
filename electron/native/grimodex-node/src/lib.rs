@@ -18,6 +18,7 @@ mod convert;
 mod lifecycle_failure_diagnostics;
 #[cfg(feature = "legacy-keyring-migration")]
 mod legacy_keyring;
+mod license_mode;
 mod narrative_maintenance;
 mod nir1_generation;
 mod nir1_generation_owner;
@@ -29,6 +30,7 @@ mod nir1_prepared_request;
 mod nir1_startup_barrier;
 mod post_effect_runtime;
 mod profile_egress;
+mod publication_guard;
 mod related_scenes;
 mod related_scenes_build_registry;
 mod related_scenes_context;
@@ -5489,9 +5491,12 @@ fn begin_profile_egress_dispatch(
     state: &Arc<AppState>,
     identity: Option<&profile_egress::CallerIdentity>,
 ) -> Result<profile_egress::ProfileDispatchPermit> {
+    // Only the eight legacy provider-egress entries use this helper; generic
+    // DB dispatch and the D-final local send call `begin_dispatch` directly.
+    // A restricted profile denies these entries before any permit exists.
     state
         .profile_egress
-        .begin_dispatch(identity)
+        .begin_legacy_provider_dispatch(identity)
         .map_err(|error| Error::from_reason(format!("{error:#}")))
 }
 
@@ -5524,6 +5529,39 @@ fn reauthorize_profile_egress_workspace(
     state
         .profile_egress
         .reauthorize_dispatch(dispatch, identity, Some(&workspace_id))
+}
+
+/// Start-time admission of a `nir1-publication` / Scope entry from inside a
+/// blocking section (K3/2). See `publication_guard`.
+fn admit_publication_entry(
+    state: &Arc<AppState>,
+    caller_identity: Option<String>,
+) -> std::result::Result<publication_guard::PublicationGuard, AppError> {
+    publication_guard::PublicationGuard::admit(state, caller_identity).map_err(AppError::Anyhow)
+}
+
+/// Return-time recheck of `admit_publication_entry`; the caller drops its
+/// result when this fails.
+fn finish_publication_entry(
+    state: &Arc<AppState>,
+    guard: &publication_guard::PublicationGuard,
+) -> std::result::Result<(), AppError> {
+    guard.finish(state).map_err(AppError::Anyhow)
+}
+
+/// A publication-admission failure keeps its `D2A_EGRESS_DENIED` reason (it
+/// names no owner, ticket or identity).
+fn publication_err_to_napi(error: anyhow::Error) -> Error {
+    Error::from_reason(format!("{error:#}"))
+}
+
+/// Related Scenes entries answer with one fixed reason, except for a D2a
+/// denial, whose reason is a constant sentence.
+fn related_scenes_err_to_napi(error: anyhow::Error) -> Error {
+    if format!("{error:#}").contains(profile_egress::D2A_EGRESS_DENIED_MARKER) {
+        return publication_err_to_napi(error);
+    }
+    Error::from_reason("RELATED_SCENES_UNAVAILABLE")
 }
 
 const PROFILE_EGRESS_DB_RESULT_KIND_KEY: &str = "__grimodexDbResultKind";
@@ -6664,9 +6702,18 @@ impl Backend {
     #[napi]
     pub async fn activate_license(&self, key: String) -> Result<String> {
         let runtime = Arc::clone(&self.state.license);
-        let dto = grimodex_license::activate_license(&runtime, key)
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        // The client is chosen by the profile mode at call time (K3/2 N-1):
+        // restricted checks the key's exact grammar before any request and
+        // uses the proxy-less, redirect-less fixed-origin client; the
+        // unrestricted path is unchanged. See `license_mode`.
+        let dto = license_mode::activate(
+            &self.state.profile_egress,
+            &runtime,
+            key,
+            license_mode::PRODUCTION_CLIENTS,
+        )
+        .await
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
     }
 
@@ -6674,9 +6721,13 @@ impl Backend {
     #[napi]
     pub async fn revalidate_license(&self) -> Result<String> {
         let runtime = Arc::clone(&self.state.license);
-        let dto = grimodex_license::revalidate_license(&runtime)
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let dto = license_mode::revalidate(
+            &self.state.profile_egress,
+            &runtime,
+            license_mode::PRODUCTION_CLIENTS,
+        )
+        .await
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
     }
 
@@ -6684,9 +6735,13 @@ impl Backend {
     #[napi]
     pub async fn deactivate_license(&self) -> Result<String> {
         let runtime = Arc::clone(&self.state.license);
-        let dto = grimodex_license::deactivate_license(&runtime)
-            .await
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
+        let dto = license_mode::deactivate(
+            &self.state.profile_egress,
+            &runtime,
+            license_mode::PRODUCTION_CLIENTS,
+        )
+        .await
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
         serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
     }
 
@@ -6695,8 +6750,13 @@ impl Backend {
     #[napi]
     pub async fn run_license_validate_cycle(&self) -> Result<Option<String>> {
         let runtime = Arc::clone(&self.state.license);
-        grimodex_license::run_validate_cycle(&runtime)
-            .await
+        let cycle = license_mode::validate_cycle(
+            &self.state.profile_egress,
+            &runtime,
+            license_mode::PRODUCTION_CLIENTS,
+        )
+        .await;
+        cycle
             .map(|dto| {
                 serde_json::to_string(&dto).map_err(|error| Error::from_reason(error.to_string()))
             })
@@ -9103,6 +9163,11 @@ impl Backend {
     /// は "run" | "get" | "all" | "values"。
     /// 返り値: mainが消費する内部種別marker付きのJSON文字列。mainはrendererへ
     /// 渡す前に `__grimodexDbResultKind` を除去する。
+    ///
+    /// `own_data_read` は Electron main だけが付ける分類（K3/2 `own-data-read`）。
+    /// true のとき、restricted profile では prepare 後の文が読取専用
+    /// （`stmt.readonly()`）でなければ実行前に拒否する。renderer の値は main が
+    /// 捨てる。None は分類なし（従来どおり）。unrestricted では使わない。
     #[napi]
     pub async fn db_execute(
         &self,
@@ -9110,6 +9175,7 @@ impl Backend {
         params: serde_json::Value,
         method: String,
         caller_identity: Option<String>,
+        own_data_read: Option<bool>,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         let caller_identity = caller_identity_from_wire(caller_identity)?;
@@ -9132,10 +9198,21 @@ impl Backend {
                 &workspace,
             )?;
             let execution = if restricted {
-                workspace
-                    .authority
-                    .db()
-                    .execute_renderer_profile_egress_with_result(&sql, &params, &method)?
+                match own_data_read {
+                    Some(read_only_required) => workspace
+                        .authority
+                        .db()
+                        .execute_renderer_profile_egress_classified_with_result(
+                            &sql,
+                            &params,
+                            &method,
+                            read_only_required,
+                        )?,
+                    None => workspace
+                        .authority
+                        .db()
+                        .execute_renderer_profile_egress_with_result(&sql, &params, &method)?,
+                }
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.
@@ -9163,11 +9240,15 @@ impl Backend {
     /// ROLLBACK — grimodex-db の `execute_batch_tx`)。オートセーブの通り道。
     /// `statements` は `[{ sql, params, method }, …]`。
     /// 返り値: 最終文のrowsと、mainが消費する内部種別markerを載せたJSON文字列。
+    ///
+    /// `own_data_read` は `db_execute` と同じ分類を文ごとに渡す（長さは
+    /// `statements` と一致しなければ拒否する）。
     #[napi]
     pub async fn db_execute_batch(
         &self,
         statements: serde_json::Value,
         caller_identity: Option<String>,
+        own_data_read: Option<Vec<bool>>,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         let caller_identity = caller_identity_from_wire(caller_identity)?;
@@ -9190,10 +9271,19 @@ impl Backend {
                 &workspace,
             )?;
             let execution = if restricted {
-                workspace
-                    .authority
-                    .db()
-                    .execute_batch_tx_renderer_profile_egress_with_result(&statements)?
+                match own_data_read.as_deref() {
+                    Some(read_only_required) => workspace
+                        .authority
+                        .db()
+                        .execute_batch_tx_renderer_profile_egress_classified_with_result(
+                            &statements,
+                            read_only_required,
+                        )?,
+                    None => workspace
+                        .authority
+                        .db()
+                        .execute_batch_tx_renderer_profile_egress_with_result(&statements)?,
+                }
             } else {
                 // Keep direct standalone Backend use compatible before the
                 // explicit first-restricted-publication transition.
@@ -11651,13 +11741,23 @@ impl Backend {
         .await
     }
 
+    /// `nir1-publication` (K3/2). `caller_identity` is the Main-issued wire
+    /// identity; a restricted profile admits the call only for the exact
+    /// registered caller at start and again at return (the result and the
+    /// operation it created are discarded on failure).
     #[napi]
-    pub async fn related_scenes_begin(&self, payload: serde_json::Value) -> Result<String> {
+    pub async fn related_scenes_begin(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
         let dto = serde_json::from_value(payload)
             .map_err(|_| Error::from_reason("RELATED_SCENES_INVALID_REQUEST"))?;
-        let result = related_scenes::begin(Arc::clone(&self.state), dto)
+        let guard = publication_guard::PublicationGuard::admit(&self.state, caller_identity)
+            .map_err(publication_err_to_napi)?;
+        let result = related_scenes::begin(Arc::clone(&self.state), dto, guard)
             .await
-            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))?;
+            .map_err(related_scenes_err_to_napi)?;
         Ok(result.to_string())
     }
 
@@ -11666,11 +11766,16 @@ impl Backend {
         &self,
         owner_key: String,
         operation_ticket: String,
+        caller_identity: Option<String>,
     ) -> Result<String> {
-        related_scenes::continue_query(Arc::clone(&self.state), owner_key, operation_ticket)
-            .await
-            .map(|value| value.to_string())
-            .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+        let guard = publication_guard::PublicationGuard::admit(&self.state, caller_identity)
+            .map_err(publication_err_to_napi)?;
+        let value =
+            related_scenes::continue_query(Arc::clone(&self.state), owner_key, operation_ticket)
+                .await
+                .map_err(related_scenes_err_to_napi)?;
+        guard.finish(&self.state).map_err(publication_err_to_napi)?;
+        Ok(value.to_string())
     }
 
     #[napi]
@@ -11707,15 +11812,18 @@ impl Backend {
         &self,
         owner_key: String,
         navigation_identity: String,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         let state = Arc::clone(&self.state);
         napi::tokio::task::spawn_blocking(move || {
-            related_scenes::qualify_evidence(&state, &owner_key, &navigation_identity)
-                .map(|value| value.to_string())
+            let guard = publication_guard::PublicationGuard::admit(&state, caller_identity)?;
+            let value = related_scenes::qualify_evidence(&state, &owner_key, &navigation_identity)?;
+            guard.finish(&state)?;
+            Ok(value.to_string())
         })
         .await
         .map_err(join_err_to_napi)?
-        .map_err(|_| Error::from_reason("RELATED_SCENES_UNAVAILABLE"))
+        .map_err(related_scenes_err_to_napi)
     }
 
     /// The product Graph route stays closed until C-query/C-product acceptance.
@@ -11791,6 +11899,7 @@ impl Backend {
     pub async fn nir1_entity_relation_revision_read(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11802,6 +11911,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -11814,7 +11924,9 @@ impl Backend {
             })?;
             let response =
                 narrative_extraction::nir1_entity_relation_revision_read_for_renderer(response)?;
-            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
         })
         .await
     }
@@ -11826,6 +11938,7 @@ impl Backend {
     pub async fn nir1_entity_relation_revision_read_current(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11837,6 +11950,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -11851,7 +11965,9 @@ impl Backend {
                 narrative_extraction::nir1_entity_relation_revision_current_read_for_renderer(
                     response,
                 )?;
-            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
         })
         .await
     }
@@ -11864,6 +11980,7 @@ impl Backend {
     pub async fn nir1_entity_relation_revision_restore(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11877,6 +11994,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            let guard = admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             if request.expected_workspace_path.trim().is_empty()
                 || request.expected_workspace_path.trim() != request.expected_workspace_path
@@ -11914,7 +12032,9 @@ impl Backend {
                     "response": current,
                 }))
             })?;
-            Ok(serde_json::to_string(&response).map_err(anyhow::Error::from)?)
+            let wire = serde_json::to_string(&response).map_err(anyhow::Error::from)?;
+            finish_publication_entry(&state, &guard)?;
+            Ok(wire)
         })
         .await
     }
@@ -11923,7 +12043,11 @@ impl Backend {
     /// workspace selected at IPC arrival. The renderer supplies identity only;
     /// the active workspace path remains the Native authority check.
     #[napi]
-    pub async fn narrative_scene_scope_read(&self, payload: serde_json::Value) -> Result<String> {
+    pub async fn narrative_scene_scope_read(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Request {
@@ -11934,6 +12058,11 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            // Scope entries admit once at start (D-final capture shape), before
+            // the payload is looked at; they publish the Scope binding and
+            // registry names, so a restricted profile needs the registered
+            // caller and workspace.
+            admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -11952,7 +12081,11 @@ impl Backend {
     /// Atomically update one A1 scene Scope binding with Native OCC and the
     /// existing Change Feed/invalidation writer.
     #[napi]
-    pub async fn narrative_scene_scope_update(&self, payload: serde_json::Value) -> Result<String> {
+    pub async fn narrative_scene_scope_update(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
         struct Request {
@@ -11962,6 +12095,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;
@@ -11980,6 +12114,7 @@ impl Backend {
     pub async fn narrative_scene_scope_registry_update(
         &self,
         payload: serde_json::Value,
+        caller_identity: Option<String>,
     ) -> Result<String> {
         #[derive(serde::Deserialize)]
         #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -11990,6 +12125,7 @@ impl Backend {
 
         let state = Arc::clone(&self.state);
         run_blocking(move || {
+            admit_publication_entry(&state, caller_identity)?;
             let request: Request = from_wire("payload", payload)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_narrative_extraction_workspace(&workspace, &request.expected_workspace_path)?;

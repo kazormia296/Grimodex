@@ -3,8 +3,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
-  D2A_TYPED_RESULT_POLICY,
+  d2aRouteLedgersForTest,
 } from "./profileEgress.js";
+import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { NAPI_COMMANDS, type NapiBackendLike } from "../shared/ipcContract.js";
 
@@ -25,52 +26,7 @@ function backend(status: Record<string, unknown> = {}) {
         restricted: true,
         handlesInvalidated: true,
         inFlightStopped: true,
-        sqlPolicy: {
-          version: 1,
-          protectedTables: [
-            "ab_comparison_runs",
-            "ab_comparisons",
-            "ai_audit_events",
-            "chat_message_chunks",
-            "chat_messages_fts",
-            "chat_messages_fts_en",
-            "chat_message_prompts",
-            "chat_messages",
-            "chat_runtime_threads",
-            "chat_sessions",
-            "chat_summaries",
-            "generation_logs",
-            "idempotency_requests",
-            "messages",
-            "narrative_apply_commits",
-            "narrative_apply_operations",
-            "narrative_commit_journals",
-            "narrative_extraction_artifacts",
-            "narrative_extraction_attempts",
-            "narrative_extraction_runs",
-            "narrative_extraction_tasks",
-            "narrative_proposal_decisions",
-            "narrative_proposal_revisions",
-            "narrative_proposal_sets",
-            "narrative_proposals",
-            "post_effect_annotation_relations",
-            "post_effect_annotations",
-            "post_effect_annotations_fts",
-            "post_effect_annotations_fts_en",
-            "post_effect_runs",
-            "impact_review_baselines",
-            "scene_lens_data",
-            "scene_chunks",
-            "codex_chunks",
-            "event_chunks",
-            "undo_journal",
-            "prose_staging",
-          ],
-          protectedColumns: [
-            { table: "change_events", column: "payload" },
-            { table: "state_snapshots", column: "payload" },
-          ],
-        },
+        sqlPolicy: nativeSqlPolicyV2(),
         ...status,
       }),
     registerProfileEgressCaller: () => undefined,
@@ -99,6 +55,7 @@ describe("D2a profile egress gate", () => {
       ["deactivate_license", {}],
       ["vivliostyle_build", {}],
       ["vivliostyle_preview_start", {}],
+      ["vivliostyle_detect", {}],
     ] as const) {
       expect(() => gate.assertInvoke(command, args), command).not.toThrow();
     }
@@ -421,9 +378,17 @@ describe("D2a profile egress gate", () => {
       revisionId: "revision-1",
       callerIdentity: issued,
     };
+    // nir1-publication (K3/2): the issued identity of a restricted profile
+    // passes at invoke; Native re-authorizes it at start and at return.
     expect(() =>
       gate.assertInvoke("nir1_entity_relation_revision_read", request),
-    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`));
+    ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("nir1_entity_relation_revision_read", {
+        ...request,
+        callerIdentity: undefined,
+      }),
+    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} nir1-publication`));
 
     const forged = { ...issued, senderId: 12 };
     expect(() =>
@@ -434,7 +399,7 @@ describe("D2a profile egress gate", () => {
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
-  it("keeps typed prepare available as a Native mutation while gating readers", async () => {
+  it("keeps typed prepare available as a Native mutation while the readers are nir1-publication", async () => {
     const gate = await createProfileEgressGate(backend());
     const issued = gate.issueCallerIdentity(11);
     expect(() =>
@@ -454,13 +419,12 @@ describe("D2a profile egress gate", () => {
     ]) {
       expect(() =>
         gate.assertInvoke(command, { callerIdentity: issued }),
-      ).toThrow(
-        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
-      );
+      ).not.toThrow();
       expect(() =>
         gate.assertPlaintextPublication(command, { callerIdentity: issued }),
-      ).toThrow(
-        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+      ).not.toThrow();
+      expect(() => gate.assertInvoke(command, {})).toThrow(
+        new RegExp(`${D2A_EGRESS_DENIED_MARKER} nir1-publication`),
       );
     }
   });
@@ -1048,11 +1012,9 @@ describe("D2a profile egress gate", () => {
     ["send_cli_chat_stream", {}],
     ["codex_app_start_turn", {}],
     ["codex_app_get_status", {}],
-    ["activate_license", { key: "arbitrary-plaintext-license-key" }],
-    ["revalidate_license", {}],
-    ["deactivate_license", {}],
     ["vivliostyle_build", {}],
     ["vivliostyle_preview_start", {}],
+    ["vivliostyle_detect", {}],
     ["nir1_pack_context", {}],
     ["fts_search", {}],
     ["narrative_extraction_claim_task", { payload: {} }],
@@ -1076,6 +1038,110 @@ describe("D2a profile egress gate", () => {
     expect(() => gate.assertInvoke(command, args)).toThrow(
       new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`),
     );
+  });
+
+  describe("license-control (K3/2 L-1)", () => {
+    const LICENSE_COMMANDS = [
+      ["activate_license", { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" }],
+      ["revalidate_license", {}],
+      ["deactivate_license", {}],
+    ] as const;
+
+    it.each(LICENSE_COMMANDS)(
+      "passes %s in a restricted profile with a main-issued identity",
+      async (command, args) => {
+        const gate = await createProfileEgressGate(backend());
+        expect(gate.restricted).toBe(true);
+        expect(gate.unavailable).toBe(false);
+        const callerIdentity = gate.issueCallerIdentity(11);
+        expect(() =>
+          gate.assertInvoke(command, { ...args, callerIdentity }),
+        ).not.toThrow();
+      },
+    );
+
+    it.each(LICENSE_COMMANDS)(
+      "passes %s while a first activation is in flight",
+      async (command, args) => {
+        const release = deferred<string>();
+        const gate = await createProfileEgressGate({
+          ...backend({ restricted: false, handlesInvalidated: false }),
+          activateProfileEgress: vi.fn(() => release.promise),
+        });
+        const activation = gate.activateFirstRestrictedPublication!();
+        expect(gate.restricted).toBe(true);
+        expect(() => gate.assertInvoke(command, args)).not.toThrow();
+        release.resolve(await backend().initializeProfileEgress!());
+        await activation;
+      },
+    );
+
+    it.each(LICENSE_COMMANDS)(
+      "denies %s when the Native profile gate is unavailable",
+      async (command, args) => {
+        const gate = await createProfileEgressGate(null);
+        expect(gate.unavailable).toBe(true);
+        expect(() => gate.assertInvoke(command, args)).toThrow(
+          new RegExp(`^${D2A_EGRESS_DENIED_MARKER} license-control:`),
+        );
+      },
+    );
+
+    it("keeps get_license_state internal and the three mutations out of every other ledger", async () => {
+      const gate = await createProfileEgressGate(null);
+      expect(() => gate.assertInvoke("get_license_state", {})).not.toThrow();
+      const ledgers = d2aRouteLedgersForTest();
+      expect(ledgers.licenseControl).toEqual([
+        "activate_license",
+        "revalidate_license",
+        "deactivate_license",
+      ]);
+      for (const [command] of LICENSE_COMMANDS) {
+        expect(ledgers.denied).not.toContain(command);
+        expect(ledgers.internal).not.toContain(command);
+      }
+      expect(ledgers.internal).toContain("get_license_state");
+    });
+  });
+
+  it("closes the Vivliostyle CLI probe as external-url in a restricted profile", async () => {
+    const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
+    for (const command of [
+      "vivliostyle_build",
+      "vivliostyle_preview_start",
+      "vivliostyle_detect",
+    ]) {
+      expect(
+        () => gate.assertInvoke(command, { callerIdentity }),
+        command,
+      ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER} external-url:`));
+    }
+    // Abort/save of an already-admitted build stay internal.
+    expect(() =>
+      gate.assertInvoke("vivliostyle_abort_build", { callerIdentity }),
+    ).not.toThrow();
+  });
+
+  it("keeps the route ledgers disjoint (K3/2 Negative (20))", () => {
+    const ledgers = d2aRouteLedgersForTest();
+    const names = ["denied", "internal", "licenseControl"] as const;
+    for (let i = 0; i < names.length; i += 1) {
+      for (let j = i + 1; j < names.length; j += 1) {
+        const overlap = ledgers[names[i]].filter((command) =>
+          ledgers[names[j]].includes(command),
+        );
+        expect(overlap, `${names[i]} / ${names[j]}`).toEqual([]);
+      }
+    }
+    for (const name of names) {
+      expect(new Set(ledgers[name]).size, name).toBe(ledgers[name].length);
+    }
+    // The license ledger is compile-time bound to NAPI_COMMANDS; check it at
+    // run time too.
+    for (const command of ledgers.licenseControl) {
+      expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
+    }
   });
 
   it("allows the typed foreshadow anchor projection while denying prose reads", async () => {
@@ -1117,19 +1183,77 @@ describe("D2a profile egress gate", () => {
 
   it.each([
     [
-      { sqlPolicy: { version: 2, protectedTables: [], protectedColumns: [] } },
+      { sqlPolicy: nativeSqlPolicyV2({ version: 3 }) },
       "unknown policy version",
+    ],
+    [
+      { sqlPolicy: nativeSqlPolicyV2({ version: 1 }) },
+      "the previous policy version",
     ],
     [{ sqlPolicy: undefined }, "missing table inventory"],
     [
+      { sqlPolicy: nativeSqlPolicyV2({ extraSet: ["chat_messages"] }) },
+      "unknown policy key",
+    ],
+    [
       {
-        sqlPolicy: {
-          version: 1,
-          protectedTables: ["chat_messages", "chat_messages"],
-          protectedColumns: [],
-        },
+        sqlPolicy: nativeSqlPolicyV2({
+          protectedTables: ["chat_messages"],
+        }),
       },
-      "duplicate table inventory",
+      "the version 1 table key",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          closedTables: ["messages", "messages"],
+        }),
+      },
+      "duplicate closed table",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          readOpenTables: ["chat_messages", "chat_messages"],
+        }),
+      },
+      "duplicate read-open table",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          closedTables: ["messages", "chat_messages"],
+          readOpenTables: ["chat_messages"],
+        }),
+      },
+      "a table declared in both classes",
+    ],
+    [
+      { sqlPolicy: nativeSqlPolicyV2({ closedTables: [] }) },
+      "an empty closed class",
+    ],
+    [
+      { sqlPolicy: nativeSqlPolicyV2({ readOpenTables: [] }) },
+      "an empty read-open class",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          readOpenColumns: [{ table: "change_events" }],
+        }),
+      },
+      "a malformed read-open column",
+    ],
+    [
+      {
+        sqlPolicy: nativeSqlPolicyV2({
+          readOpenColumns: [
+            { table: "change_events", column: "payload" },
+            { table: "CHANGE_EVENTS", column: "Payload" },
+          ],
+        }),
+      },
+      "a duplicate read-open column",
     ],
   ])("fails closed for %s", async (status, _description) => {
     const gate = await createProfileEgressGate(backend(status));
@@ -1140,26 +1264,6 @@ describe("D2a profile egress gate", () => {
         sql: "SELECT id FROM projects",
       }),
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
-  });
-
-  it("keeps every typed plaintext-result exception tied to a current NAPI command", () => {
-    for (const command of Object.keys(D2A_TYPED_RESULT_POLICY)) {
-      expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
-      expect(
-        D2A_TYPED_RESULT_POLICY[
-          command as keyof typeof D2A_TYPED_RESULT_POLICY
-        ],
-      ).toBe("plaintext-publication");
-    }
-  });
-
-  it("denies every typed plaintext result when Native startup is unavailable", async () => {
-    const gate = await createProfileEgressGate(null);
-    for (const command of Object.keys(D2A_TYPED_RESULT_POLICY)) {
-      expect(() => gate.assertInvoke(command, {}), command).toThrow(
-        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
-      );
-    }
   });
 
   it("allows capture-only locally while continuing to deny the legacy AI send", async () => {

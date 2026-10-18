@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   invoke: vi.fn(),
 }));
 
@@ -152,6 +153,30 @@ describe("license/store", () => {
     await expect(useLicenseStore.getState().revalidate()).rejects.toBeTruthy();
     expect(useLicenseStore.getState().staleConfirmed).toBe(true);
   });
+
+  it.each([
+    [
+      "restricted の拒否",
+      new Error(
+        "D2A_EGRESS_DENIED: license-control: route revalidate_license is unavailable until the Native profile gate is ready",
+      ),
+    ],
+    ["文字列の拒否", "D2A_EGRESS_DENIED: unclassified: gate unavailable"],
+  ])(
+    "revalidate の D2a 拒否（%s）は validate を試行していないので staleConfirmed を立てず reject する",
+    async (_name, denial) => {
+      mockInvoke.mockResolvedValueOnce({
+        ...trialDto(),
+        status: "license_stale",
+      });
+      await useLicenseStore.getState().refresh();
+      mockInvoke.mockRejectedValueOnce(denial);
+      await expect(useLicenseStore.getState().revalidate()).rejects.toBe(
+        denial,
+      );
+      expect(useLicenseStore.getState().staleConfirmed).toBe(false);
+    },
+  );
 
   it("applyState は DTO を反映し initialized を立てる", () => {
     useLicenseStore.getState().applyState({

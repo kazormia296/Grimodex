@@ -2,8 +2,10 @@
 import assert from "node:assert/strict";
 import process from "node:process";
 import console from "node:console";
+import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
 import { cp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
@@ -30,9 +32,62 @@ import {
 const ROOT = path.resolve(import.meta.dirname, "../..");
 const require = createRequire(import.meta.url);
 
+/**
+ * D2a profile mode of a run (K3/2 acceptance: R and R+IR must rank the same in
+ * a restricted profile). `unrestricted` is the default and changes nothing in
+ * the harness; `restricted` only places the persisted state a restricted
+ * profile reads at startup before Electron starts. The contract, the Gold set
+ * and the expectations do not depend on it.
+ */
+export const D2A_MODES = Object.freeze(["unrestricted", "restricted"]);
+
+export function resolveD2aMode(options) {
+  const mode = options["d2a-mode"] ?? "unrestricted";
+  assert.ok(
+    D2A_MODES.includes(mode),
+    `[precheck] --d2a-mode must be one of ${D2A_MODES.join(", ")}`,
+  );
+  return mode;
+}
+
+/**
+ * The state file a restricted profile reads at startup (schema v2 of
+ * `<userData>/profile-egress.json`, the shape Native persists after the first
+ * restricted publication). Placing it is not an activation: the app starts as
+ * an already restricted profile, as it does after a restart.
+ */
+export function restrictedProfileEgressState(profileId = randomUUID()) {
+  return {
+    schemaVersion: 2,
+    profileId,
+    callerEpoch: 1,
+    restricted: true,
+    handlesInvalidated: true,
+    inFlightStopped: true,
+  };
+}
+
+/**
+ * Place the persisted profile state for `mode` in a fresh `userData` before
+ * Electron starts. `unrestricted` places nothing (the app creates no state file
+ * until an activation, which this harness never performs).
+ */
+export async function placeD2aProfileState(userData, mode) {
+  if (mode !== "restricted") return undefined;
+  const stateFile = path.join(userData, "profile-egress.json");
+  const state = JSON.stringify(restrictedProfileEgressState());
+  await writeFile(stateFile, state, { flag: "wx" });
+  return {
+    path: stateFile,
+    sha256: sha256(Buffer.from(state)),
+    schemaVersion: 2,
+  };
+}
+
 function parseArgs(args) {
   const options = {
     mode: "raw",
+    "d2a-mode": "unrestricted",
     "ja-model": process.env.NIR1_JA_MODEL,
     "en-model": process.env.NIR1_EN_MODEL,
     "build-receipt": process.env.NIR1_BUILD_RECEIPT,
@@ -50,6 +105,7 @@ function parseArgs(args) {
     options[args[i].slice(2)] = args[i + 1];
   }
   assert.ok(["raw", "compare", "precheck"].includes(options.mode));
+  resolveD2aMode(options);
   return options;
 }
 
@@ -147,6 +203,8 @@ export async function runNir1Retrieval(options) {
   try {
     // R+IR+Graph is a not-wired scaffold; no mode may request measuring it.
     assertGraphArmRequestable(options["graph-arm"]);
+    const d2aMode = resolveD2aMode(options);
+    receipt.d2aMode = d2aMode;
     if (options["build-receipt"]) {
       receipt.buildReceipt = await artifactIdentity(
         path.resolve(options["build-receipt"]),
@@ -287,6 +345,8 @@ export async function runNir1Retrieval(options) {
     }
     const userData = path.join(output, "user-data");
     await mkdir(userData, { recursive: true });
+    const d2aStateFile = await placeD2aProfileState(userData, d2aMode);
+    if (d2aStateFile) receipt.d2aStateFile = d2aStateFile;
     for (const language of ["ja", "en"]) {
       const destination = path.join(
         userData,

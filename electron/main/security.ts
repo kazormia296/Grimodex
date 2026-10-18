@@ -10,6 +10,7 @@
 import { session, shell } from "electron";
 import type { App } from "electron";
 
+import { getDevRendererUrl } from "./devRendererUrl.js";
 import { APP_BUNDLE_HOST, APP_PROTOCOL_SCHEME } from "./protocol.js";
 
 const ALLOWED_EXTERNAL_PROTOCOLS = new Set(["http:", "https:"]);
@@ -33,9 +34,12 @@ export function setExternalEgressGate(
     });
 }
 
-/** dev サーバー URL と同一 origin か（リロード / HMR フルリロード用の例外）。 */
+/**
+ * dev サーバー URL と同一 origin か（リロード / HMR フルリロード用の例外）。
+ * packaged build では dev サーバー URL を無視する（devRendererUrl.ts）。
+ */
 export function isAllowedNavigation(url: string): boolean {
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+  const rendererUrl = getDevRendererUrl();
   try {
     const parsed = new URL(url);
     if (!rendererUrl) {
@@ -64,7 +68,7 @@ export function isTrustedRendererUrl(url: string): boolean {
       return true;
     }
 
-    const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+    const rendererUrl = getDevRendererUrl();
     if (!rendererUrl) return false;
     const renderer = new URL(rendererUrl);
     return parsed.origin !== "null" && parsed.origin === renderer.origin;

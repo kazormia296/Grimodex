@@ -17,6 +17,7 @@ import { app, BrowserWindow, ipcMain, Menu, screen } from "electron";
 import type { BrowserWindowConstructorOptions } from "electron";
 
 import { IPC } from "../shared/ipcContract.js";
+import { getDevRendererUrl } from "./devRendererUrl.js";
 import { PROD_INDEX_URL } from "./protocol.js";
 import {
   applicationMenuPolicy,
@@ -37,6 +38,57 @@ const registry = new Map<string, BrowserWindow>();
 const vetoControllers = new Map<number, CloseVetoController>();
 
 let stateStore: WindowStateStore | null = null;
+
+/** index.html の `<title>` と同じ製品名（title の option がない窓の既定）。 */
+const PRODUCT_WINDOW_TITLE = "Grimodex";
+
+/** 窓の生成時の title（restricted の間に固定する値）。 */
+const productTitles = new WeakMap<BrowserWindow, string>();
+
+/**
+ * パネル窓の title。renderer の title option は使わず、label（`panel-<id>`）から
+ * 作る（feature 層の `buildPanelWindowOptions` と同じ「id の先頭を大文字」の名前）。
+ * 固定中は label も renderer が選べる文字列なので製品名にする。
+ */
+export function resolvePanelWindowTitle(
+  label: string,
+  locked: boolean,
+): string {
+  if (locked) return PRODUCT_WINDOW_TITLE;
+  const id = label.startsWith(PANEL_WINDOW_LABEL_PREFIX)
+    ? label.slice(PANEL_WINDOW_LABEL_PREFIX.length)
+    : "";
+  return id ? id.charAt(0).toUpperCase() + id.slice(1) : PRODUCT_WINDOW_TITLE;
+}
+
+/**
+ * restricted または unavailable の間に true を返す（呼出しごとに読む）。
+ * 供給されるまでは固定する側（fail closed）。
+ */
+let isWindowTitleLocked: () => boolean = () => true;
+
+/**
+ * K3/2 行 18（窓の title）: renderer の `document.title` で OS の窓の title
+ * （タスクバー、alt-tab、同期 software が読みうる値）に値を載せられないよう、
+ * restricted または unavailable の間は `page-title-updated` を取り消す。
+ * unrestricted の挙動は変えない。Main の起動が gate の状態を供給する。
+ */
+export function setWindowTitleLock(
+  provider: (() => boolean) | null | undefined,
+): void {
+  isWindowTitleLocked = provider ?? (() => true);
+}
+
+/**
+ * 既存の全窓の title を生成時の値に戻す。restricted の間に固定する前に変わった
+ * title を、activation の段 2 で戻すために用意する（呼出しは DA-2）。
+ */
+export function resetWindowTitles(): void {
+  for (const win of registry.values()) {
+    if (win.isDestroyed()) continue;
+    win.setTitle(productTitles.get(win) ?? PRODUCT_WINDOW_TITLE);
+  }
+}
 
 /** label に対応する生存中の窓を返す（破棄済みは undefined）。 */
 export function getWindow(label: string): BrowserWindow | undefined {
@@ -104,6 +156,12 @@ function attachWindowChrome(
   store: WindowStateStore,
 ): void {
   const webContentsId = win.webContents.id;
+
+  // restricted または unavailable の間は、renderer の document.title を窓の title に
+  // 反映しない（呼出しのたびに gate の状態を読む）。
+  win.on("page-title-updated", (event) => {
+    if (isWindowTitleLocked()) event.preventDefault();
+  });
 
   // §6.3: 既存の「onResized → isMaximized 再取得」（WindowControls.tsx）を
   // 無改修で動かす通知。maximize/unmaximize/fullscreen も Tauri の
@@ -249,6 +307,10 @@ export function createMainWindow(): BrowserWindow {
     ...options,
     webPreferences: buildWebPreferences(),
   });
+  productTitles.set(
+    win,
+    typeof options.title === "string" ? options.title : PRODUCT_WINDOW_TITLE,
+  );
   track("main", win);
   attachWindowChrome("main", win, store);
   showWhenReady(win, options, startMaximized);
@@ -259,7 +321,7 @@ export function createMainWindow(): BrowserWindow {
     closeAllPanelWindows();
   });
 
-  const rendererUrl = process.env.ELECTRON_RENDERER_URL;
+  const rendererUrl = getDevRendererUrl();
   if (rendererUrl) {
     void win.loadURL(rendererUrl);
   } else {
@@ -298,21 +360,27 @@ export function openPanelWindow(
   }
 
   const store = ensureChrome();
+  // K3/2 行 18（窓の title）: renderer が渡す requested.title は信用しない。
+  // 生成時の title も OS（タスクバー、alt-tab、作業時間記録 software）が読む値なので、
+  // Main が label から決める。固定中（restricted／unavailable）は製品名のまま。
   const { options, startMaximized } = buildPanelWindowOptions({
     savedState: store.get(label),
     displayWorkAreas: screen.getAllDisplays().map((d) => d.workArea),
-    requested,
+    requested: { width: requested.width, height: requested.height },
   });
+  const title = resolvePanelWindowTitle(label, isWindowTitleLocked());
+  options.title = title;
 
   const win = new BrowserWindow({
     ...options,
     webPreferences: buildWebPreferences(),
   });
+  productTitles.set(win, title);
   track(label, win);
   attachWindowChrome(label, win, store);
   showWhenReady(win, options, startMaximized);
 
-  void win.loadURL(buildPanelUrl(process.env.ELECTRON_RENDERER_URL, label));
+  void win.loadURL(buildPanelUrl(getDevRendererUrl(), label));
 }
 
 /**

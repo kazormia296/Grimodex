@@ -17,6 +17,7 @@ import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
 } from "./profileEgress.js";
+import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
   handlers: new Map<
@@ -2741,11 +2742,16 @@ describe("NIR-1 router sender binding", () => {
       ok: false,
       error: "D2A_EGRESS_DENIED: plaintext-publication",
     });
-    expect(typedRead).toHaveBeenCalledExactlyOnceWith({
-      expectedWorkspacePath: "/workspace-1",
-      projectId: "project-1",
-      revisionId: "revision-1",
-    });
+    // The Main-issued identity (never the renderer's forged one) travels as
+    // the trailing argument, not inside the deny-unknown-fields request.
+    expect(typedRead).toHaveBeenCalledExactlyOnceWith(
+      {
+        expectedWorkspacePath: "/workspace-1",
+        projectId: "project-1",
+        revisionId: "revision-1",
+      },
+      JSON.stringify(identity),
+    );
     expect(profileEgress.assertInvoke).toHaveBeenCalledWith(
       "nir1_entity_relation_revision_read",
       expect.objectContaining({ callerIdentity: identity }),
@@ -2867,7 +2873,10 @@ describe("NIR-1 router sender binding", () => {
       ok: false,
       error: "D2A_EGRESS_DENIED: plaintext-publication",
     });
-    expect(readCurrent).toHaveBeenCalledExactlyOnceWith(currentArgs);
+    expect(readCurrent).toHaveBeenCalledExactlyOnceWith(
+      currentArgs,
+      JSON.stringify(identity),
+    );
     const restoreArgs = {
       expectedWorkspacePath: "/workspace-1",
       projectId: "project-1",
@@ -2883,7 +2892,10 @@ describe("NIR-1 router sender binding", () => {
       ok: false,
       error: "D2A_EGRESS_DENIED: plaintext-publication",
     });
-    expect(restore).toHaveBeenCalledExactlyOnceWith(restoreArgs);
+    expect(restore).toHaveBeenCalledExactlyOnceWith(
+      restoreArgs,
+      JSON.stringify(identity),
+    );
     expect(profileEgress.assertInvoke).toHaveBeenNthCalledWith(
       1,
       "nir1_entity_relation_revision_prepare",
@@ -2923,11 +2935,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: false,
       handlesInvalidated: false,
       inFlightStopped: true,
-      sqlPolicy: {
-        version: 1,
-        protectedTables: ["narrative_extraction_runs"],
-        protectedColumns: [],
-      },
+      sqlPolicy: nativeSqlPolicyV2(),
     };
     const activatedStatus = {
       ...initialStatus,
@@ -3227,51 +3235,7 @@ describe("NIR-1 router sender binding", () => {
           restricted: true,
           handlesInvalidated: true,
           inFlightStopped: true,
-          sqlPolicy: {
-            version: 1,
-            protectedTables: [
-              "ab_comparison_runs",
-              "ab_comparisons",
-              "ai_audit_events",
-              "chat_message_chunks",
-              "chat_messages_fts",
-              "chat_messages_fts_en",
-              "chat_message_prompts",
-              "chat_messages",
-              "chat_runtime_threads",
-              "chat_sessions",
-              "chat_summaries",
-              "generation_logs",
-              "messages",
-              "narrative_apply_commits",
-              "narrative_apply_operations",
-              "narrative_commit_journals",
-              "narrative_extraction_artifacts",
-              "narrative_extraction_attempts",
-              "narrative_extraction_runs",
-              "narrative_extraction_tasks",
-              "narrative_proposal_decisions",
-              "narrative_proposal_revisions",
-              "narrative_proposal_sets",
-              "narrative_proposals",
-              "post_effect_annotation_relations",
-              "post_effect_annotations",
-              "post_effect_annotations_fts",
-              "post_effect_annotations_fts_en",
-              "post_effect_runs",
-              "impact_review_baselines",
-              "scene_lens_data",
-              "scene_chunks",
-              "codex_chunks",
-              "event_chunks",
-              "undo_journal",
-              "prose_staging",
-            ],
-            protectedColumns: [
-              { table: "change_events", column: "payload" },
-              { table: "state_snapshots", column: "payload" },
-            ],
-          },
+          sqlPolicy: nativeSqlPolicyV2(),
         }),
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
@@ -3298,6 +3262,7 @@ describe("NIR-1 router sender binding", () => {
     const childDispatches: string[] = [];
     const vivliostyleBuild = vi.fn(async () => "run-id");
     const vivliostylePreviewStart = vi.fn(async () => null);
+    const vivliostyleDetect = vi.fn(async () => null);
     const cliManager = createCliAiManager(() => undefined, {
       runner: {
         run: async () => {
@@ -3320,6 +3285,7 @@ describe("NIR-1 router sender binding", () => {
         ...cliManager.handlers,
         vivliostyle_build: vivliostyleBuild,
         vivliostyle_preview_start: vivliostylePreviewStart,
+        vivliostyle_detect: vivliostyleDetect,
       },
       undefined,
       undefined,
@@ -3348,14 +3314,12 @@ describe("NIR-1 router sender binding", () => {
       ["codex_app_get_status", { sessionId: undefined }],
       ["codex_app_list_models", { workspaceId: "other", retry: true }],
       ["codex_app_test_connection", { redirect: true }],
-      ["activate_license", { key: "arbitrary-plaintext-license-key" }],
-      ["revalidate_license", {}],
-      ["deactivate_license", {}],
       [
         "vivliostyle_build",
         { files: [{ path: "sentinel.md", content: "sentinel" }] },
       ],
       ["vivliostyle_preview_start", { url: "https://sentinel.invalid" }],
+      ["vivliostyle_detect", {}],
       [
         "narrative_extraction_claim_task",
         {
@@ -3401,6 +3365,7 @@ describe("NIR-1 router sender binding", () => {
     expect(childDispatches).toEqual([]);
     expect(vivliostyleBuild).not.toHaveBeenCalled();
     expect(vivliostylePreviewStart).not.toHaveBeenCalled();
+    expect(vivliostyleDetect).not.toHaveBeenCalled();
 
     const save = await invokeHandler()(
       { sender: { id: 42 } },
@@ -3419,11 +3384,7 @@ describe("NIR-1 router sender binding", () => {
       restricted: true,
       handlesInvalidated: true,
       inFlightStopped: true,
-      sqlPolicy: {
-        version: 1,
-        protectedTables: ["chat_sessions", "chat_messages"],
-        protectedColumns: [],
-      },
+      sqlPolicy: nativeSqlPolicyV2(),
     };
     const responses: string[] = [];
     const captureCurrentChatInput = vi.fn(async () => responses.shift()!);

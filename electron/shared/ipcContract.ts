@@ -494,8 +494,19 @@ export interface NapiBackendLike {
     params: unknown,
     method: string,
     callerIdentity?: string,
+    /**
+     * Main-only `own-data-read` classification of this statement (K3/2). Native
+     * then requires the prepared statement to be read-only. Never taken from
+     * the renderer.
+     */
+    ownDataRead?: boolean,
   ): Promise<string>;
-  dbExecuteBatch(statements: unknown, callerIdentity?: string): Promise<string>;
+  dbExecuteBatch(
+    statements: unknown,
+    callerIdentity?: string,
+    /** One Main-only `own-data-read` flag per statement. */
+    ownDataRead?: boolean[],
+  ): Promise<string>;
   captureCurrentChatInput?(
     submission: CaptureCurrentChatInputSubmission,
     callerIdentity: string,
@@ -756,10 +767,21 @@ export interface NapiBackendLike {
     sceneScope?: string | null,
     descriptionMode?: boolean | null,
   ): Promise<string>;
-  relatedScenesBegin?(request: unknown): Promise<string>;
+  /**
+   * `nir1-publication` / Scope entries take the Main-issued JSON identity as
+   * an optional trailing argument (K3/2). A restricted profile's Native
+   * admits only the exact registered caller; an unrestricted one ignores it.
+   * Never taken from the renderer (Main attaches it as a non-enumerable
+   * sidecar of the typed command).
+   */
+  relatedScenesBegin?(
+    request: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   relatedScenesContinue?(
     ownerKey: string,
     operationTicket: string,
+    callerIdentity?: string,
   ): Promise<string>;
   relatedScenesRelease?(
     ownerKey: string,
@@ -768,6 +790,7 @@ export interface NapiBackendLike {
   nir1EvidenceQualify?(
     ownerKey: string,
     navigationIdentity: string,
+    callerIdentity?: string,
   ): Promise<string>;
   /** Native-only NIR-1 graph scaffold; deliberately absent from renderer IPC. */
   nir1GraphQuery?(payload: unknown): Promise<string>;
@@ -784,14 +807,32 @@ export interface NapiBackendLike {
     workspaceBinding: unknown,
   ): Promise<string>;
   /** Cold reader for an explicitly human-approved typed Revision. */
-  nir1EntityRelationRevisionRead?(payload: unknown): Promise<string>;
+  nir1EntityRelationRevisionRead?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   /** Dedicated typed current-by-review-Run reader for cold reopen. */
-  nir1EntityRelationRevisionReadCurrent?(payload: unknown): Promise<string>;
+  nir1EntityRelationRevisionReadCurrent?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   /** Dedicated Native target-aware typed review restore reader. */
-  nir1EntityRelationRevisionRestore?(payload: unknown): Promise<string>;
-  narrativeSceneScopeRead?(payload: unknown): Promise<string>;
-  narrativeSceneScopeUpdate?(payload: unknown): Promise<string>;
-  narrativeSceneScopeRegistryUpdate?(payload: unknown): Promise<string>;
+  nir1EntityRelationRevisionRestore?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  narrativeSceneScopeRead?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  narrativeSceneScopeUpdate?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  narrativeSceneScopeRegistryUpdate?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
   /** Main observer only; never a renderer command. */
@@ -6884,6 +6925,41 @@ function requireSceneScopeMutationRequest(
   };
 }
 
+/**
+ * Key under which Electron main attaches its `own-data-read` classification of
+ * a generic DB command to the dispatch args (a `boolean` for `db_execute`, a
+ * `boolean[]` per statement for `db_execute_batch`). A symbol, defined
+ * non-enumerable by the router after the profile gate: structured-cloned
+ * renderer input cannot carry a symbol key, so a renderer cannot supply or
+ * forge it.
+ */
+export const D2A_DB_OWN_DATA_READ = Symbol("grimodex.d2a.dbOwnDataRead");
+
+function ownDataReadWire(
+  args: CommandArgs,
+  command: "db_execute",
+): boolean | undefined;
+function ownDataReadWire(
+  args: CommandArgs,
+  command: "db_execute_batch",
+): boolean[] | undefined;
+function ownDataReadWire(
+  args: CommandArgs,
+  command: "db_execute" | "db_execute_batch",
+): boolean | boolean[] | undefined {
+  const value = (args as Record<symbol, unknown>)[D2A_DB_OWN_DATA_READ];
+  if (value === undefined) return undefined;
+  if (command === "db_execute" && typeof value === "boolean") return value;
+  if (
+    command === "db_execute_batch" &&
+    Array.isArray(value) &&
+    value.every((flag) => typeof flag === "boolean")
+  ) {
+    return [...value] as boolean[];
+  }
+  throw new Error(`invalid own-data-read classification for ${command}`);
+}
+
 function callerIdentityWire(args: CommandArgs): string | undefined {
   if (args.callerIdentity === undefined) return undefined;
   try {
@@ -6899,6 +6975,28 @@ function callerIdentityWire(args: CommandArgs): string | undefined {
       }`,
     );
   }
+}
+
+/**
+ * Call a `nir1-publication` / Scope Native entry with the Main-issued caller
+ * identity as the trailing argument. Without an identity (a standalone caller
+ * before D2a startup) the call keeps its original arity.
+ */
+function callPublicationEntry1<A>(
+  call: (a: A, callerIdentity?: string) => Promise<string>,
+  a: A,
+  callerIdentity: string | undefined,
+): Promise<string> {
+  return callerIdentity === undefined ? call(a) : call(a, callerIdentity);
+}
+
+function callPublicationEntry2<A, B>(
+  call: (a: A, b: B, callerIdentity?: string) => Promise<string>,
+  a: A,
+  b: B,
+  callerIdentity: string | undefined,
+): Promise<string> {
+  return callerIdentity === undefined ? call(a, b) : call(a, b, callerIdentity);
 }
 
 function requireExactKeys(
@@ -7092,10 +7190,19 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
       const params = requirePresent(a, "params", "db_execute");
       const method = requireString(a, "method", "db_execute");
       const callerIdentity = callerIdentityWire(a);
+      const ownDataRead = ownDataReadWire(a, "db_execute");
       const raw =
         callerIdentity === undefined
           ? await b.dbExecute(sql, params, method)
-          : await b.dbExecute(sql, params, method, callerIdentity);
+          : ownDataRead === undefined
+            ? await b.dbExecute(sql, params, method, callerIdentity)
+            : await b.dbExecute(
+                sql,
+                params,
+                method,
+                callerIdentity,
+                ownDataRead,
+              );
       return parseWire(raw);
     },
   },
@@ -7103,10 +7210,13 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
     run: async (b, a) => {
       const statements = requirePresent(a, "statements", "db_execute_batch");
       const callerIdentity = callerIdentityWire(a);
+      const ownDataRead = ownDataReadWire(a, "db_execute_batch");
       const raw =
         callerIdentity === undefined
           ? await b.dbExecuteBatch(statements)
-          : await b.dbExecuteBatch(statements, callerIdentity);
+          : ownDataRead === undefined
+            ? await b.dbExecuteBatch(statements, callerIdentity)
+            : await b.dbExecuteBatch(statements, callerIdentity, ownDataRead);
       return parseWire(raw);
     },
   },
@@ -8128,27 +8238,29 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   related_scenes_begin: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.relatedScenesBegin,
-          "relatedScenesBegin",
-        )(requireRelatedScenesBeginRequest(a)),
+        await callPublicationEntry1(
+          requireNapiMethod(b, b.relatedScenesBegin, "relatedScenesBegin"),
+          requireRelatedScenesBeginRequest(a),
+          callerIdentityWire(a),
+        ),
       ),
   },
   related_scenes_continue: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.relatedScenesContinue,
-          "relatedScenesContinue",
-        )(
+        await callPublicationEntry2(
+          requireNapiMethod(
+            b,
+            b.relatedScenesContinue,
+            "relatedScenesContinue",
+          ),
           requireNonEmptyString(a, "ownerKey", "related_scenes_continue"),
           requireNonEmptyString(
             a,
             "operationTicket",
             "related_scenes_continue",
           ),
+          callerIdentityWire(a),
         ),
       ),
   },
@@ -8168,17 +8280,15 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   nir1_evidence_qualify: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.nir1EvidenceQualify,
-          "nir1EvidenceQualify",
-        )(
+        await callPublicationEntry2(
+          requireNapiMethod(b, b.nir1EvidenceQualify, "nir1EvidenceQualify"),
           requireNonEmptyString(a, "ownerKey", "nir1_evidence_qualify"),
           requireNonEmptyString(
             a,
             "navigationIdentity",
             "nir1_evidence_qualify",
           ),
+          callerIdentityWire(a),
         ),
       ),
   },
@@ -8221,65 +8331,87 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   nir1_entity_relation_revision_read: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.nir1EntityRelationRevisionRead,
-          "nir1EntityRelationRevisionRead",
-        )(requireNir1EntityRelationRevisionReadRequest(a)),
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.nir1EntityRelationRevisionRead,
+            "nir1EntityRelationRevisionRead",
+          ),
+          requireNir1EntityRelationRevisionReadRequest(a),
+          callerIdentityWire(a),
+        ),
       ),
   },
   nir1_entity_relation_revision_read_current: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.nir1EntityRelationRevisionReadCurrent,
-          "nir1EntityRelationRevisionReadCurrent",
-        )(requireNir1EntityRelationRevisionCurrentReadRequest(a)),
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.nir1EntityRelationRevisionReadCurrent,
+            "nir1EntityRelationRevisionReadCurrent",
+          ),
+          requireNir1EntityRelationRevisionCurrentReadRequest(a),
+          callerIdentityWire(a),
+        ),
       ),
   },
   nir1_entity_relation_revision_restore: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.nir1EntityRelationRevisionRestore,
-          "nir1EntityRelationRevisionRestore",
-        )(requireNir1EntityRelationRevisionRestoreRequest(a)),
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.nir1EntityRelationRevisionRestore,
+            "nir1EntityRelationRevisionRestore",
+          ),
+          requireNir1EntityRelationRevisionRestoreRequest(a),
+          callerIdentityWire(a),
+        ),
       ),
   },
   narrative_scene_scope_read: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.narrativeSceneScopeRead,
-          "narrativeSceneScopeRead",
-        )(requireSceneScopeReadRequest(a)),
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.narrativeSceneScopeRead,
+            "narrativeSceneScopeRead",
+          ),
+          requireSceneScopeReadRequest(a),
+          callerIdentityWire(a),
+        ),
       ),
   },
   narrative_scene_scope_update: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.narrativeSceneScopeUpdate,
-          "narrativeSceneScopeUpdate",
-        )(requireSceneScopeMutationRequest(a, "narrative_scene_scope_update")),
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.narrativeSceneScopeUpdate,
+            "narrativeSceneScopeUpdate",
+          ),
+          requireSceneScopeMutationRequest(a, "narrative_scene_scope_update"),
+          callerIdentityWire(a),
+        ),
       ),
   },
   narrative_scene_scope_registry_update: {
     run: async (b, a) =>
       parseWire(
-        await requireNapiMethod(
-          b,
-          b.narrativeSceneScopeRegistryUpdate,
-          "narrativeSceneScopeRegistryUpdate",
-        )(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.narrativeSceneScopeRegistryUpdate,
+            "narrativeSceneScopeRegistryUpdate",
+          ),
           requireSceneScopeMutationRequest(
             a,
             "narrative_scene_scope_registry_update",
           ),
+          callerIdentityWire(a),
         ),
       ),
   },

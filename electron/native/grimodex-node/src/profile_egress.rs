@@ -108,6 +108,14 @@ pub(crate) enum CaptureTestEvent {
     RouteUpdateAcquired,
 }
 
+/// What `ProfileEgressState::admit_publication` observed at the start of a
+/// `nir1-publication` or Scope Native entry.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PublicationAdmission {
+    restricted: bool,
+    revocation_generation: u64,
+}
+
 #[derive(Clone, Debug)]
 pub struct ProfileDispatchPermit {
     lease: Arc<DispatchLease>,
@@ -292,6 +300,14 @@ impl ProfileEgressState {
         status_locked(&self.lock())
     }
 
+    /// Whether the profile is restricted right now. `license-control` selects
+    /// its client by this at call time (K3/2 N-1): a restricted profile uses
+    /// the fixed-origin, proxy-less, redirect-less client; an unrestricted
+    /// one keeps the existing client.
+    pub fn is_restricted(&self) -> bool {
+        self.lock().restricted
+    }
+
     /// Reserve one legacy Native dispatch while it performs its local work.
     /// The state mutex closes the check/increment race with the startup
     /// transition: after restriction, only the current main-issued epoch can
@@ -301,8 +317,37 @@ impl ProfileEgressState {
         identity: Option<&CallerIdentity>,
     ) -> anyhow::Result<ProfileDispatchPermit> {
         let state = self.lock();
+        self.begin_dispatch_locked(&state, identity)
+    }
+
+    /// Reserve a lease for a legacy provider-egress Native entry (the eight
+    /// pre-D2a AI entries: post-effect runs, chat send/stream, inline stream,
+    /// agent send, model listing, connection test). These entries send the
+    /// manuscript or credentials to a remote provider and have no
+    /// D2a-eligible route, so a restricted profile denies them outright,
+    /// even for a registered, quiesced caller (K3/2 G-2). The check and the
+    /// lease increment happen under the same state mutex as the first
+    /// restricted-publication transition, so no permit can be issued after
+    /// the profile becomes restricted. Unrestricted behaviour is unchanged.
+    pub fn begin_legacy_provider_dispatch(
+        &self,
+        identity: Option<&CallerIdentity>,
+    ) -> anyhow::Result<ProfileDispatchPermit> {
+        let state = self.lock();
+        anyhow::ensure!(
+            !state.restricted,
+            "{D2A_EGRESS_DENIED_MARKER} provider egress is closed while the profile is restricted"
+        );
+        self.begin_dispatch_locked(&state, identity)
+    }
+
+    fn begin_dispatch_locked(
+        &self,
+        state: &State,
+        identity: Option<&CallerIdentity>,
+    ) -> anyhow::Result<ProfileDispatchPermit> {
         if state.restricted {
-            authorize_locked(&state, identity)?;
+            authorize_locked(state, identity)?;
             anyhow::ensure!(
                 state.in_flight_stopped,
                 "{D2A_EGRESS_DENIED_MARKER} dispatch admissions are closed during startup quiescence"
@@ -464,6 +509,57 @@ impl ProfileEgressState {
             "{D2A_EGRESS_DENIED_MARKER} preparation caller is not registered in this process"
         );
         operation()
+    }
+
+    /// Start-time admission for a `nir1-publication` or Scope Native entry
+    /// (K3/2 "区分の意味"). It grants no dispatch lease: Related Scenes can wait
+    /// for minutes and must not hold up the activation drain, so the result is
+    /// protected by a second check at return (`recheck_publication`) instead.
+    /// An unrestricted profile admits every call unchecked (and remembers
+    /// that, so a restriction that begins meanwhile still discards the
+    /// result). A restricted one needs the stop barrier to be confirmed and
+    /// the exact registered main-issued identity of the pinned workspace.
+    pub(crate) fn admit_publication(
+        &self,
+        identity: Option<&CallerIdentity>,
+        pinned_workspace_id: Option<&str>,
+    ) -> anyhow::Result<PublicationAdmission> {
+        let state = self.lock();
+        if state.restricted {
+            publication_authorized_locked(&state, identity, pinned_workspace_id)?;
+        }
+        Ok(PublicationAdmission {
+            restricted: state.restricted,
+            revocation_generation: self.revocation_generation.load(Ordering::Acquire),
+        })
+    }
+
+    /// Return-time recheck of an `admit_publication` admission. Fails closed
+    /// when the profile became restricted after an unrestricted admission, or
+    /// when the caller registration, epoch, workspace or revocation
+    /// generation changed since a restricted admission. The caller discards
+    /// its result on error.
+    pub(crate) fn recheck_publication(
+        &self,
+        admission: PublicationAdmission,
+        identity: Option<&CallerIdentity>,
+        pinned_workspace_id: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let state = self.lock();
+        if !admission.restricted {
+            anyhow::ensure!(
+                !state.restricted,
+                "{D2A_EGRESS_DENIED_MARKER} publication completed after profile restriction began"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            state.restricted
+                && admission.revocation_generation
+                    == self.revocation_generation.load(Ordering::Acquire),
+            "{D2A_EGRESS_DENIED_MARKER} publication binding was revoked"
+        );
+        publication_authorized_locked(&state, identity, pinned_workspace_id)
     }
 
     /// Admit one current capture without queueing behind another capture or
@@ -697,6 +793,35 @@ impl ProfileDispatchPermit {
     }
 }
 
+/// The restricted conditions of a publication entry: the stop barrier is
+/// confirmed, the identity is the exact registered main-issued tuple, and it
+/// names the pinned workspace. Messages carry no owner, ticket or identity.
+fn publication_authorized_locked(
+    state: &State,
+    identity: Option<&CallerIdentity>,
+    pinned_workspace_id: Option<&str>,
+) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        state.in_flight_stopped,
+        "{D2A_EGRESS_DENIED_MARKER} publication is closed during startup quiescence"
+    );
+    authorize_locked(state, identity)?;
+    let identity =
+        identity.ok_or_else(|| anyhow!("{D2A_EGRESS_DENIED_MARKER} caller identity is missing"))?;
+    anyhow::ensure!(
+        pinned_workspace_id.is_some() && identity.workspace_id.as_deref() == pinned_workspace_id,
+        "{D2A_EGRESS_DENIED_MARKER} pinned workspace does not match caller identity"
+    );
+    anyhow::ensure!(
+        state
+            .registered_callers
+            .get(&identity.sender_id)
+            .is_some_and(|registered| registered == identity),
+        "{D2A_EGRESS_DENIED_MARKER} caller identity is not registered in this process"
+    );
+    Ok(())
+}
+
 fn authorize_locked(state: &State, identity: Option<&CallerIdentity>) -> anyhow::Result<()> {
     if !state.restricted {
         return Ok(());
@@ -743,6 +868,164 @@ mod tests {
 
     fn temp_path(label: &str) -> PathBuf {
         std::env::temp_dir().join(format!("grimodex-d2a-{label}-{}.json", Uuid::new_v4()))
+    }
+
+    fn publication_identity(
+        status: &ProfileEgressStatus,
+        sender_id: u64,
+        workspace: &str,
+    ) -> CallerIdentity {
+        CallerIdentity {
+            profile_id: status.profile_id.clone(),
+            caller_id: format!("main-issued-{sender_id}"),
+            caller_epoch: status.caller_epoch,
+            sender_id,
+            workspace_id: Some(workspace.to_string()),
+            session_id: "session-a".to_string(),
+        }
+    }
+
+    #[test]
+    fn publication_admission_is_unchecked_while_unrestricted_but_discards_after_restriction() {
+        let path = temp_path("publication-unrestricted");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let admission = state
+            .admit_publication(None, None)
+            .expect("unrestricted admits without an identity");
+        state
+            .recheck_publication(admission, None, None)
+            .expect("unrestricted recheck passes");
+        // A restriction that begins while the call is in flight discards it:
+        // the admission was unchecked, so nothing proves the caller.
+        state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        assert!(state
+            .recheck_publication(admission, None, None)
+            .expect_err("restriction began meanwhile")
+            .to_string()
+            .contains("publication completed after profile restriction began"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restricted_publication_admission_needs_the_exact_registered_identity() {
+        let path = temp_path("publication-restricted");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity = publication_identity(&status, 61, "workspace-a");
+        // Not registered yet.
+        assert!(state
+            .admit_publication(Some(&identity), Some("workspace-a"))
+            .is_err());
+        state.register_caller(&identity).expect("register");
+        state
+            .admit_publication(Some(&identity), Some("workspace-a"))
+            .expect("registered caller of the pinned workspace");
+        // Missing, other-sender, stale-epoch and other-workspace identities.
+        assert!(state
+            .admit_publication(None, Some("workspace-a"))
+            .expect_err("missing")
+            .to_string()
+            .contains("caller identity is missing"));
+        let other_sender = publication_identity(&status, 62, "workspace-a");
+        assert!(state
+            .admit_publication(Some(&other_sender), Some("workspace-a"))
+            .is_err());
+        let mut tampered = identity.clone();
+        tampered.session_id = "forged-session".to_string();
+        assert!(state
+            .admit_publication(Some(&tampered), Some("workspace-a"))
+            .is_err());
+        let mut stale = identity.clone();
+        stale.caller_epoch += 1;
+        assert!(state
+            .admit_publication(Some(&stale), Some("workspace-a"))
+            .is_err());
+        assert!(state
+            .admit_publication(Some(&identity), Some("workspace-b"))
+            .is_err());
+        assert!(state.admit_publication(Some(&identity), None).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restricted_publication_is_closed_until_the_stop_barrier_confirms() {
+        let path = temp_path("publication-quiescing");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(false)
+            .expect("activate with the barrier still pending");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity = publication_identity(&status, 63, "workspace-a");
+        assert!(state
+            .admit_publication(Some(&identity), Some("workspace-a"))
+            .expect_err("registration and publication are closed")
+            .to_string()
+            .contains("closed during startup quiescence"));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn restricted_publication_recheck_rejects_every_revocation() {
+        let path = temp_path("publication-recheck");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let status = state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        let identity = publication_identity(&status, 64, "workspace-a");
+        state.register_caller(&identity).expect("register");
+
+        let admission = state
+            .admit_publication(Some(&identity), Some("workspace-a"))
+            .expect("admitted");
+        state
+            .recheck_publication(admission, Some(&identity), Some("workspace-a"))
+            .expect("nothing changed");
+
+        // Caller invalidation (workspace swap, activation of a new epoch).
+        state.invalidate_callers();
+        assert!(state
+            .recheck_publication(admission, Some(&identity), Some("workspace-a"))
+            .is_err());
+
+        // Same-path workspace rebind (Restore) also revokes.
+        state.register_caller(&identity).expect("register again");
+        let admission = state
+            .admit_publication(Some(&identity), Some("workspace-a"))
+            .expect("admitted again");
+        state.bind_workspace(Some("workspace-a".to_string()));
+        assert!(state
+            .recheck_publication(admission, Some(&identity), Some("workspace-a"))
+            .is_err());
+
+        // A route-setting write bumps the revocation generation too.
+        state
+            .register_caller(&identity)
+            .expect("register once more");
+        let admission = state
+            .admit_publication(Some(&identity), Some("workspace-a"))
+            .expect("admitted once more");
+        state.with_route_update(|| Ok(())).expect("route update");
+        assert!(state
+            .recheck_publication(admission, Some(&identity), Some("workspace-a"))
+            .is_err());
+
+        // The workspace named by the identity must still be the pinned one.
+        state
+            .register_caller(&identity)
+            .expect("final registration");
+        let admission = state
+            .admit_publication(Some(&identity), Some("workspace-a"))
+            .expect("final admission");
+        assert!(state
+            .recheck_publication(admission, Some(&identity), Some("workspace-b"))
+            .is_err());
+        let _ = fs::remove_file(path);
     }
 
     #[test]
@@ -894,15 +1177,19 @@ mod tests {
         let status = state.status();
         let policy = grimodex_db::profile_egress_policy::sql_policy_for_status();
         assert_eq!(status.sql_policy.version, policy.version);
-        assert_eq!(status.sql_policy.protected_tables, policy.protected_tables);
+        assert_eq!(status.sql_policy.version, 2);
+        assert_eq!(status.sql_policy.closed_tables, policy.closed_tables);
+        assert_eq!(status.sql_policy.read_open_tables, policy.read_open_tables);
         assert_eq!(
-            status.sql_policy.protected_columns,
-            policy.protected_columns
+            status.sql_policy.read_open_columns,
+            policy.read_open_columns
         );
         let json = serde_json::to_value(status).expect("status JSON");
         assert_eq!(json["sqlPolicy"]["version"], policy.version);
-        assert!(json["sqlPolicy"]["protectedTables"].is_array());
-        assert!(json["sqlPolicy"]["protectedColumns"].is_array());
+        assert!(json["sqlPolicy"]["closedTables"].is_array());
+        assert!(json["sqlPolicy"]["readOpenTables"].is_array());
+        assert!(json["sqlPolicy"]["readOpenColumns"].is_array());
+        assert!(json["sqlPolicy"].get("protectedTables").is_none());
         let _ = fs::remove_file(path);
     }
 
@@ -917,6 +1204,59 @@ mod tests {
         assert_eq!(second.profile_id, first.profile_id);
         assert_eq!(second.caller_epoch, first.caller_epoch);
         assert!(!second.in_flight_stopped);
+        let _ = fs::remove_file(path);
+    }
+
+    /// K3/2 Negative (10): there is no operation that releases the restriction.
+    /// Every state-changing operation of the writer, run on a restricted
+    /// profile, leaves the durable file `restricted: true` (and a reload
+    /// restricted), and the source holds a single assignment to the flag.
+    #[test]
+    fn no_operation_of_the_writer_releases_the_restriction() {
+        let path = temp_path("one-way");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        let status = state.status();
+        state.bind_workspace(Some("workspace-a".into()));
+        state.bind_recovery_workspace(None);
+        state.invalidate_callers();
+        state.begin_startup_barrier().expect("restart barrier");
+        state.confirm_in_flight_stopped().expect("confirm");
+        state
+            .activate_first_restricted_publication(false)
+            .expect("repeat activation is idempotent");
+        let on_disk: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&path).expect("state file")).expect("json");
+        assert_eq!(on_disk["restricted"], serde_json::Value::Bool(true));
+        assert!(state.is_restricted());
+        let reloaded = ProfileEgressState::new(path.clone()).expect("reload");
+        assert!(reloaded.is_restricted());
+        assert_eq!(reloaded.status().profile_id, status.profile_id);
+
+        // The only assignment to the flag in the module (outside its tests)
+        // is the one-way `= true`; nothing writes `restricted: false` or
+        // removes the file.
+        let source = include_str!("profile_egress.rs");
+        let production = source
+            .split("#[cfg(test)]\nmod tests")
+            .next()
+            .expect("production source");
+        let assignments: Vec<&str> = production
+            .lines()
+            .filter(|line| line.trim_start().starts_with("state.restricted ="))
+            .collect();
+        assert_eq!(assignments.len(), 1, "{assignments:?}");
+        assert!(assignments[0].contains("= true;"), "{assignments:?}");
+        // The only removal is the temporary file of an atomic replace.
+        for line in production.lines().filter(|line| line.contains("remove_")) {
+            assert!(
+                line.contains("remove_file(&temporary)"),
+                "unexpected removal in profile_egress.rs: {line}"
+            );
+        }
+        assert!(!production.contains("restricted = false"));
         let _ = fs::remove_file(path);
     }
 
@@ -1345,6 +1685,223 @@ mod tests {
 
         let restarted = ProfileEgressState::new(path.clone()).expect("restart");
         assert!(restarted.begin_dispatch(Some(&identity)).is_err());
+        let _ = fs::remove_file(path);
+    }
+    fn registered_stopped_caller(state: &ProfileEgressState) -> CallerIdentity {
+        let status = state.status();
+        let identity = CallerIdentity {
+            profile_id: status.profile_id,
+            caller_id: "main-issued".to_string(),
+            caller_epoch: status.caller_epoch,
+            sender_id: 31,
+            workspace_id: None,
+            session_id: "session-1".to_string(),
+        };
+        state.register_caller(&identity).expect("register caller");
+        identity
+    }
+
+    #[test]
+    fn legacy_provider_dispatch_is_unchanged_while_unrestricted() {
+        let path = temp_path("legacy-unrestricted");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        assert!(!state.is_restricted());
+        // Both with and without an identity, exactly like `begin_dispatch`.
+        drop(
+            state
+                .begin_legacy_provider_dispatch(None)
+                .expect("no identity"),
+        );
+        let ghost = CallerIdentity {
+            profile_id: "p".into(),
+            caller_id: "c".into(),
+            caller_epoch: 9,
+            sender_id: 1,
+            workspace_id: None,
+            session_id: "s".into(),
+        };
+        drop(
+            state
+                .begin_legacy_provider_dispatch(Some(&ghost))
+                .expect("unrestricted ignores identity"),
+        );
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
+        let _ = fs::remove_file(path);
+    }
+
+    /// G-2: a registered, quiesced caller still cannot obtain a legacy
+    /// provider-egress permit, although the same identity gets a generic
+    /// `begin_dispatch` permit. No lease is left behind by the refusal.
+    #[test]
+    fn legacy_provider_dispatch_refuses_a_registered_stopped_caller_when_restricted() {
+        let path = temp_path("legacy-restricted");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        state
+            .activate_first_restricted_publication(true)
+            .expect("activate");
+        assert!(state.is_restricted());
+        let identity = registered_stopped_caller(&state);
+
+        drop(
+            state
+                .begin_dispatch(Some(&identity))
+                .expect("the same identity is admitted for local dispatch"),
+        );
+        let error = state
+            .begin_legacy_provider_dispatch(Some(&identity))
+            .expect_err("legacy provider egress is closed");
+        let text = format!("{error:#}");
+        assert!(text.starts_with(D2A_EGRESS_DENIED_MARKER), "{text}");
+        assert!(text.contains("provider egress is closed"), "{text}");
+        assert!(state.begin_legacy_provider_dispatch(None).is_err());
+        assert_eq!(
+            state.active_dispatches.load(Ordering::SeqCst),
+            0,
+            "a refusal must not leave a lease"
+        );
+        assert!(state.admissions_open.load(Ordering::SeqCst));
+        let _ = fs::remove_file(path);
+    }
+
+    /// The restart case: the profile was restricted by an earlier process, so
+    /// nothing in this process ever ran a stop barrier; the entries are
+    /// refused all the same.
+    #[test]
+    fn legacy_provider_dispatch_refuses_after_restart_on_a_restricted_profile() {
+        let path = temp_path("legacy-restart");
+        {
+            let first = ProfileEgressState::new(path.clone()).expect("state");
+            first
+                .activate_first_restricted_publication(true)
+                .expect("activate");
+        }
+        let restarted = ProfileEgressState::new(path.clone()).expect("restart");
+        assert!(restarted.is_restricted());
+        let identity = registered_stopped_caller(&restarted);
+        assert!(restarted.begin_dispatch(Some(&identity)).is_ok());
+        assert!(restarted
+            .begin_legacy_provider_dispatch(Some(&identity))
+            .is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    /// Ordering around the restricting transition (begin, activate, begin):
+    /// a lease issued before the transition is revoked by it, and no lease is
+    /// issued once the profile is restricted, even before the barrier
+    /// completes and without any identity check. This is the sequential half;
+    /// the two synchronised tests below pin the interleavings.
+    #[test]
+    fn legacy_permit_ordering_around_the_restricting_transition() {
+        let path = temp_path("legacy-race");
+        let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
+        let before = state
+            .begin_legacy_provider_dispatch(None)
+            .expect("pre-restriction");
+        let activator = std::sync::Arc::clone(&state);
+        let transition = std::thread::spawn(move || {
+            activator
+                .activate_first_restricted_publication(false)
+                .expect("activate")
+        });
+        transition.join().expect("transition");
+        assert!(state.is_restricted());
+        for _ in 0..8 {
+            assert!(state.begin_legacy_provider_dispatch(None).is_err());
+        }
+        assert!(before.ensure_open().is_err());
+        drop(before);
+        let _ = fs::remove_file(path);
+    }
+
+    /// G-2 at a synchronisation point (admission side): the test thread holds
+    /// the state mutex while another thread's `begin_legacy_provider_dispatch`
+    /// is pending, restricts the profile through the guard, then releases.
+    /// The pending admission must observe the restriction taken under the
+    /// lock, be refused, and leave no lease. An implementation that decides
+    /// before taking the lock (or on a separate atomic) would issue a permit
+    /// here and fail this test.
+    #[test]
+    fn pending_legacy_admission_is_refused_when_the_profile_is_restricted_meanwhile() {
+        let path = temp_path("legacy-pending-admission");
+        let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let mut guard = state.lock();
+        let admitter = {
+            let state = std::sync::Arc::clone(&state);
+            let started = std::sync::Arc::clone(&started);
+            std::thread::spawn(move || {
+                started.store(true, Ordering::SeqCst);
+                state.begin_legacy_provider_dispatch(None).map(|_| ())
+            })
+        };
+        while !started.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        // The admission is now blocked on (or about to reach) the mutex. It
+        // cannot have issued a lease while the test thread holds the guard.
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
+        assert!(
+            !admitter.is_finished(),
+            "the admission must wait for the lock"
+        );
+        guard.restricted = true;
+        drop(guard);
+        let error = admitter
+            .join()
+            .expect("admitter")
+            .expect_err("the pending admission sees the restriction");
+        assert!(
+            format!("{error:#}").starts_with(D2A_EGRESS_DENIED_MARKER),
+            "{error:#}"
+        );
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
+        let _ = fs::remove_file(path);
+    }
+
+    /// G-2 at a synchronisation point (revocation side): a permit issued
+    /// before the transition stays valid while the transition is pending on
+    /// the held mutex, and is revoked once the transition completes. The
+    /// lease is released only by dropping the permit.
+    #[test]
+    fn legacy_permit_issued_before_the_transition_is_revoked_by_the_pending_transition() {
+        let path = temp_path("legacy-pending-transition");
+        let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
+        let permit = state
+            .begin_legacy_provider_dispatch(None)
+            .expect("pre-restriction");
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 1);
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let guard = state.lock();
+        let transition = {
+            let state = std::sync::Arc::clone(&state);
+            let started = std::sync::Arc::clone(&started);
+            std::thread::spawn(move || {
+                started.store(true, Ordering::SeqCst);
+                state
+                    .activate_first_restricted_publication(false)
+                    .expect("activate")
+            })
+        };
+        while !started.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(
+            !transition.is_finished(),
+            "the transition must wait for the lock"
+        );
+        assert!(
+            permit.ensure_open().is_ok(),
+            "the permit is valid until the transition completes"
+        );
+        drop(guard);
+        let status = transition.join().expect("transition");
+        assert!(status.restricted);
+        assert!(permit.ensure_open().is_err());
+        assert!(state.begin_legacy_provider_dispatch(None).is_err());
+        drop(permit);
+        assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
         let _ = fs::remove_file(path);
     }
 }
