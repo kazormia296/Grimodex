@@ -258,6 +258,12 @@ impl Nir1ProjectReads {
         self.authority.as_ref()
     }
 
+    /// The validated Scene bindings of the same read as [`Self::authority`];
+    /// a Scene Scope projection resolves from them without another read.
+    pub(super) fn scene_bindings(&self) -> &BTreeMap<String, NarrativeSceneScopeBindingV1> {
+        &self.scene_bindings
+    }
+
     pub(super) fn scene_scopes(&self) -> SceneScopes<'_> {
         SceneScopes::Loaded(&self.scene_bindings)
     }

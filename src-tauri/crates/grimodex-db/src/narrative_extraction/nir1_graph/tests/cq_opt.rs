@@ -168,6 +168,7 @@ impl Fixture {
                 evidence_ids: vec![evidence_id_for(from), evidence_id_for(to)],
             });
         }
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(&db, &mut typed)?;
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
@@ -187,6 +188,7 @@ impl Fixture {
         let mut payload = request(db);
         payload.proposal_key = format!("nir1:review:candidate-{serial:04}");
         seed_scope_edits(&mut payload.bundle);
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(db, &mut payload)?;
         let created = create_nir1_entity_relation_revision(db, payload)?;
         let revision = created["revisionId"].as_str().unwrap().to_owned();
         if let Some(decision) = decision {

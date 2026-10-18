@@ -2152,6 +2152,31 @@ fn evaluate_batch_with_control(
         BTreeSet::new()
     };
     identities.extend(projection_sources.iter().cloned());
+    // A registry change moves every Scene's Scope generation, so it selects
+    // every Scene Scope projection Edge (fail safe: the registry writer also
+    // emits one `scene-scope` event per binding, which routes to each anchor).
+    let registry_event = batch
+        .events
+        .iter()
+        .rev()
+        .find(|event| event_changes_every_scene_scope_projection(event));
+    let scene_projection_sources = if registry_event.is_some() {
+        db.with_conn(|conn| {
+            Ok::<_, anyhow::Error>(
+                all_project_edges(conn, &batch.project_id)?
+                    .into_iter()
+                    .filter(|edge| {
+                        edge.source_object_identity
+                            .starts_with(super::scene_scope_projection::SOURCE_PREFIX)
+                    })
+                    .map(|edge| edge.source_object_identity)
+                    .collect::<BTreeSet<_>>(),
+            )
+        })?
+    } else {
+        BTreeSet::new()
+    };
+    identities.extend(scene_projection_sources.iter().cloned());
     // An Apply can create a new Application whose Feed event has no Source
     // locator (for example a chronicle event).  The typed transaction still
     // carries the exact Application identities it declared; include those
@@ -2166,6 +2191,11 @@ fn evaluate_batch_with_control(
     let mut signals = event_signals_by_source(&batch.project_id, &batch.events)?;
     if let Some(event) = scope_event {
         for identity in projection_sources {
+            upsert_project_scope_authority_signals(&mut signals, identity, event);
+        }
+    }
+    if let Some(event) = registry_event {
+        for identity in scene_projection_sources {
             upsert_project_scope_authority_signals(&mut signals, identity, event);
         }
     }
@@ -2251,18 +2281,16 @@ fn evaluate_batch_with_control(
         // for an obsolete Source observation.
         let typed_state = db.with_conn(|conn| {
             if super::nir1_entity_relation::is_typed_revision_edge(conn, &batch.project_id, edge)? {
-                Ok::<_, anyhow::Error>(Some((
+                // The observation and the token it was decided from come from
+                // one resolution (a projection edge reads the Scope authority
+                // once, not once for each).
+                Ok::<_, anyhow::Error>(Some(
                     super::nir1_entity_relation::evaluate_typed_edge_for_incremental(
                         conn,
                         &batch.project_id,
                         edge,
                     )?,
-                    super::nir1_entity_relation::typed_source_token_for_incremental(
-                        conn,
-                        &batch.project_id,
-                        &edge.source_object_identity,
-                    )?,
-                )))
+                ))
             } else {
                 Ok(None)
             }
@@ -3077,11 +3105,15 @@ fn publish_batch_in_tx_with_control(
             guard.edge.source_object_identity
         );
     }
+    // The guards re-read inside the publish transaction; the anchors share
+    // one Scope read.
+    let mut shared_scope = super::nir1_entity_relation::SharedTypedScope::new();
     for guard in &plan.typed_source_state_guards {
-        let current = super::nir1_entity_relation::typed_source_token_for_incremental(
+        let current = super::nir1_entity_relation::typed_source_token_with_shared_scope(
             conn,
             &batch.project_id,
             &guard.source_object_identity,
+            &mut shared_scope,
         )?;
         anyhow::ensure!(
             current == guard.revision_token,
@@ -3570,6 +3602,9 @@ pub(crate) fn affected_source_identities(
         if let Some(identity) = source_identity_for_event(project_id, event)? {
             identities.insert(identity);
         }
+        if let Some(identity) = scene_scope_projection_identity_for_event(event)? {
+            identities.insert(identity);
+        }
         if event_may_change_catalog_via_scene_anchor(event) {
             identities.insert(format!("project:codex-catalog:{project_id}"));
         }
@@ -3641,6 +3676,81 @@ fn source_identity_for_event(
     })
 }
 
+/// The Scene Scope projection (`project:scene-scope-projection:<sceneId>`) a
+/// Feed event moves, if it names exactly one.
+///
+/// - a `scene-scope` event (the Scene's Scope generation moved; `sceneId` is
+///   required, so a missing id fails the classification and is pending as
+///   unknown);
+/// - a `scene` event that creates, deletes or restores the Scene (a deleted
+///   Scene has no projection; a recreated one has a new incarnation);
+/// - a `tree-node` component event of a Scene node with the same mutations.
+///
+/// Everything else maps to no projection: body saves, titles and display
+/// fields move the body Source only; folder and note events carry no Scene
+/// (a folder that holds live Scenes advances those Scenes' generations and
+/// emits their `scene-scope` events); `scope-registry` selects every
+/// projection ([`event_changes_every_scene_scope_projection`]); and a kind
+/// that has no Source locator at all (for example a future
+/// `scene-body-declaration`) is classified by [`source_identity_for_event`],
+/// whose unsupported-kind failure keeps unknown kinds pending-unknown. A Scene
+/// id that cannot form a projection key can never be an anchor, so it maps to
+/// none.
+fn scene_scope_projection_identity_for_event(
+    event: &NarrativeChangeEventRecord,
+) -> anyhow::Result<Option<String>> {
+    let kind = event.object_key.get("kind").and_then(Value::as_str);
+    let required = |field: &str| -> anyhow::Result<&str> {
+        event
+            .object_key
+            .get(field)
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NEX_CHANGE_FEED_OBJECT_KEY_INVALID: {}.{field} is missing",
+                    kind.unwrap_or_default()
+                )
+            })
+    };
+    let changes_existence = matches!(
+        event.mutation_kind.as_str(),
+        "create" | "delete" | "restore"
+    );
+    let scene_id = match kind {
+        Some("scene-scope") => Some(required("sceneId")?),
+        Some("scene") if changes_existence => Some(required("sceneId")?),
+        Some("component") if changes_existence => event
+            .object_key
+            .get("componentId")
+            .and_then(Value::as_str)
+            .and_then(|component_id| {
+                component_id
+                    .strip_prefix("tree-node:")
+                    .or_else(|| component_id.strip_prefix("tree_node:"))
+            })
+            .filter(|persisted_id| !persisted_id.is_empty())
+            .filter(|_| {
+                event
+                    .structural_impact
+                    .as_ref()
+                    .and_then(|impact| impact.get("nodeType"))
+                    .and_then(Value::as_str)
+                    == Some("scene")
+            }),
+        _ => None,
+    };
+    Ok(scene_id.and_then(|id| super::scene_scope_projection::source_key(id).ok()))
+}
+
+/// A registry change moves every Scene's Scope generation: it selects every
+/// Scene Scope projection Edge of the project.
+pub(crate) fn event_changes_every_scene_scope_projection(
+    event: &NarrativeChangeEventRecord,
+) -> bool {
+    event.object_key.get("kind").and_then(Value::as_str) == Some("scope-registry")
+}
+
 fn component_source_identity(
     project_id: &str,
     component_id: &str,
@@ -3697,6 +3807,9 @@ fn event_signals_by_source<'a>(
     for event in events {
         if let Some(identity) = source_identity_for_event(project_id, event)? {
             upsert_event_signals(&mut result, identity, event);
+        }
+        if let Some(identity) = scene_scope_projection_identity_for_event(event)? {
+            upsert_project_scope_authority_signals(&mut result, identity, event);
         }
         if event_may_change_catalog_via_scene_anchor(event) {
             upsert_event_signals(
@@ -6168,6 +6281,170 @@ mod tests {
         assert!(
             identities.contains(&format!("project:codex-catalog:{PROJECT_ID}")),
             "the existing catalog projection remains selected"
+        );
+    }
+
+    fn routing_event(
+        object_key: Value,
+        mutation_kind: &str,
+        structural_impact: Option<Value>,
+    ) -> NarrativeChangeEventRecord {
+        NarrativeChangeEventRecord {
+            event_id: "routing-event".into(),
+            project_id: PROJECT_ID.into(),
+            transaction_id: "routing-transaction".into(),
+            canonical_change_event_uid: "routing-canonical".into(),
+            canonical_sequence: 1,
+            event_ordinal: 0,
+            object_key,
+            change_kind: "metadata".into(),
+            mutation_kind: mutation_kind.into(),
+            before_version: Some(1),
+            before_digest: Some("sha256:before".into()),
+            after_version: Some(2),
+            after_digest: Some("sha256:after".into()),
+            changed_paths: vec!["/".into()],
+            text_impact: None,
+            structural_impact,
+            cause_kind: super::super::change_feed::NarrativeChangeCauseKind::Forward,
+            origin: super::super::change_feed::NarrativeChangeOrigin::Human,
+            original_transaction_id: None,
+            commit_id: None,
+            journal_id: None,
+            undo_journal_id: None,
+            application_ids: Vec::new(),
+            occurred_at: OCCURRED_AT.into(),
+        }
+    }
+
+    /// X1-3 routing: which Feed events select a Scene's Scope projection.
+    #[test]
+    fn scene_scope_projection_routing_is_exact() {
+        let projection = |scene: &str| format!("project:scene-scope-projection:{scene}");
+        let routed = |event: &NarrativeChangeEventRecord| {
+            scene_scope_projection_identity_for_event(event).expect("classifiable event")
+        };
+
+        // The Scene's Scope generation moved.
+        let scope = routing_event(
+            serde_json::json!({"kind": "scene-scope", "sceneId": "s1"}),
+            "update",
+            None,
+        );
+        assert_eq!(routed(&scope), Some(projection("s1")));
+        assert!(affected_source_identities(PROJECT_ID, std::slice::from_ref(&scope))
+            .unwrap()
+            .contains(&projection("s1")));
+        assert!(
+            event_signals_by_source(PROJECT_ID, std::slice::from_ref(&scope))
+                .unwrap()
+                .contains_key(&projection("s1"))
+        );
+
+        // Creating, deleting and restoring a Scene change whether it has one.
+        for mutation in ["create", "delete", "restore"] {
+            let scene = routing_event(
+                serde_json::json!({"kind": "scene", "sceneId": "s2"}),
+                mutation,
+                None,
+            );
+            assert_eq!(routed(&scene), Some(projection("s2")), "scene {mutation}");
+            let component = routing_event(
+                serde_json::json!({"kind": "component", "componentId": "tree-node:s3"}),
+                mutation,
+                Some(serde_json::json!({"nodeType": "scene"})),
+            );
+            assert_eq!(
+                routed(&component),
+                Some(projection("s3")),
+                "component {mutation}"
+            );
+        }
+
+        // Body saves and display edits move the body Source only.
+        let body = routing_event(
+            serde_json::json!({"kind": "scene", "sceneId": "s1"}),
+            "update",
+            None,
+        );
+        assert_eq!(routed(&body), None);
+        assert!(!affected_source_identities(PROJECT_ID, &[body])
+            .unwrap()
+            .iter()
+            .any(|identity| identity.starts_with("project:scene-scope-projection:")));
+
+        // Folder and note events carry no Scene (a folder that holds live
+        // Scenes emits their `scene-scope` events instead).
+        for (key, impact) in [
+            (
+                serde_json::json!({"kind": "component", "componentId": "tree-node:f1"}),
+                serde_json::json!({"nodeType": "folder"}),
+            ),
+            (
+                serde_json::json!({"kind": "component", "componentId": "tree-node:n1"}),
+                serde_json::json!({"nodeType": "note"}),
+            ),
+        ] {
+            for mutation in ["create", "delete", "restore", "update"] {
+                assert_eq!(
+                    routed(&routing_event(key.clone(), mutation, Some(impact.clone()))),
+                    None
+                );
+            }
+        }
+
+        // A registry change selects every projection and names none.
+        let registry = routing_event(
+            serde_json::json!({"kind": "scope-registry", "projectId": PROJECT_ID}),
+            "update",
+            None,
+        );
+        assert_eq!(routed(&registry), None);
+        assert!(event_changes_every_scene_scope_projection(&registry));
+        assert!(!event_changes_every_scene_scope_projection(&scope));
+
+        // A kind with no Source locator, such as the C-body declaration CB-1
+        // adds, is not routed to a projection (and does not break routing).
+        let declaration = routing_event(
+            serde_json::json!({"kind": "scene-body-declaration", "sceneId": "s1"}),
+            "update",
+            None,
+        );
+        assert_eq!(routed(&declaration), None);
+        assert!(!event_changes_every_scene_scope_projection(&declaration));
+    }
+
+    /// Events that cannot be classified fail closed: they are an error here,
+    /// which the pending reader reports as `PendingUnknown`.
+    #[test]
+    fn unclassifiable_events_do_not_route_silently() {
+        for key in [
+            serde_json::json!({"kind": "scene-scope"}),
+            serde_json::json!({"kind": "scene-scope", "sceneId": ""}),
+            serde_json::json!({"kind": "scene-scope", "sceneId": 7}),
+        ] {
+            let event = routing_event(key, "update", None);
+            assert!(scene_scope_projection_identity_for_event(&event).is_err());
+            assert!(affected_source_identities(PROJECT_ID, &[event]).is_err());
+        }
+        let create = routing_event(serde_json::json!({"kind": "scene"}), "create", None);
+        assert!(scene_scope_projection_identity_for_event(&create).is_err());
+        assert!(affected_source_identities(PROJECT_ID, &[create]).is_err());
+        let unknown = routing_event(
+            serde_json::json!({"kind": "not-a-known-kind"}),
+            "update",
+            None,
+        );
+        assert!(affected_source_identities(PROJECT_ID, &[unknown]).is_err());
+        // A Scene id that cannot form a projection key can never be an anchor.
+        let odd = routing_event(
+            serde_json::json!({"kind": "scene-scope", "sceneId": "project:scene:s1"}),
+            "update",
+            None,
+        );
+        assert_eq!(
+            scene_scope_projection_identity_for_event(&odd).unwrap(),
+            None
         );
     }
 

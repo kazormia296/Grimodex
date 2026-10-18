@@ -910,6 +910,7 @@ fn qualified_revisions_that_disagree_on_an_entity_refuse_the_whole_graph() -> Re
         .expect("the fixture Revision holds Alice");
     alice.evidence[0].quote = "Ali".into();
     alice.evidence[0].end_utf16 = alice.evidence[0].start_utf16 + 3;
+    crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(db, &mut payload)?;
     let created = create_nir1_entity_relation_revision(db, payload)?;
     approve_typed_revision(db, "nir1-run", &created)?;
     publish_graph_index(&fixture.authority)?;
@@ -1403,6 +1404,7 @@ fn budget_fixture(total: usize, decoys: usize) -> Result<Fixture> {
             entity.scope.reading = exact_scene("a3-source");
             entity.scope.phase = "draft".into();
         }
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(db, &mut payload)?;
         let created = create_nir1_entity_relation_revision(db, payload)?;
         approve_typed_revision(db, "nir1-run", &created)?;
     }

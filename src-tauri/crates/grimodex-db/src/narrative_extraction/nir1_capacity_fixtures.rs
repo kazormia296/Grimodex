@@ -30,6 +30,7 @@ use super::nir1_capacity_diagnostics::{
 use super::nir1_entity_relation::create_nir1_entity_relation_revision;
 use super::project_scope_authority::load_live_project_scope_authority;
 use super::publish_runtime::publish_complete_runless_freshness_in_tx;
+use super::scene_scope_projection;
 use super::scene_scope::NarrativeSceneScopeUpdateV1;
 use super::semantic_epoch::create_epoch_in_tx;
 use super::{
@@ -650,6 +651,15 @@ fn bundle_for_plan(db: &Database, plan: &RevisionPlan) -> Result<EntityRelationB
             &format!("project:scope-authority:{NIR1_CAPACITY_FIXTURE_PROJECT_ID}"),
         )
     })?;
+    // A typed Revision binds the Scope token of its anchor Scene's projection
+    // (the Scene named by `scope.reading`), not the project authority token.
+    let projection_token = db.with_read_transaction(|conn| {
+        scene_scope_projection::resolve(
+            conn,
+            NIR1_CAPACITY_FIXTURE_PROJECT_ID,
+            &scene_scope_projection::source_key(&plan.scene_id)?,
+        )
+    })?;
     let reveal = authority
         .scope_registry
         .reserved_audience_refs
@@ -669,7 +679,7 @@ fn bundle_for_plan(db: &Database, plan: &RevisionPlan) -> Result<EntityRelationB
         phase: "draft".to_owned(),
         reveal,
         pov: None,
-        authority_revision: authority.source.revision_token,
+        authority_revision: projection_token,
     };
     let mut entities = Vec::with_capacity(plan.entity_ids.len());
     for entity_id in &plan.entity_ids {
