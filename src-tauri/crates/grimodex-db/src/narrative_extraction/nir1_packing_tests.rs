@@ -2541,6 +2541,15 @@ impl DfFinalFixture {
         &self,
         budget: impl FnOnce(&str) -> Result<usize>,
     ) -> Result<NativeNir1SelectedInputs> {
+        self.select_graph(None, budget)
+    }
+
+    /// The Native selection with a Graph's text-free candidates (DI-1a).
+    pub(super) fn select_graph(
+        &self,
+        graph: Option<&crate::narrative_extraction::Nir1GraphCandidates>,
+        budget: impl FnOnce(&str) -> Result<usize>,
+    ) -> Result<NativeNir1SelectedInputs> {
         crate::narrative_extraction::read_and_pack_native_nir1_selected_inputs(
             &self.snapshot,
             PackingPurpose::Writing,
@@ -2548,6 +2557,7 @@ impl DfFinalFixture {
             NATIVE_SESSION,
             &self.capture,
             RAW_SOURCE_SCENE,
+            graph,
             prepared_sql_budget(),
             budget,
         )
@@ -2724,6 +2734,7 @@ fn native_selection_reads_the_expectations_when_the_history_slot_is_unavailable(
         NATIVE_SESSION,
         &capture,
         RAW_SOURCE_SCENE,
+        None,
         prepared_sql_budget(),
         |_| Ok(100_000),
     )?;
@@ -3519,14 +3530,18 @@ pub(in crate::narrative_extraction) mod di1a_graph {
     use rusqlite::OptionalExtension;
     use std::sync::Arc;
 
-    const GENERATION: i64 = 7;
+    pub(in crate::narrative_extraction) const GENERATION: i64 = 7;
     /// A Graph group's ID is three bytes longer than its accepted IR group's,
     /// charged once as the part ID and once as the group ID, for five parts.
     const GRAPH_GROUP_EXTRA_BYTES: usize = 30;
     const SEED: &str = "nir1-alice";
 
     /// B's seal rows, as the Graph reader's `read_seal` joins them.
-    fn write_seal(db: &Database, generation: i64, dirty: bool) -> Result<()> {
+    pub(in crate::narrative_extraction) fn write_seal(
+        db: &Database,
+        generation: i64,
+        dirty: bool,
+    ) -> Result<()> {
         db.with_conn(|conn| {
             let epoch: Option<String> = conn
                 .query_row(
@@ -3598,7 +3613,7 @@ pub(in crate::narrative_extraction) mod di1a_graph {
 
     /// What the Graph reader would have recorded for the relations of these
     /// bindings: every relation, each Revision at the given hop.
-    fn candidates_from(
+    pub(in crate::narrative_extraction) fn candidates_from(
         bindings: &[NativeNir1AuthorityBinding],
         hops: &[u8],
     ) -> Result<Nir1GraphCandidates> {

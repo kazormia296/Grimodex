@@ -38,6 +38,7 @@ use super::{
     build_native_nir1_prepared_inputs, item_id, HistoryContextStage, NativeNir1AuthorityBinding,
     NativeNir1PooledPackedContext, NativeNir1PooledPackingRequest, NativeNir1PreparedInputs,
     NativeNir1RawSourceBinding, NativeNir1SelectedContextItem, RawBudgetCharge,
+    RevisionIndexQualification,
 };
 use crate::nir1_generation::{
     AcceptedChatInputCapture, InputReference, InputRole, InputTarget, InputUse, MessageVersion,
@@ -258,6 +259,7 @@ fn build_record(
             request.project_id,
             binding.revision_id(),
             binding,
+            RevisionIndexQualification::NotIndexDerived,
             &mut || Ok(()),
         ) {
             note(format!(
@@ -431,6 +433,19 @@ pub fn prepared_inputs_for_baseline(
     base: &RenderBase,
     kept_item_ids: &[String],
 ) -> Result<NativeNir1PreparedInputs> {
+    // The baseline arm rebuilds Revision inputs only. A Graph group needs the
+    // seal and the group list that the product requalification made, which a
+    // candidate set record does not keep, so the arm refuses a kept Graph item
+    // instead of guessing an Index reference (the Graph variant is DD-1's).
+    ensure!(
+        !set.candidate_items.iter().any(|candidate| {
+            matches!(candidate.item(), ContextItemKind::GraphEvidence { .. })
+                && kept_item_ids
+                    .iter()
+                    .any(|kept| kept == item_id(candidate.item()))
+        }),
+        "NIR1_EVAL_BASELINE_GRAPH_ITEM_UNSUPPORTED"
+    );
     let kept = kept_item_ids
         .iter()
         .map(String::as_str)

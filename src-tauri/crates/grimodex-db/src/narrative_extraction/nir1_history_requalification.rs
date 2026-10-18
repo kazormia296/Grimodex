@@ -408,6 +408,8 @@ impl<'connection> HistoryRequalifier<'connection> {
             scene_id,
             std::slice::from_ref(&reference),
             &bindings,
+            // A Graph-derived input is Pending above and never gets here.
+            None,
         )
         .map_err(|_| R::InvalidInput)?;
         let rows: Vec<StoredQualificationReference> = input
@@ -962,6 +964,7 @@ mod tests {
             past.projection.query_scene_id(),
             past.projection.input_references(),
             &bindings,
+            past.projection.graph_binding(),
         )?;
         assert_eq!(shared, past.projection.expected_qualification_targets()?);
         Ok(())

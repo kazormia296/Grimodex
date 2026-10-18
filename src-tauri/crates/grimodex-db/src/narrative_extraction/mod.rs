@@ -168,11 +168,15 @@ pub use nir1_packing::{
 pub use nir1_packing::{
     read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
     revalidate_native_nir1_prepared_inputs, NativeNir1ExcludedRevision,
-    NativeNir1FinalQualifications, NativeNir1GraphExclusion, NativeNir1GraphGroup,
-    NativeNir1GraphOutcome, NativeNir1PreparedContextItem, NativeNir1PreparedInputs,
-    NativeNir1RawSourceBinding, NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs,
-    Nir1GraphCandidateBinding, Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason,
-    Nir1GraphExclusionReason,
+    NativeNir1FinalQualifications, NativeNir1GraphBinding, NativeNir1GraphExclusion,
+    NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome,
+    NativeNir1PreparedContextItem, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs, Nir1GraphCandidateBinding,
+    Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason,
+};
+#[cfg(feature = "native-current-human-capture")]
+pub use nir1_packing::{
+    graph_evidence_ref, graph_index_reference, GRAPH_EVIDENCE_REF_FORM, GRAPH_INDEX_REF_FORM,
 };
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,

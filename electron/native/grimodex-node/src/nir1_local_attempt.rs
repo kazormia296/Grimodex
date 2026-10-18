@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use anyhow::{ensure, Context, Result};
 use grimodex_core::canonical_json_digest;
-use grimodex_db::narrative_extraction::NativeNir1AuthorityBinding;
+use grimodex_db::narrative_extraction::{NativeNir1AuthorityBinding, NativeNir1GraphBinding};
 use grimodex_db::nir1_generation::history_context::HistoryContextSlot;
 use grimodex_db::nir1_generation::{
     d1_selection_digest, AttemptSceneBinding, Nir1ExpectedScope, ReadBudget,
@@ -41,6 +41,8 @@ use crate::nir1_generation_owner::{
     Nir1GenerationOwner, Nir1GenerationRefusal, Nir1Settlement, Nir1TransportDecision,
     Nir1TransportOwner,
 };
+#[cfg(test)]
+use crate::nir1_prepared_request::prepare_selected_local_chat_request_with_graph;
 use crate::nir1_prepared_request::{
     prepare_selected_local_chat_request, reobserve_prepared_for_dispatch, LocalGenerationIntent,
     NativeAcceptedChatSubmission, PrivateDTransportHandoff, UnsupportedInputIntent,
@@ -149,6 +151,10 @@ pub(crate) struct Nir1LocalAttempt {
     owner: Nir1GenerationOwner,
     #[cfg(test)]
     probe: Option<Probe>,
+    /// A worker's Graph as text-free candidates. Only a test supplies one until
+    /// the request step of D-final exists.
+    #[cfg(test)]
+    graph: Option<grimodex_db::narrative_extraction::Nir1GraphCandidates>,
 }
 
 impl Nir1LocalAttempt {
@@ -181,6 +187,8 @@ impl Nir1LocalAttempt {
             owner,
             #[cfg(test)]
             probe: None,
+            #[cfg(test)]
+            graph: None,
         })
     }
 
@@ -191,6 +199,15 @@ impl Nir1LocalAttempt {
     #[cfg(test)]
     pub(crate) fn with_probe(mut self, probe: impl FnMut(Nir1LocalAttemptProbe) + 'static) -> Self {
         self.probe = Some(Box::new(probe));
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_graph_candidates(
+        mut self,
+        graph: grimodex_db::narrative_extraction::Nir1GraphCandidates,
+    ) -> Self {
+        self.graph = Some(graph);
         self
     }
 
@@ -207,7 +224,10 @@ impl Nir1LocalAttempt {
             owner,
             #[cfg(test)]
             mut probe,
+            #[cfg(test)]
+            graph,
         } = self;
+        #[cfg(not(test))]
         let selected = prepare_selected_local_chat_request(
             Arc::clone(&state),
             caller,
@@ -215,6 +235,17 @@ impl Nir1LocalAttempt {
             &submission,
             unsupported_inputs,
             generation,
+        )
+        .map_err(Nir1LocalAttemptRefusal::Prepare)?;
+        #[cfg(test)]
+        let selected = prepare_selected_local_chat_request_with_graph(
+            Arc::clone(&state),
+            caller,
+            &query_scene_id,
+            &submission,
+            unsupported_inputs,
+            generation,
+            graph.as_ref(),
         )
         .map_err(Nir1LocalAttemptRefusal::Prepare)?;
         let (request, scene, expected_scope, witness) = selected.into_parts();
@@ -315,7 +346,12 @@ pub(crate) fn build_final_dispatch_request(
             "NIR1_LOCAL_ATTEMPT_D1_DIGEST_MISMATCH"
         );
     }
-    let scope_digest = scope_digest(&scene, &expected_scope, handoff.authority_bindings())?;
+    let scope_digest = scope_digest(
+        &scene,
+        &expected_scope,
+        handoff.authority_bindings(),
+        handoff.graph_binding(),
+    )?;
     let material_digest = material_digest(&scene, handoff)?;
     Ok(FinalDispatchRequest {
         project_id: submission.project_id().to_owned(),
@@ -343,11 +379,15 @@ pub(crate) fn build_final_dispatch_request(
 
 /// The Scope the request was prepared under: the target Scene incarnation and
 /// its Scope binding and restore epoch as read in the snapshot, and the Scope
-/// identity of every adopted Revision's authority.
+/// identity of every adopted Revision's authority. A request with Graph-derived
+/// inputs also binds B's seal and the (Revision, edge) of each Graph group
+/// (DI-1a, DR-DI1A-9); a request without one has no such key, so its digest is
+/// the one it had before the Graph existed.
 pub(crate) fn scope_digest(
     scene: &AttemptSceneBinding,
     expected: &Nir1ExpectedScope,
     bindings: &[NativeNir1AuthorityBinding],
+    graph: Option<&NativeNir1GraphBinding>,
 ) -> Result<String> {
     let revisions = bindings
         .iter()
@@ -376,7 +416,7 @@ pub(crate) fn scope_digest(
             }))
         })
         .collect::<Result<Vec<_>>>()?;
-    Ok(canonical_json_digest(&json!({
+    let mut value = json!({
         "domain": "nir1-final-scope@1",
         "targetScene": {
             "sceneId": scene.scene_id,
@@ -392,12 +432,35 @@ pub(crate) fn scope_digest(
             "number": state.number,
         })),
         "revisions": revisions,
-    }))?)
+    });
+    if let Some(graph) = graph {
+        let seal = graph.seal();
+        value["graph"] = json!({
+            "seal": {
+                "indexKey": seal.index_key,
+                "generation": seal.generation,
+                "sourceDigest": seal.source_digest,
+                "dependencySetDigest": seal.dependency_set_digest,
+                "semanticEpochId": seal.semantic_epoch_id,
+            },
+            "groups": graph
+                .inputs()
+                .iter()
+                .map(|input| json!({
+                    "revisionId": input.revision_id(),
+                    "edgeId": input.edge_id(),
+                }))
+                .collect::<Vec<_>>(),
+        });
+    }
+    Ok(canonical_json_digest(&value)?)
 }
 
 /// The material the request carries: the input and qualification rows (as the
 /// storage digest), every adopted Revision's bundle, material basis, Decision
-/// and Freshness tokens, and the Raw Source binding.
+/// and Freshness tokens, and the Raw Source binding. Graph-derived inputs add
+/// the Index reference (identity and version) of each group; a request
+/// without one has no such key.
 pub(crate) fn material_digest(
     scene: &AttemptSceneBinding,
     handoff: &PrivateDTransportHandoff,
@@ -416,7 +479,7 @@ pub(crate) fn material_digest(
             })
         })
         .collect::<Vec<_>>();
-    Ok(canonical_json_digest(&json!({
+    let mut value = json!({
         "domain": "nir1-final-material@1",
         "inputDigest": handoff.input_digest(),
         "sceneBodyDigest": scene.body_digest,
@@ -432,7 +495,21 @@ pub(crate) fn material_digest(
             "canonicalUtf16Length": source.canonical_utf16_length,
         },
         "revisions": revisions,
-    }))?)
+    });
+    if let Some(graph) = handoff.graph_binding() {
+        value["graph"] = json!({
+            "indexRefs": graph
+                .inputs()
+                .iter()
+                .map(|input| json!({
+                    "groupId": input.group_id(),
+                    "indexIdentity": input.index_identity(),
+                    "indexVersion": input.index_version(),
+                }))
+                .collect::<Vec<_>>(),
+        });
+    }
+    Ok(canonical_json_digest(&value)?)
 }
 
 #[cfg(test)]

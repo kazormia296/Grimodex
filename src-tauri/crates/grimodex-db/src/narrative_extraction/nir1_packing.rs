@@ -27,6 +27,7 @@ use super::nir1_entity_relation::{
     Nir1EntityRelationDisclosure, Nir1EntityRelationDisclosureRead, Nir1EntityRelationFreshness,
     Nir1EntityRelationRevision,
 };
+use super::nir1_graph::read_nir1_graph_seal;
 #[cfg(feature = "native-current-human-capture")]
 use super::nir1_history_context::{
     build_history_context_stage, finish_history_draft, HistoryContextStage, NativeNir1HistoryDraft,
@@ -59,9 +60,10 @@ pub mod final_request_eval;
 pub mod graph_candidates;
 #[cfg(feature = "native-current-human-capture")]
 pub use graph_candidates::{
-    NativeNir1GraphExclusion, NativeNir1GraphGroup, NativeNir1GraphOutcome,
-    Nir1GraphCandidateBinding, Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason,
-    Nir1GraphExclusionReason,
+    graph_evidence_ref, graph_index_reference, NativeNir1GraphBinding, NativeNir1GraphExclusion,
+    NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome, Nir1GraphCandidateBinding,
+    Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason,
+    GRAPH_EVIDENCE_REF_FORM, GRAPH_INDEX_REF_FORM,
 };
 
 const NATIVE_ATOMIC_PART_COUNT: usize = 5;
@@ -1013,6 +1015,9 @@ pub struct NativeNir1PreparedInputs {
     /// What the Graph candidates did in this snapshot (None when the request
     /// carried none). It is a record of the read, not an input of the request.
     graph_outcome: Option<NativeNir1GraphOutcome>,
+    /// B's seal and the Graph-derived inputs this request adopted, with the
+    /// Index reference recorded for each (None when it adopted none).
+    graph_binding: Option<NativeNir1GraphBinding>,
     /// The history turn context built in the same snapshot, without the D1
     /// fields (K4/3 section 2). `history_draft` completes it.
     history_context: HistoryContextStage,
@@ -1074,6 +1079,12 @@ impl NativeNir1PreparedInputs {
         self.graph_outcome.as_ref()
     }
 
+    /// B's seal and the Graph-derived inputs this request adopted, each with
+    /// its Index reference. `None` when the request adopted no Graph group.
+    pub fn graph_binding(&self) -> Option<&NativeNir1GraphBinding> {
+        self.graph_binding.as_ref()
+    }
+
     /// The `(kind, target)` set that the current state derives for every
     /// adopted input, including the D1 selection of the non-current inputs.
     /// It is derived from the bindings and the Human version, not from the
@@ -1086,6 +1097,7 @@ impl NativeNir1PreparedInputs {
             &self.query_scene_id,
             &self.input_references,
             &bindings,
+            self.graph_binding.as_ref(),
         )
     }
 
@@ -1193,6 +1205,7 @@ pub(super) fn expected_targets_for_inputs(
     query_scene_id: &str,
     input_references: &[InputReference],
     bindings: &[&NativeNir1AuthorityBinding],
+    graph: Option<&NativeNir1GraphBinding>,
 ) -> Result<BTreeMap<usize, BTreeSet<TypedTarget>>> {
     let scope_target = |role: ScopeRole, components: &[&str]| TypedTarget {
         kind: QualificationKind::Scope,
@@ -1209,6 +1222,58 @@ pub(super) fn expected_targets_for_inputs(
             targets.insert(scope_target(role, &[query_scene_id]));
         }
     };
+    // The targets of a Revision's authority. An accepted Revision input and a
+    // Graph-derived input of that Revision share them: the Graph adds the
+    // Index target only.
+    let revision_targets = |targets: &mut BTreeSet<TypedTarget>, revision_id: &str| -> Result<()> {
+        let binding = bindings
+            .iter()
+            .copied()
+            .find(|binding| binding.revision_id() == revision_id)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?;
+        targets.insert(plain(QualificationKind::Revision, revision_id));
+        targets.insert(plain(QualificationKind::Decision, binding.decision().id()));
+        targets.insert(plain(QualificationKind::Freshness, revision_id));
+        let basis = &binding.revision().material_basis;
+        for key in basis
+            .source_basis
+            .iter()
+            .map(|source| &source.source_key)
+            .chain(
+                basis
+                    .evidence_set
+                    .iter()
+                    .map(|evidence| &evidence.source_key),
+            )
+        {
+            targets.insert(plain(QualificationKind::Source, key));
+        }
+        let scope = binding.scope();
+        let scene = scope.query_scene_id();
+        targets.insert(scope_target(ScopeRole::ProjectAuthority, &[project_id]));
+        for role in [
+            ScopeRole::QuerySceneScope,
+            ScopeRole::QuerySceneSource,
+            ScopeRole::QuerySceneIncarnation,
+            ScopeRole::RevealState,
+            ScopeRole::ScopeAxis,
+        ] {
+            targets.insert(scope_target(role, &[scene]));
+        }
+        for index in 0..scope.typed_scope_bindings().len() {
+            targets.insert(scope_target(
+                ScopeRole::TypedScope,
+                &[revision_id, &index.to_string()],
+            ));
+        }
+        for proof in scope.material_scene_proofs() {
+            targets.insert(scope_target(
+                ScopeRole::MaterialSceneProof,
+                &[&proof.scene_id, &proof.scene_incarnation_id],
+            ));
+        }
+        Ok(())
+    };
     let mut expected = BTreeMap::new();
     for (ordinal, input) in input_references.iter().enumerate() {
         let mut targets = BTreeSet::new();
@@ -1222,56 +1287,28 @@ pub(super) fn expected_targets_for_inputs(
                 scene_scopes(&mut targets);
             }
             InputTarget::AcceptedRevision { revision_id, .. } => {
-                let binding = bindings
-                    .iter()
-                    .copied()
-                    .find(|binding| binding.revision_id() == revision_id)
-                    .ok_or_else(|| {
-                        anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
-                    })?;
-                targets.insert(plain(QualificationKind::Revision, revision_id));
-                targets.insert(plain(QualificationKind::Decision, binding.decision().id()));
-                targets.insert(plain(QualificationKind::Freshness, revision_id));
-                let basis = &binding.revision().material_basis;
-                for key in basis
-                    .source_basis
-                    .iter()
-                    .map(|source| &source.source_key)
-                    .chain(
-                        basis
-                            .evidence_set
-                            .iter()
-                            .map(|evidence| &evidence.source_key),
-                    )
-                {
-                    targets.insert(plain(QualificationKind::Source, key));
-                }
-                let scope = binding.scope();
-                let scene = scope.query_scene_id();
-                targets.insert(scope_target(ScopeRole::ProjectAuthority, &[project_id]));
-                for role in [
-                    ScopeRole::QuerySceneScope,
-                    ScopeRole::QuerySceneSource,
-                    ScopeRole::QuerySceneIncarnation,
-                    ScopeRole::RevealState,
-                    ScopeRole::ScopeAxis,
-                ] {
-                    targets.insert(scope_target(role, &[scene]));
-                }
-                for index in 0..scope.typed_scope_bindings().len() {
-                    targets.insert(scope_target(
-                        ScopeRole::TypedScope,
-                        &[revision_id, &index.to_string()],
-                    ));
-                }
-                for proof in scope.material_scene_proofs() {
-                    targets.insert(scope_target(
-                        ScopeRole::MaterialSceneProof,
-                        &[&proof.scene_id, &proof.scene_incarnation_id],
-                    ));
-                }
+                revision_targets(&mut targets, revision_id)?;
             }
-            InputTarget::Artifact { .. } | InputTarget::GraphEvidence { .. } => {
+            InputTarget::GraphEvidence { .. } => {
+                // The Revision and the Index come from the adopted Graph
+                // input of this ordinal, never from the stored rows. The
+                // history requalifier passes no Graph binding: a
+                // Graph-derived input is Pending there and never reaches
+                // this function.
+                let adopted = graph
+                    .and_then(|graph| {
+                        graph
+                            .inputs
+                            .iter()
+                            .find(|adopted| adopted.input_ordinal == ordinal)
+                    })
+                    .ok_or_else(|| {
+                        anyhow::anyhow!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL")
+                    })?;
+                revision_targets(&mut targets, &adopted.revision_id)?;
+                targets.insert(plain(QualificationKind::Index, &adopted.index_identity));
+            }
+            InputTarget::Artifact { .. } => {
                 anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL")
             }
         }
@@ -1347,6 +1384,7 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
         capture,
         query_scene_id,
         RevisionSelection::Caller(&unique_revision_ids),
+        None,
         sql_budget,
         context_budget_for_user,
     )
@@ -1403,6 +1441,11 @@ impl NativeNir1SelectedInputs {
 /// query-level reason, more than `MAX_PACKING_ITEMS` candidates, or when no
 /// accepted IR remains (`NIR1_NATIVE_PREPARED_REQUIRED_CONTEXT_MISSING`). The
 /// caller supplies no Revision ID.
+///
+/// `graph` is the text-free candidate set of a worker's Graph (DI-1a). The
+/// snapshot requalifies it (B's seal, A2 and A3, the binding tokens) and the
+/// groups that pass become Graph-derived inputs of the request; `None` is a
+/// request without a Graph.
 #[cfg(feature = "native-current-human-capture")]
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub fn read_and_pack_native_nir1_selected_inputs(
@@ -1412,6 +1455,7 @@ pub fn read_and_pack_native_nir1_selected_inputs(
     expected_session_id: &str,
     capture: &AcceptedChatInputCapture,
     query_scene_id: &str,
+    graph: Option<&Nir1GraphCandidates>,
     sql_budget: ParticipantSqlOperationBudget,
     context_budget_for_user: impl FnOnce(&str) -> Result<usize>,
 ) -> Result<NativeNir1SelectedInputs> {
@@ -1432,6 +1476,7 @@ pub fn read_and_pack_native_nir1_selected_inputs(
         capture,
         query_scene_id,
         RevisionSelection::Native,
+        graph,
         sql_budget,
         context_budget_for_user,
     )?;
@@ -1538,6 +1583,7 @@ fn read_prepared_inputs_in_snapshot(
     capture: &AcceptedChatInputCapture,
     query_scene_id: &str,
     selection: RevisionSelection<'_>,
+    graph: Option<&Nir1GraphCandidates>,
     sql_budget: ParticipantSqlOperationBudget,
     context_budget_for_user: impl FnOnce(&str) -> Result<usize>,
 ) -> Result<(NativeNir1PreparedInputs, Option<SnapshotExpectations>)> {
@@ -1589,8 +1635,7 @@ fn read_prepared_inputs_in_snapshot(
                     query_scene_id,
                     budget_tokens: context_budget_tokens,
                     purpose,
-                    // The Graph is requested by a later D-final step (DI-1a S3).
-                    graph: None,
+                    graph,
                 },
                 policy,
                 &mut input_budget,
@@ -1655,7 +1700,15 @@ fn build_native_nir1_prepared_inputs(
         .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_RAW_SOURCE_BINDING_MISSING"))?;
     let mut raw_ordinal = None;
     let mut revision_ordinals = HashMap::new();
-    let mut selected_revision_ids = Vec::new();
+    // Graph group ID -> the ordinal of its Graph-derived input.
+    let mut graph_ordinals = HashMap::<String, usize>::new();
+    // The Revisions this request keeps, whichever input first named them.
+    let mut kept_revision_ids = Vec::<String>::new();
+    let mut kept_revision_set = HashSet::<String>::new();
+    // Every context input that carries a Revision's authority, in ordinal
+    // order: an accepted Revision input, or a Graph-derived input of one
+    // relation of a Revision.
+    let mut revision_inputs = Vec::<(usize, String, Option<(String, String)>)>::new();
     let mut context_references = Vec::new();
     let mut accepted_ir_count = 0usize;
     let graph_outcome = pooled.graph.take();
@@ -1663,6 +1716,36 @@ fn build_native_nir1_prepared_inputs(
     // order; the sealed-basis conflicts found below follow.
     let mut excluded_revisions = std::mem::take(&mut pooled.excluded);
     let mut excluded_revision_ids = HashSet::<String>::new();
+
+    // A Revision whose sealed material basis disagrees with itself is left out
+    // alone, as an accepted Revision and as a Graph-derived input; the Human,
+    // the Raw, the other Revisions and the attempt context stay (K4/3 section
+    // 3, rule 2). The check is made once, at the first selected item that
+    // names the Revision.
+    let mut keep_revision =
+        |revision_id: &str, bindings: &[NativeNir1AuthorityBinding]| -> Result<bool> {
+            if excluded_revision_ids.contains(revision_id) {
+                return Ok(false);
+            }
+            if kept_revision_set.contains(revision_id) {
+                return Ok(true);
+            }
+            let binding = bindings
+                .iter()
+                .find(|binding| binding.revision_id() == revision_id)
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?;
+            if let Some(reason) = revision_exclusion_reason(binding) {
+                excluded_revision_ids.insert(revision_id.to_owned());
+                excluded_revisions.push(NativeNir1ExcludedRevision {
+                    revision_id: revision_id.to_owned(),
+                    reason,
+                });
+                return Ok(false);
+            }
+            kept_revision_set.insert(revision_id.to_owned());
+            kept_revision_ids.push(revision_id.to_owned());
+            Ok(true)
+        };
 
     for selected in &pooled.selected_items {
         checkpoint()?;
@@ -1690,7 +1773,7 @@ fn build_native_nir1_prepared_inputs(
                 let revision_id = selected.owner_revision_id.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_OWNER_MISSING")
                 })?;
-                if excluded_revision_ids.contains(revision_id) {
+                if !keep_revision(revision_id, &pooled.bindings)? {
                     continue;
                 }
                 if !revision_ordinals.contains_key(revision_id) {
@@ -1701,21 +1784,9 @@ fn build_native_nir1_prepared_inputs(
                         .ok_or_else(|| {
                             anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
                         })?;
-                    // A Revision whose sealed material basis disagrees with
-                    // itself is left out alone; the Human, the Raw, the other
-                    // Revisions and the attempt context stay (K4/3 section 3,
-                    // rule 2).
-                    if let Some(reason) = revision_exclusion_reason(binding) {
-                        excluded_revision_ids.insert(revision_id.to_owned());
-                        excluded_revisions.push(NativeNir1ExcludedRevision {
-                            revision_id: revision_id.to_owned(),
-                            reason,
-                        });
-                        continue;
-                    }
                     let ordinal = context_references.len() + 1;
                     revision_ordinals.insert(revision_id.to_owned(), ordinal);
-                    selected_revision_ids.push(revision_id.to_owned());
+                    revision_inputs.push((ordinal, revision_id.to_owned(), None));
                     context_references.push(InputReference {
                         role: InputRole::Context,
                         target: InputTarget::AcceptedRevision {
@@ -1726,6 +1797,57 @@ fn build_native_nir1_prepared_inputs(
                     });
                 }
                 accepted_ir_count += 1;
+            }
+            ContextItemKind::GraphEvidence { atomic_group, .. } => {
+                ensure!(
+                    selected.atomic_part().is_some() && selected.candidate_binding().is_some(),
+                    "NIR1_NATIVE_PREPARED_GRAPH_BINDING_MISSING"
+                );
+                // The group is one the Graph requalification made in this
+                // snapshot; the selector cannot have invented it.
+                let group = graph_outcome
+                    .as_ref()
+                    .and_then(|outcome| {
+                        outcome
+                            .groups()
+                            .iter()
+                            .find(|group| group.group_id() == atomic_group)
+                    })
+                    .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_GRAPH_GROUP_MISSING"))?;
+                ensure!(
+                    selected.owner_revision_id.as_deref() == Some(group.revision_id()),
+                    "NIR1_NATIVE_PREPARED_GRAPH_OWNER_MISMATCH"
+                );
+                if !keep_revision(group.revision_id(), &pooled.bindings)? {
+                    continue;
+                }
+                if !graph_ordinals.contains_key(atomic_group) {
+                    let binding = pooled
+                        .bindings
+                        .iter()
+                        .find(|binding| binding.revision_id() == group.revision_id())
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING")
+                        })?;
+                    let (source_key, revision_token) =
+                        graph_input_source(binding, group.edge_id())?;
+                    let ordinal = context_references.len() + 1;
+                    graph_ordinals.insert(atomic_group.clone(), ordinal);
+                    revision_inputs.push((
+                        ordinal,
+                        group.revision_id().to_owned(),
+                        Some((group.edge_id().to_owned(), group.group_id().to_owned())),
+                    ));
+                    context_references.push(InputReference {
+                        role: InputRole::Context,
+                        target: InputTarget::GraphEvidence {
+                            evidence_ref: graph_evidence_ref(group.revision_id(), group.edge_id())?,
+                            source_key,
+                            revision_token,
+                        },
+                        input_use: InputUse::SelectedMaterial,
+                    });
+                }
             }
             _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
         }
@@ -1762,6 +1884,17 @@ fn build_native_nir1_prepared_inputs(
                     anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_ORDINAL_MISSING")
                 })?
             }
+            ContextItemKind::GraphEvidence { atomic_group, .. } => {
+                let owner = selected.owner_revision_id.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_OWNER_MISSING")
+                })?;
+                if excluded_revision_ids.contains(owner) {
+                    continue;
+                }
+                *graph_ordinals.get(atomic_group).ok_or_else(|| {
+                    anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_ORDINAL_MISSING")
+                })?
+            }
             _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
         };
         context_items.push(NativeNir1PreparedContextItem {
@@ -1770,8 +1903,8 @@ fn build_native_nir1_prepared_inputs(
         });
     }
 
-    let mut selected_bindings = Vec::with_capacity(selected_revision_ids.len());
-    for revision_id in &selected_revision_ids {
+    let mut selected_bindings = Vec::with_capacity(kept_revision_ids.len());
+    for revision_id in &kept_revision_ids {
         checkpoint()?;
         selected_bindings.push(
             pooled
@@ -1870,18 +2003,53 @@ fn build_native_nir1_prepared_inputs(
             reason,
         ));
     }
-    for (revision_id, binding) in selected_revision_ids.iter().zip(&selected_bindings) {
+    let mut graph_inputs = Vec::new();
+    for (input_ordinal, revision_id, graph_edge) in &revision_inputs {
         checkpoint()?;
-        let input_ordinal = revision_ordinals[revision_id];
+        let binding = selected_bindings
+            .iter()
+            .find(|binding| binding.revision_id() == revision_id)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?;
+        let index = match graph_edge {
+            None => RevisionIndexQualification::NotIndexDerived,
+            Some((edge_id, group_id)) => {
+                let seal = graph_outcome
+                    .as_ref()
+                    .and_then(|outcome| outcome.seal())
+                    .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_GRAPH_SEAL_MISSING"))?;
+                let (identity, version) =
+                    graph_index_reference(&project_id, seal, binding, edge_id)?;
+                graph_inputs.push(NativeNir1GraphInput {
+                    input_ordinal: *input_ordinal,
+                    revision_id: revision_id.clone(),
+                    edge_id: edge_id.clone(),
+                    group_id: group_id.clone(),
+                    index_identity: identity.clone(),
+                    index_version: version.clone(),
+                });
+                RevisionIndexQualification::Present { identity, version }
+            }
+        };
         add_revision_qualifications(
             &mut qualifications,
-            input_ordinal,
+            *input_ordinal,
             &project_id,
             revision_id,
             binding,
+            index,
             checkpoint,
         )?;
     }
+    let graph_binding = match (graph_inputs.is_empty(), graph_outcome.as_ref()) {
+        (false, Some(outcome)) => Some(NativeNir1GraphBinding {
+            seal: outcome
+                .seal()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_GRAPH_SEAL_MISSING"))?,
+            inputs: graph_inputs,
+        }),
+        _ => None,
+    };
     checkpoint()?;
     Ok(NativeNir1PreparedInputs {
         capture: capture.clone(),
@@ -1896,8 +2064,55 @@ fn build_native_nir1_prepared_inputs(
         authority_bindings: selected_bindings,
         excluded_revisions,
         graph_outcome,
+        graph_binding,
         history_context,
     })
+}
+
+/// How the Index kind of a Revision-authority input is qualified: an accepted
+/// Revision is read through A2 and A3 without a Graph Index (a typed N/A); a
+/// Graph-derived input carries the Index reference of its group and no N/A
+/// (K4/3 section 3).
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) enum RevisionIndexQualification {
+    NotIndexDerived,
+    Present { identity: String, version: String },
+}
+
+/// The Source a Graph-derived input records as its own `source_key` and
+/// `revision_token`: the first, in `(source key, revision token)` order, of the
+/// Sources of the relation's Evidence in the Revision's material basis. The
+/// other Sources are Source references of the input (K4/3 section 3).
+#[cfg(feature = "native-current-human-capture")]
+fn graph_input_source(
+    binding: &NativeNir1AuthorityBinding,
+    edge_id: &str,
+) -> Result<(String, String)> {
+    let revision = binding.revision();
+    let relation = revision
+        .bundle
+        .relations
+        .iter()
+        .find(|relation| relation.edge_id == edge_id)
+        .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_GRAPH_RELATION_MISSING"))?;
+    let mut sources = Vec::with_capacity(relation.evidence_ids.len());
+    for evidence_id in &relation.evidence_ids {
+        let evidence = revision
+            .material_basis
+            .evidence_set
+            .iter()
+            .find(|evidence| &evidence.evidence_ref == evidence_id)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_GRAPH_EVIDENCE_MISSING"))?;
+        sources.push((
+            evidence.source_key.as_str(),
+            evidence.revision_token.as_str(),
+        ));
+    }
+    sources.sort_unstable();
+    let (source_key, revision_token) = sources
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_GRAPH_EVIDENCE_MISSING"))?;
+    Ok(((*source_key).to_owned(), (*revision_token).to_owned()))
 }
 
 /// The sealed material basis disagrees with itself when `source_basis` and
@@ -1960,6 +2175,7 @@ fn add_revision_qualifications(
     project_id: &str,
     revision_id: &str,
     binding: &NativeNir1AuthorityBinding,
+    index: RevisionIndexQualification,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<()> {
     // An exact repeat (same kind, role, identity and version) is one
@@ -2081,13 +2297,24 @@ fn add_revision_qualifications(
             proof.scene_scope_token.clone(),
         );
     }
-    // The kind is "not index-derived" only because no Graph Index is read for
-    // an accepted Revision (the Graph-derived input is Pending).
-    qualifications.push(QualificationReference::not_applicable(
-        input_ordinal,
-        QualificationKind::Index,
-        NotApplicableReason::NotIndexDerived,
-    ));
+    // An accepted Revision is "not index-derived": no Graph Index is read for
+    // it. A Graph-derived input has no N/A for the Index and records the
+    // reference of its group (K4/3 section 3).
+    qualifications.push(match index {
+        RevisionIndexQualification::NotIndexDerived => QualificationReference::not_applicable(
+            input_ordinal,
+            QualificationKind::Index,
+            NotApplicableReason::NotIndexDerived,
+        ),
+        RevisionIndexQualification::Present { identity, version } => {
+            QualificationReference::present(
+                input_ordinal,
+                QualificationKind::Index,
+                identity,
+                version,
+            )
+        }
+    });
     Ok(())
 }
 
@@ -2151,6 +2378,21 @@ pub fn revalidate_native_nir1_prepared_inputs(
                 raw.text == expected_raw.text,
                 "NIR1_NATIVE_PREPARED_RAW_SOURCE_BODY_STALE"
             );
+            // A Graph-derived input is requalified against B's seal as this
+            // snapshot reads it, then against the Revision's current binding
+            // (below); its Index reference is derived again from both.
+            let current_seal = match &expected.graph_binding {
+                Some(graph) => {
+                    checkpoint()?;
+                    let seal = read_nir1_graph_seal(conn, &expected.project_id)?;
+                    ensure!(
+                        seal.as_ref() == Some(&graph.seal),
+                        "NIR1_NATIVE_PREPARED_GRAPH_STALE"
+                    );
+                    seal
+                }
+                None => None,
+            };
             for binding in &expected.authority_bindings {
                 checkpoint()?;
                 let current = match evaluate_nir1_entity_relation_disclosure(
@@ -2168,6 +2410,34 @@ pub fn revalidate_native_nir1_prepared_inputs(
                 };
                 checkpoint()?;
                 ensure!(current == *binding, "NIR1_NATIVE_PREPARED_REVISION_STALE");
+                if let (Some(graph), Some(seal)) = (&expected.graph_binding, &current_seal) {
+                    for input in graph
+                        .inputs
+                        .iter()
+                        .filter(|input| input.revision_id == current.revision_id())
+                    {
+                        checkpoint()?;
+                        ensure!(
+                            current
+                                .revision()
+                                .bundle
+                                .relations
+                                .iter()
+                                .any(|relation| relation.edge_id == input.edge_id),
+                            "NIR1_NATIVE_PREPARED_GRAPH_STALE"
+                        );
+                        let (identity, version) = graph_index_reference(
+                            &expected.project_id,
+                            seal,
+                            &current,
+                            &input.edge_id,
+                        )?;
+                        ensure!(
+                            identity == input.index_identity && version == input.index_version,
+                            "NIR1_NATIVE_PREPARED_GRAPH_STALE"
+                        );
+                    }
+                }
             }
             checkpoint()?;
             Ok(())
@@ -2178,7 +2448,9 @@ pub fn revalidate_native_nir1_prepared_inputs(
 #[cfg(feature = "native-current-human-capture")]
 fn take_selected_context_text(selected: NativeNir1SelectedContextItem) -> Result<String> {
     match selected.item {
-        ContextItemKind::Raw { text, .. } | ContextItemKind::AcceptedIr { text, .. } => Ok(text),
+        ContextItemKind::Raw { text, .. }
+        | ContextItemKind::AcceptedIr { text, .. }
+        | ContextItemKind::GraphEvidence { text, .. } => Ok(text),
         _ => anyhow::bail!("NIR1_NATIVE_PREPARED_UNSUPPORTED_SELECTED_MATERIAL"),
     }
 }
@@ -3076,6 +3348,11 @@ fn policy_is_native_selection(policy: RevisionUnavailablePolicy) -> bool {
 #[cfg(test)]
 #[path = "nir1_packing_tests.rs"]
 pub(super) mod tests;
+
+// DI-1a S2: Graph-derived inputs of a D-final request.
+#[cfg(all(test, feature = "native-current-human-capture"))]
+#[path = "nir1_packing_graph_input_tests.rs"]
+mod graph_input_tests;
 
 // HC1-4: the session history run, end to end.
 #[cfg(all(test, feature = "native-current-human-capture"))]

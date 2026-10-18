@@ -4,8 +4,9 @@
 
 use super::*;
 use crate::nir1_prepared_request::tests::{
-    create_approved_revision_with_key, write_local_route, Fixture, NO_UNSUPPORTED_INPUTS,
-    PROJECT_ID, REVISION_SCENE_ID, SCENE_ID, SESSION_ID,
+    create_approved_revision_with_key, graph_candidates_for, write_graph_seal, write_local_route,
+    Fixture, GRAPH_GENERATION, NO_UNSUPPORTED_INPUTS, PROJECT_ID, REVISION_SCENE_ID, SCENE_ID,
+    SESSION_ID,
 };
 use crate::nir1_prepared_request::MainKeyVerdict;
 use grimodex_core::narrative_nir1_receipt::{
@@ -223,9 +224,11 @@ fn save_scene_scope(target: &Target, scene_id: &str, request_id: &str) {
 }
 
 /// The kinds of change that the dispatch-time check must not let a prepared
-/// request survive (K6/2 DI-1c). The eighth kind of the list, an index
-/// generation, is not an input of D-final: see
-/// `a9_an_index_generation_is_not_an_input_of_the_final_request`.
+/// request survive (K6/2 DI-1c). `CHANGES` is the seven that every request
+/// answers to. The eighth, an index generation, is an input of a request that
+/// has Graph-derived inputs only (DI-1a): `GRAPH_CHANGES` adds it, and a
+/// request without a Graph does not answer to it (see
+/// `a9_an_index_generation_is_not_an_input_of_the_final_request`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Change {
     /// The target Scene's Scope setting is saved by the product writer.
@@ -244,7 +247,20 @@ enum Change {
     Route,
     /// The profile's route update, which revokes every counted permit.
     Revocation,
+    /// B is rebuilt and sealed again: the Graph Index has a new generation.
+    IndexGeneration,
 }
+
+const GRAPH_CHANGES: [Change; 8] = [
+    Change::Scope,
+    Change::Source,
+    Change::Revision,
+    Change::Decision,
+    Change::Freshness,
+    Change::Route,
+    Change::Revocation,
+    Change::IndexGeneration,
+];
 
 const CHANGES: [Change; 7] = [
     Change::Scope,
@@ -312,6 +328,9 @@ fn inject(target: &Target, change: Change) {
                     write_local_route(&target.state, "http://127.0.0.1:12347/v1", 16_384, 1024)
                 })
                 .expect("route update");
+        }
+        Change::IndexGeneration => {
+            write_graph_seal(&target.state, GRAPH_GENERATION + 1, false).expect("seal again");
         }
     }
 }
@@ -541,11 +560,12 @@ fn a13_the_digests_follow_their_inputs() {
     assert_ne!(route_changed.endpoint_identity, base.endpoint_identity);
 }
 
-/// The Index kind has no input in D-final (the Graph is a later slice), so a
-/// change of an index generation cannot reach a request; it is recorded as
-/// not applicable rather than skipped (A-9).
+/// A request without a Graph has no Graph-derived input, and every Index row
+/// is a typed N/A (A-9 of DI-1c, read this way by DI-1a). A change of an index
+/// generation therefore does not reach it; a request with Graph-derived inputs
+/// is covered by the `a3_` tests below.
 #[test]
-fn a9_an_index_generation_is_not_an_input_of_the_final_request() {
+fn a9_an_index_generation_is_not_an_input_of_a_request_without_a_graph() {
     let fixture = ready_fixture();
     let request = final_request(&fixture, &fixture.message_version_id);
     assert!(request
@@ -573,6 +593,16 @@ fn a9_an_index_generation_is_not_an_input_of_the_final_request() {
             "an Index row is not applicable: {row:?}"
         );
     }
+    // B is sealed after the create: the request has no input to re-observe it
+    // for, and is claimed.
+    let (_, recorder, _, result) =
+        run_with_change(Nir1LocalAttemptProbe::AfterCreate, Change::IndexGeneration);
+    assert!(
+        matches!(result, Ok(Nir1LocalAttemptOutcome::Start(_))),
+        "a request without a Graph answers to no index generation: {}",
+        describe(&result)
+    );
+    assert_eq!(recorder.sends(), 1);
 }
 
 // ---------------------------------------------------------------------------
@@ -658,6 +688,7 @@ fn a9_every_change_after_the_create_abandons_the_attempt() {
             }
             Change::Route => &["NIR1_PREPARED_ROUTE_CHANGED"],
             Change::Revocation => &["D2A_EGRESS_DENIED", "NIR1_PREPARED_ROUTE_REVOKED"],
+            Change::IndexGeneration => &["NIR1_NATIVE_PREPARED_GRAPH_STALE"],
         };
         assert!(
             expected.iter().any(|code| reason.contains(code)),
@@ -1096,4 +1127,290 @@ fn the_product_path_uses_only_the_capture_forms() {
         scanned.len() >= 6,
         "the scan covers the nir1 files: {scanned:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// DI-1a S2: Graph-derived inputs in the attempt (A-3, A-19, A-20).
+// ---------------------------------------------------------------------------
+
+/// The Graph's candidates for this fixture, on a sealed B: what the worker
+/// would have recorded for every relation of the control request's Revisions.
+fn graph_candidates(fixture: &Fixture) -> grimodex_db::narrative_extraction::Nir1GraphCandidates {
+    write_graph_seal(&fixture.state, GRAPH_GENERATION, false).expect("seal");
+    let control = prepare_selected_local_chat_request(
+        Arc::clone(&fixture.state),
+        fixture.caller.clone(),
+        SCENE_ID,
+        &fixture.message_version_id,
+        NO_UNSUPPORTED_INPUTS,
+        LocalGenerationIntent::writing_for_test(),
+    )
+    .unwrap_or_else(|error| panic!("control request: {error:#}"))
+    .into_parts()
+    .0
+    .into_d_transport_handoff();
+    graph_candidates_for(control.authority_bindings(), GRAPH_GENERATION).expect("candidates")
+}
+
+fn graph_final_request(
+    fixture: &Fixture,
+    graph: &grimodex_db::narrative_extraction::Nir1GraphCandidates,
+) -> FinalDispatchRequest {
+    let selected = crate::nir1_prepared_request::prepare_selected_local_chat_request_with_graph(
+        Arc::clone(&fixture.state),
+        fixture.caller.clone(),
+        SCENE_ID,
+        &fixture.message_version_id,
+        NO_UNSUPPORTED_INPUTS,
+        LocalGenerationIntent::writing_for_test(),
+        Some(graph),
+    )
+    .unwrap_or_else(|error| panic!("Graph request: {error:#}"));
+    let (request, scene, expected_scope, _witness) = selected.into_parts();
+    let handoff = request.into_d_transport_handoff();
+    build_final_dispatch_request(&fixture.message_version_id, &handoff, scene, expected_scope)
+        .expect("final request")
+}
+
+fn graph_ordinals_of(request: &FinalDispatchRequest) -> Vec<usize> {
+    request
+        .inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, input)| matches!(input.target, InputTarget::GraphEvidence { .. }))
+        .map(|(ordinal, _)| ordinal)
+        .collect()
+}
+
+/// A coordinator with the Graph's candidates, whose probe injects `change` at
+/// `point`.
+fn graph_attempt_with_change(
+    fixture: &Fixture,
+    point: Nir1LocalAttemptProbe,
+    change: Change,
+) -> (Nir1LocalAttempt, Seen) {
+    let graph = graph_candidates(fixture);
+    let (attempt, seen) = attempt_with_change(fixture, point, change);
+    (attempt.with_graph_candidates(graph), seen)
+}
+
+/// A-19, DG-1: the Graph request is stored as it was prepared and reads back
+/// the same, and its digests bind the Graph (a request without one has the
+/// digests it had before).
+#[test]
+fn a3_a_graph_request_is_stored_whole_and_its_digests_bind_the_graph() {
+    let fixture = ready_fixture();
+    let control = final_request(&fixture, &fixture.message_version_id);
+    let graph = graph_candidates(&fixture);
+    let planned = graph_final_request(&fixture, &graph);
+
+    let ordinals = graph_ordinals_of(&planned);
+    assert!(!ordinals.is_empty(), "the Graph reached the request");
+    assert!(graph_ordinals_of(&control).is_empty());
+    for ordinal in &ordinals {
+        let index = planned
+            .qualifications
+            .iter()
+            .filter(|row| row.input_ordinal == *ordinal && row.kind == QualificationKind::Index)
+            .collect::<Vec<_>>();
+        assert_eq!(index.len(), 1);
+        assert!(matches!(index[0].body, QualificationBody::Present { .. }));
+    }
+    // The Graph is bound by the digests; the same request again is the same.
+    assert_ne!(planned.scope_digest, control.scope_digest);
+    assert_ne!(planned.material_digest, control.material_digest);
+    assert_ne!(planned.d1_digest, control.d1_digest);
+    let again = graph_final_request(&fixture, &graph);
+    assert_eq!(again.scope_digest, planned.scope_digest);
+    assert_eq!(again.material_digest, planned.material_digest);
+    assert_eq!(again.d1_digest, planned.d1_digest);
+    // A new generation of B changes the scope and material digests.
+    write_graph_seal(&fixture.state, GRAPH_GENERATION + 1, false).expect("seal again");
+    let next = grimodex_db::narrative_extraction::Nir1GraphCandidates::new(
+        graph.project_id().to_owned(),
+        graph.query_scene_id().to_owned(),
+        graph.seed_entity_id().to_owned(),
+        GRAPH_GENERATION + 1,
+        graph.scope_revision().map(str::to_owned),
+        graph.edges().to_vec(),
+    )
+    .expect("next candidates");
+    let rebuilt = graph_final_request(&fixture, &next);
+    assert_ne!(rebuilt.scope_digest, planned.scope_digest);
+    assert_ne!(rebuilt.material_digest, planned.material_digest);
+    write_graph_seal(&fixture.state, GRAPH_GENERATION, false).expect("seal back");
+
+    // The coordinator stores what it prepared.
+    let attempt_id = generation_storage::attempt_id_for_capture(&fixture.message_version_id)
+        .expect("attempt id");
+    let outcome = capture(&fixture)
+        .with_graph_candidates(graph)
+        .run()
+        .unwrap_or_else(|refusal| panic!("the coordinator refused: {refusal:?}"));
+    let recorder = Recorder::default();
+    recorder.send(outcome, "a3-graph-answer");
+    assert_eq!(recorder.sends(), 1);
+    let attempt = stored(&fixture, &attempt_id);
+    assert_eq!(attempt.inputs, planned.inputs);
+    assert_eq!(attempt.qualifications, planned.qualifications);
+    assert_eq!(
+        attempt.input_digest,
+        crate::nir1_generation::final_input_digest(&planned.inputs, &planned.qualifications)
+            .expect("input digest")
+    );
+    assert_eq!(attempt.binding.scope_digest, planned.scope_digest);
+    assert_eq!(attempt.binding.material_digest, planned.material_digest);
+}
+
+/// A-3 (DI-1a): an index generation changed after the preparation, after the
+/// create, and just before the claim. A request with Graph-derived inputs is
+/// stopped by the dispatch-time check in the first two; the claim re-reads the
+/// capture, the Scope binding and the restore epoch only, so the third is the
+/// same residual as a Revision change at that point (A-18).
+#[test]
+fn a3_an_index_generation_change_stops_a_graph_request_before_the_claim() {
+    for point in [
+        Nir1LocalAttemptProbe::AfterPrepare,
+        Nir1LocalAttemptProbe::AfterCreate,
+    ] {
+        let fixture = ready_fixture();
+        let (attempt, seen) = graph_attempt_with_change(&fixture, point, Change::IndexGeneration);
+        let result = attempt.run();
+        let recorder = Recorder::default();
+        recorder.observe(&result);
+        assert!(seen.borrow().contains(&point), "{point:?}: injected");
+        assert!(
+            !seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim),
+            "{point:?}: the claim is never reached"
+        );
+        let reason = abandoned_reason(&result).to_owned();
+        assert!(
+            reason.contains("NIR1_NATIVE_PREPARED_GRAPH_STALE"),
+            "{point:?}: unexpected reason {reason}"
+        );
+        assert_zero_send_settlement(&result);
+        let ids = attempt_ids(&fixture);
+        assert_eq!(ids.len(), 1, "{point:?}: the attempt row exists once");
+        assert_never_sent(&fixture, &ids[0]);
+        assert_eq!(recorder.sends(), 0, "{point:?}: nothing is sent");
+        assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+    }
+
+    // Just before the claim: the Index generation and a Revision change are
+    // alike (neither is re-read by the claim), so they behave alike.
+    let mut sends = Vec::new();
+    for change in [Change::IndexGeneration, Change::Revision] {
+        let fixture = ready_fixture();
+        let (attempt, seen) =
+            graph_attempt_with_change(&fixture, Nir1LocalAttemptProbe::BeforeClaim, change);
+        let result = attempt.run();
+        let recorder = Recorder::default();
+        recorder.observe(&result);
+        assert!(seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim));
+        assert!(recorder.sends() <= 1, "{change:?}: at most one send");
+        eprintln!(
+            "A-3 observation: BeforeClaim {change:?} -> {}",
+            observed_outcome(&fixture, &result)
+        );
+        sends.push(recorder.sends());
+    }
+    assert_eq!(sends[0], sends[1]);
+}
+
+/// A-3 (DI-1a): every change of the DI-1c table is found for a Graph request
+/// too, after the create; the Graph-derived inputs add the index generation.
+#[test]
+fn a3_every_change_after_the_create_abandons_a_graph_request() {
+    for change in GRAPH_CHANGES {
+        let fixture = ready_fixture();
+        let (attempt, seen) =
+            graph_attempt_with_change(&fixture, Nir1LocalAttemptProbe::AfterCreate, change);
+        let result = attempt.run();
+        let recorder = Recorder::default();
+        recorder.observe(&result);
+        assert!(
+            !seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim),
+            "{change:?}: the claim is never reached"
+        );
+        let reason = abandoned_reason(&result).to_owned();
+        let expected: &[&str] = match change {
+            Change::Source => &[
+                "NIR1_NATIVE_RAW_SOURCE_STALE",
+                "NIR1_NATIVE_PREPARED_RAW_SOURCE_BODY_STALE",
+            ],
+            // A product writer that changes a Scope or a Revision's material
+            // also dirties B, so the seal check can answer before the
+            // Revision's own check does: either reason is a stale request.
+            Change::Scope | Change::Revision | Change::Decision | Change::Freshness => &[
+                "NIR1_NATIVE_PREPARED_REVISION_STALE",
+                "NIR1_NATIVE_PREPARED_GRAPH_STALE",
+            ],
+            Change::Route => &["NIR1_PREPARED_ROUTE_CHANGED"],
+            Change::Revocation => &["D2A_EGRESS_DENIED", "NIR1_PREPARED_ROUTE_REVOKED"],
+            Change::IndexGeneration => &["NIR1_NATIVE_PREPARED_GRAPH_STALE"],
+        };
+        assert!(
+            expected.iter().any(|code| reason.contains(code)),
+            "{change:?}: unexpected reason {reason}"
+        );
+        assert_zero_send_settlement(&result);
+        let ids = attempt_ids(&fixture);
+        assert_eq!(ids.len(), 1, "{change:?}: the attempt row exists once");
+        assert_never_sent(&fixture, &ids[0]);
+        assert_eq!(recorder.sends(), 0, "{change:?}: nothing is sent");
+    }
+}
+
+/// A-3: B is dirtied by a product writer after the create: the seal is gone,
+/// so the Graph-derived inputs are no longer current.
+#[test]
+fn a3_a_dirty_index_after_the_create_abandons_a_graph_request() {
+    let fixture = ready_fixture();
+    let graph = graph_candidates(&fixture);
+    let target = Target::of(&fixture);
+    let attempt = capture(&fixture)
+        .with_graph_candidates(graph)
+        .with_probe(move |probe| {
+            if probe == Nir1LocalAttemptProbe::AfterCreate {
+                write_graph_seal(&target.state, GRAPH_GENERATION, true).expect("dirty");
+            }
+        });
+    let result = attempt.run();
+    let reason = abandoned_reason(&result).to_owned();
+    assert!(
+        reason.contains("NIR1_NATIVE_PREPARED_GRAPH_STALE"),
+        "{reason}"
+    );
+    assert_zero_send_settlement(&result);
+}
+
+/// A-20: the references of a Graph request fit the attempt's read budget, and
+/// a request over it is refused at the create, never cut.
+#[test]
+fn a20_graph_references_fit_the_read_budget_and_an_oversized_request_is_refused() {
+    let fixture = ready_fixture();
+    let graph = graph_candidates(&fixture);
+    let planned = graph_final_request(&fixture, &graph);
+    let references = planned.inputs.len() + planned.qualifications.len();
+    assert!(
+        references <= planned.budget.max_references,
+        "{references} references against {}",
+        planned.budget.max_references
+    );
+    assert!(references > 1);
+
+    // One reference fewer than the request has: the create refuses and writes
+    // no attempt (the store does not drop rows to fit).
+    let mut oversized = graph_final_request(&fixture, &graph);
+    oversized.budget = ReadBudget {
+        max_references: references - 1,
+        max_reference_bytes: planned.budget.max_reference_bytes,
+    };
+    let refusal = capture(&fixture)
+        .owner
+        .create(oversized)
+        .err()
+        .expect("an oversized request is refused");
+    eprintln!("A-20 observation: {refusal:?}");
+    assert_eq!(attempt_ids(&fixture).len(), 0, "no attempt row");
 }

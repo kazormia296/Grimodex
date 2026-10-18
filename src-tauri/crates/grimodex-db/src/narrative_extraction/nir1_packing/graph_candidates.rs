@@ -336,6 +336,134 @@ impl NativeNir1GraphOutcome {
     }
 }
 
+/// The form of a Graph-derived input's Index reference (DI-1a, DR-DI1A-3). It
+/// is versioned so that the history confirmation that lifts the Pending of a
+/// Graph-derived input may adopt this form or replace it with a later one.
+/// The history reader does not read it yet.
+pub const GRAPH_INDEX_REF_FORM: &str = "nir1-graph-index-ref@1";
+
+/// The form of a Graph-derived input's `evidence_ref`.
+pub const GRAPH_EVIDENCE_REF_FORM: &str = "nir1-graph-evidence-ref@1";
+
+/// The stable reference of one Graph group: a digest over the Revision and the
+/// edge IDs as separate JSON fields, so no delimiter in an ID can make two
+/// groups share a reference.
+pub fn graph_evidence_ref(revision_id: &str, edge_id: &str) -> Result<String> {
+    Ok(grimodex_core::canonical_json_digest(&serde_json::json!({
+        "form": GRAPH_EVIDENCE_REF_FORM,
+        "revisionId": revision_id,
+        "edgeId": edge_id,
+    }))?)
+}
+
+/// The Index reference of one Graph group: `(identity, version)`.
+///
+/// The identity names B's sealed Graph Index (project, index key and
+/// generation). The version binds the whole seal (source digest, dependency
+/// set digest, semantic epoch) and the edge's binding: the Revision, the edge
+/// and the nine tokens this snapshot derived for the Revision. Both are
+/// domain-separated canonical JSON digests. Nothing here comes from the
+/// worker: D-final derives it from the seal it read and the binding it
+/// requalified, and a return-time and dispatch-time check derive it again.
+pub fn graph_index_reference(
+    project_id: &str,
+    seal: &Nir1GraphSealRead,
+    binding: &NativeNir1AuthorityBinding,
+    edge_id: &str,
+) -> Result<(String, String)> {
+    let scope = binding.scope();
+    let identity = grimodex_core::canonical_json_digest(&serde_json::json!({
+        "form": GRAPH_INDEX_REF_FORM,
+        "part": "identity",
+        "projectId": project_id,
+        "indexKey": seal.index_key,
+        "generation": seal.generation,
+    }))?;
+    let version = grimodex_core::canonical_json_digest(&serde_json::json!({
+        "form": GRAPH_INDEX_REF_FORM,
+        "part": "version",
+        "projectId": project_id,
+        "seal": {
+            "indexKey": seal.index_key,
+            "generation": seal.generation,
+            "sourceDigest": seal.source_digest,
+            "dependencySetDigest": seal.dependency_set_digest,
+            "semanticEpochId": seal.semantic_epoch_id,
+        },
+        "edge": {
+            "revisionId": binding.revision_id(),
+            "edgeId": edge_id,
+        },
+        "tokens": {
+            "decisionId": binding.decision().id(),
+            "decisionToken": binding.decision_token(),
+            "freshnessToken": binding.freshness_token(),
+            "scopeAuthorityRevision": scope.scope_authority_revision(),
+            "querySceneSourceToken": scope.query_scene_source_token(),
+            "querySceneScopeToken": scope.query_scene_scope_token(),
+            "querySceneIncarnationId": scope.query_scene_incarnation_id(),
+            "revealStateToken": scope.reveal_state_token(),
+        },
+    }))?;
+    Ok((identity, version))
+}
+
+/// One adopted Graph-derived input of a prepared request: the group, its
+/// ordinal among the attempt's inputs and the Index reference recorded for it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeNir1GraphInput {
+    pub(super) input_ordinal: usize,
+    pub(super) revision_id: String,
+    pub(super) edge_id: String,
+    pub(super) group_id: String,
+    pub(super) index_identity: String,
+    pub(super) index_version: String,
+}
+
+impl NativeNir1GraphInput {
+    pub fn input_ordinal(&self) -> usize {
+        self.input_ordinal
+    }
+
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+
+    pub fn edge_id(&self) -> &str {
+        &self.edge_id
+    }
+
+    pub fn group_id(&self) -> &str {
+        &self.group_id
+    }
+
+    pub fn index_identity(&self) -> &str {
+        &self.index_identity
+    }
+
+    pub fn index_version(&self) -> &str {
+        &self.index_version
+    }
+}
+
+/// B's seal and the Graph-derived inputs a request adopted (none is held when
+/// the request adopted no Graph group). Identifiers, tokens and digests only.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NativeNir1GraphBinding {
+    pub(super) seal: Nir1GraphSealRead,
+    pub(super) inputs: Vec<NativeNir1GraphInput>,
+}
+
+impl NativeNir1GraphBinding {
+    pub fn seal(&self) -> &Nir1GraphSealRead {
+        &self.seal
+    }
+
+    pub fn inputs(&self) -> &[NativeNir1GraphInput] {
+        &self.inputs
+    }
+}
+
 pub(super) struct GraphPoolContext<'a> {
     pub candidates: &'a Nir1GraphCandidates,
     pub project_id: &'a str,
