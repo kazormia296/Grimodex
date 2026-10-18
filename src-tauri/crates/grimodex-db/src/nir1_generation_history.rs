@@ -18,12 +18,14 @@ fn valid_ref(value: &str) -> bool {
     !value.is_empty() && value.trim() == value
 }
 
-use crate::nir1_generation::history_context::HistoryContextGateReason;
-#[cfg(test)]
-use crate::nir1_generation::history_context::HistoryUnavailableReason;
+use crate::nir1_generation::history_context::{
+    DurableWorkspaceIdentity, HistoryAxes, HistoryAxis, HistoryContextGateReason,
+    HistoryContextSlot, HistoryRestoreEpoch, HistorySendClassification, HistoryTargetScope,
+    HistoryUnavailableReason, HISTORY_ELIGIBILITY_WINDOW_MS,
+};
 use crate::nir1_generation::{
-    check_input_completeness, CompletenessContext, InputReference, InputRole, InputTarget,
-    QualificationReference as StoredQualificationReference,
+    check_input_completeness, CompletenessContext, GenerationPurpose, InputReference, InputRole,
+    InputTarget, QualificationReference as StoredQualificationReference,
 };
 pub use crate::nir1_generation::{
     CompletenessReason, CompletenessViolation, InputUse, QualificationBody, QualificationKind,
@@ -140,80 +142,331 @@ impl QualificationSet {
     }
 }
 
-/// The exact Scope axes are supplied by the existing Scope authority. Empty
-/// or absent fields are unavailable; no fallback value is accepted here.
+/// The scope of a turn (K4/3 section 4, "scope"): the project, the DB's chat
+/// session and the target Scene with its incarnation. Candidates are limited
+/// to attempts of the same range.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopeAxes {
-    pub reading_order: Option<OpaqueRef>,
-    pub story_time: Option<OpaqueRef>,
-    pub viewpoint: Option<OpaqueRef>,
-    pub knowledge_holder: Option<OpaqueRef>,
-    pub audience: Option<OpaqueRef>,
-    pub timeline: Option<OpaqueRef>,
-    pub worldline: Option<OpaqueRef>,
-    pub narrative_layer: Option<OpaqueRef>,
-    pub scene: Option<OpaqueRef>,
+pub struct HistoryRange {
+    pub project_id: OpaqueRef,
+    /// The `chat_sessions` row id, not the caller's session.
+    pub chat_session_id: OpaqueRef,
+    pub scene_id: OpaqueRef,
+    pub scene_incarnation_id: OpaqueRef,
 }
 
-impl ScopeAxes {
+impl HistoryRange {
     fn is_complete(&self) -> bool {
         [
-            &self.reading_order,
-            &self.story_time,
-            &self.viewpoint,
-            &self.knowledge_holder,
-            &self.audience,
-            &self.timeline,
-            &self.worldline,
-            &self.narrative_layer,
-            &self.scene,
+            &self.project_id,
+            &self.chat_session_id,
+            &self.scene_id,
+            &self.scene_incarnation_id,
         ]
         .into_iter()
-        .all(|value| {
-            value
-                .as_deref()
-                .is_some_and(|value| !value.is_empty() && value.trim() == value)
-        })
+        .all(|value| valid_ref(value))
     }
 }
 
-/// The stored turn tuple and the current turn tuple use the same shape. The
-/// stored value is only a comparison anchor; current authority readers still
-/// have to approve every attempt/input in the snapshot.
+/// The nine axes of K4/3 section 4, in the order they are compared and
+/// reported.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HistoryAxisName {
+    ReadingOrder,
+    StoryTime,
+    Viewpoint,
+    KnowledgeHolder,
+    Audience,
+    Timeline,
+    Worldline,
+    NarrativeLayer,
+    Auto,
+}
+
+/// What a turn's context is, in the form both sides are compared in (K4/3
+/// section 4). The recorded side reads it from an attempt's binding and its
+/// `HistoryTurnContextV1`; the current side comes from the HS-1 builder in the
+/// D-final snapshot. It deliberately holds no caller, profile, workspace
+/// binding digest, route, material digest, scope digest or D1 digest: those
+/// are process-local or request-local and are not compared as the context.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct HistoryTuple {
-    pub envelope: Option<OpaqueRef>,
-    pub revision_refs: Vec<OpaqueRef>,
-    pub material: Option<OpaqueRef>,
-    pub scope: Option<OpaqueRef>,
-    pub d1: Option<OpaqueRef>,
-    pub scope_axes: ScopeAxes,
-    pub purpose: Option<OpaqueRef>,
-    pub input_use: Option<OpaqueRef>,
-    pub send_classification: Option<OpaqueRef>,
+pub struct HistoryComparisonContext {
+    pub range: HistoryRange,
+    pub purpose: GenerationPurpose,
+    /// `None` is "could not be determined" and never matches.
+    pub durable_identity: Option<DurableWorkspaceIdentity>,
+    pub send_classification: HistorySendClassification,
+    pub restore_epoch: HistoryRestoreEpoch,
+    pub target: HistoryTargetScope,
+    pub axes: HistoryAxes,
 }
 
-impl HistoryTuple {
-    fn is_complete(&self) -> bool {
-        let present = |value: &Option<OpaqueRef>| {
-            value
-                .as_deref()
-                .is_some_and(|value| !value.is_empty() && value.trim() == value)
+/// A stored attempt's context and the two times the validity window needs.
+/// The stored values are comparison anchors; they carry no authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecordedHistoryContext {
+    pub context: HistoryComparisonContext,
+    /// The attempt row's `created_at_ms`.
+    pub created_at_ms: i64,
+    /// The stored `eligibleUntilMs`.
+    pub eligible_until_ms: u64,
+}
+
+/// Why the current turn's context cannot be compared. The turn goes on
+/// without history (K4/3 section 8): every candidate is excluded.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CurrentContextUnavailable {
+    /// The builder recorded a closed reason that there is no context.
+    Turn(HistoryUnavailableReason),
+    /// An identity of the range is empty.
+    Range,
+    /// The durable workspace identity could not be determined.
+    DurableIdentity,
+    /// An axis of the current turn is unavailable.
+    Axis(HistoryAxisName),
+}
+
+/// The current turn's context as the D-final snapshot's builder produced it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    all(not(test), not(feature = "native-current-human-capture")),
+    expect(
+        dead_code,
+        reason = "only the HS-1 builder's hand-off constructs it; the run entry that receives it is DI-1b's"
+    )
+)]
+pub enum CurrentHistoryContext {
+    /// A context. It can still hold an unavailable axis or no durable
+    /// identity; [`CurrentHistoryContext::unavailable`] says so.
+    Known(Box<HistoryComparisonContext>),
+    /// The builder had no context.
+    Unavailable(HistoryUnavailableReason),
+}
+
+impl CurrentHistoryContext {
+    /// The context when every compared value of the current turn is present,
+    /// else the reason history cannot be used in this turn.
+    pub fn available(&self) -> Result<&HistoryComparisonContext, CurrentContextUnavailable> {
+        let context = match self {
+            Self::Unavailable(reason) => return Err(CurrentContextUnavailable::Turn(*reason)),
+            Self::Known(context) => context.as_ref(),
         };
-        !self.revision_refs.is_empty()
-            && self
-                .revision_refs
-                .iter()
-                .all(|value| !value.is_empty() && value.trim() == value)
-            && present(&self.envelope)
-            && present(&self.material)
-            && present(&self.scope)
-            && present(&self.d1)
-            && self.scope_axes.is_complete()
-            && present(&self.purpose)
-            && present(&self.input_use)
-            && present(&self.send_classification)
+        if !context.range.is_complete() {
+            return Err(CurrentContextUnavailable::Range);
+        }
+        if context.durable_identity.is_none() {
+            return Err(CurrentContextUnavailable::DurableIdentity);
+        }
+        match axis_availability(&context.axes)
+            .into_iter()
+            .find(|(_, present)| !present)
+        {
+            Some((name, _)) => Err(CurrentContextUnavailable::Axis(name)),
+            None => Ok(context),
+        }
     }
+}
+
+fn axis_availability(axes: &HistoryAxes) -> [(HistoryAxisName, bool); 9] {
+    fn present<T, R>(axis: &HistoryAxis<T, R>) -> bool {
+        matches!(axis, HistoryAxis::Present(_))
+    }
+    [
+        (HistoryAxisName::ReadingOrder, present(&axes.reading_order)),
+        (HistoryAxisName::StoryTime, present(&axes.story_time)),
+        (HistoryAxisName::Viewpoint, present(&axes.viewpoint)),
+        (
+            HistoryAxisName::KnowledgeHolder,
+            present(&axes.knowledge_holder),
+        ),
+        (HistoryAxisName::Audience, present(&axes.audience)),
+        (HistoryAxisName::Timeline, present(&axes.timeline)),
+        (HistoryAxisName::Worldline, present(&axes.worldline)),
+        (
+            HistoryAxisName::NarrativeLayer,
+            present(&axes.narrative_layer),
+        ),
+        (HistoryAxisName::Auto, present(&axes.auto)),
+    ]
+}
+
+/// Why a recorded context does not match the current turn's: one closed
+/// reason per compared item (no plaintext). K4/3 sections 4, 5 and 7.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ContextMismatch {
+    ProjectMismatch,
+    ChatSessionMismatch,
+    SceneMismatch,
+    SceneIncarnationMismatch,
+    /// Both axes are present and differ.
+    AxisChanged(HistoryAxisName),
+    /// An axis is unavailable on either side. Two unavailable axes never
+    /// match.
+    AxisUnavailable(HistoryAxisName),
+    ScopeBindingTokenChanged,
+    ScopeBindingVersionChanged,
+    PurposeMismatch,
+    SendClassificationMismatch,
+    /// The identities differ, or either is missing.
+    DurableIdentityMismatch,
+    RestoreEpochMismatch,
+    /// The clock is at or after the end of the validity window.
+    ValidityExpired,
+    /// The clock is before the attempt's creation time.
+    ClockBeforeCreation,
+    /// The stored times cannot form a window (negative, out of range).
+    ValidityWindowInvalid,
+}
+
+fn same_ref(current: &str, recorded: &str) -> bool {
+    valid_ref(current) && current == recorded
+}
+
+fn compare_axis<T: Eq, R>(
+    name: HistoryAxisName,
+    current: &HistoryAxis<T, R>,
+    recorded: &HistoryAxis<T, R>,
+) -> Result<(), ContextMismatch> {
+    match (current, recorded) {
+        (HistoryAxis::Present(current), HistoryAxis::Present(recorded)) => {
+            if current == recorded {
+                Ok(())
+            } else {
+                Err(ContextMismatch::AxisChanged(name))
+            }
+        }
+        _ => Err(ContextMismatch::AxisUnavailable(name)),
+    }
+}
+
+/// Compare a recorded context with the current turn's (K4/3 sections 4 and
+/// 7). Equality of opaque values only: tokens and digests are not parsed or
+/// ordered, the monotone values (Scope binding token and version, restore
+/// epoch) are never compared by size, and a value that is missing or
+/// unavailable on either side does not match. The first difference in a fixed
+/// order is the reason: range, the nine axes, the Scope binding, purpose, send
+/// classification, durable identity, restore epoch, validity. `now_ms` is the
+/// Native clock's value, supplied by the caller; this module reads no clock.
+pub fn compare_context(
+    current: &HistoryComparisonContext,
+    recorded: &RecordedHistoryContext,
+    now_ms: i64,
+) -> Result<(), ContextMismatch> {
+    let (current_range, recorded_range) = (&current.range, &recorded.context.range);
+    if !same_ref(&current_range.project_id, &recorded_range.project_id) {
+        return Err(ContextMismatch::ProjectMismatch);
+    }
+    if !same_ref(
+        &current_range.chat_session_id,
+        &recorded_range.chat_session_id,
+    ) {
+        return Err(ContextMismatch::ChatSessionMismatch);
+    }
+    if !same_ref(&current_range.scene_id, &recorded_range.scene_id) {
+        return Err(ContextMismatch::SceneMismatch);
+    }
+    if !same_ref(
+        &current_range.scene_incarnation_id,
+        &recorded_range.scene_incarnation_id,
+    ) {
+        return Err(ContextMismatch::SceneIncarnationMismatch);
+    }
+    let (current_axes, recorded_axes) = (&current.axes, &recorded.context.axes);
+    compare_axis(
+        HistoryAxisName::ReadingOrder,
+        &current_axes.reading_order,
+        &recorded_axes.reading_order,
+    )?;
+    compare_axis(
+        HistoryAxisName::StoryTime,
+        &current_axes.story_time,
+        &recorded_axes.story_time,
+    )?;
+    compare_axis(
+        HistoryAxisName::Viewpoint,
+        &current_axes.viewpoint,
+        &recorded_axes.viewpoint,
+    )?;
+    compare_axis(
+        HistoryAxisName::KnowledgeHolder,
+        &current_axes.knowledge_holder,
+        &recorded_axes.knowledge_holder,
+    )?;
+    compare_axis(
+        HistoryAxisName::Audience,
+        &current_axes.audience,
+        &recorded_axes.audience,
+    )?;
+    compare_axis(
+        HistoryAxisName::Timeline,
+        &current_axes.timeline,
+        &recorded_axes.timeline,
+    )?;
+    compare_axis(
+        HistoryAxisName::Worldline,
+        &current_axes.worldline,
+        &recorded_axes.worldline,
+    )?;
+    compare_axis(
+        HistoryAxisName::NarrativeLayer,
+        &current_axes.narrative_layer,
+        &recorded_axes.narrative_layer,
+    )?;
+    compare_axis(
+        HistoryAxisName::Auto,
+        &current_axes.auto,
+        &recorded_axes.auto,
+    )?;
+    // The axes are compared first so that each change has its own reason;
+    // the Scope binding's token and version then exclude the rest.
+    if current.target.binding_token_digest != recorded.context.target.binding_token_digest {
+        return Err(ContextMismatch::ScopeBindingTokenChanged);
+    }
+    if current.target.version != recorded.context.target.version {
+        return Err(ContextMismatch::ScopeBindingVersionChanged);
+    }
+    if current.purpose != recorded.context.purpose {
+        return Err(ContextMismatch::PurposeMismatch);
+    }
+    if current.send_classification != recorded.context.send_classification {
+        return Err(ContextMismatch::SendClassificationMismatch);
+    }
+    match (
+        &current.durable_identity,
+        &recorded.context.durable_identity,
+    ) {
+        (Some(current), Some(recorded)) if current == recorded => {}
+        _ => return Err(ContextMismatch::DurableIdentityMismatch),
+    }
+    if current.restore_epoch != recorded.context.restore_epoch {
+        return Err(ContextMismatch::RestoreEpochMismatch);
+    }
+    check_validity_window(recorded, now_ms)
+}
+
+/// K4/3 section 7: the window is `[created_at_ms, end)`, and `end` is the
+/// earlier of the stored `eligibleUntilMs` and `created_at_ms` plus the
+/// current window (so shortening the window also applies to old attempts). A
+/// clock before the creation time is outside the window.
+fn check_validity_window(
+    recorded: &RecordedHistoryContext,
+    now_ms: i64,
+) -> Result<(), ContextMismatch> {
+    let created = recorded.created_at_ms;
+    if created < 0 {
+        return Err(ContextMismatch::ValidityWindowInvalid);
+    }
+    let window_end = created
+        .checked_add(HISTORY_ELIGIBILITY_WINDOW_MS)
+        .ok_or(ContextMismatch::ValidityWindowInvalid)?;
+    let stored_end = i64::try_from(recorded.eligible_until_ms)
+        .map_err(|_| ContextMismatch::ValidityWindowInvalid)?;
+    if now_ms < created {
+        return Err(ContextMismatch::ClockBeforeCreation);
+    }
+    if now_ms >= window_end.min(stored_end) {
+        return Err(ContextMismatch::ValidityExpired);
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -355,7 +608,9 @@ impl HistoryInput {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttemptSnapshot {
     pub id: AttemptId,
-    pub tuple: Option<HistoryTuple>,
+    /// The context the attempt recorded, read from its binding. `None` for a
+    /// gated attempt (its slot is not a context of the known version).
+    pub recorded: Option<RecordedHistoryContext>,
     pub inputs: Vec<HistoryInput>,
     pub terminal: Option<TerminalReceipt>,
     pub project_id: Option<OpaqueRef>,
@@ -376,8 +631,8 @@ pub struct AttemptSnapshot {
 /// binding before any reference row is read (HS1-2).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HistoryContextState {
-    /// A `HistoryTurnContextV1` of the known version. HS-1 does not compare
-    /// it (the full tuple comparison is HC-1b).
+    /// A `HistoryTurnContextV1` of the known version. The traversal compares
+    /// it with the current turn's context (HC1-2).
     Known,
     /// Not usable as history; the candidate and its descendants are excluded.
     Gated(HistoryContextGateReason),
@@ -486,7 +741,7 @@ pub trait CurrentQualifier {
     fn qualify_attempt(
         &mut self,
         attempt: &AttemptSnapshot,
-        current: &HistoryTuple,
+        current: &HistoryComparisonContext,
     ) -> QualificationStatus;
 
     fn qualify_input(
@@ -494,7 +749,7 @@ pub trait CurrentQualifier {
         attempt: &AttemptSnapshot,
         ordinal: usize,
         input: &HistoryInput,
-        current: &HistoryTuple,
+        current: &HistoryComparisonContext,
     ) -> QualificationStatus;
 }
 
@@ -504,7 +759,12 @@ pub enum IncompleteReason {
     /// (null, unavailable with a closed reason, or an unknown version). Its
     /// reference rows were not read.
     HistoryContextUnusable(HistoryContextGateReason),
-    CurrentTupleUnavailable,
+    /// The attempt is of the known context version but no recorded context
+    /// could be read for it.
+    RecordedContextMissing,
+    /// The current turn's context cannot be compared (K4/3 section 8): every
+    /// candidate is excluded with this reason and the turn goes on.
+    CurrentContextUnavailable(CurrentContextUnavailable),
     MissingAttempt(AttemptId),
     MissingParent(AttemptId),
     MissingReceipt(AttemptId),
@@ -554,7 +814,6 @@ impl IncompleteReason {
 /// an apparently successful outcome.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoryRunError {
-    CurrentTupleUnavailable,
     AuthorityUnavailable,
     BudgetExhausted,
     Cancelled,
@@ -562,7 +821,8 @@ pub enum HistoryRunError {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum IneligibleReason {
-    TupleMismatch(AttemptId),
+    /// The recorded context differs from the current turn's in one item.
+    Context(ContextMismatch),
     AuthorityRejected,
 }
 
@@ -632,7 +892,9 @@ struct Traversal<
     C: FnMut() -> bool,
 > {
     snapshot: &'snapshot HistorySnapshot,
-    current: &'snapshot HistoryTuple,
+    current: &'snapshot HistoryComparisonContext,
+    /// The Native clock's value for this turn, supplied by the caller.
+    now_ms: i64,
     qualifier: &'qualifier mut Q,
     budget: &'qualifier mut B,
     cancelled: &'qualifier mut C,
@@ -667,13 +929,13 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
         self.budget.consume_node()?;
         // The gate precedes every other check: a slot that is not a known
         // context is excluded whatever its reference rows would say (they
-        // were not read) and whatever its tuple is.
+        // were not read) and whatever its recorded context is.
         let result = if let HistoryContextState::Gated(reason) = attempt.context {
             Err(Failure::incomplete(
                 IncompleteReason::HistoryContextUnusable(reason),
             ))
         } else {
-            match attempt.tuple.as_ref() {
+            match attempt.recorded.as_ref() {
                 _ if attempt.reference_format == ReferenceFormat::LegacyV1 => {
                     // Version 1 rows have no input-use or typed N/A. The attempt
                     // and every descendant that adopts it are excluded; the turn
@@ -681,25 +943,22 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
                     Err(Failure::incomplete(IncompleteReason::LegacyReferenceFormat))
                 }
                 None => Err(Failure::incomplete(
-                    IncompleteReason::CurrentTupleUnavailable,
+                    IncompleteReason::RecordedContextMissing,
                 )),
-                Some(tuple) if !tuple.is_complete() || !self.current.is_complete() => Err(
-                    Failure::incomplete(IncompleteReason::CurrentTupleUnavailable),
-                ),
-                Some(tuple) if tuple != self.current => Err(Failure::ineligible(
-                    IneligibleReason::TupleMismatch(id.into()),
-                )),
-                Some(_) => match self.qualifier.qualify_attempt(&attempt, self.current) {
-                    QualificationStatus::Current => Ok(()),
-                    QualificationStatus::Pending => {
-                        Err(Failure::incomplete(IncompleteReason::PendingAuthority))
-                    }
-                    QualificationStatus::Unavailable => {
-                        Err(Failure::incomplete(IncompleteReason::AuthorityUnavailable))
-                    }
-                    QualificationStatus::Ineligible => {
-                        Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
-                    }
+                Some(recorded) => match compare_context(self.current, recorded, self.now_ms) {
+                    Err(mismatch) => Err(Failure::ineligible(IneligibleReason::Context(mismatch))),
+                    Ok(()) => match self.qualifier.qualify_attempt(&attempt, self.current) {
+                        QualificationStatus::Current => Ok(()),
+                        QualificationStatus::Pending => {
+                            Err(Failure::incomplete(IncompleteReason::PendingAuthority))
+                        }
+                        QualificationStatus::Unavailable => {
+                            Err(Failure::incomplete(IncompleteReason::AuthorityUnavailable))
+                        }
+                        QualificationStatus::Ineligible => {
+                            Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
+                        }
+                    },
                 },
             }
         };
@@ -988,7 +1247,8 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
 pub fn reauthorize_history<Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMut() -> bool>(
     snapshot: &HistorySnapshot,
     candidates: &[Candidate],
-    current: &HistoryTuple,
+    current: &CurrentHistoryContext,
+    now_ms: i64,
     budget: &mut B,
     qualifier: &mut Q,
     cancelled: &mut C,
@@ -996,12 +1256,30 @@ pub fn reauthorize_history<Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMut
     if cancelled() {
         return Err(HistoryRunError::Cancelled);
     }
-    if !current.is_complete() {
-        return Err(HistoryRunError::CurrentTupleUnavailable);
-    }
+    let current = match current.available() {
+        Ok(context) => context,
+        Err(unavailable) => {
+            // K4/3 section 8: a current axis that is unavailable excludes all
+            // history and the turn goes on. Nothing was read, so no budget
+            // is spent and no candidate is visited.
+            return Ok(HistoryOutcome {
+                candidates: candidates
+                    .iter()
+                    .map(|candidate| CandidateResult {
+                        id: candidate.id.clone(),
+                        disposition: CandidateDisposition::Excluded(Failure::incomplete(
+                            IncompleteReason::CurrentContextUnavailable(unavailable),
+                        )),
+                        visited_attempts: Vec::new(),
+                    })
+                    .collect(),
+            });
+        }
+    };
     let mut traversal = Traversal {
         snapshot,
         current,
+        now_ms,
         qualifier,
         budget,
         cancelled,
@@ -1083,9 +1361,6 @@ mod generation_storage_adapter {
                 ValidationTerminationReason::Cancelled,
                 "generation history traversal cancelled by caller",
             ),
-            HistoryRunError::CurrentTupleUnavailable => {
-                anyhow!("NIR1_GENERATION_HISTORY_CURRENT_TUPLE_UNAVAILABLE")
-            }
             HistoryRunError::AuthorityUnavailable => {
                 anyhow!("NIR1_GENERATION_HISTORY_AUTHORITY_UNAVAILABLE")
             }
@@ -1333,16 +1608,46 @@ mod generation_storage_adapter {
         })
     }
 
+    /// The context the attempt recorded, as the comparison reads it (K4/3
+    /// section 4): the range and purpose from the binding, the durable
+    /// identity, and the turn context's epoch, Scope binding and axes. `None`
+    /// for a gated attempt, whose slot is not a context of the known version.
+    /// Process-local values of the binding (caller, workspace binding digest,
+    /// profile, route) are not carried.
+    pub(super) fn recorded_context(stored: &StoredAttempt) -> Option<RecordedHistoryContext> {
+        if stored.history_gate().is_some() {
+            return None;
+        }
+        let Some(HistoryContextSlot::Context(context)) = &stored.binding.history_turn_context
+        else {
+            return None;
+        };
+        Some(RecordedHistoryContext {
+            context: HistoryComparisonContext {
+                range: HistoryRange {
+                    project_id: stored.binding.project_id.clone(),
+                    chat_session_id: stored.binding.chat_session_id.clone(),
+                    scene_id: stored.binding.scene.scene_id.clone(),
+                    scene_incarnation_id: stored.binding.scene.scene_incarnation_id.clone(),
+                },
+                purpose: stored.binding.purpose.clone(),
+                durable_identity: stored.binding.durable_workspace_identity.clone(),
+                send_classification: context.send_classification,
+                restore_epoch: context.restore_epoch.clone(),
+                target: context.target.clone(),
+                axes: context.axes.clone(),
+            },
+            created_at_ms: stored.created_at_ms,
+            eligible_until_ms: context.eligible_until_ms.get(),
+        })
+    }
+
     fn attempt(
         reader: &mut GenerationHistorySnapshotReader<'_>,
         budget: &mut GenerationHistoryReadBudget,
         stored: &StoredAttempt,
         resolve_lineage: bool,
     ) -> Result<AttemptSnapshot> {
-        // AttemptBinding exposes coarse digests, purpose and the query Scene
-        // binding, not the confirmed full history tuple. Do not reconstruct
-        // Scope axes here.
-        //
         // A gated attempt's reference rows were never read: `stored.inputs`
         // is empty, so no input is mapped and no row, message or artifact is
         // read for it.
@@ -1359,7 +1664,7 @@ mod generation_storage_adapter {
             .collect::<Result<Vec<_>>>()?;
         Ok(AttemptSnapshot {
             id: stored.id.clone(),
-            tuple: None,
+            recorded: recorded_context(stored),
             inputs,
             terminal: terminal_receipt(stored.terminal.as_ref()),
             project_id: Some(stored.binding.project_id.clone()),
@@ -1377,7 +1682,7 @@ mod generation_storage_adapter {
     fn excluded_attempt(excluded: &ExcludedHistoryAttempt) -> AttemptSnapshot {
         AttemptSnapshot {
             id: excluded.id.clone(),
-            tuple: None,
+            recorded: None,
             inputs: Vec::new(),
             terminal: None,
             project_id: Some(excluded.project_id.clone()),
@@ -1570,12 +1875,17 @@ mod generation_storage_adapter {
     /// snapshot. Confirmed missing rows become absent records so the
     /// candidate is excluded by the pure fail-closed path. Budget, malformed
     /// data, invalidation, and SQLite errors abort the whole read.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "the participant control, the caller's whole-turn budget, the candidates, the current context and its clock, the qualifier and the cancel poll are independent inputs of one run"
+    )]
     pub(crate) fn reauthorize_from_generation_snapshot<Q: CurrentQualifier, C: FnMut() -> bool>(
         workspace: &ActiveWorkspaceSnapshot,
         control: ParticipantSqlControl,
         caller_budget: &mut GenerationHistoryReadBudget,
         candidates: &[Candidate],
-        current: &HistoryTuple,
+        current: &CurrentHistoryContext,
+        now_ms: i64,
         qualifier: &mut Q,
         cancelled: &mut C,
     ) -> Result<HistoryOutcome> {
@@ -1592,16 +1902,20 @@ mod generation_storage_adapter {
                 let mut expanded = BTreeSet::new();
                 cancellation.checkpoint()?;
                 ensure_snapshot_not_cancelled(cancellation, cancelled)?;
-                for candidate in candidates {
-                    materialize_candidate(
-                        reader,
-                        shared_budget,
-                        candidate,
-                        &mut loaded,
-                        &mut expanded,
-                        cancellation,
-                        cancelled,
-                    )?;
+                // A current context that cannot be compared excludes every
+                // candidate: no attempt row needs to be read for that.
+                if current.available().is_ok() {
+                    for candidate in candidates {
+                        materialize_candidate(
+                            reader,
+                            shared_budget,
+                            candidate,
+                            &mut loaded,
+                            &mut expanded,
+                            cancellation,
+                            cancelled,
+                        )?;
+                    }
                 }
                 let attempts = loaded
                     .into_iter()
@@ -1621,6 +1935,7 @@ mod generation_storage_adapter {
                     &snapshot,
                     candidates,
                     current,
+                    now_ms,
                     shared_budget,
                     qualifier,
                     &mut traversal_cancelled,
@@ -1664,7 +1979,7 @@ mod generation_storage_adapter {
             fn qualify_attempt(
                 &mut self,
                 _attempt: &AttemptSnapshot,
-                _current: &HistoryTuple,
+                _current: &HistoryComparisonContext,
             ) -> QualificationStatus {
                 QualificationStatus::Current
             }
@@ -1674,59 +1989,66 @@ mod generation_storage_adapter {
                 _attempt: &AttemptSnapshot,
                 _ordinal: usize,
                 _input: &HistoryInput,
-                _current: &HistoryTuple,
+                _current: &HistoryComparisonContext,
             ) -> QualificationStatus {
                 QualificationStatus::Current
             }
         }
 
-        fn incomplete_tuple() -> HistoryTuple {
-            HistoryTuple {
-                envelope: None,
-                revision_refs: Vec::new(),
-                material: None,
-                scope: None,
-                d1: None,
-                scope_axes: ScopeAxes {
-                    reading_order: None,
-                    story_time: None,
-                    viewpoint: None,
-                    knowledge_holder: None,
-                    audience: None,
-                    timeline: None,
-                    worldline: None,
-                    narrative_layer: None,
-                    scene: None,
+        /// The clock of the adapter tests: inside every stored attempt's
+        /// window (created at 1 ms, eligible for 30 days).
+        const NOW_MS: i64 = 1_000;
+
+        fn comparison_context(scene_incarnation_id: &str) -> HistoryComparisonContext {
+            let context = history_context_testing::sample_context();
+            HistoryComparisonContext {
+                range: HistoryRange {
+                    project_id: "generation-project".into(),
+                    chat_session_id: "generation-session".into(),
+                    scene_id: "generation-scene".into(),
+                    scene_incarnation_id: scene_incarnation_id.into(),
                 },
-                purpose: None,
-                input_use: None,
-                send_classification: None,
+                purpose: GenerationPurpose::Writing,
+                durable_identity: Some(history_context_testing::sample_identity()),
+                send_classification: context.send_classification,
+                restore_epoch: context.restore_epoch,
+                target: context.target,
+                axes: context.axes,
             }
         }
 
-        fn complete_tuple() -> HistoryTuple {
-            let value = |suffix: &str| Some(format!("{suffix}:v1"));
-            HistoryTuple {
-                envelope: value("envelope"),
-                revision_refs: vec!["revision:v1".into()],
-                material: value("material"),
-                scope: value("scope"),
-                d1: value("d1"),
-                scope_axes: ScopeAxes {
-                    reading_order: value("reading"),
-                    story_time: value("story"),
-                    viewpoint: value("viewpoint"),
-                    knowledge_holder: value("holder"),
-                    audience: value("audience"),
-                    timeline: value("timeline"),
-                    worldline: value("worldline"),
-                    narrative_layer: value("layer"),
-                    scene: value("scene"),
+        /// The current context that matches what `storage_attempt` records.
+        fn complete_current(snapshot: &ActiveWorkspaceSnapshot) -> CurrentHistoryContext {
+            let scene = snapshot
+                .db()
+                .db()
+                .with_read_transaction(|connection| {
+                    read_attempt_scene_binding_in_tx(
+                        connection,
+                        "generation-project",
+                        "generation-scene",
+                    )
+                })
+                .expect("generation Scene binding");
+            CurrentHistoryContext::Known(Box::new(comparison_context(&scene.scene_incarnation_id)))
+        }
+
+        /// A matching pair for a checker run that has no storage.
+        fn pure_pair() -> (RecordedHistoryContext, CurrentHistoryContext) {
+            let context = comparison_context("incarnation-pure");
+            (
+                RecordedHistoryContext {
+                    context: context.clone(),
+                    created_at_ms: 1,
+                    eligible_until_ms: 1_000_000,
                 },
-                purpose: value("writing"),
-                input_use: value("history"),
-                send_classification: value("local"),
-            }
+                CurrentHistoryContext::Known(Box::new(context)),
+            )
+        }
+
+        /// A current context history cannot be used with.
+        fn unavailable_current() -> CurrentHistoryContext {
+            CurrentHistoryContext::Unavailable(HistoryUnavailableReason::SceneScopeUnavailable)
         }
 
         fn budget() -> GenerationHistoryReadBudget {
@@ -1788,6 +2110,18 @@ mod generation_storage_adapter {
             inputs: Vec<InputReference>,
             qualifications: Vec<crate::nir1_generation::QualificationReference>,
         ) -> String {
+            storage_attempt_edit(snapshot, inputs, qualifications, 1, |_| {})
+        }
+
+        /// Like `storage_attempt_with`, for an attempt created at
+        /// `created_at_ms` whose binding `edit` changes before it is stored.
+        fn storage_attempt_edit(
+            snapshot: &ActiveWorkspaceSnapshot,
+            inputs: Vec<InputReference>,
+            qualifications: Vec<crate::nir1_generation::QualificationReference>,
+            created_at_ms: i64,
+            edit: impl FnOnce(&mut AttemptBinding),
+        ) -> String {
             let db = snapshot.db().db();
             db.with_conn(|connection| {
                 connection.execute(
@@ -1825,44 +2159,46 @@ mod generation_storage_adapter {
                 })
                 .expect("generation Scene binding");
             let digest = format!("sha256:{}", "0".repeat(64));
+            let mut binding = AttemptBinding {
+                binding_version: AttemptBindingVersion::V2,
+                project_id: "generation-project".into(),
+                chat_session_id: "generation-session".into(),
+                scene,
+                caller: AttemptCallerBinding {
+                    profile_id: "profile".into(),
+                    caller_id: "caller".into(),
+                    caller_epoch: 1,
+                    caller_session_id: "caller-session".into(),
+                },
+                workspace_binding_digest: digest.clone(),
+                route_revision: "route".into(),
+                purpose: GenerationPurpose::Writing,
+                scope_digest: digest.clone(),
+                material_digest: digest.clone(),
+                d1_digest: digest.clone(),
+                provider: "local".into(),
+                model: "test".into(),
+                api: "chat".into(),
+                endpoint_identity: digest.clone(),
+                // A known-version context: the history gate (HS1-2)
+                // reads reference rows only for such attempts.
+                history_turn_context: Some(
+                    crate::nir1_generation::history_context::HistoryContextSlot::Context(Box::new(
+                        history_context_testing::sample_context(),
+                    )),
+                ),
+                durable_workspace_identity: Some(history_context_testing::sample_identity()),
+            };
+            edit(&mut binding);
             create_attempt(
                 db,
                 NewAttempt {
-                    binding: AttemptBinding {
-                        binding_version: AttemptBindingVersion::V2,
-                        project_id: "generation-project".into(),
-                        chat_session_id: "generation-session".into(),
-                        scene,
-                        caller: AttemptCallerBinding {
-                            profile_id: "profile".into(),
-                            caller_id: "caller".into(),
-                            caller_epoch: 1,
-                            caller_session_id: "caller-session".into(),
-                        },
-                        workspace_binding_digest: digest.clone(),
-                        route_revision: "route".into(),
-                        purpose: GenerationPurpose::Writing,
-                        scope_digest: digest.clone(),
-                        material_digest: digest.clone(),
-                        d1_digest: digest.clone(),
-                        provider: "local".into(),
-                        model: "test".into(),
-                        api: "chat".into(),
-                        endpoint_identity: digest.clone(),
-                        // A known-version context: the history gate (HS1-2)
-                        // reads reference rows only for such attempts.
-                        history_turn_context: Some(
-                            crate::nir1_generation::history_context::HistoryContextSlot::Context(
-                                Box::new(history_context_testing::sample_context()),
-                            ),
-                        ),
-                        durable_workspace_identity: Some(history_context_testing::sample_identity()),
-                    },
+                    binding,
                     payload_digest: digest,
                     inputs,
                     qualifications,
-                    created_at_ms: 1,
-                    expires_at_ms: 2,
+                    created_at_ms,
+                    expires_at_ms: created_at_ms + 1,
                     budget: ReadBudget {
                         max_references: 16,
                         max_reference_bytes: 16_384,
@@ -1895,7 +2231,8 @@ mod generation_storage_adapter {
                 control,
                 &mut caller_budget,
                 &[],
-                &incomplete_tuple(),
+                &unavailable_current(),
+                NOW_MS,
                 &mut qualifier,
                 &mut cancelled,
             )
@@ -1922,7 +2259,8 @@ mod generation_storage_adapter {
                 control,
                 &mut caller_budget,
                 &[],
-                &incomplete_tuple(),
+                &unavailable_current(),
+                NOW_MS,
                 &mut qualifier,
                 &mut cancelled,
             )
@@ -1950,7 +2288,8 @@ mod generation_storage_adapter {
                 ParticipantSqlControl::default(),
                 &mut caller_budget,
                 &[candidate],
-                &incomplete_tuple(),
+                &unavailable_current(),
+                NOW_MS,
                 &mut qualifier,
                 &mut cancelled,
             )
@@ -1991,7 +2330,8 @@ mod generation_storage_adapter {
                 control,
                 &mut caller_budget,
                 &candidates,
-                &complete_tuple(),
+                &complete_current(&snapshot),
+                NOW_MS,
                 &mut qualifier,
                 &mut cancelled,
             )
@@ -2028,7 +2368,8 @@ mod generation_storage_adapter {
                 ParticipantSqlControl::default(),
                 &mut caller_budget,
                 &candidates,
-                &complete_tuple(),
+                &pure_pair().1,
+                NOW_MS,
                 &mut qualifier,
                 &mut cancelled,
             )
@@ -2138,7 +2479,8 @@ mod generation_storage_adapter {
 
         fn run_checker(attempt: AttemptSnapshot) -> CandidateDisposition {
             let mut attempt = attempt;
-            attempt.tuple = Some(complete_tuple());
+            let (recorded, current) = pure_pair();
+            attempt.recorded = Some(recorded);
             let id = attempt.id.clone();
             let history = HistorySnapshot::from_attempts([attempt]).expect("unique attempt");
             let candidate = Candidate {
@@ -2152,7 +2494,8 @@ mod generation_storage_adapter {
             reauthorize_history(
                 &history,
                 &[candidate],
-                &complete_tuple(),
+                &current,
+                NOW_MS,
                 &mut ledger,
                 &mut qualifier,
                 &mut cancelled,
@@ -2297,7 +2640,8 @@ mod generation_storage_adapter {
                 ParticipantSqlControl::default(),
                 &mut caller_budget,
                 &candidates,
-                &complete_tuple(),
+                &complete_current(&snapshot),
+                NOW_MS,
                 &mut qualifier,
                 &mut cancelled,
             )
@@ -2313,10 +2657,9 @@ mod generation_storage_adapter {
             }
             assert_eq!(
                 outcome.candidates.last().expect("control").disposition,
-                CandidateDisposition::Excluded(Failure::Incomplete(
-                    IncompleteReason::CurrentTupleUnavailable
-                )),
-                "a known context keeps the existing behaviour: HS-1 does not fill the tuple"
+                CandidateDisposition::Qualified,
+                "a known context is read into the recorded context, matches the current one \
+                 and is judged by the rest of the checker"
             );
         }
 
@@ -2397,7 +2740,8 @@ mod generation_storage_adapter {
                 ParticipantSqlControl::default(),
                 &mut caller_budget,
                 &candidates,
-                &complete_tuple(),
+                &complete_current(&snapshot),
+                NOW_MS,
                 &mut qualifier,
                 &mut cancelled,
             )
@@ -2420,11 +2764,9 @@ mod generation_storage_adapter {
                             HistoryContextGateReason::UnsupportedBindingVersion
                         )
                     )),
-                    CandidateDisposition::Excluded(Failure::Incomplete(
-                        IncompleteReason::CurrentTupleUnavailable
-                    )),
+                    CandidateDisposition::Qualified,
                 ],
-                "the control reaches the same point as before HC-1"
+                "the control is judged by the checker, not stopped by the other rows"
             );
         }
 
@@ -2598,6 +2940,223 @@ mod generation_storage_adapter {
                 ))
             );
         }
+
+        /// Run the adapter over `ids` as candidates (adopting input 0) and
+        /// return each candidate's disposition.
+        fn run_candidates(
+            snapshot: &ActiveWorkspaceSnapshot,
+            ids: &[String],
+            current: &CurrentHistoryContext,
+            now_ms: i64,
+        ) -> Vec<CandidateDisposition> {
+            let candidates: Vec<Candidate> = ids
+                .iter()
+                .map(|id| Candidate {
+                    id: format!("candidate-{id}"),
+                    root_attempt_id: id.clone(),
+                    adopted_input_ordinals: vec![0],
+                })
+                .collect();
+            let mut caller_budget = budget();
+            caller_budget.max_reference_count = 256;
+            caller_budget.max_reference_bytes = 262_144;
+            caller_budget.remaining_qualification_refs = 256;
+            caller_budget.remaining_nodes = 32;
+            caller_budget.remaining_edges = 32;
+            let mut qualifier = AllowCurrent;
+            let mut cancelled = || false;
+            reauthorize_from_generation_snapshot(
+                snapshot,
+                ParticipantSqlControl::default(),
+                &mut caller_budget,
+                &candidates,
+                current,
+                now_ms,
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .expect("history run")
+            .candidates
+            .into_iter()
+            .map(|result| result.disposition)
+            .collect()
+        }
+
+        /// K4/3 section 4: the caller's ID and session, the workspace binding
+        /// digest, the profile and its epoch, the route and the material,
+        /// scope and D1 digests are process-local or request-local. A
+        /// difference in them alone does not exclude an attempt, and they are
+        /// not part of the recorded context.
+        #[test]
+        fn context_does_not_compare_process_local_values() {
+            let (_state, snapshot) = workspace_snapshot();
+            let plain = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            let other_digest = format!("sha256:{}", "1".repeat(64));
+            let moved =
+                storage_attempt_edit(&snapshot, vec![raw_input()], raw_rows(), 1, |binding| {
+                    binding.caller.caller_id = "another-caller".into();
+                    binding.caller.caller_session_id = "another-caller-session".into();
+                    binding.caller.profile_id = "another-profile".into();
+                    binding.caller.caller_epoch = 99;
+                    binding.workspace_binding_digest = other_digest.clone();
+                    binding.route_revision = "another-route".into();
+                    binding.scope_digest = other_digest.clone();
+                    binding.material_digest = other_digest.clone();
+                    binding.d1_digest = other_digest.clone();
+                    binding.provider = "another-endpoint".into();
+                    binding.model = "another-model".into();
+                    binding.api = "another-api".into();
+                    binding.endpoint_identity = other_digest.clone();
+                });
+            let outcome = run_candidates(
+                &snapshot,
+                &[plain.clone(), moved.clone()],
+                &complete_current(&snapshot),
+                NOW_MS,
+            );
+            assert_eq!(
+                outcome,
+                vec![CandidateDisposition::Qualified; 2],
+                "a cold reopen or another route does not exclude history"
+            );
+            // The recorded context is the same for both.
+            let plain = read_snapshot_attempt(&snapshot, &plain);
+            let moved = read_snapshot_attempt(&snapshot, &moved);
+            assert_eq!(plain.recorded, moved.recorded);
+            let recorded = plain.recorded.expect("a known context is recorded");
+            assert_eq!(recorded.created_at_ms, 1);
+            assert_eq!(
+                recorded.eligible_until_ms,
+                (1 + HISTORY_ELIGIBILITY_WINDOW_MS) as u64,
+                "the storage writer derives eligibleUntilMs from the row"
+            );
+            assert_eq!(recorded.context.range.chat_session_id, "generation-session");
+            assert_eq!(
+                recorded.context.durable_identity,
+                Some(history_context_testing::sample_identity())
+            );
+        }
+
+        /// The stored `eligibleUntilMs` and `created_at_ms` come from the row;
+        /// the clock is the caller's (this module reads no clock).
+        #[test]
+        fn validity_window_applies_to_stored_attempts() {
+            let (_state, snapshot) = workspace_snapshot();
+            let created = 5_000;
+            let id =
+                storage_attempt_edit(&snapshot, vec![raw_input()], raw_rows(), created, |_| {});
+            let current = complete_current(&snapshot);
+            let run = |now_ms| {
+                run_candidates(&snapshot, std::slice::from_ref(&id), &current, now_ms).remove(0)
+            };
+            let reason = |mismatch| {
+                CandidateDisposition::Excluded(Failure::Ineligible(IneligibleReason::Context(
+                    mismatch,
+                )))
+            };
+            assert_eq!(
+                run(created - 1),
+                reason(ContextMismatch::ClockBeforeCreation)
+            );
+            assert_eq!(run(created), CandidateDisposition::Qualified);
+            assert_eq!(
+                run(created + HISTORY_ELIGIBILITY_WINDOW_MS - 1),
+                CandidateDisposition::Qualified
+            );
+            assert_eq!(
+                run(created + HISTORY_ELIGIBILITY_WINDOW_MS),
+                reason(ContextMismatch::ValidityExpired)
+            );
+        }
+
+        /// K4/3 section 6 and Mandatory defenses: an attempt without a usable
+        /// context (null, unavailable, binding-limit) is never promoted. It
+        /// has no recorded context to compare, whatever else its binding
+        /// holds, and nothing later repairs it.
+        #[test]
+        fn no_repair_context_less_attempts_are_never_promoted() {
+            let (_state, snapshot) = workspace_snapshot();
+            let cases = [
+                ("null", None),
+                ("binding-limit", Some(unavailable_slot("binding-limit"))),
+                (
+                    "d-final-incomplete",
+                    Some(unavailable_slot("d-final-incomplete")),
+                ),
+            ];
+            let mut ids = Vec::new();
+            for (_, slot) in &cases {
+                // The binding still carries a durable identity and every
+                // other value of a full attempt.
+                let id = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+                store_history_slot(&snapshot, &id, slot.clone());
+                ids.push(id);
+            }
+            for ((name, _), id) in cases.iter().zip(&ids) {
+                let read = read_snapshot_attempt(&snapshot, id);
+                assert!(read.recorded.is_none(), "{name}");
+                assert!(
+                    matches!(read.context, HistoryContextState::Gated(_)),
+                    "{name}"
+                );
+            }
+            let outcome = run_candidates(&snapshot, &ids, &complete_current(&snapshot), NOW_MS);
+            for ((name, _), disposition) in cases.iter().zip(outcome) {
+                assert!(
+                    matches!(
+                        disposition,
+                        CandidateDisposition::Excluded(Failure::Incomplete(
+                            IncompleteReason::HistoryContextUnusable(_)
+                        ))
+                    ),
+                    "{name}: {disposition:?}"
+                );
+            }
+        }
+
+        /// K4/3 section 8: an unavailable current axis excludes all history;
+        /// the traversal reads nothing and the turn goes on. The adapter does
+        /// not even read the candidates' rows.
+        #[test]
+        fn current_axis_unavailable_excludes_all_history_without_reading_rows() {
+            let (_state, snapshot) = workspace_snapshot();
+            let id = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            let mut context = comparison_context("unused");
+            context.axes.story_time = HistoryAxis::Unavailable(
+                crate::nir1_generation::history_context::HistoryStoryTimeUnavailable::KeyAmbiguous,
+            );
+            let current = CurrentHistoryContext::Known(Box::new(context));
+            let mut caller_budget = budget();
+            let nodes = caller_budget.remaining_nodes;
+            let attempts = caller_budget.max_attempts;
+            let mut qualifier = AllowCurrent;
+            let mut cancelled = || false;
+            let outcome = reauthorize_from_generation_snapshot(
+                &snapshot,
+                ParticipantSqlControl::default(),
+                &mut caller_budget,
+                &[Candidate {
+                    id: "candidate".into(),
+                    root_attempt_id: id,
+                    adopted_input_ordinals: vec![0],
+                }],
+                &current,
+                NOW_MS,
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .expect("the turn goes on");
+            assert_eq!(
+                outcome.candidates[0].disposition,
+                CandidateDisposition::Excluded(Failure::Incomplete(
+                    IncompleteReason::CurrentContextUnavailable(CurrentContextUnavailable::Axis(
+                        HistoryAxisName::StoryTime
+                    ))
+                ))
+            );
+            assert_eq!(caller_budget.remaining_nodes, nodes, "no node was visited");
+            assert_eq!(caller_budget.max_attempts, attempts);
+        }
     }
 }
 
@@ -2607,6 +3166,8 @@ pub(crate) use generation_storage_adapter::reauthorize_from_generation_snapshot;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::nir1_generation::history_context::testing as history_context_testing;
+    use crate::nir1_generation::history_context::{HistoryDigestDomain, HistoryInt};
     use crate::nir1_generation::scope_identity;
 
     struct AllowCurrent {
@@ -2617,7 +3178,7 @@ mod tests {
         fn qualify_attempt(
             &mut self,
             _attempt: &AttemptSnapshot,
-            _current: &HistoryTuple,
+            _current: &HistoryComparisonContext,
         ) -> QualificationStatus {
             QualificationStatus::Current
         }
@@ -2627,7 +3188,7 @@ mod tests {
             _attempt: &AttemptSnapshot,
             _ordinal: usize,
             input: &HistoryInput,
-            _current: &HistoryTuple,
+            _current: &HistoryComparisonContext,
         ) -> QualificationStatus {
             if self.pending_graph && matches!(&input.kind, HistoryInputKind::GraphEvidence { .. }) {
                 QualificationStatus::Pending
@@ -2669,29 +3230,39 @@ mod tests {
         }
     }
 
-    fn tuple() -> HistoryTuple {
-        let value = |suffix: &str| Some(format!("{suffix}:v1"));
-        HistoryTuple {
-            envelope: value("envelope"),
-            revision_refs: vec!["revision:v1".into()],
-            material: value("material"),
-            scope: value("scope"),
-            d1: value("d1"),
-            scope_axes: ScopeAxes {
-                reading_order: value("reading"),
-                story_time: value("story"),
-                viewpoint: value("viewpoint"),
-                knowledge_holder: value("holder"),
-                audience: value("audience"),
-                timeline: value("timeline"),
-                worldline: value("worldline"),
-                narrative_layer: value("layer"),
-                scene: value("scene"),
+    /// The clock of the pure tests: inside every attempt's window.
+    const NOW_MS: i64 = 1_000;
+    const CREATED_AT_MS: i64 = 100;
+
+    fn comparison_context() -> HistoryComparisonContext {
+        let context = history_context_testing::sample_context();
+        HistoryComparisonContext {
+            range: HistoryRange {
+                project_id: "project-q".into(),
+                chat_session_id: "session-q".into(),
+                scene_id: TARGET_SCENE.into(),
+                scene_incarnation_id: "incarnation-q".into(),
             },
-            purpose: value("writing"),
-            input_use: value("history"),
-            send_classification: value("local"),
+            purpose: GenerationPurpose::Writing,
+            durable_identity: Some(history_context_testing::sample_identity()),
+            send_classification: context.send_classification,
+            restore_epoch: context.restore_epoch,
+            target: context.target,
+            axes: context.axes,
         }
+    }
+
+    fn recorded_context() -> RecordedHistoryContext {
+        RecordedHistoryContext {
+            context: comparison_context(),
+            created_at_ms: CREATED_AT_MS,
+            eligible_until_ms: (CREATED_AT_MS + HISTORY_ELIGIBILITY_WINDOW_MS) as u64,
+        }
+    }
+
+    /// The current turn's context, equal to what every test attempt recorded.
+    fn current_context() -> CurrentHistoryContext {
+        CurrentHistoryContext::Known(Box::new(comparison_context()))
     }
 
     const REVISION_SCOPE_ROLES: [ScopeRole; 6] = [
@@ -2864,7 +3435,7 @@ mod tests {
     ) -> AttemptSnapshot {
         AttemptSnapshot {
             id: id.into(),
-            tuple: Some(tuple()),
+            recorded: Some(recorded_context()),
             inputs,
             terminal,
             project_id: None,
@@ -2905,7 +3476,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut ledger,
             &mut current,
             &mut cancelled,
@@ -2956,7 +3528,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &candidates,
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3007,7 +3580,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &candidates,
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3042,7 +3616,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3084,7 +3659,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3121,7 +3697,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3135,12 +3712,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_full_tuple_fails_closed_before_input_adoption() {
+    fn missing_recorded_context_fails_closed_before_input_adoption() {
         let mut root = attempt("root", vec![raw("source")], None);
-        root.tuple = None;
+        root.recorded = None;
         let graph = snapshot(vec![root]);
         let candidate = Candidate {
-            id: "missing-tuple".into(),
+            id: "missing-recorded-context".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
         };
@@ -3152,7 +3729,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3162,7 +3740,7 @@ mod tests {
         assert_eq!(
             outcome.candidates[0].disposition,
             CandidateDisposition::Excluded(Failure::Incomplete(
-                IncompleteReason::CurrentTupleUnavailable
+                IncompleteReason::RecordedContextMissing
             ))
         );
     }
@@ -3187,7 +3765,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3238,7 +3817,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3288,7 +3868,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3326,7 +3907,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3362,7 +3944,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3376,9 +3959,18 @@ mod tests {
     }
 
     #[test]
-    fn tuple_mismatch_and_unbound_legacy_message_fail_closed() {
+    fn context_mismatch_and_unbound_legacy_message_fail_closed() {
         let mut stale = attempt("stale", vec![raw("source")], None);
-        stale.tuple.as_mut().unwrap().scope = Some("old-scope:v0".into());
+        stale
+            .recorded
+            .as_mut()
+            .expect("recorded context")
+            .context
+            .target
+            .binding_token_digest = history_context_testing::digest(
+            HistoryDigestDomain::ScopeBindingToken,
+            "an older Scope binding token",
+        );
         let legacy = history_input(
             HistoryInputKind::HumanMessage {
                 version_id: "legacy".into(),
@@ -3407,7 +3999,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &candidates,
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3416,7 +4009,9 @@ mod tests {
 
         assert!(matches!(
             outcome.candidates[0].disposition,
-            CandidateDisposition::Excluded(Failure::Ineligible(IneligibleReason::TupleMismatch(_)))
+            CandidateDisposition::Excluded(Failure::Ineligible(IneligibleReason::Context(
+                ContextMismatch::ScopeBindingTokenChanged
+            )))
         ));
         assert!(matches!(
             outcome.candidates[1].disposition,
@@ -3450,7 +4045,8 @@ mod tests {
         let run = reauthorize_history(
             &graph,
             &candidates,
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3489,7 +4085,8 @@ mod tests {
         let run = reauthorize_history(
             &graph,
             &candidates,
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3560,7 +4157,8 @@ mod tests {
         reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -3673,7 +4271,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -4034,7 +4633,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &[candidate],
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut ledger,
             &mut current,
             &mut cancelled,
@@ -4089,7 +4689,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &candidates,
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -4155,7 +4756,8 @@ mod tests {
         let outcome = reauthorize_history(
             &graph,
             &candidates,
-            &tuple(),
+            &current_context(),
+            NOW_MS,
             &mut remaining,
             &mut current,
             &mut cancelled,
@@ -4176,11 +4778,11 @@ mod tests {
     }
 
     #[test]
-    fn history_gate_precedes_the_completeness_checker_and_the_tuple_check() {
+    fn history_gate_precedes_the_completeness_checker_and_the_context_check() {
         let reason = gate_reason(HistoryUnavailableReason::DFinalIncomplete);
         let gate =
             HistoryContextGateReason::Unavailable(HistoryUnavailableReason::DFinalIncomplete);
-        // A complete structure and a matching tuple: the slot still excludes.
+        // A complete structure and a matching context: the slot still excludes.
         assert_eq!(
             disposition_of_attempt(gated(attempt("root", vec![raw("source")], None), gate)),
             excluded(reason.clone())
@@ -4198,26 +4800,36 @@ mod tests {
             )),
             excluded(reason.clone())
         );
-        // A missing or different tuple does not change the gate's verdict.
-        let mut no_tuple = gated(attempt("root", vec![raw("source")], None), gate);
-        no_tuple.tuple = None;
-        assert_eq!(disposition_of_attempt(no_tuple), excluded(reason.clone()));
-        let mut other_tuple = gated(attempt("root", vec![raw("source")], None), gate);
-        other_tuple.tuple.as_mut().expect("tuple").material = Some("other:v1".into());
-        assert_eq!(disposition_of_attempt(other_tuple), excluded(reason));
-        // A known context keeps the existing behaviour: the completeness
-        // rule applies, and HS-1 does not fill the tuple.
+        // A missing or different recorded context does not change the gate's
+        // verdict: the gate precedes the context comparison.
+        let mut no_recorded = gated(attempt("root", vec![raw("source")], None), gate);
+        no_recorded.recorded = None;
+        assert_eq!(
+            disposition_of_attempt(no_recorded),
+            excluded(reason.clone())
+        );
+        let mut other_context = gated(attempt("root", vec![raw("source")], None), gate);
+        other_context
+            .recorded
+            .as_mut()
+            .expect("recorded context")
+            .context
+            .restore_epoch
+            .number = HistoryInt::new(999).expect("int");
+        assert_eq!(disposition_of_attempt(other_context), excluded(reason));
+        // A known context: the completeness rule applies.
         assert_eq!(
             disposition(without_kind(raw("source"), QualificationKind::Freshness)),
             excluded(IncompleteReason::MissingQualification(
                 QualificationKind::Freshness
             ))
         );
+        // A known context whose recorded context could not be read.
         let mut unfilled = attempt("root", vec![raw("source")], None);
-        unfilled.tuple = None;
+        unfilled.recorded = None;
         assert_eq!(
             disposition_of_attempt(unfilled),
-            excluded(IncompleteReason::CurrentTupleUnavailable)
+            excluded(IncompleteReason::RecordedContextMissing)
         );
     }
 
@@ -4260,5 +4872,680 @@ mod tests {
                 None
             )
         );
+    }
+
+    // ---- HC1-2: the comparison of the turn's context (K4/3 sections 4, 5, 7) ----
+
+    use crate::nir1_generation::history_context::{
+        HistoryAuto, HistoryEffectiveAxis, HistoryPhaseSetting, HistoryPrincipal,
+        HistoryReadingOrderUnavailable, HistoryScopeRef, HistoryScopeRefUnavailable,
+        HistoryStoryTimeUnavailable, HistoryViewpointUnavailable,
+    };
+
+    fn other(
+        domain: HistoryDigestDomain,
+    ) -> crate::nir1_generation::history_context::HistoryDigest {
+        history_context_testing::digest(domain, "another value")
+    }
+
+    fn compared(recorded: &RecordedHistoryContext) -> Result<(), ContextMismatch> {
+        compare_context(&comparison_context(), recorded, NOW_MS)
+    }
+
+    fn excluded_by(mismatch: ContextMismatch) -> CandidateDisposition {
+        CandidateDisposition::Excluded(Failure::Ineligible(IneligibleReason::Context(mismatch)))
+    }
+
+    #[test]
+    fn context_equal_when_every_compared_field_matches() {
+        assert_eq!(compared(&recorded_context()), Ok(()));
+        assert_eq!(
+            disposition(raw("source")),
+            CandidateDisposition::Qualified,
+            "the traversal accepts the same pair"
+        );
+    }
+
+    /// A recorded value that differs in exactly one compared item is
+    /// excluded for that item, never for another one.
+    #[test]
+    fn context_mismatch_is_reported_per_field() {
+        type Mutate = fn(&mut RecordedHistoryContext);
+        let cases: Vec<(&str, Mutate, ContextMismatch)> = vec![
+            (
+                "project",
+                |r| r.context.range.project_id = "another-project".into(),
+                ContextMismatch::ProjectMismatch,
+            ),
+            (
+                "chat session",
+                |r| r.context.range.chat_session_id = "another-session".into(),
+                ContextMismatch::ChatSessionMismatch,
+            ),
+            (
+                "scene",
+                |r| r.context.range.scene_id = "another-scene".into(),
+                ContextMismatch::SceneMismatch,
+            ),
+            (
+                "scene incarnation",
+                |r| r.context.range.scene_incarnation_id = "another-incarnation".into(),
+                ContextMismatch::SceneIncarnationMismatch,
+            ),
+            (
+                "readingOrder",
+                |r| {
+                    if let HistoryAxis::Present(reading) = &mut r.context.axes.reading_order {
+                        reading.rank = HistoryInt::new(reading.rank.get() + 1).expect("int");
+                    }
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::ReadingOrder),
+            ),
+            (
+                "storyTime",
+                |r| {
+                    if let HistoryAxis::Present(story) = &mut r.context.axes.story_time {
+                        story.raw_key_digest = other(HistoryDigestDomain::StoryRawKey);
+                    }
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::StoryTime),
+            ),
+            (
+                "viewpoint",
+                |r| {
+                    r.context.axes.viewpoint = HistoryAxis::Present(
+                        crate::nir1_generation::history_context::HistoryViewpoint {
+                            pov_digest: other(HistoryDigestDomain::PovCharacter),
+                        },
+                    )
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::Viewpoint),
+            ),
+            (
+                "knowledgeHolder",
+                |r| {
+                    r.context.axes.knowledge_holder = HistoryAxis::Present(HistoryPrincipal::Reader)
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::KnowledgeHolder),
+            ),
+            (
+                "audience",
+                |r| {
+                    r.context.axes.audience = HistoryAxis::Present(HistoryPrincipal::Character(
+                        other(HistoryDigestDomain::PrincipalCharacter),
+                    ))
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::Audience),
+            ),
+            (
+                "timeline",
+                |r| {
+                    r.context.axes.timeline = HistoryAxis::Present(HistoryScopeRef {
+                        ref_digest: other(HistoryDigestDomain::TimelineRef),
+                    })
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::Timeline),
+            ),
+            (
+                "worldline",
+                |r| {
+                    r.context.axes.worldline = HistoryAxis::Present(HistoryScopeRef {
+                        ref_digest: other(HistoryDigestDomain::WorldlineRef),
+                    })
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::Worldline),
+            ),
+            (
+                "narrativeLayer",
+                |r| {
+                    r.context.axes.narrative_layer = HistoryAxis::Present(HistoryScopeRef {
+                        ref_digest: other(HistoryDigestDomain::NarrativeLayerRef),
+                    })
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::NarrativeLayer),
+            ),
+            (
+                "auto",
+                |r| {
+                    r.context.axes.auto = HistoryAxis::Present(HistoryAuto {
+                        setting: HistoryPhaseSetting::Reading,
+                        axis: HistoryEffectiveAxis::Reading,
+                        fallback: None,
+                    })
+                },
+                ContextMismatch::AxisChanged(HistoryAxisName::Auto),
+            ),
+            (
+                "Scope binding token",
+                |r| {
+                    r.context.target.binding_token_digest =
+                        other(HistoryDigestDomain::ScopeBindingToken)
+                },
+                ContextMismatch::ScopeBindingTokenChanged,
+            ),
+            (
+                "Scope binding version",
+                |r| {
+                    r.context.target.version =
+                        HistoryInt::new(r.context.target.version.get() + 1).expect("int")
+                },
+                ContextMismatch::ScopeBindingVersionChanged,
+            ),
+            (
+                "purpose",
+                |r| r.context.purpose = GenerationPurpose::Review,
+                ContextMismatch::PurposeMismatch,
+            ),
+            (
+                "durable workspace id",
+                |r| {
+                    r.context.durable_identity = Some(
+                        DurableWorkspaceIdentity::from_parts(
+                            "another-workspace",
+                            "/canonical/workspace/root",
+                        )
+                        .expect("identity"),
+                    )
+                },
+                ContextMismatch::DurableIdentityMismatch,
+            ),
+            (
+                "durable canonical locator",
+                |r| {
+                    r.context.durable_identity = Some(
+                        DurableWorkspaceIdentity::from_parts("workspace-id", "/another/root")
+                            .expect("identity"),
+                    )
+                },
+                ContextMismatch::DurableIdentityMismatch,
+            ),
+            (
+                "restore epoch id",
+                |r| r.context.restore_epoch.id_digest = other(HistoryDigestDomain::RestoreEpochId),
+                ContextMismatch::RestoreEpochMismatch,
+            ),
+            (
+                "restore epoch number",
+                |r| {
+                    r.context.restore_epoch.number =
+                        HistoryInt::new(r.context.restore_epoch.number.get() + 1).expect("int")
+                },
+                ContextMismatch::RestoreEpochMismatch,
+            ),
+        ];
+        for (name, mutate, expected) in cases {
+            let mut recorded = recorded_context();
+            mutate(&mut recorded);
+            assert_eq!(compared(&recorded), Err(expected), "{name}");
+            let mut stale = attempt("root", vec![raw("source")], None);
+            stale.recorded = Some(recorded);
+            assert_eq!(
+                disposition_of_attempt(stale),
+                excluded_by(expected),
+                "{name} excludes the candidate"
+            );
+        }
+        // Equal send classification is the only value; the comparison still
+        // names the item (the enum has one case today).
+        let mut recorded = recorded_context();
+        recorded.context.send_classification = HistorySendClassification::LocalOnly;
+        assert_eq!(compared(&recorded), Ok(()));
+    }
+
+    fn set_axis_unavailable(context: &mut HistoryComparisonContext, name: HistoryAxisName) {
+        let axes = &mut context.axes;
+        match name {
+            HistoryAxisName::ReadingOrder => {
+                axes.reading_order = HistoryAxis::Unavailable(
+                    HistoryReadingOrderUnavailable::SceneNotInAuthorityMapping,
+                )
+            }
+            HistoryAxisName::StoryTime => {
+                axes.story_time =
+                    HistoryAxis::Unavailable(HistoryStoryTimeUnavailable::KeyNotProvided)
+            }
+            HistoryAxisName::Viewpoint => {
+                axes.viewpoint = HistoryAxis::Unavailable(HistoryViewpointUnavailable::NotProvided)
+            }
+            HistoryAxisName::KnowledgeHolder => {
+                axes.knowledge_holder = HistoryAxis::Unavailable(
+                    crate::nir1_generation::history_context::HistoryPrincipalUnavailable::BindingNotExplicit,
+                )
+            }
+            HistoryAxisName::Audience => {
+                axes.audience = HistoryAxis::Unavailable(
+                    crate::nir1_generation::history_context::HistoryPrincipalUnavailable::BindingNotExplicit,
+                )
+            }
+            HistoryAxisName::Timeline => {
+                axes.timeline = HistoryAxis::Unavailable(HistoryScopeRefUnavailable::Unresolved)
+            }
+            HistoryAxisName::Worldline => {
+                axes.worldline = HistoryAxis::Unavailable(HistoryScopeRefUnavailable::Any)
+            }
+            HistoryAxisName::NarrativeLayer => {
+                axes.narrative_layer =
+                    HistoryAxis::Unavailable(HistoryScopeRefUnavailable::BindingNotExplicit)
+            }
+            HistoryAxisName::Auto => {
+                axes.auto = HistoryAxis::Unavailable(
+                    crate::nir1_generation::history_context::HistoryAutoUnavailable::SceneNotInAuthorityMapping,
+                )
+            }
+        }
+    }
+
+    const ALL_AXES: [HistoryAxisName; 9] = [
+        HistoryAxisName::ReadingOrder,
+        HistoryAxisName::StoryTime,
+        HistoryAxisName::Viewpoint,
+        HistoryAxisName::KnowledgeHolder,
+        HistoryAxisName::Audience,
+        HistoryAxisName::Timeline,
+        HistoryAxisName::Worldline,
+        HistoryAxisName::NarrativeLayer,
+        HistoryAxisName::Auto,
+    ];
+
+    #[test]
+    fn context_unavailable_on_both_sides_is_not_a_match() {
+        for name in ALL_AXES {
+            // Unavailable on both sides.
+            let mut current = comparison_context();
+            set_axis_unavailable(&mut current, name);
+            let mut recorded = recorded_context();
+            set_axis_unavailable(&mut recorded.context, name);
+            assert_eq!(
+                compare_context(&current, &recorded, NOW_MS),
+                Err(ContextMismatch::AxisUnavailable(name)),
+                "{name:?} on both sides"
+            );
+            // Unavailable only on the recorded side, or only on the current.
+            let mut only_recorded = recorded_context();
+            set_axis_unavailable(&mut only_recorded.context, name);
+            assert_eq!(
+                compared(&only_recorded),
+                Err(ContextMismatch::AxisUnavailable(name)),
+                "{name:?} recorded"
+            );
+            assert_eq!(
+                compare_context(&current, &recorded_context(), NOW_MS),
+                Err(ContextMismatch::AxisUnavailable(name)),
+                "{name:?} current"
+            );
+        }
+        // Neither identity is present.
+        let mut current = comparison_context();
+        current.durable_identity = None;
+        let mut recorded = recorded_context();
+        recorded.context.durable_identity = None;
+        assert_eq!(
+            compare_context(&current, &recorded, NOW_MS),
+            Err(ContextMismatch::DurableIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn context_missing_or_unknown_values_never_match() {
+        // A recorded identity that could not be determined.
+        let mut recorded = recorded_context();
+        recorded.context.durable_identity = None;
+        assert_eq!(
+            compared(&recorded),
+            Err(ContextMismatch::DurableIdentityMismatch)
+        );
+        // An empty identity of the range never equals an empty one.
+        for (name, mismatch, set) in [
+            (
+                "project",
+                ContextMismatch::ProjectMismatch,
+                (|c: &mut HistoryComparisonContext| c.range.project_id = String::new())
+                    as fn(&mut HistoryComparisonContext),
+            ),
+            ("session", ContextMismatch::ChatSessionMismatch, |c| {
+                c.range.chat_session_id = String::new()
+            }),
+            ("scene", ContextMismatch::SceneMismatch, |c| {
+                c.range.scene_id = String::new()
+            }),
+            (
+                "incarnation",
+                ContextMismatch::SceneIncarnationMismatch,
+                |c| c.range.scene_incarnation_id = String::new(),
+            ),
+        ] {
+            let mut current = comparison_context();
+            set(&mut current);
+            let mut recorded = recorded_context();
+            set(&mut recorded.context);
+            assert_eq!(
+                compare_context(&current, &recorded, NOW_MS),
+                Err(mismatch),
+                "{name}"
+            );
+        }
+    }
+
+    /// K4/3 section 8: an unavailable current axis excludes all history and
+    /// the turn goes on. Nothing is read or charged and no authority reader
+    /// is asked.
+    #[test]
+    fn current_axis_unavailable_excludes_all_history_and_the_turn_continues() {
+        struct CountingQualifier(usize);
+        impl CurrentQualifier for CountingQualifier {
+            fn qualify_attempt(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                self.0 += 1;
+                QualificationStatus::Current
+            }
+            fn qualify_input(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _ordinal: usize,
+                _input: &HistoryInput,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                self.0 += 1;
+                QualificationStatus::Current
+            }
+        }
+
+        let mut currents: Vec<(String, CurrentHistoryContext, CurrentContextUnavailable)> =
+            ALL_AXES
+                .iter()
+                .map(|&name| {
+                    let mut context = comparison_context();
+                    set_axis_unavailable(&mut context, name);
+                    (
+                        format!("{name:?}"),
+                        CurrentHistoryContext::Known(Box::new(context)),
+                        CurrentContextUnavailable::Axis(name),
+                    )
+                })
+                .collect();
+        let mut no_identity = comparison_context();
+        no_identity.durable_identity = None;
+        currents.push((
+            "durable identity".into(),
+            CurrentHistoryContext::Known(Box::new(no_identity)),
+            CurrentContextUnavailable::DurableIdentity,
+        ));
+        let mut no_range = comparison_context();
+        no_range.range.scene_incarnation_id = String::new();
+        currents.push((
+            "range".into(),
+            CurrentHistoryContext::Known(Box::new(no_range)),
+            CurrentContextUnavailable::Range,
+        ));
+        currents.push((
+            "the builder's reason".into(),
+            CurrentHistoryContext::Unavailable(HistoryUnavailableReason::SceneScopeUnavailable),
+            CurrentContextUnavailable::Turn(HistoryUnavailableReason::SceneScopeUnavailable),
+        ));
+        let graph = snapshot(vec![
+            attempt("a", vec![raw("source")], None),
+            attempt("b", vec![raw("source")], None),
+        ]);
+        let candidates = [
+            Candidate {
+                id: "a".into(),
+                root_attempt_id: "a".into(),
+                adopted_input_ordinals: vec![0],
+            },
+            Candidate {
+                id: "b".into(),
+                root_attempt_id: "b".into(),
+                adopted_input_ordinals: vec![0],
+            },
+        ];
+        for (name, current, unavailable) in currents {
+            let mut qualifier = CountingQualifier(0);
+            let mut ledger = SharedLedger {
+                nodes: 4,
+                edges: 4,
+                qualification_refs: 64,
+            };
+            let mut cancelled = || false;
+            let outcome = reauthorize_history(
+                &graph,
+                &candidates,
+                &current,
+                NOW_MS,
+                &mut ledger,
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .unwrap_or_else(|error| panic!("{name}: the turn must continue: {error:?}"));
+            assert_eq!(outcome.candidates.len(), 2, "{name}");
+            for result in &outcome.candidates {
+                assert_eq!(
+                    result.disposition,
+                    CandidateDisposition::Excluded(Failure::Incomplete(
+                        IncompleteReason::CurrentContextUnavailable(unavailable)
+                    )),
+                    "{name}"
+                );
+                assert!(result.visited_attempts.is_empty(), "{name}");
+            }
+            assert_eq!(qualifier.0, 0, "{name}: no authority reader was asked");
+            assert_eq!(
+                (ledger.nodes, ledger.edges, ledger.qualification_refs),
+                (4, 4, 64),
+                "{name}: nothing was charged"
+            );
+        }
+    }
+
+    /// Cancellation still wins over an unavailable current context.
+    #[test]
+    fn cancellation_is_checked_before_the_current_context() {
+        let graph = snapshot(Vec::new());
+        let mut qualifier = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut ledger = budget();
+        let mut cancelled = || true;
+        assert_eq!(
+            reauthorize_history(
+                &graph,
+                &[],
+                &CurrentHistoryContext::Unavailable(
+                    HistoryUnavailableReason::SceneScopeUnavailable
+                ),
+                NOW_MS,
+                &mut ledger,
+                &mut qualifier,
+                &mut cancelled,
+            ),
+            Err(HistoryRunError::Cancelled)
+        );
+    }
+
+    fn recorded_at(created_at_ms: i64, eligible_until_ms: u64) -> RecordedHistoryContext {
+        RecordedHistoryContext {
+            created_at_ms,
+            eligible_until_ms,
+            ..recorded_context()
+        }
+    }
+
+    #[test]
+    fn validity_window_boundaries_and_clock_rollback() {
+        let created = 1_000_000;
+        let window = HISTORY_ELIGIBILITY_WINDOW_MS;
+        let at = |recorded: &RecordedHistoryContext, now_ms| {
+            compare_context(&comparison_context(), recorded, now_ms)
+        };
+        // The default window: [created, created + 30 days).
+        let normal = recorded_at(created, (created + window) as u64);
+        assert_eq!(
+            at(&normal, created - 1),
+            Err(ContextMismatch::ClockBeforeCreation)
+        );
+        assert_eq!(at(&normal, 0), Err(ContextMismatch::ClockBeforeCreation));
+        assert_eq!(at(&normal, created), Ok(()));
+        assert_eq!(at(&normal, created + window - 1), Ok(()));
+        assert_eq!(
+            at(&normal, created + window),
+            Err(ContextMismatch::ValidityExpired)
+        );
+        assert_eq!(at(&normal, i64::MAX), Err(ContextMismatch::ValidityExpired));
+        // A stored `eligibleUntilMs` earlier than the window wins.
+        let early = recorded_at(created, (created + 5_000) as u64);
+        assert_eq!(at(&early, created + 4_999), Ok(()));
+        assert_eq!(
+            at(&early, created + 5_000),
+            Err(ContextMismatch::ValidityExpired)
+        );
+        // One later than the current window is cut at `created + window`
+        // (a shorter window also applies to old attempts).
+        let late = recorded_at(created, (created + window + 7_000) as u64);
+        assert_eq!(at(&late, created + window - 1), Ok(()));
+        assert_eq!(
+            at(&late, created + window),
+            Err(ContextMismatch::ValidityExpired)
+        );
+        // The builder's placeholder (0) is never valid, and neither are
+        // times that cannot form a window.
+        assert_eq!(
+            at(&recorded_at(created, 0), created),
+            Err(ContextMismatch::ValidityExpired)
+        );
+        assert_eq!(
+            at(&recorded_at(-1, 10), 0),
+            Err(ContextMismatch::ValidityWindowInvalid)
+        );
+        assert_eq!(
+            at(&recorded_at(i64::MAX - 10, u64::MAX), i64::MAX),
+            Err(ContextMismatch::ValidityWindowInvalid)
+        );
+        assert_eq!(
+            at(&recorded_at(created, u64::MAX), created),
+            Err(ContextMismatch::ValidityWindowInvalid)
+        );
+        // The comparison runs after the rest: a changed epoch is reported
+        // before the window.
+        let mut stale = recorded_at(created, 0);
+        stale.context.restore_epoch.number =
+            HistoryInt::new(stale.context.restore_epoch.number.get() + 1).expect("int");
+        assert_eq!(
+            at(&stale, created),
+            Err(ContextMismatch::RestoreEpochMismatch)
+        );
+        // The traversal reports the same.
+        let mut expired = attempt("root", vec![raw("source")], None);
+        expired.recorded = Some(recorded_at(CREATED_AT_MS, (CREATED_AT_MS + 10) as u64));
+        assert_eq!(
+            disposition_of_attempt(expired),
+            excluded_by(ContextMismatch::ValidityExpired)
+        );
+    }
+
+    #[test]
+    fn epoch_only_difference_excludes_every_candidate() {
+        let mut by_number = attempt("by-number", vec![raw("source")], None);
+        let mut by_id = attempt("by-id", vec![raw("source")], None);
+        let same = attempt("same", vec![raw("source")], None);
+        let number = by_number.recorded.as_mut().expect("recorded");
+        number.context.restore_epoch.number =
+            HistoryInt::new(number.context.restore_epoch.number.get() + 1).expect("int");
+        by_id
+            .recorded
+            .as_mut()
+            .expect("recorded")
+            .context
+            .restore_epoch
+            .id_digest = other(HistoryDigestDomain::RestoreEpochId);
+        let graph = snapshot(vec![by_number, by_id, same]);
+        let candidates = ["by-number", "by-id", "same"].map(|id| Candidate {
+            id: id.into(),
+            root_attempt_id: id.into(),
+            adopted_input_ordinals: vec![0],
+        });
+        let mut qualifier = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut ledger = budget();
+        let mut cancelled = || false;
+        let outcome = reauthorize_history(
+            &graph,
+            &candidates,
+            &current_context(),
+            NOW_MS,
+            &mut ledger,
+            &mut qualifier,
+            &mut cancelled,
+        )
+        .expect("history run");
+        let dispositions: Vec<_> = outcome
+            .candidates
+            .iter()
+            .map(|result| result.disposition.clone())
+            .collect();
+        assert_eq!(
+            dispositions,
+            vec![
+                excluded_by(ContextMismatch::RestoreEpochMismatch),
+                excluded_by(ContextMismatch::RestoreEpochMismatch),
+                CandidateDisposition::Qualified,
+            ]
+        );
+    }
+
+    /// K4/3 section 7: a cold reopen keeps the identity; a copy or a move of
+    /// the folder does not; moving it back restores the same identity (a
+    /// non-monotone value is compared with the recorded one).
+    #[test]
+    fn durable_identity_cold_reopen_matches_and_copy_or_move_does_not() {
+        let base = std::env::temp_dir().join(format!("grimodex-hc12-{}", uuid::Uuid::new_v4()));
+        let original = base.join("novel");
+        std::fs::create_dir_all(&original).expect("workspace folder");
+        let identity = |root: &std::path::Path| {
+            DurableWorkspaceIdentity::from_workspace_root("workspace-id", root)
+        };
+        let compare_with = |current: Option<DurableWorkspaceIdentity>,
+                            recorded: Option<DurableWorkspaceIdentity>| {
+            let mut current_context = comparison_context();
+            current_context.durable_identity = current;
+            let mut recorded_context = recorded_context();
+            recorded_context.context.durable_identity = recorded;
+            compare_context(&current_context, &recorded_context, NOW_MS)
+        };
+
+        let recorded = identity(&original);
+        assert!(recorded.is_some());
+        // Cold reopen: the same folder, a new process.
+        assert_eq!(compare_with(identity(&original), recorded.clone()), Ok(()));
+        // A copy of the folder is another locator.
+        let copied = base.join("novel-copy");
+        std::fs::create_dir_all(&copied).expect("copied folder");
+        assert_eq!(
+            compare_with(identity(&copied), recorded.clone()),
+            Err(ContextMismatch::DurableIdentityMismatch)
+        );
+        // Moving the folder changes the locator...
+        let moved = base.join("novel-moved");
+        std::fs::rename(&original, &moved).expect("move");
+        assert_eq!(
+            compare_with(identity(&moved), recorded.clone()),
+            Err(ContextMismatch::DurableIdentityMismatch)
+        );
+        // ...and moving it back to the original path restores the identity.
+        std::fs::rename(&moved, &original).expect("move back");
+        assert_eq!(compare_with(identity(&original), recorded.clone()), Ok(()));
+        // A different workspace id in the same folder is another identity.
+        assert_eq!(
+            compare_with(
+                DurableWorkspaceIdentity::from_workspace_root("another-id", &original),
+                recorded
+            ),
+            Err(ContextMismatch::DurableIdentityMismatch)
+        );
+        // A folder the OS cannot resolve has no identity, which never matches.
+        assert_eq!(identity(&base.join("missing")), None);
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
