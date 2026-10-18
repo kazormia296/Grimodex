@@ -417,9 +417,9 @@ fn history_legacy_v1_binding_is_excluded_not_a_snapshot_failure() {
     assert_eq!(known_read.into_stored().expect("stored").inputs.len(), 1);
     // The legacy row's ordinal 0 row is unreadable here, so it cannot be
     // counted: the session is ambiguous rather than the count being exact.
-    assert_eq!(legacy_count.count, 0);
-    assert!(legacy_count.ambiguous);
-    assert_eq!(known_count.attempt_ids, ["known"]);
+    assert_eq!(legacy_count.count(), 0);
+    assert!(legacy_count.is_ambiguous());
+    assert_eq!(known_count.attempt_ids(), ["known"]);
 }
 
 #[test]
@@ -754,17 +754,22 @@ fn ordinal_zero_attempt_count_reads_only_listed_attempts() {
             Ok((once, none, position, two, repeat, spent))
         })
         .expect("counts");
-    assert_eq!(once.count, 1);
-    assert_eq!(once.attempt_ids, ["t-once"]);
-    assert_eq!(none.count, 0, "an attempt that was never created");
-    assert_eq!(position.count, 1, "its own ordinal 0 attempt only");
-    assert_eq!(position.attempt_ids, ["t-second-position"]);
-    assert_eq!(two.count, 2, "the unreadable gated row cannot be counted");
-    assert_eq!(two.attempt_ids, ["twice-1", "twice-2"]);
+    assert_eq!(once.count(), 1);
+    assert_eq!(once.attempt_ids(), ["t-once"]);
+    assert_eq!(none.count(), 0, "an attempt that was never created");
+    assert_eq!(position.count(), 1, "its own ordinal 0 attempt only");
+    assert_eq!(position.attempt_ids(), ["t-second-position"]);
+    assert_eq!(two.count(), 2, "the unreadable gated row cannot be counted");
+    assert_eq!(two.attempt_ids(), ["twice-1", "twice-2"]);
     assert!(
-        once.ambiguous && two.ambiguous,
+        once.is_ambiguous() && two.is_ambiguous(),
         "the unreadable row makes every count a lower bound"
     );
+    // "Exactly one" can be taken only through `sole_attempt`, and an
+    // ambiguous session never yields one, whatever the count says.
+    assert_eq!(once.sole_attempt(), None);
+    assert_eq!(position.sole_attempt(), None);
+    assert_eq!(two.sole_attempt(), None);
     assert_eq!(repeat, once);
     // Five listed attempts in the session (t-once, t-second-position, gated,
     // twice-1, twice-2) have their ordinal 0 row read and debited once each.
@@ -865,15 +870,21 @@ fn ordinal_zero_count_includes_gated_and_legacy_attempts_and_marks_unknown_versi
             ))
         })
         .expect("counts");
-    assert_eq!(gated.count, 2, "a gated attempt is counted");
-    assert_eq!(gated.attempt_ids, ["g-gated", "g-known"]);
-    assert!(!gated.ambiguous);
-    assert_eq!(legacy.count, 2, "a legacy attempt is counted");
-    assert_eq!(legacy.attempt_ids, ["l-legacy", "l-known"]);
-    assert!(!legacy.ambiguous);
-    assert_eq!(future_session.attempt_ids, ["f-known"]);
+    assert_eq!(gated.count(), 2, "a gated attempt is counted");
+    assert_eq!(gated.attempt_ids(), ["g-gated", "g-known"]);
+    assert!(!gated.is_ambiguous());
+    assert_eq!(legacy.count(), 2, "a legacy attempt is counted");
+    assert_eq!(legacy.attempt_ids(), ["l-legacy", "l-known"]);
+    assert!(!legacy.is_ambiguous());
+    assert_eq!(gated.sole_attempt(), None, "two holders are not one");
+    assert_eq!(future_session.attempt_ids(), ["f-known"]);
+    assert_eq!(
+        future_session.sole_attempt(),
+        None,
+        "one counted holder is not exactly one when a row could not be counted"
+    );
     assert!(
-        future_session.ambiguous,
+        future_session.is_ambiguous(),
         "an unknown-version attempt makes the count ambiguous"
     );
 }

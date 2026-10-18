@@ -2491,3 +2491,8 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
 #[cfg(test)]
 #[path = "nir1_packing_tests.rs"]
 pub(super) mod tests;
+
+// HC1-4: the session history run, end to end.
+#[cfg(all(test, feature = "native-current-human-capture"))]
+#[path = "nir1_packing_session_tests.rs"]
+mod session_history_tests;

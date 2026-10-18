@@ -411,6 +411,7 @@ rules:
       - src-tauri/crates/grimodex-db/src/state.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation_history.rs
+      - src-tauri/crates/grimodex-db/src/nir1_generation_history/generation_storage_adapter/session_run.rs
       - src-tauri/crates/grimodex-db/src/nir1_generation/**
       - src-tauri/crates/grimodex-db/src/profile_egress_policy.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/codex_operations.rs
@@ -427,6 +428,7 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/reveal-cases.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs

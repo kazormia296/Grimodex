@@ -199,19 +199,44 @@ pub(crate) struct GenerationHistoryCapture {
 }
 
 /// The attempts of an enumerated session that hold one message version at
-/// ordinal 0 (K4/3 section 6, the exactly-one rule). The caller applies the
-/// rule; this only counts.
+/// ordinal 0 (K4/3 section 6, the exactly-one rule). The fields are private so
+/// that "exactly one" can be taken only through [`Self::sole_attempt`], which
+/// is `None` whenever an attempt of the session could not be counted: a
+/// caller cannot read `count == 1` without the ambiguity beside it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct OrdinalZeroAttempts {
-    pub count: usize,
+    count: usize,
     /// The attempt ids in the enumeration's total order.
-    pub attempt_ids: Vec<String>,
+    attempt_ids: Vec<String>,
     /// True when an attempt of the session could not be counted: a row of an
     /// unknown `bindingVersion` (its reference format is unknown), or a
     /// gated or legacy row whose ordinal 0 input row is unreadable. The
     /// count is then only a lower bound for every Human of the session, and
     /// the exactly-one rule must not hold (fail closed).
-    pub ambiguous: bool,
+    ambiguous: bool,
+}
+
+impl OrdinalZeroAttempts {
+    pub(crate) fn count(&self) -> usize {
+        self.count
+    }
+
+    pub(crate) fn attempt_ids(&self) -> &[String] {
+        &self.attempt_ids
+    }
+
+    pub(crate) fn is_ambiguous(&self) -> bool {
+        self.ambiguous
+    }
+
+    /// The one attempt that holds the version at ordinal 0: `Some` only when
+    /// exactly one attempt does and every attempt of the session was counted.
+    pub(crate) fn sole_attempt(&self) -> Option<&str> {
+        match (self.count, self.ambiguous, self.attempt_ids.first()) {
+            (1, false, Some(attempt)) => Some(attempt),
+            _ => None,
+        }
+    }
 }
 
 impl GenerationHistorySnapshotReader<'_> {
@@ -464,6 +489,30 @@ impl GenerationHistorySnapshotReader<'_> {
         human_version_id: &str,
     ) -> Result<OrdinalZeroAttempts> {
         identity(human_version_id)?;
+        self.ensure_ordinal_zero_index(budget, project_id, chat_session_id)?;
+        let key = (project_id.to_owned(), chat_session_id.to_owned());
+        let index = self.ordinal_zero.get(&key);
+        let attempt_ids = index
+            .and_then(|index| index.by_version.get(human_version_id))
+            .cloned()
+            .unwrap_or_default();
+        Ok(OrdinalZeroAttempts {
+            count: attempt_ids.len(),
+            attempt_ids,
+            ambiguous: index.is_some_and(|index| index.ambiguous),
+        })
+    }
+
+    /// Build the session's ordinal-0 index once for this snapshot (a repeated
+    /// call is served from the cache and debits nothing). The run entry calls
+    /// it before it reads any candidate, so that a session whose rows cannot
+    /// be counted within the turn's reference budget is known up front.
+    pub(crate) fn ensure_ordinal_zero_index(
+        &mut self,
+        budget: &mut GenerationHistoryReadBudget,
+        project_id: &str,
+        chat_session_id: &str,
+    ) -> Result<()> {
         let headers = self.list_session_attempts(budget, project_id, chat_session_id)?;
         let key = (project_id.to_owned(), chat_session_id.to_owned());
         if !self.ordinal_zero.contains_key(&key) {
@@ -475,18 +524,9 @@ impl GenerationHistorySnapshotReader<'_> {
                 }
             };
             self.checkpoint()?;
-            self.ordinal_zero.insert(key.clone(), index);
+            self.ordinal_zero.insert(key, index);
         }
-        let index = self.ordinal_zero.get(&key);
-        let attempt_ids = index
-            .and_then(|index| index.by_version.get(human_version_id))
-            .cloned()
-            .unwrap_or_default();
-        Ok(OrdinalZeroAttempts {
-            count: attempt_ids.len(),
-            attempt_ids,
-            ambiguous: index.is_some_and(|index| index.ambiguous),
-        })
+        Ok(())
     }
 
     fn build_ordinal_zero_index(

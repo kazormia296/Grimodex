@@ -35,13 +35,6 @@
 //!   shared by every attempt. `revalidate_nir1_entity_relation_disclosure` is
 //!   never called: it compares the evaluation of an earlier request with this
 //!   one, and an earlier request's context is not a history dependency.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the history run entry that builds a requalifier inside the snapshot is HC1-4's"
-    )
-)]
 
 use std::collections::BTreeMap;
 use std::rc::Rc;
@@ -199,7 +192,6 @@ impl<'connection> HistoryRequalifier<'connection> {
     }
 
     /// The number of A3 evaluations this turn made.
-    #[cfg(test)]
     pub(crate) fn a3_evaluation_count(&self) -> usize {
         self.a3_evaluations
     }
@@ -575,6 +567,25 @@ impl<'connection> HistoryRequalifier<'connection> {
         Ok(())
     }
 
+    /// The generated output as a candidate's own reference: the live
+    /// message version must be a generated version of this parent attempt
+    /// with the digest the parent's receipt recorded.
+    fn check_generated_output(
+        &mut self,
+        parent: &AttemptSnapshot,
+        version_id: &str,
+        recorded_digest: &str,
+        current: &HistoryComparisonContext,
+    ) -> Check {
+        self.check_message_version(
+            current,
+            version_id,
+            MessageOrigin::Generated,
+            Some(Some(parent.id.as_str())),
+            recorded_digest,
+        )
+    }
+
     fn check_scope(
         &mut self,
         role: ScopeRole,
@@ -695,6 +706,20 @@ impl CurrentQualifier for HistoryRequalifier<'_> {
         let check = self.check_input(attempt, input, current);
         self.status(check)
     }
+
+    fn qualify_generated_output(
+        &mut self,
+        parent: &AttemptSnapshot,
+        version_id: &str,
+        recorded_body_digest: &str,
+        current: &HistoryComparisonContext,
+    ) -> QualificationStatus {
+        if self.has_stopped() {
+            return QualificationStatus::Unavailable;
+        }
+        let check = self.check_generated_output(parent, version_id, recorded_body_digest, current);
+        self.status(check)
+    }
 }
 
 #[cfg(test)]
@@ -710,8 +735,8 @@ mod tests {
         GenerationPurpose, InputTarget, NotApplicableReason, ReferenceFormat,
     };
     use crate::nir1_generation_history::{
-        CurrentHistoryContext, HistoryContextState, HistoryRange, QualificationReference,
-        QualificationSet, RecordedHistoryContext,
+        CurrentHistoryContext, HistoryContextState, HistoryRange, HumanLineage,
+        QualificationReference, QualificationSet, RecordedHistoryContext,
     };
     use anyhow::Result;
 
@@ -736,7 +761,9 @@ mod tests {
         let kind = match &input.target {
             InputTarget::Message { version_id, .. } => HistoryInputKind::HumanMessage {
                 version_id: version_id.clone(),
-                explicitly_bound: true,
+                lineage: HumanLineage::Qualified {
+                    owner_attempt_id: "past-attempt".into(),
+                },
             },
             InputTarget::RawSource {
                 source_key,
@@ -1925,6 +1952,7 @@ mod tests {
             id: "candidate".into(),
             root_attempt_id: past.attempt.id.clone(),
             adopted_input_ordinals: vec![0, 1, 2, 3],
+            output: None,
         };
         let current = CurrentHistoryContext::Known(Box::new(past.current.clone()));
         let run = |attempt: &AttemptSnapshot| -> Result<_> {

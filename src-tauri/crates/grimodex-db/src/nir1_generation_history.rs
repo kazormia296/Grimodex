@@ -23,6 +23,7 @@ use crate::nir1_generation::history_context::{
     HistoryContextSlot, HistoryD1Selection, HistoryRestoreEpoch, HistorySendClassification,
     HistoryTargetScope, HistoryUnavailableReason, HISTORY_ELIGIBILITY_WINDOW_MS,
 };
+pub(crate) use crate::nir1_generation::history_reads::HistoryCaptureState;
 use crate::nir1_generation::{
     check_input_completeness, CompletenessContext, GenerationPurpose, InputReference, InputRole,
     InputTarget, QualificationReference as StoredQualificationReference,
@@ -485,6 +486,9 @@ pub struct TerminalReceipt {
     pub receipt_digest: OpaqueRef,
     pub successful: bool,
     pub output_version_id: Option<OpaqueRef>,
+    /// The body digest of the output message version the terminal wrote, as
+    /// the receipt recorded it.
+    pub output_body_digest: Option<OpaqueRef>,
     pub payload_digest: Option<OpaqueRef>,
 }
 
@@ -519,8 +523,54 @@ pub enum HistoryInputKind {
     },
     HumanMessage {
         version_id: OpaqueRef,
-        explicitly_bound: bool,
+        /// The capture lineage of this Human version (K4/3 section 6, rules
+        /// 1 to 3), read in the same snapshot. Rule 4 is the requalification
+        /// of the input's own references.
+        lineage: HumanLineage,
     },
+}
+
+/// The result of the capture lineage of a past Human (K4/3 section 6). A
+/// Human is a candidate only when its message version is a live Human
+/// version, its capture is a superseded one of the same project, chat session
+/// and Scene, and exactly one listed attempt holds it at ordinal 0.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HumanLineage {
+    /// Rules 1 to 3 hold; `owner_attempt_id` is the one attempt that holds the
+    /// version at ordinal 0.
+    Qualified {
+        owner_attempt_id: AttemptId,
+    },
+    Rejected(HumanLineageReason),
+}
+
+/// Why a Human is not a candidate (a closed set, no plaintext).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HumanLineageReason {
+    /// The lineage was not read (the input was never materialized for it).
+    Unresolved,
+    /// Rule 1: the message version's origin is not human.
+    HumanNotHuman,
+    /// Rule 1: the message version is missing or was invalidated.
+    MessageVersionInvalidated,
+    /// Rule 2: the version has no capture (a version bound by
+    /// `bind_human_message`, a legacy row).
+    CaptureMissing,
+    /// Rule 2: the capture is of another project, chat session or Scene.
+    CaptureScopeMismatch,
+    /// Rule 2: the capture is not superseded (current, cancelled or closed).
+    CaptureNotSuperseded(HistoryCaptureState),
+    /// Rule 3: no listed attempt holds the version at ordinal 0.
+    NoOrdinalZeroAttempt,
+    /// Rule 3: two or more listed attempts hold it at ordinal 0.
+    MultipleOrdinalZeroAttempts,
+    /// Rule 3: an attempt of the session could not be counted (an unknown
+    /// binding version, an unreadable row), so "exactly one" cannot hold.
+    OrdinalZeroUncountable,
+    /// Rule 3: the one attempt that holds the version at ordinal 0 is not the
+    /// attempt whose current turn it is (or, for an adopted Human, is the
+    /// adopting attempt itself).
+    OrdinalZeroAttemptMismatch,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -677,6 +727,18 @@ pub struct Candidate {
     /// Only these direct inputs are adopted at the candidate root. Once a
     /// parent attempt is reached, all of its direct inputs are traversed.
     pub adopted_input_ordinals: Vec<usize>,
+    /// `Some` for a generated-output candidate (K4/3 section 6): the output of
+    /// the attempt `root_attempt_id`. The root's inputs are then all
+    /// requalified (the parent's turn), and `adopted_input_ordinals` is not
+    /// used.
+    pub output: Option<GeneratedOutput>,
+}
+
+/// The generated output a candidate stands for: the message version that the
+/// parent attempt's terminal receipt names.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GeneratedOutput {
+    pub version_id: OpaqueRef,
 }
 
 /// Pure traversal test ledger; storage adapters use their shared turn ledger.
@@ -794,14 +856,24 @@ pub enum RequalificationReason {
 /// unavailable, a Scene that is not in the mapping) is `Excluded` with a
 /// closed reason, which drops that candidate and its descendants only.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[expect(
-    dead_code,
-    reason = "the production qualifier (HC1-3) is activated by the run entry of HC1-4"
+#[cfg_attr(
+    not(feature = "native-current-human-capture"),
+    expect(
+        dead_code,
+        reason = "only the production qualifier (feature native-current-human-capture) answers with these statuses"
+    )
 )]
 pub enum QualificationStatus {
     Current,
     Pending,
     Unavailable,
+    #[cfg_attr(
+        feature = "native-current-human-capture",
+        expect(
+            dead_code,
+            reason = "the production qualifier excludes with a closed reason; only a test qualifier answers a bare rejection"
+        )
+    )]
     Ineligible,
     Excluded(RequalificationReason),
 }
@@ -820,6 +892,19 @@ pub trait CurrentQualifier {
         attempt: &AttemptSnapshot,
         ordinal: usize,
         input: &HistoryInput,
+        current: &HistoryComparisonContext,
+    ) -> QualificationStatus;
+
+    /// The generated output of `parent` as a candidate's own reference (K4/3
+    /// section 6): the message version `version_id` must be a live generated
+    /// version of the parent with the body digest the parent's receipt
+    /// recorded. The terminal receipt and the parent's inputs are judged by
+    /// the traversal.
+    fn qualify_generated_output(
+        &mut self,
+        parent: &AttemptSnapshot,
+        version_id: &str,
+        recorded_body_digest: &str,
         current: &HistoryComparisonContext,
     ) -> QualificationStatus;
 }
@@ -858,10 +943,21 @@ pub enum IncompleteReason {
     InvalidInputOrdinal(usize),
     DuplicateInputOrdinal(usize),
     EmptyAdoption,
+    /// The attempt has neither a Human turn at ordinal 0 nor a succeeded
+    /// output, so it yields no candidate.
+    #[cfg_attr(
+        not(feature = "native-current-human-capture"),
+        expect(
+            dead_code,
+            reason = "only the session run (feature native-current-human-capture) plans candidates"
+        )
+    )]
+    NoCandidateInAttempt,
     Cycle(AttemptId),
     BudgetExhausted,
     Cancelled,
-    LegacyMessage,
+    /// A past Human is not a candidate (capture lineage, K4/3 section 6).
+    HumanLineage(HumanLineageReason),
     PendingAuthority,
     AuthorityUnavailable,
 }
@@ -886,7 +982,6 @@ impl IncompleteReason {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HistoryRunError {
     AuthorityUnavailable,
-    BudgetExhausted,
     Cancelled,
 }
 
@@ -972,9 +1067,40 @@ struct Traversal<
     budget: &'qualifier mut B,
     cancelled: &'qualifier mut C,
     header_cache: BTreeMap<AttemptId, Result<(), Failure>>,
-    input_cache: BTreeMap<(AttemptId, usize), Result<Option<AttemptId>, Failure>>,
+    input_cache: BTreeMap<(AttemptId, usize), Result<Option<Descent>, Failure>>,
     complete_cache: BTreeMap<AttemptId, Result<Vec<AttemptId>, Failure>>,
+    turn_cache: BTreeMap<AttemptId, Result<Vec<AttemptId>, Failure>>,
     visiting: BTreeSet<AttemptId>,
+}
+
+/// Where an input leads once it is current. A generated output leads to its
+/// parent attempt, whose every input is requalified; an adopted past Human
+/// leads to the one attempt whose current turn it was, of which only the
+/// header and the Human itself are requalified (K4/3 section 6, rules 3 and
+/// 4).
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum Descent {
+    Whole(AttemptId),
+    HumanTurn(AttemptId),
+}
+
+/// The closed `Failure` of a qualifier's answer that is not `Current`.
+fn status_failure(status: QualificationStatus) -> Option<Failure> {
+    match status {
+        QualificationStatus::Current => None,
+        QualificationStatus::Pending => {
+            Some(Failure::incomplete(IncompleteReason::PendingAuthority))
+        }
+        QualificationStatus::Unavailable => {
+            Some(Failure::incomplete(IncompleteReason::AuthorityUnavailable))
+        }
+        QualificationStatus::Ineligible => {
+            Some(Failure::ineligible(IneligibleReason::AuthorityRejected))
+        }
+        QualificationStatus::Excluded(reason) => Some(Failure::ineligible(
+            IneligibleReason::Requalification(reason),
+        )),
+    }
 }
 
 impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMut() -> bool>
@@ -1020,21 +1146,13 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
                 )),
                 Some(recorded) => match compare_context(self.current, recorded, self.now_ms) {
                     Err(mismatch) => Err(Failure::ineligible(IneligibleReason::Context(mismatch))),
-                    Ok(()) => match self.qualifier.qualify_attempt(&attempt, self.current) {
-                        QualificationStatus::Current => Ok(()),
-                        QualificationStatus::Pending => {
-                            Err(Failure::incomplete(IncompleteReason::PendingAuthority))
+                    Ok(()) => {
+                        match status_failure(self.qualifier.qualify_attempt(&attempt, self.current))
+                        {
+                            None => Ok(()),
+                            Some(failure) => Err(failure),
                         }
-                        QualificationStatus::Unavailable => {
-                            Err(Failure::incomplete(IncompleteReason::AuthorityUnavailable))
-                        }
-                        QualificationStatus::Ineligible => {
-                            Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
-                        }
-                        QualificationStatus::Excluded(reason) => Err(Failure::ineligible(
-                            IneligibleReason::Requalification(reason),
-                        )),
-                    },
+                    }
                 },
             }
         };
@@ -1046,7 +1164,7 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
         &mut self,
         attempt: &AttemptSnapshot,
         ordinal: usize,
-    ) -> Result<Option<AttemptId>, Failure> {
+    ) -> Result<Option<Descent>, Failure> {
         self.check_cancelled()?;
         if let Some(cached) = self.input_cache.get(&(attempt.id.clone(), ordinal)) {
             return cached.clone();
@@ -1069,23 +1187,28 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
                 .qualifications
                 .validate_complete(&reference, target_scene_id)?;
         }
-        let result = match self
-            .qualifier
-            .qualify_input(attempt, ordinal, &input, self.current)
-        {
-            QualificationStatus::Current => self.validate_lineage(attempt, &input),
-            QualificationStatus::Pending => {
-                Err(Failure::incomplete(IncompleteReason::PendingAuthority))
+        // The lineage of a past Human (K4/3 section 6, rules 1 to 3) is read
+        // from the same snapshot before the input is requalified (rule 4), so
+        // a Human that is not a candidate is excluded for that reason.
+        let rejected_lineage = match &input.kind {
+            HistoryInputKind::HumanMessage {
+                lineage: HumanLineage::Rejected(reason),
+                ..
+            } => Some(Failure::incomplete(IncompleteReason::HumanLineage(*reason))),
+            _ => None,
+        };
+        let result = if let Some(failure) = rejected_lineage {
+            Err(failure)
+        } else {
+            match status_failure(self.qualifier.qualify_input(
+                attempt,
+                ordinal,
+                &input,
+                self.current,
+            )) {
+                None => self.validate_lineage(attempt, &input),
+                Some(failure) => Err(failure),
             }
-            QualificationStatus::Unavailable => {
-                Err(Failure::incomplete(IncompleteReason::AuthorityUnavailable))
-            }
-            QualificationStatus::Ineligible => {
-                Err(Failure::ineligible(IneligibleReason::AuthorityRejected))
-            }
-            QualificationStatus::Excluded(reason) => Err(Failure::ineligible(
-                IneligibleReason::Requalification(reason),
-            )),
         };
         self.input_cache
             .insert((attempt.id.clone(), ordinal), result.clone());
@@ -1157,7 +1280,7 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
         &self,
         attempt: &AttemptSnapshot,
         input: &HistoryInput,
-    ) -> Result<Option<AttemptId>, Failure> {
+    ) -> Result<Option<Descent>, Failure> {
         match &input.kind {
             HistoryInputKind::GeneratedMessage {
                 version_id,
@@ -1167,13 +1290,15 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
                 if !valid_ref(version_id) {
                     return Err(Failure::incomplete(IncompleteReason::InvalidReference));
                 }
-                self.validate_parent_receipt(
-                    attempt,
-                    parent_attempt_id.as_ref(),
-                    receipt.as_ref(),
-                    Some(version_id),
-                    None,
-                )
+                Ok(self
+                    .validate_parent_receipt(
+                        attempt,
+                        parent_attempt_id.as_ref(),
+                        receipt.as_ref(),
+                        Some(version_id),
+                        None,
+                    )?
+                    .map(Descent::Whole))
             }
             HistoryInputKind::InvalidMessageBinding { .. } => {
                 Err(Failure::incomplete(IncompleteReason::InvalidReference))
@@ -1188,26 +1313,49 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
                 if !valid_ref(artifact_id) || !valid_ref(payload_digest) {
                     return Err(Failure::incomplete(IncompleteReason::InvalidReference));
                 }
-                self.validate_parent_receipt(
-                    attempt,
-                    producer_attempt_id.as_ref(),
-                    receipt.as_ref(),
-                    None,
-                    Some(payload_digest),
-                )
+                Ok(self
+                    .validate_parent_receipt(
+                        attempt,
+                        producer_attempt_id.as_ref(),
+                        receipt.as_ref(),
+                        None,
+                        Some(payload_digest),
+                    )?
+                    .map(Descent::Whole))
             }
             HistoryInputKind::HumanMessage {
                 version_id,
-                explicitly_bound,
-                ..
+                lineage,
             } => {
                 if !valid_ref(version_id) {
                     return Err(Failure::incomplete(IncompleteReason::InvalidReference));
                 }
-                if !explicitly_bound {
-                    Err(Failure::incomplete(IncompleteReason::LegacyMessage))
+                let owner = match lineage {
+                    HumanLineage::Rejected(reason) => {
+                        return Err(Failure::incomplete(IncompleteReason::HumanLineage(*reason)))
+                    }
+                    HumanLineage::Qualified { owner_attempt_id } => owner_attempt_id,
+                };
+                if !valid_ref(owner) {
+                    return Err(Failure::incomplete(IncompleteReason::InvalidReference));
+                }
+                // K4/3 section 6, rule 3: the one attempt that holds this
+                // Human at ordinal 0 is the attempt whose current turn it is.
+                // An adopted Human leads to that attempt, whose context and
+                // Human reference must hold too.
+                let mismatch = Failure::incomplete(IncompleteReason::HumanLineage(
+                    HumanLineageReason::OrdinalZeroAttemptMismatch,
+                ));
+                if input.input_use == InputUse::CurrentTurn {
+                    if owner == &attempt.id {
+                        Ok(None)
+                    } else {
+                        Err(mismatch)
+                    }
+                } else if owner == &attempt.id {
+                    Err(mismatch)
                 } else {
-                    Ok(None)
+                    Ok(Some(Descent::HumanTurn(owner.clone())))
                 }
             }
             HistoryInputKind::AcceptedRevision {
@@ -1264,9 +1412,8 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
             let mut visited = vec![id.into()];
             for ordinal in 0..attempt.inputs.len() {
                 self.budget.consume_edge()?;
-                if let Some(parent) = self.validate_input(&attempt, ordinal)? {
-                    let parent_visited = self.visit_complete(&parent)?;
-                    for ancestor in parent_visited {
+                if let Some(descent) = self.validate_input(&attempt, ordinal)? {
+                    for ancestor in self.descend(&descent)? {
                         if !visited.contains(&ancestor) {
                             visited.push(ancestor);
                         }
@@ -1280,7 +1427,101 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
         result
     }
 
+    fn descend(&mut self, descent: &Descent) -> Result<Vec<AttemptId>, Failure> {
+        match descent {
+            Descent::Whole(parent) => self.visit_complete(parent),
+            Descent::HumanTurn(owner) => self.visit_human_turn(owner),
+        }
+    }
+
+    /// The attempt whose current turn an adopted past Human was (K4/3 section
+    /// 6, rule 3): its context must match and the Human must requalify
+    /// (rule 4). The attempt's other inputs are not the Human's concern.
+    fn visit_human_turn(&mut self, id: &str) -> Result<Vec<AttemptId>, Failure> {
+        self.check_cancelled()?;
+        if let Some(cached) = self.turn_cache.get(id) {
+            return cached.clone();
+        }
+        let attempt = self
+            .snapshot
+            .attempts
+            .get(id)
+            .cloned()
+            .ok_or_else(|| Failure::incomplete(IncompleteReason::MissingAttempt(id.into())))?;
+        let result = (|| {
+            self.validate_header(id)?;
+            let current_human = attempt.inputs.first().is_some_and(|input| {
+                input.input_use == InputUse::CurrentTurn
+                    && matches!(input.kind, HistoryInputKind::HumanMessage { .. })
+            });
+            if !current_human {
+                return Err(Failure::incomplete(IncompleteReason::HumanLineage(
+                    HumanLineageReason::OrdinalZeroAttemptMismatch,
+                )));
+            }
+            self.budget.consume_edge()?;
+            self.validate_input(&attempt, 0)?;
+            Ok(vec![id.to_owned()])
+        })();
+        self.turn_cache.insert(id.into(), result.clone());
+        result
+    }
+
+    /// A generated output as a candidate (K4/3 section 6): the parent's
+    /// header and every input requalify, the parent's terminal receipt names
+    /// this output as a success, and the output message version is a live
+    /// generated version of the parent with the digest the receipt recorded.
+    fn visit_generated_output(
+        &mut self,
+        candidate: &Candidate,
+        output: &GeneratedOutput,
+    ) -> Result<Vec<AttemptId>, Failure> {
+        self.check_cancelled()?;
+        let parent_id = &candidate.root_attempt_id;
+        if !valid_ref(&output.version_id) || !valid_ref(parent_id) {
+            return Err(Failure::incomplete(IncompleteReason::InvalidReference));
+        }
+        let parent = self
+            .snapshot
+            .attempts
+            .get(parent_id)
+            .cloned()
+            .ok_or_else(|| {
+                Failure::incomplete(IncompleteReason::MissingAttempt(parent_id.clone()))
+            })?;
+        let visited = self.visit_complete(parent_id)?;
+        let terminal = parent.terminal.as_ref().ok_or_else(|| {
+            Failure::incomplete(IncompleteReason::MissingReceipt(parent_id.clone()))
+        })?;
+        let mismatch = || Failure::incomplete(IncompleteReason::ReceiptMismatch(parent_id.clone()));
+        if !terminal.successful
+            || &terminal.attempt_id != parent_id
+            || terminal.output_version_id.as_deref() != Some(output.version_id.as_str())
+        {
+            return Err(mismatch());
+        }
+        let digest = terminal
+            .output_body_digest
+            .as_deref()
+            .filter(|digest| valid_ref(digest))
+            .ok_or_else(mismatch)?;
+        self.budget.consume_edge()?;
+        self.budget.consume_qualification_refs(1)?;
+        if let Some(failure) = status_failure(self.qualifier.qualify_generated_output(
+            &parent,
+            &output.version_id,
+            digest,
+            self.current,
+        )) {
+            return Err(failure);
+        }
+        Ok(visited)
+    }
+
     fn visit_candidate_root(&mut self, candidate: &Candidate) -> Result<Vec<AttemptId>, Failure> {
+        if let Some(output) = &candidate.output {
+            return self.visit_generated_output(candidate, output);
+        }
         self.validate_header(&candidate.root_attempt_id)?;
         let attempt = self
             .snapshot
@@ -1311,8 +1552,8 @@ impl<'snapshot, 'qualifier, Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMu
         let mut visited = vec![candidate.root_attempt_id.clone()];
         for ordinal in ordinals {
             self.budget.consume_edge()?;
-            if let Some(parent) = self.validate_input(&attempt, ordinal)? {
-                for ancestor in self.visit_complete(&parent)? {
+            if let Some(descent) = self.validate_input(&attempt, ordinal)? {
+                for ancestor in self.descend(&descent)? {
                     if !visited.contains(&ancestor) {
                         visited.push(ancestor);
                     }
@@ -1365,6 +1606,7 @@ pub fn reauthorize_history<Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMut
         header_cache: BTreeMap::new(),
         input_cache: BTreeMap::new(),
         complete_cache: BTreeMap::new(),
+        turn_cache: BTreeMap::new(),
         visiting: BTreeSet::new(),
     };
     let mut results = Vec::with_capacity(candidates.len());
@@ -1377,9 +1619,6 @@ pub fn reauthorize_history<Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMut
             },
             Err(Failure::Incomplete(IncompleteReason::AuthorityUnavailable)) => {
                 return Err(HistoryRunError::AuthorityUnavailable)
-            }
-            Err(Failure::Incomplete(IncompleteReason::BudgetExhausted)) => {
-                return Err(HistoryRunError::BudgetExhausted)
             }
             Err(Failure::Incomplete(IncompleteReason::Cancelled)) => {
                 return Err(HistoryRunError::Cancelled)
@@ -1397,10 +1636,14 @@ pub fn reauthorize_history<Q: CurrentQualifier, B: HistoryBudgetLedger, C: FnMut
     })
 }
 
-/// Adapter for the Native storage hook. The current D2b binding has no full
-/// tuple, and the current artifact reader returns no producer receipt; both
-/// facts are preserved as `None` and therefore fail closed in
-/// `reauthorize_history`.
+/// Adapter for the Native storage hook: it reads the typed records of one
+/// snapshot (HS-1, HC-1) into the pure traversal's inputs. A recorded context
+/// is read from the attempt's binding (K4/3 section 4), the capture lineage of
+/// a past Human from the capture and the ordinal 0 rows (section 6), and the
+/// current artifact reader returns no producer receipt, which is preserved as
+/// `None` and therefore fails closed in `reauthorize_history`. The session run
+/// (`session_run`) derives the candidates of a chat session from the stored
+/// attempts and runs the traversal with the production qualifier.
 #[cfg_attr(not(test), allow(dead_code, unused_imports))]
 mod generation_storage_adapter {
     use super::*;
@@ -1411,11 +1654,14 @@ mod generation_storage_adapter {
     use crate::narrative_maintenance_connection::ParticipantSqlControl;
     use crate::nir1_generation::history_reads::{ExcludedHistoryAttempt, GenerationHistoryAttempt};
     use crate::nir1_generation::{
-        with_generation_history_snapshot, GenerationHistoryReadBudget,
+        with_generation_history_snapshot, GenerationHistoryMessage, GenerationHistoryReadBudget,
         GenerationHistorySnapshotCancellation, GenerationHistorySnapshotReader, InputRole,
         InputTarget, MessageOrigin, StoredAttempt, StoredTerminal,
     };
     use crate::state::ActiveWorkspaceSnapshot;
+
+    #[cfg(feature = "native-current-human-capture")]
+    pub(super) mod session_run;
 
     impl HistoryBudgetLedger for GenerationHistoryReadBudget {
         fn consume_node(&mut self) -> std::result::Result<(), Failure> {
@@ -1442,9 +1688,6 @@ mod generation_storage_adapter {
             ),
             HistoryRunError::AuthorityUnavailable => {
                 anyhow!("NIR1_GENERATION_HISTORY_AUTHORITY_UNAVAILABLE")
-            }
-            HistoryRunError::BudgetExhausted => {
-                anyhow!("NIR1_GENERATION_HISTORY_BUDGET_EXHAUSTED")
             }
         }
     }
@@ -1524,6 +1767,10 @@ mod generation_storage_adapter {
                 .message_version
                 .as_ref()
                 .map(|version| version.id.clone()),
+            output_body_digest: terminal
+                .message_version
+                .as_ref()
+                .map(|version| version.body_digest.clone()),
             payload_digest: Some(terminal.payload_digest.clone()),
         })
     }
@@ -1545,6 +1792,62 @@ mod generation_storage_adapter {
             attempt_id: parent_attempt_id.to_owned(),
             receipt_digest: terminal.receipt_digest,
         }))
+    }
+
+    /// The capture lineage of a past Human (K4/3 section 6, rules 1 to 3):
+    /// the message version is a live Human version, its capture is a
+    /// superseded one of the attempt's project, chat session and Scene, and
+    /// exactly one attempt of the enumerated session holds it at ordinal 0.
+    /// Rule 4 is the requalification of the input's own references. Nothing is
+    /// repaired: a version with no capture (`bind_human_message`, a legacy
+    /// row) or no attempt is not a candidate.
+    fn human_lineage(
+        reader: &mut GenerationHistorySnapshotReader<'_>,
+        budget: &mut GenerationHistoryReadBudget,
+        attempt: &StoredAttempt,
+        version_id: &str,
+        message: Option<&GenerationHistoryMessage>,
+    ) -> Result<HumanLineage> {
+        use HumanLineageReason as Reason;
+        let reject = |reason| Ok(HumanLineage::Rejected(reason));
+        let Some(message) = message else {
+            return reject(Reason::MessageVersionInvalidated);
+        };
+        if message.version.origin != MessageOrigin::Human {
+            return reject(Reason::HumanNotHuman);
+        }
+        let Some(capture) = reader.read_capture_by_message_version(version_id)? else {
+            return reject(Reason::CaptureMissing);
+        };
+        if capture.project_id != attempt.binding.project_id
+            || capture.chat_session_id != attempt.binding.chat_session_id
+            || capture.scene_id != attempt.binding.scene.scene_id
+        {
+            return reject(Reason::CaptureScopeMismatch);
+        }
+        if capture.state != HistoryCaptureState::Superseded {
+            return reject(Reason::CaptureNotSuperseded(capture.state));
+        }
+        let holders = reader.ordinal_zero_attempts(
+            budget,
+            &attempt.binding.project_id,
+            &attempt.binding.chat_session_id,
+            version_id,
+        )?;
+        // Two or more holders are a definite "not exactly one"; an attempt
+        // that could not be counted makes "exactly one" unprovable.
+        if holders.count() > 1 {
+            return reject(Reason::MultipleOrdinalZeroAttempts);
+        }
+        if let Some(owner) = holders.sole_attempt() {
+            return Ok(HumanLineage::Qualified {
+                owner_attempt_id: owner.to_owned(),
+            });
+        }
+        if holders.is_ambiguous() {
+            return reject(Reason::OrdinalZeroUncountable);
+        }
+        reject(Reason::NoOrdinalZeroAttempt)
     }
 
     fn input(
@@ -1608,7 +1911,11 @@ mod generation_storage_adapter {
                 } else {
                     HistoryInputKind::HumanMessage {
                         version_id: version_id.clone(),
-                        explicitly_bound: resolve_lineage && message.is_some(),
+                        lineage: if resolve_lineage {
+                            human_lineage(reader, budget, attempt, version_id, message.as_ref())?
+                        } else {
+                            HumanLineage::Rejected(HumanLineageReason::Unresolved)
+                        },
                     }
                 }
             }
@@ -1845,7 +2152,15 @@ mod generation_storage_adapter {
         Ok(())
     }
 
-    fn parent_id(input: &HistoryInput) -> Option<AttemptId> {
+    /// The attempt an input leads to once it is materialized: the parent of a
+    /// generated output (whole), or the attempt whose current turn an adopted
+    /// past Human was (only its ordinal 0).
+    enum Followed {
+        Whole(AttemptId),
+        HumanTurn(AttemptId),
+    }
+
+    fn followed(input: &HistoryInput) -> Option<Followed> {
         match &input.kind {
             HistoryInputKind::GeneratedMessage {
                 parent_attempt_id,
@@ -1856,8 +2171,57 @@ mod generation_storage_adapter {
                 producer_attempt_id: parent_attempt_id,
                 receipt,
                 ..
-            } => receipt.as_ref().and_then(|_| parent_attempt_id.clone()),
+            } => receipt
+                .as_ref()
+                .and_then(|_| parent_attempt_id.clone())
+                .map(Followed::Whole),
+            HistoryInputKind::HumanMessage {
+                lineage: HumanLineage::Qualified { owner_attempt_id },
+                ..
+            } if input.input_use != InputUse::CurrentTurn => {
+                Some(Followed::HumanTurn(owner_attempt_id.clone()))
+            }
             _ => None,
+        }
+    }
+
+    /// Load the attempt whose current turn an adopted past Human was, with its
+    /// ordinal 0 input only.
+    fn materialize_human_turn(
+        reader: &mut GenerationHistorySnapshotReader<'_>,
+        budget: &mut GenerationHistoryReadBudget,
+        id: &str,
+        attempts: &mut BTreeMap<AttemptId, LoadedAttempt>,
+        cancellation: &GenerationHistorySnapshotCancellation,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<()> {
+        ensure_snapshot_not_cancelled(cancellation, cancelled)?;
+        load_attempt(reader, budget, id, attempts)?;
+        enrich_input(reader, budget, id, 0, attempts)
+    }
+
+    fn follow(
+        reader: &mut GenerationHistorySnapshotReader<'_>,
+        budget: &mut GenerationHistoryReadBudget,
+        followed: Followed,
+        attempts: &mut BTreeMap<AttemptId, LoadedAttempt>,
+        expanded: &mut BTreeSet<AttemptId>,
+        cancellation: &GenerationHistorySnapshotCancellation,
+        cancelled: &mut impl FnMut() -> bool,
+    ) -> Result<()> {
+        match followed {
+            Followed::Whole(id) => materialize_all(
+                reader,
+                budget,
+                &id,
+                attempts,
+                expanded,
+                cancellation,
+                cancelled,
+            ),
+            Followed::HumanTurn(id) => {
+                materialize_human_turn(reader, budget, &id, attempts, cancellation, cancelled)
+            }
         }
     }
 
@@ -1883,18 +2247,18 @@ mod generation_storage_adapter {
             ensure_snapshot_not_cancelled(cancellation, cancelled)?;
             enrich_input(reader, budget, id, ordinal, attempts)?;
         }
-        let parents = attempts
+        let followed = attempts
             .get(id)
             .into_iter()
             .flat_map(|loaded| loaded.snapshot.inputs.iter())
-            .filter_map(parent_id)
+            .filter_map(followed)
             .collect::<Vec<_>>();
-        for parent in parents {
+        for next in followed {
             ensure_snapshot_not_cancelled(cancellation, cancelled)?;
-            materialize_all(
+            follow(
                 reader,
                 budget,
-                &parent,
+                next,
                 attempts,
                 expanded,
                 cancellation,
@@ -1914,6 +2278,18 @@ mod generation_storage_adapter {
         cancelled: &mut impl FnMut() -> bool,
     ) -> Result<()> {
         ensure_snapshot_not_cancelled(cancellation, cancelled)?;
+        if candidate.output.is_some() {
+            // A generated output: the parent attempt and all its inputs.
+            return materialize_all(
+                reader,
+                budget,
+                &candidate.root_attempt_id,
+                attempts,
+                expanded,
+                cancellation,
+                cancelled,
+            );
+        }
         load_attempt(reader, budget, &candidate.root_attempt_id, attempts)?;
         for ordinal in &candidate.adopted_input_ordinals {
             ensure_snapshot_not_cancelled(cancellation, cancelled)?;
@@ -1925,7 +2301,7 @@ mod generation_storage_adapter {
                 attempts,
             )?;
         }
-        let parents = attempts
+        let followed = attempts
             .get(&candidate.root_attempt_id)
             .into_iter()
             .flat_map(|loaded| {
@@ -1934,14 +2310,14 @@ mod generation_storage_adapter {
                     .iter()
                     .filter_map(|ordinal| loaded.snapshot.inputs.get(*ordinal))
             })
-            .filter_map(parent_id)
+            .filter_map(followed)
             .collect::<Vec<_>>();
-        for parent in parents {
+        for next in followed {
             ensure_snapshot_not_cancelled(cancellation, cancelled)?;
-            materialize_all(
+            follow(
                 reader,
                 budget,
-                &parent,
+                next,
                 attempts,
                 expanded,
                 cancellation,
@@ -2069,6 +2445,16 @@ mod generation_storage_adapter {
                 _attempt: &AttemptSnapshot,
                 _ordinal: usize,
                 _input: &HistoryInput,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                QualificationStatus::Current
+            }
+
+            fn qualify_generated_output(
+                &mut self,
+                _parent: &AttemptSnapshot,
+                _version_id: &str,
+                _recorded_body_digest: &str,
                 _current: &HistoryComparisonContext,
             ) -> QualificationStatus {
                 QualificationStatus::Current
@@ -2356,6 +2742,7 @@ mod generation_storage_adapter {
                 id: "candidate".into(),
                 root_attempt_id: "missing-attempt".into(),
                 adopted_input_ordinals: Vec::new(),
+                output: None,
             };
             let mut caller_budget = budget();
             let mut qualifier = AllowCurrent;
@@ -2388,6 +2775,7 @@ mod generation_storage_adapter {
                     id: format!("candidate-{index}"),
                     root_attempt_id: root_attempt_id.clone(),
                     adopted_input_ordinals: Vec::new(),
+                    output: None,
                 })
                 .collect::<Vec<_>>();
             let stop = Arc::new(AtomicBool::new(false));
@@ -2433,11 +2821,13 @@ mod generation_storage_adapter {
                     id: "candidate-1".into(),
                     root_attempt_id: "missing-1".into(),
                     adopted_input_ordinals: Vec::new(),
+                    output: None,
                 },
                 Candidate {
                     id: "candidate-2".into(),
                     root_attempt_id: "missing-2".into(),
                     adopted_input_ordinals: Vec::new(),
+                    output: None,
                 },
             ];
             let mut caller_budget = budget();
@@ -2568,6 +2958,7 @@ mod generation_storage_adapter {
                 id: "candidate".into(),
                 root_attempt_id: id,
                 adopted_input_ordinals: vec![0],
+                output: None,
             };
             let mut ledger = HistoryBudget::new(8, 8, 32);
             let mut qualifier = AllowCurrent;
@@ -2702,12 +3093,14 @@ mod generation_storage_adapter {
                     id: (*name).into(),
                     root_attempt_id: id.clone(),
                     adopted_input_ordinals: vec![0],
+                    output: None,
                 })
                 .collect();
             candidates.push(Candidate {
                 id: "control".into(),
                 root_attempt_id: control,
                 adopted_input_ordinals: vec![0],
+                output: None,
             });
             let mut caller_budget = budget();
             caller_budget.max_candidates = candidates.len();
@@ -2810,6 +3203,7 @@ mod generation_storage_adapter {
                 id: name.into(),
                 root_attempt_id: id,
                 adopted_input_ordinals: vec![0],
+                output: None,
             });
             let mut caller_budget = budget();
             caller_budget.max_candidates = candidates.len();
@@ -3012,6 +3406,7 @@ mod generation_storage_adapter {
                         id: name.into(),
                         root_attempt_id: id,
                         adopted_input_ordinals: vec![ordinal],
+                        output: None,
                     }
                 });
             let mut caller_budget = budget();
@@ -3235,6 +3630,7 @@ mod generation_storage_adapter {
                     id: format!("candidate-{id}"),
                     root_attempt_id: id.clone(),
                     adopted_input_ordinals: vec![0],
+                    output: None,
                 })
                 .collect();
             let mut caller_budget = budget();
@@ -3419,6 +3815,7 @@ mod generation_storage_adapter {
                     id: "candidate".into(),
                     root_attempt_id: id,
                     adopted_input_ordinals: vec![0],
+                    output: None,
                 }],
                 &current,
                 NOW_MS,
@@ -3442,6 +3839,12 @@ mod generation_storage_adapter {
 
 #[allow(unused_imports)]
 pub(crate) use generation_storage_adapter::reauthorize_from_generation_snapshot;
+#[cfg(feature = "native-current-human-capture")]
+#[allow(unused_imports)]
+pub(crate) use generation_storage_adapter::session_run::{
+    reauthorize_session_history, reauthorize_session_history_in_tx, NoHistory,
+    SessionCandidateKind, SessionCandidateResult, SessionHistoryOutcome, SessionHistoryRequest,
+};
 
 #[cfg(test)]
 mod tests {
@@ -3475,6 +3878,16 @@ mod tests {
             } else {
                 QualificationStatus::Current
             }
+        }
+
+        fn qualify_generated_output(
+            &mut self,
+            _parent: &AttemptSnapshot,
+            _version_id: &str,
+            _recorded_body_digest: &str,
+            _current: &HistoryComparisonContext,
+        ) -> QualificationStatus {
+            QualificationStatus::Current
         }
     }
 
@@ -3662,6 +4075,7 @@ mod tests {
             receipt_digest: digest.into(),
             successful: true,
             output_version_id: output_version_id.map(str::to_owned),
+            output_body_digest: None,
             payload_digest: None,
         }
     }
@@ -3744,6 +4158,7 @@ mod tests {
             id: "shared-ledger".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -3800,6 +4215,7 @@ mod tests {
             id: "root-history".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         }];
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -3846,11 +4262,13 @@ mod tests {
                 id: "bad-candidate".into(),
                 root_attempt_id: "bad".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
             Candidate {
                 id: "good-candidate".into(),
                 root_attempt_id: "good".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
         ];
         let mut current = AllowCurrent {
@@ -3888,6 +4306,7 @@ mod tests {
             id: "candidate".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -3931,6 +4350,7 @@ mod tests {
             id: "cycle".into(),
             root_attempt_id: "a".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -3969,6 +4389,7 @@ mod tests {
             id: "graph".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: true,
@@ -4001,6 +4422,7 @@ mod tests {
             id: "missing-recorded-context".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4037,6 +4459,7 @@ mod tests {
             id: "artifact".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4089,6 +4512,7 @@ mod tests {
             id: "artifact-mismatch".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4140,6 +4564,7 @@ mod tests {
             id: "cross-scope-parent".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4166,11 +4591,13 @@ mod tests {
     }
 
     #[test]
-    fn explicit_current_human_input_uses_its_separate_binding_path() {
+    fn current_turn_human_held_by_its_own_attempt_is_adopted() {
         let human = history_input(
             HistoryInputKind::HumanMessage {
                 version_id: "human:v1".into(),
-                explicitly_bound: true,
+                lineage: HumanLineage::Qualified {
+                    owner_attempt_id: "root".into(),
+                },
             },
             InputUse::CurrentTurn,
         );
@@ -4179,6 +4606,7 @@ mod tests {
             id: "current-human".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4216,6 +4644,7 @@ mod tests {
             id: "invalid-binding".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4240,7 +4669,7 @@ mod tests {
     }
 
     #[test]
-    fn context_mismatch_and_unbound_legacy_message_fail_closed() {
+    fn context_mismatch_and_capture_less_human_fail_closed() {
         let mut stale = attempt("stale", vec![raw("source")], None);
         stale
             .recorded
@@ -4255,7 +4684,7 @@ mod tests {
         let legacy = history_input(
             HistoryInputKind::HumanMessage {
                 version_id: "legacy".into(),
-                explicitly_bound: false,
+                lineage: HumanLineage::Rejected(HumanLineageReason::CaptureMissing),
             },
             InputUse::AdoptedHistory,
         );
@@ -4265,11 +4694,13 @@ mod tests {
                 id: "stale".into(),
                 root_attempt_id: "stale".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
             Candidate {
                 id: "legacy".into(),
                 root_attempt_id: "legacy-root".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
         ];
         let mut current = AllowCurrent {
@@ -4296,12 +4727,14 @@ mod tests {
         ));
         assert!(matches!(
             outcome.candidates[1].disposition,
-            CandidateDisposition::Excluded(Failure::Incomplete(IncompleteReason::LegacyMessage))
+            CandidateDisposition::Excluded(Failure::Incomplete(IncompleteReason::HumanLineage(
+                HumanLineageReason::CaptureMissing
+            )))
         ));
     }
 
     #[test]
-    fn shared_budget_is_not_reset_for_each_candidate() {
+    fn shared_budget_is_not_reset_and_exhaustion_excludes_the_unverified_candidate() {
         let graph = snapshot(vec![
             attempt("a", vec![raw("source-a")], None),
             attempt("b", vec![raw("source-b")], None),
@@ -4311,11 +4744,13 @@ mod tests {
                 id: "a".into(),
                 root_attempt_id: "a".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
             Candidate {
                 id: "b".into(),
                 root_attempt_id: "b".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
         ];
         let mut current = AllowCurrent {
@@ -4333,7 +4768,372 @@ mod tests {
             &mut cancelled,
         );
 
-        assert_eq!(run, Err(HistoryRunError::BudgetExhausted));
+        // K4/3 section 8: an exhausted budget excludes the candidate whose
+        // verification was not finished and keeps the one that was.
+        let outcome = run.expect("an exhausted budget is not a stop of the run");
+        assert_eq!(
+            outcome.candidates[0].disposition,
+            CandidateDisposition::Qualified
+        );
+        assert_eq!(
+            outcome.candidates[1].disposition,
+            CandidateDisposition::Excluded(Failure::incomplete(IncompleteReason::BudgetExhausted))
+        );
+    }
+
+    fn run_candidates(graph: &HistorySnapshot, candidates: &[Candidate]) -> Vec<CandidateResult> {
+        let mut current = AllowCurrent {
+            pending_graph: false,
+        };
+        let mut remaining = budget();
+        let mut cancelled = || false;
+        reauthorize_history(
+            graph,
+            candidates,
+            &current_context(),
+            NOW_MS,
+            &mut remaining,
+            &mut current,
+            &mut cancelled,
+        )
+        .expect("history run should complete")
+        .candidates
+    }
+
+    fn human_candidate(id: &str, root: &str) -> Candidate {
+        Candidate {
+            id: id.into(),
+            root_attempt_id: root.into(),
+            adopted_input_ordinals: vec![0],
+            output: None,
+        }
+    }
+
+    fn output_candidate(id: &str, parent: &str, version: &str) -> Candidate {
+        Candidate {
+            id: id.into(),
+            root_attempt_id: parent.into(),
+            adopted_input_ordinals: Vec::new(),
+            output: Some(GeneratedOutput {
+                version_id: version.into(),
+            }),
+        }
+    }
+
+    fn adopted_human(owner: &str) -> HistoryInput {
+        history_input(
+            HistoryInputKind::HumanMessage {
+                version_id: "human:v1".into(),
+                lineage: HumanLineage::Qualified {
+                    owner_attempt_id: owner.into(),
+                },
+            },
+            InputUse::AdoptedHistory,
+        )
+    }
+
+    #[test]
+    fn human_lineage_rule_3_the_holder_must_be_the_attempt_whose_turn_it_is() {
+        // Rule 3: the one attempt that holds the Human at ordinal 0 is the
+        // attempt whose current turn it is. A current-turn Human whose holder
+        // is another attempt is out; an adopted Human leads to its holder
+        // and is out when the adopting attempt is the holder itself.
+        let graph = snapshot(vec![
+            attempt("elsewhere", vec![owned_human("someone-else")], None),
+            attempt("self-adopter", vec![adopted_human("self-adopter")], None),
+            attempt("adopter", vec![adopted_human("holder")], None),
+            attempt("holder", vec![owned_human("holder")], None),
+        ]);
+        let results = run_candidates(
+            &graph,
+            &[
+                human_candidate("elsewhere", "elsewhere"),
+                human_candidate("self-adopter", "self-adopter"),
+                human_candidate("adopter", "adopter"),
+                human_candidate("holder", "holder"),
+            ],
+        );
+        let mismatch = CandidateDisposition::Excluded(Failure::incomplete(
+            IncompleteReason::HumanLineage(HumanLineageReason::OrdinalZeroAttemptMismatch),
+        ));
+        assert_eq!(results[0].disposition, mismatch);
+        assert_eq!(results[1].disposition, mismatch);
+        assert_eq!(results[2].disposition, CandidateDisposition::Qualified);
+        assert_eq!(
+            results[2].visited_attempts,
+            vec!["adopter".to_string(), "holder".to_string()]
+        );
+        assert_eq!(results[3].disposition, CandidateDisposition::Qualified);
+    }
+
+    #[test]
+    fn adopted_human_is_out_with_the_holder_when_the_holders_context_does_not_match() {
+        let mut stale_holder = attempt("holder", vec![owned_human("holder")], None);
+        stale_holder
+            .recorded
+            .as_mut()
+            .expect("recorded context")
+            .context
+            .target
+            .binding_token_digest = history_context_testing::digest(
+            HistoryDigestDomain::ScopeBindingToken,
+            "an older Scope binding token",
+        );
+        let graph = snapshot(vec![
+            attempt("adopter", vec![adopted_human("holder")], None),
+            stale_holder,
+        ]);
+        let results = run_candidates(&graph, &[human_candidate("adopter", "adopter")]);
+        assert_eq!(
+            results[0].disposition,
+            CandidateDisposition::Excluded(Failure::ineligible(IneligibleReason::Context(
+                ContextMismatch::ScopeBindingTokenChanged
+            )))
+        );
+    }
+
+    #[test]
+    fn human_lineage_rejections_are_closed_reasons_checked_before_the_qualifier() {
+        struct Never;
+        impl CurrentQualifier for Never {
+            fn qualify_attempt(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                QualificationStatus::Current
+            }
+            fn qualify_input(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _ordinal: usize,
+                _input: &HistoryInput,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                panic!("a rejected lineage is not requalified");
+            }
+            fn qualify_generated_output(
+                &mut self,
+                _parent: &AttemptSnapshot,
+                _version_id: &str,
+                _recorded_body_digest: &str,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                QualificationStatus::Current
+            }
+        }
+        let reasons = [
+            HumanLineageReason::Unresolved,
+            HumanLineageReason::HumanNotHuman,
+            HumanLineageReason::MessageVersionInvalidated,
+            HumanLineageReason::CaptureMissing,
+            HumanLineageReason::CaptureScopeMismatch,
+            HumanLineageReason::CaptureNotSuperseded(HistoryCaptureState::Current),
+            HumanLineageReason::CaptureNotSuperseded(HistoryCaptureState::Cancelled),
+            HumanLineageReason::CaptureNotSuperseded(HistoryCaptureState::Closed),
+            HumanLineageReason::NoOrdinalZeroAttempt,
+            HumanLineageReason::MultipleOrdinalZeroAttempts,
+            HumanLineageReason::OrdinalZeroUncountable,
+        ];
+        for reason in reasons {
+            let human = history_input(
+                HistoryInputKind::HumanMessage {
+                    version_id: "human:v1".into(),
+                    lineage: HumanLineage::Rejected(reason),
+                },
+                InputUse::CurrentTurn,
+            );
+            let graph = snapshot(vec![attempt("root", vec![human], None)]);
+            let mut qualifier = Never;
+            let mut remaining = budget();
+            let mut cancelled = || false;
+            let outcome = reauthorize_history(
+                &graph,
+                &[human_candidate("candidate", "root")],
+                &current_context(),
+                NOW_MS,
+                &mut remaining,
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .expect("history run should complete");
+            assert_eq!(
+                outcome.candidates[0].disposition,
+                CandidateDisposition::Excluded(Failure::incomplete(
+                    IncompleteReason::HumanLineage(reason)
+                )),
+                "{reason:?}"
+            );
+        }
+    }
+
+    fn receipt_for_output(
+        attempt_id: &str,
+        output_version: &str,
+        body_digest: Option<&str>,
+    ) -> TerminalReceipt {
+        TerminalReceipt {
+            output_body_digest: body_digest.map(str::to_owned),
+            ..receipt(attempt_id, "receipt", Some(output_version))
+        }
+    }
+
+    #[test]
+    fn generated_output_candidate_needs_the_parents_succeeded_receipt_of_this_output() {
+        let parent = |terminal: Option<TerminalReceipt>| {
+            attempt(
+                "parent",
+                vec![owned_human("parent"), raw("source")],
+                terminal,
+            )
+        };
+        let graph = |terminal: Option<TerminalReceipt>| snapshot(vec![parent(terminal)]);
+        let candidate = [output_candidate("output", "parent", "m1")];
+        // A succeeded receipt that names the output and its digest: adopted,
+        // with the parent's whole turn visited.
+        let results = run_candidates(
+            &graph(Some(receipt_for_output("parent", "m1", Some("sha256:out")))),
+            &candidate,
+        );
+        assert_eq!(results[0].disposition, CandidateDisposition::Qualified);
+        assert_eq!(results[0].visited_attempts, vec!["parent".to_string()]);
+        let missing = |reason| CandidateDisposition::Excluded(Failure::incomplete(reason));
+        // No receipt at all.
+        assert_eq!(
+            run_candidates(&graph(None), &candidate)[0].disposition,
+            missing(IncompleteReason::MissingReceipt("parent".into()))
+        );
+        // A receipt that is not a success.
+        let mut failed = receipt_for_output("parent", "m1", Some("sha256:out"));
+        failed.successful = false;
+        assert_eq!(
+            run_candidates(&graph(Some(failed)), &candidate)[0].disposition,
+            missing(IncompleteReason::ReceiptMismatch("parent".into()))
+        );
+        // A receipt that names another output, one for another attempt, and
+        // one that records no body digest.
+        for terminal in [
+            receipt_for_output("parent", "another-output", Some("sha256:out")),
+            receipt_for_output("another-attempt", "m1", Some("sha256:out")),
+            receipt_for_output("parent", "m1", None),
+        ] {
+            assert_eq!(
+                run_candidates(&graph(Some(terminal)), &candidate)[0].disposition,
+                missing(IncompleteReason::ReceiptMismatch("parent".into()))
+            );
+        }
+    }
+
+    #[test]
+    fn generated_output_candidate_is_out_when_the_parents_turn_or_the_output_is() {
+        let terminal = || Some(receipt_for_output("parent", "m1", Some("sha256:out")));
+        // The parent's own input is stale: the output goes with it.
+        struct RejectRaw;
+        impl CurrentQualifier for RejectRaw {
+            fn qualify_attempt(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                QualificationStatus::Current
+            }
+            fn qualify_input(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _ordinal: usize,
+                input: &HistoryInput,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                if matches!(input.kind, HistoryInputKind::RawSource { .. }) {
+                    QualificationStatus::Excluded(RequalificationReason::SourceStale)
+                } else {
+                    QualificationStatus::Current
+                }
+            }
+            fn qualify_generated_output(
+                &mut self,
+                _parent: &AttemptSnapshot,
+                _version_id: &str,
+                _recorded_body_digest: &str,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                QualificationStatus::Excluded(RequalificationReason::MessageVersionInvalid)
+            }
+        }
+        let graph = snapshot(vec![attempt(
+            "parent",
+            vec![owned_human("parent"), raw("source")],
+            terminal(),
+        )]);
+        let mut qualifier = RejectRaw;
+        let mut remaining = budget();
+        let mut cancelled = || false;
+        let outcome = reauthorize_history(
+            &graph,
+            &[output_candidate("output", "parent", "m1")],
+            &current_context(),
+            NOW_MS,
+            &mut remaining,
+            &mut qualifier,
+            &mut cancelled,
+        )
+        .expect("history run should complete");
+        assert_eq!(
+            outcome.candidates[0].disposition,
+            CandidateDisposition::Excluded(Failure::ineligible(IneligibleReason::Requalification(
+                RequalificationReason::SourceStale
+            )))
+        );
+        // With the input current, the output itself is judged by the live
+        // message version.
+        struct RejectOutput;
+        impl CurrentQualifier for RejectOutput {
+            fn qualify_attempt(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                QualificationStatus::Current
+            }
+            fn qualify_input(
+                &mut self,
+                _attempt: &AttemptSnapshot,
+                _ordinal: usize,
+                _input: &HistoryInput,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                QualificationStatus::Current
+            }
+            fn qualify_generated_output(
+                &mut self,
+                _parent: &AttemptSnapshot,
+                version_id: &str,
+                recorded_body_digest: &str,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                assert_eq!((version_id, recorded_body_digest), ("m1", "sha256:out"));
+                QualificationStatus::Excluded(RequalificationReason::MessageVersionInvalid)
+            }
+        }
+        let mut qualifier = RejectOutput;
+        let mut remaining = budget();
+        let mut cancelled = || false;
+        let outcome = reauthorize_history(
+            &graph,
+            &[output_candidate("output", "parent", "m1")],
+            &current_context(),
+            NOW_MS,
+            &mut remaining,
+            &mut qualifier,
+            &mut cancelled,
+        )
+        .expect("history run should complete");
+        assert_eq!(
+            outcome.candidates[0].disposition,
+            CandidateDisposition::Excluded(Failure::ineligible(IneligibleReason::Requalification(
+                RequalificationReason::MessageVersionInvalid
+            )))
+        );
     }
 
     #[test]
@@ -4347,11 +5147,13 @@ mod tests {
                 id: "first".into(),
                 root_attempt_id: "first".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
             Candidate {
                 id: "second".into(),
                 root_attempt_id: "second".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
         ];
         let mut current = AllowCurrent {
@@ -4388,14 +5190,21 @@ mod tests {
         QualificationKind::D1,
     ];
 
-    fn current_human() -> HistoryInput {
+    /// The Human of `owner`'s current turn, held at ordinal 0 by `owner`.
+    fn owned_human(owner: &str) -> HistoryInput {
         history_input(
             HistoryInputKind::HumanMessage {
                 version_id: "human:v1".into(),
-                explicitly_bound: true,
+                lineage: HumanLineage::Qualified {
+                    owner_attempt_id: owner.into(),
+                },
             },
             InputUse::CurrentTurn,
         )
+    }
+
+    fn current_human() -> HistoryInput {
+        owned_human("root")
     }
 
     fn target_raw() -> HistoryInput {
@@ -4424,11 +5233,17 @@ mod tests {
     }
 
     fn disposition_of_attempt(root: AttemptSnapshot) -> CandidateDisposition {
-        let graph = snapshot(vec![root]);
+        // `owner-turn` is the attempt whose current turn an adopted past
+        // Human was.
+        let graph = snapshot(vec![
+            root,
+            attempt("owner-turn", vec![owned_human("owner-turn")], None),
+        ]);
         let candidate = Candidate {
             id: "candidate".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4497,7 +5312,9 @@ mod tests {
                 history_input(
                     HistoryInputKind::HumanMessage {
                         version_id: "past:v1".into(),
-                        explicitly_bound: true,
+                        lineage: HumanLineage::Qualified {
+                            owner_attempt_id: "owner-turn".into(),
+                        },
                     },
                     InputUse::AdoptedHistory,
                 ),
@@ -4543,6 +5360,7 @@ mod tests {
             id: "generated".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4901,6 +5719,7 @@ mod tests {
             id: "human".into(),
             root_attempt_id: "root".into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         };
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -4950,16 +5769,19 @@ mod tests {
                 id: "child".into(),
                 root_attempt_id: "child".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
             Candidate {
                 id: "parent".into(),
                 root_attempt_id: "parent".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
             Candidate {
                 id: "independent".into(),
                 root_attempt_id: "independent".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
         ];
         let mut current = AllowCurrent {
@@ -5028,6 +5850,7 @@ mod tests {
             id: id.into(),
             root_attempt_id: id.into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         });
         let mut current = AllowCurrent {
             pending_graph: false,
@@ -5532,6 +6355,16 @@ mod tests {
                 self.0 += 1;
                 QualificationStatus::Current
             }
+            fn qualify_generated_output(
+                &mut self,
+                _parent: &AttemptSnapshot,
+                _version_id: &str,
+                _recorded_body_digest: &str,
+                _current: &HistoryComparisonContext,
+            ) -> QualificationStatus {
+                self.0 += 1;
+                QualificationStatus::Current
+            }
         }
 
         let mut currents: Vec<(String, CurrentHistoryContext, CurrentContextUnavailable)> =
@@ -5575,11 +6408,13 @@ mod tests {
                 id: "a".into(),
                 root_attempt_id: "a".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
             Candidate {
                 id: "b".into(),
                 root_attempt_id: "b".into(),
                 adopted_input_ordinals: vec![0],
+                output: None,
             },
         ];
         for (name, current, unavailable) in currents {
@@ -5745,6 +6580,7 @@ mod tests {
             id: id.into(),
             root_attempt_id: id.into(),
             adopted_input_ordinals: vec![0],
+            output: None,
         });
         let mut qualifier = AllowCurrent {
             pending_graph: false,

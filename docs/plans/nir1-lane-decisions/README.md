@@ -26,7 +26,7 @@
 | [hs1-decisions.md](hs1-decisions.md) | HS-1（DR-HS1-1〜。HS1-1〜HS1-4） | 確認済み契約 K4/3 の「実装で決めること」の記録 |
 | [x1-3-decisions.md](x1-3-decisions.md) | X1-3（DR-X1-3-1〜20。投影 Source の定義・解決・登録・feed routing、型付き Revision の版 2、B の preflight、Scope の形の検査、doc-sync） | 確認済み契約 X1/1 の「実装で決めること」の記録 |
 | [da1-decisions.md](da1-decisions.md) | DA-1（DR-DA1-0〜。ST1: 隔離の固定と書出し経路の遮断〔SF-1、E-3、窓の title、Y-1〕、ST2: 外へ出す経路の閉鎖と `license-control`、ST3: 読取の開放の実装〔開放の commit を除く〕、ST4: NIR の区分・Scope の Native の検査・parity の道具・文書） | 確認済み契約 K3/2 の「DA-1 が決める」ことの記録（mutation の前の記録と、subtask ごとの追記） |
-| [hc1-decisions.md](hc1-decisions.md) | HC-1（DR-HC1-1〜。HC1-1: reader の土台〔候補の列挙、capture と ordinal 0 の読取、legacy／未知の版の除外〕。HC1-2〔DR-HC1-4〜4h〕: HistoryTuple を置き換える比較用の文脈、今回の文脈の受け渡し、有効期間。HC1-3〔DR-HC1-3〜3d、5、5a、7〜9、13〕: `CurrentQualifier` の production 実装〔入力ごとの再資格化、期待集合の共有、D1 recompute、Q8 の例外、A3 の評価の共有〕） | 確認済み契約 K4/3 の「実装で決めること」の記録（subtask ごとに追記） |
+| [hc1-decisions.md](hc1-decisions.md) | HC-1（DR-HC1-1〜。HC1-1: reader の土台〔候補の列挙、capture と ordinal 0 の読取、legacy／未知の版の除外〕。HC1-2〔DR-HC1-4〜4h〕: HistoryTuple を置き換える比較用の文脈、今回の文脈の受け渡し、有効期間。HC1-3〔DR-HC1-3〜3d、5、5a、7〜9、13〕: `CurrentQualifier` の production 実装〔入力ごとの再資格化、期待集合の共有、D1 recompute、Q8 の例外、A3 の評価の共有〕。HC1-4〔DR-HC1-6、10〜12、14〜20、13b〕: lineage の組立てと run の入口〔過去の Human の capture lineage、生成出力の親の再資格化、予算の枯渇の扱い、決定的な順〕、受入れの試験、HC-1a の実測、gate の登録） | 確認済み契約 K4/3 の「実装で決めること」の記録（subtask ごとに追記） |
 
 復元した7本は、2026-10-14 の worktree の片付けで、gitignore の対象（`.ralph/`）の置き場所ごと消えたものである。PROVENANCE.md に、ファイルごとの最終版の根拠、確からしさ、PR 本文との差を書いた。PR 本文との差は、decisions 文書が最後に書かれた後の修正か、PR の側の書き足しによるもので、復元の誤りではない。
 
