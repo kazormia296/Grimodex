@@ -886,7 +886,8 @@ fn production_history_budget_n_and_n_plus_one_per_dimension() -> Result<()> {
                     == CandidateDisposition::Excluded(Failure::Incomplete(
                         IncompleteReason::BudgetExhausted,
                     ))
-            });
+            })
+            || has_unpaid_material(&outcome);
         assert!(cut_short, "{dimension:?} at N-1: {outcome:#?}");
         for result in outcome.qualified() {
             assert!(

@@ -100,6 +100,32 @@ pub(crate) enum NoHistory {
     SqlBusy,
 }
 
+/// A message the run read and authenticated for a qualified candidate: the
+/// message version and the body whose digest the reader verified. This is the
+/// reader's own value, handed on; nothing re-reads it (DI1B-2).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryMessageMaterial {
+    pub version_id: OpaqueRef,
+    pub origin: MessageOrigin,
+    pub parent_attempt_id: Option<AttemptId>,
+    /// The version's digest, equal to the digest of `body` as stored.
+    pub body_digest: String,
+    pub body: String,
+}
+
+/// What the run read of one attempt that has a qualified candidate, for the
+/// adoption (DI1B-2): the attempt's time and the Scene body it recorded, and
+/// the bodies of its qualified candidates. A body the run could not read
+/// within the turn's budget is `None` (the adoption does not use that turn).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryAttemptMaterial {
+    pub created_at_ms: i64,
+    /// The `bodyDigest` the attempt's Scene binding recorded.
+    pub scene_body_digest: String,
+    pub human: Option<HistoryMessageMaterial>,
+    pub output: Option<HistoryMessageMaterial>,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SessionHistoryOutcome {
     /// One entry per candidate or unusable attempt, in the evaluation order.
@@ -108,6 +134,8 @@ pub(crate) struct SessionHistoryOutcome {
     /// How many A3 evaluations the turn made: one per Revision and target
     /// Scene, shared by every attempt that holds the Revision.
     pub a3_evaluations: usize,
+    /// The material of the attempts that have a qualified candidate (DI1B-2).
+    pub materials: BTreeMap<AttemptId, HistoryAttemptMaterial>,
 }
 
 impl SessionHistoryOutcome {
@@ -116,6 +144,7 @@ impl SessionHistoryOutcome {
             candidates: Vec::new(),
             without_history: Some(reason),
             a3_evaluations: 0,
+            materials: BTreeMap::new(),
         }
     }
 
@@ -469,6 +498,22 @@ fn run_session_history<C: FnMut() -> bool>(
         }
     }
 
+    // What the adoption needs of each attempt, taken before the traversal's
+    // input takes the loaded attempts (DI1B-2).
+    let attempt_meta: BTreeMap<AttemptId, (i64, String)> = headers
+        .iter()
+        .filter_map(|header| {
+            let stored = attempts.get(&header.id)?.stored.as_ref()?;
+            Some((
+                header.id.clone(),
+                (
+                    header.created_at_ms,
+                    stored.binding.scene.body_digest.clone(),
+                ),
+            ))
+        })
+        .collect();
+
     // Phase 2: the pure traversal over what was read, with the production
     // requalifier on the snapshot's own connection.
     let snapshot = HistorySnapshot {
@@ -497,6 +542,7 @@ fn run_session_history<C: FnMut() -> bool>(
         &mut traversal_cancelled,
     );
     cancellation.checkpoint()?;
+    let a3_evaluations = qualifier.a3_evaluation_count();
     let outcome = match outcome {
         Ok(outcome) => outcome,
         // A failed read: the qualifier kept its error.
@@ -530,11 +576,68 @@ fn run_session_history<C: FnMut() -> bool>(
             visited_attempts,
         });
     }
+    let materials = collect_materials(reader, budget, &candidates, &attempt_meta, cancellation)?;
     Ok(SessionHistoryOutcome {
         candidates,
         without_history: None,
-        a3_evaluations: qualifier.a3_evaluation_count(),
+        a3_evaluations,
+        materials,
     })
+}
+
+/// The bodies of the qualified candidates, newest attempt first, from the
+/// reader. A past Human's message was read (and cached) when its input was
+/// enriched, so that is no second read; an output's body is read here once
+/// when no later attempt adopted it. A body that the turn's budget cannot
+/// pay for, or whose row is gone, is left out (`None`): the adoption does not
+/// use that turn. Any other error stops the run.
+fn collect_materials(
+    reader: &mut GenerationHistorySnapshotReader<'_>,
+    budget: &mut GenerationHistoryReadBudget,
+    candidates: &[SessionCandidateResult],
+    attempt_meta: &BTreeMap<AttemptId, (i64, String)>,
+    cancellation: &GenerationHistorySnapshotCancellation,
+) -> Result<BTreeMap<AttemptId, HistoryAttemptMaterial>> {
+    let mut materials: BTreeMap<AttemptId, HistoryAttemptMaterial> = BTreeMap::new();
+    for result in candidates.iter().filter(|result| {
+        result.disposition == CandidateDisposition::Qualified
+            && matches!(
+                result.kind,
+                SessionCandidateKind::PastHuman | SessionCandidateKind::GeneratedOutput
+            )
+    }) {
+        cancellation.checkpoint()?;
+        let (Some(version_id), Some((created_at_ms, scene_body_digest))) = (
+            result.version_id.as_deref(),
+            attempt_meta.get(&result.attempt_id),
+        ) else {
+            continue;
+        };
+        let body = match reader.read_message(budget, version_id) {
+            Ok(message) => Some(HistoryMessageMaterial {
+                version_id: version_id.to_owned(),
+                origin: message.version.origin,
+                parent_attempt_id: message.version.parent_attempt_id,
+                body_digest: message.version.body_digest,
+                body: message.content,
+            }),
+            Err(error) if is_history_budget_error(&error) || is_missing_row(&error) => None,
+            Err(error) => return Err(error),
+        };
+        let entry = materials
+            .entry(result.attempt_id.clone())
+            .or_insert_with(|| HistoryAttemptMaterial {
+                created_at_ms: *created_at_ms,
+                scene_body_digest: scene_body_digest.clone(),
+                human: None,
+                output: None,
+            });
+        match result.kind {
+            SessionCandidateKind::PastHuman => entry.human = body,
+            _ => entry.output = body,
+        }
+    }
+    Ok(materials)
 }
 
 /// Re-authorize the history of the current turn's chat session inside the

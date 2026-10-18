@@ -134,10 +134,6 @@ pub(crate) const HISTORY_MAX_MESSAGES: usize = 32;
 pub(crate) const HISTORY_MAX_MESSAGE_BYTES: usize = 64 * 1024;
 /// The most the history may take of the request's token budget, after the
 /// required Raw and the accepted IR (which it never displaces). Unit: tokens.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "DI1B-3 packs the adopted turns into the request")
-)]
 pub(crate) const HISTORY_MAX_TOKENS: usize = 8_192;
 /// References the adopted history adds to the new attempt for each message: one
 /// input row and the qualification rows of a past Human or output (K4/3

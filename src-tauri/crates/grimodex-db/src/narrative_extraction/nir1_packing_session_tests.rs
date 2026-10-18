@@ -1230,6 +1230,23 @@ fn requalification_reason(reason: RequalificationReason) -> Failure {
 
 use SessionCandidateKind::{Attempt, GeneratedOutput, PastHuman};
 
+/// A qualified candidate whose body the run could not pay for (the last
+/// charge of a run is the read of an output no later attempt adopted, DI1B-2):
+/// the candidate is qualified, the adoption has no body for it. That is a
+/// budget cut like an exclusion, not a wrong answer.
+fn has_unpaid_material(outcome: &SessionHistoryOutcome) -> bool {
+    outcome.qualified().any(|result| {
+        outcome
+            .materials
+            .get(&result.attempt_id)
+            .is_none_or(|material| match result.kind {
+                PastHuman => material.human.is_none(),
+                GeneratedOutput => material.output.is_none(),
+                Attempt => false,
+            })
+    })
+}
+
 /// Both candidates of the turn are adopted.
 fn assert_turn_adopted(outcome: &SessionHistoryOutcome, turn: &Turn) {
     assert!(
@@ -2752,7 +2769,8 @@ fn budget_boundary_n_and_n_plus_one_per_ledger_dimension() -> Result<()> {
                     == CandidateDisposition::Excluded(Failure::Incomplete(
                         IncompleteReason::BudgetExhausted,
                     ))
-            });
+            })
+            || has_unpaid_material(&outcome);
         assert!(cut_short, "{dimension:?} at N-1: {outcome:#?}");
         for result in outcome.qualified() {
             assert!(
@@ -3661,3 +3679,7 @@ fn graph_derived_attempts_stay_pending_and_leave_the_next_turn() -> Result<()> {
 // DI1B-1: the production history budget and the entry for the D-final snapshot.
 #[path = "nir1_history_budget_tests.rs"]
 mod history_budget_tests;
+
+// DI1B-2: the adoption rule on the outcome of a real session.
+#[path = "nir1_history_adoption_session_tests.rs"]
+mod history_adoption_session_tests;

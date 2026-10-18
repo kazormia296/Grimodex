@@ -122,6 +122,8 @@ mod human_materialization;
 mod material_membership;
 mod material_membership_root;
 #[cfg(feature = "native-current-human-capture")]
+mod nir1_history_adoption;
+#[cfg(feature = "native-current-human-capture")]
 mod nir1_history_budget;
 #[cfg(feature = "native-current-human-capture")]
 mod nir1_history_context;
