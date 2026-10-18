@@ -168,7 +168,7 @@ proposal/7の条件（draftの「確認の扱い」「受入れ」を写す）: 
 
 1文の範囲: この文はdraft冒頭の「ユーザーが批准すること」の1〜9だけを批准する（範囲の正本。台帳は別の列挙を持たない）。内容は、NC-1（default sessionのblackholeのSOCKS5 proxyと `<-loopback>`、全webContentsの `disable_non_proxied_udp`、`host-resolver-rules`）、AL-0（直接通信を許す先は0件）、RS-1（名前解決を許す固定の4名。GitHubの更新の3 hostと `localhost`）、LS-1（Mainの `127.0.0.1` のlistener。同時256以下、保持5秒以下）、MD-1（modeを問わずunrestrictedにも及ぼす。default sessionの最初の接触で `initBackend` と最初の窓の前に完了する）、FC-1（起動前の失敗と起動前の共有の期限5秒の超過は窓を開かず固定コードをstderrに出して `app.quit()`）、unrestrictedの挙動への影響の13項目、Positive (9)・Negative (23)の置換・(29)〜(34)とゲート表、「変える点」の1〜9である。依存する契約（K2、K4、K5、K6、`graph-limited-binding`、`nir1-defensive-resource-limits`）は確認しない。draftの推奨の組だけを確認し、推奨と違う案（辞書を残す案、開示して受け入れる案、O-2をやめる案など）は確認していない。contractIdは `caller-profile-egress`（K3/2と同じ。`nir1-l6-l9-contract-proposal/7` が確認済みの `/6` の一部を同じcontractIdの新しいdraftRefで改訂した前例と同じ形）。
 
-ゲート（draftのゲート表が正本。ここに条件を再掲しない）: **G-open**（`own-data-read` を開放するcommit。DA-1のST3。Linuxの最終候補）と **G-pub**（PUB-G。3 OSのpackaged smoke。CP-2bの範囲にY-1を各OSで行うことが加わる）。開放commitはG-openが通った記録があれば入れてよく、開放の許可の出所はK3/2のO-2の確認で、K3/3は条件を足す。release／tagは縛らない。
+ゲート（draftのゲート表が正本。ここに条件を再掲しない）: **G-open**（`own-data-read` を開放するcommit。DA-1のST3。Linuxの最終候補）と **G-pub**（PUB-G。3 OSのpackaged smoke。CP-2bの範囲にY-1を各OSで行うことが加わる）。開放commitは、NC-1のmergeとG-openが通った記録の後でなければ入れない。開放の許可の出所はK3/2のO-2の確認に限り、K3/3は開放の前の条件を足すだけで、開放そのものを許可しない。release／tagは縛らない。
 
 K3/3が許さないもの: `own-data-read` を開放するcommit（DA-1のST3）そのもの（K3/3は開放の前提であるY-1の外向き0を成立させる設計を確定するだけで、NC-1は未実装である）。PUB-GとSession C-1の承認（Graphの公開、activation UIの公開、開示の文言）。local送信（PUB-L）。許可先や名前解決を許す名前の追加、閉じた集合の外の新しいnetwork設定、閉じ込めを止める入口、新しいauthority・保存先・送信先。NC-1の実装、G-openとG-pubの通過は、このPRで行っていない。
 
