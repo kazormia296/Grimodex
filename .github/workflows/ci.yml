@@ -1306,6 +1306,11 @@ jobs:
           cargo test --locked --manifest-path src-tauri/Cargo.toml
           -p grimodex-db --lib windows_atomic_write
 
+      - name: Test NIR-1 local transport socket shutdown and bounded join on Windows
+        run: >-
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          -p grimodex-core --lib nir1_local_io
+
       - name: Test workspace restore maintenance barrier on Windows
         run: >-
           cargo test --locked --manifest-path src-tauri/Cargo.toml

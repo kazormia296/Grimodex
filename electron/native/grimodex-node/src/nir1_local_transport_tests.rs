@@ -1154,6 +1154,42 @@ fn c11_a_listener_that_is_not_openai_compatible_still_gets_the_whole_request() {
 }
 
 // ---------------------------------------------------------------------------
+// C12: the bounded channel holds the reader back and loses nothing.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn c12_a_full_channel_slows_the_reader_without_losing_or_reordering_output() {
+    let fixture = OwnerFixture::new();
+    let mut config = fast_config();
+    config.channel_messages = 2;
+    config.channel_bytes = 64;
+    let mut script = vec![write(HEAD_CHUNKED)];
+    let mut want = String::new();
+    for group in 0..40 {
+        let mut piece = String::new();
+        for index in 0..10 {
+            let token = format!("{:03}", group * 10 + index);
+            piece.push_str(&text_event(&token, None));
+            want.push_str(&token);
+        }
+        script.push(write(chunk(&piece)));
+    }
+    script.push(write(chunk(&text_event("!", Some("stop")))));
+    script.push(write(chunk(DONE)));
+    script.push(write("0\r\n\r\n"));
+    want.push('!');
+    let server = TestServer::start(script);
+    let endpoint = server.endpoint();
+    let claimed = claim_writing(&fixture, 0, "c12", &endpoint);
+    let (run, id, _) = start(claimed, "c12", &endpoint, config);
+    let outcome = finished(&run);
+    assert_eq!(outcome.state, Nir1LocalRunState::Succeeded, "{outcome:?}");
+    assert_eq!(run.take_delta(usize::MAX).text, want, "in order, complete");
+    assert_terminal(&fixture, &id, "succeeded", "parsed");
+    assert_eq!(server.connections(), 1);
+}
+
+// ---------------------------------------------------------------------------
 // L1 - L3: cancel.
 // ---------------------------------------------------------------------------
 
@@ -1442,6 +1478,49 @@ fn l5_a_closing_gate_cancels_the_send_and_a_transition_waits_for_the_terminal() 
     transition.join().expect("transition");
     assert_terminal(&fixture, &id, "cancelled", "not-attempted");
     assert_eq!(fixture.gate().active_lease_count(), 0);
+}
+
+#[test]
+fn l5b_begin_recovery_does_not_wait_for_a_transport_in_flight() {
+    // K5/3 DT-5 matrix: the transport holds no DT-1 lease, so the recovery of
+    // the Ready entry that closed the gate starts at once even though the send
+    // is still being cancelled; the supervisor sees the lost entry and cancels.
+    let fixture = Arc::new(OwnerFixture::new());
+    let server = TestServer::start(vec![
+        write(HEAD_CHUNKED),
+        write(chunk(&text_event("He", None))),
+        Step::WaitPeerClose,
+    ]);
+    let endpoint = server.endpoint();
+    let claimed = claim_writing(&fixture, 0, "l5b", &endpoint);
+    let (run, id, _) = start(claimed, "l5b", &endpoint, fast_config());
+    collect_text_until(&run, "He");
+    assert_eq!(fixture.gate().active_lease_count(), 0);
+
+    let binding = fixture.binding();
+    fixture
+        .gate()
+        .on_lifecycle_edge(&LifecycleEdge::ReadyPublished {
+            binding: binding.clone(),
+            revision: u64::MAX - 1,
+        });
+    let started = Instant::now();
+    let recovery = fixture.gate().begin_recovery(
+        &binding,
+        u64::MAX - 1,
+        crate::nir1_startup_barrier::NIR1_STARTUP_LEASE_DRAIN_LIMIT,
+    );
+    assert!(recovery.is_some(), "no lease: the recovery begins");
+    assert!(
+        started.elapsed() < Duration::from_millis(250),
+        "begin_recovery did not wait for the transport: {:?}",
+        started.elapsed()
+    );
+    let outcome = finished(&run);
+    assert_eq!(outcome.state, Nir1LocalRunState::Cancelled, "{outcome:?}");
+    assert_terminal(&fixture, &id, "cancelled", "not-attempted");
+    assert_eq!(terminal_events(&fixture).len(), 1);
+    drop(recovery);
 }
 
 // ---------------------------------------------------------------------------
@@ -1780,6 +1859,24 @@ fn take_prefix_cuts_at_character_boundaries_and_always_makes_progress() {
 }
 
 #[test]
+fn the_default_config_is_the_documented_final_value_set() {
+    // DR-DT5-26. A change here is a change of the K1b numbers: tightening is
+    // free, loosening after merge needs a new confirmation.
+    let config = Nir1LocalTransportConfig::DEFAULT;
+    assert_eq!(config.connect_timeout, Duration::from_secs(1));
+    assert_eq!(config.request_write_timeout, Duration::from_secs(10));
+    assert_eq!(config.first_byte_timeout, Duration::from_secs(300));
+    assert_eq!(config.event_gap_timeout, Duration::from_secs(60));
+    assert_eq!(config.total_timeout, Duration::from_secs(600));
+    assert_eq!(config.done_body_end_timeout, Duration::from_secs(2));
+    assert_eq!(config.cancel_poll, Duration::from_millis(50));
+    assert_eq!(config.join_limit, Duration::from_secs(2));
+    assert_eq!(config.channel_messages, 256);
+    assert_eq!(config.channel_bytes, 1024 * 1024);
+    assert_eq!(IO_SLICE, Duration::from_millis(100));
+}
+
+#[test]
 fn the_default_config_is_valid_and_orders_the_connect_and_join_limits() {
     assert!(Nir1LocalTransportConfig::DEFAULT.is_valid());
     assert!(
@@ -1789,4 +1886,75 @@ fn the_default_config_is_valid_and_orders_the_connect_and_join_limits() {
     let mut bad = Nir1LocalTransportConfig::DEFAULT;
     bad.join_limit = bad.connect_timeout;
     assert!(!bad.is_valid());
+}
+
+// ---------------------------------------------------------------------------
+// M1: measurement (T4, K1b rule 5). `cargo test ... -- --ignored --nocapture
+// m1`. Not a pass/fail test of a product rule: it prints the timings recorded
+// in dt5-decisions.md (DR-DT5-26).
+// ---------------------------------------------------------------------------
+
+fn cancel_latency_samples(suppress_shutdown: bool, runs: usize) -> Vec<Duration> {
+    let mut samples = Vec::new();
+    for round in 0..runs {
+        let fixture = OwnerFixture::new();
+        let server = TestServer::start(vec![
+            write(HEAD_CHUNKED),
+            write(chunk(&text_event("He", None))),
+            Step::WaitPeerClose,
+        ]);
+        let endpoint = server.endpoint();
+        let key = format!("m1-{suppress_shutdown}-{round}");
+        let claimed = claim_writing(&fixture, 0, &key, &endpoint);
+        let hooks = Arc::new(TransportTestHooks::default());
+        hooks
+            .suppress_shutdown
+            .store(suppress_shutdown, Ordering::Release);
+        let Claimed { owner, .. } = claimed;
+        // The product values, not the fast test values.
+        let run = start_local_generation(
+            owner,
+            input_for(
+                &key,
+                &endpoint,
+                Nir1LocalSendPurpose::Writing,
+                Nir1LocalTransportConfig::DEFAULT,
+                Some(hooks),
+            ),
+        );
+        collect_text_until(&run, "He");
+        let started = Instant::now();
+        run.cancel();
+        let outcome = finished(&run);
+        samples.push(started.elapsed());
+        assert_eq!(outcome.state, Nir1LocalRunState::Cancelled, "{outcome:?}");
+        assert!(!outcome.io_thread_detached);
+    }
+    samples.sort();
+    samples
+}
+
+fn summarize(label: &str, samples: &[Duration]) {
+    let at = |q: usize| samples[(samples.len() * q / 100).min(samples.len() - 1)];
+    eprintln!(
+        "M1 {label}: n={} min={:?} p50={:?} p90={:?} max={:?}",
+        samples.len(),
+        samples[0],
+        at(50),
+        at(90),
+        samples[samples.len() - 1]
+    );
+}
+
+#[test]
+#[ignore = "measurement for DR-DT5-26; run with --ignored --nocapture"]
+fn m1_cancel_to_terminal_latency_with_the_product_values() {
+    summarize(
+        "cancel() to durable terminal, shutdown wakes the read",
+        &cancel_latency_samples(false, 20),
+    );
+    summarize(
+        "cancel() to durable terminal, shutdown suppressed (abort flag + 100 ms slice)",
+        &cancel_latency_samples(true, 20),
+    );
 }

@@ -33,7 +33,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use std::io::{self, Read, Write};
-use std::net::{Shutdown, SocketAddr, TcpStream};
+use std::net::{SocketAddr, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -44,6 +44,7 @@ use grimodex_core::canonical_json_string;
 use grimodex_core::narrative_nir1_receipt::{
     Completion, OutputChannel, OutputObservationError, OutputObserver, TerminalStatus,
 };
+use grimodex_core::nir1_local_io::{join_bounded, shutdown_both, JoinOutcome, IO_SLICE};
 use grimodex_core::nir1_local_send_policy::{Nir1LocalSendPolicyBasis, Nir1LocalSendPurpose};
 use grimodex_core::nir1_local_wire::{
     build_request_head, Limits, Progress, ResponseParser, WireEvent, WireFailure,
@@ -90,9 +91,10 @@ pub(crate) struct Nir1LocalTransportConfig {
 }
 
 impl Nir1LocalTransportConfig {
-    /// Initial values (DR-DT5-9; the measurement of T4 confirms or tightens
-    /// them). `connect_timeout` is shorter than `join_limit`: a cancel seen
-    /// while connecting waits for the connect to end, and then the join.
+    /// Final values of DT-5 (DR-DT5-21, DR-DT5-26; no real server could be
+    /// measured, so none may be loosened without a new confirmation).
+    /// `connect_timeout` is shorter than `join_limit`: a cancel seen while
+    /// connecting waits for the connect to end, and then the join.
     pub(crate) const DEFAULT: Self = Self {
         wire: Limits::DEFAULT,
         connect_timeout: Duration::from_secs(1),
@@ -124,10 +126,6 @@ impl Nir1LocalTransportConfig {
             && self.channel_bytes > 0
     }
 }
-
-/// A blocked read or write wakes at least this often to look at the abort flag,
-/// so a detached I/O thread ends even where `shutdown` does not wake it.
-const IO_SLICE: Duration = Duration::from_millis(100);
 
 impl Default for Nir1LocalTransportConfig {
     fn default() -> Self {
@@ -821,30 +819,6 @@ fn io_run(plan: &IoPlan, slot: &mut Option<TcpStream>, head_ok: &mut bool) -> Io
 // The supervisor thread.
 // ---------------------------------------------------------------------------
 
-enum JoinOutcome {
-    Joined,
-    Panicked,
-    Overrun,
-}
-
-/// `std` has no timed join: poll `is_finished`. An overrun drops the handle,
-/// which detaches the thread.
-fn join_bounded(handle: JoinHandle<()>, limit: Duration) -> JoinOutcome {
-    let deadline = Instant::now() + limit;
-    while !handle.is_finished() {
-        if Instant::now() >= deadline {
-            drop(handle);
-            return JoinOutcome::Overrun;
-        }
-        thread::sleep(Duration::from_millis(1));
-    }
-    if handle.join().is_ok() {
-        JoinOutcome::Joined
-    } else {
-        JoinOutcome::Panicked
-    }
-}
-
 struct IoSide {
     rx: Option<Receiver<IoMsg>>,
     go_tx: Option<Sender<()>>,
@@ -873,7 +847,7 @@ impl IoSide {
             #[cfg(not(test))]
             let suppressed = false;
             if !suppressed {
-                let _ = socket.shutdown(Shutdown::Both);
+                shutdown_both(&socket);
             }
         }
         let outcome = match self.handle.take() {

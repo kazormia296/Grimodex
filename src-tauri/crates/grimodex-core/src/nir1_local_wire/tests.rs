@@ -1455,11 +1455,13 @@ fn n4_trailers_count_toward_the_header_limit() {
 }
 
 #[test]
-fn n4_default_limits_are_the_documented_initial_values() {
+fn n4_default_limits_are_the_documented_final_values() {
     let limits = Limits::DEFAULT;
     assert_eq!(limits.max_header_bytes, 16 * 1024);
     assert_eq!(limits.max_event_bytes, 256 * 1024);
     assert_eq!(limits.max_body_bytes, 64 * 1024 * 1024);
+    assert_eq!(limits.max_text_bytes, 2 * 1024 * 1024);
+    assert_eq!(limits.max_thinking_bytes, 2 * 1024 * 1024);
     assert_eq!(limits.max_chunk_size_digits, 8);
     assert_eq!(limits.max_chunk_bytes, 4 * 1024 * 1024);
     assert_eq!(limits.max_chunk_line_bytes, 1024);
@@ -1751,5 +1753,123 @@ fn the_wire_layer_has_no_io_and_no_clock() {
         ] {
             assert!(!code.contains(banned), "{banned}");
         }
+    }
+}
+
+// ------------------------------------------------------------ T4: body size
+
+/// Event shapes that publicly documented OpenAI-compatible servers are described
+/// as sending for one token (llama.cpp's server, vLLM, Ollama's `/v1`). They are
+/// ASSUMED shapes, not captures: no model was available to measure a real
+/// server (DR-DT5-13, DR-DT5-26). The model name and id lengths are on the long
+/// side so that the bytes per event are not underestimated.
+fn assumed_token_event(shape: usize, content: &str) -> String {
+    let model = "Meta-Llama-3.1-70B-Instruct-Q4_K_M-00001-of-00002";
+    let id = "chatcmpl-0123456789abcdef0123456789abcdef";
+    let json = match shape {
+        // llama.cpp style: choices first, then created/id/model/fingerprint/object.
+        0 => format!(
+            r#"{{"choices":[{{"finish_reason":null,"index":0,"delta":{{"content":"{content}"}}}}],"created":1700000000,"id":"{id}","model":"{model}","system_fingerprint":"b4000-0123abcd","object":"chat.completion.chunk"}}"#
+        ),
+        // vLLM style: logprobs and stop_reason keys on every choice.
+        1 => format!(
+            r#"{{"id":"{id}","object":"chat.completion.chunk","created":1700000000,"model":"{model}","choices":[{{"index":0,"delta":{{"content":"{content}"}},"logprobs":null,"finish_reason":null,"stop_reason":null}}]}}"#
+        ),
+        // Ollama /v1 style: the role is repeated in every delta.
+        _ => format!(
+            r#"{{"id":"{id}","object":"chat.completion.chunk","created":1700000000,"model":"{model}","system_fingerprint":"fp_ollama","choices":[{{"index":0,"delta":{{"role":"assistant","content":"{content}"}},"finish_reason":null}}]}}"#
+        ),
+    };
+    event(&json)
+}
+
+/// The largest per-event size among the assumed shapes, for a one-character
+/// token. `max_tokens` is the user's `custom_max_output`; K5/3's body limit has
+/// to carry a stream of that many events, which the text limit (2 MiB) alone
+/// would not bound.
+fn largest_assumed_event_bytes() -> usize {
+    (0..3)
+        .map(|shape| assumed_token_event(shape, "x").len())
+        .max()
+        .unwrap()
+}
+
+#[test]
+fn t4_the_body_limit_carries_131072_assumed_token_events() {
+    // 131072 tokens is a 128k-token output budget (a large reasoning run).
+    let per_event = largest_assumed_event_bytes();
+    assert!(per_event <= 400, "assumed event size: {per_event}");
+    let total = 131_072 * per_event;
+    assert!(
+        total <= Limits::DEFAULT.max_body_bytes,
+        "{total} bytes fit the body limit"
+    );
+    // The headroom is finite on purpose: the body limit is a fail-safe, not a
+    // token budget. More than ~220k events of this size fail the attempt.
+    assert!(Limits::DEFAULT.max_body_bytes / per_event < 250_000);
+}
+
+#[test]
+fn t4_a_stream_of_many_assumed_events_is_parsed_in_the_body_limit() {
+    // 20000 one-character events (the common few-thousand-token answer, with
+    // margin) in all three shapes, chunked at 7 bytes and at 4096 bytes: the
+    // same terminal, and the wire bytes fit the limit.
+    for shape in 0..3 {
+        let mut body = String::new();
+        let mut want = String::new();
+        for index in 0..20_000 {
+            let piece = if index % 2 == 0 { "a" } else { "\u{3042}" };
+            body.push_str(&assumed_token_event(shape, piece));
+            want.push_str(piece);
+        }
+        body.push_str(&chunk_event(json!({}), Some("stop")));
+        body.push_str(DONE);
+        for size in [7, 4096] {
+            let bytes = response_chunked(&body, size);
+            let outcome = feed(&bytes, &[], Limits::DEFAULT);
+            assert_eq!(outcome.result, Ok(()), "shape {shape} chunk {size}");
+            assert_eq!(texts(&outcome).0, want, "shape {shape} chunk {size}");
+        }
+    }
+}
+
+/// Measurement for DR-DT5-26 (`-- --ignored --nocapture t4_measure`): bytes per
+/// event and parse throughput of this implementation in the `dev` profile
+/// (debug build, so a lower bound of the release speed).
+#[test]
+#[ignore = "measurement for DR-DT5-26; run with --ignored --nocapture"]
+fn t4_measure_the_assumed_event_sizes_and_the_parse_throughput() {
+    for shape in 0..3 {
+        eprintln!(
+            "T4 shape {shape}: {} bytes per one-character event ({} bytes with a 3-byte character)",
+            assumed_token_event(shape, "x").len(),
+            assumed_token_event(shape, "\u{3042}").len()
+        );
+    }
+    for shape in 0..3 {
+        let mut body = String::new();
+        let events = 131_072;
+        for _ in 0..events {
+            body.push_str(&assumed_token_event(shape, "x"));
+        }
+        body.push_str(&chunk_event(json!({}), Some("stop")));
+        body.push_str(DONE);
+        let bytes = response_chunked(&body, 16 * 1024);
+        let started = std::time::Instant::now();
+        let mut parser = ResponseParser::new(Limits::DEFAULT);
+        let mut out = Vec::new();
+        let mut progress = Progress::NeedMore;
+        for part in bytes.chunks(16 * 1024) {
+            progress = parser.push(part, &mut out).expect("parse");
+        }
+        assert_eq!(progress, Progress::Finished);
+        let elapsed = started.elapsed();
+        eprintln!(
+            "T4 shape {shape}: {events} events, {} wire bytes ({:.1}% of the body limit), parsed in {elapsed:?} ({:.1} MiB/s, {:.0} events/s)",
+            bytes.len(),
+            100.0 * bytes.len() as f64 / Limits::DEFAULT.max_body_bytes as f64,
+            bytes.len() as f64 / (1024.0 * 1024.0) / elapsed.as_secs_f64(),
+            events as f64 / elapsed.as_secs_f64()
+        );
     }
 }

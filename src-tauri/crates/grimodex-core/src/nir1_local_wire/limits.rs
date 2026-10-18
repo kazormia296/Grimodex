@@ -40,9 +40,12 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// Initial values (DR-DT5-9; the body limit is finalized by the
-    /// measurement of T4): header 16 KiB, event 256 KiB, body 64 MiB, text and
-    /// thinking 2 MiB each, chunk size 8 hex digits and 4 MiB, chunk line 1 KiB.
+    /// Final values of DT-5 (DR-DT5-9, DR-DT5-26): header 16 KiB, event
+    /// 256 KiB, body 64 MiB, text and thinking 2 MiB each, chunk size 8 hex
+    /// digits and 4 MiB, chunk line 1 KiB. The body limit carries about 220k
+    /// events of the largest assumed server shape (~295 bytes per token), that
+    /// is a 128k-token output with a margin. No real server could be measured,
+    /// so none of these may be loosened without a new confirmation.
     pub const DEFAULT: Limits = Limits {
         max_header_bytes: 16 * 1024,
         max_event_bytes: 256 * 1024,
