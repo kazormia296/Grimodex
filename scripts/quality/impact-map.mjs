@@ -421,6 +421,11 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "electron/main/protocol.test.ts",
         "electron/main/rendererIsolation.static.test.ts",
         "electron/main/rendererIsolationProbeRecord.test.ts",
+        "electron/main/rendererContainment.test.ts",
+        "electron/main/rendererContainmentListener.test.ts",
+        "electron/main/rendererContainmentStartup.test.ts",
+        "electron/main/rendererContainment.startupOrder.test.ts",
+        "electron/main/rendererContainmentGOpenRecord.test.ts",
         "electron/main/security.test.ts",
         "electron/main/shellCommands.test.ts",
         "electron/main/stateFileReach.integration.test.ts",
@@ -433,6 +438,13 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "electron/shared/nir1EntityRelationIpcContract.test.ts",
       ],
       ["pnpm", "exec", "tsc", "-p", "electron/tsconfig.json", "--noEmit"],
+      [
+        "node",
+        "--test",
+        // NC-1 の G-open の判定の道具（実機の harness は CI に入れない。H3）。
+        "electron/scripts/webrtc-block-probe-verdict.test.mjs",
+        "electron/scripts/webrtc-block-probe-nc1.test.mjs",
+      ],
       [
         "node",
         "--test",

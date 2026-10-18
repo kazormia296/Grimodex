@@ -341,6 +341,19 @@ requirements:
       - electron/scripts/renderer-isolation-probe-renderer.js
       - electron/scripts/renderer-isolation-probe.record.json
       - electron/scripts/renderer-isolation-probe.legacy-control.record.json
+      - electron/main/rendererContainment.ts
+      - electron/main/rendererContainmentListener.ts
+      - electron/main/rendererContainmentStartup.ts
+      - electron/scripts/webrtc-block-probe.mjs
+      - electron/scripts/webrtc-block-probe-candidates.mjs
+      - electron/scripts/webrtc-block-probe-main.mjs
+      - electron/scripts/webrtc-block-probe-nc1.mjs
+      - electron/scripts/webrtc-block-probe-order.mjs
+      - electron/scripts/webrtc-block-probe-order-main.cjs
+      - electron/scripts/webrtc-block-probe-renderer.js
+      - electron/scripts/webrtc-block-probe-verdict.mjs
+      - electron/scripts/webrtc-block-probe-dnslog.c
+      - docs/plans/nir1-lane-decisions/nc1-g-open/SHA256SUMS
       - electron/native/grimodex-node/src/profile_egress.rs
       - electron/native/grimodex-node/src/license_mode.rs
       - electron/native/grimodex-node/src/publication_guard.rs
@@ -407,6 +420,13 @@ requirements:
       - electron/main/protocol.test.ts
       - electron/main/rendererIsolation.static.test.ts
       - electron/main/rendererIsolationProbeRecord.test.ts
+      - electron/main/rendererContainment.test.ts
+      - electron/main/rendererContainmentListener.test.ts
+      - electron/main/rendererContainmentStartup.test.ts
+      - electron/main/rendererContainment.startupOrder.test.ts
+      - electron/main/rendererContainmentGOpenRecord.test.ts
+      - electron/scripts/webrtc-block-probe-verdict.test.mjs
+      - electron/scripts/webrtc-block-probe-nc1.test.mjs
       - electron/main/security.test.ts
       - electron/main/shellCommands.test.ts
       - electron/main/stateFileReach.integration.test.ts

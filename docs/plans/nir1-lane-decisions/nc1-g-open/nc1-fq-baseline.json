@@ -1,0 +1,2010 @@
+{
+  "label": "nc1-fq-baseline",
+  "electron": "43.5.0",
+  "cm": {
+    "dns": true,
+    "gvt1": true,
+    "localhostRows": true,
+    "linklocal": true,
+    "fqdn": true
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 43,
+    "probes": 141,
+    "canaryHits": 277,
+    "unattributed": 0,
+    "proxyHits": 0,
+    "mdnsQueries": null,
+    "ctlHits": 1
+  },
+  "exit": {
+    "code": 0,
+    "signal": null
+  },
+  "nc1": null,
+  "extra": {
+    "loadOutcome": "loaded"
+  },
+  "appRequests": [
+    "/index.html",
+    "/index.html",
+    "/assets/probe-worker.js",
+    "/index.html",
+    "/index.html",
+    "/index.html",
+    "/index.html",
+    "/index.html",
+    "/index.html",
+    "/assets/data.json",
+    "/assets/data.json",
+    "/assets/data.json",
+    "/assets/nope.js",
+    "/assets/nope.js",
+    "/assets/nope.js"
+  ],
+  "httpdHits": 0,
+  "mdns": null,
+  "rows": [
+    {
+      "id": "control.same-origin-fetch",
+      "outcome": "status:200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]"
+      ]
+    },
+    {
+      "id": "control.bundled-worker",
+      "outcome": "worker-ok:x",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "control.rtc-defined",
+      "outcome": "function",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "stunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.stun.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "stunname-<n>.probe.test.",
+        "stunsname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.stuns.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "stunsname-<n>.probe.test.",
+        "turnudpname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.turn-udp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "turnudpname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.turn-tcp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "turntcpname-<n>.probe.test.",
+        "turntcpname-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.turns.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "turnsname-<n>.probe.test.",
+        "turnsname-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.turns-tcp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "turnstcpname-<n>.probe.test.",
+        "turnstcpname-<n>.probe.test",
+        "allowed-stunallowed-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.stun.allowed",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-stunallowed-<n>.probe.test.",
+        "allowed-stunsallowed-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.stuns.allowed",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-stunsallowed-<n>.probe.test.",
+        "allowed-turnudpallowed-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.turn-udp.allowed",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turnudpallowed-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.turn-tcp.allowed",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turntcpallowed-<n>.probe.test.",
+        "allowed-turntcpallowed-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.turns.allowed",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turnsallowed-<n>.probe.test.",
+        "allowed-turnsallowed-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.turns-tcp.allowed",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turnstcpallowed-<n>.probe.test.",
+        "allowed-turnstcpallowed-<n>.probe.test",
+        "allowed-stunallowedp-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.stun.allowedp",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-stunallowedp-<n>.probe.test.",
+        "allowed-stunsallowedp-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.stuns.allowedp",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-stunsallowedp-<n>.probe.test.",
+        "allowed-turnudpallowedp-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.turn-udp.allowedp",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turnudpallowedp-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.turn-tcp.allowedp",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turntcpallowedp-<n>.probe.test.",
+        "allowed-turntcpallowedp-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.turns.allowedp",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turnsallowedp-<n>.probe.test.",
+        "allowed-turnsallowedp-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.turns-tcp.allowedp",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "allowed-turnstcpallowedp-<n>.probe.test.",
+        "allowed-turnstcpallowedp-<n>.probe.test",
+        "ext-stunext-<n>.blocked.invalid."
+      ]
+    },
+    {
+      "id": "main.stun.ext",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "ext-stunext-<n>.blocked.invalid.",
+        "ext-stunsext-<n>.blocked.invalid."
+      ]
+    },
+    {
+      "id": "main.stuns.ext",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "ext-stunsext-<n>.blocked.invalid.",
+        "ext-turnudpext-<n>.blocked.invalid."
+      ]
+    },
+    {
+      "id": "main.turn-udp.ext",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "ext-turnudpext-<n>.blocked.invalid."
+      ]
+    },
+    {
+      "id": "main.turn-tcp.ext",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "ext-turntcpext-<n>.blocked.invalid.",
+        "ext-turntcpext-<n>.blocked.invalid"
+      ]
+    },
+    {
+      "id": "main.turns.ext",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "ext-turnsext-<n>.blocked.invalid.",
+        "ext-turnsext-<n>.blocked.invalid"
+      ]
+    },
+    {
+      "id": "main.turns-tcp.ext",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "ext-turnstcpext-<n>.blocked.invalid.",
+        "ext-turnstcpext-<n>.blocked.invalid"
+      ]
+    },
+    {
+      "id": "main.stun.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "q-127.0.0.1-other:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stuns.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "q-127.0.0.1-other:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-udp.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 6,
+      "leakDetail": {
+        "q-127.0.0.1-other:udp": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-tcp.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns-tcp.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stun.lo4b",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "r-127.0.0.2:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stuns.lo4b",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "r-127.0.0.2:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-udp.lo4b",
+      "outcome": "gathering:gathering",
+      "leaked": 6,
+      "leakDetail": {
+        "r-127.0.0.2:udp": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-tcp.lo4b",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "r-127.0.0.2:tcp-connect": 1,
+        "r-127.0.0.2:tcp-data": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns.lo4b",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "r-127.0.0.2:tcp-connect": 1,
+        "r-127.0.0.2:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns-tcp.lo4b",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "r-127.0.0.2:tcp-connect": 1,
+        "r-127.0.0.2:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stun.lo6",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "s-[::1]:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stuns.lo6",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "s-[::1]:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-udp.lo6",
+      "outcome": "gathering:gathering",
+      "leaked": 6,
+      "leakDetail": {
+        "s-[::1]:udp": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-tcp.lo6",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "s-[::1]:tcp-connect": 1,
+        "s-[::1]:tcp-data": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns.lo6",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "s-[::1]:tcp-connect": 1,
+        "s-[::1]:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns-tcp.lo6",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "s-[::1]:tcp-connect": 1,
+        "s-[::1]:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stun.lan",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "t-lan:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stuns.lan",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "t-lan:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-udp.lan",
+      "outcome": "gathering:gathering",
+      "leaked": 6,
+      "leakDetail": {
+        "t-lan:udp": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-tcp.lan",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "t-lan:tcp-connect": 1,
+        "t-lan:tcp-data": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns.lan",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "t-lan:tcp-connect": 1,
+        "t-lan:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns-tcp.lan",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "t-lan:tcp-connect": 1,
+        "t-lan:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stun.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "p-127.0.0.1:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stuns.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "p-127.0.0.1:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-udp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 6,
+      "leakDetail": {
+        "p-127.0.0.1:udp": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 8,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 2
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 2
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.remote-candidate-udp.lo4",
+      "outcome": "ice:checking",
+      "leaked": 36,
+      "leakDetail": {
+        "q-127.0.0.1-other:udp": 36
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.remote-candidate-tcp.lo4",
+      "outcome": "ice:checking",
+      "leaked": 35,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 34
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.remote-candidate-udp.lan",
+      "outcome": "ice:checking",
+      "leaked": 36,
+      "leakDetail": {
+        "t-lan:udp": 36
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.remote-candidate-tcp.lan",
+      "outcome": "ice:checking",
+      "leaked": 35,
+      "leakDetail": {
+        "t-lan:tcp-connect": 1,
+        "t-lan:tcp-data": 34
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.stun.ll4",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.stuns.ll4",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turn-udp.ll4",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turn-tcp.ll4",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turns.ll4",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turns-tcp.ll4",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.stun.ll6",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.stuns.ll6",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turn-udp.ll6",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turn-tcp.ll6",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turns.ll6",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.turns-tcp.ll6",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.remote-candidate-udp.ll4",
+      "outcome": "ice:checking",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.remote-candidate-tcp.ll4",
+      "outcome": "ice:checking",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.remote-candidate-udp.ll6",
+      "outcome": "ice:new",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "ll.remote-candidate-tcp.ll6",
+      "outcome": "ice:new",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "rcu-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.remote-candidate-udp.fqdn",
+      "outcome": "ice:new",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "rcu-<n>.probe.test.",
+        "rct-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.remote-candidate-tcp.fqdn",
+      "outcome": "ice:new",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "rct-<n>.probe.test.",
+        "rcs-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.remote-candidate-tcp.fqdn-so",
+      "outcome": "ice:new",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "rcs-<n>.probe.test.",
+        "rcr-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.remote-candidate-udp.fqdn-relay",
+      "outcome": "ice:new",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "rcr-<n>.probe.test.",
+        "rcf-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "main.remote-candidate-udp.fqdn-srflx",
+      "outcome": "ice:new",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "rcf-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-html.turn-tcp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframehtmlturntcpname-<n>.probe.test.",
+        "riframehtmlturntcpname-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "realm.iframe-html.turns.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframehtmlturnsname-<n>.probe.test.",
+        "riframehtmlturnsname-<n>.probe.test",
+        "riframehtmlstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-html.stun.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframehtmlstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-html.turn-tcp.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-html.turns.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-html.stun.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "q-127.0.0.1-other:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-blank.turn-tcp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframeblankturntcpname-<n>.probe.test.",
+        "riframeblankturntcpname-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "realm.iframe-blank.turns.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframeblankturnsname-<n>.probe.test.",
+        "riframeblankturnsname-<n>.probe.test",
+        "riframeblankstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-blank.stun.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframeblankstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-blank.turn-tcp.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-blank.turns.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-blank.stun.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "q-127.0.0.1-other:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-srcdoc.turn-tcp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframesrcdocturntcpname-<n>.probe.test.",
+        "riframesrcdocturntcpname-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "realm.iframe-srcdoc.turns.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframesrcdocturnsname-<n>.probe.test.",
+        "riframesrcdocturnsname-<n>.probe.test",
+        "riframesrcdocstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-srcdoc.stun.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframesrcdocstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-srcdoc.turn-tcp.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-srcdoc.turns.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 2,
+      "leakDetail": {
+        "q-127.0.0.1-other:tcp-connect": 1,
+        "q-127.0.0.1-other:tcp-data": 1
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-srcdoc.stun.lo4",
+      "outcome": "gathering:gathering",
+      "leaked": 3,
+      "leakDetail": {
+        "q-127.0.0.1-other:udp": 3
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-json.turn-tcp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframejsonturntcpname-<n>.probe.test.",
+        "riframejsonturntcpname-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "realm.iframe-json.turns.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframejsonturnsname-<n>.probe.test.",
+        "riframejsonturnsname-<n>.probe.test",
+        "riframejsonstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-json.stun.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframejsonstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-notfound.turn-tcp.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframenotfoundturntcpname-<n>.probe.test.",
+        "riframenotfoundturntcpname-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "realm.iframe-notfound.turns.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframenotfoundturnsname-<n>.probe.test.",
+        "riframenotfoundturnsname-<n>.probe.test",
+        "riframenotfoundstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-notfound.stun.name",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "riframenotfoundstunname-<n>.probe.test."
+      ]
+    },
+    {
+      "id": "realm.iframe-blob.turn-tcp.name",
+      "outcome": "error:SecurityError:Failed to read a named property 'RTCPeerConnection' from 'Window': Blocked a frame with origin \"app://bundle\" from acces",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-blob.turns.name",
+      "outcome": "error:SecurityError:Failed to read a named property 'RTCPeerConnection' from 'Window': Blocked a frame with origin \"app://bundle\" from acces",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.iframe-blob.stun.name",
+      "outcome": "error:SecurityError:Failed to read a named property 'RTCPeerConnection' from 'Window': Blocked a frame with origin \"app://bundle\" from acces",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.window-open.turn-tcp.name",
+      "outcome": "no-window",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.window-open.turns.name",
+      "outcome": "no-window",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.window-open.stun.name",
+      "outcome": "no-window",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "realm.worker-rtc-defined",
+      "outcome": "worker-error",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "gvt1.turn-tcp.443",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "gvt1probeturntcp443-<n>.gvt1.com.",
+        "gvt1probeturntcp443-<n>.gvt1.com"
+      ]
+    },
+    {
+      "id": "gvt1.turns.443",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "gvt1probeturns443-<n>.gvt1.com.",
+        "gvt1probeturns443-<n>.gvt1.com"
+      ]
+    },
+    {
+      "id": "gvt1.turn-tcp.8443",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "gvt1probeturntcp8443-<n>.gvt1.com.",
+        "gvt1probeturntcp8443-<n>.gvt1.com"
+      ]
+    },
+    {
+      "id": "gvt1.turns.8443",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "gvt1probeturns8443-<n>.gvt1.com.",
+        "gvt1probeturns8443-<n>.gvt1.com",
+        "dnsdnsprefetch-<n>.dnsprobe.test"
+      ]
+    },
+    {
+      "id": "dns.dns-prefetch",
+      "outcome": "link:dns-prefetch",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "dnsdnsprefetch-<n>.dnsprobe.test"
+      ]
+    },
+    {
+      "id": "dns.preconnect",
+      "outcome": "link:preconnect",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.preconnect-http",
+      "outcome": "link:preconnect",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.prefetch",
+      "outcome": "link:prefetch",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.modulepreload",
+      "outcome": "link:modulepreload",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.stylesheet",
+      "outcome": "link:stylesheet",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.img",
+      "outcome": "img",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.fetch",
+      "outcome": "fetch:TypeError",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.websocket",
+      "outcome": "ws",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.a-ping",
+      "outcome": "a-ping",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.iframe-http",
+      "outcome": "iframe-http",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.form-submit",
+      "outcome": "form",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "dns.many-turn-tcp30",
+      "outcome": "servers:30",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "m0-<n>.dnsprobe.test.",
+        "m3-<n>.dnsprobe.test.",
+        "m10-<n>.dnsprobe.test.",
+        "m12-<n>.dnsprobe.test.",
+        "m14-<n>.dnsprobe.test.",
+        "m4-<n>.dnsprobe.test.",
+        "m7-<n>.dnsprobe.test.",
+        "m21-<n>.dnsprobe.test.",
+        "m23-<n>.dnsprobe.test.",
+        "m11-<n>.dnsprobe.test.",
+        "m2-<n>.dnsprobe.test.",
+        "m18-<n>.dnsprobe.test.",
+        "m19-<n>.dnsprobe.test.",
+        "m16-<n>.dnsprobe.test.",
+        "m26-<n>.dnsprobe.test.",
+        "m13-<n>.dnsprobe.test.",
+        "m24-<n>.dnsprobe.test.",
+        "m1-<n>.dnsprobe.test.",
+        "m20-<n>.dnsprobe.test.",
+        "m17-<n>.dnsprobe.test.",
+        "m22-<n>.dnsprobe.test.",
+        "m9-<n>.dnsprobe.test.",
+        "m6-<n>.dnsprobe.test.",
+        "m5-<n>.dnsprobe.test.",
+        "m8-<n>.dnsprobe.test.",
+        "m15-<n>.dnsprobe.test.",
+        "m25-<n>.dnsprobe.test.",
+        "m27-<n>.dnsprobe.test.",
+        "m28-<n>.dnsprobe.test.",
+        "m29-<n>.dnsprobe.test.",
+        "m10-<n>.dnsprobe.test",
+        "m19-<n>.dnsprobe.test",
+        "m2-<n>.dnsprobe.test",
+        "m21-<n>.dnsprobe.test",
+        "m16-<n>.dnsprobe.test",
+        "m12-<n>.dnsprobe.test",
+        "m17-<n>.dnsprobe.test",
+        "m3-<n>.dnsprobe.test",
+        "m18-<n>.dnsprobe.test",
+        "m14-<n>.dnsprobe.test",
+        "m1-<n>.dnsprobe.test",
+        "m7-<n>.dnsprobe.test",
+        "m26-<n>.dnsprobe.test",
+        "m13-<n>.dnsprobe.test",
+        "m23-<n>.dnsprobe.test",
+        "m4-<n>.dnsprobe.test",
+        "m20-<n>.dnsprobe.test",
+        "m11-<n>.dnsprobe.test",
+        "m24-<n>.dnsprobe.test",
+        "m0-<n>.dnsprobe.test",
+        "m15-<n>.dnsprobe.test",
+        "m5-<n>.dnsprobe.test",
+        "m29-<n>.dnsprobe.test",
+        "m6-<n>.dnsprobe.test",
+        "m22-<n>.dnsprobe.test",
+        "m8-<n>.dnsprobe.test",
+        "m9-<n>.dnsprobe.test",
+        "m27-<n>.dnsprobe.test",
+        "m28-<n>.dnsprobe.test",
+        "m25-<n>.dnsprobe.test"
+      ]
+    },
+    {
+      "id": "dns.many-turns8",
+      "outcome": "servers:8",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "s6-<n>.dnsprobe.test.",
+        "s3-<n>.dnsprobe.test.",
+        "s0-<n>.dnsprobe.test.",
+        "s1-<n>.dnsprobe.test.",
+        "s2-<n>.dnsprobe.test.",
+        "s7-<n>.dnsprobe.test.",
+        "s5-<n>.dnsprobe.test.",
+        "s4-<n>.dnsprobe.test.",
+        "s2-<n>.dnsprobe.test",
+        "s5-<n>.dnsprobe.test",
+        "s3-<n>.dnsprobe.test",
+        "s0-<n>.dnsprobe.test",
+        "s6-<n>.dnsprobe.test",
+        "s7-<n>.dnsprobe.test",
+        "s1-<n>.dnsprobe.test",
+        "s4-<n>.dnsprobe.test"
+      ]
+    },
+    {
+      "id": "dns.long-name190",
+      "outcome": "servers:1",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test.",
+        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test"
+      ]
+    },
+    {
+      "id": "dns.gvt1-label",
+      "outcome": "servers:1",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "data-<n>.gvt1.com.",
+        "data-<n>.gvt1.com"
+      ]
+    },
+    {
+      "id": "dns.github-label",
+      "outcome": "servers:1",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "data-<n>.githubusercontent.com.[rc0]",
+        "data-<n>.githubusercontent.com[rc0]",
+        "data-<n>.githubusercontent.com."
+      ]
+    },
+    {
+      "id": "dns.public-example",
+      "outcome": "servers:1",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "example.org.[rc0]",
+        "example.org[rc0]",
+        "winsess-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "winsess-<n>.probe.test",
+        "defsess-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "defsess-<n>.probe.test",
+        "updater-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "updater-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1,
+      "dnsNames": []
+    },
+    {
+      "id": "main.node-fetch.loopback-socket",
+      "outcome": "connected",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "utilfetch-<n>.probe.test"
+      ]
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "dnsNames": [
+        "utilfetch-<n>.probe.test"
+      ]
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [
+    "Dictionaries/en-US-10-1.bdic"
+  ],
+  "netLog": null,
+  "dnsAll": [
+    "redirector.gvt1.com[rc0]",
+    "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]",
+    "stunname-<n>.probe.test.",
+    "stunsname-<n>.probe.test.",
+    "turnudpname-<n>.probe.test.",
+    "turntcpname-<n>.probe.test.",
+    "turntcpname-<n>.probe.test",
+    "turnsname-<n>.probe.test.",
+    "turnsname-<n>.probe.test",
+    "turnstcpname-<n>.probe.test.",
+    "turnstcpname-<n>.probe.test",
+    "allowed-stunallowed-<n>.probe.test.",
+    "allowed-stunsallowed-<n>.probe.test.",
+    "allowed-turnudpallowed-<n>.probe.test.",
+    "allowed-turntcpallowed-<n>.probe.test.",
+    "allowed-turntcpallowed-<n>.probe.test",
+    "allowed-turnsallowed-<n>.probe.test.",
+    "allowed-turnsallowed-<n>.probe.test",
+    "allowed-turnstcpallowed-<n>.probe.test.",
+    "allowed-turnstcpallowed-<n>.probe.test",
+    "allowed-stunallowedp-<n>.probe.test.",
+    "allowed-stunsallowedp-<n>.probe.test.",
+    "allowed-turnudpallowedp-<n>.probe.test.",
+    "allowed-turntcpallowedp-<n>.probe.test.",
+    "allowed-turntcpallowedp-<n>.probe.test",
+    "allowed-turnsallowedp-<n>.probe.test.",
+    "allowed-turnsallowedp-<n>.probe.test",
+    "allowed-turnstcpallowedp-<n>.probe.test.",
+    "allowed-turnstcpallowedp-<n>.probe.test",
+    "ext-stunext-<n>.blocked.invalid.",
+    "ext-stunsext-<n>.blocked.invalid.",
+    "ext-turnudpext-<n>.blocked.invalid.",
+    "ext-turntcpext-<n>.blocked.invalid.",
+    "ext-turntcpext-<n>.blocked.invalid",
+    "ext-turnsext-<n>.blocked.invalid.",
+    "ext-turnsext-<n>.blocked.invalid",
+    "ext-turnstcpext-<n>.blocked.invalid.",
+    "ext-turnstcpext-<n>.blocked.invalid",
+    "rcu-<n>.probe.test.",
+    "rct-<n>.probe.test.",
+    "rcs-<n>.probe.test.",
+    "rcr-<n>.probe.test.",
+    "rcf-<n>.probe.test.",
+    "riframehtmlturntcpname-<n>.probe.test.",
+    "riframehtmlturntcpname-<n>.probe.test",
+    "riframehtmlturnsname-<n>.probe.test.",
+    "riframehtmlturnsname-<n>.probe.test",
+    "riframehtmlstunname-<n>.probe.test.",
+    "riframeblankturntcpname-<n>.probe.test.",
+    "riframeblankturntcpname-<n>.probe.test",
+    "riframeblankturnsname-<n>.probe.test.",
+    "riframeblankturnsname-<n>.probe.test",
+    "riframeblankstunname-<n>.probe.test.",
+    "riframesrcdocturntcpname-<n>.probe.test.",
+    "riframesrcdocturntcpname-<n>.probe.test",
+    "riframesrcdocturnsname-<n>.probe.test.",
+    "riframesrcdocturnsname-<n>.probe.test",
+    "riframesrcdocstunname-<n>.probe.test.",
+    "riframejsonturntcpname-<n>.probe.test.",
+    "riframejsonturntcpname-<n>.probe.test",
+    "riframejsonturnsname-<n>.probe.test.",
+    "riframejsonturnsname-<n>.probe.test",
+    "riframejsonstunname-<n>.probe.test.",
+    "riframenotfoundturntcpname-<n>.probe.test.",
+    "riframenotfoundturntcpname-<n>.probe.test",
+    "riframenotfoundturnsname-<n>.probe.test.",
+    "riframenotfoundturnsname-<n>.probe.test",
+    "riframenotfoundstunname-<n>.probe.test.",
+    "gvt1probeturntcp443-<n>.gvt1.com.",
+    "gvt1probeturntcp443-<n>.gvt1.com",
+    "gvt1probeturns443-<n>.gvt1.com.",
+    "gvt1probeturns443-<n>.gvt1.com",
+    "gvt1probeturntcp8443-<n>.gvt1.com.",
+    "gvt1probeturntcp8443-<n>.gvt1.com",
+    "gvt1probeturns8443-<n>.gvt1.com.",
+    "gvt1probeturns8443-<n>.gvt1.com",
+    "dnsdnsprefetch-<n>.dnsprobe.test",
+    "m0-<n>.dnsprobe.test.",
+    "m3-<n>.dnsprobe.test.",
+    "m10-<n>.dnsprobe.test.",
+    "m12-<n>.dnsprobe.test.",
+    "m14-<n>.dnsprobe.test.",
+    "m4-<n>.dnsprobe.test.",
+    "m7-<n>.dnsprobe.test.",
+    "m21-<n>.dnsprobe.test.",
+    "m23-<n>.dnsprobe.test.",
+    "m11-<n>.dnsprobe.test.",
+    "m2-<n>.dnsprobe.test.",
+    "m18-<n>.dnsprobe.test.",
+    "m19-<n>.dnsprobe.test.",
+    "m16-<n>.dnsprobe.test.",
+    "m26-<n>.dnsprobe.test.",
+    "m13-<n>.dnsprobe.test.",
+    "m24-<n>.dnsprobe.test.",
+    "m1-<n>.dnsprobe.test.",
+    "m20-<n>.dnsprobe.test.",
+    "m17-<n>.dnsprobe.test.",
+    "m22-<n>.dnsprobe.test.",
+    "m9-<n>.dnsprobe.test.",
+    "m6-<n>.dnsprobe.test.",
+    "m5-<n>.dnsprobe.test.",
+    "m8-<n>.dnsprobe.test.",
+    "m15-<n>.dnsprobe.test.",
+    "m25-<n>.dnsprobe.test.",
+    "m27-<n>.dnsprobe.test.",
+    "m28-<n>.dnsprobe.test.",
+    "m29-<n>.dnsprobe.test.",
+    "m10-<n>.dnsprobe.test",
+    "m19-<n>.dnsprobe.test",
+    "m2-<n>.dnsprobe.test",
+    "m21-<n>.dnsprobe.test",
+    "m16-<n>.dnsprobe.test",
+    "m12-<n>.dnsprobe.test",
+    "m17-<n>.dnsprobe.test",
+    "m3-<n>.dnsprobe.test",
+    "m18-<n>.dnsprobe.test",
+    "m14-<n>.dnsprobe.test",
+    "m1-<n>.dnsprobe.test",
+    "m7-<n>.dnsprobe.test",
+    "m26-<n>.dnsprobe.test",
+    "m13-<n>.dnsprobe.test",
+    "m23-<n>.dnsprobe.test",
+    "m4-<n>.dnsprobe.test",
+    "m20-<n>.dnsprobe.test",
+    "m11-<n>.dnsprobe.test",
+    "m24-<n>.dnsprobe.test",
+    "m0-<n>.dnsprobe.test",
+    "m15-<n>.dnsprobe.test",
+    "m5-<n>.dnsprobe.test",
+    "m29-<n>.dnsprobe.test",
+    "m6-<n>.dnsprobe.test",
+    "m22-<n>.dnsprobe.test",
+    "m8-<n>.dnsprobe.test",
+    "m9-<n>.dnsprobe.test",
+    "m27-<n>.dnsprobe.test",
+    "m28-<n>.dnsprobe.test",
+    "m25-<n>.dnsprobe.test",
+    "s6-<n>.dnsprobe.test.",
+    "s3-<n>.dnsprobe.test.",
+    "s0-<n>.dnsprobe.test.",
+    "s1-<n>.dnsprobe.test.",
+    "s2-<n>.dnsprobe.test.",
+    "s7-<n>.dnsprobe.test.",
+    "s5-<n>.dnsprobe.test.",
+    "s4-<n>.dnsprobe.test.",
+    "s2-<n>.dnsprobe.test",
+    "s5-<n>.dnsprobe.test",
+    "s3-<n>.dnsprobe.test",
+    "s0-<n>.dnsprobe.test",
+    "s6-<n>.dnsprobe.test",
+    "s7-<n>.dnsprobe.test",
+    "s1-<n>.dnsprobe.test",
+    "s4-<n>.dnsprobe.test",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test.",
+    "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test",
+    "data-<n>.gvt1.com.",
+    "data-<n>.gvt1.com",
+    "data-<n>.githubusercontent.com.[rc0]",
+    "data-<n>.githubusercontent.com[rc0]",
+    "data-<n>.githubusercontent.com.",
+    "example.org.[rc0]",
+    "example.org[rc0]",
+    "winsess-<n>.probe.test",
+    "defsess-<n>.probe.test",
+    "updater-<n>.probe.test",
+    "utilfetch-<n>.probe.test"
+  ],
+  "dnsRowCount": 63,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

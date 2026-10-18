@@ -5,6 +5,15 @@
  * downloadGuard.ts、profileDataGuard.ts をそのまま使い、restricted の gate と窓の title の
  * 固定を有効にした状態で、乗っ取られた renderer 相当の JS を実行する。
  *
+ * NC-1（K3/3。NC-1 の lane、S4）: 製品の orchestrator（`createRendererContainment`）を `index.ts` と
+ * 同じ順序で当てる（ready の前に appendResolverSwitch と registerWebContentsPolicy、ready の後で
+ * default session の最初の接触として start()）。これで WebRTC の ICE server の finding（TURN の TCP／TLS
+ * の接続と名前解決）が Main の network 層で塞がれる。対照（`PROBE_LEGACY=1`、DA-1 の前の挙動）には
+ * 当てない（CSP のない realm の外向きが canary に届くことを示す対照なので）。launcher の
+ * `--host-resolver-rules`（`*.probe.test` を canary へ写す）は NC-1 の switch が置き換えるので、
+ * probe だけが持つ `prefixRules` の seam で同じ写しを製品の `buildHostResolverRules(prefixRules)` に渡す
+ * （S3 の DR-NC1-24 と同じ面。製品の呼出しは引数なし）。
+ *
  * 入力の env（launcher が設定）: PROBE_USER_DATA、PROBE_DIST、PROBE_RESULT、PROBE_PORT、
  * PROBE_NONCE、PROBE_RENDERER_SCRIPT、PROBE_COUNTERMEASURE（任意。Y-1 の対処の候補）。
  */
@@ -15,6 +24,9 @@ import { app, BrowserWindow, protocol, session } from "electron";
 
 import { installDownloadGuard } from "../main/downloadGuard.ts";
 import { createProfileDataGuard } from "../main/profileDataGuard.ts";
+import { buildHostResolverRules } from "../main/rendererContainment.ts";
+import { startBlackholeListener } from "../main/rendererContainmentListener.ts";
+import { createRendererContainment } from "../main/rendererContainmentStartup.ts";
 import {
   createAppProtocolHandler,
   registerAppProtocolHandler,
@@ -55,7 +67,43 @@ app.setPath("userData", userData);
 app.disableHardwareAcceleration();
 
 registerAppProtocolScheme();
+const PROBE_CANARY_PREFIX_RULES = ["MAP *.probe.test 127.0.0.1"];
+const containment = legacyControl
+  ? null
+  : createRendererContainment({
+      appendSwitch: (name, value) => {
+        if (
+          name !== "host-resolver-rules" ||
+          value !== buildHostResolverRules()
+        ) {
+          throw new Error(
+            "product host-resolver-rules switch differs from buildHostResolverRules()",
+          );
+        }
+        app.commandLine.appendSwitch(
+          name,
+          buildHostResolverRules(PROBE_CANARY_PREFIX_RULES),
+        );
+      },
+      onWebContentsCreated: (listener) => {
+        app.on("web-contents-created", (_event, contents) => {
+          listener(contents);
+        });
+      },
+      onBeforeQuit: (listener) => {
+        app.on("before-quit", listener);
+      },
+      quit: () => app.quit(),
+      defer: (callback) => {
+        setImmediate(callback);
+      },
+      getDefaultSession: () => session.defaultSession,
+      startListener: (options) => startBlackholeListener(options),
+      reportFailure: (line) => console.error(line),
+    });
+containment?.appendResolverSwitch();
 registerSecurityHandlers(app);
+containment?.registerWebContentsPolicy();
 if (countermeasure.includes("force-webrtc-policy-switch")) {
   app.commandLine.appendSwitch(
     "force-webrtc-ip-handling-policy",
@@ -77,6 +125,10 @@ function sleep(ms) {
 
 async function main() {
   await app.whenReady();
+  // NC-1: default session の最初の接触（listener → setProxy → closeAllConnections → 自己確認）
+  if (containment && !(await containment.start())) {
+    throw new Error("NC-1 start failed");
+  }
   applySessionPermissionPolicy();
   // restricted の gate: openExternal を拒否する。窓の title を固定する。
   setExternalEgressGate(() => {
