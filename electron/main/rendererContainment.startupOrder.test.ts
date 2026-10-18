@@ -244,6 +244,7 @@ vi.mock("./windows.js", () =>
         close: () => state.log.push("contents:close"),
       };
       state.app.emit("web-contents-created", {}, contents);
+      state.log.push("web-contents-created:handler-returned");
       return {
         isDestroyed: () => false,
         once: () => undefined,
@@ -551,6 +552,17 @@ describe("実行中の失敗は何も読み込ませず破棄し、既存の終�
       expect(run.entries).toContain("contents:stop");
       expect(run.entries).toContain("contents:close");
       expect(run.entries.filter((e) => e === "app.quit")).toHaveLength(1);
+      // 実 Electron では handler の同期の中の stop／app.quit が SIGSEGV する（DR-NC1-18）。
+      // 破棄と終了は handler が返った後（外の tick）で、破棄が終了より先。
+      const returned = run.entries.indexOf(
+        "web-contents-created:handler-returned",
+      );
+      expect(returned).toBeGreaterThanOrEqual(0);
+      expect(run.entries.indexOf("contents:stop")).toBeGreaterThan(returned);
+      expect(run.entries.indexOf("contents:close")).toBeGreaterThan(returned);
+      expect(run.entries.indexOf("app.quit")).toBeGreaterThan(
+        run.entries.indexOf("contents:close"),
+      );
       expect(run.entries).not.toContain("app.exit");
       expect(run.errorCalls).toHaveLength(1);
       expect(String(run.errorCalls[0][0])).toBe(`[grimodex-electron] ${code}`);
@@ -562,6 +574,7 @@ describe("実行中の失敗は何も読み込ませず破棄し、既存の終�
     const lost = await runIndex();
     state.onClosed?.();
     state.onClosed?.();
+    await settle();
     expect(lost.entries).not.toContain("app.quit");
     expect(state.log.filter((e) => e === "app.quit")).toHaveLength(1);
 
@@ -569,6 +582,7 @@ describe("実行中の失敗は何も読み込ませず破棄し、既存の終�
     expect(normal.entries).not.toContain("app.quit");
     state.app.emit("before-quit", {});
     state.onClosed?.();
+    await settle();
     expect(state.log).not.toContain("app.quit");
   });
 });

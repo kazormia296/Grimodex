@@ -21,6 +21,9 @@
  *   `app.quit()` する。OS の表示 API は呼ばない。窓を作らない（呼出し側が `false` で止める）。
  * - 実行中の失敗: 閉じ込めの外の webContents は何も読み込ませず破棄し、既存の graceful な
  *   終了の経路（`app.quit()`）に入る。新しい時間の上限も `app.exit` も足さない。
+ *   `web-contents-created` の handler の中では判定だけを行い、破棄（`stop`／`close`）と
+ *   固定コードの出力・`app.quit()` は handler の外の tick（`deps.defer`）で行う。同期の
+ *   中で呼ぶと実 Electron 43.5.0（Linux）が SIGSEGV し、graceful な終了に入れない（DR-NC1-18）。
  *
  * 閉じ込めを止める入口（env、起動引数、設定、IPC）を置かない。`deps` は試験が依存を
  * 差し込むための引数で、製品の呼出し（`index.ts`）は引数なし。
@@ -54,7 +57,6 @@ export interface ContainmentWebContents {
   readonly session: unknown;
   setWebRTCIPHandlingPolicy(policy: typeof WEBRTC_IP_HANDLING_POLICY): void;
   getWebRTCIPHandlingPolicy(): string;
-  on(event: "did-start-loading", listener: () => void): unknown;
   stop(): void;
   close(options: { waitForBeforeUnload: boolean }): void;
 }
@@ -80,6 +82,13 @@ export interface RendererContainmentDeps {
   ): void;
   onBeforeQuit(listener: () => void): void;
   quit(): void;
+  /**
+   * `web-contents-created` の handler の外の tick へ処理を回す（既定は `setImmediate`）。
+   * 実 Electron 43.5.0（Linux）では、この handler の同期の中で `webContents.stop()` や
+   * `app.quit()` を呼ぶと SIGSEGV する（`close()` の後でも同じ）ため、破棄と終了は
+   * handler の外の tick で行う（DR-NC1-18）。
+   */
+  defer(callback: () => void): void;
   getDefaultSession(): ContainmentSession;
   startListener(
     options: BlackholeListenerOptions,
@@ -111,6 +120,9 @@ function defaultDeps(): RendererContainmentDeps {
     },
     quit: () => {
       app.quit();
+    },
+    defer: (callback) => {
+      setImmediate(callback);
     },
     getDefaultSession: () => session.defaultSession,
     startListener: (options) => startBlackholeListener(options),
@@ -177,18 +189,14 @@ async function runSelfCheck(
   }
 }
 
-/** 閉じ込めの外の webContents に何も読み込ませず破棄する（best effort。各段の失敗は無視する）。 */
+/**
+ * 閉じ込めの外の webContents に何も読み込ませず破棄する（best effort。各段の失敗は無視する）。
+ * `web-contents-created` の handler の外の tick で呼ぶこと（同期の中の `stop()` は実機で
+ * SIGSEGV する。遅らせた `stop()` と `close({ waitForBeforeUnload: false })` は落ちず、
+ * 破棄された webContents の `loadURL` は `ERR_FAILED` になる）。
+ */
 function discardWebContents(contents: ContainmentWebContents): void {
   const steps: Array<() => void> = [
-    () => {
-      contents.on("did-start-loading", () => {
-        try {
-          contents.stop();
-        } catch {
-          // 破棄の途中。何もしない。
-        }
-      });
-    },
     () => contents.stop(),
     () => contents.close({ waitForBeforeUnload: false }),
   ];
@@ -215,23 +223,36 @@ export function createRendererContainment(
   let started = false;
   const handled = new WeakSet<object>();
 
-  function terminate(line: string): void {
-    // 最初の失敗だけが終了に入る（二重の終了も二重の出力も起こさない）。
+  function terminate(line: string, deferred: boolean): void {
+    // 最初の失敗だけが終了に入る（二重の終了も二重の出力も起こさない）。印は同期に立てる
+    // （遅らせた終了が実行されるまでの間に起動が続かないようにする）。
     if (enteredTermination) return;
     enteredTermination = true;
-    try {
-      deps.reportFailure(line);
-    } finally {
-      deps.quit();
-    }
+    const run = (): void => {
+      try {
+        deps.reportFailure(line);
+      } finally {
+        deps.quit();
+      }
+    };
+    if (deferred) deps.defer(run);
+    else run();
   }
 
   function failStartup(code: NcStartupFailureCode): void {
-    terminate(formatStartupFailureLine(code));
+    // 起動前の失敗は promise の継続から呼ばれる（web-contents-created の handler の外）。
+    terminate(formatStartupFailureLine(code), false);
   }
 
   function failRuntime(code: NcRuntimeFailureCode): void {
-    terminate(formatRuntimeFailureLine(code));
+    // 実行中の失敗は web-contents-created の handler からも呼ばれるので、出力と
+    // `app.quit()` は handler の外の tick へ回す。
+    terminate(formatRuntimeFailureLine(code), true);
+  }
+
+  /** handler の中では判定だけを行い、破棄は handler の外の tick へ回す。 */
+  function discardLater(contents: ContainmentWebContents): void {
+    deps.defer(() => discardWebContents(contents));
   }
 
   function applyPolicyTo(contents: ContainmentWebContents): void {
@@ -245,7 +266,7 @@ export function createRendererContainment(
       isDefaultSession = false;
     }
     if (!isDefaultSession) {
-      discardWebContents(contents);
+      discardLater(contents);
       failRuntime("NC-SESSION");
       return;
     }
@@ -259,7 +280,7 @@ export function createRendererContainment(
       policyApplied = false;
     }
     if (!policyApplied) {
-      discardWebContents(contents);
+      discardLater(contents);
       failRuntime("NC-POLICY");
     }
   }
@@ -271,6 +292,8 @@ export function createRendererContainment(
       const listener = await deps.startListener({
         onClosed: () => {
           // 終了の開始（before-quit）より前に閉じたときだけ消失として数える。再 bind はしない。
+          // `server.close()` が呼ばれたときだけ起こる（accept 不能の検知ではない。DR-NC1-19）。
+          // 終了が取り消された後も `quitting` は戻さない（DR-NC1-19）。
           if (!quitting) failRuntime("NC-LISTENER-LOST");
         },
       });
@@ -339,6 +362,8 @@ export function createRendererContainment(
         runStartupSteps(() => settled).then(
           () => finish(null),
           (error: unknown) =>
+            // StartupFailure 以外は各段の変換をすり抜けた想定外の例外。固定コード 9 個に
+            // 新しいコードは足せないので、最初の network 設定の段の NC-PROXY を既定にする（DR-NC1-20）。
             finish(error instanceof StartupFailure ? error.code : "NC-PROXY"),
         );
       });

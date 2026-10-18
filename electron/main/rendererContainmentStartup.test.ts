@@ -76,6 +76,9 @@ interface Harness {
   beforeQuitListeners: Array<() => void>;
   listenerClosed: () => void;
   rules: () => string;
+  /** `deps.defer` に積まれた処理（handler の外の tick）。flush するまで実行されない。 */
+  deferred: Array<() => void>;
+  flush: () => void;
 }
 
 function makeHarness(
@@ -113,11 +116,15 @@ function makeHarness(
   const quit = vi.fn();
   const webContentsListeners: Harness["webContentsListeners"] = [];
   const beforeQuitListeners: Harness["beforeQuitListeners"] = [];
+  const deferred: Array<() => void> = [];
   const deps: RendererContainmentDeps = {
     appendSwitch,
     onWebContentsCreated: (listener) => webContentsListeners.push(listener),
     onBeforeQuit: (listener) => beforeQuitListeners.push(listener),
     quit,
+    defer: (callback) => {
+      deferred.push(callback);
+    },
     getDefaultSession: () => session,
     startListener: startListener as RendererContainmentDeps["startListener"],
     reportFailure,
@@ -133,6 +140,10 @@ function makeHarness(
     beforeQuitListeners,
     listenerClosed: () => onClosed?.(),
     rules: () => appliedRules,
+    deferred,
+    flush: () => {
+      while (deferred.length > 0) deferred.shift()?.();
+    },
   };
 }
 
@@ -468,7 +479,6 @@ function fakeContents(over: Partial<ContainmentWebContents> = {}): {
     session: undefined as unknown,
     setWebRTCIPHandlingPolicy: set,
     getWebRTCIPHandlingPolicy: () => policy,
-    on: vi.fn(),
     stop,
     close,
     ...over,
@@ -491,12 +501,57 @@ describe("実行中の 3 コード", () => {
     const { contents, set, close } = fakeContents({ session: h.session });
     emit(contents);
     emit(contents);
+    h.flush();
     expect(set).toHaveBeenCalledTimes(1);
     expect(set).toHaveBeenCalledWith(WEBRTC_IP_HANDLING_POLICY);
     expect(WEBRTC_IP_HANDLING_POLICY).toBe("disable_non_proxied_udp");
     expect(close).not.toHaveBeenCalled();
     expect(h.reportFailure).not.toHaveBeenCalled();
     expect(h.quit).not.toHaveBeenCalled();
+  });
+
+  it("handler の同期の中では何も破棄せず、出力も quit もしない。handler の外の tick で破棄し、出力し、quit する（実機の SIGSEGV の回避。DR-NC1-18）", () => {
+    for (const foreign of [true, false]) {
+      const h = makeHarness();
+      const { emit } = registered(h);
+      const { contents, stop, close } = fakeContents(
+        foreign
+          ? { session: { other: true } }
+          : {
+              session: h.session,
+              getWebRTCIPHandlingPolicy: () => "default",
+            },
+      );
+      emit(contents);
+      // handler の同期の中（emit が返るまで）に stop／close／出力／quit が呼ばれない。
+      expect(stop).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+      expect(h.reportFailure).not.toHaveBeenCalled();
+      expect(h.quit).not.toHaveBeenCalled();
+      expect(h.deferred.length).toBeGreaterThan(0);
+      h.flush();
+      expect(stop).toHaveBeenCalledTimes(1);
+      expect(close).toHaveBeenCalledTimes(1);
+      // 破棄が終了より先（破棄された後に終了の経路に入る）。
+      expectSingleFixedLine(
+        h,
+        formatRuntimeFailureLine(foreign ? "NC-SESSION" : "NC-POLICY"),
+      );
+    }
+  });
+
+  it("handler の外の tick までに起動が続かない（失敗の印は同期に立つ）", async () => {
+    const h = makeHarness();
+    const containment = createRendererContainment(h.deps);
+    containment.registerWebContentsPolicy();
+    containment.appendResolverSwitch();
+    const started = containment.start();
+    h.webContentsListeners[0](
+      fakeContents({ session: { other: true } }).contents,
+    );
+    await expect(started).resolves.toBe(false);
+    h.flush();
+    expectSingleFixedLine(h, formatRuntimeFailureLine("NC-SESSION"));
   });
 
   it("NC-POLICY: 適用が例外を投げる。破棄してコードだけを 1 行出し、quit 1 回", () => {
@@ -509,6 +564,7 @@ describe("実行中の 3 コード", () => {
       },
     });
     emit(contents);
+    h.flush();
     expect(stop).toHaveBeenCalled();
     expect(close).toHaveBeenCalledWith({ waitForBeforeUnload: false });
     expectSingleFixedLine(h, formatRuntimeFailureLine("NC-POLICY"));
@@ -525,6 +581,7 @@ describe("実行中の 3 コード", () => {
       getWebRTCIPHandlingPolicy: () => "default",
     });
     emit(contents);
+    h.flush();
     expect(close).toHaveBeenCalled();
     expectSingleFixedLine(h, formatRuntimeFailureLine("NC-POLICY"));
   });
@@ -536,6 +593,7 @@ describe("実行中の 3 コード", () => {
       session: { other: true },
     });
     emit(contents);
+    h.flush();
     expect(set).not.toHaveBeenCalled();
     expect(stop).toHaveBeenCalled();
     expect(close).toHaveBeenCalled();
@@ -557,6 +615,7 @@ describe("実行中の 3 コード", () => {
     emit(first.contents);
     const second = fakeContents({ session: { other: true } });
     emit(second.contents);
+    h.flush();
     expect(second.close).toHaveBeenCalled();
     expectSingleFixedLine(h, formatRuntimeFailureLine("NC-SESSION"));
   });
@@ -569,6 +628,7 @@ describe("実行中の 3 コード", () => {
     await expect(containment.start()).resolves.toBe(true);
     h.listenerClosed();
     h.listenerClosed();
+    h.flush();
     expectSingleFixedLine(h, formatRuntimeFailureLine("NC-LISTENER-LOST"));
     expect(h.startListener).toHaveBeenCalledTimes(1);
   });
@@ -597,49 +657,25 @@ describe("実行中の 3 コード", () => {
     containment.registerWebContentsPolicy();
     containment.appendResolverSwitch();
     await expect(containment.start()).resolves.toBe(false);
+    h.flush();
     expectSingleFixedLine(h, formatRuntimeFailureLine("NC-LISTENER-LOST"));
   });
 
-  it("graceful な終了: quit は未保存の状態を持つ renderer の代役の flush を待ち、新しい上限も app.exit も足さない", async () => {
+  it("実行中の失敗の終了は app.quit() の 1 回だけで、deps に exit がなく、新しい timer も足さない", () => {
+    // この試験が主張する範囲: 独自の終了手段（app.exit）を持たず、quit は 1 回、timer は 0。
+    // flush の待ち（close-veto、strict persistence drain、will-quit の finalizer）そのものは
+    // この層の外の既存の経路で、windowChrome／close-veto の既存の試験と S3 の実機の観測で示す。
     vi.useFakeTimers();
-    let flushed = false;
-    let exited = false;
-    let finishFlush: () => void = () => undefined;
-    const rendererStandIn = {
-      // 既存の close-veto と strict persistence drain の代役。close を受けて flush を終えてから終了する。
-      close: () =>
-        new Promise<void>((resolve) => {
-          finishFlush = () => {
-            flushed = true;
-            resolve();
-          };
-        }).then(() => {
-          exited = true;
-        }),
-    };
     const h = makeHarness();
-    h.deps.quit = vi.fn(() => {
-      void rendererStandIn.close();
-    });
-    // deps は app.exit を持たない（型としても存在しない）。
     expect(Object.keys(h.deps)).not.toContain("exit");
-    const { emit } = {
-      emit: (() => {
-        const containment = createRendererContainment(h.deps);
-        containment.registerWebContentsPolicy();
-        return h.webContentsListeners[0];
-      })(),
-    };
-    emit(fakeContents({ session: { other: true } }).contents);
-    expect(h.deps.quit).toHaveBeenCalledTimes(1);
-    // 長い時間が経っても、この層は終了を強制しない。flush が終わるまで終了しない。
-    await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+    const containment = createRendererContainment(h.deps);
+    containment.registerWebContentsPolicy();
+    h.webContentsListeners[0](
+      fakeContents({ session: { other: true } }).contents,
+    );
+    h.flush();
+    expect(h.quit).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
-    expect(exited).toBe(false);
-    finishFlush();
-    await vi.advanceTimersByTimeAsync(0);
-    expect(flushed).toBe(true);
-    expect(exited).toBe(true);
   });
 });
 
