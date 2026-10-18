@@ -136,7 +136,12 @@ pub(crate) enum DFinalGraphOutcome {
     Excluded {
         revisions: usize,
     },
-    /// Graph groups are in the candidate set.
+    /// A Graph arrived and passed the snapshot, but no Graph group was adopted
+    /// into the request: the Graph had no relation to offer, or every group
+    /// was left out later (DR-DI1A-8).
+    Empty,
+    /// Graph groups were adopted into the request: `groups` is the number of
+    /// Graph inputs the request carries.
     Used {
         groups: usize,
         excluded_revisions: usize,
@@ -153,10 +158,13 @@ impl DFinalGraphOutcome {
     }
 
     /// The kind D-final ends with once the snapshot has spoken (or not, for a
-    /// Graph that never reached it).
+    /// Graph that never reached it). `adopted_inputs` is the number of Graph
+    /// inputs the request carries after packing (`graph_binding().inputs()`),
+    /// not the number of groups the pool once held.
     pub(crate) fn finalize(
         requested: GraphRequest,
         snapshot: Option<&NativeNir1GraphOutcome>,
+        adopted_inputs: usize,
     ) -> Self {
         if let GraphRequest::Skipped(outcome) = requested {
             return outcome;
@@ -179,15 +187,18 @@ impl DFinalGraphOutcome {
                 }
             };
         }
-        let groups = snapshot.groups().len();
         let excluded = snapshot.excluded();
         let limited = snapshot.limited_count();
-        if groups > 0 {
+        if adopted_inputs > 0 {
             return Self::Used {
-                groups,
+                groups: adopted_inputs,
                 excluded_revisions: excluded.len(),
                 limited,
             };
+        }
+        if !snapshot.groups().is_empty() {
+            // Groups reached the pool and none survived packing.
+            return Self::Empty;
         }
         if !excluded.is_empty() {
             if excluded
@@ -203,11 +214,7 @@ impl DFinalGraphOutcome {
         if limited > 0 {
             return Self::NotUsed(GraphNotUsed::Limit);
         }
-        Self::Used {
-            groups: 0,
-            excluded_revisions: 0,
-            limited: 0,
-        }
+        Self::Empty
     }
 }
 

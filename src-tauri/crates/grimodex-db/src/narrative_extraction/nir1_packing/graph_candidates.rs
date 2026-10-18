@@ -673,10 +673,22 @@ pub(super) fn pool_graph_candidates(
     // Each (Revision, edge) once, grouped by Revision in first-named order.
     let mut revision_order = Vec::<&str>::new();
     let mut edges_by_revision = HashMap::<&str, Vec<(usize, &Nir1GraphCandidateEdge)>>::new();
-    let mut seen_edges = HashSet::<(&str, &str)>::new();
+    let mut seen_edges = HashMap::<(&str, &str), &Nir1GraphCandidateEdge>::new();
+    // A Revision whose edge is named twice with different hop or tokens is a
+    // malformed answer: it is left out as a binding mismatch, never resolved
+    // by keeping the first occurrence.
+    let mut conflicting_revisions = HashSet::<&str>::new();
     for (position, edge) in candidates.edges.iter().enumerate() {
-        if !seen_edges.insert((edge.revision_id(), edge.edge_id.as_str())) {
-            continue;
+        match seen_edges.entry((edge.revision_id(), edge.edge_id.as_str())) {
+            std::collections::hash_map::Entry::Occupied(first) => {
+                if *first.get() != edge {
+                    conflicting_revisions.insert(edge.revision_id());
+                }
+                continue;
+            }
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(edge);
+            }
         }
         let entry = edges_by_revision.entry(edge.revision_id()).or_default();
         if entry.is_empty() {
@@ -714,14 +726,16 @@ pub(super) fn pool_graph_candidates(
             continue;
         };
         let edges = &edges_by_revision[revision_id];
-        if !edges.iter().all(|(_, edge)| {
-            tokens_match(
-                edge,
-                binding,
-                candidates.scope_revision.as_deref(),
-                ctx.query_scene_id,
-            )
-        }) {
+        if conflicting_revisions.contains(revision_id)
+            || !edges.iter().all(|(_, edge)| {
+                tokens_match(
+                    edge,
+                    binding,
+                    candidates.scope_revision.as_deref(),
+                    ctx.query_scene_id,
+                )
+            })
+        {
             exclude(&mut outcome, Nir1GraphExclusionReason::BindingMismatch);
             continue;
         }

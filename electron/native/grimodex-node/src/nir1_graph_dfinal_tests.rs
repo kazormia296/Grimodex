@@ -592,6 +592,74 @@ fn a5_a_stop_a_shutdown_and_a_closed_owner_end_the_wait() {
     });
 }
 
+/// A lifecycle transition alone (no close of the owner) ends the wait: the
+/// owner's edge epoch moved, so the Graph that is being prepared belongs to a
+/// workspace state that is gone (A-5; K6/2 "取消、shutdown、transition").
+#[test]
+fn a5_a_lifecycle_transition_alone_ends_the_wait() {
+    use grimodex_db::workspace_lifecycle::LifecycleEdge;
+    let rig = Rig::new();
+    rig.open();
+    rig.plan.prepare_delay_ms.store(10_000, Ordering::SeqCst);
+    let observer = rig.owner().edge_observer_for_test();
+    let epoch_before = rig.owner().edge_epoch();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(80));
+            observer.on_lifecycle_edge(&LifecycleEdge::Unavailable { revision: 1 });
+        });
+        let started = Instant::now();
+        let selected = rig.request().expect("the request continues");
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(
+            selected.graph_outcome(),
+            DFinalGraphOutcome::Unavailable {
+                reason: GraphUnavailable::Cancelled,
+                busy_cause: None,
+            }
+        );
+    });
+    // The edge moved the epoch and did not close the owner: the transition,
+    // not a close, ended the wait.
+    assert!(rig.owner().edge_epoch() > epoch_before);
+    assert!(!rig.owner().is_closed());
+}
+
+/// A revoked route alone (the permit generation moved; the owner stays open
+/// and its epoch is unchanged) ends the wait.
+#[test]
+fn a5_a_route_revocation_alone_ends_the_wait() {
+    let rig = Rig::new();
+    rig.open();
+    rig.plan.prepare_delay_ms.store(10_000, Ordering::SeqCst);
+    let epoch_before = rig.owner().edge_epoch();
+    let generation_before = rig.fixture.state.profile_egress.revocation_generation();
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            thread::sleep(Duration::from_millis(80));
+            rig.fixture.state.profile_egress.invalidate_callers();
+        });
+        let started = Instant::now();
+        // The revocation also fails the later route check of D-final, so the
+        // request itself may end with an error; what is pinned is that the
+        // wait did not run to W (10 s here) or to the worker's 10 s prepare.
+        let result = rig.request();
+        assert!(started.elapsed() < Duration::from_secs(3));
+        if let Ok(selected) = result {
+            assert_eq!(
+                selected.graph_outcome(),
+                DFinalGraphOutcome::Unavailable {
+                    reason: GraphUnavailable::Cancelled,
+                    busy_cause: None,
+                }
+            );
+        }
+    });
+    assert!(rig.fixture.state.profile_egress.revocation_generation() > generation_before);
+    assert_eq!(rig.owner().edge_epoch(), epoch_before);
+    assert!(!rig.owner().is_closed());
+}
+
 /// The coordinator (DI-1c) calls D-final from no lock; the Graph reaches the
 /// attempt it stores through the same request and wait.
 #[test]
@@ -710,19 +778,14 @@ fn a10_several_pins_give_one_deterministic_seed() {
     rig.pin(BOB, "2026-01-01T00:00:00Z");
     for _ in 0..2 {
         let selected = rig.request().expect("request");
+        // The seed D-final asked about and the seed its snapshot read again
+        // are the same (Bob), so the Graph is neither invalidated nor empty.
         assert!(
-            matches!(
-                selected.graph_outcome(),
-                DFinalGraphOutcome::Used { .. }
-                    | DFinalGraphOutcome::NotUsed(_)
-                    | DFinalGraphOutcome::Excluded { .. }
-                    | DFinalGraphOutcome::Invalidated(_)
-            ),
+            used(selected.graph_outcome()),
             "{:?}",
             selected.graph_outcome()
         );
-        // The candidates were made for the seed the worker was asked about.
-        drop(selected);
+        assert!(graph_input_count(selected) > 0);
     }
     // The fake worker answers with the seed of the request, which is Bob's;
     // the candidates it builds are for that seed.

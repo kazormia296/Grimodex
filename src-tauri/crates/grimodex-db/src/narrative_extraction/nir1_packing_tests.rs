@@ -3883,6 +3883,67 @@ pub(in crate::narrative_extraction) mod di1a_graph {
         Ok(())
     }
 
+    /// A second occurrence of one (Revision, edge) with other tokens or another
+    /// hop is a malformed answer: the Revision is left out as a binding
+    /// mismatch (not resolved by the first occurrence); an identical repeat
+    /// changes nothing.
+    #[test]
+    fn a_conflicting_duplicate_edge_is_a_binding_mismatch_for_its_revision() -> Result<()> {
+        let s = scenario()?;
+        let target = s.revisions[0].clone();
+        let (control_pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let control_groups = control_pooled.graph.as_ref().unwrap().groups().len();
+
+        // Identical repeat: no effect.
+        let mut shape = Shape::of(&s.candidates);
+        let repeat = shape
+            .edges
+            .iter()
+            .find(|e| e.revision_id() == target)
+            .cloned()
+            .expect("an edge of the target");
+        shape.edges.push(repeat);
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&shape.build()?), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert!(outcome.excluded().is_empty());
+        assert_eq!(outcome.groups().len(), control_groups);
+
+        // Conflicting repeats: stale tokens, or another hop.
+        type Conflict = fn(&mut Nir1GraphCandidateEdge);
+        let conflicts: [(&str, Conflict); 2] = [
+            ("tokens", |e| e.binding.decision_token.push('x')),
+            ("hop", |e| e.hop = e.hop.saturating_add(1)),
+        ];
+        for (what, conflict) in conflicts {
+            let mut shape = Shape::of(&s.candidates);
+            let mut repeat = shape
+                .edges
+                .iter()
+                .find(|e| e.revision_id() == target)
+                .cloned()
+                .expect("an edge of the target");
+            conflict(&mut repeat);
+            shape.edges.push(repeat);
+            let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&shape.build()?), 100_000, 0)?;
+            let outcome = pooled.graph.as_ref().unwrap();
+            assert_eq!(
+                outcome
+                    .excluded()
+                    .iter()
+                    .map(|e| (e.revision_id().to_owned(), e.reason()))
+                    .collect::<Vec<_>>(),
+                vec![(target.clone(), Nir1GraphExclusionReason::BindingMismatch)],
+                "{what}"
+            );
+            assert!(
+                outcome.groups().iter().all(|g| g.revision_id() != target),
+                "{what}"
+            );
+            assert_eq!(outcome.groups().len(), control_groups - 1, "{what}");
+        }
+        Ok(())
+    }
+
     /// A-1 (token and ID forgery): the Revision of a forged candidate has no
     /// Graph group; the others and the IR groups stay.
     #[test]

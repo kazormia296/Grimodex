@@ -965,7 +965,13 @@ fn prepare_local_chat_request_inner(
         packing_context_budget_tokens.context("NIR1_PREPARED_PACKING_BUDGET_MISSING")?;
     // The Graph candidates are done with: the snapshot has requalified them.
     drop(requested_graph);
-    let graph_outcome = DFinalGraphOutcome::finalize(graph_request, projection.graph_outcome());
+    let graph_outcome = DFinalGraphOutcome::finalize(
+        graph_request,
+        projection.graph_outcome(),
+        projection
+            .graph_binding()
+            .map_or(0, |binding| binding.inputs().len()),
+    );
     #[cfg(test)]
     after_initial_read_before_render()?;
     sql_budget.check_workspace(&workspace)?;

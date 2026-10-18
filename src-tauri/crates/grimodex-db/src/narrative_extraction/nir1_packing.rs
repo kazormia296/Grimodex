@@ -27,6 +27,7 @@ use super::nir1_entity_relation::{
     Nir1EntityRelationDisclosure, Nir1EntityRelationDisclosureRead, Nir1EntityRelationFreshness,
     Nir1EntityRelationRevision,
 };
+#[cfg(feature = "native-current-human-capture")]
 use super::nir1_graph::read_nir1_graph_seal;
 #[cfg(feature = "native-current-human-capture")]
 use super::nir1_history_context::{
