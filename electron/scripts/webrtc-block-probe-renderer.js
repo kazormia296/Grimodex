@@ -146,6 +146,21 @@
     }
   }
 
+  // ── FQDN の remote candidate（K3/3 R15）: address が非 mDNS の FQDN。Chromium は名前を解決するが、接続は試みない ──
+  // （閉じ込めなしでも canary への到達 0、ICE は ice:new のまま。名前の解決だけが観測できる。合否は RJ の「不活性の行」と NL）
+  if (globalThis.__probe.fqdn) {
+    const fq = (tag) => `rc${tag}-${nonce}.probe.test`;
+    for (const [id, line] of [
+      ["remote-candidate-udp.fqdn", `a=candidate:1 1 udp 2113937151 ${fq("u")} ${ports.q} typ host`],
+      ["remote-candidate-tcp.fqdn", `a=candidate:2 1 tcp 1518280447 ${fq("t")} ${ports.q} typ host tcptype passive`],
+      ["remote-candidate-tcp.fqdn-so", `a=candidate:3 1 tcp 1518280447 ${fq("s")} ${ports.q} typ host tcptype so`],
+      ["remote-candidate-udp.fqdn-relay", `a=candidate:4 1 udp 41885439 ${fq("r")} ${ports.q} typ relay raddr 0.0.0.0 rport 0`],
+      ["remote-candidate-udp.fqdn-srflx", `a=candidate:5 1 udp 1677729535 ${fq("f")} ${ports.q} typ srflx raddr 0.0.0.0 rport 0`],
+    ]) {
+      await settle(`main.${id}`, () => remoteCandidate(RTCPeerConnection, line), 6000);
+    }
+  }
+
   // ── 新しい realm（iframe、about:blank、srcdoc、blob、window.open）──────────────
   const realmRtc = async (id, getWindow, forms2 = ["name", "lo4"]) => {
     for (const form of forms2) {

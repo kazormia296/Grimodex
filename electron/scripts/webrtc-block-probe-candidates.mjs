@@ -180,6 +180,10 @@ export const CANDIDATES = {
   "ll-al0-no-neg-loopback": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, target: "default", policy: POLICY, proxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT" }, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
   "ll-al0-no-policy": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, target: "default", proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
   "ll-baseline": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true }, args: [], realNetwork: true, dnsLog: true },
+  // ── K3/3 R15: FQDN の remote candidate の行（非 mDNS の FQDN。接続を試みない行）を足した再走 ──
+  "fq-baseline": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, fqdn: true }, args: [], realNetwork: true, dnsLog: true },
+  "fq-baseline-mapped": { cm: { gvt1: true, localhostRows: true, fqdn: true }, args: [], dnsLog: true },
+  "fq-al0-final": { cm: { dns: true, gvt1: true, localhostRows: true, linklocal: true, fqdn: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
   "f7-app-setproxy": { cm: { appSetProxy: { mode: "fixed_servers", proxyRules: "socks5://PROXYHOSTPORT" } }, args: [] },
 };
 
