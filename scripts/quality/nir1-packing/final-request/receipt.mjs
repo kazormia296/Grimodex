@@ -837,6 +837,7 @@ export const PRODUCT_WRITERS = Object.freeze([
   "tree_node_patch",
   "tree_node_delete",
   "save_scene_body_bundle",
+  "project_create",
   "project_patch",
   // Scene Scope, the two axes, Chronicle dates and lanes
   "narrative_scene_scope_update",
@@ -897,6 +898,7 @@ const TREE_WRITERS = [
   "tree_node_patch",
   "tree_node_delete",
   "save_scene_body_bundle",
+  "project_create",
   "project_patch",
 ];
 const SCOPE_WRITERS = [

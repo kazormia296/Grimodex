@@ -795,7 +795,78 @@ export function checkHarness(sources) {
       "`with_conn` is used more than once (only the audit hook is installed through it)",
     );
   }
+  checkFreezeOrder(sources, files, fail);
   return violations;
+}
+
+/** The only test that reads the frozen fixture's bytes (as text, never into Native). */
+const FROZEN_READ_TEST =
+  "mechanics_fixture_shares_no_material_with_the_frozen_fixture";
+
+/**
+ * Native runs on the frozen fixture's materials only after the freeze gate
+ * (draft K6/2 観測前の固定): `run_all_variants` is called once outside the
+ * tests, in `evidence_run`, after `check_freeze`; no test or helper reads the
+ * frozen fixture except the one that compares text; and there is no run
+ * without the gate (no development dump).
+ */
+function checkFreezeOrder(sources, files, fail) {
+  const modFile = `${PATHS.nodeHarnessDir}mod.rs`;
+  const evidence =
+    sources[modFile] === undefined
+      ? null
+      : functionBody(sources[modFile], "evidence_run");
+  if (evidence === null) {
+    fail(modFile, "`evidence_run` (the gated evidence entry) is missing");
+  } else {
+    const masked = maskRust(evidence, { maskStrings: true });
+    const gate = masked.search(/\bcheck_freeze\(/);
+    const run = masked.search(/\brun_all_variants\(/);
+    if (gate === -1 || run === -1 || gate > run) {
+      fail(
+        modFile,
+        "`evidence_run` must call `check_freeze` before `run_all_variants`",
+      );
+    }
+  }
+  for (const file of files) {
+    const text = sources[file];
+    const masked = maskRust(text, { maskStrings: true });
+    const code = maskRust(text, { maskStrings: false });
+    if (/DEV_OUT|development_receipts_dump/.test(code)) {
+      fail(file, "a run without the freeze gate (a development dump)");
+    }
+    if (file.endsWith("/tests.rs")) {
+      const reads = [...masked.matchAll(/\.join\(\s*FIXTURE_PATH\s*\)/g)];
+      if (reads.length > 0) {
+        const body = functionBody(text, FROZEN_READ_TEST);
+        const inside =
+          body === null
+            ? 0
+            : [
+                ...maskRust(body, { maskStrings: true }).matchAll(
+                  /\.join\(\s*FIXTURE_PATH\s*\)/g,
+                ),
+              ].length;
+        if (reads.length !== inside) {
+          fail(
+            file,
+            `the frozen fixture is read outside ${FROZEN_READ_TEST} (a test must run on the mechanics fixture)`,
+          );
+        }
+      }
+      continue;
+    }
+    // Outside the tests, `run_all_variants` is called by `evidence_run` only.
+    const calls = [...masked.matchAll(/(?<!fn\s)\brun_all_variants\(/g)];
+    const allowed = file === modFile && evidence !== null ? 1 : 0;
+    if (calls.length !== allowed) {
+      fail(
+        file,
+        "`run_all_variants` is called outside `evidence_run` (Native must run on the fixture only behind the freeze gate)",
+      );
+    }
+  }
 }
 
 // ------------------------------------------------------------- the runner

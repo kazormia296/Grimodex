@@ -758,6 +758,7 @@ test("product writers: every routed writer is in the product's internal command 
     "narrative_scene_scope_registry_update",
     "temporal_scene_patch",
     "chronicle_bulk_mutate",
+    "project_create",
     "project_patch",
     "codex_create",
     "codex_mutate",

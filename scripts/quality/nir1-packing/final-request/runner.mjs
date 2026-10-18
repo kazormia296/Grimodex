@@ -2,9 +2,11 @@
 //
 //   node scripts/quality/nir1-packing/final-request/runner.mjs [--receipt <dir|file>] [--setup-receipt <file>]
 //
-// The harness is a cargo test (`cargo test ... nir1_final_request_eval::harness::
-// tests::evidence_run_holds_while_the_freeze_is_not_frozen` is the evidence
-// entry; see evals/nir1-packing/final-request.README.md). It writes
+// The harness is a cargo test. The evidence entry is the ignored test
+// `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml
+// --features nir1-final-request-eval --lib nir1_final_request_eval::harness::
+// tests::final_request_evidence_run -- --ignored --exact`; it runs only behind
+// the freeze gate (see evals/nir1-packing/final-request.README.md). It writes
 // `receipt.json` and `setup-receipt.json` under `.artifacts/`. This runner only
 // reads them: it never starts cargo, Native or any other process that outlives
 // it. The only child processes are the bounded, synchronous `git` calls of

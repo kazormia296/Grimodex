@@ -8,7 +8,8 @@
 //     before any Native observation),
 //   - the freeze record that binds the fixture, the scorer modules and the
 //     independent expectation review by sha256 (`nativeOutputObservedBeforeFreeze`
-//     must be false),
+//     records whether Native ran on the fixture's materials; it must be false
+//     when the record is frozen),
 //   - the separation of the fixture author, the expectation reviewer and the
 //     implementers of the harness, and
 //   - that the freeze commit is an ancestor of the run commit
@@ -54,7 +55,8 @@
 //     p12 { variantId, revisionIds, improvementGroups [{ logicalId, kind }],
 //     contextBudgetTokens } }.
 // Freeze record (`nir1-final-request-freeze/1`): status pending-review | frozen,
-//   nativeOutputObservedBeforeFreeze false, frozenAt, reviewVerdict, fixture /
+//   nativeOutputObservedBeforeFreeze (false when frozen; true needs
+//   nativeObservations [{ by, what, commit }]), frozenAt, reviewVerdict, fixture /
 //   reviewRecord / readme / parityVector { path, sha256 }, scorer.files (the four
 //   SCORER_FILES), contextBudget { formula, terms, perRequest [{ caseId,
 //   variantId, stage (optional, default 1), contextBudgetTokens, selectedTokens,
@@ -1310,8 +1312,49 @@ export function validateFreezeRecord(
       `freeze.status must be ${Object.values(FREEZE_STATUS).join(" or ")}`,
     );
   }
-  if (freeze.nativeOutputObservedBeforeFreeze !== false) {
-    errors.push("freeze.nativeOutputObservedBeforeFreeze must be false");
+  // The record states what happened, so a pending record may say true (and
+  // must then list the observations); a frozen record may not: the draft fixes
+  // the fixture before Native runs on its materials, and a fixture whose
+  // materials were observed is replaced by a new version, not frozen.
+  if (typeof freeze.nativeOutputObservedBeforeFreeze !== "boolean") {
+    errors.push("freeze.nativeOutputObservedBeforeFreeze must be a boolean");
+  } else {
+    const observations = freeze.nativeObservations;
+    if (observations !== undefined && !Array.isArray(observations)) {
+      errors.push("freeze.nativeObservations must be an array");
+    } else {
+      const listed = Array.isArray(observations) ? observations.length : 0;
+      if (freeze.nativeOutputObservedBeforeFreeze && listed === 0) {
+        errors.push(
+          "freeze.nativeOutputObservedBeforeFreeze is true, so freeze.nativeObservations must say what was observed",
+        );
+      }
+      if (!freeze.nativeOutputObservedBeforeFreeze && listed > 0) {
+        errors.push(
+          "freeze.nativeObservations is not empty, so nativeOutputObservedBeforeFreeze must be true",
+        );
+      }
+      for (const [index, entry] of (observations ?? []).entries()) {
+        if (
+          !isRecord(entry) ||
+          !nonEmpty(entry.by) ||
+          !nonEmpty(entry.what) ||
+          !nonEmpty(entry.commit)
+        ) {
+          errors.push(
+            `freeze.nativeObservations[${index}] needs by, what and commit`,
+          );
+        }
+      }
+    }
+    if (
+      freeze.status === FREEZE_STATUS.frozen &&
+      freeze.nativeOutputObservedBeforeFreeze !== false
+    ) {
+      errors.push(
+        "a frozen record must have nativeOutputObservedBeforeFreeze false (a fixture whose materials Native observed is replaced by a new fixture version with new materials and a new review)",
+      );
+    }
   }
   if (!FROZEN_AT_PATTERN.test(freeze.frozenAt ?? "")) {
     errors.push("freeze.frozenAt must be a UTC timestamp");

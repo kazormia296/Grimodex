@@ -1,0 +1,1169 @@
+{
+  "schemaVersion": "nir1-final-request-harness-mechanics/1",
+  "purpose": "Synthetic material for the DPH-4 harness mechanics tests (cargo test). It shares no logical ID, text or canary with evals/nir1-packing/final-request.v1.json, is not a P-01..P-11 case and is never evidence: the real fixture's materials reach Native only through the freeze gate. The `expected` code and reason of a reject request are the synthetic expectations of these tests, calibrated to the product's rules.",
+  "fixtureVersion": 1,
+  "estimatorVersion": "nir1-context-estimator-v1",
+  "route": {
+    "model": "mech-local-model",
+    "contextWindowTokens": 16384,
+    "outputTokens": 1024
+  },
+  "setupContract": {
+    "sceneScope": {
+      "registry": {
+        "timelineRefs": [
+          "timeline:main"
+        ],
+        "worldlineRefs": [
+          "worldline:prime"
+        ],
+        "narrativeLayerRefs": [
+          "layer:manuscript"
+        ]
+      },
+      "perScene": {
+        "compatibilityMarker": "explicit",
+        "queryIdentity": {
+          "timeline": "timeline:main",
+          "worldline": "worldline:prime",
+          "narrativeLayer": "layer:manuscript"
+        },
+        "materialConstraint": {
+          "timeline": "timeline:main",
+          "worldline": "worldline:prime",
+          "narrativeLayer": "layer:manuscript"
+        },
+        "knowledgeHolder": "reader",
+        "audience": "reader"
+      }
+    }
+  },
+  "cases": [
+    {
+      "caseId": "M-A",
+      "userMessage": "Continue the synthetic scene.",
+      "isolation": {
+        "workspaceId": "mech-ws-a"
+      },
+      "setup": {
+        "project": {
+          "logicalId": "ma-project"
+        },
+        "scenes": [
+          {
+            "logicalId": "ma-scene-anchor",
+            "role": "anchor",
+            "title": "Synthetic anchor",
+            "body": "The synthetic anchor scene body."
+          },
+          {
+            "logicalId": "ma-scene-query",
+            "role": "query",
+            "title": "Synthetic query",
+            "body": "The synthetic query scene body, with its own words."
+          }
+        ],
+        "codexEntities": [
+          {
+            "logicalId": "ma-ent-moss",
+            "type": "location",
+            "name": "synthetic moss",
+            "summary": "A synthetic moss entry used by the harness mechanics tests only."
+          },
+          {
+            "logicalId": "ma-ent-kiln",
+            "type": "item",
+            "name": "synthetic kiln",
+            "summary": "A synthetic kiln entry used by the harness mechanics tests only."
+          }
+        ]
+      },
+      "variants": [
+        {
+          "variantId": "ma-positive",
+          "kind": "positive",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-moss",
+                "entity": "ma-ent-moss",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-moss:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-moss",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-kiln",
+                "entity": "ma-ent-kiln",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-kiln:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-kiln",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "ma-scene-query",
+                "title": "M-A stage 1"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "ma-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-moss",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-kiln",
+                "stage": 1
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "ma-rev-moss",
+                "ma-rev-kiln"
+              ]
+            }
+          ]
+        },
+        {
+          "variantId": "ma-reject-scope",
+          "kind": "reject",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare-negative",
+                "revision": "ma-rev-neg-scope",
+                "entity": "ma-ent-tool",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-neg-scope:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve-negative",
+                "revision": "ma-rev-neg-scope",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "invalidate-negative",
+                "revision": "ma-rev-neg-scope",
+                "write": "scene-scope-registry-update",
+                "addTimelineRef": "timeline:alt"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-moss",
+                "entity": "ma-ent-moss",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-moss:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-moss",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-kiln",
+                "entity": "ma-ent-kiln",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-kiln:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-kiln",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "ma-scene-query",
+                "title": "M-A stage 1"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "ma-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-moss",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-kiln",
+                "stage": 1
+              }
+            ],
+            "codexEntities": [
+              {
+                "logicalId": "ma-ent-tool",
+                "type": "item",
+                "name": "synthetic tool",
+                "summary": "A synthetic tool entry used by the harness mechanics tests only."
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "ma-rev-moss",
+                "ma-rev-kiln",
+                "ma-rev-neg-scope"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "source-revision-changed"
+              }
+            }
+          ],
+          "ineligibleLogicalId": "ma-rev-neg-scope"
+        },
+        {
+          "variantId": "ma-reject-source",
+          "kind": "reject",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare-negative",
+                "revision": "ma-rev-neg-stale",
+                "entity": "ma-ent-word",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-neg-stale:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve-negative",
+                "revision": "ma-rev-neg-stale",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "invalidate-negative",
+                "revision": "ma-rev-neg-stale",
+                "write": "codex-update",
+                "entity": "ma-ent-word",
+                "summary": "A synthetic word entry, edited after approval."
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-moss",
+                "entity": "ma-ent-moss",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-moss:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-moss",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-kiln",
+                "entity": "ma-ent-kiln",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-kiln:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-kiln",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "ma-scene-query",
+                "title": "M-A stage 1"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "ma-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-moss",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-kiln",
+                "stage": 1
+              }
+            ],
+            "codexEntities": [
+              {
+                "logicalId": "ma-ent-word",
+                "type": "lore",
+                "name": "synthetic word",
+                "summary": "A synthetic word entry used by the harness mechanics tests only."
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "ma-rev-moss",
+                "ma-rev-kiln",
+                "ma-rev-neg-stale"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "source-revision-changed"
+              }
+            }
+          ],
+          "ineligibleLogicalId": "ma-rev-neg-stale"
+        },
+        {
+          "variantId": "ma-reject-cancelled",
+          "kind": "reject",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare-negative",
+                "revision": "ma-rev-neg-cancel",
+                "entity": "ma-ent-cloth",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-neg-cancel:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve-negative",
+                "revision": "ma-rev-neg-cancel",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "invalidate-negative",
+                "revision": "ma-rev-neg-cancel",
+                "write": "decision-cancel",
+                "decision": "rejected"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-moss",
+                "entity": "ma-ent-moss",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-moss:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-moss",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-kiln",
+                "entity": "ma-ent-kiln",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-kiln:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-kiln",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "ma-scene-query",
+                "title": "M-A stage 1"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "ma-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-moss",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-kiln",
+                "stage": 1
+              }
+            ],
+            "codexEntities": [
+              {
+                "logicalId": "ma-ent-cloth",
+                "type": "item",
+                "name": "synthetic cloth",
+                "summary": "A synthetic cloth entry used by the harness mechanics tests only."
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "ma-rev-moss",
+                "ma-rev-kiln",
+                "ma-rev-neg-cancel"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "revision-not-human-approved"
+              }
+            }
+          ],
+          "ineligibleLogicalId": "ma-rev-neg-cancel"
+        }
+      ]
+    },
+    {
+      "caseId": "M-B",
+      "userMessage": "Continue the other synthetic scene.",
+      "isolation": {
+        "workspaceId": "mech-ws-b"
+      },
+      "setup": {
+        "project": {
+          "logicalId": "mb-project"
+        },
+        "scenes": [
+          {
+            "logicalId": "mb-scene-anchor",
+            "role": "anchor",
+            "title": "Other anchor",
+            "body": "The other synthetic anchor body."
+          },
+          {
+            "logicalId": "mb-scene-query",
+            "role": "query",
+            "title": "Other query",
+            "body": "The other synthetic query body."
+          }
+        ],
+        "codexEntities": [
+          {
+            "logicalId": "mb-ent-bridge",
+            "type": "location",
+            "name": "synthetic bridge",
+            "summary": "A synthetic bridge entry used by the harness mechanics tests only."
+          }
+        ]
+      },
+      "variants": [
+        {
+          "variantId": "mb-positive-scope",
+          "kind": "positive",
+          "binding": "scope",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "mb-rev-1",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-1:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "mb-rev-1",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 2,
+                "op": "binding-change",
+                "binding": "scope",
+                "write": "scene-scope-registry-update",
+                "addTimelineRef": "timeline:alt"
+              },
+              {
+                "stage": 2,
+                "op": "prepare",
+                "revision": "mb-rev-2",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-2:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 2,
+                "op": "approve",
+                "revision": "mb-rev-2",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 1"
+              },
+              {
+                "stage": 2,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 2"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 1
+              },
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 2
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 2
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "mb-rev-1"
+              ]
+            },
+            {
+              "stage": 2,
+              "revisionIds": [
+                "mb-rev-2"
+              ]
+            }
+          ]
+        },
+        {
+          "variantId": "mb-reject-after-scope",
+          "kind": "reject",
+          "binding": "scope",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "mb-rev-1",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-1:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "mb-rev-1",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 2,
+                "op": "binding-change",
+                "binding": "scope",
+                "write": "scene-scope-registry-update",
+                "addTimelineRef": "timeline:alt"
+              },
+              {
+                "stage": 2,
+                "op": "prepare",
+                "revision": "mb-rev-2",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-2:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 2,
+                "op": "approve",
+                "revision": "mb-rev-2",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 1"
+              },
+              {
+                "stage": 2,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 2"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 1
+              },
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 2
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 2
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "mb-rev-1"
+              ]
+            },
+            {
+              "stage": 2,
+              "revisionIds": [
+                "mb-rev-2",
+                "mb-rev-1"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "source-revision-changed"
+              }
+            }
+          ],
+          "ineligibleLogicalId": "mb-rev-1"
+        },
+        {
+          "variantId": "mb-positive-source",
+          "kind": "positive",
+          "binding": "source",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "mb-rev-1",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-1:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "mb-rev-1",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 2,
+                "op": "binding-change",
+                "binding": "source",
+                "write": "codex-update",
+                "entity": "mb-ent-bridge",
+                "summary": "A synthetic bridge entry, edited between the two stages."
+              },
+              {
+                "stage": 2,
+                "op": "prepare",
+                "revision": "mb-rev-2",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-2:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 2,
+                "op": "approve",
+                "revision": "mb-rev-2",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 1"
+              },
+              {
+                "stage": 2,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 2"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 1
+              },
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 2
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 2
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "mb-rev-1"
+              ]
+            },
+            {
+              "stage": 2,
+              "revisionIds": [
+                "mb-rev-2"
+              ]
+            }
+          ]
+        },
+        {
+          "variantId": "mb-reject-after-source",
+          "kind": "reject",
+          "binding": "source",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "mb-rev-1",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-1:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "mb-rev-1",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 2,
+                "op": "binding-change",
+                "binding": "source",
+                "write": "codex-update",
+                "entity": "mb-ent-bridge",
+                "summary": "A synthetic bridge entry, edited between the two stages."
+              },
+              {
+                "stage": 2,
+                "op": "prepare",
+                "revision": "mb-rev-2",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-2:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 2,
+                "op": "approve",
+                "revision": "mb-rev-2",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 1"
+              },
+              {
+                "stage": 2,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 2"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 1
+              },
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 2
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 2
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "mb-rev-1"
+              ]
+            },
+            {
+              "stage": 2,
+              "revisionIds": [
+                "mb-rev-2",
+                "mb-rev-1"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "source-revision-changed"
+              }
+            }
+          ],
+          "ineligibleLogicalId": "mb-rev-1"
+        },
+        {
+          "variantId": "mb-positive-decision",
+          "kind": "positive",
+          "binding": "decision",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "mb-rev-1",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-1:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "mb-rev-1",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 2,
+                "op": "binding-change",
+                "binding": "decision",
+                "write": "decision-cancel",
+                "revision": "mb-rev-1",
+                "decision": "rejected"
+              },
+              {
+                "stage": 2,
+                "op": "prepare",
+                "revision": "mb-rev-2",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-2:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 2,
+                "op": "approve",
+                "revision": "mb-rev-2",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 1"
+              },
+              {
+                "stage": 2,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 2"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 1
+              },
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 2
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 2
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "mb-rev-1"
+              ]
+            },
+            {
+              "stage": 2,
+              "revisionIds": [
+                "mb-rev-2"
+              ]
+            }
+          ]
+        },
+        {
+          "variantId": "mb-reject-after-decision",
+          "kind": "reject",
+          "binding": "decision",
+          "setup": {
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "mb-rev-1",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-1:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "mb-rev-1",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 2,
+                "op": "binding-change",
+                "binding": "decision",
+                "write": "decision-cancel",
+                "revision": "mb-rev-1",
+                "decision": "rejected"
+              },
+              {
+                "stage": 2,
+                "op": "prepare",
+                "revision": "mb-rev-2",
+                "entity": "mb-ent-bridge",
+                "anchorScene": "mb-scene-anchor",
+                "proposalKey": "mech:M-B:mb-rev-2:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 2,
+                "op": "approve",
+                "revision": "mb-rev-2",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 1"
+              },
+              {
+                "stage": 2,
+                "nodeScene": "mb-scene-query",
+                "title": "M-B stage 2"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 1
+              },
+              {
+                "kind": "revisionToken",
+                "logicalId": "mb-scope-authority",
+                "stage": 2
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "mb-ent-bridge",
+                "stage": 2
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "mb-rev-1"
+              ]
+            },
+            {
+              "stage": 2,
+              "revisionIds": [
+                "mb-rev-2",
+                "mb-rev-1"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "revision-not-human-approved"
+              }
+            }
+          ],
+          "ineligibleLogicalId": "mb-rev-1"
+        }
+      ]
+    }
+  ]
+}

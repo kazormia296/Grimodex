@@ -371,7 +371,15 @@ test("the route and budgets are the fixture's own values, not new product limits
 test("the freeze and review records bind the bytes on disk (pending review until a reviewer approves)", async () => {
   const freeze = JSON.parse(await read(FREEZE_PATH));
   const review = JSON.parse(await read(REVIEW_PATH));
-  assert.equal(freeze.nativeOutputObservedBeforeFreeze, false);
+  // The record states what happened. A fixture whose materials Native observed
+  // lists the observations and cannot be frozen; a frozen record says false.
+  assert.equal(
+    freeze.nativeOutputObservedBeforeFreeze,
+    (freeze.nativeObservations ?? []).length > 0,
+  );
+  if (freeze.status === "frozen") {
+    assert.equal(freeze.nativeOutputObservedBeforeFreeze, false);
+  }
   assert.equal(freeze.authorSeparation.nativeReceiptProvidedToAuthor, false);
   assert.ok(["pending-review", "frozen"].includes(freeze.status));
   const bytes = new Map();

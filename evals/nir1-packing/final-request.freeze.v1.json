@@ -4,10 +4,19 @@
   "draftRef": "nir1-final-request-eval-proposal/2",
   "fixtureVersion": 1,
   "status": "pending-review",
-  "nativeOutputObservedBeforeFreeze": false,
+  "nativeOutputObservedBeforeFreeze": true,
+  "nativeObservations": [
+    {
+      "by": "dph-4 builder (harness, setup, registration; a harness implementer, not the fixture author)",
+      "commit": "DPH-4 commit a14eac73 (5bca62cb after the rebase onto 50a40557)",
+      "what": "Before this record was frozen, the harness's cargo tests ran every variant of all nine cases of this fixture's materials through Native (setup with product writers, the real D-final, packer and renderer) on every run of `cargo test ... nir1_final_request_eval`, and an ignored development dump wrote receipts without the freeze gate. The DPH-4 builder scored the dump with the scorer and reported per-case verdicts to the integrator; a prototype run showed every positive failing with other-case-material (DR-DPH-57), which led to the project_create change in the harness, not to a change of the fixture.",
+      "materialsObserved": "all nine cases (P-01, P-02, P-04, P-05, P-06, P-07, P-08, P-10, P-11), every variant",
+      "disposition": "Recorded here and in dp-h-decisions.md (DR-DPH-69..72). The harness no longer runs this fixture without the freeze gate (the mechanics tests use a synthetic fixture). Under the draft's rule on observed materials this fixture version must not be frozen as is: the contract refuses a frozen record with nativeOutputObservedBeforeFreeze true. Its expectations are also stale after X1-3 (#674). The integrator replaces the materials (new logical IDs and texts) and the expectations through a separate fixture author, with a new independent review, before freezing."
+    }
+  ],
   "frozenAt": "2026-10-17T22:55:04Z",
   "reviewVerdict": "pending",
-  "note": "Pending the independent expectation review. The record binds the bytes written by the fixture author (DPH-2). When the reviewer approves, the integrator rewrites this record with status frozen, reviewVerdict approve, the review record's new sha256 and a new frozenAt, and commits it before any Native run of this fixture's material.",
+  "note": "Pending the independent expectation review, and not freezable as it stands: Native observed this fixture's materials before the freeze (see nativeObservations). A replacement fixture (new materials, author separate from the harness implementers) with a new review record is required; its record sets nativeOutputObservedBeforeFreeze false and no observations before the integrator rewrites it with status frozen, reviewVerdict approve, the review record's new sha256 and a new frozenAt, and commits it before any Native run of the new fixture's material.",
   "fixture": {
     "path": "evals/nir1-packing/final-request.v1.json",
     "sha256": "0d277e0cc00dc42f61ad583b7bb59a6b2f9f038a2932684d9bc823ac8dc9ac49"
@@ -32,11 +41,11 @@
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/contract.mjs",
-        "sha256": "0b071c105752830e7d7b773f3c419deb447f5c562adae73e8994affd21023730"
+        "sha256": "ce252444569136bdbfa03e0957868a21d24417b6a505ec1205852d85c7827515"
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/receipt.mjs",
-        "sha256": "4f779efb53535a0181f3f0eaa4b9acd1874213639d534c59cbff038342e87042"
+        "sha256": "5bac0b6984c465f5278a0a4b119cd37841306a34332a852b6309b4a1ac9e22a6"
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/payload.mjs",

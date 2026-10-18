@@ -705,6 +705,13 @@ pub(super) struct RevisionReading {
     pub(super) a3: String,
     pub(super) freshness: String,
     pub(super) scope_authority_revision: Option<String>,
+    /// The Scope authority revision each Entity of the Revision carries in its
+    /// own Scope binding (since X1-3 the projection token of the Entity's
+    /// anchor Scene): the value that appears as `scope.authorityRevision` in
+    /// the rendered entry. It differs from `scope_authority_revision` (the
+    /// project-level revision the setup compares between setup-end and
+    /// request-pre).
+    pub(super) entity_scope_authority_revisions: Vec<String>,
     /// (Codex entity id, source token) of the Revision's Entities.
     pub(super) source_tokens: Vec<(String, String)>,
 }
@@ -819,6 +826,13 @@ impl CaseWorkspace {
                         a3: "eligible".into(),
                         freshness: "fresh".into(),
                         scope_authority_revision: Some(disclosure.scope_authority_revision.clone()),
+                        entity_scope_authority_revisions: disclosure
+                            .revision
+                            .bundle
+                            .entities
+                            .iter()
+                            .map(|entity| entity.scope.authority_revision.clone())
+                            .collect(),
                         source_tokens: disclosure
                             .revision
                             .bundle
@@ -838,6 +852,7 @@ impl CaseWorkspace {
                             a3,
                             freshness: "unavailable".into(),
                             scope_authority_revision: None,
+                            entity_scope_authority_revisions: Vec::new(),
                             source_tokens: Vec::new(),
                         }
                     }

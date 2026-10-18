@@ -653,3 +653,66 @@ test("harness-setup-uses-product-writers: the tests may make only the one audite
     ),
   );
 });
+
+test("harness-freeze-order: the real harness runs Native on the fixture only behind the freeze gate", () => {
+  const violations = checkHarness(real).filter((violation) =>
+    /freeze gate|check_freeze|frozen fixture|development dump|run_all_variants/.test(
+      violation.message,
+    ),
+  );
+  assert.deepEqual(violations, []);
+});
+
+test("harness-freeze-order: a run without the gate, a call outside evidence_run or a read of the frozen fixture fails", () => {
+  const mod = `${PATHS.nodeHarnessDir}mod.rs`;
+  for (const [label, file, change, expected] of [
+    [
+      "a development dump",
+      HARNESS("tests.rs"),
+      (text) =>
+        `${text}\n#[test]\n#[ignore]\nfn development_receipts_dump() {}\n`,
+      /development dump/,
+    ],
+    [
+      "an environment switch for a dump",
+      HARNESS("tests.rs"),
+      (text) => `${text}\nfn _x() { std::env::var("NIR1_FINAL_REQUEST_EVAL_DEV_OUT"); }\n`,
+      /development dump/,
+    ],
+    [
+      "run_all_variants called outside evidence_run",
+      mod,
+      (text) => `${text}\nfn _x(f: &Fixture) { let _ = run_all_variants(f); }\n`,
+      /outside `evidence_run`/,
+    ],
+    [
+      "run_all_variants called in another harness file",
+      HARNESS("output.rs"),
+      (text) => `${text}\nfn _x(f: &Fixture) { let _ = run_all_variants(f); }\n`,
+      /outside `evidence_run`/,
+    ],
+    [
+      "the gate after the run",
+      mod,
+      (text) =>
+        text.replace(
+          /let snapshot: FrozenSnapshot = match check_freeze\(repo_root, None\)/,
+          "let _early = run_all_variants(&Fixture::parse(\"{}\")?);\n    let snapshot: FrozenSnapshot = match check_freeze(repo_root, None)",
+        ),
+      /before `run_all_variants`/,
+    ],
+    [
+      "a test that reads the frozen fixture",
+      HARNESS("tests.rs"),
+      (text) =>
+        `${text}\nfn _x(root: &Path) { let _ = std::fs::read_to_string(root.join(FIXTURE_PATH)); }\n`,
+      /read outside/,
+    ],
+  ]) {
+    const violations = checkHarness(mutated(file, change));
+    assert.ok(
+      violations.some((violation) => expected.test(violation.message)),
+      `${label}: ${JSON.stringify(violations.map((violation) => violation.message))}`,
+    );
+  }
+});

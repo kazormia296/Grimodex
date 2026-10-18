@@ -795,6 +795,68 @@ test("freeze record: Native must not have been observed, and the order of roles 
   }
 });
 
+test("freeze record: an observation of Native on the materials is recorded honestly and blocks the freeze", () => {
+  const observation = {
+    by: "a harness builder",
+    what: "ran every variant of the fixture through D-final before the freeze",
+    commit: "a14eac73",
+  };
+  // A pending record may say true when it lists what was observed.
+  {
+    const { freeze, bytes, review } = freezeWorld();
+    freeze.status = "pending-review";
+    freeze.reviewVerdict = "pending";
+    freeze.nativeOutputObservedBeforeFreeze = true;
+    freeze.nativeObservations = [observation];
+    const errors = validateFreezeRecord(freeze, { bytes, review });
+    assert.ok(
+      !errors.some((e) => e.includes("nativeOutputObservedBeforeFreeze")),
+      errors.join(" | "),
+    );
+  }
+  // A frozen record may not.
+  {
+    const { freeze, bytes, review } = freezeWorld();
+    freeze.nativeOutputObservedBeforeFreeze = true;
+    freeze.nativeObservations = [observation];
+    const errors = validateFreezeRecord(freeze, { bytes, review });
+    assert.ok(
+      errors.some((e) => e.includes("a frozen record must have")),
+      errors.join(" | "),
+    );
+  }
+  // true without an observation, and false with one, are both inconsistent.
+  for (const [flag, list, expected] of [
+    [true, undefined, "must say what was observed"],
+    [true, [], "must say what was observed"],
+    [false, [observation], "must be true"],
+  ]) {
+    const { freeze, bytes, review } = freezeWorld();
+    freeze.status = "pending-review";
+    freeze.reviewVerdict = "pending";
+    freeze.nativeOutputObservedBeforeFreeze = flag;
+    if (list !== undefined) freeze.nativeObservations = list;
+    const errors = validateFreezeRecord(freeze, { bytes, review });
+    assert.ok(
+      errors.some((e) => e.includes(expected)),
+      `${expected}: ${errors.join(" | ")}`,
+    );
+  }
+  // An observation entry needs who, what and which commit.
+  {
+    const { freeze, bytes, review } = freezeWorld();
+    freeze.status = "pending-review";
+    freeze.reviewVerdict = "pending";
+    freeze.nativeOutputObservedBeforeFreeze = true;
+    freeze.nativeObservations = [{ by: "someone" }];
+    const errors = validateFreezeRecord(freeze, { bytes, review });
+    assert.ok(
+      errors.some((e) => e.includes("needs by, what and commit")),
+      errors.join(" | "),
+    );
+  }
+});
+
 test("freeze record: a frozen status needs an approving, valid review record; pending does not", () => {
   const { freeze, bytes, review } = freezeWorld();
   const changes = { ...review, verdict: "changes-required" };

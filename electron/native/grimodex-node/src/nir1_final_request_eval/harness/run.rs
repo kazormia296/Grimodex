@@ -130,7 +130,6 @@ struct Runner<'a> {
     sessions: HashMap<u32, String>,
     session_statements_match: bool,
     invoked_writers: Vec<String>,
-    provisioning_writers: Vec<String>,
     /// revision logical id -> the stage that prepared it.
     prepared_stage: HashMap<String, u32>,
     /// Stages whose first (positive) prepare has happened: no data write may
@@ -146,22 +145,6 @@ fn nonempty(value: &Option<String>, what: &str) -> Result<String> {
 }
 
 impl<'a> Runner<'a> {
-    /// `project_create` is a product writer (it is in the product's internal
-    /// command table that `receipt.mjs` `PRODUCT_WRITERS` is taken from), but
-    /// the scorer's list lacks it, so naming it in `writersUsed` or in an event
-    /// would make every setup `non-product-writer`. It is reported in the
-    /// setup case's extensions until the list is corrected before the freeze
-    /// (DR-DPH-55).
-    fn note_provisioning_writer(&mut self, writer: &str) {
-        if !self
-            .provisioning_writers
-            .iter()
-            .any(|known| known == writer)
-        {
-            self.provisioning_writers.push(writer.to_owned());
-        }
-    }
-
     fn note_writer(&mut self, writer: &str) {
         if !self.invoked_writers.iter().any(|known| known == writer) {
             self.invoked_writers.push(writer.to_owned());
@@ -197,13 +180,23 @@ impl<'a> Runner<'a> {
         self.log
             .push(1, "route-settings", "write_ai_settings", None, None, None);
 
-        // The case's own project, created by the product's project writer
-        // (see `PROJECT_WRITER_NOTE`): its id is in no other case's payload.
+        // The case's own project, created by the product's project writer: its
+        // id is in no other case's payload (the scorer scans for other cases'
+        // runtime ids). `project_create` is in the scorer's writer list, so the
+        // write is a tree event like the Scene writes.
         let project = self
             .ws
             .write_project(&format!("DP-H {}", self.case.case_id))?;
         self.ids.add(&self.case.setup.project.logical_id, &project);
-        self.note_provisioning_writer("project_create");
+        self.note_writer("project_create");
+        self.log.push(
+            1,
+            "tree",
+            "project_create",
+            Some(&self.case.setup.project.logical_id),
+            Some(&project),
+            None,
+        );
 
         for (index, scene) in self.case.setup.scenes.iter().enumerate() {
             let runtime = self
@@ -501,7 +494,6 @@ pub(super) fn run_variant(
         sessions: HashMap::new(),
         session_statements_match: true,
         invoked_writers: Vec::new(),
-        provisioning_writers: Vec::new(),
         prepared_stage: HashMap::new(),
         positive_prepared_stages: HashSet::new(),
     };
@@ -514,6 +506,22 @@ pub(super) fn run_variant(
     runner.settle()?;
     // 2. the first stage's Revisions: prepare and approve last.
     runner.exec_stage_steps(first_stage)?;
+    // The stage's setup-end row is taken here, right after its last data,
+    // prepare or approve step and before the chat sessions and the restricted
+    // activation, so a write those make (or a maintenance side effect) shows as
+    // a change of the Scope authority revision against request-pre.
+    let mut verifications = Vec::new();
+    {
+        let request = variant.request_for_stage(first_stage)?;
+        let query_scene = runner.query_runtime()?;
+        let (end_row, _) = runner.verification_row(
+            "setup-end",
+            first_stage,
+            &request.revision_ids,
+            &query_scene,
+        )?;
+        verifications.push(end_row);
+    }
     // 3. every stage's chat session, with the renderer's statement, before the
     //    profile is restricted.
     for spec in &variant.setup.chat_sessions {
@@ -548,7 +556,6 @@ pub(super) fn run_variant(
         "the profile is not restricted with in-flight stopped after activation"
     );
 
-    let mut verifications = Vec::new();
     let mut requests_json = Vec::new();
     let mut runtime_values = Vec::new();
     let mut dfinal_outcomes = Vec::new();
@@ -559,6 +566,13 @@ pub(super) fn run_variant(
         }
         let request = variant.request_for_stage(stage)?;
         let query_scene = runner.query_runtime()?;
+        if stage != first_stage {
+            // A later stage's setup-end is its last step's state (the first
+            // stage's was taken before the chat sessions).
+            let (end_row, _) =
+                runner.verification_row("setup-end", stage, &request.revision_ids, &query_scene)?;
+            verifications.push(end_row);
+        }
         let is_last = Some(&stage) == stages.last();
         let is_reject = variant.kind == "reject" && is_last;
 
@@ -584,10 +598,24 @@ pub(super) fn run_variant(
             .filter(|spec| spec.stage == stage)
         {
             let value = match spec.kind.as_str() {
-                "revisionToken" => stage_revisions
-                    .iter()
-                    .find_map(|(_, reading)| reading.scope_authority_revision.clone())
-                    .context("no eligible Revision gives the Scope authority revision")?,
+                "revisionToken" => {
+                    // The Scope authority revision the Revisions of the request
+                    // carry in their own Scope bindings (the `scope.
+                    // authorityRevision` of the rendered entries). All of them
+                    // must agree: one value stands for the stage.
+                    let mut tokens: Vec<&String> = stage_revisions
+                        .iter()
+                        .flat_map(|(_, reading)| reading.entity_scope_authority_revisions.iter())
+                        .collect();
+                    tokens.sort();
+                    tokens.dedup();
+                    ensure!(
+                        tokens.len() == 1,
+                        "the eligible Revisions of stage {stage} carry {} distinct Scope authority revisions, not one",
+                        tokens.len()
+                    );
+                    tokens[0].clone()
+                }
                 "sourceToken" => {
                     let entity_runtime = runner.ids.runtime_of(&spec.logical_id)?.to_owned();
                     stage_revisions
@@ -614,10 +642,7 @@ pub(super) fn run_variant(
             }));
         }
 
-        // setup-end, then request-pre right before the capture.
-        let (end_row, _) =
-            runner.verification_row("setup-end", stage, &request.revision_ids, &query_scene)?;
-        verifications.push(end_row);
+        // request-pre right before the capture.
         let (pre_row, pre_readings) =
             runner.verification_row("request-pre", stage, &request.revision_ids, &query_scene)?;
         verifications.push(pre_row);
@@ -755,7 +780,6 @@ pub(super) fn run_variant(
     setup_case.insert(
         "extensions".into(),
         json!({
-            "provisioningWriters": runner.provisioning_writers,
             "rowChangingWriters": writers_changed,
             "directWrites": direct_writes,
             "maintenanceOwner": "narrative_maintenance_owner (Backend main-only maintenance API, driven as the Electron scheduler drives it)",

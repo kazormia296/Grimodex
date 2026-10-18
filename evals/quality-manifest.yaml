@@ -509,6 +509,7 @@ requirements:
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/run.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/statement.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/workspace.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mechanics-fixture.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
       - electron/scripts/verify-release-native.mjs
       - scripts/quality/nir1-packing/contract.mjs
@@ -1320,6 +1321,7 @@ requirements:
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/run.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/statement.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/workspace.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mechanics-fixture.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
       - electron/scripts/verify-release-native.mjs
       - scripts/quality/nir1-packing/runner.mjs
@@ -1464,6 +1466,7 @@ requirements:
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/run.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/statement.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/workspace.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mechanics-fixture.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
       - electron/scripts/verify-release-native.mjs
       - scripts/quality/nir1-packing/contract.mjs

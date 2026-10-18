@@ -210,6 +210,23 @@ pub(super) fn check_freeze(
         ));
     }
 
+    // `frozen` is not enough: the review must have approved, and no Native
+    // output may have been seen on the fixture's materials. The scorer checks
+    // the same again, but only after Native has run, so this gate is the one in
+    // front of Native.
+    if freeze["reviewVerdict"] != "approve" {
+        refuse(format!(
+            "review-not-approved: the freeze record's reviewVerdict is {}, not \"approve\"",
+            freeze["reviewVerdict"]
+        ));
+    }
+    if freeze["nativeOutputObservedBeforeFreeze"] != false {
+        refuse(format!(
+            "native-observed-before-freeze: nativeOutputObservedBeforeFreeze is {}, not false (a fixture whose materials Native observed is replaced by a new version, not frozen)",
+            freeze["nativeOutputObservedBeforeFreeze"]
+        ));
+    }
+
     // The bytes this checkout has are the bytes the record binds.
     let bound = bound_files(&freeze);
     if bound.len() < 8 {
@@ -221,6 +238,7 @@ pub(super) fn check_freeze(
     let mut fixture_sha256 = String::new();
     let mut fixture_text = String::new();
     let mut scorer_files = Vec::new();
+    let mut review_bytes: Option<Vec<u8>> = None;
     for (path, recorded) in &bound {
         match std::fs::read(repo_root.join(path)) {
             Ok(bytes) => {
@@ -234,6 +252,9 @@ pub(super) fn check_freeze(
                     fixture_sha256 = actual;
                     fixture_text = String::from_utf8_lossy(&bytes).into_owned();
                 }
+                if Some(path.as_str()) == freeze["reviewRecord"]["path"].as_str() {
+                    review_bytes = Some(bytes.clone());
+                }
                 if path.starts_with("scripts/quality/nir1-packing/final-request/") {
                     scorer_files.push((path.clone(), recorded.clone()));
                 }
@@ -243,6 +264,32 @@ pub(super) fn check_freeze(
     }
     if fixture_sha256.is_empty() {
         refuse(format!("the freeze record does not bind {FIXTURE_PATH}"));
+    }
+    match review_bytes
+        .as_deref()
+        .and_then(|bytes| serde_json::from_slice::<Value>(bytes).ok())
+    {
+        Some(review) => {
+            if review["verdict"] != "approve" {
+                refuse(format!(
+                    "review-not-approved: the review record's verdict is {}, not \"approve\"",
+                    review["verdict"]
+                ));
+            }
+            if !fixture_sha256.is_empty() && review["fixtureSha256"] != fixture_sha256.as_str() {
+                refuse(format!(
+                    "the review record reviewed fixture sha256 {}, this checkout's fixture is {fixture_sha256}",
+                    review["fixtureSha256"]
+                ));
+            }
+            if review["reviewer"]["nativeOutputObserved"] != false {
+                refuse(
+                    "the review record does not state that the reviewer saw no Native output"
+                        .to_owned(),
+                );
+            }
+        }
+        None => refuse("the review record could not be read as JSON".to_owned()),
     }
 
     // The freeze commit is derived from history: the oldest commit reachable

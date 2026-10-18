@@ -45,6 +45,11 @@ enum EvidenceOutcome {
 
 /// Every variant of every case, one after the other. A setup that fails makes
 /// the whole run invalid (`Err`): no receipt of a partly built run is written.
+///
+/// Native runs on a fixture's materials here. The frozen fixture reaches this
+/// only through `evidence_run`, after `check_freeze`; the mechanics tests call
+/// it on the synthetic `mechanics-fixture.json`. The architecture check
+/// (`architecture.mjs`, `checkFreezeOrder`) pins both.
 fn run_all_variants(fixture: &Fixture) -> Result<Vec<VariantOutcome>> {
     let mut outcomes = Vec::new();
     for case in &fixture.cases {

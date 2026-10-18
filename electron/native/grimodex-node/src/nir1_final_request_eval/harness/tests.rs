@@ -1,6 +1,13 @@
 //! DPH-4 harness tests: the freeze gate, the case workspaces, the setup order,
 //! the requests and the receipts. They build real workspaces with product
 //! writers and call the real D-final; nothing is sent anywhere.
+//!
+//! The mechanics tests run on `mechanics-fixture.json`, a synthetic fixture with
+//! its own logical IDs, texts and canaries. They never read the frozen
+//! fixture (`evals/nir1-packing/final-request.v1.json`): that fixture's
+//! materials reach Native only through `evidence_run`, behind the freeze gate
+//! (draft K6/2 観測前の固定). `mechanics_fixture_shares_no_material_with_the_
+//! frozen_fixture` pins the separation.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -15,7 +22,6 @@ use super::freeze::{check_freeze, FIXTURE_PATH, FREEZE_PATH};
 use super::run::{run_variant, VariantOutcome};
 use super::workspace::CaseWorkspace;
 use super::{evidence_run, run_all_variants, EvidenceOutcome};
-use crate::nir1_prepared_request::nir1_final_request_eval::DfinalOutcome;
 
 /// The writers the setup may invoke (the draft's list of product writers; the
 /// scorer holds the same list in receipt.mjs `PRODUCT_WRITERS` and rejects
@@ -39,10 +45,15 @@ const ALLOWED_WRITERS: [&str; 14] = [
     "project_create",
 ];
 
+/// The synthetic fixture the mechanics tests run on.
+const MECHANICS_FIXTURE: &str = include_str!("mechanics-fixture.json");
+
 fn fixture_text() -> Result<(Fixture, Value, String)> {
-    let root = super::freeze::repository_root()?;
-    let text = std::fs::read_to_string(root.join(FIXTURE_PATH))?;
-    Ok((Fixture::parse(&text)?, serde_json::from_str(&text)?, text))
+    Ok((
+        Fixture::parse(MECHANICS_FIXTURE)?,
+        serde_json::from_str(MECHANICS_FIXTURE)?,
+        MECHANICS_FIXTURE.to_owned(),
+    ))
 }
 
 /// One run of every variant, shared by the tests that read its outcome.
@@ -130,8 +141,9 @@ fn final_request_positive_variants_return_ok_matching_capture() -> Result<()> {
             );
         }
     }
-    // 9 cases: 12 positive requests plus the P-10 stage-1 requests of the 3 reject variants.
-    assert!(positive_requests >= 9, "{positive_requests}");
+    // M-A: 1 positive request. M-B: 2 requests in each of 3 positive variants
+    // plus the stage-1 request of each of 3 reject variants.
+    assert_eq!(positive_requests, 10);
     Ok(())
 }
 
@@ -170,7 +182,8 @@ fn final_request_reject_variants_fail_closed_with_expected_reason() -> Result<()
             assert_eq!(request["attemptRowsAdded"], 0, "{variant_id}");
         }
     }
-    assert!(rejects >= 10, "{rejects}");
+    // M-A: 3 reject variants. M-B: 3 reject variants.
+    assert_eq!(rejects, 6);
     Ok(())
 }
 
@@ -304,6 +317,130 @@ fn setup_receipt_records_write_order_and_eligibility() {
         assert_eq!(outcome.setup_case["directDmlObserved"], false, "{label}");
         assert_eq!(outcome.setup_case["valid"], true, "{label}");
     }
+}
+
+#[test]
+fn setup_end_is_taken_before_chat_sessions_and_restricted_activation() {
+    // The first stage's setup-end row is read right after its last prepare or
+    // approve, before the chat sessions and the restricted activation, so the
+    // Scope authority revision comparison with request-pre spans them. A later
+    // stage's setup-end is read after the profile is restricted.
+    for outcome in all_outcomes() {
+        let label = &outcome.variant_id;
+        let verifications = outcome.setup_case["verifications"]
+            .as_array()
+            .expect("verifications");
+        let first_stage = outcome.requests[0]["stage"].clone();
+        for request in &outcome.requests {
+            let stage = request["stage"].clone();
+            let end = verifications
+                .iter()
+                .find(|row| row["stage"] == stage && row["point"] == "setup-end")
+                .unwrap_or_else(|| panic!("{label}: no setup-end for stage {stage}"));
+            if stage == first_stage {
+                assert_eq!(
+                    end["d2a"]["restricted"],
+                    json!(false),
+                    "{label}: the first stage's setup-end must precede the restricted activation"
+                );
+            } else {
+                assert_eq!(end["d2a"]["restricted"], json!(true), "{label}");
+            }
+        }
+        // One D-final result per request, kept for these tests.
+        assert_eq!(outcome.dfinal.len(), outcome.requests.len(), "{label}");
+    }
+}
+
+#[test]
+fn project_create_is_named_as_a_product_writer_in_the_setup_receipt() {
+    // The case's project is created by the product's `project_create`; it is
+    // a tree event and in writersUsed (the scorer's list names it), not hidden
+    // in an extension.
+    for outcome in all_outcomes() {
+        let label = &outcome.variant_id;
+        let created: Vec<Value> = events(outcome)
+            .into_iter()
+            .filter(|event| event["writer"] == "project_create")
+            .collect();
+        assert_eq!(created.len(), 1, "{label}");
+        assert_eq!(kind_of(&created[0]), "tree", "{label}");
+        let id_map = outcome.setup_case["idMap"].as_array().expect("idMap");
+        assert!(
+            id_map
+                .iter()
+                .any(|row| row["logicalId"] == created[0]["logicalId"]
+                    && row["runtimeId"] == created[0]["runtimeId"]),
+            "{label}: the project event names the id map's project"
+        );
+        assert!(
+            outcome.setup_case["writersUsed"]
+                .as_array()
+                .expect("writersUsed")
+                .iter()
+                .any(|writer| writer == "project_create"),
+            "{label}"
+        );
+        assert!(
+            outcome.setup_case["extensions"]
+                .get("provisioningWriters")
+                .is_none(),
+            "{label}"
+        );
+        // The project is created before any other base write.
+        let first_other = events(outcome)
+            .iter()
+            .find(|event| {
+                event["writer"] != "write_ai_settings" && event["writer"] != "project_create"
+            })
+            .map(seq_of)
+            .expect("another event");
+        assert!(seq_of(&created[0]) < first_other, "{label}");
+    }
+}
+
+#[test]
+fn scope_runtime_value_is_the_revisions_own_scope_authority_revision() {
+    // `revisionToken` stands for the Scope authority revision that the
+    // Revision's entries carry (`scope.authorityRevision`), which since X1-3 is
+    // the anchor Scene's projection token, not the project-level revision the
+    // setup compares between setup-end and request-pre.
+    let mut checked = 0;
+    for outcome in all_outcomes() {
+        let label = &outcome.variant_id;
+        let verifications = outcome.setup_case["verifications"]
+            .as_array()
+            .expect("verifications");
+        for value in outcome.setup_case["runtimeValues"]
+            .as_array()
+            .expect("runtimeValues")
+            .iter()
+            .filter(|value| value["kind"] == "revisionToken")
+        {
+            let token = value["value"].as_str().expect("token");
+            let project_level = verifications
+                .iter()
+                .find(|row| row["stage"] == value["stage"] && row["point"] == "request-pre")
+                .map(|row| row["scopeAuthorityRevision"].clone())
+                .expect("request-pre");
+            assert_ne!(json!(token), project_level, "{label}");
+            let request = outcome
+                .requests
+                .iter()
+                .find(|request| request["stage"] == value["stage"])
+                .expect("request");
+            if request["dfinal"]["outcome"] == "ok" {
+                let payload = request["candidate"]["payload"].to_string();
+                assert!(
+                    payload.contains(token),
+                    "{label} stage {}: the rendered payload does not carry the Scope authority revision {token}",
+                    value["stage"]
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked >= 10, "{checked}");
 }
 
 #[test]
@@ -515,7 +652,7 @@ fn run_mutated(
 #[test]
 fn setup_rejects_write_after_first_prepare() -> Result<()> {
     // Move the negative's invalidation after the positive prepare.
-    let result = run_mutated("p02-reject-source-stale", |variant| {
+    let result = run_mutated("ma-reject-source", |variant| {
         let steps = variant["setup"]["steps"].as_array_mut().expect("steps");
         let invalidate = steps.remove(2);
         assert_eq!(invalidate["op"], "invalidate-negative");
@@ -533,7 +670,7 @@ fn setup_rejects_write_after_first_prepare() -> Result<()> {
 
 #[test]
 fn p10_without_new_revision_is_setup_failure() -> Result<()> {
-    let result = run_mutated("p10-positive-scope", |variant| {
+    let result = run_mutated("mb-positive-scope", |variant| {
         let steps = variant["setup"]["steps"].as_array_mut().expect("steps");
         steps.retain(|step| step["stage"] == 1 || step["op"] == "binding-change");
     })?;
@@ -549,13 +686,13 @@ fn p10_without_new_revision_is_setup_failure() -> Result<()> {
 
 #[test]
 fn p10_reapproval_of_old_revision_is_rejected() -> Result<()> {
-    let result = run_mutated("p10-positive-scope", |variant| {
+    let result = run_mutated("mb-positive-scope", |variant| {
         let steps = variant["setup"]["steps"].as_array_mut().expect("steps");
         // Stage 2 approves the old Revision again instead of preparing a new one.
         steps.retain(|step| step["stage"] == 1 || step["op"] == "binding-change");
         steps.push(json!({
-            "stage": 2, "op": "approve", "revision": "p10-rev-1",
-            "decision": "approved", "decisionJson": {}, "createdBy": "dph-reviewer"
+            "stage": 2, "op": "approve", "revision": "mb-rev-1",
+            "decision": "approved", "decisionJson": {}, "createdBy": "mech-reviewer"
         }));
     })?;
     let error = result
@@ -572,9 +709,9 @@ fn p10_reapproval_of_old_revision_is_rejected() -> Result<()> {
 fn p10_request2_uses_newly_prepared_revision_not_reapproved_old() {
     let outcomes = all_outcomes();
     for variant_id in [
-        "p10-positive-scope",
-        "p10-positive-source",
-        "p10-positive-decision",
+        "mb-positive-scope",
+        "mb-positive-source",
+        "mb-positive-decision",
     ] {
         let outcome = outcome_of(outcomes, variant_id);
         let events = events(outcome);
@@ -624,8 +761,8 @@ fn p10_request2_uses_newly_prepared_revision_not_reapproved_old() {
                 .find(|row| row["logicalId"] == logical)
                 .map(|row| row["runtimeId"].clone())
         };
-        assert_ne!(runtime("p10-rev-1"), runtime("p10-rev-2"), "{variant_id}");
-        assert!(runtime("p10-rev-1").is_some());
+        assert_ne!(runtime("mb-rev-1"), runtime("mb-rev-2"), "{variant_id}");
+        assert!(runtime("mb-rev-1").is_some());
     }
 }
 
@@ -669,34 +806,52 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-const BOUND_FILES: [(&str, &str); 8] = [
-    (FIXTURE_PATH, "{\"fixture\":true}\n"),
-    (
-        "evals/nir1-packing/final-request.expectation-review.v1.json",
-        "{\"review\":true}\n",
-    ),
-    ("evals/nir1-packing/final-request.README.md", "readme\n"),
-    (
-        "evals/nir1-packing/final-request-baseline-parity.v1.json",
-        "{\"parity\":true}\n",
-    ),
-    (
-        "scripts/quality/nir1-packing/final-request/scorer.mjs",
-        "// scorer\n",
-    ),
-    (
-        "scripts/quality/nir1-packing/final-request/contract.mjs",
-        "// contract\n",
-    ),
-    (
-        "scripts/quality/nir1-packing/final-request/receipt.mjs",
-        "// receipt\n",
-    ),
-    (
-        "scripts/quality/nir1-packing/final-request/payload.mjs",
-        "// payload\n",
-    ),
-];
+const GATE_FIXTURE_TEXT: &str = "{\"fixture\":true}\n";
+
+/// A review record as the independent reviewer writes it.
+fn review_text(verdict: &str, fixture_text: &str, native_output_observed: bool) -> String {
+    serde_json::to_string_pretty(&json!({
+        "verdict": verdict,
+        "fixtureSha256": sha256_hex(fixture_text.as_bytes()),
+        "reviewer": { "nativeOutputObserved": native_output_observed },
+    }))
+    .expect("a review record serialises")
+}
+
+/// The eight files a freeze record binds (path, text), with an approving review.
+fn bound_files() -> Vec<(&'static str, String)> {
+    vec![
+        (FIXTURE_PATH, GATE_FIXTURE_TEXT.to_owned()),
+        (
+            "evals/nir1-packing/final-request.expectation-review.v1.json",
+            review_text("approve", GATE_FIXTURE_TEXT, false),
+        ),
+        (
+            "evals/nir1-packing/final-request.README.md",
+            "readme\n".to_owned(),
+        ),
+        (
+            "evals/nir1-packing/final-request-baseline-parity.v1.json",
+            "{\"parity\":true}\n".to_owned(),
+        ),
+        (
+            "scripts/quality/nir1-packing/final-request/scorer.mjs",
+            "// scorer\n".to_owned(),
+        ),
+        (
+            "scripts/quality/nir1-packing/final-request/contract.mjs",
+            "// contract\n".to_owned(),
+        ),
+        (
+            "scripts/quality/nir1-packing/final-request/receipt.mjs",
+            "// receipt\n".to_owned(),
+        ),
+        (
+            "scripts/quality/nir1-packing/final-request/payload.mjs",
+            "// payload\n".to_owned(),
+        ),
+    ]
+}
 
 fn write_file(root: &Path, path: &str, text: &str) -> Result<()> {
     let target = root.join(path);
@@ -705,33 +860,51 @@ fn write_file(root: &Path, path: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
-fn freeze_record(status: &str) -> Value {
+fn freeze_record_for(status: &str, files: &[(&'static str, String)]) -> Value {
     let entry =
         |path: &str, text: &str| json!({"path": path, "sha256": sha256_hex(text.as_bytes())});
     json!({
         "status": status,
-        "fixture": entry(BOUND_FILES[0].0, BOUND_FILES[0].1),
-        "reviewRecord": entry(BOUND_FILES[1].0, BOUND_FILES[1].1),
-        "readme": entry(BOUND_FILES[2].0, BOUND_FILES[2].1),
-        "parityVector": entry(BOUND_FILES[3].0, BOUND_FILES[3].1),
-        "scorer": { "files": BOUND_FILES[4..].iter().map(|(path, text)| entry(path, text)).collect::<Vec<_>>() },
+        "reviewVerdict": if status == "frozen" { "approve" } else { "pending" },
+        "nativeOutputObservedBeforeFreeze": false,
+        "fixture": entry(files[0].0, &files[0].1),
+        "reviewRecord": entry(files[1].0, &files[1].1),
+        "readme": entry(files[2].0, &files[2].1),
+        "parityVector": entry(files[3].0, &files[3].1),
+        "scorer": { "files": files[4..].iter().map(|(path, text)| entry(path, text)).collect::<Vec<_>>() },
     })
+}
+
+fn freeze_record(status: &str) -> Value {
+    freeze_record_for(status, &bound_files())
 }
 
 /// A repository whose first commit holds every bound file and a freeze record
 /// of the given status.
 fn temp_repo(status: &str) -> Result<TempRepo> {
+    temp_repo_with(status, &bound_files(), |_| {})
+}
+
+/// Like `temp_repo`, with the bound files given and the record adjusted by
+/// `mutate` (the record's hashes are taken from `files` first).
+fn temp_repo_with(
+    status: &str,
+    files: &[(&'static str, String)],
+    mutate: impl FnOnce(&mut Value),
+) -> Result<TempRepo> {
     let root = std::env::temp_dir().join(format!("nir1-freeze-gate-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&root)?;
     let repo = TempRepo { root };
     git(&repo.root, &["init", "--quiet", "--initial-branch=main"])?;
-    for (path, text) in BOUND_FILES {
+    for (path, text) in files {
         write_file(&repo.root, path, text)?;
     }
+    let mut record = freeze_record_for(status, files);
+    mutate(&mut record);
     write_file(
         &repo.root,
         FREEZE_PATH,
-        &serde_json::to_string_pretty(&freeze_record(status))?,
+        &serde_json::to_string_pretty(&record)?,
     )?;
     git(&repo.root, &["add", "--all"])?;
     git(&repo.root, &["commit", "--quiet", "-m", "freeze"])?;
@@ -754,13 +927,11 @@ fn harness_accepts_a_matching_frozen_snapshot() -> Result<()> {
         snapshot.freeze_commit, snapshot.run_commit,
         "the freeze commit is an ancestor, not HEAD"
     );
-    assert_eq!(
-        snapshot.fixture_sha256,
-        sha256_hex(BOUND_FILES[0].1.as_bytes())
-    );
-    assert_eq!(snapshot.fixture_text, BOUND_FILES[0].1);
+    let files = bound_files();
+    assert_eq!(snapshot.fixture_sha256, sha256_hex(files[0].1.as_bytes()));
+    assert_eq!(snapshot.fixture_text, files[0].1);
     // The scorer digest is sha256 over `<path>\t<sha256>\n`, sorted by path.
-    let mut lines: Vec<String> = BOUND_FILES[4..]
+    let mut lines: Vec<String> = files[4..]
         .iter()
         .map(|(path, text)| format!("{path}\t{}\n", sha256_hex(text.as_bytes())))
         .collect();
@@ -859,6 +1030,67 @@ fn harness_refuses_without_matching_freeze() -> Result<()> {
 }
 
 #[test]
+fn harness_refuses_an_unapproved_or_observed_freeze() -> Result<()> {
+    // `status: frozen` is not enough: the freeze record's own verdict, its
+    // statement about Native observations and the review record all gate Native.
+    let pending_verdict = temp_repo_with("frozen", &bound_files(), |record| {
+        record["reviewVerdict"] = json!("pending");
+    })?;
+    let reasons = refusal_reasons(&pending_verdict.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("review-not-approved")),
+        "{reasons:?}"
+    );
+
+    let observed = temp_repo_with("frozen", &bound_files(), |record| {
+        record["nativeOutputObservedBeforeFreeze"] = json!(true);
+    })?;
+    let reasons = refusal_reasons(&observed.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("native-observed-before-freeze")),
+        "{reasons:?}"
+    );
+
+    let mut changes = bound_files();
+    changes[1].1 = review_text("changes-required", GATE_FIXTURE_TEXT, false);
+    let changes_required = temp_repo_with("frozen", &changes, |_| {})?;
+    let reasons = refusal_reasons(&changes_required.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("review record's verdict")),
+        "{reasons:?}"
+    );
+
+    let mut other_fixture = bound_files();
+    other_fixture[1].1 = review_text("approve", "{\"another\":\"fixture\"}\n", false);
+    let wrong_fixture = temp_repo_with("frozen", &other_fixture, |_| {})?;
+    let reasons = refusal_reasons(&wrong_fixture.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("reviewed fixture sha256")),
+        "{reasons:?}"
+    );
+
+    let mut saw_native = bound_files();
+    saw_native[1].1 = review_text("approve", GATE_FIXTURE_TEXT, true);
+    let seen = temp_repo_with("frozen", &saw_native, |_| {})?;
+    let reasons = refusal_reasons(&seen.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("saw no Native output")),
+        "{reasons:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn freeze_commit_is_ancestor_of_head() -> Result<()> {
     // The record is first frozen in the second commit; the first commit holds
     // it pending. The freeze commit is the second, and it is an ancestor of HEAD.
@@ -889,6 +1121,69 @@ fn freeze_commit_is_ancestor_of_head() -> Result<()> {
             &snapshot.run_commit,
         ],
     )?;
+    Ok(())
+}
+
+// ------------------------------------------------- the mechanics fixture
+
+/// Strings of the frozen fixture that identify its materials: logical IDs,
+/// Scene and Entity texts, user messages, canaries and the route's model.
+fn material_strings(value: &Value, out: &mut Vec<String>) {
+    const KEYS: [&str; 9] = [
+        "logicalId",
+        "ineligibleLogicalId",
+        "title",
+        "body",
+        "name",
+        "summary",
+        "userMessage",
+        "text",
+        "model",
+    ];
+    match value {
+        Value::Object(map) => {
+            for (key, inner) in map {
+                if let (true, Some(text)) = (KEYS.contains(&key.as_str()), inner.as_str()) {
+                    if text.chars().count() >= 4 {
+                        out.push(text.to_owned());
+                    }
+                }
+                material_strings(inner, out);
+            }
+        }
+        Value::Array(items) => items.iter().for_each(|item| material_strings(item, out)),
+        _ => {}
+    }
+}
+
+/// The frozen fixture is read here as text only; the harness mechanics tests
+/// run on `mechanics-fixture.json`, so none of the frozen materials reaches
+/// Native before the freeze gate has passed.
+#[test]
+fn mechanics_fixture_shares_no_material_with_the_frozen_fixture() -> Result<()> {
+    let root = super::freeze::repository_root()?;
+    let frozen: Value = serde_json::from_str(&std::fs::read_to_string(root.join(FIXTURE_PATH))?)?;
+    let mut materials = Vec::new();
+    material_strings(&frozen, &mut materials);
+    assert!(materials.len() > 100, "{}", materials.len());
+    for canary in frozen["canaries"].as_array().context("canaries")? {
+        materials.push(canary["text"].as_str().context("canary text")?.to_owned());
+    }
+    for material in &materials {
+        assert!(
+            !MECHANICS_FIXTURE.contains(material.as_str()),
+            "the mechanics fixture contains a material of the frozen fixture: {material}"
+        );
+    }
+    // And the other way: the mechanics fixture is parseable and is not a P case.
+    let (fixture, _, _) = fixture_text()?;
+    for case in &fixture.cases {
+        assert!(
+            case.case_id.starts_with("M-"),
+            "{} is not a mechanics case",
+            case.case_id
+        );
+    }
     Ok(())
 }
 
@@ -952,62 +1247,5 @@ fn final_request_evidence_run() -> Result<()> {
             eprintln!("setup receipt: {}", setup_receipt_path.display());
         }
     }
-    Ok(())
-}
-
-// ------------------------------------------------------------ dev dump
-
-/// Mechanics only: runs every variant without the freeze gate and writes the
-/// receipts to the directory in `NIR1_FINAL_REQUEST_EVAL_DEV_OUT`. A
-/// development receipt carries `extensions.developmentRun` and the runner
-/// refuses it. It is not evidence.
-#[test]
-#[ignore = "development dump; set NIR1_FINAL_REQUEST_EVAL_DEV_OUT"]
-fn development_receipts_dump() -> Result<()> {
-    let out = std::env::var("NIR1_FINAL_REQUEST_EVAL_DEV_OUT")
-        .context("NIR1_FINAL_REQUEST_EVAL_DEV_OUT is not set")?;
-    let (fixture, _, text) = fixture_text()?;
-    let root = super::freeze::repository_root()?;
-    let head = super::freeze::head_commit(&root)?;
-    let tree = {
-        let output = Command::new("git")
-            .args(["rev-parse", "HEAD^{tree}"])
-            .current_dir(&root)
-            .output()?;
-        String::from_utf8_lossy(&output.stdout).trim().to_owned()
-    };
-    let snapshot = super::freeze::FrozenSnapshot {
-        run_commit: head.clone(),
-        run_tree: tree,
-        freeze_commit: head,
-        freeze_path: FREEZE_PATH.to_owned(),
-        freeze_record_sha256: sha256_hex(&std::fs::read(root.join(FREEZE_PATH))?),
-        fixture_sha256: sha256_hex(text.as_bytes()),
-        scorer_sha256: "0".repeat(64),
-        fixture_text: text,
-    };
-    let outcomes = all_outcomes();
-    let receipts = super::output::assemble(&fixture, &snapshot, outcomes, true)?;
-    std::fs::create_dir_all(&out)?;
-    std::fs::write(
-        Path::new(&out).join("receipt.json"),
-        serde_json::to_vec_pretty(&receipts.receipt)?,
-    )?;
-    std::fs::write(
-        Path::new(&out).join("setup-receipt.json"),
-        serde_json::to_vec_pretty(&receipts.setup_receipt)?,
-    )?;
-    let dfinal: Vec<String> = outcomes
-        .iter()
-        .flat_map(|outcome| {
-            outcome.dfinal.iter().map(|d| match d {
-                DfinalOutcome::Ok { .. } => "ok".to_owned(),
-                DfinalOutcome::Err { code, reason } => {
-                    format!("{code}:{}", reason.clone().unwrap_or_default())
-                }
-            })
-        })
-        .collect();
-    eprintln!("dfinal outcomes: {dfinal:?}");
     Ok(())
 }
