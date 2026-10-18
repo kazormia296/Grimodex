@@ -5,6 +5,7 @@
     "dns": true,
     "gvt1": true,
     "localhostRows": true,
+    "sentinelRows": true,
     "linklocal": true,
     "local": true,
     "reload": true,
@@ -26,27 +27,27 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 34.6 ms",
-    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:34257",
-    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:34257",
-    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:34257",
-    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:34257",
-    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:34257",
-    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:34257",
+    "nc1 orchestrator start => true in 36.9 ms",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:38297",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:38297",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:38297",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:38297",
+    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:38297",
+    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:38297",
     "updaterSession.resolveProxy(https://github.com/) => DIRECT",
     "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
     "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
     "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(redirector.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(github.com) => [\"20.27.177.113\"]",
-    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.109.133\",\"185.199.110.133\",\"185.199.108.133\",\"185.199.111.133\"]",
+    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.110.133\",\"185.199.111.133\",\"185.199.108.133\",\"185.199.109.133\"]",
     "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]",
     "resolveHost(127.0.0.1) => [\"127.0.0.1\"]",
     "resolveHost(127.0.0.2) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(1.1.1.1) => error:net::ERR_NAME_NOT_RESOLVED",
-    "network service pids=2163516",
-    "network service pids after=2163530"
+    "network service pids=2254241",
+    "network service pids after=2254260"
   ],
   "webPreferences": {
     "sandbox": true,
@@ -55,10 +56,10 @@
   },
   "totals": {
     "leakedProbes": 0,
-    "probes": 148,
+    "probes": 154,
     "canaryHits": 0,
     "unattributed": 0,
-    "proxyHits": 178,
+    "proxyHits": 184,
     "mdnsQueries": 0,
     "ctlHits": 1
   },
@@ -74,9 +75,9 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 34.6,
-    "listenerPort": 34257,
-    "listenerHits": 178,
+    "startMs": 36.9,
+    "listenerPort": 38297,
+    "listenerHits": 184,
     "overLimit": 0,
     "maxActive": 60,
     "failures": [],
@@ -802,6 +803,81 @@
     },
     {
       "id": "main.turns-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "",
+        ""
+      ],
+      "httpHits": 0,
+      "mdnsQueries": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stun.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "mdnsQueries": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.stuns.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "mdnsQueries": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-udp.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0,
+      "mdnsQueries": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turn-tcp.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "",
+        ""
+      ],
+      "httpHits": 0,
+      "mdnsQueries": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "",
+        ""
+      ],
+      "httpHits": 0,
+      "mdnsQueries": 0,
+      "dnsNames": []
+    },
+    {
+      "id": "main.turns-tcp.sentinel",
       "outcome": "gathering:gathering",
       "leaked": 0,
       "leakDetail": {},

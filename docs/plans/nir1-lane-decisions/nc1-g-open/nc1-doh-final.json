@@ -25,13 +25,13 @@
   "proxyMode": "listener",
   "events": [
     "secure DNS -> DoH canary",
-    "nc1 orchestrator start => true in 33.5 ms",
-    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:35287",
-    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:35287",
-    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:35287",
-    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:35287",
-    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:35287",
-    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:35287",
+    "nc1 orchestrator start => true in 34.9 ms",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:37771",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:37771",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:37771",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:37771",
+    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:37771",
+    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:37771",
     "updaterSession.resolveProxy(https://github.com/) => DIRECT",
     "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
     "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
@@ -71,8 +71,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 33.5,
-    "listenerPort": 35287,
+    "startMs": 34.9,
+    "listenerPort": 37771,
     "listenerHits": 182,
     "overLimit": 0,
     "maxActive": 60,
@@ -246,7 +246,9 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.turn-tcp.allowed",
@@ -330,9 +332,7 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.turns.allowedp",
@@ -416,9 +416,7 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.turns-tcp.ext",
@@ -441,9 +439,7 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.stuns.lo4",
@@ -453,7 +449,9 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.turn-udp.lo4",
@@ -553,9 +551,7 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.turns-tcp.lo4b",
@@ -757,9 +753,7 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.turns-tcp.localhost",
@@ -772,7 +766,9 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.remote-candidate-udp.lo4",
@@ -1020,9 +1016,7 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "realm.iframe-srcdoc.stun.lo4",
@@ -1094,7 +1088,9 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "realm.iframe-notfound.stun.name",
@@ -1104,9 +1100,7 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "realm.iframe-blob.turn-tcp.name",
@@ -1636,9 +1630,7 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "dns.github-label",
@@ -1692,7 +1684,9 @@
         ""
       ],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.updater-style-net-request",
@@ -1764,15 +1758,15 @@
       },
       "rawRequestHosts": {
         "127.0.0.1:0": 3,
-        "127.0.0.1:35287": 182,
+        "127.0.0.1:37771": 182,
         "app://github.com": 2,
         "app://localhost": 1,
         "app://objects.githubusercontent.com": 2,
         "app://release-assets.githubusercontent.com": 2,
         "app://~notfound": 1,
         "github.com:0": 2,
-        "http://~notfound:37765": 5,
-        "https://127.0.0.1:40649": 96,
+        "http://~notfound:33861": 5,
+        "https://127.0.0.1:35281": 96,
         "https://~notfound": 4,
         "localhost:0": 1,
         "release-assets.githubusercontent.com:0": 2,
@@ -1796,10 +1790,10 @@
     ],
     "urls": [
       "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-      "https://127.0.0.1:40649/dns-query"
+      "https://127.0.0.1:35281/dns-query"
     ],
     "proxyInfos": [
-      "SOCKS5 127.0.0.1:35287",
+      "SOCKS5 127.0.0.1:37771",
       "DIRECT"
     ]
   },

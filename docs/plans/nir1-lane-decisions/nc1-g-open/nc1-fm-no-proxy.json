@@ -4,6 +4,7 @@
   "cm": {
     "gvt1": true,
     "localhostRows": true,
+    "sentinelRows": true,
     "fqdn": true,
     "reload": true,
     "churn": true,
@@ -24,7 +25,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 parts(drop:proxy) start => true in 3.5 ms",
+    "nc1 parts(drop:proxy) start => true in 3.6 ms",
     "after churn: window eval => 2, crashed=false"
   ],
   "webPreferences": {
@@ -33,9 +34,9 @@
     "partition": "default"
   },
   "totals": {
-    "leakedProbes": 50,
-    "probes": 117,
-    "canaryHits": 9813,
+    "leakedProbes": 53,
+    "probes": 123,
+    "canaryHits": 9829,
     "unattributed": 0,
     "proxyHits": 0,
     "mdnsQueries": null,
@@ -62,8 +63,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 3.5,
-    "listenerPort": 38879,
+    "startMs": 3.6,
+    "listenerPort": 36057,
     "listenerHits": 0,
     "overLimit": 0,
     "maxActive": 0,
@@ -691,6 +692,69 @@
       "httpHits": 0
     },
     {
+      "id": "main.stun.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.stuns.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-udp.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-tcp.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 8,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 2
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns-tcp.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 2
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
       "id": "main.remote-candidate-udp.lo4",
       "outcome": "ice:new",
       "leaked": 0,
@@ -788,16 +852,16 @@
       "outcome": "churn:350",
       "leaked": 9471,
       "leakDetail": {
-        "p-127.0.0.1:tcp-connect": 1290,
-        "p-127.0.0.1:tcp-data": 2580,
-        "q-127.0.0.1-other:tcp-connect": 820,
-        "q-127.0.0.1-other:tcp-data": 1640,
-        "r-127.0.0.2:tcp-connect": 349,
-        "r-127.0.0.2:tcp-data": 698,
-        "s-[::1]:tcp-connect": 349,
-        "s-[::1]:tcp-data": 698,
-        "t-lan:tcp-connect": 349,
-        "t-lan:tcp-data": 698
+        "p-127.0.0.1:tcp-connect": 1288,
+        "p-127.0.0.1:tcp-data": 2576,
+        "q-127.0.0.1-other:tcp-connect": 819,
+        "q-127.0.0.1-other:tcp-data": 1638,
+        "r-127.0.0.2:tcp-connect": 350,
+        "r-127.0.0.2:tcp-data": 700,
+        "s-[::1]:tcp-connect": 350,
+        "s-[::1]:tcp-data": 700,
+        "t-lan:tcp-connect": 350,
+        "t-lan:tcp-data": 700
       },
       "proxied": 0,
       "proxyHeads": [],

@@ -9,7 +9,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 48.6 ms",
+    "nc1 orchestrator start => true in 33.1 ms",
     "ncSession window loadURL => error:ERR_FAILED (did-start-loading x1)"
   ],
   "webPreferences": {},
@@ -34,8 +34,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 48.6,
-    "listenerPort": 45577,
+    "startMs": 33.1,
+    "listenerPort": 38929,
     "listenerHits": 1,
     "overLimit": 0,
     "maxActive": 1,
@@ -49,7 +49,7 @@
     "created": [],
     "wc": [
       {
-        "at": 1792329348063,
+        "at": 1792336965200,
         "type": "window",
         "isDefaultSession": false
       }

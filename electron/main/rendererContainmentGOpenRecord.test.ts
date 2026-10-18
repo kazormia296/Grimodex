@@ -141,6 +141,54 @@ describe("Negative (23): 最終構成の行ごとの合否 RJ は 0 不合格", 
   });
 });
 
+describe("Negative (23): 近い名前・特殊な literal の resolveHost（al0-nearnames の形）", () => {
+  it("製品の rules の下で、近い名前は ERR_NAME_NOT_RESOLVED、別形式の loopback は 127.0.0.1 に正規化される", () => {
+    const out = nc1.judgeNearNames(rec("nc1-nearnames"));
+    expect(out.failures).toEqual([]);
+    expect(out.pass).toBe(true);
+    // 19 件の入力すべてを観測している（行を落として通していない）
+    expect(Object.keys(out.observed).length).toBe(
+      Object.keys(nc1.NEARNAMES_EXPECTED).length,
+    );
+    expect(Object.keys(out.observed)).toEqual(
+      expect.arrayContaining([
+        "gvt1.com",
+        "a.gvt1.com",
+        "a.b.github.com",
+        "github.com.evil.test",
+        "evil.release-assets.githubusercontent.com",
+        "x.localhost",
+        "localhost.",
+        "foo.local",
+        "127.1",
+        "0x7f.0.0.1",
+        "2130706433",
+        "127.0.0.1.",
+        "[::1]",
+        "169.254.169.254",
+      ]),
+    );
+  });
+
+  it("EXCLUDE が glob 化された形（近い名前が解決される）や loopback の正規化が崩れた記録は赤になる", () => {
+    const record = rec("nc1-nearnames");
+    const broken = JSON.parse(JSON.stringify(record));
+    broken.events = broken.events.map((event: string) =>
+      event.startsWith("resolveHost(a.gvt1.com) =>")
+        ? 'resolveHost(a.gvt1.com) => ["1.2.3.4"]'
+        : event,
+    );
+    expect(nc1.judgeNearNames(broken).pass).toBe(false);
+    const lost = JSON.parse(JSON.stringify(record));
+    lost.events = lost.events.map((event: string) =>
+      event.startsWith("resolveHost(0x7f.0.0.1) =>")
+        ? "resolveHost(0x7f.0.0.1) => error:net::ERR_NAME_NOT_RESOLVED"
+        : event,
+    );
+    expect(nc1.judgeNearNames(lost).pass).toBe(false);
+  });
+});
+
 describe("Negative (23)(32): 名前の漏れ NL は 0、正の対照が成立する", () => {
   for (const id of [
     "nc1-ll-final",
@@ -213,6 +261,12 @@ describe("Negative (29): 対照は漏れを検出する", () => {
       canaryless: false,
     },
     {
+      id: "nc1-ll-no-proxy",
+      baseline: "nc1-ll-baseline",
+      minFail: 1,
+      canaryless: false,
+    },
+    {
       id: "nc1-ll-no-neg-loopback",
       baseline: "nc1-ll-baseline",
       minFail: 1,
@@ -233,6 +287,99 @@ describe("Negative (29): 対照は漏れを検出する", () => {
       );
     });
   }
+
+  it("機構を外すと、外した機構ごとの期待カテゴリが行 id で canary に届く（proxy: 名前と literal と sentinel 名の TCP、policy: UDP、`<-loopback>`: loopback の TCP）", () => {
+    // 表にない方向が漏れない（direction）、必須の行が漏れる（required）、その機構のカテゴリでない行が漏れない（forbidden）を行 id で固定する
+    const cases: Array<[string, string, string[]]> = [
+      [
+        "nc1-fm-no-proxy",
+        "proxy",
+        [
+          "main.turn-tcp.name",
+          "main.turns.name",
+          "main.turns-tcp.name",
+          "main.remote-candidate-tcp.lo4",
+        ],
+      ],
+      ["nc1-ll-no-proxy", "proxy", []],
+      [
+        "nc1-fm-no-policy",
+        "policy",
+        [
+          "main.stun.name",
+          "main.stuns.name",
+          "main.turn-udp.name",
+          "main.remote-candidate-udp.fqdn",
+        ],
+      ],
+      ["nc1-ll-no-policy", "policy", []],
+      ["nc1-fm-no-neg-loopback", "neg-loopback", []],
+      ["nc1-ll-no-neg-loopback", "neg-loopback", []],
+    ];
+    for (const [id, mechanism, extraRequired] of cases) {
+      const out = nc1.judgeControlCategories(rec(id), mechanism, {
+        extraRequired,
+      });
+      expect(out.failures, id).toEqual([]);
+      expect(out.leakedIds.length, id).toBeGreaterThan(0);
+    }
+  });
+
+  it("proxy を外した (23a) と (23b) の形の両方で、固定の sentinel 名の TURN-TCP／TURNS／TURNS-TCP が canary に届き、最終構成では届かず proxy へ向く", () => {
+    const sentinelTcp = [
+      "main.turn-tcp.sentinel",
+      "main.turns.sentinel",
+      "main.turns-tcp.sentinel",
+    ];
+    for (const id of ["nc1-fm-no-proxy", "nc1-ll-no-proxy"]) {
+      const byId = new Map(rec(id).rows.map((row: Json) => [row.id, row]));
+      for (const rowId of sentinelTcp) {
+        expect(
+          (byId.get(rowId) as Json)?.leaked,
+          `${id} ${rowId}`,
+        ).toBeGreaterThan(0);
+      }
+      // 行ごとの合否も不合格として検出している
+      const pair = id.startsWith("nc1-fm")
+        ? "nc1-fm-baseline"
+        : "nc1-ll-baseline";
+      const failing = judge(id, pair).failing.map((row: Json) => row.id);
+      for (const rowId of sentinelTcp) expect(failing, id).toContain(rowId);
+    }
+    // 閉じ込めなし (23a) の対照では sentinel 名の TCP が活性（canary に届く）、(23b) の実 DNS の対照では届かない
+    for (const rowId of sentinelTcp) {
+      const base = rec("nc1-fm-baseline").rows.find(
+        (row: Json) => row.id === rowId,
+      );
+      expect(base?.leaked, rowId).toBeGreaterThan(0);
+    }
+    for (const pair of ["nc1-fm-final", "nc1-ll-final", "nc1-ll-kill"]) {
+      const byId = new Map(rec(pair).rows.map((row: Json) => [row.id, row]));
+      for (const rowId of sentinelTcp) {
+        const row = byId.get(rowId) as Json;
+        expect(row, `${pair} ${rowId}`).toBeDefined();
+        expect(row.leaked, `${pair} ${rowId}`).toBe(0);
+        expect(row.proxied, `${pair} ${rowId}`).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("sentinel 名の UDP（STUN／STUNS／TURN-UDP）の行は最終構成で canary 0 で、(23a) の対照では名前の事前解決が末尾 dot つきで MAP に一致せず不活性", () => {
+    const final = rec("nc1-fm-final");
+    for (const proto of ["stun", "stuns", "turn-udp"]) {
+      const row = final.rows.find(
+        (r: Json) => r.id === `main.${proto}.sentinel`,
+      );
+      expect(row, proto).toBeDefined();
+      expect(row.leaked, proto).toBe(0);
+    }
+    const inert = judge("nc1-fm-final", "nc1-fm-baseline").inert.map(
+      (r: Json) => r.id,
+    );
+    for (const proto of ["stun", "stuns", "turn-udp"]) {
+      expect(inert).toContain(`main.${proto}.sentinel`);
+    }
+  });
 
   it("`<-loopback>` を外した構成と policy を外した構成には、canary に届かないまま不合格になる行がある", () => {
     for (const id of ["nc1-ll-no-neg-loopback", "nc1-ll-no-policy"]) {

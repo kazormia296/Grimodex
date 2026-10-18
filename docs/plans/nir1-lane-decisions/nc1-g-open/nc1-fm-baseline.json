@@ -4,9 +4,11 @@
   "cm": {
     "gvt1": true,
     "localhostRows": true,
+    "sentinelRows": true,
     "fqdn": true,
     "reload": true,
-    "churn": true
+    "churn": true,
+    "resolverRules": "MAP *.probe.test 127.0.0.1, MAP *.probe.test. 127.0.0.1, MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE [::1], EXCLUDE ::1, EXCLUDE LANADDR, EXCLUDE localhost"
   },
   "electronArgs": [],
   "proxyMode": "listener",
@@ -19,9 +21,9 @@
     "partition": "default"
   },
   "totals": {
-    "leakedProbes": 84,
-    "probes": 117,
-    "canaryHits": 12180,
+    "leakedProbes": 87,
+    "probes": 123,
+    "canaryHits": 12196,
     "unattributed": 0,
     "proxyHits": 0,
     "mdnsQueries": null,
@@ -679,6 +681,69 @@
     },
     {
       "id": "main.turns-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 2
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.stun.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.stuns.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-udp.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-tcp.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 8,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 6
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 4,
+      "leakDetail": {
+        "p-127.0.0.1:tcp-connect": 2,
+        "p-127.0.0.1:tcp-data": 2
+      },
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns-tcp.sentinel",
       "outcome": "gathering:gathering",
       "leaked": 4,
       "leakDetail": {

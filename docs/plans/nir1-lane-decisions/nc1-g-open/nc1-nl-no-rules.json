@@ -15,7 +15,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 parts(drop:rules) start => true in 29.5 ms"
+    "nc1 parts(drop:rules) start => true in 32.2 ms"
   ],
   "webPreferences": {
     "sandbox": true,
@@ -45,8 +45,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 29.5,
-    "listenerPort": 35535,
+    "startMs": 32.2,
+    "listenerPort": 34219,
     "listenerHits": 182,
     "overLimit": 0,
     "maxActive": 60,
@@ -1252,8 +1252,8 @@
       ],
       "httpHits": 0,
       "dnsNames": [
-        "github.com.[rc0]",
-        "github.com."
+        "github.com.",
+        "github.com.[rc0]"
       ]
     },
     {
@@ -1380,8 +1380,8 @@
       ],
       "httpHits": 0,
       "dnsNames": [
-        "release-assets.githubusercontent.com.[rc0]",
-        "release-assets.githubusercontent.com."
+        "release-assets.githubusercontent.com.",
+        "release-assets.githubusercontent.com.[rc0]"
       ]
     },
     {
@@ -1604,36 +1604,36 @@
       ],
       "httpHits": 0,
       "dnsNames": [
-        "m11-<n>.dnsprobe.test.",
-        "m25-<n>.dnsprobe.test.",
-        "m9-<n>.dnsprobe.test.",
-        "m3-<n>.dnsprobe.test.",
-        "m20-<n>.dnsprobe.test.",
-        "m10-<n>.dnsprobe.test.",
-        "m1-<n>.dnsprobe.test.",
-        "m2-<n>.dnsprobe.test.",
-        "m12-<n>.dnsprobe.test.",
-        "m21-<n>.dnsprobe.test.",
-        "m27-<n>.dnsprobe.test.",
-        "m17-<n>.dnsprobe.test.",
-        "m5-<n>.dnsprobe.test.",
-        "m29-<n>.dnsprobe.test.",
-        "m28-<n>.dnsprobe.test.",
-        "m8-<n>.dnsprobe.test.",
-        "m6-<n>.dnsprobe.test.",
-        "m15-<n>.dnsprobe.test.",
-        "m24-<n>.dnsprobe.test.",
-        "m23-<n>.dnsprobe.test.",
-        "m4-<n>.dnsprobe.test.",
-        "m13-<n>.dnsprobe.test.",
-        "m16-<n>.dnsprobe.test.",
-        "m0-<n>.dnsprobe.test.",
-        "m19-<n>.dnsprobe.test.",
         "m26-<n>.dnsprobe.test.",
+        "m2-<n>.dnsprobe.test.",
+        "m25-<n>.dnsprobe.test.",
+        "m0-<n>.dnsprobe.test.",
+        "m6-<n>.dnsprobe.test.",
+        "m9-<n>.dnsprobe.test.",
+        "m18-<n>.dnsprobe.test.",
+        "m12-<n>.dnsprobe.test.",
+        "m20-<n>.dnsprobe.test.",
         "m14-<n>.dnsprobe.test.",
-        "m7-<n>.dnsprobe.test.",
+        "m11-<n>.dnsprobe.test.",
+        "m21-<n>.dnsprobe.test.",
+        "m16-<n>.dnsprobe.test.",
+        "m5-<n>.dnsprobe.test.",
+        "m4-<n>.dnsprobe.test.",
+        "m3-<n>.dnsprobe.test.",
+        "m10-<n>.dnsprobe.test.",
+        "m8-<n>.dnsprobe.test.",
+        "m17-<n>.dnsprobe.test.",
+        "m1-<n>.dnsprobe.test.",
+        "m19-<n>.dnsprobe.test.",
+        "m24-<n>.dnsprobe.test.",
         "m22-<n>.dnsprobe.test.",
-        "m18-<n>.dnsprobe.test."
+        "m15-<n>.dnsprobe.test.",
+        "m23-<n>.dnsprobe.test.",
+        "m7-<n>.dnsprobe.test.",
+        "m13-<n>.dnsprobe.test.",
+        "m27-<n>.dnsprobe.test.",
+        "m28-<n>.dnsprobe.test.",
+        "m29-<n>.dnsprobe.test."
       ]
     },
     {
@@ -1648,14 +1648,14 @@
       ],
       "httpHits": 0,
       "dnsNames": [
-        "s3-<n>.dnsprobe.test.",
-        "s2-<n>.dnsprobe.test.",
         "s0-<n>.dnsprobe.test.",
-        "s1-<n>.dnsprobe.test.",
-        "s4-<n>.dnsprobe.test.",
+        "s2-<n>.dnsprobe.test.",
         "s6-<n>.dnsprobe.test.",
+        "s1-<n>.dnsprobe.test.",
         "s5-<n>.dnsprobe.test.",
-        "s7-<n>.dnsprobe.test."
+        "s4-<n>.dnsprobe.test.",
+        "s7-<n>.dnsprobe.test.",
+        "s3-<n>.dnsprobe.test."
       ]
     },
     {
@@ -1700,8 +1700,8 @@
       ],
       "httpHits": 0,
       "dnsNames": [
-        "data-<n>.githubusercontent.com.",
-        "data-<n>.githubusercontent.com.[rc0]"
+        "data-<n>.githubusercontent.com.[rc0]",
+        "data-<n>.githubusercontent.com."
       ]
     },
     {
@@ -1742,8 +1742,8 @@
       ],
       "httpHits": 0,
       "dnsNames": [
-        "redirector.gvt1.com[rc0]",
-        "updater-<n>.probe.test"
+        "updater-<n>.probe.test",
+        "redirector.gvt1.com[rc0]"
       ]
     },
     {
@@ -1755,8 +1755,8 @@
       "proxyHeads": [],
       "httpHits": 0,
       "dnsNames": [
-        "redirector.gvt1.com[rc0]",
         "updater-<n>.probe.test",
+        "redirector.gvt1.com[rc0]",
         "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]"
       ]
     },
@@ -1826,16 +1826,16 @@
         "updater-<n>.probe.test": 1
       },
       "rawRequestHosts": {
-        "127.0.0.1:35535": 182,
+        "127.0.0.1:34219": 182,
         "app://dnsdnsprefetch-<n>.dnsprobe.test": 2,
         "app://github.com": 2,
         "app://localhost": 1,
         "app://objects.githubusercontent.com": 2,
         "app://release-assets.githubusercontent.com": 2,
-        "http://defsess-<n>.probe.test:43427": 1,
-        "http://updater-<n>.probe.test:43427": 3,
-        "http://utilfetch-<n>.probe.test:43427": 1,
-        "http://winsess-<n>.probe.test:43427": 1,
+        "http://defsess-<n>.probe.test:35625": 1,
+        "http://updater-<n>.probe.test:35625": 3,
+        "http://utilfetch-<n>.probe.test:35625": 1,
+        "http://winsess-<n>.probe.test:35625": 1,
         "https://redirector.gvt1.com": 5,
         "https://rr8---sn-3v2upjvh-3pme7.gvt1.com": 5
       },
@@ -1861,15 +1861,15 @@
       "HTTP2_SESSION_RECV_ACCEPT_CH:redirector.gvt1.com",
       "HTTP_TRANSACTION_HTTP2_SEND_REQUEST_HEADERS:redirector.gvt1.com",
       "HTTP2_SESSION_SEND_HEADERS:redirector.gvt1.com",
-      "HTTP2_SESSION_RECV_HEADERS:rr8---sn-3v2upjvh-3pme7.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic?cms_redirect=yes&met=1792328031,&mh=7g&mip=58.189.110.54&mm=28&mn",
-      "HTTP_TRANSACTION_READ_RESPONSE_HEADERS:rr8---sn-3v2upjvh-3pme7.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic?cms_redirect=yes&met=1792328031,&mh=7g&mip=58.189.110"
+      "HTTP2_SESSION_RECV_HEADERS:rr8---sn-3v2upjvh-3pme7.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic?cms_redirect=yes&met=1792336520,&mh=7g&mip=58.189.110.54&mm=28&mn",
+      "HTTP_TRANSACTION_READ_RESPONSE_HEADERS:rr8---sn-3v2upjvh-3pme7.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic?cms_redirect=yes&met=1792336520,&mh=7g&mip=58.189.110"
     ],
     "urls": [
       "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
       "https://rr8---sn-3v2upjvh-3pme7.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic"
     ],
     "proxyInfos": [
-      "SOCKS5 127.0.0.1:35535",
+      "SOCKS5 127.0.0.1:34219",
       "DIRECT"
     ]
   },
@@ -1900,61 +1900,61 @@
     "gvt1probeturns443-<n>.gvt1.com.",
     "gvt1probeturntcp8443-<n>.gvt1.com.",
     "gvt1probeturns8443-<n>.gvt1.com.",
-    "github.com.[rc0]",
     "github.com.",
+    "github.com.[rc0]",
     "github.com[rc0]",
     "objects.githubusercontent.com.",
     "objects.githubusercontent.com.[rc0]",
     "objects.githubusercontent.com[rc0]",
-    "release-assets.githubusercontent.com.[rc0]",
     "release-assets.githubusercontent.com.",
+    "release-assets.githubusercontent.com.[rc0]",
     "release-assets.githubusercontent.com[rc0]",
     "dnsdnsprefetch-<n>.dnsprobe.test",
-    "m11-<n>.dnsprobe.test.",
-    "m25-<n>.dnsprobe.test.",
-    "m9-<n>.dnsprobe.test.",
-    "m3-<n>.dnsprobe.test.",
-    "m20-<n>.dnsprobe.test.",
-    "m10-<n>.dnsprobe.test.",
-    "m1-<n>.dnsprobe.test.",
-    "m2-<n>.dnsprobe.test.",
-    "m12-<n>.dnsprobe.test.",
-    "m21-<n>.dnsprobe.test.",
-    "m27-<n>.dnsprobe.test.",
-    "m17-<n>.dnsprobe.test.",
-    "m5-<n>.dnsprobe.test.",
-    "m29-<n>.dnsprobe.test.",
-    "m28-<n>.dnsprobe.test.",
-    "m8-<n>.dnsprobe.test.",
-    "m6-<n>.dnsprobe.test.",
-    "m15-<n>.dnsprobe.test.",
-    "m24-<n>.dnsprobe.test.",
-    "m23-<n>.dnsprobe.test.",
-    "m4-<n>.dnsprobe.test.",
-    "m13-<n>.dnsprobe.test.",
-    "m16-<n>.dnsprobe.test.",
-    "m0-<n>.dnsprobe.test.",
-    "m19-<n>.dnsprobe.test.",
     "m26-<n>.dnsprobe.test.",
-    "m14-<n>.dnsprobe.test.",
-    "m7-<n>.dnsprobe.test.",
-    "m22-<n>.dnsprobe.test.",
+    "m2-<n>.dnsprobe.test.",
+    "m25-<n>.dnsprobe.test.",
+    "m0-<n>.dnsprobe.test.",
+    "m6-<n>.dnsprobe.test.",
+    "m9-<n>.dnsprobe.test.",
     "m18-<n>.dnsprobe.test.",
-    "s3-<n>.dnsprobe.test.",
-    "s2-<n>.dnsprobe.test.",
+    "m12-<n>.dnsprobe.test.",
+    "m20-<n>.dnsprobe.test.",
+    "m14-<n>.dnsprobe.test.",
+    "m11-<n>.dnsprobe.test.",
+    "m21-<n>.dnsprobe.test.",
+    "m16-<n>.dnsprobe.test.",
+    "m5-<n>.dnsprobe.test.",
+    "m4-<n>.dnsprobe.test.",
+    "m3-<n>.dnsprobe.test.",
+    "m10-<n>.dnsprobe.test.",
+    "m8-<n>.dnsprobe.test.",
+    "m17-<n>.dnsprobe.test.",
+    "m1-<n>.dnsprobe.test.",
+    "m19-<n>.dnsprobe.test.",
+    "m24-<n>.dnsprobe.test.",
+    "m22-<n>.dnsprobe.test.",
+    "m15-<n>.dnsprobe.test.",
+    "m23-<n>.dnsprobe.test.",
+    "m7-<n>.dnsprobe.test.",
+    "m13-<n>.dnsprobe.test.",
+    "m27-<n>.dnsprobe.test.",
+    "m28-<n>.dnsprobe.test.",
+    "m29-<n>.dnsprobe.test.",
     "s0-<n>.dnsprobe.test.",
-    "s1-<n>.dnsprobe.test.",
-    "s4-<n>.dnsprobe.test.",
+    "s2-<n>.dnsprobe.test.",
     "s6-<n>.dnsprobe.test.",
+    "s1-<n>.dnsprobe.test.",
     "s5-<n>.dnsprobe.test.",
+    "s4-<n>.dnsprobe.test.",
     "s7-<n>.dnsprobe.test.",
+    "s3-<n>.dnsprobe.test.",
     "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test.",
     "data-<n>.gvt1.com.",
-    "data-<n>.githubusercontent.com.",
     "data-<n>.githubusercontent.com.[rc0]",
+    "data-<n>.githubusercontent.com.",
     "example.org.[rc0]",
-    "redirector.gvt1.com[rc0]",
     "updater-<n>.probe.test",
+    "redirector.gvt1.com[rc0]",
     "rr8---sn-3v2upjvh-3pme7.gvt1.com[rc0]"
   ],
   "dnsRowCount": 45,

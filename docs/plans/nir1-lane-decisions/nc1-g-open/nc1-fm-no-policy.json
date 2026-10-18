@@ -4,6 +4,7 @@
   "cm": {
     "gvt1": true,
     "localhostRows": true,
+    "sentinelRows": true,
     "fqdn": true,
     "reload": true,
     "churn": true,
@@ -34,10 +35,10 @@
   },
   "totals": {
     "leakedProbes": 34,
-    "probes": 117,
+    "probes": 123,
     "canaryHits": 288,
     "unattributed": 0,
-    "proxyHits": 3943,
+    "proxyHits": 3949,
     "mdnsQueries": null,
     "ctlHits": 1
   },
@@ -63,8 +64,8 @@
     },
     "startOk": true,
     "startMs": 29.9,
-    "listenerPort": 40877,
-    "listenerHits": 3943,
+    "listenerPort": 44607,
+    "listenerHits": 3949,
     "overLimit": 2058,
     "maxActive": 256,
     "failures": [],
@@ -719,6 +720,69 @@
     },
     {
       "id": "main.turns-tcp.localhost",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "",
+        ""
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.stun.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.stuns.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-udp.sentinel",
+      "outcome": "gathering:complete",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turn-tcp.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "",
+        ""
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns.sentinel",
+      "outcome": "gathering:gathering",
+      "leaked": 0,
+      "leakDetail": {},
+      "proxied": 2,
+      "proxyHeads": [
+        "",
+        ""
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.turns-tcp.sentinel",
       "outcome": "gathering:gathering",
       "leaked": 0,
       "leakDetail": {},
