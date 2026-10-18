@@ -19,7 +19,12 @@
 //   ts-packer                  the product TypeScript does not import the TS
 //                              packer (`nir1Packing`);
 //   build-capabilities         `get_native_build_capabilities` reports the
-//                              feature and the release check expects `false`.
+//                              feature and the release check expects `false`;
+//   harness                    the DPH-4 harness is a `cfg(test)` module, its
+//                              setup runs product writers only (no SQL write,
+//                              no direct connection use, no seed helper of the
+//                              D-final unit tests) and its only child process
+//                              is `git`.
 //
 // The functions are pure over a `{ path -> text }` map so each rule has a
 // negative test with a synthetic source. `loadRepositorySources` reads the
@@ -43,6 +48,10 @@ export const PATHS = Object.freeze({
   nodePrepared: "electron/native/grimodex-node/src/nir1_prepared_request.rs",
   nodeLib: "electron/native/grimodex-node/src/lib.rs",
   nodeEvalDir: "electron/native/grimodex-node/src/nir1_final_request_eval/",
+  nodeEvalMod:
+    "electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs",
+  nodeHarnessDir:
+    "electron/native/grimodex-node/src/nir1_final_request_eval/harness/",
   verifyRelease: "electron/scripts/verify-release-native.mjs",
 });
 
@@ -672,6 +681,123 @@ export function checkBuildCapabilities(sources) {
   return violations;
 }
 
+// ------------------------------------------------------------ the harness
+
+/** Statements that write or change the schema; none belongs in the setup. */
+const SQL_WRITE =
+  /\b(?:INSERT\s+(?:OR\s+\w+\s+)?INTO|UPDATE\s+["`\w]+\s+SET|DELETE\s+FROM|REPLACE\s+INTO|DROP\s+(?:TABLE|INDEX|TRIGGER|VIEW)|ALTER\s+TABLE|CREATE\s+(?:TABLE|INDEX|TRIGGER|VIEW)|PRAGMA\s+\w+\s*=)/i;
+
+/** The only direct write the harness tests make, to prove the audit sees it. */
+const AUDIT_TEST = "write_audit_attributes_and_flags_direct_dml";
+
+function harnessFiles(sources) {
+  return Object.keys(sources).filter((file) =>
+    file.startsWith(PATHS.nodeHarnessDir),
+  );
+}
+
+export function checkHarness(sources) {
+  const violations = [];
+  const fail = (file, message) =>
+    violations.push({
+      rule: "harness-setup-uses-product-writers",
+      file,
+      message,
+    });
+  const mod = sources[PATHS.nodeEvalMod];
+  if (mod === undefined) {
+    fail(PATHS.nodeEvalMod, "the evaluation module root is missing");
+  } else if (
+    !/#\[cfg\(test\)\]\s*mod\s+harness\s*;/.test(
+      maskRust(mod, { maskStrings: true }),
+    )
+  ) {
+    fail(
+      PATHS.nodeEvalMod,
+      "the harness must be declared `#[cfg(test)] mod harness;`",
+    );
+  }
+  for (const [file, text] of Object.entries(sources)) {
+    if (file.endsWith(".rs") && !file.startsWith(PATHS.nodeEvalDir)) {
+      if (
+        /\bharness::/.test(maskRust(text, { maskStrings: true })) &&
+        file.includes("nir1_final_request_eval")
+      ) {
+        fail(file, "only the evaluation module declares the harness");
+      }
+    }
+  }
+  const files = harnessFiles(sources);
+  if (files.length === 0)
+    fail(PATHS.nodeHarnessDir, "the harness sources are missing");
+  let connectionUses = 0;
+  for (const file of files) {
+    const isTest = file.endsWith("/tests.rs");
+    const code = maskRust(sources[file], { maskStrings: false });
+    const codeWithoutStrings = maskRust(sources[file], { maskStrings: true });
+    for (const [pattern, what] of [
+      [
+        /\bseed_database\b/,
+        "`seed_database` (the D-final unit tests' direct INSERT helper)",
+      ],
+      [
+        /\bnir1_prepared_request::tests::Fixture\b|\bFixture::new\b/,
+        "the D-final unit tests' `Fixture`",
+      ],
+    ]) {
+      if (pattern.test(codeWithoutStrings)) fail(file, `uses ${what}`);
+    }
+    // Every child process is `git`.
+    for (const match of codeWithoutStrings.matchAll(/Command::new\(/g)) {
+      const after = code.slice(match.index, match.index + 40);
+      if (!/^Command::new\(\s*"git"\s*\)/.test(after)) {
+        fail(file, "a child process other than git");
+      }
+    }
+    if (isTest) {
+      const direct = [
+        ...codeWithoutStrings.matchAll(/\.execute(?:_batch)?\(/g),
+      ];
+      if (direct.length > 1) {
+        fail(file, "the tests run more than the one audited direct statement");
+      }
+      if (direct.length === 1) {
+        const body = functionBody(sources[file], AUDIT_TEST);
+        if (
+          body === null ||
+          !/\.execute\(/.test(maskRust(body, { maskStrings: true }))
+        ) {
+          fail(file, `the one direct statement must be inside ${AUDIT_TEST}`);
+        }
+      }
+      continue;
+    }
+    if (SQL_WRITE.test(code)) fail(file, "a SQL write statement in the setup");
+    if (/\.execute(?:_batch)?\(/.test(codeWithoutStrings)) {
+      fail(file, "a direct `execute` call in the setup");
+    }
+    connectionUses += [...codeWithoutStrings.matchAll(/\.with_conn\(/g)].length;
+    if (
+      /\.with_conn\(/.test(codeWithoutStrings) &&
+      !file.endsWith("/workspace.rs")
+    ) {
+      fail(
+        file,
+        "a direct connection (`with_conn`) outside the workspace module",
+      );
+    }
+  }
+  // The single `with_conn` installs the write-audit hook; reads use
+  // `with_read_transaction`.
+  if (connectionUses > 1) {
+    fail(
+      PATHS.nodeHarnessDir,
+      "`with_conn` is used more than once (only the audit hook is installed through it)",
+    );
+  }
+  return violations;
+}
+
 // ------------------------------------------------------------- the runner
 
 const SKIPPED_DIRS = new Set([
@@ -744,5 +870,6 @@ export function runArchitectureChecks(sources) {
     ...checkNotReachable(sources),
     ...checkProductDoesNotImportTsPacker(sources),
     ...checkBuildCapabilities(sources),
+    ...checkHarness(sources),
   ];
 }

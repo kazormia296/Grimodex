@@ -20,6 +20,8 @@
 
 mod baseline;
 mod capture;
+#[cfg(test)]
+mod harness;
 mod receipt;
 #[cfg(test)]
 mod tests;

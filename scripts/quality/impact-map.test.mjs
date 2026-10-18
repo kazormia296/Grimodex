@@ -1661,3 +1661,66 @@ test("C2-ZC impact registration is structured and rejects gate command/test/rece
     /registry|runner|command|receipt/i,
   );
 });
+
+test("NIR-1 final-request (DP-H) assets are registered, selected and executed by the nir1 suite", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const implementations = [
+    "evals/nir1-packing/final-request.v1.json",
+    "evals/nir1-packing/final-request.freeze.v1.json",
+    "evals/nir1-packing/final-request.expectation-review.v1.json",
+    "evals/nir1-packing/final-request-baseline-parity.v1.json",
+    "evals/nir1-packing/final-request-create-session-statement.v1.json",
+    "scripts/quality/nir1-packing/final-request/contract.mjs",
+    "scripts/quality/nir1-packing/final-request/scorer.mjs",
+    "scripts/quality/nir1-packing/final-request/runner.mjs",
+    "electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs",
+    "electron/native/grimodex-node/src/nir1_final_request_eval/harness/run.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs",
+    "electron/scripts/verify-release-native.mjs",
+  ];
+  const tests = [
+    "scripts/quality/nir1-packing/final-request/contract.test.mjs",
+    "scripts/quality/nir1-packing/final-request/scorer.test.mjs",
+    "scripts/quality/nir1-packing/final-request/architecture.test.mjs",
+    "scripts/quality/nir1-packing/final-request/runner.test.mjs",
+    "src/features/ai-context/nir1PackingBaselineParity.test.ts",
+    "src/features/chat/chatApi.createSessionStatement.test.ts",
+    "electron/native/grimodex-node/src/nir1_final_request_eval/tests.rs",
+    "electron/native/grimodex-node/src/nir1_final_request_eval/harness/tests.rs",
+  ];
+  for (const changedPath of [...implementations, ...tests]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.matchedRuleIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  for (const requirementId of ["GDX-GROUND-001", "GDX-ISOLATION-001", "GDX-TRACE-001"]) {
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
+    assert.ok(requirement, requirementId);
+    for (const implementation of implementations) {
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
+    }
+    for (const testPath of tests) {
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
+    }
+  }
+  // Every test the manifest lists is a command argument of the suite, and the
+  // Rust evaluation tests run with the evaluation feature.
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
+  for (const testPath of tests.filter((candidate) => !candidate.endsWith(".rs"))) {
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
+  }
+  for (const command of [
+    "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features nir1-final-request-eval --lib nir1_final_request_eval -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features nir1-final-request-eval,native-current-human-capture --lib narrative_extraction::nir1_packing -- --test-threads=1",
+  ]) {
+    assert.ok(commandLines.includes(command), command);
+  }
+});

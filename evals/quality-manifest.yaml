@@ -485,6 +485,32 @@ requirements:
       - src/features/chat/semanticRerankerShadow.ts
       - scripts/quality/validate-retrieval-fixtures.mjs
       - evals/nir1-packing/fixtures.json
+      - evals/nir1-packing/final-request.v1.json
+      - evals/nir1-packing/final-request.freeze.v1.json
+      - evals/nir1-packing/final-request.expectation-review.v1.json
+      - evals/nir1-packing/final-request-baseline-parity.v1.json
+      - evals/nir1-packing/final-request-create-session-statement.v1.json
+      - scripts/quality/nir1-packing/final-request/contract.mjs
+      - scripts/quality/nir1-packing/final-request/receipt.mjs
+      - scripts/quality/nir1-packing/final-request/payload.mjs
+      - scripts/quality/nir1-packing/final-request/scorer.mjs
+      - scripts/quality/nir1-packing/final-request/runner.mjs
+      - scripts/quality/nir1-packing/final-request/architecture.mjs
+      - scripts/quality/nir1-packing/final-request/synthetic.mjs
+      - scripts/quality/nir1-packing/final-request/fixture-derive.mjs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/baseline.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/capture.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/receipt.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mod.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/fixture.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/freeze.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/output.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/run.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/statement.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/workspace.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
+      - electron/scripts/verify-release-native.mjs
       - scripts/quality/nir1-packing/contract.mjs
       - scripts/quality/nir1-packing/runner.mjs
       - scripts/quality/nir1-packing/scorer.mjs
@@ -526,6 +552,17 @@ requirements:
       - scripts/quality/nir1-packing/contract.test.mjs
       - scripts/quality/nir1-packing/runner.test.mjs
       - scripts/quality/nir1-packing/scorer.test.mjs
+      - scripts/quality/nir1-packing/final-request/contract.test.mjs
+      - scripts/quality/nir1-packing/final-request/receipt.test.mjs
+      - scripts/quality/nir1-packing/final-request/payload.test.mjs
+      - scripts/quality/nir1-packing/final-request/fixture.test.mjs
+      - scripts/quality/nir1-packing/final-request/scorer.test.mjs
+      - scripts/quality/nir1-packing/final-request/architecture.test.mjs
+      - scripts/quality/nir1-packing/final-request/runner.test.mjs
+      - src/features/ai-context/nir1PackingBaselineParity.test.ts
+      - src/features/chat/chatApi.createSessionStatement.test.ts
+      - electron/native/grimodex-node/src/nir1_final_request_eval/tests.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/tests.rs
       - src/features/ai-context/nir1Packing.test.ts
       - src/features/ai-context/finalizeTurnPayload.test.ts
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
@@ -1259,6 +1296,32 @@ requirements:
       - evals/qualifications/live-models.yaml
       - evals/fixtures/routing.yaml
       - evals/nir1-packing/fixtures.json
+      - evals/nir1-packing/final-request.v1.json
+      - evals/nir1-packing/final-request.freeze.v1.json
+      - evals/nir1-packing/final-request.expectation-review.v1.json
+      - evals/nir1-packing/final-request-baseline-parity.v1.json
+      - evals/nir1-packing/final-request-create-session-statement.v1.json
+      - scripts/quality/nir1-packing/final-request/contract.mjs
+      - scripts/quality/nir1-packing/final-request/receipt.mjs
+      - scripts/quality/nir1-packing/final-request/payload.mjs
+      - scripts/quality/nir1-packing/final-request/scorer.mjs
+      - scripts/quality/nir1-packing/final-request/runner.mjs
+      - scripts/quality/nir1-packing/final-request/architecture.mjs
+      - scripts/quality/nir1-packing/final-request/synthetic.mjs
+      - scripts/quality/nir1-packing/final-request/fixture-derive.mjs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/baseline.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/capture.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/receipt.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mod.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/fixture.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/freeze.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/output.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/run.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/statement.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/workspace.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
+      - electron/scripts/verify-release-native.mjs
       - scripts/quality/nir1-packing/runner.mjs
       - evals/nir1-graph/manifest.v1.json
       - scripts/quality/nir1-graph/contract.mjs
@@ -1292,6 +1355,17 @@ requirements:
       - scripts/quality/nir1-packing/contract.test.mjs
       - scripts/quality/nir1-packing/runner.test.mjs
       - scripts/quality/nir1-packing/scorer.test.mjs
+      - scripts/quality/nir1-packing/final-request/contract.test.mjs
+      - scripts/quality/nir1-packing/final-request/receipt.test.mjs
+      - scripts/quality/nir1-packing/final-request/payload.test.mjs
+      - scripts/quality/nir1-packing/final-request/fixture.test.mjs
+      - scripts/quality/nir1-packing/final-request/scorer.test.mjs
+      - scripts/quality/nir1-packing/final-request/architecture.test.mjs
+      - scripts/quality/nir1-packing/final-request/runner.test.mjs
+      - src/features/ai-context/nir1PackingBaselineParity.test.ts
+      - src/features/chat/chatApi.createSessionStatement.test.ts
+      - electron/native/grimodex-node/src/nir1_final_request_eval/tests.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/tests.rs
       - scripts/quality/nir1-graph/contract.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
@@ -1366,6 +1440,32 @@ requirements:
       - evals/qualifications/schemas/live-model-qualification-v1.schema.json
       - evals/impact-map.yaml
       - evals/nir1-packing/fixtures.json
+      - evals/nir1-packing/final-request.v1.json
+      - evals/nir1-packing/final-request.freeze.v1.json
+      - evals/nir1-packing/final-request.expectation-review.v1.json
+      - evals/nir1-packing/final-request-baseline-parity.v1.json
+      - evals/nir1-packing/final-request-create-session-statement.v1.json
+      - scripts/quality/nir1-packing/final-request/contract.mjs
+      - scripts/quality/nir1-packing/final-request/receipt.mjs
+      - scripts/quality/nir1-packing/final-request/payload.mjs
+      - scripts/quality/nir1-packing/final-request/scorer.mjs
+      - scripts/quality/nir1-packing/final-request/runner.mjs
+      - scripts/quality/nir1-packing/final-request/architecture.mjs
+      - scripts/quality/nir1-packing/final-request/synthetic.mjs
+      - scripts/quality/nir1-packing/final-request/fixture-derive.mjs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/baseline.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/capture.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/receipt.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mod.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/fixture.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/freeze.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/output.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/run.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/statement.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/workspace.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
+      - electron/scripts/verify-release-native.mjs
       - scripts/quality/nir1-packing/contract.mjs
       - scripts/quality/nir1-packing/runner.mjs
       - scripts/quality/nir1-packing/scorer.mjs
@@ -1406,6 +1506,17 @@ requirements:
       - scripts/quality/nir1-packing/contract.test.mjs
       - scripts/quality/nir1-packing/runner.test.mjs
       - scripts/quality/nir1-packing/scorer.test.mjs
+      - scripts/quality/nir1-packing/final-request/contract.test.mjs
+      - scripts/quality/nir1-packing/final-request/receipt.test.mjs
+      - scripts/quality/nir1-packing/final-request/payload.test.mjs
+      - scripts/quality/nir1-packing/final-request/fixture.test.mjs
+      - scripts/quality/nir1-packing/final-request/scorer.test.mjs
+      - scripts/quality/nir1-packing/final-request/architecture.test.mjs
+      - scripts/quality/nir1-packing/final-request/runner.test.mjs
+      - src/features/ai-context/nir1PackingBaselineParity.test.ts
+      - src/features/chat/chatApi.createSessionStatement.test.ts
+      - electron/native/grimodex-node/src/nir1_final_request_eval/tests.rs
+      - electron/native/grimodex-node/src/nir1_final_request_eval/harness/tests.rs
       - src/features/ai-context/nir1Packing.test.ts
       - scripts/quality/impact-map.test.mjs
       - scripts/quality/certify-gate-b2.test.mjs

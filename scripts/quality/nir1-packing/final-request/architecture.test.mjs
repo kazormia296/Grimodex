@@ -11,6 +11,7 @@ import {
   checkBuildCapabilities,
   checkCargoFeatures,
   checkEvalFeatureAllowlist,
+  checkHarness,
   checkNotReachable,
   checkObservationCalls,
   checkProductDoesNotImportTsPacker,
@@ -558,4 +559,97 @@ test("build-capabilities-eval-flag-false-in-release: an expectation of true or a
     text.replace("    nir1FinalRequestEval: false,\n", ""),
   );
   assert.ok(checkBuildCapabilities(noExpectation).length > 0);
+});
+
+// ------------------------------------------------------------ the harness
+
+const HARNESS = (name) => `${PATHS.nodeHarnessDir}${name}`;
+
+test("harness-setup-uses-product-writers: the real harness passes", () => {
+  assert.deepEqual(checkHarness(real), []);
+  assert.ok(
+    Object.keys(real).some((file) => file.startsWith(PATHS.nodeHarnessDir)),
+  );
+});
+
+test("harness-setup-uses-product-writers: a SQL write, a direct execute or the unit-test seed fails", () => {
+  for (const [label, addition] of [
+    [
+      "an INSERT",
+      'const _x: &str = "INSERT INTO chat_sessions(id) VALUES (1)";',
+    ],
+    ["an UPDATE", 'const _x: &str = "UPDATE codex_entries SET name = 1";'],
+    ["a direct execute", 'fn _x(c: &C) { c.execute("SELECT 1", []); }'],
+    ["the seed helper", "fn _x() { seed_database(&db); }"],
+    ["the unit-test fixture", "fn _x() { let f = Fixture::new(); }"],
+  ]) {
+    const violations = checkHarness(
+      mutated(HARNESS("run.rs"), (text) => `${text}\n${addition}\n`),
+    );
+    assert.deepEqual(
+      rules(violations),
+      ["harness-setup-uses-product-writers"],
+      label,
+    );
+  }
+});
+
+test("harness-setup-uses-product-writers: a connection outside the workspace module fails", () => {
+  const violations = checkHarness(
+    mutated(
+      HARNESS("run.rs"),
+      (text) => `${text}\nfn _x(d: &D) { d.with_conn(|c| Ok(())); }\n`,
+    ),
+  );
+  assert.ok(
+    violations.some((violation) =>
+      /outside the workspace module/.test(violation.message),
+    ),
+  );
+  const twice = checkHarness(
+    mutated(
+      HARNESS("workspace.rs"),
+      (text) => `${text}\nfn _x(d: &D) { d.with_conn(|c| Ok(())); }\n`,
+    ),
+  );
+  assert.ok(
+    twice.some((violation) => /more than once/.test(violation.message)),
+  );
+});
+
+test("harness-setup-uses-product-writers: a child process other than git fails", () => {
+  const violations = checkHarness(
+    mutated(
+      HARNESS("freeze.rs"),
+      (text) => `${text}\nfn _x() { let _ = Command::new("cargo"); }\n`,
+    ),
+  );
+  assert.ok(
+    violations.some((violation) => /other than git/.test(violation.message)),
+  );
+});
+
+test("harness-setup-uses-product-writers: the harness must stay cfg(test) only", () => {
+  const violations = checkHarness(
+    mutated(PATHS.nodeEvalMod, (text) =>
+      text.replace(/#\[cfg\(test\)\]\s*mod harness;/, "mod harness;"),
+    ),
+  );
+  assert.ok(
+    violations.some((violation) => /cfg\(test\)/.test(violation.message)),
+  );
+});
+
+test("harness-setup-uses-product-writers: the tests may make only the one audited direct statement", () => {
+  const violations = checkHarness(
+    mutated(
+      HARNESS("tests.rs"),
+      (text) => `${text}\nfn _x(c: &C) { c.execute("DELETE FROM x", []); }\n`,
+    ),
+  );
+  assert.ok(
+    violations.some((violation) =>
+      /more than the one audited/.test(violation.message),
+    ),
+  );
 });

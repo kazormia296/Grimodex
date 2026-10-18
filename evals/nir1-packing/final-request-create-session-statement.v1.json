@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "nir1-final-request-create-session-statement/1",
+  "contractId": "nir1-final-request-packing-eval",
+  "draftRef": "nir1-final-request-eval-proposal/2",
+  "source": "src/features/chat/chatApi.ts createSession (drizzle insert into chat_sessions .returning())",
+  "note": "The chat session of every DP-H request is created with the statement the renderer's createSession sends to db_execute, before the profile is restricted. This file is the statement as the renderer builds it. src/features/chat/chatApi.createSessionStatement.test.ts runs the renderer function and fixes that its db_execute call equals this file; the Rust harness builds its statement from `paramSlots` and compares sql, method and slots with this file at run time (setup receipt chatSession.statementMatchesRenderer). A change of the renderer statement fails the vitest first.",
+  "method": "all",
+  "sql": "insert into \"chat_sessions\" (\"id\", \"project_id\", \"node_id\", \"codex_anchor_id\", \"snippet_anchor_id\", \"title\", \"title_manual\", \"model\", \"created_at\", \"updated_at\") values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) returning \"id\", \"project_id\", \"node_id\", \"codex_anchor_id\", \"snippet_anchor_id\", \"title\", \"title_manual\", \"model\", \"created_at\", \"updated_at\"",
+  "paramSlots": [
+    "generated-uuid",
+    "project-id",
+    "node-id",
+    "null",
+    "null",
+    "title",
+    "constant:0",
+    "schema-default-model",
+    "generated-instant",
+    "generated-instant"
+  ],
+  "schemaDefaultModel": "openrouter/anthropic/claude-sonnet-4.6"
+}
