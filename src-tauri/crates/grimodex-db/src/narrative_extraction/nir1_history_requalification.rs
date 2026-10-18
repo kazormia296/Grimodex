@@ -1367,17 +1367,10 @@ mod tests {
             assert_eq!(statuses[1 + HUMAN], QualificationStatus::Current, "{phase}");
             assert_eq!(statuses[1 + RAW], QualificationStatus::Current, "{phase}");
             for ordinal in [REVISION, REVISION_B] {
-                assert!(
-                    matches!(
-                        statuses[1 + ordinal],
-                        QualificationStatus::Excluded(
-                            RequalificationReason::SourceStale
-                                | RequalificationReason::RevisionStale
-                                | RequalificationReason::DisclosureIneligible
-                        )
-                    ),
-                    "{phase}: Revision input {ordinal}: {:?}",
-                    statuses[1 + ordinal]
+                assert_eq!(
+                    statuses[1 + ordinal],
+                    excluded(RequalificationReason::SourceStale),
+                    "{phase}: Revision input {ordinal}"
                 );
             }
             settle_freshness(db)?;

@@ -249,6 +249,207 @@ fn approve_anchored_in(
         .to_owned())
 }
 
+/// A new approved Revision that names one Entity only, anchored at `anchor`.
+/// Two such Revisions of different Entities have disjoint disclosure
+/// dependencies, so a change to one Entity retires only the outputs that hold
+/// its Revision.
+fn approve_single_entity_revision(
+    db: &Database,
+    run_id: &str,
+    anchor: &str,
+    proposal_key: &str,
+    entity_id: &str,
+) -> Result<String> {
+    create_typed_run(db, run_id)?;
+    let mut typed = request_for_run(db, run_id, proposal_key);
+    typed
+        .bundle
+        .entities
+        .retain(|entity| entity.entity_id == entity_id);
+    typed.bundle.relations.clear();
+    for entity in typed.bundle.entities.iter_mut() {
+        entity.scope.reading = ScopeValue::Exact {
+            value: format!("scene:{anchor}"),
+        };
+        entity.scope.phase = "draft".into();
+    }
+    rebind_scope_tokens(db, &mut typed)?;
+    let created = create_nir1_entity_relation_revision(db, typed)?;
+    approve_typed_revision(db, run_id, &created)?;
+    Ok(created["revisionId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?
+        .to_owned())
+}
+
+/// The product's narrative commit pipeline (proposal set, human approval,
+/// prepare, apply) creates a secret foreshadow that has a setup and no payoff
+/// and is linked to `entity_id`. Its reveal state is then "not disclosed" for
+/// every Scene, so the A3 evaluation of any Revision that names the Entity
+/// stops being Eligible, while neither a Scene's Scope binding nor the
+/// Revision's Source, Decision or bundle changes.
+fn create_secret_foreshadow_linked_to(db: &Database, entity_id: &str, tag: &str) -> Result<()> {
+    use crate::narrative_extraction::{
+        narrative_extraction_apply_commit, narrative_extraction_prepare_commit,
+        narrative_extraction_save_proposal_set, AppendDecisionPayload, ApplyCommitPayload,
+        CommitApplicationRef, CommitOperation, CreateRunPayload, CreateTaskSeed,
+        PrepareCommitPayload, ProposalSeed, SaveProposalSetPayload,
+    };
+
+    let run_id = format!("hc1-fs-run-{tag}");
+    let set_id = format!("hc1-fs-set-{tag}");
+    let source_key = format!("snapshot:{run_id}");
+    let read_set = json!([{
+        "inputRef": source_key,
+        "kind": "snapshot-document",
+        "revisionToken": "revision-1"
+    }]);
+    let envelope = json!({
+        "schemaVersion": 1, "runId": run_id, "taskId": format!("{run_id}-task"),
+        "reconcilerId": "test.reconciler", "reconcilerVersion": "1.0.0",
+        "proposalSchemaId": "narrative.test", "proposalSchemaVersion": "1",
+        "sourceBasis": [{"sourceKind":"snapshot-document","sourceKey":source_key,"revisionToken":"revision-1"}],
+        "evidenceSet": [], "readSet": read_set,
+        "readSetDigest": format!("sha256:{}", crate::narrative_extraction::digest_plan(&read_set)),
+        "changeKind": "add"
+    });
+    let payload = json!({
+        "foreshadowId": format!("hc1-fs-{tag}"),
+        "hypothesisId": format!("foreshadow-thread:hc1-{tag}"),
+        "title": "A secret that is not yet paid off",
+        "intent": "Hide the secret until its payoff.",
+        "mechanism": "object-use",
+        "secret": true,
+        "setups": [{
+            "setupId": format!("hc1-fs-setup-{tag}"),
+            "sceneId": "a3-source",
+            "fromPos": 0,
+            "toPos": 10,
+            "role": "plant",
+            "kind": "designated_existing",
+            "aiStrength": null,
+            "rationale": "The secret is planted.",
+            "semanticKey": format!("hc1-plant-{tag}")
+        }],
+        "payoffs": [],
+        "supportEdges": [],
+        "codexEntryIds": [entity_id]
+    });
+    crate::narrative_extraction::narrative_extraction_create_run(
+        db,
+        CreateRunPayload {
+            run_id: Some(run_id.clone()),
+            project_id: PROJECT.to_owned(),
+            surface_path_id: "foreshadow.extract".to_owned(),
+            scope_json: json!({}),
+            spec_json: json!({ "domain": "foreshadow" }),
+            spec_digest: "spec".to_owned(),
+            snapshot_digest: Some("revision-1".to_owned()),
+            catalog_digest: None,
+            registry_digest: None,
+            coverage_json: None,
+            tasks: vec![CreateTaskSeed {
+                task_id: Some(format!("{run_id}-task")),
+                task_kind: "extract_window".to_owned(),
+                input_json: None,
+                priority: None,
+            }],
+        },
+    )?;
+    let saved = narrative_extraction_save_proposal_set(
+        db,
+        SaveProposalSetPayload {
+            run_id: run_id.clone(),
+            project_id: PROJECT.to_owned(),
+            proposal_set_id: Some(set_id.clone()),
+            set_kind: "foreshadow.extract.review@1".to_owned(),
+            summary_json: None,
+            proposals: vec![ProposalSeed {
+                proposal_id: Some(format!("{run_id}-prop")),
+                proposal_key: format!("{run_id}-key"),
+                kind: "foreshadow.aggregate.create".to_owned(),
+                payload_json: payload.clone(),
+                reconciliation_envelope: Some(envelope),
+            }],
+        },
+    )?;
+    let proposal = saved["proposals"]
+        .as_array()
+        .and_then(|proposals| proposals.first())
+        .ok_or_else(|| anyhow::anyhow!("foreshadow proposal missing"))?;
+    let proposal_id = proposal["proposalId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("foreshadow proposal id missing"))?
+        .to_owned();
+    let revision_id = proposal["revisionId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("foreshadow revision id missing"))?
+        .to_owned();
+    crate::narrative_extraction::narrative_extraction_append_human_decision(
+        db,
+        AppendDecisionPayload {
+            run_id: run_id.clone(),
+            project_id: PROJECT.to_owned(),
+            proposal_id: proposal_id.clone(),
+            revision_id: revision_id.clone(),
+            decision: "approved".to_owned(),
+            decision_json: None,
+            created_by: Some("hc1-test".to_owned()),
+        },
+    )?;
+    let before = crate::load_narrative_runtime_policy_from_db(db)?;
+    crate::set_narrative_runtime_policy(
+        db,
+        crate::SetNarrativeRuntimePolicyInput {
+            expected_version: before.version,
+            runtime_mode: "manual-apply".into(),
+            maintenance_enabled: false,
+            generic_import_enabled: false,
+            background_ai_enabled: false,
+        },
+    )?;
+    let request_id = format!("hc1-fs-request-{tag}");
+    let prepared = narrative_extraction_prepare_commit(
+        db,
+        PrepareCommitPayload {
+            project_id: PROJECT.to_owned(),
+            run_id: run_id.clone(),
+            proposal_set_id: set_id,
+            request_id: request_id.clone(),
+            plan_digest: format!("hc1-fs-digest-{tag}"),
+            session_id: "hc1-fs-session".to_owned(),
+            surface: Some("narrative-extraction".to_owned()),
+            operations: vec![CommitOperation {
+                kind: "foreshadow.aggregate.create".to_owned(),
+                payload,
+                proposal_id: proposal_id.clone(),
+                revision_id: revision_id.clone(),
+            }],
+            applications: vec![CommitApplicationRef {
+                proposal_id,
+                revision_id,
+            }],
+            expected_tail_ordinal: None,
+            entity_bindings: vec![],
+            expected_calendar_version: None,
+        },
+    )?;
+    narrative_extraction_apply_commit(
+        db,
+        ApplyCommitPayload {
+            project_id: PROJECT.to_owned(),
+            prepared_commit_id: prepared["preparedCommitId"]
+                .as_str()
+                .ok_or_else(|| anyhow::anyhow!("prepared commit id missing"))?
+                .to_owned(),
+            request_id,
+            session_id: "hc1-fs-session".to_owned(),
+            expected_version: prepared["version"].as_i64(),
+        },
+    )?;
+    Ok(())
+}
+
 impl SessionFixture {
     fn new() -> Result<Self> {
         Self::new_in(current_schema_memory()?)
@@ -771,6 +972,47 @@ impl SessionFixture {
                 undo_journal_id: None,
                 node_id: id.into(),
                 canonical_payload: None,
+            },
+        )?;
+        Ok(())
+    }
+
+    /// The target Scene's explicit Scope through the Scene Scope writer: the
+    /// current binding with `change` applied. This moves the Scene's Scope
+    /// binding token as well as the axis the change names.
+    fn update_target_scope(
+        &self,
+        tag: &str,
+        change: impl FnOnce(&mut crate::narrative_extraction::scene_scope::NarrativeSceneScopeUpdateV1),
+    ) -> Result<()> {
+        use crate::narrative_extraction::scene_scope::{
+            read_narrative_scene_scope, update_narrative_scene_scope,
+            NarrativeSceneScopeUpdatePayload, NarrativeSceneScopeUpdateV1,
+        };
+        let current = self
+            .db()
+            .with_read_transaction(|conn| read_narrative_scene_scope(conn, PROJECT, SCENE))?;
+        let binding = current.binding;
+        let mut scope = NarrativeSceneScopeUpdateV1 {
+            schema_version: 1,
+            compatibility_marker: binding.compatibility_marker,
+            query_identity: binding.query_identity,
+            material_constraint: binding.material_constraint,
+            knowledge_holder: binding.knowledge_holder,
+            audience: binding.audience,
+        };
+        change(&mut scope);
+        update_narrative_scene_scope(
+            self.db(),
+            NarrativeSceneScopeUpdatePayload {
+                project_id: PROJECT.into(),
+                scene_id: SCENE.into(),
+                request_id: format!("hc1-scope-{tag}-request"),
+                session_id: "hc1-scope-session".into(),
+                event_uid: format!("hc1-scope-{tag}-event"),
+                base_version: binding.version,
+                updated_at: clock_stamp(),
+                scope,
             },
         )?;
         Ok(())
@@ -1332,6 +1574,66 @@ fn negative_each_axis_and_auto_change() -> Result<()> {
 }
 
 #[test]
+fn negative_scene_scope_axes_change_through_the_scene_scope_writer() -> Result<()> {
+    use crate::narrative_extraction::scene_scope::NarrativeSceneScopeUpdateV1;
+    use grimodex_core::narrative_scene_scope::{
+        NarrativeScopeConstraintV1, NarrativeScopePrincipalV1,
+    };
+    type Change = fn(&mut NarrativeSceneScopeUpdateV1);
+    // Each case writes one part of the target Scene's explicit Scope. The axis
+    // it names is reported on its own (the axes are compared before the
+    // Scope binding's token, which moves with every one of these writes).
+    let cases: [(&str, HistoryAxisName, Change); 5] = [
+        (
+            "knowledge holder",
+            HistoryAxisName::KnowledgeHolder,
+            |scope| {
+                scope.knowledge_holder = NarrativeScopePrincipalV1::Character {
+                    reference: "nir1-bob".into(),
+                };
+            },
+        ),
+        ("audience", HistoryAxisName::Audience, |scope| {
+            scope.audience = NarrativeScopePrincipalV1::Character {
+                reference: "nir1-bob".into(),
+            };
+        }),
+        ("timeline", HistoryAxisName::Timeline, |scope| {
+            scope.query_identity.timeline = NarrativeScopeConstraintV1::Exact {
+                reference: "timeline:other".into(),
+            };
+        }),
+        ("worldline", HistoryAxisName::Worldline, |scope| {
+            scope.query_identity.worldline = NarrativeScopeConstraintV1::Exact {
+                reference: "worldline:other".into(),
+            };
+        }),
+        (
+            "narrative layer",
+            HistoryAxisName::NarrativeLayer,
+            |scope| {
+                scope.query_identity.narrative_layer = NarrativeScopeConstraintV1::Exact {
+                    reference: "layer:other".into(),
+                };
+            },
+        ),
+    ];
+    for (name, axis, change) in cases {
+        let (session, turn) = settled_session()?;
+        session.update_target_scope(name.replace(' ', "-").as_str(), change)?;
+        let outcome = session.run()?;
+        assert_eq!(outcome.without_history, None, "{name}");
+        assert_turn_excluded_with(
+            &outcome,
+            &turn,
+            &context_reason(ContextMismatch::AxisChanged(axis)),
+            name,
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn negative_reading_order_changes_by_insert_delete_reorder_archive_unarchive_before_target(
 ) -> Result<()> {
     let reading = context_reason(ContextMismatch::AxisChanged(HistoryAxisName::ReadingOrder));
@@ -1423,10 +1725,10 @@ fn return_to_original_archiving_the_anchor_never_restores_its_revisions() -> Res
     run_incremental_freshness_cycle(session.db())?;
     let outcome = session.run()?;
     assert!(is_qualified(&outcome, PastHuman, &turn.attempt_id));
-    assert!(matches!(
+    assert_eq!(
         failure_of(&outcome, GeneratedOutput, &turn.attempt_id),
-        Failure::Ineligible(IneligibleReason::Requalification(_))
-    ));
+        requalification_reason(RequalificationReason::SourceStale)
+    );
     Ok(())
 }
 
@@ -1895,14 +2197,82 @@ fn negative_dependency_changes_retire_only_what_holds_the_dependency() -> Result
             is_qualified(&outcome, PastHuman, &held.attempt_id),
             "{phase}"
         );
-        assert!(
-            matches!(
-                failure_of(&outcome, GeneratedOutput, &held.attempt_id),
-                Failure::Ineligible(IneligibleReason::Requalification(_))
-            ),
+        assert_eq!(
+            failure_of(&outcome, GeneratedOutput, &held.attempt_id),
+            requalification_reason(RequalificationReason::SourceStale),
             "{phase}"
         );
         run_incremental_freshness_cycle(session.db())?;
+    }
+    Ok(())
+}
+
+/// A new Decision on a Revision through the product's decision writer.
+fn append_decision(db: &Database, revision_id: &str, decision: &str) -> Result<()> {
+    let (run_id, proposal_id): (String, String) = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT s.run_id, r.proposal_id
+               FROM narrative_proposal_revisions r
+               JOIN narrative_proposals p ON p.id = r.proposal_id
+               JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+              WHERE r.id = ?1",
+            [revision_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    })?;
+    crate::narrative_extraction::narrative_extraction_append_human_decision(
+        db,
+        crate::narrative_extraction::AppendDecisionPayload {
+            run_id,
+            project_id: PROJECT.into(),
+            proposal_id,
+            revision_id: revision_id.into(),
+            decision: decision.into(),
+            decision_json: None,
+            created_by: Some("hc1-test".into()),
+        },
+    )?;
+    Ok(())
+}
+
+#[test]
+fn negative_decision_and_canonical_freshness_each_have_their_own_reason() -> Result<()> {
+    // A Decision on a Revision is terminal; a rejection after the attempt is a
+    // Decision that no longer matches the recorded token.
+    {
+        let (session, turn) = settled_session()?;
+        append_decision(session.db(), &session.revisions[0], "rejected")?;
+        let outcome = session.run()?;
+        assert_eq!(
+            failure_of(&outcome, GeneratedOutput, &turn.attempt_id),
+            requalification_reason(RequalificationReason::DecisionStale)
+        );
+        assert!(is_qualified(&outcome, PastHuman, &turn.attempt_id));
+    }
+    // The canonical Freshness is a projection of the dependency cycle, so no
+    // product writer moves it without also moving a Source token (and the
+    // Source is read first). Its own reason is therefore made on the
+    // projection row itself, the way the cycle would leave a stale Revision
+    // whose Sources were unchanged: nothing else about the Revision moves.
+    {
+        let (session, turn) = settled_session()?;
+        let revision = session.revisions[0].clone();
+        session.db().with_conn(|conn| {
+            let changed = conn.execute(
+                "UPDATE narrative_consumer_freshness
+                    SET evidence_freshness = 'stale', build_action = 'revalidate-exact'
+                  WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1",
+                [&revision],
+            )?;
+            assert_eq!(changed, 1);
+            Ok(())
+        })?;
+        let outcome = session.run()?;
+        assert_eq!(
+            failure_of(&outcome, GeneratedOutput, &turn.attempt_id),
+            requalification_reason(RequalificationReason::FreshnessNotFresh)
+        );
+        assert!(is_qualified(&outcome, PastHuman, &turn.attempt_id));
     }
     Ok(())
 }
@@ -1930,20 +2300,20 @@ fn negative_anchor_scope_edits_expire_only_revisions_anchored_there() -> Result<
     )?;
     run_incremental_freshness_cycle(session.db())?;
     let outcome = session.run()?;
-    assert!(matches!(
+    assert_eq!(
         failure_of(&outcome, GeneratedOutput, &anchored.attempt_id),
-        Failure::Ineligible(IneligibleReason::Requalification(_))
-    ));
+        requalification_reason(RequalificationReason::SourceStale)
+    );
     assert_turn_adopted(&outcome, &other);
     assert!(is_qualified(&outcome, PastHuman, &anchored.attempt_id));
     // Undoing the edit does not bring the Revisions back.
     session.patch_node(ANCHOR, "hc1-anchor-pov-undo", "povCharacterId", Value::Null)?;
     run_incremental_freshness_cycle(session.db())?;
     let outcome = session.run()?;
-    assert!(matches!(
+    assert_eq!(
         failure_of(&outcome, GeneratedOutput, &anchored.attempt_id),
-        Failure::Ineligible(IneligibleReason::Requalification(_))
-    ));
+        requalification_reason(RequalificationReason::SourceStale)
+    );
     assert_turn_adopted(&outcome, &other);
     Ok(())
 }
@@ -2609,6 +2979,61 @@ fn cancellation_stops_the_whole_turn_without_partial_results() -> Result<()> {
 }
 
 #[test]
+fn the_in_snapshot_form_refuses_an_autocommit_connection() -> Result<()> {
+    // The listing, the captures, the ordinal-0 counts and every
+    // requalification must be read in the one snapshot the caller owns: on an
+    // autocommit connection each statement would see its own implicit
+    // snapshot, so the entry refuses it instead of qualifying a torn view.
+    let (session, turn) = settled_session()?;
+    let current = session
+        .snapshot
+        .db()
+        .with_participant_read_transaction_bounded(
+            session.snapshot.participant(),
+            prepared_sql_budget(),
+            |conn| {
+                let stage = build_history_context_stage(
+                    conn,
+                    PROJECT,
+                    SCENE,
+                    session.snapshot.durable_workspace_identity(),
+                    HistorySendClassification::LocalOnly,
+                )?;
+                let scene = read_attempt_scene_binding_in_tx(conn, PROJECT, SCENE)?;
+                Ok(stage.current_history_context(
+                    HistoryRange {
+                        project_id: PROJECT.into(),
+                        chat_session_id: SESSION.into(),
+                        scene_id: SCENE.into(),
+                        scene_incarnation_id: scene.scene_incarnation_id,
+                    },
+                    GenerationPurpose::Writing,
+                ))
+            },
+        )?;
+    let error = session
+        .db()
+        .with_conn(|conn| {
+            assert!(conn.is_autocommit());
+            run_in(
+                conn,
+                &current,
+                &mut SessionFixture::generous_budget(),
+                wall_clock_ms(),
+            )
+        })
+        .expect_err("an autocommit connection is refused");
+    assert!(
+        format!("{error:#}").contains("NIR1_GENERATION_TRANSACTION_REQUIRED"),
+        "{error:#}"
+    );
+    // Nothing was decided on that connection; the same run in the participant
+    // read transaction decides the turn.
+    assert_turn_adopted(&session.run()?, &turn);
+    Ok(())
+}
+
+#[test]
 fn history_cannot_raise_secret_disclosure() -> Result<()> {
     // The run takes the current turn's context and nothing else from the
     // request: there is no query context, no `allow_secrets` and no viewpoint
@@ -2624,6 +3049,68 @@ fn history_cannot_raise_secret_disclosure() -> Result<()> {
         &context_reason(ContextMismatch::AxisChanged(HistoryAxisName::Viewpoint)),
         "the recorded viewpoint is not the current one",
     );
+    Ok(())
+}
+
+#[test]
+fn history_cannot_raise_secret_disclosure_when_the_entity_is_no_longer_disclosable() -> Result<()> {
+    // K4/3's mandatory defense "a stored value does not change disclosure".
+    // Two outputs hold Revisions of disjoint Entities. A secret foreshadow
+    // (product commit pipeline) is linked to one Entity: its reveal state is
+    // now "not disclosed". The target Scene's nine axes and Scope binding token
+    // are untouched (the Humans of both turns stay qualified, which only an
+    // equal context allows) and no Source, Decision or bundle of either
+    // Revision changed. The current A3 evaluation alone retires the output
+    // that holds the linked Entity's Revision; the independent one stays.
+    let mut session = SessionFixture::new()?;
+    let alice = approve_single_entity_revision(
+        session.db(),
+        "hc1-alice-run",
+        ANCHOR,
+        "hc1-alice-proposal",
+        "nir1-alice",
+    )?;
+    let bob = approve_single_entity_revision(
+        session.db(),
+        "hc1-bob-run",
+        ANCHOR,
+        "hc1-bob-proposal",
+        "nir1-bob",
+    )?;
+    let holds_alice = session.run_turn(
+        TurnSpec::new("Holds the Revision of Alice.")
+            .reply("Answer one.")
+            .revisions(&[alice]),
+    )?;
+    let holds_bob = session.run_turn(
+        TurnSpec::new("Holds the Revision of Bob.")
+            .reply("Answer two.")
+            .revisions(&[bob]),
+    )?;
+    session.accept("next", "The next request.")?;
+    let outcome = session.run()?;
+    assert_turn_adopted(&outcome, &holds_alice);
+    assert_turn_adopted(&outcome, &holds_bob);
+
+    create_secret_foreshadow_linked_to(session.db(), "nir1-alice", "alice")?;
+    // The same result before and after the Freshness cycle drains the feed:
+    // the foreshadow is not a Source of either Revision.
+    for phase in ["before the Freshness cycle", "after the Freshness cycle"] {
+        let outcome = session.run()?;
+        assert_eq!(
+            failure_of(&outcome, GeneratedOutput, &holds_alice.attempt_id),
+            Failure::Ineligible(IneligibleReason::Requalification(
+                RequalificationReason::DisclosureIneligible
+            )),
+            "{phase}: the output of the Entity that is no longer disclosable"
+        );
+        assert!(
+            is_qualified(&outcome, PastHuman, &holds_alice.attempt_id),
+            "{phase}: its Human has no Revision input and the context is equal"
+        );
+        assert_turn_adopted(&outcome, &holds_bob);
+        run_incremental_freshness_cycle(session.db())?;
+    }
     Ok(())
 }
 

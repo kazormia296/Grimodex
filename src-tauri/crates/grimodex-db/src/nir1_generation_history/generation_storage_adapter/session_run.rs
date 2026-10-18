@@ -421,6 +421,13 @@ pub(crate) fn reauthorize_session_history_in_tx<C: FnMut() -> bool>(
     request: &SessionHistoryRequest<'_>,
     cancelled: &mut C,
 ) -> Result<SessionHistoryOutcome> {
+    // The listing, the captures, the ordinal-0 counts and every requalification
+    // must be one snapshot: an autocommit connection would read each statement
+    // from its own implicit snapshot and could qualify a torn view.
+    anyhow::ensure!(
+        !connection.is_autocommit(),
+        "NIR1_GENERATION_TRANSACTION_REQUIRED"
+    );
     with_generation_history_snapshot_in_tx(
         connection,
         cancellation,
