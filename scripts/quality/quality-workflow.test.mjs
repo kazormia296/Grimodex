@@ -1648,7 +1648,7 @@ test("agent operation contracts keep candidate evidence and bounded identity che
     /durable ID.*corresponding UI\s*projection before editing/is,
   );
   assert.match(runbook, /selector.*ready signal/);
-  assert.match(runbook, /33 catalog entries as 11\/11\/11 shards/);
+  assert.match(runbook, /34 catalog entries as 11\/11\/11 shards/);
   // U7 (2026-10-13): the runbook and the setup guide point to GDX-TRACE-001
   // instead of treating Full as the ordinary merge evidence.
   assert.match(

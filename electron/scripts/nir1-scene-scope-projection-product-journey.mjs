@@ -275,6 +275,40 @@ async function countRows(harness, page, table, projectId) {
   return Number(result[0]?.n ?? 0);
 }
 
+async function countAllRows(harness, page, table) {
+  const result = await rows(
+    harness,
+    page,
+    `SELECT COUNT(*) AS n FROM ${table}`,
+    [],
+  );
+  return Number(result[0]?.n ?? 0);
+}
+
+const REJECTION_COUNT_TABLES = {
+  runs: "narrative_extraction_runs",
+  sets: "narrative_proposal_sets",
+  bindings: "narrative_scene_scope_bindings",
+};
+const FOREIGN_PROJECT_ID = "x1-4-foreign-project";
+
+// Counts for the real project, the rejected foreign project ID and the whole
+// table, so a rejected prepare cannot hide a write under another project ID.
+async function countRejectionTables(harness, page, projectId) {
+  const counts = {};
+  for (const [key, table] of Object.entries(REJECTION_COUNT_TABLES)) {
+    counts[key] = await countRows(harness, page, table, projectId);
+    counts[`${key}Foreign`] = await countRows(
+      harness,
+      page,
+      table,
+      FOREIGN_PROJECT_ID,
+    );
+    counts[`${key}All`] = await countAllRows(harness, page, table);
+  }
+  return counts;
+}
+
 export async function runNir1SceneScopeProjectionJourney(
   harness,
   { configureWorkspace },
@@ -484,33 +518,14 @@ export async function runNir1SceneScopeProjectionJourney(
       page,
       workspace,
     );
-    const countsBefore = {
-      runs: await countRows(
-        harness,
-        page,
-        "narrative_extraction_runs",
-        projectId,
-      ),
-      sets: await countRows(
-        harness,
-        page,
-        "narrative_proposal_sets",
-        projectId,
-      ),
-      bindings: await countRows(
-        harness,
-        page,
-        "narrative_scene_scope_bindings",
-        projectId,
-      ),
-    };
+    const countsBefore = await countRejectionTables(harness, page, projectId);
     const rejections = {};
     for (const [label, expectedCode, payload] of [
       [
         "foreign-project",
         /NEX_SOURCE_MISSING/,
         {
-          projectId: "x1-4-foreign-project",
+          projectId: FOREIGN_PROJECT_ID,
           sceneId: anchorSceneId,
           entityIds: [entityIds.leika],
           relationIds: [],
@@ -544,26 +559,7 @@ export async function runNir1SceneScopeProjectionJourney(
       );
       rejections[label] = failure.slice(0, 300);
     }
-    const countsAfter = {
-      runs: await countRows(
-        harness,
-        page,
-        "narrative_extraction_runs",
-        projectId,
-      ),
-      sets: await countRows(
-        harness,
-        page,
-        "narrative_proposal_sets",
-        projectId,
-      ),
-      bindings: await countRows(
-        harness,
-        page,
-        "narrative_scene_scope_bindings",
-        projectId,
-      ),
-    };
+    const countsAfter = await countRejectionTables(harness, page, projectId);
     assert.deepEqual(
       countsAfter,
       countsBefore,
@@ -793,9 +789,21 @@ export async function runNir1SceneScopeProjectionJourney(
       async () =>
         (
           await stalePanel.getByTestId("nir1-typed-status").textContent()
-        )?.includes("利用不可"),
+        )?.trim() === "利用不可",
       "anchor typed Revision unavailable in the UI after the anchor move",
       60_000,
+    );
+    // The reason row is part of the shared selector sequence; assert the
+    // visible reason is the draft's invalidation value, not just the status.
+    await harness.waitUntil(
+      async () =>
+        (
+          await stalePanel
+            .getByTestId("nir1-typed-unavailable-reason")
+            .textContent()
+        )?.includes("source-revision-changed"),
+      "anchor typed Revision reason is source-revision-changed in the UI",
+      30_000,
     );
     step("e1-anchor-move-invalidates-anchor-only", {
       anchorSceneId,

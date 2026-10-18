@@ -153,7 +153,7 @@ test("journey never hands Native a token, key or incarnation", async () => {
   }
 });
 
-test("journey is registered once in the catalog, runner and fixed shard 3", () => {
+test("journey is registered once in the catalog, runner and fixed shard 6", () => {
   const journey = createNir1SceneScopeProjectionJourney({
     configureWorkspace() {},
   });
