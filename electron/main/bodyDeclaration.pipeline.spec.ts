@@ -413,15 +413,14 @@ interface ScopeRow {
   token: string | null;
 }
 
-function scopeRow(workspace: string): ScopeRow {
-  const [row] = queryRows<ScopeRow>(
-    workspace,
-    `SELECT version, source_token AS sourceToken, updated_at AS updatedAt,
+const SCOPE_ROW_SQL = `SELECT version, source_token AS sourceToken, updated_at AS updatedAt,
             compatibility_marker AS marker, body_declaration_json AS json,
             body_declaration_token AS token
        FROM narrative_scene_scope_bindings
-      WHERE project_id = '${PROJECT}' AND scene_id = '${SCENE}'`,
-  );
+      WHERE project_id = '${PROJECT}' AND scene_id = '${SCENE}'`;
+
+function scopeRow(workspace: string): ScopeRow {
+  const [row] = queryRows<ScopeRow>(workspace, SCOPE_ROW_SQL);
   return row;
 }
 
@@ -468,25 +467,47 @@ function okValue<T>(envelope: Envelope): T {
   return envelope.value as T;
 }
 
-/** The whole observable state a declaration or a refusal could touch. */
+/**
+ * The whole observable state a declaration or a refusal could touch. Read with
+ * one child process and one read-only connection, so the number of launches
+ * does not grow with the number of tables.
+ */
 function snapshot(workspace: string) {
-  const tables = queryRows<{ name: string }>(
-    workspace,
-    "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-  ).map((row) => row.name);
-  const counts: Record<string, number> = {};
-  for (const table of tables) {
-    const [{ n }] = queryRows<{ n: number }>(
-      workspace,
-      `SELECT count(*) AS n FROM "${table}"`,
-    );
-    counts[table] = n;
-  }
-  const schema = queryRows<{ name: string; sql: string | null }>(
-    workspace,
-    "SELECT name, sql FROM sqlite_master ORDER BY type, name",
-  );
-  return { counts, schema, scope: scopeRow(workspace) };
+  const script = `
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.argv[1], { readOnly: true });
+const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name);
+const counts = {};
+for (const table of tables) {
+  counts[table] = db.prepare('SELECT count(*) AS n FROM "' + table.replaceAll('"', '""') + '"').get().n;
+}
+const schema = db.prepare("SELECT name, sql FROM sqlite_master ORDER BY type, name").all();
+const scope = db.prepare(process.argv[2]).all();
+process.stdout.write(JSON.stringify({ counts, schema, scope }, (_k, v) => (typeof v === "bigint" ? String(v) : v)));
+db.close();
+`;
+  const result = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [
+        "--no-warnings",
+        "-e",
+        script,
+        path.join(workspace, "grimodex.db"),
+        SCOPE_ROW_SQL,
+      ],
+      { encoding: "utf8", timeout: 30_000 },
+    ),
+  ) as {
+    counts: Record<string, number>;
+    schema: Array<{ name: string; sql: string | null }>;
+    scope: ScopeRow[];
+  };
+  return {
+    counts: result.counts,
+    schema: result.schema,
+    scope: result.scope[0],
+  };
 }
 
 beforeEach(() => {
