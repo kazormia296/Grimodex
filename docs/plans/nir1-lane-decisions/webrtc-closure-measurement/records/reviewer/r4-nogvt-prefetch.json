@@ -1,0 +1,303 @@
+{
+  "label": "r4-nogvt-prefetch",
+  "electron": "43.5.0",
+  "cm": {
+    "r4": [
+      "prefetch",
+      "hints"
+    ],
+    "target": "default",
+    "policy": "disable_non_proxied_udp",
+    "proxy": {
+      "mode": "fixed_servers",
+      "proxyRules": "socks5://PROXYHOSTPORT",
+      "proxyBypassRules": "<-loopback>"
+    },
+    "resolverSwitch": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost"
+  },
+  "electronArgs": [],
+  "proxyMode": "listener",
+  "events": [
+    "setProxy applied to window"
+  ],
+  "webPreferences": {
+    "sandbox": true,
+    "contextIsolation": true,
+    "partition": "default"
+  },
+  "totals": {
+    "leakedProbes": 0,
+    "probes": 25,
+    "canaryHits": 0,
+    "unattributed": 0,
+    "proxyHits": 4
+  },
+  "rows": [
+    {
+      "id": "control.same-origin-fetch",
+      "outcome": "status:200",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "control.bundled-worker",
+      "outcome": "worker-ok:x",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "control.rtc-defined",
+      "outcome": "function",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.preconnect",
+      "outcome": "link",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.preconnect-xo",
+      "outcome": "link",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.prefetch",
+      "outcome": "link",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.preload-fetch",
+      "outcome": "link",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.modulepreload",
+      "outcome": "link",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.prerender",
+      "outcome": "link",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.img",
+      "outcome": "img",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.fetch",
+      "outcome": "TypeError",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.beacon",
+      "outcome": "beacon",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.speculation",
+      "outcome": "spec",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.nav-iframe",
+      "outcome": "iframe",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.a-ping",
+      "outcome": "ping",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.ws",
+      "outcome": "ws",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.hint.css-url",
+      "outcome": "css",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.pf.gvt",
+      "outcome": "pf",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.pf.nul-enc",
+      "outcome": "pf",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "r4.pf.plain",
+      "outcome": "pf",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.net-fetch.window-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.net-fetch.default-session",
+      "outcome": "error:net::ERR_SOCKS_CONNECTION_FAILED",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    },
+    {
+      "id": "main.updater-style-net-request",
+      "outcome": "error:net::ERR_NAME_NOT_RESOLVED",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 0
+    },
+    {
+      "id": "main.node-fetch",
+      "outcome": "200",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 0,
+      "proxyHeads": [],
+      "httpHits": 1
+    },
+    {
+      "id": "main.net-fetch.no-session-utility",
+      "outcome": "timeout",
+      "leaked": 0,
+      "leakDetail": {},
+      "leakHeads": [],
+      "proxied": 1,
+      "proxyHeads": [
+        "..."
+      ],
+      "httpHits": 0
+    }
+  ],
+  "webRequestSeen": null,
+  "dohAll": null,
+  "dohQueryCount": null,
+  "envProxyConnects": null,
+  "dictionaries": [],
+  "netLog": null,
+  "dnsAll": null,
+  "dnsRowCount": null,
+  "timedOut": false,
+  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+}

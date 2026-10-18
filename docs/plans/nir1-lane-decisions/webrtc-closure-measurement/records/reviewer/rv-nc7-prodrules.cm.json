@@ -1,0 +1,1 @@
+{"dns":true,"gvt1":true,"localhostRows":true,"policy":"disable_non_proxied_udp","resolverSwitch":"MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE *.gvt1.com, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost"}
