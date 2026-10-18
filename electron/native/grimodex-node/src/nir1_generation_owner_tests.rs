@@ -577,7 +577,11 @@ impl OwnerFixture {
         submission: &NativeAcceptedChatSubmission,
         history: NativeNir1HistoryDraft,
     ) -> FinalDispatchRequest {
-        let now = now_ms().expect("clock");
+        let expected_scope = self
+            .authority
+            .db()
+            .with_read_transaction(|conn| storage::read_expected_scope_in_tx(conn, PROJECT, SCENE))
+            .expect("expected scope");
         let digest = canonical_json_digest(&json!("owner-fixture")).expect("digest");
         FinalDispatchRequest {
             project_id: PROJECT.into(),
@@ -603,8 +607,8 @@ impl OwnerFixture {
             }],
             qualifications: vec![],
             history,
-            created_at_ms: now,
-            expires_at_ms: now + 60_000,
+            lifetime_ms: 60_000,
+            expected_scope,
             budget: READ_BUDGET,
         }
     }
@@ -2035,6 +2039,32 @@ fn o14_loopback_cancel_after_start_closes_the_peer_and_never_reuses_the_attempt(
     );
 }
 
+/// A submission identity for registry-only tests: no capture row exists, the
+/// values only have to be well formed.
+fn registry_identity(index: usize, submission: &str) -> Nir1SubmissionIdentity {
+    Nir1SubmissionIdentity {
+        capture_owner: ChatInputCaptureOwner::new(
+            "registry-profile".into(),
+            "registry-caller".into(),
+            1,
+            1,
+            "/registry".into(),
+            "registry-session".into(),
+            "registry-workspace".into(),
+            "/registry".into(),
+            1,
+            1,
+            1,
+        )
+        .expect("capture owner"),
+        project_id: PROJECT.into(),
+        chat_session_id: format!("o15-session-{index:02}"),
+        submission_id: submission.into(),
+        message_id: format!("{submission}-message"),
+        scene_id: SCENE.into(),
+    }
+}
+
 /// O15 (registry): the session bound counts in-flight and unresolved slots
 /// and is checked after the same-key refusals but before any allocation: a
 /// refused 17th session gets no slot and no token. An unresolved slot stops
@@ -2050,7 +2080,10 @@ fn o15_registry_checks_the_session_bound_before_allocation() {
                 project_id: PROJECT.into(),
                 chat_session_id: format!("o15-session-{index:02}"),
             },
-            submission,
+            registry_identity(index, submission),
+            Nir1OwnerCancel {
+                control: Arc::new(Nir1OwnerControl::new()),
+            },
             &format!("o15-attempt-{index:02}"),
             open_entry_epoch,
         )
@@ -2814,29 +2847,10 @@ fn owner_unknown_commit_reread_accepts_the_downgraded_binding() {
     );
     assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
 
-    // The creation time leaves the eligibility range: `eligibility-overflow`.
-    let submission = fixture.accept(1, "hs1-reread-overflow");
-    let owner = fixture.owner(1, &submission).expect("owner");
-    owner
-        .hooks()
-        .test_hooks()
-        .fail_next("create", Nir1GenerationFailpoint::ErrorAfterCommit);
-    let mut request = context_request(&fixture, &owner, &submission);
-    request.created_at_ms = i64::MAX - 1;
-    request.expires_at_ms = i64::MAX;
-    let prepared = owner
-        .create(request)
-        .expect("the reread matches the downgraded form");
-    assert_eq!(
-        fixture
-            .attempt(prepared.attempt_id())
-            .binding
-            .history_turn_context,
-        Some(HistoryContextSlot::Unavailable(
-            HistoryUnavailableReason::EligibilityOverflow
-        ))
-    );
-    assert!(matches!(prepared.abandon(), Nir1Settlement::ZeroSend(_)));
+    // `eligibility-overflow` needs a creation time near `i64::MAX`. A product
+    // create reads Native's clock and takes no absolute time (DI-1c R-6), so
+    // no owner request can reach it; grimodex-db's test-support writer covers
+    // it (`eligibility_overflow` in nir1_generation/tests.rs).
 }
 
 // ---------------------------------------------------------------------------
@@ -3510,4 +3524,616 @@ fn t1g_drop_never_writes_on_a_tokio_runtime_thread() {
         "the slot is released after the handed-over recovery",
     );
     drop(runtime);
+}
+
+
+// ---------------------------------------------------------------------------
+// DI-1c S4: the capture cancellation reaches the owner (A-14 to A-17, A-19).
+// ---------------------------------------------------------------------------
+
+use crate::nir1_prepared_request::{
+    cancel_current_chat_input, cancel_current_chat_submission, CancelCurrentChatInputRequest,
+};
+
+/// The two entries that cancel a capture: by the submission key, and by the
+/// accepted handle. Both must stop the capture's owner first.
+#[derive(Clone, Copy, Debug)]
+enum CancelEntry {
+    ByKey,
+    ByHandle,
+}
+
+const CANCEL_ENTRIES: [CancelEntry; 2] = [CancelEntry::ByKey, CancelEntry::ByHandle];
+
+fn cancel_key_request(key: &str, chat_session: &str) -> CancelCurrentChatInputRequest {
+    serde_json::from_value(json!({
+        "submissionId": format!("owner-submission-{key}"),
+        "messageId": format!("owner-message-{key}"),
+        "chatSessionId": chat_session,
+        "sceneId": SCENE,
+    }))
+    .expect("cancellation selector")
+}
+
+/// Run one entry the way a user's cancellation does and report the status the
+/// user would see; an error is a refusal, never a cancellation.
+fn cancel_via(
+    entry: CancelEntry,
+    state: &Arc<AppState>,
+    caller: &CallerIdentity,
+    accepted: &NativeAcceptedChatSubmission,
+    key: &str,
+) -> anyhow::Result<String> {
+    match entry {
+        CancelEntry::ByKey => {
+            let receipt = cancel_current_chat_input(
+                Arc::clone(state),
+                caller.clone(),
+                cancel_key_request(key, accepted.chat_session_id()),
+            )?;
+            Ok(serde_json::to_value(receipt)?["status"]
+                .as_str()
+                .expect("status")
+                .to_owned())
+        }
+        CancelEntry::ByHandle => {
+            cancel_current_chat_submission(Arc::clone(state), accepted)?;
+            Ok("cancelled".into())
+        }
+    }
+}
+
+fn capture_state(fixture: &OwnerFixture, key: &str) -> String {
+    fixture
+        .authority
+        .db()
+        .with_read_transaction(|conn| {
+            Ok(conn.query_row(
+                "SELECT state FROM nir1_chat_input_captures WHERE submission_id=?1",
+                [format!("owner-submission-{key}")],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("capture state")
+}
+
+fn human_message_rows(fixture: &OwnerFixture, key: &str) -> i64 {
+    fixture
+        .authority
+        .db()
+        .with_read_transaction(|conn| {
+            Ok(conn.query_row(
+                "SELECT count(*) FROM chat_messages WHERE id=?1",
+                [format!("owner-message-{key}")],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("message rows")
+}
+
+fn assert_cancelled_zero_send(terminal: &StoredTerminal, context: &str) {
+    assert_eq!(
+        terminal.failure_classification,
+        Some(FailureClassification::Cancelled),
+        "{context}"
+    );
+    assert_eq!(terminal.observation["terminalStatus"], "cancelled");
+    assert!(terminal.message_version.is_none(), "{context}");
+}
+
+/// A-14: a capture cancellation stops the capture's owner before it answers
+/// the user, at every stage, so no transport starts after it: before the
+/// create, between the create and the claim, and in the window after the
+/// claim COMMIT (`AfterCommit`, `BeforeDecision`; K4/3 "after COMMIT" (a)).
+#[test]
+fn a14_a_capture_cancellation_stops_the_owner_at_every_stage() {
+    for entry in CANCEL_ENTRIES {
+        // Before the create: the owner refuses the create; no attempt exists.
+        let fixture = OwnerFixture::new();
+        let submission = fixture.accept(0, "a14-create");
+        let owner = fixture.owner(0, &submission).expect("owner");
+        let request = fixture.request(&owner, &submission);
+        let status = cancel_via(
+            entry,
+            &fixture.state,
+            &fixture.callers[0],
+            &submission,
+            "a14-create",
+        )
+        .expect("the cancellation is accepted");
+        assert_eq!(status, "cancelled", "{entry:?}");
+        assert_eq!(
+            owner.create(request).err(),
+            Some(Nir1GenerationRefusal::Cancelled),
+            "{entry:?}: no attempt after a cancellation"
+        );
+        assert_eq!(fixture.attempt_count(), 0, "{entry:?}");
+        assert_eq!(capture_state(&fixture, "a14-create"), "cancelled");
+        assert_eq!(human_message_rows(&fixture, "a14-create"), 1);
+        assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+
+        // Between the create and the claim: the claim never starts.
+        let fixture = OwnerFixture::new();
+        let submission = fixture.accept(0, "a14-gap");
+        let owner = fixture.owner(0, &submission).expect("owner");
+        let request = fixture.request(&owner, &submission);
+        let prepared = owner.create(request).expect("durable attempt");
+        let id = prepared.attempt_id().to_owned();
+        let recorder = AtomicUsize::new(0);
+        let status = cancel_via(
+            entry,
+            &fixture.state,
+            &fixture.callers[0],
+            &submission,
+            "a14-gap",
+        )
+        .expect("the cancellation is accepted");
+        assert_eq!(status, "cancelled", "{entry:?}");
+        let terminal = zero_send(prepared.claim_for_transport());
+        assert_cancelled_zero_send(&terminal, "between create and claim");
+        assert!(fixture.attempt(&id).claimed_at_ms.is_none());
+        assert_eq!(recorder.load(Ordering::SeqCst), 0);
+        assert_eq!(capture_state(&fixture, "a14-gap"), "cancelled");
+        assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+
+        // After the claim COMMIT, before the start decision.
+        for point in [
+            Nir1OwnerProbePoint::AfterCommit,
+            Nir1OwnerProbePoint::BeforeDecision,
+        ] {
+            let key = "a14-window";
+            let fixture = OwnerFixture::new();
+            let submission = fixture.accept(0, key);
+            let owner = fixture.owner(0, &submission).expect("owner");
+            let request = fixture.request(&owner, &submission);
+            let prepared = owner.create(request).expect("durable attempt");
+            let id = prepared.attempt_id().to_owned();
+            let outcome = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let probe_outcome = Arc::clone(&outcome);
+            let probe_state = Arc::clone(&fixture.state);
+            let probe_caller = fixture.callers[0].clone();
+            let probe_submission = submission.clone();
+            prepared.hooks().test_hooks().on(point, move || {
+                let status = cancel_via(entry, &probe_state, &probe_caller, &probe_submission, key)
+                    .expect("the cancellation is accepted");
+                probe_outcome.lock().expect("outcome").push(status);
+            });
+            let terminal = zero_send(prepared.claim_for_transport());
+            assert_cancelled_zero_send(&terminal, &format!("{entry:?} at {point:?}"));
+            assert_eq!(outcome.lock().expect("outcome").as_slice(), ["cancelled"]);
+            assert!(
+                fixture.attempt(&id).claimed_at_ms.is_some(),
+                "{entry:?} at {point:?}: the claim was already durable"
+            );
+            assert_eq!(capture_state(&fixture, key), "cancelled");
+            assert_eq!(human_message_rows(&fixture, key), 1);
+            assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+        }
+    }
+}
+
+/// A-15: when the capture's writer fails, the user is not told that the
+/// capture is cancelled, the owner is already stopped, and a retry finishes
+/// the cancellation without a second owner cancellation. After a newer
+/// submission superseded the capture the answer is "not current".
+#[test]
+fn a15_a_failed_capture_writer_is_refused_and_a_retry_continues() {
+    for entry in CANCEL_ENTRIES {
+        let fixture = OwnerFixture::new();
+        let submission = fixture.accept(0, "a15");
+        let owner = fixture.owner(0, &submission).expect("owner");
+        let request = fixture.request(&owner, &submission);
+        let prepared = owner.create(request).expect("durable attempt");
+        let id = prepared.attempt_id().to_owned();
+        let hooks = prepared.hooks();
+        fixture
+            .authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute_batch(
+                    "CREATE TRIGGER a15_block_cancel BEFORE UPDATE OF state
+                       ON nir1_chat_input_captures WHEN NEW.state='cancelled'
+                     BEGIN SELECT RAISE(ABORT,'a15 writer failure'); END;",
+                )?;
+                Ok(())
+            })
+            .expect("failing writer");
+        let refused = cancel_via(
+            entry,
+            &fixture.state,
+            &fixture.callers[0],
+            &submission,
+            "a15",
+        );
+        assert!(
+            refused.is_err(),
+            "{entry:?}: a failed writer is not a cancellation"
+        );
+        assert_eq!(capture_state(&fixture, "a15"), "current");
+        assert!(
+            hooks.cancel_requested(),
+            "{entry:?}: the owner was stopped before the writer ran"
+        );
+        fixture
+            .authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute_batch("DROP TRIGGER a15_block_cancel;")?;
+                Ok(())
+            })
+            .expect("writer repaired");
+        let retried = cancel_via(
+            entry,
+            &fixture.state,
+            &fixture.callers[0],
+            &submission,
+            "a15",
+        )
+        .expect("the retry continues");
+        assert_eq!(retried, "cancelled", "{entry:?}");
+        assert_eq!(capture_state(&fixture, "a15"), "cancelled");
+        let again = cancel_via(
+            entry,
+            &fixture.state,
+            &fixture.callers[0],
+            &submission,
+            "a15",
+        );
+        match entry {
+            CancelEntry::ByKey => assert_eq!(again.expect("not current"), "not-current"),
+            CancelEntry::ByHandle => assert!(again
+                .expect_err("not current")
+                .to_string()
+                .contains("NIR1_CHAT_CAPTURE_NOT_CURRENT")),
+        }
+        // One owner stop, one zero-send terminal.
+        let terminal = zero_send(prepared.claim_for_transport());
+        assert_cancelled_zero_send(&terminal, "after the retried cancellation");
+        assert!(fixture.attempt(&id).claimed_at_ms.is_none());
+        assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+    }
+
+    // Superseded: a newer submission of the session took over the capture.
+    let fixture = OwnerFixture::new();
+    let first = fixture.accept(0, "a15-first");
+    let owner = fixture.owner(0, &first).expect("owner");
+    let request = fixture.request(&owner, &first);
+    let prepared = owner.create(request).expect("durable attempt");
+    let _second = fixture.accept(0, "a15-second");
+    assert_eq!(capture_state(&fixture, "a15-first"), "superseded");
+    let status = cancel_via(
+        CancelEntry::ByKey,
+        &fixture.state,
+        &fixture.callers[0],
+        &first,
+        "a15-first",
+    )
+    .expect("a superseded capture answers");
+    assert_eq!(status, "not-current");
+    assert_eq!(capture_state(&fixture, "a15-first"), "superseded");
+    // The superseded capture can no longer be claimed, whatever the cancel.
+    let settlement = not_started(prepared.claim_for_transport());
+    assert!(matches!(settlement, Nir1Settlement::ZeroSend(_)));
+}
+
+/// A-16: only the owner of the named submission is reached. Another caller,
+/// another submission, another message or Scene id, or another chat session
+/// never stops it, and the capture is refused or left as it was.
+#[test]
+fn a16_another_callers_or_submissions_cancellation_never_reaches_the_owner() {
+    let fixture = OwnerFixture::new();
+    let submission = fixture.accept(0, "a16");
+    let owner = fixture.owner(0, &submission).expect("owner");
+    let request = fixture.request(&owner, &submission);
+    let prepared = owner.create(request).expect("durable attempt");
+    let hooks = prepared.hooks();
+
+    // Another caller (its own submission in another session) names X.
+    let other = fixture.accept(1, "a16-other");
+    let foreign = cancel_current_chat_input(
+        Arc::clone(&fixture.state),
+        fixture.callers[1].clone(),
+        cancel_key_request("a16", SESSIONS[0]),
+    );
+    assert!(foreign.is_err(), "another caller cannot cancel it");
+    assert!(!hooks.cancel_requested());
+    assert_eq!(capture_state(&fixture, "a16"), "current");
+
+    // The same caller, with one identifier of the key changed.
+    for (label, request) in [
+        (
+            "another message",
+            cancel_key_request("a16-wrong-message", SESSIONS[0]),
+        ),
+        ("another session", cancel_key_request("a16", SESSIONS[1])),
+    ] {
+        let _ = cancel_current_chat_input(
+            Arc::clone(&fixture.state),
+            fixture.callers[0].clone(),
+            request,
+        );
+        assert!(!hooks.cancel_requested(), "{label}");
+        assert_eq!(capture_state(&fixture, "a16"), "current", "{label}");
+    }
+    let mixed: CancelCurrentChatInputRequest = serde_json::from_value(json!({
+        "submissionId": "owner-submission-a16",
+        "messageId": "owner-message-a16-wrong",
+        "chatSessionId": SESSIONS[0],
+        "sceneId": SCENE,
+    }))
+    .expect("selector");
+    assert!(
+        cancel_current_chat_input(
+            Arc::clone(&fixture.state),
+            fixture.callers[0].clone(),
+            mixed
+        )
+        .is_err(),
+        "the message of another submission does not match"
+    );
+    assert!(!hooks.cancel_requested(), "another message id");
+    let unknown = cancel_via(
+        CancelEntry::ByKey,
+        &fixture.state,
+        &fixture.callers[0],
+        &submission,
+        "a16-unknown",
+    )
+    .expect("an unknown key is answered");
+    assert_eq!(unknown, "not-found");
+    assert!(!hooks.cancel_requested(), "another submission");
+
+    // The handle of another submission (the same caller in another session).
+    let sibling = fixture.accept_as(&fixture.callers[0], SESSIONS[2], "a16-sibling");
+    cancel_current_chat_submission(Arc::clone(&fixture.state), &sibling)
+        .expect("the sibling's own cancellation");
+    assert!(!hooks.cancel_requested(), "the sibling's handle");
+    assert_eq!(capture_state(&fixture, "a16-sibling"), "cancelled");
+    assert_eq!(capture_state(&fixture, "a16-other"), "current");
+    let _ = other;
+
+    // X still starts exactly once.
+    let recorder = AtomicUsize::new(0);
+    let Nir1TransportDecision::Start(transport) = prepared.claim_for_transport() else {
+        panic!("an unrelated cancellation must not stop the owner");
+    };
+    record_send(transport, &recorder, "owner-message-a16-answer");
+    assert_eq!(recorder.load(Ordering::SeqCst), 1);
+    // The registry lookup itself: exact, by every identifier.
+    let registry = &fixture.state.nir1_generation_registry;
+    assert_eq!(registry.tracked_sessions(), 0);
+}
+
+/// A-16 (registry): the lookup compares the capture owner, the Ready binding
+/// and every identifier, and a slot that stopped being in flight has no
+/// handle.
+#[test]
+fn a16_the_registry_lookup_is_exact() {
+    let fixture = OwnerFixture::new();
+    let submission = fixture.accept(0, "a16-lookup");
+    let owner = fixture.owner(0, &submission).expect("owner");
+    let binding = fixture.binding();
+    let registry = &fixture.state.nir1_generation_registry;
+    let lookup = submission.cancel_lookup();
+    assert!(registry.cancel_handle_for(&binding, &lookup).is_some());
+
+    // Another workspace binding: not found.
+    let other_binding = LiveBinding::new("/other", "other-workspace", 1, 1);
+    assert!(registry
+        .cancel_handle_for(&other_binding, &lookup)
+        .is_none());
+    // Another project, when the project is named.
+    let other_project = Nir1CancelLookup {
+        project_id: Some("another-project"),
+        ..submission.cancel_lookup()
+    };
+    assert!(registry
+        .cancel_handle_for(&binding, &other_project)
+        .is_none());
+    // Another caller's capture owner.
+    let foreign_submission = fixture.accept(1, "a16-lookup-foreign");
+    let foreign = Nir1CancelLookup {
+        capture_owner: foreign_submission.capture_owner(),
+        ..submission.cancel_lookup()
+    };
+    assert!(registry.cancel_handle_for(&binding, &foreign).is_none());
+    // Another submission id, message id, scene id and chat session id.
+    for broken in [
+        Nir1CancelLookup {
+            submission_id: "owner-submission-other",
+            ..submission.cancel_lookup()
+        },
+        Nir1CancelLookup {
+            message_id: "owner-message-other",
+            ..submission.cancel_lookup()
+        },
+        Nir1CancelLookup {
+            scene_id: "other-scene",
+            ..submission.cancel_lookup()
+        },
+        Nir1CancelLookup {
+            chat_session_id: SESSIONS[1],
+            ..submission.cancel_lookup()
+        },
+    ] {
+        assert!(registry.cancel_handle_for(&binding, &broken).is_none());
+    }
+    // The owner's handle is the registered one: cancelling through the
+    // registry stops this owner.
+    assert!(!owner.hooks().cancel_requested());
+    assert!(registry.cancel_owner_for(&binding, &lookup));
+    assert!(owner.hooks().cancel_requested());
+    // After the owner is gone, nothing is left to reach.
+    drop(owner);
+    assert!(registry.cancel_handle_for(&binding, &lookup).is_none());
+    assert!(!registry.cancel_owner_for(&binding, &lookup));
+}
+
+/// A-17: a stop that the user did not ask for (callers invalidated, the
+/// registration replaced, an admission closed by a transition) stops the
+/// owner without touching the capture, and does not count as a cancellation.
+/// A destroyed sender or a closed window reaches Native only as one of these.
+#[test]
+fn a17_stops_that_are_not_a_withdrawal_leave_the_capture_alone() {
+    type Inject = fn(&OwnerFixture);
+    let cases: [(&str, Inject); 3] = [
+        ("callers invalidated", |fixture| {
+            fixture.state.profile_egress.invalidate_callers()
+        }),
+        ("registration replaced", |fixture| {
+            let mut replacement = fixture.callers[0].clone();
+            replacement.caller_id = "owner-caller-replacement".into();
+            fixture
+                .state
+                .profile_egress
+                .register_caller(&replacement)
+                .expect("replacement");
+        }),
+        ("admission closed", |fixture| {
+            match fixture
+                .state
+                .workspace_lifecycle
+                .try_begin_transition_kind(AdmissionKind::Open)
+                .expect("admission")
+            {
+                AdmissionOutcome::Admitted(_) => {}
+                AdmissionOutcome::NotAdmitted { reason, .. } => panic!("{reason:?}"),
+            }
+        }),
+    ];
+    for (name, inject) in cases {
+        let fixture = Arc::new(OwnerFixture::new());
+        let submission = fixture.accept(0, "a17");
+        let owner = fixture.owner(0, &submission).expect("owner");
+        let request = fixture.request(&owner, &submission);
+        let prepared = owner.create(request).expect("durable attempt");
+        let hooks = prepared.hooks();
+        let probe_fixture = Arc::clone(&fixture);
+        let fired = Arc::new(AtomicBool::new(false));
+        let probe_fired = Arc::clone(&fired);
+        hooks
+            .test_hooks()
+            .on(Nir1OwnerProbePoint::AfterCommit, move || {
+                if !probe_fired.swap(true, Ordering::SeqCst) {
+                    inject(&probe_fixture);
+                }
+            });
+        let terminal = zero_send(prepared.claim_for_transport());
+        assert_eq!(
+            terminal.failure_classification,
+            Some(FailureClassification::DispatchUnavailable),
+            "{name}: not a cancellation"
+        );
+        assert!(!hooks.cancel_requested(), "{name}: no cancel was issued");
+        assert_eq!(
+            capture_state(&fixture, "a17"),
+            "current",
+            "{name}: the capture is unchanged"
+        );
+        assert_eq!(fixture.state.nir1_generation_registry.tracked_sessions(), 0);
+        if name == "admission closed" {
+            fixture
+                .state
+                .workspace_lifecycle
+                .complete_transition_from_workspace(&fixture.state.ws)
+                .expect("complete the transition");
+        }
+    }
+}
+
+/// A-19 (cancel side): the cancellation holds the registry lock only to clone
+/// the handle, calls the owner's `cancel` with no registry lock, never takes
+/// the database mutex for the owner, and the owner's phase mutex is free
+/// while the capture's writer runs.
+#[test]
+fn a19_the_cancellation_holds_no_registry_phase_or_database_lock_across_its_steps() {
+    let fixture = Arc::new(OwnerFixture::new());
+    let submission = fixture.accept(0, "a19");
+    let owner = fixture.owner(0, &submission).expect("owner");
+    let request = fixture.request(&owner, &submission);
+    let prepared = owner.create(request).expect("durable attempt");
+    let control = prepared.hooks();
+    let registry = fixture.state.nir1_generation_registry.clone();
+
+    // 1. The registry lock is free while `cancel` waits for the phase mutex.
+    let phase = control.lock_phase();
+    let (started_tx, started_rx) = mpsc::channel();
+    let binding = fixture.binding();
+    let waiting = {
+        let registry = registry.clone();
+        let submission = submission.clone();
+        thread::spawn(move || {
+            started_tx.send(()).expect("started");
+            registry.cancel_owner_for(&binding, &submission.cancel_lookup())
+        })
+    };
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the cancellation started");
+    thread::sleep(Duration::from_millis(100));
+    assert!(
+        registry.inner.try_lock().is_ok(),
+        "the registry lock is not held while the owner's cancel waits"
+    );
+    assert!(!control.cancel_requested(), "cancel waits for the phase");
+    drop(phase);
+    assert!(waiting.join().expect("join"), "the owner was reached");
+    assert!(control.cancel_requested());
+
+    // 2. The owner's stop needs no database: with the connection mutex held
+    //    elsewhere, the entry reaches the owner and only the writer waits;
+    //    the phase and registry locks are free during that wait.
+    let fixture2 = Arc::new(OwnerFixture::new());
+    let submission2 = fixture2.accept(0, "a19-db");
+    let owner2 = fixture2.owner(0, &submission2).expect("owner");
+    let request2 = fixture2.request(&owner2, &submission2);
+    let prepared2 = owner2.create(request2).expect("durable attempt");
+    let control2 = prepared2.hooks();
+    let (release, holder) = hold_connection(&fixture2.authority);
+    let writer = {
+        let fixture = Arc::clone(&fixture2);
+        let submission = submission2.clone();
+        thread::spawn(move || {
+            cancel_via(
+                CancelEntry::ByHandle,
+                &fixture.state,
+                &fixture.callers[0],
+                &submission,
+                "a19-db",
+            )
+        })
+    };
+    wait_for(|| control2.cancel_requested(), "the owner stop");
+    assert!(
+        control2.phase.try_lock().is_ok(),
+        "the phase mutex is free while the capture writer runs"
+    );
+    assert!(
+        fixture2
+            .state
+            .nir1_generation_registry
+            .inner
+            .try_lock()
+            .is_ok(),
+        "the registry lock is free while the capture writer runs"
+    );
+    release.send(()).expect("release the connection");
+    holder.join().expect("holder");
+    let _ = writer.join().expect("join");
+    // The writer either finished or timed out on the mutex; a retry ends it.
+    let retried = cancel_via(
+        CancelEntry::ByHandle,
+        &fixture2.state,
+        &fixture2.callers[0],
+        &submission2,
+        "a19-db",
+    );
+    assert!(
+        retried.is_ok() || capture_state(&fixture2, "a19-db") == "cancelled",
+        "the capture ends cancelled: {retried:?}"
+    );
+    assert_eq!(capture_state(&fixture2, "a19-db"), "cancelled");
+    let terminal = zero_send(prepared2.claim_for_transport());
+    assert_cancelled_zero_send(&terminal, "a19 db");
+    drop(prepared);
 }

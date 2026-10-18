@@ -481,6 +481,7 @@ pub fn prepared_inputs_for_baseline(
         selected_items,
         bindings: set.bindings.clone(),
         raw_source_binding: Some(base.raw_source_binding.clone()),
+        excluded: Vec::new(),
     };
     build_native_nir1_prepared_inputs(
         base.capture.clone(),
@@ -493,3 +494,6 @@ pub fn prepared_inputs_for_baseline(
         &mut || Ok(()),
     )
 }
+
+#[cfg(test)]
+mod tests;

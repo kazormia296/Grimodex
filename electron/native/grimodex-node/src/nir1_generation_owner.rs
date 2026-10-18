@@ -49,16 +49,17 @@ use grimodex_core::narrative_nir1_receipt::TerminalObservation;
 use grimodex_core::nir1_local_send_policy::Nir1LocalSendPurpose;
 use grimodex_db::nir1_generation::{
     self as storage, AcceptedChatInputCapture, AttemptBinding, AttemptBindingVersion,
-    AttemptCallerBinding, NewAttempt, NewMessageBody, Nir1AdmissionProbe, Nir1AdmissionSqlBudget,
-    Nir1ClaimOutcome, Nir1CommitState, Nir1ExpectedAttempt, Nir1ExpectedClaim,
-    Nir1LocalAuditObserved, Nir1LocalAuditStart, Nir1LocalAuditStarted, Nir1PinnedSqlBudget,
-    Nir1StoreFailure, Nir1ZeroSendCompletion, StoredTerminal,
+    AttemptCallerBinding, ChatInputCaptureOwner, NewCaptureAttempt, NewMessageBody,
+    Nir1AdmissionProbe, Nir1AdmissionSqlBudget, Nir1ClaimOutcome, Nir1CommitState,
+    Nir1ExpectedAttempt, Nir1ExpectedClaim, Nir1ExpectedScope, Nir1LocalAuditObserved,
+    Nir1LocalAuditStart, Nir1LocalAuditStarted, Nir1PinnedSqlBudget, Nir1StoreFailure,
+    Nir1ZeroSendCompletion, StoredTerminal,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
 
 use crate::nir1_generation::{
-    canonical_final_payload, final_input_digest, now_ms, route_revision, FinalDispatchRequest,
+    canonical_final_payload, now_ms, route_revision, FinalDispatchRequest,
 };
 use crate::nir1_local_send_policy::{read_before_send, Nir1PreSendPolicy};
 use crate::nir1_prepared_request::NativeAcceptedChatSubmission;
@@ -185,11 +186,67 @@ pub(crate) struct Nir1SessionKey {
     chat_session_id: String,
 }
 
+/// The accepted submission an in-flight slot serves (DI-1c R-7). A capture
+/// cancellation reaches the slot's owner only when it names this exact
+/// submission under the same capture incarnation; the values are identifiers
+/// only (no body, no key).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Nir1SubmissionIdentity {
+    capture_owner: ChatInputCaptureOwner,
+    project_id: String,
+    chat_session_id: String,
+    submission_id: String,
+    message_id: String,
+    scene_id: String,
+}
+
+impl Nir1SubmissionIdentity {
+    fn of(capture: &AcceptedChatInputCapture, capture_owner: &ChatInputCaptureOwner) -> Self {
+        Self {
+            capture_owner: capture_owner.clone(),
+            project_id: capture.project_id().to_owned(),
+            chat_session_id: capture.chat_session_id().to_owned(),
+            submission_id: capture.submission_id().to_owned(),
+            message_id: capture.message_id().to_owned(),
+            scene_id: capture.scene_id().to_owned(),
+        }
+    }
+
+    fn is_named_by(&self, lookup: &Nir1CancelLookup<'_>) -> bool {
+        self.capture_owner
+            .same_capture_incarnation(lookup.capture_owner)
+            && lookup
+                .project_id
+                .is_none_or(|project_id| project_id == self.project_id)
+            && lookup.chat_session_id == self.chat_session_id
+            && lookup.submission_id == self.submission_id
+            && lookup.message_id == self.message_id
+            && lookup.scene_id == self.scene_id
+    }
+}
+
+/// What a capture-cancellation entry knows about the submission it cancels.
+/// The owner is looked up by the capture owner and every identifier together;
+/// `project_id` is absent for the entry that is given only a submission key.
+pub(crate) struct Nir1CancelLookup<'a> {
+    pub(crate) capture_owner: &'a ChatInputCaptureOwner,
+    pub(crate) project_id: Option<&'a str>,
+    pub(crate) chat_session_id: &'a str,
+    pub(crate) submission_id: &'a str,
+    pub(crate) message_id: &'a str,
+    pub(crate) scene_id: &'a str,
+}
+
 enum Nir1SessionSlot {
     InFlight {
         submission_id: String,
         attempt_id: String,
         token: u64,
+        /// The owner's cancel handle and the submission it serves. They live
+        /// exactly as long as the in-flight slot: a slot that became
+        /// `Unresolved` has no owner left that could start a transport.
+        cancel: Nir1OwnerCancel,
+        identity: Box<Nir1SubmissionIdentity>,
     },
     Unresolved {
         attempt_id: String,
@@ -218,10 +275,12 @@ impl Nir1GenerationRegistry {
     fn reserve(
         &self,
         key: Nir1SessionKey,
-        submission_id: &str,
+        identity: Nir1SubmissionIdentity,
+        cancel: Nir1OwnerCancel,
         attempt_id: &str,
         open_entry_epoch: Option<u64>,
     ) -> Result<Nir1SessionSlotGuard, Nir1GenerationRefusal> {
+        let submission_id = identity.submission_id.as_str();
         let mut state = self
             .inner
             .lock()
@@ -261,6 +320,8 @@ impl Nir1GenerationRegistry {
                 submission_id: submission_id.to_owned(),
                 attempt_id: attempt_id.to_owned(),
                 token,
+                cancel,
+                identity: Box::new(identity),
             },
         ));
         Ok(Nir1SessionSlotGuard {
@@ -268,6 +329,42 @@ impl Nir1GenerationRegistry {
             token,
             armed: true,
         })
+    }
+
+    /// The cancel handle of the in-flight owner that serves exactly the named
+    /// submission under the same capture incarnation, in the same Ready
+    /// workspace. Another caller's, another session's or another submission's
+    /// slot is never returned. The registry lock is held only to clone the
+    /// handle; the caller cancels after this returns.
+    pub(crate) fn cancel_handle_for(
+        &self,
+        binding: &LiveBinding,
+        lookup: &Nir1CancelLookup<'_>,
+    ) -> Option<Nir1OwnerCancel> {
+        let state = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        state.slots.iter().find_map(|(key, slot)| match slot {
+            Nir1SessionSlot::InFlight {
+                cancel, identity, ..
+            } if key.binding == *binding && identity.is_named_by(lookup) => Some(cancel.clone()),
+            _ => None,
+        })
+    }
+
+    /// Ask the matching owner to stop before it starts a transport. Returns
+    /// whether an owner was reached. `cancel` is idempotent, so a retry of a
+    /// capture cancellation that failed after this call calls it again.
+    pub(crate) fn cancel_owner_for(
+        &self,
+        binding: &LiveBinding,
+        lookup: &Nir1CancelLookup<'_>,
+    ) -> bool {
+        match self.cancel_handle_for(binding, lookup) {
+            Some(cancel) => {
+                cancel.cancel();
+                true
+            }
+            None => false,
+        }
     }
 
     #[cfg(test)]
@@ -622,6 +719,9 @@ struct PreparedInner {
     core: OwnerCore,
     slot: Nir1SessionSlotGuard,
     expected: Nir1ExpectedAttempt,
+    /// The Scope binding and restore epoch the D-final snapshot read; the
+    /// claim re-reads them in its own transaction (K4/3 defenses (2)(3)).
+    expected_scope: Nir1ExpectedScope,
     canonical_payload: String,
 }
 
@@ -715,9 +815,13 @@ impl Nir1GenerationOwner {
             chat_session_id: capture.chat_session_id().to_owned(),
         };
         let open_entry_epoch = gate.open_entry_epoch();
+        let control = Arc::new(Nir1OwnerControl::new());
         let slot = state.nir1_generation_registry.reserve(
             key,
-            capture.submission_id(),
+            Nir1SubmissionIdentity::of(&capture, submission.capture_owner()),
+            Nir1OwnerCancel {
+                control: Arc::clone(&control),
+            },
             &attempt_id,
             open_entry_epoch,
         )?;
@@ -732,7 +836,7 @@ impl Nir1GenerationOwner {
                 route_revision: route,
                 capture,
                 attempt_id,
-                control: Arc::new(Nir1OwnerControl::new()),
+                control,
                 workspace,
                 _operation: operation,
             },
@@ -788,8 +892,6 @@ impl Nir1GenerationOwner {
         let history_slot = request.history.slot;
         let (canonical_payload, payload_digest) = canonical_final_payload(&request.payload)
             .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
-        let input_digest = final_input_digest(&request.inputs, &request.qualifications)
-            .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
         let read_budget = request.budget;
         let binding = AttemptBinding {
             binding_version: AttemptBindingVersion::V2,
@@ -812,18 +914,26 @@ impl Nir1GenerationOwner {
             history_turn_context: Some(history_slot),
             durable_workspace_identity: owner_identity.cloned(),
         };
-        let attempt = NewAttempt {
+        let expected_scope = request.expected_scope;
+        // The request carries a lifetime only: the create transaction reads
+        // Native's clock and decides the times (DI-1c R-6).
+        let attempt = NewCaptureAttempt {
             binding,
-            payload_digest: payload_digest.clone(),
+            payload_digest,
             inputs: request.inputs,
             qualifications: request.qualifications,
-            created_at_ms: request.created_at_ms,
-            expires_at_ms: request.expires_at_ms,
+            lifetime_ms: request.lifetime_ms,
+            expected_scope: expected_scope.clone(),
             budget: read_budget,
         };
-        // What storage will keep of this binding (it may downgrade the history
-        // slots); an unknown COMMIT result is re-read and compared with it.
-        let stored_binding = storage::effective_attempt_binding(&attempt)
+        // Refuse a binding that storage can never keep (the 64 KiB ceiling)
+        // before a lease is taken. The history slots may still be downgraded
+        // by storage; an unknown COMMIT result is re-read and compared with
+        // the binding that the stored creation time gives.
+        let provisional_at_ms =
+            now_ms().map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
+        attempt
+            .effective_binding_at(provisional_at_ms)
             .map_err(|_| Nir1GenerationRefusal::Store(Nir1StoreFailure::Invalid))?;
         let lease = core
             .gate()
@@ -848,7 +958,7 @@ impl Nir1GenerationOwner {
             storage::create_attempt_for_capture_bounded(
                 &core.workspace,
                 &core.capture,
-                attempt,
+                &attempt,
                 &budget,
                 &mut pre_commit,
             )
@@ -862,6 +972,7 @@ impl Nir1GenerationOwner {
                     core,
                     slot,
                     expected,
+                    expected_scope,
                     canonical_payload,
                 ));
             }
@@ -896,16 +1007,13 @@ impl Nir1GenerationOwner {
             read_budget,
             &core.pinned_budget(),
         ) {
-            Ok(Some(stored))
-                if stored.binding == stored_binding
-                    && stored.payload_digest == payload_digest
-                    && stored.input_digest == input_digest =>
-            {
+            Ok(Some(stored)) if attempt.matches_stored(&stored) => {
                 let expected = Nir1ExpectedAttempt::from_stored(&stored, read_budget);
                 Ok(Nir1PreparedAttempt::new(
                     core,
                     slot,
                     expected,
+                    expected_scope,
                     canonical_payload,
                 ))
             }
@@ -932,6 +1040,7 @@ impl Nir1PreparedAttempt {
         core: OwnerCore,
         slot: Nir1SessionSlotGuard,
         expected: Nir1ExpectedAttempt,
+        expected_scope: Nir1ExpectedScope,
         canonical_payload: String,
     ) -> Self {
         Self {
@@ -939,6 +1048,7 @@ impl Nir1PreparedAttempt {
                 core,
                 slot,
                 expected,
+                expected_scope,
                 canonical_payload,
             }),
         }
@@ -1001,6 +1111,7 @@ impl PreparedInner {
             core,
             slot,
             expected,
+            expected_scope,
             canonical_payload,
         } = self;
         let gate = core.gate();
@@ -1040,7 +1151,16 @@ impl PreparedInner {
                 anyhow::ensure!(lease.is_current(), "NIR1_GENERATION_LEASE_LOST");
                 permit.ensure_open()
             };
-            storage::claim_attempt_bounded(&core.workspace, &expected, &budget, &mut pre_commit)
+            // The claim re-reads the capture, the Scope binding and the restore
+            // epoch in its own transaction; any difference claims nothing.
+            storage::claim_attempt_for_capture_bounded(
+                &core.workspace,
+                &core.capture,
+                &expected_scope,
+                &expected,
+                &budget,
+                &mut pre_commit,
+            )
         };
         let claimed_at_ms = match claimed {
             Ok(Nir1ClaimOutcome::Claimed { claimed_at_ms }) => {

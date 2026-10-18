@@ -18,21 +18,22 @@ use grimodex_core::narrative_nir1::{
 use grimodex_core::nir1_local_wire::RequestTarget;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
-    read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
-    NativeNir1AuthorityBinding, NativeNir1ExcludedRevision, NativeNir1HistoryDraft,
-    NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
+    revalidate_native_nir1_prepared_inputs, NativeNir1AuthorityBinding, NativeNir1ExcludedRevision,
+    NativeNir1HistoryDraft, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
 };
 use grimodex_db::nir1_generation::history_context::HistorySendClassification;
 use grimodex_db::nir1_generation::{
-    self as generation_storage, AcceptedChatInputCapture, ChatInputCaptureOwner,
-    D1SelectionParameters, GenerationPurpose, InputReference, NewChatInputSubmission,
-    QualificationReference,
+    self as generation_storage, AcceptedChatInputCapture, AttemptSceneBinding,
+    ChatInputCaptureOwner, D1SelectionParameters, GenerationPurpose, InputReference,
+    NewChatInputSubmission, Nir1ExpectedScope, QualificationReference,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
 use grimodex_db::ParticipantSqlOperationBudget;
 use serde_json::json;
 
+use crate::nir1_generation_owner::Nir1CancelLookup;
 use crate::profile_egress::CallerIdentity;
 use crate::state::AppState;
 
@@ -124,7 +125,7 @@ impl LocalGenerationIntent {
     }
 
     #[cfg(test)]
-    fn writing_for_test() -> Self {
+    pub(crate) fn writing_for_test() -> Self {
         Self::new(
             GenerationPurpose::Writing,
             MainKeyVerdict::Absent,
@@ -132,7 +133,7 @@ impl LocalGenerationIntent {
         )
     }
 
-    fn ensure_no_key(&self) -> Result<()> {
+    pub(crate) fn ensure_no_key(&self) -> Result<()> {
         match self.key_verdict {
             MainKeyVerdict::Absent => Ok(()),
             MainKeyVerdict::Present => anyhow::bail!("NIR1_PREPARED_KEY_PRESENT"),
@@ -185,7 +186,7 @@ impl UnsupportedInputIntent {
         }
     }
 
-    fn validate(self) -> Result<()> {
+    pub(crate) fn validate(self) -> Result<()> {
         ensure!(
             !self.graph_nonempty,
             "NIR1_PREPARED_GRAPH_INPUT_UNSUPPORTED"
@@ -284,6 +285,26 @@ pub(crate) struct NativeAcceptedChatSubmission {
 impl NativeAcceptedChatSubmission {
     pub(crate) fn message_version_id(&self) -> &str {
         self.capture.message_version_id()
+    }
+
+    /// The capture owner (caller, Native workspace incarnation) that accepted
+    /// this submission. The generation registry stores it with the owner's
+    /// cancel handle so a cancellation reaches only this submission's owner.
+    pub(crate) fn capture_owner(&self) -> &ChatInputCaptureOwner {
+        &self.owner
+    }
+
+    /// Everything the registry needs to find this submission's owner: the
+    /// capture owner and the accepted identifiers, with the project included.
+    pub(crate) fn cancel_lookup(&self) -> Nir1CancelLookup<'_> {
+        Nir1CancelLookup {
+            capture_owner: &self.owner,
+            project_id: Some(self.capture.project_id()),
+            chat_session_id: self.capture.chat_session_id(),
+            submission_id: self.capture.submission_id(),
+            message_id: self.capture.message_id(),
+            scene_id: self.capture.scene_id(),
+        }
     }
 }
 
@@ -484,33 +505,169 @@ pub(crate) fn prepare_local_chat_request(
     unsupported_inputs.validate()?;
     generation.ensure_no_key()?;
     let sql_budget = participant_sql_budget_for(Arc::clone(&message_version_id.stop));
-    #[cfg(test)]
-    {
-        prepare_local_chat_request_inner(
-            state,
-            caller,
-            query_scene_id,
-            message_version_id,
-            revision_ids,
-            generation,
-            sql_budget,
-            || Ok(()),
-            || Ok(()),
-            || Ok(()),
+    prepare_with_budget(
+        state,
+        caller,
+        query_scene_id,
+        message_version_id,
+        RevisionSource::Caller(revision_ids),
+        generation,
+        sql_budget,
+    )
+    .map(|prepared| prepared.request)
+}
+
+/// The Native selection of D-final (DI-1c R-1): the caller names no Revision.
+/// The trusted Native lists the current human-approved typed Revisions inside
+/// the one read snapshot and leaves out, with a closed reason, each one that
+/// A2 or A3 reports unavailable. The result carries, beside the prepared
+/// request, the exact target Scene incarnation, the Scope binding and restore
+/// epoch expectations read in that same snapshot (DT-3's "built by the
+/// coordinator in the same read transaction"), and a private witness of the
+/// adopted inputs that the coordinator re-observes right before dispatch.
+pub(crate) fn prepare_selected_local_chat_request(
+    state: Arc<AppState>,
+    caller: CallerIdentity,
+    query_scene_id: &str,
+    message_version_id: &NativeAcceptedChatSubmission,
+    unsupported_inputs: UnsupportedInputIntent,
+    generation: LocalGenerationIntent,
+) -> Result<NativeSelectedPreparedRequest> {
+    unsupported_inputs.validate()?;
+    generation.ensure_no_key()?;
+    let sql_budget = participant_sql_budget_for(Arc::clone(&message_version_id.stop));
+    let prepared = prepare_with_budget(
+        state,
+        caller,
+        query_scene_id,
+        message_version_id,
+        RevisionSource::Native,
+        generation,
+        sql_budget,
+    )?;
+    let (scene_binding, expected_scope) = prepared
+        .expectations
+        .context("NIR1_PREPARED_EXPECTATIONS_MISSING")?;
+    Ok(NativeSelectedPreparedRequest {
+        request: prepared.request,
+        scene_binding,
+        expected_scope,
+        witness: PreparedInputsWitness {
+            inputs: prepared.inputs,
+        },
+    })
+}
+
+/// Where the Revisions of one preparation come from.
+enum RevisionSource<'a> {
+    /// The caller's list. A Revision that A2/A3 reports unavailable rejects
+    /// the whole request (the DP-H rejection variant).
+    Caller(&'a [String]),
+    /// The Native selection (DI-1c). An unavailable Revision is left out.
+    Native,
+}
+
+/// What one preparation produced. `expectations` exists for the Native
+/// selection only.
+struct PreparedOutput {
+    request: NativePreparedRequest,
+    inputs: NativeNir1PreparedInputs,
+    expectations: Option<(AttemptSceneBinding, Nir1ExpectedScope)>,
+}
+
+/// A Native-selected prepared request with the values that the create and the
+/// claim compare. Request-local: no Debug, Clone or Serialize, no persistent
+/// identifier and no send authority.
+pub(crate) struct NativeSelectedPreparedRequest {
+    request: NativePreparedRequest,
+    scene_binding: AttemptSceneBinding,
+    expected_scope: Nir1ExpectedScope,
+    witness: PreparedInputsWitness,
+}
+
+impl NativeSelectedPreparedRequest {
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        NativePreparedRequest,
+        AttemptSceneBinding,
+        Nir1ExpectedScope,
+        PreparedInputsWitness,
+    ) {
+        (
+            self.request,
+            self.scene_binding,
+            self.expected_scope,
+            self.witness,
         )
     }
-    #[cfg(not(test))]
-    {
-        prepare_local_chat_request_inner(
-            state,
-            caller,
-            query_scene_id,
-            message_version_id,
-            revision_ids,
-            generation,
-            sql_budget,
-        )
-    }
+}
+
+/// The adopted DB inputs of a prepared request (Human body, Raw text,
+/// Revision authority bindings), kept private so the coordinator can
+/// re-observe them in a new read transaction right before dispatch. It holds
+/// prompt text, so it is request-local and has no Debug, Clone or Serialize,
+/// and it grants no send authority.
+pub(crate) struct PreparedInputsWitness {
+    inputs: NativeNir1PreparedInputs,
+}
+
+/// The last Native check before a claim (DI-1c R-3). It re-observes the
+/// adopted DB inputs (the current Human body, the Raw text, every Revision's
+/// authority binding) in a new participant read transaction, then confirms the
+/// workspace, the caller and profile authority, the route and its revocation
+/// generation, and the shutdown flag. Any difference is an error and the
+/// request is never sent. It holds no lock when it returns and grants nothing:
+/// the claim re-reads the capture, the Scope binding and the restore epoch in
+/// its own transaction.
+pub(crate) fn reobserve_prepared_for_dispatch(
+    state: &Arc<AppState>,
+    submission: &NativeAcceptedChatSubmission,
+    route: &SupportedLocalChatRoute,
+    route_revocation_generation: u64,
+    witness: &PreparedInputsWitness,
+) -> Result<()> {
+    ensure!(
+        !state
+            .workspace_shutdown_requested
+            .load(std::sync::atomic::Ordering::Acquire),
+        "NIR1_PREPARED_WORKSPACE_SHUTDOWN"
+    );
+    let (workspace, live_binding) = capture_ready_workspace(state)?;
+    ensure!(
+        live_binding == submission.workspace_binding,
+        "NIR1_PREPARED_WORKSPACE_CHANGED"
+    );
+    let sql_budget = participant_sql_budget_for(Arc::clone(&submission.stop));
+    sql_budget.check_workspace(&workspace)?;
+    revalidate_native_nir1_prepared_inputs(
+        &workspace,
+        submission.capture.chat_session_id(),
+        &witness.inputs,
+        sql_budget.clone(),
+    )?;
+    sql_budget.check_workspace(&workspace)?;
+    ensure_workspace_unchanged(state, &workspace, &live_binding)?;
+    state.profile_egress.with_authorized_preparation(
+        &submission.caller,
+        &live_binding.locator,
+        || {
+            let current_route = resolve_supported_local_route(&state.ai_settings_path)?;
+            ensure!(
+                state.profile_egress.revocation_generation() == route_revocation_generation,
+                "NIR1_PREPARED_ROUTE_REVOKED"
+            );
+            ensure_route_unchanged(route, &current_route)?;
+            ensure!(
+                !state
+                    .workspace_shutdown_requested
+                    .load(std::sync::atomic::Ordering::Acquire),
+                "NIR1_PREPARED_WORKSPACE_SHUTDOWN"
+            );
+            Ok(())
+        },
+    )?;
+    sql_budget.check_workspace(&workspace)
 }
 
 #[cfg(test)]
@@ -553,13 +710,53 @@ fn prepare_local_chat_request_with_test_budget(
         caller,
         query_scene_id,
         message_version_id,
-        revision_ids,
+        RevisionSource::Caller(revision_ids),
         LocalGenerationIntent::writing_for_test(),
         sql_budget,
         before_initial_read,
         after_initial_read_before_render,
         after_render_before_revalidation,
     )
+    .map(|prepared| prepared.request)
+}
+
+#[cfg_attr(test, allow(clippy::too_many_arguments))] // Test-only hooks expose each lifecycle boundary.
+fn prepare_with_budget(
+    state: Arc<AppState>,
+    caller: CallerIdentity,
+    query_scene_id: &str,
+    message_version_id: &NativeAcceptedChatSubmission,
+    revisions: RevisionSource<'_>,
+    generation: LocalGenerationIntent,
+    sql_budget: ParticipantSqlOperationBudget,
+) -> Result<PreparedOutput> {
+    #[cfg(test)]
+    {
+        prepare_local_chat_request_inner(
+            state,
+            caller,
+            query_scene_id,
+            message_version_id,
+            revisions,
+            generation,
+            sql_budget,
+            || Ok(()),
+            || Ok(()),
+            || Ok(()),
+        )
+    }
+    #[cfg(not(test))]
+    {
+        prepare_local_chat_request_inner(
+            state,
+            caller,
+            query_scene_id,
+            message_version_id,
+            revisions,
+            generation,
+            sql_budget,
+        )
+    }
 }
 
 #[cfg_attr(test, allow(clippy::too_many_arguments))] // Test-only hooks expose each lifecycle boundary.
@@ -568,13 +765,13 @@ fn prepare_local_chat_request_inner(
     caller: CallerIdentity,
     query_scene_id: &str,
     message_version_id: &NativeAcceptedChatSubmission,
-    revision_ids: &[String],
+    revisions: RevisionSource<'_>,
     generation: LocalGenerationIntent,
     sql_budget: ParticipantSqlOperationBudget,
     #[cfg(test)] before_initial_read: impl FnOnce() -> Result<()>,
     #[cfg(test)] after_initial_read_before_render: impl FnOnce() -> Result<()>,
     #[cfg(test)] after_render_before_revalidation: impl FnOnce() -> Result<()>,
-) -> Result<NativePreparedRequest> {
+) -> Result<PreparedOutput> {
     ensure!(
         !state
             .workspace_shutdown_requested
@@ -615,23 +812,44 @@ fn prepare_local_chat_request_inner(
     before_initial_read()?;
     sql_budget.check_workspace(&workspace)?;
     let mut packing_context_budget_tokens = None;
-    let projection = read_and_pack_native_nir1_prepared_inputs(
-        &workspace,
-        packing_purpose(&generation.purpose),
-        send_classification,
-        message_version_id.capture.chat_session_id(),
-        &message_version_id.capture,
-        query_scene_id,
-        revision_ids,
-        sql_budget.clone(),
-        |user_message| {
-            sql_budget.check_workspace(&workspace)?;
-            let budget = context_budget_for_user(&route, user_message)?;
-            packing_context_budget_tokens = Some(budget);
-            sql_budget.check_workspace(&workspace)?;
-            Ok(budget)
-        },
-    )?;
+    let context_budget = |user_message: &str| -> Result<usize> {
+        sql_budget.check_workspace(&workspace)?;
+        let budget = context_budget_for_user(&route, user_message)?;
+        packing_context_budget_tokens = Some(budget);
+        sql_budget.check_workspace(&workspace)?;
+        Ok(budget)
+    };
+    let (projection, expectations) = match revisions {
+        RevisionSource::Caller(revision_ids) => (
+            read_and_pack_native_nir1_prepared_inputs(
+                &workspace,
+                packing_purpose(&generation.purpose),
+                send_classification,
+                message_version_id.capture.chat_session_id(),
+                &message_version_id.capture,
+                query_scene_id,
+                revision_ids,
+                sql_budget.clone(),
+                context_budget,
+            )?,
+            None,
+        ),
+        RevisionSource::Native => {
+            let (projection, scene_binding, expected_scope) =
+                read_and_pack_native_nir1_selected_inputs(
+                    &workspace,
+                    packing_purpose(&generation.purpose),
+                    send_classification,
+                    message_version_id.capture.chat_session_id(),
+                    &message_version_id.capture,
+                    query_scene_id,
+                    sql_budget.clone(),
+                    context_budget,
+                )?
+                .into_parts();
+            (projection, Some((scene_binding, expected_scope)))
+        }
+    };
     let packing_context_budget_tokens =
         packing_context_budget_tokens.context("NIR1_PREPARED_PACKING_BUDGET_MISSING")?;
     #[cfg(test)]
@@ -720,7 +938,11 @@ fn prepare_local_chat_request_inner(
                 })
             })?;
     checkpoint()?;
-    Ok(prepared)
+    Ok(PreparedOutput {
+        request: prepared,
+        inputs: projection,
+        expectations,
+    })
 }
 
 fn capture_owner(
@@ -813,6 +1035,22 @@ pub(crate) fn cancel_current_chat_input(
                 Ok(state.profile_egress.revocation_generation())
             })?;
     let owner = capture_owner(&caller, &binding, revocation_generation)?;
+    // A cancellation the user asked for stops the capture's generation owner
+    // first, so an owner past the claim cannot start a transport after the
+    // capture is cancelled (K4/3, the window after COMMIT). Only the owner of
+    // this exact submission is reached; a failure of the writer below is
+    // returned, never reported as a cancellation, and a retry cancels again.
+    state.nir1_generation_registry.cancel_owner_for(
+        &binding,
+        &Nir1CancelLookup {
+            capture_owner: &owner,
+            project_id: None,
+            chat_session_id: &request.chat_session_id,
+            submission_id: &request.submission_id,
+            message_id: &request.message_id,
+            scene_id: &request.scene_id,
+        },
+    );
     let outcome = generation_storage::cancel_current_human_chat_input_by_submission(
         &workspace,
         &owner,
@@ -944,6 +1182,11 @@ pub(crate) fn cancel_current_chat_submission(
     accepted
         .stop
         .store(true, std::sync::atomic::Ordering::Release);
+    // The owner of this accepted submission stops before the capture changes
+    // (DI-1c R-7). `cancel` is idempotent, so a failed writer is retried.
+    state
+        .nir1_generation_registry
+        .cancel_owner_for(&binding, &accepted.cancel_lookup());
     generation_storage::cancel_current_human_chat_input(
         &workspace,
         &accepted.capture,
@@ -1537,7 +1780,7 @@ fn is_reserved_prompt_tag_start(after_open: &str, reserved: &[&str]) -> bool {
 }
 
 #[cfg(test)]
-pub(super) mod tests {
+pub(crate) mod tests {
     /// The producer's rows: the final rows without the D1 selection
     /// references that the render adds.
     fn without_d1(
@@ -1592,19 +1835,19 @@ pub(super) mod tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    const PROJECT_ID: &str = "default-project";
-    const SESSION_ID: &str = "nir1-prepared-session";
-    pub(super) const SCENE_ID: &str = "nir1-prepared-scene";
-    const REVISION_SCENE_ID: &str = "nir1-prepared-revision-scene";
+    pub(crate) const PROJECT_ID: &str = "default-project";
+    pub(crate) const SESSION_ID: &str = "nir1-prepared-session";
+    pub(crate) const SCENE_ID: &str = "nir1-prepared-scene";
+    pub(crate) const REVISION_SCENE_ID: &str = "nir1-prepared-revision-scene";
     const MESSAGE_ID: &str = "nir1-prepared-human-message";
     const DECISION_CANARY: &str = "PREPARED_PRIVATE_DECISION_NOTE_MUST_NOT_ESCAPE";
-    pub(super) const NO_UNSUPPORTED_INPUTS: super::UnsupportedInputIntent =
+    pub(crate) const NO_UNSUPPORTED_INPUTS: super::UnsupportedInputIntent =
         super::UnsupportedInputIntent::empty();
 
     /// Writing with no key and the fixture endpoint id: the pre-DF+-b shape of
     /// every existing test. Purpose, key, and endpoint tests call
     /// `prepare_local_chat_request_with_intent` directly.
-    pub(super) fn prepare_local_chat_request(
+    pub(crate) fn prepare_local_chat_request(
         state: Arc<AppState>,
         caller: CallerIdentity,
         query_scene_id: &str,
@@ -1623,16 +1866,16 @@ pub(super) mod tests {
         )
     }
 
-    pub(super) struct Fixture {
-        pub(super) root: std::path::PathBuf,
-        pub(super) state: Arc<AppState>,
-        pub(super) caller: CallerIdentity,
-        pub(super) revision_id: String,
-        pub(super) message_version_id: NativeAcceptedChatSubmission,
+    pub(crate) struct Fixture {
+        pub(crate) root: std::path::PathBuf,
+        pub(crate) state: Arc<AppState>,
+        pub(crate) caller: CallerIdentity,
+        pub(crate) revision_id: String,
+        pub(crate) message_version_id: NativeAcceptedChatSubmission,
     }
 
     impl Fixture {
-        pub(super) fn new() -> anyhow::Result<Self> {
+        pub(crate) fn new() -> anyhow::Result<Self> {
             Self::with_query_scene_body(
                 "The rain stopped. Alice looked at Bob and waited for his answer.",
             )
@@ -1737,7 +1980,7 @@ pub(super) mod tests {
     }
 
     impl Fixture {
-        pub(super) fn add_human_message(
+        pub(crate) fn add_human_message(
             &self,
             key: &str,
             content: &str,
@@ -1758,7 +2001,7 @@ pub(super) mod tests {
             )
         }
 
-        pub(super) fn generation_storage_counts(&self) -> anyhow::Result<[i64; 5]> {
+        pub(crate) fn generation_storage_counts(&self) -> anyhow::Result<[i64; 5]> {
             let workspace = active_workspace_snapshot(&self.state.ws)?;
             workspace.db().db().with_read_transaction(|conn| {
                 conn.query_row(
@@ -1782,7 +2025,7 @@ pub(super) mod tests {
             })
         }
 
-        pub(super) fn attempt_count(&self) -> anyhow::Result<i64> {
+        pub(crate) fn attempt_count(&self) -> anyhow::Result<i64> {
             Ok(self.generation_storage_counts()?[2])
         }
     }
@@ -2050,7 +2293,7 @@ pub(super) mod tests {
         Ok(())
     }
 
-    fn configure_scene_scope(database: &Database) -> anyhow::Result<()> {
+    pub(crate) fn configure_scene_scope(database: &Database) -> anyhow::Result<()> {
         let current = database.with_read_transaction(|conn| {
             narrative_extraction::read_narrative_scene_scope(conn, PROJECT_ID, SCENE_ID)
         })?;
@@ -2123,7 +2366,7 @@ pub(super) mod tests {
         create_approved_revision_with_key(database, "nir1:prepared:accepted-ir")
     }
 
-    fn create_approved_revision_with_key(
+    pub(crate) fn create_approved_revision_with_key(
         database: &Database,
         proposal_key: &str,
     ) -> anyhow::Result<String> {
@@ -2190,7 +2433,7 @@ pub(super) mod tests {
         }
     }
 
-    fn write_local_route(
+    pub(crate) fn write_local_route(
         state: &AppState,
         base_url: &str,
         context_tokens: u32,
@@ -2917,20 +3160,16 @@ pub(super) mod tests {
         Ok(())
     }
 
-    /// From the product prepare, through the handoff, a hand-built
-    /// `FinalDispatchRequest` (the coordinator is DI-1c's) and the owner's
-    /// create, to the re-read row: the stored slot is the builder's context
-    /// plus the writer's eligibility time, and the durable identity is the one
-    /// of the owner's own Ready binding.
+    /// A-12, DG-1: from the capture, through the Native selection prepare and
+    /// the handoff, the coordinator's final request and the owner's create, to
+    /// the re-read row: the stored slot is the builder's context plus the
+    /// writer's eligibility time, and the durable identity is the one of the
+    /// owner's own Ready binding. No request is assembled by hand.
     #[test]
     fn hs1_prepared_to_stored_context_end_to_end() -> anyhow::Result<()> {
-        use crate::nir1_generation::FinalDispatchRequest;
-        const READ_BUDGET_FOR_TEST: grimodex_db::nir1_generation::ReadBudget =
-            grimodex_db::nir1_generation::ReadBudget {
-                max_references: 256,
-                max_reference_bytes: 256 * 1024,
-            };
-        use crate::nir1_generation_owner::Nir1GenerationOwner;
+        use crate::nir1_local_attempt::{
+            start_local_attempt, Nir1LocalAttemptOutcome, NIR1_LOCAL_ATTEMPT_READ_BUDGET,
+        };
         use grimodex_db::nir1_generation::history_context::{
             HistoryContextSlot, HISTORY_ELIGIBILITY_WINDOW_MS,
         };
@@ -2940,79 +3179,68 @@ pub(super) mod tests {
             crate::nir1_generation::sweep_and_open_ready_entry_for_test(&fixture.state),
             "the startup gate opens after the sweep"
         );
-        let prepared = prepare_local_chat_request(
+        // The same prepare, by the Native selection, gives the slot the
+        // coordinator will hand to the owner.
+        let (planned, ..) = super::prepare_selected_local_chat_request(
             Arc::clone(&fixture.state),
             fixture.caller.clone(),
             SCENE_ID,
             &fixture.message_version_id,
-            std::slice::from_ref(&fixture.revision_id),
             super::UnsupportedInputIntent::empty(),
-        )?;
-        let handoff = prepared.into_d_transport_handoff();
-        let owner = Nir1GenerationOwner::capture(
-            Arc::clone(&fixture.state),
-            fixture.caller.clone(),
-            &fixture.message_version_id,
-        )
-        .map_err(|refusal| anyhow::anyhow!("owner refused: {refusal:?}"))?;
-        let workspace = active_workspace_snapshot(&fixture.state.ws)?;
-        let scene = workspace.db().db().with_read_transaction(|conn| {
-            generation_storage::read_attempt_scene_binding_in_tx(conn, PROJECT_ID, SCENE_ID)
-        })?;
-        let digest = grimodex_core::canonical_json_digest(&json!("hs1-end-to-end"))?;
-        let now = crate::nir1_generation::now_ms()?;
-        let request = FinalDispatchRequest {
-            project_id: PROJECT_ID.into(),
-            chat_session_id: SESSION_ID.into(),
-            scene,
-            route_revision: owner.route_revision().to_owned(),
-            purpose: handoff.purpose().clone(),
-            scope_digest: digest.clone(),
-            material_digest: digest.clone(),
-            d1_digest: digest.clone(),
-            provider: "test-recorder".into(),
-            model: "test".into(),
-            api: "internal-test".into(),
-            endpoint_identity: digest,
-            payload: serde_json::from_str(handoff.canonical_payload())?,
-            inputs: handoff.input_references().to_vec(),
-            qualifications: handoff.qualifications().to_vec(),
-            history: handoff.history_draft().clone(),
-            created_at_ms: now,
-            expires_at_ms: now + 60_000,
-            budget: READ_BUDGET_FOR_TEST,
-        };
-        let created = owner
-            .create(request)
-            .map_err(|refusal| anyhow::anyhow!("create refused: {refusal:?}"))?;
-        let attempt_id = created.attempt_id().to_owned();
-        let stored = generation_storage::read_attempt(
-            workspace.db().db(),
-            &attempt_id,
-            READ_BUDGET_FOR_TEST,
-        )?;
+            LocalGenerationIntent::writing_for_test(),
+        )?
+        .into_parts();
+        let handoff = planned.into_d_transport_handoff();
         let HistoryContextSlot::Context(sent) = &handoff.history_draft().slot else {
             anyhow::bail!("the handoff carries a context");
         };
+        let sent = sent.clone();
+
+        let outcome = start_local_attempt(
+            Arc::clone(&fixture.state),
+            fixture.caller.clone(),
+            &fixture.message_version_id,
+            SCENE_ID,
+            super::UnsupportedInputIntent::empty(),
+            LocalGenerationIntent::writing_for_test(),
+        )
+        .map_err(|refusal| anyhow::anyhow!("the coordinator refused: {refusal:?}"))?;
+        let Nir1LocalAttemptOutcome::Start(transport) = outcome else {
+            anyhow::bail!("the coordinator must start the transport");
+        };
+        let workspace = active_workspace_snapshot(&fixture.state.ws)?;
+        let stored = generation_storage::read_attempt(
+            workspace.db().db(),
+            transport.attempt_id(),
+            NIR1_LOCAL_ATTEMPT_READ_BUDGET,
+        )?;
         let Some(HistoryContextSlot::Context(kept)) = &stored.binding.history_turn_context else {
             anyhow::bail!(
                 "the stored slot is a context: {:?}",
                 stored.binding.history_turn_context
             );
         };
-        let mut expected = (**sent).clone();
+        let mut expected = (*sent).clone();
         expected.eligible_until_ms =
             grimodex_db::nir1_generation::history_context::HistoryInt::from_i64(
                 stored.created_at_ms + HISTORY_ELIGIBILITY_WINDOW_MS,
             )?;
         assert_eq!(**kept, expected);
+        // The identity is the one of the Ready binding the attempt was
+        // created under, not a value the request carried.
         let binding = super::capture_ready_workspace(&fixture.state)?.1;
         assert!(stored.binding.durable_workspace_identity.is_some());
         assert_eq!(
             stored.binding.durable_workspace_identity.as_ref(),
             binding.durable_workspace_identity()
         );
-        drop(created);
+        // No absolute time came from the request: the lifetime is the
+        // coordinator's and the times are the store's.
+        assert_eq!(
+            stored.expires_at_ms - stored.created_at_ms,
+            crate::nir1_local_attempt::NIR1_LOCAL_ATTEMPT_LIFETIME_MS
+        );
+        drop(transport);
         Ok(())
     }
 

@@ -16,7 +16,7 @@ use anyhow::{ensure, Context, Result};
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::NativeNir1HistoryDraft;
 use grimodex_db::nir1_generation::{
-    self as storage, AttemptSceneBinding, GenerationPurpose, InputReference,
+    self as storage, AttemptSceneBinding, GenerationPurpose, InputReference, Nir1ExpectedScope,
     QualificationReference, ReadBudget,
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
@@ -70,8 +70,15 @@ pub(crate) struct FinalDispatchRequest {
     /// time and applies the 64 KiB downgrade; the owner stores its own
     /// `LiveBinding`'s identity and refuses a request whose identity differs.
     pub history: NativeNir1HistoryDraft,
-    pub created_at_ms: i64,
-    pub expires_at_ms: i64,
+    /// How long the attempt may be claimed after its creation, in
+    /// milliseconds (`1..=NIR1_ATTEMPT_MAX_LIFETIME_MS`). Never an absolute
+    /// time: the create transaction reads Native's clock and decides
+    /// `created_at_ms`, `expires_at_ms` and the history `eligibleUntilMs`.
+    pub lifetime_ms: i64,
+    /// The target Scene's Scope binding and the project's restore epoch that
+    /// the D-final snapshot read (`storage::read_expected_scope_in_tx`). The
+    /// create and the claim re-read them in their own transactions.
+    pub expected_scope: Nir1ExpectedScope,
     pub budget: ReadBudget,
 }
 

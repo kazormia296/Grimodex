@@ -47,8 +47,13 @@ use crate::narrative_maintenance_connection::{
 use crate::state::ActiveWorkspaceSnapshot;
 use crate::Database;
 
+mod expected_scope;
 mod local_audit_writer;
 mod project_ai_policy;
+pub use expected_scope::{
+    read_expected_scope_in_tx, NewCaptureAttempt, Nir1ExpectedScope, Nir1RestoreEpochState,
+    Nir1ScopeBindingState, NIR1_ATTEMPT_MAX_LIFETIME_MS,
+};
 pub use local_audit_writer::{
     append_local_audit_start_bounded, finish_attempt_with_audit_bounded, Nir1LocalAuditObserved,
     Nir1LocalAuditStart, Nir1LocalAuditStarted,
@@ -6109,22 +6114,18 @@ pub fn attempt_id_for_capture(capture: &AcceptedChatInputCapture) -> Result<Stri
     }))?)
 }
 
-/// Create the attempt of one exact current Human capture. The binding must
-/// carry the capture's project, chat session and caller (including the
-/// caller's Main session); the inputs must include its Human message
-/// version; and the capture row must still be the exact current one inside
-/// the same transaction.
+/// The capture owner's caller and workspace incarnation must be the ones the
+/// binding carries, and the inputs must include the capture's Human message
+/// version. Nothing is read; a mismatch is refused before any transaction.
 #[cfg(feature = "native-current-human-capture")]
-pub fn create_attempt_for_capture_bounded(
+fn ensure_capture_serves_binding(
     workspace: &ActiveWorkspaceSnapshot,
     capture: &AcceptedChatInputCapture,
-    request: NewAttempt,
-    budget: &Nir1AdmissionSqlBudget,
-    pre_commit: &mut dyn FnMut() -> Result<()>,
-) -> Result<StoredAttempt, Nir1GenerationStoreError> {
-    ensure_no_nested_sql_owner()?;
+    binding: &AttemptBinding,
+    inputs: &[InputReference],
+) -> Result<(), Nir1GenerationStoreError> {
     let owner = &capture.owner;
-    let human_input = request.inputs.iter().any(|input| {
+    let human_input = inputs.iter().any(|input| {
         input.role == InputRole::User
             && matches!(
                 &input.target,
@@ -6132,12 +6133,12 @@ pub fn create_attempt_for_capture_bounded(
                     if version_id == &capture.message_version_id
             )
     });
-    if request.binding.project_id != capture.project_id
-        || request.binding.chat_session_id != capture.chat_session_id
-        || request.binding.caller.profile_id != owner.profile_id
-        || request.binding.caller.caller_id != owner.caller_id
-        || request.binding.caller.caller_epoch != owner.caller_epoch
-        || request.binding.caller.caller_session_id != owner.caller_session_id
+    if binding.project_id != capture.project_id
+        || binding.chat_session_id != capture.chat_session_id
+        || binding.caller.profile_id != owner.profile_id
+        || binding.caller.caller_id != owner.caller_id
+        || binding.caller.caller_epoch != owner.caller_epoch
+        || binding.caller.caller_session_id != owner.caller_session_id
         || !human_input
     {
         return Err(Nir1GenerationStoreError::not_committed(
@@ -6159,27 +6160,76 @@ pub fn create_attempt_for_capture_bounded(
             ),
         ));
     }
+    Ok(())
+}
+
+/// The capture row must still be the exact current one of its owner, inside
+/// the caller's transaction (create and claim share this check).
+#[cfg(feature = "native-current-human-capture")]
+fn require_current_capture_in_tx(
+    conn: &Connection,
+    capture: &AcceptedChatInputCapture,
+) -> Result<()> {
+    read_current_chat_input_capture_in_tx(conn, capture, &capture.owner, |_, _| Ok(()))
+        .map(|_| ())
+        .map_err(|error| {
+            if is_sqlite_busy(&error) {
+                error
+            } else {
+                error.context(Nir1DomainFailure {
+                    failure: Nir1StoreFailure::NotCurrent,
+                    code: "NIR1_GENERATION_CAPTURE_NOT_CURRENT",
+                })
+            }
+        })
+}
+
+/// Create the attempt of one exact current Human capture. The binding must
+/// carry the capture's project, chat session and caller (including the
+/// caller's Main session); the inputs must include its Human message
+/// version. In the same IMMEDIATE transaction the capture row must still be
+/// the exact current one, the target Scene's Scope binding and the project's
+/// restore epoch must equal the request's `expected_scope`, and Native's clock
+/// is read once to decide `created_at_ms`, `expires_at_ms` and the history
+/// `eligibleUntilMs` (the request carries only a lifetime).
+#[cfg(feature = "native-current-human-capture")]
+pub fn create_attempt_for_capture_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    capture: &AcceptedChatInputCapture,
+    request: &NewCaptureAttempt,
+    budget: &Nir1AdmissionSqlBudget,
+    pre_commit: &mut dyn FnMut() -> Result<()>,
+) -> Result<StoredAttempt, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    ensure_capture_serves_binding(workspace, capture, &request.binding, &request.inputs)?;
+    request.validate().map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
+    })?;
     let id = attempt_id_for_capture(capture).map_err(|error| {
         Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
     })?;
-    create_attempt_with_id_bounded_checked(workspace, &id, request, budget, pre_commit, |conn| {
-        read_current_chat_input_capture_in_tx(conn, capture, owner, |_, _| Ok(()))
-            .map(|_| ())
-            .map_err(|error| {
-                if is_sqlite_busy(&error) {
-                    error
-                } else {
-                    error.context(Nir1DomainFailure {
-                        failure: Nir1StoreFailure::NotCurrent,
-                        code: "NIR1_GENERATION_CAPTURE_NOT_CURRENT",
-                    })
-                }
-            })
-    })
+    create_attempt_with_id_bounded_checked(
+        workspace,
+        &id,
+        budget,
+        pre_commit,
+        |conn| require_current_capture_in_tx(conn, capture),
+        |conn| {
+            request.expected_scope.require_current_in_tx(
+                conn,
+                &request.binding.project_id,
+                &request.binding.scene.scene_id,
+            )?;
+            let attempt = request.at(wall_clock_ms()?)?;
+            validate_new_attempt(&attempt)?;
+            Ok(attempt)
+        },
+    )
 }
 
 /// Capture-independent bounded create (the same core as the capture form),
-/// for storage tests that run without the capture feature.
+/// for storage tests that run without the capture feature. The request
+/// carries explicit times: this is the test-support form.
 #[cfg(test)]
 pub(crate) fn create_attempt_with_id_bounded(
     workspace: &ActiveWorkspaceSnapshot,
@@ -6189,7 +6239,17 @@ pub(crate) fn create_attempt_with_id_bounded(
     pre_commit: &mut dyn FnMut() -> Result<()>,
 ) -> Result<StoredAttempt, Nir1GenerationStoreError> {
     ensure_no_nested_sql_owner()?;
-    create_attempt_with_id_bounded_checked(workspace, id, request, budget, pre_commit, |_| Ok(()))
+    validate_new_attempt(&request).map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
+    })?;
+    create_attempt_with_id_bounded_checked(
+        workspace,
+        id,
+        budget,
+        pre_commit,
+        |_| Ok(()),
+        |_| Ok(request),
+    )
 }
 
 // Production creates exist only in the Native capture build.
@@ -6197,16 +6257,14 @@ pub(crate) fn create_attempt_with_id_bounded(
 fn create_attempt_with_id_bounded_checked(
     workspace: &ActiveWorkspaceSnapshot,
     id: &str,
-    request: NewAttempt,
     budget: &Nir1AdmissionSqlBudget,
     pre_commit: &mut dyn FnMut() -> Result<()>,
     current_in_tx: impl FnOnce(&Connection) -> Result<()>,
+    request_in_tx: impl FnOnce(&Connection) -> Result<NewAttempt>,
 ) -> Result<StoredAttempt, Nir1GenerationStoreError> {
-    identity(id)
-        .and_then(|()| validate_new_attempt(&request))
-        .map_err(|error| {
-            Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
-        })?;
+    identity(id).map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
+    })?;
     bounded_write(
         workspace,
         budget.fence(),
@@ -6225,6 +6283,7 @@ fn create_attempt_with_id_bounded_checked(
                     "NIR1_GENERATION_ATTEMPT_EXISTS",
                 ));
             }
+            let request = request_in_tx(conn)?;
             require_bound_session_and_scene(conn, &request.binding)?;
             validate_refs(
                 conn,
@@ -6244,11 +6303,71 @@ fn create_attempt_with_id_bounded_checked(
 /// Consume the durable one-shot right of the exact expected attempt. This is a
 /// CAS only, never transport permission: the caller revalidates its external
 /// authorities after COMMIT and before it starts a transport.
+///
+/// This form re-reads nothing outside the attempt's own rows. The product
+/// claim is [`claim_attempt_for_capture_bounded`], which also re-reads the
+/// capture, the Scope binding and the restore epoch; this one is the
+/// capture-independent core, kept for storage tests and for a test that
+/// needs another claimer.
 pub fn claim_attempt_bounded(
     workspace: &ActiveWorkspaceSnapshot,
     expected: &Nir1ExpectedAttempt,
     budget: &Nir1AdmissionSqlBudget,
     pre_commit: &mut dyn FnMut() -> Result<()>,
+) -> Result<Nir1ClaimOutcome, Nir1GenerationStoreError> {
+    claim_attempt_bounded_checked(workspace, expected, budget, pre_commit, |_, _| Ok(()))
+}
+
+/// The product claim of one exact current Human capture. In the claim's own
+/// IMMEDIATE transaction, after the attempt's one-shot state is known and
+/// before the CAS, the capture row must still be the exact current one of its
+/// owner (the same capture ID, owner and message version) and the target
+/// Scene's Scope binding and the project's restore epoch must equal
+/// `expected_scope`. When any differs nothing is claimed
+/// (`NotCommitted`/`NotCurrent`) and the caller writes the zero-send
+/// terminal. The expectation is the one the D-final snapshot read, passed in
+/// because a stored attempt need not carry it (a `binding-limit` or any
+/// unavailable history slot stores no context).
+#[cfg(feature = "native-current-human-capture")]
+pub fn claim_attempt_for_capture_bounded(
+    workspace: &ActiveWorkspaceSnapshot,
+    capture: &AcceptedChatInputCapture,
+    expected_scope: &Nir1ExpectedScope,
+    expected: &Nir1ExpectedAttempt,
+    budget: &Nir1AdmissionSqlBudget,
+    pre_commit: &mut dyn FnMut() -> Result<()>,
+) -> Result<Nir1ClaimOutcome, Nir1GenerationStoreError> {
+    ensure_no_nested_sql_owner()?;
+    validate_expected_attempt(expected)?;
+    ensure_capture_serves_binding(workspace, capture, &expected.binding, &expected.inputs)?;
+    let capture_attempt = attempt_id_for_capture(capture).map_err(|error| {
+        Nir1GenerationStoreError::not_committed(Nir1StoreFailure::Invalid, error)
+    })?;
+    if capture_attempt != expected.id {
+        return Err(Nir1GenerationStoreError::not_committed(
+            Nir1StoreFailure::Conflict,
+            domain_failure(
+                Nir1StoreFailure::Conflict,
+                "NIR1_GENERATION_CAPTURE_ATTEMPT_MISMATCH",
+            ),
+        ));
+    }
+    claim_attempt_bounded_checked(workspace, expected, budget, pre_commit, |conn, stored| {
+        require_current_capture_in_tx(conn, capture)?;
+        expected_scope.require_current_in_tx(
+            conn,
+            &stored.binding.project_id,
+            &stored.binding.scene.scene_id,
+        )
+    })
+}
+
+fn claim_attempt_bounded_checked(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected: &Nir1ExpectedAttempt,
+    budget: &Nir1AdmissionSqlBudget,
+    pre_commit: &mut dyn FnMut() -> Result<()>,
+    current_in_tx: impl FnOnce(&Connection, &StoredAttempt) -> Result<()>,
 ) -> Result<Nir1ClaimOutcome, Nir1GenerationStoreError> {
     ensure_no_nested_sql_owner()?;
     validate_expected_attempt(expected)?;
@@ -6271,6 +6390,7 @@ pub fn claim_attempt_bounded(
                 "{}",
                 REFERENCE_LEGACY_TERMINAL_ONLY_ERROR
             );
+            current_in_tx(conn, &stored)?;
             let now_ms = wall_clock_ms()?;
             if now_ms < stored.created_at_ms || now_ms >= stored.expires_at_ms {
                 return Err(domain_failure(
