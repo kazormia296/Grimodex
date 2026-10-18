@@ -4,6 +4,7 @@
 
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -14,6 +15,7 @@ use grimodex_ai::{AiProvider, AiSettings, ResolvedToolProtocol};
 use grimodex_core::narrative_nir1::{
     estimate_nir1_context_tokens, PackingPurpose, MAX_PACKING_ITEMS,
 };
+use grimodex_core::nir1_local_wire::RequestTarget;
 use grimodex_core::{canonical_json_digest, canonical_json_string};
 use grimodex_db::narrative_extraction::{
     read_and_pack_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs,
@@ -1109,17 +1111,36 @@ enum LoopbackHost {
     V6,
 }
 
+/// The one place a loopback route turns into something the transport uses:
+/// the socket address to connect to and the identity digest the attempt binds.
+/// Only [`parse_loopback_chat_completions_endpoint`] makes one, so the host
+/// rule is not repeated anywhere else (DT-5).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct LoopbackChatEndpoint {
+pub(crate) struct LoopbackChatEndpoint {
     host: LoopbackHost,
     port: u16,
 }
 
 impl LoopbackChatEndpoint {
+    /// The address to connect to: the IP literal and port, never a name.
+    pub(crate) fn socket_addr(&self) -> SocketAddr {
+        let ip = match self.host {
+            LoopbackHost::V4 => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            LoopbackHost::V6 => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        };
+        SocketAddr::new(ip, self.port)
+    }
+
+    /// The wire layer's target (the request head's `Host` and the allow-list
+    /// of what may be connected to), derived from [`Self::socket_addr`].
+    pub(crate) fn request_target(&self) -> Result<RequestTarget> {
+        RequestTarget::new(self.socket_addr()).map_err(|failure| anyhow::anyhow!("{failure}"))
+    }
+
     /// The route identity: kind, IP literal, port, path, and wire only. The
     /// raw URL (including a trailing slash), endpoint id, label, and any
     /// credential are not inputs.
-    fn identity_digest(&self) -> Result<String> {
+    pub(crate) fn identity_digest(&self) -> Result<String> {
         Ok(canonical_json_digest(&json!({
             "domain": "nir1-local-endpoint-identity@1",
             "routeKind": "nir1-local-product-send",
@@ -1137,7 +1158,9 @@ impl LoopbackChatEndpoint {
 /// Accepts exactly `http://127.0.0.1:<port>/v1` or `http://[::1]:<port>/v1`
 /// (one trailing `/` allowed). The host is compared as a string: no
 /// `localhost`, other 127/8 address, alternate spelling, zone, or host name.
-fn parse_loopback_chat_completions_endpoint(base_url: &str) -> Result<LoopbackChatEndpoint> {
+pub(crate) fn parse_loopback_chat_completions_endpoint(
+    base_url: &str,
+) -> Result<LoopbackChatEndpoint> {
     let rest = base_url
         .strip_prefix("http://")
         .context("NIR1_PREPARED_ENDPOINT_NOT_LOCAL_HTTP")?;
@@ -6965,6 +6988,63 @@ pub(super) mod tests {
             .context("digest prefix missing")?;
         assert_eq!(hex.len(), 64);
         assert!(hex.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        Ok(())
+    }
+
+    #[test]
+    fn loopback_endpoint_gives_the_connect_address_and_the_digest_from_one_place(
+    ) -> anyhow::Result<()> {
+        // The route layer is the only parser of the URL; the transport gets a
+        // socket address and a digest from the same value.
+        for (url, address) in [
+            ("http://127.0.0.1:1234/v1", "127.0.0.1:1234"),
+            ("http://127.0.0.1:1234/v1/", "127.0.0.1:1234"),
+            ("http://127.0.0.1:1/v1", "127.0.0.1:1"),
+            ("http://[::1]:65535/v1", "[::1]:65535"),
+            ("http://[::1]:8080/v1/", "[::1]:8080"),
+        ] {
+            let endpoint = parse_loopback_chat_completions_endpoint(url)?;
+            assert_eq!(endpoint.socket_addr().to_string(), address, "{url}");
+            assert_eq!(
+                endpoint.request_target()?.socket_addr(),
+                endpoint.socket_addr()
+            );
+            // The digest is the D-final route identity digest of the same
+            // route, not a second derivation.
+            assert_eq!(
+                endpoint.identity_digest()?,
+                grimodex_core::canonical_json_digest(&json!({
+                    "domain": "nir1-local-endpoint-identity@1",
+                    "routeKind": "nir1-local-product-send",
+                    "host": if address.starts_with('[') { "::1" } else { "127.0.0.1" },
+                    "port": endpoint.socket_addr().port(),
+                    "path": "/v1/chat/completions",
+                    "wire": "sse",
+                }))?,
+                "{url}"
+            );
+        }
+        // Every spelling the route rule refuses never becomes an endpoint, so
+        // it cannot become a target or a digest either.
+        for rejected in [
+            "http://localhost:1234/v1",
+            "http://127.0.0.2:1234/v1",
+            "http://[::ffff:127.0.0.1]:1234/v1",
+            "http://[0:0:0:0:0:0:0:1]:1234/v1",
+            "http://[::1%25lo]:1234/v1",
+            "http://user:pass@127.0.0.1:1234/v1",
+            "http://127.0.0.1:1234/v1?x=1",
+            "http://127.0.0.1:1234/v1#f",
+            "http://127.0.0.1:0/v1",
+            "http://127.0.0.1:01234/v1",
+            "http://127.0.0.1:+1234/v1",
+            "http://127.0.0.1:65536/v1",
+        ] {
+            assert!(
+                parse_loopback_chat_completions_endpoint(rejected).is_err(),
+                "{rejected:?} was accepted"
+            );
+        }
         Ok(())
     }
 
