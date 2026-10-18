@@ -86,8 +86,8 @@ test("Scene Scope projection journey has one dependency-free contract", () => {
     "other-scene-scope-change-keeps-anchor",
     "anchor-delete-recreate-stays-invalid",
     "trash-restore-stays-invalid",
-    "body-event-does-not-make-pending",
-    "scope-event-pends-anchor-only",
+    "body-save-emits-no-scene-scope-event",
+    "pov-patch-routes-scope-event-to-anchor",
   ]);
 });
 

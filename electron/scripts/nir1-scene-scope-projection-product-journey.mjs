@@ -86,8 +86,8 @@ export const NIR1_SCENE_SCOPE_PROJECTION_STEPS = Object.freeze([
   "other-scene-scope-change-keeps-anchor",
   "anchor-delete-recreate-stays-invalid",
   "trash-restore-stays-invalid",
-  "body-event-does-not-make-pending",
-  "scope-event-pends-anchor-only",
+  "body-save-emits-no-scene-scope-event",
+  "pov-patch-routes-scope-event-to-anchor",
 ]);
 
 const HUMAN_DECISION_AUTHOR = "nir1-entity-relation-review";
@@ -588,6 +588,21 @@ async function revisionStatuses(ctx, revisions) {
   return statuses;
 }
 
+/** UTF-16 code-unit order, the order the Scope authority sorts siblings by. */
+function compareUtf16(a, b) {
+  const left = String(a);
+  const right = String(b);
+  const length = Math.min(left.length, right.length);
+  for (let i = 0; i < length; i += 1) {
+    const diff = left.charCodeAt(i) - right.charCodeAt(i);
+    if (diff !== 0) return diff;
+  }
+  return left.length - right.length;
+}
+
+/** The only reason the contract gives for a Revision made stale by a Scope edit. */
+const STALE_REVISION_STATUS = "unavailable:source-revision-changed";
+
 function assertStatuses(statuses, expected, label) {
   for (const [name, want] of Object.entries(expected)) {
     if (want === "available") {
@@ -597,9 +612,10 @@ function assertStatuses(statuses, expected, label) {
         `${label}: ${name} stays available`,
       );
     } else {
-      assert.ok(
-        String(statuses[name]).startsWith("unavailable"),
-        `${label}: ${name} must be unavailable, got ${statuses[name]}`,
+      assert.equal(
+        statuses[name],
+        STALE_REVISION_STATUS,
+        `${label}: ${name} must be unavailable because its source Revision changed`,
       );
     }
   }
@@ -1057,8 +1073,20 @@ async function runScopeEditMatrix(ctx, step) {
   // --- 3. Anchor reorder / reparent --------------------------------------
   const revM1b = await newRevision(ctx, f.m1);
   const orderRevs = { m1b: revM1b, m2a: revM2a };
+  const otherRankBefore = (await nodeRow(f.m3)).sortOrder;
+  const anchorRank = (await nodeRow(f.m1)).sortOrder;
+  assert.ok(
+    compareUtf16(anchorRank, otherRankBefore) < 0,
+    "fixture: the other Scene starts after the anchor",
+  );
   const beforeOther = await observedWrite(ctx, () =>
-    treePatch(ctx, f.m3, { sortOrder: "m15" }),
+    treePatch(ctx, f.m3, { sortOrder: "l9" }),
+  );
+  const otherRankAfter = (await nodeRow(f.m3)).sortOrder;
+  assert.equal(otherRankAfter, "l9");
+  assert.ok(
+    compareUtf16(otherRankAfter, (await nodeRow(f.m1)).sortOrder) < 0,
+    "the other Scene now sorts before the anchor (UTF-16 order, as the Scope authority sorts siblings)",
   );
   assertScopeEffect(
     beforeOther,
@@ -1097,6 +1125,8 @@ async function runScopeEditMatrix(ctx, step) {
   );
   step("anchor-reorder-reparent-invalidates-anchor-only", {
     otherSceneMovedBeforeAnchor: afterBeforeOther,
+    otherSceneRank: [otherRankBefore, otherRankAfter],
+    anchorRank,
     reorder: afterReorder,
     reparent: afterReparent,
     feed: {
@@ -1478,16 +1508,24 @@ async function runScopeEditMatrix(ctx, step) {
   // --- 7. Feed and pending observations -----------------------------------
   const bodyFeed = f9;
   assert.deepEqual(bodyFeed.scopeEventScenes, []);
-  step("body-event-does-not-make-pending", {
+  assert.ok(
+    (bodyFeed.eventKinds.scene ?? 0) >= 1,
+    "the body saves emitted scene events, so the empty scene-scope set is not vacuous",
+  );
+  step("body-save-emits-no-scene-scope-event", {
     scopeEventScenes: bodyFeed.scopeEventScenes,
     eventKinds: bodyFeed.eventKinds,
     feedHead: [bodyFeed.cursorBefore.head, bodyFeed.cursorAfter.head],
     acknowledgedThrough: bodyFeed.cursorAfter.acknowledgedThrough,
     routing:
-      "pending routes a typed Revision by the scene-scope event's sceneId; a body save emits none",
+      "observation of the routing input only: PendingRelevantChange is judged in Packing (closed) and covered by the Rust x13_* tests",
   });
   assert.deepEqual(pov.scopeEventScenes, [f.m1]);
-  step("scope-event-pends-anchor-only", {
+  assert.ok(
+    (pov.eventKinds["scene-scope"] ?? 0) >= 1,
+    "the POV patch emitted a scene-scope event",
+  );
+  step("pov-patch-routes-scope-event-to-anchor", {
     anchor: f.m1,
     scopeEventScenes: pov.scopeEventScenes,
     otherAnchorScopeEvents: pov.scopeEventScenes.filter((id) => id === f.m2),
@@ -2029,6 +2067,11 @@ export async function runNir1SceneScopeProjectionJourney(
       step,
     );
 
+    assert.deepEqual(
+      executedSteps,
+      [...NIR1_SCENE_SCOPE_PROJECTION_STEPS],
+      "the journey ran every declared step, in order",
+    );
     const dispatchObservation = await verifyNoForbiddenDispatches(
       harness,
       typedPanelJournalBoundary,
