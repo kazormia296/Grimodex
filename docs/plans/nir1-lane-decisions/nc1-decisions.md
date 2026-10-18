@@ -55,3 +55,12 @@ draft の設計と FC-1 から導いたもの。file と関数の名前は実装
 ## 実装後の追記
 
 （S1 以降の追記はここに足す。上の表の本文は直さない。）
+
+### S1（設定の部品と LS-1 の listener）
+
+- DR-NC1-2、3、4、14、16 を計画どおり実装した。実装した file: `electron/main/rendererContainment.ts`（`electron` を import しない。RS-1 の定数、sentinel、AL-0〔`AL0_DIRECT_ALLOWLIST` が 0 件〕、`PROXY_BYPASS_RULES`〔`<-loopback>` だけ〕、`buildProxyConfig(port)`、`buildHostResolverRules(prefixRules = [])`、`WEBRTC_IP_HANDLING_POLICY`、固定コードの列挙）、`electron/main/rendererContainmentListener.ts`（`node:net` だけ。`startBlackholeListener(options)`、`LS1_MAX_CONCURRENT_CONNECTIONS` = 256、`LS1_MAX_HOLD_MS` = 5000）。`index.ts` は変えていない。
+- DR-NC1-3 の値は計画どおり確認済みの上限（256、5000 ms）をそのまま採った。listener の引数 `maxConnections`／`holdMs` は確認済みの上限を超える値を上限に丸める（試験が小さい値を使うための引数で、製品の呼出しは引数なし。S2 の (31) で固定する）。
+- DR-NC1-16 の (9)（once-ever の印）は計画どおり。listen の失敗後も印は戻さない（retry なし）。`onClosed` は 1 度だけ呼ぶ。`onClosed` が投げる例外は握りつぶさない（呼出し側の S2 が `NC-LISTENER-LOST` の配線で扱う。fail-closed の失敗を黙って隠さないため）。
+- 試験の方式: 設定の部品は `rendererContainment.test.ts`（定数が exact、AL-0 が 0 件、`proxyBypassRules` が `<-loopback>` だけ、規則の文字列が順序まで exact、`prefixRules` が先頭に合成されること、policy の値、固定コード、LS-1 の上界の不等式〔256 以下かつ 5000 以下。exact には固定しない〕）。listener は `rendererContainmentListener.test.ts`（実 socket。RST を 100 本、half-close、half-open の保持の上限、保持 5 秒〔fake timer で 4999 ms は保持・5000 ms で切断〕、300 接続の洪水〔超過の 44 本は保持を待たず切断・保持は 256 のまま・枠が戻れば再び受ける〕、小さい上限、server の `error`〔EMFILE ほか〕で継続、`onClosed` が 1 度、listen の失敗が reject、二度目の start の拒否、受けた bytes に返事をせず `data` の listener もないこと、source に log・書込みがないこと）。
+- 試験の検出力の確認: listener の実装を 1 つずつ壊した版で赤になることを確かめた（socket の `error` の handler を外す、上限の判定を外す、保持の timer の `destroy` を外す、server の `error` で再 throw する）。
+- 範囲: `index.ts` の配線、orchestrator、FC-1 の出力、順序の試験、`rendererIsolation.static.test.ts` の拡張は S2。実機の `RTCPeerConnection` での listener の頑健性（30b）は S3／S4。advisor は DR-NC1-2 に書いたとおり S1 では呼べなかった。
