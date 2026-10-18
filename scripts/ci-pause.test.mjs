@@ -2559,11 +2559,11 @@ test("Reviewed Full workload data covers the real plan and rejects source, tuple
       assert.throws(() => assessFullDemand([...compileSpace, ...limited], compileTerms), /capacity\/quota/u);
     }
   }
-  assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, 33);
+  assert.equal(estimate.residual.filter(({ id }) => /^journey\.[0-9]+\.tmp$/u.test(id)).length, 34);
   assert.equal(estimate.residual.find(({ id }) => id === "journey.0.tmp").location, "native-b-root-1");
   assert.equal(estimate.residual.filter(({ id }) => /^native-b\.[1-7]\.root$/u.test(id)).length, 1);
   assert.equal(estimate.residual.filter(({ id, location }) => /^journey\.[0-9]+\.tmp$/u.test(id) && location === "native-b-root-1").length, 6);
-  assert.equal(estimate.residual.filter(({ id, location }) => /^journey\.[0-9]+\.tmp$/u.test(id) && location === "node-temp").length, 27);
+  assert.equal(estimate.residual.filter(({ id, location }) => /^journey\.[0-9]+\.tmp$/u.test(id) && location === "node-temp").length, 28);
   assert.ok(!estimate.residual.some(({ location }) => /^native-b-root-[2-7]$/u.test(location)));
   assert.equal(estimate.residual.filter(({ id }) => id === "native-b.bus").length, 1);
   for (const label of nativeLabels) {

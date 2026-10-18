@@ -39,6 +39,7 @@ const EXPECTED_JOURNEY_IDS = [
   "snapshot-native-roundtrip",
   "chronicle-extract-review-apply-reopen",
   "codex-entity-relation-review-apply-reopen",
+  "nir1-scene-scope-projection-acceptance",
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG.map((entry) => entry.id),
 ];
@@ -58,6 +59,7 @@ const IMPLEMENTED_CONTRACT_IDS = [
   "native-command-roundtrip:map-write-bundle",
   "native-command-roundtrip:project-snapshot",
   "codex:entity-relation-review-apply-reopen",
+  "scene-scope-projection:acceptance",
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
     (entry) => entry.contracts[0],
   ),

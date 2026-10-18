@@ -338,6 +338,15 @@ export const PRODUCT_JOURNEY_CATALOG = freezeEntries([
     description:
       "normal Codex entry creation -> typed Entity/Relation relation selection -> direct scope/material -> Native evidence review -> explicit approval -> target-bound cold reopen",
   },
+  {
+    id: "nir1-scene-scope-projection-acceptance",
+    domains: ["codex", "scene-persistence", "workspace-lifecycle"],
+    interactions: ["codex->sqlite", "sqlite->codex"],
+    contracts: ["scene-scope-projection:acceptance"],
+    capabilities: ["electron", "napi"],
+    description:
+      "typed Entity/Relation Revisions approved for an anchor and another Scene -> editor body saves keep both available -> cold reopen -> anchor move invalidates only the anchor Revision",
+  },
   ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG,
   ...NARRATIVE_C2ZC_PRODUCT_JOURNEY_CATALOG,
 ]);
@@ -697,6 +706,10 @@ export const PRODUCT_CONTRACT_REQUIREMENTS = freezeEntries([
   },
   {
     id: "codex:entity-relation-review-apply-reopen",
+    domains: ["codex", "sqlite", "scene-persistence", "workspace-lifecycle"],
+  },
+  {
+    id: "scene-scope-projection:acceptance",
     domains: ["codex", "sqlite", "scene-persistence", "workspace-lifecycle"],
   },
   {

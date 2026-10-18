@@ -41,7 +41,7 @@
     },
     {
       "path": "package.json",
-      "sha256": "21a2397c0da237019979a63cfef091c42540770175250e3e12cd385121c86065"
+      "sha256": "6bc793aa3e110bcd16b738f99fe6d9bbc702dfafdde07decde5cbc63f0e8d730"
     },
     {
       "path": "pnpm-lock.yaml",
@@ -105,7 +105,7 @@
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
-      "sha256": "d1f9ac3411f8633f3650540689d04ea9fa22588a2345943d436284f66b430869"
+      "sha256": "df851dfd63b554c85b28d4f9d1738e49a8c6d6014d70a963b282653ee17c9264"
     },
     {
       "path": "src/features/chat/chatScopeRegistry.json",
@@ -133,7 +133,7 @@
     },
     {
       "path": "electron/scripts/product-journey-shards.mjs",
-      "sha256": "2982a3c59c0b3eb01dc18329ba799e440d0436ad14d14b6b0522c65855363e04"
+      "sha256": "abe370a69bb3c939f140b828f6a04d742d82f66d571cc1c5dab3fbdb875a68de"
     }
   ],
   "fullMemoryRisk": {
@@ -2649,6 +2649,88 @@
     },
     {
       "id": "journey.codex-entity-relation-review-apply-reopen.failure",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Official backup image and full receipt/diagnostic text snapshots plus1920x1080 RGBA/PNG scanlines/header image under source-selected Xvfb screen. Full-page/HiDPI screenshot growth remains covered by fixtures.uncertainty; no screenshot suppression. Producer separately charges original+whole artifact copy+renderer.png.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "backup",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "receipt-snapshot",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "diagnostics",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "screenshot",
+          "bytes": "8364032",
+          "inodes": "1"
+        }
+      ]
+    },
+    {
+      "id": "journey.nir1-scene-scope-projection-acceptance.runtime",
+      "sources": [
+        2,
+        29
+      ],
+      "basis": "Entire nir1-scene-scope-projection-acceptance case/restart/workspace scenario: schema baseline plus Q512 mutation image per owned-tree aggregate, whole desktop/renderer/log image for profile settings/userData and full renderer assets plus RGBA surface image for browser disk/GPU caches, complete log/receipt text images. Cross-case no-sharing forecast, NOT app measurement. Extra workspace/restart image in other; no serial/fail-fast savings.",
+      "operation": "Construct declared finite source-grounded scenario from candidate sources and directly bound accepted metadata; not a peak or resource receipt",
+      "items": [
+        {
+          "role": "db",
+          "bytes": "17997824",
+          "inodes": "2"
+        },
+        {
+          "role": "wal",
+          "bytes": "18104320",
+          "inodes": "1"
+        },
+        {
+          "role": "shm",
+          "bytes": "65536",
+          "inodes": "1"
+        },
+        {
+          "role": "user-data",
+          "bytes": "177168384",
+          "inodes": "785"
+        },
+        {
+          "role": "cache",
+          "bytes": "55279616",
+          "inodes": "778"
+        },
+        {
+          "role": "logs",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "receipts",
+          "bytes": "121315328",
+          "inodes": "3"
+        },
+        {
+          "role": "other",
+          "bytes": "17997824",
+          "inodes": "2"
+        }
+      ]
+    },
+    {
+      "id": "journey.nir1-scene-scope-projection-acceptance.failure",
       "sources": [
         2,
         29

@@ -56,13 +56,13 @@ export const CODEX_ENTITY_RELATION_REVIEW_REQUIRED_INTERACTIONS =
 const NIR1_ENTITY_RELATION_SET_KIND = "nir1.entity-relation.revision@1";
 const NIR1_ENTITY_RELATION_PROPOSAL_KIND = "nir1.entity-relation@1";
 
-function assertNonEmpty(value, label) {
+export function assertNonEmpty(value, label) {
   assert.equal(typeof value, "string", `${label} must be a string`);
   assert.ok(value.length > 0, `${label} must not be empty`);
   return value;
 }
 
-async function rows(harness, page, sql, params = []) {
+export async function rows(harness, page, sql, params = []) {
   const result = await harness.invokeOk(page, "db_execute", {
     sql,
     params,
@@ -71,7 +71,7 @@ async function rows(harness, page, sql, params = []) {
   return result?.rows ?? [];
 }
 
-async function readTypedRuntimeMetadata(harness, page, projectId, runId) {
+export async function readTypedRuntimeMetadata(harness, page, projectId, runId) {
   const runRows = await rows(
     harness,
     page,
@@ -123,7 +123,7 @@ async function readTypedRuntimeMetadata(harness, page, projectId, runId) {
   return { run, decisions };
 }
 
-function assertTypedDecisionMetadata(metadata, expectedDecision) {
+export function assertTypedDecisionMetadata(metadata, expectedDecision) {
   assert.equal(metadata.decisions.length, 1, "typed approval must persist one Decision");
   assert.deepEqual(metadata.decisions[0], {
     decision: expectedDecision,
@@ -138,7 +138,7 @@ async function waitForLayout(page) {
     .waitFor({ state: "attached", timeout: 60_000 });
 }
 
-async function openPanel(page, panelId, readyTestId) {
+export async function openPanel(page, panelId, readyTestId) {
   await waitForLayout(page);
   const toggle = page.locator(`[data-stripe-icon="${panelId}"]`);
   await toggle.waitFor({ state: "visible", timeout: 60_000 });
@@ -155,7 +155,7 @@ async function openPanel(page, panelId, readyTestId) {
   await ready.waitFor({ state: "visible", timeout: 60_000 });
 }
 
-async function createCodexEntryThroughUi(harness, page, { name, summary }) {
+export async function createCodexEntryThroughUi(harness, page, { name, summary }) {
   const existingEntryIds = new Set(
     (await rows(harness, page, "SELECT id FROM codex_entries")).map((entry) =>
       String(entry.id),
@@ -207,7 +207,7 @@ async function createCodexEntryThroughUi(harness, page, { name, summary }) {
   );
 }
 
-async function createFolderThroughUi(harness, page, title) {
+export async function createFolderThroughUi(harness, page, title) {
   const header = page.locator(
     '[data-panel-header]:has(span[role="heading"]:text-is("シーン"))',
   );
@@ -246,7 +246,7 @@ async function createFolderThroughUi(harness, page, title) {
   );
 }
 
-async function createSceneInFolderThroughUi(
+export async function createSceneInFolderThroughUi(
   harness,
   page,
   { folderId, title },
@@ -298,7 +298,7 @@ async function createSceneInFolderThroughUi(
   return { ...scene, editor };
 }
 
-async function captureJournalBoundary(harness, phase) {
+export async function captureJournalBoundary(harness, phase) {
   const journal = await readFile(harness.journalPath, "utf8");
   const lines = journal.split("\n").filter(Boolean);
   const lastEntry = lines.length > 0 ? JSON.parse(lines[lines.length - 1]) : null;
@@ -310,7 +310,7 @@ async function captureJournalBoundary(harness, phase) {
   };
 }
 
-async function verifyNoForbiddenDispatches(harness, typedPanelJournalBoundary) {
+export async function verifyNoForbiddenDispatches(harness, typedPanelJournalBoundary) {
   assert.ok(
     typedPanelJournalBoundary &&
       Number.isSafeInteger(typedPanelJournalBoundary.lineOffset) &&
