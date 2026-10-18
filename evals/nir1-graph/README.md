@@ -233,7 +233,7 @@ K1 既定規則の適用範囲：
 ## 独立期待値レビューと freeze
 
 - **レビューの担当**：fixture の作成者でも、要求された変更を反映した担当でもない、read-only の担当である。
-  - 2 回とも、文書の規則と fixture から期待値を導き直した。一部の規則は製品コードで裏付けた。
+  - 3 回とも、文書の規則と fixture から期待値を導き直した。3 回目は作成者の判断記録（`cq-lim-decisions.md`）も読んでいない。一部の規則は製品コードで裏付けた。
   - 候補の worktree は編集していない。Graph runtime を実行しておらず、その出力（worker の frame、Graph 付きの Related Scenes の結果、`.artifacts` の Graph 出力）と CP-1 の worktree も読んでいない。
   - model と effort は freeze の記録にある。
 - **1 回目**：changes-required。G-02、G-03、G-06、G-07、G-08 は approve で、G-04 と G-05 には IR admission を前提条件にすることを求めた。要求は 10 件である。
@@ -241,14 +241,19 @@ K1 既定規則の適用範囲：
   - 要求はすべて反映した。fixture の本体は変えず、変えたのは前提条件の field と `measurementBoundary` の文言だけである。
 - **2 回目**：approve。G-02〜G-08 のすべてを approve とし、残る要求はない。
   - case ごとの判定と導出、解釈についての判断は、[`freeze.v1.json`](freeze.v1.json) の `independentExpectationReview` にレビューの結果のまま記録した。承認した時点の各ファイルの sha256 も同じところにある。
+- **3 回目**：approve。G-03 を proposal/7 の Entity 上限 50 に合わせて作り直した（frontier-exceeded は発見 54 件・limit 50。正例と他の負例は同一）。
+  - G-03 の期待値を規則だけから導き直し、fixture と一致した。P0〜P2 の欠陥はなく、残る要求もない。
+  - 発見が 2 件の base と 54 件の超過は、上限の値（50）そのものは判別しない。上限ちょうど（50 は available、51 は unavailable）の N／N+1 は CQ-LIM-1 の製品側の試験で見る（P3、今回は直さない）。
+  - G-02 と G-04〜G-08 は、2 回目が承認した bytes のまま変えていないので、3 回目の記録では 2 回目の approve を引き継いだ（case の `notes` に明記）。
+  - 3 回目の reviewer は Graph runtime を実行しておらず、その出力も読んでいない。
 - **承認の後の変更**：期待値を持たない部分だけを変えた。
-  - manifest は `independentExpectationReview` の欄だけで、判定を approve にし、2 回の経緯を書いた。
-  - README は「CP-0 で行わなかった作業」とこの節だけである。
-  - validator には、承認と freeze の整合の検査を足した。
-  - fixture、`schema.v1.json`、1 回目のレビュー記録は、承認した時点の bytes のままである。
+  - manifest は `independentExpectationReview` の欄だけで、3 回の経緯を書いた。
+  - README はこの節だけである。
+  - validator は 3 回目の承認の後に変えていない（3 回目のレビューが読んだ版のまま）。
+  - fixture、`schema.v1.json`、1 回目のレビュー記録は、3 回目が承認した時点の bytes のままである。
 - **freeze**：[`freeze.v1.json`](freeze.v1.json)（`nir1-graph-freeze/1`）が次を束縛する。
   - manifest、G-01〜G-08 の fixture、`schema.v1.json`、この README の sha256。
-  - 1 回目のレビュー記録とその sha256。2 回目（承認）の記録、承認した時点の sha256、承認の後に変えた範囲。
+  - 1 回目のレビュー記録とその sha256。最後（3 回目、承認）の記録、承認した時点の sha256、承認の後に変えた範囲。2 回目までの記録も残す。
   - reviewer、`reviewVerdict`、`frozenAt`、`baselineHead`（a153743b）、IR admission probe の状態、`graphRuntimeObservedBeforeFreeze: false`。
 - **validator の検査**：
   - freeze がある場合は、次を求める。

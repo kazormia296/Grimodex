@@ -1,16 +1,16 @@
 {
   "schemaVersion": "nir1-graph-freeze/1",
   "status": "frozen-after-independent-expectation-review",
-  "frozenAt": "2026-10-12T23:09:04Z",
+  "frozenAt": "2026-10-18T05:15:20Z",
   "baselineHead": "a153743b3f672b7274bdd748f15ef9c216dc9961",
   "graphRuntimeObservedBeforeFreeze": false,
   "reviewedBy": "independent-expectation-reviewer",
   "reviewVerdict": "approve",
   "reviewReceipt": "evals/nir1-graph/independent-expectation-review.v1.json",
   "reviewReceiptSha256": "188a679a0bd132df3c990e808e9be9c882b6372cbff412d89c8c844183ac34fd",
-  "manifestSha256": "76ca8040ca9162604cba9f0b376dc7c46e5a17879e892b468bb3321f2463dd3a",
-  "schemaSha256": "d012e662ba2d8b3bf91a12ca08c44a782faa4fde045d00f1dc076e2e6de96921",
-  "readmeSha256": "26fe153a71c3d27b26662324bcc893ab3106fafb7dbf81a6eab24993ef33eef9",
+  "manifestSha256": "6958613fa5a4c7b18e1306a3f5360fd4f263113a2acc25b374dc0b2c12a2a1c4",
+  "schemaSha256": "2ffd75911060302207d5180e261344c43ea558ec187621134eb8dc5ff03e56c3",
+  "readmeSha256": "fed96a764cd6e45bfdc7b83418464406e702214a5b83ae5cfddc0519daf48ce0",
   "irSupplementAdmissionProbe": {
     "status": "not-run",
     "reason": "No integrator decision to run the optional model-only cosine probe before this freeze; see manifest irSupplementedCoverage."
@@ -29,7 +29,7 @@
     {
       "caseId": "G-03",
       "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
-      "sha256": "50270567e373145362f70b1106ee9fdb8dbfe6660561f42da45ccfdd1ddc68a2"
+      "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d"
     },
     {
       "caseId": "G-04",
@@ -65,7 +65,7 @@
       "distinctFromFixtureAuthor": true,
       "readOnly": true,
       "graphRuntimeOutputObserved": false,
-      "independence": "Each round ran as its own reviewer instance, neither the fixture author nor the agent that applied the required changes. It re-derived the expectations from the documented rules and the fixtures, checking some rules against product code. It did not modify the candidate worktree (reads, hashing, pnpm eval:fixtures and node --test only), did not run the Graph runtime, and read no Graph output (worker frames, Related Scenes results with Graph, Graph output under any .artifacts) and not the CP-1 worktree."
+      "independence": "Each round ran as its own reviewer instance, neither the fixture author nor the agent that applied the required changes. It re-derived the expectations from the documented rules and the fixtures, checking some rules against product code. It did not modify the candidate worktree (reads, hashing, pnpm eval:fixtures and node --test only), did not run the Graph runtime, and read no Graph output (worker frames, Related Scenes results with Graph, Graph output under any .artifacts) and not the CP-1 worktree. Round 3 followed the same conditions as reported by the reviewer: read-only, no Graph runtime run, no Graph output read, and the author's cq-lim-decisions.md not read."
     },
     "rounds": [
       {
@@ -217,6 +217,204 @@
             "decision": "grimodex-impact-gate Light（pnpm eval:impact -- --run）の実行、PR 本文・計画の作業記録への P3-4 の転記は integrator の merge 前作業として openIssues に残っており、fixture の期待値や freeze には影響しない。今回の verdict は fixture・期待値・freeze の整合に対するもので、merge readiness を主張しない。"
           }
         ]
+      },
+      {
+        "round": 3,
+        "verdict": "approve",
+        "requiredChanges": [],
+        "scope": "G-03 を proposal/7 の Entity 上限 50 に合わせて作り直した版（commit 65ceb4f6）。変更は G-03 の fixture、schema.v1.json の limit、README、contract.mjs の検査。",
+        "graphRuntimeOutputObserved": false,
+        "reviewerNote": "reviewer block の model と effort は 1・2 回目の記録。3 回目は別の reviewer instance（作者とも freeze を更新する担当とも別）で、read-only、Graph の runtime を実行せず、その出力も作者の cq-lim-decisions.md も読んでいない。3 回目の model と effort はこの freeze 更新の依頼には含まれず、記録していない。",
+        "filesAtReview": [
+          {
+            "path": "evals/nir1-graph/manifest.v1.json",
+            "sha256": "76ca8040ca9162604cba9f0b376dc7c46e5a17879e892b468bb3321f2463dd3a"
+          },
+          {
+            "path": "evals/nir1-graph/schema.v1.json",
+            "sha256": "2ffd75911060302207d5180e261344c43ea558ec187621134eb8dc5ff03e56c3"
+          },
+          {
+            "path": "evals/nir1-graph/README.md",
+            "sha256": "cc7c362d56c7a47f053834c61fecf77915d221f15a97507d48742ac8cbde196a"
+          },
+          {
+            "path": "evals/nir1-graph/independent-expectation-review.v1.json",
+            "sha256": "188a679a0bd132df3c990e808e9be9c882b6372cbff412d89c8c844183ac34fd"
+          },
+          {
+            "path": "evals/nir1-g01/fixture.v1.json",
+            "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+          },
+          {
+            "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+            "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c"
+          },
+          {
+            "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+            "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d"
+          },
+          {
+            "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+            "sha256": "4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf"
+          },
+          {
+            "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+            "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28"
+          },
+          {
+            "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+            "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a"
+          },
+          {
+            "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+            "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0"
+          },
+          {
+            "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+            "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9"
+          }
+        ],
+        "unboundFilesAtReview": [
+          {
+            "path": "scripts/quality/nir1-graph/contract.mjs",
+            "sha256": "56f15d8e15a491714ae54bcddae5b0543362e32dec5f049276ce6d6af8949356"
+          },
+          {
+            "path": "scripts/quality/nir1-graph/contract.test.mjs",
+            "sha256": "78bbac07a1f96749dc391867f802cf3a156629db3294417144afd127209565a3"
+          },
+          {
+            "path": "scripts/quality/nir1-graph/porter.mjs",
+            "sha256": "21c418de4ee17d6e337a7dd6fcc3791d4824394e70a13bf6802c43844ceb5026"
+          }
+        ],
+        "supersededFreezeSha256": "45d8a055f09176852e1b449111216293b7768ac505c5592e74fca4f2818c9bfc",
+        "supersededFreeze": "round 2 の承認に基づく freeze（G-03 は旧版の発見 16 件・limit 12）。round 3 はその G-03・schema・README の bytes を置き換えるために作り直した版を検査し、この記録が置き換える。",
+        "recordedAs": "verdict、requiredChanges、cases、derivedExpectations、findings は reviewer の結果をそのまま記録した（cases の G-03 の notes は derivedExpectations の要約）。G-03 以外の case は round 2 の approve の引き継ぎ（carriedFromRound）で、round 3 の reviewer が導き直したものではない。",
+        "cases": [
+          {
+            "id": "G-02",
+            "verdict": "approve",
+            "carriedFromRound": 2,
+            "notes": "ラウンド 2 の approve を引き継ぐ。この case の fixture は 2 回目が承認した bytes のまま（sha256 c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c、2 回目の filesAtReview と同一）。3 回目の reviewer は G-03 だけを導き直した。2 回目の判定と導出は rounds[1].cases にそのまま残している。"
+          },
+          {
+            "id": "G-03",
+            "verdict": "approve",
+            "notes": "3 回目の導出（規則のみ。Graph の runtime 出力と作者の決定記録 cq-lim-decisions.md は読んでいない）：base は seed Wren、資格 Revision は g03-r-path と g03-r-third（approved、review Scene g03-review は reading 0 で S2 より前、Scope は explicit exact、secret の伏線なし）。Wren→Ivy が hop1、Ivy→Hollis が hop2、Hollis→Corin（taught）は hop3 で範囲外。非 seed の発見は 2（Ivy、Hollis）、nodes は Wren 0／Ivy 1／Hollis 2、edge は has-sister と treated-by。除外 edge は taught＋knows-01〜52 の 53（beyond-max-hops と no-revision）、除外 Entity は Corin＋n01〜52 の 53。pin は c1→Ivy、c2→Hollis、c3→Corin、hollis-ward→Hollis、corin-shed→Corin。c1 に 1hop、c2 に 2hop の edge 列を付加（1 本の Relation に畳まない）。Raw と R+IR が 8 件で埋まるので融合の追加は 0 件、hollis-ward は raw-full で blocked。scenesWithoutPath は c3〜c8、forbiddenSceneIds は corin-shed。frontier-exceeded は r-frontier が加わり、Wren→n01〜n52 の 52 本、Ivy、Hollis で非 seed の発見は 54（seed を含めると 55、hop1 だけでも 53）となり、seed の含み方と数える段によらず上限 50 を超える。edge 展開は約 54 で上限 512 の内なので、拒否の原因は Entity の上限だけ。Graph 全体を unavailable（graph-limit-exceeded）にし、50 件への切り詰めも部分 Graph として禁止。nodes・edgeIds・pathAttachments は空、addedScene は null、結果は R+IR と同一、forbiddenSceneIds は corin-shed と hollis-ward。指標は gold を持つ hollis-ward がどの arm にも入らず、3 arm とも Recall@8＝0、nDCG@8＝0（validator の再計算とも一致）。Revision と resource は r-frontier が Entity 53・Relation 52 の合計 105 で 512 records の内、knows-NN は Wren→g03-nNN、label は 56 件すべて異なる。すべて fixture と一致。旧版と比べて scenes・pins・query・scope・qualifiedIr・eligibleSceneIds・answerEntityIds・positive は同一（機械的に比較）で、旧版の負例 3 件（N1 の 3hop、N2 の frontier 超過、N3 の Raw 満杯）はすべて残る。判別力は旧版と同じ。"
+          },
+          {
+            "id": "G-04",
+            "verdict": "approve",
+            "carriedFromRound": 2,
+            "notes": "ラウンド 2 の approve を引き継ぐ。この case の fixture は 2 回目が承認した bytes のまま（sha256 4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf、2 回目の filesAtReview と同一）。3 回目の reviewer は G-03 だけを導き直した。2 回目の判定と導出は rounds[1].cases にそのまま残している。"
+          },
+          {
+            "id": "G-05",
+            "verdict": "approve",
+            "carriedFromRound": 2,
+            "notes": "ラウンド 2 の approve を引き継ぐ。この case の fixture は 2 回目が承認した bytes のまま（sha256 52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28、2 回目の filesAtReview と同一）。3 回目の reviewer は G-03 だけを導き直した。2 回目の判定と導出は rounds[1].cases にそのまま残している。"
+          },
+          {
+            "id": "G-06",
+            "verdict": "approve",
+            "carriedFromRound": 2,
+            "notes": "ラウンド 2 の approve を引き継ぐ。この case の fixture は 2 回目が承認した bytes のまま（sha256 acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a、2 回目の filesAtReview と同一）。3 回目の reviewer は G-03 だけを導き直した。2 回目の判定と導出は rounds[1].cases にそのまま残している。"
+          },
+          {
+            "id": "G-07",
+            "verdict": "approve",
+            "carriedFromRound": 2,
+            "notes": "ラウンド 2 の approve を引き継ぐ。この case の fixture は 2 回目が承認した bytes のまま（sha256 385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0、2 回目の filesAtReview と同一）。3 回目の reviewer は G-03 だけを導き直した。2 回目の判定と導出は rounds[1].cases にそのまま残している。"
+          },
+          {
+            "id": "G-08",
+            "verdict": "approve",
+            "carriedFromRound": 2,
+            "notes": "ラウンド 2 の approve を引き継ぐ。この case の fixture は 2 回目が承認した bytes のまま（sha256 0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9、2 回目の filesAtReview と同一）。3 回目の reviewer は G-03 だけを導き直した。2 回目の判定と導出は rounds[1].cases にそのまま残している。"
+          }
+        ],
+        "derivedExpectations": [
+          {
+            "item": "base: 発見する Entity とその数",
+            "derivation": "発見は Ivy と Hollis の 2 件。nodes は Wren 0／Ivy 1／Hollis 2、edge は has-sister と treated-by。Hollis→Corin は hop3 で範囲外。",
+            "matchesFixture": true
+          },
+          {
+            "item": "base: 除外される edge と Entity",
+            "derivation": "除外 edge は 1+52=53（g03-taught は beyond-max-hops、knows-01〜52 は no-revision）、除外 Entity は 1+52=53（g03-corin は beyond-max-hops、g03-n01〜52 は no-revision）。",
+            "matchesFixture": true
+          },
+          {
+            "item": "base: 1hop と 2hop の path 付加",
+            "derivation": "c1 に 1hop、c2 に 2hop の edge 列（1 本の Relation に畳まない）。同じ Scene に競合する path はなく、ID の順序で結果は変わらない。",
+            "matchesFixture": true
+          },
+          {
+            "item": "base: Raw 満杯で Graph が追加 Scene を足さない",
+            "derivation": "R+IR が 8 件（cap）なので追加は 0 件。hollis-ward は raw-full で blocked、appendedSceneId と addedScene は null。",
+            "matchesFixture": true
+          },
+          {
+            "item": "base: scenesWithoutPath と forbiddenSceneIds",
+            "derivation": "scenesWithoutPath は c3〜c8、forbiddenSceneIds は corin-shed（Corin は 3hop）。",
+            "matchesFixture": true
+          },
+          {
+            "item": "base: 3hop が除かれること",
+            "derivation": "max hop は 2。Hollis 発の taught は 3 本目の edge になるので辿らない。N1 として旧版から残っている。",
+            "matchesFixture": true
+          },
+          {
+            "item": "frontier-exceeded: 発見数と条件",
+            "derivation": "非 seed の発見は 52+1+1=54（seed を含めると 55、hop1 だけでも 53）。seed を含めても除いても、数える段が違っても上限 50 を超える。edge 展開は約 54 で上限 512 の内なので、拒否の原因は Entity の上限だけ。",
+            "matchesFixture": true
+          },
+          {
+            "item": "frontier-exceeded: 拒否の形",
+            "derivation": "Graph 全体を unavailable（graph-limit-exceeded）にし、50 件への切り詰めも部分 Graph として禁止。nodes・edgeIds・pathAttachments は空、addedScene は null、scenesWithoutPath は 8 件、結果は R+IR と同一、forbiddenSceneIds は corin-shed と hollis-ward。",
+            "matchesFixture": true
+          },
+          {
+            "item": "metrics（両 variant、3 arm）",
+            "derivation": "gold を持つ hollis-ward がどの arm にも入らないので Recall@8＝0、nDCG@8＝0。raw、R+IR、R+IR+Graph の 3 arm とも 0。validator の再計算とも一致。",
+            "matchesFixture": true
+          },
+          {
+            "item": "Revision と resource の整合",
+            "derivation": "r-frontier は Entity 53・Relation 52 の合計 105 で、Revision の 512 records の内。knows-NN は Wren→g03-nNN、Entity の label は 56 件すべて異なる。",
+            "matchesFixture": true
+          }
+        ],
+        "findings": [
+          {
+            "severity": "P3",
+            "location": "evals/nir1-graph/g03-bounded-two-hop.v1.json の variants（base／frontier-exceeded）",
+            "summary": "fixture が Graph の runtime の 50 件という値を判別できるのは超過側だけ。base の発見は 2 件で、frontier-exceeded は 54 件。上限が 12 や 53 のままの実装でも、この 2 variant は通る。",
+            "fix": "今回は直さない。上限ちょうど（50 は available、51 は unavailable）の N／N+1 は CQ-LIM-1 の製品側の試験で見る。proposal/7 の「54＝上限+4」の流儀に従ったことは記録に残す。"
+          },
+          {
+            "severity": "P3",
+            "location": "evals/nir1-graph/freeze.v1.json、independent-expectation-review.v1.json",
+            "summary": "freeze と review receipt は旧版（発見 16 件、limit 12）の記述と hash を持っていた。",
+            "fix": "この approve を新しい round として記録し、freeze を作り直す。G-03 と schema と README の hash を束縛する。作者の cq-lim-decisions.md には依存させない。Graph の観測の前に終える。"
+          }
+        ],
+        "interpretations": [
+          {
+            "point": "上限 50 の判別範囲",
+            "decision": "frontier-exceeded（54 件）は seed の含み方と数える段によらず 50 を超えるので、超過側の判別は成立する。上限の値そのものの N／N+1 は CQ-LIM-1 の製品側の試験で見る（P3）。"
+          },
+          {
+            "point": "G-03 以外の case の扱い",
+            "decision": "G-02 と G-04〜G-08 の fixture は 2 回目が承認した bytes のままなので、3 回目は導き直さず round 2 の approve を引き継ぐ。"
+          },
+          {
+            "point": "validator の edge 展開 100 超の検査",
+            "decision": "available のとき edge 展開が 100 を超えたら error とする検査は available 側の fixture を縛る設計上の保険で、G-03 の（unavailable の）超過 variant には当たらない。"
+          }
+        ]
       }
     ],
     "changesAfterApproval": [
@@ -227,18 +425,18 @@
           "keys": ["independentExpectationReview"]
         },
         "approvedSha256OutsideScope": "2f2a51b28ade3c88bfb9299de676535e92c967dacc1ca58284b135a5ec0f65af",
-        "change": "Records the round 2 approval: verdict approve, the round history (resolution, afterApproval), the approvalRecord pointer, the reviewer description and what the freeze binds. status and independentExpectationReview.status keep their frozen values."
+        "change": "Records the round 3 approval in the review block: the rebuilt G-03 (54 discovered Entities against limit 50), the round history, the approvalRecord pointer and what the freeze binds. status and independentExpectationReview.status keep their frozen values."
       },
       {
         "path": "evals/nir1-graph/README.md",
         "scope": {
           "kind": "markdown-sections",
-          "headings": ["CP-0 で行わなかった作業", "独立期待値レビューと freeze"]
+          "headings": ["独立期待値レビューと freeze"]
         },
-        "approvedSha256OutsideScope": "d3d51ba8f86187c103f994d711ec3cabd96852a42212db31e17a3e2730360cd1",
-        "change": "Moves the same-host R/R+IR baseline re-measurement (with the PR-P receipt) to the CP-4 measurement window and the SPIKE S1 harness import to CP-4, naming where they are and the S1 §8 import conditions; describes both review rounds, the changes after the approval and the validator's approval checks."
+        "approvedSha256OutsideScope": "4b897ee1ae71460a2887ffc22ac7ee5c5e9e0c5c82457e2e1812b0fc13080953",
+        "change": "Describes the round 3 review of the rebuilt G-03, the carried-over round 2 approvals, the changes after the approval and the bound records."
       }
     ],
-    "validatorChangesAfterApproval": "validateFreeze also requires the approving manifest verdict, its agreement with reviewVerdict and the manifest freezeRecord pointer; validateApprovingReview checks this record (reviewer, rounds, the approved hash of every bound file and the declared scope of each later change); validateReviewReceipt returns the receipt it read. porter.mjs is unchanged."
+    "validatorChangesAfterApproval": "No validator change in this update. contract.mjs and contract.test.mjs are the versions round 3 read (the Entity limit 50 checks were added in 65ceb4f6, before the review); porter.mjs is unchanged."
   }
 }
