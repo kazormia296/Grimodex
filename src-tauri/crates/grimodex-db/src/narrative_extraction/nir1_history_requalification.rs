@@ -1751,10 +1751,19 @@ mod tests {
                 include_str!("../nir1_generation/history_reads.rs"),
             ),
         ] {
+            // Cut at the test module itself: `#[cfg(test)]` also marks single
+            // production-side test hooks, so splitting on the first one would
+            // skip most of the file. A file without a test module is scanned
+            // whole.
             let production = source
-                .split("#[cfg(test)]")
+                .split("\n#[cfg(test)]\nmod tests {")
                 .next()
                 .expect("production part");
+            assert!(
+                production.lines().count() > 100,
+                "{name}: the scanned production part is too short ({} lines)",
+                production.lines().count()
+            );
             for line in production.lines() {
                 let code = line.trim_start();
                 if code.starts_with("//") {
