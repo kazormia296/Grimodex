@@ -5315,14 +5315,14 @@ pub const NIR1_GENERATION_UNTIMED_TEST_OPERATION_LIMIT: Duration = Duration::fro
 pub type Nir1AdmissionProbe = Arc<dyn Fn() -> bool + Send + Sync>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct Nir1SqlLimits {
+pub(crate) struct Nir1SqlLimits {
     mutex: Duration,
     busy: Duration,
     operation: Duration,
 }
 
 impl Nir1SqlLimits {
-    const DEFAULT: Self = Self {
+    pub(crate) const DEFAULT: Self = Self {
         mutex: NIR1_GENERATION_DB_MUTEX_WAIT_LIMIT,
         busy: NIR1_GENERATION_SQLITE_BUSY_LIMIT,
         operation: NIR1_GENERATION_OPERATION_LIMIT,
@@ -5436,21 +5436,21 @@ impl Nir1AdmissionSqlBudget {
         self
     }
 
-    fn sql_budget(&self) -> ParticipantSqlOperationBudget {
+    pub(crate) fn sql_budget(&self) -> ParticipantSqlOperationBudget {
         self.limits.operation_budget(Arc::clone(&self.cancel))
     }
 
-    fn fence(&self) -> ParticipantSqlFence {
+    pub(crate) fn fence(&self) -> ParticipantSqlFence {
         ParticipantSqlFence::Admission {
             probe: Some(Arc::clone(&self.probe)),
         }
     }
 
-    fn cancel_requested(&self) -> bool {
+    pub(crate) fn cancel_requested(&self) -> bool {
         self.cancel.load(Ordering::Acquire)
     }
 
-    fn failpoint(&self) -> WriteFailpoint {
+    pub(crate) fn failpoint(&self) -> WriteFailpoint {
         #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
         {
             self.failpoint.clone()
@@ -5509,13 +5509,13 @@ impl Nir1PinnedSqlBudget {
         self
     }
 
-    fn sql_budget(&self) -> ParticipantSqlOperationBudget {
+    pub(crate) fn sql_budget(&self) -> ParticipantSqlOperationBudget {
         // A private flag nothing sets: a Pinned scope never observes a stop.
         self.limits
             .operation_budget(Arc::new(AtomicBool::new(false)))
     }
 
-    fn failpoint(&self) -> WriteFailpoint {
+    pub(crate) fn failpoint(&self) -> WriteFailpoint {
         #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
         {
             self.failpoint.clone()
@@ -5528,12 +5528,12 @@ impl Nir1PinnedSqlBudget {
 }
 
 #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
-type WriteFailpoint = Option<Nir1GenerationFailpoint>;
+pub(crate) type WriteFailpoint = Option<Nir1GenerationFailpoint>;
 
 /// Production builds carry no failpoint.
 #[cfg(not(any(test, feature = "workspace-maintenance-test-support")))]
 #[derive(Clone, Copy)]
-struct WriteFailpoint;
+pub(crate) struct WriteFailpoint;
 
 /// Whether a bounded writer's COMMIT may have been applied.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -5577,7 +5577,7 @@ pub enum Nir1StoreFailure {
 }
 
 impl Nir1StoreFailure {
-    fn code(self) -> &'static str {
+    pub(crate) fn code(self) -> &'static str {
         match self {
             Self::ConnectionBusy => "connection-busy",
             Self::SqliteBusy => "sqlite-busy",
@@ -5746,7 +5746,7 @@ enum Nir1WritePhase {
     ReadyToCommit,
 }
 
-fn ensure_no_nested_sql_owner() -> Result<(), Nir1GenerationStoreError> {
+pub(crate) fn ensure_no_nested_sql_owner() -> Result<(), Nir1GenerationStoreError> {
     // Checked before the participant scope and its mutex: inside a scope the
     // writer itself is on the thread-local stack, and a nested scope would not
     // own its own limits.
@@ -5767,7 +5767,7 @@ fn wall_clock_ms() -> Result<i64> {
     )?)
 }
 
-fn error_chain_contains(error: &anyhow::Error, marker: &str) -> bool {
+pub(crate) fn error_chain_contains(error: &anyhow::Error, marker: &str) -> bool {
     error
         .chain()
         .any(|cause| cause.to_string().contains(marker))
@@ -5785,7 +5785,10 @@ fn is_sqlite_busy(error: &anyhow::Error) -> bool {
 /// Map a writer error to its typed failure. A stop observed while the owner's
 /// cancel is set is `Cancelled`; otherwise a participant stop or a false probe
 /// is `Fenced`.
-fn classify_store_error(error: &anyhow::Error, cancel_requested: bool) -> Nir1StoreFailure {
+pub(crate) fn classify_store_error(
+    error: &anyhow::Error,
+    cancel_requested: bool,
+) -> Nir1StoreFailure {
     let stopped = |failure| {
         if cancel_requested {
             Nir1StoreFailure::Cancelled
@@ -5844,7 +5847,7 @@ fn classify_store_error(error: &anyhow::Error, cancel_requested: bool) -> Nir1St
 /// Run one bounded IMMEDIATE transaction and classify its commit state: an
 /// error before the operation returned `Ok` is `NotCommitted`; one at or
 /// after COMMIT is `Unknown`.
-fn bounded_write<T>(
+pub(crate) fn bounded_write<T>(
     workspace: &ActiveWorkspaceSnapshot,
     fence: ParticipantSqlFence,
     sql_budget: ParticipantSqlOperationBudget,
