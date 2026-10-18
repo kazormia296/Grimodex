@@ -15,7 +15,7 @@
  */
 import { readFileSync, readdirSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -483,6 +483,35 @@ describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
       ),
     ).toEqual([]);
   });
+
+  it("名前解決の記録層と DoH の canary は製品の bundle（main と preload の esbuild の出力）に入らない（electron/shared と preload 経由の混入も見る）", async () => {
+    // pnpm electron:build と同じ設定（electron/scripts/build.mjs の bundleConfigs）を、書き出さずに in-memory で束ねて走査する。
+    // 'canary' 単独は依存 package の文字列に当たりうるので、記録層と DoH の canary の固有の名前だけを見る。
+    const buildModule = (await import(
+      pathToFileURL(path.join(MAIN_DIR, "..", "scripts", "build.mjs")).href
+    )) as { bundleConfigs: Array<Record<string, unknown>> };
+    const esbuild = (await import("esbuild")).default;
+    const forbidden =
+      /LD_PRELOAD|PROBE_DNSLOG|dnslog|dns-canary|doh-canary|webrtc-block-probe/i;
+    expect(buildModule.bundleConfigs.length).toBe(2);
+    for (const config of buildModule.bundleConfigs) {
+      const result = await esbuild.build({
+        ...config,
+        outfile: undefined,
+        outdir: "out",
+        write: false,
+        sourcemap: false,
+        logLevel: "silent",
+      });
+      expect(result.outputFiles.length).toBe(1);
+      const text = result.outputFiles[0].text;
+      // 束ねた出力が空でない（走査が何も見ていないわけではない）。NC-1 の module が main に入っている。
+      const isMain = /electron[\\/]main[\\/]/.test(String(config.entryPoints));
+      expect(text.length).toBeGreaterThan(isMain ? 1_000_000 : 1_000);
+      expect(text.match(forbidden), String(config.entryPoints)).toBeNull();
+      if (isMain) expect(text).toContain("grimodex-rule-sentinel.invalid");
+    }
+  }, 60_000);
 
   it("NC-1 の適用は shouldRegisterAppProtocol() が true のときだけで、packaged は env があっても適用する", async () => {
     const index = codeOf("index.ts");

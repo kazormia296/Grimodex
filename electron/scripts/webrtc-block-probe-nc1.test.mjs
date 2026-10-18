@@ -14,8 +14,12 @@ import { fileURLToPath } from "node:url";
 import {
   SYNTHETIC_EXPECT_MIN_FAIL,
   judgeChurn,
+  CONTROL_CATEGORIES,
+  NEARNAMES_EXPECTED,
+  judgeControlCategories,
   judgeDevTools,
   judgeLocalRule,
+  judgeNearNames,
   judgeNcPolicy,
   judgeNcSession,
   judgeNl,
@@ -445,4 +449,93 @@ test("合成の記録: 同じ形を新しい記録（nc1-g-open）から作る�
   for (const name of ["fm-no-policy.json", "fm-no-proxy.json", "fm-no-neg-loopback.json"]) {
     assert.ok(judgeRecord(load(name), { baseline }).fail > 0, name);
   }
+});
+
+// ── 近い名前・特殊な literal（al0-nearnames の形）────────────────────────
+
+const nearNamesRecord = () => ({
+  events: [
+    "nc1 orchestrator start => true in 30.0 ms",
+    ...Object.entries(NEARNAMES_EXPECTED).map(([name, expected]) =>
+      `resolveHost(${name}) => ${expected === "127.0.0.1" ? '["127.0.0.1"]' : "error:net::ERR_NAME_NOT_RESOLVED"}`),
+  ],
+  nc1: { failures: [] },
+});
+
+test("近い名前: EXCLUDE が部分一致・サブドメイン・末尾 dot に効かず、別形式の loopback が 127.0.0.1 になる記録は合格", () => {
+  const out = judgeNearNames(nearNamesRecord());
+  assert.deepEqual(out.failures, []);
+  assert.equal(out.pass, true);
+});
+
+test("近い名前: 名前が解決された（glob 化の回帰）、loopback の正規化が崩れた、観測の欠落、start の失敗は不合格", () => {
+  const mutate = (name, line) => {
+    const record = nearNamesRecord();
+    record.events = record.events.map((event) => (event.startsWith(`resolveHost(${name}) =>`) ? line : event));
+    return record;
+  };
+  assert.equal(judgeNearNames(mutate("a.gvt1.com", 'resolveHost(a.gvt1.com) => ["1.2.3.4"]')).pass, false);
+  assert.equal(judgeNearNames(mutate("a.b.github.com", 'resolveHost(a.b.github.com) => ["140.82.112.3"]')).pass, false);
+  assert.equal(judgeNearNames(mutate("github.com.", 'resolveHost(github.com.) => ["140.82.112.3"]')).pass, false);
+  assert.equal(judgeNearNames(mutate("0x7f.0.0.1", "resolveHost(0x7f.0.0.1) => error:net::ERR_NAME_NOT_RESOLVED")).pass, false);
+  assert.equal(judgeNearNames(mutate("169.254.169.254", 'resolveHost(169.254.169.254) => ["169.254.169.254"]')).pass, false);
+  const missing = nearNamesRecord();
+  missing.events = missing.events.filter((event) => !event.startsWith("resolveHost(127.1) =>"));
+  assert.match(judgeNearNames(missing).failures.join("|"), /127\.1: resolveHost の観測がない/);
+  const noStart = nearNamesRecord();
+  noStart.events = noStart.events.slice(1);
+  assert.equal(judgeNearNames(noStart).pass, false);
+  const failed = nearNamesRecord();
+  failed.nc1.failures = ["[grimodex-electron] NC-SELF-RESOLVE"];
+  assert.equal(judgeNearNames(failed).pass, false);
+});
+
+test("近い名前: 測定の記録 al0-nearnames（AL-0 の旧記録）の observed と同じ期待値を使っている", () => {
+  const old = load("al0-nearnames.json");
+  for (const [name, expected] of Object.entries(NEARNAMES_EXPECTED)) {
+    if (name === "127.0.0.1" || name === "grimodex-rule-sentinel.invalid") continue;
+    const line = old.events.find((event) => event.startsWith(`resolveHost(${name}) =>`));
+    assert.ok(line, name);
+    assert.equal(expected === "127.0.0.1" ? line.endsWith('["127.0.0.1"]') : line.includes(expected), true, line);
+  }
+});
+
+// ── (29) 外した機構ごとの期待カテゴリ ───────────────────────────────────
+
+const leakRow = (id, extra = {}) => ({ id, outcome: "gathering:gathering", leaked: 4, proxied: 0, ...extra });
+const proxyDropRecord = () => ({
+  rows: [
+    leakRow("main.turn-tcp.sentinel"), leakRow("main.turns.sentinel"), leakRow("main.turns-tcp.sentinel"),
+    leakRow("main.turn-tcp.lo4"), leakRow("main.remote-candidate-tcp.lo4", { outcome: "ice:checking" }),
+    row("main.stun.lo4"), row("main.turn-udp.lo4"),
+  ],
+});
+
+test("(29) proxy を外した構成: sentinel 名の TURN-TCP／TURNS／TURNS-TCP と loopback の TCP が漏れ、UDP は漏れない記録は合格", () => {
+  const out = judgeControlCategories(proxyDropRecord(), "proxy");
+  assert.deepEqual(out.failures, []);
+  assert.equal(out.leakedIds.length, 5);
+});
+
+test("(29) proxy を外した構成: sentinel の行が 1 つでも漏れていない、UDP が漏れた記録は不合格（検出力の欠陥／表にないカテゴリ）", () => {
+  const partial = proxyDropRecord();
+  partial.rows = partial.rows.map((r) => (r.id === "main.turns-tcp.sentinel" ? { ...r, leaked: 0 } : r));
+  assert.match(judgeControlCategories(partial, "proxy").failures.join("|"), /sentinel/);
+  const udp = proxyDropRecord();
+  udp.rows.push(leakRow("main.stun.name"));
+  assert.match(judgeControlCategories(udp, "proxy").failures.join("|"), /tcp 以外/);
+  const none = { rows: proxyDropRecord().rows.map((r) => ({ ...r, leaked: 0 })) };
+  assert.equal(judgeControlCategories(none, "proxy").pass, false);
+});
+
+test("(29) policy を外した構成は UDP だけ、`<-loopback>` を外した構成は loopback の TCP だけで sentinel 名の TCP は漏れない", () => {
+  const policy = { rows: [leakRow("main.stun.lo4"), leakRow("main.turn-udp.lo4"), leakRow("main.remote-candidate-udp.lo4"), leakRow("main.stun.name"), row("main.turn-tcp.sentinel", { proxied: 2 })] };
+  assert.deepEqual(judgeControlCategories(policy, "policy", { extraRequired: ["main.stun.name"] }).failures, []);
+  assert.equal(judgeControlCategories(policy, "policy", { extraRequired: ["main.turn-udp.name"] }).pass, false);
+  const loop = { rows: [leakRow("main.turn-tcp.lo4"), leakRow("main.turn-tcp.localhost"), leakRow("main.remote-candidate-tcp.lo4"), row("main.turn-tcp.sentinel", { proxied: 2 })] };
+  assert.deepEqual(judgeControlCategories(loop, "neg-loopback").failures, []);
+  loop.rows.push(leakRow("main.turns.sentinel"));
+  assert.match(judgeControlCategories(loop, "neg-loopback").failures.join("|"), /この機構のカテゴリではない/);
+  assert.equal(judgeControlCategories({ rows: [] }, "unknown").pass, false);
+  assert.deepEqual(Object.keys(CONTROL_CATEGORIES).sort(), ["neg-loopback", "policy", "proxy"]);
 });

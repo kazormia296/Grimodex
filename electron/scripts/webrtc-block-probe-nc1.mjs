@@ -187,6 +187,116 @@ export function judgePositive9(record) {
   return { pass: failures.length === 0, failures };
 }
 
+// ── (29) 外した機構ごとの期待カテゴリ ─────────────────────────────────────────
+
+const TCP_PROTO_RE = "(turn-tcp|turns|turns-tcp)";
+const UDP_PROTO_RE = "(stun|stuns|turn-udp)";
+const exactRows = (proto, form) => new RegExp(`^main\\.${proto}\\.${form}$`);
+const need = (pattern, min = 1) => ({ pattern, min });
+
+/**
+ * draft の (29) の表: 機構を 1 つ外した構成で漏れるカテゴリ。`direction` は漏れた行の種類（classify の kind）がすべてこの方向に限ること
+ * （表にない方向が漏れたら閉じ込めの欠陥）、`required` は min 件以上 canary に届かなければならない行（試験の欠陥でないことの証拠）、
+ * `forbidden` は届いてはならない行（その機構が担う層ではないカテゴリ）。
+ *   proxy       TCP だけ。sentinel 名の TURN-TCP／TURNS／TURNS-TCP と、loopback の IP literal の TCP（production の rules では prefix の名前でなく literal）
+ *   policy      UDP だけ。IP literal の UDP と udp の remote candidate（名前の UDP と FQDN の UDP は (23a) の形の `extraRequired`）
+ *   neg-loopback TCP だけ。loopback の IP literal と `localhost` 名の TCP、IP literal の remote candidate。名前（sentinel）の TCP は SOCKS5 が名前を proxy 側へ渡すため漏れない
+ */
+export const CONTROL_CATEGORIES = Object.freeze({
+  proxy: {
+    direction: "tcp",
+    required: [need(exactRows(TCP_PROTO_RE, "sentinel"), 3), need(exactRows("turn-tcp", "lo4")), need(/^main\.remote-candidate-tcp\.lo4$/)],
+    forbidden: [],
+  },
+  policy: {
+    direction: "udp",
+    required: [need(exactRows("stun", "lo4")), need(exactRows("turn-udp", "lo4")), need(/^main\.remote-candidate-udp\.lo4$/)],
+    forbidden: [],
+  },
+  "neg-loopback": {
+    direction: "tcp",
+    required: [need(exactRows("turn-tcp", "lo4")), need(exactRows("turn-tcp", "localhost")), need(/^main\.remote-candidate-tcp\.lo4$/)],
+    forbidden: [exactRows(TCP_PROTO_RE, "sentinel")],
+  },
+});
+
+/**
+ * (29): 機構を外した構成の記録が、その機構のカテゴリの漏れを行 id で示していること。
+ * `extraRequired` は構成の形ごとの追加（(23a) の形の名前の UDP／TCP、FQDN の remote candidate など。行 id の配列）。
+ * 戻り値の `leakedIds` は canary に届いた行（記録の leaked > 0）。
+ */
+export function judgeControlCategories(record, mechanism, { extraRequired = [] } = {}) {
+  const spec = CONTROL_CATEGORIES[mechanism];
+  if (!spec) return { pass: false, failures: [`未知の機構: ${mechanism}`], leakedIds: [] };
+  const failures = [];
+  const leaked = rowsOf(record).filter((row) => row.leaked > 0);
+  const leakedIds = leaked.map((row) => row.id);
+  for (const row of leaked) {
+    const kind = classify(row).kind;
+    if (kind !== spec.direction) failures.push(`${row.id}: ${spec.direction} 以外の種類（${kind}）が漏れた（表にないカテゴリ）`);
+  }
+  for (const { pattern, min } of spec.required) {
+    const matched = leaked.filter((row) => pattern.test(row.id));
+    if (matched.length < min) failures.push(`${pattern} に当たる行が canary に届いていない（${matched.length} 件。${min} 件以上を期待）`);
+  }
+  for (const id of extraRequired) {
+    if (!leakedIds.includes(id)) failures.push(`${id} が canary に届いていない（期待したカテゴリ）`);
+  }
+  for (const pattern of spec.forbidden) {
+    const hit = leaked.filter((row) => pattern.test(row.id)).map((row) => row.id);
+    if (hit.length > 0) failures.push(`${pattern} に当たる行が漏れた（この機構のカテゴリではない）: ${hit.join(", ")}`);
+  }
+  return { pass: failures.length === 0, failures, leakedIds };
+}
+
+// ── 近い名前・特殊な literal の resolveHost（Negative (23) の `al0-nearnames` の形）────────────────
+
+/**
+ * 製品の rules（`buildHostResolverRules()`）の下で、RS-1 の `EXCLUDE` が部分一致・サブドメイン・末尾 dot に効かないこと（名前は
+ * `ERR_NAME_NOT_RESOLVED`）と、別形式の loopback が `127.0.0.1` に正規化されること、sentinel 名と `127.0.0.1` 自身が `127.0.0.1` に解決されることを、
+ * `resolveHost` の events で固定する。将来 RS-1 の規則が glob 化されたり Chromium の版上げで `EXCLUDE` の一致が変わると、ここが赤になる。
+ * `github.com.`／`localhost.`（末尾 dot）は EXCLUDE に一致せず拒否される（draft の「末尾 dot つきの事前解決は EXCLUDE に一致しない」の挙動）。
+ */
+export const NEARNAMES_EXPECTED = Object.freeze({
+  "gvt1.com": "ERR_NAME_NOT_RESOLVED",
+  "xgvt1.com": "ERR_NAME_NOT_RESOLVED",
+  "a.gvt1.com": "ERR_NAME_NOT_RESOLVED",
+  "a.b.github.com": "ERR_NAME_NOT_RESOLVED",
+  "github.com.": "ERR_NAME_NOT_RESOLVED",
+  "github.com.evil.test": "ERR_NAME_NOT_RESOLVED",
+  "evil.release-assets.githubusercontent.com": "ERR_NAME_NOT_RESOLVED",
+  "api.github.com": "ERR_NAME_NOT_RESOLVED",
+  "x.localhost": "ERR_NAME_NOT_RESOLVED",
+  "localhost.": "ERR_NAME_NOT_RESOLVED",
+  "foo.local": "ERR_NAME_NOT_RESOLVED",
+  "[::1]": "ERR_NAME_NOT_RESOLVED",
+  "169.254.169.254": "ERR_NAME_NOT_RESOLVED",
+  "127.1": "127.0.0.1",
+  "0x7f.0.0.1": "127.0.0.1",
+  "2130706433": "127.0.0.1",
+  "127.0.0.1.": "127.0.0.1",
+  "127.0.0.1": "127.0.0.1",
+  "grimodex-rule-sentinel.invalid": "127.0.0.1",
+});
+
+export function judgeNearNames(record) {
+  const failures = [];
+  const events = (record?.events ?? []).map(String);
+  if (!events.some((event) => /^nc1 orchestrator start => true/.test(event))) failures.push("製品の start() が成功していない（events に 'nc1 orchestrator start => true' がない）");
+  if ((record?.nc1?.failures ?? []).length > 0) failures.push(`固定コードが出ている: ${record.nc1.failures.join(" | ")}`);
+  const observed = {};
+  for (const [name, expected] of Object.entries(NEARNAMES_EXPECTED)) {
+    const prefix = `resolveHost(${name}) => `;
+    const line = events.find((event) => event.startsWith(prefix));
+    if (line === undefined) { failures.push(`${name}: resolveHost の観測がない`); continue; }
+    const out = line.slice(prefix.length);
+    observed[name] = out;
+    const ok = expected === "127.0.0.1" ? out === '["127.0.0.1"]' : (out.startsWith("error:") && out.includes(expected));
+    if (!ok) failures.push(`${name}: ${expected} を期待したが ${out}`);
+  }
+  return { pass: failures.length === 0, failures, observed };
+}
+
 // ── (30b) listener の頑健性 ───────────────────────────────────────────────
 
 /** LS-1 の確認済みの同時接続の上限 */

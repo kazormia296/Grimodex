@@ -57,18 +57,24 @@ const SELFCHECK_HOSTS = ["grimodex-rule-sentinel.invalid", "example.org", "redir
 // 閉じ込めなしの対照は同じ行列の `*-baseline`（cm に nc1 を書かない）。行列は対照と最終で同じにする（RJ は対照にない行を不合格にする）。
 const NC1_PREFIX_RULES = HARNESS_PREFIX.split(", ").filter((rule) => rule.length > 0);
 // (23a) の形: 名前を末尾 dot つきも含めて canary に写す。(30b) の churn と再読込・遷移の localhost の行を足す
-const NC1_ROWS_FM = { gvt1: true, localhostRows: true, fqdn: true, reload: true, churn: true };
+// sentinelRows: 固定の sentinel 名 × 6 proto の行（Negative (23) の行列。(29) の proxy を外した構成の「sentinel 名の TCP」カテゴリ）
+const NC1_ROWS_FM = { gvt1: true, localhostRows: true, sentinelRows: true, fqdn: true, reload: true, churn: true };
 // (23b) の形: 実 DNS。link-local、`.local`（UDP 5353 の観測）、再読込・遷移の localhost の行を足す
-const NC1_ROWS_LL = { dns: true, gvt1: true, localhostRows: true, linklocal: true, local: true, reload: true };
+const NC1_ROWS_LL = { dns: true, gvt1: true, localhostRows: true, sentinelRows: true, linklocal: true, local: true, reload: true };
 const NC1_ROWS_FQ = { dns: true, gvt1: true, localhostRows: true, linklocal: true, fqdn: true };
 const NC1_ROWS_NL = { dns: true, gvt1: true, localhostRows: true, rs1: true };
 const NC1_ROWS_SX = { dns: true, secx: true, localhostRows: true };
+// fm-baseline（閉じ込めなし、非 real-network）の既定の rules（webrtc-block-probe.mjs の既定と同じ）に sentinel 名の MAP を足したもの
+const FM_BASELINE_RULES = "MAP *.probe.test 127.0.0.1, MAP *.probe.test. 127.0.0.1, MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE 127.0.0.2, EXCLUDE [::1], EXCLUDE ::1, EXCLUDE LANADDR, EXCLUDE localhost";
+// 近い名前・特殊な literal（al0-nearnames の入力。RS-1 の EXCLUDE が部分一致・サブドメイン・末尾 dot に効かないこと、別形式の loopback の正規化）
+const NEARNAMES = ["gvt1.com", "xgvt1.com", "a.gvt1.com", "a.b.github.com", "github.com.", "github.com.evil.test", "evil.release-assets.githubusercontent.com", "api.github.com", "x.localhost", "localhost.", "foo.local", "127.1", "0x7f.0.0.1", "2130706433", "127.0.0.1.", "[::1]", "169.254.169.254", "grimodex-rule-sentinel.invalid", "127.0.0.1"];
 // (33): 更新（electron-updater 方式）と env の proxy。noProbes の行列なし
 const NC1_UPDATER = { noProbes: true, realUpdater: true, spellcheck: true, waitMs: 9000, resolveHostTests: ["github.com", "localhost"] };
 const nc1Final = (rows, extra = {}) => ({ cm: { ...rows, nc1: {}, resolveHostTests: SELFCHECK_HOSTS, ...extra.cm }, args: [], realNetwork: true, dnsLog: true, ...extra.cand });
 const NC1_DEFS = {
   // ── (23a): 名前の写し（prefix）を当てた proxy と policy の層の単独の合否 ──
-  "nc1-fm-baseline": { cm: { ...NC1_ROWS_FM }, args: [], dnsLog: true },
+  // 対照は判定する構成と同じ名前解決の環境（draft の RJ）: 既定の規則に、製品の rules が写す sentinel 名の MAP を足す
+  "nc1-fm-baseline": { cm: { ...NC1_ROWS_FM, resolverRules: FM_BASELINE_RULES }, args: [], dnsLog: true },
   "nc1-fm-final": { cm: { ...NC1_ROWS_FM, nc1: { prefixRules: NC1_PREFIX_RULES } }, args: [], realNetwork: true, dnsLog: true },
   // (29): 機構を 1 つずつ外した (23a) の形
   "nc1-fm-no-policy": { cm: { ...NC1_ROWS_FM, nc1: { drop: ["policy"], prefixRules: NC1_PREFIX_RULES } }, args: [], realNetwork: true, dnsLog: true },
@@ -90,8 +96,12 @@ const NC1_DEFS = {
   "nc1-ll-kill": { ...nc1Final(NC1_ROWS_LL, { cm: { killNetworkService: true } }), mdns: true },
   // ── (29): 機構を 1 つずつ外した (23b) の形（<-loopback> と policy は link-local の行で「canary 0 のまま不合格」を示す。rules は名前の観測で示す）──
   "nc1-ll-no-neg-loopback": { cm: { ...NC1_ROWS_LL, nc1: { drop: ["neg-loopback"] }, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, mdns: true },
+  // proxy を外した (23b) の形（製品の rules〔prefix なし〕と policy だけ）。sentinel 名の TCP と loopback の TCP が canary に届く
+  "nc1-ll-no-proxy": { cm: { ...NC1_ROWS_LL, nc1: { drop: ["proxy"] }, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, mdns: true },
   "nc1-ll-no-policy": { cm: { ...NC1_ROWS_LL, nc1: { drop: ["policy"] }, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, mdns: true },
   "nc1-nl-no-rules": { cm: { ...NC1_ROWS_NL, nc1: { drop: ["rules"] } }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  // ── 近い名前・特殊な literal の resolveHost（製品の orchestrator と rules。行列なし）──
+  "nc1-nearnames": { cm: { noProbes: true, nc1: {}, resolveHostTests: NEARNAMES }, args: [], realNetwork: true },
   // ── (33): 更新と OS／env の proxy（AL-0 の構成で取り直す）。w0 は閉じ込めなしの対照 ──
   "nc1-w0-envproxy-localhost-baseline": { cm: { ...NC1_UPDATER }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "localhost" },
   "nc1-w2-envproxy-localhost-final": { cm: { ...NC1_UPDATER, nc1: {} }, args: [], realNetwork: true, dnsLog: true, clearDesktop: true, fakeProxyForm: "localhost" },

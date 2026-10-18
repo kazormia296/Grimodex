@@ -398,7 +398,7 @@ async function main() {
   const contents = win.webContents;
   const prefs = contents.getLastWebPreferences();
 
-  const probeArgs = (persist = "") => `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1, localhost: !!cm.localhostRows, rs1: !!cm.rs1, linklocal: !!cm.linklocal, fqdn: !!cm.fqdn, secx: !!cm.secx, local: !!cm.local, churn: !!cm.churn, persist })}`;
+  const probeArgs = (persist = "") => `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1, localhost: !!cm.localhostRows, sentinel: !!cm.sentinelRows, rs1: !!cm.rs1, linklocal: !!cm.linklocal, fqdn: !!cm.fqdn, secx: !!cm.secx, local: !!cm.local, churn: !!cm.churn, persist })}`;
   const script = fs.readFileSync(env.PROBE_RENDERER_SCRIPT, "utf8");
   const runRenderer = async (persist = "") => {
     try {

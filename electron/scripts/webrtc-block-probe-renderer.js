@@ -39,6 +39,8 @@
       allowedp: [`allowed-${id}-${nonce}.probe.test`, ports.p],
       ext: [`ext-${id}-${nonce}.blocked.invalid`, 443],
       localhost: ["localhost", ports.p],
+      // 固定の sentinel 名（K3/3 の NC-1 の rules が 127.0.0.1 へ写す名前。攻撃者が TURN／STUN の host に書ける。TCP を止める層は proxy の 1 つ）
+      sentinel: ["grimodex-rule-sentinel.invalid", ports.p],
     })[form];
   const urlsFor = (proto, h, port) =>
     ({
@@ -101,6 +103,8 @@
     ? ["name", "lo4"]
     : ["name", "allowed", "allowedp", "ext", "lo4", "lo4b", "lo6", "lan"];
   if (globalThis.__probe.localhost && !quick) forms.push("localhost");
+  // K3/3 Negative (23) の「固定の sentinel 名 × STUN／STUNS／TURN-UDP／TURN-TCP／TURNS／TURNS-TCP」の 6 行。(29) の proxy を外した構成の検出カテゴリ
+  if (globalThis.__probe.sentinel && !quick) forms.push("sentinel");
   for (const form of forms) {
     for (const proto of protos) {
       const id = `main.${proto}.${form}`;
