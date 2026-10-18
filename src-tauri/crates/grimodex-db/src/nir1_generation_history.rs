@@ -2200,8 +2200,8 @@ mod generation_storage_adapter {
                     created_at_ms,
                     expires_at_ms: created_at_ms + 1,
                     budget: ReadBudget {
-                        max_references: 16,
-                        max_reference_bytes: 16_384,
+                        max_references: 32,
+                        max_reference_bytes: 32_768,
                     },
                 },
             )
@@ -2767,6 +2767,205 @@ mod generation_storage_adapter {
                     CandidateDisposition::Qualified,
                 ],
                 "the control is judged by the checker, not stopped by the other rows"
+            );
+        }
+
+        /// HC-1 (K4/3 section 6, section 8 row 1): a parent of an unknown
+        /// binding version that has a succeeded terminal excludes the child
+        /// that adopts its generated output (no usable receipt).
+        /// It does not fail the snapshot, so an independent candidate in the
+        /// same turn is still judged.
+        #[test]
+        fn history_unknown_version_parent_with_a_terminal_excludes_the_child_not_the_turn() {
+            use crate::nir1_generation::{
+                claim_attempt, finish_attempt, read_attempt, InputRole, InputTarget, InputUse,
+                NewMessageBody,
+            };
+            use grimodex_core::narrative_nir1_receipt::{
+                Completion, OutputChannel, OutputObserver, ProviderTerminal,
+            };
+            let (_state, snapshot) = workspace_snapshot();
+            let db = snapshot.db().db();
+            let parent = storage_attempt(&snapshot);
+            let stored = read_attempt(
+                db,
+                &parent,
+                ReadBudget {
+                    max_references: 16,
+                    max_reference_bytes: 16_384,
+                },
+            )
+            .expect("parent");
+            assert!(claim_attempt(
+                db,
+                &parent,
+                &stored.binding,
+                1,
+                ReadBudget {
+                    max_references: 16,
+                    max_reference_bytes: 16_384,
+                }
+            )
+            .expect("claim"));
+            let mut observer = OutputObserver::new();
+            observer
+                .observe(OutputChannel::Text, b"answer")
+                .expect("text");
+            observer
+                .observe(OutputChannel::Thinking, b"")
+                .expect("thinking");
+            observer
+                .observe_terminal(ProviderTerminal::Complete)
+                .expect("terminal");
+            let terminal = finish_attempt(
+                db,
+                &parent,
+                &observer.finish(Completion::Parsed),
+                Some(NewMessageBody {
+                    message_id: "unknown-version-parent-message".into(),
+                    content: "answer".into(),
+                    thinking: String::new(),
+                }),
+                1,
+            )
+            .expect("finish");
+            let output = terminal.message_version.expect("generated output");
+            db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO chat_messages(id,session_id,role,content)
+                     VALUES ('unknown-version-current-human','generation-session','user','next')",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("current human body");
+            let human = crate::nir1_generation::bind_human_message(
+                db,
+                "generation-project",
+                "generation-session",
+                "unknown-version-current-human",
+                1,
+            )
+            .expect("bind the current human");
+            let message_input =
+                |role, version_id: &str, parent: Option<&str>, input_use| InputReference {
+                    role,
+                    target: InputTarget::Message {
+                        version_id: version_id.into(),
+                        parent_attempt_id: parent.map(str::to_owned),
+                    },
+                    input_use,
+                };
+            // A conversation attempt starts with its current turn; the
+            // adopted generated output is its input 1.
+            let child = storage_attempt_with(
+                &snapshot,
+                vec![
+                    message_input(InputRole::User, &human.id, None, InputUse::CurrentTurn),
+                    message_input(
+                        InputRole::Assistant,
+                        &output.id,
+                        Some(&parent),
+                        InputUse::AdoptedHistory,
+                    ),
+                ],
+                {
+                    use crate::nir1_generation::QualificationReference as Row;
+                    use NotApplicableReason as Na;
+                    use QualificationKind as K;
+                    let scope = |ordinal, role, version: &str| {
+                        Row::scope(
+                            ordinal,
+                            role,
+                            scope_identity(role, &[STORAGE_SCENE]).expect("scope identity"),
+                            version,
+                        )
+                    };
+                    let rows = |ordinal: usize, source: &str, decision, d1: Row| {
+                        vec![
+                            Row::present(ordinal, K::Source, source, "v0"),
+                            Row::not_applicable(ordinal, K::Revision, Na::NotARevision),
+                            Row::not_applicable(ordinal, K::Decision, decision),
+                            Row::not_applicable(ordinal, K::Freshness, Na::ImmutableMessageVersion),
+                            Row::not_applicable(ordinal, K::Index, Na::NotIndexDerived),
+                            scope(ordinal, ScopeRole::QuerySceneScope, "scope-token"),
+                            scope(ordinal, ScopeRole::QuerySceneIncarnation, "incarnation-1"),
+                            d1,
+                        ]
+                    };
+                    let mut all = rows(
+                        0,
+                        &human.id,
+                        Na::HumanAuthored,
+                        Row::not_applicable(0, K::D1, Na::FixedUserSlot),
+                    );
+                    all.extend(rows(
+                        1,
+                        &output.id,
+                        Na::DerivedFromParents,
+                        Row::present(1, K::D1, "d1-selection", "d1-digest"),
+                    ));
+                    all
+                },
+            );
+            let control = storage_attempt_with(&snapshot, vec![raw_input()], raw_rows());
+            // The run of a later build: the parent keeps its terminal.
+            db.with_conn(|conn| {
+                let stored: String = conn.query_row(
+                    "SELECT binding_json FROM nir1_generation_attempts WHERE id=?1",
+                    [&parent],
+                    |row| row.get(0),
+                )?;
+                let mut binding: serde_json::Value = serde_json::from_str(&stored)?;
+                binding["bindingVersion"] = json!(3);
+                conn.execute(
+                    "UPDATE nir1_generation_attempts SET binding_json=?2 WHERE id=?1",
+                    rusqlite::params![parent, grimodex_core::canonical_json_string(&binding)?],
+                )?;
+                Ok(())
+            })
+            .expect("store the later version");
+            let candidates =
+                [("child", child, 1), ("control", control, 0)].map(|(name, id, ordinal)| {
+                    Candidate {
+                        id: name.into(),
+                        root_attempt_id: id,
+                        adopted_input_ordinals: vec![ordinal],
+                    }
+                });
+            let mut caller_budget = budget();
+            caller_budget.max_candidates = candidates.len();
+            caller_budget.max_reference_count = 64;
+            caller_budget.max_reference_bytes = 65_536;
+            caller_budget.remaining_qualification_refs = 64;
+            let mut qualifier = AllowCurrent;
+            let mut cancelled = || false;
+            let outcome = reauthorize_from_generation_snapshot(
+                &snapshot,
+                ParticipantSqlControl::default(),
+                &mut caller_budget,
+                &candidates,
+                &complete_current(&snapshot),
+                NOW_MS,
+                &mut qualifier,
+                &mut cancelled,
+            )
+            .expect("an unknown-version parent with a terminal never stops the turn");
+            let dispositions = outcome
+                .candidates
+                .iter()
+                .map(|result| result.disposition.clone())
+                .collect::<Vec<_>>();
+            assert_eq!(
+                dispositions,
+                [
+                    // The reader gives the parent no receipt, so the adopted
+                    // output has none to check; the parent is not traversed.
+                    CandidateDisposition::Excluded(Failure::Incomplete(
+                        IncompleteReason::MissingReceipt(parent)
+                    )),
+                    CandidateDisposition::Qualified,
+                ]
             );
         }
 

@@ -480,6 +480,98 @@ fn history_unsupported_binding_version_is_excluded_with_a_closed_reason() {
     );
 }
 
+/// K4/3 section 6: a row of an unknown binding version that has a terminal
+/// has no usable receipt for the history reader. The strict readers keep
+/// refusing it, and a known or legacy row keeps its receipt.
+#[test]
+fn history_terminal_of_an_unknown_binding_version_is_no_receipt_not_a_snapshot_failure() {
+    let db = database(Path::new(":memory:"));
+    let future = create_attempt(&db, request(vec![], vec![])).expect("future");
+    finish_success(&db, &future, "hc1-future-message", "answer");
+    let known = create_attempt(&db, request(vec![], vec![])).expect("known");
+    let known_terminal = finish_success(&db, &known, "hc1-known-message", "answer");
+    let legacy = create_attempt(&db, request(vec![], vec![])).expect("legacy");
+    let legacy_terminal = finish_success(&db, &legacy, "hc1-legacy-message", "answer");
+    let mut stored = stored_json(&db, &future.id);
+    stored["bindingVersion"] = json!(3);
+    store_binding_json(&db, &future.id, &canonical_binding(&stored));
+    make_legacy(&db, &legacy.id);
+
+    let mut caller_budget = history_budget();
+    let (future_read, known_read, legacy_read) =
+        with_snapshot(&db, &mut caller_budget, |reader, budget| {
+            Ok((
+                reader.read_terminal(budget, &future.id)?,
+                reader.read_terminal(budget, &known.id)?,
+                reader.read_terminal(budget, &legacy.id)?,
+            ))
+        })
+        .expect("an unknown binding version is no receipt, not a snapshot failure");
+    assert_eq!(future_read, None);
+    assert_eq!(known_read, Some(known_terminal));
+    assert_eq!(legacy_read, Some(legacy_terminal));
+    // The strict readers keep their refusal with the same code.
+    assert_error_code(
+        read_terminal(&db, &future.id),
+        "NIR1_GENERATION_BINDING_VERSION_UNSUPPORTED",
+    );
+    // A malformed terminal of a known row still fails the read.
+    db.with_conn(|conn| {
+        conn.execute(
+            "UPDATE nir1_generation_attempts SET terminal_digest=?2 WHERE id=?1",
+            params![known.id, test_digest("tampered")],
+        )?;
+        Ok(())
+    })
+    .expect("tamper");
+    let mut caller_budget = history_budget();
+    assert!(with_snapshot(&db, &mut caller_budget, |reader, budget| {
+        reader.read_terminal(budget, &known.id)
+    })
+    .is_err());
+}
+
+/// The enumeration reads `session_id` and uses only the session index: no
+/// project-wide scan and no scan of `binding_json`.
+#[test]
+fn history_enumeration_statements_search_the_session_index() {
+    let db = database(Path::new(":memory:"));
+    let plans = db
+        .with_read_transaction(|conn| {
+            let mut plans = Vec::new();
+            for sql in [
+                "SELECT 1 FROM nir1_generation_attempts
+                 WHERE project_id=?1 AND session_id=?2 LIMIT ?3",
+                "SELECT rowid,octet_length(id),octet_length(binding_json),created_at_ms
+                 FROM nir1_generation_attempts
+                 WHERE project_id=?1 AND session_id=?2
+                 ORDER BY created_at_ms DESC, id ASC LIMIT ?3",
+            ] {
+                let mut statement = conn.prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+                let details = statement
+                    .query_map(params!["p", "s", 3], |row| row.get::<_, String>(3))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                plans.push(details);
+            }
+            Ok(plans)
+        })
+        .expect("query plans");
+    for details in plans {
+        assert!(
+            details.iter().any(|detail| detail
+                .starts_with("SEARCH nir1_generation_attempts USING")
+                && detail.contains("idx_nir1_generation_attempts_session")),
+            "{details:?}"
+        );
+        assert!(
+            !details
+                .iter()
+                .any(|detail| detail.starts_with("SCAN nir1_generation_attempts")),
+            "{details:?}"
+        );
+    }
+}
+
 #[test]
 fn history_malformed_binding_still_aborts_the_whole_read() {
     let db = database(Path::new(":memory:"));

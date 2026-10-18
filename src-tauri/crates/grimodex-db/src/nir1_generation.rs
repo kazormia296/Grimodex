@@ -3240,7 +3240,7 @@ where
         created_at_ms: stored.created_at_ms,
         expires_at_ms: stored.expires_at_ms,
         claimed_at_ms: stored.claimed_at_ms,
-        terminal: read_terminal_in_tx_with_reserve(conn, id, reserve, false, cancellation)?,
+        terminal: read_terminal_in_tx_with_reserve(conn, id, reserve, false, cancellation, false)?,
     }))
 }
 
@@ -3668,6 +3668,7 @@ impl<'connection> GenerationHistorySnapshotReader<'connection> {
                 &mut reserve,
                 true,
                 Some(&self.cancellation),
+                true,
             )
         })() {
             Ok(value) => value,
@@ -4867,15 +4868,21 @@ fn receipt_digest(terminal: &StoredTerminal) -> Result<String> {
 
 fn read_terminal_in_tx(conn: &Connection, id: &str) -> Result<Option<StoredTerminal>> {
     let mut no_reserve = |_bytes: usize| Ok(());
-    read_terminal_in_tx_with_reserve(conn, id, &mut no_reserve, true, None)
+    read_terminal_in_tx_with_reserve(conn, id, &mut no_reserve, true, None, false)
 }
 
+/// `unsupported_version_is_no_receipt` is true only for the history snapshot
+/// reader's stand-alone terminal read (K4/3 section 6): a row whose binding is
+/// of an unknown version has no usable receipt (`Ok(None)`), so a candidate
+/// that adopts its output is excluded without failing the whole read. The
+/// claim, recovery and owner readers keep the strict binding parse.
 fn read_terminal_in_tx_with_reserve<F>(
     conn: &Connection,
     id: &str,
     reserve: &mut F,
     charge_attempt_metadata: bool,
     cancellation: Option<&GenerationHistorySnapshotCancellation>,
+    unsupported_version_is_no_receipt: bool,
 ) -> Result<Option<StoredTerminal>>
 where
     F: FnMut(usize) -> Result<()>,
@@ -4913,6 +4920,24 @@ where
     if charge_attempt_metadata {
         reserve(attempt_metadata_materialization_bytes_in_tx(conn, id)?)?;
     }
+    // The binding is read before the terminal so a row of a later build is
+    // not parsed against this build's terminal shape.
+    let early_attempt = if unsupported_version_is_no_receipt {
+        let attempt = read_attempt_metadata_in_tx(conn, id)?;
+        if matches!(
+            read_stored_binding_lenient(
+                &attempt.binding_json,
+                &attempt.project_id,
+                &attempt.session_id,
+            )?,
+            LenientAttemptBinding::UnsupportedVersion
+        ) {
+            return Ok(None);
+        }
+        Some(attempt)
+    } else {
+        None
+    };
     let terminal_bytes = match (json_length, digest_length) {
         (Some(json_length), Some(digest_length)) => sum_materialization_bytes([
             bounded_sqlite_length(
@@ -4958,7 +4983,10 @@ where
         terminal.failure_classification.as_ref(),
         &terminal.retry_classification,
     )?;
-    let attempt = read_attempt_metadata_in_tx(conn, id)?;
+    let attempt = match early_attempt {
+        Some(attempt) => attempt,
+        None => read_attempt_metadata_in_tx(conn, id)?,
+    };
     if let Some(cancellation) = cancellation {
         cancellation.checkpoint()?;
     }
