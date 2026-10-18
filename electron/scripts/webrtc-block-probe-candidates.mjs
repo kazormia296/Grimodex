@@ -146,6 +146,12 @@ export const CANDIDATES = {
   "al0-final-real": { cm: { dns: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
   "al3-final-real": { cm: { dns: true, gvt1: true, localhostRows: true, target: "default", policy: POLICY, proxy: AL3_PROXY, resolverSwitch: RULES_AL3, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true },
   // 辞書の取得（spellchecker を有効にして起こす）。AL-0 は取得できず、AL-3 は redirector までで redirect 先が止まる見込み
+  // ── K3/3 R8: net log の host resolver のイベントの host の形（拒否された名前は ~NOTFOUND に書き換わる）と RS-1 の行 ──
+  // 閉じ込めなし（正の対照）と AL-0 の最終構成。行列は al0-final-real と同じ 111 行に RS-1 の行（rs1）を足す
+  "nl-baseline": { cm: { dns: true, gvt1: true, localhostRows: true, rs1: true }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  "nl-al0-final": { cm: { dns: true, gvt1: true, localhostRows: true, rs1: true, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, netLog: true },
+  // 行列なし（renderer の試行なし）の AL-0。起動と辞書の要求だけで net log に出る host
+  "nl-al0-idle": { cm: { noProbes: true, spellcheck: true, waitMs: 6000, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, netLog: true },
   "al0-dict": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: AL0_PROXY, resolverSwitch: RULES_AL0, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, netLog: true },
   "al3-dict": { cm: { noProbes: true, spellcheck: true, waitMs: 9000, target: "default", policy: POLICY, proxy: AL3_PROXY, resolverSwitch: RULES_AL3, resolveHostTests: SELFCHECK_HOSTS }, args: [], realNetwork: true, dnsLog: true, netLog: true },
   // 更新（確認と asset の redirect）が AL-0 でも通ること

@@ -173,7 +173,7 @@ async function main() {
   const prefs = contents.getLastWebPreferences();
 
   await contents.executeJavaScript(
-    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1, localhost: !!cm.localhostRows })}`,
+    `globalThis.__probe = ${JSON.stringify({ nonce, ports: cfg.ports, lan: cfg.lan, quick: !!cm.quick, dns: !!cm.dns, gvt1: !!cm.gvt1, localhost: !!cm.localhostRows, rs1: !!cm.rs1 })}`,
   );
   const script = fs.readFileSync(env.PROBE_RENDERER_SCRIPT, "utf8");
   let rendererResults;

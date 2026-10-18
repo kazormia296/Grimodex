@@ -190,6 +190,24 @@
     }
   }
 
+  // ── RS-1（更新の GitHub の 3 host と localhost）を TURN／STUN の host にした行と、その名前への dns-prefetch ──
+  // 期待値: canary への到達 0、TCP は proxy 宛、UDP 系は proxy 0（K3/3 R8）。名前そのものは固定で、攻撃者が選べる文字がない
+  if (globalThis.__probe.rs1) {
+    for (const host of ["github.com", "objects.githubusercontent.com", "release-assets.githubusercontent.com", "localhost"]) {
+      for (const proto of ["stun", "turn-udp", "turn-tcp", "turns"]) {
+        await settle(`rs1.${proto}.${host}`, () => rtcAttempt(RTCPeerConnection, proto, host, proto === "turns" ? 443 : 3478));
+      }
+      await settle(`rs1.dns-prefetch.${host}`, async () => {
+        const l = document.createElement("link");
+        l.rel = "dns-prefetch";
+        l.href = `//${host}`;
+        document.head.append(l);
+        await wait(900);
+        return "link:dns-prefetch";
+      }, 3000);
+    }
+  }
+
   // ── DNS だけが出る経路（名前解決の観測用。DNS の記録層で見る。--dns-log で有効）────────────
   if (globalThis.__probe.dns) {
     const hint = (id, rel, mk, extra = {}) =>

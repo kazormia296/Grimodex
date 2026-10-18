@@ -312,7 +312,7 @@ function runElectron({ work, bundle, cfg, args }) {
   });
 }
 
-function netLogAlerts(netLogPath) {
+function netLogAlerts(netLogPath, nonce = "") {
   if (!fs.existsSync(netLogPath)) return null;
   let text = fs.readFileSync(netLogPath, "utf8");
   let log;
@@ -324,8 +324,18 @@ function netLogAlerts(netLogPath) {
   const urls = new Set();
   const proxyInfos = new Set();
   const gvt1 = new Set();
+  // host resolver のイベント（HOST_RESOLVER_MANAGER_REQUEST／JOB）の host。scheme と port を外して正規化し、種類ごとに数える
+  const hrEvents = { REQUEST: new Map(), JOB: new Map() };
+  const hrRaw = new Map();
   for (const e of log.events ?? []) {
     const name = typeNames[e.type];
+    const hm = /^HOST_RESOLVER_MANAGER_(REQUEST|JOB)$/.exec(name ?? "");
+    if (hm && e.params?.host != null) {
+      const raw = String(e.params.host);
+      const norm = raw.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/:\d+$/, "").replace(/^\[(.*)\]$/, "$1").toLowerCase();
+      hrEvents[hm[1]].set(norm, (hrEvents[hm[1]].get(norm) ?? 0) + 1);
+      hrRaw.set(raw, (hrRaw.get(raw) ?? 0) + 1);
+    }
     if (name === "PAC_JAVASCRIPT_ALERT") alerts.push(e.params?.message);
     if (name === "URL_REQUEST_START_JOB" || name === "URL_REQUEST_REDIRECTED") {
       const u = e.params?.url ?? e.params?.location;
@@ -336,7 +346,14 @@ function netLogAlerts(netLogPath) {
     const m = j.match(/[a-z0-9.-]*gvt[12]\.com[^"\\]*/g);
     if (m) for (const x of m) gvt1.add(`${name}:${x}`.slice(0, 160));
   }
-  return { alerts: [...new Set(alerts)], gvt: [...gvt1].slice(0, 20), urls: [...urls].slice(0, 30), proxyInfos: [...proxyInfos].slice(0, 10) };
+  const hrObj = (m) => Object.fromEntries([...m.entries()].sort().map(([k, v]) => [nonce ? k.split(nonce).join("<n>") : k, v]));
+  const hostResolver = {
+    requestHosts: hrObj(hrEvents.REQUEST),
+    jobHosts: hrObj(hrEvents.JOB),
+    rawRequestHosts: hrObj(hrRaw),
+    nonceBearing: nonce ? [...hrRaw.keys()].filter((k) => k.includes(nonce)).length : null,
+  };
+  return { hostResolver, alerts: [...new Set(alerts)], gvt: [...gvt1].slice(0, 20), urls: [...urls].slice(0, 30), proxyInfos: [...proxyInfos].slice(0, 10) };
 }
 
 async function main() {
@@ -466,7 +483,7 @@ async function main() {
       dohQueryCount: doh ? doh.queries.length : null,
       envProxyConnects: fakeHttp ? fakeHttp.hits : null,
       dictionaries: result.dictionaries ?? [],
-      netLog: args.netLog ? netLogAlerts(run.netLog) : null,
+      netLog: args.netLog ? netLogAlerts(run.netLog, nonce) : null,
       dnsAll: dnsEvents ? [...new Set(dnsEvents.map((e) => `${e.name}${e.rc === 0 ? "[rc0]" : ""}`))] : null,
       dnsRowCount: dnsEvents ? rows.filter((r) => (r.dnsNames ?? []).some((n) => n.includes("<n>") || /example\.org|gvt1|github/.test(n))).length : null,
       timedOut: run.timedOut,
