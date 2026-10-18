@@ -415,7 +415,10 @@ fn history_legacy_v1_binding_is_excluded_not_a_snapshot_failure() {
     assert_eq!(headers[1].gate(), None);
     assert!(known_read.history_gate().is_none());
     assert_eq!(known_read.into_stored().expect("stored").inputs.len(), 1);
+    // The legacy row's ordinal 0 row is unreadable here, so it cannot be
+    // counted: the session is ambiguous rather than the count being exact.
     assert_eq!(legacy_count.count, 0);
+    assert!(legacy_count.ambiguous);
     assert_eq!(known_count.attempt_ids, ["known"]);
 }
 
@@ -607,8 +610,9 @@ fn ordinal_zero_attempt_count_reads_only_listed_attempts() {
         vec![message_input(&target)],
     );
     make_known(&db, "t-other-session");
-    // A gated attempt is not read: its rows are unreadable and its ordinal 0
-    // would otherwise be a second attempt for `twice`.
+    // A gated attempt whose rows are unreadable cannot be counted; it makes
+    // the session ambiguous instead (the review finding of HC1-2: a gated
+    // second attempt must never leave an exact count of one).
     insert_row(
         &db,
         "gated",
@@ -663,12 +667,16 @@ fn ordinal_zero_attempt_count_reads_only_listed_attempts() {
     assert_eq!(none.count, 0, "an attempt that was never created");
     assert_eq!(position.count, 1, "its own ordinal 0 attempt only");
     assert_eq!(position.attempt_ids, ["t-second-position"]);
-    assert_eq!(two.count, 2, "the gated row is not read, so not counted");
+    assert_eq!(two.count, 2, "the unreadable gated row cannot be counted");
     assert_eq!(two.attempt_ids, ["twice-1", "twice-2"]);
+    assert!(
+        once.ambiguous && two.ambiguous,
+        "the unreadable row makes every count a lower bound"
+    );
     assert_eq!(repeat, once);
-    // Four listed attempts have a known context (t-once, t-second-position,
-    // twice-1, twice-2): one ordinal 0 row each is debited.
-    assert_eq!(spent.0, references_before.0 - 4);
+    // Five listed attempts in the session (t-once, t-second-position, gated,
+    // twice-1, twice-2) have their ordinal 0 row read and debited once each.
+    assert_eq!(spent.0, references_before.0 - 5);
     assert!(spent.1 < references_before.1);
 
     // The reference ledger is a hard limit: three rows cannot read four.
@@ -681,6 +689,100 @@ fn ordinal_zero_attempt_count_reads_only_listed_attempts() {
                 .map(|_| ())
         }),
         "NIR1_GENERATION_REF_LIMIT",
+    );
+}
+
+#[test]
+fn ordinal_zero_count_includes_gated_and_legacy_attempts_and_marks_unknown_versions_ambiguous() {
+    // K4/3 section 6, the exactly-one rule: one gated (or legacy) attempt and
+    // one known attempt holding the same Human at ordinal 0 are two attempts.
+    let db = database(Path::new(":memory:"));
+    let project = "generation-project";
+    let human_version = human(&db, "hc1-ordinal-count", "counted");
+    // The legacy fixture binding fixes the default session.
+    let sessions = ["hc1-count-gated", "generation-session", "hc1-count-future"];
+    for session in [sessions[0], sessions[2]] {
+        add_session(&db, project, session);
+    }
+    // Null slot (gated) first in the order, then a known attempt.
+    insert_row(
+        &db,
+        "g-gated",
+        2_000,
+        project,
+        sessions[0],
+        vec![message_input(&human_version)],
+    );
+    insert_row(
+        &db,
+        "g-known",
+        1_000,
+        project,
+        sessions[0],
+        vec![message_input(&human_version)],
+    );
+    make_known(&db, "g-known");
+    // Legacy binding with readable rows.
+    insert_row(
+        &db,
+        "l-legacy",
+        2_000,
+        project,
+        sessions[1],
+        vec![message_input(&human_version)],
+    );
+    make_legacy(&db, "l-legacy");
+    insert_row(
+        &db,
+        "l-known",
+        1_000,
+        project,
+        sessions[1],
+        vec![message_input(&human_version)],
+    );
+    make_known(&db, "l-known");
+    // An unknown bindingVersion cannot be counted.
+    insert_row(
+        &db,
+        "f-future",
+        2_000,
+        project,
+        sessions[2],
+        vec![message_input(&human_version)],
+    );
+    let mut future = stored_json(&db, "f-future");
+    future["bindingVersion"] = json!(3);
+    store_binding_json(&db, "f-future", &canonical_binding(&future));
+    insert_row(
+        &db,
+        "f-known",
+        1_000,
+        project,
+        sessions[2],
+        vec![message_input(&human_version)],
+    );
+    make_known(&db, "f-known");
+
+    let mut caller_budget = budget_for_reads();
+    let (gated, legacy, future_session) =
+        with_snapshot(&db, &mut caller_budget, |reader, budget| {
+            Ok((
+                reader.ordinal_zero_attempts(budget, project, sessions[0], &human_version.id)?,
+                reader.ordinal_zero_attempts(budget, project, sessions[1], &human_version.id)?,
+                reader.ordinal_zero_attempts(budget, project, sessions[2], &human_version.id)?,
+            ))
+        })
+        .expect("counts");
+    assert_eq!(gated.count, 2, "a gated attempt is counted");
+    assert_eq!(gated.attempt_ids, ["g-gated", "g-known"]);
+    assert!(!gated.ambiguous);
+    assert_eq!(legacy.count, 2, "a legacy attempt is counted");
+    assert_eq!(legacy.attempt_ids, ["l-legacy", "l-known"]);
+    assert!(!legacy.ambiguous);
+    assert_eq!(future_session.attempt_ids, ["f-known"]);
+    assert!(
+        future_session.ambiguous,
+        "an unknown-version attempt makes the count ambiguous"
     );
 }
 

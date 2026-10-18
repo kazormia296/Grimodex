@@ -39,7 +39,15 @@ use std::sync::Arc;
 pub(super) type EnumerationCache =
     BTreeMap<(String, String), Arc<[GenerationHistoryAttemptHeader]>>;
 pub(super) type CaptureCache = BTreeMap<String, Option<GenerationHistoryCapture>>;
-pub(super) type OrdinalZeroCache = BTreeMap<(String, String), BTreeMap<String, Vec<String>>>;
+pub(super) type OrdinalZeroCache = BTreeMap<(String, String), OrdinalZeroIndex>;
+
+/// The per-session ordinal-0 index: attempt ids by Human version, and whether
+/// some attempt of the session could not be counted.
+#[derive(Debug, Default)]
+pub(super) struct OrdinalZeroIndex {
+    by_version: BTreeMap<String, Vec<String>>,
+    ambiguous: bool,
+}
 
 const ENUMERATION_CANDIDATE_LIMIT_ERROR: &str = "NIR1_GENERATION_HISTORY_CANDIDATE_LIMIT";
 const ENUMERATION_ATTEMPT_LIMIT_ERROR: &str = "NIR1_GENERATION_HISTORY_LIMIT";
@@ -194,6 +202,12 @@ pub(crate) struct OrdinalZeroAttempts {
     pub count: usize,
     /// The attempt ids in the enumeration's total order.
     pub attempt_ids: Vec<String>,
+    /// True when an attempt of the session could not be counted: a row of an
+    /// unknown `bindingVersion` (its reference format is unknown), or a
+    /// gated or legacy row whose ordinal 0 input row is unreadable. The
+    /// count is then only a lower bound for every Human of the session, and
+    /// the exactly-one rule must not hold (fail closed).
+    pub ambiguous: bool,
 }
 
 impl GenerationHistorySnapshotReader<'_> {
@@ -422,13 +436,22 @@ impl GenerationHistorySnapshotReader<'_> {
     /// snapshot, from the enumeration, by reading each usable attempt's
     /// ordinal 0 input row; the schema gets no index.
     ///
-    /// An attempt whose binding is legacy, of an unknown version, or whose
-    /// history slot is not a known context is not read (its reference rows
-    /// stay unread, as in the history gate) and so does not count. The
-    /// ordinal 0 rows are debited from the reference ledger once per turn.
-    /// Counting looks at the row's target only: whether ordinal 0 is a
-    /// current-turn use is the requalification's rule, and counting more is
-    /// the fail-closed side of the exactly-one rule.
+    /// Every listed attempt counts, including one whose history slot is not
+    /// a known context (null, unavailable, binding-limit) and one with a
+    /// legacy binding: the exactly-one rule exists to fail closed on a second
+    /// attempt, and a second attempt that this build would not use is still a
+    /// second attempt. Their ordinal 0 input row is read by primary key (a
+    /// version 2 binding's references parse as current, a legacy binding's
+    /// as legacy); this is a different path from `read_attempt`, whose gate
+    /// keeps the traversal from reading a gated attempt's rows. A row of an
+    /// unknown `bindingVersion` cannot be counted without reading a
+    /// reference of an unknown format, and a gated or legacy row whose
+    /// ordinal 0 row is unreadable cannot be counted either: both set
+    /// `ambiguous`, which the caller treats as "not exactly one" for every
+    /// Human of the session. The ordinal 0 rows are debited from the
+    /// reference ledger once per turn. Counting looks at the row's target
+    /// only: whether ordinal 0 is a current-turn use is the
+    /// requalification's rule, and counting more is the fail-closed side.
     pub(crate) fn ordinal_zero_attempts(
         &mut self,
         budget: &mut GenerationHistoryReadBudget,
@@ -450,15 +473,15 @@ impl GenerationHistorySnapshotReader<'_> {
             self.checkpoint()?;
             self.ordinal_zero.insert(key.clone(), index);
         }
-        let attempt_ids = self
-            .ordinal_zero
-            .get(&key)
-            .and_then(|index| index.get(human_version_id))
+        let index = self.ordinal_zero.get(&key);
+        let attempt_ids = index
+            .and_then(|index| index.by_version.get(human_version_id))
             .cloned()
             .unwrap_or_default();
         Ok(OrdinalZeroAttempts {
             count: attempt_ids.len(),
             attempt_ids,
+            ambiguous: index.is_some_and(|index| index.ambiguous),
         })
     }
 
@@ -466,13 +489,21 @@ impl GenerationHistorySnapshotReader<'_> {
         &mut self,
         budget: &mut GenerationHistoryReadBudget,
         headers: &[GenerationHistoryAttemptHeader],
-    ) -> Result<BTreeMap<String, Vec<String>>> {
-        let mut index: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    ) -> Result<OrdinalZeroIndex> {
+        let mut index = OrdinalZeroIndex::default();
         for header in headers {
             self.checkpoint()?;
-            if header.gate().is_some() {
+            // A binding of an unknown version has references of an unknown
+            // format: not counted, so the session is ambiguous.
+            if header.binding
+                == HistoryHeaderBinding::Excluded(
+                    HistoryContextGateReason::UnsupportedBindingVersion,
+                )
+            {
+                index.ambiguous = true;
                 continue;
             }
+            let known = header.gate().is_none();
             let bytes: Option<i64> = self
                 .connection
                 .query_row(
@@ -497,13 +528,26 @@ impl GenerationHistorySnapshotReader<'_> {
                 |row| row.get(0),
             )?;
             ensure!(raw.len() == bytes, "NIR1_GENERATION_REF_LENGTH_CHANGED");
-            let target =
-                match parse_versioned_reference::<InputReference, LegacyInputReferenceV1>(&raw)? {
-                    VersionedReference::Current(reference) => reference.target,
-                    VersionedReference::Legacy(reference) => reference.target,
-                };
+            let parsed = parse_versioned_reference::<InputReference, LegacyInputReferenceV1>(&raw);
+            let target = match parsed {
+                Ok(VersionedReference::Current(reference)) => reference.target,
+                Ok(VersionedReference::Legacy(reference)) => reference.target,
+                // A usable attempt's malformed row aborts the read, as
+                // before. A gated or legacy attempt is not used anyway, so
+                // its unreadable row must not stop the turn: it only makes
+                // the count unknown.
+                Err(_) if !known => {
+                    index.ambiguous = true;
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             if let InputTarget::Message { version_id, .. } = target {
-                index.entry(version_id).or_default().push(header.id.clone());
+                index
+                    .by_version
+                    .entry(version_id)
+                    .or_default()
+                    .push(header.id.clone());
             }
         }
         Ok(index)
