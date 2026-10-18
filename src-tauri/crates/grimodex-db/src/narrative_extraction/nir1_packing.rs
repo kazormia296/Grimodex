@@ -60,9 +60,10 @@ pub mod final_request_eval;
 pub mod graph_candidates;
 #[cfg(feature = "native-current-human-capture")]
 pub use graph_candidates::{
-    graph_evidence_ref, graph_index_reference, NativeNir1GraphBinding, NativeNir1GraphExclusion,
-    NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome, Nir1GraphCandidateBinding,
-    Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason,
+    graph_evidence_ref, graph_index_reference, read_nir1_graph_seed, read_nir1_graph_seed_in_tx,
+    NativeNir1GraphBinding, NativeNir1GraphExclusion, NativeNir1GraphGroup, NativeNir1GraphInput,
+    NativeNir1GraphOutcome, Nir1GraphCandidateBinding, Nir1GraphCandidateEdge,
+    Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason, Nir1GraphSeedRead,
     GRAPH_EVIDENCE_REF_FORM, GRAPH_INDEX_REF_FORM,
 };
 

@@ -34,15 +34,18 @@ use grimodex_core::narrative_nir1::{
     CandidateContextItem, CandidatePackingRequest, ContextItemKind, EntityInput, PackedContext,
     PackingPurpose, MAX_GRAPH_EDGES, MAX_PACKING_ITEMS,
 };
-use rusqlite::Connection;
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::{
     candidate_binding_digest, group_parts, material_evidence_map, reader_part_name,
     relation_group_material, NativeNir1AuthorityBinding, NativeNir1ExcludedRevision,
     NativeNir1RevisionExclusionReason, NativePackingInputBudget,
 };
+use crate::narrative_extraction::nir1_graph::c_query_worker::REQUEST_BYTES;
 use crate::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
 use crate::narrative_extraction::nir1_graph::{read_nir1_graph_seal, Nir1GraphSealRead};
+use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
+use crate::state::ActiveWorkspaceSnapshot;
 
 const GRAPH_CANDIDATE_BINDING_KIND: &str = "nir1.native.graph-evidence@1";
 
@@ -187,6 +190,84 @@ impl Nir1GraphCandidates {
     }
 }
 
+/// What D-final's seed rule found for a query Scene (DI-1a, DR-DI1A-6).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum Nir1GraphSeedRead {
+    /// The Scene has no pinned Entity: nothing to ask the Graph about.
+    NoPin,
+    /// The deterministic seed: of the Entities pinned to the Scene, the one
+    /// with the smallest `(created_at, entry_id)`.
+    Pinned(String),
+    /// The chosen pin's Entity ID is longer than a Graph request can carry.
+    /// It is reported, never cut.
+    TooLarge,
+}
+
+/// D-final's seed rule, inside the caller's read transaction.
+///
+/// The seed is the Entity pinned to the query Scene with the smallest
+/// `(created_at, entry_id)`. The Scene must be a live scene and the Entity a
+/// Codex entry of the same project. A pin is a locator only: it is neither
+/// Relation evidence nor an eligibility input, and the Graph's A2/A3
+/// requalification stays the authority for everything that follows.
+pub fn read_nir1_graph_seed_in_tx(
+    conn: &Connection,
+    project_id: &str,
+    query_scene_id: &str,
+) -> Result<Nir1GraphSeedRead> {
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1_GRAPH_SEED_REQUIRES_READ_TRANSACTION"
+    );
+    let limit = i64::try_from(REQUEST_BYTES)?;
+    let row = conn
+        .query_row(
+            "SELECT octet_length(p.entry_id),
+                    CASE WHEN octet_length(p.entry_id) <= ?3 THEN p.entry_id END
+               FROM scene_codex_pins p
+               JOIN tree_nodes scene
+                 ON scene.id = p.scene_id AND scene.project_id = ?1
+                AND scene.node_type = 'scene' AND scene.archived_at IS NULL
+               JOIN codex_entries entry
+                 ON entry.id = p.entry_id AND entry.project_id = ?1
+              WHERE p.scene_id = ?2
+              ORDER BY p.created_at, p.entry_id
+              LIMIT 1",
+            params![project_id, query_scene_id, limit],
+            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
+        )
+        .optional()?;
+    Ok(match row {
+        None => Nir1GraphSeedRead::NoPin,
+        Some((_, None)) => Nir1GraphSeedRead::TooLarge,
+        Some((_, Some(entry_id))) if entry_id.is_empty() => Nir1GraphSeedRead::NoPin,
+        Some((_, Some(entry_id))) => Nir1GraphSeedRead::Pinned(entry_id),
+    })
+}
+
+/// The short read that precedes D-final's Graph request: the same rule as
+/// [`read_nir1_graph_seed_in_tx`] in its own bounded participant read. The
+/// database mutex is returned when it finishes, so the request and the wait
+/// that follow hold no database lock.
+pub fn read_nir1_graph_seed(
+    workspace: &ActiveWorkspaceSnapshot,
+    project_id: &str,
+    query_scene_id: &str,
+    sql_budget: ParticipantSqlOperationBudget,
+) -> Result<Nir1GraphSeedRead> {
+    let checkpoint_budget = sql_budget.clone();
+    workspace.db().with_participant_read_transaction_bounded(
+        workspace.participant(),
+        sql_budget,
+        |conn| {
+            checkpoint_budget.check(workspace.participant())?;
+            let seed = read_nir1_graph_seed_in_tx(conn, project_id, query_scene_id)?;
+            checkpoint_budget.check(workspace.participant())?;
+            Ok(seed)
+        },
+    )
+}
+
 /// Why the whole Graph contributed nothing to this request. The set is closed.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Nir1GraphDropReason {
@@ -195,6 +276,9 @@ pub enum Nir1GraphDropReason {
     NotNativeSelection,
     /// The candidate was made for another project or another query Scene.
     ProjectOrSceneMismatch,
+    /// The seed rule, read again in this snapshot, names another Entity (or
+    /// none) than the one the request was made for.
+    SeedChanged,
     /// B has no current seal in this snapshot (dirty, stale or not built).
     SealUnavailable,
     /// B is sealed at another generation than the one the worker answered
@@ -210,6 +294,7 @@ impl Nir1GraphDropReason {
         match self {
             Self::NotNativeSelection => "not-native-selection",
             Self::ProjectOrSceneMismatch => "project-or-scene-mismatch",
+            Self::SeedChanged => "seed-changed",
             Self::SealUnavailable => "seal-unavailable",
             Self::SealMismatch => "seal-mismatch",
             Self::WouldRemoveRequiredAcceptedIr => "would-remove-required-accepted-ir",
@@ -556,7 +641,15 @@ pub(super) fn pool_graph_candidates(
             Nir1GraphDropReason::ProjectOrSceneMismatch,
         ));
     }
+    // The seed is read again in this snapshot with the rule that chose it.
     checkpoint()?;
+    let seed_now = read_nir1_graph_seed_in_tx(conn, ctx.project_id, ctx.query_scene_id)?;
+    checkpoint()?;
+    if seed_now != Nir1GraphSeedRead::Pinned(candidates.seed_entity_id.clone()) {
+        return Ok(NativeNir1GraphOutcome::dropped(
+            Nir1GraphDropReason::SeedChanged,
+        ));
+    }
     let seal = read_nir1_graph_seal(conn, ctx.project_id)?;
     checkpoint()?;
     let Some(seal) = seal else {

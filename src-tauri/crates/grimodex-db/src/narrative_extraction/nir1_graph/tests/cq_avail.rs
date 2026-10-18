@@ -2241,3 +2241,68 @@ fn native_worker_registers_multiple_product_shaped_revisions() -> Result<()> {
     }
     Ok(())
 }
+
+// DI-1a (DR-DI1A-5b): what D-final's wait for a READY costs. A rebuild after a
+// capture's commit is a new worker child's `prepare` (S0 stamp, spawn,
+// registration) followed by one query; this prints each repetition's two
+// durations for a typical project and for projects near the practical
+// capacity, so the budget W of the wait is chosen from measurements. It
+// asserts nothing about time: W is a decision, the numbers are its evidence.
+// Run it with a built normal worker (NIR1_C_QUERY_WORKER_BIN).
+#[test]
+#[ignore = "requires a built normal worker binary (NIR1_C_QUERY_WORKER_BIN); prints timings; builds its own projects"]
+fn native_worker_rebuild_cost_for_the_d_final_wait() -> Result<()> {
+    const REPETITIONS: usize = 10;
+    let projects: Vec<(&str, Fixture, &str)> = vec![
+        (
+            "novel 10 scenes",
+            novel_fixture(10, 5, ReviewMode::Scene)?.fixture,
+            "m1",
+        ),
+        (
+            "2 same-Entity reviews of 2,094,880 B",
+            same_entity_product_fixture(2, 682_000)?,
+            "v00",
+        ),
+        (
+            "30 scenes with differing casts",
+            novel_fixture(30, 5, ReviewMode::Scene)?.fixture,
+            "x1",
+        ),
+    ];
+    for (label, fixture, seed) in &projects {
+        let mut prepares = Vec::new();
+        let mut queries = Vec::new();
+        for _ in 0..REPETITIONS {
+            with_real_worker(fixture, |owner| {
+                let started = Instant::now();
+                owner.prepare(PROJECT)?;
+                prepares.push(started.elapsed());
+                let started = Instant::now();
+                let outcome =
+                    owner.query_projected(&request_for(seed, "nir1"), &AtomicBool::new(false));
+                queries.push(started.elapsed());
+                if let Err(error) = outcome {
+                    eprintln!("{label}: the query was refused: {error:#}");
+                }
+                let _ = owner.retirement();
+                Ok(())
+            })?;
+        }
+        prepares.sort();
+        queries.sort();
+        let ms = |durations: &[Duration]| {
+            durations
+                .iter()
+                .map(|duration| format!("{:.1}", duration.as_secs_f64() * 1000.0))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        eprintln!(
+            "W-measurement project=\"{label}\" n={REPETITIONS} prepare_ms=[{}] query_ms=[{}]",
+            ms(&prepares),
+            ms(&queries)
+        );
+    }
+    Ok(())
+}

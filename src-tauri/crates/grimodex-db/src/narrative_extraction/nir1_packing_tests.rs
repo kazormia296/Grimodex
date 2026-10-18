@@ -3578,6 +3578,18 @@ pub(in crate::narrative_extraction) mod di1a_graph {
                  VALUES (?1, 'semantic-index', ?2, 'fresh', 'none', ?3, '2026-10-19T00:00:00Z')",
                 params![RAW_SOURCE_PROJECT, INDEX_KEY, epoch],
             )?;
+            // D-final reads the seed again in its snapshot (DR-DI1A-6): the
+            // fixture's seed Entity is pinned to the query Scene.
+            conn.execute(
+                "INSERT OR IGNORE INTO codex_entries(id,project_id,type,name,summary,updated_at)
+                 VALUES (?1,?2,'character','Seed','Seed.','2026-10-19T00:00:00Z')",
+                params![SEED, RAW_SOURCE_PROJECT],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO scene_codex_pins(scene_id,entry_id,created_at)
+                 VALUES (?1,?2,'2026-10-19T00:00:00Z')",
+                params![RAW_SOURCE_SCENE, SEED],
+            )?;
             Ok(())
         })
     }
@@ -4036,6 +4048,99 @@ pub(in crate::narrative_extraction) mod di1a_graph {
             Some(Nir1GraphDropReason::SealUnavailable)
         );
         assert_pool_unchanged(&s, &pooled, bytes);
+        Ok(())
+    }
+
+    /// A-10 (db): the seed is the earliest pin of the query Scene, and a seed
+    /// that differs when the snapshot reads it again drops the Graph whole.
+    #[test]
+    fn the_seed_is_the_earliest_pin_and_a_changed_seed_drops_the_graph_whole() -> Result<()> {
+        use crate::narrative_extraction::{read_nir1_graph_seed_in_tx, Nir1GraphSeedRead};
+        let s = scenario()?;
+        let read = |scene: &str| -> Result<Nir1GraphSeedRead> {
+            s.db.with_read_transaction(|conn| {
+                read_nir1_graph_seed_in_tx(conn, RAW_SOURCE_PROJECT, scene)
+            })
+        };
+        let pin = |entry: &str, project: &str, created_at: &str| -> Result<()> {
+            s.db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO codex_entries(id,project_id,type,name,summary,updated_at)
+                     VALUES (?1,?2,'character','Pinned','Pinned.','2026-10-19T00:00:00Z')",
+                    params![entry, project],
+                )?;
+                conn.execute(
+                    "INSERT INTO scene_codex_pins(scene_id,entry_id,created_at) VALUES (?1,?2,?3)",
+                    params![RAW_SOURCE_SCENE, entry, created_at],
+                )?;
+                Ok(())
+            })
+        };
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned(SEED.into())
+        );
+        // A Scene without a pin has no seed; so does an unknown Scene.
+        assert_eq!(read("another-scene")?, Nir1GraphSeedRead::NoPin);
+        // The same candidates still pass while the seed is the pinned one.
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        assert_eq!(pooled.graph.as_ref().unwrap().dropped_reason(), None);
+
+        // A later pin does not take the seed; the same time breaks the tie by
+        // Entity ID; an earlier pin takes it.
+        pin("zz-later", RAW_SOURCE_PROJECT, "2026-12-31T00:00:00Z")?;
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned(SEED.into())
+        );
+        pin("aa-tie", RAW_SOURCE_PROJECT, "2026-10-19T00:00:00Z")?;
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned("aa-tie".into())
+        );
+        // Unpinning gives the seed back.
+        s.db.with_conn(|conn| {
+            conn.execute("DELETE FROM scene_codex_pins WHERE entry_id='aa-tie'", [])?;
+            Ok(())
+        })?;
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned(SEED.into())
+        );
+        // The request was made for SEED; the snapshot now names another one.
+        pin("0-earliest", RAW_SOURCE_PROJECT, "2026-01-01T00:00:00Z")?;
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(
+            outcome.dropped_reason(),
+            Some(Nir1GraphDropReason::SeedChanged)
+        );
+        assert!(outcome.groups().is_empty());
+        assert_pool_unchanged(&s, &pooled, bytes);
+        // No pin at all: the seed is gone.
+        s.db.with_conn(|conn| {
+            conn.execute("DELETE FROM scene_codex_pins", [])?;
+            Ok(())
+        })?;
+        assert_eq!(read(RAW_SOURCE_SCENE)?, Nir1GraphSeedRead::NoPin);
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        assert_eq!(
+            pooled.graph.as_ref().unwrap().dropped_reason(),
+            Some(Nir1GraphDropReason::SeedChanged)
+        );
+        assert_pool_unchanged(&s, &pooled, bytes);
+        // An Entity ID longer than a Graph request can carry is reported.
+        let huge = "e".repeat(8_193);
+        pin(&huge, RAW_SOURCE_PROJECT, "2026-01-01T00:00:00Z")?;
+        assert_eq!(read(RAW_SOURCE_SCENE)?, Nir1GraphSeedRead::TooLarge);
+        // The read needs a transaction: an autocommit connection is refused.
+        let refused = s.db.with_conn(|conn| {
+            read_nir1_graph_seed_in_tx(conn, RAW_SOURCE_PROJECT, RAW_SOURCE_SCENE)
+        });
+        assert!(refused
+            .unwrap_err()
+            .to_string()
+            .contains("NIR1_GRAPH_SEED_REQUIRES_READ_TRANSACTION"));
         Ok(())
     }
 

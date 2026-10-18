@@ -35,6 +35,9 @@ use grimodex_db::ParticipantSqlOperationBudget;
 use serde_json::json;
 
 use crate::nir1_generation_owner::Nir1CancelLookup;
+use crate::nir1_graph_dfinal::{
+    request_graph, DFinalGraphOutcome, GraphRequest, GraphRequestContext,
+};
 use crate::profile_egress::CallerIdentity;
 use crate::state::AppState;
 
@@ -59,7 +62,7 @@ const FIXED_TEMPLATE_REF: &str =
     "src/prompts/ja/chatSystemBase.txt+src/prompts/ja/chatSystemDataBoundaryReminder.txt";
 const FIXED_TEMPLATE_VERSION: &str = "nir1-local-chat-system-ja-v1";
 const MAX_PREPARED_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
-const PREPARATION_SQL_TIMEOUT: Duration = Duration::from_secs(20);
+pub(crate) const PREPARATION_SQL_TIMEOUT: Duration = Duration::from_secs(20);
 const PREPARATION_SQL_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
 
 #[derive(Clone, PartialEq)]
@@ -284,6 +287,12 @@ pub(crate) struct NativeAcceptedChatSubmission {
 }
 
 impl NativeAcceptedChatSubmission {
+    /// A test stops the submission the way a cancellation does.
+    #[cfg(test)]
+    pub(crate) fn stop_for_test(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
     pub(crate) fn message_version_id(&self) -> &str {
         self.capture.message_version_id()
     }
@@ -550,12 +559,12 @@ pub(crate) fn prepare_selected_local_chat_request(
         message_version_id,
         unsupported_inputs,
         generation,
-        None,
+        GraphSource::Request,
     )
 }
 
-/// The Native selection with a worker's Graph as text-free candidates. Test
-/// only until the request step of D-final exists.
+/// The Native selection with a Graph supplied by the test as text-free
+/// candidates, in place of the request step of D-final.
 #[cfg(test)]
 pub(crate) fn prepare_selected_local_chat_request_with_graph(
     state: Arc<AppState>,
@@ -573,7 +582,7 @@ pub(crate) fn prepare_selected_local_chat_request_with_graph(
         message_version_id,
         unsupported_inputs,
         generation,
-        graph,
+        GraphSource::Supplied(graph),
     )
 }
 
@@ -584,7 +593,7 @@ fn prepare_selected_with_graph(
     message_version_id: &NativeAcceptedChatSubmission,
     unsupported_inputs: UnsupportedInputIntent,
     generation: LocalGenerationIntent,
-    graph: Option<&Nir1GraphCandidates>,
+    graph: GraphSource<'_>,
 ) -> Result<NativeSelectedPreparedRequest> {
     unsupported_inputs.validate()?;
     generation.ensure_no_key()?;
@@ -605,6 +614,7 @@ fn prepare_selected_with_graph(
         request: prepared.request,
         scene_binding,
         expected_scope,
+        graph_outcome: prepared.graph_outcome,
         witness: PreparedInputsWitness {
             inputs: prepared.inputs,
         },
@@ -616,11 +626,19 @@ enum RevisionSource<'a> {
     /// The caller's list. A Revision that A2/A3 reports unavailable rejects
     /// the whole request (the DP-H rejection variant).
     Caller(&'a [String]),
-    /// The Native selection (DI-1c). An unavailable Revision is left out. The
-    /// optional value is a worker's Graph as text-free candidates; the
-    /// snapshot requalifies it (DI-1a). The product has no caller of it yet:
-    /// the request step of a later slice supplies it.
-    Native(Option<&'a Nir1GraphCandidates>),
+    /// The Native selection (DI-1c). An unavailable Revision is left out. It
+    /// is the only source that asks for a Graph (DI-1a).
+    Native(GraphSource<'a>),
+}
+
+/// Where the Graph of a Native selection comes from.
+enum GraphSource<'a> {
+    /// D-final asks the product owner before its participant read (S3).
+    Request,
+    /// A test supplies text-free candidates (or none) in place of the request.
+    /// The snapshot requalifies them either way.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Supplied(Option<&'a Nir1GraphCandidates>),
 }
 
 /// What one preparation produced. `expectations` exists for the Native
@@ -629,6 +647,9 @@ struct PreparedOutput {
     request: NativePreparedRequest,
     inputs: NativeNir1PreparedInputs,
     expectations: Option<(AttemptSceneBinding, Nir1ExpectedScope)>,
+    /// The kind of result of D-final's Graph step, computed in the body of the
+    /// preparation (DR-DI1A-8). `NotRequested` for the caller's Revision list.
+    graph_outcome: DFinalGraphOutcome,
 }
 
 /// A Native-selected prepared request with the values that the create and the
@@ -638,10 +659,17 @@ pub(crate) struct NativeSelectedPreparedRequest {
     request: NativePreparedRequest,
     scene_binding: AttemptSceneBinding,
     expected_scope: Nir1ExpectedScope,
+    graph_outcome: DFinalGraphOutcome,
     witness: PreparedInputsWitness,
 }
 
 impl NativeSelectedPreparedRequest {
+    /// The kind of result D-final's Graph step ended with (counts and closed
+    /// reasons only).
+    pub(crate) fn graph_outcome(&self) -> DFinalGraphOutcome {
+        self.graph_outcome
+    }
+
     pub(crate) fn into_parts(
         self,
     ) -> (
@@ -864,6 +892,32 @@ fn prepare_local_chat_request_inner(
     sql_budget.check_workspace(&workspace)?;
     let send_classification = send_classification_of(&route)?;
 
+    // DI-1a: the Graph is asked for, and waited for, before the participant
+    // read opens: no database mutex, SQLite transaction, profile or lifecycle
+    // lock is held here, and `with_authorized_preparation` has returned. Only
+    // the Native selection asks; the caller's Revision list never does.
+    let (graph_request, requested_graph) = match &revisions {
+        RevisionSource::Native(GraphSource::Request) => request_graph(&GraphRequestContext {
+            state: &state,
+            workspace: &workspace,
+            project_id: message_version_id.capture.project_id(),
+            query_scene_id,
+            stop: message_version_id.stop.as_ref(),
+            route_revocation_generation,
+            sql_budget: sql_budget.clone(),
+        })?,
+        RevisionSource::Native(GraphSource::Supplied(Some(_))) => (GraphRequest::Reached, None),
+        RevisionSource::Native(GraphSource::Supplied(None)) | RevisionSource::Caller(_) => (
+            GraphRequest::Skipped(DFinalGraphOutcome::NotRequested),
+            None,
+        ),
+    };
+    let graph_candidates = match &revisions {
+        RevisionSource::Native(GraphSource::Supplied(supplied)) => *supplied,
+        _ => requested_graph.as_ref(),
+    };
+    sql_budget.check_workspace(&workspace)?;
+
     #[cfg(test)]
     before_initial_read()?;
     sql_budget.check_workspace(&workspace)?;
@@ -890,7 +944,7 @@ fn prepare_local_chat_request_inner(
             )?,
             None,
         ),
-        RevisionSource::Native(graph) => {
+        RevisionSource::Native(_) => {
             let (projection, scene_binding, expected_scope) =
                 read_and_pack_native_nir1_selected_inputs(
                     &workspace,
@@ -899,7 +953,7 @@ fn prepare_local_chat_request_inner(
                     message_version_id.capture.chat_session_id(),
                     &message_version_id.capture,
                     query_scene_id,
-                    graph,
+                    graph_candidates,
                     sql_budget.clone(),
                     context_budget,
                 )?
@@ -909,6 +963,9 @@ fn prepare_local_chat_request_inner(
     };
     let packing_context_budget_tokens =
         packing_context_budget_tokens.context("NIR1_PREPARED_PACKING_BUDGET_MISSING")?;
+    // The Graph candidates are done with: the snapshot has requalified them.
+    drop(requested_graph);
+    let graph_outcome = DFinalGraphOutcome::finalize(graph_request, projection.graph_outcome());
     #[cfg(test)]
     after_initial_read_before_render()?;
     sql_budget.check_workspace(&workspace)?;
@@ -1000,6 +1057,7 @@ fn prepare_local_chat_request_inner(
         request: prepared,
         inputs: projection,
         expectations,
+        graph_outcome,
     })
 }
 
@@ -2562,6 +2620,13 @@ pub(crate) mod tests {
                     grimodex_core::narrative_nir1::ENTITY_RELATION_INDEX_KEY,
                     epoch,
                 ),
+            )?;
+            // D-final reads the seed again in its snapshot (DR-DI1A-6): the
+            // fixture's Alice is pinned to the query Scene.
+            conn.execute(
+                "INSERT OR IGNORE INTO scene_codex_pins(scene_id,entry_id,created_at)
+                 VALUES (?1,'nir1-prepared-alice','2026-10-19T00:00:00Z')",
+                [SCENE_ID],
             )?;
             Ok(())
         })

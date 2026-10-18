@@ -237,16 +237,28 @@ impl Nir1LocalAttempt {
             generation,
         )
         .map_err(Nir1LocalAttemptRefusal::Prepare)?;
+        // A test that supplies candidates replaces the request step; without
+        // them the coordinator makes the product's own request for the Graph.
         #[cfg(test)]
-        let selected = prepare_selected_local_chat_request_with_graph(
-            Arc::clone(&state),
-            caller,
-            &query_scene_id,
-            &submission,
-            unsupported_inputs,
-            generation,
-            graph.as_ref(),
-        )
+        let selected = match graph.as_ref() {
+            Some(graph) => prepare_selected_local_chat_request_with_graph(
+                Arc::clone(&state),
+                caller,
+                &query_scene_id,
+                &submission,
+                unsupported_inputs,
+                generation,
+                Some(graph),
+            ),
+            None => prepare_selected_local_chat_request(
+                Arc::clone(&state),
+                caller,
+                &query_scene_id,
+                &submission,
+                unsupported_inputs,
+                generation,
+            ),
+        }
         .map_err(Nir1LocalAttemptRefusal::Prepare)?;
         let (request, scene, expected_scope, witness) = selected.into_parts();
         let handoff = request.into_d_transport_handoff();
