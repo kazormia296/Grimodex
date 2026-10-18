@@ -462,6 +462,8 @@ fn infer_source_kind(source_object_identity: &str) -> Option<&'static str> {
         Some("scope-dependency-projection-v1")
     } else if source_object_identity.starts_with("project:scope-authority:") {
         Some("project-scope-authority")
+    } else if source_object_identity.starts_with("project:scene-scope-projection:") {
+        Some(super::scene_scope_projection::SOURCE_KIND)
     } else if source_object_identity.starts_with("project:scene:") {
         Some("scene-body")
     } else if source_object_identity.starts_with("snapshot:") {
@@ -699,7 +701,7 @@ pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_control(
     control: &mut dyn GraphWorkControl,
 ) -> anyhow::Result<Vec<EdgeObservation>> {
     anyhow::ensure!(!conn.is_autocommit(), "Edge batch requires a transaction");
-    let mut authority = None;
+    let mut scope_read = None;
     edges
         .iter()
         .map(|edge| {
@@ -714,7 +716,7 @@ pub(crate) fn evaluate_owned_edges_from_db_in_tx_with_control(
                 run_id,
                 source_kind,
                 &edge.source_object_identity,
-                &mut authority,
+                &mut scope_read,
                 control,
             )?;
             let state = ResolvedEdgeSourceState {
@@ -5162,6 +5164,51 @@ fn durable_edge_scope_authority_source_input(
     }))
 }
 
+/// The anchor Scene's tree row and Scope binding identity behind a Scene Scope
+/// projection Edge. The resolved token is retained separately; recording the
+/// rows keeps a deleted, archived or re-bound anchor distinguishable from a
+/// resolver error, and records explicit absence.
+fn durable_edge_scene_scope_projection_source_input(
+    conn: &Connection,
+    project_id: &str,
+    source_identity: &str,
+) -> anyhow::Result<Value> {
+    let Ok(scene_id) = super::scene_scope_projection::scene_id_from_source_key(source_identity)
+    else {
+        return Ok(json!({"exists": false, "projectId": project_id}));
+    };
+    let node: Option<(String, bool)> = conn
+        .query_row(
+            "SELECT node_type, archived_at IS NOT NULL
+               FROM tree_nodes
+              WHERE id = ?1 AND project_id = ?2",
+            params![scene_id, project_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let binding: Option<(String, i64, String)> = conn
+        .query_row(
+            "SELECT scene_incarnation_id, version, source_token
+               FROM narrative_scene_scope_bindings
+              WHERE project_id = ?1 AND scene_id = ?2",
+            params![project_id, scene_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    Ok(json!({
+        "exists": node.is_some() && binding.is_some(),
+        "projectId": project_id,
+        "sceneId": scene_id,
+        "nodeType": node.as_ref().map(|(node_type, _)| node_type),
+        "archived": node.as_ref().map(|(_, archived)| archived),
+        "binding": binding.map(|(incarnation, version, source_token)| json!({
+            "sceneIncarnationId": incarnation,
+            "version": version,
+            "sourceToken": source_token,
+        })),
+    }))
+}
+
 fn durable_resolved_source_value(
     resolved: anyhow::Result<CurrentSourceState>,
 ) -> anyhow::Result<Value> {
@@ -5242,6 +5289,9 @@ fn durable_edge_resolution_input_with_control(
         }
         Some("project-scope-authority") => {
             durable_edge_scope_authority_source_input(conn, project_id)?
+        }
+        Some(super::scene_scope_projection::SOURCE_KIND) => {
+            durable_edge_scene_scope_projection_source_input(conn, project_id, source_identity)?
         }
         // Codex catalog has no single resolver row; its aggregate resolver
         // token above covers every catalog row consumed by Verify.
@@ -11808,5 +11858,61 @@ mod tests {
         // NEX_SOURCE_PROJECT_MISMATCH and this would incorrectly read
         // 'source-missing'.
         assert_eq!(freshness, "fresh");
+    }
+
+    /// X1-3: the registries that decide how an Edge's Source identity is read
+    /// stay one set. Every registered prefix is recognized by the stored-identity
+    /// validator and by `infer_source_kind`, the inferred kind builds the same
+    /// prefix again, and the Source resolver has an arm for it (an unregistered
+    /// kind would fail with `NEX_SOURCE_KIND_UNSUPPORTED`).
+    #[test]
+    fn every_registered_source_prefix_is_inferred_built_and_resolved() {
+        use crate::narrative_extraction::dependency_edges::{
+            source_identity_prefix_for, validate_stored_source_object_identity,
+            SOURCE_IDENTITY_PREFIXES,
+        };
+        use crate::narrative_extraction::source_revision::resolve_source_revision;
+        let db = crate::test_support::fresh_migrated_memory().expect("migrated database");
+        db.with_conn(|conn| {
+            conn.execute("INSERT INTO projects (id, title) VALUES ('p1', 'P')", [])?;
+            for prefix in SOURCE_IDENTITY_PREFIXES {
+                let identity = if *prefix == "scope-dependency:v1:" {
+                    // The L5 identity is a hex-encoded document, not a plain id.
+                    grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity {
+                        project_id: "p1".into(),
+                        run_id: "run-1".into(),
+                        anchor_document_ref: "doc:a".into(),
+                        anchor_scene_ref: "scene:a".into(),
+                        reveal_document_ref: "doc:b".into(),
+                        reveal_scene_ref: "scene:b".into(),
+                        secret: false,
+                    }
+                    .source_key()?
+                } else {
+                    format!("{prefix}x1")
+                };
+                validate_stored_source_object_identity(&identity)
+                    .unwrap_or_else(|error| panic!("{prefix}: {error}"));
+                let kind = infer_source_kind(&identity)
+                    .unwrap_or_else(|| panic!("{prefix} is not inferred to a Source kind"));
+                // The eligibility Sources are built by their own modules, not by
+                // the generic prefix table.
+                if !kind.ends_with("-eligibility-set") {
+                    assert_eq!(
+                        source_identity_prefix_for(kind)?,
+                        *prefix,
+                        "{kind} must build the prefix it was inferred from"
+                    );
+                }
+                if let Err(error) = resolve_source_revision(conn, "p1", "run-1", kind, &identity) {
+                    assert!(
+                        !error.to_string().contains("NEX_SOURCE_KIND_UNSUPPORTED"),
+                        "{kind} has no resolver arm: {error}"
+                    );
+                }
+            }
+            Ok(())
+        })
+        .expect("registration walk");
     }
 }

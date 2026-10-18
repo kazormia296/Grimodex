@@ -21,7 +21,8 @@ use crate::narrative_extraction::incremental_freshness::{
     run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
 };
 use crate::narrative_extraction::nir1_entity_relation::tests::{
-    approve_typed_revision, prepare_a3_scope_fixture, request, seed_run_and_catalog,
+    approve_typed_revision, prepare_a3_scope_fixture, request,
+    scene_scope_projection_token_for_test, seed_run_and_catalog,
 };
 use crate::narrative_extraction::nir1_entity_relation::{
     create_nir1_entity_relation_revision, evaluate_nir1_entity_relation_disclosure,
@@ -38,17 +39,17 @@ use crate::test_support::fresh_migrated_memory;
 use crate::Database;
 use grimodex_core::narrative_dependency::{DependencyRole, DependencySelector};
 
-const PROJECT: &str = "default-project";
-const SCENES: [&str; 3] = ["nir1", "a3-source", "a3-future"];
+pub(super) const PROJECT: &str = "default-project";
+pub(super) const SCENES: [&str; 3] = ["nir1", "a3-source", "a3-future"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Generation {
-    version: i64,
-    source_token: String,
-    updated_at: String,
+pub(super) struct Generation {
+    pub(super) version: i64,
+    pub(super) source_token: String,
+    pub(super) updated_at: String,
 }
 
-fn generation(db: &Database, scene: &str) -> Result<Generation> {
+pub(super) fn generation(db: &Database, scene: &str) -> Result<Generation> {
     db.with_read_transaction(|conn| {
         let binding = read_narrative_scene_scope(conn, PROJECT, scene)?.binding;
         Ok(Generation {
@@ -59,11 +60,11 @@ fn generation(db: &Database, scene: &str) -> Result<Generation> {
     })
 }
 
-fn generations(db: &Database) -> Result<Vec<Generation>> {
+pub(super) fn generations(db: &Database) -> Result<Vec<Generation>> {
     SCENES.iter().map(|scene| generation(db, scene)).collect()
 }
 
-fn body_token(db: &Database, scene: &str) -> Result<String> {
+pub(super) fn body_token(db: &Database, scene: &str) -> Result<String> {
     db.with_conn(|conn| {
         Ok(conn.query_row(
             "SELECT 'v' || version || '@' || updated_at FROM tree_nodes
@@ -74,7 +75,7 @@ fn body_token(db: &Database, scene: &str) -> Result<String> {
     })
 }
 
-fn project_token(db: &Database) -> Result<String> {
+pub(super) fn project_token(db: &Database) -> Result<String> {
     db.with_read_transaction(|conn| {
         Ok(load_live_project_scope_authority(
             conn,
@@ -99,15 +100,19 @@ fn scope_event_count(db: &Database) -> Result<i64> {
     })
 }
 
-fn roster(db: &Database) -> Result<nir1_entity_relation_index::GraphEligibilitySource> {
+pub(super) fn roster(db: &Database) -> Result<nir1_entity_relation_index::GraphEligibilitySource> {
     db.with_read_transaction(|conn| {
         nir1_entity_relation_index::read_eligibility_source(conn, PROJECT)
     })
 }
 
 /// A typed Revision anchored at `a3-source`, approved, with every Scene bound.
-fn approved_fixture() -> Result<(Database, String)> {
-    let db = fresh_migrated_memory()?;
+pub(super) fn approved_fixture() -> Result<(Database, String)> {
+    approved_fixture_in(fresh_migrated_memory()?)
+}
+
+/// `approved_fixture` on a database the caller opened (a file for cold reopen).
+pub(super) fn approved_fixture_in(db: Database) -> Result<(Database, String)> {
     seed_run_and_catalog(&db)?;
     prepare_a3_scope_fixture(&db)?;
     run_incremental_freshness_cycle(&db)?;
@@ -116,6 +121,8 @@ fn approved_fixture() -> Result<(Database, String)> {
         entity.scope.reading = ScopeValue::Exact {
             value: "scene:a3-source".into(),
         };
+        entity.scope.authority_revision =
+            scene_scope_projection_token_for_test(&db, PROJECT, "a3-source")?;
     }
     let created = create_nir1_entity_relation_revision(&db, typed_request)?;
     approve_typed_revision(&db, "nir1-run", &created)?;
@@ -126,7 +133,7 @@ fn approved_fixture() -> Result<(Database, String)> {
     Ok((db, revision_id))
 }
 
-fn assert_revision_current(db: &Database, revision_id: &str, context: &str) -> Result<()> {
+pub(super) fn assert_revision_current(db: &Database, revision_id: &str, context: &str) -> Result<()> {
     let a2 = db.with_read_transaction(|conn| {
         read_nir1_entity_relation_revision(conn, PROJECT, revision_id)
     })?;
@@ -144,7 +151,7 @@ fn assert_revision_current(db: &Database, revision_id: &str, context: &str) -> R
     Ok(())
 }
 
-fn save_body(db: &Database, scene: &str, tag: &str, updated_at: &str) -> Result<()> {
+pub(super) fn save_body(db: &Database, scene: &str, tag: &str, updated_at: &str) -> Result<()> {
     save_scene_body_bundle(
         db,
         SaveSceneBodyBundlePayload {
@@ -179,7 +186,7 @@ fn save_body(db: &Database, scene: &str, tag: &str, updated_at: &str) -> Result<
     Ok(())
 }
 
-fn patch(
+pub(super) fn patch(
     db: &Database,
     scene: &str,
     tag: &str,
@@ -592,7 +599,7 @@ fn codex_rename_propagation_keeps_scope_generation() -> Result<()> {
     Ok(())
 }
 
-fn revision_is_current(db: &Database, revision_id: &str) -> Result<bool> {
+pub(super) fn revision_is_current(db: &Database, revision_id: &str) -> Result<bool> {
     let a2 = db.with_read_transaction(|conn| {
         read_nir1_entity_relation_revision(conn, PROJECT, revision_id)
     })?;
@@ -622,6 +629,7 @@ fn snapshot_body_restore_keeps_typed_revision_ineligible_when_the_token_returns(
     let token_at_approval = body_token(&db, "a3-source")?;
     let project_before = project_token(&db)?;
     let generations_before = generations(&db)?;
+    let projection_before = scene_scope_projection_token_for_test(&db, PROJECT, "a3-source")?;
 
     let tree_rows: Vec<crate::project_snapshots::RawRow> = db.with_conn(|conn| {
         let mut statement = conn.prepare(
@@ -723,6 +731,11 @@ fn snapshot_body_restore_keeps_typed_revision_ineligible_when_the_token_returns(
         assert_ne!(after.source_token, before.source_token);
     }
     assert_ne!(project_token(&db)?, project_before);
+    assert_ne!(
+        scene_scope_projection_token_for_test(&db, PROJECT, "a3-source")?,
+        projection_before,
+        "the restored Scene is a new incarnation: its projection does not return"
+    );
     assert!(
         !revision_is_current(&db, &revision_id)?,
         "the old approval must not match again after the restore"

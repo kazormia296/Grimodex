@@ -93,7 +93,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_capacity_fixtures.rs",
-      "sha256": "96b52ceef674afcace84c1b69abc442dc8e91e89188346888565b6c7f54887b1"
+      "sha256": "ca5e27f9d0f647864654575fd342ef9351d14a88877ab3d7cd6db3449d15d23b"
     },
     {
       "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/c2zc_restore_fixture.rs",

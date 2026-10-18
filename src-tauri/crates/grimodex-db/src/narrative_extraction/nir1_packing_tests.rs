@@ -974,6 +974,75 @@ fn pooled_qualification_never_projects_private_decision_annotations() -> Result<
     Ok(())
 }
 
+/// X1-3 test 17. A Revision binds its anchor's Scene Scope projection (and no
+/// project Scope token), so moving or saving another Scene does not stop a new
+/// request from qualifying it, and the sealed basis a request qualifies carries
+/// the projection Source and no `project-scope-authority` Source.
+#[test]
+fn x13_new_request_qualifies_after_other_scene_save() -> Result<()> {
+    use crate::narrative_extraction::scope_storage_authority_tests::{patch, save_body};
+    let db = current_schema_memory()?;
+    seed_run_and_catalog(&db)?;
+    prepare_a3_scope_fixture(&db)?;
+    run_incremental_freshness_cycle(&db)?;
+    let created = create_nir1_entity_relation_revision(
+        &db,
+        request_for_run(&db, "nir1-run", "x13-qualify"),
+    )?;
+    approve_typed_revision(&db, "nir1-run", &created)?;
+    let revision_id = created["revisionId"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("revision missing"))?
+        .to_owned();
+    let pack = |db: &Database| {
+        let raw = raw();
+        let ids = [revision_id.clone()];
+        db.with_read_transaction(|conn| {
+            read_and_pack_native_a2_context_in_tx(
+                conn,
+                request(&ids, &raw, 100_000),
+                &mut NativePackingInputBudget::default(),
+                &mut |_| Ok(()),
+                &mut || Ok(()),
+            )
+        })
+    };
+    let before = pack(&db)?;
+    assert_eq!(before.bindings.len(), 1, "the Revision qualifies");
+    let basis = &before.bindings[0].revision().material_basis.source_basis;
+    assert!(basis
+        .iter()
+        .any(|source| source.source_kind == "scene-scope-projection-v1"
+            && source.source_key == "project:scene-scope-projection:nir1"));
+    assert!(basis
+        .iter()
+        .all(|source| source.source_kind != "project-scope-authority"));
+
+    // Another Scene is saved and moved: the project token moves, the anchor's
+    // projection does not.
+    save_body(&db, "a3-source", "other", "2026-10-18T02:00:00.000Z")?;
+    patch(
+        &db,
+        "a3-source",
+        "other-move",
+        "sortOrder",
+        serde_json::json!("a5"),
+        true,
+        "2026-10-18T02:00:01.000Z",
+    )?;
+    while matches!(
+        run_incremental_freshness_cycle(&db)?,
+        crate::narrative_extraction::incremental_freshness::IncrementalFreshnessCycleOutcome::Processed(_)
+    ) {}
+    let after = pack(&db)?;
+    assert_eq!(after.bindings.len(), 1, "a new request still qualifies it");
+    assert_eq!(
+        after.bindings[0].revision().material_basis.source_basis,
+        before.bindings[0].revision().material_basis.source_basis,
+    );
+    Ok(())
+}
+
 #[test]
 fn pooled_helper_refuses_autocommit_before_reading_material() -> Result<()> {
     let db = current_schema_memory()?;

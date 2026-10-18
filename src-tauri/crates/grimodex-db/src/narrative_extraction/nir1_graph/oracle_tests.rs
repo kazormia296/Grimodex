@@ -207,6 +207,10 @@ impl OracleFixture {
             second_relation.edge_id
         );
         target.bundle.relations.push(second_relation);
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+            &db,
+            &mut target,
+        )?;
         let expected_bundle = target.bundle.clone();
         // Storage order differs from the declared output order: sorting the
         // actual result in the assertion would hide an ordering regression.
@@ -238,6 +242,10 @@ impl OracleFixture {
         evidence.end_utf16 = "Unrelated".encode_utf16().count();
         unrelated.bundle.entities.truncate(1);
         unrelated.bundle.relations.clear();
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+            &db,
+            &mut unrelated,
+        )?;
         let unrelated_entity = unrelated.bundle.entities[0].clone();
         let _unrelated_created = create_nir1_entity_relation_revision(&db, unrelated)?;
         approve_typed_revision(&db, "nir1-run", &_unrelated_created)?;
@@ -271,6 +279,10 @@ impl OracleFixture {
                 "nir1-evidence-bob".into(),
                 "oracle-unrelated-evidence".into(),
             ];
+            crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+                &db,
+                &mut denied,
+            )?;
             let created = create_nir1_entity_relation_revision(&db, denied)?;
             if matches!(bridge, DeniedBridge::FutureScope) {
                 approve_typed_revision(&db, "nir1-run", &created)?;
@@ -418,7 +430,7 @@ impl OracleFixture {
                     PROJECT,
                     self.target_revision,
                     crate::narrative_extraction::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID,
-                    // One source per Entity/Relation plus Scope authority.
+                    // One source per Entity/Relation plus the one anchor Scene's projection.
                     (self.expected_bundle.entities.len() + self.expected_bundle.relations.len() + 1)
                         as i64,
                 ],
@@ -445,7 +457,15 @@ impl OracleFixture {
                 .iter()
                 .map(|entity| entity.entity_id.as_str())
                 .collect::<Vec<_>>();
-            let authority_revision = &entities[0].scope.authority_revision;
+            // The request's context is the project Scope authority token; the
+            // Entities bind their anchor Scene's projection token instead.
+            let authority_revision = &crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority(
+                conn,
+                PROJECT,
+                &format!("project:scope-authority:{PROJECT}"),
+            )?
+            .source
+            .revision_token;
             // This fixture has no POV, phases or foreshadows; auto falls back
             // to reading order. These expectations do not consult A3 output.
             let reveal = json!({

@@ -1124,7 +1124,10 @@ fn read_revision_input_stats(
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    let (entity_count, relation_count, evidence_count): (i64, i64, i64) = conn.query_row(
+    // The scope row of a version-2 Revision is one Scene Scope projection per
+    // distinct anchor Scene, so the scope term of the record admission is the
+    // anchor count (a version-1 Revision carried one project-token row).
+    let (entity_count, relation_count, evidence_count, anchor_count): (i64, i64, i64, i64) = conn.query_row(
         "SELECT CASE WHEN json_valid(revision.payload_json)
                          THEN COALESCE(
                               CASE WHEN json_type(
@@ -1172,6 +1175,33 @@ fn read_revision_input_stats(
                                          ELSE '[]' END
                                 ) AS entity
                          ), 0)
+                         ELSE 0 END,
+                    CASE WHEN json_valid(revision.payload_json)
+                         THEN COALESCE((
+                              SELECT COUNT(DISTINCT CASE
+                                  WHEN json_valid(entity.value)
+                                   AND json_extract(entity.value, '$.scope.reading.kind') = 'exact'
+                                  THEN CASE
+                                      WHEN substr(json_extract(entity.value, '$.scope.reading.value'), 1, 6) = 'scene:'
+                                       AND length(json_extract(entity.value, '$.scope.reading.value')) > 6
+                                      THEN substr(json_extract(entity.value, '$.scope.reading.value'), 7)
+                                      WHEN substr(json_extract(entity.value, '$.scope.reading.value'), 1, 8) = 'reading:'
+                                       AND length(json_extract(entity.value, '$.scope.reading.value')) > 8
+                                      THEN substr(json_extract(entity.value, '$.scope.reading.value'), 9)
+                                  END
+                              END)
+                                FROM json_each(
+                                    CASE WHEN json_type(
+                                               revision.payload_json,
+                                               '$.bundle.entities'
+                                         ) = 'array'
+                                         THEN jsonb_extract(
+                                               revision.payload_json,
+                                               '$.bundle.entities'
+                                         )
+                                         ELSE '[]' END
+                                ) AS entity
+                         ), 0)
                          ELSE 0 END
                FROM narrative_proposal_revisions revision
                JOIN narrative_proposals proposal
@@ -1191,7 +1221,7 @@ fn read_revision_input_stats(
             super::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND,
             super::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
         ],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
@@ -1202,12 +1232,14 @@ fn read_revision_input_stats(
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
     let evidence_count = usize::try_from(evidence_count)
         .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
+    let anchor_count = usize::try_from(anchor_count)
+        .map_err(|_| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
     let material_records = entity_count
         .checked_add(relation_count)
         .and_then(|count| count.checked_add(evidence_count))
         .ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_ROSTER_RECORD_LIMIT"))?;
     if material_records
-        .checked_add(1)
+        .checked_add(anchor_count)
         .is_none_or(|count| count > REVISION_RECORD_ADMISSION)
     {
         return Ok(None);
@@ -1275,25 +1307,31 @@ fn revision_is_approved(conn: &Connection, revision_id: &str) -> Result<bool> {
 /// for a Source whose basis row was deleted or replaced.
 fn preflight_revision_source_basis(
     conn: &Connection,
-    project: &str,
+    _project: &str,
     revision_id: &str,
     admission: Option<&GraphReadAdmission<'_>>,
 ) -> Result<bool> {
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    let scope_key = format!("project:scope-authority:{project}");
+    // A version-2 basis binds one Scene Scope projection row per distinct anchor
+    // Scene and no `project-scope-authority` row. A version-1 basis (the old
+    // project-token row) is an ordinary A2-unavailable Revision: it is skipped
+    // here and never read as a project token.
     // query_row finalizes its statement before the relation statement is prepared.
     let (
         entity_payload_count,
         basis_count,
-        basis_scope_count,
+        projection_basis_count,
+        legacy_authority_basis_count,
         entity_matched_payload_count,
         entity_matched_basis_count,
+        anchor_count,
         payload_scope_count,
         matched_scope_count,
+        matched_projection_basis_count,
         invalid_entity_count,
-    ): (i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
+    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
         "WITH payload_root AS MATERIALIZED (
     SELECT CASE WHEN json_valid(revision.payload_json)
                 THEN jsonb(revision.payload_json)
@@ -1308,6 +1346,19 @@ fn preflight_revision_source_basis(
                 THEN json_extract(entity.value, '$.sourceToken') END AS source_token,
            CASE WHEN entity.type = 'object'
                 THEN json_extract(entity.value, '$.scope.authorityRevision') END AS scope_token,
+           CASE WHEN entity.type = 'object'
+                 AND json_extract(entity.value, '$.scope.reading.kind') = 'exact'
+                THEN CASE
+                    WHEN substr(json_extract(entity.value, '$.scope.reading.value'), 1, 6) = 'scene:'
+                     AND length(json_extract(entity.value, '$.scope.reading.value')) > 6
+                    THEN 'project:scene-scope-projection:'
+                         || substr(json_extract(entity.value, '$.scope.reading.value'), 7)
+                    WHEN substr(json_extract(entity.value, '$.scope.reading.value'), 1, 8) = 'reading:'
+                     AND length(json_extract(entity.value, '$.scope.reading.value')) > 8
+                    THEN 'project:scene-scope-projection:'
+                         || substr(json_extract(entity.value, '$.scope.reading.value'), 9)
+                END
+           END AS anchor_key,
            CASE WHEN entity.type = 'object'
                 THEN json_type(entity.value, '$.entityId') END AS material_id_type,
            CASE WHEN entity.type = 'object'
@@ -1330,6 +1381,7 @@ fn preflight_revision_source_basis(
                   OR COALESCE(scope_token_type, '') <> 'text'
            ) AS invalid_count,
            COUNT(scope_token) AS scope_count,
+           COUNT(DISTINCT anchor_key) AS anchor_count,
            COUNT(*) FILTER (WHERE material_match.rowid IS NOT NULL) AS matched_payload_count,
            (SELECT COUNT(*)
           FROM narrative_revision_source_basis basis
@@ -1340,6 +1392,15 @@ fn preflight_revision_source_basis(
                 WHERE basis.source_key = 'codex:' || item.material_id
                   AND basis.revision_token = item.source_token
            )) AS matched_basis_count,
+           (SELECT COUNT(*)
+          FROM narrative_revision_source_basis basis
+         WHERE basis.revision_id = ?1
+           AND basis.source_kind = 'scene-scope-projection-v1'
+           AND EXISTS (
+               SELECT 1 FROM entity_items item
+                WHERE basis.source_key = item.anchor_key
+                  AND basis.revision_token = item.scope_token
+           )) AS matched_projection_basis_count,
            COUNT(*) FILTER (WHERE scope_match.rowid IS NOT NULL) AS matched_scope_count
       FROM entity_items entity
       LEFT JOIN narrative_revision_source_basis AS material_match
@@ -1349,8 +1410,8 @@ fn preflight_revision_source_basis(
        AND material_match.revision_token = entity.source_token
       LEFT JOIN narrative_revision_source_basis AS scope_match
         ON scope_match.revision_id = ?1
-       AND scope_match.source_kind = 'project-scope-authority'
-       AND scope_match.source_key = ?2
+       AND scope_match.source_kind = 'scene-scope-projection-v1'
+       AND scope_match.source_key = entity.anchor_key
        AND scope_match.revision_token = entity.scope_token
 )
 SELECT entity.payload_count,
@@ -1360,15 +1421,20 @@ SELECT entity.payload_count,
        (SELECT COUNT(*)
           FROM narrative_revision_source_basis
          WHERE revision_id = ?1
-           AND source_kind = 'project-scope-authority'
-           AND source_key = ?2),
+           AND source_kind = 'scene-scope-projection-v1'),
+       (SELECT COUNT(*)
+          FROM narrative_revision_source_basis
+         WHERE revision_id = ?1
+           AND source_kind = 'project-scope-authority'),
        entity.matched_payload_count,
        entity.matched_basis_count,
+       entity.anchor_count,
        entity.scope_count,
        entity.matched_scope_count,
+       entity.matched_projection_basis_count,
        entity.invalid_count
   FROM entity_rollup AS entity",
-        params![revision_id, scope_key],
+        params![revision_id],
         |row| {
             Ok((
                 row.get(0)?,
@@ -1379,20 +1445,13 @@ SELECT entity.payload_count,
                 row.get(5)?,
                 row.get(6)?,
                 row.get(7)?,
+                row.get(8)?,
+                row.get(9)?,
+                row.get(10)?,
             ))
         },
     )?;
-    let (
-        payload_source_count,
-        basis_count,
-        scope_count,
-        matched_payload_count,
-        matched_basis_count,
-        payload_scope_count,
-        matched_scope_count,
-        invalid_entity_count,
-        invalid_relation_count,
-    ): (i64, i64, i64, i64, i64, i64, i64, i64, i64) = conn.query_row(
+    let (relation_payload_count, relation_matched_payload_count, relation_matched_basis_count, invalid_relation_count): (i64, i64, i64, i64) = conn.query_row(
         "WITH payload_root AS MATERIALIZED (
     SELECT CASE WHEN json_valid(revision.payload_json)
                 THEN jsonb(revision.payload_json)
@@ -1440,51 +1499,31 @@ SELECT entity.payload_count,
        AND material_match.source_key = 'codex-relation:' || relation.material_id
        AND material_match.revision_token = relation.source_token
 )
-SELECT ?2 + relation.payload_count,
-       ?3,
-       ?4,
-       ?5 + relation.matched_payload_count,
-       ?6 + relation.matched_basis_count,
-       ?7,
-       ?8,
-       ?9,
+SELECT relation.payload_count,
+       relation.matched_payload_count,
+       relation.matched_basis_count,
        relation.invalid_count
   FROM relation_rollup AS relation",
-        params![
-            revision_id,
-            entity_payload_count,
-            basis_count,
-            basis_scope_count,
-            entity_matched_payload_count,
-            entity_matched_basis_count,
-            payload_scope_count,
-            matched_scope_count,
-            invalid_entity_count,
-        ],
-        |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-                row.get(8)?,
-            ))
-        },
+        params![revision_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     if let Some(admission) = admission {
         admission.ensure_current(conn)?;
     }
-    Ok(basis_count == payload_source_count + 1
-        && scope_count == 1
+    let payload_source_count = entity_payload_count + relation_payload_count;
+    let matched_payload_count = entity_matched_payload_count + relation_matched_payload_count;
+    let matched_basis_count = entity_matched_basis_count + relation_matched_basis_count;
+    Ok(legacy_authority_basis_count == 0
+        && anchor_count >= 1
+        && projection_basis_count == anchor_count
+        && matched_projection_basis_count == anchor_count
+        && basis_count == payload_source_count + projection_basis_count
         && matched_payload_count == payload_source_count
         && matched_basis_count == payload_source_count
+        && matched_scope_count == payload_scope_count
+        && payload_scope_count == entity_payload_count
         && invalid_entity_count == 0
-        && invalid_relation_count == 0
-        && (payload_scope_count == 0 || matched_scope_count == payload_scope_count))
+        && invalid_relation_count == 0)
 }
 
 /// Preflight the live Source values that the A2 reader will resolve. The
@@ -1511,8 +1550,9 @@ fn preflight_live_source_lengths(
                      AND relation.id IS NOT NULL
                      AND basis.revision_token = 'v' || relation.version || '@'
                          || relation.updated_at || ':relation:' || relation.id THEN 1
-                    WHEN basis.source_kind = 'project-scope-authority'
-                     AND basis.source_key = ?2 THEN 1
+                    WHEN basis.source_kind = 'scene-scope-projection-v1'
+                     AND substr(basis.source_key, 1, 31) = 'project:scene-scope-projection:'
+                     AND length(basis.source_key) > 31 THEN 1
                     ELSE 0
                 END),
                 COALESCE(SUM(
@@ -1543,8 +1583,8 @@ fn preflight_live_source_lengths(
             AND substr(basis.source_key, 1, 15) = 'codex-relation:'
             AND relation.id = substr(basis.source_key, 16)
             AND relation.project_id = ?1
-          WHERE basis.revision_id = ?3",
-        params![project, format!("project:scope-authority:{project}"), revision_id],
+          WHERE basis.revision_id = ?2",
+        params![project, revision_id],
         |row| Ok((row.get(0)?, row.get::<_, Option<i64>>(1)?.unwrap_or(0), row.get(2)?)),
     )?;
     if basis_count == 0 || basis_count != matched_count {
@@ -2916,6 +2956,56 @@ mod tests {
         Ok(())
     }
 
+    // X1-3: the scope term of the record admission is one projection row per
+    // distinct anchor Scene (`scene:<id>` and `reading:<id>` name the same
+    // anchor), not a fixed 1. 512 stays the limit.
+    #[test]
+    fn revision_record_admission_counts_one_scope_row_per_distinct_anchor() -> Result<()> {
+        let conn = stats_connection()?;
+        let payload = |entities: usize, anchors: usize| -> String {
+            let items: Vec<String> = (0..entities)
+                .map(|index| {
+                    let anchor = index % anchors;
+                    let prefix = if index % 2 == 0 { "scene" } else { "reading" };
+                    format!(
+                        r#"{{"entityId":"e{index}","scope":{{"reading":{{"kind":"exact","value":"{prefix}:s{anchor}"}}}}}}"#
+                    )
+                })
+                .collect();
+            format!(r#"{{"bundle":{{"entities":[{}],"relations":[]}}}}"#, items.join(","))
+        };
+        // (case, entities, distinct anchors, admitted)
+        for (name, entities, anchors, admitted) in [
+            ("one anchor", 511, 1, true),
+            ("one anchor over", 512, 1, false),
+            ("256 entities with 256 anchors", 256, 256, true),
+            ("257 entities with 257 anchors", 257, 257, false),
+            ("257 entities with 255 anchors", 257, 255, true),
+            ("512 entities with 2 anchors", 512, 2, false),
+        ] {
+            let revision_id = format!("revision-{name}");
+            let proposal_id = format!("proposal-{name}");
+            conn.execute(
+                "INSERT INTO narrative_proposals VALUES (?1, 'set-1', ?2, 'accepted')",
+                params![proposal_id, revision_id],
+            )?;
+            conn.execute(
+                "INSERT INTO narrative_proposal_revisions
+                 VALUES (?1, ?2, ?3, '{}', 'human', 'digest', 'now')",
+                params![revision_id, proposal_id, payload(entities, anchors)],
+            )?;
+            let stats = read_revision_input_stats(
+                &conn,
+                "project-1",
+                &revision_id,
+                None,
+                &mut SourceCapacity::default(),
+            )?;
+            assert_eq!(stats.is_some(), admitted, "{name}");
+        }
+        Ok(())
+    }
+
     #[test]
     fn source_basis_preflight_keeps_guarded_json_array_semantics() -> Result<()> {
         let conn = Connection::open_in_memory()?;
@@ -2953,11 +3043,22 @@ mod tests {
             [],
         )?;
 
-        let scope_basis = [(
-            "project-scope-authority",
-            "project:scope-authority:project-1",
+        // A version-2 basis binds one Scene Scope projection row per distinct
+        // anchor Scene; a version-1 basis (`project-scope-authority`) is not
+        // read as a project token.
+        let projection = (
+            "scene-scope-projection-v1",
+            "project:scene-scope-projection:scene-1",
             "scope-token",
-        )];
+        );
+        let entity = |id: &str, token: &str, reading: &str| {
+            format!(
+                r#"{{"entityId":"{id}","sourceToken":"{token}","scope":{{"authorityRevision":"scope-token","reading":{reading}}}}}"#
+            )
+        };
+        let scene_one = r#"{"kind":"exact","value":"scene:scene-1"}"#;
+        let reading_one = r#"{"kind":"exact","value":"reading:scene-1"}"#;
+        let scene_two = r#"{"kind":"exact","value":"scene:scene-2"}"#;
         let valid_basis = [
             ("codex-entry", "codex:entity-1", "entity-token"),
             (
@@ -2965,32 +3066,122 @@ mod tests {
                 "codex-relation:relation-1",
                 "relation-token",
             ),
-            scope_basis[0],
+            projection,
         ];
         let duplicate_basis = [
             ("codex-entry", "codex:entity-1", "entity-token"),
-            scope_basis[0],
+            projection,
         ];
+        let entity_only_basis = [("codex-entry", "codex:entity-1", "entity-token"), projection];
+        let legacy_basis = [
+            ("codex-entry", "codex:entity-1", "entity-token"),
+            (
+                "project-scope-authority",
+                "project:scope-authority:project-1",
+                "scope-token",
+            ),
+        ];
+        let mixed_basis = [
+            ("codex-entry", "codex:entity-1", "entity-token"),
+            projection,
+            (
+                "project-scope-authority",
+                "project:scope-authority:project-1",
+                "scope-token",
+            ),
+        ];
+        let wrong_token_basis = [
+            ("codex-entry", "codex:entity-1", "entity-token"),
+            (projection.0, projection.1, "other-token"),
+        ];
+        let two_anchor_basis = [
+            ("codex-entry", "codex:entity-1", "entity-token"),
+            ("codex-entry", "codex:entity-2", "entity-token-2"),
+            projection,
+            (
+                "scene-scope-projection-v1",
+                "project:scene-scope-projection:scene-2",
+                "scope-token",
+            ),
+        ];
+        let extra_anchor_basis = [
+            ("codex-entry", "codex:entity-1", "entity-token"),
+            projection,
+            (
+                "scene-scope-projection-v1",
+                "project:scene-scope-projection:scene-2",
+                "scope-token",
+            ),
+        ];
+        let no_scope_basis = [("codex-entry", "codex:entity-1", "entity-token")];
+        let relation = r#""relations":[{"edgeId":"relation-1","sourceToken":"relation-token"}]"#;
+        let normal = format!(
+            r#"{{"bundle":{{"entities":[{}],{relation}}}}}"#,
+            entity("entity-1", "entity-token", scene_one)
+        );
+        let reading_prefix = format!(
+            r#"{{"bundle":{{"entities":[{}],"relations":[]}}}}"#,
+            entity("entity-1", "entity-token", reading_one)
+        );
+        let two_anchors = format!(
+            r#"{{"bundle":{{"entities":[{},{}],"relations":[]}}}}"#,
+            entity("entity-1", "entity-token", scene_one),
+            entity("entity-2", "entity-token-2", scene_two)
+        );
+        let any_reading = format!(
+            r#"{{"bundle":{{"entities":[{}],"relations":[]}}}}"#,
+            entity("entity-1", "entity-token", r#"{"kind":"any","purpose":"p"}"#)
+        );
+        let empty_prefix = format!(
+            r#"{{"bundle":{{"entities":[{}],"relations":[]}}}}"#,
+            entity(
+                "entity-1",
+                "entity-token",
+                r#"{"kind":"exact","value":"scene:"}"#
+            )
+        );
+        let other_prefix = format!(
+            r#"{{"bundle":{{"entities":[{}],"relations":[]}}}}"#,
+            entity(
+                "entity-1",
+                "entity-token",
+                r#"{"kind":"exact","value":"note:scene-1"}"#
+            )
+        );
+        let one_entity = format!(
+            r#"{{"bundle":{{"entities":[{}],"relations":[]}}}}"#,
+            entity("entity-1", "entity-token", scene_one)
+        );
+        let duplicate_members = format!(
+            r#"{{"bundle":{{"entities":[{0},{0}],"relations":[]}}}}"#,
+            entity("entity-1", "entity-token", scene_one)
+        );
         type SourceBasisPreflightCase<'a> =
             (&'a str, &'a str, &'a [(&'a str, &'a str, &'a str)], bool);
-        let cases: [SourceBasisPreflightCase<'_>; 12] = [
-            (
-                "normal arrays",
-                r#"{"bundle":{"entities":[{"entityId":"entity-1","sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[{"edgeId":"relation-1","sourceToken":"relation-token"}]}}"#,
-                &valid_basis,
-                true,
-            ),
-            ("empty arrays", r#"{"bundle":{"entities":[],"relations":[]}}"#, &scope_basis, true),
-            ("missing entities", r#"{"bundle":{"relations":[]}}"#, &scope_basis, true),
-            ("missing relations", r#"{"bundle":{"entities":[]}}"#, &scope_basis, true),
-            ("null arrays", r#"{"bundle":{"entities":null,"relations":null}}"#, &scope_basis, true),
-            ("wrong array types", r#"{"bundle":{"entities":"[]","relations":{"x":1}}}"#, &scope_basis, true),
-            ("malformed root", r#"{"bundle":{"entities":["#, &scope_basis, true),
-            ("duplicate member", r#"{"bundle":{"entities":[{"entityId":"entity-1","sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}},{"entityId":"entity-1","sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[]}}"#, &duplicate_basis, false),
-            ("non-object entity", r#"{"bundle":{"entities":[null],"relations":[]}}"#, &scope_basis, false),
-            ("missing entity fields", r#"{"bundle":{"entities":[{"sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[]}}"#, &scope_basis, false),
-            ("null entity fields", r#"{"bundle":{"entities":[{"entityId":null,"sourceToken":null,"scope":{"authorityRevision":null}}],"relations":[]}}"#, &scope_basis, false),
-            ("wrong relation field types", r#"{"bundle":{"entities":[],"relations":[{"edgeId":42,"sourceToken":"relation-token"}]}}"#, &scope_basis, false),
+        let cases: Vec<SourceBasisPreflightCase<'_>> = vec![
+            ("normal arrays", &normal, &valid_basis, true),
+            ("reading prefix", &reading_prefix, &entity_only_basis, true),
+            ("two anchors", &two_anchors, &two_anchor_basis, true),
+            ("an anchor without a projection row", &two_anchors, &entity_only_basis, false),
+            ("a projection row of no anchor", &one_entity, &extra_anchor_basis, false),
+            ("a projection token that differs", &one_entity, &wrong_token_basis, false),
+            ("no projection row", &one_entity, &no_scope_basis, false),
+            ("version-1 basis", &one_entity, &legacy_basis, false),
+            ("mixed basis", &one_entity, &mixed_basis, false),
+            ("Any reading", &any_reading, &entity_only_basis, false),
+            ("empty Scene prefix", &empty_prefix, &entity_only_basis, false),
+            ("non-Scene prefix", &other_prefix, &entity_only_basis, false),
+            ("empty arrays", r#"{"bundle":{"entities":[],"relations":[]}}"#, &no_scope_basis[..0], false),
+            ("missing entities", r#"{"bundle":{"relations":[]}}"#, &no_scope_basis[..0], false),
+            ("missing relations", r#"{"bundle":{"entities":[]}}"#, &no_scope_basis[..0], false),
+            ("null arrays", r#"{"bundle":{"entities":null,"relations":null}}"#, &no_scope_basis[..0], false),
+            ("wrong array types", r#"{"bundle":{"entities":"[]","relations":{"x":1}}}"#, &no_scope_basis[..0], false),
+            ("malformed root", r#"{"bundle":{"entities":["#, &no_scope_basis[..0], false),
+            ("duplicate member", &duplicate_members, &duplicate_basis, false),
+            ("non-object entity", r#"{"bundle":{"entities":[null],"relations":[]}}"#, &duplicate_basis, false),
+            ("missing entity fields", r#"{"bundle":{"entities":[{"sourceToken":"entity-token","scope":{"authorityRevision":"scope-token"}}],"relations":[]}}"#, &duplicate_basis, false),
+            ("null entity fields", r#"{"bundle":{"entities":[{"entityId":null,"sourceToken":null,"scope":{"authorityRevision":null}}],"relations":[]}}"#, &duplicate_basis, false),
+            ("wrong relation field types", r#"{"bundle":{"entities":[],"relations":[{"edgeId":42,"sourceToken":"relation-token"}]}}"#, &duplicate_basis, false),
         ];
 
         for (name, payload, basis_rows, expected) in cases {

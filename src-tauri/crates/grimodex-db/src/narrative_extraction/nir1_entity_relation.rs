@@ -33,8 +33,10 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
+use std::cell::RefCell;
 use std::cmp::Ordering;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use uuid::Uuid;
 
 use super::c2zc_canonical_cutover::{
@@ -56,7 +58,7 @@ use super::human_material_basis::{
     MaterialSourceBasisEntry,
 };
 use super::nir1_capacity::{check_active_work, parse_json_with_active_work};
-use super::project_scope_authority::load_live_project_scope_authority;
+use super::project_scope_authority::load_live_project_scope_authority_with_scene_bindings;
 use super::publish_runtime::{
     publish_complete_runless_freshness_in_tx, worst_edge_state_for_consumer,
 };
@@ -68,6 +70,7 @@ use super::repository::{
     REVIEW_RESUMABLE_RUN_PREDICATE_SQL,
 };
 use super::revision_eligibility::pending;
+use super::scene_scope_projection as projection;
 use super::semantic_epoch::{get_current_epoch, CurrentEpoch};
 use super::source_revision::is_validation_terminated;
 use super::task_leases::with_immediate_transaction;
@@ -507,14 +510,143 @@ fn digest_bytes(value: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(value)))
 }
 
+/// The live project Scope authority and the validated Scene bindings of one
+/// read snapshot. A Scene Scope projection resolves from this pair, so an
+/// anchor never costs a read of its own; the token of an anchor is computed
+/// once per snapshot.
+struct LiveScope<'a> {
+    authority: Cow<'a, NarrativeProjectScopeAuthorityV1>,
+    scene_bindings: Cow<'a, BTreeMap<String, NarrativeSceneScopeBindingV1>>,
+    anchor_tokens: RefCell<HashMap<String, String>>,
+}
+
+impl<'a> LiveScope<'a> {
+    fn new(
+        authority: Cow<'a, NarrativeProjectScopeAuthorityV1>,
+        scene_bindings: Cow<'a, BTreeMap<String, NarrativeSceneScopeBindingV1>>,
+    ) -> Self {
+        Self {
+            authority,
+            scene_bindings,
+            anchor_tokens: RefCell::new(HashMap::new()),
+        }
+    }
+
+    fn from_read(read: super::project_scope_authority::LiveProjectScopeRead) -> LiveScope<'static> {
+        LiveScope::new(Cow::Owned(read.authority), Cow::Owned(read.scene_bindings))
+    }
+
+    fn authority(&self) -> &NarrativeProjectScopeAuthorityV1 {
+        &self.authority
+    }
+
+    /// The token of the Scene Scope projection of `scene_id`. Failures keep
+    /// the projection's own closed codes (`NEX_SOURCE_MISSING`, `_STALE`,
+    /// `_PROJECT_MISMATCH`, `_KEY_INVALID`).
+    fn projection_token(&self, project_id: &str, scene_id: &str) -> anyhow::Result<String> {
+        anyhow::ensure!(
+            project_id == self.authority.project_id,
+            "NEX_SOURCE_PROJECT_MISMATCH: projection project is not the live authority's project"
+        );
+        if let Some(token) = self.anchor_tokens.borrow().get(scene_id) {
+            return Ok(token.clone());
+        }
+        let key = projection::source_key(scene_id)?;
+        let token = projection::resolve_with_authority(
+            project_id,
+            &key,
+            &self.authority,
+            &self.scene_bindings,
+        )?;
+        self.anchor_tokens
+            .borrow_mut()
+            .insert(scene_id.to_owned(), token.clone());
+        Ok(token)
+    }
+}
+
+/// The component contract version the writer seals new Revisions with.
+/// Version 1 bound the whole project Scope authority; it is read only to be
+/// declared unavailable (see [`classify_typed_material_contract`]).
+const TYPED_MATERIAL_CONTRACT_VERSION: &str = "2";
+#[cfg(test)]
+const TYPED_MATERIAL_CONTRACT_LEGACY_VERSION: &str = "1";
+
+fn typed_component_contract_digest(version: &str) -> anyhow::Result<String> {
+    Ok(canonical_json_digest(&json!({
+        "contractId": ENTITY_RELATION_MATERIAL_CONTRACT_ID,
+        "version": version,
+    }))?)
+}
+
+fn typed_component_contract_dependency_id(version: &str) -> String {
+    format!("nir1:component-contract:{version}")
+}
+
+/// The distinct anchor Scenes of the bundle's Entities: the Scene each
+/// Entity's `scope.reading` names, in Scene id order. An Entity without an
+/// anchor (not `Exact`, or not a Scene) is not a valid typed input.
+fn typed_anchor_scene_ids(bundle: &EntityRelationBundle) -> anyhow::Result<BTreeSet<&str>> {
+    bundle
+        .entities
+        .iter()
+        .map(|entity| {
+            projection::anchor_scene_id(&entity.scope.reading).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "NIR1_SCOPE_ANCHOR_INVALID: Entity '{}' reading does not name a Scene",
+                    entity.entity_id
+                )
+            })
+        })
+        .collect()
+}
+
 fn build_typed_material_basis(
     conn: &Connection,
     project_id: &str,
     bundle: &EntityRelationBundle,
-    authority: &NarrativeProjectScopeAuthorityV1,
+    scope: &LiveScope<'_>,
     observed_at: &str,
 ) -> anyhow::Result<MaterialBasis> {
-    let scope_source_key = authority.source.source_key.clone();
+    let mut anchors = Vec::new();
+    for scene_id in typed_anchor_scene_ids(bundle)? {
+        check_active_work(conn)?;
+        anchors.push((
+            scene_id,
+            projection::source_key(scene_id)?,
+            scope.projection_token(project_id, scene_id)?,
+        ));
+    }
+    let source_basis = typed_source_basis(bundle, observed_at, |source_basis| {
+        for (_, key, token) in &anchors {
+            source_basis.push(MaterialSourceBasisEntry {
+                source_kind: projection::SOURCE_KIND.into(),
+                source_key: key.clone(),
+                revision_token: token.clone(),
+                revision_observed_at: Some(observed_at.into()),
+            });
+        }
+    });
+    let scope_dependencies = anchors
+        .iter()
+        .map(|(scene_id, key, _)| (format!("nir1:scope:{scene_id}"), key.clone()))
+        .collect::<Vec<_>>();
+    assemble_typed_material(
+        conn,
+        bundle,
+        source_basis,
+        scope_dependencies,
+        TYPED_MATERIAL_CONTRACT_VERSION,
+    )
+}
+
+/// The Codex Sources of the bundle plus the Scope Sources `add_scope` pushes,
+/// sorted by Source key.
+fn typed_source_basis(
+    bundle: &EntityRelationBundle,
+    observed_at: &str,
+    add_scope: impl FnOnce(&mut Vec<MaterialSourceBasisEntry>),
+) -> Vec<MaterialSourceBasisEntry> {
     let mut source_basis = bundle
         .entities
         .iter()
@@ -535,15 +667,23 @@ fn build_typed_material_basis(
                     revision_observed_at: Some(observed_at.into()),
                 }),
         )
-        .chain(std::iter::once(MaterialSourceBasisEntry {
-            source_kind: "project-scope-authority".into(),
-            source_key: scope_source_key.clone(),
-            revision_token: authority.source.revision_token.clone(),
-            revision_observed_at: Some(observed_at.into()),
-        }))
         .collect::<Vec<_>>();
+    add_scope(&mut source_basis);
     source_basis.sort_by(|left, right| left.source_key.cmp(&right.source_key));
+    source_basis
+}
 
+/// Seal the Evidence, dependency set and digests of one material basis.
+/// `scope_dependencies` is `(dependency id, Source key)` of every Scope
+/// Source already in `source_basis`; `contract_version` names the component
+/// contract.
+fn assemble_typed_material(
+    conn: &Connection,
+    bundle: &EntityRelationBundle,
+    source_basis: Vec<MaterialSourceBasisEntry>,
+    scope_dependencies: Vec<(String, String)>,
+    contract_version: &str,
+) -> anyhow::Result<MaterialBasis> {
     let mut evidence_set = bundle
         .entities
         .iter()
@@ -596,23 +736,22 @@ fn build_typed_material_basis(
             selector: DependencySelector::WholeSource,
         });
     }
-    dependency_set.push(MaterialDependencyEntry {
-        dependency_id: format!("nir1:scope:{project_id}"),
-        input_ref: scope_source_key,
-        context_ids: vec![context_id.clone()],
-        role: DependencyRole::ScopeResolution,
-        selector: DependencySelector::WholeSource,
-    });
-    let component_contract_digest = canonical_json_digest(&json!({
-        "contractId": ENTITY_RELATION_MATERIAL_CONTRACT_ID,
-        "version": "1",
-    }))?;
+    for (dependency_id, input_ref) in scope_dependencies {
+        dependency_set.push(MaterialDependencyEntry {
+            dependency_id,
+            input_ref,
+            context_ids: vec![context_id.clone()],
+            role: DependencyRole::ScopeResolution,
+            selector: DependencySelector::WholeSource,
+        });
+    }
+    let component_contract_digest = typed_component_contract_digest(contract_version)?;
     let component_input_ref = source_basis
         .first()
         .map(|source| source.source_key.clone())
         .ok_or_else(|| anyhow::anyhow!("NIR1_ENTITY_RELATION_MATERIAL_SOURCE_EMPTY"))?;
     dependency_set.push(MaterialDependencyEntry {
-        dependency_id: "nir1:component-contract:1".into(),
+        dependency_id: typed_component_contract_dependency_id(contract_version),
         input_ref: component_input_ref,
         context_ids: vec![context_id],
         role: DependencyRole::ComponentContract,
@@ -629,14 +768,87 @@ fn build_typed_material_basis(
         "evidenceSet": evidence_set,
         "dependencySet": dependency_set,
     }))?;
-    let material = MaterialBasis {
+    Ok(MaterialBasis {
         source_basis,
         evidence_set,
         dependency_set,
         dependency_set_digest,
         material_basis_digest,
+    })
+}
+
+/// How a stored material basis relates to the component contract this build
+/// writes. Decided from the material alone (the contract dependency, its
+/// selector digest and the envelope's `componentContractDigest`), never
+/// inferred from which Sources the basis happens to hold.
+#[derive(Debug, Eq, PartialEq)]
+enum TypedMaterialContract {
+    /// Version 2: the Scope is bound by one Scene Scope projection per anchor.
+    Current,
+    /// Version 1: the Scope was the whole project Scope authority. It is never
+    /// rewritten and never re-checked against the project token.
+    Superseded,
+    /// The declarations disagree with each other or with the Sources held.
+    Mixed,
+    /// A version, contract id or shape this build does not know.
+    Unsupported,
+}
+
+fn classify_typed_material_contract(
+    material: &MaterialBasis,
+    envelope_component_digest: Option<&str>,
+) -> anyhow::Result<TypedMaterialContract> {
+    let digest_v1 = typed_component_contract_digest("1")?;
+    let digest_v2 = typed_component_contract_digest("2")?;
+    let digest_version = |digest: &str| -> Option<u8> {
+        if digest == digest_v1 {
+            Some(1)
+        } else if digest == digest_v2 {
+            Some(2)
+        } else {
+            None
+        }
     };
-    Ok(material)
+    let mut components = material
+        .dependency_set
+        .iter()
+        .filter(|dependency| dependency.role == DependencyRole::ComponentContract);
+    let (Some(component), None) = (components.next(), components.next()) else {
+        return Ok(TypedMaterialContract::Unsupported);
+    };
+    let id_version = match component.dependency_id.as_str() {
+        "nir1:component-contract:1" => Some(1),
+        "nir1:component-contract:2" => Some(2),
+        _ => None,
+    };
+    let selector_version = match &component.selector {
+        DependencySelector::ComponentContract {
+            contract_id,
+            contract_digest,
+        } if contract_id == ENTITY_RELATION_MATERIAL_CONTRACT_ID => digest_version(contract_digest),
+        _ => None,
+    };
+    let envelope_version = envelope_component_digest.and_then(digest_version);
+    let (Some(id_version), Some(selector_version), Some(envelope_version)) =
+        (id_version, selector_version, envelope_version)
+    else {
+        return Ok(TypedMaterialContract::Unsupported);
+    };
+    if id_version != selector_version || selector_version != envelope_version {
+        return Ok(TypedMaterialContract::Mixed);
+    }
+    let holds = |kind: &str| {
+        material
+            .source_basis
+            .iter()
+            .any(|source| source.source_kind == kind)
+    };
+    Ok(match id_version {
+        1 if holds(projection::SOURCE_KIND) => TypedMaterialContract::Mixed,
+        1 => TypedMaterialContract::Superseded,
+        _ if holds("project-scope-authority") => TypedMaterialContract::Mixed,
+        _ => TypedMaterialContract::Current,
+    })
 }
 
 fn typed_assertion_scope() -> Value {
@@ -662,6 +874,7 @@ fn build_typed_envelope(
     payload: &Value,
     bundle_digest: &str,
     material: &MaterialBasis,
+    component_contract_digest: &str,
 ) -> anyhow::Result<Value> {
     let producer = json!({
         "kind": "reconciler-proposal",
@@ -700,10 +913,6 @@ fn build_typed_envelope(
     let context_set_digest = canonical_json_digest(&json!({
         "version": NIR1_ENTITY_RELATION_CONTEXT_VERSION,
         "entries": context_set,
-    }))?;
-    let component_contract_digest = canonical_json_digest(&json!({
-        "contractId": ENTITY_RELATION_MATERIAL_CONTRACT_ID,
-        "version": "1",
     }))?;
     let value = json!({
         "schemaVersion": 2,
@@ -775,12 +984,12 @@ fn source_basis_rows(material: &MaterialBasis) -> Vec<SourceBasisRow> {
         .collect()
 }
 
-/// The generic Source identity registry intentionally does not know about
-/// this typed family. Entity/Relation source identities therefore stay inside
-/// this adapter and are written verbatim to the existing V1/D1 authorities.
+/// Codex Entity/Relation identities stay inside this adapter and are written
+/// verbatim to the existing V1/D1 authorities; the Scene Scope projection is
+/// a registered Source whose key grammar `scene_scope_projection` owns.
 fn typed_source_identity(
     source: &MaterialSourceBasisEntry,
-    project_id: &str,
+    #[cfg_attr(not(test), allow(unused_variables))] project_id: &str,
 ) -> anyhow::Result<String> {
     let expected = match source.source_kind.as_str() {
         "codex-entry" => {
@@ -799,6 +1008,18 @@ fn typed_source_identity(
             );
             source.source_key.clone()
         }
+        kind if kind == projection::SOURCE_KIND => {
+            let scene_id = projection::scene_id_from_source_key(&source.source_key)
+                .map_err(|_| anyhow::anyhow!("NIR1_ENTITY_RELATION_SCOPE_SOURCE_IDENTITY_INVALID"))?;
+            anyhow::ensure!(
+                projection::source_key(scene_id)? == source.source_key,
+                "NIR1_ENTITY_RELATION_SCOPE_SOURCE_IDENTITY_INVALID"
+            );
+            source.source_key.clone()
+        }
+        // Test only: the version 1 builder that proves a superseded Revision
+        // is read as unavailable. Production never writes or checks this kind.
+        #[cfg(test)]
         "project-scope-authority" => {
             let expected = format!("project:scope-authority:{project_id}");
             anyhow::ensure!(
@@ -901,6 +1122,7 @@ fn materialize_typed_authorities_in_tx(
     _run_id: &str,
     revision_id: &str,
     material: &MaterialBasis,
+    scope: &LiveScope<'_>,
     created_at: &str,
 ) -> anyhow::Result<()> {
     let epoch_id = get_current_epoch(conn, project_id)?
@@ -926,7 +1148,7 @@ fn materialize_typed_authorities_in_tx(
         .map(|edge| {
             Ok((
                 edge.id.clone(),
-                evaluate_typed_edge(conn, project_id, edge, None)?,
+                evaluate_typed_edge(conn, project_id, edge, Some(scope))?,
             ))
         })
         .collect::<anyhow::Result<Vec<_>>>()?;
@@ -1058,14 +1280,16 @@ fn canonical_instant(value: &str) -> bool {
     })
 }
 
-/// Resolve only the three source shapes admitted by `nir1.entity-relation@1`.
-/// This intentionally does not register them with the generic Source
-/// resolver; the typed reader is the sole consumer of these identities.
+/// Resolve the Source shapes admitted by `nir1.entity-relation@1`: the two
+/// Codex shapes (not registered with the generic Source resolver; the typed
+/// reader is their sole consumer) and the Scene Scope projection. `scope` is
+/// the caller's read of the same snapshot; without it the projection reads
+/// the Scope authority itself.
 fn resolve_typed_source_token(
     conn: &Connection,
     project_id: &str,
     source_object_identity: &str,
-    scope_authority: Option<&NarrativeProjectScopeAuthorityV1>,
+    scope: Option<&LiveScope<'_>>,
 ) -> anyhow::Result<Option<String>> {
     if let Some(entity_id) = source_object_identity.strip_prefix("codex:") {
         if entity_id.trim().is_empty() {
@@ -1104,18 +1328,28 @@ fn resolve_typed_source_token(
             })
             .map_err(Into::into);
     }
-    let expected_scope = format!("project:scope-authority:{project_id}");
-    if source_object_identity == expected_scope {
-        if let Some(authority) = scope_authority {
-            anyhow::ensure!(
-                authority.project_id.as_str() == project_id
-                    && authority.source.source_key == expected_scope,
-                "NIR1_ENTITY_RELATION_SCOPE_AUTHORITY_BINDING_MISMATCH"
-            );
-            return Ok(Some(authority.source.revision_token.clone()));
-        }
-        return load_live_project_scope_authority(conn, project_id, source_object_identity)
-            .map(|authority| Some(authority.source.revision_token));
+    if source_object_identity.starts_with(projection::SOURCE_PREFIX) {
+        // A Scene that is missing or no longer live has no projection (`None`,
+        // the same "absent Source" the Codex arms return); a malformed key or
+        // a project mismatch stays an error.
+        let resolved = match scope {
+            Some(scope) => projection::scene_id_from_source_key(source_object_identity)
+                .and_then(|scene_id| scope.projection_token(project_id, scene_id)),
+            None => projection::resolve(conn, project_id, source_object_identity),
+        };
+        return projection::token_or_absent(resolved);
+    }
+    // Test only: a version 1 edge still names the whole project Scope
+    // authority. Production does not resolve it: a superseded Revision is
+    // unavailable by its contract, never by the project token.
+    #[cfg(test)]
+    if source_object_identity == format!("project:scope-authority:{project_id}") {
+        return super::project_scope_authority::load_live_project_scope_authority(
+            conn,
+            project_id,
+            source_object_identity,
+        )
+        .map(|authority| Some(authority.source.revision_token));
     }
     Ok(None)
 }
@@ -1124,8 +1358,19 @@ fn evaluate_typed_edge(
     conn: &Connection,
     project_id: &str,
     edge: &DependencyEdge,
-    scope_authority: Option<&NarrativeProjectScopeAuthorityV1>,
+    scope: Option<&LiveScope<'_>>,
 ) -> anyhow::Result<super::evaluator::EdgeObservation> {
+    Ok(evaluate_typed_edge_with_token(conn, project_id, edge, scope)?.0)
+}
+
+/// The edge's observation and the current token it was decided from: one
+/// resolution, so the two cannot disagree.
+fn evaluate_typed_edge_with_token(
+    conn: &Connection,
+    project_id: &str,
+    edge: &DependencyEdge,
+    scope: Option<&LiveScope<'_>>,
+) -> anyhow::Result<(super::evaluator::EdgeObservation, Option<String>)> {
     let read_set: Vec<String> =
         parse_json_with_active_work(conn, &edge.read_set_json).map_err(|error| {
             if is_validation_terminated(&error) {
@@ -1138,19 +1383,16 @@ fn evaluate_typed_edge(
         read_set.len() == 1,
         "NIR1_ENTITY_RELATION_V1_READ_SET_INVALID"
     );
-    let current_revision_token = resolve_typed_source_token(
-        conn,
-        project_id,
-        &edge.source_object_identity,
-        scope_authority,
-    )?;
-    Ok(evaluate_edge(&EdgeComparisonInput {
+    let current_revision_token =
+        resolve_typed_source_token(conn, project_id, &edge.source_object_identity, scope)?;
+    let observation = evaluate_edge(&EdgeComparisonInput {
         stored_revision_token: read_set.into_iter().next(),
         current_revision_token: current_revision_token.clone(),
         current_source_exists: current_revision_token.is_some(),
         comparison_available: current_revision_token.is_some(),
         ..EdgeComparisonInput::default()
-    }))
+    });
+    Ok((observation, current_revision_token))
 }
 
 pub(crate) fn is_typed_revision_edge(
@@ -1178,12 +1420,14 @@ pub(crate) fn is_typed_revision_edge(
     )?)
 }
 
+/// The incremental evaluation of one typed edge and the token it was decided
+/// from. A projection edge reads the Scope authority once for both.
 pub(crate) fn evaluate_typed_edge_for_incremental(
     conn: &Connection,
     project_id: &str,
     edge: &DependencyEdge,
-) -> anyhow::Result<super::evaluator::EdgeObservation> {
-    evaluate_typed_edge(conn, project_id, edge, None)
+) -> anyhow::Result<(super::evaluator::EdgeObservation, Option<String>)> {
+    evaluate_typed_edge_with_token(conn, project_id, edge, None)
 }
 
 pub(crate) fn typed_source_token_for_incremental(
@@ -1192,6 +1436,44 @@ pub(crate) fn typed_source_token_for_incremental(
     source_object_identity: &str,
 ) -> anyhow::Result<Option<String>> {
     resolve_typed_source_token(conn, project_id, source_object_identity, None)
+}
+
+/// The project Scope read one transaction shares across the typed Sources it
+/// resolves. It is loaded by the first projection Source and kept for the
+/// rest, so K anchors cost one authority read, not K. Only a caller that
+/// resolves inside one write or read transaction may hold it: the read is
+/// that transaction's snapshot and must not outlive it.
+#[derive(Default)]
+pub(crate) struct SharedTypedScope(Option<LiveScope<'static>>);
+
+impl SharedTypedScope {
+    pub(crate) fn new() -> Self {
+        Self::default()
+    }
+}
+
+/// [`typed_source_token_for_incremental`] for a caller that resolves several
+/// Sources in one transaction. The results are the same; a projection Source
+/// resolves from `shared`, so a malformed key costs no read and a Scene that
+/// is missing or no longer live is `None`, as without it.
+pub(crate) fn typed_source_token_with_shared_scope(
+    conn: &Connection,
+    project_id: &str,
+    source_object_identity: &str,
+    shared: &mut SharedTypedScope,
+) -> anyhow::Result<Option<String>> {
+    if !source_object_identity.starts_with(projection::SOURCE_PREFIX) {
+        return resolve_typed_source_token(conn, project_id, source_object_identity, None);
+    }
+    projection::scene_id_from_source_key(source_object_identity)?;
+    if shared.0.is_none() {
+        match projection::load_scope_read(conn, project_id) {
+            Ok(read) => shared.0 = Some(LiveScope::from_read(read)),
+            // A project that is not found has no projection, as `resolve`.
+            Err(error) => return projection::token_or_absent(Err(error)),
+        }
+    }
+    resolve_typed_source_token(conn, project_id, source_object_identity, shared.0.as_ref())
 }
 
 /// The project's latest Semantic Epoch. A Graph query reads it once for all
@@ -1236,14 +1518,14 @@ fn typed_run_matches_current_epoch(
 /// Read the existing canonical V1/D1 Freshness authority for the typed
 /// consumer. The generic reader is intentionally not called because its
 /// membership and Source resolvers must remain family-scoped deny paths. Reuse
-/// the caller's validated Scope authority for the same SQLite read snapshot.
+/// the caller's validated Scope read for the same SQLite read snapshot.
 fn read_typed_canonical_freshness(
     conn: &Connection,
     project_id: &str,
     run_id: &str,
     revision_id: &str,
     material: &MaterialBasis,
-    scope_authority: &NarrativeProjectScopeAuthorityV1,
+    scope: &LiveScope<'_>,
     shared: Option<&Nir1ProjectReads>,
 ) -> anyhow::Result<Option<Nir1EntityRelationFreshness>> {
     if !is_generic_freshness_canonical(conn)? {
@@ -1393,7 +1675,7 @@ fn read_typed_canonical_freshness(
         if edge.owning_run_id.as_deref() != Some(run_id) {
             return Ok(None);
         }
-        let observation = evaluate_typed_edge(conn, project_id, edge, Some(scope_authority))?;
+        let observation = evaluate_typed_edge(conn, project_id, edge, Some(scope))?;
         if observation.freshness != EvidenceFreshness::Fresh
             || observation.build_action != BuildAction::None
             || observation.reason_code.is_some()
@@ -1428,6 +1710,29 @@ pub fn create_nir1_entity_relation_revision(
 fn create_in_tx(
     conn: &Connection,
     request: Nir1EntityRelationRevisionRequest,
+) -> anyhow::Result<Value> {
+    create_in_tx_with(
+        conn,
+        request,
+        build_typed_material_basis,
+        &typed_component_contract_digest(TYPED_MATERIAL_CONTRACT_VERSION)?,
+    )
+}
+
+/// `build_material` and `component_contract_digest` are the writer's material
+/// contract. Production passes the current contract; the test-only version 1
+/// builder passes the superseded one to seal a Revision this reader refuses.
+fn create_in_tx_with(
+    conn: &Connection,
+    request: Nir1EntityRelationRevisionRequest,
+    build_material: impl FnOnce(
+        &Connection,
+        &str,
+        &EntityRelationBundle,
+        &LiveScope<'_>,
+        &str,
+    ) -> anyhow::Result<MaterialBasis>,
+    component_contract_digest: &str,
 ) -> anyhow::Result<Value> {
     if request.project_id.trim().is_empty()
         || request.run_id.trim().is_empty()
@@ -1464,7 +1769,7 @@ fn create_in_tx(
     bundle.revision_id = revision_id.clone();
     validate_entity_relation_bundle(&bundle)
         .map_err(|error| anyhow::anyhow!("NIR1_ENTITY_RELATION_INPUT_INVALID: {error}"))?;
-    let authority = validate_live_sources(conn, &request.project_id, &bundle, None)?;
+    let scope = validate_live_sources(conn, &request.project_id, &bundle, None)?;
 
     let payload = StoredNir1EntityRelationPayload {
         schema_version: 1,
@@ -1481,14 +1786,14 @@ fn create_in_tx(
     let proposal_set_id = Uuid::new_v4().to_string();
     let proposal_id = Uuid::new_v4().to_string();
     let created_at = Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
-    let material =
-        build_typed_material_basis(conn, &request.project_id, &bundle, &authority, &created_at)?;
+    let material = build_material(conn, &request.project_id, &bundle, &scope, &created_at)?;
     let envelope = build_typed_envelope(
         &request.run_id,
         &revision_id,
         &payload_value,
         &bundle_digest,
         &material,
+        component_contract_digest,
     )?;
     let envelope_json = canonical_json_string(&envelope)?;
     let envelope_digest = canonical_json_digest(&envelope)?;
@@ -1563,6 +1868,7 @@ fn create_in_tx(
         &request.run_id,
         &revision_id,
         &material,
+        &scope,
         &created_at,
     )?;
 
@@ -1962,7 +2268,7 @@ fn read_typed_revision_core(
         allow_draft,
         None,
         decision_read,
-        |revision, _authority| Ok(revision),
+        |revision, _scope| Ok(revision),
     )?
     .into_current_read())
 }
@@ -2039,10 +2345,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     allow_draft: bool,
     shared: Option<&Nir1ProjectReads>,
     decision_read: DecisionRead,
-    on_available: impl FnOnce(
-        Box<Nir1EntityRelationRevision>,
-        &NarrativeProjectScopeAuthorityV1,
-    ) -> anyhow::Result<T>,
+    on_available: impl FnOnce(Box<Nir1EntityRelationRevision>, &LiveScope<'_>) -> anyhow::Result<T>,
 ) -> anyhow::Result<TypedRevisionCoreRead<T>> {
     if conn.is_autocommit() {
         anyhow::bail!("NIR1_ENTITY_RELATION_REQUIRES_READ_TRANSACTION");
@@ -2273,6 +2576,10 @@ fn read_typed_revision_core_with_scope_authority<T>(
         return Ok(unavailable("revision-payload-binding-invalid"));
     }
     check_active_work(conn)?;
+    let envelope_component_digest = envelope
+        .pointer("/revisionBasis/componentContractDigest")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
     let material_basis: MaterialBasis = match envelope
         .get_mut("effectiveMaterialBasis")
         .map(Value::take)
@@ -2283,11 +2590,25 @@ fn read_typed_revision_core_with_scope_authority<T>(
     };
     drop(envelope);
     check_active_work(conn)?;
+    // The material's own contract decides how it is read. A Revision sealed
+    // under a superseded contract (version 1 bound the whole project Scope
+    // authority) is never rewritten and never checked against the project
+    // token: it stays unavailable until a new one is prepared and approved.
+    match classify_typed_material_contract(&material_basis, envelope_component_digest.as_deref())? {
+        TypedMaterialContract::Current => {}
+        TypedMaterialContract::Superseded => {
+            return Ok(unavailable("revision-material-contract-superseded"))
+        }
+        TypedMaterialContract::Mixed => return Ok(unavailable("revision-material-contract-mixed")),
+        TypedMaterialContract::Unsupported => {
+            return Ok(unavailable("revision-material-contract-unsupported"))
+        }
+    }
     if validate_entity_relation_bundle(&payload.bundle).is_err() {
         return Ok(unavailable("source-revision-changed"));
     }
-    let authority = match validate_live_sources(conn, project_id, &payload.bundle, shared) {
-        Ok(authority) => authority,
+    let scope = match validate_live_sources(conn, project_id, &payload.bundle, shared) {
+        Ok(scope) => scope,
         Err(error) if is_validation_terminated(&error) => return Err(error),
         Err(_) => return Ok(unavailable("source-revision-changed")),
     };
@@ -2295,7 +2616,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
         conn,
         project_id,
         &payload.bundle,
-        &authority,
+        &scope,
         &revision_created_at,
     ) {
         Ok(material) => material,
@@ -2323,7 +2644,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
         &run_id,
         revision_id,
         &expected_material,
-        &authority,
+        &scope,
         shared,
     )? {
         Some(snapshot) => snapshot,
@@ -2345,7 +2666,7 @@ fn read_typed_revision_core_with_scope_authority<T>(
     });
     if human_approved {
         Ok(TypedRevisionCoreRead::Available(on_available(
-            revision, &authority,
+            revision, &scope,
         )?))
     } else {
         Ok(TypedRevisionCoreRead::Draft { revision })
@@ -2436,14 +2757,14 @@ fn evaluate_disclosure(
         false,
         shared,
         decision_read,
-        |revision, authority| {
+        |revision, scope| {
             evaluate_nir1_entity_relation_disclosure_with_authority(
                 conn,
                 project_id,
                 revision_id,
                 query_scene_id,
                 revision,
-                authority,
+                scope,
                 shared,
             )
         },
@@ -2465,9 +2786,10 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
     revision_id: &str,
     query_scene_id: &str,
     revision: Box<Nir1EntityRelationRevision>,
-    authority: &NarrativeProjectScopeAuthorityV1,
+    scope: &LiveScope<'_>,
     shared: Option<&Nir1ProjectReads>,
 ) -> anyhow::Result<Nir1EntityRelationDisclosureRead> {
+    let authority = scope.authority();
     anyhow::ensure!(
         revision.project_id == project_id && revision.revision_id == revision_id,
         "NIR1_ENTITY_RELATION_A3_REVISION_IDENTITY_MISMATCH"
@@ -2533,7 +2855,15 @@ fn evaluate_nir1_entity_relation_disclosure_with_authority(
 
     for entity in &revision.bundle.entities {
         check_active_work(conn)?;
-        if entity.scope.authority_revision != query_scope_authority_revision {
+        // The Entity's Scope token is the projection of its own anchor Scene,
+        // not the project's token (which is the request's context below).
+        // A2 (`validate_live_sources`) already compares every Entity's token with
+        // the same `LiveScope` snapshot and answers `source-revision-changed`
+        // first, so this branch is a second, defensive gate (DR-X1-3-4).
+        let anchor_matches = projection::anchor_scene_id(&entity.scope.reading)
+            .and_then(|anchor| scope.projection_token(project_id, anchor).ok())
+            .is_some_and(|token| token == entity.scope.authority_revision);
+        if !anchor_matches {
             return Ok(Nir1EntityRelationDisclosureRead::Unavailable {
                 reason: "a3-scope-authority-stale".into(),
             });
@@ -3599,21 +3929,22 @@ fn validate_live_sources<'a>(
     project_id: &str,
     bundle: &EntityRelationBundle,
     shared: Option<&'a Nir1ProjectReads>,
-) -> anyhow::Result<std::borrow::Cow<'a, NarrativeProjectScopeAuthorityV1>> {
-    use std::borrow::Cow;
-    let authority =
-        match shared {
-            // The query's own read of the same snapshot; the failure to load it is
-            // the failure each Revision would have met loading it itself.
-            Some(shared) => Cow::Borrowed(shared.authority().ok_or_else(|| {
+) -> anyhow::Result<LiveScope<'a>> {
+    let scope = match shared {
+        // The query's own read of the same snapshot; the failure to load it is
+        // the failure each Revision would have met loading it itself.
+        Some(shared) => LiveScope::new(
+            Cow::Borrowed(shared.authority().ok_or_else(|| {
                 anyhow::anyhow!("NIR1_ENTITY_RELATION_SCOPE_AUTHORITY_UNAVAILABLE")
             })?),
-            None => Cow::Owned(load_live_project_scope_authority(
-                conn,
-                project_id,
-                &format!("project:scope-authority:{project_id}"),
-            )?),
-        };
+            Cow::Borrowed(shared.scene_bindings()),
+        ),
+        None => LiveScope::from_read(load_live_project_scope_authority_with_scene_bindings(
+            conn,
+            project_id,
+            &format!("project:scope-authority:{project_id}"),
+        )?),
+    };
     for entity in &bundle.entities {
         check_active_work(conn)?;
         let current: Option<(String, String, Option<String>, String)> = conn
@@ -3648,7 +3979,7 @@ fn validate_live_sources<'a>(
             "NIR1_ENTITY_SOURCE_STALE: entity '{}' source token does not match current Codex revision",
             entity.entity_id
         );
-        validate_scope_binding(conn, project_id, &entity.scope, &authority)?;
+        validate_scope_binding(conn, project_id, &entity.scope, &scope)?;
         let canonical_text = summary
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| name.clone());
@@ -3718,27 +4049,37 @@ fn validate_live_sources<'a>(
             relation.edge_id
         );
     }
-    Ok(authority)
+    Ok(scope)
 }
 
 fn validate_scope_binding(
     conn: &Connection,
     project_id: &str,
     scope: &ScopeBinding,
-    authority: &grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
+    live: &LiveScope<'_>,
 ) -> anyhow::Result<()> {
+    let authority = live.authority();
     anyhow::ensure!(
         authority.project_id == project_id,
         "NIR1_SCOPE_PROJECT_MISMATCH: live Scope authority belongs to another project"
     );
-    anyhow::ensure!(
-        scope.authority_revision == authority.source.revision_token,
-        "NIR1_SCOPE_AUTHORITY_STALE: Scope binding does not match the current project Scope authority revision"
-    );
-
+    ensure_prepare_scope_shape(scope)?;
     validate_scope_value(&scope.reading, "reading", authority)?;
     validate_scope_value(&scope.story, "story", authority)?;
     validate_scope_value(&scope.auto, "auto", authority)?;
+    // The Scope token is the projection of the Entity's anchor Scene, which
+    // Native resolves here; nothing the caller names is a source of it.
+    let anchor = projection::anchor_scene_id(&scope.reading).ok_or_else(|| {
+        anyhow::anyhow!("NIR1_SCOPE_ANCHOR_INVALID: reading Scope does not name a Scene")
+    })?;
+    let current = live
+        .projection_token(project_id, anchor)
+        .map_err(|error| anyhow::anyhow!("NIR1_SCOPE_ANCHOR_UNAVAILABLE: {error}"))?;
+    anyhow::ensure!(
+        scope.authority_revision == current,
+        "NIR1_SCOPE_AUTHORITY_STALE: Scope binding does not match the current Scene Scope projection of its anchor"
+    );
+
     anyhow::ensure!(
         authority
             .scope_registry
@@ -3766,6 +4107,67 @@ fn validate_scope_binding(
         );
     }
     Ok(())
+}
+
+/// The Scene Scope projection binds one non-secret Scope: the shape
+/// `nir1.entity-relation@1` prepare builds (reading `Exact` Scene, story `Any`,
+/// auto `NotApplicable`, reveal `reader`, no POV). A Scope outside it carries a
+/// story key, a secret reveal or a POV the projection does not bind, so a
+/// version 2 writer rejects it and a version 2 reader declares it unavailable
+/// (the validation failure reads as `source-revision-changed`).
+fn ensure_prepare_scope_shape(scope: &ScopeBinding) -> anyhow::Result<()> {
+    #[cfg(test)]
+    if tests_scope_shape::relaxed() {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        matches!(scope.story, ScopeValue::Any { .. }),
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: story Scope is not 'any' (the Scene Scope projection binds no story key)"
+    );
+    anyhow::ensure!(
+        matches!(scope.auto, ScopeValue::NotApplicable { .. }),
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: auto Scope is not 'not applicable'"
+    );
+    anyhow::ensure!(
+        scope.pov.is_none(),
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: a Scope with a POV is not bound by the Scene Scope projection"
+    );
+    anyhow::ensure!(
+        scope.reveal == projection::REVEAL_READER_REF,
+        "NIR1_SCOPE_SHAPE_UNSUPPORTED: reveal audience is not the reader"
+    );
+    Ok(())
+}
+
+/// Tests that exercise A3's story, auto and POV rules need a Scope outside the
+/// prepare shape; they hold this guard so the shape check stands aside. No
+/// production path can hold it.
+#[cfg(test)]
+pub(crate) mod tests_scope_shape {
+    use std::cell::Cell;
+
+    thread_local! {
+        static RELAXED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    pub(super) fn relaxed() -> bool {
+        RELAXED.with(Cell::get)
+    }
+
+    pub(crate) struct RelaxedScopeShape(());
+
+    impl RelaxedScopeShape {
+        pub(crate) fn hold() -> Self {
+            RELAXED.with(|flag| flag.set(true));
+            Self(())
+        }
+    }
+
+    impl Drop for RelaxedScopeShape {
+        fn drop(&mut self) {
+            RELAXED.with(|flag| flag.set(false));
+        }
+    }
 }
 
 fn validate_scope_value(
@@ -3862,11 +4264,12 @@ fn build_live_typed_bundle(
         "NIR1_ENTITY_RELATION_PREPARE_TOO_LARGE"
     );
 
-    let authority = load_live_project_scope_authority(
+    let live = LiveScope::from_read(load_live_project_scope_authority_with_scene_bindings(
         conn,
         &request.project_id,
         &format!("project:scope-authority:{}", request.project_id),
-    )?;
+    )?);
+    let authority = live.authority();
     let scene_ref = format!("scene:{}", request.scene_id);
     anyhow::ensure!(
         authority
@@ -3892,7 +4295,13 @@ fn build_live_typed_bundle(
         phase: "draft".into(),
         reveal,
         pov: None,
-        authority_revision: authority.source.revision_token.clone(),
+        // The anchor is the Scene under review; its projection is the token the
+        // Revision binds (never the project's).
+        authority_revision: live
+            .projection_token(&request.project_id, &request.scene_id)
+            .map_err(|error| {
+                anyhow::anyhow!("NIR1_ENTITY_RELATION_PREPARE_SCENE_UNAVAILABLE: {error}")
+            })?,
     };
 
     let mut relation_rows = Vec::with_capacity(request.relation_ids.len());
@@ -4115,7 +4524,11 @@ pub(super) mod tests {
         read_revision_material_membership, MaterialMembershipRead,
     };
     use crate::narrative_extraction::nir1_entity_relation_index;
+    use crate::narrative_extraction::project_scope_authority::{
+        load_live_project_scope_authority, load_live_project_scope_authority_with_scene_bindings,
+    };
     use crate::narrative_extraction::revision_eligibility::RevisionFreshnessReason;
+    use crate::narrative_extraction::scene_scope_projection;
     use crate::narrative_extraction::{
         narrative_extraction_append_human_decision, narrative_extraction_append_revision,
         narrative_extraction_create_run, narrative_extraction_save_proposal_set,
@@ -4250,6 +4663,14 @@ pub(super) mod tests {
                     (id, project_id, node_type, title, content, sort_order)
                  VALUES ('nir1', 'default-project', 'scene', 'NIR1', '{}', 'a0')",
                 [],
+            )?;
+            // A Scene made through a writer has its binding; a typed Revision
+            // anchored here needs one for its Scene Scope projection.
+            super::super::ensure_scene_scope_binding_in_tx(
+                conn,
+                "default-project",
+                "nir1",
+                "2026-09-15T00:00:00.000Z",
             )?;
             conn.execute(
                 "INSERT INTO codex_entries (id, project_id, type, name, summary, updated_at)
@@ -4386,21 +4807,48 @@ pub(super) mod tests {
         Ok(())
     }
 
+    /// The token of the Scene Scope projection of `scene_id`: what a typed
+    /// Revision whose Entities anchor to that Scene binds as its Scope token.
+    pub(crate) fn scene_scope_projection_token_for_test(
+        db: &crate::Database,
+        project_id: &str,
+        scene_id: &str,
+    ) -> anyhow::Result<String> {
+        db.with_read_transaction(|conn| {
+            scene_scope_projection::resolve(
+                conn,
+                project_id,
+                &scene_scope_projection::source_key(scene_id)?,
+            )
+        })
+    }
+
+    /// After a test moved Entities' readings to other Scenes, bind each
+    /// Entity's Scope token to the live projection of the Scene it now names.
+    pub(crate) fn rebind_scope_tokens(
+        db: &crate::Database,
+        request: &mut Nir1EntityRelationRevisionRequest,
+    ) -> anyhow::Result<()> {
+        let project_id = request.project_id.clone();
+        for entity in &mut request.bundle.entities {
+            let anchor = scene_scope_projection::anchor_scene_id(&entity.scope.reading)
+                .expect("the test reading names a Scene")
+                .to_owned();
+            entity.scope.authority_revision =
+                scene_scope_projection_token_for_test(db, &project_id, &anchor)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn request(db: &crate::Database) -> Nir1EntityRelationRevisionRequest {
-        let authority_revision = db
-            .with_read_transaction(|conn| {
-                super::load_live_project_scope_authority(
-                    conn,
-                    "default-project",
-                    "project:scope-authority:default-project",
-                )
-            })
-            .expect("live fixture Scope authority");
+        let authority_revision =
+            scene_scope_projection_token_for_test(db, "default-project", "nir1")
+                .expect("live fixture Scene Scope projection");
         Nir1EntityRelationRevisionRequest {
             run_id: "nir1-run".into(),
             project_id: "default-project".into(),
             proposal_key: "nir1:review:1".into(),
-            bundle: valid_bundle("default-project", authority_revision.source.revision_token),
+            bundle: valid_bundle("default-project", authority_revision),
         }
     }
 
@@ -4500,18 +4948,19 @@ pub(super) mod tests {
                     return Ok(Nir1EntityRelationDisclosureRead::Unavailable { reason });
                 }
             };
-        let authority = super::load_live_project_scope_authority(
-            conn,
-            project_id,
-            &format!("project:scope-authority:{project_id}"),
-        )?;
+        let scope =
+            super::LiveScope::from_read(load_live_project_scope_authority_with_scene_bindings(
+                conn,
+                project_id,
+                &format!("project:scope-authority:{project_id}"),
+            )?);
         super::evaluate_nir1_entity_relation_disclosure_with_authority(
             conn,
             project_id,
             revision_id,
             query_scene_id,
             revision,
-            &authority,
+            &scope,
             None,
         )
     }
@@ -5820,21 +6269,21 @@ pub(super) mod tests {
         seed_run_and_catalog(&db)?;
         let bundle = request(&db).bundle;
         let observed_at = "2026-09-15T00:00:00.000Z";
-        let (authority, reused_material, reloaded_material) = db.with_read_transaction(|conn| {
-            let authority =
-                super::validate_live_sources(conn, "default-project", &bundle, None)?.into_owned();
+        let (reused_material, reloaded_material) = db.with_read_transaction(|conn| {
+            let scope = super::validate_live_sources(conn, "default-project", &bundle, None)?;
             let reused_material = super::build_typed_material_basis(
                 conn,
                 "default-project",
                 &bundle,
-                &authority,
+                &scope,
                 observed_at,
             )?;
-            let independently_loaded = super::load_live_project_scope_authority(
-                conn,
-                "default-project",
-                "project:scope-authority:default-project",
-            )?;
+            let independently_loaded =
+                super::LiveScope::from_read(load_live_project_scope_authority_with_scene_bindings(
+                    conn,
+                    "default-project",
+                    "project:scope-authority:default-project",
+                )?);
             let reloaded_material = super::build_typed_material_basis(
                 conn,
                 "default-project",
@@ -5842,16 +6291,38 @@ pub(super) mod tests {
                 &independently_loaded,
                 observed_at,
             )?;
-            Ok((authority, reused_material, reloaded_material))
+            Ok((reused_material, reloaded_material))
         })?;
 
         assert_eq!(reused_material, reloaded_material);
-        let scope_source = reused_material
+        // Version 2: the Scope is one projection row for the one anchor Scene,
+        // and the project's token is not in the basis at all.
+        let projection_token =
+            scene_scope_projection_token_for_test(&db, "default-project", "nir1")?;
+        assert!(reused_material
             .source_basis
             .iter()
-            .find(|source| source.source_kind == "project-scope-authority")
-            .expect("scope authority is in the material basis");
-        assert_eq!(scope_source.revision_token, authority.source.revision_token);
+            .all(|source| source.source_kind != "project-scope-authority"));
+        let scope_rows = reused_material
+            .source_basis
+            .iter()
+            .filter(|source| source.source_kind == "scene-scope-projection-v1")
+            .collect::<Vec<_>>();
+        assert_eq!(scope_rows.len(), 1);
+        assert_eq!(
+            scope_rows[0].source_key,
+            "project:scene-scope-projection:nir1"
+        );
+        assert_eq!(scope_rows[0].revision_token, projection_token);
+        assert!(reused_material
+            .dependency_set
+            .iter()
+            .any(|dependency| dependency.dependency_id == "nir1:scope:nir1"
+                && dependency.input_ref == "project:scene-scope-projection:nir1"));
+        assert!(reused_material
+            .dependency_set
+            .iter()
+            .any(|dependency| dependency.dependency_id == "nir1:component-contract:2"));
         Ok(())
     }
 
@@ -6294,41 +6765,638 @@ pub(super) mod tests {
         Ok(())
     }
 
+    /// Change one Scene field through the real tree writer (it appends the
+    /// Scope event and advances the Scope generation exactly as production does).
+    fn patch_scene_field(
+        db: &crate::Database,
+        scene_id: &str,
+        tag: &str,
+        field: &str,
+        value: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        let mut patch = serde_json::Map::new();
+        patch.insert(field.to_owned(), value);
+        tree_node_patch(
+            db,
+            TreeNodePatchPayload {
+                project_id: "default-project".into(),
+                request_id: format!("x13-patch-{tag}-request"),
+                session_id: "x13-patch-session".into(),
+                event_uid: format!("x13-patch-{tag}-event"),
+                node_id: scene_id.into(),
+                patch,
+                base_version: None,
+                bump_version: true,
+                updated_at: "2026-10-17T02:00:00.000Z".into(),
+                change_event: None,
+                timelapse_doc_step_coverage: None,
+                origin: NarrativeChangeOrigin::Human,
+                original_transaction_id: None,
+                undo_journal_id: None,
+                source_domain: None,
+                op_type: None,
+                canonical_payload: None,
+            },
+        )?;
+        Ok(())
+    }
+
+    fn approved_revision(db: &crate::Database) -> anyhow::Result<String> {
+        let created = create_nir1_entity_relation_revision(db, request(db))?;
+        approve_typed_revision(db, "nir1-run", &created)?;
+        Ok(created["revisionId"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("typed revision id missing"))?
+            .to_owned())
+    }
+
+    fn a2_reason(db: &crate::Database, revision_id: &str) -> anyhow::Result<Option<String>> {
+        Ok(
+            match db.with_read_transaction(|conn| {
+                read_nir1_entity_relation_revision(conn, "default-project", revision_id)
+            })? {
+                Nir1EntityRelationRevisionRead::Available(_) => None,
+                Nir1EntityRelationRevisionRead::Unavailable { reason } => Some(reason),
+            },
+        )
+    }
+
     #[test]
     fn typed_revision_reopen_is_invalidated_by_scope_authority_change() -> anyhow::Result<()> {
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
-        let created = create_nir1_entity_relation_revision(&db, request(&db))?;
-        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
-        narrative_extraction_append_human_decision(
+        let revision_id = approved_revision(&db)?;
+        assert_eq!(a2_reason(&db, &revision_id)?, None);
+        // The real writer for the anchor's story key: the anchor's Scope
+        // generation advances, so its projection (and the Revision) moves.
+        patch_scene_field(
             &db,
-            AppendDecisionPayload {
-                run_id: "nir1-run".into(),
-                project_id: "default-project".into(),
-                proposal_id: created["proposalId"].as_str().unwrap().into(),
-                revision_id: revision_id.clone(),
-                decision: "approved".into(),
-                decision_json: None,
-                created_by: Some("renderer-reviewer".into()),
-            },
+            "nir1",
+            "anchor-story",
+            "storyTimeOrder",
+            json!("story-nir1"),
         )?;
+        assert_eq!(
+            a2_reason(&db, &revision_id)?.as_deref(),
+            Some("source-revision-changed")
+        );
+        Ok(())
+    }
+
+    /// Test 16 (other direction): another Scene's story key, and a Scene that
+    /// is not the anchor at all, leave the version 2 Revision available.
+    #[test]
+    fn x13_other_scene_story_change_keeps_v2_revision() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+        let revision_id = approved_revision(&db)?;
+        let project_before = db.with_read_transaction(|conn| {
+            Ok(load_live_project_scope_authority(
+                conn,
+                "default-project",
+                "project:scope-authority:default-project",
+            )?
+            .source
+            .revision_token)
+        })?;
+        let projection_before =
+            scene_scope_projection_token_for_test(&db, "default-project", "nir1")?;
+        patch_scene_field(
+            &db,
+            "a3-future",
+            "other-story",
+            "storyTimeOrder",
+            json!("story-other"),
+        )?;
+        let project_after = db.with_read_transaction(|conn| {
+            Ok(load_live_project_scope_authority(
+                conn,
+                "default-project",
+                "project:scope-authority:default-project",
+            )?
+            .source
+            .revision_token)
+        })?;
+        assert_ne!(
+            project_before, project_after,
+            "the project token does move for another Scene's story key"
+        );
+        assert_eq!(
+            projection_before,
+            scene_scope_projection_token_for_test(&db, "default-project", "nir1")?
+        );
+        assert_eq!(a2_reason(&db, &revision_id)?, None);
+        Ok(())
+    }
+
+    /// Test only: seal a Revision under the superseded version 1 contract
+    /// (the whole project Scope authority as the Scope Source). Production has
+    /// no writer or checker for it; this exists to prove the reader refuses it.
+    pub(crate) fn create_version_one_revision_for_test(
+        db: &crate::Database,
+        request: Nir1EntityRelationRevisionRequest,
+    ) -> anyhow::Result<serde_json::Value> {
+        fn build_version_one_material(
+            conn: &rusqlite::Connection,
+            project_id: &str,
+            bundle: &EntityRelationBundle,
+            scope: &super::LiveScope<'_>,
+            observed_at: &str,
+        ) -> anyhow::Result<super::MaterialBasis> {
+            let source = &scope.authority().source;
+            let source_basis = super::typed_source_basis(bundle, observed_at, |rows| {
+                rows.push(super::MaterialSourceBasisEntry {
+                    source_kind: "project-scope-authority".into(),
+                    source_key: source.source_key.clone(),
+                    revision_token: source.revision_token.clone(),
+                    revision_observed_at: Some(observed_at.into()),
+                });
+            });
+            super::assemble_typed_material(
+                conn,
+                bundle,
+                source_basis,
+                vec![(
+                    format!("nir1:scope:{project_id}"),
+                    source.source_key.clone(),
+                )],
+                super::TYPED_MATERIAL_CONTRACT_LEGACY_VERSION,
+            )
+        }
         db.with_conn(|conn| {
+            super::with_immediate_transaction(conn, |conn| {
+                super::create_in_tx_with(
+                    conn,
+                    request,
+                    build_version_one_material,
+                    &super::typed_component_contract_digest(
+                        super::TYPED_MATERIAL_CONTRACT_LEGACY_VERSION,
+                    )?,
+                )
+            })
+        })
+    }
+
+    /// Every durable row of one Revision that the reader must never rewrite.
+    fn revision_rows_snapshot(
+        db: &crate::Database,
+        revision_id: &str,
+    ) -> anyhow::Result<Vec<Option<String>>> {
+        db.with_read_transaction(|conn| {
+            [
+                "SELECT payload_json || char(10) || COALESCE(reconciliation_envelope_json, '')
+                        || char(10) || COALESCE(reconciliation_envelope_digest, '')
+                   FROM narrative_proposal_revisions WHERE id = ?1",
+                "SELECT group_concat(ordinal || source_kind || source_key || revision_token
+                                     || COALESCE(observed_at, ''), char(10))
+                   FROM (SELECT * FROM narrative_revision_source_basis
+                          WHERE revision_id = ?1 ORDER BY ordinal)",
+                "SELECT group_concat(id || source_object_identity || read_set_json, char(10))
+                   FROM (SELECT * FROM narrative_dependency_edges
+                          WHERE consumer_kind = 'proposal-revision' AND consumer_key = ?1
+                          ORDER BY source_object_identity)",
+                "SELECT group_concat(source_object_identity || dependency_role || selector_json,
+                                     char(10))
+                   FROM (SELECT * FROM narrative_dependency_declaration_entries
+                          WHERE declaration_set_id = (
+                                SELECT active_declaration_set_id
+                                  FROM narrative_dependency_declaration_heads
+                                 WHERE project_id = 'default-project'
+                                   AND consumer_kind = 'proposal-revision'
+                                   AND consumer_key = ?1)
+                          ORDER BY source_object_identity, dependency_role)",
+                "SELECT group_concat(id || decision || created_at || actor_id, char(10))
+                   FROM (SELECT * FROM narrative_proposal_decisions
+                          WHERE revision_id = ?1 ORDER BY id)",
+            ]
+            .into_iter()
+            .map(|sql| {
+                Ok(conn.query_row(sql, [revision_id], |row| row.get::<_, Option<String>>(0))?)
+            })
+            .collect()
+        })
+    }
+
+    fn rewrite_envelope(
+        db: &crate::Database,
+        revision_id: &str,
+        mutate: impl FnOnce(&mut serde_json::Value),
+    ) -> anyhow::Result<()> {
+        db.with_conn(|conn| {
+            let stored: String = conn.query_row(
+                "SELECT reconciliation_envelope_json FROM narrative_proposal_revisions
+                  WHERE id = ?1",
+                [revision_id],
+                |row| row.get(0),
+            )?;
+            let mut value: serde_json::Value = serde_json::from_str(&stored)?;
+            mutate(&mut value);
+            // Keep the forged material internally consistent so that only the
+            // contract declarations are what the reader can object to.
+            let material = &mut value["effectiveMaterialBasis"];
+            material["dependencySetDigest"] = json!(grimodex_core::canonical_json_digest(
+                &material["dependencySet"]
+            )?);
+            material["materialBasisDigest"] =
+                json!(grimodex_core::canonical_json_digest(&json!({
+                    "sourceBasis": material["sourceBasis"],
+                    "evidenceSet": material["evidenceSet"],
+                    "dependencySet": material["dependencySet"],
+                }))?);
+            // A sealed envelope is immutable. The test lifts that guard on its
+            // own throwaway database to forge the stored material.
+            conn.execute_batch("DROP TRIGGER narrative_revision_envelope_immutable_update")?;
             conn.execute(
-                "UPDATE tree_nodes
-                    SET story_time_order = 'story-nir1'
-                  WHERE id = 'nir1' AND project_id = 'default-project'",
-                [],
+                "UPDATE narrative_proposal_revisions
+                    SET reconciliation_envelope_json = ?1, reconciliation_envelope_digest = ?2
+                  WHERE id = ?3",
+                params![
+                    grimodex_core::canonical_json_string(&value)?,
+                    grimodex_core::canonical_json_digest(&value)?,
+                    revision_id
+                ],
             )?;
             Ok(())
-        })?;
-        let reopened = db.with_read_transaction(|conn| {
-            read_nir1_entity_relation_revision(conn, "default-project", &revision_id)
+        })
+    }
+
+    /// Test 12: a version 1 Revision is read as unavailable by its contract and
+    /// every row it owns stays byte for byte as it was written.
+    #[test]
+    fn x13_version_one_revision_is_unavailable_and_not_rewritten() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_version_one_revision_for_test(&db, request(&db))?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        // A draft (not yet decided) version 1 Revision is unavailable too.
+        let draft = db.with_read_transaction(|conn| {
+            read_nir1_entity_relation_revision_current_for_revision(
+                conn,
+                "default-project",
+                &revision_id,
+            )
         })?;
         assert!(matches!(
-            reopened,
-            Nir1EntityRelationRevisionRead::Unavailable { ref reason }
-                if reason == "source-revision-changed"
+            draft,
+            Nir1EntityRelationRevisionCurrentRead::Unavailable { ref reason }
+                if reason == "revision-material-contract-superseded"
         ));
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let before = revision_rows_snapshot(&db, &revision_id)?;
+        assert!(before.iter().all(Option::is_some), "{before:?}");
+
+        assert_eq!(
+            a2_reason(&db, &revision_id)?.as_deref(),
+            Some("revision-material-contract-superseded")
+        );
+        let a3 = db.with_read_transaction(|conn| {
+            evaluate_nir1_entity_relation_disclosure(conn, "default-project", &revision_id, "nir1")
+        })?;
+        assert!(matches!(
+            a3,
+            Nir1EntityRelationDisclosureRead::Unavailable { ref reason }
+                if reason == "revision-material-contract-superseded"
+        ));
+        // The project token moving does not matter and nothing re-checks it.
+        patch_scene_field(
+            &db,
+            "nir1",
+            "v1-anchor",
+            "storyTimeOrder",
+            json!("story-v1"),
+        )?;
+        run_incremental_freshness_cycle(&db)?;
+        assert_eq!(
+            a2_reason(&db, &revision_id)?.as_deref(),
+            Some("revision-material-contract-superseded")
+        );
+        assert_eq!(before, revision_rows_snapshot(&db, &revision_id)?);
+        Ok(())
+    }
+
+    /// Test 12: version 1 and version 2 declarations mixed in one basis, and a
+    /// contract this build does not know, are unavailable and never repaired.
+    #[test]
+    fn x13_mixed_basis_is_unavailable() -> anyhow::Result<()> {
+        for (case, expected) in [
+            (
+                "v2-with-project-scope-row",
+                "revision-material-contract-mixed",
+            ),
+            ("id-one-selector-two", "revision-material-contract-mixed"),
+            ("v1-with-projection-row", "revision-material-contract-mixed"),
+            ("unknown-version", "revision-material-contract-unsupported"),
+        ] {
+            let db = fresh_migrated_memory()?;
+            seed_run_and_catalog(&db)?;
+            let revision_id = approved_revision(&db)?;
+            assert_eq!(a2_reason(&db, &revision_id)?, None, "{case}");
+            let digest_v1 = super::typed_component_contract_digest("1")?;
+            rewrite_envelope(&db, &revision_id, |envelope| {
+                let material = &mut envelope["effectiveMaterialBasis"];
+                match case {
+                    "v2-with-project-scope-row" => {
+                        material["sourceBasis"].as_array_mut().unwrap().push(json!({
+                            "sourceKind": "project-scope-authority",
+                            "sourceKey": "project:scope-authority:default-project",
+                            "revisionToken": "sha256:legacy",
+                            "revisionObservedAt": "2026-09-15T00:00:00.000Z",
+                        }));
+                    }
+                    "id-one-selector-two" => {
+                        for dependency in material["dependencySet"].as_array_mut().unwrap() {
+                            if dependency["role"] == "component-contract" {
+                                dependency["dependencyId"] = json!("nir1:component-contract:1");
+                            }
+                        }
+                    }
+                    "v1-with-projection-row" => {
+                        for dependency in material["dependencySet"].as_array_mut().unwrap() {
+                            if dependency["role"] == "component-contract" {
+                                dependency["dependencyId"] = json!("nir1:component-contract:1");
+                                dependency["selector"]["contractDigest"] = json!(digest_v1);
+                            }
+                        }
+                        envelope["revisionBasis"]["componentContractDigest"] = json!(digest_v1);
+                    }
+                    _ => {
+                        for dependency in material["dependencySet"].as_array_mut().unwrap() {
+                            if dependency["role"] == "component-contract" {
+                                dependency["dependencyId"] = json!("nir1:component-contract:3");
+                            }
+                        }
+                    }
+                }
+            })?;
+            let before = revision_rows_snapshot(&db, &revision_id)?;
+            assert_eq!(
+                a2_reason(&db, &revision_id)?.as_deref(),
+                Some(expected),
+                "{case}"
+            );
+            assert_eq!(before, revision_rows_snapshot(&db, &revision_id)?, "{case}");
+        }
+        Ok(())
+    }
+
+    /// Test 12: an unavailable version 1 Revision is replaced by preparing a
+    /// new Revision and approving it explicitly; the old Decision stays.
+    #[test]
+    fn x13_unavailable_v1_can_be_replaced_by_a_new_prepare_and_approval() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        let created = create_version_one_revision_for_test(&db, request(&db))?;
+        let v1_id = created["revisionId"].as_str().unwrap().to_owned();
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let v1_before = revision_rows_snapshot(&db, &v1_id)?;
+        assert_eq!(
+            a2_reason(&db, &v1_id)?.as_deref(),
+            Some("revision-material-contract-superseded")
+        );
+
+        let prepared = prepare_nir1_entity_relation_revision(
+            &db,
+            Nir1EntityRelationRevisionPrepareRequest {
+                project_id: "default-project".into(),
+                scene_id: "nir1".into(),
+                proposal_key: Some("nir1:review:replacement".into()),
+                entity_ids: vec!["nir1-alice".into()],
+                relation_ids: vec!["nir1-edge".into()],
+            },
+        )?;
+        let run_id = prepared["runId"].as_str().unwrap().to_owned();
+        let new_id = prepared["result"]["revisionId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        assert_ne!(new_id, v1_id);
+        assert_eq!(
+            a2_reason(&db, &new_id)?.as_deref(),
+            Some("revision-not-human-approved")
+        );
+        approve_typed_revision(
+            &db,
+            &run_id,
+            &json!({
+                "proposalId": prepared["result"]["proposalId"],
+                "revisionId": new_id,
+            }),
+        )?;
+        assert_eq!(a2_reason(&db, &new_id)?, None);
+        // The superseded Revision and its Decision are history, untouched.
+        assert_eq!(v1_before, revision_rows_snapshot(&db, &v1_id)?);
+        assert_eq!(
+            a2_reason(&db, &v1_id)?.as_deref(),
+            Some("revision-material-contract-superseded")
+        );
+        Ok(())
+    }
+
+    /// Test 13: nothing the caller names is a source of the Scope token. A
+    /// token from anywhere but the live projection of the anchor, an anchor
+    /// that is not a live Scene of this project, and a reading that is not an
+    /// exact Scene are all refused by the writer.
+    #[test]
+    fn x13_forged_projection_inputs_are_rejected() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        let refused = |payload: Nir1EntityRelationRevisionRequest| -> String {
+            create_nir1_entity_relation_revision(&db, payload)
+                .expect_err("the forged Scope input must be refused")
+                .to_string()
+        };
+
+        // Another token: invented, the project's own token, and another
+        // Scene's projection token all differ from the anchor's projection.
+        let project_token = db.with_read_transaction(|conn| {
+            Ok(load_live_project_scope_authority(
+                conn,
+                "default-project",
+                "project:scope-authority:default-project",
+            )?
+            .source
+            .revision_token)
+        })?;
+        let other_scene =
+            scene_scope_projection_token_for_test(&db, "default-project", "a3-source")?;
+        for forged in [
+            format!("sha256:{}", "a".repeat(64)),
+            project_token,
+            other_scene,
+        ] {
+            let mut payload = request(&db);
+            payload.bundle.entities[0].scope.authority_revision = forged;
+            assert!(refused(payload).contains("NIR1_SCOPE_AUTHORITY_STALE"));
+        }
+
+        // An anchor that is not a Scene of this project (never existed).
+        let mut payload = request(&db);
+        payload.bundle.entities[0].scope.reading = ScopeValue::Exact {
+            value: "scene:not-live".into(),
+        };
+        assert!(refused(payload).contains("NIR1_SCOPE_REFERENCE_UNAVAILABLE"));
+
+        // A project key is not a Scene; neither is a reading that is not exact.
+        for reading in [
+            ScopeValue::Exact {
+                value: "project:scene:nir1".into(),
+            },
+            ScopeValue::Exact {
+                value: "scene:".into(),
+            },
+            ScopeValue::Any {
+                purpose: Some("nir1-review".into()),
+            },
+            ScopeValue::NotApplicable {
+                reason: "review-input".into(),
+            },
+            ScopeValue::LegacyAbsent,
+            ScopeValue::Unresolved,
+        ] {
+            let mut payload = request(&db);
+            payload.bundle.entities[0].scope.reading = reading;
+            let message = refused(payload);
+            assert!(
+                message.contains("NIR1_SCOPE_ANCHOR_INVALID")
+                    || message.contains("NIR1_SCOPE_REFERENCE_UNAVAILABLE")
+                    || message.contains("NIR1_ENTITY_RELATION_INPUT_INVALID"),
+                "{message}"
+            );
+        }
+
+        // A Scope outside the prepare shape binds a story key, a secret reveal
+        // or a POV that the projection does not: the writer refuses each.
+        type Reshape = fn(&mut ScopeBinding);
+        let shapes: [(&str, Reshape); 4] = [
+            ("story", |scope| {
+                scope.story = ScopeValue::Exact {
+                    value: "story:a3-future".into(),
+                }
+            }),
+            ("auto", |scope| {
+                scope.auto = ScopeValue::Exact {
+                    value: "scene:a3-source".into(),
+                }
+            }),
+            ("pov", |scope| scope.pov = Some("nir1-alice".into())),
+            ("reveal", |scope| scope.reveal = "author".into()),
+        ];
+        for (field, reshape) in shapes {
+            let mut payload = request(&db);
+            for entity in &mut payload.bundle.entities {
+                reshape(&mut entity.scope);
+            }
+            let message = refused(payload);
+            assert!(
+                message.contains("NIR1_SCOPE_SHAPE_UNSUPPORTED"),
+                "{field}: {message}"
+            );
+        }
+
+        // Another project: the projection resolver refuses the live read.
+        let error = db.with_read_transaction(|conn| {
+            let scope =
+                super::LiveScope::from_read(load_live_project_scope_authority_with_scene_bindings(
+                    conn,
+                    "default-project",
+                    "project:scope-authority:default-project",
+                )?);
+            // The memo of an anchor never answers for another project.
+            scope.projection_token("default-project", "nir1")?;
+            Ok(scope
+                .projection_token("other-project", "nir1")
+                .expect_err("a Scene of another project has no projection here")
+                .to_string())
+        })?;
+        assert!(error.contains("NEX_SOURCE_PROJECT_MISMATCH"), "{error}");
+
+        // The one valid anchor still creates; `reading:<id>` normalizes to the
+        // same anchor and projection.
+        let mut by_reading = request(&db);
+        for entity in &mut by_reading.bundle.entities {
+            entity.scope.reading = ScopeValue::Exact {
+                value: "reading:nir1".into(),
+            };
+        }
+        create_nir1_entity_relation_revision(&db, by_reading)?;
+        Ok(())
+    }
+
+    /// The reader holds the same shape: a Revision whose Scope carries a POV
+    /// (written only while the shape check stood aside) is unavailable, and
+    /// its rows are not rewritten.
+    #[test]
+    fn x13_reader_declares_a_scope_outside_the_prepare_shape_unavailable() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+        let created = {
+            let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
+            let mut payload = request(&db);
+            for entity in &mut payload.bundle.entities {
+                entity.scope.pov = Some("nir1-alice".into());
+            }
+            let created = create_nir1_entity_relation_revision(&db, payload)?;
+            approve_typed_revision(&db, "nir1-run", &created)?;
+            let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+            assert_eq!(a2_reason(&db, &revision_id)?, None);
+            created
+        };
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        let before = revision_rows_snapshot(&db, &revision_id)?;
+        assert_eq!(
+            a2_reason(&db, &revision_id)?.as_deref(),
+            Some("source-revision-changed")
+        );
+        assert_eq!(revision_rows_snapshot(&db, &revision_id)?, before);
+        Ok(())
+    }
+
+    /// A Revision whose Entities anchor to different Scenes binds one
+    /// projection per anchor, and any one of them moving retires all of it.
+    #[test]
+    fn x13_multi_anchor_revision_binds_one_projection_per_anchor() -> anyhow::Result<()> {
+        let db = fresh_migrated_memory()?;
+        seed_run_and_catalog(&db)?;
+        prepare_a3_scope_fixture(&db)?;
+        run_incremental_freshness_cycle(&db)?;
+        let mut payload = request(&db);
+        payload.bundle.entities[1].scope.reading = ScopeValue::Exact {
+            value: "scene:a3-source".into(),
+        };
+        payload.bundle.entities[1].scope.authority_revision =
+            scene_scope_projection_token_for_test(&db, "default-project", "a3-source")?;
+        let created = create_nir1_entity_relation_revision(&db, payload)?;
+        approve_typed_revision(&db, "nir1-run", &created)?;
+        let revision_id = created["revisionId"].as_str().unwrap().to_owned();
+        assert_eq!(a2_reason(&db, &revision_id)?, None);
+        let snapshot = revision_rows_snapshot(&db, &revision_id)?;
+        let sources = snapshot[1].clone().unwrap();
+        assert!(
+            sources.contains("scene-scope-projection-v1project:scene-scope-projection:a3-source")
+        );
+        assert!(sources.contains("scene-scope-projection-v1project:scene-scope-projection:nir1"));
+        assert!(!sources.contains("project-scope-authority"));
+        // 2 Entities + 1 Relation + 2 anchors: one V1 edge per Source.
+        let edges = snapshot[2].clone().unwrap();
+        assert_eq!(edges.lines().count(), 5, "{edges}");
+
+        // Moving the second anchor alone retires the whole Revision.
+        patch_scene_field(
+            &db,
+            "a3-source",
+            "second-anchor",
+            "storyTimeOrder",
+            json!("story-a"),
+        )?;
+        assert_eq!(
+            a2_reason(&db, &revision_id)?.as_deref(),
+            Some("source-revision-changed")
+        );
         Ok(())
     }
 
@@ -7298,6 +8366,7 @@ pub(super) mod tests {
                 value: "scene:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         let revision_id = created["revisionId"]
             .as_str()
@@ -7528,6 +8597,7 @@ pub(super) mod tests {
                 value: "scene:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         let revision_id = created["revisionId"]
             .as_str()
@@ -7563,6 +8633,7 @@ pub(super) mod tests {
         typed_request.bundle.entities[1].scope.reading = ScopeValue::Exact {
             value: "scene:a3-future".into(),
         };
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -7596,6 +8667,9 @@ pub(super) mod tests {
 
     #[test]
     fn a3_explicit_story_constraint_remains_story_axis_on_reading_fallback() -> anyhow::Result<()> {
+        // A3 reads a Scope the prepare never builds (story key, POV); the shape
+        // check stands aside for this test only.
+        let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
         prepare_a3_scope_fixture(&db)?;
@@ -7629,6 +8703,7 @@ pub(super) mod tests {
                 value: "story:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -7648,6 +8723,9 @@ pub(super) mod tests {
 
     #[test]
     fn a3_persisted_story_keys_use_canonical_utf16_order() -> anyhow::Result<()> {
+        // A3 reads a Scope the prepare never builds (story key, POV); the shape
+        // check stands aside for this test only.
+        let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
         prepare_a3_scope_fixture(&db)?;
@@ -7681,6 +8759,7 @@ pub(super) mod tests {
                 value: "story:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -7727,6 +8806,7 @@ pub(super) mod tests {
                 value: "scene:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -7770,6 +8850,7 @@ pub(super) mod tests {
         typed_request.bundle.entities[1].scope.reading = ScopeValue::Exact {
             value: "scene:a3-source".into(),
         };
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -7879,7 +8960,7 @@ pub(super) mod tests {
         })?;
 
         let authority = db.with_read_transaction(|conn| {
-            super::load_live_project_scope_authority(
+            load_live_project_scope_authority(
                 conn,
                 "default-project",
                 "project:scope-authority:default-project",
@@ -8255,6 +9336,9 @@ pub(super) mod tests {
 
     #[test]
     fn a3_pov_requires_an_explicit_visible_query_viewpoint_match() -> anyhow::Result<()> {
+        // A3 reads a Scope the prepare never builds (story key, POV); the shape
+        // check stands aside for this test only.
+        let _relaxed = super::tests_scope_shape::RelaxedScopeShape::hold();
         let db = fresh_migrated_memory()?;
         seed_run_and_catalog(&db)?;
         prepare_a3_scope_fixture(&db)?;
@@ -8276,6 +9360,7 @@ pub(super) mod tests {
             };
             entity.scope.pov = Some("nir1-alice".into());
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -8451,6 +9536,7 @@ pub(super) mod tests {
                 value: "scene:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -8498,6 +9584,7 @@ pub(super) mod tests {
                 value: "scene:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let revision_id = created["revisionId"]
@@ -8557,6 +9644,7 @@ pub(super) mod tests {
                     value: "scene:a3-source".into(),
                 };
             }
+            rebind_scope_tokens(&db, &mut typed_request)?;
             let created = create_nir1_entity_relation_revision(&db, typed_request)?;
             approve_typed_revision(&db, "nir1-run", &created)?;
             let revision_id = created["revisionId"]
@@ -8614,6 +9702,7 @@ pub(super) mod tests {
                     value: "scene:a3-source".into(),
                 };
             }
+            rebind_scope_tokens(&reopened, &mut new_request)?;
             let new_created = create_nir1_entity_relation_revision(&reopened, new_request)?;
             approve_typed_revision(&reopened, "nir1-run", &new_created)?;
             let new_revision_id = new_created["revisionId"]
@@ -8857,6 +9946,7 @@ pub(super) mod tests {
                     value: "scene:a3-source".into(),
                 };
             }
+            rebind_scope_tokens(&db, &mut typed_request)?;
             let created = create_nir1_entity_relation_revision(&db, typed_request)?;
             let revision_id = created["revisionId"]
                 .as_str()
@@ -11384,6 +12474,7 @@ pub(super) mod tests {
                 value: "scene:a3-source".into(),
             };
         }
+        rebind_scope_tokens(&db, &mut typed_request)?;
         let created = create_nir1_entity_relation_revision(&db, typed_request)?;
         let revision_id = created["revisionId"].as_str().unwrap().to_owned();
         approve_typed_revision(&db, "nir1-run", &created)?;

@@ -135,7 +135,10 @@ mod repair;
 mod retrieval_admission;
 mod scene_scope;
 pub mod scene_body_declaration;
+mod scene_scope_projection;
 mod scope_dependency_projection;
+#[cfg(test)]
+mod scene_scope_projection_tests;
 #[cfg(test)]
 mod scope_storage_authority_tests;
 #[cfg(feature = "native-current-human-capture")]

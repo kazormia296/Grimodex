@@ -3943,6 +3943,117 @@ mod tests {
         Ok(())
     }
 
+    /// X1-3 (test 17). A typed Revision's `Source` qualification references are
+    /// the rows of its material basis: the Scene Scope projection of each
+    /// anchor (its key and token), and no `project-scope-authority` Source. The
+    /// `project:scope-authority:` reference that remains is the request's
+    /// `Scope` context, which this lane does not change.
+    #[test]
+    fn x13_qualification_source_refs_carry_projection_not_project_authority() -> anyhow::Result<()>
+    {
+        let fixture = Fixture::new()?;
+        let snapshot = active_workspace_snapshot(&fixture.state.ws)?;
+        let candidate_ids = vec![fixture.revision_id.clone()];
+        let projected = narrative_extraction::read_and_pack_native_nir1_prepared_inputs(
+            &snapshot,
+            grimodex_core::narrative_nir1::PackingPurpose::Writing,
+            grimodex_db::nir1_generation::history_context::HistorySendClassification::LocalOnly,
+            SESSION_ID,
+            &fixture.message_version_id,
+            SCENE_ID,
+            &candidate_ids,
+            super::participant_sql_budget(),
+            |_| Ok(100_000),
+        )?;
+        let ordinal = projected
+            .input_references()
+            .iter()
+            .position(|reference| {
+                matches!(
+                    &reference.target,
+                    InputTarget::AcceptedRevision { revision_id, .. }
+                        if revision_id == &fixture.revision_id
+                )
+            })
+            .context("selected Revision direct reference missing")?;
+        let revision_rows = projected
+            .qualifications()
+            .iter()
+            .filter(|qualification| qualification.input_ordinal == ordinal)
+            .collect::<Vec<_>>();
+        let source_rows = revision_rows
+            .iter()
+            .filter(|qualification| qualification.kind == QualificationKind::Source)
+            .filter_map(|qualification| {
+                Some((
+                    qualification.identity()?.to_owned(),
+                    qualification.version()?.to_owned(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        let disclosure = snapshot.db().db().with_read_transaction(|conn| {
+            match narrative_extraction::evaluate_nir1_entity_relation_disclosure(
+                conn,
+                PROJECT_ID,
+                &fixture.revision_id,
+                SCENE_ID,
+            )? {
+                narrative_extraction::Nir1EntityRelationDisclosureRead::Eligible(disclosure) => {
+                    Ok(disclosure)
+                }
+                narrative_extraction::Nir1EntityRelationDisclosureRead::Unavailable { reason } => {
+                    anyhow::bail!("selected fixture Revision unavailable: {reason}")
+                }
+            }
+        })?;
+        let projection_basis = disclosure
+            .revision
+            .material_basis
+            .source_basis
+            .iter()
+            .filter(|source| source.source_kind == "scene-scope-projection-v1")
+            .collect::<Vec<_>>();
+        assert!(
+            !projection_basis.is_empty(),
+            "the Revision binds a Scene Scope projection"
+        );
+        for source in &projection_basis {
+            assert!(
+                source
+                    .source_key
+                    .starts_with("project:scene-scope-projection:"),
+                "{}",
+                source.source_key
+            );
+            assert!(
+                source_rows.contains(&(source.source_key.clone(), source.revision_token.clone())),
+                "the projection key and token are a Source reference: {}",
+                source.source_key
+            );
+        }
+        assert!(
+            source_rows
+                .iter()
+                .all(|(identity, _)| !identity.starts_with("project:scope-authority:")),
+            "no project Scope authority Source reference: {source_rows:?}"
+        );
+        assert!(disclosure
+            .revision
+            .material_basis
+            .source_basis
+            .iter()
+            .all(|source| source.source_kind != "project-scope-authority"));
+        // The request context keeps the project Scope authority as a `Scope`
+        // reference (Delta 7).
+        assert!(revision_rows.iter().any(|qualification| {
+            qualification.kind == QualificationKind::Scope
+                && qualification.identity()
+                    == Some(format!("project:scope-authority:{PROJECT_ID}").as_str())
+                && qualification.version() == Some(disclosure.scope_authority_revision.as_str())
+        }));
+        Ok(())
+    }
+
     #[test]
     fn preparation_deduplicates_candidates_and_preserves_selected_lineage_and_freshness(
     ) -> anyhow::Result<()> {

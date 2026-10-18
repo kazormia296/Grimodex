@@ -104,6 +104,7 @@ pub(crate) fn source_identity_prefix_for(source_kind: &str) -> anyhow::Result<&'
         "nir1-chronicle-eligibility-set" => "project:nir1-chronicle-eligibility:",
         "nir1-entity-relation-eligibility-set" => "project:nir1-entity-relation-eligibility:",
         "project-scope-authority" => "project:scope-authority:",
+        "scene-scope-projection-v1" => "project:scene-scope-projection:",
         "codex-entry" => "codex:",
         "codex-relation" => "codex-relation:",
         "scope-dependency-projection-v1" => "scope-dependency:v1:",
@@ -144,6 +145,7 @@ pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
     "project:nir1-chronicle-eligibility:",
     "project:nir1-entity-relation-eligibility:",
     "project:scope-authority:",
+    "project:scene-scope-projection:",
     "codex-relation:",
     "codex:",
     "project:codex-catalog:",
@@ -155,7 +157,7 @@ pub(crate) const SOURCE_IDENTITY_PREFIXES: &[&str] = &[
     "evidence:",
 ];
 
-fn starts_with_legacy_source_prefix(value: &str) -> bool {
+pub(super) fn starts_with_legacy_source_prefix(value: &str) -> bool {
     LEGACY_SOURCE_IDENTITY_PREFIXES
         .iter()
         .any(|prefix| value.starts_with(prefix))
@@ -274,6 +276,11 @@ pub(crate) fn canonical_source_object_identity(
         if source_kind == "scope-dependency-projection-v1" {
             grimodex_core::narrative_scope_dependency_projection::ScopeDependencyIdentity::from_source_key(source_key)?;
         }
+        if source_kind == "scene-scope-projection-v1" {
+            // The projection key has its own exact grammar (non-empty,
+            // trimmed Scene id that is not itself a Source identity).
+            super::scene_scope_projection::scene_id_from_source_key(source_key)?;
+        }
         if source_kind == "snapshot-document" {
             // Keep the writer-facing Snapshot parser and the general
             // canonicalizer on one exact grammar.
@@ -317,6 +324,8 @@ pub(crate) fn validate_stored_source_object_identity(
         "scope-dependency-projection-v1"
     } else if source_object_identity.starts_with("project:scope-authority:") {
         "project-scope-authority"
+    } else if source_object_identity.starts_with("project:scene-scope-projection:") {
+        "scene-scope-projection-v1"
     } else if source_object_identity.starts_with("project:codex-catalog:") {
         "codex-catalog"
     } else if source_object_identity.starts_with("project:scene:") {
@@ -1212,6 +1221,10 @@ mod tests {
                 "project:scope-authority:project-1",
             ),
             ("scene-body", "project:scene:scene-1"),
+            (
+                "scene-scope-projection-v1",
+                "project:scene-scope-projection:scene-1",
+            ),
             ("snapshot-document", "snapshot:snap-1"),
             ("codex-catalog", "project:codex-catalog:entry-1"),
             ("domain-projection", "projection:proj-1"),
@@ -1309,6 +1322,7 @@ mod tests {
         );
         for kind in [
             "project-scope-authority",
+            "scene-scope-projection-v1",
             "scene-body",
             "snapshot-document",
             "codex-catalog",
@@ -1368,6 +1382,77 @@ mod tests {
                 error.to_string().contains("NEX_SOURCE_KEY_INVALID"),
                 "unexpected error for {identity}: {error}"
             );
+        }
+    }
+
+    /// The Scene Scope projection key has its own exact grammar, and it never
+    /// reinterprets another Source's identity: `project:scene:<id>` is the
+    /// body Source, not a projection.
+    #[test]
+    fn scene_scope_projection_identity_has_an_exact_grammar() {
+        let kind = "scene-scope-projection-v1";
+        let identity = "project:scene-scope-projection:scene-1";
+        assert_eq!(
+            canonical_source_object_identity(kind, identity).unwrap(),
+            identity
+        );
+        validate_stored_source_object_identity(identity).expect("canonical stored identity");
+        for bad in [
+            "project:scene-scope-projection:",
+            "project:scene-scope-projection: scene-1",
+            "project:scene-scope-projection:scene-1 ",
+            "project:scene-scope-projection:project:scene-scope-projection:scene-1",
+            "project:scene-scope-projection:project:scene:scene-1",
+            "project:scene-scope-projection:snapshot:run-1",
+        ] {
+            for result in [
+                canonical_source_object_identity(kind, bad).map(|_| ()),
+                validate_stored_source_object_identity(bad),
+            ] {
+                let error = result.expect_err("malformed projection identity must fail closed");
+                assert!(
+                    error.to_string().contains("NEX_SOURCE_KEY_INVALID"),
+                    "unexpected error for {bad}: {error}"
+                );
+            }
+        }
+        // The body Source's identity does not canonicalize as a projection, and
+        // the projection prefix is not a body-Source identity.
+        let error = canonical_source_object_identity(kind, "project:scene:scene-1")
+            .expect_err("the body Source key is not a projection key");
+        assert!(error.to_string().contains("NEX_SOURCE_KEY_KIND_MISMATCH"));
+        assert_eq!(
+            canonical_source_object_identity("scene-body", "project:scene:scene-1").unwrap(),
+            "project:scene:scene-1"
+        );
+        assert!(
+            canonical_source_object_identity("scene-body", identity).is_err(),
+            "a projection identity is not a body-Source identity"
+        );
+        assert_eq!(
+            source_identity_prefix_for(kind).unwrap(),
+            "project:scene-scope-projection:"
+        );
+        assert!(SOURCE_IDENTITY_PREFIXES.contains(&"project:scene-scope-projection:"));
+        // A prefix introduced after the historical grammar leaves Run ids opaque.
+        validate_run_id("project:scene-scope-projection:run-1")
+            .expect("the new prefix must not reserve Run ids");
+    }
+
+    /// Every registered prefix is a valid stored Source identity. (The
+    /// kind inference, the prefix built back from the kind and the resolver arm
+    /// are walked in `restore_rebuild`'s registration test.)
+    #[test]
+    fn every_registered_prefix_validates_as_a_stored_identity() {
+        for prefix in SOURCE_IDENTITY_PREFIXES {
+            // `scope-dependency:v1:` carries a hex-encoded identity; every other
+            // Source takes a plain suffix.
+            if *prefix == "scope-dependency:v1:" {
+                continue;
+            }
+            let identity = format!("{prefix}x1");
+            validate_stored_source_object_identity(&identity)
+                .unwrap_or_else(|error| panic!("{prefix} must validate: {error}"));
         }
     }
 

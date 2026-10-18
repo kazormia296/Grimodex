@@ -24,7 +24,8 @@ use crate::narrative_extraction::nir1_entity_relation::{
     create_nir1_entity_relation_revision,
     tests::{
         append_typed_decision, approve_typed_revision, bounded_writer_bundle,
-        prepare_a3_scope_fixture, request, request_for_run, seed_run_and_catalog,
+        prepare_a3_scope_fixture, rebind_scope_tokens, request, request_for_run,
+        seed_run_and_catalog,
         writer_input_bytes,
     },
 };
@@ -74,6 +75,7 @@ struct Fixture {
 }
 
 fn qualified_scope(
+    db: &Database,
     typed: &mut super::super::nir1_entity_relation::Nir1EntityRelationRevisionRequest,
 ) {
     for entity in &mut typed.bundle.entities {
@@ -82,6 +84,8 @@ fn qualified_scope(
         };
         entity.scope.phase = "draft".into();
     }
+    // The Scope token is the anchor Scene's projection, not the project's.
+    rebind_scope_tokens(db, typed).expect("bind the anchor Scene Scope projection");
 }
 
 impl Fixture {
@@ -97,7 +101,7 @@ impl Fixture {
         prepare_a3_scope_fixture(&db)?;
         run_incremental_freshness_cycle(&db)?;
         let mut typed = request(&db);
-        qualified_scope(&mut typed);
+        qualified_scope(&db, &mut typed);
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
@@ -532,7 +536,7 @@ fn add_second_reviewed_revision(db: &Database, proposal_key: &str) -> Result<()>
         Ok(())
     })?;
     let mut typed = request_for_run(db, "nir1-run", proposal_key);
-    qualified_scope(&mut typed);
+    qualified_scope(db, &mut typed);
     let mut relation = typed.bundle.relations[0].clone();
     relation.edge_id = "nir1-edge-b".into();
     relation.relation_type = "related".into();
@@ -572,7 +576,7 @@ fn add_revision_with_oversized_payload(
     proposal_key: &str,
 ) -> Result<serde_json::Value> {
     let mut typed = request_for_run(db, "nir1-run", proposal_key);
-    qualified_scope(&mut typed);
+    qualified_scope(db, &mut typed);
     let created = create_nir1_entity_relation_revision(db, typed)?;
     pad_payload(db, &revision_id_of(&created)?)?;
     Ok(created)
@@ -587,7 +591,7 @@ fn add_revision_with_oversized_envelope(
     proposal_key: &str,
 ) -> Result<serde_json::Value> {
     let mut typed = request_for_run(db, "nir1-run", proposal_key);
-    qualified_scope(&mut typed);
+    qualified_scope(db, &mut typed);
     let template = typed.bundle.clone();
     let base = writer_input_bytes(&bounded_writer_bundle(&template, 507, 0));
     typed.bundle = bounded_writer_bundle(&template, 507, 3 * 1024 * 1024 - base);

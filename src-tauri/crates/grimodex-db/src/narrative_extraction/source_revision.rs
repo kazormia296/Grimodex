@@ -11,7 +11,7 @@ use sha2::Digest;
 use std::fmt;
 
 use super::change_feed;
-use super::project_scope_authority::load_live_project_scope_authority;
+use super::project_scope_authority::{load_live_project_scope_authority, LiveProjectScopeRead};
 
 /// A borrowed validation capability for a whole-eligibility read.  The
 /// connection and lifecycle owner are coupled in one value so callers cannot
@@ -203,6 +203,9 @@ pub(crate) fn resolve_source_revision(
             let authority = load_live_project_scope_authority(conn, project_id, source_key)?;
             ensure_non_empty_token(authority.source.revision_token)
         }
+        super::scene_scope_projection::SOURCE_KIND => ensure_non_empty_token(
+            super::scene_scope_projection::resolve(conn, project_id, source_key)?,
+        ),
         super::nir1_chronicle_index::SOURCE_KIND => {
             let _ = (conn, project_id, run_id, source_key);
             Err(validation_terminated(
@@ -405,30 +408,33 @@ pub(super) fn resolve_current_source_state_in_batch_with_control(
     run_id: &str,
     source_kind: &str,
     source_key: &str,
-    authority: &mut Option<
-        grimodex_core::narrative_project_scope_authority::NarrativeProjectScopeAuthorityV1,
-    >,
+    scope_read: &mut Option<LiveProjectScopeRead>,
     control: &mut dyn super::nir1_entity_relation_index::GraphWorkControl,
 ) -> anyhow::Result<CurrentSourceState> {
     anyhow::ensure!(!conn.is_autocommit(), "Source batch requires a transaction");
     control.check(super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     let resolved = if source_kind == "scope-dependency-projection-v1" {
         (|| {
-            if authority.is_none() {
-                *authority = Some(load_live_project_scope_authority(
-                    conn,
-                    project_id,
-                    &format!("project:scope-authority:{project_id}"),
-                )?);
-            }
-            let authority = authority
-                .as_ref()
-                .ok_or_else(|| anyhow::anyhow!("Scope batch authority unavailable"))?;
+            let read = shared_scope_read(conn, project_id, scope_read)?;
             ensure_non_empty_token(
                 super::scope_dependency_projection::resolve_with_authority_in_tx(
-                    conn, project_id, run_id, source_key, authority,
+                    conn,
+                    project_id,
+                    run_id,
+                    source_key,
+                    &read.authority,
                 )?,
             )
+        })()
+    } else if source_kind == super::scene_scope_projection::SOURCE_KIND {
+        // Every anchor of every Revision in the batch resolves against the
+        // one Scope read; a malformed key costs no read.
+        (|| {
+            super::scene_scope_projection::scene_id_from_source_key(source_key)?;
+            let read = shared_scope_read(conn, project_id, scope_read)?;
+            ensure_non_empty_token(super::scene_scope_projection::resolve_with_read(
+                project_id, source_key, read,
+            )?)
         })()
     } else {
         resolve_source_revision_with_control(
@@ -441,6 +447,24 @@ pub(super) fn resolve_current_source_state_in_batch_with_control(
         )
     };
     current_source_state_from_resolution(source_kind, resolved)
+}
+
+/// The batch's one project Scope read (authority and validated Scene
+/// bindings), loaded on first use. Only the bounded, read-only edge batch owns
+/// it, inside its transaction.
+fn shared_scope_read<'a>(
+    conn: &Connection,
+    project_id: &str,
+    scope_read: &'a mut Option<LiveProjectScopeRead>,
+) -> anyhow::Result<&'a LiveProjectScopeRead> {
+    if scope_read.is_none() {
+        *scope_read = Some(super::scene_scope_projection::load_scope_read(
+            conn, project_id,
+        )?);
+    }
+    scope_read
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Scope batch authority unavailable"))
 }
 
 fn current_source_state_from_resolution(

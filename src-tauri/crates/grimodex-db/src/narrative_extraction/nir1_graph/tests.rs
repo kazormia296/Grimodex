@@ -176,6 +176,7 @@ impl Fixture {
             relation.source_token = "v1@2026-09-12T00:00:00Z:relation:nir1-edge-b".into();
             typed.bundle.relations.push(relation);
         }
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(&db, &mut typed)?;
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
@@ -1494,6 +1495,11 @@ struct CanonicalGoldBinding {
 // These fixtures have one Codex source per Entity plus Scope authority, no
 // Relations, POV, phases or foreshadows. Derive tokens from their saved inputs
 // and canonical DB rows, never from the production A3 disclosure result.
+// Since X1-3 two Scope tokens are distinct (scene-scope-projection draft,
+// Delta 2(c) and 7): each Entity's `authorityRevision` is its anchor Scene's
+// projection token, saved in the immutable Revision; the request context (the
+// Graph's Scope revision, the binding's `scopeAuthorityRevision` and the
+// reveal state) stays the live project Scope authority token.
 fn fixture_canonical_gold_binding(
     authority: &crate::state::WorkspaceAuthority,
     project: &str,
@@ -1506,6 +1512,18 @@ fn fixture_canonical_gold_binding(
         .first()
         .ok_or_else(|| anyhow::anyhow!("canonical Gold fixture has no Entities"))?;
     authority.with_read_transaction(|conn| {
+        let project_scope_authority_revision =
+            crate::narrative_extraction::project_scope_authority::load_live_project_scope_authority(
+                conn,
+                project,
+                &format!("project:scope-authority:{project}"),
+            )?
+            .source
+            .revision_token;
+        ensure!(
+            project_scope_authority_revision != entity.scope.authority_revision,
+            "canonical Gold fixture conflates the project and anchor Scope tokens"
+        );
         let mut statement = conn.prepare(
             "SELECT id, decision, decision_json, created_at, created_by,
                     actor_kind, actor_id, authority_scope, override_field_paths_json
@@ -1651,7 +1669,7 @@ fn fixture_canonical_gold_binding(
             "querySceneId": query_scene,
             "phaseResolutionMode": phase_resolution_mode,
             "effectiveAxis": "reading",
-            "scopeAuthorityRevision": entity.scope.authority_revision,
+            "scopeAuthorityRevision": project_scope_authority_revision,
             "queryViewpoint": query_viewpoint,
             "phaseState": phase_state,
             "entities": reveal_entities,
@@ -1664,7 +1682,7 @@ fn fixture_canonical_gold_binding(
             decision_id,
             decision_token,
             freshness_token,
-            scope_authority_revision: entity.scope.authority_revision.clone(),
+            scope_authority_revision: project_scope_authority_revision,
             query_scene_source_token,
             query_scene_scope_token,
             query_scene_incarnation_id,
@@ -1773,6 +1791,7 @@ fn canonical_single_node_gold_frame(
     q2_gold_text(&mut frame, project)?;
     q2_gold_text(&mut frame, query_scene)?;
     // The Scope revision is optional in NQG3: present (1) for a Graph with a node.
+    // It is the request context's project token, not the Entity's anchor token.
     q2_gold_optional_text(&mut frame, Some(&binding.scope_authority_revision))?;
     frame.extend_from_slice(&generation.to_le_bytes());
     q2_gold_text(&mut frame, &entity.entity_id)?;
@@ -1841,8 +1860,7 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     };
     use crate::narrative_extraction::{
         narrative_extraction_append_human_decision,
-        project_scope_authority::load_live_project_scope_authority, AppendDecisionPayload,
-        Nir1EntityRelationRevisionRequest,
+        AppendDecisionPayload, Nir1EntityRelationRevisionRequest,
     };
     use crate::narrative_maintenance_connection::{
         with_narrative_maintenance_graph_control, NarrativeMaintenanceGraphControlConfig,
@@ -2029,18 +2047,19 @@ fn q2_reader_fixture(scenario: Q2WorkerScenario) -> Result<()> {
     // exactly the same Q2 material through the Native typed writer and a new
     // Human Decision; neither Freshness nor registration can revive the old
     // immutable Revision. The original preseed and its approval stay intact.
-    let current_authority = authority.with_read_transaction(|conn| {
-        load_live_project_scope_authority(
-            conn,
-            PROJECT,
-            &format!("project:scope-authority:{PROJECT}"),
-        )
-    })?;
     ensure!(
         bundle.entities.len() == 1 && bundle.relations.is_empty(),
         "Q2 shape changed"
     );
-    bundle.entities[0].scope.authority_revision = current_authority.source.revision_token;
+    let anchor = crate::narrative_extraction::scene_scope_projection::anchor_scene_id(
+        &bundle.entities[0].scope.reading,
+    )
+    .ok_or_else(|| anyhow::anyhow!("Q2 entity reading names no Scene"))?
+    .to_owned();
+    bundle.entities[0].scope.authority_revision =
+        crate::narrative_extraction::nir1_entity_relation::tests::scene_scope_projection_token_for_test(
+            &authority, PROJECT, &anchor,
+        )?;
     let canonical_gold_entity = bundle.entities[0].clone();
     let created = create_nir1_entity_relation_revision(
         &authority,
@@ -6952,6 +6971,7 @@ impl Fixture {
                 evidence_ids: vec![evidence_id_for(from), evidence_id_for(to)],
             });
         }
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(&db, &mut typed)?;
         let created = create_nir1_entity_relation_revision(&db, typed)?;
         approve_typed_revision(&db, "nir1-run", &created)?;
         let authority = WorkspaceAuthority::from_database_for_test(db, directory.0.clone())?;
@@ -6994,6 +7014,7 @@ impl Fixture {
         let mut payload = request(db);
         payload.proposal_key = format!("nir1:review:candidate-{serial:04}");
         seed_scope_edits(&mut payload.bundle);
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(db, &mut payload)?;
         let created = create_nir1_entity_relation_revision(db, payload)?;
         let revision = created["revisionId"].as_str().unwrap().to_owned();
         narrative_extraction_append_human_decision(
