@@ -6770,6 +6770,7 @@ pub(super) mod tests {
                 &payload_value,
                 &bundle_digest,
                 &material,
+                &super::typed_component_contract_digest(super::TYPED_MATERIAL_CONTRACT_VERSION)?,
             )?;
             Ok(canonical_json_string(&envelope)?.len())
         })

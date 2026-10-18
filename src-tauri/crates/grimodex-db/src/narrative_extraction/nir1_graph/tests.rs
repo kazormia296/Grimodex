@@ -7282,6 +7282,10 @@ fn b_publishes_a_revision_whose_stored_envelope_is_exactly_the_writer_limit() ->
     let db = fixture.authority.db();
     let mut payload = request(db);
     seed_scope_edits(&mut payload.bundle);
+    crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+        db,
+        &mut payload,
+    )?;
     let (run_id, bundle) = envelope_bundle_of(db, &payload.bundle, MAX_GRAPH_INPUT_BYTES)?;
     payload.proposal_key = "nir1:review:writer-limit".into();
     payload.run_id = run_id.clone();
@@ -8032,6 +8036,10 @@ impl Fixture {
                 .ok_or_else(|| anyhow::anyhow!("target is below the base count"))?,
         );
         seed_scope_edits(&mut payload.bundle);
+        crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+            db,
+            &mut payload,
+        )?;
         let created = create_nir1_entity_relation_revision(db, payload)?;
         approve_typed_revision(db, "nir1-run", &created)?;
         Ok(created["revisionId"].as_str().unwrap().to_owned())
@@ -8129,6 +8137,10 @@ fn registration_skips_a_revision_that_is_not_approved_whatever_its_size() -> Res
     let mut payload = request(db);
     payload.proposal_key = "nir1:review:rejected-0001".into();
     seed_scope_edits(&mut payload.bundle);
+    crate::narrative_extraction::nir1_entity_relation::tests::rebind_scope_tokens(
+        db,
+        &mut payload,
+    )?;
     let created = create_nir1_entity_relation_revision(db, payload)?;
     let revision = created["revisionId"].as_str().unwrap().to_owned();
     narrative_extraction_append_human_decision(
