@@ -1240,10 +1240,14 @@ mod contract {
         assert_eq!(events.last().unwrap().payload["remoteOutcome"], "unknown");
         assert_eq!(events.last().unwrap().payload["conservative"], true);
 
-        // A data-less success cannot be recorded as one.
+        // A data-less success of a started execution is rejected as a whole
+        // transaction (it must go through `*_with_audit`): the attempt stays
+        // unfinished, no audit event is written, and the claimed recover then
+        // closes the execution conservatively.
         let silent = claimed(&workspace, &GenerationPurpose::Writing, "silent-success");
         start(&workspace, &silent).unwrap();
-        finish_attempt_bounded(
+        let before = audit_events(&workspace).len();
+        let error = finish_attempt_bounded(
             &workspace.snapshot(),
             &silent.expected(),
             &observation("x", "", Completion::Parsed),
@@ -1255,13 +1259,55 @@ mod contract {
             now_ms(),
             &pinned(),
         )
-        .expect("data-less success");
+        .expect_err("data-less success of a started execution");
+        assert_store_failure(
+            &error,
+            Nir1StoreFailure::Invalid,
+            Nir1CommitState::NotCommitted,
+        );
+        assert_eq!(audit_events(&workspace).len(), before);
+        assert!(!attempt_terminal_present(&workspace, &silent));
+        let recovered =
+            recover_claimed_attempt_bounded(&workspace.snapshot(), &silent.expected(), &pinned())
+                .expect("recover after the rejection");
+        assert_eq!(
+            recovered.failure_classification,
+            Some(FailureClassification::InterruptedUnknown)
+        );
         let events = audit_events(&workspace);
         assert_eq!(events.last().unwrap().event_type, "execution.failed");
-        assert_eq!(
+        assert_eq!(events.last().unwrap().payload["conservative"], true);
+        assert_eq!(events.last().unwrap().payload["source"], "recovery");
+        assert_ne!(
             events.last().unwrap().payload["classification"],
             "audit-data-missing"
         );
+
+        // The same success through the audit-aware writer is accepted.
+        let audited = claimed(&workspace, &GenerationPurpose::Writing, "audited-success");
+        start(&workspace, &audited).unwrap();
+        success(&workspace, &audited, "x", "", &pinned()).expect("audited success");
+        assert_eq!(types(&workspace).last().unwrap(), "execution.succeeded");
+
+        // An attempt whose execution was never started keeps the data-less
+        // success path (DT-2 owner tests use it); no audit event is written.
+        let unaudited = claimed(&workspace, &GenerationPurpose::Writing, "unaudited-success");
+        let before = audit_events(&workspace).len();
+        finish_attempt_bounded(
+            &workspace.snapshot(),
+            &unaudited.expected(),
+            &observation("x", "", Completion::Parsed),
+            Some(NewMessageBody {
+                message_id: "assistant-unaudited".into(),
+                content: "x".into(),
+                thinking: String::new(),
+            }),
+            now_ms(),
+            &pinned(),
+        )
+        .expect("data-less success without a started execution");
+        assert!(attempt_terminal_present(&workspace, &unaudited));
+        assert_eq!(audit_events(&workspace).len(), before);
         assert_chain_ok(&workspace);
     }
 

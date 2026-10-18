@@ -16,6 +16,9 @@
 //!   same transaction, so the two cannot diverge. An attempt without a started
 //!   execution gets no audit event. The restart sweep reaches this through
 //!   `recover_attempt_in_tx`, so it needs no code of its own.
+//!   A success of a started execution without audit data (`Conservative`,
+//!   not a recovery) is rejected with the whole transaction instead of being
+//!   recorded as `execution.failed`; it must use `finish_attempt_with_audit_bounded`.
 //!
 //! `request.dispatched` records that the request was handed to the transport
 //! thread. It is not evidence that a byte was sent or received.
@@ -442,6 +445,23 @@ pub(super) fn close_execution_in_tx(
     };
     let timestamp = terminal.completed_at_ms;
     let terminal_status = observation.terminal_status;
+    // A success of a started execution can only be recorded with the observed
+    // response (`response.completed`). The data-less writer used to turn it
+    // into `execution.failed (audit-data-missing)` while the attempt stayed
+    // succeeded; it now rejects the whole transaction, so the attempt terminal
+    // is not written either and the owner's failure path (`recover`) closes
+    // the execution conservatively. Not reached for an attempt without a
+    // started execution, for the restart sweep / claimed recover
+    // (`recovery`), or for a zero-send terminal.
+    if !recovery
+        && matches!(close, AuditClose::Conservative)
+        && terminal_status == TerminalStatus::Succeeded
+    {
+        return Err(domain_failure(
+            Nir1StoreFailure::Invalid,
+            "NIR1_LOCAL_AUDIT_SUCCESS_REQUIRES_AUDIT_DATA",
+        ));
+    }
     let mut events = Vec::with_capacity(3);
     let mut common = json!({
         "attemptId": attempt_id,
