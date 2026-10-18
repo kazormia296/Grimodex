@@ -52,6 +52,12 @@ import {
 import type { NarrativeMaintenanceCiSeam } from "./narrativeMaintenanceCiSeam.js";
 import type { LicenseValidationScheduler } from "./licenseValidation.js";
 import { createRelatedScenesSearchAuthority } from "./relatedScenesSearchAuthority.js";
+import {
+  MAIN_GRANT_REQUIRED,
+  isGrantRequiredCommand,
+  stripRendererGrantFields,
+  type MainGrantController,
+} from "./mainGrant.js";
 import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
 import type {
   MainIssuedCallerIdentity,
@@ -2095,6 +2101,7 @@ export function registerIpcRouter(
     NarrativeFreshnessScheduler,
     "quiesceForWorkspaceSwitch"
   >,
+  mainGrant?: MainGrantController,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
@@ -2160,10 +2167,14 @@ export function registerIpcRouter(
         // `attemptId` is a main-issued lifecycle identity. Strip any value
         // supplied by a renderer before the profile gate and only add the
         // exact scheduler-owned id below after admission succeeds.
-        const rendererSafeArgs =
-          MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
-          isRecord(boundArgs) &&
-          isRecord(boundArgs.payload)
+        // Grant-shaped fields a renderer put next to a request that needs
+        // Main's one-time grant are dropped; the grant is attached only by
+        // `mainGrant`, as a non-enumerable sidecar after the dialog.
+        const rendererSafeArgs = isGrantRequiredCommand(cmd)
+          ? stripRendererGrantFields(boundArgs)
+          : MANUAL_NARRATIVE_MAINTENANCE_COMMANDS.has(cmd) &&
+              isRecord(boundArgs) &&
+              isRecord(boundArgs.payload)
             ? (() => {
                 const { attemptId: _rendererAttemptId, ...payload } =
                   boundArgs.payload;
@@ -2208,8 +2219,8 @@ export function registerIpcRouter(
             });
           }
         }
-        const dispatch = (): Promise<Envelope> =>
-          dispatchInvoke(cmd, dispatchArgs, {
+        const dispatch = (args = dispatchArgs): Promise<Envelope> =>
+          dispatchInvoke(cmd, args, {
             backend,
             shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
             secrets,
@@ -2316,10 +2327,24 @@ export function registerIpcRouter(
               }
             }
           }
-          envelope =
-            licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
-              ? await licenseValidation.runManualOperation(dispatch)
-              : await dispatch();
+          if (isGrantRequiredCommand(cmd)) {
+            // Never dispatched on the renderer's word: Main's confirmation
+            // (preview, dialog, issue) comes first, or the command is refused.
+            envelope = mainGrant
+              ? await mainGrant.run({
+                  command: cmd,
+                  sender: event.sender,
+                  win,
+                  args: dispatchArgs,
+                  dispatch,
+                })
+              : { ok: false, error: MAIN_GRANT_REQUIRED };
+          } else {
+            envelope =
+              licenseValidation && MANUAL_LICENSE_COMMANDS.has(cmd)
+                ? await licenseValidation.runManualOperation(dispatch)
+                : await dispatch();
+          }
         } catch (error) {
           envelope = { ok: false, error: toErrorString(error) };
         }

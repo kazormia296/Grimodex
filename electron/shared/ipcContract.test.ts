@@ -17,6 +17,7 @@ import {
   isAllowedRendererEventChannel,
   isSafeExternalUrl,
   MAIN_EVENT_CHANNEL_ALLOWLIST,
+  MAIN_GRANT_SIDECAR,
   NAPI_COMMANDS,
   RENDERER_EVENT_CHANNEL_ALLOWLIST,
   SHELL_COMMAND_NAMES,
@@ -1937,6 +1938,208 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       nativeArgs,
       JSON.stringify(args.callerIdentity),
     );
+  });
+
+  describe("本文宣言の2つの入口（CB-2）", () => {
+    const values = {
+      story: "independent",
+      auto: "independent",
+      phase: "independent",
+      reveal: "non-secret",
+      pov: "independent",
+    };
+    const declareArgs = () => ({
+      expectedWorkspacePath: "/workspace/project-1",
+      payload: {
+        projectId: "project-1",
+        sceneId: "scene-1",
+        requestId: "request-1",
+        expected: { scopeVersion: 1, scopeToken: "t", declarationToken: null },
+        values,
+      },
+    });
+    const revokeArgs = () => ({
+      expectedWorkspacePath: "/workspace/project-1",
+      payload: {
+        projectId: "project-1",
+        sceneId: "scene-1",
+        requestId: "request-2",
+        declarationToken: "token",
+      },
+    });
+
+    it("declare は closed な payload だけを渡し、grant は symbol sidecar から第3引数にだけ載せる", async () => {
+      const method = vi.fn().mockResolvedValue('{"outcome":"declared"}');
+      const { backend } = fakeBackend({
+        narrativeSceneBodyDeclarationDeclare: method,
+      });
+      const callerIdentity = { callerId: "c" };
+      const args = { ...declareArgs(), callerIdentity };
+      const sidecar = { grantId: "g-1", senderId: 7, windowId: 11 };
+      Object.defineProperty(args, MAIN_GRANT_SIDECAR, {
+        value: sidecar,
+        enumerable: false,
+      });
+      const env = await dispatchInvoke(
+        "narrative_scene_body_declaration_declare",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: { outcome: "declared" } });
+      expect(method).toHaveBeenCalledExactlyOnceWith(
+        declareArgs(),
+        JSON.stringify(callerIdentity),
+        JSON.stringify(sidecar),
+      );
+    });
+
+    it("grant が無ければ trailing 引数を付けない（Native が MAIN_GRANT_REQUIRED で拒否する）", async () => {
+      const method = vi.fn().mockResolvedValue('{"outcome":"declared"}');
+      const { backend } = fakeBackend({
+        narrativeSceneBodyDeclarationDeclare: method,
+      });
+      await dispatchInvoke(
+        "narrative_scene_body_declaration_declare",
+        declareArgs(),
+        { backend, shell: noShell },
+      );
+      expect(method).toHaveBeenCalledExactlyOnceWith(declareArgs());
+    });
+
+    it("enumerable な grant の欄、宣言の ID・時刻・digest、未知の欄を拒否する", async () => {
+      const method = vi.fn().mockResolvedValue("{}");
+      const { backend } = fakeBackend({
+        narrativeSceneBodyDeclarationDeclare: method,
+        narrativeSceneBodyDeclarationRevoke: method,
+      });
+      const bad = [
+        { ...declareArgs(), grant: { grantId: "g" } },
+        { ...declareArgs(), grantId: "g" },
+        { ...declareArgs(), senderId: 1 },
+        { ...declareArgs(), unexpected: true },
+        {
+          ...declareArgs(),
+          payload: { ...declareArgs().payload, declarationId: "d" },
+        },
+        {
+          ...declareArgs(),
+          payload: { ...declareArgs().payload, declaredAt: "2026-10-18" },
+        },
+        {
+          ...declareArgs(),
+          payload: { ...declareArgs().payload, digest: "sha256:x" },
+        },
+        {
+          ...declareArgs(),
+          payload: { ...declareArgs().payload, grant: "g" },
+        },
+        {
+          ...declareArgs(),
+          payload: {
+            ...declareArgs().payload,
+            expected: {
+              scopeVersion: 1,
+              scopeToken: "t",
+              declarationToken: null,
+              extra: 1,
+            },
+          },
+        },
+        { ...declareArgs(), payload: { projectId: "p" } },
+        { expectedWorkspacePath: "/w" },
+      ];
+      for (const args of bad) {
+        const env = await dispatchInvoke(
+          "narrative_scene_body_declaration_declare",
+          args,
+          { backend, shell: noShell },
+        );
+        expect(env.ok, JSON.stringify(args)).toBe(false);
+      }
+      for (const args of [
+        { ...revokeArgs(), grant: { grantId: "g" } },
+        { ...revokeArgs(), payload: { ...revokeArgs().payload, grantId: "g" } },
+        {
+          ...revokeArgs(),
+          payload: { ...revokeArgs().payload, declarationToken: "" },
+        },
+        {
+          ...revokeArgs(),
+          payload: { ...revokeArgs().payload, declarationId: "d" },
+        },
+      ]) {
+        const env = await dispatchInvoke(
+          "narrative_scene_body_declaration_revoke",
+          args,
+          { backend, shell: noShell },
+        );
+        expect(env.ok, JSON.stringify(args)).toBe(false);
+      }
+      expect(method).not.toHaveBeenCalled();
+    });
+
+    it("revoke は grant を受け取らず、caller identity だけを trailing に渡す", async () => {
+      const method = vi.fn().mockResolvedValue('{"outcome":"revoked"}');
+      const { backend } = fakeBackend({
+        narrativeSceneBodyDeclarationRevoke: method,
+      });
+      const callerIdentity = { callerId: "c" };
+      const args = { ...revokeArgs(), callerIdentity };
+      // Even a sidecar on the args is not forwarded by the revoke entry.
+      Object.defineProperty(args, MAIN_GRANT_SIDECAR, {
+        value: { grantId: "g-1", senderId: 7, windowId: 11 },
+        enumerable: false,
+      });
+      const env = await dispatchInvoke(
+        "narrative_scene_body_declaration_revoke",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: { outcome: "revoked" } });
+      expect(method).toHaveBeenCalledExactlyOnceWith(
+        revokeArgs(),
+        JSON.stringify(callerIdentity),
+      );
+    });
+
+    it("不正な sidecar の形は dispatch の前に拒否する", async () => {
+      const method = vi.fn().mockResolvedValue("{}");
+      const { backend } = fakeBackend({
+        narrativeSceneBodyDeclarationDeclare: method,
+      });
+      for (const value of [
+        null,
+        "g",
+        { grantId: "g" },
+        { grantId: "g", senderId: "7", windowId: 1 },
+        { grantId: "g", senderId: 7, windowId: 1, extra: 1 },
+      ]) {
+        const args = declareArgs();
+        Object.defineProperty(args, MAIN_GRANT_SIDECAR, {
+          value,
+          enumerable: false,
+        });
+        const env = await dispatchInvoke(
+          "narrative_scene_body_declaration_declare",
+          args,
+          { backend, shell: noShell },
+        );
+        expect(env.ok, JSON.stringify(value)).toBe(false);
+      }
+      expect(method).not.toHaveBeenCalled();
+    });
+
+    it("Main 専用の grant と gate の N-API は renderer の command 表に無い", () => {
+      for (const name of [
+        "main_grant_preview",
+        "main_grant_issue",
+        "main_grant_revoke",
+        "main_grant_revoke_sender",
+        "main_open_pre_publication_gate",
+      ]) {
+        expect(NAPI_COMMANDS).not.toHaveProperty(name);
+      }
+    });
   });
 
   it("semantic per-entity commands forward workspace/project authority before the entity id", async () => {
@@ -5909,6 +6112,8 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_maintenance_inbox_list",
       "narrative_runtime_policy_get",
       "narrative_runtime_policy_set",
+      "narrative_scene_body_declaration_declare",
+      "narrative_scene_body_declaration_revoke",
       "narrative_scene_scope_read",
       "narrative_scene_scope_registry_update",
       "narrative_scene_scope_update",
