@@ -1169,6 +1169,22 @@ impl Nir1TransportOwner {
         self.inner().claimed_at_ms
     }
 
+    /// The endpoint identity digest the attempt's binding carries. The
+    /// transport compares it with its own target before it connects.
+    pub(crate) fn bound_endpoint_identity(&self) -> &str {
+        &self.inner().expected.binding.endpoint_identity
+    }
+
+    /// The payload digest the attempt stored (the canonical payload's).
+    pub(crate) fn bound_payload_digest(&self) -> &str {
+        &self.inner().expected.payload_digest
+    }
+
+    /// The purpose the attempt's binding carries.
+    pub(crate) fn bound_purpose(&self) -> &grimodex_db::nir1_generation::GenerationPurpose {
+        &self.inner().expected.binding.purpose
+    }
+
     pub(crate) fn cancel_handle(&self) -> Nir1OwnerCancel {
         Nir1OwnerCancel {
             control: Arc::clone(&self.inner().core.control),
@@ -1662,8 +1678,19 @@ pub(crate) mod test_hooks {
             &self.hooks
         }
     }
+
+    impl Nir1TransportOwner {
+        /// Replace the in-process payload (not the stored digest), to test that
+        /// a transport refuses a payload that is not the one the attempt bound.
+        pub(crate) fn replace_canonical_payload_for_test(&mut self, payload: String) {
+            self.inner
+                .as_mut()
+                .expect("a transport owner finishes exactly once")
+                .canonical_payload = payload;
+        }
+    }
 }
 
 #[cfg(test)]
 #[path = "nir1_generation_owner_tests.rs"]
-mod tests;
+pub(crate) mod tests;

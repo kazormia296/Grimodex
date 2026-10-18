@@ -284,10 +284,10 @@ mod loopback {
     }
 }
 
-const PROJECT: &str = "owner-project";
-const SCENE: &str = "owner-scene";
-const SESSIONS: [&str; 3] = ["owner-session-a", "owner-session-b", "owner-session-c"];
-const READ_BUDGET: ReadBudget = ReadBudget {
+pub(crate) const PROJECT: &str = "owner-project";
+pub(crate) const SCENE: &str = "owner-scene";
+pub(crate) const SESSIONS: [&str; 3] = ["owner-session-a", "owner-session-b", "owner-session-c"];
+pub(crate) const READ_BUDGET: ReadBudget = ReadBudget {
     max_references: 16,
     max_reference_bytes: 16 * 1024,
 };
@@ -363,21 +363,21 @@ fn create_scene(db: &grimodex_db::Database, tag: &str) {
 /// published by the real adapter), its startup gate Open after a real sweep,
 /// and one registered main caller per chat session. A caller's Main session
 /// is a random UUID; the chat session of caller `i` is `SESSIONS[i]`.
-struct OwnerFixture {
-    root: PathBuf,
-    state: Arc<AppState>,
-    authority: PinnedWorkspaceDb,
-    callers: Vec<CallerIdentity>,
+pub(crate) struct OwnerFixture {
+    pub(crate) root: PathBuf,
+    pub(crate) state: Arc<AppState>,
+    pub(crate) authority: PinnedWorkspaceDb,
+    pub(crate) callers: Vec<CallerIdentity>,
     owns_root: bool,
 }
 
 impl OwnerFixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let root = workspace_root();
         Self::open(root, "app", true)
     }
 
-    fn open(root: PathBuf, app: &str, owns_root: bool) -> Self {
+    pub(crate) fn open(root: PathBuf, app: &str, owns_root: bool) -> Self {
         let backend =
             crate::Backend::new(root.join(app).to_string_lossy().into_owned(), None, None)
                 .expect("Native backend");
@@ -434,20 +434,20 @@ impl OwnerFixture {
         }
     }
 
-    fn gate(&self) -> &Nir1StartupAdmissionGate {
+    pub(crate) fn gate(&self) -> &Nir1StartupAdmissionGate {
         self.state.workspace_lifecycle.nir1_startup_gate()
     }
 
-    fn binding(&self) -> LiveBinding {
+    pub(crate) fn binding(&self) -> LiveBinding {
         ready_binding(&self.state).expect("Ready binding")
     }
 
-    fn accept(&self, session: usize, key: &str) -> NativeAcceptedChatSubmission {
+    pub(crate) fn accept(&self, session: usize, key: &str) -> NativeAcceptedChatSubmission {
         self.accept_as(&self.callers[session], SESSIONS[session], key)
     }
 
     /// Accept one current Human submission by `caller` in `chat_session`.
-    fn accept_as(
+    pub(crate) fn accept_as(
         &self,
         caller: &CallerIdentity,
         chat_session: &str,
@@ -468,7 +468,7 @@ impl OwnerFixture {
 
     /// One more scene-bound chat session of the project, with its own
     /// registered main caller (and that caller's own Main session).
-    fn add_session(&self, index: usize) -> (CallerIdentity, String) {
+    pub(crate) fn add_session(&self, index: usize) -> (CallerIdentity, String) {
         let session = format!("owner-session-extra-{index:02}");
         self.authority
             .db()
@@ -496,7 +496,7 @@ impl OwnerFixture {
 
     /// The current Scene binding, read the way the coordinator reads it: in
     /// one read transaction.
-    fn scene_binding(&self) -> AttemptSceneBinding {
+    pub(crate) fn scene_binding(&self) -> AttemptSceneBinding {
         self.authority
             .db()
             .with_read_transaction(|conn| {
@@ -508,7 +508,7 @@ impl OwnerFixture {
     /// Delete and recreate the Scene with the same id and body, both through
     /// the Native tree writer: the A1 writer mints a new incarnation for the
     /// recreated row. `tag` keeps the writer's request keys unique.
-    fn replace_scene(&self, tag: &str) {
+    pub(crate) fn replace_scene(&self, tag: &str) {
         tree_node_delete(
             self.authority.db(),
             TreeNodeDeletePayload {
@@ -528,7 +528,7 @@ impl OwnerFixture {
     }
 
     /// A tree patch may change the body without a new token.
-    fn edit_scene_body_in_place(&self) {
+    pub(crate) fn edit_scene_body_in_place(&self) {
         self.authority
             .db()
             .with_conn(|conn| {
@@ -545,7 +545,7 @@ impl OwnerFixture {
             .expect("edit the Scene body");
     }
 
-    fn owner(
+    pub(crate) fn owner(
         &self,
         session: usize,
         submission: &NativeAcceptedChatSubmission,
@@ -557,7 +557,7 @@ impl OwnerFixture {
         )
     }
 
-    fn request(
+    pub(crate) fn request(
         &self,
         owner: &Nir1GenerationOwner,
         submission: &NativeAcceptedChatSubmission,
@@ -571,7 +571,7 @@ impl OwnerFixture {
         self.request_with_history(owner, submission, history)
     }
 
-    fn request_with_history(
+    pub(crate) fn request_with_history(
         &self,
         owner: &Nir1GenerationOwner,
         submission: &NativeAcceptedChatSubmission,
@@ -609,18 +609,18 @@ impl OwnerFixture {
         }
     }
 
-    fn prepared(&self, session: usize, key: &str) -> Nir1PreparedAttempt {
+    pub(crate) fn prepared(&self, session: usize, key: &str) -> Nir1PreparedAttempt {
         let submission = self.accept(session, key);
         let owner = self.owner(session, &submission).expect("owner");
         let request = self.request(&owner, &submission);
         owner.create(request).expect("durable attempt")
     }
 
-    fn attempt(&self, id: &str) -> StoredAttempt {
+    pub(crate) fn attempt(&self, id: &str) -> StoredAttempt {
         storage::read_attempt(self.authority.db(), id, READ_BUDGET).expect("attempt row")
     }
 
-    fn attempt_count(&self) -> i64 {
+    pub(crate) fn attempt_count(&self) -> i64 {
         self.authority
             .db()
             .with_conn(|conn| {
@@ -633,7 +633,7 @@ impl OwnerFixture {
             .expect("attempt count")
     }
 
-    fn publish_new_ready_entry(&self) -> (LiveBinding, u64) {
+    pub(crate) fn publish_new_ready_entry(&self) -> (LiveBinding, u64) {
         match self
             .state
             .workspace_lifecycle
@@ -657,7 +657,7 @@ impl OwnerFixture {
         (self.binding(), view.revision)
     }
 
-    fn admission_budget(&self) -> Nir1AdmissionSqlBudget {
+    pub(crate) fn admission_budget(&self) -> Nir1AdmissionSqlBudget {
         Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), Arc::new(|| true))
             .for_untimed_test()
     }
@@ -717,7 +717,9 @@ fn zero_send(decision: Nir1TransportDecision) -> StoredTerminal {
 }
 
 /// Hold the connection mutex on another thread until `release` fires.
-fn hold_connection(authority: &PinnedWorkspaceDb) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
+pub(crate) fn hold_connection(
+    authority: &PinnedWorkspaceDb,
+) -> (mpsc::Sender<()>, thread::JoinHandle<()>) {
     let (held_tx, held_rx) = mpsc::channel();
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let holder = Arc::clone(authority);
@@ -737,7 +739,7 @@ fn hold_connection(authority: &PinnedWorkspaceDb) -> (mpsc::Sender<()>, thread::
     (release_tx, worker)
 }
 
-fn wait_for(condition: impl Fn() -> bool, what: &str) {
+pub(crate) fn wait_for(condition: impl Fn() -> bool, what: &str) {
     let deadline = Instant::now() + Duration::from_secs(5);
     while !condition() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
@@ -2841,7 +2843,7 @@ fn owner_unknown_commit_reread_accepts_the_downgraded_binding() {
 // DT-5 (T1): the owner's entries for a transport.
 // ---------------------------------------------------------------------------
 
-fn audit_events(fixture: &OwnerFixture) -> Vec<grimodex_db::ai_audit::AiAuditEvent> {
+pub(crate) fn audit_events(fixture: &OwnerFixture) -> Vec<grimodex_db::ai_audit::AiAuditEvent> {
     use grimodex_db::ai_audit::read_ai_audit_snapshot_for_scope;
     fixture
         .authority
@@ -2855,7 +2857,7 @@ fn audit_events(fixture: &OwnerFixture) -> Vec<grimodex_db::ai_audit::AiAuditEve
         .expect("audit events")
 }
 
-fn audit_types(fixture: &OwnerFixture) -> Vec<String> {
+pub(crate) fn audit_types(fixture: &OwnerFixture) -> Vec<String> {
     audit_events(fixture)
         .into_iter()
         .map(|event| event.event_type)
@@ -2901,7 +2903,7 @@ fn success_body(id: &str) -> Option<NewMessageBody> {
     })
 }
 
-fn chat_message_exists(fixture: &OwnerFixture, id: &str) -> bool {
+pub(crate) fn chat_message_exists(fixture: &OwnerFixture, id: &str) -> bool {
     fixture
         .authority
         .db()
@@ -2915,7 +2917,7 @@ fn chat_message_exists(fixture: &OwnerFixture, id: &str) -> bool {
         .expect("message lookup")
 }
 
-fn set_project_ai_policy(fixture: &OwnerFixture, value: &str) {
+pub(crate) fn set_project_ai_policy(fixture: &OwnerFixture, value: &str) {
     fixture
         .authority
         .db()
