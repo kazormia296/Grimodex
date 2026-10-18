@@ -87,3 +87,39 @@ test("種類の内訳は判定した行だけを数える（対照不成立の�
   assert.equal(out.byKind.udp, 1);
   assert.equal(out.unverified.length, 1);
 });
+
+test("DNS だけの行は、対照で試みが観測できなくても対照不成立にせず、canary 0 で合格（K3/3 R14）", () => {
+  const baseline = { rows: [row("dns.preconnect", "link:preconnect"), row("dns.dns-prefetch", "link:dns-prefetch")] };
+  baseline.rows[1].dnsNames = ["x.invalid"];
+  const out = judgeRecord(
+    {
+      label: "x",
+      totals: { leakedProbes: 0, canaryHits: 0, unattributed: 0 },
+      rows: [row("dns.preconnect", "link:preconnect"), row("dns.dns-prefetch", "link:dns-prefetch")],
+    },
+    { baseline },
+  );
+  assert.equal(out.fail, 0);
+  assert.equal(out.pass, 2);
+  assert.equal(out.byKind.hint, 2);
+  assert.equal(out.unverified.length, 0);
+});
+
+test("対照の行列にない DNS だけの行は不合格（fail-safe。K3/3 R14）", () => {
+  const baseline = { rows: [row("dns.dns-prefetch", "link:dns-prefetch")] };
+  const out = judgeRecord(
+    {
+      label: "x",
+      totals: { leakedProbes: 0, canaryHits: 0, unattributed: 0 },
+      rows: [row("dns.dns-prefetch", "link:dns-prefetch"), row("dns.new-hint-not-in-baseline", "link:preconnect")],
+    },
+    { baseline },
+  );
+  assert.equal(out.fail, 1);
+  assert.equal(out.failing[0].id, "dns.new-hint-not-in-baseline");
+});
+
+test("対照なし（--baseline なし）の DNS だけの行は canary 0 で合格", () => {
+  const out = judgeRecord({ label: "x", totals: { unattributed: 0 }, rows: [row("dns.new-hint", "link:preconnect")] });
+  assert.equal(out.fail, 0);
+});

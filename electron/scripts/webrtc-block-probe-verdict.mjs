@@ -10,7 +10,8 @@
  *     合格 = leaked が 0 かつ proxied（blackhole の listener への接続）が 1 以上
  *   UDP の ICE 行（stun／stuns／turn-udp／remote-candidate-udp）:
  *     合格 = leaked が 0 かつ ICE が policy で止まった形の outcome（gathering:complete、ice:new）
- *   DNS だけが起きる行（dns-prefetch など）: leaked が 0（名前の合否は NL の述語。ここでは見ない）
+ *   DNS だけが起きる行（dns-prefetch など）: leaked が 0（名前の合否は NL の述語。ここでは見ない）。
+ *     対照で試みが観測できることは要求しない（--baseline があっても「対照不成立」にしない）。ただし対照の行列にない行は不合格（K3/3 R14）
  *   対象外（ICE まで届かない行。CSP や handler で止まる行、Main 側の通信、対照）: 判定しない。理由を出す
  *
  *   .local（mDNS）の行: 判定しない（draft の「.local の規則」だけで判定する）
@@ -21,8 +22,8 @@
  *   対照不成立の行、.local の行）に帰属した到達と、どの行にも帰属しない到達（totals.unattributed）を含む。1 件でもあれば不合格。
  *   - 対象外の行でも leaked>0 なら行として不合格（judge。対照不成立に変換しない）
  *   - totals.unattributed／canaryHits／leakedProbes が 0 でなければ記録として不合格（recordFailures）
- *   --baseline <record.json>: 閉じ込めなしの同じ行列の記録。対照で試みが観測できない行（canary 到達、ICE の進行中、名前の解決のどれもない）は
- *     判定できないので「対照不成立」として列挙し（未検証）、対照にない行は不合格にする
+ *   --baseline <record.json>: 閉じ込めなしの同じ行列の記録。TCP／UDP の行で、対照で試みが観測できない行（canary 到達、ICE の進行中、名前の解決のどれもない）は
+ *     判定できないので「対照不成立」として列挙し（未検証）、対照にない行（DNS だけの行を含む）は不合格にする
  *   --no-listener: blackhole の listener を置かない試験。TCP の行は canary 0 だけを見る
  * 終了コード: 不合格の行があれば 1。--expect-min-fail n（対照の構成用）は不合格が n 行以上のとき 0、未満なら 1。
  */
@@ -93,8 +94,13 @@ export function judgeRecord(record, options = {}) {
   const baseById = new Map((options.baseline?.rows ?? []).map((r) => [r.id, r]));
   const rows = (record.rows ?? []).map((r) => {
     const j = judge(r, options);
-    // hint（DNS だけが起きる行）は名前の合否が NL の述語なので、対照の試みの観測は要求しない（canary 0 だけを見る）
-    if (!options.baseline || j.verdict === "n/a" || j.kind === "hint") return j;
+    if (!options.baseline || j.verdict === "n/a") return j;
+    // hint（DNS だけが起きる行）は名前の合否が NL の述語なので、対照で試みが観測できることは要求しない（canary 0 だけを見る。
+    // 対照でも解決・到達が 0 の行がある〔Electron で no-op か CSP で止まる〕）。ただし対照の行列にない行は不合格（fail-safe。K3/3 R14）
+    if (j.kind === "hint") {
+      if (j.verdict === "fail" || baseById.has(r.id)) return j;
+      return { ...j, verdict: "fail", why: "対照（baseline）の行列にない行（fail-safe）" };
+    }
     // canary へ到達した行は、対照不成立でも未検証にしない（到達は不合格のまま）
     if (j.verdict === "fail" && r.leaked > 0) return j;
     const b = baseById.get(r.id);
