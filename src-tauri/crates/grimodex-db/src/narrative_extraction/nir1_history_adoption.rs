@@ -41,9 +41,16 @@
 //! the newest) that does not fit one of the limits ends the window, and every
 //! older turn is left out with [`NotAdoptedReason::BeyondWindowEnd`]. A turn
 //! that cannot be adopted for its own message (a body that is gone, blank,
-//! over the per-message limit, or not the message the candidate named) is
-//! skipped and the window goes on, the way a turn whose candidate was excluded
-//! is already absent.
+//! over the per-message limit, or not the message the candidate named) ends the
+//! window the same way: it is one more "this turn does not go in", and a turn
+//! that is missing from the middle of the conversation would leave a later
+//! instruction ("shorten that") pointing at something that is not there. (A
+//! turn whose candidate the run excluded is different: that is a decision of
+//! the run's authorization, not of this function, and it is already absent.)
+//! The one place the position of such a turn is unknown (no material was
+//! handed on for its attempt, which the run never does for a qualified
+//! candidate) is treated as the newest, so nothing is adopted: the narrower
+//! side.
 
 use std::collections::BTreeMap;
 
@@ -161,7 +168,7 @@ pub(crate) struct NotAdopted {
 
 /// One message of an adopted turn: the input row the new attempt stores for it
 /// and the body to render.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct AdoptedMessage {
     /// The attempt whose turn the message belongs to.
     pub attempt_id: AttemptId,
@@ -174,6 +181,21 @@ pub(crate) struct AdoptedMessage {
     pub body: String,
     /// Tokens of the message in the request: its text and its envelope.
     pub tokens: usize,
+}
+
+/// Like [`HistoryMessageMaterial`], the body is not shown by `{:?}`: its length
+/// and digest are.
+impl std::fmt::Debug for AdoptedMessage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AdoptedMessage")
+            .field("attempt_id", &self.attempt_id)
+            .field("input", &self.input)
+            .field("body_digest", &self.body_digest)
+            .field("body_bytes", &self.body.len())
+            .field("tokens", &self.tokens)
+            .finish_non_exhaustive()
+    }
 }
 
 /// One adopted turn.
@@ -303,6 +325,9 @@ pub(crate) fn adopt_history_turns(
 
     // 2. The turns whose own messages are usable.
     let mut usable: Vec<Usable> = Vec::new();
+    // The turns that cannot be adopted for their own messages, with the place
+    // they would have had in the order (creation time, then attempt ID bytes).
+    let mut unusable: Vec<(i64, AttemptId)> = Vec::new();
     for (attempt_id, candidates) in by_attempt {
         let Some(human) = candidates.human else {
             if candidates.output.is_some() {
@@ -315,12 +340,25 @@ pub(crate) fn adopt_history_turns(
         };
         match usable_turn(request, human, candidates.output) {
             Ok(turn) => usable.push(turn),
-            Err(reason) => not_adopted.push(NotAdopted {
-                attempt_id: attempt_id.to_owned(),
-                reason,
-            }),
+            Err(reason) => {
+                // Without the attempt's material its place is unknown: newest.
+                let created_at_ms = request
+                    .outcome
+                    .materials
+                    .get(attempt_id)
+                    .map_or(i64::MAX, |material| material.created_at_ms);
+                unusable.push((created_at_ms, attempt_id.to_owned()));
+                not_adopted.push(NotAdopted {
+                    attempt_id: attempt_id.to_owned(),
+                    reason,
+                });
+            }
         }
     }
+    // The newest of them ends the window: nothing older than it is adopted.
+    let window_cutoff: Option<(i64, AttemptId)> = unusable
+        .into_iter()
+        .max_by(|left, right| (left.0, left.1.as_bytes()).cmp(&(right.0, right.1.as_bytes())));
     // Oldest first: the attempt's creation time, then the attempt ID's bytes.
     usable.sort_by(|left, right| {
         (left.created_at_ms, left.attempt_id.as_bytes())
@@ -358,6 +396,14 @@ pub(crate) fn adopt_history_turns(
     let (mut parent_rows, mut parent_bytes) = (0usize, 0usize);
     let mut ended = false;
     for turn in retained {
+        if !ended {
+            if let Some((cutoff_ms, cutoff_id)) = &window_cutoff {
+                // At or before the turn that could not be adopted: the window
+                // ends before it (its own reason is already recorded).
+                ended = (turn.created_at_ms, turn.attempt_id.as_bytes())
+                    < (*cutoff_ms, cutoff_id.as_bytes());
+            }
+        }
         if ended {
             not_adopted.push(NotAdopted {
                 attempt_id: turn.attempt_id,

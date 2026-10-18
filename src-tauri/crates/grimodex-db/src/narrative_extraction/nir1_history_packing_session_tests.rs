@@ -705,6 +705,154 @@ fn revalidation_confirms_adopted_history_and_rejects_history_that_stops_qualifyi
     Ok(())
 }
 
+/// A session with two settled turns and a prepared next request that adopted
+/// both (four messages), to be changed afterwards.
+fn prepared_with_two_turns() -> Result<(SessionFixture, NativeNir1PreparedInputs, i64)> {
+    let mut session = SessionFixture::new()?;
+    let first = session.turn("First.", &[], Some("First answer."))?;
+    session.turn(
+        "Second.",
+        &[Adopt::human(&first), Adopt::output(&first)],
+        Some("Second answer."),
+    )?;
+    let now = wall_clock_ms();
+    let prepared = next(
+        &session,
+        "Third.",
+        Some(NativeNir1HistoryRequest {
+            now_ms: now,
+            message_envelope_tokens: ENVELOPE,
+        }),
+        BIG_BUDGET,
+    )?;
+    assert_eq!(prepared.history_messages().len(), 4);
+    revalidate_native_nir1_prepared_inputs(
+        &session.snapshot,
+        SESSION,
+        &prepared,
+        prepared_sql_budget(),
+        now,
+    )?;
+    Ok((session, prepared, now))
+}
+
+/// Only the history part of the return-time check, in a participant read
+/// transaction of its own. A Scope, point-of-view or epoch change of the
+/// target Scene also fails the Human, Raw or Revision checks that run before
+/// it, with their own codes; calling the history confirmation alone shows that
+/// it rejects the change by itself (it does not lean on those checks).
+fn confirm_history_alone(
+    session: &SessionFixture,
+    prepared: &NativeNir1PreparedInputs,
+    now: i64,
+) -> Result<()> {
+    let history = prepared.history.as_ref().expect("history");
+    let budget = prepared_sql_budget();
+    let checkpoint_budget = budget.clone();
+    session
+        .snapshot
+        .db()
+        .with_participant_read_transaction_bounded(session.snapshot.participant(), budget, |conn| {
+            let mut checkpoint = || checkpoint_budget.check(session.snapshot.participant());
+            confirm_history_in_snapshot(
+                conn,
+                prepared,
+                history,
+                &session.snapshot,
+                now,
+                &checkpoint_budget,
+                &mut checkpoint,
+            )
+        })
+}
+
+/// The history confirmation says the history is stale (and not some other
+/// failure): the turn stops, nothing is sent.
+fn assert_history_stale(session: &SessionFixture, prepared: &NativeNir1PreparedInputs, now: i64) {
+    let error = confirm_history_alone(session, prepared, now)
+        .expect_err("the history no longer qualifies, but the confirmation accepted it");
+    assert!(
+        format!("{error:#}").contains("NIR1_NATIVE_PREPARED_HISTORY_STALE"),
+        "{error:#}"
+    );
+}
+
+#[test]
+fn revalidation_rejects_each_way_the_history_stops_qualifying() -> Result<()> {
+    // (i) A write that changes the Scene's Scope (its reading position).
+    {
+        let (session, prepared, now) = prepared_with_two_turns()?;
+        let moved = format!("{}x", session.sort_order_of(SCENE)?);
+        session.patch_node(SCENE, "di1b3-stale-move", "sortOrder", json!(moved))?;
+        assert_history_stale(&session, &prepared, now);
+    }
+    // (ii) The point of view, and the story-time axis, of the target Scene.
+    {
+        let (session, prepared, now) = prepared_with_two_turns()?;
+        session.patch_node(SCENE, "di1b3-stale-pov", "povCharacterId", Value::Null)?;
+        assert_history_stale(&session, &prepared, now);
+    }
+    {
+        let (session, prepared, now) = prepared_with_two_turns()?;
+        session.patch_node(SCENE, "di1b3-stale-time", "storyTimeOrder", Value::Null)?;
+        assert_history_stale(&session, &prepared, now);
+    }
+    // (iii) The restore epoch of the project changes.
+    {
+        let (session, prepared, now) = prepared_with_two_turns()?;
+        session.db().with_conn(|conn| {
+            crate::narrative_extraction::semantic_epoch::create_epoch_in_tx(
+                conn, PROJECT, "restore", None,
+            )?;
+            Ok(())
+        })?;
+        assert_history_stale(&session, &prepared, now);
+    }
+    // (iv) A message body that is not the one adopted (the prepared value is
+    // changed; the stored message is immutable, so this is the comparison).
+    {
+        let (session, mut prepared, now) = prepared_with_two_turns()?;
+        let history = prepared.history.as_mut().expect("history");
+        history.turns[0].human.body.push_str(" (changed)");
+        assert_history_stale(&session, &prepared, now);
+    }
+    {
+        let (session, mut prepared, now) = prepared_with_two_turns()?;
+        let history = prepared.history.as_mut().expect("history");
+        history.turns[1]
+            .output
+            .as_mut()
+            .expect("output")
+            .body_digest = "sha256:other".into();
+        assert_history_stale(&session, &prepared, now);
+    }
+    Ok(())
+}
+
+#[test]
+fn revalidation_keeps_history_over_writes_that_do_not_touch_its_authority() -> Result<()> {
+    // Q8: a body, a title, a synopsis and a label of other Scenes do not stop
+    // the turn (the Revision's own anchor is not among them: a write there
+    // retires the Revision, which the Revision check reports on its own).
+    let (session, prepared, now) = prepared_with_two_turns()?;
+    save_body(
+        session.db(),
+        "a3-source",
+        "di1b3-other-body",
+        &clock_stamp(),
+    )?;
+    for (tag, field, value) in [
+        ("title", "title", json!("Retitled")),
+        ("synopsis", "synopsis", json!("Only a synopsis")),
+        ("label", "storyTimeLabel", json!("A label")),
+    ] {
+        session.patch_node("a3-source", &format!("di1b3-other-{tag}"), field, value)?;
+    }
+    run_incremental_freshness_cycle(session.db())?;
+    confirm_history_alone(&session, &prepared, now)?;
+    Ok(())
+}
+
 #[test]
 fn revalidation_does_not_continue_with_a_part_of_the_history_when_its_budget_is_spent() -> Result<()>
 {

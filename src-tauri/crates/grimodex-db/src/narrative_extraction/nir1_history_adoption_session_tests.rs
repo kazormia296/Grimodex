@@ -262,11 +262,11 @@ fn reply_to_changed_body_is_adopted_in_place_and_counted() -> Result<()> {
 }
 
 #[test]
-fn a_body_the_run_could_not_pay_for_drops_that_turn_and_keeps_the_rest() -> Result<()> {
+fn a_body_the_run_could_not_pay_for_ends_the_window_at_that_turn() -> Result<()> {
     // The last body the run charges is the newest output (read once more for
     // the adoption). One byte short of it, the run still qualifies every
     // candidate; the adoption has no body for that reply, so the turn is left
-    // out whole and the older turn is adopted.
+    // out whole and the window ends there.
     let mut session = SessionFixture::new()?;
     let first = session.turn("First.", &[], Some("First answer."))?;
     let second = session.turn(
@@ -290,10 +290,16 @@ fn a_body_the_run_could_not_pay_for_drops_that_turn_and_keeps_the_rest() -> Resu
     assert_turn_adopted(&outcome, &second);
     assert!(outcome.materials[&second.attempt_id].output.is_none());
     let adoption = adopt(&session, &outcome, "Third.")?;
-    assert_eq!(bodies(&adoption), pair("First.", "First answer."));
+    // The newest turn has no body to carry, so the window ends before it:
+    // the older turn is not adopted either (no hole in the conversation).
+    assert!(adoption.turns.is_empty());
     assert_eq!(
         adoption.reason_for(&second.attempt_id),
         Some(NotAdoptedReason::BodyUnavailable)
+    );
+    assert_eq!(
+        adoption.reason_for(&first.attempt_id),
+        Some(NotAdoptedReason::BeyondWindowEnd)
     );
     Ok(())
 }

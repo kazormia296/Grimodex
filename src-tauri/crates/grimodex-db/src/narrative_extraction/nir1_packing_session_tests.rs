@@ -2790,7 +2790,10 @@ fn budget_boundary_n_and_n_plus_one_per_ledger_dimension() -> Result<()> {
                         IncompleteReason::BudgetExhausted,
                     ))
             })
-            || has_unpaid_material(&outcome);
+            // Only the body-bytes ledger is charged for a body the adoption
+            // then lacks (the output read comes last); for every other
+            // dimension the original assertion stands.
+            || (matches!(dimension, Dimension::BodyBytes) && has_unpaid_material(&outcome));
         assert!(cut_short, "{dimension:?} at N-1: {outcome:#?}");
         for result in outcome.qualified() {
             assert!(

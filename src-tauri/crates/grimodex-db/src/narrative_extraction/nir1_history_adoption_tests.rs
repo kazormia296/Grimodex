@@ -3,6 +3,7 @@
 //! `nir1_packing_session_tests`.
 
 use super::*;
+use crate::narrative_extraction::nir1_history_budget::adoptable_turn_count;
 use crate::nir1_generation_history::{
     CandidateDisposition, Failure, HistoryAttemptMaterial, HistoryMessageMaterial,
     IncompleteReason, SessionCandidateKind, SessionCandidateResult, SessionHistoryOutcome,
@@ -440,13 +441,19 @@ fn the_turn_of_an_unadopted_output_is_dropped_whole() {
     let mut outcome = outcome_of(&[
         spec("a1", 1_000, "H1", Some("M1")),
         spec("a2", 2_000, "H2", Some("M2")),
+        spec("a3", 3_000, "H3", Some("M3")),
     ]);
     outcome.materials.get_mut("a2").expect("a2").output = None;
-    let adoption = adopt(&outcome, "H3", limits());
-    assert_eq!(rendered(&adoption), vec![user("H1"), assistant("M1")]);
+    let adoption = adopt(&outcome, "H4", limits());
+    // The Human of a2 is not adopted alone, and a1 (older than it) goes with it.
+    assert_eq!(rendered(&adoption), vec![user("H3"), assistant("M3")]);
     assert_eq!(
         adoption.reason_for("a2"),
         Some(NotAdoptedReason::BodyUnavailable)
+    );
+    assert_eq!(
+        adoption.reason_for("a1"),
+        Some(NotAdoptedReason::BeyondWindowEnd)
     );
 }
 
@@ -463,7 +470,12 @@ fn blank_oversize_missing_and_mismatched_bodies_are_not_adopted() {
     ]);
     outcome.materials.get_mut("big").expect("big").output =
         Some(output_material("big", &"x".repeat(1_025)));
-    outcome.materials.remove("gone");
+    // The run read the attempt but could not pay for (or find) its bodies.
+    {
+        let gone = outcome.materials.get_mut("gone").expect("gone");
+        gone.human = None;
+        gone.output = None;
+    }
     outcome
         .materials
         .get_mut("origin")
@@ -523,6 +535,150 @@ fn blank_oversize_missing_and_mismatched_bodies_are_not_adopted() {
         adoption.messages().last().expect("output").body.len(),
         1_024
     );
+}
+
+#[test]
+fn a_turn_that_cannot_be_adopted_for_its_own_message_ends_the_window() {
+    // The same rule as a turn that does not fit the budget: nothing older is
+    // adopted, so the conversation has no hole in the middle.
+    for flaw in ["blank", "big", "gone", "origin"] {
+        let mut outcome = outcome_of(&[
+            spec("old1", 1_000, "H1", Some("M1")),
+            spec("old2", 2_000, "H2", Some("M2")),
+            spec("flawed", 3_000, "H3", Some("M3")),
+            spec("new1", 4_000, "H4", Some("M4")),
+        ]);
+        let material = outcome.materials.get_mut("flawed").expect("flawed");
+        match flaw {
+            "blank" => material.human.as_mut().expect("human").body = "  ".into(),
+            "big" => material.output.as_mut().expect("output").body = "x".repeat(1_025),
+            "gone" => material.output = None,
+            _ => material.human.as_mut().expect("human").origin = MessageOrigin::Generated,
+        }
+        let adoption = adopt(&outcome, "now", limits());
+        assert_eq!(
+            rendered(&adoption),
+            vec![user("H4"), assistant("M4")],
+            "{flaw}"
+        );
+        assert!(adoption.reason_for("flawed").is_some(), "{flaw}");
+        for older in ["old1", "old2"] {
+            assert_eq!(
+                adoption.reason_for(older),
+                Some(NotAdoptedReason::BeyondWindowEnd),
+                "{flaw} {older}"
+            );
+        }
+        assert_eq!(adoption.reason_for("new1"), None, "{flaw}");
+    }
+}
+
+#[test]
+fn a_flawed_turn_older_than_every_adopted_turn_costs_nothing() {
+    let mut outcome = outcome_of(&[
+        spec("flawed", 1_000, "H1", Some("M1")),
+        spec("new1", 2_000, "H2", Some("M2")),
+    ]);
+    outcome.materials.get_mut("flawed").expect("flawed").output = None;
+    let adoption = adopt(&outcome, "now", limits());
+    assert_eq!(rendered(&adoption), vec![user("H2"), assistant("M2")]);
+}
+
+#[test]
+fn a_turn_with_no_material_adopts_nothing() {
+    // The run always hands a qualified attempt's material on. When it did not,
+    // the turn's place is unknown and the window does not guess.
+    let mut outcome = outcome_of(&[
+        spec("old1", 1_000, "H1", Some("M1")),
+        spec("lost", 2_000, "H2", Some("M2")),
+    ]);
+    outcome.materials.remove("lost");
+    let adoption = adopt(&outcome, "now", limits());
+    assert!(adoption.turns.is_empty());
+    assert_eq!(
+        adoption.reason_for("lost"),
+        Some(NotAdoptedReason::BodyUnavailable)
+    );
+}
+
+/// The envelope tests size their windows with `adoptable_turn_count`; the
+/// product adopts with `adopt_history_turns`. Both are the same rule, and this
+/// is the one place that says so: for the same costs (the tokens not binding)
+/// they adopt the same number of the newest turns, including where the first
+/// misfit ends the window.
+#[test]
+fn the_envelope_window_rule_and_the_adoption_agree() {
+    let cost = |rows, bytes| ParentReadCost { rows, bytes };
+    let quarter = cost(CREATE_PARENT_READ_ROWS / 4, CREATE_PARENT_READ_BYTES / 4);
+    let small = cost(1, 1);
+    let none = ParentReadCost::default();
+    let huge = cost(CREATE_PARENT_READ_ROWS + 1, 1);
+    let heavy_bytes = cost(1, CREATE_PARENT_READ_BYTES + 1);
+    let scenarios: Vec<Vec<ParentReadCost>> = vec![
+        vec![],
+        vec![small],
+        vec![quarter; 4],
+        vec![quarter; 5],
+        vec![
+            quarter,
+            quarter,
+            quarter,
+            cost(quarter.rows + 1, quarter.bytes),
+        ],
+        vec![
+            quarter,
+            quarter,
+            quarter,
+            cost(quarter.rows, quarter.bytes + 1),
+        ],
+        vec![small, huge, small, small],
+        vec![huge, small],
+        vec![small, heavy_bytes, small],
+        vec![none, quarter, none, quarter, none],
+        vec![none, none, huge, none],
+        vec![small; HISTORY_MAX_TURNS],
+        vec![small; HISTORY_MAX_TURNS + 6],
+        vec![none; HISTORY_MAX_TURNS + 6],
+        vec![cost(usize::MAX, 0), small],
+    ];
+    for (index, costs) in scenarios.iter().enumerate() {
+        // Turn `i` of the outcome is `costs[i]` from the newest; the names are
+        // chosen so that the oldest sorts first.
+        let count = costs.len();
+        let names: Vec<String> = (0..count).map(|turn| format!("t{turn:02}")).collect();
+        let specs: Vec<Spec> = (0..count)
+            .map(|turn| {
+                let newest_rank = count - 1 - turn;
+                let name: &'static str = Box::leak(names[turn].clone().into_boxed_str());
+                // Distinct text, so the retry rule has nothing to drop.
+                let human: &'static str = Box::leak(format!("H{turn}").into_boxed_str());
+                let output = (costs[newest_rank] != none).then_some("M");
+                spec(name, 1_000 * (turn as i64 + 1), human, output)
+            })
+            .collect();
+        let outcome = outcome_of(&specs);
+        let by_attempt: BTreeMap<String, ParentReadCost> = (0..count)
+            .map(|turn| (names[turn].clone(), costs[count - 1 - turn]))
+            .collect();
+        let adoption = adopt_history_turns(
+            &HistoryAdoptionRequest {
+                outcome: &outcome,
+                current_human_body: "now",
+                current_scene_body_digest: CURRENT_DIGEST,
+                limits: AdoptionLimits {
+                    max_message_bytes: HISTORY_MAX_MESSAGE_BYTES,
+                    ..AdoptionLimits::production(usize::MAX, 4)
+                },
+            },
+            &mut |attempt: &str| Ok(by_attempt[attempt]),
+        )
+        .expect("adoption");
+        assert_eq!(
+            adoption.turns.len(),
+            adoptable_turn_count(costs),
+            "scenario {index}"
+        );
+    }
 }
 
 #[test]

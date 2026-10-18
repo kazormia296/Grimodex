@@ -117,7 +117,7 @@ impl NoHistory {
 /// A message the run read and authenticated for a qualified candidate: the
 /// message version and the body whose digest the reader verified. This is the
 /// reader's own value, handed on; nothing re-reads it (DI1B-2).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub(crate) struct HistoryMessageMaterial {
     pub version_id: OpaqueRef,
     pub origin: MessageOrigin,
@@ -125,6 +125,22 @@ pub(crate) struct HistoryMessageMaterial {
     /// The version's digest, equal to the digest of `body` as stored.
     pub body_digest: String,
     pub body: String,
+}
+
+/// The body is the user's past words or a model's reply: `{:?}` of an outcome
+/// (or of an error context that holds one) must not put it in a log. Only its
+/// length and its digest are shown.
+impl std::fmt::Debug for HistoryMessageMaterial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HistoryMessageMaterial")
+            .field("version_id", &self.version_id)
+            .field("origin", &self.origin)
+            .field("parent_attempt_id", &self.parent_attempt_id)
+            .field("body_digest", &self.body_digest)
+            .field("body_bytes", &self.body.len())
+            .finish_non_exhaustive()
+    }
 }
 
 /// What the run read of one attempt that has a qualified candidate, for the
