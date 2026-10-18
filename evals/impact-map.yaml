@@ -476,9 +476,14 @@ rules:
     suites:
       - nir1-entity-relation-review
   - id: d2a-profile-egress
-    reason: The D2a restricted-profile gate (route classes, the own-data-read opening, closed external-send paths, license-control, NIR publication admission, renderer isolation and state-file protection) must keep every external-send path closed and admit each publication class only under its confirmed conditions.
+    reason: The D2a restricted-profile gate (route classes, the own-data-read opening, closed external-send paths, license-control, NIR publication admission, renderer isolation and state-file protection) must keep every external-send path closed and admit each publication class only under its confirmed conditions. It also covers Main's one-time confirmation (MG-1) of the Scene body declaration and its evaluation-only CI seam.
     paths:
       - electron/main/d2a*.ts
+      - electron/main/bodyDeclaration.pipeline.spec.ts
+      - electron/main/bodyDeclarationCiSeam.ts
+      - electron/main/bodyDeclarationCiSeam.test.ts
+      - electron/main/mainGrant.ts
+      - electron/main/mainGrant.test.ts
       - electron/main/devRendererUrl*.ts
       - electron/main/downloadGuard*.ts
       - electron/main/externalMount.ts

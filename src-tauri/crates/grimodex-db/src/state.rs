@@ -249,6 +249,13 @@ impl ActiveWorkspaceSnapshot {
         &self._participant
     }
 
+    /// The exact Ready binding captured with this participant (`None` only on
+    /// the frozen legacy NoWorkspace compatibility path).
+    #[cfg_attr(not(feature = "native-current-human-capture"), allow(dead_code))]
+    pub(crate) fn live_binding(&self) -> Option<&crate::workspace_lifecycle::LiveBinding> {
+        self.binding.as_ref()
+    }
+
     pub(crate) fn check_current_binding(&self) -> anyhow::Result<()> {
         let binding = self
             .binding

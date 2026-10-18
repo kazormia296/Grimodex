@@ -833,6 +833,44 @@ export interface NapiBackendLike {
     payload: unknown,
     callerIdentity?: string,
   ): Promise<string>;
+  /**
+   * Scene body declaration (CB-2). A typed entry apart from the A1 save. It
+   * needs the one-time grant Main attaches as the trailing sidecar and stays
+   * closed by Native's pre-publication gate until PUB-G.
+   */
+  narrativeSceneBodyDeclarationDeclare?(
+    payload: unknown,
+    callerIdentity?: string,
+    grant?: string,
+  ): Promise<string>;
+  /** Revoke a body declaration. Needs no grant (K2-3). */
+  narrativeSceneBodyDeclarationRevoke?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  /**
+   * Main-only grant calls (MG-1). Deliberately absent from the renderer
+   * command map: only `electron/main/mainGrant.ts` calls them.
+   */
+  mainGrantPreview?(
+    kind: string,
+    requestJson: string,
+    senderId: number,
+    windowId: number,
+    callerIdentity?: string,
+  ): Promise<string>;
+  mainGrantIssue?(
+    previewId: string,
+    senderId: number,
+    windowId: number,
+  ): Promise<string>;
+  mainGrantRevoke?(id: string): void;
+  mainGrantRevokeSender?(senderId: number): void;
+  /**
+   * Main-only: opens one pre-publication entry for this process. Called once
+   * at startup, and only when the evaluation CI seam is active.
+   */
+  mainOpenPrePublicationGate?(kind: string): void;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
   /** Main observer only; never a renderer command. */
@@ -6978,6 +7016,112 @@ function callerIdentityWire(args: CommandArgs): string | undefined {
 }
 
 /**
+ * Key under which Electron main attaches the one-time grant (MG-1) to the
+ * dispatch args of the declaration entry: `{ grantId, senderId, windowId }`.
+ * A symbol, defined non-enumerable by `electron/main/mainGrant.ts` after the
+ * dialog was approved: structured-cloned renderer input cannot carry a symbol
+ * key, so a renderer can neither supply nor read it.
+ */
+export const MAIN_GRANT_SIDECAR = Symbol("grimodex.mainGrant.sidecar");
+
+function mainGrantSidecarWire(args: CommandArgs): string | undefined {
+  const value = (args as Record<symbol, unknown>)[MAIN_GRANT_SIDECAR];
+  if (value === undefined) return undefined;
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    JSON.stringify(Object.keys(value).sort()) !==
+      JSON.stringify(["grantId", "senderId", "windowId"])
+  ) {
+    throw new Error("invalid main grant sidecar");
+  }
+  const grant = value as Record<string, unknown>;
+  if (
+    typeof grant.grantId !== "string" ||
+    !Number.isSafeInteger(grant.senderId) ||
+    !Number.isSafeInteger(grant.windowId)
+  ) {
+    throw new Error("invalid main grant sidecar");
+  }
+  return JSON.stringify({
+    grantId: grant.grantId,
+    senderId: grant.senderId,
+    windowId: grant.windowId,
+  });
+}
+
+const BODY_DECLARATION_DECLARE_PAYLOAD_KEYS = [
+  "projectId",
+  "sceneId",
+  "requestId",
+  "expected",
+  "values",
+] as const;
+const BODY_DECLARATION_REVOKE_PAYLOAD_KEYS = [
+  "projectId",
+  "sceneId",
+  "requestId",
+  "declarationToken",
+] as const;
+
+/**
+ * Closed request of the two body declaration entries. The payload has no field
+ * for a declaration ID, a time, a digest, a grant, a sender or a window: any
+ * extra key is refused here, and Native refuses it again (`deny_unknown_fields`).
+ * The grant itself is never read from `args`; it travels in the symbol sidecar.
+ */
+function requireBodyDeclarationRequest(
+  args: CommandArgs,
+  command: string,
+): CommandArgs {
+  requireExactKeys(
+    args,
+    ["expectedWorkspacePath", "payload", "callerIdentity"],
+    command,
+  );
+  const payload = requireRecord(args, "payload", command);
+  const payloadKeys =
+    command === "narrative_scene_body_declaration_declare"
+      ? BODY_DECLARATION_DECLARE_PAYLOAD_KEYS
+      : BODY_DECLARATION_REVOKE_PAYLOAD_KEYS;
+  for (const key of Object.keys(payload)) {
+    if (!(payloadKeys as readonly string[]).includes(key)) {
+      throw new Error(
+        `invalid args \`payload.${key}\` for command \`${command}\`: unknown field`,
+      );
+    }
+  }
+  for (const key of payloadKeys) {
+    requirePresent(payload, key, command);
+  }
+  for (const key of ["projectId", "sceneId", "requestId"] as const) {
+    requireNonEmptyString(payload, key, command);
+  }
+  if (command === "narrative_scene_body_declaration_declare") {
+    const expected = requireRecord(payload, "expected", command);
+    for (const key of Object.keys(expected)) {
+      if (!["scopeVersion", "scopeToken", "declarationToken"].includes(key)) {
+        throw new Error(
+          `invalid args \`payload.expected.${key}\` for command \`${command}\`: unknown field`,
+        );
+      }
+    }
+    requireRecord(payload, "values", command);
+  } else {
+    requireNonEmptyString(payload, "declarationToken", command);
+  }
+  return {
+    expectedWorkspacePath: requireNonEmptyString(
+      args,
+      "expectedWorkspacePath",
+      command,
+    ),
+    payload,
+  };
+}
+
+/**
  * Call a `nir1-publication` / Scope Native entry with the Main-issued caller
  * identity as the trailing argument. Without an identity (a standalone caller
  * before D2a startup) the call keeps its original arity.
@@ -8394,6 +8538,43 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
             "narrativeSceneScopeUpdate",
           ),
           requireSceneScopeMutationRequest(a, "narrative_scene_scope_update"),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  narrative_scene_body_declaration_declare: {
+    run: async (b, a) => {
+      const call = requireNapiMethod(
+        b,
+        b.narrativeSceneBodyDeclarationDeclare,
+        "narrativeSceneBodyDeclarationDeclare",
+      );
+      const request = requireBodyDeclarationRequest(
+        a,
+        "narrative_scene_body_declaration_declare",
+      );
+      const callerIdentity = callerIdentityWire(a);
+      const grant = mainGrantSidecarWire(a);
+      return parseWire(
+        grant === undefined
+          ? await callPublicationEntry1(call, request, callerIdentity)
+          : await call(request, callerIdentity, grant),
+      );
+    },
+  },
+  narrative_scene_body_declaration_revoke: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.narrativeSceneBodyDeclarationRevoke,
+            "narrativeSceneBodyDeclarationRevoke",
+          ),
+          requireBodyDeclarationRequest(
+            a,
+            "narrative_scene_body_declaration_revoke",
+          ),
           callerIdentityWire(a),
         ),
       ),

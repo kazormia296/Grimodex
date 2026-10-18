@@ -62,9 +62,10 @@ enum Class {
     /// UPDATE of a binding row; the statement must write `version`.
     BindingAdvance,
     /// UPDATE of a binding row that writes only the two Scene body declaration
-    /// columns (to NULL). It deliberately does not advance the Scope generation:
-    /// `version`, `source_token`, `updated_at` and the A1 columns keep their
-    /// bytes, so a declaration never moves the v1 token (CB-1, K2/4).
+    /// columns (to NULL, or the declaration writer's one compare-and-set). It
+    /// deliberately does not advance the Scope generation: `version`,
+    /// `source_token`, `updated_at` and the A1 columns keep their bytes, so a
+    /// declaration never moves the v1 token (CB-1, K2/4).
     BindingDeclarationOnly,
     /// Explicit DELETE of a Scene's binding row next to the Scene row delete.
     BindingDelete,
@@ -373,6 +374,13 @@ const MANIFEST: &[ManifestRow] = &[
     (
         "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration.rs",
         "null_declaration_columns",
+        "UPDATE narrative_scene_scope_bindings",
+        1,
+        BindingDeclarationOnly,
+    ),
+    (
+        "src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/writer.rs",
+        "set_declaration_columns",
         "UPDATE narrative_scene_scope_bindings",
         1,
         BindingDeclarationOnly,

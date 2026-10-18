@@ -368,6 +368,12 @@ const INTERNAL_COMMANDS = new Set([
   "narrative_maintenance_attention_set",
   "narrative_runtime_policy_get",
   "narrative_runtime_policy_set",
+  // Scene body declaration (CB-2, K3/2 "宣言 UI"): internal. Native's entry
+  // checks the registered caller and workspace while restricted and only the
+  // workspace while unrestricted. The declaration needs Main's one-time
+  // grant (`GRANT_REQUIRED_COMMANDS`); the revoke entry needs none (K2-3).
+  "narrative_scene_body_declaration_declare",
+  "narrative_scene_body_declaration_revoke",
   "narrative_scene_scope_read",
   "narrative_scene_scope_registry_update",
   "narrative_scene_scope_update",

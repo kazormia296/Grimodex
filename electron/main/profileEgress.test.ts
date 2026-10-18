@@ -1287,6 +1287,36 @@ describe("D2a profile egress gate", () => {
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
+  it("classifies the two body declaration entries as internal (CB-2, K3/2 宣言 UI)", async () => {
+    const ledgers = d2aRouteLedgersForTest();
+    const entries = [
+      "narrative_scene_body_declaration_declare",
+      "narrative_scene_body_declaration_revoke",
+    ];
+    for (const command of entries) {
+      expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
+      expect(ledgers.internal, command).toContain(command);
+      for (const other of [
+        "denied",
+        "licenseControl",
+        "ownDataRead",
+        "nir1Publication",
+        "nir1RestrictedOnly",
+      ] as const) {
+        expect(ledgers[other], `${other} / ${command}`).not.toContain(command);
+      }
+    }
+    // Restricted: the gate itself passes both (Native checks the registered
+    // caller and workspace); an unrestricted gate checks the workspace only.
+    const gate = await createProfileEgressGate(backend());
+    const callerIdentity = gate.issueCallerIdentity(11);
+    for (const command of entries) {
+      expect(() =>
+        gate.assertInvoke(command, { callerIdentity }),
+      ).not.toThrow();
+    }
+  });
+
   it("keeps native-only saves and stop controls available", async () => {
     const gate = await createProfileEgressGate(backend());
     const callerIdentity = gate.issueCallerIdentity(11);

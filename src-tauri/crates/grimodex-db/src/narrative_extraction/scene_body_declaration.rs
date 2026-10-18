@@ -13,10 +13,16 @@
 //! - the pure binding-match function a reader uses to tell a declaration
 //!   whose Scene changed from one that still holds.
 //!
-//! Nothing here sets the columns outside tests: the declaration writer that
-//! consumes a Main confirmation is CB-2. The clear and the setter never write
-//! any other column of the row (`version`, `source_token`, `updated_at`, the
-//! A1 columns) or any other table except the feed, so the v1 Scene Scope
+//! Nothing in this file sets the columns. The one production statement that
+//! does is in the child module `writer` (CB-2): the declaration writer, which
+//! runs only after Main's confirmation was consumed and exists only in the
+//! Electron Native build (`native-current-human-capture`). The child modules
+//! `veto`, `display`, `facts`, `writer`, `revoke` and `commit_outcome` hold
+//! the preview, the shared veto, the confirmation text, the declaration and
+//! revoke writers and the handling of a COMMIT whose outcome is unknown. The
+//! clear, the setter and the revoke never write any other column of the row
+//! (`version`, `source_token`, `updated_at`, the A1 columns) or any other
+//! table except the feed and the idempotency ledger, so the v1 Scene Scope
 //! token and the project's Scope authority digest stay byte identical.
 
 use anyhow::Result;
@@ -552,9 +558,76 @@ pub(crate) fn is_scene_body_declaration_event(object_key: &Value) -> bool {
     object_key.get("kind").and_then(Value::as_str) == Some(SCENE_BODY_DECLARATION_OBJECT_KIND)
 }
 
+mod binding;
+mod display;
+mod limits;
+mod veto;
+
+pub use binding::{
+    declaration_values_digest, BodyDeclarationBinding, ConsumedBodyDeclarationBinding,
+    DeclareRefusal, DeclareRequest, DeclareResponse, ExpectedDeclarationOcc, RevokeRequest,
+    RevokeResponse, StateComponent, MAX_DECLARATION_REQUEST_ID_BYTES,
+};
+pub use display::{
+    build_body_declaration_display, sanitize_display_title, scene_body_title_digest,
+    BodyDeclarationDisplay, DisplayTitle, DISPLAY_TITLE_MAX_SCALARS,
+};
+pub use limits::{
+    SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES, SCENE_BODY_TITLE_MAX_BYTES,
+    SCENE_BODY_VETO_MAX_ROWS, VETO_CONTENT_LIMIT_MARKER, VETO_ROW_LIMIT_MARKER,
+};
+pub use veto::{scene_body_declaration_veto, BodyDeclarationVeto, VetoLimits};
+
+// The writers need the bounded Scene reader, which exists only in the Electron
+// Native build (`native-current-human-capture`). grimodex-mcp never enables
+// it, so no MCP tool and no generic path can reach a declaration writer.
+#[cfg(feature = "native-current-human-capture")]
+mod commit_outcome;
+#[cfg(feature = "native-current-human-capture")]
+mod facts;
+#[cfg(feature = "native-current-human-capture")]
+mod revoke;
+#[cfg(feature = "native-current-human-capture")]
+mod writer;
+
+#[cfg(all(
+    feature = "native-current-human-capture",
+    any(test, feature = "workspace-maintenance-test-support")
+))]
+pub use commit_outcome::{
+    clear_scene_body_declaration_quarantine_for_test,
+    clear_scene_body_declaration_workspace_quarantine_for_test,
+    quarantine_scene_body_declaration_workspace_for_test,
+};
+#[cfg(feature = "native-current-human-capture")]
+pub use commit_outcome::{
+    is_scene_body_declaration_quarantined, is_workspace_scene_body_declaration_quarantined,
+    DeclarationTerminalEvidence, TerminalKind,
+};
+#[cfg(feature = "native-current-human-capture")]
+pub use facts::{preview_scene_body_declaration, BodyDeclarationPreview};
+#[cfg(feature = "native-current-human-capture")]
+pub use revoke::{revoke_scene_body, RevokeOutcome};
+#[cfg(feature = "native-current-human-capture")]
+pub use writer::{declare_scene_body, DeclareFailure, DeclareOutcome};
+
+#[cfg(test)]
+mod commit_outcome_tests;
+#[cfg(test)]
+mod display_tests;
+#[cfg(test)]
+mod invalidation_tests;
+#[cfg(test)]
+mod lifecycle_tests;
+#[cfg(test)]
+mod locator_tests;
 #[cfg(test)]
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
-mod invalidation_tests;
+mod veto_tests;
+#[cfg(test)]
+mod writer_support_tests;
+#[cfg(test)]
+mod writer_tests;

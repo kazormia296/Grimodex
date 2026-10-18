@@ -31,8 +31,33 @@ export declare class Backend {
   /**
    * Main-only invalidation when the trusted workspace binding changes.
    * Renderer-provided identities cannot clear or retain Native registrations.
+   * A change of the D2a caller epoch also revokes any pending Main grant.
    */
   invalidateProfileEgressCallers(): void
+  /**
+   * Reads the Scene and stores a preview in the process-wide grant slot.
+   * Returns `{ previewId, display, expiresInMs }`. A closed pre-publication
+   * gate refuses before the database is read.
+   */
+  mainGrantPreview(kind: string, requestJson: string, senderId: number, windowId: number, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * Turns an approved preview into a grant (`{ grantId }`), after reading the
+   * Scene again.
+   */
+  mainGrantIssue(previewId: string, senderId: number, windowId: number): Promise<string>
+  /**
+   * Revokes the grant named by a previewId or a grantId. An unknown or ended
+   * id is not an error.
+   */
+  mainGrantRevoke(id: string): void
+  /** Revokes the grant bound to a sender (destroyed, navigated, crashed). */
+  mainGrantRevokeSender(senderId: number): void
+  /**
+   * Opens one pre-publication entry for the life of this process. Main calls
+   * it once at startup, and only when the evaluation CI seam is active. It
+   * is not persisted and there is no call that closes it.
+   */
+  mainOpenPrePublicationGate(kind: string): void
   /**
    * Main-process-only bridge used during the Electron v2 first-run
    * credential migration. This method is deliberately absent from
@@ -671,6 +696,18 @@ export declare class Backend {
    * existing Change Feed/invalidation writer.
    */
   narrativeSceneScopeUpdate(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * Declare a Scene's whole body (title included) as disclosed (CB-2, K2/4).
+   * A typed entry apart from the A1 save. It needs the one-time grant Main
+   * attached as the trailing sidecar and is closed by the pre-publication
+   * gate until PUB-G; the grant is consumed before the writer's transaction.
+   */
+  narrativeSceneBodyDeclarationDeclare(payload: any, callerIdentity?: string | undefined | null, grant?: string | undefined | null): Promise<string>
+  /**
+   * Revoke a Scene's body declaration. It needs no grant (K2-3) and is
+   * closed by the same gate.
+   */
+  narrativeSceneBodyDeclarationRevoke(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
    * Atomically update the project Scope vocabulary registry. Scene bindings
    * are revalidated against the new registry inside the same transaction.

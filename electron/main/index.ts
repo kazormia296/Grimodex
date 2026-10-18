@@ -31,7 +31,12 @@ import { shouldRegisterAppProtocol } from "./devRendererUrl.js";
 import { installProductDownloadGuard } from "./downloadGuardElectron.js";
 import { createExternalMountManager } from "./externalMount.js";
 import { registerImeShutdown } from "./imeShutdown.js";
+import {
+  parseBodyDeclarationCiSeam,
+  startBodyDeclarationCiSeam,
+} from "./bodyDeclarationCiSeam.js";
 import { registerIpcRouter } from "./ipc.js";
+import { createMainGrantController } from "./mainGrant.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import {
   createLicenseValidationScheduler,
@@ -684,6 +689,22 @@ if (!gotSingleInstanceLock) {
       ...mozkeyInstaller.handlers,
       ...mcpConfigHandlers,
     };
+    // MG-1: Main's one-time confirmation. The pre-publication gate is closed
+    // in every launch except an unpackaged `CI=true` evaluation launch that
+    // carries the public owner token and a per-launch nonce; only that seam
+    // opens it (once, here) and replaces the dialog's display and press.
+    const bodyDeclarationCiSeam = await startBodyDeclarationCiSeam({
+      seam: parseBodyDeclarationCiSeam(process.env, {
+        isPackaged: app.isPackaged,
+      }),
+      backend,
+      isPackaged: app.isPackaged,
+      userDataDir: configuredUserDataDir,
+    });
+    const mainGrant = createMainGrantController({
+      backend,
+      confirm: bodyDeclarationCiSeam?.confirm,
+    });
     const codexOwnerLifecycleBound = new Set<number>();
     registerIpcRouter(
       backend,
@@ -710,6 +731,7 @@ if (!gotSingleInstanceLock) {
       licenseValidation,
       narrativeMaintenance ?? undefined,
       narrativeFreshness,
+      mainGrant,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には
