@@ -174,6 +174,10 @@ pub(super) struct CaseWorkspace {
     runtime: Option<tokio::runtime::Runtime>,
     writer_session: String,
     request_counter: usize,
+    /// The caller registered when the profile is restricted. A restricted
+    /// profile admits the Scope entries only for it (DA-1), so the setup
+    /// calls made after restriction carry it.
+    caller: Option<CallerIdentity>,
 }
 
 impl Drop for CaseWorkspace {
@@ -242,6 +246,7 @@ impl CaseWorkspace {
             runtime: Some(runtime),
             writer_session: format!("nir1-final-request-eval-writer-{}", uuid::Uuid::new_v4()),
             request_counter: 0,
+            caller: None,
         })
     }
 
@@ -250,6 +255,22 @@ impl CaseWorkspace {
             .as_ref()
             .expect("the runtime lives as long as the workspace")
             .block_on(future)
+    }
+
+    /// The wire form of the registered caller (the shape main sends), or
+    /// `None` while the profile is unrestricted.
+    fn caller_wire(&self) -> Option<String> {
+        self.caller.as_ref().map(|caller| {
+            json!({
+                "profileId": caller.profile_id,
+                "callerId": caller.caller_id,
+                "callerEpoch": caller.caller_epoch,
+                "senderId": caller.sender_id,
+                "workspaceId": caller.workspace_id,
+                "sessionId": caller.session_id,
+            })
+            .to_string()
+        })
     }
 
     fn next_request_id(&mut self, label: &str) -> String {
@@ -431,7 +452,7 @@ impl CaseWorkspace {
             "sceneId": scene_id,
         });
         let raw = self
-            .block_on(self.backend.narrative_scene_scope_read(payload))
+            .block_on(self.backend.narrative_scene_scope_read(payload, self.caller_wire()))
             .map_err(|error| anyhow!("narrative_scene_scope_read failed: {error}"))?;
         Ok(serde_json::from_str(&raw)?)
     }
@@ -476,7 +497,7 @@ impl CaseWorkspace {
             }
         });
         let _scope = self.audit.enter("narrative_scene_scope_registry_update");
-        self.block_on(self.backend.narrative_scene_scope_registry_update(payload))
+        self.block_on(self.backend.narrative_scene_scope_registry_update(payload, self.caller_wire()))
             .map_err(|error| anyhow!("narrative_scene_scope_registry_update failed: {error}"))?;
         Ok(())
     }
@@ -522,7 +543,7 @@ impl CaseWorkspace {
             }
         });
         let _scope = self.audit.enter("narrative_scene_scope_update");
-        self.block_on(self.backend.narrative_scene_scope_update(payload))
+        self.block_on(self.backend.narrative_scene_scope_update(payload, self.caller_wire()))
             .map_err(|error| anyhow!("narrative_scene_scope_update failed: {error}"))?;
         Ok(())
     }
@@ -765,6 +786,7 @@ impl CaseWorkspace {
             Value::Array(statement.params.clone()),
             statement.method.clone(),
             None,
+            None,
         ))
         .map_err(|error| anyhow!("db_execute (createSession) failed: {error}"))?;
         Ok((statement.session_id, statement.matches_renderer))
@@ -790,6 +812,7 @@ impl CaseWorkspace {
             session_id: "nir1-final-request-eval-caller-session".into(),
         };
         self.state.profile_egress.register_caller(&caller)?;
+        self.caller = Some(caller.clone());
         Ok(caller)
     }
 
