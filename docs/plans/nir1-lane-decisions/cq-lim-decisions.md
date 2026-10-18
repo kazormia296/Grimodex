@@ -17,6 +17,7 @@ CQ-LIM-1（query の上限の分離と値の変更）の記録を最初に書い
 | DR-CQL-5 | 2026-10-18 | CQ-LIM-3 | RB-1（P7-3）: typed Revision の writer（`nir1_entity_relation.rs` の `create_in_tx`）に、保存する `payload_json` と `reconciliation_envelope_json` をそれぞれ 6,291,456 B（`MAX_GRAPH_INPUT_BYTES`）と比べる検査を足す。検査は DB への最初の INSERT より前（payload は envelope の構築より前、envelope は構築の直後）で、超えたら保存せず typed エラーで拒否する。理由の名前は `NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT` と `NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT`（既存の `NIR1_ENTITY_RELATION_INPUT_INVALID` と同じ「大文字の code + 説明」の形。限界の値と実際の長さを説明に含める）。数値は変えない（counted の 512 records／6,291,456 B の検査は `validate_entity_relation_bundle` に残る）。保存済みのデータと reader は変えない。検査は書込みの前なので、部分的な書込みは残らず、接続は呼出しの前後で autocommit のまま。envelope は同じ counted でも payload の約 2 倍になる形（Evidence の `evidence_id` の padding）があるため、その形では counted 約 3 MiB 超で拒否される。payload だけが超える形（Entity の `label` の padding。envelope に入らない）で payload の検査を独立に確かめる | 保存範囲は狭まる（緩和ではない）。schema・IPC・N-API の入口・受信先は変えない。保存済みの Revision と B-GUARD の成分 guard の扱いは変えない | counted だけを残す（B の成分 guard が保存後に project 全体を止める。台帳 §7.1 の食い違い）、envelope を payload から計算した推定値で比べる（実際の保存 bytes と合わない）、保存後に検査して rollback する（INSERT の費用が無駄になる） | 不要（台帳 §7.1 の選択肢 1-B。ユーザーは Session B2 で proposal/7 の推奨の組を確認済み） | 該当なし | 不要（新しい終端なし。同期の拒否で、非同期・外部送信・subprocess を含まない） | 記録済み（実装済み） |
 | DR-CQL-6 | 2026-10-18 | CQ-LIM-3 | 台帳・品質試験の同期の方針: `docs/plans/nir1-l6-l9-execution-plan.md` の proposal/6 の節と `scripts/quality/quality-workflow.test.mjs` の proposal/6 の節を読む assert は履歴を確かめるので残し、proposal/7 の値（records 2,048、pages 128、steps 600,000、Entity 50、edge 512、Q 16 MiB、Native 3 MiB、writer の保存形の検査）を確かめる assert を別に足す。台帳（`nir1-c-query-acceptance-2026-10.md`）は、proposal/6 の時点の記述を履歴として残し、「proposal/7 の後（CQ-LIM）」の節を足して RB-1、RB-2、G-1、G-2 の判定を更新する。G-2 の [precheck] は、CQ-LIM-2 の実 worker の試験が通った事実（下の「CQ-LIM-3 の結果」）に基づいて解除する。G-1 の [precheck] は、writer の検査（1-B）と文言の更新（1-D）を実施したことで、B の上限近傍の publish の食い違いを契約の文言どおりに閉じる | 値は draft で確認済み。新しい数値なし | proposal/6 の節の書き換え（履歴が消える）、未実行の試験を根拠に precheck を解除する | 不要 | 該当なし | 不要 | 記録済み（実装済み） |
 | DR-CQL-7 | 2026-10-18 | CQ-LIM-4（候補まで。freeze と独立レビューは integrator） | G-03 の frontier-exceeded を発見 54 件（上限 50 + 4。旧 16＝12+4 と同じ流儀）に作り直し、base と `schema.v1.json` の `limit` を 50、`contract.mjs` の `maxDiscoveredEntities` を 50、`maxQualifiedEdgeExpansions` を 512 にした。数え方: 発見数は seed を除いた Entity の数（`hop.size - 1`。validator の既存の定義のまま）。54＝Wren の knows 52 件＋Ivy＋Hollis で、seed を含めると 55。どちらも 50 を超える。edge 展開は 54（Wren→52、Wren→Ivy、Ivy→Hollis）で 512 の内なので、unavailable の原因は Entity の上限だけ。fixture は `g03-n15`〜`g03-n52` と `g03-knows-15`〜`g03-knows-52` を足し（Entity の label は既存の A〜N の名前に続く固有の名前。本文・query の語と重ならないことを validator が検査する）、`g03-r-frontier` の Entity 53 件・Relation 52 件（計 105 records、Revision の 512 の内）と base の excludedEdges／excludedEntities（reason `no-revision`）を同じ流儀で広げた。validator の仕様は変えていない（定数と `limit` の値、コメント、メッセージの数字だけ）。判定の規則（超えたら Graph 全体 unavailable、部分 Graph なし）、他の variant の期待値、他の fixture は変えていない。`expansions > 100` の「available variant は edge 展開を上限よりずっと下に保つ」検査は、閾値 100 を変えない（上限が 144 から 512 に上がったので、検査は厳しいままで緩和ではない。メッセージの数字だけ 512 にした）。作り直した variant は unavailable を期待する variant なので、K6/2 の窓外率の pool に入らない（draft「影響」）。**Graph の runtime 出力は読まずに作り直した**（期待値は規則と draft の値から導き、観測に合わせて直していない。`graphRuntimeObservedBeforeFreeze` は false のまま）。| 値は draft（proposal/7）で確認済み。新しい数値の根拠: 54＝50+4（draft の流儀）、52＝54−2（Ivy と Hollis）。保存範囲・schema の構造・IPC・N-API の入口・受信先は変えない（`limit` の const の値だけ） | 発見数を 51 にして seed 込みの数え方で境界に寄せる（4 の余裕が無く、旧 fixture の流儀と合わない）、`expansions > 100` を 360 などに比例して緩める（確認済みの検査を緩める） | 不要（値は確認済み。作り直しは委任の内） | 該当なし | 不要（fixture と validator の値の変更だけで、新しい終端なし） | 記録済み（候補まで。freeze は独立レビューの後に integrator） |
+| DR-CQL-12 | 2026-10-18 | CQ-LIM（X1-3 の後の再測。integrator） | proposal/7 の「受入れ」の再測を、X1-3（#674）の入った CQ-LIM の HEAD（`65ceb4f6` に結合の修正 `0ceb9b21` の内容を足したもの）で、harness の手順（`measure-instrumentation.patch` を載せ直し、定数は HEAD のまま）で行った。5 条件の判定: records・steps・Entity・edge・pages の余裕はどれも 1.5 倍以上（最小は大 cast 12+80 の records 1,339 に対する 1.53 倍）、50 場面の全 seed が available（in-process と worker 経路）、frame は上限の最大 82.8%（85% 以下）、RB-1 の閾値は試験形で counted 3,049,917 B まで保存（約 3.05 MB）、製品形で約 6.15 MB（どちらも確認時の説明のまま）。**registration の使用量が Q の 85% を超える条件に当たった**: payload 形（R2-5 の形）の registration の使用量が X1-3 の前の約 1.7 倍になり、A2 1,584,267 B で Q の 93.0%、A2 1,734,267 B 以上（preflight 2,097,152 B と registration の検査の内）で `NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX` の exit 1 になる（X1-3 の前の R2-5 では A2 2,034,294 B で Q の 71%）。よって lane は **[precheck]** で止まり、直さずに新しい draftRef（proposal/8）を求める。詳細は下の「X1-3 の後の再測（DR-CQL-12）」 | 確認済みの値・閾値は変えていない。計測は scratch の複製で行い、製品コードの挙動を変える差分は無い（期限 10 s の build は計測用で、製品の 100 ms は変えない） | 閾値を緩める、registration の検査の値（2,097,152 B）を下げる、payload 形の試験を外す（どれも確認の範囲外） | 要（proposal/8。下の「proposal/8 への論点」） | 該当なし | 変更なし | **[precheck] で停止**（merge しない） |
 
 ## MAX_GRAPH_RECORDS の使用箇所の分類（DR-CQL-1）
 
@@ -283,3 +284,144 @@ writer が保存する payload と envelope を各 6,291,456 B で検査する�
 1. 独立 reviewer（`claude-fable-5-1`、effort high、read-only、builder とは別 instance、Graph の runtime 出力を読まない、候補を編集しない）に G-02〜G-08 の期待値を再導出させる。変更が及ぶのは G-03 の fixture、`schema.v1.json`、`README.md`、`contract.mjs` で、G-02、G-04〜G-08 の fixture の bytes は変えていない。
 2. approve（P2 以上が 0）の後に、round 3 以降の記録（`final.filesAtReview` の全 bound file の sha、`requiredChanges: []`、`supersededFreezeSha256` ＝ `45d8a055f09176852e1b449111216293b7768ac505c5592e74fca4f2818c9bfc`）、receipt、`freeze.v1.json`（`frozenAt`、`manifestSha256`、`schemaSha256`、`readmeSha256`、`cases[].sha256`）、`manifest.v1.json` の `independentExpectationReview` を書く。validator（`validateFreeze`／`validateApprovingReview`）の仕様は変えていないので、レビューに見せる validator の差分は上の数字の変更だけ。
 3. 新しい `freeze.v1.json` の sha256 を PR 本文と K2/4 addendum 用に記録する（この commit では未確定）。
+
+## X1-3 の後の再測（DR-CQL-12。2026-10-18）
+
+proposal/7 の「受入れ」の再測（表 A、表 C〔R2-3、R2-5〕、RB-1 の閾値）。**結果: registration の使用量の条件に当たり、[precheck] で停止。** 他の 4 条件は満たす。
+
+### 条件
+
+- 候補: branch `claude/nir1-cq-lim` の `65ceb4f6`（origin/master `50a40557`〔X1-3 #674〕に rebase 済みの CQ-LIM-1〜4）に、結合の修正 `0ceb9b21`（試験だけ）と同じ内容を足した複製。定数は HEAD のまま（query の records 2,048、pages 128、steps 600,000、Entity 50、edge 512、Q 16,777,216 B、Native 3,145,728 B、`FRAME_BYTES` 3,129,112 B、peak と入力 6,291,456 B）。
+- harness: `proposal7-measurement/harness/measure-instrumentation.patch`（SHA256SUMS で検査済み）を載せ直した。CQ-LIM-2 が `cq_avail.rs` に入れた `NovelShape` と同じ規則の cast と summary なので、`P7_CAST`／`P7_SUMMARY_CHARS` は `NovelShape` に写した（fixture の形は同じ）。worker の Q と Native の既定値は HEAD の値にした。RB-1 の測定 test（`p7_rb1_test_shape`、`p7_rb1_product_shape`）を足した。製品コードの挙動は変えない。
+- build: worker（本番の期限 100 ms）、worker と test（期限 10 s。harness の `build-w10s.sh` と同じく `QUERY_DEADLINE` だけを sed）。release。
+- 1 台の Linux 機（共有。nproc 12）。1 分負荷平均は run の前 11.02、後 5.68（他の lane の build と重なる窓）。時間は pass／fail に使っていない（期限 10 s）。
+- 生データ: `/tmp/claude-1000/-home-grimodex-Grimodex/fa34d6ef-ff00-4f4d-846d-7ccee58abf30/scratchpad/cqlim-remeasure/raw/`（`SHA256SUMS` の SHA-256 は `c09b226c6553a332fc6c07b489889683211114ddba984b40682844066bac575b`。計測差分 `remeasure-instrumentation.patch`、`build.sh`、`run.sh`、集計 `tables.py`／`tables.md` を含む）。scratch なので repo には入れていない。
+
+### 表 A（必要量と余裕。in-process、期限 10 s）
+
+| 形 | 場面数 | seed（available／全） | 最大 records | 最大 steps | 最大 Entity | 最大 edge | 最大 pages | 最大 peak B |
+|---|---|---|---|---|---|---|---|---|
+| 既定 cast 5+15 | 20 | 6/6 | 415 | 95,749 | 11 | 40 | 18 | 1,196,684 |
+| 既定 cast 5+15 | 30 | 6/6 | 596 | 140,275 | 13 | 59 | 21 | 1,575,485 |
+| 既定 cast 5+15 | 50 | 6/6 | 967 | 233,022 | 13 | 99 | 24 | 2,191,161 |
+| 既定 cast 5+15 | 100 | 6/6 | 1,879 | 459,181 | 13 | 198 | 30 | 3,692,365 |
+| cast 8+40 | 50 | 48/48 | 1,259 | 294,292 | 22 | 108 | 35 | 2,989,943 |
+| cast 8+40 | 100 | 39/48 | 2,454 | 492,678 | 22 | 214 | 13 | 2,853,021 |
+| cast 12+80 | 50 | 92/92 | 1,339 | 306,879 | 23 | 97 | 38 | 3,135,662 |
+| cast 12+80 | 100 | 81/92 | 2,663 | 468,770 | 25 | 190 | 15 | 3,084,471 |
+| summary 600 字、5+15 | 100 | 6/6 | 1,879 | 459,181 | 13 | 198 | 30 | 5,841,028 |
+| summary 2000 字、5+15 | 50 | 6/6 | 967 | 233,022 | 13 | 99 | 24 | 5,859,892 |
+| summary 2000 字、5+15 | 100 | 1/6 | 1,879 | — | 13 | 198 | — | —（m1〜m4、c01 は work-other。peak の台帳） |
+
+records・steps・Entity・edge は replay の必要量（上限なし）、pages と peak は production の query の値。100 場面の大 cast の unavailable は records（2,048）と開示の records で、確認時（R2-1）と同じ。X1-3 の前の値（R2-1、表 2）との差: records、Entity、edge、pages は全行で同じ。steps は大 cast で少し減った（8+40: 297,197→294,292、12+80: 310,952→306,879）。A2 の合計は 50 場面の既定 cast で 793,621→792,352 B。
+
+余裕（上限÷必要量。判定は 50 場面の既定 cast と大 cast。100 場面は確認時に 1.5 倍を割っていた値で、参考）:
+
+| 値 | 上限 | 50 場面 既定 | 50 場面 大 cast | 判定 | 参考: 100 場面 |
+|---|---|---|---|---|---|
+| records | 2,048 | 967 → 2.12× | 1,339 → **1.53×** | 1.5 倍以上 | 1,879 → 1.09×（確認時と同じ） |
+| steps | 600,000 | 233,022 → 2.57× | 306,879 → 1.96× | 1.5 倍以上 | 459,181 → 1.31× |
+| Entity | 50 | 13 → 3.85× | 23 → 2.17× | 1.5 倍以上 | 25 → 2.00× |
+| edge | 512 | 99 → 5.17× | 108 → 4.74× | 1.5 倍以上 | 214 → 2.39× |
+| pages | 128 | 24 → 5.33× | 38 → 3.37× | 1.5 倍以上 | 30 → 4.27× |
+
+### 50 場面の seed（worker 経路。Q 16 MiB、Native 3 MiB、期限 10 s の worker。各 2 回）
+
+| 形 | seed | 結果 | registration の使用量 | frame の最大 |
+|---|---|---|---|---|
+| 既定 5+15 | m1〜m5、c01 | 全て available、exit 0 | 1,399,434 B（Q の 8.3%） | 225,760 B |
+| 既定 5+15、100 場面 | m1〜m5、c01 | 全て available | 1,725,233 B | 446,545 B |
+| 2000 字 | m1〜m5、c01 | 全て available | 1,583,883 B（9.4%） | 1,481,356 B（frame 上限の 47.3%） |
+| 8+40 | m1、m2、m3、m5、c01 | 全て available | 1,574,464 B | 247,915 B |
+| 12+80 | m1、m2、m5、c01 | 全て available | 1,631,023 B（9.7%） | 224,163 B |
+
+in-process でも 50 場面の全 seed（6、48、92）が available。query の Q の使用量の最大は 3,040,915 B（2000 字、Q の 18%）。
+
+### 表 C（worker のメモリ。本番の worker〔期限 100 ms〕、Revision 1 件）
+
+| 形 | A2 bytes | 結果 | registration の使用量（Q 比） | X1-3 の前（R2-3／R2-5、Q 16 MiB＋Native 3 MiB） | frame（上限比） |
+|---|---|---|---|---|---|
+| 製品形 p:300000 | 948,662 | available | 4,216,912 B（25.1%） | 3,837,670 B | 875,584 B |
+| 製品形 p:520000 | 1,608,770 | available | 6,399,098 B（38.1%） | 5,781,043 B | 1,499,008 B |
+| 製品形 p:682000（上限近傍） | 2,094,770 | available | 8,002,330 B（47.7%） | 7,208,463 B（43%） | 1,958,008 B（62.6%） |
+| payload 形 w:100000 | 534,267 | available | 5,069,520 B（30.2%） | 3,342,261 B | 3,294 B |
+| payload 形 w:200000 | 834,267 | available | 8,080,104 B（48.2%） | 5,052,645 B | 3,294 B |
+| payload 形 w:400000 | 1,434,267 | available | 14,096,880 B（**84.0%**） | 8,469,205 B（50.5%） | 3,294 B |
+| payload 形 w:450000 | 1,584,267 | available | 15,600,144 B（**93.0%**） | 未測定 | 3,294 B |
+| payload 形 w:500000 | 1,734,267 | **READY の前に `NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX` で exit 1**（請求 529,214 B、空き 530,880 B。断片化） | high water 16,041,954 B（95.6%） | 未測定 | — |
+| payload 形 w:550000 | 1,884,267 | 同じ NOMEM | high water 16,286,542 B | 未測定 | — |
+| payload 形 w:600000（preflight の内、R2-5 の上限側） | 2,034,267 | **同じ NOMEM**（2 回とも。請求 630,232 B、空き 242,848 B。枯渇） | high water 16,331,348 B（97.3%） | 11,885,581 B（70.8%）で READY | — |
+| payload 形 w:690000／700,000 | A2 超（preflight 超） | READY の前に `NIR1_C_QUERY_STARTUP_REGISTRATION_REVISION_INPUT_LIMIT` で exit 1（CQ-LIM-2 の検査どおり） | — | NOMEM の帯域 | — |
+
+- payload 形の registration の増幅（A2 の 1 B あたりの使用量の増分）は、w:100000→400000 で約 10.0 B（X1-3 の前は約 5.7 B）。製品形は 25〜48% で余裕がある。
+- 原因（コードからの推定。実行で分離はしていない）: X1-3 は registration が呼ぶ `read_revision_input_stats`（draft が「NOMEM を起こす読取の関数」に挙げた関数）に、payload の `$.entities` を `json_each` で走り、各 Entity の `$.scope.reading` を `json_extract` する項を足した（DR-X1-3-9 の (3)。distinct な anchor の数）。payload 形は Entity の Evidence 識別子が数百 KB あり、`json_each` が Entity の値を中間 buffer に作るので、使用量が A2 にほぼ比例して増えたとみられる。
+- 帰結: CQ-LIM-2 の registration の検査（承認済み Revision の A2 が 2,097,152 B を超えたら NOMEM の前に typed に止める）は、payload 形の A2 約 1.6〜1.7 MB から 2,097,152 B の帯域では NOMEM を防げなくなった（NOMEM は exit 1 の typed な終了で、signal ではない。fail-safe の性質は保たれるが、確認時の「payload 形の上限で Q の 73%（推定）」「preflight の内の payload 形は Q 16 MiB で READY」の説明と合わない）。lifecycle の実 worker の試験 `native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit`（B2）と `native_worker_registers_multiple_payload_shaped_revisions`（B4）がこの NOMEM で落ちる（下の「結合の確認」）。
+
+製品形で Revision が複数ある project（R2-4。同じ Entity 12 件を場面ごとに review）:
+
+| Revision 数×case | 結果 | registration の使用量 | frame（上限比） | X1-3 の前（R2-4） |
+|---|---|---|---|---|
+| 1×p:300000 | available | 4,216,912 B | 875,584 B | — |
+| 2×p:300000 | available | 4,217,088 B | 1,447,512 B（46.3%） | available、875,584 B |
+| 3×p:300000 | available | 4,217,124 B | 2,019,440 B（64.5%） | — |
+| 4×p:300000 | available | 4,217,260 B | **2,591,368 B（82.8%）** | available、875,584 B |
+| 5×、6×p:300000 | 全体 unavailable（`query-worker-work-other-pre-cleanup-work-failed-other`）、exit 0 | 4,217,296 B | 98 B | 未測定 |
+| 3×、4×p:520000、2×、3×p:682000 | 全体 unavailable（同じ理由）、exit 0 | 6,399,310〜8,002,542 B | 98 B | 3×p:520000 と 2×p:682000 は available |
+
+- X1-3 の前は、場面ごとの Scope の編集が project の token を進め、前の Revision が A3 で落ちていた（frame が 1 件分の 875,584 B のまま）。X1-3 の後は anchor ごとの投影なので全 Revision が残り、frame と query の入力が Revision 数に比例して増える。4 件で frame の上限の 82.8%（85% 以下）。5 件以上と、A2 の大きい 2〜3 件は、frame の上限より先に query が work-other で全体を拒否した（入力 bytes か peak の台帳とみられる。分類は未特定）。frame 超過による worker の終了は観測していない。
+
+### RB-1 の閾値（writer の検査と persisted の検査）
+
+| 形 | counted | writer | 保存した payload／envelope | B（persisted の成分 guard と whole-set） |
+|---|---|---|---|---|
+| 試験形（507 Evidence、参照されない識別子を伸ばす） | 2,621,440 | 保存 | 2,658,919／5,434,501 | publish |
+| 試験形 | 3,000,000 | 保存 | 3,037,479／6,191,621 | publish |
+| 試験形 | **3,049,917** | 保存 | 3,087,396／6,291,455 | publish |
+| 試験形 | **3,049,918** | `NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT`（envelope 6,291,457 B） | — | — |
+| 試験形 | 3,145,728 | 同じ拒否（envelope 6,483,077 B） | — | — |
+| 製品形（Codex review の prepare、Entity 255、Relation 0） | 4,057,388 | 保存 | 4,142,566／4,195,149 | publish |
+| 製品形 | 5,057,243 | 保存 | 5,142,421／5,195,004 | publish |
+| 製品形 | 5,857,433〜6,147,368 | 保存 | 〜6,232,546／〜6,285,129 | whole-set（`input-bytes exceeds 16777216`）で拒否（確認前からの挙動。台帳 §7.1 の 5.4〜5.8 MB） |
+| 製品形 | 約 6,157,000 | `NIR1_ENTITY_RELATION_STORED_ENVELOPE_LIMIT`（envelope 6,295,074 B） | — | — |
+| 製品形 | 約 6,257,000 | `NIR1_ENTITY_RELATION_STORED_PAYLOAD_LIMIT`（payload 6,342,706 B） | — | — |
+
+- 試験形: envelope＝2×counted＋191,621 B（X1-3 の前の台帳 §7.1 の点からは＋191,638 B）。保存できる counted は 3,049,917 B まで（前は約 3,049,909 B）。**約 3.05 MB 超で拒否のまま**。
+- 製品形: payload＝counted＋85,178 B、envelope＝counted＋137,761 B（envelope／counted は 6 MB 付近で約 1.022）。envelope が先に当たり、保存できる counted は約 6,153,695 B まで（線形の計算。6,147,368 B は保存、約 6,157,000 B は拒否で実測）。**約 6.15 MB 超で拒否のまま**（確認前の測定では payload が先に当たっていたが、境界の値は同じ）。
+- persisted の検査: B の成分 guard は writer と同じ `octet_length` を 6,291,456 B と比べる。writer が保存した最大（試験形の envelope 6,291,455 B）を B は publish した。envelope がちょうど 6,291,456 B の Revision の publish は既存の試験 `b_publishes_a_revision_whose_stored_envelope_is_exactly_the_writer_limit`（`0ceb9b21` で X1-3 に合わせた後に緑）。writer を通って B の成分 guard に当たる Revision は無い。製品形は B の whole-set（16 MiB）が先に当たる（確認前からの挙動。RB-1 の行の説明と矛盾しない）。
+- 判定: 閾値は確認時の説明（試験形で counted 約 3.05 MB 超、製品形で約 6.15 MB 超）と合う。
+
+### 5 条件の判定
+
+| 条件 | 実測 | 判定 |
+|---|---|---|
+| records・steps・Entity・edge・pages のどれかの余裕が 1.5 倍を割る | 最小は records の大 cast 12+80 で 1.53 倍。他は 1.96 倍以上 | 当たらない |
+| 50 場面の seed が available でなくなる | in-process（6/6、48/48、92/92）と worker 経路の全 seed が available | 当たらない |
+| registration の使用量が Q の 85% を超える | payload 形 A2 1,584,267 B で 93.0%、A2 1,734,267〜2,034,267 B で NOMEM（使用量が Q を超える）。製品形は最大 47.7% | **当たる** |
+| frame が上限の 85% を超える | 最大 2,591,368 B（4×p:300000、82.8%）。単独の製品形の上限近傍は 62.6% | 当たらない（82.8% は近い） |
+| RB-1 の閾値が確認時の説明と合わなくなる | 試験形 3,049,917 B、製品形 約 6,153,695 B | 当たらない |
+
+peak の台帳（6,291,456 B、対象外）: 最大 5,859,892 B（2000 字・50 場面、93.1%）、5,841,028 B（600 字・100 場面）。2000 字・100 場面は確認時と同じく 6 seed 中 1 seed だけ available。
+
+### 資格 ref の数と bytes（DF+ の 102 Revision の測り直し）
+
+DR-DFP-15 と同じ試験（`nir1_packing_tests.rs` の `resource_estimate_for_102_revisions`、`--features native-current-human-capture`）に値の出力だけを足して、X1-3 の後の候補で実行した（試験は緑）。
+
+- fixture（Revision 2 件、各 Entity 2・Relation 1）の Revision ごとの資格 ref は 18 件で、式 13＋2E＋Rel が X1-3 の後も成り立つ。Revision 2 件の行の合計は 36 件・7,248 B（平均 201.33 B）、今回の Human と Raw は 16 件・2,373 B。
+- 102 Revision（各 E=1、Rel=0）への外挿: **1,546 件、約 310,413 B**（330,000 B 未満。DR-DFP-15 の約 311 KB と同程度）。
+- 限界: 実際に 102 Revision の request を作って測ったものではなく、2 Revision の fixture の平均からの外挿（DR-DFP-15 と同じ方法）。fixture の Revision は anchor が 1 つで、複数 anchor の Revision の資格 ref は測っていない。
+
+### 結合の確認（仕事 1。2026-10-18）
+
+- 結合の修正（`0ceb9b21`）: `stored_envelope_len`（RB-1 の試験の helper）が X1-3 で増えた `build_typed_envelope` の引数（material 契約の digest）を渡していなかった（build エラー）。writer と同じ現行の digest を渡した。CQ-LIM の 3 試験（`b_publishes_a_revision_whose_stored_envelope_is_exactly_the_writer_limit`、`registration_skips_a_revision_that_is_not_approved_whatever_its_size`、`add_payload_shaped_candidate` を使う `registration_refuses_a_payload_shaped_revision_over_the_a2_registration_limit`）が、Entity の reading を別の Scene に移したのに Scope の token を移した先の投影に替えておらず、`NIR1_SCOPE_AUTHORITY_STALE` で落ちていた。X1-3 の他の試験と同じく `rebind_scope_tokens` を足した。値と判定は変えていない。
+- `cargo clippy -p grimodex-db --all-targets -- -D warnings`: warning なし。`cargo test -p grimodex-db --lib`: 2,257 件のうち上の 3 件だけが落ち（修正前）、修正後に 3 件を再実行して緑。
+- `scripts/nir1-c-query-worker-ci.sh`: workers（引数なし）、frame-lifecycle、caller-cancellation、startup-registration-refusal、trailing-data、partial-terminal-marker、practical-retention は緑。canonical の Gold（`fixture_canonical_gold_binding` を使う Q2 の worker 試験と Q512／registry33 の canonical）も緑。**lifecycle は赤**: `native_worker_uses_a_payload_shaped_revision_near_the_preflight_limit`（B2、counted 600,000、A2 2,034,277 B）が `NIR1_GRAPH_WORKER_EXIT_BEFORE_READY: NIR1_C_QUERY_REG_NOMEM:SEMANTIC_INDEX` で落ち、script はそこで止まった。後続の case を同じ手順（case ごとの入力の複製、1 case 1 process、`prlimit --core=1:1`）で個別に流すと、`native_worker_registers_multiple_payload_shaped_revisions`（B4）も同じ NOMEM で落ち、他の 10 case（製品形の複数 Revision、preflight 超の 2 試験、seam の 7 試験）は緑。B2 と B4 の失敗は上の表 C の registration の増幅そのもので、[precheck] の対象なので直していない。
+- `electron/native/grimodex-node` の `cargo test --lib`: 405 件のうち 404 件が通り、`recovery_join_slot_survives_restore_reentry_and_shutdown_with_zero_counters` が 2 s の期限（`bounded shutdown observation: Elapsed`）で 1 回落ちた（負荷平均 13〜16 の窓）。単独で 3 回再実行して 3 回とも緑。CQ-LIM はこの経路を変えていない。
+- dataset／hash に束縛された file は変えていないので、`ci-pause` の試験は実行していない。
+
+### proposal/8 への論点（integrator が起案する。この lane は値も方式も変えない）
+
+1. payload 形の registration の増幅（X1-3 の `json_each` が主因とみられる）を減らす最適化（anchor の数を payload を JSON として走らずに数える、または `json_each` の対象を `$.entities[*].scope.reading` に絞る等）を X1-3 の側か CQ-LIM の側で入れて、再測し直す。
+2. registration の検査の値を payload 形の NOMEM の位置より下に置く（確認済みの preflight 2,097,152 B と別の値になり、製品形の正例を狭める）。
+3. Q を 16 MiB より大きくする（32 MiB は実行ファイル約 +17 MB。draft の対案）。
+4. 4×p:300000 の frame 82.8% は、anchor ごとの投影で Revision が残るようになった新しい形で、確認時に測っていない。Revision 数が増えると frame と query の入力が比例して増える（5 件以上は work-other で全体拒否）。
+5. 再測に入れた RB-1 の測定 test と payload 形の境界（w:450000〜550000）は、harness の次の版に入れる。
