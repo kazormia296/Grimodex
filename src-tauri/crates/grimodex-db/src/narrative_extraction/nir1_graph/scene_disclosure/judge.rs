@@ -71,7 +71,43 @@ fn not_appended(count: Count) -> Result<GraphOnlyScan> {
     Ok(GraphOnlyScan::NotAppended(NotAppended))
 }
 
+/// Whether `error` is SQLite's interrupt (`SQLITE_INTERRUPT`), which is what a
+/// statement returns when the connection's progress handler (the participant's
+/// SQL budget) stops it, or when the connection's interrupt handle is used.
+///
+/// DR-CB4-23: the draft's "資源" says that when the parent's SQL steps are
+/// exceeded the Graph-only judgement stops there and adds nothing, and the
+/// Graph's own state is not touched. So an interrupt is not an `Err` of the
+/// whole Graph. The caller's cancel and deadline are told apart by calling its
+/// checkpoint right after: when that fails, its `Err` is returned; when it
+/// passes, nothing but the budget can have interrupted the statement.
+pub(super) fn is_budget_interrupt(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(failure, _))
+                if failure.code == rusqlite::ErrorCode::OperationInterrupted
+        )
+    })
+}
+
 pub(super) fn scan(
+    conn: &Connection,
+    input: &GraphOnlyScanInput<'_>,
+    path: &mut dyn GraphPathRevalidator,
+    check: &mut dyn FnMut() -> Result<()>,
+    max_candidates: usize,
+) -> Result<GraphOnlyScan> {
+    match scan_candidates(conn, input, &mut *path, &mut *check, max_candidates) {
+        Err(error) if is_budget_interrupt(&error) => {
+            check()?;
+            not_appended(Count::ResourceLimit)
+        }
+        other => other,
+    }
+}
+
+fn scan_candidates(
     conn: &Connection,
     input: &GraphOnlyScanInput<'_>,
     path: &mut dyn GraphPathRevalidator,

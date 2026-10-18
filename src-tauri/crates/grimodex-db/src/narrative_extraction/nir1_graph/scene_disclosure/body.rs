@@ -17,23 +17,22 @@ use rusqlite::Connection;
 
 use super::counters::{record, Count};
 use super::eligible::{BodyFacts, EligibleGraphScene, GraphOnlySceneBinding};
-use super::judge::{is_storage_failure, read_title};
+use super::judge::{is_budget_interrupt, is_storage_failure, read_title};
 use super::{
     evaluate_graph_only_append, GraphDisclosureQuery, GraphDisclosureWorkspace, GraphOnlyCandidate,
     GraphOnlyScan, GraphOnlyScanInput, GraphOnlySceneDisclosure, GraphPathRevalidator, NotAppended,
     QueryParts, WorkspaceParts,
 };
 use crate::narrative_extraction::nir1_graph::scenes::first_non_empty_anchor;
+use crate::narrative_extraction::read_narrative_scene_scope;
 use crate::narrative_extraction::retrieval_admission::{
     read_retrieval_scene_source_bounded, RetrievalSceneSourceRead,
 };
-use crate::narrative_extraction::read_narrative_scene_scope;
 use crate::narrative_extraction::scene_body_declaration::{
     read_scene_body_declaration, scene_body_declaration_binding_mismatches,
-    SceneBodyDeclarationRead, scene_body_declaration_veto,
-    scene_body_title_digest, SceneBodyDeclarationCurrentFacts, VetoLimits,
-    SCENE_BODY_READ_MAX_BYTES, SCENE_BODY_READ_PEAK_MAX_BYTES, VETO_CONTENT_LIMIT_MARKER,
-    VETO_ROW_LIMIT_MARKER,
+    scene_body_declaration_veto, scene_body_title_digest, SceneBodyDeclarationCurrentFacts,
+    SceneBodyDeclarationRead, VetoLimits, SCENE_BODY_READ_MAX_BYTES,
+    SCENE_BODY_READ_PEAK_MAX_BYTES, VETO_CONTENT_LIMIT_MARKER, VETO_ROW_LIMIT_MARKER,
 };
 use crate::nir1_generation::error_chain_contains;
 
@@ -82,8 +81,25 @@ fn absorb(error: anyhow::Error, control_failed: &Cell<bool>) -> Result<BodyStep>
 }
 
 /// Reads and judges the body of the adopted candidate. The same function serves
-/// the response and the click.
+/// the response and the click. An interrupt from the connection's SQL budget
+/// rejects the candidate (DR-CB4-23); a failing checkpoint is still an `Err`.
 pub(super) fn read_body(
+    conn: &Connection,
+    workspace: &WorkspaceParts,
+    query: &QueryParts,
+    candidate: &GraphOnlyCandidate,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<BodyStep> {
+    match read_body_steps(conn, workspace, query, candidate, &mut *check) {
+        Err(error) if is_budget_interrupt(&error) => {
+            check()?;
+            Ok(BodyStep::Rejected(Count::ResourceLimit))
+        }
+        other => other,
+    }
+}
+
+fn read_body_steps(
     conn: &Connection,
     workspace: &WorkspaceParts,
     query: &QueryParts,
@@ -319,13 +335,16 @@ pub(super) fn disclose_graph_only_candidate(
         result
     };
     guarded()?;
-    if let Some(count) = reverify_candidate(
-        conn,
-        &query_parts.project_id,
-        &candidate,
-        &control_failed,
-    )? {
-        return Ok(not_appended(count));
+    match reverify_candidate(conn, &query_parts.project_id, &candidate, &control_failed) {
+        Ok(None) => {}
+        Ok(Some(count)) => return Ok(not_appended(count)),
+        Err(error) if is_budget_interrupt(&error) => {
+            // The connection's SQL budget (DR-CB4-23); a failing checkpoint
+            // is the `Err` instead.
+            guarded()?;
+            return Ok(not_appended(Count::ResourceLimit));
+        }
+        Err(error) => return Err(error),
     }
     let body = match read_body(conn, workspace_parts, query_parts, &candidate, &mut guarded)? {
         BodyStep::Read(body) => *body,

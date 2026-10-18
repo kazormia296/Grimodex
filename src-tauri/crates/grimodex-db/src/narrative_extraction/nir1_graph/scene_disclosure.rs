@@ -221,6 +221,12 @@ impl fmt::Debug for GraphDisclosureQuery {
 /// `Ok(false)` and `Err` mean the candidate is not adopted. Its answer is the
 /// only thing the reader takes from it: the path's proof is a proof about the
 /// query Scene and never becomes evidence for the target's body.
+///
+/// A cancel or a deadline seen by the implementation is returned as a typed
+/// `Err` (for example `ValidationTerminated`, which `classify_store_error`
+/// does not call `Invalid`) or by the same checkpoint that was passed to the
+/// reader. An untyped `Err` is read as a problem of the candidate's data and
+/// the candidate is not adopted (DR-CB4-24).
 pub trait GraphPathRevalidator {
     fn revalidate(
         &mut self,
@@ -300,7 +306,9 @@ impl fmt::Debug for GraphOnlyCandidate {
 /// Graph's own steps 1 and 2. `conn` must be in a transaction (`Err`
 /// otherwise). `check` is the caller's cancel/deadline checkpoint; an `Err`
 /// from it, from SQLite or from the path revalidation's storage is returned
-/// as is and no partial result is made.
+/// as is and no partial result is made. The one exception is SQLite's interrupt
+/// from the connection's SQL budget: the scan stops and adds nothing
+/// ([`NotAppended`]) unless `check` fails right after it (DR-CB4-23).
 pub fn evaluate_graph_only_append(
     conn: &Connection,
     input: &GraphOnlyScanInput<'_>,

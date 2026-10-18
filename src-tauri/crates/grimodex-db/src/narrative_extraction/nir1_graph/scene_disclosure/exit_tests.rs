@@ -478,14 +478,45 @@ fn f6_every_entry_point_refuses_a_connection_that_is_not_in_a_read_transaction()
     });
 }
 
-// ---- F5: a SQL budget interrupt is an error ------------------------------------------------------------
+// ---- F5: a SQL budget interrupt only adds nothing (DR-CB4-23) -----------------------------------------
+
+/// A progress handler that stops every statement after `allowed` steps, which
+/// is what a participant's SQL budget does on the connection. `tripped` is set
+/// when it stopped one, so a checkpoint can tell it from a cancel.
+fn install_budget(
+    conn: &Connection,
+    allowed: u64,
+    tripped: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    let used = std::sync::Arc::new(AtomicU64::new(0));
+    let tripped = std::sync::Arc::clone(tripped);
+    let _ = conn.progress_handler(
+        1,
+        Some(move || {
+            if used.fetch_add(1, Ordering::Relaxed) >= allowed {
+                tripped.store(true, Ordering::Relaxed);
+                true
+            } else {
+                false
+            }
+        }),
+    );
+}
+
+fn remove_budget(conn: &Connection) {
+    let _ = conn.progress_handler(0, None::<fn() -> bool>);
+}
+
+fn untripped() -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false))
+}
 
 #[test]
-fn f5_an_interrupt_from_the_connections_sql_budget_is_an_error_not_a_verdict() {
+fn f5_a_budget_interrupt_anywhere_in_the_response_adds_nothing_and_is_never_an_error() {
+    use std::sync::atomic::Ordering;
     let env = fixture();
     place_real(&env, "b1");
-    // Everything the closure needs is made before the transaction: the pinned
-    // connection is held for the transaction's whole length.
     let candidates = associations(&env, &["b1"]);
     let workspace = workspace(&env);
     let query = query(&env);
@@ -497,20 +528,211 @@ fn f5_an_interrupt_from_the_connections_sql_budget_is_an_error_not_a_verdict() {
         existing_scene_ids: &existing,
         candidates: &candidates,
     };
+    let mut tripped_somewhere = false;
+    let mut disclosed_somewhere = false;
+    // Budgets from "the first statement" up to "more than the whole response
+    // needs": the answer is Ok at every point, and a Scene is added only when
+    // the budget was never reached.
+    for allowed in [
+        0u64, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1_000, 2_500, 5_000, 20_000, 1_000_000,
+    ] {
+        let tripped = untripped();
+        let outcome = env
+            .db()
+            .db()
+            .with_read_transaction(|conn| {
+                install_budget(conn, allowed, &tripped);
+                let outcome =
+                    evaluate_graph_only_scene(conn, &input, &mut Path::yes(), &mut || Ok(()));
+                remove_budget(conn);
+                Ok(outcome)
+            })
+            .unwrap();
+        let disclosure = outcome.unwrap_or_else(|error| {
+            panic!("budget {allowed}: an interrupt is not an error: {error:#}")
+        });
+        if tripped.load(Ordering::Relaxed) {
+            tripped_somewhere = true;
+            assert_nothing_added(&disclosure);
+        } else {
+            disclosed_somewhere = true;
+            assert!(matches!(disclosure, GraphOnlySceneDisclosure::Eligible(_)));
+        }
+    }
+    assert!(tripped_somewhere, "the sweep must reach the budget");
+    assert!(disclosed_somewhere, "the sweep must also pass it");
+}
+
+#[test]
+fn f5_a_budget_interrupt_gives_the_same_code_as_every_other_reason_and_changes_no_row() {
+    let env = fixture();
+    place_real(&env, "b1");
+    let candidates = associations(&env, &["b1"]);
+    let workspace = workspace(&env);
+    let query = query(&env);
+    let existing = BTreeSet::new();
+    let input = GraphOnlyScanInput {
+        workspace: &workspace,
+        query: &query,
+        slot: OPEN,
+        existing_scene_ids: &existing,
+        candidates: &candidates,
+    };
+    let before = env.with_conn(|conn| Ok(dump(conn)));
+    let tripped = untripped();
+    let interrupted = env
+        .db()
+        .db()
+        .with_read_transaction(|conn| {
+            install_budget(conn, 0, &tripped);
+            let outcome = evaluate_graph_only_scene(conn, &input, &mut Path::yes(), &mut || Ok(()));
+            remove_budget(conn);
+            Ok(outcome)
+        })
+        .unwrap()
+        .unwrap();
+    let GraphOnlySceneDisclosure::NotAppended(interrupted) = interrupted else {
+        panic!("an interrupt must add nothing");
+    };
+    // The renderer cannot tell this from "no candidate".
+    let none = disclose(&env, &[]);
+    let GraphOnlySceneDisclosure::NotAppended(none) = none else {
+        panic!("no candidate adds nothing");
+    };
+    assert_eq!(interrupted, none);
+    assert_eq!(interrupted.code(), none.code());
+    assert_eq!(
+        env.with_conn(|conn| Ok(dump(conn))),
+        before,
+        "the reader writes nothing"
+    );
+}
+
+#[test]
+fn f5_an_interrupt_with_a_failing_checkpoint_is_the_checkpoints_error() {
+    use std::sync::atomic::Ordering;
+    let env = fixture();
+    place_real(&env, "b1");
+    let candidates = associations(&env, &["b1"]);
+    let workspace = workspace(&env);
+    let query = query(&env);
+    let existing = BTreeSet::new();
+    let input = GraphOnlyScanInput {
+        workspace: &workspace,
+        query: &query,
+        slot: OPEN,
+        existing_scene_ids: &existing,
+        candidates: &candidates,
+    };
+    // A cancel that is told to the connection as an interrupt: the checkpoint
+    // fails once the statement was stopped.
+    let tripped = untripped();
+    let flag = std::sync::Arc::clone(&tripped);
     let outcome = env
         .db()
         .db()
         .with_read_transaction(|conn| {
-            // What the participant's SQL budget does when it is exhausted.
-            let _ = conn.progress_handler(1, Some(|| true));
-            let outcome = evaluate_graph_only_scene(conn, &input, &mut Path::yes(), &mut || Ok(()));
-            let _ = conn.progress_handler(0, None::<fn() -> bool>);
+            install_budget(conn, 0, &tripped);
+            let outcome = evaluate_graph_only_scene(conn, &input, &mut Path::yes(), &mut || {
+                if flag.load(Ordering::Relaxed) {
+                    anyhow::bail!("cancelled")
+                }
+                Ok(())
+            });
+            remove_budget(conn);
             Ok(outcome)
         })
         .unwrap();
-    assert!(
-        outcome.is_err(),
-        "an interrupted statement must not look like a rejected Scene"
+    let error = outcome.expect_err("a cancel is an error, not a verdict");
+    assert!(format!("{error:#}").contains("cancelled"));
+}
+
+#[test]
+fn f5_a_budget_interrupt_in_the_body_step_the_carry_over_check_and_the_click_adds_nothing() {
+    let env = fixture();
+    place_real(&env, "b1");
+    let shown = eligible(disclose(&env, &["b1"]));
+    let candidates = associations(&env, &["b1"]);
+    let workspace = workspace(&env);
+    let query = query(&env);
+    let existing = BTreeSet::new();
+    let input = GraphOnlyScanInput {
+        workspace: &workspace,
+        query: &query,
+        slot: OPEN,
+        existing_scene_ids: &existing,
+        candidates: &candidates,
+    };
+    let reached = std::cell::Cell::new((false, false));
+    for allowed in [0u64, 3, 20, 100, 400] {
+        let tripped = untripped();
+        env.db()
+            .db()
+            .with_read_transaction(|conn| {
+                let candidate = match evaluate_graph_only_append(
+                    conn,
+                    &input,
+                    &mut Path::yes(),
+                    &mut || Ok(()),
+                )? {
+                    GraphOnlyScan::Candidate(candidate) => candidate,
+                    GraphOnlyScan::NotAppended(_) => panic!("a candidate was expected"),
+                };
+                // The budget is reached after the scan: in the re-check of
+                // the scan's values or in the body read.
+                install_budget(conn, allowed, &tripped);
+                let disclosure = disclose_graph_only_candidate(
+                    conn,
+                    &workspace,
+                    &query,
+                    *candidate,
+                    &mut || Ok(()),
+                );
+                remove_budget(conn);
+                let disclosure = disclosure.unwrap_or_else(|error| {
+                    panic!("budget {allowed}: an interrupt is not an error: {error:#}")
+                });
+                if tripped.load(std::sync::atomic::Ordering::Relaxed) {
+                    assert_nothing_added(&disclosure);
+                    reached.set((true, reached.get().1));
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // The click: the scan of the one Scene and the body step.
+        let tripped = untripped();
+        env.db()
+            .db()
+            .with_read_transaction(|conn| {
+                install_budget(conn, allowed, &tripped);
+                let clicked = requalify_graph_only_scene_disclosure(
+                    conn,
+                    &workspace,
+                    &query,
+                    shown.binding(),
+                    &mut Path::yes(),
+                    &mut || Ok(()),
+                );
+                remove_budget(conn);
+                let clicked = clicked.unwrap_or_else(|error| {
+                    panic!("budget {allowed}: an interrupt is not an error: {error:#}")
+                });
+                if tripped.load(std::sync::atomic::Ordering::Relaxed) {
+                    assert!(matches!(
+                        clicked,
+                        GraphOnlyClick::Refused(GraphSceneRevalidationRefused)
+                    ));
+                    reached.set((reached.get().0, true));
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    assert_eq!(
+        reached.get(),
+        (true, true),
+        "the sweep must reach the budget"
     );
 }
 
