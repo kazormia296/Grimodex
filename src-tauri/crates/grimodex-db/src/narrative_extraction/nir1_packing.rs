@@ -31,6 +31,7 @@ use super::nir1_entity_relation::{
 };
 #[cfg(feature = "native-current-human-capture")]
 use super::nir1_graph::read_nir1_graph_seal;
+#[cfg(feature = "native-current-human-capture")]
 use super::nir1_history_adoption::{
     adopt_history_turns, AdoptedTurn, AdoptionLimits, HistoryAdoptionRequest,
 };
