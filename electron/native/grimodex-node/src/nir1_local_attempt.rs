@@ -288,6 +288,7 @@ impl Nir1LocalAttempt {
             &route,
             route_revocation_generation,
             &witness,
+            prepared.attempt_id(),
         ) {
             let settlement = prepared.abandon();
             return Ok(Nir1LocalAttemptOutcome::Abandoned {

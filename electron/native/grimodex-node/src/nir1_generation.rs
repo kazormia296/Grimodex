@@ -1091,9 +1091,43 @@ pub(crate) fn final_input_digest(
 }
 
 pub(crate) fn now_ms() -> Result<i64> {
-    Ok(i64::try_from(
-        SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),
-    )?)
+    let now = i64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
+    #[cfg(test)]
+    let now = now + test_clock::offset_ms();
+    Ok(now)
+}
+
+/// A test-only skew of Native's clock, per thread: how a test lets 30 days
+/// pass between two turns without waiting (the validity window of a past
+/// turn is decided against `now_ms()`). No product code reads it.
+#[cfg(test)]
+pub(crate) mod test_clock {
+    use std::cell::Cell;
+
+    thread_local! {
+        static OFFSET_MS: Cell<i64> = const { Cell::new(0) };
+    }
+
+    pub(super) fn offset_ms() -> i64 {
+        OFFSET_MS.with(Cell::get)
+    }
+
+    /// Restores the clock when dropped.
+    pub(crate) struct ClockSkew(i64);
+
+    impl Drop for ClockSkew {
+        fn drop(&mut self) {
+            OFFSET_MS.with(|offset| offset.set(self.0));
+        }
+    }
+
+    /// Moves Native's clock forward by `ms` for this thread until the guard
+    /// is dropped.
+    pub(crate) fn advance(ms: i64) -> ClockSkew {
+        let before = OFFSET_MS.with(Cell::get);
+        OFFSET_MS.with(|offset| offset.set(before + ms));
+        ClockSkew(before)
+    }
 }
 
 /// Digest of the current normalized AI route settings. A change between two

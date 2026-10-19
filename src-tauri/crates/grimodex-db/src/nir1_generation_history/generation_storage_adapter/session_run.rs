@@ -23,13 +23,24 @@
 //!   (VM steps, deadline, busy) is the connection's progress handler: once it
 //!   is spent the snapshot itself cannot be closed, so that exhaustion, a
 //!   cancel and a timeout are the typed errors of the snapshot, not outcomes.
+//!   [`reauthorize_session_history_for_turn_in_tx`] is the form the D-final
+//!   snapshot calls (DI1B-1): the history's ledger being spent leaves the
+//!   caller's own transaction open and usable (the spike
+//!   `spike_outer_snapshot_survives_a_spent_history_sql_ledger`), so that
+//!   exhaustion and a deadline become "this turn goes on without history"; a
+//!   cancel and every other error (a busy or locked error included: that form
+//!   waits for nothing) stay the typed error that stops the turn. The form
+//!   that opens its own transaction ([`reauthorize_session_history_for_turn`])
+//!   is the one that waits for the database, and a wait beyond its allowance
+//!   is "without history" too.
 //! * A failed read (SQLite or IO, a malformed row) stops the run with that
 //!   error. A candidate is excluded only for a closed reason.
 
 use super::*;
-use crate::narrative_extraction::HistoryRequalifier;
+use crate::narrative_extraction::{HistoryRequalifier, PROJECT_SCOPE_AUTHORITY_SNAPSHOT};
 use crate::nir1_generation::history_reads::GenerationHistoryAttemptHeader;
 use crate::nir1_generation::with_generation_history_snapshot_in_tx;
+use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::Connection;
 
 /// What the run is asked for: the current turn's context from the D-final
@@ -38,6 +49,20 @@ use rusqlite::Connection;
 pub(crate) struct SessionHistoryRequest<'a> {
     pub current: &'a CurrentHistoryContext,
     pub now_ms: i64,
+    /// The turn's own attempt, when it was created after the request was
+    /// prepared (the re-confirmation at dispatch). It is left out of the
+    /// session's enumeration after the reader checked that it is the attempt
+    /// of the current Human; `None` for a preparation, where it does not exist.
+    pub in_flight: Option<InFlightAttempt<'a>>,
+}
+
+/// The attempt a turn has just created, named so that the run does not count
+/// it as part of the session's history.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct InFlightAttempt<'a> {
+    pub attempt_id: &'a str,
+    /// The current Human's message version: the attempt's ordinal 0 input.
+    pub human_version_id: &'a str,
 }
 
 /// What a result stands for.
@@ -73,6 +98,76 @@ pub(crate) enum NoHistory {
     /// The session's attempts cannot be listed or counted within the turn's
     /// budget, so no candidate could be verified.
     SessionOverBudget,
+    /// The history's own SQL capacity ended before the run did: the VM-step
+    /// ledger, or the same budget's deadline when the progress handler is the
+    /// one that sees it (`CapacityExceeded`). The run cannot return a part of
+    /// its result, so none of it is used (DI1B-1).
+    SqlCapacityExhausted,
+    /// The history's own deadline (the turn's budget, clipped to the prepare
+    /// deadline) elapsed before the run ended, seen at a checkpoint of the run
+    /// or before it started (`TimedOut`) (DI1B-1).
+    SqlDeadlineElapsed,
+    /// SQLite reported the database busy beyond the history's busy-wait
+    /// allowance, in the form that opens its own transaction and so waits for
+    /// the database (DI1B-1). The in-transaction form waits for nothing and
+    /// never returns this.
+    SqlBusy,
+}
+
+impl NoHistory {
+    /// A closed code for evidence and tests. It names the kind only: no
+    /// identifier, no text.
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::CurrentContextUnavailable(_) => "current-context-unavailable",
+            Self::SessionOverBudget => "session-over-budget",
+            Self::SqlCapacityExhausted => "sql-capacity-exhausted",
+            Self::SqlDeadlineElapsed => "sql-deadline-elapsed",
+            Self::SqlBusy => "sql-busy",
+        }
+    }
+}
+
+/// A message the run read and authenticated for a qualified candidate: the
+/// message version and the body whose digest the reader verified. This is the
+/// reader's own value, handed on; nothing re-reads it (DI1B-2).
+#[derive(Clone, Eq, PartialEq)]
+pub(crate) struct HistoryMessageMaterial {
+    pub version_id: OpaqueRef,
+    pub origin: MessageOrigin,
+    pub parent_attempt_id: Option<AttemptId>,
+    /// The version's digest, equal to the digest of `body` as stored.
+    pub body_digest: String,
+    pub body: String,
+}
+
+/// The body is the user's past words or a model's reply: `{:?}` of an outcome
+/// (or of an error context that holds one) must not put it in a log. Only its
+/// length and its digest are shown.
+impl std::fmt::Debug for HistoryMessageMaterial {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("HistoryMessageMaterial")
+            .field("version_id", &self.version_id)
+            .field("origin", &self.origin)
+            .field("parent_attempt_id", &self.parent_attempt_id)
+            .field("body_digest", &self.body_digest)
+            .field("body_bytes", &self.body.len())
+            .finish_non_exhaustive()
+    }
+}
+
+/// What the run read of one attempt that has a qualified candidate, for the
+/// adoption (DI1B-2): the attempt's time and the Scene body it recorded, and
+/// the bodies of its qualified candidates. A body the run could not read
+/// within the turn's budget is `None` (the adoption does not use that turn).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct HistoryAttemptMaterial {
+    pub created_at_ms: i64,
+    /// The `bodyDigest` the attempt's Scene binding recorded.
+    pub scene_body_digest: String,
+    pub human: Option<HistoryMessageMaterial>,
+    pub output: Option<HistoryMessageMaterial>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -83,6 +178,8 @@ pub(crate) struct SessionHistoryOutcome {
     /// How many A3 evaluations the turn made: one per Revision and target
     /// Scene, shared by every attempt that holds the Revision.
     pub a3_evaluations: usize,
+    /// The material of the attempts that have a qualified candidate (DI1B-2).
+    pub materials: BTreeMap<AttemptId, HistoryAttemptMaterial>,
 }
 
 impl SessionHistoryOutcome {
@@ -91,6 +188,7 @@ impl SessionHistoryOutcome {
             candidates: Vec::new(),
             without_history: Some(reason),
             a3_evaluations: 0,
+            materials: BTreeMap::new(),
         }
     }
 
@@ -252,6 +350,105 @@ fn plan_attempt<C: FnMut() -> bool>(
     Ok(planned)
 }
 
+/// What the history run may ask of the connection it borrows: reads. The
+/// run is read-only by construction (HC-1 asserts `total_changes` stays put);
+/// this makes a write a refused statement (`SQLITE_AUTH`) instead of a rule
+/// kept by discipline (DR-HC1-24 (3), DI1B-1).
+///
+/// An authorizer acts when a statement is prepared, so it costs nothing per
+/// row, and clearing it is not SQL: it cannot be interrupted by the progress
+/// handler, so a connection pooled by the participant cannot be left
+/// refusing writes (`PRAGMA query_only` can, which is why it is not used).
+/// The run executes inside the participant's connection scope, where no other
+/// authorizer is installed (the renderer SQL policy installs its own only for
+/// its own call); the guard clears the authorizer when it ends, also when the
+/// run fails.
+struct ReadOnlyRun<'connection> {
+    connection: &'connection Connection,
+}
+
+impl<'connection> ReadOnlyRun<'connection> {
+    fn enter(connection: &'connection Connection) -> Result<Self> {
+        connection
+            .authorizer(Some(allow_reads_only))
+            .context("NIR1_GENERATION_HISTORY_READ_ONLY_GUARD")?;
+        Ok(Self { connection })
+    }
+}
+
+impl Drop for ReadOnlyRun<'_> {
+    fn drop(&mut self) {
+        // Not SQL: clearing the hook cannot be interrupted or refused.
+        let _ = self
+            .connection
+            .authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+    }
+}
+
+/// Reads only: a SELECT, the columns it reads, the functions and the recursive
+/// terms it uses. Everything else (every write, DDL, transaction and
+/// savepoint control, PRAGMA, ATTACH) is refused.
+fn allow_reads_only(context: AuthContext<'_>) -> Authorization {
+    match context.action {
+        AuthAction::Select
+        | AuthAction::Read { .. }
+        | AuthAction::Function { .. }
+        | AuthAction::Recursive => Authorization::Allow,
+        // The project's Scope authority reads its tree, its Scene bindings and
+        // its registry inside one named savepoint so that they are one view.
+        // A savepoint writes no row; any other transaction control is refused.
+        AuthAction::Savepoint {
+            savepoint_name: PROJECT_SCOPE_AUTHORITY_SNAPSHOT,
+            ..
+        } => Authorization::Allow,
+        _ => Authorization::Deny,
+    }
+}
+
+/// Why a typed or SQLite stop of the run means "this turn goes on without
+/// history" (K4/3 section 8, a spent budget) and not "the turn stops".
+///
+/// The history's own SQL ledger (VM steps, deadline) ends the run with the
+/// typed `CapacityExceeded` / `TimedOut`. A cancel (`Cancelled`, or the
+/// participant's `ContextUnavailable`), any other typed reason and every other
+/// SQLite or IO error stay errors: the owner stopped the work, or a read
+/// failed, and the turn stops.
+///
+/// `waits_for_busy` is true only for the form that opens its own transaction.
+/// Only that form waits for the database (the ledger's busy-wait allowance),
+/// so only there is `SQLITE_BUSY` / `SQLITE_LOCKED` "the wait ran out". In the
+/// caller's own transaction nothing is waited for: a busy or locked error
+/// there is not a spent allowance but an unexpected failure of a read in the
+/// D-final snapshot, and it stops the turn (DI1B-1 review, DR-DI1B-4).
+fn no_history_for_ledger_stop(error: &anyhow::Error, waits_for_busy: bool) -> Option<NoHistory> {
+    use crate::narrative_extraction::{ValidationTerminated, ValidationTerminationReason};
+
+    if let Some(terminated) = error.downcast_ref::<ValidationTerminated>() {
+        return match terminated.reason {
+            ValidationTerminationReason::CapacityExceeded => Some(NoHistory::SqlCapacityExhausted),
+            ValidationTerminationReason::TimedOut => Some(NoHistory::SqlDeadlineElapsed),
+            _ => None,
+        };
+    }
+    if !waits_for_busy {
+        return None;
+    }
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<rusqlite::Error>())
+        .any(|cause| {
+            matches!(
+                cause,
+                rusqlite::Error::SqliteFailure(failure, _)
+                    if matches!(
+                        failure.code,
+                        rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                    )
+            )
+        })
+        .then_some(NoHistory::SqlBusy)
+}
+
 fn run_session_history<C: FnMut() -> bool>(
     reader: &mut GenerationHistorySnapshotReader<'_>,
     budget: &mut GenerationHistoryReadBudget,
@@ -259,6 +456,9 @@ fn run_session_history<C: FnMut() -> bool>(
     request: &SessionHistoryRequest<'_>,
     cancelled: &mut C,
 ) -> Result<SessionHistoryOutcome> {
+    // Whatever the run decides, it only reads (DR-HC1-24 (3)); the guard is
+    // in force before the first poll of the owner.
+    let _read_only = ReadOnlyRun::enter(reader.authority_connection().connection())?;
     ensure_snapshot_not_cancelled(cancellation, cancelled)?;
     // A current context that cannot be compared excludes all history and the
     // turn goes on: no row is read and no budget is spent.
@@ -272,6 +472,14 @@ fn run_session_history<C: FnMut() -> bool>(
     };
     let project_id = current.range.project_id.as_str();
     let session_id = current.range.chat_session_id.as_str();
+    if let Some(in_flight) = request.in_flight {
+        reader.exclude_in_flight_attempt(
+            project_id,
+            session_id,
+            in_flight.attempt_id,
+            in_flight.human_version_id,
+        )?;
+    }
 
     // The session's attempts, from the session column and its index only. A
     // session that cannot be listed within the budget leaves every candidate
@@ -342,6 +550,22 @@ fn run_session_history<C: FnMut() -> bool>(
         }
     }
 
+    // What the adoption needs of each attempt, taken before the traversal's
+    // input takes the loaded attempts (DI1B-2).
+    let attempt_meta: BTreeMap<AttemptId, (i64, String)> = headers
+        .iter()
+        .filter_map(|header| {
+            let stored = attempts.get(&header.id)?.stored.as_ref()?;
+            Some((
+                header.id.clone(),
+                (
+                    header.created_at_ms,
+                    stored.binding.scene.body_digest.clone(),
+                ),
+            ))
+        })
+        .collect();
+
     // Phase 2: the pure traversal over what was read, with the production
     // requalifier on the snapshot's own connection.
     let snapshot = HistorySnapshot {
@@ -370,6 +594,7 @@ fn run_session_history<C: FnMut() -> bool>(
         &mut traversal_cancelled,
     );
     cancellation.checkpoint()?;
+    let a3_evaluations = qualifier.a3_evaluation_count();
     let outcome = match outcome {
         Ok(outcome) => outcome,
         // A failed read: the qualifier kept its error.
@@ -403,11 +628,68 @@ fn run_session_history<C: FnMut() -> bool>(
             visited_attempts,
         });
     }
+    let materials = collect_materials(reader, budget, &candidates, &attempt_meta, cancellation)?;
     Ok(SessionHistoryOutcome {
         candidates,
         without_history: None,
-        a3_evaluations: qualifier.a3_evaluation_count(),
+        a3_evaluations,
+        materials,
     })
+}
+
+/// The bodies of the qualified candidates, newest attempt first, from the
+/// reader. A past Human's message was read (and cached) when its input was
+/// enriched, so that is no second read; an output's body is read here once
+/// when no later attempt adopted it. A body that the turn's budget cannot
+/// pay for, or whose row is gone, is left out (`None`): the adoption does not
+/// use that turn. Any other error stops the run.
+fn collect_materials(
+    reader: &mut GenerationHistorySnapshotReader<'_>,
+    budget: &mut GenerationHistoryReadBudget,
+    candidates: &[SessionCandidateResult],
+    attempt_meta: &BTreeMap<AttemptId, (i64, String)>,
+    cancellation: &GenerationHistorySnapshotCancellation,
+) -> Result<BTreeMap<AttemptId, HistoryAttemptMaterial>> {
+    let mut materials: BTreeMap<AttemptId, HistoryAttemptMaterial> = BTreeMap::new();
+    for result in candidates.iter().filter(|result| {
+        result.disposition == CandidateDisposition::Qualified
+            && matches!(
+                result.kind,
+                SessionCandidateKind::PastHuman | SessionCandidateKind::GeneratedOutput
+            )
+    }) {
+        cancellation.checkpoint()?;
+        let (Some(version_id), Some((created_at_ms, scene_body_digest))) = (
+            result.version_id.as_deref(),
+            attempt_meta.get(&result.attempt_id),
+        ) else {
+            continue;
+        };
+        let body = match reader.read_message(budget, version_id) {
+            Ok(message) => Some(HistoryMessageMaterial {
+                version_id: version_id.to_owned(),
+                origin: message.version.origin,
+                parent_attempt_id: message.version.parent_attempt_id,
+                body_digest: message.version.body_digest,
+                body: message.content,
+            }),
+            Err(error) if is_history_budget_error(&error) || is_missing_row(&error) => None,
+            Err(error) => return Err(error),
+        };
+        let entry = materials
+            .entry(result.attempt_id.clone())
+            .or_insert_with(|| HistoryAttemptMaterial {
+                created_at_ms: *created_at_ms,
+                scene_body_digest: scene_body_digest.clone(),
+                human: None,
+                output: None,
+            });
+        match result.kind {
+            SessionCandidateKind::PastHuman => entry.human = body,
+            _ => entry.output = body,
+        }
+    }
+    Ok(materials)
 }
 
 /// Re-authorize the history of the current turn's chat session inside the
@@ -439,13 +721,6 @@ pub(crate) fn reauthorize_session_history_in_tx<C: FnMut() -> bool>(
 
 /// The same run in its own participant read transaction, for a caller that
 /// has no snapshot of its own.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "DI-1b runs the in-transaction form inside the D-final snapshot; this form is for a caller without one"
-    )
-)]
 pub(crate) fn reauthorize_session_history<C: FnMut() -> bool>(
     workspace: &ActiveWorkspaceSnapshot,
     control: ParticipantSqlControl,
@@ -462,4 +737,123 @@ pub(crate) fn reauthorize_session_history<C: FnMut() -> bool>(
         },
     )
     .context("NIR1_GENERATION_HISTORY_SESSION")
+}
+
+/// The D-final snapshot's form of the run (DI1B-1): the same run inside the
+/// caller's own read transaction, where the history's SQL ledger being spent
+/// (VM steps, the history deadline) ends the history, not the turn. The
+/// caller's transaction is still open and readable afterwards; the outcome
+/// carries no candidate. A cancel, a stop of the participant, any other typed
+/// reason and every other error stay errors, a busy or locked error included
+/// (this form waits for nothing: the transaction is already open).
+pub(crate) fn reauthorize_session_history_for_turn_in_tx<C: FnMut() -> bool>(
+    connection: &Connection,
+    cancellation: &GenerationHistorySnapshotCancellation,
+    caller_budget: &mut GenerationHistoryReadBudget,
+    request: &SessionHistoryRequest<'_>,
+    cancelled: &mut C,
+) -> Result<SessionHistoryOutcome> {
+    match reauthorize_session_history_in_tx(
+        connection,
+        cancellation,
+        caller_budget,
+        request,
+        cancelled,
+    ) {
+        Err(error) => match no_history_for_ledger_stop(&error, false) {
+            Some(reason) => Ok(SessionHistoryOutcome::without_history(reason)),
+            None => Err(error),
+        },
+        outcome => outcome,
+    }
+}
+
+/// [`reauthorize_session_history_for_turn_in_tx`] for a caller that has no
+/// snapshot of its own: the run opens the participant read transaction with
+/// the ledger's deadline and busy wait, and a busy database beyond that
+/// allowance ends the history, not the turn.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the D-final snapshot uses the in-transaction form; this form is for a caller without one"
+    )
+)]
+pub(crate) fn reauthorize_session_history_for_turn<C: FnMut() -> bool>(
+    workspace: &ActiveWorkspaceSnapshot,
+    control: ParticipantSqlControl,
+    caller_budget: &mut GenerationHistoryReadBudget,
+    request: &SessionHistoryRequest<'_>,
+    cancelled: &mut C,
+) -> Result<SessionHistoryOutcome> {
+    match reauthorize_session_history(workspace, control, caller_budget, request, cancelled) {
+        Err(error) => match no_history_for_ledger_stop(&error, true) {
+            Some(reason) => Ok(SessionHistoryOutcome::without_history(reason)),
+            None => Err(error),
+        },
+        outcome => outcome,
+    }
+}
+
+#[cfg(test)]
+mod ledger_stop_tests {
+    use super::*;
+    use crate::narrative_extraction::{validation_terminated, ValidationTerminationReason};
+
+    fn sqlite_failure(code: std::ffi::c_int) -> anyhow::Error {
+        anyhow::Error::from(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ))
+        .context("NIR1_GENERATION_HISTORY_SESSION")
+    }
+
+    /// The mapping of a stop to "no history" (DI1B-1 review, DR-DI1B-4): the
+    /// typed ledger stops map in both forms; a busy or locked error maps only
+    /// in the form that waits for the database (it opens its own transaction)
+    /// and stays the turn's error inside the caller's transaction. A cancel
+    /// and any other error are never "no history".
+    #[test]
+    fn busy_maps_only_where_the_run_waits_for_the_database() {
+        for waits_for_busy in [false, true] {
+            assert_eq!(
+                no_history_for_ledger_stop(
+                    &validation_terminated(ValidationTerminationReason::CapacityExceeded, "spent"),
+                    waits_for_busy
+                ),
+                Some(NoHistory::SqlCapacityExhausted)
+            );
+            assert_eq!(
+                no_history_for_ledger_stop(
+                    &validation_terminated(ValidationTerminationReason::TimedOut, "late"),
+                    waits_for_busy
+                ),
+                Some(NoHistory::SqlDeadlineElapsed)
+            );
+            assert_eq!(
+                no_history_for_ledger_stop(
+                    &validation_terminated(ValidationTerminationReason::Cancelled, "stop"),
+                    waits_for_busy
+                ),
+                None
+            );
+            for code in [rusqlite::ffi::SQLITE_IOERR, rusqlite::ffi::SQLITE_CORRUPT] {
+                assert_eq!(
+                    no_history_for_ledger_stop(&sqlite_failure(code), waits_for_busy),
+                    None
+                );
+            }
+        }
+        for code in [rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED] {
+            assert_eq!(
+                no_history_for_ledger_stop(&sqlite_failure(code), true),
+                Some(NoHistory::SqlBusy)
+            );
+            assert_eq!(
+                no_history_for_ledger_stop(&sqlite_failure(code), false),
+                None,
+                "a busy error inside the caller's transaction stops the turn"
+            );
+        }
+    }
 }

@@ -407,6 +407,55 @@ fn capture_json_has_the_receipt_contract_keys() -> Result<()> {
     Ok(())
 }
 
+/// DI-1b: the rows of the history messages reach the receipt contract's
+/// render correspondence, named by their place in the payload.
+#[test]
+fn capture_json_names_the_history_positions() -> Result<()> {
+    use crate::nir1_prepared_request::history_turns_tests::{ready_fixture, send_turn};
+    let fixture = ready_fixture();
+    send_turn(&fixture, &fixture.message_version_id, "ANSWER-ONE");
+    let second = fixture.add_human_message("eval-turn-two", "SECOND-REQUEST")?;
+    let record = run_dfinal_with_capture(|| {
+        prepare_local_chat_request(
+            Arc::clone(&fixture.state),
+            fixture.caller.clone(),
+            SCENE_ID,
+            &second,
+            std::slice::from_ref(&fixture.revision_id),
+            NO_UNSUPPORTED_INPUTS,
+        )
+    })
+    .0;
+    let capture = captured(&record);
+    let json = capture.capture_json();
+    let payload: Value = serde_json::from_str(capture.payload.as_str())?;
+    assert_eq!(payload["messages"].as_array().unwrap().len(), 4);
+    let rows = json["rendered"]["renderCorrespondence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|row| row["position"]["kind"] == "history-message")
+        .collect::<Vec<_>>();
+    assert_eq!(rows.len(), 2);
+    for (index, row) in rows.iter().enumerate() {
+        assert_eq!(row["position"]["index"], index);
+        let ordinal = usize::try_from(row["inputOrdinal"].as_u64().unwrap())?;
+        let reference = &json["rendered"]["inputReferences"][ordinal];
+        assert_eq!(reference["target"]["kind"], "message");
+        assert_eq!(
+            reference["role"],
+            if index == 0 { "user" } else { "assistant" }
+        );
+    }
+    // The system rows keep their place and name.
+    assert!(json["rendered"]["renderCorrespondence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|row| row["position"]["kind"] == "system-current-scene"));
+    Ok(())
+}
+
 // ----------------------------------------------------------------- baseline
 
 fn raw_tokens(capture: &CapturedRequest) -> usize {

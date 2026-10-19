@@ -27,7 +27,8 @@ use grimodex_core::narrative_scene_scope::NarrativeSceneScopeBindingV1;
 use rusqlite::{params, Connection, OptionalExtension};
 
 const PROJECT_SCOPE_AUTHORITY_SOURCE_PREFIX: &str = "project:scope-authority:";
-const PROJECT_SCOPE_AUTHORITY_SNAPSHOT: &str = "narrative_project_scope_authority_snapshot";
+pub(crate) const PROJECT_SCOPE_AUTHORITY_SNAPSHOT: &str =
+    "narrative_project_scope_authority_snapshot";
 
 #[derive(Debug)]
 struct PersistedProjectTreeNode {

@@ -122,6 +122,10 @@ mod human_materialization;
 mod material_membership;
 mod material_membership_root;
 #[cfg(feature = "native-current-human-capture")]
+mod nir1_history_adoption;
+#[cfg(feature = "native-current-human-capture")]
+mod nir1_history_budget;
+#[cfg(feature = "native-current-human-capture")]
 mod nir1_history_context;
 #[cfg(feature = "native-current-human-capture")]
 mod nir1_history_requalification;
@@ -143,6 +147,8 @@ mod phase_undo;
 mod plot_thread_operations;
 mod plot_thread_undo;
 mod project_scope_authority;
+#[cfg(feature = "native-current-human-capture")]
+pub(crate) use project_scope_authority::PROJECT_SCOPE_AUTHORITY_SNAPSHOT;
 mod publish_runtime;
 mod reconciliation_envelope;
 mod repair;
@@ -173,10 +179,11 @@ pub use nir1_packing::{
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_packing::{
     read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
-    revalidate_native_nir1_prepared_inputs, NativeNir1ExcludedRevision,
-    NativeNir1FinalQualifications, NativeNir1GraphBinding, NativeNir1GraphExclusion,
-    NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome,
-    NativeNir1PreparedContextItem, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    revalidate_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs_after_create,
+    NativeNir1ExcludedRevision, NativeNir1FinalQualifications, NativeNir1GraphBinding,
+    NativeNir1GraphExclusion, NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome,
+    NativeNir1HistoryObservation, NativeNir1HistoryRequest, NativeNir1PreparedContextItem,
+    NativeNir1PreparedHistoryMessage, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
     NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs, Nir1GraphCandidateBinding,
     Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason,
 };

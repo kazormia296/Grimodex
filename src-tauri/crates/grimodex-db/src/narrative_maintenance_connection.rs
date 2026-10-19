@@ -351,6 +351,39 @@ impl ParticipantSqlOperationBudget {
     pub(crate) fn check(&self, participant: &WorkspaceParticipant) -> Result<()> {
         check_participant_sql_control(participant, &self.stop, Some(self.deadline))
     }
+
+    /// The operation's stop flag and deadline, for a read that runs inside
+    /// this operation's transaction and must observe the same owner.
+    pub(crate) fn control(&self) -> ParticipantSqlControl {
+        ParticipantSqlControl {
+            stop: Arc::clone(&self.stop),
+            deadline: Some(self.deadline),
+        }
+    }
+
+    /// The operation's deadline.
+    #[cfg_attr(
+        not(feature = "native-current-human-capture"),
+        expect(
+            dead_code,
+            reason = "only the D-final history entry (feature native-current-human-capture) reads it"
+        )
+    )]
+    pub(crate) fn deadline(&self) -> Instant {
+        self.deadline
+    }
+
+    /// The operation's SQLite busy-wait allowance.
+    #[cfg_attr(
+        not(feature = "native-current-human-capture"),
+        expect(
+            dead_code,
+            reason = "only the D-final history entry (feature native-current-human-capture) reads it"
+        )
+    )]
+    pub(crate) fn busy_timeout(&self) -> Duration {
+        self.busy_timeout
+    }
 }
 
 /// The stop/deadline observation set of one bounded operation, selected by

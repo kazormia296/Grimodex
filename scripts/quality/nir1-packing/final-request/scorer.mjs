@@ -39,6 +39,8 @@ import {
   cutSystemMessage,
   escapeReservedPromptTags,
   estimateTokens,
+  cutHistoryMessages,
+  historyTokens,
   parsePlainChatPayload,
   payloadDigest,
   reservedTotalTokens,
@@ -470,9 +472,15 @@ export function readPayload(view, capture, template) {
   const failures = [];
   let parsed;
   let cut;
+  let history;
   try {
     parsed = parsePlainChatPayload(view.payload);
     cut = cutSystemMessage(parsed.system, template);
+    history = cutHistoryMessages({
+      parsed,
+      renderCorrespondence: view.renderCorrespondence,
+      inputReferences: view.inputReferences,
+    });
   } catch (error) {
     if (error instanceof PayloadShapeError) {
       failures.push(
@@ -518,7 +526,7 @@ export function readPayload(view, capture, template) {
       );
     }
   }
-  return { failures, parsed, cut, codex, scene };
+  return { failures, parsed, cut, history, codex, scene };
 }
 
 /**
@@ -742,6 +750,7 @@ export function scanForbidden({
   payload,
   system,
   user,
+  history = [],
   canaries,
   forbiddenTexts,
   forbiddenIds,
@@ -749,7 +758,7 @@ export function scanForbidden({
   otherIds,
 }) {
   const failures = [];
-  const haystacks = [payload, system, user];
+  const haystacks = [payload, system, user, ...history.map((message) => message.content)];
   // The renderer escapes the reserved prompt tags in every text it renders
   // (`<chronicle_snapshot>` becomes a different byte sequence), so a needle
   // that holds such a tag is also looked for in its escaped form.
@@ -1511,6 +1520,7 @@ function windowFailure(parsed, route, label) {
   const total = reservedTotalTokens({
     system: parsed.system,
     user: parsed.user,
+    history: parsed.history,
     outputTokens: parsed.maxTokens,
   });
   if (total > route.contextWindowTokens) {
@@ -1570,16 +1580,23 @@ function budgetFormulaFailures({
   return failures;
 }
 
-/** The selected items (Raw plus the matched entries) must fit the context budget. */
-function selectionFailures({ capture, matched, label }) {
-  const total = capture.candidateSet.items
+/**
+ * The selected items (Raw plus the matched entries) and the history messages
+ * (text and envelope each) must fit the context budget together: the history
+ * is placed in what the selector's budget leaves after the selection, so it
+ * never takes the room of the Raw or the accepted IR (DI-1b). Without a
+ * history the check is the one of before.
+ */
+function selectionFailures({ capture, matched, label, history = [] }) {
+  const selected = capture.candidateSet.items
     .filter((item, index) => item.kind === "raw" || matched.includes(index))
     .reduce((sum, item) => sum + item.tokens, 0);
+  const total = selected + historyTokens(history);
   return total > capture.contextBudgetTokens
     ? [
         fail(
           "selection-exceeds-budget",
-          `${label}: the selected items measure ${total} tokens, over the ${capture.contextBudgetTokens} context budget`,
+          `${label}: the selected items measure ${selected} tokens and the history ${total - selected}, over the ${capture.contextBudgetTokens} context budget`,
         ),
       ]
     : [];
@@ -1674,6 +1691,17 @@ function frozenInputFailures({
 function armContentFailures({ read, view, capture, rawText, prefix }) {
   const failures = [];
   const { parsed, cut } = read;
+  // The history slot of a DP-H request is zero inputs: a payload that holds
+  // history messages is not the request the fixture described (the harness
+  // runs sessions with no past attempt; the baseline arm renders none).
+  if (parsed.history.length !== 0) {
+    failures.push(
+      fail(
+        "history-input-present",
+        `${prefix}the payload holds ${parsed.history.length} history message(s), but the history slot of a DP-H request is zero inputs`,
+      ),
+    );
+  }
   if (parsed.user !== capture.userMessage.text) {
     failures.push(
       fail(
@@ -1926,6 +1954,7 @@ export function scorePositiveRequest({
       capture,
       matched: alignment.matched,
       label: "candidate",
+      history: parsed.history,
     }),
   );
   failures.push(...windowFailure(parsed, fixture.route, "candidate"));
@@ -1948,6 +1977,7 @@ export function scorePositiveRequest({
       payload: request.candidate.payload,
       system: parsed.system,
       user: parsed.user,
+      history: parsed.history,
       canaries: fixture.canaries,
       forbiddenTexts: forbiddenTexts.flatMap((row) => row.texts),
       forbiddenIds,
@@ -2219,6 +2249,7 @@ export function scoreP12Pair({
       payload: arm.payload,
       system: parsedArm.system,
       user: parsedArm.user,
+      history: parsedArm.history,
       canaries: fixture.canaries,
       forbiddenTexts: [],
       forbiddenIds: [],
@@ -2274,11 +2305,13 @@ export function scoreP12Pair({
       capture,
       matched: candidateAlign.matched,
       label: "candidate",
+      history: candidateRead.parsed.history,
     }),
     ...selectionFailures({
       capture,
       matched: baselineAlign.matched,
       label: "baseline",
+      history: baselineRead.parsed.history,
     }),
   );
   const candidateSlots = deriveSlots({

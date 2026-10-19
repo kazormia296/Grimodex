@@ -340,6 +340,15 @@ test("receipt: the capture carries the (c-1) set and the (c-2) rendering", () =>
       },
       "position.index",
     ],
+    [
+      (r) => {
+        positive(r).capture.rendered.renderCorrespondence.push({
+          position: { kind: "history-message" },
+          inputOrdinal: 0,
+        });
+      },
+      "position.index",
+    ],
   ]) {
     assert.ok(
       errorsAfter(mutate).some((e) => e.includes(expected)),
@@ -851,4 +860,13 @@ test("event kind writers: every setup event kind has writers, all of them produc
     "narrative_extraction_append_human_decision",
   ]);
   assert.ok(!EVENT_KIND_WRITERS.tree.includes("db_execute:createSession"));
+});
+
+test("receipt: a history message position is a known position with an index", () => {
+  const value = receipt();
+  positive(value).capture.rendered.renderCorrespondence.push({
+    position: { kind: "history-message", index: 0 },
+    inputOrdinal: 0,
+  });
+  assert.deepEqual(validateReceipt(value), []);
 });

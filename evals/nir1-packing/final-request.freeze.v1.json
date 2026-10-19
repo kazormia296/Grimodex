@@ -37,7 +37,7 @@
     "files": [
       {
         "path": "scripts/quality/nir1-packing/final-request/scorer.mjs",
-        "sha256": "3c7db6adc57dbe8a481e1c0c8d5bb332e478f6b49e56cec772440be01c7b097a"
+        "sha256": "440f39971beae80ee64ce184fa38c54811aa9ea99fa63331b893d1ebe26a55ca"
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/contract.mjs",
@@ -45,11 +45,11 @@
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/receipt.mjs",
-        "sha256": "5bac0b6984c465f5278a0a4b119cd37841306a34332a852b6309b4a1ac9e22a6"
+        "sha256": "e37aa05ddf7e2faa07242d58dee8d7e187dd9b9599691a49fe1f1bb0e209572c"
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/payload.mjs",
-        "sha256": "52aba5f1aa8114d1c49cb0c46d07e23873992befbbd4cc780cee94baf92ae84d"
+        "sha256": "19c99da8fda46c567e5ccd6909498b57c9faed6dc4af3b4cb05f57ec171e5ed8"
       }
     ]
   },

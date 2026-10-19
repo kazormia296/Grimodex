@@ -32,7 +32,7 @@ use super::{
     VersionedAttemptBinding, VersionedReference, MAX_BINDING_JSON_BYTES, MAX_ID_BYTES,
 };
 #[cfg(feature = "native-current-human-capture")]
-use super::{MessageOrigin, MAX_DIGEST_BYTES};
+use super::{InputRole, InputUse, MessageOrigin, MAX_DIGEST_BYTES};
 use anyhow::{ensure, Context, Result};
 #[cfg(feature = "native-current-human-capture")]
 use rusqlite::Connection;
@@ -59,6 +59,14 @@ const ENUMERATION_CHANGED_ERROR: &str = "NIR1_GENERATION_HISTORY_ENUMERATION_CHA
 const REFERENCE_LIMIT_ERROR: &str = "NIR1_GENERATION_REF_LIMIT";
 const CAPTURE_LIMIT_ERROR: &str = "NIR1_GENERATION_CAPTURE_LIMIT";
 const CAPTURE_STATE_INVALID_ERROR: &str = "NIR1_GENERATION_CAPTURE_STATE_INVALID";
+#[cfg(feature = "native-current-human-capture")]
+const IN_FLIGHT_ATTEMPT_MISMATCH_ERROR: &str = "NIR1_GENERATION_HISTORY_IN_FLIGHT_ATTEMPT_MISMATCH";
+#[cfg(feature = "native-current-human-capture")]
+const IN_FLIGHT_ATTEMPT_LATE_ERROR: &str = "NIR1_GENERATION_HISTORY_IN_FLIGHT_ATTEMPT_LATE";
+/// A stored reference row is a few hundred bytes (1 KiB per row slot in the
+/// create's budget); the in-flight attempt's ordinal 0 row is read once.
+#[cfg(feature = "native-current-human-capture")]
+const IN_FLIGHT_REFERENCE_MAX_BYTES: usize = 16 * 1024;
 
 /// An attempt row the history snapshot reader does not use: only its header
 /// and the closed reason. No reference row was read, so neither the
@@ -275,6 +283,92 @@ impl GenerationHistorySnapshotReader<'_> {
         Ok(headers)
     }
 
+    /// Leave the turn's own attempt out of the session enumeration (DI1B-3
+    /// review). A request that was prepared and then created as an attempt is
+    /// re-confirmed against the session the next turn would see; the attempt
+    /// it just created is not history, and it would otherwise cost the
+    /// re-confirmation a candidate, a node, its reference rows and its edges
+    /// that the preparation never paid, so a session at the edge of the budget
+    /// would be refused for the turn's own attempt.
+    ///
+    /// Nothing is left out on trust. The attempt must belong to this project
+    /// and chat session, and its ordinal 0 input must be the current Human
+    /// message version of the turn (a current-turn use): the one attempt that
+    /// the current Human's capture produced. Anything else, and a call after
+    /// the session was already enumerated, is an error (the turn stops):
+    /// hiding another attempt could hide a second holder of a past Human and
+    /// so widen what qualifies.
+    #[cfg(feature = "native-current-human-capture")]
+    pub(crate) fn exclude_in_flight_attempt(
+        &mut self,
+        project_id: &str,
+        chat_session_id: &str,
+        attempt_id: &str,
+        human_version_id: &str,
+    ) -> Result<()> {
+        identity(project_id)?;
+        identity(chat_session_id)?;
+        identity(attempt_id)?;
+        identity(human_version_id)?;
+        self.checkpoint()?;
+        ensure!(
+            self.enumerations.is_empty() && self.in_flight_attempt.is_none(),
+            "{}",
+            IN_FLIGHT_ATTEMPT_LATE_ERROR
+        );
+        let belongs: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT 1 FROM nir1_generation_attempts
+                 WHERE id=?1 AND project_id=?2 AND session_id=?3",
+                params![attempt_id, project_id, chat_session_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        ensure!(belongs.is_some(), "{}", IN_FLIGHT_ATTEMPT_MISMATCH_ERROR);
+        let bytes: Option<i64> = self
+            .connection
+            .query_row(
+                "SELECT octet_length(reference_json) FROM nir1_generation_input_refs
+                 WHERE attempt_id=?1 AND ordinal=0",
+                [attempt_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let bytes = bounded_sqlite_length(
+            bytes.context(IN_FLIGHT_ATTEMPT_MISMATCH_ERROR)?,
+            IN_FLIGHT_REFERENCE_MAX_BYTES,
+            IN_FLIGHT_ATTEMPT_MISMATCH_ERROR,
+        )?;
+        let raw: String = self.connection.query_row(
+            "SELECT reference_json FROM nir1_generation_input_refs
+             WHERE attempt_id=?1 AND ordinal=0",
+            [attempt_id],
+            |row| row.get(0),
+        )?;
+        ensure!(raw.len() == bytes, "NIR1_GENERATION_REF_LENGTH_CHANGED");
+        let is_current_human =
+            match parse_versioned_reference::<InputReference, LegacyInputReferenceV1>(&raw)? {
+                VersionedReference::Current(reference) => matches!(
+                    (&reference.role, &reference.input_use, &reference.target),
+                    (
+                        InputRole::User,
+                        InputUse::CurrentTurn,
+                        InputTarget::Message {
+                            version_id,
+                            parent_attempt_id: None,
+                        },
+                    ) if version_id == human_version_id
+                ),
+                // A legacy attempt is never the one this turn just created.
+                VersionedReference::Legacy(_) => false,
+            };
+        ensure!(is_current_human, "{}", IN_FLIGHT_ATTEMPT_MISMATCH_ERROR);
+        self.checkpoint()?;
+        self.in_flight_attempt = Some(attempt_id.to_owned());
+        Ok(())
+    }
+
     fn enumerate_session_attempts(
         &mut self,
         budget: &mut GenerationHistoryReadBudget,
@@ -287,11 +381,14 @@ impl GenerationHistorySnapshotReader<'_> {
         let probe = i64::try_from(limit)?
             .checked_add(1)
             .context(ENUMERATION_ATTEMPT_LIMIT_ERROR)?;
+        // The turn's own in-flight attempt, when one was named, is not part of
+        // the session's history (`id IS NOT NULL` holds for every row).
+        let excluded = self.in_flight_attempt.clone();
         let counted: i64 = self.connection.query_row(
             "SELECT count(*) FROM (
                  SELECT 1 FROM nir1_generation_attempts
-                 WHERE project_id=?1 AND session_id=?2 LIMIT ?3)",
-            params![project_id, chat_session_id, probe],
+                 WHERE project_id=?1 AND session_id=?2 AND id IS NOT ?4 LIMIT ?3)",
+            params![project_id, chat_session_id, probe, excluded],
             |row| row.get(0),
         )?;
         let counted = usize::try_from(counted)?;
@@ -315,13 +412,14 @@ impl GenerationHistorySnapshotReader<'_> {
             let mut statement = self.connection.prepare(
                 "SELECT rowid,octet_length(id),octet_length(binding_json),created_at_ms
                  FROM nir1_generation_attempts
-                 WHERE project_id=?1 AND session_id=?2
+                 WHERE project_id=?1 AND session_id=?2 AND id IS NOT ?4
                  ORDER BY created_at_ms DESC, id ASC LIMIT ?3",
             )?;
             let mut rows = statement.query(params![
                 project_id,
                 chat_session_id,
-                i64::try_from(counted)?
+                i64::try_from(counted)?,
+                excluded
             ])?;
             let mut locations = Vec::with_capacity(counted);
             while let Some(row) = rows.next()? {

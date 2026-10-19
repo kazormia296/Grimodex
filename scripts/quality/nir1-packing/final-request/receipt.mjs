@@ -60,6 +60,9 @@ export const INPUT_TARGET_KINDS = Object.freeze([
 export const POSITION_KINDS = Object.freeze([
   "system-current-scene",
   "system-codex-entry",
+  // The `index`-th adopted history message, oldest first (DI-1b): payload
+  // message `index + 1`, between the system message and the current Human.
+  "history-message",
 ]);
 export const ITEM_KINDS = Object.freeze([
   "raw",
@@ -209,7 +212,11 @@ function validateCorrespondence(rows, label, errors) {
     const position = row.position;
     if (!isRecord(position) || !POSITION_KINDS.includes(position.kind)) {
       errors.push(`${rowLabel}.position.kind is not a known position`);
-    } else if (position.kind === "system-codex-entry" && !nat(position.index)) {
+    } else if (
+      (position.kind === "system-codex-entry" ||
+        position.kind === "history-message") &&
+      !nat(position.index)
+    ) {
       errors.push(`${rowLabel}.position.index must be a non-negative integer`);
     }
   }

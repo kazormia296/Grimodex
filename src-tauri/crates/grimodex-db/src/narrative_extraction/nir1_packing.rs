@@ -20,6 +20,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::collections::{HashMap, HashSet};
 use std::ops::Deref;
+#[cfg(feature = "native-current-human-capture")]
+use std::time::Instant;
 
 use super::human_material_basis::MaterialEvidenceEntry;
 use super::nir1_entity_relation::{
@@ -30,8 +32,15 @@ use super::nir1_entity_relation::{
 #[cfg(feature = "native-current-human-capture")]
 use super::nir1_graph::read_nir1_graph_seal;
 #[cfg(feature = "native-current-human-capture")]
+use super::nir1_history_adoption::{
+    adopt_history_turns, AdoptedTurn, AdoptionLimits, HistoryAdoptionRequest,
+};
+#[cfg(feature = "native-current-human-capture")]
+use super::nir1_history_budget::{parent_read_cost_in_tx, reauthorize_turn_history_in_tx};
+#[cfg(feature = "native-current-human-capture")]
 use super::nir1_history_context::{
     build_history_context_stage, finish_history_draft, HistoryContextStage, NativeNir1HistoryDraft,
+    TurnHistoryRange,
 };
 #[cfg(feature = "native-current-human-capture")]
 use super::retrieval_admission::read_retrieval_scene_source_bounded;
@@ -42,6 +51,8 @@ use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
 #[cfg(feature = "native-current-human-capture")]
 use crate::nir1_generation::history_context::HistorySendClassification;
 #[cfg(feature = "native-current-human-capture")]
+use crate::nir1_generation::GenerationPurpose;
+#[cfg(feature = "native-current-human-capture")]
 use crate::nir1_generation::{
     check_attempt_completeness, d1_selection_digest, d1_selection_reference,
     read_attempt_scene_binding_in_tx, read_current_chat_input_capture_in_tx,
@@ -50,6 +61,10 @@ use crate::nir1_generation::{
     InputTarget, InputUse, MessageVersion, Nir1ExpectedScope, NotApplicableReason,
     QualificationBody, QualificationKind, QualificationReference, ScopeRole, TypedTarget,
     D1_SELECTION_IDENTITY,
+};
+#[cfg(feature = "native-current-human-capture")]
+use crate::nir1_generation_history::{
+    CandidateDisposition, InFlightAttempt, SessionCandidateKind, SessionHistoryOutcome,
 };
 #[cfg(feature = "native-current-human-capture")]
 use crate::state::ActiveWorkspaceSnapshot;
@@ -998,6 +1013,91 @@ pub struct NativeNir1FinalQualifications {
     pub d1_selection_digest: String,
 }
 
+/// What Native supplies for the history of one turn (DI1B-3). A caller that
+/// passes `None` asks for no history: the prepared inputs then hold the
+/// Human, the Raw and the Revisions only, byte for byte as before history.
+///
+/// * `now_ms` is the Native clock's value for the turn. This crate reads no
+///   wall clock; the 30-day validity of a past turn is decided against it.
+/// * `message_envelope_tokens` is what one chat message costs besides its
+///   text. The history is counted in the same budget as the context (it
+///   takes the tokens the selector's budget leaves after the Raw and the
+///   accepted IR), so the envelope of each history message is part of it.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeNir1HistoryRequest {
+    pub now_ms: i64,
+    pub message_envelope_tokens: usize,
+}
+
+/// One adopted history message, in the order it is rendered (oldest first).
+/// The text is the body the run read and authenticated; it is request-local
+/// like the Human body, with no Debug or Serialize.
+#[cfg(feature = "native-current-human-capture")]
+pub struct NativeNir1PreparedHistoryMessage {
+    input_ordinal: usize,
+    role: InputRole,
+    text: String,
+    tokens: usize,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl NativeNir1PreparedHistoryMessage {
+    /// The ordinal of the message's input row.
+    pub fn input_ordinal(&self) -> usize {
+        self.input_ordinal
+    }
+
+    /// `User` for a past Human, `Assistant` for a generated output.
+    pub fn role(&self) -> &InputRole {
+        &self.role
+    }
+
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
+    /// The tokens the message takes in the request: its text and its envelope.
+    pub fn tokens(&self) -> usize {
+        self.tokens
+    }
+}
+
+/// What the history of a turn came to, without any text or identifier: for
+/// tests and evidence.
+#[cfg(feature = "native-current-human-capture")]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NativeNir1HistoryObservation {
+    pub adopted_turns: usize,
+    pub adopted_messages: usize,
+    pub tokens: usize,
+    /// Adopted replies written against a Scene body that has since changed.
+    pub changed_body_replies: usize,
+    /// The closed code of why the whole turn went on without history.
+    pub without_history: Option<&'static str>,
+    /// The closed code of every qualified turn that was not adopted, newest
+    /// first.
+    pub not_adopted: Vec<&'static str>,
+}
+
+/// The adopted history of a prepared request and what is needed to confirm it
+/// again before the request is sent.
+#[cfg(feature = "native-current-human-capture")]
+struct PreparedHistory {
+    purpose: GenerationPurpose,
+    send_classification: HistorySendClassification,
+    turns: Vec<AdoptedTurn>,
+    messages: Vec<NativeNir1PreparedHistoryMessage>,
+    observation: NativeNir1HistoryObservation,
+}
+
+#[cfg(feature = "native-current-human-capture")]
+impl PreparedHistory {
+    fn tokens(&self) -> usize {
+        self.messages.iter().map(|message| message.tokens).sum()
+    }
+}
+
 /// Request-local DB projection. It is neither a wire DTO nor a dispatch or
 /// attempt capability. Private prompt/context text has no Debug/Serialize
 /// implementation and is dropped with the preparing owner.
@@ -1023,6 +1123,9 @@ pub struct NativeNir1PreparedInputs {
     /// The history turn context built in the same snapshot, without the D1
     /// fields (K4/3 section 2). `history_draft` completes it.
     history_context: HistoryContextStage,
+    /// The history turns adopted after the Raw and the Revisions (DI1B-3).
+    /// `None` when the caller asked for none.
+    history: Option<PreparedHistory>,
 }
 
 #[cfg(feature = "native-current-human-capture")]
@@ -1065,6 +1168,20 @@ impl NativeNir1PreparedInputs {
 
     pub fn authority_bindings(&self) -> &[NativeNir1AuthorityBinding] {
         &self.authority_bindings
+    }
+
+    /// The adopted history messages, oldest first: the order they are rendered
+    /// between the system message and the current Human. Empty when there is
+    /// no history.
+    pub fn history_messages(&self) -> &[NativeNir1PreparedHistoryMessage] {
+        self.history
+            .as_ref()
+            .map_or(&[], |history| history.messages.as_slice())
+    }
+
+    /// What the history came to, or `None` when the caller asked for none.
+    pub fn history_observation(&self) -> Option<&NativeNir1HistoryObservation> {
+        self.history.as_ref().map(|history| &history.observation)
     }
 
     /// Accepted Revisions that were consulted but not adopted, each with its
@@ -1154,7 +1271,9 @@ impl NativeNir1PreparedInputs {
     /// Add the D1 selection references once the rendered usage is known and
     /// check the complete output against the rule. `selector_budget_tokens` is
     /// the context budget the selector was given; the usage is the estimate of
-    /// the adopted context texts, which is what the selector counted. An
+    /// the adopted context texts, which is what the selector counted, and the
+    /// adopted history messages with their envelopes, which took their tokens
+    /// from what the selector left. An
     /// incomplete output is refused (`NIR1_NATIVE_PREPARED_QUALIFICATION_INCOMPLETE`).
     pub fn finalize_qualifications(
         &self,
@@ -1164,6 +1283,12 @@ impl NativeNir1PreparedInputs {
         for item in &self.context_items {
             used_tokens = used_tokens
                 .checked_add(estimate_nir1_context_tokens(&item.text))
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_D1_USAGE_OVERFLOW"))?;
+        }
+        // The history shares the selector's budget: what it takes is used.
+        if let Some(history) = &self.history {
+            used_tokens = used_tokens
+                .checked_add(history.tokens())
                 .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_D1_USAGE_OVERFLOW"))?;
         }
         let remaining_tokens = selector_budget_tokens
@@ -1330,12 +1455,18 @@ pub(super) fn expected_targets_for_inputs(
 /// The Revisions are the caller's list, and one that A2 or A3 reports
 /// unavailable fails the whole request (the DP-H rejection variant). The
 /// Native selection is [`read_and_pack_native_nir1_selected_inputs`].
+///
+/// `history` (DI1B-3) asks for the turn's history in the same snapshot, the
+/// way the Native selection does: the function is shared, so a caller's list
+/// of Revisions gets the same history as the Native selection. `None` asks for
+/// none.
 #[cfg(feature = "native-current-human-capture")]
 #[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
 pub fn read_and_pack_native_nir1_prepared_inputs(
     workspace: &ActiveWorkspaceSnapshot,
     purpose: PackingPurpose,
     send_classification: HistorySendClassification,
+    history: Option<NativeNir1HistoryRequest>,
     expected_session_id: &str,
     capture: &AcceptedChatInputCapture,
     query_scene_id: &str,
@@ -1387,6 +1518,7 @@ pub fn read_and_pack_native_nir1_prepared_inputs(
         query_scene_id,
         RevisionSelection::Caller(&unique_revision_ids),
         None,
+        history,
         sql_budget,
         context_budget_for_user,
     )
@@ -1454,6 +1586,7 @@ pub fn read_and_pack_native_nir1_selected_inputs(
     workspace: &ActiveWorkspaceSnapshot,
     purpose: PackingPurpose,
     send_classification: HistorySendClassification,
+    history: Option<NativeNir1HistoryRequest>,
     expected_session_id: &str,
     capture: &AcceptedChatInputCapture,
     query_scene_id: &str,
@@ -1479,6 +1612,7 @@ pub fn read_and_pack_native_nir1_selected_inputs(
         query_scene_id,
         RevisionSelection::Native,
         graph,
+        history,
         sql_budget,
         context_budget_for_user,
     )?;
@@ -1586,6 +1720,7 @@ fn read_prepared_inputs_in_snapshot(
     query_scene_id: &str,
     selection: RevisionSelection<'_>,
     graph: Option<&Nir1GraphCandidates>,
+    history: Option<NativeNir1HistoryRequest>,
     sql_budget: ParticipantSqlOperationBudget,
     context_budget_for_user: impl FnOnce(&str) -> Result<usize>,
 ) -> Result<(NativeNir1PreparedInputs, Option<SnapshotExpectations>)> {
@@ -1657,20 +1792,28 @@ fn read_prepared_inputs_in_snapshot(
             checkpoint()?;
             // The Native selection also reads, in this snapshot, what a create
             // and a claim compare. The Scope token and the restore epoch are
-            // read even when the history slot is unavailable.
-            let expectations = match selection {
-                RevisionSelection::Caller(_) => None,
-                RevisionSelection::Native => {
+            // read even when the history slot is unavailable. A request for
+            // history needs the same Scene binding (its incarnation names the
+            // range of the history), so it is read once for both.
+            let scene_binding =
+                if history.is_some() || matches!(selection, RevisionSelection::Native) {
                     let scene_binding =
                         read_attempt_scene_binding_in_tx(conn, &project_id, query_scene_id)?;
                     checkpoint()?;
+                    Some(scene_binding)
+                } else {
+                    None
+                };
+            let expectations = match (&selection, &scene_binding) {
+                (RevisionSelection::Native, Some(scene_binding)) => {
                     let expected_scope =
                         read_expected_scope_in_tx(conn, &project_id, query_scene_id)?;
                     checkpoint()?;
-                    Some((scene_binding, expected_scope))
+                    Some((scene_binding.clone(), expected_scope))
                 }
+                _ => None,
             };
-            let prepared = build_native_nir1_prepared_inputs(
+            let mut prepared = build_native_nir1_prepared_inputs(
                 capture.clone(),
                 project_id,
                 query_scene_id.to_owned(),
@@ -1680,9 +1823,297 @@ fn read_prepared_inputs_in_snapshot(
                 history_context,
                 &mut checkpoint,
             )?;
+            // The history comes last: it takes what the selector's budget
+            // leaves after the Raw and the accepted IR, so the Raw and the IR
+            // are the same with and without it (DI1B-3).
+            if let (Some(request), Some(scene_binding)) = (history, &scene_binding) {
+                attach_history_in_snapshot(
+                    conn,
+                    &mut prepared,
+                    scene_binding,
+                    purpose,
+                    send_classification,
+                    request,
+                    context_budget_tokens,
+                    &checkpoint_budget,
+                    &mut checkpoint,
+                )?;
+            }
             Ok((prepared, expectations))
         },
     )
+}
+
+/// The generation purpose of a packing purpose: the history of a turn is the
+/// history of the same purpose (a Review turn adopts Review history only).
+#[cfg(feature = "native-current-human-capture")]
+fn generation_purpose_of(purpose: PackingPurpose) -> GenerationPurpose {
+    match purpose {
+        PackingPurpose::Writing => GenerationPurpose::Writing,
+        PackingPurpose::Review => GenerationPurpose::Review,
+    }
+}
+
+/// Run the history re-authorization in the D-final snapshot and append the
+/// adopted turns to the prepared inputs (DI1B-3; K4/3 sections 3, 6 and 8).
+///
+/// * The range is the capture's session and the Scene incarnation this
+///   snapshot read (`TurnHistoryRange::from_snapshot`); nothing of it comes
+///   from the caller.
+/// * The history takes the tokens the selector's budget leaves after the Raw
+///   and the accepted IR (`context_budget_tokens` less the tokens of the
+///   adopted context items), each message with its envelope. The selector's
+///   own result is not touched, so a request with no adopted history is the
+///   request it was before history.
+/// * The input rows come after the Human, the Raw and the Revisions, oldest
+///   turn first, so no earlier ordinal moves. Each message gets the rows of
+///   K4/3 section 3: its message version and body digest as Source, the
+///   target Scene's Scope token and incarnation, and typed N/A for the
+///   Revision, Decision, Freshness and Index kinds; D1 is added by
+///   `finalize_qualifications`.
+/// * A spent SQL ledger or deadline of the history is "no history for this
+///   turn" (the run's outcome); a cancel and every other error stop the turn.
+#[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
+fn attach_history_in_snapshot(
+    conn: &Connection,
+    prepared: &mut NativeNir1PreparedInputs,
+    scene_binding: &AttemptSceneBinding,
+    purpose: PackingPurpose,
+    send_classification: HistorySendClassification,
+    request: NativeNir1HistoryRequest,
+    context_budget_tokens: usize,
+    prepare: &ParticipantSqlOperationBudget,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let range = TurnHistoryRange::from_snapshot(&prepared.capture, scene_binding)?;
+    let generation_purpose = generation_purpose_of(purpose);
+    let outcome = reauthorize_turn_history_in_tx(
+        conn,
+        &prepared.history_context,
+        &range,
+        generation_purpose.clone(),
+        request.now_ms,
+        Instant::now(),
+        prepare,
+        None,
+        &mut *checkpoint,
+    )?;
+    checkpoint()?;
+    let mut context_tokens = 0usize;
+    for item in &prepared.context_items {
+        context_tokens = context_tokens
+            .checked_add(estimate_nir1_context_tokens(&item.text))
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_D1_USAGE_OVERFLOW"))?;
+    }
+    let remaining_tokens = context_budget_tokens.saturating_sub(context_tokens);
+    let adoption = adopt_history_turns(
+        &HistoryAdoptionRequest {
+            outcome: &outcome,
+            current_human_body: &prepared.user_message,
+            current_scene_body_digest: &scene_binding.body_digest,
+            limits: AdoptionLimits::production(remaining_tokens, request.message_envelope_tokens),
+        },
+        &mut |attempt_id| {
+            checkpoint()?;
+            parent_read_cost_in_tx(conn, attempt_id)
+        },
+    )?;
+    checkpoint()?;
+
+    let scope = prepared
+        .authority_bindings
+        .first()
+        .map(NativeNir1AuthorityBinding::scope)
+        .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REQUIRED_CONTEXT_MISSING"))?
+        .clone();
+    let mut messages = Vec::with_capacity(adoption.message_count());
+    for message in adoption.messages() {
+        checkpoint()?;
+        let InputTarget::Message { version_id, .. } = &message.input.target else {
+            anyhow::bail!("NIR1_NATIVE_PREPARED_HISTORY_INPUT_INVALID");
+        };
+        let decision = match message.input.role {
+            InputRole::User => NotApplicableReason::HumanAuthored,
+            InputRole::Assistant => NotApplicableReason::DerivedFromParents,
+            _ => anyhow::bail!("NIR1_NATIVE_PREPARED_HISTORY_INPUT_INVALID"),
+        };
+        let ordinal = prepared.input_references.len();
+        prepared.input_references.push(message.input.clone());
+        prepared
+            .qualifications
+            .push(QualificationReference::present(
+                ordinal,
+                QualificationKind::Source,
+                version_id.clone(),
+                message.body_digest.clone(),
+            ));
+        add_scene_scope_references(
+            &mut prepared.qualifications,
+            ordinal,
+            &prepared.query_scene_id,
+            &scope,
+        )?;
+        for (kind, reason) in [
+            (
+                QualificationKind::Revision,
+                NotApplicableReason::NotARevision,
+            ),
+            (QualificationKind::Decision, decision),
+            (
+                QualificationKind::Freshness,
+                NotApplicableReason::ImmutableMessageVersion,
+            ),
+            (
+                QualificationKind::Index,
+                NotApplicableReason::NotIndexDerived,
+            ),
+        ] {
+            prepared
+                .qualifications
+                .push(QualificationReference::not_applicable(
+                    ordinal, kind, reason,
+                ));
+        }
+        messages.push(NativeNir1PreparedHistoryMessage {
+            input_ordinal: ordinal,
+            role: message.input.role.clone(),
+            text: message.body.clone(),
+            tokens: message.tokens,
+        });
+    }
+    let observation = NativeNir1HistoryObservation {
+        adopted_turns: adoption.turns.len(),
+        adopted_messages: messages.len(),
+        tokens: adoption.tokens(),
+        changed_body_replies: adoption.changed_body_replies(),
+        without_history: outcome.without_history.map(|reason| reason.code()),
+        not_adopted: adoption
+            .not_adopted
+            .iter()
+            .map(|entry| entry.reason.code())
+            .collect(),
+    };
+    prepared.history = Some(PreparedHistory {
+        purpose: generation_purpose,
+        send_classification,
+        turns: adoption.turns,
+        messages,
+        observation,
+    });
+    checkpoint()
+}
+
+/// Confirm the adopted history again in a new snapshot (DI1B-3; K4/3
+/// section 8, "a lapse between the preparation and the claim stops the whole
+/// turn"). The same run is made with a new budget; every adopted turn must
+/// still be qualified, with the message versions and the body digests that
+/// were adopted. Anything else, including a run that ended without a result
+/// because its budget was spent, is `NIR1_NATIVE_PREPARED_HISTORY_STALE`: a
+/// part of the history is never sent on the strength of a part of the
+/// confirmation. (At preparation a spent budget is "no history, the turn
+/// goes on", because nothing was adopted yet; here the history was adopted and
+/// is about to be sent, so what cannot be confirmed must not be sent.)
+#[cfg(feature = "native-current-human-capture")]
+#[allow(clippy::too_many_arguments)] // One explicit value per input of the D-final snapshot.
+fn confirm_history_in_snapshot(
+    conn: &Connection,
+    expected: &NativeNir1PreparedInputs,
+    history: &PreparedHistory,
+    workspace: &ActiveWorkspaceSnapshot,
+    now_ms: i64,
+    created_attempt_id: Option<&str>,
+    prepare: &ParticipantSqlOperationBudget,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<()> {
+    let stage = build_history_context_stage(
+        conn,
+        &expected.project_id,
+        &expected.query_scene_id,
+        workspace.durable_workspace_identity(),
+        history.send_classification,
+    )?;
+    checkpoint()?;
+    let scene_binding =
+        read_attempt_scene_binding_in_tx(conn, &expected.project_id, &expected.query_scene_id)?;
+    checkpoint()?;
+    let range = TurnHistoryRange::from_snapshot(&expected.capture, &scene_binding)?;
+    let outcome = reauthorize_turn_history_in_tx(
+        conn,
+        &stage,
+        &range,
+        history.purpose.clone(),
+        now_ms,
+        Instant::now(),
+        prepare,
+        created_attempt_id.map(|attempt_id| InFlightAttempt {
+            attempt_id,
+            human_version_id: &expected.user_message_version.id,
+        }),
+        &mut *checkpoint,
+    )?;
+    checkpoint()?;
+    for turn in &history.turns {
+        ensure!(
+            history_message_still_qualified(
+                &outcome,
+                &turn.attempt_id,
+                SessionCandidateKind::PastHuman,
+                &turn.human,
+            ),
+            "NIR1_NATIVE_PREPARED_HISTORY_STALE"
+        );
+        if let Some(output) = &turn.output {
+            ensure!(
+                history_message_still_qualified(
+                    &outcome,
+                    &turn.attempt_id,
+                    SessionCandidateKind::GeneratedOutput,
+                    output,
+                ),
+                "NIR1_NATIVE_PREPARED_HISTORY_STALE"
+            );
+        }
+        checkpoint()?;
+    }
+    Ok(())
+}
+
+/// The new run qualified the candidate of `attempt_id` and `kind`, and the
+/// message it read is the adopted one: the same version, the same digest and
+/// the same body.
+#[cfg(feature = "native-current-human-capture")]
+fn history_message_still_qualified(
+    outcome: &SessionHistoryOutcome,
+    attempt_id: &str,
+    kind: SessionCandidateKind,
+    adopted: &super::nir1_history_adoption::AdoptedMessage,
+) -> bool {
+    let InputTarget::Message { version_id, .. } = &adopted.input.target else {
+        return false;
+    };
+    let qualified = outcome.candidates.iter().any(|result| {
+        result.kind == kind
+            && result.attempt_id == attempt_id
+            && result.disposition == CandidateDisposition::Qualified
+            && result.version_id.as_deref() == Some(version_id.as_str())
+    });
+    if !qualified {
+        return false;
+    }
+    let Some(material) = outcome.materials.get(attempt_id) else {
+        return false;
+    };
+    let message = match kind {
+        SessionCandidateKind::PastHuman => material.human.as_ref(),
+        SessionCandidateKind::GeneratedOutput => material.output.as_ref(),
+        SessionCandidateKind::Attempt => None,
+    };
+    message.is_some_and(|message| {
+        message.version_id == *version_id
+            && message.body_digest == adopted.body_digest
+            && message.body == adopted.body
+    })
 }
 
 #[cfg(feature = "native-current-human-capture")]
@@ -2068,6 +2499,7 @@ fn build_native_nir1_prepared_inputs(
         graph_outcome,
         graph_binding,
         history_context,
+        history: None,
     })
 }
 
@@ -2322,12 +2754,78 @@ fn add_revision_qualifications(
 
 /// Re-read every adopted input in a new participant-owned read transaction.
 /// The original preparation snapshot is never reused as a return-time proof.
+///
+/// The adopted history (DI1B-3) is confirmed again in the same transaction:
+/// the run is made once more with a new budget, and a turn that no longer
+/// qualifies, or a message whose body is not the adopted one, stops the turn
+/// with `NIR1_NATIVE_PREPARED_HISTORY_STALE`. `now_ms` is the Native clock's
+/// value now (the 30-day validity is decided against it); it is not used when
+/// no history was adopted.
+///
+/// This is the form for a request that has not been created as an attempt yet
+/// (the return of the preparation): the session holds only the attempts of the
+/// turns before it. Once the attempt exists, use
+/// [`revalidate_native_nir1_prepared_inputs_after_create`].
 #[cfg(feature = "native-current-human-capture")]
 pub fn revalidate_native_nir1_prepared_inputs(
     workspace: &ActiveWorkspaceSnapshot,
     expected_session_id: &str,
     expected: &NativeNir1PreparedInputs,
     sql_budget: ParticipantSqlOperationBudget,
+    now_ms: i64,
+) -> Result<()> {
+    revalidate_prepared_inputs(
+        workspace,
+        expected_session_id,
+        expected,
+        sql_budget,
+        now_ms,
+        None,
+    )
+}
+
+/// [`revalidate_native_nir1_prepared_inputs`] for the check right before the
+/// claim, after the request was created as the attempt `created_attempt_id`
+/// (DI1B-3 review, DR-DI1B-9c).
+///
+/// The created attempt is now a row of the session, but it is not history: the
+/// preparation, which ran before it existed, never counted it, so counting it
+/// here would charge the turn's own attempt to its own history budget and
+/// refuse (`NIR1_NATIVE_PREPARED_HISTORY_STALE`) a turn whose history was
+/// adopted within the budget, at the edge of every dimension (128 attempts,
+/// 128 nodes, its own reference rows and edges). The run therefore leaves that
+/// one attempt out of the enumeration, after checking that it is the attempt
+/// of the turn's own Human (same project, same chat session, ordinal 0 is the
+/// current Human message version as a current-turn use). Any other id is an
+/// error and stops the turn. No value of the budget is larger than the
+/// preparation's.
+#[cfg(feature = "native-current-human-capture")]
+pub fn revalidate_native_nir1_prepared_inputs_after_create(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_session_id: &str,
+    expected: &NativeNir1PreparedInputs,
+    sql_budget: ParticipantSqlOperationBudget,
+    now_ms: i64,
+    created_attempt_id: &str,
+) -> Result<()> {
+    revalidate_prepared_inputs(
+        workspace,
+        expected_session_id,
+        expected,
+        sql_budget,
+        now_ms,
+        Some(created_attempt_id),
+    )
+}
+
+#[cfg(feature = "native-current-human-capture")]
+fn revalidate_prepared_inputs(
+    workspace: &ActiveWorkspaceSnapshot,
+    expected_session_id: &str,
+    expected: &NativeNir1PreparedInputs,
+    sql_budget: ParticipantSqlOperationBudget,
+    now_ms: i64,
+    created_attempt_id: Option<&str>,
 ) -> Result<()> {
     ensure!(
         expected.capture.chat_session_id() == expected_session_id,
@@ -2442,6 +2940,22 @@ pub fn revalidate_native_nir1_prepared_inputs(
                 }
             }
             checkpoint()?;
+            if let Some(history) = expected
+                .history
+                .as_ref()
+                .filter(|history| !history.turns.is_empty())
+            {
+                confirm_history_in_snapshot(
+                    conn,
+                    expected,
+                    history,
+                    workspace,
+                    now_ms,
+                    created_attempt_id,
+                    &checkpoint_budget,
+                    &mut checkpoint,
+                )?;
+            }
             Ok(())
         },
     )

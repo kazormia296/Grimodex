@@ -153,6 +153,16 @@ struct TurnSpec {
     mutate: Option<RowMutation>,
     /// Read D-final with the Native selection and a Graph (DI-1a).
     graph: bool,
+    /// The create's read budget; `SessionFixture::read_budget()` when `None`.
+    create_budget: Option<ReadBudget>,
+    /// DI1B-3: ask D-final for the turn's own history instead of adopting
+    /// `adopt` by hand.
+    history: Option<NativeNir1HistoryRequest>,
+    /// The selector's context budget in tokens.
+    context_budget: usize,
+    /// Leave the created attempt as it is (no claim, no finish): the state a
+    /// turn is in between its create and its dispatch (DI1B-3 review).
+    settle: bool,
 }
 
 impl TurnSpec {
@@ -168,12 +178,39 @@ impl TurnSpec {
             writer: Writer::Product,
             mutate: None,
             graph: false,
+            create_budget: None,
+            history: None,
+            context_budget: 100_000,
+            settle: true,
         }
     }
 
     /// A turn whose D-final input carries Graph-derived inputs.
     fn with_graph(mut self) -> Self {
         self.graph = true;
+        self
+    }
+
+    /// Stop after the create: the attempt is in flight, not settled.
+    fn in_flight(mut self) -> Self {
+        self.settle = false;
+        self
+    }
+
+    /// Let D-final adopt the turn's history (the Native clock's `now_ms` and
+    /// the envelope of a chat message).
+    fn native_history(mut self, now_ms: i64, message_envelope_tokens: usize) -> Self {
+        self.history = Some(NativeNir1HistoryRequest {
+            now_ms,
+            message_envelope_tokens,
+        });
+        self
+    }
+
+    /// Create the attempt with this read budget (the Native one for a test
+    /// that sizes a history window against the create).
+    fn create_budget(mut self, budget: ReadBudget) -> Self {
+        self.create_budget = Some(budget);
         self
     }
 
@@ -676,6 +713,7 @@ impl SessionFixture {
     fn run_turn(&mut self, spec: TurnSpec) -> Result<Turn> {
         self.turns += 1;
         let key = self.turns;
+        let create_budget = spec.create_budget.unwrap_or_else(Self::read_budget);
         let (capture, human_message_id) = match spec.capture {
             Some(accepted) => accepted,
             None => self.accept(&format!("{key}"), &spec.text)?,
@@ -689,18 +727,19 @@ impl SessionFixture {
             GenerationPurpose::Review => PackingPurpose::Review,
         };
         let mut projection = if spec.graph {
-            self.read_graph_projection(&capture, purpose)?
+            self.read_graph_projection(&capture, purpose, spec.history)?
         } else {
             read_and_pack_native_nir1_prepared_inputs(
                 &self.snapshot,
                 purpose,
                 HistorySendClassification::LocalOnly,
+                spec.history,
                 SESSION,
                 &capture,
                 SCENE,
                 &revisions,
                 prepared_sql_budget(),
-                |_| Ok(100_000),
+                |_| Ok(spec.context_budget),
             )?
         };
         let human_version_id = projection.user_message_version().id.clone();
@@ -737,7 +776,7 @@ impl SessionFixture {
                 .qualifications
                 .extend(Self::history_rows(ordinal, item, &scope)?);
         }
-        let finalized = projection.finalize_qualifications(100_000)?;
+        let finalized = projection.finalize_qualifications(spec.context_budget)?;
         let draft = projection.history_draft(&finalized);
         let mut qualifications = finalized.qualifications.clone();
         if let Some(mutate) = spec.mutate {
@@ -781,7 +820,7 @@ impl SessionFixture {
             qualifications,
             created_at_ms,
             expires_at_ms: wall_clock_ms() + 600_000,
-            budget: Self::read_budget(),
+            budget: create_budget,
         };
         let stored = match spec.writer {
             Writer::Product => {
@@ -810,7 +849,17 @@ impl SessionFixture {
             }
             Writer::TestSupport { .. } => create_attempt(self.db(), request)?,
         };
-        let expected = Nir1ExpectedAttempt::from_stored(&stored, Self::read_budget());
+        if !spec.settle {
+            return Ok(Turn {
+                attempt_id: stored.id,
+                capture,
+                human_message_id,
+                human_version_id,
+                human_digest,
+                output: None,
+            });
+        }
+        let expected = Nir1ExpectedAttempt::from_stored(&stored, create_budget);
         let output = match &spec.reply {
             Some(reply) => {
                 match claim_attempt_bounded(
@@ -875,6 +924,7 @@ impl SessionFixture {
         &self,
         capture: &AcceptedChatInputCapture,
         purpose: PackingPurpose,
+        history: Option<NativeNir1HistoryRequest>,
     ) -> Result<NativeNir1PreparedInputs> {
         use super::tests::di1a_graph::{candidates_from, write_seal, GENERATION};
 
@@ -884,6 +934,7 @@ impl SessionFixture {
                 &self.snapshot,
                 purpose,
                 HistorySendClassification::LocalOnly,
+                history,
                 SESSION,
                 capture,
                 SCENE,
@@ -1167,7 +1218,11 @@ fn run_in(
         conn,
         &cancellation,
         budget,
-        &SessionHistoryRequest { current, now_ms },
+        &SessionHistoryRequest {
+            current,
+            now_ms,
+            in_flight: None,
+        },
         &mut || false,
     )
 }
@@ -1218,6 +1273,23 @@ fn requalification_reason(reason: RequalificationReason) -> Failure {
 }
 
 use SessionCandidateKind::{Attempt, GeneratedOutput, PastHuman};
+
+/// A qualified candidate whose body the run could not pay for (the last
+/// charge of a run is the read of an output no later attempt adopted, DI1B-2):
+/// the candidate is qualified, the adoption has no body for it. That is a
+/// budget cut like an exclusion, not a wrong answer.
+fn has_unpaid_material(outcome: &SessionHistoryOutcome) -> bool {
+    outcome.qualified().any(|result| {
+        outcome
+            .materials
+            .get(&result.attempt_id)
+            .is_none_or(|material| match result.kind {
+                PastHuman => material.human.is_none(),
+                GeneratedOutput => material.output.is_none(),
+                Attempt => false,
+            })
+    })
+}
 
 /// Both candidates of the turn are adopted.
 fn assert_turn_adopted(outcome: &SessionHistoryOutcome, turn: &Turn) {
@@ -2741,7 +2813,11 @@ fn budget_boundary_n_and_n_plus_one_per_ledger_dimension() -> Result<()> {
                     == CandidateDisposition::Excluded(Failure::Incomplete(
                         IncompleteReason::BudgetExhausted,
                     ))
-            });
+            })
+            // Only the body-bytes ledger is charged for a body the adoption
+            // then lacks (the output read comes last); for every other
+            // dimension the original assertion stands.
+            || (matches!(dimension, Dimension::BodyBytes) && has_unpaid_material(&outcome));
         assert!(cut_short, "{dimension:?} at N-1: {outcome:#?}");
         for result in outcome.qualified() {
             assert!(
@@ -2987,6 +3063,7 @@ fn cancellation_stops_the_whole_turn_without_partial_results() -> Result<()> {
                     &SessionHistoryRequest {
                         current: &current,
                         now_ms: wall_clock_ms(),
+                        in_flight: None,
                     },
                     &mut || {
                         polls += 1;
@@ -3029,6 +3106,7 @@ fn cancellation_stops_the_whole_turn_without_partial_results() -> Result<()> {
                     &SessionHistoryRequest {
                         current: &current,
                         now_ms: wall_clock_ms(),
+                        in_flight: None,
                     },
                     &mut || false,
                 )
@@ -3558,6 +3636,7 @@ fn positive_the_self_transaction_form_decides_like_the_in_snapshot_form() -> Res
         &SessionHistoryRequest {
             current: &current,
             now_ms,
+            in_flight: None,
         },
         &mut || false,
     )?;
@@ -3646,3 +3725,15 @@ fn graph_derived_attempts_stay_pending_and_leave_the_next_turn() -> Result<()> {
     assert_turn_adopted(&outcome, &plain_turn);
     Ok(())
 }
+
+// DI1B-1: the production history budget and the entry for the D-final snapshot.
+#[path = "nir1_history_budget_tests.rs"]
+mod history_budget_tests;
+
+// DI1B-2: the adoption rule on the outcome of a real session.
+#[path = "nir1_history_adoption_session_tests.rs"]
+mod history_adoption_session_tests;
+
+// DI1B-3: the history in D-final.
+#[path = "nir1_history_packing_session_tests.rs"]
+mod history_packing_session_tests;
