@@ -28,8 +28,8 @@ use std::{
 use anyhow::Result;
 use grimodex_db::{
     narrative_extraction::{
-        read_nir1_graph_seed, NativeNir1GraphOutcome, Nir1GraphCandidates, Nir1GraphDropReason,
-        Nir1GraphExclusionReason, Nir1GraphSeedRead,
+        is_validation_terminated, read_nir1_graph_seed, NativeNir1GraphOutcome,
+        Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason, Nir1GraphSeedRead,
     },
     state::ActiveWorkspaceSnapshot,
     ParticipantSqlOperationBudget,
@@ -44,7 +44,7 @@ use crate::{
 
 #[cfg(test)]
 #[path = "nir1_graph_dfinal_tests.rs"]
-mod tests;
+pub(crate) mod tests;
 
 /// W: the whole budget of the Graph step (the wait for a READY and the wait
 /// for the query's ticket together). It is inside the 20 s SQL deadline that
@@ -246,8 +246,11 @@ pub(crate) struct GraphRequestContext<'a> {
 /// Ask for the Graph of the query Scene's seed, waiting as rule (i) says.
 ///
 /// Returns the text-free candidates for the snapshot, or the reason there are
-/// none. An `Err` is a failed database read or a cancelled request, which end
-/// D-final as they would at its own read.
+/// none. An `Err` is the request's own end (a cancellation, a shutdown, a
+/// lifecycle transition or the SQL deadline), which ends D-final as it would at
+/// its own read. A transient database failure of the short seed read is not:
+/// the Graph is optional, so it becomes `Unavailable(Failed)` and D-final goes
+/// on without it (DR-DI1A-24).
 pub(crate) fn request_graph(
     context: &GraphRequestContext<'_>,
 ) -> Result<(GraphRequest, Option<Nir1GraphCandidates>)> {
@@ -259,12 +262,22 @@ pub(crate) fn request_graph(
             GraphUnavailable::NotActivated,
         ));
     }
-    let seed = read_nir1_graph_seed(
+    let seed = match read_nir1_graph_seed(
         context.workspace,
         context.project_id,
         context.query_scene_id,
         context.sql_budget.clone(),
-    )?;
+    ) {
+        Ok(seed) => seed,
+        // The Graph is optional material: a transient database failure of this
+        // short read must not refuse a send the body's own read could serve
+        // (DR-DI1A-24). A cancellation, a shutdown, a transition or the end of
+        // the SQL deadline is the request's own end and stays an `Err`.
+        Err(error) if !seed_read_ends_the_request(&error, context) => {
+            return skipped(DFinalGraphOutcome::unavailable(GraphUnavailable::Failed));
+        }
+        Err(error) => return Err(error),
+    };
     let seed_entity_id = match seed {
         Nir1GraphSeedRead::NoPin => return skipped(DFinalGraphOutcome::NotRequested),
         Nir1GraphSeedRead::TooLarge => {
@@ -355,6 +368,22 @@ pub(crate) fn request_graph(
             SignalWait::Cancelled => return unavailable(GraphUnavailable::Cancelled),
         }
     }
+}
+
+/// Whether a failed seed read is the end of the request itself (cancelled,
+/// shut down, a lifecycle transition, the SQL deadline) rather than a
+/// transient failure of the optional Graph step.
+fn seed_read_ends_the_request(error: &anyhow::Error, context: &GraphRequestContext<'_>) -> bool {
+    is_validation_terminated(error)
+        || context.stop.load(Ordering::SeqCst)
+        || context
+            .state
+            .workspace_shutdown_requested
+            .load(Ordering::Acquire)
+        || context
+            .sql_budget
+            .check_workspace(context.workspace)
+            .is_err()
 }
 
 fn reached(

@@ -712,3 +712,39 @@ async fn build_capabilities_report_the_eval_feature_under_the_feature() -> Resul
     std::fs::remove_dir_all(&root)?;
     Ok(())
 }
+
+// -------------------------------------------- K2/4 defense 2 at (c-1), (c-2)
+
+/// DI-1a A-13: a worker that answers with text and a Scene association leaves
+/// no trace in the candidate set (c-1) or the capture (c-2) of a request that
+/// uses its Graph. The Graph group's text comes from the snapshot's Revision.
+#[test]
+fn a13_the_graph_request_capture_carries_no_worker_text_or_scene_association() {
+    use crate::nir1_graph_dfinal::tests::{assert_free_of_worker_text, Rig};
+
+    let rig = Rig::new();
+    rig.open();
+    let (record, _) = run_dfinal_with_capture(|| rig.request().map(|s| s.into_parts().0));
+    assert!(record.defects.is_empty(), "{:?}", record.defects);
+    let capture = captured(&record);
+    let set = &capture.candidate_set;
+    assert!(
+        set.items.iter().any(|item| item.kind == "graph-evidence"),
+        "the candidate set holds a Graph group, so the scan means something"
+    );
+    assert_free_of_worker_text("the candidate items", &format!("{:?}", set.items));
+    assert_free_of_worker_text("the candidate refs", &format!("{:?}", set.candidate_refs));
+    assert_free_of_worker_text("the captured payload", &capture.payload);
+    assert_free_of_worker_text(
+        "the captured input references",
+        &format!("{:?}", capture.input_references),
+    );
+    assert_free_of_worker_text(
+        "the captured qualifications",
+        &format!("{:?}", capture.qualifications),
+    );
+    assert_free_of_worker_text(
+        "the captured render correspondence",
+        &format!("{:?}", capture.render_correspondence),
+    );
+}

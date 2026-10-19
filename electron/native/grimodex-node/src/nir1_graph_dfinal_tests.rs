@@ -14,12 +14,15 @@ use crate::nir1_prepared_request::tests::{
 use crate::nir1_prepared_request::{
     prepare_selected_local_chat_request, LocalGenerationIntent, NativeSelectedPreparedRequest,
 };
-use grimodex_core::narrative_nir1::{EntityInput, GraphEdgeInput, ScopeBinding, ScopeValue};
+use grimodex_core::narrative_nir1::{
+    EntityInput, EvidenceInput, GraphEdgeInput, ScopeBinding, ScopeValue,
+};
 use grimodex_db::narrative_extraction::nir1_graph::c_query_freshness::try_read_c_query_freshness_stamp;
 use grimodex_db::narrative_extraction::nir1_graph::c_query_worker::CQueryRetirement;
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
 use grimodex_db::narrative_extraction::nir1_graph::{
-    Nir1GraphEdge, Nir1GraphMaterialBinding, Nir1GraphNode, Nir1QualifiedGraph,
+    Nir1GraphEdge, Nir1GraphMaterialBinding, Nir1GraphNode, Nir1GraphSceneAssociation,
+    Nir1QualifiedGraph,
 };
 use grimodex_db::narrative_extraction::Nir1GraphRequest;
 use grimodex_db::nir1_generation::InputTarget;
@@ -122,8 +125,45 @@ fn entity(id: &str) -> Arc<EntityInput> {
             pov: None,
             authority_revision: "authority".into(),
         },
-        evidence: Vec::new(),
+        evidence: vec![EvidenceInput {
+            evidence_id: format!("evidence-{id}"),
+            source_ref: format!("codex:{id}"),
+            quote: format!("WORKER-QUOTE-{id}"),
+            start_utf16: 0,
+            end_utf16: 4,
+        }],
     })
+}
+
+/// Text and Scene association a worker may return and a request must never
+/// carry (K2/4 Mandatory defense 2; A-13). Every string starts with
+/// `WORKER-`; the pin's rowid is a number nothing else in a request has.
+const WORKER_TEXT_PREFIX: &str = "WORKER-";
+const WORKER_PIN_ROWID: i64 = 7_654_321;
+
+fn worker_scene_associations() -> Vec<Nir1GraphSceneAssociation> {
+    vec![Nir1GraphSceneAssociation {
+        scene_id: "WORKER-SCENE-ID".into(),
+        scene_incarnation_id: Some("WORKER-SCENE-INCARNATION".into()),
+        scene_source_token: "WORKER-SCENE-SOURCE".into(),
+        scene_scope_token: Some("WORKER-SCENE-SCOPE".into()),
+        pin_rowid: WORKER_PIN_ROWID,
+        pin_entry_id: "WORKER-PIN-ENTRY".into(),
+        pin_created_at: "WORKER-PIN-CREATED".into(),
+        path_hop: 1,
+        path_edge_indices: vec![0],
+    }]
+}
+
+pub(crate) fn assert_free_of_worker_text(what: &str, haystack: &str) {
+    assert!(
+        !haystack.contains(WORKER_TEXT_PREFIX),
+        "{what} carries worker text"
+    );
+    assert!(
+        !haystack.contains(&WORKER_PIN_ROWID.to_string()),
+        "{what} carries a pin rowid"
+    );
 }
 
 /// The projection a worker would return for these candidates: every edge
@@ -183,8 +223,8 @@ fn projection_from(
             generation: candidates.generation(),
             nodes,
             edges,
-            scene_total: 0,
-            scenes: Vec::new(),
+            scene_total: 1,
+            scenes: worker_scene_associations(),
         },
         elapsed: Duration::ZERO,
     }
@@ -264,7 +304,7 @@ impl GraphWorker for FakeWorker {
 // the product owner.
 // ---------------------------------------------------------------------------
 
-struct Rig {
+pub(crate) struct Rig {
     fixture: Fixture,
     plan: Arc<Plan>,
     candidates: Nir1GraphCandidates,
@@ -272,7 +312,7 @@ struct Rig {
 
 impl Rig {
     /// The publication gate is closed, as in a product build, until `open`.
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let fixture = Fixture::new().expect("fixture");
         write_graph_seal(&fixture.state, GRAPH_GENERATION, false).expect("seal and pin");
         let control = prepare_selected_local_chat_request(
@@ -298,7 +338,7 @@ impl Rig {
         }
     }
 
-    fn open(&self) {
+    pub(crate) fn open(&self) {
         let owner = &self.fixture.state.nir1_graph;
         owner.open_publication_for_test();
         owner.set_config_for_test(fast_config());
@@ -324,7 +364,7 @@ impl Rig {
         &self.fixture.state.nir1_graph
     }
 
-    fn request(&self) -> anyhow::Result<NativeSelectedPreparedRequest> {
+    pub(crate) fn request(&self) -> anyhow::Result<NativeSelectedPreparedRequest> {
         prepare_selected_local_chat_request(
             Arc::clone(&self.fixture.state),
             self.fixture.caller.clone(),
@@ -443,6 +483,56 @@ fn a17_the_module_has_no_product_entry() {
         assert!(!source.contains(forbidden), "{forbidden}");
     }
     assert!(!include_str!("lib.rs").contains("nir1_graph_dfinal::"));
+}
+
+// ---------------------------------------------------------------------------
+// A-13 (K2/4 Mandatory defense 2): what a worker returns as text, and the Scene
+// association, never reach the request.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a13_worker_text_and_scene_association_reach_neither_the_request_nor_its_diagnostics() {
+    let rig = Rig::new();
+    rig.open();
+    let selected = rig.request().expect("request");
+    let outcome = selected.graph_outcome();
+    assert!(used(outcome), "{outcome:?}");
+    let handoff = selected.into_parts().0.into_d_transport_handoff();
+    assert!(
+        handoff
+            .input_references()
+            .iter()
+            .any(|input| matches!(input.target, InputTarget::GraphEvidence { .. })),
+        "the request carries a Graph group, so the scan means something"
+    );
+    // The worker did answer with the sentinels (the fake's query ran once).
+    assert_eq!(rig.plan.queries.load(Ordering::SeqCst), 1);
+    assert_free_of_worker_text("the canonical payload", handoff.canonical_payload());
+    assert_free_of_worker_text(
+        "the input references",
+        &format!("{:?}", handoff.input_references()),
+    );
+    assert_free_of_worker_text(
+        "the qualifications",
+        &format!("{:?}", handoff.qualifications()),
+    );
+    assert_free_of_worker_text(
+        "the render correspondence",
+        &format!("{:?}", handoff.render_correspondence()),
+    );
+    assert_free_of_worker_text(
+        "the Graph binding",
+        &format!("{:?}", handoff.graph_binding()),
+    );
+    assert_free_of_worker_text(
+        "the excluded Revisions",
+        &format!("{:?}", handoff.excluded_revisions()),
+    );
+    assert_free_of_worker_text("the kind of result", &format!("{outcome:?}"));
+    assert_free_of_worker_text(
+        "the owner's diagnostics",
+        &format!("{:?}", rig.owner().diagnostics()),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -913,6 +1003,112 @@ fn a10_a_seed_that_changes_after_the_request_invalidates_the_graph() {
             ALICE.to_owned()
         )]
     );
+}
+
+// ---------------------------------------------------------------------------
+// The seed read is a short step of an optional material (DR-DI1A-24).
+// ---------------------------------------------------------------------------
+
+impl Rig {
+    /// Makes the seed read fail the way a database fault would: the table it
+    /// reads is gone. Nothing else of D-final reads it unless a Graph reaches
+    /// the snapshot.
+    fn break_the_seed_read(&self) {
+        let workspace =
+            grimodex_db::state::active_workspace_snapshot(&self.fixture.state.ws).expect("ws");
+        workspace
+            .db()
+            .db()
+            .with_conn(|conn| {
+                conn.execute_batch("ALTER TABLE scene_codex_pins RENAME TO scene_codex_pins_gone")?;
+                Ok(())
+            })
+            .expect("rename the pin table");
+    }
+
+    fn seed_request_with(
+        &self,
+        stop: &Arc<AtomicBool>,
+        deadline: Instant,
+    ) -> Result<(GraphRequest, Option<Nir1GraphCandidates>)> {
+        let workspace =
+            grimodex_db::state::active_workspace_snapshot(&self.fixture.state.ws).expect("ws");
+        request_graph(&GraphRequestContext {
+            state: &self.fixture.state,
+            workspace: &workspace,
+            project_id: "default-project",
+            query_scene_id: SCENE_ID,
+            stop: stop.as_ref(),
+            route_revocation_generation: self.fixture.state.profile_egress.revocation_generation(),
+            sql_budget: ParticipantSqlOperationBudget::new(
+                Arc::clone(stop),
+                deadline,
+                Duration::from_millis(50),
+            ),
+        })
+    }
+}
+
+/// A transient failure of the short seed read does not refuse the send: the
+/// Graph is optional, and the body's own read does not need the pins.
+#[test]
+fn a_failed_seed_read_goes_without_the_graph_and_the_request_is_sent() {
+    let rig = Rig::new();
+    rig.open();
+    rig.break_the_seed_read();
+    let selected = rig
+        .request()
+        .expect("the request continues without a Graph");
+    assert_eq!(
+        selected.graph_outcome(),
+        DFinalGraphOutcome::Unavailable {
+            reason: GraphUnavailable::Failed,
+            busy_cause: None,
+        }
+    );
+    // Nothing was asked of the owner and no worker was made.
+    assert_eq!(rig.owner().diagnostics().begins, 0);
+    assert_eq!(rig.plan.creates.load(Ordering::SeqCst), 0);
+    assert_eq!(graph_input_count(selected), 0);
+}
+
+/// The request's own end stays an error, even where the seed read failed for
+/// another reason at the same time: a stop, a shutdown and the end of the SQL
+/// deadline.
+#[test]
+fn a_seed_read_that_ends_the_request_stays_an_error() {
+    // The deadline is over.
+    let rig = Rig::new();
+    rig.open();
+    let live = Arc::new(AtomicBool::new(false));
+    assert!(rig.seed_request_with(&live, Instant::now()).is_err());
+    drop(rig);
+
+    // A stop of the submission.
+    let rig = Rig::new();
+    rig.open();
+    let stopped = Arc::new(AtomicBool::new(true));
+    assert!(rig
+        .seed_request_with(&stopped, Instant::now() + Duration::from_secs(20))
+        .is_err());
+    drop(rig);
+
+    // A shutdown while the read fails for a database reason: the failure is
+    // not mapped to "no Graph" (the preparation is over).
+    let rig = Rig::new();
+    rig.open();
+    rig.break_the_seed_read();
+    let live = Arc::new(AtomicBool::new(false));
+    let later = Instant::now() + Duration::from_secs(20);
+    assert!(
+        rig.seed_request_with(&live, later).is_ok(),
+        "without a shutdown the failure goes without the Graph"
+    );
+    rig.fixture
+        .state
+        .workspace_shutdown_requested
+        .store(true, Ordering::SeqCst);
+    assert!(rig.seed_request_with(&live, later).is_err());
 }
 
 // ---------------------------------------------------------------------------

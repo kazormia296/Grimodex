@@ -4696,6 +4696,126 @@ pub(in crate::narrative_extraction) mod di1a_graph {
         Ok(())
     }
 
+    /// A-13 through the pool: a worker that answers with text and a Scene
+    /// association for Revisions that are really eligible changes nothing a
+    /// request carries. The Graph groups are used (so the scan means
+    /// something), and neither the selected items, the packed context, the
+    /// outcome nor the candidate holds a sentinel.
+    #[test]
+    fn worker_text_and_scene_association_never_reach_the_pooled_request() -> Result<()> {
+        let s = scenario()?;
+        let sentinel_entity = |id: &str| {
+            Arc::new(EntityInput {
+                entity_id: id.into(),
+                entity_type: "character".into(),
+                label: format!("WORKER-LABEL-{id}"),
+                source_token: format!("codex:{id}@1"),
+                scope: synthetic_scope(),
+                evidence: vec![EvidenceInput {
+                    evidence_id: format!("evidence-{id}"),
+                    source_ref: format!("codex:{id}"),
+                    quote: format!("WORKER-QUOTE-{id}"),
+                    start_utf16: 0,
+                    end_utf16: 4,
+                }],
+            })
+        };
+        let seed = sentinel_entity(SEED);
+        let mut nodes = vec![Nir1GraphNode {
+            entity: Arc::clone(&seed),
+            hop: 0,
+            bindings: Vec::new(),
+            binding_scopes: Vec::new(),
+        }];
+        let mut edges = Vec::new();
+        for binding in &s.control.bindings {
+            let scope = binding.scope();
+            let token_binding = Arc::new(Nir1GraphMaterialBinding {
+                revision_id: binding.revision_id().to_owned(),
+                decision_id: binding.decision().id().to_owned(),
+                decision_token: binding.decision_token().to_owned(),
+                freshness_token: binding.freshness_token().to_owned(),
+                scope_authority_revision: scope.scope_authority_revision().to_owned(),
+                query_scene_source_token: scope.query_scene_source_token().to_owned(),
+                query_scene_scope_token: scope.query_scene_scope_token().to_owned(),
+                query_scene_incarnation_id: scope.query_scene_incarnation_id().to_owned(),
+                reveal_state_token: scope.reveal_state_token().to_owned(),
+            });
+            for relation in &binding.revision().bundle.relations {
+                let peer = sentinel_entity(&format!("peer-{}", relation.edge_id));
+                nodes.push(Nir1GraphNode {
+                    entity: Arc::clone(&peer),
+                    hop: 1,
+                    bindings: Vec::new(),
+                    binding_scopes: Vec::new(),
+                });
+                edges.push(Nir1GraphEdge {
+                    relation: Arc::new(GraphEdgeInput {
+                        edge_id: relation.edge_id.clone(),
+                        from_entity_id: SEED.into(),
+                        to_entity_id: peer.entity_id.clone(),
+                        relation_type: "WORKER-RELATION-TYPE".into(),
+                        directionality: "directed".into(),
+                        source_token: "relation-source".into(),
+                        evidence_ids: vec![format!("evidence-{SEED}")],
+                    }),
+                    from: Arc::clone(&seed),
+                    to: peer,
+                    binding: Arc::clone(&token_binding),
+                });
+            }
+        }
+        let projection = Nir1GraphProjection {
+            project_id: RAW_SOURCE_PROJECT.into(),
+            query_scene_id: RAW_SOURCE_SCENE.into(),
+            scope_revision: Some(
+                s.control.bindings[0]
+                    .scope()
+                    .scope_authority_revision()
+                    .to_owned(),
+            ),
+            graph: Nir1QualifiedGraph {
+                seed_entity_id: SEED.into(),
+                generation: GENERATION,
+                nodes,
+                edges,
+                scene_total: 1,
+                scenes: vec![Nir1GraphSceneAssociation {
+                    scene_id: "WORKER-SCENE-ID".into(),
+                    scene_incarnation_id: Some("WORKER-SCENE-INCARNATION".into()),
+                    scene_source_token: "WORKER-SCENE-SOURCE".into(),
+                    scene_scope_token: Some("WORKER-SCENE-SCOPE".into()),
+                    pin_rowid: 7_654_321,
+                    pin_entry_id: "WORKER-PIN-ENTRY".into(),
+                    pin_created_at: "WORKER-PIN-CREATED".into(),
+                    path_hop: 1,
+                    path_edge_indices: vec![0],
+                }],
+            },
+            elapsed: std::time::Duration::from_millis(1),
+        };
+        let candidates = Nir1GraphCandidates::from_projection(&projection)?;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().expect("a Graph outcome");
+        assert_eq!(outcome.dropped_reason(), None);
+        assert_eq!(outcome.groups().len(), 2, "the Graph groups are used");
+        assert!(pooled
+            .selected_items
+            .iter()
+            .any(|selected| matches!(selected.item(), ContextItemKind::GraphEvidence { .. })));
+        let scanned = [
+            ("the candidate", format!("{candidates:?}")),
+            ("the outcome", format!("{outcome:?}")),
+            ("the selected items", format!("{:?}", pooled.selected_items)),
+            ("the packed context", format!("{:?}", pooled.packed)),
+        ];
+        for (what, text) in scanned {
+            assert!(!text.contains("WORKER-"), "{what} holds worker text");
+            assert!(!text.contains("7654321"), "{what} holds a pin rowid");
+        }
+        Ok(())
+    }
+
     /// A graph for an endpoint that is not a node cannot be projected.
     #[test]
     fn a_projection_with_an_unknown_endpoint_is_refused() {
