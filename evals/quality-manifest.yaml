@@ -551,8 +551,10 @@ requirements:
       - scripts/quality/nir1-packing/scorer.mjs
       - src/features/ai-context/nir1Packing.ts
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
+      - electron/native/grimodex-node/src/nir1_graph_dfinal.rs
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/graph_candidates.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/retrieval_admission.rs
@@ -602,8 +604,11 @@ requirements:
       - src/features/ai-context/nir1Packing.test.ts
       - src/features/ai-context/finalizeTurnPayload.test.ts
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
+      - electron/native/grimodex-node/src/nir1_graph_dfinal_tests.rs
+      - electron/native/grimodex-node/src/nir1_graph_reach_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_graph_input_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - src-tauri/crates/grimodex-core/tests/narrative_nir1.rs

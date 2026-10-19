@@ -386,6 +386,9 @@ rules:
       - electron/native/grimodex-node/src/lib.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - electron/native/grimodex-node/src/nir1_prepared_request.rs
+      - electron/native/grimodex-node/src/nir1_graph_dfinal.rs
+      - electron/native/grimodex-node/src/nir1_graph_dfinal_tests.rs
+      - electron/native/grimodex-node/src/nir1_graph_reach_tests.rs
       - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
       - electron/scripts/codex-entity-relation-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
@@ -429,6 +432,8 @@ rules:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/graph_candidates.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_graph_input_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/project_scope_authority.rs

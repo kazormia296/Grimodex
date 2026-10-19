@@ -313,7 +313,11 @@ pub(crate) struct Rig {
 impl Rig {
     /// The publication gate is closed, as in a product build, until `open`.
     pub(crate) fn new() -> Self {
-        let fixture = Fixture::new().expect("fixture");
+        Self::over(Fixture::new().expect("fixture"))
+    }
+
+    /// The rig over a fixture the caller has already shaped (more Revisions).
+    pub(crate) fn over(fixture: Fixture) -> Self {
         write_graph_seal(&fixture.state, GRAPH_GENERATION, false).expect("seal and pin");
         let control = prepare_selected_local_chat_request(
             Arc::clone(&fixture.state),
@@ -1291,3 +1295,7 @@ fn a16_a_busy_slot_is_not_waited_for_and_its_ticket_is_not_cancelled() {
     ));
     ticket.finish(GraphTicketUse::Used);
 }
+
+// S4: the cold-process reach, the requalification race and the old cache.
+#[path = "nir1_graph_reach_tests.rs"]
+mod reach;

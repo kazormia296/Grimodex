@@ -526,4 +526,4 @@ pub(crate) fn material_digest(
 
 #[cfg(test)]
 #[path = "nir1_local_attempt_tests.rs"]
-mod tests;
+pub(crate) mod tests;

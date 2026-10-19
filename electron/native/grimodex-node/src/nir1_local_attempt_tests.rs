@@ -167,14 +167,14 @@ fn final_request(
 /// What a probe closure needs to change the world; owned, so the closure can
 /// be `'static`.
 #[derive(Clone)]
-struct Target {
+pub(crate) struct Target {
     state: Arc<AppState>,
     caller: CallerIdentity,
     revision_id: String,
 }
 
 impl Target {
-    fn of(fixture: &Fixture) -> Self {
+    pub(crate) fn of(fixture: &Fixture) -> Self {
         Self {
             state: Arc::clone(&fixture.state),
             caller: fixture.caller.clone(),
@@ -230,7 +230,7 @@ fn save_scene_scope(target: &Target, scene_id: &str, request_id: &str) {
 /// request without a Graph does not answer to it (see
 /// `a9_an_index_generation_is_not_an_input_of_the_final_request`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Change {
+pub(crate) enum Change {
     /// The target Scene's Scope setting is saved by the product writer.
     Scope,
     /// The Raw Source body changes.
@@ -272,7 +272,7 @@ const CHANGES: [Change; 7] = [
     Change::Revocation,
 ];
 
-fn inject(target: &Target, change: Change) {
+pub(crate) fn inject(target: &Target, change: Change) {
     let db = || target.workspace();
     match change {
         Change::Scope => save_scene_scope(target, SCENE_ID, "di1c-scope-save"),

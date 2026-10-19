@@ -607,6 +607,42 @@ fn prepare_selected_with_graph(
         generation,
         sql_budget,
     )?;
+    selected_from_prepared(prepared)
+}
+
+/// The Native selection with the Graph asked for as in production, and a test
+/// hook between the Graph step and the opening of the participant read: the
+/// position at which the worker's answer is in hand and D-final's snapshot is
+/// not yet taken (DI-1a A-9, the requalification race).
+#[cfg(test)]
+pub(crate) fn prepare_selected_local_chat_request_with_hook(
+    state: Arc<AppState>,
+    caller: CallerIdentity,
+    query_scene_id: &str,
+    message_version_id: &NativeAcceptedChatSubmission,
+    unsupported_inputs: UnsupportedInputIntent,
+    generation: LocalGenerationIntent,
+    before_initial_read: impl FnOnce() -> Result<()>,
+) -> Result<NativeSelectedPreparedRequest> {
+    unsupported_inputs.validate()?;
+    generation.ensure_no_key()?;
+    let sql_budget = participant_sql_budget_for(Arc::clone(&message_version_id.stop));
+    let prepared = prepare_local_chat_request_inner(
+        state,
+        caller,
+        query_scene_id,
+        message_version_id,
+        RevisionSource::Native(GraphSource::Request),
+        generation,
+        sql_budget,
+        before_initial_read,
+        || Ok(()),
+        || Ok(()),
+    )?;
+    selected_from_prepared(prepared)
+}
+
+fn selected_from_prepared(prepared: PreparedOutput) -> Result<NativeSelectedPreparedRequest> {
     let (scene_binding, expected_scope) = prepared
         .expectations
         .context("NIR1_PREPARED_EXPECTATIONS_MISSING")?;
@@ -2508,14 +2544,29 @@ pub(crate) mod tests {
         database: &Database,
         proposal_key: &str,
     ) -> anyhow::Result<String> {
+        create_approved_revision_over(
+            database,
+            proposal_key,
+            &["nir1-prepared-alice", "nir1-prepared-bob"],
+            &["nir1-prepared-edge"],
+        )
+    }
+
+    /// An approved typed Revision over these Codex Entities and relations.
+    pub(crate) fn create_approved_revision_over(
+        database: &Database,
+        proposal_key: &str,
+        entity_ids: &[&str],
+        relation_ids: &[&str],
+    ) -> anyhow::Result<String> {
         let created = narrative_extraction::prepare_nir1_entity_relation_revision(
             database,
             Nir1EntityRelationRevisionPrepareRequest {
                 project_id: PROJECT_ID.into(),
                 scene_id: REVISION_SCENE_ID.into(),
                 proposal_key: Some(proposal_key.into()),
-                entity_ids: vec!["nir1-prepared-alice".into(), "nir1-prepared-bob".into()],
-                relation_ids: vec!["nir1-prepared-edge".into()],
+                entity_ids: entity_ids.iter().map(|id| (*id).to_owned()).collect(),
+                relation_ids: relation_ids.iter().map(|id| (*id).to_owned()).collect(),
             },
         )?;
         let result = &created["result"];
