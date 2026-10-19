@@ -5,7 +5,7 @@
 ## 採取した候補
 
 - 候補の head: `d91c24f1b0a6f6218127ab5440a58e9256898df1`（DA-1 の開放 commit。branch `claude/nir1-da1-open`、base は origin/master `bf69e2f0`）。この head の後に変わるのは、この記録、記録を読む判定の試験、文書だけで、`electron/main` の製品コードと `electron/scripts/webrtc-block-probe*` は変えない（記録の commit は `git diff d91c24f1b0a6f6218127ab5440a58e9256898df1..HEAD -- electron/main electron/scripts/webrtc-block-probe*` が空）。製品コードか harness が変わったら、この記録は無効（GDX-TRACE-001）。DA-1 の開放 commit は、最終 head と一致する記録だけを引く（DR-NC1-46(b)）。
-- 経緯: 最初の記録は NC-1 の最終候補 `fd549d4c06bd3dfe78965d96445e86919ef79c54`（branch `claude/nir1-nc1`、base `7c3d3110`）で採った。その後 integrator の rebase と CB-2 などで `electron/main` に差分が入ったため、開放 commit の head で JSON 全体と起動順序を採り直した（古い記録は残さない）。判定の結果は前回と同じ（不合格 0、対照の成立）。
+- 経緯: 最初の記録は NC-1 の最終候補 `fd549d4c06bd3dfe78965d96445e86919ef79c54`（branch `claude/nir1-nc1`、base `7c3d3110`）で採った。その後 integrator の rebase と CB-2 などで `electron/main` に差分が入ったため、開放 commit の head で JSON 全体と起動順序を採り直した（古い記録は残さない）。判定の結果は前回と同じ（不合格 0、対照の成立）。`nc1-fm-baseline.json`／`nc1-upd-baseline.json`／`nc1-session-none.json`／`nc1-policy-none.json` は採り直した結果が前回の記録と byte 一致した（head や時刻を含まない決定的な出力）。
 - 環境: Linux 7.2.9-arch1、Electron 43.5.0（Chromium 150）、sandbox 有効、2026-10-19。Xvfb は `scripts/local-ci-xvfb.mjs` 経由で host namespace に起動し、`WAYLAND_DISPLAY`・`XDG_SESSION_TYPE`・`DBUS_SESSION_BUS_ADDRESS`・env の proxy を外した（`unshare -n` は使わない）。1 分負荷平均は 0.00〜0.86（採取中の標本。上限 1.5 を超えず、共有機の負荷による `proxy 宛 1 以上` の揺れは出なかったので再走は不要だった）。34 構成は 3 本の流れに分けて並列に走らせた（起動順序 6 本は別に直列）（Xvfb の display と port は runner が自動で別に取る）。
 - 実機は Linux だけ。Windows／macOS と packaged の build は G-pub（CP-2b）の範囲で、この記録には含まない。
 
