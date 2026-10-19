@@ -36,11 +36,11 @@ const PROFILE_EGRESS_POLICY_VERSION = 2;
  * `own-data-read` classification is routed as `plaintext-publication`, i.e.
  * rejected, which is the a153743b behavior.  Native's matching switch is
  * `PROFILE_EGRESS_READ_OPEN_ENABLED` in `grimodex-db`'s
- * `profile_egress_policy.rs`; both are flipped by the single opening commit,
- * which is held back until the renderer-isolation finding in
- * `docs/plans/nir1-lane-decisions/da1-decisions.md` (Y-1) is resolved.
+ * `profile_egress_policy.rs`; both were flipped by the single opening commit
+ * (DR-DA1-35 in `docs/plans/nir1-lane-decisions/da1-decisions.md`), after the
+ * renderer-isolation finding (Y-1) was closed by NC-1.
  */
-export const D2A_OWN_DATA_READ_OPEN = false;
+export const D2A_OWN_DATA_READ_OPEN = true;
 
 interface NativeProfileEgressPolicy {
   /** `closed`: neither readable nor writable through generic SQL. */

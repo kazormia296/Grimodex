@@ -2226,21 +2226,34 @@ mod tests {
             "unexpected error: {error}"
         );
 
+        // The read-open class (the author's own chat summaries, chunks,
+        // generation logs, A/B records and the change-feed payload) is
+        // readable once the opening is on (the shipped default); writes to it
+        // stay rejected.
+        assert!(crate::profile_egress_policy::read_open_enabled());
         for sql in [
-            "SELECT content FROM \"messages\"",
             "SELECT summary FROM chat_summaries",
             "SELECT text FROM chat_message_chunks",
             "SELECT prompt_full FROM generation_logs",
             "SELECT response_a, response_b FROM ab_comparisons",
             "SELECT slots FROM ab_comparison_runs",
+            "SELECT payload FROM change_events",
+            "SELECT * FROM change_events",
+        ] {
+            db.execute_renderer_profile_egress(sql, &[], "all")
+                .unwrap_or_else(|error| panic!("read-open read must pass: {sql}: {error}"));
+        }
+
+        for sql in [
+            "SELECT content FROM \"messages\"",
             "WITH source AS (SELECT content FROM messages) SELECT content FROM source",
             "SELECT value FROM (SELECT content AS value FROM messages)",
             "SELECT value FROM app_settings WHERE value IN (SELECT content FROM messages)",
             "UPDATE app_settings SET value = (SELECT content FROM messages)",
             "WITH source AS (SELECT content FROM messages) INSERT INTO app_settings (key, value) SELECT 'leak', value FROM source",
-            "SELECT payload FROM change_events",
-            "SELECT * FROM change_events",
             "INSERT INTO change_events (sequence, domain, payload) VALUES (2, 'editor', 'private')",
+            "DELETE FROM chat_summaries",
+            "UPDATE ab_comparisons SET response_a = 'x'",
         ] {
             let error = db
                 .execute_renderer_profile_egress(sql, &[], "all")
@@ -2374,12 +2387,30 @@ mod tests {
 
         for entry in crate::profile_egress_policy::PROFILE_EGRESS_TABLES {
             let table = entry.name;
+            let read =
+                db.execute_renderer_profile_egress(&format!("SELECT * FROM {table}"), &[], "all");
+            if crate::profile_egress_policy::is_read_open_table(table) {
+                // The shipped default is open: read-open tables are readable.
+                read.unwrap_or_else(|error| panic!("read-open table {table}: {error}"));
+            } else {
+                let error =
+                    read.expect_err("every closed table must be denied through generic SQL");
+                assert!(
+                    error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                    "unexpected error for protected table {table}: {error}"
+                );
+            }
+            // Writes to either class are denied.
             let error = db
-                .execute_renderer_profile_egress(&format!("SELECT * FROM {table}"), &[], "all")
-                .expect_err("every inventory table must be denied through generic SQL");
+                .execute_renderer_profile_egress(
+                    &format!("DELETE FROM {table} WHERE 0"),
+                    &[],
+                    "run",
+                )
+                .expect_err("every inventory table write must be denied");
             assert!(
                 error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
-                "unexpected error for protected table {table}: {error}"
+                "unexpected DML error for protected table {table}: {error}"
             );
         }
     }
@@ -2432,17 +2463,20 @@ mod tests {
                 existing_tables.contains(table),
                 "migrated schema is missing sentinel table {table}"
             );
-            let error = db
-                .execute_renderer_profile_egress(
-                    &format!("SELECT * FROM \"{table}\" LIMIT 0"),
-                    &[],
-                    "all",
-                )
-                .expect_err("protected route table read must be denied");
-            assert!(
-                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
-                "unexpected read error for {table}: {error}"
+            let read = db.execute_renderer_profile_egress(
+                &format!("SELECT * FROM \"{table}\" LIMIT 0"),
+                &[],
+                "all",
             );
+            if crate::profile_egress_policy::is_read_open_table(table) {
+                read.unwrap_or_else(|error| panic!("read-open route table {table}: {error}"));
+            } else {
+                let error = read.expect_err("closed route table read must be denied");
+                assert!(
+                    error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                    "unexpected read error for {table}: {error}"
+                );
+            }
 
             let error = db
                 .execute_renderer_profile_egress(
@@ -2482,13 +2516,20 @@ mod tests {
                 existing_tables.contains(table),
                 "migrated schema is missing sentinel table {table}"
             );
-            let error = db
-                .execute_renderer_profile_egress(&format!("SELECT * FROM \"{table}\""), &[], "all")
-                .expect_err("protected route table read must be denied");
-            assert!(
-                error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
-                "unexpected read error for {table}: {error}"
+            let read = db.execute_renderer_profile_egress(
+                &format!("SELECT * FROM \"{table}\""),
+                &[],
+                "all",
             );
+            if crate::profile_egress_policy::is_read_open_table(table) {
+                read.unwrap_or_else(|error| panic!("read-open shadow table {table}: {error}"));
+            } else {
+                let error = read.expect_err("closed shadow table read must be denied");
+                assert!(
+                    error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR),
+                    "unexpected read error for {table}: {error}"
+                );
+            }
         }
 
         db.execute_renderer_profile_egress(
@@ -2554,10 +2595,11 @@ mod tests {
             )
             .expect("snapshot metadata remains readable");
         assert_eq!(rows.len(), 1);
-        let error = db
+        // The snapshot payload is a read-open column once the opening is on.
+        let rows = db
             .execute_renderer_profile_egress("SELECT payload FROM state_snapshots", &[], "all")
-            .expect_err("snapshot payload must not be published");
-        assert!(error.to_string().contains(RENDERER_PROFILE_EGRESS_ERROR));
+            .expect("snapshot payload is read-open");
+        assert_eq!(rows.len(), 1);
         let error = db
             .execute_renderer_profile_egress(
                 "INSERT INTO state_snapshots (id, domain, anchor_sequence, payload)
@@ -4598,33 +4640,58 @@ mod tests {
     }
 
     #[test]
-    fn profile_egress_read_open_switch_is_closed_by_default_and_matches_the_old_inventory() {
-        // With the production switch (false) a read-open table or column is
-        // rejected exactly like a closed one (a153743b behavior).
-        assert!(!crate::profile_egress_policy::read_open_enabled());
+    fn profile_egress_read_open_switch_is_open_by_default_and_closed_tables_stay_closed() {
+        // The production switch is open (no `with_read_open` override here):
+        // a read-open table or column is readable, the closed class is still
+        // rejected, and DML is rejected for both classes.
+        use crate::profile_egress_policy::{is_closed_table, is_read_open_table};
+        assert!(crate::profile_egress_policy::read_open_enabled());
         let db = d2a_seeded_db();
         for entry in crate::profile_egress_policy::PROFILE_EGRESS_TABLES {
+            let read = db.execute_renderer_profile_egress(
+                &format!("SELECT * FROM \"{}\" LIMIT 0", entry.name),
+                &[],
+                "all",
+            );
+            if is_read_open_table(entry.name) {
+                read.unwrap_or_else(|error| panic!("read-open read {}: {error}", entry.name));
+            } else {
+                assert!(is_closed_table(entry.name), "{}", entry.name);
+                let error = read.expect_err("closed table read must stay rejected");
+                assert!(d2a_denied(&error), "{}: {error}", entry.name);
+            }
             let error = db
                 .execute_renderer_profile_egress(
-                    &format!("SELECT * FROM \"{}\" LIMIT 0", entry.name),
+                    &format!("DELETE FROM \"{}\" WHERE 0", entry.name),
                     &[],
-                    "all",
+                    "run",
                 )
-                .expect_err("closed switch: every ledger table read is rejected");
-            assert!(d2a_denied(&error), "{}: {error}", entry.name);
+                .expect_err("ledger DML stays rejected");
+            let sqlite_shadow = entry.name.contains("_fts_");
+            assert!(
+                sqlite_shadow || d2a_denied(&error),
+                "{}: {error}",
+                entry.name
+            );
         }
         for sql in [
             "SELECT payload FROM change_events",
             "SELECT * FROM change_events",
             "SELECT payload FROM state_snapshots",
+            "SELECT domain FROM change_events",
+        ] {
+            db.execute_renderer_profile_egress(sql, &[], "all")
+                .unwrap_or_else(|error| panic!("{sql}: {error}"));
+        }
+        for dml in [
+            "DELETE FROM change_events WHERE 0",
+            "UPDATE state_snapshots SET domain = domain WHERE 0",
         ] {
             let error = db
-                .execute_renderer_profile_egress(sql, &[], "all")
-                .expect_err("closed switch: payload columns are rejected");
-            assert!(d2a_denied(&error), "{sql}: {error}");
+                .execute_renderer_profile_egress(dml, &[], "run")
+                .expect_err("feed table DML stays rejected");
+            assert!(d2a_denied(&error), "{dml}: {error}");
         }
-        db.execute_renderer_profile_egress("SELECT domain FROM change_events", &[], "all")
-            .expect("feed metadata stays readable");
     }
 
     #[test]
@@ -4714,11 +4781,15 @@ mod tests {
             assert!(!error.to_string().is_empty());
             assert!(!attached.exists());
         });
-        // Back to closed: nothing leaked out of the override.
-        let error = db
-            .execute_renderer_profile_egress("SELECT content FROM chat_messages", &[], "all")
-            .expect_err("override must not outlive its scope");
+        // Forcing the switch off rejects, and neither override outlives its
+        // scope: back at the shipped default (open).
+        let error = with_read_open(false, || {
+            db.execute_renderer_profile_egress("SELECT content FROM chat_messages", &[], "all")
+        })
+        .expect_err("a forced-off switch rejects the read");
         assert!(d2a_denied(&error));
+        db.execute_renderer_profile_egress("SELECT content FROM chat_messages", &[], "all")
+            .expect("override must not outlive its scope");
     }
 
     /// K3/2 Negative (18): DML on `chat_sessions` and UPDATE on `chat_messages`

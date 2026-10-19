@@ -1144,7 +1144,7 @@ describe("D2a profile egress gate", () => {
     }
   });
 
-  it("allows the typed foreshadow anchor projection while denying prose reads", async () => {
+  it("allows the typed foreshadow anchor projection and the own-data foreshadow read while denying plaintext publication", async () => {
     const gate = await createProfileEgressGate(backend());
     const callerIdentity = gate.issueCallerIdentity(11);
 
@@ -1154,32 +1154,58 @@ describe("D2a profile egress gate", () => {
         sceneId: "scene-1",
       }),
     ).not.toThrow();
+    // `foreshadow_get` is an own-data-read command: it passes once the opening
+    // is on, while the plaintext-publication commands stay denied.
     expect(() =>
       gate.assertInvoke("foreshadow_get", {
         callerIdentity,
         payload: { id: "foreshadow-1" },
       }),
+    ).not.toThrow();
+    expect(() =>
+      gate.assertInvoke("nir1_pack_context", { callerIdentity }),
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`));
   });
 
   it.each([
-    ["chat_summaries", "summary"],
-    ["chat_message_chunks", "text"],
-    ["generation_logs", "prompt_full"],
-    ["idempotency_requests", "tombstone_json"],
-    ["ab_comparisons", "response_a"],
-    ["ab_comparison_runs", "slots"],
-  ])("consumes the Native inventory for %s", async (table, column) => {
-    const gate = await createProfileEgressGate(backend());
-    const callerIdentity = gate.issueCallerIdentity(11);
-    expect(() =>
-      gate.assertInvoke("db_execute", {
-        callerIdentity,
-        method: "all",
-        sql: `SELECT ${column} FROM ${table}`,
-      }),
-    ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`));
-  });
+    ["chat_summaries", "summary", true],
+    ["chat_message_chunks", "text", true],
+    ["generation_logs", "prompt_full", true],
+    ["idempotency_requests", "tombstone_json", false],
+    ["ab_comparisons", "response_a", true],
+    ["ab_comparison_runs", "slots", true],
+  ])(
+    "consumes the Native inventory for %s",
+    async (table, column, readOpen) => {
+      const gate = await createProfileEgressGate(backend());
+      const callerIdentity = gate.issueCallerIdentity(11);
+      const read = () =>
+        gate.assertInvoke("db_execute", {
+          callerIdentity,
+          method: "all",
+          sql: `SELECT ${column} FROM ${table}`,
+        });
+      // The read-open class is readable as own-data-read; the closed class stays
+      // plaintext-publication.
+      if (readOpen) {
+        expect(read).not.toThrow();
+      } else {
+        expect(read).toThrow(
+          new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+        );
+      }
+      // Writes to either class are never own-data-read.
+      expect(() =>
+        gate.assertInvoke("db_execute", {
+          callerIdentity,
+          method: "run",
+          sql: `DELETE FROM ${table}`,
+        }),
+      ).toThrow(
+        new RegExp(`${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+      );
+    },
+  );
 
   it.each([
     [
@@ -1378,11 +1404,16 @@ describe("D2a profile egress gate", () => {
       }),
     ).not.toThrow();
 
+    // `fts_search` is an own-data-read command and passes once opened.
+    expect(() =>
+      gate.assertInvoke("fts_search", { callerIdentity }),
+    ).not.toThrow();
+
     for (const [command, args] of [
       ["send_chat_message", {}],
       ["send_cli_chat_stream", {}],
       ["get_mcp_config", {}],
-      ["fts_search", {}],
+      ["nir1_pack_context", {}],
       ["db_execute", { method: "all", sql: "SELECT body FROM messages" }],
       ["db_execute", { method: "all", sql: "SELECT 1" }],
     ] as const) {

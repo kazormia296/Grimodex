@@ -6748,7 +6748,21 @@ pub(crate) mod tests {
             state: Arc::clone(&fixture.state),
         };
         let runtime = tokio::runtime::Runtime::new()?;
+        // A closed table is never readable through generic SQL.
         let publication_error = runtime
+            .block_on(backend.db_execute(
+                "SELECT id FROM narrative_proposals WHERE id=?1".into(),
+                json!([SESSION_ID]),
+                "all".into(),
+                Some(caller_identity_wire(&fixture.caller)),
+                None,
+            ))
+            .expect_err("restricted generic SQL must not publish a closed table");
+        assert!(publication_error.reason.contains("D2A_EGRESS_DENIED"));
+        assert_eq!(fixture.generation_storage_counts()?, before);
+        // The author's own chat sessions are read-open (own-data-read): the
+        // read passes the authorizer and changes nothing.
+        let own_read = runtime
             .block_on(backend.db_execute(
                 "SELECT id FROM chat_sessions WHERE id=?1".into(),
                 json!([SESSION_ID]),
@@ -6756,8 +6770,20 @@ pub(crate) mod tests {
                 Some(caller_identity_wire(&fixture.caller)),
                 None,
             ))
-            .expect_err("restricted generic SQL must not publish chat sessions");
-        assert!(publication_error.reason.contains("D2A_EGRESS_DENIED"));
+            .expect("restricted generic SQL may read the author's own chat sessions");
+        assert!(own_read.contains(SESSION_ID));
+        assert_eq!(fixture.generation_storage_counts()?, before);
+        // Ledger DML stays rejected.
+        let write_error = runtime
+            .block_on(backend.db_execute(
+                "DELETE FROM chat_sessions WHERE id=?1".into(),
+                json!([SESSION_ID]),
+                "run".into(),
+                Some(caller_identity_wire(&fixture.caller)),
+                None,
+            ))
+            .expect_err("restricted generic SQL must not write chat sessions");
+        assert!(write_error.reason.contains("D2A_EGRESS_DENIED"));
         assert_eq!(fixture.generation_storage_counts()?, before);
 
         let request = capture_input_wire(

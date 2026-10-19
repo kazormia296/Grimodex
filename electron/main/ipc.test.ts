@@ -2948,7 +2948,7 @@ describe("NIR-1 router sender binding", () => {
     const readerResponse = new Promise<string>((resolve) => {
       resolveReader = resolve;
     });
-    const narrativeExtractionGetRun = vi.fn(() => readerResponse);
+    const narrativeExtractionClaimTask = vi.fn(() => readerResponse);
     const activateProfileEgress = vi.fn(async () =>
       JSON.stringify(activatedStatus),
     );
@@ -2957,7 +2957,7 @@ describe("NIR-1 router sender binding", () => {
       activateProfileEgress,
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
-      narrativeExtractionGetRun,
+      narrativeExtractionClaimTask,
     };
     const profileEgress = await createProfileEgressGate(
       backend as unknown as NapiBackendLike,
@@ -2979,13 +2979,23 @@ describe("NIR-1 router sender binding", () => {
       profileEgress,
     );
 
+    // `narrative_extraction_claim_task` publishes task plaintext, so it is
+    // plaintext-publication (an own-data-read such as `..._get_run` would
+    // complete without re-authorization, K3/2 Q-1).
     const pendingReader = invokeHandler()(
       { sender: { id: 42 } },
-      "narrative_extraction_get_run",
-      { payload: { runId: "run-1", projectId: "project-1" } },
+      "narrative_extraction_claim_task",
+      {
+        payload: { runId: "run-1", projectId: "project-1" },
+        workspaceBinding: {
+          authorityId: "authority-1",
+          generation: 1,
+          authorityInstanceId: "1",
+        },
+      },
     );
     await vi.waitFor(() =>
-      expect(narrativeExtractionGetRun).toHaveBeenCalledOnce(),
+      expect(narrativeExtractionClaimTask).toHaveBeenCalledOnce(),
     );
 
     const activation = profileEgress.activateFirstRestrictedPublication!();
@@ -3327,6 +3337,11 @@ describe("NIR-1 router sender binding", () => {
           workspaceBinding: { authorityId: "authority-1" },
         },
       ],
+    ];
+    // own-data-read commands are no longer rejected by the D2a gate once the
+    // opening is on: they get past it and fail later on the mock's arguments
+    // (never with D2A_EGRESS_DENIED).
+    const ownDataReadRoutes: Array<[string, Record<string, unknown>]> = [
       ["narrative_extraction_get_run_review_bundle", { messages: ["old"] }],
       ["project_snapshot_restore_context", { workspaceId: "other" }],
       ["lint_ignore_list", { projectId: "other" }],
@@ -3357,7 +3372,6 @@ describe("NIR-1 router sender binding", () => {
       nativeCalls.startPostEffectRun,
       nativeCalls.startPostEffectRunMulti,
       nativeCalls.narrativeExtractionClaimTask,
-      nativeCalls.narrativeExtractionGetRunReviewBundle,
     ]) {
       expect(call).not.toHaveBeenCalled();
     }
@@ -3366,6 +3380,21 @@ describe("NIR-1 router sender binding", () => {
     expect(vivliostyleBuild).not.toHaveBeenCalled();
     expect(vivliostylePreviewStart).not.toHaveBeenCalled();
     expect(vivliostyleDetect).not.toHaveBeenCalled();
+
+    for (const [command, args] of ownDataReadRoutes) {
+      const envelope = await invokeHandler()(
+        { sender: { id: 42 } },
+        command,
+        args,
+      );
+      if (!envelope.ok) {
+        expect(envelope.error, command).not.toMatch(
+          new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`),
+        );
+      }
+    }
+    // The review-bundle read never reached the AI/dispatch transport.
+    expect(nativeTransportCalls).toEqual([]);
 
     const save = await invokeHandler()(
       { sender: { id: 42 } },
@@ -3395,7 +3424,9 @@ describe("NIR-1 router sender binding", () => {
         messageId: request.messageId,
       }),
     );
-    const dbExecute = vi.fn(async () => JSON.stringify({ rows: [] }));
+    const dbExecute = vi.fn(async (..._args: unknown[]) =>
+      JSON.stringify({ rows: [] }),
+    );
     const sendChatMessageStream = vi.fn();
     const backend = {
       initializeProfileEgress: vi.fn(async () => JSON.stringify(status)),
@@ -3505,12 +3536,30 @@ describe("NIR-1 router sender binding", () => {
       expect.any(String),
     );
     expect(legacy).toEqual({ ok: true, value: { status: "legacy-only" } });
-    expect(protectedRead).toMatchObject({
-      ok: false,
-      error: expect.stringMatching(
-        new RegExp(`^${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
-      ),
-    });
+    // A read of the author's own chat is an own-data-read and passes the gate;
+    // Native receives Main's read-only classification as the 5th argument.
+    expect(protectedRead).toEqual({ ok: true, value: { rows: [] } });
+    expect(dbExecute).toHaveBeenCalledTimes(1);
+    expect(dbExecute.mock.calls[0]?.[4]).toBe(true);
+    // Ledger DML and a closed-table read stay plaintext-publication.
+    for (const sql of [
+      "DELETE FROM chat_sessions WHERE id = ?",
+      "SELECT id FROM narrative_proposals WHERE id = ?",
+    ]) {
+      expect(
+        await invokeHandler()(event, "db_execute", {
+          sql,
+          params: ["session-1"],
+          method: "run",
+        }),
+        sql,
+      ).toMatchObject({
+        ok: false,
+        error: expect.stringMatching(
+          new RegExp(`^${D2A_EGRESS_DENIED_MARKER} plaintext-publication`),
+        ),
+      });
+    }
     expect(legacyStream).toMatchObject({
       ok: false,
       error: expect.stringMatching(
@@ -3518,7 +3567,7 @@ describe("NIR-1 router sender binding", () => {
       ),
     });
     expect(captureCurrentChatInput).toHaveBeenCalledTimes(3);
-    expect(dbExecute).not.toHaveBeenCalled();
+    expect(dbExecute).toHaveBeenCalledTimes(1);
     expect(sendChatMessageStream).not.toHaveBeenCalled();
   });
 

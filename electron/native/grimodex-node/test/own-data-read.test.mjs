@@ -20,9 +20,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
 
-// pending: 開放 commit でこの値と grimodex-db の PROFILE_EGRESS_READ_OPEN_ENABLED
-// を同時に true にする。
-const READ_OPEN = false;
+// 開放 commit（DR-DA1-35）でこの値と grimodex-db の PROFILE_EGRESS_READ_OPEN_ENABLED
+// を同時に true にした。
+const READ_OPEN = true;
 
 const DENIED = /D2A_EGRESS_DENIED/;
 const NOT_READ_ONLY = /D2A_EGRESS_DENIED.*own-data-read statement is not read-only/;
