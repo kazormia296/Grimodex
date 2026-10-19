@@ -77,8 +77,8 @@ const _: () = assert!(
 /// ceiling: a request over it is refused at the create (`NIR1_GENERATION_REF_LIMIT`,
 /// nothing committed) and never truncated.
 pub(crate) const NIR1_LOCAL_ATTEMPT_READ_BUDGET: ReadBudget = ReadBudget {
-    max_references: grimodex_core::narrative_nir1::MAX_PACKING_ITEMS * 16,
-    max_reference_bytes: grimodex_core::narrative_nir1::MAX_PACKING_ITEMS * 16 * 1024,
+    max_references: grimodex_db::narrative_extraction::NATIVE_ATTEMPT_MAX_REFERENCES,
+    max_reference_bytes: grimodex_db::narrative_extraction::NATIVE_ATTEMPT_MAX_REFERENCE_BYTES,
 };
 
 /// A refusal before any attempt row exists, or one that leaves the owner's

@@ -1297,7 +1297,9 @@ fn a3_an_index_generation_change_stops_a_graph_request_before_the_claim() {
     }
 
     // Just before the claim: the Index generation and a Revision change are
-    // alike (neither is re-read by the claim), so they behave alike.
+    // alike (neither is re-read by the claim, DR-DI1C-9), so they behave
+    // alike: the request is sent, as the DI-1c Revision residual is. The
+    // residual is recorded in the decisions and the PR body (DR-DI1A-16).
     let mut sends = Vec::new();
     for change in [Change::IndexGeneration, Change::Revision] {
         let fixture = ready_fixture();
@@ -1307,7 +1309,15 @@ fn a3_an_index_generation_change_stops_a_graph_request_before_the_claim() {
         let recorder = Recorder::default();
         recorder.observe(&result);
         assert!(seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim));
-        assert!(recorder.sends() <= 1, "{change:?}: at most one send");
+        assert_eq!(
+            recorder.sends(),
+            1,
+            "{change:?}: the claim reads neither, so the request is sent"
+        );
+        assert!(
+            matches!(result, Ok(Nir1LocalAttemptOutcome::Start(_))),
+            "{change:?}: started"
+        );
         eprintln!(
             "A-3 observation: BeforeClaim {change:?} -> {}",
             observed_outcome(&fixture, &result)

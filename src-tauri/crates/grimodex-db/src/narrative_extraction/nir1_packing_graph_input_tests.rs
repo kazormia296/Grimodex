@@ -658,3 +658,92 @@ fn graph_inputs_of(selected: &NativeNir1SelectedInputs, revision_id: &str) -> Ve
         )
         .collect()
 }
+
+/// A-20 (DR-DI1A-23): the Graph groups record one input each with the whole
+/// qualification set of their Revision, so the optional Graph may not turn a
+/// request that fits the attempt's reference cap into one the create refuses.
+/// The groups that do not fit are not added (counted as `limit`) and the
+/// accepted IR groups stay.
+#[test]
+fn the_graph_groups_that_would_exceed_the_reference_cap_are_not_added() -> Result<()> {
+    use super::graph_candidates::REFERENCE_CAPS_FOR_TEST;
+
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            REFERENCE_CAPS_FOR_TEST.with(|caps| caps.set(None));
+        }
+    }
+    let _reset = Reset;
+
+    let request = graph_request()?;
+    let references_of = |selected: &NativeNir1SelectedInputs| -> Result<usize> {
+        let prepared = selected.prepared();
+        Ok(prepared.input_references().len()
+            + prepared
+                .finalize_qualifications(100_000)?
+                .qualifications
+                .len())
+    };
+    let control_references = references_of(&request.control)?;
+    let full_references = references_of(&request.selected)?;
+    let full_groups = request
+        .selected
+        .prepared()
+        .graph_outcome()
+        .expect("a Graph outcome")
+        .groups()
+        .len();
+    assert!(full_groups >= 2, "the fixture admits several groups");
+    assert!(full_references > control_references);
+
+    let mut seen_groups = std::collections::BTreeSet::new();
+    let mut previous = 0usize;
+    // From the cap of the Graph-less request up to the one that holds every
+    // group (the count carries a fixed allowance above the exact total).
+    for cap in (control_references..=full_references + REFERENCE_ALLOWANCE).step_by(3) {
+        REFERENCE_CAPS_FOR_TEST.with(|caps| caps.set(Some((cap, usize::MAX))));
+        let selected = request
+            .fixture
+            .select_graph(Some(&request.candidates), |_| Ok(100_000))?;
+        let prepared = selected.prepared();
+        let outcome = prepared.graph_outcome().expect("a Graph outcome");
+        let groups = outcome.groups().len();
+        assert!(groups >= previous, "a larger cap never admits fewer groups");
+        previous = groups;
+        seen_groups.insert(groups);
+        // The request is accepted whatever the cap: the references it records
+        // fit the cap and the accepted IR groups are still in it.
+        assert!(
+            references_of(&selected)? <= cap || groups == 0,
+            "cap {cap}: {} references",
+            references_of(&selected)?
+        );
+        assert_eq!(
+            outcome.limited_count() + groups,
+            full_groups,
+            "cap {cap}: every group that is not added is counted as a limit"
+        );
+        assert_eq!(
+            prepared.context_items().len(),
+            request.control.prepared().context_items().len(),
+            "cap {cap}: a Graph group replaces its IR group"
+        );
+    }
+    assert!(seen_groups.contains(&0), "the lowest cap admits no group");
+    assert!(
+        seen_groups.contains(&full_groups),
+        "the highest cap admits every group"
+    );
+    assert!(
+        seen_groups
+            .iter()
+            .any(|groups| *groups > 0 && *groups < full_groups),
+        "a cap in between admits a prefix: {seen_groups:?}"
+    );
+    Ok(())
+}
+
+/// The fixed allowance `ReferenceMeter` keeps above the exact total (the Human
+/// and the Raw input are not counted one by one).
+const REFERENCE_ALLOWANCE: usize = 32;

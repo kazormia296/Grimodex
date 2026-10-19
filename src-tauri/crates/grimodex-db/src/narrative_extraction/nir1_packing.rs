@@ -63,9 +63,9 @@ pub mod graph_candidates;
 pub use graph_candidates::{
     graph_evidence_ref, graph_index_reference, read_nir1_graph_seed, read_nir1_graph_seed_in_tx,
     NativeNir1GraphBinding, NativeNir1GraphExclusion, NativeNir1GraphGroup, NativeNir1GraphInput,
-    NativeNir1GraphOutcome, Nir1GraphCandidateBinding, Nir1GraphCandidateEdge,
-    Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason, Nir1GraphSeedRead,
-    GRAPH_EVIDENCE_REF_FORM, GRAPH_INDEX_REF_FORM,
+    NativeNir1GraphOutcome, Nir1GraphCandidateBinding, Nir1GraphCandidateEdge, Nir1GraphCandidates,
+    Nir1GraphDropReason, Nir1GraphExclusionReason, Nir1GraphSeedRead, GRAPH_EVIDENCE_REF_FORM,
+    GRAPH_INDEX_REF_FORM, NATIVE_ATTEMPT_MAX_REFERENCES, NATIVE_ATTEMPT_MAX_REFERENCE_BYTES,
 };
 
 const NATIVE_ATOMIC_PART_COUNT: usize = 5;

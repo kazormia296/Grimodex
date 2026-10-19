@@ -39,12 +39,15 @@ use rusqlite::{params, Connection, OptionalExtension};
 use super::{
     candidate_binding_digest, group_parts, material_evidence_map, reader_part_name,
     relation_group_material, NativeNir1AuthorityBinding, NativeNir1ExcludedRevision,
-    NativeNir1RevisionExclusionReason, NativePackingInputBudget,
+    NativeNir1RevisionExclusionReason, NativePackingInputBudget, RevisionIndexQualification,
 };
 use crate::narrative_extraction::nir1_graph::c_query_worker::REQUEST_BYTES;
 use crate::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
 use crate::narrative_extraction::nir1_graph::{read_nir1_graph_seal, Nir1GraphSealRead};
 use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
+use crate::nir1_generation::{
+    d1_selection_reference, InputReference, InputRole, InputTarget, InputUse,
+};
 use crate::state::ActiveWorkspaceSnapshot;
 
 const GRAPH_CANDIDATE_BINDING_KIND: &str = "nir1.native.graph-evidence@1";
@@ -766,6 +769,8 @@ pub(super) fn pool_graph_candidates(
         accepted_ir_group_id: String,
         items: Vec<CandidateContextItem>,
         group: NativeNir1GraphGroup,
+        /// The input bytes this group charged beyond its accepted IR group.
+        extra: usize,
     }
     let mut lookups = HashMap::<&str, RevisionLookup<'_>>::new();
     let mut replacements = Vec::<Replacement>::new();
@@ -850,6 +855,7 @@ pub(super) fn pool_graph_candidates(
             .collect::<Result<Vec<_>>>()?;
         replacements.push(Replacement {
             accepted_ir_group_id,
+            extra,
             items: group_items,
             group: NativeNir1GraphGroup {
                 revision_id: revision.revision_id.clone(),
@@ -861,37 +867,6 @@ pub(super) fn pool_graph_candidates(
     if replacements.is_empty() {
         return Ok(outcome);
     }
-
-    // The swap in a trial list: the replaced accepted IR groups leave, and the
-    // Graph groups follow the Raw items, ahead of the IR groups.
-    let replaced = replacements
-        .iter()
-        .map(|replacement| replacement.accepted_ir_group_id.as_str())
-        .collect::<HashSet<_>>();
-    let mut removed_ids = Vec::new();
-    let mut trial = Vec::with_capacity(items.len());
-    trial.extend(items.iter().take(ctx.raw_item_count).cloned());
-    for replacement in &replacements {
-        trial.extend(replacement.items.iter().cloned());
-    }
-    for candidate in items.iter().skip(ctx.raw_item_count) {
-        match candidate.item() {
-            ContextItemKind::AcceptedIr {
-                id, atomic_group, ..
-            } if replaced.contains(atomic_group.as_str()) => removed_ids.push(id.clone()),
-            _ => trial.push(candidate.clone()),
-        }
-    }
-    ensure!(
-        removed_ids.len() == replacements.len() * super::NATIVE_ATOMIC_PART_COUNT
-            && trial.len() == items.len(),
-        "NIR1_NATIVE_GRAPH_REPLACEMENT_LOST_GROUP"
-    );
-    ensure!(
-        trial.len() <= MAX_PACKING_ITEMS,
-        "NIR-1 Native projected item count {} exceeds MAX_PACKING_ITEMS {MAX_PACKING_ITEMS}",
-        trial.len()
-    );
 
     // D-final needs at least one accepted IR item in the request. A Graph
     // group outranks the IR groups, so on a very small budget it could take
@@ -916,6 +891,136 @@ pub(super) fn pool_graph_candidates(
                 && selected.contains(super::item_id(candidate.item()))
         })
     };
+    // The swap in a trial list: the first `count` replaced accepted IR groups
+    // leave, and their Graph groups follow the Raw items, ahead of the IR
+    // groups.
+    let build_trial =
+        |count: usize, replacements: &[Replacement]| -> (Vec<CandidateContextItem>, Vec<String>) {
+            let replaced = replacements[..count]
+                .iter()
+                .map(|replacement| replacement.accepted_ir_group_id.as_str())
+                .collect::<HashSet<_>>();
+            let mut removed_ids = Vec::new();
+            let mut trial = Vec::with_capacity(items.len());
+            trial.extend(items.iter().take(ctx.raw_item_count).cloned());
+            for replacement in &replacements[..count] {
+                trial.extend(replacement.items.iter().cloned());
+            }
+            for candidate in items.iter().skip(ctx.raw_item_count) {
+                match candidate.item() {
+                    ContextItemKind::AcceptedIr {
+                        id, atomic_group, ..
+                    } if replaced.contains(atomic_group.as_str()) => removed_ids.push(id.clone()),
+                    _ => trial.push(candidate.clone()),
+                }
+            }
+            (trial, removed_ids)
+        };
+
+    // The attempt records one input per Graph group, each with the whole
+    // qualification set of its Revision. The Graph is optional material, so it
+    // may not turn a request that fits the attempt's reference caps into one
+    // the create refuses: the references the selection would record are
+    // counted against the caps, and the Graph groups that do not fit (and the
+    // ones after them) are not added (DR-DI1A-23).
+    let index_seal = outcome
+        .seal
+        .clone()
+        .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_GRAPH_SEAL_MISSING"))?;
+    let mut meter = ReferenceMeter {
+        project_id: ctx.project_id,
+        seal: &index_seal,
+        bindings: &bindings_by_revision,
+        cache: HashMap::new(),
+    };
+    let group_index = replacements
+        .iter()
+        .enumerate()
+        .map(|(position, replacement)| (replacement.group.group_id.as_str(), position))
+        .collect::<HashMap<_, _>>();
+    let mut fits = |count: usize| -> Result<bool> {
+        let (trial, _) = build_trial(count, &replacements);
+        let packed = pack(&trial)?;
+        let selected = packed
+            .selected_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let mut ir_revisions = std::collections::BTreeSet::<&str>::new();
+        let mut graph_groups = std::collections::BTreeSet::<&str>::new();
+        for candidate in &trial {
+            let id = super::item_id(candidate.item());
+            if !selected.contains(id) {
+                continue;
+            }
+            match candidate.item() {
+                ContextItemKind::AcceptedIr { .. } => {
+                    if let Some(owner) = candidate_owners.get(id) {
+                        ir_revisions.insert(owner.as_str());
+                    }
+                }
+                ContextItemKind::GraphEvidence { atomic_group, .. } => {
+                    graph_groups.insert(atomic_group.as_str());
+                }
+                _ => {}
+            }
+        }
+        let mut references = REFERENCE_SLACK_COUNT;
+        let mut bytes = REFERENCE_SLACK_BYTES;
+        for revision_id in ir_revisions {
+            let (count, size) = meter.accepted_revision(revision_id)?;
+            references = references.saturating_add(count);
+            bytes = bytes.saturating_add(size);
+        }
+        for group_id in graph_groups {
+            let position = *group_index
+                .get(group_id)
+                .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_GRAPH_REPLACEMENT_LOST_GROUP"))?;
+            let (count, size) = meter.graph_group(&replacements[position].group)?;
+            references = references.saturating_add(count);
+            bytes = bytes.saturating_add(size);
+        }
+        let (max_references, max_reference_bytes) = reference_caps();
+        Ok(references <= max_references && bytes <= max_reference_bytes)
+    };
+    checkpoint()?;
+    let total = replacements.len();
+    let mut keep = total;
+    if !fits(total)? {
+        // The request without any Graph group is the one the cap already
+        // accepted (the baseline); search the largest prefix that fits.
+        let (mut low, mut high) = (0usize, total - 1);
+        while low < high {
+            checkpoint()?;
+            let mid = (low + high).div_ceil(2);
+            if fits(mid)? {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        keep = low;
+    }
+    for dropped in replacements.split_off(keep) {
+        input_budget.release_additional(dropped.extra);
+        reserved_extra -= dropped.extra;
+        outcome.limited += 1;
+    }
+    if replacements.is_empty() {
+        return Ok(outcome);
+    }
+
+    let (trial, removed_ids) = build_trial(replacements.len(), &replacements);
+    ensure!(
+        removed_ids.len() == replacements.len() * super::NATIVE_ATOMIC_PART_COUNT
+            && trial.len() == items.len(),
+        "NIR1_NATIVE_GRAPH_REPLACEMENT_LOST_GROUP"
+    );
+    ensure!(
+        trial.len() <= MAX_PACKING_ITEMS,
+        "NIR-1 Native projected item count {} exceeds MAX_PACKING_ITEMS {MAX_PACKING_ITEMS}",
+        trial.len()
+    );
     checkpoint()?;
     if !has_accepted_ir(&trial, &pack(&trial)?) && has_accepted_ir(items, &pack(items)?) {
         input_budget.release_additional(reserved_extra);
@@ -937,4 +1042,127 @@ pub(super) fn pool_graph_candidates(
         outcome.groups.push(replacement.group);
     }
     Ok(outcome)
+}
+
+/// The references the attempt would record for the Human and the Raw input
+/// (one input, eight and seven qualification rows, one D1 row for the Raw),
+/// with room for a few more. The selection is counted exactly for the
+/// Revisions and the Graph groups; this covers the rest.
+const REFERENCE_SLACK_COUNT: usize = 32;
+const REFERENCE_SLACK_BYTES: usize = 32 * 1024;
+
+/// The caps of one local attempt's references (input rows plus qualification
+/// rows), applied by the store at the create and at the read back. 16
+/// references per input slot at 1 KiB each. The Graph admission counts against
+/// the same values, so the create never refuses a request only because the
+/// optional Graph groups were added.
+pub const NATIVE_ATTEMPT_MAX_REFERENCES: usize = MAX_PACKING_ITEMS * 16;
+pub const NATIVE_ATTEMPT_MAX_REFERENCE_BYTES: usize = MAX_PACKING_ITEMS * 16 * 1024;
+
+#[cfg(test)]
+thread_local! {
+    /// A test lowers the caps to reach them with a small fixture.
+    pub(super) static REFERENCE_CAPS_FOR_TEST: std::cell::Cell<Option<(usize, usize)>> =
+        const { std::cell::Cell::new(None) };
+}
+
+fn reference_caps() -> (usize, usize) {
+    #[cfg(test)]
+    if let Some(caps) = REFERENCE_CAPS_FOR_TEST.with(std::cell::Cell::get) {
+        return caps;
+    }
+    (
+        NATIVE_ATTEMPT_MAX_REFERENCES,
+        NATIVE_ATTEMPT_MAX_REFERENCE_BYTES,
+    )
+}
+
+/// What an input of one Revision costs the attempt: the input row, its
+/// qualification rows and the D1 row, in count and in serialized bytes. The
+/// rows are derived with the product function, so the count is what the
+/// create sees. Cached by Revision (and by group).
+struct ReferenceMeter<'a> {
+    project_id: &'a str,
+    seal: &'a Nir1GraphSealRead,
+    bindings: &'a HashMap<&'a str, &'a NativeNir1AuthorityBinding>,
+    cache: HashMap<String, (usize, usize)>,
+}
+
+impl ReferenceMeter<'_> {
+    fn accepted_revision(&mut self, revision_id: &str) -> Result<(usize, usize)> {
+        let key = format!("ir:{revision_id}");
+        if let Some(cost) = self.cache.get(&key) {
+            return Ok(*cost);
+        }
+        let binding = *self
+            .bindings
+            .get(revision_id)
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?;
+        let input = InputReference {
+            role: InputRole::Context,
+            target: InputTarget::AcceptedRevision {
+                revision_id: revision_id.to_owned(),
+                bundle_digest: binding.bundle_digest().to_owned(),
+            },
+            input_use: InputUse::SelectedMaterial,
+        };
+        let cost = self.cost(binding, RevisionIndexQualification::NotIndexDerived, &input)?;
+        self.cache.insert(key, cost);
+        Ok(cost)
+    }
+
+    fn graph_group(&mut self, group: &NativeNir1GraphGroup) -> Result<(usize, usize)> {
+        let key = format!("graph:{}", group.group_id);
+        if let Some(cost) = self.cache.get(&key) {
+            return Ok(*cost);
+        }
+        let binding = *self
+            .bindings
+            .get(group.revision_id.as_str())
+            .ok_or_else(|| anyhow::anyhow!("NIR1_NATIVE_PREPARED_REVISION_BINDING_MISSING"))?;
+        let (source_key, revision_token) = super::graph_input_source(binding, &group.edge_id)?;
+        let (identity, version) =
+            graph_index_reference(self.project_id, self.seal, binding, &group.edge_id)?;
+        let input = InputReference {
+            role: InputRole::Context,
+            target: InputTarget::GraphEvidence {
+                evidence_ref: graph_evidence_ref(&group.revision_id, &group.edge_id)?,
+                source_key,
+                revision_token,
+            },
+            input_use: InputUse::SelectedMaterial,
+        };
+        let cost = self.cost(
+            binding,
+            RevisionIndexQualification::Present { identity, version },
+            &input,
+        )?;
+        self.cache.insert(key, cost);
+        Ok(cost)
+    }
+
+    fn cost(
+        &self,
+        binding: &NativeNir1AuthorityBinding,
+        index: RevisionIndexQualification,
+        input: &InputReference,
+    ) -> Result<(usize, usize)> {
+        let mut rows = Vec::new();
+        super::add_revision_qualifications(
+            &mut rows,
+            0,
+            self.project_id,
+            binding.revision_id(),
+            binding,
+            index,
+            &mut || Ok(()),
+        )?;
+        let d1 = d1_selection_reference(0, &"0".repeat(64));
+        let mut bytes = serde_json::to_vec(input)?.len() + serde_json::to_vec(&d1)?.len();
+        for row in &rows {
+            bytes += serde_json::to_vec(row)?.len();
+        }
+        // The input row, the qualification rows and the D1 row.
+        Ok((rows.len() + 2, bytes))
+    }
 }

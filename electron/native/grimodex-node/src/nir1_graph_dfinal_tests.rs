@@ -515,6 +515,82 @@ fn a5_a_stale_graph_waits_for_the_rebuild_and_asks_again() {
     );
 }
 
+/// From another thread, reads the main connection without waiting, every few
+/// milliseconds, from the moment `from` holds until `window` has passed. A
+/// sample that returns `None` found the connection held or inside a
+/// transaction. Returns `(samples, free)`.
+fn sample_main_connection(rig: &Rig, from: impl Fn() -> bool, window: Duration) -> (usize, usize) {
+    let workspace =
+        grimodex_db::state::active_workspace_snapshot(&rig.fixture.state.ws).expect("ws");
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !from() {
+        assert!(Instant::now() < deadline, "the wait never began");
+        thread::sleep(Duration::from_millis(1));
+    }
+    let started = Instant::now();
+    let (mut samples, mut free) = (0usize, 0usize);
+    while started.elapsed() < window {
+        samples += 1;
+        if try_read_c_query_freshness_stamp(workspace.db().db()).is_some() {
+            free += 1;
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+    (samples, free)
+}
+
+#[test]
+fn a5_the_main_connection_stays_free_during_the_whole_wait() {
+    // While READY is awaited (the worker is preparing) ...
+    let rig = Rig::new();
+    rig.open();
+    rig.plan.prepare_delay_ms.store(700, Ordering::SeqCst);
+    let (samples, free) = thread::scope(|scope| {
+        let sampler = scope.spawn(|| {
+            sample_main_connection(
+                &rig,
+                || rig.plan.prepares.load(Ordering::SeqCst) >= 1,
+                Duration::from_millis(450),
+            )
+        });
+        let selected = rig.request().expect("request");
+        assert!(
+            used(selected.graph_outcome()),
+            "{:?}",
+            selected.graph_outcome()
+        );
+        sampler.join().expect("sampler")
+    });
+    assert!(samples >= 20, "{samples} samples");
+    assert_eq!(free, samples, "the connection was held during the wait");
+
+    // ... and while a running query is awaited.
+    let rig = Rig::new();
+    rig.open_with_budget(Duration::from_millis(700));
+    rig.plan.hold_query.store(true, Ordering::SeqCst);
+    let (samples, free) = thread::scope(|scope| {
+        let sampler = scope.spawn(|| {
+            sample_main_connection(
+                &rig,
+                || rig.plan.queries.load(Ordering::SeqCst) >= 1,
+                Duration::from_millis(450),
+            )
+        });
+        let selected = rig.request().expect("request");
+        assert_eq!(
+            selected.graph_outcome(),
+            DFinalGraphOutcome::WaitExpired(GraphWaitKind::Query),
+            "a query that outlasts the wait is the wait's expiry, not the owner's timeout"
+        );
+        sampler.join().expect("sampler")
+    });
+    assert!(samples >= 20, "{samples} samples");
+    assert_eq!(
+        free, samples,
+        "the connection was held during the query wait"
+    );
+}
+
 #[test]
 fn a5_the_wait_is_bounded_and_the_request_goes_without_the_graph() {
     let rig = Rig::new();

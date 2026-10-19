@@ -96,6 +96,10 @@ pub(crate) enum GraphBusyCause {
 pub(crate) enum GraphWaitKind {
     Warming,
     Stale,
+    /// A query was running (a pending ticket) and had not settled when the
+    /// wait budget ran out. Not the owner's own `Timeout` (the worker's lease
+    /// ran out), which the owner returns as `Unavailable(Timeout)`.
+    Query,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -322,7 +326,14 @@ pub(crate) fn request_graph(
                     TicketWait::Settled(GraphTicketOutcome::Unavailable(reason)) => {
                         return unavailable(reason);
                     }
-                    TicketWait::Expired => return unavailable(GraphUnavailable::Timeout),
+                    TicketWait::Expired => {
+                        return Ok((
+                            GraphRequest::Skipped(DFinalGraphOutcome::WaitExpired(
+                                GraphWaitKind::Query,
+                            )),
+                            None,
+                        ));
+                    }
                     TicketWait::Cancelled => return unavailable(GraphUnavailable::Cancelled),
                 }
             }
@@ -360,6 +371,11 @@ fn reached(
 
 /// Pure: a `busy` answer while the owner's stamp counters moved is attributed
 /// to an unreadable stamp; otherwise to the slot.
+///
+/// This is an inference from the owner's counters, not a cause the owner
+/// reports: a stamp miss of another consumer's query in the same interval is
+/// counted too. The reach record (S4, A-8) takes the cause from the owner's
+/// diagnostics, and DD-1 does not take this value as evidence of a cause.
 fn busy_cause_of(stamp_misses_before: u64, stamp_misses_after: u64) -> GraphBusyCause {
     if stamp_misses_after > stamp_misses_before {
         GraphBusyCause::StampUnreadable

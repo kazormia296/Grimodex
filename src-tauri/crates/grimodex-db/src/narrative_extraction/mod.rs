@@ -177,7 +177,8 @@ pub use nir1_packing::{
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_packing::{
     graph_evidence_ref, graph_index_reference, read_nir1_graph_seed, read_nir1_graph_seed_in_tx,
-    Nir1GraphSeedRead, GRAPH_EVIDENCE_REF_FORM, GRAPH_INDEX_REF_FORM,
+    Nir1GraphSeedRead, GRAPH_EVIDENCE_REF_FORM, GRAPH_INDEX_REF_FORM, NATIVE_ATTEMPT_MAX_REFERENCES,
+    NATIVE_ATTEMPT_MAX_REFERENCE_BYTES,
 };
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,
