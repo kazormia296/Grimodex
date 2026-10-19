@@ -378,6 +378,20 @@ impl Rig {
         &self.fixture.state.nir1_graph
     }
 
+    /// After a query the owner retires the worker and rebuilds (InUse, then
+    /// Preparing, then READY). Until it is READY again, a `begin` is answered
+    /// Busy or Warming, and a Busy is not waited for (A-16). A test that asks
+    /// again right after a query waits, bounded, for the rebuild to end, so
+    /// its request meets the slot the case means, however slow the scheduler.
+    pub(crate) fn wait_for_the_rebuild_after_the_last_query(&self) {
+        wait_until("the owner's rebuild after the last query", || {
+            !matches!(
+                self.owner().slot_kind_for_test(),
+                GraphSlotKind::InUse | GraphSlotKind::Retiring | GraphSlotKind::Preparing
+            )
+        });
+    }
+
     pub(crate) fn request(&self) -> anyhow::Result<NativeSelectedPreparedRequest> {
         prepare_selected_local_chat_request(
             Arc::clone(&self.fixture.state),
@@ -998,6 +1012,7 @@ fn a10_several_pins_give_one_deterministic_seed() {
     // Bob was pinned before Alice: the earliest pin is the seed.
     rig.pin(BOB, "2026-01-01T00:00:00Z");
     for _ in 0..2 {
+        rig.wait_for_the_rebuild_after_the_last_query();
         let selected = rig.request().expect("request");
         // The seed D-final asked about and the seed its snapshot read again
         // are the same (Bob), so the Graph is neither invalidated nor empty.
@@ -1017,6 +1032,7 @@ fn a10_several_pins_give_one_deterministic_seed() {
     // Two pins at the same time: the Entity ID breaks the tie.
     rig.pin(ALICE, "2026-01-01T00:00:00Z");
     lock(&rig.plan.requests).clear();
+    rig.wait_for_the_rebuild_after_the_last_query();
     let _ = rig.request().expect("request");
     let seeds = lock(&rig.plan.requests).clone();
     assert!(seeds.iter().all(|(_, _, seed)| seed == ALICE), "{seeds:?}");

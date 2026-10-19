@@ -756,6 +756,7 @@ fn a9_a_change_that_leaves_b_clean_drops_only_that_revisions_group() {
     let baseline = baseline.into_parts().0.into_d_transport_handoff();
     assert_eq!(graph_revisions(&baseline), set_of(&[&first, &second]));
 
+    rig.wait_for_the_rebuild_after_the_last_query();
     let selected = request_with_hook(&rig, || {
         // The injection: not a writer of B.
         let workspace = active_workspace_snapshot(&rig.fixture.state.ws)?;
@@ -927,23 +928,63 @@ fn rig_over_real_b(two_revisions: bool) -> (Rig, Option<String>) {
 
 /// What Related Scenes does with a result it does not use: the finished,
 /// unused ticket of an available Graph fills the single-entry cache.
+///
+/// It follows a D-final request whose query makes the owner rebuild, so it
+/// first waits for that rebuild to end. What stays transient after that is
+/// retried within a bound: a `begin` answered Warming or Busy (the slot is
+/// between phases) and a query answered Stale (the rebuild's S0 stamp was
+/// taken before a commit of the request that ended just before; the owner
+/// retires that build and rebuilds). Anything else, or no available Graph
+/// within the bound, fails: a ready slot with a fresh stamp takes the query.
 fn fill_the_cache_like_related_scenes(rig: &Rig) {
     let state = &rig.fixture.state;
-    let GraphBegin::Pending(ticket) = state.nir1_graph.begin(
-        state,
-        GraphQuery {
-            project_id: PROJECT_ID.into(),
-            query_scene_id: SCENE_ID.into(),
-            seed_entity_id: ALICE.into(),
-        },
-    ) else {
-        panic!("a ready slot with a fresh stamp takes the query");
-    };
-    let outcome = ticket
-        .wait_timeout(Duration::from_secs(10))
-        .expect("the query settles");
-    assert!(matches!(outcome, GraphTicketOutcome::Available(_)));
-    ticket.finish(GraphTicketUse::Unused);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut last = String::new();
+    while Instant::now() < deadline {
+        rig.wait_for_the_rebuild_after_the_last_query();
+        let begin = state.nir1_graph.begin(
+            state,
+            GraphQuery {
+                project_id: PROJECT_ID.into(),
+                query_scene_id: SCENE_ID.into(),
+                seed_entity_id: ALICE.into(),
+            },
+        );
+        let ticket = match begin {
+            GraphBegin::Pending(ticket) => ticket,
+            GraphBegin::Unavailable(
+                reason @ (GraphUnavailable::Warming | GraphUnavailable::Busy),
+            ) => {
+                last = format!("begin answered {}", reason.as_str());
+                thread::sleep(Duration::from_millis(5));
+                continue;
+            }
+            GraphBegin::Unavailable(reason) => {
+                panic!(
+                    "a ready slot with a fresh stamp takes the query, not {}",
+                    reason.as_str()
+                )
+            }
+            GraphBegin::Cached(_) => {
+                panic!("a ready slot with a fresh stamp takes the query, not the cache")
+            }
+        };
+        let outcome = ticket
+            .wait_timeout(Duration::from_secs(10))
+            .expect("the query settles");
+        match outcome {
+            GraphTicketOutcome::Available(_) => {
+                ticket.finish(GraphTicketUse::Unused);
+                return;
+            }
+            GraphTicketOutcome::Unavailable(GraphUnavailable::Stale) => {
+                last = "the query answered stale".into();
+                drop(ticket);
+            }
+            other => panic!("the query of a ready slot is available: {other:?}"),
+        }
+    }
+    panic!("a ready slot with a fresh stamp takes the query (last: {last})");
 }
 
 /// The inject of DI-1c's table, except the index generation, which here is a
@@ -1093,6 +1134,7 @@ fn a11_the_single_entry_cache_does_not_carry_an_old_graph_into_a_later_request()
 
         // Request 3: from the worker, under the new generation; nothing of the
         // old Revision or the old generation.
+        rig.wait_for_the_rebuild_after_the_last_query();
         let queries = rig.plan.queries.load(Ordering::SeqCst);
         let hits = rig.owner().diagnostics().cache_hits;
         let three = prepare(&rig, &label);
@@ -1191,6 +1233,7 @@ fn a11_an_old_revision_is_out_of_requests_two_and_three_while_the_other_stays() 
     assert_eq!(accepted_revisions(&fresh), set_of(&[&second]));
     *lock(&rig.plan.candidates) =
         Some(graph_candidates_for(fresh.authority_bindings(), new_generation).expect("candidates"));
+    rig.wait_for_the_rebuild_after_the_last_query();
     let queries = rig.plan.queries.load(Ordering::SeqCst);
     let hits = rig.owner().diagnostics().cache_hits;
     let Prepared::Request(three, outcome) = prepare(&rig, "request 3") else {
