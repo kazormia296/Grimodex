@@ -3,11 +3,10 @@
 // Backend.dbExecute / dbExecuteBatch で固定する。
 //
 // 読取の開放（read-open の表と列を restricted の汎用 SQL で読めること）は
-// `PROFILE_EGRESS_READ_OPEN_ENABLED`（grimodex-db）が false の間は閉じたまま
-// なので、ここでは「閉じたままの状態で成り立つこと」だけを断言する。開放後の
-// 期待値は OPEN_EXPECTATIONS に pending として並べ、開放 commit が true に
-// 切り替える（開いているときの挙動は grimodex-db の cargo test が
-// `with_read_open(true)` で固定している）。
+// `PROFILE_EGRESS_READ_OPEN_ENABLED`（grimodex-db）が true になった開放 commit で
+// 有効になった。READ_OPEN が true のとき開いた状態を断言し、false に戻した
+// 場合の閉じた状態の分岐も残す（開いているときの挙動は grimodex-db の cargo
+// test が `with_read_open(true)` でも固定している）。
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtempSync, rmSync } from "node:fs";

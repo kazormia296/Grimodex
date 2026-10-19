@@ -2567,7 +2567,7 @@ mod tests {
     }
 
     #[test]
-    fn profile_egress_denies_snapshot_payload_but_keeps_metadata_readable() {
+    fn profile_egress_snapshot_payload_is_read_open_and_metadata_stays_readable() {
         let db = test_db();
         db.execute(
             "CREATE TABLE state_snapshots (
