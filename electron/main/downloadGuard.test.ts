@@ -111,6 +111,15 @@ const settle = async (): Promise<void> => {
   for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 5));
 };
 
+// copy と temp 削除の完了は負荷で遅れる。固定待ちだけに頼らず、空になるまで待つ。
+const expectEmptyDir = async (dir: string): Promise<void> => {
+  const deadline = Date.now() + 5000;
+  while (readdirSync(dir).length > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  expect(readdirSync(dir)).toEqual([]);
+};
+
 describe("handleWillDownload", () => {
   it("保存先を同期に OS の temp の新規 directory へ向け、profile data directory に書かない", async () => {
     const { deps } = makeDeps(() => null);
@@ -135,7 +144,7 @@ describe("handleWillDownload", () => {
     expect(picks).toEqual(["report.json"]);
     expect(readFileSync(dest, "utf8")).toBe("BODY");
     expect(notices).toEqual([]);
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
   });
 
   it("`<a download>` の攻撃: 名前を profile-egress.json にし、利用者の dialog が profile data directory を選んでも上書きされない", async () => {
@@ -147,7 +156,7 @@ describe("handleWillDownload", () => {
     await settle();
     expect(readFileSync(state, "utf8")).toBe("genuine");
     expect(notices).toEqual(["rejected-destination"]);
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
   });
 
   it("保存先が profile data directory の下の存在しない file でも拒否する", async () => {
@@ -168,7 +177,7 @@ describe("handleWillDownload", () => {
     item.finish("completed");
     await settle();
     expect(notices).toEqual([]);
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
     expect(readdirSync(documents)).toEqual([]);
   });
 
@@ -180,7 +189,7 @@ describe("handleWillDownload", () => {
     await settle();
     expect(picks).toEqual([]);
     expect(notices).toEqual([]);
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
   });
 
   it("中断（interrupted）は dialog を開かず、failed を通知し、temp を削除する", async () => {
@@ -191,7 +200,7 @@ describe("handleWillDownload", () => {
     await settle();
     expect(picks).toEqual([]);
     expect(notices).toEqual(["failed"]);
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
   });
 
   it("窓（webContents）が閉じたら item を取り消し、完了の通知で temp を削除する", async () => {
@@ -204,7 +213,7 @@ describe("handleWillDownload", () => {
     item.finish("cancelled");
     await settle();
     expect(picks).toEqual([]);
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
     // 閉じた窓の listener は残らない。
     expect(wc.listenerCount("destroyed")).toBe(0);
   });
@@ -250,7 +259,7 @@ describe("handleWillDownload", () => {
     await settle();
     expect(item.cancelled).toBe(true);
     expect(notices).toEqual(["rejected-destination"]);
-    expect(readdirSync(path.join(profile, "bin"))).toEqual([]);
+    await expectEmptyDir(path.join(profile, "bin"));
   });
 
   it("copy の失敗は failed を通知し、temp を削除する", async () => {
@@ -262,7 +271,7 @@ describe("handleWillDownload", () => {
     item.finish("completed");
     await settle();
     expect(notices).toEqual(["failed"]);
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
   });
 
   it("download ごとに独立した temp directory を使う（再入）", async () => {
@@ -277,7 +286,7 @@ describe("handleWillDownload", () => {
     await settle();
     expect(readFileSync(path.join(documents, "a.txt"), "utf8")).toBe("A");
     expect(readFileSync(path.join(documents, "b.txt"), "utf8")).toBe("B");
-    expect(readdirSync(tmp)).toEqual([]);
+    await expectEmptyDir(tmp);
   });
 });
 
