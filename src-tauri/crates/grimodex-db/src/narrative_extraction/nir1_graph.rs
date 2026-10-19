@@ -1540,6 +1540,35 @@ impl GraphWorkControl for QueryOwnerControl<'_> {
     }
 }
 
+/// B's sealed Graph Index identity, as one read of the live rows. A role-free
+/// read for D-final's participant snapshot (DI-1a): the candidate a worker
+/// returned carries only a generation, and the snapshot decides whether that
+/// generation is still the sealed one. `None` means B has no current seal
+/// (never built, dirty, stale or being rebuilt), which is not an error.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Nir1GraphSealRead {
+    pub index_key: &'static str,
+    pub generation: i64,
+    pub source_digest: String,
+    pub dependency_set_digest: String,
+    pub semantic_epoch_id: String,
+}
+
+/// Read B's current seal inside the caller's read transaction. It changes no
+/// row and holds no state, so the query paths keep using the private reader.
+pub fn read_nir1_graph_seal(
+    conn: &Connection,
+    project_id: &str,
+) -> Result<Option<Nir1GraphSealRead>> {
+    Ok(read_seal(conn, project_id)?.map(|seal| Nir1GraphSealRead {
+        index_key: INDEX_KEY,
+        generation: seal.generation,
+        source_digest: seal.source,
+        dependency_set_digest: seal.dependency,
+        semantic_epoch_id: seal.semantic_epoch,
+    }))
+}
+
 fn read_seal(conn: &Connection, project: &str) -> Result<Option<Seal>> {
     Ok(conn.query_row("SELECT m.generation,m.source_digest,m.dependency_set_digest,f.semantic_epoch_id
        FROM narrative_semantic_index_metadata m JOIN narrative_consumer_freshness f

@@ -2322,3 +2322,64 @@ fn open_entry_refuses_only_when_the_quarantine_retained_a_participant() {
         .is_none());
     ticket.finish(GraphTicketUse::Used);
 }
+
+// ---------------------------------------------------------------------------
+// DI-1a S3: the READY signal D-final waits on (DSN §1.3 E7, DR-DI1A-5).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn the_ready_signal_moves_when_a_session_reaches_ready_and_when_it_ends() {
+    let fixture = ProductFixture::new();
+    let owner = &fixture.state.nir1_graph;
+    let start = owner.ready_signal_generation();
+    // A wait that nothing answers ends at its bound.
+    let started = Instant::now();
+    assert!(!owner.wait_ready_signal(start, Duration::from_millis(40)));
+    assert!(started.elapsed() >= Duration::from_millis(40));
+    assert!(started.elapsed() < Duration::from_secs(2));
+
+    // READY: a waiter that read the generation before `begin` is woken.
+    let waiter = {
+        let state = Arc::clone(&fixture.state);
+        thread::spawn(move || {
+            state
+                .nir1_graph
+                .wait_ready_signal(start, Duration::from_secs(5))
+        })
+    };
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Warming)
+    ));
+    assert!(waiter.join().expect("waiter"));
+    wait_until("READY", || fixture.kind() == GraphSlotKind::Ready);
+    let ready = owner.ready_signal_generation();
+    assert_ne!(ready, start);
+    // A generation already past the one a waiter holds returns at once.
+    assert!(owner.wait_ready_signal(start, Duration::from_secs(5)));
+
+    // The end of the session moves it again, so a waiter re-reads the slot.
+    let waiter = {
+        let state = Arc::clone(&fixture.state);
+        thread::spawn(move || {
+            state
+                .nir1_graph
+                .wait_ready_signal(ready, Duration::from_secs(5))
+        })
+    };
+    owner.close_for_shutdown();
+    assert!(waiter.join().expect("waiter"));
+    assert!(owner.is_closed());
+}
+
+#[test]
+fn a_lifecycle_edge_moves_the_ready_signal_and_the_edge_epoch() {
+    let fixture = ProductFixture::new();
+    let owner = &fixture.state.nir1_graph;
+    let before = owner.ready_signal_generation();
+    let epoch = owner.edge_epoch();
+    let observer = owner.edge_observer_for_test();
+    observer.on_lifecycle_edge(&LifecycleEdge::Unavailable { revision: 1 });
+    assert_ne!(owner.ready_signal_generation(), before);
+    assert_ne!(owner.edge_epoch(), epoch);
+}

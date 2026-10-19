@@ -41,6 +41,7 @@ use grimodex_db::{
     },
 };
 
+use crate::nir1_graph_dfinal::GraphWaitPlan;
 use crate::state::AppState;
 
 #[cfg(test)]
@@ -393,6 +394,13 @@ struct Shared {
     slot: Mutex<SlotState>,
     edge_epoch: AtomicU64,
     ready_generation: AtomicU64,
+    /// D-final's wait for a READY (DSN §1.3 E7, DR-DI1A-5). A generation that
+    /// grows when a session reaches READY, when it ends (retired, failed,
+    /// quarantined, closed), on a lifecycle edge and on close, so a waiter
+    /// re-reads the slot instead of sleeping out its whole budget. It is a
+    /// leaf lock: nothing else is taken while it is held.
+    ready_signal: Mutex<u64>,
+    ready_signal_changed: Condvar,
     closed: AtomicBool,
     observer_registered: AtomicBool,
     /// Projects whose demand was answered warming, stale or busy and has not yet
@@ -406,6 +414,9 @@ struct Shared {
     notifier: OnceLock<GraphReadyNotifier>,
     cache: Mutex<Option<CacheEntry>>,
     config: Mutex<GraphOwnerConfig>,
+    /// D-final's wait budget and step. The constants in production; a test
+    /// installs shorter values.
+    dfinal_wait: Mutex<GraphWaitPlan>,
     diagnostics: DiagnosticCounters,
     #[cfg(test)]
     publication_open_for_test: AtomicBool,
@@ -422,6 +433,8 @@ impl Shared {
             }),
             edge_epoch: AtomicU64::new(0),
             ready_generation: AtomicU64::new(0),
+            ready_signal: Mutex::new(0),
+            ready_signal_changed: Condvar::new(),
             closed: AtomicBool::new(false),
             observer_registered: AtomicBool::new(false),
             unserved: Mutex::new(Vec::new()),
@@ -431,6 +444,7 @@ impl Shared {
             notifier: OnceLock::new(),
             cache: Mutex::new(None),
             config: Mutex::new(GraphOwnerConfig::default()),
+            dfinal_wait: Mutex::new(GraphWaitPlan::default()),
             diagnostics: DiagnosticCounters::default(),
             #[cfg(test)]
             publication_open_for_test: AtomicBool::new(false),
@@ -453,6 +467,17 @@ impl Shared {
 
     fn config(&self) -> GraphOwnerConfig {
         *lock(&self.config)
+    }
+
+    /// Announces that the slot changed in a way a D-final waiter should look
+    /// at again. Called after the change is published, never under another lock
+    /// of this owner that a waiter needs.
+    fn signal_ready(&self) {
+        {
+            let mut generation = lock(&self.ready_signal);
+            *generation = generation.wrapping_add(1);
+        }
+        self.ready_signal_changed.notify_all();
     }
 
     fn count_unavailable(&self, reason: GraphUnavailable) -> GraphBegin {
@@ -539,12 +564,15 @@ impl Shared {
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.edge_epoch.fetch_add(1, Ordering::SeqCst);
-        let mut slot = lock(&self.slot);
-        if let Some(session) = slot.session.as_ref() {
-            let _ = session.commands.try_send(Command::Wake);
-        } else if !matches!(slot.phase, Phase::Quarantined { .. }) {
-            slot.phase = Phase::Closed;
+        {
+            let mut slot = lock(&self.slot);
+            if let Some(session) = slot.session.as_ref() {
+                let _ = session.commands.try_send(Command::Wake);
+            } else if !matches!(slot.phase, Phase::Quarantined { .. }) {
+                slot.phase = Phase::Closed;
+            }
         }
+        self.signal_ready();
     }
 }
 
@@ -794,10 +822,14 @@ impl WorkspaceLifecycleObserver for GraphEdgeObserver {
             // Transitions, unavailability and future edges retire by epoch only.
             _ => {}
         }
-        let slot = lock(&self.shared.slot);
-        if let Some(session) = slot.session.as_ref() {
-            let _ = session.commands.try_send(Command::Wake);
+        {
+            let slot = lock(&self.shared.slot);
+            if let Some(session) = slot.session.as_ref() {
+                let _ = session.commands.try_send(Command::Wake);
+            }
         }
+        // A waiter of D-final compares the edge epoch it started with.
+        self.shared.signal_ready();
     }
 }
 
@@ -897,6 +929,57 @@ impl Nir1GraphProductOwner {
             bump(&shared.diagnostics.pending);
         }
         result
+    }
+
+    // ---- D-final's wait (DI-1a, DR-DI1A-5) ---------------------------------
+
+    /// True once the publication gate is open. D-final asks it before it reads
+    /// a seed, so a closed product costs nothing.
+    pub(crate) fn publication_is_open(&self) -> bool {
+        self.shared.publication_open()
+    }
+
+    /// The generation of the READY signal. A waiter reads it before `begin`, so
+    /// a READY that lands between the `begin` and the wait is not lost.
+    pub(crate) fn ready_signal_generation(&self) -> u64 {
+        *lock(&self.shared.ready_signal)
+    }
+
+    /// Blocks the calling thread (never an async task) until the READY signal
+    /// moves past `since` or `timeout` passes. True when it moved. The caller
+    /// holds no database, lifecycle or profile lock.
+    pub(crate) fn wait_ready_signal(&self, since: u64, timeout: Duration) -> bool {
+        let deadline = Instant::now() + timeout;
+        let mut generation = lock(&self.shared.ready_signal);
+        loop {
+            if *generation != since {
+                return true;
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return false;
+            }
+            let (next, _) = self
+                .shared
+                .ready_signal_changed
+                .wait_timeout(generation, deadline - now)
+                .unwrap_or_else(PoisonError::into_inner);
+            generation = next;
+        }
+    }
+
+    /// The lifecycle edge epoch. A D-final wait ends when it differs from the
+    /// value read at the start (a transition, an unavailability, a shutdown).
+    pub(crate) fn edge_epoch(&self) -> u64 {
+        self.shared.edge_epoch.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn dfinal_wait_plan(&self) -> GraphWaitPlan {
+        *lock(&self.shared.dfinal_wait)
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        self.shared.closed.load(Ordering::SeqCst)
     }
 
     /// CP-2a keeps this unused by products (the wiring is CP-2b / PUB-G).
@@ -1054,6 +1137,11 @@ impl Nir1GraphProductOwner {
     #[cfg(test)]
     pub(crate) fn install_worker_factory_for_test(&self, factory: Arc<dyn GraphWorkerFactory>) {
         let _ = self.shared.worker.set(factory);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_dfinal_wait_for_test(&self, plan: GraphWaitPlan) {
+        *lock(&self.shared.dfinal_wait) = plan;
     }
 
     #[cfg(test)]
@@ -1368,6 +1456,9 @@ fn session_main(context: SessionContext) {
             bump(&shared.diagnostics.panics);
         }
     }
+    // The guard has published the session's end (the slot phase), so a D-final
+    // waiter that wakes now reads the final state.
+    shared.signal_ready();
     // The guard has removed this session from the slot and dropped its sender,
     // so nothing can be queued behind this drain.
     settle_queued(&context.receiver);
@@ -1480,6 +1571,7 @@ fn build_and_serve(
         slot.rebuild.last_failure = None;
     }
     bump(&shared.diagnostics.prepares_ready);
+    shared.signal_ready();
     if shared.take_unserved(&key.project_id) {
         if let Some(notifier) = shared.notifier.get() {
             notifier(&GraphReadyNotice {

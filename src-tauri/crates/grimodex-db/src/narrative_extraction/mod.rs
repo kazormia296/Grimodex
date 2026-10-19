@@ -80,7 +80,10 @@ pub use nir1_graph::{
     GraphOnlyScanInput, GraphOnlySceneBinding, GraphOnlySceneDisclosure, GraphPathRevalidator,
     GraphSceneRange, GraphSceneRevalidationRefused, NotAppended, COMMON_SLOT_RAW_LIMIT,
 };
-pub use nir1_graph::{read_nir1_graph, Nir1GraphReader, Nir1GraphRequest, Nir1GraphResponse};
+pub use nir1_graph::{
+    read_nir1_graph, read_nir1_graph_seal, Nir1GraphReader, Nir1GraphRequest, Nir1GraphResponse,
+    Nir1GraphSealRead,
+};
 pub use reconciliation_envelope::SourceBasisRow;
 pub use repository::project_lifecycle_namespace_for_database;
 pub use repository::PROPOSAL_REVISION_D1_PRODUCER_GENERATION;
@@ -156,6 +159,12 @@ mod scope_storage_authority_tests;
 pub use nir1_history_context::{HistoryContextStage, NativeNir1HistoryDraft};
 #[cfg(feature = "nir1-final-request-eval")]
 pub use nir1_packing::final_request_eval;
+#[cfg(feature = "native-current-human-capture")]
+pub use nir1_packing::{
+    graph_evidence_ref, graph_index_reference, read_nir1_graph_seed, read_nir1_graph_seed_in_tx,
+    Nir1GraphSeedRead, GRAPH_EVIDENCE_REF_FORM, GRAPH_INDEX_REF_FORM,
+    NATIVE_ATTEMPT_MAX_REFERENCES, NATIVE_ATTEMPT_MAX_REFERENCE_BYTES,
+};
 pub use nir1_packing::{
     read_and_pack_native_a2_context, NativeNir1AuthorityBinding, NativeNir1DecisionBinding,
     NativeNir1PackedContext, NativeNir1PackingRequest, NativeNir1RawContextItem,
@@ -165,8 +174,11 @@ pub use nir1_packing::{
 pub use nir1_packing::{
     read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
     revalidate_native_nir1_prepared_inputs, NativeNir1ExcludedRevision,
-    NativeNir1FinalQualifications, NativeNir1PreparedContextItem, NativeNir1PreparedInputs,
-    NativeNir1RawSourceBinding, NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs,
+    NativeNir1FinalQualifications, NativeNir1GraphBinding, NativeNir1GraphExclusion,
+    NativeNir1GraphGroup, NativeNir1GraphInput, NativeNir1GraphOutcome,
+    NativeNir1PreparedContextItem, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    NativeNir1RevisionExclusionReason, NativeNir1SelectedInputs, Nir1GraphCandidateBinding,
+    Nir1GraphCandidateEdge, Nir1GraphCandidates, Nir1GraphDropReason, Nir1GraphExclusionReason,
 };
 pub use retrieval_admission::{
     read_retrieval_query_context, read_retrieval_scene_source, read_revision_retrieval_eligibility,

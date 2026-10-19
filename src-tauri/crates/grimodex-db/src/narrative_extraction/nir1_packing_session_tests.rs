@@ -151,6 +151,8 @@ struct TurnSpec {
     capture: Option<(AcceptedChatInputCapture, String)>,
     writer: Writer,
     mutate: Option<RowMutation>,
+    /// Read D-final with the Native selection and a Graph (DI-1a).
+    graph: bool,
 }
 
 impl TurnSpec {
@@ -165,7 +167,14 @@ impl TurnSpec {
             capture: None,
             writer: Writer::Product,
             mutate: None,
+            graph: false,
         }
+    }
+
+    /// A turn whose D-final input carries Graph-derived inputs.
+    fn with_graph(mut self) -> Self {
+        self.graph = true;
+        self
     }
 
     fn adopt(mut self, items: &[Adopt]) -> Self {
@@ -675,20 +684,25 @@ impl SessionFixture {
             .revisions
             .clone()
             .unwrap_or_else(|| self.revisions.clone());
-        let mut projection = read_and_pack_native_nir1_prepared_inputs(
-            &self.snapshot,
-            match spec.purpose {
-                GenerationPurpose::Writing => PackingPurpose::Writing,
-                GenerationPurpose::Review => PackingPurpose::Review,
-            },
-            HistorySendClassification::LocalOnly,
-            SESSION,
-            &capture,
-            SCENE,
-            &revisions,
-            prepared_sql_budget(),
-            |_| Ok(100_000),
-        )?;
+        let purpose = match spec.purpose {
+            GenerationPurpose::Writing => PackingPurpose::Writing,
+            GenerationPurpose::Review => PackingPurpose::Review,
+        };
+        let mut projection = if spec.graph {
+            self.read_graph_projection(&capture, purpose)?
+        } else {
+            read_and_pack_native_nir1_prepared_inputs(
+                &self.snapshot,
+                purpose,
+                HistorySendClassification::LocalOnly,
+                SESSION,
+                &capture,
+                SCENE,
+                &revisions,
+                prepared_sql_budget(),
+                |_| Ok(100_000),
+            )?
+        };
         let human_version_id = projection.user_message_version().id.clone();
         let human_digest = projection.user_message_version().body_digest.clone();
         let scope = projection.authority_bindings()[0].scope().clone();
@@ -853,6 +867,40 @@ impl SessionFixture {
             human_digest,
             output,
         })
+    }
+
+    /// D-final with the Native selection and the Graph of every relation of
+    /// the Revisions the control read adopted, under B's seal.
+    fn read_graph_projection(
+        &self,
+        capture: &AcceptedChatInputCapture,
+        purpose: PackingPurpose,
+    ) -> Result<NativeNir1PreparedInputs> {
+        use super::tests::di1a_graph::{candidates_from, write_seal, GENERATION};
+
+        write_seal(self.db(), GENERATION, false)?;
+        let select = |graph: Option<&Nir1GraphCandidates>| {
+            read_and_pack_native_nir1_selected_inputs(
+                &self.snapshot,
+                purpose,
+                HistorySendClassification::LocalOnly,
+                SESSION,
+                capture,
+                SCENE,
+                graph,
+                prepared_sql_budget(),
+                |_| Ok(100_000),
+            )
+        };
+        let control = select(None)?;
+        let bindings = control.prepared().authority_bindings();
+        let candidates = candidates_from(bindings, &vec![0u8; bindings.len()])?;
+        let selected = select(Some(&candidates))?;
+        ensure!(
+            selected.prepared().graph_binding().is_some(),
+            "the Graph reached the request"
+        );
+        Ok(selected.into_parts().0)
     }
 
     fn generous_budget() -> GenerationHistoryReadBudget {
@@ -3522,5 +3570,79 @@ fn positive_the_self_transaction_form_decides_like_the_in_snapshot_form() -> Res
         now_ms,
     )?;
     assert_eq!(own, in_snapshot);
+    Ok(())
+}
+
+/// A-15 (DI-1a): an attempt with Graph-derived inputs is stored and read back,
+/// and the history of the next turn leaves its Human and its output out as
+/// `PendingAuthority` (K4/3 section 6). The independent branch stays.
+#[test]
+fn graph_derived_attempts_stay_pending_and_leave_the_next_turn() -> Result<()> {
+    let mut session = SessionFixture::new()?;
+    let graph_turn = session.run_turn(
+        TurnSpec::new("A request with a Graph.")
+            .with_graph()
+            .reply("A Graph answer."),
+    )?;
+    let plain_turn = session.turn("A request without a Graph.", &[], Some("A plain answer."))?;
+
+    // The stored attempt holds the Graph-derived inputs, each with an Index
+    // reference that is not a typed N/A, and reads back whole.
+    let stored = read_attempt(
+        session.db(),
+        &graph_turn.attempt_id,
+        SessionFixture::read_budget(),
+    )?;
+    let graph_ordinals = stored
+        .inputs
+        .iter()
+        .enumerate()
+        .filter(|(_, input)| matches!(input.target, InputTarget::GraphEvidence { .. }))
+        .map(|(ordinal, _)| ordinal)
+        .collect::<Vec<_>>();
+    assert!(
+        !graph_ordinals.is_empty(),
+        "the attempt stored Graph inputs"
+    );
+    for ordinal in &graph_ordinals {
+        let index = stored
+            .qualifications
+            .iter()
+            .filter(|row| row.input_ordinal == *ordinal && row.kind == QualificationKind::Index)
+            .collect::<Vec<_>>();
+        assert_eq!(index.len(), 1);
+        assert!(
+            matches!(index[0].body, QualificationBody::Present { .. }),
+            "the Index of a Graph-derived input is a reference: {index:?}"
+        );
+    }
+    assert!(
+        read_attempt(
+            session.db(),
+            &plain_turn.attempt_id,
+            SessionFixture::read_budget()
+        )?
+        .inputs
+        .iter()
+        .all(|input| !matches!(input.target, InputTarget::GraphEvidence { .. })),
+        "the control turn has no Graph input"
+    );
+
+    session.accept("next", "The next request.")?;
+    let outcome = session.run()?;
+    assert_eq!(outcome.without_history, None, "{outcome:#?}");
+    // The generated output descends from every input of its attempt, so the
+    // Graph-derived input keeps it out (Pending). The past Human is judged by
+    // its own message input only: DI-1a does not change the history reader.
+    assert_eq!(
+        failure_of(&outcome, GeneratedOutput, &graph_turn.attempt_id),
+        Failure::Incomplete(IncompleteReason::PendingAuthority),
+        "the output of a Graph-derived attempt"
+    );
+    assert!(
+        is_qualified(&outcome, PastHuman, &graph_turn.attempt_id),
+        "the Human of a Graph-derived attempt is unchanged: {outcome:#?}"
+    );
+    assert_turn_adopted(&outcome, &plain_turn);
     Ok(())
 }

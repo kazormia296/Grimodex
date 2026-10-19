@@ -378,6 +378,8 @@ fn request<'a>(
         budget_tokens,
         purpose: PackingPurpose::Writing,
         raw_items,
+        #[cfg(feature = "native-current-human-capture")]
+        graph: None,
     }
 }
 
@@ -392,6 +394,7 @@ fn source_request<'a>(
         query_scene_id: RAW_SOURCE_SCENE,
         budget_tokens,
         purpose: PackingPurpose::Writing,
+        graph: None,
     }
 }
 
@@ -985,10 +988,8 @@ fn x13_new_request_qualifies_after_other_scene_save() -> Result<()> {
     seed_run_and_catalog(&db)?;
     prepare_a3_scope_fixture(&db)?;
     run_incremental_freshness_cycle(&db)?;
-    let created = create_nir1_entity_relation_revision(
-        &db,
-        request_for_run(&db, "nir1-run", "x13-qualify"),
-    )?;
+    let created =
+        create_nir1_entity_relation_revision(&db, request_for_run(&db, "nir1-run", "x13-qualify"))?;
     approve_typed_revision(&db, "nir1-run", &created)?;
     let revision_id = created["revisionId"]
         .as_str()
@@ -1554,6 +1555,7 @@ impl DfFinalFixture {
                             query_scene_id: RAW_SOURCE_SCENE,
                             budget_tokens: 100_000,
                             purpose: PackingPurpose::Writing,
+                            graph: None,
                         },
                         &mut input_budget,
                         &mut reserve,
@@ -2539,6 +2541,15 @@ impl DfFinalFixture {
         &self,
         budget: impl FnOnce(&str) -> Result<usize>,
     ) -> Result<NativeNir1SelectedInputs> {
+        self.select_graph(None, budget)
+    }
+
+    /// The Native selection with a Graph's text-free candidates (DI-1a).
+    pub(super) fn select_graph(
+        &self,
+        graph: Option<&crate::narrative_extraction::Nir1GraphCandidates>,
+        budget: impl FnOnce(&str) -> Result<usize>,
+    ) -> Result<NativeNir1SelectedInputs> {
         crate::narrative_extraction::read_and_pack_native_nir1_selected_inputs(
             &self.snapshot,
             PackingPurpose::Writing,
@@ -2546,6 +2557,7 @@ impl DfFinalFixture {
             NATIVE_SESSION,
             &self.capture,
             RAW_SOURCE_SCENE,
+            graph,
             prepared_sql_budget(),
             budget,
         )
@@ -2722,6 +2734,7 @@ fn native_selection_reads_the_expectations_when_the_history_slot_is_unavailable(
         NATIVE_SESSION,
         &capture,
         RAW_SOURCE_SCENE,
+        None,
         prepared_sql_budget(),
         |_| Ok(100_000),
     )?;
@@ -2875,6 +2888,7 @@ fn native_selection_excludes_candidates_that_a3_reports_unavailable() -> Result<
                         query_scene_id: RAW_SOURCE_SCENE,
                         budget_tokens: 100_000,
                         purpose: PackingPurpose::Writing,
+                        graph: None,
                     },
                     RevisionUnavailablePolicy::Exclude,
                     &mut NativePackingInputBudget::default(),
@@ -3209,6 +3223,7 @@ fn native_selection_stops_as_a_whole_on_cancel_budget_and_sql_errors() -> Result
                         query_scene_id: RAW_SOURCE_SCENE,
                         budget_tokens: 100_000,
                         purpose: PackingPurpose::Writing,
+                        graph: None,
                     },
                     RevisionUnavailablePolicy::Exclude,
                     &mut NativePackingInputBudget::default(),
@@ -3248,6 +3263,7 @@ fn native_selection_stops_as_a_whole_on_cancel_budget_and_sql_errors() -> Result
                         query_scene_id: RAW_SOURCE_SCENE,
                         budget_tokens: 100_000,
                         purpose: PackingPurpose::Writing,
+                        graph: None,
                     },
                     RevisionUnavailablePolicy::Exclude,
                     &mut NativePackingInputBudget::default(),
@@ -3489,4 +3505,1357 @@ fn native_selection_lists_candidates_inside_the_pinned_snapshot() -> Result<()> 
     drop(fixture);
     let _ = std::fs::remove_file(path);
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// DI-1a S1: Graph candidates requalified in the D-final snapshot
+// ---------------------------------------------------------------------------
+
+#[cfg(feature = "native-current-human-capture")]
+pub(in crate::narrative_extraction) mod di1a_graph {
+    use super::*;
+    use crate::narrative_extraction::nir1_entity_relation_index::INDEX_KEY;
+    use crate::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
+    use crate::narrative_extraction::nir1_graph::{
+        Nir1GraphEdge, Nir1GraphMaterialBinding, Nir1GraphNode, Nir1GraphSceneAssociation,
+        Nir1QualifiedGraph,
+    };
+    use crate::narrative_extraction::{
+        Nir1GraphCandidateBinding, Nir1GraphCandidateEdge, Nir1GraphCandidates,
+        Nir1GraphDropReason, Nir1GraphExclusionReason,
+    };
+    use grimodex_core::narrative_nir1::{
+        EntityInput, EvidenceInput, GraphEdgeInput, ScopeValue, MAX_GRAPH_EDGES,
+    };
+    use rusqlite::OptionalExtension;
+    use std::sync::Arc;
+
+    pub(in crate::narrative_extraction) const GENERATION: i64 = 7;
+    /// A Graph group's ID is three bytes longer than its accepted IR group's,
+    /// charged once as the part ID and once as the group ID, for five parts.
+    const GRAPH_GROUP_EXTRA_BYTES: usize = 30;
+    const SEED: &str = "nir1-alice";
+
+    /// B's seal rows, as the Graph reader's `read_seal` joins them.
+    pub(in crate::narrative_extraction) fn write_seal(
+        db: &Database,
+        generation: i64,
+        dirty: bool,
+    ) -> Result<()> {
+        db.with_conn(|conn| {
+            let epoch: Option<String> = conn
+                .query_row(
+                    "SELECT id FROM narrative_semantic_epochs
+                      WHERE project_id=?1 ORDER BY epoch_number DESC LIMIT 1",
+                    params![RAW_SOURCE_PROJECT],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            let epoch = match epoch {
+                Some(epoch) => epoch,
+                None => {
+                    conn.execute(
+                        "INSERT INTO narrative_semantic_epochs
+                            (id, project_id, epoch_number, reason, created_at)
+                         VALUES ('di1a-epoch', ?1, 0, 'initial', '2026-10-19T00:00:00Z')",
+                        params![RAW_SOURCE_PROJECT],
+                    )?;
+                    "di1a-epoch".to_owned()
+                }
+            };
+            conn.execute(
+                "INSERT OR REPLACE INTO narrative_semantic_index_metadata
+                    (project_id, index_key, generation, built_at, source_digest,
+                     dependency_set_digest, dirty_cache_flag)
+                 VALUES (?1, ?2, ?3, '2026-10-19T00:00:00Z', 'sha256:di1a-source',
+                         'sha256:di1a-dependency', ?4)",
+                params![RAW_SOURCE_PROJECT, INDEX_KEY, generation, i64::from(dirty)],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO narrative_consumer_freshness
+                    (project_id, consumer_kind, consumer_key, evidence_freshness,
+                     build_action, semantic_epoch_id, updated_at)
+                 VALUES (?1, 'semantic-index', ?2, 'fresh', 'none', ?3, '2026-10-19T00:00:00Z')",
+                params![RAW_SOURCE_PROJECT, INDEX_KEY, epoch],
+            )?;
+            // D-final reads the seed again in its snapshot (DR-DI1A-6): the
+            // fixture's seed Entity is pinned to the query Scene.
+            conn.execute(
+                "INSERT OR IGNORE INTO codex_entries(id,project_id,type,name,summary,updated_at)
+                 VALUES (?1,?2,'character','Seed','Seed.','2026-10-19T00:00:00Z')",
+                params![SEED, RAW_SOURCE_PROJECT],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO scene_codex_pins(scene_id,entry_id,created_at)
+                 VALUES (?1,?2,'2026-10-19T00:00:00Z')",
+                params![RAW_SOURCE_SCENE, SEED],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub(in crate::narrative_extraction) fn run_pool(
+        db: &Database,
+        revisions: &[String],
+        graph: Option<&Nir1GraphCandidates>,
+        budget_tokens: usize,
+        preset_used_bytes: usize,
+    ) -> Result<(NativeNir1PooledPackedContext, usize)> {
+        let raw = raw();
+        db.with_read_transaction(|conn| {
+            let mut budget = NativePackingInputBudget {
+                used_bytes: preset_used_bytes,
+                ..Default::default()
+            };
+            let pooled = read_and_pack_native_a2_context_in_tx_with_raw_charge(
+                conn,
+                NativeNir1PooledPackingRequest {
+                    graph,
+                    ..request(revisions, &raw, budget_tokens)
+                },
+                &mut budget,
+                RawBudgetCharge::Charge,
+                RevisionUnavailablePolicy::Exclude,
+                &mut |_| Ok(()),
+                &mut || Ok(()),
+            )?;
+            Ok((pooled, budget.used_bytes))
+        })
+    }
+
+    /// What the Graph reader would have recorded for the relations of these
+    /// bindings: every relation, each Revision at the given hop.
+    pub(in crate::narrative_extraction) fn candidates_from(
+        bindings: &[NativeNir1AuthorityBinding],
+        hops: &[u8],
+    ) -> Result<Nir1GraphCandidates> {
+        let mut edges = Vec::new();
+        for (binding, hop) in bindings.iter().zip(hops) {
+            let scope = binding.scope();
+            for relation in &binding.revision().bundle.relations {
+                edges.push(Nir1GraphCandidateEdge {
+                    edge_id: relation.edge_id.clone(),
+                    hop: *hop,
+                    binding: Nir1GraphCandidateBinding {
+                        revision_id: binding.revision_id().to_owned(),
+                        decision_id: binding.decision().id().to_owned(),
+                        decision_token: binding.decision_token().to_owned(),
+                        freshness_token: binding.freshness_token().to_owned(),
+                        scope_authority_revision: scope.scope_authority_revision().to_owned(),
+                        query_scene_source_token: scope.query_scene_source_token().to_owned(),
+                        query_scene_scope_token: scope.query_scene_scope_token().to_owned(),
+                        query_scene_incarnation_id: scope.query_scene_incarnation_id().to_owned(),
+                        reveal_state_token: scope.reveal_state_token().to_owned(),
+                    },
+                });
+            }
+        }
+        Nir1GraphCandidates::new(
+            RAW_SOURCE_PROJECT.into(),
+            RAW_SOURCE_SCENE.into(),
+            SEED.into(),
+            GENERATION,
+            Some(bindings[0].scope().scope_authority_revision().to_owned()),
+            edges,
+        )
+    }
+
+    #[derive(Clone)]
+    struct Shape {
+        project: String,
+        scene: String,
+        seed: String,
+        generation: i64,
+        scope_revision: Option<String>,
+        edges: Vec<Nir1GraphCandidateEdge>,
+    }
+
+    impl Shape {
+        fn of(candidates: &Nir1GraphCandidates) -> Self {
+            Self {
+                project: candidates.project_id().to_owned(),
+                scene: candidates.query_scene_id().to_owned(),
+                seed: candidates.seed_entity_id().to_owned(),
+                generation: candidates.generation(),
+                scope_revision: candidates.scope_revision().map(str::to_owned),
+                edges: candidates.edges().to_vec(),
+            }
+        }
+
+        fn build(self) -> Result<Nir1GraphCandidates> {
+            Nir1GraphCandidates::new(
+                self.project,
+                self.scene,
+                self.seed,
+                self.generation,
+                self.scope_revision,
+                self.edges,
+            )
+        }
+    }
+
+    fn item_tokens(item: &ContextItemKind) -> usize {
+        match item {
+            ContextItemKind::Raw { tokens, .. }
+            | ContextItemKind::AcceptedIr { tokens, .. }
+            | ContextItemKind::GraphEvidence { tokens, .. }
+            | ContextItemKind::AuthorDeclared { tokens, .. }
+            | ContextItemKind::UnreviewedForReview { tokens, .. } => *tokens,
+        }
+    }
+
+    fn item_group(item: &ContextItemKind) -> Option<&str> {
+        match item {
+            ContextItemKind::Raw { .. } => None,
+            ContextItemKind::AcceptedIr { atomic_group, .. }
+            | ContextItemKind::GraphEvidence { atomic_group, .. }
+            | ContextItemKind::AuthorDeclared { atomic_group, .. }
+            | ContextItemKind::UnreviewedForReview { atomic_group, .. } => Some(atomic_group),
+        }
+    }
+
+    fn kind_of(item: &ContextItemKind) -> &'static str {
+        match item {
+            ContextItemKind::Raw { .. } => "raw",
+            ContextItemKind::AcceptedIr { .. } => "accepted-ir",
+            ContextItemKind::GraphEvidence { .. } => "graph-evidence",
+            ContextItemKind::AuthorDeclared { .. } => "author-declared",
+            ContextItemKind::UnreviewedForReview { .. } => "unreviewed",
+        }
+    }
+
+    fn group_tokens(pooled: &NativeNir1PooledPackedContext, group: &str) -> usize {
+        pooled
+            .selected_items
+            .iter()
+            .filter(|selected| item_group(selected.item()) == Some(group))
+            .map(|selected| item_tokens(selected.item()))
+            .sum()
+    }
+
+    fn selected_groups(pooled: &NativeNir1PooledPackedContext) -> Vec<(&'static str, String)> {
+        let mut groups = Vec::<(&'static str, String)>::new();
+        for selected in &pooled.selected_items {
+            let Some(group) = item_group(selected.item()) else {
+                continue;
+            };
+            if groups.last().map(|(_, last)| last.as_str()) != Some(group) {
+                groups.push((kind_of(selected.item()), group.to_owned()));
+            }
+        }
+        groups
+    }
+
+    fn graph_group_id(revision_id: &str, edge_id: &str) -> String {
+        format!("nir1:graph-evidence:{revision_id}:relation:{edge_id}")
+    }
+
+    fn ir_group_id(revision_id: &str, edge_id: &str) -> String {
+        format!("nir1:accepted-ir:{revision_id}:relation:{edge_id}")
+    }
+
+    pub(in crate::narrative_extraction) struct Scenario {
+        pub(in crate::narrative_extraction) db: Database,
+        pub(in crate::narrative_extraction) revisions: Vec<String>,
+        control: NativeNir1PooledPackedContext,
+        control_bytes: usize,
+        pub(in crate::narrative_extraction) candidates: Nir1GraphCandidates,
+        edge_ids: Vec<String>,
+    }
+
+    pub(in crate::narrative_extraction) fn scenario() -> Result<Scenario> {
+        let db = current_schema_memory()?;
+        let revisions = fixture(&db)?;
+        write_seal(&db, GENERATION, false)?;
+        let (control, control_bytes) = run_pool(&db, &revisions, None, 100_000, 0)?;
+        let candidates = candidates_from(&control.bindings, &[0, 0])?;
+        let edge_ids = candidates
+            .edges()
+            .iter()
+            .map(|edge| edge.edge_id.clone())
+            .collect();
+        Ok(Scenario {
+            db,
+            revisions,
+            control,
+            control_bytes,
+            candidates,
+            edge_ids,
+        })
+    }
+
+    fn assert_pool_unchanged(
+        scenario: &Scenario,
+        pooled: &NativeNir1PooledPackedContext,
+        bytes: usize,
+    ) {
+        assert_eq!(pooled.packed, scenario.control.packed);
+        assert_eq!(pooled.selected_items, scenario.control.selected_items);
+        assert_eq!(bytes, scenario.control_bytes);
+    }
+
+    /// A-1: the Graph group's text is the snapshot Revision's text.
+    #[test]
+    fn graph_groups_take_the_place_of_their_accepted_ir_groups_with_the_snapshot_text() -> Result<()>
+    {
+        let s = scenario()?;
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().expect("a Graph outcome");
+        assert_eq!(outcome.dropped_reason(), None);
+        assert!(outcome.excluded().is_empty());
+        assert_eq!(outcome.limited_count(), 0);
+        assert_eq!(outcome.seal().map(|seal| seal.generation), Some(GENERATION));
+        assert_eq!(outcome.groups().len(), 2);
+        // The relation is sent once: the item count does not grow, and the
+        // accepted IR group of a Graph relation is not in the pool.
+        assert_eq!(pooled.selected_items.len(), s.control.selected_items.len());
+        for group in outcome.groups() {
+            assert_eq!(
+                group.group_id(),
+                graph_group_id(group.revision_id(), group.edge_id())
+            );
+            let ir_group = ir_group_id(group.revision_id(), group.edge_id());
+            assert!(
+                pooled
+                    .selected_items
+                    .iter()
+                    .all(|selected| item_group(selected.item()) != Some(ir_group.as_str())),
+                "{ir_group} must be replaced"
+            );
+            // Same five parts, same bytes and tokens as the IR group.
+            for selected in pooled
+                .selected_items
+                .iter()
+                .filter(|selected| item_group(selected.item()) == Some(group.group_id()))
+            {
+                let ContextItemKind::GraphEvidence {
+                    id, text, tokens, ..
+                } = selected.item()
+                else {
+                    panic!("a Graph group holds GraphEvidence items")
+                };
+                let part = id.rsplit(':').next().unwrap();
+                let control_id = format!("{ir_group}:{part}");
+                let control = s
+                    .control
+                    .selected_items
+                    .iter()
+                    .find_map(|item| match item.item() {
+                        ContextItemKind::AcceptedIr {
+                            id, text, tokens, ..
+                        } if id == &control_id => Some((text, tokens)),
+                        _ => None,
+                    })
+                    .expect("the control holds the IR part");
+                assert_eq!((text, tokens), control, "{id}");
+                assert_eq!(
+                    selected.owner_revision_id.as_deref(),
+                    Some(group.revision_id())
+                );
+                assert!(selected.candidate_binding().is_some());
+            }
+            assert_eq!(
+                pooled
+                    .selected_items
+                    .iter()
+                    .filter(|selected| item_group(selected.item()) == Some(group.group_id()))
+                    .count(),
+                5
+            );
+        }
+        // Raw, then the Graph groups, then the accepted IR groups.
+        let kinds = pooled
+            .selected_items
+            .iter()
+            .map(|selected| kind_of(selected.item()))
+            .collect::<Vec<_>>();
+        assert_eq!(kinds[0], "raw");
+        assert!(kinds[1..11].iter().all(|kind| *kind == "graph-evidence"));
+        assert!(kinds[11..].iter().all(|kind| *kind == "accepted-ir"));
+        // One shared envelope: the Graph group only adds the longer group ID.
+        assert_eq!(
+            bytes,
+            s.control_bytes + 2 * GRAPH_GROUP_EXTRA_BYTES,
+            "the Graph groups are charged to the same input envelope"
+        );
+        // The authority bindings are those of the snapshot's A2/A3 results.
+        assert_eq!(pooled.bindings, s.control.bindings);
+        Ok(())
+    }
+
+    /// A second occurrence of one (Revision, edge) with other tokens or another
+    /// hop is a malformed answer: the Revision is left out as a binding
+    /// mismatch (not resolved by the first occurrence); an identical repeat
+    /// changes nothing.
+    #[test]
+    fn a_conflicting_duplicate_edge_is_a_binding_mismatch_for_its_revision() -> Result<()> {
+        let s = scenario()?;
+        let target = s.revisions[0].clone();
+        let (control_pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let control_groups = control_pooled.graph.as_ref().unwrap().groups().len();
+
+        // Identical repeat: no effect.
+        let mut shape = Shape::of(&s.candidates);
+        let repeat = shape
+            .edges
+            .iter()
+            .find(|e| e.revision_id() == target)
+            .cloned()
+            .expect("an edge of the target");
+        shape.edges.push(repeat);
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&shape.build()?), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert!(outcome.excluded().is_empty());
+        assert_eq!(outcome.groups().len(), control_groups);
+
+        // Conflicting repeats: stale tokens, or another hop.
+        type Conflict = fn(&mut Nir1GraphCandidateEdge);
+        let conflicts: [(&str, Conflict); 2] = [
+            ("tokens", |e| e.binding.decision_token.push('x')),
+            ("hop", |e| e.hop = e.hop.saturating_add(1)),
+        ];
+        for (what, conflict) in conflicts {
+            let mut shape = Shape::of(&s.candidates);
+            let mut repeat = shape
+                .edges
+                .iter()
+                .find(|e| e.revision_id() == target)
+                .cloned()
+                .expect("an edge of the target");
+            conflict(&mut repeat);
+            shape.edges.push(repeat);
+            let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&shape.build()?), 100_000, 0)?;
+            let outcome = pooled.graph.as_ref().unwrap();
+            assert_eq!(
+                outcome
+                    .excluded()
+                    .iter()
+                    .map(|e| (e.revision_id().to_owned(), e.reason()))
+                    .collect::<Vec<_>>(),
+                vec![(target.clone(), Nir1GraphExclusionReason::BindingMismatch)],
+                "{what}"
+            );
+            assert!(
+                outcome.groups().iter().all(|g| g.revision_id() != target),
+                "{what}"
+            );
+            assert_eq!(outcome.groups().len(), control_groups - 1, "{what}");
+        }
+        Ok(())
+    }
+
+    /// A-1 (token and ID forgery): the Revision of a forged candidate has no
+    /// Graph group; the others and the IR groups stay.
+    #[test]
+    fn a_forged_binding_token_or_id_removes_only_that_revisions_group() -> Result<()> {
+        let s = scenario()?;
+        type Forge = fn(&mut Nir1GraphCandidateBinding);
+        let forgeries: [(&str, Forge); 8] = [
+            ("decision_id", |b| b.decision_id.push('x')),
+            ("decision_token", |b| b.decision_token.push('x')),
+            ("freshness_token", |b| b.freshness_token.push('x')),
+            ("scope_authority_revision", |b| {
+                b.scope_authority_revision.push('x')
+            }),
+            ("query_scene_source_token", |b| {
+                b.query_scene_source_token.push('x')
+            }),
+            ("query_scene_scope_token", |b| {
+                b.query_scene_scope_token.push('x')
+            }),
+            ("query_scene_incarnation_id", |b| {
+                b.query_scene_incarnation_id.push('x')
+            }),
+            ("reveal_state_token", |b| b.reveal_state_token.push('x')),
+        ];
+        for (field, forge) in forgeries {
+            let mut shape = Shape::of(&s.candidates);
+            let target = s.revisions[0].clone();
+            for edge in shape.edges.iter_mut().filter(|e| e.revision_id() == target) {
+                forge(&mut edge.binding);
+            }
+            let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&shape.build()?), 100_000, 0)?;
+            let outcome = pooled.graph.as_ref().unwrap();
+            assert_eq!(outcome.dropped_reason(), None, "{field}");
+            assert_eq!(
+                outcome
+                    .excluded()
+                    .iter()
+                    .map(|e| (e.revision_id().to_owned(), e.reason()))
+                    .collect::<Vec<_>>(),
+                vec![(target.clone(), Nir1GraphExclusionReason::BindingMismatch)],
+                "{field}"
+            );
+            assert_eq!(outcome.groups().len(), 1, "{field}");
+            assert_eq!(outcome.groups()[0].revision_id(), s.revisions[1], "{field}");
+            // The forged Revision keeps its accepted IR group.
+            assert!(
+                pooled.selected_items.iter().any(|selected| {
+                    item_group(selected.item())
+                        == Some(ir_group_id(&target, &s.edge_ids[0]).as_str())
+                }),
+                "{field}"
+            );
+            assert_eq!(pooled.selected_items.len(), s.control.selected_items.len());
+        }
+
+        // A Revision ID that does not exist, an edge ID the Revision does not
+        // have, and a Revision of another project are not groups.
+        let mut shape = Shape::of(&s.candidates);
+        let mut ghost = shape.edges[0].clone();
+        ghost.binding.revision_id = "no-such-revision".into();
+        shape.edges.push(ghost);
+        let mut wrong_edge = shape.edges[1].clone();
+        wrong_edge.edge_id = "no-such-edge".into();
+        shape.edges[1] = wrong_edge;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&shape.build()?), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(
+            outcome
+                .excluded()
+                .iter()
+                .map(|e| (e.revision_id().to_owned(), e.reason()))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    s.revisions[1].clone(),
+                    Nir1GraphExclusionReason::EdgeUnknown
+                ),
+                (
+                    "no-such-revision".to_owned(),
+                    Nir1GraphExclusionReason::RevisionNotSelected
+                ),
+            ]
+        );
+        assert_eq!(outcome.groups().len(), 1);
+        assert_eq!(outcome.groups()[0].revision_id(), s.revisions[0]);
+        Ok(())
+    }
+
+    /// A-1 (seal, query and project): a Graph for another generation, another
+    /// Scene or another project, or without a current seal, is dropped whole.
+    #[test]
+    fn a_graph_for_another_seal_scene_or_project_is_dropped_whole() -> Result<()> {
+        let s = scenario()?;
+        let drop_cases: Vec<(&str, Nir1GraphCandidates, Nir1GraphDropReason)> = vec![
+            (
+                "generation",
+                Shape {
+                    generation: GENERATION + 1,
+                    ..Shape::of(&s.candidates)
+                }
+                .build()?,
+                Nir1GraphDropReason::SealMismatch,
+            ),
+            (
+                "scene",
+                Shape {
+                    scene: "another-scene".into(),
+                    ..Shape::of(&s.candidates)
+                }
+                .build()?,
+                Nir1GraphDropReason::ProjectOrSceneMismatch,
+            ),
+            (
+                "project",
+                Shape {
+                    project: "another-project".into(),
+                    ..Shape::of(&s.candidates)
+                }
+                .build()?,
+                Nir1GraphDropReason::ProjectOrSceneMismatch,
+            ),
+        ];
+        for (name, candidates, reason) in drop_cases {
+            let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&candidates), 100_000, 0)?;
+            let outcome = pooled.graph.as_ref().unwrap();
+            assert_eq!(outcome.dropped_reason(), Some(reason), "{name}");
+            assert!(outcome.groups().is_empty(), "{name}");
+            assert_pool_unchanged(&s, &pooled, bytes);
+        }
+        // The scope revision the frame recorded is checked against the
+        // snapshot's: a wrong one removes every Revision.
+        let wrong_scope = Shape {
+            scope_revision: Some("another-scope-revision".into()),
+            ..Shape::of(&s.candidates)
+        }
+        .build()?;
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&wrong_scope), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(outcome.dropped_reason(), None);
+        assert_eq!(outcome.excluded().len(), 2);
+        assert!(outcome
+            .excluded()
+            .iter()
+            .all(|e| e.reason() == Nir1GraphExclusionReason::BindingMismatch));
+        assert_pool_unchanged(&s, &pooled, bytes);
+
+        // B is dirty (a writer changed a bound row): no Graph.
+        write_seal(&s.db, GENERATION, true)?;
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        assert_eq!(
+            pooled.graph.as_ref().unwrap().dropped_reason(),
+            Some(Nir1GraphDropReason::SealUnavailable)
+        );
+        assert_pool_unchanged(&s, &pooled, bytes);
+        // B was never sealed.
+        s.db.with_conn(|conn| {
+            conn.execute("DELETE FROM narrative_semantic_index_metadata", [])?;
+            Ok(())
+        })?;
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        assert_eq!(
+            pooled.graph.as_ref().unwrap().dropped_reason(),
+            Some(Nir1GraphDropReason::SealUnavailable)
+        );
+        assert_pool_unchanged(&s, &pooled, bytes);
+        Ok(())
+    }
+
+    /// A-10 (db): the seed is the earliest pin of the query Scene, and a seed
+    /// that differs when the snapshot reads it again drops the Graph whole.
+    #[test]
+    fn the_seed_is_the_earliest_pin_and_a_changed_seed_drops_the_graph_whole() -> Result<()> {
+        use crate::narrative_extraction::{read_nir1_graph_seed_in_tx, Nir1GraphSeedRead};
+        let s = scenario()?;
+        let read = |scene: &str| -> Result<Nir1GraphSeedRead> {
+            s.db.with_read_transaction(|conn| {
+                read_nir1_graph_seed_in_tx(conn, RAW_SOURCE_PROJECT, scene)
+            })
+        };
+        let pin = |entry: &str, project: &str, created_at: &str| -> Result<()> {
+            s.db.with_conn(|conn| {
+                conn.execute(
+                    "INSERT OR IGNORE INTO codex_entries(id,project_id,type,name,summary,updated_at)
+                     VALUES (?1,?2,'character','Pinned','Pinned.','2026-10-19T00:00:00Z')",
+                    params![entry, project],
+                )?;
+                conn.execute(
+                    "INSERT INTO scene_codex_pins(scene_id,entry_id,created_at) VALUES (?1,?2,?3)",
+                    params![RAW_SOURCE_SCENE, entry, created_at],
+                )?;
+                Ok(())
+            })
+        };
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned(SEED.into())
+        );
+        // A Scene without a pin has no seed; so does an unknown Scene.
+        assert_eq!(read("another-scene")?, Nir1GraphSeedRead::NoPin);
+        // The same candidates still pass while the seed is the pinned one.
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        assert_eq!(pooled.graph.as_ref().unwrap().dropped_reason(), None);
+
+        // A later pin does not take the seed; the same time breaks the tie by
+        // Entity ID; an earlier pin takes it.
+        pin("zz-later", RAW_SOURCE_PROJECT, "2026-12-31T00:00:00Z")?;
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned(SEED.into())
+        );
+        pin("aa-tie", RAW_SOURCE_PROJECT, "2026-10-19T00:00:00Z")?;
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned("aa-tie".into())
+        );
+        // Unpinning gives the seed back.
+        s.db.with_conn(|conn| {
+            conn.execute("DELETE FROM scene_codex_pins WHERE entry_id='aa-tie'", [])?;
+            Ok(())
+        })?;
+        assert_eq!(
+            read(RAW_SOURCE_SCENE)?,
+            Nir1GraphSeedRead::Pinned(SEED.into())
+        );
+        // The request was made for SEED; the snapshot now names another one.
+        pin("0-earliest", RAW_SOURCE_PROJECT, "2026-01-01T00:00:00Z")?;
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(
+            outcome.dropped_reason(),
+            Some(Nir1GraphDropReason::SeedChanged)
+        );
+        assert!(outcome.groups().is_empty());
+        assert_pool_unchanged(&s, &pooled, bytes);
+        // No pin at all: the seed is gone.
+        s.db.with_conn(|conn| {
+            conn.execute("DELETE FROM scene_codex_pins", [])?;
+            Ok(())
+        })?;
+        assert_eq!(read(RAW_SOURCE_SCENE)?, Nir1GraphSeedRead::NoPin);
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        assert_eq!(
+            pooled.graph.as_ref().unwrap().dropped_reason(),
+            Some(Nir1GraphDropReason::SeedChanged)
+        );
+        assert_pool_unchanged(&s, &pooled, bytes);
+        // An Entity ID longer than a Graph request can carry is reported.
+        let huge = "e".repeat(8_193);
+        pin(&huge, RAW_SOURCE_PROJECT, "2026-01-01T00:00:00Z")?;
+        assert_eq!(read(RAW_SOURCE_SCENE)?, Nir1GraphSeedRead::TooLarge);
+        // The read needs a transaction: an autocommit connection is refused.
+        let refused = s.db.with_conn(|conn| {
+            read_nir1_graph_seed_in_tx(conn, RAW_SOURCE_PROJECT, RAW_SOURCE_SCENE)
+        });
+        assert!(refused
+            .unwrap_err()
+            .to_string()
+            .contains("NIR1_GRAPH_SEED_REQUIRES_READ_TRANSACTION"));
+        Ok(())
+    }
+
+    /// A-2: one budget, Graph before accepted IR, atomic groups, one envelope.
+    #[test]
+    fn graph_and_accepted_ir_groups_share_one_budget_and_the_graph_ranks_first() -> Result<()> {
+        let s = scenario()?;
+        let (full, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let outcome = full.graph.as_ref().unwrap();
+        let g0 = outcome.groups()[0].group_id().to_owned();
+        let g1 = outcome.groups()[1].group_id().to_owned();
+        let first_ir = full
+            .selected_items
+            .iter()
+            .find_map(|selected| match selected.item() {
+                ContextItemKind::AcceptedIr { atomic_group, .. } => Some(atomic_group.clone()),
+                _ => None,
+            })
+            .unwrap();
+        let (tokens_g0, tokens_g1, tokens_ir) = (
+            group_tokens(&full, &g0),
+            group_tokens(&full, &g1),
+            group_tokens(&full, &first_ir),
+        );
+        ensure!(
+            tokens_g1 > tokens_ir && tokens_g0 > tokens_ir,
+            "a relation group is larger than an Entity group"
+        );
+        // Room for the first Graph group and the first accepted IR group only.
+        let (pooled, _) = run_pool(
+            &s.db,
+            &s.revisions,
+            Some(&s.candidates),
+            1 + tokens_g0 + tokens_ir,
+            0,
+        )?;
+        assert_eq!(pooled.packed.remaining_tokens, 0);
+        let groups = selected_groups(&pooled);
+        assert_eq!(
+            groups,
+            vec![
+                ("graph-evidence", g0.clone()),
+                ("accepted-ir", first_ir.clone())
+            ]
+        );
+        // The Graph group is whole (all five parts) or absent.
+        assert_eq!(
+            pooled
+                .selected_items
+                .iter()
+                .filter(|selected| item_group(selected.item()) == Some(g0.as_str()))
+                .count(),
+            5
+        );
+        // The same budget without the Graph does not select a relation group
+        // ahead of the Entity groups: the Graph changed the rank, nothing else.
+        let (control, _) = run_pool(&s.db, &s.revisions, None, 1 + tokens_g0 + tokens_ir, 0)?;
+        assert!(selected_groups(&control)
+            .iter()
+            .all(|(kind, _)| *kind == "accepted-ir"));
+        Ok(())
+    }
+
+    /// A-14: on a budget so small that the Graph group would take the room of
+    /// the only accepted IR group, the request continues with the IR group.
+    #[test]
+    fn a_graph_group_never_crowds_out_the_required_accepted_ir() -> Result<()> {
+        let s = scenario()?;
+        let (full, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let g0 = full.graph.as_ref().unwrap().groups()[0]
+            .group_id()
+            .to_owned();
+        let tokens_g0 = group_tokens(&full, &g0);
+        let budget = 1 + tokens_g0;
+        let (control, control_bytes) = run_pool(&s.db, &s.revisions, None, budget, 0)?;
+        ensure!(
+            control
+                .selected_items
+                .iter()
+                .any(|selected| matches!(selected.item(), ContextItemKind::AcceptedIr { .. })),
+            "the control request holds accepted IR"
+        );
+        let (pooled, bytes) = run_pool(&s.db, &s.revisions, Some(&s.candidates), budget, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(
+            outcome.dropped_reason(),
+            Some(Nir1GraphDropReason::WouldRemoveRequiredAcceptedIr)
+        );
+        assert!(outcome.groups().is_empty());
+        assert_eq!(pooled.packed, control.packed);
+        assert_eq!(pooled.selected_items, control.selected_items);
+        assert_eq!(bytes, control_bytes);
+        Ok(())
+    }
+
+    /// A-2: when the shared 2 MiB envelope cannot hold the Graph groups, they
+    /// are not added, the request continues, and no accepted IR group is lost.
+    #[test]
+    fn graph_groups_that_do_not_fit_the_input_envelope_are_not_added() -> Result<()> {
+        let s = scenario()?;
+        let headroom = |bytes: usize| MAX_PACKING_INPUT_BYTES - s.control_bytes - bytes;
+        // Room for none of the two Graph groups.
+        let (pooled, bytes) = run_pool(
+            &s.db,
+            &s.revisions,
+            Some(&s.candidates),
+            100_000,
+            headroom(GRAPH_GROUP_EXTRA_BYTES - 1),
+        )?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(outcome.dropped_reason(), None);
+        assert!(outcome.groups().is_empty());
+        assert_eq!(outcome.limited_count(), 2);
+        assert_eq!(pooled.selected_items, s.control.selected_items);
+        assert_eq!(
+            bytes,
+            s.control_bytes + headroom(GRAPH_GROUP_EXTRA_BYTES - 1)
+        );
+        // Room for the first only: a prefix in Graph order, never half a group.
+        let (pooled, _) = run_pool(
+            &s.db,
+            &s.revisions,
+            Some(&s.candidates),
+            100_000,
+            headroom(GRAPH_GROUP_EXTRA_BYTES),
+        )?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(outcome.groups().len(), 1);
+        assert_eq!(outcome.limited_count(), 1);
+        assert_eq!(pooled.selected_items.len(), s.control.selected_items.len());
+        let first = outcome.groups()[0].clone();
+        assert_eq!(
+            pooled
+                .selected_items
+                .iter()
+                .filter(|selected| item_group(selected.item()) == Some(first.group_id()))
+                .count(),
+            5
+        );
+        // The other relation keeps its accepted IR group.
+        let second = &s.candidates.edges()[1];
+        assert!(pooled.selected_items.iter().any(|selected| {
+            item_group(selected.item())
+                == Some(ir_group_id(second.revision_id(), &second.edge_id).as_str())
+        }));
+        Ok(())
+    }
+
+    /// A-2: the Graph order is the hop, then the Graph's own traversal order.
+    #[test]
+    fn graph_groups_are_ordered_by_hop_then_traversal() -> Result<()> {
+        let s = scenario()?;
+        let farther_first = candidates_from(&s.control.bindings, &[1, 0])?;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&farther_first), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(
+            outcome
+                .groups()
+                .iter()
+                .map(|group| group.revision_id().to_owned())
+                .collect::<Vec<_>>(),
+            vec![s.revisions[1].clone(), s.revisions[0].clone()]
+        );
+        let same_hop = candidates_from(&s.control.bindings, &[1, 1])?;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&same_hop), 100_000, 0)?;
+        assert_eq!(
+            pooled
+                .graph
+                .as_ref()
+                .unwrap()
+                .groups()
+                .iter()
+                .map(|group| group.revision_id().to_owned())
+                .collect::<Vec<_>>(),
+            s.revisions
+        );
+        Ok(())
+    }
+
+    /// A-9 (db side): A2 and A3 decide per Revision in the same snapshot.
+    #[test]
+    fn a2_a3_unavailable_and_unselected_revisions_lose_only_their_graph_group() -> Result<()> {
+        // A2: the second Revision's payload is broken after the Graph answered.
+        let s = scenario()?;
+        s.db.with_conn(|conn| {
+            conn.execute(
+                "UPDATE narrative_proposal_revisions SET payload_json='{' WHERE id=?1",
+                params![s.revisions[1]],
+            )?;
+            Ok(())
+        })?;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(
+            outcome
+                .excluded()
+                .iter()
+                .map(|e| (e.revision_id().to_owned(), e.reason().code()))
+                .collect::<Vec<_>>(),
+            vec![(
+                s.revisions[1].clone(),
+                "revision-unavailable:revision-payload-invalid".to_owned()
+            )]
+        );
+        assert_eq!(outcome.groups().len(), 1);
+        assert_eq!(outcome.groups()[0].revision_id(), s.revisions[0]);
+        // The request continues with the Revision A2 accepts; the broken
+        // Revision has no item at all, accepted IR or Graph.
+        assert!(pooled
+            .selected_items
+            .iter()
+            .all(|selected| selected.owner_revision_id.as_deref() != Some(&s.revisions[1])));
+        assert_eq!(pooled.excluded.len(), 1);
+
+        // Not listed by the Native selection: the Graph names it, the pooled
+        // read did not list it.
+        let s = scenario()?;
+        let listed = vec![s.revisions[0].clone()];
+        let (pooled, _) = run_pool(&s.db, &listed, Some(&s.candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert_eq!(
+            outcome
+                .excluded()
+                .iter()
+                .map(|e| (e.revision_id().to_owned(), e.reason()))
+                .collect::<Vec<_>>(),
+            vec![(
+                s.revisions[1].clone(),
+                Nir1GraphExclusionReason::RevisionNotSelected
+            )]
+        );
+        assert_eq!(outcome.groups().len(), 1);
+
+        // A3: a secret Foreshadow whose payoff is not confirmed denies Alice's
+        // reveal; every Revision of the fixture holds Alice.
+        let s = scenario()?;
+        s.db.with_conn(|conn| {
+            conn.execute(
+                "INSERT INTO foreshadows
+                    (id, project_id, title, payoff_confirmed, abandoned, secret,
+                     payoff_scene_id, created_at, updated_at)
+                 VALUES ('di1a-reveal', 'default-project', 'Reveal', 0, 0, 1, NULL, 0, 0)",
+                [],
+            )?;
+            conn.execute(
+                "INSERT INTO foreshadow_codex_links (foreshadow_id, codex_entry_id)
+                 VALUES ('di1a-reveal', 'nir1-alice')",
+                [],
+            )?;
+            Ok(())
+        })?;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().unwrap();
+        assert!(outcome.groups().is_empty());
+        assert_eq!(
+            outcome
+                .excluded()
+                .iter()
+                .map(|e| e.reason().code())
+                .collect::<Vec<_>>(),
+            vec!["revision-unavailable:a3-reveal-unavailable"; 2]
+        );
+        // Nothing but the Raw remains, as before the Graph: the request meets
+        // the required-context rule later, exactly as without the Graph.
+        assert!(pooled
+            .selected_items
+            .iter()
+            .all(|selected| matches!(selected.item(), ContextItemKind::Raw { .. })));
+        Ok(())
+    }
+
+    /// A-9: every closed A2 reason leaves exactly one Revision's group out.
+    #[test]
+    fn every_closed_a2_reason_maps_to_a_closed_graph_exclusion() -> Result<()> {
+        type Break = fn(&Database, &str) -> Result<()>;
+        let cases: [(&str, Break); 3] = [
+            ("revision-payload-invalid", |db, revision_id| {
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE narrative_proposal_revisions SET payload_json='{' WHERE id=?1",
+                        params![revision_id],
+                    )?;
+                    Ok(())
+                })
+            }),
+            ("revision-not-human-approved", |db, revision_id| {
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE narrative_proposal_decisions
+                            SET actor_kind='automated', actor_id='electron:automated-review',
+                                authority_scope='automated'
+                          WHERE revision_id=?1",
+                        params![revision_id],
+                    )?;
+                    Ok(())
+                })
+            }),
+            ("revision-decision-ambiguous", |db, revision_id| {
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "INSERT INTO narrative_proposal_decisions
+                            (id, proposal_id, revision_id, decision, decision_json, created_at,
+                             created_by, actor_kind, actor_id, authority_scope,
+                             override_field_paths_json)
+                         SELECT 'ambiguous-' || id, proposal_id, revision_id, 'approved', '{}',
+                                created_at, 'automation', 'automated',
+                                'electron:automated-review', 'automated', '[]'
+                           FROM narrative_proposal_decisions WHERE revision_id=?1",
+                        params![revision_id],
+                    )?;
+                    Ok(())
+                })
+            }),
+        ];
+        for (reason, break_revision) in cases {
+            let s = scenario()?;
+            break_revision(&s.db, &s.revisions[0])?;
+            let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+            let outcome = pooled.graph.as_ref().unwrap();
+            assert_eq!(
+                outcome
+                    .excluded()
+                    .iter()
+                    .map(|e| (e.revision_id().to_owned(), e.reason().code()))
+                    .collect::<Vec<_>>(),
+                vec![(
+                    s.revisions[0].clone(),
+                    format!("revision-unavailable:{reason}")
+                )],
+                "{reason}"
+            );
+            assert_eq!(outcome.groups().len(), 1, "{reason}");
+            assert_eq!(
+                outcome.groups()[0].revision_id(),
+                s.revisions[1],
+                "{reason}"
+            );
+        }
+        Ok(())
+    }
+
+    fn synthetic_scope() -> grimodex_core::narrative_nir1::ScopeBinding {
+        grimodex_core::narrative_nir1::ScopeBinding {
+            reading: ScopeValue::LegacyAbsent,
+            story: ScopeValue::LegacyAbsent,
+            auto: ScopeValue::LegacyAbsent,
+            phase: "draft".into(),
+            reveal: "none".into(),
+            pov: None,
+            authority_revision: "authority".into(),
+        }
+    }
+
+    fn synthetic_entity(id: &str) -> Arc<EntityInput> {
+        Arc::new(EntityInput {
+            entity_id: id.into(),
+            entity_type: "character".into(),
+            label: format!("LABEL-SENTINEL-{id}"),
+            source_token: format!("codex:{id}@1"),
+            scope: synthetic_scope(),
+            evidence: vec![EvidenceInput {
+                evidence_id: format!("evidence-{id}"),
+                source_ref: format!("codex:{id}"),
+                quote: format!("QUOTE-SENTINEL-{id}"),
+                start_utf16: 0,
+                end_utf16: 4,
+            }],
+        })
+    }
+
+    fn synthetic_binding(revision: &str) -> Arc<Nir1GraphMaterialBinding> {
+        Arc::new(Nir1GraphMaterialBinding {
+            revision_id: revision.into(),
+            decision_id: format!("{revision}-decision"),
+            decision_token: format!("{revision}-decision-token"),
+            freshness_token: format!("{revision}-freshness-token"),
+            scope_authority_revision: "authority".into(),
+            query_scene_source_token: "v1@now".into(),
+            query_scene_scope_token: "scope-token".into(),
+            query_scene_incarnation_id: "incarnation".into(),
+            reveal_state_token: "reveal-token".into(),
+        })
+    }
+
+    fn synthetic_projection() -> Nir1GraphProjection {
+        let binding = synthetic_binding("revision-a");
+        let entities = ["e-seed", "e-one", "e-two"].map(synthetic_entity);
+        let nodes = [(0usize, 0u8), (1, 1), (2, 1)]
+            .into_iter()
+            .map(|(index, hop)| Nir1GraphNode {
+                entity: Arc::clone(&entities[index]),
+                hop,
+                bindings: vec![Arc::clone(&binding)],
+                binding_scopes: vec![Arc::new(synthetic_scope())],
+            })
+            .collect();
+        let edge = |id: &str, from: usize, to: usize| Nir1GraphEdge {
+            relation: Arc::new(GraphEdgeInput {
+                edge_id: id.into(),
+                from_entity_id: entities[from].entity_id.clone(),
+                to_entity_id: entities[to].entity_id.clone(),
+                relation_type: "TYPE-SENTINEL".into(),
+                directionality: "directed".into(),
+                source_token: "relation-source".into(),
+                evidence_ids: vec![format!("evidence-{}", entities[from].entity_id)],
+            }),
+            from: Arc::clone(&entities[from]),
+            to: Arc::clone(&entities[to]),
+            binding: Arc::clone(&binding),
+        };
+        Nir1GraphProjection {
+            project_id: "project-x".into(),
+            query_scene_id: "scene-x".into(),
+            scope_revision: Some("authority".into()),
+            graph: Nir1QualifiedGraph {
+                seed_entity_id: "e-seed".into(),
+                generation: GENERATION,
+                nodes,
+                edges: vec![edge("edge-1", 0, 1), edge("edge-2", 1, 2)],
+                scene_total: 1,
+                scenes: vec![Nir1GraphSceneAssociation {
+                    scene_id: "SCENE-SENTINEL".into(),
+                    scene_incarnation_id: Some("INCARNATION-SENTINEL".into()),
+                    scene_source_token: "SOURCE-SENTINEL".into(),
+                    scene_scope_token: Some("SCOPE-SENTINEL".into()),
+                    pin_rowid: 424_242,
+                    pin_entry_id: "PIN-ENTRY-SENTINEL".into(),
+                    pin_created_at: "PIN-CREATED-SENTINEL".into(),
+                    path_hop: 1,
+                    path_edge_indices: vec![0],
+                }],
+            },
+            elapsed: std::time::Duration::from_millis(1),
+        }
+    }
+
+    /// A-1 and A-13: the candidate is built from IDs and tokens only. Neither
+    /// the worker's text nor a Scene association (K2/4 Mandatory defense 2)
+    /// can reach the request.
+    #[test]
+    fn a_candidate_keeps_identifiers_and_tokens_and_no_text_or_scene_association() -> Result<()> {
+        let projection = synthetic_projection();
+        let candidates = Nir1GraphCandidates::from_projection(&projection)?;
+        assert_eq!(candidates.project_id(), "project-x");
+        assert_eq!(candidates.query_scene_id(), "scene-x");
+        assert_eq!(candidates.seed_entity_id(), "e-seed");
+        assert_eq!(candidates.generation(), GENERATION);
+        assert_eq!(candidates.scope_revision(), Some("authority"));
+        // The hop of an edge is the nearer endpoint's: edge-2 joins two Entities
+        // one hop from the seed.
+        assert_eq!(
+            candidates
+                .edges()
+                .iter()
+                .map(|edge| (edge.edge_id.as_str(), edge.hop, edge.revision_id()))
+                .collect::<Vec<_>>(),
+            vec![("edge-1", 0, "revision-a"), ("edge-2", 1, "revision-a")]
+        );
+        let debug = format!("{candidates:?}");
+        for text in [
+            "LABEL-SENTINEL",
+            "QUOTE-SENTINEL",
+            "TYPE-SENTINEL",
+            "SCENE-SENTINEL",
+            "INCARNATION-SENTINEL",
+            "SOURCE-SENTINEL",
+            "SCOPE-SENTINEL",
+            "PIN-ENTRY-SENTINEL",
+            "PIN-CREATED-SENTINEL",
+            "424242",
+        ] {
+            assert!(!debug.contains(text), "the candidate holds {text}");
+        }
+        // The same holds for a pool outcome.
+        let s = scenario()?;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&s.candidates), 100_000, 0)?;
+        let rendered = format!("{:?}", pooled.graph);
+        for text in ["SENTINEL", "Alice", "Bob"] {
+            assert!(!rendered.contains(text), "the outcome holds {text}");
+        }
+        // The edge bound of the Graph holds at the candidate too.
+        let edge = candidates.edges()[0].clone();
+        assert!(Nir1GraphCandidates::new(
+            "p".into(),
+            "s".into(),
+            "e".into(),
+            1,
+            None,
+            vec![edge; MAX_GRAPH_EDGES + 1],
+        )
+        .is_err());
+        Ok(())
+    }
+
+    /// A-13 through the pool: a worker that answers with text and a Scene
+    /// association for Revisions that are really eligible changes nothing a
+    /// request carries. The Graph groups are used (so the scan means
+    /// something), and neither the selected items, the packed context, the
+    /// outcome nor the candidate holds a sentinel.
+    #[test]
+    fn worker_text_and_scene_association_never_reach_the_pooled_request() -> Result<()> {
+        let s = scenario()?;
+        let sentinel_entity = |id: &str| {
+            Arc::new(EntityInput {
+                entity_id: id.into(),
+                entity_type: "character".into(),
+                label: format!("WORKER-LABEL-{id}"),
+                source_token: format!("codex:{id}@1"),
+                scope: synthetic_scope(),
+                evidence: vec![EvidenceInput {
+                    evidence_id: format!("evidence-{id}"),
+                    source_ref: format!("codex:{id}"),
+                    quote: format!("WORKER-QUOTE-{id}"),
+                    start_utf16: 0,
+                    end_utf16: 4,
+                }],
+            })
+        };
+        let seed = sentinel_entity(SEED);
+        let mut nodes = vec![Nir1GraphNode {
+            entity: Arc::clone(&seed),
+            hop: 0,
+            bindings: Vec::new(),
+            binding_scopes: Vec::new(),
+        }];
+        let mut edges = Vec::new();
+        for binding in &s.control.bindings {
+            let scope = binding.scope();
+            let token_binding = Arc::new(Nir1GraphMaterialBinding {
+                revision_id: binding.revision_id().to_owned(),
+                decision_id: binding.decision().id().to_owned(),
+                decision_token: binding.decision_token().to_owned(),
+                freshness_token: binding.freshness_token().to_owned(),
+                scope_authority_revision: scope.scope_authority_revision().to_owned(),
+                query_scene_source_token: scope.query_scene_source_token().to_owned(),
+                query_scene_scope_token: scope.query_scene_scope_token().to_owned(),
+                query_scene_incarnation_id: scope.query_scene_incarnation_id().to_owned(),
+                reveal_state_token: scope.reveal_state_token().to_owned(),
+            });
+            for relation in &binding.revision().bundle.relations {
+                let peer = sentinel_entity(&format!("peer-{}", relation.edge_id));
+                nodes.push(Nir1GraphNode {
+                    entity: Arc::clone(&peer),
+                    hop: 1,
+                    bindings: Vec::new(),
+                    binding_scopes: Vec::new(),
+                });
+                edges.push(Nir1GraphEdge {
+                    relation: Arc::new(GraphEdgeInput {
+                        edge_id: relation.edge_id.clone(),
+                        from_entity_id: SEED.into(),
+                        to_entity_id: peer.entity_id.clone(),
+                        relation_type: "WORKER-RELATION-TYPE".into(),
+                        directionality: "directed".into(),
+                        source_token: "relation-source".into(),
+                        evidence_ids: vec![format!("evidence-{SEED}")],
+                    }),
+                    from: Arc::clone(&seed),
+                    to: peer,
+                    binding: Arc::clone(&token_binding),
+                });
+            }
+        }
+        let projection = Nir1GraphProjection {
+            project_id: RAW_SOURCE_PROJECT.into(),
+            query_scene_id: RAW_SOURCE_SCENE.into(),
+            scope_revision: Some(
+                s.control.bindings[0]
+                    .scope()
+                    .scope_authority_revision()
+                    .to_owned(),
+            ),
+            graph: Nir1QualifiedGraph {
+                seed_entity_id: SEED.into(),
+                generation: GENERATION,
+                nodes,
+                edges,
+                scene_total: 1,
+                scenes: vec![Nir1GraphSceneAssociation {
+                    scene_id: "WORKER-SCENE-ID".into(),
+                    scene_incarnation_id: Some("WORKER-SCENE-INCARNATION".into()),
+                    scene_source_token: "WORKER-SCENE-SOURCE".into(),
+                    scene_scope_token: Some("WORKER-SCENE-SCOPE".into()),
+                    pin_rowid: 7_654_321,
+                    pin_entry_id: "WORKER-PIN-ENTRY".into(),
+                    pin_created_at: "WORKER-PIN-CREATED".into(),
+                    path_hop: 1,
+                    path_edge_indices: vec![0],
+                }],
+            },
+            elapsed: std::time::Duration::from_millis(1),
+        };
+        let candidates = Nir1GraphCandidates::from_projection(&projection)?;
+        let (pooled, _) = run_pool(&s.db, &s.revisions, Some(&candidates), 100_000, 0)?;
+        let outcome = pooled.graph.as_ref().expect("a Graph outcome");
+        assert_eq!(outcome.dropped_reason(), None);
+        assert_eq!(outcome.groups().len(), 2, "the Graph groups are used");
+        assert!(pooled
+            .selected_items
+            .iter()
+            .any(|selected| matches!(selected.item(), ContextItemKind::GraphEvidence { .. })));
+        let scanned = [
+            ("the candidate", format!("{candidates:?}")),
+            ("the outcome", format!("{outcome:?}")),
+            ("the selected items", format!("{:?}", pooled.selected_items)),
+            ("the packed context", format!("{:?}", pooled.packed)),
+        ];
+        for (what, text) in scanned {
+            assert!(!text.contains("WORKER-"), "{what} holds worker text");
+            assert!(!text.contains("7654321"), "{what} holds a pin rowid");
+        }
+        Ok(())
+    }
+
+    /// A graph for an endpoint that is not a node cannot be projected.
+    #[test]
+    fn a_projection_with_an_unknown_endpoint_is_refused() {
+        let mut projection = synthetic_projection();
+        projection.graph.nodes.pop();
+        projection.graph.nodes.pop();
+        assert_eq!(
+            Nir1GraphCandidates::from_projection(&projection)
+                .unwrap_err()
+                .to_string(),
+            "NIR1_GRAPH_CANDIDATE_ENDPOINT_MISSING"
+        );
+    }
+
+    /// A caller-supplied Revision list never carries a Graph.
+    #[test]
+    fn a_caller_revision_list_ignores_the_graph() -> Result<()> {
+        let s = scenario()?;
+        let raw = raw();
+        let (pooled, bytes) = s.db.with_read_transaction(|conn| {
+            let mut budget = NativePackingInputBudget::default();
+            let pooled = read_and_pack_native_a2_context_in_tx_with_raw_charge(
+                conn,
+                NativeNir1PooledPackingRequest {
+                    graph: Some(&s.candidates),
+                    ..request(&s.revisions, &raw, 100_000)
+                },
+                &mut budget,
+                RawBudgetCharge::Charge,
+                RevisionUnavailablePolicy::Reject,
+                &mut |_| Ok(()),
+                &mut || Ok(()),
+            )?;
+            Ok((pooled, budget.used_bytes))
+        })?;
+        assert_eq!(
+            pooled.graph.as_ref().unwrap().dropped_reason(),
+            Some(Nir1GraphDropReason::NotNativeSelection)
+        );
+        assert_pool_unchanged(&s, &pooled, bytes);
+        Ok(())
+    }
 }
