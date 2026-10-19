@@ -14,7 +14,7 @@ if (Date.now() >= Date.parse("2026-11-18T00:00:00+09:00")) {
 const auditFiles = new Map();
 for (const [path, expected] of Object.entries({
   "package.json":
-    "21a2397c0da237019979a63cfef091c42540770175250e3e12cd385121c86065",
+    "6bc793aa3e110bcd16b738f99fe6d9bbc702dfafdde07decde5cbc63f0e8d730",
   "pnpm-lock.yaml":
     "5c4b776186746b635a43ced9c46bb3816360b0a7fe3946876d7e7224a57c3d04",
   "pnpm-workspace.yaml":

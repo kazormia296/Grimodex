@@ -55,7 +55,7 @@ const REPORT_FIELDS = [
 ];
 
 if (
-  IDS.length !== 33 ||
+  IDS.length !== 34 ||
   PRODUCT_JOURNEY_CATALOG.some(
     (entry) =>
       entry.required === false || entry.acceptanceRole === "diagnostic",
@@ -95,6 +95,7 @@ export const FIXED_PRODUCT_JOURNEY_SHARDS = Object.freeze([
     "c2-5b-graph-digest-no-skip",
   ]),
   Object.freeze([
+    "nir1-scene-scope-projection-acceptance",
     "c2-5b-rule-digest-no-skip",
     "c2-5b-producer-generation-no-skip",
     "c2-5b-transient-bounded-retry",
@@ -124,7 +125,7 @@ if (
   FIXED_PRODUCT_JOURNEY_SHARDS.length !== 7 ||
   FIXED_PRODUCT_JOURNEY_SHARDS.some(
     (ids, index) =>
-      ids.length !== [6, 4, 2, 6, 5, 6, 4][index] ||
+      ids.length !== [6, 4, 2, 6, 5, 7, 4][index] ||
       !isDeepStrictEqual(
         ids,
         IDS.filter((id) => ids.includes(id)),

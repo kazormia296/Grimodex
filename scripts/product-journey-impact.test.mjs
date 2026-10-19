@@ -74,6 +74,7 @@ test("the current catalog has complete journey, contract, and interaction covera
     "snapshot-native-roundtrip",
     "chronicle-extract-review-apply-reopen",
     "codex-entity-relation-review-apply-reopen",
+    "nir1-scene-scope-projection-acceptance",
     ...NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_CATALOG.map(
       (journey) => journey.id,
     ),
@@ -258,6 +259,7 @@ test("each newly classified lifecycle or MCP domain selects its declared journey
         "chat-stream-workspace-switch",
         "agent-stream-workspace-switch",
         "codex-entity-relation-review-apply-reopen",
+        "nir1-scene-scope-projection-acceptance",
       ],
     ],
     [
@@ -400,6 +402,7 @@ test("one changed domain selects every declared journey that can be affected", (
     "chat-stream-codex-switch",
     "cross-feature-authoring",
     "codex-entity-relation-review-apply-reopen",
+    "nir1-scene-scope-projection-acceptance",
   ]);
   assert.equal(selection.fallback, false);
   assert.equal(selection.allSelected, false);
@@ -613,6 +616,7 @@ test("shadow mode records affected recommendations but executes the full catalog
     "chat-stream-codex-switch",
     "cross-feature-authoring",
     "codex-entity-relation-review-apply-reopen",
+    "nir1-scene-scope-projection-acceptance",
   ]);
   assert.deepEqual(
     execution.executionJourneyIds,
@@ -744,6 +748,7 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
     "chat-stream-codex-switch",
     "cross-feature-authoring",
     "codex-entity-relation-review-apply-reopen",
+    "nir1-scene-scope-projection-acceptance",
   ]);
   assert.deepEqual(
     report.execution.executionJourneyIds,
@@ -766,7 +771,7 @@ test("dependency-free CLI writes JSON report and GitHub outputs", async (t) => {
   );
   assert.match(
     githubOutput,
-    /selected_journey_ids=\["chat-stream-codex-switch","cross-feature-authoring","codex-entity-relation-review-apply-reopen"\]/,
+    /selected_journey_ids=\["chat-stream-codex-switch","cross-feature-authoring","codex-entity-relation-review-apply-reopen","nir1-scene-scope-projection-acceptance"\]/,
   );
   assert.match(
     githubOutput,
