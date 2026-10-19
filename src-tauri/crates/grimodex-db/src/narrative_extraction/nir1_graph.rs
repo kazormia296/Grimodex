@@ -25,6 +25,8 @@ mod input;
 mod memory;
 #[cfg(test)]
 mod oracle_tests;
+#[cfg(feature = "native-current-human-capture")]
+mod scene_disclosure;
 mod scenes;
 #[cfg(test)]
 mod tests;
@@ -69,6 +71,13 @@ use crate::workspace_lifecycle::WorkspaceParticipant;
 #[cfg(feature = "nir1-material-diagnostics")]
 pub(crate) use self::input::{A2SqlObservation, A3SqlObservation};
 use self::memory::{RetainedLedger, RetainedPart};
+#[cfg(feature = "native-current-human-capture")]
+pub use self::scene_disclosure::{
+    evaluate_graph_only_append, evaluate_graph_only_scene, requalify_graph_only_scene_disclosure, AppendSlot, EligibleGraphScene, GraphDisclosureQuery,
+    GraphDisclosureWorkspace, GraphOnlyCandidate, GraphOnlyClick, GraphOnlyScan,
+    GraphOnlyScanInput, GraphOnlySceneBinding, GraphOnlySceneDisclosure, GraphPathRevalidator,
+    GraphSceneRange, GraphSceneRevalidationRefused, NotAppended, COMMON_SLOT_RAW_LIMIT,
+};
 use self::scenes::{SceneJoinBudget, ScenePinLocator};
 use self::worker_frame::{
     PreCleanup, SceneAssociationLengths, UnavailableReason, WorkerCause, WorkerSite,

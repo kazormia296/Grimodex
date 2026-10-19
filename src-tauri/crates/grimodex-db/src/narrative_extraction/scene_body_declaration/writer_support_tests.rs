@@ -38,31 +38,31 @@ use crate::workspace_lifecycle::{
 };
 use crate::Database;
 
-pub(super) const PROJECT: &str = "p1";
+pub(crate) const PROJECT: &str = "p1";
 /// A live Scene with a one-paragraph body and an explicit, resolved A1.
-pub(super) const SCENE: &str = "s1";
+pub(crate) const SCENE: &str = "s1";
 /// A live Scene whose body has no text.
-pub(super) const EMPTY_SCENE: &str = "s2";
+pub(crate) const EMPTY_SCENE: &str = "s2";
 /// An archived Scene.
-pub(super) const ARCHIVED_SCENE: &str = "s3";
+pub(crate) const ARCHIVED_SCENE: &str = "s3";
 /// A Scene of another project.
-pub(super) const OTHER_PROJECT: &str = "p2";
-pub(super) const OTHER_SCENE: &str = "s4";
+pub(crate) const OTHER_PROJECT: &str = "p2";
+pub(crate) const OTHER_SCENE: &str = "s4";
 /// A live Scene whose A1 was never set (legacy-absent).
-pub(super) const LEGACY_SCENE: &str = "s5";
+pub(crate) const LEGACY_SCENE: &str = "s5";
 /// A second declarable Scene of the project.
-pub(super) const SECOND_SCENE: &str = "s6";
+pub(crate) const SECOND_SCENE: &str = "s6";
 
-pub(super) const NOW: &str = "2026-10-18T00:00:00.000Z";
-pub(super) const BODY_TEXT: &str = "Mira opened the door.";
+pub(crate) const NOW: &str = "2026-10-18T00:00:00.000Z";
+pub(crate) const BODY_TEXT: &str = "Mira opened the door.";
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub(super) fn unique(label: &str) -> String {
+pub(crate) fn unique(label: &str) -> String {
     format!("{label}-{}", SEQUENCE.fetch_add(1, Ordering::Relaxed))
 }
 
-pub(super) fn body_json(text: &str) -> String {
+pub(crate) fn body_json(text: &str) -> String {
     json!({
         "type": "doc",
         "content": [{ "type": "paragraph", "content": [{ "type": "text", "text": text }] }],
@@ -148,7 +148,7 @@ fn seed(db: &Database) {
 
 /// Sets the Scene's A1 to explicit; `resolved` chooses concrete query axes or
 /// an unresolved timeline.
-pub(super) fn set_a1(db: &Database, project: &str, scene: &str, resolved: bool) {
+pub(crate) fn set_a1(db: &Database, project: &str, scene: &str, resolved: bool) {
     let read = db
         .with_read_transaction(|conn| read_narrative_scene_scope(conn, project, scene))
         .expect("scope read");
@@ -225,7 +225,7 @@ fn ready_state(
 }
 
 /// A Ready workspace over a file-backed, seeded database in its own directory.
-pub(super) struct Env {
+pub(crate) struct Env {
     pub state: Option<WorkspaceState>,
     /// The database handle, usable whatever the lifecycle state is.
     pub authority: Option<crate::state::PinnedWorkspaceDb>,
@@ -337,14 +337,14 @@ impl Drop for Env {
     }
 }
 
-pub(super) fn budget() -> Nir1AdmissionSqlBudget {
+pub(crate) fn budget() -> Nir1AdmissionSqlBudget {
     Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), Arc::new(|| true))
         .for_untimed_test()
 }
 
 /// A request carrying the Scene's current OCC, as the author's screen would
 /// have read it.
-pub(super) fn request_for(env: &Env, project: &str, scene: &str) -> DeclareRequest {
+pub(crate) fn request_for(env: &Env, project: &str, scene: &str) -> DeclareRequest {
     let (version, token) = env.with_conn(|conn| {
         let read = read_narrative_scene_scope(conn, project, scene)?;
         Ok((read.binding.version, read.binding.source_token))
@@ -373,12 +373,12 @@ pub(super) fn request_for(env: &Env, project: &str, scene: &str) -> DeclareReque
     }
 }
 
-pub(super) fn scene_request(env: &Env) -> DeclareRequest {
+pub(crate) fn scene_request(env: &Env) -> DeclareRequest {
     request_for(env, PROJECT, SCENE)
 }
 
 /// Preview, then consume: what the Native grant code does around the writer.
-pub(super) fn consumed_for(
+pub(crate) fn consumed_for(
     env: &Env,
     request: &DeclareRequest,
 ) -> Result<ConsumedBodyDeclarationBinding, DeclareRefusal> {
@@ -390,7 +390,7 @@ pub(super) fn consumed_for(
 }
 
 /// A whole declaration through the preview and the writer.
-pub(super) fn declare(
+pub(crate) fn declare(
     env: &Env,
     request: DeclareRequest,
 ) -> Result<DeclareOutcome, DeclareFailure> {
@@ -402,7 +402,7 @@ pub(super) fn declare(
     declare_scene_body(&snapshot, consumed, request, &budget())
 }
 
-pub(super) fn revoke_request(project: &str, scene: &str, token: &str) -> RevokeRequest {
+pub(crate) fn revoke_request(project: &str, scene: &str, token: &str) -> RevokeRequest {
     RevokeRequest {
         project_id: project.into(),
         scene_id: scene.into(),
@@ -412,7 +412,7 @@ pub(super) fn revoke_request(project: &str, scene: &str, token: &str) -> RevokeR
 }
 
 /// Every column of one row as text, for byte comparison.
-pub(super) fn dump_row(
+pub(crate) fn dump_row(
     conn: &Connection,
     sql: &str,
     key: &[&str],
@@ -447,7 +447,7 @@ pub(super) fn dump_row(
 }
 
 /// The binding row except the two declaration columns.
-pub(super) fn binding_row_without_declaration(
+pub(crate) fn binding_row_without_declaration(
     conn: &Connection,
     project: &str,
     scene: &str,
@@ -461,7 +461,7 @@ pub(super) fn binding_row_without_declaration(
 }
 
 /// The Scene's `tree_nodes` row.
-pub(super) fn tree_row(conn: &Connection, scene: &str) -> BTreeMap<String, String> {
+pub(crate) fn tree_row(conn: &Connection, scene: &str) -> BTreeMap<String, String> {
     dump_row(
         conn,
         "SELECT * FROM tree_nodes WHERE id = ?1",
@@ -470,17 +470,17 @@ pub(super) fn tree_row(conn: &Connection, scene: &str) -> BTreeMap<String, Strin
     )
 }
 
-pub(super) fn count(conn: &Connection, sql: &str) -> i64 {
+pub(crate) fn count(conn: &Connection, sql: &str) -> i64 {
     conn.query_row(sql, [], |row| row.get(0)).expect("count")
 }
 
 /// The plan's limits unchanged (mutex 100 ms, busy 100 ms, operation 250 ms).
-pub(super) fn plan_budget() -> Nir1AdmissionSqlBudget {
+pub(crate) fn plan_budget() -> Nir1AdmissionSqlBudget {
     Nir1AdmissionSqlBudget::new(Arc::new(AtomicBool::new(false)), Arc::new(|| true))
 }
 
 /// A saved body of `paragraphs` paragraphs of `width` characters each.
-pub(super) fn long_body(paragraphs: usize, width: usize) -> String {
+pub(crate) fn long_body(paragraphs: usize, width: usize) -> String {
     let text = "あ".repeat(width);
     let paragraph = json!({
         "type": "paragraph",

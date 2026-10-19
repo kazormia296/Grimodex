@@ -327,3 +327,92 @@ fn the_default_limits_are_the_documented_values() {
     assert_eq!(SCENE_BODY_READ_MAX_BYTES, 64 * 1024);
     assert_eq!(SCENE_BODY_READ_PEAK_MAX_BYTES, 64 * 1024 * 1024);
 }
+
+// ---- the records part (CB-4 S1) ---------------------------------------------
+
+fn records(
+    db: &Database,
+    scene: &str,
+    max_rows: usize,
+) -> anyhow::Result<super::veto::VetoRecordsRead> {
+    db.with_read_transaction(|conn| {
+        super::veto::scene_body_declaration_veto_records(conn, "p1", scene, max_rows)
+    })
+}
+
+#[test]
+fn the_records_part_agrees_with_the_full_veto_on_records_and_leaves_the_body_alone() {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    // Every record source: the full veto and the records part give the same
+    // verdict and the same row count behaviour.
+    let db = fixture();
+    db.with_conn(|conn| {
+        foreshadow(conn, "f1", 1, 0, Some("s1"));
+        event(conn, "e-secret", 1, Some("s2"));
+        Ok(())
+    })
+    .unwrap();
+    for scene in ["s1", "s2"] {
+        assert_eq!(
+            records(&db, scene, 512).unwrap().veto,
+            verdict(&db, scene),
+            "{scene}"
+        );
+    }
+
+    // A beat POV lives only in the saved body: the full veto finds it, the
+    // records part is not allowed to look.
+    let db = fixture();
+    set_content(
+        &db,
+        "s1",
+        json!({"type": "doc", "content": [{"type": "sceneBeat", "attrs": {"pov": "c1"}}]}),
+    );
+    assert_eq!(verdict(&db, "s1"), Some(BodyDeclarationVeto::Pov));
+    assert_eq!(records(&db, "s1", 512).unwrap().veto, None);
+
+    // The records part does not even prepare a statement that names `content`.
+    db.with_conn(|conn| {
+        conn.authorizer(Some(|context: AuthContext<'_>| match context.action {
+            AuthAction::Read {
+                table_name,
+                column_name,
+            } if table_name == "tree_nodes" && column_name == "content" => Authorization::Deny,
+            _ => Authorization::Allow,
+        }))?;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(records(&db, "s1", 512).unwrap().veto, None);
+    assert!(
+        db.with_read_transaction(|conn| {
+            scene_body_declaration_veto(conn, "p1", "s1", VetoLimits::DEFAULT)
+        })
+        .is_err(),
+        "the full veto does need the body"
+    );
+    db.with_conn(|conn| {
+        conn.authorizer(None::<fn(AuthContext<'_>) -> Authorization>)?;
+        Ok(())
+    })
+    .unwrap();
+}
+
+#[test]
+fn the_records_part_counts_the_rows_it_looked_at_and_fails_above_the_limit() {
+    let db = fixture();
+    db.with_conn(|conn| {
+        foreshadow(conn, "f1", 0, 0, None);
+        for index in 0..4 {
+            setup(conn, &format!("su{index}"), "f1", "s1", index);
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(records(&db, "s1", 512).unwrap().rows_looked_at, 4);
+    assert_eq!(records(&db, "s1", 4).unwrap().rows_looked_at, 4);
+    let error = records(&db, "s1", 3).expect_err("N + 1 rows");
+    assert!(error.to_string().contains(VETO_ROW_LIMIT_MARKER), "{error}");
+    assert_eq!(records(&db, "s2", 512).unwrap().rows_looked_at, 0);
+}

@@ -550,10 +550,10 @@ pub(super) fn read_scene_frame_tokens(
 /// not invalidate a pin.  The caller must also compare its full connection
 /// read identity before accepting the result.
 #[cfg_attr(
-    not(test),
+    not(any(test, feature = "native-current-human-capture")),
     expect(
         dead_code,
-        reason = "parent-side CB-4 pin recheck; the worker reads pins only by page"
+        reason = "parent-side CB-4 pin recheck (Native build); the worker reads pins only by page"
     )
 )]
 pub(super) fn recheck_scene_pin(
@@ -725,7 +725,7 @@ pub(super) fn read_scene_source_bounded(
     })
 }
 
-fn first_non_empty_anchor(
+pub(super) fn first_non_empty_anchor(
     canonical: &str,
     check: &mut dyn FnMut() -> Result<()>,
     admit_excerpt: &mut dyn FnMut(usize) -> Result<()>,
@@ -778,10 +778,10 @@ fn matches_query_axis(constraint: &NarrativeScopeConstraintV1, expected: &str) -
 /// project authority, reveal state, or lifecycle/read-identity proof; the
 /// path's full A2/A3 proof remains a separate input owned by the C-query.
 #[cfg_attr(
-    not(test),
+    not(any(test, feature = "native-current-human-capture")),
     expect(
         dead_code,
-        reason = "parent-side CB-4 Scene scope qualification; the worker never qualifies Scenes"
+        reason = "parent-side CB-4 Scene scope qualification (Native build); the worker never qualifies Scenes"
     )
 )]
 pub(super) fn validate_scene_scope(

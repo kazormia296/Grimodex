@@ -651,6 +651,12 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/worker_frame.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/body.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/click.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/counters.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/eligible.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/judge.rs
       - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
       - src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
       - policies/narrative/narrative-artifact-authority.json
@@ -706,6 +712,10 @@ requirements:
       - src-tauri/crates/grimodex-db/src/nir1_generation_history/generation_storage_adapter/session_run.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/body_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/invalidation_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/exit_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs
@@ -971,6 +981,12 @@ requirements:
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/memory.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/c_query_worker.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/worker_frame.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/body.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/click.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/counters.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/eligible.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/judge.rs
       - src-tauri/crates/grimodex-db/src/bin/nir1-c-query-worker.rs
       - src-tauri/crates/grimodex-db/src/bin/support/c_query_fixed_allocator.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs
@@ -1138,6 +1154,10 @@ requirements:
       - src-tauri/crates/grimodex-db/src/nir1_generation_history/generation_storage_adapter/session_run.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/oracle_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/body_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/invalidation_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph/scene_disclosure/exit_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs

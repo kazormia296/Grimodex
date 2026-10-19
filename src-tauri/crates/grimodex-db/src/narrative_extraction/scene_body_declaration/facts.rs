@@ -198,6 +198,32 @@ fn unresolved_material(constraint: &NarrativeSceneMaterialConstraintV1) -> bool 
         || is_unresolved(&constraint.narrative_layer)
 }
 
+/// True when the Scene, or a folder above it, is archived. The chain is
+/// followed for 256 levels; a chain that is still going after that (or that
+/// loops) counts as archived, so a truncated walk can only refuse, never
+/// declare a Scene live. The writer's preview and CB-4's reader share it, so
+/// the two cannot judge liveness differently.
+pub(in crate::narrative_extraction) fn archived_in_chain(
+    conn: &Connection,
+    project_id: &str,
+    scene_id: &str,
+) -> Result<bool> {
+    Ok(conn.query_row(
+        "WITH RECURSIVE chain(id, parent_id, archived, depth) AS (
+             SELECT id, parent_id, archived_at IS NOT NULL, 0
+               FROM tree_nodes WHERE id = ?1 AND project_id = ?2
+             UNION ALL
+             SELECT t.id, t.parent_id, t.archived_at IS NOT NULL, c.depth + 1
+               FROM tree_nodes t JOIN chain c ON t.id = c.parent_id
+              WHERE t.project_id = ?2 AND c.depth < 256
+         )
+         SELECT COALESCE(MAX(archived OR (depth >= 256 AND parent_id IS NOT NULL)), 0)
+           FROM chain",
+        params![scene_id, project_id],
+        |row| row.get(0),
+    )?)
+}
+
 /// Reads every fact a declaration is bound to, inside the caller's
 /// transaction. Refuses with a closed [`DeclareRefusal`] (through
 /// [`refuse`]) when the Scene cannot be declared.
@@ -224,20 +250,7 @@ pub(super) fn read_scene_facts_in_tx(
         return refuse(DeclareRefusal::SceneNotFound);
     };
     // A Scene that is archived, or sits under an archived folder, is not live.
-    let archived_in_chain: bool = conn.query_row(
-        "WITH RECURSIVE chain(id, parent_id, archived, depth) AS (
-             SELECT id, parent_id, archived_at IS NOT NULL, 0
-               FROM tree_nodes WHERE id = ?1 AND project_id = ?2
-             UNION ALL
-             SELECT t.id, t.parent_id, t.archived_at IS NOT NULL, c.depth + 1
-               FROM tree_nodes t JOIN chain c ON t.id = c.parent_id
-              WHERE t.project_id = ?2 AND c.depth < 256
-         )
-         SELECT COALESCE(MAX(archived), 0) FROM chain",
-        params![scene_id, project_id],
-        |row| row.get(0),
-    )?;
-    if archived_in_chain {
+    if archived_in_chain(conn, project_id, scene_id)? {
         return refuse(DeclareRefusal::SceneArchived);
     }
     if usize::try_from(title_octets).map_or(true, |octets| octets > SCENE_BODY_TITLE_MAX_BYTES) {

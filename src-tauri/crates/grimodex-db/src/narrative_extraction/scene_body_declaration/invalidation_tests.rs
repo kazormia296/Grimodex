@@ -54,14 +54,14 @@ use crate::narrative_extraction::{
 use crate::Database;
 
 const NOW: &str = "2026-10-17T00:00:00.000Z";
-const FAR_FUTURE: &str = "2099-01-01T00:00:00.000Z";
+pub(crate) const FAR_FUTURE: &str = "2099-01-01T00:00:00.000Z";
 
 thread_local! {
     static REQUESTS: Cell<u64> = const { Cell::new(0) };
 }
 
 /// A request or event id that never repeats inside a test thread.
-fn unique(label: &str) -> String {
+pub(crate) fn unique(label: &str) -> String {
     REQUESTS.with(|counter| {
         counter.set(counter.get() + 1);
         format!("{label}-{}", counter.get())
@@ -233,7 +233,7 @@ fn assert_no_declaration(db: &Database, project: &str, scene: &str, step: &str) 
     );
 }
 
-fn scene_row(db: &Database, scene: &str, column: &str) -> String {
+pub(crate) fn scene_row(db: &Database, scene: &str, column: &str) -> String {
     db.with_conn(|conn| {
         Ok(conn.query_row(
             &format!("SELECT {column} FROM tree_nodes WHERE id = ?1"),
@@ -244,7 +244,7 @@ fn scene_row(db: &Database, scene: &str, column: &str) -> String {
     .expect("scene column")
 }
 
-fn patch(
+pub(crate) fn patch(
     db: &Database,
     node: &str,
     fields: Value,
@@ -276,7 +276,7 @@ fn patch(
     )
 }
 
-fn bulk(db: &Database, operations: Value) -> Value {
+pub(crate) fn bulk(db: &Database, operations: Value) -> Value {
     let payload: AgentChronicleBulkPayload = serde_json::from_value(json!({
         "requestId": unique("bulk"),
         "projectId": "p1",
@@ -288,7 +288,7 @@ fn bulk(db: &Database, operations: Value) -> Value {
     agent_chronicle_bulk_mutate_impl(db, payload).expect("chronicle bulk")
 }
 
-fn undo_or_redo(db: &Database, journal_id: &str, direction: &str) {
+pub(crate) fn undo_or_redo(db: &Database, journal_id: &str, direction: &str) {
     crate::undo_replay_test_support::replay_undo_journal(
         db,
         "p1",
@@ -298,7 +298,7 @@ fn undo_or_redo(db: &Database, journal_id: &str, direction: &str) {
     );
 }
 
-fn save_body(db: &Database, scene: &str, content: &str, updated_at: &str) {
+pub(crate) fn save_body(db: &Database, scene: &str, content: &str, updated_at: &str) {
     let request = Uuid::new_v4().to_string();
     let payload = serde_json::from_value(json!({
         "sceneId": scene,
@@ -782,7 +782,7 @@ fn folder_move_reorder_archive_and_back_never_match_again() {
 
 // ---- A1, registry and Codex characters -------------------------------------
 
-fn a1_payload(
+pub(crate) fn a1_payload(
     base_version: i64,
     holder: NarrativeScopePrincipalV1,
     updated_at: &str,
@@ -818,7 +818,7 @@ fn a1_payload(
     }
 }
 
-fn a1_version(db: &Database) -> i64 {
+pub(crate) fn a1_version(db: &Database) -> i64 {
     db.with_read_transaction(|conn| read_narrative_scene_scope(conn, "p1", "s1"))
         .unwrap()
         .binding
@@ -864,7 +864,7 @@ fn a1_update_invalidates() {
     assert_expired(&db, &declaration, "A1 holder put back");
 }
 
-fn registry_edit(db: &Database, add: Option<&str>) {
+pub(crate) fn registry_edit(db: &Database, add: Option<&str>) {
     let (revision, mut registry) = db
         .with_read_transaction(|conn| {
             let read = read_narrative_scene_scope(conn, "p1", "s1")?;
@@ -972,7 +972,7 @@ fn codex_character_restore_a1_invalidation_invalidates() {
 
 // ---- identity: duplicate, delete, recreate, trash --------------------------
 
-fn create_scene(db: &Database, id: &str, title: &str, content: &str) {
+pub(crate) fn create_scene(db: &Database, id: &str, title: &str, content: &str) {
     let label = unique("create");
     tree_node_create(
         db,
@@ -1000,7 +1000,7 @@ fn create_scene(db: &Database, id: &str, title: &str, content: &str) {
     .expect("create Scene");
 }
 
-fn delete_scene(db: &Database, id: &str) {
+pub(crate) fn delete_scene(db: &Database, id: &str) {
     let label = unique("delete");
     tree_node_delete(
         db,
