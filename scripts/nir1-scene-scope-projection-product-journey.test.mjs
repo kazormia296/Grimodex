@@ -24,6 +24,7 @@ const OBSERVED_NAMES = new Set([
   "narrative_extraction_runs",
   "narrative_proposal_sets",
   "narrative_scene_scope_bindings",
+  "narrative_change_events",
 ]);
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -86,8 +87,8 @@ test("Scene Scope projection journey has one dependency-free contract", () => {
     "other-scene-scope-change-keeps-anchor",
     "anchor-delete-recreate-stays-invalid",
     "trash-restore-stays-invalid",
-    "body-save-emits-no-scene-scope-event",
-    "pov-patch-routes-scope-event-to-anchor",
+    "body-event-does-not-make-pending",
+    "scope-event-pends-anchor-only",
   ]);
 });
 
@@ -178,17 +179,57 @@ test("journey never hands Native a token, key or incarnation", async () => {
   }
 });
 
+/**
+ * Every string literal (single, double and template) of a JavaScript source,
+ * skipping comments.  A small scanner: the journey has no regular-expression
+ * literal that contains a quote and no nested template literal.
+ */
+function stringLiterals(source) {
+  const found = [];
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    const next = source[index + 1];
+    if (char === "/" && next === "/") {
+      const end = source.indexOf("\n", index);
+      index = end === -1 ? source.length : end;
+    } else if (char === "/" && next === "*") {
+      const end = source.indexOf("*/", index + 2);
+      index = end === -1 ? source.length : end + 2;
+    } else if (char === '"' || char === "'" || char === "`") {
+      let end = index + 1;
+      while (end < source.length && source[end] !== char) {
+        end += source[end] === "\\" ? 2 : 1;
+      }
+      found.push(source.slice(index + 1, end));
+      index = end + 1;
+    } else {
+      index += 1;
+    }
+  }
+  return found;
+}
+
 test("journey changes state only through real writers, never a direct SQL write", async () => {
   const source = await readFile(journeySourcePath, "utf8");
-  const sqlStatements = [...source.matchAll(/`([^`]*)`/gu)]
-    .map(([, text]) => text)
-    .filter((text) => /\b(SELECT|UPDATE|INSERT|DELETE)\b/u.test(text));
+  const literals = stringLiterals(source);
+  const sqlStatements = literals.filter((text) =>
+    /\b(SELECT|UPDATE|INSERT|DELETE)\b/u.test(text),
+  );
   assert.ok(sqlStatements.length > 0);
   for (const statement of sqlStatements) {
     assert.match(
       statement.trim(),
       /^SELECT\b/u,
       "every SQL the journey sends is a SELECT observation",
+    );
+  }
+  // A statement spelled in any quote style, or split across a line, is still caught.
+  for (const text of literals) {
+    assert.doesNotMatch(
+      text,
+      /\b(UPDATE\s+\w+\s+SET|INSERT\s+(OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO|DROP\s+TABLE|ALTER\s+TABLE)\b/iu,
+      "no string literal contains a SQL write",
     );
   }
   // The edit matrix uses the canonical writers the product uses.

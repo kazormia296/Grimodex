@@ -86,8 +86,8 @@ export const NIR1_SCENE_SCOPE_PROJECTION_STEPS = Object.freeze([
   "other-scene-scope-change-keeps-anchor",
   "anchor-delete-recreate-stays-invalid",
   "trash-restore-stays-invalid",
-  "body-save-emits-no-scene-scope-event",
-  "pov-patch-routes-scope-event-to-anchor",
+  "body-event-does-not-make-pending",
+  "scope-event-pends-anchor-only",
 ]);
 
 const HUMAN_DECISION_AUTHOR = "nir1-entity-relation-review";
@@ -316,6 +316,7 @@ const REJECTION_COUNT_TABLES = {
   runs: "narrative_extraction_runs",
   sets: "narrative_proposal_sets",
   bindings: "narrative_scene_scope_bindings",
+  events: "narrative_change_events",
 };
 const FOREIGN_PROJECT_ID = "x1-4-foreign-project";
 
@@ -621,6 +622,54 @@ function assertStatuses(statuses, expected, label) {
   }
 }
 
+/**
+ * The saved Freshness state of each Revision's Scene Scope projection edges.
+ * The Incremental Freshness consumer writes it in the background, so wait until
+ * it has acknowledged the Change Feed first.  `fresh` means every projection
+ * edge of the Revision is fresh; `stale:<reason>` that one of them is stale.
+ */
+async function projectionEdgeStates(ctx, revisions, label) {
+  await settleFeed(ctx, `${label}: before reading the projection edge states`);
+  const states = {};
+  for (const [name, revision] of Object.entries(revisions)) {
+    const edges = await rows(
+      ctx.harness,
+      ctx.page,
+      `SELECT state.evidence_freshness AS freshness, state.reason_code AS reason
+         FROM narrative_dependency_edges edge
+         JOIN narrative_dependency_edge_states state ON state.edge_id = edge.id
+        WHERE edge.project_id = ? AND edge.consumer_kind = 'proposal-revision'
+          AND edge.consumer_key = ?
+          AND edge.source_object_identity LIKE 'project:scene-scope-projection:%'
+        ORDER BY edge.id`,
+      [ctx.projectId, revision.revisionId],
+    );
+    assert.ok(
+      edges.length > 0,
+      `${label}: ${name} has Scene Scope projection edges with a saved state`,
+    );
+    const stale = edges.find((edge) => edge.freshness !== "fresh");
+    states[name] = stale ? `${stale.freshness}:${stale.reason ?? ""}` : "fresh";
+  }
+  return states;
+}
+
+/** The only saved state the contract gives a Revision made stale by a Scope edit. */
+const STALE_EDGE_STATE = "stale:source-revision-changed";
+
+/** Same `expected` map as `assertStatuses`: A2 and the saved edge state agree. */
+async function assertProjectionEdges(ctx, revisions, expected, label) {
+  const states = await projectionEdgeStates(ctx, revisions, label);
+  for (const [name, want] of Object.entries(expected)) {
+    assert.equal(
+      states[name],
+      want === "available" ? "fresh" : STALE_EDGE_STATE,
+      `${label}: ${name} saved projection edge state`,
+    );
+  }
+  return states;
+}
+
 async function snapshotBindings(ctx) {
   const result = await rows(
     ctx.harness,
@@ -867,6 +916,12 @@ async function runScopeEditMatrix(ctx, step) {
     { m1a: "available", m2a: "available" },
     "body saves",
   );
+  const f9Edges = await assertProjectionEdges(
+    ctx,
+    { m1a: revM1a, m2a: revM2a },
+    { m1a: "available", m2a: "available" },
+    "body saves",
+  );
   step("f9-body-save-keeps-revisions-available", {
     sceneIds: [f.m1, f.m2],
     bodyTokens: {
@@ -875,6 +930,7 @@ async function runScopeEditMatrix(ctx, step) {
     },
     generation: { m1: f9After.m1.version, m2: f9After.m2.version },
     statuses: f9Statuses,
+    projectionEdges: f9Edges,
     feed: feedSummary(f9),
     evidence:
       "spike-style re-observation in a real Electron, not a product-build reproduction",
@@ -936,6 +992,12 @@ async function runScopeEditMatrix(ctx, step) {
     { m1a: "available", m2a: "available" },
     "display field patches",
   );
+  const displayEdges = await assertProjectionEdges(
+    ctx,
+    { m1a: revM1a, m2a: revM2a },
+    { m1a: "available", m2a: "available" },
+    "display field patches",
+  );
   step("display-patches-keep-projection", {
     patched: [
       "title",
@@ -948,6 +1010,7 @@ async function runScopeEditMatrix(ctx, step) {
     ],
     bodyTokens: displayTokens,
     statuses: displayStatuses,
+    projectionEdges: displayEdges,
     feed: feedSummary(display),
   });
 
@@ -966,10 +1029,17 @@ async function runScopeEditMatrix(ctx, step) {
     { m1a: "unavailable", m2a: "available" },
     "POV patch",
   );
+  const povEdges = await assertProjectionEdges(
+    ctx,
+    { m1a: revM1a, m2a: revM2a },
+    { m1a: "unavailable", m2a: "available" },
+    "POV patch",
+  );
   step("pov-patch-invalidates-anchor-only", {
     anchor: f.m1,
     generation: [povBefore.version, povAfter.version],
     statuses: povStatuses,
+    projectionEdges: povEdges,
     feed: feedSummary(pov),
   });
 
@@ -996,6 +1066,17 @@ async function runScopeEditMatrix(ctx, step) {
       (error) => `rejected: ${ipcFailureText(error).slice(0, 200)}`,
     );
     const afterThird = await observe(f.z);
+    // The row's current updated_at replayed verbatim with a different title.
+    const sameAsCurrent = await treePatch(
+      ctx,
+      f.z,
+      { title: "ZE" },
+      { updatedAt: afterThird.treeUpdatedAt },
+    ).then(
+      () => "accepted",
+      (error) => `rejected: ${ipcFailureText(error).slice(0, 200)}`,
+    );
+    const afterSame = await observe(f.z);
     // A -> B -> A title with the original timestamps replayed.
     const replayed = [];
     for (const title of ["ZC", "ZD", "ZC"]) {
@@ -1007,10 +1088,25 @@ async function runScopeEditMatrix(ctx, step) {
       );
       replayed.push(bodyToken(await observe(f.z)));
     }
-    return { afterFirst, afterChronicle, third, afterThird, replayed };
+    return {
+      afterFirst,
+      afterChronicle,
+      third,
+      afterThird,
+      sameAsCurrent,
+      afterSame,
+      replayed,
+    };
   });
-  const { afterFirst, afterChronicle, third, afterThird, replayed } =
-    interruption.value;
+  const {
+    afterFirst,
+    afterChronicle,
+    third,
+    afterThird,
+    sameAsCurrent,
+    afterSame,
+    replayed,
+  } = interruption.value;
   assert.equal(
     afterFirst.version,
     zBase.version,
@@ -1045,11 +1141,25 @@ async function runScopeEditMatrix(ctx, step) {
       "a rejected patch leaves the row unchanged",
     );
   }
+  const tokenSame = bodyToken(afterSame);
+  if (sameAsCurrent === "accepted") {
+    assert.ok(
+      ![tokenZ0, tokenFirst, tokenChronicle, tokenThird].includes(tokenSame),
+      "a patch with updatedAt equal to the row's current value cannot return an earlier body token",
+    );
+  } else {
+    assert.equal(
+      tokenSame,
+      tokenThird,
+      "a rejected equal-updatedAt patch leaves the row unchanged",
+    );
+  }
   const allZTokens = [
     tokenZ0,
     tokenFirst,
     tokenChronicle,
     ...(third === "accepted" ? [tokenThird] : []),
+    ...(sameAsCurrent === "accepted" ? [tokenSame] : []),
     ...replayed,
   ];
   assert.equal(
@@ -1067,6 +1177,7 @@ async function runScopeEditMatrix(ctx, step) {
     scratchScene: f.z,
     tokens: allZTokens,
     interruptingPatch: third,
+    equalToCurrentUpdatedAt: sameAsCurrent,
     feed: feedSummary(interruption),
   });
 
@@ -1099,6 +1210,12 @@ async function runScopeEditMatrix(ctx, step) {
     { m1b: "available", m2a: "available" },
     "moving another Scene before the anchor",
   );
+  const edgesBeforeOther = await assertProjectionEdges(
+    ctx,
+    orderRevs,
+    { m1b: "available", m2a: "available" },
+    "moving another Scene before the anchor",
+  );
   const reorder = await observedWrite(ctx, () =>
     treePatch(ctx, f.m1, { sortOrder: "m4" }),
   );
@@ -1106,6 +1223,12 @@ async function runScopeEditMatrix(ctx, step) {
   const afterReorder = await revisionStatuses(ctx, orderRevs);
   assertStatuses(
     afterReorder,
+    { m1b: "unavailable", m2a: "available" },
+    "anchor reorder",
+  );
+  const edgesReorder = await assertProjectionEdges(
+    ctx,
+    orderRevs,
     { m1b: "unavailable", m2a: "available" },
     "anchor reorder",
   );
@@ -1123,12 +1246,23 @@ async function runScopeEditMatrix(ctx, step) {
     { m1c: "unavailable", m2a: "available" },
     "anchor reparent",
   );
+  const edgesReparent = await assertProjectionEdges(
+    ctx,
+    { m1c: revM1c, m2a: revM2a },
+    { m1c: "unavailable", m2a: "available" },
+    "anchor reparent",
+  );
   step("anchor-reorder-reparent-invalidates-anchor-only", {
     otherSceneMovedBeforeAnchor: afterBeforeOther,
     otherSceneRank: [otherRankBefore, otherRankAfter],
     anchorRank,
     reorder: afterReorder,
     reparent: afterReparent,
+    projectionEdges: {
+      otherBefore: edgesBeforeOther,
+      reorder: edgesReorder,
+      reparent: edgesReparent,
+    },
     feed: {
       otherBefore: feedSummary(beforeOther),
       reorder: feedSummary(reorder),
@@ -1156,6 +1290,12 @@ async function runScopeEditMatrix(ctx, step) {
   });
   assertStatuses(
     afterFolderRoundTrip,
+    { p1a: "unavailable", p2a: "available", m2a: "available" },
+    "folder move and back",
+  );
+  const edgesFolderRoundTrip = await assertProjectionEdges(
+    ctx,
+    { p1a: revP1a, p2a: revP2a, m2a: revM2a },
     { p1a: "unavailable", p2a: "available", m2a: "available" },
     "folder move and back",
   );
@@ -1206,6 +1346,12 @@ async function runScopeEditMatrix(ctx, step) {
     { p1c: "unavailable", p2a: "available" },
     "folder unarchive does not return",
   );
+  const edgesFolderRestore = await assertProjectionEdges(
+    ctx,
+    { p1c: revP1c, p2a: revP2a },
+    { p1c: "unavailable", p2a: "available" },
+    "folder unarchive does not return",
+  );
   const revP1d = await newRevision(ctx, f.p1);
   assertStatuses(
     await revisionStatuses(ctx, { p1d: revP1d }),
@@ -1216,6 +1362,10 @@ async function runScopeEditMatrix(ctx, step) {
     folderMoveAndBack: afterFolderRoundTrip,
     archived: archivedStatuses,
     unarchived: restoredStatuses,
+    projectionEdges: {
+      moveAndBack: edgesFolderRoundTrip,
+      unarchived: edgesFolderRestore,
+    },
     freshAfterRoundTrip: "available",
     feed: {
       move: feedSummary(folderMove),
@@ -1246,8 +1396,15 @@ async function runScopeEditMatrix(ctx, step) {
     { p1d: "available", p2a: "available", m2a: "available" },
     "empty folder and note edits",
   );
+  const emptyEdges = await assertProjectionEdges(
+    ctx,
+    keep,
+    { p1d: "available", p2a: "available", m2a: "available" },
+    "empty folder and note edits",
+  );
   step("empty-folder-and-note-keep-everything", {
     statuses: emptyStatuses,
+    projectionEdges: emptyEdges,
     edits: 9,
     feed: feedSummary(emptyAndNote),
   });
@@ -1285,12 +1442,19 @@ async function runScopeEditMatrix(ctx, step) {
     { q1a: "unavailable" },
     "anchor Scope X->Y->X",
   );
+  const edgesScopeBack = await assertProjectionEdges(
+    ctx,
+    { q1a: revQ1a },
+    { q1a: "unavailable" },
+    "anchor Scope X->Y->X",
+  );
   step("anchor-scope-roundtrip-stays-invalid", {
     anchor: f.q1,
     generation: [q1Initial.version, q1Back.version],
     tokens: [q1Initial.sourceToken, q1Back.sourceToken],
     afterY: scopeYStatuses,
     afterBackToX: scopeBackStatuses,
+    projectionEdgesAfterBackToX: edgesScopeBack,
     feed: { toY: feedSummary(scopeY), backToX: feedSummary(scopeX) },
   });
 
@@ -1315,9 +1479,16 @@ async function runScopeEditMatrix(ctx, step) {
     { q1b: "unavailable" },
     "anchor unarchive does not return",
   );
+  const edgesUnarchived = await assertProjectionEdges(
+    ctx,
+    { q1b: revQ1b },
+    { q1b: "unavailable" },
+    "anchor unarchive does not return",
+  );
   step("anchor-archive-roundtrip-stays-invalid", {
     archived: archivedSceneStatuses,
     unarchived: unarchivedSceneStatuses,
+    projectionEdgesUnarchived: edgesUnarchived,
     feed: {
       archive: feedSummary(archiveScene),
       unarchive: feedSummary(unarchiveScene),
@@ -1351,9 +1522,16 @@ async function runScopeEditMatrix(ctx, step) {
     { q1c: "unavailable" },
     "anchor story key round trip",
   );
+  const edgesStoryOff = await assertProjectionEdges(
+    ctx,
+    { q1c: revQ1c },
+    { q1c: "unavailable" },
+    "anchor story key round trip",
+  );
   step("story-time-order-roundtrip-stays-invalid", {
     set: storyOnStatuses,
     cleared: storyOffStatuses,
+    projectionEdgesCleared: edgesStoryOff,
     feed: { set: feedSummary(storyOn), cleared: feedSummary(storyOff) },
   });
 
@@ -1376,9 +1554,16 @@ async function runScopeEditMatrix(ctx, step) {
     { q1d: "available", p2a: "available" },
     "other Scene Scope changes",
   );
+  const otherScopeEdges = await assertProjectionEdges(
+    ctx,
+    { q1d: revQ1d, p2a: revP2a },
+    { q1d: "available", p2a: "available" },
+    "other Scene Scope changes",
+  );
   step("other-scene-scope-change-keeps-anchor", {
     changedScene: f.q2,
     statuses: otherScopeStatuses,
+    projectionEdges: otherScopeEdges,
     feed: feedSummary(otherScope),
   });
 
@@ -1512,21 +1697,33 @@ async function runScopeEditMatrix(ctx, step) {
     (bodyFeed.eventKinds.scene ?? 0) >= 1,
     "the body saves emitted scene events, so the empty scene-scope set is not vacuous",
   );
-  step("body-save-emits-no-scene-scope-event", {
+  assert.deepEqual(
+    f9Edges,
+    { m1a: "fresh", m2a: "fresh" },
+    "after Incremental Freshness, the body saves left every projection edge fresh",
+  );
+  step("body-event-does-not-make-pending", {
     scopeEventScenes: bodyFeed.scopeEventScenes,
+    projectionEdgesAfterFreshness: f9Edges,
     eventKinds: bodyFeed.eventKinds,
     feedHead: [bodyFeed.cursorBefore.head, bodyFeed.cursorAfter.head],
     acknowledgedThrough: bodyFeed.cursorAfter.acknowledgedThrough,
     routing:
-      "observation of the routing input only: PendingRelevantChange is judged in Packing (closed) and covered by the Rust x13_* tests",
+      "PendingRelevantChange itself is judged in Packing (closed) and covered by the Rust x13_* tests; here the Feed events (no scene-scope event) and the saved projection edge states after the Incremental Freshness cycle (all fresh) are observed",
   });
   assert.deepEqual(pov.scopeEventScenes, [f.m1]);
   assert.ok(
     (pov.eventKinds["scene-scope"] ?? 0) >= 1,
     "the POV patch emitted a scene-scope event",
   );
-  step("pov-patch-routes-scope-event-to-anchor", {
+  assert.deepEqual(
+    povEdges,
+    { m1a: STALE_EDGE_STATE, m2a: "fresh" },
+    "after Incremental Freshness, only the anchor's projection edge is stale",
+  );
+  step("scope-event-pends-anchor-only", {
     anchor: f.m1,
+    projectionEdgesAfterFreshness: povEdges,
     scopeEventScenes: pov.scopeEventScenes,
     otherAnchorScopeEvents: pov.scopeEventScenes.filter((id) => id === f.m2),
     eventKinds: pov.eventKinds,
