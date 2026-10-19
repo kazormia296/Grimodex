@@ -18,7 +18,7 @@
 //! two are adopted together or dropped together; a turn without an adopted
 //! output is its Human alone. A message is never shortened.
 //!
-//! Three decisions K4/3 left to DI-1b (recorded in DR-DI1B-4):
+//! Three decisions K4/3 left to DI-1b (recorded in DR-DI1B-5):
 //!
 //! * (a) The Human of a turn that has no output is adopted, in its place in
 //!   the order. The chat the user sees keeps that message, and the existing

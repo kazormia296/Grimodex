@@ -28,12 +28,11 @@ use super::history_context::HistoryContextGateReason;
 use super::{
     bounded_sqlite_length, identity, parse_versioned_reference, read_stored_binding_lenient,
     GenerationHistoryReadBudget, GenerationHistorySnapshotReader, GenerationPurpose,
-    InputReference, InputRole, InputTarget, InputUse, LegacyInputReferenceV1,
-    LenientAttemptBinding, StoredAttempt, VersionedAttemptBinding, VersionedReference,
-    MAX_BINDING_JSON_BYTES, MAX_ID_BYTES,
+    InputReference, InputTarget, LegacyInputReferenceV1, LenientAttemptBinding, StoredAttempt,
+    VersionedAttemptBinding, VersionedReference, MAX_BINDING_JSON_BYTES, MAX_ID_BYTES,
 };
 #[cfg(feature = "native-current-human-capture")]
-use super::{MessageOrigin, MAX_DIGEST_BYTES};
+use super::{InputRole, InputUse, MessageOrigin, MAX_DIGEST_BYTES};
 use anyhow::{ensure, Context, Result};
 #[cfg(feature = "native-current-human-capture")]
 use rusqlite::Connection;
@@ -60,10 +59,13 @@ const ENUMERATION_CHANGED_ERROR: &str = "NIR1_GENERATION_HISTORY_ENUMERATION_CHA
 const REFERENCE_LIMIT_ERROR: &str = "NIR1_GENERATION_REF_LIMIT";
 const CAPTURE_LIMIT_ERROR: &str = "NIR1_GENERATION_CAPTURE_LIMIT";
 const CAPTURE_STATE_INVALID_ERROR: &str = "NIR1_GENERATION_CAPTURE_STATE_INVALID";
+#[cfg(feature = "native-current-human-capture")]
 const IN_FLIGHT_ATTEMPT_MISMATCH_ERROR: &str = "NIR1_GENERATION_HISTORY_IN_FLIGHT_ATTEMPT_MISMATCH";
+#[cfg(feature = "native-current-human-capture")]
 const IN_FLIGHT_ATTEMPT_LATE_ERROR: &str = "NIR1_GENERATION_HISTORY_IN_FLIGHT_ATTEMPT_LATE";
 /// A stored reference row is a few hundred bytes (1 KiB per row slot in the
 /// create's budget); the in-flight attempt's ordinal 0 row is read once.
+#[cfg(feature = "native-current-human-capture")]
 const IN_FLIGHT_REFERENCE_MAX_BYTES: usize = 16 * 1024;
 
 /// An attempt row the history snapshot reader does not use: only its header
@@ -296,6 +298,7 @@ impl GenerationHistorySnapshotReader<'_> {
     /// the session was already enumerated, is an error (the turn stops):
     /// hiding another attempt could hide a second holder of a past Human and
     /// so widen what qualifies.
+    #[cfg(feature = "native-current-human-capture")]
     pub(crate) fn exclude_in_flight_attempt(
         &mut self,
         project_id: &str,
