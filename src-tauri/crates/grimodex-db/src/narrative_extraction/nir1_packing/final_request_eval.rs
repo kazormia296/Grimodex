@@ -35,10 +35,11 @@ use sha2::{Digest, Sha256};
 
 use super::{
     add_revision_qualifications, authority_binding_digest_and_size,
-    build_native_nir1_prepared_inputs, item_id, HistoryContextStage, NativeNir1AuthorityBinding,
-    NativeNir1PooledPackedContext, NativeNir1PooledPackingRequest, NativeNir1PreparedInputs,
-    NativeNir1RawSourceBinding, NativeNir1SelectedContextItem, RawBudgetCharge,
-    RevisionIndexQualification,
+    build_native_nir1_prepared_inputs, graph_evidence_ref, graph_index_reference,
+    graph_input_source, item_id, HistoryContextStage, NativeNir1AuthorityBinding,
+    NativeNir1GraphGroup, NativeNir1GraphOutcome, NativeNir1PooledPackedContext,
+    NativeNir1PooledPackingRequest, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
+    NativeNir1SelectedContextItem, RawBudgetCharge, RevisionIndexQualification,
 };
 use crate::nir1_generation::{
     AcceptedChatInputCapture, InputReference, InputRole, InputTarget, InputUse, MessageVersion,
@@ -73,9 +74,12 @@ pub struct CandidateItemRow {
     pub atomic_part: Option<&'static str>,
 }
 
-/// The input reference and qualification refs of one candidate Revision,
-/// derived by the product function `add_revision_qualifications`. The D1 rows
-/// are added by the render and are not part of this derivation.
+/// The input reference and qualification refs of one candidate Revision or one
+/// Graph group, derived by the product function `add_revision_qualifications`
+/// (a Graph group: with the Index reference of `graph_index_reference`). The D1
+/// rows are added by the render and are not part of this derivation. `owner_id`
+/// is the Revision ID, or for a Graph group its `graph_evidence_ref` (the
+/// scorer's `targetOwnerId`).
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CandidateRefRow {
     pub owner_id: String,
@@ -193,6 +197,47 @@ fn row_json(row: &CandidateItemRow) -> serde_json::Value {
     })
 }
 
+fn graph_candidate_ref(
+    project_id: &str,
+    outcome: &NativeNir1GraphOutcome,
+    group: &NativeNir1GraphGroup,
+    bindings: &[NativeNir1AuthorityBinding],
+) -> Result<CandidateRefRow> {
+    let binding = bindings
+        .iter()
+        .find(|binding| binding.revision_id() == group.revision_id())
+        .ok_or_else(|| anyhow::anyhow!("no authority binding for the Graph group's Revision"))?;
+    let seal = outcome
+        .seal()
+        .ok_or_else(|| anyhow::anyhow!("the Graph outcome has a group and no seal"))?;
+    let evidence_ref = graph_evidence_ref(group.revision_id(), group.edge_id())?;
+    let (source_key, revision_token) = graph_input_source(binding, group.edge_id())?;
+    let (identity, version) = graph_index_reference(project_id, seal, binding, group.edge_id())?;
+    let mut qualifications = Vec::new();
+    add_revision_qualifications(
+        &mut qualifications,
+        0,
+        project_id,
+        group.revision_id(),
+        binding,
+        RevisionIndexQualification::Present { identity, version },
+        &mut || Ok(()),
+    )?;
+    Ok(CandidateRefRow {
+        owner_id: evidence_ref.clone(),
+        input: InputReference {
+            role: InputRole::Context,
+            target: InputTarget::GraphEvidence {
+                evidence_ref,
+                source_key,
+                revision_token,
+            },
+            input_use: InputUse::SelectedMaterial,
+        },
+        qualifications,
+    })
+}
+
 #[allow(clippy::type_complexity)] // One pass builds the rows, the refs and the digests together.
 fn build_record(
     request: &NativeNir1PooledPackingRequest<'_>,
@@ -200,6 +245,7 @@ fn build_record(
     candidate_owners: &HashMap<String, String>,
     bindings: &[NativeNir1AuthorityBinding],
     raw_budget_charge: &RawBudgetCharge,
+    graph: Option<&NativeNir1GraphOutcome>,
 ) -> CandidateSetRecord {
     let mut derivation_error = None;
     let mut note = |message: String| {
@@ -280,6 +326,22 @@ fn build_record(
             qualifications,
         });
     }
+    // The Graph groups the pool admitted: the owner, the input reference and
+    // the qualification refs come from the same product functions D-final uses
+    // for the attempt (`graph_evidence_ref`, `graph_input_source`,
+    // `graph_index_reference`, `add_revision_qualifications`), so the (c-2)
+    // refs of a rendered Graph group equal these apart from the ordinal.
+    if let Some(outcome) = graph {
+        for group in outcome.groups() {
+            match graph_candidate_ref(request.project_id, outcome, group, bindings) {
+                Ok(row) => candidate_refs.push(row),
+                Err(error) => note(format!(
+                    "candidate ref of the Graph group of {}: {error}",
+                    group.revision_id()
+                )),
+            }
+        }
+    }
     let candidate_set_digest = canonical_json_digest(&json!({
         "domain": CANDIDATE_SET_DIGEST_DOMAIN,
         "items": rows.iter().map(row_json).collect::<Vec<_>>(),
@@ -337,6 +399,7 @@ pub(super) fn observe_candidate_set(
     candidate_owners: &HashMap<String, String>,
     bindings: &[NativeNir1AuthorityBinding],
     raw_budget_charge: &RawBudgetCharge,
+    graph: &Option<NativeNir1GraphOutcome>,
 ) {
     let record = build_record(
         request,
@@ -344,6 +407,7 @@ pub(super) fn observe_candidate_set(
         candidate_owners,
         bindings,
         raw_budget_charge,
+        graph.as_ref(),
     );
     LATEST.with(|slot| {
         if let Ok(mut slot) = slot.try_borrow_mut() {

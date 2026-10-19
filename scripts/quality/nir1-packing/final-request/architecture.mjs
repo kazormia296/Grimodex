@@ -174,7 +174,7 @@ export const SITES = Object.freeze({
     file: PATHS.dbPacking,
     fn: "read_and_pack_native_a2_context_in_tx_with_raw_charge",
     before: "checkpoint()?;",
-    statement: `#[cfg(feature = "${EVAL_FEATURE}")] final_request_eval::observe_candidate_set(&request, &items, &candidate_owners, &bindings, &raw_budget_charge);`,
+    statement: `#[cfg(feature = "${EVAL_FEATURE}")] final_request_eval::observe_candidate_set(&request, &items, &candidate_owners, &bindings, &raw_budget_charge, &graph);`,
     after: "let packed = pack_candidate_context(CandidatePackingRequest {",
     callee: "final_request_eval::observe_candidate_set",
     bareArguments: [],

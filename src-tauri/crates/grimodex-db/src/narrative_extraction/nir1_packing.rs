@@ -3320,6 +3320,7 @@ fn read_and_pack_native_a2_context_in_tx_with_raw_charge(
         &candidate_owners,
         &bindings,
         &raw_budget_charge,
+        &graph,
     );
     let packed = pack_candidate_context(CandidatePackingRequest {
         budget_tokens: request.budget_tokens,

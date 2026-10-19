@@ -748,3 +748,78 @@ fn a13_the_graph_request_capture_carries_no_worker_text_or_scene_association() {
         &format!("{:?}", capture.render_correspondence),
     );
 }
+
+/// K6/2 (c-1): the owner and the refs of a Graph group in the candidate set are
+/// derived by the product functions. For every Graph input the request
+/// rendered, the candidate ref has the group's evidence reference as owner, an
+/// input reference equal to the attempt's, and qualification refs (Index
+/// `Present`, no typed N/A) equal to the attempt's apart from the ordinal and
+/// the D1 row that the render adds.
+#[test]
+fn the_candidate_refs_of_a_graph_group_equal_the_refs_the_product_stores() {
+    use crate::nir1_graph_dfinal::tests::Rig;
+    use grimodex_db::nir1_generation::{InputTarget, QualificationBody, QualificationKind};
+
+    let rig = Rig::new();
+    rig.open();
+    let (record, _) = run_dfinal_with_capture(|| rig.request().map(|s| s.into_parts().0));
+    assert!(record.defects.is_empty(), "{:?}", record.defects);
+    let capture = captured(&record);
+    let set = &capture.candidate_set;
+    assert!(set.derivation_error.is_none(), "{:?}", set.derivation_error);
+    assert!(
+        set.items.iter().any(|item| item.kind == "graph-evidence"),
+        "the pool put a Graph group in the candidate set"
+    );
+    let mut graph_inputs = 0;
+    for (ordinal, input) in capture.input_references.iter().enumerate() {
+        let InputTarget::GraphEvidence { evidence_ref, .. } = &input.target else {
+            continue;
+        };
+        graph_inputs += 1;
+        let row = set
+            .candidate_refs
+            .iter()
+            .find(|row| &row.owner_id == evidence_ref)
+            .expect("a candidate ref is captured for the rendered Graph owner");
+        assert_eq!(&row.input, input);
+        let stored = capture
+            .qualifications
+            .iter()
+            .filter(|q| q.input_ordinal == ordinal && q.kind != QualificationKind::D1)
+            .map(|q| format!("{:?} {:?}", q.kind, q.body))
+            .collect::<std::collections::BTreeSet<_>>();
+        let derived = row
+            .qualifications
+            .iter()
+            .map(|q| format!("{:?} {:?}", q.kind, q.body))
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(stored, derived, "the (c-1) refs equal the stored refs");
+        assert!(
+            row.qualifications
+                .iter()
+                .any(|q| q.kind == QualificationKind::Index
+                    && matches!(q.body, QualificationBody::Present { .. })),
+            "the Index ref is Present"
+        );
+        assert!(
+            row.qualifications
+                .iter()
+                .all(|q| matches!(q.body, QualificationBody::Present { .. })
+                    || q.kind != QualificationKind::Index),
+            "a Graph group has no typed N/A for Index"
+        );
+    }
+    assert!(graph_inputs >= 1, "the request rendered a Graph input");
+    // The refs are in the receipt JSON too, with the D1 row of a rendered owner.
+    let json = capture.capture_json();
+    let refs = json["candidateSet"]["candidateRefs"].as_array().unwrap();
+    assert!(refs
+        .iter()
+        .any(|entry| entry["input"]["target"]["kind"] == "graph-evidence"
+            && entry["qualifications"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|q| q["kind"] == "d1")));
+}

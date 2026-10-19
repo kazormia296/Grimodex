@@ -266,8 +266,8 @@ test("observation-calls-are-single-shared-ref-statements: an extra statement, a 
           `if request.budget_tokens > 0 {\n    #[cfg(feature = "${EVAL_FEATURE}")]\n    final_request_eval::observe_candidate_set(`,
         )
         .replace(
-          "&raw_budget_charge,\n    );",
-          "&raw_budget_charge,\n    ); }",
+          "&graph,\n    );",
+          "&graph,\n    ); }",
         ),
     ).length > 0,
   );

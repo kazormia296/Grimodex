@@ -266,6 +266,8 @@ impl CapturedRequest {
             .iter()
             .position(|reference| match &reference.target {
                 InputTarget::AcceptedRevision { revision_id, .. } => revision_id == owner_id,
+                // A Graph group's owner is its evidence reference.
+                InputTarget::GraphEvidence { evidence_ref, .. } => evidence_ref == owner_id,
                 _ => false,
             })
     }
