@@ -82,6 +82,12 @@ struct Plan {
     /// Whether the parent's main connection could be read without waiting
     /// (the S0 premise) at each `prepare`.
     prepare_saw_free_connection: Mutex<Vec<bool>>,
+    /// True while `prepare` only sleeps: after its own read of the main
+    /// connection (and the commit), until the delay ends. A sampler of the
+    /// connection starts after the fake's own read, so it measures D-final.
+    preparing: AtomicBool,
+    /// True while `query` holds (before its hook and its answer).
+    querying: AtomicBool,
     requests: Mutex<Vec<(String, String, String)>>,
     on_query: Mutex<Option<Box<dyn Fn() + Send>>>,
     candidates: Mutex<Option<Nir1GraphCandidates>>,
@@ -253,9 +259,11 @@ impl GraphWorker for FakeWorker {
                 Ok(())
             })?;
         }
+        self.plan.preparing.store(true, Ordering::SeqCst);
         self.sleep_interruptibly(Duration::from_millis(
             self.plan.prepare_delay_ms.load(Ordering::SeqCst),
         ));
+        self.plan.preparing.store(false, Ordering::SeqCst);
         if let Some(text) = *lock(&self.plan.prepare_error) {
             return Err(anyhow::anyhow!(text));
         }
@@ -273,12 +281,14 @@ impl GraphWorker for FakeWorker {
             request.query_scene_id.clone(),
             request.seed_entity_id.clone(),
         ));
+        self.plan.querying.store(true, Ordering::SeqCst);
         while self.plan.hold_query.load(Ordering::SeqCst)
             && !self.plan.release.load(Ordering::SeqCst)
             && !cancel.load(Ordering::SeqCst)
         {
             thread::sleep(Duration::from_millis(2));
         }
+        self.plan.querying.store(false, Ordering::SeqCst);
         if let Some(hook) = lock(&self.plan.on_query).as_ref() {
             hook();
         }
@@ -548,6 +558,18 @@ fn a5_a_warming_graph_is_waited_for_outside_the_database_and_reaches_the_request
     let rig = Rig::new();
     rig.open();
     rig.plan.prepare_delay_ms.store(150, Ordering::SeqCst);
+    // The owner's counters as the worker answers, while D-final still waits for
+    // the ticket: after the query the owner rebuilds, and that build's S0 may
+    // meet D-final's own reads after the wait, which is not the wait's S0.
+    let at_query = Arc::new(Mutex::new(None));
+    {
+        let state = Arc::downgrade(&rig.fixture.state);
+        let at_query = Arc::clone(&at_query);
+        *lock(&rig.plan.on_query) = Some(Box::new(move || {
+            let state = state.upgrade().expect("state while the request waits");
+            *lock(&at_query) = Some(state.nir1_graph.diagnostics());
+        }));
+    }
     // The D-final thread is a plain thread, not an async runtime.
     assert!(tokio::runtime::Handle::try_current().is_err());
     let d_final_thread = thread::current().id();
@@ -572,8 +594,11 @@ fn a5_a_warming_graph_is_waited_for_outside_the_database_and_reaches_the_request
     // S0's premise held during the wait: the main connection was free and in
     // autocommit, so the freshness stamp was readable, at S0 and at the query.
     assert!(lock(&rig.plan.prepare_saw_free_connection)[0]);
-    assert_eq!(rig.owner().diagnostics().stamp0_missing, 0);
-    assert_eq!(rig.owner().diagnostics().stamp_unavailable, 0);
+    let at_query = lock(&at_query).expect("the query ran during the wait");
+    assert_eq!(at_query.prepares_started, 1, "only the wait's build ran");
+    assert_eq!(at_query.stamp0_missing, 0);
+    assert_eq!(at_query.stamp_unavailable, 0);
+    assert_eq!(at_query.stamp_fresh, 1);
     // The query asked for the pinned Entity of the query Scene.
     assert_eq!(
         *lock(&rig.plan.requests),
@@ -612,8 +637,16 @@ fn a5_a_stale_graph_waits_for_the_rebuild_and_asks_again() {
 /// From another thread, reads the main connection without waiting, every few
 /// milliseconds, from the moment `from` holds until `window` has passed. A
 /// sample that returns `None` found the connection held or inside a
-/// transaction. Returns `(samples, free)`.
-fn sample_main_connection(rig: &Rig, from: impl Fn() -> bool, window: Duration) -> (usize, usize) {
+/// transaction. `during` says the wait is still on; it is asked after each
+/// read, so a counted sample lies wholly inside the wait, and sampling stops
+/// once it is false (a slow scheduler must not stretch the window past the
+/// wait into D-final's own reads). Returns `(samples, free)`.
+fn sample_main_connection(
+    rig: &Rig,
+    from: impl Fn() -> bool,
+    during: impl Fn() -> bool,
+    window: Duration,
+) -> (usize, usize) {
     let workspace =
         grimodex_db::state::active_workspace_snapshot(&rig.fixture.state.ws).expect("ws");
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -624,8 +657,12 @@ fn sample_main_connection(rig: &Rig, from: impl Fn() -> bool, window: Duration) 
     let started = Instant::now();
     let (mut samples, mut free) = (0usize, 0usize);
     while started.elapsed() < window {
+        let was_free = try_read_c_query_freshness_stamp(workspace.db().db()).is_some();
+        if !during() {
+            break;
+        }
         samples += 1;
-        if try_read_c_query_freshness_stamp(workspace.db().db()).is_some() {
+        if was_free {
             free += 1;
         }
         thread::sleep(Duration::from_millis(5));
@@ -636,6 +673,8 @@ fn sample_main_connection(rig: &Rig, from: impl Fn() -> bool, window: Duration) 
 #[test]
 fn a5_the_main_connection_stays_free_during_the_whole_wait() {
     // While READY is awaited (the worker is preparing) ...
+    // The samples start after the fake's own read of the connection in
+    // `prepare` and end with its delay, before READY can reach D-final.
     let rig = Rig::new();
     rig.open();
     rig.plan.prepare_delay_ms.store(700, Ordering::SeqCst);
@@ -643,7 +682,8 @@ fn a5_the_main_connection_stays_free_during_the_whole_wait() {
         let sampler = scope.spawn(|| {
             sample_main_connection(
                 &rig,
-                || rig.plan.prepares.load(Ordering::SeqCst) >= 1,
+                || rig.plan.preparing.load(Ordering::SeqCst),
+                || rig.plan.preparing.load(Ordering::SeqCst),
                 Duration::from_millis(450),
             )
         });
@@ -659,17 +699,28 @@ fn a5_the_main_connection_stays_free_during_the_whole_wait() {
     assert_eq!(free, samples, "the connection was held during the wait");
 
     // ... and while a running query is awaited.
+    // D-final's wait ends no earlier than the budget after the request was
+    // called (or when the held query returns), so the samples stop there.
+    let budget = Duration::from_millis(700);
     let rig = Rig::new();
-    rig.open_with_budget(Duration::from_millis(700));
+    rig.open_with_budget(budget);
     rig.plan.hold_query.store(true, Ordering::SeqCst);
+    let called = std::sync::OnceLock::new();
     let (samples, free) = thread::scope(|scope| {
         let sampler = scope.spawn(|| {
             sample_main_connection(
                 &rig,
-                || rig.plan.queries.load(Ordering::SeqCst) >= 1,
+                || rig.plan.querying.load(Ordering::SeqCst),
+                || {
+                    rig.plan.querying.load(Ordering::SeqCst)
+                        && called
+                            .get()
+                            .is_some_and(|called: &Instant| called.elapsed() < budget)
+                },
                 Duration::from_millis(450),
             )
         });
+        called.set(Instant::now()).expect("called once");
         let selected = rig.request().expect("request");
         assert_eq!(
             selected.graph_outcome(),
