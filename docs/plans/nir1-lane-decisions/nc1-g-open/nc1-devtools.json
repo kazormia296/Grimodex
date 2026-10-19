@@ -9,7 +9,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 32 ms",
+    "nc1 orchestrator start => true in 30.3 ms",
     "devtools opened=true, webContents=2"
   ],
   "webPreferences": {
@@ -38,8 +38,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 32,
-    "listenerPort": 37759,
+    "startMs": 30.3,
+    "listenerPort": 40869,
     "listenerHits": 4,
     "overLimit": 0,
     "maxActive": 2,
@@ -51,12 +51,12 @@
     "created": [],
     "wc": [
       {
-        "at": 1792336946685,
+        "at": 1792412944252,
         "type": "window",
         "isDefaultSession": true
       },
       {
-        "at": 1792336946788,
+        "at": 1792412944362,
         "type": "remote",
         "isDefaultSession": true
       }

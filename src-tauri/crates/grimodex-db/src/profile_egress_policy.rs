@@ -24,10 +24,11 @@ pub const PROFILE_EGRESS_POLICY_VERSION: u32 = 2;
 /// tables and columns) for `own-data-read`.  The opening is deliberately a
 /// single reviewed switch: while it is `false` the authorizer treats the
 /// `read-open` class exactly like `closed` for reads (the a153743b behavior),
-/// and DML/RETURNING/temp/attached stay rejected either way.  The commit that
-/// flips it is held back until the renderer-isolation finding recorded in
-/// `docs/plans/nir1-lane-decisions/da1-decisions.md` (Y-1) is resolved.
-pub const PROFILE_EGRESS_READ_OPEN_ENABLED: bool = false;
+/// and DML/RETURNING/temp/attached stay rejected either way.  The opening
+/// commit (DR-DA1-35 in `docs/plans/nir1-lane-decisions/da1-decisions.md`)
+/// flipped it to `true` after the renderer-isolation finding (Y-1) was closed
+/// by NC-1.
+pub const PROFILE_EGRESS_READ_OPEN_ENABLED: bool = true;
 
 /// Class of a protected table in the D2a ledger.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -459,9 +460,9 @@ mod tests {
     }
 
     #[test]
-    fn read_open_switch_is_closed_until_the_opening_commit() {
-        // The opening commit flips PROFILE_EGRESS_READ_OPEN_ENABLED and this
+    fn read_open_switch_is_open_after_the_opening_commit() {
+        // The opening commit flipped PROFILE_EGRESS_READ_OPEN_ENABLED and this
         // assertion together (docs/plans/nir1-lane-decisions/da1-decisions.md).
-        assert!(!read_open_enabled());
+        assert!(read_open_enabled());
     }
 }

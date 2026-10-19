@@ -2,15 +2,14 @@
 // own-data-read を、実 router + 実 gate + 実 Native を通して固定する。
 //
 // 開放（D2A_OWN_DATA_READ_OPEN と grimodex-db の PROFILE_EGRESS_READ_OPEN_ENABLED）
-// は、WebRTC の finding（da1-decisions.md の Y-1）の対処が確認されるまで入れない。
-// そのため期待値は開放の状態から選ぶ。
-//   - 閉じたまま（現在）: restricted の own-data-read は plaintext-publication と
-//     同じく invoke の時点で拒否され、Native も read-open の読取を拒否する。
-//   - 開いたとき（pending。開放 commit が定数を true にすると自動で切り替わる）:
-//     restricted で unrestricted と同じ内容が返り、保存データは変わらず、
-//     credential は返らず、DML / closed の表 / 台帳にない書込みは拒否される。
-// 開いた状態の分岐は、定数を一時的に true にして napi:build し直した手元の
-// 実行で通ることを確かめてある（記録は da1-decisions.md）。
+// の状態で期待値を選ぶ。
+//   - 開いている（現在。DR-DA1-35 の開放 commit で true にした）: restricted で
+//     unrestricted と同じ内容が返り、各 command の呼出しの前後で保存データの
+//     digest は変わらず、credential は返らず、DML / closed の表 / 台帳にない
+//     書込みは拒否される。
+//   - 閉じている（定数を false に戻した場合の分岐）: restricted の own-data-read は
+//     plaintext-publication と同じく invoke の時点で拒否され、Native も
+//     read-open の読取を拒否する。
 //
 // 実 Native の addon が要るので `vitest.electron-native.config.ts` だけが拾う。
 import { execFileSync } from "node:child_process";
@@ -102,6 +101,9 @@ async function closeBackends(): Promise<void> {
 }
 
 const MARKER = "D2A_EGRESS_DENIED:";
+const OWN_VERSIONED_SCENE = "own-versioned-scene";
+const OWN_RUN_ID = "own-run";
+const OWN_SNAPSHOT_ID = "own-snapshot";
 /** A credential that exists in the profile; no read may return it. */
 const CREDENTIAL_SENTINEL = "sk-d2a-own-data-read-CREDENTIAL-SENTINEL";
 const roots: string[] = [];
@@ -234,6 +236,10 @@ function failureOf(envelope: Envelope): string {
 interface Workspace {
   path: string;
   projectId: string;
+  /** An extraction run saved while unrestricted (review / inbox reads). */
+  runId: string;
+  /** A project snapshot created while unrestricted (restore-context read). */
+  snapshotId: string;
 }
 
 /** Sample workspace + a chat session with messages, written while unrestricted. */
@@ -264,13 +270,110 @@ async function seedWorkspace(rig: Rig): Promise<Workspace> {
       ),
     );
   }
-  return { path: seeded.path, projectId: seeded.projectId };
+  // 版の過去の本文（content_versions）。
+  for (const [versionNumber, content] of [
+    [1, "灯台の灯はまだ点いていた。"],
+    [2, "灯台の灯が消えた夜。"],
+  ] as const) {
+    ok(
+      await run(
+        "INSERT INTO content_versions(id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, 'scene', ?, ?, ?, 'manual', ?)",
+        [
+          `own-version-${versionNumber}`,
+          OWN_VERSIONED_SCENE,
+          content,
+          versionNumber,
+          "2026-10-18T00:00:00.000Z",
+        ],
+      ),
+    );
+  }
+  // 抽出の run と proposal set（review bundle、resumable runs、inbox の読取用）。
+  const binding = ok<Record<string, unknown>>(
+    await rig.route("narrative_extraction_capture_workspace_binding", {
+      expectedWorkspacePath: seeded.path,
+    }),
+  );
+  const runRef = {
+    runId: OWN_RUN_ID,
+    projectId: seeded.projectId,
+    surfacePathId: "chronicle.extract",
+  };
+  ok(
+    await rig.route("narrative_extraction_create_run", {
+      payload: {
+        ...runRef,
+        scopeJson: {},
+        specJson: { kind: "legacy-review-test@1" },
+        specDigest: "sha256:test-spec",
+        tasks: [],
+      },
+      workspaceBinding: binding,
+    }),
+  );
+  ok(
+    await rig.route("narrative_extraction_save_proposal_set", {
+      payload: {
+        runId: OWN_RUN_ID,
+        projectId: seeded.projectId,
+        proposalSetId: "own-set",
+        setKind: "chronicle.extract.review@1",
+        proposals: [
+          {
+            proposalId: "own-proposal",
+            proposalKey: "proposal:key",
+            kind: "chronicle.create-event@1",
+            payloadJson: {},
+          },
+        ],
+      },
+      workspaceBinding: binding,
+    }),
+  );
+  // snapshot（restore 文脈の読取用）。
+  ok(
+    await rig.route("project_snapshot_create", {
+      payload: {
+        projectId: seeded.projectId,
+        snapshotId: OWN_SNAPSHOT_ID,
+        name: "own snapshot",
+        description: null,
+        createdAt: "2026-10-18T00:00:00.000Z",
+        treeRows: [],
+        codexRows: [],
+        snippetRows: [],
+        versionIds: [],
+      },
+    }),
+  );
+  return {
+    path: seeded.path,
+    projectId: seeded.projectId,
+    runId: OWN_RUN_ID,
+    snapshotId: OWN_SNAPSHOT_ID,
+  };
 }
 
 interface ReadCall {
   name: string;
   cmd: string;
   args: Record<string, unknown>;
+  /**
+   * The command needs a resource this test environment may lack (the
+   * embedding model of `semantic_search`). Its unrestricted error is then the
+   * baseline: restricted must produce the identical outcome, never
+   * D2A_EGRESS_DENIED, and the stored data must still be unchanged.
+   */
+  unavailableIsBaseline?: boolean;
+}
+
+/** What a read returned: its value, or (when tolerated) its typed error. */
+function readOutcome(call: ReadCall, envelope: Envelope): unknown {
+  if (envelope.ok) return envelope.value;
+  if (call.unavailableIsBaseline && !envelope.error.includes(MARKER)) {
+    return { unavailable: envelope.error };
+  }
+  return ok(envelope);
 }
 
 /** Representative own-data-read calls (typed commands and generic SQL). */
@@ -370,6 +473,58 @@ function readCalls(ws: Workspace): ReadCall[] {
       name: "audit verify",
       cmd: "ai_audit_verify",
       args: { expectedWorkspacePath: ws.path, projectId: ws.projectId },
+    },
+    // 開放の commit の完了条件（da1-decisions.md の P3）: 版の過去の本文、
+    // 意味検索、抽出の review／maintenance inbox、snapshot の復元の文脈。
+    sql(
+      "version history body (content_versions)",
+      "SELECT version_number, snapshot_type, content FROM content_versions WHERE entity_type = 'scene' AND entity_id = ? ORDER BY version_number",
+      [OWN_VERSIONED_SCENE],
+    ),
+    {
+      name: "semantic search",
+      cmd: "semantic_search",
+      args: {
+        expectedWorkspacePath: ws.path,
+        projectId: ws.projectId,
+        query: "灯台",
+        limit: 5,
+      },
+      unavailableIsBaseline: true,
+    },
+    {
+      name: "extraction run",
+      cmd: "narrative_extraction_get_run",
+      args: { payload: { runId: ws.runId, projectId: ws.projectId } },
+    },
+    {
+      name: "extraction run review bundle",
+      cmd: "narrative_extraction_get_run_review_bundle",
+      args: { payload: { runId: ws.runId, projectId: ws.projectId } },
+    },
+    {
+      name: "extraction resumable runs",
+      cmd: "narrative_extraction_list_resumable_runs",
+      args: { payload: { projectId: ws.projectId } },
+    },
+    {
+      name: "extraction commit status",
+      cmd: "narrative_extraction_get_commit_status",
+      args: { payload: { projectId: ws.projectId, requestId: "own-request" } },
+    },
+    {
+      name: "maintenance inbox",
+      cmd: "narrative_maintenance_inbox_list",
+      args: { payload: { projectId: ws.projectId } },
+    },
+    {
+      name: "snapshot restore context",
+      cmd: "project_snapshot_restore_context",
+      args: {
+        projectId: ws.projectId,
+        snapshotId: ws.snapshotId,
+        scopes: ["labels"],
+      },
     },
   ];
 }
@@ -579,7 +734,7 @@ describe("own-data-read through the real router, gate and Native", () => {
     const baseline = new Map<string, unknown>();
     for (const call of readCalls(ws)) {
       const envelope = await rig.route(call.cmd, call.args);
-      baseline.set(call.name, ok(envelope));
+      baseline.set(call.name, readOutcome(call, envelope));
       leavesNoCredential(envelope);
     }
     expect(
@@ -596,11 +751,20 @@ describe("own-data-read through the real router, gate and Native", () => {
     expect(rig.gate.restricted).toBe(true);
     expect(rig.gate.unavailable).toBe(false);
 
+    let digestBeforeCall = digestBefore;
     for (const call of readCalls(ws)) {
       const envelope = await rig.route(call.cmd, call.args);
       leavesNoCredential(envelope);
       if (rig.open) {
-        expect(ok(envelope), call.name).toEqual(baseline.get(call.name));
+        expect(readOutcome(call, envelope), call.name).toEqual(
+          baseline.get(call.name),
+        );
+        // 各 command の呼出しの前後で保存データの digest が変わらない。
+        const digestAfterCall = dataDigest(ws.path);
+        expect(digestAfterCall, `${call.name}: stored data unchanged`).toBe(
+          digestBeforeCall,
+        );
+        digestBeforeCall = digestAfterCall;
       } else {
         expect(failureOf(envelope), call.name).toContain(MARKER);
       }
@@ -685,7 +849,10 @@ describe("own-data-read through the real router, gate and Native", () => {
     const ws = await seedWorkspace(first);
     const baseline = new Map<string, unknown>();
     for (const call of readCalls(ws)) {
-      baseline.set(call.name, ok(await first.route(call.cmd, call.args)));
+      baseline.set(
+        call.name,
+        readOutcome(call, await first.route(call.cmd, call.args)),
+      );
     }
     await first.gate.activateFirstRestrictedPublication!();
     first.exit();
@@ -697,7 +864,9 @@ describe("own-data-read through the real router, gate and Native", () => {
       const envelope = await restarted.route(call.cmd, call.args);
       leavesNoCredential(envelope);
       if (restarted.open) {
-        expect(ok(envelope), call.name).toEqual(baseline.get(call.name));
+        expect(readOutcome(call, envelope), call.name).toEqual(
+          baseline.get(call.name),
+        );
       } else {
         expect(failureOf(envelope), call.name).toContain(MARKER);
       }
@@ -734,7 +903,12 @@ describe("own-data-read through the real router, gate and Native", () => {
     const appData = newAppData();
     const rig = await startMain(appData, { unavailable: true });
     expect(rig.gate.unavailable).toBe(true);
-    for (const call of readCalls({ path: "/none", projectId: "p" })) {
+    for (const call of readCalls({
+      path: "/none",
+      projectId: "p",
+      runId: "r",
+      snapshotId: "s",
+    })) {
       expect(
         failureOf(await rig.route(call.cmd, call.args)),
         call.name,

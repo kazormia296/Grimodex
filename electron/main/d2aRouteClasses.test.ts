@@ -2,12 +2,11 @@
 // classes, the 39-command own-data-read ledger, the generic-SQL early
 // classification, and the Main -> Native own-data-read classification.
 //
-// The own-data-read opening is a single switch (`D2A_OWN_DATA_READ_OPEN`, false
-// until the opening commit). The behavior is pinned in both states here: with
-// the switch off the gate keeps the a153743b behavior (every own-data-read
-// reference is `plaintext-publication`); with it on (`ownDataReadOpen: true`
-// test seam) the gate routes as K3/2 specifies. The opening commit flips the
-// constant and nothing in this file.
+// The own-data-read opening is a single switch (`D2A_OWN_DATA_READ_OPEN`, true
+// since the opening commit, DR-DA1-35). The behavior is pinned in both states
+// here: with the shipped switch on the gate routes as K3/2 specifies; with it
+// forced off (`ownDataReadOpen: false` test seam) the gate keeps the a153743b
+// behavior (every own-data-read reference is `plaintext-publication`).
 import { describe, expect, it, vi } from "vitest";
 
 import { IPC, NAPI_COMMANDS } from "../shared/ipcContract.js";
@@ -568,13 +567,77 @@ describe("route decision (K3/2 区分の意味)", () => {
   });
 });
 
-describe("gate: own-data-read while the opening is off (the default)", () => {
+describe("gate: own-data-read with the shipped opening (the default)", () => {
   it("follows the shipped constant", () => {
-    expect(D2A_OWN_DATA_READ_OPEN).toBe(false);
+    expect(D2A_OWN_DATA_READ_OPEN).toBe(true);
   });
 
-  it("keeps every own-data-read command and SQL read closed in a restricted profile", async () => {
+  it("passes every own-data-read command and SQL read in a restricted profile, and keeps the rest closed", async () => {
     const gate = await createProfileEgressGate(backend(true));
+    const callerIdentity = gate.issueCallerIdentity(11);
+    for (const command of OWN_DATA_READ_COMMANDS) {
+      expect(
+        () => gate.assertInvoke(command, { callerIdentity }),
+        command,
+      ).not.toThrow();
+    }
+    expect(() =>
+      gate.assertInvoke("db_execute", {
+        callerIdentity,
+        method: "all",
+        sql: "SELECT content FROM chat_messages",
+      }),
+    ).not.toThrow();
+    // a classification is produced, so Native checks the statement is read-only
+    expect(
+      gate.classifyOwnDataRead?.("db_execute", {
+        callerIdentity,
+        sql: "SELECT content FROM chat_messages",
+      }),
+    ).toBe(true);
+    // the closed class, ledger DML and the plaintext-publication commands stay
+    // closed under the shipped default
+    for (const sql of [
+      "SELECT * FROM narrative_proposals",
+      "DELETE FROM chat_messages",
+      "UPDATE chat_sessions SET title = 'x'",
+    ]) {
+      expect(
+        () =>
+          gate.assertInvoke("db_execute", {
+            callerIdentity,
+            method: "all",
+            sql,
+          }),
+        sql,
+      ).toThrow(DENIED("plaintext-publication"));
+    }
+    for (const command of [
+      "narrative_extraction_claim_task",
+      "nir1_pack_context",
+    ]) {
+      expect(() => gate.assertInvoke(command, { callerIdentity })).toThrow(
+        DENIED("plaintext-publication"),
+      );
+    }
+  });
+
+  it("still passes the derived-index updates, which publish nothing", async () => {
+    const gate = await createProfileEgressGate(backend(true));
+    const callerIdentity = gate.issueCallerIdentity(11);
+    for (const command of DERIVED_INDEX_COMMANDS) {
+      expect(() =>
+        gate.assertInvoke(command, { callerIdentity }),
+      ).not.toThrow();
+    }
+  });
+});
+
+describe("gate: own-data-read with the opening forced off (test seam)", () => {
+  const closed = { ownDataReadOpen: false } as const;
+
+  it("keeps every own-data-read command and SQL read closed in a restricted profile", async () => {
+    const gate = await createProfileEgressGate(backend(true), closed);
     const callerIdentity = gate.issueCallerIdentity(11);
     for (const command of OWN_DATA_READ_COMMANDS) {
       expect(
@@ -596,16 +659,6 @@ describe("gate: own-data-read while the opening is off (the default)", () => {
         sql: "SELECT content FROM chat_messages",
       }),
     ).toBeUndefined();
-  });
-
-  it("still passes the derived-index updates, which publish nothing", async () => {
-    const gate = await createProfileEgressGate(backend(true));
-    const callerIdentity = gate.issueCallerIdentity(11);
-    for (const command of DERIVED_INDEX_COMMANDS) {
-      expect(() =>
-        gate.assertInvoke(command, { callerIdentity }),
-      ).not.toThrow();
-    }
   });
 });
 
