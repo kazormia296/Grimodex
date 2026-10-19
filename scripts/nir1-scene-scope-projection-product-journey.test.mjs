@@ -19,12 +19,16 @@ import {
 import { FIXED_PRODUCT_JOURNEY_SHARDS } from "../electron/scripts/product-journey-shards.mjs";
 import { PRODUCT_JOURNEYS } from "../electron/scripts/product-journeys.mjs";
 
-// SQL table names passed to the row counter (not bridge commands).
+// SQL table and column names the journey spells as strings (not bridge commands).
 const OBSERVED_NAMES = new Set([
   "narrative_extraction_runs",
   "narrative_proposal_sets",
   "narrative_scene_scope_bindings",
   "narrative_change_events",
+  // Snapshot restore plan table names (not bridge commands).
+  "tree_nodes",
+  "project_calendar",
+  "codex_entry_id",
 ]);
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
@@ -67,6 +71,9 @@ test("Scene Scope projection journey has one dependency-free contract", () => {
     "restore-typed-run-through-ui",
     "move-anchor-through-canonical-tree-writer",
     "edit-scope-through-canonical-writers-and-observe-cold-reader",
+    "delete-and-retype-codex-persons-through-canonical-writers",
+    "replay-undo-journal-through-history-replay-route",
+    "restore-project-snapshot-body-through-native-aggregate",
   ]);
   assert.deepEqual(NIR1_SCENE_SCOPE_PROJECTION_STEPS, [
     "e1-prepare-approve",
@@ -89,6 +96,15 @@ test("Scene Scope projection journey has one dependency-free contract", () => {
     "trash-restore-stays-invalid",
     "body-event-does-not-make-pending",
     "scope-event-pends-anchor-only",
+    "pov-only-person-delete-nulls-pov",
+    "referenced-person-delete-and-type-change-rejected",
+    "journal-undo-redo-guard-and-invalidate",
+    "probe-def2-journal-pov-null-next-patch",
+    "prepare-rejects-other-project-scene",
+    "probe-def1-snapshot-restore-feed",
+    "snapshot-body-restore-recreates-bindings",
+    "snapshot-restore-epoch-keeps-revisions-unavailable",
+    "snapshot-token-return-stays-unavailable",
   ]);
 });
 
@@ -109,6 +125,14 @@ test("journey sends only the declared renderer-bridge commands and no Graph, Pac
     "narrative_scene_scope_update",
     "trash_bin_create",
     "trash_bin_restore",
+    "codex_create",
+    "codex_update",
+    "codex_delete",
+    "agent_apply_undo_journal",
+    "project_snapshot_create",
+    "project_snapshot_restore_context",
+    "project_snapshot_apply_restore",
+    "project_create",
   ]);
   const source = await readFile(journeySourcePath, "utf8");
   const quoted = new Set(
@@ -210,6 +234,19 @@ function stringLiterals(source) {
   return found;
 }
 
+/**
+ * The one SQL write the journey sends: the `content_versions` row the
+ * renderer's `createRevision` inserts (through Drizzle) for each body in a
+ * project snapshot.  `content_versions` is outside the protected writers; the
+ * statement is pinned here so no other write can ride on the exception.
+ */
+const SNAPSHOT_BODY_VERSION_INSERT =
+  "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at) VALUES (?, ?, ?, ?, (SELECT COALESCE(MAX(version_number), 0) + 1 FROM content_versions WHERE entity_type = ? AND entity_id = ?), 'manual', ?)";
+
+function normalizeSql(text) {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
 test("journey changes state only through real writers, never a direct SQL write", async () => {
   const source = await readFile(journeySourcePath, "utf8");
   const literals = stringLiterals(source);
@@ -217,15 +254,26 @@ test("journey changes state only through real writers, never a direct SQL write"
     /\b(SELECT|UPDATE|INSERT|DELETE)\b/u.test(text),
   );
   assert.ok(sqlStatements.length > 0);
+  const allowedWrites = [];
   for (const statement of sqlStatements) {
+    if (normalizeSql(statement) === SNAPSHOT_BODY_VERSION_INSERT) {
+      allowedWrites.push(statement);
+      continue;
+    }
     assert.match(
       statement.trim(),
       /^SELECT\b/u,
       "every SQL the journey sends is a SELECT observation",
     );
   }
+  assert.equal(
+    allowedWrites.length,
+    1,
+    "the content_versions insert of the snapshot capture is the only SQL write",
+  );
   // A statement spelled in any quote style, or split across a line, is still caught.
   for (const text of literals) {
+    if (normalizeSql(text) === SNAPSHOT_BODY_VERSION_INSERT) continue;
     assert.doesNotMatch(
       text,
       /\b(UPDATE\s+\w+\s+SET|INSERT\s+(OR\s+\w+\s+)?INTO|DELETE\s+FROM|REPLACE\s+INTO|DROP\s+TABLE|ALTER\s+TABLE)\b/iu,
@@ -242,9 +290,41 @@ test("journey changes state only through real writers, never a direct SQL write"
     "temporal_scene_patch",
     "narrative_scene_scope_update",
     "trash_bin_restore",
+    "codex_create",
+    "codex_update",
+    "codex_delete",
+    "agent_apply_undo_journal",
+    "project_snapshot_create",
+    "project_snapshot_apply_restore",
   ]) {
     assert.ok(source.includes(`"${writer}"`), `matrix uses ${writer}`);
   }
+});
+
+test("journey replays the journal and restores the snapshot without an Agent capability", async () => {
+  const source = await readFile(journeySourcePath, "utf8");
+  // The Interactive Agent create needs a Main-issued one-shot capability the
+  // journey cannot (and must not) obtain; the renderer's Codex writer is used.
+  assert.equal(source.includes("agentAuthorityCapability"), false);
+  assert.equal(
+    stringLiterals(source).includes("agent_codex_create"),
+    false,
+    "no string literal sends agent_codex_create",
+  );
+  // The journal replay payload is the renderer's, with Main-owned authority.
+  assert.match(source, /authorityRoute: "history-replay"/u);
+  assert.match(source, /caller: "undo-redo-command"/u);
+  // The diagnostic probes accept both outcomes and pin the Change Feed code.
+  for (const probe of [
+    "probe-def1-snapshot-restore-feed",
+    "probe-def2-journal-pov-null-next-patch",
+  ]) {
+    assert.ok(NIR1_SCENE_SCOPE_PROJECTION_STEPS.includes(probe));
+  }
+  assert.match(source, /NARRATIVE_CHANGE_FEED_DISCONTINUITY/u);
+  assert.match(source, /unmet-by-DEF-1/u);
+  // The snapshot restore is body-scope only (codex rows stay out of the plan).
+  assert.match(source, /scopes: \["body"\]/u);
 });
 
 test("journey is registered once in the catalog, runner and fixed shard 6", () => {

@@ -45,6 +45,9 @@ export const NIR1_SCENE_SCOPE_PROJECTION_REQUIRED_INTERACTIONS = Object.freeze([
   "restore-typed-run-through-ui",
   "move-anchor-through-canonical-tree-writer",
   "edit-scope-through-canonical-writers-and-observe-cold-reader",
+  "delete-and-retype-codex-persons-through-canonical-writers",
+  "replay-undo-journal-through-history-replay-route",
+  "restore-project-snapshot-body-through-native-aggregate",
 ]);
 
 /** Every renderer-bridge command the journey sends.  No Graph/Packing/AI. */
@@ -64,6 +67,14 @@ export const NIR1_SCENE_SCOPE_PROJECTION_IPC_COMMANDS = Object.freeze([
   "narrative_scene_scope_update",
   "trash_bin_create",
   "trash_bin_restore",
+  "codex_create",
+  "codex_update",
+  "codex_delete",
+  "agent_apply_undo_journal",
+  "project_snapshot_create",
+  "project_snapshot_restore_context",
+  "project_snapshot_apply_restore",
+  "project_create",
 ]);
 
 /** The assertion steps, in execution order (draft acceptance names). */
@@ -88,6 +99,15 @@ export const NIR1_SCENE_SCOPE_PROJECTION_STEPS = Object.freeze([
   "trash-restore-stays-invalid",
   "body-event-does-not-make-pending",
   "scope-event-pends-anchor-only",
+  "pov-only-person-delete-nulls-pov",
+  "referenced-person-delete-and-type-change-rejected",
+  "journal-undo-redo-guard-and-invalidate",
+  "probe-def2-journal-pov-null-next-patch",
+  "prepare-rejects-other-project-scene",
+  "probe-def1-snapshot-restore-feed",
+  "snapshot-body-restore-recreates-bindings",
+  "snapshot-restore-epoch-keeps-revisions-unavailable",
+  "snapshot-token-return-stays-unavailable",
 ]);
 
 const HUMAN_DECISION_AUTHOR = "nir1-entity-relation-review";
@@ -510,8 +530,12 @@ async function readScope(ctx, sceneId) {
   });
 }
 
-/** Write the A1 binding; `materialTimeline` is the only axis the journey varies. */
-async function updateSceneScope(ctx, sceneId, materialTimeline) {
+/**
+ * Write the A1 binding through the canonical Scope writer.  `fields` names the
+ * axes the caller changes (`timeline`, `knowledgeHolder`, `audience`); every
+ * other axis is carried over from the binding as read.
+ */
+async function updateSceneScopeFields(ctx, sceneId, fields) {
   const current = await readScope(ctx, sceneId);
   const binding = current.binding;
   await ctx.harness.invokeOk(ctx.page, "narrative_scene_scope_update", {
@@ -528,16 +552,21 @@ async function updateSceneScope(ctx, sceneId, materialTimeline) {
         schemaVersion: 1,
         compatibilityMarker: binding.compatibilityMarker,
         queryIdentity: binding.queryIdentity,
-        materialConstraint: {
-          ...binding.materialConstraint,
-          timeline: materialTimeline,
-        },
-        knowledgeHolder: binding.knowledgeHolder,
-        audience: binding.audience,
+        materialConstraint:
+          fields.timeline === undefined
+            ? binding.materialConstraint
+            : { ...binding.materialConstraint, timeline: fields.timeline },
+        knowledgeHolder: fields.knowledgeHolder ?? binding.knowledgeHolder,
+        audience: fields.audience ?? binding.audience,
       },
     },
   });
   return current;
+}
+
+/** Write the A1 binding; `materialTimeline` is the axis the matrix varies. */
+async function updateSceneScope(ctx, sceneId, materialTimeline) {
+  return updateSceneScopeFields(ctx, sceneId, { timeline: materialTimeline });
 }
 
 /**
@@ -563,13 +592,20 @@ async function newRevision(ctx, sceneId) {
   await settleFeed(ctx, `before preparing a Revision for ${sceneId}`);
   const pair = ctx.pairs[ctx.pairIndex % ctx.pairs.length];
   ctx.pairIndex += 1;
-  return prepareAndApproveThroughNative(ctx.harness, ctx.page, {
+  const revision = await prepareAndApproveThroughNative(ctx.harness, ctx.page, {
     workspace: ctx.workspace,
     projectId: ctx.projectId,
     sceneId,
     entityIds: pair.entityIds,
     relationIds: pair.relationIds,
   });
+  // Every Revision the journey approved, so the project snapshot restore can
+  // check that none of them survives the restore epoch.
+  ctx.revisionLog.push({
+    name: `${sceneId}#${ctx.revisionLog.length}`,
+    ...revision,
+  });
+  return revision;
 }
 
 /** `available` or `unavailable:<reason>` for each named Revision (A2). */
@@ -1731,6 +1767,1219 @@ async function runScopeEditMatrix(ctx, step) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// S3: persons the Scope names, Undo Journal replay, project snapshot restore.
+// Everything below goes through the writers the product uses.  The Interactive
+// Agent create (`agent_codex_create`) needs a one-shot capability that Main
+// issues from a chat tool_use response, which this journey (no AI dispatch)
+// cannot and must not obtain.  The renderer's own Codex writers reach the same
+// Native function with a renderer context and return the same `undoJournalId`,
+// which Main records for the sender, so the Undo Journal replay below is the
+// real `agent_apply_undo_journal` route.
+// ---------------------------------------------------------------------------
+
+const CHARACTER_REFERENCED = /NEX_SCENE_SCOPE_CHARACTER_REFERENCED/u;
+const FEED_DISCONTINUITY = /NARRATIVE_CHANGE_FEED_DISCONTINUITY/u;
+const HISTORY_REPLAY_CONTROLS = Object.freeze([
+  "original-transaction",
+  "journal-lineage",
+  "typed-writer",
+  "occ",
+  "change-event",
+  "change-feed",
+]);
+const READER_PRINCIPAL = Object.freeze({ kind: "reader" });
+
+function characterPrincipal(entryId) {
+  return { kind: "character", ref: entryId };
+}
+
+async function codexRow(ctx, entryId) {
+  const result = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT id, type, version, name FROM codex_entries WHERE project_id = ? AND id = ?`,
+    [ctx.projectId, entryId],
+  );
+  return result[0] ?? null;
+}
+
+/** A person (character) through the renderer's Codex writer. */
+async function codexCreateCharacter(ctx, label, name) {
+  const entryId = `x14-${label}-${randomUUID()}`;
+  const result = await ctx.harness.invokeOk(ctx.page, "codex_create", {
+    payload: {
+      ...writerIdentity(ctx.projectId, `codex-create-${label}`),
+      surface: "manual",
+      entryId,
+      typeSlug: "character",
+      name,
+      summary: `${name} summary`,
+      content: proseDoc(`${name} content`),
+      aliases: null,
+      excludedAliases: null,
+      readings: null,
+      tagsCache: null,
+      parentId: null,
+      sourceChatMessageId: null,
+      model: null,
+      chatMessageId: null,
+      traceId: null,
+      authorshipSpans: [],
+    },
+  });
+  assert.equal(String(result.entityId), entryId);
+  assertNonEmpty(String(result.undoJournalId), `${label} create journal id`);
+  const row = await codexRow(ctx, entryId);
+  assert.ok(row, `${label} exists after create`);
+  assert.equal(row.type, "character");
+  return { entryId, journalId: String(result.undoJournalId) };
+}
+
+async function codexDelete(ctx, entryId, label) {
+  const row = await codexRow(ctx, entryId);
+  assert.ok(row, `${label}: the person to delete exists`);
+  return ctx.harness.invokeOk(ctx.page, "codex_delete", {
+    payload: {
+      ...writerIdentity(ctx.projectId, `codex-delete-${label}`),
+      surface: "manual",
+      entryId,
+      baseVersion: Number(row.version),
+    },
+  });
+}
+
+async function codexRetype(ctx, entryId, typeSlug, label) {
+  const row = await codexRow(ctx, entryId);
+  assert.ok(row, `${label}: the person to retype exists`);
+  return ctx.harness.invokeOk(ctx.page, "codex_update", {
+    payload: {
+      ...writerIdentity(ctx.projectId, `codex-retype-${label}`),
+      surface: "manual",
+      entryId,
+      baseVersion: Number(row.version),
+      typeSlug,
+      model: null,
+      chatMessageId: null,
+      traceId: null,
+      authorshipSpans: null,
+      authorshipSpanLanes: null,
+    },
+  });
+}
+
+/** Undo or redo one Undo Journal entry through the history-replay route. */
+async function applyUndoJournal(ctx, journalId, direction) {
+  return ctx.harness.invokeOk(ctx.page, "agent_apply_undo_journal", {
+    payload: {
+      requestId: `x1-4-journal-${direction}:${randomUUID()}`,
+      projectId: ctx.projectId,
+      sessionId: WRITER_SESSION_ID,
+      journalId,
+      direction,
+      authorityRoute: "history-replay",
+      origin: direction,
+      caller: "undo-redo-command",
+      controls: [...HISTORY_REPLAY_CONTROLS],
+    },
+  });
+}
+
+async function expectRejected(label, pattern, action) {
+  const failure = await action().then(
+    () => null,
+    (error) => ipcFailureText(error),
+  );
+  assert.ok(failure, `${label} must be rejected`);
+  assert.match(failure, pattern, `${label}: rejected with its defense code`);
+  return failure.slice(0, 300);
+}
+
+/** The Scope binding, the tree row and the POV of one Scene (renderer SELECT). */
+async function sceneScopeFull(ctx, sceneId) {
+  const scene = await observeScene(
+    ctx.harness,
+    ctx.page,
+    ctx.projectId,
+    sceneId,
+  );
+  const extra = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT b.knowledge_holder_json AS holder, b.audience_json AS audience,
+            n.pov_character_id AS pov, n.title AS title
+       FROM narrative_scene_scope_bindings b
+       JOIN tree_nodes n ON n.id = b.scene_id AND n.project_id = b.project_id
+      WHERE b.project_id = ? AND b.scene_id = ?`,
+    [ctx.projectId, sceneId],
+  );
+  assert.equal(extra.length, 1, `Scene ${sceneId} binding and tree row`);
+  return { ...scene, ...extra[0] };
+}
+
+async function feedEventTotals(ctx) {
+  const cursor = await feedCursor(ctx);
+  const count = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT COUNT(*) AS n FROM narrative_change_events WHERE project_id = ?`,
+    [ctx.projectId],
+  );
+  return { head: cursor.head, events: Number(count[0]?.n ?? 0) };
+}
+
+async function createS3Fixture(ctx) {
+  const folderId = `x14-s3-folder-${randomUUID()}`;
+  await treeCreate(ctx, {
+    id: folderId,
+    nodeType: "folder",
+    title: "X14 S3",
+    sortOrder: "x14-s3",
+  });
+  const scenes = {};
+  for (const [index, name] of [
+    "pov",
+    "other",
+    "hold",
+    "aud",
+    "jpov",
+    "def2",
+  ].entries()) {
+    scenes[name] = `x14s3-${name}-${randomUUID()}`;
+    await treeCreate(ctx, {
+      id: scenes[name],
+      nodeType: "scene",
+      title: `X14 S3 ${name}`,
+      parentId: folderId,
+      sortOrder: `s${index}`,
+    });
+  }
+  return { folderId, scenes };
+}
+
+/** What a rejected or no-op route must leave exactly as it found it. */
+async function characterRouteState(ctx, scenes, people, revisions) {
+  const state = { scenes: {}, people: {} };
+  for (const [name, sceneId] of Object.entries(scenes)) {
+    state.scenes[name] = await sceneScopeFull(ctx, sceneId);
+  }
+  for (const [name, entryId] of Object.entries(people)) {
+    state.people[name] = await codexRow(ctx, entryId);
+  }
+  state.feed = await feedEventTotals(ctx);
+  state.revisions = await revisionStatuses(ctx, revisions);
+  return state;
+}
+
+function jsonKind(text) {
+  return JSON.parse(String(text)).kind;
+}
+
+async function runCharacterAndJournalChecks(ctx, step) {
+  const { scenes } = await createS3Fixture(ctx);
+
+  // --- 1. A person only a POV names: the delete goes through ---------------
+  const povPerson = await codexCreateCharacter(ctx, "pov", "POV Person");
+  await treePatch(ctx, scenes.pov, { povCharacterId: povPerson.entryId });
+  const revPov = await newRevision(ctx, scenes.pov);
+  const revOther = await newRevision(ctx, scenes.other);
+  const povBefore = await sceneScopeFull(ctx, scenes.pov);
+  const otherBefore = await sceneScopeFull(ctx, scenes.other);
+  assert.equal(povBefore.pov, povPerson.entryId);
+  const povDeletion = await observedWrite(ctx, () =>
+    codexDelete(ctx, povPerson.entryId, "pov"),
+  );
+  const povAfter = await sceneScopeFull(ctx, scenes.pov);
+  const otherAfter = await sceneScopeFull(ctx, scenes.other);
+  assert.equal(await codexRow(ctx, povPerson.entryId), null);
+  assert.equal(povAfter.pov, null, "the foreign key clears the POV");
+  assert.equal(povAfter.incarnation, povBefore.incarnation);
+  assert.equal(
+    Number(povAfter.version),
+    Number(povBefore.version) + 1,
+    "the Scope generation advances once",
+  );
+  assert.notEqual(povAfter.sourceToken, povBefore.sourceToken);
+  assert.equal(otherAfter.version, otherBefore.version);
+  assert.equal(otherAfter.sourceToken, otherBefore.sourceToken);
+  assertScopeEffect(povDeletion, [scenes.pov], "POV-only person delete");
+  const povStatuses = await revisionStatuses(ctx, {
+    pov: revPov,
+    other: revOther,
+  });
+  assertStatuses(
+    povStatuses,
+    { pov: "unavailable", other: "available" },
+    "POV-only person delete",
+  );
+  const povEdges = await assertProjectionEdges(
+    ctx,
+    { pov: revPov, other: revOther },
+    { pov: "unavailable", other: "available" },
+    "POV-only person delete",
+  );
+  step("pov-only-person-delete-nulls-pov", {
+    scene: scenes.pov,
+    generation: [povBefore.version, povAfter.version],
+    statuses: povStatuses,
+    projectionEdges: povEdges,
+    feed: feedSummary(povDeletion),
+  });
+
+  // --- 2. A holder and an audience: delete and type change are refused -----
+  const holder = await codexCreateCharacter(ctx, "holder", "Holder Person");
+  const audience = await codexCreateCharacter(
+    ctx,
+    "audience",
+    "Audience Person",
+  );
+  await updateSceneScopeFields(ctx, scenes.hold, {
+    knowledgeHolder: characterPrincipal(holder.entryId),
+  });
+  await updateSceneScopeFields(ctx, scenes.aud, {
+    audience: characterPrincipal(audience.entryId),
+  });
+  const revHold = await newRevision(ctx, scenes.hold);
+  const revAud = await newRevision(ctx, scenes.aud);
+  const people = { holder: holder.entryId, audience: audience.entryId };
+  const watched = {
+    hold: scenes.hold,
+    aud: scenes.aud,
+    other: scenes.other,
+  };
+  const referencedRevisions = {
+    hold: revHold,
+    aud: revAud,
+    other: revOther,
+  };
+  const referencedBefore = await characterRouteState(
+    ctx,
+    watched,
+    people,
+    referencedRevisions,
+  );
+  assert.equal(jsonKind(referencedBefore.scenes.hold.holder), "character");
+  assert.equal(jsonKind(referencedBefore.scenes.aud.audience), "character");
+  assertStatuses(
+    referencedBefore.revisions,
+    { hold: "available", aud: "available", other: "available" },
+    "Revisions anchored to a holder and an audience Scene",
+  );
+  const rejections = {};
+  for (const [label, person] of [
+    ["holder", holder],
+    ["audience", audience],
+  ]) {
+    rejections[`${label}-delete`] = await expectRejected(
+      `delete of the ${label}`,
+      CHARACTER_REFERENCED,
+      () => codexDelete(ctx, person.entryId, label),
+    );
+    rejections[`${label}-type-change`] = await expectRejected(
+      `type change of the ${label}`,
+      CHARACTER_REFERENCED,
+      () => codexRetype(ctx, person.entryId, "location", label),
+    );
+  }
+  assert.deepEqual(
+    await characterRouteState(ctx, watched, people, referencedRevisions),
+    referencedBefore,
+    "a refused delete or type change writes nothing",
+  );
+  step("referenced-person-delete-and-type-change-rejected", {
+    rejections,
+    unchanged: ["binding", "person", "pov", "feed", "revisions"],
+  });
+
+  // --- 3. Undo Journal replay (J1) -----------------------------------------
+  const guard = {};
+  guard.holderCreateUndo = await expectRejected(
+    "journal undo of the holder's creation",
+    CHARACTER_REFERENCED,
+    () => applyUndoJournal(ctx, holder.journalId, "undo"),
+  );
+  guard.audienceCreateUndo = await expectRejected(
+    "journal undo of the audience's creation",
+    CHARACTER_REFERENCED,
+    () => applyUndoJournal(ctx, audience.journalId, "undo"),
+  );
+  assert.deepEqual(
+    await characterRouteState(ctx, watched, people, referencedRevisions),
+    referencedBefore,
+    "a refused journal undo writes nothing",
+  );
+
+  // Take the holder reference off: the Scope change retires that anchor's
+  // Revision, and the person can then be removed and put back by the journal.
+  await updateSceneScopeFields(ctx, scenes.hold, {
+    knowledgeHolder: READER_PRINCIPAL,
+  });
+  assertStatuses(
+    await revisionStatuses(ctx, referencedRevisions),
+    { hold: "unavailable", aud: "available", other: "available" },
+    "clearing the holder retires only that anchor's Revision",
+  );
+  const revHold2 = await newRevision(ctx, scenes.hold);
+  const unreferencedRevisions = {
+    hold: revHold2,
+    aud: revAud,
+    other: revOther,
+  };
+  const holdBeforeJournal = await sceneScopeFull(ctx, scenes.hold);
+  const unreferencedUndo = await observedWrite(ctx, () =>
+    applyUndoJournal(ctx, holder.journalId, "undo"),
+  );
+  assert.equal(await codexRow(ctx, holder.entryId), null);
+  const holdAfterUndo = await sceneScopeFull(ctx, scenes.hold);
+  assert.equal(holdAfterUndo.version, holdBeforeJournal.version);
+  assert.equal(holdAfterUndo.sourceToken, holdBeforeJournal.sourceToken);
+  assertStatuses(
+    await revisionStatuses(ctx, unreferencedRevisions),
+    { hold: "available", aud: "available", other: "available" },
+    "journal undo of a person nothing references",
+  );
+  const unreferencedRedo = await observedWrite(ctx, () =>
+    applyUndoJournal(ctx, holder.journalId, "redo"),
+  );
+  assert.ok(
+    await codexRow(ctx, holder.entryId),
+    "the redo puts the person back",
+  );
+  const holdAfterRedo = await sceneScopeFull(ctx, scenes.hold);
+  assert.equal(jsonKind(holdAfterRedo.holder), "reader");
+  assert.equal(holdAfterRedo.version, holdBeforeJournal.version);
+  assertStatuses(
+    await revisionStatuses(ctx, unreferencedRevisions),
+    { hold: "available", aud: "available", other: "available" },
+    "journal redo does not name the person again",
+  );
+
+  // A delete journal: undo puts the person back, naming the person again makes
+  // the redo (delete) a refused route.
+  const redoGuard = await codexCreateCharacter(ctx, "redo-guard", "Redo Guard");
+  const deleted = await codexDelete(ctx, redoGuard.entryId, "redo-guard");
+  const deleteJournalId = String(deleted.undoJournalId);
+  assertNonEmpty(deleteJournalId, "delete journal id");
+  await applyUndoJournal(ctx, deleteJournalId, "undo");
+  assert.ok(await codexRow(ctx, redoGuard.entryId), "the delete was undone");
+  await updateSceneScopeFields(ctx, scenes.hold, {
+    knowledgeHolder: characterPrincipal(redoGuard.entryId),
+  });
+  const revHold3 = await newRevision(ctx, scenes.hold);
+  const redoWatch = { hold: scenes.hold, aud: scenes.aud, other: scenes.other };
+  const redoPeople = { redoGuard: redoGuard.entryId };
+  const redoRevisions = { hold: revHold3, aud: revAud, other: revOther };
+  const redoBefore = await characterRouteState(
+    ctx,
+    redoWatch,
+    redoPeople,
+    redoRevisions,
+  );
+  guard.deleteRedo = await expectRejected(
+    "journal redo of a delete while the person is named",
+    CHARACTER_REFERENCED,
+    () => applyUndoJournal(ctx, deleteJournalId, "redo"),
+  );
+  guard.createUndoWhileNamed = await expectRejected(
+    "journal undo of the creation while the person is named",
+    CHARACTER_REFERENCED,
+    () => applyUndoJournal(ctx, redoGuard.journalId, "undo"),
+  );
+  assert.deepEqual(
+    await characterRouteState(ctx, redoWatch, redoPeople, redoRevisions),
+    redoBefore,
+    "a refused journal redo or undo writes nothing",
+  );
+
+  // A person only a POV names, removed and put back by the journal: the POV
+  // clears with the delete, the person coming back does not name it again, and
+  // the Revision anchored there needs a new approval.
+  const journalPov = await codexCreateCharacter(ctx, "jpov", "Journal POV");
+  await treePatch(ctx, scenes.jpov, { povCharacterId: journalPov.entryId });
+  const revJpov = await newRevision(ctx, scenes.jpov);
+  const jpovRevisions = { jpov: revJpov, other: revOther };
+  const jpovBefore = await sceneScopeFull(ctx, scenes.jpov);
+  assert.equal(jpovBefore.pov, journalPov.entryId);
+  const povUndo = await observedWrite(ctx, () =>
+    applyUndoJournal(ctx, journalPov.journalId, "undo"),
+  );
+  const jpovAfterUndo = await sceneScopeFull(ctx, scenes.jpov);
+  assert.equal(await codexRow(ctx, journalPov.entryId), null);
+  assert.equal(jpovAfterUndo.pov, null);
+  assert.equal(
+    Number(jpovAfterUndo.version),
+    Number(jpovBefore.version) + 1,
+    "the journal undo advances the Scope generation once",
+  );
+  assert.deepEqual(Object.keys(povUndo.advanced), [scenes.jpov]);
+  assert.equal(Object.values(povUndo.advanced)[0], 1);
+  const afterPovUndo = await revisionStatuses(ctx, jpovRevisions);
+  assertStatuses(
+    afterPovUndo,
+    { jpov: "unavailable", other: "available" },
+    "journal undo of the POV person",
+  );
+  const povRedo = await observedWrite(ctx, () =>
+    applyUndoJournal(ctx, journalPov.journalId, "redo"),
+  );
+  assert.ok(
+    await codexRow(ctx, journalPov.entryId),
+    "the redo puts the person back",
+  );
+  const jpovAfterRedo = await sceneScopeFull(ctx, scenes.jpov);
+  assert.equal(jpovAfterRedo.pov, null, "the POV is not restored by the redo");
+  const afterPovRedo = await revisionStatuses(ctx, jpovRevisions);
+  assertStatuses(
+    afterPovRedo,
+    { jpov: "unavailable", other: "available" },
+    "journal redo of the POV person",
+  );
+  const jpovEdges = await assertProjectionEdges(
+    ctx,
+    jpovRevisions,
+    { jpov: "unavailable", other: "available" },
+    "journal undo and redo of the POV person",
+  );
+  step("journal-undo-redo-guard-and-invalidate", {
+    guard,
+    unreferencedJournal: {
+      undo: feedSummary(unreferencedUndo),
+      redo: feedSummary(unreferencedRedo),
+    },
+    povJournal: {
+      generation: [
+        jpovBefore.version,
+        jpovAfterUndo.version,
+        jpovAfterRedo.version,
+      ],
+      afterUndo: afterPovUndo,
+      afterRedo: afterPovRedo,
+      projectionEdges: jpovEdges,
+      undo: feedSummary(povUndo),
+      redo: feedSummary(povRedo),
+    },
+    note: "a person a Scope still names cannot be put back by the journal as a stale reference: the guard refuses the removal, so the A1 invalidation on re-insert is covered by the Rust x13_* tests only",
+  });
+
+  // --- 4. DEF-2 probe: the Scene patch after a journal removed its POV -----
+  const def2Person = await codexCreateCharacter(ctx, "def2", "DEF-2 Person");
+  await treePatch(ctx, scenes.def2, { povCharacterId: def2Person.entryId });
+  await applyUndoJournal(ctx, def2Person.journalId, "undo");
+  const def2Before = await sceneScopeFull(ctx, scenes.def2);
+  assert.equal(def2Before.pov, null, "the journal undo cleared the POV");
+  const def2FeedBefore = await feedEventTotals(ctx);
+  const def2Outcome = await treePatch(ctx, scenes.def2, {
+    title: "X14 S3 def2 next patch",
+  }).then(
+    () => ({ result: "accepted", error: "" }),
+    (error) => ({ result: "rejected", error: ipcFailureText(error) }),
+  );
+  const def2After = await sceneScopeFull(ctx, scenes.def2);
+  const def2FeedAfter = await feedEventTotals(ctx);
+  const def2Reproduced =
+    def2Outcome.result === "rejected" &&
+    FEED_DISCONTINUITY.test(def2Outcome.error);
+  if (def2Outcome.result === "accepted") {
+    assert.equal(def2After.title, "X14 S3 def2 next patch");
+  } else {
+    // Fail closed: a rejected patch rolled back, so nothing was written.
+    assert.deepEqual(
+      { ...def2After },
+      { ...def2Before },
+      "a rejected patch leaves the Scene and its binding untouched",
+    );
+    assert.deepEqual(
+      def2FeedAfter,
+      def2FeedBefore,
+      "a rejected patch appends no Change Feed event",
+    );
+  }
+  step("probe-def2-journal-pov-null-next-patch", {
+    result: def2Outcome.result,
+    reproduced: def2Reproduced,
+    error: def2Outcome.error.slice(0, 400),
+    rolledBack: def2Outcome.result === "rejected",
+    note: "diagnostic only (DR-X1-3-18 (3)); reproduced or not both pass",
+  });
+}
+
+// --- project snapshot (body scope) -------------------------------------------
+
+const SNAPSHOT_TREE_SELECT = `SELECT id, parent_id, node_type, title, synopsis, intent, sort_order,
+       story_time_order, story_time_label, pov_character_id, location_id,
+       chronicle_start_time, chronicle_start_minute, chronicle_start_granularity,
+       chronicle_end_time, chronicle_end_minute, chronicle_end_granularity,
+       chronicle_precision, status, content, unplaced_beats_doc, char_count,
+       created_at, updated_at
+  FROM tree_nodes WHERE project_id = ? ORDER BY id`;
+
+/** The body-owned aux scopes, in the order the renderer's restore pushes them. */
+const BODY_AUX_RESTORE_SCOPES = Object.freeze([
+  "authorship_spans",
+  "post_effect_annotations",
+  "post_effect_annotation_relations",
+  "scene_codex_pins",
+  "scene_codex_mentions",
+  "scene_beat_pov_cache",
+  "plot_threads",
+  "plot_thread_scene_links",
+  "plot_thread_branches",
+  "events",
+  "scene_events",
+  "event_participants",
+  "event_relations",
+  "project_calendar",
+]);
+
+/**
+ * Capture the project like the renderer's `createProjectSnapshot`: every tree
+ * row, the body of a Scene or note through a `content_versions` row (the INSERT
+ * is the one `createRevision` sends through Drizzle), and the Native
+ * `project_snapshot_create` aggregate for the rest.
+ */
+async function createProjectSnapshotThroughNative(ctx, label) {
+  const snapshotId = `x14-snapshot-${label}-${randomUUID()}`;
+  const createdAt = new Date().toISOString();
+  const nodes = await rows(ctx.harness, ctx.page, SNAPSHOT_TREE_SELECT, [
+    ctx.projectId,
+  ]);
+  const treeRows = [];
+  const versionIds = [];
+  for (const node of nodes) {
+    let bodyVersionId = null;
+    const hasBody =
+      (node.node_type === "scene" || node.node_type === "note") &&
+      node.content &&
+      node.content !== "{}";
+    if (hasBody) {
+      bodyVersionId = randomUUID();
+      await ctx.harness.invokeOk(ctx.page, "db_execute", {
+        sql: `INSERT INTO content_versions
+                (id, entity_type, entity_id, content, version_number, snapshot_type, created_at)
+              VALUES (?, ?, ?, ?,
+                (SELECT COALESCE(MAX(version_number), 0) + 1 FROM content_versions
+                  WHERE entity_type = ? AND entity_id = ?),
+                'manual', ?)`,
+        params: [
+          bodyVersionId,
+          node.node_type,
+          node.id,
+          node.content,
+          node.node_type,
+          node.id,
+          createdAt,
+        ],
+        method: "run",
+      });
+      versionIds.push(bodyVersionId);
+    }
+    treeRows.push({
+      snapshot_id: snapshotId,
+      node_id: node.id,
+      parent_id: node.parent_id ?? null,
+      node_type: node.node_type,
+      title: node.title,
+      synopsis: node.synopsis ?? null,
+      intent: node.intent ?? null,
+      sort_order: node.sort_order,
+      story_time_order: node.story_time_order ?? null,
+      story_time_label: node.story_time_label ?? null,
+      pov_character_id: node.pov_character_id ?? null,
+      location_id: node.location_id ?? null,
+      chronicle_start_time: node.chronicle_start_time ?? null,
+      chronicle_start_minute: node.chronicle_start_minute ?? null,
+      chronicle_start_granularity: node.chronicle_start_granularity ?? "none",
+      chronicle_end_time: node.chronicle_end_time ?? null,
+      chronicle_end_minute: node.chronicle_end_minute ?? null,
+      chronicle_end_granularity: node.chronicle_end_granularity ?? "none",
+      chronicle_precision: node.chronicle_precision ?? "exact",
+      status: node.status ?? null,
+      body_version_id: bodyVersionId,
+      unplaced_beats_doc: node.unplaced_beats_doc,
+      char_count: node.char_count,
+      created_at: node.created_at,
+      updated_at: node.updated_at,
+    });
+  }
+  await ctx.harness.invokeOk(ctx.page, "project_snapshot_create", {
+    payload: {
+      projectId: ctx.projectId,
+      snapshotId,
+      name: `X1-4 snapshot ${label}`,
+      description: null,
+      createdAt,
+      treeRows,
+      codexRows: [],
+      snippetRows: [],
+      versionIds,
+    },
+  });
+  return {
+    snapshotId,
+    sceneIds: nodes.filter((n) => n.node_type === "scene").map((n) => n.id),
+  };
+}
+
+/** The renderer's `restoreStructural` for scope `body` (codex not selected). */
+function bodyRestoreInserts(projectId, context) {
+  const liveTables = new Set(context.liveTables);
+  const liveCodexIds = new Set(context.liveCodexIds);
+  const contentById = new Map(
+    context.contentRows.map((row) => [row.id, row.content]),
+  );
+  const aux = new Map(
+    context.auxRows.map((row) => [
+      row.scope,
+      JSON.parse(row.payloadJson).rows ?? [],
+    ]),
+  );
+  const inserts = [];
+  const push = (table, row) => {
+    if (liveTables.has(table)) inserts.push({ table, row, mode: "insert" });
+  };
+  const liveOrNull = (value) =>
+    value === null || value === undefined || liveCodexIds.has(value)
+      ? (value ?? null)
+      : null;
+  for (const row of context.treeRows) {
+    const content = row.body_version_id
+      ? (contentById.get(String(row.body_version_id)) ?? "{}")
+      : "{}";
+    const now = new Date().toISOString();
+    push("tree_nodes", {
+      id: row.node_id,
+      project_id: projectId,
+      parent_id: row.parent_id ?? null,
+      node_type: row.node_type,
+      title: row.title,
+      synopsis: row.synopsis ?? null,
+      intent: row.intent ?? null,
+      sort_order: row.sort_order,
+      story_time_order: row.story_time_order ?? null,
+      story_time_label: row.story_time_label ?? null,
+      pov_character_id: liveOrNull(row.pov_character_id),
+      location_id: liveOrNull(row.location_id),
+      chronicle_start_time: row.chronicle_start_time ?? null,
+      chronicle_start_minute: row.chronicle_start_minute ?? null,
+      chronicle_start_granularity: row.chronicle_start_granularity ?? "none",
+      chronicle_end_time: row.chronicle_end_time ?? null,
+      chronicle_end_minute: row.chronicle_end_minute ?? null,
+      chronicle_end_granularity: row.chronicle_end_granularity ?? "none",
+      chronicle_precision: row.chronicle_precision ?? "exact",
+      status: row.status ?? null,
+      content,
+      unplaced_beats_doc: row.unplaced_beats_doc ?? "[]",
+      char_count: row.char_count ?? 0,
+      unplaced_beat_preview: null,
+      placed_beat_preview: null,
+      created_at: row.created_at ?? now,
+      updated_at: row.updated_at ?? now,
+    });
+  }
+  const codexRef = {
+    scene_codex_pins: "entry_id",
+    scene_codex_mentions: "codex_entry_id",
+    scene_beat_pov_cache: "pov_character_id",
+    event_participants: "codex_entry_id",
+  };
+  const auxRowCounts = {};
+  for (const scope of BODY_AUX_RESTORE_SCOPES) {
+    for (const row of aux.get(scope) ?? []) {
+      const ref = codexRef[scope];
+      if (ref && typeof row[ref] === "string" && !liveCodexIds.has(row[ref])) {
+        continue;
+      }
+      let next = row;
+      if (scope === "events") {
+        next = {
+          ...row,
+          primary_codex_id: liveOrNull(row.primary_codex_id),
+          location_codex_id: liveOrNull(row.location_codex_id),
+        };
+      } else if (scope === "scene_events") {
+        next = { ...row, incarnation_token: randomUUID() };
+      } else if (scope === "project_calendar") {
+        next = { ...row, version: 0 };
+      }
+      auxRowCounts[scope] = (auxRowCounts[scope] ?? 0) + 1;
+      push(scope, next);
+    }
+  }
+  return { inserts, auxRowCounts };
+}
+
+async function applyBodySnapshotRestore(ctx, snapshotId) {
+  const context = await ctx.harness.invokeOk(
+    ctx.page,
+    "project_snapshot_restore_context",
+    { projectId: ctx.projectId, snapshotId, scopes: ["body"] },
+  );
+  assert.equal(context.structural, true, "the snapshot is structural");
+  const { inserts, auxRowCounts } = bodyRestoreInserts(ctx.projectId, context);
+  const result = await ctx.harness.invokeOk(
+    ctx.page,
+    "project_snapshot_apply_restore",
+    {
+      payload: {
+        requestId: `x1-4-snapshot-restore:${randomUUID()}`,
+        sessionId: WRITER_SESSION_ID,
+        projectId: ctx.projectId,
+        snapshotId,
+        scopes: ["body"],
+        inserts,
+      },
+    },
+  );
+  return { result, insertCount: inserts.length, auxRowCounts };
+}
+
+async function restoreEpochCount(ctx) {
+  const result = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT COUNT(*) AS n FROM narrative_semantic_epochs
+      WHERE project_id = ? AND reason = 'restore'`,
+    [ctx.projectId],
+  );
+  return Number(result[0]?.n ?? 0);
+}
+
+/** Everything a failed restore must leave as it found it. */
+async function projectFingerprint(ctx) {
+  const trees = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT id, parent_id, version, updated_at, title, pov_character_id,
+            archived_at, content
+       FROM tree_nodes WHERE project_id = ? ORDER BY id`,
+    [ctx.projectId],
+  );
+  const bindings = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT scene_id, scene_incarnation_id, version, source_token,
+            knowledge_holder_json, audience_json
+       FROM narrative_scene_scope_bindings WHERE project_id = ? ORDER BY scene_id`,
+    [ctx.projectId],
+  );
+  const epochs = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT COUNT(*) AS n FROM narrative_semantic_epochs WHERE project_id = ?`,
+    [ctx.projectId],
+  );
+  return {
+    trees,
+    bindings,
+    epochs: Number(epochs[0]?.n ?? 0),
+    restoreEpochs: await restoreEpochCount(ctx),
+    feed: await feedEventTotals(ctx),
+    revisions: await revisionStatuses(
+      ctx,
+      Object.fromEntries(ctx.revisionLog.map((r) => [r.name, r])),
+    ),
+  };
+}
+
+/**
+ * One restore attempt over a fixture of two Scenes: `tk` is never body-saved
+ * (version 0), so the snapshot row puts back the very body Source token it had,
+ * and `bs` has a body saved before and another after the snapshot.  The
+ * attempt either restores or fails with the Change Feed chain error; a failure
+ * is checked to have written nothing.
+ */
+async function runSnapshotRestoreAttempt(ctx, label) {
+  const folderId = `x14-snap-${label}-folder-${randomUUID()}`;
+  await treeCreate(ctx, {
+    id: folderId,
+    nodeType: "folder",
+    title: `X14 snapshot ${label}`,
+    sortOrder: `x14-snap-${label}`,
+  });
+  const ids = {
+    tk: `x14snap-${label}-tk-${randomUUID()}`,
+    bs: `x14snap-${label}-bs-${randomUUID()}`,
+    late: `x14snap-${label}-late-${randomUUID()}`,
+  };
+  for (const [index, name] of ["tk", "bs"].entries()) {
+    await treeCreate(ctx, {
+      id: ids[name],
+      nodeType: "scene",
+      title: `X14 snapshot ${label} ${name}`,
+      parentId: folderId,
+      sortOrder: `a${index}`,
+    });
+  }
+  await saveBodyThroughNative(ctx, ids.bs, "SnapBodyBefore");
+  const revTk = await newRevision(ctx, ids.tk);
+  const revBs = await newRevision(ctx, ids.bs);
+  const tkAtSnapshot = await sceneScopeFull(ctx, ids.tk);
+  assert.equal(Number(tkAtSnapshot.treeVersion), 0, "tk is never body-saved");
+  const snapshot = await createProjectSnapshotThroughNative(ctx, label);
+  assert.ok(
+    snapshot.sceneIds.includes(ids.tk) && snapshot.sceneIds.includes(ids.bs),
+  );
+
+  // The project moves on after the snapshot.
+  await treeCreate(ctx, {
+    id: ids.late,
+    nodeType: "scene",
+    title: `X14 snapshot ${label} late`,
+    parentId: folderId,
+    sortOrder: "a9",
+  });
+  await treePatch(ctx, ids.tk, { title: `X14 snapshot ${label} tk edited` });
+  await saveBodyThroughNative(ctx, ids.bs, "SnapBodyAfter");
+  const tkEdited = await sceneScopeFull(ctx, ids.tk);
+  assert.notEqual(
+    bodyToken(tkEdited),
+    bodyToken(tkAtSnapshot),
+    "the title edit moved tk's body Source token away from its snapshot value",
+  );
+  const preStatuses = await revisionStatuses(ctx, { tk: revTk, bs: revBs });
+  assertStatuses(
+    preStatuses,
+    { tk: "available", bs: "available" },
+    "title and body edits do not retire the fixture Revisions",
+  );
+  const bindingsBefore = await snapshotBindings(ctx);
+  const fingerprintBefore = await projectFingerprint(ctx);
+
+  const attempt = await applyBodySnapshotRestore(ctx, snapshot.snapshotId).then(
+    (applied) => ({ restored: true, applied, error: "" }),
+    (error) => ({
+      restored: false,
+      applied: null,
+      error: ipcFailureText(error),
+    }),
+  );
+  const fingerprintAfter = await projectFingerprint(ctx);
+  if (!attempt.restored) {
+    assert.match(
+      attempt.error,
+      FEED_DISCONTINUITY,
+      `the ${label} restore may fail only on the Change Feed chain (DEF-1): ${attempt.error.slice(0, 300)}`,
+    );
+    assert.deepEqual(
+      fingerprintAfter,
+      fingerprintBefore,
+      "a failed restore rolls back: no tree, binding, Feed, epoch or Revision change",
+    );
+  }
+  return {
+    label,
+    ids,
+    revisions: { tk: revTk, bs: revBs },
+    snapshot,
+    tkAtSnapshot,
+    tkEdited,
+    bindingsBefore,
+    fingerprintBefore,
+    fingerprintAfter,
+    attempt,
+  };
+}
+
+/**
+ * A second project of the workspace (the product's own `project_create`) whose
+ * Scenes have no Scope edit history, with two persons for its Revisions.  It
+ * is the "basic" fixture of the DEF-1 probe and the other project of the
+ * cross-project prepare negative.
+ */
+async function createSecondProject(ctx) {
+  const projectId = `x14-second-project-${randomUUID()}`;
+  const now = new Date().toISOString();
+  await ctx.harness.invokeOk(ctx.page, "project_create", {
+    payload: {
+      ...writerIdentity(projectId, "project-create"),
+      projectId,
+      title: "X1-4 second project",
+      genre: null,
+      pov: null,
+      tense: null,
+      language: null,
+      styleGuide: null,
+      aiInstructions: null,
+      outline: null,
+      targetReaders: null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  });
+  const second = {
+    ...ctx,
+    projectId,
+    pairs: [],
+    pairIndex: 0,
+    revisionLog: [],
+  };
+  const persons = [];
+  for (const name of ["Second One", "Second Two"]) {
+    persons.push(
+      (await codexCreateCharacter(second, `second-${persons.length}`, name))
+        .entryId,
+    );
+  }
+  second.pairs = [{ entityIds: persons, relationIds: [] }];
+  return second;
+}
+
+function attemptSummary(run) {
+  return {
+    label: run.label,
+    restored: run.attempt.restored,
+    error: run.attempt.error.slice(0, 400),
+    insertCount: run.attempt.applied?.insertCount ?? null,
+    auxRowCounts: run.attempt.applied?.auxRowCounts ?? null,
+    result: run.attempt.applied?.result ?? null,
+    rolledBack: run.attempt.restored
+      ? null
+      : JSON.stringify(run.fingerprintAfter) ===
+        JSON.stringify(run.fingerprintBefore),
+  };
+}
+
+function recordSnapshotAttempt(ctx, run) {
+  const summary = attemptSummary(run);
+  ctx.harness.recordTimeline(
+    `${NIR1_SCENE_SCOPE_PROJECTION_JOURNEY_ID}/snapshot-attempt-${run.label}`,
+    summary,
+  );
+  process.stdout.write(
+    `[electron:product] ${NIR1_SCENE_SCOPE_PROJECTION_JOURNEY_ID} snapshot attempt ${run.label} ${JSON.stringify(summary)}\n`,
+  );
+  return summary;
+}
+
+async function runSnapshotChecks(rootCtx, step) {
+  // The persons of the other project, for a cross-project prepare negative.
+  const second = await createSecondProject(rootCtx);
+  const foreignSceneId = `x14-foreign-scene-${randomUUID()}`;
+  await treeCreate(second, {
+    id: foreignSceneId,
+    nodeType: "scene",
+    title: "X14 other project scene",
+    sortOrder: "f0",
+  });
+  const bindingBefore = await captureWorkspaceBinding(
+    rootCtx.harness,
+    rootCtx.page,
+    rootCtx.workspace,
+  );
+  const countsBefore = await countRejectionTables(
+    rootCtx.harness,
+    rootCtx.page,
+    rootCtx.projectId,
+  );
+  const foreignRejection = await expectRejected(
+    "prepare of another project's Scene",
+    /NIR1_ENTITY_RELATION_PREPARE_SCENE_UNAVAILABLE|NEX_SOURCE_MISSING|NEX_SOURCE_PROJECT_MISMATCH/u,
+    () =>
+      rootCtx.harness.invokeOk(
+        rootCtx.page,
+        "nir1_entity_relation_revision_prepare",
+        {
+          payload: {
+            projectId: rootCtx.projectId,
+            sceneId: foreignSceneId,
+            entityIds: [rootCtx.entityIds.leika],
+            relationIds: [],
+          },
+          workspaceBinding: bindingBefore,
+        },
+      ),
+  );
+  const countsAfter = await countRejectionTables(
+    rootCtx.harness,
+    rootCtx.page,
+    rootCtx.projectId,
+  );
+  assert.deepEqual(countsAfter, countsBefore, "the rejection writes nothing");
+  step("prepare-rejects-other-project-scene", {
+    otherProjectId: second.projectId,
+    rejection: foreignRejection,
+    countsBefore,
+    countsAfter,
+  });
+
+  const ctx = rootCtx;
+  let contractCtx = ctx;
+  const rich = await runSnapshotRestoreAttempt(ctx, "rich");
+  const attempts = [recordSnapshotAttempt(ctx, rich)];
+  let contract = rich.attempt.restored ? rich : null;
+  if (!contract) {
+    const basic = await runSnapshotRestoreAttempt(second, "basic");
+    attempts.push(recordSnapshotAttempt(ctx, basic));
+    contract = basic.attempt.restored ? basic : null;
+    contractCtx = second;
+  }
+  // An unrelated Change Feed chain observation: delete the Scene the trash
+  // restore of the matrix made.  A rejected delete must roll back.
+  const trashScenes = await rows(
+    ctx.harness,
+    ctx.page,
+    `SELECT id FROM tree_nodes WHERE project_id = ? AND id LIKE 'restored-scene:%'`,
+    [ctx.projectId],
+  );
+  const trashDelete = [];
+  for (const { id } of trashScenes.slice(0, 1)) {
+    const before = await sceneScopeFull(ctx, String(id)).catch(() => null);
+    const outcome = await treeDelete(ctx, String(id)).then(
+      () => ({ result: "accepted", error: "" }),
+      (error) => ({ result: "rejected", error: ipcFailureText(error) }),
+    );
+    if (outcome.result === "rejected" && before) {
+      assert.deepEqual(
+        await sceneScopeFull(ctx, String(id)),
+        before,
+        "a rejected delete leaves the Scene and its binding untouched",
+      );
+    }
+    trashDelete.push({
+      sceneId: String(id),
+      result: outcome.result,
+      error: outcome.error.slice(0, 400),
+    });
+  }
+  step("probe-def1-snapshot-restore-feed", {
+    reproduced: attempts.map((a) => !a.restored),
+    attempts,
+    trashRestoredSceneDelete: trashDelete,
+    note: "diagnostic only (DR-X1-2-10 (2)); restored or failed on the Change Feed chain both pass, a failure must roll back everything",
+  });
+  if (!contract) {
+    const unmet = {
+      status: "unmet-by-DEF-1",
+      reason:
+        "the body restore fails on NARRATIVE_CHANGE_FEED_DISCONTINUITY both for the project with Scope edit history and for a second project with no Scope edit",
+      attempts,
+    };
+    step("snapshot-body-restore-recreates-bindings", unmet);
+    step("snapshot-restore-epoch-keeps-revisions-unavailable", unmet);
+    step("snapshot-token-return-stays-unavailable", unmet);
+    return;
+  }
+  const cctx = contractCtx;
+
+  const { ids } = contract;
+  const bindingsAfter = await snapshotBindings(cctx);
+  const recreated = {};
+  for (const sceneId of contract.snapshot.sceneIds) {
+    const before = contract.bindingsBefore.get(sceneId);
+    const after = bindingsAfter.get(sceneId);
+    assert.ok(after, `${sceneId} has a binding after the restore`);
+    if (before) {
+      assert.notEqual(
+        after.incarnation,
+        before.incarnation,
+        `${sceneId}: the restore creates a new Scene incarnation`,
+      );
+      assert.notEqual(after.sourceToken, before.sourceToken);
+    }
+    assert.equal(
+      Number(after.version),
+      2,
+      `${sceneId}: the binding restarts at generation 1, plus the restore's own refresh`,
+    );
+    recreated[sceneId] = Number(after.version);
+  }
+  const gone = await rows(
+    cctx.harness,
+    cctx.page,
+    `SELECT COUNT(*) AS n FROM tree_nodes WHERE project_id = ? AND id = ?`,
+    [cctx.projectId, ids.late],
+  );
+  assert.equal(Number(gone[0].n), 0, "a Scene made after the snapshot is gone");
+  assert.equal(bindingsAfter.has(ids.late), false);
+  const bodyRows = await rows(
+    cctx.harness,
+    cctx.page,
+    `SELECT content FROM tree_nodes WHERE project_id = ? AND id = ?`,
+    [cctx.projectId, ids.bs],
+  );
+  assert.match(String(bodyRows[0].content), /SnapBodyBefore/u);
+  assert.doesNotMatch(String(bodyRows[0].content), /SnapBodyAfter/u);
+  step("snapshot-body-restore-recreates-bindings", {
+    attempt: contract.label,
+    restoredSceneCount: contract.snapshot.sceneIds.length,
+    generations: recreated,
+    lateSceneGone: true,
+    bodyRestored: true,
+    result: contract.attempt.applied.result,
+    insertCount: contract.attempt.applied.insertCount,
+  });
+
+  // The restore rotates the semantic epoch; no Revision approved before it is
+  // readable afterwards, whatever its Scene's Scope looks like.
+  const restoreEpochs = [
+    contract.fingerprintBefore.restoreEpochs,
+    contract.fingerprintAfter.restoreEpochs,
+  ];
+  assert.equal(restoreEpochs[1], restoreEpochs[0] + 1, "one restore epoch");
+  const everyRevision = Object.fromEntries(
+    cctx.revisionLog.map((revision) => [revision.name, revision]),
+  );
+  const afterStatuses = await revisionStatuses(cctx, everyRevision);
+  for (const [name, status] of Object.entries(afterStatuses)) {
+    assert.notEqual(
+      status,
+      "available",
+      `${name} must not survive the restore`,
+    );
+  }
+  step("snapshot-restore-epoch-keeps-revisions-unavailable", {
+    restoreEpochs,
+    revisionCount: cctx.revisionLog.length,
+    statuses: afterStatuses,
+    reasons: [...new Set(Object.values(afterStatuses))],
+  });
+
+  // The restored row carries the very body Source token it had at capture,
+  // yet its Revision stays unavailable (new incarnation and a new epoch).
+  const tkAfter = await sceneScopeFull(cctx, ids.tk);
+  assert.equal(Number(tkAfter.treeVersion), 0);
+  assert.equal(
+    bodyToken(tkAfter),
+    bodyToken(contract.tkAtSnapshot),
+    "the restore puts the snapshot-time body Source token back",
+  );
+  assert.notEqual(bodyToken(tkAfter), bodyToken(contract.tkEdited));
+  assert.notEqual(tkAfter.incarnation, contract.tkAtSnapshot.incarnation);
+  assert.notEqual(tkAfter.sourceToken, contract.tkAtSnapshot.sourceToken);
+  const tkStatuses = await revisionStatuses(cctx, {
+    tk: contract.revisions.tk,
+    bs: contract.revisions.bs,
+  });
+  assert.notEqual(tkStatuses.tk, "available");
+  assert.notEqual(tkStatuses.bs, "available");
+  // A new approval after the restore is the only way back: it is readable.
+  let fresh;
+  try {
+    const revFresh = await newRevision(cctx, ids.tk);
+    fresh = (await revisionStatuses(cctx, { fresh: revFresh })).fresh;
+    assert.equal(fresh, "available", "a new approval after the restore reads");
+  } catch (error) {
+    if (error instanceof assert.AssertionError) throw error;
+    fresh = `prepare refused: ${ipcFailureText(error).slice(0, 200)}`;
+  }
+  step("snapshot-token-return-stays-unavailable", {
+    sceneId: ids.tk,
+    bodyToken: {
+      atSnapshot: bodyToken(contract.tkAtSnapshot),
+      beforeRestore: bodyToken(contract.tkEdited),
+      afterRestore: bodyToken(tkAfter),
+    },
+    incarnation: [contract.tkAtSnapshot.incarnation, tkAfter.incarnation],
+    statuses: tkStatuses,
+    freshRevisionAfterRestore: fresh,
+  });
+}
+
+async function runCharacterJournalAndSnapshotChecks(ctx, step) {
+  await runCharacterAndJournalChecks(ctx, step);
+  await runSnapshotChecks(ctx, step);
+}
+
 export async function runNir1SceneScopeProjectionJourney(
   harness,
   { configureWorkspace },
@@ -2241,28 +3490,31 @@ export async function runNir1SceneScopeProjectionJourney(
     });
 
     await closeTypedReviewDialog(page);
-    await runScopeEditMatrix(
-      {
-        harness,
-        page,
-        workspace,
-        projectId,
-        entityIds,
-        relationIds,
-        pairs: [
-          {
-            entityIds: [entityIds.mira, entityIds.zeno],
-            relationIds: [relationIds.two],
-          },
-          {
-            entityIds: [entityIds.leika, entityIds.belka],
-            relationIds: [relationIds.one],
-          },
-        ],
-        pairIndex: 0,
-      },
-      step,
-    );
+    const matrixContext = {
+      harness,
+      page,
+      workspace,
+      projectId,
+      entityIds,
+      relationIds,
+      pairs: [
+        {
+          entityIds: [entityIds.mira, entityIds.zeno],
+          relationIds: [relationIds.two],
+        },
+        {
+          entityIds: [entityIds.leika, entityIds.belka],
+          relationIds: [relationIds.one],
+        },
+      ],
+      pairIndex: 0,
+      revisionLog: [
+        { name: "r1", ...r1 },
+        { name: "r2", ...r2 },
+      ],
+    };
+    await runScopeEditMatrix(matrixContext, step);
+    await runCharacterJournalAndSnapshotChecks(matrixContext, step);
 
     assert.deepEqual(
       executedSteps,
