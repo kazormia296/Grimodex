@@ -2960,6 +2960,9 @@ pub(crate) mod tests {
                     Some((position, entry.input_ordinal()))
                 }
                 PreparedPayloadPosition::SystemCurrentScene => None,
+                PreparedPayloadPosition::HistoryMessage(_) => {
+                    panic!("a request without history has no history position")
+                }
             })
             .collect::<Vec<_>>();
         assert_eq!(codex_positions.len(), lines.len());
