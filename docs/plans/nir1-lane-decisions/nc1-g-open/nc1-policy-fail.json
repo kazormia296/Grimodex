@@ -11,7 +11,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 35.8 ms",
+    "nc1 orchestrator start => true in 53.5 ms",
     "window loadURL => error:ERR_FAILED"
   ],
   "webPreferences": {},
@@ -36,8 +36,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 35.8,
-    "listenerPort": 34993,
+    "startMs": 53.5,
+    "listenerPort": 34163,
     "listenerHits": 1,
     "overLimit": 0,
     "maxActive": 1,

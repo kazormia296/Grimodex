@@ -47,7 +47,7 @@ nc1-fm-no-proxy: 行 123（判定 87: tcp 53／udp 34／hint 0／unclassified 0�
   不活性の行（合否に数えない）20 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, main.stun.sentinel, main.stuns.sentinel, main.turn-udp.sentinel, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443, main.stun.reload-localhost, main.turn-udp.reload-localhost, main.stun.nav-localhost, main.turn-udp.nav-localhost
   exit=1
 nc1-fm-no-neg-loopback: 行 123（判定 87: tcp 53／udp 34／hint 0／unclassified 0／対象外の行への到達 0、対象外 36〔うち .local 0、不活性 20〕、区分: 活性 62／canary 不可 0／不活性 20）合格 62 不合格 25 記録全体の不合格 2
-  FAIL(記録全体) 記録全体で canary 到達 8545 件（totals.canaryHits）
+  FAIL(記録全体) 記録全体で canary 到達 8548 件（totals.canaryHits）
   FAIL(記録全体) canary に届いた probe 25 行（totals.leakedProbes）
   不活性の行（合否に数えない）20 行: main.stun.ext, main.stuns.ext, main.turn-udp.ext, main.turn-tcp.ext, main.turns.ext, main.turns-tcp.ext, main.stun.localhost, main.stuns.localhost, main.turn-udp.localhost, main.stun.sentinel, main.stuns.sentinel, main.turn-udp.sentinel, gvt1.turn-tcp.443, gvt1.turns.443, gvt1.turn-tcp.8443, gvt1.turns.8443, main.stun.reload-localhost, main.turn-udp.reload-localhost, main.stun.nav-localhost, main.turn-udp.nav-localhost
   exit=1
@@ -164,5 +164,5 @@ DevTools: {"pass":true,"failures":[]}
 
 ## 起動順序（env の proxy なし／ip／localhost × 各 5 回）
 product-nc1: {"pass":true,"failures":[],"runs":15}
-NC-1 の所要 nc1Ms: min 36 中央値 37 max 44（n=15）／ready から窓の読込の完了: NC-1 あり min 140 中央値 145 max 158、product-none min 104 中央値 108 max 128（n=9）
+NC-1 の所要 nc1Ms: min 32 中央値 36 max 38（n=15）／ready から窓の読込の完了: NC-1 あり min 137 中央値 145 max 165、product-none min 101 中央値 107 max 114（n=9）
 product-none（対照。赤が期待）: {"pass":false}

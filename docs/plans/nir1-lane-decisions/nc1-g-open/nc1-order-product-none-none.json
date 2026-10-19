@@ -18,18 +18,18 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "registerSecurityHandlers (before ready)": -49,
+        "registerSecurityHandlers (before ready)": -52,
         "ready": 0,
         "applySessionPermissionPolicy done": 3,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
-        "BrowserWindow created": 22,
-        "window loaded": 109
+        "BrowserWindow created": 23,
+        "window loaded": 104
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 42,
+          "startMsFromReady": 44,
           "startBeforeSetProxyDone": null,
           "proxyInfo": [
             "DIRECT"
@@ -40,14 +40,14 @@
       ],
       "nc1Ms": null,
       "nc1Marks": {
-        "registerSecurityHandlers (before ready)": -49,
+        "registerSecurityHandlers (before ready)": -52,
         "applySessionPermissionPolicy done": 3,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
-        "BrowserWindow created": 22,
-        "window loaded": 109
+        "BrowserWindow created": 23,
+        "window loaded": 104
       },
-      "readyToWindowLoadedMs": 109,
+      "readyToWindowLoadedMs": 104,
       "envProxyConnects": [],
       "blackholeHits": 0,
       "dictionaries": [],
@@ -69,18 +69,18 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "registerSecurityHandlers (before ready)": -52,
+        "registerSecurityHandlers (before ready)": -53,
         "ready": 0,
-        "applySessionPermissionPolicy done": 3,
-        "installProductDownloadGuard done": 3,
+        "applySessionPermissionPolicy done": 2,
+        "installProductDownloadGuard done": 2,
         "registerAppProtocolHandler done": 3,
-        "BrowserWindow created": 27,
-        "window loaded": 109
+        "BrowserWindow created": 22,
+        "window loaded": 107
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 48,
+          "startMsFromReady": 43,
           "startBeforeSetProxyDone": null,
           "proxyInfo": [
             "DIRECT"
@@ -91,14 +91,14 @@
       ],
       "nc1Ms": null,
       "nc1Marks": {
-        "registerSecurityHandlers (before ready)": -52,
-        "applySessionPermissionPolicy done": 3,
-        "installProductDownloadGuard done": 3,
+        "registerSecurityHandlers (before ready)": -53,
+        "applySessionPermissionPolicy done": 2,
+        "installProductDownloadGuard done": 2,
         "registerAppProtocolHandler done": 3,
-        "BrowserWindow created": 27,
-        "window loaded": 109
+        "BrowserWindow created": 22,
+        "window loaded": 107
       },
-      "readyToWindowLoadedMs": 109,
+      "readyToWindowLoadedMs": 107,
       "envProxyConnects": [],
       "blackholeHits": 0,
       "dictionaries": [],
@@ -120,13 +120,13 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "registerSecurityHandlers (before ready)": -49,
+        "registerSecurityHandlers (before ready)": -48,
         "ready": 0,
         "applySessionPermissionPolicy done": 2,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
         "BrowserWindow created": 22,
-        "window loaded": 104
+        "window loaded": 107
       },
       "dictionaryRequests": [
         {
@@ -142,14 +142,14 @@
       ],
       "nc1Ms": null,
       "nc1Marks": {
-        "registerSecurityHandlers (before ready)": -49,
+        "registerSecurityHandlers (before ready)": -48,
         "applySessionPermissionPolicy done": 2,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
         "BrowserWindow created": 22,
-        "window loaded": 104
+        "window loaded": 107
       },
-      "readyToWindowLoadedMs": 104,
+      "readyToWindowLoadedMs": 107,
       "envProxyConnects": [],
       "blackholeHits": 0,
       "dictionaries": [],

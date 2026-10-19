@@ -23,20 +23,20 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 34.7 ms",
-    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:33735",
-    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:33735",
-    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:33735",
-    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:33735",
-    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:33735",
-    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:33735",
+    "nc1 orchestrator start => true in 37.5 ms",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:43175",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:43175",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:43175",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:43175",
+    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:43175",
+    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:43175",
     "updaterSession.resolveProxy(https://github.com/) => DIRECT",
     "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
     "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
     "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(redirector.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(github.com) => [\"20.27.177.113\"]",
-    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.110.133\",\"185.199.111.133\",\"185.199.108.133\",\"185.199.109.133\"]",
+    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.109.133\",\"185.199.110.133\",\"185.199.111.133\",\"185.199.108.133\"]",
     "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]",
     "resolveHost(127.0.0.1) => [\"127.0.0.1\"]",
@@ -69,8 +69,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 34.7,
-    "listenerPort": 33735,
+    "startMs": 37.5,
+    "listenerPort": 43175,
     "listenerHits": 182,
     "overLimit": 0,
     "maxActive": 60,
@@ -1296,9 +1296,7 @@
         ""
       ],
       "httpHits": 0,
-      "dnsNames": [
-        "objects.githubusercontent.com[rc0]"
-      ]
+      "dnsNames": []
     },
     {
       "id": "rs1.dns-prefetch.objects.githubusercontent.com",
@@ -1715,14 +1713,14 @@
       },
       "rawRequestHosts": {
         "127.0.0.1:0": 3,
-        "127.0.0.1:33735": 182,
+        "127.0.0.1:43175": 182,
         "app://github.com": 2,
         "app://localhost": 1,
         "app://objects.githubusercontent.com": 2,
         "app://release-assets.githubusercontent.com": 2,
         "app://~notfound": 1,
         "github.com:0": 2,
-        "http://~notfound:36381": 5,
+        "http://~notfound:33723": 5,
         "https://~notfound": 4,
         "localhost:0": 1,
         "release-assets.githubusercontent.com:0": 2,
@@ -1748,7 +1746,7 @@
       "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic"
     ],
     "proxyInfos": [
-      "SOCKS5 127.0.0.1:33735",
+      "SOCKS5 127.0.0.1:43175",
       "DIRECT"
     ]
   },
@@ -1757,7 +1755,7 @@
     "release-assets.githubusercontent.com[rc0]",
     "objects.githubusercontent.com[rc0]"
   ],
-  "dnsRowCount": 6,
+  "dnsRowCount": 5,
   "timedOut": false,
   "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
 }

@@ -25,7 +25,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 parts(drop:policy) start => true in 29.9 ms",
+    "nc1 parts(drop:policy) start => true in 34.8 ms",
     "after churn: window eval => 2, crashed=false"
   ],
   "webPreferences": {
@@ -63,8 +63,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 29.9,
-    "listenerPort": 44607,
+    "startMs": 34.8,
+    "listenerPort": 42159,
     "listenerHits": 3949,
     "overLimit": 2058,
     "maxActive": 256,
