@@ -322,7 +322,10 @@ test("journey replays the journal and restores the snapshot without an Agent cap
     assert.ok(NIR1_SCENE_SCOPE_PROJECTION_STEPS.includes(probe));
   }
   assert.match(source, /NARRATIVE_CHANGE_FEED_DISCONTINUITY/u);
-  assert.match(source, /unmet-by-DEF-1/u);
+  // Fail-closed: the basic project's restore must succeed, no "unmet" pass.
+  assert.equal(source.includes("unmet-by-DEF-1"), false);
+  assert.match(source, /basic\.attempt\.restored,\s*true/u);
+  assert.match(source, /unavailable:revision-restore-invalidated/u);
   // The snapshot restore is body-scope only (codex rows stay out of the plan).
   assert.match(source, /scopes: \["body"\]/u);
 });

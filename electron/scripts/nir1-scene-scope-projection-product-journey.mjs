@@ -2281,7 +2281,19 @@ async function runCharacterAndJournalChecks(ctx, step) {
     FEED_DISCONTINUITY.test(def2Outcome.error);
   if (def2Outcome.result === "accepted") {
     assert.equal(def2After.title, "X14 S3 def2 next patch");
+    assert.ok(
+      def2FeedAfter.events > def2FeedBefore.events &&
+        def2FeedAfter.head !== def2FeedBefore.head,
+      "an accepted patch appends Change Feed events and moves the head",
+    );
   } else {
+    // Only the known Change Feed chain error may reject it; any other
+    // refusal would be a different defect, not DEF-2.
+    assert.match(
+      def2Outcome.error,
+      FEED_DISCONTINUITY,
+      `the DEF-2 patch may fail only on the Change Feed chain: ${def2Outcome.error.slice(0, 300)}`,
+    );
     // Fail closed: a rejected patch rolled back, so nothing was written.
     assert.deepEqual(
       { ...def2After },
@@ -2803,16 +2815,21 @@ async function runSnapshotChecks(rootCtx, step) {
   });
 
   const ctx = rootCtx;
-  let contractCtx = ctx;
+  // The rich project (Scope edit history) may fail on the Change Feed chain
+  // (DEF-1, a diagnostic probe).  The basic project (no Scope edit history) is
+  // the contract of draft test 10 and MUST restore: if it fails the journey
+  // fails (fail-closed), never an "unmet" pass.
   const rich = await runSnapshotRestoreAttempt(ctx, "rich");
   const attempts = [recordSnapshotAttempt(ctx, rich)];
-  let contract = rich.attempt.restored ? rich : null;
-  if (!contract) {
-    const basic = await runSnapshotRestoreAttempt(second, "basic");
-    attempts.push(recordSnapshotAttempt(ctx, basic));
-    contract = basic.attempt.restored ? basic : null;
-    contractCtx = second;
-  }
+  const basic = await runSnapshotRestoreAttempt(second, "basic");
+  attempts.push(recordSnapshotAttempt(ctx, basic));
+  assert.equal(
+    basic.attempt.restored,
+    true,
+    `the body restore of a project without Scope edit history must succeed: ${basic.attempt.error.slice(0, 300)}`,
+  );
+  const contract = rich.attempt.restored ? rich : basic;
+  const contractCtx = rich.attempt.restored ? ctx : second;
   // An unrelated Change Feed chain observation: delete the Scene the trash
   // restore of the matrix made.  A rejected delete must roll back.
   const trashScenes = await rows(
@@ -2845,20 +2862,8 @@ async function runSnapshotChecks(rootCtx, step) {
     reproduced: attempts.map((a) => !a.restored),
     attempts,
     trashRestoredSceneDelete: trashDelete,
-    note: "diagnostic only (DR-X1-2-10 (2)); restored or failed on the Change Feed chain both pass, a failure must roll back everything",
+    note: "diagnostic only for the rich project (DR-X1-2-10 (2)); restored or failed on the Change Feed chain both pass and a failure must roll back everything. The basic project's restore is asserted separately",
   });
-  if (!contract) {
-    const unmet = {
-      status: "unmet-by-DEF-1",
-      reason:
-        "the body restore fails on NARRATIVE_CHANGE_FEED_DISCONTINUITY both for the project with Scope edit history and for a second project with no Scope edit",
-      attempts,
-    };
-    step("snapshot-body-restore-recreates-bindings", unmet);
-    step("snapshot-restore-epoch-keeps-revisions-unavailable", unmet);
-    step("snapshot-token-return-stays-unavailable", unmet);
-    return;
-  }
   const cctx = contractCtx;
 
   const { ids } = contract;
@@ -2921,10 +2926,10 @@ async function runSnapshotChecks(rootCtx, step) {
   );
   const afterStatuses = await revisionStatuses(cctx, everyRevision);
   for (const [name, status] of Object.entries(afterStatuses)) {
-    assert.notEqual(
+    assert.equal(
       status,
-      "available",
-      `${name} must not survive the restore`,
+      "unavailable:revision-restore-invalidated",
+      `${name} must be retired by the restore epoch (draft F13)`,
     );
   }
   step("snapshot-restore-epoch-keeps-revisions-unavailable", {
@@ -2953,15 +2958,9 @@ async function runSnapshotChecks(rootCtx, step) {
   assert.notEqual(tkStatuses.tk, "available");
   assert.notEqual(tkStatuses.bs, "available");
   // A new approval after the restore is the only way back: it is readable.
-  let fresh;
-  try {
-    const revFresh = await newRevision(cctx, ids.tk);
-    fresh = (await revisionStatuses(cctx, { fresh: revFresh })).fresh;
-    assert.equal(fresh, "available", "a new approval after the restore reads");
-  } catch (error) {
-    if (error instanceof assert.AssertionError) throw error;
-    fresh = `prepare refused: ${ipcFailureText(error).slice(0, 200)}`;
-  }
+  const revFresh = await newRevision(cctx, ids.tk);
+  const fresh = (await revisionStatuses(cctx, { fresh: revFresh })).fresh;
+  assert.equal(fresh, "available", "a new approval after the restore reads");
   step("snapshot-token-return-stays-unavailable", {
     sceneId: ids.tk,
     bodyToken: {
