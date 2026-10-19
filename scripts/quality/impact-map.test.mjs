@@ -605,6 +605,8 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_budget.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_adoption.rs",
   ];
   const tests = [
     "src-tauri/crates/grimodex-core/tests/narrative_nir1_receipt.rs",
@@ -620,6 +622,13 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing_session_tests.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_context.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_requalification.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_budget.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_adoption.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_budget_tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_adoption_tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_adoption_session_tests.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_history_packing_session_tests.rs",
+    "electron/native/grimodex-node/src/nir1_history_turns_tests.rs",
   ];
   const nativeAcceptance = "electron/native/grimodex-node/src/nir1_graph_activation_tests.rs";
   const g01Assets = ["evals/nir1-g01/fixture.v1.json", "src/features/related-scenes/nir1G01Feasibility.test.ts"];
@@ -697,6 +706,9 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation::history_context::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_history_context::tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_history_requalification::tests -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_history_budget -- --test-threads=1",
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_history_adoption -- --test-threads=1",
+    "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_prepared_request::history_turns_tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib nir1_generation::tests::hc1_reads -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --lib narrative_extraction::nir1_packing -- --test-threads=1",
     "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib nir1_generation::tests -- --test-threads=1",

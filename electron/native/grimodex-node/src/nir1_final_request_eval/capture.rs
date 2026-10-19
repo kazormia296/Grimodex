@@ -220,6 +220,9 @@ pub(crate) fn render_correspondence_json(rows: &[PreparedRenderCorrespondence]) 
                     PreparedPayloadPosition::SystemCodexEntry(index) => {
                         json!({ "kind": "system-codex-entry", "index": index })
                     }
+                    PreparedPayloadPosition::HistoryMessage(index) => {
+                        json!({ "kind": "history-message", "index": index })
+                    }
                 };
                 json!({ "position": position, "inputOrdinal": row.input_ordinal() })
             })

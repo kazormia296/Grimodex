@@ -3045,3 +3045,134 @@ test("template-forbidden: a forbidden template that resolves into an expected en
     String(codes(entry)),
   );
 });
+
+// ------------------------------------------------- history messages (DI-1b)
+
+/**
+ * Puts history messages between the system message and the current Human of a
+ * request's payload and names each in the render correspondence (the input
+ * rows are appended after the existing ones, as the renderer's rows are).
+ */
+function addHistory(request, history, { correspondence = true } = {}) {
+  repayload(request, (payload) => {
+    payload.messages.splice(
+      1,
+      0,
+      ...history.map(({ role, content }) => ({ role, content })),
+    );
+  });
+  const rendered = request.capture.rendered;
+  const rows = history.map((message) => {
+    const inputOrdinal = rendered.inputReferences.length;
+    rendered.inputReferences.push({
+      role: message.role,
+      target: { kind: "message", versionId: `history:${inputOrdinal}` },
+    });
+    return inputOrdinal;
+  });
+  if (correspondence) {
+    rendered.renderCorrespondence = [
+      ...rendered.renderCorrespondence,
+      ...rows.map((inputOrdinal, index) => ({
+        position: { kind: "history-message", index },
+        inputOrdinal,
+      })),
+    ];
+    request.candidate.renderCorrespondence = rendered.renderCorrespondence;
+  }
+}
+
+const HISTORY = [
+  { role: "user", content: "an earlier request" },
+  { role: "assistant", content: "an earlier reply" },
+];
+
+test("history_positions: a payload with history messages is cut by the render correspondence, and a DP-H request holds none", () => {
+  const w = world();
+  addHistory(requestOf(w.receipt, "P-01", positiveId("P-01")), HISTORY);
+  const entry = result(score(w), "P-01", positiveId("P-01"));
+  assert.equal(entry.status, "failed");
+  // The payload was cut as the renderer places the messages: no shape error.
+  assert.ok(
+    codes(entry).every((code) => !code.startsWith("payload-shape:")),
+    codes(entry).join(","),
+  );
+  // The history slot of the request is zero inputs; the payload says otherwise.
+  assert.ok(codes(entry).includes("history-input-present"));
+});
+
+test("history_positions: a history message without a position, or a position without a message, is a shape failure", () => {
+  const withoutRows = world();
+  addHistory(
+    requestOf(withoutRows.receipt, "P-01", positiveId("P-01")),
+    HISTORY,
+    { correspondence: false },
+  );
+  assert.ok(
+    codes(result(score(withoutRows), "P-01", positiveId("P-01"))).includes(
+      "payload-shape:history-position-mismatch",
+    ),
+  );
+  const withoutMessages = world();
+  const request = requestOf(
+    withoutMessages.receipt,
+    "P-01",
+    positiveId("P-01"),
+  );
+  request.capture.rendered.renderCorrespondence = [
+    ...request.capture.rendered.renderCorrespondence,
+    {
+      position: { kind: "history-message", index: 0 },
+      inputOrdinal: request.capture.rendered.inputReferences.length - 1,
+    },
+  ];
+  request.candidate.renderCorrespondence =
+    request.capture.rendered.renderCorrespondence;
+  assert.ok(
+    codes(result(score(withoutMessages), "P-01", positiveId("P-01"))).includes(
+      "payload-shape:history-position-mismatch",
+    ),
+  );
+});
+
+test("history_shares_the_budget: the history counts in the window and in the context budget", () => {
+  // In the window: a long history pushes the request over the window.
+  const long = world();
+  addHistory(requestOf(long.receipt, "P-05", positiveId("P-05")), [
+    { role: "user", content: "あ".repeat(60000) },
+  ]);
+  const entry = result(score(long), "P-05", positiveId("P-05"));
+  assert.ok(codes(entry).includes("window-exceeded"));
+  // In the context budget: the selected items and the history together.
+  const w = world();
+  const request = requestOf(w.receipt, "P-06", positiveId("P-06"));
+  const budget = request.capture.contextBudgetTokens;
+  const selected = request.capture.candidateSet.items
+    .filter((item) => item.kind === "raw")
+    .reduce((sum, item) => sum + item.tokens, 0);
+  const content = "あ".repeat(Math.max(3 * (budget - selected), 3));
+  addHistory(request, [{ role: "user", content }]);
+  const over = result(score(w), "P-06", positiveId("P-06"));
+  assert.ok(
+    codes(over).includes("selection-exceeds-budget"),
+    codes(over).join(","),
+  );
+});
+
+test("history_text_is_scanned: a canary in a history message is found", () => {
+  const failures = scanForbidden({
+    payload: "{}",
+    system: "s",
+    user: "u",
+    history: [{ role: "assistant", content: "x CANARY-1 y" }],
+    canaries: [{ id: "c1", kind: "test", text: "CANARY-1" }],
+    forbiddenTexts: [],
+    forbiddenIds: [],
+    otherMarkers: [],
+    otherIds: [],
+  });
+  assert.deepEqual(
+    failures.map((row) => row.code),
+    ["canary-in-payload"],
+  );
+});

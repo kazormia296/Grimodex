@@ -21,8 +21,8 @@ use grimodex_db::narrative_extraction::{
     read_and_pack_native_nir1_prepared_inputs, read_and_pack_native_nir1_selected_inputs,
     revalidate_native_nir1_prepared_inputs, revalidate_native_nir1_prepared_inputs_after_create,
     NativeNir1AuthorityBinding, NativeNir1ExcludedRevision, NativeNir1GraphBinding,
-    NativeNir1HistoryDraft, NativeNir1PreparedInputs, NativeNir1RawSourceBinding,
-    Nir1GraphCandidates,
+    NativeNir1HistoryDraft, NativeNir1HistoryRequest, NativeNir1PreparedInputs,
+    NativeNir1RawSourceBinding, Nir1GraphCandidates,
 };
 use grimodex_db::nir1_generation::history_context::HistorySendClassification;
 use grimodex_db::nir1_generation::{
@@ -58,7 +58,15 @@ const DATA_BOUNDARY_REMINDER: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../../src/prompts/ja/chatSystemDataBoundaryReminder.txt"
 ));
+/// The messages of a request besides its history: the system message and the
+/// current Human. The history messages (DI-1b) sit between the two, so a
+/// request holds this many plus the adopted history messages.
 const LOCAL_PLAIN_CHAT_MESSAGE_COUNT: usize = 2;
+/// What one chat message costs besides its text. A request of `n` messages
+/// reserves `4 * n + 2` tokens; the `+ 2` is fixed, so a history message adds
+/// exactly this much (the `message_envelope_tokens` D-final counts a history
+/// message with).
+const PLAIN_CHAT_MESSAGE_ENVELOPE_TOKENS: usize = 4;
 const TOKEN_ESTIMATOR_SAFETY_MARGIN: usize = 32;
 const FIXED_TEMPLATE_REF: &str =
     "src/prompts/ja/chatSystemBase.txt+src/prompts/ja/chatSystemDataBoundaryReminder.txt";
@@ -86,7 +94,12 @@ pub(crate) struct SupportedLocalChatRoute {
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) struct PreparedBudgetUsage {
     pub(crate) system_tokens: usize,
+    /// The text of the conversation: the current Human and the adopted
+    /// history messages (`history_tokens` is the history's part).
     pub(crate) conversation_tokens: usize,
+    /// The text of the adopted history messages, without their envelope
+    /// (that is in `envelope_tokens`). Zero when no history was adopted.
+    pub(crate) history_tokens: usize,
     pub(crate) tool_tokens: usize,
     pub(crate) envelope_tokens: usize,
     pub(crate) safety_margin_tokens: usize,
@@ -392,6 +405,10 @@ struct RenderedPlainChatBody {
 pub(crate) enum PreparedPayloadPosition {
     SystemCurrentScene,
     SystemCodexEntry(usize),
+    /// The `index`-th adopted history message, oldest first: payload message
+    /// `index + 1` (the system message is payload message 0, and the current
+    /// Human is the last one).
+    HistoryMessage(usize),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -973,16 +990,21 @@ fn prepare_local_chat_request_inner(
         sql_budget.check_workspace(&workspace)?;
         Ok(budget)
     };
+    // The history of this turn: Native derives it from the session in the
+    // same snapshot (the renderer never supplies one). The clock is Native's
+    // and is read here, so the 30-day validity is decided against the time of
+    // this preparation, not a stored one.
+    let history_request = Some(NativeNir1HistoryRequest {
+        now_ms: now_ms()?,
+        message_envelope_tokens: PLAIN_CHAT_MESSAGE_ENVELOPE_TOKENS,
+    });
     let (projection, expectations) = match revisions {
         RevisionSource::Caller(revision_ids) => (
             read_and_pack_native_nir1_prepared_inputs(
                 &workspace,
                 packing_purpose(&generation.purpose),
                 send_classification,
-                // No history yet: DI1B-4 renders the adopted messages and
-                // passes the request (with the Native clock) here. Until
-                // then a request carries none, as before history existed.
-                None,
+                history_request,
                 message_version_id.capture.chat_session_id(),
                 &message_version_id.capture,
                 query_scene_id,
@@ -998,7 +1020,7 @@ fn prepare_local_chat_request_inner(
                     &workspace,
                     packing_purpose(&generation.purpose),
                     send_classification,
-                    None, // See above: DI1B-4 passes the history request.
+                    history_request,
                     message_version_id.capture.chat_session_id(),
                     &message_version_id.capture,
                     query_scene_id,
@@ -1637,7 +1659,7 @@ fn fixed_system_prompt() -> String {
 
 fn plain_chat_message_envelope_tokens(message_count: usize) -> Result<usize> {
     message_count
-        .checked_mul(4)
+        .checked_mul(PLAIN_CHAT_MESSAGE_ENVELOPE_TOKENS)
         .and_then(|tokens| tokens.checked_add(if message_count > 0 { 2 } else { 0 }))
         .context("NIR1_PREPARED_TOKEN_BUDGET_OVERFLOW")
 }
@@ -1648,6 +1670,12 @@ fn context_separator_reserve_tokens() -> usize {
     estimate_nir1_context_tokens(&"\n".repeat(MAX_PACKING_ITEMS))
 }
 
+/// What the selector's budget leaves out. It counts the system message, the
+/// current Human and the envelope of those two messages only: the selector's
+/// budget (and so the Raw and the Revisions it selects) is the same with or
+/// without a history. The history is placed after the selection, in what the
+/// selector's budget leaves over (DR-DI1B-7), and `final_plain_chat_budget_usage`
+/// counts it again in the whole request.
 fn non_context_budget_for_user(
     route: &SupportedLocalChatRoute,
     user_message: &str,
@@ -1670,15 +1698,40 @@ fn context_budget_for_user(route: &SupportedLocalChatRoute, user_message: &str) 
         .context("NIR1_PREPARED_CONTEXT_BUDGET_EMPTY")
 }
 
+/// One adopted history message as it is rendered: the wire role and the text,
+/// unescaped (a past Human and a generated reply are utterances like the
+/// current Human, not material of the system message's data blocks).
+#[derive(Clone, Copy)]
+struct RenderedHistoryMessage<'a> {
+    role: &'static str,
+    text: &'a str,
+}
+
+fn plain_chat_message_count(history_messages: usize) -> Result<usize> {
+    LOCAL_PLAIN_CHAT_MESSAGE_COUNT
+        .checked_add(history_messages)
+        .context("NIR1_PREPARED_TOKEN_BUDGET_OVERFLOW")
+}
+
 fn final_plain_chat_budget_usage(
     system_message: &str,
+    history: &[RenderedHistoryMessage<'_>],
     user_message: &str,
     wire_output_tokens: usize,
     context_window_tokens: usize,
 ) -> Result<PreparedBudgetUsage> {
     let system_tokens = estimate_nir1_context_tokens(system_message);
-    let conversation_tokens = estimate_nir1_context_tokens(user_message);
-    let envelope_tokens = plain_chat_message_envelope_tokens(LOCAL_PLAIN_CHAT_MESSAGE_COUNT)?;
+    let mut history_tokens = 0usize;
+    for message in history {
+        history_tokens = history_tokens
+            .checked_add(estimate_nir1_context_tokens(message.text))
+            .context("NIR1_PREPARED_TOKEN_BUDGET_OVERFLOW")?;
+    }
+    let conversation_tokens = estimate_nir1_context_tokens(user_message)
+        .checked_add(history_tokens)
+        .context("NIR1_PREPARED_TOKEN_BUDGET_OVERFLOW")?;
+    let envelope_tokens =
+        plain_chat_message_envelope_tokens(plain_chat_message_count(history.len())?)?;
     let input_tokens = system_tokens
         .checked_add(conversation_tokens)
         .and_then(|tokens| tokens.checked_add(envelope_tokens))
@@ -1690,6 +1743,7 @@ fn final_plain_chat_budget_usage(
     Ok(PreparedBudgetUsage {
         system_tokens,
         conversation_tokens,
+        history_tokens,
         tool_tokens: 0,
         envelope_tokens,
         safety_margin_tokens: TOKEN_ESTIMATOR_SAFETY_MARGIN,
@@ -1707,15 +1761,14 @@ fn final_plain_chat_request_tokens(
     user_message: &str,
     wire_output_tokens: usize,
 ) -> Result<usize> {
-    Ok(
-        final_plain_chat_budget_usage(
-            system_message,
-            user_message,
-            wire_output_tokens,
-            usize::MAX,
-        )?
-        .reserved_total_tokens,
-    )
+    Ok(final_plain_chat_budget_usage(
+        system_message,
+        &[],
+        user_message,
+        wire_output_tokens,
+        usize::MAX,
+    )?
+    .reserved_total_tokens)
 }
 
 fn render_local_plain_chat_payload(
@@ -1781,10 +1834,13 @@ fn render_local_plain_chat_payload(
     let raw = raw.context("NIR1_PREPARED_RAW_INPUT_MISSING")?;
     ensure!(!accepted_ir.is_empty(), "NIR1_PREPARED_ACCEPTED_IR_MISSING");
     checkpoint()?;
+    let history = history_for_render(projection, &mut render_correspondence, checkpoint)?;
+    checkpoint()?;
     let body = render_plain_chat_payload_from_material(
         route,
         &raw,
         &accepted_ir,
+        &history,
         projection.user_message(),
         checkpoint,
     )?;
@@ -1813,10 +1869,67 @@ fn render_local_plain_chat_payload(
     })
 }
 
+/// The adopted history of the projection in the order it is rendered, with
+/// its correspondence rows. Each message must be a history input row of the
+/// projection (message target, `AdoptedHistory`, the row's role) and the rows
+/// the projection holds for history must be exactly the messages rendered, so
+/// a payload message never exists without an input row, and an input row
+/// never exists without a payload message.
+fn history_for_render<'a>(
+    projection: &'a NativeNir1PreparedInputs,
+    render_correspondence: &mut Vec<PreparedRenderCorrespondence>,
+    checkpoint: &mut impl FnMut() -> Result<()>,
+) -> Result<Vec<RenderedHistoryMessage<'a>>> {
+    use grimodex_db::nir1_generation::{InputRole, InputTarget, InputUse};
+
+    let rows = projection
+        .input_references()
+        .iter()
+        .filter(|reference| reference.input_use == InputUse::AdoptedHistory)
+        .count();
+    ensure!(
+        rows == projection.history_messages().len(),
+        "NIR1_PREPARED_HISTORY_INPUT_MISMATCH"
+    );
+    let mut history = Vec::with_capacity(rows);
+    let mut previous_ordinal = 0usize;
+    for (index, message) in projection.history_messages().iter().enumerate() {
+        checkpoint()?;
+        let ordinal = message.input_ordinal();
+        let reference = projection
+            .input_references()
+            .get(ordinal)
+            .context("NIR1_PREPARED_HISTORY_INPUT_ORDINAL_INVALID")?;
+        ensure!(
+            ordinal > previous_ordinal
+                && reference.input_use == InputUse::AdoptedHistory
+                && matches!(reference.target, InputTarget::Message { .. })
+                && reference.role == *message.role(),
+            "NIR1_PREPARED_HISTORY_INPUT_MISMATCH"
+        );
+        previous_ordinal = ordinal;
+        let role = match message.role() {
+            InputRole::User => "user",
+            InputRole::Assistant => "assistant",
+            _ => anyhow::bail!("NIR1_PREPARED_HISTORY_INPUT_MISMATCH"),
+        };
+        render_correspondence.push(PreparedRenderCorrespondence {
+            position: PreparedPayloadPosition::HistoryMessage(index),
+            input_ordinal: ordinal,
+        });
+        history.push(RenderedHistoryMessage {
+            role,
+            text: message.text(),
+        });
+    }
+    Ok(history)
+}
+
 fn render_plain_chat_payload_from_material(
     route: &SupportedLocalChatRoute,
     raw: &str,
     accepted_ir: &[String],
+    history: &[RenderedHistoryMessage<'_>],
     user_message: &str,
     checkpoint: &mut impl FnMut() -> Result<()>,
 ) -> Result<RenderedPlainChatBody> {
@@ -1836,12 +1949,19 @@ fn render_plain_chat_payload_from_material(
         "{CHAT_SYSTEM_BASE}\n\n<current_scene>\n{raw}\n</current_scene>\n\n<codex_entries>\n{ir}\n</codex_entries>\n\n{DATA_BOUNDARY_REMINDER}"
     );
     checkpoint()?;
+    // The messages are the system message, the adopted history (oldest first,
+    // each with its own role) and the current Human. A request without history
+    // is the two-message payload of before.
+    let mut wire_messages = Vec::with_capacity(plain_chat_message_count(history.len())?);
+    wire_messages.push(json!({"role": "system", "content": system_message}));
+    for message in history {
+        checkpoint()?;
+        wire_messages.push(json!({"role": message.role, "content": message.text}));
+    }
+    wire_messages.push(json!({"role": "user", "content": user_message}));
     let payload = json!({
         "model": route.model,
-        "messages": [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": user_message},
-        ],
+        "messages": wire_messages,
         "max_tokens": route.output_tokens,
         "stream": true,
     });
@@ -1850,15 +1970,19 @@ fn render_plain_chat_payload_from_material(
         .as_array()
         .context("NIR1_PREPARED_PLAIN_CHAT_MESSAGES_INVALID")?;
     ensure!(
-        messages.len() == LOCAL_PLAIN_CHAT_MESSAGE_COUNT
+        messages.len() == plain_chat_message_count(history.len())?
             && messages[0]["role"].as_str() == Some("system")
-            && messages[1]["role"].as_str() == Some("user"),
+            && messages[messages.len() - 1]["role"].as_str() == Some("user")
+            && history.iter().enumerate().all(|(index, message)| {
+                messages[index + 1]["role"].as_str() == Some(message.role)
+                    && messages[index + 1]["content"].as_str() == Some(message.text)
+            }),
         "NIR1_PREPARED_PLAIN_CHAT_MESSAGES_INVALID"
     );
     let rendered_system = messages[0]["content"]
         .as_str()
         .context("NIR1_PREPARED_SYSTEM_MESSAGE_INVALID")?;
-    let rendered_user = messages[1]["content"]
+    let rendered_user = messages[messages.len() - 1]["content"]
         .as_str()
         .context("NIR1_PREPARED_USER_MESSAGE_INVALID")?;
     let wire_output_tokens = payload["max_tokens"]
@@ -1872,6 +1996,7 @@ fn render_plain_chat_payload_from_material(
     checkpoint()?;
     let budget_usage = final_plain_chat_budget_usage(
         rendered_system,
+        history,
         rendered_user,
         wire_output_tokens,
         route.context_window_tokens,
@@ -3056,6 +3181,7 @@ pub(crate) mod tests {
                 &route,
                 raw,
                 &[codex.to_owned()],
+                &[],
                 user,
                 &mut || Ok(()),
             )?;
@@ -3160,6 +3286,7 @@ pub(crate) mod tests {
                 &one_token_short_route,
                 raw,
                 &[codex.to_owned()],
+                &[],
                 user,
                 &mut || Ok(()),
             )
@@ -3182,6 +3309,7 @@ pub(crate) mod tests {
                 &output_plus_one_route,
                 raw,
                 &[codex.to_owned()],
+                &[],
                 user,
                 &mut || Ok(()),
             )
@@ -3475,6 +3603,9 @@ pub(crate) mod tests {
                         InputTarget::AcceptedRevision { revision_id, .. }
                             if revision_id == &fixture.revision_id
                     ));
+                }
+                super::PreparedPayloadPosition::HistoryMessage(_) => {
+                    panic!("a turn without a past conversation has no history position")
                 }
             }
         }
@@ -7498,6 +7629,7 @@ pub(crate) mod tests {
             &route,
             "raw scene",
             &["codex entry".to_owned()],
+            &[],
             "user turn",
             &mut || Ok(()),
         )?;
@@ -7825,6 +7957,7 @@ pub(crate) mod tests {
             &route,
             "raw",
             &["ir".to_owned()],
+            &[],
             "user",
             &mut || Ok(()),
         )?;
@@ -7833,3 +7966,7 @@ pub(crate) mod tests {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "nir1_history_turns_tests.rs"]
+mod history_turns_tests;
