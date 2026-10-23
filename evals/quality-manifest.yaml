@@ -382,6 +382,7 @@ requirements:
       - electron/native/grimodex-node/src/body_declaration_entry.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/writer.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/revoke.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/state.rs
     lightTests:
       - electron/main/mainGrant.test.ts
       - electron/main/bodyDeclarationCiSeam.test.ts

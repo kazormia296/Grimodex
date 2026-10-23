@@ -566,7 +566,7 @@ mod veto;
 pub use binding::{
     declaration_values_digest, BodyDeclarationBinding, ConsumedBodyDeclarationBinding,
     DeclareRefusal, DeclareRequest, DeclareResponse, ExpectedDeclarationOcc, RevokeRequest,
-    RevokeResponse, StateComponent, MAX_DECLARATION_REQUEST_ID_BYTES,
+    RevokeResponse, StateComponent, StateRequest, MAX_DECLARATION_REQUEST_ID_BYTES,
 };
 pub use display::{
     build_body_declaration_display, sanitize_display_title, scene_body_title_digest,
@@ -589,6 +589,8 @@ mod commit_outcome;
 mod facts;
 #[cfg(feature = "native-current-human-capture")]
 mod revoke;
+#[cfg(feature = "native-current-human-capture")]
+mod state;
 #[cfg(feature = "native-current-human-capture")]
 mod writer;
 
@@ -613,6 +615,11 @@ pub use facts::{preview_scene_body_declaration, BodyDeclarationPreview};
 #[cfg(feature = "native-current-human-capture")]
 pub use revoke::{revoke_scene_body, RevokeOutcome};
 #[cfg(feature = "native-current-human-capture")]
+pub use state::{
+    expiry_group, read_scene_body_declaration_state, BodyDeclarationState,
+    BodyDeclarationStateRead, ExpiryGroup, StateOcc,
+};
+#[cfg(feature = "native-current-human-capture")]
 pub use writer::{declare_scene_body, DeclareFailure, DeclareOutcome};
 
 #[cfg(test)]
@@ -631,6 +638,8 @@ pub(crate) mod test_support;
 mod tests;
 #[cfg(test)]
 mod veto_tests;
+#[cfg(all(test, feature = "native-current-human-capture"))]
+mod state_tests;
 #[cfg(test)]
 pub(crate) mod writer_support_tests;
 #[cfg(test)]
