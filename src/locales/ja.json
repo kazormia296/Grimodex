@@ -4045,7 +4045,129 @@
       "noMatches": "該当なし",
       "synopsisChip": "あらすじ",
       "synopsisEmpty": "未記入",
-      "beatsChip": "ビート {{count}}"
+      "beatsChip": "ビート {{count}}",
+      "bodyDeclaration": {
+        "title": "本文の開示宣言",
+        "scopeNote": "宣言の対象は、保存された本文の全体と title です。未配置のビート（unplaced beats）とメモは含まれません。",
+        "invalidationNote": "この Scene の Scope（A1）や registry を保存すると、宣言は失効します。registry の変更は project のすべての Scene の宣言に影響します。",
+        "state": {
+          "loading": "読み込み中",
+          "unknown": "不明",
+          "restartRequired": "再起動が必要",
+          "draft": "草案（未宣言）",
+          "effective": "宣言済み・現在有効",
+          "expired": "宣言済み・失効",
+          "unavailable": "宣言済み・読めない"
+        },
+        "loading": "宣言の状態を読み込んでいます…",
+        "unknownRead": "宣言の状態を読めませんでした。有効とは見なされません。",
+        "reload": "再読込",
+        "restartRequired": "Grimodex を再起動するまで、宣言も取消もできません。再起動してください。",
+        "draftIntro": "まだ宣言されていません。この Scene の本文全体を、Graph が追加する Scene として表示してよいと宣言するには、次の 5 項目を 1 つずつ確認してください。",
+        "axesLegend": "宣言する内容（1 つずつ確認）",
+        "axis": {
+          "story": {
+            "label": "story（物語上の時間）",
+            "help": "story time の前後に限られず、本文全体を表示してよい（independent）"
+          },
+          "auto": {
+            "label": "auto（読む順の判定）",
+            "help": "読む順と story time による phase の判定に限られず表示してよい（independent）"
+          },
+          "phase": {
+            "label": "phase（Codex の phase）",
+            "help": "Codex の phase に限られず表示してよい（independent）"
+          },
+          "reveal": {
+            "label": "reveal（秘密）",
+            "help": "本文全体に、まだ明かしていない秘密を含まない（non-secret）"
+          },
+          "pov": {
+            "label": "POV（視点）",
+            "help": "視点に限られた知識を含まず、どの視点の query にも表示してよい（independent）"
+          }
+        },
+        "axesPending": "5 項目をすべて確認すると宣言できます。",
+        "declare": "宣言する",
+        "redeclare": "改めて宣言する",
+        "declareHint": "押すと Grimodex 本体の確認ダイアログが開きます。宣言は、そのダイアログで承認したときだけ行われます。",
+        "declaring": "Grimodex 本体の確認ダイアログを待っています。この間、ほかの保存が待たされることがあります。",
+        "unsavedWait": "本文・title・あらすじに未保存の編集があります。保存を待ってください。保存された内容が宣言の対象になります。",
+        "blockerPrefix": "いまは宣言できません。",
+        "effectiveHeading": "この Scene は現在有効です。",
+        "effectiveBody": "Graph が見つけたときだけ、この Scene は Related Scenes に表示されえます。表示は保証されません。",
+        "effectiveExpiresOn": "本文・title・Scope（A1）・registry・章の組み替え・restore・workspace の移動で、宣言は失効します。失効したら、この画面でお知らせします。",
+        "expiredHeading": "宣言が失効しました。",
+        "expiredPrompt": "失効した宣言は使われません。この Scene を開示に使うには、内容を確認して改めて宣言してください。",
+        "expiredUnknown": "宣言は現在有効ではありません。",
+        "expiry": {
+          "content": "本文または title が変わりました。",
+          "scope": "Scope（A1）、registry、章の組み替えなど、Scope に関わる設定が変わりました。",
+          "identity": "Scene の同一性が変わりました（複製・削除と再作成・ごみ箱からの復元など）。",
+          "workspace": "workspace が変わりました（場所の移動・複写・restore など）。"
+        },
+        "unavailableHeading": "保存された宣言を読めません。有効な宣言とは見なされません。",
+        "unavailable": {
+          "binding-row-missing": "宣言の保存先が見つかりません。",
+          "half-state": "宣言の記録が片方しか残っていません。",
+          "oversized": "宣言の記録が大きすぎて読めません。",
+          "malformed": "宣言の記録が壊れています。",
+          "unsupported-version": "宣言の記録の版に対応していません。",
+          "unknown-field": "宣言の記録に未知の項目があります。",
+          "token-mismatch": "宣言の記録が一致しません。",
+          "scene-key-mismatch": "宣言の記録がこの Scene のものと一致しません。",
+          "unknown-response": "宣言の状態の応答を認識できませんでした。"
+        },
+        "revoke": "宣言を取り消す",
+        "revoking": "取り消しています…",
+        "revokeHint": "取消は確認なしで行われ、すぐに開示を止めます。",
+        "outcome": {
+          "declared": "宣言しました。",
+          "declareRefused": "宣言されませんでした。{{reason}}",
+          "revoked": "宣言を取り消しました。",
+          "no-declaration": "取り消す宣言はありませんでした。",
+          "declaration-changed": "宣言が画面の表示と違っていたため、何も取り消していません。最新の状態を読み直しました。",
+          "revokeRefused": "取り消せませんでした。{{reason}}"
+        },
+        "code": {
+          "scene-not-found": "この Scene が見つかりません。",
+          "scene-archived": "アーカイブされた Scene は宣言できません。",
+          "scope-unavailable": "Scope（A1）を読めません。",
+          "scope-not-explicit": "Scope（A1）が明示されていません。Scope を明示して保存すると宣言できます。",
+          "scope-unresolved": "Scope（A1）に未解決の項目があります。解決して保存すると宣言できます。",
+          "body-empty": "本文が空です。",
+          "body-too-large": "本文が大きすぎます。",
+          "body-unreadable": "保存された本文を読めません。",
+          "title-too-large": "title が長すぎます。",
+          "locator-unavailable": "この workspace の場所を確定できません。",
+          "veto-secret-foreshadow": "この Scene を参照する秘密の伏線（foreshadow）の記録があります。",
+          "veto-secret-event-reveal": "この Scene で明かされる秘密の Chronicle event の記録があります。",
+          "veto-secret-event-link": "この Scene に結ばれた秘密の Chronicle event の記録があります。",
+          "veto-pov": "視点（POV）の記録があります。",
+          "veto-limit": "確認すべき記録が多すぎて、宣言できるか判断できません。",
+          "declaration-unreadable": "保存された宣言を読めません。",
+          "gate-closed": "この機能は現在利用できません。",
+          "restart-required": "再起動が必要です。Grimodex を再起動してください。",
+          "workspace-mismatch": "開いている workspace と一致しません。",
+          "invalid-request": "要求が正しくありません。",
+          "state-changed": "Scene の状態が途中で変わりました。最新の状態を読み直したので、確認してからもう一度行ってください。",
+          "display-mismatch": "確認ダイアログの内容と Scene の状態が一致しませんでした。",
+          "request-conflict": "同じ要求が重複しました。",
+          "commit-failed": "保存の結果を確認できませんでした。最新の状態を読み直しています。",
+          "internal": "内部エラーが発生しました。",
+          "store-failure": "保存先が混み合っているか、一時的に使えません。しばらくしてからもう一度試してください。",
+          "grant-cancelled": "確認ダイアログがキャンセルされました。",
+          "grant-expired": "確認ダイアログの期限が切れました。",
+          "grant-revoked": "確認が取り消されました。",
+          "grant-busy": "ほかの確認ダイアログが開いています。終えてからもう一度試してください。",
+          "grant-required": "確認の経路が使えません。",
+          "grant-sender-unavailable": "確認ダイアログを開けませんでした。",
+          "grant-failed": "確認を完了できませんでした。",
+          "egress-denied": "この操作は許可されていません。",
+          "timeout": "応答がありませんでした。最新の状態を読み直してください。",
+          "unknown-refusal": "原因を特定できませんでした。"
+        }
+      }
     },
     "layers": {
       "title": "本文レイヤー",

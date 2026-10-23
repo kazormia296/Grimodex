@@ -8,7 +8,9 @@ import {
   _resetPendingSynopsisSavesForTests,
   cancelPendingSynopsisSave,
   flushPendingSynopsisSaves,
+  hasPendingSynopsisSaveForNode,
   schedulePendingSynopsisSave,
+  subscribePendingSynopsisSaves,
 } from "./pendingSynopsisSaves";
 
 function deferred<T>(): {
@@ -195,5 +197,70 @@ describe("pending synopsis saves", () => {
     await vi.runAllTimersAsync();
 
     expect(persist).not.toHaveBeenCalled();
+  });
+});
+
+describe("the pending-save probe (CB-3 declaration guard)", () => {
+  it("is true from scheduling until the save has finished, for that node only", async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const changes = vi.fn();
+    const unsubscribe = subscribePendingSynopsisSaves(changes);
+    expect(hasPendingSynopsisSaveForNode("scene-1")).toBe(false);
+
+    schedulePendingSynopsisSave({
+      key: "map-scene-synopsis\u0000scene-1",
+      owner: Symbol("editor"),
+      value: "text",
+      persist,
+    });
+    expect(hasPendingSynopsisSaveForNode("scene-1")).toBe(true);
+    expect(hasPendingSynopsisSaveForNode("scene-2")).toBe(false);
+    expect(changes).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(persist).toHaveBeenCalledTimes(1);
+    expect(hasPendingSynopsisSaveForNode("scene-1")).toBe(false);
+    expect(changes.mock.calls.length).toBeGreaterThanOrEqual(2);
+
+    unsubscribe();
+    const seen = changes.mock.calls.length;
+    schedulePendingSynopsisSave({
+      key: "tree-synopsis\u0000scene-1",
+      owner: Symbol("editor"),
+      value: "again",
+      persist,
+    });
+    expect(changes).toHaveBeenCalledTimes(seen);
+  });
+
+  it("stays true after a failed save and false once the edit is cancelled", async () => {
+    const owner = Symbol("editor");
+    const persist = vi.fn().mockRejectedValue(new Error("disk"));
+    schedulePendingSynopsisSave({
+      key: "tree-synopsis\u0000scene-1",
+      owner,
+      value: "text",
+      persist,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(hasPendingSynopsisSaveForNode("scene-1")).toBe(true);
+    cancelPendingSynopsisSave("tree-synopsis\u0000scene-1", owner);
+    expect(hasPendingSynopsisSaveForNode("scene-1")).toBe(false);
+  });
+
+  it("does not let a throwing observer disturb the save", async () => {
+    const persist = vi.fn().mockResolvedValue(undefined);
+    const unsubscribe = subscribePendingSynopsisSaves(() => {
+      throw new Error("observer");
+    });
+    schedulePendingSynopsisSave({
+      key: "tree-synopsis\u0000scene-1",
+      owner: Symbol("editor"),
+      value: "text",
+      persist,
+    });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(persist).toHaveBeenCalledTimes(1);
+    unsubscribe();
   });
 });

@@ -498,6 +498,10 @@ rules:
       - electron/main/bodyDeclarationCiSeam.ts
       - electron/main/bodyDeclarationCiSeam.test.ts
       - src/features/editor/sceneMeta/bodyDeclaration/**
+      - src/features/editor/sceneMeta/SceneScopeEditor.tsx
+      - src/features/editor/sceneMeta/SceneScopeEditor.declaration.*.test.tsx
+      - src/features/editor/pendingSynopsisSaves.ts
+      - src/features/editor/pendingSynopsisSaves.test.ts
       - electron/main/mainGrant.ts
       - electron/main/mainGrant.test.ts
       - electron/main/devRendererUrl*.ts

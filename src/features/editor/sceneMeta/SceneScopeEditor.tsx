@@ -8,6 +8,8 @@ import type { TreeNodeData } from "@/features/tree/treeStore";
 import { SceneScopeFields } from "./SceneScopeFields";
 import { SceneScopeRegistryEditor } from "./SceneScopeRegistryEditor";
 import { SceneScopePrincipals } from "./SceneScopePrincipals";
+import { isBodyDeclarationUiEnabled } from "./bodyDeclaration/bodyDeclarationAvailability";
+import { SceneBodyDeclarationSection } from "./bodyDeclaration/SceneBodyDeclarationSection";
 import type {
   Binding,
   Constraint,
@@ -163,6 +165,12 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
   }, [node.id, node.projectId, workspacePath]);
 
   if (!isElectron()) return null;
+
+  // A saved A1 or registry expires body declarations: their versions tell the
+  // declaration panel to read again.
+  const declarationRefreshKey = read
+    ? `${read.binding.version}:${read.registryRevision}`
+    : "";
 
   const updateAxis = (
     group: "queryIdentity" | "materialConstraint",
@@ -422,6 +430,13 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
             {saving ? t("common.saving", "Saving…") : t("common.save", "Save")}
           </button>
         </fieldset>
+      )}
+      {isBodyDeclarationUiEnabled() && (
+        <SceneBodyDeclarationSection
+          node={node}
+          workspacePath={workspacePath}
+          refreshKey={declarationRefreshKey}
+        />
       )}
     </div>
   );
