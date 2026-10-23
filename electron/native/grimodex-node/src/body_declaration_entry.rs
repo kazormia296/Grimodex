@@ -214,7 +214,7 @@ pub(crate) fn revoke(
 
 /// The values the author's next declare has to name, read in the same snapshot
 /// as the state. Opaque: nothing else about the Scene crosses.
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StateOccResponse {
     scope_version: i64,
@@ -223,7 +223,7 @@ struct StateOccResponse {
 
 /// The closed answer. There is no field for a body, an excerpt, a title, a
 /// digest, a locator, a workspace ID, a Scene ID, a declaration ID or a time.
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(
     tag = "kind",
     rename_all = "kebab-case",
@@ -244,7 +244,7 @@ enum StateBodyResponse {
     },
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct StateResponse {
     occ: Option<StateOccResponse>,

@@ -215,6 +215,35 @@ describe("states", () => {
     expect(calls(DECLARE)).toHaveLength(0);
   });
 
+  it("declare() itself refuses, without an IPC call, on a blocker or an unavailable state that still carries an OCC", async () => {
+    // Not only the flags: the guard inside declare() must hold when a caller
+    // ignores canDeclare (DR-CB3-23 (1)).
+    invokeMock.mockResolvedValueOnce({
+      occ: { scopeVersion: 3, scopeToken: "st" },
+      declarationToken: null,
+      state: { kind: "none", blocker: "scene-archived" },
+    });
+    const { result, rerender } = mount();
+    await waitFor(() => expect(result.current.status).toBe("ready"));
+    expect(result.current.view?.state.blocker).not.toBeNull();
+    await expect(result.current.declare(ALL)).resolves.toBe(false);
+    expect(calls(DECLARE)).toHaveLength(0);
+
+    invokeMock.mockResolvedValueOnce({
+      occ: { scopeVersion: 3, scopeToken: "st" },
+      declarationToken: null,
+      state: { kind: "unavailable", reason: "half-state", blocker: null },
+    });
+    rerender({ ...BASE, version: 2 });
+    await waitFor(() => expect(calls(STATE)).toHaveLength(2));
+    await waitFor(() =>
+      expect(result.current.view?.state.kind).toBe("unavailable"),
+    );
+    await expect(result.current.declare(ALL)).resolves.toBe(false);
+    expect(calls(DECLARE)).toHaveLength(0);
+    expect(result.current.busy).toBeNull();
+  });
+
   it("a restart-required read disables declare and revoke, and quiets automatic reads", async () => {
     invokeMock.mockRejectedValue(refusal("restart-required"));
     const { result, rerender } = mount();

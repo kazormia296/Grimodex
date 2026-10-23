@@ -4108,7 +4108,7 @@
           "content": "本文または title が変わりました。",
           "scope": "Scope（A1）、registry、章の組み替えなど、Scope に関わる設定が変わりました。",
           "identity": "Scene の同一性が変わりました（複製・削除と再作成・ごみ箱からの復元など）。",
-          "workspace": "workspace が変わりました（場所の移動・複写・restore など）。"
+          "workspace": "workspace が変わりました（場所の移動・複写など）。"
         },
         "unavailableHeading": "保存された宣言を読めません。有効な宣言とは見なされません。",
         "unavailable": {

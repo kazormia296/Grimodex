@@ -4115,7 +4115,7 @@
           "content": "The body or title changed.",
           "scope": "A Scope setting changed (Scope (A1), registry, chapter arrangement and so on).",
           "identity": "The identity of the Scene changed (duplicated, deleted and recreated, restored from the trash and so on).",
-          "workspace": "The workspace changed (moved, copied, restored and so on)."
+          "workspace": "The workspace changed (moved, copied and so on)."
         },
         "unavailableHeading": "The stored declaration cannot be read. It is not treated as effective.",
         "unavailable": {
