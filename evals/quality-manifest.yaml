@@ -316,8 +316,10 @@ requirements:
       - electron/scripts/product-journeys.mjs
       - electron/scripts/product-journey-shards.mjs
       - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs
       - scripts/product-journey-impact.test.mjs
       - electron/shared/nir1EntityRelationIpcContract.test.ts
@@ -407,6 +409,7 @@ requirements:
       - scripts/c2zc-product-journeys.test.mjs
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - electron/main/ipc.test.ts
       - electron/main/profileEgress.test.ts
@@ -770,6 +773,7 @@ requirements:
       - electron/shared/nir1GraphIpcContract.test.ts
       - src/features/narrative-semantic-core/nir1PackingApi.test.ts
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/quality/nir1-packing/contract.test.mjs
       - scripts/quality/nir1-packing/runner.test.mjs
       - scripts/quality/nir1-packing/scorer.test.mjs
@@ -1164,10 +1168,12 @@ requirements:
       - src-tauri/crates/grimodex-core/src/narrative_nir1.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_entity_relation.rs
       - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
       - electron/scripts/product-journey-shards.mjs
       - electron/scripts/product-journeys.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs
       - scripts/product-journey-impact.test.mjs
     lightTests:
@@ -1262,6 +1268,7 @@ requirements:
       - electron/shared/nir1GraphIpcContract.test.ts
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/nir1-scene-scope-projection-product-journey.test.mjs
     heavyTests:
       # Focused Native activation denial is separate from the Light suite.
       - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
@@ -1529,6 +1536,7 @@ requirements:
       - scripts/nir1-c-query-worker-ci.sh
       - scripts/local-ci.mjs
       - scripts/local-ci-registry.json
+      - scripts/local-ci-full-workload-allocation.json
       - scripts/local-ci-runner.mjs
       - scripts/local-ci-process-supervisor.mjs
       - scripts/quality/nir1-retrieval/standard-build.mjs
@@ -1579,17 +1587,20 @@ requirements:
       - src/features/ai-context/nir1Packing.ts
       - electron/scripts/narrative-maintenance-product-journeys.mjs
       - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
       - electron/scripts/product-journeys.mjs
       - electron/scripts/product-journey-shards.mjs
       - electron/scripts/product-journey-shards.test.mjs
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs
       - scripts/product-journey-impact.test.mjs
       - electron/scripts/product-journey-impact.mjs
       - scripts/electron-product-journeys.test.mjs
       - package.json
       - scripts/local-ci-registry.json
+      - scripts/local-ci-full-workload-allocation.json
       - src/features/ai-verification/aiPathRegistry.ts
       - docs/Grimodex_Semantic_Reranker_Shadow_Impact_Matrix.md
       - experiments/lfm25-encoder-phase0/PHASE0B_GATE2_RESULTS.md
