@@ -263,19 +263,21 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     }
   });
 
-  it("holds the six NIR commands in nir1-publication and nothing in nir1-restricted-only", () => {
+  it("holds the seven NIR commands in nir1-publication and nothing in nir1-restricted-only", () => {
     const ledgers = d2aRouteLedgersForTest();
     expect([...ledgers.nir1Publication].sort()).toEqual(
       [
         "related_scenes_begin",
         "related_scenes_continue",
+        "related_scenes_graph_continue",
         "nir1_evidence_qualify",
         "nir1_entity_relation_revision_read",
         "nir1_entity_relation_revision_read_current",
         "nir1_entity_relation_revision_restore",
       ].sort(),
     );
-    // K5's D-dispatch commands are added by DD-1; Graph is CP-3a.
+    // K5's D-dispatch commands are added by DD-1.  The Graph wait/settle is one
+    // nir1-publication command (CP-3a), not a restricted-only one.
     expect(ledgers.nir1RestrictedOnly).toEqual([]);
   });
 });

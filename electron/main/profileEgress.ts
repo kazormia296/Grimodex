@@ -146,10 +146,11 @@ const OWN_DATA_READ_COMMANDS = [
  * `nir1-publication` (K3/2): the NIR plaintext a restricted profile may still
  * publish to the renderer, each behind a Native admission at start and at
  * return (`publication_guard.rs`) and a Main completion check.  Related Scenes
- * R/IR and Evidence navigation (3) and the A2 review reads (3).  Unrestricted
- * passes them unchecked.  `related_scenes_release` and
- * `related_scenes_release_owner` carry no plaintext and stay `internal`; the
- * Graph listener is CP-3a.
+ * R/IR, the Graph wait/settle (`related_scenes_graph_continue`, CP-3a; one
+ * command carries both) and Evidence navigation (4) and the A2 review reads
+ * (3).  Unrestricted passes them unchecked.  `related_scenes_release` and
+ * `related_scenes_release_owner` carry no plaintext and stay `internal`.  The
+ * Graph itself stays closed by Native's own gate (PUB-G), not by this ledger.
  *
  * `nir1-restricted-only` is empty here: K5's D-dispatch commands are added by
  * DD-1.  Both ledgers are `satisfies`-bound to `NAPI_COMMANDS`, and a command
@@ -159,6 +160,7 @@ const NIR1_PUBLICATION_COMMANDS = [
   // Related Scenes R/IR and Evidence navigation
   "related_scenes_begin",
   "related_scenes_continue",
+  "related_scenes_graph_continue",
   "nir1_evidence_qualify",
   // A2 review reads
   "nir1_entity_relation_revision_read",
@@ -560,6 +562,7 @@ const ALLOWED_BACKEND_EVENTS = new Set([
   "semantic:reindex_progress",
   "related-scenes:invalidated",
   "related-scenes:index-ready",
+  "related-scenes:graph-ready",
   "vivliostyle:log",
   "vivliostyle:preview-exited",
   "external-mount://file-added",

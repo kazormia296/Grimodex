@@ -62,6 +62,7 @@ const { registerIpcRouter } = await import("./ipc.js");
 const NIR_COMMANDS = [
   "related_scenes_begin",
   "related_scenes_continue",
+  "related_scenes_graph_continue",
   "nir1_evidence_qualify",
   "nir1_entity_relation_revision_read",
   "nir1_entity_relation_revision_read_current",
@@ -105,7 +106,7 @@ function backend(
 }
 
 describe("gate: nir1-publication at invoke (K3/2)", () => {
-  it("holds the six NIR commands and routes them nir1-publication", async () => {
+  it("holds the seven NIR commands and routes them nir1-publication", async () => {
     expect([...d2aRouteLedgersForTest().nir1Publication].sort()).toEqual(
       [...NIR_COMMANDS].sort(),
     );
@@ -310,6 +311,9 @@ describe("router: the identity reaches Native as a trailing argument only", () =
     const relatedScenesContinue = vi.fn(
       async (..._args: unknown[]) => '{"status":"unavailable"}',
     );
+    const relatedScenesGraphContinue = vi.fn(
+      async (..._args: unknown[]) => '{"status":"unavailable"}',
+    );
     const nir1EvidenceQualify = vi.fn(
       async (..._args: unknown[]) => '{"status":"unavailable"}',
     );
@@ -317,6 +321,7 @@ describe("router: the identity reaches Native as a trailing argument only", () =
     const { invoke, gate } = await routerWith(true, {
       relatedScenesBegin,
       relatedScenesContinue,
+      relatedScenesGraphContinue,
       nir1EvidenceQualify,
       nir1EntityRelationRevisionRead: read,
     });
@@ -336,6 +341,16 @@ describe("router: the identity reaches Native as a trailing argument only", () =
       operationTicket: "t",
       callerIdentity: forged,
     });
+    await invoke(event(), "related_scenes_graph_continue", {
+      operationTicket: "t",
+      rawSceneIds: ["s1"],
+      callerIdentity: forged,
+    });
+    await invoke(event(), "related_scenes_graph_continue", {
+      operationTicket: "t",
+      settle: "unused",
+      callerIdentity: forged,
+    });
     await invoke(event(), "nir1_evidence_qualify", {
       ownerKey: "x",
       navigationIdentity: "n",
@@ -350,6 +365,8 @@ describe("router: the identity reaches Native as a trailing argument only", () =
     for (const call of [
       relatedScenesBegin.mock.calls[0],
       relatedScenesContinue.mock.calls[0],
+      relatedScenesGraphContinue.mock.calls[0],
+      relatedScenesGraphContinue.mock.calls[1],
       nir1EvidenceQualify.mock.calls[0],
       read.mock.calls[0],
     ]) {
@@ -460,5 +477,81 @@ describe("router: the identity reaches Native as a trailing argument only", () =
     });
     expect(result.ok).toBe(true);
     expect(relatedScenesRelease).not.toHaveBeenCalled();
+  });
+
+  it("binds the Graph wait and settle to Main's owner and refuses a result whose identity rotated while Native worked", async () => {
+    const calls: unknown[][] = [];
+    const relatedScenesGraphContinue = vi.fn(async (...args: unknown[]) => {
+      calls.push(args);
+      return JSON.stringify({
+        status: "available",
+        queryBinding: "binding-secret",
+        pathAttachments: [],
+        graphOnly: null,
+      });
+    });
+    const relatedScenesRelease = vi.fn(
+      async (..._args: unknown[]) => '{"status":"released"}',
+    );
+    const { invoke, gate } = await routerWith(true, {
+      relatedScenesGraphContinue,
+      relatedScenesRelease,
+    });
+    // the router issues the identity itself; the renderer's owner is replaced
+    const original = relatedScenesGraphContinue.getMockImplementation()!;
+    let rotate = false;
+    relatedScenesGraphContinue.mockImplementation(
+      async (...args: unknown[]) => {
+        const value = await original(...args);
+        if (rotate) {
+          gate.observeBackendEvent?.("workspace:opened", {
+            path: "/workspace-b",
+          });
+        }
+        return value;
+      },
+    );
+    const ok = await invoke(event(), "related_scenes_graph_continue", {
+      ownerKey: "renderer-forged-owner",
+      operationTicket: "t",
+      rawSceneIds: ["s1"],
+    });
+    expect(ok.ok).toBe(true);
+    const request = calls.at(-1)!;
+    expect(request[0]).toMatch(/^related-scenes-owner:/);
+    expect(request[0]).not.toBe("renderer-forged-owner");
+    expect(request[1]).toEqual({ operationTicket: "t", rawSceneIds: ["s1"] });
+
+    // the identity rotates while Native works: the completion check refuses
+    // the plaintext, and nothing of it reaches the renderer
+    rotate = true;
+    const refused = await invoke(event(), "related_scenes_graph_continue", {
+      operationTicket: "t",
+      rawSceneIds: ["s1"],
+    });
+    expect(refused.ok).toBe(false);
+    expect(JSON.stringify(refused)).not.toContain("binding-secret");
+    expect(JSON.stringify(refused)).not.toContain(String(request[0]));
+    // a Graph wait is not a begin: the router releases nothing on its own
+    expect(relatedScenesRelease).not.toHaveBeenCalled();
+  });
+
+  it("lets the settle form complete under the same identity and carries no plaintext", async () => {
+    const relatedScenesGraphContinue = vi.fn(
+      async (..._args: unknown[]) => '{"status":"settled"}',
+    );
+    const { invoke, gate } = await routerWith(true, {
+      relatedScenesGraphContinue,
+    });
+    expect(gate.issueCallerIdentity(11)).toBeDefined();
+    const result = await invoke(event(), "related_scenes_graph_continue", {
+      operationTicket: "t",
+      settle: "cancelled",
+    });
+    expect(result).toEqual({ ok: true, value: { status: "settled" } });
+    expect(relatedScenesGraphContinue.mock.calls[0]?.[1]).toEqual({
+      operationTicket: "t",
+      settle: "cancelled",
+    });
   });
 });

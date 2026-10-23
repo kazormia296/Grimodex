@@ -39,6 +39,7 @@ describe("related-scenes main sender authority", () => {
     expect(begin.ownerKey).toMatch(/^related-scenes-owner:/);
     for (const command of [
       "related_scenes_continue",
+      "related_scenes_graph_continue",
       "related_scenes_release",
       "nir1_evidence_qualify",
     ]) {
@@ -63,6 +64,7 @@ describe("related-scenes main sender authority", () => {
     const one = sender(3);
     const bound = authority.bind("related_scenes_begin", {}, one.value);
     authority.bind("related_scenes_continue", { ticket: "t" }, one.value);
+    authority.bind("related_scenes_graph_continue", { ticket: "t" }, one.value);
     one.close();
     await Promise.resolve();
     expect(releaseOwner).toHaveBeenCalledExactlyOnceWith(bound.ownerKey);

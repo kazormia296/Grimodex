@@ -31,6 +31,20 @@ import {
   RELATED_SCENES_INDEX_READY_EVENT,
 } from "../shared/relatedScenesSearchWire.js";
 
+/**
+ * CP-3a: the Graph owner's "a late result is now cached" notice (CP2a-D11).
+ * The payload is `{ projectId }` only, the same shape as `index-ready`; any
+ * other key is dropped here, before the observer and the broadcast.  Defined
+ * here (S3) so the allowlists and the forwarding check land together; the
+ * renderer wire file takes it up with its consumer (S4).
+ */
+export const RELATED_SCENES_GRAPH_READY_EVENT = "related-scenes:graph-ready";
+export function isRelatedScenesGraphReadyEvent(
+  value: unknown,
+): value is { readonly projectId: string } {
+  return isRelatedScenesIndexReadyEvent(value);
+}
+
 /** Native completion signal consumed by main only; never broadcast to a window. */
 export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
   "narrative-maintenance:epoch-rotated";
@@ -253,6 +267,13 @@ function handleBackendEvent(
     console.warn(
       "[backend:event] invalid related-scenes index readiness payload",
     );
+    return;
+  }
+  if (
+    channel === RELATED_SCENES_GRAPH_READY_EVENT &&
+    !isRelatedScenesGraphReadyEvent(payload)
+  ) {
+    console.warn("[backend:event] invalid related-scenes graph-ready payload");
     return;
   }
   try {

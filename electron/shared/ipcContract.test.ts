@@ -2,6 +2,7 @@
  * ipcContract の純関数部の単体テスト（設計書 §8 S4:
  * allowlist / envelope / 引数アダプタ）。node 環境（vitest.electron.config.ts）。
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -940,6 +941,8 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
     // napi Phase 2 実証チャネル
     "backend:ready",
     "workspace:opened",
+    // CP-3a: Graph owner の通知（backend 発のみ）
+    "related-scenes:graph-ready",
   ])("allows %s", (channel) => {
     expect(isAllowedEventChannel(channel)).toBe(true);
   });
@@ -985,6 +988,26 @@ describe("EVENT_CHANNEL_ALLOWLIST", () => {
       expect(isAllowedBackendEventChannel(channel)).toBe(false);
     },
   );
+
+  it("related-scenes:graph-ready は backend allowlist だけに 1 件属し、renderer 発では送れない", () => {
+    expect(
+      BACKEND_EVENT_CHANNEL_ALLOWLIST.filter(
+        (channel) => channel === "related-scenes:graph-ready",
+      ),
+    ).toHaveLength(1);
+    expect(EVENT_CHANNEL_ALLOWLIST).toContain("related-scenes:graph-ready");
+    expect(isAllowedBackendEventChannel("related-scenes:graph-ready")).toBe(
+      true,
+    );
+    expect(isAllowedRendererEventChannel("related-scenes:graph-ready")).toBe(
+      false,
+    );
+    expect(isAllowedMainEventChannel("related-scenes:graph-ready")).toBe(false);
+    // 近い名前は前方一致で通らない
+    expect(isAllowedBackendEventChannel("related-scenes:graph-ready2")).toBe(
+      false,
+    );
+  });
 
   it("updater event は main allowlist だけに属する", () => {
     expect(isAllowedMainEventChannel("updater:download-progress")).toBe(true);
@@ -6229,6 +6252,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "rebuild_narrative_derived_state",
       "related_scenes_begin",
       "related_scenes_continue",
+      "related_scenes_graph_continue",
       "related_scenes_release",
       "repair_integrity",
       "repair_narrative_dependency_declarations",
@@ -11408,6 +11432,254 @@ describe("NIR-1 two-result command boundary", () => {
         (await dispatchInvoke("related_scenes_begin", invalid, deps)).ok,
       ).toBe(false);
     expect(relatedScenesBegin).not.toHaveBeenCalled();
+  });
+
+  it("passes the optional Graph seed only when present, so a seedless begin stays byte-identical", async () => {
+    const relatedScenesBegin = vi
+      .fn()
+      .mockResolvedValue('{"status":"raw-ready"}');
+    const deps = {
+      backend: { relatedScenesBegin } as unknown as NapiBackendLike,
+      shell: {},
+    };
+    await dispatchInvoke("related_scenes_begin", begin, deps);
+    await dispatchInvoke(
+      "related_scenes_begin",
+      { ...begin, graphSeedEntityId: undefined },
+      deps,
+    );
+    for (const call of relatedScenesBegin.mock.calls) {
+      expect(call[0]).toEqual(begin);
+      expect(Object.keys(call[0] as object)).toEqual(Object.keys(begin));
+    }
+    await dispatchInvoke(
+      "related_scenes_begin",
+      { ...begin, graphSeedEntityId: "entity-1" },
+      deps,
+    );
+    expect(relatedScenesBegin).toHaveBeenLastCalledWith({
+      ...begin,
+      graphSeedEntityId: "entity-1",
+    });
+    expect(relatedScenesBegin).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects an unusable Graph seed before Native execution", async () => {
+    const relatedScenesBegin = vi.fn();
+    const deps = {
+      backend: { relatedScenesBegin } as unknown as NapiBackendLike,
+      shell: {},
+    };
+    for (const graphSeedEntityId of [
+      "",
+      " ",
+      "\t\n",
+      "e".repeat(201),
+      null,
+      7,
+      ["entity"],
+      { id: "entity" },
+    ])
+      expect(
+        (
+          await dispatchInvoke(
+            "related_scenes_begin",
+            { ...begin, graphSeedEntityId },
+            deps,
+          )
+        ).ok,
+        JSON.stringify(graphSeedEntityId),
+      ).toBe(false);
+    expect(relatedScenesBegin).not.toHaveBeenCalled();
+    // The boundary itself still passes.
+    await dispatchInvoke(
+      "related_scenes_begin",
+      { ...begin, graphSeedEntityId: "e".repeat(200) },
+      {
+        backend: {
+          relatedScenesBegin: vi.fn().mockResolvedValue("{}"),
+        } as unknown as NapiBackendLike,
+        shell: {},
+      },
+    );
+  });
+
+  describe("related_scenes_graph_continue", () => {
+    const wait = {
+      ownerKey,
+      operationTicket: "ticket",
+      rawSceneIds: ["a", "b"],
+    };
+    const settle = { ownerKey, operationTicket: "ticket", settle: "used" };
+    const setup = () => {
+      const relatedScenesGraphContinue = vi
+        .fn()
+        .mockResolvedValue('{"status":"unavailable","reason":"warming"}');
+      return {
+        relatedScenesGraphContinue,
+        deps: {
+          backend: {
+            relatedScenesGraphContinue,
+          } as unknown as NapiBackendLike,
+          shell: {},
+        },
+      };
+    };
+
+    it("maps the wait form and the settle form to (ownerKey, request) and nothing else", async () => {
+      const { relatedScenesGraphContinue, deps } = setup();
+      expect(
+        await dispatchInvoke("related_scenes_graph_continue", wait, deps),
+      ).toEqual({
+        ok: true,
+        value: { status: "unavailable", reason: "warming" },
+      });
+      expect(relatedScenesGraphContinue).toHaveBeenLastCalledWith(ownerKey, {
+        operationTicket: "ticket",
+        rawSceneIds: ["a", "b"],
+      });
+      for (const value of ["used", "unused", "cancelled"]) {
+        await dispatchInvoke(
+          "related_scenes_graph_continue",
+          { ...settle, settle: value },
+          deps,
+        );
+        expect(relatedScenesGraphContinue).toHaveBeenLastCalledWith(ownerKey, {
+          operationTicket: "ticket",
+          settle: value,
+        });
+      }
+      // an empty list is a valid wait (no Raw hit selected)
+      await dispatchInvoke(
+        "related_scenes_graph_continue",
+        { ...wait, rawSceneIds: [] },
+        deps,
+      );
+      expect(relatedScenesGraphContinue).toHaveBeenLastCalledWith(ownerKey, {
+        operationTicket: "ticket",
+        rawSceneIds: [],
+      });
+      expect(relatedScenesGraphContinue).toHaveBeenCalledTimes(5);
+    });
+
+    it("keeps the Main-issued identity out of the request and passes it as the trailing argument", async () => {
+      const { relatedScenesGraphContinue, deps } = setup();
+      const args = { ...wait };
+      Object.defineProperty(args, "callerIdentity", {
+        value: { callerId: "main-issued" },
+        enumerable: false,
+      });
+      await dispatchInvoke("related_scenes_graph_continue", args, deps);
+      const call = relatedScenesGraphContinue.mock.calls[0]!;
+      expect(call).toHaveLength(3);
+      expect(call[2]).toBe(JSON.stringify({ callerId: "main-issued" }));
+      expect(Object.keys(call[1] as object)).toEqual([
+        "operationTicket",
+        "rawSceneIds",
+      ]);
+    });
+
+    it("accepts exactly 8 Scene IDs and rejects 9, and enforces the ID bounds", async () => {
+      const { relatedScenesGraphContinue, deps } = setup();
+      const ids = (n: number) => Array.from({ length: n }, (_, i) => `s${i}`);
+      expect(
+        (
+          await dispatchInvoke(
+            "related_scenes_graph_continue",
+            { ...wait, rawSceneIds: ids(8) },
+            deps,
+          )
+        ).ok,
+      ).toBe(true);
+      expect(
+        (
+          await dispatchInvoke(
+            "related_scenes_graph_continue",
+            { ...wait, rawSceneIds: [`${"x".repeat(200)}`] },
+            deps,
+          )
+        ).ok,
+      ).toBe(true);
+      expect(relatedScenesGraphContinue).toHaveBeenCalledTimes(2);
+      for (const invalid of [
+        { ...wait, rawSceneIds: ids(9) },
+        { ...wait, rawSceneIds: ["a", "a"] },
+        { ...wait, rawSceneIds: ["a", ""] },
+        { ...wait, rawSceneIds: ["a", "  "] },
+        { ...wait, rawSceneIds: ["x".repeat(201)] },
+        { ...wait, rawSceneIds: ["a", 7] },
+        { ...wait, rawSceneIds: ["a", null] },
+        { ...wait, rawSceneIds: "a" },
+        { ...wait, rawSceneIds: null },
+        { ...wait, operationTicket: "" },
+        { ...wait, operationTicket: "   " },
+        { ...wait, operationTicket: "t".repeat(201) },
+        { ...wait, operationTicket: 7 },
+        { ...wait, ownerKey: "" },
+        { operationTicket: "ticket", rawSceneIds: [] },
+      ])
+        expect(
+          (await dispatchInvoke("related_scenes_graph_continue", invalid, deps))
+            .ok,
+          JSON.stringify(invalid),
+        ).toBe(false);
+      expect(relatedScenesGraphContinue).toHaveBeenCalledTimes(2);
+    });
+
+    it("keeps the 8-ID Raw bound equal to the ranking policy's maxScenes (not duplicated elsewhere)", () => {
+      const policy = JSON.parse(
+        readFileSync(
+          new URL(
+            "../../policies/narrative/nir1-related-scenes-ranking.json",
+            import.meta.url,
+          ),
+          "utf8",
+        ),
+      ) as { fusion: { maxScenes: number } };
+      // The wire accepts exactly `maxScenes` Raw IDs: the boundary test above
+      // (8 accepted, 9 rejected) must move with the policy.
+      expect(policy.fusion.maxScenes).toBe(8);
+    });
+
+    it("rejects both forms together, neither form, a bad settle value and every unknown key", async () => {
+      const { relatedScenesGraphContinue, deps } = setup();
+      for (const invalid of [
+        { ...wait, settle: "used" },
+        { ownerKey, operationTicket: "ticket" },
+        { ...settle, settle: "USED" },
+        { ...settle, settle: "settled" },
+        { ...settle, settle: "" },
+        { ...settle, settle: null },
+        { ...settle, settle: true },
+        { ...wait, projectId: "cannot-rebind" },
+        { ...settle, extra: 1 },
+        { ...wait, queryBinding: "x" },
+      ])
+        expect(
+          (await dispatchInvoke("related_scenes_graph_continue", invalid, deps))
+            .ok,
+          JSON.stringify(invalid),
+        ).toBe(false);
+      expect(relatedScenesGraphContinue).not.toHaveBeenCalled();
+    });
+
+    it("reports backend absence and version skew as explicit errors", async () => {
+      expect(
+        await dispatchInvoke("related_scenes_graph_continue", wait, {
+          backend: null,
+          shell: {},
+        }),
+      ).toMatchObject({
+        ok: false,
+        error: expect.stringContaining("IPC_BACKEND_UNAVAILABLE"),
+      });
+      expect(
+        await dispatchInvoke("related_scenes_graph_continue", wait, {
+          backend: {} as NapiBackendLike,
+          shell: {},
+        }),
+      ).toMatchObject({ ok: false });
+    });
   });
 
   it("exposes explicit backend/version-skew errors, and never exposes owner release to renderer", async () => {
