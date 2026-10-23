@@ -41,11 +41,11 @@
     },
     {
       "path": "package.json",
-      "sha256": "6bc793aa3e110bcd16b738f99fe6d9bbc702dfafdde07decde5cbc63f0e8d730"
+      "sha256": "aa909d7ee79966dea7894033bc00fdf129e8e776162adb27c94823c94175da3d"
     },
     {
       "path": "pnpm-lock.yaml",
-      "sha256": "5c4b776186746b635a43ced9c46bb3816360b0a7fe3946876d7e7224a57c3d04"
+      "sha256": "d9be4132526bf1667e715b93480d70398268270f66e87c1c4ca35c2765022ed0"
     },
     {
       "path": "src-tauri/Cargo.toml",
@@ -53,7 +53,7 @@
     },
     {
       "path": "src-tauri/Cargo.lock",
-      "sha256": "8f794401988781c31f56bf3a25648cdc1820b26bc286bb67cb550161b75421f6"
+      "sha256": "0e0c18895670fb45a3ce5f08b25f196b8efb0362e7976de64782a1ec901eeaab"
     },
     {
       "path": "electron/native/grimodex-node/Cargo.toml",
@@ -61,7 +61,7 @@
     },
     {
       "path": "electron/native/grimodex-node/Cargo.lock",
-      "sha256": "22b290c855725418cf5d6d5139553940ac70a1bf56d4937bec11175cf2e9b9e3"
+      "sha256": "0ff3ea1a7dbf148de01c06c83515eeceab5008630a25a0f030d9c5e12525576c"
     },
     {
       "path": "electron/native/grimodex-node/package.json",

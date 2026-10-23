@@ -13,10 +13,19 @@ const config: StorybookConfig = {
   },
   viteFinal: async (config) => {
     config.resolve ??= {};
-    config.resolve.alias = {
-      ...config.resolve.alias,
-      "@": path.resolve(__dirname, "../src"),
-    };
+    // Storybook 10.6 以降は alias を配列で渡す。object／array のどちらでも "@" を足せるよう
+    // 配列へ正規化する（object を展開すると配列が壊れて build が失敗する）。
+    const existing = config.resolve.alias;
+    const entries = Array.isArray(existing)
+      ? existing
+      : Object.entries(existing ?? {}).map(([find, replacement]) => ({
+          find,
+          replacement,
+        }));
+    config.resolve.alias = [
+      ...entries.filter((entry) => entry.find !== "@"),
+      { find: "@", replacement: path.resolve(__dirname, "../src") },
+    ];
     return config;
   },
 };
