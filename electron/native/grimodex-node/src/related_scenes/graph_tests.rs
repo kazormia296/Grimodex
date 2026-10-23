@@ -946,3 +946,6 @@ fn the_ready_notice_reaches_the_event_queue_with_the_project_id_only() {
         )]
     );
 }
+
+#[path = "graph_response_tests.rs"]
+mod response;

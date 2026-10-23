@@ -20,8 +20,10 @@
 //!   wait for the ticket and the IR response, never a verification (P1-1).
 //!
 //! The response assembly (path additions, the Graph-only row, click-time
-//! requalification) is S2b; this module stops at "the Graph is here and the
-//! operation is still current".
+//! requalification) is `graph_response.rs`; this module stops at "the Graph is
+//! here and the operation is still current", and returns what that module made
+//! once the gate, the lease and the declaration have been looked at again.
+use super::graph_response::{self, ClickEntry};
 use super::*;
 use crate::nir1_graph_product::{
     GraphBegin, GraphQuery, GraphTicket, GraphTicketOutcome, GraphTicketUse, GraphTicketWaiter,
@@ -51,6 +53,11 @@ struct GraphInner {
     claimed: bool,
     /// The owner's lifecycle edge epoch when the query was handed over.
     edge_epoch: u64,
+    /// The Graph-only row the one response of this operation showed, by its
+    /// opaque handle: the binding and the path's identifiers and tokens a click
+    /// is compared with. At most one; it lives and dies with the lease. Never a
+    /// response, an excerpt, a body or path text (DR-CP3A-25).
+    click: Option<(String, ClickEntry)>,
 }
 
 impl Default for GraphInner {
@@ -60,6 +67,7 @@ impl Default for GraphInner {
             dense_scene_ids: None,
             claimed: false,
             edge_epoch: 0,
+            click: None,
         }
     }
 }
@@ -133,6 +141,26 @@ impl GraphState {
         inner.edge_epoch = edge_epoch;
         inner.slot = slot;
         wire
+    }
+
+    /// The lifecycle epoch of the owner when the query was handed over.
+    pub(super) fn edge_epoch(&self) -> u64 {
+        lock_inner(&self.inner).edge_epoch
+    }
+
+    /// Keeps the Graph-only row of the response that is leaving, replacing any
+    /// earlier one (an operation is verified once, so there is none).
+    pub(super) fn keep_click(&self, identity: String, entry: ClickEntry) {
+        lock_inner(&self.inner).click = Some((identity, entry));
+    }
+
+    /// The Graph-only row behind `identity`, if this operation showed it.
+    pub(super) fn click_entry(&self, identity: &str) -> Option<ClickEntry> {
+        lock_inner(&self.inner)
+            .click
+            .as_ref()
+            .filter(|(kept, _)| kept == identity)
+            .map(|(_, entry)| entry.clone())
     }
 
     pub(super) fn set_dense_scene_ids(&self, ids: HashSet<String>) {
@@ -405,7 +433,7 @@ fn lease_probe(lease: &Lease) -> LeaseProbe {
 
 /// The reason the Graph may not be handed out now, if any. The owner already
 /// checked these at `begin`; they are checked again where the result leaves.
-fn gate_reason(state: &AppState) -> Option<GraphUnavailable> {
+pub(super) fn gate_reason(state: &AppState) -> Option<GraphUnavailable> {
     if state.nir1_graph.is_closed() {
         return Some(GraphUnavailable::Invalidated);
     }
@@ -500,19 +528,63 @@ async fn await_request(
     if let Some(reason) = gate_reason(&state) {
         return reply(reason);
     }
-    assemble(&state, &lease, &projection, &raw_scene_ids)
+    // The requalification reads the database: on a blocking thread, with the
+    // operation's own checkpoint. An `Err` of any kind is a failure of the
+    // whole Graph and says nothing about a Graph-only candidate.
+    let assembled = {
+        let state = Arc::clone(&state);
+        let lease = lease.clone();
+        let raw_scene_ids = raw_scene_ids.clone();
+        tokio::task::spawn_blocking(move || {
+            graph_response::assemble(&state, &lease, &projection, &raw_scene_ids)
+        })
+        .await
+    };
+    let assembled = match assembled {
+        Ok(Ok(assembled)) => assembled,
+        Ok(Err(error)) => {
+            return stopped(&state, &ticket, &lease, graph_response::classify(&error))
+        }
+        Err(_) => return reply(GraphUnavailable::Failed),
+    };
+    let graph_response::Assembled::Available { wire, click } = assembled else {
+        let graph_response::Assembled::Unavailable(reason) = assembled else {
+            unreachable!("an assembly is available or unavailable")
+        };
+        return stopped(&state, &ticket, &lease, reason);
+    };
+    // The payload leaves only if everything still holds where it leaves: the
+    // renderer has not settled, the lease is live, the gate is open and the
+    // workspace is the one the operation was made for. The handle of the
+    // Graph-only row is kept last, so a discarded payload leaves none.
+    if lease.data.graph.is_settled() {
+        return reply(GraphUnavailable::Cancelled);
+    }
+    if !lease.is_live(Instant::now()) {
+        return stopped(&state, &ticket, &lease, GraphUnavailable::Invalidated);
+    }
+    if let Some(reason) = gate_reason(&state) {
+        return reply(reason);
+    }
+    if !current_request(&state, &lease.data.request)? {
+        return stopped(&state, &ticket, &lease, GraphUnavailable::Invalidated);
+    }
+    graph_response::keep_click(&lease.data.graph, click);
+    Ok(wire)
 }
 
-/// S2b replaces this with the re-verification and the response assembly.
-/// Until then no `Available` Graph reaches a caller: the gate above is closed
-/// (`PRODUCT_GRAPH_PUBLISHED` is false), so a result cannot arrive.
-fn assemble(
-    _state: &AppState,
-    _lease: &Lease,
-    _projection: &Nir1GraphProjection,
-    _raw_scene_ids: &[String],
+/// The unavailable answer of an await that ended in `reason`; an operation
+/// whose lease has ended is invalidated, as every other path does.
+fn stopped(
+    state: &AppState,
+    ticket: &str,
+    lease: &Lease,
+    reason: GraphUnavailable,
 ) -> Result<Value> {
-    Ok(unavailable(GraphUnavailable::Failed.as_str()))
+    if !lease.is_live(Instant::now()) {
+        invalidate(state, ticket, lease)?;
+    }
+    Ok(unavailable(reason.as_str()))
 }
 
 #[cfg(test)]

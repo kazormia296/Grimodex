@@ -43,9 +43,10 @@ use rusqlite::Connection;
 use super::scenes::{recheck_scene_pin, SceneJoinBudget, ScenePinLocator};
 use super::worker_projection::Nir1GraphProjection;
 use super::{
-    evaluate_graph_only_scene, read_nir1_graph_seal, AppendSlot, GraphDisclosureQuery,
-    GraphDisclosureWorkspace, GraphOnlyScanInput, GraphOnlySceneDisclosure, GraphPathRevalidator,
-    Nir1GraphEdge, Nir1GraphSceneAssociation, NotAppended,
+    evaluate_graph_only_scene, read_nir1_graph_seal, requalify_graph_only_scene_disclosure,
+    AppendSlot, GraphDisclosureQuery, GraphDisclosureWorkspace, GraphOnlyClick, GraphOnlyScanInput,
+    GraphOnlySceneBinding, GraphOnlySceneDisclosure, GraphPathRevalidator,
+    Nir1GraphMaterialBinding, Nir1GraphSceneAssociation, NotAppended,
 };
 use crate::narrative_extraction::nir1_capacity;
 use crate::narrative_extraction::nir1_entity_relation::{
@@ -251,7 +252,84 @@ pub struct GraphPathEdge {
 pub struct GraphPathAttachment {
     pub scene_id: String,
     pub hop: u8,
+    /// The Entity the Scene is pinned to: an endpoint of the path's last edge.
+    /// The draft shows the pin's correspondence as part of the path Evidence.
+    pub pin_entity_id: String,
     pub edges: Vec<GraphPathEdge>,
+}
+
+/// What a click on a Graph-only row is later compared with, beyond the CB-4
+/// binding: the identifiers and tokens of the row's path (not one character of
+/// its text). It is request-local, bounded by the two edges of a path, and
+/// never stored, serialized or printed. DR-CP3A-25.
+#[derive(Clone)]
+pub struct GraphClickPath {
+    project_id: String,
+    query_scene_id: String,
+    scope_revision: Option<String>,
+    /// The retained edges with their indices in the worker's frame, which the
+    /// association's `path_edge_indices` refer to.
+    edges: Vec<(u16, RetainedEdge)>,
+}
+
+#[derive(Clone)]
+struct RetainedEdge {
+    binding: Nir1GraphMaterialBinding,
+    relation_edge_id: String,
+    from_entity_id: String,
+    to_entity_id: String,
+}
+
+impl GraphClickPath {
+    /// The path of `association`, or `None` when it is malformed (the same
+    /// rule as the path additions).
+    fn from_association(
+        projection: &Nir1GraphProjection,
+        association: &Nir1GraphSceneAssociation,
+    ) -> Option<Self> {
+        let edges = path_edges(projection, association)?;
+        Some(Self {
+            project_id: projection.project_id.clone(),
+            query_scene_id: projection.query_scene_id.clone(),
+            scope_revision: projection.scope_revision.clone(),
+            edges: association
+                .path_edge_indices
+                .iter()
+                .copied()
+                .zip(edges)
+                .map(|(index, edge)| {
+                    (
+                        index,
+                        RetainedEdge {
+                            binding: edge.binding.clone(),
+                            relation_edge_id: edge.relation_edge_id.to_owned(),
+                            from_entity_id: edge.from_entity_id.to_owned(),
+                            to_entity_id: edge.to_entity_id.to_owned(),
+                        },
+                    )
+                })
+                .collect(),
+        })
+    }
+
+    fn edge(&self, index: u16) -> Option<PathEdgeRef<'_>> {
+        self.edges
+            .iter()
+            .find(|(retained, _)| *retained == index)
+            .map(|(_, edge)| PathEdgeRef {
+                binding: &edge.binding,
+                relation_edge_id: &edge.relation_edge_id,
+                from_entity_id: &edge.from_entity_id,
+                to_entity_id: &edge.to_entity_id,
+            })
+    }
+}
+
+/// The Graph-only Scene's path as the response shows it, and what its click
+/// needs. Present exactly when the Graph-only disclosure is `Eligible`.
+pub struct GraphOnlyRow {
+    pub path: GraphPathAttachment,
+    pub click_path: GraphClickPath,
 }
 
 macro_rules! hide_contents {
@@ -268,7 +346,9 @@ hide_contents!(
     GraphPathEntity,
     GraphPathEvidence,
     GraphPathEdge,
-    GraphPathAttachment
+    GraphPathAttachment,
+    GraphClickPath,
+    GraphOnlyRow
 );
 
 /// What survived: the path additions of the displayed Scenes (tuple order),
@@ -277,6 +357,23 @@ hide_contents!(
 pub struct QualifiedGraphForRelatedScenes {
     pub attachments: Vec<GraphPathAttachment>,
     pub graph_only: GraphOnlySceneDisclosure,
+    /// The Graph-only row's path and click means: `Some` exactly when
+    /// `graph_only` is `Eligible`. A row whose path text can not be made is
+    /// not appended (`NotAppended`), like any other Graph-only failure.
+    pub graph_only_row: Option<GraphOnlyRow>,
+}
+
+impl QualifiedGraphForRelatedScenes {
+    /// The last check of a response: after the read transaction ended, a
+    /// workspace whose declaration COMMIT had an unknown outcome in this
+    /// process discloses nothing. The Graph-only Scene is dropped (like any
+    /// other Graph-only failure) and the path additions stay (DR-CB4-12 (4)).
+    pub fn drop_graph_only_if_quarantined(&mut self, workspace: &GraphDisclosureWorkspace) {
+        if workspace.is_quarantined() {
+            self.graph_only = GraphOnlySceneDisclosure::NotAppended(NotAppended);
+            self.graph_only_row = None;
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -399,6 +496,10 @@ struct RevisionCurrent {
     reveal_state_token: String,
     relation_ids: HashSet<String>,
     edges: HashMap<String, GraphPathEdge>,
+    /// The Revision as this snapshot read it, kept for the request so the text
+    /// of a Graph-only row's path can be made after its judgement (the
+    /// additions asked for their own Relations only). Dropped with the call.
+    disclosure: Arc<Nir1EntityRelationDisclosure>,
 }
 
 impl RevisionCurrent {
@@ -533,6 +634,8 @@ struct Evaluator<'a> {
     text: TextBudget,
     /// A Revision whose Relation text was over the limit or inconsistent.
     text_failure: Option<GraphRequalificationDrop>,
+    /// Relation text asked for after the Revision was first evaluated.
+    later_text: HashMap<(String, String), GraphPathEdge>,
 }
 
 impl<'a> Evaluator<'a> {
@@ -544,6 +647,32 @@ impl<'a> Evaluator<'a> {
             cache: HashMap::new(),
             text: TextBudget { used: Cell::new(0) },
             text_failure: None,
+            later_text: HashMap::new(),
+        }
+    }
+
+    /// The Revision's state if it was already evaluated in this call.
+    fn cached(&self, revision_id: &str) -> Option<Arc<RevisionCurrent>> {
+        self.cache.get(revision_id).cloned().flatten()
+    }
+
+    /// The text of one Relation of an already evaluated Revision, charged to
+    /// the same text budget as the path additions. `None` when it is
+    /// inconsistent or over the limit.
+    fn relation_text(&mut self, current: &RevisionCurrent, edge_id: &str) -> Option<GraphPathEdge> {
+        if let Some(edge) = current.edges.get(edge_id) {
+            return Some(edge.clone());
+        }
+        let key = (current.revision_id.clone(), edge_id.to_owned());
+        if let Some(edge) = self.later_text.get(&key) {
+            return Some(edge.clone());
+        }
+        match edge_text(&current.disclosure, edge_id, &self.text) {
+            EdgeText::Edge(edge) => {
+                self.later_text.insert(key, (*edge).clone());
+                Some(*edge)
+            }
+            EdgeText::Inconsistent | EdgeText::OverLimit => None,
         }
     }
 
@@ -578,7 +707,7 @@ impl<'a> Evaluator<'a> {
         )?;
         let current = match read {
             Nir1EntityRelationDisclosureRead::Eligible(disclosure) => {
-                self.derive(&disclosure, revision_id, text_edges)
+                self.derive(Arc::from(disclosure), revision_id, text_edges)
             }
             Nir1EntityRelationDisclosureRead::Unavailable { .. } => None,
         };
@@ -588,7 +717,7 @@ impl<'a> Evaluator<'a> {
 
     fn derive(
         &mut self,
-        disclosure: &Nir1EntityRelationDisclosure,
+        disclosure: Arc<Nir1EntityRelationDisclosure>,
         revision_id: &str,
         text_edges: &[&str],
     ) -> Option<Arc<RevisionCurrent>> {
@@ -599,7 +728,7 @@ impl<'a> Evaluator<'a> {
         let decision_id = revision.decision.as_ref()?.id().to_owned();
         let mut edges = HashMap::with_capacity(text_edges.len());
         for edge_id in text_edges {
-            match edge_text(disclosure, edge_id, &self.text) {
+            match edge_text(&disclosure, edge_id, &self.text) {
                 EdgeText::Edge(edge) => {
                     edges.insert((*edge_id).to_owned(), *edge);
                 }
@@ -632,17 +761,29 @@ impl<'a> Evaluator<'a> {
                 .map(|relation| relation.edge_id.clone())
                 .collect(),
             edges,
+            disclosure: Arc::clone(&disclosure),
         }))
     }
 }
 
-/// The projection's edges on one Scene's representative path, or `None` when
-/// the association is malformed (not 1 or 2 edges, hop differing from the
-/// count, an index outside the frame, or a pin that is not at the path's end).
-fn path_edges<'p>(
-    projection: &'p Nir1GraphProjection,
+/// What the requalification takes of one edge of a path: its identity and the
+/// tokens it was qualified under. Never its text.
+#[derive(Clone, Copy)]
+struct PathEdgeRef<'a> {
+    binding: &'a Nir1GraphMaterialBinding,
+    relation_edge_id: &'a str,
+    from_entity_id: &'a str,
+    to_entity_id: &'a str,
+}
+
+/// The edges of one Scene's representative path through `lookup` (an index in
+/// the worker's frame to its edge), or `None` when the association is
+/// malformed (not 1 or 2 edges, hop differing from the count, an index outside
+/// the frame, or a pin that is not at the path's end).
+fn shaped_path<'p>(
     association: &Nir1GraphSceneAssociation,
-) -> Option<Vec<&'p Nir1GraphEdge>> {
+    lookup: impl Fn(u16) -> Option<PathEdgeRef<'p>>,
+) -> Option<Vec<PathEdgeRef<'p>>> {
     let indices = &association.path_edge_indices;
     if indices.is_empty()
         || indices.len() > MAX_PATH_EDGES
@@ -652,28 +793,48 @@ fn path_edges<'p>(
     }
     let edges = indices
         .iter()
-        .map(|index| projection.graph.edges.get(usize::from(*index)))
+        .map(|index| lookup(*index))
         .collect::<Option<Vec<_>>>()?;
     // The pin locates an Entity the path reached: an endpoint of its last edge.
     let last = edges.last()?;
-    let ends_at_pin = last.from.entity_id == association.pin_entry_id
-        || last.to.entity_id == association.pin_entry_id;
+    let ends_at_pin = last.from_entity_id == association.pin_entry_id
+        || last.to_entity_id == association.pin_entry_id;
     ends_at_pin.then_some(edges)
+}
+
+/// The projection's edges on one Scene's representative path (see
+/// [`shaped_path`]).
+fn path_edges<'p>(
+    projection: &'p Nir1GraphProjection,
+    association: &Nir1GraphSceneAssociation,
+) -> Option<Vec<PathEdgeRef<'p>>> {
+    shaped_path(association, |index| {
+        projection
+            .graph
+            .edges
+            .get(usize::from(index))
+            .map(|edge| PathEdgeRef {
+                binding: &edge.binding,
+                relation_edge_id: &edge.relation.edge_id,
+                from_entity_id: &edge.from.entity_id,
+                to_entity_id: &edge.to.entity_id,
+            })
+    })
 }
 
 /// Whether a worker's edge is still what this snapshot derives.
 fn edge_holds(
-    projection: &Nir1GraphProjection,
+    scope_revision: Option<&str>,
     query_scene_id: &str,
-    edge: &Nir1GraphEdge,
+    edge: PathEdgeRef<'_>,
     current: &RevisionCurrent,
 ) -> bool {
     tokens_match_current(
-        &Nir1GraphCandidateBinding::from(&*edge.binding),
+        &Nir1GraphCandidateBinding::from(edge.binding),
         &current.tokens(),
-        projection.scope_revision.as_deref(),
+        scope_revision,
         query_scene_id,
-    ) && current.relation_ids.contains(&edge.relation.edge_id)
+    ) && current.relation_ids.contains(edge.relation_edge_id)
 }
 
 /// The path of a Graph-only candidate, compared with this snapshot's A3
@@ -702,12 +863,77 @@ impl GraphPathRevalidator for PathRevalidator<'_, '_> {
             let Some(current) = current else {
                 return Ok(false);
             };
-            if !edge_holds(self.projection, self.query_scene_id, edge, &current) {
+            if !edge_holds(
+                self.projection.scope_revision.as_deref(),
+                self.query_scene_id,
+                edge,
+                &current,
+            ) {
                 return Ok(false);
             }
         }
         Ok(true)
     }
+}
+
+/// The path of a clicked Graph-only row, compared with the retained
+/// identifiers and tokens of the response (the projection is gone by then).
+struct ClickRevalidator<'a, 'e> {
+    evaluator: &'e RefCell<Evaluator<'a>>,
+    path: &'a GraphClickPath,
+}
+
+impl GraphPathRevalidator for ClickRevalidator<'_, '_> {
+    fn revalidate(
+        &mut self,
+        conn: &Connection,
+        association: &Nir1GraphSceneAssociation,
+    ) -> Result<bool> {
+        let Some(edges) = shaped_path(association, |index| self.path.edge(index)) else {
+            return Ok(false);
+        };
+        for edge in edges {
+            let current =
+                self.evaluator
+                    .borrow_mut()
+                    .current(conn, &edge.binding.revision_id, &[])?;
+            let Some(current) = current else {
+                return Ok(false);
+            };
+            if !edge_holds(
+                self.path.scope_revision.as_deref(),
+                &self.path.query_scene_id,
+                edge,
+                &current,
+            ) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+}
+
+/// Revalidates a clicked Graph-only row: CB-4's click revalidation, with the
+/// row's path compared with the identifiers and tokens the response kept
+/// ([`GraphClickPath`]) against this snapshot's A3, and the pin, declaration,
+/// title and body checked again. `conn` must be in a new read transaction.
+/// `Allowed` carries the range to go to; anything that no longer holds is the
+/// closed [`GraphOnlyClick::Refused`]; an `Err` is a cancel, a deadline or a
+/// storage failure.
+pub fn requalify_graph_only_click(
+    conn: &Connection,
+    workspace: &GraphDisclosureWorkspace,
+    query: &GraphDisclosureQuery,
+    binding: &GraphOnlySceneBinding,
+    path: &GraphClickPath,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<GraphOnlyClick> {
+    let evaluator = RefCell::new(Evaluator::new(&path.project_id, &path.query_scene_id));
+    let mut revalidator = ClickRevalidator {
+        evaluator: &evaluator,
+        path,
+    };
+    requalify_graph_only_scene_disclosure(conn, workspace, query, binding, &mut revalidator, check)
 }
 
 /// Requalifies a worker's Graph for one Related Scenes response. Call it in
@@ -765,11 +991,12 @@ pub fn requalify_graph_for_related_scenes(
     };
 
     // Steps 3 and 4: the common extra slot, judged once, under its own budget.
-    let graph_only = graph_only(conn, input, &evaluator, check)?;
+    let (graph_only, graph_only_row) = graph_only(conn, input, &evaluator, check)?;
     Ok(GraphRequalification::Qualified(Box::new(
         QualifiedGraphForRelatedScenes {
             attachments,
             graph_only,
+            graph_only_row,
         },
     )))
 }
@@ -777,7 +1004,7 @@ pub fn requalify_graph_for_related_scenes(
 /// A displayed Scene with its association and the edges of its path.
 struct Target<'p> {
     association: &'p Nir1GraphSceneAssociation,
-    edges: Vec<&'p Nir1GraphEdge>,
+    edges: Vec<PathEdgeRef<'p>>,
 }
 
 fn attach_paths(
@@ -822,8 +1049,8 @@ fn attach_paths(
                 revision_order.push(revision_id);
                 Vec::new()
             });
-            if !edges.contains(&edge.relation.edge_id.as_str()) {
-                edges.push(edge.relation.edge_id.as_str());
+            if !edges.contains(&edge.relation_edge_id) {
+                edges.push(edge.relation_edge_id);
             }
         }
     }
@@ -853,10 +1080,15 @@ fn attach_paths(
             let Some(current) = current else {
                 return Ok(Err(GraphRequalificationDrop::PathNotCurrent));
             };
-            if !edge_holds(projection, input.query_scene_id, edge, &current) {
+            if !edge_holds(
+                projection.scope_revision.as_deref(),
+                input.query_scene_id,
+                *edge,
+                &current,
+            ) {
                 return Ok(Err(GraphRequalificationDrop::PathNotCurrent));
             }
-            let Some(text) = current.edges.get(&edge.relation.edge_id) else {
+            let Some(text) = current.edges.get(edge.relation_edge_id) else {
                 return Ok(Err(GraphRequalificationDrop::PathNotCurrent));
             };
             edges.push(text.clone());
@@ -883,13 +1115,68 @@ fn attach_paths(
         attachments.push(GraphPathAttachment {
             scene_id: association.scene_id.clone(),
             hop: association.path_hop,
+            pin_entity_id: association.pin_entry_id.clone(),
             edges,
         });
     }
     Ok(Ok(attachments))
 }
 
+/// The Graph-only judgement, and for an `Eligible` Scene its row (path text and
+/// click means). A row that can not be made (its path text is inconsistent or
+/// over the text limit) is a Graph-only failure like any other: the Scene is
+/// not appended and nothing else changes.
 fn graph_only<'a>(
+    conn: &Connection,
+    input: &GraphRequalificationInput<'a>,
+    evaluator: &RefCell<Evaluator<'a>>,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<(GraphOnlySceneDisclosure, Option<GraphOnlyRow>)> {
+    let disclosure = judge_graph_only(conn, input, evaluator, check)?;
+    let GraphOnlySceneDisclosure::Eligible(scene) = &disclosure else {
+        return Ok((disclosure, None));
+    };
+    match graph_only_row(input, evaluator, scene.scene_id()) {
+        Some(row) => Ok((disclosure, Some(row))),
+        None => Ok((GraphOnlySceneDisclosure::NotAppended(NotAppended), None)),
+    }
+}
+
+/// The path text and click means of the Scene the judgement adopted. Its path
+/// was revalidated by the judgement, so its Revisions are in the cache.
+fn graph_only_row<'a>(
+    input: &GraphRequalificationInput<'a>,
+    evaluator: &RefCell<Evaluator<'a>>,
+    scene_id: &str,
+) -> Option<GraphOnlyRow> {
+    let projection = input.projection;
+    let association = projection
+        .graph
+        .scenes
+        .iter()
+        .find(|association| association.scene_id == scene_id)?;
+    let edges = path_edges(projection, association)?;
+    let mut text = Vec::with_capacity(edges.len());
+    for edge in &edges {
+        let current = evaluator.borrow().cached(&edge.binding.revision_id)?;
+        text.push(
+            evaluator
+                .borrow_mut()
+                .relation_text(&current, edge.relation_edge_id)?,
+        );
+    }
+    Some(GraphOnlyRow {
+        path: GraphPathAttachment {
+            scene_id: association.scene_id.clone(),
+            hop: association.path_hop,
+            pin_entity_id: association.pin_entry_id.clone(),
+            edges: text,
+        },
+        click_path: GraphClickPath::from_association(projection, association)?,
+    })
+}
+
+fn judge_graph_only<'a>(
     conn: &Connection,
     input: &GraphRequalificationInput<'a>,
     evaluator: &RefCell<Evaluator<'a>>,

@@ -28,6 +28,7 @@ use tokio::sync::Notify;
 mod begin;
 mod build;
 mod graph;
+mod graph_response;
 mod ranking_policy;
 mod scoring;
 
@@ -304,6 +305,13 @@ pub(crate) fn qualify_evidence(state: &AppState, owner: &str, identity: &str) ->
         }
         let handle = lock(&lease.data.result)?.navigation.get(identity).cloned();
         let Some(handle) = handle else {
+            // A Graph-only row of the Graph answer (CP-3a): its own arm, with
+            // its own requalification. Whatever fails there is `unavailable`
+            // for this row; the operation is invalidated only when it is
+            // itself stale.
+            if let Some(entry) = lease.data.graph.click_entry(identity) {
+                return graph_response::click(state, &ticket, &lease, identity, &entry);
+            }
             continue;
         };
         if !current_operation(state, &lease)? {

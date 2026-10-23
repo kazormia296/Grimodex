@@ -75,10 +75,11 @@ pub(crate) use self::input::{A2SqlObservation, A3SqlObservation};
 use self::memory::{RetainedLedger, RetainedPart};
 #[cfg(feature = "native-current-human-capture")]
 pub use self::related_scenes_requalification::{
-    requalify_graph_for_related_scenes, with_graph_requalification_read, GraphOnlyBudget,
-    GraphPathAttachment, GraphPathEdge, GraphPathEntity, GraphPathEvidence, GraphRequalification,
-    GraphRequalificationDrop, GraphRequalificationInput, QualifiedGraphForRelatedScenes,
-    ATTACHMENT_TEXT_MAX_BYTES, GRAPH_ONLY_VM_STEPS,
+    requalify_graph_for_related_scenes, requalify_graph_only_click, with_graph_requalification_read,
+    GraphClickPath, GraphOnlyBudget, GraphOnlyRow, GraphPathAttachment, GraphPathEdge,
+    GraphPathEntity, GraphPathEvidence, GraphRequalification, GraphRequalificationDrop,
+    GraphRequalificationInput, QualifiedGraphForRelatedScenes, ATTACHMENT_TEXT_MAX_BYTES,
+    GRAPH_ONLY_VM_STEPS,
 };
 #[cfg(feature = "native-current-human-capture")]
 pub use self::scene_disclosure::{

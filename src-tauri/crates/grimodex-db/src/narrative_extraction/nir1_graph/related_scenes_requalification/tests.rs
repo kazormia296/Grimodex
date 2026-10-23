@@ -1432,3 +1432,360 @@ fn measure_graph_only_vm_steps() {
     assert!(uncached.1 > cached.1);
     assert!(uncached.1 < GRAPH_ONLY_VM_STEPS / 4);
 }
+
+// ---- S2b: the Graph-only row's path, and the click ----------------------------------------
+
+fn row_of(result: &QualifiedGraphForRelatedScenes) -> &GraphOnlyRow {
+    result.graph_only_row.as_ref().expect("an eligible row")
+}
+
+fn click(
+    world: &World,
+    binding: &GraphOnlySceneBinding,
+    path: &GraphClickPath,
+) -> Result<GraphOnlyClick> {
+    click_with(world, binding, path, &mut || Ok(()))
+}
+
+fn click_with(
+    world: &World,
+    binding: &GraphOnlySceneBinding,
+    path: &GraphClickPath,
+    check: &mut dyn FnMut() -> Result<()>,
+) -> Result<GraphOnlyClick> {
+    let workspace = world.workspace();
+    let query = world.query();
+    with_graph_requalification_read(&world.snapshot, transaction_budget(), |conn| {
+        requalify_graph_only_click(conn, &workspace, &query, binding, path, check)
+    })
+}
+
+#[test]
+fn the_graph_only_row_carries_the_path_text_and_the_pin_of_its_scene() {
+    let world = declared_world();
+    let projection = world.projection();
+    let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
+    assert_eq!(graph_only_scene(&result), Some("g3"));
+    let row = row_of(&result);
+    assert_eq!(row.path.scene_id, "g3");
+    assert_eq!(row.path.hop, 1);
+    // The pin's correspondence is part of the path: Bob, the path's end.
+    assert_eq!(row.path.pin_entity_id, REACHED);
+    // g3 is reached through the first Revision's edge, as g1 is; the text is
+    // the same Relation, read once.
+    assert_eq!(row.path.edges, result.attachments[0].edges);
+    assert_eq!(row.path.edges[0].relation_type, "knows");
+    assert_eq!(evaluated().len(), 2, "each Revision is evaluated once");
+}
+
+#[test]
+fn the_graph_only_path_text_is_made_even_when_no_displayed_path_read_that_revision() {
+    // Nothing is displayed, so the path additions evaluated no Revision; the
+    // judgement does, and the row's text is made from what it read.
+    let world = declared_world();
+    let mut projection = world.projection();
+    for edge in &mut projection.graph.edges {
+        let mut relation = (*edge.relation).clone();
+        relation.relation_type = "WORKER-RELATION-TYPE".into();
+        edge.relation = Arc::new(relation);
+    }
+    let result = qualified(Call::new(&world, &projection, &[]).run());
+    assert!(result.attachments.is_empty());
+    assert_eq!(graph_only_scene(&result), Some("g3"));
+    let row = row_of(&result);
+    assert_eq!(row.path.edges.len(), 1);
+    assert_eq!(row.path.edges[0].relation_type, "knows");
+    assert_eq!(row.path.edges[0].from.label, "Alice");
+    assert_eq!(row.path.edges[0].to.label, "Bob");
+    assert!(row
+        .path
+        .edges
+        .iter()
+        .flat_map(|edge| &edge.evidence)
+        .all(|evidence| !evidence.quote.contains("WORKER")));
+    assert_eq!(evaluated().len(), 1, "g3 needs the first Revision only");
+}
+
+#[test]
+fn a_graph_only_row_exists_exactly_when_the_disclosure_is_eligible() {
+    let world = declared_world();
+    let projection = world.projection();
+    // Eligible: a row.
+    let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
+    assert!(result.graph_only_row.is_some());
+    // A closed slot, and no declared candidate: no row, one answer.
+    let closed = AppendSlot {
+        ir_uses_common_slot: true,
+        raw_count: 3,
+    };
+    let result = qualified(
+        Call::new(&world, &projection, &["g1", "g2"])
+            .with_slot(closed)
+            .run(),
+    );
+    assert!(result.graph_only_row.is_none());
+    assert!(matches!(
+        result.graph_only,
+        GraphOnlySceneDisclosure::NotAppended(NotAppended)
+    ));
+    let world = World::new().unwrap();
+    let projection = world.projection();
+    let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
+    assert!(result.graph_only_row.is_none());
+}
+
+#[test]
+fn a_graph_only_path_text_over_the_limit_is_not_appended_and_changes_nothing_else() {
+    let world = declared_world();
+    let projection = world.projection();
+    let baseline = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
+    let one_scene_text: usize = baseline.attachments[0]
+        .edges
+        .iter()
+        .map(|edge| {
+            edge.edge_id.len()
+                + edge.relation_type.len()
+                + edge.directionality.len()
+                + edge.from.entity_id.len()
+                + edge.from.label.len()
+                + edge.to.entity_id.len()
+                + edge.to.label.len()
+                + edge
+                    .evidence
+                    .iter()
+                    .map(|evidence| evidence.evidence_id.len() + evidence.quote.len())
+                    .sum::<usize>()
+        })
+        .sum();
+    assert!(one_scene_text > 0);
+    // g1 and g2 use both Revisions' Relations; g3's path is g1's Relation,
+    // already charged. A displayed set that charges nothing leaves the
+    // judgement to read g3's own text, and a limit one byte short of it refuses
+    // that text only.
+    TEST_TEXT_LIMIT.with(|limit| limit.set(Some(one_scene_text - 1)));
+    let result = qualified(Call::new(&world, &projection, &[]).run());
+    assert!(result.attachments.is_empty());
+    assert!(matches!(
+        result.graph_only,
+        GraphOnlySceneDisclosure::NotAppended(NotAppended)
+    ));
+    assert!(result.graph_only_row.is_none());
+    // At the limit exactly, the row is made.
+    TEST_TEXT_LIMIT.with(|limit| limit.set(Some(one_scene_text)));
+    let result = qualified(Call::new(&world, &projection, &[]).run());
+    assert_eq!(graph_only_scene(&result), Some("g3"));
+    assert!(result.graph_only_row.is_some());
+    TEST_TEXT_LIMIT.with(|limit| limit.set(None));
+}
+
+#[test]
+fn a_clicked_graph_only_row_is_requalified_without_the_projection() {
+    let world = declared_world();
+    let result = {
+        let projection = world.projection();
+        qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
+    };
+    // The projection is gone; the retained identifiers and tokens are enough.
+    let GraphOnlySceneDisclosure::Eligible(scene) = &result.graph_only else {
+        panic!("eligible")
+    };
+    let row = row_of(&result);
+    match click(&world, scene.binding(), &row.click_path).unwrap() {
+        GraphOnlyClick::Allowed(range) => assert_eq!(range, scene.range()),
+        GraphOnlyClick::Refused(_) => panic!("the click was refused"),
+    }
+    // Nothing of the path's text is retained.
+    let retained = format!("{:?}", row.click_path);
+    assert!(!retained.contains("Alice") && !retained.contains("knows"));
+}
+
+#[test]
+fn a_click_is_refused_after_any_change_the_response_did_not_see() {
+    type Change = (&'static str, &'static str);
+    let changes: [Change; 6] = [
+        (
+            "the declaration was revoked",
+            "UPDATE narrative_scene_scope_bindings SET body_declaration_json = NULL, body_declaration_token = NULL WHERE scene_id = 'g3';",
+        ),
+        (
+            "the body was saved again",
+            "UPDATE tree_nodes SET content = '{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Rewritten.\"}]}]}', version = version + 1, updated_at = '2026-10-23T01:00:00.000Z' WHERE id = 'g3';",
+        ),
+        (
+            "the title changed",
+            "UPDATE tree_nodes SET title = 'Another title' WHERE id = 'g3';",
+        ),
+        (
+            "the pin moved",
+            "UPDATE scene_codex_pins SET created_at = '2031-01-01T00:00:00Z' WHERE scene_id = 'g3';",
+        ),
+        (
+            "the pin was deleted",
+            "DELETE FROM scene_codex_pins WHERE scene_id = 'g3';",
+        ),
+        (
+            "the Scene was archived",
+            "UPDATE tree_nodes SET archived_at = '2026-10-23 00:00:00' WHERE id = 'g3';",
+        ),
+    ];
+    for (name, sql) in changes {
+        let world = declared_world();
+        let result = {
+            let projection = world.projection();
+            qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
+        };
+        let GraphOnlySceneDisclosure::Eligible(scene) = &result.graph_only else {
+            panic!("{name}: eligible")
+        };
+        let row = row_of(&result);
+        world.execute(sql);
+        assert!(
+            matches!(
+                click(&world, scene.binding(), &row.click_path).unwrap(),
+                GraphOnlyClick::Refused(_)
+            ),
+            "{name}"
+        );
+    }
+}
+
+#[test]
+fn a_click_is_refused_when_the_retained_path_no_longer_holds() {
+    // Everything else is intact: only the path's tokens differ. Each token the
+    // frame was qualified under is compared again, as at the response.
+    type Tamper = (&'static str, fn(&mut Nir1GraphMaterialBinding));
+    let tampers: [Tamper; 4] = [
+        ("freshness", |b| b.freshness_token = "sha256:stale".into()),
+        ("decision", |b| b.decision_token = "sha256:stale".into()),
+        ("scope authority", |b| {
+            b.scope_authority_revision = "stale".into()
+        }),
+        ("reveal state", |b| {
+            b.reveal_state_token = "sha256:stale".into()
+        }),
+    ];
+    for (name, tamper) in tampers {
+        let world = declared_world();
+        let result = {
+            let projection = world.projection();
+            qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
+        };
+        let GraphOnlySceneDisclosure::Eligible(scene) = &result.graph_only else {
+            panic!("{name}: eligible")
+        };
+        let mut path = row_of(&result).click_path.clone();
+        // The untouched path passes.
+        assert!(
+            matches!(
+                click(&world, scene.binding(), &path).unwrap(),
+                GraphOnlyClick::Allowed(_)
+            ),
+            "{name}: control"
+        );
+        tamper(&mut path.edges[0].1.binding);
+        assert!(
+            matches!(
+                click(&world, scene.binding(), &path).unwrap(),
+                GraphOnlyClick::Refused(_)
+            ),
+            "{name}"
+        );
+    }
+    // A path that lost an edge, or whose scope revision changed, is refused.
+    let world = declared_world();
+    let result = {
+        let projection = world.projection();
+        qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
+    };
+    let GraphOnlySceneDisclosure::Eligible(scene) = &result.graph_only else {
+        panic!("eligible")
+    };
+    let mut path = row_of(&result).click_path.clone();
+    path.edges.clear();
+    assert!(matches!(
+        click(&world, scene.binding(), &path).unwrap(),
+        GraphOnlyClick::Refused(_)
+    ));
+    let mut path = row_of(&result).click_path.clone();
+    path.scope_revision = Some("another-scope-revision".into());
+    assert!(matches!(
+        click(&world, scene.binding(), &path).unwrap(),
+        GraphOnlyClick::Refused(_)
+    ));
+}
+
+#[test]
+fn a_real_cancel_during_a_click_is_an_error_not_a_refusal() {
+    let world = declared_world();
+    let result = {
+        let projection = world.projection();
+        qualified(Call::new(&world, &projection, &["g1", "g2"]).run())
+    };
+    let GraphOnlySceneDisclosure::Eligible(scene) = &result.graph_only else {
+        panic!("eligible")
+    };
+    let row = row_of(&result);
+    let calls = AtomicUsize::new(0);
+    let outcome = click_with(&world, scene.binding(), &row.click_path, &mut || {
+        if calls.fetch_add(1, Ordering::SeqCst) >= 1 {
+            Err(crate::narrative_extraction::validation_terminated(
+                ValidationTerminationReason::Cancelled,
+                "TEST_CANCELLED",
+            ))
+        } else {
+            Ok(())
+        }
+    });
+    assert!(outcome.is_err(), "a cancel is not a refused click");
+}
+
+#[test]
+fn a_workspace_quarantined_after_the_read_drops_the_graph_only_row_and_keeps_the_paths() {
+    use crate::narrative_extraction::scene_body_declaration::{
+        clear_scene_body_declaration_workspace_quarantine_for_test,
+        quarantine_scene_body_declaration_workspace_for_test,
+    };
+    let world = declared_world();
+    let projection = world.projection();
+    let mut result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
+    assert!(result.graph_only_row.is_some());
+    let attachments = result.attachments.clone();
+    let workspace = world.workspace();
+    // Not quarantined: nothing changes.
+    result.drop_graph_only_if_quarantined(&workspace);
+    assert!(result.graph_only_row.is_some());
+    quarantine_scene_body_declaration_workspace_for_test(&world.snapshot);
+    result.drop_graph_only_if_quarantined(&workspace);
+    clear_scene_body_declaration_workspace_quarantine_for_test(&world.snapshot);
+    assert!(result.graph_only_row.is_none());
+    assert!(matches!(
+        result.graph_only,
+        GraphOnlySceneDisclosure::NotAppended(NotAppended)
+    ));
+    assert_eq!(result.attachments, attachments);
+}
+
+/// R-3 of the TASK (does the requalification fit the merge window?): the time of
+/// one whole requalification, for the record in DR-CP3A-29. Run with
+/// `--nocapture`, in debug and with `--release`. The world is small (two
+/// Revisions, four Scenes, a body of one sentence): the conditions are part of
+/// the record.
+#[test]
+fn measure_requalification_time() {
+    let world = declared_world();
+    let projection = world.projection();
+    let mut times = Vec::new();
+    for _ in 0..21 {
+        let started = Instant::now();
+        let result = qualified(Call::new(&world, &projection, &["g1", "g2"]).run());
+        times.push(started.elapsed());
+        assert_eq!(graph_only_scene(&result), Some("g3"));
+    }
+    times.sort();
+    println!(
+        "MEASURE requalification (2 paths + 1 Graph-only row, query context read included): \
+         median {:?}, max {:?}",
+        times[10], times[20]
+    );
+    assert!(times[20] < Duration::from_secs(2));
+}
