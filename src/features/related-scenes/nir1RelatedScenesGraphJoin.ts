@@ -46,7 +46,7 @@ export type Nir1GraphTicketUse = "used" | "unused" | "cancelled";
 
 export interface Nir1GraphJoinResult<G> {
   readonly status: "completed" | "cancelled" | "invalidated";
-  /** R or R+IR fusion only; the Graph fusion belongs to CP-3a. */
+  /** R or R+IR fusion only; the Graph fusion belongs to CP-3b. */
   readonly result: Nir1RelatedScenesResult;
   /** The IR outcome, decided at the IR arrival time. */
   readonly completion: Nir1RelatedScenesCompletion;
@@ -86,7 +86,7 @@ export function awaitNir1RelatedScenesWithGraph<G>(input: {
     "stopReason" | "isActive" | "subscribeInvalidation"
   >;
   isCurrent: () => boolean;
-  /** CP-3a connects this to the Native ticket finish. */
+  /** fetchNir1RelatedScenesGraph connects this to the Native ticket finish. */
   onGraphSettled: (use: Nir1GraphTicketUse) => void;
 }): Promise<Nir1GraphJoinResult<G>> {
   const deadline = createNir1RelatedScenesDeadline({
@@ -192,12 +192,15 @@ export function awaitNir1RelatedScenesWithGraph<G>(input: {
         graph,
         publishedAtMs: nowMs,
       };
-      // The caller always gets its result, even when the ticket settlement throws.
+      // The caller always gets its result. A declaration that throws is
+      // dropped here: rethrowing would only surface as an unhandled rejection
+      // of the arrival handler, and the ticket's TTL bounds a lost declaration.
       try {
         input.onGraphSettled(use);
-      } finally {
-        resolve(outcome);
+      } catch {
+        // Intentionally ignored (see above).
       }
+      resolve(outcome);
     }
 
     function arm(): void {

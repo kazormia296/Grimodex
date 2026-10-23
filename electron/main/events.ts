@@ -27,23 +27,14 @@ import {
 import {
   isRelatedScenesInvalidatedEvent,
   isRelatedScenesIndexReadyEvent,
+  isRelatedScenesGraphReadyEvent,
   RELATED_SCENES_INVALIDATED_EVENT,
   RELATED_SCENES_INDEX_READY_EVENT,
+  RELATED_SCENES_GRAPH_READY_EVENT,
 } from "../shared/relatedScenesSearchWire.js";
-
-/**
- * CP-3a: the Graph owner's "a late result is now cached" notice (CP2a-D11).
- * The payload is `{ projectId }` only, the same shape as `index-ready`; any
- * other key is dropped here, before the observer and the broadcast.  Defined
- * here (S3) so the allowlists and the forwarding check land together; the
- * renderer wire file takes it up with its consumer (S4).
- */
-export const RELATED_SCENES_GRAPH_READY_EVENT = "related-scenes:graph-ready";
-export function isRelatedScenesGraphReadyEvent(
-  value: unknown,
-): value is { readonly projectId: string } {
-  return isRelatedScenesIndexReadyEvent(value);
-}
+// CP-3a: `related-scenes:graph-ready` carries `{ projectId }` only (the same
+// check as `index-ready`); any other key is dropped before the observer and
+// the broadcast. The constant and guard live in the shared wire file.
 
 /** Native completion signal consumed by main only; never broadcast to a window. */
 export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =

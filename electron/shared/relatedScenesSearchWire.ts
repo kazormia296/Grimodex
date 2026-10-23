@@ -1,6 +1,8 @@
 /** NIR-1 two-result wire. All capability and owner identities are opaque. */
 export const RELATED_SCENES_INVALIDATED_EVENT = "related-scenes:invalidated";
 export const RELATED_SCENES_INDEX_READY_EVENT = "related-scenes:index-ready";
+/** A late Graph result is now cached (CP-3a). The payload is `{ projectId }` only. */
+export const RELATED_SCENES_GRAPH_READY_EVENT = "related-scenes:graph-ready";
 
 export interface RelatedScenesIndexReadyEvent {
   readonly projectId: string;
@@ -18,6 +20,17 @@ export function isRelatedScenesIndexReadyEvent(
     record.projectId.trim().length > 0 &&
     record.projectId.length <= 200
   );
+}
+
+/** Same `{ projectId }` shape and checks as `index-ready`; no other key. */
+export interface RelatedScenesGraphReadyEvent {
+  readonly projectId: string;
+}
+
+export function isRelatedScenesGraphReadyEvent(
+  value: unknown,
+): value is RelatedScenesGraphReadyEvent {
+  return isRelatedScenesIndexReadyEvent(value);
 }
 
 export interface RelatedScenesInvalidatedEvent {
@@ -44,6 +57,12 @@ export interface RelatedScenesBeginRequest {
   readonly currentSceneId: string;
   /** Exact existing Raw saved-body tail; Native independently derives it. */
   readonly query: string;
+  /**
+   * Optional Graph seed Entity (CP-3a). A locator claim, not authority: Native
+   * re-reads the seed rule and drops the Graph when it differs. When absent the
+   * request, and the response, are exactly the non-Graph shape.
+   */
+  readonly graphSeedEntityId?: string;
 }
 
 export interface RelatedScenesRawHit {
@@ -91,6 +110,33 @@ export interface Nir1AdmittedSceneWire {
   readonly freshness: "fresh";
 }
 
+/**
+ * The closed Native Graph reasons (CP-1 allowlist, DSN §1.5). A cached hit is
+ * reported as `pending` and awaited through the same continue command.
+ */
+export type RelatedScenesGraphUnavailableReason =
+  | "not-requested"
+  | "not-activated"
+  | "profile-not-restricted"
+  | "warming"
+  | "stale"
+  | "busy"
+  | "limit"
+  | "timeout"
+  | "registration-unavailable"
+  | "invalidated"
+  | "cancelled"
+  | "restart-required"
+  | "worker-unavailable"
+  | "failed";
+
+export type RelatedScenesBeginGraph =
+  | { readonly status: "pending" }
+  | {
+      readonly status: "unavailable";
+      readonly reason: RelatedScenesGraphUnavailableReason;
+    };
+
 export interface RelatedScenesBeginResponse {
   readonly status: "raw-ready";
   readonly denseHits: readonly RelatedScenesRawHit[];
@@ -107,6 +153,8 @@ export interface RelatedScenesBeginResponse {
         readonly status: "unavailable";
         readonly reason: RelatedScenesUnavailableReason;
       };
+  /** Present only when the request carried `graphSeedEntityId`. */
+  readonly graph?: RelatedScenesBeginGraph;
 }
 
 /** Await work started by begin. This request starts neither IR nor a deadline. */
@@ -124,6 +172,78 @@ export type RelatedScenesContinueResponse =
       readonly status: "unavailable";
       readonly reason: RelatedScenesUnavailableReason;
     };
+
+/**
+ * Await the Graph started by begin (CP-3a). The same `operationTicket` as IR.
+ * `rawSceneIds` is the renderer's Raw R (0..8 Scene IDs, a subset of the dense
+ * hits begin returned); a claim, never authority. One wait per operation.
+ */
+export interface RelatedScenesGraphWaitRequest {
+  readonly operationTicket: string;
+  readonly rawSceneIds: readonly string[];
+}
+
+/** The renderer's declaration for the Graph ticket; carries no plaintext. */
+export type RelatedScenesGraphSettle = "used" | "unused" | "cancelled";
+export interface RelatedScenesGraphSettleRequest {
+  readonly operationTicket: string;
+  readonly settle: RelatedScenesGraphSettle;
+}
+export interface RelatedScenesGraphSettleResponse {
+  readonly status: "settled";
+}
+
+export interface RelatedScenesGraphPathEntity {
+  readonly entityId: string;
+  readonly label: string;
+}
+export interface RelatedScenesGraphPathEdge {
+  readonly relationType: string;
+  readonly directionality: string;
+  readonly from: RelatedScenesGraphPathEntity;
+  readonly to: RelatedScenesGraphPathEntity;
+  readonly evidence: readonly {
+    readonly evidenceId: string;
+    readonly quote: string;
+  }[];
+}
+/** Display text of the path attached to one displayed (R or R+IR) Scene. */
+export interface RelatedScenesGraphPathAttachment {
+  readonly sceneId: string;
+  readonly hop: number;
+  readonly edges: readonly RelatedScenesGraphPathEdge[];
+}
+/**
+ * The one Graph-only row, when Eligible. Every reason it is absent is the same
+ * `null`. `navigationIdentity` is opaque; no digest, token or Revision ID.
+ */
+export interface RelatedScenesGraphOnlyRow {
+  readonly sceneId: string;
+  readonly sceneTitle: string;
+  readonly excerpt: string;
+  readonly canonicalRange: { readonly start: number; readonly end: number };
+  readonly navigationIdentity: string;
+  readonly path: {
+    readonly hop: number;
+    readonly pinEntityId: string;
+    readonly edges: readonly RelatedScenesGraphPathEdge[];
+  };
+}
+
+export type RelatedScenesGraphWaitResponse =
+  | {
+      readonly status: "available";
+      readonly queryBinding: string;
+      readonly pathAttachments: readonly RelatedScenesGraphPathAttachment[];
+      readonly graphOnly: RelatedScenesGraphOnlyRow | null;
+    }
+  | {
+      readonly status: "unavailable";
+      readonly reason: RelatedScenesGraphUnavailableReason;
+    };
+export type RelatedScenesGraphContinueResponse =
+  | RelatedScenesGraphWaitResponse
+  | RelatedScenesGraphSettleResponse;
 
 /** Keep the ticket while its published IR list remains clickable; release on
  * timeout, supersession, cancellation, or unmount. Release is idempotent. */
@@ -155,4 +275,22 @@ export type Nir1EvidenceQualifyResponse =
   | {
       readonly status: "unavailable";
       readonly reason: "invalidated" | "expired" | "cancelled" | "failed";
+    };
+
+/**
+ * Click-time answer for a Graph-only row's handle. It never carries a body
+ * digest or the full quote: Native re-reads and compares them itself, and the
+ * renderer matches its own editor text against the disclosed `excerpt`.
+ */
+export type Nir1GraphEvidenceQualifyResponse =
+  | {
+      readonly status: "qualified";
+      readonly bindingKey: string;
+      readonly queryBinding: string;
+      readonly sceneId: string;
+      readonly canonicalRange: { readonly start: number; readonly end: number };
+    }
+  | {
+      readonly status: "unavailable";
+      readonly reason: "invalidated" | "cancelled" | "failed";
     };

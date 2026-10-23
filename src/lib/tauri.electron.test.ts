@@ -490,7 +490,11 @@ describe("caller timeout policy（electron 分岐）", () => {
     await expect(derived).resolves.toBe(42);
   });
 
-  it.each(["semantic_reindex_all", "related_scenes_continue"])(
+  it.each([
+    "semantic_reindex_all",
+    "related_scenes_continue",
+    "related_scenes_graph_continue",
+  ])(
     "%s は lifecycle quiescence を保持せず derived caller を cancel する",
     async (command) => {
       let resolveBridge!: (value: { ok: true; value: number }) => void;

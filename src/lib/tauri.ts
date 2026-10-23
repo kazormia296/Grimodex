@@ -268,6 +268,7 @@ const DERIVED_INDEX_COMMANDS = new Set([
   "chat_reindex_all",
   "related_scenes_begin",
   "related_scenes_continue",
+  "related_scenes_graph_continue",
 ]);
 
 const AUDIT_EXPORT_READ_COMMANDS = new Set([
