@@ -27,6 +27,7 @@ use tokio::sync::Notify;
 
 mod begin;
 mod build;
+mod graph;
 mod ranking_policy;
 mod scoring;
 
@@ -62,6 +63,8 @@ struct Operation {
     original: index::NirQuerySnapshot,
     result: Mutex<OperationResult>,
     completed: Notify,
+    /// The Graph query of this operation (CP-3a). Its lifetime is the lease's.
+    graph: graph::GraphState,
 }
 
 #[derive(Default)]
@@ -80,6 +83,9 @@ pub(crate) struct BeginRequest {
     project_id: String,
     current_scene_id: String,
     query: String,
+    /// The Graph seed Entity the renderer chose (CP-3b). Absent: no Graph.
+    #[serde(default)]
+    graph_seed_entity_id: Option<String>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> Result<MutexGuard<'_, T>> {
@@ -158,6 +164,7 @@ fn current_operation(state: &AppState, lease: &Lease) -> Result<bool> {
 
 fn invalidate(state: &AppState, ticket: &str, lease: &Lease) -> Result<()> {
     if lock(&state.related_scenes.registry)?.invalidate(ticket) {
+        lease.data.graph.cancel();
         lease.data.completed.notify_waiters();
         state.events.emit(
             "related-scenes:invalidated",
@@ -198,6 +205,7 @@ fn invalidate_from_registry(
     lease: &Lease,
 ) -> Result<bool> {
     if lock(registry)?.invalidate(ticket) {
+        lease.data.graph.cancel();
         lease.data.completed.notify_waiters();
         Ok(true)
     } else {
@@ -206,6 +214,7 @@ fn invalidate_from_registry(
 }
 
 pub(crate) use begin::begin;
+pub(crate) use graph::graph_continue;
 
 pub(crate) async fn continue_query(
     state: Arc<AppState>,
@@ -246,6 +255,9 @@ pub(crate) async fn continue_query(
 pub(crate) fn release(state: &AppState, owner: &str, ticket: &str) -> Result<Value> {
     if let Some(lease) = state.related_scenes.owned(owner, ticket)? {
         lock(&state.related_scenes.registry)?.release(ticket, owner);
+        // A release is a cancellation of the Graph; only the renderer's
+        // explicit `unused` declaration lets a result reach the cache.
+        lease.data.graph.cancel();
         lease.data.completed.notify_waiters();
     }
     Ok(json!({"status":"released"}))
@@ -256,6 +268,7 @@ pub(crate) fn release_owner(state: &AppState, owner: &str) -> Result<Value> {
     let released = lock(&state.related_scenes.registry)?.release_owner(owner);
     for (_, lease) in entries {
         if lease.is_owned_by(owner) {
+            lease.data.graph.cancel();
             lease.data.completed.notify_waiters();
         }
     }

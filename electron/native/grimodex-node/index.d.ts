@@ -638,6 +638,13 @@ export declare class Backend {
    */
   relatedScenesBegin(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   relatedScenesContinue(ownerKey: string, operationTicket: string, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * `nir1-publication` (K3/2). One command carries both the wait for the
+   * Graph and the renderer's settle declaration (CP-3a D5). The Graph is
+   * handed out only when it is restricted, stopped and published (PUB-G),
+   * and again here at return.
+   */
+  relatedScenesGraphContinue(ownerKey: string, request: any, callerIdentity?: string | undefined | null): Promise<string>
   relatedScenesRelease(ownerKey: string, operationTicket: string): Promise<string>
   relatedScenesReleaseOwner(ownerKey: string): Promise<string>
   relatedScenesReconcile(): Promise<string>

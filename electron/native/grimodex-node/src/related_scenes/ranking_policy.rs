@@ -69,11 +69,12 @@ pub(super) fn for_language(language: &str) -> Result<(f64, usize)> {
 /// Scene) may add beyond Raw. The common extra slot of CP-3a is open while Raw
 /// has fewer than `maxScenes` items and the IR added none of the
 /// `maxAdditionalScenes`.
-// The Graph's response assembly (CP-3a S2b) is the first caller.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(super) fn fusion_limits() -> Result<(usize, usize)> {
     let policy = policy()?;
-    Ok((policy.fusion.max_scenes, policy.fusion.max_additional_scenes))
+    Ok((
+        policy.fusion.max_scenes,
+        policy.fusion.max_additional_scenes,
+    ))
 }
 
 #[cfg(test)]

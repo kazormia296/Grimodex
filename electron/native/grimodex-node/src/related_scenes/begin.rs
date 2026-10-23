@@ -33,7 +33,11 @@ async fn begin_admitted(state: Arc<AppState>, dto: BeginRequest) -> Result<Value
             && !dto.project_id.trim().is_empty()
             && !dto.current_scene_id.trim().is_empty()
             && !dto.query.trim().is_empty()
-            && dto.query.encode_utf16().count() <= 500,
+            && dto.query.encode_utf16().count() <= 500
+            && dto
+                .graph_seed_entity_id
+                .as_deref()
+                .is_none_or(|seed| !seed.trim().is_empty()),
         "RELATED_SCENES_INVALID_REQUEST"
     );
     // Keep a lifecycle participant for the registry entry and every detached
@@ -130,6 +134,7 @@ fn begin_blocking(
             original: original.ok_or_else(|| anyhow!("RELATED_SCENES_SNAPSHOT_UNAVAILABLE"))?,
             result: Mutex::new(OperationResult::default()),
             completed: Notify::new(),
+            graph: graph::GraphState::default(),
         };
         let ticket = lock(&state.related_scenes.registry)?.insert(
             &dto.owner_key,
@@ -144,6 +149,31 @@ fn begin_blocking(
         ticket
     } else {
         None
+    };
+    // The Graph starts once the IR operation exists, in parallel with it, and
+    // `begin` waits for neither: the owner call is wait-free and reads no
+    // database. A seedless request touches neither the owner nor the response.
+    let graph_wire = match dto.graph_seed_entity_id.as_deref() {
+        Some(seed) => {
+            let lease = match &ticket {
+                // A lock failure leaves no lease: `not-requested`, and the
+                // operation is released by its own expiry.
+                Some(ticket) => state
+                    .related_scenes
+                    .owned(&dto.owner_key, ticket)
+                    .ok()
+                    .flatten(),
+                None => None,
+            };
+            Some(graph::begin_graph(
+                &state,
+                lease.as_ref(),
+                &dto.project_id,
+                &dto.current_scene_id,
+                seed,
+            ))
+        }
+        None => None,
     };
     // Exactly one audited query embedding serves both consumers. Raw uses the
     // same limit, scope and description mode as the previous entry point.
@@ -184,6 +214,21 @@ fn begin_blocking(
         let hits = state
             .semantic
             .semantic_search_with_query(&query, RAW_LIMIT, None, None)?;
+        // Raw R is a selection out of these hits; the Graph await accepts no
+        // R outside them (P1-2).
+        if graph_wire.is_some() {
+            if let Some(lease) = ticket
+                .as_ref()
+                .map(|ticket| state.related_scenes.owned(&dto.owner_key, ticket))
+                .transpose()?
+                .flatten()
+            {
+                lease
+                    .data
+                    .graph
+                    .set_dense_scene_ids(hits.iter().map(|hit| hit.scene_id.clone()).collect());
+            }
+        }
         ensure!(
             current_request(&state, &request)?,
             "RELATED_SCENES_WORKSPACE_CHANGED"
@@ -197,13 +242,15 @@ fn begin_blocking(
             Ok(source.matches(&current))
         })?;
         ensure!(source_current, "RELATED_SCENES_QUERY_SOURCE_CHANGED");
-        Ok(
-            json!({"status":"raw-ready","denseHits":raw_wire_value(&hits)?,"snapshot":{
+        let mut value = json!({"status":"raw-ready","denseHits":raw_wire_value(&hits)?,"snapshot":{
             "queryBinding":query_binding,"originalSnapshotUsable":snapshot.original_snapshot_usable,
             "supportedProfile":snapshot.supported_profile},"ir":ir,
             "timing":{"clock":"native-monotonic","firstSnapshotElapsedMs":first_snapshot_elapsed_ms,
-                "rawReadyElapsedMs":accepted_at.elapsed().as_secs_f64()*1000.0}}),
-        )
+                "rawReadyElapsedMs":accepted_at.elapsed().as_secs_f64()*1000.0}});
+        if let Some(graph) = &graph_wire {
+            value["graph"] = graph.clone();
+        }
+        Ok(value)
     })();
     if outcome.is_err() {
         if let Some(ticket) = &ticket {
