@@ -709,6 +709,13 @@ export declare class Backend {
    */
   narrativeSceneBodyDeclarationRevoke(payload: any, callerIdentity?: string | undefined | null): Promise<string>
   /**
+   * Read the state of the Scene's body declaration for the author's screen
+   * (CB-3, DR-CB3-1). Read-only, no grant, closed by the same gate as the
+   * declaration. The answer is a closed set: no body, title, digest or
+   * locator, only the OCC tokens the next declare or revoke names.
+   */
+  narrativeSceneBodyDeclarationState(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
    * Atomically update the project Scope vocabulary registry. Scene bindings
    * are revalidated against the new registry inside the same transaction.
    */

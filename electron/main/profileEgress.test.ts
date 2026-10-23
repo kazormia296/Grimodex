@@ -1313,11 +1313,12 @@ describe("D2a profile egress gate", () => {
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
-  it("classifies the two body declaration entries as internal (CB-2, K3/2 宣言 UI)", async () => {
+  it("classifies the body declaration entries and the state read as internal (CB-2/CB-3, K3/2 宣言 UI)", async () => {
     const ledgers = d2aRouteLedgersForTest();
     const entries = [
       "narrative_scene_body_declaration_declare",
       "narrative_scene_body_declaration_revoke",
+      "narrative_scene_body_declaration_state",
     ];
     for (const command of entries) {
       expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);

@@ -254,6 +254,35 @@ describe("caller timeout policy（electron 分岐）", () => {
     },
   );
 
+  it("narrative_scene_body_declaration_state (CB-3) は read lane の10s枠を使い、declare/revoke は使わない", async () => {
+    vi.useFakeTimers();
+    installBridge({
+      invoke: vi.fn().mockReturnValue(new Promise(() => {})),
+    });
+    const { invoke } = await import("./tauri");
+    const caught = invoke("narrative_scene_body_declaration_state").catch(
+      (error: unknown) => error,
+    );
+    await vi.advanceTimersByTimeAsync(11_000);
+    await expect(caught).resolves.toMatchObject({
+      name: "IpcInvokeError",
+      code: "IPC_TIMEOUT",
+      command: "narrative_scene_body_declaration_state",
+      details: { timeoutMs: 10_000 },
+    });
+    // The writers keep awaiting their real result (a timeout cannot cancel
+    // native work, and the declare waits on Main's dialog).
+    const declare = invoke("narrative_scene_body_declaration_declare").then(
+      () => "settled",
+      () => "settled",
+    );
+    await vi.advanceTimersByTimeAsync(11_000);
+    const pending = Symbol("pending");
+    await expect(
+      Promise.race([declare, Promise.resolve(pending)]),
+    ).resolves.toBe(pending);
+  });
+
   it.each([
     ["SELECT * FROM projects", "all"],
     ["WITH current AS (SELECT 1 AS id) SELECT * FROM current", "all"],
@@ -400,6 +429,7 @@ describe("caller timeout policy（electron 分岐）", () => {
     "nir1_entity_relation_revision_read",
     "nir1_entity_relation_revision_read_current",
     "nir1_entity_relation_revision_restore",
+    "narrative_scene_body_declaration_state",
   ])(
     "%s は lifecycle quiescence を保持せず read caller を cancel する",
     async (command) => {

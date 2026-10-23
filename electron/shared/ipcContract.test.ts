@@ -2102,6 +2102,84 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       );
     });
 
+    const stateArgs = () => ({
+      expectedWorkspacePath: "/workspace/project-1",
+      payload: { projectId: "project-1", sceneId: "scene-1" },
+    });
+
+    it("state（CB-3）は Scene の2つの key だけを渡し、grant の sidecar は読まない", async () => {
+      const response = {
+        occ: { scopeVersion: 1, scopeToken: "t" },
+        declarationToken: null,
+        state: { kind: "none", blocker: null },
+      };
+      const method = vi.fn().mockResolvedValue(JSON.stringify(response));
+      const { backend } = fakeBackend({
+        narrativeSceneBodyDeclarationState: method,
+      });
+      const callerIdentity = { callerId: "c" };
+      const args = { ...stateArgs(), callerIdentity };
+      Object.defineProperty(args, MAIN_GRANT_SIDECAR, {
+        value: { grantId: "g-1", senderId: 7, windowId: 11 },
+        enumerable: false,
+      });
+      const env = await dispatchInvoke(
+        "narrative_scene_body_declaration_state",
+        args,
+        { backend, shell: noShell },
+      );
+      expect(env).toEqual({ ok: true, value: response });
+      expect(method).toHaveBeenCalledExactlyOnceWith(
+        stateArgs(),
+        JSON.stringify(callerIdentity),
+      );
+      // Without an identity the call keeps its original arity.
+      method.mockClear();
+      await dispatchInvoke(
+        "narrative_scene_body_declaration_state",
+        stateArgs(),
+        {
+          backend,
+          shell: noShell,
+        },
+      );
+      expect(method).toHaveBeenCalledExactlyOnceWith(stateArgs());
+    });
+
+    it("state は grant・request ID・declaration token・未知の欄を dispatch の前に拒否する", async () => {
+      const method = vi.fn().mockResolvedValue("{}");
+      const { backend } = fakeBackend({
+        narrativeSceneBodyDeclarationState: method,
+      });
+      const withPayload = (extra: Record<string, unknown>) => ({
+        ...stateArgs(),
+        payload: { ...stateArgs().payload, ...extra },
+      });
+      const bad = [
+        { ...stateArgs(), grant: { grantId: "g" } },
+        { ...stateArgs(), grantId: "g" },
+        { ...stateArgs(), unexpected: true },
+        withPayload({ requestId: "r" }),
+        withPayload({ declarationToken: "t" }),
+        withPayload({ declarationId: "d" }),
+        withPayload({ grant: "g" }),
+        withPayload({ projectId: "" }),
+        withPayload({ sceneId: 1 }),
+        { ...stateArgs(), payload: { projectId: "p" } },
+        { ...stateArgs(), expectedWorkspacePath: "" },
+        { expectedWorkspacePath: "/w" },
+      ];
+      for (const args of bad) {
+        const env = await dispatchInvoke(
+          "narrative_scene_body_declaration_state",
+          args,
+          { backend, shell: noShell },
+        );
+        expect(env.ok, JSON.stringify(args)).toBe(false);
+      }
+      expect(method).not.toHaveBeenCalled();
+    });
+
     it("不正な sidecar の形は dispatch の前に拒否する", async () => {
       const method = vi.fn().mockResolvedValue("{}");
       const { backend } = fakeBackend({
@@ -6114,6 +6192,7 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "narrative_runtime_policy_set",
       "narrative_scene_body_declaration_declare",
       "narrative_scene_body_declaration_revoke",
+      "narrative_scene_body_declaration_state",
       "narrative_scene_scope_read",
       "narrative_scene_scope_registry_update",
       "narrative_scene_scope_update",

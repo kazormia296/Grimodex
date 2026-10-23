@@ -7,6 +7,8 @@
 // E2: 評価用 CI seam が有効な起動では、実 router・gate・Native を通して宣言でき、再起動
 //     の後も残り、v1 の列は byte 同一。unrestricted と restricted の両方。
 // E3: 取消は grant なしで動き、宣言がないときは何も書かない。
+// N-13（CB-3）: 読取専用の状態の入口は、閉じた gate では DB を読む前に拒否され、seam が
+//     有効な起動では宣言 → 有効 → 本文の保存で失効（content）→ 取消 → none と追従する。
 // E6: 新しい table・column・row の種類が増えていない（宣言と取消が書く table の集合が閉じている）。
 //
 // 実 Native の addon が要るので `vitest.electron-native.config.ts` だけが拾う。
@@ -98,6 +100,7 @@ const BODY = "Mira opened the door.";
 const GATE_CLOSED = "NEX_BODY_DECLARATION_REFUSED:gate-closed";
 const DECLARE = "narrative_scene_body_declaration_declare";
 const REVOKE = "narrative_scene_body_declaration_revoke";
+const STATE = "narrative_scene_body_declaration_state";
 const NONCE_A = "3f9a8f0e-5b6c-4d7e-8a9b-0c1d2e3f4a5b";
 const VALUES = {
   story: "independent",
@@ -458,6 +461,24 @@ function revokeArgs(
   };
 }
 
+function stateArgs(workspace: string) {
+  return {
+    expectedWorkspacePath: workspace,
+    payload: { projectId: PROJECT, sceneId: SCENE },
+  };
+}
+
+interface StateAnswer {
+  occ: { scopeVersion: number; scopeToken: string } | null;
+  declarationToken: string | null;
+  state: {
+    kind: string;
+    effective?: boolean;
+    expiredBy?: string[];
+    blocker: string | null;
+  };
+}
+
 function failureOf(envelope: Envelope): string {
   expect(envelope.ok).toBe(false);
   return envelope.ok ? "" : envelope.error;
@@ -510,6 +531,33 @@ db.close();
   };
 }
 
+/**
+ * A digest of every row of every table (not only counts), read with a separate
+ * read-only process. Two equal digests mean nothing in the database changed.
+ */
+function dataDigest(workspace: string): string {
+  const script = `
+const { DatabaseSync } = require("node:sqlite");
+const { createHash } = require("node:crypto");
+const db = new DatabaseSync(process.argv[1], { readOnly: true });
+const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name);
+const hash = createHash("sha256");
+for (const table of tables) {
+  const rows = db.prepare('SELECT * FROM "' + table.replaceAll('"', '""') + '"').all()
+    .map((row) => JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)))
+    .sort();
+  hash.update(table + "\\n" + rows.join("\\n") + "\\n");
+}
+process.stdout.write(hash.digest("hex"));
+db.close();
+`;
+  return execFileSync(
+    process.execPath,
+    ["--no-warnings", "-e", script, path.join(workspace, "grimodex.db")],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+}
+
 beforeEach(() => {
   mocks.showMessageBox.mockReset();
 });
@@ -548,6 +596,10 @@ describe("E1 a normal or packaged launch refuses the declaration entries before 
         // Declaration: no preview is made and no dialog is shown.
         expect(
           failureOf(await main.invoke(DECLARE, declareArgs(fixture.workspace))),
+        ).toContain(GATE_CLOSED);
+        // The state read is closed by the same gate, before the database.
+        expect(
+          failureOf(await main.invoke(STATE, stateArgs(fixture.workspace))),
         ).toContain(GATE_CLOSED);
         // Revoke needs no grant but the gate still stands.
         expect(
@@ -718,6 +770,126 @@ describe("E2 / E3 the seam-enabled launch declares and revokes through the real 
       expect(snapshot(fixture.workspace)).toEqual(afterRevoke);
       expect(mocks.showMessageBox).not.toHaveBeenCalled();
       await evaluated.shutdown();
+    });
+  }
+});
+
+describe("N-13 the state read follows a declaration through the real router", () => {
+  for (const restricted of [false, true]) {
+    it(`${restricted ? "restricted" : "unrestricted"}: none, effective, expired by the body, declared again, revoked`, async () => {
+      const fixture = await newFixture("n13");
+      const main = await launch(fixture, { restricted, seam: {} });
+      // A state read writes nothing: every row of every table is the same
+      // before and after it (the digest is taken by a separate process).
+      const readState = async (): Promise<StateAnswer> => {
+        const digest = dataDigest(fixture.workspace);
+        const answer = okValue<StateAnswer>(
+          await main.invoke(STATE, stateArgs(fixture.workspace)),
+        );
+        expect(dataDigest(fixture.workspace)).toBe(digest);
+        return answer;
+      };
+      const none = await readState();
+      expect(none.state).toEqual({ kind: "none", blocker: null });
+      expect(none.declarationToken).toBeNull();
+      const row = scopeRow(fixture.workspace);
+      expect(none.occ).toEqual({
+        scopeVersion: row.version,
+        scopeToken: row.sourceToken,
+      });
+
+      expect(
+        okValue(await main.invoke(DECLARE, declareArgs(fixture.workspace))),
+      ).toEqual({ outcome: "declared" });
+      const declared = await readState();
+      expect(declared.state).toEqual({
+        kind: "declared",
+        effective: true,
+        expiredBy: [],
+        blocker: null,
+      });
+      expect(declared.declarationToken).toBe(scopeRow(fixture.workspace).token);
+      const wire = JSON.stringify(declared);
+      for (const secret of [BODY, TITLE, SCENE, PROJECT]) {
+        expect(wire).not.toContain(secret);
+      }
+
+      // The body is saved: still declared, no longer in effect.
+      const [{ version }] = queryRows<{ version: number }>(
+        fixture.workspace,
+        `SELECT version FROM tree_nodes WHERE id = '${SCENE}'`,
+      );
+      const patchId = unique("scene-patch");
+      await main.backend.treeNodePatch!({
+        requestId: patchId,
+        sessionId: `${patchId}:session`,
+        eventUid: `${patchId}:event`,
+        origin: "human",
+        authorityRoute: "human-direct",
+        caller: "manual-wrapper",
+        controls: CONTROLS,
+        provenance: null,
+        writesAuthorityProtectedField: false,
+        originalTransactionId: null,
+        undoJournalId: null,
+        projectId: PROJECT,
+        nodeId: SCENE,
+        patch: { content: tiptapDoc("Another sentence.") },
+        baseVersion: version,
+        bumpVersion: true,
+        updatedAt: new Date().toISOString(),
+      });
+      const expired = await readState();
+      expect(expired.state).toEqual({
+        kind: "declared",
+        effective: false,
+        expiredBy: ["content"],
+        blocker: null,
+      });
+      expect(expired.declarationToken).not.toBeNull();
+
+      // Declaring again over the expired declaration: the request names the
+      // stored declaration's token (it is not null), the OCC values come from
+      // the same state read, and the new declaration is effective.
+      expect(
+        okValue(
+          await main.invoke(DECLARE, {
+            expectedWorkspacePath: fixture.workspace,
+            payload: {
+              projectId: PROJECT,
+              sceneId: SCENE,
+              requestId: unique("redeclare"),
+              expected: {
+                scopeVersion: expired.occ!.scopeVersion,
+                scopeToken: expired.occ!.scopeToken,
+                declarationToken: expired.declarationToken,
+              },
+              values: VALUES,
+            },
+          }),
+        ),
+      ).toEqual({ outcome: "declared" });
+      const again = await readState();
+      expect(again.state).toEqual({
+        kind: "declared",
+        effective: true,
+        expiredBy: [],
+        blocker: null,
+      });
+      expect(again.declarationToken).not.toBe(expired.declarationToken);
+
+      expect(
+        okValue(
+          await main.invoke(
+            REVOKE,
+            revokeArgs(fixture.workspace, again.declarationToken!),
+          ),
+        ),
+      ).toEqual({ outcome: "revoked" });
+      const after = await readState();
+      expect(after.state).toEqual({ kind: "none", blocker: null });
+      expect(after.declarationToken).toBeNull();
+      await main.shutdown();
     });
   }
 });

@@ -225,6 +225,10 @@ const READ_ONLY_COMMAND_TIMEOUTS = new Map<string, number>([
   ["nir1_entity_relation_revision_read", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_read_current", IPC_TIMEOUT_MS],
   ["nir1_entity_relation_revision_restore", IPC_TIMEOUT_MS],
+  // CB-3: the author's screen reads a Scene's declaration state. It must not
+  // wait behind a declare (a confirmation dialog of up to 60 s) in the
+  // mutation queue.
+  ["narrative_scene_body_declaration_state", IPC_TIMEOUT_MS],
   // These reads can legitimately include process/network startup or a model
   // cold-load, so retain the existing five-minute caller budget.
   ["detect_cli_binary", AI_IPC_TIMEOUT_MS],

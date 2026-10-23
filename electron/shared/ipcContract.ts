@@ -849,6 +849,14 @@ export interface NapiBackendLike {
     callerIdentity?: string,
   ): Promise<string>;
   /**
+   * The state of the Scene's body declaration for the author's screen (CB-3).
+   * Read-only, no grant, closed by the same gate as the declaration.
+   */
+  narrativeSceneBodyDeclarationState?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  /**
    * Main-only grant calls (MG-1). Deliberately absent from the renderer
    * command map: only `electron/main/mainGrant.ts` calls them.
    */
@@ -7064,9 +7072,13 @@ const BODY_DECLARATION_REVOKE_PAYLOAD_KEYS = [
   "requestId",
   "declarationToken",
 ] as const;
+// The state read names only the Scene the author opened: no request ID, no
+// declaration token, no grant.
+const BODY_DECLARATION_STATE_PAYLOAD_KEYS = ["projectId", "sceneId"] as const;
 
 /**
- * Closed request of the two body declaration entries. The payload has no field
+ * Closed request of the body declaration entries (declare, revoke and the
+ * read-only state). The payload has no field
  * for a declaration ID, a time, a digest, a grant, a sender or a window: any
  * extra key is refused here, and Native refuses it again (`deny_unknown_fields`).
  * The grant itself is never read from `args`; it travels in the symbol sidecar.
@@ -7084,7 +7096,9 @@ function requireBodyDeclarationRequest(
   const payloadKeys =
     command === "narrative_scene_body_declaration_declare"
       ? BODY_DECLARATION_DECLARE_PAYLOAD_KEYS
-      : BODY_DECLARATION_REVOKE_PAYLOAD_KEYS;
+      : command === "narrative_scene_body_declaration_state"
+        ? BODY_DECLARATION_STATE_PAYLOAD_KEYS
+        : BODY_DECLARATION_REVOKE_PAYLOAD_KEYS;
   for (const key of Object.keys(payload)) {
     if (!(payloadKeys as readonly string[]).includes(key)) {
       throw new Error(
@@ -7095,8 +7109,11 @@ function requireBodyDeclarationRequest(
   for (const key of payloadKeys) {
     requirePresent(payload, key, command);
   }
-  for (const key of ["projectId", "sceneId", "requestId"] as const) {
+  for (const key of ["projectId", "sceneId"] as const) {
     requireNonEmptyString(payload, key, command);
+  }
+  if (command !== "narrative_scene_body_declaration_state") {
+    requireNonEmptyString(payload, "requestId", command);
   }
   if (command === "narrative_scene_body_declaration_declare") {
     const expected = requireRecord(payload, "expected", command);
@@ -7108,7 +7125,7 @@ function requireBodyDeclarationRequest(
       }
     }
     requireRecord(payload, "values", command);
-  } else {
+  } else if (command === "narrative_scene_body_declaration_revoke") {
     requireNonEmptyString(payload, "declarationToken", command);
   }
   return {
@@ -8574,6 +8591,23 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           requireBodyDeclarationRequest(
             a,
             "narrative_scene_body_declaration_revoke",
+          ),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  narrative_scene_body_declaration_state: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.narrativeSceneBodyDeclarationState,
+            "narrativeSceneBodyDeclarationState",
+          ),
+          requireBodyDeclarationRequest(
+            a,
+            "narrative_scene_body_declaration_state",
           ),
           callerIdentityWire(a),
         ),

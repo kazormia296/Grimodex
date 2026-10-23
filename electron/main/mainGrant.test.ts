@@ -202,6 +202,10 @@ describe("F1 GRANT_REQUIRED_COMMANDS", () => {
     expect(isGrantRequiredCommand(DECLARE)).toBe(true);
     // The revoke entry needs no grant (K2-3); the A1 save is a different entry.
     expect(isGrantRequiredCommand(REVOKE)).toBe(false);
+    // The read-only state entry (CB-3) needs no grant either.
+    expect(
+      isGrantRequiredCommand("narrative_scene_body_declaration_state"),
+    ).toBe(false);
     expect(isGrantRequiredCommand("narrative_scene_scope_update")).toBe(false);
     expect(
       isGrantRequiredCommand("narrative_scene_scope_registry_update"),

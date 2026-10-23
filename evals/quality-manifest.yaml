@@ -382,11 +382,30 @@ requirements:
       - electron/native/grimodex-node/src/body_declaration_entry.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/writer.rs
       - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/revoke.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/state.rs
+      - src/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationApi.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationAvailability.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationTypes.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/declaredStanding.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/useSceneBodyDeclaration.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/SceneBodyDeclarationSection.tsx
+      - src/features/editor/sceneMeta/bodyDeclaration/useUnsavedSceneEdits.ts
     lightTests:
       - electron/main/mainGrant.test.ts
       - electron/main/bodyDeclarationCiSeam.test.ts
       - electron/main/bodyDeclaration.pipeline.spec.ts
       - electron/native/grimodex-node/test/body-declaration.test.mjs
+      - electron/native/grimodex-node/src/body_declaration_entry_tests.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/scene_body_declaration/state_tests.rs
+      - src/features/editor/sceneMeta/bodyDeclaration/declaredStanding.test.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationApi.test.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationAvailability.test.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/useSceneBodyDeclaration.test.tsx
+      - src/features/editor/sceneMeta/bodyDeclaration/useSceneBodyDeclaration.default.test.tsx
+      - src/features/editor/sceneMeta/bodyDeclaration/SceneBodyDeclarationSection.test.tsx
+      - src/features/editor/sceneMeta/SceneScopeEditor.declaration.default.test.tsx
+      - src/features/editor/sceneMeta/SceneScopeEditor.declaration.enabled.test.tsx
+      - src/features/editor/pendingSynopsisSaves.test.ts
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
       - scripts/quality/validate-change-feed-writers.test.mjs

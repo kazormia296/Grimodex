@@ -82,6 +82,29 @@ pub struct RevokeRequest {
     pub declaration_token: String,
 }
 
+/// The state read's payload (CB-3): the two keys of the Scene the author
+/// opened. It has no request ID (a read is not idempotent-recorded), no
+/// declaration token and no grant: unknown fields are refused when it is
+/// parsed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StateRequest {
+    pub project_id: String,
+    pub scene_id: String,
+}
+
+impl StateRequest {
+    pub fn validate(&self) -> Result<(), DeclareRefusal> {
+        if bounded(&self.project_id, MAX_BODY_DECLARATION_ID_BYTES)
+            && bounded(&self.scene_id, MAX_BODY_DECLARATION_ID_BYTES)
+        {
+            Ok(())
+        } else {
+            Err(DeclareRefusal::InvalidRequest)
+        }
+    }
+}
+
 fn bounded(value: &str, max_bytes: usize) -> bool {
     !value.is_empty() && value.trim() == value && value.len() <= max_bytes
 }

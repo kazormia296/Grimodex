@@ -31,6 +31,40 @@ interface SynopsisSaveSlot {
 }
 
 const slotsByKey = new Map<string, SynopsisSaveSlot>();
+const changeListeners = new Set<() => void>();
+
+function notifyChange(): void {
+  for (const listener of [...changeListeners]) {
+    try {
+      listener();
+    } catch {
+      // An observer must never disturb persistence.
+    }
+  }
+}
+
+/**
+ * Read-only probe: does a node still have a synopsis edit that is scheduled,
+ * running or retained after a failure (that is, not yet saved)? It starts and
+ * flushes nothing.
+ */
+export function hasPendingSynopsisSaveForNode(nodeId: string): boolean {
+  for (const [key, slot] of slotsByKey) {
+    if (key.split("\u0000").at(-1) !== nodeId) continue;
+    if (slot.pending || slot.failed || slot.timer || slot.running) return true;
+  }
+  return false;
+}
+
+/** Observes every change of the pending state. Returns the unsubscribe. */
+export function subscribePendingSynopsisSaves(
+  listener: () => void,
+): () => void {
+  changeListeners.add(listener);
+  return () => {
+    changeListeners.delete(listener);
+  };
+}
 
 function getSlot(key: string): SynopsisSaveSlot {
   let slot = slotsByKey.get(key);
@@ -116,6 +150,7 @@ function startSlot(slot: SynopsisSaveSlot): Promise<void> {
       } else {
         cleanupSlotIfIdle(slot);
       }
+      notifyChange();
     });
   slot.running = tracked;
   return tracked;
@@ -145,6 +180,7 @@ export function schedulePendingSynopsisSave(options: {
     slot.timer = null;
     void startSlot(slot).catch(() => {});
   }, options.delayMs ?? DEFAULT_SAVE_DELAY_MS);
+  notifyChange();
 }
 
 /**
@@ -174,6 +210,7 @@ export function cancelPendingSynopsisSave(
     slot.runningRequest.cancelled = true;
   }
   cleanupSlotIfIdle(slot);
+  notifyChange();
 }
 
 function retryRetainedFailure(slot: SynopsisSaveSlot): void {
@@ -262,6 +299,7 @@ function discardPendingSynopsisSaves(): void {
     slot.failed = null;
     cleanupSlotIfIdle(slot);
   }
+  notifyChange();
 }
 
 registerQuiescenceProvider({

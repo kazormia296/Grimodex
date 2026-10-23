@@ -12220,6 +12220,20 @@ impl Backend {
         run_blocking(move || body_declaration_entry::revoke(&state, payload, caller_identity)).await
     }
 
+    /// Read the state of the Scene's body declaration for the author's screen
+    /// (CB-3, DR-CB3-1). Read-only, no grant, closed by the same gate as the
+    /// declaration. The answer is a closed set: no body, title, digest or
+    /// locator, only the OCC tokens the next declare or revoke names.
+    #[napi]
+    pub async fn narrative_scene_body_declaration_state(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || body_declaration_entry::state(&state, payload, caller_identity)).await
+    }
+
     /// Atomically update the project Scope vocabulary registry. Scene bindings
     /// are revalidated against the new registry inside the same transaction.
     #[napi]

@@ -372,8 +372,10 @@ const INTERNAL_COMMANDS = new Set([
   // checks the registered caller and workspace while restricted and only the
   // workspace while unrestricted. The declaration needs Main's one-time
   // grant (`GRANT_REQUIRED_COMMANDS`); the revoke entry needs none (K2-3).
+  // The state entry (CB-3) only reads the author's Scene and needs none.
   "narrative_scene_body_declaration_declare",
   "narrative_scene_body_declaration_revoke",
+  "narrative_scene_body_declaration_state",
   "narrative_scene_scope_read",
   "narrative_scene_scope_registry_update",
   "narrative_scene_scope_update",

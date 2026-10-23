@@ -64,7 +64,8 @@ use crate::narrative_extraction::scene_body_declaration::writer_support_tests::{
 };
 use crate::narrative_extraction::scene_body_declaration::{
     clear_all_scene_body_declarations_for_staged_restore, read_scene_body_declaration,
-    revoke_scene_body, RevokeResponse, SceneBodyDeclarationRead,
+    read_scene_body_declaration_state, revoke_scene_body, DeclareRefusal, RevokeResponse,
+    SceneBodyDeclarationRead, StateRequest,
 };
 use crate::narrative_extraction::task_leases::with_immediate_transaction;
 use crate::narrative_extraction::{
@@ -155,18 +156,48 @@ fn arm(env: &Env, scene: &str) -> GraphOnlySceneBinding {
     shown.binding().clone()
 }
 
-/// The reader answers `Eligible` for the Scene as it is now.
+/// CB-3's state read says the Scene's declaration is `effective` right now.
+/// The author's screen and the reader judge the query-independent conditions
+/// with the same parts, so the two must agree at every step of this file: a
+/// screen that says "not effective" while the reader can disclose, or the other
+/// way round, is a defect (CB-3 P2-2).
+fn state_is_effective(env: &Env, scene: &str) -> bool {
+    match read_scene_body_declaration_state(
+        &env.snapshot(),
+        &StateRequest {
+            project_id: PROJECT.to_owned(),
+            scene_id: scene.to_owned(),
+        },
+        &budget(),
+    ) {
+        Ok(read) => read.state.is_effective(),
+        // A quarantined workspace claims nothing.
+        Err(DeclareRefusal::RestartRequired) => false,
+        Err(refusal) => panic!("the state read failed: {refusal}"),
+    }
+}
+
+/// The reader answers `Eligible` for the Scene as it is now, and so does the
+/// state read (`effective`).
 fn assert_holds(env: &Env, scene: &str, step: &str) {
     let now = fresh(env, scene).unwrap_or_else(|| panic!("{step}: the Scene has no frame"));
     match answer(env, now).unwrap() {
         GraphOnlySceneDisclosure::Eligible(_) => {}
         other => panic!("{step}: the Scene should be eligible, got {other:?}"),
     }
+    assert!(
+        state_is_effective(env, scene),
+        "{step}: the reader is eligible but the state read is not effective"
+    );
 }
 
 /// The reader adds nothing for the Scene as it is now and for the frame the
 /// response used, and the click on the response's binding is refused.
 fn assert_expired(env: &Env, scene: &str, shown: &GraphOnlySceneBinding, step: &str) {
+    assert!(
+        !state_is_effective(env, scene),
+        "{step}: the reader adds nothing but the state read says effective"
+    );
     if let Some(now) = fresh(env, scene) {
         let result = answer(env, now).unwrap();
         assert!(
