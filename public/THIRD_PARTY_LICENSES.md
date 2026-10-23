@@ -13168,7 +13168,7 @@ SOFTWARE.
 ```
 </details>
 
-### markdown-it (14.3.1)
+### markdown-it (14.3.3)
 
 - License: MIT
 - Repository: markdown-it/markdown-it
