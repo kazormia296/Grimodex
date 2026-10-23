@@ -79,8 +79,10 @@ export type UseSceneBodyDeclarationResult = {
   readonly busy: "declare" | "revoke" | null;
   readonly outcome: BodyDeclarationOutcome | null;
   /**
-   * True when the latest read showed a declaration that had been effective
-   * turn not effective (the author may not have noticed it happen).
+   * True when the latest read showed that a declaration which had been
+   * effective no longer is: it expired, it is paused, it is gone (revoked in
+   * another window, cleared by a restore) or it cannot be read. The author may
+   * not have noticed it happen. An author's own revoke does not count.
    */
   readonly becameInvalid: boolean;
   readonly canDeclare: boolean;
@@ -180,7 +182,10 @@ export function useSceneBodyDeclaration(
   const handledSignatureRef = useRef(triggerSignature);
   const lastEffectiveRef = useRef(false);
 
-  const startRead = useCallback(function run(manual: boolean): void {
+  const startRead = useCallback(function run(
+    manual: boolean,
+    keepOutcome = false,
+  ): void {
     const target = targetRef.current;
     if (target.scene === null) return;
     // Never two operations at once. Triggers that arrive meanwhile become one
@@ -197,7 +202,11 @@ export function useSceneBodyDeclaration(
     setState((current) => ({
       ...emptyState(target.key, "loading"),
       busy: null,
-      outcome: current.key === target.key ? current.outcome : null,
+      // The outcome of the author's own operation stays until the state is
+      // read again for any other reason; then it would sit beside a newer
+      // banner it no longer describes.
+      outcome:
+        keepOutcome && current.key === target.key ? current.outcome : null,
     }));
     void readBodyDeclarationState(target.scene).then((result) => {
       if (epoch !== epochRef.current) return;
@@ -235,14 +244,25 @@ export function useSceneBodyDeclaration(
             becameInvalid: false,
           }));
         }
+      } else if (result.snapshot.state.blocker === "scene-not-found") {
+        // The Scene is gone (deleted elsewhere): there is nothing to declare or
+        // revoke, so nothing is shown. Not sticky: another Scene, or a Scene
+        // that is back, reads again.
+        lastEffectiveRef.current = false;
+        readyRef.current = null;
+        setState((current) => ({
+          ...current,
+          status: "hidden",
+          view: null,
+          failure: null,
+          busy: null,
+          becameInvalid: false,
+        }));
       } else {
         stickyRef.current = null;
         const snapshot = result.snapshot;
-        const wasEffective = lastEffectiveRef.current;
         const becameInvalid =
-          wasEffective &&
-          snapshot.state.kind === "declared" &&
-          !snapshot.state.effective;
+          lastEffectiveRef.current && !isEffective(snapshot);
         lastEffectiveRef.current = isEffective(snapshot);
         readyRef.current = snapshot;
         setState((current) => ({
@@ -329,13 +349,17 @@ export function useSceneBodyDeclaration(
       inFlightRef.current = null;
       // The re-read below covers every trigger that came in meanwhile.
       pendingRef.current = false;
+      // What the author just did is not news to the author: a revoke that
+      // ends an effective declaration is reported by its own outcome, not as a
+      // declaration that "became invalid".
+      lastEffectiveRef.current = false;
       setState((current) =>
         current.key === target.key
           ? { ...current, busy: null, outcome }
           : current,
       );
       // Whatever happened, the next thing shown is what Native says now.
-      startRead(true);
+      startRead(true, true);
       return true;
     },
     [startRead],

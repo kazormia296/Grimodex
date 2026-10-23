@@ -26,6 +26,7 @@ import {
   type BodyDeclarationSnapshot,
   type ConfirmedAxes,
 } from "./bodyDeclarationTypes";
+import { declaredStanding, type DeclaredStanding } from "./declaredStanding";
 import {
   useSceneBodyDeclaration,
   type BodyDeclarationOutcome,
@@ -83,19 +84,20 @@ export function SceneBodyDeclarationSection({
       `${PREFIX}.code.${code !== null && KNOWN_CODES.has(code) ? code : "unknown-refusal"}`,
     );
   const kind = view?.state.kind ?? null;
-  const effective =
-    view !== null && view.state.kind === "declared" && view.state.effective;
-  const expired =
-    view !== null && view.state.kind === "declared" && !view.state.effective;
+  const standing =
+    view !== null && view.state.kind === "declared"
+      ? declaredStanding(view.state)
+      : null;
+  // Declared but not in use right now (paused or expired): the author can
+  // declare again unless a blocker forbids it.
+  const notEffective = standing === "paused" || standing === "expired";
   const stateKey =
     status === "ready"
       ? kind === "none"
         ? "draft"
         : kind === "unavailable"
           ? "unavailable"
-          : effective
-            ? "effective"
-            : "expired"
+          : (standing ?? "unavailable")
       : status === "restart-required"
         ? "restart-required"
         : status === "unknown"
@@ -105,12 +107,15 @@ export function SceneBodyDeclarationSection({
     draft: "draft",
     unavailable: "unavailable",
     effective: "effective",
+    paused: "paused",
     expired: "expired",
     "restart-required": "restartRequired",
     unknown: "unknown",
     loading: "loading",
   }[stateKey];
-  const showForm = status === "ready" && (kind === "none" || expired);
+  const announcedBanner =
+    stateKey === "unknown" || stateKey === "restart-required";
+  const showForm = status === "ready" && (kind === "none" || notEffective);
 
   return (
     <section
@@ -136,12 +141,11 @@ export function SceneBodyDeclarationSection({
         </span>
       </div>
 
-      <div
-        role="status"
-        aria-live="polite"
-        data-testid="body-declaration-status"
-        className="flex min-w-0 flex-col gap-1.5"
-      >
+      {/* Every re-read (each autosave) passes through "loading", so the state
+          banner itself is not a live region: only what changed for the author
+          is announced, once. A failed read and the restart notice are rare and
+          are announced as they appear. */}
+      {!announcedBanner && (
         <StateBanner
           stateKey={stateKey}
           view={view}
@@ -149,6 +153,25 @@ export function SceneBodyDeclarationSection({
           becameInvalid={declaration.becameInvalid}
           codeText={codeText}
         />
+      )}
+      <div
+        role="status"
+        aria-live="polite"
+        data-testid="body-declaration-status"
+        className="flex min-w-0 flex-col gap-1.5"
+      >
+        {announcedBanner && (
+          <StateBanner
+            stateKey={stateKey}
+            view={view}
+            failure={declaration.failure}
+            becameInvalid={false}
+            codeText={codeText}
+          />
+        )}
+        {declaration.becameInvalid && view !== null && (
+          <ChangeNotice view={view} standing={standing} />
+        )}
         <OutcomeNotice
           outcome={declaration.outcome}
           busy={declaration.busy}
@@ -182,7 +205,7 @@ export function SceneBodyDeclarationSection({
         <DeclareForm
           key={`${workspacePath ?? ""}\u0000${node.projectId}\u0000${node.id}`}
           sceneId={node.id}
-          expired={expired}
+          expired={notEffective}
           canDeclare={declaration.canDeclare}
           busy={declaration.busy}
           unsaved={unsaved}
@@ -311,16 +334,21 @@ function StateBanner({
     );
   }
   if (state.kind === "declared") {
+    // Not effective, so either paused (it can come back) or expired (it cannot).
+    const paused = declaredStanding(state) === "paused";
     return (
       <div
         data-testid="body-declaration-banner"
+        data-standing={paused ? "paused" : "expired"}
         data-became-invalid={becameInvalid ? "true" : undefined}
         className={`${frame} border-amber-500/40 bg-amber-500/10 text-amber-950 dark:text-amber-100`}
       >
         <ShieldAlert size={11} aria-hidden className="mt-px shrink-0" />
         <div className="flex min-w-0 flex-col gap-0.5">
           <span className="wrap-anywhere font-medium">
-            {t(`${PREFIX}.expiredHeading`)}
+            {paused
+              ? t(`${PREFIX}.pausedHeading`)
+              : t(`${PREFIX}.expiredHeading`)}
           </span>
           {state.blocker !== null && (
             <span
@@ -349,7 +377,9 @@ function StateBanner({
               </span>
             )
           )}
-          <span className="wrap-anywhere">{t(`${PREFIX}.expiredPrompt`)}</span>
+          <span className="wrap-anywhere">
+            {paused ? t(`${PREFIX}.pausedBody`) : t(`${PREFIX}.expiredPrompt`)}
+          </span>
         </div>
       </div>
     );
@@ -369,6 +399,37 @@ function StateBanner({
         {t(`${PREFIX}.blockerPrefix`)} {codeText(state.blocker)}
       </span>
     </div>
+  );
+}
+
+/**
+ * What the author has to hear once: the declaration that was effective no
+ * longer is. It is the live region's own text (the banner is not announced).
+ */
+function ChangeNotice({
+  view,
+  standing,
+}: {
+  view: BodyDeclarationSnapshot;
+  standing: DeclaredStanding | null;
+}) {
+  const { t } = useTranslation();
+  const kind = view.state.kind;
+  const key =
+    kind === "none"
+      ? "noticeGone"
+      : kind === "unavailable"
+        ? "unavailableHeading"
+        : standing === "paused"
+          ? "pausedHeading"
+          : "expiredHeading";
+  return (
+    <p
+      data-testid="body-declaration-change-notice"
+      className="m-0 wrap-anywhere text-[10px] font-medium text-foreground"
+    >
+      {t(`${PREFIX}.${key}`)}
+    </p>
   );
 }
 

@@ -531,6 +531,33 @@ db.close();
   };
 }
 
+/**
+ * A digest of every row of every table (not only counts), read with a separate
+ * read-only process. Two equal digests mean nothing in the database changed.
+ */
+function dataDigest(workspace: string): string {
+  const script = `
+const { DatabaseSync } = require("node:sqlite");
+const { createHash } = require("node:crypto");
+const db = new DatabaseSync(process.argv[1], { readOnly: true });
+const tables = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name);
+const hash = createHash("sha256");
+for (const table of tables) {
+  const rows = db.prepare('SELECT * FROM "' + table.replaceAll('"', '""') + '"').all()
+    .map((row) => JSON.stringify(row, (_k, v) => (typeof v === "bigint" ? String(v) : v)))
+    .sort();
+  hash.update(table + "\\n" + rows.join("\\n") + "\\n");
+}
+process.stdout.write(hash.digest("hex"));
+db.close();
+`;
+  return execFileSync(
+    process.execPath,
+    ["--no-warnings", "-e", script, path.join(workspace, "grimodex.db")],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+}
+
 beforeEach(() => {
   mocks.showMessageBox.mockReset();
 });
@@ -749,12 +776,20 @@ describe("E2 / E3 the seam-enabled launch declares and revokes through the real 
 
 describe("N-13 the state read follows a declaration through the real router", () => {
   for (const restricted of [false, true]) {
-    it(`${restricted ? "restricted" : "unrestricted"}: none, effective, expired by the body, revoked`, async () => {
+    it(`${restricted ? "restricted" : "unrestricted"}: none, effective, expired by the body, declared again, revoked`, async () => {
       const fixture = await newFixture("n13");
       const main = await launch(fixture, { restricted, seam: {} });
-      const none = okValue<StateAnswer>(
-        await main.invoke(STATE, stateArgs(fixture.workspace)),
-      );
+      // A state read writes nothing: every row of every table is the same
+      // before and after it (the digest is taken by a separate process).
+      const readState = async (): Promise<StateAnswer> => {
+        const digest = dataDigest(fixture.workspace);
+        const answer = okValue<StateAnswer>(
+          await main.invoke(STATE, stateArgs(fixture.workspace)),
+        );
+        expect(dataDigest(fixture.workspace)).toBe(digest);
+        return answer;
+      };
+      const none = await readState();
       expect(none.state).toEqual({ kind: "none", blocker: null });
       expect(none.declarationToken).toBeNull();
       const row = scopeRow(fixture.workspace);
@@ -762,15 +797,11 @@ describe("N-13 the state read follows a declaration through the real router", ()
         scopeVersion: row.version,
         scopeToken: row.sourceToken,
       });
-      // A read writes nothing.
-      const before = snapshot(fixture.workspace);
 
       expect(
         okValue(await main.invoke(DECLARE, declareArgs(fixture.workspace))),
       ).toEqual({ outcome: "declared" });
-      const declared = okValue<StateAnswer>(
-        await main.invoke(STATE, stateArgs(fixture.workspace)),
-      );
+      const declared = await readState();
       expect(declared.state).toEqual({
         kind: "declared",
         effective: true,
@@ -808,30 +839,56 @@ describe("N-13 the state read follows a declaration through the real router", ()
         bumpVersion: true,
         updatedAt: new Date().toISOString(),
       });
-      const expired = okValue<StateAnswer>(
-        await main.invoke(STATE, stateArgs(fixture.workspace)),
-      );
+      const expired = await readState();
       expect(expired.state).toEqual({
         kind: "declared",
         effective: false,
         expiredBy: ["content"],
         blocker: null,
       });
+      expect(expired.declarationToken).not.toBeNull();
+
+      // Declaring again over the expired declaration: the request names the
+      // stored declaration's token (it is not null), the OCC values come from
+      // the same state read, and the new declaration is effective.
+      expect(
+        okValue(
+          await main.invoke(DECLARE, {
+            expectedWorkspacePath: fixture.workspace,
+            payload: {
+              projectId: PROJECT,
+              sceneId: SCENE,
+              requestId: unique("redeclare"),
+              expected: {
+                scopeVersion: expired.occ!.scopeVersion,
+                scopeToken: expired.occ!.scopeToken,
+                declarationToken: expired.declarationToken,
+              },
+              values: VALUES,
+            },
+          }),
+        ),
+      ).toEqual({ outcome: "declared" });
+      const again = await readState();
+      expect(again.state).toEqual({
+        kind: "declared",
+        effective: true,
+        expiredBy: [],
+        blocker: null,
+      });
+      expect(again.declarationToken).not.toBe(expired.declarationToken);
 
       expect(
         okValue(
           await main.invoke(
             REVOKE,
-            revokeArgs(fixture.workspace, expired.declarationToken!),
+            revokeArgs(fixture.workspace, again.declarationToken!),
           ),
         ),
       ).toEqual({ outcome: "revoked" });
-      const after = okValue<StateAnswer>(
-        await main.invoke(STATE, stateArgs(fixture.workspace)),
-      );
+      const after = await readState();
       expect(after.state).toEqual({ kind: "none", blocker: null });
       expect(after.declarationToken).toBeNull();
-      expect(before.schema).toEqual(snapshot(fixture.workspace).schema);
       await main.shutdown();
     });
   }

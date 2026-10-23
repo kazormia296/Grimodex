@@ -24,7 +24,9 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { nir1LocalAuditReservedField } from "./nir1LocalAuditNamespace.js";
-import { parseWorkspaceRestoreOutcome } from "./workspaceRestoreOutcome.js";
+import {
+  parseWorkspaceRestoreOutcome,
+} from "./workspaceRestoreOutcome.js";
 
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"

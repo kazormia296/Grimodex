@@ -937,7 +937,9 @@ describe("D2a profile egress gate", () => {
         activation: "ready",
       },
     });
-    expect(gate.issueCallerIdentity(11).workspaceId).toBe("/workspace-normal");
+    expect(gate.issueCallerIdentity(11).workspaceId).toBe(
+      "/workspace-normal",
+    );
   });
 
   it("keeps an unchanged proof pending across a delayed Transition and Ready event", async () => {
@@ -1040,10 +1042,7 @@ describe("D2a profile egress gate", () => {
 
   describe("license-control (K3/2 L-1)", () => {
     const LICENSE_COMMANDS = [
-      [
-        "activate_license",
-        { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" },
-      ],
+      ["activate_license", { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" }],
       ["revalidate_license", {}],
       ["deactivate_license", {}],
     ] as const;

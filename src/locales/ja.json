@@ -4057,6 +4057,7 @@
           "draft": "草案（未宣言）",
           "effective": "宣言済み・現在有効",
           "expired": "宣言済み・失効",
+          "paused": "宣言済み・止まっている",
           "unavailable": "宣言済み・読めない"
         },
         "loading": "宣言の状態を読み込んでいます…",
@@ -4096,9 +4097,12 @@
         "blockerPrefix": "いまは宣言できません。",
         "effectiveHeading": "この Scene は現在有効です。",
         "effectiveBody": "Graph が見つけたときだけ、この Scene は Related Scenes に表示されえます。表示は保証されません。",
-        "effectiveExpiresOn": "本文・title・Scope（A1）・registry・章の組み替え・restore・workspace の移動で、宣言は失効します。失効したら、この画面でお知らせします。",
+        "effectiveExpiresOn": "本文・title・Scope（A1）・registry・章の組み替え・restore で、宣言は失効します。workspace の移動や、秘密の伏線・Chronicle event の記録を足すことでは、宣言は止まります。失効したときも止まったときも、この画面でお知らせします。",
         "expiredHeading": "宣言が失効しました。",
         "expiredPrompt": "失効した宣言は使われません。この Scene を開示に使うには、内容を確認して改めて宣言してください。",
+        "pausedHeading": "宣言は止まっています。",
+        "pausedBody": "いまは使われません。上の原因が解消し、本文・title・Scope（A1）などが宣言したときのままであれば、この宣言は再び有効になります。止めたいときは取り消してください。",
+        "noticeGone": "宣言がなくなりました（別の窓での取消や restore など）。この Scene は開示に使われません。",
         "expiredUnknown": "宣言は現在有効ではありません。",
         "expiry": {
           "content": "本文または title が変わりました。",

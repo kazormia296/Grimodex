@@ -896,18 +896,24 @@ fn st_response_carries_no_body_title_digest_or_locator() {
             assert!(!token.contains(value.as_str()), "token holds {value}");
         }
     }
-    assert!(!scope_token.contains(SCENE) || scope_token.len() > SCENE.len());
     let printed = format!("{read:?}");
     for value in forbidden.iter().chain([&scope_token, &declaration_token]) {
         assert!(!printed.contains(value.as_str()), "Debug holds {value}");
     }
-    // The blockers and reasons are closed codes that name nothing.
+    // The blockers are closed codes that name none of those values, nor the
+    // project or the Scene.
     for blocker in [
         DeclareRefusal::SceneArchived,
         DeclareRefusal::Veto(BodyDeclarationVeto::Pov),
         DeclareRefusal::VetoLimit,
     ] {
-        assert!(!blocker.code().contains("s1") && !blocker.code().contains("p1"));
+        for value in forbidden.iter().map(String::as_str).chain([PROJECT, SCENE]) {
+            assert!(
+                !blocker.code().contains(value),
+                "blocker code {} holds {value}",
+                blocker.code()
+            );
+        }
     }
 }
 

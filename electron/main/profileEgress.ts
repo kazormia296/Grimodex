@@ -1248,7 +1248,10 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
 
     // A successful replacement or a different workspace event supersedes an
     // old proof.  Never overwrite that binding with the retained old target.
-    if (this.workspaceId !== null && this.workspaceId !== proof.workspaceId) {
+    if (
+      this.workspaceId !== null &&
+      this.workspaceId !== proof.workspaceId
+    ) {
       this.pendingUnchangedWorkspaceBinding = null;
       return;
     }
@@ -1332,7 +1335,10 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       this.pendingUnchangedWorkspaceBinding = null;
       return;
     }
-    if (this.workspaceId !== null && this.workspaceId !== proof.workspaceId) {
+    if (
+      this.workspaceId !== null &&
+      this.workspaceId !== proof.workspaceId
+    ) {
       this.pendingUnchangedWorkspaceBinding = null;
       return;
     }

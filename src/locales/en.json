@@ -4064,6 +4064,7 @@
           "draft": "Draft (not declared)",
           "effective": "Declared, currently effective",
           "expired": "Declared, expired",
+          "paused": "Declared, paused",
           "unavailable": "Declared, unreadable"
         },
         "loading": "Reading the declaration state…",
@@ -4103,9 +4104,12 @@
         "blockerPrefix": "Declaring is not possible right now.",
         "effectiveHeading": "This Scene is currently effective.",
         "effectiveBody": "Only when Graph finds it can this Scene appear in Related Scenes. Display is not guaranteed.",
-        "effectiveExpiresOn": "The declaration expires when the body, title, Scope (A1), registry, chapter arrangement, a restore or a workspace move changes. This panel tells you when that happens.",
+        "effectiveExpiresOn": "The declaration expires when the body, title, Scope (A1), registry, chapter arrangement or a restore changes. A workspace move, or adding a secret foreshadow or Chronicle event record, pauses it. This panel tells you when it expires or is paused.",
         "expiredHeading": "The declaration has expired.",
         "expiredPrompt": "An expired declaration is not used. To use this Scene for disclosure, review it and declare again.",
+        "pausedHeading": "The declaration is paused.",
+        "pausedBody": "It is not used right now. If the cause above is resolved and the body, title and Scope (A1) are still as when you declared, the declaration becomes effective again. To stop it, revoke it.",
+        "noticeGone": "The declaration is gone (revoked in another window, cleared by a restore and so on). This Scene is not used for disclosure.",
         "expiredUnknown": "The declaration is not currently effective.",
         "expiry": {
           "content": "The body or title changed.",

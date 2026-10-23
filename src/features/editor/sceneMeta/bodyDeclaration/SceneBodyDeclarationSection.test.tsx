@@ -284,7 +284,9 @@ describe("the three states (U-2 to U-6)", () => {
     expect(revokeButton()).toBeEnabled();
   });
 
-  it.each(BODY_DECLARATION_EXPIRY_GROUPS)(
+  it.each(
+    BODY_DECLARATION_EXPIRY_GROUPS.filter((group) => group !== "workspace"),
+  )(
     "names the %s group of an expired declaration and asks to declare again",
     async (group) => {
       installNative({ state: () => declaredWire(false, [group]) });
@@ -313,6 +315,122 @@ describe("the three states (U-2 to U-6)", () => {
       expect(revokeButton()).toBeEnabled();
     },
   );
+
+  it("calls a workspace-only difference paused, not expired, and says what brings it back", async () => {
+    installNative({ state: () => declaredWire(false, ["workspace"]) });
+    renderSection();
+    await ready("paused");
+    const banner = screen.getByTestId("body-declaration-banner");
+    expect(banner).toHaveAttribute("data-standing", "paused");
+    expect(banner).toHaveTextContent("止まっています");
+    expect(banner).toHaveTextContent("再び有効になります");
+    expect(banner).toHaveTextContent("取り消してください");
+    expect(banner.textContent).not.toContain("失効");
+    expect(
+      within(banner).getByTestId("body-declaration-expiry-workspace"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByTestId("body-declaration-state-label"),
+    ).toHaveTextContent("止まっている");
+    expect(
+      screen.getByTestId("body-declaration-state-label").textContent,
+    ).not.toContain("失効");
+    // The declaration form is offered as before (nothing blocks it).
+    expect(declareButton()).toHaveTextContent("改めて宣言する");
+    expect(revokeButton()).toBeEnabled();
+  });
+
+  it("keeps a workspace difference together with a content change an expiry", async () => {
+    installNative({
+      state: () => declaredWire(false, ["content", "workspace"]),
+    });
+    renderSection();
+    await ready("expired");
+    expect(screen.getByTestId("body-declaration-banner")).toHaveTextContent(
+      "宣言が失効しました",
+    );
+  });
+
+  it.each([
+    "veto-secret-foreshadow",
+    "veto-secret-event-reveal",
+    "veto-secret-event-link",
+    "veto-limit",
+    "locator-unavailable",
+  ])(
+    "calls a declaration paused by %s paused, names the cause and keeps declare closed",
+    async (blocker) => {
+      installNative({ state: () => declaredWire(false, [], blocker) });
+      renderSection();
+      await ready("paused");
+      const banner = screen.getByTestId("body-declaration-banner");
+      expect(banner).toHaveTextContent("止まっています");
+      expect(banner.textContent).not.toContain("失効");
+      expect(
+        within(banner).getByTestId("body-declaration-blocker"),
+      ).toHaveTextContent(
+        (ja.editor.sceneDetail.bodyDeclaration.code as Record<string, string>)[
+          blocker
+        ],
+      );
+      for (const axis of BODY_DECLARATION_AXES) {
+        expect(axisBox(axis).disabled).toBe(true);
+      }
+      expect(declareButton()).toBeDisabled();
+      expect(revokeButton()).toBeEnabled();
+    },
+  );
+
+  it.each([
+    "scene-archived",
+    "scope-unavailable",
+    "scope-not-explicit",
+    "scope-unresolved",
+    "body-empty",
+    "body-too-large",
+    "body-unreadable",
+    "title-too-large",
+    "veto-pov",
+  ])(
+    "calls a declaration stopped by %s expired (the change also moved the binding)",
+    async (blocker) => {
+      installNative({ state: () => declaredWire(false, [], blocker) });
+      renderSection();
+      await ready("expired");
+      expect(screen.getByTestId("body-declaration-banner")).toHaveTextContent(
+        "宣言が失効しました",
+      );
+    },
+  );
+
+  it("goes back to effective when a pausing cause is removed (the draft's veto row)", async () => {
+    let wire: unknown = declaredWire(true);
+    installNative({ state: () => wire });
+    renderSection();
+    await ready("effective");
+    // A secret foreshadow is added: stopped, but not expired.
+    wire = declaredWire(false, [], "veto-secret-foreshadow");
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await ready("paused");
+    expect(
+      screen.getByTestId("body-declaration-banner").textContent,
+    ).not.toContain("失効");
+    expect(screen.getByRole("status")).toHaveTextContent("止まっています");
+    expect(screen.getByRole("status").textContent).not.toContain("失効");
+    // The record is taken away and the binding still holds: effective again,
+    // the same as the reader (CB-4) does.
+    wire = declaredWire(true);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await ready("effective");
+    expect(screen.getByTestId("body-declaration-banner")).toHaveTextContent(
+      "現在有効",
+    );
+    expect(screen.queryByTestId("body-declaration-change-notice")).toBeNull();
+  });
 
   it("each expiry group has its own message", () => {
     const messages = Object.values(
@@ -610,24 +728,182 @@ describe("what is never rendered (U-13)", () => {
 });
 
 describe("blockers (U-14)", () => {
-  it.each(BODY_DECLARATION_BLOCKERS)(
-    "disables the axes and names the reason for %s",
-    async (blocker) => {
-      installNative({ state: () => noneWire(blocker) });
-      renderSection();
-      await ready("draft");
-      const message = (
-        ja.editor.sceneDetail.bodyDeclaration.code as Record<string, string>
-      )[blocker];
-      expect(screen.getByTestId("body-declaration-blocker")).toHaveTextContent(
-        message,
-      );
-      for (const axis of BODY_DECLARATION_AXES) {
-        expect(axisBox(axis).disabled).toBe(true);
-      }
-      expect(declareButton()).toBeDisabled();
-    },
-  );
+  // A Scene that is gone is not shown at all (see below).
+  it.each(
+    BODY_DECLARATION_BLOCKERS.filter(
+      (blocker) => blocker !== "scene-not-found",
+    ),
+  )("disables the axes and names the reason for %s", async (blocker) => {
+    installNative({ state: () => noneWire(blocker) });
+    renderSection();
+    await ready("draft");
+    const message = (
+      ja.editor.sceneDetail.bodyDeclaration.code as Record<string, string>
+    )[blocker];
+    expect(screen.getByTestId("body-declaration-blocker")).toHaveTextContent(
+      message,
+    );
+    for (const axis of BODY_DECLARATION_AXES) {
+      expect(axisBox(axis).disabled).toBe(true);
+    }
+    expect(declareButton()).toBeDisabled();
+  });
+});
+
+describe("a Scene that is gone", () => {
+  it("renders nothing for scene-not-found, whatever the state says", async () => {
+    installNative({
+      state: () => ({
+        occ: null,
+        declarationToken: SECRET_TOKEN,
+        state: {
+          kind: "unavailable",
+          reason: "binding-row-missing",
+          blocker: "scene-not-found",
+        },
+      }),
+    });
+    const { container } = renderSection();
+    await waitFor(() => expect(calls(STATE)).toHaveLength(1));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(container.firstChild).toBeNull();
+    expect(revokeButton()).toBeNull();
+    expect(declareButton()).toBeNull();
+    expect(calls(DECLARE)).toHaveLength(0);
+    expect(calls(REVOKE)).toHaveLength(0);
+  });
+
+  it("hides a section that was visible when the Scene is deleted elsewhere", async () => {
+    let wire: unknown = declaredWire(true);
+    installNative({ state: () => wire });
+    const { container } = renderSection();
+    await ready("effective");
+    wire = noneWire("scene-not-found");
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(container.firstChild).toBeNull());
+  });
+});
+
+describe("what the live region announces (P3)", () => {
+  const liveText = () => screen.getByRole("status").textContent ?? "";
+
+  it("announces once when an effective declaration is gone (revoked elsewhere, cleared by a restore)", async () => {
+    let wire: unknown = declaredWire(true);
+    installNative({ state: () => wire });
+    renderSection();
+    await ready("effective");
+    expect(liveText()).toBe("");
+    wire = noneWire();
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await ready("draft");
+    expect(
+      screen.getByTestId("body-declaration-change-notice"),
+    ).toBeInTheDocument();
+    expect(liveText()).toContain("宣言がなくなりました");
+    // The next read (nothing changed) does not announce it again.
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await ready("draft");
+    await waitFor(() => expect(liveText()).toBe(""));
+  });
+
+  it("announces when an effective declaration becomes unreadable or paused", async () => {
+    let wire: unknown = declaredWire(true);
+    installNative({ state: () => wire });
+    renderSection();
+    await ready("effective");
+    wire = {
+      occ: null,
+      declarationToken: SECRET_TOKEN,
+      state: { kind: "unavailable", reason: "malformed", blocker: null },
+    };
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await ready("unavailable");
+    expect(liveText()).toContain("保存された宣言を読めません");
+    wire = declaredWire(true);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await ready("effective");
+    wire = declaredWire(false, ["workspace"]);
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await ready("paused");
+    expect(liveText()).toContain("宣言は止まっています");
+  });
+
+  it("does not announce the author's own revoke as a declaration that became invalid", async () => {
+    let wire: unknown = declaredWire(true);
+    installNative({
+      state: () => wire,
+      revoke: () => ({ outcome: "revoked" }),
+    });
+    renderSection();
+    await ready("effective");
+    wire = noneWire();
+    fireEvent.click(revokeButton() as HTMLButtonElement);
+    await ready("draft");
+    await waitFor(() =>
+      expect(screen.getByTestId("body-declaration-outcome")).toHaveTextContent(
+        "取り消しました",
+      ),
+    );
+    expect(screen.queryByTestId("body-declaration-change-notice")).toBeNull();
+  });
+
+  it("keeps the loading banner out of the live region, so an autosave is not read out", async () => {
+    const gate = deferred<unknown>();
+    installNative({ state: () => gate.promise });
+    renderSection();
+    expect(stateOf()).toBe("loading");
+    const banner = screen.getByTestId("body-declaration-banner");
+    expect(banner).toHaveTextContent("読み込んでいます");
+    expect(screen.getByRole("status").contains(banner)).toBe(false);
+    expect(liveText()).toBe("");
+    gate.resolve(declaredWire(true));
+    await ready("effective");
+    // The state banner is not a live region either: a re-read of an unchanged
+    // state says nothing.
+    expect(
+      screen
+        .getByRole("status")
+        .contains(screen.getByTestId("body-declaration-banner")),
+    ).toBe(false);
+    expect(liveText()).toBe("");
+  });
+
+  it("drops the outcome of an operation when the state is read again", async () => {
+    let wire: unknown = noneWire();
+    installNative({ state: () => wire });
+    const { update } = renderSection();
+    await ready("draft");
+    confirmAll();
+    wire = declaredWire(true);
+    fireEvent.click(declareButton() as HTMLButtonElement);
+    await waitFor(() =>
+      expect(screen.getByTestId("body-declaration-outcome")).toHaveTextContent(
+        "宣言しました",
+      ),
+    );
+    await ready("effective");
+    // The Scene is saved again (an autosave): the state is read again and the
+    // old outcome no longer describes it.
+    update(makeNode({ version: 2 }));
+    await waitFor(() =>
+      expect(screen.queryByTestId("body-declaration-outcome")).toBeNull(),
+    );
+    await ready("effective");
+  });
 });
 
 describe("unsaved edits (P2-3)", () => {
