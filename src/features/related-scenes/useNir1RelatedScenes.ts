@@ -46,6 +46,12 @@ export function useNir1RelatedScenes(enabled: boolean) {
   // The generation of the displayed result that still awaits `graph-ready`.
   // Cleared when consumed, so one generation refreshes at most once.
   const graphReadyGeneration = useRef<number | null>(null);
+  // The generation whose fetch is in flight, and whether a `graph-ready` came
+  // while it was: Native may cache the late Graph before the fetch returns, so
+  // the notice is kept for that generation and spent once it has published
+  // (still one refresh per generation; DR-CP3A-49).
+  const fetchingGeneration = useRef<number | null>(null);
+  const graphReadyDuringFetch = useRef<number | null>(null);
 
   // This visible-section watcher survives an invalidated ticket and the
   // debounce before its replacement query. Subscribe before starting a query.
@@ -61,13 +67,14 @@ export function useNir1RelatedScenes(enabled: boolean) {
     // Optional: a failed graph-ready registration never blocks the query.
     const graphReady = listenRelatedScenesGraphReady((readyProject) => {
       const awaited = graphReadyGeneration.current;
-      if (
-        disposed ||
-        readyProject !== projectId ||
-        awaited === null ||
-        awaited !== current.current
-      )
+      if (disposed || readyProject !== projectId) return;
+      if (awaited === null) {
+        const fetching = fetchingGeneration.current;
+        if (fetching !== null && fetching === current.current)
+          graphReadyDuringFetch.current = fetching;
         return;
+      }
+      if (awaited !== current.current) return;
       graphReadyGeneration.current = null;
       setRefresh((value) => value + 1);
     })
@@ -96,6 +103,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
       unlisten?.();
       unlistenGraph?.();
       graphReadyGeneration.current = null;
+      graphReadyDuringFetch.current = null;
       setListening(false);
     };
   }, [enabled, sceneId, projectId, workspace, openRevision]);
@@ -103,6 +111,8 @@ export function useNir1RelatedScenes(enabled: boolean) {
   useEffect(() => {
     current.current = ++nextQueryGeneration;
     graphReadyGeneration.current = null;
+    fetchingGeneration.current = null;
+    graphReadyDuringFetch.current = null;
     setFetch(null);
     if (!enabled || !sceneId || !listening) {
       setLoading(false);
@@ -132,6 +142,8 @@ export function useNir1RelatedScenes(enabled: boolean) {
       published?.session?.release();
       published = null;
       graphReadyGeneration.current = null;
+      fetchingGeneration.current = generation;
+      graphReadyDuringFetch.current = null;
       setLoading(true);
       observeNir1RelatedScenesQuery(sceneId);
       void fetchRelatedPastScenes(sceneId, {
@@ -142,6 +154,11 @@ export function useNir1RelatedScenes(enabled: boolean) {
         isCurrent: () => current.current === generation && !disposed,
       })
         .then((value) => {
+          const readyDuringFetch = graphReadyDuringFetch.current === generation;
+          if (fetchingGeneration.current === generation) {
+            fetchingGeneration.current = null;
+            graphReadyDuringFetch.current = null;
+          }
           if (disposed || current.current !== generation) {
             value.session?.release();
             return;
@@ -153,9 +170,13 @@ export function useNir1RelatedScenes(enabled: boolean) {
             return;
           }
           setFetch(value);
-          graphReadyGeneration.current = awaitsGraphReady(value)
-            ? generation
-            : null;
+          graphReadyGeneration.current = null;
+          if (awaitsGraphReady(value)) {
+            // A notice that came during the fetch is this generation's one
+            // refresh; otherwise wait for the next one.
+            if (readyDuringFetch) setRefresh((count) => count + 1);
+            else graphReadyGeneration.current = generation;
+          }
           unsubscribe = value.session?.subscribeInvalidation(() => {
             if (disposed || current.current !== generation) return;
             recoverRaw();
@@ -174,6 +195,10 @@ export function useNir1RelatedScenes(enabled: boolean) {
           }
         })
         .catch(() => {
+          if (fetchingGeneration.current === generation) {
+            fetchingGeneration.current = null;
+            graphReadyDuringFetch.current = null;
+          }
           if (!disposed && current.current === generation) setFetch(null);
         })
         .finally(() => {

@@ -255,6 +255,64 @@ describe("Related Scenes graph-ready refresh (CP-3a)", () => {
     expect(h.fetch).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps a graph-ready that came during the fetch and refreshes once after a late outcome (DR-CP3A-49)", async () => {
+    let finish!: (value: Nir1RelatedScenesFetchResult) => void;
+    h.fetch.mockImplementationOnce(
+      () =>
+        new Promise<Nir1RelatedScenesFetchResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    h.fetch.mockResolvedValue(withOutcome("graph-late"));
+    renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    // Native cached the late Graph before the fetch returned.
+    await ready("p");
+    await ready("p");
+    await act(async () => {
+      finish(withOutcome("graph-late"));
+    });
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    expect(h.fetch.mock.calls[1][1].queryGeneration).not.toBe(
+      h.fetch.mock.calls[0][1].queryGeneration,
+    );
+    // The early notice was that generation's one refresh; the new one waits
+    // for its own notice.
+    await advance(1000);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    await ready("p");
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["graph-ready", "graph-ready"],
+    ["no outcome", undefined],
+  ] as const)(
+    "drops a graph-ready that came during a fetch that ended with %s",
+    async (_name, outcome) => {
+      let finish!: (value: Nir1RelatedScenesFetchResult) => void;
+      h.fetch.mockImplementationOnce(
+        () =>
+          new Promise<Nir1RelatedScenesFetchResult>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      renderHook(() => useNir1RelatedScenes(true));
+      await advance(0);
+      await advance(400);
+      await ready("p");
+      await act(async () => {
+        finish(withOutcome(outcome));
+      });
+      await advance(1000);
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it("ignores graph-ready after the scene changed and unsubscribes on unmount", async () => {
     h.fetch.mockResolvedValue(withOutcome("graph-late"));
     const view = renderHook(() => useNir1RelatedScenes(true));

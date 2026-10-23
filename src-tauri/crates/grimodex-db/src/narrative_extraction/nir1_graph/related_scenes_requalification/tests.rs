@@ -1789,3 +1789,90 @@ fn measure_requalification_time() {
     );
     assert!(times[20] < Duration::from_secs(2));
 }
+
+#[test]
+fn every_reason_there_is_no_graph_only_row_leaves_the_same_value_for_the_response() {
+    // N-8 (Mandatory defense 9, DR-CP3A-50). Native's response
+    // (`graph_response::response`) is made from `attachments`, `graph_only`
+    // and `graph_only_row` alone, so equal values give equal bytes. No
+    // candidate, candidates refused at steps 3 and 4, a Graph-only budget that
+    // runs out and a closed slot all leave the same values.
+    let displayed = ["g1", "g2"];
+    let absent = |name: &str, result: Box<QualifiedGraphForRelatedScenes>| {
+        assert!(
+            matches!(
+                result.graph_only,
+                GraphOnlySceneDisclosure::NotAppended(NotAppended)
+            ),
+            "{name}"
+        );
+        assert!(result.graph_only_row.is_none(), "{name}");
+        result.attachments
+    };
+
+    // No candidate: the projection reaches the displayed Scenes only.
+    let world = declared_world();
+    let mut reduced = world.projection();
+    reduced
+        .graph
+        .scenes
+        .retain(|scene| displayed.contains(&scene.scene_id.as_str()));
+    let no_candidate = absent(
+        "no candidate",
+        qualified(Call::new(&world, &reduced, &displayed).run()),
+    );
+    assert!(
+        !no_candidate.is_empty(),
+        "the comparison needs path additions to compare"
+    );
+
+    // The same world with its declared candidates: one is eligible, and the
+    // path additions are the same as without any candidate.
+    let projection = world.projection();
+    let eligible = qualified(Call::new(&world, &projection, &displayed).run());
+    assert_eq!(graph_only_scene(&eligible), Some("g3"));
+    assert_eq!(eligible.attachments, no_candidate);
+
+    // The Graph-only budget runs out at once, or after one step.
+    for max in [0, 1] {
+        let result = qualified(
+            Call::new(&world, &projection, &displayed)
+                .with_budget(GraphOnlyBudget::new(max, None))
+                .run(),
+        );
+        assert_eq!(absent("budget", result), no_candidate, "budget {max}");
+    }
+
+    // The slot is closed: the IR took it, or Raw is full.
+    for slot in [
+        AppendSlot {
+            ir_uses_common_slot: true,
+            raw_count: 3,
+        },
+        AppendSlot {
+            ir_uses_common_slot: false,
+            raw_count: 8,
+        },
+    ] {
+        let result = qualified(
+            Call::new(&world, &projection, &displayed)
+                .with_slot(slot)
+                .run(),
+        );
+        assert_eq!(absent("closed slot", result), no_candidate);
+    }
+
+    // Steps 3 and 4: every declared candidate refused (the declaration is
+    // gone; the body changed after it).
+    let refusals = [
+        "UPDATE narrative_scene_scope_bindings SET body_declaration_json = NULL,
+                body_declaration_token = NULL WHERE scene_id IN ('g3', 'g4');",
+        "UPDATE tree_nodes SET content = '{\"type\":\"doc\",\"content\":[{\"type\":\"paragraph\",\"content\":[{\"type\":\"text\",\"text\":\"Rewritten.\"}]}]}', version = version + 1, updated_at = '2026-10-23T01:00:00.000Z' WHERE id IN ('g3', 'g4');",
+    ];
+    for sql in refusals {
+        let world = declared_world();
+        let projection = world.projection_with_stale_scenes(|| world.execute(sql));
+        let result = qualified(Call::new(&world, &projection, &displayed).run());
+        assert_eq!(absent(sql, result), no_candidate, "{sql}");
+    }
+}

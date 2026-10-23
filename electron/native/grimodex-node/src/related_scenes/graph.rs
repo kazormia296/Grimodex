@@ -348,6 +348,15 @@ impl GraphContinueRequest {
     /// Graph states; they change nothing.
     pub(super) fn parse(value: Value) -> Result<Self> {
         let invalid = || anyhow!("RELATED_SCENES_INVALID_REQUEST");
+        // `null` is not absence: serde would read it as `None` and let
+        // `{rawSceneIds, settle: null}` pass as an await. Main refuses it too
+        // (DR-CP3A-33); Native does not rely on that (DR-CP3A-47).
+        ensure!(
+            value
+                .as_object()
+                .is_some_and(|fields| !fields.values().any(Value::is_null)),
+            "RELATED_SCENES_INVALID_REQUEST"
+        );
         let raw: RawContinueRequest = serde_json::from_value(value).map_err(|_| invalid())?;
         ensure!(
             !raw.operation_ticket.trim().is_empty()
@@ -391,9 +400,9 @@ impl GraphContinueRequest {
 /// uses a Graph without it, and a query started for nothing costs the single
 /// worker slot. Without a lease the answer is `not-requested`, and the owner is
 /// not touched.
-pub(super) fn begin_graph(
+pub(super) fn begin_graph<T: LeaseEnd>(
     state: &Arc<AppState>,
-    lease: Option<&Lease>,
+    lease: Option<&LeaseOf<T>>,
     project_id: &str,
     query_scene_id: &str,
     seed_entity_id: &str,
@@ -401,7 +410,7 @@ pub(super) fn begin_graph(
     let Some(lease) = lease else {
         return graph_unavailable(GraphUnavailable::NotRequested);
     };
-    let wire = lease.data.graph.start(
+    let wire = lease.data.graph().start(
         state,
         GraphQuery {
             project_id: project_id.to_owned(),
@@ -411,7 +420,7 @@ pub(super) fn begin_graph(
     );
     // The operation may have been invalidated while the query was handed over.
     if !lease.is_live(Instant::now()) {
-        lease.data.graph.cancel();
+        lease.data.graph().cancel();
     }
     wire
 }
@@ -458,18 +467,61 @@ pub(crate) async fn graph_continue(
         GraphContinueRequest::Settle {
             operation_ticket,
             settle,
-        } => {
-            let Some(lease) = state.related_scenes.owned(&owner, &operation_ticket)? else {
-                return Ok(unavailable("cancelled"));
-            };
-            lease.data.graph.declare(settle.ticket_use());
-            Ok(json!({"status": "settled"}))
-        }
+        } => match settle_in(
+            &state.related_scenes.registry,
+            &owner,
+            &operation_ticket,
+            settle.ticket_use(),
+            Instant::now(),
+        )? {
+            Settled::Declared => Ok(json!({"status": "settled"})),
+            Settled::Unknown => Ok(unavailable("cancelled")),
+            Settled::Expired(lease) => {
+                announce_invalidated(&state, &lease);
+                Ok(unavailable("cancelled"))
+            }
+        },
         GraphContinueRequest::Await {
             operation_ticket,
             raw_scene_ids,
         } => await_request(state, owner, operation_ticket, raw_scene_ids).await,
     }
+}
+
+pub(super) enum Settled<T> {
+    /// The declaration reached the live operation's ticket.
+    Declared,
+    /// No such operation for this owner: nothing changed.
+    Unknown,
+    /// The operation is no longer live. It took no declaration: its ticket is
+    /// cancelled with it, so its late result reaches neither the cache nor
+    /// `graph-ready`. The caller delivers the withdrawal signal.
+    Expired(LeaseOf<T>),
+}
+
+/// The settle form (D5). Only a live operation takes a declaration; an
+/// expired one is invalidated instead, like every other call that finds it.
+pub(super) fn settle_in<T: LeaseEnd>(
+    registry: &Mutex<RelatedScenesRegistry<T>>,
+    owner: &str,
+    ticket: &str,
+    use_: GraphTicketUse,
+    now: Instant,
+) -> Result<Settled<T>> {
+    let Some(lease) = owned_in(registry, owner, ticket)? else {
+        return Ok(Settled::Unknown);
+    };
+    if !lease.is_live(now) {
+        // The invalidation cancels the ticket; a caller that won the race to
+        // invalidate it first has cancelled it already.
+        return Ok(if invalidate_from_registry(registry, ticket, &lease)? {
+            Settled::Expired(lease)
+        } else {
+            Settled::Unknown
+        });
+    }
+    lease.data.graph().declare(use_);
+    Ok(Settled::Declared)
 }
 
 async fn await_request(

@@ -1,8 +1,10 @@
 //! CP-3a S2a tests: the Graph slot of a Related Scenes operation, its await,
 //! its settle declaration and the wire that carries them. A fake worker drives
-//! the product owner; an `Operation` needs a live Chronicle index proof that
-//! only the database crate can build, so the lease-level glue (the six
-//! cancellation call sites) is covered by the `GraphState` calls it makes.
+//! the product owner. An `Operation` needs a live Chronicle index proof that
+//! only the database crate can build, so the paths that end a lease (release,
+//! owner release, invalidation, a workspace transition, expiry, the hand-over
+//! in `begin`, settle) are generic over `LeaseEnd` and run here on a registry
+//! of `FakeOperation`s, each with a real Graph ticket (DR-CP3A-46).
 use super::*;
 use crate::nir1_graph_product::{
     GraphReadyNotice, GraphSlotKind, GraphWorker, GraphWorkerFactory, GraphWorkerStart,
@@ -270,6 +272,15 @@ impl Drop for Fixture {
     }
 }
 
+/// Lets a held query go and waits until the worker has returned it, so what
+/// the ticket's end caused (a cache entry, a notice) has happened by then.
+fn let_the_query_end(fixture: &Fixture) {
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    wait_until("the query to leave the worker", || {
+        fixture.state.nir1_graph.slot_kind_for_test() != GraphSlotKind::InUse
+    });
+}
+
 fn live_ir(ir: IrState) -> impl Fn() -> LeaseProbe {
     move || LeaseProbe { live: true, ir }
 }
@@ -297,7 +308,7 @@ fn begin_without_a_lease_is_not_requested_and_does_not_touch_the_owner() {
     // D6 (N-5): no IR operation, no Graph query. N-1's seedless half is the
     // `begin_blocking` shape: `graph_wire` is `None`, so no `graph` key exists.
     let fixture = Fixture::new();
-    let wire = begin_graph(&fixture.state, None, PROJECT, SCENE, SEED);
+    let wire = begin_graph::<FakeOperation>(&fixture.state, None, PROJECT, SCENE, SEED);
     assert_eq!(wire, graph_unavailable(GraphUnavailable::NotRequested));
     assert_eq!(fixture.state.nir1_graph.diagnostics().begins, 0);
     assert_eq!(fixture.plan.creates.load(Ordering::SeqCst), 0);
@@ -442,22 +453,252 @@ fn dropping_the_slot_cancels_a_running_query() {
     let graph = GraphState::default();
     graph.start(&fixture.state, Fixture::query());
     drop(graph);
-    fixture.plan.release.store(true, Ordering::SeqCst);
-    std::thread::sleep(Duration::from_millis(100));
+    let_the_query_end(&fixture);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
     assert!(fixture.graph_events().is_empty());
 }
 
+// ---- the paths that end a lease (DR-CP3A-46) ---------------------------------
+
+/// An operation with only what the end of a lease touches.
+#[derive(Default)]
+struct FakeOperation {
+    graph: GraphState,
+    completed: Notify,
+}
+
+impl LeaseEnd for FakeOperation {
+    fn graph(&self) -> &GraphState {
+        &self.graph
+    }
+
+    fn completed(&self) -> &Notify {
+        &self.completed
+    }
+}
+
+const OWNER: &str = "owner-a";
+const OTHER_OWNER: &str = "owner-b";
+
+struct Leases {
+    fixture: Fixture,
+    registry: Mutex<RelatedScenesRegistry<FakeOperation>>,
+}
+
+impl Leases {
+    fn new(ttl: Duration) -> Self {
+        let fixture = Fixture::new();
+        fixture.warm();
+        set_mode(&fixture.plan, QueryMode::Hold);
+        Self {
+            fixture,
+            registry: Mutex::new(RelatedScenesRegistry::new(8, ttl)),
+        }
+    }
+
+    /// A live lease of `owner` with no Graph query (the owner runs one query
+    /// at a time, so only one lease of a test can have one).
+    fn idle(&self, owner: &str) -> (String, LeaseOf<FakeOperation>) {
+        let ticket = lock(&self.registry)
+            .expect("registry")
+            .insert(
+                owner,
+                SnapshotEligibility {
+                    original_snapshot_usable: true,
+                    supported_profile: true,
+                },
+                FakeOperation::default(),
+                Instant::now(),
+            )
+            .expect("capacity");
+        let lease = owned_in(&self.registry, owner, &ticket)
+            .expect("registry")
+            .expect("lease");
+        (ticket, lease)
+    }
+
+    /// A live lease of `owner` whose Graph query `begin_graph` started.
+    fn running(&self, owner: &str) -> (String, LeaseOf<FakeOperation>) {
+        let (ticket, lease) = self.idle(owner);
+        let wire = begin_graph(&self.fixture.state, Some(&lease), PROJECT, SCENE, SEED);
+        assert_eq!(wire, graph_pending());
+        assert!(!lease.data.graph.is_settled());
+        (ticket, lease)
+    }
+
+    fn is_registered(&self, ticket: &str) -> bool {
+        lock(&self.registry)
+            .expect("registry")
+            .entries()
+            .iter()
+            .any(|(key, _)| key == ticket)
+    }
+
+    /// The path cancelled the ticket: it is settled at once, and the query's
+    /// result reaches neither the cache nor `graph-ready`.
+    fn assert_cancelled(&self, lease: &LeaseOf<FakeOperation>, path: &str) {
+        assert!(
+            lease.data.graph.is_settled(),
+            "{path} must cancel the Graph ticket"
+        );
+        let_the_query_end(&self.fixture);
+        assert_eq!(
+            self.fixture.state.nir1_graph.cache_len_for_test(),
+            0,
+            "{path}"
+        );
+        assert!(self.fixture.graph_events().is_empty(), "{path}");
+    }
+}
+
+#[test]
+fn a_release_cancels_the_graph_ticket_of_its_own_lease_only() {
+    let leases = Leases::new(TTL);
+    let (ticket, lease) = leases.running(OWNER);
+    // Another owner's release of the same ticket changes nothing.
+    release_from(&leases.registry, OTHER_OWNER, &ticket).expect("release");
+    assert!(!lease.data.graph.is_settled());
+    release_from(&leases.registry, OWNER, &ticket).expect("release");
+    assert!(!leases.is_registered(&ticket));
+    leases.assert_cancelled(&lease, "release");
+}
+
+#[test]
+fn an_owner_release_cancels_the_graph_ticket_of_every_lease_of_the_owner() {
+    let leases = Leases::new(TTL);
+    let (ticket, lease) = leases.running(OWNER);
+    let (other, _) = leases.idle(OTHER_OWNER);
+    assert_eq!(
+        release_owner_from(&leases.registry, OWNER).expect("owner release"),
+        1
+    );
+    assert!(!leases.is_registered(&ticket));
+    assert!(leases.is_registered(&other));
+    leases.assert_cancelled(&lease, "release_owner");
+}
+
+#[test]
+fn an_invalidation_cancels_the_graph_ticket() {
+    // `invalidate` (a stale operation, `reconcile`, an expired `continue` or
+    // await) is this call plus the withdrawal signal.
+    let leases = Leases::new(TTL);
+    let (ticket, lease) = leases.running(OWNER);
+    assert!(invalidate_from_registry(&leases.registry, &ticket, &lease).expect("invalidate"));
+    // A second invalidation finds nothing.
+    assert!(!invalidate_from_registry(&leases.registry, &ticket, &lease).expect("invalidate"));
+    leases.assert_cancelled(&lease, "invalidate_from_registry");
+}
+
+#[test]
+fn a_workspace_transition_cancels_the_graph_ticket_of_every_lease() {
+    let leases = Leases::new(TTL);
+    let (first_ticket, first) = leases.running(OWNER);
+    let (second_ticket, _) = leases.idle(OTHER_OWNER);
+    assert_eq!(stop_every_lease(&leases.registry).expect("transition"), 2);
+    assert!(!leases.is_registered(&first_ticket));
+    assert!(!leases.is_registered(&second_ticket));
+    leases.assert_cancelled(&first, "stop_for_workspace_transition");
+}
+
+#[test]
+fn an_expired_lease_is_swept_and_its_graph_ticket_cancelled() {
+    let leases = Leases::new(Duration::from_millis(200));
+    let (ticket, lease) = leases.running(OWNER);
+    // A live lease is not swept.
+    assert!(invalidate_expired(&leases.registry, Instant::now())
+        .expect("sweep")
+        .is_empty());
+    assert!(!lease.data.graph.is_settled());
+    wait_until("the lease to expire", || !lease.is_live(Instant::now()));
+    let swept = invalidate_expired(&leases.registry, Instant::now()).expect("sweep");
+    assert_eq!(swept.len(), 1);
+    assert!(Arc::ptr_eq(&swept[0], &lease));
+    assert!(!leases.is_registered(&ticket));
+    leases.assert_cancelled(&lease, "the expiry sweep");
+}
+
 #[test]
 fn a_lease_that_died_during_the_hand_over_cancels_the_ticket() {
-    let fixture = Fixture::new();
-    fixture.warm();
-    set_mode(&fixture.plan, QueryMode::Hold);
-    let graph = GraphState::default();
-    graph.start(&fixture.state, Fixture::query());
-    // `begin_graph` cancels exactly like this when the lease is no longer live.
-    graph.cancel();
-    assert!(graph.is_settled());
+    let leases = Leases::new(TTL);
+    let (ticket, lease) = leases.idle(OWNER);
+    // The operation is invalidated before `begin_graph` hands the query over.
+    assert!(lock(&leases.registry)
+        .expect("registry")
+        .invalidate(&ticket));
+    let wire = begin_graph(&leases.fixture.state, Some(&lease), PROJECT, SCENE, SEED);
+    // The owner accepted the query, so the wire says `pending`; the ticket is
+    // already cancelled and the await will answer `cancelled`.
+    assert_eq!(wire, graph_pending());
+    leases.assert_cancelled(&lease, "begin_graph's liveness check");
+}
+
+#[test]
+fn settle_declares_only_on_a_live_lease_of_its_owner() {
+    let leases = Leases::new(TTL);
+    let (ticket, lease) = leases.running(OWNER);
+    assert!(matches!(
+        settle_in(
+            &leases.registry,
+            OTHER_OWNER,
+            &ticket,
+            GraphTicketUse::Unused,
+            Instant::now()
+        )
+        .expect("settle"),
+        Settled::Unknown
+    ));
+    assert!(!lease.data.graph.is_settled());
+    assert!(matches!(
+        settle_in(
+            &leases.registry,
+            OWNER,
+            &ticket,
+            GraphTicketUse::Unused,
+            Instant::now()
+        )
+        .expect("settle"),
+        Settled::Declared
+    ));
+    assert!(leases.is_registered(&ticket));
+    let_the_query_end(&leases.fixture);
+    wait_until("the late cache", || {
+        leases.fixture.state.nir1_graph.cache_len_for_test() == 1
+    });
+}
+
+#[test]
+fn settle_on_an_expired_lease_cancels_and_never_caches_or_announces() {
+    // Contract P3-7 / safety P3-4: `unused` on an expired lease must not put
+    // the late result into the cache or announce it.
+    let leases = Leases::new(Duration::from_millis(200));
+    let (ticket, lease) = leases.running(OWNER);
+    wait_until("the lease to expire", || !lease.is_live(Instant::now()));
+    let settled = settle_in(
+        &leases.registry,
+        OWNER,
+        &ticket,
+        GraphTicketUse::Unused,
+        Instant::now(),
+    )
+    .expect("settle");
+    let Settled::Expired(expired) = settled else {
+        panic!("an expired lease takes no declaration");
+    };
+    assert!(Arc::ptr_eq(&expired, &lease));
+    assert!(!leases.is_registered(&ticket));
+    leases.assert_cancelled(&lease, "settle on an expired lease");
+    // The ticket is gone: a second settle finds nothing.
+    assert!(matches!(
+        settle_in(
+            &leases.registry,
+            OWNER,
+            &ticket,
+            GraphTicketUse::Unused,
+            Instant::now()
+        )
+        .expect("settle"),
+        Settled::Unknown
+    ));
 }
 
 // ---- settle ---------------------------------------------------------------
@@ -493,8 +734,7 @@ fn settle_used_and_cancelled_never_cache_or_announce() {
         let graph = GraphState::default();
         graph.start(&fixture.state, Fixture::query());
         graph.declare(use_);
-        fixture.plan.release.store(true, Ordering::SeqCst);
-        std::thread::sleep(Duration::from_millis(100));
+        let_the_query_end(&fixture);
         assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0, "{use_:?}");
         assert!(fixture.graph_events().is_empty(), "{use_:?}");
     }
@@ -792,7 +1032,7 @@ fn the_pending_query_is_not_cached_when_the_claim_is_refused() {
     graph.set_dense_scene_ids(dense(&["a"]));
     assert!(matches!(graph.claim(&ids(&["z"])), Claim::Violation));
     graph.cancel();
-    std::thread::sleep(Duration::from_millis(50));
+    let_the_query_end(&fixture);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
 }
 
@@ -854,6 +1094,33 @@ fn graph_continue_rejects_malformed_requests_and_unknown_fields() {
         let error = GraphContinueRequest::parse(request.clone()).expect_err(&request.to_string());
         assert_eq!(error.to_string(), "RELATED_SCENES_INVALID_REQUEST");
     }
+}
+
+#[test]
+fn graph_continue_refuses_null_in_place_of_a_missing_key() {
+    // Safety P3-1 (DR-CP3A-47): serde reads `null` as `None`, so without the
+    // check these would pass as an await or a settle. Main refuses them too.
+    let bad = [
+        json!({"operationTicket": "t", "rawSceneIds": ["a"], "settle": null}),
+        json!({"operationTicket": "t", "rawSceneIds": null, "settle": "unused"}),
+        json!({"operationTicket": "t", "rawSceneIds": null}),
+        json!({"operationTicket": "t", "settle": null}),
+        json!({"operationTicket": "t", "rawSceneIds": null, "settle": null}),
+        json!({"operationTicket": null, "settle": "used"}),
+    ];
+    for request in bad {
+        let error = GraphContinueRequest::parse(request.clone()).expect_err(&request.to_string());
+        assert_eq!(error.to_string(), "RELATED_SCENES_INVALID_REQUEST");
+    }
+    // The two shapes without `null` still parse.
+    assert!(matches!(
+        GraphContinueRequest::parse(json!({"operationTicket": "t", "rawSceneIds": ["a"]})),
+        Ok(GraphContinueRequest::Await { .. })
+    ));
+    assert!(matches!(
+        GraphContinueRequest::parse(json!({"operationTicket": "t", "settle": "unused"})),
+        Ok(GraphContinueRequest::Settle { .. })
+    ));
 }
 
 #[test]

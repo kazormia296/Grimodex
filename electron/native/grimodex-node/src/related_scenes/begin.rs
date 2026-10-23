@@ -119,11 +119,8 @@ fn begin_blocking(
     });
     // Expired entries are invalidated before allocation, so pruning cannot
     // silently eat the final UI withdrawal signal.
-    let expired = lock(&state.related_scenes.registry)?.entries();
-    for (ticket, lease) in expired {
-        if !lease.is_live(Instant::now()) {
-            invalidate(&state, &ticket, &lease)?;
-        }
+    for lease in invalidate_expired(&state.related_scenes.registry, Instant::now())? {
+        announce_invalidated(&state, &lease);
     }
     let ticket = if snapshot.original_snapshot_usable && snapshot.supported_profile {
         let operation = Operation {
