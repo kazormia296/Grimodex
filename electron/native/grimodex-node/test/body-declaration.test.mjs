@@ -219,6 +219,12 @@ async function rig(label, { openGate = true } = {}) {
       ),
     revoke: (request) =>
       backend.narrativeSceneBodyDeclarationRevoke(request, undefined),
+    stateRequest: () => ({
+      expectedWorkspacePath: workspace,
+      payload: { projectId: PROJECT, sceneId: SCENE },
+    }),
+    state: (request) =>
+      backend.narrativeSceneBodyDeclarationState(request, undefined),
     /** preview + issue, returning what Main would hold. */
     async confirm(request) {
       const preview = await self.preview(request);
@@ -910,5 +916,198 @@ test("an unrestricted profile needs no caller, only the workspace (D10)", async 
     assert.notEqual((await r.columns()).token, null);
   } finally {
     await r.close();
+  }
+});
+
+// CB-3: the read-only state of the Scene's declaration (DR-CB3-1).
+const STATE_KEYS = ["declarationToken", "occ", "state"];
+
+test("the state read is closed with the gate and Main-only to open (G-2)", async () => {
+  const r = await rig("state-closed", { openGate: false });
+  try {
+    const request = r.stateRequest();
+    const before = await r.counts();
+    const columnsBefore = await r.columns();
+    // Closed: it refuses before the payload or the workspace is looked at.
+    await assert.rejects(r.state(request), (error) => {
+      assert.equal(error.message, GATE_CLOSED);
+      return true;
+    });
+    await assert.rejects(r.state({ bad: 1 }), (error) => {
+      assert.equal(error.message, GATE_CLOSED);
+      return true;
+    });
+    // A renderer cannot open it: there is no such call on the commands it
+    // reaches, and an unknown kind leaves it closed.
+    for (const kind of ["", "all", "local-send", "Scene-Body-Declaration"]) {
+      assert.throws(
+        () => r.backend.mainOpenPrePublicationGate(kind),
+        /^Error: MAIN_GATE_KIND$/,
+      );
+    }
+    await assert.rejects(r.state(request), (error) => {
+      assert.equal(error.message, GATE_CLOSED);
+      return true;
+    });
+    assert.deepEqual(await r.counts(), before);
+    assert.deepEqual(await r.columns(), columnsBefore);
+    // Main opens it for this process.
+    r.backend.mainOpenPrePublicationGate("scene-body-declaration");
+    const answer = JSON.parse(await r.state(request));
+    assert.deepEqual(Object.keys(answer).sort(), STATE_KEYS);
+    assert.deepEqual(answer.state, { kind: "none", blocker: null });
+  } finally {
+    await r.close();
+  }
+});
+
+test("the state follows a declaration through a body change, a revoke and a re-declaration (N-13)", async () => {
+  const r = await rig("state-flow");
+  try {
+    const columnsBefore = await r.columns();
+    const none = JSON.parse(await r.state(r.stateRequest()));
+    assert.deepEqual(Object.keys(none).sort(), STATE_KEYS);
+    assert.deepEqual(none.state, { kind: "none", blocker: null });
+    assert.equal(none.declarationToken, null);
+    const read = await r.scope();
+    assert.deepEqual(none.occ, {
+      scopeVersion: read.binding.version,
+      scopeToken: read.binding.sourceToken,
+    });
+    // A read writes nothing.
+    assert.deepEqual(await r.columns(), columnsBefore);
+
+    const request = await r.declareRequest()();
+    const { grantId } = await r.confirm(request);
+    await r.declare(request, grantId);
+    const declaredWire = await r.state(r.stateRequest());
+    const declared = JSON.parse(declaredWire);
+    assert.deepEqual(declared.state, {
+      kind: "declared",
+      effective: true,
+      expiredBy: [],
+      blocker: null,
+    });
+    const stored = await r.columns();
+    assert.equal(declared.declarationToken, stored.token);
+    // The answer names no body, title, digest, Scene or declaration ID, and
+    // no time.
+    const declaration = JSON.parse(stored.json);
+    for (const secret of [
+      TITLE,
+      "Mira opened",
+      SCENE,
+      PROJECT,
+      request.payload.requestId,
+      declaration.declarationId,
+      declaration.declaredAt,
+      grantId,
+    ]) {
+      assert.ok(secret, "the secret is a non-empty string");
+      assert.ok(!declaredWire.includes(secret), `${declaredWire} has ${secret}`);
+    }
+    // The OCC tokens are the only digests-looking values: nothing else is.
+    const withoutTokens = declaredWire
+      .replace(declared.occ.scopeToken, "")
+      .replace(declared.declarationToken, "");
+    assert.ok(!withoutTokens.includes("sha256:"), withoutTokens);
+
+    // The body changes: still declared, no longer effective, with its group.
+    await r.patchScene({ content: tiptapDoc("Another sentence.") });
+    const expired = JSON.parse(await r.state(r.stateRequest()));
+    assert.deepEqual(expired.state, {
+      kind: "declared",
+      effective: false,
+      expiredBy: ["content"],
+      blocker: null,
+    });
+    assert.equal(expired.declarationToken, stored.token);
+
+    // The token the state returned is the one a revoke takes.
+    const revoked = await r.revoke(r.revokeRequest(expired.declarationToken));
+    assert.equal(revoked, JSON.stringify({ outcome: "revoked" }));
+    const after = JSON.parse(await r.state(r.stateRequest()));
+    assert.deepEqual(after.state, { kind: "none", blocker: null });
+    assert.equal(after.declarationToken, null);
+
+    // And the OCC it returned is the one a declare takes.
+    const again = r.declareRequest();
+    const second = await again();
+    second.payload.expected = {
+      scopeVersion: after.occ.scopeVersion,
+      scopeToken: after.occ.scopeToken,
+      declarationToken: after.declarationToken,
+    };
+    const held = await r.confirm(second);
+    assert.equal(await r.declare(second, held.grantId), '{"outcome":"declared"}');
+    const last = JSON.parse(await r.state(r.stateRequest()));
+    assert.equal(last.state.effective, true);
+  } finally {
+    await r.close();
+  }
+});
+
+test("the state payload is closed and a wrong workspace is one closed code (N-11)", async () => {
+  const r = await rig("state-payload");
+  try {
+    for (const [key, value] of [
+      ["grant", { grantId: "g" }],
+      ["requestId", "r"],
+      ["declarationToken", "t"],
+      ["declarationId", "d"],
+      ["digest", "sha256:x"],
+    ]) {
+      const top = r.stateRequest();
+      top[key] = value;
+      await assert.rejects(r.state(top), /unknown field/);
+      const inner = r.stateRequest();
+      inner.payload[key] = value;
+      await assert.rejects(r.state(inner), /unknown field/);
+    }
+    for (const path of [join(r.root, "another-workspace"), join(r.root, "missing"), ""]) {
+      const stray = r.stateRequest();
+      stray.expectedWorkspacePath = path;
+      await assert.rejects(r.state(stray), (error) => {
+        assert.equal(
+          error.message,
+          "NEX_BODY_DECLARATION_REFUSED:workspace-mismatch",
+        );
+        return true;
+      });
+    }
+  } finally {
+    await r.close();
+  }
+});
+
+test("a restricted profile admits the state read only for the registered caller (N-10)", async () => {
+  const rr = await restrictedRig("state-restricted");
+  try {
+    const payload = {
+      expectedWorkspacePath: rr.workspace,
+      payload: { projectId: PROJECT, sceneId: SCENE },
+    };
+    const denied = /D2A_EGRESS_DENIED/;
+    const wire = JSON.stringify(rr.identity());
+    const other = JSON.stringify(rr.identity({ workspaceId: "/elsewhere" }));
+    for (const identity of [undefined, wire, other]) {
+      await assert.rejects(
+        rr.backend.narrativeSceneBodyDeclarationState(payload, identity),
+        denied,
+      );
+    }
+    const registered = await rr.register();
+    // Admitted: the Scene this workspace does not have is a closed answer,
+    // not a denial.
+    const answer = JSON.parse(
+      await rr.backend.narrativeSceneBodyDeclarationState(payload, registered),
+    );
+    assert.equal(answer.state.blocker, "scene-not-found");
+    await assert.rejects(
+      rr.backend.narrativeSceneBodyDeclarationState(payload, other),
+      denied,
+    );
+  } finally {
+    await rr.close();
   }
 });

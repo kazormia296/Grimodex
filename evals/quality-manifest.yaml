@@ -388,6 +388,7 @@ requirements:
       - electron/main/bodyDeclarationCiSeam.test.ts
       - electron/main/bodyDeclaration.pipeline.spec.ts
       - electron/native/grimodex-node/test/body-declaration.test.mjs
+      - electron/native/grimodex-node/src/body_declaration_entry_tests.rs
       - scripts/quality/quality-workflow.test.mjs
       - scripts/quality/validate-run-kind-policy.test.mjs
       - scripts/quality/validate-change-feed-writers.test.mjs

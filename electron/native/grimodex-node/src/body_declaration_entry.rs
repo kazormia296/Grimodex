@@ -1,5 +1,6 @@
 //! The typed Native entries of the body declaration (CB-2, DR-CB2-1,
-//! DR-CB2-8, DR-CB2-9) and the Main-only grant calls that serve them.
+//! DR-CB2-8, DR-CB2-9), the read-only state entry of the author's screen
+//! (CB-3, DR-CB3-1) and the Main-only grant calls that serve them.
 //!
 //! Every entry here runs inside a blocking section and follows one order:
 //!
@@ -10,6 +11,8 @@
 //! 3. the payload, the active workspace, and the workspace the request named;
 //! 4. the quarantine of a previous COMMIT of unknown outcome;
 //! 5. (declaration only) the grant's consume, then the writer.
+//!
+//! The state entry (`state`) follows steps 1 to 4 and then only reads.
 //!
 //! A refusal reaches the caller as the error message
 //! `NEX_BODY_DECLARATION_REFUSED:<code>` (a closed set of codes, see the db
@@ -22,14 +25,15 @@ use std::sync::Arc;
 use anyhow::anyhow;
 use grimodex_db::narrative_extraction::scene_body_declaration::{
     declare_scene_body, is_workspace_scene_body_declaration_quarantined,
-    preview_scene_body_declaration, revoke_scene_body, DeclareRefusal, DeclareRequest,
-    RevokeRequest,
+    preview_scene_body_declaration, read_scene_body_declaration_state, revoke_scene_body,
+    BodyDeclarationState, BodyDeclarationStateRead, DeclareRefusal, DeclareRequest, RevokeRequest,
+    StateRequest,
 };
 use grimodex_db::nir1_generation::{Nir1AdmissionProbe, Nir1AdmissionSqlBudget};
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use grimodex_db::workspace_lifecycle::{LifecycleState, LiveBinding};
 use grimodex_db::AppError;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::convert::from_wire;
@@ -54,6 +58,16 @@ struct DeclareWire {
 struct RevokeWire {
     expected_workspace_path: String,
     payload: RevokeRequest,
+}
+
+/// The wire request of the state read: the workspace the author's window
+/// named and the two keys of the Scene it opened. It has no room for a grant,
+/// a request ID or a declaration token.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct StateWire {
+    expected_workspace_path: String,
+    payload: StateRequest,
 }
 
 /// The out-of-band grant Main attaches to the declaration entry (a
@@ -193,6 +207,119 @@ pub(crate) fn revoke(
     match revoke_scene_body(&workspace, wire.payload, &budget) {
         Ok(outcome) => Ok(json!({ "outcome": outcome.response.code() }).to_string()),
         Err(failure) => refuse(failure.refusal),
+    }
+}
+
+// ───────────────────────── the state read (CB-3) ─────────────────────────
+
+/// The values the author's next declare has to name, read in the same snapshot
+/// as the state. Opaque: nothing else about the Scene crosses.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StateOccResponse {
+    scope_version: i64,
+    scope_token: String,
+}
+
+/// The closed answer. There is no field for a body, an excerpt, a title, a
+/// digest, a locator, a workspace ID, a Scene ID, a declaration ID or a time.
+#[derive(Debug, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "kebab-case",
+    rename_all_fields = "camelCase"
+)]
+enum StateBodyResponse {
+    None {
+        blocker: Option<&'static str>,
+    },
+    Declared {
+        effective: bool,
+        expired_by: Vec<&'static str>,
+        blocker: Option<&'static str>,
+    },
+    Unavailable {
+        reason: &'static str,
+        blocker: Option<&'static str>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StateResponse {
+    occ: Option<StateOccResponse>,
+    declaration_token: Option<String>,
+    state: StateBodyResponse,
+}
+
+fn state_response(read: BodyDeclarationStateRead) -> StateResponse {
+    let blocker = read.state.blocker().map(DeclareRefusal::code);
+    let state = match read.state {
+        BodyDeclarationState::None { .. } => StateBodyResponse::None { blocker },
+        BodyDeclarationState::Declared {
+            effective,
+            expired_by,
+            ..
+        } => StateBodyResponse::Declared {
+            effective,
+            expired_by: expired_by.into_iter().map(|group| group.code()).collect(),
+            blocker,
+        },
+        BodyDeclarationState::Unavailable { reason, .. } => StateBodyResponse::Unavailable {
+            reason: reason.code(),
+            blocker,
+        },
+    };
+    StateResponse {
+        occ: read.occ.map(|occ| StateOccResponse {
+            scope_version: occ.scope_version,
+            scope_token: occ.scope_token,
+        }),
+        declaration_token: read.declaration_token,
+        state,
+    }
+}
+
+/// Opens the active workspace for the state read. A workspace that is not the
+/// one the request named, and a path that cannot be compared, are the same
+/// closed code: no path or I/O error text reaches the caller.
+fn open_workspace_for_state(
+    state: &AppState,
+    expected_workspace_path: &str,
+) -> Result<ActiveWorkspaceSnapshot, AppError> {
+    let workspace = active_workspace_snapshot(&state.ws)?;
+    let matches = match (
+        workspace.path().canonicalize(),
+        std::path::Path::new(expected_workspace_path).canonicalize(),
+    ) {
+        (Ok(active), Ok(expected)) => active == expected,
+        _ => false,
+    };
+    if matches {
+        Ok(workspace)
+    } else {
+        refuse(DeclareRefusal::WorkspaceMismatch)
+    }
+}
+
+/// The state read of the Scene the author opened. Read-only; it needs no
+/// grant, and the same gate that closes the declaration closes it, before the
+/// workspace or the database is touched.
+pub(crate) fn state(
+    state: &Arc<AppState>,
+    payload: Value,
+    caller_identity: Option<String>,
+) -> Result<String, AppError> {
+    admit_publication_entry(state, caller_identity)?;
+    require_gate(state, PrePublicationEntry::SceneBodyDeclaration)?;
+    let epoch = state.main_grant.registry.edge_epoch();
+    let wire: StateWire = from_wire("payload", payload)?;
+    let workspace = open_workspace_for_state(state, &wire.expected_workspace_path)?;
+    let budget = admission_budget(state, epoch);
+    match read_scene_body_declaration_state(&workspace, &wire.payload, &budget) {
+        Ok(read) => serde_json::to_string(&state_response(read))
+            .map_err(|error| AppError::Anyhow(anyhow::Error::from(error))),
+        Err(refusal) => refuse(refusal),
     }
 }
 

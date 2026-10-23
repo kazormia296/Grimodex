@@ -937,9 +937,7 @@ describe("D2a profile egress gate", () => {
         activation: "ready",
       },
     });
-    expect(gate.issueCallerIdentity(11).workspaceId).toBe(
-      "/workspace-normal",
-    );
+    expect(gate.issueCallerIdentity(11).workspaceId).toBe("/workspace-normal");
   });
 
   it("keeps an unchanged proof pending across a delayed Transition and Ready event", async () => {
@@ -1042,7 +1040,10 @@ describe("D2a profile egress gate", () => {
 
   describe("license-control (K3/2 L-1)", () => {
     const LICENSE_COMMANDS = [
-      ["activate_license", { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" }],
+      [
+        "activate_license",
+        { key: "GRIM-8CA5F5B0-4C44-4E5B-B7C5-F8C3D3E3E3E3" },
+      ],
       ["revalidate_license", {}],
       ["deactivate_license", {}],
     ] as const;
@@ -1313,11 +1314,12 @@ describe("D2a profile egress gate", () => {
     ).toThrow(new RegExp(`${D2A_EGRESS_DENIED_MARKER} unclassified`));
   });
 
-  it("classifies the two body declaration entries as internal (CB-2, K3/2 宣言 UI)", async () => {
+  it("classifies the body declaration entries and the state read as internal (CB-2/CB-3, K3/2 宣言 UI)", async () => {
     const ledgers = d2aRouteLedgersForTest();
     const entries = [
       "narrative_scene_body_declaration_declare",
       "narrative_scene_body_declaration_revoke",
+      "narrative_scene_body_declaration_state",
     ];
     for (const command of entries) {
       expect(Object.hasOwn(NAPI_COMMANDS, command), command).toBe(true);
