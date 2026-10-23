@@ -173,6 +173,7 @@ test("the NIR-1 Entity/Relation suite covers the typed review seam and its contr
     "release_schema_migration",
     "workspace_migration_supervisor",
     "scripts/codex-entity-relation-product-journey.test.mjs",
+    "scripts/nir1-scene-scope-projection-product-journey.test.mjs",
     "product-journey-shards.test.mjs",
   ]) {
     assert.match(commandText, new RegExp(expected.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -204,6 +205,8 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
     "src/prompts/ja/chatSystemDataBoundaryReminder.txt",
     "electron/native/grimodex-node/src/nir1_prepared_request.rs",
     "scripts/codex-entity-relation-product-journey.test.mjs",
+    "scripts/nir1-scene-scope-projection-product-journey.test.mjs",
+    "electron/scripts/nir1-scene-scope-projection-product-journey.mjs",
   ];
   for (const changedPath of dedicatedPaths) {
     const selection = selectImpact(map, [changedPath]);

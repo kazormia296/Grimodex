@@ -51,6 +51,7 @@ rules:
       - docs/DEVELOPMENT_SETUP.md
       - scripts/local-ci.mjs
       - scripts/local-ci-registry.json
+      - scripts/local-ci-full-workload-allocation.json
       - scripts/local-ci.test.mjs
       - scripts/local-ci-runner.mjs
       - scripts/local-ci-runner.test.mjs
@@ -392,6 +393,7 @@ rules:
       - electron/native/grimodex-node/src/nir1_history_turns_tests.rs
       - electron/native/grimodex-node/src/nir1_graph_activation_tests.rs
       - electron/scripts/codex-entity-relation-product-journey.mjs
+      - electron/scripts/nir1-scene-scope-projection-product-journey.mjs
       - electron/scripts/product-journey-catalog.mjs
       - electron/scripts/product-journey-shards.mjs
       - electron/scripts/product-journeys.mjs
@@ -403,6 +405,7 @@ rules:
       - electron/shared/nir1GraphIpcContract.test.ts
       - electron/shared/nir1EntityRelationIpcContract.test.ts
       - scripts/codex-entity-relation-product-journey.test.mjs
+      - scripts/nir1-scene-scope-projection-product-journey.test.mjs
       - scripts/product-journey-backlog.test.mjs
       - scripts/product-journey-impact.test.mjs
       - src-tauri/crates/grimodex-core/src/narrative_ir.rs
