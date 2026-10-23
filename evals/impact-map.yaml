@@ -497,6 +497,7 @@ rules:
       - electron/main/bodyDeclaration.pipeline.spec.ts
       - electron/main/bodyDeclarationCiSeam.ts
       - electron/main/bodyDeclarationCiSeam.test.ts
+      - src/features/editor/sceneMeta/bodyDeclaration/**
       - electron/main/mainGrant.ts
       - electron/main/mainGrant.test.ts
       - electron/main/devRendererUrl*.ts
