@@ -23,6 +23,7 @@ vi.mock("./bodyDeclarationAvailability", () => ({
 
 import { SceneBodyDeclarationSection } from "./SceneBodyDeclarationSection";
 import { BODY_DECLARATION_AXES } from "./bodyDeclarationTypes";
+import { UNSAVED_SCENE_EDITS } from "./useUnsavedSceneEdits";
 
 const STATE = "narrative_scene_body_declaration_state";
 /** WCAG 2.5.8 の下限。確認欄とボタンはこれ以上の実寸を持つ。 */
@@ -100,7 +101,11 @@ function mountAt(width: number, name: string) {
         boxSizing: "border-box",
       }}
     >
-      <SceneBodyDeclarationSection node={node} workspacePath="/ws" />
+      <SceneBodyDeclarationSection
+        node={node}
+        workspacePath="/ws"
+        unsavedEdits={UNSAVED_SCENE_EDITS}
+      />
     </div>,
   );
 }

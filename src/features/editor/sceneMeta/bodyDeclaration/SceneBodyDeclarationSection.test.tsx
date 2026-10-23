@@ -10,8 +10,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/lib/i18n";
-import en from "@/locales/en.json";
-import ja from "@/locales/ja.json";
+import { BODY_DECLARATION_TRANSLATIONS } from "./bodyDeclarationTranslations";
+import { UNSAVED_SCENE_EDITS } from "./useUnsavedSceneEdits";
 import { registerQuiescenceParticipant } from "@/application/lifecycle/quiescenceParticipants";
 import { createEditorInstanceId } from "@/features/editor/document/documentKey";
 import { useEditorSessionStore } from "@/features/editor/editorSessionStore";
@@ -138,6 +138,7 @@ function renderSection(node = makeNode(), refreshKey: string | number = 0) {
       node={node}
       workspacePath="/workspace"
       refreshKey={refreshKey}
+      unsavedEdits={UNSAVED_SCENE_EDITS}
     />,
   );
   return {
@@ -148,6 +149,7 @@ function renderSection(node = makeNode(), refreshKey: string | number = 0) {
           node={next}
           workspacePath="/workspace"
           refreshKey={key}
+          unsavedEdits={UNSAVED_SCENE_EDITS}
         />,
       ),
   };
@@ -296,9 +298,9 @@ describe("the three states (U-2 to U-6)", () => {
       expect(
         within(banner).getByTestId(`body-declaration-expiry-${group}`),
       ).toHaveTextContent(
-        (
-          ja.editor.sceneDetail.bodyDeclaration.expiry as Record<string, string>
-        )[group],
+        (BODY_DECLARATION_TRANSLATIONS.ja.expiry as Record<string, string>)[
+          group
+        ],
       );
       for (const other of BODY_DECLARATION_EXPIRY_GROUPS) {
         if (other === group) continue;
@@ -369,7 +371,7 @@ describe("the three states (U-2 to U-6)", () => {
       expect(
         within(banner).getByTestId("body-declaration-blocker"),
       ).toHaveTextContent(
-        (ja.editor.sceneDetail.bodyDeclaration.code as Record<string, string>)[
+        (BODY_DECLARATION_TRANSLATIONS.ja.code as Record<string, string>)[
           blocker
         ],
       );
@@ -433,9 +435,7 @@ describe("the three states (U-2 to U-6)", () => {
   });
 
   it("each expiry group has its own message", () => {
-    const messages = Object.values(
-      ja.editor.sceneDetail.bodyDeclaration.expiry,
-    );
+    const messages = Object.values(BODY_DECLARATION_TRANSLATIONS.ja.expiry);
     expect(new Set(messages).size).toBe(BODY_DECLARATION_EXPIRY_GROUPS.length);
   });
 
@@ -738,7 +738,7 @@ describe("blockers (U-14)", () => {
     renderSection();
     await ready("draft");
     const message = (
-      ja.editor.sceneDetail.bodyDeclaration.code as Record<string, string>
+      BODY_DECLARATION_TRANSLATIONS.ja.code as Record<string, string>
     )[blocker];
     expect(screen.getByTestId("body-declaration-blocker")).toHaveTextContent(
       message,
@@ -1001,12 +1001,13 @@ describe("locale (U-15)", () => {
       .split(".")
       .reduce<unknown>(
         (value, key) => (value as Record<string, unknown> | undefined)?.[key],
-        (locale as typeof ja).editor.sceneDetail.bodyDeclaration,
+        locale,
       );
+  const { ja, en } = BODY_DECLARATION_TRANSLATIONS;
 
   it("has the same keys in en and ja, none of them empty", () => {
-    const jaKeys = leaves(ja.editor.sceneDetail.bodyDeclaration).sort();
-    const enKeys = leaves(en.editor.sceneDetail.bodyDeclaration).sort();
+    const jaKeys = leaves(BODY_DECLARATION_TRANSLATIONS.ja).sort();
+    const enKeys = leaves(BODY_DECLARATION_TRANSLATIONS.en).sort();
     expect(enKeys).toEqual(jaKeys);
     for (const key of jaKeys) {
       expect(String(textOf(ja, key)).length).toBeGreaterThan(0);

@@ -26,15 +26,17 @@ import {
   type BodyDeclarationSnapshot,
   type ConfirmedAxes,
 } from "./bodyDeclarationTypes";
+import { ensureBodyDeclarationTranslations } from "./bodyDeclarationTranslations";
 import { declaredStanding, type DeclaredStanding } from "./declaredStanding";
 import {
   useSceneBodyDeclaration,
   type BodyDeclarationOutcome,
 } from "./useSceneBodyDeclaration";
-import {
-  hasUnsavedSceneEdits,
-  useUnsavedSceneEdits,
-} from "./useUnsavedSceneEdits";
+import type { UnsavedSceneEdits } from "./useUnsavedSceneEdits";
+
+// The strings travel with this lazy chunk (DR-CB3-35), so they are registered
+// when the module is evaluated, before anything here renders.
+ensureBodyDeclarationTranslations();
 
 const PREFIX = "editor.sceneDetail.bodyDeclaration";
 const KNOWN_CODES: ReadonlySet<string> = new Set(
@@ -58,12 +60,18 @@ type SectionProps = {
   workspacePath: string | null;
   /** Changes when A1 or the registry was saved (both expire declarations). */
   refreshKey?: string | number;
+  /**
+   * The unsaved-edit probe, passed in by the host so that this lazy chunk does
+   * not import the startup stores it reads (DR-CB3-35). A module constant.
+   */
+  unsavedEdits: UnsavedSceneEdits;
 };
 
 export function SceneBodyDeclarationSection({
   node,
   workspacePath,
   refreshKey,
+  unsavedEdits,
 }: SectionProps) {
   const { t } = useTranslation();
   const declaration = useSceneBodyDeclaration({
@@ -75,7 +83,7 @@ export function SceneBodyDeclarationSection({
     title: node.title,
     refreshKey,
   });
-  const unsaved = useUnsavedSceneEdits(node.id);
+  const unsaved = unsavedEdits.useUnsavedSceneEdits(node.id);
   const { status, view } = declaration;
   if (status === "off" || status === "hidden") return null;
 
@@ -209,6 +217,7 @@ export function SceneBodyDeclarationSection({
           canDeclare={declaration.canDeclare}
           busy={declaration.busy}
           unsaved={unsaved}
+          hasUnsavedEdits={unsavedEdits.hasUnsavedSceneEdits}
           declare={declaration.declare}
         />
       )}
@@ -486,6 +495,7 @@ function DeclareForm({
   canDeclare,
   busy,
   unsaved,
+  hasUnsavedEdits,
   declare,
 }: {
   sceneId: string;
@@ -493,6 +503,7 @@ function DeclareForm({
   canDeclare: boolean;
   busy: "declare" | "revoke" | null;
   unsaved: boolean;
+  hasUnsavedEdits: (sceneId: string) => boolean;
   declare: (confirmed: ConfirmedAxes) => Promise<boolean>;
 }) {
   const { t } = useTranslation();
@@ -521,7 +532,7 @@ function DeclareForm({
     if (pressDisabled) return;
     // Some drafts (the title) do not announce that they are dirty, so look
     // once more at the moment of the press.
-    if (hasUnsavedSceneEdits(sceneId)) {
+    if (hasUnsavedEdits(sceneId)) {
       setBlockedAtPress(true);
       return;
     }

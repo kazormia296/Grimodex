@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from "react";
 import { Save, Shield } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { invoke, isElectron } from "@/lib/tauri";
@@ -9,7 +9,7 @@ import { SceneScopeFields } from "./SceneScopeFields";
 import { SceneScopeRegistryEditor } from "./SceneScopeRegistryEditor";
 import { SceneScopePrincipals } from "./SceneScopePrincipals";
 import { isBodyDeclarationUiEnabled } from "./bodyDeclaration/bodyDeclarationAvailability";
-import { SceneBodyDeclarationSection } from "./bodyDeclaration/SceneBodyDeclarationSection";
+import { UNSAVED_SCENE_EDITS } from "./bodyDeclaration/useUnsavedSceneEdits";
 import type {
   Binding,
   Constraint,
@@ -17,6 +17,16 @@ import type {
   ScopeRead,
   ScopeUpdate,
 } from "./sceneScopeTypes";
+
+// The body declaration UI (CB-3) is closed by a constant until PUB-G, so it is
+// kept out of the startup JS graph: the chunk is requested only when the
+// constant is on and the section is rendered (DR-CB3-35). While the constant is
+// false nothing below references or fetches it.
+const SceneBodyDeclarationSection = lazy(() =>
+  import("./bodyDeclaration/SceneBodyDeclarationSection").then((m) => ({
+    default: m.SceneBodyDeclarationSection,
+  })),
+);
 
 type SceneScopeIdentity = {
   workspacePath: string | null;
@@ -432,11 +442,14 @@ export function SceneScopeEditor({ node }: { node: TreeNodeData }) {
         </fieldset>
       )}
       {isBodyDeclarationUiEnabled() && (
-        <SceneBodyDeclarationSection
-          node={node}
-          workspacePath={workspacePath}
-          refreshKey={declarationRefreshKey}
-        />
+        <Suspense fallback={null}>
+          <SceneBodyDeclarationSection
+            node={node}
+            workspacePath={workspacePath}
+            refreshKey={declarationRefreshKey}
+            unsavedEdits={UNSAVED_SCENE_EDITS}
+          />
+        </Suspense>
       )}
     </div>
   );

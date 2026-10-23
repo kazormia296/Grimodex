@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import type { TreeNodeData } from "@/features/tree/treeStore";
 import { SceneScopeEditor } from "./SceneScopeEditor";
 
-const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
+const { invokeMock, sectionModuleLoaded } = vi.hoisted(() => ({
+  invokeMock: vi.fn(),
+  sectionModuleLoaded: { value: false },
+}));
 
 vi.mock("@/lib/tauri", () => ({
   invoke: invokeMock,
@@ -25,6 +28,15 @@ vi.mock("./SceneScopeRegistryEditor", () => ({
   SceneScopeRegistryEditor: () => null,
 }));
 // No mock of the availability module: this is the product default.
+// The section is a lazy chunk (DR-CB3-35). This pass-through mock only records
+// whether the module was ever requested; with the default it must not be.
+vi.mock(
+  "./bodyDeclaration/SceneBodyDeclarationSection",
+  async (importOriginal) => {
+    sectionModuleLoaded.value = true;
+    return importOriginal();
+  },
+);
 
 describe("the body declaration panel in SceneScopeEditor with the product default", () => {
   it("is not mounted and no declaration command is invoked", async () => {
@@ -46,5 +58,6 @@ describe("the body declaration panel in SceneScopeEditor with the product defaul
     expect(screen.queryByTestId("scene-body-declaration")).toBeNull();
     const commands = invokeMock.mock.calls.map((call) => String(call[0]));
     expect(commands.filter((c) => c.includes("body_declaration"))).toEqual([]);
+    expect(sectionModuleLoaded.value).toBe(false);
   });
 });

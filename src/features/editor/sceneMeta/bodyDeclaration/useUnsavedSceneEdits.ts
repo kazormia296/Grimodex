@@ -42,3 +42,21 @@ export function useUnsavedSceneEdits(sceneId: string): boolean {
   ]);
   return bodyDirty || synopsisPending || draftPending;
 }
+
+/**
+ * The probe as the host hands it to the lazy section (DR-CB3-35).
+ *
+ * The section's chunk does not import this module: the stores it reads are in
+ * the startup graph, and a lazy chunk that imported them would make the
+ * bundler split them out of their shared chunks, which grows the startup
+ * graph. `SceneScopeEditor` (startup) imports it and passes it down instead.
+ */
+export type UnsavedSceneEdits = {
+  useUnsavedSceneEdits: (sceneId: string) => boolean;
+  hasUnsavedSceneEdits: (sceneId: string) => boolean;
+};
+
+export const UNSAVED_SCENE_EDITS: UnsavedSceneEdits = Object.freeze({
+  useUnsavedSceneEdits,
+  hasUnsavedSceneEdits,
+});
