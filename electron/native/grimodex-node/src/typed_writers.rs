@@ -57,7 +57,15 @@ where
     R: DeserializeOwned,
     T: Serialize,
 {
-    let _admission = crate::admit_publication_entry(state, caller_identity)?;
+    // One snapshot for the admission, the workspace check and the write
+    // (DR-DA2-56): the identity is matched to the workspace written to.
+    let workspace = active_workspace_snapshot(&state.ws);
+    let _admission = crate::publication_guard::PublicationGuard::admit_on(
+        state,
+        caller_identity,
+        workspace.as_ref().ok(),
+    )
+    .map_err(AppError::Anyhow)?;
     let Value::Object(mut fields) = payload else {
         return Err(refused(ChatWriteRefusal::InvalidRequest));
     };
@@ -68,7 +76,7 @@ where
     let request: R = decode(Value::Object(fields), || {
         refused(ChatWriteRefusal::InvalidRequest)
     })?;
-    let workspace = active_workspace_snapshot(&state.ws)?;
+    let workspace = workspace?;
     let active = workspace.path().canonicalize();
     let expected = PathBuf::from(&expected_workspace_path).canonicalize();
     match (active, expected) {
@@ -201,3 +209,7 @@ pub(crate) fn impact_review_baseline_update_visibility(
         impact_review_baselines::update_visibility,
     )
 }
+
+#[cfg(test)]
+#[path = "typed_writers_tests.rs"]
+mod tests;

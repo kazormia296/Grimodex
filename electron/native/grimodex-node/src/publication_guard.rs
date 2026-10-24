@@ -20,7 +20,7 @@ use crate::{
     state::AppState,
 };
 use anyhow::{anyhow, Result};
-use grimodex_db::state::active_workspace_snapshot;
+use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 
 pub(crate) struct PublicationGuard {
     identity: Option<CallerIdentity>,
@@ -31,13 +31,30 @@ impl PublicationGuard {
     /// Parse the wire identity and admit the call. A malformed identity is
     /// refused whatever the profile mode.
     pub(crate) fn admit(state: &AppState, wire: Option<String>) -> Result<Self> {
-        let identity = wire
-            .map(|serialized| {
-                serde_json::from_str::<CallerIdentity>(&serialized)
-                    .map_err(|_| anyhow!("{D2A_EGRESS_DENIED_MARKER} caller identity is malformed"))
-            })
-            .transpose()?;
+        let identity = parse_identity(wire)?;
         let workspace_id = pinned_workspace_id(state)?;
+        Self::admit_identity(state, identity, workspace_id)
+    }
+
+    /// [`Self::admit`] against a workspace snapshot the caller already holds
+    /// and then writes to (`None`: no workspace is open). The identity is
+    /// matched to the same snapshot the writer uses, not to a second lookup
+    /// (DA-2b CW; DR-DA2-56).
+    pub(crate) fn admit_on(
+        state: &AppState,
+        wire: Option<String>,
+        workspace: Option<&ActiveWorkspaceSnapshot>,
+    ) -> Result<Self> {
+        let identity = parse_identity(wire)?;
+        let workspace_id = pinned_workspace_id_of(state, workspace)?;
+        Self::admit_identity(state, identity, workspace_id)
+    }
+
+    fn admit_identity(
+        state: &AppState,
+        identity: Option<CallerIdentity>,
+        workspace_id: Option<String>,
+    ) -> Result<Self> {
         let admission = state
             .profile_egress
             .admit_publication(identity.as_ref(), workspace_id.as_deref())?;
@@ -59,13 +76,34 @@ impl PublicationGuard {
     }
 }
 
+/// A malformed identity is refused whatever the profile mode.
+fn parse_identity(wire: Option<String>) -> Result<Option<CallerIdentity>> {
+    wire.map(|serialized| {
+        serde_json::from_str::<CallerIdentity>(&serialized)
+            .map_err(|_| anyhow!("{D2A_EGRESS_DENIED_MARKER} caller identity is malformed"))
+    })
+    .transpose()
+}
+
 /// The workspace the identity must name: the active workspace path, the same
 /// value the generic DB seam pins. Only a restricted profile looks it up.
 fn pinned_workspace_id(state: &AppState) -> Result<Option<String>> {
     if !state.profile_egress.is_restricted() {
         return Ok(None);
     }
-    let workspace = active_workspace_snapshot(&state.ws).map_err(|_| {
+    let workspace = active_workspace_snapshot(&state.ws).ok();
+    pinned_workspace_id_of(state, workspace.as_ref())
+}
+
+/// [`pinned_workspace_id`] for a snapshot the caller already holds.
+fn pinned_workspace_id_of(
+    state: &AppState,
+    workspace: Option<&ActiveWorkspaceSnapshot>,
+) -> Result<Option<String>> {
+    if !state.profile_egress.is_restricted() {
+        return Ok(None);
+    }
+    let workspace = workspace.ok_or_else(|| {
         anyhow!("{D2A_EGRESS_DENIED_MARKER} no active workspace for the caller identity")
     })?;
     Ok(Some(workspace.path().to_string_lossy().into_owned()))
