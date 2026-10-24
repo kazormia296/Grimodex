@@ -28,15 +28,34 @@ describe("NIR-1 Graph-only click qualification (CP-3b)", () => {
     h.invoke.mockResolvedValueOnce({
       ...qualified,
       canonicalRange: { start: 3, end: 9, extra: "x" },
-      canonicalTextDigest: "digest",
-      storageDigest: "digest",
-      sourceVersion: 4,
-      fullQuote: "full quote",
-      normalizerVersion: "n",
+      extra: "x",
     });
     await expect(qualifyNir1GraphEvidence("nav-1")).resolves.toStrictEqual(
       qualified,
     );
+  });
+
+  it("refuses an IR-arm answer, or any IR-only field, as unavailable:failed (F2)", async () => {
+    const irOnly = {
+      sourceVersion: 4,
+      storageDigest: "digest",
+      canonicalTextDigest: "digest",
+      normalizerVersion: "n",
+      fullQuote: "full quote",
+    };
+    const answers: unknown[] = [{ ...qualified, ...irOnly }];
+    for (const [field, value] of Object.entries(irOnly))
+      answers.push({ ...qualified, [field]: value });
+    // Present even with an empty or undefined value: still the IR arm.
+    answers.push({ ...qualified, fullQuote: "" });
+    answers.push({ ...qualified, storageDigest: undefined });
+    for (const answer of answers) {
+      h.invoke.mockResolvedValueOnce(answer);
+      await expect(qualifyNir1GraphEvidence("nav-1")).resolves.toStrictEqual({
+        status: "unavailable",
+        reason: "failed",
+      });
+    }
   });
 
   it("keeps a closed unavailable reason", async () => {

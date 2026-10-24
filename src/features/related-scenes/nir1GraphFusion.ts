@@ -36,10 +36,13 @@ export type Nir1GraphDisplayRow = Nir1GraphBaseRow | Nir1GraphOnlyDisplayRow;
 
 export interface Nir1GraphFusion {
   readonly rows: readonly Nir1GraphDisplayRow[];
-  /** Counts only (no text, no ID): what the renderer's checks discarded. */
+  /**
+   * Counts only (no text, no ID): the path attachments the renderer's checks
+   * discarded. A discarded Graph-only row is not counted: whether an Eligible
+   * candidate existed must not reach any diagnostic (K2/4 MD2, MD9; DR-CP3B-4).
+   */
   readonly dropped: {
     readonly attachments: number;
-    readonly graphOnly: number;
   };
 }
 
@@ -137,17 +140,11 @@ export function fuseNir1RelatedScenesGraph(
   const rows = baseRows(input.result);
   const graph = input.graph;
   if (input.graphOutcome !== "graph-ready" || !graph)
-    return { rows, dropped: { attachments: 0, graphOnly: 0 } };
+    return { rows, dropped: { attachments: 0 } };
   const attachments = Array.isArray(graph.pathAttachments)
     ? graph.pathAttachments
     : [];
-  const dropAll = {
-    rows,
-    dropped: {
-      attachments: attachments.length,
-      graphOnly: graph.graphOnly ? 1 : 0,
-    },
-  };
+  const dropAll = { rows, dropped: { attachments: attachments.length } };
   if (
     !Array.isArray(graph.pathAttachments) ||
     !nonEmptyString(graph.queryBinding) ||
@@ -169,7 +166,6 @@ export function fuseNir1RelatedScenesGraph(
     ...row,
     path: attached.get(row.sceneId) ?? null,
   }));
-  let droppedGraphOnly = 0;
   const graphOnly = graph.graphOnly;
   if (graphOnly) {
     if (
@@ -184,10 +180,7 @@ export function fuseNir1RelatedScenesGraph(
         rank: rows.length + 1,
         graphOnly,
       });
-    else droppedGraphOnly = 1;
+    // Otherwise the row is dropped silently (no counter, see `dropped`).
   }
-  return {
-    rows: fused,
-    dropped: { attachments: 0, graphOnly: droppedGraphOnly },
-  };
+  return { rows: fused, dropped: { attachments: 0 } };
 }

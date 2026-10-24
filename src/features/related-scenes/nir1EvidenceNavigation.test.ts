@@ -209,6 +209,34 @@ describe("NIR Graph-only request (CP-3b C-2)", () => {
     expect(f.release).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    "sourceVersion",
+    "storageDigest",
+    "canonicalTextDigest",
+    "normalizerVersion",
+    "fullQuote",
+  ])(
+    "a Graph-only request refuses an answer carrying the IR-only field %s (F2)",
+    async (field) => {
+      vi.mocked(qualifyNir1Evidence).mockResolvedValue({
+        ...graphAnswer,
+        [field]: field === "sourceVersion" ? 1 : "x",
+      } as never);
+      const f = fetchResult();
+      expect(
+        await requestNir1EvidenceNavigation(
+          f.fetch,
+          "s1",
+          "graph-handle",
+          target,
+        ),
+      ).toBe(false);
+      expect(useTreeStore.getState().activeSceneId).toBe("s2");
+      expect(claimNir1EvidenceNavigation("s1")).toBeNull();
+      expect(f.release).toHaveBeenCalledOnce();
+    },
+  );
+
   it("an unavailable answer does not open", async () => {
     vi.mocked(qualifyNir1Evidence).mockResolvedValue({
       status: "unavailable",

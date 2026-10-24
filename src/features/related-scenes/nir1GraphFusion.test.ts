@@ -143,7 +143,7 @@ describe("fuseNir1RelatedScenesGraph", () => {
         row.kind === "base" ? (row.path?.sceneId ?? null) : null,
       ),
     ).toEqual(["a", null, "c"]);
-    expect(fusion.dropped).toEqual({ attachments: 0, graphOnly: 0 });
+    expect(fusion.dropped).toEqual({ attachments: 0 });
   });
 
   it("appends the Graph-only row last with rank n+1 when IR does not use the slot and Raw has fewer than 8", () => {
@@ -161,14 +161,14 @@ describe("fuseNir1RelatedScenesGraph", () => {
       input(fused(["a"], "ir"), payload({ graphOnly: graphOnly() })),
     );
     expect(ids(withIr.rows)).toEqual(["a", "ir"]);
-    expect(withIr.dropped.graphOnly).toBe(1);
+    expect(withIr.dropped).toEqual({ attachments: 0 });
     const eight = ["1", "2", "3", "4", "5", "6", "7", "8"];
     for (const result of [fused(eight), rawResult(eight)]) {
       const full = fuseNir1RelatedScenesGraph(
         input(result, payload({ graphOnly: graphOnly() })),
       );
       expect(ids(full.rows)).toEqual(eight);
-      expect(full.dropped.graphOnly).toBe(1);
+      expect(full.dropped).toEqual({ attachments: 0 });
     }
   });
 
@@ -199,7 +199,7 @@ describe("fuseNir1RelatedScenesGraph", () => {
       );
       expect(ids(fusion.rows)).toEqual(["a"]);
       expect(fusion.rows[0].kind === "base" && fusion.rows[0].path).toBeNull();
-      expect(fusion.dropped).toEqual({ attachments: 0, graphOnly: 0 });
+      expect(fusion.dropped).toEqual({ attachments: 0 });
     }
     const noGraph = fuseNir1RelatedScenesGraph(input(fused(["a"]), undefined));
     expect(ids(noGraph.rows)).toEqual(["a"]);
@@ -224,7 +224,6 @@ describe("fuseNir1RelatedScenesGraph", () => {
       // The Graph-only row is not shown either (P2-1).
       expect(fusion.dropped).toEqual({
         attachments: pathAttachments.length,
-        graphOnly: 1,
       });
     }
   });
@@ -241,7 +240,7 @@ describe("fuseNir1RelatedScenesGraph", () => {
       ),
     );
     expect(ids(fusion.rows)).toEqual(["a"]);
-    expect(fusion.dropped).toEqual({ attachments: 1, graphOnly: 1 });
+    expect(fusion.dropped).toEqual({ attachments: 1 });
   });
 
   it("a Graph-only scene that is already displayed drops only that row", () => {
@@ -258,7 +257,7 @@ describe("fuseNir1RelatedScenesGraph", () => {
     expect(fusion.rows[0].kind === "base" && fusion.rows[0].path?.sceneId).toBe(
       "a",
     );
-    expect(fusion.dropped).toEqual({ attachments: 0, graphOnly: 1 });
+    expect(fusion.dropped).toEqual({ attachments: 0 });
   });
 
   it("a malformed Graph-only row drops only that row (P3-6)", () => {
@@ -297,7 +296,7 @@ describe("fuseNir1RelatedScenesGraph", () => {
       expect(
         fusion.rows[0].kind === "base" && fusion.rows[0].path?.sceneId,
       ).toBe("a");
-      expect(fusion.dropped).toEqual({ attachments: 0, graphOnly: 1 });
+      expect(fusion.dropped).toEqual({ attachments: 0 });
     }
     const pinAtStart = fuseNir1RelatedScenesGraph(
       input(

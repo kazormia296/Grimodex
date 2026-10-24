@@ -110,15 +110,17 @@ export default function Nir1GraphRelatedScenes({ fetch, querySceneId }: Props) {
       }),
     [fetch, querySceneId],
   );
-  const { attachments, graphOnly } = fusion.dropped;
+  const { attachments } = fusion.dropped;
   useEffect(() => {
-    if (attachments > 0 || graphOnly > 0)
-      // Counts only: never a title, excerpt, path text or ID.
+    if (attachments > 0)
+      // The attachment count only: never a title, excerpt, path text or ID,
+      // and nothing about a Graph-only row (its presence is not diagnosable,
+      // K2/4 MD2 and MD9; DR-CP3B-4).
       debugLog.warn("related-scenes", "graph contribution narrowed", {
         sensitivity: "safe",
-        fields: { attachments, graphOnly },
+        fields: { attachments },
       });
-  }, [attachments, graphOnly, fusion]);
+  }, [attachments, fusion]);
   const restart = fetch.graphOutcome === "graph-unavailable:restart-required";
   return (
     <>

@@ -279,6 +279,43 @@ describe("Nir1GraphRelatedScenes", () => {
     setItem.mockRestore();
   });
 
+  it("never tells debugLog whether a Graph-only row existed, even when the renderer drops it (K2/4 MD2, MD9)", () => {
+    // A Graph-only row for the query Scene itself: the renderer drops it.
+    const dropped = graphOnly({ sceneId: "current" });
+    const quiet = view(
+      fetchWith({
+        graph: { queryBinding: "qb", pathAttachments: [], graphOnly: dropped },
+      }),
+    );
+    expect(screen.queryByTestId("nir1-graph-only-open")).toBeNull();
+    expect(useDebugLogStore.getState().entries).toEqual([]);
+    quiet.unmount();
+    // With a narrowed attachment the log carries the attachment count only,
+    // the same with or without a (dropped) Graph-only row.
+    const details = [dropped, null].map((row) => {
+      useDebugLogStore.getState().clear();
+      const rendered = view(
+        fetchWith({
+          graph: {
+            queryBinding: "qb",
+            pathAttachments: [
+              { sceneId: "zz", hop: 1, edges: [edge("seed", "zz", "q")] },
+            ],
+            graphOnly: row,
+          },
+        }),
+      );
+      const entries = useDebugLogStore.getState().entries;
+      rendered.unmount();
+      expect(entries).toHaveLength(1);
+      expect(entries[0].message).toBe("graph contribution narrowed");
+      expect(entries[0].detail).not.toMatch(/graphOnly/i);
+      expect(JSON.parse(entries[0].detail!).fields).toEqual({ attachments: 1 });
+      return entries[0].detail;
+    });
+    expect(details[0]).toBe(details[1]);
+  });
+
   it("offers no chat, packing, snippet or copy action on a Graph row", () => {
     view();
     const rows = screen.getAllByTestId("related-scene-row");
