@@ -402,7 +402,10 @@ impl OwnerFixture {
         );
         let status = state
             .profile_egress
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("restricted profile");
         let locator = root.to_string_lossy().into_owned();
         state.profile_egress.bind_workspace(Some(locator.clone()));

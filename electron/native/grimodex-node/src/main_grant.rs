@@ -7,7 +7,11 @@
 //! writer opens its transaction. A consumed grant is never given back, even
 //! when the writer fails.
 //!
-//! * `Previewed -> Issued -> Consumed | Revoked | Expired`.
+//! * `Previewed -> Issued -> Consumed | Revoked | Expired`. A
+//!   `ProfileActivation` grant (DA-2, DR-DA2-2) is consumed into `Reserved`
+//!   instead: the activation's reservation, held until the commit succeeds
+//!   (`Reserved -> Consumed`). `Reserved` is not active: neither the expiry nor
+//!   any revoke ends it, and it refuses every other preview and consume.
 //! * previewId and grantId are random hex strings (two UUIDv4s: 244 random
 //!   bits). The grantId never leaves Native except as the value Main passes
 //!   back; no response or event carries either id to the renderer.
@@ -41,24 +45,27 @@ use uuid::Uuid;
 /// Validity of a grant, from its preview.
 pub(crate) const MAIN_GRANT_TTL_MS: u64 = 60_000;
 
-/// The kinds of grant. `ProfileActivation` is added by DA-2 together with its
-/// payload; [`GrantPayload`] and [`GrantKindBinding`] are the places it plugs
-/// in.
+/// The kinds of grant. `ProfileActivation` (DA-2, DR-DA2-2) is consumed into
+/// the activation's reservation by [`MainGrantRegistry::consume_profile_activation`],
+/// not by the generic [`MainGrantRegistry::consume`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MainGrantKind {
     BodyDeclaration,
+    ProfileActivation,
 }
 
 impl MainGrantKind {
     pub(crate) const fn wire(self) -> &'static str {
         match self {
             Self::BodyDeclaration => "body-declaration",
+            Self::ProfileActivation => "profile-activation",
         }
     }
 
     pub(crate) fn parse(wire: &str) -> Option<Self> {
         match wire {
             "body-declaration" => Some(Self::BodyDeclaration),
+            "profile-activation" => Some(Self::ProfileActivation),
             _ => None,
         }
     }
@@ -67,6 +74,7 @@ impl MainGrantKind {
     pub(crate) const fn gate_entry(self) -> PrePublicationEntry {
         match self {
             Self::BodyDeclaration => PrePublicationEntry::SceneBodyDeclaration,
+            Self::ProfileActivation => PrePublicationEntry::ProfileActivation,
         }
     }
 }
@@ -78,11 +86,21 @@ pub(crate) enum GrantState {
     Consumed,
     Revoked,
     Expired,
+    /// A consumed `ProfileActivation` grant whose activation has not finished
+    /// (DR-DA2-2). Not active: the expiry and the revokes leave it alone.
+    Reserved,
 }
 
 impl GrantState {
+    /// Previewed and Issued only. `Reserved` is deliberately not active, so
+    /// `expire_due` and every `revoke_*` leave the reservation in place (P2-1).
     const fn is_active(self) -> bool {
         matches!(self, Self::Previewed | Self::Issued)
+    }
+
+    /// Whether the slot is taken: an active grant or a reservation.
+    const fn holds_slot(self) -> bool {
+        matches!(self, Self::Previewed | Self::Issued | Self::Reserved)
     }
 }
 
@@ -149,14 +167,19 @@ pub(crate) enum PrePublicationEntry {
     /// K2/4: the body-declaration preview, the declaration writer and the
     /// revoke writer.
     SceneBodyDeclaration,
+    /// K3/2 (DA-2, DR-DA2-1): the profile-activation preview. Its grant is
+    /// the only way to the restricted profile. Nothing in the product start
+    /// opens it; PUB-G and Session C-1 do.
+    ProfileActivation,
 }
 
 impl PrePublicationEntry {
-    const ALL: [Self; 1] = [Self::SceneBodyDeclaration];
+    const ALL: [Self; 2] = [Self::SceneBodyDeclaration, Self::ProfileActivation];
 
     const fn index(self) -> usize {
         match self {
             Self::SceneBodyDeclaration => 0,
+            Self::ProfileActivation => 1,
         }
     }
 
@@ -167,6 +190,7 @@ impl PrePublicationEntry {
     pub(crate) const fn wire(self) -> &'static str {
         match self {
             Self::SceneBodyDeclaration => "scene-body-declaration",
+            Self::ProfileActivation => "profile-activation",
         }
     }
 }
@@ -203,9 +227,106 @@ pub(crate) struct BodyDeclarationGrantPayload {
     pub(crate) binding: BodyDeclarationBinding,
 }
 
+/// What a `ProfileActivation` grant is bound to (K3/2 "grant"): the profile,
+/// its caller epoch, the disclosure version and the digest of the dialog text.
+/// Held in Native only; the u64 never crosses N-API.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ProfileActivationGrantPayload {
+    pub(crate) profile_id: String,
+    pub(crate) caller_epoch: u64,
+    pub(crate) disclosure_version: u32,
+    pub(crate) disclosure_digest: String,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum GrantPayload {
     BodyDeclaration(Box<BodyDeclarationGrantPayload>),
+    ProfileActivation(ProfileActivationGrantPayload),
+}
+
+/// The proof that a `ProfileActivation` grant was consumed (stage 1). The
+/// fields are private to this module, so outside of tests only
+/// [`MainGrantRegistry::consume_profile_activation`] makes one; stage 4
+/// (`ProfileEgressState::activate_first_restricted_publication`) requires it.
+#[derive(Debug)]
+pub(crate) struct ConsumedProfileActivation {
+    binding: ProfileActivationGrantPayload,
+    /// Test-only: skip the binding comparison of stage 4.
+    #[cfg(test)]
+    matches_any: bool,
+}
+
+impl ConsumedProfileActivation {
+    fn from_consumed_grant(binding: ProfileActivationGrantPayload) -> Self {
+        Self {
+            binding,
+            #[cfg(test)]
+            matches_any: false,
+        }
+    }
+
+    /// Stage 4's re-check (K3/2): the same profile and caller epoch, the
+    /// profile still unrestricted, and the disclosure version Native shows.
+    /// The lifecycle revision is checked at stage 1 only (D-3).
+    pub(crate) fn binds(&self, profile_id: &str, caller_epoch: u64, restricted: bool) -> bool {
+        #[cfg(test)]
+        if self.matches_any {
+            return true;
+        }
+        !restricted
+            && self.binding.profile_id == profile_id
+            && self.binding.caller_epoch == caller_epoch
+            && self.binding.disclosure_version
+                == crate::profile_activation::PROFILE_ACTIVATION_DISCLOSURE_VERSION
+    }
+
+    /// A token for tests (and the `cfg(test)` evaluation harness) that drive
+    /// the restricted transition directly. Not in a product build.
+    #[cfg(test)]
+    pub(crate) fn for_test() -> Self {
+        Self {
+            binding: ProfileActivationGrantPayload {
+                profile_id: String::new(),
+                caller_epoch: 0,
+                disclosure_version: 0,
+                disclosure_digest: String::new(),
+            },
+            matches_any: true,
+        }
+    }
+
+    /// A token bound to exact values, as stage 1 would make it.
+    #[cfg(test)]
+    pub(crate) fn bound_for_test(binding: ProfileActivationGrantPayload) -> Self {
+        Self::from_consumed_grant(binding)
+    }
+}
+
+/// Why the commit could not take the reservation. Closed; the code is the
+/// whole message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ReservationRefusal {
+    /// No reservation, or its token was already taken by a commit.
+    NotReserved,
+    /// The app is shutting down: no new stage starts.
+    Shutdown,
+}
+
+impl ReservationRefusal {
+    pub(crate) const fn code(self) -> &'static str {
+        match self {
+            Self::NotReserved => "PROFILE_ACTIVATION_REFUSED:not-reserved",
+            Self::Shutdown => "PROFILE_ACTIVATION_REFUSED:shutdown",
+        }
+    }
+}
+
+/// The activation's reservation (stage 1 to the end of stage 5).
+#[derive(Debug)]
+struct Reservation {
+    /// Taken by the commit; `None` afterwards.
+    consumed: Option<ConsumedProfileActivation>,
+    shutdown: bool,
 }
 
 /// Ties a grant kind to the value the writer receives when the grant is
@@ -227,6 +348,7 @@ impl GrantKindBinding for BodyDeclarationKind {
             GrantPayload::BodyDeclaration(payload) => Some(
                 ConsumedBodyDeclarationBinding::from_consumed_grant(payload.binding),
             ),
+            GrantPayload::ProfileActivation(_) => None,
         }
     }
 }
@@ -243,12 +365,15 @@ struct Slot {
     lifecycle_revision: u64,
     /// Dropped when the grant leaves `Previewed` / `Issued`.
     payload: Option<GrantPayload>,
+    /// Only in `Reserved`.
+    reservation: Option<Reservation>,
 }
 
 impl Slot {
     fn end(&mut self, state: GrantState) {
         self.state = state;
         self.payload = None;
+        self.reservation = None;
     }
 }
 
@@ -332,13 +457,28 @@ impl MainGrantRegistry {
 
     /// The lifecycle seam's revoke: advances the epoch and revokes an active
     /// slot. Short, non-blocking, and free of any Core, database or
-    /// projection access.
+    /// projection access. A reservation is not active and stays.
     pub(crate) fn revoke_for_edge(&self) {
         let mut slot = self.lock();
         self.edge_epoch.fetch_add(1, Ordering::SeqCst);
         if let Some(current) = slot.as_mut() {
             if current.state.is_active() {
                 current.end(GrantState::Revoked);
+            }
+        }
+    }
+
+    /// `ShutdownRequested`: the revoke of an edge, and a reservation is marked
+    /// so the commit starts no new stage (DR-DA2-2). The slot stays
+    /// `Reserved`, so nothing else can be previewed either.
+    pub(crate) fn revoke_for_shutdown(&self) {
+        let mut slot = self.lock();
+        self.edge_epoch.fetch_add(1, Ordering::SeqCst);
+        if let Some(current) = slot.as_mut() {
+            if current.state.is_active() {
+                current.end(GrantState::Revoked);
+            } else if let Some(reservation) = current.reservation.as_mut() {
+                reservation.shutdown = true;
             }
         }
     }
@@ -389,7 +529,7 @@ impl MainGrantRegistry {
         }
         if slot
             .as_ref()
-            .is_some_and(|current| current.state.is_active())
+            .is_some_and(|current| current.state.holds_slot())
         {
             return Err(GrantRefusal::Busy);
         }
@@ -422,6 +562,7 @@ impl MainGrantRegistry {
             digest: init.digest,
             lifecycle_revision: init.lifecycle_revision,
             payload: Some(init.payload),
+            reservation: None,
         });
         Ok(PreviewHandle {
             preview_id,
@@ -434,8 +575,21 @@ impl MainGrantRegistry {
             GrantState::Expired => GrantRefusal::Expired,
             GrantState::Revoked => GrantRefusal::Revoked,
             GrantState::Consumed => GrantRefusal::Consumed,
+            GrantState::Reserved => GrantRefusal::Busy,
             GrantState::Previewed | GrantState::Issued => GrantRefusal::WrongState,
         }
+    }
+
+    /// While a reservation holds the slot, every issue and consume is busy,
+    /// whatever id it names (K3/2 "grant").
+    fn refuse_if_reserved(slot: &Option<Slot>) -> Result<(), GrantRefusal> {
+        if slot
+            .as_ref()
+            .is_some_and(|current| current.state == GrantState::Reserved)
+        {
+            return Err(GrantRefusal::Busy);
+        }
+        Ok(())
     }
 
     /// First half of an issue: checks the preview, the sender, the window and
@@ -449,6 +603,7 @@ impl MainGrantRegistry {
     ) -> Result<IssueTicket, GrantRefusal> {
         let mut slot = self.lock();
         self.expire_due(&mut slot);
+        Self::refuse_if_reserved(&slot)?;
         let current = slot
             .as_mut()
             .filter(|current| current.preview_id == preview_id)
@@ -477,6 +632,7 @@ impl MainGrantRegistry {
     ) -> Result<String, GrantRefusal> {
         let mut slot = self.lock();
         self.expire_due(&mut slot);
+        Self::refuse_if_reserved(&slot)?;
         let current = slot
             .as_mut()
             .filter(|current| current.preview_id == preview_id)
@@ -505,6 +661,26 @@ impl MainGrantRegistry {
     ) -> Result<K::Consumed, GrantRefusal> {
         let mut slot = self.lock();
         self.expire_due(&mut slot);
+        let current = Self::consumable(&mut slot, grant_id, sender_id, window_id, K::KIND)?;
+        if current.lifecycle_revision != current_lifecycle_revision {
+            current.end(GrantState::Revoked);
+            return Err(GrantRefusal::StateChanged);
+        }
+        let payload = current.payload.take().ok_or(GrantRefusal::Revoked)?;
+        current.end(GrantState::Consumed);
+        K::extract(payload).ok_or(GrantRefusal::WrongKind)
+    }
+
+    /// The checks every consume shares: no reservation, the grant id, the
+    /// sender and window, the state and the kind.
+    fn consumable<'slot>(
+        slot: &'slot mut Option<Slot>,
+        grant_id: &str,
+        sender_id: u32,
+        window_id: u32,
+        kind: MainGrantKind,
+    ) -> Result<&'slot mut Slot, GrantRefusal> {
+        Self::refuse_if_reserved(slot)?;
         let current = slot
             .as_mut()
             .filter(|current| current.grant_id.as_deref() == Some(grant_id))
@@ -515,16 +691,93 @@ impl MainGrantRegistry {
         if current.state != GrantState::Issued {
             return Err(Self::state_refusal(current.state));
         }
-        if current.kind != K::KIND {
+        if current.kind != kind {
             return Err(GrantRefusal::WrongKind);
         }
+        Ok(current)
+    }
+
+    /// Stage 1 of the activation (K3/2): consumes a `ProfileActivation` grant
+    /// into the reservation, under the slot mutex. `binding_holds` compares
+    /// the grant's binding with the profile as it is now; a lifecycle edge
+    /// since the preview or a binding that no longer holds revokes the grant
+    /// and closes nothing. On success the slot is `Reserved` and holds the
+    /// [`ConsumedProfileActivation`] for the commit.
+    pub(crate) fn consume_profile_activation(
+        &self,
+        grant_id: &str,
+        sender_id: u32,
+        window_id: u32,
+        current_lifecycle_revision: u64,
+        binding_holds: impl FnOnce(&ProfileActivationGrantPayload) -> bool,
+    ) -> Result<(), GrantRefusal> {
+        let mut slot = self.lock();
+        self.expire_due(&mut slot);
+        let current = Self::consumable(
+            &mut slot,
+            grant_id,
+            sender_id,
+            window_id,
+            MainGrantKind::ProfileActivation,
+        )?;
         if current.lifecycle_revision != current_lifecycle_revision {
             current.end(GrantState::Revoked);
             return Err(GrantRefusal::StateChanged);
         }
-        let payload = current.payload.take().ok_or(GrantRefusal::Revoked)?;
-        current.end(GrantState::Consumed);
-        K::extract(payload).ok_or(GrantRefusal::WrongKind)
+        let binding = match current.payload.take() {
+            Some(GrantPayload::ProfileActivation(binding)) => binding,
+            _ => {
+                current.end(GrantState::Revoked);
+                return Err(GrantRefusal::WrongKind);
+            }
+        };
+        if !binding_holds(&binding) {
+            current.end(GrantState::Revoked);
+            return Err(GrantRefusal::StateChanged);
+        }
+        current.state = GrantState::Reserved;
+        current.reservation = Some(Reservation {
+            consumed: Some(ConsumedProfileActivation::from_consumed_grant(binding)),
+            shutdown: false,
+        });
+        Ok(())
+    }
+
+    /// The commit takes the reservation's token (once). The slot stays
+    /// `Reserved` until [`Self::finish_reservation`].
+    pub(crate) fn take_reservation(&self) -> Result<ConsumedProfileActivation, ReservationRefusal> {
+        let mut slot = self.lock();
+        let reservation = slot
+            .as_mut()
+            .filter(|current| current.state == GrantState::Reserved)
+            .and_then(|current| current.reservation.as_mut())
+            .ok_or(ReservationRefusal::NotReserved)?;
+        if reservation.shutdown {
+            return Err(ReservationRefusal::Shutdown);
+        }
+        reservation
+            .consumed
+            .take()
+            .ok_or(ReservationRefusal::NotReserved)
+    }
+
+    /// Ends the reservation after a successful commit (stage 5 confirmed).
+    /// A failed activation never calls this: its reservation stays for the
+    /// life of the process (DR-DA2-2).
+    pub(crate) fn finish_reservation(&self) {
+        let mut slot = self.lock();
+        if let Some(current) = slot.as_mut() {
+            if current.state == GrantState::Reserved {
+                current.end(GrantState::Consumed);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_reserved(&self) -> bool {
+        self.lock()
+            .as_ref()
+            .is_some_and(|current| current.state == GrantState::Reserved)
     }
 
     #[cfg(test)]
@@ -546,9 +799,10 @@ struct GrantEdgeObserver {
 impl WorkspaceLifecycleObserver for GrantEdgeObserver {
     fn on_lifecycle_edge(&self, edge: &LifecycleEdge) {
         match edge {
-            LifecycleEdge::TransitionAdmitted { .. }
-            | LifecycleEdge::Unavailable { .. }
-            | LifecycleEdge::ShutdownRequested { .. } => self.registry.revoke_for_edge(),
+            LifecycleEdge::TransitionAdmitted { .. } | LifecycleEdge::Unavailable { .. } => {
+                self.registry.revoke_for_edge()
+            }
+            LifecycleEdge::ShutdownRequested { .. } => self.registry.revoke_for_shutdown(),
             // A new Ready entry is entered through one of the edges above, and
             // the consume step compares the lifecycle revision. Edges added
             // later do not revoke until this match names them.
@@ -613,6 +867,31 @@ pub(crate) fn main_grant_digest(
         "senderId": sender_id,
         "windowId": window_id,
         "binding": serde_json::to_value(binding)?,
+    }))?)
+}
+
+/// The grant digest of a `ProfileActivation` grant (DR-DA2-3): the same shape
+/// as [`main_grant_digest`], with the profile binding in place of the Scene
+/// binding. The caller epoch is a decimal string.
+pub(crate) fn profile_activation_grant_digest(
+    binding: &ProfileActivationGrantPayload,
+    lifecycle_revision: u64,
+    sender_id: u32,
+    window_id: u32,
+) -> Result<String> {
+    let kind = MainGrantKind::ProfileActivation;
+    Ok(canonical_json_digest(&json!({
+        "domain": format!("grimodex/main-grant/v1/{}\0", kind.wire()),
+        "kind": kind.wire(),
+        "lifecycleRevision": lifecycle_revision.to_string(),
+        "senderId": sender_id,
+        "windowId": window_id,
+        "binding": {
+            "profileId": binding.profile_id,
+            "callerEpoch": binding.caller_epoch.to_string(),
+            "disclosureVersion": binding.disclosure_version,
+            "disclosureDigest": binding.disclosure_digest,
+        },
     }))?)
 }
 

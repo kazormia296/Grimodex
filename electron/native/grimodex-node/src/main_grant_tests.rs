@@ -611,15 +611,36 @@ fn an_unknown_grant_id_is_not_found_and_changes_nothing() {
 // D9 (the gate itself; the entries are tested on the real addon)
 #[test]
 fn the_gate_is_closed_by_default_and_only_opens() {
-    let gate = PrePublicationGate::new();
-    assert!(!gate.is_open(PrePublicationEntry::SceneBodyDeclaration));
-    gate.open(PrePublicationEntry::SceneBodyDeclaration);
-    assert!(gate.is_open(PrePublicationEntry::SceneBodyDeclaration));
+    // Every entry is closed by default, and opening one leaves the others
+    // closed (DR-DA2-1: the profile-activation entry is its own).
+    for entry in PrePublicationEntry::ALL {
+        let gate = PrePublicationGate::new();
+        assert!(!gate.is_open(entry), "{entry:?}");
+        gate.open(entry);
+        assert!(gate.is_open(entry));
+        for other in PrePublicationEntry::ALL
+            .into_iter()
+            .filter(|other| *other != entry)
+        {
+            assert!(!gate.is_open(other), "{other:?} opened with {entry:?}");
+        }
+    }
     assert_eq!(
         PrePublicationEntry::parse("scene-body-declaration"),
         Some(PrePublicationEntry::SceneBodyDeclaration)
     );
-    for unknown in ["", "all", "Scene-Body-Declaration", "local-send"] {
+    assert_eq!(
+        PrePublicationEntry::parse("profile-activation"),
+        Some(PrePublicationEntry::ProfileActivation)
+    );
+    for unknown in [
+        "",
+        "all",
+        "Scene-Body-Declaration",
+        "local-send",
+        "Profile-Activation",
+        "profile_activation",
+    ] {
         assert_eq!(PrePublicationEntry::parse(unknown), None, "{unknown:?}");
     }
     assert_eq!(
@@ -627,8 +648,283 @@ fn the_gate_is_closed_by_default_and_only_opens() {
         PrePublicationEntry::SceneBodyDeclaration
     );
     assert_eq!(
+        MainGrantKind::ProfileActivation.gate_entry(),
+        PrePublicationEntry::ProfileActivation
+    );
+    assert_eq!(
         MainGrantKind::parse("body-declaration"),
         Some(MainGrantKind::BodyDeclaration)
     );
-    assert_eq!(MainGrantKind::parse("profile-activation"), None);
+    assert_eq!(
+        MainGrantKind::parse("profile-activation"),
+        Some(MainGrantKind::ProfileActivation)
+    );
+}
+
+// ─────────────── DA-2: the ProfileActivation grant and reservation ───────────────
+
+fn activation_binding() -> ProfileActivationGrantPayload {
+    ProfileActivationGrantPayload {
+        profile_id: "profile-1".into(),
+        caller_epoch: 0,
+        disclosure_version: crate::profile_activation::PROFILE_ACTIVATION_DISCLOSURE_VERSION,
+        disclosure_digest: digest('9'),
+    }
+}
+
+impl Rig {
+    fn activation_preview(&self) -> Result<PreviewHandle, GrantRefusal> {
+        let binding = activation_binding();
+        let digest = profile_activation_grant_digest(&binding, REVISION, SENDER, WINDOW).unwrap();
+        self.registry.insert_preview(
+            PreviewInit {
+                kind: MainGrantKind::ProfileActivation,
+                sender_id: SENDER,
+                window_id: WINDOW,
+                digest,
+                lifecycle_revision: REVISION,
+                payload: GrantPayload::ProfileActivation(binding),
+            },
+            self.registry.edge_epoch(),
+        )
+    }
+
+    fn activation_issued(&self) -> String {
+        let preview = self.activation_preview().unwrap();
+        self.registry
+            .begin_issue(&preview.preview_id, SENDER, WINDOW)
+            .unwrap();
+        let digest =
+            profile_activation_grant_digest(&activation_binding(), REVISION, SENDER, WINDOW)
+                .unwrap();
+        self.registry
+            .finish_issue(&preview.preview_id, &digest)
+            .unwrap()
+    }
+
+    fn reserve(&self, grant_id: &str) -> Result<(), GrantRefusal> {
+        self.registry
+            .consume_profile_activation(grant_id, SENDER, WINDOW, REVISION, |bound| {
+                *bound == activation_binding()
+            })
+    }
+}
+
+// K3/2 Negative (4): while the reservation holds the slot, every preview,
+// issue and consume is busy, whatever its kind or id.
+#[test]
+fn profile_activation_reservation_blocks_any_preview_and_second_consume() {
+    let rig = fresh_rig();
+    let grant = rig.activation_issued();
+    rig.reserve(&grant).unwrap();
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Reserved));
+    assert!(rig.registry.is_reserved());
+    assert_eq!(rig.preview().err(), Some(GrantRefusal::Busy));
+    assert_eq!(rig.activation_preview().err(), Some(GrantRefusal::Busy));
+    assert_eq!(
+        rig.registry.ensure_can_preview().err(),
+        Some(GrantRefusal::Busy)
+    );
+    // A second consume of the same grant, of any other id, of either kind.
+    assert_eq!(rig.reserve(&grant).err(), Some(GrantRefusal::Busy));
+    assert_eq!(rig.reserve("another-grant").err(), Some(GrantRefusal::Busy));
+    assert_eq!(rig.consume(&grant).err(), Some(GrantRefusal::Busy));
+    assert_eq!(rig.consume("another-grant").err(), Some(GrantRefusal::Busy));
+    assert_eq!(
+        rig.registry
+            .begin_issue("any-preview", SENDER, WINDOW)
+            .err(),
+        Some(GrantRefusal::Busy)
+    );
+    assert_eq!(
+        rig.registry.finish_issue("any-preview", &digest('1')).err(),
+        Some(GrantRefusal::Busy)
+    );
+    // The commit takes the token once.
+    assert!(rig.registry.take_reservation().is_ok());
+    assert_eq!(
+        rig.registry.take_reservation().err(),
+        Some(ReservationRefusal::NotReserved)
+    );
+    // Still reserved until the commit finishes.
+    assert_eq!(rig.preview().err(), Some(GrantRefusal::Busy));
+    rig.registry.finish_reservation();
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Consumed));
+    assert!(!rig.registry.is_reserved());
+    // Only now can another grant start.
+    assert!(rig.preview().is_ok());
+}
+
+// P2-1: the reservation outlives the 60 s expiry, every revoke and every
+// lifecycle edge but shutdown, so stage 3 plus stage 5 may exceed 60 s.
+#[test]
+fn reservation_survives_expiry_and_every_revoke() {
+    let rig = fresh_rig();
+    let grant = rig.activation_issued();
+    rig.reserve(&grant).unwrap();
+    rig.advance(MAIN_GRANT_TTL_MS * 3);
+    rig.registry.revoke_all();
+    rig.registry.revoke_sender(SENDER);
+    rig.registry.revoke(&grant);
+    rig.registry.revoke_for_edge();
+    let observer = GrantEdgeObserver {
+        registry: Arc::clone(&rig.registry),
+    };
+    observer.on_lifecycle_edge(&LifecycleEdge::TransitionAdmitted {
+        operation_id: OperationId::new(3),
+        kind: AdmissionKind::Open,
+        revision: 9,
+    });
+    observer.on_lifecycle_edge(&LifecycleEdge::Unavailable { revision: 10 });
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Reserved));
+    // More than 60 s after the preview (stage 3 + stage 5), the commit still
+    // finds its token.
+    rig.advance(MAIN_GRANT_TTL_MS);
+    let consumed = rig
+        .registry
+        .take_reservation()
+        .expect("the reservation stays");
+    assert!(consumed.binds("profile-1", 0, false));
+    assert!(
+        !consumed.binds("profile-1", 0, true),
+        "restricted no longer binds"
+    );
+    assert!(!consumed.binds("profile-1", 1, false), "another epoch");
+    assert!(!consumed.binds("profile-2", 0, false), "another profile");
+    rig.registry.finish_reservation();
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Consumed));
+}
+
+// Stage 1's refusals close nothing: an expired grant, another sender or
+// window, a lifecycle edge since the preview, a binding that no longer holds,
+// and the generic consume of the wrong kind.
+#[test]
+fn expired_profile_activation_consume_closes_nothing() {
+    let rig = fresh_rig();
+    let grant = rig.activation_issued();
+    rig.advance(MAIN_GRANT_TTL_MS);
+    assert_eq!(rig.reserve(&grant).err(), Some(GrantRefusal::Expired));
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Expired));
+    assert_eq!(
+        rig.registry.take_reservation().err(),
+        Some(ReservationRefusal::NotReserved)
+    );
+
+    let grant = rig.activation_issued();
+    assert_eq!(
+        rig.registry
+            .consume_profile_activation(&grant, SENDER + 1, WINDOW, REVISION, |_| true)
+            .err(),
+        Some(GrantRefusal::Mismatch)
+    );
+    assert_eq!(
+        rig.registry
+            .consume_profile_activation(&grant, SENDER, WINDOW + 1, REVISION, |_| true)
+            .err(),
+        Some(GrantRefusal::Mismatch)
+    );
+    assert_eq!(
+        rig.registry
+            .consume::<BodyDeclarationKind>(&grant, SENDER, WINDOW, REVISION)
+            .err(),
+        Some(GrantRefusal::WrongKind)
+    );
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Issued));
+    assert_eq!(
+        rig.registry
+            .consume_profile_activation(&grant, SENDER, WINDOW, REVISION + 1, |_| true)
+            .err(),
+        Some(GrantRefusal::StateChanged)
+    );
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Revoked));
+
+    let grant = rig.activation_issued();
+    assert_eq!(
+        rig.registry
+            .consume_profile_activation(&grant, SENDER, WINDOW, REVISION, |_| false)
+            .err(),
+        Some(GrantRefusal::StateChanged)
+    );
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Revoked));
+    assert!(!rig.registry.is_reserved());
+
+    // A body-declaration grant is not a profile activation.
+    let (_, body) = rig.issued();
+    assert_eq!(rig.reserve(&body).err(), Some(GrantRefusal::WrongKind));
+    assert!(rig.consume(&body).is_ok());
+}
+
+// The app's shutdown starts no new stage: the reservation is marked and the
+// slot stays taken.
+#[test]
+fn shutdown_marks_the_reservation_and_commit_refuses() {
+    let rig = fresh_rig();
+    let grant = rig.activation_issued();
+    rig.reserve(&grant).unwrap();
+    rig.core.request_shutdown().unwrap();
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Reserved));
+    assert_eq!(
+        rig.registry.take_reservation().err(),
+        Some(ReservationRefusal::Shutdown)
+    );
+    assert_eq!(rig.preview().err(), Some(GrantRefusal::Busy));
+
+    // A shutdown after the commit took its token does not stop the commit.
+    let rig = fresh_rig();
+    let grant = rig.activation_issued();
+    rig.reserve(&grant).unwrap();
+    let _token = rig.registry.take_reservation().unwrap();
+    rig.core.request_shutdown().unwrap();
+    rig.registry.finish_reservation();
+    assert_eq!(rig.registry.state_for_test(), Some(GrantState::Consumed));
+}
+
+// The ProfileActivation grant digest moves with every bound component, and
+// the u64 caller epoch is a decimal string inside it.
+#[test]
+fn the_profile_activation_digest_changes_with_every_bound_component() {
+    let base_binding = activation_binding();
+    let base = profile_activation_grant_digest(&base_binding, REVISION, SENDER, WINDOW).unwrap();
+    assert!(base.starts_with("sha256:"));
+    let mut variants = Vec::new();
+    let mut variant = base_binding.clone();
+    variant.profile_id = "profile-2".into();
+    variants.push(variant);
+    let mut variant = base_binding.clone();
+    variant.caller_epoch = u64::MAX;
+    variants.push(variant);
+    let mut variant = base_binding.clone();
+    variant.disclosure_version += 1;
+    variants.push(variant);
+    let mut variant = base_binding.clone();
+    variant.disclosure_digest = digest('8');
+    variants.push(variant);
+    for variant in &variants {
+        assert_ne!(
+            profile_activation_grant_digest(variant, REVISION, SENDER, WINDOW).unwrap(),
+            base
+        );
+    }
+    for (revision, sender, window) in [
+        (REVISION + 1, SENDER, WINDOW),
+        (REVISION, SENDER + 1, WINDOW),
+        (REVISION, SENDER, WINDOW + 1),
+    ] {
+        assert_ne!(
+            profile_activation_grant_digest(&base_binding, revision, sender, window).unwrap(),
+            base
+        );
+    }
+    // Not the body-declaration digest's domain.
+    assert_ne!(
+        base,
+        main_grant_digest(
+            MainGrantKind::BodyDeclaration,
+            &binding("tok"),
+            REVISION,
+            SENDER,
+            WINDOW
+        )
+        .unwrap()
+    );
 }

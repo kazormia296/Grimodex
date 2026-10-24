@@ -8,6 +8,7 @@
 
 use std::collections::HashMap;
 use std::fs::{self, File, OpenOptions};
+use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -18,8 +19,45 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Notify;
 use uuid::Uuid;
 
+use crate::main_grant::ConsumedProfileActivation;
+
 pub const D2A_EGRESS_DENIED_MARKER: &str = "D2A_EGRESS_DENIED:";
+/// Prefix of a Native unavailable reason (DR-DA2-8). The code that follows is
+/// one of [`ProfileEgressUnavailable::code`]; no path or detail follows it
+/// except, for `state-file-unreadable`, the OS error text.
+pub const PROFILE_EGRESS_UNAVAILABLE_MARKER: &str = "PROFILE_EGRESS_UNAVAILABLE:";
 const STATE_VERSION: u32 = 2;
+
+/// Why this process's profile gate is unavailable (K3/2 "起動時の gate",
+/// DR-DA2-8). A closed set; process-local, never persisted and never cleared.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProfileEgressUnavailable {
+    /// The state file could not be read; the Backend is not built.
+    StateFileUnreadable,
+    /// A persist of the state file failed (startup barrier, stage 4 or 5).
+    StateFileUnwritable,
+    /// The stop barrier did not drain within its bound (stage 5 or startup).
+    BarrierTimeout,
+    /// The activation failed for another reason (for example stage 4's
+    /// binding no longer held).
+    ActivationFailed,
+}
+
+impl ProfileEgressUnavailable {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::StateFileUnreadable => "state-file-unreadable",
+            Self::StateFileUnwritable => "state-file-unwritable",
+            Self::BarrierTimeout => "barrier-timeout",
+            Self::ActivationFailed => "activation-failed",
+        }
+    }
+
+    /// The whole N-API error message of this reason.
+    pub fn message(self) -> String {
+        format!("{PROFILE_EGRESS_UNAVAILABLE_MARKER}{}", self.code())
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -41,6 +79,10 @@ pub struct ProfileEgressStatus {
     pub handles_invalidated: bool,
     pub in_flight_stopped: bool,
     pub sql_policy: grimodex_db::profile_egress_policy::ProfileEgressSqlPolicy,
+    /// The Native unavailable reason, when there is one (DR-DA2-8). Absent
+    /// otherwise, so a healthy status is unchanged on the wire.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unavailable_reason: Option<&'static str>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -71,6 +113,12 @@ struct State {
     /// Exact identities are process-local. A fresh Backend is a fresh process
     /// generation, so stale tuples from a previous process cannot authorize.
     registered_callers: HashMap<u64, CallerIdentity>,
+    /// Set by stage 1 (the `ProfileActivation` grant was consumed into a
+    /// reservation). `license-control` then uses the restricted client
+    /// (DR-DA2-4). Process-local and never cleared.
+    activation_reserved: bool,
+    /// Process-local, never persisted, never cleared (DR-DA2-8).
+    unavailable: Option<ProfileEgressUnavailable>,
 }
 
 /// One authority for the profile restriction.  The mutex covers both the
@@ -93,6 +141,22 @@ pub struct ProfileEgressState {
     /// caller invalidation, startup barrier, and registration replacement
     /// revokes permits captured before the transition.
     revocation_generation: Arc<AtomicU64>,
+    /// The cancellation of in-flight non-stream legacy provider requests by
+    /// the stop barrier (DR-DA2-6).
+    legacy_cancel: Arc<LegacyCancel>,
+}
+
+/// The stop barrier's cancellation of in-flight non-stream legacy provider
+/// requests (K3/2 "activation の途中の AI 処理" 2, DR-DA2-6). Registration is
+/// the legacy permit itself: every permit records the generation it was
+/// issued in, and [`ProfileDispatchPermit::until_cancelled`] ends its transport
+/// future once the barrier advances the generation.
+#[derive(Debug, Default)]
+struct LegacyCancel {
+    generation: AtomicU64,
+    notify: Notify,
+    /// Transport futures currently waiting inside `until_cancelled`.
+    waiting: AtomicUsize,
 }
 
 /// A Native dispatch lease. The startup transition closes new leases and
@@ -128,6 +192,8 @@ struct DispatchLease {
     admissions_open: Arc<AtomicBool>,
     revocation_generation: Arc<AtomicU64>,
     generation: u64,
+    legacy_cancel: Arc<LegacyCancel>,
+    legacy_cancel_generation: u64,
 }
 
 impl Drop for DispatchLease {
@@ -142,45 +208,52 @@ impl ProfileEgressState {
     pub fn new(path: PathBuf) -> anyhow::Result<Self> {
         let state = match fs::read_to_string(&path) {
             Ok(raw) => match serde_json::from_str::<PersistedProfileEgress>(&raw) {
+                // The acceptance table of the state file (K3/2 "起動時の gate",
+                // DR-DA2-8). Every row is decided here and nowhere else.
                 Ok(saved)
                     if matches!(saved.schema_version, 1 | STATE_VERSION)
                         && !saved.profile_id.trim().is_empty()
                         && saved.profile_id == saved.profile_id.trim() =>
                 {
-                    State {
-                        profile_id: saved.profile_id,
-                        caller_epoch: saved.caller_epoch,
-                        restricted: saved.restricted,
-                        // Schema v1 could only have been persisted after the
-                        // original startup activation, so its missing bits
-                        // conservatively inherit the restricted state. The
-                        // next startup still runs the barrier before publish.
-                        handles_invalidated: saved.handles_invalidated.unwrap_or(saved.restricted),
-                        in_flight_stopped: saved.in_flight_stopped.unwrap_or(saved.restricted),
-                        workspace_id: None,
-                        registered_callers: HashMap::new(),
-                    }
+                    let (handles_invalidated, in_flight_stopped) = if saved.restricted {
+                        // Row 2: the v2 form keeps its stop bit. Row 3: schema
+                        // v1, a missing bit, or `handlesInvalidated: false`
+                        // (never written beside `restricted: true`) is read
+                        // as restricted with the stop unconfirmed. Either way
+                        // the startup barrier runs again before anything is
+                        // published and rewrites the file in the v2 form.
+                        let complete = saved.schema_version == STATE_VERSION
+                            && saved.handles_invalidated == Some(true);
+                        (true, complete && saved.in_flight_stopped == Some(true))
+                    } else {
+                        // Row 4 (J-1): the product never writes
+                        // `restricted: false`, so its content is read as a
+                        // missing file would be: the unrestricted bits,
+                        // whatever the file says. The file is not rewritten.
+                        (false, true)
+                    };
+                    State::loaded(
+                        saved.profile_id,
+                        saved.caller_epoch,
+                        saved.restricted,
+                        handles_invalidated,
+                        in_flight_stopped,
+                    )
                 }
-                Ok(_) | Err(_) => State {
-                    profile_id: Uuid::new_v4().to_string(),
-                    caller_epoch: 1,
-                    restricted: true,
-                    handles_invalidated: true,
-                    in_flight_stopped: false,
-                    workspace_id: None,
-                    registered_callers: HashMap::new(),
-                },
+                // Row 5: broken JSON, an unknown version or a bad profileId
+                // start a fresh restricted profile whose stop is unconfirmed.
+                Ok(_) | Err(_) => State::loaded(Uuid::new_v4().to_string(), 1, true, true, false),
             },
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => State {
-                profile_id: Uuid::new_v4().to_string(),
-                caller_epoch: 0,
-                restricted: false,
-                handles_invalidated: false,
-                in_flight_stopped: true,
-                workspace_id: None,
-                registered_callers: HashMap::new(),
-            },
-            Err(error) => return Err(error).with_context(|| format!("read {}", path.display())),
+            // Row 1: no file is a fresh unrestricted profile.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                State::loaded(Uuid::new_v4().to_string(), 0, false, false, true)
+            }
+            // Row 6: an unreadable file builds no Backend. The message is the
+            // closed reason and the OS error only (P3-9: no path).
+            Err(error) => {
+                return Err(anyhow::Error::new(error)
+                    .context(ProfileEgressUnavailable::StateFileUnreadable.message()))
+            }
         };
         let admissions_open = !state.restricted || state.in_flight_stopped;
         Ok(Self {
@@ -195,17 +268,30 @@ impl ProfileEgressState {
             dispatch_quiesced: Arc::new(Notify::new()),
             admissions_open: Arc::new(AtomicBool::new(admissions_open)),
             revocation_generation: Arc::new(AtomicU64::new(0)),
+            legacy_cancel: Arc::new(LegacyCancel::default()),
         })
     }
 
-    /// Perform the one explicit first-restricted-publication transition.
-    /// Restarting an already restricted profile is idempotent: it must not
-    /// rotate the epoch merely because the process started again.
+    /// Stage 4 of the activation (K3/2): the one explicit
+    /// first-restricted-publication transition. It needs the token of a
+    /// consumed `ProfileActivation` grant (stage 1), and the grant's binding
+    /// must still hold under this mutex (same profile and caller epoch, still
+    /// unrestricted, the disclosure version Native shows); otherwise nothing
+    /// changes and the process becomes unavailable (`activation-failed`).
+    /// A `cfg(test)` token ([`ConsumedProfileActivation::for_test`]) keeps the
+    /// old idempotent behaviour on an already restricted profile.
     pub fn activate_first_restricted_publication(
         &self,
+        activation: &ConsumedProfileActivation,
         in_flight_stopped: bool,
     ) -> anyhow::Result<ProfileEgressStatus> {
         let mut state = self.lock();
+        if !activation.binds(&state.profile_id, state.caller_epoch, state.restricted) {
+            state.unavailable = Some(ProfileEgressUnavailable::ActivationFailed);
+            return Err(anyhow!(
+                "{D2A_EGRESS_DENIED_MARKER} the activation's binding no longer holds"
+            ));
+        }
         if state.restricted {
             return Ok(status_locked(&state));
         }
@@ -224,12 +310,49 @@ impl ProfileEgressState {
             // Keep the profile restricted, but fail closed until a later
             // process can establish a fresh startup barrier.
             state.in_flight_stopped = false;
+            state.unavailable = Some(ProfileEgressUnavailable::StateFileUnwritable);
             self.admissions_open.store(false, Ordering::Release);
             return Err(error);
         }
         self.admissions_open
             .store(in_flight_stopped, Ordering::Release);
         Ok(status_locked(&state))
+    }
+
+    /// Stage 1 marks the reservation here, in the same synchronous call that
+    /// consumed the grant (DR-DA2-4).
+    pub(crate) fn mark_activation_reserved(&self) {
+        self.lock().activation_reserved = true;
+    }
+
+    /// `license-control` picks the restricted client once the profile is
+    /// restricted or an activation is reserved (K3/2 N-1, DA-1 P3 (b)).
+    pub fn license_uses_restricted_client(&self) -> bool {
+        let state = self.lock();
+        state.restricted || state.activation_reserved
+    }
+
+    /// Records why this process is unavailable. The first reason stays.
+    pub(crate) fn mark_unavailable(&self, reason: ProfileEgressUnavailable) {
+        let mut state = self.lock();
+        if state.unavailable.is_none() {
+            state.unavailable = Some(reason);
+        }
+    }
+
+    pub fn unavailable_reason(&self) -> Option<ProfileEgressUnavailable> {
+        self.lock().unavailable
+    }
+
+    /// Asks every in-flight non-stream legacy provider request to stop
+    /// (DR-DA2-6) and returns how many were waiting on their transport. The
+    /// evidence of the stop is the drop of each lease, which
+    /// [`Self::wait_for_dispatches`] observes.
+    pub fn cancel_legacy_dispatches(&self) -> usize {
+        let waiting = self.legacy_cancel.waiting.load(Ordering::Acquire);
+        self.legacy_cancel.generation.fetch_add(1, Ordering::AcqRel);
+        self.legacy_cancel.notify.notify_waiters();
+        waiting
     }
 
     /// Close admissions for one process startup after loading the persisted
@@ -249,7 +372,13 @@ impl ProfileEgressState {
         // Close admissions while holding the same mutex used by begin_dispatch;
         // no caller can pass authorization after this transition starts.
         self.admissions_open.store(false, Ordering::Release);
-        self.persist_locked(&state)?;
+        if let Err(error) = self.persist_locked(&state) {
+            // Row 7 of the acceptance table: admissions stay closed.
+            if state.unavailable.is_none() {
+                state.unavailable = Some(ProfileEgressUnavailable::StateFileUnwritable);
+            }
+            return Err(error);
+        }
         Ok(status_locked(&state))
     }
 
@@ -289,6 +418,9 @@ impl ProfileEgressState {
             // Do not expose the completed barrier if its durable marker was not
             // persisted. The next startup must repeat the stop barrier.
             state.in_flight_stopped = false;
+            if state.unavailable.is_none() {
+                state.unavailable = Some(ProfileEgressUnavailable::StateFileUnwritable);
+            }
             self.admissions_open.store(false, Ordering::Release);
             return Err(error);
         }
@@ -301,9 +433,8 @@ impl ProfileEgressState {
     }
 
     /// Whether the profile is restricted right now. `license-control` selects
-    /// its client by this at call time (K3/2 N-1): a restricted profile uses
-    /// the fixed-origin, proxy-less, redirect-less client; an unrestricted
-    /// one keeps the existing client.
+    /// its client by [`Self::license_uses_restricted_client`] instead, which
+    /// also counts an activation's reservation (DR-DA2-4).
     pub fn is_restricted(&self) -> bool {
         self.lock().restricted
     }
@@ -371,6 +502,8 @@ impl ProfileEgressState {
                 admissions_open: Arc::clone(&self.admissions_open),
                 revocation_generation: Arc::clone(&self.revocation_generation),
                 generation,
+                legacy_cancel: Arc::clone(&self.legacy_cancel),
+                legacy_cancel_generation: self.legacy_cancel.generation.load(Ordering::Acquire),
             }),
         })
     }
@@ -791,6 +924,47 @@ impl ProfileDispatchPermit {
         );
         Ok(())
     }
+
+    /// Runs a non-stream legacy provider transport until it completes or the
+    /// stop barrier cancels it (DR-DA2-6). A cancelled transport future is
+    /// dropped here; the caller then returns and drops the permit, which is
+    /// the evidence the barrier waits for.
+    pub async fn until_cancelled<T>(
+        &self,
+        transport: impl Future<Output = T>,
+    ) -> anyhow::Result<T> {
+        let cancel = &self.lease.legacy_cancel;
+        cancel.waiting.fetch_add(1, Ordering::AcqRel);
+        let _waiting = WaitingGuard(cancel);
+        tokio::select! {
+            biased;
+            () = self.cancelled() => Err(anyhow!(
+                "{D2A_EGRESS_DENIED_MARKER} legacy-request-stopped: the provider request was stopped by the profile restriction"
+            )),
+            output = transport => Ok(output),
+        }
+    }
+
+    async fn cancelled(&self) {
+        let cancel = &self.lease.legacy_cancel;
+        loop {
+            let notified = cancel.notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if cancel.generation.load(Ordering::Acquire) != self.lease.legacy_cancel_generation {
+                return;
+            }
+            notified.await;
+        }
+    }
+}
+
+struct WaitingGuard<'a>(&'a LegacyCancel);
+
+impl Drop for WaitingGuard<'_> {
+    fn drop(&mut self) {
+        self.0.waiting.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 /// The restricted conditions of a publication entry: the stop barrier is
@@ -859,6 +1033,29 @@ fn status_locked(state: &State) -> ProfileEgressStatus {
         handles_invalidated: state.handles_invalidated,
         in_flight_stopped: state.in_flight_stopped,
         sql_policy: grimodex_db::profile_egress_policy::sql_policy_for_status(),
+        unavailable_reason: state.unavailable.map(ProfileEgressUnavailable::code),
+    }
+}
+
+impl State {
+    fn loaded(
+        profile_id: String,
+        caller_epoch: u64,
+        restricted: bool,
+        handles_invalidated: bool,
+        in_flight_stopped: bool,
+    ) -> Self {
+        Self {
+            profile_id,
+            caller_epoch,
+            restricted,
+            handles_invalidated,
+            in_flight_stopped,
+            workspace_id: None,
+            registered_callers: HashMap::new(),
+            activation_reserved: false,
+            unavailable: None,
+        }
     }
 }
 
@@ -898,7 +1095,10 @@ mod tests {
         // A restriction that begins while the call is in flight discards it:
         // the admission was unchecked, so nothing proves the caller.
         state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         assert!(state
             .recheck_publication(admission, None, None)
@@ -913,7 +1113,10 @@ mod tests {
         let path = temp_path("publication-restricted");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity = publication_identity(&status, 61, "workspace-a");
@@ -957,7 +1160,10 @@ mod tests {
         let path = temp_path("publication-quiescing");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(false)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                false,
+            )
             .expect("activate with the barrier still pending");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity = publication_identity(&status, 63, "workspace-a");
@@ -974,7 +1180,10 @@ mod tests {
         let path = temp_path("publication-recheck");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity = publication_identity(&status, 64, "workspace-a");
@@ -1033,7 +1242,10 @@ mod tests {
         let path = temp_path("final-dispatch-guard");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".into()));
         let identity = CallerIdentity {
@@ -1112,7 +1324,10 @@ mod tests {
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let before = state.status();
         let activated = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         assert!(activated.restricted);
         assert!(activated.handles_invalidated);
@@ -1157,7 +1372,10 @@ mod tests {
         fs::write(&parent, b"blocking file").expect("create blocking parent file");
 
         let error = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect_err("activation must fail when its profile path cannot be persisted");
         assert!(format!("{error:#}").contains("create"));
         let status = state.status();
@@ -1198,7 +1416,10 @@ mod tests {
         let path = temp_path("idempotent");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let first = state
-            .activate_first_restricted_publication(false)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                false,
+            )
             .expect("first transition");
         let second = state.begin_startup_barrier().expect("restart transition");
         assert_eq!(second.profile_id, first.profile_id);
@@ -1216,7 +1437,10 @@ mod tests {
         let path = temp_path("one-way");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         let status = state.status();
         state.bind_workspace(Some("workspace-a".into()));
@@ -1225,8 +1449,29 @@ mod tests {
         state.begin_startup_barrier().expect("restart barrier");
         state.confirm_in_flight_stopped().expect("confirm");
         state
-            .activate_first_restricted_publication(false)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                false,
+            )
             .expect("repeat activation is idempotent");
+        // DA-2's operations (stage 1's mark, the unavailable reason, the
+        // barrier's cancellation) and a real stage-4 token on a restricted
+        // profile (refused) do not release it either.
+        state.mark_activation_reserved();
+        state.mark_unavailable(ProfileEgressUnavailable::BarrierTimeout);
+        state.cancel_legacy_dispatches();
+        let real = crate::main_grant::ConsumedProfileActivation::bound_for_test(
+            crate::main_grant::ProfileActivationGrantPayload {
+                profile_id: status.profile_id.clone(),
+                caller_epoch: status.caller_epoch,
+                disclosure_version:
+                    crate::profile_activation::PROFILE_ACTIVATION_DISCLOSURE_VERSION,
+                disclosure_digest: String::new(),
+            },
+        );
+        assert!(state
+            .activate_first_restricted_publication(&real, false)
+            .is_err());
         let on_disk: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&path).expect("state file")).expect("json");
         assert_eq!(on_disk["restricted"], serde_json::Value::Bool(true));
@@ -1274,7 +1519,10 @@ mod tests {
         let path = temp_path("partial-stop");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let first = state
-            .activate_first_restricted_publication(false)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                false,
+            )
             .expect("first transition");
         drop(state);
 
@@ -1299,7 +1547,10 @@ mod tests {
         let state = std::sync::Arc::new(ProfileEgressState::new(path.clone()).expect("state"));
         let active = state.begin_dispatch(None).expect("unrestricted permit");
         state
-            .activate_first_restricted_publication(false)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                false,
+            )
             .expect("activate");
         assert!(state.confirm_in_flight_stopped().is_err());
 
@@ -1350,7 +1601,10 @@ mod tests {
         let path = temp_path("identity");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         let valid = CallerIdentity {
             profile_id: status.profile_id.clone(),
@@ -1377,7 +1631,10 @@ mod tests {
         let path = temp_path("registration");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(false)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                false,
+            )
             .expect("activate");
         state.confirm_in_flight_stopped().expect("startup barrier");
         state.bind_workspace(Some("workspace-1".to_string()));
@@ -1412,7 +1669,10 @@ mod tests {
         let path = temp_path("registration-replace");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-1".to_string()));
         let first = CallerIdentity {
@@ -1446,7 +1706,10 @@ mod tests {
         let path = temp_path("recovery-binding");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity_a = CallerIdentity {
@@ -1491,7 +1754,10 @@ mod tests {
         let path = temp_path("registration-workspace");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-1".to_string()));
         let identity = CallerIdentity {
@@ -1527,7 +1793,10 @@ mod tests {
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let permit = state.begin_dispatch(None).expect("unrestricted permit");
         state
-            .activate_first_restricted_publication(false)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                false,
+            )
             .expect("activate");
         state.begin_startup_barrier().expect("startup barrier");
         assert!(permit.ensure_open().is_err());
@@ -1540,7 +1809,10 @@ mod tests {
         let path = temp_path("permit-workspace-rebind");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity = CallerIdentity {
@@ -1569,7 +1841,10 @@ mod tests {
         let path = temp_path("permit-invalidate");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity = CallerIdentity {
@@ -1598,7 +1873,10 @@ mod tests {
         let path = temp_path("reauthorize-params-race");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity = CallerIdentity {
@@ -1633,7 +1911,10 @@ mod tests {
         let path = temp_path("reauthorize-restore-race");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         state.bind_workspace(Some("workspace-a".to_string()));
         let identity = CallerIdentity {
@@ -1670,7 +1951,10 @@ mod tests {
         let path = temp_path("registration-restart");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         let identity = CallerIdentity {
             profile_id: status.profile_id.clone(),
@@ -1737,7 +2021,10 @@ mod tests {
         let path = temp_path("legacy-restricted");
         let state = ProfileEgressState::new(path.clone()).expect("state");
         state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         assert!(state.is_restricted());
         let identity = registered_stopped_caller(&state);
@@ -1772,7 +2059,10 @@ mod tests {
         {
             let first = ProfileEgressState::new(path.clone()).expect("state");
             first
-                .activate_first_restricted_publication(true)
+                .activate_first_restricted_publication(
+                    &crate::main_grant::ConsumedProfileActivation::for_test(),
+                    true,
+                )
                 .expect("activate");
         }
         let restarted = ProfileEgressState::new(path.clone()).expect("restart");
@@ -1800,7 +2090,10 @@ mod tests {
         let activator = std::sync::Arc::clone(&state);
         let transition = std::thread::spawn(move || {
             activator
-                .activate_first_restricted_publication(false)
+                .activate_first_restricted_publication(
+                    &crate::main_grant::ConsumedProfileActivation::for_test(),
+                    false,
+                )
                 .expect("activate")
         });
         transition.join().expect("transition");
@@ -1879,7 +2172,10 @@ mod tests {
             std::thread::spawn(move || {
                 started.store(true, Ordering::SeqCst);
                 state
-                    .activate_first_restricted_publication(false)
+                    .activate_first_restricted_publication(
+                        &crate::main_grant::ConsumedProfileActivation::for_test(),
+                        false,
+                    )
                     .expect("activate")
             })
         };
@@ -1903,5 +2199,211 @@ mod tests {
         drop(permit);
         assert_eq!(state.active_dispatches.load(Ordering::SeqCst), 0);
         let _ = fs::remove_file(path);
+    }
+
+    /// K3/2 "起動時の gate" (DR-DA2-8), Negative (16): every row of the
+    /// acceptance table of the state file. `Expect` is what Native loads; the
+    /// Main side (ST2) fixes the same rows against this table.
+    #[test]
+    fn state_file_acceptance_table() {
+        #[derive(Debug)]
+        struct Expect {
+            restricted: bool,
+            handles_invalidated: bool,
+            in_flight_stopped: bool,
+            keeps_profile: bool,
+            caller_epoch: Option<u64>,
+        }
+        let unrestricted = |keeps_profile: bool, epoch: u64| Expect {
+            restricted: false,
+            handles_invalidated: false,
+            in_flight_stopped: true,
+            keeps_profile,
+            caller_epoch: Some(epoch),
+        };
+        let restricted = |stopped: bool, epoch: u64| Expect {
+            restricted: true,
+            handles_invalidated: true,
+            in_flight_stopped: stopped,
+            keeps_profile: true,
+            caller_epoch: Some(epoch),
+        };
+        let fresh_restricted = Expect {
+            restricted: true,
+            handles_invalidated: true,
+            in_flight_stopped: false,
+            keeps_profile: false,
+            caller_epoch: Some(1),
+        };
+        let rows: Vec<(&str, Option<String>, Expect)> = vec![
+            ("1: no file", None, unrestricted(false, 0)),
+            (
+                "2: restricted v2, stopped",
+                Some(r#"{"schemaVersion":2,"profileId":"p","callerEpoch":4,"restricted":true,"handlesInvalidated":true,"inFlightStopped":true}"#.into()),
+                restricted(true, 4),
+            ),
+            (
+                "2: restricted v2, stop unconfirmed",
+                Some(r#"{"schemaVersion":2,"profileId":"p","callerEpoch":4,"restricted":true,"handlesInvalidated":true,"inFlightStopped":false}"#.into()),
+                restricted(false, 4),
+            ),
+            (
+                "3: restricted v1",
+                Some(r#"{"schemaVersion":1,"profileId":"p","callerEpoch":4,"restricted":true}"#.into()),
+                restricted(false, 4),
+            ),
+            (
+                "3: restricted v2 without bits",
+                Some(r#"{"schemaVersion":2,"profileId":"p","callerEpoch":4,"restricted":true}"#.into()),
+                restricted(false, 4),
+            ),
+            (
+                "3: restricted v2, handles not invalidated",
+                Some(r#"{"schemaVersion":2,"profileId":"p","callerEpoch":4,"restricted":true,"handlesInvalidated":false,"inFlightStopped":true}"#.into()),
+                restricted(false, 4),
+            ),
+            (
+                "4: unrestricted v2 (J-1)",
+                Some(r#"{"schemaVersion":2,"profileId":"p","callerEpoch":4,"restricted":false,"handlesInvalidated":true,"inFlightStopped":false}"#.into()),
+                unrestricted(true, 4),
+            ),
+            (
+                "4: unrestricted v1 (J-1)",
+                Some(r#"{"schemaVersion":1,"profileId":"p","callerEpoch":0,"restricted":false}"#.into()),
+                unrestricted(true, 0),
+            ),
+            (
+                "4: unrestricted v2 with the unrestricted bits",
+                Some(r#"{"schemaVersion":2,"profileId":"p","callerEpoch":0,"restricted":false,"handlesInvalidated":false,"inFlightStopped":true}"#.into()),
+                unrestricted(true, 0),
+            ),
+            ("5: broken JSON", Some("{not json".into()), fresh_restricted),
+            (
+                "5: unknown version",
+                Some(r#"{"schemaVersion":3,"profileId":"p","callerEpoch":4,"restricted":false}"#.into()),
+                Expect { restricted: true, handles_invalidated: true, in_flight_stopped: false, keeps_profile: false, caller_epoch: Some(1) },
+            ),
+            (
+                "5: blank profileId",
+                Some(r#"{"schemaVersion":2,"profileId":" ","callerEpoch":4,"restricted":false}"#.into()),
+                Expect { restricted: true, handles_invalidated: true, in_flight_stopped: false, keeps_profile: false, caller_epoch: Some(1) },
+            ),
+            (
+                "5: untrimmed profileId",
+                Some(r#"{"schemaVersion":2,"profileId":" p","callerEpoch":4,"restricted":true}"#.into()),
+                Expect { restricted: true, handles_invalidated: true, in_flight_stopped: false, keeps_profile: false, caller_epoch: Some(1) },
+            ),
+        ];
+        for (label, content, expect) in rows {
+            let path = temp_path("acceptance");
+            if let Some(content) = &content {
+                fs::write(&path, content).expect("write state file");
+            }
+            let state = ProfileEgressState::new(path.clone()).expect(label);
+            let status = state.status();
+            assert_eq!(status.restricted, expect.restricted, "{label}");
+            assert_eq!(
+                status.handles_invalidated, expect.handles_invalidated,
+                "{label}"
+            );
+            assert_eq!(
+                status.in_flight_stopped, expect.in_flight_stopped,
+                "{label}"
+            );
+            assert_eq!(status.profile_id == "p", expect.keeps_profile, "{label}");
+            if let Some(epoch) = expect.caller_epoch {
+                assert_eq!(status.caller_epoch, epoch, "{label}");
+            }
+            assert_eq!(status.unavailable_reason, None, "{label}");
+            // Main's acceptance (`isValidNativeProfileEgressStatus`) needs
+            // `handlesInvalidated === restricted`: every unrestricted row
+            // satisfies it without a barrier (J-1).
+            if !status.restricted {
+                assert!(
+                    !status.handles_invalidated && status.in_flight_stopped,
+                    "{label}"
+                );
+                assert!(
+                    state.begin_dispatch(None).is_ok(),
+                    "{label}: admissions open"
+                );
+            }
+            // Loading never rewrites the file (J-1 included).
+            match &content {
+                Some(content) => {
+                    assert_eq!(&fs::read_to_string(&path).expect(label), content, "{label}")
+                }
+                None => assert!(!path.exists(), "{label}"),
+            }
+            // A restricted row runs the barrier again, which rewrites the
+            // file in the v2 form with the same epoch (row 3).
+            if status.restricted {
+                state.begin_startup_barrier().expect(label);
+                state.confirm_in_flight_stopped().expect(label);
+                let rewritten: serde_json::Value =
+                    serde_json::from_str(&fs::read_to_string(&path).expect(label)).expect(label);
+                assert_eq!(rewritten["schemaVersion"], 2, "{label}");
+                assert_eq!(rewritten["restricted"], true, "{label}");
+                assert_eq!(rewritten["handlesInvalidated"], true, "{label}");
+                assert_eq!(rewritten["inFlightStopped"], true, "{label}");
+                assert_eq!(rewritten["callerEpoch"], status.caller_epoch, "{label}");
+            }
+            let _ = fs::remove_file(path);
+        }
+
+        // Row 6: an unreadable file builds nothing, and the message is the
+        // closed reason without the path (P3-9).
+        let directory = temp_path("unreadable");
+        fs::create_dir_all(&directory).expect("directory in place of the file");
+        let error = match ProfileEgressState::new(directory.clone()) {
+            Ok(_) => panic!("a directory is not a readable state file"),
+            Err(error) => format!("{error:#}"),
+        };
+        assert!(
+            error.starts_with("PROFILE_EGRESS_UNAVAILABLE:state-file-unreadable"),
+            "{error}"
+        );
+        assert!(!error.contains(&directory.display().to_string()), "{error}");
+        let _ = fs::remove_dir_all(directory);
+
+        // Row 7: a restricted file whose barrier cannot persist keeps the
+        // admissions closed and reports `state-file-unwritable`.
+        let parent = temp_path("unwritable-parent");
+        fs::create_dir_all(&parent).expect("parent");
+        let path = parent.join("profile-egress.json");
+        fs::write(
+            &path,
+            r#"{"schemaVersion":2,"profileId":"p","callerEpoch":4,"restricted":true,"handlesInvalidated":true,"inFlightStopped":true}"#,
+        )
+        .expect("write state file");
+        let state = ProfileEgressState::new(path.clone()).expect("restricted state");
+        fs::remove_file(&path).expect("remove the file");
+        fs::create_dir_all(path.join("blocker")).expect("a directory where the file goes");
+        assert!(state.begin_startup_barrier().is_err());
+        let status = state.status();
+        assert!(status.restricted && !status.in_flight_stopped);
+        assert_eq!(status.unavailable_reason, Some("state-file-unwritable"));
+        assert!(state.begin_dispatch(None).is_err());
+        let _ = fs::remove_dir_all(parent);
+    }
+
+    /// The healthy status carries no `unavailableReason` field.
+    #[test]
+    fn a_healthy_status_has_no_unavailable_reason_on_the_wire() {
+        let path = temp_path("status-wire");
+        let state = ProfileEgressState::new(path.clone()).expect("state");
+        let json = serde_json::to_value(state.status()).expect("status JSON");
+        assert!(json.get("unavailableReason").is_none(), "{json}");
+        state.mark_unavailable(ProfileEgressUnavailable::BarrierTimeout);
+        state.mark_unavailable(ProfileEgressUnavailable::ActivationFailed);
+        let json = serde_json::to_value(state.status()).expect("status JSON");
+        assert_eq!(
+            json["unavailableReason"], "barrier-timeout",
+            "the first reason stays"
+        );
+        assert_eq!(
+            ProfileEgressUnavailable::StateFileUnwritable.message(),
+            "PROFILE_EGRESS_UNAVAILABLE:state-file-unwritable"
+        );
     }
 }

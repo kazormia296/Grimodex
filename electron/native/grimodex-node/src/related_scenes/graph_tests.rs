@@ -182,7 +182,10 @@ impl Fixture {
         if restricted {
             state
                 .profile_egress
-                .activate_first_restricted_publication(true)
+                .activate_first_restricted_publication(
+                    &crate::main_grant::ConsumedProfileActivation::for_test(),
+                    true,
+                )
                 .expect("restricted profile");
         }
         let plan = Arc::new(FakePlan::default());

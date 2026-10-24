@@ -2,7 +2,9 @@
 //!
 //! The four license entry points (`activate`, `revalidate`, `deactivate` and the
 //! background validate cycle) read the profile mode at call time and pick the
-//! restricted or the unrestricted client. The choice lives here, behind an
+//! restricted or the unrestricted client. From stage 1 of an activation (the
+//! grant consumed into a reservation) the restricted client is used as well
+//! (NIR-1 DA-2, DR-DA2-4), so stages 2 to 4 never pick the unrestricted one. The choice lives here, behind an
 //! injected client pair, so that a test can prove which side was reached
 //! without touching the network. Production passes [`PRODUCTION_CLIENTS`]; the
 //! unrestricted side is the unchanged `PolarClient`.
@@ -32,7 +34,7 @@ pub(crate) async fn activate(
     key: String,
     clients: LicenseClients<'_>,
 ) -> anyhow::Result<LicenseStateDto> {
-    if profile.is_restricted() {
+    if profile.license_uses_restricted_client() {
         activate_license_restricted_with_client(runtime, key, clients.restricted).await
     } else {
         activate_license_with_client(runtime, key, clients.unrestricted).await
@@ -44,7 +46,7 @@ pub(crate) async fn revalidate(
     runtime: &LicenseRuntime,
     clients: LicenseClients<'_>,
 ) -> anyhow::Result<LicenseStateDto> {
-    if profile.is_restricted() {
+    if profile.license_uses_restricted_client() {
         revalidate_license_with_client(runtime, clients.restricted).await
     } else {
         revalidate_license_with_client(runtime, clients.unrestricted).await
@@ -56,7 +58,7 @@ pub(crate) async fn deactivate(
     runtime: &LicenseRuntime,
     clients: LicenseClients<'_>,
 ) -> anyhow::Result<LicenseStateDto> {
-    if profile.is_restricted() {
+    if profile.license_uses_restricted_client() {
         deactivate_license_with_client(runtime, clients.restricted).await
     } else {
         deactivate_license_with_client(runtime, clients.unrestricted).await
@@ -68,7 +70,7 @@ pub(crate) async fn validate_cycle(
     runtime: &LicenseRuntime,
     clients: LicenseClients<'_>,
 ) -> Option<LicenseStateDto> {
-    if profile.is_restricted() {
+    if profile.license_uses_restricted_client() {
         run_validate_cycle_with_client(runtime, clients.restricted).await
     } else {
         run_validate_cycle_with_client(runtime, clients.unrestricted).await
@@ -186,7 +188,10 @@ mod tests {
             let profile = ProfileEgressState::new(root.join("profile-egress.json")).expect("state");
             if restricted {
                 profile
-                    .activate_first_restricted_publication(true)
+                    .activate_first_restricted_publication(
+                        &crate::main_grant::ConsumedProfileActivation::for_test(),
+                        true,
+                    )
                     .expect("restrict");
             }
             let stale = "2020-01-01T00:00:00Z".to_string();
@@ -328,10 +333,42 @@ mod tests {
         assert_eq!(fixture.reached(), ((0, 0, 0), (0, 1, 0)));
         fixture
             .profile
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("restrict");
         let _ = revalidate(&fixture.profile, &fixture.runtime, fixture.clients()).await;
         assert_eq!(fixture.reached(), ((0, 1, 0), (0, 1, 0)));
+    }
+
+    /// DA-2 (DR-DA2-4, DA-1 P3 (b)): from stage 1 (the reservation) the
+    /// restricted client is chosen although the profile is not restricted yet,
+    /// so stages 2 to 4 never reach the unrestricted client. The key grammar
+    /// of the restricted path applies as well.
+    #[tokio::test]
+    async fn restricted_client_is_selected_once_activation_is_reserved() {
+        let fixture = Fixture::new(false);
+        let _ = revalidate(&fixture.profile, &fixture.runtime, fixture.clients()).await;
+        assert_eq!(fixture.reached(), ((0, 0, 0), (0, 1, 0)));
+        // The synchronization point: stage 1 marks the reservation.
+        fixture.profile.mark_activation_reserved();
+        assert!(!fixture.profile.is_restricted());
+        let _ = revalidate(&fixture.profile, &fixture.runtime, fixture.clients()).await;
+        let _ = deactivate(&fixture.profile, &fixture.runtime, fixture.clients()).await;
+        let _ = validate_cycle(&fixture.profile, &fixture.runtime, fixture.clients()).await;
+        let error = activate(
+            &fixture.profile,
+            &fixture.runtime,
+            MALFORMED_KEY.to_string(),
+            fixture.clients(),
+        )
+        .await
+        .expect_err("the restricted grammar applies once reserved");
+        assert!(format!("{error:#}").contains(FORMAT_ERROR), "{error:#}");
+        // revalidate and the cycle validate, deactivate deactivates; all on
+        // the restricted side. The unrestricted side keeps its first call.
+        assert_eq!(fixture.reached(), ((0, 2, 1), (0, 1, 0)));
     }
 
     /// The napi entry point passes the profile's mode and the production
@@ -352,7 +389,10 @@ mod tests {
         backend
             .state
             .profile_egress
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("restrict");
         let error = backend
             .activate_license(MALFORMED_KEY.to_string())

@@ -296,7 +296,10 @@ impl ProductFixture {
         if restricted {
             state
                 .profile_egress
-                .activate_first_restricted_publication(true)
+                .activate_first_restricted_publication(
+                    &crate::main_grant::ConsumedProfileActivation::for_test(),
+                    true,
+                )
                 .expect("restricted profile");
         }
         let plan = Arc::new(FakePlan::default());
@@ -911,7 +914,10 @@ impl RefusalFixture {
         crate::install_test_workspace(&state, authority);
         state
             .profile_egress
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("restricted profile");
         let plan = Arc::new(FakePlan::default());
         state.nir1_graph.open_publication_for_test();

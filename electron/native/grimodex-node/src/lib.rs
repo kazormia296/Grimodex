@@ -36,6 +36,7 @@ mod nir1_local_transport;
 mod nir1_prepared_request;
 mod nir1_startup_barrier;
 mod post_effect_runtime;
+mod profile_activation;
 mod profile_egress;
 mod publication_guard;
 mod related_scenes;
@@ -5632,7 +5633,10 @@ mod profile_egress_db_result_tests {
         ));
         let state = profile_egress::ProfileEgressState::new(path.clone()).expect("state");
         let status = state
-            .activate_first_restricted_publication(true)
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )
             .expect("activate");
         let identity = profile_egress::CallerIdentity {
             profile_id: status.profile_id,
@@ -6528,35 +6532,30 @@ fn deferred_narrative_maintenance_result(
 }
 
 async fn settle_profile_egress_startup(state: &Arc<AppState>) -> Result<String> {
-    let initial = state.profile_egress.status();
-    if !initial.restricted {
-        let mut json =
-            serde_json::to_value(initial).map_err(|error| Error::from_reason(error.to_string()))?;
-        if let Some(object) = json.as_object_mut() {
-            object.insert("chatStreamsStopped".to_string(), serde_json::json!(0));
-            object.insert("inlineStreamsStopped".to_string(), serde_json::json!(0));
-            object.insert("postEffectRunsStopped".to_string(), serde_json::json!(0));
-        }
-        return serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()));
-    }
+    settle_profile_egress_bounded(state, profile_activation::stop_barrier_bound()).await
+}
 
-    // Close the gate before awaiting cancellation. The state mutex makes
-    // this transition and every subsequent dispatch admission mutually
-    // exclusive; an already restricted profile keeps its durable epoch.
-    state
+/// The N-API error of a failure that made the profile gate unavailable: the
+/// closed reason only (DR-DA2-8). The detail stays in the Native log.
+pub(crate) fn profile_egress_unavailable_error(
+    state: &AppState,
+    fallback: profile_egress::ProfileEgressUnavailable,
+) -> Error {
+    state.profile_egress.mark_unavailable(fallback);
+    let reason = state
         .profile_egress
-        .begin_startup_barrier()
-        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-    let post_effect_stopped = state.post_effect_abort.abort_all();
-    let chat_stopped = state.chat_streams.abort_all().await;
-    let inline_stopped = state.inline_ai_streams.abort_all().await;
-    state.profile_egress.wait_for_dispatches().await;
-    state.post_effect_abort.clear_abort_all();
-    let status = state
-        .profile_egress
-        .confirm_in_flight_stopped()
-        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-    debug_assert!(status.in_flight_stopped);
+        .unavailable_reason()
+        .unwrap_or(fallback);
+    Error::from_reason(reason.message())
+}
+
+fn profile_egress_status_json(
+    status: profile_egress::ProfileEgressStatus,
+    chat_stopped: usize,
+    inline_stopped: usize,
+    post_effect_stopped: usize,
+    legacy_stopped: usize,
+) -> Result<String> {
     let mut json =
         serde_json::to_value(status).map_err(|error| Error::from_reason(error.to_string()))?;
     if let Some(object) = json.as_object_mut() {
@@ -6572,8 +6571,74 @@ async fn settle_profile_egress_startup(state: &Arc<AppState>) -> Result<String> 
             "postEffectRunsStopped".to_string(),
             serde_json::json!(post_effect_stopped),
         );
+        object.insert(
+            "legacyRequestsStopped".to_string(),
+            serde_json::json!(legacy_stopped),
+        );
     }
     serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()))
+}
+
+/// The stop barrier of a restricted profile: at startup, and as stage 5 of
+/// an activation (K3/2). The whole wait, from the closed admissions to the
+/// confirmation, is bounded by `bound` (P2-2, DR-DA2-5). Past the bound the
+/// admissions stay closed, the state file stays restricted with the stop
+/// unconfirmed, the post-effect abort is not cleared, and the process is
+/// unavailable (`barrier-timeout`). The waits are Notify waits only, so
+/// dropping them at the bound leaves nothing half done.
+pub(crate) async fn settle_profile_egress_bounded(
+    state: &Arc<AppState>,
+    bound: std::time::Duration,
+) -> Result<String> {
+    let initial = state.profile_egress.status();
+    if !initial.restricted {
+        return profile_egress_status_json(initial, 0, 0, 0, 0);
+    }
+
+    // Close the gate before awaiting cancellation. The state mutex makes
+    // this transition and every subsequent dispatch admission mutually
+    // exclusive; an already restricted profile keeps its durable epoch.
+    if let Err(error) = state.profile_egress.begin_startup_barrier() {
+        tracing::warn!("profile egress stop barrier could not start: {error:#}");
+        return Err(profile_egress_unavailable_error(
+            state,
+            profile_egress::ProfileEgressUnavailable::StateFileUnwritable,
+        ));
+    }
+    let post_effect_stopped = state.post_effect_abort.abort_all();
+    let legacy_stopped = state.profile_egress.cancel_legacy_dispatches();
+    let drain = async {
+        let chat_stopped = state.chat_streams.abort_all().await;
+        let inline_stopped = state.inline_ai_streams.abort_all().await;
+        state.profile_egress.wait_for_dispatches().await;
+        (chat_stopped, inline_stopped)
+    };
+    let Ok((chat_stopped, inline_stopped)) = tokio::time::timeout(bound, drain).await else {
+        // Keep cancelling: the post-effect abort stays set.
+        return Err(profile_egress_unavailable_error(
+            state,
+            profile_egress::ProfileEgressUnavailable::BarrierTimeout,
+        ));
+    };
+    state.post_effect_abort.clear_abort_all();
+    let status = match state.profile_egress.confirm_in_flight_stopped() {
+        Ok(status) => status,
+        Err(error) => {
+            tracing::warn!("profile egress stop barrier could not confirm: {error:#}");
+            return Err(profile_egress_unavailable_error(
+                state,
+                profile_egress::ProfileEgressUnavailable::StateFileUnwritable,
+            ));
+        }
+    };
+    debug_assert!(status.in_flight_stopped);
+    profile_egress_status_json(
+        status,
+        chat_stopped,
+        inline_stopped,
+        post_effect_stopped,
+        legacy_stopped,
+    )
 }
 
 #[napi]
@@ -6622,19 +6687,62 @@ impl Backend {
         settle_profile_egress_startup(&self.state).await
     }
 
-    /// Main-only first protected-publication activation. The caller is the
-    /// Electron main process; this method is deliberately absent from the
-    /// renderer IPC contract. Activation is durable and followed by the same
-    /// quiescence barrier used for a restricted-profile restart.
+    // ───────────── DA-2: the profile activation (K3/2, DR-DA2-3) ─────────────
+    // Main-only. None of these is in `NAPI_COMMANDS`. There is no activation
+    // without a consumed `ProfileActivation` grant: the grant-less
+    // `activateProfileEgress` was removed (Negative (6)).
+
+    /// Builds the dialog text and stores a `ProfileActivation` preview in the
+    /// process-wide grant slot. Returns
+    /// `{ previewId, display, disclosureVersion, expiresInMs }`.
+    /// A closed pre-publication gate refuses before anything is read.
     #[napi]
-    pub async fn activate_profile_egress(&self) -> Result<String> {
-        // A change of the D2a epoch revokes any pending Main grant.
-        self.state.main_grant.registry.revoke_all();
-        self.state
-            .profile_egress
-            .activate_first_restricted_publication(false)
-            .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        settle_profile_egress_startup(&self.state).await
+    pub async fn profile_activation_preview(
+        &self,
+        sender_id: u32,
+        window_id: u32,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || profile_activation::preview(&state, sender_id, window_id)).await
+    }
+
+    /// Turns an approved preview into a grant (`{ grantId }`). `display_digest`
+    /// is the digest of the strings Main showed (DR-DA2-3); a difference
+    /// revokes the grant.
+    #[napi]
+    pub async fn profile_activation_issue(
+        &self,
+        preview_id: String,
+        sender_id: u32,
+        window_id: u32,
+        display_digest: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            profile_activation::issue(&state, &preview_id, sender_id, window_id, &display_digest)
+        })
+        .await
+    }
+
+    /// Stage 1: consumes the grant into the activation's reservation. It is
+    /// synchronous so that Main reaches stage 2 in the same JS task (P3-1).
+    #[napi]
+    pub fn profile_activation_consume(
+        &self,
+        grant_id: String,
+        sender_id: u32,
+        window_id: u32,
+    ) -> Result<()> {
+        profile_activation::consume(&self.state, &grant_id, sender_id, window_id)
+            .map_err(app_err_to_napi)
+    }
+
+    /// Stages 4 and 5: needs the reservation of stage 1. Returns the restricted
+    /// status, or `PROFILE_ACTIVATION_REFUSED:<code>` /
+    /// `PROFILE_EGRESS_UNAVAILABLE:<code>`.
+    #[napi]
+    pub async fn profile_activation_commit(&self) -> Result<String> {
+        profile_activation::commit(&self.state).await
     }
 
     /// Main-only registration of one exact caller identity for this Backend
@@ -6660,7 +6768,7 @@ impl Backend {
 
     // ───────────── MG-1: Main's one-time confirmation (CB-2) ─────────────
     // Main-only. None of these is in `NAPI_COMMANDS`, so the renderer's IPC
-    // cannot reach them (the same treatment as `activateProfileEgress`).
+    // cannot reach them (the same treatment as the profile activation calls).
 
     /// Reads the Scene and stores a preview in the process-wide grant slot.
     /// Returns `{ previewId, display, expiresInMs }`. A closed pre-publication
@@ -15052,8 +15160,10 @@ impl Backend {
         dispatch
             .ensure_open()
             .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        let result = grimodex_ai::send_chat(&params, &msgs)
+        let result = dispatch
+            .until_cancelled(grimodex_ai::send_chat(&params, &msgs))
             .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?
             .map_err(native_ai_error_to_napi)?;
         serde_json::to_string(&result)
             .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
@@ -15370,8 +15480,14 @@ impl Backend {
         dispatch
             .ensure_open()
             .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        let result = grimodex_ai::send_chat_with_tools(&params, &req.messages, &req.tools)
+        let result = dispatch
+            .until_cancelled(grimodex_ai::send_chat_with_tools(
+                &params,
+                &req.messages,
+                &req.tools,
+            ))
             .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?
             .map_err(native_ai_error_to_napi)?;
         serde_json::to_string(&result)
             .map_err(|e| Error::from_reason(format!("failed to serialize ChatResponse: {e}")))
@@ -15404,16 +15520,18 @@ impl Backend {
         dispatch
             .ensure_open()
             .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        let models = grimodex_ai::fetch_models_for(
-            &req.provider,
-            &api_key,
-            settings.endpoints(),
-            req.selected_model_id
-                .as_deref()
-                .filter(|model| !model.trim().is_empty()),
-        )
-        .await
-        .map_err(native_ai_error_to_napi)?;
+        let models = dispatch
+            .until_cancelled(grimodex_ai::fetch_models_for(
+                &req.provider,
+                &api_key,
+                settings.endpoints(),
+                req.selected_model_id
+                    .as_deref()
+                    .filter(|model| !model.trim().is_empty()),
+            ))
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?
+            .map_err(native_ai_error_to_napi)?;
         serde_json::to_string(&models)
             .map_err(|e| Error::from_reason(format!("failed to serialize AI models: {e}")))
     }
@@ -15477,16 +15595,18 @@ impl Backend {
         dispatch
             .ensure_open()
             .map_err(|error| Error::from_reason(format!("{error:#}")))?;
-        grimodex_ai::test_connection_with_observer(
-            &req.provider,
-            &req.model,
-            &api_key,
-            settings.endpoints(),
-            variant.as_deref(),
-            Some(&observer),
-        )
-        .await
-        .map_err(native_ai_error_to_napi)
+        dispatch
+            .until_cancelled(grimodex_ai::test_connection_with_observer(
+                &req.provider,
+                &req.model,
+                &api_key,
+                settings.endpoints(),
+                variant.as_deref(),
+                Some(&observer),
+            ))
+            .await
+            .map_err(|error| Error::from_reason(format!("{error:#}")))?
+            .map_err(native_ai_error_to_napi)
     }
 
     /// main 起動時に 1 回登録する (§7.1)。コールバックは
