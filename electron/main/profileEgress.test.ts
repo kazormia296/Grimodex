@@ -5,6 +5,7 @@ import {
   D2A_EGRESS_DENIED_MARKER,
   d2aRouteLedgersForTest,
 } from "./profileEgress.js";
+import { activateGateForTest } from "./profileActivation.test.support.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 import { createLicenseValidationScheduler } from "./licenseValidation.js";
 import { NAPI_COMMANDS, type NapiBackendLike } from "../shared/ipcContract.js";
@@ -66,12 +67,12 @@ describe("D2a profile egress gate", () => {
     expect(registerProfileEgressCaller).not.toHaveBeenCalled();
   });
 
-  it("closes egress immediately, coalesces activation, and rotates old callers", async () => {
+  it("closes egress immediately, accepts one activation only, and rotates old callers", async () => {
     const nativeStatus = JSON.parse(
       await backend().initializeProfileEgress!(),
     ) as Record<string, unknown>;
     let resolveActivation: (value: string) => void = () => {};
-    const activateProfileEgress = vi.fn(
+    const profileActivationCommit = vi.fn(
       () =>
         new Promise<string>((resolve) => {
           resolveActivation = resolve;
@@ -80,14 +81,16 @@ describe("D2a profile egress gate", () => {
     const registerProfileEgressCaller = vi.fn();
     const gate = await createProfileEgressGate({
       ...backend({ restricted: false, handlesInvalidated: false }),
-      activateProfileEgress,
+      profileActivationCommit,
       registerProfileEgressCaller,
     });
     const oldIdentity = gate.issueCallerIdentity(11);
 
-    const first = gate.activateFirstRestrictedPublication!();
-    const second = gate.activateFirstRestrictedPublication!();
-    expect(activateProfileEgress).toHaveBeenCalledOnce();
+    const first = activateGateForTest(gate);
+    // A second consumed token closes nothing new and never reaches Native.
+    const second = activateGateForTest(gate);
+    await expect(second).rejects.toThrow(/PROFILE_ACTIVATION_REFUSED:not-reserved/u);
+    await vi.waitFor(() => expect(profileActivationCommit).toHaveBeenCalledOnce());
     expect(gate.restricted).toBe(true);
     expect(() => gate.assertInvoke("send_chat_message", {})).toThrow(
       new RegExp(`${D2A_EGRESS_DENIED_MARKER} old-external-ai`),
@@ -107,7 +110,8 @@ describe("D2a profile egress gate", () => {
         inFlightStopped: true,
       }),
     );
-    await Promise.all([first, second]);
+    await expect(first).resolves.toEqual({ state: "restricted" });
+    expect(profileActivationCommit).toHaveBeenCalledOnce();
     expect(gate.unavailable).toBe(false);
     const newIdentity = gate.issueCallerIdentity(11);
     expect(newIdentity.callerId).not.toBe(oldIdentity.callerId);
@@ -131,7 +135,7 @@ describe("D2a profile egress gate", () => {
           releaseDrain = resolve;
         }),
     );
-    const activateProfileEgress = vi.fn(async () =>
+    const profileActivationCommit = vi.fn(async () =>
       JSON.stringify({
         ...nativeStatus,
         profileId: "profile-activated",
@@ -143,32 +147,32 @@ describe("D2a profile egress gate", () => {
     );
     const gate = await createProfileEgressGate({
       ...backend({ restricted: false, handlesInvalidated: false }),
-      activateProfileEgress,
+      profileActivationCommit,
     });
 
     gate.registerMainEgressParticipant?.("cli", drain);
-    const activation = gate.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(gate);
     await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
     expect(gate.restricted).toBe(true);
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(profileActivationCommit).not.toHaveBeenCalled();
 
     releaseDrain();
     await activation;
-    expect(activateProfileEgress).toHaveBeenCalledOnce();
+    expect(profileActivationCommit).toHaveBeenCalledOnce();
     expect(gate.unavailable).toBe(false);
     expect(() =>
       gate.registerMainEgressParticipant?.("late", async () => {}),
     ).toThrow("already completed");
   });
 
-  it("waits for admitted manual license operations before Native activation", async () => {
+  it("does not wait for the license check: it is no participant and keeps running (L-1, D-8)", async () => {
     const initialStatus = JSON.parse(
       await backend({
         restricted: false,
         handlesInvalidated: false,
       }).initializeProfileEgress!(),
     ) as Record<string, unknown>;
-    const activateProfileEgress = vi.fn(async () =>
+    const profileActivationCommit = vi.fn(async () =>
       JSON.stringify({
         ...initialStatus,
         profileId: "profile-activated",
@@ -180,43 +184,30 @@ describe("D2a profile egress gate", () => {
     );
     const gate = await createProfileEgressGate({
       ...backend({ restricted: false, handlesInvalidated: false }),
-      activateProfileEgress,
+      profileActivationCommit,
     });
     const scheduler = createLicenseValidationScheduler(null, vi.fn());
-    const manualOperations = [
-      deferred<string>(),
-      deferred<string>(),
-      deferred<string>(),
-    ];
-    gate.registerMainEgressParticipant("license-validation", () =>
-      scheduler.quiesceForProfileEgress(),
-    );
-    const admitted = manualOperations.map((operation) =>
-      scheduler.runManualOperation(() => operation.promise),
-    );
+    const pending = deferred<string>();
+    const admitted = scheduler.runManualOperation(() => pending.promise);
 
-    const activation = gate.activateFirstRestrictedPublication!();
-    await vi.waitFor(() => expect(gate.restricted).toBe(true));
-    expect(activateProfileEgress).not.toHaveBeenCalled();
-
-    for (const [index, operation] of manualOperations.entries()) {
-      operation.resolve(`manual-${index}`);
-    }
-    await expect(Promise.all(admitted)).resolves.toEqual([
-      "manual-0",
-      "manual-1",
-      "manual-2",
-    ]);
-    await activation;
-    expect(activateProfileEgress).toHaveBeenCalledOnce();
-    expect(gate.unavailable).toBe(false);
+    // A manual license operation still in flight does not hold stages 3-5.
+    await expect(activateGateForTest(gate)).resolves.toEqual({
+      state: "restricted",
+    });
+    expect(profileActivationCommit).toHaveBeenCalledOnce();
+    // ... and the scheduler still admits license operations afterwards.
+    await expect(
+      scheduler.runManualOperation(async () => "after"),
+    ).resolves.toBe("after");
+    pending.resolve("before");
+    await expect(admitted).resolves.toBe("before");
   });
 
   it("closes participant registration before a drain callback can re-enter", async () => {
     const nativeStatus = JSON.parse(
       await backend().initializeProfileEgress!(),
     ) as Record<string, unknown>;
-    const activateProfileEgress = vi.fn(async () =>
+    const profileActivationCommit = vi.fn(async () =>
       JSON.stringify({
         ...nativeStatus,
         profileId: "profile-activated",
@@ -236,17 +227,17 @@ describe("D2a profile egress gate", () => {
     });
     const gate = await createProfileEgressGate({
       ...backend({ restricted: false, handlesInvalidated: false }),
-      activateProfileEgress,
+      profileActivationCommit,
     });
     gate.registerMainEgressParticipant("first", drain);
 
-    await gate.activateFirstRestrictedPublication!();
+    await activateGateForTest(gate);
 
     expect(registrationError).toBeInstanceOf(Error);
     expect(registrationError).toMatchObject({
       message: expect.stringMatching(/started|completed/),
     });
-    expect(activateProfileEgress).toHaveBeenCalledOnce();
+    expect(profileActivationCommit).toHaveBeenCalledOnce();
   });
 
   it("waits for every participant before failing activation", async () => {
@@ -260,38 +251,42 @@ describe("D2a profile egress gate", () => {
           releaseSecond = resolve;
         }),
     );
-    const activateProfileEgress = vi.fn(async () => "never-called");
+    const profileActivationCommit = vi.fn(async () => "never-called");
     const gate = await createProfileEgressGate({
       ...backend({ restricted: false, handlesInvalidated: false }),
-      activateProfileEgress,
+      profileActivationCommit,
     });
     gate.registerMainEgressParticipant?.("first", first);
     gate.registerMainEgressParticipant?.("second", second);
 
-    const activation = gate.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(gate);
     await vi.waitFor(() => expect(second).toHaveBeenCalledOnce());
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(profileActivationCommit).not.toHaveBeenCalled();
     releaseSecond();
 
-    await expect(activation).rejects.toThrow("first drain failed");
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    await expect(activation).resolves.toEqual({
+      state: "unavailable",
+      reason: "participant-failed",
+    });
+    expect(profileActivationCommit).not.toHaveBeenCalled();
     expect(gate.unavailable).toBe(true);
   });
 
   it("fails closed when a main-owned transport cannot drain", async () => {
-    const activateProfileEgress = vi.fn(async () => "never-called");
+    const profileActivationCommit = vi.fn(async () => "never-called");
     const gate = await createProfileEgressGate({
       ...backend({ restricted: false, handlesInvalidated: false }),
-      activateProfileEgress,
+      profileActivationCommit,
     });
     gate.registerMainEgressParticipant?.("codex-app-server", async () => {
       throw new Error("Codex drain failed");
     });
 
-    await expect(gate.activateFirstRestrictedPublication!()).rejects.toThrow(
-      "Codex drain failed",
-    );
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    await expect(activateGateForTest(gate)).resolves.toEqual({
+      state: "unavailable",
+      reason: "participant-failed",
+    });
+    expect(profileActivationCommit).not.toHaveBeenCalled();
     expect(gate.restricted).toBe(true);
     expect(gate.unavailable).toBe(true);
   });
@@ -299,14 +294,15 @@ describe("D2a profile egress gate", () => {
   it("stays fail-closed when main-only activation fails", async () => {
     const gate = await createProfileEgressGate({
       ...backend({ restricted: false, handlesInvalidated: false }),
-      activateProfileEgress: vi.fn(async () => {
+      profileActivationCommit: vi.fn(async () => {
         throw new Error("native activation failed");
       }),
     });
 
-    await expect(gate.activateFirstRestrictedPublication!()).rejects.toThrow(
-      "native activation failed",
-    );
+    await expect(activateGateForTest(gate)).resolves.toEqual({
+      state: "unavailable",
+      reason: "activation-failed",
+    });
     expect(gate.restricted).toBe(true);
     expect(gate.unavailable).toBe(true);
     expect(() => gate.assertInvoke("send_chat_message", {})).toThrow(
@@ -1066,9 +1062,9 @@ describe("D2a profile egress gate", () => {
         const release = deferred<string>();
         const gate = await createProfileEgressGate({
           ...backend({ restricted: false, handlesInvalidated: false }),
-          activateProfileEgress: vi.fn(() => release.promise),
+          profileActivationCommit: vi.fn(() => release.promise),
         });
-        const activation = gate.activateFirstRestrictedPublication!();
+        const activation = activateGateForTest(gate);
         expect(gate.restricted).toBe(true);
         expect(() => gate.assertInvoke(command, args)).not.toThrow();
         release.resolve(await backend().initializeProfileEgress!());

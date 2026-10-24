@@ -17,6 +17,7 @@ import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
 } from "./profileEgress.js";
+import { activateGateForTest } from "./profileActivation.test.support.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
@@ -2949,12 +2950,12 @@ describe("NIR-1 router sender binding", () => {
       resolveReader = resolve;
     });
     const narrativeExtractionClaimTask = vi.fn(() => readerResponse);
-    const activateProfileEgress = vi.fn(async () =>
+    const profileActivationCommit = vi.fn(async () =>
       JSON.stringify(activatedStatus),
     );
     const backend = {
       initializeProfileEgress: vi.fn(async () => JSON.stringify(initialStatus)),
-      activateProfileEgress,
+      profileActivationCommit,
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
       narrativeExtractionClaimTask,
@@ -2998,10 +2999,10 @@ describe("NIR-1 router sender binding", () => {
       expect(narrativeExtractionClaimTask).toHaveBeenCalledOnce(),
     );
 
-    const activation = profileEgress.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(profileEgress);
     await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
     expect(profileEgress.restricted).toBe(true);
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(profileActivationCommit).not.toHaveBeenCalled();
 
     resolveReader(JSON.stringify({ secret: "D2A_PLAINTEXT_SENTINEL" }));
     const envelope = await pendingReader;

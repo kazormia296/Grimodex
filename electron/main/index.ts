@@ -23,6 +23,7 @@ import {
   broadcastMainEvent,
   registerEventBus,
   refreshWorkspaceLifecycleView,
+  sendAiStreamTerminalToWindow,
   setBackendEventEgressGate,
   sendBackendEventToWindow,
   sendMainEventToWindow,
@@ -36,7 +37,19 @@ import {
   startBodyDeclarationCiSeam,
 } from "./bodyDeclarationCiSeam.js";
 import { registerIpcRouter } from "./ipc.js";
-import { createMainGrantController } from "./mainGrant.js";
+import {
+  createMainGrantController,
+  createMainGrantInFlight,
+} from "./mainGrant.js";
+import { createAiStreamTerminalTracker } from "./aiStreamTerminals.js";
+import {
+  createProfileActivationController,
+  PROFILE_EGRESS_STATE_EVENT,
+} from "./profileActivation.js";
+import {
+  parseProfileActivationCiSeam,
+  startProfileActivationCiSeam,
+} from "./profileActivationCiSeam.js";
 import { buildKeyStoreShellHandlers, createKeyStore } from "./keyStore.js";
 import {
   createLicenseValidationScheduler,
@@ -70,7 +83,12 @@ import {
   resolveElectronUpdaterAvailability,
 } from "./updater.js";
 import { createVivliostyleManager } from "./vivliostyle.js";
-import { createMainWindow, getWindow, setWindowTitleLock } from "./windows.js";
+import {
+  createMainWindow,
+  getWindow,
+  resetWindowTitles,
+  setWindowTitleLock,
+} from "./windows.js";
 import { createProfileEgressGate } from "./profileEgress.js";
 import {
   applySessionPermissionPolicy,
@@ -532,22 +550,44 @@ if (!gotSingleInstanceLock) {
       },
     );
     // D2a activation is main-owned: close and drain all main-owned external
-    // transports before Native persists the restricted profile state. These
-    // callbacks never cross the renderer/preload contract.
+    // transports before Native persists the restricted profile state (stage
+    // 3, bounded). These callbacks never cross the renderer/preload contract.
+    // The license check is not a participant: it keeps running (L-1, D-8);
+    // Native picks the restricted client from the reservation on.
     if (!profileEgress.unavailable) {
-      profileEgress.registerMainEgressParticipant("cli-ai", () =>
-        cliAi.quiesceForProfileEgress(),
+      profileEgress.registerMainEgressParticipant(
+        "cli-ai",
+        () => cliAi.quiesceForProfileEgress(),
+        () => cliAi.disposeAll(),
       );
-      profileEgress.registerMainEgressParticipant("codex-app-server", () =>
-        codexApp.quiesceForProfileEgress(),
+      profileEgress.registerMainEgressParticipant(
+        "codex-app-server",
+        () => codexApp.quiesceForProfileEgress(),
+        () => codexApp.dispose(),
       );
-      profileEgress.registerMainEgressParticipant("license-validation", () =>
-        licenseValidation.quiesceForProfileEgress(),
-      );
-      profileEgress.registerMainEgressParticipant("vivliostyle", () =>
-        vivliostyle.quiesceForProfileEgress(),
+      profileEgress.registerMainEgressParticipant(
+        "vivliostyle",
+        () => vivliostyle.quiesceForProfileEgress(),
+        () => vivliostyle.disposeAll(),
       );
     }
+    // DA-2 (DR-DA2-17, DR-DA2-18): the activation's notices. Stage 2 resets
+    // every window title to the product name and ends the streams in flight
+    // with a typed terminal; every change reaches every window as a closed
+    // state; becoming unavailable stops the periodic license check (P2-4).
+    const aiStreamTerminals = createAiStreamTerminalTracker({
+      send: sendAiStreamTerminalToWindow,
+    });
+    profileEgress.onStatusChange?.((view) => {
+      if (view.state === "activating") {
+        resetWindowTitles();
+        aiStreamTerminals.terminateAll();
+      }
+      if (view.state === "unavailable") {
+        licenseValidation.dispose();
+      }
+      broadcastMainEvent(PROFILE_EGRESS_STATE_EVENT, view);
+    });
     let narrativeMaintenanceTriggers: NarrativeMaintenanceTriggerCoordinator | null =
       null;
     const narrativeFreshness = createNarrativeFreshnessScheduler(backend, {
@@ -717,9 +757,30 @@ if (!gotSingleInstanceLock) {
       isPackaged: app.isPackaged,
       userDataDir: configuredUserDataDir,
     });
+    // DA-2 (DR-DA2-10): the profile activation's journey seam. Inert unless
+    // unpackaged, `CI=true`, the public owner token, a nonce, a response and
+    // the journey's own userData; only then is the `profile-activation` entry
+    // opened, once, and the dialog replaced.
+    const profileActivationCiSeam = startProfileActivationCiSeam({
+      seam: parseProfileActivationCiSeam(process.env, {
+        isPackaged: app.isPackaged,
+        userDataDir: configuredUserDataDir,
+      }),
+      backend,
+      isPackaged: app.isPackaged,
+    });
+    // One in-flight confirmation for the whole process, whatever its kind.
+    const mainGrantInFlight = createMainGrantInFlight();
     const mainGrant = createMainGrantController({
       backend,
       confirm: bodyDeclarationCiSeam?.confirm,
+      inFlight: mainGrantInFlight,
+    });
+    const profileActivation = createProfileActivationController({
+      backend,
+      gate: profileEgress,
+      inFlight: mainGrantInFlight,
+      confirm: profileActivationCiSeam?.confirm,
     });
     const codexOwnerLifecycleBound = new Set<number>();
     registerIpcRouter(
@@ -748,6 +809,8 @@ if (!gotSingleInstanceLock) {
       narrativeMaintenance ?? undefined,
       narrativeFreshness,
       mainGrant,
+      profileActivation,
+      aiStreamTerminals,
     );
     // TSFn 配線（backend.onEvent → 全窓 broadcast）を含む（§7.1、S7）。
     // 登録時に flush される backend:ready は窓生成前のため renderer には

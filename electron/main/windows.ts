@@ -42,9 +42,6 @@ let stateStore: WindowStateStore | null = null;
 /** index.html の `<title>` と同じ製品名（title の option がない窓の既定）。 */
 const PRODUCT_WINDOW_TITLE = "Grimodex";
 
-/** 窓の生成時の title（restricted の間に固定する値）。 */
-const productTitles = new WeakMap<BrowserWindow, string>();
-
 /**
  * パネル窓の title。renderer の title option は使わず、label（`panel-<id>`）から
  * 作る（feature 層の `buildPanelWindowOptions` と同じ「id の先頭を大文字」の名前）。
@@ -80,13 +77,14 @@ export function setWindowTitleLock(
 }
 
 /**
- * 既存の全窓の title を生成時の値に戻す。restricted の間に固定する前に変わった
- * title を、activation の段 2 で戻すために用意する（呼出しは DA-2）。
+ * 既存の全窓（パネル窓を含む）の title を製品名に戻す。activation の段 2 で、
+ * 固定する前に renderer が変えた title も、label から作った panel の名前も、
+ * restricted の間に固定する値（製品名）へそろえる（DA-2 DR-DA2-17、Negative (28)）。
  */
 export function resetWindowTitles(): void {
   for (const win of registry.values()) {
     if (win.isDestroyed()) continue;
-    win.setTitle(productTitles.get(win) ?? PRODUCT_WINDOW_TITLE);
+    win.setTitle(PRODUCT_WINDOW_TITLE);
   }
 }
 
@@ -307,10 +305,6 @@ export function createMainWindow(): BrowserWindow {
     ...options,
     webPreferences: buildWebPreferences(),
   });
-  productTitles.set(
-    win,
-    typeof options.title === "string" ? options.title : PRODUCT_WINDOW_TITLE,
-  );
   track("main", win);
   attachWindowChrome("main", win, store);
   showWhenReady(win, options, startMaximized);
@@ -375,7 +369,6 @@ export function openPanelWindow(
     ...options,
     webPreferences: buildWebPreferences(),
   });
-  productTitles.set(win, title);
   track(label, win);
   attachWindowChrome(label, win, store);
   showWhenReady(win, options, startMaximized);

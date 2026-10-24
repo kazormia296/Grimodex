@@ -5,6 +5,11 @@ import {
   type CommandArgs,
   type NapiBackendLike,
 } from "../shared/ipcContract.js";
+import {
+  PROFILE_EGRESS_UNAVAILABLE_REASONS,
+  type ProfileEgressStatusView,
+  type ProfileEgressUnavailableReason,
+} from "../shared/profileEgressStatusWire.js";
 import { parseWorkspaceRestoreOutcome } from "../shared/workspaceRestoreOutcome.js";
 
 export const D2A_EGRESS_DENIED_MARKER = "D2A_EGRESS_DENIED:";
@@ -59,10 +64,84 @@ function emptyNativeProfileEgressPolicy(): NativeProfileEgressPolicy {
   };
 }
 
-type MainProfileEgressBackend = NapiBackendLike & {
-  /** Main-only N-API method; never part of the renderer command contract. */
-  activateProfileEgress?: () => Promise<string>;
-};
+/**
+ * The Native surface the gate uses. There is no grant-less activation: the
+ * only way to restricted is `profileActivationCommit`, which Native refuses
+ * without the reservation of a consumed ProfileActivation grant (DR-DA2-3),
+ * and which the gate calls only from `beginProfileActivation` with a token
+ * that `consumeProfileActivation` returned (DR-DA2-17).
+ */
+type MainProfileEgressBackend = NapiBackendLike;
+
+/**
+ * Stage 3 bound (K3/2 "待ちの上限": 30 s or less, fail closed; DR-DA2-17).
+ * A test may pass a shorter bound; a longer one is cut to this value.
+ */
+export const PROFILE_EGRESS_PARTICIPANT_BOUND_MS = 30_000;
+
+/** Typed terminal reason of a legacy AI result refused after stage 2. */
+export const PROFILE_ACTIVATION_STOPPED_MESSAGE = `${D2A_EGRESS_DENIED_MARKER} profile-activation-stopped`;
+
+declare const consumedProfileActivationBrand: unique symbol;
+
+/**
+ * Proof that Native consumed a ProfileActivation grant (stage 1) in this
+ * process. Opaque; only `consumeProfileActivation` creates one, and the gate
+ * accepts each one once.
+ */
+export interface ConsumedProfileActivation {
+  readonly [consumedProfileActivationBrand]: true;
+}
+
+const consumedProfileActivations = new WeakSet<object>();
+
+/**
+ * Stage 1: Native's synchronous consume of the grant into the activation's
+ * reservation. On success the caller goes to `beginProfileActivation` in the
+ * same JS task (P3-1). A refusal throws Native's closed code and closes
+ * nothing.
+ */
+export function consumeProfileActivation(
+  backend: Pick<NapiBackendLike, "profileActivationConsume"> | null,
+  grantId: string,
+  senderId: number,
+  windowId: number,
+): ConsumedProfileActivation {
+  const consume = backend?.profileActivationConsume;
+  if (typeof consume !== "function") {
+    throw new Error("PROFILE_ACTIVATION_REFUSED:unavailable");
+  }
+  consume.call(backend, grantId, senderId, windowId);
+  const token = Object.freeze({}) as ConsumedProfileActivation;
+  consumedProfileActivations.add(token);
+  return token;
+}
+
+const NATIVE_UNAVAILABLE_REASON =
+  /PROFILE_EGRESS_UNAVAILABLE:(state-file-unreadable|state-file-unwritable|barrier-timeout|activation-failed)\b/u;
+
+/** The closed reason of a Native unavailable error; never its detail. */
+function nativeUnavailableReason(
+  error: unknown,
+  fallback: ProfileEgressUnavailableReason,
+): ProfileEgressUnavailableReason {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = NATIVE_UNAVAILABLE_REASON.exec(message)?.[1];
+  return code !== undefined &&
+    (PROFILE_EGRESS_UNAVAILABLE_REASONS as readonly string[]).includes(code)
+    ? (code as ProfileEgressUnavailableReason)
+    : fallback;
+}
+
+class ProfileActivationStageError extends Error {
+  constructor(
+    readonly reason: ProfileEgressUnavailableReason,
+    message: string,
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
+  }
+}
 
 /**
  * Route classes (K3/2 "restricted 下の route 区分"). The five publication
@@ -327,6 +406,10 @@ const INTERNAL_COMMANDS = new Set([
   "get_global_settings",
   "get_license_state",
   "get_narrative_backfill_status",
+  // DA-2 (DR-DA2-9): Main answers the closed state itself, before the invoke
+  // check, so it also answers while unavailable or after a failed caller
+  // registration. Never forwarded to Native.
+  "get_profile_egress_status",
   "has_api_key",
   "ime_export_clear_all",
   "ime_export_get_status",
@@ -412,6 +495,9 @@ const INTERNAL_COMMANDS = new Set([
   "repair_integrity",
   "repair_narrative_dependency_declarations",
   "reply_to_annotation",
+  // DA-2 (DR-DA2-16): Main's confirmation runs the activation; the renderer
+  // receives a closed status code only. Never forwarded to Native.
+  "request_profile_activation",
   "restore_backup",
   "restore_recovery_candidate",
   "retry_narrative_legacy_backfill",
@@ -789,7 +875,21 @@ function denied(route: D2aRoute, detail: string): Error {
 export interface ProfileEgressGate {
   readonly restricted: boolean;
   readonly unavailable: boolean;
+  /** Stages 2 to 6 of an activation are running. */
+  readonly activating?: boolean;
+  /** The closed state for the renderer (DR-DA2-9). */
+  statusView?(): ProfileEgressStatusView;
+  /**
+   * Called synchronously at stage 2 (`activating`), at stage 6
+   * (`restricted`) and when the gate becomes unavailable. A listener that
+   * throws during stage 2 fails the activation closed.
+   */
+  onStatusChange?(
+    listener: (view: ProfileEgressStatusView) => void,
+  ): () => void;
   issueCallerIdentity(senderId: number): MainIssuedCallerIdentity;
+  /** Whether `identity` is exactly the one Main issued to its sender. */
+  isIssuedCallerIdentity?(identity: unknown): boolean;
   assertInvoke(command: string, args: CommandArgs): void;
   /**
    * `own-data-read` classification of a generic DB command, for Native's
@@ -806,12 +906,24 @@ export interface ProfileEgressGate {
   assertPlaintextPublication(command: string, args: CommandArgs): void;
   allowsBackendEvent(channel: string): boolean;
   assertExternalUrl(): void;
-  /** Main-only lifecycle participants; never exposed through renderer IPC. */
+  /**
+   * Main-only lifecycle participants; never exposed through renderer IPC.
+   * `forceStop` is requested (not awaited) when stage 3 runs out of time.
+   */
   registerMainEgressParticipant(
     name: string,
     quiesce: () => Promise<void>,
+    forceStop?: () => unknown,
   ): void;
-  activateFirstRestrictedPublication?(): Promise<void>;
+  /**
+   * Stages 2 to 7 of the profile activation (DR-DA2-17). Stage 2 runs inside
+   * this call, synchronously; the promise settles after stage 6 with the
+   * resulting state (`restricted`, or `unavailable` with its reason). Only a
+   * token from `consumeProfileActivation` is accepted, once.
+   */
+  beginProfileActivation?(
+    consumed: ConsumedProfileActivation,
+  ): Promise<ProfileEgressStatusView>;
   observeBackendEvent?(channel: string, payload: unknown): void;
   /** Main-only proof from a Native restore result; never exposed to renderer. */
   observeWorkspaceLifecycleResult?(payload: unknown): void;
@@ -825,9 +937,28 @@ interface ReadyWorkspaceBinding {
   readonly revision: number;
 }
 
+interface NativeBoundProfileEgressGateInit {
+  readonly status: NativeProfileEgressStatus | null;
+  /** Set when the gate starts unavailable; the reason is kept. */
+  readonly unavailableReason: ProfileEgressUnavailableReason | null;
+  readonly policy: NativeProfileEgressPolicy;
+  readonly registerCaller?: (identity: MainIssuedCallerIdentity) => void;
+  readonly invalidateCallers?: () => void;
+  /** Native stages 4 and 5; refused by Native without the reservation. */
+  readonly commitActivation?: () => Promise<string>;
+  readonly ownDataReadOpen: boolean;
+  readonly participantBoundMs: number;
+}
+
+interface MainEgressParticipant {
+  readonly quiesce: () => Promise<void>;
+  readonly forceStop: (() => unknown) | null;
+}
+
 class NativeBoundProfileEgressGate implements ProfileEgressGate {
   private _restricted: boolean;
   private _unavailable: boolean;
+  private _unavailableReason: ProfileEgressUnavailableReason | null;
   private profileId: string;
   private callerEpoch: number;
   private readonly registerCaller:
@@ -835,13 +966,18 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     | null;
   private readonly invalidateCallers: (() => void) | null;
   private policy: NativeProfileEgressPolicy;
-  private readonly activateProfileEgress: (() => Promise<string>) | null;
-  private activationPromise: Promise<void> | null = null;
+  private readonly commitActivation: (() => Promise<string>) | null;
+  private readonly participantBoundMs: number;
+  private activationPromise: Promise<ProfileEgressStatusView> | null = null;
+  private activationStarted = false;
   private activationCompleted = false;
   private mainEgressRegistrationOpen = true;
   private readonly mainEgressParticipants = new Map<
     string,
-    () => Promise<void>
+    MainEgressParticipant
+  >();
+  private readonly statusListeners = new Set<
+    (view: ProfileEgressStatusView) => void
   >();
   private workspaceId: string | null = null;
   // Safe Mode/restore-only keeps a restricted authorization target even while
@@ -875,24 +1011,23 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
 
   private readonly ownDataReadOpen: boolean;
 
-  constructor(
-    status: NativeProfileEgressStatus | null,
-    unavailable: boolean,
-    policy: NativeProfileEgressPolicy,
-    registerCaller?: (identity: MainIssuedCallerIdentity) => void,
-    invalidateCallers?: () => void,
-    activateProfileEgress?: () => Promise<string>,
-    ownDataReadOpen: boolean = D2A_OWN_DATA_READ_OPEN,
-  ) {
-    this.ownDataReadOpen = ownDataReadOpen;
+  constructor(init: NativeBoundProfileEgressGateInit) {
+    const { status } = init;
+    const unavailable = init.unavailableReason !== null;
+    this.ownDataReadOpen = init.ownDataReadOpen;
     const profileId = status?.profileId;
     const callerEpoch = status?.callerEpoch;
     this._restricted = unavailable || status?.restricted === true;
     this._unavailable = unavailable;
-    this.policy = policy;
-    this.registerCaller = registerCaller ?? null;
-    this.invalidateCallers = invalidateCallers ?? null;
-    this.activateProfileEgress = activateProfileEgress ?? null;
+    this._unavailableReason = init.unavailableReason;
+    this.policy = init.policy;
+    this.registerCaller = init.registerCaller ?? null;
+    this.invalidateCallers = init.invalidateCallers ?? null;
+    this.commitActivation = init.commitActivation ?? null;
+    this.participantBoundMs = Math.min(
+      Math.max(0, init.participantBoundMs),
+      PROFILE_EGRESS_PARTICIPANT_BOUND_MS,
+    );
     this.profileId =
       typeof profileId === "string" &&
       profileId.trim() === profileId &&
@@ -905,6 +1040,61 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       callerEpoch >= 0
         ? callerEpoch
         : 0;
+  }
+
+  get activating(): boolean {
+    return this.activationPromise !== null;
+  }
+
+  statusView(): ProfileEgressStatusView {
+    if (this._unavailable) {
+      return {
+        state: "unavailable",
+        reason: this._unavailableReason ?? "activation-failed",
+      };
+    }
+    if (this.activationPromise !== null) return { state: "activating" };
+    return this._restricted ? { state: "restricted" } : { state: "unrestricted" };
+  }
+
+  onStatusChange(
+    listener: (view: ProfileEgressStatusView) => void,
+  ): () => void {
+    this.statusListeners.add(listener);
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+
+  /** Every listener runs; the first error is rethrown after all ran. */
+  private notifyStatus(view: ProfileEgressStatusView): void {
+    let failure: unknown = null;
+    for (const listener of [...this.statusListeners]) {
+      try {
+        listener(view);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+    if (failure !== null) throw failure;
+  }
+
+  isIssuedCallerIdentity(identity: unknown): boolean {
+    if (
+      identity === null ||
+      typeof identity !== "object" ||
+      Array.isArray(identity)
+    ) {
+      return false;
+    }
+    const candidate = identity as Partial<MainIssuedCallerIdentity>;
+    if (typeof candidate.senderId !== "number") return false;
+    const issued = this.identities.get(candidate.senderId);
+    return (
+      issued !== undefined &&
+      issued === identity &&
+      !this.registrationErrors.has(candidate.senderId)
+    );
   }
 
   issueCallerIdentity(senderId: number): MainIssuedCallerIdentity {
@@ -1041,6 +1231,15 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       }
       return;
     }
+    if (route === "old-external-ai" || route === "old-local-ai") {
+      // I-7 (DR-DA2-18): a legacy AI result that completes after stage 2 is
+      // not returned. Unrestricted keeps its behavior: no identity check.
+      if (!this.restricted && !this.unavailable) return;
+      throw denied(
+        route,
+        `route ${command} completed after profile restriction began`,
+      );
+    }
     if (route !== "plaintext-publication") {
       return;
     }
@@ -1115,15 +1314,16 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   registerMainEgressParticipant(
     name: string,
     quiesce: () => Promise<void>,
+    forceStop?: () => unknown,
   ): void {
     if (name.trim() !== name || name.length === 0) {
       throw new Error("main egress participant name must be non-empty");
     }
-    if (this.activationPromise) {
-      throw new Error("main egress activation has already started");
-    }
     if (this.activationCompleted || this.unavailable) {
       throw new Error("main egress activation has already completed");
+    }
+    if (this.activationStarted) {
+      throw new Error("main egress activation has already started");
     }
     if (!this.mainEgressRegistrationOpen) {
       throw new Error("main egress activation has already started");
@@ -1131,84 +1331,191 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     if (this.mainEgressParticipants.has(name)) {
       throw new Error(`main egress participant is already registered: ${name}`);
     }
-    this.mainEgressParticipants.set(name, quiesce);
+    this.mainEgressParticipants.set(name, {
+      quiesce,
+      forceStop: forceStop ?? null,
+    });
   }
 
-  async activateFirstRestrictedPublication(): Promise<void> {
-    if (this.activationPromise) return this.activationPromise;
-    if (this.unavailable) {
-      throw denied("unclassified", "profile egress activation is unavailable");
+  beginProfileActivation(
+    consumed: ConsumedProfileActivation,
+  ): Promise<ProfileEgressStatusView> {
+    if (
+      consumed === null ||
+      typeof consumed !== "object" ||
+      !consumedProfileActivations.has(consumed)
+    ) {
+      return Promise.reject(
+        new Error(
+          "PROFILE_ACTIVATION_REFUSED:not-reserved: no consumed profile activation grant",
+        ),
+      );
     }
-    if (this.restricted) return;
+    consumedProfileActivations.delete(consumed);
+    if (this.activationStarted || this.restricted || this.unavailable) {
+      // Native consumed nothing it could commit (it refuses an activation of
+      // a restricted or reserved profile); Main closes nothing new.
+      return Promise.reject(
+        new Error(
+          "PROFILE_ACTIVATION_REFUSED:not-reserved: the profile is not unrestricted",
+        ),
+      );
+    }
 
-    // Close all egress synchronously while Native performs the durable
-    // transition and quiescence barrier. No invoke/event/url can slip through
-    // the activation window.
+    // Stage 2: close everything synchronously, in the same JS task as the
+    // consume. From here no new class is admitted at invoke time and results
+    // admitted before are refused at completion.
+    this.activationStarted = true;
     this.mainEgressRegistrationOpen = false;
     this._restricted = true;
-    const activate = this.activateProfileEgress;
-    this.activationPromise = (async () => {
+    let settle!: (view: ProfileEgressStatusView) => void;
+    const promise = new Promise<ProfileEgressStatusView>((resolve) => {
+      settle = resolve;
+    });
+    this.activationPromise = promise;
+    let stageTwoFailure: unknown = null;
+    try {
+      this.notifyStatus({ state: "activating" });
+    } catch (error) {
+      stageTwoFailure = error;
+    }
+
+    void (async (): Promise<ProfileEgressStatusView> => {
       try {
-        const participants = [...this.mainEgressParticipants.entries()];
-        if (participants.length > 0) {
-          const results = await Promise.allSettled(
-            participants.map(async ([name, quiesce]) => {
-              try {
-                await quiesce();
-              } catch (error) {
-                throw new Error(
-                  `main egress participant failed to drain: ${name}: ${error instanceof Error ? error.message : String(error)}`,
-                  { cause: error },
-                );
-              }
-            }),
-          );
-          const failed = results.find(
-            (result): result is PromiseRejectedResult =>
-              result.status === "rejected",
-          );
-          if (failed) throw failed.reason;
-        }
-        if (!activate) {
-          throw denied(
-            "unclassified",
-            "profile egress activation is unavailable",
+        if (stageTwoFailure !== null) {
+          throw new ProfileActivationStageError(
+            "activation-failed",
+            "profile activation stage 2 failed",
+            { cause: stageTwoFailure },
           );
         }
-        const raw = await activate();
+        await this.stopMainParticipants();
+        const commit = this.commitActivation;
+        if (!commit) {
+          throw new ProfileActivationStageError(
+            "activation-failed",
+            "profile activation commit is unavailable",
+          );
+        }
+        let raw: string;
+        try {
+          raw = await commit();
+        } catch (error) {
+          throw new ProfileActivationStageError(
+            nativeUnavailableReason(error, "activation-failed"),
+            "profile activation commit failed",
+            { cause: error },
+          );
+        }
         const status = JSON.parse(raw) as NativeProfileEgressStatus;
         const policy = parseNativeProfileEgressPolicy(status);
-        if (!isValidNativeProfileEgressStatus(status, policy, true)) {
-          throw denied(
-            "unclassified",
-            "profile egress activation returned an invalid restricted status",
-          );
-        }
         if (
+          !isValidNativeProfileEgressStatus(status, policy, true) ||
           typeof status.profileId !== "string" ||
           typeof status.callerEpoch !== "number" ||
           !policy
         ) {
-          throw denied(
-            "unclassified",
+          throw new ProfileActivationStageError(
+            "activation-failed",
             "profile egress activation returned an invalid restricted status",
           );
         }
+        // Stage 6.
         this.profileId = status.profileId;
         this.callerEpoch = status.callerEpoch;
         this.policy = policy;
         this.identities.clear();
         this.registrationErrors.clear();
         this.activationCompleted = true;
+        this.activationPromise = null;
+        const view: ProfileEgressStatusView = { state: "restricted" };
+        try {
+          this.notifyStatus(view);
+        } catch (error) {
+          console.warn(
+            `[grimodex-electron] profile egress listener failed after stage 6: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        // Stage 7: the next invoke registers each caller at the new epoch.
+        return view;
       } catch (error) {
+        const reason =
+          error instanceof ProfileActivationStageError
+            ? error.reason
+            : "activation-failed";
+        console.error(
+          `[grimodex-electron] D2a profile activation failed closed: ${reason}: ${error instanceof Error ? error.message : String(error)}`,
+        );
         this._unavailable = true;
         this._restricted = true;
-        throw error;
-      } finally {
+        this._unavailableReason = reason;
         this.activationPromise = null;
+        const view: ProfileEgressStatusView = { state: "unavailable", reason };
+        try {
+          this.notifyStatus(view);
+        } catch (listenerError) {
+          console.warn(
+            `[grimodex-electron] profile egress listener failed while unavailable: ${listenerError instanceof Error ? listenerError.message : String(listenerError)}`,
+          );
+        }
+        return view;
       }
-    })();
-    return this.activationPromise;
+    })().then(settle);
+    return promise;
+  }
+
+  /**
+   * Stage 3: every registered participant once, in parallel, inside one
+   * bound. A participant that has not finished when the bound runs out is
+   * asked to force-stop; the activation does not wait for it.
+   */
+  private async stopMainParticipants(): Promise<void> {
+    const participants = [...this.mainEgressParticipants.entries()];
+    if (participants.length === 0) return;
+    const pending = new Set(participants.map(([name]) => name));
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), this.participantBoundMs);
+    });
+    const all = Promise.allSettled(
+      participants.map(async ([name, participant]) => {
+        try {
+          await participant.quiesce();
+        } catch (error) {
+          throw new ProfileActivationStageError(
+            "participant-failed",
+            `main egress participant failed to drain: ${name}`,
+            { cause: error },
+          );
+        } finally {
+          pending.delete(name);
+        }
+      }),
+    );
+    try {
+      const outcome = await Promise.race([all, timeout]);
+      if (outcome === "timeout") {
+        for (const [name, participant] of participants) {
+          if (!pending.has(name) || !participant.forceStop) continue;
+          try {
+            void Promise.resolve(participant.forceStop()).catch(() => undefined);
+          } catch {
+            // The activation is failing closed either way.
+          }
+        }
+        throw new ProfileActivationStageError(
+          "participant-timeout",
+          `main egress participants did not stop within ${this.participantBoundMs} ms: ${[...pending].join(", ")}`,
+        );
+      }
+      const failed = outcome.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      );
+      if (failed) throw failed.reason;
+    } finally {
+      if (timer !== null) clearTimeout(timer);
+    }
   }
 
   /**
@@ -1638,6 +1945,11 @@ export interface ProfileEgressGateOptions {
    * the gate follows `D2A_OWN_DATA_READ_OPEN`.
    */
   readonly ownDataReadOpen?: boolean;
+  /**
+   * Test seam for a shorter stage 3 bound. Production code does not pass it;
+   * a value above `PROFILE_EGRESS_PARTICIPANT_BOUND_MS` is cut to it.
+   */
+  readonly participantBoundMs?: number;
 }
 
 export async function createProfileEgressGate(
@@ -1645,72 +1957,52 @@ export async function createProfileEgressGate(
   options: ProfileEgressGateOptions = {},
 ): Promise<ProfileEgressGate> {
   const ownDataReadOpen = options.ownDataReadOpen ?? D2A_OWN_DATA_READ_OPEN;
+  const participantBoundMs =
+    options.participantBoundMs ?? PROFILE_EGRESS_PARTICIPANT_BOUND_MS;
+  const unavailableGate = (
+    reason: ProfileEgressUnavailableReason,
+  ): ProfileEgressGate =>
+    new NativeBoundProfileEgressGate({
+      status: null,
+      unavailableReason: reason,
+      policy: emptyNativeProfileEgressPolicy(),
+      ownDataReadOpen,
+      participantBoundMs,
+    });
   if (
     !backend?.initializeProfileEgress ||
     !backend.registerProfileEgressCaller ||
     !backend.invalidateProfileEgressCallers
   ) {
-    return new NativeBoundProfileEgressGate(
-      null,
-      true,
-      emptyNativeProfileEgressPolicy(),
-      undefined,
-      undefined,
-      undefined,
-      ownDataReadOpen,
-    );
+    return unavailableGate("backend-unavailable");
   }
   try {
     const raw = await backend.initializeProfileEgress!();
     const status = JSON.parse(raw) as NativeProfileEgressStatus;
     const policy = parseNativeProfileEgressPolicy(status);
-    if (!isValidNativeProfileEgressStatus(status, policy, false)) {
-      return new NativeBoundProfileEgressGate(
-        null,
-        true,
-        emptyNativeProfileEgressPolicy(),
-        undefined,
-        undefined,
-        undefined,
-        ownDataReadOpen,
-      );
+    if (!isValidNativeProfileEgressStatus(status, policy, false) || !policy) {
+      return unavailableGate("status-invalid");
     }
-    if (!policy) {
-      return new NativeBoundProfileEgressGate(
-        null,
-        true,
-        emptyNativeProfileEgressPolicy(),
-        undefined,
-        undefined,
-        undefined,
-        ownDataReadOpen,
-      );
-    }
-    return new NativeBoundProfileEgressGate(
+    return new NativeBoundProfileEgressGate({
       status,
-      false,
+      unavailableReason: null,
       policy,
-      (identity) => {
+      registerCaller: (identity) => {
         backend.registerProfileEgressCaller!(JSON.stringify(identity));
       },
-      () => backend.invalidateProfileEgressCallers!(),
-      backend.activateProfileEgress
-        ? () => backend.activateProfileEgress!()
+      invalidateCallers: () => backend.invalidateProfileEgressCallers!(),
+      commitActivation: backend.profileActivationCommit
+        ? () => backend.profileActivationCommit!()
         : undefined,
       ownDataReadOpen,
-    );
+      participantBoundMs,
+    });
   } catch (error) {
+    // The closed reason only; the detail (Native keeps paths out of it, but
+    // the message is not part of the renderer contract) stays in this log.
     console.error(
       `[grimodex-electron] D2a profile egress startup failed: ${error instanceof Error ? error.message : String(error)}`,
     );
-    return new NativeBoundProfileEgressGate(
-      null,
-      true,
-      emptyNativeProfileEgressPolicy(),
-      undefined,
-      undefined,
-      undefined,
-      ownDataReadOpen,
-    );
+    return unavailableGate(nativeUnavailableReason(error, "status-invalid"));
   }
 }

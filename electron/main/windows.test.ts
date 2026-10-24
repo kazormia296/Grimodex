@@ -159,14 +159,22 @@ describe("窓の title の固定（restricted または unavailable）", () => {
     expect(main.title).toBe("c");
   });
 
-  it("resetWindowTitles: 全窓の title を生成時の値に戻す（呼出しは DA-2 の段 2）", () => {
+  it("resetWindowTitles: 全窓（パネル窓を含む）の title を製品名に戻す（DA-2 の段 2。Negative (28)）", () => {
     main.title = "leaked before activation";
     panel.title = "leaked panel";
     resetWindowTitles();
     expect(main.setTitle).toHaveBeenLastCalledWith("Grimodex");
-    expect(panel.setTitle).toHaveBeenLastCalledWith("Codex");
+    expect(panel.setTitle).toHaveBeenLastCalledWith("Grimodex");
     expect(main.title).toBe("Grimodex");
-    expect(panel.title).toBe("Codex");
+    expect(panel.title).toBe("Grimodex");
+  });
+
+  it("resetWindowTitles restores the product name for panel windows（固定の後も document.title で変わらない）", () => {
+    panel.title = "Codex";
+    resetWindowTitles();
+    locked = true;
+    expect(panel.documentTitleChanged("secret chapter text")).toBe(true);
+    expect(panel.title).toBe("Grimodex");
   });
 
   it("resetWindowTitles: 破棄済みの窓は触らない", () => {
@@ -201,8 +209,10 @@ describe("窓の title の固定（restricted または unavailable）", () => {
     openPanelWindow("panel-leak2", { title: "secret chapter text" });
     const w = FakeBrowserWindow.instances.at(-1) as FakeBrowserWindow;
     expect(w.options.title).toBe("Leak2");
-    resetWindowTitles();
     expect(w.title).toBe("Leak2");
+    // 段 2 の reset は製品名にそろえる（renderer の値には戻らない）
+    resetWindowTitles();
+    expect(w.title).toBe("Grimodex");
     expect(w.title).not.toContain("secret");
   });
 

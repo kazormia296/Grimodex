@@ -162,6 +162,42 @@ export function sendBackendEventToWindow(
   }
 }
 
+const AI_STREAM_TERMINAL_CHANNELS: ReadonlySet<string> = new Set([
+  "chat:stream-error",
+  "inline-ai:stream-error",
+  "cli:stream-error",
+  "codex-app:event",
+]);
+
+/**
+ * DA-2 (DR-DA2-18): the typed terminal Main synthesizes for a stream that was
+ * in flight at stage 2 of a profile activation. The profile gate drops these
+ * channels from then on, so this path does not consult it; it sends only the
+ * closed terminal shapes `aiStreamTerminals.ts` builds (ids and a fixed code,
+ * no plaintext) to the one window that started the stream.
+ */
+export function sendAiStreamTerminalToWindow(
+  webContentsId: number,
+  channel: string,
+  payload: unknown,
+): void {
+  if (!AI_STREAM_TERMINAL_CHANNELS.has(channel)) {
+    console.warn(`[main:event] rejected non-terminal channel: ${channel}`);
+    return;
+  }
+  const target = BrowserWindow.getAllWindows().find(
+    (win) => !win.isDestroyed() && win.webContents.id === webContentsId,
+  );
+  if (!target) return;
+  try {
+    target.webContents.send(IPC.event, channel, payload);
+  } catch (cause) {
+    console.warn(
+      `[main:event] target ${webContentsId} became unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+}
+
 /** Electron main 専用イベントを検証して配信する。 */
 export function broadcastMainEvent(channel: string, payload: unknown): void {
   if (!isAllowedMainEventChannel(channel)) {
