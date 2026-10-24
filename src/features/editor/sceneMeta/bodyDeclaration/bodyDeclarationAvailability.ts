@@ -6,7 +6,9 @@
  * all. Turning it on is a PUB-G change: it is made together with opening the
  * product gate in Native, under the same approval. Native's gate is the second,
  * independent lock: with this on and the gate closed the read answers
- * `gate-closed` and the section stays hidden.
+ * `gate-closed` and the section stays hidden. PUB-G changes this together
+ * with the Related Scenes Graph UI constant (`NIR1_GRAPH_UI_ENABLED`,
+ * DR-CP3B-2).
  */
 export const BODY_DECLARATION_UI_ENABLED = false as const;
 

@@ -9,6 +9,8 @@ import {
   listenRelatedScenesIndexReady,
 } from "./nir1RelatedScenesApi";
 import { observeNir1RelatedScenesQuery } from "./nir1EvidenceNavigation";
+import { isNir1GraphUiEnabled } from "./nir1GraphAvailability";
+import { selectNir1GraphSeed } from "./nir1GraphSeed";
 import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
 
 const FETCH_DEBOUNCE_MS = 400;
@@ -146,12 +148,35 @@ export function useNir1RelatedScenes(enabled: boolean) {
       graphReadyDuringFetch.current = null;
       setLoading(true);
       observeNir1RelatedScenesQuery(sceneId);
+      const isCurrent = () => current.current === generation && !disposed;
+      // DR-CP3B-3 (D2-A): only with the Graph UI on is a pin read and a seed
+      // sent; otherwise begin is byte-identical to the one before CP-3a. A
+      // failed read is no seed; Raw and IR still run. `rawOnly` has no begin.
+      if (rawOnly || !isNir1GraphUiEnabled() || !projectId) {
+        start(rawOnly, generation, isCurrent, null);
+        return;
+      }
+      void selectNir1GraphSeed(projectId, sceneId)
+        .catch(() => null)
+        .then((seed) => {
+          if (isCurrent()) start(false, generation, isCurrent, seed);
+          else if (fetchingGeneration.current === generation)
+            fetchingGeneration.current = null;
+        });
+    };
+    const start = (
+      rawOnly: boolean,
+      generation: number,
+      isCurrent: () => boolean,
+      seed: string | null,
+    ) => {
       void fetchRelatedPastScenes(sceneId, {
         mode: "hybrid",
         ...(rawOnly ? { rawOnly: true } : {}),
         signal: abort.signal,
         queryGeneration: generation,
-        isCurrent: () => current.current === generation && !disposed,
+        isCurrent,
+        ...(seed !== null ? { graphSeedEntityId: seed } : {}),
       })
         .then((value) => {
           const readyDuringFetch = graphReadyDuringFetch.current === generation;
