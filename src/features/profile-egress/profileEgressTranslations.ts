@@ -30,7 +30,7 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       "state-file-unreadable":
         "状態ファイル（userData の profile-egress.json）を読めません。ファイルを読めるようにしてから、Grimodex を再起動してください。",
       "state-file-unwritable":
-        "状態ファイル（userData の profile-egress.json）に書き込めませんでした。書き込めるようにしてから、Grimodex を再起動してください。",
+        "状態ファイル（userData の profile-egress.json）に書き込めませんでした。userData に書き込めるようにしてから、Grimodex を再起動してください。再起動の後は、外部送信の制限を有効にする処理が成立していれば制限中、成立していなければ制限なしになります。",
       "barrier-timeout":
         "実行中の処理が止まったことを時間内に確かめられませんでした。Grimodex を再起動してください。再起動の後にもう一度確かめます。",
       "activation-failed":
@@ -68,7 +68,7 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       activated: "外部送信の制限を有効にしました。",
       cancelled: "取り消しました。外部送信の制限は変わっていません。",
       expired: "確認の期限が切れました。もう一度操作してください。",
-      busy: "ほかの確認の画面が開いています。閉じてからもう一度操作してください。",
+      busy: "ほかの処理が進行中です。しばらくしてからもう一度操作してください。",
       "already-restricted": "外部送信の制限は既に有効です。",
       unavailable: "いまは外部送信の制限を有効にできません。",
       "not-activated": "この版では、まだ外部送信の制限を有効にできません。",
@@ -89,7 +89,7 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       "state-file-unreadable":
         "The state file (profile-egress.json in userData) cannot be read. Make it readable, then restart Grimodex.",
       "state-file-unwritable":
-        "The state file (profile-egress.json in userData) could not be written. Make it writable, then restart Grimodex.",
+        "The state file (profile-egress.json in userData) could not be written. Make userData writable, then restart Grimodex. After the restart, the external sending restriction is on if turning it on took effect, and off if it did not.",
       "barrier-timeout":
         "Grimodex could not confirm in time that running work stopped. Restart Grimodex; it checks again after the restart.",
       "activation-failed":
@@ -127,7 +127,7 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       activated: "The external sending restriction is on.",
       cancelled: "Cancelled. The external sending restriction did not change.",
       expired: "The confirmation expired. Try again.",
-      busy: "Another confirmation dialog is open. Close it and try again.",
+      busy: "Another operation is in progress. Wait a moment and try again.",
       "already-restricted": "The external sending restriction is already on.",
       unavailable: "The external sending restriction cannot be turned on now.",
       "not-activated":
