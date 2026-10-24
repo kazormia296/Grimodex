@@ -1,6 +1,6 @@
 {
   "label": "nc1-ll-no-neg-loopback",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "dns": true,
     "gvt1": true,
@@ -30,10 +30,10 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 parts(drop:neg-loopback) start => true in 39.7 ms",
-    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:34693",
-    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:34693",
-    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:34693",
+    "nc1 parts(drop:neg-loopback) start => true in 52.9 ms",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:33171",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:33171",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:33171",
     "resolveProxy(http://127.0.0.1:1/) => DIRECT",
     "resolveProxy(https://169.254.169.254/) => DIRECT",
     "resolveProxy(https://[fe80::1]/) => DIRECT",
@@ -78,8 +78,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 39.7,
-    "listenerPort": 34693,
+    "startMs": 52.9,
+    "listenerPort": 33171,
     "listenerHits": 150,
     "overLimit": 0,
     "maxActive": 60,

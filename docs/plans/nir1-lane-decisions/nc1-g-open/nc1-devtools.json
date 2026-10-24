@@ -1,6 +1,6 @@
 {
   "label": "nc1-devtools",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "noProbes": true,
     "devtools": true,
@@ -9,7 +9,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 30.3 ms",
+    "nc1 orchestrator start => true in 35.4 ms",
     "devtools opened=true, webContents=2"
   ],
   "webPreferences": {
@@ -38,8 +38,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 30.3,
-    "listenerPort": 40869,
+    "startMs": 35.4,
+    "listenerPort": 46701,
     "listenerHits": 4,
     "overLimit": 0,
     "maxActive": 2,
@@ -51,12 +51,12 @@
     "created": [],
     "wc": [
       {
-        "at": 1792412944252,
+        "at": 1792807511805,
         "type": "window",
         "isDefaultSession": true
       },
       {
-        "at": 1792412944362,
+        "at": 1792807511919,
         "type": "remote",
         "isDefaultSession": true
       }

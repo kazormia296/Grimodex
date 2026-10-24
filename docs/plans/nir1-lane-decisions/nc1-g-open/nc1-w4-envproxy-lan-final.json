@@ -1,6 +1,6 @@
 {
   "label": "nc1-w4-envproxy-lan-final",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "noProbes": true,
     "realUpdater": true,
@@ -15,15 +15,15 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 30.8 ms",
-    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:37975",
-    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:37975",
-    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:37975",
-    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:37975",
-    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:37975",
-    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:37975",
-    "updaterSession.resolveProxy(https://github.com/) => PROXY <lan>:46527",
-    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => PROXY <lan>:46527",
+    "nc1 orchestrator start => true in 33 ms",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:46817",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:46817",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:46817",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:46817",
+    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:46817",
+    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:46817",
+    "updaterSession.resolveProxy(https://github.com/) => PROXY <lan>:32941",
+    "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => PROXY <lan>:32941",
     "resolveHost(github.com) => [\"20.27.177.113\"]",
     "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]"
   ],
@@ -53,8 +53,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 30.8,
-    "listenerPort": 37975,
+    "startMs": 33,
+    "listenerPort": 46817,
     "listenerHits": 4,
     "overLimit": 0,
     "maxActive": 3,

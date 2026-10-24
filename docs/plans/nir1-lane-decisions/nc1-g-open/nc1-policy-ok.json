@@ -1,6 +1,6 @@
 {
   "label": "nc1-policy-ok",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "noProbes": true,
     "pageRan": true,
@@ -9,7 +9,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 31.9 ms"
+    "nc1 orchestrator start => true in 45.2 ms"
   ],
   "webPreferences": {
     "sandbox": true,
@@ -37,8 +37,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 31.9,
-    "listenerPort": 38983,
+    "startMs": 45.2,
+    "listenerPort": 36883,
     "listenerHits": 4,
     "overLimit": 0,
     "maxActive": 2,

@@ -1,6 +1,6 @@
 {
   "label": "nc1-fm-no-neg-loopback",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "gvt1": true,
     "localhostRows": true,
@@ -25,7 +25,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 parts(drop:neg-loopback) start => true in 29.2 ms",
+    "nc1 parts(drop:neg-loopback) start => true in 41.7 ms",
     "after churn: window eval => 2, crashed=false"
   ],
   "webPreferences": {
@@ -36,9 +36,9 @@
   "totals": {
     "leakedProbes": 25,
     "probes": 123,
-    "canaryHits": 8548,
+    "canaryHits": 8542,
     "unattributed": 0,
-    "proxyHits": 416,
+    "proxyHits": 418,
     "mdnsQueries": null,
     "ctlHits": 1
   },
@@ -63,9 +63,9 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 29.2,
-    "listenerPort": 36257,
-    "listenerHits": 416,
+    "startMs": 41.7,
+    "listenerPort": 41025,
+    "listenerHits": 418,
     "overLimit": 0,
     "maxActive": 50,
     "failures": [],
@@ -853,18 +853,18 @@
     {
       "id": "main.turn-tcp.churn",
       "outcome": "churn:350",
-      "leaked": 8427,
+      "leaked": 8421,
       "leakDetail": {
-        "p-127.0.0.1:tcp-connect": 1292,
-        "p-127.0.0.1:tcp-data": 2584,
-        "q-127.0.0.1-other:tcp-connect": 821,
-        "q-127.0.0.1-other:tcp-data": 1642,
-        "r-127.0.0.2:tcp-connect": 348,
-        "r-127.0.0.2:tcp-data": 696,
-        "s-[::1]:tcp-connect": 348,
-        "s-[::1]:tcp-data": 696
+        "p-127.0.0.1:tcp-connect": 1288,
+        "p-127.0.0.1:tcp-data": 2576,
+        "q-127.0.0.1-other:tcp-connect": 819,
+        "q-127.0.0.1-other:tcp-data": 1638,
+        "r-127.0.0.2:tcp-connect": 350,
+        "r-127.0.0.2:tcp-data": 700,
+        "s-[::1]:tcp-connect": 350,
+        "s-[::1]:tcp-data": 700
       },
-      "proxied": 348,
+      "proxied": 350,
       "proxyHeads": [
         "",
         ""

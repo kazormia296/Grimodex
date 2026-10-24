@@ -1,6 +1,6 @@
 {
   "label": "nc1-fm-baseline",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "gvt1": true,
     "localhostRows": true,

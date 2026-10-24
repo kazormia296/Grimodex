@@ -1,6 +1,6 @@
 {
   "label": "nc1-session-none",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "noProbes": true,
     "ncSession": true

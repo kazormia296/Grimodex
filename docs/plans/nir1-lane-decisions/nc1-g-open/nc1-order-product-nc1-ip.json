@@ -18,54 +18,54 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "appendSwitch host-resolver-rules (before ready)": -49,
-        "registerSecurityHandlers (before ready)": -48,
-        "registerWebContentsPolicy (before ready)": -47,
+        "appendSwitch host-resolver-rules (before ready)": -47,
+        "registerSecurityHandlers (before ready)": -46,
+        "registerWebContentsPolicy (before ready)": -46,
         "ready": 0,
         "nc1 start begin": 0,
-        "listener up": 3,
+        "listener up": 4,
         "defaultSession first touch": 6,
-        "setProxy start": 6,
-        "setProxy done": 9,
-        "closeAllConnections done": 35,
-        "nc1 start done": 38,
-        "applySessionPermissionPolicy done": 38,
-        "installProductDownloadGuard done": 38,
-        "registerAppProtocolHandler done": 38,
-        "BrowserWindow created": 64,
-        "window loaded": 147
+        "setProxy start": 7,
+        "setProxy done": 10,
+        "closeAllConnections done": 33,
+        "nc1 start done": 36,
+        "applySessionPermissionPolicy done": 36,
+        "installProductDownloadGuard done": 37,
+        "registerAppProtocolHandler done": 37,
+        "BrowserWindow created": 61,
+        "window loaded": 140
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 35,
+          "startMsFromReady": 33,
           "startBeforeSetProxyDone": false,
           "proxyInfo": [
-            "SOCKS5 127.0.0.1:41425"
+            "SOCKS5 127.0.0.1:43037"
           ],
           "hostResolver": [],
           "netError": -120
         }
       ],
-      "nc1Ms": 38,
+      "nc1Ms": 36,
       "nc1Marks": {
-        "appendSwitch host-resolver-rules (before ready)": -49,
-        "registerSecurityHandlers (before ready)": -48,
-        "registerWebContentsPolicy (before ready)": -47,
+        "appendSwitch host-resolver-rules (before ready)": -47,
+        "registerSecurityHandlers (before ready)": -46,
+        "registerWebContentsPolicy (before ready)": -46,
         "nc1 start begin": 0,
-        "listener up": 3,
+        "listener up": 4,
         "defaultSession first touch": 6,
-        "setProxy start": 6,
-        "setProxy done": 9,
-        "closeAllConnections done": 35,
-        "nc1 start done": 38,
-        "applySessionPermissionPolicy done": 38,
-        "installProductDownloadGuard done": 38,
-        "registerAppProtocolHandler done": 38,
-        "BrowserWindow created": 64,
-        "window loaded": 147
+        "setProxy start": 7,
+        "setProxy done": 10,
+        "closeAllConnections done": 33,
+        "nc1 start done": 36,
+        "applySessionPermissionPolicy done": 36,
+        "installProductDownloadGuard done": 37,
+        "registerAppProtocolHandler done": 37,
+        "BrowserWindow created": 61,
+        "window loaded": 140
       },
-      "readyToWindowLoadedMs": 147,
+      "readyToWindowLoadedMs": 140,
       "envProxyConnects": [],
       "blackholeHits": 1,
       "dictionaries": [],
@@ -75,7 +75,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     },
     {
@@ -88,53 +88,53 @@
       "rules": "1",
       "timelineMsFromReady": {
         "appendSwitch host-resolver-rules (before ready)": -50,
-        "registerSecurityHandlers (before ready)": -48,
-        "registerWebContentsPolicy (before ready)": -48,
+        "registerSecurityHandlers (before ready)": -49,
+        "registerWebContentsPolicy (before ready)": -49,
         "ready": 0,
-        "nc1 start begin": 0,
-        "listener up": 3,
-        "defaultSession first touch": 6,
-        "setProxy start": 6,
-        "setProxy done": 10,
-        "closeAllConnections done": 33,
-        "nc1 start done": 36,
-        "applySessionPermissionPolicy done": 36,
-        "installProductDownloadGuard done": 36,
-        "registerAppProtocolHandler done": 36,
+        "nc1 start begin": 1,
+        "listener up": 5,
+        "defaultSession first touch": 7,
+        "setProxy start": 8,
+        "setProxy done": 12,
+        "closeAllConnections done": 32,
+        "nc1 start done": 35,
+        "applySessionPermissionPolicy done": 35,
+        "installProductDownloadGuard done": 35,
+        "registerAppProtocolHandler done": 35,
         "BrowserWindow created": 60,
-        "window loaded": 165
+        "window loaded": 138
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 33,
+          "startMsFromReady": 32,
           "startBeforeSetProxyDone": false,
           "proxyInfo": [
-            "SOCKS5 127.0.0.1:33089"
+            "SOCKS5 127.0.0.1:44681"
           ],
           "hostResolver": [],
           "netError": -120
         }
       ],
-      "nc1Ms": 36,
+      "nc1Ms": 34,
       "nc1Marks": {
         "appendSwitch host-resolver-rules (before ready)": -50,
-        "registerSecurityHandlers (before ready)": -48,
-        "registerWebContentsPolicy (before ready)": -48,
-        "nc1 start begin": 0,
-        "listener up": 3,
-        "defaultSession first touch": 6,
-        "setProxy start": 6,
-        "setProxy done": 10,
-        "closeAllConnections done": 33,
-        "nc1 start done": 36,
-        "applySessionPermissionPolicy done": 36,
-        "installProductDownloadGuard done": 36,
-        "registerAppProtocolHandler done": 36,
+        "registerSecurityHandlers (before ready)": -49,
+        "registerWebContentsPolicy (before ready)": -49,
+        "nc1 start begin": 1,
+        "listener up": 5,
+        "defaultSession first touch": 7,
+        "setProxy start": 8,
+        "setProxy done": 12,
+        "closeAllConnections done": 32,
+        "nc1 start done": 35,
+        "applySessionPermissionPolicy done": 35,
+        "installProductDownloadGuard done": 35,
+        "registerAppProtocolHandler done": 35,
         "BrowserWindow created": 60,
-        "window loaded": 165
+        "window loaded": 138
       },
-      "readyToWindowLoadedMs": 165,
+      "readyToWindowLoadedMs": 138,
       "envProxyConnects": [],
       "blackholeHits": 1,
       "dictionaries": [],
@@ -144,7 +144,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     },
     {
@@ -156,22 +156,22 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "appendSwitch host-resolver-rules (before ready)": -52,
-        "registerSecurityHandlers (before ready)": -51,
-        "registerWebContentsPolicy (before ready)": -51,
+        "appendSwitch host-resolver-rules (before ready)": -50,
+        "registerSecurityHandlers (before ready)": -49,
+        "registerWebContentsPolicy (before ready)": -49,
         "ready": 0,
         "nc1 start begin": 0,
         "listener up": 4,
         "defaultSession first touch": 6,
         "setProxy start": 6,
-        "setProxy done": 10,
+        "setProxy done": 9,
         "closeAllConnections done": 30,
         "nc1 start done": 33,
         "applySessionPermissionPolicy done": 33,
         "installProductDownloadGuard done": 33,
         "registerAppProtocolHandler done": 33,
-        "BrowserWindow created": 58,
-        "window loaded": 152
+        "BrowserWindow created": 59,
+        "window loaded": 138
       },
       "dictionaryRequests": [
         {
@@ -179,7 +179,7 @@
           "startMsFromReady": 30,
           "startBeforeSetProxyDone": false,
           "proxyInfo": [
-            "SOCKS5 127.0.0.1:34887"
+            "SOCKS5 127.0.0.1:37855"
           ],
           "hostResolver": [],
           "netError": -120
@@ -187,23 +187,23 @@
       ],
       "nc1Ms": 33,
       "nc1Marks": {
-        "appendSwitch host-resolver-rules (before ready)": -52,
-        "registerSecurityHandlers (before ready)": -51,
-        "registerWebContentsPolicy (before ready)": -51,
+        "appendSwitch host-resolver-rules (before ready)": -50,
+        "registerSecurityHandlers (before ready)": -49,
+        "registerWebContentsPolicy (before ready)": -49,
         "nc1 start begin": 0,
         "listener up": 4,
         "defaultSession first touch": 6,
         "setProxy start": 6,
-        "setProxy done": 10,
+        "setProxy done": 9,
         "closeAllConnections done": 30,
         "nc1 start done": 33,
         "applySessionPermissionPolicy done": 33,
         "installProductDownloadGuard done": 33,
         "registerAppProtocolHandler done": 33,
-        "BrowserWindow created": 58,
-        "window loaded": 152
+        "BrowserWindow created": 59,
+        "window loaded": 138
       },
-      "readyToWindowLoadedMs": 152,
+      "readyToWindowLoadedMs": 138,
       "envProxyConnects": [],
       "blackholeHits": 1,
       "dictionaries": [],
@@ -213,7 +213,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     },
     {
@@ -225,54 +225,54 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "appendSwitch host-resolver-rules (before ready)": -49,
-        "registerSecurityHandlers (before ready)": -48,
-        "registerWebContentsPolicy (before ready)": -48,
+        "appendSwitch host-resolver-rules (before ready)": -53,
+        "registerSecurityHandlers (before ready)": -52,
+        "registerWebContentsPolicy (before ready)": -51,
         "ready": 0,
         "nc1 start begin": 0,
         "listener up": 4,
         "defaultSession first touch": 6,
         "setProxy start": 6,
         "setProxy done": 10,
-        "closeAllConnections done": 32,
-        "nc1 start done": 35,
-        "applySessionPermissionPolicy done": 35,
-        "installProductDownloadGuard done": 35,
-        "registerAppProtocolHandler done": 35,
-        "BrowserWindow created": 59,
-        "window loaded": 161
+        "closeAllConnections done": 30,
+        "nc1 start done": 32,
+        "applySessionPermissionPolicy done": 33,
+        "installProductDownloadGuard done": 33,
+        "registerAppProtocolHandler done": 33,
+        "BrowserWindow created": 58,
+        "window loaded": 160
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 32,
+          "startMsFromReady": 30,
           "startBeforeSetProxyDone": false,
           "proxyInfo": [
-            "SOCKS5 127.0.0.1:37681"
+            "SOCKS5 127.0.0.1:34291"
           ],
           "hostResolver": [],
           "netError": -120
         }
       ],
-      "nc1Ms": 35,
+      "nc1Ms": 32,
       "nc1Marks": {
-        "appendSwitch host-resolver-rules (before ready)": -49,
-        "registerSecurityHandlers (before ready)": -48,
-        "registerWebContentsPolicy (before ready)": -48,
+        "appendSwitch host-resolver-rules (before ready)": -53,
+        "registerSecurityHandlers (before ready)": -52,
+        "registerWebContentsPolicy (before ready)": -51,
         "nc1 start begin": 0,
         "listener up": 4,
         "defaultSession first touch": 6,
         "setProxy start": 6,
         "setProxy done": 10,
-        "closeAllConnections done": 32,
-        "nc1 start done": 35,
-        "applySessionPermissionPolicy done": 35,
-        "installProductDownloadGuard done": 35,
-        "registerAppProtocolHandler done": 35,
-        "BrowserWindow created": 59,
-        "window loaded": 161
+        "closeAllConnections done": 30,
+        "nc1 start done": 32,
+        "applySessionPermissionPolicy done": 33,
+        "installProductDownloadGuard done": 33,
+        "registerAppProtocolHandler done": 33,
+        "BrowserWindow created": 58,
+        "window loaded": 160
       },
-      "readyToWindowLoadedMs": 161,
+      "readyToWindowLoadedMs": 160,
       "envProxyConnects": [],
       "blackholeHits": 1,
       "dictionaries": [],
@@ -282,7 +282,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     },
     {
@@ -294,30 +294,30 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "appendSwitch host-resolver-rules (before ready)": -48,
-        "registerSecurityHandlers (before ready)": -47,
-        "registerWebContentsPolicy (before ready)": -47,
+        "appendSwitch host-resolver-rules (before ready)": -46,
+        "registerSecurityHandlers (before ready)": -45,
+        "registerWebContentsPolicy (before ready)": -45,
         "ready": 0,
-        "nc1 start begin": 1,
+        "nc1 start begin": 0,
         "listener up": 4,
-        "defaultSession first touch": 7,
-        "setProxy start": 7,
-        "setProxy done": 10,
-        "closeAllConnections done": 34,
-        "nc1 start done": 36,
-        "applySessionPermissionPolicy done": 36,
-        "installProductDownloadGuard done": 37,
-        "registerAppProtocolHandler done": 37,
-        "BrowserWindow created": 61,
-        "window loaded": 142
+        "defaultSession first touch": 6,
+        "setProxy start": 6,
+        "setProxy done": 11,
+        "closeAllConnections done": 32,
+        "nc1 start done": 35,
+        "applySessionPermissionPolicy done": 35,
+        "installProductDownloadGuard done": 35,
+        "registerAppProtocolHandler done": 35,
+        "BrowserWindow created": 60,
+        "window loaded": 143
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 34,
+          "startMsFromReady": 32,
           "startBeforeSetProxyDone": false,
           "proxyInfo": [
-            "SOCKS5 127.0.0.1:38063"
+            "SOCKS5 127.0.0.1:46159"
           ],
           "hostResolver": [],
           "netError": -120
@@ -325,23 +325,23 @@
       ],
       "nc1Ms": 35,
       "nc1Marks": {
-        "appendSwitch host-resolver-rules (before ready)": -48,
-        "registerSecurityHandlers (before ready)": -47,
-        "registerWebContentsPolicy (before ready)": -47,
-        "nc1 start begin": 1,
+        "appendSwitch host-resolver-rules (before ready)": -46,
+        "registerSecurityHandlers (before ready)": -45,
+        "registerWebContentsPolicy (before ready)": -45,
+        "nc1 start begin": 0,
         "listener up": 4,
-        "defaultSession first touch": 7,
-        "setProxy start": 7,
-        "setProxy done": 10,
-        "closeAllConnections done": 34,
-        "nc1 start done": 36,
-        "applySessionPermissionPolicy done": 36,
-        "installProductDownloadGuard done": 37,
-        "registerAppProtocolHandler done": 37,
-        "BrowserWindow created": 61,
-        "window loaded": 142
+        "defaultSession first touch": 6,
+        "setProxy start": 6,
+        "setProxy done": 11,
+        "closeAllConnections done": 32,
+        "nc1 start done": 35,
+        "applySessionPermissionPolicy done": 35,
+        "installProductDownloadGuard done": 35,
+        "registerAppProtocolHandler done": 35,
+        "BrowserWindow created": 60,
+        "window loaded": 143
       },
-      "readyToWindowLoadedMs": 142,
+      "readyToWindowLoadedMs": 143,
       "envProxyConnects": [],
       "blackholeHits": 1,
       "dictionaries": [],
@@ -351,7 +351,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     }
   ]

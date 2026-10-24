@@ -1,6 +1,6 @@
 {
   "label": "nc1-session-fail",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "noProbes": true,
     "ncSession": true,
@@ -9,7 +9,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 38.8 ms",
+    "nc1 orchestrator start => true in 39.1 ms",
     "ncSession window loadURL => error:ERR_FAILED (did-start-loading x1)"
   ],
   "webPreferences": {},
@@ -34,8 +34,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 38.8,
-    "listenerPort": 37285,
+    "startMs": 39.1,
+    "listenerPort": 44097,
     "listenerHits": 1,
     "overLimit": 0,
     "maxActive": 1,
@@ -49,7 +49,7 @@
     "created": [],
     "wc": [
       {
-        "at": 1792412938116,
+        "at": 1792809102540,
         "type": "window",
         "isDefaultSession": false
       }

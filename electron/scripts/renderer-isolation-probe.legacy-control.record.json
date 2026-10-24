@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "chrome": "150.0.7871.250",
   "platform": "linux",
   "variant": "legacy-control",
@@ -875,6 +875,7 @@
       "rxhrnotfound",
       "rxhrpng",
       "traversal",
+      "turns",
       "workerclassic",
       "workermodule"
     ]
@@ -889,12 +890,13 @@
     ],
     "localUdpSockets": 26,
     "other": [
-      "http://~notfound:34865"
+      "http://~notfound:40471"
     ]
   },
   "title": {
     "lockedStaysProduct": true,
-    "unlockedControlChanged": true
+    "unlockedControlChanged": true,
+    "panelOpenOptionStaysProduct": true
   },
   "navigation": {
     "willNavigateHosts": 1,
@@ -944,7 +946,7 @@
     ]
   },
   "fileSystemAccessPicker": {
-    "outcome": "rejected:NotAllowedError",
+    "outcome": "pending-after-4s",
     "stateFileUnchanged": true
   },
   "windowPrint": {

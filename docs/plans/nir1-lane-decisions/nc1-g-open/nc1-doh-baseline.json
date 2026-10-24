@@ -1,6 +1,6 @@
 {
   "label": "nc1-doh-baseline",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "dns": true,
     "gvt1": true,
@@ -319,8 +319,7 @@
       "httpHits": 0,
       "dohNames": [
         "allowed-turntcpallowedp-<n>.probe.test/1",
-        "allowed-turntcpallowedp-<n>.probe.test/28",
-        "www.gstatic.com/1"
+        "allowed-turntcpallowedp-<n>.probe.test/28"
       ]
     },
     {
@@ -333,7 +332,8 @@
       "httpHits": 0,
       "dohNames": [
         "allowed-turnsallowedp-<n>.probe.test/1",
-        "allowed-turnsallowedp-<n>.probe.test/28"
+        "allowed-turnsallowedp-<n>.probe.test/28",
+        "www.gstatic.com/1"
       ]
     },
     {
@@ -570,7 +570,9 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "main.turns-tcp.lo4b",
@@ -595,9 +597,7 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.stuns.lo6",
@@ -784,9 +784,7 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ]
+      "dohNames": []
     },
     {
       "id": "main.turns.localhost",
@@ -1101,7 +1099,9 @@
       "proxied": 0,
       "proxyHeads": [],
       "httpHits": 0,
-      "dohNames": []
+      "dohNames": [
+        "www.gstatic.com/1"
+      ]
     },
     {
       "id": "realm.iframe-json.turn-tcp.name",
@@ -1141,8 +1141,7 @@
       "httpHits": 0,
       "dohNames": [
         "riframejsonstunname-<n>.probe.test/1",
-        "riframejsonstunname-<n>.probe.test/28",
-        "www.gstatic.com/1"
+        "riframejsonstunname-<n>.probe.test/28"
       ]
     },
     {
@@ -1748,7 +1747,8 @@
         "m26-<n>.dnsprobe.test/28",
         "m27-<n>.dnsprobe.test/28",
         "m28-<n>.dnsprobe.test/28",
-        "m29-<n>.dnsprobe.test/28"
+        "m29-<n>.dnsprobe.test/28",
+        "www.gstatic.com/1"
       ]
     },
     {
@@ -1814,8 +1814,7 @@
       "httpHits": 0,
       "dohNames": [
         "data-<n>.githubusercontent.com/1",
-        "data-<n>.githubusercontent.com/28",
-        "www.gstatic.com/1"
+        "data-<n>.githubusercontent.com/28"
       ]
     },
     {
@@ -1829,7 +1828,7 @@
       "dohNames": [
         "example.org/1",
         "example.org/28",
-        "_44963._https.winsess-<n>.probe.test/65",
+        "_43745._https.winsess-<n>.probe.test/65",
         "winsess-<n>.probe.test/1"
       ]
     },
@@ -1842,9 +1841,9 @@
       "proxyHeads": [],
       "httpHits": 0,
       "dohNames": [
-        "_44963._https.winsess-<n>.probe.test/65",
+        "_43745._https.winsess-<n>.probe.test/65",
         "winsess-<n>.probe.test/1",
-        "_44963._https.defsess-<n>.probe.test/65",
+        "_43745._https.defsess-<n>.probe.test/65",
         "defsess-<n>.probe.test/1"
       ]
     },
@@ -1857,13 +1856,13 @@
       "proxyHeads": [],
       "httpHits": 0,
       "dohNames": [
-        "_44963._https.defsess-<n>.probe.test/65",
+        "_43745._https.defsess-<n>.probe.test/65",
         "defsess-<n>.probe.test/1",
         "www.gstatic.com/1",
         "redirector.gvt1.com/65",
+        "_43745._https.updater-<n>.probe.test/65",
         "redirector.gvt1.com/1",
-        "updater-<n>.probe.test/1",
-        "_44963._https.updater-<n>.probe.test/65"
+        "updater-<n>.probe.test/1"
       ]
     },
     {
@@ -1877,9 +1876,9 @@
       "dohNames": [
         "www.gstatic.com/1",
         "redirector.gvt1.com/65",
+        "_43745._https.updater-<n>.probe.test/65",
         "redirector.gvt1.com/1",
-        "updater-<n>.probe.test/1",
-        "_44963._https.updater-<n>.probe.test/65"
+        "updater-<n>.probe.test/1"
       ]
     },
     {
@@ -1901,7 +1900,7 @@
       "proxyHeads": [],
       "httpHits": 0,
       "dohNames": [
-        "_44963._https.utilfetch-<n>.probe.test/65",
+        "_43745._https.utilfetch-<n>.probe.test/65",
         "utilfetch-<n>.probe.test/1"
       ]
     },
@@ -1914,7 +1913,7 @@
       "proxyHeads": [],
       "httpHits": 0,
       "dohNames": [
-        "_44963._https.utilfetch-<n>.probe.test/65",
+        "_43745._https.utilfetch-<n>.probe.test/65",
         "utilfetch-<n>.probe.test/1"
       ]
     }
@@ -2012,13 +2011,13 @@
     "data-<n>.gvt1.com",
     "data-<n>.githubusercontent.com",
     "example.org",
-    "_44963._https.winsess-<n>.probe.test",
+    "_43745._https.winsess-<n>.probe.test",
     "winsess-<n>.probe.test",
-    "_44963._https.defsess-<n>.probe.test",
+    "_43745._https.defsess-<n>.probe.test",
     "defsess-<n>.probe.test",
+    "_43745._https.updater-<n>.probe.test",
     "updater-<n>.probe.test",
-    "_44963._https.updater-<n>.probe.test",
-    "_44963._https.utilfetch-<n>.probe.test",
+    "_43745._https.utilfetch-<n>.probe.test",
     "utilfetch-<n>.probe.test"
   ],
   "dohQueryCount": 316,
@@ -2190,16 +2189,16 @@
         "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test": 1
       },
       "rawRequestHosts": {
-        "127.0.0.1:38187": 10,
-        "127.0.0.2:44549": 3,
-        "<lan>:40343": 4,
-        "[::1]:38193": 3,
-        "allowed-turnsallowed-<n>.probe.test:38187": 3,
-        "allowed-turnsallowedp-<n>.probe.test:34781": 3,
-        "allowed-turnstcpallowed-<n>.probe.test:38187": 3,
-        "allowed-turnstcpallowedp-<n>.probe.test:34781": 3,
-        "allowed-turntcpallowed-<n>.probe.test:38187": 3,
-        "allowed-turntcpallowedp-<n>.probe.test:34781": 3,
+        "127.0.0.1:37485": 10,
+        "127.0.0.2:41643": 3,
+        "<lan>:45453": 4,
+        "[::1]:44995": 3,
+        "allowed-turnsallowed-<n>.probe.test:37485": 3,
+        "allowed-turnsallowedp-<n>.probe.test:35927": 3,
+        "allowed-turnstcpallowed-<n>.probe.test:37485": 3,
+        "allowed-turnstcpallowedp-<n>.probe.test:35927": 3,
+        "allowed-turntcpallowed-<n>.probe.test:37485": 3,
+        "allowed-turntcpallowedp-<n>.probe.test:35927": 3,
         "app://dnsdnsprefetch-<n>.dnsprobe.test": 2,
         "app://github.com": 2,
         "app://localhost": 1,
@@ -2217,14 +2216,14 @@
         "gvt1probeturns8443-<n>.gvt1.com:8443": 3,
         "gvt1probeturntcp443-<n>.gvt1.com:443": 3,
         "gvt1probeturntcp8443-<n>.gvt1.com:8443": 3,
-        "http://defsess-<n>.probe.test:44963": 3,
-        "http://updater-<n>.probe.test:44963": 3,
-        "http://utilfetch-<n>.probe.test:44963": 3,
-        "http://winsess-<n>.probe.test:44963": 3,
-        "https://127.0.0.1:40817": 956,
+        "http://defsess-<n>.probe.test:43745": 3,
+        "http://updater-<n>.probe.test:43745": 3,
+        "http://utilfetch-<n>.probe.test:43745": 3,
+        "http://winsess-<n>.probe.test:43745": 3,
+        "https://127.0.0.1:35441": 956,
         "https://redirector.gvt1.com": 10,
         "localhost:3478": 2,
-        "localhost:34781": 6,
+        "localhost:35927": 6,
         "localhost:443": 2,
         "m0-<n>.dnsprobe.test:3478": 3,
         "m1-<n>.dnsprobe.test:3478": 3,
@@ -2260,16 +2259,16 @@
         "objects.githubusercontent.com:443": 3,
         "release-assets.githubusercontent.com:3478": 3,
         "release-assets.githubusercontent.com:443": 3,
-        "riframeblankturnsname-<n>.probe.test:34781": 3,
-        "riframeblankturntcpname-<n>.probe.test:34781": 3,
-        "riframehtmlturnsname-<n>.probe.test:34781": 3,
-        "riframehtmlturntcpname-<n>.probe.test:34781": 3,
-        "riframejsonturnsname-<n>.probe.test:34781": 3,
-        "riframejsonturntcpname-<n>.probe.test:34781": 3,
-        "riframenotfoundturnsname-<n>.probe.test:34781": 3,
-        "riframenotfoundturntcpname-<n>.probe.test:34781": 3,
-        "riframesrcdocturnsname-<n>.probe.test:34781": 3,
-        "riframesrcdocturntcpname-<n>.probe.test:34781": 3,
+        "riframeblankturnsname-<n>.probe.test:35927": 3,
+        "riframeblankturntcpname-<n>.probe.test:35927": 3,
+        "riframehtmlturnsname-<n>.probe.test:35927": 3,
+        "riframehtmlturntcpname-<n>.probe.test:35927": 3,
+        "riframejsonturnsname-<n>.probe.test:35927": 3,
+        "riframejsonturntcpname-<n>.probe.test:35927": 3,
+        "riframenotfoundturnsname-<n>.probe.test:35927": 3,
+        "riframenotfoundturntcpname-<n>.probe.test:35927": 3,
+        "riframesrcdocturnsname-<n>.probe.test:35927": 3,
+        "riframesrcdocturntcpname-<n>.probe.test:35927": 3,
         "s0-<n>.dnsprobe.test:443": 3,
         "s1-<n>.dnsprobe.test:443": 3,
         "s2-<n>.dnsprobe.test:443": 3,
@@ -2278,9 +2277,9 @@
         "s5-<n>.dnsprobe.test:443": 3,
         "s6-<n>.dnsprobe.test:443": 3,
         "s7-<n>.dnsprobe.test:443": 3,
-        "turnsname-<n>.probe.test:34781": 3,
-        "turnstcpname-<n>.probe.test:34781": 3,
-        "turntcpname-<n>.probe.test:34781": 3,
+        "turnsname-<n>.probe.test:35927": 3,
+        "turnstcpname-<n>.probe.test:35927": 3,
+        "turntcpname-<n>.probe.test:35927": 3,
         "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test:443": 3
       },
       "nonceBearing": 72
@@ -2310,7 +2309,7 @@
     ],
     "urls": [
       "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-      "https://127.0.0.1:40817/dns-query"
+      "https://127.0.0.1:35441/dns-query"
     ],
     "proxyInfos": [
       "DIRECT"
