@@ -548,7 +548,7 @@ API の差分は `chat_messages_delete` の `messageIds` の件数の上限だ�
 - **CW の一時的な拒否**（DR-DA2-54 の (5)）：activation の段 4 から停止の確認まで、restricted の再起動の起動時 barrier の間、activation が段 4 の後に失敗した process では、CW が `D2A_EGRESS_DENIED`（`publication is closed during startup quiescence`）を返す。この区間の拒否を生の marker のまま表示せず、無言の縮退（成功に見せる、行を画面から消す）にもしない。再試行は有限（activation の完了の通知を待つか、有限の回数）。activation が失敗した process では process の終わりまで戻らない。M と T はこの区間も書ける。
 - **メッセージの削除**（DR-DA2-56 の (3)）：user のメッセージの削除は、後続のメッセージ（system を除く現行の対象）を **1 回の `chat_messages_delete` にまとめて**渡す（1 件ずつ呼ばない）。10,000 件を超えるときだけ分割し、そのときは非原子（途中で失敗すると前半だけが消える）になることを失敗として扱う。
 - **M と T の束縛**（DR-DA2-59）：wrapper は renderer の workspace の lifecycle の admission を必ず通る。`projectId` は entity の持ち主（entity の行から取る。UI の今の project の id ではない）。
-- **D-11 の差分**（DR-DA2-58 の (a)〜(g)）：unrestricted でも拒否か件数 0 になる条件がある。利用者向けの失敗として扱い、成功に見せない。
+- **D-11 の差分**（DR-DA2-58 の (a)〜(g)）：unrestricted でも拒否か件数 0 になる条件がある。利用者向けの失敗として扱い、成功に見せない。（注記、`da2b-renderer-decisions.md` の DR-DA2B-R3：M の (e)(f) は背景の版の記録で利用者が取れる手が無く、`null` は元から「版を作らない」結果なので warn と `null` にする。project の snapshot の中の (e) は snapshot の作成を失敗で終える。）
 - **sticky と pin の実測の範囲**（DR-DA2-55）：cargo の試験は Drizzle の builder から再現した文での実測。書き換えた後の実際の `mapApi`／`chatApi` の関数を実 router に通す試験（restricted の pipeline か journey）を ST4-B／ST5 で足す。O-2 を閉じ直す判断が出たら sticky と pin に typed な writer が要る。
 - `chatApi.ts` の `deleteMessagesFrom` には製品の呼出し元が無い（試験だけ）。restricted で要るなら `chat_messages_delete` に id を渡す形にする。
 
