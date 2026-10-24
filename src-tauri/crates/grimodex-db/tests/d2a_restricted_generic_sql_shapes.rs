@@ -112,7 +112,7 @@ fn pin_children_toggle_passes_without_returning() {
 }
 
 #[test]
-fn labels_prompt_templates_and_map_boards_pass_without_returning() {
+fn labels_prompt_templates_and_map_tables_pass_without_returning() {
     let db = fixture();
     for sql in [
         "INSERT INTO labels (id, project_id, name, color) VALUES ('label-1', 'p1', 'L1', '#fff')",
@@ -121,6 +121,17 @@ fn labels_prompt_templates_and_map_boards_pass_without_returning() {
         "UPDATE prompt_templates SET usage_count = usage_count + 1 WHERE id = 'prompt-1'",
         "INSERT INTO map_boards (id, project_id, title) VALUES ('board-2', 'p1', 'B')",
         "UPDATE map_boards SET title = 'C' WHERE id = 'board-2'",
+        "INSERT INTO map_node_positions (id, board_id, node_ref_type, sticky_id, x, y)
+         VALUES ('pos-1', 'board-1', 'sticky', 'sticky-0', 0, 0)",
+        "INSERT INTO map_node_positions (id, board_id, node_ref_type, tree_node_id, x, y)
+         VALUES ('pos-2', 'board-1', 'scene', 'scene-1', 1, 1)",
+        "UPDATE map_node_positions SET x = 2 WHERE id = 'pos-2'",
+        "INSERT INTO map_edges (id, board_id, from_position_id, to_position_id)
+         VALUES ('edge-1', 'board-1', 'pos-1', 'pos-2')",
+        "UPDATE map_edges SET color = '#ffffff' WHERE id = 'edge-1'",
+        "INSERT INTO map_frames (id, board_id, x, y, width, height)
+         VALUES ('frame-1', 'board-1', 0, 0, 10, 10)",
+        "UPDATE map_frames SET title = 'F' WHERE id = 'frame-1'",
     ] {
         assert_passes(&db, sql);
     }
