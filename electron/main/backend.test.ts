@@ -21,6 +21,7 @@ vi.mock("electron", () => ({
 }));
 
 const {
+  getBackendConstructionFailure,
   initBackend,
   resolveNodeBinaryPath,
   resolveRerankerResourceRoot,
@@ -201,5 +202,44 @@ describe("initBackend startup policy", () => {
 
     dialogMock.showErrorBox.mockReset();
     vi.unstubAllEnvs();
+  });
+
+  it("keeps only the closed code of an unreadable profile state file (DA-2 R-7)", () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), "grimodex-backend-r7-"));
+    let index = 0;
+    /** A module that stands in for the addon; its constructor throws. */
+    const failingBackend = (message: string): string => {
+      const fake = path.join(root, `fake-backend-${index++}.cjs`);
+      writeFileSync(
+        fake,
+        `exports.Backend = class { constructor() { throw new Error(${JSON.stringify(message)}); } };`,
+      );
+      return fake;
+    };
+    try {
+      vi.stubEnv(
+        "GRIMODEX_NODE_PATH",
+        failingBackend(
+          "PROFILE_EGRESS_UNAVAILABLE:state-file-unreadable: Is a directory (os error 21)",
+        ),
+      );
+      expect(initBackend()).toBeNull();
+      expect(getBackendConstructionFailure()).toBe("state-file-unreadable");
+
+      // Another cause (or a lookalike code) is not that reason.
+      for (const message of [
+        "PROFILE_EGRESS_UNAVAILABLE:state-file-unreadable-x",
+        "XPROFILE_EGRESS_UNAVAILABLE:state-file-unreadable",
+        "database is locked",
+      ]) {
+        vi.stubEnv("GRIMODEX_NODE_PATH", failingBackend(message));
+        expect(initBackend(), message).toBeNull();
+        expect(getBackendConstructionFailure(), message).toBeNull();
+      }
+    } finally {
+      dialogMock.showErrorBox.mockReset();
+      vi.unstubAllEnvs();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

@@ -85,9 +85,12 @@ export const PROFILE_ACTIVATION_STOPPED_MESSAGE = `${D2A_EGRESS_DENIED_MARKER} p
 declare const consumedProfileActivationBrand: unique symbol;
 
 /**
- * Proof that Native consumed a ProfileActivation grant (stage 1) in this
- * process. Opaque; only `consumeProfileActivation` creates one, and the gate
- * accepts each one once.
+ * Mark that Main called Native's consume of a ProfileActivation grant
+ * (stage 1) and it returned without an error. Opaque; only
+ * `consumeProfileActivation` creates one, and the gate accepts each one once.
+ * It is not a proof of Native's consume (the function is exported and takes
+ * any backend): what enforces the activation is Native's reservation, without
+ * which Native refuses the commit (DR-DA2-25, R-8 (b)).
  */
 export interface ConsumedProfileActivation {
   readonly [consumedProfileActivationBrand]: true;
@@ -924,11 +927,33 @@ export interface ProfileEgressGate {
   beginProfileActivation?(
     consumed: ConsumedProfileActivation,
   ): Promise<ProfileEgressStatusView>;
+  /**
+   * The app is quitting (`will-quit`). An activation still in stage 2 or 3
+   * does not go on to Native's stages 4 and 5; it fails closed instead.
+   */
+  noteAppQuitting?(): void;
   observeBackendEvent?(channel: string, payload: unknown): void;
   /** Main-only proof from a Native restore result; never exposed to renderer. */
   observeWorkspaceLifecycleResult?(payload: unknown): void;
   /** Trusted successful Native Open result plus the main-validated target. */
   observeWorkspaceOpenResult?(payload: unknown, workspacePath: string): void;
+}
+
+/**
+ * The gate `createProfileEgressGate` returns: the DA-2 members are required,
+ * so that the product's wiring (`index.ts`, the router, the controller)
+ * cannot lose one without a type error. Test fakes keep using
+ * `ProfileEgressGate` (DR-DA2-25, R-4).
+ */
+export interface ProductProfileEgressGate extends ProfileEgressGate {
+  readonly activating: boolean;
+  statusView(): ProfileEgressStatusView;
+  onStatusChange(listener: (view: ProfileEgressStatusView) => void): () => void;
+  isIssuedCallerIdentity(identity: unknown): boolean;
+  beginProfileActivation(
+    consumed: ConsumedProfileActivation,
+  ): Promise<ProfileEgressStatusView>;
+  noteAppQuitting(): void;
 }
 
 interface ReadyWorkspaceBinding {
@@ -946,6 +971,11 @@ interface NativeBoundProfileEgressGateInit {
   readonly invalidateCallers?: () => void;
   /** Native stages 4 and 5; refused by Native without the reservation. */
   readonly commitActivation?: () => Promise<string>;
+  /**
+   * Native's stop request for the AI in flight after a stage 2 or 3 failure
+   * (DR-DA2-24); `true` when a reservation existed.
+   */
+  readonly abortInFlight?: () => boolean;
   readonly ownDataReadOpen: boolean;
   readonly participantBoundMs: number;
 }
@@ -955,7 +985,7 @@ interface MainEgressParticipant {
   readonly forceStop: (() => unknown) | null;
 }
 
-class NativeBoundProfileEgressGate implements ProfileEgressGate {
+class NativeBoundProfileEgressGate implements ProductProfileEgressGate {
   private _restricted: boolean;
   private _unavailable: boolean;
   private _unavailableReason: ProfileEgressUnavailableReason | null;
@@ -967,7 +997,9 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
   private readonly invalidateCallers: (() => void) | null;
   private policy: NativeProfileEgressPolicy;
   private readonly commitActivation: (() => Promise<string>) | null;
+  private readonly abortInFlight: (() => boolean) | null;
   private readonly participantBoundMs: number;
+  private appQuitting = false;
   private activationPromise: Promise<ProfileEgressStatusView> | null = null;
   private activationStarted = false;
   private activationCompleted = false;
@@ -1024,6 +1056,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
     this.registerCaller = init.registerCaller ?? null;
     this.invalidateCallers = init.invalidateCallers ?? null;
     this.commitActivation = init.commitActivation ?? null;
+    this.abortInFlight = init.abortInFlight ?? null;
     this.participantBoundMs = Math.min(
       Math.max(0, init.participantBoundMs),
       PROFILE_EGRESS_PARTICIPANT_BOUND_MS,
@@ -1054,7 +1087,9 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       };
     }
     if (this.activationPromise !== null) return { state: "activating" };
-    return this._restricted ? { state: "restricted" } : { state: "unrestricted" };
+    return this._restricted
+      ? { state: "restricted" }
+      : { state: "unrestricted" };
   }
 
   onStatusChange(
@@ -1380,6 +1415,11 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       stageTwoFailure = error;
     }
 
+    // Set once Native's stages 4 and 5 have been asked for. Before that, a
+    // failure leaves Native unrestricted with its admissions open, so the
+    // gate asks Native to stop the AI in flight (DR-DA2-24, DR-DA2-25). After
+    // it, Native has already asked for the same stop itself.
+    let commitRequested = false;
     void (async (): Promise<ProfileEgressStatusView> => {
       try {
         if (stageTwoFailure !== null) {
@@ -1390,6 +1430,14 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
           );
         }
         await this.stopMainParticipants();
+        if (this.appQuitting) {
+          // L-3: a quit that began during stages 2 and 3 does not go on to
+          // stage 4; the state file stays unrestricted.
+          throw new ProfileActivationStageError(
+            "activation-failed",
+            "the app is quitting",
+          );
+        }
         const commit = this.commitActivation;
         if (!commit) {
           throw new ProfileActivationStageError(
@@ -1399,6 +1447,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         }
         let raw: string;
         try {
+          commitRequested = true;
           raw = await commit();
         } catch (error) {
           throw new ProfileActivationStageError(
@@ -1450,6 +1499,9 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         this._restricted = true;
         this._unavailableReason = reason;
         this.activationPromise = null;
+        // Before the notice: the AI admitted before stage 2 must not keep
+        // sending on Native, which is still unrestricted here.
+        if (!commitRequested) this.requestNativeInFlightAbort();
         const view: ProfileEgressStatusView = { state: "unavailable", reason };
         try {
           this.notifyStatus(view);
@@ -1462,6 +1514,36 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       }
     })().then(settle);
     return promise;
+  }
+
+  /**
+   * Native's stop request for the AI in flight (DR-DA2-24). A missing or
+   * failing call is logged and never stops the move to unavailable: Main
+   * refuses every new class and every late result from here on either way.
+   */
+  private requestNativeInFlightAbort(): void {
+    const abort = this.abortInFlight;
+    if (!abort) {
+      console.error(
+        "[grimodex-electron] D2a profile activation: Native cannot stop the AI in flight (no abort call)",
+      );
+      return;
+    }
+    try {
+      if (abort() !== true) {
+        console.error(
+          "[grimodex-electron] D2a profile activation: Native held no reservation to stop the AI in flight",
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[grimodex-electron] D2a profile activation: Native's stop request failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  noteAppQuitting(): void {
+    this.appQuitting = true;
   }
 
   /**
@@ -1498,7 +1580,9 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
         for (const [name, participant] of participants) {
           if (!pending.has(name) || !participant.forceStop) continue;
           try {
-            void Promise.resolve(participant.forceStop()).catch(() => undefined);
+            void Promise.resolve(participant.forceStop()).catch(
+              () => undefined,
+            );
           } catch {
             // The activation is failing closed either way.
           }
@@ -1558,10 +1642,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
 
     // A successful replacement or a different workspace event supersedes an
     // old proof.  Never overwrite that binding with the retained old target.
-    if (
-      this.workspaceId !== null &&
-      this.workspaceId !== proof.workspaceId
-    ) {
+    if (this.workspaceId !== null && this.workspaceId !== proof.workspaceId) {
       this.pendingUnchangedWorkspaceBinding = null;
       return;
     }
@@ -1645,10 +1726,7 @@ class NativeBoundProfileEgressGate implements ProfileEgressGate {
       this.pendingUnchangedWorkspaceBinding = null;
       return;
     }
-    if (
-      this.workspaceId !== null &&
-      this.workspaceId !== proof.workspaceId
-    ) {
+    if (this.workspaceId !== null && this.workspaceId !== proof.workspaceId) {
       this.pendingUnchangedWorkspaceBinding = null;
       return;
     }
@@ -1950,18 +2028,24 @@ export interface ProfileEgressGateOptions {
    * a value above `PROFILE_EGRESS_PARTICIPANT_BOUND_MS` is cut to it.
    */
   readonly participantBoundMs?: number;
+  /**
+   * The closed reason Native's Backend construction failed with, when
+   * `backend` is null because of it (R-7: `state-file-unreadable` is the
+   * state file's row 6). Without it a null backend is `backend-unavailable`.
+   */
+  readonly backendConstructionFailure?: ProfileEgressUnavailableReason | null;
 }
 
 export async function createProfileEgressGate(
   backend: MainProfileEgressBackend | null,
   options: ProfileEgressGateOptions = {},
-): Promise<ProfileEgressGate> {
+): Promise<ProductProfileEgressGate> {
   const ownDataReadOpen = options.ownDataReadOpen ?? D2A_OWN_DATA_READ_OPEN;
   const participantBoundMs =
     options.participantBoundMs ?? PROFILE_EGRESS_PARTICIPANT_BOUND_MS;
   const unavailableGate = (
     reason: ProfileEgressUnavailableReason,
-  ): ProfileEgressGate =>
+  ): ProductProfileEgressGate =>
     new NativeBoundProfileEgressGate({
       status: null,
       unavailableReason: reason,
@@ -1969,8 +2053,14 @@ export async function createProfileEgressGate(
       ownDataReadOpen,
       participantBoundMs,
     });
+  if (!backend) {
+    const failure = options.backendConstructionFailure;
+    return unavailableGate(
+      failure === "state-file-unreadable" ? failure : "backend-unavailable",
+    );
+  }
   if (
-    !backend?.initializeProfileEgress ||
+    !backend.initializeProfileEgress ||
     !backend.registerProfileEgressCaller ||
     !backend.invalidateProfileEgressCallers
   ) {
@@ -1993,6 +2083,9 @@ export async function createProfileEgressGate(
       invalidateCallers: () => backend.invalidateProfileEgressCallers!(),
       commitActivation: backend.profileActivationCommit
         ? () => backend.profileActivationCommit!()
+        : undefined,
+      abortInFlight: backend.profileActivationAbortInFlight
+        ? () => backend.profileActivationAbortInFlight!()
         : undefined,
       ownDataReadOpen,
       participantBoundMs,

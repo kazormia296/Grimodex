@@ -3,9 +3,19 @@
 // （`list_ai_models`）があっても、Main の activation（preview → 承認 → issue → 消費 →
 // 段 2〜7）が上限の内で一度だけ成立し、その要求の結果が返らず、待ち続けないことを固定する。
 // 取消は Native の段 5（DR-DA2-6）、結果の拒否は Main の完了時の検査（DR-DA2-18）。
+// 段 3 の失敗（段 4 の前、Native は unrestricted のまま）でも、Main が Native の
+// `profileActivationAbortInFlight` で同じ要求を取り消すことを固定する（L-1、DR-DA2-24、
+// DR-DA2-25）。
 //
 // 実 Native の addon が要るので `vitest.electron-native.config.ts` だけが拾う。
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import {
   createServer,
   type IncomingMessage,
@@ -178,6 +188,98 @@ describe("activation with a legacy AI request in flight (real router + gate + Na
     });
     expect(after.ok).toBe(false);
     expect(providerHits).toBe(hitsBefore + 1);
+  });
 
+  it("a stage 3 failure cancels the in-flight non-stream request on Native, which stays unrestricted (L-1)", async () => {
+    vi.resetModules();
+    mocks.handlers.clear();
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const appData = newAppData();
+    const backend = new Backend(appData);
+    const { createProfileEgressGate } = await import("./profileEgress.js");
+    const { activateThroughMain } =
+      await import("./profileActivation.test.support.js");
+    const { registerEventBus } = await import("./events.js");
+    const { registerIpcRouter } = await import("./ipc.js");
+    const { IPC } = await import("../shared/ipcContract.js");
+
+    const gate = await createProfileEgressGate(backend);
+    registerEventBus(backend, undefined, gate);
+    registerIpcRouter(
+      backend,
+      {} as never,
+      {
+        resolveApiKeyForRequest: () => "sk-test",
+        getApiKeyForRequest: () => "sk-test",
+      } as never,
+      undefined,
+      { active: false },
+      gate,
+    );
+    // Stage 3 fails: a Main participant cannot drain.
+    gate.registerMainEgressParticipant("cli-ai", async () => {
+      throw new Error("drain failed");
+    });
+    const route = mocks.handlers.get(IPC.invoke) as (
+      event: unknown,
+      cmd: unknown,
+      args: unknown,
+    ) => Promise<Envelope>;
+    const event = {
+      sender: { id: 7, isDestroyed: () => false, once: () => undefined },
+    };
+
+    const hitsBefore = providerHits;
+    let settled = false;
+    const pending = route(event, "list_ai_models", {
+      provider: "openai-compatible",
+      endpointId: "test",
+    }).finally(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => expect(providerHits).toBe(hitsBefore + 1), {
+      timeout: 20_000,
+    });
+    expect(settled).toBe(false);
+
+    const result = await activateThroughMain(backend, gate);
+    expect(result).toEqual({ status: "unavailable" });
+    expect(gate.statusView()).toEqual({
+      state: "unavailable",
+      reason: "participant-failed",
+    });
+
+    // The provider never answers: only Native's stop ends the request, with
+    // Native's typed reason (not Main's completion refusal).
+    const envelope = await pending;
+    expect(envelope.ok).toBe(false);
+    if (!envelope.ok) {
+      expect(envelope.error).toContain("legacy-request-stopped");
+    }
+    expect(providerHits).toBe(hitsBefore + 1);
+
+    // Stage 4 never ran: the state file is not restricted. Native still holds
+    // the reservation, so a second stop request answers true (idempotent).
+    const stateFile = path.join(appData, "profile-egress.json");
+    if (existsSync(stateFile)) {
+      expect(
+        (JSON.parse(readFileSync(stateFile, "utf8")) as { restricted: unknown })
+          .restricted,
+      ).toBe(false);
+    }
+    expect(backend.profileActivationAbortInFlight!()).toBe(true);
+    // Main refuses a new legacy request at invoke, before Native.
+    const after = await route(event, "list_ai_models", {
+      provider: "openai-compatible",
+      endpointId: "test",
+    });
+    expect(after.ok).toBe(false);
+    expect(providerHits).toBe(hitsBefore + 1);
+    expect(
+      errors.mock.calls.some(([line]) =>
+        String(line).includes("participant-failed"),
+      ),
+    ).toBe(true);
+    errors.mockRestore();
   });
 });

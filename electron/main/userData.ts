@@ -101,6 +101,43 @@ export function resolveUserDataConfiguration(
   };
 }
 
+/**
+ * The data directories a launch uses without `GRIMODEX_USER_DATA_DIR`: the
+ * development one and the product one. A journey seam that needs its own
+ * userData refuses an override equal to either (DA-2 R-3). A directory that
+ * cannot be resolved on this platform is left out.
+ */
+export function defaultUserDataDirectories(
+  options: Omit<UserDataResolutionOptions, "isPackaged">,
+): string[] {
+  const env = { ...options.env, GRIMODEX_USER_DATA_DIR: undefined };
+  const directories: string[] = [];
+  for (const isPackaged of [false, true]) {
+    try {
+      directories.push(
+        resolveUserDataConfiguration({ ...options, env, isPackaged })
+          .userDataDir,
+      );
+    } catch {
+      // Not resolvable here (for example no absolute home directory).
+    }
+  }
+  return directories;
+}
+
+/** `defaultUserDataDirectories` for this process. */
+export function defaultUserDataDirectoriesForApp(
+  app: Pick<ElectronAppPathController, "getPath">,
+  options: Pick<ConfigureUserDataOptions, "platform" | "env" | "homeDir"> = {},
+): string[] {
+  return defaultUserDataDirectories({
+    platform: options.platform ?? process.platform,
+    env: options.env ?? process.env,
+    homeDir: options.homeDir ?? homedir(),
+    appDataDir: app.getPath("appData"),
+  });
+}
+
 export interface ElectronAppPathController {
   readonly isPackaged: boolean;
   setName(name: string): void;

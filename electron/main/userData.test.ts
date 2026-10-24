@@ -7,6 +7,8 @@ import {
   LINUX_DESKTOP_NAME,
   PRODUCTION_APP_NAME,
   configureAppUserData,
+  defaultUserDataDirectories,
+  defaultUserDataDirectoriesForApp,
   resolveUserDataConfiguration,
 } from "./userData.js";
 
@@ -158,5 +160,49 @@ describe("configureAppUserData", () => {
       "path:userData:/mnt/data/com.miyakey.grimodex",
       "mkdir:/mnt/data/com.miyakey.grimodex",
     ]);
+  });
+});
+
+describe("defaultUserDataDirectories (DA-2 R-3)", () => {
+  it("names the development and product directories and ignores the override", () => {
+    expect(
+      defaultUserDataDirectories({
+        platform: "linux",
+        env: {
+          GRIMODEX_USER_DATA_DIR: "/tmp/grimodex-journey",
+          XDG_DATA_HOME: "/home/writer/.data",
+        },
+        homeDir: "/home/writer",
+        appDataDir: "/home/writer/.config",
+      }),
+    ).toEqual([
+      "/home/writer/.config/GrimodexElectronDev",
+      "/home/writer/.data/com.miyakey.grimodex",
+    ]);
+  });
+
+  it("leaves out a directory that cannot be resolved", () => {
+    expect(
+      defaultUserDataDirectories({
+        platform: "linux",
+        env: {},
+        homeDir: "relative-home",
+        appDataDir: "/home/writer/.config",
+      }),
+    ).toEqual(["/home/writer/.config/GrimodexElectronDev"]);
+  });
+
+  it("reads appData from the app for this process", () => {
+    const getPath = vi.fn(() => "/home/writer/.config");
+    expect(
+      defaultUserDataDirectoriesForApp(
+        { getPath },
+        { platform: "linux", env: {}, homeDir: "/home/writer" },
+      ),
+    ).toEqual([
+      "/home/writer/.config/GrimodexElectronDev",
+      "/home/writer/.local/share/com.miyakey.grimodex",
+    ]);
+    expect(getPath).toHaveBeenCalledWith("appData");
   });
 });

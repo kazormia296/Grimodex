@@ -109,6 +109,8 @@ function mockNative(
     issueError?: string;
     consumeError?: string;
     commit?: () => Promise<string>;
+    /** Native's stop request for the AI in flight (DR-DA2-24). */
+    abortInFlight?: () => boolean;
     initial?: Record<string, unknown>;
   } = {},
 ): MockNative {
@@ -150,6 +152,13 @@ function mockNative(
         (async () => {
           calls.push("commit");
           return JSON.stringify(RESTRICTED);
+        }),
+    ),
+    profileActivationAbortInFlight: vi.fn(
+      options.abortInFlight ??
+        (() => {
+          calls.push("abort-in-flight");
+          return true;
         }),
     ),
     mainGrantRevoke: vi.fn(),
@@ -719,16 +728,30 @@ describe("stages 2 to 7 on the gate (DR-DA2-17)", () => {
   });
 
   it("stage 3 bound: participants that stop inside the bound continue to stage 4", async () => {
+    // L-7: fake timers and a participant released by hand, one tick before
+    // the 30 s bound; no wall clock.
+    vi.useFakeTimers();
     const native = mockNative();
-    const { gate, consumed } = await unrestrictedGate(native, 200);
+    const { gate, consumed } = await unrestrictedGate(native);
+    let stop!: () => void;
     gate.registerMainEgressParticipant(
       "slow-but-in-time",
-      () => new Promise<void>((resolve) => setTimeout(resolve, 10)),
+      () =>
+        new Promise<void>((resolve) => {
+          stop = resolve;
+        }),
     );
-    await expect(gate.beginProfileActivation!(consumed())).resolves.toEqual({
-      state: "restricted",
-    });
+    const activation = gate.beginProfileActivation!(consumed());
+    await vi.advanceTimersByTimeAsync(PROFILE_EGRESS_PARTICIPANT_BOUND_MS - 1);
+    expect(gate.activating).toBe(true);
+    expect(native.fns.profileActivationCommit).not.toHaveBeenCalled();
+    stop();
+    await expect(activation).resolves.toEqual({ state: "restricted" });
     expect(native.fns.profileActivationCommit).toHaveBeenCalledOnce();
+    expect(native.fns.profileActivationAbortInFlight).not.toHaveBeenCalled();
+    // The bound's timer was cleared: nothing fires after it.
+    await vi.advanceTimersByTimeAsync(PROFILE_EGRESS_PARTICIPANT_BOUND_MS);
+    expect(gate.statusView!()).toEqual({ state: "restricted" });
   });
 
   it("the stage 3 bound is 30 s and a longer test value is cut to it", async () => {
@@ -818,6 +841,270 @@ describe("stages 2 to 7 on the gate (DR-DA2-17)", () => {
     }
   });
 
+  it("a stage 2 or 3 failure asks Native to stop the AI in flight, once, before the unavailable notice (L-1)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const cases: Array<{
+      readonly name: string;
+      readonly reason: string;
+      readonly arrange: (
+        gate: Awaited<ReturnType<typeof createProfileEgressGate>>,
+      ) => void;
+      readonly bound?: number;
+    }> = [
+      {
+        name: "stage 2: a listener throws",
+        reason: "activation-failed",
+        arrange: (gate) =>
+          gate.onStatusChange((view) => {
+            if (view.state === "activating") throw new Error("title reset");
+          }),
+      },
+      {
+        name: "stage 3: participant-timeout",
+        reason: "participant-timeout",
+        bound: 0,
+        arrange: (gate) =>
+          gate.registerMainEgressParticipant(
+            "stuck",
+            () => new Promise(() => {}),
+          ),
+      },
+      {
+        name: "stage 3: participant-failed",
+        reason: "participant-failed",
+        arrange: (gate) =>
+          gate.registerMainEgressParticipant("cli-ai", async () => {
+            throw new Error("drain failed");
+          }),
+      },
+    ];
+    for (const { name, reason, arrange, bound } of cases) {
+      const native = mockNative();
+      const gate = await createProfileEgressGate(native.backend, {
+        participantBoundMs: bound,
+      });
+      gate.onStatusChange((view) => native.calls.push(`notice:${view.state}`));
+      arrange(gate);
+      await expect(
+        gate.beginProfileActivation(
+          consumeProfileActivation(native.backend, "grant", 7, 3),
+        ),
+        name,
+      ).resolves.toEqual({ state: "unavailable", reason });
+      expect(
+        native.fns.profileActivationAbortInFlight,
+        name,
+      ).toHaveBeenCalledOnce();
+      expect(native.fns.profileActivationCommit, name).not.toHaveBeenCalled();
+      expect(native.calls.slice(native.calls.indexOf("consume")), name).toEqual(
+        [
+          "consume",
+          "notice:activating",
+          "abort-in-flight",
+          "notice:unavailable",
+        ],
+      );
+    }
+  });
+
+  it("stages 4 and 5 failing do not repeat the stop (Native asked for it itself)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const commit of [
+      async () => {
+        throw new Error("PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
+      },
+      async () => JSON.stringify(UNRESTRICTED),
+    ]) {
+      const native = mockNative({ commit });
+      const gate = await createProfileEgressGate(native.backend);
+      await expect(
+        gate.beginProfileActivation(
+          consumeProfileActivation(native.backend, "grant", 7, 3),
+        ),
+      ).resolves.toMatchObject({ state: "unavailable" });
+      expect(native.fns.profileActivationAbortInFlight).not.toHaveBeenCalled();
+    }
+  });
+
+  it("a missing, refusing or throwing stop request does not keep the gate from unavailable (L-1)", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const abortInFlight of [
+      () => false,
+      () => {
+        throw new Error("napi failed");
+      },
+      null,
+    ]) {
+      const native = mockNative(
+        abortInFlight === null ? {} : { abortInFlight },
+      );
+      const backend =
+        abortInFlight === null
+          ? ({
+              ...native.backend,
+              profileActivationAbortInFlight: undefined,
+            } as NapiBackendLike)
+          : native.backend;
+      const gate = await createProfileEgressGate(backend);
+      const views: unknown[] = [];
+      gate.onStatusChange((view) => views.push(view));
+      gate.registerMainEgressParticipant("cli-ai", async () => {
+        throw new Error("drain failed");
+      });
+      await expect(
+        gate.beginProfileActivation(
+          consumeProfileActivation(backend, "grant", 7, 3),
+        ),
+      ).resolves.toEqual({
+        state: "unavailable",
+        reason: "participant-failed",
+      });
+      expect(gate.unavailable).toBe(true);
+      expect(views.at(-1)).toEqual({
+        state: "unavailable",
+        reason: "participant-failed",
+      });
+      expect(() => gate.assertInvoke("send_chat_message", {})).toThrow();
+    }
+    expect(
+      errors.mock.calls.some(([line]) =>
+        String(line).includes("Native's stop request failed: napi failed"),
+      ),
+    ).toBe(true);
+  });
+
+  it("a quit during stage 3 does not go on to stage 4 (L-3)", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const native = mockNative();
+    const gate = await createProfileEgressGate(native.backend);
+    let stop!: () => void;
+    gate.registerMainEgressParticipant(
+      "cli-ai",
+      () =>
+        new Promise<void>((resolve) => {
+          stop = resolve;
+        }),
+    );
+    const activation = gate.beginProfileActivation(
+      consumeProfileActivation(native.backend, "grant", 7, 3),
+    );
+    gate.noteAppQuitting();
+    stop();
+    await expect(activation).resolves.toEqual({
+      state: "unavailable",
+      reason: "activation-failed",
+    });
+    expect(native.fns.profileActivationCommit).not.toHaveBeenCalled();
+    expect(native.fns.profileActivationAbortInFlight).toHaveBeenCalledOnce();
+  });
+
+  it("a quit noted after stage 4 began changes nothing in Main (Native's shutdown edge decides)", async () => {
+    let release!: (value: string) => void;
+    const native = mockNative({
+      commit: () =>
+        new Promise<string>((resolve) => {
+          release = resolve;
+        }),
+    });
+    const gate = await createProfileEgressGate(native.backend);
+    const activation = gate.beginProfileActivation(
+      consumeProfileActivation(native.backend, "grant", 7, 3),
+    );
+    await vi.waitFor(() =>
+      expect(native.fns.profileActivationCommit).toHaveBeenCalledOnce(),
+    );
+    gate.noteAppQuitting();
+    release(JSON.stringify(RESTRICTED));
+    await expect(activation).resolves.toEqual({ state: "restricted" });
+  });
+
+  it("workspace events during stage 3 or the commit register no caller; stage 7 registers lazily at the new workspace (L-5, D-4 (b))", async () => {
+    for (const during of ["stage-3", "commit"] as const) {
+      let stop!: () => void;
+      let release!: (value: string) => void;
+      const native = mockNative({
+        commit: () =>
+          new Promise<string>((resolve) => {
+            release = resolve;
+          }),
+      });
+      const register = native.backend
+        .registerProfileEgressCaller as unknown as ReturnType<typeof vi.fn>;
+      const gate = await createProfileEgressGate(native.backend);
+      if (during === "stage-3") {
+        gate.registerMainEgressParticipant(
+          "cli-ai",
+          () =>
+            new Promise<void>((resolve) => {
+              stop = resolve;
+            }),
+        );
+      }
+      const before = gate.issueCallerIdentity(7);
+      const activation = gate.beginProfileActivation(
+        consumeProfileActivation(native.backend, "grant", 7, 3),
+      );
+      // Sync point: the activation is waiting in stage 3 or in the commit.
+      if (during === "commit") {
+        await vi.waitFor(() =>
+          expect(native.fns.profileActivationCommit).toHaveBeenCalledOnce(),
+        );
+      } else {
+        expect(native.fns.profileActivationCommit).not.toHaveBeenCalled();
+      }
+      gate.observeBackendEvent!("workspace:opened", {
+        workspace: { workspaceId: "workspace-2" },
+      });
+      gate.observeBackendEvent!("workspace:lifecycle-state", {
+        schemaVersion: 1,
+        revision: 4,
+        status: "ready",
+        bindingToken: "bnd-ready",
+        activation: "ready",
+      });
+      const during1 = gate.issueCallerIdentity(7);
+      expect(during1.workspaceId, during).toBe("workspace-2");
+      expect(during1.callerId, during).not.toBe(before.callerId);
+      // `issueCallerIdentity` does not register while `activationPromise` is set.
+      expect(register, during).not.toHaveBeenCalled();
+      expect(
+        () =>
+          gate.assertInvoke("related_scenes_begin", {
+            callerIdentity: during1,
+          }),
+        during,
+      ).toThrow(new RegExp(`^${D2A_EGRESS_DENIED_MARKER}`));
+
+      if (during === "stage-3") {
+        stop();
+        await vi.waitFor(() =>
+          expect(native.fns.profileActivationCommit).toHaveBeenCalledOnce(),
+        );
+        expect(register, during).not.toHaveBeenCalled();
+      }
+      release(JSON.stringify(RESTRICTED));
+      await expect(activation, during).resolves.toEqual({
+        state: "restricted",
+      });
+      expect(register, during).not.toHaveBeenCalled();
+
+      // Stage 7: the next invoke registers once, at the new epoch and workspace.
+      const after = gate.issueCallerIdentity(7);
+      expect(register, during).toHaveBeenCalledOnce();
+      const registered = JSON.parse(register.mock.calls[0]![0] as string) as {
+        callerId: string;
+        callerEpoch: number;
+        workspaceId: string;
+      };
+      expect(registered, during).toMatchObject({
+        callerId: after.callerId,
+        callerEpoch: RESTRICTED.callerEpoch,
+        workspaceId: "workspace-2",
+      });
+      expect(after.callerId, during).not.toBe(during1.callerId);
+    }
+  });
+
   it("status command answers while unavailable without ids or epoch", async () => {
     const gate = await createProfileEgressGate(null);
     expect(gate.statusView!()).toEqual({
@@ -846,6 +1133,18 @@ describe("stages 2 to 7 on the gate (DR-DA2-17)", () => {
       reason: "state-file-unwritable",
     });
     expect(JSON.stringify(failing.statusView!())).not.toContain("/home");
+    // R-7: the Backend could not be built because the state file is
+    // unreadable (row 6); only that closed reason is carried.
+    for (const [backendConstructionFailure, reason] of [
+      ["state-file-unreadable", "state-file-unreadable"],
+      [null, "backend-unavailable"],
+      ["barrier-timeout", "backend-unavailable"],
+    ] as const) {
+      const gate = await createProfileEgressGate(null, {
+        backendConstructionFailure,
+      });
+      expect(gate.statusView()).toEqual({ state: "unavailable", reason });
+    }
   });
 });
 

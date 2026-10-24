@@ -8,7 +8,9 @@
  * The one exception is a launch that is not packaged, runs with `CI=true`,
  * carries the public owner token below, a per-launch UUIDv4 nonce and one of
  * the three responses, and whose userData is the journey's own
- * (`GRIMODEX_USER_DATA_DIR` set to the directory this launch uses, P3-4).
+ * (`GRIMODEX_USER_DATA_DIR` set to the directory this launch uses, P3-4, and
+ * that directory is neither the development nor the product data directory
+ * a launch uses without the override, R-3).
  * Such a launch opens that one entry once at startup and replaces the
  * dialog's display and press with the response, and nothing else: the
  * request, Main's checks, Native's preview, the display digest, the issue,
@@ -67,7 +69,15 @@ export type ProfileActivationCiSeam =
  */
 export function parseProfileActivationCiSeam(
   env: NodeJS.ProcessEnv,
-  options: { readonly isPackaged: boolean; readonly userDataDir: string },
+  options: {
+    readonly isPackaged: boolean;
+    readonly userDataDir: string;
+    /**
+     * The development and product data directories (`userData.ts`
+     * `defaultUserDataDirectories`); an override equal to one is inert.
+     */
+    readonly defaultUserDataDirs: readonly string[];
+  },
 ): ProfileActivationCiSeam {
   if (options.isPackaged) return { active: false };
   if (env.CI !== "true") return { active: false };
@@ -97,11 +107,33 @@ export function parseProfileActivationCiSeam(
   ) {
     return { active: false };
   }
+  // R-3: the override must name a directory of the journey's own, not the
+  // one an ordinary development or product launch uses.
+  const defaults = options.defaultUserDataDirs;
+  if (
+    !Array.isArray(defaults) ||
+    defaults.some(
+      (directory) =>
+        typeof directory !== "string" ||
+        sameDirectory(directory, journeyUserData),
+    )
+  ) {
+    return { active: false };
+  }
   return {
     active: true,
     nonce: nonce.toLowerCase(),
     response: response as ProfileActivationCiResponse,
   };
+}
+
+/** Case-insensitive where the file system usually is (macOS, Windows). */
+function sameDirectory(a: string, b: string): boolean {
+  const left = path.resolve(a);
+  const right = path.resolve(b);
+  return process.platform === "darwin" || process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 }
 
 export interface ProfileActivationCiSeamHandle {

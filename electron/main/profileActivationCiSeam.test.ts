@@ -32,6 +32,12 @@ afterAll(() => {
 });
 
 const USER_DATA = path.resolve("/tmp/grimodex-journey-user-data");
+/** The development and product directories of an ordinary launch (R-3). */
+const DEV_USER_DATA = path.resolve("/home/user/.config/GrimodexElectronDev");
+const PRODUCT_USER_DATA = path.resolve(
+  "/home/user/.local/share/com.miyakey.grimodex",
+);
+const DEFAULT_USER_DATA_DIRS = [DEV_USER_DATA, PRODUCT_USER_DATA] as const;
 const NONCE = "1b4e28ba-2fa1-4d3b-a3f5-ef19b5a7633b";
 
 function env(overrides: Record<string, string | undefined> = {}) {
@@ -71,6 +77,7 @@ describe("parseProfileActivationCiSeam", () => {
       parseProfileActivationCiSeam(env(), {
         isPackaged: false,
         userDataDir: USER_DATA,
+        defaultUserDataDirs: DEFAULT_USER_DATA_DIRS,
       }),
     ).toEqual({ active: true, nonce: NONCE, response: "approve" });
   });
@@ -124,14 +131,46 @@ describe("parseProfileActivationCiSeam", () => {
       false,
       "/home/user/.config/GrimodexElectronDev",
     ],
+    [
+      "the override names the development data directory (R-3)",
+      env({ GRIMODEX_USER_DATA_DIR: DEV_USER_DATA }),
+      false,
+      DEV_USER_DATA,
+    ],
+    [
+      "the override names the product data directory (R-3)",
+      env({ GRIMODEX_USER_DATA_DIR: `${PRODUCT_USER_DATA}/` }),
+      false,
+      PRODUCT_USER_DATA,
+    ],
   ] as const)(
     "is inert when %s (Negative (12))",
     (_name, launchEnv, isPackaged, userDataDir) => {
       expect(
-        parseProfileActivationCiSeam(launchEnv, { isPackaged, userDataDir }),
+        parseProfileActivationCiSeam(launchEnv, {
+          isPackaged,
+          userDataDir,
+          defaultUserDataDirs: DEFAULT_USER_DATA_DIRS,
+        }),
       ).toEqual({ active: false });
     },
   );
+
+  it("is inert when the default directories are not a list of paths (R-3)", () => {
+    for (const defaultUserDataDirs of [
+      undefined,
+      "not-a-list",
+      [42],
+    ] as unknown as readonly string[][]) {
+      expect(
+        parseProfileActivationCiSeam(env(), {
+          isPackaged: false,
+          userDataDir: USER_DATA,
+          defaultUserDataDirs,
+        }),
+      ).toEqual({ active: false });
+    }
+  });
 });
 
 describe("startProfileActivationCiSeam", () => {
@@ -185,17 +224,42 @@ describe("startProfileActivationCiSeam", () => {
       backend,
       isPackaged: false,
     });
-    const abort = new AbortController();
-    let settled = false;
-    const answer = timeout!
-      .confirm(confirmation("profile-activation", abort.signal))
-      .then((value) => {
-        settled = true;
-        return value;
+    // L-7: no wall clock. However long the time runs, the seam answers only
+    // when the preview's abort arrives, and it keeps no timer of its own.
+    vi.useFakeTimers();
+    try {
+      const abort = new AbortController();
+      let settled = false;
+      const answer = timeout!
+        .confirm(confirmation("profile-activation", abort.signal))
+        .then((value) => {
+          settled = true;
+          return value;
+        });
+      await vi.advanceTimersByTimeAsync(24 * 60 * 60 * 1_000);
+      expect(settled).toBe(false);
+      expect(vi.getTimerCount()).toBe(0);
+      abort.abort();
+      await expect(answer).resolves.toEqual({
+        response: 0,
+        checkboxChecked: false,
       });
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(settled).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("timeout answers at once when the preview was already aborted", async () => {
+    const timeout = startProfileActivationCiSeam({
+      seam: { ...active, response: "timeout" },
+      backend: { mainOpenPrePublicationGate: vi.fn() },
+      isPackaged: false,
+    });
+    const abort = new AbortController();
     abort.abort();
+    const answer = timeout!.confirm(
+      confirmation("profile-activation", abort.signal),
+    );
     await expect(answer).resolves.toEqual({
       response: 0,
       checkboxChecked: false,

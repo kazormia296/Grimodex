@@ -29,9 +29,7 @@ import {
   PROFILE_EGRESS_STATE_EVENT,
   PROFILE_EGRESS_STATUS_COMMAND,
 } from "./profileEgressStatusWire.js";
-import {
-  parseWorkspaceRestoreOutcome,
-} from "./workspaceRestoreOutcome.js";
+import { parseWorkspaceRestoreOutcome } from "./workspaceRestoreOutcome.js";
 
 export type IpcErrorCode =
   | "WORKSPACE_SWITCHING"
@@ -903,7 +901,7 @@ export interface NapiBackendLike {
   /**
    * Main-only profile activation (DA-2, DR-DA2-3). Deliberately absent from
    * the renderer command map: only `electron/main/profileActivation.ts` and
-   * `profileEgress.ts` call them. The preview answers
+   * `profileEgress.ts` reference them. The preview answers
    * `{ previewId, display, disclosureVersion, expiresInMs }`, the issue
    * `{ grantId }`; the consume (stage 1) is synchronous; the commit runs
    * stages 4 and 5 and answers the restricted status JSON. Cancellation uses
@@ -925,6 +923,15 @@ export interface NapiBackendLike {
     windowId: number,
   ): void;
   profileActivationCommit?(): Promise<string>;
+  /**
+   * Main-only (DR-DA2-24). Synchronous and never throws: while an activation
+   * reservation exists, asks chat, inline, post-effect and the non-stream
+   * legacy AI requests to stop and answers `true`; without one it does
+   * nothing and answers `false`. It does not wait, persist, clear the stop,
+   * or change admissions, the state file or unavailable. Only
+   * `profileEgress.ts` calls it, after a stage 2 or 3 failure.
+   */
+  profileActivationAbortInFlight?(): boolean;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
   /** Main observer only; never a renderer command. */

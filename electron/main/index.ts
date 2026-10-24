@@ -12,7 +12,11 @@ import { randomUUID } from "node:crypto";
 
 import { app, dialog, safeStorage } from "electron";
 
-import { getBackend, initBackend } from "./backend.js";
+import {
+  getBackend,
+  getBackendConstructionFailure,
+  initBackend,
+} from "./backend.js";
 import { createCliAiManager } from "./cliAi.js";
 import { createCodexAppServerManager } from "./codexAppServer/manager.js";
 import { readPersistedCodexAppServerSettings } from "./codexAppServer/persistedSettings.js";
@@ -77,7 +81,10 @@ import {
 import { getDefaultProfileDataGuard } from "./profileDataGuardDefault.js";
 import { createRendererContainment } from "./rendererContainmentStartup.js";
 import { showSavePathDialog } from "./shellCommands.js";
-import { configureAppUserData } from "./userData.js";
+import {
+  configureAppUserData,
+  defaultUserDataDirectoriesForApp,
+} from "./userData.js";
 import {
   createElectronUpdaterManager,
   resolveElectronUpdaterAvailability,
@@ -145,7 +152,13 @@ async function initializeNarrativeMaintenanceStartup(
     // D2a is the first main/native boundary after backend construction. It
     // must complete before CI seams, workspace events, schedulers, or a
     // renderer can publish profile plaintext.
-    const profileEgress = await createProfileEgressGate(initializedBackend);
+    // R-7: an unreadable profile state file stops the Backend's construction;
+    // the gate keeps that closed reason (not the message) for the renderer.
+    const profileEgress = await createProfileEgressGate(initializedBackend, {
+      backendConstructionFailure: initializedBackend
+        ? null
+        : getBackendConstructionFailure(),
+    });
     setBackendEventEgressGate(profileEgress);
     // The product-journey seam is deliberately configured at this one startup
     // point: after native initialization, before any scheduler can observe a
@@ -578,7 +591,7 @@ if (!gotSingleInstanceLock) {
     const aiStreamTerminals = createAiStreamTerminalTracker({
       send: sendAiStreamTerminalToWindow,
     });
-    profileEgress.onStatusChange?.(
+    profileEgress.onStatusChange(
       createProfileEgressStatusNotifier({
         resetWindowTitles,
         terminateAiStreams: () => aiStreamTerminals.terminateAll(),
@@ -726,6 +739,9 @@ if (!gotSingleInstanceLock) {
       },
     });
     app.on("will-quit", (event) => {
+      // DA-2 (L-3): an activation still in stage 2 or 3 does not go on to
+      // Native's stages 4 and 5 once the app is quitting.
+      profileEgress.noteAppQuitting();
       // The finalizer vetoes the current quit synchronously, then waits for a
       // validated Native terminal receipt before releasing the rest of the
       // process teardown. Reentrant will-quit events only observe the same
@@ -757,12 +773,14 @@ if (!gotSingleInstanceLock) {
     });
     // DA-2 (DR-DA2-10): the profile activation's journey seam. Inert unless
     // unpackaged, `CI=true`, the public owner token, a nonce, a response and
-    // the journey's own userData; only then is the `profile-activation` entry
+    // the journey's own userData (an override that is neither the
+    // development nor the product data directory); only then is the `profile-activation` entry
     // opened, once, and the dialog replaced.
     const profileActivationCiSeam = startProfileActivationCiSeam({
       seam: parseProfileActivationCiSeam(process.env, {
         isPackaged: app.isPackaged,
         userDataDir: configuredUserDataDir,
+        defaultUserDataDirs: defaultUserDataDirectoriesForApp(app),
       }),
       backend,
       isPackaged: app.isPackaged,
