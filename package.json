@@ -122,7 +122,7 @@
     "@dnd-kit/utilities": "^3.2.2",
     "@fontsource/line-seed-jp": "^5.2.2",
     "@fontsource/literata": "^5.2.8",
-    "@fontsource/m-plus-1": "^5.2.9",
+    "@fontsource/m-plus-1": "^5.3.1",
     "@fontsource/noto-serif-jp": "^5.2.8",
     "@grimodex/scan-contract": "workspace:*",
     "@grimodex/scan-core": "workspace:*",
