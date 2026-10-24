@@ -215,8 +215,9 @@ describe("NIR Graph-only request (CP-3b C-2)", () => {
     "canonicalTextDigest",
     "normalizerVersion",
     "fullQuote",
+    "unexpectedField",
   ])(
-    "a Graph-only request refuses an answer carrying the IR-only field %s (F2)",
+    "a Graph-only request refuses an answer carrying the IR-only or extra field %s (F2)",
     async (field) => {
       vi.mocked(qualifyNir1Evidence).mockResolvedValue({
         ...graphAnswer,

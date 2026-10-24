@@ -20,14 +20,6 @@ import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes
 import type { Nir1RelatedScenesLease } from "./nir1RelatedScenesSession";
 
 const navigation = createNir1EvidenceNavigationState();
-/** IR-only answer fields: on a Graph-only click they mean mixed arms (F2). */
-const IR_ARM_FIELDS = [
-  "sourceVersion",
-  "storageDigest",
-  "canonicalTextDigest",
-  "normalizerVersion",
-  "fullQuote",
-];
 /** A Graph-only row's disclosed target (CP-3b): matched at click time. */
 export interface Nir1GraphOnlyTarget {
   readonly canonicalRange: { readonly start: number; readonly end: number };
@@ -207,15 +199,18 @@ export async function requestNir1EvidenceNavigation(
     observe();
     if (pending !== item) return false;
     const qualified = await qualifyNir1Evidence(identity);
-    // A Graph-only answer has no digest (an IR-only field means the arms were
-    // mixed up: refused); its range must equal the row's (`===` also refuses
-    // a non-number at runtime).
+    // A Graph-only answer has exactly its 5 fields (status, bindingKey,
+    // queryBinding, sceneId, canonicalRange): any other key, such as an IR
+    // digest or the full quote, means the arms were mixed up and is refused
+    // (F2; a key count keeps the startup graph small, the lazy wrapper names
+    // the IR fields). Its range must equal the row's (`===` also refuses a
+    // non-number at runtime).
     const range = (
       qualified as { canonicalRange?: Nir1GraphOnlyTarget["canonicalRange"] }
     ).canonicalRange;
     if (
       (graphOnly &&
-        (IR_ARM_FIELDS.some((field) => field in qualified) ||
+        (Object.keys(qualified).length !== 5 ||
           range?.start !== graphOnly.canonicalRange.start ||
           range?.end !== graphOnly.canonicalRange.end)) ||
       pending !== item ||
