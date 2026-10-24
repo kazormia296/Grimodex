@@ -7493,7 +7493,6 @@ function parseCancelCurrentChatInputReceipt(
   return receipt;
 }
 
-/** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 // ── DA-2b typed writers (NIR-1 DA-2b ST4-A, DR-DA2-50..53) ──────────────
 // Main re-validates every request before Native: exact keys, id lengths,
 // array sizes, enums and integer ranges (the same bounds as grimodex-db's
@@ -7501,7 +7500,11 @@ function parseCancelCurrentChatInputReceipt(
 
 const D2B_MAX_ID_LENGTH = 256;
 const D2B_MAX_PATH_LENGTH = 4096;
-const D2B_MAX_MESSAGE_IDS = 256;
+// Not a K3/2 threshold: one atomic deletion of a user message and every
+// later message of its session (DR-DA2-56).
+const D2B_MAX_MESSAGE_IDS = 10_000;
+// The longest renderer key a refusal message names (DR-DA2-56).
+const D2B_MAX_ECHOED_KEY_LENGTH = 64;
 const D2B_MAX_TITLE_LENGTH = 4096;
 const D2B_MAX_RECORD_IDS = 64;
 const D2B_MAX_KEEP_COUNT = 100_000;
@@ -7669,9 +7672,14 @@ function requireChatMessageMetadataRecordPayload(
   const keys = Object.keys(patch);
   for (const key of keys) {
     if (!(D2B_RECORD_METADATA_KEYS as readonly string[]).includes(key)) {
-      // The same typed reason Native gives (CW condition 2).
+      // The same typed reason Native gives (CW condition 2). The renderer's
+      // key is echoed only up to a bound.
+      const shown =
+        key.length > D2B_MAX_ECHOED_KEY_LENGTH
+          ? `${key.slice(0, D2B_MAX_ECHOED_KEY_LENGTH)}…`
+          : key;
       throw new Error(
-        `CHAT_WRITE_REFUSED:metadata-key-not-allowed (invalid args \`patch.${key}\` for command \`${command}\`)`,
+        `CHAT_WRITE_REFUSED:metadata-key-not-allowed (invalid args \`patch.${shown}\` for command \`${command}\`)`,
       );
     }
   }
@@ -7798,6 +7806,7 @@ function requireImpactReviewBaselineUpdateVisibilityPayload(
   };
 }
 
+/** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
     run: async (b, a) => {

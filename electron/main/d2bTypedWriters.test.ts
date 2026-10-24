@@ -221,7 +221,7 @@ describe("DA-2b typed writers: Main re-validation", () => {
     ["chat_messages_delete", { messageIds: [] }],
     [
       "chat_messages_delete",
-      { messageIds: Array.from({ length: 257 }, (_, i) => `m${i}`) },
+      { messageIds: Array.from({ length: 10_001 }, (_, i) => `m${i}`) },
     ],
     ["chat_messages_delete", { messageIds: [""] }],
     ["chat_messages_delete", { sessionId: "x".repeat(257) }],
@@ -286,5 +286,45 @@ describe("DA-2b typed writers: Main re-validation", () => {
       ),
     ).rejects.toThrow(/^CHAT_WRITE_REFUSED:metadata-key-not-allowed/);
     expect(calls).toHaveLength(0);
+  });
+
+  it("accepts one deletion of up to 10,000 messages (DR-DA2-56)", async () => {
+    const { backend, calls } = recordingBackend();
+    await NAPI_COMMANDS.chat_messages_delete.run(
+      backend,
+      {
+        payload: {
+          ...VALID_PAYLOADS.chat_messages_delete,
+          messageIds: Array.from({ length: 10_000 }, (_, i) => `m${i}`),
+        },
+      },
+      deps,
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it("names a long renderer key only up to a bound in the refusal", async () => {
+    const { backend } = recordingBackend();
+    const key = "k".repeat(10_000);
+    const error = await NAPI_COMMANDS.chat_message_metadata_record
+      .run(
+        backend,
+        {
+          payload: {
+            ...VALID_PAYLOADS.chat_message_metadata_record,
+            patch: { [key]: true },
+          },
+        },
+        deps,
+      )
+      .then(
+        () => null,
+        (reason: unknown) => reason as Error,
+      );
+    expect(error?.message).toMatch(
+      /^CHAT_WRITE_REFUSED:metadata-key-not-allowed/,
+    );
+    expect(error?.message).toContain(`patch.${"k".repeat(64)}…`);
+    expect(error?.message.length).toBeLessThan(200);
   });
 });
