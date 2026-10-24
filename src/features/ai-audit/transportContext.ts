@@ -274,8 +274,12 @@ export const PROFILE_ACTIVATION_STOPPED_MESSAGE =
  * cancellation, DR-DA2-25), and its events are dropped by the gate while
  * restricted. The metadata says so, instead of the provider-failure reading
  * the error alone would give, and overrides any `transportTerminationObserved`
- * an abort receipt set. Only the exact synthesized text matches; a provider
- * error that merely contains the marker gets nothing.
+ * an abort receipt set. It is not a provider failure either, so a cancellation
+ * that came first did not race one: `abortRacedWithProviderFailure` is false
+ * (the receipt's `cleanupReturnedBeforeTerminalAuditDurable` stays, since the
+ * cleanup did return first; DR-DA2-35, ST3-S5). Spread it after the receipt's
+ * fields. Only the exact synthesized text matches; a provider error that
+ * merely contains the marker gets nothing.
  */
 export function profileActivationStopAuditMetadata(
   message: string,
@@ -286,5 +290,6 @@ export function profileActivationStopAuditMetadata(
     terminalSynthesizedByMain: true,
     transportTerminationObserved: false,
     auditObservationContinuedUntilTransportTerminal: false,
+    abortRacedWithProviderFailure: false,
   };
 }

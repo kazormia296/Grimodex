@@ -3,7 +3,10 @@ import { resolve } from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import i18n from "@/lib/i18n";
 import { classifyError } from "@/application/chat/chatStoreSupport";
-import { PROFILE_ACTIVATION_STOPPED_MESSAGE } from "@/features/ai-audit/transportContext";
+import {
+  PROFILE_ACTIVATION_STOPPED_MESSAGE,
+  profileActivationStopAuditMetadata,
+} from "@/features/ai-audit/transportContext";
 import { aiFailureText } from "./profileEgressAiStop";
 import * as text from "./profileEgressAiStopText";
 
@@ -74,6 +77,36 @@ describe("the profile activation's AI terminals (D-10 (a), DR-DA2-34)", () => {
     ]) {
       expect(aiFailureText(other)).toBeNull();
     }
+  });
+
+  it("changes neither the display nor the audit for a provider error that merely contains a marker (S4)", () => {
+    text.ensureProfileEgressAiStopTranslations();
+    for (const contained of [
+      `provider said: ${SYNTHESIZED}`,
+      `${SYNTHESIZED}.`,
+      `${SYNTHESIZED}\nmore`,
+      // The synthesized terminal is exact, as the audit requires.
+      `Error: ${SYNTHESIZED}`,
+      `upstream: ${LEGACY_STOPPED}`,
+      `Error: upstream ${LEGACY_STOPPED}`,
+      "D2A_EGRESS_DENIED: legacy-request-stopped-later",
+      `ERROR: ${LEGACY_STOPPED}`,
+      `provider: ${DISCARDED_EXTERNAL}`,
+      `${DISCARDED_LOCAL} (retry)`,
+      `Error: Error: ${DISCARDED_EXTERNAL}`,
+    ]) {
+      expect(aiFailureText(contained)).toBeNull();
+      expect(profileActivationStopAuditMetadata(contained)).toBeNull();
+    }
+    // The audit marks the synthesized text only; the display accepts the
+    // stringified prefix of the other two.
+    expect(profileActivationStopAuditMetadata(SYNTHESIZED)).not.toBeNull();
+    expect(aiFailureText(`Error: ${DISCARDED_EXTERNAL}`)).toBe(
+      text.PROFILE_EGRESS_AI_STOP_TRANSLATIONS.ja.discarded,
+    );
+    expect(aiFailureText("D2A_EGRESS_DENIED: legacy-request-stopped")).toBe(
+      text.PROFILE_EGRESS_AI_STOP_TRANSLATIONS.ja.stopped,
+    );
   });
 
   it("keeps the chat's error classification for every terminal (no misattribution)", () => {

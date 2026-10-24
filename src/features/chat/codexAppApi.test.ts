@@ -750,6 +750,56 @@ describe("codexAppApi", () => {
     cleanup();
   });
 
+  it("records Main's synthesized terminal after a cancellation as no provider race and no observed transport end (DA-2 ST3-S5)", async () => {
+    const callbacks = {
+      onTextDelta: vi.fn(),
+      onThinkingDelta: vi.fn(),
+      onDone: vi.fn(),
+      onError: vi.fn(),
+      onWarning: vi.fn(),
+    };
+    const cleanup = await sendCodexAppTurn(
+      { ...basePayload, transport: "app-server" },
+      callbacks,
+    );
+    cleanup();
+    emit({
+      projectId: "p1",
+      sessionId: "s1",
+      grimodexTurnId: "g1",
+      event: {
+        type: "turn-error",
+        message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+        code: "D2A_EGRESS_DENIED",
+        retryable: false,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(auditApi.failAiAuditExecution).toHaveBeenCalledOnce(),
+    );
+    expect(callbacks.onError).not.toHaveBeenCalled();
+    // Exact: the receipt's fields, then the synthesized terminal's overrides.
+    expect(
+      (
+        vi.mocked(auditApi.failAiAuditExecution).mock.calls[0]?.[1] as {
+          metadata?: unknown;
+        }
+      ).metadata,
+    ).toEqual({
+      externalRuntimeInternalPromptObserved: false,
+      transportAbortRequested: true,
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+      providerAbortReceiptObserved: false,
+      uiDeliveryEnded: true,
+      auditObservationContinuedUntilTransportTerminal: false,
+      cleanupReturnedBeforeTerminalAuditDurable: true,
+      abortRacedWithProviderFailure: false,
+      profileEgressStop: "profile-activation-stopped",
+      terminalSynthesizedByMain: true,
+    });
+  });
+
   it("keeps listening after a retryable turn error", async () => {
     const callbacks = {
       onTextDelta: vi.fn(),

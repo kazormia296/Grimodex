@@ -347,6 +347,7 @@ describe("chat and Agent audit contracts", () => {
           terminalSynthesizedByMain: true,
           transportTerminationObserved: false,
           auditObservationContinuedUntilTransportTerminal: false,
+          abortRacedWithProviderFailure: false,
         },
       }),
     ]);
@@ -372,6 +373,47 @@ describe("chat and Agent audit contracts", () => {
     expect(
       (failMock.mock.calls[0] as unknown[] | undefined)?.[1],
     ).not.toHaveProperty("metadata");
+  });
+
+  it("records Main's synthesized terminal after a cancellation as no provider race and no observed transport end (DA-2 ST3-S5)", async () => {
+    const onError = vi.fn();
+    const cleanup = await sendChatMessageStream(
+      [{ role: "user", content: "stream" }],
+      undefined,
+      {
+        onTextDelta: vi.fn(),
+        onThinkingDelta: vi.fn(),
+        onDone: vi.fn(),
+        onError,
+      },
+      { projectId: "project-1", pathId: "chat_stream_non_agent" },
+    );
+    cleanup();
+    emitChat("chat:stream-error", {
+      message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    await vi.waitFor(() => expect(failMock).toHaveBeenCalledOnce());
+    expect(invokeMock).toHaveBeenCalledWith(
+      "abort_chat_stream",
+      expect.anything(),
+    );
+    expect(onError).not.toHaveBeenCalled();
+    // Exact: the receipt's fields, then the synthesized terminal's overrides.
+    expect(
+      ((failMock.mock.calls[0] as unknown[])[1] as { metadata?: unknown })
+        .metadata,
+    ).toEqual({
+      transportAbortRequested: true,
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+      providerAbortReceiptObserved: false,
+      uiDeliveryEnded: true,
+      auditObservationContinuedUntilTransportTerminal: false,
+      cleanupReturnedBeforeTerminalAuditDurable: true,
+      abortRacedWithProviderFailure: false,
+      profileEgressStop: "profile-activation-stopped",
+      terminalSynthesizedByMain: true,
+    });
   });
 
   it("keeps correlated audit observation through abort quiescence while stopping UI immediately", async () => {
