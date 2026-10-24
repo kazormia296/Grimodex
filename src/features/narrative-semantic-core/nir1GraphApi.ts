@@ -6,8 +6,9 @@ const FAILED = { status: "unavailable", reason: "failed" } as const;
 /**
  * Fields only the IR arm carries. Any of them on a Graph-only answer means the
  * arms were mixed up (a renderer bug), so the answer is refused fail-closed
- * instead of skipping the digest checks (CP-3b F2, DR-CP3B-13). The startup
- * click path (`nir1EvidenceNavigation.ts`) holds the same list.
+ * instead of skipping the digest checks (CP-3b F2, DR-CP3B-14). The startup
+ * click path (`nir1EvidenceNavigation.ts`) does not hold this list; it refuses
+ * a Graph-only answer whose key count is not exactly 5.
  */
 const IR_ARM_FIELDS = [
   "sourceVersion",

@@ -6,9 +6,10 @@ import { codexEntries, sceneCodexPins, treeNodes } from "@/db/schema";
 const SEED_UTF16_MAX = 200;
 
 /**
- * The Graph seed of a query Scene: the same rule as Native's
- * `read_nir1_graph_seed_in_tx` (`nir1_packing/graph_candidates.rs`), so that
- * Native's re-read at §3.3 agrees (DR-DI1A-6, DR-CP3B-3).
+ * The Graph seed of a query Scene: Native's `read_nir1_graph_seed_in_tx`
+ * (`nir1_packing/graph_candidates.rs`) join and order, with a narrower bound
+ * (Main's 200 UTF-16, no blank id), so that Native's re-read at §3.3 agrees
+ * whenever a seed is sent (DR-DI1A-6, DR-CP3B-3).
  *
  * The pins of the Scene, joined to a live Scene and a Codex entry of the same
  * project, ordered by `created_at` then `entry_id`; only the first one decides.
