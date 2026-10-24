@@ -25,6 +25,11 @@
 
 import { nir1LocalAuditReservedField } from "./nir1LocalAuditNamespace.js";
 import {
+  PROFILE_ACTIVATION_REQUEST_COMMAND,
+  PROFILE_EGRESS_STATE_EVENT,
+  PROFILE_EGRESS_STATUS_COMMAND,
+} from "./profileEgressStatusWire.js";
+import {
   parseWorkspaceRestoreOutcome,
 } from "./workspaceRestoreOutcome.js";
 
@@ -336,6 +341,10 @@ export const MAIN_EVENT_CHANNEL_ALLOWLIST = [
   "updater:download-progress",
   // Web Editor handoff deep link: UIを開く合図のみ。path/contentは含めない。
   "web-editor-handoff:requested",
+  // DA-2 (DR-DA2-9): the profile egress state, a closed union without
+  // plaintext or ids. Main sends it itself, so it is not a backend event and
+  // the profile gate's backend-event filter does not apply.
+  PROFILE_EGRESS_STATE_EVENT,
 ] as const;
 
 /** listen 用の全イベント一覧。送信元別 allowlist の union。 */
@@ -891,6 +900,31 @@ export interface NapiBackendLike {
    * at startup, and only when the evaluation CI seam is active.
    */
   mainOpenPrePublicationGate?(kind: string): void;
+  /**
+   * Main-only profile activation (DA-2, DR-DA2-3). Deliberately absent from
+   * the renderer command map: only `electron/main/profileActivation.ts` and
+   * `profileEgress.ts` call them. The preview answers
+   * `{ previewId, display, disclosureVersion, expiresInMs }`, the issue
+   * `{ grantId }`; the consume (stage 1) is synchronous; the commit runs
+   * stages 4 and 5 and answers the restricted status JSON. Cancellation uses
+   * `mainGrantRevoke` / `mainGrantRevokeSender` (the slot is shared).
+   */
+  profileActivationPreview?(
+    senderId: number,
+    windowId: number,
+  ): Promise<string>;
+  profileActivationIssue?(
+    previewId: string,
+    senderId: number,
+    windowId: number,
+    displayDigest: string,
+  ): Promise<string>;
+  profileActivationConsume?(
+    grantId: string,
+    senderId: number,
+    windowId: number,
+  ): void;
+  profileActivationCommit?(): Promise<string>;
   /** Main lifecycle only; deliberately absent from the renderer command map. */
   relatedScenesReleaseOwner?(ownerKey: string): Promise<string>;
   /** Main observer only; never a renderer command. */
@@ -10776,6 +10810,11 @@ export const SHELL_COMMAND_NAMES: readonly string[] = [
   // Mozkey IbG: official GitHub Release selection, checksum verification,
   // and native installer launch are owned by one stateful main manager.
   "mozkey_download_and_install",
+  // DA-2 (DR-DA2-9, DR-DA2-16): processed by Electron main itself before the
+  // profile gate's invoke check, never forwarded to Native. Both answer
+  // closed codes only.
+  PROFILE_ACTIVATION_REQUEST_COMMAND,
+  PROFILE_EGRESS_STATUS_COMMAND,
 ];
 
 // ─────────────────────────────────────────────────────────────────────────────

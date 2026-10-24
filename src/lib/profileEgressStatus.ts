@@ -1,0 +1,80 @@
+/**
+ * Renderer wrapper of the profile egress state and the activation request
+ * (NIR-1 DA-2; DR-DA2-9 and DR-DA2-16 in
+ * `docs/plans/nir1-lane-decisions/da2-decisions.md`).
+ *
+ * The renderer only reads closed codes and asks; Electron main decides and
+ * shows the confirmation. Nothing here carries plaintext or an id.
+ *
+ * Startup graph: this module is not imported by the startup graph. Import it
+ * only from a lazy chunk (ST3, behind `PROFILE_ACTIVATION_UI_ENABLED`).
+ *
+ * The two commands bypass the renderer's IPC queue on purpose: they are
+ * processed by Main without touching Native data, and the request waits for
+ * the user's dialog (up to the preview's 60 s) and the bounded stages, which
+ * must not hold a queue slot or a lifecycle quiescence.
+ */
+import {
+  PROFILE_ACTIVATION_REQUEST_COMMAND,
+  PROFILE_EGRESS_STATE_EVENT,
+  PROFILE_EGRESS_STATUS_COMMAND,
+  parseProfileActivationRequestResult,
+  parseProfileEgressStatusView,
+  type ProfileActivationRequestResult,
+  type ProfileEgressStatusView,
+} from "@/../electron/shared/profileEgressStatusWire";
+
+import { electronBridge, isElectron } from "./shell";
+
+export type {
+  ProfileActivationRequestResult,
+  ProfileActivationRequestStatus,
+  ProfileEgressState,
+  ProfileEgressStatusView,
+  ProfileEgressUnavailableReason,
+} from "@/../electron/shared/profileEgressStatusWire";
+
+/** Outside Electron there is no profile gate: the legacy runtimes are unrestricted. */
+const NON_ELECTRON_STATUS: ProfileEgressStatusView = { state: "unrestricted" };
+
+/** The current state. Main answers while unavailable too. */
+export async function getProfileEgressStatus(): Promise<ProfileEgressStatusView> {
+  if (!isElectron()) return NON_ELECTRON_STATUS;
+  const envelope = await electronBridge().invoke(PROFILE_EGRESS_STATUS_COMMAND);
+  if (!envelope.ok) {
+    throw new Error("PROFILE_EGRESS_STATUS_UNAVAILABLE");
+  }
+  const view = parseProfileEgressStatusView(envelope.value);
+  if (view === null) throw new Error("PROFILE_EGRESS_STATUS_INVALID");
+  return view;
+}
+
+/**
+ * Asks Main to run the activation. Main shows its own confirmation; the
+ * answer is a closed status. Before PUB-G it is always `not-activated`.
+ */
+export async function requestProfileActivation(): Promise<ProfileActivationRequestResult> {
+  if (!isElectron()) return { status: "not-activated" };
+  const envelope = await electronBridge().invoke(
+    PROFILE_ACTIVATION_REQUEST_COMMAND,
+  );
+  const result = envelope.ok
+    ? parseProfileActivationRequestResult(envelope.value)
+    : null;
+  return result ?? { status: "refused" };
+}
+
+/**
+ * Subscribes to the state Main sends at stage 2 (`activating`), stage 6
+ * (`restricted`) and on a failure (`unavailable` with its reason). A payload
+ * outside the closed union is dropped. Returns the unsubscribe.
+ */
+export function onProfileEgressStatus(
+  handler: (view: ProfileEgressStatusView) => void,
+): () => void {
+  if (!isElectron()) return () => undefined;
+  return electronBridge().listen(PROFILE_EGRESS_STATE_EVENT, (payload) => {
+    const view = parseProfileEgressStatusView(payload);
+    if (view !== null) handler(view);
+  });
+}
