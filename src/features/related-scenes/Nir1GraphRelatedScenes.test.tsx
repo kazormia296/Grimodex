@@ -1,5 +1,11 @@
 // @vitest-environment happy-dom
-import { cleanup, render, screen, within } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   RelatedScenesGraphOnlyRow,
@@ -12,6 +18,7 @@ vi.mock("./nir1EvidenceNavigation", () => ({
   requestNir1EvidenceNavigation: vi.fn(),
 }));
 import Nir1GraphRelatedScenes from "./Nir1GraphRelatedScenes";
+import { requestNir1EvidenceNavigation } from "./nir1EvidenceNavigation";
 
 const edge = (
   from: string,
@@ -291,5 +298,16 @@ describe("Nir1GraphRelatedScenes", () => {
       );
     }
     expect(document.querySelector("[draggable=true]")).toBeNull();
+  });
+  it("the open action requests the Graph-only navigation with the row's range and excerpt", () => {
+    const fetch = fetchWith();
+    view(fetch);
+    fireEvent.click(screen.getByTestId("nir1-graph-only-open"));
+    expect(requestNir1EvidenceNavigation).toHaveBeenCalledExactlyOnceWith(
+      fetch,
+      "g",
+      "nav-secret-handle",
+      { canonicalRange: { start: 0, end: 18 }, excerpt: "Graph excerpt text" },
+    );
   });
 });

@@ -155,3 +155,83 @@ describe("NIR Evidence request lifetime", () => {
     expect(hasPendingNir1EvidenceNavigation("s1")).toBe(false);
   });
 });
+
+describe("NIR Graph-only request (CP-3b C-2)", () => {
+  const target = {
+    canonicalRange: { start: 0, end: 10 },
+    excerpt: "first line",
+  };
+  const graphAnswer = {
+    status: "qualified" as const,
+    bindingKey: "graph-handle",
+    queryBinding: "query",
+    sceneId: "s1",
+    canonicalRange: { start: 0, end: 10 },
+  };
+
+  it("a Graph-only request opens the scene only when the qualified range equals the row's range", async () => {
+    vi.mocked(qualifyNir1Evidence).mockResolvedValue(graphAnswer as never);
+    const f = fetchResult();
+    expect(
+      await requestNir1EvidenceNavigation(
+        f.fetch,
+        "s1",
+        "graph-handle",
+        target,
+      ),
+    ).toBe(true);
+    expect(useTreeStore.getState().activeSceneId).toBe("s1");
+    const claim = claimNir1EvidenceNavigation("s1");
+    expect(claim?.graphOnly).toEqual(target);
+    claim?.finish();
+  });
+
+  it.each([
+    { start: 0, end: 11 },
+    { start: 1, end: 10 },
+    { start: "0", end: 10 },
+    undefined,
+  ])("a qualified range %o that differs does not open", async (range) => {
+    vi.mocked(qualifyNir1Evidence).mockResolvedValue({
+      ...graphAnswer,
+      canonicalRange: range,
+    } as never);
+    const f = fetchResult();
+    expect(
+      await requestNir1EvidenceNavigation(
+        f.fetch,
+        "s1",
+        "graph-handle",
+        target,
+      ),
+    ).toBe(false);
+    expect(useTreeStore.getState().activeSceneId).toBe("s2");
+    expect(f.release).toHaveBeenCalledOnce();
+  });
+
+  it("an unavailable answer does not open", async () => {
+    vi.mocked(qualifyNir1Evidence).mockResolvedValue({
+      status: "unavailable",
+      reason: "invalidated",
+    });
+    const f = fetchResult();
+    expect(
+      await requestNir1EvidenceNavigation(
+        f.fetch,
+        "s1",
+        "graph-handle",
+        target,
+      ),
+    ).toBe(false);
+    expect(useTreeStore.getState().activeSceneId).toBe("s2");
+    expect(claimNir1EvidenceNavigation("s1")).toBeNull();
+  });
+
+  it("an IR request carries no Graph-only target", async () => {
+    const f = fetchResult();
+    expect(await requestNir1EvidenceNavigation(f.fetch, "s1", "evidence")).toBe(
+      true,
+    );
+    expect(claimNir1EvidenceNavigation("s1")?.graphOnly).toBeNull();
+  });
+});

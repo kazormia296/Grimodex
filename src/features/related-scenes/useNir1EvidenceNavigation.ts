@@ -37,63 +37,22 @@ export function useNir1EvidenceNavigation(options: Options): void {
         const editor = latest.current.editor;
         if (!editor || editor.isDestroyed) return;
         const documentJson = JSON.stringify(editor.getJSON());
-        const { resolveNir1EvidenceRange, serializeProseMirrorDocument } =
-          await import("./nir1EvidenceRange");
+        // D5-B (DR-CP3B-10): the claim and first capture stay here, before
+        // any await; the IR and Graph-only matching lives in a lazy module.
+        const { consumeNir1Evidence } = await import("./nir1EvidenceConsume");
         if (cancelled || !claim.isCurrent() || editor.isDestroyed) return;
-        const serialized = serializeProseMirrorDocument(
+        await consumeNir1Evidence({
+          claim,
+          capture,
+          editor,
           documentJson,
-          "database",
-        );
-        if (!serialized.ok) return;
-        const canonicalDigest = await sha256Digest(serialized.canonical.text);
-        const qualified = await qualifyNir1Evidence(claim.identity);
-        const current = latest.current.captureState();
-        if (
-          cancelled ||
-          !claim.isCurrent() ||
-          qualified.status !== "qualified" ||
-          qualified.bindingKey !== claim.identity ||
-          qualified.queryBinding !== claim.queryBinding ||
-          qualified.sceneId !== claim.sceneId ||
-          !current ||
-          !isNir1EvidenceEditorCurrent(capture, current) ||
-          capture.binding.kind !== "tree" ||
-          capture.binding.id !== claim.sceneId ||
-          capture.binding.loadedVersion !== qualified.sourceVersion
-        )
-          return;
-        if (
-          editor.isDestroyed ||
-          canonicalDigest !== qualified.canonicalTextDigest
-        )
-          return;
-        const range = resolveNir1EvidenceRange({
-          documentJson,
-          fullQuote: qualified.fullQuote,
-          normalizerVersion: qualified.normalizerVersion,
+          cancelled: () => cancelled,
+          captureState: () => latest.current.captureState(),
+          beforeSelection: () => latest.current.beforeSelection(),
+          isEditorCurrent: isNir1EvidenceEditorCurrent,
+          qualifyEvidence: qualifyNir1Evidence,
+          digest: sha256Digest,
         });
-        if (
-          range.status !== "highlight" ||
-          range.canonicalRange.start !== qualified.canonicalRange.start ||
-          range.canonicalRange.end !== qualified.canonicalRange.end
-        )
-          return;
-        // No await between this final generation check and selection. Never
-        // clamp a stale range or use a prefix/Raw jump fallback.
-        const final = latest.current.captureState();
-        if (
-          !final ||
-          !claim.isCurrent() ||
-          !isNir1EvidenceEditorCurrent(capture, final)
-        )
-          return;
-        latest.current.beforeSelection();
-        editor
-          .chain()
-          .focus()
-          .setTextSelection(range.selection)
-          .scrollIntoView()
-          .run();
       } catch {
         // An unavailable qualification leaves the scene open without applying
         // a selection; exception payloads never enter the display.

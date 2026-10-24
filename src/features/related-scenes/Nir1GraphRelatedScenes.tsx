@@ -2,6 +2,7 @@ import { useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { debugLog } from "@/lib/debugLog";
 import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
+import { requestNir1EvidenceNavigation } from "./nir1EvidenceNavigation";
 import { Nir1GraphPathEvidence, Nir1GraphText } from "./Nir1GraphPathEvidence";
 import {
   fuseNir1RelatedScenesGraph,
@@ -19,12 +20,22 @@ interface Props {
 
 function GraphOnlyRow({
   row,
+  fetch,
 }: {
   readonly row: Nir1GraphOnlyDisplayRow;
   readonly fetch: Nir1RelatedScenesFetchResult;
 }) {
   const { t } = useTranslation();
   const { graphOnly } = row;
+  // Native re-qualifies twice (before opening and after the editor loads);
+  // the editor text at the range must equal the excerpt (DR-CP3B-10).
+  const open = () =>
+    void requestNir1EvidenceNavigation(
+      fetch,
+      row.sceneId,
+      graphOnly.navigationIdentity,
+      { canonicalRange: graphOnly.canonicalRange, excerpt: graphOnly.excerpt },
+    );
   return (
     <div
       data-testid="related-scene-row"
@@ -63,8 +74,8 @@ function GraphOnlyRow({
           type="button"
           data-testid="nir1-graph-only-open"
           data-nir1-navigation-identity={graphOnly.navigationIdentity}
-          disabled
-          className="mt-1 w-full min-w-0 cursor-pointer text-left text-primary hover:underline disabled:cursor-default disabled:no-underline"
+          onClick={open}
+          className="mt-1 w-full min-w-0 cursor-pointer text-left text-primary hover:underline"
         >
           <span className="block">{t("relatedScenes.graph.openExcerpt")}</span>
           <span className="line-clamp-3 break-words">
