@@ -66,16 +66,20 @@ describe("the profile activation's AI terminals (D-10 (a), DR-DA2-34)", () => {
     expect(aiFailureText(SYNTHESIZED)).toBe(
       text.PROFILE_EGRESS_AI_STOP_TRANSLATIONS.en.stopped,
     );
-    for (const other of [
-      null,
-      "",
-      "provider failed",
+    for (const other of [null, "", "provider failed"]) {
+      expect(aiFailureText(other)).toBeNull();
+    }
+    // Any other refusal of the gate shows the generic error text, never the
+    // raw marker (DA-2b, Negative (11); DR-DA2B-R5).
+    for (const refusal of [
       "D2A_EGRESS_DENIED: old-external-ai: route send_chat_message is closed while restricted",
       "D2A_EGRESS_DENIED: plaintext-publication: route x completed after profile restriction began",
       "D2A_EGRESS_DENIED: profile-activation-stopped-later",
-      "D2A_EGRESS_DENIED: publication completed after profile restriction began",
+      "Error: D2A_EGRESS_DENIED: old-local-ai: route list_ai_models is closed while restricted",
+      "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: route db_execute is unavailable in profile local-only mode",
     ]) {
-      expect(aiFailureText(other)).toBeNull();
+      expect(aiFailureText(refusal)).toBe(i18n.t("common.error"));
+      expect(aiFailureText(refusal)).not.toContain("D2A_EGRESS_DENIED");
     }
   });
 
@@ -89,13 +93,19 @@ describe("the profile activation's AI terminals (D-10 (a), DR-DA2-34)", () => {
       `Error: ${SYNTHESIZED}`,
       `upstream: ${LEGACY_STOPPED}`,
       `Error: upstream ${LEGACY_STOPPED}`,
-      "D2A_EGRESS_DENIED: legacy-request-stopped-later",
       `ERROR: ${LEGACY_STOPPED}`,
       `provider: ${DISCARDED_EXTERNAL}`,
       `${DISCARDED_LOCAL} (retry)`,
       `Error: Error: ${DISCARDED_EXTERNAL}`,
     ]) {
-      expect(aiFailureText(contained)).toBeNull();
+      // Never the stop reason. A text that starts with the gate's marker is a
+      // refusal and shows the generic error (DA-2b, DR-DA2B-R5); a provider
+      // text that merely contains it keeps its own text.
+      expect(aiFailureText(contained)).toBe(
+        /^(?:Error: )?D2A_EGRESS_DENIED: [a-z0-9-]+(?::|$)/.test(contained)
+          ? i18n.t("common.error")
+          : null,
+      );
       expect(profileActivationStopAuditMetadata(contained)).toBeNull();
     }
     // The audit marks the synthesized text only; the display accepts the
@@ -104,6 +114,16 @@ describe("the profile activation's AI terminals (D-10 (a), DR-DA2-34)", () => {
     expect(aiFailureText(`Error: ${DISCARDED_EXTERNAL}`)).toBe(
       text.PROFILE_EGRESS_AI_STOP_TRANSLATIONS.ja.discarded,
     );
+    // An anchored refusal that is not a stop terminal is the generic error,
+    // not the stop reason.
+    expect(
+      aiFailureText("D2A_EGRESS_DENIED: legacy-request-stopped-later"),
+    ).toBe(i18n.t("common.error"));
+    expect(
+      profileActivationStopAuditMetadata(
+        "D2A_EGRESS_DENIED: legacy-request-stopped-later",
+      ),
+    ).toBeNull();
     expect(aiFailureText("D2A_EGRESS_DENIED: legacy-request-stopped")).toBe(
       text.PROFILE_EGRESS_AI_STOP_TRANSLATIONS.ja.stopped,
     );

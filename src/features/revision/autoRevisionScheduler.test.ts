@@ -127,13 +127,35 @@ describe("autoRevisionScheduler", () => {
     await runScheduledRevision();
 
     expect(h.createRevision).toHaveBeenCalledWith({
+      scope: { projectId: "project-1", isCurrent: expect.any(Function) },
       entityType: "scene",
       entityId: "scene-1",
       content: '{"persisted":true}',
       snapshotType: "auto",
     });
     expect(h.recordAutoRevision).toHaveBeenCalledWith(scopedRevisionKey);
-    expect(h.pruneRevisions).toHaveBeenCalledWith("scene", "scene-1", 25);
+    expect(h.pruneRevisions).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: "project-1" }),
+      "scene",
+      "scene-1",
+      25,
+    );
+  });
+
+  it("binds the version write to the queued workspace and scene project (DR-DA2B-R3)", async () => {
+    scheduleAutoRevision(request(7));
+    await runScheduledRevision();
+    const [{ scope }] = h.createRevision.mock.calls[0] as unknown as [
+      { scope: { isCurrent: () => boolean } },
+    ];
+    expect(scope.isCurrent()).toBe(true);
+    // A workspace switch (or a different loaded project) makes a late write
+    // stale: `writeRevision` then sends nothing.
+    setCurrentWorkspaceIdentity({ path: "/other", openRevision: 1 });
+    expect(scope.isCurrent()).toBe(false);
+    setCurrentWorkspaceIdentity(workspaceIdentity);
+    h.projectId = "project-2";
+    expect(scope.isCurrent()).toBe(false);
   });
 
   it("latest-wins consecutive saves for the same scene", async () => {

@@ -9,9 +9,13 @@
  *   pnpm napi:build
  *   pnpm exec vitest --config vitest.electron-native.config.ts --run
  */
+import path from "node:path";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  // The renderer's `@` alias, for the spec that runs the renderer's own API
+  // functions against the real router and Native (d2bRendererWriters).
+  resolve: { alias: { "@": path.resolve(__dirname, "./src") } },
   test: {
     name: "electron-native",
     environment: "node",

@@ -27,6 +27,8 @@ rules:
       - docs/plans/nir1-l6-l9-execution-plan.md
       - docs/plans/nir1-l6-l9-contract-proposal-*.md
       - policies/quality/**
+      - architecture-baseline.json
+      - policies/architecture/**
       - evals/**
       - scripts/quality/**
     requirements:
@@ -568,6 +570,95 @@ rules:
       - src/features/chat/codexAppApi.test.ts
       - src/features/settings/categories/DataCategory.tsx
       - src/features/settings/categories/DataCategory.test.tsx
+      - src-tauri/crates/grimodex-db/src/chat_typed_writes.rs
+      - src-tauri/crates/grimodex-db/src/revision_writes.rs
+      - src-tauri/crates/grimodex-db/src/impact_review_baselines.rs
+      - src-tauri/crates/grimodex-db/tests/chat_typed_writers.rs
+      - src-tauri/crates/grimodex-db/tests/d2a_m_t_typed_writers.rs
+      - src-tauri/crates/grimodex-db/tests/d2a_restricted_generic_sql_shapes.rs
+      - electron/native/grimodex-node/src/typed_writers.rs
+      - electron/native/grimodex-node/src/typed_writers_tests.rs
+      - electron/main/d2bTypedWriters.test.ts
+      - electron/main/d2bRendererWriters.pipeline.spec.ts
+      - src/application/chat/chatOllamaPreflight.test.ts
+      - src/application/chat/chatOllamaPreflight.ts
+      - src/application/chat/chatPersistenceStoreActions.test.ts
+      - src/application/chat/chatPersistenceStoreActions.ts
+      - src/application/chat/chatSessionStoreActions.ts
+      - src/application/chat/chatStoreSupport.turnErrorText.test.ts
+      - src/features/chat/chatApi.cw.test.ts
+      - src/features/chat/chatHistoryApi.ts
+      - src/features/chat/chatTypedWrites.ts
+      - src/features/chat/components/ChatInput.editClosed.test.tsx
+      - src/features/chat/components/ChatInput.tsx
+      - src/features/chat/components/ContextCreatorDialog.tsx
+      - src/features/chat/store.ts
+      - src/features/chat/useChatMessageActions.editClosed.test.tsx
+      - src/features/chat/useChatMessageActions.record.test.ts
+      - src/features/chat/useChatMessageActions.ts
+      - src/features/codex/components/CodexDetailContent.tsx
+      - src/features/codex/components/TagSelector.tsx
+      - src/features/codex/impactBaselineVisibility.ts
+      - src/features/concurrency/externalWriteFeed.test.ts
+      - src/features/concurrency/externalWriteFeed.ts
+      - src/features/concurrency/externalWriteFeedRead.ts
+      - src/features/concurrency/mutationAuthority.ts
+      - src/features/editor/EditorPane.tsx
+      - src/features/editor/document/sceneSidecars.test.ts
+      - src/features/editor/document/sceneSidecars.ts
+      - src/features/editor/editorStore.test.ts
+      - src/features/editor/editorStore.ts
+      - src/features/export/ExportDialog.tsx
+      - src/features/export/NovelExportDialog.tsx
+      - src/features/export/ZipExportDialog.tsx
+      - src/features/foreshadow/foreshadowStore.revisionRefusal.test.ts
+      - src/features/foreshadow/foreshadowStore.test.ts
+      - src/features/foreshadow/foreshadowStore.ts
+      - src/features/import/chatImportNotice.enabled.test.ts
+      - src/features/import/chatImportNotice.ts
+      - src/features/import/flows/NovelcrafterImportFlow.tsx
+      - src/features/import/importApi.ts
+      - src/features/import/importChat.restricted.test.ts
+      - src/features/kouetsu/fullCheck.ts
+      - src/features/kouetsu/runners/consistency.ts
+      - src/features/kouetsu/runners/shared.ts
+      - src/features/kouetsu/triage/issueActions.ts
+      - src/features/kouetsu/usePseudoCommentRun.ts
+      - src/features/labels/labelApi.ts
+      - src/features/map/MapCanvas.tsx
+      - src/features/map/hooks/useFrameDrawing.ts
+      - src/features/map/hooks/useMapContextMenu.ts
+      - src/features/map/hooks/useMapExport.ts
+      - src/features/map/hooks/useMapPositionPersistence.test.ts
+      - src/features/map/hooks/useMapPositionPersistence.ts
+      - src/features/map/mapApi.test.ts
+      - src/features/map/mapApi.ts
+      - src/features/map/restrictedGenericSqlT.test.ts
+      - src/features/matrix/MatrixPanel.tsx
+      - src/features/prompt-library/api.test.ts
+      - src/features/prompt-library/api.ts
+      - src/features/revision/api.createRevision.test.ts
+      - src/features/revision/api.ts
+      - src/features/revision/autoRevisionScheduler.test.ts
+      - src/features/revision/autoRevisionScheduler.ts
+      - src/features/revision/projectSnapshotApi.revisionRefusal.test.ts
+      - src/features/settings/categories/LicenseCategory.tsx
+      - src/features/snippets/SnippetDetailContent.tsx
+      - src/features/sticky/stickyDraftController.w1.test.ts
+      - src/features/trash-bin/trashBinStore.idempotency.test.ts
+      - src/features/trash-bin/trashBinStore.ts
+      - src/features/vivliostyle/CliStatusBanner.tsx
+      - src/features/vivliostyle/VivliostyleExportSection.test.tsx
+      - src/features/vivliostyle/VivliostyleExportSection.tsx
+      - src/features/vivliostyle/runStore.ts
+      - src/lib/d2aFailureText.test.ts
+      - src/lib/d2aFailureText.ts
+      - src/lib/d2aRestrictedGenericSql.testSupport.ts
+      - src/lib/debugLog.test.ts
+      - src/lib/debugLog.ts
+      - src/lib/i18n.ts
+      - src/lib/typedWriters.test.ts
+      - src/lib/typedWriters.ts
     requirements:
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001

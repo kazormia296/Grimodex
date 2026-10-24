@@ -278,6 +278,34 @@ export declare class Backend {
   editorStickyUpdate(payload: any): Promise<string>
   editorStickyDelete(payload: any): Promise<void>
   /**
+   * DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
+   * `internal` writer; Main attaches the caller identity as the trailing
+   * sidecar. Returns `{"deleted":n}`.
+   */
+  chatMessagesDelete(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /** DA-2b CW: delete one chat session (children follow the foreign keys). */
+  chatSessionDelete(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /** DA-2b CW: delete every chat session of a project. */
+  chatProjectHistoryClear(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /** DA-2b CW: the manual rename (title, title_manual, updated_at only). */
+  chatSessionRename(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /** DA-2b CW: the extraction / insertion record (three metadata keys only). */
+  chatMessageMetadataRecord(payload: any, callerIdentity?: string | undefined | null): Promise<string>
+  /**
+   * DA-2b M (DR-DA2-51): record a content version unless the latest one
+   * has the same body. Returns ids and numbers, never a body.
+   */
+  revisionCreate(payload: any): Promise<string>
+  /** DA-2b M: prune old auto versions that no snapshot references. */
+  revisionPrune(payload: any): Promise<string>
+  /** DA-2b M: delete one project snapshot (children follow the foreign keys). */
+  projectSnapshotDelete(payload: any): Promise<string>
+  /**
+   * DA-2b T (DR-DA2-52): CAS-update the Impact Review baseline's
+   * visibility metadata. Returns `{"updated":bool}`.
+   */
+  impactReviewBaselineUpdateVisibility(payload: any): Promise<string>
+  /**
    * Project-scoped lint diagnostic ignore-list commands. The renderer
    * receives a domain DTO instead of owning SQL strings or generic DB
    * parameters; all scene ownership checks happen in grimodex-db.

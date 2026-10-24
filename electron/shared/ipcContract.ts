@@ -530,6 +530,32 @@ export interface NapiBackendLike {
   ): Promise<string>;
   narrativeRuntimePolicyGet?(): Promise<string>;
   narrativeRuntimePolicySet?(payload: unknown): Promise<string>;
+  // DA-2b typed writers (DR-DA2-50..53). Ordinary `internal` commands; the
+  // CW entries take Main's caller identity as the trailing sidecar.
+  chatMessagesDelete?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  chatSessionDelete?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  chatProjectHistoryClear?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  chatSessionRename?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  chatMessageMetadataRecord?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  revisionCreate?(payload: unknown): Promise<string>;
+  revisionPrune?(payload: unknown): Promise<string>;
+  projectSnapshotDelete?(payload: unknown): Promise<string>;
+  impactReviewBaselineUpdateVisibility?(payload: unknown): Promise<string>;
   editorStickyList?(projectId: string, documentKey: string): Promise<string>;
   editorStickyCreate?(payload: unknown): Promise<string>;
   editorStickyUpdate?(payload: unknown): Promise<string>;
@@ -7467,6 +7493,319 @@ function parseCancelCurrentChatInputReceipt(
   return receipt;
 }
 
+// ── DA-2b typed writers (NIR-1 DA-2b ST4-A, DR-DA2-50..53) ──────────────
+// Main re-validates every request before Native: exact keys, id lengths,
+// array sizes, enums and integer ranges (the same bounds as grimodex-db's
+// `chat_typed_writes`, `revision_writes` and `impact_review_baselines`).
+
+const D2B_MAX_ID_LENGTH = 256;
+const D2B_MAX_PATH_LENGTH = 4096;
+// Not a K3/2 threshold: one atomic deletion of a user message and every
+// later message of its session (DR-DA2-56).
+const D2B_MAX_MESSAGE_IDS = 10_000;
+// The longest renderer key a refusal message names (DR-DA2-56).
+const D2B_MAX_ECHOED_KEY_LENGTH = 64;
+const D2B_MAX_TITLE_LENGTH = 4096;
+const D2B_MAX_RECORD_IDS = 64;
+const D2B_MAX_KEEP_COUNT = 100_000;
+const D2B_MAX_HASH_LENGTH = 64;
+const D2B_MAX_SNAPSHOT_JSON_BYTES = 16 * 1024 * 1024;
+const D2B_RECORD_METADATA_KEYS = [
+  "extractedCodex",
+  "extractedSnippets",
+  "insertedToEditor",
+] as const;
+const D2B_REVISION_ENTITY_TYPES = [
+  "scene",
+  "note",
+  "codex_entry",
+  "snippet",
+] as const;
+
+function requireD2bPayload(
+  args: CommandArgs,
+  keys: readonly string[],
+  command: string,
+): CommandArgs {
+  requireExactKeys(args, ["payload"], command);
+  const payload = requireRecord(args, "payload", command);
+  requireExactKeys(payload, keys, command);
+  return payload;
+}
+
+function requireD2bId(
+  record: CommandArgs,
+  key: string,
+  command: string,
+): string {
+  const value = requireNonEmptyString(record, key, command);
+  if (value.length > D2B_MAX_ID_LENGTH) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected at most ${D2B_MAX_ID_LENGTH} characters`,
+    );
+  }
+  return value;
+}
+
+function requireD2bIdArray(
+  record: CommandArgs,
+  key: string,
+  command: string,
+  min: number,
+  max: number,
+): string[] {
+  const values = requireArray(record, key, command);
+  if (values.length < min || values.length > max) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected ${min} to ${max} ids`,
+    );
+  }
+  return values.map((value, index) =>
+    requireD2bId({ [`${key}[${index}]`]: value }, `${key}[${index}]`, command),
+  );
+}
+
+function requireD2bWorkspacePath(record: CommandArgs, command: string): string {
+  const value = requireNonEmptyString(record, "expectedWorkspacePath", command);
+  if (value.length > D2B_MAX_PATH_LENGTH) {
+    throw new Error(
+      `invalid args \`expectedWorkspacePath\` for command \`${command}\`: expected at most ${D2B_MAX_PATH_LENGTH} characters`,
+    );
+  }
+  return value;
+}
+
+function requireD2bEnum<T extends string>(
+  record: CommandArgs,
+  key: string,
+  allowed: readonly T[],
+  command: string,
+): T {
+  const value = requireString(record, key, command);
+  if (!(allowed as readonly string[]).includes(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected one of ${allowed.join(", ")}`,
+    );
+  }
+  return value as T;
+}
+
+function requireChatMessagesDeletePayload(args: CommandArgs): CommandArgs {
+  const command = "chat_messages_delete";
+  const payload = requireD2bPayload(
+    args,
+    ["expectedWorkspacePath", "projectId", "sessionId", "messageIds"],
+    command,
+  );
+  return {
+    expectedWorkspacePath: requireD2bWorkspacePath(payload, command),
+    projectId: requireD2bId(payload, "projectId", command),
+    sessionId: requireD2bId(payload, "sessionId", command),
+    messageIds: requireD2bIdArray(
+      payload,
+      "messageIds",
+      command,
+      1,
+      D2B_MAX_MESSAGE_IDS,
+    ),
+  };
+}
+
+function requireChatSessionDeletePayload(args: CommandArgs): CommandArgs {
+  const command = "chat_session_delete";
+  const payload = requireD2bPayload(
+    args,
+    ["expectedWorkspacePath", "projectId", "sessionId"],
+    command,
+  );
+  return {
+    expectedWorkspacePath: requireD2bWorkspacePath(payload, command),
+    projectId: requireD2bId(payload, "projectId", command),
+    sessionId: requireD2bId(payload, "sessionId", command),
+  };
+}
+
+function requireChatProjectHistoryClearPayload(args: CommandArgs): CommandArgs {
+  const command = "chat_project_history_clear";
+  const payload = requireD2bPayload(
+    args,
+    ["expectedWorkspacePath", "projectId"],
+    command,
+  );
+  return {
+    expectedWorkspacePath: requireD2bWorkspacePath(payload, command),
+    projectId: requireD2bId(payload, "projectId", command),
+  };
+}
+
+function requireChatSessionRenamePayload(args: CommandArgs): CommandArgs {
+  const command = "chat_session_rename";
+  const payload = requireD2bPayload(
+    args,
+    ["expectedWorkspacePath", "projectId", "sessionId", "title"],
+    command,
+  );
+  const title = requireString(payload, "title", command);
+  if (title.length > D2B_MAX_TITLE_LENGTH) {
+    throw new Error(
+      `invalid args \`title\` for command \`${command}\`: expected at most ${D2B_MAX_TITLE_LENGTH} characters`,
+    );
+  }
+  return {
+    expectedWorkspacePath: requireD2bWorkspacePath(payload, command),
+    projectId: requireD2bId(payload, "projectId", command),
+    sessionId: requireD2bId(payload, "sessionId", command),
+    title,
+  };
+}
+
+function requireChatMessageMetadataRecordPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "chat_message_metadata_record";
+  const payload = requireD2bPayload(
+    args,
+    ["expectedWorkspacePath", "projectId", "messageId", "patch"],
+    command,
+  );
+  const patch = requireRecord(payload, "patch", command);
+  const keys = Object.keys(patch);
+  for (const key of keys) {
+    if (!(D2B_RECORD_METADATA_KEYS as readonly string[]).includes(key)) {
+      // The same typed reason Native gives (CW condition 2). The renderer's
+      // key is echoed only up to a bound.
+      const shown =
+        key.length > D2B_MAX_ECHOED_KEY_LENGTH
+          ? `${key.slice(0, D2B_MAX_ECHOED_KEY_LENGTH)}…`
+          : key;
+      throw new Error(
+        `CHAT_WRITE_REFUSED:metadata-key-not-allowed (invalid args \`patch.${shown}\` for command \`${command}\`)`,
+      );
+    }
+  }
+  if (keys.length === 0) {
+    throw new Error(
+      `invalid args \`patch\` for command \`${command}\`: expected at least one record key`,
+    );
+  }
+  const validated: CommandArgs = {};
+  for (const key of keys) {
+    validated[key] =
+      key === "insertedToEditor"
+        ? requireBoolean(patch, key, command)
+        : requireD2bIdArray(patch, key, command, 0, D2B_MAX_RECORD_IDS);
+  }
+  return {
+    expectedWorkspacePath: requireD2bWorkspacePath(payload, command),
+    projectId: requireD2bId(payload, "projectId", command),
+    messageId: requireD2bId(payload, "messageId", command),
+    patch: validated,
+  };
+}
+
+function requireRevisionCreatePayload(args: CommandArgs): CommandArgs {
+  const command = "revision_create";
+  const payload = requireD2bPayload(
+    args,
+    ["projectId", "entityType", "entityId", "content", "snapshotType"],
+    command,
+  );
+  return {
+    projectId: requireD2bId(payload, "projectId", command),
+    entityType: requireD2bEnum(
+      payload,
+      "entityType",
+      D2B_REVISION_ENTITY_TYPES,
+      command,
+    ),
+    entityId: requireD2bId(payload, "entityId", command),
+    content: requireString(payload, "content", command),
+    snapshotType: requireD2bEnum(
+      payload,
+      "snapshotType",
+      ["auto", "manual"] as const,
+      command,
+    ),
+  };
+}
+
+function requireRevisionPrunePayload(args: CommandArgs): CommandArgs {
+  const command = "revision_prune";
+  const payload = requireD2bPayload(
+    args,
+    ["projectId", "entityType", "entityId", "keepCount"],
+    command,
+  );
+  const keepCount = requireSafeInteger(payload, "keepCount", command);
+  if (keepCount < 0 || keepCount > D2B_MAX_KEEP_COUNT) {
+    throw new Error(
+      `invalid args \`keepCount\` for command \`${command}\`: expected 0 to ${D2B_MAX_KEEP_COUNT}`,
+    );
+  }
+  return {
+    projectId: requireD2bId(payload, "projectId", command),
+    entityType: requireD2bEnum(
+      payload,
+      "entityType",
+      D2B_REVISION_ENTITY_TYPES,
+      command,
+    ),
+    entityId: requireD2bId(payload, "entityId", command),
+    keepCount,
+  };
+}
+
+function requireProjectSnapshotDeletePayload(args: CommandArgs): CommandArgs {
+  const command = "project_snapshot_delete";
+  const payload = requireD2bPayload(args, ["projectId", "snapshotId"], command);
+  return {
+    projectId: requireD2bId(payload, "projectId", command),
+    snapshotId: requireD2bId(payload, "snapshotId", command),
+  };
+}
+
+function requireImpactReviewBaselineUpdateVisibilityPayload(
+  args: CommandArgs,
+): CommandArgs {
+  const command = "impact_review_baseline_update_visibility";
+  const payload = requireD2bPayload(
+    args,
+    [
+      "projectId",
+      "entryId",
+      "expectedContentHash",
+      "snapshotJson",
+      "contentHash",
+    ],
+    command,
+  );
+  const snapshotJson = requireString(payload, "snapshotJson", command);
+  if (
+    new TextEncoder().encode(snapshotJson).byteLength >
+    D2B_MAX_SNAPSHOT_JSON_BYTES
+  ) {
+    throw new Error(
+      `invalid args \`snapshotJson\` for command \`${command}\`: expected at most ${D2B_MAX_SNAPSHOT_JSON_BYTES} bytes`,
+    );
+  }
+  const hash = (key: string): string => {
+    const value = requireNonEmptyString(payload, key, command);
+    if (value.length > D2B_MAX_HASH_LENGTH) {
+      throw new Error(
+        `invalid args \`${key}\` for command \`${command}\`: expected at most ${D2B_MAX_HASH_LENGTH} characters`,
+      );
+    }
+    return value;
+  };
+  return {
+    projectId: requireD2bId(payload, "projectId", command),
+    entryId: requireD2bId(payload, "entryId", command),
+    expectedContentHash: hash("expectedContentHash"),
+    snapshotJson,
+    contentHash: hash("contentHash"),
+  };
+}
+
 /** napi 実装済みコマンドの明示写像（Phase 3 の各バッチで追加）。 */
 export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
   db_execute: {
@@ -7523,6 +7862,105 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           b.narrativeRuntimePolicySet,
           "narrativeRuntimePolicySet",
         )(requireNarrativeRuntimePolicySetPayload(a)),
+      ),
+  },
+  // DA-2b typed writers (DR-DA2-50..53): `internal` in the D2a route ledger.
+  chat_messages_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(b, b.chatMessagesDelete, "chatMessagesDelete"),
+          requireChatMessagesDeletePayload(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  chat_session_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(b, b.chatSessionDelete, "chatSessionDelete"),
+          requireChatSessionDeletePayload(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  chat_project_history_clear: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.chatProjectHistoryClear,
+            "chatProjectHistoryClear",
+          ),
+          requireChatProjectHistoryClearPayload(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  chat_session_rename: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(b, b.chatSessionRename, "chatSessionRename"),
+          requireChatSessionRenamePayload(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  chat_message_metadata_record: {
+    run: async (b, a) =>
+      parseWire(
+        await callPublicationEntry1(
+          requireNapiMethod(
+            b,
+            b.chatMessageMetadataRecord,
+            "chatMessageMetadataRecord",
+          ),
+          requireChatMessageMetadataRecordPayload(a),
+          callerIdentityWire(a),
+        ),
+      ),
+  },
+  revision_create: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.revisionCreate,
+          "revisionCreate",
+        )(requireRevisionCreatePayload(a)),
+      ),
+  },
+  revision_prune: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.revisionPrune,
+          "revisionPrune",
+        )(requireRevisionPrunePayload(a)),
+      ),
+  },
+  project_snapshot_delete: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.projectSnapshotDelete,
+          "projectSnapshotDelete",
+        )(requireProjectSnapshotDeletePayload(a)),
+      ),
+  },
+  impact_review_baseline_update_visibility: {
+    run: async (b, a) =>
+      parseWire(
+        await requireNapiMethod(
+          b,
+          b.impactReviewBaselineUpdateVisibility,
+          "impactReviewBaselineUpdateVisibility",
+        )(requireImpactReviewBaselineUpdateVisibilityPayload(a)),
       ),
   },
   editor_sticky_list: {

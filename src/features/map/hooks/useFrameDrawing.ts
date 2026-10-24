@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useState, useRef, useCallback } from "react";
 import type { XYPosition } from "@xyflow/react";
 import { toast } from "sonner";
@@ -85,7 +86,7 @@ export function useFrameDrawing(
       });
     } catch (err) {
       toast.error(i18next.t("map.toast.frameCreateFailed"), {
-        description: String(err),
+        description: d2aFailureText(err, String(err)),
       });
       return;
     }

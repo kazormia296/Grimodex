@@ -36,6 +36,7 @@ import {
 } from "@/features/timelapse/rebaseline";
 import { generateNKeysBetween } from "@/features/tree/fractionalIndex";
 import { db } from "@/db/client";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import { chatSessions, chatMessages } from "@/db/schema";
 import { updateProject } from "@/features/project/api";
 import { markdownToPmJson } from "@/features/external-mount/markdownBridge";
@@ -692,12 +693,23 @@ export async function importChapters(
  * Insert parsed chat sessions and their messages directly via Drizzle so we
  * can preserve the original session createdAt and produce a deterministic
  * createdAt sequence for messages within a session.
+ *
+ * The conversation part of an import adds rows to the open workspace, so it
+ * stays closed while restricted (D, RW-1: K3/2 "chat の書込みの入口" 9). The
+ * first D2a refusal ends it without trying the rest: `notImported` counts
+ * the conversations not taken in (that one and the rest) so the flow shows
+ * the count and the reason; the other items ran before it, with their own
+ * errors listed apart (DR-DA2B-R7). A refusal that starts between a session
+ * row and its messages (the activation beginning mid-import) leaves that row
+ * and the messages written so far, though it is counted as not taken in (a
+ * narrow window, recorded in DR-DA2B-R7). Unrestricted, nothing changes.
  */
 export async function importChatSessionsBatch(
   sessionsToImport: ParsedChatSession[],
   onProgress?: (p: ImportProgress) => void,
-): Promise<{ imported: number; errors: string[] }> {
+): Promise<{ imported: number; errors: string[]; notImported: number }> {
   let imported = 0;
+  let notImported = 0;
   const errors: string[] = [];
 
   for (let i = 0; i < sessionsToImport.length; i++) {
@@ -744,6 +756,10 @@ export async function importChatSessionsBatch(
       }
       imported++;
     } catch (err) {
+      if (isD2aEgressDenied(err)) {
+        notImported = sessionsToImport.length - i;
+        break;
+      }
       errors.push(`${s.title}: ${String(err)}`);
     }
   }
@@ -753,5 +769,5 @@ export async function importChatSessionsBatch(
     done: sessionsToImport.length,
     currentName: "",
   });
-  return { imported, errors };
+  return { imported, errors, notImported };
 }

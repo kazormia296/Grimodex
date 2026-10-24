@@ -15563,6 +15563,358 @@ export async function createBrowserMock(
     }
   }
 
+  // ── DA-2b typed writers (DR-DA2-50..53; DR-DA2B-R1) ─────────────────────
+  // The browser runtime has no profile gate, so these follow the Native
+  // writers' unrestricted results: the same rows as the legacy generic SQL,
+  // the same typed refusals for a wrong scope or a pending generation.
+
+  function browserTypedPayload(
+    command: string,
+    args: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return browserCommandPayload(command, args);
+  }
+
+  function browserTypedWrite<T>(write: () => T): T {
+    db.run("BEGIN IMMEDIATE");
+    try {
+      const result = write();
+      db.run("COMMIT");
+      options.onDatabaseDirty?.();
+      return result;
+    } catch (error) {
+      try {
+        db.run("ROLLBACK");
+      } catch {
+        // Preserve the typed writer's failure.
+      }
+      throw error;
+    }
+  }
+
+  function browserChatSession(
+    command: string,
+    payload: Record<string, unknown>,
+  ): string {
+    requiredBrowserString(command, payload, "expectedWorkspacePath");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const sessionId = requiredBrowserString(command, payload, "sessionId");
+    const row = queryOne("SELECT project_id FROM chat_sessions WHERE id = ?", [
+      sessionId,
+    ]);
+    if (row && row.project_id !== projectId) {
+      throw new Error("CHAT_WRITE_REFUSED:scope-mismatch");
+    }
+    return sessionId;
+  }
+
+  function browserChatGenerationPending(
+    where: string,
+    params: SqlValue[],
+  ): void {
+    if (
+      !queryOne(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'nir1_generation_attempts'",
+        [],
+      )
+    ) {
+      return;
+    }
+    if (
+      queryOne(
+        `SELECT 1 FROM nir1_generation_attempts
+          WHERE terminal_json IS NULL AND session_id IN (${where})`,
+        params,
+      )
+    ) {
+      throw new Error("CHAT_WRITE_REFUSED:generation-pending");
+    }
+  }
+
+  function handleChatMessagesDelete(args: Record<string, unknown>) {
+    const command = "chat_messages_delete";
+    const payload = browserTypedPayload(command, args);
+    const sessionId = browserChatSession(command, payload);
+    const ids = payload.messageIds;
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 10_000) {
+      throw new Error("CHAT_WRITE_REFUSED:invalid-request");
+    }
+    return browserTypedWrite(() => {
+      for (const id of ids) {
+        const row = queryOne(
+          "SELECT session_id FROM chat_messages WHERE id = ?",
+          [String(id)],
+        );
+        if (row && row.session_id !== sessionId) {
+          throw new Error("CHAT_WRITE_REFUSED:scope-mismatch");
+        }
+      }
+      browserChatGenerationPending("?", [sessionId]);
+      db.run(
+        `DELETE FROM chat_messages WHERE session_id = ? AND id IN (${ids
+          .map(() => "?")
+          .join(", ")})`,
+        [sessionId, ...ids.map(String)],
+      );
+      return { deleted: db.getRowsModified() };
+    });
+  }
+
+  function handleChatSessionDelete(args: Record<string, unknown>) {
+    const command = "chat_session_delete";
+    const payload = browserTypedPayload(command, args);
+    const sessionId = browserChatSession(command, payload);
+    return browserTypedWrite(() => {
+      browserChatGenerationPending("?", [sessionId]);
+      db.run("DELETE FROM chat_sessions WHERE id = ?", [sessionId]);
+      return { deleted: db.getRowsModified() };
+    });
+  }
+
+  function handleChatProjectHistoryClear(args: Record<string, unknown>) {
+    const command = "chat_project_history_clear";
+    const payload = browserTypedPayload(command, args);
+    requiredBrowserString(command, payload, "expectedWorkspacePath");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    return browserTypedWrite(() => {
+      browserChatGenerationPending(
+        "SELECT id FROM chat_sessions WHERE project_id = ?",
+        [projectId],
+      );
+      db.run("DELETE FROM chat_sessions WHERE project_id = ?", [projectId]);
+      return { deletedSessions: db.getRowsModified() };
+    });
+  }
+
+  function handleChatSessionRename(args: Record<string, unknown>) {
+    const command = "chat_session_rename";
+    const payload = browserTypedPayload(command, args);
+    const sessionId = browserChatSession(command, payload);
+    const title = payload.title;
+    if (typeof title !== "string" || title.length > 4096) {
+      throw new Error("CHAT_WRITE_REFUSED:invalid-request");
+    }
+    return browserTypedWrite(() => {
+      db.run(
+        "UPDATE chat_sessions SET title = ?, title_manual = 1, updated_at = ? WHERE id = ?",
+        [title, new Date().toISOString(), sessionId],
+      );
+      return { updated: db.getRowsModified() };
+    });
+  }
+
+  function handleChatMessageMetadataRecord(args: Record<string, unknown>) {
+    const command = "chat_message_metadata_record";
+    const payload = browserTypedPayload(command, args);
+    requiredBrowserString(command, payload, "expectedWorkspacePath");
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const messageId = requiredBrowserString(command, payload, "messageId");
+    const patch = payload.patch;
+    if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+      throw new Error("CHAT_WRITE_REFUSED:invalid-request");
+    }
+    for (const key of Object.keys(patch)) {
+      if (
+        !["extractedCodex", "extractedSnippets", "insertedToEditor"].includes(
+          key,
+        )
+      ) {
+        throw new Error("CHAT_WRITE_REFUSED:metadata-key-not-allowed");
+      }
+    }
+    return browserTypedWrite(() => {
+      const row = queryOne(
+        `SELECT m.metadata AS metadata, s.project_id AS project_id
+           FROM chat_messages m JOIN chat_sessions s ON s.id = m.session_id
+          WHERE m.id = ?`,
+        [messageId],
+      );
+      if (!row) return { updated: 0 };
+      if (row.project_id !== projectId) {
+        throw new Error("CHAT_WRITE_REFUSED:scope-mismatch");
+      }
+      let existing: unknown = {};
+      if (row.metadata !== null) {
+        try {
+          existing = JSON.parse(String(row.metadata));
+        } catch {
+          existing = null;
+        }
+      }
+      if (
+        existing === null ||
+        typeof existing !== "object" ||
+        Array.isArray(existing)
+      ) {
+        throw new Error("CHAT_WRITE_REFUSED:metadata-unreadable");
+      }
+      db.run("UPDATE chat_messages SET metadata = ? WHERE id = ?", [
+        JSON.stringify({ ...existing, ...patch }),
+        messageId,
+      ]);
+      return { updated: db.getRowsModified() };
+    });
+  }
+
+  function browserRevisionEntity(
+    command: string,
+    payload: Record<string, unknown>,
+  ): { projectId: string; entityType: string; entityId: string } {
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const entityType = requiredBrowserString(command, payload, "entityType");
+    const entityId = requiredBrowserString(command, payload, "entityId");
+    const table =
+      entityType === "scene" || entityType === "note"
+        ? "tree_nodes"
+        : entityType === "codex_entry"
+          ? "codex_entries"
+          : entityType === "snippet"
+            ? "snippets"
+            : null;
+    if (!table) throw new Error("REVISION_WRITE_REFUSED:invalid-request");
+    if (
+      !queryOne(`SELECT 1 FROM ${table} WHERE id = ? AND project_id = ?`, [
+        entityId,
+        projectId,
+      ])
+    ) {
+      throw new Error("REVISION_WRITE_REFUSED:not-found");
+    }
+    return { projectId, entityType, entityId };
+  }
+
+  function handleRevisionCreate(args: Record<string, unknown>) {
+    const command = "revision_create";
+    const payload = browserTypedPayload(command, args);
+    const { entityType, entityId } = browserRevisionEntity(command, payload);
+    const content = payload.content;
+    const snapshotType = payload.snapshotType;
+    if (
+      typeof content !== "string" ||
+      (snapshotType !== "auto" && snapshotType !== "manual")
+    ) {
+      throw new Error("REVISION_WRITE_REFUSED:invalid-request");
+    }
+    return browserTypedWrite(() => {
+      const latest = queryOne(
+        `SELECT id, version_number, content, created_at FROM content_versions
+          WHERE entity_type = ? AND entity_id = ?
+          ORDER BY version_number DESC LIMIT 1`,
+        [entityType, entityId],
+      );
+      if (latest && latest.content === content) {
+        return {
+          created: false,
+          id: String(latest.id),
+          versionNumber: Number(latest.version_number),
+          createdAt: String(latest.created_at),
+        };
+      }
+      const id = crypto.randomUUID();
+      const versionNumber = (latest ? Number(latest.version_number) : 0) + 1;
+      const createdAt = new Date().toISOString();
+      db.run(
+        `INSERT INTO content_versions
+           (id, entity_type, entity_id, content, version_number, snapshot_type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          entityType,
+          entityId,
+          content,
+          versionNumber,
+          snapshotType,
+          createdAt,
+        ],
+      );
+      return { created: true, id, versionNumber, createdAt };
+    });
+  }
+
+  function handleRevisionPrune(args: Record<string, unknown>) {
+    const command = "revision_prune";
+    const payload = browserTypedPayload(command, args);
+    const { entityType, entityId } = browserRevisionEntity(command, payload);
+    const keepCount = payload.keepCount;
+    if (
+      typeof keepCount !== "number" ||
+      !Number.isSafeInteger(keepCount) ||
+      keepCount < 0 ||
+      keepCount > 100_000
+    ) {
+      throw new Error("REVISION_WRITE_REFUSED:invalid-request");
+    }
+    return browserTypedWrite(() => {
+      const ids = queryAll(
+        `SELECT id, snapshot_type FROM content_versions
+          WHERE entity_type = ? AND entity_id = ?
+          ORDER BY version_number DESC`,
+        [entityType, entityId],
+      )
+        .slice(keepCount)
+        .filter((row) => row.snapshot_type === "auto")
+        .map((row) => String(row.id))
+        .filter(
+          (id) =>
+            !queryOne(
+              `SELECT 1 FROM project_snapshot_entries WHERE version_id = ?
+               UNION ALL SELECT 1 FROM project_snapshot_tree_nodes WHERE body_version_id = ?
+               UNION ALL SELECT 1 FROM project_snapshot_codex_entries WHERE body_version_id = ?
+               UNION ALL SELECT 1 FROM project_snapshot_snippets WHERE body_version_id = ?`,
+              [id, id, id, id],
+            ),
+        );
+      let deleted = 0;
+      for (const id of ids) {
+        db.run("DELETE FROM content_versions WHERE id = ?", [id]);
+        deleted += db.getRowsModified();
+      }
+      return { deleted };
+    });
+  }
+
+  function handleProjectSnapshotDelete(args: Record<string, unknown>) {
+    const command = "project_snapshot_delete";
+    const payload = browserTypedPayload(command, args);
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const snapshotId = requiredBrowserString(command, payload, "snapshotId");
+    return browserTypedWrite(() => {
+      db.run("DELETE FROM project_snapshots WHERE id = ? AND project_id = ?", [
+        snapshotId,
+        projectId,
+      ]);
+      return { deleted: db.getRowsModified() };
+    });
+  }
+
+  function handleImpactReviewBaselineUpdateVisibility(
+    args: Record<string, unknown>,
+  ) {
+    const command = "impact_review_baseline_update_visibility";
+    const payload = browserTypedPayload(command, args);
+    const projectId = requiredBrowserString(command, payload, "projectId");
+    const entryId = requiredBrowserString(command, payload, "entryId");
+    const expected = requiredBrowserString(
+      command,
+      payload,
+      "expectedContentHash",
+    );
+    const snapshotJson = requiredBrowserString(
+      command,
+      payload,
+      "snapshotJson",
+    );
+    const contentHash = requiredBrowserString(command, payload, "contentHash");
+    return browserTypedWrite(() => {
+      db.run(
+        `UPDATE impact_review_baselines SET snapshot_json = ?, content_hash = ?
+          WHERE entry_id = ? AND project_id = ? AND content_hash = ?`,
+        [snapshotJson, contentHash, entryId, projectId, expected],
+      );
+      return { updated: db.getRowsModified() > 0 };
+    });
+  }
+
   function handleProjectSnapshotCreate(args: Record<string, unknown>): void {
     const payload = browserSnapshotPayload(args, "project_snapshot_create");
     const projectId = String(payload.projectId);
@@ -28038,6 +28390,24 @@ export async function createBrowserMock(
       }
       case "map_write_bundle":
         return (await handleMapWriteBundle(args)) as T;
+      case "chat_messages_delete":
+        return handleChatMessagesDelete(args) as T;
+      case "chat_session_delete":
+        return handleChatSessionDelete(args) as T;
+      case "chat_project_history_clear":
+        return handleChatProjectHistoryClear(args) as T;
+      case "chat_session_rename":
+        return handleChatSessionRename(args) as T;
+      case "chat_message_metadata_record":
+        return handleChatMessageMetadataRecord(args) as T;
+      case "revision_create":
+        return handleRevisionCreate(args) as T;
+      case "revision_prune":
+        return handleRevisionPrune(args) as T;
+      case "project_snapshot_delete":
+        return handleProjectSnapshotDelete(args) as T;
+      case "impact_review_baseline_update_visibility":
+        return handleImpactReviewBaselineUpdateVisibility(args) as T;
       case "project_snapshot_create":
         handleProjectSnapshotCreate(args);
         return undefined as T;

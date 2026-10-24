@@ -13,6 +13,16 @@ export async function listLabels(projectId: string): Promise<Label[]> {
     .orderBy(asc(labels.sortOrder), asc(labels.name));
 }
 
+/**
+ * T (D-12 (a), DR-DA2B-R4): restricted refuses RETURNING, while `labels`
+ * (outside the D2a table ledger) takes the plain DML; the row is read back by
+ * its id, which the caller already holds.
+ */
+async function readLabel(id: string): Promise<Label | undefined> {
+  const [row] = await db.select().from(labels).where(eq(labels.id, id));
+  return row;
+}
+
 export async function createLabel(data: {
   id: string;
   projectId: string;
@@ -20,17 +30,15 @@ export async function createLabel(data: {
   color: string;
   sortOrder?: number;
 }): Promise<Label> {
-  const rows = await db
-    .insert(labels)
-    .values({
-      id: data.id,
-      projectId: data.projectId,
-      name: data.name,
-      color: data.color,
-      sortOrder: data.sortOrder ?? 0.0,
-      createdAt: new Date().toISOString(),
-    })
-    .returning();
+  await db.insert(labels).values({
+    id: data.id,
+    projectId: data.projectId,
+    name: data.name,
+    color: data.color,
+    sortOrder: data.sortOrder ?? 0.0,
+    createdAt: new Date().toISOString(),
+  });
+  const row = (await readLabel(data.id)) as Label;
   recordChangeEvent({
     domain: "labels",
     opType: "label.create",
@@ -38,7 +46,7 @@ export async function createLabel(data: {
     entityId: data.id,
     payload: { labelId: data.id, name: data.name, color: data.color },
   });
-  return rows[0];
+  return row;
 }
 
 export async function updateLabel(
@@ -49,11 +57,8 @@ export async function updateLabel(
   if (data.name !== undefined) updateData.name = data.name;
   if (data.color !== undefined) updateData.color = data.color;
   if (data.sortOrder !== undefined) updateData.sortOrder = data.sortOrder;
-  const rows = await db
-    .update(labels)
-    .set(updateData)
-    .where(eq(labels.id, id))
-    .returning();
+  await db.update(labels).set(updateData).where(eq(labels.id, id));
+  const row = await readLabel(id);
   recordChangeEvent({
     domain: "labels",
     opType: "label.update",
@@ -61,7 +66,7 @@ export async function updateLabel(
     entityId: id,
     payload: { labelId: id, fields: Object.keys(updateData) },
   });
-  return rows[0];
+  return row;
 }
 
 export async function deleteLabel(id: string): Promise<void> {

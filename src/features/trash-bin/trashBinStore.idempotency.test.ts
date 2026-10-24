@@ -288,6 +288,26 @@ describe("trashBinStore Project authority and delayed persistence", () => {
     expect(useTrashBinStore.getState().items).toEqual(new Map());
   });
 
+  it("shows a D2a refusal of the list as the load failure, not as an empty trash (DR-DA2B-R5)", async () => {
+    const { toast } = await import("sonner");
+    vi.mocked(toast.error).mockClear();
+    currentProject.value = "p2";
+    useTrashBinStore.getState().resetForProject("p2");
+    vi.mocked(trashApi.listTrashItems).mockRejectedValueOnce(
+      new Error(
+        "D2A_EGRESS_DENIED: plaintext-publication: route trash_bin_list",
+      ),
+    );
+
+    await expect(useTrashBinStore.getState().loadItems("p2")).rejects.toThrow(
+      "D2A_EGRESS_DENIED",
+    );
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(String(vi.mocked(toast.error).mock.calls[0][0])).not.toContain(
+      "D2A_EGRESS_DENIED",
+    );
+  });
+
   it("cancels old timers and rejects stale id-only callbacks at Project commit", async () => {
     useTrashBinStore.setState({
       items: new Map([["old", createdItem("old")]]),

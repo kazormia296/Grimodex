@@ -3,6 +3,9 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Node, NodeChange } from "@xyflow/react";
 import type { MapNodePositionRecord } from "../types";
+import { DrizzleQueryError } from "drizzle-orm/errors";
+import { toast } from "sonner";
+import { rootCause } from "@/lib/debugLog";
 import { useMapPositionPersistence } from "./useMapPositionPersistence";
 import { setNodePinned, updateFrame, upsertNodePosition } from "../mapApi";
 import {
@@ -89,6 +92,44 @@ describe("useMapPositionPersistence — position revision routing", () => {
     expect(input.setPositionCoordinates).toHaveBeenCalledOnce();
     expect(input.setPositions).not.toHaveBeenCalled();
     expect(setNodePinned).not.toHaveBeenCalled();
+  });
+
+  // DA-2b W-1 (Negative (11); DR-DA2B-R5, R8): activation stages 4-7 refuse
+  // the generic Map write; Drizzle wraps the refusal with the statement and
+  // its params. The failure toast shows the generic text instead.
+  it("D2a に拒否された位置の保存は SQL と marker を出さず一般の文で知らせる", async () => {
+    const refusal = new DrizzleQueryError(
+      'update "map_node_positions" set "x" = ?, "y" = ? where "map_node_positions"."id" = ?',
+      [30, 40, "pos-secret"],
+      new Error(
+        "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: publication is closed during startup quiescence",
+      ),
+    );
+    vi.mocked(upsertNodePosition).mockRejectedValue(refusal);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    const { result } = renderHook(() => useMapPositionPersistence(makeInput()));
+
+    await act(async () => {
+      await result.current.persistPosition("scene:s1", 30, 40);
+    });
+
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    const description = String(
+      (vi.mocked(toast.error).mock.calls[0]?.[1] as { description?: unknown })
+        ?.description,
+    );
+    expect(description).toBe(rootCause(refusal));
+    for (const leaked of [
+      "Failed query",
+      "map_node_positions",
+      "pos-secret",
+      "D2A_EGRESS_DENIED",
+    ]) {
+      expect(description).not.toContain(leaked);
+    }
+    consoleError.mockRestore();
   });
 
   it("theme-mode drag は auto-pin を含む invalidating publisher を使う", async () => {

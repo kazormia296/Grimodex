@@ -12,6 +12,7 @@ const h = vi.hoisted(() => ({
   // When true, the mocked drizzle query rejects like a stalled db_execute
   // (e.g. blocked behind the native save dialog during timelapse export).
   dbReject: false,
+  dbRejectMessage: "IPC timeout after 10000ms: db_execute",
   dbResponses: [] as Array<unknown[] | Promise<unknown[]>>,
 }));
 
@@ -27,7 +28,7 @@ vi.mock("@/db/client", () => {
       limit: () => q,
       then: (resolve: (v: unknown[]) => void, reject: (e: unknown) => void) => {
         if (h.dbReject) {
-          reject(new Error("IPC timeout after 10000ms: db_execute"));
+          reject(new Error(h.dbRejectMessage));
           return;
         }
         void Promise.resolve(h.dbResponses.shift() ?? []).then(resolve, reject);
@@ -792,6 +793,7 @@ describe("externalWriteFeed pollTick resilience", () => {
   beforeEach(() => {
     stopExternalWriteFeed();
     h.dbReject = false;
+    h.dbRejectMessage = "IPC timeout after 10000ms: db_execute";
     h.dbResponses = [];
     useGlobalHistoryStore.getState().clear();
   });
@@ -805,6 +807,73 @@ describe("externalWriteFeed pollTick resilience", () => {
     await expect(pollExternalWritesForTest()).resolves.toBeUndefined();
     // Cursor is never advanced on the failing path, so the next tick retries.
     expect(getExternalWriteCursorForTest()).toBe(0);
+  });
+
+  // DA-2b (Negative (11); DR-DA2-29 P3-5, DR-DA2B-R5): the change_events read
+  // is an own-data-read; its D2a refusal is temporary from activation stage 2
+  // to 7. The poll keeps its cursor and retries a bounded number of times,
+  // then stops (never an endless retry).
+  it("retries D2a refusals with the cursor kept, then stops after the bound", async () => {
+    await processExternalEventsForTest([], "p1");
+    h.dbReject = true;
+    h.dbRejectMessage =
+      "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: route db_execute is unavailable in profile local-only mode";
+    for (let i = 0; i < 159; i++) await pollExternalWritesForTest();
+    // Still polling: once reads are allowed again, the kept range arrives.
+    h.dbReject = false;
+    h.dbResponses.push([
+      ev({
+        domain: "codex",
+        entityType: "codex_entry",
+        entityId: "after-stage-7",
+      }),
+    ]);
+    await pollExternalWritesForTest();
+    expect(h.loadCodex).toHaveBeenCalled();
+
+    // A success resets the count; 160 refusals in a row stop the feed.
+    h.loadCodex.mockClear();
+    h.dbReject = true;
+    for (let i = 0; i < 160; i++) await pollExternalWritesForTest();
+    h.dbReject = false;
+    h.dbResponses.push([
+      ev({ domain: "codex", entityType: "codex_entry", entityId: "late" }),
+    ]);
+    await pollExternalWritesForTest();
+    expect(h.loadCodex).not.toHaveBeenCalled();
+  });
+
+  // A tick that was in flight when the project switched is stale: its D2a
+  // refusal must not spend the new feed's bounded budget (reviewer F-7).
+  it("does not count a stale tick's D2a refusal against the new feed", async () => {
+    const denial =
+      "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: route db_execute is unavailable in profile local-only mode";
+    await processExternalEventsForTest([], "p1");
+    let rejectOld!: (error: unknown) => void;
+    h.dbResponses.push(
+      new Promise<unknown[]>((_, reject) => {
+        rejectOld = reject;
+      }),
+    );
+    const oldTick = pollExternalWritesForTest();
+
+    // The project switches while the old tick waits for its read.
+    stopExternalWriteFeed();
+    await processExternalEventsForTest([], "p2");
+    rejectOld(new Error(denial));
+    await oldTick;
+
+    // The new feed still has its whole budget: 159 refusals do not stop it.
+    h.dbReject = true;
+    h.dbRejectMessage = denial;
+    for (let i = 0; i < 159; i++) await pollExternalWritesForTest();
+    h.dbReject = false;
+    h.dbResponses.push([
+      ev({ domain: "codex", entityType: "codex_entry", entityId: "p2-late" }),
+    ]);
+    await pollExternalWritesForTest();
+    expect(h.loadCodex).toHaveBeenCalled();
+    h.loadCodex.mockClear();
   });
 
   it("retains local history when a self-write reaches the poll boundary", async () => {

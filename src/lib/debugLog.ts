@@ -196,16 +196,34 @@ export const debugLog = {
     useDebugLogStore.getState().push("error", tag, msg, detail),
 };
 
-/** Extract a short root-cause message (for toasts) */
+/** The generic error text of a D2a refusal in `rootCause`; set by `i18n.ts`. */
+let refusalText = (): string => "エラーが発生しました";
+
+export function setRootCauseRefusalText(text: () => string): void {
+  refusalText = text;
+}
+
+/**
+ * Extract a short root-cause message (for toasts).
+ *
+ * A D2a refusal (`D2A_EGRESS_DENIED:`, the profile egress gate's marker) is
+ * shown as the generic error text, never as the raw marker and route (K3/2
+ * "D の扱い", Negative (11); DR-DA2B-R5). The typed restricted reason is
+ * Session C-1 wording and stays behind `PROFILE_ACTIVATION_UI_ENABLED`.
+ *
+ * The text comes from `i18n.ts`, which registers its `common.error` here:
+ * importing i18next into this module would split it out of its startup chunk
+ * (DR-DA2-30).
+ */
 export function rootCause(e: unknown): string {
-  if (!(e instanceof Error)) return redactSqlParams(String(e));
   let current: unknown = e;
   while (current instanceof Error && current.cause) {
     current = current.cause;
   }
-  return current instanceof Error
-    ? redactSqlParams(current.message)
-    : redactSqlParams(String(current));
+  const message = current instanceof Error ? current.message : String(current);
+  return message.includes("D2A_EGRESS_DENIED:")
+    ? refusalText()
+    : redactSqlParams(message);
 }
 
 /** Extract a useful message from an unknown thrown value, including cause chain */

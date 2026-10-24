@@ -15,6 +15,8 @@ const INSTALL_COMMAND = "npm install -g @vivliostyle/cli";
 interface Props {
   /** undefined = 検出中、null = 未検出 */
   detected: VivliostyleDetectResult | null | undefined;
+  /** 検出が D2a に拒否されたときの一般の文（未検出の案内を出さない） */
+  refusal?: string | null;
   binaryPath: string;
   onBinaryPathChange: (path: string) => void;
   onRedetect: () => void;
@@ -22,6 +24,7 @@ interface Props {
 
 export function CliStatusBanner({
   detected,
+  refusal,
   binaryPath,
   onBinaryPathChange,
   onRedetect,
@@ -66,6 +69,50 @@ export function CliStatusBanner({
     }
   }
 
+  const manualPath = (
+    <label className="flex flex-col gap-1">
+      <span className="text-muted-foreground">
+        {t("vivliostyle.cli.manualPath")}
+      </span>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={binaryPath}
+          onChange={(e) => onBinaryPathChange(e.target.value)}
+          placeholder={t("vivliostyle.cli.manualPathPlaceholder")}
+          className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={onRedetect}
+          className="shrink-0 rounded-md border border-border px-2 py-1 hover:bg-accent"
+        >
+          {t("vivliostyle.cli.redetect")}
+        </button>
+      </div>
+    </label>
+  );
+
+  // A D2a refusal of the detection is not a missing CLI: it shows the
+  // generic text, without the install guide (Negative (11); DR-DA2B-R5).
+  if (refusal) {
+    return (
+      <div
+        data-testid="vivliostyle-cli-refused"
+        className="flex flex-col gap-2 rounded border border-border bg-muted/30 px-3 py-2 text-xs"
+      >
+        <div className="flex items-start gap-2">
+          <XCircle
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive"
+            aria-hidden
+          />
+          <p>{refusal}</p>
+        </div>
+        {manualPath}
+      </div>
+    );
+  }
+
   return (
     <div
       data-testid="vivliostyle-cli-guide"
@@ -105,27 +152,7 @@ export function CliStatusBanner({
           )}
         </button>
       </div>
-      <label className="flex flex-col gap-1">
-        <span className="text-muted-foreground">
-          {t("vivliostyle.cli.manualPath")}
-        </span>
-        <div className="flex gap-2">
-          <input
-            type="text"
-            value={binaryPath}
-            onChange={(e) => onBinaryPathChange(e.target.value)}
-            placeholder={t("vivliostyle.cli.manualPathPlaceholder")}
-            className="min-w-0 flex-1 rounded-md border border-input bg-background px-2 py-1 font-mono focus:outline-none"
-          />
-          <button
-            type="button"
-            onClick={onRedetect}
-            className="shrink-0 rounded-md border border-border px-2 py-1 hover:bg-accent"
-          >
-            {t("vivliostyle.cli.redetect")}
-          </button>
-        </div>
-      </label>
+      {manualPath}
     </div>
   );
 }

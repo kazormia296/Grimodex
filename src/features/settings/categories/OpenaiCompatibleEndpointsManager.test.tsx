@@ -3,23 +3,27 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { OpenaiCompatibleEndpointsManager } from "./OpenaiCompatibleEndpointsManager";
 import type { OpenaiCompatibleEndpoint } from "@/features/chat/types";
+import { rootCause } from "@/lib/debugLog";
 
 // i18n は key をそのまま返すモック（メッセージ文言ではなく挙動を検証する）。
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({ t: (k: string) => k }),
 }));
 
-const { hasApiKey, deleteApiKey, saveApiKey } = vi.hoisted(() => ({
-  hasApiKey: vi.fn(),
-  deleteApiKey: vi.fn(),
-  saveApiKey: vi.fn(),
-}));
+const { hasApiKey, deleteApiKey, saveApiKey, testAiConnection } = vi.hoisted(
+  () => ({
+    hasApiKey: vi.fn(),
+    deleteApiKey: vi.fn(),
+    saveApiKey: vi.fn(),
+    testAiConnection: vi.fn(),
+  }),
+);
 
 vi.mock("@/features/chat/api", () => ({
   hasApiKey: (...a: unknown[]) => hasApiKey(...a),
   deleteApiKey: (...a: unknown[]) => deleteApiKey(...a),
   saveApiKey: (...a: unknown[]) => saveApiKey(...a),
-  testAiConnection: vi.fn(),
+  testAiConnection: (...a: unknown[]) => testAiConnection(...a),
   listAiModels: vi.fn().mockResolvedValue([]),
 }));
 
@@ -156,5 +160,35 @@ describe("OpenaiCompatibleEndpointsManager — key presence fetching", () => {
 
     await screen.findByPlaceholderText("sk-...");
     expect(hasApiKey).toHaveBeenCalledTimes(1);
+  });
+});
+
+// DA-2b (Negative (11); DR-DA2B-R5): a D2a refusal of the connection test is
+// not a connection failure: the result is the generic text, never the raw
+// marker and route.
+describe("OpenaiCompatibleEndpointsManager — a D2a refusal of the test", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows the generic text instead of the marker", async () => {
+    const denial = new Error(
+      "D2A_EGRESS_DENIED: external-url: route test_ai_connection is unavailable in profile local-only mode",
+    );
+    hasApiKey.mockResolvedValue(true);
+    testAiConnection.mockRejectedValue(denial);
+
+    render(
+      <OpenaiCompatibleEndpointsManager
+        endpoints={[EP]}
+        activeId="default"
+        onChange={() => {}}
+      />,
+    );
+    fireEvent.click(await screen.findByText("settings.ai.testConnection"));
+
+    expect(await screen.findByText(rootCause(denial))).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("D2A_EGRESS_DENIED");
+    expect(document.body.textContent).not.toContain("external-url");
   });
 });

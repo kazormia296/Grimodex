@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { createRevision, pruneRevisions } from "@/features/revision/api";
+import { captureWorkspaceWriteScope } from "@/features/concurrency/mutationAuthority";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { debugLog, errorDetail, rootCause } from "@/lib/debugLog";
 import { useAutoSave } from "@/hooks/useAutoSave";
@@ -528,6 +529,8 @@ export function CodexDetailContent({
     useCallback(
       async (context?: QuiescenceProviderFlushOptions) => {
         const content = contentRef.current;
+        // The entry's project and the workspace of this save (DR-DA2B-R3).
+        const revisionScope = captureWorkspaceWriteScope(entry.projectId);
         await persistTextPatch({ content }, context);
         try {
           const intervalMs =
@@ -536,6 +539,7 @@ export function CodexDetailContent({
             1000;
           if (shouldAutoRevision(entry.id, intervalMs)) {
             const rev = await createRevision({
+              scope: revisionScope,
               entityType: "codex_entry",
               entityId: entry.id,
               content,
@@ -546,9 +550,12 @@ export function CodexDetailContent({
               const keepCount = useSettingsStore
                 .getState()
                 .getNumber("revision.keepCount", 50);
-              pruneRevisions("codex_entry", entry.id, keepCount).catch(
-                console.error,
-              );
+              pruneRevisions(
+                revisionScope,
+                "codex_entry",
+                entry.id,
+                keepCount,
+              ).catch(console.error);
             }
           }
         } catch (e) {
@@ -559,7 +566,13 @@ export function CodexDetailContent({
           );
         }
       },
-      [entry.id, persistTextPatch, shouldAutoRevision, recordAutoRevision],
+      [
+        entry.id,
+        entry.projectId,
+        persistTextPatch,
+        shouldAutoRevision,
+        recordAutoRevision,
+      ],
     ),
     2000,
   );

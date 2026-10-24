@@ -8,6 +8,7 @@ import {
   snippets,
 } from "@/db/schema";
 import { and, eq, desc, inArray } from "drizzle-orm";
+import { invokeTypedWriter, sessionWriteScope } from "./chatTypedWrites";
 
 export interface SessionExtractions {
   codex: Array<{ id: string; name: string; type: string }>;
@@ -51,39 +52,32 @@ function toSession(row: typeof chatSessions.$inferSelect): ChatSession {
   };
 }
 
-function createSessionTitleUpdate(
-  id: string,
-  title: string,
-  markManual: boolean,
-) {
-  return db
-    .update(chatSessions)
-    .set({
-      title,
-      ...(markManual ? { titleManual: 1 } : {}),
-      updatedAt: new Date().toISOString(),
-    })
-    .where(
-      markManual
-        ? eq(chatSessions.id, id)
-        : and(eq(chatSessions.id, id), eq(chatSessions.titleManual, 0)),
-    );
-}
-
+/**
+ * The user's rename (CW 7): Native writes only title, title_manual = 1 and
+ * updated_at of the session (DR-DA2B-R2). An unknown id writes nothing, as the
+ * legacy UPDATE matched nothing.
+ */
 export async function updateSessionTitle(
   id: string,
   title: string,
 ): Promise<void> {
-  await createSessionTitleUpdate(id, title, true);
+  const scope = await sessionWriteScope(id);
+  if (scope)
+    await invokeTypedWriter("chat_session_rename", {
+      payload: { ...scope, title },
+    });
 }
 
+/** The generated title is an AI feature (D): the generic statement stays. */
 export async function updateSessionTitleIfAutomatic(
   id: string,
   title: string,
 ): Promise<boolean> {
-  const updated = await createSessionTitleUpdate(id, title, false).returning({
-    id: chatSessions.id,
-  });
+  const updated = await db
+    .update(chatSessions)
+    .set({ title, updatedAt: new Date().toISOString() })
+    .where(and(eq(chatSessions.id, id), eq(chatSessions.titleManual, 0)))
+    .returning({ id: chatSessions.id });
   return updated.length > 0;
 }
 

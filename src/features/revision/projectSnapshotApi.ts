@@ -3,14 +3,18 @@ import {
   projectSnapshots,
   projectSnapshotEntries,
   projectSnapshotAux,
-  contentVersions,
   treeNodes,
   codexEntries,
   snippets,
 } from "@/db/schema";
-import { eq, and, desc, sql, inArray } from "drizzle-orm";
-import { createRevision } from "./api";
-import type { EntityType } from "./api";
+import { eq, desc, sql, inArray } from "drizzle-orm";
+import {
+  invokeTypedWriter,
+  writeRevision,
+  type EntityType,
+  type RevisionWriteScope,
+} from "./api";
+import { captureWorkspaceWriteScope } from "@/features/concurrency/mutationAuthority";
 import { getCurrentProjectId } from "@/features/project/projectStore";
 import { scheduleImeExportRefresh } from "@/features/ime/scheduler";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
@@ -66,31 +70,42 @@ function buildInsert(
 
 // ── createProjectSnapshot ──────────────────────────────────────────
 
-/** Get the latest revision ID for an entity, or create one if content differs. */
+/**
+ * Get the latest revision ID for an entity, or create one if content differs.
+ *
+ * `revision_create` answers `created: false` with the latest version's id when
+ * the content is identical, so no re-read is needed (DR-DA2B-R3). A workspace
+ * change ends the snapshot: its rows were read from the previous workspace. A
+ * typed refusal (`REVISION_WRITE_REFUSED:`, e.g. the entity was deleted while
+ * the snapshot was captured entity by entity) ends it the same way: a row
+ * without its body version would restore the entity with an empty body
+ * (`"{}"`), while the legacy statements always gave it one. The user creates
+ * the snapshot again; the versions written before stay (harmless, prunable)
+ * and no snapshot row is written (D-11 difference, DR-DA2-58 (e)).
+ */
 async function getOrCreateRevisionId(
+  scope: RevisionWriteScope,
   entityType: EntityType,
   entityId: string,
   content: string,
 ): Promise<string | null> {
-  const rev = await createRevision({
+  const written = await writeRevision(scope, "revision_create", {
     entityType,
     entityId,
     content,
     snapshotType: "manual",
   });
-  if (rev) return rev.id;
-  const rows = await db
-    .select({ id: contentVersions.id })
-    .from(contentVersions)
-    .where(
-      and(
-        eq(contentVersions.entityType, entityType),
-        eq(contentVersions.entityId, entityId),
-      ),
-    )
-    .orderBy(desc(contentVersions.versionNumber))
-    .limit(1);
-  return rows[0]?.id ?? null;
+  if (!scope.isCurrent()) {
+    throw new Error(
+      "workspace changed while the project snapshot was captured",
+    );
+  }
+  if (!written) {
+    throw new Error(
+      "an entity changed while the project snapshot was captured",
+    );
+  }
+  return written.id;
 }
 
 /**
@@ -117,6 +132,7 @@ async function createProjectSnapshotForProject(
   projectId: string,
 ): Promise<{ id: string; entryCount: number }> {
   const { name, description } = params;
+  const revisionScope = captureWorkspaceWriteScope(projectId);
   const snapshotId = crypto.randomUUID();
   const now = new Date().toISOString();
 
@@ -135,6 +151,7 @@ async function createProjectSnapshotForProject(
     let bodyVersionId: string | null = null;
     if (isContentEntity && node.content && node.content !== "{}") {
       bodyVersionId = await getOrCreateRevisionId(
+        revisionScope,
         node.nodeType as EntityType,
         node.id,
         node.content,
@@ -182,6 +199,7 @@ async function createProjectSnapshotForProject(
     let bodyVersionId: string | null = null;
     if (entry.content && entry.content !== "{}") {
       bodyVersionId = await getOrCreateRevisionId(
+        revisionScope,
         "codex_entry",
         entry.id,
         entry.content,
@@ -218,6 +236,7 @@ async function createProjectSnapshotForProject(
     let bodyVersionId: string | null = null;
     if (snippet.content && snippet.content !== "{}") {
       bodyVersionId = await getOrCreateRevisionId(
+        revisionScope,
         "snippet",
         snippet.id,
         snippet.content,
@@ -306,8 +325,17 @@ export async function listProjectSnapshots(): Promise<ProjectSnapshotMeta[]> {
 
 // ── deleteProjectSnapshot (unchanged behaviour) ────────────────────
 
+/**
+ * The legacy DELETE's CASCADE reaches the read-open snapshot child tables, so
+ * the generic statement is refused while restricted; `project_snapshot_delete`
+ * (M, DR-DA2-51) deletes the same rows through the same foreign keys and keeps
+ * every `content_versions` row. An id that is not the current project's
+ * deletes nothing.
+ */
 export async function deleteProjectSnapshot(snapshotId: string): Promise<void> {
-  await db.delete(projectSnapshots).where(eq(projectSnapshots.id, snapshotId));
+  await invokeTypedWriter("project_snapshot_delete", {
+    payload: { projectId: getCurrentProjectId(), snapshotId },
+  });
 }
 
 // ── restoreProjectSnapshot ─────────────────────────────────────────

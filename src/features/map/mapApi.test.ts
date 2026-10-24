@@ -136,7 +136,9 @@ describe("mapApi — getOrCreateBoard", () => {
     const emptyChain = makeMock([]);
     const insertChain = makeMock([newBoard]);
 
-    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(emptyChain);
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(emptyChain)
+      .mockReturnValueOnce(makeMock([newBoard])); // re-read by id (no RETURNING)
     (db.insert as ReturnType<typeof vi.fn>).mockReturnValue(insertChain);
 
     const { getOrCreateBoard } = await import("./mapApi");
@@ -413,6 +415,9 @@ describe("mapApi — frames", () => {
     };
     const chain = makeMock([newFrame]);
     (db.insert as ReturnType<typeof vi.fn>).mockReturnValue(chain);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([newFrame]),
+    );
 
     const { createFrame } = await import("./mapApi");
     const result = await createFrame({
@@ -519,7 +524,10 @@ describe("mapApi — createSticky", () => {
     (db.insert as ReturnType<typeof vi.fn>)
       .mockReturnValueOnce(insertChain)
       .mockReturnValueOnce(insertPosChain);
-    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(selectChain);
+    (db.select as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(makeMock([newSticky])) // re-read of the sticky
+      .mockReturnValueOnce(selectChain) // existing position lookup
+      .mockReturnValueOnce(makeMock([newPos])); // re-read of the position
 
     const { createSticky } = await import("./mapApi");
     const result = await createSticky({ boardId: "b1", x: 10, y: 20 });
@@ -551,6 +559,9 @@ describe("mapApi — updateMapBoardSettings", () => {
     };
     const chain = makeMock([updatedBoard]);
     (db.update as ReturnType<typeof vi.fn>).mockReturnValue(chain);
+    (db.select as ReturnType<typeof vi.fn>).mockReturnValue(
+      makeMock([updatedBoard]),
+    );
 
     const { updateMapBoardSettings } = await import("./mapApi");
     const result = await updateMapBoardSettings("b1", {
@@ -917,7 +928,8 @@ describe("mapApi — adoptSticky / reattachSticky / adoptAllForBranch", () => {
       .mockReturnValueOnce(makeMock([sticky])) // sticky lookup
       .mockReturnValueOnce(makeMock([stickyPos])) // sticky position
       .mockReturnValueOnce(makeMock([branchPos])) // branch position
-      .mockReturnValueOnce(makeMock([edge])); // dashed edge
+      .mockReturnValueOnce(makeMock([edge])) // dashed edge
+      .mockReturnValueOnce(makeMock([updated])); // re-read (no RETURNING)
     (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([]));
     (db.update as ReturnType<typeof vi.fn>).mockReturnValue(
       makeMock([updated]),
@@ -1030,7 +1042,8 @@ describe("mapApi — adoptSticky / reattachSticky / adoptAllForBranch", () => {
       .mockReturnValueOnce(makeMock([sticky])) // adoptSticky: sticky lookup
       .mockReturnValueOnce(makeMock([stickyPos])) // sticky position
       .mockReturnValueOnce(makeMock([branchPos])) // branch position
-      .mockReturnValueOnce(makeMock([edge])); // dashed edge
+      .mockReturnValueOnce(makeMock([edge])) // dashed edge
+      .mockReturnValueOnce(makeMock([{ ...sticky, aiBranchId: null }])); // re-read
     (db.delete as ReturnType<typeof vi.fn>).mockReturnValue(makeMock([]));
     (db.update as ReturnType<typeof vi.fn>).mockReturnValue(
       makeMock([{ ...sticky, aiBranchId: null }]),
@@ -1110,7 +1123,8 @@ describe("mapApi — updateSticky timelapse capture", () => {
     const payload = call![0].payload as { fields: string[]; diffs?: unknown };
     expect(payload.fields).toContain("colorSlot");
     expect(payload.diffs).toBeUndefined();
-    // body 未更新時は旧 body の SELECT を撃たない
-    expect(db.select).not.toHaveBeenCalled();
+    // body 未更新時は旧 body の SELECT を撃たない（1 回は RETURNING の代わりの
+    // id での再読取）
+    expect(db.select).toHaveBeenCalledTimes(1);
   });
 });

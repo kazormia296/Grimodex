@@ -39,6 +39,7 @@ import {
   useImportFailureReset,
 } from "../importShared";
 import { prepareImportTarget, type ImportTarget } from "../importTarget";
+import { chatImportNotice } from "../chatImportNotice";
 import {
   hasAllowedImportExtension,
   importFileLimitViolation,
@@ -201,9 +202,18 @@ export function NovelcrafterImportFlow({
         const { imported: chaptersImported, errors: chapterErrors } =
           await importChapters(parsed.chapters, setProgress);
         allErrors.push(...chapterErrors);
-        const { imported: chatsImported, errors: chatErrors } =
-          await importChatSessionsBatch(parsed.chatSessions, setProgress);
+        const {
+          imported: chatsImported,
+          errors: chatErrors,
+          notImported: chatsNotImported,
+        } = await importChatSessionsBatch(parsed.chatSessions, setProgress);
         allErrors.push(...chatErrors);
+        // Not dropped silently (K3/2 "chat の書込みの入口" 9; DR-DA2B-R7).
+        if (chatsNotImported > 0) {
+          const notice = await chatImportNotice(chatsNotImported);
+          allErrors.push(notice);
+          toast.warning(notice);
+        }
         setErrors(allErrors);
         await reloadCodex();
         await reloadSnippets();

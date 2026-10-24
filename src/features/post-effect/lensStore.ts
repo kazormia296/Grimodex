@@ -1,5 +1,4 @@
 import { create } from "zustand";
-import { isD2aEgressDenied } from "@/lib/tauri";
 import { listSceneLensForProject } from "./api";
 import type { SceneLensRecord } from "./types";
 
@@ -28,10 +27,8 @@ export const useLensStore = create<LensState>()((set) => ({
       }
       set({ bySceneId: map });
     } catch (e) {
-      if (isD2aEgressDenied(e)) {
-        set({ bySceneId: new Map() });
-        return;
-      }
+      // An own-data-read (O-2): a D2a refusal keeps the previous badges
+      // instead of clearing them as if no lens existed (DR-DA2B-R5).
       console.error("lens load error", e);
     }
   },

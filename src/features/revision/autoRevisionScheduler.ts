@@ -84,7 +84,14 @@ async function runAutoRevision(key: string): Promise<void> {
       if (!isAuthoritative(request)) return;
       if ((completedVersion.get(key) ?? -1) >= request.contentVersion) return;
 
+      // The scope captured when the save was queued (DR-DA2B-R3): the scene's
+      // project and the workspace of that save.
+      const scope = {
+        projectId: request.projectId,
+        isCurrent: () => isAuthoritative(request),
+      };
       const revision = await createRevision({
+        scope,
         entityType: "scene",
         entityId: request.sceneId,
         content: request.contentJson,
@@ -94,7 +101,7 @@ async function runAutoRevision(key: string): Promise<void> {
       completedVersion.set(key, request.contentVersion);
       if (!revision) return;
       useRevisionStore.getState().recordAutoRevision(key);
-      await pruneRevisions("scene", request.sceneId, request.keepCount);
+      await pruneRevisions(scope, "scene", request.sceneId, request.keepCount);
     } catch (error) {
       // Revisions are non-critical follow-up work. In particular, a
       // Workspace/Project lifecycle closes read admission before strict

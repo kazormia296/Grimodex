@@ -1,4 +1,7 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import {
+  Suspense,
+  lazy,
   useState,
   useRef,
   useEffect,
@@ -77,6 +80,7 @@ import { useChatPinsController } from "./useChatPinsController";
 import { useChatMessageViewport } from "./useChatMessageViewport";
 import { aiFailureText } from "@/features/profile-egress/profileEgressAiStop";
 import { ensureProfileEgressAiStopTranslations } from "@/features/profile-egress/profileEgressAiStopText";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import {
   useChatMessageActions,
   wholeMessageContent,
@@ -85,6 +89,17 @@ import {
 // D-10 (a), DR-DA2-34: the strings of the profile activation's AI terminals
 // live in this lazy chunk; the startup `aiFailureText` reads them.
 ensureProfileEgressAiStopTranslations();
+
+// The chat panel's closed entrances (K3/2 "D の扱い", D-13 (a); DR-DA2B-R6):
+// a lazy probe reads the profile egress state and reports whether the AI
+// entrances are closed. Requested only while the constant is on; while it is
+// false the probe, its chunk, the status read and the strings are dropped
+// from the build (DR-DA2-30). A chunk that fails to load reports nothing.
+const ProfileEgressChatClosureProbe = /* @__PURE__ */ lazy(() =>
+  import("@/features/profile-egress/ProfileEgressChatClosureProbe").catch(
+    () => ({ default: () => null }),
+  ),
+);
 
 /**
  * チャットのシーンスコープ選択からエディタへシーンを同期する。
@@ -566,6 +581,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const ensureSession = useChatStore((s) => s.ensureSession);
   const activeProjectId = useChatStore((s) => s.activeProjectId);
   const chatScope = useChatStore((s) => s.chatScope);
+  const [egressClosed, setEgressClosed] = useState(false);
+  // Only a scene's conversation can store input while restricted (capture).
+  const egressNonSceneClosed = egressClosed && chatScope !== "scene";
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const currentScopeAnchor =
     scopeAnchor &&
@@ -844,6 +862,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
     aiSettings,
     chatEditorRef,
     syncInsertedToEditorMetadata,
+    editClosed: egressNonSceneClosed,
   });
   // Context menu state
   const [contextMenu, setContextMenu] = useState<ChatContextMenuState | null>(
@@ -1140,7 +1159,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         }
       } catch (cause) {
         if (codexApprovalEpochRef.current !== responseEpoch) return;
-        toast.error(cause instanceof Error ? cause.message : String(cause));
+        toast.error(
+          d2aFailureText(
+            cause,
+            cause instanceof Error ? cause.message : String(cause),
+          ),
+        );
         throw cause;
       }
     },
@@ -1361,15 +1385,36 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
               dismissChatRecallPromote(messageId);
             }}
           />
+          {PROFILE_ACTIVATION_UI_ENABLED && (
+            <Suspense fallback={null}>
+              <ProfileEgressChatClosureProbe onChange={setEgressClosed} />
+            </Suspense>
+          )}
           <QuickActionStrip hidden={inputHasText} />
+          {PROFILE_ACTIVATION_UI_ENABLED && egressClosed && (
+            <p
+              role="status"
+              data-testid="chat-profile-egress-closed"
+              className="px-3 pb-1 text-xs text-muted-foreground"
+            >
+              {t(
+                egressNonSceneClosed
+                  ? "profileEgress.chat.sendClosed"
+                  : "profileEgress.chat.aiClosed",
+              )}
+            </p>
+          )}
 
           <ChatInput
             onSend={handleSend}
             disabled={isStreaming || isLoadingSessions || isLoadingMessages}
-            policyDisabled={chatGate.presentation !== "enabled"}
+            policyDisabled={
+              chatGate.presentation !== "enabled" || egressNonSceneClosed
+            }
             editorRef={chatEditorRef}
             onDetectedEntries={handleDetectedEntries}
             onHasTextChange={setInputHasText}
+            editDisabled={egressNonSceneClosed}
           />
         </>
       )}

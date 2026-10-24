@@ -17,18 +17,26 @@ const CONSTANT = "PROFILE_ACTIVATION_UI_ENABLED";
 const MOUNT_POINTS: ReadonlyArray<{
   readonly file: string;
   readonly lazyModule: string | null;
+  /** The lazy component the file mounts (null when it mounts none). */
+  readonly component?: string;
+  /** A variable that holds the constant's condition, when the mount reads it. */
+  readonly guardVariable?: string;
 }> = [
   {
     file: "src/features/profile-egress/ProfileEgressStatusSlot.tsx",
     lazyModule: "./ProfileEgressStatusIndicator",
+    component: "ProfileEgressStatusIndicator",
   },
   {
     file: "src/features/settings/categories/DataCategory.tsx",
     lazyModule: "@/features/profile-egress/ProfileActivationSettingsSection",
+    component: "ProfileActivationSettingsSection",
   },
   {
     file: "src/features/related-scenes/Nir1GraphRelatedScenes.tsx",
     lazyModule: "@/features/profile-egress/ProfileActivationGuidance",
+    component: "ProfileActivationGuidance",
+    guardVariable: "profileNotRestricted",
   },
   // Decides whether the Graph chunk (itself behind the Graph constant) is
   // requested for `profile-not-restricted`; it requests no chunk of its own.
@@ -36,11 +44,24 @@ const MOUNT_POINTS: ReadonlyArray<{
     file: "src/features/related-scenes/RelatedScenesSection.tsx",
     lazyModule: null,
   },
+  // DA-2b ST4-B (DR-DA2B-R6): the chat panel's closed AI entrances. The panel
+  // requests the probe; the input and the message actions only read the
+  // closure the panel passes down.
+  {
+    file: "src/features/chat/ChatPanel.tsx",
+    lazyModule: "@/features/profile-egress/ProfileEgressChatClosureProbe",
+    component: "ProfileEgressChatClosureProbe",
+  },
+  { file: "src/features/chat/components/ChatInput.tsx", lazyModule: null },
+  { file: "src/features/chat/useChatMessageActions.ts", lazyModule: null },
+  // The import's notice of the conversations not taken in (DR-DA2B-R7).
+  { file: "src/features/import/chatImportNotice.ts", lazyModule: null },
 ];
 
 /** The lazy chunks behind the constant: never imported statically. */
 const LAZY_MODULES = [
   "ProfileEgressStatusIndicator",
+  "ProfileEgressChatClosureProbe",
   "ProfileActivationSettingsSection",
   "ProfileActivationGuidance",
 ];
@@ -119,6 +140,34 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
     },
   );
 
+  // DA-2b acceptance (mutation 16b): the checks above are satisfied by any
+  // other `CONSTANT &&` in the file, so a lazy part mounted outside the
+  // constant (which would call `get_profile_egress_status` while the constant
+  // is false) passed them. The mount itself must sit directly under it.
+  it.each(MOUNT_POINTS.filter(({ component }) => component !== undefined))(
+    "$file mounts $component only under the constant",
+    ({ file, component, guardVariable }) => {
+      const body = code(read(file));
+      const mount = `<Suspense[^>]*>\\s*<${component}\\b`;
+      if (guardVariable === undefined) {
+        expect(body).toMatch(
+          new RegExp(`${CONSTANT}\\s*(?:&&|\\?)\\s*\\(\\s*${mount}`),
+        );
+      } else {
+        expect(body).toMatch(
+          new RegExp(
+            `(?:const|let)\\s+${guardVariable}\\s*=\\s*${CONSTANT}\\s*&&`,
+          ),
+        );
+        expect(body).toMatch(
+          new RegExp(`\\{${guardVariable}\\s*&&\\s*\\(\\s*${mount}`),
+        );
+      }
+      // Exactly one mount of the component, so a second one cannot hide.
+      expect(body.match(new RegExp(`<${component}\\b`, "g"))?.length).toBe(1);
+    },
+  );
+
   it("never imports a lazy chunk statically", () => {
     for (const file of sources) {
       const body = code(read(file));
@@ -129,5 +178,21 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
         ).toBe(false);
       }
     }
+  });
+
+  // DA-2b W-1 (DR-DA2B-R8): the retry after the activation is code of the
+  // status display's lazy chunk only, so it is not in the startup graph.
+  it("reaches the W-1 retry only from the status display's lazy chunk", () => {
+    const importers = sources.filter((file) =>
+      /from\s+"[^"]*\/profileActivationWriteRetry"/.test(code(read(file))),
+    );
+    expect(importers).toEqual([
+      "src/features/profile-egress/ProfileEgressStatusIndicator.tsx",
+    ]);
+    // Reaching the root of the startup chunk it calls into keeps that chunk
+    // whole (without it the startup graph grows by about 1 KB).
+    expect(
+      code(read("src/features/profile-egress/profileActivationWriteRetry.ts")),
+    ).toMatch(/^import "@\/features\/project\/projectStore";$/m);
   });
 });

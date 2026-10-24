@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { ensureProfileEgressTranslations } from "./profileEgressTranslations";
 import { useProfileEgressStatus } from "./useProfileEgressStatus";
+import { useWritesRetryAfterActivation } from "./profileActivationWriteRetry";
 
 ensureProfileEgressTranslations();
 
@@ -14,10 +15,14 @@ ensureProfileEgressTranslations();
  * - activating: shown from stage 2 until stage 6 or a failure.
  * - unavailable: the reason and the recovery step, from the closed code only.
  * - unrestricted, loading, unknown: nothing.
+ *
+ * It also starts the bounded retry of the generic DB writes refused during
+ * the activation, once this renderer sees it complete (W-1, DR-DA2B-R8).
  */
 export default function ProfileEgressStatusIndicator() {
   const { t } = useTranslation();
   const snapshot = useProfileEgressStatus();
+  useWritesRetryAfterActivation(snapshot);
   if (snapshot.kind !== "known") return null;
   const { view } = snapshot;
   if (view.state === "unrestricted") return null;

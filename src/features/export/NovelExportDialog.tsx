@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
@@ -127,7 +128,9 @@ export function NovelExportBody({ onClose }: { onClose: () => void }) {
         onClose();
       }
     } catch (err) {
-      toast.error(t("novelExport.failed", { error: String(err) }));
+      toast.error(
+        t("novelExport.failed", { error: d2aFailureText(err, String(err)) }),
+      );
     } finally {
       setIsExporting(false);
     }

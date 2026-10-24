@@ -1,3 +1,4 @@
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { createPortal } from "react-dom";
 import type { MutableRefObject } from "react";
@@ -98,6 +99,8 @@ interface ChatInputProps {
   onDetectedEntries?: (entryIds: string[]) => void;
   /** 入力欄にテキストがあるかどうかを親に通知（QuickActionStrip の表示制御用） */
   onHasTextChange?: (hasText: boolean) => void;
+  /** 編集して再送の入口を閉じる（restricted の場面でない会話。DR-DA2B-R6） */
+  editDisabled?: boolean;
 }
 
 interface ChatInputEditorState {
@@ -187,6 +190,7 @@ export function ChatInput({
   editorRef,
   onDetectedEntries,
   onHasTextChange,
+  editDisabled,
 }: ChatInputProps) {
   const { t } = useTranslation();
   const reduced = useReducedMotion();
@@ -504,7 +508,7 @@ export function ChatInput({
   // G18: editLastFnRef を最新の messages/editor に合わせて更新
   useEffect(() => {
     editLastFnRef.current = () => {
-      if (!editor) return;
+      if (!editor || (PROFILE_ACTIVATION_UI_ENABLED && editDisabled)) return;
       const userMessages = messages.filter((m) => m.role === "user");
       const last = userMessages[userMessages.length - 1];
       if (!last) return;
@@ -521,7 +525,7 @@ export function ChatInput({
         editor.commands.focus("end");
       }
     };
-  }, [editor, messages, editUserMessage]);
+  }, [editor, editDisabled, messages, editUserMessage]);
 
   // C: エディタ「チャットで調べる」から渡されたテキストを入力欄に pre-fill
   useEffect(() => {

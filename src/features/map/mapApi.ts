@@ -72,6 +72,33 @@ function recordMapEvent(
 
 export { DEFAULT_SHOW } from "./types";
 
+type MapRowTable =
+  | typeof mapBoards
+  | typeof mapNodePositions
+  | typeof mapStickies
+  | typeof mapEdges
+  | typeof mapFrames;
+
+/**
+ * T (D-12 (a), DR-DA2B-R4): restricted refuses any RETURNING, while these
+ * tables (outside the D2a table ledger) still take the plain DML. Run the
+ * write, then read the row back by the id the renderer already holds, so the
+ * answer is that row (or `undefined` when no row matched, as RETURNING gave).
+ */
+async function writeThenRead<T extends MapRowTable>(
+  write: PromiseLike<unknown>,
+  table: T,
+  id: string,
+): Promise<T["$inferSelect"] | undefined> {
+  await write;
+  const rows = await db
+    .select()
+    .from(table as typeof mapBoards)
+    .where(eq((table as typeof mapBoards).id, id))
+    .limit(1);
+  return rows[0];
+}
+
 export function createMapWriteContext(
   origin: Exclude<CanonicalWriteOrigin, "ai-apply"> = "human",
   receipt?: CanonicalWriteReceipt,
@@ -173,12 +200,14 @@ export async function updateMapBoardSettings(
   },
 ): Promise<MapBoard | undefined> {
   const now = new Date().toISOString();
-  const rows = await db
-    .update(mapBoards)
-    .set({ ...partial, updatedAt: now })
-    .where(eq(mapBoards.id, boardId))
-    .returning();
-  return rows[0];
+  return writeThenRead(
+    db
+      .update(mapBoards)
+      .set({ ...partial, updatedAt: now })
+      .where(eq(mapBoards.id, boardId)),
+    mapBoards,
+    boardId,
+  );
 }
 
 export async function getOrCreateBoard(projectId: string): Promise<MapBoard> {
@@ -193,9 +222,8 @@ export async function getOrCreateBoard(projectId: string): Promise<MapBoard> {
 
   const now = new Date().toISOString();
   const id = `${projectId}-main-board`;
-  const inserted = await db
-    .insert(mapBoards)
-    .values({
+  const inserted = writeThenRead(
+    db.insert(mapBoards).values({
       id,
       projectId,
       title: "Main",
@@ -208,9 +236,11 @@ export async function getOrCreateBoard(projectId: string): Promise<MapBoard> {
       colorBy: "none",
       createdAt: now,
       updatedAt: now,
-    } satisfies NewMapBoard)
-    .returning();
-  return inserted[0];
+    } satisfies NewMapBoard),
+    mapBoards,
+    id,
+  );
+  return (await inserted) as MapBoard;
 }
 
 export async function createBoard(
@@ -221,9 +251,8 @@ export async function createBoard(
   const maxOrder = existing.reduce((m, b) => Math.max(m, b.sortOrder), 0);
   const now = new Date().toISOString();
   const id = crypto.randomUUID();
-  const inserted = await db
-    .insert(mapBoards)
-    .values({
+  const inserted = writeThenRead(
+    db.insert(mapBoards).values({
       id,
       projectId,
       title,
@@ -236,21 +265,25 @@ export async function createBoard(
       colorBy: "none",
       createdAt: now,
       updatedAt: now,
-    } satisfies NewMapBoard)
-    .returning();
-  return inserted[0];
+    } satisfies NewMapBoard),
+    mapBoards,
+    id,
+  );
+  return (await inserted) as MapBoard;
 }
 
 export async function renameBoard(
   id: string,
   title: string,
 ): Promise<MapBoard | undefined> {
-  const rows = await db
-    .update(mapBoards)
-    .set({ title, updatedAt: new Date().toISOString() })
-    .where(eq(mapBoards.id, id))
-    .returning();
-  return rows[0];
+  return writeThenRead(
+    db
+      .update(mapBoards)
+      .set({ title, updatedAt: new Date().toISOString() })
+      .where(eq(mapBoards.id, id)),
+    mapBoards,
+    id,
+  );
 }
 
 export async function deleteBoard(id: string): Promise<void> {
@@ -490,18 +523,21 @@ export async function upsertNodePosition(data: {
   }
 
   if (existing) {
-    const updated = await db
-      .update(mapNodePositions)
-      .set({ x: data.x, y: data.y, updatedAt: now })
-      .where(eq(mapNodePositions.id, existing.id))
-      .returning();
-    recordMapEvent("position.move", updated[0]?.id ?? null, {
+    const updated = await writeThenRead(
+      db
+        .update(mapNodePositions)
+        .set({ x: data.x, y: data.y, updatedAt: now })
+        .where(eq(mapNodePositions.id, existing.id)),
+      mapNodePositions,
+      existing.id,
+    );
+    recordMapEvent("position.move", updated?.id ?? null, {
       boardId: data.boardId,
       x: data.x,
       y: data.y,
       ref: data.nodeRefType,
     });
-    return updated[0];
+    return updated as MapNodePosition;
   }
 
   const id = crypto.randomUUID();
@@ -521,17 +557,18 @@ export async function upsertNodePosition(data: {
     createdAt: now,
     updatedAt: now,
   };
-  const inserted = await db
-    .insert(mapNodePositions)
-    .values(insertData)
-    .returning();
+  const inserted = await writeThenRead(
+    db.insert(mapNodePositions).values(insertData),
+    mapNodePositions,
+    id,
+  );
   recordMapEvent("position.create", id, {
     boardId: data.boardId,
     x: data.x,
     y: data.y,
     ref: data.nodeRefType,
   });
-  return inserted[0];
+  return inserted as MapNodePosition;
 }
 
 export async function updateNodePosition(
@@ -544,12 +581,14 @@ export async function updateNodePosition(
   },
 ): Promise<MapNodePosition | undefined> {
   const now = new Date().toISOString();
-  const rows = await db
-    .update(mapNodePositions)
-    .set({ ...update, updatedAt: now })
-    .where(eq(mapNodePositions.id, id))
-    .returning();
-  return rows[0];
+  return writeThenRead(
+    db
+      .update(mapNodePositions)
+      .set({ ...update, updatedAt: now })
+      .where(eq(mapNodePositions.id, id)),
+    mapNodePositions,
+    id,
+  );
 }
 
 export async function setNodePinned(
@@ -624,9 +663,8 @@ export async function createSticky(data: {
   const body = data.body ?? '{"type":"doc","content":[]}';
   const previewText = extractPreviewText(body);
 
-  const [sticky] = await db
-    .insert(mapStickies)
-    .values({
+  const sticky = (await writeThenRead(
+    db.insert(mapStickies).values({
       id: stickyId,
       boardId: data.boardId,
       title: data.title ?? null,
@@ -638,8 +676,10 @@ export async function createSticky(data: {
       sourceChatMessageId: null,
       createdAt: now,
       updatedAt: now,
-    } satisfies NewMapSticky)
-    .returning();
+    } satisfies NewMapSticky),
+    mapStickies,
+    stickyId,
+  )) as MapSticky;
 
   const position = await upsertNodePosition({
     boardId: data.boardId,
@@ -686,11 +726,11 @@ export async function updateSticky(
   }
   if (update.paletteId !== undefined) set.paletteId = update.paletteId;
   if (update.colorSlot !== undefined) set.colorSlot = update.colorSlot;
-  const rows = await db
-    .update(mapStickies)
-    .set(set)
-    .where(eq(mapStickies.id, id))
-    .returning();
+  const row = await writeThenRead(
+    db.update(mapStickies).set(set).where(eq(mapStickies.id, id)),
+    mapStickies,
+    id,
+  );
   // 本文 (body, ProseMirror JSON) の変更差分を timelapse に記録する。
   const diffs: Record<string, BodyDiff> = {};
   if (update.body !== undefined) {
@@ -701,7 +741,7 @@ export async function updateSticky(
     fields: Object.keys(update),
     ...(diffs.body ? { diffs } : {}),
   });
-  return rows[0];
+  return row;
 }
 
 export async function deleteSticky(id: string): Promise<void> {
@@ -777,11 +817,14 @@ export async function adoptSticky(stickyId: string): Promise<{
   }
 
   const now = new Date().toISOString();
-  const [updated] = await db
-    .update(mapStickies)
-    .set({ aiBranchId: null, updatedAt: now })
-    .where(eq(mapStickies.id, stickyId))
-    .returning();
+  const updated = (await writeThenRead(
+    db
+      .update(mapStickies)
+      .set({ aiBranchId: null, updatedAt: now })
+      .where(eq(mapStickies.id, stickyId)),
+    mapStickies,
+    stickyId,
+  )) as MapSticky;
   recordMapEvent("sticky.adopt", stickyId, { branchId });
   return { sticky: updated, previousAiBranchId: branchId, removedEdge };
 }
@@ -1353,13 +1396,17 @@ export async function createUserEdge(data: {
     createdAt: now,
     updatedAt: now,
   };
-  const inserted = await db.insert(mapEdges).values(insertData).returning();
+  const inserted = await writeThenRead(
+    db.insert(mapEdges).values(insertData),
+    mapEdges,
+    id,
+  );
   recordMapEvent("edge.create", id, {
     boardId: data.boardId,
     from: data.fromPositionId,
     to: data.toPositionId,
   });
-  return inserted[0];
+  return inserted as MapEdge;
 }
 
 export async function updateUserEdge(
@@ -1374,13 +1421,16 @@ export async function updateUserEdge(
   },
 ): Promise<MapEdge | undefined> {
   const now = new Date().toISOString();
-  const rows = await db
-    .update(mapEdges)
-    .set({ ...update, updatedAt: now })
-    .where(eq(mapEdges.id, id))
-    .returning();
+  const row = await writeThenRead(
+    db
+      .update(mapEdges)
+      .set({ ...update, updatedAt: now })
+      .where(eq(mapEdges.id, id)),
+    mapEdges,
+    id,
+  );
   recordMapEvent("edge.update", id, { fields: Object.keys(update) });
-  return rows[0];
+  return row;
 }
 
 export async function deleteUserEdge(id: string): Promise<void> {
@@ -1481,9 +1531,13 @@ export async function createFrame(data: {
     createdAt: now,
     updatedAt: now,
   };
-  const inserted = await db.insert(mapFrames).values(insertData).returning();
+  const inserted = await writeThenRead(
+    db.insert(mapFrames).values(insertData),
+    mapFrames,
+    id,
+  );
   recordMapEvent("frame.create", id, { boardId: data.boardId });
-  return inserted[0];
+  return inserted as MapFrame;
 }
 
 export async function updateFrame(
@@ -1499,13 +1553,16 @@ export async function updateFrame(
   },
 ): Promise<MapFrame | undefined> {
   const now = new Date().toISOString();
-  const rows = await db
-    .update(mapFrames)
-    .set({ ...update, updatedAt: now })
-    .where(eq(mapFrames.id, id))
-    .returning();
+  const row = await writeThenRead(
+    db
+      .update(mapFrames)
+      .set({ ...update, updatedAt: now })
+      .where(eq(mapFrames.id, id)),
+    mapFrames,
+    id,
+  );
   recordMapEvent("frame.update", id, { fields: Object.keys(update) });
-  return rows[0];
+  return row;
 }
 
 export async function deleteFrame(id: string): Promise<void> {

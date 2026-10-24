@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import {
   abortVivliostyleBuild,
   onVivliostylePreviewExited,
@@ -148,7 +149,12 @@ export const useVivliostyleRunStore = create<VivliostyleRunState>()(
           },
           onError: (e) => {
             disposeBuildSubscription();
-            set({ build: { phase: "error", message: e.message } });
+            set({
+              build: {
+                phase: "error",
+                message: d2aFailureText(e.message, e.message),
+              },
+            });
           },
         });
         buildCleanup = cleanup;
@@ -165,7 +171,10 @@ export const useVivliostyleRunStore = create<VivliostyleRunState>()(
         set({
           build: {
             phase: "error",
-            message: e instanceof Error ? e.message : String(e),
+            message: d2aFailureText(
+              e,
+              e instanceof Error ? e.message : String(e),
+            ),
           },
         });
       } finally {

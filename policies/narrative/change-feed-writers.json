@@ -754,6 +754,35 @@
       "canonical": null
     },
     {
+      "id": "project.snapshot.delete",
+      "authorityRoute": "restore-or-migration",
+      "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],
+      "feedPolicy": "excluded",
+      "coverageStatus": "verified",
+      "reason": "Deleting a project snapshot removes only the snapshot and its read-open child rows; it does not mutate source narrative aggregates (NIR-1 DA-2b DR-DA2-51).",
+      "exclusionReason": "snapshot-capture",
+      "implementation": {
+        "module": "src-tauri/crates/grimodex-db/src/revision_writes.rs",
+        "symbol": "delete_project_snapshot"
+      },
+      "routes": [
+        {
+          "surface": "electron-ipc",
+          "name": "project_snapshot_delete",
+          "module": "electron/shared/ipcContract.ts"
+        },
+        {
+          "surface": "napi",
+          "name": "project_snapshot_delete",
+          "module": "electron/native/grimodex-node/src/lib.rs"
+        }
+      ],
+      "writerIds": [],
+      "scope": "project",
+      "requiredIdentities": ["projectId"],
+      "canonical": null
+    },
+    {
       "id": "workspace.sample.seed",
       "authorityRoute": "restore-or-migration",
       "controls": ["exclusive-system-operation","semantic-epoch-event","full-rebuild-marker"],

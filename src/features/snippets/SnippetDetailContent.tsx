@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { createRevision, pruneRevisions } from "@/features/revision/api";
+import { captureWorkspaceWriteScope } from "@/features/concurrency/mutationAuthority";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { debugLog, errorDetail } from "@/lib/debugLog";
 import { toast } from "sonner";
@@ -423,6 +424,8 @@ export function SnippetDetailContent({
     // prettier-ignore
     useCallback(async (context?: QuiescenceProviderFlushOptions) => {
       const snippetId = snippet.id;
+      // The snippet's project and the workspace of this save (DR-DA2B-R3).
+      const revisionScope = captureWorkspaceWriteScope(snippet.projectId);
       // Falls back to snippet.content if the editor was already destroyed
       // (defensive — flush should run before TipTap's cleanup, but keep the
       // pre-existing fallback semantic).
@@ -478,6 +481,7 @@ export function SnippetDetailContent({
             1000;
           if (shouldAutoRevision(snippetId, intervalMs)) {
             const rev = await createRevision({
+              scope: revisionScope,
               entityType: "snippet",
               entityId: snippetId,
               content,
@@ -488,7 +492,7 @@ export function SnippetDetailContent({
               const keepCount = useSettingsStore
                 .getState()
                 .getNumber("revision.keepCount", 50);
-              pruneRevisions("snippet", snippetId, keepCount).catch(
+              pruneRevisions(revisionScope, "snippet", snippetId, keepCount).catch(
                 console.error,
               );
             }
@@ -502,6 +506,7 @@ export function SnippetDetailContent({
         }
     }, [
       snippet.id,
+      snippet.projectId,
       snippet.title,
       snippet.content,
       editor,

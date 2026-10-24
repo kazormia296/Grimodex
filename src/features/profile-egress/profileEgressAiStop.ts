@@ -26,15 +26,26 @@ import i18next from "@/lib/i18n";
  *
  * This module is in the startup graph, so it holds no text: the strings are in
  * `profileEgressAiStopText.ts`, a part of the chat panel's lazy chunk. Until
- * that chunk has loaded, or for any other message, the answer is `null` and the
- * display keeps its own text (DR-DA2-30).
+ * that chunk has loaded the answer is `null` and the display keeps its own
+ * text (DR-DA2-30). Any other refusal of the gate (an anchored marker) answers
+ * the startup locale's generic `common.error`; any other message answers
+ * `null`.
  */
 const AI_STOP =
   /^(?:D2A_EGRESS_DENIED: profile-activation-stopped$|(?:Error: )?D2A_EGRESS_DENIED: (?:legacy-request-stopped(?:: |$)|old-(?:external|local)-ai: route \S+ (completed) after profile restriction began$))/;
 
+const D2A_REFUSAL =
+  /^(?:Error: )?(?:\w+ rejected: )?D2A_EGRESS_DENIED: [a-z0-9-]+(?::|$)/;
+
 export function aiFailureText(message: string | null): string | null {
   const match = AI_STOP.exec(message ?? "");
-  if (!match) return null;
+  // Any other refusal of the gate (the AI routes are closed while restricted)
+  // shows the generic error text, never the raw marker nor a provider's or
+  // Ollama's reason (Negative (11); DR-DA2B-R5). Anchored like `AI_STOP`, so a
+  // provider text that merely contains a marker keeps its own text (S4).
+  if (!match) {
+    return D2A_REFUSAL.test(message ?? "") ? i18next.t("common.error") : null;
+  }
   const key = `profileEgressAiStop.${match[1] ? "discarded" : "stopped"}`;
   return i18next.exists(key) ? i18next.t(key) : null;
 }

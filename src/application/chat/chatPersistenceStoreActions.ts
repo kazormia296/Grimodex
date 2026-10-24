@@ -21,7 +21,8 @@ interface ChatPersistenceRepository {
       model: string | null;
     },
   ) => Promise<void>;
-  deleteMessage: (messageId: string) => Promise<void>;
+  /** One session's messages, all-or-nothing in one typed call (CW). */
+  deleteMessages: (messageIds: string[]) => Promise<void>;
 }
 
 interface ChatPersistenceRuntime {
@@ -162,14 +163,14 @@ export function createChatPersistenceStoreActions(
             .slice(index)
             .filter((candidate) => candidate.role !== "system");
           if (activeSessionId) {
-            for (const candidate of toDelete) {
-              await repository.deleteMessage(candidate.id);
-            }
+            await repository.deleteMessages(
+              toDelete.map((candidate) => candidate.id),
+            );
           }
           set({ messages: messages.slice(0, index) });
         } else {
           if (activeSessionId) {
-            await repository.deleteMessage(messageId);
+            await repository.deleteMessages([messageId]);
           }
           set({
             messages: messages.filter(
@@ -197,9 +198,14 @@ export function createChatPersistenceStoreActions(
         .slice(index)
         .filter((candidate) => candidate.role !== "system");
       if (activeSessionId) {
-        Promise.all(
-          toDelete.map((candidate) => repository.deleteMessage(candidate.id)),
-        ).catch((error) => runtime.reportError("editUserMessage", error));
+        // The rows leave the list at once; a failed deletion is not silent
+        // (K3/2 "D の扱い": they come back on the next load).
+        repository
+          .deleteMessages(toDelete.map((candidate) => candidate.id))
+          .catch((error) => {
+            runtime.notifyDeleteFailure();
+            runtime.reportError("editUserMessage", error);
+          });
       }
       set({ messages: messages.slice(0, index) });
       return mentionedSceneIds ? { content, mentionedSceneIds } : { content };

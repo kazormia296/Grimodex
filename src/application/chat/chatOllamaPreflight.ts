@@ -66,10 +66,15 @@ export function runChatOllamaPreflight(
     probedTargets.add(key);
 
     return (async () => {
-      const observedModels = await ports.refreshSelectedModel(
-        target,
-        requireCapabilities,
-      );
+      // A refusal of the probe (the profile gate) is not reported as missing
+      // Ollama metadata (Negative (11); DR-DA2B-R5).
+      let refused = false;
+      const observedModels = await ports
+        .refreshSelectedModel(target, requireCapabilities)
+        .catch(() => {
+          refused = true;
+          return null;
+        });
       const pendingSessionMutations = ports.awaitPendingSessionMutations();
       if (pendingSessionMutations) {
         await pendingSessionMutations;
@@ -81,8 +86,9 @@ export function runChatOllamaPreflight(
       if (ports.blockIfPolicyOff()) return false;
       if (ports.blockIfUnlicensed()) return false;
       if (observedModels === null || observedModels.length === 0) {
-        const message =
-          observedModels === null
+        const message = refused
+          ? ports.translate("common.error")
+          : observedModels === null
             ? ports.translate("chat.ollamaMetadataUnavailable", {
                 model: target.model,
               })

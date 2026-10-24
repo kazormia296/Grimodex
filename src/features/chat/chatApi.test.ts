@@ -105,7 +105,6 @@ import {
   listMessages,
   addMessage,
   updateMessageMetadata,
-  updateSessionTitle,
   updateSessionTitleIfAutomatic,
   unpinStickyEntry,
   saveMessagePrompt,
@@ -493,15 +492,9 @@ describe("chatApi - session/message persistence", () => {
     });
   });
 
+  // The typed CW writers (delete, clear, rename, record) are fixed against a
+  // real SQLite in `chatApi.cw.test.ts` (DR-DA2B-R2).
   describe("deleteSession", () => {
-    it("deletes a session by id", async () => {
-      mockDeleteChain();
-
-      await deleteSession("session-1");
-
-      expect(mockDb.delete).toHaveBeenCalled();
-    });
-
     it("refuses to delete a Session owned by an unresolved turn", async () => {
       await registerPendingCompletedTurn();
 
@@ -864,20 +857,6 @@ describe("chatApi - session/message persistence", () => {
   });
 
   describe("updateSessionTitle", () => {
-    it("marks user-renamed titles as manual", async () => {
-      const chain = mockUpdateChain();
-
-      await updateSessionTitle("session-1", "手動タイトル");
-
-      expect(chain.set).toHaveBeenCalledWith(
-        expect.objectContaining({ title: "手動タイトル", titleManual: 1 }),
-      );
-      expect(chain.where).toHaveBeenCalledWith({
-        eq: ["id", "session-1"],
-      });
-      expect(chain.returning).not.toHaveBeenCalled();
-    });
-
     it("reports whether the conditional generated-title update matched", async () => {
       const chain = mockUpdateChain();
 
