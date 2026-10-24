@@ -74,11 +74,14 @@ function buildInsert(
  * Get the latest revision ID for an entity, or create one if content differs.
  *
  * `revision_create` answers `created: false` with the latest version's id when
- * the content is identical, so no re-read is needed (DR-DA2B-R3). A typed
- * refusal (the entity stopped being the project's while the snapshot was
- * captured, e.g. it was deleted) gives the row no body version, the same as an
- * entity without content, and the snapshot goes on. A workspace change ends
- * the snapshot: its rows were read from the previous workspace.
+ * the content is identical, so no re-read is needed (DR-DA2B-R3). A workspace
+ * change ends the snapshot: its rows were read from the previous workspace. A
+ * typed refusal (`REVISION_WRITE_REFUSED:`, e.g. the entity was deleted while
+ * the snapshot was captured entity by entity) ends it the same way: a row
+ * without its body version would restore the entity with an empty body
+ * (`"{}"`), while the legacy statements always gave it one. The user creates
+ * the snapshot again; the versions written before stay (harmless, prunable)
+ * and no snapshot row is written (D-11 difference, DR-DA2-58 (e)).
  */
 async function getOrCreateRevisionId(
   scope: RevisionWriteScope,
@@ -97,7 +100,12 @@ async function getOrCreateRevisionId(
       "workspace changed while the project snapshot was captured",
     );
   }
-  return written?.id ?? null;
+  if (!written) {
+    throw new Error(
+      "an entity changed while the project snapshot was captured",
+    );
+  }
+  return written.id;
 }
 
 /**

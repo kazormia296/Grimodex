@@ -8,9 +8,9 @@ import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 
 // DA-2b M (DR-DA2B-R3): the snapshot's body versions come from the typed
 // `revision_create`. A node that stops being the project's while the snapshot
-// is captured (Native: `REVISION_WRITE_REFUSED:not-found`) keeps its row
-// without a body version, as an entity without content does, and the snapshot
-// is created. A workspace change during the capture ends it instead.
+// is captured (Native: `REVISION_WRITE_REFUSED:not-found`) ends the snapshot
+// as a workspace change does: a row without its body version would restore
+// the node with an empty body. No snapshot row is written.
 
 const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 
@@ -69,23 +69,23 @@ afterEach(() => {
 });
 
 describe("createProjectSnapshot with the typed version writer", () => {
-  it("keeps a node refused as not-found without a body version and creates the snapshot", async () => {
+  it("ends the snapshot when a node is refused as not-found during the capture", async () => {
     onRevisionCreate = (payload) => {
       if (payload.entityId === "vanished") {
         throw new Error("REVISION_WRITE_REFUSED:not-found");
       }
     };
 
-    const snapshot = await createProjectSnapshot({ name: "during delete" });
-
-    const captured = await rows(
-      `SELECT node_id, body_version_id FROM project_snapshot_tree_nodes
-        WHERE snapshot_id = '${snapshot.id}' ORDER BY node_id`,
+    await expect(
+      createProjectSnapshot({ name: "during delete" }),
+    ).rejects.toThrow(
+      "an entity changed while the project snapshot was captured",
     );
-    expect(captured).toEqual([
-      { node_id: "kept", body_version_id: expect.any(String) },
-      { node_id: "vanished", body_version_id: null },
-    ]);
+    // No snapshot (and no row without its body) is left to restore from.
+    expect(await rows("SELECT id FROM project_snapshots")).toEqual([]);
+    expect(
+      await rows("SELECT snapshot_id FROM project_snapshot_tree_nodes"),
+    ).toEqual([]);
     // Only the typed writer recorded versions; no generic SQL touched them.
     const generic = invokeMock.mock.calls.filter(
       ([command, args]) =>
@@ -94,6 +94,19 @@ describe("createProjectSnapshot with the typed version writer", () => {
         !/^\s*select/i.test(String(args?.sql)),
     );
     expect(generic).toEqual([]);
+  });
+
+  it("creates the snapshot with every body version when nothing is refused", async () => {
+    const snapshot = await createProjectSnapshot({ name: "plain" });
+
+    const captured = await rows(
+      `SELECT node_id, body_version_id FROM project_snapshot_tree_nodes
+        WHERE snapshot_id = '${snapshot.id}' ORDER BY node_id`,
+    );
+    expect(captured).toEqual([
+      { node_id: "kept", body_version_id: expect.any(String) },
+      { node_id: "vanished", body_version_id: expect.any(String) },
+    ]);
   });
 
   it("ends the snapshot when the workspace changes during the capture", async () => {
