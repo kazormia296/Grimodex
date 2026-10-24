@@ -17,18 +17,26 @@ const CONSTANT = "PROFILE_ACTIVATION_UI_ENABLED";
 const MOUNT_POINTS: ReadonlyArray<{
   readonly file: string;
   readonly lazyModule: string | null;
+  /** The lazy component the file mounts (null when it mounts none). */
+  readonly component?: string;
+  /** A variable that holds the constant's condition, when the mount reads it. */
+  readonly guardVariable?: string;
 }> = [
   {
     file: "src/features/profile-egress/ProfileEgressStatusSlot.tsx",
     lazyModule: "./ProfileEgressStatusIndicator",
+    component: "ProfileEgressStatusIndicator",
   },
   {
     file: "src/features/settings/categories/DataCategory.tsx",
     lazyModule: "@/features/profile-egress/ProfileActivationSettingsSection",
+    component: "ProfileActivationSettingsSection",
   },
   {
     file: "src/features/related-scenes/Nir1GraphRelatedScenes.tsx",
     lazyModule: "@/features/profile-egress/ProfileActivationGuidance",
+    component: "ProfileActivationGuidance",
+    guardVariable: "profileNotRestricted",
   },
   // Decides whether the Graph chunk (itself behind the Graph constant) is
   // requested for `profile-not-restricted`; it requests no chunk of its own.
@@ -42,6 +50,7 @@ const MOUNT_POINTS: ReadonlyArray<{
   {
     file: "src/features/chat/ChatPanel.tsx",
     lazyModule: "@/features/profile-egress/ProfileEgressChatClosureProbe",
+    component: "ProfileEgressChatClosureProbe",
   },
   { file: "src/features/chat/components/ChatInput.tsx", lazyModule: null },
   { file: "src/features/chat/useChatMessageActions.ts", lazyModule: null },
@@ -128,6 +137,34 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
           `/\\* @__PURE__ \\*/ lazy\\(\\(\\) =>\\s*import\\("${escape(lazyModule)}"\\)`,
         ),
       );
+    },
+  );
+
+  // DA-2b acceptance (mutation 16b): the checks above are satisfied by any
+  // other `CONSTANT &&` in the file, so a lazy part mounted outside the
+  // constant (which would call `get_profile_egress_status` while the constant
+  // is false) passed them. The mount itself must sit directly under it.
+  it.each(MOUNT_POINTS.filter(({ component }) => component !== undefined))(
+    "$file mounts $component only under the constant",
+    ({ file, component, guardVariable }) => {
+      const body = code(read(file));
+      const mount = `<Suspense[^>]*>\\s*<${component}\\b`;
+      if (guardVariable === undefined) {
+        expect(body).toMatch(
+          new RegExp(`${CONSTANT}\\s*(?:&&|\\?)\\s*\\(\\s*${mount}`),
+        );
+      } else {
+        expect(body).toMatch(
+          new RegExp(
+            `(?:const|let)\\s+${guardVariable}\\s*=\\s*${CONSTANT}\\s*&&`,
+          ),
+        );
+        expect(body).toMatch(
+          new RegExp(`\\{${guardVariable}\\s*&&\\s*\\(\\s*${mount}`),
+        );
+      }
+      // Exactly one mount of the component, so a second one cannot hide.
+      expect(body.match(new RegExp(`<${component}\\b`, "g"))?.length).toBe(1);
     },
   );
 
