@@ -20,9 +20,24 @@ import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes
 import type { Nir1RelatedScenesLease } from "./nir1RelatedScenesSession";
 
 const navigation = createNir1EvidenceNavigationState();
+/** A Graph-only row's disclosed target (CP-3b): matched at click time. */
+export interface Nir1GraphOnlyTarget {
+  readonly canonicalRange: { readonly start: number; readonly end: number };
+  readonly excerpt: string;
+}
+/** What the editor-side consumer may use; Graph-only claims carry `graphOnly`. */
+export interface Nir1EvidenceClaim {
+  readonly identity: string;
+  readonly queryBinding: string;
+  readonly sceneId: string;
+  readonly graphOnly?: Nir1GraphOnlyTarget | null;
+  readonly isCurrent: () => boolean;
+  readonly finish: () => void;
+}
 interface PendingEvidence {
   readonly request: Nir1EvidenceNavigationRequest;
   readonly identity: string;
+  readonly graphOnly: Nir1GraphOnlyTarget | null;
   readonly queryBinding: string;
   readonly lease: Nir1RelatedScenesLease;
   accepted: boolean;
@@ -96,7 +111,9 @@ export function subscribeNir1EvidenceNavigation(
 }
 
 /** Both editor load and already-loaded editor paths use this single claim. */
-export function claimNir1EvidenceNavigation(sceneId: string) {
+export function claimNir1EvidenceNavigation(
+  sceneId: string,
+): Nir1EvidenceClaim | null {
   const item = pending;
   if (!item || item.claimed || !hasPendingNir1EvidenceNavigation(sceneId))
     return null;
@@ -109,6 +126,7 @@ export function claimNir1EvidenceNavigation(sceneId: string) {
     identity: item.identity,
     queryBinding: item.queryBinding,
     sceneId,
+    graphOnly: item.graphOnly,
     isCurrent: () => pending === item && matchesContext(item),
     finish: () => {
       if (pending === item) cancelNir1EvidenceNavigation();
@@ -120,6 +138,7 @@ export async function requestNir1EvidenceNavigation(
   fetch: Nir1RelatedScenesFetchResult,
   sceneId: string,
   identity: string,
+  graphOnly: Nir1GraphOnlyTarget | null = null,
 ): Promise<boolean> {
   cancelNir1EvidenceNavigation();
   if (
@@ -134,6 +153,7 @@ export async function requestNir1EvidenceNavigation(
   const item: PendingEvidence = {
     request: navigation.begin(fetch.origin, sceneId),
     identity,
+    graphOnly,
     queryBinding: fetch.queryBinding,
     lease,
     accepted: false,
@@ -179,7 +199,20 @@ export async function requestNir1EvidenceNavigation(
     observe();
     if (pending !== item) return false;
     const qualified = await qualifyNir1Evidence(identity);
+    // A Graph-only answer has exactly its 5 fields (status, bindingKey,
+    // queryBinding, sceneId, canonicalRange): any other key, such as an IR
+    // digest or the full quote, means the arms were mixed up and is refused
+    // (F2; a key count keeps the startup graph small, the lazy wrapper names
+    // the IR fields). Its range must equal the row's (`===` also refuses a
+    // non-number at runtime).
+    const range = (
+      qualified as { canonicalRange?: Nir1GraphOnlyTarget["canonicalRange"] }
+    ).canonicalRange;
     if (
+      (graphOnly &&
+        (Object.keys(qualified).length !== 5 ||
+          range?.start !== graphOnly.canonicalRange.start ||
+          range?.end !== graphOnly.canonicalRange.end)) ||
       pending !== item ||
       !matchesContext(item) ||
       qualified.status !== "qualified" ||

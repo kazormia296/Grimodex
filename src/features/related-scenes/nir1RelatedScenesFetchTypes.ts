@@ -15,7 +15,8 @@ import type {
 
 /**
  * A Graph answer Native re-qualified for this query: display text only. It is
- * attached to the R/R+IR fusion result and shown by nothing yet (CP-3b).
+ * attached to the R/R+IR fusion result, which it never changes; the lazy Graph
+ * view fuses it for display (CP-3b, `nir1GraphFusion.ts`).
  */
 export interface Nir1RelatedScenesGraphPayload {
   readonly queryBinding: string;
@@ -32,9 +33,9 @@ export interface Nir1RelatedScenesFetchOptions {
   readonly queryGeneration?: number;
   readonly isCurrent?: () => boolean;
   /**
-   * Test/CP-3b injection point: when present, begin carries the seed and the
-   * Graph is joined with IR. No production caller passes it yet. Ignored for
-   * `rawOnly` (no begin).
+   * When present, begin carries the seed and the Graph is joined with IR.
+   * Production passes it only while the Graph UI constant is on (CP-3b,
+   * DR-CP3B-3). Ignored for `rawOnly` (no begin).
    */
   readonly graphSeedEntityId?: string;
 }

@@ -9,6 +9,9 @@ import {
   listenRelatedScenesIndexReady,
 } from "./nir1RelatedScenesApi";
 import { observeNir1RelatedScenesQuery } from "./nir1EvidenceNavigation";
+import { isNir1GraphUiEnabled } from "./nir1GraphAvailability";
+import { selectNir1GraphSeed } from "./nir1GraphSeed";
+import { subscribeNir1GraphOnlyRevocation } from "./nir1GraphOnlyRevocation";
 import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
 
 const FETCH_DEBOUNCE_MS = 400;
@@ -52,6 +55,44 @@ export function useNir1RelatedScenes(enabled: boolean) {
   // (still one refresh per generation; DR-CP3A-49).
   const fetchingGeneration = useRef<number | null>(null);
   const graphReadyDuringFetch = useRef<number | null>(null);
+  // DR-CP3B-9 (D8-b): the shown result, and the generation already refreshed
+  // for a revoked Graph-only row (one refresh per generation).
+  const shown = useRef<Nir1RelatedScenesFetchResult | null>(null);
+  shown.current = fetch;
+  const revokedGeneration = useRef<number | null>(null);
+  // CP-3b F4: the Scenes revoked while a generation's fetch was in flight
+  // (Native may have re-checked before the revoke committed). Checked once
+  // when that generation publishes, like `graphReadyDuringFetch`.
+  const revokedDuringFetch = useRef<{
+    generation: number;
+    sceneIds: Set<string>;
+  } | null>(null);
+
+  // A revoke of the author's declaration in this window hides the shown
+  // Graph-only row of that Scene and queries once more. Closed with the UI.
+  useEffect(() => {
+    if (!enabled || !isNir1GraphUiEnabled()) return;
+    return subscribeNir1GraphOnlyRevocation((revokedSceneId) => {
+      const generation = current.current;
+      const value = shown.current;
+      if (
+        value?.graphOutcome === "graph-ready" &&
+        value.graph?.graphOnly?.sceneId === revokedSceneId
+      ) {
+        if (revokedGeneration.current === generation) return;
+        revokedGeneration.current = generation;
+        setRefresh((count) => count + 1);
+      } else if (fetchingGeneration.current === generation) {
+        const kept = revokedDuringFetch.current;
+        if (kept?.generation === generation) kept.sceneIds.add(revokedSceneId);
+        else
+          revokedDuringFetch.current = {
+            generation,
+            sceneIds: new Set([revokedSceneId]),
+          };
+      }
+    });
+  }, [enabled]);
 
   // This visible-section watcher survives an invalidated ticket and the
   // debounce before its replacement query. Subscribe before starting a query.
@@ -146,12 +187,35 @@ export function useNir1RelatedScenes(enabled: boolean) {
       graphReadyDuringFetch.current = null;
       setLoading(true);
       observeNir1RelatedScenesQuery(sceneId);
+      const isCurrent = () => current.current === generation && !disposed;
+      // DR-CP3B-3 (D2-A): only with the Graph UI on is a pin read and a seed
+      // sent; otherwise begin is byte-identical to the one before CP-3a. A
+      // failed read is no seed; Raw and IR still run. `rawOnly` has no begin.
+      if (rawOnly || !isNir1GraphUiEnabled() || !projectId) {
+        start(rawOnly, generation, isCurrent, null);
+        return;
+      }
+      void selectNir1GraphSeed(projectId, sceneId)
+        .catch(() => null)
+        .then((seed) => {
+          if (isCurrent()) start(false, generation, isCurrent, seed);
+          else if (fetchingGeneration.current === generation)
+            fetchingGeneration.current = null;
+        });
+    };
+    const start = (
+      rawOnly: boolean,
+      generation: number,
+      isCurrent: () => boolean,
+      seed: string | null,
+    ) => {
       void fetchRelatedPastScenes(sceneId, {
         mode: "hybrid",
         ...(rawOnly ? { rawOnly: true } : {}),
         signal: abort.signal,
         queryGeneration: generation,
-        isCurrent: () => current.current === generation && !disposed,
+        isCurrent,
+        ...(seed !== null ? { graphSeedEntityId: seed } : {}),
       })
         .then((value) => {
           const readyDuringFetch = graphReadyDuringFetch.current === generation;
@@ -171,6 +235,20 @@ export function useNir1RelatedScenes(enabled: boolean) {
           }
           setFetch(value);
           graphReadyGeneration.current = null;
+          const revoked = revokedDuringFetch.current;
+          if (revoked?.generation === generation) {
+            revokedDuringFetch.current = null;
+            const graphOnlyId = value.graph?.graphOnly?.sceneId;
+            if (
+              value.graphOutcome === "graph-ready" &&
+              graphOnlyId !== undefined &&
+              revoked.sceneIds.has(graphOnlyId) &&
+              revokedGeneration.current !== generation
+            ) {
+              revokedGeneration.current = generation;
+              setRefresh((count) => count + 1);
+            }
+          }
           if (awaitsGraphReady(value)) {
             // A notice that came during the fetch is this generation's one
             // refresh; otherwise wait for the next one.

@@ -13,6 +13,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { isBodyDeclarationUiEnabled } from "./bodyDeclarationAvailability";
+import { notifyNir1GraphOnlyRevoked } from "@/features/related-scenes/nir1GraphOnlyRevocation";
 import {
   declareBody,
   readBodyDeclarationState,
@@ -401,6 +402,8 @@ export function useSceneBodyDeclaration(
     const token = snapshot.declarationToken;
     return runOperation("revoke", async (scene) => {
       const result = await revokeBody({ scene, declarationToken: token });
+      // A shown Graph-only row of this Scene goes away (DR-CP3B-9).
+      if (result.ok) notifyNir1GraphOnlyRevoked(scene.sceneId);
       return result.ok
         ? { kind: result.outcome }
         : { kind: "revoke-refused", code: result.code };
