@@ -18,9 +18,11 @@ import { dialog } from "electron";
 import type { BrowserWindow } from "electron";
 
 import type { NapiBackendLike } from "../shared/ipcContract.js";
-import type {
-  ProfileActivationRequestResult,
-  ProfileActivationRequestStatus,
+import {
+  PROFILE_EGRESS_STATE_EVENT,
+  type ProfileActivationRequestResult,
+  type ProfileActivationRequestStatus,
+  type ProfileEgressStatusView,
 } from "../shared/profileEgressStatusWire.js";
 import {
   canonicalJson,
@@ -35,9 +37,6 @@ import {
   consumeProfileActivation,
   type ProfileEgressGate,
 } from "./profileEgress.js";
-
-/** Re-exported for `index.ts`, which imports only sibling modules. */
-export { PROFILE_EGRESS_STATE_EVENT } from "../shared/profileEgressStatusWire.js";
 
 /** Domain of the digest over the dialog Main showed (DR-DA2-3, P2-3). */
 export const PROFILE_ACTIVATION_DISPLAY_DIGEST_DOMAIN =
@@ -475,5 +474,36 @@ export function createProfileActivationController(
         inFlight.release();
       }
     },
+  };
+}
+
+export interface ProfileEgressStatusNotifierDeps {
+  /** Stage 2: every window title back to the product name. */
+  readonly resetWindowTitles: () => void;
+  /** Stage 2: the typed terminal of every stream in flight. */
+  readonly terminateAiStreams: () => unknown;
+  /** Unavailable: stop the periodic license check (P2-4). */
+  readonly disposeLicenseValidation: () => void;
+  /** Every change: the closed state to every window. */
+  readonly broadcast: (channel: string, payload: unknown) => void;
+}
+
+/**
+ * The gate's status listener that `index.ts` installs (DR-DA2-17,
+ * DR-DA2-18). Stage 2's work throws through to the gate, which then fails
+ * the activation closed.
+ */
+export function createProfileEgressStatusNotifier(
+  deps: ProfileEgressStatusNotifierDeps,
+): (view: ProfileEgressStatusView) => void {
+  return (view) => {
+    if (view.state === "activating") {
+      deps.resetWindowTitles();
+      deps.terminateAiStreams();
+    }
+    if (view.state === "unavailable") {
+      deps.disposeLicenseValidation();
+    }
+    deps.broadcast(PROFILE_EGRESS_STATE_EVENT, view);
   };
 }

@@ -44,7 +44,7 @@ import {
 import { createAiStreamTerminalTracker } from "./aiStreamTerminals.js";
 import {
   createProfileActivationController,
-  PROFILE_EGRESS_STATE_EVENT,
+  createProfileEgressStatusNotifier,
 } from "./profileActivation.js";
 import {
   parseProfileActivationCiSeam,
@@ -578,16 +578,14 @@ if (!gotSingleInstanceLock) {
     const aiStreamTerminals = createAiStreamTerminalTracker({
       send: sendAiStreamTerminalToWindow,
     });
-    profileEgress.onStatusChange?.((view) => {
-      if (view.state === "activating") {
-        resetWindowTitles();
-        aiStreamTerminals.terminateAll();
-      }
-      if (view.state === "unavailable") {
-        licenseValidation.dispose();
-      }
-      broadcastMainEvent(PROFILE_EGRESS_STATE_EVENT, view);
-    });
+    profileEgress.onStatusChange?.(
+      createProfileEgressStatusNotifier({
+        resetWindowTitles,
+        terminateAiStreams: () => aiStreamTerminals.terminateAll(),
+        disposeLicenseValidation: () => licenseValidation.dispose(),
+        broadcast: broadcastMainEvent,
+      }),
+    );
     let narrativeMaintenanceTriggers: NarrativeMaintenanceTriggerCoordinator | null =
       null;
     const narrativeFreshness = createNarrativeFreshnessScheduler(backend, {
