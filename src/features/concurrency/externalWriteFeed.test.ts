@@ -843,6 +843,39 @@ describe("externalWriteFeed pollTick resilience", () => {
     expect(h.loadCodex).not.toHaveBeenCalled();
   });
 
+  // A tick that was in flight when the project switched is stale: its D2a
+  // refusal must not spend the new feed's bounded budget (reviewer F-7).
+  it("does not count a stale tick's D2a refusal against the new feed", async () => {
+    const denial =
+      "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: route db_execute is unavailable in profile local-only mode";
+    await processExternalEventsForTest([], "p1");
+    let rejectOld!: (error: unknown) => void;
+    h.dbResponses.push(
+      new Promise<unknown[]>((_, reject) => {
+        rejectOld = reject;
+      }),
+    );
+    const oldTick = pollExternalWritesForTest();
+
+    // The project switches while the old tick waits for its read.
+    stopExternalWriteFeed();
+    await processExternalEventsForTest([], "p2");
+    rejectOld(new Error(denial));
+    await oldTick;
+
+    // The new feed still has its whole budget: 159 refusals do not stop it.
+    h.dbReject = true;
+    h.dbRejectMessage = denial;
+    for (let i = 0; i < 159; i++) await pollExternalWritesForTest();
+    h.dbReject = false;
+    h.dbResponses.push([
+      ev({ domain: "codex", entityType: "codex_entry", entityId: "p2-late" }),
+    ]);
+    await pollExternalWritesForTest();
+    expect(h.loadCodex).toHaveBeenCalled();
+    h.loadCodex.mockClear();
+  });
+
   it("retains local history when a self-write reaches the poll boundary", async () => {
     await processExternalEventsForTest([], "p1");
     const writerSessionId = getRecorderSessionId();

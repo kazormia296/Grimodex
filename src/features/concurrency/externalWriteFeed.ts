@@ -583,7 +583,6 @@ async function pollTick(
         rows = await fetchExternalRows(projectId, cursor, sessionId);
         if (!isAuthoritative()) return;
         if (rows.length === 0) {
-          if (!isAuthoritative()) return;
           state.cursor = tail;
         }
       }
@@ -594,6 +593,7 @@ async function pollTick(
     if (!isAuthoritative()) return;
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
+    if (!isAuthoritative()) return;
     if (isD2aEgressDenied(err)) return noteDeniedPoll(stopExternalWriteFeed);
     if (!isIpcLifecycleCancellation(err)) {
       console.warn("[externalWriteFeed] poll failed; cursor retained", err);

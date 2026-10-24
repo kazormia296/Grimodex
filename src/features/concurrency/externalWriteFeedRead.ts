@@ -10,7 +10,10 @@ type ChangeEventRow = typeof changeEvents.$inferSelect;
  * unavailable), and the renderer cannot tell them apart, so the poll keeps
  * its cursor and retries for about two minutes (longer than the bounded
  * stages), then stops: a finite retry, never an endless one (Negative (11);
- * DR-DA2B-R5). A new Project open starts it again.
+ * DR-DA2B-R5). A new Project open starts it again. A stale tick's refusal
+ * (its feed was stopped or replaced meanwhile) is not counted: the poll's
+ * catch returns before `noteDeniedPoll` when the tick is no longer
+ * authoritative, so it never spends the new feed's budget.
  */
 const MAX_DENIED_POLLS = 160;
 let deniedPolls = 0;
