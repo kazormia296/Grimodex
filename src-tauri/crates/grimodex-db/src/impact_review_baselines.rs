@@ -133,9 +133,10 @@ pub fn update_visibility(
     if !next.is_object() || !visibility_values_are_string_arrays(&next) {
         return refuse(ImpactBaselineWriteRefusal::InvalidRequest);
     }
-    db.with_conn(|conn| {
-        let tx = conn.unchecked_transaction()?;
-        let stored: Option<String> = tx
+    // IMMEDIATE, as the other typed writers: the CAS read and the UPDATE
+    // hold the write lock from the start (DR-DA2-56).
+    crate::revision_writes::with_immediate_transaction(db, |conn| {
+        let stored: Option<String> = conn
             .query_row(
                 "SELECT snapshot_json FROM impact_review_baselines
                   WHERE entry_id = ?1 AND project_id = ?2 AND content_hash = ?3",
@@ -161,7 +162,7 @@ pub fn update_visibility(
         if without_visibility(&next) != Some(stored_rest) {
             return refuse(ImpactBaselineWriteRefusal::NotVisibilityOnly);
         }
-        let changed = tx.execute(
+        let changed = conn.execute(
             "UPDATE impact_review_baselines
                 SET snapshot_json = ?1, content_hash = ?2
               WHERE entry_id = ?3 AND project_id = ?4 AND content_hash = ?5",
@@ -173,7 +174,6 @@ pub fn update_visibility(
                 request.expected_content_hash
             ],
         )?;
-        tx.commit()?;
         Ok(VisibilityUpdate {
             updated: changed == 1,
         })

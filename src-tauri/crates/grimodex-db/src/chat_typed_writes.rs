@@ -34,7 +34,10 @@ pub const CHAT_WRITE_REFUSED: &str = "CHAT_WRITE_REFUSED";
 
 /// Upper bounds of the typed requests (Main re-validates the same values).
 pub const MAX_ID_CHARS: usize = 256;
-pub const MAX_MESSAGE_IDS: usize = 256;
+/// Not a K3/2 threshold: the bound of one atomic deletion. A user message's
+/// deletion removes every later message of the session in one call, so the
+/// bound is set well above a realistic conversation (DR-DA2-56).
+pub const MAX_MESSAGE_IDS: usize = 10_000;
 pub const MAX_TITLE_CHARS: usize = 4096;
 pub const MAX_RECORD_IDS: usize = 64;
 

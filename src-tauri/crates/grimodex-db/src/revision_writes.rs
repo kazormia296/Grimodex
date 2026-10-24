@@ -161,7 +161,7 @@ pub struct DeletedCount {
     pub deleted: usize,
 }
 
-fn with_immediate_transaction<T>(
+pub(crate) fn with_immediate_transaction<T>(
     db: &Database,
     operation: impl FnOnce(&Connection) -> Result<T>,
 ) -> Result<T> {
