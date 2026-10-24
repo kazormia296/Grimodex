@@ -406,7 +406,10 @@ describe("DA-2b typed writers through the real router, gate and Native", () => {
       Record<string, unknown>
     >;
     expect(first.created).toBe(true);
-    expect(same).toEqual({ created: false, versionNumber: first.versionNumber });
+    expect(same).toEqual({
+      created: false,
+      versionNumber: first.versionNumber,
+    });
     expect(next).toEqual({
       created: true,
       versionNumber: (first.versionNumber as number) + 1,
@@ -515,7 +518,9 @@ describe("DA-2b typed writers through the real router, gate and Native", () => {
       sessionId: "cw-b",
     };
     // Straight into Native without Main's identity: refused, nothing deleted.
-    await expect(rig.native.chatSessionDelete(payload)).rejects.toThrow(MARKER);
+    await expect(rig.native.chatSessionDelete!(payload)).rejects.toThrow(
+      MARKER,
+    );
     // Another existing directory is not the open workspace.
     expect(
       failureOf(

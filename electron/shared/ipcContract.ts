@@ -532,13 +532,22 @@ export interface NapiBackendLike {
   narrativeRuntimePolicySet?(payload: unknown): Promise<string>;
   // DA-2b typed writers (DR-DA2-50..53). Ordinary `internal` commands; the
   // CW entries take Main's caller identity as the trailing sidecar.
-  chatMessagesDelete?(payload: unknown, callerIdentity?: string): Promise<string>;
-  chatSessionDelete?(payload: unknown, callerIdentity?: string): Promise<string>;
+  chatMessagesDelete?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
+  chatSessionDelete?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   chatProjectHistoryClear?(
     payload: unknown,
     callerIdentity?: string,
   ): Promise<string>;
-  chatSessionRename?(payload: unknown, callerIdentity?: string): Promise<string>;
+  chatSessionRename?(
+    payload: unknown,
+    callerIdentity?: string,
+  ): Promise<string>;
   chatMessageMetadataRecord?(
     payload: unknown,
     callerIdentity?: string,
@@ -7740,11 +7749,7 @@ function requireRevisionPrunePayload(args: CommandArgs): CommandArgs {
 
 function requireProjectSnapshotDeletePayload(args: CommandArgs): CommandArgs {
   const command = "project_snapshot_delete";
-  const payload = requireD2bPayload(
-    args,
-    ["projectId", "snapshotId"],
-    command,
-  );
+  const payload = requireD2bPayload(args, ["projectId", "snapshotId"], command);
   return {
     projectId: requireD2bId(payload, "projectId", command),
     snapshotId: requireD2bId(payload, "snapshotId", command),
