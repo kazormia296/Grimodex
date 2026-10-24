@@ -402,6 +402,7 @@ requirements:
       - src/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationAvailability.test.ts
       - src/features/editor/sceneMeta/bodyDeclaration/useSceneBodyDeclaration.test.tsx
       - src/features/editor/sceneMeta/bodyDeclaration/useSceneBodyDeclaration.default.test.tsx
+      - src/features/editor/sceneMeta/bodyDeclaration/useSceneBodyDeclaration.revocationNotice.test.tsx
       - src/features/editor/sceneMeta/bodyDeclaration/SceneBodyDeclarationSection.test.tsx
       - src/features/editor/sceneMeta/SceneScopeEditor.declaration.default.test.tsx
       - src/features/editor/sceneMeta/SceneScopeEditor.declaration.enabled.test.tsx
@@ -501,6 +502,12 @@ requirements:
     implementedBy:
       - evals/nir1-g01/fixture.v1.json
       - src/features/related-scenes/nir1G01Feasibility.test.ts
+      - src/features/related-scenes/nir1GraphAvailability.ts
+      - src/features/related-scenes/nir1GraphSeed.ts
+      - src/features/related-scenes/nir1GraphFusion.ts
+      - src/features/related-scenes/Nir1GraphRelatedScenes.tsx
+      - src/features/related-scenes/nir1EvidenceConsume.ts
+      - src/features/narrative-semantic-core/nir1GraphApi.ts
       - evals/nir1-graph/manifest.v1.json
       - evals/nir1-graph/schema.v1.json
       - evals/nir1-graph/g02-directed-relation.v1.json
@@ -599,6 +606,13 @@ requirements:
     lightTests:
       - src/features/related-scenes/nir1G01Feasibility.test.ts
       - src/features/related-scenes/nir1RelatedScenesFusion.test.ts
+      - src/features/related-scenes/nir1GraphAvailability.test.ts
+      - src/features/related-scenes/nir1GraphSeed.test.ts
+      - src/features/related-scenes/nir1GraphFusion.test.ts
+      - src/features/related-scenes/Nir1GraphRelatedScenes.test.tsx
+      - src/features/related-scenes/RelatedScenesSection.graph.default.test.tsx
+      - src/features/related-scenes/useNir1EvidenceNavigation.graphOnly.test.tsx
+      - src/features/narrative-semantic-core/nir1GraphApi.test.ts
       - scripts/quality/nir1-graph/contract.test.mjs
       - scripts/quality/nir1-retrieval/contract.test.mjs
       - scripts/quality/nir1-retrieval/standard-build.test.mjs
