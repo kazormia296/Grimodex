@@ -6458,7 +6458,7 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
   const exact =
     "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
   const runtime = {
-    electron: "43.5.0",
+    electron: "43.8.3",
     chrome: "150.0.7871.250",
     platform: "linux",
     x11Session: true,
