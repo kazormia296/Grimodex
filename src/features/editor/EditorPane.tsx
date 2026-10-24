@@ -72,6 +72,7 @@ import {
   type EditorInputScopeKey,
 } from "@/features/editor/editorInputReady";
 import { createRevision } from "@/features/revision/api";
+import { captureWorkspaceWriteScope } from "@/features/concurrency/mutationAuthority";
 import { scheduleAutoRevision } from "@/features/revision/autoRevisionScheduler";
 import { useRevisionStore } from "@/features/revision/revisionStore";
 import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
@@ -1703,6 +1704,8 @@ export function EditorPane({
       guardInlineAiPending();
       throw new AlreadyNotifiedSaveError(INLINE_AI_SAVE_BLOCKED_MESSAGE);
     }
+    // The scene's project (the loaded tree's) and the workspace of this save.
+    const scope = captureWorkspaceWriteScope(useTreeStore.getState().projectId);
     await flush();
     if (isEntryMode) return; // Codex/snippet entries: no revision on manual save
     // 未ロード doc は手動保存リビジョンにも残さない (空 doc 汚染防止)
@@ -1713,6 +1716,7 @@ export function EditorPane({
     if (!id || !ed) return;
     const content = JSON.stringify(ed.getJSON());
     await createRevision({
+      scope,
       entityType: "scene",
       entityId: id,
       content,

@@ -1,60 +1,170 @@
 // @vitest-environment happy-dom
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 
-// 採番レースの回帰テスト。JS 側で max+1 を先読みして INSERT すると、
-// 並走する saveFn (flush 二重発火) が同じ番号を計算して UNIQUE
-// (entity_type, entity_id, version_number) 衝突になり auto-revision が
-// 保存されない (実機ログで確認)。採番は INSERT 内サブクエリで原子的に行う。
+// DA-2b M (DR-DA2-51, DR-DA2B-R3): the version writers are typed Native
+// writers. Numbering (the former `coalesce(max(...)) + 1` sub-select race
+// fix) and the "same content as the latest version" check happen inside one
+// Native transaction (cargo `d2a_m_t_typed_writers`); the renderer sends no
+// generic SQL for them, in either mode (D-11 (a)).
 
-const calls = vi.hoisted(
-  () =>
-    ({ list: [] }) as {
-      list: { sql: string; params: unknown[]; method: string }[];
-    },
-);
+const { invokeMock } = vi.hoisted(() => ({ invokeMock: vi.fn() }));
 
-vi.mock("@/lib/tauri", () => ({
-  invoke: vi.fn(
-    async (
-      _cmd: string,
-      args: { sql: string; params: unknown[]; method: string },
-    ) => {
-      calls.list.push(args);
-      if (/^\s*select/i.test(args.sql)) return { rows: [] };
-      return {
-        rows: [
-          {
-            id: "r1",
-            entity_type: "scene",
-            entity_id: "s1",
-            content: "X",
-            version_number: 1,
-            snapshot_type: "auto",
-            created_at: "2026-01-01T00:00:00.000Z",
-          },
-        ],
-      };
-    },
-  ),
+vi.mock("@/lib/tauri", () => ({ invoke: invokeMock }));
+vi.mock("@/lib/debugLog", () => ({
+  debugLog: { warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+  errorDetail: (error: unknown) => ({ error: String(error) }),
 }));
 
-import { createRevision } from "./api";
+import { debugLog } from "@/lib/debugLog";
+import { createRevision, pruneRevisions, type RevisionWriteScope } from "./api";
+
+const current: RevisionWriteScope = { projectId: "p1", isCurrent: () => true };
+const stale: RevisionWriteScope = { projectId: "p1", isCurrent: () => false };
+
+beforeEach(() => {
+  invokeMock.mockReset();
+  vi.mocked(debugLog.warn).mockClear();
+});
 
 describe("createRevision", () => {
-  it("採番は INSERT 内サブクエリで原子的に行う (リテラル番号を渡さない)", async () => {
+  it("sends revision_create with the owner project and builds the version from the request", async () => {
+    invokeMock.mockResolvedValueOnce({
+      created: true,
+      id: "v2",
+      versionNumber: 2,
+      createdAt: "2026-10-24T00:00:00.000Z",
+    });
+
     const rev = await createRevision({
+      scope: current,
       entityType: "scene",
       entityId: "s1",
       content: "X",
       snapshotType: "auto",
     });
-    expect(rev).not.toBeNull();
 
-    const insert = calls.list.find((c) => /insert into/i.test(c.sql));
-    expect(insert).toBeDefined();
-    // version_number はサブクエリ (coalesce(max(...)) + 1) で計算される
-    expect(insert!.sql).toMatch(/coalesce\(max\(/i);
-    // JS 先読みのリテラル番号が params に乗っていない
-    expect(insert!.params.filter((p) => typeof p === "number")).toEqual([]);
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "revision_create",
+        {
+          payload: {
+            projectId: "p1",
+            entityType: "scene",
+            entityId: "s1",
+            content: "X",
+            snapshotType: "auto",
+          },
+        },
+      ],
+    ]);
+    // The same `ContentVersion` the legacy RETURNING row gave.
+    expect(rev).toEqual({
+      id: "v2",
+      entityType: "scene",
+      entityId: "s1",
+      content: "X",
+      versionNumber: 2,
+      snapshotType: "auto",
+      createdAt: "2026-10-24T00:00:00.000Z",
+    });
+  });
+
+  it("answers null for the latest version's content (created: false), as before", async () => {
+    invokeMock.mockResolvedValueOnce({
+      created: false,
+      id: "v1",
+      versionNumber: 1,
+      createdAt: "2026-10-23T00:00:00.000Z",
+    });
+    await expect(
+      createRevision({
+        scope: current,
+        entityType: "codex_entry",
+        entityId: "c1",
+        content: "same",
+        snapshotType: "manual",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it.each([
+    "REVISION_WRITE_REFUSED:not-found",
+    "Error: REVISION_WRITE_REFUSED:invalid-request",
+  ])(
+    "turns the typed refusal %s into null with a warn only",
+    async (message) => {
+      invokeMock.mockRejectedValueOnce(new Error(message));
+      await expect(
+        createRevision({
+          scope: current,
+          entityType: "scene",
+          entityId: "gone",
+          content: "X",
+          snapshotType: "auto",
+        }),
+      ).resolves.toBeNull();
+      expect(debugLog.warn).toHaveBeenCalledWith(
+        "Revision",
+        "version write refused",
+        expect.anything(),
+      );
+    },
+  );
+
+  it("keeps other failures as failures", async () => {
+    invokeMock.mockRejectedValueOnce(new Error("No workspace is open"));
+    await expect(
+      createRevision({
+        scope: current,
+        entityType: "scene",
+        entityId: "s1",
+        content: "X",
+        snapshotType: "auto",
+      }),
+    ).rejects.toThrow("No workspace is open");
+  });
+
+  it("writes nothing once the captured workspace is no longer bound", async () => {
+    await expect(
+      createRevision({
+        scope: stale,
+        entityType: "scene",
+        entityId: "s1",
+        content: "X",
+        snapshotType: "auto",
+      }),
+    ).resolves.toBeNull();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("pruneRevisions", () => {
+  it("sends revision_prune with the default keep count of 50", async () => {
+    invokeMock.mockResolvedValueOnce({ deleted: 3 });
+    await pruneRevisions(current, "snippet", "n1");
+    expect(invokeMock.mock.calls).toEqual([
+      [
+        "revision_prune",
+        {
+          payload: {
+            projectId: "p1",
+            entityType: "snippet",
+            entityId: "n1",
+            keepCount: 50,
+          },
+        },
+      ],
+    ]);
+  });
+
+  it("swallows a typed refusal and skips a stale scope", async () => {
+    invokeMock.mockRejectedValueOnce(
+      new Error("REVISION_WRITE_REFUSED:not-found"),
+    );
+    await expect(
+      pruneRevisions(current, "scene", "gone", 10),
+    ).resolves.toBeUndefined();
+    await pruneRevisions(stale, "scene", "s1", 10);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 });

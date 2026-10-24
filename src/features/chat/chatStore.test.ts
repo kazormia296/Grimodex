@@ -99,6 +99,7 @@ vi.mock("./chatApi", () => ({
   markMessagesSummarized: vi.fn(() => Promise.resolve()),
   addMessage: vi.fn(),
   deleteMessage: vi.fn(() => Promise.resolve()),
+  deleteMessages: vi.fn(() => Promise.resolve()),
   saveMessagePrompt: vi.fn(() => Promise.resolve()),
   getMessagePrompt: vi.fn(() => Promise.resolve(null)),
   updateSessionTitle: vi.fn(),
@@ -4459,6 +4460,7 @@ describe("useChatStore", () => {
         const after = useChatStore.getState();
         expect(editResult).toEqual({ content: "" });
         expect(chatApi.deleteMessage).not.toHaveBeenCalled();
+        expect(chatApi.deleteMessages).not.toHaveBeenCalled();
         expect(mockDeleteSession).not.toHaveBeenCalled();
         expect(mockListMessages).not.toHaveBeenCalled();
         expect(after.activeSessionId).toBe(before.activeSessionId);

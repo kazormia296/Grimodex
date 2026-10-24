@@ -310,7 +310,7 @@ export const useChatStore = create<ChatState>()((set, get) => ({
           : chatApi.addMessage(sessionId, role, content, extra),
       saveMessagePrompt: (messageId, snapshot) =>
         chatApi.saveMessagePrompt(messageId, snapshot),
-      deleteMessage: (messageId) => chatApi.deleteMessage(messageId),
+      deleteMessages: (messageIds) => chatApi.deleteMessages(messageIds),
     },
     runtime: {
       hasPendingCompletedTurnPersistence: () =>

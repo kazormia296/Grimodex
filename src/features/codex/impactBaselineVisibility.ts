@@ -1,6 +1,12 @@
 import { db } from "@/db/client";
 import { impactReviewBaselines } from "@/db/schema";
-import { and, eq } from "drizzle-orm";
+import { eq } from "drizzle-orm";
+import { invoke } from "@/lib/tauri";
+import type { InvokeTypedWriter } from "@/lib/typedWriters";
+
+// Bound at call time, so a partial `@/lib/tauri` mock still loads this module.
+const invokeTypedWriter: InvokeTypedWriter = (command, args) =>
+  invoke(command, args);
 
 interface ImpactBaselineMetadata {
   phases?: Array<{ phaseId?: unknown }>;
@@ -54,6 +60,7 @@ async function updateBaselineMetadata(
   for (let attempt = 0; attempt < 3; attempt++) {
     const rows = await db
       .select({
+        projectId: impactReviewBaselines.projectId,
         snapshotJson: impactReviewBaselines.snapshotJson,
         contentHash: impactReviewBaselines.contentHash,
       })
@@ -71,18 +78,24 @@ async function updateBaselineMetadata(
     }
     if (!mutate(snapshot)) return;
 
+    // The table is read-open, so the generic UPDATE is refused while
+    // restricted. Native checks that the hash is `stableHash(snapshotJson)`,
+    // that only the two visibility keys changed, and the same content-hash CAS
+    // (T, DR-DA2-52); a lost CAS answers `updated: false` and retries here.
     const snapshotJson = stableStringify(snapshot);
-    const updated = await db
-      .update(impactReviewBaselines)
-      .set({ snapshotJson, contentHash: stableHash(snapshotJson) })
-      .where(
-        and(
-          eq(impactReviewBaselines.entryId, entryId),
-          eq(impactReviewBaselines.contentHash, row.contentHash),
-        ),
-      )
-      .returning({ entryId: impactReviewBaselines.entryId });
-    if (updated.length > 0) return;
+    const { updated } = await invokeTypedWriter(
+      "impact_review_baseline_update_visibility",
+      {
+        payload: {
+          projectId: row.projectId,
+          entryId,
+          expectedContentHash: row.contentHash,
+          snapshotJson,
+          contentHash: stableHash(snapshotJson),
+        },
+      },
+    );
+    if (updated) return;
   }
   throw new Error("Impact baseline visibility metadata changed concurrently");
 }

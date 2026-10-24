@@ -31,7 +31,6 @@ import type {
 } from "./chatTypes";
 import {
   recordChatMessageAdd,
-  recordChatMessageDelete,
   recordChatMessagesDeleteFrom,
 } from "@/features/timelapse/captureChat";
 import type { CodexEntry } from "@/features/codex/api";
@@ -51,6 +50,15 @@ import {
   sendChatMessageStream,
 } from "./lazyTransportApi";
 
+// The CW typed writers (DR-DA2B-R2) live in `chatTypedWrites.ts`.
+export { deleteMessage, deleteMessages } from "./chatTypedWrites";
+import {
+  chatScope,
+  invokeTypedWriter,
+  recordMessageMetadata,
+  sessionWriteScope,
+} from "./chatTypedWrites";
+import type { ChatMessageRecordPatch } from "@/lib/typedWriters";
 export {
   generateSessionTitle,
   generateSynopsisFromContent,
@@ -485,15 +493,15 @@ export async function deleteSession(id: string): Promise<void> {
     kind: "session-id",
     sessionId: id,
   });
-  await db.delete(chatSessions).where(eq(chatSessions.id, id));
+  // CW typed writer (DR-DA2B-R2): the same rows as the legacy DELETE; an
+  // unknown id deletes nothing, as before.
+  const scope = await sessionWriteScope(id);
+  if (scope) await invokeTypedWriter("chat_session_delete", { payload: scope });
 }
 
 /**
- * プロジェクトのチャット履歴を全消去する。chat_sessions を 1 文で消すだけで、
- * chat_messages / chat_summaries / chat_summary_messages / chat_message_prompts /
- * chat_session_pinned_codex はすべて FK ON DELETE CASCADE (foreign_keys=ON) で
- * 連鎖削除される。子テーブルを個別に DELETE すると N+1 かつ非原子（別 IPC ごとに
- * lock/unlock され、途中失敗で中途半端に消える）になるため、単一 statement に閉じる。
+ * プロジェクトのチャット履歴を全消去する（CW 6）。typed writer が 1 transaction で
+ * chat_sessions を消し、子の表は FK ON DELETE CASCADE で連鎖削除される。
  */
 export async function clearProjectChatHistory(
   projectId: string,
@@ -503,7 +511,9 @@ export async function clearProjectChatHistory(
     workspaceIdentity: getCurrentImeWorkspaceIdentity(),
     projectId,
   });
-  await db.delete(chatSessions).where(eq(chatSessions.projectId, projectId));
+  await invokeTypedWriter("chat_project_history_clear", {
+    payload: chatScope(projectId),
+  });
 }
 
 export async function getSessionTitleForMessage(
@@ -668,12 +678,6 @@ export async function addMessage(
   return toMessage(stored);
 }
 
-export async function deleteMessage(messageId: string): Promise<void> {
-  assertMessageMutationAllowed(messageId);
-  await db.delete(chatMessages).where(eq(chatMessages.id, messageId));
-  recordChatMessageDelete({ messageId });
-}
-
 export async function deleteMessagesFrom(
   sessionId: string,
   fromCreatedAt: string,
@@ -693,26 +697,17 @@ export async function deleteMessagesFrom(
   recordChatMessagesDeleteFrom({ sessionId, fromCreatedAt });
 }
 
+/**
+ * The extraction and insertion record (CW 8; `recordMessageMetadata`). Only
+ * the three record keys are accepted; the episodic index is re-scheduled after
+ * a recorded write, as before.
+ */
 export async function updateMessageMetadata(
   messageId: string,
-  metadataUpdate: Record<string, unknown>,
+  metadataUpdate: ChatMessageRecordPatch,
 ): Promise<void> {
   assertMessageMutationAllowed(messageId);
-  const rows = await db
-    .select({ metadata: chatMessages.metadata })
-    .from(chatMessages)
-    .where(eq(chatMessages.id, messageId));
-  if (!rows[0]) return;
-
-  const existing: Record<string, unknown> = rows[0].metadata
-    ? (JSON.parse(rows[0].metadata) as Record<string, unknown>)
-    : {};
-  const merged = { ...existing, ...metadataUpdate };
-
-  await db
-    .update(chatMessages)
-    .set({ metadata: JSON.stringify(merged) })
-    .where(eq(chatMessages.id, messageId));
+  if (!(await recordMessageMetadata(messageId, metadataUpdate))) return;
 
   // 効果信号 (insertedToEditor / extractedCodex 等) が変わったので episodic index の
   // weight 列を更新するため再 index をスケジュール。content 不変でも hash に signal を
@@ -1093,16 +1088,21 @@ export async function togglePinChildren(
   codexEntryId: string,
   withChildren: boolean,
 ): Promise<void> {
-  const result = await db
+  const pin = and(
+    eq(chatSessionPinnedCodex.sessionId, sessionId),
+    eq(chatSessionPinnedCodex.codexEntryId, codexEntryId),
+  );
+  // No RETURNING (T, D-12 (a)): restricted refuses it. The re-read of the same
+  // key tells whether the UPDATE matched a row, as RETURNING did.
+  await db
     .update(chatSessionPinnedCodex)
     .set({ withChildren: withChildren ? 1 : 0 })
-    .where(
-      and(
-        eq(chatSessionPinnedCodex.sessionId, sessionId),
-        eq(chatSessionPinnedCodex.codexEntryId, codexEntryId),
-      ),
-    )
-    .returning({ id: chatSessionPinnedCodex.id });
+    .where(pin);
+  const result = await db
+    .select({ id: chatSessionPinnedCodex.id })
+    .from(chatSessionPinnedCodex)
+    .where(pin)
+    .limit(1);
   if (result.length === 0) {
     // No pin row matched — most likely the caller passed a snippet id by
     // mistake. Surface it instead of failing silently.

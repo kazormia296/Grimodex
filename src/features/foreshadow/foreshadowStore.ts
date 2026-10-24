@@ -35,6 +35,7 @@ import {
   unsetForeshadowPayoffMarksByForeshadowIds,
 } from "./saveAnchors";
 import { createRevision } from "@/features/revision/api";
+import { captureWorkspaceWriteScope } from "@/features/concurrency/mutationAuthority";
 import { aiAuthorshipAttrs } from "@/features/attribution/aiAuthorship";
 import type { ProposedSetup } from "./api";
 import { safeParseAiEvaluation } from "./types";
@@ -1077,6 +1078,9 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
   },
 
   adoptInsertedNewSetup: async (foreshadowId, candidateIdx) => {
+    // The scene's project (the setup is created in the current project) and
+    // the workspace at the start of the adoption (DR-DA2B-R3).
+    const revisionScope = captureWorkspaceWriteScope(getCurrentProjectId());
     const editor = getActiveEditor();
     const activeSceneId = getActiveTreeSceneId();
 
@@ -1166,6 +1170,7 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       afterContent = JSON.stringify(editor.getJSON());
       await saveSceneContent(activeSceneId, afterContent);
       await createRevision({
+        scope: revisionScope,
         entityType: "scene",
         entityId: activeSceneId,
         content: afterContent,

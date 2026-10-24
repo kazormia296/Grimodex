@@ -43,6 +43,19 @@ export function isCurrentMutationAuthority(
 }
 
 /**
+ * The workspace authority of a write owned by `projectId` whose writer is not
+ * bound to a workspace (the DA-2b version writers; DR-DA2B-R3): `isCurrent`
+ * is false once the workspace captured here is no longer the bound one.
+ */
+export function captureWorkspaceWriteScope(projectId: string): {
+  readonly projectId: string;
+  readonly isCurrent: () => boolean;
+} {
+  const authority = captureMutationAuthority(projectId, () => projectId);
+  return { projectId, isCurrent: () => isCurrentMutationAuthority(authority) };
+}
+
+/**
  * Tracks the real persistence task so Workspace/Project quiescence cannot
  * replace authority while it is still running. A stale completion is a
  * committed-old-scope outcome, not a retryable failure.

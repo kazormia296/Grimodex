@@ -75,7 +75,14 @@ describe("prompt-library api", () => {
       title: "文体整形プロンプト",
       content: "次の文章の文体を整えてください。",
     });
-    expect(h.queries).toHaveLength(1);
+    // No RETURNING (restricted refuses it, DR-DA2B-R4): the INSERT, then the
+    // project-scoped re-read by id.
+    expect(h.queries).toHaveLength(2);
+    expect(h.queries.map((q) => q.sql.toLowerCase())).not.toContainEqual(
+      expect.stringContaining("returning"),
+    );
+    expect(h.queries[1].sql).toMatch(/^select .* from "prompt_templates"/);
+    expect(h.queries[1].params).toEqual(["tpl-1", "project-1"]);
     expect(h.queries[0].sql).toContain("insert");
     expect(h.queries[0].sql).toContain("prompt_templates");
     expect(h.queries[0].params).toContain("project-1");
@@ -88,7 +95,10 @@ describe("prompt-library api", () => {
       title: "更新後",
       content: "更新本文",
     });
-    expect(h.queries).toHaveLength(1);
+    expect(h.queries).toHaveLength(2);
+    expect(h.queries[0].sql.toLowerCase()).not.toContain("returning");
+    expect(h.queries[1].sql).toMatch(/^select .* from "prompt_templates"/);
+    expect(h.queries[1].params).toEqual(["tpl-1", "project-1"]);
     expect(h.queries[0].sql).toContain("update");
     expect(h.queries[0].sql).toContain("prompt_templates");
     expect(h.queries[0].sql).toContain("project_id");

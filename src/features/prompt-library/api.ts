@@ -42,10 +42,14 @@ export async function createPromptTemplate(
   data: Pick<NewPromptTemplate, "id" | "projectId" | "title" | "content">,
 ): Promise<PromptTemplate> {
   const now = new Date().toISOString();
-  const rows = await db
+  // T (D-12 (a), DR-DA2B-R4): no RETURNING; read the row back by its id.
+  await db
     .insert(promptTemplates)
-    .values({ ...data, createdAt: now, updatedAt: now })
-    .returning();
+    .values({ ...data, createdAt: now, updatedAt: now });
+  const row = (await getPromptTemplate(
+    data.projectId,
+    data.id,
+  )) as PromptTemplate;
   recordChangeEvent({
     domain: "prompt",
     opType: "template.create",
@@ -53,7 +57,7 @@ export async function createPromptTemplate(
     entityId: data.id,
     payload: { templateId: data.id, title: data.title },
   });
-  return rows[0];
+  return row;
 }
 
 /**
@@ -64,13 +68,13 @@ export async function updatePromptTemplate(
   id: string,
   data: Partial<Pick<NewPromptTemplate, "title" | "content">>,
 ): Promise<PromptTemplate | undefined> {
-  const rows = await db
+  await db
     .update(promptTemplates)
     .set({ ...data, updatedAt: new Date().toISOString() })
     .where(
       and(eq(promptTemplates.id, id), eq(promptTemplates.projectId, projectId)),
-    )
-    .returning();
+    );
+  const row = await getPromptTemplate(projectId, id);
   recordChangeEvent({
     domain: "prompt",
     opType: "template.update",
@@ -78,7 +82,7 @@ export async function updatePromptTemplate(
     entityId: id,
     payload: { templateId: id, fields: Object.keys(data) },
   });
-  return rows[0];
+  return row;
 }
 
 /**
