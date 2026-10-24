@@ -14,7 +14,7 @@
       "maxLines": 2395
     },
     "src/features/concurrency/externalWriteFeed.ts": {
-      "maxLines": 674
+      "maxLines": 662
     },
     "src/features/project/projectStore.ts": {
       "maxLines": 922

@@ -1,6 +1,6 @@
 import { db } from "@/db/client";
 import { changeEvents } from "@/db/schema";
-import { and, eq, gt, ne, asc, desc } from "drizzle-orm";
+import { eq, desc } from "drizzle-orm";
 import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCodexStore } from "@/features/codex/codexStore";
@@ -28,21 +28,16 @@ import type { DocumentKey } from "@/features/editor/document/documentKey";
 import { getExternalWriteProjectors } from "@/application/externalWrites/externalWriteProjectors";
 import { isD2aEgressDenied, isIpcLifecycleCancellation } from "@/lib/tauri";
 import {
+  fetchExternalRows,
+  noteDeniedPoll,
+  resetDeniedPolls,
+} from "./externalWriteFeedRead";
+import {
   parseChangePayload,
   payloadString,
   payloadStringArray,
 } from "./changeEventPayload";
 const POLL_MS = 750;
-/**
- * The feed reads `change_events` as an own-data-read (O-2). Its D2a refusal is
- * temporary from activation stage 2 to stage 7 (and lasting while
- * unavailable), and the renderer cannot tell them apart, so the poll keeps
- * its cursor and retries for about two minutes (longer than the bounded
- * stages), then stops: a finite retry, never an endless one (Negative (11);
- * DR-DA2B-R5). A new Project open starts it again.
- */
-const MAX_DENIED_POLLS = 160;
-let deniedPolls = 0;
 
 /**
  * Optional handler for incoming MCP/agent prose proposals (headless auto-apply).
@@ -549,24 +544,6 @@ async function fanOut(
   }
 }
 
-async function fetchExternalRows(
-  projectId: string,
-  cursor: number,
-  sessionId: string,
-): Promise<ChangeEventRow[]> {
-  const rows = await db
-    .select()
-    .from(changeEvents)
-    .where(
-      and(
-        eq(changeEvents.projectId, projectId),
-        gt(changeEvents.sequence, cursor),
-        ne(changeEvents.sessionId, sessionId),
-      ),
-    )
-    .orderBy(asc(changeEvents.sequence));
-  return rows.filter((row) => row.sessionId !== sessionId);
-}
 async function pollTick(
   requestedAuthority: FeedAuthority | null = captureFeedAuthority(),
 ): Promise<void> {
@@ -596,7 +573,6 @@ async function pollTick(
   try {
     const sessionId = getRecorderSessionId();
     let rows = await fetchExternalRows(projectId, cursor, sessionId);
-    deniedPolls = 0;
     if (!isAuthoritative()) return;
 
     if (rows.length === 0) {
@@ -618,10 +594,7 @@ async function pollTick(
     if (!isAuthoritative()) return;
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
-    if (isD2aEgressDenied(err)) {
-      if (++deniedPolls >= MAX_DENIED_POLLS) stopExternalWriteFeed();
-      return;
-    }
+    if (isD2aEgressDenied(err)) return noteDeniedPoll(stopExternalWriteFeed);
     if (!isIpcLifecycleCancellation(err)) {
       console.warn("[externalWriteFeed] poll failed; cursor retained", err);
     }
@@ -652,7 +625,7 @@ export async function startExternalWriteFeed(projectId: string): Promise<void> {
 /** Stop polling (project switch / workspace close). */
 export function stopExternalWriteFeed(): void {
   state.generation += 1;
-  deniedPolls = 0;
+  resetDeniedPolls();
   // The transport read cannot be aborted, but relinquishing this ownership
   // token lets the replacement feed poll immediately. The old tick's finally
   // block cannot clear a newer tick's token.
