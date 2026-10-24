@@ -1,6 +1,6 @@
 {
   "label": "nc1-ll-no-proxy",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "dns": true,
     "gvt1": true,
@@ -30,7 +30,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 parts(drop:proxy) start => true in 3.8 ms",
+    "nc1 parts(drop:proxy) start => true in 3.6 ms",
     "resolveProxy(https://turn.attacker.invalid:443/) => DIRECT",
     "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
     "resolveProxy(https://example.invalid:8443/) => DIRECT",
@@ -43,7 +43,7 @@
     "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(redirector.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(github.com) => [\"20.27.177.113\"]",
-    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.111.133\",\"185.199.108.133\",\"185.199.109.133\",\"185.199.110.133\"]",
+    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.109.133\",\"185.199.108.133\",\"185.199.111.133\",\"185.199.110.133\"]",
     "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]",
     "resolveHost(127.0.0.1) => [\"127.0.0.1\"]",
@@ -78,8 +78,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 3.8,
-    "listenerPort": 37629,
+    "startMs": 3.6,
+    "listenerPort": 43321,
     "listenerHits": 0,
     "overLimit": 0,
     "maxActive": 0,

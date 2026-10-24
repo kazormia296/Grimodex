@@ -18,21 +18,21 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "registerSecurityHandlers (before ready)": -53,
+        "registerSecurityHandlers (before ready)": -50,
         "ready": 0,
-        "applySessionPermissionPolicy done": 3,
+        "applySessionPermissionPolicy done": 2,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
         "BrowserWindow created": 22,
-        "window loaded": 110
+        "window loaded": 107
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 42,
+          "startMsFromReady": 43,
           "startBeforeSetProxyDone": null,
           "proxyInfo": [
-            "PROXY localhost:42053"
+            "PROXY localhost:40937"
           ],
           "hostResolver": [],
           "netError": -111
@@ -40,17 +40,17 @@
       ],
       "nc1Ms": null,
       "nc1Marks": {
-        "registerSecurityHandlers (before ready)": -53,
-        "applySessionPermissionPolicy done": 3,
+        "registerSecurityHandlers (before ready)": -50,
+        "applySessionPermissionPolicy done": 2,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
         "BrowserWindow created": 22,
-        "window loaded": 110
+        "window loaded": 107
       },
-      "readyToWindowLoadedMs": 110,
+      "readyToWindowLoadedMs": 107,
       "envProxyConnects": [
         {
-          "msFromReady": 46,
+          "msFromReady": 45,
           "line": "CONNECT redirector.gvt1.com:443"
         }
       ],
@@ -62,7 +62,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     },
     {
@@ -74,21 +74,21 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "registerSecurityHandlers (before ready)": -51,
+        "registerSecurityHandlers (before ready)": -46,
         "ready": 0,
-        "applySessionPermissionPolicy done": 3,
+        "applySessionPermissionPolicy done": 2,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
-        "BrowserWindow created": 23,
-        "window loaded": 106
+        "BrowserWindow created": 22,
+        "window loaded": 102
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 43,
+          "startMsFromReady": 42,
           "startBeforeSetProxyDone": null,
           "proxyInfo": [
-            "PROXY localhost:37305"
+            "PROXY localhost:34735"
           ],
           "hostResolver": [],
           "netError": -111
@@ -96,17 +96,17 @@
       ],
       "nc1Ms": null,
       "nc1Marks": {
-        "registerSecurityHandlers (before ready)": -51,
-        "applySessionPermissionPolicy done": 3,
+        "registerSecurityHandlers (before ready)": -46,
+        "applySessionPermissionPolicy done": 2,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
-        "BrowserWindow created": 23,
-        "window loaded": 106
+        "BrowserWindow created": 22,
+        "window loaded": 102
       },
-      "readyToWindowLoadedMs": 106,
+      "readyToWindowLoadedMs": 102,
       "envProxyConnects": [
         {
-          "msFromReady": 45,
+          "msFromReady": 44,
           "line": "CONNECT redirector.gvt1.com:443"
         }
       ],
@@ -118,7 +118,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     },
     {
@@ -130,21 +130,21 @@
       "tunnel": false,
       "rules": "1",
       "timelineMsFromReady": {
-        "registerSecurityHandlers (before ready)": -53,
+        "registerSecurityHandlers (before ready)": -49,
         "ready": 0,
-        "applySessionPermissionPolicy done": 2,
+        "applySessionPermissionPolicy done": 3,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
         "BrowserWindow created": 22,
-        "window loaded": 114
+        "window loaded": 124
       },
       "dictionaryRequests": [
         {
           "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-          "startMsFromReady": 42,
+          "startMsFromReady": 43,
           "startBeforeSetProxyDone": null,
           "proxyInfo": [
-            "PROXY localhost:38867"
+            "PROXY localhost:44863"
           ],
           "hostResolver": [],
           "netError": -111
@@ -152,14 +152,14 @@
       ],
       "nc1Ms": null,
       "nc1Marks": {
-        "registerSecurityHandlers (before ready)": -53,
-        "applySessionPermissionPolicy done": 2,
+        "registerSecurityHandlers (before ready)": -49,
+        "applySessionPermissionPolicy done": 3,
         "installProductDownloadGuard done": 3,
         "registerAppProtocolHandler done": 3,
         "BrowserWindow created": 22,
-        "window loaded": 114
+        "window loaded": 124
       },
-      "readyToWindowLoadedMs": 114,
+      "readyToWindowLoadedMs": 124,
       "envProxyConnects": [
         {
           "msFromReady": 45,
@@ -174,7 +174,7 @@
           "en-US"
         ]
       },
-      "electron": "43.5.0",
+      "electron": "43.8.3",
       "ok": true
     }
   ]

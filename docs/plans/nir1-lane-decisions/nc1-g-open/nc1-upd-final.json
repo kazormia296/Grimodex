@@ -1,6 +1,6 @@
 {
   "label": "nc1-upd-final",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "noProbes": true,
     "realUpdater": true,
@@ -10,7 +10,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 48.5 ms"
+    "nc1 orchestrator start => true in 32 ms"
   ],
   "webPreferences": {
     "sandbox": true,
@@ -38,8 +38,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 48.5,
-    "listenerPort": 40675,
+    "startMs": 32,
+    "listenerPort": 39941,
     "listenerHits": 4,
     "overLimit": 0,
     "maxActive": 3,

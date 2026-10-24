@@ -1,6 +1,6 @@
 {
   "label": "nc1-policy-fail",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "noProbes": true,
     "pageRan": true,
@@ -11,7 +11,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 53.5 ms",
+    "nc1 orchestrator start => true in 33.2 ms",
     "window loadURL => error:ERR_FAILED"
   ],
   "webPreferences": {},
@@ -36,8 +36,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 53.5,
-    "listenerPort": 34163,
+    "startMs": 33.2,
+    "listenerPort": 42719,
     "listenerHits": 1,
     "overLimit": 0,
     "maxActive": 1,
@@ -66,5 +66,5 @@
   "dnsAll": null,
   "dnsRowCount": null,
   "timedOut": false,
-  "runStdoutTail": " Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+  "runStdoutTail": "\"unix\")\n[349238:1024/113141.979414:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n[349238:1024/113142.014447:ERROR:dbus/bus.cc:406] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are \"tcp\" and on UNIX \"unix\")\n[grimodex-electron] NC-POLICY\n"
 }

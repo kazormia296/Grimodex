@@ -41,11 +41,11 @@
     },
     {
       "path": "package.json",
-      "sha256": "aa909d7ee79966dea7894033bc00fdf129e8e776162adb27c94823c94175da3d"
+      "sha256": "dd112820d877a104e406f31b61f46310d7f9b0a08601bbbf0c0999a8c80b2d03"
     },
     {
       "path": "pnpm-lock.yaml",
-      "sha256": "d9be4132526bf1667e715b93480d70398268270f66e87c1c4ca35c2765022ed0"
+      "sha256": "c4f75b93493642391ad807a42117714e38446c25208791b7964a2e86490be3dd"
     },
     {
       "path": "src-tauri/Cargo.toml",
@@ -101,7 +101,7 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "734a4d213c0a065fa8b36a72c9e2b6d1a222034690c87451cf30634493b90114"
+      "sha256": "14a6d88d053bc7d5161f110e47a82f22a9acd0dee2d12ce004c26e042166ca05"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",

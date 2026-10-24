@@ -1,6 +1,6 @@
 {
   "label": "nc1-fm-final",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "gvt1": true,
     "localhostRows": true,
@@ -22,7 +22,7 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 parts(drop:none) start => true in 34.1 ms",
+    "nc1 parts(drop:none) start => true in 32.7 ms",
     "after churn: window eval => 2, crashed=false"
   ],
   "webPreferences": {
@@ -58,8 +58,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 34.1,
-    "listenerPort": 42307,
+    "startMs": 32.7,
+    "listenerPort": 44497,
     "listenerHits": 3949,
     "overLimit": 2058,
     "maxActive": 256,

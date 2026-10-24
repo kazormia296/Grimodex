@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "chrome": "150.0.7871.250",
   "platform": "linux",
   "variant": "product",

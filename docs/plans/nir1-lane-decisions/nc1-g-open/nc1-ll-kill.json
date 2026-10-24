@@ -1,6 +1,6 @@
 {
   "label": "nc1-ll-kill",
-  "electron": "43.5.0",
+  "electron": "43.8.3",
   "cm": {
     "dns": true,
     "gvt1": true,
@@ -27,27 +27,27 @@
   "electronArgs": [],
   "proxyMode": "listener",
   "events": [
-    "nc1 orchestrator start => true in 34.8 ms",
-    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:34863",
-    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:34863",
-    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:34863",
-    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:34863",
-    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:34863",
-    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:34863",
+    "nc1 orchestrator start => true in 34.7 ms",
+    "resolveProxy(https://turn.attacker.invalid:443/) => SOCKS5 127.0.0.1:45843",
+    "resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => SOCKS5 127.0.0.1:45843",
+    "resolveProxy(https://example.invalid:8443/) => SOCKS5 127.0.0.1:45843",
+    "resolveProxy(http://127.0.0.1:1/) => SOCKS5 127.0.0.1:45843",
+    "resolveProxy(https://169.254.169.254/) => SOCKS5 127.0.0.1:45843",
+    "resolveProxy(https://[fe80::1]/) => SOCKS5 127.0.0.1:45843",
     "updaterSession.resolveProxy(https://github.com/) => DIRECT",
     "updaterSession.resolveProxy(https://redirector.gvt1.com/edgedl/chrome/dict/x) => DIRECT",
     "resolveHost(grimodex-rule-sentinel.invalid) => [\"127.0.0.1\"]",
     "resolveHost(example.org) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(redirector.gvt1.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(github.com) => [\"20.27.177.113\"]",
-    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.108.133\",\"185.199.109.133\",\"185.199.110.133\",\"185.199.111.133\"]",
+    "resolveHost(release-assets.githubusercontent.com) => [\"185.199.110.133\",\"185.199.111.133\",\"185.199.108.133\",\"185.199.109.133\"]",
     "resolveHost(api.github.com) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(localhost) => [\"::1\",\"127.0.0.1\"]",
     "resolveHost(127.0.0.1) => [\"127.0.0.1\"]",
     "resolveHost(127.0.0.2) => error:net::ERR_NAME_NOT_RESOLVED",
     "resolveHost(1.1.1.1) => error:net::ERR_NAME_NOT_RESOLVED",
-    "network service pids=3787022",
-    "network service pids after=3787037"
+    "network service pids=346359",
+    "network service pids after=346376"
   ],
   "webPreferences": {
     "sandbox": true,
@@ -75,8 +75,8 @@
       "policy": "disable_non_proxied_udp"
     },
     "startOk": true,
-    "startMs": 34.8,
-    "listenerPort": 34863,
+    "startMs": 34.7,
+    "listenerPort": 45843,
     "listenerHits": 184,
     "overLimit": 0,
     "maxActive": 60,
@@ -115,7 +115,7 @@
     "joined": true,
     "error": null,
     "iface": "<lan>",
-    "seenAll": 0,
+    "seenAll": 8,
     "nonceBearing": 0
   },
   "rows": [
