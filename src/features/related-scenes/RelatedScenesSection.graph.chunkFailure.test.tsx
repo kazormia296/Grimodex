@@ -63,9 +63,32 @@ afterEach(() => {
 
 describe("RelatedScenesSection when the Graph chunk fails", () => {
   it("a failed Graph chunk falls back to the R/R+IR rows", async () => {
+    // React 19 reports an error a boundary caught through its default
+    // `onCaughtError`, i.e. `console.error` (renderer devtools only; Main does
+    // not forward the console, DR-CP3B-7). Only that one report of
+    // Nir1GraphBoundary is silenced; anything else (an act warning, another
+    // error) is passed through and fails the test.
+    const original = console.error;
+    const caught: unknown[][] = [];
+    const unexpected: unknown[][] = [];
     const consoleError = vi
       .spyOn(console, "error")
-      .mockImplementation(() => {});
+      .mockImplementation((...args: unknown[]) => {
+        const text = args.filter((arg) => typeof arg === "string").join("\n");
+        if (
+          caught.length === 0 &&
+          args.some((arg) => arg instanceof Error) &&
+          text.includes(
+            "The above error occurred in one of your React components.",
+          ) &&
+          text.includes("the error boundary you provided, Nir1GraphBoundary")
+        )
+          caught.push(args);
+        else {
+          unexpected.push(args);
+          original(...args);
+        }
+      });
     render(<RelatedScenesSection />);
     for (const ms of [0, 400, 0, 0, 0]) {
       await act(async () => {
@@ -88,6 +111,8 @@ describe("RelatedScenesSection when the Graph chunk fails", () => {
     expect(JSON.stringify(useDebugLogStore.getState().entries)).not.toContain(
       "Graph only title",
     );
+    expect(caught).toHaveLength(1);
+    expect(unexpected).toEqual([]);
     consoleError.mockRestore();
   });
 });
