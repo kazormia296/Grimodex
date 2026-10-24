@@ -20,6 +20,9 @@ import { collectQuiescenceProviderRecovery } from "@/lib/quiescenceProviders";
 import { registerChatContextPreparation } from "@/application/chat/chatContextPreparation";
 import { chatContextPreparationComposition } from "@/application/composition/chatContextPreparationComposition";
 import { IpcInvokeError } from "@/lib/tauri";
+import { DrizzleQueryError } from "drizzle-orm/errors";
+import { D2A_RESTRICTED_DB_EXECUTE_DENIAL } from "@/lib/d2aRestrictedGenericSql.testSupport";
+import { rootCause } from "@/lib/debugLog";
 import {
   LIFECYCLE_TRACE_OPT_IN_KEY,
   activateLifecycleTransition,
@@ -1320,6 +1323,47 @@ describe("useChatStore", () => {
         ).toBe(false);
         expect(mockCreateSession).toHaveBeenCalledOnce();
         expect(mockSendChatMessageStream).toHaveBeenCalledOnce();
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
+    // DA-2b (Negative (11); DR-DA2B-R5): restricted, the new conversation's
+    // INSERT … RETURNING is refused as generic SQL and Drizzle wraps the
+    // refusal with the statement and its params. The panel shows the generic
+    // text, never the statement, the params nor the raw marker.
+    it("shows a refused new conversation as the generic error, not Drizzle's statement", async () => {
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      useChatStore.setState({
+        activeSessionId: null,
+        sessions: [],
+        messages: [],
+      });
+      const refusal = new DrizzleQueryError(
+        'insert into "chat_sessions" ("id", "project_id", "title") values (?, ?, ?) returning "id"',
+        ["new-session-id", "proj-1", "New session"],
+        new Error(D2A_RESTRICTED_DB_EXECUTE_DENIAL),
+      );
+      mockCreateSession.mockRejectedValueOnce(refusal);
+      installChatCaptureBridge(async () => ({ ok: true, value: [] }));
+      try {
+        await useChatStore.getState().sendMessage("restricted first turn");
+
+        const shown = useChatStore.getState().error;
+        expect(shown).toBe(rootCause(refusal));
+        for (const raw of [
+          "Failed query",
+          "chat_sessions",
+          "params",
+          "new-session-id",
+          "D2A_EGRESS_DENIED",
+        ]) {
+          expect(shown).not.toContain(raw);
+        }
+        expect(mockSendChatMessageStream).not.toHaveBeenCalled();
+        expect(useChatStore.getState().isStreaming).toBe(false);
       } finally {
         useAiSettingsStore.setState({ settings: previousSettings });
         vi.unstubAllGlobals();

@@ -45,6 +45,7 @@ import {
   createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
   fetchRequiredProjectContext,
+  turnErrorText,
 } from "./chatStoreSupport";
 import {
   countTokens,
@@ -552,10 +553,7 @@ function createChatTurnStoreActions(
         }
         sendControl.aborted = true;
         removeOwnedTurnMessages();
-        set({
-          isStreaming: false,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        set({ isStreaming: false, error: turnErrorText(error) });
         turnRuntime.clearActiveRouteIf(turnRoute);
         turnCoordinator.release(sendControl, "failed");
       };
@@ -581,7 +579,7 @@ function createChatTurnStoreActions(
             messages: visiblePrevMessages,
             streamingDraft: null,
             isStreaming: false,
-            error: error instanceof Error ? error.message : String(error),
+            error: turnErrorText(error),
           });
           turnCoordinator.release(sendControl, "failed");
         } else {

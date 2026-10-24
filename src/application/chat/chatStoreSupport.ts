@@ -1,6 +1,8 @@
 import * as chatApi from "@/features/chat/chatApi";
 import { aiFailureText } from "@/features/profile-egress/profileEgressAiStop";
 import i18next from "@/lib/i18n";
+import { rootCause } from "@/lib/debugLog";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import type { ProjectContext } from "@/features/chat/contextBuilder";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { fetchProjectContext as fetchProjectContextAtom } from "@/features/project/contextAtoms";
@@ -37,6 +39,19 @@ export function classifyError(
  */
 export function aiFailureToastText(key: string, message: string): string {
   return aiFailureText(message) ?? i18next.t(key, { message });
+}
+
+/**
+ * The chat panel's error of a turn that failed before its transport. A D2a
+ * refusal there is often wrapped: the new conversation's `createSession`
+ * (`INSERT … RETURNING`, D) is refused as generic SQL and Drizzle's message is
+ * the statement with its params. It shows `rootCause`'s generic text instead,
+ * never the statement, the params nor the raw marker (Negative (11);
+ * DR-DA2B-R5). Any other error keeps its message.
+ */
+export function turnErrorText(error: unknown): string {
+  if (isD2aEgressDenied(error)) return rootCause(error);
+  return error instanceof Error ? error.message : String(error);
 }
 
 /**
