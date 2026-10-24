@@ -19,7 +19,10 @@ import {
   isAllowedRendererEventChannel,
 } from "../shared/ipcContract.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
-import type { ProfileEgressGate } from "./profileEgress.js";
+import {
+  PROFILE_ACTIVATION_STOPPED_MESSAGE,
+  type ProfileEgressGate,
+} from "./profileEgress.js";
 import {
   parseWorkspaceLifecycleView,
   type WorkspaceLifecycleView,
@@ -50,11 +53,20 @@ export function setBackendEventEgressGate(
   profileEgressGate = profileEgress ?? null;
 }
 
-/** 全窓（送信元含む）へ 1 イベントを配信する。 */
+/**
+ * 全窓（送信元含む）へ 1 イベントを配信する。1 つの窓の送信の失敗（破棄の途中など）で
+ * 残りの窓への配信を止めない（`sendBackendEventToWindow` と同じ作法。DA-2 L-4）。
+ */
 export function broadcastEvent(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
-    if (win.isDestroyed()) continue;
-    win.webContents.send(IPC.event, channel, payload);
+    try {
+      if (win.isDestroyed()) continue;
+      win.webContents.send(IPC.event, channel, payload);
+    } catch (cause) {
+      console.warn(
+        `[event] a window became unavailable during ${channel}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
   }
 }
 
@@ -169,12 +181,70 @@ const AI_STREAM_TERMINAL_CHANNELS: ReadonlySet<string> = new Set([
   "codex-app:event",
 ]);
 
+function exactKeys(value: unknown, keys: readonly string[]): boolean {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const actual = Object.keys(value);
+  return (
+    actual.length === keys.length &&
+    keys.every((key) => Object.hasOwn(value, key))
+  );
+}
+
+function terminalId(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= 256 &&
+    value === value.trim()
+  );
+}
+
+/**
+ * The closed shapes of `aiStreamTerminals.ts` (DR-DA2-18): ids and the fixed
+ * stop message only. Anything else (another key, another message, plaintext)
+ * is refused.
+ */
+export function isAiStreamTerminalPayload(
+  channel: string,
+  payload: unknown,
+): boolean {
+  if (channel === "codex-app:event") {
+    if (
+      !exactKeys(payload, ["projectId", "sessionId", "grimodexTurnId", "event"])
+    ) {
+      return false;
+    }
+    const record = payload as Record<string, unknown>;
+    const event = record.event as Record<string, unknown>;
+    return (
+      terminalId(record.projectId) &&
+      terminalId(record.sessionId) &&
+      terminalId(record.grimodexTurnId) &&
+      exactKeys(event, ["type", "message", "code", "retryable"]) &&
+      event.type === "turn-error" &&
+      event.message === PROFILE_ACTIVATION_STOPPED_MESSAGE &&
+      event.code === "D2A_EGRESS_DENIED" &&
+      event.retryable === false
+    );
+  }
+  if (!AI_STREAM_TERMINAL_CHANNELS.has(channel)) return false;
+  if (!exactKeys(payload, ["streamId", "message"])) return false;
+  const record = payload as Record<string, unknown>;
+  return (
+    terminalId(record.streamId) &&
+    record.message === PROFILE_ACTIVATION_STOPPED_MESSAGE
+  );
+}
+
 /**
  * DA-2 (DR-DA2-18): the typed terminal Main synthesizes for a stream that was
  * in flight at stage 2 of a profile activation. The profile gate drops these
  * channels from then on, so this path does not consult it; it sends only the
  * closed terminal shapes `aiStreamTerminals.ts` builds (ids and a fixed code,
- * no plaintext) to the one window that started the stream.
+ * no plaintext; checked by `isAiStreamTerminalPayload`, R-5) to the one
+ * window that started the stream.
  */
 export function sendAiStreamTerminalToWindow(
   webContentsId: number,
@@ -183,6 +253,12 @@ export function sendAiStreamTerminalToWindow(
 ): void {
   if (!AI_STREAM_TERMINAL_CHANNELS.has(channel)) {
     console.warn(`[main:event] rejected non-terminal channel: ${channel}`);
+    return;
+  }
+  if (!isAiStreamTerminalPayload(channel, payload)) {
+    console.warn(
+      `[main:event] rejected a terminal outside its shape: ${channel}`,
+    );
     return;
   }
   const target = BrowserWindow.getAllWindows().find(

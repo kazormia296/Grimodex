@@ -121,6 +121,34 @@ describe("broadcastEvent", () => {
     expect(alive.webContents.send).toHaveBeenCalledTimes(1);
     expect(dead.webContents.send).not.toHaveBeenCalled();
   });
+
+  it("1 つの窓の送信の失敗で残りの窓への配信を止めない（DA-2 L-4）", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const first = makeWindow(1);
+    const failing = makeWindow(2);
+    const destroyedCheckFails = makeWindow(3);
+    const last = makeWindow(4);
+    failing.webContents.send.mockImplementation(() => {
+      throw new Error("Object has been destroyed");
+    });
+    destroyedCheckFails.isDestroyed = () => {
+      throw new Error("Object has been destroyed");
+    };
+    allWindows.push(first, failing, destroyedCheckFails, last);
+
+    expect(() =>
+      broadcastMainEvent("profile-egress:state", { state: "activating" }),
+    ).not.toThrow();
+
+    for (const win of [first, last]) {
+      expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith(
+        IPC.event,
+        "profile-egress:state",
+        { state: "activating" },
+      );
+    }
+    expect(warn).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -490,6 +518,79 @@ describe("DA-2 profile egress events (DR-DA2-9, DR-DA2-18)", () => {
     expect(owner.webContents.send).not.toHaveBeenCalled();
     expect(warn).toHaveBeenCalled();
   });
+
+  it("the terminal path sends only the closed terminal shapes (R-5)", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const owner = makeWindow(11);
+    allWindows.push(owner);
+    const stopped = "D2A_EGRESS_DENIED: profile-activation-stopped";
+    const codex = {
+      projectId: "p",
+      sessionId: "s",
+      grimodexTurnId: "t",
+      event: {
+        type: "turn-error",
+        message: stopped,
+        code: "D2A_EGRESS_DENIED",
+        retryable: false,
+      },
+    };
+    const refused: Array<[string, unknown]> = [
+      ["chat:stream-error", { streamId: "s" }],
+      ["chat:stream-error", { streamId: "s", message: "原稿の本文" }],
+      ["chat:stream-error", { streamId: "s", message: stopped, text: "x" }],
+      ["inline-ai:stream-error", { streamId: "", message: stopped }],
+      ["cli:stream-error", { streamId: 42, message: stopped }],
+      ["cli:stream-error", [{ streamId: "s", message: stopped }]],
+      ["codex-app:event", { streamId: "s", message: stopped }],
+      ["codex-app:event", { ...codex, extra: "x" }],
+      [
+        "codex-app:event",
+        { ...codex, event: { ...codex.event, message: "本文" } },
+      ],
+      [
+        "codex-app:event",
+        { ...codex, event: { ...codex.event, retryable: true } },
+      ],
+      [
+        "codex-app:event",
+        { ...codex, event: { ...codex.event, type: "turn-completed" } },
+      ],
+      ["codex-app:event", { ...codex, event: { ...codex.event, delta: "x" } }],
+    ];
+    for (const [channel, payload] of refused) {
+      sendAiStreamTerminalToWindow(11, channel, payload);
+    }
+    expect(owner.webContents.send).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledTimes(refused.length);
+  });
+
+  it("every terminal the tracker builds passes the shape check (R-5)", async () => {
+    const owner = makeWindow(11);
+    allWindows.push(owner);
+    const { createAiStreamTerminalTracker } =
+      await import("./aiStreamTerminals.js");
+    const tracker = createAiStreamTerminalTracker({
+      send: sendAiStreamTerminalToWindow,
+    });
+    tracker.track(11, "send_chat_message_stream", { streamId: "c" });
+    tracker.track(11, "send_inline_ai_stream", { streamId: "i" });
+    tracker.track(11, "send_cli_chat_stream", { streamId: "l" });
+    tracker.track(11, "codex_app_start_turn", {
+      projectId: "p",
+      sessionId: "s",
+      grimodexTurnId: "t",
+    });
+    expect(tracker.terminateAll()).toBe(4);
+    expect(
+      owner.webContents.send.mock.calls.map(([, channel]) => channel),
+    ).toEqual([
+      "chat:stream-error",
+      "inline-ai:stream-error",
+      "cli:stream-error",
+      "codex-app:event",
+    ]);
+  });
 });
 
 describe("NIR-1 invalidation event", () => {
@@ -498,10 +599,19 @@ describe("NIR-1 invalidation event", () => {
     allWindows.push(window);
     const backend = makeBackend();
     registerEventBus(backend);
-    backend.capturedCallback?.("related-scenes:invalidated", '{"queryBinding":"query-binding"}');
-    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC.event, "related-scenes:invalidated", { queryBinding: "query-binding" });
+    backend.capturedCallback?.(
+      "related-scenes:invalidated",
+      '{"queryBinding":"query-binding"}',
+    );
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "related-scenes:invalidated",
+      { queryBinding: "query-binding" },
+    );
     window.webContents.send.mockClear();
-    emitFromRenderer(window, "related-scenes:invalidated", { queryBinding: "query-binding" });
+    emitFromRenderer(window, "related-scenes:invalidated", {
+      queryBinding: "query-binding",
+    });
     expect(window.webContents.send).not.toHaveBeenCalled();
   });
 
@@ -510,7 +620,12 @@ describe("NIR-1 invalidation event", () => {
     allWindows.push(window);
     const backend = makeBackend();
     registerEventBus(backend);
-    for (const payload of ['not-json', '{}', '{"queryBinding":" "}', '{"queryBinding":"ok","envelope":"must-not-leak"}']) {
+    for (const payload of [
+      "not-json",
+      "{}",
+      '{"queryBinding":" "}',
+      '{"queryBinding":"ok","envelope":"must-not-leak"}',
+    ]) {
       backend.capturedCallback?.("related-scenes:invalidated", payload);
     }
     expect(window.webContents.send).not.toHaveBeenCalled();
@@ -523,11 +638,23 @@ describe("NIR-1 newly usable index notification", () => {
     allWindows.push(window);
     const backend = makeBackend();
     registerEventBus(backend);
-    backend.capturedCallback?.("related-scenes:index-ready", '{"projectId":"project"}');
-    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(IPC.event, "related-scenes:index-ready", { projectId: "project" });
+    backend.capturedCallback?.(
+      "related-scenes:index-ready",
+      '{"projectId":"project"}',
+    );
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "related-scenes:index-ready",
+      { projectId: "project" },
+    );
     window.webContents.send.mockClear();
-    backend.capturedCallback?.("related-scenes:index-ready", '{"projectId":"project","count":9}');
-    emitFromRenderer(window, "related-scenes:index-ready", { projectId: "project" });
+    backend.capturedCallback?.(
+      "related-scenes:index-ready",
+      '{"projectId":"project","count":9}',
+    );
+    emitFromRenderer(window, "related-scenes:index-ready", {
+      projectId: "project",
+    });
     expect(window.webContents.send).not.toHaveBeenCalled();
   });
 });
