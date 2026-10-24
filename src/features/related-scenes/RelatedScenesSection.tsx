@@ -1,9 +1,47 @@
-import { useState } from "react";
+import { Component, Suspense, lazy, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { CollapsibleSection } from "@/features/layout/CollapsibleSection";
+import { debugLog } from "@/lib/debugLog";
 import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
+import { isNir1GraphUiEnabled } from "./nir1GraphAvailability";
 import { useNir1RelatedScenes } from "./useNir1RelatedScenes";
+import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
+
+// The Graph view (CP-3b) is a lazy chunk requested only while the Graph UI
+// constant is on and the fetch carries a Graph payload or `restart-required`
+// (DR-CP3B-7). While the constant is false nothing below fetches it.
+const Nir1GraphRelatedScenes = lazy(() => import("./Nir1GraphRelatedScenes"));
+
+/** A failed Graph chunk or render falls back to the R/R+IR rows. */
+class Nir1GraphBoundary extends Component<
+  { readonly fallback: ReactNode; readonly children: ReactNode },
+  { readonly failed: boolean }
+> {
+  state = { failed: false };
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch() {
+    // A fixed message only: the error may carry payload text.
+    debugLog.warn("related-scenes", "graph view unavailable");
+  }
+
+  render() {
+    return this.state.failed ? this.props.fallback : this.props.children;
+  }
+}
+
+function showsGraph(fetch: Nir1RelatedScenesFetchResult | null): boolean {
+  return Boolean(
+    fetch &&
+    isNir1GraphUiEnabled() &&
+    ((fetch.graphOutcome === "graph-ready" && fetch.graph) ||
+      fetch.graphOutcome === "graph-unavailable:restart-required"),
+  );
+}
 
 interface RelatedScenesSectionProps {
   enabled?: boolean;
@@ -48,34 +86,51 @@ export function RelatedScenesSection({
           <p className="px-3 py-2 text-[11px] text-muted-foreground">
             {t("relatedScenes.noActiveScene")}
           </p>
-        ) : !fetch || !result?.scenes.length ? (
-          <p className="px-3 py-2 text-[11px] text-muted-foreground">
-            {t(loading ? "relatedScenes.loading" : "relatedScenes.empty")}
-          </p>
-        ) : result.kind === "raw" ? (
-          result.scenes.map((raw) => (
-            <Nir1RelatedSceneRow
-              key={raw.sceneId}
-              sceneId={raw.sceneId}
-              sceneTitle={raw.sceneTitle}
-              raw={raw}
-              fetch={fetch}
-            />
-          ))
+        ) : fetch && showsGraph(fetch) ? (
+          <Nir1GraphBoundary fallback={baseRows(fetch, loading, t)}>
+            <Suspense fallback={baseRows(fetch, loading, t)}>
+              <Nir1GraphRelatedScenes fetch={fetch} querySceneId={sceneId} />
+            </Suspense>
+          </Nir1GraphBoundary>
         ) : (
-          result.scenes.map((scene) => (
-            <Nir1RelatedSceneRow
-              key={scene.sceneId}
-              sceneId={scene.sceneId}
-              sceneTitle={scene.sceneTitle}
-              rank={scene.rank1}
-              raw={scene.kind !== "ir" ? scene.raw : undefined}
-              ir={scene.kind !== "raw" ? scene.ir : undefined}
-              fetch={fetch}
-            />
-          ))
+          baseRows(fetch, loading, t)
         )}
       </div>
     </CollapsibleSection>
+  );
+}
+
+function baseRows(
+  fetch: Nir1RelatedScenesFetchResult | null,
+  loading: boolean,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): ReactNode {
+  const result = fetch?.result;
+  return !fetch || !result?.scenes.length ? (
+    <p className="px-3 py-2 text-[11px] text-muted-foreground">
+      {t(loading ? "relatedScenes.loading" : "relatedScenes.empty")}
+    </p>
+  ) : result.kind === "raw" ? (
+    result.scenes.map((raw) => (
+      <Nir1RelatedSceneRow
+        key={raw.sceneId}
+        sceneId={raw.sceneId}
+        sceneTitle={raw.sceneTitle}
+        raw={raw}
+        fetch={fetch}
+      />
+    ))
+  ) : (
+    result.scenes.map((scene) => (
+      <Nir1RelatedSceneRow
+        key={scene.sceneId}
+        sceneId={scene.sceneId}
+        sceneTitle={scene.sceneTitle}
+        rank={scene.rank1}
+        raw={scene.kind !== "ir" ? scene.raw : undefined}
+        ir={scene.kind !== "raw" ? scene.ir : undefined}
+        fetch={fetch}
+      />
+    ))
   );
 }

@@ -11,6 +11,7 @@ import {
 import { observeNir1RelatedScenesQuery } from "./nir1EvidenceNavigation";
 import { isNir1GraphUiEnabled } from "./nir1GraphAvailability";
 import { selectNir1GraphSeed } from "./nir1GraphSeed";
+import { subscribeNir1GraphOnlyRevocation } from "./nir1GraphOnlyRevocation";
 import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
 
 const FETCH_DEBOUNCE_MS = 400;
@@ -54,6 +55,28 @@ export function useNir1RelatedScenes(enabled: boolean) {
   // (still one refresh per generation; DR-CP3A-49).
   const fetchingGeneration = useRef<number | null>(null);
   const graphReadyDuringFetch = useRef<number | null>(null);
+  // DR-CP3B-9 (D8-b): the shown result, and the generation already refreshed
+  // for a revoked Graph-only row (one refresh per generation).
+  const shown = useRef<Nir1RelatedScenesFetchResult | null>(null);
+  shown.current = fetch;
+  const revokedGeneration = useRef<number | null>(null);
+
+  // A revoke of the author's declaration in this window hides the shown
+  // Graph-only row of that Scene and queries once more. Closed with the UI.
+  useEffect(() => {
+    if (!enabled || !isNir1GraphUiEnabled()) return;
+    return subscribeNir1GraphOnlyRevocation((revokedSceneId) => {
+      const value = shown.current;
+      if (
+        value?.graphOutcome !== "graph-ready" ||
+        value.graph?.graphOnly?.sceneId !== revokedSceneId ||
+        revokedGeneration.current === current.current
+      )
+        return;
+      revokedGeneration.current = current.current;
+      setRefresh((count) => count + 1);
+    });
+  }, [enabled]);
 
   // This visible-section watcher survives an invalidated ticket and the
   // debounce before its replacement query. Subscribe before starting a query.

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { requestSceneChunkJump } from "@/features/semantic-search/sceneChunkJump";
@@ -13,6 +14,8 @@ interface Props {
   readonly raw?: RelatedScene;
   readonly ir?: Nir1AdmittedScene;
   readonly fetch: Nir1RelatedScenesFetchResult;
+  /** The Graph path Evidence slot (CP-3b); drawn below the row's own text. */
+  readonly children?: ReactNode;
 }
 
 export function Nir1RelatedSceneRow({
@@ -22,6 +25,7 @@ export function Nir1RelatedSceneRow({
   raw,
   ir,
   fetch,
+  children,
 }: Props) {
   const { t } = useTranslation();
   const openEvidence = () => {
@@ -100,6 +104,7 @@ export function Nir1RelatedSceneRow({
           </button>
         </div>
       )}
+      {children}
     </div>
   );
 }
