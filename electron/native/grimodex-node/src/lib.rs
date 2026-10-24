@@ -6784,6 +6784,16 @@ impl Backend {
         profile_activation::commit(&self.state).await
     }
 
+    /// Main's cancellation of in-flight AI work after its stage 2 or 3 failed
+    /// (DR-DA2-24). Synchronous; acts only while an activation is reserved
+    /// (returns `true`), otherwise does nothing (returns `false`). It asks the
+    /// chat and inline streams, the post-effect runs and the non-stream legacy
+    /// requests to stop, and changes nothing else.
+    #[napi]
+    pub fn profile_activation_abort_in_flight(&self) -> bool {
+        profile_activation::abort_in_flight(&self.state)
+    }
+
     /// Main-only registration of one exact caller identity for this Backend
     /// process generation. Renderer IPC never exposes this method.
     #[napi]

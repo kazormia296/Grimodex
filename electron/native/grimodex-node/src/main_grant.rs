@@ -773,7 +773,8 @@ impl MainGrantRegistry {
         }
     }
 
-    #[cfg(test)]
+    /// Whether an activation's reservation is held (stage 1 succeeded and no
+    /// commit has succeeded yet).
     pub(crate) fn is_reserved(&self) -> bool {
         self.lock()
             .as_ref()

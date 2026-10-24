@@ -41,6 +41,14 @@ export declare class Backend {
    */
   profileActivationCommit(): Promise<string>
   /**
+   * Main's cancellation of in-flight AI work after its stage 2 or 3 failed
+   * (DR-DA2-24). Synchronous; acts only while an activation is reserved
+   * (returns `true`), otherwise does nothing (returns `false`). It asks the
+   * chat and inline streams, the post-effect runs and the non-stream legacy
+   * requests to stop, and changes nothing else.
+   */
+  profileActivationAbortInFlight(): boolean
+  /**
    * Main-only registration of one exact caller identity for this Backend
    * process generation. Renderer IPC never exposes this method.
    */

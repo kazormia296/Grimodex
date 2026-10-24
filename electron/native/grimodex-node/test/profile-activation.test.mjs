@@ -54,6 +54,7 @@ test("the backend has no grant-less activation (Negative (6))", () => {
     assert.deepEqual(restricting.sort(), [
       "initializeProfileEgress",
       "invalidateProfileEgressCallers",
+      "profileActivationAbortInFlight",
       "profileActivationCommit",
       "profileActivationConsume",
       "profileActivationIssue",
@@ -63,6 +64,7 @@ test("the backend has no grant-less activation (Negative (6))", () => {
     const declarations = readFileSync(join(here, "..", "index.d.ts"), "utf8");
     assert.doesNotMatch(declarations, /activateProfileEgress/);
     assert.match(declarations, /profileActivationConsume\(grantId: string, senderId: number, windowId: number\): void/);
+    assert.match(declarations, /profileActivationAbortInFlight\(\): boolean/);
   } finally {
     r.close();
   }
@@ -207,6 +209,40 @@ test("a workspace open between issue and consume revokes the grant; nothing clos
     // With the workspace Ready, the activation goes through.
     const status = JSON.parse(await activateThroughGrant(r.backend));
     assert.equal(status.restricted, true);
+  } finally {
+    r.close();
+  }
+});
+
+test("Main's in-flight cancellation acts only on a reservation and restricts nothing (DR-DA2-24)", async () => {
+  const r = rig("abort-in-flight");
+  try {
+    await r.backend.initializeProfileEgress();
+    // No activation has started: nothing happens.
+    assert.equal(r.backend.profileActivationAbortInFlight(), false);
+    r.backend.mainOpenPrePublicationGate(PROFILE_ACTIVATION_GATE);
+    const previewed = await preview(r.backend);
+    const grantId = await issue(
+      r.backend,
+      previewed,
+      displayDigest(previewed.display, previewed.disclosureVersion),
+    );
+    // An issued grant is not a reservation either.
+    assert.equal(r.backend.profileActivationAbortInFlight(), false);
+    r.backend.profileActivationConsume(grantId, SENDER, WINDOW);
+    // Synchronous (no Promise), idempotent, and it closes or persists
+    // nothing: the profile stays unrestricted and no state file appears.
+    assert.equal(r.backend.profileActivationAbortInFlight(), true);
+    assert.equal(r.backend.profileActivationAbortInFlight(), true);
+    assert.equal(existsSync(r.statePath), false);
+    const egress = JSON.parse(await r.backend.initializeProfileEgress());
+    assert.equal(egress.restricted, false);
+    assert.equal(egress.unavailableReason, undefined);
+    // The activation itself still needs the commit, and only the commit.
+    const status = JSON.parse(await r.backend.profileActivationCommit());
+    assert.equal(status.restricted, true);
+    assert.equal(status.inFlightStopped, true);
+    assert.equal(r.backend.profileActivationAbortInFlight(), false);
   } finally {
     r.close();
   }

@@ -314,6 +314,21 @@ pub(crate) fn consume(
     Ok(())
 }
 
+/// Main's cancellation of in-flight AI work when its stage 2 or 3 fails
+/// (DR-DA2-24; ST2 review L-1). Only an activation's reservation lets it act:
+/// it then asks every kind of in-flight AI work to stop, synchronously, and
+/// returns `true`. Without a reservation it does nothing and returns `false`.
+/// It never waits, persists, clears a request, opens or closes admissions,
+/// or restricts the profile, so it is no way around the grant; calling it
+/// again repeats the same requests.
+pub(crate) fn abort_in_flight(state: &AppState) -> bool {
+    if !state.main_grant.registry.is_reserved() {
+        return false;
+    }
+    crate::request_profile_egress_stop(state);
+    true
+}
+
 /// Stages 4 and 5. The reservation's token is taken once; stage 4 re-checks
 /// the binding under the profile mutex and persists the restriction; stage 5
 /// runs the stop barrier within its bound. Only success ends the reservation.

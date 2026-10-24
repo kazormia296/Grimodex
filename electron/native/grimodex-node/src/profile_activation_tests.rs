@@ -970,6 +970,53 @@ async fn a_workspace_open_does_not_withdraw_an_unconfirmed_stop() {
     drop(stuck);
 }
 
+// DR-DA2-24 (ST2 review L-1): Main's cancellation after a stage 2 or 3
+// failure acts only on a reservation, asks every kind to stop, changes
+// nothing else and is idempotent.
+#[tokio::test]
+async fn abort_in_flight_needs_the_reservation() {
+    use std::sync::atomic::Ordering;
+    let rig = Rig::new("abort-in-flight");
+    rig.open_gate();
+    let chat = rig.state().chat_streams.register("chat-a").unwrap();
+    let inline = rig.state().inline_ai_streams.register("inline-b").unwrap();
+    let request = rig.waiting_legacy_request().await;
+    // No reservation: nothing is asked to stop.
+    assert!(!rig.backend.profile_activation_abort_in_flight());
+    assert!(!chat.abort_flag().load(Ordering::Acquire));
+    assert!(!inline.abort_flag().load(Ordering::Acquire));
+    assert!(!rig.state().post_effect_abort.abort_all_pending());
+    assert_eq!(rig.state().profile_egress.legacy_waiting_for_test(), 1);
+
+    rig.reserved().await;
+    let before = rig.state().profile_egress.status();
+    assert!(rig.backend.profile_activation_abort_in_flight());
+    assert!(chat.abort_flag().load(Ordering::Acquire));
+    assert!(inline.abort_flag().load(Ordering::Acquire));
+    assert!(rig.state().post_effect_abort.abort_all_pending());
+    assert_stopped_by_the_profile(stopped(request).await);
+    // Idempotent, and nothing else changed: still unrestricted and
+    // available, no state file, admissions open, the reservation held.
+    assert!(rig.backend.profile_activation_abort_in_flight());
+    let after = rig.state().profile_egress.status();
+    assert!(!after.restricted && after.unavailable_reason.is_none());
+    assert_eq!(after.caller_epoch, before.caller_epoch);
+    assert!(!rig.state_file().exists());
+    assert!(rig.state().profile_egress.begin_dispatch(None).is_ok());
+    assert!(rig.state().main_grant.registry.is_reserved());
+    rig.state().chat_streams.complete("chat-a", &chat);
+    rig.state().inline_ai_streams.complete("inline-b", &inline);
+
+    // A later commit still runs the whole activation; afterwards there is
+    // no reservation and the call does nothing again.
+    let status: serde_json::Value =
+        serde_json::from_str(&rig.backend.profile_activation_commit().await.unwrap()).unwrap();
+    assert_eq!(status["restricted"], true);
+    assert!(!rig.state().post_effect_abort.abort_all_pending());
+    assert!(!rig.backend.profile_activation_abort_in_flight());
+    assert!(!rig.state().post_effect_abort.abort_all_pending());
+}
+
 // D-3: no workspace is fine, a shutdown is not.
 #[tokio::test]
 async fn the_preview_refuses_while_the_app_shuts_down() {
