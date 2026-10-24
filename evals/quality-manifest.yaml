@@ -390,6 +390,28 @@ requirements:
       - src/features/editor/sceneMeta/bodyDeclaration/useSceneBodyDeclaration.ts
       - src/features/editor/sceneMeta/bodyDeclaration/SceneBodyDeclarationSection.tsx
       - src/features/editor/sceneMeta/bodyDeclaration/useUnsavedSceneEdits.ts
+      - electron/main/profileActivation.ts
+      - electron/main/profileActivationCiSeam.ts
+      - electron/main/aiStreamTerminals.ts
+      - electron/main/backend.ts
+      - electron/main/userData.ts
+      - electron/shared/profileEgressStatusWire.ts
+      - electron/native/grimodex-node/src/profile_activation.rs
+      - src/lib/profileEgressStatus.ts
+      - src/features/profile-egress/profileActivationAvailability.ts
+      - src/features/profile-egress/ProfileActivationGuidance.tsx
+      - src/features/profile-egress/ProfileActivationSettingsSection.tsx
+      - src/features/profile-egress/ProfileEgressStatusIndicator.tsx
+      - src/features/profile-egress/ProfileEgressStatusSlot.tsx
+      - src/features/profile-egress/profileEgressAiStop.ts
+      - src/features/profile-egress/profileEgressAiStopText.ts
+      - src/features/profile-egress/profileEgressTranslations.ts
+      - src/features/profile-egress/useProfileActivationRequest.ts
+      - src/features/profile-egress/useProfileEgressStatus.ts
+      - src/components/ApplicationDialogs.tsx
+      - src/application/chat/chatStoreSupport.ts
+      - src/features/chat/ChatPanel.tsx
+      - src/features/settings/categories/DataCategory.tsx
     lightTests:
       - electron/main/mainGrant.test.ts
       - electron/main/bodyDeclarationCiSeam.test.ts
@@ -461,6 +483,27 @@ requirements:
       - electron/main/d2aEgressRows.pipeline.spec.ts
       - electron/main/d2aOwnDataPaths.pipeline.spec.ts
       - electron/main/d2aOwnDataRead.pipeline.spec.ts
+      - electron/main/d2aActivation.pipeline.spec.ts
+      - electron/main/profileEgressStateFile.pipeline.spec.ts
+      - electron/main/profileActivation.test.ts
+      - electron/main/profileActivationCiSeam.test.ts
+      - electron/main/aiStreamTerminals.test.ts
+      - electron/main/backend.test.ts
+      - electron/main/userData.test.ts
+      - electron/shared/profileEgressStatusWire.test.ts
+      - electron/native/grimodex-node/src/profile_activation_tests.rs
+      - electron/native/grimodex-node/test/profile-activation.test.mjs
+      - src/lib/profileEgressStatus.electron.test.ts
+      - src/features/profile-egress/profileActivationAvailability.test.ts
+      - src/features/profile-egress/profileActivationMountPoints.static.test.ts
+      - src/features/profile-egress/ProfileActivationRequest.test.tsx
+      - src/features/profile-egress/ProfileEgressStatusIndicator.test.tsx
+      - src/features/profile-egress/ProfileEgressStatusSlot.test.tsx
+      - src/features/profile-egress/profileEgressAiStop.test.ts
+      - src/features/chat/ChatPanel.test.tsx
+      - src/features/chat/cliApi.test.ts
+      - src/features/chat/codexAppApi.test.ts
+      - src/features/settings/categories/DataCategory.test.tsx
       - vitest.electron-native.config.ts
       - electron/native/grimodex-node/test/egress-closure.test.mjs
       - electron/native/grimodex-node/test/own-data-read.test.mjs
