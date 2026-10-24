@@ -36,6 +36,8 @@ vi.mock("@/features/semantic-search/scheduler", () => ({
 }));
 
 import {
+  addMessage,
+  addSummary,
   clearProjectChatHistory,
   createSession,
   deleteMessage,
@@ -43,7 +45,10 @@ import {
   deleteSession,
   updateMessageMetadata,
 } from "./chatApi";
-import { updateSessionTitle } from "./chatHistoryApi";
+import {
+  updateSessionTitle,
+  updateSessionTitleIfAutomatic,
+} from "./chatHistoryApi";
 
 const WORKSPACE = { path: "/workspaces/novel", openRevision: 3 };
 const NOW = new Date("2026-10-24T09:00:00.000Z");
@@ -274,4 +279,41 @@ describe("CW typed writers in the restricted generic-SQL shape", () => {
     const [, args] = invokeMock.mock.calls.at(-1) as [string, { sql: string }];
     expect(args.sql).toMatch(/^insert into "chat_sessions".*returning/is);
   });
+
+  // The other AI-feature writes stay D too (DR-DA2B-R2): each is still its
+  // generic statement with RETURNING, refused restricted, and writes nothing.
+  it.each([
+    {
+      name: "addMessage",
+      write: () => addMessage("s1", "assistant", "late reply"),
+      statement: /^insert into "chat_messages".*returning/is,
+    },
+    {
+      name: "addSummary",
+      write: () => addSummary("s1", "summary", ["m1", "m2"]),
+      statement: /^insert into "chat_summaries".*returning/is,
+    },
+    {
+      name: "updateSessionTitleIfAutomatic",
+      write: () => updateSessionTitleIfAutomatic("s1", "AI title"),
+      statement: /^update "chat_sessions".*returning/is,
+    },
+  ])(
+    "keeps $name closed (D): the generic statement is refused and nothing is written",
+    async ({ write, statement }) => {
+      const before = await dump(typed);
+      const error: unknown = await write().then(
+        () => null,
+        (reason: unknown) => reason,
+      );
+      expect(isD2aEgressDenied(error)).toBe(true);
+      expect(typedCalls()).toEqual([]);
+      const [, args] = invokeMock.mock.calls.at(-1) as [
+        string,
+        { sql: string },
+      ];
+      expect(args.sql).toMatch(statement);
+      expect(await dump(typed)).toEqual(before);
+    },
+  );
 });
