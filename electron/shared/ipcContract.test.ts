@@ -11705,3 +11705,41 @@ describe("NIR-1 two-result command boundary", () => {
     expect(NAPI_COMMANDS).not.toHaveProperty("related_scenes_release_owner");
   });
 });
+
+describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
+  it("Main-only profile activation N-API is absent from NAPI_COMMANDS", () => {
+    const names = Object.keys(NAPI_COMMANDS);
+    for (const forbidden of [
+      "activate_profile_egress",
+      "profile_activation_preview",
+      "profile_activation_issue",
+      "profile_activation_consume",
+      "profile_activation_commit",
+      "main_open_pre_publication_gate",
+      "request_profile_activation",
+      "get_profile_egress_status",
+    ]) {
+      expect(names, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it("the request and the state are Main-processed commands; the state event is a Main event only", () => {
+    expect(SHELL_COMMAND_NAMES).toEqual(
+      expect.arrayContaining([
+        "request_profile_activation",
+        "get_profile_egress_status",
+      ]),
+    );
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain("profile-egress:state");
+    expect(
+      (BACKEND_EVENT_CHANNEL_ALLOWLIST as readonly string[]).includes(
+        "profile-egress:state",
+      ),
+    ).toBe(false);
+    expect(
+      (RENDERER_EVENT_CHANNEL_ALLOWLIST as readonly string[]).includes(
+        "profile-egress:state",
+      ),
+    ).toBe(false);
+  });
+});

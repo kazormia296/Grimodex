@@ -48,8 +48,10 @@ const {
   broadcastEvent,
   broadcastMainEvent,
   registerEventBus,
+  sendAiStreamTerminalToWindow,
   sendBackendEventToWindow,
   sendMainEventToWindow,
+  setBackendEventEgressGate,
 } = await import("./events.js");
 
 function makeBackend(): NapiBackendLike & {
@@ -419,6 +421,74 @@ describe("trusted event broadcast", () => {
       sendBackendEventToWindow(11, "codex-app:event", { requestId: 7 }),
     ).not.toThrow();
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("renderer gone"));
+  });
+});
+
+describe("DA-2 profile egress events (DR-DA2-9, DR-DA2-18)", () => {
+  const closedGate = {
+    allowsBackendEvent: () => false,
+  } as unknown as Parameters<typeof setBackendEventEgressGate>[0];
+
+  it("the state event is a main event: it reaches every window even while the gate drops backend events", () => {
+    const a = makeWindow(1);
+    const b = makeWindow(2);
+    allWindows.push(a, b);
+    setBackendEventEgressGate(closedGate);
+    try {
+      broadcastMainEvent("profile-egress:state", { state: "activating" });
+      // The backend path cannot carry it (not a backend channel).
+      broadcastBackendEvent("profile-egress:state", { state: "restricted" });
+    } finally {
+      setBackendEventEgressGate(null);
+    }
+    for (const win of [a, b]) {
+      expect(win.webContents.send).toHaveBeenCalledExactlyOnceWith(
+        IPC.event,
+        "profile-egress:state",
+        { state: "activating" },
+      );
+    }
+  });
+
+  it("a synthesized stream terminal reaches only its window although the gate drops stream channels", () => {
+    const owner = makeWindow(11);
+    const other = makeWindow(12);
+    allWindows.push(owner, other);
+    setBackendEventEgressGate(closedGate);
+    try {
+      const payload = {
+        streamId: "s-1",
+        message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+      };
+      sendAiStreamTerminalToWindow(11, "chat:stream-error", payload);
+      // The ordinary targeted path stays closed.
+      sendBackendEventToWindow(11, "chat:stream-error", payload);
+      expect(owner.webContents.send).toHaveBeenCalledExactlyOnceWith(
+        IPC.event,
+        "chat:stream-error",
+        payload,
+      );
+      expect(other.webContents.send).not.toHaveBeenCalled();
+    } finally {
+      setBackendEventEgressGate(null);
+    }
+  });
+
+  it("the terminal path refuses every channel other than the four terminals", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const owner = makeWindow(11);
+    allWindows.push(owner);
+    for (const channel of [
+      "chat:stream-chunk",
+      "chat:stream-done",
+      "cli:stream-chunk",
+      "post_effect:partial",
+      "profile-egress:state",
+    ]) {
+      sendAiStreamTerminalToWindow(11, channel, { streamId: "s" });
+    }
+    expect(owner.webContents.send).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalled();
   });
 });
 

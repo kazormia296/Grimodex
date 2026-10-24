@@ -560,3 +560,130 @@ describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * DA-2 ST2（K3/2 の X-1 と K3/3 の変える点 4、Negative (6)、P3-3、D-15。
+ * `docs/plans/nir1-lane-decisions/da2-decisions.md` の DR-DA2-10、11、17）。
+ */
+describe("DA-2: spellchecker、grant を伴わない activation、gate の entry、workspace の束縛", () => {
+  const REPO = path.resolve(MAIN_DIR, "../..");
+  /** The product's Main source: not the tests, not the pipeline specs. */
+  const productSources = (): Array<{ file: string; text: string }> =>
+    mainSources().filter(({ file }) => !/\.spec\./.test(file));
+
+  it("main never configures the spellchecker（言語、辞書の取得先、外部 service、webPreferences の spellcheck）", () => {
+    const pattern =
+      /\bsetSpellChecker(?:Languages|DictionaryDownloadURL|Enabled)\b|\baddWordToSpellCheckerDictionary\b|\bremoveWordFromSpellCheckerDictionary\b|\bspellcheck\s*:|\bspellCheckerEnabled\b/;
+    const preload = readdirSync(path.join(MAIN_DIR, "..", "preload"))
+      .filter((name) => /\.ts$/.test(name) && !/\.test\./.test(name))
+      .map((name) => ({
+        file: `../preload/${name}`,
+        text: readFileSync(path.join(MAIN_DIR, "..", "preload", name), "utf8"),
+      }));
+    const offenders = [...productSources(), ...preload]
+      .filter(({ text }) => pattern.test(stripComments(text)))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("grant を伴わない activation の method が index.d.ts と Main の型・source に残らない（Negative (6)）", () => {
+    const dts = readFileSync(
+      path.join(REPO, "electron/native/grimodex-node/index.d.ts"),
+      "utf8",
+    );
+    expect(dts).not.toMatch(/\bactivateProfileEgress\b/);
+    for (const method of [
+      "profileActivationPreview",
+      "profileActivationIssue",
+      "profileActivationConsume",
+      "profileActivationCommit",
+    ]) {
+      expect(dts, method).toMatch(new RegExp(`\\b${method}\\(`));
+    }
+    const contract = stripComments(
+      readFileSync(path.join(REPO, "electron/shared/ipcContract.ts"), "utf8"),
+    );
+    expect(contract).not.toMatch(/\bactivateProfileEgress\b/);
+    const offenders = productSources()
+      .filter(({ text }) =>
+        /\bactivateProfileEgress\b|\bactivateFirstRestrictedPublication\b/.test(
+          stripComments(text),
+        ),
+      )
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("Native の commit を呼ぶのは gate（profileEgress.ts）だけ、consume を呼ぶのは token を作る関数だけ", () => {
+    const callers = (pattern: RegExp): string[] =>
+      productSources()
+        .filter(({ text }) => pattern.test(stripComments(text)))
+        .map(({ file }) => file)
+        .sort();
+    expect(callers(/\.profileActivationCommit\b/)).toEqual(["profileEgress.ts"]);
+    // profileActivation.ts only checks the method is present.
+    expect(callers(/\bprofileActivationConsume\b/)).toEqual([
+      "profileActivation.ts",
+      "profileEgress.ts",
+    ]);
+    const consumeCalls = [
+      ...stripComments(
+        readFileSync(path.join(MAIN_DIR, "profileEgress.ts"), "utf8"),
+      ).matchAll(/profileActivationConsume\b/g),
+    ];
+    expect(consumeCalls.length).toBeGreaterThan(0);
+  });
+
+  it("mainOpenPrePublicationGate を呼ぶのは 2 つの seam だけで、wire の値はそれぞれの定数だけ（P3-3）", () => {
+    const calls = productSources().flatMap(({ file, text }) =>
+      [
+        ...stripComments(text).matchAll(
+          /\.mainOpenPrePublicationGate\s*\(\s*([^)]*)\)/g,
+        ),
+      ].map((match) => `${file}: ${match[1]?.trim()}`),
+    );
+    expect(calls.sort()).toEqual([
+      "bodyDeclarationCiSeam.ts: BODY_DECLARATION_CI_GATE_ENTRY",
+      "profileActivationCiSeam.ts: PROFILE_ACTIVATION_CI_GATE_ENTRY",
+    ]);
+    const body = readFileSync(
+      path.join(MAIN_DIR, "bodyDeclarationCiSeam.ts"),
+      "utf8",
+    );
+    expect(body).toMatch(
+      /export const BODY_DECLARATION_CI_GATE_ENTRY = "scene-body-declaration";/,
+    );
+    const profile = readFileSync(
+      path.join(MAIN_DIR, "profileActivationCiSeam.ts"),
+      "utf8",
+    );
+    expect(profile).toMatch(
+      /export const PROFILE_ACTIVATION_CI_GATE_ENTRY = "profile-activation";/,
+    );
+  });
+
+  it("main が束縛を観測する前に Native が workspace を束縛する経路が製品にない（D-15）", () => {
+    const binders =
+      /\.(openWorkspace|restoreBackup|restoreRecoveryCandidate|seedSampleWorkspace|importWebEditorWorkspace)\s*[(,)]/;
+    const offenders = productSources()
+      .filter(({ text }) => binders.test(stripComments(text)))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+    // They are reached through the router's NAPI_COMMANDS only.
+    const contract = stripComments(
+      readFileSync(path.join(REPO, "electron/shared/ipcContract.ts"), "utf8"),
+    );
+    for (const method of [
+      "openWorkspace",
+      "restoreBackup",
+      "restoreRecoveryCandidate",
+      "seedSampleWorkspace",
+      "importWebEditorWorkspace",
+    ]) {
+      expect(
+        [...contract.matchAll(new RegExp(`\\bb\\.${method}\\b`, "g"))].length,
+        method,
+      ).toBe(1);
+    }
+  });
+});
