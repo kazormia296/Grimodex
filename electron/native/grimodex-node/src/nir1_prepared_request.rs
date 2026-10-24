@@ -2253,9 +2253,10 @@ pub(crate) mod tests {
             );
             *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
             state.ws.lifecycle_core().set_ready(live_binding)?;
-            let status = state
-                .profile_egress
-                .activate_first_restricted_publication(true)?;
+            let status = state.profile_egress.activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )?;
             let workspace_locator = root.to_string_lossy().into_owned();
             state
                 .profile_egress
@@ -2367,9 +2368,10 @@ pub(crate) mod tests {
         );
         *state.ws.inner.lock().expect("workspace lock") = Some(ActiveWorkspace::new(authority));
         state.ws.lifecycle_core().set_ready(binding)?;
-        let status = state
-            .profile_egress
-            .activate_first_restricted_publication(true)?;
+        let status = state.profile_egress.activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            true,
+        )?;
         let workspace_locator = root.to_string_lossy().into_owned();
         state
             .profile_egress
@@ -7494,9 +7496,10 @@ pub(crate) mod tests {
         assert_eq!(read_counts(workspace.db().db())?, before);
         let legacy_dispatch = crate::begin_profile_egress_dispatch(&state, Some(&caller))?;
         drop(legacy_dispatch);
-        state
-            .profile_egress
-            .activate_first_restricted_publication(true)?;
+        state.profile_egress.activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            true,
+        )?;
         assert!(crate::begin_profile_egress_dispatch(&state, Some(&caller)).is_err());
 
         drop(workspace);
@@ -7516,7 +7519,10 @@ pub(crate) mod tests {
         let status = inactive
             .state
             .profile_egress
-            .activate_first_restricted_publication(true)?;
+            .activate_first_restricted_publication(
+                &crate::main_grant::ConsumedProfileActivation::for_test(),
+                true,
+            )?;
         let inactive_caller = CallerIdentity {
             profile_id: status.profile_id,
             caller_id: "restricted-main-caller".into(),

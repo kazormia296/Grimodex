@@ -560,3 +560,247 @@ describe("(f) NC-1 の閉じた集合（K3/3 の Negative (31)）", () => {
     expect(offenders).toEqual([]);
   });
 });
+
+/**
+ * DA-2 ST2（K3/2 の X-1 と K3/3 の変える点 4、Negative (6)、P3-3、D-15。
+ * `docs/plans/nir1-lane-decisions/da2-decisions.md` の DR-DA2-10、11、17）。
+ */
+describe("DA-2: spellchecker、grant を伴わない activation、gate の entry、workspace の束縛", () => {
+  const REPO = path.resolve(MAIN_DIR, "../..");
+  /** The product's Main source: not the tests, not the pipeline specs. */
+  const productSources = (): Array<{ file: string; text: string }> =>
+    mainSources().filter(({ file }) => !/\.spec\./.test(file));
+
+  it("main never configures the spellchecker（言語、辞書の取得先、外部 service、webPreferences の spellcheck）", () => {
+    const pattern =
+      /\bsetSpellChecker(?:Languages|DictionaryDownloadURL|Enabled)\b|\baddWordToSpellCheckerDictionary\b|\bremoveWordFromSpellCheckerDictionary\b|\bspellcheck\s*:|\bspellCheckerEnabled\b/;
+    const preload = readdirSync(path.join(MAIN_DIR, "..", "preload"))
+      .filter((name) => /\.ts$/.test(name) && !/\.test\./.test(name))
+      .map((name) => ({
+        file: `../preload/${name}`,
+        text: readFileSync(path.join(MAIN_DIR, "..", "preload", name), "utf8"),
+      }));
+    const offenders = [...productSources(), ...preload]
+      .filter(({ text }) => pattern.test(stripComments(text)))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("grant を伴わない activation の method が index.d.ts と Main の型・source に残らない（Negative (6)）", () => {
+    const dts = readFileSync(
+      path.join(REPO, "electron/native/grimodex-node/index.d.ts"),
+      "utf8",
+    );
+    expect(dts).not.toMatch(/\bactivateProfileEgress\b/);
+    for (const method of [
+      "profileActivationPreview",
+      "profileActivationIssue",
+      "profileActivationConsume",
+      "profileActivationCommit",
+      "profileActivationAbortInFlight",
+    ]) {
+      expect(dts, method).toMatch(new RegExp(`\\b${method}\\(`));
+    }
+    const contract = stripComments(
+      readFileSync(path.join(REPO, "electron/shared/ipcContract.ts"), "utf8"),
+    );
+    expect(contract).not.toMatch(/\bactivateProfileEgress\b/);
+    const offenders = productSources()
+      .filter(({ text }) =>
+        /\bactivateProfileEgress\b|\bactivateFirstRestrictedPublication\b/.test(
+          stripComments(text),
+        ),
+      )
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+  });
+
+  it("Native の commit を呼ぶのは gate（profileEgress.ts）だけ、consume を呼ぶのは token を作る関数だけ", () => {
+    const callers = (pattern: RegExp): string[] =>
+      productSources()
+        .filter(({ text }) => pattern.test(stripComments(text)))
+        .map(({ file }) => file)
+        .sort();
+    expect(callers(/\.profileActivationCommit\b/)).toEqual([
+      "profileEgress.ts",
+    ]);
+    // profileActivation.ts only checks the method is present.
+    expect(callers(/\bprofileActivationConsume\b/)).toEqual([
+      "profileActivation.ts",
+      "profileEgress.ts",
+    ]);
+    const consumeCalls = [
+      ...stripComments(
+        readFileSync(path.join(MAIN_DIR, "profileEgress.ts"), "utf8"),
+      ).matchAll(/profileActivationConsume\b/g),
+    ];
+    expect(consumeCalls.length).toBeGreaterThan(0);
+    // DR-DA2-24 / L-1: only the gate asks Native to stop the AI in flight.
+    expect(callers(/\bprofileActivationAbortInFlight\b/)).toEqual([
+      "profileEgress.ts",
+    ]);
+  });
+
+  it("the gate asks Native to stop the AI in flight before the unavailable notice, outside stages 4 and 5 (L-1)", () => {
+    const source = stripComments(
+      readFileSync(path.join(MAIN_DIR, "profileEgress.ts"), "utf8"),
+    );
+    // The one call site wraps the N-API; the activation's catch calls it.
+    expect([
+      ...source.matchAll(/backend\.profileActivationAbortInFlight!\(\)/g),
+    ]).toHaveLength(1);
+    const begin = source.indexOf("  beginProfileActivation(");
+    const end = source.indexOf("  private requestNativeInFlightAbort(");
+    expect(begin).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(begin);
+    const body = source.slice(begin, end);
+    const abort = body.indexOf(
+      "if (!commitRequested) this.requestNativeInFlightAbort();",
+    );
+    const notice = body.indexOf(
+      'const view: ProfileEgressStatusView = { state: "unavailable", reason };',
+    );
+    expect(abort).toBeGreaterThan(0);
+    expect(notice).toBeGreaterThan(abort);
+    expect(body.indexOf("commitRequested = true;")).toBeLessThan(
+      body.indexOf("raw = await commit();"),
+    );
+  });
+
+  it("index.ts wires the gate's DA-2 members (R-4)", () => {
+    const index = stripComments(
+      readFileSync(path.join(MAIN_DIR, "index.ts"), "utf8"),
+    ).replace(/\s+/g, " ");
+    for (const wiring of [
+      // The notices of stage 2, stage 6 and unavailable.
+      "profileEgress.onStatusChange( createProfileEgressStatusNotifier({ resetWindowTitles, terminateAiStreams: () => aiStreamTerminals.terminateAll(), disposeLicenseValidation: () => licenseValidation.dispose(), broadcast: broadcastMainEvent, }), );",
+      "createAiStreamTerminalTracker({ send: sendAiStreamTerminalToWindow, });",
+      // L-3: the quit reaches the gate.
+      'app.on("will-quit", (event) => { profileEgress.noteAppQuitting(); void quitFinalizer(event); });',
+      // R-7: the closed reason of a Backend that could not be built.
+      "createProfileEgressGate(initializedBackend, { backendConstructionFailure: initializedBackend ? null : getBackendConstructionFailure(), });",
+      // The request controller and the router.
+      "createProfileActivationController({ backend, gate: profileEgress, inFlight: mainGrantInFlight, confirm: profileActivationCiSeam?.confirm, });",
+      "mainGrant, profileActivation, aiStreamTerminals, );",
+      // R-3: the seam refuses the ordinary data directories.
+      "defaultUserDataDirs: defaultUserDataDirectoriesForApp(app),",
+    ]) {
+      expect(index, wiring).toContain(wiring);
+    }
+    // The product gate's members are required: no optional call on them.
+    expect(index).not.toMatch(
+      /profileEgress\.(?:onStatusChange|statusView|beginProfileActivation|isIssuedCallerIdentity|noteAppQuitting)\?\./,
+    );
+  });
+
+  /**
+   * Every reference of the gate-opening N-API, by line. The `typeof` check
+   * and the `Pick<NapiBackendLike, …>` type are named as such; any other
+   * reference (a call in any form, `?.(`, `.call(`, `["…"](`, an alias) is
+   * kept as written, so only the two seams' exact calls pass (R-1).
+   */
+  const gateOpenReferences = (
+    sources: ReadonlyArray<{ file: string; text: string }>,
+  ): string[] =>
+    sources.flatMap(({ file, text }) =>
+      stripComments(text)
+        .split("\n")
+        .filter((line) => /\bmainOpenPrePublicationGate\b/.test(line))
+        .map((line) => {
+          const trimmed = line.trim();
+          if (
+            /^if \(typeof backend\?\.mainOpenPrePublicationGate !== "function"\) return null;$/.test(
+              trimmed,
+            )
+          ) {
+            return `${file}: typeof-check`;
+          }
+          if (
+            /^readonly backend: Pick<NapiBackendLike, "mainOpenPrePublicationGate"> \| null;$/.test(
+              trimmed,
+            )
+          ) {
+            return `${file}: type`;
+          }
+          return `${file}: ${trimmed}`;
+        }),
+    );
+
+  it("mainOpenPrePublicationGate を呼ぶのは 2 つの seam だけで、wire の値はそれぞれの定数だけ（P3-3、R-1）", () => {
+    expect(gateOpenReferences(productSources()).sort()).toEqual([
+      "bodyDeclarationCiSeam.ts: backend.mainOpenPrePublicationGate(BODY_DECLARATION_CI_GATE_ENTRY);",
+      "bodyDeclarationCiSeam.ts: type",
+      "bodyDeclarationCiSeam.ts: typeof-check",
+      "profileActivationCiSeam.ts: backend.mainOpenPrePublicationGate(PROFILE_ACTIVATION_CI_GATE_ENTRY);",
+      "profileActivationCiSeam.ts: type",
+      "profileActivationCiSeam.ts: typeof-check",
+    ]);
+    const body = readFileSync(
+      path.join(MAIN_DIR, "bodyDeclarationCiSeam.ts"),
+      "utf8",
+    );
+    expect(body).toMatch(
+      /export const BODY_DECLARATION_CI_GATE_ENTRY = "scene-body-declaration";/,
+    );
+    const profile = readFileSync(
+      path.join(MAIN_DIR, "profileActivationCiSeam.ts"),
+      "utf8",
+    );
+    expect(profile).toMatch(
+      /export const PROFILE_ACTIVATION_CI_GATE_ENTRY = "profile-activation";/,
+    );
+  });
+
+  it("the gate-opening check catches the call forms that a `.name(` pattern misses (R-1)", () => {
+    for (const evasion of [
+      'backend?.mainOpenPrePublicationGate?.("profile-activation");',
+      'backend.mainOpenPrePublicationGate.call(backend, "profile-activation");',
+      'backend["mainOpenPrePublicationGate"]("profile-activation");',
+      "const open = backend.mainOpenPrePublicationGate;",
+    ]) {
+      expect(
+        gateOpenReferences([{ file: "other.ts", text: evasion }]),
+        evasion,
+      ).toEqual([`other.ts: ${evasion}`]);
+      // Inside a seam file too, an extra form is kept as written, so the
+      // exact list above no longer matches.
+      expect(
+        gateOpenReferences([
+          { file: "profileActivationCiSeam.ts", text: evasion },
+        ]),
+        evasion,
+      ).toEqual([`profileActivationCiSeam.ts: ${evasion}`]);
+    }
+    // A comment is not a reference.
+    expect(
+      gateOpenReferences([
+        { file: "other.ts", text: "// mainOpenPrePublicationGate(x)" },
+      ]),
+    ).toEqual([]);
+  });
+
+  it("main が束縛を観測する前に Native が workspace を束縛する経路が製品にない（D-15）", () => {
+    const binders =
+      /\.(openWorkspace|restoreBackup|restoreRecoveryCandidate|seedSampleWorkspace|importWebEditorWorkspace)\s*[(,)]/;
+    const offenders = productSources()
+      .filter(({ text }) => binders.test(stripComments(text)))
+      .map(({ file }) => file);
+    expect(offenders).toEqual([]);
+    // They are reached through the router's NAPI_COMMANDS only.
+    const contract = stripComments(
+      readFileSync(path.join(REPO, "electron/shared/ipcContract.ts"), "utf8"),
+    );
+    for (const method of [
+      "openWorkspace",
+      "restoreBackup",
+      "restoreRecoveryCandidate",
+      "seedSampleWorkspace",
+      "importWebEditorWorkspace",
+    ]) {
+      expect(
+        [...contract.matchAll(new RegExp(`\\bb\\.${method}\\b`, "g"))].length,
+        method,
+      ).toBe(1);
+    }
+  });
+});

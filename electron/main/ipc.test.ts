@@ -17,6 +17,7 @@ import {
   createProfileEgressGate,
   D2A_EGRESS_DENIED_MARKER,
 } from "./profileEgress.js";
+import { activateGateForTest } from "./profileActivation.test.support.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
@@ -2949,12 +2950,12 @@ describe("NIR-1 router sender binding", () => {
       resolveReader = resolve;
     });
     const narrativeExtractionClaimTask = vi.fn(() => readerResponse);
-    const activateProfileEgress = vi.fn(async () =>
+    const profileActivationCommit = vi.fn(async () =>
       JSON.stringify(activatedStatus),
     );
     const backend = {
       initializeProfileEgress: vi.fn(async () => JSON.stringify(initialStatus)),
-      activateProfileEgress,
+      profileActivationCommit,
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
       narrativeExtractionClaimTask,
@@ -2998,10 +2999,10 @@ describe("NIR-1 router sender binding", () => {
       expect(narrativeExtractionClaimTask).toHaveBeenCalledOnce(),
     );
 
-    const activation = profileEgress.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(profileEgress);
     await vi.waitFor(() => expect(drain).toHaveBeenCalledOnce());
     expect(profileEgress.restricted).toBe(true);
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    expect(profileActivationCommit).not.toHaveBeenCalled();
 
     resolveReader(JSON.stringify({ secret: "D2A_PLAINTEXT_SENTINEL" }));
     const envelope = await pendingReader;
@@ -4141,5 +4142,220 @@ describe("NIR-1 router sender binding", () => {
       settle: "used",
     });
     expect(graph[2]?.[0]).not.toBe(owner);
+  });
+});
+
+describe("DA-2 profile activation commands and stream terminals (DR-DA2-9, -16, -18)", () => {
+  const identity = {
+    profileId: "profile-1",
+    callerId: "main-caller-1",
+    callerEpoch: 2,
+    senderId: 42,
+    workspaceId: null,
+    sessionId: "session-1",
+  };
+  const fakeGate = (overrides: Record<string, unknown> = {}) => ({
+    restricted: true,
+    unavailable: true,
+    issueCallerIdentity: vi.fn(() => identity),
+    // A failed caller registration: every non-stop command is refused here.
+    assertInvoke: vi.fn(() => {
+      throw new Error("D2A_EGRESS_DENIED: unclassified: caller registration failed");
+    }),
+    assertPlaintextPublication: vi.fn(),
+    allowsBackendEvent: vi.fn(() => false),
+    assertExternalUrl: vi.fn(),
+    registerMainEgressParticipant: vi.fn(),
+    statusView: vi.fn(() => ({
+      state: "unavailable",
+      reason: "barrier-timeout",
+    })),
+    ...overrides,
+  });
+
+  it("answers the state before the invoke check, also while unavailable or after a failed registration, without Native", async () => {
+    const backend = { dbExecute: vi.fn() } as unknown as NapiBackendLike;
+    const profileEgress = fakeGate();
+    registerIpcRouter(
+      backend,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress as never,
+    );
+    const envelope = await invokeHandler()(
+      { sender: { id: 42 } },
+      "get_profile_egress_status",
+      { anything: "ignored" },
+    );
+    expect(envelope).toEqual({
+      ok: true,
+      value: { state: "unavailable", reason: "barrier-timeout" },
+    });
+    expect(profileEgress.assertInvoke).not.toHaveBeenCalled();
+    expect(JSON.stringify(envelope)).not.toContain("profile-1");
+  });
+
+  it("hands the request to Main's controller with the sender, its window and the issued identity; nothing reaches Native", async () => {
+    const backend = {
+      dbExecute: vi.fn(),
+      profileActivationPreview: vi.fn(),
+    } as unknown as NapiBackendLike;
+    const profileEgress = fakeGate({ unavailable: false, restricted: false });
+    const request = vi.fn(async () => ({ status: "not-activated" as const }));
+    registerIpcRouter(
+      backend,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress as never,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { request },
+    );
+    const sender = { id: 42 };
+    const envelope = await invokeHandler()(
+      { sender },
+      "request_profile_activation",
+      { grantId: "renderer-forged", previewId: "renderer-forged" },
+    );
+    expect(envelope).toEqual({ ok: true, value: { status: "not-activated" } });
+    expect(request).toHaveBeenCalledExactlyOnceWith({
+      sender,
+      win: null,
+      callerIdentity: identity,
+    });
+    expect(profileEgress.assertInvoke).not.toHaveBeenCalled();
+    expect(
+      (backend as unknown as { profileActivationPreview: ReturnType<typeof vi.fn> })
+        .profileActivationPreview,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("without a controller the request is unavailable", async () => {
+    registerIpcRouter(
+      {} as unknown as NapiBackendLike,
+      {},
+      undefined,
+      undefined,
+      { active: false },
+      fakeGate() as never,
+    );
+    await expect(
+      invokeHandler()({ sender: { id: 42 } }, "request_profile_activation", {}),
+    ).resolves.toEqual({ ok: true, value: { status: "unavailable" } });
+  });
+
+  it("records an admitted stream until its invoke settles", async () => {
+    let finish!: () => void;
+    const sendChatMessageStream = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const release = vi.fn();
+    const track = vi.fn(
+      (_senderId: number, _command: string, _args: unknown) => release,
+    );
+    registerIpcRouter(
+      { sendChatMessageStream } as unknown as NapiBackendLike,
+      {},
+      { resolveApiKeyForRequest: () => "k", getApiKeyForRequest: () => "k" } as never,
+      undefined,
+      { active: false },
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { track, terminateAll: vi.fn() },
+    );
+    const pending = invokeHandler()(
+      { sender: { id: 42 } },
+      "send_chat_message_stream",
+      { streamId: "s-1" },
+    );
+    await vi.waitFor(() => expect(track).toHaveBeenCalledOnce());
+    expect(track.mock.calls[0]?.[0]).toBe(42);
+    expect(track.mock.calls[0]?.[1]).toBe("send_chat_message_stream");
+    expect(release).not.toHaveBeenCalled();
+    finish?.();
+    await pending;
+    expect(release).toHaveBeenCalledOnce();
+  });
+
+  it("does not return a legacy AI result completed after stage 2 (Negative (15))", async () => {
+    const initialStatus = {
+      profileId: "profile-1",
+      callerEpoch: 4,
+      restricted: false,
+      handlesInvalidated: false,
+      inFlightStopped: true,
+      sqlPolicy: nativeSqlPolicyV2(),
+    };
+    let resolveReply!: (value: unknown) => void;
+    // A legacy AI route served by Main (old-external-ai): its result settles
+    // after stage 2.
+    const detectCliBinary = vi.fn(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveReply = resolve;
+        }),
+    );
+    let releaseCommit!: (value: string) => void;
+    const backend = {
+      initializeProfileEgress: vi.fn(async () => JSON.stringify(initialStatus)),
+      registerProfileEgressCaller: vi.fn(),
+      invalidateProfileEgressCallers: vi.fn(),
+      profileActivationCommit: vi.fn(
+        () =>
+          new Promise<string>((resolve) => {
+            releaseCommit = resolve;
+          }),
+      ),
+    };
+    const profileEgress = await createProfileEgressGate(
+      backend as unknown as NapiBackendLike,
+    );
+    registerIpcRouter(
+      backend as unknown as NapiBackendLike,
+      { detect_cli_binary: detectCliBinary } as never,
+      undefined,
+      undefined,
+      { active: false },
+      profileEgress,
+    );
+    const pending = invokeHandler()(
+      { sender: { id: 42 } },
+      "detect_cli_binary",
+      { cli: "codex" },
+    );
+    await vi.waitFor(() => expect(detectCliBinary).toHaveBeenCalledOnce());
+    const activation = activateGateForTest(profileEgress);
+    resolveReply({ path: "/D2A_PLAINTEXT_SENTINEL/codex" });
+    const envelope = await pending;
+    expect(envelope.ok).toBe(false);
+    if (!envelope.ok) {
+      expect(envelope.error).toMatch(/^D2A_EGRESS_DENIED: old-external-ai/u);
+      expect(envelope.error).not.toContain("D2A_PLAINTEXT_SENTINEL");
+    }
+    await vi.waitFor(() =>
+      expect(backend.profileActivationCommit).toHaveBeenCalledOnce(),
+    );
+    releaseCommit(
+      JSON.stringify({
+        ...initialStatus,
+        callerEpoch: 5,
+        restricted: true,
+        handlesInvalidated: true,
+      }),
+    );
+    await expect(activation).resolves.toEqual({ state: "restricted" });
   });
 });

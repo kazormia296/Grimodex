@@ -11705,3 +11705,78 @@ describe("NIR-1 two-result command boundary", () => {
     expect(NAPI_COMMANDS).not.toHaveProperty("related_scenes_release_owner");
   });
 });
+
+describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
+  it("Main-only profile activation N-API is absent from NAPI_COMMANDS", () => {
+    const names = Object.keys(NAPI_COMMANDS);
+    for (const forbidden of [
+      "activate_profile_egress",
+      "profile_activation_preview",
+      "profile_activation_issue",
+      "profile_activation_consume",
+      "profile_activation_commit",
+      "profile_activation_abort_in_flight",
+      "main_open_pre_publication_gate",
+      "request_profile_activation",
+      "get_profile_egress_status",
+    ]) {
+      expect(names, forbidden).not.toContain(forbidden);
+    }
+  });
+
+  it("no NAPI_COMMANDS entry calls a Main-only N-API (R-2)", () => {
+    const source = readFileSync(
+      new URL("./ipcContract.ts", import.meta.url),
+      "utf8",
+    )
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+    const start = source.indexOf("export const NAPI_COMMANDS");
+    const end = source.indexOf("\n};\n", start);
+    expect(start).toBeGreaterThan(0);
+    expect(end).toBeGreaterThan(start);
+    const body = source.slice(start, end);
+    const MAIN_ONLY =
+      "profileActivation\\w+|mainOpenPrePublicationGate|mainGrant(?:Preview|Issue|Revoke\\w*)";
+    // A call through the backend argument in any form.
+    expect(
+      [
+        ...body.matchAll(
+          new RegExp(`\\bb\\s*(?:\\?\\.|\\.)\\s*(?:${MAIN_ONLY})\\b`, "g"),
+        ),
+      ].map((match) => match[0]),
+    ).toEqual([]);
+    // Nor by name (`b["…"]`, `requireMethod(…, "…")`).
+    expect(
+      [...body.matchAll(new RegExp(`["'\`](?:${MAIN_ONLY})["'\`]`, "g"))].map(
+        (match) => match[0],
+      ),
+    ).toEqual([]);
+    // In the whole contract, the Main-only names appear only as optional
+    // members of NapiBackendLike (`name?(`), never as a use.
+    const uses = [
+      ...source.matchAll(new RegExp(`\\b(?:${MAIN_ONLY})\\b(?!\\?\\()`, "g")),
+    ].map((match) => match[0]);
+    expect(uses).toEqual([]);
+  });
+
+  it("the request and the state are Main-processed commands; the state event is a Main event only", () => {
+    expect(SHELL_COMMAND_NAMES).toEqual(
+      expect.arrayContaining([
+        "request_profile_activation",
+        "get_profile_egress_status",
+      ]),
+    );
+    expect(MAIN_EVENT_CHANNEL_ALLOWLIST).toContain("profile-egress:state");
+    expect(
+      (BACKEND_EVENT_CHANNEL_ALLOWLIST as readonly string[]).includes(
+        "profile-egress:state",
+      ),
+    ).toBe(false);
+    expect(
+      (RENDERER_EVENT_CHANNEL_ALLOWLIST as readonly string[]).includes(
+        "profile-egress:state",
+      ),
+    ).toBe(false);
+  });
+});

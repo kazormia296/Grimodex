@@ -147,10 +147,42 @@ export interface MainGrantController {
   run(context: MainGrantRunContext): Promise<Envelope>;
 }
 
+/**
+ * Main's record that a confirmation is in flight (DSN §7.2 "Main の記録と
+ * Native の slot の両方"). One per process, shared by every controller that
+ * shows a grant dialog (MG-1 and the profile activation, P3-2): the second
+ * confirmation of any kind is refused with busy, never queued.
+ */
+export interface MainGrantInFlight {
+  /** true when acquired; false when another confirmation holds it. */
+  tryAcquire(): boolean;
+  release(): void;
+  readonly held: boolean;
+}
+
+export function createMainGrantInFlight(): MainGrantInFlight {
+  let held = false;
+  return {
+    tryAcquire(): boolean {
+      if (held) return false;
+      held = true;
+      return true;
+    },
+    release(): void {
+      held = false;
+    },
+    get held(): boolean {
+      return held;
+    },
+  };
+}
+
 export interface MainGrantControllerOptions {
   readonly backend: NapiBackendLike | null;
   /** Replaces only the dialog's display and button press (the CI seam). */
   readonly confirm?: MainGrantConfirm;
+  /** Shared with the profile activation controller; one per process. */
+  readonly inFlight?: MainGrantInFlight;
 }
 
 const DIALOG_TITLE = "本文の開示の宣言";
@@ -181,7 +213,7 @@ export async function showMainGrantDialog(
   return response === 1;
 }
 
-function canonicalJson(value: unknown): string {
+export function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map((entry) => canonicalJson(entry)).join(",")}]`;
   }
@@ -195,7 +227,7 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-function sha256Hex(text: string): string {
+export function sha256Hex(text: string): string {
   return createHash("sha256").update(text, "utf8").digest("hex");
 }
 
@@ -204,7 +236,7 @@ function failure(error: string): Envelope {
 }
 
 const NATIVE_CODE =
-  /(NEX_BODY_DECLARATION_REFUSED:[a-z0-9-]+|MAIN_GRANT_[A-Z_]+|D2A_EGRESS_DENIED[^\n]*|IPC_[A-Z_]+)/u;
+  /(NEX_BODY_DECLARATION_REFUSED:[a-z0-9-]+|PROFILE_ACTIVATION_REFUSED:[a-z0-9-]+|PROFILE_EGRESS_UNAVAILABLE:[a-z0-9-]+|MAIN_GRANT_[A-Z_]+|D2A_EGRESS_DENIED[^\n]*|IPC_[A-Z_]+)/u;
 
 /**
  * Keeps only the closed code of a Native refusal. Nothing else of the message
@@ -234,7 +266,7 @@ export function createMainGrantController(
 ): MainGrantController {
   const confirm = options.confirm ?? showMainGrantDialog;
   /** At most one confirmation for the whole process, whatever its kind. */
-  let inFlight = false;
+  const inFlight = options.inFlight ?? createMainGrantInFlight();
 
   return {
     async run(context: MainGrantRunContext): Promise<Envelope> {
@@ -244,7 +276,7 @@ export function createMainGrantController(
       const kind = GRANT_KIND_BY_COMMAND[context.command];
       const backend = options.backend;
       const { sender, win } = context;
-      if (inFlight) return failure(MAIN_GRANT_BUSY);
+      if (inFlight.held) return failure(MAIN_GRANT_BUSY);
       if (
         !backend?.mainGrantPreview ||
         !backend.mainGrantIssue ||
@@ -256,7 +288,7 @@ export function createMainGrantController(
       if (sender.isDestroyed() || !win || win.isDestroyed()) {
         return failure(MAIN_GRANT_SENDER_UNAVAILABLE);
       }
-      inFlight = true;
+      if (!inFlight.tryAcquire()) return failure(MAIN_GRANT_BUSY);
 
       const preview = backend.mainGrantPreview.bind(backend);
       const issue = backend.mainGrantIssue.bind(backend);
@@ -399,7 +431,7 @@ export function createMainGrantController(
         sender.removeListener("render-process-gone", onSenderGone);
         sender.removeListener("did-start-navigation", onNavigation);
         win.removeListener("closed", onWindowClosed);
-        inFlight = false;
+        inFlight.release();
       }
     },
   };

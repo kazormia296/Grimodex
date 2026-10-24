@@ -325,8 +325,15 @@ pub(crate) fn state(
 
 // ───────────────────────── Main-only grant calls ─────────────────────────
 
+/// The kinds this generic preview serves. A `profile-activation` preview has
+/// its own entry (`profile_activation::preview`, DR-DA2-3) and is refused here.
 fn parse_kind(kind: &str) -> Result<MainGrantKind, AppError> {
-    MainGrantKind::parse(kind).ok_or_else(|| AppError::Anyhow(anyhow!("MAIN_GRANT_KIND")))
+    match MainGrantKind::parse(kind) {
+        Some(kind @ MainGrantKind::BodyDeclaration) => Ok(kind),
+        Some(MainGrantKind::ProfileActivation) | None => {
+            Err(AppError::Anyhow(anyhow!("MAIN_GRANT_KIND")))
+        }
+    }
 }
 
 /// Reads the Scene and stores a preview. Returns the dialog text Native built,
@@ -411,7 +418,10 @@ pub(crate) fn grant_issue(
         .begin_issue(preview_id, sender_id, window_id)
         .or_else(grant_error)?;
     let reread = || -> Result<String, AppError> {
-        let GrantPayload::BodyDeclaration(payload) = &ticket.payload;
+        let GrantPayload::BodyDeclaration(payload) = &ticket.payload else {
+            // A profile-activation preview is issued by its own entry.
+            return grant_error(GrantRefusal::WrongKind);
+        };
         require_gate(state, PrePublicationEntry::SceneBodyDeclaration)?;
         let (binding, revision) = ready_lifecycle(state)?;
         let workspace = open_workspace(state, &payload.expected_workspace_path)?;

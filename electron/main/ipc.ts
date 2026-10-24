@@ -59,6 +59,12 @@ import {
   type MainGrantController,
 } from "./mainGrant.js";
 import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
+import type { ProfileActivationController } from "./profileActivation.js";
+import type { AiStreamTerminalTracker } from "./aiStreamTerminals.js";
+import {
+  PROFILE_ACTIVATION_REQUEST_COMMAND,
+  PROFILE_EGRESS_STATUS_COMMAND,
+} from "../shared/profileEgressStatusWire.js";
 import type {
   MainIssuedCallerIdentity,
   ProfileEgressGate,
@@ -2102,6 +2108,8 @@ export function registerIpcRouter(
     "quiesceForWorkspaceSwitch"
   >,
   mainGrant?: MainGrantController,
+  profileActivation?: ProfileActivationController,
+  aiStreamTerminals?: AiStreamTerminalTracker,
 ): void {
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
@@ -2196,6 +2204,31 @@ export function registerIpcRouter(
               configurable: true,
             })
           : rendererSafeArgs;
+        // DA-2 (DR-DA2-9, DR-DA2-16): Main answers these two itself, before
+        // the invoke check, with closed codes only; they never reach Native.
+        // The state also answers while unavailable or after a failed caller
+        // registration.
+        if (cmd === PROFILE_EGRESS_STATUS_COMMAND) {
+          return {
+            ok: true,
+            value: profileEgress?.statusView?.() ?? {
+              state: "unavailable",
+              reason: "backend-unavailable",
+            },
+          };
+        }
+        if (cmd === PROFILE_ACTIVATION_REQUEST_COMMAND) {
+          return {
+            ok: true,
+            value: profileActivation
+              ? await profileActivation.request({
+                  sender: event.sender,
+                  win,
+                  callerIdentity,
+                })
+              : { status: "unavailable" },
+          };
+        }
         try {
           profileEgress?.assertInvoke(cmd, dispatchArgs);
         } catch (error) {
@@ -2219,21 +2252,30 @@ export function registerIpcRouter(
             });
           }
         }
-        const dispatch = (args = dispatchArgs): Promise<Envelope> =>
-          dispatchInvoke(cmd, args, {
-            backend,
-            shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
-            secrets,
-            broadcast,
-            issueAgentAuthorityCapabilities: (agentArgs, response) =>
-              issueAgentAuthorityCapabilitiesForSender(
-                event.sender.id,
-                agentArgs,
-                response,
-                backend,
-                callerIdentity,
-              ),
-          });
+        const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
+          // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
+          // settles, so stage 2 can send it a typed terminal.
+          const releaseStream =
+            aiStreamTerminals?.track(event.sender.id, cmd, args) ?? null;
+          try {
+            return await dispatchInvoke(cmd, args, {
+              backend,
+              shell: { ...buildShellCommandHandlers(win), ...injectedHandlers },
+              secrets,
+              broadcast,
+              issueAgentAuthorityCapabilities: (agentArgs, response) =>
+                issueAgentAuthorityCapabilitiesForSender(
+                  event.sender.id,
+                  agentArgs,
+                  response,
+                  backend,
+                  callerIdentity,
+                ),
+            });
+          } finally {
+            releaseStream?.();
+          }
+        };
         let envelope: Envelope;
         let manualMaintenanceAttemptId: string | null = null;
         try {

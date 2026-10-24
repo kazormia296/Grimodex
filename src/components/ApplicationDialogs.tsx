@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 
 import { EulaConsentDialog } from "@/features/legal/EulaConsentDialog";
+import { ProfileEgressStatusSlot } from "@/features/profile-egress/ProfileEgressStatusSlot";
 import { useReleaseNotesStore } from "@/features/release-notes/releaseNotesStore";
 import { useWorkspaceStore } from "@/features/workspace/store";
 import { useDebugLogStore } from "@/lib/debugLog";
@@ -71,6 +72,8 @@ export function ApplicationDialogs({
           <DebugLogViewer />
         </Suspense>
       )}
+      {/* NIR-1 DA-2 ST3: nothing while PROFILE_ACTIVATION_UI_ENABLED is off. */}
+      <ProfileEgressStatusSlot />
     </>
   );
 }

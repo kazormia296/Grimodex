@@ -1,5 +1,6 @@
-import { useEffect, useMemo } from "react";
+import { Suspense, lazy, useEffect, useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import { debugLog } from "@/lib/debugLog";
 import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
 import { requestNir1EvidenceNavigation } from "./nir1EvidenceNavigation";
@@ -12,6 +13,15 @@ import { ensureNir1GraphTranslations } from "./nir1GraphTranslations";
 import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
 
 ensureNir1GraphTranslations();
+
+// The `profile-not-restricted` guidance (K3/2 T-1; NIR-1 DA-2 ST3,
+// DR-DA2-33) is its own lazy chunk, requested only while the activation UI
+// constant is on. A chunk that fails to load draws nothing.
+const ProfileActivationGuidance = /* @__PURE__ */ lazy(() =>
+  import("@/features/profile-egress/ProfileActivationGuidance").catch(() => ({
+    default: () => null,
+  })),
+);
 
 interface Props {
   readonly fetch: Nir1RelatedScenesFetchResult;
@@ -122,8 +132,16 @@ export default function Nir1GraphRelatedScenes({ fetch, querySceneId }: Props) {
       });
   }, [attachments, fusion]);
   const restart = fetch.graphOutcome === "graph-unavailable:restart-required";
+  const profileNotRestricted =
+    PROFILE_ACTIVATION_UI_ENABLED &&
+    fetch.graphOutcome === "graph-unavailable:profile-not-restricted";
   return (
     <>
+      {profileNotRestricted && (
+        <Suspense fallback={null}>
+          <ProfileActivationGuidance />
+        </Suspense>
+      )}
       {restart && (
         <p
           role="status"

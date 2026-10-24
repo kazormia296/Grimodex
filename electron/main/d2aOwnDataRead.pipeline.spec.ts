@@ -122,6 +122,12 @@ interface Rig {
     ReturnType<(typeof import("./profileEgress.js"))["createProfileEgressGate"]>
   >;
   open: boolean;
+  /**
+   * The activation through Main's product path (DA-2): the entry is opened
+   * the way the journey seam opens it, then preview → approved dialog →
+   * issue → consume → stages 2 to 7. Resolves when `activated`.
+   */
+  activate: () => Promise<void>;
   nativeDbExecute: NapiBackendLike["dbExecute"];
   /** Straight into Native, for reading back what a route wrote. */
   nativeForeshadowAnchors: (sceneId: string) => Promise<string>;
@@ -147,10 +153,10 @@ async function startMain(
       if (options.unavailable && property === "initializeProfileEgress") {
         return undefined;
       }
-      if (options.holdActivation && property === "activateProfileEgress") {
+      if (options.holdActivation && property === "profileActivationCommit") {
         return async () => {
           await options.holdActivation;
-          return target.activateProfileEgress!();
+          return target.profileActivationCommit!();
         };
       }
       const value = Reflect.get(target, property, target);
@@ -159,6 +165,10 @@ async function startMain(
   });
   const { createProfileEgressGate, D2A_OWN_DATA_READ_OPEN } =
     await import("./profileEgress.js");
+  // The same module graph as the gate (the consumed token is per module).
+  const { activateThroughMain } = await import(
+    "./profileActivation.test.support.js"
+  );
   const { registerEventBus } = await import("./events.js");
   const { registerIpcRouter } = await import("./ipc.js");
   const { IPC } = await import("../shared/ipcContract.js");
@@ -187,6 +197,10 @@ async function startMain(
   return {
     gate,
     open: D2A_OWN_DATA_READ_OPEN,
+    activate: async () => {
+      const result = await activateThroughMain(proxied as NapiBackendLike, gate);
+      expect(result).toEqual({ status: "activated" });
+    },
     route: (cmd, args, senderId = 7) =>
       handler(sender(senderId), cmd, args ?? {}),
     nativeDbExecute: backend.dbExecute.bind(backend),
@@ -747,7 +761,7 @@ describe("own-data-read through the real router, gate and Native", () => {
       "the unchanged-data check needs node:sqlite (Node 22.13+)",
     ).not.toBeNull();
 
-    await rig.gate.activateFirstRestrictedPublication!();
+    await rig.activate();
     expect(rig.gate.restricted).toBe(true);
     expect(rig.gate.unavailable).toBe(false);
 
@@ -824,7 +838,7 @@ describe("own-data-read through the real router, gate and Native", () => {
     const appData = newAppData();
     const rig = await startMain(appData);
     await seedWorkspace(rig);
-    await rig.gate.activateFirstRestrictedPublication!();
+    await rig.activate();
     ok(
       await rig.route("db_execute", {
         sql: "INSERT INTO app_settings(key, value) VALUES (?, ?)",
@@ -854,7 +868,7 @@ describe("own-data-read through the real router, gate and Native", () => {
         readOutcome(call, await first.route(call.cmd, call.args)),
       );
     }
-    await first.gate.activateFirstRestrictedPublication!();
+    await first.activate();
     first.exit();
 
     const restarted = await startMain(appData);
@@ -887,7 +901,8 @@ describe("own-data-read through the real router, gate and Native", () => {
     });
     const rig = await startMain(appData, { holdActivation: held });
     const ws = await seedWorkspace(rig);
-    const activation = rig.gate.activateFirstRestrictedPublication!();
+    const activation = rig.activate();
+    await vi.waitFor(() => expect(rig.gate.activating).toBe(true));
     expect(rig.gate.restricted).toBe(true);
     for (const call of readCalls(ws)) {
       expect(
@@ -920,7 +935,7 @@ describe("own-data-read through the real router, gate and Native", () => {
     const appData = newAppData();
     const rig = await startMain(appData);
     await seedWorkspace(rig);
-    await rig.gate.activateFirstRestrictedPublication!();
+    await rig.activate();
     const identity = rig.gate.issueCallerIdentity(7);
     // Skipping Main's classification path: a statement Main classified
     // own-data-read is read-only-checked inside Native.
@@ -955,7 +970,7 @@ describe("own-data-read through the real router, gate and Native", () => {
         "the sample has two foreshadows",
       ).toBeTruthy();
       if (restrict) {
-        await rig.gate.activateFirstRestrictedPublication!();
+        await rig.activate();
         expect(rig.gate.restricted).toBe(true);
       }
       const sceneVersion = (

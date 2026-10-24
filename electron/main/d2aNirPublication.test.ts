@@ -19,6 +19,7 @@ import {
   D2A_EGRESS_DENIED_MARKER,
   d2aRouteLedgersForTest,
 } from "./profileEgress.js";
+import { activateGateForTest } from "./profileActivation.test.support.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 
 const mocks = vi.hoisted(() => ({
@@ -93,7 +94,7 @@ function backend(
     initializeProfileEgress: async () => JSON.stringify(status(restricted)),
     registerProfileEgressCaller: () => undefined,
     invalidateProfileEgressCallers: () => undefined,
-    activateProfileEgress:
+    profileActivationCommit:
       activate ??
       (async () =>
         JSON.stringify(
@@ -101,7 +102,7 @@ function backend(
         )),
     ...extra,
   } as unknown as NapiBackendLike & {
-    activateProfileEgress: () => Promise<string>;
+    profileActivationCommit: () => Promise<string>;
   };
 }
 
@@ -175,7 +176,7 @@ describe("gate: nir1-publication at invoke (K3/2)", () => {
       backend(false, {}, () => settled),
     );
     const before = gate.issueCallerIdentity(11);
-    const activation = gate.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(gate);
     for (const args of [{ callerIdentity: before }, {}]) {
       for (const command of NIR_COMMANDS) {
         expect(() => gate.assertInvoke(command, args), command).toThrow(
@@ -223,7 +224,7 @@ describe("gate: nir1-publication at completion (K3/2)", () => {
     );
     const admitted = gate.issueCallerIdentity(11);
     gate.assertInvoke("related_scenes_begin", { callerIdentity: admitted });
-    const activation = gate.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(gate);
     // activation in flight: the identity is still the issued one, but the
     // profile is being restricted
     for (const command of NIR_COMMANDS) {

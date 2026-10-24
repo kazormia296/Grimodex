@@ -17,6 +17,7 @@ import {
   auditErrorSnapshot,
   beforeIpcDispatchDetails,
   nativeAiAuditContext,
+  profileActivationStopAuditMetadata,
 } from "@/features/ai-audit/transportContext";
 import type {
   AiAuditExecutionHandle,
@@ -613,6 +614,8 @@ export async function sendCodexAppTurn(
                         abortRacedWithProviderFailure: true,
                       }
                     : {}),
+                  // L-6 (DR-DA2-35): Main's synthesized stage-2 terminal.
+                  ...profileActivationStopAuditMetadata(event.message),
                 },
               });
             },

@@ -545,6 +545,29 @@ rules:
       - src/features/license/store.ts
       - src/features/license/store.test.ts
       - vitest.electron-native.config.ts
+      - electron/main/profileActivation*.ts
+      - electron/main/profileEgressStateFile.pipeline.spec.ts
+      - electron/main/aiStreamTerminals.ts
+      - electron/main/aiStreamTerminals.test.ts
+      - electron/main/backend.ts
+      - electron/main/backend.test.ts
+      - electron/main/userData.ts
+      - electron/main/userData.test.ts
+      - electron/shared/profileEgressStatusWire.ts
+      - electron/shared/profileEgressStatusWire.test.ts
+      - electron/native/grimodex-node/src/profile_activation*.rs
+      - electron/native/grimodex-node/test/profile-activation*.mjs
+      - src/features/profile-egress/**
+      - src/lib/profileEgressStatus.ts
+      - src/lib/profileEgressStatus.electron.test.ts
+      - src/components/ApplicationDialogs.tsx
+      - src/application/chat/chatStoreSupport.ts
+      - src/features/chat/ChatPanel.tsx
+      - src/features/chat/ChatPanel.test.tsx
+      - src/features/chat/cliApi.test.ts
+      - src/features/chat/codexAppApi.test.ts
+      - src/features/settings/categories/DataCategory.tsx
+      - src/features/settings/categories/DataCategory.test.tsx
     requirements:
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001

@@ -113,6 +113,8 @@ interface Rig {
   route: (cmd: string, args?: Record<string, unknown>) => Promise<Envelope>;
   readonly restricted: boolean;
   appData: string;
+  /** The activation through Main's product path (DA-2). */
+  activate: () => Promise<void>;
 }
 
 /** A fresh module graph and router on `appData`, as a Main process would start. */
@@ -123,6 +125,9 @@ async function startMain(appData: string): Promise<Rig> {
 
   const backend = newBackend(appData);
   const { createProfileEgressGate } = await import("./profileEgress.js");
+  const { activateThroughMain } = await import(
+    "./profileActivation.test.support.js"
+  );
   const { registerEventBus } = await import("./events.js");
   const { registerIpcRouter } = await import("./ipc.js");
   const { createExternalMountManager } = await import("./externalMount.js");
@@ -163,6 +168,11 @@ async function startMain(appData: string): Promise<Rig> {
     gate,
     get restricted() {
       return gate.restricted;
+    },
+    activate: async () => {
+      expect(await activateThroughMain(backend, gate)).toEqual({
+        status: "activated",
+      });
     },
     route: (cmd, args) => routerHandler(event, cmd, args ?? {}),
   };
@@ -395,13 +405,11 @@ describe("own-data paths keep working under the SF-1 guard and E-3 (real router 
 
   it("restricted profile, restarted (re-registration on every start)", async () => {
     const { appData, external } = newProfile("restricted");
-    // Process 1 activates the first restricted publication and exits.
-    const first = newBackend(appData);
-    await first.initializeProfileEgress!();
-    const activated = JSON.parse(await first.activateProfileEgress!()) as {
-      restricted: boolean;
-    };
-    expect(activated.restricted).toBe(true);
+    // Process 1 activates the first restricted publication (through Main's
+    // grant path) and exits.
+    const first = await startMain(appData);
+    await first.activate();
+    expect(first.restricted).toBe(true);
 
     const rig = await startMain(appData);
     expect(rig.restricted).toBe(true);
@@ -424,7 +432,7 @@ describe("own-data paths keep working under the SF-1 guard and E-3 (real router 
     await exerciseMount(rig, external, { restricted: false });
     // The one-way transition, through the real gate and the real Native; the
     // manager reads the gate live, so the same objects now apply E-3.
-    await rig.gate.activateFirstRestrictedPublication!();
+    await rig.activate();
     expect(rig.restricted).toBe(true);
     await assertProfileDataIsNotReachable(rig);
     await exerciseMount(rig, external, { restricted: true });

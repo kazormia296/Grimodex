@@ -489,7 +489,10 @@ async fn the_state_read_admits_like_revoke_and_answers_restart_required_when_qua
     backend
         .state
         .profile_egress
-        .activate_first_restricted_publication(true)
+        .activate_first_restricted_publication(
+            &crate::main_grant::ConsumedProfileActivation::for_test(),
+            true,
+        )
         .expect("restricted profile");
     let state_error = backend
         .narrative_scene_body_declaration_state(payload.clone(), None)

@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { placeRestrictedProfile } from "./profile-activation-helper.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -28,9 +29,10 @@ const NOT_READ_ONLY = /D2A_EGRESS_DENIED.*own-data-read statement is not read-on
 
 async function restrictedRig(label) {
   const root = mkdtempSync(join(tmpdir(), `grimodex-own-data-${label}-`));
+  // DA-2 (D-7): a restricted state file, not an activation (K3/2 "公開" (b)).
+  placeRestrictedProfile(join(root, "app-data"));
   const backend = new Backend(join(root, "app-data"));
-  await backend.initializeProfileEgress();
-  const status = JSON.parse(await backend.activateProfileEgress());
+  const status = JSON.parse(await backend.initializeProfileEgress());
   const workspace = join(root, "workspace");
   await backend.openWorkspace(workspace);
   const identity = {

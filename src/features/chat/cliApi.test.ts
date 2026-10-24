@@ -181,6 +181,78 @@ describe("chat/cliApi", () => {
     );
   });
 
+  it("Main が段 2 で合成した終端は transport の終了を観測していないと記録する（DA-2 L-6）", async () => {
+    const onError = vi.fn();
+    await sendCliChatStream({ cli: "codex", prompt: "hello" }, auditContext, {
+      onTextDelta: vi.fn(),
+      onThinkingDelta: vi.fn(),
+      onDone: vi.fn(),
+      onError,
+    });
+    emit("cli:stream-error", {
+      message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(
+      vi.mocked(auditApi.failAiAuditExecution).mock.calls[0]?.[1],
+    ).toMatchObject({
+      error: { name: "CliRuntimeError" },
+      metadata: {
+        externalRuntimeInternalPromptObserved: false,
+        profileEgressStop: "profile-activation-stopped",
+        terminalSynthesizedByMain: true,
+        transportTerminationObserved: false,
+        auditObservationContinuedUntilTransportTerminal: false,
+      },
+    });
+  });
+
+  it("取消の後に Main が合成した終端は provider との競合とも transport の終了の観測とも記録しない（DA-2 ST3-S5）", async () => {
+    const onError = vi.fn();
+    const cleanup = await sendCliChatStream(
+      { cli: "codex", prompt: "hello" },
+      auditContext,
+      {
+        onTextDelta: vi.fn(),
+        onThinkingDelta: vi.fn(),
+        onDone: vi.fn(),
+        onError,
+      },
+    );
+    cleanup();
+    emit("cli:stream-error", {
+      message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    await vi.waitFor(() =>
+      expect(auditApi.failAiAuditExecution).toHaveBeenCalledOnce(),
+    );
+    expect(invokeMock).toHaveBeenCalledWith(
+      "abort_cli_chat_stream",
+      expect.anything(),
+    );
+    expect(onError).not.toHaveBeenCalled();
+    // Exact: the receipt's fields, then the synthesized terminal's overrides.
+    expect(
+      (
+        vi.mocked(auditApi.failAiAuditExecution).mock.calls[0]?.[1] as {
+          metadata?: unknown;
+        }
+      ).metadata,
+    ).toEqual({
+      externalRuntimeInternalPromptObserved: false,
+      transportAbortRequested: true,
+      abortCommandAcknowledged: true,
+      transportTerminationObserved: false,
+      providerAbortReceiptObserved: false,
+      uiDeliveryEnded: true,
+      auditObservationContinuedUntilTransportTerminal: false,
+      cleanupReturnedBeforeTerminalAuditDurable: true,
+      abortRacedWithProviderFailure: false,
+      profileEgressStop: "profile-activation-stopped",
+      terminalSynthesizedByMain: true,
+    });
+  });
+
   it("deltaを永続化してからerror/cleanup terminalを記録する", async () => {
     const onTextDelta = vi.fn();
     const onError = vi.fn();

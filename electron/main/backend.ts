@@ -33,9 +33,26 @@ interface RerankerResourceResolution {
 }
 
 let instance: NapiBackendLike | null = null;
+let constructionFailure: "state-file-unreadable" | null = null;
 
 export function getBackend(): NapiBackendLike | null {
   return instance;
+}
+
+/** Native's closed code for an unreadable state file (DR-DA2-8 row 6). */
+const STATE_FILE_UNREADABLE =
+  /(?:^|[^A-Za-z0-9_])PROFILE_EGRESS_UNAVAILABLE:state-file-unreadable(?![A-Za-z0-9_-])/u;
+
+/**
+ * The closed reason of the last failed `initBackend`, when Native's Backend
+ * constructor refused an unreadable profile state file (R-7). Only the code
+ * is kept: the message (paths, the OS error) stays in the log and the error
+ * box. `null` when the backend loaded or failed for another cause.
+ */
+export function getBackendConstructionFailure():
+  | "state-file-unreadable"
+  | null {
+  return constructionFailure;
 }
 
 /**
@@ -154,6 +171,7 @@ export function initBackend({
 }: InitBackendOptions = {}): NapiBackendLike | null {
   const binaryPath = resolveNodeBinaryPath();
   const semanticResourceRoot = resolveSemanticResourceRoot();
+  constructionFailure = null;
   try {
     const rerankerResourceRoot = resolveRerankerResourceRoot();
     if (!existsSync(binaryPath)) {
@@ -175,6 +193,9 @@ export function initBackend({
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     console.error(`[grimodex-electron] napi backend load failed: ${message}`);
+    constructionFailure = STATE_FILE_UNREADABLE.test(message)
+      ? "state-file-unreadable"
+      : null;
     if (failFast) {
       instance = null;
       throw e instanceof Error ? e : new Error(message);

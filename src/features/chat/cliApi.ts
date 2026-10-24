@@ -26,6 +26,7 @@ import {
   beforeIpcDispatchDetails,
   nativeAiAuditContext,
   type AiAuditTransportContext,
+  profileActivationStopAuditMetadata,
 } from "@/features/ai-audit/transportContext";
 import type {
   AiAuditExecutionHandle,
@@ -298,6 +299,8 @@ export async function sendCliChatStream(
                       abortRacedWithProviderFailure: true,
                     }
                   : {}),
+                // L-6 (DR-DA2-35): Main's synthesized stage-2 terminal.
+                ...profileActivationStopAuditMetadata(p.message),
               },
             });
           },

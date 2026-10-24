@@ -40,6 +40,7 @@ import {
 import {
   ChatTurnPersistenceError,
   MAX_RATE_LIMIT_RETRIES,
+  aiFailureToastText,
   classifyError,
   createRetryableCompletedTurnPersistence,
   createSessionForCurrentRuntime,
@@ -792,9 +793,7 @@ function createChatTurnStoreActions(
         } else if (kind === "network") {
           toast.error(i18next.t("chat.networkError"));
         } else {
-          toast.error(
-            i18next.t("chat.sendFailed", { message: failureMessage }),
-          );
+          toast.error(aiFailureToastText("chat.sendFailed", failureMessage));
         }
         return true;
       };
@@ -1641,7 +1640,7 @@ function createChatTurnStoreActions(
           } else if (kind === "network") {
             toast.error(i18next.t("chat.networkError"));
           } else {
-            toast.error(i18next.t("chat.agentFailed", { message: msg }));
+            toast.error(aiFailureToastText("chat.agentFailed", msg));
           }
           const failedContextWindowUsage = contextWindowUsageFromError(e);
           set({
@@ -2669,7 +2668,8 @@ function createChatTurnStoreActions(
         } else if (kind === "network") {
           toast.error(i18next.t("chat.networkError"));
         } else {
-          toast.error(i18next.t("chat.sendFailed", { message: msg }));
+          // D-10 (a), DR-DA2-34: the activation's AI stop has a fixed reason.
+          toast.error(aiFailureToastText("chat.sendFailed", msg));
         }
 
         const failedContextWindowUsage = contextWindowUsageFromError(e);

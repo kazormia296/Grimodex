@@ -20,6 +20,7 @@ import {
   d2aRouteLedgersForTest,
   type D2aRoute,
 } from "./profileEgress.js";
+import { activateGateForTest } from "./profileActivation.test.support.js";
 import {
   NATIVE_CLOSED_TABLES,
   NATIVE_READ_OPEN_COLUMNS,
@@ -168,10 +169,10 @@ function backend(restricted: boolean, activate?: () => Promise<string>) {
     initializeProfileEgress: async () => JSON.stringify(status),
     registerProfileEgressCaller: () => undefined,
     invalidateProfileEgressCallers: () => undefined,
-    activateProfileEgress:
+    profileActivationCommit:
       activate ?? (async () => JSON.stringify({ ...status, restricted: true })),
   } as unknown as NapiBackendLike & {
-    activateProfileEgress: () => Promise<string>;
+    profileActivationCommit: () => Promise<string>;
   };
 }
 
@@ -765,7 +766,7 @@ describe("gate: own-data-read with the opening on", () => {
     // unrestricted: an own-data-read passes without any check
     expect(() => gate.assertInvoke("fts_search", {})).not.toThrow();
 
-    const activation = gate.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(gate);
     expect(gate.restricted).toBe(true);
     for (const args of [{ callerIdentity: before }, {}]) {
       expect(() => gate.assertInvoke("fts_search", args)).toThrow(
@@ -806,7 +807,7 @@ describe("gate: own-data-read with the opening on", () => {
     );
     const admitted = gate.issueCallerIdentity(11);
     gate.assertInvoke("fts_search", { callerIdentity: admitted });
-    const activation = gate.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(gate);
     // the request admitted earlier completes after restriction began
     expect(() =>
       gate.assertPlaintextPublication("fts_search", {

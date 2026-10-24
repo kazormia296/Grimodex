@@ -24,6 +24,7 @@ import {
   type VivliostyleSaveDialogOptions,
 } from "./vivliostyle.js";
 import { createProfileEgressGate } from "./profileEgress.js";
+import { activateGateForTest } from "./profileActivation.test.support.js";
 import type { NapiBackendLike } from "../shared/ipcContract.js";
 import { nativeSqlPolicyV2 } from "./d2aSqlPolicyFixture.js";
 
@@ -938,7 +939,7 @@ describe("VivliostyleManager preview / lifecycle", () => {
       inFlightStopped: true,
       sqlPolicy: nativeSqlPolicyV2(),
     };
-    const activateProfileEgress = vi.fn(async () =>
+    const profileActivationCommit = vi.fn(async () =>
       JSON.stringify({
         ...status,
         restricted: true,
@@ -950,16 +951,17 @@ describe("VivliostyleManager preview / lifecycle", () => {
       initializeProfileEgress: async () => JSON.stringify(status),
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
-      activateProfileEgress,
+      profileActivationCommit,
     } as unknown as NapiBackendLike);
     gate.registerMainEgressParticipant("vivliostyle", () =>
       h.manager.quiesceForProfileEgress(),
     );
 
-    await expect(gate.activateFirstRestrictedPublication!()).rejects.toThrow(
-      "main egress participant failed to drain: vivliostyle: Vivliostyle egress transport did not quiesce",
-    );
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    await expect(activateGateForTest(gate)).resolves.toEqual({
+      state: "unavailable",
+      reason: "participant-failed",
+    });
+    expect(profileActivationCommit).not.toHaveBeenCalled();
     expect(gate.restricted).toBe(true);
     expect(gate.unavailable).toBe(true);
   });
@@ -981,7 +983,7 @@ describe("VivliostyleManager preview / lifecycle", () => {
       inFlightStopped: true,
       sqlPolicy: nativeSqlPolicyV2(),
     };
-    const activateProfileEgress = vi.fn(async () =>
+    const profileActivationCommit = vi.fn(async () =>
       JSON.stringify({
         ...status,
         restricted: true,
@@ -993,18 +995,19 @@ describe("VivliostyleManager preview / lifecycle", () => {
       initializeProfileEgress: async () => JSON.stringify(status),
       registerProfileEgressCaller: vi.fn(),
       invalidateProfileEgressCallers: vi.fn(),
-      activateProfileEgress,
+      profileActivationCommit,
     } as unknown as NapiBackendLike);
     gate.registerMainEgressParticipant("vivliostyle", () =>
       h.manager.quiesceForProfileEgress(),
     );
 
-    const activation = gate.activateFirstRestrictedPublication!();
+    const activation = activateGateForTest(gate);
     process.finish(null, "SIGKILL");
-    await expect(activation).rejects.toThrow(
-      "main egress participant failed to drain: vivliostyle: child stop failed",
-    );
-    expect(activateProfileEgress).not.toHaveBeenCalled();
+    await expect(activation).resolves.toEqual({
+      state: "unavailable",
+      reason: "participant-failed",
+    });
+    expect(profileActivationCommit).not.toHaveBeenCalled();
     expect(gate.restricted).toBe(true);
     expect(gate.unavailable).toBe(true);
   });

@@ -17,12 +17,37 @@ export declare class Backend {
    */
   initializeProfileEgress(): Promise<string>
   /**
-   * Main-only first protected-publication activation. The caller is the
-   * Electron main process; this method is deliberately absent from the
-   * renderer IPC contract. Activation is durable and followed by the same
-   * quiescence barrier used for a restricted-profile restart.
+   * Builds the dialog text and stores a `ProfileActivation` preview in the
+   * process-wide grant slot. Returns
+   * `{ previewId, display, disclosureVersion, expiresInMs }`.
+   * A closed pre-publication gate refuses before anything is read.
    */
-  activateProfileEgress(): Promise<string>
+  profileActivationPreview(senderId: number, windowId: number): Promise<string>
+  /**
+   * Turns an approved preview into a grant (`{ grantId }`). `display_digest`
+   * is the digest of the strings Main showed (DR-DA2-3); a difference
+   * revokes the grant.
+   */
+  profileActivationIssue(previewId: string, senderId: number, windowId: number, displayDigest: string): Promise<string>
+  /**
+   * Stage 1: consumes the grant into the activation's reservation. It is
+   * synchronous so that Main reaches stage 2 in the same JS task (P3-1).
+   */
+  profileActivationConsume(grantId: string, senderId: number, windowId: number): void
+  /**
+   * Stages 4 and 5: needs the reservation of stage 1. Returns the restricted
+   * status, or `PROFILE_ACTIVATION_REFUSED:<code>` /
+   * `PROFILE_EGRESS_UNAVAILABLE:<code>`.
+   */
+  profileActivationCommit(): Promise<string>
+  /**
+   * Main's cancellation of in-flight AI work after its stage 2 or 3 failed
+   * (DR-DA2-24). Synchronous; acts only while an activation is reserved
+   * (returns `true`), otherwise does nothing (returns `false`). It asks the
+   * chat and inline streams, the post-effect runs and the non-stream legacy
+   * requests to stop, and changes nothing else.
+   */
+  profileActivationAbortInFlight(): boolean
   /**
    * Main-only registration of one exact caller identity for this Backend
    * process generation. Renderer IPC never exposes this method.

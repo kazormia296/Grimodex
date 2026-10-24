@@ -294,6 +294,12 @@ impl PostEffectAbortRegistry {
         self.lock().abort_all_pending = false;
     }
 
+    /// Whether a process-wide abort-all request is in force (the D2a stop
+    /// barrier keeps it past its bound; DA-2 DR-DA2-20).
+    pub fn abort_all_pending(&self) -> bool {
+        self.lock().abort_all_pending
+    }
+
     pub fn clear(&self, run_id: &str) {
         let mut state = self.lock();
         state.aborted.remove(run_id);

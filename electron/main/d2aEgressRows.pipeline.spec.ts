@@ -90,6 +90,8 @@ interface Rig {
     ReturnType<(typeof import("./profileEgress.js"))["createProfileEgressGate"]>
   >;
   reach: Reach;
+  /** The activation through Main's product path (DA-2). */
+  activate: () => Promise<void>;
 }
 
 let provider: Server;
@@ -145,6 +147,9 @@ async function startMain(appData: string): Promise<Rig> {
 
   const backend = new Backend(appData);
   const { createProfileEgressGate } = await import("./profileEgress.js");
+  const { activateThroughMain } = await import(
+    "./profileActivation.test.support.js"
+  );
   const { registerEventBus } = await import("./events.js");
   const { registerIpcRouter } = await import("./ipc.js");
   const { registerShellBridgeHandlers } = await import("./shellCommands.js");
@@ -237,6 +242,11 @@ async function startMain(appData: string): Promise<Rig> {
   return {
     gate,
     reach,
+    activate: async () => {
+      expect(await activateThroughMain(backend, gate)).toEqual({
+        status: "activated",
+      });
+    },
     route: (cmd, args) => routerHandler(event, cmd, args ?? {}),
     openExternal: (url) => openHandler(event, url),
   };
@@ -319,7 +329,7 @@ describe("D2a egress rows reach nothing outside (real router + gate + Native)", 
     expect(rig.reach.urlOpens).toEqual(["https://example.com/"]);
 
     // The one-way transition, through the real gate and the real Native.
-    await rig.gate.activateFirstRestrictedPublication!();
+    await rig.activate();
     expect(rig.gate.restricted).toBe(true);
     expect(rig.gate.unavailable).toBe(false);
     await assertNothingLeavesMain(rig);
@@ -329,11 +339,16 @@ describe("D2a egress rows reach nothing outside (real router + gate + Native)", 
     const appData = newAppData();
     // Process 1 activates and exits; no main participant stop runs in process 2.
     const first = new Backend(appData);
-    await first.initializeProfileEgress!();
-    const activated = JSON.parse(await first.activateProfileEgress!()) as {
-      restricted: boolean;
-    };
-    expect(activated.restricted).toBe(true);
+    vi.resetModules();
+    const { createProfileEgressGate } = await import("./profileEgress.js");
+    const { activateThroughMain } = await import(
+      "./profileActivation.test.support.js"
+    );
+    const firstGate = await createProfileEgressGate(first);
+    expect(await activateThroughMain(first, firstGate)).toEqual({
+      status: "activated",
+    });
+    expect(firstGate.restricted).toBe(true);
 
     const rig = await startMain(appData);
     expect(rig.gate.restricted).toBe(true);

@@ -1,4 +1,6 @@
 import * as chatApi from "@/features/chat/chatApi";
+import { aiFailureText } from "@/features/profile-egress/profileEgressAiStop";
+import i18next from "@/lib/i18n";
 import type { ProjectContext } from "@/features/chat/contextBuilder";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { fetchProjectContext as fetchProjectContextAtom } from "@/features/project/contextAtoms";
@@ -26,6 +28,15 @@ export function classifyError(
   )
     return "context_length";
   return "unknown";
+}
+
+/**
+ * The toast text of a failed AI turn: the translated `key` with the error, or,
+ * for one of the profile activation's AI terminals, its fixed reason instead
+ * of the raw code (NIR-1 DA-2 D-10 (a), DR-DA2-34).
+ */
+export function aiFailureToastText(key: string, message: string): string {
+  return aiFailureText(message) ?? i18next.t(key, { message });
 }
 
 /**

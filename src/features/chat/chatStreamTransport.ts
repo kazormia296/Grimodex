@@ -15,6 +15,7 @@ import {
   beforeIpcDispatchDetails,
   nativeAiAuditContext,
   type AiAuditTransportContext,
+  profileActivationStopAuditMetadata,
 } from "@/features/ai-audit/transportContext";
 import { invoke, listen } from "@/lib/tauri";
 import type { ThinkingParams } from "./agent/modelLimits";
@@ -288,21 +289,30 @@ export async function sendChatMessageStream(
         auditQueue.close(
           async () => {
             const abortReceipt = cleanupRequested ? await requestAbort() : null;
+            // L-6 (DR-DA2-35): Main's synthesized stage-2 terminal.
+            const stopMetadata = profileActivationStopAuditMetadata(
+              payload.message,
+            );
             await failAiAuditExecution(audit, {
               error: { name: "ProviderError", message: payload.message },
               partialResponse: { text, thinking },
-              ...(abortReceipt
+              ...(abortReceipt || stopMetadata
                 ? {
                     metadata: {
-                      transportAbortRequested: true,
-                      abortCommandAcknowledged:
-                        abortReceipt.abortCommandAcknowledged,
-                      transportTerminationObserved: true,
-                      providerAbortReceiptObserved: false,
-                      uiDeliveryEnded: true,
-                      auditObservationContinuedUntilTransportTerminal: true,
-                      cleanupReturnedBeforeTerminalAuditDurable: true,
-                      abortRacedWithProviderFailure: true,
+                      ...(abortReceipt
+                        ? {
+                            transportAbortRequested: true,
+                            abortCommandAcknowledged:
+                              abortReceipt.abortCommandAcknowledged,
+                            transportTerminationObserved: true,
+                            providerAbortReceiptObserved: false,
+                            uiDeliveryEnded: true,
+                            auditObservationContinuedUntilTransportTerminal: true,
+                            cleanupReturnedBeforeTerminalAuditDurable: true,
+                            abortRacedWithProviderFailure: true,
+                          }
+                        : {}),
+                      ...stopMetadata,
                     },
                   }
                 : {}),

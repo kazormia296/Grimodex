@@ -324,6 +324,9 @@ async function launch(
   backends.push(backend);
 
   const { createProfileEgressGate } = await import("./profileEgress.js");
+  const { activateThroughMain } = await import(
+    "./profileActivation.test.support.js"
+  );
   const { registerEventBus } = await import("./events.js");
   const { registerIpcRouter } = await import("./ipc.js");
   const { createMainGrantController } = await import("./mainGrant.js");
@@ -385,7 +388,10 @@ async function launch(
   // is activated (a restart finds the profile restricted already).
   okValue(await invoke("open_workspace", { path: fixture.workspace }));
   if (options.restricted && !gate.restricted) {
-    await gate.activateFirstRestrictedPublication!();
+    // DA-2: through Main's grant path (the entry opened as the seam does).
+    expect(
+      await activateThroughMain(backend as NapiBackendLike, gate),
+    ).toEqual({ status: "activated" });
   }
   expect(gate.restricted).toBe(options.restricted);
   return {

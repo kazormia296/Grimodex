@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { Suspense, lazy, useState, useEffect } from "react";
 import { toast } from "sonner";
 import { useTranslation } from "react-i18next";
 import { invoke } from "@/lib/tauri";
@@ -21,6 +21,16 @@ import { CapabilityGate } from "@/runtime/runtimeCapabilitiesContext";
 import { useChatStore } from "@/features/chat/chatStore";
 import { getProjectDataStats, type ProjectDataStats } from "../dataApi";
 import { useQuiescenceLeaseActive } from "@/application/lifecycle/useQuiescenceLeaseActive";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+
+// The profile activation item (NIR-1 DA-2 ST3, DR-DA2-32) is a lazy chunk
+// requested only while `PROFILE_ACTIVATION_UI_ENABLED` is on. A chunk that
+// fails to load draws nothing.
+const ProfileActivationSettingsSection = /* @__PURE__ */ lazy(() =>
+  import("@/features/profile-egress/ProfileActivationSettingsSection").catch(
+    () => ({ default: () => null }),
+  ),
+);
 
 async function triggerDownload(filename: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
@@ -344,6 +354,12 @@ export function DataCategory() {
       <SettingSection title={t("settings.data.integrityCheck")}>
         <IntegrityCheckSection />
       </SettingSection>
+
+      {PROFILE_ACTIVATION_UI_ENABLED && (
+        <Suspense fallback={null}>
+          <ProfileActivationSettingsSection />
+        </Suspense>
+      )}
 
       <CapabilityGate capability="externalMount">
         <MountListDialog

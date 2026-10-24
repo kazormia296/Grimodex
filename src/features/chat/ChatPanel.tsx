@@ -75,10 +75,16 @@ import { defaultEditorNavigationPorts } from "@/features/editor/editorNavigation
 import { useChatSessionLifecycle } from "./useChatSessionLifecycle";
 import { useChatPinsController } from "./useChatPinsController";
 import { useChatMessageViewport } from "./useChatMessageViewport";
+import { aiFailureText } from "@/features/profile-egress/profileEgressAiStop";
+import { ensureProfileEgressAiStopTranslations } from "@/features/profile-egress/profileEgressAiStopText";
 import {
   useChatMessageActions,
   wholeMessageContent,
 } from "./useChatMessageActions";
+
+// D-10 (a), DR-DA2-34: the strings of the profile activation's AI terminals
+// live in this lazy chunk; the startup `aiFailureText` reads them.
+ensureProfileEgressAiStopTranslations();
 
 /**
  * チャットのシーンスコープ選択からエディタへシーンを同期する。
@@ -1285,7 +1291,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
 
       {error && (
         <div className="border-t border-destructive bg-destructive/10 px-4 py-2">
-          <p className="text-xs text-destructive">{error}</p>
+          <p className="text-xs text-destructive">
+            {/* D-10 (a), DR-DA2-34: the activation's AI terminal shows its
+                reason instead of the raw marker. */}
+            {aiFailureText(error) ?? error}
+          </p>
         </div>
       )}
 

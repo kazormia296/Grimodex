@@ -254,3 +254,42 @@ export function beforeIpcDispatchDetails(command: string): AiAuditJsonObject {
     modelDispatched: null,
   };
 }
+
+/**
+ * The terminal Electron main synthesizes at stage 2 of the profile activation
+ * for every stream it forwarded (`chat:stream-error`, `inline-ai:stream-error`,
+ * `cli:stream-error` and the Codex `turn-error`; NIR-1 DA-2 DR-DA2-18). The
+ * same text as Main's `PROFILE_ACTIVATION_STOPPED_MESSAGE`
+ * (`electron/main/profileEgress.ts`);
+ * `src/features/profile-egress/profileEgressAiStop.test.ts` pins the two
+ * together.
+ */
+export const PROFILE_ACTIVATION_STOPPED_MESSAGE =
+  "D2A_EGRESS_DENIED: profile-activation-stopped";
+
+/**
+ * Audit metadata of a terminal Main synthesized (DA-2 L-6, DR-DA2-35). When the
+ * renderer writes the failed terminal for it, Native's transport has not
+ * ended: it is cancelled later (stage 5, or the stage 2/3 failure's
+ * cancellation, DR-DA2-25), and its events are dropped by the gate while
+ * restricted. The metadata says so, instead of the provider-failure reading
+ * the error alone would give, and overrides any `transportTerminationObserved`
+ * an abort receipt set. It is not a provider failure either, so a cancellation
+ * that came first did not race one: `abortRacedWithProviderFailure` is false
+ * (the receipt's `cleanupReturnedBeforeTerminalAuditDurable` stays, since the
+ * cleanup did return first; DR-DA2-35, ST3-S5). Spread it after the receipt's
+ * fields. Only the exact synthesized text matches; a provider error that
+ * merely contains the marker gets nothing.
+ */
+export function profileActivationStopAuditMetadata(
+  message: string,
+): AiAuditJsonObject | null {
+  if (message !== PROFILE_ACTIVATION_STOPPED_MESSAGE) return null;
+  return {
+    profileEgressStop: "profile-activation-stopped",
+    terminalSynthesizedByMain: true,
+    transportTerminationObserved: false,
+    auditObservationContinuedUntilTransportTerminal: false,
+    abortRacedWithProviderFailure: false,
+  };
+}
