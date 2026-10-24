@@ -429,3 +429,95 @@ spellcheck を有効にした入力（restricted、`spellcheck="true"` の edito
 - seam の journey：inline、CLI、Codex の終端と非 stream の旧 AI の表示、製品の dialog の見た目、chat の panel を layout から外した phone の起動（DR-DA2-45）。
 - IPv6 到達性の確認の分類（packet を出さない UDP の connect を続く通信に加えない読み）は integrator の確認の対象（DR-DA2-44）。
 - `[precheck]` に当たるものは無かった（30 s を超える正常な activation なし、続く通信の外の接続先なし、新しい受信先・保存範囲・authority・閾値の緩和なし、`policies/` の更新が要る分類なし）。
+
+## ST4-A（DA-2b の Native 側）の実装後の追記（2026-10-24。上の表と matrix、前の追記の本文は直さない）
+
+判断は DR-DA2-49〜53。`src/**`、`src/locales/*.json`、`electron/main/windows.ts`／`index.ts`、NC-1 の module、`policies/quality/**`、AGENTS.md、`.agents/skills` は変えていない（Y-1 の再採取は要らない）。閉じた gate はどれも開けていない。
+
+### 前の記録の訂正
+
+- **DR-DA2-51 の置き場**：`project_snapshot_delete` の writer（`delete_project_snapshot`）は `project_snapshots.rs` ではなく `revision_writes.rs` に置いた（版の writer と同じ transaction の helper を使うため。change-feed の台帳の `implementation.module` もこの file）。
+- **DR-DA2-51 の entity の所有**：`scene` と `note` はどちらも project の `tree_nodes` の行を指す（`EditorPane.tsx` の手動の版は note の binding でも `scene` で記録するため。node_type で絞ると現行の結果が変わる）。
+- **DR-DA2-50 の Main の検査**：Main は metadata の記録の key が 3 つ以外なら、Native と同じ `CHAT_WRITE_REFUSED:metadata-key-not-allowed` で Native に渡す前に拒否する（ほかの引数の違反は既存の `invalid args …` の文言）。
+
+### 実測（DR-DA2-52 の根拠。`src-tauri/crates/grimodex-db/tests/d2a_restricted_generic_sql_shapes.rs` と `electron/main/d2aChatWriters.pipeline.spec.ts`）
+
+| 文の形（restricted の汎用 SQL） | RETURNING なし | RETURNING あり | 対処 |
+|---|---|---|---|
+| `map_stickies` の INSERT（`source_chat_message_id` に既存の chat の行）、UPDATE、DELETE | 通る | 拒否 | T：RETURNING を外して再読取（ST4-B） |
+| `map_boards`、`map_node_positions`、`map_edges`、`map_frames` の INSERT と UPDATE | 通る | 拒否（`map_boards` で確認） | T：同上 |
+| `labels`、`prompt_templates` の INSERT と UPDATE | 通る | 拒否 | T：同上 |
+| `chat_session_pinned_codex` の UPDATE（pin の子の切替） | 通る | 拒否 | T：同上 |
+| `content_versions` の INSERT と DELETE | 拒否 | 拒否 | M：`revision_create`／`revision_prune` |
+| `project_snapshots` の DELETE（CASCADE の先が read-open） | 拒否 | — | M：`project_snapshot_delete` |
+| `impact_review_baselines` の UPDATE | 拒否 | 拒否 | T：`impact_review_baseline_update_visibility` |
+| `chat_messages`／`chat_sessions` の DELETE と UPDATE | 拒否 | 拒否 | CW の 5 つ |
+
+実 router と実 Native（pipeline spec）でも同じ結果（拒否は `D2A_EGRESS_DENIED`、通った文の後の再読取は `own-data-read` で値を返し、拒否した文は行を変えない）。
+
+### CW の条件と試験の対応（Positive (8)、Negative (27)）
+
+| 条件（K3/2） | cargo（`tests/chat_typed_writers.rs`。`--features native-current-human-capture`） | 実 Native（`d2aChatWriters.pipeline.spec.ts`） |
+|---|---|---|
+| 1 置き場・引数・結果（workspace と project への束縛、件数だけ） | `deletion_scope_is_bound_to_project_and_session`、`writers_reject_invalid_requests_without_writing`、`results_are_counts_only` | `CW needs the issued identity and the open workspace while restricted`（identity なしの Native 直呼びは `D2A_EGRESS_DENIED`、別の directory は `workspace-mismatch`、別の project は `scope-mismatch`）。Main の再検証は `electron/main/d2bTypedWriters.test.ts` |
+| 2 行を挿入しない・残る行を変えない・記録の 3 key だけ・version を失効させない | `rename_writes_only_title_manual_and_updated_at`、`metadata_record_keeps_other_keys_and_message_versions`、`metadata_record_rejects_other_keys_without_writing`、`no_writer_inserts_a_row` | `metadata-key-not-allowed` の拒否（同上の試験） |
+| 3 削除の効果は既存の FK と正準の trigger（capture の削除、version の失効、出所の NULL、attempt と `change_events` は残る） | `message_delete_follows_foreign_keys_and_canonical_triggers`、`session_delete_and_clear_cascade_and_keep_attempts_and_feed` | `unrestricted and restricted give the same results`（削除と全消去の後の行） |
+| 4 未終端の attempt は何も消さずに拒否（改名と記録は拒否しない） | `pending_attempt_refuses_every_deletion_and_deletes_nothing`、`terminal_attempt_allows_deletion` | `an unterminated generation attempt refuses every deletion and deletes nothing` |
+| 5 unrestricted の結果を変えない（D-11 の (a)） | `typed_writers_match_the_current_generic_sql_results`（現行の汎用 SQL と同じ行） | `unrestricted and restricted give the same results (D-11 (a))` |
+
+M と T は `tests/d2a_m_t_typed_writers.rs`（現行の汎用 SQL と同じ版の行、prune の規則、snapshot の子表の CASCADE と版の保持、baseline の hash と CAS と visibility 以外の拒否）と同じ pipeline spec。
+
+### route 区分の実測（DR-DA2-53。`d2aChatWriters.pipeline.spec.ts` の最後の試験）
+
+- restricted：Main は `internal` として通し、Native の writer が書く（CW は Native の admission も通る）。
+- activation の途中（段 2・3 の後、段 4 の永続化の前で止めた状態）：Main は `internal` を通し、Native はまだ unrestricted なので CW と M の writer は件数を返す。段 4 の永続化の後から段 7 までの CW は Native の admission が `D2A_EGRESS_DENIED` で拒否する（`PublicationGuard` の既存の挙動。この区間を止めて確かめる試験は置いていない）。
+- unavailable（起動時に gate を作れなかった）：Main は `internal` を通すが、workspace を開けないので Native は `No workspace is open` で拒否し、何も書かない（D2a の理由ではない）。
+
+### ST4-B（renderer）に引き継ぐこと
+
+新しい command（全部 `internal`。引数は `{ payload: {...} }`。戻り値は JSON。typed な拒否は `Error` の文字列の接頭辞）：
+
+| command | payload | 戻り値 | typed な拒否 |
+|---|---|---|---|
+| `chat_messages_delete` | `expectedWorkspacePath`, `projectId`, `sessionId`, `messageIds`（1〜256 件） | `{ deleted }` | `CHAT_WRITE_REFUSED:` `invalid-request`／`workspace-mismatch`／`scope-mismatch`／`generation-pending` |
+| `chat_session_delete` | `expectedWorkspacePath`, `projectId`, `sessionId` | `{ deleted }`（0 か 1） | 同上 |
+| `chat_project_history_clear` | `expectedWorkspacePath`, `projectId` | `{ deletedSessions }` | 同上 |
+| `chat_session_rename` | `expectedWorkspacePath`, `projectId`, `sessionId`, `title`（4,096 文字まで） | `{ updated }` | `invalid-request`／`workspace-mismatch`／`scope-mismatch` |
+| `chat_message_metadata_record` | `expectedWorkspacePath`, `projectId`, `messageId`, `patch`（`extractedCodex`／`extractedSnippets`〔id の配列、64 件まで〕、`insertedToEditor`〔真偽〕のうち 1 つ以上） | `{ updated }` | 上に加えて `metadata-key-not-allowed`、`metadata-unreadable` |
+| `revision_create` | `projectId`, `entityType`（`scene`／`note`／`codex_entry`／`snippet`）, `entityId`, `content`, `snapshotType`（`auto`／`manual`） | `{ created, id, versionNumber, createdAt }`（`created:false` は最新の版。本文は返さない） | `REVISION_WRITE_REFUSED:` `invalid-request`／`not-found` |
+| `revision_prune` | `projectId`, `entityType`, `entityId`, `keepCount`（0〜100,000） | `{ deleted }` | 同上 |
+| `project_snapshot_delete` | `projectId`, `snapshotId` | `{ deleted }` | `PROJECT_SNAPSHOT_WRITE_REFUSED:invalid-request` |
+| `impact_review_baseline_update_visibility` | `projectId`, `entryId`, `expectedContentHash`, `snapshotJson`, `contentHash`（`stableHash(snapshotJson)`） | `{ updated }`（CAS の不一致と行の不在は `false`） | `IMPACT_BASELINE_WRITE_REFUSED:` `invalid-request`／`hash-mismatch`／`not-visibility-only`／`baseline-unreadable` |
+
+CW の admission の失敗は既存の `D2A_EGRESS_DENIED`。`expectedWorkspacePath` は Scope の入口と同じ値（`workspaceIdentity.path`）。
+
+renderer が切り替える呼出し：
+
+- CW：`src/features/chat/chatApi.ts` の `deleteMessage`、`deleteSession`、`clearProjectChatHistory`、`updateMessageMetadata`（既存の metadata を読んで merge する処理は Native が行う）と `src/features/chat/chatHistoryApi.ts` の `updateSessionTitle`（`updateSessionTitleIfAutomatic` は AI の機能で D のまま）。タイムラプスの記録（`recordChatMessageDelete` など）と `scheduleChatIndex` は今のまま renderer が呼ぶ。guard（`pendingCompletedTurnPersistence`、`assertMessageMutationAllowed`）は保つ。`createSession` の文は変えない。
+- M：`src/features/revision/api.ts` の `createRevision`（`null` は `created:false`）と `pruneRevisions`、`src/features/revision/projectSnapshotApi.ts` の `getOrCreateRevisionId`（`created:false` の `id` をそのまま使えば再読取は要らない）と `deleteProjectSnapshot`。呼出し元は `autoRevisionScheduler.ts`、`EditorPane.tsx`、`CodexDetailContent.tsx`、`SnippetDetailContent.tsx`、`foreshadowStore.ts`。
+- T（typed）：`src/features/codex/impactBaselineVisibility.ts` の `updateBaselineMetadata` の UPDATE を `impact_review_baseline_update_visibility` に（読取と mutate と 3 回の再試行は今のまま）。
+- T（RETURNING を外して再読取。台帳に載らない表）：`src/features/map/mapApi.ts` の `updateMapBoardSettings`、`getOrCreateBoard`、`createBoard`、`renameBoard`、`upsertNodePosition`（2 箇所）、`updateNodePosition`、`createSticky`、`updateSticky`、`adoptSticky`、`createUserEdge`、`updateUserEdge`、`createFrame`、`updateFrame`。`src/features/labels/labelApi.ts` の `createLabel`、`updateLabel`。`src/features/prompt-library/api.ts` の `createPromptTemplate`、`updatePromptTemplate`。`src/features/chat/chatApi.ts` の `togglePinChildren`。`createSession`、`addMessage`、`addSummary` の RETURNING は D（閉じたまま）なので外さない。
+- import：`importChatSessionsBatch` の会話の部分は restricted では取り込まず、renderer が解析済みの会話の件数を示す（Native の仕様は要らない）。
+- `src/lib/browser-mock.ts` に新しい command の case は足していない（ST4-B が wrapper と一緒に足す。足さなくても今の試験は通る）。
+
+### 台帳（`policies/narrative/**`）
+
+- `policies/narrative/change-feed-writers.json`：`project.snapshot.delete`（`feedPolicy: excluded`、`exclusionReason: snapshot-capture`、implementation `revision_writes.rs` の `delete_project_snapshot`、route は electron-ipc と napi の `project_snapshot_delete`）を足した。理由：`validate-semantic-core-boundary.mjs` が mutationPrefixes の `project_` に当たる未登録の command として落としたため。ほかの 8 command は mutationPrefixes に当たらず、chat、`content_versions`、`impact_review_baselines`、`project_snapshots` は protected writers の表でないので、`protected-writers.json` などは変えていない（3 つの validator はそのまま通る）。
+
+### 検証（Full・Quick・hosted CI は走らせていない）
+
+- cargo（`src-tauri`）：`cargo test -p grimodex-db --lib` 2,327 pass（52 ignored）、`--test '*'` 78 binary の全部 pass（820 件。feature なしでは `chat_typed_writers` は空）、`--features native-current-human-capture --test chat_typed_writers` 12 pass、`d2a_m_t_typed_writers` 7 pass、`d2a_restricted_generic_sql_shapes` 4 pass。`cargo clippy -p grimodex-db --all-targets -- -D warnings` 通過（feature 付きは上の既存の file で落ちる）。
+- cargo（grimodex-node）：`cargo clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings` 通過、`cargo test … --features licensing,legacy-keyring-migration --lib` 647 pass（6 ignored）。
+- `pnpm napi:build` の後：`pnpm --dir electron/native/grimodex-node test` 187 pass（1 skip）、`vitest.electron.config.ts` 96 file 2,251 件 pass、`vitest.electron-native.config.ts` 7 file 47 件 pass（新しい `d2aChatWriters.pipeline.spec.ts` 5 件を含む）。
+- `tsc`（root と `-p electron/tsconfig.json`）通過、`pnpm lint` 0 error（既存の warning 43）、root の `src/lib/tauri.electron.test.ts` と `src/lib/browser-mock*` 26 file pass。
+- 台帳：`test:narrative:writers`、`test:narrative:native-ownership`、`test:narrative:change-feed-writers`、`test:narrative:semantic-contract` 通過。`pnpm validate:architecture` 通過。
+- `pnpm eval:impact --base origin/master`：rc 0、未分類の 7 file のため fallback で全 suite を選ぶ（選ぶだけで suite は走らせていない。分類は ST5）。
+- `pnpm build` → `node scripts/check-performance-budgets.mjs`：起動時の JS graph は raw 4,249,080／gzip 1,342,278（DA-2a の最後と同じ。`src/` を変えていない）。
+
+### 持ち越し・未検証（PR 本文に載せる）
+
+- **sticky と pin の子の扱い**（DR-DA2-52）：実測に基づき typed な writer を作らず RETURNING 外しにした。TASK の D-12 の文と違うので integrator の確認が要る。
+- **impact-map と quality-manifest の分類**（ST5）：`eval:impact` が未分類として挙げた 7 file（`chat_typed_writes.rs`、`impact_review_baselines.rs`、`revision_writes.rs`、`tests/chat_typed_writers.rs`、`tests/d2a_m_t_typed_writers.rs`、`tests/d2a_restricted_generic_sql_shapes.rs`、`electron/main/d2bTypedWriters.test.ts`）。`tests/chat_typed_writers.rs` は feature `native-current-human-capture` が要る（既定の `cargo test -p grimodex-db --test '*'` では空になる）ので、impact-map の command に feature 付きの行が要る。
+- grimodex-db を `--features native-current-human-capture` で clippy すると、この branch で触っていない既存の file（`nir1_packing.rs`、`nir1_generation.rs`、`nir1_packing_tests.rs`）が `-D warnings` で落ちる（CI はこの形を走らせない。既定の features の clippy は通る）。
+- 段 4 の永続化の後から段 7 までの CW の拒否を、activation を止めた状態で確かめる試験は置いていない（`PublicationGuard` の既存の試験に任せた）。
+- D の `isD2aEgressDenied` の見直し、AI の入口の閉鎖、場面の会話でない会話の編集して再送の入口、import の表示、W-1 は ST4-B。
