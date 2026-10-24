@@ -47,6 +47,7 @@ mod related_scenes_registry;
 mod state;
 #[cfg(test)]
 mod test_link_stubs;
+mod typed_writers;
 mod workspace_lifecycle_view;
 use lifecycle_failure_diagnostics::{FailureClass, Producer};
 
@@ -9645,6 +9646,108 @@ impl Backend {
         run_blocking(move || {
             let payload: editor_stickies::DeletePayload = from_wire("payload", payload)?;
             with_db_state(&state.ws, |db| editor_stickies::delete(db, payload))
+        })
+        .await
+    }
+
+    /// DA-2b CW (DR-DA2-50): delete messages of one chat session. Typed
+    /// `internal` writer; Main attaches the caller identity as the trailing
+    /// sidecar. Returns `{"deleted":n}`.
+    #[napi]
+    pub async fn chat_messages_delete(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || typed_writers::chat_messages_delete(&state, payload, caller_identity))
+            .await
+    }
+
+    /// DA-2b CW: delete one chat session (children follow the foreign keys).
+    #[napi]
+    pub async fn chat_session_delete(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || typed_writers::chat_session_delete(&state, payload, caller_identity))
+            .await
+    }
+
+    /// DA-2b CW: delete every chat session of a project.
+    #[napi]
+    pub async fn chat_project_history_clear(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            typed_writers::chat_project_history_clear(&state, payload, caller_identity)
+        })
+        .await
+    }
+
+    /// DA-2b CW: the manual rename (title, title_manual, updated_at only).
+    #[napi]
+    pub async fn chat_session_rename(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || typed_writers::chat_session_rename(&state, payload, caller_identity))
+            .await
+    }
+
+    /// DA-2b CW: the extraction / insertion record (three metadata keys only).
+    #[napi]
+    pub async fn chat_message_metadata_record(
+        &self,
+        payload: serde_json::Value,
+        caller_identity: Option<String>,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            typed_writers::chat_message_metadata_record(&state, payload, caller_identity)
+        })
+        .await
+    }
+
+    /// DA-2b M (DR-DA2-51): record a content version unless the latest one
+    /// has the same body. Returns ids and numbers, never a body.
+    #[napi]
+    pub async fn revision_create(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || typed_writers::revision_create(&state, payload)).await
+    }
+
+    /// DA-2b M: prune old auto versions that no snapshot references.
+    #[napi]
+    pub async fn revision_prune(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || typed_writers::revision_prune(&state, payload)).await
+    }
+
+    /// DA-2b M: delete one project snapshot (children follow the foreign keys).
+    #[napi]
+    pub async fn project_snapshot_delete(&self, payload: serde_json::Value) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || typed_writers::project_snapshot_delete(&state, payload)).await
+    }
+
+    /// DA-2b T (DR-DA2-52): CAS-update the Impact Review baseline's
+    /// visibility metadata. Returns `{"updated":bool}`.
+    #[napi]
+    pub async fn impact_review_baseline_update_visibility(
+        &self,
+        payload: serde_json::Value,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            typed_writers::impact_review_baseline_update_visibility(&state, payload)
         })
         .await
     }
