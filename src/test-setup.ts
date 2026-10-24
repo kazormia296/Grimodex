@@ -44,3 +44,15 @@ if (typeof document !== "undefined") {
   Range.prototype.getBoundingClientRect = () => new DOMRect();
   HTMLElement.prototype.getClientRects = () => emptyDOMRectList;
 }
+
+// happy-dom 21 の Animation.cancel() は finished promise を AbortError で reject するが、
+// Web Animations の仕様（cancel の手順で finished promise の [[PromiseIsHandled]] を true にする）
+// と違って handled にしない。motion の stop() が cancel() を呼ぶたびに unhandled rejection に
+// なるので、仕様どおり handled にする。finished を await する側には reject がそのまま届く。
+if (typeof Animation !== "undefined") {
+  const cancel = Animation.prototype.cancel;
+  Animation.prototype.cancel = function (this: Animation) {
+    this.finished.catch(() => {});
+    return cancel.call(this);
+  };
+}

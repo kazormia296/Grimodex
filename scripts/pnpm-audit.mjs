@@ -14,11 +14,11 @@ if (Date.now() >= Date.parse("2026-11-18T00:00:00+09:00")) {
 const auditFiles = new Map();
 for (const [path, expected] of Object.entries({
   "package.json":
-    "aa909d7ee79966dea7894033bc00fdf129e8e776162adb27c94823c94175da3d",
+    "dd112820d877a104e406f31b61f46310d7f9b0a08601bbbf0c0999a8c80b2d03",
   "pnpm-lock.yaml":
-    "d9be4132526bf1667e715b93480d70398268270f66e87c1c4ca35c2765022ed0",
+    "c4f75b93493642391ad807a42117714e38446c25208791b7964a2e86490be3dd",
   "pnpm-workspace.yaml":
-    "27d7c6c71730f9b2d0c2e275afd7859b8f14ba5cc92d812dd609b69c36073a5f",
+    "9ed861aee69a45baaaa5ce32c36c4f299d4cf467cd02c6462ff4bf8f0ad20551",
   "electron-builder.yml":
     "5c78bc304e01c550c03beabb422907ca86fcf8921f5136e87ae49676d60a1bf4",
 })) {

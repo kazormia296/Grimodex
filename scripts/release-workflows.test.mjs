@@ -827,13 +827,14 @@ describe("release workflow boundary", () => {
       "utf8",
     );
 
-    assert.equal(manifest.devDependencies.electron, "43.5.0");
+    assert.equal(manifest.devDependencies.electron, "43.8.3");
     assert.match(
       lockfile,
-      /^      electron:\n        specifier: 43\.5\.0\n        version: 43\.5\.0$/m,
+      /^      electron:\n        specifier: 43\.8\.3\n        version: 43\.8\.3$/m,
     );
-    assert.match(lockfile, /^  electron@43\.5\.0:$/m);
+    assert.match(lockfile, /^  electron@43\.8\.3:$/m);
     assert.doesNotMatch(lockfile, /^  electron@43\.1\.0:$/m);
+    assert.doesNotMatch(lockfile, /^  electron@43\.5\.0:$/m);
   });
 
   it("pins brace-expansion to the patched version required by the audit gate", async () => {

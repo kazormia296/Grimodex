@@ -11238,7 +11238,7 @@ SOFTWARE.
 ```
 </details>
 
-### fast-uri (3.1.8)
+### fast-uri (3.1.9)
 
 - License: BSD-3-Clause
 - Repository: https://github.com/fastify/fast-uri
@@ -17587,7 +17587,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 </details>
 
-### undici (7.30.0)
+### undici (7.30.1)
 
 - License: MIT
 - Repository: https://github.com/nodejs/undici
@@ -18224,7 +18224,7 @@ IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 </details>
 
-### zod (4.4.3)
+### zod (4.6.7)
 
 - License: MIT
 - Repository: https://github.com/colinhacks/zod

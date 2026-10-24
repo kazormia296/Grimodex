@@ -41,11 +41,11 @@
     },
     {
       "path": "package.json",
-      "sha256": "aa909d7ee79966dea7894033bc00fdf129e8e776162adb27c94823c94175da3d"
+      "sha256": "dd112820d877a104e406f31b61f46310d7f9b0a08601bbbf0c0999a8c80b2d03"
     },
     {
       "path": "pnpm-lock.yaml",
-      "sha256": "d9be4132526bf1667e715b93480d70398268270f66e87c1c4ca35c2765022ed0"
+      "sha256": "c4f75b93493642391ad807a42117714e38446c25208791b7964a2e86490be3dd"
     },
     {
       "path": "src-tauri/Cargo.toml",
