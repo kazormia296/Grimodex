@@ -649,6 +649,7 @@ rules:
       - electron/main/narrativeFreshness.ts
       - electron/main/narrativeFreshness.test.ts
       - electron/main/events.ts
+      - electron/main/events.test.ts
       - electron/main/index.ts
       - electron/main/narrativeMaintenanceDelivery.ts
       - electron/main/narrativeMaintenanceDelivery.test.ts
@@ -1191,9 +1192,12 @@ rules:
       - electron/main/narrativeFreshness.test.ts
       - electron/main/ipc.ts
       - electron/main/ipc.test.ts
+      - electron/main/relatedScenesSearchAuthority.ts
+      - electron/main/relatedScenesSearchAuthority.test.ts
       - electron/main/profileEgress.ts
       - electron/main/profileEgress.test.ts
       - electron/shared/ipcContract.ts
+      - electron/shared/relatedScenesSearchWire.ts
       - electron/shared/ipcContract.test.ts
       - electron/native/grimodex-node/Cargo.toml
       - electron/native/grimodex-node/index.d.ts

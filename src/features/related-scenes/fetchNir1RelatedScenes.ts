@@ -34,6 +34,11 @@ import {
 } from "./nir1RelatedScenesProjection";
 import { fuseNir1RelatedScenes } from "./nir1RelatedScenesFusion";
 import { awaitNir1RelatedScenes } from "./awaitNir1RelatedScenes";
+import { awaitNir1RelatedScenesWithGraph } from "./nir1RelatedScenesGraphJoin";
+import {
+  createNir1RelatedScenesGraphWait,
+  type Nir1RelatedScenesGraphWait,
+} from "./fetchNir1RelatedScenesGraph";
 import type {
   Nir1RelatedScenesFetchOptions,
   Nir1RelatedScenesFetchResult,
@@ -105,13 +110,24 @@ export async function fetchNir1RelatedPastScenes(
   function output(
     status: Nir1RelatedScenesFetchResult["status"],
     reason: Nir1IrUnavailableReason,
-    completed?: Pick<Nir1RelatedScenesFetchResult, "result" | "completion">,
+    completed?: Pick<Nir1RelatedScenesFetchResult, "result" | "completion"> &
+      Partial<Pick<Nir1RelatedScenesFetchResult, "graphOutcome" | "graph">>,
+    graphWait?: Nir1RelatedScenesGraphWait | null,
   ): Nir1RelatedScenesFetchResult {
     const result =
       completed?.result ??
       fuseNir1RelatedScenes(raw, { status: "unavailable", reason });
     session?.completeFetch();
-    if (result.kind === "raw") session?.releaseOperation();
+    // A Graph-only row keeps its navigation handle in the Native operation, so
+    // the operation outlives an empty-IR "raw" result while the row is held.
+    // Otherwise release it, but only after the Graph declaration has reached
+    // Native: a release that overtakes `unused` would cancel the ticket and
+    // lose the late Graph result's cache entry and graph-ready.
+    if (result.kind === "raw" && completed?.graph?.graphOnly == null) {
+      if (graphWait)
+        void graphWait.settled().then(() => session?.releaseOperation());
+      else session?.releaseOperation();
+    }
     if (options.rawOnly || status !== "completed" || rawStatus !== "completed")
       session?.release();
     return {
@@ -123,6 +139,10 @@ export async function fetchNir1RelatedPastScenes(
       completion: completed?.completion ?? null,
       rawScenes: raw.scenes,
       result,
+      ...(completed?.graphOutcome
+        ? { graphOutcome: completed.graphOutcome }
+        : {}),
+      ...(completed?.graph ? { graph: completed.graph } : {}),
       session: options.rawOnly ? null : session,
       timing: {
         tFetchMs,
@@ -211,6 +231,9 @@ export async function fetchNir1RelatedPastScenes(
       projectId,
       currentSceneId: sceneId,
       query,
+      ...(options.graphSeedEntityId !== undefined
+        ? { graphSeedEntityId: options.graphSeedEntityId }
+        : {}),
     });
     if (
       response.timing?.clock === "native-monotonic" &&
@@ -252,6 +275,36 @@ export async function fetchNir1RelatedPastScenes(
     rawStatus = "completed";
     tRawReadyMs = performance.now();
     stopIfContextChanged();
+    const graphWait = createNir1RelatedScenesGraphWait({
+      begin: response,
+      operationTicket,
+      queryBinding,
+      canWait: () =>
+        session.isActive() && !options.signal?.aborted && isCurrent(),
+    });
+    if (graphWait) {
+      const completed = await awaitNir1RelatedScenesWithGraph({
+        raw,
+        rawReadyAtMs: tRawReadyMs,
+        snapshot: initialSnapshot,
+        ir,
+        graph: graphWait.arrival(raw.scenes.map((scene) => scene.sceneId)),
+        session,
+        isCurrent,
+        onGraphSettled: graphWait.settle,
+      });
+      return output(
+        completed.status,
+        "failed",
+        {
+          result: completed.result,
+          completion: completed.completion,
+          graphOutcome: completed.graphOutcome,
+          ...(completed.graph ? { graph: completed.graph } : {}),
+        },
+        graphWait,
+      );
+    }
     const completed = await awaitNir1RelatedScenes({
       raw,
       rawReadyAtMs: tRawReadyMs,

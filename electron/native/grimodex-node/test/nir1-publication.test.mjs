@@ -54,6 +54,13 @@ function entries(backend, workspace) {
       backend.relatedScenesContinue(
         ...withIdentity(["owner-1", "ticket-1"], identity),
       ),
+    related_scenes_graph_continue: (identity) =>
+      backend.relatedScenesGraphContinue(
+        ...withIdentity(
+          ["owner-1", { operationTicket: "ticket-1", rawSceneIds: [] }],
+          identity,
+        ),
+      ),
     nir1_evidence_qualify: (identity) =>
       backend.nir1EvidenceQualify(
         ...withIdentity(["owner-1", "navigation-1"], identity),
@@ -134,6 +141,7 @@ function entries(backend, workspace) {
 const COMMANDS = [
   "related_scenes_begin",
   "related_scenes_continue",
+  "related_scenes_graph_continue",
   "nir1_evidence_qualify",
   "nir1_entity_relation_revision_read",
   "nir1_entity_relation_revision_read_current",
@@ -239,6 +247,21 @@ test("restricted: the registered identity of the active workspace is admitted", 
       "cancelled",
     );
     assert.equal(
+      JSON.parse(await rig.call.related_scenes_graph_continue(rig.wire)).reason,
+      "cancelled",
+    );
+    // The settle shape is the same command; an unknown ticket is cancelled.
+    assert.equal(
+      JSON.parse(
+        await rig.backend.relatedScenesGraphContinue(
+          "owner-1",
+          { operationTicket: "ticket-1", settle: "unused" },
+          rig.wire,
+        ),
+      ).reason,
+      "cancelled",
+    );
+    assert.equal(
       JSON.parse(await rig.call.nir1_evidence_qualify(rig.wire)).reason,
       "cancelled",
     );
@@ -253,6 +276,7 @@ test("restricted: a refusal names no owner, ticket or identity", async () => {
     for (const command of [
       "related_scenes_begin",
       "related_scenes_continue",
+      "related_scenes_graph_continue",
       "nir1_evidence_qualify",
     ]) {
       await assert.rejects(rig.call[command](undefined), (error) => {
@@ -326,5 +350,68 @@ test("unrestricted: every publication entry runs unchecked, with or without an i
     const wire = await backend.shutdownWorkspaceLifecycle();
     assert.equal(JSON.parse(wire).status, "closed");
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("graph continue: a malformed request is a request error, never a D2a refusal or a Graph state", async () => {
+  const rig = await restrictedRig("graph-shape");
+  try {
+    const bad = [
+      {},
+      { operationTicket: "ticket-1" },
+      { operationTicket: "ticket-1", rawSceneIds: [], settle: "used" },
+      { operationTicket: "ticket-1", settle: "later" },
+      { operationTicket: "ticket-1", rawSceneIds: [], extra: true },
+      { operationTicket: "ticket-1", rawSceneIds: ["a", "a"] },
+      {
+        operationTicket: "ticket-1",
+        rawSceneIds: Array.from({ length: 9 }, (_, index) => `s${index}`),
+      },
+    ];
+    for (const request of bad) {
+      await assert.rejects(
+        rig.backend.relatedScenesGraphContinue("owner-1", request, rig.wire),
+        (error) => {
+          NOT_DENIED(error);
+          assert.match(String(error.message), /RELATED_SCENES_UNAVAILABLE/);
+          return true;
+        },
+        JSON.stringify(request),
+      );
+    }
+  } finally {
+    await rig.close();
+  }
+});
+
+test("the Graph stays closed in a normal start: the direct query entry refuses, and a graph continue answers cancelled without a workspace read", async () => {
+  const rig = await restrictedRig("graph-closed");
+  try {
+    await assert.rejects(
+      rig.backend.nir1GraphQuery({
+        expectedWorkspacePath: rig.workspace,
+        projectId: "no-project",
+        querySceneId: "no-scene",
+        seedEntityId: "no-entity",
+      }),
+      /NIR1_GRAPH_NOT_ACTIVATED/,
+    );
+    for (const request of [
+      { operationTicket: "ticket-1", rawSceneIds: [] },
+      { operationTicket: "ticket-1", settle: "cancelled" },
+    ]) {
+      assert.equal(
+        JSON.parse(
+          await rig.backend.relatedScenesGraphContinue(
+            "owner-1",
+            request,
+            rig.wire,
+          ),
+        ).reason,
+        "cancelled",
+      );
+    }
+  } finally {
+    await rig.close();
   }
 });

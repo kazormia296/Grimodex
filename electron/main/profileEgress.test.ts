@@ -1478,4 +1478,15 @@ describe("D2a profile egress gate", () => {
     expect(gate.allowsBackendEvent("codex-app:event")).toBe(false);
     expect(gate.allowsBackendEvent("unknown:event")).toBe(false);
   });
+
+  it("lets only the project-ID-only Related Scenes notices through while restricted (CP-3a graph-ready)", async () => {
+    const gate = await createProfileEgressGate(backend());
+    expect(gate.restricted || gate.unavailable).toBe(true);
+    expect(gate.allowsBackendEvent("related-scenes:index-ready")).toBe(true);
+    expect(gate.allowsBackendEvent("related-scenes:graph-ready")).toBe(true);
+    // neighbours are not prefix-matched
+    expect(gate.allowsBackendEvent("related-scenes:graph-ready2")).toBe(false);
+    expect(gate.allowsBackendEvent("related-scenes:graph")).toBe(false);
+    expect(gate.allowsBackendEvent("related-scenes:graph-result")).toBe(false);
+  });
 });

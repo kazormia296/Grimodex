@@ -95,6 +95,31 @@ impl EventSink for EventQueue {
     }
 }
 
+/// The owner's `graph-ready` notice as an event: the project ID only.
+pub(crate) fn graph_ready_notifier(
+    events: EventQueue,
+) -> crate::nir1_graph_product::GraphReadyNotifier {
+    Arc::new(
+        move |notice: &crate::nir1_graph_product::GraphReadyNotice| {
+            events.emit(
+                "related-scenes:graph-ready",
+                serde_json::json!({"projectId": notice.project_id}),
+            );
+        },
+    )
+}
+
+#[cfg(test)]
+impl EventQueue {
+    /// The events not yet handed to a registered callback, oldest first.
+    pub(crate) fn pending_for_test(&self) -> Vec<(String, String)> {
+        match &*self.inner.lock().expect("event queue") {
+            SinkState::Pending(buffered) => buffered.clone(),
+            SinkState::Registered(_) => Vec::new(),
+        }
+    }
+}
+
 /// grimodex-ai のストリーミング emit（`send_chat_stream` の chunk/done）を同じ
 /// EventQueue（＝TSFn → main → 全窓 broadcast）へ載せる（Phase 3 バッチ3a）。
 /// Tauri 側の `AppHandle::emit` と同じくベストエフォート。EventSink の実装へ委譲する。
@@ -2753,6 +2778,9 @@ impl AppState {
         let switching = grimodex_db::WorkspaceLifecycleCompatibilityView::default();
         let lifecycle_core = switching.core();
         let nir1_graph = crate::nir1_graph_product::Nir1GraphProductOwner::new(&lifecycle_core);
+        // CP-3a: a late Graph result is announced with the project ID only
+        // (K3/2's `related-scenes:graph-ready`); the payload never carries data.
+        nir1_graph.set_graph_ready_notifier(graph_ready_notifier(events.clone()));
         let main_grant = crate::main_grant::MainGrantState::new(&lifecycle_core);
         Ok(Self {
             ws: WorkspaceState {

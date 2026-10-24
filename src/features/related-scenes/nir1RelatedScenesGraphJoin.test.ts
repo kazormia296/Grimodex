@@ -31,7 +31,7 @@ async function flush(): Promise<void> {
   for (let index = 0; index < 10; index += 1) await Promise.resolve();
 }
 
-function start() {
+function start(onSettled?: (use: Nir1GraphTicketUse) => void) {
   const ir = deferred<Nir1RelatedScenesIr>();
   const graph = deferred<Nir1GraphArrival<string>>();
   let listener: (() => void) | null = null;
@@ -59,7 +59,10 @@ function start() {
       "stopReason" | "isActive" | "subscribeInvalidation"
     >,
     isCurrent: () => current,
-    onGraphSettled: (use) => settled.push(use),
+    onGraphSettled: (use) => {
+      settled.push(use);
+      onSettled?.(use);
+    },
   });
   return {
     ir,
@@ -263,5 +266,23 @@ describe("awaitNir1RelatedScenesWithGraph", () => {
     expect(out.status).toBe("cancelled");
     expect(out.completion.outcome).toBe("cancelled");
     expect(h.settled).toEqual(["cancelled"]);
+  });
+
+  it("returns its result even when the settle declaration throws (T14)", async () => {
+    const h = start(() => {
+      throw new Error("settle failed");
+    });
+    clock = 103;
+    h.ir.resolve(AVAILABLE);
+    await flush();
+    clock = 105;
+    h.graph.resolve({ status: "available", graph: "g" });
+    const out = await h.promise;
+    expect(out.graphOutcome).toBe("graph-ready");
+    expect(h.settled).toEqual(["used"]);
+    // A later arrival or stop never declares a second time.
+    h.invalidate();
+    await flush();
+    expect(h.settled).toEqual(["used"]);
   });
 });

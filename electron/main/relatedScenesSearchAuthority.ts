@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 const RELATED_SCENES_COMMANDS = new Set([
   "related_scenes_begin",
   "related_scenes_continue",
+  "related_scenes_graph_continue",
   "related_scenes_release",
   "nir1_evidence_qualify",
 ]);

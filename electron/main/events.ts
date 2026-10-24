@@ -27,9 +27,14 @@ import {
 import {
   isRelatedScenesInvalidatedEvent,
   isRelatedScenesIndexReadyEvent,
+  isRelatedScenesGraphReadyEvent,
   RELATED_SCENES_INVALIDATED_EVENT,
   RELATED_SCENES_INDEX_READY_EVENT,
+  RELATED_SCENES_GRAPH_READY_EVENT,
 } from "../shared/relatedScenesSearchWire.js";
+// CP-3a: `related-scenes:graph-ready` carries `{ projectId }` only (the same
+// check as `index-ready`); any other key is dropped before the observer and
+// the broadcast. The constant and guard live in the shared wire file.
 
 /** Native completion signal consumed by main only; never broadcast to a window. */
 export const NARRATIVE_MAINTENANCE_EPOCH_ROTATED_EVENT =
@@ -253,6 +258,13 @@ function handleBackendEvent(
     console.warn(
       "[backend:event] invalid related-scenes index readiness payload",
     );
+    return;
+  }
+  if (
+    channel === RELATED_SCENES_GRAPH_READY_EVENT &&
+    !isRelatedScenesGraphReadyEvent(payload)
+  ) {
+    console.warn("[backend:event] invalid related-scenes graph-ready payload");
     return;
   }
   try {

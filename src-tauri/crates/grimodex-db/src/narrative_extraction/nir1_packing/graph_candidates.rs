@@ -43,7 +43,9 @@ use super::{
 };
 use crate::narrative_extraction::nir1_graph::c_query_worker::REQUEST_BYTES;
 use crate::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
-use crate::narrative_extraction::nir1_graph::{read_nir1_graph_seal, Nir1GraphSealRead};
+use crate::narrative_extraction::nir1_graph::{
+    read_nir1_graph_seal, Nir1GraphMaterialBinding, Nir1GraphSealRead,
+};
 use crate::narrative_maintenance_connection::ParticipantSqlOperationBudget;
 use crate::nir1_generation::{
     d1_selection_reference, InputReference, InputRole, InputTarget, InputUse,
@@ -77,6 +79,22 @@ pub struct Nir1GraphCandidateEdge {
     /// that leaves the seed).
     pub hop: u8,
     pub binding: Nir1GraphCandidateBinding,
+}
+
+impl From<&Nir1GraphMaterialBinding> for Nir1GraphCandidateBinding {
+    fn from(binding: &Nir1GraphMaterialBinding) -> Self {
+        Self {
+            revision_id: binding.revision_id.clone(),
+            decision_id: binding.decision_id.clone(),
+            decision_token: binding.decision_token.clone(),
+            freshness_token: binding.freshness_token.clone(),
+            scope_authority_revision: binding.scope_authority_revision.clone(),
+            query_scene_source_token: binding.query_scene_source_token.clone(),
+            query_scene_scope_token: binding.query_scene_scope_token.clone(),
+            query_scene_incarnation_id: binding.query_scene_incarnation_id.clone(),
+            reveal_state_token: binding.reveal_state_token.clone(),
+        }
+    }
 }
 
 impl Nir1GraphCandidateEdge {
@@ -141,21 +159,10 @@ impl Nir1GraphCandidates {
             let (Some(from), Some(to)) = (from, to) else {
                 anyhow::bail!("NIR1_GRAPH_CANDIDATE_ENDPOINT_MISSING");
             };
-            let binding = &edge.binding;
             edges.push(Nir1GraphCandidateEdge {
                 edge_id: edge.relation.edge_id.clone(),
                 hop: (*from).min(*to),
-                binding: Nir1GraphCandidateBinding {
-                    revision_id: binding.revision_id.clone(),
-                    decision_id: binding.decision_id.clone(),
-                    decision_token: binding.decision_token.clone(),
-                    freshness_token: binding.freshness_token.clone(),
-                    scope_authority_revision: binding.scope_authority_revision.clone(),
-                    query_scene_source_token: binding.query_scene_source_token.clone(),
-                    query_scene_scope_token: binding.query_scene_scope_token.clone(),
-                    query_scene_incarnation_id: binding.query_scene_incarnation_id.clone(),
-                    reveal_state_token: binding.reveal_state_token.clone(),
-                },
+                binding: Nir1GraphCandidateBinding::from(&*edge.binding),
             });
         }
         Self::new(
@@ -568,27 +575,77 @@ pub(super) struct GraphPoolContext<'a> {
     pub authority_digests: &'a HashMap<String, [u8; 32]>,
 }
 
+/// The nine tokens a snapshot derived itself for one Revision, borrowed from
+/// wherever that snapshot keeps them: D-final's authority binding
+/// ([`NativeNir1AuthorityBinding`]) or the A3 result of the Related Scenes
+/// requalification. The comparison with a worker's frame is one function so
+/// the two callers cannot drift apart (CP-3a S1).
+pub(crate) struct CurrentGraphTokens<'a> {
+    pub(crate) revision_id: &'a str,
+    pub(crate) decision_id: &'a str,
+    pub(crate) decision_token: &'a str,
+    pub(crate) freshness_token: &'a str,
+    pub(crate) scope_authority_revision: &'a str,
+    pub(crate) query_scene_id: &'a str,
+    pub(crate) query_scene_source_token: &'a str,
+    pub(crate) query_scene_scope_token: &'a str,
+    pub(crate) query_scene_incarnation_id: &'a str,
+    pub(crate) reveal_state_token: &'a str,
+}
+
+impl<'a> CurrentGraphTokens<'a> {
+    fn of_binding(binding: &'a NativeNir1AuthorityBinding) -> Self {
+        let scope = binding.scope();
+        Self {
+            revision_id: binding.revision_id(),
+            decision_id: binding.decision().id(),
+            decision_token: binding.decision_token(),
+            freshness_token: binding.freshness_token(),
+            scope_authority_revision: scope.scope_authority_revision(),
+            query_scene_id: scope.query_scene_id(),
+            query_scene_source_token: scope.query_scene_source_token(),
+            query_scene_scope_token: scope.query_scene_scope_token(),
+            query_scene_incarnation_id: scope.query_scene_incarnation_id(),
+            reveal_state_token: scope.reveal_state_token(),
+        }
+    }
+}
+
 /// The nine tokens plus the scope revision of the worker's frame, against the
-/// ones this snapshot derived for the Revision.
+/// ones a snapshot derived for the Revision.
+pub(crate) fn tokens_match_current(
+    candidate: &Nir1GraphCandidateBinding,
+    current: &CurrentGraphTokens<'_>,
+    scope_revision: Option<&str>,
+    query_scene_id: &str,
+) -> bool {
+    candidate.revision_id == current.revision_id
+        && candidate.decision_id == current.decision_id
+        && candidate.decision_token == current.decision_token
+        && candidate.freshness_token == current.freshness_token
+        && candidate.scope_authority_revision == current.scope_authority_revision
+        && candidate.query_scene_source_token == current.query_scene_source_token
+        && candidate.query_scene_scope_token == current.query_scene_scope_token
+        && candidate.query_scene_incarnation_id == current.query_scene_incarnation_id
+        && candidate.reveal_state_token == current.reveal_state_token
+        && current.query_scene_id == query_scene_id
+        && scope_revision == Some(current.scope_authority_revision)
+}
+
+/// D-final's comparison: the worker's edge against the authority binding the
+/// pooled read derived.
 fn tokens_match(
     edge: &Nir1GraphCandidateEdge,
     binding: &NativeNir1AuthorityBinding,
     scope_revision: Option<&str>,
     query_scene_id: &str,
 ) -> bool {
-    let candidate = &edge.binding;
-    let scope = binding.scope();
-    candidate.revision_id == binding.revision_id()
-        && candidate.decision_id == binding.decision().id()
-        && candidate.decision_token == binding.decision_token()
-        && candidate.freshness_token == binding.freshness_token()
-        && candidate.scope_authority_revision == scope.scope_authority_revision()
-        && candidate.query_scene_source_token == scope.query_scene_source_token()
-        && candidate.query_scene_scope_token == scope.query_scene_scope_token()
-        && candidate.query_scene_incarnation_id == scope.query_scene_incarnation_id()
-        && candidate.reveal_state_token == scope.reveal_state_token()
-        && scope.query_scene_id() == query_scene_id
-        && scope_revision == Some(scope.scope_authority_revision())
+    tokens_match_current(
+        &edge.binding,
+        &CurrentGraphTokens::of_binding(binding),
+        scope_revision,
+        query_scene_id,
+    )
 }
 
 /// What `reserve_group` charges for a group, without charging it.

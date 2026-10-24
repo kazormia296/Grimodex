@@ -7,6 +7,9 @@ import type { Nir1RelatedScenesSession } from "./nir1RelatedScenesSession";
 const h = vi.hoisted(() => ({
   tree: { activeSceneId: "s2", nodes: [] },
   fetch: vi.fn(),
+  graphReady: undefined as ((projectId: string) => void) | undefined,
+  unlistenGraph: vi.fn(),
+  listenGraph: vi.fn(),
 }));
 vi.mock("@/features/tree/treeStore", () => ({
   useTreeStore: (select: (state: typeof h.tree) => unknown) => select(h.tree),
@@ -26,6 +29,7 @@ vi.mock("@/features/workspace/store", () => ({
 vi.mock("./fetchRelatedScenes", () => ({ fetchRelatedPastScenes: h.fetch }));
 vi.mock("./nir1RelatedScenesApi", () => ({
   listenRelatedScenesIndexReady: vi.fn(async () => () => {}),
+  listenRelatedScenesGraphReady: h.listenGraph,
 }));
 vi.mock("./nir1EvidenceNavigation", () => ({
   observeNir1RelatedScenesQuery: vi.fn(),
@@ -57,6 +61,13 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   h.tree.activeSceneId = "s2";
+  h.graphReady = undefined;
+  h.listenGraph.mockImplementation(
+    async (receive: (projectId: string) => void) => {
+      h.graphReady = receive;
+      return h.unlistenGraph;
+    },
+  );
   h.fetch.mockResolvedValue(result(false));
 });
 afterEach(() => {
@@ -168,4 +179,163 @@ describe("Related Scenes timeout recovery", () => {
       expect(h.fetch).toHaveBeenCalledTimes(1);
     },
   );
+});
+
+describe("Related Scenes graph-ready refresh (CP-3a)", () => {
+  const withOutcome = (
+    graphOutcome: Nir1RelatedScenesFetchResult["graphOutcome"],
+  ): Nir1RelatedScenesFetchResult => ({ ...result(false), graphOutcome });
+  const ready = (projectId: string) =>
+    act(async () => {
+      h.graphReady?.(projectId);
+    });
+
+  it.each([
+    "graph-late",
+    "graph-unavailable:warming",
+    "graph-unavailable:stale",
+    "graph-unavailable:busy",
+  ] as const)(
+    "refreshes the displayed query once on graph-ready after %s",
+    async (outcome) => {
+      h.fetch.mockResolvedValue(withOutcome(outcome));
+      renderHook(() => useNir1RelatedScenes(true));
+      await advance(0);
+      await advance(400);
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+      await ready("p");
+      await advance(400);
+      expect(h.fetch).toHaveBeenCalledTimes(2);
+      expect(h.fetch.mock.calls[1][1].queryGeneration).not.toBe(
+        h.fetch.mock.calls[0][1].queryGeneration,
+      );
+    },
+  );
+
+  it("ignores a second graph-ready for the same generation", async () => {
+    h.fetch.mockResolvedValueOnce(withOutcome("graph-late"));
+    h.fetch.mockResolvedValue(result(false));
+    renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    await ready("p");
+    await ready("p");
+    await advance(400);
+    await ready("p");
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("each new generation that awaits the Graph may refresh once", async () => {
+    h.fetch.mockResolvedValue(withOutcome("graph-late"));
+    renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    await ready("p");
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    await ready("p");
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["another project", "graph-late", "other"],
+    ["graph-ready", "graph-ready", "p"],
+    ["graph-unavailable:failed", "graph-unavailable:failed", "p"],
+    ["graph-unavailable:not-activated", "graph-unavailable:not-activated", "p"],
+    ["an unseeded fetch (no outcome)", undefined, "p"],
+  ] as const)("does not refresh for %s", async (_name, outcome, project) => {
+    h.fetch.mockResolvedValue(withOutcome(outcome));
+    renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    await ready(project);
+    await advance(1000);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a graph-ready that came during the fetch and refreshes once after a late outcome (DR-CP3A-49)", async () => {
+    let finish!: (value: Nir1RelatedScenesFetchResult) => void;
+    h.fetch.mockImplementationOnce(
+      () =>
+        new Promise<Nir1RelatedScenesFetchResult>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    h.fetch.mockResolvedValue(withOutcome("graph-late"));
+    renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    // Native cached the late Graph before the fetch returned.
+    await ready("p");
+    await ready("p");
+    await act(async () => {
+      finish(withOutcome("graph-late"));
+    });
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    expect(h.fetch.mock.calls[1][1].queryGeneration).not.toBe(
+      h.fetch.mock.calls[0][1].queryGeneration,
+    );
+    // The early notice was that generation's one refresh; the new one waits
+    // for its own notice.
+    await advance(1000);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    await ready("p");
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["graph-ready", "graph-ready"],
+    ["no outcome", undefined],
+  ] as const)(
+    "drops a graph-ready that came during a fetch that ended with %s",
+    async (_name, outcome) => {
+      let finish!: (value: Nir1RelatedScenesFetchResult) => void;
+      h.fetch.mockImplementationOnce(
+        () =>
+          new Promise<Nir1RelatedScenesFetchResult>((resolve) => {
+            finish = resolve;
+          }),
+      );
+      renderHook(() => useNir1RelatedScenes(true));
+      await advance(0);
+      await advance(400);
+      await ready("p");
+      await act(async () => {
+        finish(withOutcome(outcome));
+      });
+      await advance(1000);
+      expect(h.fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("ignores graph-ready after the scene changed and unsubscribes on unmount", async () => {
+    h.fetch.mockResolvedValue(withOutcome("graph-late"));
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    h.tree.activeSceneId = "s3";
+    view.rerender();
+    await advance(0);
+    // The s3 query has not published yet: nothing awaits the Graph.
+    await ready("p");
+    await advance(0);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    view.unmount();
+    expect(h.unlistenGraph).toHaveBeenCalled();
+  });
+
+  it("keeps working when graph-ready registration fails", async () => {
+    h.listenGraph.mockRejectedValue(new Error("no event bridge"));
+    h.fetch.mockResolvedValue(withOutcome("graph-late"));
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(view.result.current.fetch).not.toBeNull();
+  });
 });

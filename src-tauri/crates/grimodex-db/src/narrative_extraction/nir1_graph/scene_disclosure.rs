@@ -202,6 +202,13 @@ impl GraphDisclosureQuery {
         Self { parts }
     }
 
+    /// A query that has no usable context (its context could not be read in
+    /// this snapshot). The reader answers [`NotAppended`] without reading the
+    /// database, like any other query without values.
+    pub const fn unavailable() -> Self {
+        Self { parts: None }
+    }
+
     pub(super) fn parts(&self) -> Option<&QueryParts> {
         self.parts.as_ref()
     }

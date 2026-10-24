@@ -31,7 +31,8 @@ struct Fusion {
     max_additional_scenes: usize,
 }
 
-pub(super) fn for_language(language: &str) -> Result<(f64, usize)> {
+/// The compiled policy, checked against the values this build was written for.
+fn policy() -> Result<&'static Policy> {
     static POLICY: OnceLock<Option<Policy>> = OnceLock::new();
     let policy = POLICY
         .get_or_init(|| serde_json::from_str(SOURCE).ok())
@@ -46,6 +47,11 @@ pub(super) fn for_language(language: &str) -> Result<(f64, usize)> {
             && policy.fusion.max_additional_scenes == 1,
         "RELATED_SCENES_RANKING_POLICY_INVALID"
     );
+    Ok(policy)
+}
+
+pub(super) fn for_language(language: &str) -> Result<(f64, usize)> {
+    let policy = policy()?;
     let floor = match language {
         "ja" => policy.ir_cosine_floors.ja,
         "en" => policy.ir_cosine_floors.en,
@@ -56,6 +62,19 @@ pub(super) fn for_language(language: &str) -> Result<(f64, usize)> {
         "RELATED_SCENES_RANKING_POLICY_INVALID"
     );
     Ok((floor, policy.ir_max_scenes))
+}
+
+/// The fusion's limits, `(maxScenes, maxAdditionalScenes)`: the most Scenes a
+/// Related Scenes result shows, and how many of them the IR (or a Graph-only
+/// Scene) may add beyond Raw. The common extra slot of CP-3a is open while Raw
+/// has fewer than `maxScenes` items and the IR added none of the
+/// `maxAdditionalScenes`.
+pub(super) fn fusion_limits() -> Result<(usize, usize)> {
+    let policy = policy()?;
+    Ok((
+        policy.fusion.max_scenes,
+        policy.fusion.max_additional_scenes,
+    ))
 }
 
 #[cfg(test)]
@@ -69,6 +88,19 @@ mod tests {
         for language in ["", "JA", "fr", "en-US"] {
             assert!(for_language(language).is_err());
         }
+        Ok(())
+    }
+
+    #[test]
+    fn compiled_fusion_limits_are_the_policy_file_values() -> Result<()> {
+        assert_eq!(fusion_limits()?, (8, 1));
+        // The accessor reads the same validated policy as the IR gates.
+        assert_eq!(for_language("ja")?.1, fusion_limits()?.0);
+        // The db crate's reader opens the common extra slot at the same count.
+        assert_eq!(
+            fusion_limits()?.0,
+            grimodex_db::narrative_extraction::COMMON_SLOT_RAW_LIMIT
+        );
         Ok(())
     }
 }

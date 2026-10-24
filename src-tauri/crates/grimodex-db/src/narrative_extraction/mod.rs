@@ -75,10 +75,16 @@ pub use nir1_entity_relation::{
 };
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_graph::{
-    evaluate_graph_only_append, evaluate_graph_only_scene, requalify_graph_only_scene_disclosure, AppendSlot, EligibleGraphScene, GraphDisclosureQuery,
-    GraphDisclosureWorkspace, GraphOnlyCandidate, GraphOnlyClick, GraphOnlyScan,
-    GraphOnlyScanInput, GraphOnlySceneBinding, GraphOnlySceneDisclosure, GraphPathRevalidator,
-    GraphSceneRange, GraphSceneRevalidationRefused, NotAppended, COMMON_SLOT_RAW_LIMIT,
+    evaluate_graph_only_append, evaluate_graph_only_scene, requalify_graph_for_related_scenes,
+    requalify_graph_only_click, requalify_graph_only_scene_disclosure,
+    with_graph_requalification_read, AppendSlot, EligibleGraphScene, GraphClickPath,
+    GraphDisclosureQuery, GraphDisclosureWorkspace, GraphOnlyBudget, GraphOnlyCandidate,
+    GraphOnlyClick, GraphOnlyRow, GraphOnlyScan, GraphOnlyScanInput, GraphOnlySceneBinding,
+    GraphOnlySceneDisclosure, GraphPathAttachment, GraphPathEdge, GraphPathEntity,
+    GraphPathEvidence, GraphPathRevalidator, GraphRequalification, GraphRequalificationDrop,
+    GraphRequalificationInput, GraphSceneRange, GraphSceneRevalidationRefused, NotAppended,
+    QualifiedGraphForRelatedScenes, ATTACHMENT_TEXT_MAX_BYTES, COMMON_SLOT_RAW_LIMIT,
+    GRAPH_ONLY_VM_STEPS,
 };
 pub use nir1_graph::{
     read_nir1_graph, read_nir1_graph_seal, Nir1GraphReader, Nir1GraphRequest, Nir1GraphResponse,

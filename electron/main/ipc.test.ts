@@ -4086,4 +4086,60 @@ describe("NIR-1 router sender binding", () => {
     ).toBe(true);
     expect(calls[1]?.ownerKey).not.toBe(owner);
   });
+
+  it("binds related_scenes_graph_continue to the same Main owner as begin, whatever the renderer sends", async () => {
+    const begins: Array<Record<string, unknown>> = [];
+    const graph: unknown[][] = [];
+    const relatedScenesBegin = vi.fn(
+      async (request: Record<string, unknown>) => {
+        begins.push(request);
+        return '{"status":"raw-ready"}';
+      },
+    );
+    const relatedScenesGraphContinue = vi.fn(async (...args: unknown[]) => {
+      graph.push(args);
+      return '{"status":"unavailable","reason":"cancelled"}';
+    });
+    registerIpcRouter({
+      relatedScenesBegin,
+      relatedScenesGraphContinue,
+    } as unknown as NapiBackendLike);
+    const sender = { id: 98, isDestroyed: () => false, once: vi.fn() };
+    const other = { id: 98, isDestroyed: () => false, once: vi.fn() };
+    await invokeHandler()({ sender }, "related_scenes_begin", {
+      expectedWorkspacePath: "/workspace",
+      projectId: "p",
+      currentSceneId: "s2",
+      query: "tail",
+    });
+    const owner = begins[0]?.ownerKey;
+    expect(typeof owner).toBe("string");
+    expect(
+      (
+        await invokeHandler()({ sender }, "related_scenes_graph_continue", {
+          ownerKey: "forged",
+          operationTicket: "t",
+          rawSceneIds: ["s1"],
+        })
+      ).ok,
+    ).toBe(true);
+    expect(
+      (
+        await invokeHandler()({ sender }, "related_scenes_graph_continue", {
+          operationTicket: "t",
+          settle: "unused",
+        })
+      ).ok,
+    ).toBe(true);
+    expect(graph[0]?.[0]).toBe(owner);
+    expect(graph[1]?.[0]).toBe(owner);
+    // another WebContents with the same numeric id gets its own owner and can
+    // never address this operation, even by copying the owner key
+    await invokeHandler()({ sender: other }, "related_scenes_graph_continue", {
+      ownerKey: owner,
+      operationTicket: "t",
+      settle: "used",
+    });
+    expect(graph[2]?.[0]).not.toBe(owner);
+  });
 });

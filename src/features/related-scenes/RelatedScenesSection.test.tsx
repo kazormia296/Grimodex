@@ -21,6 +21,7 @@ vi.mock("./fetchRelatedScenes", () => ({
 
 vi.mock("./nir1RelatedScenesApi", () => ({
   listenRelatedScenesIndexReady: vi.fn(async () => () => {}),
+  listenRelatedScenesGraphReady: vi.fn(async () => () => {}),
   qualifyNir1Evidence: vi.fn(),
 }));
 

@@ -490,7 +490,11 @@ describe("caller timeout policy（electron 分岐）", () => {
     await expect(derived).resolves.toBe(42);
   });
 
-  it.each(["semantic_reindex_all", "related_scenes_continue"])(
+  it.each([
+    "semantic_reindex_all",
+    "related_scenes_continue",
+    "related_scenes_graph_continue",
+  ])(
     "%s は lifecycle quiescence を保持せず derived caller を cancel する",
     async (command) => {
       let resolveBridge!: (value: { ok: true; value: number }) => void;
@@ -529,6 +533,62 @@ describe("caller timeout policy（electron 分岐）", () => {
       await Promise.resolve();
     },
   );
+
+  it("related_scenes_graph_continue の settle 形は release と同じ mutation lane を通る（DR-CP3A-45）", async () => {
+    let resolveSettle!: (value: { ok: true; value: unknown }) => void;
+    installBridge({
+      invoke: vi.fn().mockReturnValue(
+        new Promise<{ ok: true; value: unknown }>((resolve) => {
+          resolveSettle = resolve;
+        }),
+      ),
+    });
+    const [
+      { invoke },
+      {
+        acquireIpcDerivedAdmissionBarrier,
+        acquireIpcMutationAdmissionBarrier,
+        cancelDerivedIpcCallersForLifecycle,
+      },
+      { flushQuiescenceProviderStage },
+    ] = await Promise.all([
+      import("./tauri"),
+      import("./ipcQueue"),
+      import("./quiescenceProviders"),
+    ]);
+    const settleArgs = { operationTicket: "ticket-1", settle: "unused" };
+
+    // A lifecycle that closes derived admission does not drop the declaration;
+    // like release, it holds quiescence until Native has taken it.
+    const releaseDerived = acquireIpcDerivedAdmissionBarrier();
+    const settle = invoke("related_scenes_graph_continue", settleArgs);
+    await Promise.resolve();
+    cancelDerivedIpcCallersForLifecycle();
+    let flushSettled = false;
+    const flush = flushQuiescenceProviderStage("ipc-actual-tasks").then(() => {
+      flushSettled = true;
+    });
+    await Promise.resolve();
+    expect(flushSettled).toBe(false);
+    resolveSettle({ ok: true, value: { status: "settled" } });
+    await expect(settle).resolves.toEqual({ status: "settled" });
+    await flush;
+    releaseDerived();
+
+    // A frozen audit export refuses it with the other mutations (and release).
+    const releaseMutation = acquireIpcMutationAdmissionBarrier();
+    await expect(
+      invoke("related_scenes_graph_continue", settleArgs),
+    ).rejects.toMatchObject({ code: "IPC_MUTATION_CANCELLED" });
+    // The await form is still derived: the derived barrier, not this one.
+    await expect(
+      invoke("related_scenes_graph_continue", {
+        operationTicket: "ticket-1",
+        rawSceneIds: [],
+      }),
+    ).resolves.toEqual({ status: "settled" });
+    releaseMutation();
+  });
 
   it("cancel 後に完了した related_scenes_begin の ticket を一度だけ release する", async () => {
     let resolveBegin!: (value: {

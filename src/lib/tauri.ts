@@ -268,6 +268,7 @@ const DERIVED_INDEX_COMMANDS = new Set([
   "chat_reindex_all",
   "related_scenes_begin",
   "related_scenes_continue",
+  "related_scenes_graph_continue",
 ]);
 
 const AUDIT_EXPORT_READ_COMMANDS = new Set([
@@ -360,10 +361,26 @@ function callerTimeoutForCommand(
   return READ_ONLY_COMMAND_TIMEOUTS.get(command) ?? null;
 }
 
+/**
+ * The settle form of `related_scenes_graph_continue` (CP-3a, DR-CP3A-45) ends
+ * the Graph await that occupies the single derived slot. Queued behind that
+ * await it could never reach Native in time to end it, so it takes the same
+ * lane as `related_scenes_release`: no new command, the lane follows the args.
+ */
+function isRelatedScenesGraphSettle(
+  command: string,
+  args?: Record<string, unknown>,
+): boolean {
+  return (
+    command === "related_scenes_graph_continue" && args?.settle !== undefined
+  );
+}
+
 function ipcCategoryForCommand(
   command: string,
   args?: Record<string, unknown>,
 ): "mutation" | "read" | "derived" {
+  if (isRelatedScenesGraphSettle(command, args)) return "mutation";
   if (DERIVED_INDEX_COMMANDS.has(command)) return "derived";
   if (NON_PERSISTENT_READ_COMMANDS.has(command)) return "read";
   if (AUDIT_EXPORT_READ_COMMANDS.has(command)) return "read";

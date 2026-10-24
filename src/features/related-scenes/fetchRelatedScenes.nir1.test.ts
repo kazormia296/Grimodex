@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   RelatedScenesBeginResponse,
   RelatedScenesContinueResponse,
+  RelatedScenesGraphWaitResponse,
 } from "@/../electron/shared/relatedScenesSearchWire";
 import { setCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -16,6 +17,8 @@ const h = vi.hoisted(() => ({
   sparse: vi.fn(),
   begin: vi.fn(),
   continue: vi.fn(),
+  graphContinue: vi.fn(),
+  graphSettle: vi.fn(),
   release: vi.fn(),
   listen: vi.fn(),
   listenReady: vi.fn(),
@@ -42,6 +45,8 @@ vi.mock("@/features/chat/semanticRecall", async (original) => ({
 vi.mock("./nir1RelatedScenesApi", () => ({
   beginRelatedScenes: h.begin,
   continueRelatedScenes: h.continue,
+  continueRelatedScenesGraph: h.graphContinue,
+  settleRelatedScenesGraph: h.graphSettle,
   releaseRelatedScenes: h.release,
   listenRelatedScenesInvalidations: h.listen,
   listenRelatedScenesIndexReady: h.listenReady,
@@ -116,6 +121,8 @@ function fetchHybrid(
     signal?: AbortSignal;
     isCurrent?: () => boolean;
     queryGeneration?: number;
+    graphSeedEntityId?: string;
+    rawOnly?: boolean;
   } = {},
 ) {
   const response = fetchRelatedPastScenes("current", {
@@ -156,6 +163,7 @@ beforeEach(() => {
   h.begin.mockResolvedValue(beginResponse());
   h.continue.mockResolvedValue(irResponse());
   h.release.mockResolvedValue({ status: "released" });
+  h.graphSettle.mockResolvedValue({ status: "settled" });
   h.listen.mockImplementation(async (callback: (binding: string) => void) => {
     h.invalidate = callback;
     return h.unlisten;
@@ -530,4 +538,281 @@ describe("NIR1 production fetch orchestration", () => {
       expect(JSON.stringify(response.result)).not.toContain("private");
     },
   );
+});
+
+type GraphAvailable = Extract<
+  RelatedScenesGraphWaitResponse,
+  { status: "available" }
+>;
+const graphWire = (
+  overrides: Partial<GraphAvailable> = {},
+): GraphAvailable => ({
+  status: "available",
+  queryBinding: "query-a",
+  pathAttachments: [
+    {
+      sceneId: "a",
+      hop: 1,
+      edges: [
+        {
+          relationType: "ally",
+          directionality: "directed",
+          from: { entityId: "e1", label: "Alice" },
+          to: { entityId: "e2", label: "Bob" },
+          evidence: [{ evidenceId: "ev1", quote: "They met." }],
+        },
+      ],
+    },
+  ],
+  graphOnly: null,
+  ...overrides,
+});
+const graphOnlyRow = {
+  sceneId: "g",
+  sceneTitle: "Graph scene",
+  excerpt: "Graph excerpt",
+  canonicalRange: { start: 0, end: 13 },
+  navigationIdentity: "related-scenes-graph-scene:opaque",
+  path: {
+    hop: 2,
+    pinEntityId: "e2",
+    edges: [
+      {
+        relationType: "ally",
+        directionality: "directed",
+        from: { entityId: "e1", label: "Alice" },
+        to: { entityId: "e2", label: "Bob" },
+        evidence: [{ evidenceId: "ev1", quote: "They met." }],
+      },
+    ],
+  },
+};
+const seeded = () => ({ graphSeedEntityId: "entity-seed" });
+const pendingBegin = (): RelatedScenesBeginResponse => ({
+  ...beginResponse(),
+  graph: { status: "pending" },
+});
+
+describe("NIR1 Graph join wiring (CP-3a)", () => {
+  it("leaves an unseeded query exactly as before: no Graph call, no Graph field", async () => {
+    const response = await fetchHybrid();
+    expect(h.begin.mock.calls[0][0]).not.toHaveProperty("graphSeedEntityId");
+    expect(h.graphContinue).not.toHaveBeenCalled();
+    expect(h.graphSettle).not.toHaveBeenCalled();
+    expect(response).not.toHaveProperty("graphOutcome");
+    expect(response).not.toHaveProperty("graph");
+    expect(response.result.kind).toBe("fused");
+  });
+
+  it("ignores a seed for a Raw-only recovery (no begin at all)", async () => {
+    h.listenReady.mockRejectedValue(new Error("no bridge"));
+    await fetchHybrid({ ...seeded(), rawOnly: true });
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(h.graphContinue).not.toHaveBeenCalled();
+  });
+
+  it("sends the seed to begin and waits once, with the Raw R IDs, after Raw is selected", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.graphContinue.mockResolvedValue(graphWire());
+    const response = await fetchHybrid(seeded());
+    expect(h.begin.mock.calls[0][0]).toMatchObject({
+      graphSeedEntityId: "entity-seed",
+    });
+    expect(h.graphContinue).toHaveBeenCalledExactlyOnceWith("ticket-a", [
+      "a",
+      "b",
+    ]);
+    expect(response.graphOutcome).toBe("graph-ready");
+    expect(response.graph).toEqual({
+      queryBinding: "query-a",
+      pathAttachments: graphWire().pathAttachments,
+      graphOnly: null,
+    });
+    // The fusion result is the R+IR one, untouched by the Graph.
+    expect(response.result.kind).toBe("fused");
+    expect(response.result.scenes[0].sceneId).toBe("a");
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "used");
+    expect(h.release).not.toHaveBeenCalled();
+  });
+
+  it("publishes graph-late at the deadline with R+IR and declares the ticket unused", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    const graph = deferred<RelatedScenesGraphWaitResponse>();
+    h.graphContinue.mockReturnValue(graph.promise);
+    const pending = fetchHybrid(seeded());
+    await drain();
+    h.now = 120;
+    await vi.advanceTimersByTimeAsync(20);
+    const response = await pending;
+    expect(response.graphOutcome).toBe("graph-late");
+    expect(response).not.toHaveProperty("graph");
+    expect(response.result.kind).toBe("fused");
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "unused");
+    graph.resolve(graphWire());
+    await drain();
+    expect(response).not.toHaveProperty("graph");
+    expect(h.graphSettle).toHaveBeenCalledOnce();
+  });
+
+  it("does not wait for, or add a wait to, a Graph that was unavailable at begin", async () => {
+    h.begin.mockResolvedValue({
+      ...beginResponse(),
+      graph: { status: "unavailable", reason: "not-activated" },
+    });
+    // No timer is advanced: the result must not wait for the deadline.
+    const response = await fetchHybrid(seeded());
+    expect(h.graphContinue).not.toHaveBeenCalled();
+    expect(h.graphSettle).not.toHaveBeenCalled();
+    expect(response.graphOutcome).toBe("graph-unavailable:not-activated");
+    expect(response.result.kind).toBe("fused");
+  });
+
+  it("reports an unavailable Graph wait with its closed reason and keeps R+IR", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.graphContinue.mockResolvedValue({
+      status: "unavailable",
+      reason: "warming",
+    });
+    const response = await fetchHybrid(seeded());
+    expect(response.graphOutcome).toBe("graph-unavailable:warming");
+    expect(response.result.kind).toBe("fused");
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "used");
+  });
+
+  it("uses exact R and cancels the Graph ticket when IR is unavailable", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.continue.mockResolvedValue({ status: "unavailable", reason: "failed" });
+    h.graphContinue.mockReturnValue(new Promise(() => {}));
+    const response = await fetchHybrid(seeded());
+    expect(response.result.scenes).toBe(response.rawScenes);
+    expect(response.graphOutcome).toBe("graph-unavailable:cancelled");
+    expect(response).not.toHaveProperty("graph");
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith(
+      "ticket-a",
+      "cancelled",
+    );
+  });
+
+  it("does not use a Graph when IR times out, and declares it unused", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.continue.mockReturnValue(new Promise(() => {}));
+    h.graphContinue.mockReturnValue(new Promise(() => {}));
+    const pending = fetchHybrid(seeded());
+    await drain();
+    h.now = 120;
+    await vi.advanceTimersByTimeAsync(20);
+    const response = await pending;
+    expect(response.result).toMatchObject({
+      kind: "raw",
+      ir: { status: "unavailable", reason: "timeout" },
+    });
+    expect(response.graphOutcome).toBe("graph-late");
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "unused");
+  });
+
+  it("does not start a Graph wait for a query that is no longer current", async () => {
+    const begin = deferred<RelatedScenesBeginResponse>();
+    h.begin.mockReturnValue(begin.promise);
+    const controller = new AbortController();
+    const pending = fetchHybrid({ ...seeded(), signal: controller.signal });
+    await drain();
+    controller.abort();
+    begin.resolve(pendingBegin());
+    const response = await pending;
+    expect(response.status).toBe("cancelled");
+    expect(h.graphContinue).not.toHaveBeenCalled();
+    expect(h.graphSettle).not.toHaveBeenCalled();
+    expect(h.release).toHaveBeenCalledExactlyOnceWith("ticket-a");
+  });
+
+  it("projects display fields only and drops anything else the answer carries", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.graphContinue.mockResolvedValue({
+      ...graphWire({ graphOnly: graphOnlyRow }),
+      privateDigest: "private",
+      graphOnly: {
+        ...graphOnlyRow,
+        canonicalTextDigest: "private",
+        path: { ...graphOnlyRow.path, token: "private" },
+      },
+    } as unknown as RelatedScenesGraphWaitResponse);
+    const response = await fetchHybrid(seeded());
+    expect(response.graph?.graphOnly).toEqual(graphOnlyRow);
+    expect(JSON.stringify(response.graph)).not.toContain("private");
+  });
+
+  it.each([
+    ["a binding of another query", { queryBinding: "wrong-query" }],
+    ["a malformed path", { pathAttachments: [{ sceneId: "a", hop: 1 }] }],
+    ["a malformed Graph-only row", { graphOnly: { sceneId: "g" } }],
+  ])("reports %s as an unavailable Graph", async (_name, patch) => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.graphContinue.mockResolvedValue({
+      ...graphWire(),
+      ...patch,
+    } as unknown as RelatedScenesGraphWaitResponse);
+    const response = await fetchHybrid(seeded());
+    expect(response.graphOutcome).toBe("graph-unavailable:failed");
+    expect(response).not.toHaveProperty("graph");
+  });
+
+  it("reports a rejected Graph wait as failed and a rejected settle does not break the result", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.graphContinue.mockRejectedValue(new Error("private transport"));
+    h.graphSettle.mockRejectedValue(new Error("private settle"));
+    const response = await fetchHybrid(seeded());
+    expect(response.graphOutcome).toBe("graph-unavailable:failed");
+    expect(response.status).toBe("completed");
+    expect(JSON.stringify(response.result)).not.toContain("private");
+  });
+
+  describe("the Operation is released only after the Graph declaration", () => {
+    const emptyIr = () =>
+      h.continue.mockResolvedValue({
+        status: "available",
+        queryBinding: "query-a",
+        scenes: [],
+      });
+
+    it("holds the Operation while a Graph-only row is held", async () => {
+      h.begin.mockResolvedValue(pendingBegin());
+      emptyIr();
+      h.graphContinue.mockResolvedValue(graphWire({ graphOnly: graphOnlyRow }));
+      const response = await fetchHybrid(seeded());
+      expect(response.result.kind).toBe("raw");
+      expect(response.graph?.graphOnly?.sceneId).toBe("g");
+      await drain();
+      expect(h.release).not.toHaveBeenCalled();
+      expect(response.session?.retain()).not.toBeNull();
+    });
+
+    it("releases a raw result without a Graph-only row, after the settle reached Native", async () => {
+      h.begin.mockResolvedValue(pendingBegin());
+      emptyIr();
+      h.graphContinue.mockResolvedValue(graphWire());
+      const settle = deferred<{ status: "settled" }>();
+      h.graphSettle.mockReturnValue(settle.promise);
+      const response = await fetchHybrid(seeded());
+      expect(response.result.kind).toBe("raw");
+      await drain();
+      expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "used");
+      expect(h.release).not.toHaveBeenCalled();
+      settle.resolve({ status: "settled" });
+      await drain();
+      expect(h.release).toHaveBeenCalledExactlyOnceWith("ticket-a");
+      expect(h.graphSettle.mock.invocationCallOrder[0]).toBeLessThan(
+        h.release.mock.invocationCallOrder[0],
+      );
+    });
+
+    it("still releases after a rejected settle", async () => {
+      h.begin.mockResolvedValue(pendingBegin());
+      emptyIr();
+      h.graphContinue.mockResolvedValue(graphWire());
+      h.graphSettle.mockRejectedValue(new Error("private"));
+      await fetchHybrid(seeded());
+      await drain();
+      expect(h.release).toHaveBeenCalledExactlyOnceWith("ticket-a");
+    });
+  });
 });

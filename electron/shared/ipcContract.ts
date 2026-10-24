@@ -309,6 +309,8 @@ export const BACKEND_EVENT_CHANNEL_ALLOWLIST = [
   "semantic:reindex_progress",
   "related-scenes:invalidated",
   "related-scenes:index-ready",
+  // CP-3a: the Graph owner's "a late result is now cached" notice (CP2a-D11).
+  "related-scenes:graph-ready",
   "vivliostyle:log",
   "vivliostyle:done",
   "vivliostyle:error",
@@ -781,6 +783,16 @@ export interface NapiBackendLike {
   relatedScenesContinue?(
     ownerKey: string,
     operationTicket: string,
+    callerIdentity?: string,
+  ): Promise<string>;
+  /**
+   * One command for both the wait for the Graph and the renderer's settle
+   * declaration (CP-3a D5): `{ operationTicket, rawSceneIds }` or
+   * `{ operationTicket, settle }`, mutually exclusive.  `nir1-publication`.
+   */
+  relatedScenesGraphContinue?(
+    ownerKey: string,
+    request: unknown,
     callerIdentity?: string,
   ): Promise<string>;
   relatedScenesRelease?(
@@ -6600,7 +6612,7 @@ function requireRelatedScenesBeginRequest(args: CommandArgs) {
       "IPC_INVALID_REQUEST: related_scenes_begin query exceeds Raw UTF-16 tail",
     );
   }
-  return {
+  const request = {
     ownerKey: requireNonEmptyString(args, "ownerKey", command),
     expectedWorkspacePath: requireNonEmptyString(
       args,
@@ -6611,6 +6623,77 @@ function requireRelatedScenesBeginRequest(args: CommandArgs) {
     currentSceneId: requireNonEmptyString(args, "currentSceneId", command),
     query,
   };
+  // CP-3a: an optional Graph seed.  Without the key, Native receives exactly
+  // the five keys above (the Graph is neither started nor mentioned).  Native
+  // owns the request-size limit and answers `limit`; this only refuses a seed
+  // that can never name an Entity.
+  if (args.graphSeedEntityId === undefined) return request;
+  const seed = requireNonEmptyString(args, "graphSeedEntityId", command);
+  if (seed.trim().length === 0 || seed.length > RELATED_SCENES_ID_UTF16_MAX) {
+    throw new Error(
+      "IPC_INVALID_REQUEST: related_scenes_begin graphSeedEntityId is not an Entity ID",
+    );
+  }
+  return { ...request, graphSeedEntityId: seed };
+}
+
+/** Same bound as Native's ticket and Scene IDs (`graph.rs` `REQUEST_ID_UTF16_MAX`). */
+const RELATED_SCENES_ID_UTF16_MAX = 200;
+/** `maxScenes` of the ranking policy; Native re-checks it against the policy. */
+const RELATED_SCENES_GRAPH_RAW_SCENES_MAX = 8;
+const RELATED_SCENES_GRAPH_SETTLE_VALUES: ReadonlySet<unknown> = new Set([
+  "used",
+  "unused",
+  "cancelled",
+]);
+
+/**
+ * `related_scenes_graph_continue` (CP-3a): exactly one of
+ * `{ operationTicket, rawSceneIds }` (wait) or `{ operationTicket, settle }`
+ * (declare), plus the Main-bound `ownerKey` (returned separately).  Anything
+ * else is a request error here, before Native; Native checks again.
+ */
+function requireRelatedScenesGraphContinueRequest(
+  args: CommandArgs,
+): readonly [string, Record<string, unknown>] {
+  const command = "related_scenes_graph_continue";
+  requireExactKeys(
+    args,
+    ["ownerKey", "operationTicket", "rawSceneIds", "settle"],
+    command,
+  );
+  const ownerKey = requireNonEmptyString(args, "ownerKey", command);
+  const operationTicket = requireNonEmptyString(
+    args,
+    "operationTicket",
+    command,
+  );
+  const invalid = (what: string) =>
+    new Error(`IPC_INVALID_REQUEST: ${command} ${what}`);
+  const idOk = (id: string) =>
+    id.trim().length > 0 && id.length <= RELATED_SCENES_ID_UTF16_MAX;
+  if (!idOk(operationTicket)) throw invalid("operationTicket is not an ID");
+  const hasRaw = args.rawSceneIds !== undefined;
+  const hasSettle = args.settle !== undefined;
+  if (hasRaw === hasSettle) {
+    throw invalid("needs exactly one of rawSceneIds or settle");
+  }
+  if (hasSettle) {
+    if (!RELATED_SCENES_GRAPH_SETTLE_VALUES.has(args.settle)) {
+      throw invalid("settle is not used, unused or cancelled");
+    }
+    return [ownerKey, { operationTicket, settle: args.settle }];
+  }
+  const rawSceneIds = args.rawSceneIds;
+  if (
+    !Array.isArray(rawSceneIds) ||
+    rawSceneIds.length > RELATED_SCENES_GRAPH_RAW_SCENES_MAX ||
+    !rawSceneIds.every((id) => typeof id === "string" && idOk(id)) ||
+    new Set(rawSceneIds).size !== rawSceneIds.length
+  ) {
+    throw invalid("rawSceneIds is not up to 8 distinct Scene IDs");
+  }
+  return [ownerKey, { operationTicket, rawSceneIds: [...rawSceneIds] }];
 }
 
 function requireNir1EntityRelationRevisionCreateRequest(
@@ -8424,6 +8507,23 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
           callerIdentityWire(a),
         ),
       ),
+  },
+  related_scenes_graph_continue: {
+    run: async (b, a) => {
+      const [ownerKey, request] = requireRelatedScenesGraphContinueRequest(a);
+      return parseWire(
+        await callPublicationEntry2(
+          requireNapiMethod(
+            b,
+            b.relatedScenesGraphContinue,
+            "relatedScenesGraphContinue",
+          ),
+          ownerKey,
+          request,
+          callerIdentityWire(a),
+        ),
+      );
+    },
   },
   related_scenes_release: {
     run: async (b, a) =>

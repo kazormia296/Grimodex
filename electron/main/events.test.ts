@@ -461,3 +461,38 @@ describe("NIR-1 newly usable index notification", () => {
     expect(window.webContents.send).not.toHaveBeenCalled();
   });
 });
+
+describe("NIR-1 Graph readiness notification (CP-3a)", () => {
+  it("accepts a Native project-only graph-ready event and refuses extra disclosure and renderer spoofing", () => {
+    const window = makeWindow(44);
+    allWindows.push(window);
+    const backend = makeBackend();
+    registerEventBus(backend);
+    backend.capturedCallback?.(
+      "related-scenes:graph-ready",
+      '{"projectId":"project"}',
+    );
+    expect(window.webContents.send).toHaveBeenCalledExactlyOnceWith(
+      IPC.event,
+      "related-scenes:graph-ready",
+      { projectId: "project" },
+    );
+    window.webContents.send.mockClear();
+    for (const payload of [
+      "not-json",
+      "{}",
+      '{"projectId":" "}',
+      '{"projectId":"project","count":9}',
+      '{"projectId":"project","queryBinding":"must-not-leak"}',
+      `{"projectId":"${"p".repeat(201)}"}`,
+      '{"projectId":7}',
+      '["project"]',
+    ]) {
+      backend.capturedCallback?.("related-scenes:graph-ready", payload);
+    }
+    emitFromRenderer(window, "related-scenes:graph-ready", {
+      projectId: "project",
+    });
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+});

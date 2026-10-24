@@ -5,7 +5,7 @@
 //! One slot holds at most one demand session; each session owns one thread
 //! that prepares and queries the worker, so the worker never leaves the thread.
 //! `begin` never waits on the database, a child process or a join.
-#![cfg_attr(not(test), allow(dead_code))] // Product callers arrive with CP-3a/DI-1a (DT-2 precedent).
+#![cfg_attr(not(test), allow(dead_code))] // Still unused: the process worker (CP-2b), its path configuration, the Suspended resume hook (PUB-G/CP-4) and test-only inspection. CP-3a's callers are in related_scenes/graph.rs.
 
 use std::{
     panic::{catch_unwind, AssertUnwindSafe},
@@ -411,7 +411,7 @@ struct Shared {
     quarantined: AtomicBool,
     next_thread_id: AtomicU64,
     worker: OnceLock<Arc<dyn GraphWorkerFactory>>,
-    notifier: OnceLock<GraphReadyNotifier>,
+    notifier: Mutex<Option<GraphReadyNotifier>>,
     cache: Mutex<Option<CacheEntry>>,
     config: Mutex<GraphOwnerConfig>,
     /// D-final's wait budget and step. The constants in production; a test
@@ -441,7 +441,7 @@ impl Shared {
             quarantined: AtomicBool::new(false),
             next_thread_id: AtomicU64::new(1),
             worker: OnceLock::new(),
-            notifier: OnceLock::new(),
+            notifier: Mutex::new(None),
             cache: Mutex::new(None),
             config: Mutex::new(GraphOwnerConfig::default()),
             dfinal_wait: Mutex::new(GraphWaitPlan::default()),
@@ -554,9 +554,16 @@ impl Shared {
             });
         }
         bump(&self.diagnostics.late_cached);
-        if let Some(notifier) = self.notifier.get() {
+        self.notify_ready(&key.project_id);
+    }
+
+    /// Announces a late result or a READY. The notifier runs outside every lock
+    /// of this owner: it reaches the event queue.
+    fn notify_ready(&self, project_id: &str) {
+        let notifier = lock(&self.notifier).clone();
+        if let Some(notifier) = notifier {
             notifier(&GraphReadyNotice {
-                project_id: key.project_id.clone(),
+                project_id: project_id.to_owned(),
             });
         }
     }
@@ -991,9 +998,16 @@ impl Nir1GraphProductOwner {
             .map_err(|_| anyhow!("NIR1_GRAPH_WORKER_ALREADY_CONFIGURED"))
     }
 
-    /// CP-3a connects this to the EventQueue; CP-2a never installs it.
+    /// `AppState` connects this to the EventQueue once (CP-3a). A second call is
+    /// refused; under test it replaces the connection, so a test can observe
+    /// the notices without the real queue.
     pub(crate) fn set_graph_ready_notifier(&self, notifier: GraphReadyNotifier) -> bool {
-        self.shared.notifier.set(notifier).is_ok()
+        let mut slot = lock(&self.shared.notifier);
+        if slot.is_some() && !cfg!(test) {
+            return false;
+        }
+        *slot = Some(notifier);
+        true
     }
 
     /// Called after B's publish (B-ROUTE/CP-3a) to leave Suspended.
@@ -1573,11 +1587,7 @@ fn build_and_serve(
     bump(&shared.diagnostics.prepares_ready);
     shared.signal_ready();
     if shared.take_unserved(&key.project_id) {
-        if let Some(notifier) = shared.notifier.get() {
-            notifier(&GraphReadyNotice {
-                project_id: key.project_id.clone(),
-            });
-        }
+        shared.notify_ready(&key.project_id);
     }
     serve_until_retired(guard, context, key, epoch, stamp)
 }

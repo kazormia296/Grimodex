@@ -41,6 +41,7 @@ vi.mock("./nir1RelatedScenesApi", () => ({
   continueRelatedScenes: h.continuation,
   releaseRelatedScenes: h.release,
   listenRelatedScenesIndexReady: async () => () => {},
+  listenRelatedScenesGraphReady: async () => () => {},
   listenRelatedScenesInvalidations: async (
     receive: (binding: string) => void,
   ) => {
