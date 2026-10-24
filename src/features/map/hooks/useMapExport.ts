@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useEffect } from "react";
 import type { Edge, Node } from "@xyflow/react";
 import { buildMapSVG, svgToPngBlob, buildMapJSON } from "../mapExport";
@@ -61,7 +62,7 @@ export function useMapExport(
     doExport().catch((err) => {
       console.error(err);
       toast.error(i18next.t("map.toast.exportFailed"), {
-        description: String(err),
+        description: d2aFailureText(err, String(err)),
       });
     });
   }, [pendingExport, setPendingExport, getNodes, getEdges]);

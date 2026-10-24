@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useState, useCallback } from "react";
 import type { Node } from "@xyflow/react";
 import { toast } from "sonner";
@@ -126,7 +127,7 @@ export function useMapContextMenu({
         await deleteNodePosition(pos.id);
       } catch (err) {
         toast.error(i18next.t("map.toast.removeFromBoardFailed"), {
-          description: String(err),
+          description: d2aFailureText(err, String(err)),
         });
         setContextMenu(null);
         return;
