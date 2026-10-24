@@ -119,6 +119,52 @@ impl Rig {
         let grant = self.issued().await;
         self.consume(&grant).unwrap();
     }
+
+    /// A non-stream legacy request whose transport never answers, returned
+    /// once it is waiting inside `until_cancelled` (the synchronisation
+    /// point: from here only the barrier's Notify wakeup can end it).
+    async fn waiting_legacy_request(&self) -> tokio::task::JoinHandle<anyhow::Result<()>> {
+        let before = self.state().profile_egress.legacy_waiting_for_test();
+        let permit = self
+            .state()
+            .profile_egress
+            .begin_legacy_provider_dispatch(None)
+            .unwrap();
+        let request = tokio::spawn(async move {
+            let outcome = permit.until_cancelled(std::future::pending::<()>()).await;
+            drop(permit);
+            outcome
+        });
+        until(|| self.state().profile_egress.legacy_waiting_for_test() == before + 1).await;
+        request
+    }
+}
+
+/// Polls `condition` (a synchronisation point, not a fixed sleep) for up to
+/// 10 s.
+async fn until(condition: impl Fn() -> bool) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !condition() {
+        assert!(Instant::now() < deadline, "the condition never held");
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+}
+
+/// Awaits a request ended by the barrier, with a bound so that a request
+/// that is never cancelled fails the test instead of hanging it.
+async fn stopped(request: tokio::task::JoinHandle<anyhow::Result<()>>) -> anyhow::Result<()> {
+    tokio::time::timeout(Duration::from_secs(10), request)
+        .await
+        .expect("the request was never stopped")
+        .unwrap()
+}
+
+fn assert_stopped_by_the_profile(outcome: anyhow::Result<()>) {
+    let error = outcome.unwrap_err();
+    assert!(
+        format!("{error:#}").contains("D2A_EGRESS_DENIED: legacy-request-stopped"),
+        "{error:#}"
+    );
 }
 
 // Entrance closed (A-1, DR-DA2-1): a closed gate refuses before anything is
@@ -240,8 +286,14 @@ async fn the_preview_returns_only_the_id_the_text_and_the_time_left() {
         .map(String::as_str)
         .collect();
     keys.sort_unstable();
-    assert_eq!(keys, ["disclosureVersion", "display", "expiresInMs", "previewId"]);
-    assert_eq!(preview["disclosureVersion"], PROFILE_ACTIVATION_DISCLOSURE_VERSION);
+    assert_eq!(
+        keys,
+        ["disclosureVersion", "display", "expiresInMs", "previewId"]
+    );
+    assert_eq!(
+        preview["disclosureVersion"],
+        PROFILE_ACTIVATION_DISCLOSURE_VERSION
+    );
     assert_eq!(preview["expiresInMs"], 60_000);
     let id = preview["previewId"].as_str().unwrap();
     assert_eq!(id.len(), 64);
@@ -522,6 +574,12 @@ async fn activation_barrier_drain_is_bounded() {
         .profile_egress
         .begin_legacy_provider_dispatch(None)
         .unwrap();
+    // And one of every kind that is: a chat stream that never quiesces (the
+    // review's stream A), an inline stream (stream B) and a non-stream
+    // request waiting on its transport.
+    let chat = rig.state().chat_streams.register("chat-a").unwrap();
+    let inline = rig.state().inline_ai_streams.register("inline-b").unwrap();
+    let request = rig.waiting_legacy_request().await;
     rig.reserved().await;
     let started = Instant::now();
     let error = commit_bounded(rig.state(), Duration::from_millis(50))
@@ -529,6 +587,14 @@ async fn activation_barrier_drain_is_bounded() {
         .unwrap_err();
     assert!(started.elapsed() < Duration::from_secs(10));
     assert_eq!(error.reason, "PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
+    // Every kind was asked to stop although the chat stream held the wait
+    // until the bound (F1), and nothing was withdrawn at the bound (F5).
+    assert!(chat.abort_flag().load(std::sync::atomic::Ordering::Acquire));
+    assert!(inline
+        .abort_flag()
+        .load(std::sync::atomic::Ordering::Acquire));
+    assert!(rig.state().post_effect_abort.abort_all_pending());
+    assert_stopped_by_the_profile(stopped(request).await);
     let persisted = rig.persisted();
     assert_eq!(persisted["restricted"], true);
     assert_eq!(persisted["inFlightStopped"], false);
@@ -579,11 +645,22 @@ async fn startup_barrier_drain_is_bounded() {
             "restricted": true, "handlesInvalidated": true, "inFlightStopped": true,
         }),
     );
-    let _stream = rig.state().chat_streams.register("never-quiesces").unwrap();
+    // Stream A never quiesces; stream B is in the other registry, which the
+    // barrier used to reach only after A had quiesced (review F1).
+    let chat = rig.state().chat_streams.register("never-quiesces").unwrap();
+    let inline = rig.state().inline_ai_streams.register("inline-b").unwrap();
     let error = crate::settle_profile_egress_bounded(rig.state(), Duration::from_millis(50))
         .await
         .unwrap_err();
     assert_eq!(error.reason, "PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
+    assert!(chat.abort_flag().load(std::sync::atomic::Ordering::Acquire));
+    assert!(
+        inline
+            .abort_flag()
+            .load(std::sync::atomic::Ordering::Acquire),
+        "the inline stream is asked to stop although the bound ended the wait"
+    );
+    assert!(rig.state().post_effect_abort.abort_all_pending());
     assert!(rig.state().profile_egress.begin_dispatch(None).is_err());
     let persisted = rig.persisted();
     assert_eq!(persisted["restricted"], true);
@@ -624,17 +701,10 @@ async fn startup_barrier_without_targets_finishes_without_waiting() {
 async fn non_stream_legacy_request_is_cancelled_by_the_barrier() {
     let rig = Rig::new("legacy-cancel");
     rig.open_gate();
-    let permit = rig
-        .state()
-        .profile_egress
-        .begin_legacy_provider_dispatch(None)
-        .unwrap();
-    let request = tokio::spawn(async move {
-        let outcome = permit.until_cancelled(std::future::pending::<()>()).await;
-        drop(permit);
-        outcome
-    });
-    tokio::task::yield_now().await;
+    // The request is already waiting on its transport (it passed the
+    // generation check at the entry of `until_cancelled`), so only the
+    // barrier's Notify wakeup can end it (review F5).
+    let request = rig.waiting_legacy_request().await;
     rig.reserved().await;
     let status: serde_json::Value = serde_json::from_str(
         &commit_bounded(rig.state(), Duration::from_secs(10))
@@ -644,11 +714,205 @@ async fn non_stream_legacy_request_is_cancelled_by_the_barrier() {
     .unwrap();
     assert_eq!(status["restricted"], true);
     assert_eq!(status["inFlightStopped"], true);
-    let error = request.await.unwrap().unwrap_err();
-    assert!(
-        format!("{error:#}").contains("D2A_EGRESS_DENIED: legacy-request-stopped"),
-        "{error:#}"
+    assert_eq!(status["legacyRequestsStopped"], 1);
+    assert_eq!(rig.state().profile_egress.legacy_waiting_for_test(), 0);
+    assert!(!rig.state().post_effect_abort.abort_all_pending());
+    assert_stopped_by_the_profile(stopped(request).await);
+}
+
+// Review F2 (K3/2 "どの段の失敗も fail-closed"): a stage 4 failure still asks
+// every in-flight AI work accepted before stage 2 to stop, without waiting,
+// confirming or clearing.
+#[tokio::test]
+async fn a_stage_4_failure_still_asks_in_flight_ai_work_to_stop() {
+    let rig = Rig::new("stage-4-stop");
+    rig.open_gate();
+    let request = rig.waiting_legacy_request().await;
+    let chat = rig.state().chat_streams.register("chat-a").unwrap();
+    let inline = rig.state().inline_ai_streams.register("inline-b").unwrap();
+    rig.reserved().await;
+    // The state file cannot be written: stage 4's persist fails.
+    std::fs::create_dir_all(rig.state_file().join("blocker")).unwrap();
+    let error = rig.backend.profile_activation_commit().await.unwrap_err();
+    assert_eq!(
+        error.reason,
+        "PROFILE_EGRESS_UNAVAILABLE:state-file-unwritable"
     );
+    assert_stopped_by_the_profile(stopped(request).await);
+    assert!(chat.abort_flag().load(std::sync::atomic::Ordering::Acquire));
+    assert!(inline
+        .abort_flag()
+        .load(std::sync::atomic::Ordering::Acquire));
+    assert!(rig.state().post_effect_abort.abort_all_pending());
+    let status = rig.state().profile_egress.status();
+    assert!(status.restricted && !status.in_flight_stopped);
+    // Nothing was confirmed: the streams are still registered (no wait).
+    rig.state().chat_streams.complete("chat-a", &chat);
+    rig.state().inline_ai_streams.complete("inline-b", &inline);
+}
+
+// Review F3: an unavailable process keeps its admissions closed. A barrier
+// that ran past its bound cannot be run again into a confirmed stop, and no
+// caller can be registered (recovery is a process restart, K3/2).
+#[tokio::test]
+async fn an_unavailable_process_refuses_a_second_barrier_and_registration() {
+    let rig = Rig::with_state_file(
+        "unavailable-closed",
+        &serde_json::json!({
+            "schemaVersion": 2, "profileId": "p-unavailable", "callerEpoch": 3,
+            "restricted": true, "handlesInvalidated": true, "inFlightStopped": true,
+        }),
+    );
+    let chat = rig.state().chat_streams.register("never-quiesces").unwrap();
+    let error = crate::settle_profile_egress_bounded(rig.state(), Duration::from_millis(50))
+        .await
+        .unwrap_err();
+    assert_eq!(error.reason, "PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
+    // The stream quiesces late; a second barrier would now drain at once.
+    rig.state().chat_streams.complete("never-quiesces", &chat);
+    let again = crate::settle_profile_egress_bounded(rig.state(), Duration::from_secs(10))
+        .await
+        .unwrap_err();
+    assert_eq!(again.reason, "PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
+    let status = rig.state().profile_egress.status();
+    assert!(status.restricted && !status.in_flight_stopped);
+    assert_eq!(status.unavailable_reason, Some("barrier-timeout"));
+    assert_eq!(rig.persisted()["inFlightStopped"], false);
+    assert!(rig
+        .state()
+        .profile_egress
+        .confirm_in_flight_stopped()
+        .is_err());
+    let identity = crate::profile_egress::CallerIdentity {
+        profile_id: status.profile_id.clone(),
+        caller_id: "caller".into(),
+        caller_epoch: status.caller_epoch,
+        sender_id: u64::from(SENDER),
+        workspace_id: None,
+        session_id: "session".into(),
+    };
+    let refused = rig
+        .state()
+        .profile_egress
+        .register_caller(&identity)
+        .unwrap_err();
+    assert!(
+        format!("{refused:#}").contains("unavailable"),
+        "{refused:#}"
+    );
+    assert!(rig
+        .state()
+        .profile_egress
+        .begin_dispatch(Some(&identity))
+        .is_err());
+
+    // Stage 4's binding failure leaves the profile unrestricted but
+    // unavailable: no legacy provider permit is issued then either.
+    let rig = Rig::new("unavailable-unrestricted");
+    let status = rig.state().profile_egress.status();
+    let stale = ConsumedProfileActivation::bound_for_test(
+        crate::main_grant::ProfileActivationGrantPayload {
+            profile_id: status.profile_id,
+            caller_epoch: status.caller_epoch + 1,
+            disclosure_version: PROFILE_ACTIVATION_DISCLOSURE_VERSION,
+            disclosure_digest: display_digest(&display()).unwrap(),
+        },
+    );
+    assert!(rig
+        .state()
+        .profile_egress
+        .activate_first_restricted_publication(&stale, false)
+        .is_err());
+    assert!(!rig.state().profile_egress.status().restricted);
+    assert!(rig
+        .state()
+        .profile_egress
+        .begin_legacy_provider_dispatch(None)
+        .is_err());
+}
+
+// Review F3: the barrier is single-flight. A second run while one is
+// running is refused, and does not make the process unavailable.
+#[tokio::test]
+async fn the_stop_barrier_is_single_flight() {
+    let rig = Rig::with_state_file(
+        "single-flight",
+        &serde_json::json!({
+            "schemaVersion": 2, "profileId": "p-flight", "callerEpoch": 2,
+            "restricted": true, "handlesInvalidated": true, "inFlightStopped": true,
+        }),
+    );
+    let chat = rig.state().chat_streams.register("held").unwrap();
+    let state = Arc::clone(rig.state());
+    let first = tokio::spawn(async move {
+        crate::settle_profile_egress_bounded(&state, Duration::from_secs(10)).await
+    });
+    // The first barrier has asked the stream to stop and waits for it.
+    until(|| chat.abort_flag().load(std::sync::atomic::Ordering::Acquire)).await;
+    let second = crate::settle_profile_egress_bounded(rig.state(), Duration::from_secs(10))
+        .await
+        .unwrap_err();
+    assert!(
+        second.reason.contains("already running"),
+        "{}",
+        second.reason
+    );
+    assert_eq!(rig.state().profile_egress.status().unavailable_reason, None);
+    rig.state().chat_streams.complete("held", &chat);
+    let status: serde_json::Value = serde_json::from_str(&first.await.unwrap().unwrap()).unwrap();
+    assert_eq!(status["inFlightStopped"], true);
+    assert_eq!(status["chatStreamsStopped"], 1);
+}
+
+// D-4 (b) with a real workspace open between stage 1 and the commit: the
+// open's transition (TransitionAdmitted, the post-effect abort-all and its
+// clear, the Native bind) does not end the reservation, and the commit
+// passes (review F5).
+#[tokio::test]
+async fn a_real_workspace_open_after_stage_1_keeps_the_reservation() {
+    let rig = Rig::new("open-after-stage-1");
+    rig.open_gate();
+    rig.reserved().await;
+    rig.backend
+        .open_workspace(rig.root.join("workspace").to_string_lossy().into_owned())
+        .await
+        .expect("open workspace");
+    assert!(rig.state().main_grant.registry.is_reserved());
+    assert!(!rig.state().post_effect_abort.abort_all_pending());
+    let status: serde_json::Value =
+        serde_json::from_str(&rig.backend.profile_activation_commit().await.unwrap()).unwrap();
+    assert_eq!(status["restricted"], true);
+    assert_eq!(status["inFlightStopped"], true);
+    assert!(!rig.state().main_grant.registry.is_reserved());
+}
+
+// Review R2 (DR-DA2-20): a workspace open that completes while the stop is
+// unconfirmed (here after the bound) does not withdraw the barrier's
+// post-effect abort-all request.
+#[tokio::test]
+async fn a_workspace_open_does_not_withdraw_an_unconfirmed_stop() {
+    let rig = Rig::new("open-after-timeout");
+    rig.open_gate();
+    let stuck = rig
+        .state()
+        .profile_egress
+        .begin_legacy_provider_dispatch(None)
+        .unwrap();
+    rig.reserved().await;
+    let error = commit_bounded(rig.state(), Duration::from_millis(50))
+        .await
+        .unwrap_err();
+    assert_eq!(error.reason, "PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
+    assert!(rig.state().post_effect_abort.abort_all_pending());
+    rig.backend
+        .open_workspace(rig.root.join("workspace").to_string_lossy().into_owned())
+        .await
+        .expect("open workspace");
+    assert!(
+        rig.state().post_effect_abort.abort_all_pending(),
+        "the open's clear is held back while the stop is unconfirmed"
+    );
+    drop(stuck);
 }
 
 // D-3: no workspace is fine, a shutdown is not.

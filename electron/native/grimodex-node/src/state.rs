@@ -2532,9 +2532,14 @@ impl StreamAbortRegistry {
         Ok(true)
     }
 
-    /// Abort every currently registered stream and wait for each one to
-    /// quiesce. D2a invokes this before exposing the persistent profile gate.
-    pub async fn abort_all(&self) -> usize {
+    /// Ask every currently registered stream to abort, synchronously, and
+    /// return the streams whose quiescence the caller may then wait for. The
+    /// D2a stop barrier asks every kind of in-flight AI work to stop before
+    /// it waits for any of them, so a bound that ends the wait cannot leave a
+    /// stream that was never asked (DA-2 ST1 review F1). A stream registers
+    /// before it takes its dispatch permit, so every stream that holds a
+    /// permit is in this snapshot.
+    pub fn request_abort_all(&self) -> StreamQuiescence {
         let active: Vec<Arc<StreamCancellation>> = {
             let state = self.lock();
             state.active.values().cloned().collect()
@@ -2542,10 +2547,28 @@ impl StreamAbortRegistry {
         for cancellation in &active {
             cancellation.request_abort();
         }
-        for cancellation in &active {
+        StreamQuiescence { active }
+    }
+}
+
+/// The streams one [`StreamAbortRegistry::request_abort_all`] asked to stop.
+/// Waiting is a Notify wait only, so dropping [`Self::wait`] at a bound
+/// leaves the abort requests in place.
+#[derive(Debug)]
+pub struct StreamQuiescence {
+    active: Vec<Arc<StreamCancellation>>,
+}
+
+impl StreamQuiescence {
+    /// How many streams were asked to stop.
+    pub fn count(&self) -> usize {
+        self.active.len()
+    }
+
+    pub async fn wait(&self) {
+        for cancellation in &self.active {
             cancellation.wait_quiesced().await;
         }
-        active.len()
     }
 }
 

@@ -317,6 +317,7 @@ pub(crate) fn consume(
 /// Stages 4 and 5. The reservation's token is taken once; stage 4 re-checks
 /// the binding under the profile mutex and persists the restriction; stage 5
 /// runs the stop barrier within its bound. Only success ends the reservation.
+/// A stage 4 failure still asks every in-flight AI work to stop (F2).
 pub(crate) async fn commit(state: &Arc<AppState>) -> Result<String> {
     commit_bounded(state, stop_barrier_bound()).await
 }
@@ -332,6 +333,10 @@ pub(crate) async fn commit_bounded(state: &Arc<AppState>, bound: Duration) -> Re
         .activate_first_restricted_publication(&consumed, false)
     {
         tracing::warn!("profile activation stage 4 failed: {error:#}");
+        // Stage 2 already stopped new work, but what was accepted before it
+        // is still running. Ask every kind of it to stop, without waiting,
+        // confirming or clearing anything (DA-2 ST1 review F2, DR-DA2-20).
+        crate::request_profile_egress_stop(state);
         return Err(crate::profile_egress_unavailable_error(
             state,
             ProfileEgressUnavailable::ActivationFailed,

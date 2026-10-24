@@ -6579,13 +6579,47 @@ fn profile_egress_status_json(
     serde_json::to_string(&json).map_err(|error| Error::from_reason(error.to_string()))
 }
 
+/// The synchronous half of the stop barrier's cancellation: every kind of
+/// in-flight AI work (chat and inline streams, post-effect runs, non-stream
+/// legacy provider requests) is asked to stop before anything is awaited
+/// (DA-2 ST1 review F1, DR-DA2-20). It never waits and never clears a
+/// request, so stage 4's failure can use it alone (review F2).
+pub(crate) struct ProfileEgressStopRequests {
+    chat: state::StreamQuiescence,
+    inline: state::StreamQuiescence,
+    post_effect: usize,
+    legacy: usize,
+}
+
+pub(crate) fn request_profile_egress_stop(state: &AppState) -> ProfileEgressStopRequests {
+    ProfileEgressStopRequests {
+        chat: state.chat_streams.request_abort_all(),
+        inline: state.inline_ai_streams.request_abort_all(),
+        post_effect: state.post_effect_abort.abort_all(),
+        legacy: state.profile_egress.cancel_legacy_dispatches(),
+    }
+}
+
+/// Clears the post-effect abort-all request at the end of a workspace
+/// transition, unless a profile stop must keep going (restricted with the
+/// stop unconfirmed, or unavailable). Only the stop barrier's own success
+/// clears it then (DR-DA2-20, R2).
+pub(crate) fn clear_post_effect_abort_after_workspace_transition(state: &AppState) {
+    state
+        .profile_egress
+        .unless_stop_must_continue(|| state.post_effect_abort.clear_abort_all());
+}
+
 /// The stop barrier of a restricted profile: at startup, and as stage 5 of
-/// an activation (K3/2). The whole wait, from the closed admissions to the
-/// confirmation, is bounded by `bound` (P2-2, DR-DA2-5). Past the bound the
-/// admissions stay closed, the state file stays restricted with the stop
-/// unconfirmed, the post-effect abort is not cleared, and the process is
-/// unavailable (`barrier-timeout`). The waits are Notify waits only, so
-/// dropping them at the bound leaves nothing half done.
+/// an activation (K3/2). Every kind of in-flight AI work is asked to stop
+/// synchronously, outside the bound; then the whole wait, up to the
+/// confirmation, is bounded by `bound` (P2-2, DR-DA2-5, DR-DA2-20). Past the
+/// bound the admissions stay closed, the state file stays restricted with
+/// the stop unconfirmed, no stop request is withdrawn (the post-effect abort
+/// is not cleared), and the process is unavailable (`barrier-timeout`). The
+/// waits are Notify waits only, so dropping them at the bound leaves every
+/// request in place. The barrier is single-flight and refuses to run in an
+/// unavailable process.
 pub(crate) async fn settle_profile_egress_bounded(
     state: &Arc<AppState>,
     bound: std::time::Duration,
@@ -6594,33 +6628,36 @@ pub(crate) async fn settle_profile_egress_bounded(
     if !initial.restricted {
         return profile_egress_status_json(initial, 0, 0, 0, 0);
     }
+    let _flight = state
+        .profile_egress
+        .begin_barrier_flight()
+        .map_err(|error| Error::from_reason(format!("{error:#}")))?;
 
     // Close the gate before awaiting cancellation. The state mutex makes
     // this transition and every subsequent dispatch admission mutually
     // exclusive; an already restricted profile keeps its durable epoch.
     if let Err(error) = state.profile_egress.begin_startup_barrier() {
         tracing::warn!("profile egress stop barrier could not start: {error:#}");
+        request_profile_egress_stop(state);
         return Err(profile_egress_unavailable_error(
             state,
             profile_egress::ProfileEgressUnavailable::StateFileUnwritable,
         ));
     }
-    let post_effect_stopped = state.post_effect_abort.abort_all();
-    let legacy_stopped = state.profile_egress.cancel_legacy_dispatches();
+    let requests = request_profile_egress_stop(state);
     let drain = async {
-        let chat_stopped = state.chat_streams.abort_all().await;
-        let inline_stopped = state.inline_ai_streams.abort_all().await;
+        requests.chat.wait().await;
+        requests.inline.wait().await;
         state.profile_egress.wait_for_dispatches().await;
-        (chat_stopped, inline_stopped)
     };
-    let Ok((chat_stopped, inline_stopped)) = tokio::time::timeout(bound, drain).await else {
-        // Keep cancelling: the post-effect abort stays set.
+    if tokio::time::timeout(bound, drain).await.is_err() {
+        // Keep cancelling: every request stays, the post-effect abort
+        // included.
         return Err(profile_egress_unavailable_error(
             state,
             profile_egress::ProfileEgressUnavailable::BarrierTimeout,
         ));
-    };
-    state.post_effect_abort.clear_abort_all();
+    }
     let status = match state.profile_egress.confirm_in_flight_stopped() {
         Ok(status) => status,
         Err(error) => {
@@ -6631,13 +6668,15 @@ pub(crate) async fn settle_profile_egress_bounded(
             ));
         }
     };
+    // Only a confirmed stop withdraws the post-effect abort-all request.
+    state.post_effect_abort.clear_abort_all();
     debug_assert!(status.in_flight_stopped);
     profile_egress_status_json(
         status,
-        chat_stopped,
-        inline_stopped,
-        post_effect_stopped,
-        legacy_stopped,
+        requests.chat.count(),
+        requests.inline.count(),
+        requests.post_effect,
+        requests.legacy,
     )
 }
 
@@ -10382,7 +10421,7 @@ impl Backend {
             // The transition has joined, activated, and released every
             // participant. Future post-effect launches may bind again; the
             // old detached runs remain cancelled in their own terminal path.
-            self.state.post_effect_abort.clear_abort_all();
+            clear_post_effect_abort_after_workspace_transition(&self.state);
             let wire = result?;
             let opened_ready = serde_json::from_str::<serde_json::Value>(&wire)
                 .ok()
@@ -10884,7 +10923,7 @@ impl Backend {
         }
 
         if result.is_ok() {
-            self.state.post_effect_abort.clear_abort_all();
+            clear_post_effect_abort_after_workspace_transition(&self.state);
             let recovery_revision = (lifecycle.status == WorkspaceLifecycleStatus::Ready
                 && lifecycle.activation
                     == workspace_lifecycle_view::WorkspaceLifecycleActivation::Ready)
@@ -11013,7 +11052,7 @@ impl Backend {
             result
         } else {
             lifecycle.map_err(app_err_to_napi)?;
-            self.state.post_effect_abort.clear_abort_all();
+            clear_post_effect_abort_after_workspace_transition(&self.state);
             result
         }
     }

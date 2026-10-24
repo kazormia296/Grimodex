@@ -144,6 +144,20 @@ pub struct ProfileEgressState {
     /// The cancellation of in-flight non-stream legacy provider requests by
     /// the stop barrier (DR-DA2-6).
     legacy_cancel: Arc<LegacyCancel>,
+    /// The stop barrier is single-flight: a second run while one is running
+    /// is refused (DA-2 ST1 review F3, DR-DA2-21).
+    barrier_in_flight: AtomicBool,
+}
+
+/// The one running stop barrier. Dropping it (the barrier ended, failed or
+/// was dropped at its bound) lets a later barrier start; an unavailable
+/// process refuses that later barrier anyway.
+pub(crate) struct BarrierFlight<'a>(&'a AtomicBool);
+
+impl Drop for BarrierFlight<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// The stop barrier's cancellation of in-flight non-stream legacy provider
@@ -206,8 +220,10 @@ impl Drop for DispatchLease {
 
 impl ProfileEgressState {
     pub fn new(path: PathBuf) -> anyhow::Result<Self> {
-        let state = match fs::read_to_string(&path) {
-            Ok(raw) => match serde_json::from_str::<PersistedProfileEgress>(&raw) {
+        // Read bytes, not a string: content that is not UTF-8 is a broken
+        // file (row 5), not an unreadable one (row 6; DA-2 ST1 review F6).
+        let state = match fs::read(&path) {
+            Ok(raw) => match serde_json::from_slice::<PersistedProfileEgress>(&raw) {
                 // The acceptance table of the state file (K3/2 "起動時の gate",
                 // DR-DA2-8). Every row is decided here and nowhere else.
                 Ok(saved)
@@ -240,8 +256,9 @@ impl ProfileEgressState {
                         in_flight_stopped,
                     )
                 }
-                // Row 5: broken JSON, an unknown version or a bad profileId
-                // start a fresh restricted profile whose stop is unconfirmed.
+                // Row 5: broken JSON (bytes that are not UTF-8 included), an
+                // unknown version or a bad profileId start a fresh restricted
+                // profile whose stop is unconfirmed.
                 Ok(_) | Err(_) => State::loaded(Uuid::new_v4().to_string(), 1, true, true, false),
             },
             // Row 1: no file is a fresh unrestricted profile.
@@ -269,6 +286,7 @@ impl ProfileEgressState {
             admissions_open: Arc::new(AtomicBool::new(admissions_open)),
             revocation_generation: Arc::new(AtomicU64::new(0)),
             legacy_cancel: Arc::new(LegacyCancel::default()),
+            barrier_in_flight: AtomicBool::new(false),
         })
     }
 
@@ -295,10 +313,11 @@ impl ProfileEgressState {
         if state.restricted {
             return Ok(status_locked(&state));
         }
-        state.caller_epoch = state
-            .caller_epoch
-            .checked_add(1)
-            .ok_or_else(|| anyhow!("caller epoch exhausted"))?;
+        let Some(next_epoch) = state.caller_epoch.checked_add(1) else {
+            state.unavailable = Some(ProfileEgressUnavailable::ActivationFailed);
+            return Err(anyhow!("caller epoch exhausted"));
+        };
+        state.caller_epoch = next_epoch;
         state.restricted = true;
         state.handles_invalidated = true;
         state.in_flight_stopped = in_flight_stopped;
@@ -345,14 +364,48 @@ impl ProfileEgressState {
     }
 
     /// Asks every in-flight non-stream legacy provider request to stop
-    /// (DR-DA2-6) and returns how many were waiting on their transport. The
-    /// evidence of the stop is the drop of each lease, which
-    /// [`Self::wait_for_dispatches`] observes.
+    /// (DR-DA2-6) and returns how many were waiting on their transport inside
+    /// [`ProfileDispatchPermit::until_cancelled`] at this moment. A request
+    /// whose permit was issued before the request but that had not reached
+    /// `until_cancelled` yet is stopped too (`ensure_open` refuses it, and
+    /// `until_cancelled` ends at once on the advanced generation), but it is
+    /// not in this count (DR-DA2-20, R1). The evidence of the stop is the
+    /// drop of each lease, which [`Self::wait_for_dispatches`] observes.
     pub fn cancel_legacy_dispatches(&self) -> usize {
         let waiting = self.legacy_cancel.waiting.load(Ordering::Acquire);
         self.legacy_cancel.generation.fetch_add(1, Ordering::AcqRel);
         self.legacy_cancel.notify.notify_waiters();
         waiting
+    }
+
+    /// Starts the single-flight stop barrier (DA-2 ST1 review F3). An
+    /// unavailable process refuses it with its reason: recovery is a process
+    /// restart only (K3/2). A barrier already running refuses a second one
+    /// without making the process unavailable.
+    pub(crate) fn begin_barrier_flight(&self) -> anyhow::Result<BarrierFlight<'_>> {
+        if let Some(reason) = self.lock().unavailable {
+            anyhow::bail!(reason.message());
+        }
+        anyhow::ensure!(
+            self.barrier_in_flight
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok(),
+            "{D2A_EGRESS_DENIED_MARKER} the stop barrier is already running"
+        );
+        Ok(BarrierFlight(&self.barrier_in_flight))
+    }
+
+    /// Whether a stop that was asked for must keep going: the profile is
+    /// restricted with its stop unconfirmed (stage 4 to 5, a barrier past its
+    /// bound, a failed persist), or the process is unavailable. Runs
+    /// `operation` only when it need not, under the profile mutex, so a
+    /// barrier cannot start between the check and `operation` (DR-DA2-20, R2).
+    pub(crate) fn unless_stop_must_continue(&self, operation: impl FnOnce()) {
+        let state = self.lock();
+        if state.unavailable.is_some() || (state.restricted && !state.in_flight_stopped) {
+            return;
+        }
+        operation();
     }
 
     /// Close admissions for one process startup after loading the persisted
@@ -388,6 +441,10 @@ impl ProfileEgressState {
     pub fn register_caller(&self, identity: &CallerIdentity) -> anyhow::Result<()> {
         let mut state = self.lock();
         anyhow::ensure!(
+            state.unavailable.is_none(),
+            "{D2A_EGRESS_DENIED_MARKER} caller registration is closed while the profile gate is unavailable"
+        );
+        anyhow::ensure!(
             state.restricted && state.in_flight_stopped,
             "{D2A_EGRESS_DENIED_MARKER} caller registration is closed until startup quiesces"
         );
@@ -409,6 +466,10 @@ impl ProfileEgressState {
     /// invalidation have already become durable.
     pub fn confirm_in_flight_stopped(&self) -> anyhow::Result<ProfileEgressStatus> {
         let mut state = self.lock();
+        anyhow::ensure!(
+            state.unavailable.is_none(),
+            "{D2A_EGRESS_DENIED_MARKER} the stop cannot be confirmed while the profile gate is unavailable"
+        );
         anyhow::ensure!(
             self.active_dispatches.load(Ordering::Acquire) == 0,
             "cannot publish profile egress state while dispatches are active"
@@ -468,6 +529,13 @@ impl ProfileEgressState {
         anyhow::ensure!(
             !state.restricted,
             "{D2A_EGRESS_DENIED_MARKER} provider egress is closed while the profile is restricted"
+        );
+        // An activation that failed at stage 4 can leave the profile
+        // unrestricted but unavailable; provider egress stays closed
+        // (DA-2 ST1 review F3).
+        anyhow::ensure!(
+            state.unavailable.is_none(),
+            "{D2A_EGRESS_DENIED_MARKER} provider egress is closed while the profile gate is unavailable"
         );
         self.begin_dispatch_locked(&state, identity)
     }
@@ -535,6 +603,13 @@ impl ProfileEgressState {
     /// from silently skipping the Native binding update.
     pub fn bind_recovery_workspace(&self, workspace_id: Option<String>) {
         self.bind_workspace(workspace_id);
+    }
+
+    /// How many non-stream legacy transports are waiting inside
+    /// `until_cancelled` (a synchronisation point for tests).
+    #[cfg(test)]
+    pub(crate) fn legacy_waiting_for_test(&self) -> usize {
+        self.legacy_cancel.waiting.load(Ordering::Acquire)
     }
 
     /// Wait until all leases acquired before the transition have dropped.
@@ -2235,7 +2310,7 @@ mod tests {
             keeps_profile: false,
             caller_epoch: Some(1),
         };
-        let rows: Vec<(&str, Option<String>, Expect)> = vec![
+        let rows: Vec<(&str, Option<Vec<u8>>, Expect)> = vec![
             ("1: no file", None, unrestricted(false, 0)),
             (
                 "2: restricted v2, stopped",
@@ -2278,6 +2353,12 @@ mod tests {
                 unrestricted(true, 0),
             ),
             ("5: broken JSON", Some("{not json".into()), fresh_restricted),
+            (
+                // Not UTF-8 is broken content, not an unreadable file (F6).
+                "5: not UTF-8",
+                Some(vec![0xff, 0xfe, b'{', 0x80, b'}']),
+                Expect { restricted: true, handles_invalidated: true, in_flight_stopped: false, keeps_profile: false, caller_epoch: Some(1) },
+            ),
             (
                 "5: unknown version",
                 Some(r#"{"schemaVersion":3,"profileId":"p","callerEpoch":4,"restricted":false}"#.into()),
@@ -2331,7 +2412,7 @@ mod tests {
             // Loading never rewrites the file (J-1 included).
             match &content {
                 Some(content) => {
-                    assert_eq!(&fs::read_to_string(&path).expect(label), content, "{label}")
+                    assert_eq!(&fs::read(&path).expect(label), content, "{label}")
                 }
                 None => assert!(!path.exists(), "{label}"),
             }
