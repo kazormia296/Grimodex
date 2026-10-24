@@ -232,6 +232,61 @@ fn the_disclosure_is_a_versioned_draft_behind_a_closed_gate() {
         .detail
         .contains("辞書の取得を試みますが、取得できません"));
     assert!(shown.detail.contains("127.0.0.1"));
+    // The details of K3/2 "開示に必ず含めるもの" that the review found missing
+    // (DA-2 ST1 review F4, DR-DA2-20), item by item.
+    let item = |n: usize| -> &str {
+        let start = shown.detail.find(&format!("{n}. ")).unwrap();
+        let end = shown.detail[start..]
+            .find(&format!("\n{}. ", n + 1))
+            .map_or(shown.detail.len(), |at| start + at);
+        &shown.detail[start..end]
+    };
+    for (n, phrase) in [
+        (
+            3,
+            "書出しの Vivliostyle の tab を開いても、CLI を探して起動しません",
+        ),
+        (3, "ほかの会話ではメッセージの編集して再送も閉じます"),
+        (3, "会話のない場面では Codex の文脈 pin もできません"),
+        (
+            3,
+            "import は会話の部分を取り込まず、そのことを示して残りを取り込みます",
+        ),
+        (4, "M と T に分類した操作"),
+        (4, "メッセージの編集して再送は場面の会話でだけ使え"),
+        (
+            4,
+            "Graph は公開の後に、local 生成はその公開（PUB-L）の後に使えます",
+        ),
+        (4, "それまでは AI の応答を得る手段がありません"),
+        (5, "適用は、取得した更新の installer を起動します"),
+        (5, "model がなければ project を開くと自動で始まります"),
+        (5, "同じ release の checksum と照合した installer"),
+        (
+            5,
+            "installer の起動は、アプリの画面が利用者の操作なしに始めることもできます",
+        ),
+        (5, "起動の時期だけを選べ、起動するものは選べません"),
+        (6, "アプリの画面のコードから読めます"),
+        (6, "この写しは設定の履歴の消去でも消えません"),
+        (
+            6,
+            "project ごと削除したときは、記録も project とともに消えます",
+        ),
+        (7, "(d) local 生成の公開（PUB-L）の後の local 送信"),
+        (7, "(a)〜(c) と (e) は restricted にする前から同じ能力"),
+        (7, "(d) は local 生成の公開が加える能力です"),
+    ] {
+        assert!(item(n).contains(phrase), "item {n} lacks {phrase}");
+    }
+    // Item 7 names its paths (a) to (e) in K3/2's order.
+    let residual = item(7);
+    let mut from = 0;
+    for letter in ["(a) ", "(b) ", "(c) ", "(d) ", "(e) "] {
+        from += residual[from..]
+            .find(letter)
+            .unwrap_or_else(|| panic!("item 7 lacks {letter}"));
+    }
     // The dialog: cancel is the default and the cancel button; approval needs
     // the box, whose text is part of the digest.
     assert_eq!(shown.buttons, ["取消", "有効にする"]);
