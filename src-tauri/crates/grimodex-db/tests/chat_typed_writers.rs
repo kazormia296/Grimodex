@@ -670,7 +670,10 @@ fn metadata_record_rejects_other_keys_without_writing() {
     }
     assert_eq!(dump(&db), before, "a refused record must write nothing");
     db.with_conn(|conn| {
-        conn.execute("UPDATE chat_messages SET metadata = '[1]' WHERE id = 'm4'", [])?;
+        conn.execute(
+            "UPDATE chat_messages SET metadata = '[1]' WHERE id = 'm4'",
+            [],
+        )?;
         Ok(())
     })
     .expect("seed non-object metadata");
