@@ -45,6 +45,8 @@ const MOUNT_POINTS: ReadonlyArray<{
   },
   { file: "src/features/chat/components/ChatInput.tsx", lazyModule: null },
   { file: "src/features/chat/useChatMessageActions.ts", lazyModule: null },
+  // The import's notice of the conversations not taken in (DR-DA2B-R7).
+  { file: "src/features/import/chatImportNotice.ts", lazyModule: null },
 ];
 
 /** The lazy chunks behind the constant: never imported statically. */

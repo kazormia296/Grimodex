@@ -73,6 +73,10 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       editClosed:
         "外部送信を制限中は、場面の会話でない会話のメッセージを編集して送り直せません。削除はできます。",
     },
+    import: {
+      chatsRestricted:
+        "外部送信を制限中は会話を取り込めないため、会話 {{count}} 件は取り込みませんでした。ほかの項目の取込みは完了しています。",
+    },
     result: {
       activated: "外部送信の制限を有効にしました。",
       cancelled: "取り消しました。外部送信の制限は変わっていません。",
@@ -139,6 +143,10 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
         "While external sending is restricted, input cannot be saved in a conversation that is not a scene's.",
       editClosed:
         "While external sending is restricted, messages in a conversation that is not a scene's cannot be edited and resent. They can still be deleted.",
+    },
+    import: {
+      chatsRestricted:
+        "Conversations cannot be imported while external sending is restricted, so {{count}} conversation(s) were not imported. The other items were imported.",
     },
     result: {
       activated: "The external sending restriction is on.",
