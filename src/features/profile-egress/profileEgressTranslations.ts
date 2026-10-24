@@ -77,6 +77,10 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       chatsRestricted:
         "外部送信を制限中は会話を取り込めないため、会話 {{count}} 件は取り込みませんでした。",
     },
+    writeRetry: {
+      failed:
+        "外部送信の制限を有効にした後、未保存の変更の一部を保存できませんでした。変更は残っており、次の保存でもう一度書き込みます。",
+    },
     result: {
       activated: "外部送信の制限を有効にしました。",
       cancelled: "取り消しました。外部送信の制限は変わっていません。",
@@ -147,6 +151,10 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
     import: {
       chatsRestricted:
         "Conversations cannot be imported while external sending is restricted, so {{count}} conversation(s) were not imported.",
+    },
+    writeRetry: {
+      failed:
+        "Some unsaved changes could not be saved after the external sending restriction was turned on. They are kept and will be written again on the next save.",
     },
     result: {
       activated: "The external sending restriction is on.",

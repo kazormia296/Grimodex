@@ -142,4 +142,20 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
       }
     }
   });
+
+  // DA-2b W-1 (DR-DA2B-R8): the retry after the activation is code of the
+  // status display's lazy chunk only, so it is not in the startup graph.
+  it("reaches the W-1 retry only from the status display's lazy chunk", () => {
+    const importers = sources.filter((file) =>
+      /from\s+"[^"]*\/profileActivationWriteRetry"/.test(code(read(file))),
+    );
+    expect(importers).toEqual([
+      "src/features/profile-egress/ProfileEgressStatusIndicator.tsx",
+    ]);
+    // Reaching the root of the startup chunk it calls into keeps that chunk
+    // whole (without it the startup graph grows by about 1 KB).
+    expect(
+      code(read("src/features/profile-egress/profileActivationWriteRetry.ts")),
+    ).toMatch(/^import "@\/features\/project\/projectStore";$/m);
+  });
 });
