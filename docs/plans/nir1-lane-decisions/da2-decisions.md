@@ -243,3 +243,42 @@ U3 の委任（継続計画 §3.1）の外に当たる要素は、ST1 の範囲�
 - `pnpm lint`：error 0（warning 43 は既存の `src/features` のもの）。変更した file は prettier に沿う。
 - `pnpm build` の後の `node scripts/check-performance-budgets.mjs`：起動時の JS graph raw=4,249,075、gzip=1,341,991（ST2 の前と同じ。上限 raw 4,250,000 の内）。
 - `pnpm eval:impact --base origin/master`（コードの commit `29c7ab54` の後）：rc 0。未分類の file のため fallback で全 suite を選ぶ（ST2 の時点と同じ。この修正で `backend.ts`、`userData.ts` とその試験が未分類の一覧に加わった。分類は ST5）。選ぶだけで suite は走らせていない。
+
+## ST3 の実装後の追記（2026-10-24。上の表と matrix の本文は直さない）
+
+判断は DR-DA2-29〜35。Rust、`electron/**`、`src/locales/*.json`、`policies/**` は変えていない。新しい IPC、N-API、event、受信先、保存先は無い（ST2 が置いた 2 つの command と 1 つの event と wrapper だけを使う）。
+
+### 起動時の JS graph（commit ごと。DR-DA2-30）
+
+同じ toolchain（Node v24、pnpm 10.33.0）で build の後に `node scripts/check-performance-budgets.mjs`。上限 raw 4,250,000、gzip 1,349,743（baseline＋allowance）。予算・baseline・allowance・absoluteMax は変えていない。
+
+| commit | raw | gzip | assets | ST2 の HEAD 比 |
+|---|---|---|---|---|
+| ST2 の HEAD `f88d9856`（CP-3b の merge 後に rebase） | 4,248,613 | 1,341,958 | 150 | — |
+| `4006a493`（DR の追記だけ） | 4,248,613（コードの差分なし。測り直していない） | — | — | 0 |
+| `45026fc1`（定数、状態の表示、設定の項目、Related Scenes の案内） | 4,248,656 | 1,341,970 | 150 | +43／+12 |
+| `99842f0d`（AI の終端の表示、合成した終端の audit） | 4,249,049 | 1,342,170 | 150 | +436／+212（上限まで残り raw 951） |
+
+### 検証（Full・Quick・hosted CI は走らせていない）
+
+- `pnpm build`（root の `tsc` を含む）：成功。`pnpm exec tsc --noEmit -p electron/tsconfig.json`：0 error。
+- `pnpm exec vitest --run`（`src/features/profile-egress`、`src/features/chat`、`src/application/chat`、`src/features/editor/inlineAi`、`src/features/related-scenes`、`src/features/settings`、`src/lib`、`src/components`、`src/App.test.tsx`、`src/features/ai-audit`、`src/features/editor/EditorPaneOverlays.test.tsx`）：300 file、3,629 件 pass、12 件 skip（既存の skip）。その後に変えた `profileEgressAiStop.test.ts` は単独で 4 件 pass。`45026fc1` の時点（後の変更を stash した状態）でも対象の 41 file、417 件 pass。
+- 実 Chromium（`vitest.browser.config.ts` の限定実行）：`ProfileEgressStatusIndicator.browser.test.tsx` 8 件、既存の `InlineAIToolbar.browser.test.tsx` と `src/features/related-scenes` の browser 試験 10 件が pass。
+- `pnpm lint`：error 0（warning 43 は既存）。`pnpm validate:architecture`：pass（`App.tsx` の行数 44 と `chatTurnStoreActions.ts` の maxLines 2751・runtime import 36 を保つ。DR-DA2-30）。
+- `pnpm eval:impact --base origin/master`：rc 0。Fallback: yes（ST2 の時点から yes のまま。未分類の file による）。選ぶだけで suite は走らせていない。
+- 試験の実行で `src/features/chat/calibration/corpus.json` が書き換わる（既存の較正の試験の副作用）。commit には含めず、working tree を戻した。
+
+### ST5 に引き継ぐこと
+
+- `evals/impact-map.yaml`（rule `d2a-profile-egress` など）と `evals/quality-manifest.yaml` への分類。ST3 で未分類の一覧に加わった renderer の file：`src/features/profile-egress/` の全部（実装 10、試験 6）、`src/components/ApplicationDialogs.tsx`、`src/application/chat/chatStoreSupport.ts`、`src/features/chat/ChatPanel.tsx`、`src/features/chat/cliApi.test.ts`、`src/features/chat/codexAppApi.test.ts`、`src/features/settings/categories/DataCategory.tsx`（＋試験）。`src/lib/profileEgressStatus.ts`（＋試験）は ST2 から未分類。
+- 実 Electron での確認（seam (a) の journey で）：合成した終端で chat／inline／CLI／Codex の表示が理由の文になり、audit の行に DR-DA2-35 の metadata が載ること。状態の表示は定数が false なので journey では出ない（定数を上書きした build は作らない）。
+
+### 持ち越し・未検証（PR 本文に載せる）
+
+- 状態の表示、設定の項目、Related Scenes の案内、AI の終端の文言はすべて Session C-1 の草案で、製品では見えない（AI の終端の文言は定数で閉じないが、製品の起動では activation が始まらないので届かない。DR-DA2-34）。置き場所（左下の固定）と見た目の最終の判断は C-1／PUB-G。
+- chat の panel の chunk が読まれる前に AI の終端が届くと、chat の toast は従来の文（生のコードを含む）になる（DR-DA2-34）。chat の送信は panel から行うので実際には起きない見込みだが、実 Electron では確かめていない。
+- chat 以外の非 stream の AI（post-effect、要約、beat 生成など）の終端の表示と、D の typed な理由は ST4（I-16）。
+- local 生成の `profile-not-restricted` の案内は、local 生成の製品の入口が PUB-L まで無いので置いていない。
+- 定数を true にした build の起動時の JS graph は測っていない（PUB-G の PR で測る。閉じた分岐と lazy の表が build に戻る）。
+- lazy chunk（状態の表示、設定の項目、案内）は定数が false でも dist に出る（起動時の graph からは参照されない）。
+- `[precheck]` に当たるものは無かった（P-G：予算の内で吸収できた。新しい受信先、保存範囲の拡大、閾値の緩和、新しい authority、認可の削除のどれも要らなかった）。
