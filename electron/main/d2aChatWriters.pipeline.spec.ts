@@ -3,14 +3,19 @@
 // real profile gate and the real Native addon.
 //
 // * Unrestricted and restricted (after an activation through Main's product
-//   path) give the same results for the same calls (D-11 (a)).
+//   path) give the same typed-writer results for the same calls. This
+//   compares the typed writers with each other; that they leave the rows of
+//   the generic SQL they replace (D-11 (a)) is pinned by the cargo tests
+//   (`chat_typed_writers.rs`, `d2a_m_t_typed_writers.rs`).
 // * Restricted keeps the generic-SQL DML these writers replace closed, while
 //   the RETURNING-free DML on tables outside the ledger (Map, Label, Prompt
 //   template, the pin's children) passes (D-12 (a), DR-DA2-52).
 // * The CW entries need the issued identity and the open workspace; an
 //   unterminated generation attempt refuses every deletion.
 // * During an activation in flight and while unavailable the route stays
-//   `internal`; what Native answers is pinned below.
+//   `internal`; what Native answers is pinned below (the stop barrier held
+//   from stage 4 to the confirmed stop is pinned on Native by
+//   `electron/native/grimodex-node/src/typed_writers_tests.rs`).
 //
 // The real addon is needed, so only `vitest.electron-native.config.ts` runs it.
 import { execFileSync } from "node:child_process";
@@ -385,8 +390,36 @@ db.close();
   );
 }
 
+/**
+ * Rows written from a separate process (the generic SQL may not create a
+ * project, and an unavailable gate refuses the generic SQL altogether).
+ */
+function writeFromAnotherProcess(
+  workspacePath: string,
+  statements: readonly string[],
+): void {
+  const script = `
+const { DatabaseSync } = require("node:sqlite");
+const db = new DatabaseSync(process.argv[1]);
+db.exec("PRAGMA busy_timeout = 10000");
+for (const statement of JSON.parse(process.argv[2])) db.exec(statement);
+db.close();
+`;
+  execFileSync(
+    process.execPath,
+    [
+      "--no-warnings",
+      "-e",
+      script,
+      path.join(workspacePath, "grimodex.db"),
+      JSON.stringify(statements),
+    ],
+    { encoding: "utf8", timeout: 30_000 },
+  );
+}
+
 describe("DA-2b typed writers through the real router, gate and Native", () => {
-  it("unrestricted and restricted give the same results (D-11 (a))", async () => {
+  it("unrestricted and restricted give the same typed-writer results (D-11 (a) itself: the cargo tests)", async () => {
     const results: Record<string, unknown[]> = {};
     for (const mode of ["unrestricted", "restricted"] as const) {
       const rig = await startMain(newAppData());
@@ -558,6 +591,12 @@ describe("DA-2b typed writers through the real router, gate and Native", () => {
   it("an unterminated generation attempt refuses every deletion and deletes nothing", async () => {
     const rig = await startMain(newAppData());
     const ws = await seedWorkspace(rig);
+    // A second project with one session, written from a separate process
+    // (the generic SQL may not create a project row).
+    writeFromAnotherProcess(ws.path, [
+      "INSERT INTO projects (id, title) VALUES ('cw-p2', 'P2')",
+      "INSERT INTO chat_sessions (id, project_id, title) VALUES ('cw-p2-s', 'cw-p2', 'other')",
+    ]);
     await rig.activate();
     insertPendingAttempt(ws, "cw-a");
     const cw = (extra: Record<string, unknown>) => ({
@@ -596,6 +635,14 @@ describe("DA-2b typed writers through the real router, gate and Native", () => {
     expect(
       ok(await rig.route("chat_session_delete", cw({ sessionId: "cw-b" }))),
     ).toEqual({ deleted: 1 });
+    // The pending attempt holds its own project's clear, not another's.
+    expect(
+      ok(
+        await rig.route("chat_project_history_clear", {
+          payload: { expectedWorkspacePath: ws.path, projectId: "cw-p2" },
+        }),
+      ),
+    ).toEqual({ deletedSessions: 1 });
     const left = dbRows(
       await rig.route("db_execute", {
         sql: "SELECT id FROM chat_messages WHERE session_id = 'cw-a' ORDER BY id",
@@ -640,9 +687,10 @@ describe("DA-2b typed writers through the real router, gate and Native", () => {
     await activation;
     expect(rig.gate.restricted).toBe(true);
 
-    // An unavailable gate (startup could not build it): Main still routes the
-    // writers as internal; with no workspace open Native refuses them without
-    // a D2a reason and writes nothing.
+    // An unavailable gate built by Main without Native's startup status (here
+    // the addon lacks `initializeProfileEgress`; Native itself stays
+    // unrestricted). Main still routes the writers as internal; with no
+    // workspace open Native refuses them without a D2a reason.
     const unavailable = await startMain(newAppData(), { unavailable: true });
     expect(unavailable.gate.unavailable).toBe(true);
     const refusal = failureOf(
@@ -658,5 +706,54 @@ describe("DA-2b typed writers through the real router, gate and Native", () => {
     );
     expect(refusal).not.toContain(MARKER);
     expect(refusal).toContain("No workspace is open");
+    // `open_workspace` is internal too, so Main routes it and Native opens
+    // the workspace (DR-DA2-54). The generic SQL stays refused while
+    // unavailable, and the typed writers, like the other internal writers,
+    // then write unchecked: Native has no restricted state to check.
+    const fresh = ok<{ path: string; projectId: string }>(
+      await unavailable.route("seed_sample_workspace", {
+        language: "ja",
+        aiPolicy: '{"preset":"full"}',
+      }),
+    );
+    ok(await unavailable.route("open_workspace", { path: fresh.path }));
+    expect(
+      failureOf(
+        await unavailable.route("db_execute", {
+          sql: "SELECT 1",
+          params: [],
+          method: "all",
+        }),
+      ),
+    ).toContain(MARKER);
+    writeFromAnotherProcess(fresh.path, [
+      `INSERT INTO chat_sessions (id, project_id, title) VALUES ('cw-u', '${fresh.projectId}', 'u')`,
+      `INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, version) VALUES ('cw-u-scene', '${fresh.projectId}', 'scene', 'U', 'zz', 0)`,
+    ]);
+    expect(
+      ok(
+        await unavailable.route("chat_session_rename", {
+          payload: {
+            expectedWorkspacePath: fresh.path,
+            projectId: fresh.projectId,
+            sessionId: "cw-u",
+            title: "unavailable",
+          },
+        }),
+      ),
+    ).toEqual({ updated: 1 });
+    expect(
+      ok<Record<string, unknown>>(
+        await unavailable.route("revision_create", {
+          payload: {
+            projectId: fresh.projectId,
+            entityType: "scene",
+            entityId: "cw-u-scene",
+            content: '{"unavailable":1}',
+            snapshotType: "auto",
+          },
+        }),
+      ).created,
+    ).toBe(true);
   });
 });
