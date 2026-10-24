@@ -26,7 +26,8 @@ fn fixture() -> Database {
              INSERT INTO tree_nodes (id, project_id, node_type, title, sort_order, version)
                VALUES ('scene-1', 'p1', 'scene', 'Scene', 'a0', 0),
                       ('note-1', 'p1', 'note', 'Note', 'a1', 0),
-                      ('scene-2', 'p2', 'scene', 'Other', 'a0', 0);
+                      ('scene-2', 'p2', 'scene', 'Other', 'a0', 0),
+                      ('note-2', 'p2', 'note', 'Other note', 'a1', 0);
              INSERT INTO codex_entries (id, project_id, name) VALUES ('codex-1', 'p1', 'Entry');
              INSERT INTO snippets (id, project_id, title) VALUES ('snippet-1', 'p1', 'Snip');",
         )?;
@@ -136,7 +137,7 @@ fn revision_create_matches_the_current_generic_sql_rows() {
         current
             .execute_renderer(
                 "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type, created_at)
-                 VALUES (?, 'scene', 'scene-1', ?, (SELECT coalesce(max(version_number), 0) + 1 FROM content_versions WHERE entity_type = 'scene' AND entity_id = 'scene-1'), 'manual', 'T')",
+                 VALUES (?, 'scene', 'scene-1', ?, (SELECT coalesce(max(version_number), 0) + 1 FROM content_versions WHERE entity_type = 'scene' AND entity_id = 'scene-1'), 'manual', '2026-10-25T00:00:00.000Z')",
                 &[Value::from(uuid_like(content)), Value::from(content)],
                 "run",
             )
@@ -154,6 +155,31 @@ fn revision_create_matches_the_current_generic_sql_rows() {
         .expect("typed insert");
     }
     assert_eq!(versions(&next, "scene-1"), versions(&current, "scene-1"));
+    // The entity type and the `toISOString()` shape of created_at (the
+    // renderer passed `new Date().toISOString()`; review P3-3).
+    assert_eq!(row_shapes(&next), row_shapes(&current));
+}
+
+/// (entity_type, created_at's `YYYY-MM-DDTHH:MM:SS.mmmZ` shape) per version.
+fn row_shapes(db: &Database) -> Vec<(String, bool)> {
+    db.with_conn(|conn| {
+        let mut statement = conn.prepare(
+            "SELECT entity_type, created_at FROM content_versions ORDER BY version_number",
+        )?;
+        let rows = statement
+            .query_map([], |row| {
+                let created_at: String = row.get(1)?;
+                let bytes = created_at.as_bytes();
+                let iso = bytes.len() == 24
+                    && bytes[10] == b'T'
+                    && bytes[19] == b'.'
+                    && bytes[23] == b'Z';
+                Ok((row.get(0)?, iso))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows)
+    })
+    .expect("read shapes")
 }
 
 fn uuid_like(seed: &str) -> String {
@@ -258,6 +284,10 @@ fn snapshot_delete_cascades_children_and_keeps_versions() {
              INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES ('snap-1', 'v1');
              INSERT INTO project_snapshot_tree_nodes (snapshot_id, node_id, node_type, title, sort_order, body_version_id, created_at, updated_at)
                VALUES ('snap-1', 'scene-1', 'scene', 'Scene', 'a0', 'v1', 'T', 'T');
+             INSERT INTO project_snapshot_codex_entries (snapshot_id, entry_id, type, name, context_mode, children_budget, body_version_id)
+               VALUES ('snap-1', 'codex-1', 'lore', 'Entry', 'mentioned', 'compact', 'v1');
+             INSERT INTO project_snapshot_snippets (snapshot_id, snippet_id, title, body_version_id)
+               VALUES ('snap-1', 'snippet-1', 'Snip', 'v1');
              INSERT INTO project_snapshot_aux (snapshot_id, scope, payload_json) VALUES ('snap-1', 'labels', '[]');",
         )?;
         Ok(())
@@ -285,6 +315,8 @@ fn snapshot_delete_cascades_children_and_keeps_versions() {
     for table in [
         "project_snapshot_entries",
         "project_snapshot_tree_nodes",
+        "project_snapshot_codex_entries",
+        "project_snapshot_snippets",
         "project_snapshot_aux",
     ] {
         assert_eq!(
@@ -402,6 +434,165 @@ fn baseline_visibility_update_refuses_other_changes() {
             &db,
             &format!(
                 "SELECT count(*) FROM impact_review_baselines WHERE content_hash = '{stored_hash}'"
+            )
+        ),
+        1
+    );
+}
+
+/// Review F-1: each of the four snapshot references keeps its version (a
+/// prune that ignored one would hit the RESTRICT foreign key and fail every
+/// time, the regression `revision/api.ts` describes).
+#[test]
+fn revision_prune_keeps_a_version_referenced_by_each_snapshot_table() {
+    let db = fixture();
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type)
+               VALUES ('v1', 'scene', 'scene-1', '1', 1, 'auto'),
+                      ('v2', 'scene', 'scene-1', '2', 2, 'auto'),
+                      ('v3', 'scene', 'scene-1', '3', 3, 'auto'),
+                      ('v4', 'scene', 'scene-1', '4', 4, 'auto'),
+                      ('v5', 'scene', 'scene-1', '5', 5, 'auto'),
+                      ('v6', 'scene', 'scene-1', '6', 6, 'auto'),
+                      ('v7', 'scene', 'scene-1', '7', 7, 'auto'),
+                      ('v8', 'scene', 'scene-1', '8', 8, 'auto');
+             INSERT INTO project_snapshots (id, project_id, name) VALUES ('snap', 'p1', 'S');
+             INSERT INTO project_snapshot_entries (snapshot_id, version_id) VALUES ('snap', 'v1');
+             INSERT INTO project_snapshot_tree_nodes (snapshot_id, node_id, node_type, title, sort_order, body_version_id, created_at, updated_at)
+               VALUES ('snap', 'scene-1', 'scene', 'Scene', 'a0', 'v2', 'T', 'T');
+             INSERT INTO project_snapshot_codex_entries (snapshot_id, entry_id, type, name, context_mode, children_budget, body_version_id)
+               VALUES ('snap', 'codex-1', 'lore', 'Entry', 'mentioned', 'compact', 'v3');
+             INSERT INTO project_snapshot_snippets (snapshot_id, snippet_id, title, body_version_id)
+               VALUES ('snap', 'snippet-1', 'Snip', 'v4');",
+        )?;
+        Ok(())
+    })
+    .expect("seed referenced versions");
+    let pruned = prune_revisions(
+        &db,
+        PruneRevisionsRequest {
+            project_id: "p1".into(),
+            entity_type: RevisionEntityType::Scene,
+            entity_id: "scene-1".into(),
+            keep_count: 2,
+        },
+    )
+    .expect("prune succeeds with every reference in place");
+    // Older than the newest 2 (v8, v7): v1..v4 are referenced, v5 and v6 go.
+    assert_eq!(pruned.deleted, 2);
+    assert_eq!(
+        versions(&db, "scene-1")
+            .iter()
+            .map(|(number, _, _)| *number)
+            .collect::<Vec<_>>(),
+        [1, 2, 3, 4, 7, 8]
+    );
+}
+
+/// Review F-2 and P3-2: `note` (what `projectSnapshotApi.ts` passes for a
+/// note node) is recorded and pruned on the project's `tree_nodes` row of
+/// any node type, as `scene` is; another project's node, a Codex id and an
+/// entity of another project are refused by both writers.
+#[test]
+fn note_versions_are_bound_to_the_projects_tree_nodes() {
+    let db = fixture();
+    assert!(
+        create(&db, RevisionEntityType::Note, "note-1", "{\"n\":1}")
+            .expect("note")
+            .created
+    );
+    assert!(
+        create(&db, RevisionEntityType::Note, "note-1", "{\"n\":2}")
+            .expect("note again")
+            .created
+    );
+    // Any tree binding: the node type does not narrow `note` (or `scene`).
+    assert!(
+        create(&db, RevisionEntityType::Note, "scene-1", "{}")
+            .expect("note on a scene node")
+            .created
+    );
+    for (entity_type, entity) in [
+        (RevisionEntityType::Note, "note-2"),
+        (RevisionEntityType::Note, "codex-1"),
+        (RevisionEntityType::Scene, "codex-1"),
+        (RevisionEntityType::CodexEntry, "note-1"),
+        (RevisionEntityType::Snippet, "note-1"),
+    ] {
+        let refusal = create(&db, entity_type, entity, "{}").expect_err("outside the project");
+        assert_eq!(
+            refusal.downcast_ref::<RevisionWriteRefusal>(),
+            Some(&RevisionWriteRefusal::NotFound),
+            "{entity_type:?} {entity}"
+        );
+    }
+    let pruned = prune_revisions(
+        &db,
+        PruneRevisionsRequest {
+            project_id: "p1".into(),
+            entity_type: RevisionEntityType::Note,
+            entity_id: "note-1".into(),
+            keep_count: 1,
+        },
+    )
+    .expect("prune note");
+    assert_eq!(pruned.deleted, 1);
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM content_versions WHERE entity_type = 'note' AND entity_id = 'note-1'"),
+        1
+    );
+    // The prune of another project's entity is refused before it deletes.
+    db.with_conn(|conn| {
+        conn.execute_batch(
+            "INSERT INTO content_versions (id, entity_type, entity_id, content, version_number, snapshot_type)
+               VALUES ('o1', 'note', 'note-2', 'a', 1, 'auto'), ('o2', 'note', 'note-2', 'b', 2, 'auto');",
+        )?;
+        Ok(())
+    })
+    .expect("seed the other project's versions");
+    let refusal = prune_revisions(
+        &db,
+        PruneRevisionsRequest {
+            project_id: "p1".into(),
+            entity_type: RevisionEntityType::Note,
+            entity_id: "note-2".into(),
+            keep_count: 0,
+        },
+    )
+    .expect_err("other project's note");
+    assert_eq!(format!("{refusal}"), "REVISION_WRITE_REFUSED:not-found");
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM content_versions WHERE entity_id = 'note-2'"
+        ),
+        2
+    );
+}
+
+/// Review P3-2 (f): the baseline is looked up by project as well as entry.
+/// A request naming another project does not reach the p1 row, so even a
+/// body change is no refusal there, just `updated: false`.
+#[test]
+fn baseline_visibility_update_is_bound_to_the_project() {
+    let db = fixture();
+    let stored_hash = seed_baseline(&db, STORED);
+    let body_change = r#"{"allPhaseIds":["a","b"],"phases":[{"phaseId":"a","body":"changed"}],"restrictedPhaseIds":["a"],"visibilityProvenanceVersion":1}"#;
+    for snapshot_json in [RESTRICTED, body_change] {
+        let mut request = visibility_request(&stored_hash, snapshot_json);
+        request.project_id = "p2".into();
+        assert!(
+            !update_visibility(&db, request)
+                .expect("another project's request")
+                .updated
+        );
+    }
+    assert_eq!(
+        count(
+            &db,
+            &format!(
+                "SELECT count(*) FROM impact_review_baselines WHERE project_id = 'p1' AND content_hash = '{stored_hash}'"
             )
         ),
         1

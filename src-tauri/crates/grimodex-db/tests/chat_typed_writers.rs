@@ -60,6 +60,14 @@ fn fixture() -> Database {
                VALUES ('codex-1', 'p1', 'Entry', 'm2');
              INSERT INTO chat_session_pinned_codex (id, session_id, codex_entry_id)
                VALUES ('pin-1', 's1', 'codex-1');
+             INSERT INTO snippets (id, project_id, title, source_chat_message_id)
+               VALUES ('snippet-1', 'p1', 'Snip', 'm2');
+             INSERT INTO chat_summaries (id, session_id, summary) VALUES ('summary-1', 's1', 'sum');
+             INSERT INTO chat_summary_messages (summary_id, message_id) VALUES ('summary-1', 'm2');
+             INSERT INTO chat_message_chunks
+                 (message_id, session_id, project_id, role, text, embedding, embedding_dim,
+                  model_id, content_hash, chunker_version, created_at, updated_at)
+               VALUES ('m2', 's1', 'p1', 'assistant', 'answer', X'00', 1, 'model', 'h', 'v', 1, 1);
              INSERT INTO map_boards (id, project_id) VALUES ('board-1', 'p1');
              INSERT INTO map_stickies (id, board_id, body, source_chat_message_id)
                VALUES ('sticky-1', 'board-1', '{{}}', 'm2');
@@ -90,6 +98,12 @@ fn fixture() -> Database {
                      'current', 1790000000000)",
             params![DIGEST, version_id],
         )?;
+        conn.execute(
+            "INSERT INTO nir1_chat_input_submission_keys
+                (submission_id, capture_id, submission_digest, created_at_ms)
+             VALUES ('submission-1', 'capture-1', ?1, 1790000000000)",
+            params![DIGEST],
+        )?;
         Ok(())
     })
     .expect("seed capture");
@@ -97,6 +111,17 @@ fn fixture() -> Database {
 }
 
 fn insert_attempt(db: &Database, id: &str, session: &str, terminal: bool) {
+    let project = scalar(
+        db,
+        &format!("SELECT project_id FROM chat_sessions WHERE id = '{session}'"),
+    )
+    .expect("attempt session");
+    insert_attempt_in(db, id, &project, session, terminal);
+}
+
+/// An attempt whose own `project_id` column is `project` (the session's
+/// project unless a test sets another one on purpose).
+fn insert_attempt_in(db: &Database, id: &str, project: &str, session: &str, terminal: bool) {
     db.with_conn(|conn| {
         let (terminal_json, terminal_digest, completed): (Option<&str>, Option<&str>, Option<i64>) =
             if terminal {
@@ -108,8 +133,15 @@ fn insert_attempt(db: &Database, id: &str, session: &str, terminal: bool) {
             "INSERT INTO nir1_generation_attempts
                 (id, project_id, session_id, binding_json, payload_digest, input_digest,
                  created_at_ms, expires_at_ms, terminal_json, terminal_digest, completed_at_ms)
-             VALUES (?1, 'p1', ?2, '{}', 'pd', 'id', 1, 2, ?3, ?4, ?5)",
-            params![id, session, terminal_json, terminal_digest, completed],
+             VALUES (?1, ?6, ?2, '{}', 'pd', 'id', 1, 2, ?3, ?4, ?5)",
+            params![
+                id,
+                session,
+                terminal_json,
+                terminal_digest,
+                completed,
+                project
+            ],
         )?;
         Ok(())
     })
@@ -129,6 +161,13 @@ fn dump(db: &Database) -> Vec<String> {
         "SELECT id, source_chat_message_id FROM map_stickies ORDER BY id",
         "SELECT id, session_id, terminal_json FROM nir1_generation_attempts ORDER BY id",
         "SELECT entity_id, op_type, payload FROM change_events ORDER BY sequence",
+        "SELECT id, session_id, summary FROM chat_summaries ORDER BY id",
+        "SELECT summary_id, message_id FROM chat_summary_messages ORDER BY summary_id, message_id",
+        "SELECT message_id, session_id, project_id FROM chat_message_chunks ORDER BY message_id",
+        "SELECT id FROM chat_messages_fts_docsize ORDER BY id",
+        "SELECT rowid, content FROM chat_messages_fts_en ORDER BY rowid",
+        "SELECT id, source_chat_message_id FROM snippets ORDER BY id",
+        "SELECT submission_id, capture_id FROM nir1_chat_input_submission_keys ORDER BY submission_id",
     ];
     db.with_conn(|conn| {
         let mut out = Vec::new();
@@ -215,6 +254,16 @@ fn message_delete_follows_foreign_keys_and_canonical_triggers() {
         None
     );
     assert_eq!(count(&db, "SELECT count(*) FROM chat_message_prompts"), 0);
+    assert_eq!(
+        scalar(&db, "SELECT source_chat_message_id FROM snippets"),
+        None
+    );
+    assert_eq!(count(&db, "SELECT count(*) FROM chat_summary_messages"), 0);
+    assert_eq!(count(&db, "SELECT count(*) FROM chat_message_chunks"), 0);
+    assert_eq!(
+        count(&db, "SELECT count(*) FROM chat_messages_fts_en WHERE rowid IN (SELECT rowid FROM chat_messages)"),
+        count(&db, "SELECT count(*) FROM chat_messages_fts_en")
+    );
     // The timelapse copy and the surviving rows stay.
     assert_eq!(
         count(
@@ -257,6 +306,24 @@ fn session_delete_and_clear_cascade_and_keep_attempts_and_feed() {
         count(&db, "SELECT count(*) FROM nir1_chat_input_captures"),
         0
     );
+    // The canonical triggers also run for the messages the session's
+    // cascade removes: versions invalidated, provenance nulled.
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM nir1_generation_message_versions WHERE invalidated = 0"
+        ),
+        0
+    );
+    assert_eq!(
+        scalar(&db, "SELECT source_chat_message_id FROM snippets"),
+        None
+    );
+    assert_eq!(
+        scalar(&db, "SELECT source_chat_message_id FROM codex_entries"),
+        None
+    );
+    assert_eq!(count(&db, "SELECT count(*) FROM chat_summaries"), 0);
     // Attempts have no foreign key to the session; the feed is not rewritten.
     assert_eq!(
         count(&db, "SELECT count(*) FROM nir1_generation_attempts"),
@@ -455,7 +522,7 @@ fn writers_reject_invalid_requests_without_writing() {
         delete_messages(&db, delete_request("s1", &[])),
         ChatWriteRefusal::InvalidRequest,
     );
-    let too_many: Vec<String> = (0..257).map(|index| format!("id-{index}")).collect();
+    let too_many: Vec<String> = (0..10_001).map(|index| format!("id-{index}")).collect();
     assert_refused(
         delete_messages(
             &db,
@@ -772,7 +839,7 @@ fn results_are_counts_only() {
 fn typed_writers_match_the_current_generic_sql_results() {
     type Generic = fn(&Database);
     type Typed = fn(&Database);
-    let cases: [(&str, Generic, Typed); 5] = [
+    let cases: [(&str, Generic, Typed); 6] = [
         (
             "deleteMessage",
             |db| {
@@ -884,6 +951,33 @@ fn typed_writers_match_the_current_generic_sql_results() {
                 .expect("typed metadata");
             },
         ),
+        (
+            "updateMessageMetadata (two keys, not alphabetical)",
+            |db| {
+                // JSON.stringify({ ...existing, insertedToEditor, extractedCodex }):
+                // new keys follow the existing ones in the update's order.
+                let merged = r#"{"thinking_blocks":[{"type":"thinking","text":"t"}],"other":{"b":2,"a":1},"insertedToEditor":true,"extractedCodex":["codex-1"]}"#;
+                db.execute_renderer(
+                    "UPDATE chat_messages SET metadata = ? WHERE id = ?",
+                    &[Value::from(merged), Value::from("m2")],
+                    "run",
+                )
+                .expect("generic metadata");
+            },
+            |db| {
+                record_message_metadata(
+                    db,
+                    RecordMessageMetadataRequest {
+                        project_id: "p1".into(),
+                        message_id: "m2".into(),
+                        patch: patch(
+                            json!({ "insertedToEditor": true, "extractedCodex": ["codex-1"] }),
+                        ),
+                    },
+                )
+                .expect("typed metadata");
+            },
+        ),
     ];
     for (name, generic, typed) in cases {
         let current = fixture();
@@ -891,5 +985,231 @@ fn typed_writers_match_the_current_generic_sql_results() {
         generic(&current);
         typed(&next);
         assert_eq!(dump(&next), dump(&current), "{name}");
+    }
+}
+
+/// Review P3-2 (a)(b): the unterminated-attempt check is scoped to the
+/// session (message and session deletion) and to the project's sessions
+/// (the clear), never wider.
+#[test]
+fn pending_attempt_is_scoped_to_its_session_and_its_project() {
+    let db = fixture();
+    insert_attempt(&db, "attempt-s2", "s2", false);
+    let before_s2 = count(
+        &db,
+        "SELECT count(*) FROM chat_messages WHERE session_id = 's2'",
+    );
+    assert_refused(
+        delete_messages(&db, delete_request("s2", &["m4"])),
+        ChatWriteRefusal::GenerationPending,
+    );
+    assert_refused(
+        delete_session(
+            &db,
+            DeleteSessionRequest {
+                project_id: "p1".into(),
+                session_id: "s2".into(),
+            },
+        ),
+        ChatWriteRefusal::GenerationPending,
+    );
+    assert_refused(
+        clear_project_history(
+            &db,
+            ClearProjectHistoryRequest {
+                project_id: "p1".into(),
+            },
+        ),
+        ChatWriteRefusal::GenerationPending,
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT count(*) FROM chat_messages WHERE session_id = 's2'"
+        ),
+        before_s2
+    );
+    // Another session of the same project and another project are free.
+    assert_eq!(
+        delete_messages(&db, delete_request("s1", &["m3"]))
+            .expect("other session's message")
+            .deleted,
+        1
+    );
+    assert_eq!(
+        delete_session(
+            &db,
+            DeleteSessionRequest {
+                project_id: "p1".into(),
+                session_id: "s1".into(),
+            },
+        )
+        .expect("other session")
+        .deleted,
+        1
+    );
+    assert_eq!(
+        clear_project_history(
+            &db,
+            ClearProjectHistoryRequest {
+                project_id: "p2".into(),
+            },
+        )
+        .expect("other project")
+        .deleted_sessions,
+        1
+    );
+
+    // The session decides, not the attempt's own project column: an attempt
+    // of a p1 session that names p2 holds p1's clear and not p2's.
+    let db = fixture();
+    insert_attempt_in(&db, "attempt-cross", "p2", "s2", false);
+    assert_refused(
+        clear_project_history(
+            &db,
+            ClearProjectHistoryRequest {
+                project_id: "p1".into(),
+            },
+        ),
+        ChatWriteRefusal::GenerationPending,
+    );
+    assert_eq!(
+        clear_project_history(
+            &db,
+            ClearProjectHistoryRequest {
+                project_id: "p2".into(),
+            },
+        )
+        .expect("p2 has no pending session")
+        .deleted_sessions,
+        1
+    );
+}
+
+/// The record writes new keys in the patch's order after the existing ones,
+/// as `{ ...existing, ...update }` does (review P3-3).
+#[test]
+fn metadata_record_keeps_the_patch_key_order() {
+    let db = fixture();
+    record_message_metadata(
+        &db,
+        RecordMessageMetadataRequest {
+            project_id: "p1".into(),
+            message_id: "m4".into(),
+            patch: patch(json!({ "insertedToEditor": true, "extractedSnippets": ["s-1"] })),
+        },
+    )
+    .expect("record");
+    assert_eq!(
+        scalar(&db, "SELECT metadata FROM chat_messages WHERE id = 'm4'").as_deref(),
+        Some(r#"{"keep":true,"insertedToEditor":true,"extractedSnippets":["s-1"]}"#)
+    );
+}
+
+fn writer_source() -> String {
+    let path = concat!(env!("CARGO_MANIFEST_DIR"), "/src/chat_typed_writes.rs");
+    let text = std::fs::read_to_string(path).expect("read chat_typed_writes.rs");
+    // Code only: drop `//` comment lines (doc comments included).
+    text.lines()
+        .filter(|line| !line.trim_start().starts_with("//"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn function_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let start = source
+        .find(&format!("fn {name}("))
+        .or_else(|| source.find(&format!("fn {name}<")))
+        .unwrap_or_else(|| panic!("{name} not found"));
+    let rest = &source[start..];
+    let end = ["\npub fn ", "\nfn ", "\npub(crate) fn "]
+        .iter()
+        .filter_map(|marker| rest[1..].find(marker))
+        .min()
+        .map_or(rest.len(), |index| index + 1);
+    &rest[..end]
+}
+
+/// Review P3-2 (c): each deletion checks the unterminated attempt inside the
+/// same `BEGIN IMMEDIATE` transaction as its DELETE (a check outside it
+/// could race a new attempt). Fixed on the source, as a race is not
+/// reproducible here.
+#[test]
+fn deletions_check_pending_attempts_inside_their_immediate_transaction() {
+    let source = writer_source();
+    let helper = function_body(&source, "with_immediate_transaction").to_string();
+    assert!(helper.contains("BEGIN IMMEDIATE"), "{helper}");
+    for name in ["delete_messages", "delete_session", "clear_project_history"] {
+        let body = function_body(&source, name);
+        let transaction = body
+            .find("with_immediate_transaction(db, |conn| {")
+            .unwrap_or_else(|| panic!("{name}: no immediate transaction"));
+        let check = body
+            .find("_has_pending_attempt(conn,")
+            .unwrap_or_else(|| panic!("{name}: no pending-attempt check"));
+        let delete = body
+            .find("DELETE FROM")
+            .unwrap_or_else(|| panic!("{name}: no DELETE"));
+        assert!(
+            transaction < check && check < delete,
+            "{name}: the check must run inside the transaction, before the DELETE"
+        );
+        assert_eq!(
+            body.matches("with_immediate_transaction(").count(),
+            1,
+            "{name}: one transaction"
+        );
+    }
+}
+
+/// Review P3-2 (d): the writers never insert, upsert or replace a row and
+/// never write a closed table themselves (the canonical triggers do). The
+/// only DML targets are `chat_messages` and `chat_sessions`; the attempt
+/// table is only read.
+#[test]
+fn the_writer_source_writes_only_chat_messages_and_chat_sessions() {
+    let source = writer_source();
+    let upper = source.to_uppercase();
+    for forbidden in [
+        "INSERT INTO",
+        "INSERT OR",
+        "REPLACE INTO",
+        "ON CONFLICT",
+        "UPSERT",
+    ] {
+        assert!(
+            !upper.contains(forbidden),
+            "{forbidden} in chat_typed_writes.rs"
+        );
+    }
+    for closed in [
+        "nir1_chat_input_captures",
+        "nir1_chat_input_submission_keys",
+        "nir1_generation_message_versions",
+        "change_events",
+    ] {
+        assert!(!source.contains(closed), "{closed} in chat_typed_writes.rs");
+    }
+    assert_eq!(
+        source.matches("nir1_generation_attempts").count(),
+        source.matches("FROM nir1_generation_attempts").count(),
+        "the attempt table is only read"
+    );
+    let mut targets = Vec::new();
+    for keyword in ["DELETE FROM ", "UPDATE "] {
+        for (index, _) in source.match_indices(keyword) {
+            let table: String = source[index + keyword.len()..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            targets.push(table);
+        }
+    }
+    assert!(!targets.is_empty());
+    for table in targets {
+        assert!(
+            table == "chat_messages" || table == "chat_sessions",
+            "DML on {table} in chat_typed_writes.rs"
+        );
     }
 }
