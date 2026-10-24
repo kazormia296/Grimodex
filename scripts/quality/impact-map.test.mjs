@@ -719,6 +719,9 @@ test("NIR-1 post-B paths select executable core/DB checks and retain separate Na
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --lib nir1_generation_history::generation_storage_adapter::adapter_tests -- --test-threads=1",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test release_schema_migration",
     "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --test workspace_migration_supervisor",
+    // DA-2b typed writers (DR-DA2-57): feature-gated, so named here.
+    "cargo test --manifest-path src-tauri/Cargo.toml -p grimodex-db --features native-current-human-capture --test chat_typed_writers --test d2a_m_t_typed_writers --test d2a_restricted_generic_sql_shapes",
+    "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib typed_writers::tests -- --test-threads=1",
   ]) {
     assert.ok(commandLines.includes(command), command);
   }

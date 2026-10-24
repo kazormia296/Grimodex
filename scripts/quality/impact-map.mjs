@@ -412,6 +412,8 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         // own-data-read, renderer isolation, state-file protection, E-3.
         "electron/main/d2aRouteClasses.test.ts",
         "electron/main/d2aNirPublication.test.ts",
+        // DA-2b typed writers: Main's re-validation (DR-DA2-53).
+        "electron/main/d2bTypedWriters.test.ts",
         "electron/main/devRendererUrl.test.ts",
         "electron/main/downloadGuard.test.ts",
         "electron/main/externalMount.test.ts",
@@ -715,6 +717,34 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "native-current-human-capture",
         "--lib",
         "narrative_extraction::nir1_packing",
+        "--",
+        "--test-threads=1",
+      ],
+      // DA-2b typed writers (DR-DA2-57): the CW tests compile only with the
+      // feature, so the default `--test '*'` runs an empty binary.
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "src-tauri/Cargo.toml",
+        "-p",
+        "grimodex-db",
+        "--features",
+        "native-current-human-capture",
+        "--test",
+        "chat_typed_writers",
+        "--test",
+        "d2a_m_t_typed_writers",
+        "--test",
+        "d2a_restricted_generic_sql_shapes",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+        "--lib",
+        "typed_writers::tests",
         "--",
         "--test-threads=1",
       ],

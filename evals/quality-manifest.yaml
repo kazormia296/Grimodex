@@ -412,6 +412,10 @@ requirements:
       - src/application/chat/chatStoreSupport.ts
       - src/features/chat/ChatPanel.tsx
       - src/features/settings/categories/DataCategory.tsx
+      - src-tauri/crates/grimodex-db/src/chat_typed_writes.rs
+      - src-tauri/crates/grimodex-db/src/revision_writes.rs
+      - src-tauri/crates/grimodex-db/src/impact_review_baselines.rs
+      - electron/native/grimodex-node/src/typed_writers.rs
     lightTests:
       - electron/main/mainGrant.test.ts
       - electron/main/bodyDeclarationCiSeam.test.ts
@@ -493,6 +497,12 @@ requirements:
       - electron/shared/profileEgressStatusWire.test.ts
       - electron/native/grimodex-node/src/profile_activation_tests.rs
       - electron/native/grimodex-node/test/profile-activation.test.mjs
+      - electron/main/d2bTypedWriters.test.ts
+      - electron/main/d2aChatWriters.pipeline.spec.ts
+      - electron/native/grimodex-node/src/typed_writers_tests.rs
+      - src-tauri/crates/grimodex-db/tests/chat_typed_writers.rs
+      - src-tauri/crates/grimodex-db/tests/d2a_m_t_typed_writers.rs
+      - src-tauri/crates/grimodex-db/tests/d2a_restricted_generic_sql_shapes.rs
       - src/lib/profileEgressStatus.electron.test.ts
       - src/features/profile-egress/profileActivationAvailability.test.ts
       - src/features/profile-egress/profileActivationMountPoints.static.test.ts

@@ -568,6 +568,15 @@ rules:
       - src/features/chat/codexAppApi.test.ts
       - src/features/settings/categories/DataCategory.tsx
       - src/features/settings/categories/DataCategory.test.tsx
+      - src-tauri/crates/grimodex-db/src/chat_typed_writes.rs
+      - src-tauri/crates/grimodex-db/src/revision_writes.rs
+      - src-tauri/crates/grimodex-db/src/impact_review_baselines.rs
+      - src-tauri/crates/grimodex-db/tests/chat_typed_writers.rs
+      - src-tauri/crates/grimodex-db/tests/d2a_m_t_typed_writers.rs
+      - src-tauri/crates/grimodex-db/tests/d2a_restricted_generic_sql_shapes.rs
+      - electron/native/grimodex-node/src/typed_writers.rs
+      - electron/native/grimodex-node/src/typed_writers_tests.rs
+      - electron/main/d2bTypedWriters.test.ts
     requirements:
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001
