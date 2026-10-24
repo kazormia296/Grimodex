@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
+import { d2aFailureText } from "@/lib/d2aFailureText";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import { useTreeStore } from "@/features/tree/treeStore";
 import {
   ExportTree,
@@ -51,6 +53,7 @@ export function VivliostyleExportSection() {
   const [detected, setDetected] = useState<
     VivliostyleDetectResult | null | undefined
   >(undefined);
+  const [detectRefusal, setDetectRefusal] = useState<string | null>(null);
   // ビルド/プレビューの実行状態はグローバル store（タブ切替 = unmount を
   // 跨いで進捗・中止・停止手段を維持する）。
   const status = useVivliostyleRunStore((s) => s.build);
@@ -74,9 +77,14 @@ export function VivliostyleExportSection() {
 
   const redetect = useCallback(() => {
     setDetected(undefined);
+    setDetectRefusal(null);
     detectVivliostyle()
       .then(setDetected)
-      .catch(() => setDetected(null));
+      .catch((err: unknown) => {
+        // A D2a refusal is not a missing CLI (DR-DA2B-R5).
+        if (isD2aEgressDenied(err)) setDetectRefusal(d2aFailureText(err, ""));
+        setDetected(null);
+      });
   }, []);
 
   // マウント時（タブ表示時）に素材と CLI 検出を初期化する。ビルド/プレビューの
@@ -160,7 +168,11 @@ export function VivliostyleExportSection() {
     try {
       await startPreview({ files, binaryPath: binaryPath.trim() || null });
     } catch (err) {
-      toast.error(t("vivliostyle.preview.failed", { error: String(err) }));
+      toast.error(
+        t("vivliostyle.preview.failed", {
+          error: d2aFailureText(err, String(err)),
+        }),
+      );
     }
   }
 
@@ -171,7 +183,11 @@ export function VivliostyleExportSection() {
         // null = ユーザーキャンセル（トーストは出さない）
         if (path) toast.success(t("vivliostyle.build.saved", { path }));
       } catch (err) {
-        toast.error(t("vivliostyle.build.saveFailed", { error: String(err) }));
+        toast.error(
+          t("vivliostyle.build.saveFailed", {
+            error: d2aFailureText(err, String(err)),
+          }),
+        );
       }
     },
     [t],
@@ -187,6 +203,7 @@ export function VivliostyleExportSection() {
         <div className="flex min-w-[280px] flex-1 flex-col gap-4 overflow-y-auto p-4">
           <CliStatusBanner
             detected={detected}
+            refusal={detectRefusal}
             binaryPath={binaryPath}
             onBinaryPathChange={setBinaryPath}
             onRedetect={redetect}

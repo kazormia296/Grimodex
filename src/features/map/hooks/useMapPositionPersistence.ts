@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useCallback, useEffect, useRef } from "react";
 import type {
   OnNodesChange,
@@ -50,7 +51,7 @@ function reportPersistError(err: unknown) {
 
   console.error("[map] persistPosition failed", err);
   toast.error(i18next.t("map.toast.positionSaveFailed"), {
-    description: String(err),
+    description: d2aFailureText(err, String(err)),
   });
 }
 

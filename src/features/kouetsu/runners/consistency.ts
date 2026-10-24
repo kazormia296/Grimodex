@@ -7,6 +7,7 @@
  * 結果を落とさない（CurrentScene ビューの片側失敗トーストが前提とする契約）。
  */
 
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { getPromptCatalog } from "@/prompts/index";
 import { resolveRoleSendOverride } from "@/features/chat/modelRouting";
 import { appendKouetsuGuidance } from "@/features/post-effect/customInstruction";
@@ -95,7 +96,7 @@ export async function runConsistencyCheck(
             hooks,
           );
         } catch (err) {
-          return { ok: false, error: String(err) };
+          return { ok: false, error: d2aFailureText(err, String(err)) };
         }
       })(),
       (async (): Promise<KouetsuRunOutcome> => {
@@ -124,7 +125,7 @@ export async function runConsistencyCheck(
             hooks,
           );
         } catch (err) {
-          return { ok: false, error: String(err) };
+          return { ok: false, error: d2aFailureText(err, String(err)) };
         }
       })(),
     ]);

@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useState, useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { Download } from "lucide-react";
@@ -92,7 +93,9 @@ export function ZipExportBody({ onClose }: { onClose: () => void }) {
         onClose();
       }
     } catch (err) {
-      toast.error(t("zipExport.failed", { error: String(err) }));
+      toast.error(
+        t("zipExport.failed", { error: d2aFailureText(err, String(err)) }),
+      );
     } finally {
       setIsExporting(false);
       setProgress(null);

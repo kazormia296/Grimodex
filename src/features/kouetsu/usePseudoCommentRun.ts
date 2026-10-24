@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -133,7 +134,9 @@ export function usePseudoCommentRun({
             onDone: (e) => resolve({ ok: true, e }),
             onError: (e) => resolve({ ok: false, error: e.error }),
           },
-        ).catch((err) => resolve({ ok: false, error: String(err) }));
+        ).catch((err) =>
+          resolve({ ok: false, error: d2aFailureText(err, String(err)) }),
+        );
       });
 
       // 生成後、対象シーンの annotation を再取得して annotationStore と本文の
@@ -169,7 +172,7 @@ export function usePseudoCommentRun({
       setLaunching(false);
       postEffectErrorToast(
         t("kouetsu.pseudoComment.launchFailed"),
-        e instanceof Error ? e.message : String(e),
+        d2aFailureText(e, e instanceof Error ? e.message : String(e)),
       );
     }
   }, [

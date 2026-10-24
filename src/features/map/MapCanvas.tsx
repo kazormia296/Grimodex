@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -732,7 +733,7 @@ export function MapCanvas() {
         forwardReceipt = await eraseAiBranchSnapshot(snapshot);
       } catch (err) {
         toast.error(t("map.toast.aiBranchBulkDeleteFailed"), {
-          description: String(err),
+          description: d2aFailureText(err, String(err)),
         });
         return;
       }
@@ -1068,7 +1069,7 @@ export function MapCanvas() {
         await deleteUserEdge(userEdgeId);
       } catch (err) {
         toast.error(t("map.toast.edgeDeleteFailed"), {
-          description: String(err),
+          description: d2aFailureText(err, String(err)),
         });
         continue;
       }
@@ -1089,7 +1090,7 @@ export function MapCanvas() {
         await deleteFrame(frameId);
       } catch (err) {
         toast.error(t("map.toast.frameDeleteFailed"), {
-          description: String(err),
+          description: d2aFailureText(err, String(err)),
         });
         continue;
       }
@@ -1108,7 +1109,7 @@ export function MapCanvas() {
         await deleteNodePosition(pos.id);
       } catch (err) {
         toast.error(t("map.toast.removeFromBoardFailed"), {
-          description: String(err),
+          description: d2aFailureText(err, String(err)),
         });
         continue;
       }
@@ -1121,7 +1122,7 @@ export function MapCanvas() {
         await deleteEntityNodes([node]);
       } catch (err) {
         toast.error(t("map.toast.nodeDeleteFailed"), {
-          description: String(err),
+          description: d2aFailureText(err, String(err)),
         });
       }
     }
@@ -1775,7 +1776,10 @@ export function MapCanvas() {
           toast.error(t("map.toast.aiBranchEmptyResponse"));
         } else {
           toast.error(t("map.toast.aiBranchGenerateFailed"), {
-            description: err instanceof Error ? err.message : undefined,
+            description:
+              err instanceof Error
+                ? d2aFailureText(err, err.message)
+                : undefined,
           });
         }
       } finally {

@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { X, ClipboardCopy, Check, Download } from "lucide-react";
@@ -340,7 +341,11 @@ export function ExportDialog({ open, onClose, modeRequest }: Props) {
         toast.success(t("export.dialog.exportComplete", { path: savedPath }));
       }
     } catch (err) {
-      toast.error(t("export.dialog.exportFailed", { error: String(err) }));
+      toast.error(
+        t("export.dialog.exportFailed", {
+          error: d2aFailureText(err, String(err)),
+        }),
+      );
     } finally {
       setIsExporting(false);
     }

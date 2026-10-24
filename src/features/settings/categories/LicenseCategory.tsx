@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
@@ -75,7 +76,7 @@ export function LicenseCategory() {
       setKeyInput("");
     } catch (e) {
       // AppError は文字列で届く (理由別メッセージは Rust 側で組み立て済み)。
-      toast.error(String(e));
+      toast.error(d2aFailureText(e, String(e)));
     } finally {
       setBusy(false);
     }
@@ -92,7 +93,7 @@ export function LicenseCategory() {
       await useLicenseStore.getState().deactivate();
       toast.success(t("license.settings.deactivated"));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(d2aFailureText(e, String(e)));
     } finally {
       setBusy(false);
       setDeactivateArmed(false);
@@ -106,7 +107,7 @@ export function LicenseCategory() {
       await useLicenseStore.getState().revalidate();
       toast.success(t("license.settings.revalidated"));
     } catch (e) {
-      toast.error(String(e));
+      toast.error(d2aFailureText(e, String(e)));
     } finally {
       setBusy(false);
     }

@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useTreeStore, type TreeNodeData } from "@/features/tree/treeStore";
@@ -326,7 +327,9 @@ export function MatrixPanel() {
       );
       if (saved !== null) toast.success(t("matrix.export.success"));
     } catch (err) {
-      toast.error(t("matrix.export.failed"), { description: String(err) });
+      toast.error(t("matrix.export.failed"), {
+        description: d2aFailureText(err, String(err)),
+      });
     }
   }
 

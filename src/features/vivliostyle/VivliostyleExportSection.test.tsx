@@ -15,6 +15,10 @@ import {
   VIVLIOSTYLE_THEME_FILENAME,
 } from "./buildVivliostyleHtml";
 import type { VivliostyleBuildFile } from "./types";
+import { rootCause } from "@/lib/debugLog";
+
+const D2A_DENIAL =
+  "D2A_EGRESS_DENIED: external-process: route vivliostyle_detect is unavailable in profile local-only mode";
 
 // ---------------------------------------------------------------------------
 // mocks
@@ -34,7 +38,8 @@ vi.mock("@/application/project/currentProjectAuthority", () => ({
   getCurrentProjectId: () => currentProjectIdRef.value,
 }));
 
-vi.mock("@/lib/tauri", () => ({
+vi.mock("@/lib/tauri", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/tauri")>()),
   isTauri: () => false,
   invoke: (cmd: string, args?: Record<string, unknown>) =>
     invokeMock(cmd, args),
@@ -544,5 +549,47 @@ describe("VivliostyleExportSection", () => {
       expect(toast.error).toHaveBeenCalledWith("vivliostyle.preview.failed");
     });
     expect(previewButton).toHaveTextContent("vivliostyle.preview.start");
+  });
+
+  // DA-2b (Negative (11); DR-DA2B-R5): a D2a refusal of the detection is not
+  // a missing CLI, and a refused build shows the generic text, never the raw
+  // marker.
+  it("D2a に検出を拒否されたら未検出の案内でなく一般の文を出す", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      if (cmd === "vivliostyle_detect") throw new Error(D2A_DENIAL);
+      return undefined;
+    });
+    render(<VivliostyleExportSection />);
+
+    const refused = await screen.findByTestId("vivliostyle-cli-refused");
+    expect(refused).toHaveTextContent(rootCause(new Error(D2A_DENIAL)));
+    expect(refused.textContent).not.toContain("D2A_EGRESS_DENIED");
+    expect(screen.queryByTestId("vivliostyle-cli-guide")).toBeNull();
+    expect(screen.queryByText("vivliostyle.cli.notFound")).toBeNull();
+    expect(screen.getByTestId("vivliostyle-build")).toBeDisabled();
+  });
+
+  it("D2a に書き出しを拒否されたら生の marker を出さない", async () => {
+    invokeMock.mockImplementation(async (cmd: string) => {
+      switch (cmd) {
+        case "vivliostyle_detect":
+          return { path: "/usr/bin/vivliostyle", version: "8.0.0" };
+        case "vivliostyle_build":
+          throw new Error(D2A_DENIAL);
+        default:
+          return undefined;
+      }
+    });
+    render(<VivliostyleExportSection />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("vivliostyle-build")).toBeEnabled();
+    });
+    fireEvent.click(screen.getByTestId("vivliostyle-build"));
+
+    expect(
+      await screen.findByText(rootCause(new Error(D2A_DENIAL))),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("D2A_EGRESS_DENIED");
   });
 });

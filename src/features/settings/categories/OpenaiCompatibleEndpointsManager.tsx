@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Plus, Trash2, X } from "lucide-react";
@@ -185,7 +186,11 @@ export function OpenaiCompatibleEndpointsManager({
           testing: false,
           result: {
             success: false,
-            message: e instanceof Error ? e.message : String(e),
+            // A D2a refusal is not a connection failure (DR-DA2B-R5).
+            message: d2aFailureText(
+              e,
+              e instanceof Error ? e.message : String(e),
+            ),
           },
         },
       }));

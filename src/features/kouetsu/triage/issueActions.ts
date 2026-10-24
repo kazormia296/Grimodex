@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import i18next from "@/lib/i18n";
 import { toast } from "sonner";
 import { useTreeStore } from "@/features/tree/treeStore";
@@ -253,7 +254,7 @@ export async function runCategoryCheck(
   } catch (e) {
     postEffectErrorToast(
       i18next.t("kouetsu.triage.runCategoryFailed"),
-      e instanceof Error ? e.message : String(e),
+      d2aFailureText(e, e instanceof Error ? e.message : String(e)),
     );
   }
 }

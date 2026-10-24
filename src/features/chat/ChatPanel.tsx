@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import {
   Suspense,
   lazy,
@@ -1158,7 +1159,12 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         }
       } catch (cause) {
         if (codexApprovalEpochRef.current !== responseEpoch) return;
-        toast.error(cause instanceof Error ? cause.message : String(cause));
+        toast.error(
+          d2aFailureText(
+            cause,
+            cause instanceof Error ? cause.message : String(cause),
+          ),
+        );
         throw cause;
       }
     },

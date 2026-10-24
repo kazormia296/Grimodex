@@ -1,3 +1,4 @@
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { Check } from "lucide-react";
 import { useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
@@ -151,7 +152,9 @@ export function TagSelector({
       );
     } catch (err) {
       onTagsChange(before);
-      toast.error(t("codex.tag.saveFailed"), { description: String(err) });
+      toast.error(t("codex.tag.saveFailed"), {
+        description: d2aFailureText(err, String(err)),
+      });
       return;
     }
     pushTagAssociation(before, next, t("codex.tag.historyToggle"));
@@ -168,7 +171,9 @@ export function TagSelector({
       );
     } catch (err) {
       onTagsChange(before);
-      toast.error(t("codex.tag.saveFailed"), { description: String(err) });
+      toast.error(t("codex.tag.saveFailed"), {
+        description: d2aFailureText(err, String(err)),
+      });
       return;
     }
     pushTagAssociation(before, next, t("codex.tag.historyRemove"));
@@ -186,7 +191,9 @@ export function TagSelector({
         color: newColor,
       });
     } catch (err) {
-      toast.error(t("codex.tag.createFailed"), { description: String(err) });
+      toast.error(t("codex.tag.createFailed"), {
+        description: d2aFailureText(err, String(err)),
+      });
       return;
     }
     setAllTags((prev) => [...prev, tag]);
@@ -204,7 +211,7 @@ export function TagSelector({
       // creation itself is a valid standalone outcome.
       onTagsChange(before);
       toast.error(t("codex.tag.linkFailed"), {
-        description: String(err),
+        description: d2aFailureText(err, String(err)),
       });
       setNewName("");
       setNewColor(PRESET_COLORS[0]);

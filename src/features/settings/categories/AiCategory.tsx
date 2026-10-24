@@ -1,3 +1,4 @@
+import { d2aFailureText, d2aMessageText } from "@/lib/d2aFailureText";
 import { AlertTriangle, Check, X } from "lucide-react";
 import { useState, useEffect, useCallback } from "react";
 import { useTranslation } from "react-i18next";
@@ -961,10 +962,14 @@ export function AiCategory() {
                           t("settings.ai.connectionSuccessToast", { version }),
                         );
                       } catch (e) {
+                        // A D2a refusal is not a connection failure.
                         toast.error(
-                          t("settings.ai.connectionFailedToast", {
-                            error: e instanceof Error ? e.message : String(e),
-                          }),
+                          d2aFailureText(
+                            e,
+                            t("settings.ai.connectionFailedToast", {
+                              error: e instanceof Error ? e.message : String(e),
+                            }),
+                          ),
                         );
                       }
                     }}
@@ -988,10 +993,18 @@ export function AiCategory() {
                             );
                           } catch (e) {
                             toast.error(
-                              t("settings.ai.codexAppServerConnectionFailed", {
-                                error:
-                                  e instanceof Error ? e.message : String(e),
-                              }),
+                              d2aFailureText(
+                                e,
+                                t(
+                                  "settings.ai.codexAppServerConnectionFailed",
+                                  {
+                                    error:
+                                      e instanceof Error
+                                        ? e.message
+                                        : String(e),
+                                  },
+                                ),
+                              ),
                             );
                           }
                         }}
@@ -1495,7 +1508,11 @@ export function AiCategory() {
                 ) : (
                   <X className="h-3.5 w-3.5 shrink-0" aria-hidden />
                 )}
-                <span>{connectionTestResult.message}</span>
+                <span>
+                  {connectionTestResult.success
+                    ? connectionTestResult.message
+                    : d2aMessageText(connectionTestResult.message)}
+                </span>
               </p>
             )}
           </div>

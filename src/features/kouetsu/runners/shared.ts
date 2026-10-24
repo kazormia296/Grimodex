@@ -5,6 +5,7 @@
  * outcome 正規化 のうち、各 runner に共通する部分をまとめる。
  */
 
+import { d2aFailureText } from "@/lib/d2aFailureText";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useAiSettingsStore } from "@/features/chat/store";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -123,7 +124,9 @@ export function launchSingle(
       // begin は runPostEffect の resolve 前に済んでいるので、この時点で
       // runStore にエントリが存在する。
       .then(({ runId }) => hooks?.onRunStarted?.(runId))
-      .catch((err) => resolve({ ok: false, error: String(err) }));
+      .catch((err) =>
+        resolve({ ok: false, error: d2aFailureText(err, String(err)) }),
+      );
   });
 }
 
@@ -138,6 +141,8 @@ export function launchMulti(
       onError: (e) => resolve({ ok: false, error: e.error }),
     })
       .then(({ runId }) => hooks?.onRunStarted?.(runId))
-      .catch((err) => resolve({ ok: false, error: String(err) }));
+      .catch((err) =>
+        resolve({ ok: false, error: d2aFailureText(err, String(err)) }),
+      );
   });
 }
