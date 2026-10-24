@@ -17,6 +17,13 @@ vi.mock("./nir1GraphAvailability", () => ({
   NIR1_GRAPH_UI_ENABLED: false,
   isNir1GraphUiEnabled: () => true,
 }));
+// The real `PROFILE_ACTIVATION_UI_ENABLED` (false): the guidance module must
+// never be requested (DA-2 ST3, DR-DA2-33).
+const guidanceRequests = vi.hoisted(() => ({ count: 0 }));
+vi.mock("@/features/profile-egress/ProfileActivationGuidance", () => {
+  guidanceRequests.count += 1;
+  return { default: () => <p data-testid="profile-activation-guidance" /> };
+});
 vi.mock("./nir1GraphSeed", () => ({
   selectNir1GraphSeed: vi.fn(async () => "seed"),
 }));
@@ -113,6 +120,19 @@ describe("RelatedScenesSection with the Graph UI on (mocked availability)", () =
         .map((row) => row.getAttribute("data-related-scene-id")),
     ).toEqual(["g"]);
     expect(screen.queryByText("関連するシーンが見つかりません")).toBeNull();
+  });
+
+  it("shows no profile-not-restricted guidance while the activation UI constant is off (DA-2 ST3)", async () => {
+    h.fetch.mockResolvedValue({
+      ...graphFetch(["a"]),
+      graphOutcome: "graph-unavailable:profile-not-restricted",
+      graph: undefined,
+    });
+    render(<RelatedScenesSection />);
+    await settle();
+    await vi.waitFor(() => expect(screen.getByText("Raw a")).toBeTruthy());
+    expect(screen.queryByTestId("profile-activation-guidance")).toBeNull();
+    expect(guidanceRequests.count).toBe(0);
   });
 
   it("keeps the Graph-only row while the active Scene moves to it before the fetch resets (F3)", async () => {

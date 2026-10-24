@@ -76,9 +76,25 @@ vi.mock("./BackupRestoreSection", () => ({
 vi.mock("@/features/external-mount/components/MountListDialog", () => ({
   MountListDialog: () => null,
 }));
+// The real `PROFILE_ACTIVATION_UI_ENABLED` (false): the activation item's
+// chunk must never be requested (DA-2 ST3, DR-DA2-32).
+const activationItemRequests = vi.hoisted(() => ({ count: 0 }));
+vi.mock("@/features/profile-egress/ProfileActivationSettingsSection", () => {
+  activationItemRequests.count += 1;
+  return { default: () => <div data-testid="profile-activation-settings" /> };
+});
 vi.mock("@/runtime/runtimeCapabilitiesContext", () => ({
   CapabilityGate: ({ children }: { children: ReactNode }) => children,
 }));
+
+describe("DataCategory profile activation item (DA-2 ST3)", () => {
+  it("creates no element and requests no chunk while the constant is off", async () => {
+    render(<DataCategory />);
+    await act(async () => {});
+    expect(screen.queryByTestId("profile-activation-settings")).toBeNull();
+    expect(activationItemRequests.count).toBe(0);
+  });
+});
 
 describe("DataCategory Chat history lifecycle admission", () => {
   beforeEach(() => {

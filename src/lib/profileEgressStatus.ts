@@ -24,7 +24,15 @@ import {
   type ProfileEgressStatusView,
 } from "@/../electron/shared/profileEgressStatusWire";
 
-import { electronBridge, isElectron } from "./shell";
+/**
+ * The preload bridge, read directly rather than through `./shell` (the same
+ * check as `isElectron()` and `electronBridge()`): this module is reached only
+ * from lazy chunks, and importing `./shell` from them splits it out of the
+ * startup `tauri` chunk, which grows every startup preload list (DR-DA2-30).
+ */
+function bridge(): NonNullable<Window["grimodex"]> | undefined {
+  return typeof window !== "undefined" ? window.grimodex : undefined;
+}
 
 export type {
   ProfileActivationRequestResult,
@@ -39,8 +47,9 @@ const NON_ELECTRON_STATUS: ProfileEgressStatusView = { state: "unrestricted" };
 
 /** The current state. Main answers while unavailable too. */
 export async function getProfileEgressStatus(): Promise<ProfileEgressStatusView> {
-  if (!isElectron()) return NON_ELECTRON_STATUS;
-  const envelope = await electronBridge().invoke(PROFILE_EGRESS_STATUS_COMMAND);
+  const electron = bridge();
+  if (!electron) return NON_ELECTRON_STATUS;
+  const envelope = await electron.invoke(PROFILE_EGRESS_STATUS_COMMAND);
   if (!envelope.ok) {
     throw new Error("PROFILE_EGRESS_STATUS_UNAVAILABLE");
   }
@@ -54,10 +63,9 @@ export async function getProfileEgressStatus(): Promise<ProfileEgressStatusView>
  * answer is a closed status. Before PUB-G it is always `not-activated`.
  */
 export async function requestProfileActivation(): Promise<ProfileActivationRequestResult> {
-  if (!isElectron()) return { status: "not-activated" };
-  const envelope = await electronBridge().invoke(
-    PROFILE_ACTIVATION_REQUEST_COMMAND,
-  );
+  const electron = bridge();
+  if (!electron) return { status: "not-activated" };
+  const envelope = await electron.invoke(PROFILE_ACTIVATION_REQUEST_COMMAND);
   const result = envelope.ok
     ? parseProfileActivationRequestResult(envelope.value)
     : null;
@@ -72,8 +80,9 @@ export async function requestProfileActivation(): Promise<ProfileActivationReque
 export function onProfileEgressStatus(
   handler: (view: ProfileEgressStatusView) => void,
 ): () => void {
-  if (!isElectron()) return () => undefined;
-  return electronBridge().listen(PROFILE_EGRESS_STATE_EVENT, (payload) => {
+  const electron = bridge();
+  if (!electron) return () => undefined;
+  return electron.listen(PROFILE_EGRESS_STATE_EVENT, (payload) => {
     const view = parseProfileEgressStatusView(payload);
     if (view !== null) handler(view);
   });

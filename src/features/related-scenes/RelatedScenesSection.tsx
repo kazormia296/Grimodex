@@ -4,13 +4,15 @@ import { Loader2 } from "lucide-react";
 import { CollapsibleSection } from "@/features/layout/CollapsibleSection";
 import { debugLog } from "@/lib/debugLog";
 import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import { isNir1GraphUiEnabled } from "./nir1GraphAvailability";
 import { useNir1RelatedScenes } from "./useNir1RelatedScenes";
 import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes";
 
 // The Graph view (CP-3b) is a lazy chunk requested only while the Graph UI
-// constant is on and the fetch carries a Graph payload or `restart-required`
-// (DR-CP3B-7). While the constant is false nothing below fetches it.
+// constant is on and the fetch carries a Graph payload, `restart-required` or
+// (with `PROFILE_ACTIVATION_UI_ENABLED` on too) `profile-not-restricted`
+// (DR-CP3B-7, DR-DA2-33). While the constant is false nothing below fetches it.
 const Nir1GraphRelatedScenes = lazy(() => import("./Nir1GraphRelatedScenes"));
 
 /** A failed Graph chunk or render falls back to the R/R+IR rows. */
@@ -39,7 +41,11 @@ function showsGraph(fetch: Nir1RelatedScenesFetchResult | null): boolean {
     fetch &&
     isNir1GraphUiEnabled() &&
     ((fetch.graphOutcome === "graph-ready" && fetch.graph) ||
-      fetch.graphOutcome === "graph-unavailable:restart-required"),
+      fetch.graphOutcome === "graph-unavailable:restart-required" ||
+      // K3/2 T-1 guidance (NIR-1 DA-2 ST3, DR-DA2-33): only while the
+      // activation UI constant is on too.
+      (PROFILE_ACTIVATION_UI_ENABLED &&
+        fetch.graphOutcome === "graph-unavailable:profile-not-restricted")),
   );
 }
 
