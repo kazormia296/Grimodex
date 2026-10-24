@@ -4,6 +4,7 @@ import type { CSSProperties, RefObject } from "react";
 import { createPortal } from "react-dom";
 import { motion } from "motion/react";
 import { useTranslation } from "react-i18next";
+import { aiFailureText } from "@/features/profile-egress/profileEgressAiStop";
 import { useInlineAiStore } from "./inlineAiStore";
 import { DURATIONS, SHAKE_KEYFRAMES, useReducedMotion } from "@/lib/animation";
 
@@ -87,6 +88,7 @@ export function InlineAIToolbar({
 }: InlineAIToolbarProps) {
   const { t } = useTranslation();
   const status = useInlineAiStore((s) => s.status);
+  const error = useInlineAiStore((s) => s.error);
   const attentionNonce = useInlineAiStore((s) => s.attentionNonce);
   const reduced = useReducedMotion();
 
@@ -185,7 +187,9 @@ export function InlineAIToolbar({
         {isError && (
           <span className="ml-1 flex items-center gap-1 text-xs text-red-500">
             <AlertTriangle className="h-3 w-3" aria-hidden />
-            {t("inlineAi.generateFailed")}
+            {/* D-10 (a), DR-DA2-34: the activation's AI terminal has its
+                reason; any other failure keeps the fixed text. */}
+            {aiFailureText(error) ?? t("inlineAi.generateFailed")}
           </span>
         )}
       </motion.div>

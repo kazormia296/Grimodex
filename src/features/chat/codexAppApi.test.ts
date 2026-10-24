@@ -707,6 +707,49 @@ describe("codexAppApi", () => {
     expect(cliApi.sendCliChatStream).not.toHaveBeenCalled();
   });
 
+  it("records Main's synthesized stage-2 turn-error as not observing the transport's end (DA-2 L-6)", async () => {
+    const callbacks = {
+      onTextDelta: vi.fn(),
+      onThinkingDelta: vi.fn(),
+      onDone: vi.fn(),
+      onError: vi.fn(),
+      onWarning: vi.fn(),
+    };
+    const cleanup = await sendCodexAppTurn(
+      { ...basePayload, transport: "app-server" },
+      callbacks,
+    );
+    emit({
+      projectId: "p1",
+      sessionId: "s1",
+      grimodexTurnId: "g1",
+      event: {
+        type: "turn-error",
+        message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+        code: "D2A_EGRESS_DENIED",
+        retryable: false,
+      },
+    });
+    await vi.waitFor(() =>
+      expect(callbacks.onError).toHaveBeenCalledWith(
+        "D2A_EGRESS_DENIED: profile-activation-stopped",
+      ),
+    );
+    expect(
+      vi.mocked(auditApi.failAiAuditExecution).mock.calls[0]?.[1],
+    ).toMatchObject({
+      error: { name: "CodexAppError", code: "D2A_EGRESS_DENIED" },
+      metadata: {
+        externalRuntimeInternalPromptObserved: false,
+        profileEgressStop: "profile-activation-stopped",
+        terminalSynthesizedByMain: true,
+        transportTerminationObserved: false,
+        auditObservationContinuedUntilTransportTerminal: false,
+      },
+    });
+    cleanup();
+  });
+
   it("keeps listening after a retryable turn error", async () => {
     const callbacks = {
       onTextDelta: vi.fn(),

@@ -6,6 +6,10 @@ import { InlineAIToolbar } from "./InlineAIToolbar";
 import { useInlineAiStore } from "./inlineAiStore";
 import type { InlineAiStatus } from "./inlineAiTypes";
 import i18next from "@/lib/i18n";
+import {
+  PROFILE_EGRESS_AI_STOP_TRANSLATIONS,
+  ensureProfileEgressAiStopTranslations,
+} from "@/features/profile-egress/profileEgressAiStopText";
 
 // happy-dom は getBoundingClientRect を実寸で返さない (幾何は browser test で gate)。
 // ここでは可視性/owner ゲート/error 出口/キーバインドのロジックだけを検証する。
@@ -135,6 +139,37 @@ describe("InlineAIToolbar visibility", () => {
     expect(screen.getByRole("button", { name: /反映/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: /破棄/ })).toBeTruthy();
     expect(screen.getByRole("button", { name: /再試行/ })).toBeTruthy();
+  });
+});
+
+describe("InlineAIToolbar profile activation terminal (DA-2 D-10 (a))", () => {
+  it("keeps the fixed failure text until the reason strings are registered, then shows the reason", () => {
+    useInlineAiStore.setState({
+      status: "error",
+      error: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    const { unmount } = render(<Harness isOwner />);
+    expect(screen.getByRole("status").textContent).toContain(
+      i18next.t("inlineAi.generateFailed"),
+    );
+    expect(screen.getByRole("status").textContent).not.toContain(
+      "D2A_EGRESS_DENIED",
+    );
+    unmount();
+    ensureProfileEgressAiStopTranslations();
+    render(<Harness isOwner />);
+    expect(screen.getByRole("status").textContent).toContain(
+      PROFILE_EGRESS_AI_STOP_TRANSLATIONS.ja.stopped,
+    );
+  });
+
+  it("keeps the fixed failure text for any other error", () => {
+    ensureProfileEgressAiStopTranslations();
+    useInlineAiStore.setState({ status: "error", error: "provider failed" });
+    render(<Harness isOwner />);
+    expect(screen.getByRole("status").textContent).toContain(
+      i18next.t("inlineAi.generateFailed"),
+    );
   });
 });
 

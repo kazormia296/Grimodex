@@ -181,6 +181,32 @@ describe("chat/cliApi", () => {
     );
   });
 
+  it("Main が段 2 で合成した終端は transport の終了を観測していないと記録する（DA-2 L-6）", async () => {
+    const onError = vi.fn();
+    await sendCliChatStream({ cli: "codex", prompt: "hello" }, auditContext, {
+      onTextDelta: vi.fn(),
+      onThinkingDelta: vi.fn(),
+      onDone: vi.fn(),
+      onError,
+    });
+    emit("cli:stream-error", {
+      message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(
+      vi.mocked(auditApi.failAiAuditExecution).mock.calls[0]?.[1],
+    ).toMatchObject({
+      error: { name: "CliRuntimeError" },
+      metadata: {
+        externalRuntimeInternalPromptObserved: false,
+        profileEgressStop: "profile-activation-stopped",
+        terminalSynthesizedByMain: true,
+        transportTerminationObserved: false,
+        auditObservationContinuedUntilTransportTerminal: false,
+      },
+    });
+  });
+
   it("deltaを永続化してからerror/cleanup terminalを記録する", async () => {
     const onTextDelta = vi.fn();
     const onError = vi.fn();

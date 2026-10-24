@@ -7147,6 +7147,26 @@ describe("useChatStore", () => {
       expect(isStreaming).toBe(false);
     });
 
+    it("toasts the reason of the profile activation's AI terminal, keeping the raw code in the store (DA-2 D-10 (a))", async () => {
+      const { ensureProfileEgressAiStopTranslations } =
+        await import("@/features/profile-egress/profileEgressAiStopText");
+      ensureProfileEgressAiStopTranslations();
+      vi.mocked(toast.error).mockClear();
+      mockStreamError("D2A_EGRESS_DENIED: profile-activation-stopped");
+
+      await useChatStore.getState().sendMessage("テスト");
+
+      expect(useChatStore.getState().error).toBe(
+        "D2A_EGRESS_DENIED: profile-activation-stopped",
+      );
+      expect(toast.error).toHaveBeenCalledOnce();
+      const shown = String(vi.mocked(toast.error).mock.calls[0]?.[0]);
+      expect(shown).not.toContain("D2A_EGRESS_DENIED");
+      expect(shown).toBe(
+        "外部送信の制限を有効にする処理が始まったため、AI の処理を止めました。",
+      );
+    });
+
     it("does not send when already streaming", async () => {
       useChatStore.setState({ isStreaming: true });
 

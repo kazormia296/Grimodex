@@ -314,6 +314,66 @@ describe("chat and Agent audit contracts", () => {
     expect(order.indexOf("audit:fail")).toBeLessThan(order.indexOf("ui:error"));
   });
 
+  it("records Main's synthesized stage-2 terminal as not observing the transport's end (DA-2 L-6)", async () => {
+    const onError = vi.fn();
+    await sendChatMessageStream(
+      [{ role: "user", content: "stream" }],
+      undefined,
+      {
+        onTextDelta: vi.fn(),
+        onThinkingDelta: vi.fn(),
+        onDone: vi.fn(),
+        onError,
+      },
+      { projectId: "project-1", pathId: "chat_stream_non_agent" },
+    );
+    emitChat("chat:stream-error", {
+      message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(onError).toHaveBeenCalledWith(
+      "D2A_EGRESS_DENIED: profile-activation-stopped",
+    );
+    expect(failMock).toHaveBeenCalledOnce();
+    expect(failMock.mock.calls[0]).toEqual([
+      expect.anything(),
+      expect.objectContaining({
+        error: {
+          name: "ProviderError",
+          message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+        },
+        metadata: {
+          profileEgressStop: "profile-activation-stopped",
+          terminalSynthesizedByMain: true,
+          transportTerminationObserved: false,
+          auditObservationContinuedUntilTransportTerminal: false,
+        },
+      }),
+    ]);
+
+    // A provider error that only contains the marker is not Main's terminal.
+    failMock.mockClear();
+    const onSecondError = vi.fn();
+    await sendChatMessageStream(
+      [{ role: "user", content: "stream" }],
+      undefined,
+      {
+        onTextDelta: vi.fn(),
+        onThinkingDelta: vi.fn(),
+        onDone: vi.fn(),
+        onError: onSecondError,
+      },
+      { projectId: "project-1", pathId: "chat_stream_non_agent" },
+    );
+    emitChat("chat:stream-error", {
+      message: "upstream said D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    await vi.waitFor(() => expect(onSecondError).toHaveBeenCalledOnce());
+    expect(
+      (failMock.mock.calls[0] as unknown[] | undefined)?.[1],
+    ).not.toHaveProperty("metadata");
+  });
+
   it("keeps correlated audit observation through abort quiescence while stopping UI immediately", async () => {
     const onTextDelta = vi.fn(() => order.push("ui:text"));
     const cleanup = await sendChatMessageStream(

@@ -38,6 +38,7 @@ vi.mock("@/features/ai-audit/api", () => ({
 
 const auditContext = { projectId: "project-1", pathId: "inline_ai_stream" };
 
+import { failAiAuditExecution } from "@/features/ai-audit/api";
 import { sendInlineAiStream, abortInlineAiStream } from "./inlineAiStreaming";
 
 function emit(event: string, payload: unknown) {
@@ -122,6 +123,31 @@ describe("inlineAiStreaming", () => {
     await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
 
     expect(onError).toHaveBeenCalledWith("boom");
+  });
+
+  it("records Main's synthesized stage-2 terminal as not observing the transport's end (DA-2 L-6)", async () => {
+    invokeMock.mockResolvedValue(undefined);
+    vi.mocked(failAiAuditExecution).mockClear();
+    const onError = vi.fn();
+    await sendInlineAiStream([{ role: "user", content: "hi" }], auditContext, {
+      onTextDelta: vi.fn(),
+      onDone: vi.fn(),
+      onError,
+    });
+    emit("inline-ai:stream-error", {
+      streamId: "execution-test",
+      message: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+    await vi.waitFor(() => expect(onError).toHaveBeenCalledOnce());
+    expect(vi.mocked(failAiAuditExecution).mock.calls[0]?.[1]).toMatchObject({
+      error: { name: "ProviderError" },
+      metadata: {
+        profileEgressStop: "profile-activation-stopped",
+        terminalSynthesizedByMain: true,
+        transportTerminationObserved: false,
+        auditObservationContinuedUntilTransportTerminal: false,
+      },
+    });
   });
 
   it("invokes the backend abort command", async () => {
