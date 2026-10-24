@@ -75,7 +75,7 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
     },
     import: {
       chatsRestricted:
-        "外部送信を制限中は会話を取り込めないため、会話 {{count}} 件は取り込みませんでした。ほかの項目の取込みは完了しています。",
+        "外部送信を制限中は会話を取り込めないため、会話 {{count}} 件は取り込みませんでした。",
     },
     result: {
       activated: "外部送信の制限を有効にしました。",
@@ -146,7 +146,7 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
     },
     import: {
       chatsRestricted:
-        "Conversations cannot be imported while external sending is restricted, so {{count}} conversation(s) were not imported. The other items were imported.",
+        "Conversations cannot be imported while external sending is restricted, so {{count}} conversation(s) were not imported.",
     },
     result: {
       activated: "The external sending restriction is on.",

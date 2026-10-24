@@ -13,5 +13,6 @@ describe("chatImportNotice with the activation UI enabled", () => {
     const notice = await chatImportNotice(2);
     expect(notice).toContain("2");
     expect(notice).toContain("外部送信を制限中");
+    expect(notice).not.toContain("完了");
   });
 });

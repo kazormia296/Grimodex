@@ -698,8 +698,11 @@ export async function importChapters(
  * stays closed while restricted (D, RW-1: K3/2 "chat の書込みの入口" 9). The
  * first D2a refusal ends it without trying the rest: `notImported` counts
  * the conversations not taken in (that one and the rest) so the flow shows
- * the count and the reason, and the rest of the import is already complete
- * (DR-DA2B-R7). Unrestricted, nothing changes.
+ * the count and the reason; the other items ran before it, with their own
+ * errors listed apart (DR-DA2B-R7). A refusal that starts between a session
+ * row and its messages (the activation beginning mid-import) leaves that row
+ * and the messages written so far, though it is counted as not taken in (a
+ * narrow window, recorded in DR-DA2B-R7). Unrestricted, nothing changes.
  */
 export async function importChatSessionsBatch(
   sessionsToImport: ParsedChatSession[],

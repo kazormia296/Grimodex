@@ -98,5 +98,7 @@ describe("importChatSessionsBatch", () => {
     expect(notice).toContain("3");
     expect(notice).not.toContain("D2A_EGRESS_DENIED");
     expect(notice).not.toContain("外部送信");
+    // It does not claim the other items succeeded: they may have errors.
+    expect(notice).not.toContain("完了");
   });
 });

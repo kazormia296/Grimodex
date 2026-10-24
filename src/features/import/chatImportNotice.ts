@@ -5,9 +5,10 @@ import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profile
  * The notice of the conversations an import did not take in (K3/2 "chat の
  * 書込みの入口" 9: shown, never dropped silently; DR-DA2B-R7).
  *
- * The count and a neutral reason are shown whatever the constant: they name
- * no restriction (no Session C-1 wording) and appear only when the
- * conversation part was refused (restricted, or the activation in progress).
+ * The count is shown whatever the constant: it names no restriction (no
+ * Session C-1 wording) and appears only when the conversation part was
+ * refused (restricted, or the activation in progress). It says nothing about
+ * the other items: their own errors, if any, are listed beside it.
  * The restricted reason itself is D wording behind
  * `PROFILE_ACTIVATION_UI_ENABLED` (D-13 (a)), in the lazy
  * `profileEgressTranslations` chunk; while it is false the bundler drops the
@@ -16,12 +17,10 @@ import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profile
  */
 const CHAT_IMPORT_NOTICE = {
   ja: {
-    notImported:
-      "会話 {{count}} 件は取り込みませんでした。ほかの項目の取込みは完了しています。",
+    notImported: "会話 {{count}} 件は取り込みませんでした。",
   },
   en: {
-    notImported:
-      "{{count}} conversation(s) were not imported. The other items were imported.",
+    notImported: "{{count}} conversation(s) were not imported.",
   },
 } as const;
 
