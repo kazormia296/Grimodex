@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { placeRestrictedProfile } from "./profile-activation-helper.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -101,10 +102,12 @@ function writeImpactResponse(res) {
   writeAiResponse(res, { judgments: [] });
 }
 
-function makeBackend() {
+function makeBackend({ restricted = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "grimodex-node-pe-run-"));
   roots.push(root);
   const events = [];
+  // DA-2 (D-7): a restricted state file, not an activation.
+  if (restricted) placeRestrictedProfile(join(root, "app-data"));
   const backend = new Backend(join(root, "app-data"));
   backend.onEvent((channel, payload) => {
     events.push({ channel, payload: JSON.parse(payload) });
@@ -238,9 +241,8 @@ test("restricted Native post-effect families reject a forged caller before local
     res.writeHead(500).end();
   });
   try {
-    const { backend, workspace } = makeBackend();
-    await backend.initializeProfileEgress();
-    const status = JSON.parse(await backend.activateProfileEgress());
+    const { backend, workspace } = makeBackend({ restricted: true });
+    const status = JSON.parse(await backend.initializeProfileEgress());
     await backend.openWorkspace(workspace);
     const forgedIdentity = {
       profileId: status.profileId,

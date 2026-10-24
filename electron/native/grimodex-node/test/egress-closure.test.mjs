@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
 import { closeMockServer, startMockServer } from "./mock-http.mjs";
+import { activateThroughGrant } from "./profile-activation-helper.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -216,7 +217,7 @@ test("G-2: all eight legacy entries refuse after activation, for a registered st
     writeAiSettings(appData, baseUrl);
     const backend = new Backend(appData);
     await backend.initializeProfileEgress();
-    const status = JSON.parse(await backend.activateProfileEgress());
+    const status = JSON.parse(await activateThroughGrant(backend));
     assert.equal(status.restricted, true);
     assert.equal(status.inFlightStopped, true);
     const workspace = join(root, "workspace-a");
@@ -239,7 +240,7 @@ test("G-2: all eight legacy entries refuse in a process restarted on a restricte
     writeAiSettings(appData, baseUrl);
     const first = new Backend(appData);
     await first.initializeProfileEgress();
-    await first.activateProfileEgress();
+    await activateThroughGrant(first);
 
     // A new Backend on the same app data is a restarted process: Main's
     // "stop the external transports" participants never ran for it.

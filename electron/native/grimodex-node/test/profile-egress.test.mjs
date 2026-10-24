@@ -15,6 +15,8 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 
+import { activateThroughGrant } from "./profile-activation-helper.mjs";
+
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
 const { Backend } = require(join(here, "..", "grimodex-node.node"));
@@ -55,9 +57,10 @@ test("D2a startup stays dormant until explicit activation, then survives restart
     assert.equal(initialized.postEffectRunsStopped, 0);
     assert.equal(existsSync(join(appData, "profile-egress.json")), false);
 
+    // DA-2: the only activation is the consumed ProfileActivation grant.
     const activated = JSON.parse(
       await boundedStartup(
-        first.activateProfileEgress(),
+        activateThroughGrant(first),
         "first Native activation",
       ),
     );
@@ -148,7 +151,7 @@ test("D2a accepts one registered identity, persists settings, then rejects it af
     const backend = new Backend(join(root, "app-data"));
     owner.backend = backend;
     await backend.initializeProfileEgress();
-    const status = JSON.parse(await backend.activateProfileEgress());
+    const status = JSON.parse(await activateThroughGrant(backend));
     const firstWorkspace = join(root, "workspace-a");
     await backend.openWorkspace(firstWorkspace);
     const identity = {

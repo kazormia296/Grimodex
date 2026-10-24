@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
+import { placeRestrictedProfile } from "./profile-activation-helper.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -44,11 +45,13 @@ process.on("exit", () => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
 
-function makeBackend() {
+function makeBackend({ restricted = false } = {}) {
   const root = mkdtempSync(join(tmpdir(), "grimodex-node-ai-3b-"));
   roots.push(root);
   const appDataDir = join(root, "app-data");
   mkdirSync(appDataDir, { recursive: true });
+  // DA-2 (D-7): a restricted state file, not an activation.
+  if (restricted) placeRestrictedProfile(appDataDir);
   const events = [];
   const backend = new Backend(appDataDir);
   backend.onEvent((channel, payload) => events.push({ channel, payload }));
@@ -589,9 +592,8 @@ test("restricted Native inline/agent/model/connection families reject before loc
     res.writeHead(500).end();
   });
   try {
-    const { backend, root } = makeBackend();
-    await backend.initializeProfileEgress();
-    const status = JSON.parse(await backend.activateProfileEgress());
+    const { backend, root } = makeBackend({ restricted: true });
+    const status = JSON.parse(await backend.initializeProfileEgress());
     const workspace = join(root, "workspace");
     await backend.openWorkspace(workspace);
     const expectedWorkspacePath = realpathSync(workspace);

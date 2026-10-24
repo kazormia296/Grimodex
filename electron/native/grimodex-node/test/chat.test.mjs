@@ -22,6 +22,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { placeRestrictedProfile } from "./profile-activation-helper.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -251,10 +252,11 @@ test("restricted Native chat families reject a forged caller before local HTTP",
         activeOpenaiCompatibleEndpointId: "test",
       }),
     );
+    // DA-2 (D-7): a restricted state file, not an activation.
+    placeRestrictedProfile(isolatedAppDataDir);
     const backend = new Backend(isolatedAppDataDir);
     owner.backend = backend;
-    await backend.initializeProfileEgress();
-    const status = JSON.parse(await backend.activateProfileEgress());
+    const status = JSON.parse(await backend.initializeProfileEgress());
     const workspace = join(isolatedRoot, "d2a-restricted-chat");
     await backend.openWorkspace(workspace);
     const expectedWorkspacePath = realpathSync(workspace);
