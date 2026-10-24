@@ -20,6 +20,13 @@ vi.mock("./nir1GraphAvailability", () => ({
 vi.mock("./nir1GraphSeed", () => ({
   selectNir1GraphSeed: vi.fn(async () => "seed"),
 }));
+vi.mock("./nir1GraphFusion", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./nir1GraphFusion")>();
+  return {
+    fuseNir1RelatedScenesGraph: vi.fn(actual.fuseNir1RelatedScenesGraph),
+  };
+});
+import { fuseNir1RelatedScenesGraph } from "./nir1GraphFusion";
 import { RelatedScenesSection } from "./RelatedScenesSection";
 
 function graphFetch(rawIds: string[]): Nir1RelatedScenesFetchResult {
@@ -106,5 +113,44 @@ describe("RelatedScenesSection with the Graph UI on (mocked availability)", () =
         .map((row) => row.getAttribute("data-related-scene-id")),
     ).toEqual(["g"]);
     expect(screen.queryByText("関連するシーンが見つかりません")).toBeNull();
+  });
+
+  it("keeps the Graph-only row while the active Scene moves to it before the fetch resets (F3)", async () => {
+    h.fetch.mockResolvedValue({
+      ...graphFetch(["a"]),
+      origin: {
+        workspacePath: "/w",
+        openRevision: 1,
+        projectId: "p",
+        querySceneId: "current",
+        queryGeneration: 1,
+      },
+    });
+    render(<RelatedScenesSection />);
+    await settle();
+    await vi.waitFor(() =>
+      expect(screen.getByText("Graph only title")).toBeTruthy(),
+    );
+    const fuse = vi.mocked(fuseNir1RelatedScenesGraph);
+    expect(fuse).toHaveBeenCalled();
+    fuse.mockClear();
+    // An accepted Graph-only click: the active Scene becomes the target while
+    // the shown fetch still belongs to the query of "current".
+    // Every render of that window fuses with the query's own Scene (the memo
+    // is not even recomputed), so the row is never judged "the query Scene".
+    act(() => useTreeStore.setState({ activeSceneId: "g" }));
+    for (const [input] of fuse.mock.calls)
+      expect(input.querySceneId).toBe("current");
+    for (const result of fuse.mock.results)
+      expect(
+        (
+          result.value as ReturnType<typeof fuseNir1RelatedScenesGraph>
+        ).rows.map((row) => row.sceneId),
+      ).toEqual(["a", "g"]);
+    expect(
+      useDebugLogStore
+        .getState()
+        .entries.filter((entry) => entry.tag === "related-scenes"),
+    ).toEqual([]);
   });
 });

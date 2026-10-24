@@ -37,6 +37,20 @@ vi.mock("./nir1EvidenceNavigation", () => ({
 vi.mock("./nir1GraphSeed", () => ({
   selectNir1GraphSeed: vi.fn(async () => "seed"),
 }));
+// Each listener the hook subscribes is wrapped, to see whether it still runs.
+const listenerCalls = vi.hoisted(() => vi.fn());
+vi.mock("./nir1GraphOnlyRevocation", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("./nir1GraphOnlyRevocation")>();
+  return {
+    ...actual,
+    subscribeNir1GraphOnlyRevocation: (listener: (sceneId: string) => void) =>
+      actual.subscribeNir1GraphOnlyRevocation((sceneId) => {
+        listenerCalls(sceneId);
+        listener(sceneId);
+      }),
+  };
+});
 vi.mock("./nir1GraphAvailability", () => ({
   NIR1_GRAPH_UI_ENABLED: false,
   isNir1GraphUiEnabled: () => h.enabled,
@@ -129,5 +143,72 @@ describe("Graph-only revocation notice", () => {
     await advance(1000);
     expect(h.fetch).toHaveBeenCalledTimes(1);
     expect(view.result.current.fetch).toBe(shown);
+  });
+
+  it("unsubscribes on unmount: a later notice reaches no listener of the hook", async () => {
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    act(() => notifyNir1GraphOnlyRevoked("other"));
+    expect(listenerCalls).toHaveBeenCalledOnce();
+    view.unmount();
+    listenerCalls.mockClear();
+    act(() => notifyNir1GraphOnlyRevoked("g"));
+    await advance(1000);
+    expect(listenerCalls).not.toHaveBeenCalled();
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("two notices of one generation with a render between refresh once", async () => {
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    h.fetch.mockResolvedValue(withGraphOnly(null));
+    act(() => notifyNir1GraphOnlyRevoked("g"));
+    view.rerender();
+    act(() => notifyNir1GraphOnlyRevoked("g"));
+    await advance(400);
+    await advance(1000);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    expect(view.result.current.fetch?.graph?.graphOnly).toBeNull();
+  });
+
+  it("a notice that comes while the fetch is in flight refreshes once after that result publishes (F4)", async () => {
+    let resolve!: (value: Nir1RelatedScenesFetchResult) => void;
+    h.fetch.mockReturnValueOnce(
+      new Promise<Nir1RelatedScenesFetchResult>((done) => (resolve = done)),
+    );
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(view.result.current.fetch).toBeNull();
+    h.fetch.mockResolvedValue(withGraphOnly(null));
+    act(() => {
+      notifyNir1GraphOnlyRevoked("g");
+      notifyNir1GraphOnlyRevoked("g");
+    });
+    await act(async () => resolve(withGraphOnly("g")));
+    // The revoked row is hidden at once and queried once more.
+    expect(view.result.current.fetch).toBeNull();
+    await advance(400);
+    await advance(1000);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    expect(view.result.current.fetch?.graph?.graphOnly).toBeNull();
+  });
+
+  it("a notice in flight for another Scene leaves the published row and queries no more", async () => {
+    let resolve!: (value: Nir1RelatedScenesFetchResult) => void;
+    h.fetch.mockReturnValueOnce(
+      new Promise<Nir1RelatedScenesFetchResult>((done) => (resolve = done)),
+    );
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    act(() => notifyNir1GraphOnlyRevoked("other"));
+    await act(async () => resolve(withGraphOnly("g")));
+    await advance(1000);
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(view.result.current.fetch?.graph?.graphOnly?.sceneId).toBe("g");
   });
 });

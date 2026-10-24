@@ -89,7 +89,12 @@ export function RelatedScenesSection({
         ) : fetch && showsGraph(fetch) ? (
           <Nir1GraphBoundary fallback={baseRows(fetch, loading, t)}>
             <Suspense fallback={baseRows(fetch, loading, t)}>
-              <Nir1GraphRelatedScenes fetch={fetch} querySceneId={sceneId} />
+              <Nir1GraphRelatedScenes
+                fetch={fetch}
+                // The query's own Scene: after an accepted Graph-only click the
+                // active Scene is the target for a render before `fetch` resets.
+                querySceneId={fetch.origin?.querySceneId ?? sceneId}
+              />
             </Suspense>
           </Nir1GraphBoundary>
         ) : (

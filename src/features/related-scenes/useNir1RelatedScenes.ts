@@ -60,21 +60,37 @@ export function useNir1RelatedScenes(enabled: boolean) {
   const shown = useRef<Nir1RelatedScenesFetchResult | null>(null);
   shown.current = fetch;
   const revokedGeneration = useRef<number | null>(null);
+  // CP-3b F4: the Scenes revoked while a generation's fetch was in flight
+  // (Native may have re-checked before the revoke committed). Checked once
+  // when that generation publishes, like `graphReadyDuringFetch`.
+  const revokedDuringFetch = useRef<{
+    generation: number;
+    sceneIds: Set<string>;
+  } | null>(null);
 
   // A revoke of the author's declaration in this window hides the shown
   // Graph-only row of that Scene and queries once more. Closed with the UI.
   useEffect(() => {
     if (!enabled || !isNir1GraphUiEnabled()) return;
     return subscribeNir1GraphOnlyRevocation((revokedSceneId) => {
+      const generation = current.current;
       const value = shown.current;
       if (
-        value?.graphOutcome !== "graph-ready" ||
-        value.graph?.graphOnly?.sceneId !== revokedSceneId ||
-        revokedGeneration.current === current.current
-      )
-        return;
-      revokedGeneration.current = current.current;
-      setRefresh((count) => count + 1);
+        value?.graphOutcome === "graph-ready" &&
+        value.graph?.graphOnly?.sceneId === revokedSceneId
+      ) {
+        if (revokedGeneration.current === generation) return;
+        revokedGeneration.current = generation;
+        setRefresh((count) => count + 1);
+      } else if (fetchingGeneration.current === generation) {
+        const kept = revokedDuringFetch.current;
+        if (kept?.generation === generation) kept.sceneIds.add(revokedSceneId);
+        else
+          revokedDuringFetch.current = {
+            generation,
+            sceneIds: new Set([revokedSceneId]),
+          };
+      }
     });
   }, [enabled]);
 
@@ -219,6 +235,20 @@ export function useNir1RelatedScenes(enabled: boolean) {
           }
           setFetch(value);
           graphReadyGeneration.current = null;
+          const revoked = revokedDuringFetch.current;
+          if (revoked?.generation === generation) {
+            revokedDuringFetch.current = null;
+            const graphOnlyId = value.graph?.graphOnly?.sceneId;
+            if (
+              value.graphOutcome === "graph-ready" &&
+              graphOnlyId !== undefined &&
+              revoked.sceneIds.has(graphOnlyId) &&
+              revokedGeneration.current !== generation
+            ) {
+              revokedGeneration.current = generation;
+              setRefresh((count) => count + 1);
+            }
+          }
           if (awaitsGraphReady(value)) {
             // A notice that came during the fetch is this generation's one
             // refresh; otherwise wait for the next one.
