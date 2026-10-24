@@ -118,3 +118,37 @@ U3 の委任（継続計画 §3.1）の外に当たる要素は、ST1 の範囲�
 - **予約の API**（Native の中）：段 1 の consume が slot を `Reserved` にし、commit の成功だけが終える。Main は予約を見られない。Main の in-flight の印と `activationPromise` は Main の側で持つ（P3-2）。段 2・3 の失敗で Main が unavailable にしても Native は知らないが、予約が残るのでその process ではほかの grant も通らない。
 - **license**：Native は予約の時点から restricted の client を選ぶ。`license-validation` を participant から外すことと、unavailable への移行で scheduler を dispose すること（P2-4）は ST2。
 - **audit の終端**：段 5 が取り消した非 stream の旧 AI 要求の HTTP の audit の行に終端が残るかは未確認（DR-DA2-6 の残余。P3-6 と合わせて ST2）。
+
+## ST2 の実装後の追記（2026-10-24。上の表と matrix の本文は直さない）
+
+### 実装で決めたこと（DR-DA2-9〜11、16〜19 の範囲内）
+
+- **置き場**：要求の controller と表示の digest、状態の通知は `electron/main/profileActivation.ts`、seam は `profileActivationCiSeam.ts`、AI の終端の tracker は `aiStreamTerminals.ts`、合成した終端の送信は `events.ts` の `sendAiStreamTerminalToWindow`（4 つの終端の channel だけを受ける）、閉じた union と command・event の名前は `electron/shared/profileEgressStatusWire.ts`、renderer の wrapper は `src/lib/profileEgressStatus.ts`。Rust は変えていない（ST1 の N-API をそのまま使う）。
+- **状態の通知**：DR-DA2-17 で index.ts の listener と書いた処理は、試験できるよう `createProfileEgressStatusNotifier`（`profileActivation.ts`）にまとめ、index.ts はそれを gate の `onStatusChange` に渡すだけにした（挙動は DR のとおり：段 2 で `resetWindowTitles()` と AI の終端、unavailable で license の scheduler の dispose、全部の状態で `profile-egress:state` を全窓へ）。index.ts は同じ階層の module だけを import する（`rendererContainment.startupOrder.test.ts` の書き換えが `./` の import だけを絶対 path に直すため。NC-1 の試験は変えていない）。
+- **gate の新しい member**（`activating`、`statusView`、`onStatusChange`、`isIssuedCallerIdentity`、`beginProfileActivation`）は interface では任意にした（既存の試験の fake gate を変えずに済む）。製品の gate は全部を持ち、controller と router は無いときを `unavailable`／`refused` に倒す。
+- **router**：`get_profile_egress_status` と `request_profile_activation` は caller identity の発行の後、`assertInvoke` の前に Main が答える。前者は gate の `statusView()`（gate が無ければ `backend-unavailable`）、後者は controller（無ければ `unavailable`）。どちらも Native へ転送しない。台帳の分類は `INTERNAL_COMMANDS`。
+- **renderer の wrapper** は renderer の IPC の queue（`ipcQueue.ts`）を通らず `electronBridge().invoke` を直接呼ぶ。要求は dialog（preview から最大 60 s）と段 3〜5 の上限の間待つので、queue の slot と lifecycle の quiescence を持たないようにした。Electron の外（browser mock、legacy の Tauri）は `unrestricted`／`not-activated` を返す。
+- **完了時の拒否の範囲**：`assertPlaintextPublication` は `old-external-ai`・`old-local-ai` の結果を restricted か unavailable で拒否する。`external-url`（接続試験と Vivliostyle）は従来どおり完了時の検査の対象にしていない（invoke 時に拒否され、段 3 で子 process を止める）。
+- **license**：`licenseValidation.quiesceForProfileEgress()` は製品では呼ばれなくなった（participant から外した）。scheduler の API と試験は残した（消すのは別の整理）。
+- **実測（ST5 の正式な実測ではない）**：`d2aActivation.pipeline.spec.ts`（応答しない provider に `list_ai_models` が待っている状態での activation。Linux、debug でない addon）の 1 試験が setup を含めて 519 ms。段 5 の取消で 30 s の上限に届かない。
+- **検証**：`tsc`（root と `-p electron/tsconfig.json`）、`vitest.electron.config.ts` の全件（95 file、2204 件）、`vitest.electron-native.config.ts` の全件（6 file、41 件。実 Native）、`pnpm --dir electron/native/grimodex-node test`（187 件、pass 186、skip 1 は env の fixture が要る既存の試験）、`pnpm lint`（error 0）、`pnpm build` の後の `node scripts/check-performance-budgets.mjs`（起動時の JS graph raw=4,249,075、gzip=1,341,991。上限 raw 4,250,000 の内で、ST2 の前と同じ。wrapper は起動時の graph に入らない）、`pnpm eval:impact --base origin/master`（rc 0。新しい file が未分類のため fallback で全 suite。分類は ST5）。
+
+### ST3 に引き継ぐこと
+
+- **command**（どちらも引数なし、Main 処理、Native へ転送しない）：
+  - `get_profile_egress_status` → `ProfileEgressStatusView`：`{ state: "unrestricted" } | { state: "activating" } | { state: "restricted" } | { state: "unavailable", reason }`。`reason` は `state-file-unreadable`、`state-file-unwritable`、`barrier-timeout`、`activation-failed`、`participant-timeout`、`participant-failed`、`backend-unavailable`、`status-invalid`。unavailable でも答える。
+  - `request_profile_activation` → `{ status }`。`status` は `activated`、`cancelled`、`expired`、`busy`、`already-restricted`、`unavailable`、`not-activated`（PUB-G の前は必ずこれ）、`refused`。
+- **event**：`profile-egress:state`（Main の event。payload は上の `ProfileEgressStatusView`）。段 2 の `activating`、段 6 の `restricted`、失敗の `unavailable` の 3 回だけ。起動時は送らないので、表示は command で初期値を取る。
+- **wrapper**（`src/lib/profileEgressStatus.ts`。起動時の graph に入れないため、lazy chunk からだけ import する）：`getProfileEgressStatus(): Promise<ProfileEgressStatusView>`（形の外は throw）、`requestProfileActivation(): Promise<ProfileActivationRequestResult>`（形の外は `refused`）、`onProfileEgressStatus(handler): () => void`（形の外は捨てる）。型 `ProfileEgressStatusView`、`ProfileEgressState`、`ProfileEgressUnavailableReason`、`ProfileActivationRequestResult`、`ProfileActivationRequestStatus` も同じ file から re-export する（正本は `electron/shared/profileEgressStatusWire.ts`）。
+- **AI の終端の理由**：段 2 で Main が合成する終端の message は `D2A_EGRESS_DENIED: profile-activation-stopped`（chat／inline／CLI は `*:stream-error` の `message`、Codex は `codex-app:event` の `turn-error` の `message` と `code: "D2A_EGRESS_DENIED"`）。非 stream の旧 AI 要求は invoke の失敗 `D2A_EGRESS_DENIED: legacy-request-stopped`（Native の段 5）か `D2A_EGRESS_DENIED: old-external-ai: route <cmd> completed after profile restriction began`（Main の完了時の拒否）で終わる。ST3 はこれらを i18n の理由に写す（D-10）。
+- **入口の閉鎖**：Main と Native の側では、seam のない起動で `request_profile_activation` は常に `not-activated`（dialog は出ない）。renderer の定数 `PROFILE_ACTIVATION_UI_ENABLED` と lazy chunk は ST3。
+
+### 持ち越し・未検証（PR 本文に載せる）
+
+- Y-1 の probe の採り直し（`windows.ts` と `index.ts` を変えたため。DA-1 の追加の記録の約束）は ST5。G-open の記録（`nc1-g-open/`）は採り直さない（DA-2 の条件ではない）。
+- `evals/impact-map.yaml`（rule `d2a-profile-egress`）と `evals/quality-manifest.yaml` への新しい file の分類は ST5（今は eval:impact が fallback で全 suite を選ぶ）。
+- 実 Electron での確認は未実施：seam (a) の journey（env を与えた非 packaged の起動、`approve`／`cancel`／`timeout`）、製品の dialog の見た目と checkbox、合成した stream の終端で renderer の UI と audit が閉じること、段 2 の窓の title の戻り。どれも vitest と実 Native の pipeline spec までで確かめた。
+- stream（chat／inline／CLI／Codex）の in-flight を実 Native で通した activation の試験は置いていない（非 stream の `list_ai_models` だけ。stream は unit の試験と router の試験）。Positive (2)（reload、workspace の切替、別窓、restart、W-1 の再試行）の pipeline spec は ST4／ST5。
+- 段 3 の時間切れの後の強制停止（`forceStop`）の exit は待たない（上限の外で待たせない）。exit の証拠は各 manager の既存の child lifetime に残るが、activation の記録には載らない。
+- 取り消した非 stream の旧 AI 要求の audit の終端は renderer の既存の失敗の経路が書く（Main は書かない）。実 Electron での行の確認は未実施（DR-DA2-6 の残余と同じ）。
+- `[precheck]` に当たるものは無かった（新しい受信先、保存範囲の拡大、閾値の緩和、新しい authority、認可の削除のどれも要らなかった）。
