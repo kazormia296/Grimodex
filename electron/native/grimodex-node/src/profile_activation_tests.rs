@@ -825,10 +825,23 @@ async fn an_unavailable_process_refuses_a_second_barrier_and_registration() {
     assert_eq!(error.reason, "PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
     // The stream quiesces late; a second barrier would now drain at once.
     rig.state().chat_streams.complete("never-quiesces", &chat);
+    // A stream registered after the first barrier: a second barrier that got
+    // past the unavailable refusal would run the stop request again and abort
+    // it, so its flag staying down proves the second barrier did not start.
+    let late = rig
+        .state()
+        .chat_streams
+        .register("registered-late")
+        .unwrap();
     let again = crate::settle_profile_egress_bounded(rig.state(), Duration::from_secs(10))
         .await
         .unwrap_err();
     assert_eq!(again.reason, "PROFILE_EGRESS_UNAVAILABLE:barrier-timeout");
+    assert!(
+        !late.abort_flag().load(std::sync::atomic::Ordering::Acquire),
+        "an unavailable process must refuse a second barrier before it asks anything to stop"
+    );
+    rig.state().chat_streams.complete("registered-late", &late);
     let status = rig.state().profile_egress.status();
     assert!(status.restricted && !status.in_flight_stopped);
     assert_eq!(status.unavailable_reason, Some("barrier-timeout"));
