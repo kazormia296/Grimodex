@@ -70,13 +70,17 @@ export async function deleteMessage(messageId: string): Promise<void> {
   await deleteMessages([messageId]);
 }
 
-/** The typed writer's per-call bound (Main and Native). */
-const MESSAGE_DELETE_BATCH = 256;
+/**
+ * The typed writer's per-call bound (Main and Native; 10,000 since the ST4-A
+ * review fix, DR-DA2-54..61). It is not a K3/2 threshold.
+ */
+const MESSAGE_DELETE_BATCH = 10_000;
 
 /**
  * Deletes messages of one session with the CW typed writer (DR-DA2B-R2). One
  * call is all-or-nothing, so a user row and the rows after it go in one call;
- * only a list above the writer's bound is split, and then it is not atomic.
+ * only a list above the writer's bound is split, and then it is not atomic (a
+ * failed batch is the caller's delete failure).
  * The session and project are read from the first row that still exists; ids
  * that are already gone are not counted, as the legacy DELETE matched nothing.
  */
@@ -92,17 +96,17 @@ export async function deleteMessages(messageIds: string[]): Promise<void> {
     scope = await messageWriteScope(id);
     if (scope) break;
   }
-  if (scope) {
-    for (let at = 0; at < messageIds.length; at += MESSAGE_DELETE_BATCH) {
+  for (let at = 0; at < messageIds.length; at += MESSAGE_DELETE_BATCH) {
+    const batch = messageIds.slice(at, at + MESSAGE_DELETE_BATCH);
+    if (scope) {
       await invokeTypedWriter("chat_messages_delete", {
-        payload: {
-          ...scope,
-          messageIds: messageIds.slice(at, at + MESSAGE_DELETE_BATCH),
-        },
+        payload: { ...scope, messageIds: batch },
       });
     }
+    // A failed later batch throws to the caller's delete failure; the
+    // timelapse keeps the batches that were deleted.
+    for (const messageId of batch) recordChatMessageDelete({ messageId });
   }
-  for (const messageId of messageIds) recordChatMessageDelete({ messageId });
 }
 
 /**

@@ -170,15 +170,15 @@ describe("CW typed writers in the restricted generic-SQL shape", () => {
     ]);
   });
 
-  it("splits only a list above the writer's bound of 256 ids", async () => {
-    const ids = Array.from({ length: 300 }, (_, i) => `gone-${i}`);
+  it("splits only a list above the writer's bound of 10,000 ids", async () => {
+    const ids = Array.from({ length: 10_044 }, (_, i) => `gone-${i}`);
     await deleteMessages(["m1", ...ids]);
     expect(
       typedCalls().map(([, args]) => {
         const payload = (args as { payload: { messageIds: string[] } }).payload;
         return payload.messageIds.length;
       }),
-    ).toEqual([256, 45]);
+    ).toEqual([10_000, 45]);
   });
 
   it("deletes one message; an unknown id writes nothing, as the legacy DELETE matched nothing", async () => {

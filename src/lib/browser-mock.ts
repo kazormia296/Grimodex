@@ -15636,7 +15636,7 @@ export async function createBrowserMock(
     const payload = browserTypedPayload(command, args);
     const sessionId = browserChatSession(command, payload);
     const ids = payload.messageIds;
-    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 256) {
+    if (!Array.isArray(ids) || ids.length < 1 || ids.length > 10_000) {
       throw new Error("CHAT_WRITE_REFUSED:invalid-request");
     }
     return browserTypedWrite(() => {

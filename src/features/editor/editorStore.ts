@@ -7,6 +7,8 @@ import { incrementSnippetUsageCount } from "@/features/snippets/api";
 import { getCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import * as chatApi from "@/features/chat/chatApi";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { toast } from "sonner";
+import i18next from "@/lib/i18n";
 
 export interface InsertRange {
   from: number;
@@ -156,7 +158,10 @@ export const useEditorStore = create<EditorState>()((set, get) => {
       void chatApi
         .updateMessageMetadata(chatMessageId, { insertedToEditor: true })
         .catch((err: unknown) => {
+          // Not silent (CW 8, a typed refusal or a temporary D2a refusal;
+          // DR-DA2B-R2): the inserted text stays, the record is missing.
           console.error("insertFromChat: metadata update failed", err);
+          toast.error(i18next.t("common.error"));
         });
 
       if (highlightTimer) clearTimeout(highlightTimer);

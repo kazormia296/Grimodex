@@ -7,10 +7,13 @@ vi.mock("@/features/chat/chatApi", () => ({
   updateMessageMetadata: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("sonner", () => ({ toast: { error: vi.fn() } }));
+
 import {
   assertMessageMutationAllowed,
   updateMessageMetadata,
 } from "@/features/chat/chatApi";
+import { toast } from "sonner";
 
 function makeEditor(overrides = {}) {
   const state = {
@@ -145,6 +148,25 @@ describe("useEditorStore", () => {
           insertedToEditor: true,
         });
       });
+    });
+
+    it("shows a failed insertion record instead of only logging it (CW 8; DR-DA2B-R2)", async () => {
+      const editor = makeEditor();
+      useEditorStore.getState().setEditor(editor);
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      vi.mocked(updateMessageMetadata).mockRejectedValueOnce(
+        new Error("CHAT_WRITE_REFUSED:metadata-unreadable"),
+      );
+
+      expect(
+        useEditorStore.getState().insertFromChat("挿入テキスト", "msg-f"),
+      ).toBe(true);
+
+      await vi.waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+      expect(String(vi.mocked(toast.error).mock.calls[0][0])).not.toContain(
+        "CHAT_WRITE_REFUSED",
+      );
+      logged.mockRestore();
     });
 
     it("inserts at end of document when cursor position is unavailable", () => {
