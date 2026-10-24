@@ -1,5 +1,6 @@
 // @vitest-environment happy-dom
 import { act, cleanup, render, screen } from "@testing-library/react";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/lib/i18n";
 import type { ProfileEgressStatusView } from "@/lib/profileEgressStatus";
@@ -163,6 +164,97 @@ describe("profile egress status display (DA-2 ST3, Positive (6))", () => {
       "data-profile-egress-state",
       "restricted",
     );
+  });
+
+  it("never lets a read's answer of the same rank replace an event's view (R3-1)", async () => {
+    const pending = deferred<ProfileEgressStatusView>();
+    getMock.mockReturnValue(pending.promise);
+    render(<ProfileEgressStatusIndicator />);
+    emit({ state: "unavailable", reason: "participant-timeout" });
+    // The read was answered at stage 6 but arrives after the failure event.
+    await act(async () => pending.resolve({ state: "restricted" }));
+    expect(screen.getByRole("alert")).toHaveAttribute(
+      "data-profile-egress-reason",
+      "participant-timeout",
+    );
+    expect(screen.queryByRole("status")).toBeNull();
+    cleanup();
+
+    const second = deferred<ProfileEgressStatusView>();
+    getMock.mockReturnValue(second.promise);
+    render(<ProfileEgressStatusIndicator />);
+    emit({ state: "restricted" });
+    await act(async () =>
+      second.resolve({ state: "unavailable", reason: "barrier-timeout" }),
+    );
+    expect(screen.getByRole("status")).toHaveAttribute(
+      "data-profile-egress-state",
+      "restricted",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does nothing for an event or an answer after the unmount (R3-2 (a))", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const pending = deferred<ProfileEgressStatusView>();
+      getMock.mockReturnValue(pending.promise);
+      const { container, unmount } = render(<ProfileEgressStatusIndicator />);
+      unmount();
+      emit({ state: "restricted" });
+      await act(async () => pending.resolve({ state: "restricted" }));
+      expect(container).toBeEmptyDOMElement();
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it("pairs every subscribe with an unsubscribe under StrictMode and ignores the cleaned-up effect (R3-2 (b))", async () => {
+    const first = deferred<ProfileEgressStatusView>();
+    const second = deferred<ProfileEgressStatusView>();
+    getMock
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise);
+    const { container, unmount } = render(
+      <StrictMode>
+        <ProfileEgressStatusIndicator />
+      </StrictMode>,
+    );
+    expect(order).toEqual([
+      "subscribe",
+      "get",
+      "unsubscribe",
+      "subscribe",
+      "get",
+    ]);
+    expect(handlers).toHaveLength(2);
+    // The first effect was cleaned up: its read's answer and a last event its
+    // listener still receives change nothing.
+    await act(async () => first.resolve({ state: "restricted" }));
+    act(() => handlers[0]!({ state: "activating" }));
+    expect(container).toBeEmptyDOMElement();
+    // The live effect shows its answer once.
+    await act(async () => second.resolve({ state: "restricted" }));
+    expect(screen.getAllByRole("status")).toHaveLength(1);
+    unmount();
+    expect(order.filter((step) => step === "subscribe")).toHaveLength(2);
+    expect(order.filter((step) => step === "unsubscribe")).toHaveLength(2);
+  });
+
+  it("tells for state-file-unwritable both states the restart can lead to (ST3-S1, R3)", () => {
+    for (const language of ["ja", "en"] as const) {
+      const text =
+        PROFILE_EGRESS_TRANSLATIONS[language].reason["state-file-unwritable"];
+      expect(text).toContain("userData");
+      if (language === "ja") {
+        expect(text).toContain("成立していれば制限中");
+        expect(text).toContain("成立していなければ制限なし");
+      } else {
+        expect(text).toContain("is on if turning it on took effect");
+        expect(text).toContain("off if it did not");
+      }
+    }
   });
 
   it("shows the English strings in en", async () => {

@@ -7167,6 +7167,36 @@ describe("useChatStore", () => {
       );
     });
 
+    it("toasts the reason of a discarded legacy AI result on the Agent path (DA-2 D-10 (a), R3-6)", async () => {
+      const { ensureProfileEgressAiStopTranslations } =
+        await import("@/features/profile-egress/profileEgressAiStopText");
+      ensureProfileEgressAiStopTranslations();
+      const discarded =
+        "D2A_EGRESS_DENIED: old-external-ai: route send_agent_message completed after profile restriction began";
+      const previousSettings = useAiSettingsStore.getState().settings;
+      configurePlainCaptureTurn();
+      useChatStore.setState({
+        agentMode: true,
+        sessionAgentToolsSnapshot: null,
+      });
+      installChatCaptureBridge(async () => ({ ok: true, value: [] }));
+      mockSendAgentMessage.mockRejectedValueOnce(new Error(discarded));
+      vi.mocked(toast.error).mockClear();
+      try {
+        await useChatStore.getState().sendMessage("Agent の質問");
+
+        expect(mockSendAgentMessage).toHaveBeenCalledOnce();
+        expect(useChatStore.getState().error).toBe(discarded);
+        expect(toast.error).toHaveBeenCalledOnce();
+        expect(String(vi.mocked(toast.error).mock.calls[0]?.[0])).toBe(
+          "外部送信の制限が始まった後に完了した AI の結果は返しません。",
+        );
+      } finally {
+        useAiSettingsStore.setState({ settings: previousSettings });
+        vi.unstubAllGlobals();
+      }
+    });
+
     it("does not send when already streaming", async () => {
       useChatStore.setState({ isStreaming: true });
 
@@ -7722,6 +7752,99 @@ describe("useChatStore", () => {
           }),
         );
         expect(toast.error).toHaveBeenCalled();
+      } finally {
+        __discardPendingCompletedChatTurnsForTests();
+        mockAddMessage.mockReset();
+        mockSendChatMessageStream.mockReset();
+        vi.mocked(useTreeStore.getState).mockReturnValue({
+          nodes: [],
+        } as never);
+      }
+    });
+
+    it("toasts the reason of the profile activation's AI terminal for a failed anchored stream kept after switching (DA-2 D-10 (a), R3-6)", async () => {
+      const { ensureProfileEgressAiStopTranslations } =
+        await import("@/features/profile-egress/profileEgressAiStopText");
+      ensureProfileEgressAiStopTranslations();
+      const { useTreeStore } = await import("@/features/tree/treeStore");
+      vi.mocked(useTreeStore.getState).mockReturnValue({
+        nodes: [
+          {
+            id: "folder-a",
+            parentId: null,
+            nodeType: "folder",
+            title: "Folder A",
+            sortOrder: "a0",
+            synopsis: null,
+            charCount: 0,
+          },
+        ],
+        projectId: "proj-1",
+      } as never);
+      const folderSession = {
+        ...session1,
+        id: "folder-a-stopped-session",
+        nodeId: "folder-a",
+        titleManual: 1,
+      };
+      mockAddMessage.mockImplementation(
+        async (sessionId, role, content, extra) => ({
+          id: extra?.id ?? crypto.randomUUID(),
+          sessionId,
+          role,
+          content,
+          model: extra?.model ?? null,
+          tokensIn: extra?.tokensIn ?? null,
+          tokensOut: extra?.tokensOut ?? null,
+          durationMs: extra?.durationMs ?? null,
+          metadata: extra?.metadata ?? null,
+          createdAt: extra?.createdAt ?? "2026-01-01T00:00:00.000Z",
+        }),
+      );
+      let callbacks: StreamCallbacks | undefined;
+      mockSendChatMessageStream.mockImplementationOnce(
+        async (_messages, _params, streamCallbacks: StreamCallbacks) => {
+          callbacks = streamCallbacks;
+          return () => {};
+        },
+      );
+      useChatStore.setState({
+        activeSceneId: "scene-a",
+        activeProjectId: "proj-1",
+        activeSessionId: folderSession.id,
+        sessions: [folderSession],
+        chatScope: "folder",
+        scopeAnchorId: "folder-a",
+      });
+      vi.mocked(toast.error).mockClear();
+
+      try {
+        const send = useChatStore
+          .getState()
+          .sendMessage("folder A stopped prompt");
+        await vi.waitFor(() => expect(callbacks).toBeDefined());
+        callbacks?.onTextDelta("PARTIAL");
+        await vi.waitFor(() =>
+          expect(useChatStore.getState().streamingDraft?.content).toBe(
+            "PARTIAL",
+          ),
+        );
+        useChatStore.getState().setChatScope("folder", "folder-b");
+        callbacks?.onError("D2A_EGRESS_DENIED: profile-activation-stopped");
+        await send;
+
+        expect(mockAddMessage).toHaveBeenCalledWith(
+          folderSession.id,
+          "assistant",
+          "PARTIAL",
+          expect.any(Object),
+        );
+        const shown = vi
+          .mocked(toast.error)
+          .mock.calls.map(([message]) => String(message));
+        expect(shown).toEqual([
+          "外部送信の制限を有効にする処理が始まったため、AI の処理を止めました。",
+        ]);
       } finally {
         __discardPendingCompletedChatTurnsForTests();
         mockAddMessage.mockReset();

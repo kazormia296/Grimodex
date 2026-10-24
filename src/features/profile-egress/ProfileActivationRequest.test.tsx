@@ -4,6 +4,7 @@ import {
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -35,6 +36,7 @@ vi.mock("./profileActivationAvailability", () => ({
 import ProfileActivationGuidance from "./ProfileActivationGuidance";
 import ProfileActivationSettingsSection from "./ProfileActivationSettingsSection";
 import { PROFILE_EGRESS_TRANSLATIONS } from "./profileEgressTranslations";
+import { useProfileActivationRequest } from "./useProfileActivationRequest";
 
 const ja = PROFILE_EGRESS_TRANSLATIONS.ja;
 
@@ -140,6 +142,47 @@ describe("profile activation settings item (K3/2 T-1, DA-2 ST3)", () => {
     expect(
       await screen.findByTestId("profile-activation-result"),
     ).toHaveAttribute("data-profile-activation-status", "refused");
+  });
+});
+
+describe("the shared request (useProfileActivationRequest)", () => {
+  it("sends one request for two calls in the same render, before pending is drawn (R3-3)", async () => {
+    const answer = deferred<ProfileActivationRequestResult>();
+    requestMock.mockReturnValue(answer.promise);
+    const { result } = renderHook(() => useProfileActivationRequest());
+    act(() => {
+      result.current.request();
+      result.current.request();
+    });
+    expect(requestMock).toHaveBeenCalledTimes(1);
+    expect(result.current.pending).toBe(true);
+    await act(async () => answer.resolve({ status: "cancelled" }));
+    expect(result.current).toMatchObject({
+      pending: false,
+      lastStatus: "cancelled",
+    });
+    // The next request is sent once the answer came.
+    requestMock.mockResolvedValue({ status: "busy" });
+    await act(async () => result.current.request());
+    expect(requestMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does nothing when Main answers after the unmount (R3-2 (a))", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      const answer = deferred<ProfileActivationRequestResult>();
+      requestMock.mockReturnValue(answer.promise);
+      const { result, unmount } = renderHook(() =>
+        useProfileActivationRequest(),
+      );
+      act(() => result.current.request());
+      unmount();
+      await act(async () => answer.resolve({ status: "activated" }));
+      expect(result.current).toMatchObject({ pending: true, lastStatus: null });
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
   });
 });
 

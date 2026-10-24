@@ -719,6 +719,21 @@ describe("ChatPanel", () => {
     expect(screen.getByText("接続エラー")).toBeInTheDocument();
   });
 
+  it("shows the reason instead of the raw marker for the profile activation's AI terminal (DA-2 D-10 (a), R3-6)", () => {
+    useChatStore.setState({
+      error: "D2A_EGRESS_DENIED: profile-activation-stopped",
+    });
+
+    render(<ChatPanel />);
+
+    expect(
+      screen.getByText(
+        "外部送信の制限を有効にする処理が始まったため、AI の処理を止めました。",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/D2A_EGRESS_DENIED/)).toBeNull();
+  });
+
   it("renders assistant messages as markdown", () => {
     useChatStore.setState({
       messages: [

@@ -143,6 +143,33 @@ describe("RelatedScenesSection with the Graph and the activation UI on (mocked a
     expect(request).toHaveBeenCalledTimes(1);
   });
 
+  it.each(["graph-ready", "graph-unavailable:restart-required"] as const)(
+    "shows no guidance with the Graph view for %s (R3-4 (A))",
+    async (graphOutcome) => {
+      // The guidance chunk is already loaded, so a wrong condition would show
+      // it within the settles below.
+      await import("@/features/profile-egress/ProfileActivationGuidance");
+      const base = graphFetch(["a"]);
+      h.fetch.mockResolvedValue(
+        graphOutcome === "graph-ready"
+          ? base
+          : { ...base, graphOutcome, graph: undefined },
+      );
+      render(<RelatedScenesSection />);
+      await settle();
+      // The Graph view rendered (its Graph-only row, or its restart notice).
+      await vi.waitFor(() =>
+        expect(
+          graphOutcome === "graph-ready"
+            ? screen.getByText("Graph only title")
+            : screen.getByTestId("nir1-graph-restart-required"),
+        ).toBeTruthy(),
+      );
+      await settle();
+      expect(screen.queryByTestId("profile-activation-guidance")).toBeNull();
+    },
+  );
+
   it("shows no guidance for any other Graph outcome", async () => {
     h.fetch.mockResolvedValue({
       ...graphFetch(["a"]),
