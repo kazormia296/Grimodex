@@ -70,19 +70,16 @@ export function applySceneSidecars(
   // a normal switch look like a live workspace failure.
   if (isCancelled()) return;
 
-  const foreshadowDenied = sidecars.errors.some(
-    ({ label, reason }) =>
-      label === "foreshadowAnchors" && isD2aEgressDenied(reason),
-  );
-  if (foreshadowDenied) {
-    // The typed projection is expected to be allowed in restricted mode. If
-    // it is nevertheless unavailable, do not hydrate a saveable document with
-    // stale marks/version tokens.
+  // Every sidecar is an own-data-read (O-2). A D2a refusal (activation stages
+  // 2-7, unavailable) leaves the scene unloaded rather than hydrating a
+  // saveable document without its marks, OCC tokens or authorship spans
+  // (DR-DA2B-R5). The load failure toast shows the generic error, not the
+  // marker (`rootCause`).
+  if (sidecars.errors.some(({ reason }) => isD2aEgressDenied(reason))) {
     throw new SceneForeshadowAnchorsUnavailableError();
   }
 
   for (const { label, reason } of sidecars.errors) {
-    if (isD2aEgressDenied(reason)) continue;
     debugLog.error(
       "EditorPane",
       `sceneLoad.loadAnchors:${label} failed`,

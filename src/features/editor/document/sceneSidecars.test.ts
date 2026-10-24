@@ -104,4 +104,32 @@ describe("applySceneSidecars", () => {
     ).toThrow(SceneForeshadowAnchorsUnavailableError);
     expect(editor.chain).not.toHaveBeenCalled();
   });
+
+  it.each(["authorshipSpans", "annotations"] as const)(
+    "fails closed for a D2a-denied %s read too, instead of hydrating without it (DR-DA2B-R5)",
+    (label) => {
+      const editor = { schema: { marks: {} }, chain: vi.fn() };
+      expect(() =>
+        applySceneSidecars(
+          editor as never,
+          "scene-1",
+          {
+            spans: [],
+            foreshadowMarks: [],
+            annotations: null,
+            errors: [
+              {
+                label,
+                reason: new Error(
+                  "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: route db_execute is unavailable in profile local-only mode",
+                ),
+              },
+            ],
+          },
+          () => false,
+        ),
+      ).toThrow(SceneForeshadowAnchorsUnavailableError);
+      expect(editor.chain).not.toHaveBeenCalled();
+    },
+  );
 });

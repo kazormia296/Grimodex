@@ -53,7 +53,7 @@ import {
 } from "@/features/trash-bin/captureHooks";
 import { createInFlightTracker } from "@/lib/inFlightTracker";
 import { createPendingCreateRequestRegistry } from "@/lib/pendingCreateRequestRegistry";
-import { IpcInvokeError, isD2aEgressDenied } from "@/lib/tauri";
+import { IpcInvokeError } from "@/lib/tauri";
 import { getNativeMutationMetadata } from "@/lib/nativeMutationMetadata";
 import { applyUndoJournal } from "@/features/agent-writes/undoJournal";
 import type {
@@ -239,15 +239,16 @@ export const useForeshadowStore = create<ForeshadowState>()((set, get) => ({
       } catch (e) {
         if (generation === foreshadowLoadGeneration) {
           set({ isLoading: false });
-          if (!isD2aEgressDenied(e)) {
-            toast.error(
-              i18next.t(
-                "foreshadow.store.loadFailed",
-                "伏線の読み込みに失敗しました",
-              ),
-            );
-            debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
-          }
+          // The list is an own-data-read (O-2), so a D2a refusal (activation
+          // stages 2-7, unavailable) is a failure to show, not a silent empty
+          // list (Negative (11); DR-DA2B-R5). The previous items stay.
+          toast.error(
+            i18next.t(
+              "foreshadow.store.loadFailed",
+              "伏線の読み込みに失敗しました",
+            ),
+          );
+          debugLog.error("ForeshadowStore", "load failed", errorDetail(e));
         }
         throw e;
       }

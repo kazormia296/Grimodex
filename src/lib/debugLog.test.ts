@@ -66,6 +66,24 @@ describe("redactParams", () => {
   });
 });
 
+describe("rootCause and the D2a marker (DA-2b, Negative (11); DR-DA2B-R5)", () => {
+  it("shows the generic error text instead of the raw marker, through the cause chain", () => {
+    const denied = new Error("Failed query: delete from x", {
+      cause: new Error(
+        "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: route db_execute is unavailable in profile local-only mode",
+      ),
+    });
+    const shown = rootCause(denied);
+    expect(shown).not.toContain("D2A_EGRESS_DENIED");
+    expect(shown).not.toContain("db_execute");
+    expect(rootCause("D2A_EGRESS_DENIED: old-external-ai: route x")).toBe(
+      shown,
+    );
+    // Any other cause keeps its own text.
+    expect(rootCause(new Error("disk full"))).toBe("disk full");
+  });
+});
+
 describe("rootCause", () => {
   it("redacts long params in root cause message", () => {
     const longContent = "e".repeat(200);

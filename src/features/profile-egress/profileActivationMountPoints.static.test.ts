@@ -36,11 +36,21 @@ const MOUNT_POINTS: ReadonlyArray<{
     file: "src/features/related-scenes/RelatedScenesSection.tsx",
     lazyModule: null,
   },
+  // DA-2b ST4-B (DR-DA2B-R6): the chat panel's closed AI entrances. The panel
+  // requests the probe; the input and the message actions only read the
+  // closure the panel passes down.
+  {
+    file: "src/features/chat/ChatPanel.tsx",
+    lazyModule: "@/features/profile-egress/ProfileEgressChatClosureProbe",
+  },
+  { file: "src/features/chat/components/ChatInput.tsx", lazyModule: null },
+  { file: "src/features/chat/useChatMessageActions.ts", lazyModule: null },
 ];
 
 /** The lazy chunks behind the constant: never imported statically. */
 const LAZY_MODULES = [
   "ProfileEgressStatusIndicator",
+  "ProfileEgressChatClosureProbe",
   "ProfileActivationSettingsSection",
   "ProfileActivationGuidance",
 ];

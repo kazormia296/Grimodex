@@ -15,6 +15,26 @@ import type { AiSettings } from "./types";
 import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+
+/**
+ * The extraction record (CW 8; DR-DA2B-R2). The entry already exists when its
+ * record fails (a typed refusal, or a temporary D2a refusal from activation
+ * stage 4 to the stop confirmation), so the dialog still closes and the
+ * failure is shown instead of leaving the dialog open, where pressing again
+ * would create the entry twice. No automatic retry.
+ */
+export async function recordExtraction(
+  messageId: string,
+  patch: Parameters<typeof chatApi.updateMessageMetadata>[1],
+): Promise<void> {
+  try {
+    await chatApi.updateMessageMetadata(messageId, patch);
+  } catch (error) {
+    console.error("chat extraction record failed", error);
+    toast.error(i18next.t("common.error"));
+  }
+}
 
 export interface ChatExtractionDialogState {
   open: boolean;
@@ -41,6 +61,12 @@ interface UseChatMessageActionsOptions {
   aiSettings: AiSettings | null;
   chatEditorRef: RefObject<Editor | null>;
   syncInsertedToEditorMetadata: (messageId: string) => void;
+  /**
+   * The edit-and-resend entrance is closed (K3/2 "chat の書込みの入口" 4: a
+   * conversation that is not a scene's, while restricted; DR-DA2B-R6). Its
+   * resend could not be saved, so the edit would only delete. Deletion stays.
+   */
+  editClosed?: boolean;
 }
 
 const emptyCodexDialog = (): ChatExtractionDialogState => ({
@@ -61,6 +87,7 @@ export function useChatMessageActions({
   aiSettings,
   chatEditorRef,
   syncInsertedToEditorMetadata,
+  editClosed,
 }: UseChatMessageActionsOptions) {
   const editUserMessage = useChatStore((s) => s.editUserMessage);
   const deleteMessage = useChatStore((s) => s.deleteMessage);
@@ -116,7 +143,7 @@ export function useChatMessageActions({
         sourceChatMessageId: messageId,
       });
       if (!entry) return;
-      await chatApi.updateMessageMetadata(messageId, {
+      await recordExtraction(messageId, {
         extractedCodex: [entry.id],
       });
       void requestOpenInCodex(entry.id);
@@ -160,7 +187,7 @@ export function useChatMessageActions({
         { silent: true },
       );
       if (!snippet) return;
-      await chatApi.updateMessageMetadata(messageId, {
+      await recordExtraction(messageId, {
         extractedSnippets: [snippet.id],
       });
       useLayoutStore.getState().showPanel("snippets");
@@ -179,7 +206,7 @@ export function useChatMessageActions({
       }
       const entry = await createCodexEntry(data);
       if (entry && extractionDialog.messageId) {
-        await chatApi.updateMessageMetadata(extractionDialog.messageId, {
+        await recordExtraction(extractionDialog.messageId, {
           extractedCodex: [entry.id],
         });
       }
@@ -199,7 +226,7 @@ export function useChatMessageActions({
       }
       const snippet = await createSnippet(data, { silent: true });
       if (snippet && snippetDialog.messageId) {
-        await chatApi.updateMessageMetadata(snippetDialog.messageId, {
+        await recordExtraction(snippetDialog.messageId, {
           extractedSnippets: [snippet.id],
         });
       }
@@ -232,6 +259,10 @@ export function useChatMessageActions({
 
   const handleEditMessage = useCallback(
     (messageId: string) => {
+      if (PROFILE_ACTIVATION_UI_ENABLED && editClosed) {
+        toast.info(i18next.t("profileEgress.chat.editClosed"));
+        return;
+      }
       const { content, mentionedSceneIds } = editUserMessage(messageId);
       const editor = chatEditorRef.current;
       if (!content || !editor) return;
@@ -241,7 +272,7 @@ export function useChatMessageActions({
       }
       editor.commands.focus("end");
     },
-    [chatEditorRef, editUserMessage],
+    [chatEditorRef, editClosed, editUserMessage],
   );
 
   const handleDeleteMessage = useCallback(

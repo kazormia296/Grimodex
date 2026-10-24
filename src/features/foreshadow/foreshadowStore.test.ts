@@ -1,3 +1,4 @@
+import { toast } from "sonner";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { useForeshadowStore } from "./foreshadowStore";
 import type { ForeshadowRow, ForeshadowSetupRow } from "./types";
@@ -224,6 +225,28 @@ describe("foreshadowStore", () => {
 
       expect(useForeshadowStore.getState().items).toEqual([]);
       expect(useForeshadowStore.getState().isLoading).toBe(false);
+    });
+
+    it("shows a D2a refusal of the list as the load failure, keeping the previous items (DR-DA2B-R5)", async () => {
+      const items = [
+        { ...makeRow(), label: "planned" as const, setupCount: 0 },
+      ];
+      useForeshadowStore.setState({ items });
+      vi.mocked(toast.error).mockClear();
+      mockListForeshadowsWithLabels.mockRejectedValueOnce(
+        new Error(
+          "D2A_EGRESS_DENIED: plaintext-publication: route foreshadow_list_with_labels is unavailable",
+        ),
+      );
+
+      await useForeshadowStore.getState().load("proj-1");
+
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(String(vi.mocked(toast.error).mock.calls[0][0])).not.toContain(
+        "D2A_EGRESS_DENIED",
+      );
+      expect(useForeshadowStore.getState().items).toEqual(items);
+      expect(mockListForeshadowsWithLabels).toHaveBeenCalledTimes(1);
     });
 
     it("lets lifecycle strict callers observe a shared load failure", async () => {

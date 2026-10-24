@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import * as api from "./api";
+import { isD2aEgressDenied } from "@/lib/tauri";
 import {
   detectCliBinary,
   listCliModels,
@@ -602,7 +603,7 @@ export async function refreshDynamicCapsForProvider(
           : {},
       );
       return authoritativeModels;
-    } catch {
+    } catch (error) {
       const ollamaScopeStillCurrent =
         ollamaEndpointActivationEpoch === ollamaEndpointEpoch &&
         normalizeOllamaEndpoint(
@@ -614,6 +615,11 @@ export async function refreshDynamicCapsForProvider(
           notNewerThanGeneration: observationGeneration,
         });
       }
+      // A send-time probe refused by the profile gate (the AI routes are
+      // closed while restricted) is that refusal, not missing Ollama metadata:
+      // the caller shows it without blaming Ollama (Negative (11);
+      // DR-DA2B-R5).
+      if (selectedModelId && isD2aEgressDenied(error)) throw error;
       // Static model metadata is retained after a transient failure. Mutable
       // runner observations are cleared above because reusing them is unsafe.
       return null;

@@ -16,7 +16,6 @@ import type {
 } from "./types";
 import { UNDO_ABSORB_WINDOW_MS } from "./types";
 import { isCreateResultEntityPresent } from "@/lib/createResultMetadata";
-import { isD2aEgressDenied } from "@/lib/tauri";
 import {
   captureMutationAuthority,
   isCurrentMutationAuthority,
@@ -193,10 +192,10 @@ export const useTrashBinStore = create<TrashBinStore>()((set, get) => ({
         isCurrentMutationAuthority(authority)
       ) {
         set({ isLoading: false });
-        if (!isD2aEgressDenied(e)) {
-          toast.error(i18next.t("trashBin.loadFailed"));
-          debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
-        }
+        // An own-data-read (O-2): a D2a refusal is shown like any failure,
+        // never as an empty trash (Negative (11); DR-DA2B-R5).
+        toast.error(i18next.t("trashBin.loadFailed"));
+        debugLog.error("TrashBinStore", "loadItems", errorDetail(e));
       }
       throw e;
     }

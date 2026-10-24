@@ -1,9 +1,10 @@
 import i18next from "@/lib/i18n";
 
 /**
- * The strings of the profile egress status display, the settings item and the
- * Related Scenes `profile-not-restricted` guidance (NIR-1 DA-2 ST3), keyed
- * under `profileEgress`.
+ * The strings of the profile egress status display, the settings item, the
+ * Related Scenes `profile-not-restricted` guidance (NIR-1 DA-2 ST3) and the
+ * chat panel's closed entrances (DA-2b ST4-B, DR-DA2B-R6), keyed under
+ * `profileEgress`.
  *
  * They live in the lazy chunks behind `PROFILE_ACTIVATION_UI_ENABLED` rather
  * than in `src/locales/*.json`, so that while the constant is false they are
@@ -64,6 +65,14 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       graphNeedsRestriction:
         "Graph の関連は、外部送信の制限を有効にした profile でだけ使えます。",
     },
+    chat: {
+      aiClosed:
+        "外部送信を制限中のため、AI の応答は使えません。場面の会話への入力は保存されます。",
+      sendClosed:
+        "外部送信を制限中は、場面の会話でない会話に入力を保存できません。",
+      editClosed:
+        "外部送信を制限中は、場面の会話でない会話のメッセージを編集して送り直せません。削除はできます。",
+    },
     result: {
       activated: "外部送信の制限を有効にしました。",
       cancelled: "取り消しました。外部送信の制限は変わっていません。",
@@ -122,6 +131,14 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
     guidance: {
       graphNeedsRestriction:
         "Graph relations are available only in a profile with the external sending restriction turned on.",
+    },
+    chat: {
+      aiClosed:
+        "External sending is restricted, so AI replies are not available. Input in a scene's conversation is still saved.",
+      sendClosed:
+        "While external sending is restricted, input cannot be saved in a conversation that is not a scene's.",
+      editClosed:
+        "While external sending is restricted, messages in a conversation that is not a scene's cannot be edited and resent. They can still be deleted.",
     },
     result: {
       activated: "The external sending restriction is on.",

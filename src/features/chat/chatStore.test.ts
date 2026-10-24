@@ -11417,6 +11417,24 @@ describe("useChatStore", () => {
       expect(s.includeBodies).toBe(true);
     });
 
+    it("loadSessions shows a D2a refusal as the load failure, not an empty history (DR-DA2B-R5)", async () => {
+      vi.mocked(toast.error).mockClear();
+      mockListSessions.mockRejectedValueOnce(
+        new Error(
+          "db_execute rejected: D2A_EGRESS_DENIED: plaintext-publication: route db_execute is unavailable in profile local-only mode",
+        ),
+      );
+      useChatStore.setState({ chatScope: "codex", scopeAnchorId: "codex-1" });
+      await expect(
+        useChatStore.getState().loadSessions(undefined, "codex-1"),
+      ).resolves.toBe(false);
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(String(vi.mocked(toast.error).mock.calls[0][0])).not.toContain(
+        "D2A_EGRESS_DENIED",
+      );
+      expect(useChatStore.getState().isLoadingSessions).toBe(false);
+    });
+
     it("loadSessions passes codexAnchorId to chatApi", async () => {
       mockListSessions.mockResolvedValueOnce([]);
       useChatStore.setState({

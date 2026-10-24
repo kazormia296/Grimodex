@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, X } from "lucide-react";
 import type { SuggestedEntry } from "../contextCreatorApi";
+import { aiFailureText } from "@/features/profile-egress/profileEgressAiStop";
 
 interface ContextCreatorDialogProps {
   onSearch: (instruction: string) => Promise<SuggestedEntry[]>;
@@ -50,7 +51,10 @@ export function ContextCreatorDialog({
         new Set(entries.filter((e) => !e.alreadyPinned).map((e) => e.id)),
       );
     } catch (error) {
-      setSearchError(error instanceof Error ? error.message : String(error));
+      const message = error instanceof Error ? error.message : String(error);
+      // A refusal of the profile gate shows the generic error, not the raw
+      // marker (DR-DA2B-R5).
+      setSearchError(aiFailureText(message) ?? message);
     } finally {
       setIsSearching(false);
     }

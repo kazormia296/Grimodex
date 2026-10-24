@@ -33,6 +33,16 @@ import {
   payloadStringArray,
 } from "./changeEventPayload";
 const POLL_MS = 750;
+/**
+ * The feed reads `change_events` as an own-data-read (O-2). Its D2a refusal is
+ * temporary from activation stage 2 to stage 7 (and lasting while
+ * unavailable), and the renderer cannot tell them apart, so the poll keeps
+ * its cursor and retries for about two minutes (longer than the bounded
+ * stages), then stops: a finite retry, never an endless one (Negative (11);
+ * DR-DA2B-R5). A new Project open starts it again.
+ */
+const MAX_DENIED_POLLS = 160;
+let deniedPolls = 0;
 
 /**
  * Optional handler for incoming MCP/agent prose proposals (headless auto-apply).
@@ -586,6 +596,7 @@ async function pollTick(
   try {
     const sessionId = getRecorderSessionId();
     let rows = await fetchExternalRows(projectId, cursor, sessionId);
+    deniedPolls = 0;
     if (!isAuthoritative()) return;
 
     if (rows.length === 0) {
@@ -607,7 +618,10 @@ async function pollTick(
     if (!isAuthoritative()) return;
     state.cursor = rows[rows.length - 1].sequence;
   } catch (err) {
-    if (isD2aEgressDenied(err)) return stopExternalWriteFeed();
+    if (isD2aEgressDenied(err)) {
+      if (++deniedPolls >= MAX_DENIED_POLLS) stopExternalWriteFeed();
+      return;
+    }
     if (!isIpcLifecycleCancellation(err)) {
       console.warn("[externalWriteFeed] poll failed; cursor retained", err);
     }
@@ -638,6 +652,7 @@ export async function startExternalWriteFeed(projectId: string): Promise<void> {
 /** Stop polling (project switch / workspace close). */
 export function stopExternalWriteFeed(): void {
   state.generation += 1;
+  deniedPolls = 0;
   // The transport read cannot be aborted, but relinquishing this ownership
   // token lets the replacement feed poll immediately. The old tick's finally
   // block cannot clear a newer tick's token.
