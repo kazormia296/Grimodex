@@ -170,9 +170,11 @@ export function isEditTargetCurrent(
 let editInFlight = false;
 
 /**
- * 編集の入口を通す。場面の会話では読まずに、同期で `proceed` を呼ぶ（今のまま）。
- * 場面の会話でないときは、状態を読み、開で、かつ `isCurrent()` が真のときだけ
- * `proceed` を呼ぶ。閉（時間切れを含む）なら `notifyNonSceneEditClosed` を出して何も
+ * 編集の入口を通す。`proceed` は削除（`editUserMessage`）から始まるので、その前提
+ * （store の対象と、本文を戻す先の editor が生きていること）はすべて `isCurrent()` に
+ * 置き、`proceed` の直前に必ず確かめる（DR-DA2B-R21）。場面の会話では読まずに、同期で
+ * `isCurrent()` を確かめて `proceed` を呼ぶ。場面の会話でないときは、状態を読み、開で、
+ * かつ読取の後の `isCurrent()` が真のときだけ `proceed` を呼ぶ。閉（時間切れを含む）なら `notifyNonSceneEditClosed` を出して何も
  * しない。読取の途中の 2 回目以降の要求は、1 回目が進行中なので通知せずに捨てる。
  * `isCurrent()` が偽（会話や workspace を移った、stream が始まった、行が変わった）の
  * ときも通知しない（利用者は既に別の操作に移っており、失敗の文は誤解を招く）。
@@ -183,7 +185,7 @@ export async function admitConversationEdit(input: {
   readonly proceed: () => void;
 }): Promise<void> {
   if (input.sceneConversation) {
-    input.proceed();
+    if (input.isCurrent()) input.proceed();
     return;
   }
   if (editInFlight) return;

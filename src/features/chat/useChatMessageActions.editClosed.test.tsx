@@ -30,6 +30,19 @@ function render(editClosed: boolean) {
   // `useChatMessageActions.nonSceneEdit.test.tsx`（DR-DA2B-R17）。
   useChatStore.setState({
     editUserMessage,
+    // 対象の行は一覧にある（同期の経路でも対象の確認を通る。R21）。
+    activeProjectId: "p1",
+    activeSessionId: "s1",
+    isStreaming: false,
+    messages: [
+      {
+        id: "m1",
+        sessionId: "s1",
+        role: "user",
+        content: "question",
+        createdAt: "2026-10-25T00:00:00.000Z",
+      },
+    ] as never,
     chatScope: "scene",
     activeSceneId: "scene-1",
     scopeAnchorId: null,
@@ -38,7 +51,13 @@ function render(editClosed: boolean) {
   const { result } = renderHook(() =>
     useChatMessageActions({
       aiSettings: null,
-      chatEditorRef: { current: null },
+      // 本文を戻す先の editor（生きた stub）。無いと編集は行を消さずに止まる（R21）。
+      chatEditorRef: {
+        current: {
+          isDestroyed: false,
+          commands: { setContent: vi.fn(), focus: vi.fn() },
+        },
+      } as never,
       syncInsertedToEditorMetadata: vi.fn(),
       editClosed,
     }),

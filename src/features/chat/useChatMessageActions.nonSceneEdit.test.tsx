@@ -82,11 +82,23 @@ function seed(scope: "project" | "scene" | "folder" = "project") {
   });
 }
 
-function renderActions() {
+/** 本文を戻す先の editor（生きた stub）。 */
+function liveEditor() {
+  return {
+    isDestroyed: false,
+    commands: { setContent: vi.fn(), focus: vi.fn() },
+  };
+}
+
+type EditorStub = ReturnType<typeof liveEditor>;
+let editorRef: { current: EditorStub | null } = { current: null };
+
+function renderActions(editor: EditorStub | null = liveEditor()) {
+  editorRef = { current: editor };
   const { result } = renderHook(() =>
     useChatMessageActions({
       aiSettings: null,
-      chatEditorRef: { current: null },
+      chatEditorRef: editorRef as never,
       syncInsertedToEditorMetadata: vi.fn(),
     }),
   );
@@ -185,8 +197,58 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
     );
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(useChatStore.getState().messages).toEqual([]);
+    expect(editorRef.current?.commands.setContent).toHaveBeenCalledWith(
+      "question",
+    );
     expect(toastError).not.toHaveBeenCalled();
   });
+
+  // 最終受入れの P2-1（DR-DA2B-R21）：本文を戻す先が無いまま行だけを消さない。
+  it.each([
+    ["非場面の会話（unrestricted）", "project"],
+    ["場面の会話（同期）", "scene"],
+  ] as Array<[string, "project" | "scene"]>)(
+    "%sで editor が無ければ行を消さない",
+    async (_label, scope) => {
+      installBridge(ok({ state: "unrestricted" }));
+      seed(scope);
+      renderActions(null).current.handleEditMessage("u1");
+      await flush();
+      expect(deleteMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toHaveLength(2);
+    },
+  );
+
+  it.each([
+    [
+      "破棄された",
+      () => {
+        if (editorRef.current) editorRef.current.isDestroyed = true;
+      },
+    ],
+    [
+      "null になった（ChatPanel を閉じた）",
+      () => {
+        editorRef.current = null;
+      },
+    ],
+  ] as Array<[string, () => void]>)(
+    "読取の間に editor が%sら、unrestricted でも行を消さない",
+    async (_label, change) => {
+      const gate = deferred();
+      const invoke = installBridge(() => gate.promise);
+      seed("project");
+      const editor = liveEditor();
+      renderActions(editor).current.handleEditMessage("u1");
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      change();
+      gate.resolve({ ok: true, value: { state: "unrestricted" } });
+      await flush();
+      expect(deleteMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toHaveLength(2);
+      expect(editor.commands.setContent).not.toHaveBeenCalled();
+    },
+  );
 
   it("場面の会話では状態を読まず、同期で編集する", () => {
     const invoke = installBridge(ok({ state: "restricted" }));
@@ -229,6 +291,21 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
     await closedShown();
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(deleteMessages).not.toHaveBeenCalled();
+  });
+
+  it("restricted 以外の閉（activating）は保持しない", async () => {
+    let answer: Answer = ok({ state: "activating" });
+    const invoke = installBridge(() => answer());
+    seed("project");
+    const result = renderActions();
+    result.current.handleEditMessage("u1");
+    await closedShown();
+    answer = ok({ state: "unrestricted" });
+    result.current.handleEditMessage("u1");
+    await vi.waitFor(() =>
+      expect(deleteMessages).toHaveBeenCalledWith(["u1", "a1"]),
+    );
+    expect(invoke).toHaveBeenCalledTimes(2);
   });
 
   it("開と読取の失敗は保持しない（次の編集で読み直す）", async () => {
@@ -291,6 +368,22 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
     ],
     ["stream の開始", () => useChatStore.setState({ isStreaming: true })],
     ["行が消えた", () => useChatStore.setState({ messages: [] as never })],
+    [
+      "後ろに assistant 行が足された（stream の完了）",
+      () =>
+        useChatStore.setState({
+          messages: [
+            ...useChatStore.getState().messages,
+            {
+              id: "a2",
+              sessionId: "s1",
+              role: "assistant",
+              content: "late answer",
+              createdAt: "2026-10-25T00:00:02.000Z",
+            },
+          ] as never,
+        }),
+    ],
     [
       "後ろに行が足された",
       () =>

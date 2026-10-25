@@ -272,7 +272,16 @@ export function useChatMessageActions({
       const target = snapshotEditTarget(useChatStore.getState(), messageId);
       void admitConversationEdit({
         sceneConversation: target.sceneConversation,
-        isCurrent: () => isEditTargetCurrent(target, useChatStore.getState()),
+        // 削除の前提：本文を戻す先の editor が生きていること（読取の間に ChatPanel を
+        // 閉じても、行だけを消さない。DR-DA2B-R21）。
+        isCurrent: () => {
+          const editor = chatEditorRef.current;
+          return (
+            editor !== null &&
+            !editor.isDestroyed &&
+            isEditTargetCurrent(target, useChatStore.getState())
+          );
+        },
         proceed: () => {
           const { content, mentionedSceneIds } = editUserMessage(messageId);
           const editor = chatEditorRef.current;

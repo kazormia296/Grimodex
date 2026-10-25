@@ -140,6 +140,10 @@ describe("editUserMessage を呼ぶ製品の入口（静的）", () => {
     const body = code(read(file));
     expect(body.match(/\beditUserMessage\s*\(/g)).toHaveLength(1);
     expect(body.match(/\badmitConversationEdit\s*\(/g)).toHaveLength(1);
+    // 削除の前提の editor の確認は isCurrent の中（R21。同期の経路でも確かめる）。
+    expect(body).toMatch(
+      /isCurrent:\s*\(\)\s*=>[\s\S]*?isDestroyed[\s\S]*?isEditTargetCurrent\(/,
+    );
     // snapshot → admit（sceneConversation は snapshot から）→ proceed の中の呼出し。
     expect(body).toMatch(
       /snapshotEditTarget\(\s*useChatStore\.getState\(\),[\s\S]*?admitConversationEdit\(\{\s*sceneConversation:\s*target\.sceneConversation,\s*isCurrent:[\s\S]*?isEditTargetCurrent\(\s*target,\s*useChatStore\.getState\(\)[\s\S]*?proceed:\s*\(\)\s*=>\s*\{\s*const \{ content, mentionedSceneIds \} = editUserMessage\(/,

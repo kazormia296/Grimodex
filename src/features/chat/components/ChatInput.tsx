@@ -542,7 +542,8 @@ export function ChatInput({
       const target = snapshotEditTarget(useChatStore.getState(), last.id);
       void admitConversationEdit({
         sceneConversation: target.sceneConversation,
-        // ArrowUp は空の入力欄でだけ発火する。読取の間に打った文字を上書きしない。
+        // 削除の前提：editor が生きていて、空のまま（ArrowUp は空の入力欄でだけ発火する。
+        // 読取の間に打った文字を上書きしない。DR-DA2B-R20、R21）。
         isCurrent: () =>
           !editor.isDestroyed &&
           editor.isEmpty &&
