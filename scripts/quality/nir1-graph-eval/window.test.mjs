@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { assessMeasurementWindow } from "./receipt.mjs";
 import {
+  ancestorPids,
   classifyProcess,
   heavySlotsInUse,
   lockedInodes,
@@ -107,4 +108,20 @@ test("the harness's own processes are excluded and a build in this worktree is f
   });
   assert.equal(quiet.sameWorktreeBuild, false);
   assert.deepEqual(quiet.buildProcesses, []);
+});
+
+test("the launcher chain (the wrapper that carries the runner's argv) is the harness's own", () => {
+  const stats = {
+    40: "40 (node) S 30 40 40 0",
+    30: "30 (node xvfb (wrap)) S 20 30 30 0",
+    20: "20 (bash) S 1 20 20 0",
+  };
+  assert.deepEqual(
+    ancestorPids(40, (pid) => stats[pid]),
+    [40, 30, 20],
+  );
+  assert.deepEqual(
+    ancestorPids(40, () => null),
+    [40],
+  );
 });

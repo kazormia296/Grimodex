@@ -50,7 +50,11 @@ import {
   sampleRow,
 } from "./run-sample.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
-import { hostSnapshot, startWindowSampler } from "./window.mjs";
+import {
+  hostSnapshot,
+  readAncestorPids,
+  startWindowSampler,
+} from "./window.mjs";
 import {
   openDataVersionProbe,
   readIndexMetadata,
@@ -275,9 +279,10 @@ async function main() {
     if (session.evidence.problems.length > 0)
       throw new Error(session.evidence.problems.join("; "));
     const page = session.page;
+    const launcherChain = readAncestorPids();
     windowSampler = startWindowSampler({
       root: ROOT,
-      ownPids: () => [process.pid, ...session.pids()],
+      ownPids: () => [...launcherChain, ...session.pids()],
     });
 
     // V-10 (registration, worker path, gate) before anything is measured.
@@ -601,7 +606,7 @@ async function main() {
   const evidence = report.session ?? {};
   if (evidence.problems?.length) report.problems.push(...evidence.problems);
   const ownPids = [
-    process.pid,
+    ...readAncestorPids(),
     ...(evidence.recordedPids ?? []).map((row) => row.pid),
   ];
   const runWindow = run ?? {

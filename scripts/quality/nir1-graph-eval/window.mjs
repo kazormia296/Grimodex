@@ -161,6 +161,32 @@ function slotInodes(dir) {
   return inodes;
 }
 
+/**
+ * The pids from `pid` up to init through `/proc/<pid>/stat` ppid fields: the
+ * harness's own launcher chain (the Xvfb wrapper, the shell that started it),
+ * which carries the runner's argv and is not another measurement.
+ */
+export function ancestorPids(pid, readStat) {
+  const out = [];
+  let current = pid;
+  const seen = new Set();
+  while (Number.isInteger(current) && current > 1 && !seen.has(current)) {
+    seen.add(current);
+    out.push(current);
+    const text = readStat(current);
+    if (!text) break;
+    const fields = text.slice(text.lastIndexOf(")") + 2).split(" ");
+    current = Number(fields[1]);
+  }
+  return out;
+}
+
+export function readAncestorPids(pid = process.pid, procRoot = "/proc") {
+  return ancestorPids(pid, (at) =>
+    readMaybe(path.join(procRoot, String(at), "stat")),
+  );
+}
+
 /** Host snapshot (the shape of `run-nir1-retrieval.mjs` `snapshotHost`). */
 export function hostSnapshot() {
   return {
