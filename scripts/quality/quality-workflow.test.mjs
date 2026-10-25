@@ -3002,9 +3002,28 @@ test("NIR-1 preserves R0 history, records effective typed ratification, and keep
     proposalSection,
     /proposal\/3五つのcontract row.*PR #579.*Option Bのtyped row.*明示批准済み.*契約として有効/is,
   );
+  // The 2026-10-25 relaxation (the user's instruction): a confirmation no
+  // longer has to match a fixed sentence, but it must still unambiguously
+  // identify one draftRef and one contractId, and the integrator records the
+  // reply verbatim. Earlier exact statements stay valid as history.
+  assert.doesNotMatch(
+    proposalSection,
+    /only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/,
+    "the fixed-sentence rule must not remain as the current rule",
+  );
   for (const confirmationRule of [
-    /Confirmation protocol.*only an explicit user statement naming the exact `draftRef` and one `contractId` confirms that one row/is,
-    /stable ledger form is `draftRef#contractId`/,
+    /Confirmation protocol \(recorded, bounded; relaxed on 2026-10-25 by the user's instruction/,
+    /Confirmation protocol.*a row is confirmed only by an explicit user expression of approval that unambiguously identifies one `draftRef` and one `contractId`; it need not match a fixed sentence/is,
+    /Free wording and an answer to a structured question \(AskUserQuestion\) both count/,
+    /\(1\) the user's statement itself names the `draftRef` and the `contractId`/,
+    /\(2\) the integrator's immediately preceding message presents exactly one `draftRef#contractId` with the draft's SHA-256 and asks for confirmation, and the user answers it with approval/,
+    /for a structured question, the question text names the `draftRef`, the `contractId` and the draft's SHA-256, and the chosen option is an explicit confirmation/,
+    /The integrator records the user's reply verbatim, with its receipt date and time, the presented `draftRef#contractId` and SHA-256, and the byte identity of the imported draft/,
+    /Confirmations recorded before 2026-10-25 under the earlier rule.*remain valid as history/is,
+    /“this proposal is fine” that does not answer a question presenting exactly one row is not a ratification/,
+    /neither is an answer to a question that presented several rows or omitted the draft's SHA-256, nor a statement whose row the integrator would have to interpret/,
+    /The integrator never records a confirmation the user did not give/,
+    /stable ledger form is still `draftRef#contractId`/,
     /four.*refs.*record separate confirmations.*exactly `scope-storage-authority`.*`caller-profile-egress`.*`native-generation-receipt`.*`history-reauthorization`/is,
     /Plan agreement.*not a ratification/is,
     /active goal.*not a ratification/is,
