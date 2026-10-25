@@ -114,6 +114,27 @@ export const FIXTURE_VERSIONS = Object.freeze({
     /** Observed by Native before the freeze (DR-DPH-70): HOLD, replaced by 2. */
     supersededBy: 2,
     supersededDecision: "DR-DPH-70",
+    /**
+     * The HOLD history, pinned (DR-DPH-84): the sha256 of each version-1 file
+     * as it stood when it was superseded, and the last commit that wrote the
+     * freeze record. A superseded version is checked against these values, not
+     * only against its own record, so the record and a replacement's
+     * `supersedes` cannot be rewritten together. This module is bound by the
+     * replacement's freeze, so the pins cannot move after that freeze.
+     */
+    pinned: Object.freeze({
+      fixture:
+        "0d277e0cc00dc42f61ad583b7bb59a6b2f9f038a2932684d9bc823ac8dc9ac49",
+      freezeRecord:
+        "0bc52f5e8e5b97842e800ceecb943dc97f7ab1cd5adde5cf765f0347b1f50dd7",
+      reviewRecord:
+        "368e9aae16a263d7cff1143f6a3f19aef24ca20bdce1c8de8b296e4d8ff4d828",
+      readme:
+        "db37884ba3fd7b0c0a7d563e130dde08def3923b8abd372dc6ffc455da3a0858",
+      parityVector:
+        "9a6daf65e4d7cec70ca760f1ad06432585711fae50d981d46044bb39f74caf31",
+      freezeRecordCommit: "bf69e2f00a3b68e23059431cd931e2a86e4b2cbe",
+    }),
   }),
   2: Object.freeze({
     fixtureVersion: 2,
@@ -133,6 +154,18 @@ export const FIXTURE_VERSIONS = Object.freeze({
 
 /** The version whose frozen record the evidence run (runner, harness) uses. */
 export const EVIDENCE_FIXTURE_VERSION = 2;
+
+/** `[path, pinned sha256]` of each file of a superseded version. */
+export function pinnedHistory(spec) {
+  if (spec?.pinned === undefined) return [];
+  return [
+    [spec.fixturePath, spec.pinned.fixture],
+    [spec.freezePath, spec.pinned.freezeRecord],
+    [spec.reviewPath, spec.pinned.reviewRecord],
+    [spec.readmePath, spec.pinned.readme],
+    [spec.parityVectorPath, spec.pinned.parityVector],
+  ];
+}
 
 /** The paths of a registered fixture version, or `undefined`. */
 export function fixtureVersionSpec(version) {
@@ -1500,6 +1533,30 @@ function checkSupersedes(freeze, spec, bind, errors) {
   }
   bind(block.fixture, "freeze.supersedes.fixture", target.fixturePath);
   bind(block.freezeRecord, "freeze.supersedes.freezeRecord", target.freezePath);
+  // The replaced version is pinned in this module: its bytes may not be
+  // rewritten together with this record (DR-DPH-84).
+  for (const [key, pinKey] of [
+    ["fixture", "fixture"],
+    ["freezeRecord", "freezeRecord"],
+  ]) {
+    if (
+      isRecord(block[key]) &&
+      target.pinned !== undefined &&
+      block[key].sha256 !== target.pinned[pinKey]
+    ) {
+      errors.push(
+        `freeze.supersedes.${key}.sha256 must be the pinned sha256 of version ${spec.replaces} (${target.pinned[pinKey]})`,
+      );
+    }
+  }
+  if (
+    target.pinned !== undefined &&
+    block.freezeRecordCommit !== target.pinned.freezeRecordCommit
+  ) {
+    errors.push(
+      `freeze.supersedes.freezeRecordCommit must be ${target.pinned.freezeRecordCommit} (the last commit that wrote the version-${spec.replaces} record)`,
+    );
+  }
   if (block.decision !== target.supersededDecision) {
     errors.push(
       `freeze.supersedes.decision must be ${target.supersededDecision}`,
@@ -1598,6 +1655,15 @@ export function validateFreezeRecord(
       errors.push(
         `fixture version ${spec.fixtureVersion} is superseded because Native observed it; its record must keep nativeOutputObservedBeforeFreeze true`,
       );
+    }
+    // Its own bindings are pinned too (DR-DPH-84).
+    for (const key of ["fixture", "reviewRecord", "readme", "parityVector"]) {
+      const pinned = spec.pinned?.[key];
+      if (pinned !== undefined && freeze[key]?.sha256 !== pinned) {
+        errors.push(
+          `freeze.${key}.sha256 of the superseded version ${spec.fixtureVersion} must stay the pinned ${pinned}`,
+        );
+      }
     }
   }
   if (!Object.values(FREEZE_STATUS).includes(freeze.status)) {
@@ -2196,6 +2262,13 @@ export function verifyFrozenSnapshot({
   const fixtureBytes = atFreeze.get(spec.fixturePath);
   const fixture =
     fixtureBytes === undefined ? undefined : parseJsonBytes(fixtureBytes);
+  // The fixture frozen at this version's path must name this version: a
+  // version-1 fixture copied under the version-2 path is not version 2.
+  if (fixture !== undefined && fixture.fixtureVersion !== spec.fixtureVersion) {
+    errors.push(
+      `the fixture at ${spec.fixturePath} names fixtureVersion ${JSON.stringify(fixture.fixtureVersion)}, not ${spec.fixtureVersion}`,
+    );
+  }
   const reviewErrors = review
     ? validateReviewRecord(review, {
         fixtureSha256: fixtureBytes ? sha256(fixtureBytes) : undefined,
@@ -2329,6 +2402,23 @@ async function validateFixtureVersion({ repoRoot, spec }) {
       fixtureVersion: spec.fixtureVersion,
     }).map((e) => `${label} fixture: ${e}`),
   );
+  // A superseded version's files are pinned (DR-DPH-84): rewriting them,
+  // even together with the record that binds them, is an error.
+  for (const [file, pinned] of pinnedHistory(spec)) {
+    let content;
+    try {
+      content = await read(file);
+    } catch {
+      if (file !== spec.freezePath)
+        errors.push(`${label} pinned file ${file} is missing`);
+      continue;
+    }
+    if (sha256(content) !== pinned) {
+      errors.push(
+        `${label} ${file} differs from its pinned sha256 ${pinned} (the HOLD history is not rewritten)`,
+      );
+    }
+  }
   const cases = Array.isArray(fixture.cases)
     ? fixture.cases.map((testCase) => ({
         caseId: testCase?.caseId,
@@ -2361,6 +2451,28 @@ async function validateFixtureVersion({ repoRoot, spec }) {
       errors.push(
         `${label} freeze record ${spec.freezePath} is missing (a superseded version keeps its HOLD record)`,
       );
+    }
+    // A replacement is checked for reused material as soon as its fixture is
+    // placed, before any freeze record exists (the freeze validation repeats it).
+    if (spec.replaces !== undefined) {
+      const target = fixtureVersionSpec(spec.replaces);
+      let replacedFixture;
+      try {
+        replacedFixture = parseJsonBytes(await read(target.fixturePath));
+      } catch {
+        // Reported below.
+      }
+      if (replacedFixture === undefined) {
+        errors.push(
+          `${label} fixture: the fixture of the replaced version ${spec.replaces} is required to check that no material is reused`,
+        );
+      } else {
+        errors.push(
+          ...replacedMaterialReuseErrors(fixture, replacedFixture).map(
+            (e) => `${label} fixture: ${e}`,
+          ),
+        );
+      }
     }
     return {
       ...head,

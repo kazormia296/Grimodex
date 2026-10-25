@@ -53,7 +53,15 @@ function satisfiedDeps(world) {
   };
 }
 
-const newWorld = () => buildSyntheticWorld({ template });
+/** The synthetic world as the evidence version (the runner scores no other). */
+function newWorld() {
+  const world = buildSyntheticWorld({ template });
+  world.fixture.fixtureVersion = EVIDENCE_FIXTURE_VERSION;
+  world.receipt.inputs.fixtureVersion = EVIDENCE_FIXTURE_VERSION;
+  world.receipt.freeze.path =
+    FIXTURE_VERSIONS[EVIDENCE_FIXTURE_VERSION].freezePath;
+  return world;
+}
 
 test("the runner scores a receipt after the freeze gate and the candidate check pass", async () => {
   const world = newWorld();
@@ -382,4 +390,25 @@ test("the runner never starts cargo or a resident process", async () => {
   // The only child process is the bounded synchronous git call.
   assert.match(source, /execFileSync\("git"/);
   assert.match(source, /timeout: GIT_TIMEOUT_MS/);
+});
+
+test("the runner holds, and does not score, a fixture that names another version", async () => {
+  const world = newWorld();
+  await withRun(world, async ({ receiptPath, setupReceiptPath }) => {
+    const deps = satisfiedDeps(world);
+    deps.loadFixture = async () => ({
+      ...structuredClone(world.fixture),
+      fixtureVersion: 1,
+    });
+    const outcome = await runFinalRequestEvaluation({
+      repoRoot,
+      receiptPath,
+      setupReceiptPath,
+      deps,
+    });
+    assert.equal(outcome.status, "hold");
+    assert.equal(outcome.exit, EXIT.hold);
+    assert.match(outcome.reasons.join("\n"), /fixture-version-mismatch/);
+    assert.equal(outcome.result, undefined);
+  });
 });

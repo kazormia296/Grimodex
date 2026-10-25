@@ -216,6 +216,17 @@ export async function runFinalRequestEvaluation({
   }
 
   const fixture = await loadFixture(repoRoot);
+  // The scorer accepts any registered version; the evidence run scores only
+  // the evidence version's fixture.
+  if (fixture?.fixtureVersion !== fixtureVersion) {
+    return {
+      status: "hold",
+      exit: EXIT.hold,
+      reasons: [
+        `fixture-version-mismatch: the fixture at version ${fixtureVersion}'s path names fixtureVersion ${JSON.stringify(fixture?.fixtureVersion)}`,
+      ],
+    };
+  }
   const template = await loadTemplate(repoRoot);
   const result = scoreFinalRequestReceipt({
     fixture,
