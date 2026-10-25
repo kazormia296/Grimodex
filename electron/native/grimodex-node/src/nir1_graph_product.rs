@@ -675,10 +675,8 @@ impl Shared {
     /// instead of at the end of its hold. Called with no other lock held.
     fn wake_deferred(&self) {
         let slot = lock(&self.slot);
-        if matches!(slot.phase, Phase::Deferred) {
-            if let Some(session) = slot.session.as_ref() {
-                let _ = session.commands.try_send(Command::Wake);
-            }
+        if let Some(session) = slot.session.as_ref().filter(|session| session.held.is_some()) {
+            let _ = session.commands.try_send(Command::Wake);
         }
     }
 }
@@ -1957,7 +1955,7 @@ fn build_and_serve(
     epoch: &mut u64,
 ) -> Next {
     let shared = Arc::clone(&context.shared);
-    let stamp = match build_worker(guard, context, key, *epoch) {
+    let stamp = match build_worker(guard, context, key, *epoch, None) {
         Built::Ready(stamp) => stamp,
         Built::Exit(_) => return Next::Exit,
     };
@@ -1983,14 +1981,23 @@ fn build_worker(
     context: &SessionContext,
     key: &GraphKey,
     epoch: u64,
+    held: Option<&TicketShared>,
 ) -> Built {
     let shared = Arc::clone(&context.shared);
-    if !wait_rebuild_window(context, epoch) {
-        return Built::Exit(GraphUnavailable::Invalidated);
+    if !wait_rebuild_window(context, epoch, held) {
+        return Built::Exit(if held_cancelled(held) {
+            GraphUnavailable::Cancelled
+        } else {
+            GraphUnavailable::Invalidated
+        });
     }
     let Some((snapshot, core, stamp)) = admit(context, key, epoch) else {
         return Built::Exit(GraphUnavailable::Invalidated);
     };
+    // CQ-DEFER: a held query cancelled meanwhile creates no worker.
+    if held_cancelled(held) {
+        return Built::Exit(GraphUnavailable::Cancelled);
+    }
     guard.worker = Some(context.factory.create(GraphWorkerStart {
         snapshot,
         binding: key.binding.clone(),
@@ -2081,7 +2088,7 @@ fn run_deferred(
     // Until it is answered the held query is this thread's in-flight ticket,
     // so a panic settles it too.
     guard.in_flight = Some(Arc::clone(&held.ticket));
-    let stamp = match build_worker(guard, context, key, *epoch) {
+    let stamp = match build_worker(guard, context, key, *epoch, Some(&held.ticket)) {
         Built::Ready(stamp) => stamp,
         Built::Exit(reason) => {
             if let Some(ticket) = guard.in_flight.take() {
@@ -2203,10 +2210,16 @@ fn retire_current(guard: &mut SessionGuard) {
 
 /// Waits out the minimum rebuild interval and failure backoff, serving only
 /// edge and retire commands meanwhile. Returns false when the thread must exit.
-fn wait_rebuild_window(context: &SessionContext, epoch: u64) -> bool {
+/// `held` is the ticket of a CQ-DEFER query: its cancellation (which wakes
+/// this thread) ends the wait too, so it does not occupy the slot for the rest
+/// of the window.
+fn wait_rebuild_window(context: &SessionContext, epoch: u64, held: Option<&TicketShared>) -> bool {
     let shared = Arc::clone(&context.shared);
     lock(&shared.slot).phase = Phase::Preparing;
     loop {
+        if held_cancelled(held) {
+            return false;
+        }
         let config = shared.config();
         let not_before = {
             let slot = lock(&shared.slot);
@@ -2236,6 +2249,10 @@ fn wait_rebuild_window(context: &SessionContext, epoch: u64) -> bool {
             }
         }
     }
+}
+
+fn held_cancelled(held: Option<&TicketShared>) -> bool {
+    held.is_some_and(|ticket| ticket.cancel.load(Ordering::SeqCst))
 }
 
 fn edge_or_closed(shared: &Shared, epoch: u64) -> bool {
