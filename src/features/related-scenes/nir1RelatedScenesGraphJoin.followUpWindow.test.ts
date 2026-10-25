@@ -64,6 +64,7 @@ function start(graphWindowMs?: number) {
   };
   const settled: Nir1GraphTicketUse[] = [];
   let resolved = 0;
+  let current = true;
   const promise = awaitNir1RelatedScenesWithGraph<string>({
     raw,
     rawReadyAtMs: RAW_READY_AT_MS,
@@ -74,7 +75,7 @@ function start(graphWindowMs?: number) {
       Nir1RelatedScenesSession,
       "stopReason" | "isActive" | "subscribeInvalidation"
     >,
-    isCurrent: () => true,
+    isCurrent: () => current,
     onGraphSettled: (use) => settled.push(use),
     ...(graphWindowMs !== undefined ? { graphWindowMs } : {}),
   });
@@ -88,6 +89,9 @@ function start(graphWindowMs?: number) {
     settled,
     resolved: () => resolved,
     invalidate: () => listener?.(),
+    setCurrent: (value: boolean) => {
+      current = value;
+    },
     cancel: () => {
       session.stopReason = "cancelled";
       listener?.();
@@ -228,6 +232,40 @@ describe("follow-up の子の Graph の窓 W_f（K6/4 の批准 12）", () => {
     h.graph.resolve({ status: "available", graph: "g" });
     await advanceTo(WF_AT + 1);
     expect(h.resolved()).toBe(1);
+    expect(h.settled).toEqual(["cancelled"]);
+  });
+
+  it("子が D と W_f の間に unavailable の Graph を受けたら、即座にその理由で 1 回だけ公開する", async () => {
+    const h = start(RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS);
+    clock = 105;
+    h.ir.resolve(AVAILABLE);
+    await flush();
+    await advanceTo(D_AT + 20);
+    expect(h.resolved()).toBe(0);
+    h.graph.resolve({ status: "unavailable", reason: "busy" });
+    const out = await h.promise;
+    expect(out.publishedAtMs).toBe(D_AT + 20);
+    expect(out.status).toBe("completed");
+    expect(out.graphOutcome).toBe("graph-unavailable:busy");
+    expect(out.graph).toBeNull();
+    expect(h.settled).toEqual(["used"]);
+    await advanceTo(WF_AT + 1);
+    expect(h.resolved()).toBe(1);
+  });
+
+  it("子が W_f を待つ間に isCurrent だけが外れたら、W_f で cancelled として公開し Graph を使わない", async () => {
+    const h = start(RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS);
+    clock = 105;
+    h.ir.resolve(AVAILABLE);
+    await flush();
+    await advanceTo(D_AT + 5);
+    h.setCurrent(false);
+    // 中断の event が無いので、窓の満了で公開する（abort があれば即座。下の試験）。
+    await advanceTo(WF_AT);
+    const out = await h.promise;
+    expect(out.status).toBe("cancelled");
+    expect(out.graph).toBeNull();
+    expect(out.graphOutcome).toBe("graph-unavailable:cancelled");
     expect(h.settled).toEqual(["cancelled"]);
   });
 

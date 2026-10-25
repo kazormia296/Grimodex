@@ -164,6 +164,26 @@ describe("Related Scenes の取り直しの契機の印（K6/4 の批准 12）",
     expect(triggerOf(1)).toBe("graph-ready");
   });
 
+  it("graph-ready の連鎖（子がさらに graph-ready で取り直す）にも印を付ける", async () => {
+    h.fetch
+      .mockResolvedValueOnce(late())
+      .mockResolvedValueOnce(late())
+      .mockResolvedValueOnce(result({ graphOutcome: "graph-ready" }));
+    renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    await ready("p");
+    await advance(0);
+    expect(triggerOf(1)).toBe("graph-ready");
+    await ready("p");
+    // 連鎖は debounce を保つ（DR-RSJ-6）が、契機は graph-ready（DR-WF-3）。
+    await advance(0);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(3);
+    expect(triggerOf(2)).toBe("graph-ready");
+  });
+
   it("IR の timeout の再試行には印を付けない（子の再試行も）", async () => {
     h.fetch
       .mockResolvedValueOnce(late({}))
