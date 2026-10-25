@@ -24,7 +24,15 @@ import { useChatMessageActions } from "./useChatMessageActions";
 
 function render(editClosed: boolean) {
   const editUserMessage = vi.fn(() => ({ content: "" }));
-  useChatStore.setState({ editUserMessage });
+  // 場面の会話（同期の経路）。非場面の会話の状態の読取は
+  // `useChatMessageActions.nonSceneEdit.test.tsx`（DR-DA2B-R17）。
+  useChatStore.setState({
+    editUserMessage,
+    chatScope: "scene",
+    activeSceneId: "scene-1",
+    scopeAnchorId: null,
+    threadFocusOverride: null,
+  });
   const { result } = renderHook(() =>
     useChatMessageActions({
       aiSettings: null,
