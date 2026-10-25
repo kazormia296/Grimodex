@@ -2666,3 +2666,11 @@ test("setup shapes: the placed version-1 fixture is unchanged by the setup check
     [],
   );
 });
+
+test("setup shapes: the negative-anchor Scene and the unknown reason are materials of the fixture", () => {
+  const { value } = unknownScopeFixture();
+  const materials = fixtureMaterials(value);
+  assert.ok(materials.ids.has(NEG));
+  assert.ok(materials.texts.has("合成の負例専用の本文。"));
+  assert.ok(materials.texts.has("合成の負例の Scope は未確定"));
+});

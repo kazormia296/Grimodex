@@ -1458,8 +1458,11 @@ export function fixtureMaterials(fixture) {
       addText(entity?.name);
       addText(entity?.summary);
     }
-    for (const step of Array.isArray(setup.steps) ? setup.steps : [])
+    for (const step of Array.isArray(setup.steps) ? setup.steps : []) {
       addText(step?.summary);
+      // The unknown Scope's reason is written into the Scene Scope (DR-DPH-99).
+      addText(step?.unresolvedReason);
+    }
   };
   if (!isRecord(fixture)) return { ids, texts };
   for (const canary of Array.isArray(fixture.canaries) ? fixture.canaries : [])
