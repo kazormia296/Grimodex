@@ -524,12 +524,12 @@ fn the_a3_record_matches_the_product_qualification_without_the_database_mutex() 
         .db()
         .db()
         .with_read_transaction(|conn| {
-            Ok(evaluate_nir1_entity_relation_disclosure(
+            evaluate_nir1_entity_relation_disclosure(
                 conn,
                 PROJECT_ID,
                 &fixture.revision_id,
                 SCENE_ID,
-            )?)
+            )
         })
         .expect("product qualification");
     // The prepared fixture's approved Revision is eligible: the positive path.
