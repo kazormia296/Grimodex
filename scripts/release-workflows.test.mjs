@@ -701,7 +701,7 @@ describe("release workflow boundary", () => {
     assert.doesNotMatch(lockfile, /^ {2}http-cache-semantics@4\.[0-2]\./m);
   });
 
-  it("scopes the Rust audit exception to the zip crate pulled in by the legacy updater", async () => {
+  it("keeps the Rust audit exceptions empty and zip out of both Cargo.lock files", async () => {
     const config = await readFile(
       path.join(repoRoot, ".cargo/audit.toml"),
       "utf8",
@@ -709,14 +709,12 @@ describe("release workflow boundary", () => {
     const ignored = [...config.matchAll(/^\s*"(RUSTSEC-\d{4}-\d{4})"/gm)].map(
       (match) => match[1],
     );
-    const expiresAt = config.match(/^# expires-at: (\S+)$/m)?.[1];
     const packagesOf = async (lockfile) =>
       (await readFile(path.join(repoRoot, lockfile), "utf8"))
         .split("[[package]]")
         .slice(1)
         .map((block) => ({
           name: block.match(/^name = "([^"]+)"/m)?.[1],
-          version: block.match(/^version = "([^"]+)"/m)?.[1],
           dependencies: [...block.matchAll(/^ "([^" ]+)(?: [^"]*)?",$/gm)].map(
             (match) => match[1],
           ),
@@ -724,31 +722,20 @@ describe("release workflow boundary", () => {
     const shared = await packagesOf("src-tauri/Cargo.lock");
     const native = await packagesOf("electron/native/grimodex-node/Cargo.lock");
 
-    assert.deepEqual(ignored, [
-      "RUSTSEC-2026-0367",
-      "RUSTSEC-2026-0368",
-      "RUSTSEC-2026-0369",
-    ]);
-    assert.ok(expiresAt, "the exception must carry an expires-at line");
-    assert.ok(
-      Date.now() < Date.parse(expiresAt),
-      `the zip audit exception expired at ${expiresAt}`,
-    );
-    // The exception is only needed while zip 4.x is locked; drop it once zip >= 9 lands.
-    assert.deepEqual(
-      shared.filter((pkg) => pkg.name === "zip").map((pkg) => pkg.version),
-      ["4.6.1"],
-    );
-    assert.deepEqual(
-      shared
-        .filter((pkg) => pkg.dependencies.includes("zip"))
-        .map((pkg) => pkg.name),
-      ["tauri-plugin-updater"],
-    );
-    assert.equal(
-      native.some((pkg) => pkg.name === "zip"),
-      false,
-    );
+    // The former zip 4.x exception (RUSTSEC-2026-0367..0369) was removed by
+    // dropping the legacy shell's tauri-plugin-updater `zip` feature. A new
+    // exception needs its own scope, reason and expiry assertions here.
+    assert.deepEqual(ignored, []);
+    for (const lock of [shared, native]) {
+      assert.equal(
+        lock.some((pkg) => pkg.name === "zip"),
+        false,
+      );
+      assert.equal(
+        lock.some((pkg) => pkg.dependencies.includes("zip")),
+        false,
+      );
+    }
   });
 
   it("gives every root TypeScript build explicit Node heap headroom", async () => {
