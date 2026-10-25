@@ -175,9 +175,15 @@ test("root が exit した後（close の前でも）は、その pid に taskki
   assert.deepEqual(calls.map(([kind, , force]) => `${kind}:${force}`), ["taskkill:false", "taskkill:true"]);
 });
 
-test("launchOwned は exit を close と別に記録する（exit の後は hasExited が true）", posixOnly, async () => {
-  const owner = nodeChild("process.exit(0)", fs.mkdtempSync(path.join(os.tmpdir(), "gps-pt-")));
+test("launchOwned は exit を close と別に記録する（exit の後・close の前でも hasExited が true）", posixOnly, async () => {
+  // 孫が stdout を持ったまま 1 秒残るので、直接の子の exit の後しばらく close が来ない
+  const script = `require("node:child_process").spawn(process.execPath, ["-e", "setTimeout(() => {}, 1000)"], { stdio: "inherit" }); process.exit(0);`;
+  const owner = nodeChild(script, fs.mkdtempSync(path.join(os.tmpdir(), "gps-pt-")));
   assert.equal(owner.hasExited(), false);
-  await owner.exited;
+  await new Promise((resolve) => owner.child.once("exit", resolve));
+  await sleep(50);
+  assert.equal(owner.closed(), null);
   assert.equal(owner.hasExited(), true);
+  await owner.exited;
+  try { process.kill(-owner.pgid, "SIGKILL"); } catch { /* 終わっている */ }
 });
