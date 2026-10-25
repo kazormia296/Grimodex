@@ -2660,6 +2660,9 @@ pub struct AppState {
     pub(crate) nir1_generation_recovery_statuses: Mutex<GenerationRecoveryHookLedger>,
     /// Process-local in-flight attempt slots, one per chat session (DT-2).
     pub(crate) nir1_generation_registry: crate::nir1_generation_owner::Nir1GenerationRegistry,
+    /// DD-1a: the handles and the start record of the local generation entry.
+    /// Process-local; a restart starts empty.
+    pub(crate) nir1_local_entry: Arc<crate::nir1_local_entry::Nir1LocalEntryState>,
     #[cfg(test)]
     pub(crate) nir1_generation_recovery_worker_probe:
         Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
@@ -2854,6 +2857,7 @@ impl AppState {
             nir1_generation_recovery_bindings: Mutex::new(Vec::new()),
             nir1_generation_recovery_statuses: Mutex::new(GenerationRecoveryHookLedger::default()),
             nir1_generation_registry: Default::default(),
+            nir1_local_entry: Default::default(),
             #[cfg(test)]
             nir1_generation_recovery_worker_probe: Mutex::new(None),
             #[cfg(test)]

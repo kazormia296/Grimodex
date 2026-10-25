@@ -161,7 +161,7 @@ impl std::error::Error for GrantRefusal {}
 // ───────────────────────────── the gate ─────────────────────────────
 
 /// Entries that stay closed until their product is published (PUB-G, PUB-L).
-/// DD-1 adds the local-send route by adding a variant and an index here.
+/// DD-1a added the local-send route (`LocalGeneration`).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PrePublicationEntry {
     /// K2/4: the body-declaration preview, the declaration writer and the
@@ -171,15 +171,26 @@ pub(crate) enum PrePublicationEntry {
     /// the only way to the restricted profile. Nothing in the product start
     /// opens it; PUB-G and Session C-1 do.
     ProfileActivation,
+    /// K5/3 (DD-1a, DR-DD1A-2): the six commands of the local generation
+    /// route (`nir1_local_generation_*`, `nir1_local_conversation_*`).
+    /// Nothing in the product start opens it; PUB-L does, and before PUB-L
+    /// only Main's journey seam (DD-1b) through
+    /// `main_open_pre_publication_gate`.
+    LocalGeneration,
 }
 
 impl PrePublicationEntry {
-    const ALL: [Self; 2] = [Self::SceneBodyDeclaration, Self::ProfileActivation];
+    const ALL: [Self; 3] = [
+        Self::SceneBodyDeclaration,
+        Self::ProfileActivation,
+        Self::LocalGeneration,
+    ];
 
     const fn index(self) -> usize {
         match self {
             Self::SceneBodyDeclaration => 0,
             Self::ProfileActivation => 1,
+            Self::LocalGeneration => 2,
         }
     }
 
@@ -191,6 +202,7 @@ impl PrePublicationEntry {
         match self {
             Self::SceneBodyDeclaration => "scene-body-declaration",
             Self::ProfileActivation => "profile-activation",
+            Self::LocalGeneration => "nir1-local-generation",
         }
     }
 }

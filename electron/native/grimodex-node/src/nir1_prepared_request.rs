@@ -75,6 +75,10 @@ const MAX_PREPARED_PAYLOAD_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const PREPARATION_SQL_TIMEOUT: Duration = Duration::from_secs(20);
 const PREPARATION_SQL_BUSY_TIMEOUT: Duration = Duration::from_millis(100);
 
+/// The `api` this route's D-final writes into an attempt binding. The DD-1a
+/// conversation reader selects this route's outputs by it.
+pub(crate) const LOCAL_CHAT_API: &str = "chat-completions";
+
 #[derive(Clone, PartialEq)]
 pub(crate) struct SupportedLocalChatRoute {
     pub(crate) provider: AiProvider,
@@ -255,6 +259,78 @@ pub(crate) struct CancelCurrentChatInputRequest {
     scene_id: String,
 }
 
+impl CancelCurrentChatInputRequest {
+    /// The selector of one accepted submission, for the DD-1a generation
+    /// cancel, which reaches the capture through this same entry (K4/3: the
+    /// existing capture writer, no new one).
+    pub(crate) fn for_submission(submission: &NativeAcceptedChatSubmission) -> Self {
+        Self {
+            submission_id: submission.capture.submission_id().to_owned(),
+            message_id: submission.capture.message_id().to_owned(),
+            chat_session_id: submission.capture.chat_session_id().to_owned(),
+            scene_id: submission.capture.scene_id().to_owned(),
+        }
+    }
+}
+
+/// The Ready workspace and its binding, for a registered caller of the pinned
+/// workspace under a restricted profile whose in-flight stop is confirmed
+/// (`with_authorized_preparation`). The DD-1a entry uses it before any read.
+pub(crate) fn ready_workspace_for_caller(
+    state: &AppState,
+    caller: &CallerIdentity,
+) -> Result<(ActiveWorkspaceSnapshot, LiveBinding)> {
+    let (workspace, binding) = capture_ready_workspace(state)?;
+    state
+        .profile_egress
+        .with_authorized_preparation(caller, &binding.locator, || Ok(()))?;
+    Ok((workspace, binding))
+}
+
+/// The current capture of one chat session as an accepted submission, when
+/// its owner is exactly the owner this caller has now by the D-final rule (the
+/// same `capture_owner` as the capture writer, with the current route
+/// revocation generation) and its Scene is `scene_id` (DD-1a, P11). Only the
+/// session's *current* capture can be returned, re-validated by the store's
+/// current-capture reader; a historical version ID is never accepted, and a
+/// capture of another caller, epoch, workspace incarnation or route generation
+/// is `None`. The owner's create and claim re-read it again.
+pub(crate) fn current_submission_for_session(
+    state: &AppState,
+    caller: &CallerIdentity,
+    chat_session_id: &str,
+    scene_id: &str,
+) -> Result<Option<NativeAcceptedChatSubmission>> {
+    ensure!(
+        !state
+            .workspace_shutdown_requested
+            .load(std::sync::atomic::Ordering::Acquire),
+        "NIR1_PREPARED_WORKSPACE_SHUTDOWN"
+    );
+    let (workspace, workspace_binding) = capture_ready_workspace(state)?;
+    let revocation_generation = state.profile_egress.with_authorized_preparation(
+        caller,
+        &workspace_binding.locator,
+        || Ok(state.profile_egress.revocation_generation()),
+    )?;
+    let owner = capture_owner(caller, &workspace_binding, revocation_generation)?;
+    let capture = generation_storage::local_conversation::read_current_capture_for_session_bounded(
+        &workspace,
+        &owner,
+        chat_session_id,
+        scene_id,
+        participant_sql_budget(),
+    )?;
+    ensure_workspace_unchanged(state, &workspace, &workspace_binding)?;
+    Ok(capture.map(|capture| NativeAcceptedChatSubmission {
+        capture,
+        owner,
+        caller: caller.clone(),
+        workspace_binding,
+        stop: Arc::new(AtomicBool::new(false)),
+    }))
+}
+
 /// Session selector for revocation only; it carries no capture authority.
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -279,6 +355,13 @@ pub(crate) struct CancelCurrentChatInputReceipt {
     message_id: String,
 }
 
+impl CancelCurrentChatInputReceipt {
+    /// `cancelled`, `not-current` or `not-found`.
+    pub(crate) fn status(&self) -> &'static str {
+        self.status
+    }
+}
+
 /// Minimal renderer receipt; no capture capability, version id, or payload.
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -290,8 +373,9 @@ pub(crate) struct CaptureCurrentChatInputReceipt {
     message_id: String,
 }
 
-/// Private Native capability minted only by the exact current Human capture
-/// writer. Its DB capture and owner cannot be replaced by a historical ID.
+/// Private Native capability minted by the exact current Human capture writer,
+/// or (DD-1a) by the reader of a session's current capture for the caller's
+/// own owner. Its DB capture and owner cannot be replaced by a historical ID.
 #[derive(Clone)]
 pub(crate) struct NativeAcceptedChatSubmission {
     capture: AcceptedChatInputCapture,
@@ -1394,7 +1478,7 @@ pub(crate) fn cancel_current_chat_submission(
     Ok(())
 }
 
-fn participant_sql_budget() -> ParticipantSqlOperationBudget {
+pub(crate) fn participant_sql_budget() -> ParticipantSqlOperationBudget {
     participant_sql_budget_for(Arc::new(AtomicBool::new(false)))
 }
 
@@ -1511,7 +1595,7 @@ fn resolve_supported_local_route(path: &Path) -> Result<SupportedLocalChatRoute>
     Ok(SupportedLocalChatRoute {
         provider: settings.provider.clone(),
         model: model.to_owned(),
-        api: "chat-completions",
+        api: LOCAL_CHAT_API,
         api_variant: endpoint.api_variant.clone(),
         endpoint_id: endpoint.id.clone(),
         endpoint_base_url: endpoint.base_url.clone(),
@@ -2344,7 +2428,7 @@ pub(crate) mod tests {
         }
     }
 
-    fn native_state_for_workspace(
+    pub(crate) fn native_state_for_workspace(
         root: &std::path::Path,
         database: Database,
         caller_id: &str,
