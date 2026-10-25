@@ -46,6 +46,10 @@ nir1-c-query-test-seam = []
 # release packaging. It needs `native-current-human-capture`, which
 # grimodex-node always enables.
 nir1-final-request-eval = []
+# Test-only: record PRAGMA synchronous right before each AI audit COMMIT so
+# downstream crate tests can prove the pre-dispatch commit runs at FULL.
+# Never enable in production builds.
+ai-audit-commit-test-probe = []
 
 [[bin]]
 name = "migration-crash-harness"

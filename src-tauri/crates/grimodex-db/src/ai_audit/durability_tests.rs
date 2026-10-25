@@ -53,6 +53,74 @@ fn connection_levels(db: &Database) -> (i64, i64, bool) {
     .expect("read connection levels")
 }
 
+/// この thread で記録した COMMIT 時点の `synchronous` を取り出す。
+fn commits() -> Vec<i64> {
+    commit_test_probe::take_observed_commit_synchronous()
+}
+
+/// WAL の file DB（製品と同じ `Database::new`）。
+fn file_database(name: &str) -> (Database, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "grimodex-ai-audit-durability-{name}-{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let db = Database::new(&dir.join("grimodex.db")).expect("open file db");
+    db.migrate().expect("migrate");
+    db.with_conn(|conn| {
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(journal_mode, "wal");
+        conn.execute(
+            "INSERT INTO projects (id, title, created_at, updated_at)
+             VALUES ('project-1', 'Project', datetime('now'), datetime('now'))",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed project");
+    (db, dir)
+}
+
+fn cli_lifecycle(execution_id: &str) -> [AppendAiAuditEvent; 3] {
+    let mut cli = [
+        event(
+            &format!("{execution_id}-start"),
+            execution_id,
+            "execution.started",
+        ),
+        event(
+            &format!("{execution_id}-prepared"),
+            execution_id,
+            "request.prepared",
+        ),
+        event(
+            &format!("{execution_id}-dispatched"),
+            execution_id,
+            "request.dispatched",
+        ),
+    ];
+    for item in &mut cli {
+        item.path_id = "cli_chat_stream".to_string();
+    }
+    cli[1].payload = json!({
+        "captureState": "partial",
+        "credentialsExcluded": true,
+        "request": {
+            "provider": "cli",
+            "model": "gpt-test",
+            "messages": [{"role": "user", "content": "hello"}],
+            "options": {"cli": "codex"}
+        }
+    });
+    cli
+}
+
+fn cli_digest() -> String {
+    hex::encode(Sha256::digest(
+        br#"{"cli":"codex","model":"gpt-test","prompt":"hello"}"#,
+    ))
+}
+
 fn audit_rows(db: &Database) -> i64 {
     db.with_conn(|conn| {
         Ok(conn.query_row("SELECT COUNT(*) FROM ai_audit_events", [], |row| row.get(0))?)
@@ -176,7 +244,7 @@ fn guard_rolls_back_and_restores_when_the_transaction_panics() {
 #[test]
 fn external_append_restores_connection_default_after_commit_and_after_failure() {
     let db = database();
-    let before = power_loss_durable_guards_enabled_for_test();
+    commits();
     db.append_external_ai_audit_events(
         PROJECT,
         &[
@@ -186,7 +254,7 @@ fn external_append_restores_connection_default_after_commit_and_after_failure() 
         ],
     )
     .expect("durable pre-dispatch batch");
-    assert_eq!(power_loss_durable_guards_enabled_for_test(), before + 1);
+    assert_eq!(commits(), [SQLITE_SYNCHRONOUS_FULL]);
     assert_eq!(connection_levels(&db), (1, 0, true));
     assert_eq!(audit_rows(&db), 3);
 
@@ -201,18 +269,21 @@ fn external_append_restores_connection_default_after_commit_and_after_failure() 
         )
         .expect_err("dispatch without prepared must fail closed");
     assert!(error.to_string().contains("request.prepared"));
-    assert_eq!(power_loss_durable_guards_enabled_for_test(), before + 2);
+    assert!(
+        commits().is_empty(),
+        "the failed batch never reaches COMMIT"
+    );
     assert_eq!(connection_levels(&db), (1, 0, true));
     assert_eq!(audit_rows(&db), 3, "the failed batch is rolled back");
 }
 
+/// 送信前の commit だけが COMMIT の時点で FULL になる（WAL の file DB で確かめる）。
 #[test]
-fn only_pre_dispatch_commits_on_external_paths_use_the_durable_guard() {
-    let db = database();
-    let count = power_loss_durable_guards_enabled_for_test;
+fn only_pre_dispatch_commits_on_external_paths_commit_at_full_on_a_wal_database() {
+    let (db, dir) = file_database("paths");
+    commits();
 
-    // renderer の begin（started＋prepared）は送信前だが dispatched より前なので NORMAL。
-    let start = count();
+    // renderer の begin（started＋prepared）は dispatched より前なので NORMAL。
     db.append_external_ai_audit_events(
         PROJECT,
         &[
@@ -221,14 +292,12 @@ fn only_pre_dispatch_commits_on_external_paths_use_the_durable_guard() {
         ],
     )
     .expect("renderer begin");
-    assert_eq!(count(), start);
-    // markAiAuditDispatched の batch は durable。
+    // markAiAuditDispatched の batch は FULL。
     db.append_external_ai_audit_events(
         PROJECT,
         &[event("r-dispatched", "r", "request.dispatched")],
     )
     .expect("renderer dispatched");
-    assert_eq!(count(), start + 1);
     // 送信後の microbatch と終端は NORMAL。
     db.append_external_ai_audit_events(
         PROJECT,
@@ -246,7 +315,7 @@ fn only_pre_dispatch_commits_on_external_paths_use_the_durable_guard() {
         ],
     )
     .expect("terminal");
-    assert_eq!(count(), start + 1);
+    assert_eq!(commits(), [1, SQLITE_SYNCHRONOUS_FULL, 1, 1]);
 
     // 汎用の append（local の semantic など）は dispatched を含んでも NORMAL のまま。
     db.append_ai_audit_events(
@@ -258,62 +327,46 @@ fn only_pre_dispatch_commits_on_external_paths_use_the_durable_guard() {
         ],
     )
     .expect("generic local batch");
-    assert_eq!(count(), start + 1);
+    assert_eq!(commits(), [1]);
 
-    // CLI の claim は常に durable。
-    let mut cli = [
-        event("c-start", "c", "execution.started"),
-        event("c-prepared", "c", "request.prepared"),
-        event("c-dispatched", "c", "request.dispatched"),
-    ];
-    for item in &mut cli {
-        item.path_id = "cli_chat_stream".to_string();
-    }
-    cli[1].payload = json!({
-        "captureState": "partial",
-        "credentialsExcluded": true,
-        "request": {
-            "provider": "cli",
-            "model": "gpt-test",
-            "messages": [{"role": "user", "content": "hello"}],
-            "options": {"cli": "codex"}
-        }
-    });
-    db.append_external_ai_audit_events(PROJECT, &cli)
+    // CLI／Codex：dispatched を含む batch と claim は FULL。
+    db.append_external_ai_audit_events(PROJECT, &cli_lifecycle("c"))
         .expect("cli lifecycle");
-    assert_eq!(count(), start + 2);
-    let digest = hex::encode(Sha256::digest(
-        br#"{"cli":"codex","model":"gpt-test","prompt":"hello"}"#,
-    ));
     db.claim_cli_ai_audit_dispatch(
         Some(PROJECT),
         "c",
         "operation-1",
         None,
         "cli_chat_stream",
-        &digest,
+        &cli_digest(),
     )
     .expect("claim");
-    assert_eq!(count(), start + 3);
+    assert_eq!(
+        commits(),
+        [SQLITE_SYNCHRONOUS_FULL, SQLITE_SYNCHRONOUS_FULL]
+    );
     assert_eq!(connection_levels(&db), (1, 0, true));
 
-    // 同じ execution の 2 回目の claim は拒否され、それでも元に戻る。
+    // 同じ execution の 2 回目の claim は拒否され、COMMIT に届かず、元に戻る。
     db.claim_cli_ai_audit_dispatch(
         Some(PROJECT),
         "c",
         "operation-1",
         None,
         "cli_chat_stream",
-        &digest,
+        &cli_digest(),
     )
     .expect_err("second claim must fail closed");
+    assert!(commits().is_empty());
     assert_eq!(connection_levels(&db), (1, 0, true));
+    drop(db);
+    let _ = std::fs::remove_dir_all(dir);
 }
 
 #[test]
 fn external_append_still_rejects_the_nir1_local_namespace_before_the_guard() {
     let db = database();
-    let before = power_loss_durable_guards_enabled_for_test();
+    commits();
     let mut batch = [
         event("n-start", "n", "execution.started"),
         event("n-prepared", "n", "request.prepared"),
@@ -326,7 +379,51 @@ fn external_append_still_rejects_the_nir1_local_namespace_before_the_guard() {
         .append_external_ai_audit_events(PROJECT, &batch)
         .expect_err("the NIR-1 local namespace is reserved for the dedicated append");
     assert!(error.to_string().contains("AI_AUDIT_RESERVED_NAMESPACE"));
-    assert_eq!(power_loss_durable_guards_enabled_for_test(), before);
+    assert!(commits().is_empty());
     assert_eq!(connection_levels(&db), (1, 0, true));
     assert_eq!(audit_rows(&db), 0);
+}
+
+/// 戻し損ねたら append は失敗し（送信しない側）、接続は quarantine されて以後使われない。
+#[test]
+fn a_failed_restore_fails_the_append_and_quarantines_the_connection() {
+    for claim in [false, true] {
+        let db = database();
+        if claim {
+            db.append_external_ai_audit_events(PROJECT, &cli_lifecycle("q"))
+                .expect("cli lifecycle");
+        }
+        commits();
+        fail_next_durability_restore_for_test();
+        let error = if claim {
+            db.claim_cli_ai_audit_dispatch(
+                Some(PROJECT),
+                "q",
+                "operation-1",
+                None,
+                "cli_chat_stream",
+                &cli_digest(),
+            )
+            .expect_err("restore failure must fail the claim")
+        } else {
+            db.append_external_ai_audit_events(
+                PROJECT,
+                &[
+                    event("q-start", "q", "execution.started"),
+                    event("q-prepared", "q", "request.prepared"),
+                    event("q-dispatched", "q", "request.dispatched"),
+                ],
+            )
+            .expect_err("restore failure must fail the append")
+        };
+        assert!(error
+            .downcast_ref::<AiAuditDurabilityRestoreError>()
+            .is_some());
+        assert!(error
+            .to_string()
+            .contains("AI_AUDIT_DURABILITY_RESTORE_FAILED"));
+        assert_eq!(commits(), [SQLITE_SYNCHRONOUS_FULL], "claim={claim}");
+        assert!(!db.connection_reusable(), "claim={claim}");
+        assert!(db.with_conn(|_| Ok(())).is_err(), "claim={claim}");
+    }
 }
