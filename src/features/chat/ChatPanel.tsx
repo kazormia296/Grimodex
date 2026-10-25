@@ -944,6 +944,10 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
         commandInstruction?: string;
       },
     ): Promise<boolean> => {
+      // PUB-G 前の必須 4（DR-DA2B-R24、R26）：Enter（keymap の onSubmit）は送信ボタンの
+      // 無効化を通らないので、送信の閉鎖をここでも見る。閉なら受け付けず、本文は入力欄に
+      // 残る。定数が false の間は分岐ごと消える。
+      if (PROFILE_ACTIVATION_UI_ENABLED && egressSendClosed) return false;
       const trimmed = markdown.trim();
       const liveChatState = useChatStore.getState();
       if (
@@ -1036,6 +1040,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
       scopeAnchorId,
       resetInputDismissed,
       t,
+      egressSendClosed,
     ],
   );
 

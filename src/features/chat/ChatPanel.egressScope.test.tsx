@@ -22,11 +22,14 @@ vi.mock("@/features/profile-egress/ProfileEgressChatClosureProbe", async () => {
   };
 });
 
-const inputProps = vi.hoisted(
-  () => [] as Array<{ policyDisabled?: boolean; editDisabled?: boolean }>,
-);
+type InputProps = {
+  policyDisabled?: boolean;
+  editDisabled?: boolean;
+  onSend?: (markdown: string) => Promise<boolean>;
+};
+const inputProps = vi.hoisted(() => [] as InputProps[]);
 vi.mock("./components/ChatInput", () => ({
-  ChatInput: (props: { policyDisabled?: boolean; editDisabled?: boolean }) => {
+  ChatInput: (props: InputProps) => {
     inputProps.push(props);
     return <div data-testid="chat-input" />;
   },
@@ -173,6 +176,41 @@ beforeEach(() => {
 });
 
 describe("chat panel の送信の閉鎖（定数 true、閉）", () => {
+  // DR-DA2B-R26：Enter の送信（keymap の onSubmit → onSend）は送信ボタンの無効化を
+  // 通らない。閉鎖は onSend でも止まり、受け付けない（本文は入力欄に残る）。
+  it.each([
+    ["会話の無い場面の会話", { activeSessionId: null }],
+    [
+      "場面の会話でない会話",
+      {
+        chatScope: "project",
+        activeSessionId: "s2",
+        sessions: [session("s2", null)],
+      },
+    ],
+  ] as const)("%s：Enter の送信も受け付けない", async (_label, patch) => {
+    const sendMessage = vi.fn(async () => true);
+    setChat({ ...patch, sendMessage });
+    render(<ChatPanel />);
+    await closedNotice();
+    await waitFor(() => expect(lastInput().policyDisabled).toBe(true));
+    await expect(lastInput().onSend!("本文")).resolves.toBe(false);
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
+  it("会話のある場面の会話：Enter の送信は今のまま受け付ける", async () => {
+    const sendMessage = vi.fn(async () => true);
+    setChat({
+      activeSessionId: "s1",
+      sessions: [session("s1", "scene-1")],
+      sendMessage,
+    });
+    render(<ChatPanel />);
+    expect(await closedNotice()).toBe(ja.aiClosed);
+    await lastInput().onSend!("本文");
+    await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+  });
+
   it("会話の無い場面の会話：送信を閉じ、新しい会話の文を出す", async () => {
     setChat({ activeSessionId: null });
     render(<ChatPanel />);

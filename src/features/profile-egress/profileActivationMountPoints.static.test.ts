@@ -323,4 +323,13 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
       );
     }
   });
+
+  // DR-DA2B-R26: the Enter submit reaches `onSend` without the send button, so
+  // the chat panel's send closure is checked there too, under the constant.
+  it("checks the chat send's closure in onSend, under the constant", () => {
+    const body = code(read("src/features/chat/ChatPanel.tsx"));
+    expect(
+      body.match(/if \(([\w ]*&& )?egressSendClosed\) return false;/g),
+    ).toEqual([`if (${CONSTANT} && egressSendClosed) return false;`]);
+  });
 });
