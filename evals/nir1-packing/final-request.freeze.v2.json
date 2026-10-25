@@ -3,18 +3,18 @@
   "contractId": "nir1-final-request-packing-eval",
   "draftRef": "nir1-final-request-eval-proposal/2",
   "fixtureVersion": 2,
-  "status": "pending-review",
+  "status": "frozen",
   "nativeOutputObservedBeforeFreeze": false,
-  "frozenAt": "2026-10-25T05:05:54Z",
-  "reviewVerdict": "pending",
-  "note": "Pending the independent expectation review (S2). The fixture author derived every expectation from the product's source after X1-3 (base 352474d4) without running Native, and wrote this record as pending-review: the S3 integrator rewrites it with status frozen, reviewVerdict approve, the review record's new sha256, the reviewer's name and a new frozenAt after an approving review, and commits it before any Native run of this fixture's materials. `frozenAt` here is the time the pending record was written.",
+  "frozenAt": "2026-10-25T07:35:18Z",
+  "reviewVerdict": "approve",
+  "note": "Frozen by the S3 step at the integrator's instruction (executed by dph-s0-builder; recorded in dp-h-decisions.md DR-DPH-115..). The independent expectation review approved every case (review record bound below; its reviewer is the expectationReviewer here). The fixture author derived every expectation from the product's source after X1-3 without running Native. Disclosures: (i) the author read the one-sentence summary in the version-1 freeze record's nativeObservations (a prototype run failed with other-case-material, which led to the harness's project_create change); no expectation was derived from it (the author's own statement, DR-DPH-96..98 and 107..110). (ii) The reviewer did not see the DPH-4 observation record. (iii) The S0c writer test calls the setup-verification reader on synthetic materials; it runs no packer, renderer or D-final, so it is not an observation (K6/2, 観測前の固定). (iv) The paths that include D-final (the unknown-marker check, the IdMap duplicate error, the unknown-scope variants end to end) still need the mechanics tests before S4. (v) contract.mjs carries a copy of the product's contract-whitespace list, kept equal to grimodex-core and the TS contract by a parity test. Native has not run on this fixture's materials; the first such run must have this record's commit as an ancestor.",
   "fixture": {
     "path": "evals/nir1-packing/final-request.v2.json",
     "sha256": "cc52f8e6b5a9b894371334617e237cf6d4abab2a01be66c41c95b737217016cc"
   },
   "reviewRecord": {
     "path": "evals/nir1-packing/final-request.expectation-review.v2.json",
-    "sha256": "24f388fbf0207bb7c9c15252e300e662c21fa08667f87be558c622d12c22b7da"
+    "sha256": "5b46be5b8480cbe3144c5c9d45e886bb1262be2b34892df9e77e6b383bddd8d9"
   },
   "readme": {
     "path": "evals/nir1-packing/final-request.v2.README.md",
@@ -32,7 +32,7 @@
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/contract.mjs",
-        "sha256": "bbf05a9bb4e6cdb885cd1b838180d58e64c7604c37ceb560614b6968924b9067"
+        "sha256": "1b10bc5ac7f7405a0c2441fb70eb6da5c819a62c131619b3c18ae21f8babee88"
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/receipt.mjs",
@@ -231,7 +231,7 @@
       "role": "writes the version-2 fixture, README, derivation module and consistency test; no harness, baseline, capture, scorer or contract code; did not see the version-1 receipts, the DPH-4 observations or per-case verdicts"
     },
     "expectationReviewer": {
-      "agent": "dph-v2-expectation-reviewer (unassigned; S2)",
+      "agent": "dph-v2-expectation-reviewer (claude-opus-5-5, independent read-only)",
       "role": "independent, read-only, has not seen Native output; distinct from the version-2 author, the version-1 author and every implementer listed here"
     },
     "harnessImplementers": [

@@ -5,8 +5,8 @@
 // expectation of final-request.v2.json is what the derivation rules
 // (fixture-derive.v2.mjs, read from the product's source after X1-3) give for
 // the fixture's own materials, that no material of version 1 is reused, and
-// that the review template and the pending freeze record bind the bytes on
-// disk. They cannot make the rules right: the independent expectation reviewer
+// that the approving review record and the frozen freeze record (S3) bind the
+// bytes on disk. They cannot make the rules right: the independent expectation reviewer
 // (S2) checks the rules against the cited source.
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
@@ -519,17 +519,16 @@ test("the route is the fixture's own value, not a new product limit", () => {
   });
 });
 
-test("the review template and the pending freeze record bind the bytes on disk", async () => {
+test("the approving review and the frozen freeze record bind the bytes on disk", async () => {
   const freeze = JSON.parse(await read(V2.freezePath));
   const review = JSON.parse(await read(V2.reviewPath));
-  // The template: nobody has reviewed version 2 yet.
-  assert.equal(review.verdict, "changes-required");
-  assert.equal(review.status, "not-reviewed");
+  // The independent review (S2) approved every case of these bytes.
+  assert.equal(review.verdict, "approve");
   assert.equal(review.fixtureSha256, sha256(fixtureBytes));
-  assert.ok(review.requiredChanges.length > 0);
+  assert.deepEqual(review.requiredChanges, []);
   assert.deepEqual(
     review.cases.map((row) => [row.caseId, row.verdict]),
-    DPH_CASE_IDS.map((caseId) => [caseId, "pending"]),
+    DPH_CASE_IDS.map((caseId) => [caseId, "approve"]),
   );
   assert.deepEqual(
     {
@@ -551,9 +550,10 @@ test("the review template and the pending freeze record bind the bytes on disk",
   });
   assert.deepEqual(reviewErrors, []);
 
-  // The record: pending, not observed, superseding version 1.
-  assert.equal(freeze.status, "pending-review");
-  assert.equal(freeze.reviewVerdict, "pending");
+  // The record (S3): frozen, approved, not observed, superseding version 1.
+  assert.equal(freeze.status, "frozen");
+  assert.equal(freeze.reviewVerdict, "approve");
+  assert.equal(freeze.reviewRecord.sha256, sha256(await read(V2.reviewPath)));
   assert.equal(freeze.nativeOutputObservedBeforeFreeze, false);
   assert.equal(freeze.nativeObservations, undefined);
   assert.deepEqual(freeze.supersedes, {
@@ -606,13 +606,15 @@ test("the review template and the pending freeze record bind the bytes on disk",
   assert.equal(freeze.contextBudget.perRequest.length, 17);
 });
 
-test("the repository report has version 2 pending review and no error", async () => {
+test("the repository report has version 2 frozen, version 1 on HOLD, and no error", async () => {
   const report = await validateNir1FinalRequestFixtures({ repoRoot });
   assert.deepEqual(report.errors, []);
   assert.equal(report.fixtureVersion, 2);
-  assert.equal(report.status, "pending-review");
+  assert.equal(report.status, "frozen");
   const v2 = report.versions.find((entry) => entry.fixtureVersion === 2);
-  assert.equal(v2.status, "pending-review");
+  assert.equal(v2.status, "frozen");
+  const v1 = report.versions.find((entry) => entry.fixtureVersion === 1);
+  assert.equal(v1.status, "pending-review");
   assert.deepEqual(
     v2.cases.map((entry) => entry.caseId),
     [...DPH_CASE_IDS],
