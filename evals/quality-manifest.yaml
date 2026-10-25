@@ -1607,6 +1607,11 @@ requirements:
       - scripts/quality/nir1-packing/runner.mjs
       - evals/nir1-graph/manifest.v1.json
       - scripts/quality/nir1-graph/contract.mjs
+      - scripts/quality/nir1-graph-eval/constants.mjs
+      - scripts/quality/nir1-graph-eval/availability.mjs
+      - scripts/quality/nir1-graph-eval/receipt.mjs
+      - scripts/quality/nir1-graph-eval/outcome.mjs
+      - scripts/quality/nir1-graph-eval/admission.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
@@ -1649,6 +1654,10 @@ requirements:
       - electron/native/grimodex-node/src/nir1_final_request_eval/tests.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/tests.rs
       - scripts/quality/nir1-graph/contract.test.mjs
+      - scripts/quality/nir1-graph-eval/availability.test.mjs
+      - scripts/quality/nir1-graph-eval/receipt.test.mjs
+      - scripts/quality/nir1-graph-eval/outcome.test.mjs
+      - scripts/quality/nir1-graph-eval/admission.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
