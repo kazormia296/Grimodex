@@ -2456,3 +2456,213 @@ test("the repository report checks a placed version-2 fixture for reused materia
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+// ------------------------- negative-anchor Scene and unknown Scope (DPH-S0c)
+
+const NEG = "syn-p02-negative-anchor";
+
+/**
+ * The synthetic fixture with a P-02 setup whose reject variant prepares its
+ * negative on its own negative-anchor Scene and invalidates it by turning that
+ * Scene's Scope unknown (DR-DPH-99).
+ */
+function unknownScopeFixture(version = 2) {
+  const value = structuredClone(v2Fixture);
+  value.fixtureVersion = version;
+  const testCase = value.cases.find((row) => row.caseId === "P-02");
+  testCase.setup = {
+    project: { logicalId: "syn-p02-project" },
+    scenes: [
+      {
+        logicalId: "syn-p02-anchor",
+        role: "anchor",
+        title: "合成の起点",
+        body: "合成の起点の本文。",
+      },
+      {
+        logicalId: "syn-p02-query",
+        role: "query",
+        title: "合成の問い",
+        body: "合成の問いの本文。",
+      },
+    ],
+    codexEntities: [],
+  };
+  const reject = testCase.variants.find((row) => row.kind === "reject");
+  const positive = testCase.variants.find((row) => row.kind === "positive");
+  const bad = reject.ineligibleLogicalId;
+  const positiveSteps = ["rev-P-02-a", "rev-P-02-b"].flatMap((revision) => [
+    {
+      stage: 1,
+      op: "prepare",
+      revision,
+      entity: `${revision}-entity`,
+      anchorScene: "syn-p02-anchor",
+      proposalKey: `key:${revision}`,
+    },
+    { stage: 1, op: "approve", revision, decision: "approved" },
+  ]);
+  positive.setup = { steps: structuredClone(positiveSteps), chatSessions: [] };
+  reject.setup = {
+    scenes: [
+      {
+        logicalId: NEG,
+        role: "negative-anchor",
+        title: "合成の負例の場面",
+        body: "合成の負例専用の本文。",
+      },
+    ],
+    steps: [
+      {
+        stage: 1,
+        op: "prepare-negative",
+        revision: bad,
+        entity: `${bad}-entity`,
+        anchorScene: NEG,
+        proposalKey: `key:${bad}`,
+      },
+      { stage: 1, op: "approve-negative", revision: bad, decision: "approved" },
+      {
+        stage: 1,
+        op: "invalidate-negative",
+        revision: bad,
+        write: "scene-scope-unknown",
+        scene: NEG,
+        unresolvedReason: "合成の負例の Scope は未確定",
+      },
+      ...structuredClone(positiveSteps),
+    ],
+    chatSessions: [],
+  };
+  return { value, testCase, reject, positive };
+}
+
+const setupErrors = (value) =>
+  validateFinalRequestFixture(value, {
+    template,
+    fixtureVersion: value.fixtureVersion,
+  });
+
+test("setup shapes: a reject variant may anchor its negative on its own Scene and turn its Scope unknown (version 2)", () => {
+  assert.deepEqual(setupErrors(unknownScopeFixture().value), []);
+  // The other writes stay allowed, on the case's anchor as before.
+  const { value, reject } = unknownScopeFixture();
+  delete reject.setup.scenes;
+  reject.setup.steps[0].anchorScene = "syn-p02-anchor";
+  Object.assign(reject.setup.steps[2], { write: "codex-update" });
+  delete reject.setup.steps[2].scene;
+  delete reject.setup.steps[2].unresolvedReason;
+  assert.deepEqual(setupErrors(value), []);
+});
+
+test("setup shapes: version 1 may not use the negative-anchor Scene or the unknown write", () => {
+  const { value } = unknownScopeFixture(1);
+  const errors = setupErrors(value);
+  assert.ok(
+    errors.some((e) =>
+      e.includes(
+        ".scenes (a negative-anchor Scene) is not allowed in fixture version 1",
+      ),
+    ),
+    errors.join(" | "),
+  );
+  assert.ok(
+    errors.some((e) =>
+      e.includes("scene-scope-unknown is not allowed in fixture version 1"),
+    ),
+    errors.join(" | "),
+  );
+});
+
+test("setup shapes: malformed or misplaced negative-anchor Scenes and unknown writes are fixture errors", () => {
+  for (const [mutate, expected] of [
+    [
+      ({ reject }) =>
+        reject.setup.scenes.push({
+          ...reject.setup.scenes[0],
+          logicalId: "syn-extra",
+        }),
+      "at most one Scene",
+    ],
+    [
+      ({ positive, reject }) =>
+        (positive.setup.scenes = structuredClone(reject.setup.scenes)),
+      "only a reject variant may declare",
+    ],
+    [({ reject }) => delete reject.setup.scenes[0].body, "must be { logicalId"],
+    [
+      ({ reject }) => (reject.setup.scenes[0].role = "anchor"),
+      "must be { logicalId",
+    ],
+    [
+      ({ reject }) => (reject.setup.scenes[0].extra = true),
+      "must be { logicalId",
+    ],
+    [
+      ({ reject }) => (reject.setup.scenes[0].logicalId = "syn-p02-query"),
+      "is a Scene of the case",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[2].scene = "syn-p02-anchor"),
+      "may not target the case's anchor Scene",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[2].scene = "syn-p02-query"),
+      "may not target the case's query Scene",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[2].scene = "syn-elsewhere"),
+      "must name the variant's negative-anchor Scene",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[0].anchorScene = "syn-p02-anchor"),
+      "must be the anchorScene of the prepare-negative step",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[0].anchorScene = "syn-p02-anchor"),
+      "is not the anchorScene of the variant's prepare-negative step",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[0].anchorScene = "syn-undeclared"),
+      "is neither the case's anchor nor a negative-anchor Scene",
+    ],
+    [
+      ({ reject }) => delete reject.setup.steps[2].unresolvedReason,
+      "unresolvedReason must be a trimmed non-empty string",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[2].unresolvedReason = " 前後に空白 "),
+      "unresolvedReason must be a trimmed non-empty string",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[2].op = "binding-change"),
+      "is an invalidate-negative write only",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[2].write = "scene-delete"),
+      "write must be one of",
+    ],
+    [
+      ({ reject }) => (reject.setup.steps[3].anchorScene = NEG),
+      "a positive Revision may not anchor the negative-anchor Scene",
+    ],
+  ]) {
+    const world = unknownScopeFixture();
+    mutate(world);
+    const errors = setupErrors(world.value);
+    assert.ok(
+      errors.some((e) => e.includes(expected)),
+      `${expected}: ${errors.join(" | ")}`,
+    );
+  }
+});
+
+test("setup shapes: the placed version-1 fixture is unchanged by the setup checks", async () => {
+  const v1 = JSON.parse(
+    await readFile(path.join(repoRoot, V1.fixturePath), "utf8"),
+  );
+  assert.deepEqual(
+    validateFinalRequestFixture(v1, { template, fixtureVersion: 1 }),
+    [],
+  );
+});

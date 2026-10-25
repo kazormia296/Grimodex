@@ -149,6 +149,11 @@ export const FIXTURE_VERSIONS = Object.freeze({
     requiredImplementers: Object.freeze([
       "dph-s0-builder (versioned contract and gate)",
     ]),
+    /**
+     * A reject variant may declare its own negative-anchor Scene and
+     * invalidate its negative with `scene-scope-unknown` (DR-DPH-99, 100).
+     */
+    negativeAnchors: true,
   }),
 });
 
@@ -1214,7 +1219,187 @@ export function validateFinalRequestFixture(
   checkBindingCoverage(fixture, errors);
   checkLogicalIdIsolation(fixture.cases, errors);
   validateDiagnosticCases(fixture.diagnosticCases, fixture.cases, errors);
+  validateSetupShapes(
+    fixture.cases,
+    fixtureVersionSpec(fixtureVersion ?? fixture.fixtureVersion),
+    errors,
+  );
   return errors;
+}
+
+// ------------------------------------------------------------ setup shapes
+
+/** The writes an `invalidate-negative` or `binding-change` step may name. */
+export const SETUP_WRITE_KINDS = Object.freeze([
+  "scene-scope-registry-update",
+  "codex-update",
+  "decision-cancel",
+  "scene-scope-unknown",
+]);
+/** The write that turns a negative-anchor Scene's Scope unknown. */
+export const SCENE_SCOPE_UNKNOWN_WRITE = "scene-scope-unknown";
+export const NEGATIVE_ANCHOR_ROLE = "negative-anchor";
+
+function isTrimmedNonEmpty(value) {
+  return (
+    typeof value === "string" && value.length > 0 && value.trim() === value
+  );
+}
+
+/**
+ * The setup shapes a fixture version may use (DR-DPH-99, 100). The harness
+ * reads `setup`; the contract checks only what decides whether a reject
+ * variant can be built as declared. A version without `negativeAnchors`
+ * (version 1) may not use the negative-anchor Scene or `scene-scope-unknown`;
+ * nothing else of its setup is checked, so version 1's result is unchanged.
+ */
+function validateSetupShapes(cases, spec, errors) {
+  const extended = spec?.negativeAnchors === true;
+  for (const [caseIndex, testCase] of (cases ?? []).entries()) {
+    if (!isRecord(testCase)) continue;
+    const caseScenes = Array.isArray(testCase.setup?.scenes)
+      ? testCase.setup.scenes.filter(isRecord)
+      : [];
+    const caseAnchor = caseScenes.find((scene) => scene.role === "anchor");
+    const caseQuery = caseScenes.find((scene) => scene.role === "query");
+    const caseSceneIds = new Set(caseScenes.map((scene) => scene.logicalId));
+    for (const [variantIndex, variant] of (testCase.variants ?? []).entries()) {
+      if (!isRecord(variant) || !isRecord(variant.setup)) continue;
+      const label = `cases[${caseIndex}].variants[${variantIndex}].setup`;
+      const setup = variant.setup;
+      const steps = Array.isArray(setup.steps)
+        ? setup.steps.filter(isRecord)
+        : [];
+      const usesUnknown = steps.some(
+        (step) => step.write === SCENE_SCOPE_UNKNOWN_WRITE,
+      );
+      if (!extended) {
+        if (setup.scenes !== undefined)
+          errors.push(
+            `${label}.scenes (a negative-anchor Scene) is not allowed in fixture version ${spec?.fixtureVersion ?? "?"}`,
+          );
+        if (usesUnknown)
+          errors.push(
+            `${label}: ${SCENE_SCOPE_UNKNOWN_WRITE} is not allowed in fixture version ${spec?.fixtureVersion ?? "?"}`,
+          );
+        continue;
+      }
+      // (1) the negative-anchor Scene: reject variants only, at most one.
+      const negativeAnchors = new Map();
+      if (setup.scenes !== undefined) {
+        if (!Array.isArray(setup.scenes) || setup.scenes.length > 1) {
+          errors.push(`${label}.scenes must be an array of at most one Scene`);
+        } else if (variant.kind !== "reject") {
+          errors.push(
+            `${label}.scenes: only a reject variant may declare a negative-anchor Scene`,
+          );
+        } else {
+          for (const [sceneIndex, scene] of setup.scenes.entries()) {
+            const sceneLabel = `${label}.scenes[${sceneIndex}]`;
+            const keys = isRecord(scene) ? Object.keys(scene).sort() : [];
+            if (
+              !isRecord(scene) ||
+              keys.join(",") !== "body,logicalId,role,title" ||
+              scene.role !== NEGATIVE_ANCHOR_ROLE ||
+              !nonEmpty(scene.logicalId) ||
+              !nonEmpty(scene.title) ||
+              !nonEmpty(scene.body)
+            ) {
+              errors.push(
+                `${sceneLabel} must be { logicalId, role: "${NEGATIVE_ANCHOR_ROLE}", title, body }`,
+              );
+              continue;
+            }
+            if (caseSceneIds.has(scene.logicalId)) {
+              errors.push(
+                `${sceneLabel}.logicalId ${scene.logicalId} is a Scene of the case`,
+              );
+              continue;
+            }
+            negativeAnchors.set(scene.logicalId, scene);
+          }
+        }
+      }
+      const negativePrepare = new Map(
+        steps
+          .filter((step) => step.op === "prepare-negative")
+          .map((step) => [step.revision, step]),
+      );
+      const usedAnchors = new Set();
+      for (const [stepIndex, step] of steps.entries()) {
+        const stepLabel = `${label}.steps[${stepIndex}]`;
+        // (4) a positive Revision anchors the case's anchor.
+        if (step.op === "prepare" && negativeAnchors.has(step.anchorScene)) {
+          errors.push(
+            `${stepLabel}: a positive Revision may not anchor the negative-anchor Scene ${step.anchorScene}`,
+          );
+        }
+        if (step.op === "prepare-negative") {
+          if (negativeAnchors.has(step.anchorScene))
+            usedAnchors.add(step.anchorScene);
+          else if (
+            step.anchorScene !== undefined &&
+            step.anchorScene !== caseAnchor?.logicalId
+          ) {
+            errors.push(
+              `${stepLabel}.anchorScene ${step.anchorScene} is neither the case's anchor nor a negative-anchor Scene of the variant`,
+            );
+          }
+        }
+        if (step.op !== "invalidate-negative" && step.op !== "binding-change")
+          continue;
+        // (6) the closed list of setup writes.
+        if (!SETUP_WRITE_KINDS.includes(step.write)) {
+          errors.push(
+            `${stepLabel}.write must be one of ${SETUP_WRITE_KINDS.join(", ")}`,
+          );
+          continue;
+        }
+        if (step.write !== SCENE_SCOPE_UNKNOWN_WRITE) continue;
+        // (2) and (5): the unknown write targets the negative's own anchor.
+        if (step.op !== "invalidate-negative") {
+          errors.push(
+            `${stepLabel}: ${SCENE_SCOPE_UNKNOWN_WRITE} is an invalidate-negative write only`,
+          );
+          continue;
+        }
+        if (
+          step.scene !== undefined &&
+          (step.scene === caseAnchor?.logicalId ||
+            step.scene === caseQuery?.logicalId)
+        ) {
+          errors.push(
+            `${stepLabel}: ${SCENE_SCOPE_UNKNOWN_WRITE} may not target the case's ${step.scene === caseAnchor?.logicalId ? "anchor" : "query"} Scene (the positive Revisions would fail A3)`,
+          );
+          continue;
+        }
+        if (!negativeAnchors.has(step.scene)) {
+          errors.push(
+            `${stepLabel}.scene must name the variant's negative-anchor Scene`,
+          );
+        } else if (
+          negativePrepare.get(step.revision)?.anchorScene !== step.scene
+        ) {
+          errors.push(
+            `${stepLabel}.scene must be the anchorScene of the prepare-negative step of ${step.revision}`,
+          );
+        }
+        if (!isTrimmedNonEmpty(step.unresolvedReason)) {
+          errors.push(
+            `${stepLabel}.unresolvedReason must be a trimmed non-empty string`,
+          );
+        }
+      }
+      // (3) a declared negative-anchor Scene is the negative's anchor.
+      for (const logicalId of negativeAnchors.keys()) {
+        if (!usedAnchors.has(logicalId)) {
+          errors.push(
+            `${label}.scenes: ${logicalId} is not the anchorScene of the variant's prepare-negative step`,
+          );
+        }
+      }
+    }
+  }
 }
 
 // ------------------------------------------------- replaced-version materials
