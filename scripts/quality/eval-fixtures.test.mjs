@@ -208,6 +208,11 @@ test("NIR-1 final-request fixture is part of the fixture gate and reports not-pl
     report.scope,
     /no Native packer, renderer, D-final or model result/,
   );
+  // Version 1 is the superseded HOLD record; the state is the evidence version's.
+  const v1 = report.versions.find((entry) => entry.fixtureVersion === 1);
+  assert.equal(v1.supersededBy, 2);
+  assert.equal(v1.state, "pending-review");
+  assert.equal(report.fixtureVersion, 2);
   if (report.state === "not-placed") {
     assert.deepEqual(report.cases, []);
     assert.equal(report.freeze.status, "not-placed");

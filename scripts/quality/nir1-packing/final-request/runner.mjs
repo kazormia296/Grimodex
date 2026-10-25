@@ -12,6 +12,11 @@
 // it. The only child processes are the bounded, synchronous `git` calls of
 // `verifyFrozenSnapshot` and of the candidate lookup.
 //
+// The runner scores the evidence fixture version only (EVIDENCE_FIXTURE_VERSION
+// in contract.mjs). While that version's fixture or freeze record is not placed
+// the run is a HOLD; a superseded version (version 1, observed before its
+// freeze) is never scored.
+//
 // Order (draft: 作者の分離と freeze の順序): the freeze gate first, scoring
 // second. A receipt is scored only if the freeze record is `frozen`, binds the
 // bytes at the candidate commit, and the candidate is a clean checkout. A run
@@ -28,8 +33,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  FIXTURE_PATH,
-  FREEZE_PATH,
+  EVIDENCE_FIXTURE_VERSION,
+  fixtureVersionSpec,
   scorerDigest,
   verifyFrozenSnapshot,
 } from "./contract.mjs";
@@ -66,11 +71,29 @@ function git(repoRoot, args) {
   }).trim();
 }
 
+async function readIfPresent(file) {
+  try {
+    return await readFile(file);
+  } catch (error) {
+    if (error?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
 /**
  * The candidate under test: this checkout. A receipt is compared with it, not
  * with itself, so a receipt of another commit, tree, fixture or scorer is stale.
+ * `missing` lists the evidence version's files that are not placed (the run is
+ * then a HOLD).
  */
-export async function resolveCandidate({ repoRoot }) {
+export async function resolveCandidate({
+  repoRoot,
+  fixtureVersion = EVIDENCE_FIXTURE_VERSION,
+}) {
+  const spec = fixtureVersionSpec(fixtureVersion);
+  if (spec === undefined) {
+    throw new TypeError(`fixture version ${fixtureVersion} is not registered`);
+  }
   const head = git(repoRoot, ["rev-parse", "HEAD"]);
   const tree = git(repoRoot, ["rev-parse", "HEAD^{tree}"]);
   const dirty = git(repoRoot, [
@@ -80,15 +103,34 @@ export async function resolveCandidate({ repoRoot }) {
   ])
     .split("\n")
     .filter((line) => line.trim().length > 0);
-  const fixtureBytes = await readFile(path.join(repoRoot, FIXTURE_PATH));
-  const freezeBytes = await readFile(path.join(repoRoot, FREEZE_PATH));
-  const freeze = JSON.parse(freezeBytes.toString("utf8"));
+  const fixtureBytes = await readIfPresent(
+    path.join(repoRoot, spec.fixturePath),
+  );
+  const freezeBytes = await readIfPresent(path.join(repoRoot, spec.freezePath));
+  const missing = [
+    [spec.fixturePath, fixtureBytes],
+    [spec.freezePath, freezeBytes],
+  ]
+    .filter(([, bytes]) => bytes === undefined)
+    .map(([file]) => file);
+  let freeze;
+  try {
+    freeze =
+      freezeBytes === undefined
+        ? undefined
+        : JSON.parse(freezeBytes.toString("utf8"));
+  } catch {
+    // An unreadable record is refused by the freeze gate.
+  }
   return {
     head,
     tree,
     dirtyPaths: dirty,
-    fixtureSha256: sha256(fixtureBytes),
-    freezeSha256: sha256(freezeBytes),
+    fixtureVersion: spec.fixtureVersion,
+    missing,
+    fixtureSha256:
+      fixtureBytes === undefined ? undefined : sha256(fixtureBytes),
+    freezeSha256: freezeBytes === undefined ? undefined : sha256(freezeBytes),
     scorerSha256: scorerDigest(freeze?.scorer?.files ?? []),
     featureSet: [EVAL_FEATURE],
   };
@@ -111,9 +153,13 @@ export async function runFinalRequestEvaluation({
 }) {
   const resolve = deps.resolveCandidate ?? resolveCandidate;
   const verifyFrozen = deps.verifyFrozen ?? verifyFrozenSnapshot;
+  const fixtureVersion = EVIDENCE_FIXTURE_VERSION;
   const loadFixture =
     deps.loadFixture ??
-    (async (root) => readJson(path.join(root, FIXTURE_PATH)));
+    (async (root) =>
+      readJson(
+        path.join(root, fixtureVersionSpec(fixtureVersion).fixturePath),
+      ));
   const loadTemplate = deps.loadTemplate ?? loadFixedTemplate;
 
   let receipt;
@@ -145,16 +191,23 @@ export async function runFinalRequestEvaluation({
     };
   }
 
-  const candidate = await resolve({ repoRoot });
+  const candidate = await resolve({ repoRoot, fixtureVersion });
   const reasons = [];
   if ((candidate.dirtyPaths ?? []).length > 0) {
     reasons.push(
       `workspace-not-clean: ${candidate.dirtyPaths.length} path(s) differ from HEAD ${candidate.head}`,
     );
   }
+  if ((candidate.missing ?? []).length > 0) {
+    reasons.push(
+      `not-placed: fixture version ${fixtureVersion} has no ${candidate.missing.join(" and no ")}`,
+    );
+    return { status: "hold", exit: EXIT.hold, reasons };
+  }
   const frozen = verifyFrozen({
     repoRoot,
     runCommit: candidate.head,
+    fixtureVersion,
     expectedFreezeCommit: receipt?.freeze?.commit,
   });
   if (frozen.errors.length > 0) reasons.push(...frozen.errors);
@@ -163,6 +216,17 @@ export async function runFinalRequestEvaluation({
   }
 
   const fixture = await loadFixture(repoRoot);
+  // The scorer accepts any registered version; the evidence run scores only
+  // the evidence version's fixture.
+  if (fixture?.fixtureVersion !== fixtureVersion) {
+    return {
+      status: "hold",
+      exit: EXIT.hold,
+      reasons: [
+        `fixture-version-mismatch: the fixture at version ${fixtureVersion}'s path names fixtureVersion ${JSON.stringify(fixture?.fixtureVersion)}`,
+      ],
+    };
+  }
   const template = await loadTemplate(repoRoot);
   const result = scoreFinalRequestReceipt({
     fixture,
