@@ -56,14 +56,14 @@ const AUTHOR = "dph-v2-fixture-author (claude-opus-5-5, independent)";
 const DRAFT_REJECT_COLUMN = {
   "P-01": { made: [], excluded: [] },
   "P-02": {
-    made: ["scope-authority-changed", "source-stale"],
-    excluded: ["unknown-scope"],
+    made: ["scope-authority-changed", "source-stale", "unknown-scope"],
+    excluded: [],
   },
   "P-04": {
     made: [],
     excluded: ["approval-of-another-revision", "evidence-missing"],
   },
-  "P-05": { made: [], excluded: ["unknown-scope"] },
+  "P-05": { made: ["unknown-scope"], excluded: [] },
   "P-06": { made: ["source-stale", "approval-cancelled"], excluded: [] },
   "P-07": { made: [], excluded: [] },
   "P-08": {
@@ -182,7 +182,7 @@ test("every reject expectation is the reason the A2 gate gives for the invalidat
       checked += 1;
     }
   }
-  assert.equal(checked, 10);
+  assert.equal(checked, 12);
 });
 
 test("after X1-3 the Entity Scope token is the anchor Scene's projection, named per case", () => {
@@ -251,16 +251,36 @@ test("runtimeValues name exactly the token placeholders of the stages with posit
   }
 });
 
-test("one anchor and one query Scene per case; every Revision anchors to the anchor", () => {
+test("one anchor and one query Scene per case; positives anchor to it, an unknown-scope negative to its own Scene", () => {
+  let negativeAnchors = 0;
   for (const testCase of fixture.cases) {
     assert.deepEqual(
       testCase.setup.scenes.map((scene) => scene.role),
       ["anchor", "query"],
     );
     for (const variant of testCase.variants) {
+      const own = variant.setup.scenes ?? [];
+      if (variant.kind === "positive") assert.deepEqual(own, []);
+      // DR-DPH-106: a negative-anchor Scene belongs to an unknown-scope reject
+      // variant only, and is the anchor of that variant's negative only.
+      assert.equal(own.length, variant.negative === "unknown-scope" ? 1 : 0);
+      for (const scene of own) {
+        assert.equal(scene.role, "negative-anchor");
+        assert.ok(
+          !testCase.setup.scenes.some(
+            (row) => row.logicalId === scene.logicalId,
+          ),
+        );
+        negativeAnchors += 1;
+      }
       for (const step of variant.setup.steps) {
-        if (step.op.startsWith("prepare")) {
+        if (step.op === "prepare") {
           assert.equal(step.anchorScene, anchorScene(testCase).logicalId);
+        } else if (step.op === "prepare-negative") {
+          assert.equal(
+            step.anchorScene,
+            own[0]?.logicalId ?? anchorScene(testCase).logicalId,
+          );
         }
       }
       for (const session of variant.setup.chatSessions) {
@@ -272,6 +292,7 @@ test("one anchor and one query Scene per case; every Revision anchors to the anc
       );
     }
   }
+  assert.equal(negativeAnchors, 2);
 });
 
 test("every case marker occurs in the case's own Raw and in no other case's payload material", () => {
@@ -285,11 +306,17 @@ test("every case marker occurs in the case's own Raw and in no other case's payl
         other.userMessage,
         ...other.setup.scenes.flatMap((scene) => [scene.title, scene.body]),
         ...other.variants.flatMap((variant) => [
+          ...(variant.setup.scenes ?? []).flatMap((scene) => [
+            scene.title,
+            scene.body,
+          ]),
           ...[
             ...other.setup.codexEntities,
             ...(variant.setup.codexEntities ?? []),
           ].flatMap((entity) => [entity.name, entity.summary]),
-          ...variant.setup.steps.map((step) => step.summary ?? ""),
+          ...variant.setup.steps.map(
+            (step) => step.summary ?? step.unresolvedReason ?? "",
+          ),
         ]),
       ];
       for (const marker of testCase.markers) {
@@ -311,12 +338,13 @@ test("Codex names and summaries are single-line, trimmed, BMP-only and need no J
       ].flatMap((entity) => [entity.name, entity.summary]);
       texts.push(
         ...variant.setup.steps
-          .map((step) => step.summary)
+          .flatMap((step) => [step.summary, step.unresolvedReason])
           .filter((text) => typeof text === "string"),
       );
       for (const text of [
         ...texts,
         ...testCase.setup.scenes.map((scene) => scene.body),
+        ...(variant.setup.scenes ?? []).map((scene) => scene.body),
       ]) {
         assert.equal(text.trim(), text);
         assert.ok(text.length > 0);
@@ -374,6 +402,20 @@ test("reject variants and P-10 bindings use the writes the reasons are derived f
         ),
       );
       assert.equal(negativeSteps[2].write, WRITE_BY_NEGATIVE[variant.negative]);
+      if (negativeSteps[2].write === "scene-scope-unknown") {
+        // The unknown marker is written on the negative's own anchor only.
+        assert.equal(negativeSteps[2].scene, negativeSteps[0].anchorScene);
+        assert.equal(negativeSteps[2].scene, variant.setup.scenes[0].logicalId);
+        assert.notEqual(
+          negativeSteps[2].scene,
+          anchorScene(testCase).logicalId,
+        );
+        assert.notEqual(negativeSteps[2].scene, queryScene(testCase).logicalId);
+        assert.equal(
+          negativeSteps[2].unresolvedReason.trim(),
+          negativeSteps[2].unresolvedReason,
+        );
+      }
       assert.ok(
         steps.indexOf(negativeSteps[2]) < firstPositive,
         "the negative is invalidated before any positive is prepared",

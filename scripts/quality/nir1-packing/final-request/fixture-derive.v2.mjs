@@ -85,11 +85,32 @@ export const PART_ORDER = Object.freeze([
  *                               90, 230; test x13_registry_ref_addition_invalidates_every_revision),
  *                               `validate_scope_binding` (4102-4113) fails,
  *                               read as `source-revision-changed`.
+ *   scene-scope-unknown         (S0c, DR-DPH-106) the negative's own anchor
+ *                               Scene is written `compatibilityMarker: unknown`
+ *                               with an unresolved query identity by
+ *                               `narrative_scene_scope_update`: the writer
+ *                               refuses only a return to legacy-absent
+ *                               (scene_scope.rs 1283-1289), sets
+ *                               `version = base + 1` (1312-1315), and core
+ *                               `validate_binding` accepts unknown with the
+ *                               three axes unresolved (narrative_scene_scope.rs
+ *                               165-172); `read_scope_extension` keeps it as a
+ *                               validated binding (scene_scope.rs 832-863). The
+ *                               anchor's projection carries the marker, the
+ *                               query identity and `scopeGeneration`
+ *                               (scene_scope_projection.rs 82-94, 225-236), so
+ *                               its token moves; `validate_scope_binding`
+ *                               answers NIR1_SCOPE_AUTHORITY_STALE
+ *                               (nir1_entity_relation.rs 4107-4113) and the
+ *                               reader `source-revision-changed` (2642-2646),
+ *                               before A3 (`evaluate_disclosure` runs A3 only
+ *                               on an available A2 read, 2785-2803).
  */
 export const REASON_BY_WRITE = Object.freeze({
   "decision-cancel": "revision-not-human-approved",
   "codex-update": "source-revision-changed",
   "scene-scope-registry-update": "source-revision-changed",
+  "scene-scope-unknown": "source-revision-changed",
 });
 
 /** The write a reject variant's negative (or a P-10 binding) is made with. */
@@ -97,6 +118,7 @@ export const WRITE_BY_NEGATIVE = Object.freeze({
   "approval-cancelled": "decision-cancel",
   "source-stale": "codex-update",
   "scope-authority-changed": "scene-scope-registry-update",
+  "unknown-scope": "scene-scope-unknown",
 });
 export const WRITE_BY_BINDING = Object.freeze({
   decision: "decision-cancel",
@@ -251,9 +273,17 @@ export function preparedInStage(variant, stage) {
   );
 }
 
-/** Negatives of the case's reject variants that are their own Revision (not an earlier stage's). */
+/**
+ * Negatives of the case's reject variants that are their own Revision (not an
+ * earlier stage's) and are prepared on the case's anchor Scene, as the
+ * positives are. A negative on its own negative-anchor Scene (unknown-scope,
+ * DR-DPH-106) is left out of the positive's forbidden list: its Scene and its
+ * Entity exist only in that reject variant's workspace, and the positive
+ * expectations the version-2 review approved stay as they were (DR-DPH-108).
+ */
 export function ownNegatives(testCase) {
   const negatives = [];
+  const caseAnchor = anchorScene(testCase).logicalId;
   for (const variant of testCase.variants) {
     if (variant.kind !== "reject") continue;
     const prepare = variant.setup.steps.find(
@@ -261,7 +291,7 @@ export function ownNegatives(testCase) {
         step.op === "prepare-negative" &&
         step.revision === variant.ineligibleLogicalId,
     );
-    if (!prepare) continue;
+    if (!prepare || prepare.anchorScene !== caseAnchor) continue;
     const entity = (variant.setup.codexEntities ?? []).find(
       (row) => row.logicalId === prepare.entity,
     );

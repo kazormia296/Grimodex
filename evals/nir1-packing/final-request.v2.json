@@ -29,11 +29,6 @@
   ],
   "excludedNegatives": [
     {
-      "caseId": "P-02",
-      "negative": "unknown-scope",
-      "reason": "No listed product writer can create it: narrative_scene_scope_update validates the binding against the registry (grimodex-core narrative_scene_scope.rs validate_binding passes the registry to validate_query_identity and validate_material_constraint), so a Scene Scope naming an unregistered reference is refused, and prepare needs the anchor's projection, which needs a validated binding (scene_scope_projection.rs resolve_with_authority: NEX_SOURCE_MISSING without one). Moves to DD-1's mixed variants."
-    },
-    {
       "caseId": "P-04",
       "negative": "approval-of-another-revision",
       "reason": "No listed product writer can create it: narrative_extraction_append_human_decision binds a Decision to the proposal's current Revision, and the A2 reader accepts only a latest Decision whose revision_id is the Revision read (nir1_entity_relation.rs read_typed_revision_core_with_scope_authority, human_approved). An approval that belongs to another Revision is not an expressible state. Moves to DD-1's mixed variants."
@@ -42,11 +37,6 @@
       "caseId": "P-04",
       "negative": "evidence-missing",
       "reason": "No listed product writer can create it: nir1_entity_relation_revision_prepare builds every Entity with exactly one Evidence from the live Codex row (build_live_typed_bundle: the summary, or the name when the summary is blank), so a typed Revision without Evidence cannot be prepared. Moves to DD-1's mixed variants (and the output check that no partial group is rendered)."
-    },
-    {
-      "caseId": "P-05",
-      "negative": "unknown-scope",
-      "reason": "Same as P-02 unknown-scope: the Scene Scope writers refuse references the registry does not hold, and prepare needs a validated anchor binding. Moves to DD-1's mixed variants."
     },
     {
       "caseId": "P-08",
@@ -74,9 +64,9 @@
     "audience": "DP-H harness only. The scorer and the contract validator do not read `setup`, `setupContract` or `steps`; they are bound by the freeze record because they are part of the fixture bytes.",
     "rules": [
       "Run each variant in its own workspace (workspace namespace = isolation.workspaceId + '/' + variantId).",
-      "Each case has one anchor Scene and one query Scene; the anchor is listed first so it precedes the query in reading order (A3 needs reading_rank(anchor) < reading_rank(query)). Every Revision of a request anchors the same Scene, so a stage has one anchor projection token.",
+      "Each case has one anchor Scene and one query Scene; the anchor is listed first so it precedes the query in reading order (A3 needs reading_rank(anchor) < reading_rank(query)). Every positive Revision anchors the case's anchor Scene, so a stage has one anchor projection token. An unknown-scope reject variant also declares its own negative-anchor Scene in `setup.scenes` (DR-DPH-106); only its negative is prepared there, and that Scene exists only in that variant's workspace.",
       "Order inside a stage: case.setup writes (project, tree, Scope, Codex) and the variant's own codexEntities first; then the steps in the listed order. A stage-2 `binding-change` is the only write after the first prepare of stage 1; it precedes the first prepare of stage 2.",
-      "Every prepare/approve/write goes through the product writer (receipt.mjs EVENT_KIND_WRITERS): prepare = nir1_entity_relation_revision_prepare, approve and decision-cancel = narrative_extraction_append_human_decision, codex-update = codex_update, scene-scope-registry-update = narrative_scene_scope_registry_update. No direct DML.",
+      "Every prepare/approve/write goes through the product writer (receipt.mjs EVENT_KIND_WRITERS): prepare = nir1_entity_relation_revision_prepare, approve and decision-cancel = narrative_extraction_append_human_decision, codex-update = codex_update, scene-scope-registry-update = narrative_scene_scope_registry_update, scene-scope-unknown = narrative_scene_scope_update with compatibilityMarker unknown and the three query-identity axes unresolved (reason = unresolvedReason) on the negative's own negative-anchor Scene only. No direct DML.",
       "A reject variant's own negative is prepared, approved, then invalidated before any positive Revision is prepared (prepare-negative < approve-negative < invalidate-negative < first prepare).",
       "Chat sessions are created with the renderer's createSession statement (node_id = the query Scene) before the profile is restricted; one per stage.",
       "The user message of the case is the captured human message of every stage.",
@@ -774,6 +764,117 @@
               }
             }
           ]
+        },
+        {
+          "variantId": "dh2-p02-reject-unknown-scope",
+          "kind": "reject",
+          "baseVariantId": "dh2-p02-positive",
+          "negative": "unknown-scope",
+          "ineligibleLogicalId": "dh2-p02-revision-negative-lookout",
+          "setup": {
+            "scenes": [
+              {
+                "logicalId": "dh2-p02-scene-negative-anchor",
+                "role": "negative-anchor",
+                "title": "其の三の二 干潟の見張り",
+                "body": "干潟の見張り小屋では、夜通し焚き火が絶やされなかった。"
+              }
+            ],
+            "codexEntities": [
+              {
+                "logicalId": "dh2-p02-entity-negative-lookout",
+                "type": "location",
+                "name": "干潟の見張り小屋",
+                "summary": "干潟の端に建つ葦葺きの小屋。満ち潮の夜は番人が二人詰める。"
+              }
+            ],
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare-negative",
+                "revision": "dh2-p02-revision-negative-lookout",
+                "entity": "dh2-p02-entity-negative-lookout",
+                "anchorScene": "dh2-p02-scene-negative-anchor",
+                "proposalKey": "nir1:dph2:P-02:dh2-p02-revision-negative-lookout:DH2-CANARY-META-c47a92e6"
+              },
+              {
+                "stage": 1,
+                "op": "approve-negative",
+                "revision": "dh2-p02-revision-negative-lookout",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "DH2-CANARY-NOTE-5b8e31d0"
+                },
+                "createdBy": "dh2-human-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "invalidate-negative",
+                "revision": "dh2-p02-revision-negative-lookout",
+                "write": "scene-scope-unknown",
+                "scene": "dh2-p02-scene-negative-anchor",
+                "unresolvedReason": "見張り小屋の場面の時系列は未確定"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "dh2-p02-revision-flat",
+                "entity": "dh2-p02-entity-flat",
+                "anchorScene": "dh2-p02-scene-anchor",
+                "proposalKey": "nir1:dph2:P-02:dh2-p02-revision-flat:DH2-CANARY-META-c47a92e6"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "dh2-p02-revision-flat",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "DH2-CANARY-NOTE-5b8e31d0"
+                },
+                "createdBy": "dh2-human-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "dh2-p02-revision-bell",
+                "entity": "dh2-p02-entity-bell",
+                "anchorScene": "dh2-p02-scene-anchor",
+                "proposalKey": "nir1:dph2:P-02:dh2-p02-revision-bell:DH2-CANARY-META-c47a92e6"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "dh2-p02-revision-bell",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "DH2-CANARY-NOTE-5b8e31d0"
+                },
+                "createdBy": "dh2-human-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "dh2-p02-scene-query",
+                "title": "DH2 P-02 stage 1"
+              }
+            ],
+            "runtimeValues": []
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "dh2-p02-revision-flat",
+                "dh2-p02-revision-bell",
+                "dh2-p02-revision-negative-lookout"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "source-revision-changed"
+              }
+            }
+          ]
         }
       ]
     },
@@ -1215,6 +1316,117 @@
                   "dh2-canary-decision-note",
                   "dh2-canary-internal-metadata"
                 ]
+              }
+            }
+          ]
+        },
+        {
+          "variantId": "dh2-p05-reject-unknown-scope",
+          "kind": "reject",
+          "baseVariantId": "dh2-p05-positive",
+          "negative": "unknown-scope",
+          "ineligibleLogicalId": "dh2-p05-revision-negative-storehouse",
+          "setup": {
+            "scenes": [
+              {
+                "logicalId": "dh2-p05-scene-negative-anchor",
+                "role": "negative-anchor",
+                "title": "其の七の二 冬越しの蔵",
+                "body": "冬のあいだ、巣箱は土蔵の奥で藁に包まれて眠っていた。"
+              }
+            ],
+            "codexEntities": [
+              {
+                "logicalId": "dh2-p05-entity-negative-storehouse",
+                "type": "location",
+                "name": "冬越しの土蔵",
+                "summary": "巣箱を冬越しさせる土蔵。中は藁を敷き詰め、昼でも薄暗い。"
+              }
+            ],
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare-negative",
+                "revision": "dh2-p05-revision-negative-storehouse",
+                "entity": "dh2-p05-entity-negative-storehouse",
+                "anchorScene": "dh2-p05-scene-negative-anchor",
+                "proposalKey": "nir1:dph2:P-05:dh2-p05-revision-negative-storehouse:DH2-CANARY-META-c47a92e6"
+              },
+              {
+                "stage": 1,
+                "op": "approve-negative",
+                "revision": "dh2-p05-revision-negative-storehouse",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "DH2-CANARY-NOTE-5b8e31d0"
+                },
+                "createdBy": "dh2-human-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "invalidate-negative",
+                "revision": "dh2-p05-revision-negative-storehouse",
+                "write": "scene-scope-unknown",
+                "scene": "dh2-p05-scene-negative-anchor",
+                "unresolvedReason": "冬越しの土蔵の場面の時系列は未確定"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "dh2-p05-revision-slope",
+                "entity": "dh2-p05-entity-slope",
+                "anchorScene": "dh2-p05-scene-anchor",
+                "proposalKey": "nir1:dph2:P-05:dh2-p05-revision-slope:DH2-CANARY-META-c47a92e6"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "dh2-p05-revision-slope",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "DH2-CANARY-NOTE-5b8e31d0"
+                },
+                "createdBy": "dh2-human-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "dh2-p05-revision-veil",
+                "entity": "dh2-p05-entity-veil",
+                "anchorScene": "dh2-p05-scene-anchor",
+                "proposalKey": "nir1:dph2:P-05:dh2-p05-revision-veil:DH2-CANARY-META-c47a92e6"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "dh2-p05-revision-veil",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "DH2-CANARY-NOTE-5b8e31d0"
+                },
+                "createdBy": "dh2-human-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "dh2-p05-scene-query",
+                "title": "DH2 P-05 stage 1"
+              }
+            ],
+            "runtimeValues": []
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "dh2-p05-revision-slope",
+                "dh2-p05-revision-veil",
+                "dh2-p05-revision-negative-storehouse"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "source-revision-changed"
               }
             }
           ]

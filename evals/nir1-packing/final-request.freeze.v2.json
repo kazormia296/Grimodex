@@ -10,7 +10,7 @@
   "note": "Pending the independent expectation review (S2). The fixture author derived every expectation from the product's source after X1-3 (base 352474d4) without running Native, and wrote this record as pending-review: the S3 integrator rewrites it with status frozen, reviewVerdict approve, the review record's new sha256, the reviewer's name and a new frozenAt after an approving review, and commits it before any Native run of this fixture's materials. `frozenAt` here is the time the pending record was written.",
   "fixture": {
     "path": "evals/nir1-packing/final-request.v2.json",
-    "sha256": "0b5d2912364ff738da599db6ab44da751f2b833cab495939bd183264356b9970"
+    "sha256": "cc52f8e6b5a9b894371334617e237cf6d4abab2a01be66c41c95b737217016cc"
   },
   "reviewRecord": {
     "path": "evals/nir1-packing/final-request.expectation-review.v2.json",
@@ -18,7 +18,7 @@
   },
   "readme": {
     "path": "evals/nir1-packing/final-request.v2.README.md",
-    "sha256": "280fed21c1c87a80b3b3710f8a3d32689b00b845d57162cf3fa7b03014a82c51"
+    "sha256": "f1a1b69c6933467f9fd964332bc651db9a069384247e7d4d7942bf8ee65fc99d"
   },
   "parityVector": {
     "path": "evals/nir1-packing/final-request-baseline-parity.v1.json",
@@ -32,7 +32,7 @@
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/contract.mjs",
-        "sha256": "8946c5f13879d1d8154e3871a7937d8e92280b9f38eb64288bf7872677e33967"
+        "sha256": "bbf05a9bb4e6cdb885cd1b838180d58e64c7604c37ceb560614b6968924b9067"
       },
       {
         "path": "scripts/quality/nir1-packing/final-request/receipt.mjs",
