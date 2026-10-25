@@ -254,6 +254,7 @@ requirements:
       - src-tauri/crates/grimodex-db/src/nir1_generation/project_ai_policy.rs
       - electron/native/grimodex-node/src/nir1_local_send_policy.rs
       - electron/native/grimodex-node/src/nir1_local_transport.rs
+      - electron/native/grimodex-node/src/nir1_local_entry.rs
       - agent-tool-manifest.json
       - policies/narrative/narrative-run-kind-policy.json
       - scripts/quality/validate-run-kind-policy.mjs
@@ -501,6 +502,7 @@ requirements:
       - src-tauri/crates/grimodex-core/src/nir1_local_send_policy/decision_vectors.json
       - electron/native/grimodex-node/src/nir1_local_send_policy_tests.rs
       - electron/native/grimodex-node/src/nir1_local_transport_tests.rs
+      - electron/native/grimodex-node/src/nir1_local_entry_tests.rs
       - src/features/chat/agent/toolExecutors.test.ts
       - src-tauri/crates/grimodex-db/tests/narrative_incremental_freshness_runtime.rs
       - src-tauri/crates/grimodex-db/tests/narrative_change_feed.rs

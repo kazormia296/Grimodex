@@ -31,6 +31,7 @@ mod nir1_graph_activation_tests;
 mod nir1_graph_dfinal;
 mod nir1_graph_product;
 mod nir1_local_attempt;
+mod nir1_local_entry;
 mod nir1_local_send_policy;
 mod nir1_local_transport;
 mod nir1_prepared_request;
@@ -15244,6 +15245,129 @@ impl Backend {
             Ok(serde_json::to_string(&receipt).map_err(anyhow::Error::from)?)
         })
         .await
+    }
+
+    // ─────── NIR-1 local generation（DD-1a。K5/3 の「IPC の command」の 6 つ。
+    // PUB-L まで Native gate〔`PrePublicationEntry::LocalGeneration`〕で閉じる。
+    // caller identity は Main が注入する。応答は invoke への応答だけで、event で
+    // 配らない。IPC の登録〔`NAPI_COMMANDS`〕と Main の gate は DD-1b）───────
+
+    /// 生成の開始。`intent` は Main が検証した typed な intent（purpose、
+    /// conversationId、sceneId）、`main_verdict` は Main の key の判定
+    /// （endpointId、keyVerdict）。応答は `{status:"started",handle}` か
+    /// `{status:"unavailable",reason}`（typed）だけ。
+    #[napi]
+    pub async fn nir1_local_generation_start(
+        &self,
+        intent: serde_json::Value,
+        main_verdict: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_generation_start(
+                &state,
+                intent,
+                main_verdict,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// 出力の取得。起動した caller（sender と epoch を含む）にだけ、上限の内の
+    /// text と thinking の差分と状態を返す。
+    #[napi]
+    pub async fn nir1_local_generation_continue(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_generation_continue(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// 取消。owner の `cancel()` と既存の capture の writer を 1 command で行う。
+    #[napi]
+    pub async fn nir1_local_generation_cancel(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_generation_cancel(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// この route の会話の作成。ID と表示名（purpose と作成時刻）だけを返す。
+    #[napi]
+    pub async fn nir1_local_conversation_create(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_conversation_create(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// この route の会話の一覧（ID と表示名だけ）。
+    #[napi]
+    pub async fn nir1_local_conversation_list(&self, caller_identity: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_conversation_list(
+                &state,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// この route の会話の読取（行の段の行だけ。上限の内）。
+    #[napi]
+    pub async fn nir1_local_conversation_read(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_conversation_read(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// Main 専用（`NAPI_COMMANDS` に載せない）。sender の destroyed／window の
+    /// close で、その sender が始めた生成の owner に `cancel()` を呼ぶ（取り下げ
+    /// でない停止なので capture は変えない）。届いた handle の数を返す。
+    #[napi]
+    pub fn main_nir1_local_generation_cancel_sender(&self, sender_id: u32) -> u32 {
+        let reached = nir1_local_entry::cancel_sender(&self.state, u64::from(sender_id));
+        u32::try_from(reached).unwrap_or(u32::MAX)
     }
 
     /// AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。

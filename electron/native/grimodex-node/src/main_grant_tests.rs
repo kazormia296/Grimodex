@@ -633,6 +633,10 @@ fn the_gate_is_closed_by_default_and_only_opens() {
         PrePublicationEntry::parse("profile-activation"),
         Some(PrePublicationEntry::ProfileActivation)
     );
+    assert_eq!(
+        PrePublicationEntry::parse("nir1-local-generation"),
+        Some(PrePublicationEntry::LocalGeneration)
+    );
     for unknown in [
         "",
         "all",
@@ -640,6 +644,9 @@ fn the_gate_is_closed_by_default_and_only_opens() {
         "local-send",
         "Profile-Activation",
         "profile_activation",
+        "Nir1-Local-Generation",
+        "nir1_local_generation",
+        "local-generation",
     ] {
         assert_eq!(PrePublicationEntry::parse(unknown), None, "{unknown:?}");
     }

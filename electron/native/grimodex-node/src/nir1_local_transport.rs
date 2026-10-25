@@ -225,6 +225,8 @@ struct RunInner {
     thinking: String,
     state: Nir1LocalRunState,
     outcome: Option<Arc<Nir1LocalRunOutcome>>,
+    /// When the final state was set (DD-1a's handle retention counts from it).
+    finished_at: Option<Instant>,
 }
 
 struct RunShared {
@@ -241,6 +243,7 @@ impl RunShared {
                 thinking: String::new(),
                 state: Nir1LocalRunState::Running,
                 outcome: None,
+                finished_at: None,
             }),
             changed: Condvar::new(),
             cancel,
@@ -273,6 +276,7 @@ impl RunShared {
             return;
         }
         inner.state = state;
+        inner.finished_at = Some(Instant::now());
         inner.outcome = Some(Arc::new(Nir1LocalRunOutcome {
             state,
             end,
@@ -293,6 +297,7 @@ impl Drop for RunGuard {
         let mut inner = self.0.lock();
         if inner.outcome.is_none() {
             inner.state = Nir1LocalRunState::Failed;
+            inner.finished_at = Some(Instant::now());
             inner.outcome = Some(Arc::new(Nir1LocalRunOutcome {
                 state: Nir1LocalRunState::Failed,
                 end: Nir1LocalRunEnd::FinishFailed {
@@ -340,6 +345,11 @@ impl Nir1LocalRun {
 
     pub(crate) fn state(&self) -> Nir1LocalRunState {
         self.shared.lock().state
+    }
+
+    /// When the run became final (`None` while it is running).
+    pub(crate) fn finished_at(&self) -> Option<Instant> {
+        self.shared.lock().finished_at
     }
 
     /// The final outcome once the run is over.

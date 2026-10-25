@@ -18,9 +18,9 @@
 //! Any difference found after `create` and before the claim abandons the
 //! attempt (a transport-less terminal, nothing sent). The coordinator is a
 //! `pub(crate)` Native-internal function with no IPC, preload or N-API entry
-//! and no transport; the caller is a test or, later, DD-1. It reads no AI use
-//! policy: DD-1 decides where that check goes (`Nir1LocalAttempt::capture`
-//! and `run` are separate so a caller can step in between).
+//! and no transport; the caller is a test or the DD-1a entry
+//! (`nir1_local_entry`). It reads no AI use policy: the DD-1a entry checks it
+//! between `Nir1LocalAttempt::capture` and `run` (DR-DD1A-5).
 
 #![cfg_attr(not(test), allow(dead_code))]
 
@@ -44,7 +44,8 @@ use crate::nir1_generation_owner::{
 #[cfg(test)]
 use crate::nir1_prepared_request::prepare_selected_local_chat_request_with_graph;
 use crate::nir1_prepared_request::{
-    prepare_selected_local_chat_request, reobserve_prepared_for_dispatch, LocalGenerationIntent,
+    parse_loopback_chat_completions_endpoint, prepare_selected_local_chat_request,
+    reobserve_prepared_for_dispatch, LocalGenerationIntent, LoopbackChatEndpoint,
     NativeAcceptedChatSubmission, PrivateDTransportHandoff, UnsupportedInputIntent,
 };
 use crate::profile_egress::CallerIdentity;
@@ -135,8 +136,9 @@ pub(crate) enum Nir1LocalAttemptProbe {
     BeforeClaim,
 }
 
+/// `Send`, so an attempt with a probe can run on the DD-1a starter thread.
 #[cfg(test)]
-type Probe = Box<dyn FnMut(Nir1LocalAttemptProbe)>;
+type Probe = Box<dyn FnMut(Nir1LocalAttemptProbe) + Send>;
 
 /// One accepted submission with its owner captured and nothing prepared yet.
 /// A caller (DD-1) may check the AI use policy between `capture` and `run`;
@@ -197,7 +199,10 @@ impl Nir1LocalAttempt {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_probe(mut self, probe: impl FnMut(Nir1LocalAttemptProbe) + 'static) -> Self {
+    pub(crate) fn with_probe(
+        mut self,
+        probe: impl FnMut(Nir1LocalAttemptProbe) + Send + 'static,
+    ) -> Self {
         self.probe = Some(Box::new(probe));
         self
     }
@@ -214,6 +219,19 @@ impl Nir1LocalAttempt {
     /// Prepare, assemble, create, re-observe and claim. Every call holds one
     /// bounded operation at a time; no lease or lock spans two of them.
     pub(crate) fn run(self) -> Result<Nir1LocalAttemptOutcome, Nir1LocalAttemptRefusal> {
+        self.run_for_dispatch().map(|(outcome, _)| outcome)
+    }
+
+    /// [`Self::run`], also returning the transport target of the route the
+    /// request was prepared from (DD-1a). The target comes from the same
+    /// route value as the attempt's endpoint identity, so a transport given
+    /// it sends to the endpoint the attempt bound; `None` when the route's
+    /// URL no longer parses as a loopback endpoint (the caller then settles
+    /// the transport without sending).
+    pub(crate) fn run_for_dispatch(
+        self,
+    ) -> Result<(Nir1LocalAttemptOutcome, Option<LoopbackChatEndpoint>), Nir1LocalAttemptRefusal>
+    {
         let Self {
             state,
             caller,
@@ -263,6 +281,7 @@ impl Nir1LocalAttempt {
         let (request, scene, expected_scope, witness) = selected.into_parts();
         let handoff = request.into_d_transport_handoff();
         let route = handoff.route().clone();
+        let target = parse_loopback_chat_completions_endpoint(&route.endpoint_base_url).ok();
         let route_revocation_generation = handoff.request_metadata().route_revocation_generation;
         let final_request =
             build_final_dispatch_request(&submission, &handoff, scene, expected_scope)
@@ -291,10 +310,13 @@ impl Nir1LocalAttempt {
             prepared.attempt_id(),
         ) {
             let settlement = prepared.abandon();
-            return Ok(Nir1LocalAttemptOutcome::Abandoned {
-                reason: error.to_string(),
-                settlement,
-            });
+            return Ok((
+                Nir1LocalAttemptOutcome::Abandoned {
+                    reason: error.to_string(),
+                    settlement,
+                },
+                target,
+            ));
         }
         // The witness holds prompt text; it ends here, before the claim.
         drop(witness);
@@ -302,12 +324,13 @@ impl Nir1LocalAttempt {
         if let Some(probe) = probe.as_mut() {
             probe(Nir1LocalAttemptProbe::BeforeClaim);
         }
-        Ok(match prepared.claim_for_transport() {
+        let outcome = match prepared.claim_for_transport() {
             Nir1TransportDecision::Start(transport) => Nir1LocalAttemptOutcome::Start(transport),
             Nir1TransportDecision::NotStarted(settlement) => {
                 Nir1LocalAttemptOutcome::NotStarted(settlement)
             }
-        })
+        };
+        Ok((outcome, target))
     }
 }
 
