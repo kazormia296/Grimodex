@@ -31,6 +31,17 @@ export const DOH_POSITIVE_REQUIRE = Object.freeze(["stun", "turn-udp", "turn-tcp
 /** bind できない canary の宛先を使う行（行 id の末尾の form） */
 export const CANARY_ROW_FORMS = Object.freeze({ "r-127.0.0.2": /\.lo4b$/, "s-[::1]": /\.lo6$/, "t-lan": /\.lan$/ });
 export const CONFIGS = Object.freeze(["baseline", "toolcheck", "packaged"]);
+/** page の shim（run.mjs の pageShimIds）が実行を変える行（DR-CP2B-P2-5）。判定は変えず、出力に行単位で明示する */
+export const SHIMMED_ROWS = Object.freeze({ "form-submit": Object.freeze(["dns.form-submit"]) });
+
+/** shim の影響を受けた行と、その判定（開示の正確さのため。合否の数は変えない） */
+export function shimmedRows(packaged, rj) {
+  const ids = (packaged?.pageShimIds ?? []).flatMap((shim) => SHIMMED_ROWS[shim] ?? []);
+  return ids.map((id) => {
+    const row = rj?.results.find((entry) => entry.id === id);
+    return { id, verdict: row?.verdict ?? "absent", kind: row?.kind ?? null };
+  });
+}
 
 const sameFlags = (flags) => JSON.stringify(Object.keys(MATRIX_FLAGS).sort().map((key) => [key, flags?.[key] === true]))
   === JSON.stringify(Object.keys(MATRIX_FLAGS).sort().map((key) => [key, true]))
@@ -161,6 +172,7 @@ export function judgeOs({ baseline, toolcheck, packaged, packageCheck }) {
     recorded: {
       unboundCanaries: rj ? unboundCanaryRows(packaged, rj) : [],
       pageShims: packaged?.pageShims ?? [],
+      shimmedRows: rj ? shimmedRows(packaged, rj) : [],
       nc1: {
         networkPhaseLowerBoundMs: packaged?.netLog?.nc1NetworkPhase?.lowerBoundMs ?? null,
         launchToWindowMs: packaged?.cdp?.launchToTargetMs ?? null,
@@ -193,6 +205,9 @@ export function formatVerdict(os, verdict) {
     lines.push(`  記録: bind できない canary ${canary.label}（${canary.error}）の宛先の行: ${canary.rows.map((row) => `${row.id}=${row.region ?? row.verdict}`).join(", ")}`);
   }
   for (const shim of verdict.recorded.pageShims) lines.push(`  記録: page の shim ${shim}`);
+  for (const row of verdict.recorded.shimmedRows ?? []) {
+    lines.push(`  記録: shim 済みの行 ${row.id}（${row.kind ?? "?"}、判定 ${row.verdict}。packaged では送信しないので実質は実行されていない。合格の数には含む）`);
+  }
   lines.push(`記録（合否にしない）: NC-1 の network の段の下限 ${verdict.recorded.nc1.networkPhaseLowerBoundMs} ms、起動から窓まで ${verdict.recorded.nc1.launchToWindowMs} ms（期限 5000 ms）、辞書の要求 ${verdict.recorded.dictionaryRequests.length} 件、H9 ${JSON.stringify(verdict.recorded.h9)}`);
   return lines.join("\n");
 }

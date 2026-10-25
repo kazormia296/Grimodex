@@ -1,8 +1,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
+import { NL_ALLOWED_NAMES, NL_DOH_ONLY, NL_NETLOG_ONLY } from "../webrtc-block-probe-nc1.mjs";
 import { judgeRecord } from "../webrtc-block-probe-verdict.mjs";
-import { MATRIX_FLAGS, formatVerdict, judgeMatrix, judgeOs } from "./verdict.mjs";
+import { MATRIX_FLAGS, SHIMMED_ROWS, formatVerdict, judgeMatrix, judgeOs } from "./verdict.mjs";
 
 // 合成の記録（K3/3 の RJ・NL・`.local` の規則と、DR-CP2B-P2-4 の (a)〜(g) だけを試す。実機の記録ではない）。
 // 合格する 1 組を作り、各変異で合格しなくなることを確かめる（判定が緩むと落ちる）。
@@ -231,4 +232,49 @@ test("bind できない canary の宛先の行は区分つきで列挙される�
   assert.equal(verdict.status, "pass");
   assert.deepEqual(verdict.recorded.unboundCanaries[0].rows, [{ id: "main.turn-tcp.lo4b", verdict: "pass", region: "canaryless" }]);
   assert.match(formatVerdict("mac", verdict), /bind できない canary r-127\.0\.0\.2/);
+});
+
+test("canary を置けない宛先（127.0.0.2・[::1]・LAN）の TCP の行は、LS-1 への接続が 0 なら不合格（区分で逃がさない）", () => {
+  for (const form of ["lo4b", "lo6", "lan"]) {
+    const set = passingSet();
+    const id = `main.turns-tcp.${form}`; // main.turn-tcp.lo6 は合成の 1 組で不活性の行として使っている
+    // 対照: canary に届かないが ICE が進行（canary を置けない宛先の行）
+    set.baseline.rows.push({ id, outcome: "gathering:gathering", leaked: 0, proxied: 0 });
+    set.baseline.rendererRowIds.push(id);
+    set.packaged.rows.push({ id, outcome: "gathering:gathering", leaked: 0, proxied: 1 });
+    set.packaged.rendererRowIds.push(id);
+    assert.equal(statusOf(set), "pass", form);
+    set.packaged.rows.find((row) => row.id === id).proxied = 0;
+    const verdict = judgeOs(set);
+    assert.equal(verdict.status, "fail", form);
+    assert.ok(verdict.failures.some((failure) => failure.includes(id)), form);
+  }
+});
+
+test("NL の許容集合 A を固定する（G-pub の判定が自前で守る。足しても減らしても赤）", () => {
+  assert.deepEqual([...NL_ALLOWED_NAMES], [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+    "localhost",
+    "grimodex-rule-sentinel.invalid",
+    "127.0.0.1",
+  ]);
+  assert.equal(NL_NETLOG_ONLY, "~notfound");
+  assert.equal(NL_DOH_ONLY, "www.gstatic.com");
+  assert.deepEqual(MATRIX_FLAGS, { dns: true, localhostRows: true, rs1: true, local: true });
+});
+
+test("form の shim の影響を受けた行は、判定を変えずに出力で行単位に明示する", () => {
+  const set = passingSet();
+  for (const record of [set.baseline, set.packaged]) {
+    record.rows.push({ id: "dns.form-submit", outcome: "form", leaked: 0, proxied: 0 });
+    record.rendererRowIds.push("dns.form-submit");
+  }
+  set.packaged.pageShimIds = ["form-submit"];
+  const verdict = judgeOs(set);
+  assert.equal(verdict.status, "pass");
+  assert.deepEqual(SHIMMED_ROWS["form-submit"], ["dns.form-submit"]);
+  assert.deepEqual(verdict.recorded.shimmedRows, [{ id: "dns.form-submit", verdict: "pass", kind: "hint" }]);
+  assert.match(formatVerdict("linux", verdict), /shim 済みの行 dns\.form-submit（hint、判定 pass。packaged では送信しない/);
 });

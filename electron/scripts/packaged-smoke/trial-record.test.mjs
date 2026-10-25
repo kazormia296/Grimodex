@@ -63,6 +63,12 @@ test("実データの変異: packaged の 1 行の canary 到達、TCP の行の
   dropped.packaged.rows = dropped.packaged.rows.filter((row) => row.id !== "main.turns.name");
   dropped.packaged.rendererRowIds = dropped.packaged.rendererRowIds.filter((id) => id !== "main.turns.name");
   assert.equal(judgeOs(dropped).status, "fail");
+  // canary を置けない宛先（LAN）の TCP の行の LS-1 への接続 0 も不合格（security レビュー A）
+  const lan = clone(records);
+  const lanRow = lan.packaged.rows.find((row) => row.id === "main.turn-tcp.lan");
+  assert.ok(lanRow && lanRow.proxied >= 1);
+  lanRow.proxied = 0;
+  assert.equal(judgeOs(lan).status, "fail");
   const name = clone(records);
   name.packaged.netLog.hostResolver.requestHosts["attacker.example"] = 1;
   assert.equal(judgeOs(name).status, "fail");
