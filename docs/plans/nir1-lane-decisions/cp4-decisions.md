@@ -29,3 +29,53 @@ CP-4（Graph arm を実 Electron で初めて観測する計測 lane）の判断
 | DR-CP4-S1B-7 | 2026-10-25 | 同 | remote にあることは、`git for-each-ref refs/remotes --contains <commit>` が 1 件以上返すことで確かめる（network に出ない。`standard-build.mjs` が `refs/remotes/origin/master` を使うのと同じ作法）。`git ls-remote` は外向きの操作なので S1b-pure では呼ばず、記録 branch の `ls-remote` は S4 で integrator が取る | 新しい外向きの通信を足さないこと（T-3） | `ls-remote` で確かめる（network。S1b の範囲外） | なし | 該当なし | git の同期の子 process（retry なし、exit を待つ） | 記録済み |
 | DR-CP4-S1B-8 | 2026-10-25 | 同 | 前提条件 6 種は、variant が宣言したものだけを receipt の証跡から判定し、`resolveVariantOutcome`（`scripts/quality/nir1-graph/contract.mjs`）にそのまま渡す。証跡が欠けたら unmet（blocked）にし、満たしたとは扱わない。G-01 は前提条件を宣言しないので、B の seal に届かなければ v1 期待値未達の Hold にする（D2）。宣言が current でない、または宣言の段の前後で Index の metadata が違うときは blocked にせず `[precheck]` で止める（N-5、N-6） | 既存の validator を弱めないこと | 自前の判定を書く（P-6 に反する） | なし | 該当なし | 不要 | 記録済み |
 | DR-CP4-S1B-9 | 2026-10-25 | 同 | 計測窓（D3）の証跡は、run の前と後の標本があり、隣り合う標本の間隔が予定の 20 秒の 2 倍以下であることを求める（1 回の取りこぼしまで。これより開いた run は証跡の欠けとして組から外す）。違反は heavy の slot の使用、build の process、別の計測、同じ worktree の build が観測されたことだけで決め、負荷の数値の閾値は置かない（GDX-PRECHECK-001）。外した run は理由つきで残す（N-14） | 測定の汚れを結果を見ずに外すこと（T-5） | 間隔の検査を置かない（窓の証跡にならない） | なし | 容量・負荷の固定閾値を置かない | 不要 | 記録済み |
+
+### 実装後の追記（2026-10-25）
+
+commit：`1468affa`（この節の mutation の前の記録）、`6a1e356a`（Graph arm の guard）、`87ac90d8`（`scripts/quality/nir1-graph-eval/` と試験の登録）。DR-CP4-S1B-1〜9 は記録どおりに実装した。変えた判断は無い。
+
+#### 公開する関数（S1c と S2 が使う interface）
+
+| file | 関数 | 入力 → 出力 |
+|---|---|---|
+| `nir1-retrieval/contract.mjs` | `assertGraphArmRequestable(requested, admission)` | `"not-wired"` → `{wiring}`。`"wired"` と `{scope:"existing-queries", buildReceipt, seedPolicy}` か `{scope:"graph-case", buildReceipt, fixturePaths, observationPrep}` → 凍結した admission。それ以外は `[precheck]` |
+| 同 | `classifyGraphFixturePath(path)`、`assertProductBuildReceipt`、`assertEvalBuildReceipt`、`assertObservationPrepAdmits(facts, head)` | path → `"frozen"`／`"dev"`。受領書と事実の形を検査して throw |
+| 同 | `describeGraphArm({seedPolicy, admission})`、`summarizeGraphArm(arm, comparisons)` | 24 件の wired の arm は `not-requested`、一致なら `equal-to-hybrid`。`pass` は常に false |
+| `nir1-graph-eval/admission.mjs` | `collectObservationPrepFacts({root, commit, candidateHead, freezeRecordPath})` | local の git から `assertObservationPrepAdmits` の入力を作る |
+| 同 | `readK62FreezeHead({root, commit})`、`assertDefaultAddonIsNotEvaluation({defaultAddonSha256, evalReceipt})` | receipt の先頭の K6/2 の値。読めなければ receipt を書かずに止める |
+| `availability.mjs` | `graphCaseScheduleKeys(variantKey)`、`validateGraphCaseSchedule(samples, keys)` | AB／BA の予定と照合 |
+| 同 | `joinedWithinWindow(sample)`、`steadyStateInWindow(sample)` | 窓内の判定。遅れを混ぜた sample は throw（N-7） |
+| 同 | `summarizeSteadyState({samples, fixedGraphMode})` | (a) の pool、case ごとの値、品質 HOLD の variant、再 query の別欄 |
+| 同 | `summarizeTrace({trace:{kind, queries}, fixedGraphMode})`、`validateTraceEvents(kind, events)` | (b) の Q、U、窓外率、失効率と (i)〜(iv)、区分、主な理由。trace の密度 |
+| 同 | `decideCp4Availability({steadyState, traces})`、`evaluateDiagnosticCondition({kind, steadyState, traces, traceFile, cp4TraceFile})` | §15.4 の CP-4 の判定（`[precheck]` を出さない）。診断の rule 6（ここだけが失効率の `[precheck]` を出す） |
+| `receipt.mjs` | `validateCp4Receipt`／`assertCp4Receipt`、`receiptHeadErrors` | §7.2 の最小集合の検査 |
+| 同 | `assertDeclarationCurrent({declaration, measurementWorkspace})` | 宣言が current で Index の metadata が同じなら `{proceed:true}`、違えば `[precheck]` |
+| 同 | `assessMeasurementWindow({samples, run, ownPids})`、`selectReceiptsForAggregation(receipts)` | 計測窓の判定と、理由つきの除外 |
+| 同 | `assertElectronLaunch({env, argv})`、`formatSha256Sums`／`parseSha256Sums`／`writeSha256Sums`／`verifySha256Sums` | 起動 env の検査、`sha256sum -c` 互換の `SHA256SUMS` |
+| `outcome.mjs` | `unmetPreconditions`、`resolveCp4VariantOutcome`、`summarizeVariantQuality`、`compareExistingQueryGraphArm` | 前提条件と Hold／blocked、手順の 8 の品質、24 件の一致 |
+
+評価の受領書の schema（`nir1-graph-eval-build/1`）は guard が求める形として決めた。受領書を作る `standard-build.mjs` の評価の mode は S1b-pure の範囲外で、作る担当は integrator が決める。
+
+#### 試験の対応（TASK §6）
+
+P-1、P-2、P-4、P-5、P-6、P-9、P-10、N-1、N-3（受領書の部分）、N-4、N-5、N-6、N-7、N-8（`summarizeGraphArm` の pass が常に false）、N-9、N-11、N-14、N-15、N-16 と、§15.4 の分岐、§15.2 の既定の addon の拒否、§15.10 の「`graph-ready` の再 query を (a) の分母に入れない」を node:test で固定した（`scripts/quality/nir1-graph-eval/*.test.mjs` の 40 件、`scripts/quality/nir1-retrieval/contract.test.mjs` に 5 件を追加）。P-3 は宣言の照合の pure な部分だけで、合成の dev fixture を実 Electron に通す部分は S1c。P-7、P-8、N-2、N-10、N-12、N-13 は範囲外（S1a、standard-build、S1c、S2）。
+
+#### 検証（実行したもの）
+
+- `node --test scripts/quality/nir1-graph-eval/*.test.mjs`：40 件 pass。
+- `node --test scripts/quality/nir1-retrieval/*.test.mjs`：36 件 pass。`node --test scripts/quality/nir1-graph/contract.test.mjs`：27 件 pass。
+- `node scripts/quality/validate-nir1-retrieval.mjs --require-freeze`：valid。`pnpm eval:fixtures`：errors なし。
+- `node --test scripts/quality/impact-map.test.mjs`：37 件 pass。`node --test scripts/quality/quality-workflow.test.mjs scripts/quality/eval-fixtures.test.mjs`：33 件 pass。
+- `pnpm eval:impact --base origin/master`：Fallback no、未分類の path なし（`scripts/quality/**` の critical path なので Light は全 suite）。
+- `prettier --check`（新しい file と `nir1-retrieval/contract*.mjs`）、`eslint`（同）：問題なし。`impact-map.mjs` と decisions の md は master の時点で prettier に合っていないので整形しなかった。
+- 変異 28 種を 1 つずつ入れて該当の試験が落ちることを確かめ、すべて元の bytes に戻した（sha で確認）：D を 11、`<=` を `<`、1% を 2%、pool を case ごと、(iv) を数えない、cache を (a) の窓内に、分岐の入替え、再 query を分母に、override を受け付ける、主な理由のちょうど半分を過半数に、重なった `busy` を鮮度に、N-1 の guard を外す（2 経路）、祖先の検査を外す、24 件で評価の受領書を許す、clean の検査を外す、path の allowlist を外す、receipt の先頭の K6/2 を省く、宣言の前後の比較を外す、宣言の不一致を blocked に、窓の証跡を無視、env の除去を外す、`resolveVariantOutcome` を自前の判定に、比較の field（excerpt）を外す、seed の検査を外す、窓内 0 件を HOLD にしない、証跡の欠けを満たしたとする、K6/2 の sha の照合を外す。
+
+実行しなかったもの：Quick／Full、cargo、実 Electron、`git ls-remote` などの外向きの操作。
+
+#### integrator に返す点
+
+1. 窓の境界：K6/2 は「`t_raw_ready + D` までに」で両端を含むが、製品の合流 helper は `now < deadline`、D は 10.840000000596048 である（DR-CP4-S1B-3）。harness は製品が合流したことと時刻の両方を求めるので、境界の 1 点で「製品は合流したが harness は窓外」となりうる。その場合は N-7 として throw する（記録が止まる）。境界をどちらに揃えるかの判断が要る（閾値の変更ではないが、K6/2 の文の読み方）。
+2. (a) の定常状態で snapshot が usable でない sample は、K6/2 の分母の定義から外れるので、黙って除かず run を setup の不備として無効にした（取り直し）。
+3. `graph-late` で開始時の slot か鮮度の stamp の記録が欠けたものは「その他」に入れた（規則は記録がある場合だけを定める。鮮度に数えない側に倒した）。
+4. 評価の受領書の schema と、`.node` の隣の worker の固定名 `nir1-c-query-worker` は guard の側で決めた。S1a と standard-build の評価の mode をこれに合わせるか、guard を合わせるかを決める。
+5. 計測窓の標本の間隔の上限（予定の 20 秒の 2 倍）は証跡の欠けの判定で、負荷の閾値ではない（DR-CP4-S1B-9）。
