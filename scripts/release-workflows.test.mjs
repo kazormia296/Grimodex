@@ -1148,10 +1148,25 @@ describe("packaged smoke workflow (CP-2b P2)", () => {
   it("runs the harness unit tests before any packaged build", async () => {
     const workflow = await readWorkflow("packaged-smoke.yml");
     const unit = workflow.jobs.unit.steps.map((step) => String(step.run ?? "")).join("\n");
-    for (const file of ["netlog", "verdict", "package-check", "process-tree", "run", "trial-record"]) {
+    for (const file of ["netlog", "verdict", "package-check", "process-tree", "run", "trial-record", "cdp", "observers", "port-owner"]) {
       assert.match(unit, new RegExp(`electron/scripts/packaged-smoke/${file}\\.test\\.mjs`), file);
     }
     assert.match(unit, /scripts\/release-workflows\.test\.mjs/);
+  });
+
+  it("uses no build cache, keys concurrency by OS, and never interpolates expressions into run scripts", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    assert.match(workflow.concurrency.group, /inputs\.os/);
+    assert.equal(workflow.concurrency["cancel-in-progress"], true);
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      for (const step of job.steps ?? []) {
+        const uses = String(step.uses ?? "");
+        assert.doesNotMatch(uses, /rust-cache|actions\/cache@/, `${name}: ${uses}`);
+        if (uses.startsWith("actions/setup-node@")) assert.equal(step.with?.cache, undefined, `${name}: setup-node cache`);
+        if (uses.startsWith("pnpm/action-setup@")) assert.equal(step.with?.cache, undefined, `${name}: pnpm cache`);
+        assert.doesNotMatch(String(step.run ?? ""), /\$\{\{/, `${name}: ${step.name ?? step.run}`);
+      }
+    }
   });
 
   it("keeps the harness outside the packaged app.asar file set", async () => {

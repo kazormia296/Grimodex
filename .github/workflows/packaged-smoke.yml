@@ -3,6 +3,8 @@
 # - release.yml とは別の workflow（release を試験の harness に使わない）。release の artifact と混ざらないよう、
 #   packaged の binary と raw の net log は artifact にしない。上げるのは harness の出力（記録の JSON、判定の出力）だけ。
 # - secrets を使わない。pull_request_target を使わない。権限は contents: read だけ。action は 40 桁の SHA に固定する。
+# - cache を使わない（workflow_dispatch は任意の SHA を checkout できるので、release と共有する cache の scope に
+#   候補の build 物を書かない）。
 # - pull_request は workflow と harness の file の変更でだけ走る。G-pub の記録は merge 後に workflow_dispatch で
 #   最終候補の 40 桁の SHA を指定して採る（P4）。条件の正本は K3/3 のゲート表で、この workflow は条件を定義しない。
 name: Packaged smoke (G-pub)
@@ -33,7 +35,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: packaged-smoke-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.candidate_ref }}
+  # 同じ候補でも OS ごとの dispatch が互いを cancel しないよう、OS の選択を group に入れる
+  group: packaged-smoke-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.candidate_ref }}-${{ inputs.os || 'all' }}
   cancel-in-progress: true
 
 jobs:
@@ -96,7 +99,6 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: pnpm
 
       - run: pnpm install --frozen-lockfile
 
@@ -108,6 +110,9 @@ jobs:
           electron/scripts/packaged-smoke/package-check.test.mjs
           electron/scripts/packaged-smoke/process-tree.test.mjs
           electron/scripts/packaged-smoke/run.test.mjs
+          electron/scripts/packaged-smoke/cdp.test.mjs
+          electron/scripts/packaged-smoke/observers.test.mjs
+          electron/scripts/packaged-smoke/port-owner.test.mjs
           electron/scripts/packaged-smoke/trial-record.test.mjs
           scripts/release-workflows.test.mjs
 
@@ -147,18 +152,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-          cache: pnpm
 
       - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
         with:
           toolchain: stable
-
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
-        with:
-          workspaces: |
-            src-tauri
-            electron/native/grimodex-node
-          key: packaged-smoke-${{ matrix.id }}
 
       - run: pnpm install --frozen-lockfile
 
