@@ -180,6 +180,52 @@ pub(super) struct CaseWorkspace {
     caller: Option<CallerIdentity>,
 }
 
+/// The `scope` a Scene Scope write sends: explicit from the fixture's
+/// `sceneScope.perScene`, or (with `unknown_reason`) unknown with an
+/// unresolved query identity and the same material constraint and principals.
+pub(super) fn scene_scope_value(per_scene: &Value, unknown_reason: Option<&str>) -> Value {
+    let exact = |reference: &Value| json!({"kind": "exact", "ref": reference});
+    let identity = &per_scene["queryIdentity"];
+    let material = &per_scene["materialConstraint"];
+    let principal = |name: &Value| match name.as_str() {
+        Some("reader") => json!({"kind": "reader"}),
+        other => json!({"kind": "character", "ref": other}),
+    };
+    let (marker, query_identity) = match unknown_reason {
+        None => (
+            per_scene["compatibilityMarker"].clone(),
+            json!({
+                "timeline": exact(&identity["timeline"]),
+                "worldline": exact(&identity["worldline"]),
+                "narrativeLayer": exact(&identity["narrativeLayer"]),
+            }),
+        ),
+        Some(reason) => {
+            let unresolved = json!({"kind": "unresolved", "reason": reason});
+            (
+                json!("unknown"),
+                json!({
+                    "timeline": unresolved.clone(),
+                    "worldline": unresolved.clone(),
+                    "narrativeLayer": unresolved,
+                }),
+            )
+        }
+    };
+    json!({
+        "schemaVersion": 1,
+        "compatibilityMarker": marker,
+        "queryIdentity": query_identity,
+        "materialConstraint": {
+            "timeline": exact(&material["timeline"]),
+            "worldline": exact(&material["worldline"]),
+            "narrativeLayer": exact(&material["narrativeLayer"]),
+        },
+        "knowledgeHolder": principal(&per_scene["knowledgeHolder"]),
+        "audience": principal(&per_scene["audience"]),
+    })
+}
+
 impl Drop for CaseWorkspace {
     fn drop(&mut self) {
         // The runtime goes first so no blocking task still holds the file.
@@ -452,7 +498,10 @@ impl CaseWorkspace {
             "sceneId": scene_id,
         });
         let raw = self
-            .block_on(self.backend.narrative_scene_scope_read(payload, self.caller_wire()))
+            .block_on(
+                self.backend
+                    .narrative_scene_scope_read(payload, self.caller_wire()),
+            )
             .map_err(|error| anyhow!("narrative_scene_scope_read failed: {error}"))?;
         Ok(serde_json::from_str(&raw)?)
     }
@@ -497,23 +546,42 @@ impl CaseWorkspace {
             }
         });
         let _scope = self.audit.enter("narrative_scene_scope_registry_update");
-        self.block_on(self.backend.narrative_scene_scope_registry_update(payload, self.caller_wire()))
-            .map_err(|error| anyhow!("narrative_scene_scope_registry_update failed: {error}"))?;
+        self.block_on(
+            self.backend
+                .narrative_scene_scope_registry_update(payload, self.caller_wire()),
+        )
+        .map_err(|error| anyhow!("narrative_scene_scope_registry_update failed: {error}"))?;
         Ok(())
     }
 
     /// `narrative_scene_scope_update` with the explicit Scope of the fixture's
     /// `sceneScope.perScene`.
     pub(super) fn write_scene_scope(&mut self, scene_id: &str, per_scene: &Value) -> Result<()> {
+        self.write_scene_scope_with(scene_id, per_scene, None)
+    }
+
+    /// `narrative_scene_scope_update` that turns a Scene's Scope unknown: the
+    /// compatibility marker `unknown` and the three query-identity axes
+    /// `unresolved { reason }` (grimodex-core `validate_binding` requires both);
+    /// the material constraint and the principals stay those of `perScene`.
+    /// Only a negative-anchor Scene is written this way (DR-DPH-99).
+    pub(super) fn write_scene_scope_unknown(
+        &mut self,
+        scene_id: &str,
+        per_scene: &Value,
+        reason: &str,
+    ) -> Result<()> {
+        self.write_scene_scope_with(scene_id, per_scene, Some(reason))
+    }
+
+    fn write_scene_scope_with(
+        &mut self,
+        scene_id: &str,
+        per_scene: &Value,
+        unknown_reason: Option<&str>,
+    ) -> Result<()> {
         let current = self.read_scene_scope(scene_id)?;
         let request_id = self.next_request_id("scene-scope");
-        let exact = |reference: &Value| json!({"kind": "exact", "ref": reference});
-        let identity = &per_scene["queryIdentity"];
-        let material = &per_scene["materialConstraint"];
-        let principal = |name: &Value| match name.as_str() {
-            Some("reader") => json!({"kind": "reader"}),
-            other => json!({"kind": "character", "ref": other}),
-        };
         let payload = json!({
             "expectedWorkspacePath": self.locator,
             "payload": {
@@ -524,28 +592,25 @@ impl CaseWorkspace {
                 "eventUid": format!("{request_id}:event"),
                 "baseVersion": current["binding"]["version"],
                 "updatedAt": grimodex_core::now_rfc3339_millis(),
-                "scope": {
-                    "schemaVersion": 1,
-                    "compatibilityMarker": per_scene["compatibilityMarker"],
-                    "queryIdentity": {
-                        "timeline": exact(&identity["timeline"]),
-                        "worldline": exact(&identity["worldline"]),
-                        "narrativeLayer": exact(&identity["narrativeLayer"]),
-                    },
-                    "materialConstraint": {
-                        "timeline": exact(&material["timeline"]),
-                        "worldline": exact(&material["worldline"]),
-                        "narrativeLayer": exact(&material["narrativeLayer"]),
-                    },
-                    "knowledgeHolder": principal(&per_scene["knowledgeHolder"]),
-                    "audience": principal(&per_scene["audience"]),
-                },
+                "scope": scene_scope_value(per_scene, unknown_reason),
             }
         });
         let _scope = self.audit.enter("narrative_scene_scope_update");
-        self.block_on(self.backend.narrative_scene_scope_update(payload, self.caller_wire()))
-            .map_err(|error| anyhow!("narrative_scene_scope_update failed: {error}"))?;
+        self.block_on(
+            self.backend
+                .narrative_scene_scope_update(payload, self.caller_wire()),
+        )
+        .map_err(|error| anyhow!("narrative_scene_scope_update failed: {error}"))?;
         Ok(())
+    }
+
+    /// The Scene Scope's current compatibility marker (the product reader).
+    pub(super) fn scene_scope_marker(&self, scene_id: &str) -> Result<String> {
+        let current = self.read_scene_scope(scene_id)?;
+        current["binding"]["compatibilityMarker"]
+            .as_str()
+            .map(str::to_owned)
+            .context("the Scene Scope has no compatibilityMarker")
     }
 
     /// `nir1_entity_relation_revision_prepare` for one Entity. Returns the

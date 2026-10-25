@@ -708,6 +708,13 @@ test("harness-freeze-order: a run without the gate, a call outside evidence_run 
         `${text}\nfn _x(root: &Path) { let _ = std::fs::read_to_string(root.join(FIXTURE_PATH)); }\n`,
       /read outside/,
     ],
+    [
+      "a test that reads the superseded version-1 fixture",
+      HARNESS("tests.rs"),
+      (text) =>
+        `${text}\nfn _y(root: &Path) { let _ = std::fs::read_to_string(root.join(SUPERSEDED_FIXTURE_PATH)); }\n`,
+      /read outside/,
+    ],
   ]) {
     const violations = checkHarness(mutated(file, change));
     assert.ok(

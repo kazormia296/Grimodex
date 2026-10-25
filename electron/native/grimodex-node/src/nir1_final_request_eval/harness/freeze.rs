@@ -19,11 +19,21 @@ use anyhow::{anyhow, Context, Result};
 use grimodex_db::narrative_extraction::final_request_eval::sha256_hex;
 use serde_json::Value;
 
-pub(super) const FIXTURE_PATH: &str = "evals/nir1-packing/final-request.v1.json";
-pub(super) const FREEZE_PATH: &str = "evals/nir1-packing/final-request.freeze.v1.json";
+/// The fixture version the evidence entry runs (contract.mjs
+/// `EVIDENCE_FIXTURE_VERSION`). The gate reads this version's files only.
+pub(super) const EVIDENCE_FIXTURE_VERSION: u64 = 2;
+pub(super) const FIXTURE_PATH: &str = "evals/nir1-packing/final-request.v2.json";
+pub(super) const FREEZE_PATH: &str = "evals/nir1-packing/final-request.freeze.v2.json";
+pub(super) const REVIEW_PATH: &str = "evals/nir1-packing/final-request.expectation-review.v2.json";
+/// Version 1, superseded (Native observed its materials before its freeze,
+/// DR-DPH-70): kept as the HOLD history and never read by the gate, so it can
+/// never pass it (DR-DPH-103).
+pub(super) const SUPERSEDED_FIXTURE_PATH: &str = "evals/nir1-packing/final-request.v1.json";
+pub(super) const SUPERSEDED_FREEZE_PATH: &str = "evals/nir1-packing/final-request.freeze.v1.json";
 const GIT_TIMEOUT: Duration = Duration::from_secs(10);
 /// A freeze record is written once; more commits than this on its path mean it
-/// was rewritten after it was frozen.
+/// was rewritten after it was frozen. Counted per record path, as
+/// contract.mjs counts it.
 const MAX_FREEZE_RECORD_COMMITS: usize = 16;
 
 /// What a run binds into its receipts when the gate passes.
@@ -203,6 +213,20 @@ pub(super) fn check_freeze(
             return Err(refusal);
         }
     };
+    // The record must be the evidence version's: a version-1 record copied
+    // under the version-2 path, or a record of another version, is refused.
+    if freeze["fixtureVersion"] != EVIDENCE_FIXTURE_VERSION {
+        refuse(format!(
+            "fixture-version-mismatch: the freeze record names fixtureVersion {}, the evidence version is {EVIDENCE_FIXTURE_VERSION}",
+            freeze["fixtureVersion"]
+        ));
+    }
+    if freeze["reviewRecord"]["path"] != REVIEW_PATH {
+        refuse(format!(
+            "the freeze record binds the review record {}, not {REVIEW_PATH}",
+            freeze["reviewRecord"]["path"]
+        ));
+    }
     if freeze["status"] != "frozen" {
         refuse(format!(
             "freeze-record-not-frozen: status is {}, not \"frozen\" (the independent expectation review has not approved the fixture)",
@@ -264,6 +288,15 @@ pub(super) fn check_freeze(
     }
     if fixture_sha256.is_empty() {
         refuse(format!("the freeze record does not bind {FIXTURE_PATH}"));
+    } else {
+        let named = serde_json::from_str::<Value>(&fixture_text)
+            .ok()
+            .and_then(|fixture| fixture["fixtureVersion"].as_u64());
+        if named != Some(EVIDENCE_FIXTURE_VERSION) {
+            refuse(format!(
+                "fixture-version-mismatch: {FIXTURE_PATH} names fixtureVersion {named:?}, not {EVIDENCE_FIXTURE_VERSION}"
+            ));
+        }
     }
     match review_bytes
         .as_deref()
