@@ -530,7 +530,11 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const runtimeCapabilities = useRuntimeCapabilities();
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  const chatGate = useAiGate("chat");
+  // 外部送信の制限の閉鎖は下の probe の判定で自分で扱う（場面の会話の送信は開いたまま。
+  // DR-DA2B-R22）。
+  const chatGate = useAiGate(
+    PROFILE_ACTIVATION_UI_ENABLED ? "chat-send" : "chat",
+  );
   const maximizedPanelId = useLayoutStore((s) => s.maximizedPanelId);
   const isMessageViewportActive =
     isActive && (maximizedPanelId === null || maximizedPanelId === "chat");

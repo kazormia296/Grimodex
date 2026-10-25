@@ -1,6 +1,8 @@
 import type { BrowserMock } from "./browser-mock";
 import { enqueueIpc } from "./ipcQueue";
 import { electronBridge, isElectron } from "./shell";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+import { profileEgressLocalRefusal } from "@/features/profile-egress/profileEgressClosure";
 export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
@@ -542,6 +544,15 @@ export async function invoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
+  // DA-2b の PUB-G 前の必須 3（DR-DA2B-R22〜）：閉鎖の状態が閉なら、Main の gate が
+  // 拒否する command を IPC に出さず、Main と同じ文で拒否する（どの transport でも）。
+  // 防御は Main の gate と Native のまま。定数が false の間はこの分岐ごと消える。
+  if (PROFILE_ACTIVATION_UI_ENABLED) {
+    const refusal = profileEgressLocalRefusal(cmd);
+    if (refusal !== null) {
+      throw new IpcInvokeError(cmd, classifyLegacyIpcError(refusal));
+    }
+  }
   if (isTauri()) {
     console.debug(`[tauri] invoke: ${cmd} (native)`);
     const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");

@@ -1,8 +1,10 @@
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { ensureProfileEgressTranslations } from "./profileEgressTranslations";
 import { useProfileEgressStatus } from "./useProfileEgressStatus";
 import { useWritesRetryAfterActivation } from "./profileActivationWriteRetry";
+import { closeProfileEgressEntrances } from "@/features/chat/closeProfileEgressEntrances";
 
 ensureProfileEgressTranslations();
 
@@ -18,11 +20,21 @@ ensureProfileEgressTranslations();
  *
  * It also starts the bounded retry of the generic DB writes refused during
  * the activation, once this renderer sees it complete (W-1, DR-DA2B-R8).
+ *
+ * It is also the only writer of the AI entrances' closure (DA-2b PUB-G 前の必須
+ * 3・4, DR-DA2B-R22): a known state other than unrestricted closes them, the
+ * same rule as the chat panel's probe. The state only moves forward, so the
+ * closure is never reopened.
  */
 export default function ProfileEgressStatusIndicator() {
   const { t } = useTranslation();
   const snapshot = useProfileEgressStatus();
   useWritesRetryAfterActivation(snapshot);
+  const entrancesClosed =
+    snapshot.kind === "known" && snapshot.view.state !== "unrestricted";
+  useEffect(() => {
+    if (entrancesClosed) closeProfileEgressEntrances();
+  }, [entrancesClosed]);
   if (snapshot.kind !== "known") return null;
   const { view } = snapshot;
   if (view.state === "unrestricted") return null;

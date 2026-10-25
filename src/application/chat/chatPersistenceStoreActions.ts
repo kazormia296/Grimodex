@@ -1,6 +1,10 @@
 import type { ChatStoreActionPorts } from "./chatStoreActionPorts";
 import type { ChatState } from "./chatStoreTypes";
 import type { ChatMessage, MessageRole } from "@/features/chat/chatTypes";
+import { toast } from "sonner";
+import i18next from "@/lib/i18n";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+import { useAiSettingsStore } from "@/features/chat/store";
 
 interface ChatPersistenceRepository {
   addMessage: (
@@ -86,6 +90,16 @@ export function createChatPersistenceStoreActions(
       model,
     }) => {
       if (blockForPendingCompletedTurn()) return false;
+      // DA-2b の PUB-G 前の必須 3 の C（DR-DA2B-R22）：外部送信の制限で AI の入口が閉じて
+      // いる間は、会話の作成も行の追加（汎用の INSERT。Main の gate が拒否する）もしない。
+      // 定数が false の間は分岐ごと消える（同じ chunk の import だけを使う）。
+      if (
+        PROFILE_ACTIVATION_UI_ENABLED &&
+        useAiSettingsStore.getState().profileEgressClosed === true
+      ) {
+        toast.info(i18next.t("profileEgress.chat.abAdoptClosed"));
+        return false;
+      }
       // A/B ダイアログはスコープを変えずに開くため、ensureSession は現在のスコープ
       // (scene/folder/project/codex/snippet) に対応する正しいセッションを返す。
       const sessionId = await get().ensureSession();

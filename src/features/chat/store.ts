@@ -35,6 +35,13 @@ import {
 
 export interface AiSettingsState {
   settings: AiSettings | null;
+  /**
+   * 外部送信の制限で AI の入口の UI を閉じている（NIR-1 DA-2b の PUB-G 前の必須 3・4、
+   * DR-DA2B-R22）。立てるのは `PROFILE_ACTIVATION_UI_ENABLED` の後ろの lazy な状態の表示
+   * （`closeProfileEgressEntrances`）だけで、一方向（戻さない）。読むのも定数の後ろだけ。
+   * 初期値を置かないので、定数が false の間は起動時の graph に何も載らない。
+   */
+  profileEgressClosed?: true;
   hasApiKey: boolean;
   /** CLI バイナリの検出結果。null = 未検出/CLI プロバイダ非選択。 */
   cliBinaryAvailable: boolean | null;
