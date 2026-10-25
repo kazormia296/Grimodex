@@ -11441,9 +11441,11 @@ impl Backend {
             let events: Vec<AppendAiAuditEvent> = from_wire("events", events)?;
             let workspace = active_workspace_snapshot(&state.ws)?;
             validate_ai_audit_workspace(&workspace, &expected_workspace_path)?;
+            // 外部送信の経路。`request.dispatched` を含む送信前の batch は WAL を fsync して
+            // commit し、停電や OS の crash でも失われないようにする。
             let result = workspace
                 .db()
-                .append_ai_audit_events_for_scope(project_id.as_deref(), &events)?;
+                .append_external_ai_audit_events_for_scope(project_id.as_deref(), &events)?;
             Ok(serde_json::to_string(&result).map_err(anyhow::Error::from)?)
         })
         .await

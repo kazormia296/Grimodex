@@ -1199,16 +1199,177 @@ pub(crate) fn append_ai_audit_events_in_transaction(
     })
 }
 
+/// 監査行の commit をどこまで永続化するか。
+///
+/// 主 DB は WAL＋`synchronous=NORMAL` で開く（`Database::new`）。NORMAL の commit は
+/// process の crash（kill -9 を含む）には耐えるが、commit ごとに WAL を fsync しないので、
+/// 停電や OS の crash では最後の commit 群を失いうる。外部送信の前提になる行だけは、
+/// その transaction の間だけ `synchronous=FULL` にして commit 時に WAL を fsync させる。
+/// 他の writer の既定（NORMAL）は変えない。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AiAuditCommitDurability {
+    /// 接続の既定（WAL＋NORMAL）のまま commit する。
+    ConnectionDefault,
+    /// commit の時点で WAL を fsync し、停電・OS の crash にも耐える。
+    PowerLossDurable,
+}
+
+/// 外部送信の経路が書く batch を分類する。
+///
+/// `request.dispatched` を含む batch は、その commit の直後に provider への送信が起きうる
+/// 「送信前の commit」なので durable にする。同じ execution の `execution.started`／
+/// `request.prepared` が前の batch（NORMAL）で commit 済みでも、WAL は追記だけなので、
+/// この commit の fsync がそれより前の frame もまとめて永続化する（checkpoint 済みの frame は、
+/// NORMAL でも checkpoint の前に WAL、後に DB file が sync されている）。
+/// `request.dispatched` より後の行（effective request の receipt、transport の attempt、
+/// `response.partial` の microbatch、終端）は NORMAL のまま。送信の事実と送信前の要求は、
+/// 先に durable にした `request.dispatched`（とそれより前の `request.prepared`）が持つ。
+pub fn external_dispatch_commit_durability(
+    events: &[AppendAiAuditEvent],
+) -> AiAuditCommitDurability {
+    if events
+        .iter()
+        .any(|event| event.event_type == "request.dispatched")
+    {
+        AiAuditCommitDurability::PowerLossDurable
+    } else {
+        AiAuditCommitDurability::ConnectionDefault
+    }
+}
+
+/// SQLite の `synchronous` の値（0=OFF, 1=NORMAL, 2=FULL, 3=EXTRA）。
+const SQLITE_SYNCHRONOUS_FULL: i64 = 2;
+
+#[cfg(test)]
+thread_local! {
+    /// 試験用：この thread で durable commit の guard を有効にした回数。
+    static POWER_LOSS_DURABLE_GUARDS_ENABLED: std::cell::Cell<usize> =
+        const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn power_loss_durable_guards_enabled_for_test() -> usize {
+    POWER_LOSS_DURABLE_GUARDS_ENABLED.with(std::cell::Cell::get)
+}
+
+/// 1 つの transaction の間だけ `synchronous=FULL`（WAL では commit ごとに WAL を fsync）と
+/// `fullfsync=ON`（macOS では fsync でなく F_FULLFSYNC。他の OS では効果なし）にする RAII。
+///
+/// SQLite は transaction の中で safety level を変えられないので、BEGIN の前に作り、
+/// COMMIT／ROLLBACK の後に drop する。主接続は `Mutex<Connection>` の下で使うので、
+/// guard が生きている間に他の writer が同じ接続で commit することはない。
+/// drop は成功・失敗・panic のどれでも元の値に戻す。panic などで transaction が開いたまま
+/// drop に来た場合は、その transaction を commit せず ROLLBACK してから戻す。
+/// 元の値が FULL より強い（EXTRA）なら弱めない。
+pub(crate) struct PowerLossDurableCommitGuard<'conn> {
+    conn: &'conn Connection,
+    previous_synchronous: i64,
+    previous_fullfsync: i64,
+}
+
+impl<'conn> PowerLossDurableCommitGuard<'conn> {
+    pub(crate) fn enable(conn: &'conn Connection) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            conn.is_autocommit(),
+            "AI audit power-loss durable commit must start outside a transaction"
+        );
+        let previous_synchronous: i64 =
+            conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
+        let previous_fullfsync: i64 = conn.query_row("PRAGMA fullfsync", [], |row| row.get(0))?;
+        // ここから先で失敗しても drop が元の値に戻す。
+        let guard = Self {
+            conn,
+            previous_synchronous,
+            previous_fullfsync,
+        };
+        let target = previous_synchronous.max(SQLITE_SYNCHRONOUS_FULL);
+        conn.execute_batch(&format!(
+            "PRAGMA synchronous={target}; PRAGMA fullfsync=ON;"
+        ))?;
+        let synchronous: i64 = conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?;
+        let fullfsync: i64 = conn.query_row("PRAGMA fullfsync", [], |row| row.get(0))?;
+        anyhow::ensure!(
+            synchronous >= SQLITE_SYNCHRONOUS_FULL && fullfsync == 1,
+            "AI audit power-loss durable commit could not enable synchronous=FULL"
+        );
+        #[cfg(test)]
+        POWER_LOSS_DURABLE_GUARDS_ENABLED.with(|count| count.set(count.get() + 1));
+        Ok(guard)
+    }
+}
+
+impl Drop for PowerLossDurableCommitGuard<'_> {
+    fn drop(&mut self) {
+        if !self.conn.is_autocommit() {
+            // COMMIT／ROLLBACK に届かなかった（panic など）。開いたままの transaction を
+            // 次の利用者に渡さず、commit もしない。
+            let _ = self.conn.execute_batch("ROLLBACK");
+        }
+        let restore = format!(
+            "PRAGMA synchronous={}; PRAGMA fullfsync={};",
+            self.previous_synchronous, self.previous_fullfsync
+        );
+        if let Err(error) = self.conn.execute_batch(&restore) {
+            // 戻せなくても接続は FULL のまま（より強い側）で、監査の安全は損なわない。
+            tracing::warn!(%error, "failed to restore SQLite synchronous after AI audit commit");
+        }
+    }
+}
+
+/// 汎用の append。接続の既定（WAL＋NORMAL）で commit する。
+///
+/// local の推論（`grimodex-semantic` の embedding／reranker）と、`request.dispatched` より
+/// 後の行（effective request の receipt、transport の attempt）を書く native の observer が
+/// 使う。外部送信の経路は
+/// [`append_external_ai_audit_events_for_scope`] を使う。
 pub fn append_ai_audit_events_for_scope(
     conn: &Connection,
     project_id: Option<&str>,
     events: &[AppendAiAuditEvent],
+) -> anyhow::Result<AiAuditAppendResult> {
+    append_ai_audit_events_with_durability(
+        conn,
+        project_id,
+        events,
+        AiAuditCommitDurability::ConnectionDefault,
+    )
+}
+
+/// 外部送信の経路（renderer の `ai_audit_append_batch`、post-effect）の append。
+/// `request.dispatched` を含む送信前の batch だけを停電にも耐える commit にする
+/// （[`external_dispatch_commit_durability`]）。durable にできなければ append は失敗し、
+/// 呼出し側は送信しない（fail-closed）。
+pub fn append_external_ai_audit_events_for_scope(
+    conn: &Connection,
+    project_id: Option<&str>,
+    events: &[AppendAiAuditEvent],
+) -> anyhow::Result<AiAuditAppendResult> {
+    append_ai_audit_events_with_durability(
+        conn,
+        project_id,
+        events,
+        external_dispatch_commit_durability(events),
+    )
+}
+
+fn append_ai_audit_events_with_durability(
+    conn: &Connection,
+    project_id: Option<&str>,
+    events: &[AppendAiAuditEvent],
+    durability: AiAuditCommitDurability,
 ) -> anyhow::Result<AiAuditAppendResult> {
     // The NIR-1 local generation namespace is written only by the dedicated
     // Native append; the generic path (renderer, N-API, post-effect, semantic)
     // rejects the whole batch before any transaction opens.
     crate::nir1_local_audit::reject_reserved_events(events)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    // BEGIN より前に作り、COMMIT／ROLLBACK の後（この関数を出るとき）に drop する。
+    let _durable_commit = match durability {
+        AiAuditCommitDurability::PowerLossDurable => {
+            Some(PowerLossDurableCommitGuard::enable(conn)?)
+        }
+        AiAuditCommitDurability::ConnectionDefault => None,
+    };
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = append_ai_audit_events_in_transaction(conn, project_id, events);
     match result {
@@ -1333,6 +1494,9 @@ pub fn claim_cli_ai_audit_dispatch_for_scope(
 
     let scope_id = ai_audit_scope_id(project_id)?;
     conn.busy_timeout(BUSY_TIMEOUT)?;
+    // claim は CLI／Codex の subprocess を起動する直前の commit なので、常に停電にも耐える
+    // commit にする。前の batch の `request.dispatched` も同じ WAL の fsync で永続化される。
+    let _durable_commit = PowerLossDurableCommitGuard::enable(conn)?;
     conn.execute_batch("BEGIN IMMEDIATE")?;
     let result = (|| {
         let mut statement = conn.prepare(
@@ -1737,6 +1901,24 @@ impl Database {
         self.with_conn(|conn| append_ai_audit_events_for_scope(conn, project_id, events))
     }
 
+    /// 外部送信の経路の append（[`append_external_ai_audit_events_for_scope`]）。
+    pub fn append_external_ai_audit_events(
+        &self,
+        project_id: &str,
+        events: &[AppendAiAuditEvent],
+    ) -> anyhow::Result<AiAuditAppendResult> {
+        self.append_external_ai_audit_events_for_scope(Some(project_id), events)
+    }
+
+    /// 外部送信の経路の append（[`append_external_ai_audit_events_for_scope`]）。
+    pub fn append_external_ai_audit_events_for_scope(
+        &self,
+        project_id: Option<&str>,
+        events: &[AppendAiAuditEvent],
+    ) -> anyhow::Result<AiAuditAppendResult> {
+        self.with_conn(|conn| append_external_ai_audit_events_for_scope(conn, project_id, events))
+    }
+
     pub fn claim_cli_ai_audit_dispatch(
         &self,
         project_id: Option<&str>,
@@ -1830,3 +2012,6 @@ impl Database {
         })
     }
 }
+
+#[cfg(test)]
+mod durability_tests;
