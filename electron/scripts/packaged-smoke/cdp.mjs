@@ -81,6 +81,8 @@ export async function connectCdp(webSocketDebuggerUrl, { timeoutMs = 10_000 } = 
   return {
     send(method, params = {}, { timeoutMs: callTimeout = 30_000 } = {}) {
       const id = nextId++;
+      // 閉じた socket への send は応答が来ないので、timeout まで待たずに reject する
+      if (socket.readyState !== WebSocket.OPEN) return Promise.reject(new Error(`CDP ${method}: socket is not open`));
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => { pending.delete(id); reject(new Error(`CDP ${method}: ${callTimeout} ms で応答なし`)); }, callTimeout);
         pending.set(id, { resolve, reject, timer, method });
@@ -90,9 +92,10 @@ export async function connectCdp(webSocketDebuggerUrl, { timeoutMs = 10_000 } = 
     close() {
       return new Promise((resolve) => {
         if (socket.readyState === WebSocket.CLOSED) return resolve();
-        socket.addEventListener("close", () => resolve(), { once: true });
-        try { socket.close(); } catch { resolve(); }
-        setTimeout(resolve, 2000);
+        // 2 秒の上限の timer は close を見たら止める（残った timer で harness の終了を待たせない）
+        const timer = setTimeout(resolve, 2000);
+        socket.addEventListener("close", () => { clearTimeout(timer); resolve(); }, { once: true });
+        try { socket.close(); } catch { clearTimeout(timer); resolve(); }
       });
     },
   };
