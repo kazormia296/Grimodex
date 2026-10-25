@@ -1141,6 +1141,63 @@ describe("update route watch (CP-2b P3, H1)", () => {
     }
   });
 
+  it("uses only the release workflow's pinned tools in a fixed step list", async () => {
+    const workflow = await readWorkflow("update-route-watch.yml");
+    const release = await readWorkflow("release.yml");
+    const manifest = JSON.parse(
+      await readFile(path.join(repoRoot, "package.json"), "utf8"),
+    );
+    assert.deepEqual(workflow.concurrency, {
+      group: "update-route-watch",
+      "cancel-in-progress": false,
+    });
+    const steps = workflow.jobs.watch.steps;
+    // 許可した 3 つの action と 2 つの run だけ。順序も固定する。
+    assert.deepEqual(
+      steps.map((step) => step.uses?.split("@")[0] ?? `run:${step.run.trim()}`),
+      [
+        "actions/checkout",
+        "pnpm/action-setup",
+        "actions/setup-node",
+        "run:pnpm install --frozen-lockfile --ignore-scripts",
+        "run:node scripts/update-route-redirect-check.mjs",
+      ],
+    );
+    for (const step of steps) {
+      assert.deepEqual(
+        Object.keys(step).filter((key) => !["name", "uses", "run", "with"].includes(key)),
+        [],
+        JSON.stringify(step),
+      );
+    }
+    // action の pin は release.yml と同じ値。
+    const releasePins = new Map();
+    for (const uses of collectUses(release)) {
+      const [name, ref] = uses.split("@");
+      releasePins.set(name, new Set([...(releasePins.get(name) ?? []), ref]));
+    }
+    for (const uses of collectUses(workflow)) {
+      const [name, ref] = uses.split("@");
+      assert.deepEqual([...(releasePins.get(name) ?? [])], [ref], uses);
+    }
+    const pnpm = steps.find((step) => step.uses?.startsWith("pnpm/action-setup@"));
+    assert.equal(`pnpm@${pnpm.with.version}`, manifest.packageManager);
+    // Node は release.yml の pnpm を使う job と同じ版。
+    const releaseNodeVersions = new Set(
+      Object.values(release.jobs)
+        .filter((job) =>
+          (job.steps ?? []).some((step) => step.uses?.startsWith("pnpm/action-setup@")),
+        )
+        .flatMap((job) =>
+          job.steps
+            .filter((step) => step.uses?.startsWith("actions/setup-node@"))
+            .map((step) => step.with["node-version"]),
+        ),
+    );
+    const node = steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+    assert.deepEqual([...releaseNodeVersions], [node.with["node-version"]]);
+  });
+
   it("reads RS-1 from the product constant and starts from the current Electron asset", async () => {
     const {
       electronShasumsUrl,
