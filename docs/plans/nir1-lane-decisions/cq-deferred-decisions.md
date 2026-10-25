@@ -90,3 +90,84 @@ begin の thread（lock なし）→ GraphState の内側の lock（ticket の h
 ## 5. 時間の見込み（TASK §2.5）
 
 release から Graph が届くまで：rebuild の窓（前の prepare から最大 1 s。初回は 0）＋ prepare 約 33 ms ＋ query（lease 100 ms の内）＋ Native の requalify。常に graph-late。lease 100 ms は parent の受付から有効な結果までで startup を含まない（proposal/7:222）。cache の TTL 30 s で足りる。Raw の時間は変わらない（begin の owner 呼出しは wait 0 のまま、prepare が begin の監査の commit と並ばなくなる分だけわずかに速くなる見込み）。D-final の READY 待ちは、保留中と持たせた session の間は `warming` のまま待ち、その session の終わりで自分の session を作る。最悪は「保留の残り（begin の残りの時間、上限 2 s）＋ 持たせた session（窓 ≤1 s ＋ prepare ＋ query）＋ D-final 自身の窓（≤1 s）＋ prepare ＋ query」で、通常は 4 s の予算に収まるが、保留が期限まで残る病的な場合は D-final が `WaitExpired`（Graph なしで続行、fail-soft）になりうる（未測定。実装後の追記の未検証に残す）。
+
+## 6. 実装後の追記（2026-10-25。上の本文は直さない）
+
+### 6.1. 実装の要点（commit `f899491b`）
+
+- `nir1_graph_product.rs`：`begin_deferred`（admission は `begin` と共有する `admit_and_route`）、`Phase::Deferred`／`GraphSlotKind::Deferred`、`SlotState::deferred`（`DeferredDemand`）、`Command::Defer`、`TicketShared::deferred`（取消で owner thread を起こす）、`GraphTicket::release_after_own_commits` と `GraphTicketRelease`、`Shared::release_deferred`／`wake_deferred`、owner thread の `run_deferred`／`await_release`、`build_and_serve` を `build_worker`（窓・admit・create・prepare・失敗の台帳）と READY の公開に分けた。`SessionGuard` の Drop は、owner thread が保留を残して終わったとき（panic を含む）に `invalidated`（quarantine なら `restart-required`）で settle する（不変条件 (2) の安全網）。counter は `deferred_released`、`deferred_expired`、`deferred_dropped`、`stale_ready_retired`。保留の期限は `DEFERRED_RELEASE_LIMIT`（2 s、`GRAPH_AWAIT_LIMIT` と等しいことを試験で固定）。
+- `related_scenes/graph.rs`：`GraphState::start` は `begin_deferred` を呼ぶ。`GraphState::release_after_own_commits`（内側の lock の下では handle を複製するだけ）。RAII の guard `DeferredRelease<T: LeaseEnd>`（`release` で release、Drop で cancel）。
+- `related_scenes/begin.rs`：`begin_graph` の直後に guard を作り、outcome が `Ok` なら `release()`、`Err` なら drop（cancel）。`build::schedule` の前。
+- D-final の経路（`nir1_graph_dfinal.rs`）、監査、`ReadIdentity`、registration／query の drift の検査、`src/`、IPC／preload／Main、gate、確認済みの値は変えていない。
+- 試験（commit `c7c31eaa`）：`nir1_graph_deferred_tests.rs`（owner の試験 module の子）、`related_scenes/graph_tests.rs`（begin と同じ start → release の helper `start_released`、guard の試験）。`nir1_graph_product_tests.rs` は `TicketShared::new` の引数と module の取り込みだけ。`scripts/quality/impact-map.mjs` は全 path を分類した（fallback なし）。新しい試験 file の登録は要らなかった（owner の試験 file と同じく manifest の対象外）。
+
+### 6.2. TASK からの調整（本文 DR-CQD-3、9、10 の再掲と実装で分かったこと）
+
+1. 別の key の READY は rekey の規則のときだけ奪う（DR-CQD-3）。
+2. `nir1_graph_eval` は master に無いので counter だけを足した（DR-CQD-9）。
+3. 統合試験は (i-a) CI の段と (i-b) opt-in の実 worker の段に分けた（DR-CQD-10）。
+4. 持たせた session の prepare の失敗は、保留の ticket にその理由（`registration-unavailable` など）で返す（`Built::Exit(reason)`）。master では warming の後の失敗は誰にも返らなかった。
+5. 持たせた session が stale／busy を返すと、`deliver` が今のとおり project を unserved に記録するが、持たせた session は READY で通知しないので、その project への通知は次の D-final 型の READY か遅れた結果の cache まで出ない（TASK の「通知は 1 回だけ」に従った結果。DSN §3.4 (a) の「次の READY で知らせる」は、Related Scenes の需要については late cache の通知で代わる）。
+
+### 6.3. 実行した検証（すべて focused。Quick／Full は走らせていない）
+
+| コマンド | 結果 |
+|---|---|
+| `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib -- nir1_graph related_scenes`（owner、D-final、reach、RS、新しい試験を含む） | 184 passed、0 failed、5 ignored（opt-in）。負荷の下で 3 回続けて green（最終の内容） |
+| 同 `-- i_b_the_real_worker --ignored --nocapture --test-threads=1`（`NIR1_C_QUERY_WORKER_BIN`） | passed（4 回。正しい build の上の最後の 1 回を含む） |
+| `cargo clippy --manifest-path electron/native/grimodex-node/Cargo.toml --lib --tests` | 警告なし |
+| `rustfmt --edition 2021 --check`（変更した file） | 新しい差分なし（master に元からある差分は触っていない） |
+| `pnpm eval:impact --base origin/master` | 全 path を分類、fallback なし。選ばれた light suite（`nir1-entity-relation-review`、`narrative-runtime`、`narrative-semantic-contract`）と heavy は走らせていない |
+
+`--features nir1-graph-eval` の試験は master に feature が無いので走らせていない（統合 branch で行う）。`grimodex-db` の試験は、この lane が db crate を変えないので走らせていない。
+
+### 6.4. 実測（(i-b)、実 worker、release build の worker と debug build の試験）
+
+- 保留 → 製品の接続と別の接続の監査の commit（各 3＋2 行、推論の代わりに 11 ms）→ release：begin から release まで 26.6〜27.3 ms、begin から結果まで 44.1〜47.6 ms（release から結果まで約 17〜21 ms。初回なので rebuild の窓は 0）。4 回とも `prepareFailures=0`、`driftAtQuery=0`、`stampStale=0`、`preparesReady=1`、available。
+- 対照（READY を作ってから同じ commit、その後に query）：4 回とも `stale`（owner の stamp が先に検出：`stampStale=1`、worker の `driftAtQuery=0`）。
+- worker の binary は CP-4 の target の release build を scratchpad に複写して使った（sha256 `87a412cf73dfa66c3315472068ef5469eb6c49a6d4d6579b5029e2e524e2d26f`、2026-10-25 14:26 の build）。CP-4 と master の grimodex-db の差は feature の下の `nir1_graph_eval.rs` だけで、worker の source（`bin/`、`nir1_graph*`、`lib.rs`）に差は無い。
+
+### 6.5. 落ちることを確かめた変異（1 つずつ入れて対象の試験を走らせ、sha256 で復元を確かめた）
+
+| 変異 | 落ちた試験 |
+|---|---|
+| M1 release を監査つきの embedding（begin.rs:178）より前に置く | `begin_releases_the_held_query_after_its_own_commits_and_reads`（動的には (i-a) の対照 1 が同じ組合せ：release の後の registration が監査の commit と重なり拒否） |
+| M2 release より前の READY を使い回す（P3） | `p3_a_ready_worker_prepared_before_the_release_is_retired_unqueried` |
+| M3 `Ok` の経路で release を忘れる（N3） | `begin_releases_…`（release の呼出しが無い） |
+| M4 `Err` で取り消さない（guard の Drop が何もしない、N2） | `a_begin_that_fails_drops_its_hold_and_frees_the_slot_at_once` |
+| M5 持たせた session の READY で通知する | `p1_a_held_query_prepares_only_after_its_release_and_is_announced_once` |
+| M6 registration の拒否を数えない（N8） | `n8_refusals_after_the_release_still_count_and_suspend_at_five`、(i-a) |
+| M7 participant の読取の中で release する | `begin_releases_…`（S0 の欠落は `a_release_inside_an_open_read_shows_as_a_missing_s0_stamp` が counter で示す） |
+| M8 release で `Arc` の同一性を見ない | `n7_a_second_release_or_one_after_a_cancellation_does_nothing` |
+| M9 保留の取消で owner thread を起こさない | `n3_dropping_an_unreleased_ticket_frees_the_slot_at_once`、`a_begin_that_fails_…`（最初は試験が owner thread の待ちの前に取り消していて生き残った。待ちに入ってから取り消すように直して再確認） |
+| M10 保留の期限を見ない | `n3_an_unreleased_hold_expires_and_frees_the_slot` |
+| M11 持たせた query の後に作り直して READY を公開する | `p1_…`（作り直しが無いこと） |
+| M12 release を待たずに query する | `p1_…`、(i-a) |
+
+注意：最初の変異の script は復元に `shutil.move` を使い、backup の古い mtime のまま戻したので、cargo が最後の変異（M9）の build を使い続けた回が 1 回あった（その回の回帰の 2 件の失敗は M9 の build によるもの）。復元した file を touch して build し直し、回帰・clippy・(i-b) をやり直した（上の結果はやり直した後のもの）。release の epoch の検査（`release_deferred` の `edge_or_closed`）を外す変異は、owner thread が edge を先に見て `invalidated` にするので試験では落ちない（多重の防御。N4 は owner thread 側で守られる）。
+
+### 6.6. 試験の競合（product の欠陥ではない）
+
+- `settle_unused_before_the_result_caches_and_announces_the_project_once`：cache は notice の emit より先に埋まるので、cache を待った直後に event を読むと負荷の下で空のことがあった。notice と session の終わりを待つように直した。
+- P3 の 2 件：fake の `retire` の counter は `retire` の始めに増え、owner の `stale_ready_retired` は `retire` が返った後に増える。owner の counter を待つように直した。
+
+### 6.7. 未検証・残る risk
+
+- 統合試験 (ii)（実 Electron、seed つきの実際の begin、semantic の埋め込みを含む）は未実施。手順は 6.8。本物の `prepare_related_scene_query` は通していない（model が要る）。fake の commit は製品と同じ writer・同じ順序（event type の列で確認）・同じ接続（authority）で、begin.rs の中の位置は source の順序の試験で固定した。
+- 常に graph-late。K6/2 (a) の窓内率は構造的にほぼ全部が窓外（HOLD）。
+- D-final の READY 待ち：保留中と持たせた session の間は `warming` のまま待ち、session の終わりの signal で自分の session を作る（P2、N6 で挙動を確認）。最悪の待ち（保留が期限まで残る場合に 4 s の予算を超えうる）は未測定。
+- 編集中の保存の頻度による F10、別の window の begin が同時に来る場合、`build::schedule` の Idle の poll（250 ms ごとの読取）が owner の S0／stamp の try-lock と重なる頻度は未測定。
+- 持たせた session の stale は project を unserved に残すが、その通知は次の D-final 型の READY か late cache まで出ない（6.2 の 5）。
+
+### 6.8. integrator が統合 branch で行う実機の確認（(ii) の手順）
+
+1. 統合 branch（`claude/nir1-cp4` に本 lane の 3 commit を取り込む）で、CP-4 の `nir1_graph_eval` を合わせる：`slot_name` の match に `GraphSlotKind::Deferred`（例 `"deferred"`）、`diagnostics_json` に `deferredReleased`、`deferredExpired`、`deferredDropped`、`staleReadyRetired`、`begin` と同じ `BeginProbe` を `begin_deferred` にも付ける（CP-4 は `begin` を `admit` で包んでいる）。`TicketShared::new` の引数（`deferred`）と CP-4 の `eval_notes` の初期化を合わせる。
+2. CP-4 の runner（`scripts/quality/nir1-graph-eval/runner.mjs`）の sample ごとの `waitReady`（slot が `ready` で `preparesReady` が増えるのを待つ）は、D′ では成り立たない（Related Scenes の query は READY を残さず、slot は query の後に `empty`）。K6/2 の `graph-eval-procedure`（条件付き、未発効）も「各 sample の前に slot が新しい READY になったことを確かめる」と書く。D′ の下で何を前提にするか（slot が `empty` で保留が無いこと、など）は integrator の判断と、必要なら確認の対象（この lane では変えない）。
+3. 評価 build の `.node` と dev fixture（`setup-driver.mjs`）で、CP-4 の隔離（`scripts/local-ci-xvfb.mjs`、Wayland／D-Bus 変数の除去）を守って、seed つきの `related_scenes_begin` を N 回（例 30）。各回：`related_scenes_graph_continue` を直接 2 s 待ち、Graph-only の handle があれば `nir1_evidence_qualify` で click、`unused` の settle の後の `graph-ready` で再 query が `Cached` になることを確かめる。
+4. 受入れの値：評価の診断で `prepareFailures=0`、`driftAtQuery=0`、`deferredReleased=N`（cache hit の回を除く）、`deferredExpired=0`、worker の stderr に `REGISTRATION_REFUSED` が無いこと。`diag-registration.mjs` の `owner-quiet` の段で、owner の prepare が READY になること。
+5. seed あり／なしで `rawReadyElapsedMs` の分布が変わらないこと（Raw の時間は D′ で増えない）。
+6. 対照：本 lane の commit を外した build（master の owner）で同じ手順を行い、`prepareFailures>0` または `driftAtQuery>0` になること（DR-CP4-S1C2-19〜22 の再現）。
+
+### 6.9. 重要な変更への該当
+
+無い。監査（順序と内容）、鮮度の判定（`ReadIdentity`、registration／query の drift）、保存の範囲、security の境界、確認済みの値と閾値、閉じた gate、D-final の経路はどれも変えていない。新しい受信先・保存・authority は無い。6.8 の 2（評価手順の READY の前提）は、手順の文の扱いを決める必要があるかもしれない点として integrator に返す（この lane では手順も runner も変えていない）。
