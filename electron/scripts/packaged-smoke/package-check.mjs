@@ -45,6 +45,36 @@ export function listAsarEntries(file) {
   }
 }
 
+/** app.asar の中身（bytes）に現れてはならない harness・probe の固有の文字列（製品の bundle に harness の code が混ざったら検出） */
+export const FORBIDDEN_ASAR_CONTENT = Object.freeze([
+  "dnsprobe.test", "probe.test:", "webrtc-block-probe", "renderer-isolation-probe", "packaged-smoke", "PROBE_DNSLOG", "PROBE_RENDERER_SCRIPT", "form-submit-shim",
+]);
+
+/** file の bytes に含まれる禁止の文字列（chunk の境界をまたぐ一致も見る） */
+export function forbiddenContent(file, needles = FORBIDDEN_ASAR_CONTENT) {
+  const encoded = needles.map((needle) => Buffer.from(needle, "latin1"));
+  const longest = Math.max(...encoded.map((needle) => needle.length));
+  const found = new Set();
+  const fd = fs.openSync(file, "r");
+  try {
+    const chunk = 1024 * 1024;
+    const buffer = Buffer.alloc(chunk + longest - 1);
+    let carry = 0;
+    for (;;) {
+      const read = fs.readSync(fd, buffer, carry, chunk, null);
+      if (read === 0) break;
+      const filled = carry + read;
+      const view = buffer.subarray(0, filled);
+      encoded.forEach((needle, index) => { if (view.includes(needle)) found.add(needles[index]); });
+      carry = Math.min(longest - 1, filled);
+      buffer.copy(buffer, 0, filled - carry, filled);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return [...found].sort();
+}
+
 /** PE の Optional Header の Subsystem（2 = GUI、3 = console）。PE でなければ null */
 export function peSubsystem(file) {
   const buffer = fs.readFileSync(file);
@@ -85,9 +115,11 @@ export async function checkPackage({ appDir, platform = process.platform }) {
   try {
     const entries = listAsarEntries(asar);
     const forbidden = entries.filter((entry) => FORBIDDEN_ASAR_ENTRY.test(entry));
-    recorded.asar = { entries: entries.length, forbidden };
+    const content = forbiddenContent(asar);
+    recorded.asar = { entries: entries.length, forbidden, forbiddenContent: content };
     if (entries.length === 0) failures.push("app.asar: file が 0（走査が何も見ていない）");
     if (forbidden.length) failures.push(`app.asar に harness／probe の file: ${forbidden.slice(0, 5).join(", ")}`);
+    if (content.length) failures.push(`app.asar の中身に harness／probe の文字列: ${content.join(", ")}`);
   } catch (error) {
     failures.push(`app.asar: ${String(error?.message ?? error)}`);
   }

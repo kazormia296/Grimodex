@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { GRAPH_WORKER_SEAM_MARKER } from "../verify-release-graph-worker.mjs";
-import { FORBIDDEN_ASAR_ENTRY, checkPackage, listAsarEntries, peSubsystem, resourcesDirOf } from "./package-check.mjs";
+import { FORBIDDEN_ASAR_CONTENT, FORBIDDEN_ASAR_ENTRY, checkPackage, forbiddenContent, listAsarEntries, peSubsystem, resourcesDirOf } from "./package-check.mjs";
 
 /** asar の header だけを持つ合成の file（中身の bytes は使わない） */
 function writeAsar(file, tree) {
@@ -97,4 +97,18 @@ test("PE の subsystem を読む（記録だけ）", () => {
 test("macOS の resources は bundle の Contents/Resources", () => {
   assert.equal(resourcesDirOf("/a/Grimodex.app", "darwin"), path.join("/a/Grimodex.app", "Contents", "Resources"));
   assert.equal(resourcesDirOf("/a/linux-unpacked", "linux"), path.join("/a/linux-unpacked", "resources"));
+});
+
+test("app.asar の中身に harness・probe の固有の文字列があれば不合格（chunk の境界をまたぐ一致も見る）", { skip: process.platform === "win32" }, async () => {
+  const appDir = fakeApp({ asarTree: PRODUCT_TREE });
+  const asar = path.join(resourcesDirOf(appDir, "linux"), "app.asar");
+  assert.deepEqual(forbiddenContent(asar), []);
+  // 1 MiB の境界をまたいで文字列を置く
+  const filler = Buffer.alloc(1024 * 1024 - 5, 0x20);
+  fs.appendFileSync(asar, Buffer.concat([filler, Buffer.from("x.dnsprobe.test/x")]));
+  assert.deepEqual(forbiddenContent(asar), ["dnsprobe.test"]);
+  const result = await checkPackage({ appDir, platform: "linux" });
+  assert.equal(result.ok, false);
+  assert.match(result.failures.join("\n"), /中身に harness／probe の文字列: dnsprobe\.test/);
+  assert.ok(FORBIDDEN_ASAR_CONTENT.includes("webrtc-block-probe"));
 });
