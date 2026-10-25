@@ -47,3 +47,12 @@ test("pid の分からない listen の socket があれば owned にしない�
     : command === "netstat" ? "tcp4  0  0  127.0.0.1.9222  *.*  LISTEN\ntcp6  0  0  ::1.9222  *.*  LISTEN\ntcp4 0 0 127.0.0.1.19222 *.* LISTEN\n" : " 100\n");
   assert.equal(verifyCdpPortOwner({ port: 9222, owner, platform: "darwin", exec: macOk }).owned, true);
 });
+
+test("pid の所属を確かめられない（stat を読めない、ps が失敗）なら owned にしない（fail-closed）", () => {
+  const exec = () => 'LISTEN 0 10 127.0.0.1:9222 0.0.0.0:* users:(("grimodex",pid=101,fd=40))';
+  const denied = verifyCdpPortOwner({ port: 9222, owner, platform: "linux", exec, readStat: () => { throw Object.assign(new Error("x"), { code: "EACCES" }); } });
+  assert.equal(denied.owned, false);
+  assert.match(denied.reason, /確かめられない/);
+  const mac = (command) => { if (command === "ps") throw new Error("ps failed"); return command === "lsof" ? "p101\nn127.0.0.1:9222\n" : "tcp4 0 0 127.0.0.1.9222 *.* LISTEN\n"; };
+  assert.equal(verifyCdpPortOwner({ port: 9222, owner, platform: "darwin", exec: mac }).owned, false);
+});
