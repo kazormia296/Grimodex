@@ -354,6 +354,35 @@ describe("enqueueIpc", () => {
     expect(beginRun).toHaveBeenCalledOnce();
   });
 
+  it("never runs two items of the same command and pair together (RS-JOIN, DR-RSJ-2)", async () => {
+    let release!: () => void;
+    const firstRun = vi.fn(
+      () =>
+        new Promise<string>((resolve) => (release = () => resolve("first"))),
+    );
+    const secondRun = vi.fn(async () => "second");
+    const first = enqueueIpc(
+      "related_scenes_continue",
+      firstRun,
+      null,
+      "derived",
+      "ticket-1",
+    );
+    const second = enqueueIpc(
+      "related_scenes_continue",
+      secondRun,
+      null,
+      "derived",
+      "ticket-1",
+    );
+    await Promise.resolve();
+    expect(firstRun).toHaveBeenCalledOnce();
+    expect(secondRun).not.toHaveBeenCalled();
+    release();
+    await expect(first).resolves.toBe("first");
+    await expect(second).resolves.toBe("second");
+  });
+
   it("cancels a joined pair item with the derived callers (RS-JOIN, DR-RSJ-2)", async () => {
     let releaseIr!: () => void;
     let releaseGraph!: () => void;

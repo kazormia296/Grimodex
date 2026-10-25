@@ -23,13 +23,15 @@ const MAX_CONCURRENT = 4;
 const MAX_CONCURRENT_BACKGROUND = MAX_CONCURRENT - 1;
 const MAX_CONCURRENT_DERIVED = 1;
 // RS-JOIN (DR-RSJ-2): derived work that names the `pair` of the single running
-// derived item may join it. Only the IR continue and the Graph await of one
-// Related Scenes operation name a pair (its ticket), so at most one item is
-// ever added, and only while that operation's IR continue is running.
+// derived item may join it if it is another command. Only the IR continue and
+// the Graph await of one Related Scenes operation name a pair (its ticket), so
+// at most one item is ever added: the one partner of the running one.
 const joinsActivePair = (item: QueueItem<unknown>) =>
   item.pair !== null &&
   activeDerivedCount === MAX_CONCURRENT_DERIVED &&
-  [...activeDerivedItems].some((active) => active.pair === item.pair);
+  [...activeDerivedItems].some(
+    (active) => active.pair === item.pair && active.cmd !== item.cmd,
+  );
 
 let queue: QueueItem<unknown>[] = [];
 let activeCount = 0;
