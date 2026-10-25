@@ -702,3 +702,16 @@ test("SHA256SUMS is sha256sum -c compatible and detects tampering", async () => 
   );
   assert.throws(() => parseSha256Sums("nothex  file\n"), /malformed/);
 });
+
+test("DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature", () => {
+  const withFeatures = (features) =>
+    receipt({ candidate: { ...receipt().candidate, features } });
+  assert.deepEqual(validateCp4Receipt(withFeatures(["nir1-graph-eval"])), []);
+  for (const features of [
+    ["nir1-graph-eval", "licensing"],
+    ["licensing", "nir1-graph-eval"],
+    [],
+    "nir1-graph-eval",
+  ])
+    assert.match(errorsOf(withFeatures(features)), /exactly the evaluation/);
+});

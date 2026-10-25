@@ -424,9 +424,12 @@ export function assertEvalBuildReceipt(receipt) {
     );
   if (
     !Array.isArray(receipt.features) ||
-    !receipt.features.includes(GRAPH_EVAL_FEATURE)
+    receipt.features.length !== 1 ||
+    receipt.features[0] !== GRAPH_EVAL_FEATURE
   )
-    throw precheck(`evaluation build lacks the ${GRAPH_EVAL_FEATURE} feature`);
+    throw precheck(
+      `evaluation build feature set must be exactly ["${GRAPH_EVAL_FEATURE}"]`,
+    );
   if (receipt.capabilities?.nir1GraphEval !== true)
     throw precheck("evaluation build lacks the nir1GraphEval capability");
   const artifacts = Object.keys(receipt.artifacts ?? {});

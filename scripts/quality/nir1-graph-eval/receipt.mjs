@@ -444,9 +444,12 @@ export function validateCp4Receipt(receipt) {
     digestErrors(errors, candidate?.workerSha256, "candidate.workerSha256");
     if (
       !Array.isArray(candidate?.features) ||
-      !candidate.features.includes("nir1-graph-eval")
+      candidate.features.length !== 1 ||
+      candidate.features[0] !== "nir1-graph-eval"
     )
-      errors.push("candidate.features must record the evaluation feature set");
+      errors.push(
+        'candidate.features must be exactly the evaluation feature set ["nir1-graph-eval"]',
+      );
   }
   for (const language of ["ja", "en"]) {
     digestErrors(

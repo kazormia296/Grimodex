@@ -412,6 +412,15 @@ test("N-3 / P1-2: a G-case Graph arm needs a strict evaluation receipt", () => {
     withEval(evalReceipt({ features: ["xx-nir1-graph-eval-yy"] })),
     /feature/,
   );
+  // DR-CP4-S1C1-9: exactly the one feature, not a superset.
+  assert.throws(
+    withEval(evalReceipt({ features: ["nir1-graph-eval", "licensing"] })),
+    /exactly/,
+  );
+  assert.throws(
+    withEval(evalReceipt({ features: ["nir1-graph-eval", "nir1-graph-eval"] })),
+    /exactly/,
+  );
   const escape =
     ".artifacts/cp4/eval-build/../../../electron/native/grimodex-node/grimodex-node.node";
   const escapeWorker =

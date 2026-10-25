@@ -93,7 +93,9 @@ test("P1-4 / N-7: (a) counts only worker results that started on a fresh READY w
   );
   assert.equal(
     steadyStateInWindow(
-      sample({ freshnessStamp: { matched: false, attemptedAt: 95 } }),
+      sample({
+        freshnessStamp: { result: "stale", matched: false, attemptedAtNs: 95 },
+      }),
     ),
     false,
   );
@@ -193,7 +195,13 @@ test("P1-4: not-READY or stamp-mismatched samples joined in time are out of wind
         : repeat === 2
           ? { startSlot: { readyFresh: false } }
           : repeat === 3
-            ? { freshnessStamp: { matched: false, attemptedAt: 95 } }
+            ? {
+                freshnessStamp: {
+                  result: "stale",
+                  matched: false,
+                  attemptedAtNs: 95,
+                },
+              }
             : {},
   );
   const g06 = summarize(rows).cases.find(
@@ -204,6 +212,32 @@ test("P1-4: not-READY or stamp-mismatched samples joined in time are out of wind
   assert.equal(g06.cacheOrigin, 2);
   assert.equal(g06.notReadyAtStart, 1);
   assert.equal(g06.stampMismatch, 1);
+});
+
+test("DR-CP4-S1C1-8: (a) counts a stamp without comparison apart and never in window", () => {
+  const rows = steadyRun((variant, repeat) =>
+    variant.key === "G-06/base" && repeat < 2
+      ? {
+          freshnessStamp: {
+            result: repeat === 0 ? "unavailable" : "stamp0-missing",
+            matched: null,
+            attemptedAtNs: 95,
+          },
+        }
+      : {},
+  );
+  const g06 = summarize(rows).cases.find(
+    (row) => row.variantKey === "G-06/base",
+  );
+  assert.equal(g06.outOfWindow, 2);
+  assert.equal(g06.stampMismatch, 2);
+  assert.equal(g06.stampWithoutComparison, 2);
+  const retired = steadyRun((variant, repeat) =>
+    variant.key === "G-06/base" && repeat === 0
+      ? late("busy", { busyCause: "freshness-stamp-read-failed" })
+      : {},
+  );
+  assert.throws(() => summarize(retired), /never answers Busy/);
 });
 
 test("a case with no in-window sample is quality HOLD", () => {
@@ -355,8 +389,13 @@ function trace(kind, n, mutate = () => ({})) {
         tFetch: t0,
         tRawReady: t0 + 10,
         tReturn: t0 + 30,
-        recordRead: { startedAt: t0 + 1, finishedAt: t0 + 2 },
-        freshnessStamp: { matched: true, attemptedAt: t0 + 5 },
+        // Native ns (a different clock from the renderer ms above).
+        recordRead: { startedAtNs: t0 * 1e6 + 1, finishedAtNs: t0 * 1e6 + 2 },
+        freshnessStamp: {
+          result: "fresh",
+          matched: true,
+          attemptedAtNs: t0 * 1e6 + 5,
+        },
         ...rest,
         graph: { arrivedAt: t0 + 15, ...graph },
       });
@@ -478,43 +517,137 @@ test("U = 0 never satisfies the yardstick; Q = 199 is a trace defect, Q = 200 is
   assert.equal(traceOf(trace("browsing", 200)).status, "valid");
 });
 
-const busy = late("busy", { busyCause: "freshness-stamp-read-failed" });
+const unavailableStamp = (t0) => ({
+  ...late("graph-late"),
+  freshnessStamp: {
+    result: "unavailable",
+    matched: null,
+    attemptedAtNs: t0 * 1e6 + 5,
+  },
+});
 
-test("rule 4 / P2-4: freshness-stamp busy is freshness only without any record-read overlap", () => {
-  const clear = traceOf(trace("browsing", 200, (at) => (at === 7 ? busy : {})));
-  assert.equal(clear.categories.freshness, 1);
-  assert.equal(clear.busy.freshnessStamp, 1);
+test("rule 4 / DR-CP4-S1C1-8: a stamp read failure is other on its own, never freshness", () => {
+  const clear = traceOf(
+    trace("browsing", 200, (at, t0) =>
+      at === 7
+        ? { ...unavailableStamp(t0), startSlot: { readyFresh: false } }
+        : {},
+    ),
+  );
+  // readyFresh false would make a compared stale start freshness; without a
+  // comparison it stays "other".
+  assert.equal(clear.categories.freshness, 0);
+  assert.equal(clear.categories.other, 1);
+  assert.equal(clear.stampWithoutComparison.unavailable.clear, 1);
+  assert.equal(clear.reasons["freshness-stamp-unavailable:clear"], 1);
   const overlapped = traceOf(
     trace("browsing", 200, (at, t0) =>
       at === 7
-        ? { ...busy, recordRead: { startedAt: t0 + 4, finishedAt: t0 + 6 } }
+        ? {
+            ...unavailableStamp(t0),
+            recordRead: {
+              startedAtNs: t0 * 1e6 + 4,
+              finishedAtNs: t0 * 1e6 + 6,
+            },
+          }
         : {},
     ),
   );
   assert.equal(overlapped.categories.other, 1);
-  assert.equal(overlapped.busy.overlapped, 1);
+  assert.equal(overlapped.stampWithoutComparison.unavailable.overlapped, 1);
   // A re-query's record read also counts (rule 4: any sample of the trace).
-  const viaRequery = trace("browsing", 200, (at) => (at === 7 ? busy : {}));
+  const viaRequery = trace("browsing", 200, (at, t0) =>
+    at === 7 ? unavailableStamp(t0) : {},
+  );
   viaRequery.queries.push(
     sample({
       queryId: "r1",
       trigger: "graph-ready-requery",
-      recordRead: { startedAt: 7004, finishedAt: 7006 },
+      recordRead: { startedAtNs: 7000e6 + 4, finishedAtNs: 7000e6 + 6 },
     }),
   );
-  assert.equal(traceOf(viaRequery).busy.overlapped, 1);
-  const requeryMissing = trace("browsing", 200, (at) => (at === 7 ? busy : {}));
+  assert.equal(
+    traceOf(viaRequery).stampWithoutComparison.unavailable.overlapped,
+    1,
+  );
+  const requeryMissing = trace("browsing", 200, (at, t0) =>
+    at === 7 ? unavailableStamp(t0) : {},
+  );
   requeryMissing.queries.push(
     sample({ queryId: "r2", trigger: "graph-ready-requery", recordRead: null }),
   );
-  assert.equal(traceOf(requeryMissing).busy.overlapRecordMissing, 1);
-  const missing = traceOf(
-    trace("browsing", 200, (at) =>
-      at === 7 ? busy : at === 150 ? { recordRead: null } : {},
+  assert.equal(
+    traceOf(requeryMissing).stampWithoutComparison.unavailable[
+      "overlap-record-missing"
+    ],
+    1,
+  );
+  // stamp0-missing (no READY stamp to compare) is handled the same way.
+  const stamp0 = traceOf(
+    trace("browsing", 200, (at, t0) =>
+      at === 3
+        ? {
+            ...late("graph-late"),
+            startSlot: { readyFresh: false },
+            freshnessStamp: {
+              result: "stamp0-missing",
+              matched: null,
+              attemptedAtNs: t0 * 1e6 + 5,
+            },
+          }
+        : {},
     ),
   );
-  assert.equal(missing.categories.other, 1);
-  assert.equal(missing.busy.overlapRecordMissing, 1);
+  assert.equal(stamp0.categories.freshness, 0);
+  assert.equal(stamp0.stampWithoutComparison["stamp0-missing"].clear, 1);
+});
+
+test("DR-CP4-S1C1-8: a Busy for a stamp read is not a product answer and stops", () => {
+  const retired = late("busy", { busyCause: "freshness-stamp-read-failed" });
+  assert.throws(
+    () => traceOf(trace("browsing", 200, (at) => (at === 7 ? retired : {}))),
+    /never answers Busy for a stamp read/,
+  );
+  // Other Busy causes stay "other".
+  const busy = traceOf(
+    trace("browsing", 200, (at) =>
+      at === 7 ? late("busy", { busyCause: "worker-capacity" }) : {},
+    ),
+  );
+  assert.equal(busy.categories.other, 1);
+  assert.equal(busy.busy.causes["worker-capacity"], 1);
+});
+
+test("DR-CP4-S1C1-10: the Native ns fields never move the window", () => {
+  const base = sample();
+  const shifted = sample({
+    freshnessStamp: {
+      result: "fresh",
+      matched: true,
+      attemptedAtNs: 9_999_999_999,
+    },
+    recordRead: { startedAtNs: 1, finishedAtNs: 9_999_999_999 },
+  });
+  assert.deepEqual(classifyJoin(shifted), classifyJoin(base));
+  // A ms value in a Ns field is not a Native time: the overlap is undecidable.
+  const msInNs = traceOf(
+    trace("browsing", 200, (at, t0) =>
+      at === 7
+        ? {
+            ...unavailableStamp(t0),
+            freshnessStamp: {
+              result: "unavailable",
+              matched: null,
+              attemptedAtNs: t0 + 5.5,
+            },
+          }
+        : {},
+    ),
+  );
+  assert.equal(
+    msInNs.stampWithoutComparison.unavailable["overlap-record-missing"],
+    1,
+  );
 });
 
 test("rule 4: graph-late splits by the start slot and stamp; Chronicle stop is a lapse", () => {

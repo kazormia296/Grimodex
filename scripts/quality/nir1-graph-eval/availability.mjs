@@ -15,14 +15,18 @@
 //   irOutcome                             same query's IR outcome
 //   a3AtStart: { eligible, reasons }      expected materials at start
 //   startSlot: { readyFresh }             owner slot was a new READY
-//   freshnessStamp: { matched, attemptedAt }
-//   recordRead: { startedAt, finishedAt } read-only record connection
+//   freshnessStamp: { result, matched, attemptedAtNs }
+//   recordRead: { startedAtNs, finishedAtNs } read-only record connection
+//                                         (*Ns: the evaluation Native clock,
+//                                         native-sample.mjs; never mixed with
+//                                         the renderer ms of the window)
 //   graph: { outcome, reason, source, joined, arrivedAt, revalidation,
 //            edgeCount, busyCause }       arrivedAt: the same renderer clock
 //                                         the product's join helper compared
 //   finalSceneIds                         the returned final list
 //   expectedMaterials                     trace queries only
 
+import { isNativeNs } from "./native-sample.mjs";
 import {
   BOUNDARY_TOLERANCE_MS,
   GRAPH_CASE_ARMS,
@@ -43,7 +47,22 @@ const SETUP_DEFECT_REASONS = new Set([
   "profile-not-restricted",
 ]);
 const FRESHNESS_REASONS = new Set(["stale", "warming"]);
-const FRESHNESS_STAMP_BUSY = "freshness-stamp-read-failed";
+/**
+ * A Busy cause the product owner never answers (DR-CP4-S1C1-8): a failed
+ * stamp read does not make the owner Busy; the Native records it as
+ * `freshnessStamp.result: "unavailable"` and the query goes on. A sample with
+ * this cause is a harness mistake and stops instead of being counted.
+ */
+const RETIRED_FRESHNESS_STAMP_BUSY = "freshness-stamp-read-failed";
+/** Stamp results without a comparison (matched null): never freshness. */
+const STAMP_WITHOUT_COMPARISON = new Set(["unavailable", "stamp0-missing"]);
+
+function assertNoRetiredBusy(sample) {
+  if (sample?.graph?.busyCause === RETIRED_FRESHNESS_STAMP_BUSY)
+    throw new Error(
+      "[artifact] the product owner never answers Busy for a stamp read; record it as freshnessStamp.result unavailable",
+    );
+}
 export const BOUNDARY_DISAGREEMENTS = Object.freeze({
   notJoinedInTime: "not-joined-in-time",
   joinedLateWithinTolerance: "joined-late-within-tolerance",
@@ -213,6 +232,7 @@ export function summarizeSteadyStateCase({ rows, variant, fixedGraphMode }) {
     cacheOrigin: 0,
     notReadyAtStart: 0,
     stampMismatch: 0,
+    stampWithoutComparison: 0,
     boundaryDisagreement: emptyDisagreement(),
     qualityHold: false,
   };
@@ -229,12 +249,15 @@ export function summarizeSteadyStateCase({ rows, variant, fixedGraphMode }) {
       invalid.push(
         `${row.variantKey}#${row.repeat} started without a usable snapshot (steady-state setup defect)`,
       );
+    assertNoRetiredBusy(row);
     const join = classifyJoin(row);
     if (join.disagreement) entry.boundaryDisagreement[join.disagreement] += 1;
     if (steadyStateInWindow(row)) entry.inWindow += 1;
     if (row.graph.source === "cache") entry.cacheOrigin += 1;
     if (row.startSlot?.readyFresh !== true) entry.notReadyAtStart += 1;
     if (row.freshnessStamp?.matched !== true) entry.stampMismatch += 1;
+    if (STAMP_WITHOUT_COMPARISON.has(row.freshnessStamp?.result))
+      entry.stampWithoutComparison += 1;
   }
   if (entry.n !== MEASURED_RUNS_PER_ARM)
     invalid.push(
@@ -330,18 +353,20 @@ export function lapseKind(query, inWindow) {
  * overlap undecidable.
  */
 function busyOverlap(query, allQueries) {
-  const attempted = query.freshnessStamp?.attemptedAt;
-  if (!finite(attempted)) return "overlap-record-missing";
+  // Both sides are evaluation Native ns (native-sample.mjs); nothing here is
+  // compared with the renderer ms of the window.
+  const attempted = query.freshnessStamp?.attemptedAtNs;
+  if (!isNativeNs(attempted)) return "overlap-record-missing";
   for (const row of allQueries)
     if (
-      !finite(row.recordRead?.startedAt) ||
-      !finite(row.recordRead?.finishedAt)
+      !isNativeNs(row.recordRead?.startedAtNs) ||
+      !isNativeNs(row.recordRead?.finishedAtNs)
     )
       return "overlap-record-missing";
   return allQueries.some(
     (row) =>
-      row.recordRead.startedAt <= attempted &&
-      attempted <= row.recordRead.finishedAt,
+      row.recordRead.startedAtNs <= attempted &&
+      attempted <= row.recordRead.finishedAtNs,
   )
     ? "overlapped"
     : "clear";
@@ -350,8 +375,13 @@ function busyOverlap(query, allQueries) {
 /**
  * Rule 4: lapse, then other, then freshness. Returns the category and the
  * reason name used for it. `setup-defect` reasons invalidate the run.
+ * A stamp attempt without a comparison (the stamp read failed, or the READY
+ * stamp was missing) is counted on its own and goes to "other", never to
+ * freshness (DR-CP4-S1C1-8); its record-read overlap is still computed for
+ * disclosure.
  */
 export function outOfWindowCategory(query, allQueries, join) {
+  assertNoRetiredBusy(query);
   const kind = lapseKind(query, false);
   if (kind && kind !== "iv-empty-contribution")
     return { category: "lapse", reason: kind };
@@ -361,15 +391,15 @@ export function outOfWindowCategory(query, allQueries, join) {
   const reason = graph.outcome === "graph-late" ? "graph-late" : graph.reason;
   if (SETUP_DEFECT_REASONS.has(reason))
     return { category: "setup-defect", reason };
+  const stampResult = query.freshnessStamp?.result;
+  if (STAMP_WITHOUT_COMPARISON.has(stampResult))
+    return {
+      category: "other",
+      reason: `freshness-stamp-${stampResult}:${busyOverlap(query, allQueries)}`,
+    };
   if (FRESHNESS_REASONS.has(reason)) return { category: "freshness", reason };
-  if (reason === "busy") {
-    if (graph.busyCause !== FRESHNESS_STAMP_BUSY)
-      return { category: "other", reason: `busy:${graph.busyCause ?? "none"}` };
-    const overlap = busyOverlap(query, allQueries);
-    return overlap === "clear"
-      ? { category: "freshness", reason: "busy:freshness-stamp" }
-      : { category: "other", reason: `busy:freshness-stamp:${overlap}` };
-  }
+  if (reason === "busy")
+    return { category: "other", reason: `busy:${graph.busyCause ?? "none"}` };
   if (reason === "graph-late") {
     const fresh =
       query.startSlot?.readyFresh === true &&
@@ -454,10 +484,12 @@ export function summarizeTrace(input) {
   const reasons = {};
   const boundaryDisagreement = emptyDisagreement();
   let inWindow = 0;
-  let overlapped = 0;
-  let overlapMissing = 0;
-  let freshnessStampBusy = 0;
+  const stampWithoutComparison = {
+    unavailable: { clear: 0, overlapped: 0, "overlap-record-missing": 0 },
+    "stamp0-missing": { clear: 0, overlapped: 0, "overlap-record-missing": 0 },
+  };
   for (const query of counted) {
+    assertNoRetiredBusy(query);
     const join = classifyJoin(query);
     if (join.disagreement) boundaryDisagreement[join.disagreement] += 1;
     // Rule 2: only a query of U can be in-window.
@@ -475,10 +507,10 @@ export function summarizeTrace(input) {
       invalid.push(`${query.queryId} reported ${reason} (setup defect)`);
     else categories[category] += 1;
     reasons[reason] = (reasons[reason] ?? 0) + 1;
-    if (reason === "busy:freshness-stamp") freshnessStampBusy += 1;
-    if (reason === "busy:freshness-stamp:overlapped") overlapped += 1;
-    if (reason === "busy:freshness-stamp:overlap-record-missing")
-      overlapMissing += 1;
+    const stamp = /^freshness-stamp-(unavailable|stamp0-missing):(.+)$/u.exec(
+      reason,
+    );
+    if (stamp) stampWithoutComparison[stamp[1]][stamp[2]] += 1;
   }
   if (invalid.length > 0) return invalidTrace(trace, invalid, Q, requeries);
   const U = usable.length;
@@ -501,10 +533,8 @@ export function summarizeTrace(input) {
     categories,
     reasons,
     boundaryDisagreement,
+    stampWithoutComparison,
     busy: {
-      freshnessStamp: freshnessStampBusy,
-      overlapped,
-      overlapRecordMissing: overlapMissing,
       causes: countBy(
         counted.filter((query) => query.graph.reason === "busy"),
         (query) => query.graph.busyCause,
