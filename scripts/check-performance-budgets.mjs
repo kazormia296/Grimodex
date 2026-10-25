@@ -19,7 +19,11 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
   // （実測 raw 4,249,993 → 4,250,669 で +676、gzip 1,342,871 → 1,343,227 で +356）。
-  absoluteMax: { rawBytes: 4_250_700, gzipBytes: 1_350_000 },
+  // raw は 4_250_700 から 300 byte だけ上げた。RS-JOIN（DR-RSJ-2）で、同じ Related Scenes
+  // operation の IR の continue と Graph の待受けを並行に通す pair の規則が初期 graph の
+  // ipcQueue.ts と tauri.ts に入るため（実測 raw 4,250,669 → 4,250,910 で +241、
+  // gzip は上限の内側）。
+  absoluteMax: { rawBytes: 4_251_000, gzipBytes: 1_350_000 },
 };
 const INITIAL_CSS_MAX_BYTES = 240_000;
 const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;

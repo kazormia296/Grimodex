@@ -376,6 +376,22 @@ function isRelatedScenesGraphSettle(
   );
 }
 
+/**
+ * RS-JOIN (DR-RSJ-2): the IR continue and the Graph await of one Related
+ * Scenes operation share its ticket as their derived pair, so the Graph await
+ * runs beside the IR continue instead of after it (`ipcQueue.ts`).
+ */
+function derivedPairForCommand(
+  command: string,
+  args?: Record<string, unknown>,
+): string | null {
+  return (command === "related_scenes_continue" ||
+    command === "related_scenes_graph_continue") &&
+    typeof args?.operationTicket === "string"
+    ? args.operationTicket
+    : null;
+}
+
 function ipcCategoryForCommand(
   command: string,
   args?: Record<string, unknown>,
@@ -579,6 +595,7 @@ export async function invoke<T = unknown>(
         },
         ms,
         ipcCategoryForCommand(cmd, args),
+        derivedPairForCommand(cmd, args),
       );
     } catch (error) {
       const normalized = normalizeIpcFailure(cmd, error);

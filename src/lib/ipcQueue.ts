@@ -8,6 +8,7 @@ type QueueItem<T> = {
   run: () => Promise<T>;
   timeoutMs: number | null;
   category: IpcQueueCategory;
+  pair: string | null;
   resolve: (value: T) => void;
   reject: (error: unknown) => void;
   cancelCaller: ((error: Error) => void) | null;
@@ -21,6 +22,16 @@ const MAX_CONCURRENT = 4;
 // leaving one global slot for manuscript mutations/lifecycle commands.
 const MAX_CONCURRENT_BACKGROUND = MAX_CONCURRENT - 1;
 const MAX_CONCURRENT_DERIVED = 1;
+// RS-JOIN (DR-RSJ-2): derived work that names the `pair` of the single running
+// derived item may join it if it is another command. Only the IR continue and
+// the Graph await of one Related Scenes operation name a pair (its ticket), so
+// at most one item is ever added: the one partner of the running one.
+const joinsActivePair = (item: QueueItem<unknown>) =>
+  item.pair !== null &&
+  activeDerivedCount === MAX_CONCURRENT_DERIVED &&
+  [...activeDerivedItems].some(
+    (active) => active.pair === item.pair && active.cmd !== item.cmd,
+  );
 
 let queue: QueueItem<unknown>[] = [];
 let activeCount = 0;
@@ -137,7 +148,9 @@ function pumpQueue(): void {
       if (item.category === "mutation") return true;
       if (activeBackgroundCount >= MAX_CONCURRENT_BACKGROUND) return false;
       return (
-        item.category === "read" || activeDerivedCount < MAX_CONCURRENT_DERIVED
+        item.category === "read" ||
+        activeDerivedCount < MAX_CONCURRENT_DERIVED ||
+        joinsActivePair(item)
       );
     });
     if (nextIndex < 0) break;
@@ -175,6 +188,7 @@ export function enqueueIpc<T>(
   run: () => Promise<T>,
   timeoutMs: number | null,
   category: IpcQueueCategory = "mutation",
+  pair: string | null = null,
 ): Promise<T> {
   if (category === "mutation" && mutationAdmissionBarrierCount > 0) {
     return Promise.reject(mutationCancellationError(cmd));
@@ -198,6 +212,7 @@ export function enqueueIpc<T>(
       run,
       timeoutMs,
       category,
+      pair,
       resolve: resolve as (value: unknown) => void,
       reject,
       cancelCaller: null,
