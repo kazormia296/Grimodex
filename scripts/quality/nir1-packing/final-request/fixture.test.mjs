@@ -1,4 +1,7 @@
-// Consistency tests for the placed final-request fixture (DP-H / DPH-2).
+// Consistency tests for the placed final-request fixture version 1 (DP-H /
+// DPH-2). Version 1 is superseded (Native observed its materials before the
+// freeze, DR-DPH-70) and stays as the HOLD history; these tests keep checking
+// it as it is. A replacement version brings its own tests.
 //
 // Nothing here runs Native or reads a receipt. The tests fix that the fixture's
 // expected entries are what the hand-derivation rules (fixture-derive.mjs) give
@@ -12,11 +15,7 @@ import path from "node:path";
 import test from "node:test";
 import {
   DPH_CASE_IDS,
-  FIXTURE_PATH,
-  FREEZE_PATH,
-  PARITY_VECTOR_PATH,
-  README_PATH,
-  REVIEW_PATH,
+  FIXTURE_VERSIONS,
   REJECT_CODE,
   SCORER_FILES,
   sha256,
@@ -31,6 +30,12 @@ import { estimateTokens, loadFixedTemplate } from "./payload.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "../../../..");
 const read = (file) => readFile(path.join(repoRoot, file));
+const V1 = FIXTURE_VERSIONS[1];
+const FIXTURE_PATH = V1.fixturePath;
+const FREEZE_PATH = V1.freezePath;
+const REVIEW_PATH = V1.reviewPath;
+const README_PATH = V1.readmePath;
+const PARITY_VECTOR_PATH = V1.parityVectorPath;
 
 const fixtureBytes = await read(FIXTURE_PATH);
 const fixture = JSON.parse(fixtureBytes);
@@ -397,9 +402,19 @@ test("the freeze and review records bind the bytes on disk (pending review until
   });
   assert.deepEqual(reviewErrors, []);
   assert.deepEqual(
-    validateFreezeRecord(freeze, { bytes, review, reviewErrors, fixture }),
+    validateFreezeRecord(freeze, {
+      bytes,
+      review,
+      reviewErrors,
+      fixture,
+      fixtureVersion: 1,
+    }),
     [],
   );
+  // Version 1 is the HOLD history (DR-DPH-70, 78): observed, never frozen.
+  assert.equal(V1.supersededBy, 2);
+  assert.equal(freeze.status, "pending-review");
+  assert.equal(freeze.nativeOutputObservedBeforeFreeze, true);
   assert.equal(freeze.fixture.sha256, sha256(fixtureBytes));
   assert.deepEqual(
     freeze.scorer.files.map((file) => file.path).sort(),
@@ -423,9 +438,14 @@ test("the freeze and review records bind the bytes on disk (pending review until
 test("the repository report validates the placed fixture, freeze and review records", async () => {
   const report = await validateNir1FinalRequestFixtures({ repoRoot });
   assert.deepEqual(report.errors, []);
-  assert.ok(["pending-review", "frozen"].includes(report.status));
+  const v1 = report.versions.find((entry) => entry.fixtureVersion === 1);
+  assert.equal(v1.status, "pending-review");
+  assert.equal(v1.supersededBy, 2);
   assert.deepEqual(
-    report.cases.map((entry) => entry.caseId),
+    v1.cases.map((entry) => entry.caseId),
     [...DPH_CASE_IDS],
   );
+  // The top level is the evidence version (the replacement).
+  assert.equal(report.fixtureVersion, 2);
+  assert.ok(["not-placed", "pending-review", "frozen"].includes(report.status));
 });

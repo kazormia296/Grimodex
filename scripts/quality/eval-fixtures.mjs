@@ -895,8 +895,10 @@ export async function buildNir1GraphCaseReport({
 
 /**
  * NIR-1 final-request (DP-H) fixture: shape, freeze record, independent review
- * and sha256 bindings. Until the fixture file is placed the state is
- * `not-placed` (not an error). No Native, Raw, IR or model result is read.
+ * and sha256 bindings of every fixture version. The state is the evidence
+ * version's (`not-placed` until its file is placed, not an error); `versions`
+ * lists each version, including the superseded HOLD record. No Native, Raw, IR
+ * or model result is read.
  */
 export async function buildNir1FinalRequestFixtureReport({
   repoRoot = DEFAULT_REPO_ROOT,
@@ -905,10 +907,17 @@ export async function buildNir1FinalRequestFixtureReport({
   return {
     status: result.errors.length === 0 ? "passed" : "failed",
     state: result.status,
+    fixtureVersion: result.fixtureVersion,
     scope:
-      "Fixture shape, freeze-record and independent-review bindings only; no Native packer, renderer, D-final or model result is read, and a missing fixture is reported as not-placed.",
+      "Fixture shape, freeze-record and independent-review bindings only, for every fixture version (the state is the evidence version's); no Native packer, renderer, D-final or model result is read, and a missing fixture is reported as not-placed.",
     cases: result.cases,
     freeze: result.freeze,
+    versions: (result.versions ?? []).map((entry) => ({
+      fixtureVersion: entry.fixtureVersion,
+      supersededBy: entry.supersededBy,
+      state: entry.status,
+      freeze: entry.freeze,
+    })),
     errors: result.errors,
   };
 }

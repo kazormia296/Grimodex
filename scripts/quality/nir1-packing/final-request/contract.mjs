@@ -21,8 +21,8 @@
 // "作者の分離と freeze の順序", "fixture の版と freeze 記録",
 // "variant の区分と負例の表し方", "case ごとの材料と測る時期".
 //
-// Fixture shape (`nir1-final-request-fixture/1`, evals/nir1-packing/final-request.v1.json):
-//   schemaVersion, contractId, draftRef, fixtureVersion (1), phase ("dp-h"),
+// Fixture shape (`nir1-final-request-fixture/1`, evals/nir1-packing/final-request.v<N>.json):
+//   schemaVersion, contractId, draftRef, fixtureVersion (a FIXTURE_VERSIONS key), phase ("dp-h"),
 //   fixtureId, estimatorVersion, fixedTemplate { version, ref },
 //   route { model, contextWindowTokens, outputTokens },
 //   canaries [{ id, kind: decision-note | internal-metadata, text }],
@@ -62,7 +62,9 @@
 //   variantId, stage (optional, default 1), contextBudgetTokens, selectedTokens,
 //   marginTokens }] } (one row per positive request, matching the fixture),
 //   authorSeparation { fixtureAuthor, expectationReviewer, harnessImplementers,
-//   nativeReceiptProvidedToAuthor false }.
+//   nativeReceiptProvidedToAuthor false }; a replacement version also has
+//   supersedes { fixtureVersion, fixture { path, sha256 }, freezeRecord { path,
+//   sha256 }, decision } naming the version it replaces.
 // Review record (`nir1-final-request-expectation-review/1`): verdict, reviewer
 //   { agent, model, distinctFromFixtureAuthor, distinctFromImplementers, readOnly,
 //   nativeOutputObserved false }, fixtureSha256 (the reviewed bytes), requiredChanges,
@@ -88,13 +90,60 @@ import {
   RUNTIME_VALUE_KINDS,
 } from "./receipt.mjs";
 
-export const FIXTURE_PATH = "evals/nir1-packing/final-request.v1.json";
-export const FREEZE_PATH = "evals/nir1-packing/final-request.freeze.v1.json";
-export const REVIEW_PATH =
-  "evals/nir1-packing/final-request.expectation-review.v1.json";
-export const README_PATH = "evals/nir1-packing/final-request.README.md";
-export const PARITY_VECTOR_PATH =
+// ---------------------------------------------------------- fixture versions
+//
+// Each DP-H fixture version owns its fixture, freeze record, review record and
+// README (draft: fixture の版と freeze 記録; dp-h-decisions.md DR-DPH-77..81).
+// A version whose materials Native observed before it was frozen is kept as a
+// HOLD record (`supersededBy`): it is still validated, never frozen and never
+// scored. A replacement version (`replaces`) is held to the whole contract plus
+// the cross-version checks (`supersedes` binding, no reuse of the replaced
+// version's materials, author separation across the versions).
+
+const PARITY_VECTOR_V1_PATH =
   "evals/nir1-packing/final-request-baseline-parity.v1.json";
+
+export const FIXTURE_VERSIONS = Object.freeze({
+  1: Object.freeze({
+    fixtureVersion: 1,
+    fixturePath: "evals/nir1-packing/final-request.v1.json",
+    freezePath: "evals/nir1-packing/final-request.freeze.v1.json",
+    reviewPath: "evals/nir1-packing/final-request.expectation-review.v1.json",
+    readmePath: "evals/nir1-packing/final-request.README.md",
+    parityVectorPath: PARITY_VECTOR_V1_PATH,
+    /** Observed by Native before the freeze (DR-DPH-70): HOLD, replaced by 2. */
+    supersededBy: 2,
+    supersededDecision: "DR-DPH-70",
+  }),
+  2: Object.freeze({
+    fixtureVersion: 2,
+    fixturePath: "evals/nir1-packing/final-request.v2.json",
+    freezePath: "evals/nir1-packing/final-request.freeze.v2.json",
+    reviewPath: "evals/nir1-packing/final-request.expectation-review.v2.json",
+    readmePath: "evals/nir1-packing/final-request.v2.README.md",
+    parityVectorPath: PARITY_VECTOR_V1_PATH,
+    /** DP-H replacement of version 1 (new materials, new author, new review). */
+    replaces: 1,
+    /** Implementers of the harness and contract after version 1 (S0). */
+    requiredImplementers: Object.freeze([
+      "dph-s0-builder (versioned contract and gate)",
+    ]),
+  }),
+});
+
+/** The version whose frozen record the evidence run (runner, harness) uses. */
+export const EVIDENCE_FIXTURE_VERSION = 2;
+
+/** The paths of a registered fixture version, or `undefined`. */
+export function fixtureVersionSpec(version) {
+  return Object.hasOwn(FIXTURE_VERSIONS, String(version))
+    ? FIXTURE_VERSIONS[version]
+    : undefined;
+}
+
+function registeredVersions() {
+  return Object.values(FIXTURE_VERSIONS).map((spec) => spec.fixtureVersion);
+}
 
 export const FIXTURE_SCHEMA_VERSION = "nir1-final-request-fixture/1";
 export const FREEZE_SCHEMA_VERSION = "nir1-final-request-freeze/1";
@@ -1042,7 +1091,10 @@ function validateDiagnosticCases(diagnostics, cases, errors) {
  * Validates a final-request fixture. `template` (optional, from
  * `loadFixedTemplate`) enables the context-budget formula check.
  */
-export function validateFinalRequestFixture(fixture, { template } = {}) {
+export function validateFinalRequestFixture(
+  fixture,
+  { template, fixtureVersion } = {},
+) {
   const errors = [];
   if (!isRecord(fixture)) return ["fixture must be an object"];
   if (fixture.schemaVersion !== FIXTURE_SCHEMA_VERSION) {
@@ -1052,10 +1104,18 @@ export function validateFinalRequestFixture(fixture, { template } = {}) {
     errors.push(`fixture.contractId must be ${CONTRACT_ID}`);
   if (fixture.draftRef !== DRAFT_REF)
     errors.push(`fixture.draftRef must be ${DRAFT_REF}`);
-  if (fixture.fixtureVersion !== 1)
+  // `fixtureVersion` (optional) is the version whose path the fixture was read
+  // from; without it the fixture must name a registered version.
+  if (fixtureVersion !== undefined) {
+    if (fixture.fixtureVersion !== fixtureVersion)
+      errors.push(
+        `fixture.fixtureVersion must be ${fixtureVersion} (the version of the file it was read from)`,
+      );
+  } else if (!registeredVersions().includes(fixture.fixtureVersion)) {
     errors.push(
-      "fixture.fixtureVersion must be 1 (DD-1 adds a separate version 2 file)",
+      `fixture.fixtureVersion must be a registered version (${registeredVersions().join(", ")})`,
     );
+  }
   if (fixture.phase !== "dp-h") errors.push("fixture.phase must be dp-h");
   if (!nonEmpty(fixture.fixtureId))
     errors.push("fixture.fixtureId is required");
@@ -1121,6 +1181,141 @@ export function validateFinalRequestFixture(fixture, { template } = {}) {
   checkBindingCoverage(fixture, errors);
   checkLogicalIdIsolation(fixture.cases, errors);
   validateDiagnosticCases(fixture.diagnosticCases, fixture.cases, errors);
+  return errors;
+}
+
+// ------------------------------------------------- replaced-version materials
+
+const MATERIAL_ID_KEYS = new Set([
+  "logicalId",
+  "groupLogicalId",
+  "revision",
+  "entity",
+  "anchorScene",
+  "nodeScene",
+  "ineligibleLogicalId",
+]);
+const MATERIAL_ID_LIST_KEYS = new Set([
+  "revisionIds",
+  "selectedGroupLogicalIds",
+]);
+
+/**
+ * The materials of a fixture (draft: a material is identified by its logical
+ * id and its text): the logical ids of the project, Scenes, Codex Entities,
+ * Revisions, entries, groups and runtime values, the isolation ids, and the
+ * texts that reach Native or are matched in its output (Scene title and body,
+ * Codex name and summary, step summaries, markers, user messages, canary texts,
+ * expected Raw and exact quotes). Expected entry templates are not listed: their
+ * literal parts are derived from these materials.
+ */
+export function fixtureMaterials(fixture) {
+  const ids = new Set();
+  const texts = new Set();
+  const addText = (value) => {
+    if (typeof value === "string" && value.trim().length > 0) texts.add(value);
+  };
+  const walkIds = (value) => {
+    if (Array.isArray(value)) {
+      for (const item of value) walkIds(item);
+      return;
+    }
+    if (!isRecord(value)) return;
+    for (const [key, item] of Object.entries(value)) {
+      if (MATERIAL_ID_KEYS.has(key) && nonEmpty(item)) ids.add(item);
+      else if (MATERIAL_ID_LIST_KEYS.has(key) && Array.isArray(item)) {
+        for (const id of item) if (nonEmpty(id)) ids.add(id);
+      } else walkIds(item);
+    }
+  };
+  const addSetupTexts = (setup) => {
+    if (!isRecord(setup)) return;
+    for (const scene of Array.isArray(setup.scenes) ? setup.scenes : []) {
+      addText(scene?.title);
+      addText(scene?.body);
+    }
+    for (const entity of Array.isArray(setup.codexEntities)
+      ? setup.codexEntities
+      : []) {
+      addText(entity?.name);
+      addText(entity?.summary);
+    }
+    for (const step of Array.isArray(setup.steps) ? setup.steps : [])
+      addText(step?.summary);
+  };
+  if (!isRecord(fixture)) return { ids, texts };
+  for (const canary of Array.isArray(fixture.canaries) ? fixture.canaries : [])
+    addText(canary?.text);
+  for (const testCase of Array.isArray(fixture.cases) ? fixture.cases : []) {
+    if (!isRecord(testCase)) continue;
+    walkIds(testCase.setup);
+    walkIds(testCase.variants);
+    for (const key of ["workspaceId", "conversationId", "artifactNamespace"]) {
+      if (nonEmpty(testCase.isolation?.[key])) ids.add(testCase.isolation[key]);
+    }
+    addText(testCase.userMessage);
+    for (const marker of Array.isArray(testCase.markers)
+      ? testCase.markers
+      : [])
+      addText(marker);
+    addSetupTexts(testCase.setup);
+    for (const variant of Array.isArray(testCase.variants)
+      ? testCase.variants
+      : []) {
+      addSetupTexts(variant?.setup);
+      for (const request of variantRequests(variant)) {
+        addText(request?.expected?.rawText);
+        for (const quote of Array.isArray(request?.expected?.exactQuotes)
+          ? request.expected.exactQuotes
+          : [])
+          addText(quote?.quote);
+      }
+    }
+  }
+  for (const diagnostic of Array.isArray(fixture.diagnosticCases)
+    ? fixture.diagnosticCases
+    : []) {
+    walkIds(diagnostic?.materials);
+    walkIds(diagnostic?.p12);
+    addText(diagnostic?.userMessage);
+    addText(diagnostic?.rawText);
+    for (const material of Array.isArray(diagnostic?.materials)
+      ? diagnostic.materials
+      : [])
+      addText(material?.text);
+  }
+  return { ids, texts };
+}
+
+/**
+ * Errors when a replacement fixture reuses a material of the version it
+ * replaces (draft: fixture の版と freeze 記録 — using a material DP-H observed
+ * puts the version on HOLD). A logical id may not recur; a text may not equal,
+ * contain or be contained in a replaced text.
+ */
+export function replacedMaterialReuseErrors(fixture, replaced) {
+  const errors = [];
+  const fresh = fixtureMaterials(fixture);
+  const old = fixtureMaterials(replaced);
+  const replacedVersion = isRecord(replaced) ? replaced.fixtureVersion : "?";
+  for (const id of fresh.ids) {
+    if (old.ids.has(id)) {
+      errors.push(
+        `logical id ${id} is a material of the replaced fixture version ${replacedVersion}`,
+      );
+    }
+  }
+  const oldTexts = [...old.texts];
+  for (const text of fresh.texts) {
+    const reused = oldTexts.find(
+      (previous) => previous.includes(text) || text.includes(previous),
+    );
+    if (reused !== undefined) {
+      errors.push(
+        `text ${JSON.stringify(text.slice(0, 40))} reuses the material ${JSON.stringify(reused.slice(0, 40))} of the replaced fixture version ${replacedVersion}`,
+      );
+    }
+  }
   return errors;
 }
 
@@ -1288,13 +1483,87 @@ function checkBoundFile(entry, label, errors) {
 }
 
 /**
+ * A replacement record names the version it replaces and binds that version's
+ * fixture and freeze record (both stay unchanged as the HOLD history).
+ */
+function checkSupersedes(freeze, spec, bind, errors) {
+  const target = fixtureVersionSpec(spec.replaces);
+  const block = freeze.supersedes;
+  if (!isRecord(block)) {
+    errors.push(
+      `freeze.supersedes must name the replaced fixture version ${spec.replaces}`,
+    );
+    return;
+  }
+  if (block.fixtureVersion !== spec.replaces) {
+    errors.push(`freeze.supersedes.fixtureVersion must be ${spec.replaces}`);
+  }
+  bind(block.fixture, "freeze.supersedes.fixture", target.fixturePath);
+  bind(block.freezeRecord, "freeze.supersedes.freezeRecord", target.freezePath);
+  if (block.decision !== target.supersededDecision) {
+    errors.push(
+      `freeze.supersedes.decision must be ${target.supersededDecision}`,
+    );
+  }
+}
+
+/**
+ * Author separation across versions: the replacement's author and reviewer are
+ * neither the replaced version's author nor one of its implementers, and the
+ * replacement keeps every implementer of the replaced version (an implementer
+ * cannot be dropped to become eligible as the author).
+ */
+function checkReplacedSeparation(
+  { author, reviewer, implementers },
+  spec,
+  replaced,
+  errors,
+) {
+  const previous = replaced?.freeze?.authorSeparation;
+  if (!isRecord(previous)) {
+    errors.push(
+      `the freeze record of the replaced version ${spec.replaces} is required to check the author separation`,
+    );
+    return;
+  }
+  const previousImplementers = Array.isArray(previous.harnessImplementers)
+    ? previous.harnessImplementers.filter(nonEmpty)
+    : [];
+  for (const name of previousImplementers) {
+    if (!implementers.includes(name)) {
+      errors.push(
+        `freeze.authorSeparation.harnessImplementers must keep ${name} (an implementer of version ${spec.replaces})`,
+      );
+    }
+  }
+  const excluded = [
+    previous.fixtureAuthor?.agent,
+    ...previousImplementers,
+  ].filter(nonEmpty);
+  if (nonEmpty(author) && excluded.includes(author)) {
+    errors.push(
+      `the fixture author must be neither the author nor an implementer of the replaced version ${spec.replaces}`,
+    );
+  }
+  if (nonEmpty(reviewer) && excluded.includes(reviewer)) {
+    errors.push(
+      `the expectation reviewer must be neither the author nor an implementer of the replaced version ${spec.replaces}`,
+    );
+  }
+}
+
+/**
  * Schema and consistency errors of a freeze record. `bytes` maps a repository
  * path to the file's current bytes (the caller reads them) so the sha256
- * bindings are checked against what is on disk now.
+ * bindings are checked against what is on disk now. `fixtureVersion` is the
+ * version whose path the record was read from (defaults to the record's own);
+ * a replacement version also needs `replaced: { fixture, freeze }`, the parsed
+ * records of the version it replaces, and `bytes` for that version's fixture
+ * and freeze record.
  */
 export function validateFreezeRecord(
   freeze,
-  { bytes, review, reviewErrors, fixture } = {},
+  { bytes, review, reviewErrors, fixture, fixtureVersion, replaced } = {},
 ) {
   const errors = [];
   if (!isRecord(freeze)) return ["freeze record must be an object"];
@@ -1305,8 +1574,32 @@ export function validateFreezeRecord(
     errors.push(`freeze.contractId must be ${CONTRACT_ID}`);
   if (freeze.draftRef !== DRAFT_REF)
     errors.push(`freeze.draftRef must be ${DRAFT_REF}`);
-  if (freeze.fixtureVersion !== 1)
-    errors.push("freeze.fixtureVersion must be 1");
+  // The version is the one whose path the record was read from when the caller
+  // knows it; otherwise the record's own (registered) version.
+  const spec = fixtureVersionSpec(fixtureVersion ?? freeze.fixtureVersion);
+  if (spec === undefined) {
+    errors.push(
+      `freeze.fixtureVersion must be a registered version (${registeredVersions().join(", ")})`,
+    );
+    return errors;
+  }
+  if (freeze.fixtureVersion !== spec.fixtureVersion)
+    errors.push(
+      `freeze.fixtureVersion must be ${spec.fixtureVersion} (the version of the file it was read from)`,
+    );
+  if (spec.supersededBy !== undefined) {
+    // A version whose materials Native observed is kept as a HOLD record.
+    if (freeze.status === FREEZE_STATUS.frozen) {
+      errors.push(
+        `fixture version ${spec.fixtureVersion} is superseded by version ${spec.supersededBy} (${spec.supersededDecision}); its record must stay ${FREEZE_STATUS.pending}`,
+      );
+    }
+    if (freeze.nativeOutputObservedBeforeFreeze !== true) {
+      errors.push(
+        `fixture version ${spec.fixtureVersion} is superseded because Native observed it; its record must keep nativeOutputObservedBeforeFreeze true`,
+      );
+    }
+  }
   if (!Object.values(FREEZE_STATUS).includes(freeze.status)) {
     errors.push(
       `freeze.status must be ${Object.values(FREEZE_STATUS).join(" or ")}`,
@@ -1374,13 +1667,13 @@ export function validateFreezeRecord(
     }
     bound.set(entry.path, entry.sha256);
   };
-  bind(freeze.fixture, "freeze.fixture", FIXTURE_PATH);
-  bind(freeze.reviewRecord, "freeze.reviewRecord", REVIEW_PATH);
+  bind(freeze.fixture, "freeze.fixture", spec.fixturePath);
+  bind(freeze.reviewRecord, "freeze.reviewRecord", spec.reviewPath);
   // A frozen record binds the README and the baseline parity vector as well:
   // a vector rewritten after the observation would otherwise go unnoticed.
   for (const [key, expectedPath] of [
-    ["readme", README_PATH],
-    ["parityVector", PARITY_VECTOR_PATH],
+    ["readme", spec.readmePath],
+    ["parityVector", spec.parityVectorPath],
   ]) {
     if (freeze[key] !== undefined)
       bind(freeze[key], `freeze.${key}`, expectedPath);
@@ -1392,9 +1685,15 @@ export function validateFreezeRecord(
     : [];
   if (!Array.isArray(freeze.scorer?.files))
     errors.push("freeze.scorer.files must be an array");
+  // A superseded record is never frozen or scored, so its scorer rows record
+  // the scorer it was written against; they are checked for shape, not against
+  // today's bytes (DR-DPH-78). Every other record binds today's bytes.
   for (const [index, entry] of scorerFiles.entries()) {
-    bind(entry, `freeze.scorer.files[${index}]`);
+    const label = `freeze.scorer.files[${index}]`;
+    if (spec.supersededBy === undefined) bind(entry, label);
+    else checkBoundFile(entry, label, errors);
   }
+  if (spec.replaces !== undefined) checkSupersedes(freeze, spec, bind, errors);
   for (const required of SCORER_FILES) {
     if (!scorerFiles.some((entry) => entry?.path === required)) {
       errors.push(`freeze.scorer.files must bind ${required}`);
@@ -1515,6 +1814,36 @@ export function validateFreezeRecord(
       errors.push(
         "freeze.authorSeparation.nativeReceiptProvidedToAuthor must be false",
       );
+    }
+    const listed = Array.isArray(implementers) ? implementers : [];
+    for (const name of spec.requiredImplementers ?? []) {
+      if (!listed.includes(name)) {
+        errors.push(
+          `freeze.authorSeparation.harnessImplementers must list ${name} (an implementer of the contract for version ${spec.fixtureVersion})`,
+        );
+      }
+    }
+    if (spec.replaces !== undefined) {
+      checkReplacedSeparation(
+        { author, reviewer, implementers: listed },
+        spec,
+        replaced,
+        errors,
+      );
+    }
+  }
+
+  if (spec.replaces !== undefined) {
+    if (!isRecord(replaced?.fixture)) {
+      errors.push(
+        `the fixture of the replaced version ${spec.replaces} is required to check that no material is reused`,
+      );
+    } else if (!isRecord(fixture)) {
+      errors.push(
+        `the fixture of version ${spec.fixtureVersion} is required to check that no material of version ${spec.replaces} is reused`,
+      );
+    } else {
+      errors.push(...replacedMaterialReuseErrors(fixture, replaced.fixture));
     }
   }
 
@@ -1662,17 +1991,28 @@ function parseJsonBytes(bytes) {
  * oldest commit reachable from `runCommit` whose version of the freeze record
  * has `status: "frozen"`. (`git log --reverse` over the record's path, then
  * `git show` of the record at each commit, capped at
- * MAX_FREEZE_RECORD_COMMITS.) Returns `{ commit }` or `{ error }`.
+ * MAX_FREEZE_RECORD_COMMITS, counted per version's record path.) Returns
+ * `{ commit }` or `{ error }`.
  */
-export function deriveFreezeCommit({ repoRoot, runCommit, execFile }) {
+export function deriveFreezeCommit({
+  repoRoot,
+  runCommit,
+  fixtureVersion,
+  execFile,
+}) {
   if (!COMMIT_PATTERN.test(runCommit ?? "")) {
     return { error: "run commit must be a full commit id" };
   }
+  const spec = fixtureVersionSpec(fixtureVersion);
+  if (spec === undefined) {
+    return { error: `fixture version ${fixtureVersion} is not registered` };
+  }
+  const freezePath = spec.freezePath;
   let listing;
   try {
     listing = runGit(
       repoRoot,
-      ["log", "--reverse", "--format=%H", runCommit, "--", FREEZE_PATH],
+      ["log", "--reverse", "--format=%H", runCommit, "--", freezePath],
       execFile,
     );
   } catch (error) {
@@ -1685,7 +2025,7 @@ export function deriveFreezeCommit({ repoRoot, runCommit, execFile }) {
     .map((line) => line.trim())
     .filter(Boolean);
   if (commits.length === 0) {
-    return { error: `no commit before ${runCommit} holds ${FREEZE_PATH}` };
+    return { error: `no commit before ${runCommit} holds ${freezePath}` };
   }
   if (commits.length > MAX_FREEZE_RECORD_COMMITS) {
     return {
@@ -1695,7 +2035,7 @@ export function deriveFreezeCommit({ repoRoot, runCommit, execFile }) {
   for (const commit of commits) {
     let bytes;
     try {
-      bytes = gitFileAtCommit(repoRoot, commit, FREEZE_PATH, { execFile });
+      bytes = gitFileAtCommit(repoRoot, commit, freezePath, { execFile });
     } catch (error) {
       return {
         error: `freeze record at ${commit} could not be read: ${firstLine(error)}`,
@@ -1705,6 +2045,23 @@ export function deriveFreezeCommit({ repoRoot, runCommit, execFile }) {
     if (record?.status === FREEZE_STATUS.frozen) return { commit };
   }
   return { error: "no commit holds a frozen freeze record" };
+}
+
+/**
+ * The parsed fixture and freeze record of the version `spec` replaces, read
+ * through `readBytes(path)` (`undefined` when `spec` replaces nothing).
+ */
+function replacedAt(spec, readBytes) {
+  if (spec.replaces === undefined) return undefined;
+  const target = fixtureVersionSpec(spec.replaces);
+  const parse = (file) => {
+    const bytes = readBytes(file);
+    return bytes === undefined ? undefined : parseJsonBytes(bytes);
+  };
+  return {
+    fixture: parse(target.fixturePath),
+    freeze: parse(target.freezePath),
+  };
 }
 
 function firstLine(error) {
@@ -1725,15 +2082,42 @@ function firstLine(error) {
  * the freeze (`git merge-base --is-ancestor` also treats a commit as its own
  * ancestor).
  *
+ * `fixtureVersion` names the version the run used; a superseded version is
+ * refused before git is read (it is a HOLD record, never scored). For a
+ * replacement version the replaced version's fixture and freeze record are
+ * read at the freeze commit, so the material-reuse and author-separation
+ * checks see what was frozen.
+ *
  * Returns `{ errors, freezeCommit }`; an unverifiable snapshot is an error.
  */
 export function verifyFrozenSnapshot({
   repoRoot,
   runCommit,
+  fixtureVersion,
   expectedFreezeCommit,
   execFile,
 }) {
-  const derived = deriveFreezeCommit({ repoRoot, runCommit, execFile });
+  const spec = fixtureVersionSpec(fixtureVersion);
+  if (spec === undefined) {
+    return {
+      errors: [`fixture version ${fixtureVersion} is not registered`],
+      freezeCommit: undefined,
+    };
+  }
+  if (spec.supersededBy !== undefined) {
+    return {
+      errors: [
+        `fixture version ${spec.fixtureVersion} is superseded by version ${spec.supersededBy} (${spec.supersededDecision}); it is a HOLD record and is never scored`,
+      ],
+      freezeCommit: undefined,
+    };
+  }
+  const derived = deriveFreezeCommit({
+    repoRoot,
+    runCommit,
+    fixtureVersion: spec.fixtureVersion,
+    execFile,
+  });
   if (derived.error)
     return { errors: [derived.error], freezeCommit: undefined };
   const freezeCommit = derived.commit;
@@ -1764,8 +2148,8 @@ export function verifyFrozenSnapshot({
       return undefined;
     }
   };
-  const recordAtFreeze = read(freezeCommit, FREEZE_PATH);
-  const recordAtRun = read(runCommit, FREEZE_PATH);
+  const recordAtFreeze = read(freezeCommit, spec.freezePath);
+  const recordAtRun = read(runCommit, spec.freezePath);
   const freeze =
     recordAtFreeze === undefined ? undefined : parseJsonBytes(recordAtFreeze);
   if (!freeze) {
@@ -1785,6 +2169,8 @@ export function verifyFrozenSnapshot({
     freeze.reviewRecord,
     freeze.readme,
     freeze.parityVector,
+    freeze.supersedes?.fixture,
+    freeze.supersedes?.freezeRecord,
     ...(Array.isArray(freeze.scorer?.files) ? freeze.scorer.files : []),
   ].filter((entry) => isRecord(entry) && nonEmpty(entry.path));
   const atFreeze = new Map();
@@ -1804,10 +2190,10 @@ export function verifyFrozenSnapshot({
   }
   // The record, read as it stood at the freeze commit, must validate as frozen
   // against the bytes it was frozen with.
-  const reviewBytes = atFreeze.get(REVIEW_PATH);
+  const reviewBytes = atFreeze.get(spec.reviewPath);
   const review =
     reviewBytes === undefined ? undefined : parseJsonBytes(reviewBytes);
-  const fixtureBytes = atFreeze.get(FIXTURE_PATH);
+  const fixtureBytes = atFreeze.get(spec.fixturePath);
   const fixture =
     fixtureBytes === undefined ? undefined : parseJsonBytes(fixtureBytes);
   const reviewErrors = review
@@ -1826,6 +2212,10 @@ export function verifyFrozenSnapshot({
       review,
       reviewErrors,
       fixture: Array.isArray(fixture?.cases) ? fixture : undefined,
+      fixtureVersion: spec.fixtureVersion,
+      replaced: replacedAt(spec, (file) =>
+        atFreeze.has(file) ? atFreeze.get(file) : read(freezeCommit, file),
+      ),
     }).map((message) => `freeze record at ${freezeCommit}: ${message}`),
     ...reviewErrors.map(
       (message) => `review record at ${freezeCommit}: ${message}`,
@@ -1837,62 +2227,107 @@ export function verifyFrozenSnapshot({
 // -------------------------------------------------------- repo-level report
 
 /**
- * The state `pnpm eval:fixtures` reports. `not-placed` (no fixture file yet,
- * before DPH-2 merges) is a status, not an error; once a fixture exists it is
- * validated in full. No Native output and no git history are read here.
+ * The state `pnpm eval:fixtures` reports. Every registered version is
+ * validated; the top level is the evidence version's state (`not-placed` until
+ * its fixture file is placed, which is a status, not an error) and
+ * `versions` lists each version. A superseded version must stay placed (it is
+ * the HOLD history) and is validated as a record that is never frozen. No
+ * Native output and no git history are read here.
  */
 export async function validateNir1FinalRequestFixtures({ repoRoot }) {
+  const reports = [];
+  for (const spec of Object.values(FIXTURE_VERSIONS)) {
+    reports.push(await validateFixtureVersion({ repoRoot, spec }));
+  }
+  const evidence = reports.find(
+    (report) => report.fixtureVersion === EVIDENCE_FIXTURE_VERSION,
+  );
+  const errors = reports.flatMap((report) => report.errors);
+  const otherVersionFailed = reports.some(
+    (report) => report !== evidence && report.errors.length > 0,
+  );
+  return {
+    ...evidence,
+    status: otherVersionFailed ? "invalid" : evidence.status,
+    errors,
+    versions: reports.map((report) => ({
+      fixtureVersion: report.fixtureVersion,
+      supersededBy: report.supersededBy,
+      status: report.status,
+      fixturePath: report.fixturePath,
+      cases: report.cases,
+      freeze: report.freeze,
+      errors: report.errors,
+    })),
+  };
+}
+
+async function validateFixtureVersion({ repoRoot, spec }) {
   const errors = [];
+  const label = `nir1-final-request v${spec.fixtureVersion}`;
   const read = (relative) => readFile(path.join(repoRoot, relative));
+  const head = {
+    fixtureVersion: spec.fixtureVersion,
+    supersededBy: spec.supersededBy,
+    fixturePath: spec.fixturePath,
+  };
   const present = {
-    fixture: await exists(path.join(repoRoot, FIXTURE_PATH)),
-    freeze: await exists(path.join(repoRoot, FREEZE_PATH)),
-    review: await exists(path.join(repoRoot, REVIEW_PATH)),
+    fixture: await exists(path.join(repoRoot, spec.fixturePath)),
+    freeze: await exists(path.join(repoRoot, spec.freezePath)),
+    review: await exists(path.join(repoRoot, spec.reviewPath)),
   };
   if (!present.fixture) {
+    if (spec.supersededBy !== undefined) {
+      errors.push(
+        `${label} fixture ${spec.fixturePath} is missing (a superseded version stays placed as the HOLD history)`,
+      );
+    }
     for (const key of ["freeze", "review"]) {
       if (present[key]) {
         errors.push(
-          `nir1-final-request ${key} record exists without ${FIXTURE_PATH}`,
+          `${label} ${key} record exists without ${spec.fixturePath}`,
         );
       }
     }
     return {
-      status: "not-placed",
-      fixturePath: FIXTURE_PATH,
+      ...head,
+      // A record without its fixture is an error, but the version stays
+      // not-placed; a missing superseded version is invalid.
+      status: spec.supersededBy === undefined ? "not-placed" : "invalid",
       errors,
       cases: [],
       freeze: { status: "not-placed" },
     };
   }
 
-  const fixtureBytes = await read(FIXTURE_PATH);
+  const fixtureBytes = await read(spec.fixturePath);
   let fixture;
   try {
     fixture = JSON.parse(fixtureBytes);
   } catch {
     return {
+      ...head,
       status: "invalid",
-      fixturePath: FIXTURE_PATH,
-      errors: ["nir1-final-request fixture is not JSON"],
+      errors: [`${label} fixture is not JSON`],
       cases: [],
       freeze: { status: "invalid" },
     };
   }
   if (!isRecord(fixture)) {
     return {
+      ...head,
       status: "invalid",
-      fixturePath: FIXTURE_PATH,
-      errors: ["nir1-final-request fixture must be a JSON object"],
+      errors: [`${label} fixture must be a JSON object`],
       cases: [],
       freeze: { status: "invalid" },
     };
   }
   const template = await loadFixedTemplate(repoRoot);
   errors.push(
-    ...validateFinalRequestFixture(fixture, { template }).map(
-      (e) => `nir1-final-request fixture: ${e}`,
-    ),
+    ...validateFinalRequestFixture(fixture, {
+      template,
+      fixtureVersion: spec.fixtureVersion,
+    }).map((e) => `${label} fixture: ${e}`),
   );
   const cases = Array.isArray(fixture.cases)
     ? fixture.cases.map((testCase) => ({
@@ -1907,7 +2342,7 @@ export async function validateNir1FinalRequestFixtures({ repoRoot }) {
   let reviewErrors = [];
   if (present.review) {
     try {
-      review = JSON.parse(await read(REVIEW_PATH));
+      review = JSON.parse(await read(spec.reviewPath));
       reviewErrors = validateReviewRecord(review, {
         fixtureSha256: sha256(fixtureBytes),
         fixture:
@@ -1916,17 +2351,20 @@ export async function validateNir1FinalRequestFixtures({ repoRoot }) {
             ? fixture
             : undefined,
       });
-      errors.push(
-        ...reviewErrors.map((e) => `nir1-final-request review: ${e}`),
-      );
+      errors.push(...reviewErrors.map((e) => `${label} review: ${e}`));
     } catch {
-      errors.push("nir1-final-request review record is not JSON");
+      errors.push(`${label} review record is not JSON`);
     }
   }
   if (!present.freeze) {
+    if (spec.supersededBy !== undefined) {
+      errors.push(
+        `${label} freeze record ${spec.freezePath} is missing (a superseded version keeps its HOLD record)`,
+      );
+    }
     return {
+      ...head,
       status: errors.length === 0 ? "pending-review" : "invalid",
-      fixturePath: FIXTURE_PATH,
       fixtureSha256: sha256(fixtureBytes),
       errors,
       cases,
@@ -1936,35 +2374,40 @@ export async function validateNir1FinalRequestFixtures({ repoRoot }) {
 
   let freeze;
   try {
-    freeze = JSON.parse(await read(FREEZE_PATH));
+    freeze = JSON.parse(await read(spec.freezePath));
   } catch {
-    errors.push("nir1-final-request freeze record is not JSON");
+    errors.push(`${label} freeze record is not JSON`);
     return {
+      ...head,
       status: "invalid",
-      fixturePath: FIXTURE_PATH,
       errors,
       cases,
       freeze: { status: "invalid" },
     };
   }
   if (!isRecord(freeze)) {
-    errors.push("nir1-final-request freeze record must be a JSON object");
+    errors.push(`${label} freeze record must be a JSON object`);
     return {
+      ...head,
       status: "invalid",
-      fixturePath: FIXTURE_PATH,
       errors,
       cases,
       freeze: { status: "invalid" },
     };
   }
-  const bytes = new Map([[FIXTURE_PATH, fixtureBytes]]);
+  const bytes = new Map([[spec.fixturePath, fixtureBytes]]);
+  const replacedSpec =
+    spec.replaces === undefined ? undefined : fixtureVersionSpec(spec.replaces);
   const wanted = [
-    REVIEW_PATH,
-    README_PATH,
-    PARITY_VECTOR_PATH,
+    spec.reviewPath,
+    spec.readmePath,
+    spec.parityVectorPath,
     ...SCORER_FILES,
     ...(Array.isArray(freeze?.scorer?.files)
       ? freeze.scorer.files.map((entry) => entry?.path)
+      : []),
+    ...(replacedSpec
+      ? [replacedSpec.fixturePath, replacedSpec.freezePath]
       : []),
   ];
   for (const file of wanted) {
@@ -1981,17 +2424,20 @@ export async function validateNir1FinalRequestFixtures({ repoRoot }) {
       review,
       reviewErrors,
       fixture: Array.isArray(fixture.cases) ? fixture : undefined,
-    }).map((e) => `nir1-final-request freeze: ${e}`),
+      fixtureVersion: spec.fixtureVersion,
+      replaced: replacedAt(spec, (file) => bytes.get(file)),
+    }).map((e) => `${label} freeze: ${e}`),
   );
+  const status = errors.length === 0 ? freeze.status : "invalid";
   return {
-    status: errors.length === 0 ? freeze.status : "invalid",
-    fixturePath: FIXTURE_PATH,
+    ...head,
+    status,
     fixtureSha256: sha256(fixtureBytes),
     errors,
     cases,
     freeze: {
-      status: errors.length === 0 ? freeze.status : "invalid",
-      path: FREEZE_PATH,
+      status,
+      path: spec.freezePath,
       frozenAt: freeze?.frozenAt,
       reviewVerdict: freeze?.reviewVerdict,
     },
