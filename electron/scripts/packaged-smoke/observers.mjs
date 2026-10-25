@@ -121,8 +121,13 @@ export function nxdomainReply(buffer, end) {
 export async function startDohCanary(work) {
   const key = path.join(work, "doh.key");
   const crt = path.join(work, "doh.crt");
-  execFileSync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "1",
-    "-subj", "/CN=127.0.0.1", "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore", timeout: 30_000 });
+  const request = ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "1", "-subj", "/CN=127.0.0.1"];
+  try {
+    execFileSync("openssl", [...request, "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore", timeout: 30_000 });
+  } catch {
+    // `-addext` を持たない openssl（古い LibreSSL など）。probe の main は DoH の構成で証明書の検証を外すので SAN は要らない
+    execFileSync("openssl", request, { stdio: "ignore", timeout: 30_000 });
+  }
   const queries = [];
   const server = http2.createSecureServer({ key: fs.readFileSync(key), cert: fs.readFileSync(crt), allowHTTP1: true });
   server.on("request", (req, res) => {

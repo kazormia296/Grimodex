@@ -38,9 +38,10 @@ export function processesUnder(dir, platform = process.platform) {
       return out;
     }
     if (platform === "darwin") {
-      const text = execFileSync("ps", ["-axo", "pid=,comm="], { encoding: "utf8", timeout: 30_000 });
+      // args（-ww で切り詰めない）の先頭は実行体の path（Chromium は macOS で argv を書き換えない）
+      const text = execFileSync("ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8", timeout: 30_000 });
       return text.split("\n").map((line) => /^\s*(\d+)\s+(.+)$/.exec(line)).filter(Boolean)
-        .filter((match) => Number(match[1]) !== process.pid && inside(match[2].trim()))
+        .filter((match) => Number(match[1]) !== process.pid && match[2].trim().startsWith(root + path.sep))
         .map((match) => Number(match[1]));
     }
     if (platform === "win32") {
@@ -71,14 +72,15 @@ export function groupAlive(pgid) {
  * 子を起動して owner を返す。owner は close の結果と出力の末尾を持つ。
  * options: { command, args, env, cwd, exeDir, label, platform }
  */
-export function launchOwned({ command, args, env, cwd, exeDir, label, platform = process.platform }) {
+export function launchOwned({ command, args, env, cwd, exeDir, label, platform = process.platform, windowsHide = false }) {
   const posix = platform !== "win32";
+  // GUI の実行体は windowsHide にしない（SW_HIDE で最初の窓が隠れ、隠れた窓の timer の間引きで行の時間が伸びうる）
   const child = spawn(command, args, {
     env,
     cwd,
     stdio: ["ignore", "pipe", "pipe"],
     detached: posix,
-    windowsHide: true,
+    windowsHide,
   });
   let output = "";
   const append = (chunk) => {
