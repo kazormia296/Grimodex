@@ -495,6 +495,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-packing/final-request/architecture.test.mjs",
         "scripts/quality/nir1-packing/final-request/runner.test.mjs",
         "scripts/quality/nir1-graph/contract.test.mjs",
+        "scripts/quality/nir1-graph-eval/availability.test.mjs",
+        "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+        "scripts/quality/nir1-graph-eval/outcome.test.mjs",
+        "scripts/quality/nir1-graph-eval/admission.test.mjs",
       ],
       [
         "node",
