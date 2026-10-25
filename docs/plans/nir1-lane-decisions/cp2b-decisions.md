@@ -112,3 +112,97 @@ P1〜P6、P8、P10 は `implemented`（P4 は `verified unchanged`：既存の 3
 - P3-4: §2 の P1 の行と DR-CP2B-P1-2 の拒否の順序を、実際（`not-activated` → `profile-not-restricted` → `worker-unavailable`）に直した。
 - P3-5: unix 以外では no-spawn 試験の marker の主張が空になることを、試験の comment と §3 の行に書いた。
 - P3-6: `backend.test.ts` の「Main は存在を確かめない」の試験は、vitest で `__dirname` が `electron/main` になり、既定の解決が `electron/src-tauri/target/release/…`（常に無い）になるので成り立つ。本物の dev の path は純関数の試験だけが固定していることを comment に書いた。
+
+## P3（H1）
+
+この節は CP-2b の PR 列（TASK §7.1）の **P3（H1: 更新経路の定期 CI `update-route-watch.yml` と、RS-1 起因の更新の失敗が updater の error として surface される試験）** だけを扱う。出所は TASK §4、§6、§7.2、§1.5、§11 と K3/3（`docs/plans/nir1-d2a-activation-proposal-3-draft.md`）の :380（H1）、:356（`github-releases.githubusercontent.com`）、:170（更新の失敗の影響）。branch `claude/cp2b-p3-update-route-watch`（基点 master `8e93bb31`）。mutation の前に書き、実装後の事実は「P3.5 実装後の追記」に足す（前の本文は直さない）。
+
+### P3.1 範囲と、範囲の外
+
+- 範囲: (a) `scripts/update-route-redirect-check.mjs`（検知の script）、(b) `.github/workflows/update-route-watch.yml`（週 1 回＋手動）、(c) 契約試験と script の単体試験（`scripts/release-workflows.test.mjs` の独立した describe と、SHA 固定の試験の対象への 1 行）、(d) `electron/main/updater.test.ts` への `net::ERR_NAME_NOT_RESOLVED` の試験、(e) 実 Electron の新規 harness（`electron/scripts/update-route-name-probe*.mjs`。ローカルで走らせる道具で、CI には載せない〔H3 は非目標〕）。
+- 範囲の外: RS-1・許容集合への host の追加（検知した場合の対応も含む。重要な変更 (2)）、`electron/main/rendererContainment*`・`windows.ts`・`index.ts`・`webrtc-block-probe*`・`renderer-isolation-probe*` の編集、製品コード（`updater.ts` を含む）の変更、`release.yml`、`ci.yml`、`scripts/local-ci-registry.json`、version・release notes・tag・GitHub Release。
+
+### P3.2 threat model（GDX-PRECHECK-001。何が・どこへ・どの頻度で）
+
+| 項目 | 内容 |
+|---|---|
+| 何が | GitHub の hosted runner（`ubuntu-24.04`）の 1 job。`permissions: contents: read`、secrets を参照しない、`actions/checkout` は `persist-credentials: false`、`pull_request`／`pull_request_target` の trigger なし（fork の code を走らせない）。製品の通信ではなく、製品の挙動も変えない |
+| どこへ（検知の要求） | 起点は `https://github.com/electron/electron/releases/download/v<package.json の electron の exact 版>/SHASUMS256.txt`（現行 43.8.3）。`redirect: "manual"` で 1 hop ずつ受け、`Location` の host が RS-1 の GitHub 3 host（`RS1_GITHUB_HOSTS`）に含まれる場合だけ次へ進む。含まれない host には要求を出さない（検査は要求の前）。現行の観測では `github.com` → `release-assets.githubusercontent.com` の 1 hop |
+| どこへ（道具の取得） | `actions/checkout`・`pnpm/action-setup`・`actions/setup-node`（40 桁 SHA 固定。github.com と GitHub の配布先）、`pnpm install --frozen-lockfile --ignore-scripts`（npm registry。lockfile の integrity で固定、lifecycle script を走らせない）。どれも既存の CI と同じ受け手で、新しい受け手ではない |
+| どの頻度で | `schedule` の週 1 回（月曜 03:17 UTC）＋`workflow_dispatch`。1 run の要求は最大 11 回（起点＋redirect の上限 10。electron-updater の `maxRedirects` と同じ）で、各 30 秒の timeout、job 全体 10 分 |
+| 運ぶもの | 利用者のデータは無い。要求に認証情報・cookie を付けない（Node の `fetch` の既定の header だけ）。asset の本文は最後の 200 の header を見たら読まずに捨てる |
+| 出力 | log は hop ごとの status と host だけ。署名付きの `Location` の query は出さない（公開物の一時 URL だが、log に残す理由がない） |
+| 失敗の意味 | job が失敗する（GitHub の workflow 失敗の通知が検知になる）。host の追加・RS-1 の変更・issue の作成はしない（`issues: write` を持たない）。GitHub の障害でも失敗するが、誤検知は手で読み分ける（検知の取りこぼしより安全側） |
+| subprocess（実 Electron の harness） | ローカル専用。Electron の子は独立の process group、上限の timeout、終了は子の PID（group）指定の kill と `close` の観測で確かめる。一時の `HOME`／`XDG_*`／TMPDIR（短い path）を使い、終われば消す。Xvfb は `scripts/local-ci-xvfb.mjs` を host namespace で使う。要求先は loopback の模擬 server だけで、名前は NC-1 の規則で解決されない（外部の DNS へ問い合わせない設計。ただし Chromium の他の通信〔辞書など〕は起きうるので「外部網なし」は主張しない） |
+
+重要な変更の線引き（TASK §6）: 週 1 回 GitHub の公開 asset（RS-1 の既知の host）へ要求することは (2) に当たらない（新しい受け手が無い）。GitHub 以外の host を検知の対象や許容に足すことは (2) で、ここではしない。
+
+### P3.3 判断の表
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界（actor・防御・受信先・受入れ） | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-CP2B-P3-1 | 2026-10-26 | CP-2b P3 | workflow は `schedule`（`17 3 * * 1`）＋`workflow_dispatch`、`ubuntu-24.04`、`permissions: contents: read`（top level。job で広げない）、`timeout-minutes: 10`、`concurrency`（同じ group で重ねない）、secrets なし、checkout は `persist-credentials: false`。action は 40 桁 SHA 固定で、既存の固定の試験の対象表に 1 行足す。契約（trigger、権限、secrets の不使用、timeout、実行する command）は `scripts/release-workflows.test.mjs` の独立した describe で固定する | actor は GitHub の scheduler と手動の dispatch をする repo の書込み権者だけ。fork の PR から走らない | (1) `pull_request` でも走らせる案: PR ごとに外部へ要求が増え、TASK の形（週 1＋手動）から外れる。(2) 失敗で issue を作る案: `issues: write` が要る | なし | 該当なし（新しい受け手が無い。TASK §6 が「当たらない」と定める） | P3.2 | 記録済み（実装前） |
+| DR-CP2B-P3-2 | 2026-10-26 | 同 | 検知の対象は `electron/electron` の現行版の `SHASUMS256.txt`（K3/3:380）。版は実行時に `package.json` の `devDependencies.electron`（exact の `x.y.z` だけを受け、それ以外は失敗）から読むので、Electron の版上げに自動で付いていく。`GrimodexReleases` の公開後の付け替えは別の判断で行う（GitHub の公開 repo の asset への付け替えは (2) に当たらないが、記録して報告する） | 公開 asset だけ。Grimodex 固有の release の構成は見えない（K3/3:380 の限界をそのまま持つ） | 版を workflow に書く案: 版上げのたびに忘れうる | なし | 該当なし | P3.2 | 記録済み（実装前） |
+| DR-CP2B-P3-3 | 2026-10-26 | 同 | 判定: hop ごとに `fetch(url, { redirect: "manual" })`。3xx は `Location` を今の URL に対して解決し（`new URL`）、正規化（小文字化は URL の仕様、末尾の `.` を外す）した上で、`https:` であること、userinfo が無いこと、port が既定であること、host が `RS1_GITHUB_HOSTS` に exact で含まれることを確かめ、どれかに反すれば要求を出さずに失敗。`Location` の欠落、redirect の上限（10）超え、最後の status が 200 でないこと、通信の失敗・timeout も失敗。起点の host も同じ検査に通す | 要求は RS-1 の host にだけ出る（検査が要求の前）。suffix 一致・wildcard にしない（`objects.githubusercontent.com.example` を通さない） | (1) `redirect: "follow"` で最後の URL だけ見る案: 途中の host が RS-1 外でも見えず、RS-1 外の host へ要求を出してしまう。(2) 最初の hop だけ見る案: 2 段目の変化を見落とす | なし | 該当なし | P3.2 | 記録済み（実装前） |
+| DR-CP2B-P3-4 | 2026-10-26 | 同 | `RS1_GITHUB_HOSTS` は `electron/main/rendererContainment.ts` を esbuild の `transform`（memory の上だけ。file を書かない）で JS にして `data:` URL で import し、その export を読む（read-only。file は変えない）。値が 3 件の空でない文字列の配列でなければ失敗。workflow は esbuild のために `pnpm install --frozen-lockfile --ignore-scripts` をする | 正本は製品の定数 1 つ（写しを作らない）。lockfile の integrity で道具を固定 | (1) 定数を script に写す案: 正本と食い違いうる。(2) 正規表現で TS を読む案: 書式の変更で黙って壊れうる。(3) Node の type stripping 案: runner の Node の版に依存する（Node 22 の既定化は 22.18 以降） | なし | 該当なし | P3.2 | 記録済み（実装前） |
+| DR-CP2B-P3-5 | 2026-10-26 | 同 | 試験 (a): `electron/main/updater.test.ts` に、check と download の進行中に `error` event（`net::ERR_NAME_NOT_RESOLVED`）が来ると操作（＝renderer が `invoke` する IPC handler）が `Update <action> failed: net::ERR_NAME_NOT_RESOLVED` で reject し、次の操作が汚れないこと、`checkForUpdates` 自体がその error で reject する場合も同じ文言になること、操作の外の error は `warn` に出て crash しないことを足す（既存 `:268-281` の形）。製品コードは変えない | renderer への通知は IPC の reject（`src/lib/updater.ts` の `invoke` が受ける）で、error の broadcast の channel は無い（事実の確認）。自動確認の失敗が利用者に見えないこと（K3/3:170）は変えない | renderer 側の試験も足す案: renderer の wrapper は reject を素通しするだけで、既存の試験の範囲 | なし | 該当なし | — | 記録済み（実装前） |
+| DR-CP2B-P3-6 | 2026-10-26 | 同 | 試験 (b): 新規 `electron/scripts/update-route-name-probe.mjs`（runner）と `update-route-name-probe-main.mjs`（Electron の main。esbuild で束ねる）。main は製品の `createRendererContainment()`（既定の deps）の起動手順 (0) `appendResolverSwitch()`、(1) `registerWebContentsPolicy()`、ready の後の (2)〜(4) `start()` をそのまま通し、更新の要求は electron-updater 本体の `ElectronHttpExecutor`（partition `electron-updater` の session の `net.request`、`redirect: "manual"` で作り直す方式）で出す。loopback の模擬 server が `302` で `http://github-releases.githubusercontent.com:<port>/…` へ向けると `net::ERR_NAME_NOT_RESOLVED` で reject すること、同じ server の loopback への `302` は 200 に届くこと（redirect の経路が働く対照）を確かめる。規則が原因であることの対照は別の起動で、`buildHostResolverRules(["MAP github-releases.githubusercontent.com 127.0.0.1"])`（`prefixRules` は試験用の既存の引数）を当てると同じ要求が 200 に届くこと | 製品の NC-1 の module を import するだけで、NC-1 の file も既存の probe も変えない。製品に seam を足さない。要求先は loopback だけ | (1) 既存の `webrtc-block-probe` に行を足す案: G-open の記録の道具を変えることになる（禁止）。(2) `net.request` を手で書く案: electron-updater の redirect の作り直しを写すことになり、本体と食い違いうる | なし | 該当なし | P3.2 | 記録済み（実装前） |
+
+### P3.4 TASK と master の食い違い（調べた結果）
+
+- `RS1_GITHUB_HOSTS` は `rendererContainment.ts:16-20`（TASK は :16-19。宣言の閉じ括弧まで含めた差だけで内容は同じ 3 host）。
+- Electron は `package.json` で `43.8.3`（TASK の記述と一致）。`electron-updater` は `6.8.9`、`builder-util-runtime` は `9.7.0`（`maxRedirects = 10`）。
+- `updater.test.ts:268-281` の既存の形（`surfaces method/error-event failures without poisoning a retry`）は master でも同じ行にある。
+- TASK §11 の「electron-updater が専用 partition を使うか」は P1 の §5 で確かめ済み（partition `electron-updater`、`cache: false`）。(b) はそれに合わせる。
+- `GrimodexReleases` の公開状態はこの lane では確かめ直していない（TASK の記述のまま。対象にしない）。
+- 新しい workflow を default branch に入れる前に `workflow_dispatch` できないこと（TASK §11 の推測）は確かめていない。PR の段階では workflow は走らず、merge 後の初回の手動 dispatch か最初の schedule が最初の実行になる。
+
+### P3.5 実装後の追記（2026-10-26）
+
+branch `claude/cp2b-p3-update-route-watch`（基点 `8e93bb31`）。commit: `54a2f810`（この節の P3.1〜P3.4）、`01fd6fb1`（script）、`d540a60e`（workflow）、`e828faf3`（契約・単体試験）、`019d484b`（updater の試験）、`4674527f`（実 Electron の harness）。
+
+実装の要点と、設計（P3.3）からの差:
+
+- 試験の置き場: script の単体試験と workflow の契約は `scripts/release-workflows.test.mjs` の独立した describe「update route watch (CP-2b P3, H1)」に置き、SHA 固定の試験の対象表には `update-route-watch.yml` を 1 行足した。別の試験 file にすると `ci.yml` と `scripts/local-ci-registry.json` の一覧に足すことになり、registry の sha（`scripts/local-ci-full-workload-allocation.json`）も変わるので避けた（既存の CI の段「Release workflow and manifest contract tests」でそのまま走る）。
+- 要求は正規化の検査を通った URL をそのまま使う（末尾の `.` 付きの FQDN は同じ名前として要求する）。検査は `.` を外した host で行う。
+- (b) の harness は、electron-updater の確認の形（`HttpExecutor.request`。net の既定の redirect の追従）と取得の形（`ElectronHttpExecutor.download`。`redirect: "manual"` で作り直す）の両方を通す。どちらも `net::ERR_NAME_NOT_RESOLVED` で reject した。Electron は `--no-sandbox` で起動する（webContents を作らない。既存の probe と同じ扱い）。判定の純関数の試験 `electron/scripts/update-route-name-probe.test.mjs` は CI の一覧に載せていない（ローカルの道具。`webrtc-block-probe-verdict.test.mjs` と同じ扱い）。
+
+試験と変異（どれも元に戻して再確認した）:
+
+| 実行 | 結果 |
+|---|---|
+| `node --test scripts/release-workflows.test.mjs` | 27 passed（P3 の 5 件と、対象を足した SHA 固定の試験を含む） |
+| 変異（script）: `*.githubusercontent.com` の wildcard 化、redirect 先の検査の除去、userinfo／port の検査の除去、末尾の `.` の処理の除去、`redirect: "follow"`、redirect の上限の除去、4xx の終端の受理 | 各 1〜2 件が赤 |
+| 変異（workflow）: `pull_request` の追加、`contents: write`、timeout 30 分、action の tag 指定、`persist-credentials: true` | 各 1〜2 件が赤 |
+| `pnpm exec vitest run --config vitest.electron.config.ts electron/main/updater.test.ts` | 21 passed（P3 の 4 件を含む） |
+| 変異（`updater.ts`。製品は元に戻した）: error event を進行中の操作へ渡さない、reject の文言から原因を落とす、操作の外の error を投げ直す | それぞれ 2、3、1 件が赤 |
+| `node --test electron/scripts/update-route-name-probe.test.mjs` | 3 passed（合成の記録 13 通りの変異が赤） |
+| `TMPDIR=/tmp/claude-1000/h1 node electron/scripts/update-route-name-probe.mjs`（Linux、Electron 43.8.3、2 回） | `H1(b) PASS`。product: containment の `start()` が true、loopback への 302 は 200、RS-1 外の名前への 302 は確認・取得とも `net::ERR_NAME_NOT_RESOLVED`、その名前は server に届かず、partition `electron-updater` の `resolveHost` も失敗。mapped-control: 同じ要求が 200 で、server が `github-releases.githubusercontent.com:<port>` の Host で受けた。両方の起動で exit 0、group の残りの process 0 |
+| 変異（実 Electron）: product の起動で RS-1 外の名前を loopback へ写す（RS-1 に足したのと同じ状態） | `H1(b) FAIL`（4 項目） |
+| `node scripts/update-route-redirect-check.mjs`（ローカルから 1 回。公開 asset への要求） | `github.com` 302 → `release-assets.githubusercontent.com` 200、exit 0（2026-10-26） |
+| `pnpm exec tsc -p electron/tsconfig.json --noEmit`、`pnpm validate:architecture` | 成功 |
+
+確かめていないこと・開示:
+
+- hosted の runner での workflow の実行（default branch に入る前は schedule も dispatch も走らない。TASK §11 の推測のまま）。`pnpm install --ignore-scripts` の後に esbuild が postinstall なしで動くこと（esbuild の JS API は platform の package の binary を直接使う。推定）。
+- GitHub の schedule が 60 日の無活動で止まること、schedule の失敗の通知が cron を最後に変えた利用者へ行くこと（どちらも一般的な挙動の推測）。止まったことの検知は続行計画の期限の表で扱う（TASK §4）。
+- `GrimodexReleases` の公開後の対象の付け替え（DR-CP2B-P3-2）。
+- 利用者に見える副作用: worktree の `node_modules` に Electron 43.8.3 の binary を利用者の cache（`~/.cache/electron`）の zip から展開した。Xvfb は `scripts/local-ci-xvfb.mjs` を host の namespace で使い、利用者の `/tmp/.X11-unix/X0`〜`X2` は実行の前後で残っている。一時 dir は消した。ローカルの検知の 1 回は github.com と release-assets.githubusercontent.com へ要求した。Chromium の他の通信（辞書など）は起きうるので「外部網なし」は主張しない。
+- Quick／Full はローカルで走らせていない。
+
+### P3.6 独立 security レビューの修正の追記（2026-10-26）
+
+レビューの結論は P1 なし、P2 が 1 件。直した点（commit `d4221d64`、`ffba278b`、`3a7083e5`）:
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界（actor・防御・受信先・受入れ） | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-CP2B-P3-7 | 2026-10-26 | CP-2b P3（レビュー修正） | 末尾ドットは検知側で拒否し、製品との差を作らない。host の末尾が `.`（URL が `.` へ写す全角の句点 `。` を含む）なら `trailing-dot` で失敗する（P3.5 の「`.` を外して照合し、付いたまま要求する」を改めた） | 製品の `EXCLUDE <host>` が末尾ドット付きの名前に当たるかは確かめていない（推測）。当たらない場合、検知が通っても製品は `~NOTFOUND` になりうる | `.` を外したまま照合を続ける案: 上の差が残る | なし | 該当なし | P3.2 | 記録済み（レビュー修正） |
+
+- P2（suffix 一致の変異が検出されない）: 「fails before contacting a redirect host outside RS-1」の表に RS-1 の host の subdomain 3 件（`evil.github.com`、`x.objects.githubusercontent.com`、`a.release-assets.githubusercontent.com`）を足した。`host === h || host.endsWith("." + h)` の変異で赤になった。DR-CP2B-P3-3 の「suffix 一致にしない」を固定する。
+- 末尾ドット（DR-CP2B-P3-7）: ASCII の `.` は表で、全角の句点は `admitUrl` を直接呼んで試す（合成の `Response` の header に非 ASCII を載せられないため）。末尾ドットを許す変異と、`.` を外して照合する変異のどちらでも赤になった。
+- error 文の回帰: 拒否の error 文に Location の path・query（`sig=`）が出ないことを表の各行で確かめる。error 文に Location を足す変異で赤になった。
+- workflow の契約の追加: concurrency（`update-route-watch`、`cancel-in-progress: false`）、`pnpm/action-setup` の版と `package.json` の `packageManager` の一致、`setup-node` の版と `release.yml` の pnpm を使う job の版（22。job の間で 1 つ）の一致、3 つの action の SHA が `release.yml` の pin と同じ値であること、step の一覧（3 action と 2 run。step の key は `name`／`uses`／`run`／`with` だけ）を固定した。変異 9 種（concurrency の除去、`cancel-in-progress: true`、pnpm の版、Node 24、3 つの action の SHA の差替え、step の追加、step への `env`）でそれぞれ赤になった。
+- harness の signal の片付け: runner が SIGINT／SIGTERM を受けると、まず次の起動を止める印を立て、実行中の子の process group（`-child.pid`）に SIGTERM を送り（wrapper が Xvfb を片付ける）、`close` を最大 5 秒待ってから SIGKILL を送り（待つ間に入れ替わった子にも）、一時 dir を消して 130／143 で終了する。単体試験 3 件（`createSignalCleanup` を偽の kill／remove／exit で試す）を足し、変異 5 種（SIGTERM を省く、SIGKILL を省く、一時 dir を消さない、止める印を立てない、入れ替わった子を止めない）で赤になった。手動の確認: Electron の実行中（group に 3 process）に runner へ SIGTERM を送ると、exit 143、group の残り 0、一時 dir 0、h1b の process 0、利用者の `/tmp/.X11-unix/X0`〜`X2` は残った（同時に動いていた別 lane〔P2〕の Xvfb には触れていない）。最初の手動の確認で、片付けの待ちの間に次の起動（mapped-control）が始まる競合が見つかったので、止める印を足した。
+- 判定の弱い変異 2 件: 判定の試験に、余分な case を持つ product の記録と、対照の server 到達が 1 回だけの記録を足した。case の集合の検査を外す変異と、`< 2` を `< 1` にする変異で赤になった。
+- 取り込まなかったもの: 5xx・通信の失敗の即失敗は安全側の設計として維持した。`error.cause.code` は log に出していない（host 名と status 以外を出さない原則を優先した）。
+- 再確認: `node --test scripts/release-workflows.test.mjs` 28 passed、`node --test electron/scripts/update-route-name-probe.test.mjs` 6 passed、実 Electron の harness `H1(b) PASS`、検知の script を公開 asset に 1 回（`github.com` → `release-assets.githubusercontent.com`、exit 0）。
