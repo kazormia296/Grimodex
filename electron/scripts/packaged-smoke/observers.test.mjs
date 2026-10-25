@@ -3,7 +3,13 @@ import dgram from "node:dgram";
 import net from "node:net";
 import test from "node:test";
 
-import { startCanary, startCtlSocket, startHttp } from "./observers.mjs";
+import fs from "node:fs";
+import http2 from "node:http2";
+import os from "node:os";
+import path from "node:path";
+
+import { settlesWithin } from "./process-tree.mjs";
+import { startCanary, startCtlSocket, startDohCanary, startHttp } from "./observers.mjs";
 
 const canBind = (port, kind) => new Promise((resolve) => {
   if (kind === "udp") {
@@ -39,4 +45,17 @@ test("http と ctl の受け口は listen の error を reject し、close で p
   await Promise.all([httpd.close(), ctl.close()]);
   assert.equal(await canBind(httpd.port, "tcp"), true);
   assert.equal(await canBind(ctl.port, "tcp"), true);
+});
+
+test("DoH の canary の close は開いたままの http2 の session があっても有限で終わる", async (t) => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "gps-doh-"));
+  let doh;
+  try { doh = await startDohCanary(work); } catch { t.skip("openssl が無い"); return; }
+  const client = http2.connect(`https://127.0.0.1:${doh.port}`, { rejectUnauthorized: false });
+  client.on("error", () => {});
+  await new Promise((resolve) => client.once("connect", resolve));
+  // client の session を開いたまま server を閉じる（session を壊さなければ close は session の終わりまで待つ）
+  assert.equal(await settlesWithin(doh.close(), 3000), true);
+  client.destroy();
+  fs.rmSync(work, { recursive: true, force: true });
 });
