@@ -102,7 +102,8 @@ export async function readElectronVersion(
 
 /**
  * 要求の前の検査。`location` を `base` に対して解決し、正規化した URL を返す。
- * RS-1 の host（exact）、`https:`、userinfo なし、既定の port でなければ失敗。
+ * RS-1 の host（exact）、`https:`、userinfo なし、既定の port、末尾の `.` なしでなければ
+ * 失敗。
  */
 export function admitUrl(location, base, allowedHosts) {
   let url;
@@ -111,8 +112,8 @@ export function admitUrl(location, base, allowedHosts) {
   } catch {
     throw new UpdateRouteError("location-unparsable");
   }
-  // URL の hostname は小文字化と IDN の punycode 化を済ませている。末尾の `.` だけ外す。
-  const host = url.hostname.replace(/\.$/, "");
+  // URL の hostname は小文字化と IDN の写像（全角の句点 `。` などを `.` へ）を済ませている。
+  const host = url.hostname;
   if (url.protocol !== "https:") {
     throw new UpdateRouteError("not-https", { host });
   }
@@ -121,6 +122,11 @@ export function admitUrl(location, base, allowedHosts) {
   }
   if (url.port !== "") {
     throw new UpdateRouteError("non-default-port", { host });
+  }
+  // 末尾の `.` 付きの名前は外さずに拒否する。製品の `EXCLUDE <host>` が末尾の `.` 付きの
+  // 名前に当たるかは確かめておらず、検知だけが通って製品が止まる差を作らない。
+  if (host.endsWith(".")) {
+    throw new UpdateRouteError("trailing-dot", { host });
   }
   if (!allowedHosts.includes(host)) {
     throw new UpdateRouteError("host-outside-rs1", { host });

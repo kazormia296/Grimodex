@@ -1171,7 +1171,7 @@ describe("update route watch (CP-2b P3, H1)", () => {
   it("follows only RS-1 hosts hop by hop with manual redirects", async () => {
     const { checkUpdateRoute } = await loadCheck();
     const { fetchImpl, requested } = syntheticFetch([
-      { status: 302, location: "https://RELEASE-ASSETS.githubusercontent.com./a?sig=1" },
+      { status: 302, location: "https://RELEASE-ASSETS.GitHubUserContent.com/a?sig=1" },
       { status: 307, location: "/b" },
       { status: 200 },
     ]);
@@ -1189,7 +1189,7 @@ describe("update route watch (CP-2b P3, H1)", () => {
     ]);
     assert.deepEqual(
       requested.map(({ url }) => new URL(url).hostname),
-      ["github.com", "release-assets.githubusercontent.com.", "release-assets.githubusercontent.com."],
+      ["github.com", "release-assets.githubusercontent.com", "release-assets.githubusercontent.com"],
     );
     assert.ok(requested.every(({ redirect }) => redirect === "manual"));
     // log は host と status だけで、署名付きの query を出さない。
@@ -1199,7 +1199,13 @@ describe("update route watch (CP-2b P3, H1)", () => {
   it("fails before contacting a redirect host outside RS-1", async () => {
     const { checkUpdateRoute } = await loadCheck();
     for (const [location, reason] of [
-      ["https://github-releases.githubusercontent.com/a", "host-outside-rs1"],
+      ["https://github-releases.githubusercontent.com/a?sig=secret", "host-outside-rs1"],
+      // RS-1 の host の subdomain は通さない（suffix 一致にしない。DR-CP2B-P3-3）。
+      ["https://evil.github.com/a", "host-outside-rs1"],
+      ["https://x.objects.githubusercontent.com/a", "host-outside-rs1"],
+      ["https://a.release-assets.githubusercontent.com/a", "host-outside-rs1"],
+      // 末尾の `.`（全角の句点を含む）は外さずに拒否する（DR-CP2B-P3-7）。
+      ["https://release-assets.githubusercontent.com./a", "trailing-dot"],
       ["https://objects.githubusercontent.com.example/a", "host-outside-rs1"],
       ["https://evil.example/github.com", "host-outside-rs1"],
       ["https://github.com@evil.example/a", "userinfo-present"],
@@ -1215,7 +1221,15 @@ describe("update route watch (CP-2b P3, H1)", () => {
       );
       assert.equal(error.reason, reason, location);
       assert.equal(requested.length, 1, location);
+      // error 文は reason と host（と status）だけで、Location の path・query を出さない。
+      assert.doesNotMatch(error.message, /sig=|\/a\b/, location);
     }
+    // 全角の句点は header に載らないので、要求の前の検査を直接確かめる（URL が `.` へ写す）。
+    const { UpdateRouteError, admitUrl } = await loadCheck();
+    assert.throws(
+      () => admitUrl("https://release-assets.githubusercontent.com\u3002/a", undefined, RS1),
+      (error) => error instanceof UpdateRouteError && error.reason === "trailing-dot",
+    );
     const { fetchImpl, requested } = syntheticFetch([]);
     const error = await refusal(
       checkUpdateRoute({
