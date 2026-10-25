@@ -104,7 +104,7 @@ jobs:
 
       - name: Packaged smoke judgement and workflow contract tests
         run: >-
-          node --test --test-force-exit
+          node --test
           electron/scripts/packaged-smoke/netlog.test.mjs
           electron/scripts/packaged-smoke/verdict.test.mjs
           electron/scripts/packaged-smoke/package-check.test.mjs
