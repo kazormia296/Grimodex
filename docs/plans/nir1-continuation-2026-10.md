@@ -13,9 +13,9 @@
 
 ## 1. ユーザー決定（逐語）
 
-決定日は 2026-10-12（JST）。ただし U7 は 2026-10-13（JST）。integrator セッション（`3754f9a7-620d-4e21-ad37-3096691a96be`）の会話記録にあるユーザー自身の回答を、G0 で照合して逐語で転記した。U7 は同じセッションの会話記録にあるユーザー自身のメッセージを、merge 規則の変更時（2026-10-13）に逐語で転記した。選択肢を選んだ回答は、その選択肢の label を逐語とする。問いは要旨である。
+決定日は 2026-10-12（JST）。ただし U7 は 2026-10-13（JST）、U8 は 2026-10-25（JST。integrator の伝える逐語を、Session B4 の記録の時に転記した。時刻は会話記録の timestamp）。integrator セッション（`3754f9a7-620d-4e21-ad37-3096691a96be`）の会話記録にあるユーザー自身の回答を、G0 で照合して逐語で転記した。U7 は同じセッションの会話記録にあるユーザー自身のメッセージを、merge 規則の変更時（2026-10-13）に逐語で転記した。選択肢を選んだ回答は、その選択肢の label を逐語とする。問いは要旨である。
 
-SB-1〜SB-5 は、Session B の前にユーザーが出した決定と選択である（SB-1 は 2026-10-13、SB-2〜SB-5 は 2026-10-14、JST）。同じセッションの会話記録にあるユーザー自身のメッセージと構造化質問への回答を、2026-10-14 に照合して逐語で転記した（時刻は会話記録の timestamp）。SB-6 と SB-7 は 2026-10-18（JST）の決定で、Session B3 の記録の時に、同じ integrator セッション（`fa34d6ef-ff00-4f4d-846d-7ccee58abf30`）の会話記録にあるユーザー自身のメッセージと構造化質問への回答を照合して逐語で転記した（時刻は会話記録の timestamp）。SB-8 は 2026-10-25（JST）の選択で、Session B4（K6/3）の記録の時に integrator の伝える逐語を転記した（時刻は会話記録の timestamp）。どれも契約の確認文ではない。契約は、書き直した draft に対して、ユーザーが逐語の確認文を打ったときだけ確認される。契約の draft によっては、同じ決定を別の名前（K3 の /2 と K2 の /3 の UB1・UB2、K5 の /3 の UB-K5、K3 の /3 の UB3〔SB-6〕）で引く。
+SB-1〜SB-5 は、Session B の前にユーザーが出した決定と選択である（SB-1 は 2026-10-13、SB-2〜SB-5 は 2026-10-14、JST）。同じセッションの会話記録にあるユーザー自身のメッセージと構造化質問への回答を、2026-10-14 に照合して逐語で転記した（時刻は会話記録の timestamp）。SB-6 と SB-7 は 2026-10-18（JST）の決定で、Session B3 の記録の時に、同じ integrator セッション（`fa34d6ef-ff00-4f4d-846d-7ccee58abf30`）の会話記録にあるユーザー自身のメッセージと構造化質問への回答を照合して逐語で転記した（時刻は会話記録の timestamp）。SB-8 は 2026-10-25（JST）の選択で、Session B4（K6/3）の記録の時に integrator の伝える逐語を転記した（時刻は会話記録の timestamp）。どれも契約の確認文ではない。契約は、書き直した draft に対して、ユーザーが明示に承認したときだけ確認される（2026-10-25 までは逐語の確認文を打ったときだけ。U8 で、1つの draftRef と1つの contractId を曖昧さなく特定する承認に緩和した）。契約の draft によっては、同じ決定を別の名前（K3 の /2 と K2 の /3 の UB1・UB2、K5 の /3 の UB-K5、K3 の /3 の UB3〔SB-6〕）で引く。
 
 | ID | 時刻（JST） | 問い（要旨） | ユーザーの回答（逐語） | 計画での扱い |
 |---|---|---|---|---|
@@ -29,6 +29,7 @@ SB-1〜SB-5 は、Session B の前にユーザーが出した決定と選択で�
 | U5 | 17:28 | CI 保守（ProduceSkia allowance 10-17、pnpm audit 例外 GHSA-ch52-4w7c-c8xp 10-18、Dependabot 10件）をどう進めるか | 「この計画では扱わない」 | CI 保守はこの計画では扱わない |
 | U3 変更 | 23:05 | Ralph（Claude Code backend）の新しい起動が、auto mode の安全判定（Create Unsafe Agents。Ralph が子の Claude Code を `--dangerously-skip-permissions` で動かすため）で拒否された。今後どうするか | 「Workflow subagent で続ける（推奨）」 | 以後の実装は Ralph ではなく Workflow subagent で行う（builder → Fable による reviewer → fix の順。§5）。Ralph で起動済みの最初の3レーン（CR-1、DT-1、HP-1）の記述は記録として残す |
 | U7 | 10-13 22:22 | 問いへの回答ではない。CR-1 の Full 待ちなどの途中経過の報告の後に、ユーザーが出した merge 条件の変更の指示 | 「FullCIに時間が掛かり、Full中の並列PRのmergeによるbase stale 問題などが発生している。merge条件からCanonicalFullの合格を外す。「merge の直前に base が master と完全に一致していること」という条件も、一緒に緩める。たとえば「rebase して Quick が通れば可」にします。masterのfullで赤が出た場合、優先して対応するなどの運用でカバーする。ReleaseではFullCIのままにする。」 | 通常の PR の merge 条件から canonical Full を外し、rebase 済みの Quick と同じ head の `ci.yml` checks で merge する。merge 直前の base の完全一致も要求しない。merge 後に master の head で hosted Full を走らせ、赤は優先して直す。release PR と release tag は従来どおり Full を要求する（[GDX-TRACE-001](../../policies/quality/iron-laws.md#GDX-TRACE-001)。§6） |
+| U8 | 10-25 | 問いへの回答ではない。K6/3 の確認文（§10.6）を受け取った直後に、ユーザーが出した確認の規則の変更の指示 | 「この固定文言の確認めんどいので、台帳の規則を完全一致じゃなくてもOKにしてください」 | 確認台帳の Confirmation protocol を改め、固定の文との一致を要求しない。行は、1つの `draftRef` と1つの `contractId` を曖昧さなく特定する明示の承認で確認される（発言が両方を名指すか、直前の integrator のメッセージがちょうど1つの `draftRef#contractId` を draft の SHA-256 つきで示した問いに承認で答える。構造化質問への回答でもよい）。integrator は返答を逐語で、受信の日時、示した ref と SHA-256、取り込んだ draft の byte 同一性とともに記録する。計画への同意、merge の指示、1つの行を示した問いへの返答でない包括的な言い方などは確認にならない。2026-10-25 より前の exact statement による確認は履歴として有効。AGENTS.md と GDX-PRECHECK-001 は変えない（完全一致を書いていない） |
 | SB-1 | 10-13 19:40 | 問いへの回答ではない。K3 と K5 の書き直しの提案（renderer が乗っ取られうる前提は保ち、守る場所を「平文を外へ出す経路」に絞る。外へ出ない機能は制限モードでも開く〔K3 の O-2〕。local 送信の同意は送信先ごとに1回〔K5 の B〕）への返答 | 「それで行きましょう。K5はCで。ローカルLLMを使う人は基本的にリテラシーが高いと思うので釈迦に説法でしょう。」 | K3 は O-2、K5 は C（Main の同意ダイアログを置かず、利用者の AI 使用ポリシーと接続先の設定を同意とみなす）で書き直す。乗っ取られた renderer が設定を変えて送信を始めうることなどは残余として開示する。確認は、書き直した版（K3 の /2、K5 の /3 など）に対して逐語の確認文で行う |
 | SB-2 | 10-14 04:06 | 問いへの回答ではない。K3 の /2 のレビューが、Web Editor の handoff の取込みを根拠に防御の追加を求めていたときの、ユーザーの指示 | 「web editorは廃止し、再公開の予定もないのでhandoffの考慮は不要です」 | Web Editor の handoff の取込みと、Web Editor を前提にした脅威・同意の議論は、K2〜K6 の契約と設計の考慮の対象外とする。製品からの取込み経路の削除は、別に依頼されたときだけ行う |
 | SB-3 | 10-14 10:02 | 場面の本文を保存するたびに承認済みの型付き Revision がすべて失効し、執筆中は Graph が実質使えない（X1）。確認済みの契約は「本文・題名・順序の更新で旧 Revision を失効させる」と書くが、どの Revision かは書かず、L9 と post-B は本文の保存の後も履歴が続くことを求める。どう扱うか（選択肢は「本文では失効させない (推奨)」「依存するものだけ失効」「今のまま」） | 「依存するものだけ失効」 | 編集した場面の Scope の解決に依存する Revision だけを失効させる（L5 の `nir1-scope-dependency-delta/1` と同じ投影型の考え方）。新しい draftRef（`nir1-scene-scope-projection-proposal/1`）を起案して確認を求める。確認文が要らない委任の範囲の修正（X1-1。DR-X1-1）は先に進める |
@@ -65,7 +66,7 @@ U3 変更で選ばれた選択肢の提示文は「Ralph の代わりに、こ�
 | P7 | `nir1-l6-l9-contract-proposal/7`：`graph-limited-binding`（proposal/6 の資源の値の改訂。SB-4、SB-5。`nir1-defensive-resource-limits` は規則を変えず、確認文はない） | CQ-LIM-1〜4、C の受入れ（G-1、G-2）、PUB-G | 2026-10-17 の Session B2 で確認された（§10.4）。実装（CQ-LIM-1〜4）は X1-3 の merge の後の再測を終えて、#678 で master |
 | X1 | `nir1-scene-scope-projection-proposal/1`：`scope-storage-authority` と `typed-revision-material` の差分（本文の保存で承認済みの Revision を失効させない。SB-3） | X1-2／3／4、K4 の前提 XP、CP-4 | 2026-10-17 の Session B1 で2文とも確認された（§10.3） |
 
-確認は、確認台帳の protocol（[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の Confirmation protocol）に従い、1つの contractId につき exact draftRef を名指した1文で行う。draft は契約ごとに別ファイルにし、merge しない branch で SHA を固定する。確認された draft は byte 同一で台帳へ取り込む。
+確認は、確認台帳の protocol（[L6〜L9実行計画](nir1-l6-l9-execution-plan.md) の Confirmation protocol）に従い、1つの draftRef と1つの contractId を曖昧さなく特定する明示の承認で行う（2026-10-25 に U8 で緩和した。固定の文との一致は要らず、自由な文でも、integrator が1つの `draftRef#contractId` を draft の SHA-256 つきで示した問いへの承認の返答でもよい。2026-10-25 より前は、exact draftRef を名指した1文で行い、その記録は履歴として有効）。draft は契約ごとに別ファイルにし、merge しない branch で SHA を固定する。確認された draft は byte 同一で台帳へ取り込む。
 
 ## 3. U3 の委任範囲と記録の形式
 
@@ -574,6 +575,7 @@ integrator の運用の記録で、契約の確認でも規則の変更でもな
 - ユーザーに確認し、`[precheck]` で止まるのは「重要な変更」だけ。それ以外は確認せず、計画、実装、独立レビュー、PR、hosted CI、merge、master の Full まで自動で進め、最終報告で開示する。
 - 契約の確認に「ユーザー本人が入力した正確な文」は要求しない。重要な変更では、チャットで内容を示し、通常の返答での了承を得る。
 - 「重要な変更」の暫定の定義（integrator の提案。ユーザーの確認は未了で、ユーザーが直してよい）: (1) 製品の公開・有効化（PUB-G／PUB-L、閉じた gate を開ける、activation UI・開示文言の承認）、(2) 新しい外部送信先・データの受け手、security 境界を弱める変更（NC-1／Y-1 の変更、認可の削除、新しい authority）、(3) 利用者データの保存範囲の拡大、確認済みの閾値・合格基準の緩和、(4) 取り返しのつかない外向きの操作（release／tag の公開、履歴の書換え、データ削除）。
+- 確認台帳の規則も 2026-10-25 に緩和した（ユーザーの指示。§1 の U8）: 行は、1つの `draftRef` と1つの `contractId` を曖昧さなく特定する明示の承認（自由な文、またはちょうど1つの `draftRef#contractId` を draft の SHA-256 つきで示した問いへの承認の返答）で確認され、固定の文との一致は要らない。integrator は返答を逐語で記録し、過去の exact statement の記録は履歴として有効のまま。
 - 限界: ユーザーが言っていない確認を「得た」と記録しない。repo の validator や文書が確認の記録を merge の条件にしている変更は、その記録を作れないので、そのときだけ一言ユーザーに確認する。
 
 ### 12.2. 守ること
