@@ -1,5 +1,6 @@
 // Synthetic receipts only. SHA256SUMS tests write to a fresh temp directory.
 import assert from "node:assert/strict";
+import { SOCKET_SAMPLE_SCHEMA } from "./egress.mjs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -44,6 +45,19 @@ function windowSamples(times, extra = {}) {
 }
 
 const RUN = { startedAtMs: 1_000, finishedAtMs: 61_000 };
+function socketSamples(times, extra = {}) {
+  return times.map((atMs) => ({
+    schema: SOCKET_SAMPLE_SCHEMA,
+    atMs,
+    rootPid: 10,
+    pids: [10, 11],
+    unreadable: [],
+    sockets: { tcp: 2, udp: 0, loopback: 2, unconnected: 0 },
+    external: [],
+    externalListeners: [],
+    ...extra,
+  }));
+}
 const WORKSPACE = {
   workspaceId: "ws-1",
   canonicalLocatorDigest: H64("8"),
@@ -127,7 +141,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
         "DBUS_SESSION_BUS_ADDRESS",
       ],
       netLog: { sha256: H64("7"), nonLoopbackAttempts: 0 },
-      socketSamples: [],
+      socketSamples: socketSamples([0, 20_000, 40_000, 62_000]),
     },
     settings: {
       variantKey,
@@ -714,4 +728,35 @@ test("DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature
     "nir1-graph-eval",
   ])
     assert.match(errorsOf(withFeatures(features)), /exactly the evaluation/);
+});
+
+test("DR-CP4-S1C1-6: socket samples cover the run and an external socket is [precheck]", () => {
+  const withSockets = (samples) =>
+    receipt({
+      environment: { ...receipt().environment, socketSamples: samples },
+    });
+  assert.match(errorsOf(withSockets([])), /socketSamples: fewer than two/);
+  assert.match(
+    errorsOf(withSockets(socketSamples([20_000, 40_000, 62_000]))),
+    /before the run/,
+  );
+  const external = socketSamples([0, 20_000, 40_000, 62_000]).map((row, at) =>
+    at === 1
+      ? {
+          ...row,
+          external: [
+            {
+              pid: 11,
+              proto: "tcp",
+              local: "10.0.0.2:5000",
+              remote: "140.82.112.3:443",
+            },
+          ],
+        }
+      : row,
+  );
+  assert.match(
+    errorsOf(withSockets(external)),
+    /\[precheck\].*external socket/,
+  );
 });

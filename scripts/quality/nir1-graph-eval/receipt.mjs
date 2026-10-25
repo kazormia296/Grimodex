@@ -17,6 +17,7 @@ import {
   summarizeTrace,
   validateGraphCaseSchedule,
 } from "./availability.mjs";
+import { assessSocketSamples } from "./egress.mjs";
 import {
   D2A_MODES,
   FROZEN_FIXTURE_SHA256,
@@ -504,8 +505,18 @@ export function validateCp4Receipt(receipt) {
     errors.push(
       "[precheck] N-12: the net log shows (or lacks the count of) non-loopback attempts",
     );
-  if (!Array.isArray(environment?.socketSamples))
-    errors.push("environment.socketSamples must record non-Chromium sockets");
+  // §15.1: the socket samples see what the net log cannot (Native reqwest,
+  // the Main's Node). An external socket is a new-receiver suspicion.
+  const sockets = assessSocketSamples({
+    samples: environment?.socketSamples,
+    run: receipt?.run,
+  });
+  for (const gap of sockets.gaps)
+    errors.push(`environment.socketSamples: ${gap}`);
+  if (sockets.violations.length > 0)
+    errors.push(
+      `[precheck] the Electron process tree had an external socket: ${sockets.violations.join("; ")}`,
+    );
 
   const settings = receipt?.settings;
   for (const arm of ["raw", "hybrid", "graph"])
