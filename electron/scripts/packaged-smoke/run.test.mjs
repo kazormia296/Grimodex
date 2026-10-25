@@ -7,6 +7,14 @@ import vm from "node:vm";
 
 import {
   FORM_SUBMIT_SHIM,
+  closeAllWithin,
+  createTracker,
+  installInterruptHandler,
+  maskFreeText,
+  maskRules,
+  maskValue,
+  runConfigsInOrder,
+  startObservers,
   LEGACY_KEYRING_MARKER_FILE,
   attributeRows,
   childEnv,
@@ -119,4 +127,101 @@ test("packaged の実行体の置き場（OS ごとの --dir の出力）", () =
   fs.writeFileSync(path.join(release, "mac-arm64", "Grimodex.app", "Contents", "MacOS", "Grimodex"), "");
   assert.equal(resolvePackagedApp({ app: "", exe: "" }, "darwin", release).appDir, path.join(release, "mac-arm64", "Grimodex.app"));
   assert.throws(() => resolvePackagedApp({ app: "", exe: "" }, "win32", release), /見つからない/);
+});
+
+test("中断: signal を受けたら起動中の owner を terminate してから非 0 で終わり、2 回目の signal で二重に実行しない", async () => {
+  const handlers = new Map();
+  const terminated = [];
+  const exits = [];
+  const active = new Set([{ label: "packaged" }, { label: "probe" }]);
+  const interrupt = installInterruptHandler({
+    active,
+    terminate: async (owner) => { terminated.push(owner.label); await new Promise((r) => setTimeout(r, 20)); return { ok: true, steps: ["SIGTERM(pid)"] }; },
+    exit: (code) => exits.push(code),
+    on: (signal, fn) => handlers.set(signal, fn),
+    off: (signal) => handlers.delete(signal),
+    log: () => {},
+  });
+  assert.deepEqual([...handlers.keys()].sort(), ["SIGINT", "SIGTERM"]);
+  const first = handlers.get("SIGINT")("SIGINT");
+  const second = handlers.get("SIGTERM")("SIGTERM");
+  assert.equal(interrupt.state.interrupted, true);
+  // exit は terminate の後（終了の証拠を待ってから）
+  assert.deepEqual(exits, []);
+  await Promise.all([first, second]);
+  assert.deepEqual(terminated, ["packaged", "probe"]);
+  assert.deepEqual(exits, [130]);
+  assert.equal(active.size, 0);
+  interrupt.dispose();
+  assert.equal(handlers.size, 0);
+});
+
+test("中断の対象の登録: 終了の証拠が取れた owner だけを外す", () => {
+  const active = new Set();
+  const track = createTracker(active);
+  const a = track({ label: "a" });
+  const b = track({ label: "b" });
+  track.release(a, { ok: true });
+  track.release(b, { ok: false });
+  assert.deepEqual([...active], [b]);
+});
+
+test("admission closure: 前の構成の終了の証拠が取れなければ、中断されたら、次の構成を起動しない", async () => {
+  const started = [];
+  const records = await runConfigsInOrder(["baseline", "toolcheck", "packaged"], async (config) => {
+    started.push(config);
+    return { config, lifecycle: { ok: config !== "toolcheck" } };
+  }, { log: () => {} });
+  assert.deepEqual(started, ["baseline", "toolcheck"]);
+  assert.equal(records.length, 2);
+  let interrupted = false;
+  const written = [];
+  await assert.rejects(runConfigsInOrder(["baseline", "toolcheck"], async (config) => { interrupted = true; return { config, lifecycle: { ok: true } }; }, {
+    isInterrupted: () => interrupted, onRecord: (config) => written.push(config), log: () => {},
+  }), /中断/);
+  // 中断の後は記録を書かない
+  assert.deepEqual(written, []);
+});
+
+test("受け口の起動が途中で失敗したら、開いたものを閉じてから throw する", async () => {
+  const closed = [];
+  const fake = (label) => async () => ({ label, port: 1, bound: true, close: async () => { closed.push(label); } });
+  await assert.rejects(startObservers({
+    nonce: "abc", lan: null, withDoh: false, work: os.tmpdir(),
+    factories: {
+      startCanary: (label) => fake(label)(),
+      startHttp: fake("http"),
+      startCtlSocket: async () => { throw new Error("listen EADDRINUSE"); },
+    },
+  }), /EADDRINUSE/);
+  assert.deepEqual(closed.sort(), ["http", "p-127.0.0.1", "q-127.0.0.1-other", "r-127.0.0.2", "s-[::1]"].sort());
+});
+
+test("close の待ちは上限つき（閉じない受け口で harness を止めない）", async () => {
+  const started = Date.now();
+  assert.equal(await closeAllWithin([() => new Promise(() => {}), async () => {}], 50), false);
+  assert.equal(await closeAllWithin([async () => {}], 1000), true);
+  assert.ok(Date.now() - started < 2000);
+});
+
+test("伏せ字: repo・一時 dir・home の絶対 path（Windows の区切りの両形）、nonce、LAN、hostname を key と値で伏せ、利用者名は自由文だけ伏せる", () => {
+  const rules = maskRules({
+    nonce: "abc123", lan: "10.0.0.5", hostname: "box",
+    paths: { repo: "/home/alice/src/Grimodex", tmp: "/tmp/gps-x", home: "/home/alice", win: "C:\\Users\\alice\\AppData" },
+  });
+  const record = maskValue({
+    fatal: "ENOENT /home/alice/src/Grimodex/release/x and /tmp/gps-x/pa-1/netlog.json",
+    outputTail: "[pid] C:/Users/alice/AppData/Local/Temp and C:\\Users\\alice\\AppData\\x for alice",
+    hostResolver: { "stun-abc123.probe.test": 1, "10.0.0.5": 2 },
+    environment: { runner: { os: "Linux" } },
+    note: "/home/alice/.config box",
+  }, rules);
+  assert.equal(record.fatal, "ENOENT <repo>/release/x and <tmp>/pa-1/netlog.json");
+  assert.deepEqual(record.hostResolver, { "stun-<n>.probe.test": 1, "<lan>": 2 });
+  assert.equal(record.note, "<home>/.config <host>");
+  assert.match(record.outputTail, /^\[pid\] <win>\/Local\/Temp and <win>\\x for alice$/);
+  const free = maskFreeText({ ...record, cdp: { error: "port owned by alice" }, environment: { runner: { os: "alice" } } }, "alice");
+  assert.match(free.outputTail, /for <user>$/);
+  assert.equal(free.cdp.error, "port owned by <user>");
+  assert.equal(free.environment.runner.os, "alice"); // 自由文の field 以外は変えない
 });

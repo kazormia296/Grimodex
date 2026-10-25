@@ -32,6 +32,7 @@ import { connectsInWindow, parseNetLog, sha256, summarizeNetLog } from "./netlog
 import { freePort, lanAddress, startCanary, startCtlSocket, startDohCanary, startHttp, startMdnsObserver } from "./observers.mjs";
 import { checkPackage } from "./package-check.mjs";
 import { launchOwned, settlesWithin, terminateOwned } from "./process-tree.mjs";
+import { verifyCdpPortOwner } from "./port-owner.mjs";
 import { CONFIGS, MATRIX_FLAGS, formatVerdict, judgeOs } from "./verdict.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -58,6 +59,7 @@ export const FORM_SUBMIT_SHIM = `(() => {
   };
   return "form-submit-shim";
 })()`;
+export const FORM_SUBMIT_SHIM_ID = "form-submit";
 export const FORM_SUBMIT_SHIM_NOTE = "HTMLFormElement.prototype.submit: target が空でも _self でもない form は送らない（製品の openExternal を起こさず、probe の main の deny と同じ結果にそろえる。DR-CP2B-P2-5）";
 
 /**
@@ -225,42 +227,99 @@ export function attributeRows({ results, canaries, connectTimes, listenerHits, d
   };
 }
 
-/** 記録の text から nonce、LAN の IPv4、hostname を伏せる（probe と同じ表記） */
-export function maskRecordText(text, { nonce, lan, hostname }) {
-  let out = text.split(nonce).join("<n>");
-  if (lan) out = out.split(lan).join("<lan>");
-  if (hostname) out = out.split(hostname).join("<host>");
+/**
+ * 公開する記録の伏せ字（probe と同じ表記の nonce `<n>`、LAN の IPv4 `<lan>`、hostname `<host>` に加えて、絶対 path の
+ * repo `<repo>`、一時 dir `<tmp>`、home `<home>`）。長い path から先に置き換える。Windows の path は区切りを `/` にした形も伏せる。
+ */
+export function maskRules({ nonce, lan, hostname, paths = {} }) {
+  const rules = [];
+  const pathEntries = Object.entries(paths).filter(([, value]) => typeof value === "string" && value.length > 1)
+    .flatMap(([mark, value]) => [[value, `<${mark}>`], [value.replaceAll("\\", "/"), `<${mark}>`]])
+    .sort((a, b) => b[0].length - a[0].length);
+  rules.push(...pathEntries);
+  if (nonce) rules.push([nonce, "<n>"]);
+  if (lan) rules.push([lan, "<lan>"]);
+  if (hostname) rules.push([hostname, "<host>"]);
+  return rules;
+}
+
+export function maskRecordText(text, context) {
+  let out = String(text);
+  for (const [from, to] of maskRules(context)) out = out.split(from).join(to);
   return out;
 }
 
-async function startObservers({ nonce, lan, withDoh, work }) {
-  const canaries = [
-    await startCanary("p-127.0.0.1", "127.0.0.1"),
-    await startCanary("q-127.0.0.1-other", "127.0.0.1"),
-    await startCanary("r-127.0.0.2", "127.0.0.2"),
-    await startCanary("s-[::1]", "::1", { v6: true }),
-    ...(lan ? [await startCanary("t-lan", lan)] : []),
-  ];
-  for (const canary of canaries.slice(0, 2)) if (!canary.bound) throw new Error(`canary ${canary.label} を 127.0.0.1 に bind できない（${canary.error}）`);
-  const portOf = async (canary) => (canary?.bound ? canary.port : await freePort());
-  const httpd = await startHttp();
-  const ctl = await startCtlSocket();
-  let doh = null;
-  let dohError = null;
-  if (withDoh) {
-    try { doh = await startDohCanary(work); } catch (error) { dohError = String(error?.message ?? error).slice(0, 200); }
+/** 値（object の key と文字列）を再帰で伏せる。JSON の escape（Windows の `\\`）に左右されない */
+export function maskValue(value, rules) {
+  const apply = (text) => rules.reduce((acc, [from, to]) => acc.split(from).join(to), text);
+  if (typeof value === "string") return apply(value);
+  if (Array.isArray(value)) return value.map((entry) => maskValue(entry, rules));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [apply(key), maskValue(entry, rules)]));
   }
-  const mdns = await startMdnsObserver(nonce, lan);
-  const ports = {
-    p: canaries[0].port, q: canaries[1].port, r: await portOf(canaries[2]), s: await portOf(canaries[3]),
-    t: lan ? await portOf(canaries[4]) : 1, proxy: await freePort(), http: httpd.port, doh: doh?.port ?? 0, fake: 0, ctl: ctl.port,
-  };
-  return {
-    canaries, httpd, ctl, doh, dohError, mdns, ports,
-    close: async () => {
-      await Promise.all([...canaries.map((canary) => canary.close()), httpd.close(), ctl.close(), mdns.close(), ...(doh ? [doh.close()] : [])]);
-    },
-  };
+  return value;
+}
+
+/** 自由文の field（子の出力の末尾、失敗の文、CDP の error）だけは利用者名も伏せる（key の `runner` などを壊さないため全体には当てない） */
+export const FREE_TEXT_FIELDS = Object.freeze(["outputTail", "output", "fatal"]);
+export function maskFreeText(record, username) {
+  if (!username || username.length < 2) return record;
+  const out = { ...record };
+  const scrub = (text) => (typeof text === "string" ? text.split(username).join("<user>") : text);
+  for (const field of FREE_TEXT_FIELDS) if (field in out) out[field] = scrub(out[field]);
+  if (out.cdp && typeof out.cdp === "object") out.cdp = { ...out.cdp, error: scrub(out.cdp.error) };
+  return out;
+}
+
+/** 一時 dir を消す（Windows の EBUSY／EPERM に有限の再試行） */
+export function removeDir(dir) {
+  try { fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch (error) {
+    console.error(`[packaged-smoke] 一時 dir を消せない（${error?.code ?? error}）: ${path.basename(dir)}`);
+  }
+}
+
+/** 複数の close を上限つきで待つ（上限を超えても harness を止めない） */
+export async function closeAllWithin(closers, ms = 10_000) {
+  return settlesWithin(Promise.allSettled(closers.map((close) => Promise.resolve().then(close))), ms);
+}
+
+const DEFAULT_OBSERVER_FACTORIES = { startCanary, startHttp, startCtlSocket, startDohCanary, startMdnsObserver, freePort };
+
+/**
+ * 受け口を起動する。途中で失敗したら、それまでに開いたものを上限つきで閉じてから throw（socket を残して event loop を生かさない）。
+ * factories は試験が差し替える。
+ */
+export async function startObservers({ nonce, lan, withDoh, work, factories = DEFAULT_OBSERVER_FACTORIES }) {
+  const f = { ...DEFAULT_OBSERVER_FACTORIES, ...factories };
+  const opened = [];
+  const own = async (promise) => { const value = await promise; opened.push(value); return value; };
+  try {
+    const canaries = [
+      await own(f.startCanary("p-127.0.0.1", "127.0.0.1")),
+      await own(f.startCanary("q-127.0.0.1-other", "127.0.0.1")),
+      await own(f.startCanary("r-127.0.0.2", "127.0.0.2")),
+      await own(f.startCanary("s-[::1]", "::1", { v6: true })),
+      ...(lan ? [await own(f.startCanary("t-lan", lan))] : []),
+    ];
+    for (const canary of canaries.slice(0, 2)) if (!canary.bound) throw new Error(`canary ${canary.label} を 127.0.0.1 に bind できない（${canary.error}）`);
+    const portOf = async (canary) => (canary?.bound ? canary.port : await f.freePort());
+    const httpd = await own(f.startHttp());
+    const ctl = await own(f.startCtlSocket());
+    let doh = null;
+    let dohError = null;
+    if (withDoh) {
+      try { doh = await own(f.startDohCanary(work)); } catch (error) { dohError = String(error?.message ?? error).slice(0, 200); }
+    }
+    const mdns = await own(f.startMdnsObserver(nonce, lan));
+    const ports = {
+      p: canaries[0].port, q: canaries[1].port, r: await portOf(canaries[2]), s: await portOf(canaries[3]),
+      t: lan ? await portOf(canaries[4]) : 1, proxy: await f.freePort(), http: httpd.port, doh: doh?.port ?? 0, fake: 0, ctl: ctl.port,
+    };
+    return { canaries, httpd, ctl, doh, dohError, mdns, ports, close: () => closeAllWithin(opened.map((entry) => () => entry.close())) };
+  } catch (error) {
+    await closeAllWithin(opened.map((entry) => () => entry.close()));
+    throw error;
+  }
 }
 
 function readNetLogSummary(file, nonce) {
@@ -299,7 +358,7 @@ function environmentFacts() {
 }
 
 /** probe の main を node_modules の Electron で走らせる（baseline／toolcheck） */
-async function runProbeMain({ config, work, bundles, observers, nonce, lan, args, platform }) {
+async function runProbeMain({ config, work, bundles, observers, nonce, lan, args, platform, track }) {
   const { distDir, binary } = electronDist();
   const cfg = {
     userData: path.join(work, "userData"),
@@ -326,9 +385,10 @@ async function runProbeMain({ config, work, bundles, observers, nonce, lan, args
     },
   });
   const launch = wrapForPlatform(binary, [`--log-net-log=${netLog}`, "--net-log-capture-mode=Everything", path.join(bundles.bundle, "main.cjs")], platform);
-  const owner = launchOwned({ ...launch, env, cwd: work, exeDir: distDir, label: config, platform });
+  const owner = track(launchOwned({ ...launch, env, cwd: work, exeDir: distDir, label: config, platform }));
   const closedInTime = await settlesWithin(owner.exited, LIMITS.probeMainMs);
   const lifecycle = await terminateOwned(owner);
+  track.release(owner, lifecycle);
   const result = fs.existsSync(cfg.resultPath) ? JSON.parse(fs.readFileSync(cfg.resultPath, "utf8")) : null;
   if (!result || result.fatal) {
     return { fatal: result?.fatal ?? `probe の main の結果がない（closedInTime=${closedInTime}、${JSON.stringify(owner.closed())}）`, lifecycle, output: owner.output().slice(-2000), cm };
@@ -368,7 +428,7 @@ async function runProbeMain({ config, work, bundles, observers, nonce, lan, args
 }
 
 /** packaged の実行体を走らせ、CDP で攻撃 JS を注入する */
-async function runPackaged({ work, observers, nonce, lan, args, platform, packagedApp }) {
+async function runPackaged({ work, observers, nonce, lan, args, platform, packagedApp, track, verifyPortOwner = verifyCdpPortOwner }) {
   const cdpPort = await freePort();
   const netLog = path.join(work, "netlog.json");
   const home = path.join(work, "home");
@@ -383,17 +443,22 @@ async function runPackaged({ work, observers, nonce, lan, args, platform, packag
   });
   const appArgs = [`--remote-debugging-port=${cdpPort}`, `--log-net-log=${netLog}`, "--net-log-capture-mode=Everything"];
   const launch = wrapForPlatform(packagedApp.executable, appArgs, platform);
-  const owner = launchOwned({ ...launch, env, cwd: work, exeDir: packagedApp.appDir, label: "packaged", platform });
+  const owner = track(launchOwned({ ...launch, env, cwd: work, exeDir: packagedApp.appDir, label: "packaged", platform }));
   const cdp = { port: cdpPort, injected: false, launchToTargetMs: null, error: null, version: null };
   const pageShims = [];
+  const pageShimIds = [];
   let rendererResults = [];
   let session = null;
   try {
     const { target, waitedMs } = await waitForTarget(cdpPort, { timeoutMs: LIMITS.targetMs, isAlive: owner.isAlive });
     cdp.launchToTargetMs = waitedMs;
     cdp.targetUrl = String(target.url).split("?")[0];
+    // CDP の port は起動前に選んで閉じた番号なので、別の process が先に取りうる。owned の process tree が listen していることを
+    // 確かめてから注入する（別の Grimodex に攻撃 JS を注入しない）。確かめられなければ注入しない（道具なし）
+    cdp.portOwner = verifyPortOwner({ port: cdpPort, owner, platform });
+    if (!cdp.portOwner.owned) throw new Error(`CDP の port を owned の process tree が listen していると確かめられない（${cdp.portOwner.reason}）`);
     try {
-      const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`);
+      const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(5_000) });
       const version = await response.json();
       cdp.version = { browser: version.Browser ?? null, userAgent: version["User-Agent"] ?? null };
     } catch { /* 記録だけ */ }
@@ -403,7 +468,10 @@ async function runPackaged({ work, observers, nonce, lan, args, platform, packag
       if (Date.now() - readyStarted > LIMITS.pageReadyMs) throw new Error("document.readyState が complete にならない");
       await sleep(250);
     }
-    if (await evaluate(session, FORM_SUBMIT_SHIM, { timeoutMs: 10_000 }) === "form-submit-shim") pageShims.push(FORM_SUBMIT_SHIM_NOTE);
+    if (await evaluate(session, FORM_SUBMIT_SHIM, { timeoutMs: 10_000 }) === "form-submit-shim") {
+      pageShims.push(FORM_SUBMIT_SHIM_NOTE);
+      pageShimIds.push(FORM_SUBMIT_SHIM_ID);
+    }
     await evaluate(session, `globalThis.__probe = ${JSON.stringify(probeArgsFor({ nonce, ports: observers.ports, lan: lan ?? "192.0.2.1" }))}; true`, { timeoutMs: 10_000 });
     const script = fs.readFileSync(RENDERER_SCRIPT, "utf8");
     const value = await evaluate(session, script, { timeoutMs: LIMITS.rendererMs });
@@ -416,6 +484,7 @@ async function runPackaged({ work, observers, nonce, lan, args, platform, packag
     if (session) await session.close();
   }
   const lifecycle = await terminateOwned(owner);
+  track.release(owner, lifecycle);
   const { summary, connectTimes } = readNetLogSummary(netLog, nonce);
   const attributed = attributeRows({
     results: rendererResults,
@@ -435,6 +504,7 @@ async function runPackaged({ work, observers, nonce, lan, args, platform, packag
     userDataSeed,
     cdp,
     pageShims,
+    pageShimIds,
     rendererRowIds: rendererResults.filter((row) => row.startedAt).map((row) => row.id),
     ...attributed,
     netLog: summary,
@@ -450,12 +520,14 @@ async function runPackaged({ work, observers, nonce, lan, args, platform, packag
 async function runConfig(config, context) {
   const nonce = randomBytes(3).toString("hex");
   const work = fs.mkdtempSync(path.join(context.tmpRoot, `${config.slice(0, 2)}-`));
-  const observers = await startObservers({ nonce, lan: context.lan, withDoh: config === "baseline", work });
+  let observers = null;
   let record;
   try {
+    observers = await startObservers({ nonce, lan: context.lan, withDoh: config === "baseline", work });
+    const common = { work, observers, nonce, lan: context.lan, args: context.args, platform: context.platform, track: context.track };
     const body = config === "packaged"
-      ? await runPackaged({ work, observers, nonce, lan: context.lan, args: context.args, platform: context.platform, packagedApp: context.packagedApp })
-      : await runProbeMain({ config, work, bundles: context.bundles, observers, nonce, lan: context.lan, args: context.args, platform: context.platform });
+      ? await runPackaged({ ...common, packagedApp: context.packagedApp })
+      : await runProbeMain({ ...common, config, bundles: context.bundles });
     record = {
       label: `${context.osLabel}-${config}`,
       config,
@@ -467,14 +539,76 @@ async function runConfig(config, context) {
       ...body,
     };
   } finally {
-    await observers.close();
-    if (!context.args.keep) fs.rmSync(work, { recursive: true, force: true });
+    if (observers) await observers.close();
+    if (!context.args.keep) removeDir(work);
   }
   // raw の net log の SHA-256 は伏せ字の置換の外に置く（16 進の nonce が digest の中に現れうる）
   const rawSha256 = record.netLog?.rawSha256 ?? null;
-  const masked = JSON.parse(maskRecordText(JSON.stringify(record, null, 2), { nonce, lan: context.lan, hostname: os.hostname() }));
+  const rules = maskRules({ nonce, lan: context.lan, hostname: os.hostname(), paths: context.maskPaths });
+  const masked = maskValue(maskFreeText(record, context.username), rules);
   if (masked.netLog && rawSha256) masked.netLog.rawSha256 = rawSha256;
   return masked;
+}
+
+/**
+ * harness の中断（SIGINT／SIGTERM）: 起動中の owner を terminate して終了の証拠を得てから、記録を書かずに非 0 で終わる。
+ * 2 回目以降の signal は同じ処理を待つだけで二重に実行しない。on／off／terminate／exit は試験が差し替える。
+ */
+export function installInterruptHandler({
+  active, terminate = terminateOwned, exit = (code) => process.exit(code), cleanup = () => {},
+  on = (signal, fn) => process.on(signal, fn), off = (signal, fn) => process.removeListener(signal, fn),
+  log = (line) => console.error(line),
+}) {
+  let handling = null;
+  const state = { interrupted: false, evidence: [] };
+  const handler = (signal) => {
+    state.interrupted = true;
+    if (handling) {
+      log(`[packaged-smoke] ${signal}: 中断の処理中（二重に実行しない）`);
+      return handling;
+    }
+    handling = (async () => {
+      log(`[packaged-smoke] ${signal}: 起動中の ${active.size} 個の子を終わらせてから、記録を書かずに終了する`);
+      for (const owner of [...active]) {
+        const evidence = await terminate(owner);
+        state.evidence.push({ label: owner.label, ok: evidence?.ok === true });
+        log(`[packaged-smoke] ${owner.label} の終了の証拠: ${JSON.stringify({ ok: evidence?.ok, steps: evidence?.steps, residual: evidence?.residual })}`);
+        active.delete(owner);
+      }
+      try { cleanup(); } catch { /* best effort */ }
+      exit(signal === "SIGINT" ? 130 : 143);
+    })();
+    return handling;
+  };
+  for (const signal of ["SIGINT", "SIGTERM"]) on(signal, handler);
+  return { state, handler, dispose: () => { for (const signal of ["SIGINT", "SIGTERM"]) off(signal, handler); } };
+}
+
+/** owner の登録（中断の対象）。release は終了の証拠が取れたときだけ外す（取れなければ中断の処理が再び terminate する） */
+export function createTracker(active) {
+  const track = (owner) => { active.add(owner); return owner; };
+  track.release = (owner, lifecycle) => { if (lifecycle?.ok === true) active.delete(owner); };
+  return track;
+}
+
+/**
+ * 構成を直列に走らせる（§8.4 の admission closure）。前の構成の終了の証拠が取れなければ、または中断されたら、次を起動しない。
+ * 戻り値は記録の配列（書くのは呼出し側）。
+ */
+export async function runConfigsInOrder(configs, runOne, { isInterrupted = () => false, onRecord = () => {}, log = (line) => console.error(line) } = {}) {
+  const records = [];
+  for (const config of configs) {
+    if (isInterrupted()) throw new Error("中断された");
+    const record = await runOne(config);
+    if (isInterrupted()) throw new Error("中断された");
+    records.push(record);
+    onRecord(config, record);
+    if (record?.lifecycle?.ok !== true) {
+      log(`[packaged-smoke] ${config} の子 process の終了を確かめられない。以後の構成を起動しない: ${JSON.stringify(record?.lifecycle ?? null)}`);
+      break;
+    }
+  }
+  return records;
 }
 
 function writeSha256Sums(dir) {
@@ -492,34 +626,36 @@ export async function main(argv = process.argv.slice(2)) {
   const packagedApp = args.configs.includes("packaged") ? resolvePackagedApp(args, platform) : null;
   // TMPDIR は短い path（長い path は Chromium の SingletonSocket が落ちる）。呼出し側が短い TMPDIR を渡す
   const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gps-"));
-  const context = { args, platform, osLabel, packagedApp, tmpRoot, lan: lanAddress(), bundles: null };
-  let interrupted = false;
-  const onSignal = () => { interrupted = true; };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  const active = new Set();
+  const context = {
+    args, platform, osLabel, packagedApp, tmpRoot, lan: lanAddress(), bundles: null, track: createTracker(active),
+    username: (() => { try { return os.userInfo().username; } catch { return ""; } })(),
+    maskPaths: { repo: root, tmp: tmpRoot, ostmp: os.tmpdir(), home: os.homedir() },
+  };
+  const interrupt = installInterruptHandler({ active, cleanup: () => { if (!args.keep) removeDir(tmpRoot); } });
   try {
     if (args.configs.some((config) => config !== "packaged")) context.bundles = await buildProbeBundles(fs.mkdtempSync(path.join(tmpRoot, "b-")));
-    for (const config of args.configs) {
-      if (interrupted) throw new Error("中断された");
+    await runConfigsInOrder(args.configs, (config) => {
       console.log(`[packaged-smoke] ${osLabel}: ${config} を開始`);
-      const record = await runConfig(config, context);
-      fs.writeFileSync(path.join(outDir, `${config}.json`), JSON.stringify(record, null, 2) + "\n");
-      console.log(`[packaged-smoke] ${osLabel}: ${config} 行 ${record.rows?.length ?? 0}、終了の証拠 ${record.lifecycle?.ok}${record.fatal ? `、失敗 ${String(record.fatal).slice(0, 200)}` : ""}${record.cdp?.error ? `、CDP ${record.cdp.error}` : ""}`);
-      // 前の構成の終了の証拠が取れなければ、次を起動しない（§8.4 の admission closure）
-      if (record.lifecycle?.ok !== true) {
-        console.error(`[packaged-smoke] ${config} の子 process の終了を確かめられない: ${JSON.stringify(record.lifecycle)}`);
-        break;
-      }
-    }
-    if (packagedApp) {
+      return runConfig(config, context);
+    }, {
+      isInterrupted: () => interrupt.state.interrupted,
+      onRecord: (config, record) => {
+        fs.writeFileSync(path.join(outDir, `${config}.json`), JSON.stringify(record, null, 2) + "\n");
+        console.log(`[packaged-smoke] ${osLabel}: ${config} 行 ${record.rows?.length ?? 0}、終了の証拠 ${record.lifecycle?.ok}${record.fatal ? `、失敗 ${String(record.fatal).slice(0, 200)}` : ""}${record.cdp?.error ? `、CDP ${record.cdp.error}` : ""}`);
+      },
+    });
+    if (packagedApp && !interrupt.state.interrupted) {
       const packageCheck = await checkPackage({ appDir: packagedApp.appDir, platform });
-      fs.writeFileSync(path.join(outDir, "package-check.json"), JSON.stringify(packageCheck, null, 2) + "\n");
+      fs.writeFileSync(path.join(outDir, "package-check.json"), JSON.stringify(maskValue(packageCheck, maskRules({ paths: context.maskPaths })), null, 2) + "\n");
     }
   } finally {
-    process.removeListener("SIGINT", onSignal);
-    process.removeListener("SIGTERM", onSignal);
-    if (!args.keep) fs.rmSync(tmpRoot, { recursive: true, force: true });
+    if (!interrupt.state.interrupted) {
+      interrupt.dispose();
+      if (!args.keep) removeDir(tmpRoot);
+    }
   }
+  if (interrupt.state.interrupted) return new Promise(() => {}); // 中断の処理が exit する
   const read = (name) => (fs.existsSync(path.join(outDir, `${name}.json`)) ? JSON.parse(fs.readFileSync(path.join(outDir, `${name}.json`), "utf8")) : null);
   const verdict = judgeOs({ baseline: read("baseline"), toolcheck: read("toolcheck"), packaged: read("packaged"), packageCheck: read("package-check") });
   fs.writeFileSync(path.join(outDir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n");
