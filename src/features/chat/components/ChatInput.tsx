@@ -79,6 +79,10 @@ import {
   getCurrentProjectLanguage,
 } from "@/features/project/projectStore";
 import { buildChatCommandInstruction } from "../extensions/chatCommandInstruction";
+import {
+  useChatInputDraftPersistence,
+  type ChatInputDraftController,
+} from "./useChatInputDraftPersistence";
 
 interface ChatSendOptions {
   overrideAgentMode?: boolean;
@@ -379,6 +383,8 @@ export function ChatInput({
   const pendingCommandRef = useRef<string | null>(null);
   const submissionPendingRef = useRef(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  // 書きかけの保存先。送信の受付で消せるよう、submitDraft から参照する。
+  const draftDiscardRef = useRef<ChatInputDraftController | null>(null);
   const buildPendingCommandInstruction = useCallback(
     (commandId: string | null = pendingCommandRef.current) => {
       const lang = getCurrentProjectLanguage().startsWith("en") ? "en" : "ja";
@@ -398,6 +404,7 @@ export function ChatInput({
       setIsSubmitting(true);
       const commandId = pendingCommandRef.current;
       const commandInstruction = buildPendingCommandInstruction(commandId);
+      const draftCapture = draftDiscardRef.current?.captureForSend() ?? null;
       try {
         const accepted = await onSend(markdown, {
           ...options,
@@ -406,7 +413,11 @@ export function ChatInput({
         if (accepted && pendingCommandRef.current === commandId) {
           pendingCommandRef.current = null;
         }
-        return accepted;
+        // 送信を受け付けたら書きかけの保存を消す（失敗時は残して再送できるようにする）。
+        // 返り値は「入力欄を空にしてよいか」。準備中に別の会話へ移り、入力欄がその会話の
+        // 下書きに入れ替わっていたら空にしない。
+        if (!accepted) return false;
+        return draftDiscardRef.current?.discardAfterSend(draftCapture) ?? true;
       } catch {
         return false;
       } finally {
@@ -454,6 +465,16 @@ export function ChatInput({
   const editorViewReady = useEditorViewReady(editor);
   const mountedEditor =
     editorViewReady && isEditorViewReady(editor) ? editor : null;
+
+  // 書きかけを project／session ごとに端末へ保存し、再起動・再 mount 後に戻す。
+  const draftPersistence = useChatInputDraftPersistence(
+    mountedEditor,
+    pendingCommandRef,
+    submissionPendingRef,
+  );
+  useEffect(() => {
+    draftDiscardRef.current = draftPersistence;
+  }, [draftPersistence]);
 
   // editorRef を親に公開
   useEffect(() => {
@@ -715,9 +736,10 @@ export function ChatInput({
       // コマンド本文 (/brainstorm) はエディタから削除されるため、次の送信に
       // 適用する指示として id を保持する (consume 時に解決)。
       pendingCommandRef.current = cmd.id;
+      draftPersistence.scheduleSave();
       setCommandPopup(null);
     },
-    [commandPopup],
+    [commandPopup, draftPersistence],
   );
 
   // プロンプトテンプレート挿入: 本文を入力エディタのカーソル位置にテキストとして
@@ -911,11 +933,12 @@ export function ChatInput({
       });
       if (!ok) return;
       editor?.commands.clearContent();
+      draftPersistence.discardCurrent();
       onHasTextChange?.(false);
       setAbChat(null);
       toast.success(t("abTest.adoptedToConversation"));
     },
-    [abChat, appendAdoptedAbTurn, editor, onHasTextChange, t],
+    [abChat, appendAdoptedAbTurn, draftPersistence, editor, onHasTextChange, t],
   );
 
   const canUseTools = agentCaps.supportsTools;

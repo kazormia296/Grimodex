@@ -6,6 +6,10 @@ import {
   contextPromptKey,
   useChatStore,
 } from "./chatStore";
+import {
+  getChatInputDraftPurges,
+  hashChatInputDraftWorkspace,
+} from "./chatInputDraftPurge";
 import { useAiSettingsStore, DEFAULT_AI_SETTINGS } from "./store";
 import { useProjectStore } from "@/features/project/projectStore";
 import { useTabStore } from "@/features/editor/tabStore";
@@ -3377,6 +3381,13 @@ describe("useChatStore", () => {
         sessionId: "session-1",
         expectedWorkspacePath: "/workspace/chat-store-test",
       });
+      // 削除した session の書きかけ（入力欄の下書き）も消す。
+      expect(getChatInputDraftPurges()).toContainEqual([
+        hashChatInputDraftWorkspace("/workspace/chat-store-test"),
+        "proj-1",
+        "session-1",
+        true,
+      ]);
     });
 
     it("does not clear selection when deleting non-active session", async () => {
@@ -3550,6 +3561,12 @@ describe("useChatStore", () => {
         await clear;
 
         expect(mockClearProjectChatHistory).toHaveBeenCalledWith("proj-1");
+        expect(getChatInputDraftPurges()).toContainEqual([
+          hashChatInputDraftWorkspace("/workspace/chat-store-test"),
+          "proj-1",
+          null,
+          false,
+        ]);
         expect(useChatStore.getState()).toMatchObject({
           sessions: [],
           activeSessionId: null,
