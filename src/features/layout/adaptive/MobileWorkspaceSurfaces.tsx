@@ -10,6 +10,11 @@ import {
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useAiGate } from "@/features/ai-policy/useAiGate";
+import type {
+  ChatEgressClosure,
+  ChatEgressScopeState,
+} from "@/features/chat/chatEgressClosure";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import { useChatStore } from "@/features/chat/chatStore";
 import {
   resolveScopeSessionKey,
@@ -346,13 +351,54 @@ function ConnectedCodexSurface() {
   );
 }
 
+/**
+ * 外部送信の制限で AI が閉じているときの、Mobile の chat の送信の閉鎖（NIR-1 DA-2b の
+ * PUB-G 前の必須 3・4、DR-DA2B-R24）。chat panel の `chatEgressClosureOf` と同じ判定の
+ * 写し：この module は起動時の chunk にあり、lazy な chat panel の chunk の module を
+ * import すると、その module が起動時の chunk に移る。一致は `chatEgressScope.test.ts`
+ * が固定する。
+ */
+export function phoneChatEgressClosure(
+  closed: boolean,
+  state: ChatEgressScopeState,
+): ChatEgressClosure {
+  if (!closed) return "open";
+  const sceneConversation =
+    state.chatScope === "scene" &&
+    typeof state.activeSceneId === "string" &&
+    state.activeSceneId.length > 0 &&
+    state.scopeAnchorId === null &&
+    state.threadFocusOverride === null;
+  if (!sceneConversation) return "nonScene";
+  return state.activeSessionId === null ? "newConversation" : "ai";
+}
+
+const PHONE_EGRESS_NOTICE = {
+  ai: "profileEgress.chat.aiClosed",
+  newConversation: "profileEgress.chat.newConversationClosed",
+  nonScene: "profileEgress.chat.sendClosed",
+} as const;
+
 function ConnectedAiSurface({
   onOpenSettings,
 }: {
   onOpenSettings: () => void;
 }) {
   const { t } = useTranslation();
-  const chatGate = useAiGate("chat");
+  // 外部送信の制限の閉鎖は下の 3 状態で自分で扱う（場面の会話の送信は開いたまま）。
+  const chatGate = useAiGate(
+    PROFILE_ACTIVATION_UI_ENABLED ? "chat-send" : "chat",
+  );
+  // 定数（compile time の値）で分かれるので、render ごとの hook の順は変わらない。定数が
+  // false の間は minify で消える（どちらの store もこの chunk が既に import している）。
+  const egressClosed = PROFILE_ACTIVATION_UI_ENABLED
+    ? // eslint-disable-next-line react-hooks/rules-of-hooks
+      useAiSettingsStore((state) => state.profileEgressClosed === true)
+    : false;
+  const egressClosure: ChatEgressClosure = PROFILE_ACTIVATION_UI_ENABLED
+    ? // eslint-disable-next-line react-hooks/rules-of-hooks
+      useChatStore((state) => phoneChatEgressClosure(egressClosed, state))
+    : "open";
   const aiSettings = useAiSettingsStore((state) => state.settings);
   const loadAiSettings = useAiSettingsStore((state) => state.loadSettings);
   const messages = useChatStore((state) => state.messages);
@@ -523,10 +569,20 @@ function ConnectedAiSurface({
       onSelectSession={(sessionId) => void selectSession(sessionId)}
       onCreateSession={handleCreateSession}
       disabled={isStreaming || sceneScopeWithoutScene}
-      sendDisabled={chatGate.presentation !== "enabled"}
+      sendDisabled={
+        PROFILE_ACTIVATION_UI_ENABLED
+          ? chatGate.presentation !== "enabled" ||
+            egressClosure === "nonScene" ||
+            egressClosure === "newConversation"
+          : chatGate.presentation !== "enabled"
+      }
       disabledHint={
-        chatGate.tooltip ??
-        (chatGate.presentation === "hidden" ? t("chat.aiOffNote") : null)
+        PROFILE_ACTIVATION_UI_ENABLED &&
+        egressClosure !== "open" &&
+        chatGate.presentation !== "hidden"
+          ? t(PHONE_EGRESS_NOTICE[egressClosure])
+          : (chatGate.tooltip ??
+            (chatGate.presentation === "hidden" ? t("chat.aiOffNote") : null))
       }
       hideComposer={chatGate.presentation === "hidden"}
       onOpenSettings={onOpenSettings}
