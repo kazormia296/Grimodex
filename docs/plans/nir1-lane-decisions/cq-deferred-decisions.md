@@ -95,7 +95,7 @@ release から Graph が届くまで：rebuild の窓（前の prepare から最
 
 ### 6.1. 実装の要点（commit `f899491b`）
 
-- `nir1_graph_product.rs`：`begin_deferred`（admission は `begin` と共有する `admit_and_route`）、`Phase::Deferred`／`GraphSlotKind::Deferred`、`SlotState::deferred`（`DeferredDemand`）、`Command::Defer`、`TicketShared::deferred`（取消で owner thread を起こす）、`GraphTicket::release_after_own_commits` と `GraphTicketRelease`、`Shared::release_deferred`／`wake_deferred`、owner thread の `run_deferred`／`await_release`、`build_and_serve` を `build_worker`（窓・admit・create・prepare・失敗の台帳）と READY の公開に分けた。`SessionGuard` の Drop は、owner thread が保留を残して終わったとき（panic を含む）に `invalidated`（quarantine なら `restart-required`）で settle する（不変条件 (2) の安全網）。counter は `deferred_released`、`deferred_expired`、`deferred_dropped`、`stale_ready_retired`。保留の期限は `DEFERRED_RELEASE_LIMIT`（2 s、`GRAPH_AWAIT_LIMIT` と等しいことを試験で固定）。
+- `nir1_graph_product.rs`：`begin_deferred`（admission は `begin` と共有する `admit_and_route`）、`Phase::Deferred`／`GraphSlotKind::Deferred`、`SlotState::deferred`（`DeferredDemand`）、`Command::Defer`、`TicketShared::deferred`（取消で owner thread を起こす）、`GraphTicket::release_after_own_commits` と `GraphTicketRelease`、`Shared::release_deferred`／`wake_deferred`、owner thread の `run_deferred`／`await_release`、`build_and_serve` を `build_worker`（窓・admit・create・prepare・失敗の台帳）と READY の公開に分けた。`SessionGuard` の Drop は、owner thread が保留を残して終わったとき（panic を含む）に `invalidated`（quarantine なら `restart-required`）で settle する（不変条件 (2) の安全網）。counter は `deferred_released`、`deferred_expired`、`deferred_dropped`、`stale_ready_retired`。保留の期限は `DEFERRED_RELEASE_LIMIT`（2 s、`GRAPH_AWAIT_LIMIT` と等しいことを試験で固定）。→ review P2-1 で 10 s の独立した定数に変えた（§7.2）。
 - `related_scenes/graph.rs`：`GraphState::start` は `begin_deferred` を呼ぶ。`GraphState::release_after_own_commits`（内側の lock の下では handle を複製するだけ）。RAII の guard `DeferredRelease<T: LeaseEnd>`（`release` で release、Drop で cancel）。
 - `related_scenes/begin.rs`：`begin_graph` の直後に guard を作り、outcome が `Ok` なら `release()`、`Err` なら drop（cancel）。`build::schedule` の前。
 - D-final の経路（`nir1_graph_dfinal.rs`）、監査、`ReadIdentity`、registration／query の drift の検査、`src/`、IPC／preload／Main、gate、確認済みの値は変えていない。
@@ -131,7 +131,7 @@ release から Graph が届くまで：rebuild の窓（前の prepare から最
 
 | 変異 | 落ちた試験 |
 |---|---|
-| M1 release を監査つきの embedding（begin.rs:178）より前に置く | `begin_releases_the_held_query_after_its_own_commits_and_reads`（動的には (i-a) の対照 1 が同じ組合せ：release の後の registration が監査の commit と重なり拒否） |
+| M1 release を監査つきの embedding（begin.rs:178）より前に置く | `begin_releases_the_held_query_after_its_own_commits_and_reads`（source の順序の試験）**だけ**。この変異を動的に検出する試験は無い（本物の `prepare_related_scene_query` を通す試験が無いため）。(i-a) の対照 1 は「commit の前に release した場合の結果」を owner の側で示すもので、begin.rs の変異そのものは走らせていない。動的な検出は (ii) に残す（§6.8 の 7）。（review P2-2 による訂正。2026-10-25） |
 | M2 release より前の READY を使い回す（P3） | `p3_a_ready_worker_prepared_before_the_release_is_retired_unqueried` |
 | M3 `Ok` の経路で release を忘れる（N3） | `begin_releases_…`（release の呼出しが無い） |
 | M4 `Err` で取り消さない（guard の Drop が何もしない、N2） | `a_begin_that_fails_drops_its_hold_and_frees_the_slot_at_once` |
@@ -144,7 +144,7 @@ release から Graph が届くまで：rebuild の窓（前の prepare から最
 | M11 持たせた query の後に作り直して READY を公開する | `p1_…`（作り直しが無いこと） |
 | M12 release を待たずに query する | `p1_…`、(i-a) |
 
-注意：最初の変異の script は復元に `shutil.move` を使い、backup の古い mtime のまま戻したので、cargo が最後の変異（M9）の build を使い続けた回が 1 回あった（その回の回帰の 2 件の失敗は M9 の build によるもの）。復元した file を touch して build し直し、回帰・clippy・(i-b) をやり直した（上の結果はやり直した後のもの）。release の epoch の検査（`release_deferred` の `edge_or_closed`）を外す変異は、owner thread が edge を先に見て `invalidated` にするので試験では落ちない（多重の防御。N4 は owner thread 側で守られる）。
+注意：最初の変異の script は復元に `shutil.move` を使い、backup の古い mtime のまま戻したので、cargo が最後の変異（M9）の build を使い続けた回が 1 回あった（その回の回帰の 2 件の失敗は M9 の build によるもの）。復元した file を touch して build し直し、回帰・clippy・(i-b) をやり直した（上の結果はやり直した後のもの）。release の epoch の検査（`release_deferred` の `edge_or_closed`）を外す変異は、この時点の試験では落ちなかった（N4 は edge observer の Wake で owner thread が先に `invalidated` にするので、release の側の検査を通らない）。review safety P3-1 を受けて、Wake を送らず epoch だけ進める決定的な試験 `a_release_in_another_lifecycle_epoch_is_refused_by_the_release_itself` を足し、この変異が落ちることを確かめた（§7.3 の ME）。（訂正。2026-10-25）
 
 ### 6.6. 試験の競合（product の欠陥ではない）
 
@@ -167,7 +167,57 @@ release から Graph が届くまで：rebuild の窓（前の prepare から最
 4. 受入れの値：評価の診断で `prepareFailures=0`、`driftAtQuery=0`、`deferredReleased=N`（cache hit の回を除く）、`deferredExpired=0`、worker の stderr に `REGISTRATION_REFUSED` が無いこと。`diag-registration.mjs` の `owner-quiet` の段で、owner の prepare が READY になること。
 5. seed あり／なしで `rawReadyElapsedMs` の分布が変わらないこと（Raw の時間は D′ で増えない）。
 6. 対照：本 lane の commit を外した build（master の owner）で同じ手順を行い、`prepareFailures>0` または `driftAtQuery>0` になること（DR-CP4-S1C2-19〜22 の再現）。
+7. M1 の動的検出（review P2-2）：begin.rs の release を `prepare_related_scene_query` の前に移した build で同じ手順を行い、`prepareFailures>0`（registration の拒否）または `driftAtQuery>0` になること。この lane の試験は M1 を source の順序でしか検出しない。
+8. cold start（review P2-1）：起動直後の最初の seed つきの begin（embedding の model の初回ロードを含む）で、begin の受渡しから release までの時間を記録し、2 s を超える場合も保留が `timeout` にならず（`deferredExpired=0`）Graph が届くこと。保留の期限は 10 s（§7.2）。10 s を超える cold start が見つかったら integrator に返す（期限は漏れの上限で、確認済みの値ではない）。
 
 ### 6.9. 重要な変更への該当
 
 無い。監査（順序と内容）、鮮度の判定（`ReadIdentity`、registration／query の drift）、保存の範囲、security の境界、確認済みの値と閾値、閉じた gate、D-final の経路はどれも変えていない。新しい受信先・保存・authority は無い。6.8 の 2（評価手順の READY の前提）は、手順の文の扱いを決める必要があるかもしれない点として integrator に返す（この lane では手順も runner も変えていない）。
+
+## 7. 独立 review（lifecycle／safety）の指摘への対応（2026-10-25。§6 は 6.5 と 6.8 だけを訂正した）
+
+### 7.1. 修正と commit
+
+| 指摘 | 対応 | commit |
+|---|---|---|
+| P1-1 保留つき session の間に待たされた需要に通知が来ない | `Session::held`（その間に `warming`／`busy` で待たせた project の一覧。distinct、上限は `MAX_UNSERVED_PROJECTS`）を持たせ、session の終わり（`session_main` の `signal_ready` の後、lock の外）に `take_unserved` して `notify_ready` を 1 回ずつ出す。保留つき query 自身の stale（F10）は一覧に入れない | `ba81edd1` |
+| P2-1 保留の期限 | `DEFERRED_RELEASE_LIMIT` を `GRAPH_AWAIT_LIMIT` から切り離し 10 s にした（7.2） | `f99ea7c6` |
+| P2-3／safety P3-2 取り消された保留が slot を占める | `wait_rebuild_window` の loop の先頭（各 recv の後）と worker の create の直前で cancel を見て `Built::Exit(Cancelled)`。取消の wake は保留つき session のどの phase でも送る | `0fea9c3d` |
+| safety P3-3 begin.rs の comment | closure の `Err`、release の後の `?`（`current_request`、`build::schedule`）、unwind を書き分けた（挙動は不変） | `f32b3362` |
+| safety P3-4、lifecycle P3-2、P2-2／safety P3-1 | 試験の補強（7.3） | `443e782c` |
+| P2-2／safety P3-1 記録 | §6.5 の M1 行と epoch の検査の記述を訂正、§6.8 に 7（M1 の動的検出）と 8（cold start）を足した | この docs の commit |
+
+### 7.2. 保留の期限（P2-1）と D-final の待ち
+
+保留の期限は begin の受渡しの時刻から数える。begin には上限が無い（cold start は最初の監査の commit の前に embedding の model を読む）ので、10 s は漏れの上限で、遅延の上限ではない（Related Scenes の await の 2 s は begin が返った後に始まるので、両者は別の時計）。試験は「await の 4 倍以上、30 s 以下」と「await を超えて release された保留が提供される」に替えた。
+
+D-final への影響：保留中（と持たせた session の間）に来た D-final の begin は、同じ key なら `warming` で待ち、その session の終わりの signal で自分の session を作る。保留が長い（cold start の begin、または release されず期限まで残る）と、D-final の待ちは延びうる。D-final には 4 s の予算（`GRAPH_WAIT_BUDGET`）があり、超えれば `WaitExpired` で Graph なしで進む（fail-soft。D-final の経路と予算は変えていない）。期限を 10 s にしたことで、release されない保留が D-final の待ちを予算の終わりまで占めうる範囲は広がった（2 s → 10 s）。どちらの場合も D-final は予算で止まる。この頻度は未測定。
+
+### 7.3. 試験と変異
+
+足した試験（owner の試験 module）：`p4_a_demand_made_to_wait_by_a_held_session_is_announced_once_at_its_end`、`p4_the_held_querys_own_stale_answer_is_not_announced`、`n2_a_release_later_than_the_await_limit_is_still_served`、`n3_a_cancellation_during_the_rebuild_window_creates_no_worker`、`i_a_without_s0_a_commit_before_the_query_is_caught_by_the_worker_drift`（S0 欠落 → `stamp_unavailable` → query の前の commit → worker の drift で stale、`drift_at_query=1`）、`a_panic_of_the_held_query_settles_it_once_as_failed`（in-flight で 1 回、`deferred_dropped=0`）、`an_owner_thread_that_ends_while_holding_settles_the_hold_once`（takeover で退役する READY が quarantine → guard が `restart-required` で 1 回、`deferred_dropped=1`）、`a_release_in_another_lifecycle_epoch_is_refused_by_the_release_itself`。N1 と (i-a) の対照 1 に「`finish(Unused)` の後に cache が空、通知なし」を足した。RS の試験の等値の試験は `the_owner_hold_limit_outlasts_a_begin_longer_than_the_await` に替えた。
+
+| 変異（1 つずつ入れて対象の試験を走らせ、sha256 と touch で復元を確かめた） | 結果 |
+|---|---|
+| MA1 session の終わりの通知を消す | `p4_a_demand_…` が落ちた |
+| MA2 終わりに unserved の全部を通知する（自分の stale を含む） | `p4_the_held_querys_own_stale_…` が落ちた |
+| MB 期限を 2 s に戻す | `n2_…` と `the_owner_hold_limit_…` が落ちた |
+| MC 窓の待ちの cancel の検査を消す | `n3_a_cancellation_during_…`（取消から slot が空くまで 300 ms 未満）が落ちた |
+| ME `release_deferred` の epoch の検査を消す | `a_release_in_another_lifecycle_epoch_…` が落ちた |
+| MF create の直前の cancel の検査だけを消す | **生き残った**（窓の検査が先に止めるため）。create の直前の検査は、窓の後の admit の間の取消に対する多重の防御で、単独で落とす試験は無い |
+
+### 7.4. 確認だけの項目
+
+- lifecycle P3-1（IR scoring の接続）：begin.rs:190 の `spawn_blocking` で走る `scoring::run` は `db.with_participant_read_transaction`（`narrative_maintenance_connection.rs:1226` → `with_participant_sql_scope_config_with_stop` → `Database::lock_conn_with_check`）を使い、**主接続の mutex と同じ**である（owner の S0／stamp の `try_read_c_query_freshness_stamp` は同じ `db.conn` を `try_lock` する）。IR scoring は Raw-ready と並行に走り、begin の outcome を待たないので、release の後もその読取（資格の確認、title と language の読取、再検証）が続きうる。その間に owner の admit が来ると、try-lock が失敗して `stamp0_missing` になり、その query は stamp の比較をせず（`stamp_unavailable`）worker の registration と query の drift の検査だけが鮮度を守る（偽の fresh にはならない。新しい試験 `i_a_without_s0_…` がこの経路を示す）。影響は owner の側の早い stale の検出が無くなることだけ。頻度は未測定（(ii) で `stamp0Missing` を記録する）。
+- lifecycle P3-3（admit の失敗の理由が粗い）：既知。admit が `None` を返すとき（edge、AppState の消失、restricted profile でない、binding の不一致）は、保留の ticket にすべて `invalidated` を返す。今回は直さない。
+
+### 7.5. 検証（最終の内容 `443e782c` に対して）
+
+| コマンド | 結果 |
+|---|---|
+| `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib -- nir1_graph related_scenes` | 192 passed、0 failed、5 ignored。負荷の下で 2 回続けて green |
+| 同 `i_b_the_real_worker -- --ignored`（実 worker） | passed（release 26.6 ms、結果 45.2 ms、`prepareFailures=0`、`driftAtQuery=0`、対照は stale） |
+| `cargo clippy … --lib --tests` | 各 commit で警告なし |
+| `rustfmt --check`（変更した file） | 新しい差分なし |
+
+未実施：(ii)（実 Electron）、cold start の実測、D-final の待ちの延びの実測、Quick／Full。
