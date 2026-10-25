@@ -218,7 +218,8 @@ export function useNir1RelatedScenes(enabled: boolean) {
     const recoverRaw = () => {
       // An IR lease can be revoked for a source mutation too. Never publish
       // its old Raw snapshot; re-read the current S2 without waiting on IR.
-      dropCarried();
+      // Both callers come after this generation's answer, which has already
+      // dropped any kept result (DR-RSJ-6).
       setFetch(null);
       graphReadyGeneration.current = null;
       clearTimeout(timer);

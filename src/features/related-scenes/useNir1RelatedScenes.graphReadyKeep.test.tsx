@@ -196,6 +196,30 @@ describe("Related Scenes graph-ready refresh keeps the shown list (RS-JOIN, DR-R
     },
   );
 
+  it("drops the kept result when the refresh rejects", async () => {
+    const parent = session();
+    h.fetch.mockResolvedValueOnce(late(parent));
+    let fail!: (error: Error) => void;
+    h.fetch.mockImplementationOnce(
+      () =>
+        new Promise<Nir1RelatedScenesFetchResult>((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    await ready("p");
+    await advance(0);
+    expect(view.result.current.fetch).not.toBeNull();
+    await act(async () => {
+      fail(new Error("transport"));
+    });
+    expect(view.result.current.fetch).toBeNull();
+    expect(parent.release).toHaveBeenCalledTimes(1);
+    expect(parent.observers.size).toBe(0);
+  });
+
   it("keeps the child's list without a Graph and refreshes again only on a new notice, debounced (P2-A)", async () => {
     const first = session();
     const second = session();
