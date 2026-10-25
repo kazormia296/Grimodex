@@ -236,7 +236,7 @@ harness が作る子 process は (1) packaged の実行体（Linux は `scripts/
 | lifecycle P2-2: non-dumpable な子の見落とし | `/proc/<pid>/exe` が EACCES のときは `/proc/<pid>/cmdline` の argv[0] で照合する（ENOENT は終わった process として飛ばす。cmdline も読めない pid は判断せず、group の消滅の確認が担う）。走査の失敗は null（観測できない）で `[]` にしない | EACCES を飛ばす、走査の失敗を `[]` にする |
 | lifecycle P2-3: kill しないことの固定 | node の copy を一時 dir に置いて exeDir にし、owner でない process（同じ copy から別 group）が残存として報告され、`ok: false` で、生きていることを assert する。`process.execPath` の dir を exeDir にする試験は無くした。`terminateOwned` の観測と kill を `deps` で差し替えられる形にし、group の残存・走査の失敗・残存の pid に kill を送らないことを固定した | 残存に SIGKILL、group の消滅を常に true |
 | lifecycle P2-4: concurrency に OS がない | `concurrency.group` に `inputs.os`（PR は `all`）を足し、契約試験で固定した | OS を group から外す |
-| lifecycle P3-5〜10 | 受け口の起動の途中の失敗で開いたものを上限つきで閉じてから throw、`listen` の error を reject、close は上限 10 秒、DoH の http2 の server は session と socket を持って close で壊す。一時 dir の削除に `maxRetries`／`retryDelay`。CDP は閉じた socket への send を即 reject、close の 2 秒の timer を close で止める、`/json/version` に 5 秒の timeout。Windows は exit を見た後に pid へ `taskkill` を送らない。macOS の走査の記述を実装（`ps -axww -o pid=,args=`）にそろえた（§8.4 の「`ps -axo pid=,comm=`」はこの記述で置き換える） | canary の close の no-op、起動失敗で閉じない、DoH の session を壊さない、閉じた後の send、close の timer。Windows の `else if (!isClosed)` を外す変異は緑（強制の分岐に入るのが `!isClosed` のときだけなので同値の変異） |
+| lifecycle P3-5〜10 | 受け口の起動の途中の失敗で開いたものを上限つきで閉じてから throw、`listen` の error を reject、close は上限 10 秒、DoH の http2 の server は session と socket を持って close で壊す。一時 dir の削除に `maxRetries`／`retryDelay`。CDP は閉じた socket への send を即 reject、close の 2 秒の timer を close で止める、`/json/version` に 5 秒の timeout。Windows は exit を見た後に pid へ `taskkill` を送らない。macOS の走査の記述を実装（`ps -axww -o pid=,args=`）にそろえた（§8.4 の「`ps -axo pid=,comm=`」はこの記述で置き換える） | canary の close の no-op、起動失敗で閉じない、DoH の session を壊さない、閉じた後の send、close の timer。Windows の `else if (!isClosed)` を外す変異は緑（強制の分岐に入るのが `!isClosed` のときだけなので同値の変異）。**訂正（§10.3）**: `isClosed` は `close` が基準で、`exit` の後・`close` の前の窓では pid に `/F` を送っていた。記述（exit の後は送らない）と実装が食い違っていたので、§10.3 で実装を記述に合わせた |
 | security P2 A: canary を置けない宛先の行の不合格 | 判定は変えず、合成（`main.turns-tcp.{lo4b,lo6,lan}` の proxied 0）と実データ（試運転の `main.turn-tcp.lan`）で不合格になることを固定した | `.lo4b`／`.lo6`／`.lan` の不合格を捨てる |
 | security B | NL の許容集合 A（`webrtc-block-probe-nc1.mjs` の定数。read-only の import）と `MATRIX_FLAGS` を deepEqual で固定した | （Y-1 の file を一時でも書き換えないので、変異は回していない） |
 | security C | 記録の伏せ字に repo・一時 dir・`os.tmpdir()`・home の絶対 path（Windows の区切りの両形）を足し、key と値を再帰で伏せる。子の出力の末尾・失敗の文・CDP の error だけは利用者名も伏せる（key の `runner` などを壊さないため全体には当てない）。package の検査の記録も伏せる | path を伏せない、利用者名を伏せない |
@@ -265,3 +265,17 @@ P1 なし、P2 1 件、P3 2 件。どれも commit の後に、保存した原�
 | P3: hostname が許容集合 A の名前と同じ機 | hostname が A の名前（と `~notfound`）と一致するときは伏せず、警告を出す（NL の host を `<host>` に変えて原因の分かりにくい不合格にしない） | 常に伏せる |
 
 実機（Linux）で、`ss` による owner の確認が自分の子の listen を owned、別の pgid を owned でないと判定することを確かめた。試運転の記録（head `de86d6e6`）は採り直していない。その後の harness の変更（この節）で head の束縛は古くなったが、記録はもともと G-pub の証跡ではない（README）。
+
+### 10.3 lifecycle の再レビューの修正（2026-10-26）
+
+P1・P2 なし。P3 を直した。どれも commit の後に、保存した原本の copy からの変異で赤になることを確かめた。
+
+| 指摘 | 直し | 赤になる変異 |
+|---|---|---|
+| P3-3: Windows の taskkill の記述と実装の食い違い | `launchOwned` が `exit`（`close` より先）を別に記録し（`hasExited`）、root が exit した後は graceful・強制とも、その pid に signal も `taskkill` も送らない（残存は CIM の走査、POSIX は group の消滅で確かめる）。§10 の「同値の変異」の説明を訂正した | exit の記録を外す（exit の後・close の前の窓の試験で赤）、強制の分岐を close 基準に戻す、graceful を exit で止めない |
+| P3-1: 中断の対象の登録が試験で守られていない | `runPackaged`／`runProbeMain` を export し、launch／terminate／inject／Electron の場所を差し替えられる形にした。launch した owner が terminate の時点で登録されていること、終了の証拠が取れなければ登録が残り、中断の処理が terminate することを固定した | packaged／probe の `track` を外す（M12）、release を常に外す |
+| P3-2: 所属を確かめられないときの fail-closed | `/proc/<pid>/stat` を読めない、`ps` が失敗する場合に owned にならないことを固定した | catch を owned にする |
+| P3-5: `closeAllWithin` の結果 | 受け口の close が上限を超えたら記録に `observersClosed: false` を残し、判定の `recorded.observersNotClosed` と出力の警告に出す（判定には使わない。ある時だけ field を出す） | 警告を出さない。記録に残す側（`runConfig`）は export しておらず、変異を回していない |
+| P3-4: `--test-force-exit` | 外しても `node --test electron/scripts/packaged-smoke/*.test.mjs` は約 4 秒で終わった（89 件）。workflow から外した（handle の漏れを隠さない） | — |
+
+試運転の記録（head `de86d6e6`）は採り直していない（README のとおり G-pub の証跡ではなく、head 束縛は古い）。
