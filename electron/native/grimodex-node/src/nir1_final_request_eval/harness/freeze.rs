@@ -221,6 +221,12 @@ pub(super) fn check_freeze(
             freeze["fixtureVersion"]
         ));
     }
+    if freeze["fixture"]["path"] != FIXTURE_PATH {
+        refuse(format!(
+            "the freeze record binds the fixture {}, not {FIXTURE_PATH}",
+            freeze["fixture"]["path"]
+        ));
+    }
     if freeze["reviewRecord"]["path"] != REVIEW_PATH {
         refuse(format!(
             "the freeze record binds the review record {}, not {REVIEW_PATH}",

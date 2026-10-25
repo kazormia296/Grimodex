@@ -1193,6 +1193,13 @@ fn mechanics_fixture_shares_no_material_with_the_frozen_fixture() -> Result<()> 
             !MECHANICS_FIXTURE.contains(material.as_str()),
             "the mechanics fixture contains a material of the frozen fixture: {material}"
         );
+        // The S0c writer test's synthetic texts are not frozen materials.
+        for text in S0C_SYNTHETIC_TEXTS.iter().chain(S0C_POSITIVE_TEXTS.iter()) {
+            assert!(
+                !text.contains(material.as_str()) && !material.contains(text),
+                "an S0c synthetic text overlaps a material of the frozen fixture: {text}"
+            );
+        }
     }
     // And the other way: the mechanics fixture is parseable and is not a P case.
     let (fixture, _, _) = fixture_text()?;
@@ -1418,7 +1425,11 @@ fn setup_shapes_allow_an_unknown_scope_negative_on_its_own_anchor_only() {
         (
             "is an invalidate-negative write only",
             Box::new(|raw: &mut Value| {
-                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["op"] = json!("binding-change");
+                // The scene is not a negative-anchor Scene, so only the op
+                // rule applies (the harness reports the first error).
+                let step = &mut raw["cases"][0]["variants"][1]["setup"]["steps"][2];
+                step["op"] = json!("binding-change");
+                step["scene"] = json!("s-other");
             }),
         ),
         (
@@ -1436,7 +1447,7 @@ fn setup_shapes_allow_an_unknown_scope_negative_on_its_own_anchor_only() {
             }),
         ),
         (
-            "a positive Revision may not anchor",
+            "used outside its own variant's",
             Box::new(|raw: &mut Value| {
                 raw["cases"][0]["variants"][1]["setup"]["steps"][3]["anchorScene"] =
                     json!("s-neg-anchor");
@@ -1486,6 +1497,90 @@ fn setup_shapes_allow_an_unknown_scope_negative_on_its_own_anchor_only() {
                     .push(scene);
             }),
         ),
+        // Review fixes (DR-DPH-111..114).
+        (
+            "used outside its own variant's",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][0]["setup"]["steps"][0]["anchorScene"] =
+                    json!("s-neg-anchor");
+            }),
+        ),
+        (
+            "must anchor the case's anchor Scene",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][0]["setup"]["steps"][0]["anchorScene"] =
+                    json!("s-query");
+            }),
+        ),
+        (
+            "used outside its own variant's",
+            Box::new(|raw: &mut Value| {
+                let mut other = raw["cases"][0]["variants"][1].clone();
+                other["variantId"] = json!("s-reject-other");
+                other["setup"]["scenes"] = json!([]);
+                other["setup"]["steps"]
+                    .as_array_mut()
+                    .expect("steps")
+                    .remove(2);
+                raw["cases"][0]["variants"]
+                    .as_array_mut()
+                    .expect("variants")
+                    .push(other);
+            }),
+        ),
+        (
+            "contract-trimmed",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["unresolvedReason"] =
+                    json!("\u{0085}x");
+            }),
+        ),
+        (
+            "contract-trimmed",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["unresolvedReason"] =
+                    json!("\u{feff}x");
+            }),
+        ),
+        (
+            "invalidated before it is prepared and approved",
+            Box::new(|raw: &mut Value| {
+                let steps = raw["cases"][0]["variants"][1]["setup"]["steps"]
+                    .as_array_mut()
+                    .expect("steps");
+                let invalidate = steps.remove(2);
+                steps.insert(0, invalidate);
+            }),
+        ),
+        (
+            "after the stage's first positive prepare",
+            Box::new(|raw: &mut Value| {
+                let steps = raw["cases"][0]["variants"][1]["setup"]["steps"]
+                    .as_array_mut()
+                    .expect("steps");
+                let invalidate = steps.remove(2);
+                steps.insert(3, invalidate);
+            }),
+        ),
+        (
+            "role belongs to a reject variant's setup.scenes",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["setup"]["scenes"][1]["role"] = json!("negative-anchor");
+            }),
+        ),
+        (
+            "names two materials of the variant's workspace",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["setup"]["codexEntities"] = json!([{"logicalId": "s-neg-anchor", "type": "lore", "name": "n", "summary": "s"}]);
+            }),
+        ),
+        (
+            "a chat session may not sit on a negative-anchor Scene",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["chatSessions"] =
+                    json!([{"stage": 1, "nodeScene": "s-neg-anchor", "title": "t"}]);
+            }),
+        ),
     ];
     for (expected, mutate) in cases {
         let mut raw = shape_fixture(2);
@@ -1526,31 +1621,45 @@ fn unknown_scope_value_is_unknown_with_an_unresolved_query_identity() {
 /// packer, renderer or D-final runs) sees the negative anchored on that Scene
 /// as not eligible and a positive prepared afterwards on the case's anchor as
 /// eligible. Synthetic materials only.
+/// The synthetic materials the S0c writer test writes; the separation test
+/// checks that no frozen fixture material is among them.
+const S0C_SYNTHETIC_TEXTS: [&str; 9] = [
+    "合成の起点",
+    "合成の起点の本文。",
+    "合成の問い",
+    "合成の問いの本文。",
+    "合成の負例の場面",
+    "合成の負例専用の本文。",
+    "合成の負例",
+    "合成の負例の要約。",
+    "合成の負例の Scope は未確定",
+];
+const S0C_POSITIVE_TEXTS: [&str; 2] = ["合成の正例", "合成の正例の要約。"];
+
 #[test]
 fn unknown_scope_write_makes_only_the_negative_ineligible() -> Result<()> {
     let (_, raw, _) = fixture_text()?;
     let scope = &raw["setupContract"]["sceneScope"];
     let mut ws = CaseWorkspace::open("s0c/unknown-scope")?;
     ws.write_project("S0c unknown scope")?;
-    let anchor = ws.write_scene("合成の起点", "a0", "合成の起点の本文。")?;
-    let query = ws.write_scene("合成の問い", "a1", "合成の問いの本文。")?;
-    let negative_anchor = ws.write_scene("合成の負例の場面", "a2", "合成の負例専用の本文。")?;
+    let [anchor_title, anchor_body, query_title, query_body, negative_title, negative_body, negative_name, negative_summary, reason] =
+        S0C_SYNTHETIC_TEXTS;
+    let [positive_name, positive_summary] = S0C_POSITIVE_TEXTS;
+    let anchor = ws.write_scene(anchor_title, "a0", anchor_body)?;
+    let query = ws.write_scene(query_title, "a1", query_body)?;
+    let negative_anchor = ws.write_scene(negative_title, "a2", negative_body)?;
     ws.write_scope_registry(&anchor, Some(&scope["registry"]), None)?;
     for scene in [&anchor, &query, &negative_anchor] {
         ws.write_scene_scope(scene, &scope["perScene"])?;
     }
-    let negative_entity = ws.write_codex_entity("lore", "合成の負例", "合成の負例の要約。")?;
-    let positive_entity = ws.write_codex_entity("lore", "合成の正例", "合成の正例の要約。")?;
+    let negative_entity = ws.write_codex_entity("lore", negative_name, negative_summary)?;
+    let positive_entity = ws.write_codex_entity("lore", positive_name, positive_summary)?;
     ws.run_product_maintenance(12)?;
 
     let negative = ws.prepare_revision(&negative_anchor, &negative_entity, "s0c:negative")?;
     ws.append_decision(&negative, "approved", None, "s0c-reviewer")?;
     ws.run_product_maintenance(12)?;
-    ws.write_scene_scope_unknown(
-        &negative_anchor,
-        &scope["perScene"],
-        "合成の負例の Scope は未確定",
-    )?;
+    ws.write_scene_scope_unknown(&negative_anchor, &scope["perScene"], reason)?;
     ws.run_product_maintenance(12)?;
     assert_eq!(ws.scene_scope_marker(&negative_anchor)?, "unknown");
     assert_eq!(ws.scene_scope_marker(&anchor)?, "explicit");
@@ -1576,6 +1685,67 @@ fn unknown_scope_write_makes_only_the_negative_ineligible() -> Result<()> {
     assert!(
         ws.audit.direct_writes().is_empty(),
         "every write went through a product writer"
+    );
+    Ok(())
+}
+
+#[test]
+fn setup_shapes_refuse_a_declared_but_unused_negative_anchor() {
+    // The negative anchors the case's anchor and is invalidated by a Codex
+    // write: the declared negative-anchor Scene is left unused, alone.
+    let mut raw = shape_fixture(2);
+    let steps = &mut raw["cases"][0]["variants"][1]["setup"]["steps"];
+    steps[0]["anchorScene"] = json!("s-anchor");
+    steps[2] = json!({"stage": 1, "op": "invalidate-negative", "revision": "s-neg",
+        "write": "codex-update", "entity": "s-neg-ent", "summary": "changed"});
+    let errors = shape_errors(raw);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("is not the anchor of the variant's prepare-negative step"),
+        "{errors:?}"
+    );
+}
+
+/// A frozen fixture whose later variant has a setup-shape error holds before
+/// Native runs on any variant (no receipt is written).
+#[test]
+fn evidence_run_holds_on_a_setup_shape_error_before_any_variant_runs() -> Result<()> {
+    let mut raw = shape_fixture(2);
+    raw["cases"][0]["variants"][1]["setup"]["steps"][2]["scene"] = json!("s-anchor");
+    let text = format!("{}\n", serde_json::to_string_pretty(&raw)?);
+    let mut files = bound_files();
+    files[0].1 = text.clone();
+    files[1].1 = review_text("approve", &text, false);
+    let repo = temp_repo_with("frozen", &files, |_| {})?;
+    let out = repo
+        .root
+        .join(".artifacts/nir1-final-request-eval/test")
+        .join(format!("hold-{}", uuid::Uuid::new_v4()));
+    let outcome = evidence_run(&repo.root, Some(out.clone()))?;
+    let EvidenceOutcome::Held { reasons, .. } = outcome else {
+        anyhow::bail!("the evidence entry ran a fixture with a setup-shape error");
+    };
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("NIR1_EVAL_SETUP_SHAPE")),
+        "{reasons:?}"
+    );
+    assert!(!out.join("receipt.json").exists());
+    Ok(())
+}
+
+#[test]
+fn harness_refuses_a_record_that_binds_another_fixture_path() -> Result<()> {
+    let mut files = bound_files();
+    files[0].0 = SUPERSEDED_FIXTURE_PATH;
+    let repo = temp_repo_with("frozen", &files, |_| {})?;
+    let reasons = refusal_reasons(&repo.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("binds the fixture") && reason.contains(FIXTURE_PATH)),
+        "{reasons:?}"
     );
     Ok(())
 }

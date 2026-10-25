@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   APPROVING_VERDICT,
+  CONTRACT_WHITESPACE_CODE_POINTS,
   EVIDENCE_FIXTURE_VERSION,
   FIXTURE_VERSIONS,
   fixtureMaterials,
@@ -2628,11 +2629,11 @@ test("setup shapes: malformed or misplaced negative-anchor Scenes and unknown wr
     ],
     [
       ({ reject }) => delete reject.setup.steps[2].unresolvedReason,
-      "unresolvedReason must be a trimmed non-empty string",
+      "unresolvedReason must be a contract-trimmed non-empty string",
     ],
     [
       ({ reject }) => (reject.setup.steps[2].unresolvedReason = " 前後に空白 "),
-      "unresolvedReason must be a trimmed non-empty string",
+      "unresolvedReason must be a contract-trimmed non-empty string",
     ],
     [
       ({ reject }) => (reject.setup.steps[2].op = "binding-change"),
@@ -2644,7 +2645,7 @@ test("setup shapes: malformed or misplaced negative-anchor Scenes and unknown wr
     ],
     [
       ({ reject }) => (reject.setup.steps[3].anchorScene = NEG),
-      "a positive Revision may not anchor the negative-anchor Scene",
+      "a positive Revision must anchor the case's anchor Scene",
     ],
   ]) {
     const world = unknownScopeFixture();
@@ -2673,4 +2674,172 @@ test("setup shapes: the negative-anchor Scene and the unknown reason are materia
   assert.ok(materials.ids.has(NEG));
   assert.ok(materials.texts.has("合成の負例専用の本文。"));
   assert.ok(materials.texts.has("合成の負例の Scope は未確定"));
+});
+
+// ------------------------------- setup shapes: review fixes (DPH-S0c, P1/P2/P3)
+
+test("setup shapes: a positive Revision anchors the case's anchor, in every variant (P1-1)", () => {
+  for (const [mutate, expected] of [
+    [
+      ({ positive }) => (positive.setup.steps[0].anchorScene = NEG),
+      "used outside its own variant's prepare-negative and invalidate-negative",
+    ],
+    [
+      ({ positive }) => (positive.setup.steps[0].anchorScene = NEG),
+      "a positive Revision must anchor the case's anchor Scene",
+    ],
+    [
+      ({ positive }) => (positive.setup.steps[0].anchorScene = "syn-p02-query"),
+      "a positive Revision must anchor the case's anchor Scene",
+    ],
+    [
+      ({ testCase, reject }) => {
+        // Another reject variant borrows the first one's negative-anchor Scene.
+        const other = structuredClone(reject);
+        other.variantId = `${reject.variantId}-other`;
+        delete other.setup.scenes;
+        other.setup.steps.splice(2, 1);
+        testCase.variants.push(other);
+      },
+      "used outside its own variant's prepare-negative and invalidate-negative",
+    ],
+    [
+      ({ reject }) =>
+        reject.setup.chatSessions.push({
+          stage: 1,
+          nodeScene: NEG,
+          title: "t",
+        }),
+      "nodeScene may not be a negative-anchor Scene",
+    ],
+  ]) {
+    const world = unknownScopeFixture();
+    mutate(world);
+    const errors = setupErrors(world.value);
+    assert.ok(
+      errors.some((e) => e.includes(expected)),
+      `${expected}: ${errors.join(" | ")}`,
+    );
+  }
+});
+
+test("setup shapes: contract strings use the product's whitespace rule (P1-2)", () => {
+  for (const reason of ["\u0085未確定", "﻿未確定", "未確定　", " ", ""]) {
+    const { value, reject } = unknownScopeFixture();
+    reject.setup.steps[2].unresolvedReason = reason;
+    assert.ok(
+      setupErrors(value).some((e) =>
+        e.includes("unresolvedReason must be a contract-trimmed"),
+      ),
+      JSON.stringify(reason),
+    );
+  }
+  {
+    const { value, reject } = unknownScopeFixture();
+    reject.setup.steps[2].unresolvedReason = "未確定の　内側";
+    assert.deepEqual(setupErrors(value), []);
+  }
+  for (const key of ["title", "body"]) {
+    const { value, reject } = unknownScopeFixture();
+    reject.setup.scenes[0][key] = "﻿\u0085";
+    assert.ok(
+      setupErrors(value).some((e) => e.includes("must be { logicalId")),
+      key,
+    );
+  }
+});
+
+test("setup shapes: the contract whitespace list is the product's (parity with grimodex-core and the TS contract)", async () => {
+  const hexList = (text, name) => {
+    const start = text.indexOf(name);
+    assert.ok(start >= 0, name);
+    const open = text.indexOf("[", text.indexOf("=", start));
+    const body = text.slice(open, text.indexOf("]", open));
+    return [...body.matchAll(/0x([0-9a-fA-F]{4})/g)].map((match) =>
+      parseInt(match[1], 16),
+    );
+  };
+  const rust = await readFile(
+    path.join(
+      repoRoot,
+      "src-tauri/crates/grimodex-core/src/contract_string.rs",
+    ),
+    "utf8",
+  );
+  const ts = await readFile(
+    path.join(
+      repoRoot,
+      "src/features/narrative-semantic-core/contracts/contractString.ts",
+    ),
+    "utf8",
+  );
+  const expected = [...CONTRACT_WHITESPACE_CODE_POINTS];
+  assert.ok(expected.includes(0x0085) && expected.includes(0xfeff));
+  assert.deepEqual(
+    hexList(rust, "pub const CONTRACT_WHITESPACE_CODE_POINTS"),
+    expected,
+  );
+  assert.deepEqual(
+    hexList(ts, "export const CONTRACT_WHITESPACE_CODE_POINTS"),
+    expected,
+  );
+});
+
+test("setup shapes: an invalidation follows its negative's prepare and approve and precedes the first positive prepare (P2-3)", () => {
+  {
+    const { value, reject } = unknownScopeFixture();
+    const [invalidate] = reject.setup.steps.splice(2, 1);
+    reject.setup.steps.unshift(invalidate);
+    assert.ok(
+      setupErrors(value).some((e) =>
+        e.includes("is invalidated before it is prepared and approved"),
+      ),
+    );
+  }
+  {
+    const { value, reject } = unknownScopeFixture();
+    const [invalidate] = reject.setup.steps.splice(2, 1);
+    reject.setup.steps.splice(3, 0, invalidate);
+    assert.ok(
+      setupErrors(value).some((e) =>
+        e.includes("after the stage's first positive prepare"),
+      ),
+    );
+  }
+});
+
+test("setup shapes: a case Scene never takes the negative-anchor role, and one logical id names one material (P3)", () => {
+  for (const version of [1, 2]) {
+    const { value, testCase } = unknownScopeFixture(version);
+    testCase.setup.scenes[1].role = "negative-anchor";
+    assert.ok(
+      setupErrors(value).some((e) =>
+        e.includes("role belongs to a reject variant's setup.scenes"),
+      ),
+      String(version),
+    );
+  }
+  for (const mutate of [
+    ({ testCase }) =>
+      testCase.setup.codexEntities.push({
+        logicalId: NEG,
+        type: "lore",
+        name: "n",
+        summary: "s",
+      }),
+    ({ testCase }) => (testCase.setup.project.logicalId = NEG),
+    ({ reject }) =>
+      (reject.setup.codexEntities = [
+        { logicalId: "syn-p02-anchor", type: "lore", name: "n", summary: "s" },
+      ]),
+  ]) {
+    const world = unknownScopeFixture();
+    mutate(world);
+    assert.ok(
+      setupErrors(world.value).some((e) =>
+        e.includes("names two materials of the variant's workspace"),
+      ),
+      setupErrors(world.value).join(" | "),
+    );
+  }
 });

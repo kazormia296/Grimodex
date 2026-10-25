@@ -78,13 +78,20 @@ struct IdMap {
 }
 
 impl IdMap {
-    fn add(&mut self, logical_id: &str, runtime_id: &str) {
+    /// One runtime id per logical id: a second material under the same
+    /// logical id is a setup error, not an overwrite (DR-DPH-114).
+    fn add(&mut self, logical_id: &str, runtime_id: &str) -> Result<()> {
+        ensure!(
+            !self.runtime.contains_key(logical_id),
+            "NIR1_EVAL_SETUP_DUPLICATE_LOGICAL_ID: {logical_id} already names a material of this workspace"
+        );
         let mut row = Map::new();
         row.insert("logicalId".into(), json!(logical_id));
         row.insert("runtimeId".into(), json!(runtime_id));
         self.rows.push(row);
         self.runtime
             .insert(logical_id.to_owned(), runtime_id.to_owned());
+        Ok(())
     }
 
     fn set(&mut self, logical_id: &str, key: &str, value: &str) {
@@ -190,7 +197,8 @@ impl<'a> Runner<'a> {
         let project = self
             .ws
             .write_project(&format!("DP-H {}", self.case.case_id))?;
-        self.ids.add(&self.case.setup.project.logical_id, &project);
+        self.ids
+            .add(&self.case.setup.project.logical_id, &project)?;
         self.note_writer("project_create");
         self.log.push(
             1,
@@ -214,7 +222,7 @@ impl<'a> Runner<'a> {
             let runtime = self
                 .ws
                 .write_scene(&scene.title, &format!("a{index}"), &scene.body)?;
-            self.ids.add(&scene.logical_id, &runtime);
+            self.ids.add(&scene.logical_id, &runtime)?;
             self.note_writer("tree_node_create");
             self.log.push(
                 1,
@@ -266,7 +274,7 @@ impl<'a> Runner<'a> {
             let runtime =
                 self.ws
                     .write_codex_entity(&entity.type_slug, &entity.name, &entity.summary)?;
-            self.ids.add(&entity.logical_id, &runtime);
+            self.ids.add(&entity.logical_id, &runtime)?;
             self.note_writer("codex_create");
             self.log.push(
                 1,
@@ -306,7 +314,7 @@ impl<'a> Runner<'a> {
                 let anchor = self.ids.runtime_of(&anchor_logical)?.to_owned();
                 let entity_runtime = self.ids.runtime_of(&entity)?.to_owned();
                 let prepared = self.ws.prepare_revision(&anchor, &entity_runtime, &key)?;
-                self.ids.add(&revision, &prepared.revision_id);
+                self.ids.add(&revision, &prepared.revision_id)?;
                 self.ids.set(&revision, "proposalId", &prepared.proposal_id);
                 self.revision_entity.insert(revision.clone(), entity);
                 self.prepared_stage.insert(revision.clone(), stage);
@@ -388,6 +396,15 @@ impl<'a> Runner<'a> {
                             &self.fixture.setup_contract.scene_scope.per_scene,
                             &reason,
                         )?;
+                        // A2 answers this negative with the same reason as the
+                        // other source-changing writes, so the receipt cannot
+                        // show the Scope was unknown: the harness does, fail
+                        // closed (DR-DPH-112).
+                        let marker = self.ws.scene_scope_marker(&runtime)?;
+                        ensure!(
+                            marker == "unknown",
+                            "NIR1_EVAL_SETUP_SCOPE_NOT_UNKNOWN: {scene} has compatibilityMarker {marker} after the unknown write"
+                        );
                         ("narrative_scene_scope_update", None, None)
                     }
                     "codex-update" => {
@@ -634,15 +651,12 @@ pub(super) fn run_variant(
                     // carry in their own Scope bindings (the `scope.
                     // authorityRevision` of the rendered entries). All of them
                     // must agree: one value stands for the stage.
-                    // A reject request's negative is left out: it may anchor
-                    // its own Scene (DR-DPH-99), and it is not eligible.
+                    // A Revision that is not eligible carries no token (the
+                    // reader returns none), and a negative that is eligible
+                    // stops the run at request-pre, so the negative never
+                    // adds one (DR-DPH-114).
                     let mut tokens: Vec<&String> = stage_revisions
                         .iter()
-                        .filter(|(logical, _)| {
-                            !(is_reject
-                                && variant.ineligible_logical_id.as_deref()
-                                    == Some(logical.as_str()))
-                        })
                         .flat_map(|(_, reading)| reading.entity_scope_authority_revisions.iter())
                         .collect();
                     tokens.sort();

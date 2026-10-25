@@ -6,6 +6,7 @@
 use std::collections::{HashMap, HashSet};
 
 use anyhow::{bail, ensure, Context, Result};
+use grimodex_core::contract_string::{is_contract_non_empty, is_contract_trimmed_non_empty};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -222,17 +223,42 @@ pub(super) const SETUP_WRITE_KINDS: [&str; 4] = [
     SCENE_SCOPE_UNKNOWN_WRITE,
 ];
 
-/// The setup shapes of one variant, checked before any workspace is built
-/// (the same rules as contract.mjs `validateSetupShapes`, DR-DPH-100): a
-/// negative-anchor Scene belongs to a reject variant only and is its
-/// negative's anchor; `scene-scope-unknown` invalidates that negative and never
-/// touches the case's anchor or query (the positive Revisions would fail A3).
+/// Every variant's setup shapes, checked before Native runs on any variant of
+/// the fixture (the evidence entry holds on an error; DR-DPH-113).
+pub(super) fn validate_fixture_setup(fixture: &Fixture) -> Result<()> {
+    for case in &fixture.cases {
+        for variant in &case.variants {
+            validate_variant_setup(fixture, case, variant)?;
+        }
+    }
+    Ok(())
+}
+
+/// The setup shapes of one variant (the same rules as contract.mjs
+/// `validateSetupShapes`, DR-DPH-100 and 111): a case's Scenes never take the
+/// negative-anchor role; a negative-anchor Scene belongs to a reject variant
+/// and is used only by that variant's `prepare-negative` (anchor) and
+/// `invalidate-negative` (scene); every positive Revision anchors the case's
+/// anchor; `scene-scope-unknown` invalidates the negative after its prepare and
+/// approve and before the stage's first positive prepare, and never touches
+/// the case's anchor or query (the positive Revisions would fail A3); one
+/// logical id names one material of the variant's workspace. Contract strings
+/// follow grimodex-core's whitespace rule.
 pub(super) fn validate_variant_setup(
     fixture: &Fixture,
     case: &CaseSpec,
     variant: &VariantSpec,
 ) -> Result<()> {
     let label = format!("{}/{}", case.case_id, variant.variant_id);
+    ensure!(
+        !case
+            .setup
+            .scenes
+            .iter()
+            .any(|scene| scene.role == NEGATIVE_ANCHOR_ROLE),
+        "NIR1_EVAL_SETUP_SHAPE: {}: the {NEGATIVE_ANCHOR_ROLE} role belongs to a reject variant's setup.scenes, not to the case",
+        case.case_id
+    );
     let steps = &variant.setup.steps;
     let uses_unknown = steps
         .iter()
@@ -253,11 +279,18 @@ pub(super) fn validate_variant_setup(
             .map(|scene| scene.logical_id.as_str())
     };
     let (case_anchor, case_query) = (case_scene("anchor"), case_scene("query"));
+    // Every variant's negative-anchor Scenes, so a borrowed one is caught.
+    let all_negative_anchors: HashSet<&str> = case
+        .variants
+        .iter()
+        .flat_map(|other| other.setup.scenes.iter())
+        .map(|scene| scene.logical_id.as_str())
+        .collect();
     ensure!(
         variant.setup.scenes.len() <= 1,
         "NIR1_EVAL_SETUP_SHAPE: {label}: at most one negative-anchor Scene"
     );
-    let mut negative_anchors = HashSet::new();
+    let mut own = HashSet::new();
     for scene in &variant.setup.scenes {
         ensure!(
             variant.kind == "reject",
@@ -265,9 +298,9 @@ pub(super) fn validate_variant_setup(
         );
         ensure!(
             scene.role == NEGATIVE_ANCHOR_ROLE
-                && !scene.logical_id.is_empty()
-                && !scene.title.is_empty()
-                && !scene.body.is_empty(),
+                && is_contract_trimmed_non_empty(&scene.logical_id)
+                && is_contract_non_empty(&scene.title)
+                && is_contract_non_empty(&scene.body),
             "NIR1_EVAL_SETUP_SHAPE: {label}: a variant Scene must be a {NEGATIVE_ANCHOR_ROLE} with logicalId, title and body"
         );
         ensure!(
@@ -279,24 +312,98 @@ pub(super) fn validate_variant_setup(
             "NIR1_EVAL_SETUP_SHAPE: {label}: {} is a Scene of the case",
             scene.logical_id
         );
-        negative_anchors.insert(scene.logical_id.as_str());
+        own.insert(scene.logical_id.as_str());
     }
-    let negative_prepare: HashMap<&str, &str> = steps
-        .iter()
-        .filter(|step| step.op == "prepare-negative")
-        .filter_map(|step| Some((step.revision.as_deref()?, step.anchor_scene.as_deref()?)))
-        .collect();
+    // One logical id names one material of the workspace (the id map holds
+    // one runtime id per logical id).
+    let mut seen = HashSet::new();
+    let revisions: Vec<&str> = {
+        let mut list = Vec::new();
+        for step in steps {
+            if matches!(step.op.as_str(), "prepare" | "prepare-negative") {
+                if let Some(revision) = step.revision.as_deref() {
+                    if !list.contains(&revision) {
+                        list.push(revision);
+                    }
+                }
+            }
+        }
+        list
+    };
+    for id in std::iter::once(case.setup.project.logical_id.as_str())
+        .chain(
+            case.setup
+                .scenes
+                .iter()
+                .map(|scene| scene.logical_id.as_str()),
+        )
+        .chain(
+            case.setup
+                .codex_entities
+                .iter()
+                .map(|entity| entity.logical_id.as_str()),
+        )
+        .chain(
+            variant
+                .setup
+                .scenes
+                .iter()
+                .map(|scene| scene.logical_id.as_str()),
+        )
+        .chain(
+            variant
+                .setup
+                .codex_entities
+                .iter()
+                .map(|entity| entity.logical_id.as_str()),
+        )
+        .chain(revisions)
+    {
+        ensure!(
+            seen.insert(id),
+            "NIR1_EVAL_SETUP_SHAPE: {label}: logical id {id} names two materials of the variant's workspace"
+        );
+    }
+    for session in &variant.setup.chat_sessions {
+        ensure!(
+            !all_negative_anchors.contains(session.node_scene.as_str()),
+            "NIR1_EVAL_SETUP_SHAPE: {label}: a chat session may not sit on a negative-anchor Scene"
+        );
+    }
+    let mut negative_prepare: HashMap<&str, &str> = HashMap::new();
+    let mut negative_approved: HashSet<&str> = HashSet::new();
+    let mut prepared_stages: HashSet<u32> = HashSet::new();
     let mut used = HashSet::new();
     for step in steps {
+        for (key, value) in [
+            ("anchorScene", step.anchor_scene.as_deref()),
+            ("scene", step.scene.as_deref()),
+        ] {
+            if let Some(scene) = value.filter(|scene| all_negative_anchors.contains(scene)) {
+                let allowed = own.contains(scene)
+                    && ((key == "anchorScene" && step.op == "prepare-negative")
+                        || (key == "scene" && step.op == "invalidate-negative"));
+                ensure!(
+                    allowed,
+                    "NIR1_EVAL_SETUP_SHAPE: {label}: the negative-anchor Scene {scene} is used outside its own variant's prepare-negative and invalidate-negative"
+                );
+            }
+        }
         let anchor = step.anchor_scene.as_deref();
         match step.op.as_str() {
-            "prepare" => ensure!(
-                !anchor.is_some_and(|scene| negative_anchors.contains(scene)),
-                "NIR1_EVAL_SETUP_SHAPE: {label}: a positive Revision may not anchor the negative-anchor Scene"
-            ),
+            "prepare" => {
+                ensure!(
+                    anchor.is_some() && anchor == case_anchor,
+                    "NIR1_EVAL_SETUP_SHAPE: {label}: a positive Revision must anchor the case's anchor Scene"
+                );
+                prepared_stages.insert(step.stage);
+            }
             "prepare-negative" => {
+                if let (Some(revision), Some(scene)) = (step.revision.as_deref(), anchor) {
+                    negative_prepare.insert(revision, scene);
+                }
                 if let Some(scene) = anchor {
-                    if negative_anchors.contains(scene) {
+                    if own.contains(scene) {
                         used.insert(scene);
                     } else {
                         ensure!(
@@ -306,46 +413,62 @@ pub(super) fn validate_variant_setup(
                     }
                 }
             }
-            "invalidate-negative" | "binding-change" => {
-                let write = step.write.as_deref().unwrap_or_default();
-                ensure!(
-                    SETUP_WRITE_KINDS.contains(&write),
-                    "NIR1_EVAL_SETUP_SHAPE: {label}: unknown setup write {write}"
-                );
-                if write != SCENE_SCOPE_UNKNOWN_WRITE {
-                    continue;
+            "approve-negative" => {
+                if let Some(revision) = step.revision.as_deref() {
+                    negative_approved.insert(revision);
                 }
-                ensure!(
-                    step.op == "invalidate-negative",
-                    "NIR1_EVAL_SETUP_SHAPE: {label}: {SCENE_SCOPE_UNKNOWN_WRITE} is an invalidate-negative write only"
-                );
-                let scene = step.scene.as_deref().unwrap_or_default();
-                if Some(scene) == case_anchor || Some(scene) == case_query {
-                    bail!(
-                        "NIR1_EVAL_SETUP_SHAPE: {label}: {SCENE_SCOPE_UNKNOWN_WRITE} may not target the case's anchor or query Scene"
-                    );
-                }
-                ensure!(
-                    negative_anchors.contains(scene),
-                    "NIR1_EVAL_SETUP_SHAPE: {label}: {SCENE_SCOPE_UNKNOWN_WRITE} must name the variant's negative-anchor Scene"
-                );
-                ensure!(
-                    step.revision
-                        .as_deref()
-                        .and_then(|revision| negative_prepare.get(revision))
-                        == Some(&scene),
-                    "NIR1_EVAL_SETUP_SHAPE: {label}: {scene} is not the anchor of the invalidated negative"
-                );
-                let reason = step.unresolved_reason.as_deref().unwrap_or_default();
-                ensure!(
-                    !reason.is_empty() && reason.trim() == reason,
-                    "NIR1_EVAL_SETUP_SHAPE: {label}: unresolvedReason must be a trimmed non-empty string"
-                );
             }
             _ => {}
         }
+        if step.op == "invalidate-negative" {
+            let revision = step.revision.as_deref().unwrap_or_default();
+            ensure!(
+                negative_prepare.contains_key(revision) && negative_approved.contains(revision),
+                "NIR1_EVAL_SETUP_SHAPE: {label}: {revision} is invalidated before it is prepared and approved"
+            );
+            ensure!(
+                !prepared_stages.contains(&step.stage),
+                "NIR1_EVAL_SETUP_SHAPE: {label}: an invalidation comes after the stage's first positive prepare"
+            );
+        }
+        if !matches!(step.op.as_str(), "invalidate-negative" | "binding-change") {
+            continue;
+        }
+        let write = step.write.as_deref().unwrap_or_default();
+        ensure!(
+            SETUP_WRITE_KINDS.contains(&write),
+            "NIR1_EVAL_SETUP_SHAPE: {label}: unknown setup write {write}"
+        );
+        if write != SCENE_SCOPE_UNKNOWN_WRITE {
+            continue;
+        }
+        ensure!(
+            step.op == "invalidate-negative",
+            "NIR1_EVAL_SETUP_SHAPE: {label}: {SCENE_SCOPE_UNKNOWN_WRITE} is an invalidate-negative write only"
+        );
+        let scene = step.scene.as_deref().unwrap_or_default();
+        if Some(scene) == case_anchor || Some(scene) == case_query {
+            bail!(
+                "NIR1_EVAL_SETUP_SHAPE: {label}: {SCENE_SCOPE_UNKNOWN_WRITE} may not target the case's anchor or query Scene"
+            );
+        }
+        ensure!(
+            own.contains(scene),
+            "NIR1_EVAL_SETUP_SHAPE: {label}: {SCENE_SCOPE_UNKNOWN_WRITE} must name the variant's negative-anchor Scene"
+        );
+        ensure!(
+            step.revision
+                .as_deref()
+                .and_then(|revision| negative_prepare.get(revision))
+                == Some(&scene),
+            "NIR1_EVAL_SETUP_SHAPE: {label}: {scene} is not the anchor of the invalidated negative"
+        );
+        ensure!(
+            is_contract_trimmed_non_empty(step.unresolved_reason.as_deref().unwrap_or_default()),
+            "NIR1_EVAL_SETUP_SHAPE: {label}: unresolvedReason must be a contract-trimmed non-empty string"
+        );
     }
-    for scene in &negative_anchors {
+    for scene in &own {
         ensure!(
             used.contains(scene),
             "NIR1_EVAL_SETUP_SHAPE: {label}: {scene} is not the anchor of the variant's prepare-negative step"
