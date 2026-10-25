@@ -466,6 +466,40 @@ fn n3_a_cancellation_during_the_rebuild_window_creates_no_worker() {
     assert_eq!(creates(&fixture), 1, "no worker for the cancelled query");
 }
 
+/// P2-3: a held query cancelled while its session is inside `admit` (the
+/// rebuild window was 0 s and its check had passed: the usual case in
+/// production, where the previous prepare is more than 1 s old) creates no
+/// worker. Only the check right before the worker's creation sees it.
+#[test]
+fn n3_a_cancellation_during_admit_creates_no_worker() {
+    let fixture = ProductFixture::new();
+    let entered = Arc::new(AtomicBool::new(false));
+    let go = Arc::new(AtomicBool::new(false));
+    {
+        let entered = Arc::clone(&entered);
+        let go = Arc::clone(&go);
+        fixture
+            .state
+            .nir1_graph
+            .set_admit_hook_for_test(Arc::new(move || {
+                entered.store(true, Ordering::SeqCst);
+                while !go.load(Ordering::SeqCst) {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            }));
+    }
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    ticket.release_after_own_commits();
+    wait_until("the admission", || entered.load(Ordering::SeqCst));
+    ticket.finish(GraphTicketUse::Cancelled);
+    go.store(true, Ordering::SeqCst);
+    wait_until("the slot to be free", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    assert_eq!(creates(&fixture), 0, "no worker for the cancelled query");
+    assert_eq!(fixture.plan.prepares.load(Ordering::SeqCst), 0);
+}
+
 /// N4: a release after a lifecycle edge is invalidated and prepares nothing.
 #[test]
 fn n4_a_release_after_a_lifecycle_edge_is_invalidated_and_never_prepares() {

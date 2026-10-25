@@ -482,6 +482,10 @@ struct Shared {
     diagnostics: DiagnosticCounters,
     #[cfg(test)]
     publication_open_for_test: AtomicBool,
+    /// Test-only: runs inside `admit`, after its first edge check, on the
+    /// owner thread with no lock of this owner held.
+    #[cfg(test)]
+    admit_hook_for_test: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
@@ -512,6 +516,8 @@ impl Shared {
             diagnostics: DiagnosticCounters::default(),
             #[cfg(test)]
             publication_open_for_test: AtomicBool::new(false),
+            #[cfg(test)]
+            admit_hook_for_test: Mutex::new(None),
         }
     }
 
@@ -1345,6 +1351,11 @@ impl Nir1GraphProductOwner {
     #[cfg(test)]
     pub(crate) fn set_deferred_release_limit_for_test(&self, limit: Duration) {
         *lock(&self.shared.deferred_limit) = limit;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_admit_hook_for_test(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.admit_hook_for_test) = Some(hook);
     }
 
     #[cfg(test)]
@@ -2301,6 +2312,13 @@ fn admit(
     let shared = &context.shared;
     if edge_or_closed(shared, epoch) {
         return None;
+    }
+    #[cfg(test)]
+    {
+        let hook = lock(&shared.admit_hook_for_test).clone();
+        if let Some(hook) = hook {
+            hook();
+        }
     }
     let state = context.state.upgrade()?;
     let status = state.profile_egress.status();
