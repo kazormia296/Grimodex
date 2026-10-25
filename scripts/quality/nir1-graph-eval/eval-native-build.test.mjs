@@ -56,7 +56,7 @@ test("the output directory must be under .artifacts and outside the grimodex-nod
 });
 
 test("the plan builds with the evaluation feature into the output directory only", () => {
-  const plan = planEvalNativeBuild({ root: ROOT });
+  const plan = planEvalNativeBuild({ root: ROOT, targetDir: null });
   assert.deepEqual(plan.features, [EVAL_FEATURE]);
   const [native, worker] = plan.commands;
   assert.deepEqual(native.args.slice(0, 8), [
@@ -233,6 +233,7 @@ test("the manifest of a clean candidate passes the Graph arm's receipt guard", a
   const root = await fakeRepository();
   try {
     const manifest = await runEvalNativeBuild({
+      targetDir: null,
       root,
       runCommand: fakeRun(root),
       inspect: () => goodInspection,
@@ -271,7 +272,12 @@ test("the manifest of a clean candidate passes the Graph arm's receipt guard", a
 test("a dirty candidate, a source change during the build, a default .node write or a failed command leaves no manifest", async () => {
   const root = await fakeRepository();
   const run = (runCommand) =>
-    runEvalNativeBuild({ root, runCommand, inspect: () => goodInspection });
+    runEvalNativeBuild({
+      targetDir: null,
+      root,
+      runCommand,
+      inspect: () => goodInspection,
+    });
   try {
     // A manifest of an earlier success is removed before anything runs.
     await run(fakeRun(root));
@@ -298,4 +304,24 @@ test("a dirty candidate, a source change during the build, a default .node write
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("the worker is copied from CARGO_TARGET_DIR when it is set", () => {
+  const plan = planEvalNativeBuild({
+    root: ROOT,
+    targetDir: "electron/native/grimodex-node/target",
+  });
+  assert.equal(
+    plan.copies[0].from,
+    path.join(
+      ROOT,
+      "electron/native/grimodex-node/target/release",
+      path.basename(WORKER_ARTIFACT),
+    ),
+  );
+  assert.equal(
+    planEvalNativeBuild({ root: ROOT, targetDir: "/abs/target" }).copies[0]
+      .from,
+    path.join("/abs/target/release", path.basename(WORKER_ARTIFACT)),
+  );
 });

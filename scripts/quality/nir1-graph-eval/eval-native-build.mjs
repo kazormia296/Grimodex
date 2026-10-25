@@ -108,8 +108,24 @@ export function resolveEvalOutputDir(root, outDir = DEFAULT_OUT_DIR) {
   return out;
 }
 
+/**
+ * The worker cargo writes: `CARGO_TARGET_DIR` (relative to the repository
+ * root, where the command runs) moves it out of `src-tauri/target`. Without
+ * this the copy would take a stale worker of an earlier build（D′ の統合で
+ * 見つけた。DR-CP4-S1C2-25）.
+ */
+export function workerArtifactPath(root, targetDir = null) {
+  return targetDir
+    ? path.resolve(root, targetDir, "release", WORKER_FILE_NAME)
+    : path.join(root, WORKER_ARTIFACT);
+}
+
 /** The two builds and the copies, without running anything. */
-export function planEvalNativeBuild({ root, outDir = DEFAULT_OUT_DIR }) {
+export function planEvalNativeBuild({
+  root,
+  outDir = DEFAULT_OUT_DIR,
+  targetDir = process.env.CARGO_TARGET_DIR || null,
+}) {
   const out = resolveEvalOutputDir(root, outDir);
   // napi joins its cwd with the destination for the declarations, so the
   // destination is given relative to the package directory.
@@ -160,7 +176,7 @@ export function planEvalNativeBuild({ root, outDir = DEFAULT_OUT_DIR }) {
     },
     copies: [
       {
-        from: path.join(root, WORKER_ARTIFACT),
+        from: workerArtifactPath(root, targetDir),
         to: path.join(out, WORKER_FILE_NAME),
       },
     ],
@@ -298,9 +314,10 @@ export async function runEvalNativeBuild({
   outDir = DEFAULT_OUT_DIR,
   runCommand = runLocalCiCommand,
   inspect = inspectEvalModule,
+  targetDir = process.env.CARGO_TARGET_DIR || null,
 }) {
   const root = await realpath(requestedRoot);
-  const plan = planEvalNativeBuild({ root, outDir });
+  const plan = planEvalNativeBuild({ root, outDir, targetDir });
   const startedAt = new Date().toISOString();
   await mkdir(plan.out, { recursive: true });
   await rm(plan.outputs.manifest, { force: true });
