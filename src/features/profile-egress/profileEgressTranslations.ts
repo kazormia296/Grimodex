@@ -4,7 +4,7 @@ import i18next from "@/lib/i18n";
  * The strings of the profile egress status display, the settings item, the
  * Related Scenes `profile-not-restricted` guidance (NIR-1 DA-2 ST3) and the
  * chat panel's closed entrances (DA-2b ST4-B, DR-DA2B-R6) and the other AI
- * entrances' closure (DA-2b PUB-G 前の必須 3, DR-DA2B-R22), keyed under
+ * entrances' closure (DA-2b PUB-G 前の必須 3・4, DR-DA2B-R22〜R24), keyed under
  * `profileEgress`.
  *
  * They live in the lazy chunks behind `PROFILE_ACTIVATION_UI_ENABLED` rather
@@ -71,9 +71,10 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
       closed: "外部送信を制限中のため、AI は使えません。",
     },
     chat: {
+      // 会話のある場面の会話でだけ出す（PUB-G 前の必須 4、DR-DA2B-R24）。
       aiClosed:
-        "外部送信を制限中のため、AI の応答は使えません。場面の会話への入力は保存されます。",
-      // 新しい会話・関連付けた会話の作成（DR-DA2B-R22）。
+        "外部送信を制限中のため、AI の応答は使えません。会話のある場面の会話への入力は保存されます。",
+      // 会話の無い場面の会話（送信も閉じる）と、新しい会話・関連付けた会話の作成。
       newConversationClosed:
         "外部送信を制限中は、新しい会話を始められません。会話のある場面では入力が保存されます。",
       abAdoptClosed: "外部送信を制限中は、比較の応答を会話に追加できません。",
@@ -154,7 +155,7 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
     },
     chat: {
       aiClosed:
-        "External sending is restricted, so AI replies are not available. Input in a scene's conversation is still saved.",
+        "External sending is restricted, so AI replies are not available. Input in a scene's existing conversation is still saved.",
       newConversationClosed:
         "While external sending is restricted, a new conversation cannot be started. Input is still saved in a scene that has a conversation.",
       abAdoptClosed:

@@ -85,6 +85,7 @@ import {
   useChatMessageActions,
   wholeMessageContent,
 } from "./useChatMessageActions";
+import { chatEgressClosureOf } from "./chatEgressClosure";
 
 // D-10 (a), DR-DA2-34: the strings of the profile activation's AI terminals
 // live in this lazy chunk; the startup `aiFailureText` reads them.
@@ -530,8 +531,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const runtimeCapabilities = useRuntimeCapabilities();
   const __perfStart = performance.now();
   const { t } = useTranslation();
-  // 外部送信の制限の閉鎖は下の probe の判定で自分で扱う（場面の会話の送信は開いたまま。
-  // DR-DA2B-R22）。
+  // 外部送信の制限の閉鎖は下の 3 状態で自分で扱う（場面の会話の送信は開いたまま）。
   const chatGate = useAiGate(
     PROFILE_ACTIVATION_UI_ENABLED ? "chat-send" : "chat",
   );
@@ -586,8 +586,15 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const activeProjectId = useChatStore((s) => s.activeProjectId);
   const chatScope = useChatStore((s) => s.chatScope);
   const [egressClosed, setEgressClosed] = useState(false);
-  // Only a scene's conversation can store input while restricted (capture).
-  const egressNonSceneClosed = egressClosed && chatScope !== "scene";
+  // Only a scene's conversation that exists can store input while restricted
+  // (capture). The three states of the send's closure (PUB-G 前の必須 4,
+  // DR-DA2B-R24); the scene predicate is capture's (`isSceneConversation`, R18).
+  const egressClosure = useChatStore((s) =>
+    chatEgressClosureOf(egressClosed, s),
+  );
+  const egressNonSceneClosed = egressClosure === "nonScene";
+  const egressSendClosed =
+    egressNonSceneClosed || egressClosure === "newConversation";
   const scopeAnchorId = useChatStore((s) => s.scopeAnchorId);
   const currentScopeAnchor =
     scopeAnchor &&
@@ -1404,7 +1411,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
               {t(
                 egressNonSceneClosed
                   ? "profileEgress.chat.sendClosed"
-                  : "profileEgress.chat.aiClosed",
+                  : egressClosure === "newConversation"
+                    ? "profileEgress.chat.newConversationClosed"
+                    : "profileEgress.chat.aiClosed",
               )}
             </p>
           )}
@@ -1413,7 +1422,7 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             onSend={handleSend}
             disabled={isStreaming || isLoadingSessions || isLoadingMessages}
             policyDisabled={
-              chatGate.presentation !== "enabled" || egressNonSceneClosed
+              chatGate.presentation !== "enabled" || egressSendClosed
             }
             editorRef={chatEditorRef}
             onDetectedEntries={handleDetectedEntries}

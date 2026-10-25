@@ -42,6 +42,33 @@ export function isSceneConversation(state: ConversationKindState): boolean {
   );
 }
 
+/** chat の送信の閉鎖の種類（PUB-G 前の必須 4、DR-DA2B-R24）。 */
+export type ChatEgressClosure = "open" | "ai" | "newConversation" | "nonScene";
+
+/** 送信の閉鎖の判定に要る store の欄（`ChatState` の一部）。 */
+export interface ChatEgressScopeState extends ConversationKindState {
+  readonly activeSessionId: string | null;
+}
+
+/**
+ * 外部送信の制限で AI が閉じている（`closed`）ときの chat の送信の閉鎖。
+ * - `ai`：会話のある場面の会話。AI の応答だけが使えず、送信は開く（capture が保存する）。
+ * - `newConversation`：会話の無い場面の会話。最初の送信は会話の作成（汎用の INSERT）で
+ *   拒否されるので、送信も閉じる。
+ * - `nonScene`：場面の会話でない会話（capture の外）。送信を閉じる。
+ * 場面の会話の述語は `isSceneConversation`（capture の会話の条件、R18）と同じ。
+ * Mobile の chat は起動時の chunk なので、同じ判定を自分の module に写して持つ
+ * （`phoneChatEgressClosure`。`chatEgressScope.test.ts` が一致を固定する）。
+ */
+export function chatEgressClosureOf(
+  closed: boolean,
+  state: ChatEgressScopeState,
+): ChatEgressClosure {
+  if (!closed) return "open";
+  if (!isSceneConversation(state)) return "nonScene";
+  return state.activeSessionId === null ? "newConversation" : "ai";
+}
+
 /**
  * 状態の読取の結果（view、または投げられた値）から閉鎖を決める。`{ state:
  * "unrestricted" }` そのものだけが開。restricted、activating、unavailable、例外、

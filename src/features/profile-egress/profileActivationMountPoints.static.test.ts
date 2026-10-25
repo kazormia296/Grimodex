@@ -59,9 +59,9 @@ const MOUNT_POINTS: ReadonlyArray<{
   { file: "src/features/chat/chatEgressClosure.ts", lazyModule: null },
   // The import's notice of the conversations not taken in (DR-DA2B-R7).
   { file: "src/features/import/chatImportNotice.ts", lazyModule: null },
-  // The other AI entrances' closure (PUB-G 前の必須 3, DR-DA2B-R22): the
-  // local refusal before IPC, the visible controls, the conversation creation
-  // and the A/B adoption, and the Spotlight's notice.
+  // The other AI entrances' closure (PUB-G 前の必須 3・4, DR-DA2B-R22〜R24):
+  // the local refusal before IPC, the visible controls, the conversation
+  // creation and the A/B adoption, the Spotlight's notice and the phone chat.
   { file: "src/lib/tauri.ts", lazyModule: null },
   { file: "src/features/ai-policy/useAiGate.ts", lazyModule: null },
   {
@@ -73,6 +73,10 @@ const MOUNT_POINTS: ReadonlyArray<{
     lazyModule: null,
   },
   { file: "src/features/chat/useChatPinsController.ts", lazyModule: null },
+  {
+    file: "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+    lazyModule: null,
+  },
 ];
 
 /** The lazy chunks behind the constant: never imported statically. */
@@ -260,11 +264,15 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
         "src/features/ai-policy/useAiGate.ts",
         "src/features/chat/store.ts",
         "src/features/chat/useChatPinsController.ts",
+        "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
         "src/features/chat/closeProfileEgressEntrances.ts",
       ].sort(),
     );
     // The hook reads sit directly behind the constant's ternary.
-    for (const file of ["src/features/ai-policy/useAiGate.ts"]) {
+    for (const file of [
+      "src/features/ai-policy/useAiGate.ts",
+      "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+    ]) {
       expect(code(read(file))).toMatch(
         new RegExp(
           `${CONSTANT}\\s*\\?\\s*useAiSettingsStore\\(\\s*\\(\\w+\\) => \\w+\\.profileEgressClosed === true`,
@@ -291,9 +299,13 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
       [
         "src/features/ai-policy/useAiGate.ts",
         "src/features/chat/ChatPanel.tsx",
+        "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
       ].sort(),
     );
-    for (const file of ["src/features/chat/ChatPanel.tsx"]) {
+    for (const file of [
+      "src/features/chat/ChatPanel.tsx",
+      "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+    ]) {
       expect(code(read(file))).toMatch(
         new RegExp(
           `useAiGate\\(\\s*${CONSTANT} \\? "chat-send" : "chat",?\\s*\\)`,
