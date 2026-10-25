@@ -232,3 +232,94 @@ mutation の前の判断（integrator の決定を含む）：
 | DR-CP4-S1C1-9 | 2026-10-25 | 同 | (ii) 評価の受領書の feature 集合は完全一致にする。`assertEvalBuildReceipt` と receipt の `candidate.features` は、配列でちょうど `["nir1-graph-eval"]` のときだけ通す（`includes` をやめる） | 受入れ: `contract.test.mjs`、`receipt.test.mjs`（余分な feature を足した受領書が落ちる） | — | lane の指示 | 該当なし | 不要 | 記録済み |
 | DR-CP4-S1C1-10 | 2026-10-25 | 同 | (iii) 単位。S1b の sample の Native の時刻は field 名に単位を持たせる：`freshnessStamp.attemptedAtNs`、`recordRead.startedAtNs`／`finishedAtNs`（評価の時計の ns。整数）。renderer の時刻（`tFetch`、`tRawReady`、`tReturn`、`graph.arrivedAt`）は ms のまま。Native の値（JSON の数か 10 進の文字列）から sample の field への変換は `native-sample.mjs` の 1 つの関数（`nativeNs`）だけで行い、safe integer でない値・負の値・小数・指数表記を拒否する。規則 4 の重なりは Native の ns どうしだけで比べ、窓の判定（`classifyJoin`）は ms の field しか読まない。Native の記録（`nir1GraphEvalSamples` の 1 件と A3 の記録）から sample の field への写しも同じ module に置く（S1a の表の写し方） | 受入れ: `native-sample.test.mjs`（変換の誤りの固定：ms への誤変換、文字列の扱い、安全でない整数）、`availability.test.mjs`（Ns の field を変えても窓の判定が変わらないこと） | 時刻を ms に揃える（Native の時計と renderer の時計は原点が違い、換算の手段が無い。順序の比較に丸めが入るので不採用） | lane の指示 | 該当なし | 不要 | 記録済み |
 | DR-CP4-S1C1-11 | 2026-10-25 | 同 | S1 の harness の取り込み（D15、§15.7）は、この節では計画と差分の一覧だけを作る（下の「S1 の harness の取り込みの計画」）。基点は spike の worktree の `.artifacts/s1/harness-frozen/`（manifest `harness-frozen/manifest.json`、sha256 `8fcaf41e…`）。IPC trace は取り込み、offline namespace の precheck（`requireOfflineNetworkNamespace`）と `unshare -rn` の起動方法は取り込まない。`.artifacts/s1/` を記録 branch に置く作業（S0）は integrator | actor: integrator（記録 branch）、S1c-2（取り込み）。受入れ: 差分の一覧（この節） | — | integrator の TASK（§15.7） | 該当なし | 不要 | 記録済み |
+
+### 実装後の追記（2026-10-25）
+
+commit：`5f9be4b6`（この節の mutation の前の記録）、`20de227f`（S1b の整合 3 点）、`18bce532`（egress の標本）、`74dce247`（renderer build と静的 server）、`4d53a883`（launcher、observer、smoke）、`c08b7964`（Light への登録）、`0e599c6b`（実 Electron の記録に合わせた net log の解析と smoke の修正）。DR-CP4-S1C1-1〜11 は記録どおりに実装した。変えた点と、実装で決めた点を次に足す。
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-CP4-S1C1-12 | 2026-10-25 | CP-4 S1c-1 | observer の entry は CJS ではなく ESM（`electron-observer.entry.mjs`）で書き、esbuild が CJS の 1 file に束ねる（repo の eslint が `require` を許さないため）。製品 main は `createRequire(<main.cjs>)(<main.cjs>)` で読む。束ねた file の入力（製品の NC-1 の 3 file、`observer-core.mjs`）と sha256 を `bundleObserver` が返し、3 file が入っていなければ止める | 同 DR-CP4-S1C1-1 | CJS のまま eslint の例外を足す（lint の設定の変更は範囲外） | なし | 該当なし | 不変 | 記録済み |
+| DR-CP4-S1C1-13 | 2026-10-25 | 同 | **迷った点（integrator に返す）**。実 Electron 43.8.3 の net log に、Chromium の IPv6 到達性の確認（`HOST_RESOLVER_MANAGER_IPV6_REACHABILITY_CHECK` に伴う `[2001:4860:4860::8888]:443` への `UDP_CONNECT`。datagram は送らない）が毎回 2〜3 件出る。DA-1（`da1-decisions.md` の P3）と K3/3 の draft（「Chromium 自身の付随の通信」の 5）が開示済みの項目で、`renderer-isolation-probe.mjs` も `ipv6ReachabilityProbe` として別に分類している。解析はこの先例に合わせ、**その address と port の `UDP_CONNECT` で、同じ socket に送信の event（`UDP_BYTES_SENT`／`SOCKET_BYTES_SENT`）が無いときだけ** `ipv6ReachabilityProbe` に数え、`nonLoopbackAttempts` に入れない（別の port、送信あり、TCP は試みに数える）。N-12 の「loopback と blackhole 以外への接続の試み」をこの読みで閉じてよいかは integrator が決める（厳しく読むと、すべての run が `[precheck]` になる） | actor: Chromium の network stack。防御: 送信の有無で分ける。受信先: 新しい受け手ではない（開示済み）。受入れ: `egress.test.mjs` | 試みに数える（どの run も N-12 で止まる）／Chromium の switch で止める（確かめた switch が無い） | 先例（DA-1、K3/3、DR-NC1-36） | 開示済みの通信の分類で、新しい受け手を足さない | 不要 | 記録済み。integrator の確認待ち |
+| DR-CP4-S1C1-14 | 2026-10-25 | 同 | 評価 build は `eval-native-build.mjs` では作れなかった（`refs/remotes/origin/master`〔`352474d4`〕が統合 branch の HEAD の祖先でなく、候補の照合で止まった。統合 branch の基点は `7af0be93`）。統合 branch の rebase は integrator の判断なので行わず、**同じ 2 command**（`napi build --release --features nir1-graph-eval --js false ../../../.artifacts/cp4/eval-build` と `cargo build --release … -p grimodex-db --bin nir1-c-query-worker`、heavy.sh 越し）を HEAD `c08b7964`（S1c-1 は Rust を変えていない）で回して、`.artifacts/cp4/eval-build/` に `.node`（sha256 `2132008b…`）と worker（`87a412cf…`）を置いた。`eval-build.json`（受領書）は作っていない。**予告・非正式の build で、S5 の受領書の代わりにしない**。既定の `.node` と追跡される `index.d.ts` の sha256 は前後で同じだった。`native-architecture.mjs --binary … --expect eval` は ok。この worktree の `target/release` は評価 feature の build で上書きされたので、次に製品の napi build を回すと作り直しになる | actor: builder。防御: 出力先は `.artifacts/cp4/eval-build/` だけ、既定の file の不変を sha で確認 | `refs/remotes/origin/master` を手元で動かす（偽の照合になるので不採用）／rebase（integrator の判断） | なし | 該当なし | build の 2 command は heavy.sh の slot 1 つで直列 | 記録済み |
+| DR-CP4-S1C1-15 | 2026-10-25 | 同 | V-10 は途中で止めた（報告する）。worker の path の解決と設定（`/proc/self/maps` → `.artifacts/cp4/eval-build/nir1-c-query-worker`、`configured`）は製品 Main の中で確かめたが、worker の起動と READY には届かなかった。理由：Native の `related_scenes_begin` は IR の operation（ticket）ができたときだけ Graph を始める（`related_scenes/begin.rs:126` 付近）。IR の operation には Chronicle Index の query status が usable で supported であることが要り、空の合成 project では `ir: unsupported-query`、`graph: not-requested` になり、owner の `begins` は 0 だった。Chronicle Index を作るには setup driver（通常の writer、決定論の provider、maintenance の seam）が要り、これは S1c-2 の範囲なので、この節では作らない。smoke の V-10 の段（seed 付きの begin、`/proc` の worker の観測、owner の診断の poll）は S1c-2 の合成の dev fixture でそのまま使える | — | 空の project で Chronicle Index を作る setup をここで書く（S1c-2 の setup driver と重なるので不採用） | なし | 該当なし | — | 記録済み。S1c-2 へ引継ぎ |
+| DR-CP4-S1C1-16 | 2026-10-25 | 同 | socket の標本の窓は Electron の寿命（sampler の最初の標本は launch の直後、最後の標本は停止の直前）にした。receipt の `run.startedAtMs`／`finishedAtMs` はその内側に置く（S1c-2 の runner は測定の開始と終了を run にし、sampler は launch から停止まで動かす） | — | — | なし | 該当なし | timer 1 本（unref）。停止で最後の標本 | 記録済み |
+| DR-CP4-S1C1-17 | 2026-10-25 | 同 | 環境の注意：scratchpad の path が長く、tsx（`pnpm build` の中）と Chromium の unix socket の path が 108 byte を超える。build と Electron の `TMPDIR` は scratchpad の `cp4/` を指す短い symlink（`/tmp/claude-1000/c4`）にした（実体は scratchpad の下）。この symlink の下では `standard-build.test.mjs` の 1 件（`realpath` と `TMPDIR` の比較）が落ちるので、node:test は実体の path の `TMPDIR` で回す | — | — | なし | 該当なし | — | 記録済み |
+
+#### V-9／V-10 の結果（smoke `s1c1-smoke-2`、2026-10-25。`.artifacts/cp4/s1c1-smoke-2/smoke-report.json`）
+
+構成：`node scripts/local-ci-xvfb.mjs node scripts/quality/nir1-graph-eval/smoke.mjs`（host の network namespace、Xvfb は wrapper の `-displayfd`。`DISPLAY=:2`）。製品の `dist-electron/main.cjs`（`node electron/scripts/build.mjs`。sha256 `054f315c…`）を observer（sha256 `4b35fbfb…`）越しに Electron 43.8.3 で起動し、`GRIMODEX_NODE_PATH` で評価の `.node` を読ませた。profile は新規（restricted の状態 file、pin 済みの model を sha で照合して写した）。renderer は harness の build（`rendererBundleSha256` `8ed59e06…`。製品の `index.html` と smoke の page。alias は製品の 2 file だけを替えた）を loopback の静的 server（200 が 12 件だけ）で配った。
+
+- V-9：通った。`app.evaluate` で `Module._cache[<評価の .node の実 path>]` があり、`createRequire(p)(p)` の戻り値がその `exports` と同一、`process.mainModule.require(p)` も同一。`nir1GraphEvalStatus()` は `registrations: 1`、`worker.state: "configured"`（path は `.artifacts/cp4/eval-build/nir1-c-query-worker`）、`gateOpened: true`、owner は `publicationOpen: true`、`profile: {restricted: true, inFlightStopped: true}`（TASK §12 の V-8 も、この profile の状態 file で満たされた）。評価の export は 7 つ。
+- V-10：途中まで（DR-CP4-S1C1-15）。`/proc/self/maps` からの path の解決と worker の設定は確かめた。worker の起動と READY は、空の合成 project では Native が Graph を始めない（`ir: unsupported-query`、`graph: not-requested`、owner の `begins: 0`）ため確かめていない。
+- NC-1 の当て方：observer の記録の順序は `appendSwitch host-resolver-rules` → `registerWebContentsPolicy` → 製品 main の require → ready → listener → default session の最初の接触 → `setProxy` → `start()` 完了 → 製品の続きを放す、で製品と同じ。proxy は `socks5://127.0.0.1:<LS-1>`、bypass は `<-loopback>;http://127.0.0.1:<静的 server>` だけ。`resolveProxy` の読み戻しは、静的 server が `DIRECT`、同じ host の別の port・port 1・外部名が blackhole。Main の stderr に `NC-*` と `CP4-OBS-*` は無い。spellchecker は止まった（`isSpellCheckerEnabled() == false`）。
+- egress：socket の標本 3 件（23 秒の run。20 秒ごと）に外部への接続と外から届く listener は無い（Electron の 6 process、TCP はすべて loopback）。net log は `nonLoopbackAttempts: 0`、IPv6 到達性の確認 3 件（DR-CP4-S1C1-13）、LS-1 への接続 2 件、辞書の要求 1 件（`redirector.gvt1.com/…/en-us-10-1.bdic`、proxy は blackhole の `SOCKS5 127.0.0.1:<LS-1>`、`net_error -120`）。profile の `Dictionaries/` は空、`Network Persistent State` の server も無い。
+- K6/3 の「NC-1 を当てた起動」の意味（`ELECTRON_RENDERER_URL` がない起動）は満たさない（DR-CP4-S1C1-1）。observer の記録にも `k63Nc1Launch: false` を書く。
+
+#### 机上の副作用
+
+無かった。run の前後で `/tmp/.X11-unix` の `X0`／`X1` の inode と mtime は同じ（wrapper の display `X2` は run の間だけあり、終わりに消えた）。Xvfb の `-displayfd` は使用中の `:0`／`:1` を飛ばすときに「server already running」を stderr に出すが、既存の socket には触れていない。Electron の process（6 つ）は `app.close()` で終わり、記録した pid と開始時刻のどれも `/proc` に残らなかった（signal は送っていない）。Electron の env から `WAYLAND_*`、`DBUS_SESSION_BUS_ADDRESS`、proxy の env を除き、`XDG_SESSION_TYPE=x11`、`ELECTRON_OZONE_PLATFORM_HINT=x11` で、Chromium の子 process はすべて `--ozone-platform=x11` だった。利用者の app data は使っていない（`GRIMODEX_USER_DATA_DIR` は run の directory）。
+
+#### 製品の bytes と起動時 JS graph
+
+`git diff a94f9ff2..HEAD -- src vite.config.ts index.html electron` は空。製品の `pnpm build` の `dist/`（787 file、一覧の sha256 `813045b9…`）は、harness の renderer build の前後で同一だった。起動時 JS graph は raw 4,249,945／gzip 1,342,903（#706 の測定と同じ。raw の余裕 55 byte のまま）。`dist/` に stub と plugin の名前は無い。
+
+#### S1c-2 が使う interface
+
+| file | 関数 | 入力 → 出力 |
+|---|---|---|
+| `launcher.mjs` | `assertXvfbWrapperEnv(env)` | wrapper の下でなければ `[precheck]` |
+| 同 | `buildElectronLaunchEnv(baseEnv, {userData, nativePath, rendererUrl, productMain, tmpDir})`、`buildElectronArgs({observerPath, netLogPath})` | `_electron.launch` の env と argv（`assertElectronLaunch` を通る形） |
+| 同 | `bundleObserver({outDir})` | `{path, sha256, entry, sources}`（receipt の `candidate.harnessFiles` に入れる） |
+| 同 | `prepareEvalProfile({userData, d2aMode, models:{ja,en}})` | D2a の状態 file、pin 済みの model（sha 照合、download しない）、空の設定 |
+| 同 | `launchGraphEvalElectron({observer, env, netLogPath})` | `{app, pid, launch, args, stderr(), stdout()}`。wrapper の検査と `assertElectronLaunch` を中で行う |
+| 同 | `assessObserverRecord(record, {stderr})` | `app.evaluate(() => globalThis.__cp4Observer)` の記録の順序・bypass・spellchecker・固定コードの検査 |
+| 同 | `snapshotElectronPids(rootPid)`、`stopElectron(handle, recordedPids)` | pid と開始時刻での停止と、残りの確認（`remaining` が空でなければ失敗） |
+| `renderer-build.mjs` | `buildHarnessRenderer({root, outDir: ".artifacts/cp4/<run>/renderer-dist", input})` | alias の記録、`rendererBundleSha256`、file ごとの sha256。`input` に S1c-2 の harness page と製品の `index.html` を両方渡す（alias の照合は製品の全 graph で行う） |
+| 同 | `startStaticServer({dir})` | `{origin, port, url(path), requests, close()}` |
+| `egress.mjs` | `startSocketSampler({rootPid})` → `stop()` | receipt の `environment.socketSamples` |
+| 同 | `parseNetLogText(text)`、`analyzeNetLog(log, {blackholePort})` | receipt の `environment.netLog`（`nonLoopbackAttempts`、`ipv6ReachabilityProbe`、辞書の要求） |
+| 同 | `readProcessTree(rootPid)`、`assertX11Ozone(tree)` | worker の process の観測（`exe`）、ozone の検査 |
+| `native-sample.mjs` | `sampleFieldsFromNativeRecord(record)`、`recordReadFromA3(record)`、`nativeNs(value)` | `nir1GraphEvalSamples` の 1 件と A3 の記録から S1b の sample の field（`startSlot`、`freshnessStamp{result, matched, attemptedAtNs}`、`source`、`busyCause`、`recordRead{startedAtNs, finishedAtNs}`） |
+| `smoke.mjs` | — | V-9／V-10 の段の雛形（`renderer/smoke.ts` の `prepare`／`begin`／`release`） |
+
+#### S1 の harness の取り込みの計画と差分の一覧（D15、§15.7。取り込みは S1c-2）
+
+基点：spike の worktree `/home/grimodex/worktrees/Grimodex/claude-nir1-spike` の `.artifacts/s1/harness-frozen/`（`manifest.json` sha256 `8fcaf41e…`）。`final/` を基点にし、`fix-round-1/` は IPC trace と egress の証跡だけを取る。
+
+| S1 の file・部分 | 扱い | CP-4 での形 |
+|---|---|---|
+| `final/g01-common.mjs` の `MODEL_SOURCE_ROOT`（別 worktree の固定 path） | 変える | 引数（`--ja-model`／`--en-model`）と `prepareEvalProfile` の sha 照合。download しない |
+| 同 `NETWORK_BLACKHOLE_ENV`／`applyNetworkBlackhole`（env の proxy） | 取り込まない | D6 (a') の observer。launch env は proxy の env を除く。遮断の証跡は socket の標本と net log |
+| 同 `requireOffscreenDisplay` | 取り込んだ | `launcher.mjs` の `assertXvfbWrapperEnv`（同じ条件） |
+| 同 `electronProcessTree`／`requireX11Ozone` | 取り込んだ | `egress.mjs` の `readProcessTree`／`assertX11Ozone` |
+| 同 `loadFixture`、`scenesInReadingOrder`、`scorerQuery`、`rendererQuery`、`providerSeedScenes`、`hostSnapshot` | S1c-2 で取り込む | fixture は S1b の `assertFixtureReadAllowed` を通してだけ読む。`hostSnapshot` は `run-nir1-retrieval.mjs` の `snapshotHost` に揃える |
+| `final/build-g01.mjs` の setup 専用の main（`main-g01-setup.cjs`。決定論の provider の対応表を esbuild の plugin で差し替える） | 置き場所を変える | 対応表と bundle を `.artifacts/cp4/<run>/` に置き、sha を setup receipt に書く。測定の Main は製品の `main.cjs` のまま |
+| 同 renderer の build（標準の config、別の outDir、module の収集） | 置き換えた | `renderer-build.mjs`（D11 の alias つき） |
+| 同 Native の build | 置き換える | 製品の standard-build の受領書（24 件、setup）と評価 build（G-case） |
+| `final/setup-g01.mjs`（`createProductJourneyHarness` と `configureWorkspace`。S3 の seam の env `GRIMODEX_SPIKE_S3_D2A_RESTRICTED` は S1 の run で外していた） | S1c-2 で取り込む | 今の `product-journey-harness.mjs`（S3 の seam なし）を使う。D2a の mode は `placeD2aProfileState`。D2 の B の seal と G-02〜G-08 の setup driver を足す |
+| `final/measure-g01.mjs` の vite dev server（`createServer`）と `ELECTRON_RENDERER_URL` の dev 形 | 変える | harness の production build と静的 server（§15.6）。observer 越しの起動（D6 (a')） |
+| 同 IPC trace（`scripts/quality/nir1-retrieval/electron-observer.mjs` の `globalThis.nir1IpcTrace`）と `validateRawIpcTrace` | 取り込む | S1c-2 が `observer-core.mjs` の製品 main の require の直前に同じ trace を置く（記録は command・完了・ok だけ） |
+| 同 receipt | 変える | S1b の `nir1-cp4-run-receipt/1`。run ごとに harness の file の sha と写しを `.artifacts/cp4/<run>/harness/` に置く（run ごとの凍結） |
+| `fix-round-1/measure-g01-trace.mjs` の `requireOfflineNetworkNamespace` と `unshare -rn` の起動方法 | 取り込まない | §15.7。host の namespace で wrapper を使う |
+| 同 sample ごとの IPC trace | 取り込む | 上と同じ |
+| 同 `profileEgressEvidence`（`Dictionaries/` と `Network Persistent State`） | 取り込んだ | `smoke.mjs` に入れた。S1c-2 の runner にも入れる |
+| 同 pre-gate の候補の診断 | S1c-2 が決める | 判定に使わない診断として |
+| `runtime/electron/scripts/product-journey-harness.mjs`（S3 の seam と Electron 43.5.0 の文字列） | 取り込まない | 今の harness を使う（差は S3 の restricted の seed と、#629 以降の timeout の理由の改善、Electron 43.8.3） |
+| `final/explain-scores.py` | 取り込まない | 診断用 |
+| off-screen の guard と X11 socket の隔離（wrapper の `-nolisten tcp`、私有の cookie。`unshare` を使わない） | 取り込んだ | `assertXvfbWrapperEnv`、`assertElectronLaunch`、smoke の `/tmp/.X11-unix` の前後の比較 |
+
+#### 落ちることを確かめた変異（25 種。1 つずつ入れて該当の試験が落ち、元の bytes に戻したことを sha で確認）
+
+observer：製品 main を NC-1 の pre-ready の段より前に読む、whenReady を止めない、spellchecker を止めない、bypass を `127.0.0.1` 全体に広げる、bypass の読み戻しを飛ばす。renderer build：製品の `vite.config.ts` に alias（plugin の名前）を漏らす、import の文字列で照合する（解決した path を見ない）、製品の `dist/` への出力を許す、製品の module が bundle にあるかの検査を外す。launcher：launch env に `DBUS_SESSION_BUS_ADDRESS` を残す、wrapper の検査で `:0` を許す、x11 の ozone hint を落とす、observer の記録の順序の検査を外す。egress：外部への接続を無視する、`0.0.0.0` の listener を loopback とみなす、規則で拒否されない名前の解決を数えない、receipt で socket の違反を `[precheck]` にしない。S1b の整合：stamp の比較が無いものを鮮度に数える、旧い stamp の Busy を受け付ける、feature 集合を `includes` に戻す（受領書と receipt の 2 か所）、`nativeNs` が小数を受け付ける、重なりの比較で ns を ms に変える、窓の判定に Native の ns を混ぜる。最初の試行で 2 つの変異（`dist/` の許可と ms の field の参照）は形が悪く生き残ったので、意味のある形に作り直して落ちることを確かめた。
+
+#### 検証（実行したもの）
+
+- `node --test scripts/quality/nir1-graph-eval/*.test.mjs scripts/quality/nir1-retrieval/*.test.mjs scripts/quality/nir1-graph/contract.test.mjs`：186 件 pass（`TMPDIR` は scratchpad の実体の path。DR-CP4-S1C1-17）。
+- `node --test scripts/quality/impact-map.test.mjs scripts/quality/quality-workflow.test.mjs scripts/quality/eval-fixtures.test.mjs`：71 件 pass。`node --test scripts/quality/nir1-packing/final-request/architecture.test.mjs`：37 件 pass。
+- `node scripts/quality/validate-nir1-retrieval.mjs --require-freeze`：valid。`pnpm eval:fixtures`：errors なし。`pnpm eval:impact --base origin/master`：Fallback no（critical path なので Light は全 suite）。`node scripts/quality/nir1-graph-eval/native-architecture.mjs`：ok。
+- 変更した file の prettier と eslint：問題なし。
+- 実 Electron：smoke の 3 回（`s1c1-shakeout`〔製品の `.node`。observer と egress の試走〕、`s1c1-smoke-1`、`s1c1-smoke-2`〔commit 済みの harness で取り直した記録〕）。
+- 製品の `pnpm build` 2 回と `check-performance-budgets.mjs`（上の「製品の bytes」）。
+
+実行しなかったもの：Quick／Full、cargo test（Rust を変えていない）、`eval-native-build.mjs` の正式の受領書（DR-CP4-S1C1-14）、worker の起動と READY（DR-CP4-S1C1-15）、`pnpm exec tsc --noEmit`（`src/` を変えていない。harness の TS は vite が build した）、外向きの git の操作。凍結済みの G-case の材料は読んでいない。
