@@ -7,17 +7,17 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import {
   APPROVING_VERDICT,
-  FIXTURE_PATH,
-  FREEZE_PATH,
+  EVIDENCE_FIXTURE_VERSION,
+  FIXTURE_VERSIONS,
+  fixtureMaterials,
+  fixtureVersionSpec,
+  replacedMaterialReuseErrors,
   FREEZE_SCHEMA_VERSION,
-  PARITY_VECTOR_PATH,
-  README_PATH,
-  REVIEW_PATH,
   REVIEW_SCHEMA_VERSION,
   PLACEHOLDER_KINDS,
   PLACEHOLDER_VALUE_PATTERN,
   SCORER_FILES,
-  deriveFreezeCommit,
+  deriveFreezeCommit as deriveFreezeCommitOfVersion,
   estimateTemplateTokens,
   resolveTemplate,
   templateErrors,
@@ -25,11 +25,11 @@ import {
   isAncestorCommit,
   sha256,
   validateFinalRequestFixture,
-  validateFreezeRecord,
+  validateFreezeRecord as validateFreezeRecordOfVersion,
   validateNir1FinalRequestFixtures,
   validateReviewRecord,
   verifyFreezeOrder,
-  verifyFrozenSnapshot,
+  verifyFrozenSnapshot as verifyFrozenSnapshotOfVersion,
 } from "./contract.mjs";
 import { estimateTokens, loadFixedTemplate } from "./payload.mjs";
 import { CONTRACT_ID, DRAFT_REF } from "./receipt.mjs";
@@ -41,6 +41,40 @@ const repoRoot = path.resolve(
 );
 const template = await loadFixedTemplate(repoRoot);
 const baseWorld = buildSyntheticWorld({ template });
+
+// The synthetic frozen world is the freezable replacement version (2); the
+// version it replaces is the real version 1 (the HOLD history), whose
+// materials the synthetic fixture does not share.
+const V1 = FIXTURE_VERSIONS[1];
+const V2 = FIXTURE_VERSIONS[2];
+const FIXTURE_PATH = V2.fixturePath;
+const FREEZE_PATH = V2.freezePath;
+const REVIEW_PATH = V2.reviewPath;
+const README_PATH = V2.readmePath;
+const PARITY_VECTOR_PATH = V2.parityVectorPath;
+const v1FixtureBytes = await readFile(path.join(repoRoot, V1.fixturePath));
+const v1FreezeBytes = await readFile(path.join(repoRoot, V1.freezePath));
+const replacedRecords = Object.freeze({
+  fixture: JSON.parse(v1FixtureBytes),
+  freeze: JSON.parse(v1FreezeBytes),
+});
+const v2Fixture = { ...structuredClone(baseWorld.fixture), fixtureVersion: 2 };
+const realParityBytes = await readFile(
+  path.join(repoRoot, V2.parityVectorPath),
+);
+
+/** validateFreezeRecord for the synthetic version-2 world (overridable). */
+function validateFreezeRecord(freeze, options = {}) {
+  return validateFreezeRecordOfVersion(freeze, {
+    fixture: v2Fixture,
+    replaced: replacedRecords,
+    ...options,
+  });
+}
+const verifyFrozenSnapshot = (args) =>
+  verifyFrozenSnapshotOfVersion({ fixtureVersion: 2, ...args });
+const deriveFreezeCommit = (args) =>
+  deriveFreezeCommitOfVersion({ fixtureVersion: 2, ...args });
 
 function fixture() {
   return structuredClone(baseWorld.fixture);
@@ -85,7 +119,7 @@ test("fixture: schema header, version, phase and route are closed", () => {
     ],
     [
       (f) => {
-        f.fixtureVersion = 2;
+        f.fixtureVersion = 3;
       },
       "fixtureVersion",
     ],
@@ -455,7 +489,7 @@ function reviewRecord(fixtureBytes) {
   };
 }
 
-const fixtureBytes = Buffer.from(JSON.stringify(baseWorld.fixture));
+const fixtureBytes = Buffer.from(JSON.stringify(v2Fixture));
 
 test("review record: an approving review is independent, read-only and bound to the fixture bytes", () => {
   const ok = reviewRecord(fixtureBytes);
@@ -587,19 +621,22 @@ function freezeWorld() {
   const review = reviewRecord(fixtureBytes);
   const reviewBytes = Buffer.from(JSON.stringify(review));
   const readmeBytes = Buffer.from("fixture README");
-  const parityBytes = Buffer.from('{"parity":"vector"}');
+  // Version 2 shares version 1's parity vector path, so it binds the same bytes.
+  const parityBytes = realParityBytes;
   const bytes = new Map([
     [FIXTURE_PATH, fixtureBytes],
     [REVIEW_PATH, reviewBytes],
     [README_PATH, readmeBytes],
     [PARITY_VECTOR_PATH, parityBytes],
+    [V1.fixturePath, v1FixtureBytes],
+    [V1.freezePath, v1FreezeBytes],
     ...scorerBytes,
   ]);
   const freeze = {
     schemaVersion: FREEZE_SCHEMA_VERSION,
     contractId: CONTRACT_ID,
     draftRef: DRAFT_REF,
-    fixtureVersion: 1,
+    fixtureVersion: 2,
     status: "frozen",
     nativeOutputObservedBeforeFreeze: false,
     frozenAt: "2026-10-18T00:00:00Z",
@@ -623,8 +660,18 @@ function freezeWorld() {
     authorSeparation: {
       fixtureAuthor: { agent: "author-agent" },
       expectationReviewer: { agent: "reviewer-agent" },
-      harnessImplementers: ["impl-1", "impl-3", "impl-4"],
+      harnessImplementers: [
+        ...replacedRecords.freeze.authorSeparation.harnessImplementers,
+        ...V2.requiredImplementers,
+      ],
       nativeReceiptProvidedToAuthor: false,
+    },
+    supersedes: {
+      fixtureVersion: 1,
+      fixture: { path: V1.fixturePath, sha256: sha256(v1FixtureBytes) },
+      freezeRecord: { path: V1.freezePath, sha256: sha256(v1FreezeBytes) },
+      freezeRecordCommit: V1.pinned.freezeRecordCommit,
+      decision: V1.supersededDecision,
     },
   };
   return { freeze, bytes, review };
@@ -714,7 +761,7 @@ test("freeze record: Native must not have been observed, and the order of roles 
     ],
     [
       (f) => {
-        f.fixtureVersion = 2;
+        f.fixtureVersion = 3;
       },
       "fixtureVersion",
     ],
@@ -1360,7 +1407,7 @@ test("a JSON null fixture or freeze record is reported, not thrown", async () =>
     });
     assert.equal(nullFixture.status, "invalid");
     assert.ok(nullFixture.errors.length > 0);
-    const bytes = Buffer.from(JSON.stringify(baseWorld.fixture));
+    const bytes = Buffer.from(JSON.stringify(v2Fixture));
     await writeFile(path.join(dir, FIXTURE_PATH), bytes);
     await writeFile(path.join(dir, FREEZE_PATH), "null");
     const nullFreeze = await validateNir1FinalRequestFixtures({
@@ -1375,7 +1422,7 @@ test("a JSON null fixture or freeze record is reported, not thrown", async () =>
 
 // ------------------------------------------------------- repository report
 
-async function tempRoot() {
+async function tempRoot({ withV1 = true } = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "nir1-final-request-"));
   await mkdir(path.join(dir, "src/prompts/ja"), { recursive: true });
   for (const file of [
@@ -1388,6 +1435,18 @@ async function tempRoot() {
     );
   }
   await mkdir(path.join(dir, "evals/nir1-packing"), { recursive: true });
+  // Version 1 stays placed as the HOLD history in every repository.
+  if (withV1) {
+    for (const file of [
+      V1.fixturePath,
+      V1.freezePath,
+      V1.reviewPath,
+      V1.readmePath,
+      V1.parityVectorPath,
+    ]) {
+      await cp(path.join(repoRoot, file), path.join(dir, file));
+    }
+  }
   return dir;
 }
 
@@ -1420,7 +1479,7 @@ test("the repository report rejects a freeze or review record that has no fixtur
 test("the repository report validates a placed fixture: pending-review, then frozen, then invalid after a change", async () => {
   const dir = await tempRoot();
   try {
-    const bytes = Buffer.from(JSON.stringify(baseWorld.fixture));
+    const bytes = Buffer.from(JSON.stringify(v2Fixture));
     await writeFile(path.join(dir, FIXTURE_PATH), bytes);
     const pending = await validateNir1FinalRequestFixtures({ repoRoot: dir });
     assert.deepEqual(pending.errors, []);
@@ -1732,4 +1791,668 @@ test("template: a resolved value may hold a space (the legacy SQLite updated_at 
   assert.ok(!PLACEHOLDER_VALUE_PATTERN.test("a\nb"));
   assert.ok(!PLACEHOLDER_VALUE_PATTERN.test('a"b'));
   assert.ok(!PLACEHOLDER_VALUE_PATTERN.test("a\\b"));
+});
+
+// ------------------------------------------------ fixture versions (DPH-S0)
+
+const v1FreezeRecord = () => structuredClone(replacedRecords.freeze);
+
+/** The real version-1 bytes, as the repository report reads them. */
+async function v1Bytes() {
+  const bytes = new Map();
+  for (const file of [
+    V1.fixturePath,
+    V1.reviewPath,
+    V1.readmePath,
+    V1.parityVectorPath,
+  ])
+    bytes.set(file, await readFile(path.join(repoRoot, file)));
+  return bytes;
+}
+
+test("versions: each version owns its paths; version 1 is superseded by the evidence version 2", () => {
+  assert.equal(EVIDENCE_FIXTURE_VERSION, 2);
+  assert.equal(V1.supersededBy, 2);
+  assert.equal(V2.replaces, 1);
+  assert.equal(fixtureVersionSpec(3), undefined);
+  assert.equal(fixtureVersionSpec("constructor"), undefined);
+  for (const key of ["fixturePath", "freezePath", "reviewPath", "readmePath"])
+    assert.notEqual(V1[key], V2[key], key);
+  assert.ok(V2.requiredImplementers.length > 0);
+});
+
+test("versions: a fixture read from one version's path must name that version", () => {
+  assert.deepEqual(
+    validateFinalRequestFixture(v2Fixture, { template, fixtureVersion: 2 }),
+    [],
+  );
+  assert.ok(
+    validateFinalRequestFixture(v2Fixture, {
+      template,
+      fixtureVersion: 1,
+    }).some((e) => e.includes("fixture.fixtureVersion must be 1")),
+  );
+  assert.ok(
+    validateFinalRequestFixture(baseWorld.fixture, {
+      template,
+      fixtureVersion: 2,
+    }).some((e) => e.includes("fixture.fixtureVersion must be 2")),
+  );
+});
+
+test("superseded version: the version-1 record stays a HOLD record and can never be frozen", async () => {
+  const bytes = await v1Bytes();
+  const fixtureV1 = replacedRecords.fixture;
+  const review = JSON.parse(bytes.get(V1.reviewPath));
+  const options = { bytes, review, fixture: fixtureV1, fixtureVersion: 1 };
+  // As placed: valid (its scorer rows are history, not today's bytes).
+  assert.deepEqual(
+    validateFreezeRecordOfVersion(v1FreezeRecord(), options),
+    [],
+  );
+  // Frozen, even with every other frozen condition claimed, is refused.
+  const frozen = v1FreezeRecord();
+  frozen.status = "frozen";
+  frozen.reviewVerdict = APPROVING_VERDICT;
+  frozen.nativeOutputObservedBeforeFreeze = false;
+  delete frozen.nativeObservations;
+  const frozenErrors = validateFreezeRecordOfVersion(frozen, options);
+  assert.ok(
+    frozenErrors.some((e) => e.includes("is superseded by version 2")),
+    frozenErrors.join(" | "),
+  );
+  // Erasing the observation is refused too.
+  const erased = v1FreezeRecord();
+  erased.nativeOutputObservedBeforeFreeze = false;
+  delete erased.nativeObservations;
+  assert.ok(
+    validateFreezeRecordOfVersion(erased, options).some((e) =>
+      e.includes("must keep nativeOutputObservedBeforeFreeze true"),
+    ),
+  );
+  // Its fixture, review, README and parity vector stay bound to today's bytes.
+  for (const file of bytes.keys()) {
+    const changed = new Map(bytes);
+    changed.set(file, Buffer.from("changed history"));
+    assert.ok(
+      validateFreezeRecordOfVersion(v1FreezeRecord(), {
+        ...options,
+        bytes: changed,
+      }).some((e) => e.includes(`sha256 for ${file} differs`)),
+      file,
+    );
+  }
+  // Its scorer rows are still checked for shape.
+  const badRow = v1FreezeRecord();
+  badRow.scorer.files[0].sha256 = "not-a-digest";
+  assert.ok(
+    validateFreezeRecordOfVersion(badRow, options).some((e) =>
+      e.includes("freeze.scorer.files[0]"),
+    ),
+  );
+});
+
+test("versions: a record of one version cannot stand for another", () => {
+  // The version-1 record read as the version-2 record.
+  assert.ok(
+    validateFreezeRecordOfVersion(v1FreezeRecord(), {
+      fixtureVersion: 2,
+      fixture: v2Fixture,
+      replaced: replacedRecords,
+    }).some((e) => e.includes("freeze.fixtureVersion must be 2")),
+  );
+  // A version-2 record that binds the version-1 fixture or review.
+  for (const [key, file] of [
+    ["fixture", V1.fixturePath],
+    ["reviewRecord", V1.reviewPath],
+    ["readme", V1.readmePath],
+  ]) {
+    const { freeze, bytes, review } = freezeWorld();
+    freeze[key] = { path: file, sha256: "0".repeat(64) };
+    assert.ok(
+      validateFreezeRecord(freeze, { bytes, review }).some((e) =>
+        e.includes(`freeze.${key}.path must be`),
+      ),
+      key,
+    );
+  }
+  // A version-2 record that says version 1, read from the version-2 path.
+  const { freeze, bytes, review } = freezeWorld();
+  freeze.fixtureVersion = 1;
+  assert.ok(
+    validateFreezeRecord(freeze, { bytes, review, fixtureVersion: 2 }).some(
+      (e) => e.includes("freeze.fixtureVersion must be 2"),
+    ),
+  );
+  // An unregistered version is refused.
+  assert.ok(
+    validateFreezeRecordOfVersion({ ...freeze, fixtureVersion: 7 }, {}).some(
+      (e) => e.includes("registered version"),
+    ),
+  );
+});
+
+test("replacement: the record names and binds the version it replaces", () => {
+  const { freeze, bytes, review } = freezeWorld();
+  assert.deepEqual(validateFreezeRecord(freeze, { bytes, review }), []);
+  for (const [mutate, expected] of [
+    [(f) => delete f.supersedes, "freeze.supersedes must name"],
+    [
+      (f) => (f.supersedes.fixtureVersion = 2),
+      "supersedes.fixtureVersion must be 1",
+    ],
+    [
+      (f) => (f.supersedes.decision = "DR-DPH-1"),
+      "supersedes.decision must be",
+    ],
+    [
+      (f) => (f.supersedes.fixture.path = V2.fixturePath),
+      "freeze.supersedes.fixture.path must be",
+    ],
+    [
+      (f) => (f.supersedes.freezeRecord.sha256 = "0".repeat(64)),
+      `sha256 for ${V1.freezePath} differs`,
+    ],
+  ]) {
+    const world = freezeWorld();
+    mutate(world.freeze);
+    const errors = validateFreezeRecord(world.freeze, {
+      bytes: world.bytes,
+      review: world.review,
+    });
+    assert.ok(
+      errors.some((e) => e.includes(expected)),
+      `${expected}: ${errors.join(" | ")}`,
+    );
+  }
+  // The replaced version's bytes must be present, and a changed version-1
+  // fixture breaks the replacement's binding.
+  const missing = freezeWorld();
+  missing.bytes.delete(V1.fixturePath);
+  assert.ok(
+    validateFreezeRecord(missing.freeze, {
+      bytes: missing.bytes,
+      review: missing.review,
+    }).some((e) =>
+      e.includes(`freeze binds ${V1.fixturePath}, which is missing`),
+    ),
+  );
+  const changed = freezeWorld();
+  changed.bytes.set(V1.fixturePath, Buffer.from("rewritten history"));
+  assert.ok(
+    validateFreezeRecord(changed.freeze, {
+      bytes: changed.bytes,
+      review: changed.review,
+    }).some((e) => e.includes(`sha256 for ${V1.fixturePath} differs`)),
+  );
+  // Without the replaced version's records the check fails closed.
+  const errors = validateFreezeRecord(freeze, {
+    bytes,
+    review,
+    replaced: undefined,
+  });
+  assert.ok(
+    errors.some((e) => e.includes("of the replaced version 1 is required")),
+  );
+  assert.ok(
+    validateFreezeRecord(freeze, { bytes, review, fixture: undefined }).some(
+      (e) => e.includes("the fixture of version 2 is required"),
+    ),
+  );
+});
+
+test("replacement: no material of the replaced version may be reused", () => {
+  const v1 = replacedRecords.fixture;
+  const old = fixtureMaterials(v1);
+  assert.ok(old.ids.has("p01-rev-voice"));
+  assert.ok(old.ids.has("dph-ws-p01"));
+  assert.ok(old.texts.has(v1.cases[0].userMessage));
+  assert.deepEqual(replacedMaterialReuseErrors(v2Fixture, v1), []);
+  const firstScene = v1.cases[0].setup.scenes[0];
+  const firstEntity = v1.cases[0].setup.codexEntities[0];
+  for (const [mutate, expected] of [
+    [
+      (f) =>
+        (f.cases[0].variants[0].requests[0].revisionIds[0] = "p01-rev-voice"),
+      "logical id p01-rev-voice",
+    ],
+    [
+      (f) => (f.cases[1].isolation.workspaceId = "dph-ws-p01"),
+      "logical id dph-ws-p01",
+    ],
+    [
+      (f) => (f.cases[0].userMessage = v1.cases[0].userMessage),
+      "reuses the material",
+    ],
+    [
+      (f) => (f.cases[0].markers = [v1.cases[0].markers[0]]),
+      "reuses the material",
+    ],
+    [(f) => (f.canaries[0].text = v1.canaries[0].text), "reuses the material"],
+    [
+      (f) => {
+        const request = f.cases[0].variants[0].requests[0];
+        request.expected.rawText = `${firstScene.body} 新しい一文。`;
+      },
+      "reuses the material",
+    ],
+    [
+      (f) => {
+        const request = f.cases[0].variants[0].requests[0];
+        request.expected.exactQuotes[0].quote = firstEntity.summary;
+      },
+      "reuses the material",
+    ],
+  ]) {
+    const value = structuredClone(v2Fixture);
+    mutate(value);
+    const errors = replacedMaterialReuseErrors(value, v1);
+    assert.ok(
+      errors.some((e) => e.includes(expected)),
+      `${expected}: ${errors.join(" | ")}`,
+    );
+    // The freeze record of the replacement refuses it as well.
+    const { freeze, bytes, review } = freezeWorld();
+    assert.ok(
+      validateFreezeRecord(freeze, { bytes, review, fixture: value }).some(
+        (e) => e.includes(expected),
+      ),
+      expected,
+    );
+  }
+});
+
+test("replacement: the author separation holds across the versions", () => {
+  const previous = replacedRecords.freeze.authorSeparation;
+  const v1Author = previous.fixtureAuthor.agent;
+  const v1Implementer = previous.harnessImplementers.at(-1);
+  for (const [mutate, expected] of [
+    [
+      (s) => (s.fixtureAuthor.agent = v1Author),
+      "fixture author must be neither the author nor an implementer of the replaced version 1",
+    ],
+    [
+      (s) => (s.expectationReviewer.agent = v1Author),
+      "expectation reviewer must be neither the author nor an implementer of the replaced version 1",
+    ],
+    [
+      (s) => {
+        // Dropping a version-1 implementer does not make them an eligible author.
+        s.harnessImplementers = s.harnessImplementers.filter(
+          (name) => name !== v1Implementer,
+        );
+        s.fixtureAuthor.agent = v1Implementer;
+      },
+      `must keep ${v1Implementer}`,
+    ],
+    [
+      (s) => {
+        s.harnessImplementers = s.harnessImplementers.filter(
+          (name) => name !== v1Implementer,
+        );
+        s.fixtureAuthor.agent = v1Implementer;
+      },
+      "fixture author must be neither the author nor an implementer",
+    ],
+    [
+      (s) => {
+        s.harnessImplementers = s.harnessImplementers.filter(
+          (name) => !V2.requiredImplementers.includes(name),
+        );
+      },
+      `must list ${V2.requiredImplementers[0]}`,
+    ],
+    [
+      (s) => (s.fixtureAuthor.agent = V2.requiredImplementers[0]),
+      "the fixture author must not be a harness implementer",
+    ],
+  ]) {
+    const { freeze, bytes, review } = freezeWorld();
+    mutate(freeze.authorSeparation);
+    const errors = validateFreezeRecord(freeze, { bytes, review });
+    assert.ok(
+      errors.some((e) => e.includes(expected)),
+      `${expected}: ${errors.join(" | ")}`,
+    );
+  }
+  // Without the replaced record the separation cannot be checked: an error.
+  const { freeze, bytes, review } = freezeWorld();
+  assert.ok(
+    validateFreezeRecord(freeze, {
+      bytes,
+      review,
+      replaced: { fixture: replacedRecords.fixture },
+    }).some((e) => e.includes("is required to check the author separation")),
+  );
+});
+
+test("frozen-snapshot: the superseded version is refused before git, and an unregistered version is an error", () => {
+  let called = false;
+  const execFile = () => {
+    called = true;
+    throw new Error("git must not run");
+  };
+  const v1 = verifyFrozenSnapshotOfVersion({
+    repoRoot: "/repo",
+    runCommit: "a".repeat(40),
+    fixtureVersion: 1,
+    execFile,
+  });
+  assert.ok(v1.errors.some((e) => e.includes("superseded by version 2")));
+  assert.equal(v1.freezeCommit, undefined);
+  const unknown = verifyFrozenSnapshotOfVersion({
+    repoRoot: "/repo",
+    runCommit: "a".repeat(40),
+    execFile,
+  });
+  assert.ok(unknown.errors.some((e) => e.includes("is not registered")));
+  assert.ok(
+    deriveFreezeCommitOfVersion({
+      repoRoot: "/repo",
+      runCommit: "a".repeat(40),
+      fixtureVersion: 9,
+      execFile,
+    }).error.includes("is not registered"),
+  );
+  assert.equal(called, false);
+});
+
+test("frozen-snapshot: version 2 is gated by its own record, and the version-1 history is bound at the freeze", async () => {
+  // A frozen record written at the version-1 path does not gate version 2.
+  {
+    const dir = await mkdtemp(path.join(tmpdir(), "nir1-snapshot-mixup-"));
+    try {
+      git(dir, "init", "-q");
+      const { freeze, bytes } = freezeWorld();
+      for (const [file, content] of bytes)
+        await writeRepoFile(dir, file, content);
+      await writeRepoFile(dir, V1.freezePath, JSON.stringify(freeze));
+      git(dir, "add", "-A");
+      git(dir, "commit", "-q", "-m", "a v2 record under the v1 path");
+      const head = git(dir, "rev-parse", "HEAD");
+      const result = verifyFrozenSnapshot({ repoRoot: dir, runCommit: head });
+      assert.ok(
+        result.errors.some((e) => e.includes(`holds ${V2.freezePath}`)),
+        result.errors.join(" | "),
+      );
+      assert.ok(
+        verifyFrozenSnapshotOfVersion({
+          repoRoot: dir,
+          runCommit: head,
+          fixtureVersion: 1,
+        }).errors.some((e) => e.includes("superseded")),
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+  // Rewriting the version-1 fixture after the version-2 freeze is detected.
+  const { dir } = await frozenRepo();
+  try {
+    await writeRepoFile(dir, V1.fixturePath, "rewritten history");
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "rewrite v1");
+    const result = verifyFrozenSnapshot({
+      repoRoot: dir,
+      runCommit: git(dir, "rev-parse", "HEAD"),
+    });
+    assert.ok(
+      result.errors.some(
+        (e) =>
+          e.includes(V1.fixturePath) &&
+          e.includes("differs from the frozen bytes"),
+      ),
+      result.errors.join(" | "),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("frozen-snapshot: a frozen version-2 record that reuses version-1 material is refused at the freeze commit", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nir1-snapshot-reuse-"));
+  try {
+    git(dir, "init", "-q");
+    const { freeze, bytes } = freezeWorld();
+    const reused = structuredClone(v2Fixture);
+    reused.cases[0].userMessage = replacedRecords.fixture.cases[0].userMessage;
+    const reusedBytes = Buffer.from(JSON.stringify(reused));
+    const review = reviewRecord(reusedBytes);
+    const reviewBytes = Buffer.from(JSON.stringify(review));
+    bytes.set(FIXTURE_PATH, reusedBytes);
+    bytes.set(REVIEW_PATH, reviewBytes);
+    freeze.fixture.sha256 = sha256(reusedBytes);
+    freeze.reviewRecord.sha256 = sha256(reviewBytes);
+    for (const [file, content] of bytes)
+      await writeRepoFile(dir, file, content);
+    await writeRepoFile(dir, FREEZE_PATH, JSON.stringify(freeze));
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "freeze");
+    const head = git(dir, "rev-parse", "HEAD");
+    const result = verifyFrozenSnapshot({ repoRoot: dir, runCommit: head });
+    assert.equal(result.freezeCommit, head);
+    assert.ok(
+      result.errors.some((e) => e.includes("reuses the material")),
+      result.errors.join(" | "),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the repository report keeps checking the version-1 history while version 2 is not placed", async () => {
+  const dir = await tempRoot();
+  try {
+    const report = await validateNir1FinalRequestFixtures({ repoRoot: dir });
+    assert.deepEqual(report.errors, []);
+    assert.equal(report.fixtureVersion, 2);
+    assert.equal(report.status, "not-placed");
+    const v1 = report.versions.find((entry) => entry.fixtureVersion === 1);
+    assert.equal(v1.status, "pending-review");
+    assert.equal(v1.supersededBy, 2);
+    // A version-1 record turned frozen is invalid, and so is the whole report.
+    const frozen = v1FreezeRecord();
+    frozen.status = "frozen";
+    await writeFile(path.join(dir, V1.freezePath), JSON.stringify(frozen));
+    const refused = await validateNir1FinalRequestFixtures({ repoRoot: dir });
+    assert.equal(refused.status, "invalid");
+    assert.ok(
+      refused.errors.some((e) => e.startsWith("nir1-final-request v1 freeze:")),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+  // The version-1 history may not be removed.
+  const bare = await tempRoot({ withV1: false });
+  try {
+    const report = await validateNir1FinalRequestFixtures({ repoRoot: bare });
+    assert.equal(report.status, "invalid");
+    assert.ok(
+      report.errors.some((e) => e.includes("stays placed as the HOLD history")),
+    );
+  } finally {
+    await rm(bare, { recursive: true, force: true });
+  }
+});
+
+test("the repository report refuses a version-2 fixture that names version 1", async () => {
+  const dir = await tempRoot();
+  try {
+    await writeFile(
+      path.join(dir, FIXTURE_PATH),
+      JSON.stringify(baseWorld.fixture),
+    );
+    const report = await validateNir1FinalRequestFixtures({ repoRoot: dir });
+    assert.equal(report.status, "invalid");
+    assert.ok(
+      report.errors.some((e) =>
+        e.includes(
+          "nir1-final-request v2 fixture: fixture.fixtureVersion must be 2",
+        ),
+      ),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+// ------------------------------- pinned version-1 history (review fix, P1/P2)
+
+test("pinned history: the version-1 record and a replacement's supersedes cannot be rewritten together", () => {
+  // The reviewer's probe: rename the version-1 author, drop an implementer,
+  // and move the replacement's supersedes sha256 with the rewritten record.
+  const rewritten = v1FreezeRecord();
+  rewritten.authorSeparation.fixtureAuthor.agent = "someone else";
+  rewritten.authorSeparation.harnessImplementers =
+    rewritten.authorSeparation.harnessImplementers.filter(
+      (name) => !name.startsWith("dph-4-builder"),
+    );
+  const rewrittenBytes = Buffer.from(JSON.stringify(rewritten, null, 2));
+  const { freeze, bytes, review } = freezeWorld();
+  bytes.set(V1.freezePath, rewrittenBytes);
+  freeze.supersedes.freezeRecord.sha256 = sha256(rewrittenBytes);
+  freeze.authorSeparation.fixtureAuthor.agent =
+    replacedRecords.freeze.authorSeparation.fixtureAuthor.agent;
+  freeze.authorSeparation.harnessImplementers =
+    rewritten.authorSeparation.harnessImplementers.concat(
+      V2.requiredImplementers,
+    );
+  const errors = validateFreezeRecord(freeze, {
+    bytes,
+    review,
+    replaced: { fixture: replacedRecords.fixture, freeze: rewritten },
+  });
+  assert.ok(
+    errors.some((e) =>
+      e.includes("freeze.supersedes.freezeRecord.sha256 must be the pinned"),
+    ),
+    errors.join(" | "),
+  );
+  // The same for the fixture, and for the recorded commit of the record.
+  const fixtureMoved = freezeWorld();
+  fixtureMoved.freeze.supersedes.fixture.sha256 = "1".repeat(64);
+  fixtureMoved.bytes.set(V1.fixturePath, Buffer.from("x"));
+  assert.ok(
+    validateFreezeRecord(fixtureMoved.freeze, {
+      bytes: fixtureMoved.bytes,
+      review: fixtureMoved.review,
+    }).some((e) => e.includes("supersedes.fixture.sha256 must be the pinned")),
+  );
+  const commitMoved = freezeWorld();
+  commitMoved.freeze.supersedes.freezeRecordCommit = "c".repeat(40);
+  assert.ok(
+    validateFreezeRecord(commitMoved.freeze, {
+      bytes: commitMoved.bytes,
+      review: commitMoved.review,
+    }).some((e) => e.includes("supersedes.freezeRecordCommit must be")),
+  );
+});
+
+test("pinned history: the version-1 record's own bindings stay the pinned values", async () => {
+  const bytes = await v1Bytes();
+  const review = JSON.parse(bytes.get(V1.reviewPath));
+  const changedFixture = Buffer.from("rewritten v1 fixture");
+  const rebound = v1FreezeRecord();
+  rebound.fixture.sha256 = sha256(changedFixture);
+  bytes.set(V1.fixturePath, changedFixture);
+  const errors = validateFreezeRecordOfVersion(rebound, {
+    bytes,
+    review,
+    fixtureVersion: 1,
+  });
+  assert.ok(
+    errors.some((e) =>
+      e.includes(
+        "freeze.fixture.sha256 of the superseded version 1 must stay the pinned",
+      ),
+    ),
+    errors.join(" | "),
+  );
+});
+
+test("pinned history: rewriting the version-1 fixture, review and record consistently is refused by the report", async () => {
+  const dir = await tempRoot();
+  try {
+    const fixtureV1 = structuredClone(replacedRecords.fixture);
+    fixtureV1.cases[0].setup.scenes[0].body = "書き換えた本文。";
+    const fixtureBytesV1 = Buffer.from(JSON.stringify(fixtureV1, null, 2));
+    const reviewV1 = JSON.parse(
+      await readFile(path.join(repoRoot, V1.reviewPath)),
+    );
+    reviewV1.fixtureSha256 = sha256(fixtureBytesV1);
+    const reviewBytesV1 = Buffer.from(JSON.stringify(reviewV1, null, 2));
+    const freezeV1 = v1FreezeRecord();
+    freezeV1.fixture.sha256 = sha256(fixtureBytesV1);
+    freezeV1.reviewRecord.sha256 = sha256(reviewBytesV1);
+    await writeFile(path.join(dir, V1.fixturePath), fixtureBytesV1);
+    await writeFile(path.join(dir, V1.reviewPath), reviewBytesV1);
+    await writeFile(path.join(dir, V1.freezePath), JSON.stringify(freezeV1));
+    const report = await validateNir1FinalRequestFixtures({ repoRoot: dir });
+    assert.equal(report.status, "invalid");
+    for (const file of [V1.fixturePath, V1.reviewPath, V1.freezePath]) {
+      assert.ok(
+        report.errors.some(
+          (e) =>
+            e.includes(file) && e.includes("differs from its pinned sha256"),
+        ),
+        file,
+      );
+    }
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("frozen-snapshot: a fixture under the version-2 path that names version 1 is refused", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "nir1-snapshot-version-"));
+  try {
+    git(dir, "init", "-q");
+    const { freeze, bytes } = freezeWorld();
+    const named = Buffer.from(JSON.stringify(baseWorld.fixture));
+    const review = reviewRecord(named);
+    const reviewBytes = Buffer.from(JSON.stringify(review));
+    bytes.set(FIXTURE_PATH, named);
+    bytes.set(REVIEW_PATH, reviewBytes);
+    freeze.fixture.sha256 = sha256(named);
+    freeze.reviewRecord.sha256 = sha256(reviewBytes);
+    for (const [file, content] of bytes)
+      await writeRepoFile(dir, file, content);
+    await writeRepoFile(dir, FREEZE_PATH, JSON.stringify(freeze));
+    git(dir, "add", "-A");
+    git(dir, "commit", "-q", "-m", "freeze");
+    const head = git(dir, "rev-parse", "HEAD");
+    const result = verifyFrozenSnapshot({ repoRoot: dir, runCommit: head });
+    assert.ok(
+      result.errors.some((e) => e.includes("names fixtureVersion 1, not 2")),
+      result.errors.join(" | "),
+    );
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the repository report checks a placed version-2 fixture for reused material before any freeze record", async () => {
+  const dir = await tempRoot();
+  try {
+    const reused = structuredClone(v2Fixture);
+    reused.cases[0].userMessage = replacedRecords.fixture.cases[0].userMessage;
+    await writeFile(path.join(dir, FIXTURE_PATH), JSON.stringify(reused));
+    const report = await validateNir1FinalRequestFixtures({ repoRoot: dir });
+    assert.equal(report.status, "invalid");
+    assert.ok(
+      report.errors.some(
+        (e) =>
+          e.startsWith("nir1-final-request v2 fixture:") &&
+          e.includes("reuses the material"),
+      ),
+      report.errors.join(" | "),
+    );
+    // Without reuse the placed fixture is pending review.
+    await writeFile(path.join(dir, FIXTURE_PATH), JSON.stringify(v2Fixture));
+    const clean = await validateNir1FinalRequestFixtures({ repoRoot: dir });
+    assert.deepEqual(clean.errors, []);
+    assert.equal(clean.status, "pending-review");
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
