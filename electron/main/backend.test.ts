@@ -251,75 +251,100 @@ describe("initBackend startup policy", () => {
 // Backend constructor の 4 番目の引数で渡す。出所は Main の解決だけで、env・
 // renderer・IPC からは受け取らない。検証は Native の 1 か所（`from_path`）。
 describe("resolveGraphWorkerPath", () => {
-  it("packageでは<resources>/bin のworkerをOSごとの名前で指す", () => {
-    expect(
-      resolveGraphWorkerPath({
-        isPackaged: true,
-        resourcesPath: "/opt/Grimodex/resources",
-        mainDir: "/opt/Grimodex/resources/app.asar/dist-electron",
-        platform: "linux",
-      }),
-    ).toBe(path.join("/opt/Grimodex/resources", "bin", "nir1-c-query-worker"));
-    expect(
-      resolveGraphWorkerPath({
-        isPackaged: true,
-        resourcesPath: "C:\\Program Files\\Grimodex\\resources",
-        mainDir:
-          "C:\\Program Files\\Grimodex\\resources\\app.asar\\dist-electron",
-        platform: "win32",
-      }),
-    ).toBe(
-      path.win32.join(
-        "C:\\Program Files\\Grimodex\\resources",
-        "bin",
-        "nir1-c-query-worker.exe",
-      ),
-    );
-    expect(
-      resolveGraphWorkerPath({
-        isPackaged: true,
-        resourcesPath: "/Applications/Grimodex.app/Contents/Resources",
-        mainDir:
-          "/Applications/Grimodex.app/Contents/Resources/app.asar/dist-electron",
-        platform: "darwin",
-      }),
-    ).toBe(
-      path.join(
-        "/Applications/Grimodex.app/Contents/Resources",
-        "bin",
-        "nir1-c-query-worker",
-      ),
-    );
+  // 期待値は OS ごとの literal で書く。製品は `platform` に合わせて
+  // `path.posix`／`path.win32` を選ぶので、試験は実行する host の区切り
+  // （Windows の CI では `\`）に依らずに同じ結果を確かめられる。
+  const packaged = {
+    linux: {
+      resourcesPath: "/opt/Grimodex/resources",
+      mainDir: "/opt/Grimodex/resources/app.asar/dist-electron",
+      expected: "/opt/Grimodex/resources/bin/nir1-c-query-worker",
+    },
+    darwin: {
+      resourcesPath: "/Applications/Grimodex.app/Contents/Resources",
+      mainDir:
+        "/Applications/Grimodex.app/Contents/Resources/app.asar/dist-electron",
+      expected:
+        "/Applications/Grimodex.app/Contents/Resources/bin/nir1-c-query-worker",
+    },
+    win32: {
+      resourcesPath: "C:\\Program Files\\Grimodex\\resources",
+      mainDir:
+        "C:\\Program Files\\Grimodex\\resources\\app.asar\\dist-electron",
+      expected:
+        "C:\\Program Files\\Grimodex\\resources\\bin\\nir1-c-query-worker.exe",
+    },
+  } as const;
+  const dev = {
+    linux: {
+      mainDir: "/repo/Grimodex/dist-electron",
+      expected: "/repo/Grimodex/src-tauri/target/release/nir1-c-query-worker",
+    },
+    darwin: {
+      mainDir: "/Users/writer/Grimodex/dist-electron",
+      expected:
+        "/Users/writer/Grimodex/src-tauri/target/release/nir1-c-query-worker",
+    },
+    win32: {
+      mainDir: "C:\\repo\\Grimodex\\dist-electron",
+      expected:
+        "C:\\repo\\Grimodex\\src-tauri\\target\\release\\nir1-c-query-worker.exe",
+    },
+  } as const;
+  const platforms = ["linux", "darwin", "win32"] as const;
+
+  it("packageでは<resources>/bin のworkerをOSごとの名前と区切りで指す", () => {
+    for (const platform of platforms) {
+      const { resourcesPath, mainDir, expected } = packaged[platform];
+      expect(
+        resolveGraphWorkerPath({
+          isPackaged: true,
+          resourcesPath,
+          mainDir,
+          platform,
+        }),
+        platform,
+      ).toBe(expected);
+    }
   });
 
   it("devではextraResourcesの元と同じsrc-tauri/target/releaseを指し、debugは見ない", () => {
-    expect(
-      resolveGraphWorkerPath({
-        isPackaged: false,
-        resourcesPath: "/opt/Grimodex/resources",
-        mainDir: "/repo/Grimodex/dist-electron",
-        platform: "linux",
-      }),
-    ).toBe(
-      path.join(
-        "/repo/Grimodex",
-        "src-tauri",
-        "target",
-        "release",
-        "nir1-c-query-worker",
-      ),
-    );
+    for (const platform of platforms) {
+      const { mainDir, expected } = dev[platform];
+      expect(
+        resolveGraphWorkerPath({
+          isPackaged: false,
+          resourcesPath: packaged[platform].resourcesPath,
+          mainDir,
+          platform,
+        }),
+        platform,
+      ).toBe(expected);
+    }
   });
 
-  it("returns an absolute path for every packaged and dev layout", () => {
-    for (const isPackaged of [true, false]) {
-      const resolved = resolveGraphWorkerPath({
-        isPackaged,
-        resourcesPath: "/opt/Grimodex/resources",
-        mainDir: "/repo/Grimodex/dist-electron",
-        platform: "linux",
-      });
-      expect(path.isAbsolute(resolved)).toBe(true);
+  it("returns an absolute path in the platform's own separator for every layout", () => {
+    for (const platform of platforms) {
+      const pathApi = platform === "win32" ? path.win32 : path.posix;
+      for (const isPackaged of [true, false]) {
+        const resolved = resolveGraphWorkerPath({
+          isPackaged,
+          resourcesPath: packaged[platform].resourcesPath,
+          mainDir: isPackaged
+            ? packaged[platform].mainDir
+            : dev[platform].mainDir,
+          platform,
+        });
+        expect(pathApi.isAbsolute(resolved), resolved).toBe(true);
+        expect(resolved, resolved).not.toContain(
+          platform === "win32" ? "/" : "\\",
+        );
+        expect(pathApi.basename(resolved)).toBe(
+          platform === "win32"
+            ? "nir1-c-query-worker.exe"
+            : "nir1-c-query-worker",
+        );
+      }
     }
   });
 

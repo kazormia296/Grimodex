@@ -89,9 +89,15 @@ export async function verifyReleaseGraphWorker(
   return { path: file };
 }
 
+// Windows paths compare case-insensitively (a drive letter may differ in case
+// between argv and the module URL); a missed match would skip the check silently.
+const sameFile = (left, right) =>
+  process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
 const invokedDirectly =
-  process.argv[1] &&
-  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  Boolean(process.argv[1]) &&
+  sameFile(path.resolve(process.argv[1]), fileURLToPath(import.meta.url));
 
 if (invokedDirectly) {
   const rootDir = path.resolve(

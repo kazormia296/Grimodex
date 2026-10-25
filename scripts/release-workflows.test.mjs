@@ -1038,6 +1038,28 @@ describe("C-query worker packaging (CP-2b P1)", () => {
         /test seam/,
       );
       assert.equal(GRAPH_WORKER_SEAM_MARKER, "NIR1_C_QUERY_TEST_");
+
+      // The CLI the release step runs fails the step on a refused worker and
+      // passes a clean one (its direct-invocation guard must not skip the check).
+      const { spawnSync } = await import("node:child_process");
+      const cli = path.join(
+        repoRoot,
+        "electron",
+        "scripts",
+        "verify-release-graph-worker.mjs",
+      );
+      if (process.platform !== "win32") {
+        const refused = spawnSync(process.execPath, [cli, seam], {
+          encoding: "utf8",
+        });
+        assert.equal(refused.status, 1, refused.stderr);
+        assert.match(refused.stderr, /test seam/);
+        const passed = spawnSync(process.execPath, [cli, clean], {
+          encoding: "utf8",
+        });
+        assert.equal(passed.status, 0, passed.stderr);
+        assert.match(passed.stdout, /seam-free worker verified/);
+      }
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
