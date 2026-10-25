@@ -282,18 +282,183 @@ export function validateRawIpcTrace(calls) {
   }
 }
 
-// R+IR+Graph arm scaffold (C-product CP-0). The Graph runtime is not wired
-// into this harness: the arm is recorded as unavailable, schedules no call and
-// can never pass. Existing raw/hybrid measurement, gates and budgets are
-// untouched by these helpers.
+// R+IR+Graph arm (C-product CP-0 scaffold, CP-4 admission). Without an
+// admission the arm stays the not-wired scaffold: recorded as unavailable,
+// no call scheduled, never a pass. `wired` is admitted only with a build
+// receipt (TASK CP-4 §15.2, §15.8): the existing 24 queries and P with the
+// product standard-build receipt (no seed, Graph not-requested), and G-cases
+// with the evaluation build receipt, where a frozen fixture path further
+// needs the pre-observation commit to be an ancestor of the candidate and on
+// a remote-tracking ref. Existing raw/hybrid measurement, gates and budgets
+// are untouched by these helpers.
 export const RETRIEVAL_ARMS = Object.freeze({
   raw: "R",
   hybrid: "R+IR",
   graph: "R+IR+Graph",
 });
 export const GRAPH_ARM_WIRING = "not-wired";
+export const GRAPH_ARM_WIRED = "wired";
 export const GRAPH_ARM_UNAVAILABLE_REASON = "graph-runtime-not-wired";
 export const GRAPH_CASE_MANIFEST_PATH = "evals/nir1-graph/manifest.v1.json";
+export const GRAPH_ARM_SCOPES = Object.freeze({
+  existing: "existing-queries",
+  graphCase: "graph-case",
+});
+export const PRODUCT_BUILD_RECEIPT_SCHEMA = "nir1-standard-build/1";
+export const EVAL_BUILD_RECEIPT_SCHEMA = "nir1-graph-eval-build/1";
+export const GRAPH_EVAL_FEATURE = "nir1-graph-eval";
+export const EVAL_BUILD_OUTPUT_DIR = ".artifacts/cp4/eval-build";
+export const PRODUCT_NATIVE_ARTIFACT =
+  "electron/native/grimodex-node/grimodex-node.node";
+export const FROZEN_GRAPH_FIXTURE_ROOTS = Object.freeze([
+  "evals/nir1-graph/",
+  "evals/nir1-g01/",
+]);
+export const DEV_GRAPH_FIXTURE_ROOT =
+  "scripts/quality/nir1-graph-eval/dev-fixtures/";
+
+const HEX40 = /^[0-9a-f]{40}$/u;
+const HEX64 = /^[0-9a-f]{64}$/u;
+
+function precheck(message) {
+  return new Error(`[precheck] ${message}`);
+}
+
+/** `frozen` for CP-0 / G-01 fixtures, `dev` for synthetic dev fixtures. */
+export function classifyGraphFixturePath(file) {
+  if (
+    typeof file !== "string" ||
+    file.length === 0 ||
+    file.startsWith("/") ||
+    file.includes("\\") ||
+    file.split("/").some((part) => part === ".." || part === ".")
+  )
+    throw precheck(`Graph fixture path must be repo-relative: ${file}`);
+  if (FROZEN_GRAPH_FIXTURE_ROOTS.some((root) => file.startsWith(root)))
+    return "frozen";
+  if (file.startsWith(DEV_GRAPH_FIXTURE_ROOT) && file.endsWith(".json"))
+    return "dev";
+  throw precheck(
+    `${file} is neither a frozen G-case fixture nor a dev fixture`,
+  );
+}
+
+function cleanCandidate(candidate) {
+  return (
+    candidate?.worktreeClean === true &&
+    ["resolvedBaseSha", "resolvedHeadSha", "resolvedHeadTreeSha"].every(
+      (field) => HEX40.test(candidate?.[field] ?? ""),
+    ) &&
+    candidate.currentHeadSha === candidate.resolvedHeadSha
+  );
+}
+
+/** Shape of a passed product standard-build receipt (standard-build.mjs). */
+export function assertProductBuildReceipt(receipt) {
+  if (receipt?.schemaVersion !== PRODUCT_BUILD_RECEIPT_SCHEMA)
+    throw precheck(
+      `the existing queries' Graph arm needs a ${PRODUCT_BUILD_RECEIPT_SCHEMA} receipt`,
+    );
+  if (
+    receipt.status !== "passed" ||
+    receipt.standardBuild !== true ||
+    receipt.sourceUnchanged !== true ||
+    !cleanCandidate(receipt.candidate) ||
+    !HEX64.test(receipt.artifacts?.[PRODUCT_NATIVE_ARTIFACT] ?? "")
+  )
+    throw precheck(
+      "product standard-build receipt is not a clean passed build",
+    );
+  return receipt;
+}
+
+/**
+ * Shape of a passed evaluation build receipt. The evaluation `.node` and its
+ * C-query worker live only under `.artifacts/cp4/eval-build/` (never the
+ * default addon path), the feature set and the `nir1GraphEval` capability
+ * are recorded, and the worker is the fixed name beside the `.node`.
+ */
+export function assertEvalBuildReceipt(receipt) {
+  if (receipt?.schemaVersion !== EVAL_BUILD_RECEIPT_SCHEMA)
+    throw precheck(
+      `the G-case Graph arm needs a ${EVAL_BUILD_RECEIPT_SCHEMA} receipt`,
+    );
+  if (
+    receipt.status !== "passed" ||
+    receipt.standardBuild !== false ||
+    receipt.evaluationBuild !== true ||
+    receipt.sourceUnchanged !== true ||
+    !cleanCandidate(receipt.candidate)
+  )
+    throw precheck(
+      "evaluation build receipt is not a clean passed evaluation build",
+    );
+  if (!receipt.features?.includes(GRAPH_EVAL_FEATURE))
+    throw precheck(`evaluation build lacks the ${GRAPH_EVAL_FEATURE} feature`);
+  if (receipt.capabilities?.nir1GraphEval !== true)
+    throw precheck("evaluation build lacks the nir1GraphEval capability");
+  const artifacts = Object.keys(receipt.artifacts ?? {});
+  if (artifacts.includes(PRODUCT_NATIVE_ARTIFACT))
+    throw precheck("evaluation build must not write the default addon path");
+  const nodes = artifacts.filter((file) => file.endsWith(".node"));
+  if (
+    nodes.length !== 1 ||
+    !nodes[0].startsWith(`${EVAL_BUILD_OUTPUT_DIR}/`) ||
+    !HEX64.test(receipt.artifacts[nodes[0]])
+  )
+    throw precheck(
+      `evaluation .node must be the single artifact under ${EVAL_BUILD_OUTPUT_DIR}/`,
+    );
+  const directory = nodes[0].slice(0, nodes[0].lastIndexOf("/"));
+  const worker = receipt.worker;
+  if (
+    typeof worker?.path !== "string" ||
+    worker.path.slice(0, worker.path.lastIndexOf("/")) !== directory ||
+    !/\/nir1-c-query-worker(\.exe)?$/u.test(worker.path) ||
+    receipt.artifacts[worker.path] !== worker.sha256 ||
+    !HEX64.test(worker.sha256 ?? "")
+  )
+    throw precheck(
+      "evaluation worker must be the fixed name beside the evaluation .node",
+    );
+  return receipt;
+}
+
+/**
+ * N-1: a frozen G-case fixture may reach the Graph arm and the evaluation
+ * `.node` only after the pre-observation commit (observation-prep freeze
+ * record) is an ancestor of the measured candidate, is on a remote-tracking
+ * ref, and the freeze record bytes at that commit equal those at the head.
+ */
+export function assertObservationPrepAdmits(observationPrep, candidateHead) {
+  const prep = observationPrep;
+  if (!prep)
+    throw precheck(
+      "the pre-observation commit is not given for a frozen fixture",
+    );
+  if (!HEX40.test(prep.commit ?? ""))
+    throw precheck("the pre-observation commit must be a 40-hex commit");
+  if (prep.candidateHead !== candidateHead)
+    throw precheck(
+      "pre-observation facts were collected for another candidate head",
+    );
+  if (prep.ancestorOfCandidateHead !== true)
+    throw precheck(
+      "the pre-observation commit is not an ancestor of the candidate head",
+    );
+  if (!Array.isArray(prep.remoteRefs) || prep.remoteRefs.length === 0)
+    throw precheck(
+      "the pre-observation commit is not on a remote-tracking ref",
+    );
+  if (
+    !HEX64.test(prep.freezeRecordSha256AtCommit ?? "") ||
+    prep.freezeRecordSha256AtCommit !== prep.freezeRecordSha256AtHead
+  )
+    throw precheck(
+      "the observation-prep freeze record differs from the pre-observation commit",
+    );
+  return prep;
+}
 
 /** Declared seed policy for the frozen 24 queries: no seed, Graph contribution 0. */
 export async function loadGraphSeedPolicy(root, contract) {
@@ -341,15 +506,93 @@ export function graphSeedForExistingQuery(policy, query) {
   return null;
 }
 
-/** Refuses any request to measure the Graph arm before it is wired. */
-export function assertGraphArmRequestable(requested = GRAPH_ARM_WIRING) {
-  if (requested !== GRAPH_ARM_WIRING)
-    throw new Error(
-      `[precheck] the ${RETRIEVAL_ARMS.graph} arm is ${GRAPH_ARM_WIRING}; Graph runtime is not connected to this harness`,
+/**
+ * Refuses a request to measure the Graph arm unless it carries an admission.
+ * `not-wired` (the default) is always accepted and returns the scaffold.
+ * `wired` needs `admission`:
+ *   { scope: "existing-queries", buildReceipt, seedPolicy }
+ *     the product standard-build receipt; the existing queries carry no
+ *     seed, so Graph is `not-requested` and contributes nothing.
+ *   { scope: "graph-case", buildReceipt, fixturePaths, observationPrep }
+ *     the evaluation build receipt; any frozen fixture path also needs the
+ *     pre-observation commit facts (assertObservationPrepAdmits).
+ * Everything else is refused with `[precheck]`.
+ */
+export function assertGraphArmRequestable(
+  requested = GRAPH_ARM_WIRING,
+  admission = null,
+) {
+  if (requested === GRAPH_ARM_WIRING) return { wiring: GRAPH_ARM_WIRING };
+  if (requested !== GRAPH_ARM_WIRED)
+    throw precheck(
+      `the ${RETRIEVAL_ARMS.graph} arm accepts only ${GRAPH_ARM_WIRING} or ${GRAPH_ARM_WIRED}`,
     );
+  if (!admission)
+    throw precheck(
+      `the ${RETRIEVAL_ARMS.graph} arm is ${GRAPH_ARM_WIRING} without a build receipt admission`,
+    );
+  if (admission.scope === GRAPH_ARM_SCOPES.existing) {
+    if (admission.buildReceipt?.schemaVersion === EVAL_BUILD_RECEIPT_SCHEMA)
+      throw precheck(
+        "the existing queries and P are measured on the product build, not the evaluation build",
+      );
+    assertProductBuildReceipt(admission.buildReceipt);
+    if (admission.seedPolicy?.manualSeed !== "none")
+      throw precheck("existing retrieval queries declare no Graph seed");
+    return Object.freeze({
+      wiring: GRAPH_ARM_WIRED,
+      scope: GRAPH_ARM_SCOPES.existing,
+      receiptKind: "product",
+      candidateHead: admission.buildReceipt.candidate.resolvedHeadSha,
+      graphStatus: "not-requested",
+      expectedGraphContribution: 0,
+    });
+  }
+  if (admission.scope === GRAPH_ARM_SCOPES.graphCase) {
+    if (admission.buildReceipt?.schemaVersion === PRODUCT_BUILD_RECEIPT_SCHEMA)
+      throw precheck(
+        "a G-case Graph arm cannot run on the product build (Graph is not activated there)",
+      );
+    assertEvalBuildReceipt(admission.buildReceipt);
+    const paths = admission.fixturePaths;
+    if (!Array.isArray(paths) || paths.length === 0)
+      throw precheck("a G-case Graph arm request names no fixture path");
+    const classes = paths.map(classifyGraphFixturePath);
+    const candidateHead = admission.buildReceipt.candidate.resolvedHeadSha;
+    const frozen = classes.includes("frozen");
+    if (frozen)
+      assertObservationPrepAdmits(admission.observationPrep, candidateHead);
+    return Object.freeze({
+      wiring: GRAPH_ARM_WIRED,
+      scope: GRAPH_ARM_SCOPES.graphCase,
+      receiptKind: "evaluation",
+      candidateHead,
+      fixtureClass: frozen ? "frozen" : "dev",
+      observationPrepCommit: frozen ? admission.observationPrep.commit : null,
+    });
+  }
+  throw precheck(`unknown ${RETRIEVAL_ARMS.graph} admission scope`);
 }
 
-export function describeGraphArm({ seedPolicy = null } = {}) {
+export function describeGraphArm({ seedPolicy = null, admission = null } = {}) {
+  if (
+    admission?.wiring === GRAPH_ARM_WIRED &&
+    admission.scope === GRAPH_ARM_SCOPES.existing
+  )
+    return {
+      arm: "graph",
+      label: RETRIEVAL_ARMS.graph,
+      comparedAgainst: "hybrid",
+      wiring: GRAPH_ARM_WIRED,
+      scope: admission.scope,
+      receiptKind: admission.receiptKind,
+      status: "not-requested",
+      reason: "existing-query-carries-no-graph-seed",
+      expectedGraphContribution: 0,
+      seedPolicy,
+      gate: "equal-to-hybrid",
+      pass: false,
+    };
   return {
     arm: "graph",
     label: RETRIEVAL_ARMS.graph,
@@ -365,10 +608,32 @@ export function describeGraphArm({ seedPolicy = null } = {}) {
 }
 
 /**
- * Graph-integrated recheck verdict. A not-wired or unavailable arm stays Hold;
- * this scaffold has no evaluation path that could return a pass.
+ * Graph-integrated recheck verdict. A not-wired or unavailable arm stays
+ * Hold. On the existing queries a wired arm can only show that R+IR+Graph
+ * equals R+IR (`comparisons` from compareExistingQueryGraphArm); that is not
+ * a Graph pass, so `pass` stays false here (the Graph verdict is the G-case
+ * judgment).
  */
-export function summarizeGraphArm(graphArm) {
+export function summarizeGraphArm(graphArm, comparisons = null) {
+  if (
+    graphArm?.wiring === GRAPH_ARM_WIRED &&
+    graphArm.scope === GRAPH_ARM_SCOPES.existing &&
+    Array.isArray(comparisons) &&
+    comparisons.length > 0
+  ) {
+    const violations = comparisons.flatMap((row) => row.violations ?? []);
+    const equal = comparisons.every((row) => row.equal === true);
+    return {
+      status: equal ? "equal-to-hybrid" : "hold",
+      reason: equal
+        ? "existing-queries-graph-not-requested"
+        : "graph-arm-differs-from-hybrid",
+      arm: graphArm.label ?? RETRIEVAL_ARMS.graph,
+      equalsHybrid: equal,
+      violations: [...new Set(violations)],
+      pass: false,
+    };
+  }
   return {
     status: "hold",
     reason:
