@@ -224,16 +224,20 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
   // a symbol it did not already import. A reference from another chunk keeps
   // an export and an import even when the call is gone (measured: +23 to +244
   // bytes), so the homes of the closure are read only as follows.
-  it("reaches the import-free local refusal only from tauri.ts", () => {
+  it("keeps the local refusal's ledger out of the startup chunks", () => {
+    // Only the status display's lazy writer imports the ledger; the startup
+    // `tauri` chunk reads the global the writer sets, under the constant only.
     const importers = sources.filter((file) =>
       /from\s+"[^"]*\/profileEgressClosure"/.test(code(read(file))),
     );
-    expect(importers).toEqual(["src/lib/tauri.ts"]);
+    expect(importers).toEqual([
+      "src/features/chat/closeProfileEgressEntrances.ts",
+    ]);
     expect(
       code(read("src/features/profile-egress/profileEgressClosure.ts")),
     ).not.toMatch(/^\s*import\b/m);
     expect(code(read("src/lib/tauri.ts"))).toMatch(
-      /if \(PROFILE_ACTIVATION_UI_ENABLED\) \{\s*const refusal = profileEgressLocalRefusal\(cmd\);/,
+      /if \(PROFILE_ACTIVATION_UI_ENABLED\) \{\s*const refusal =\s*globalThis\.__grimodexProfileEgressLocalRefusal\?\.\(cmd\) \?\? null;/,
     );
   });
 
@@ -245,12 +249,18 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
       "src/features/profile-egress/ProfileEgressStatusIndicator.tsx",
     ]);
     const globalUsers = sources.filter((file) =>
-      /__grimodexProfileEgressClosed/.test(code(read(file))),
+      /__grimodexProfileEgressLocalRefusal/.test(code(read(file))),
     );
     expect(globalUsers.sort()).toEqual([
       "src/features/chat/closeProfileEgressEntrances.ts",
       "src/features/profile-egress/profileEgressClosure.ts",
+      "src/lib/tauri.ts",
     ]);
+    expect(
+      code(read("src/features/chat/closeProfileEgressEntrances.ts")).match(
+        /__grimodexProfileEgressLocalRefusal\s*=/g,
+      )?.length,
+    ).toBe(1);
   });
 
   it("reads the store's closure only under the constant, in the listed files", () => {

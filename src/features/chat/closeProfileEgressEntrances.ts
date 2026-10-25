@@ -1,3 +1,4 @@
+import { profileEgressLocalRefusal } from "@/features/profile-egress/profileEgressClosure";
 import { useAiSettingsStore } from "./store";
 
 /**
@@ -8,13 +9,14 @@ import { useAiSettingsStore } from "./store";
  * （`cross-feature-store-mutation`）のため。
  *
  * 閉鎖の状態は 2 か所に置く：`invoke` の手前の局所の拒否は renderer の global の
- * `__grimodexProfileEgressClosed`（`profileEgressClosure.ts` が型を宣言し、起動時の
- * `tauri` chunk の中だけで読む）、見える control と chat の会話の作成は
- * `useAiSettingsStore` の `profileEgressClosed`（各起動時の chunk が既に import している
- * store。新しい import と export を足さない）。どちらもここで同時に立てる（R23）。
+ * `__grimodexProfileEgressLocalRefusal` に台帳の関数を置く（`profileEgressClosure.ts`。
+ * 起動時の `tauri` chunk は global を読むだけで、台帳はこの lazy chunk にある。R25）、
+ * 見える control と chat の会話の作成は `useAiSettingsStore` の `profileEgressClosed`
+ * （各起動時の chunk が既に import している store。新しい import と export を足さない）。
+ * どちらもここで同時に立てる（R23）。
  */
 export function closeProfileEgressEntrances(): void {
-  globalThis.__grimodexProfileEgressClosed = true;
+  globalThis.__grimodexProfileEgressLocalRefusal = profileEgressLocalRefusal;
   if (useAiSettingsStore.getState().profileEgressClosed !== true) {
     useAiSettingsStore.setState({ profileEgressClosed: true });
   }

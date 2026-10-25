@@ -36,7 +36,7 @@ beforeEach(() => {
 
 afterEach(() => {
   delete (window as unknown as AnyWindow).grimodex;
-  globalThis.__grimodexProfileEgressClosed = undefined;
+  globalThis.__grimodexProfileEgressLocalRefusal = undefined;
   vi.doUnmock("@/features/profile-egress/profileActivationAvailability");
 });
 

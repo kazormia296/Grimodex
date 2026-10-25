@@ -1,28 +1,27 @@
 /**
- * `invoke`（`src/lib/tauri.ts`）の手前の局所の拒否のための閉鎖の状態（NIR-1 DA-2b の
- * PUB-G 前の必須 3、`docs/plans/nir1-lane-decisions/da2b-renderer-decisions.md` の
- * DR-DA2B-R22〜R24）。
+ * `invoke`（`src/lib/tauri.ts`）の手前の局所の拒否（NIR-1 DA-2b の PUB-G 前の必須 3、
+ * `docs/plans/nir1-lane-decisions/da2b-renderer-decisions.md` の DR-DA2B-R22、R23、R25）。
  *
- * 閉の印は renderer の global の `__grimodexProfileEgressClosed` で、立てるのは定数
+ * 閉鎖は renderer の global の `__grimodexProfileEgressLocalRefusal` に、この module の
+ * `profileEgressLocalRefusal` を置くこと（置かれていなければ開）。置くのは定数
  * （`PROFILE_ACTIVATION_UI_ENABLED`）の後ろの lazy な状態の表示だけ
  * （`src/features/chat/closeProfileEgressEntrances.ts`。同じ時に `useAiSettingsStore` の
  * `profileEgressClosed` も立てる）。状態は process の中で前にしか進まない
  * （unrestricted → activating → restricted／unavailable）ので、閉は戻らない。
  *
- * 起動時の graph：この module は **import を持たない**。`tauri.ts` は起動時の `tauri`
- * chunk にあり、ここから別の module を import すると、定数が false で呼出しが消えても
- * chunk の組み分けが変わる（試作で起動時の 150 chunk が 147 に変わった。R23）。この
- * module の関数は `tauri.ts` の `PROFILE_ACTIVATION_UI_ENABLED` の分岐の中だけで呼ぶ
- * （別の chunk から参照すると、定数が false でも `tauri` chunk に export が残る。lazy な
- * 書き手が module の関数を呼ぶ形でも +23 byte だった）。印を global に置くのはそのため
- * で、書き手は module を import せずに印を立てる。top level に呼出しを置かない
- * （`new Map()` も遅延で作る）。renderer の閉鎖は防御に数えない（Main の gate と Native が
- * 拒否する。無駄な呼出しを出さないためだけのもの。印を立てられるのは renderer のコード
- * だけで、立てても呼出しが減るだけ）。
+ * 起動時の graph：この module を import するのは lazy な書き手だけで、起動時の `tauri`
+ * chunk は global を読むだけ（定数が false の間はその分岐も消える）。起動時の module から
+ * import すると、定数が false でも chunk の組み分けが変わるか export が残り（R23）、定数を
+ * 開けたときは台帳が起動時の chunk に載る（+1,419 byte。R25）。import は持たない。
+ * top level に呼出しを置かない（`new Map()` も遅延で作る）。renderer の閉鎖は防御に
+ * 数えない（Main の gate と Native が拒否する。無駄な呼出しを出さないためだけのもの。
+ * global に置けるのは renderer のコードだけで、置いても呼出しが減るだけ）。
  */
 
 declare global {
-  var __grimodexProfileEgressClosed: true | undefined;
+  var __grimodexProfileEgressLocalRefusal:
+    | ((command: string) => string | null)
+    | undefined;
 }
 
 /**
@@ -66,10 +65,9 @@ let deniedRoutes: Map<string, string> | null = null;
 /**
  * 閉じている間に `command` を IPC に出さずに拒否するなら、その拒否の文（Main の gate が
  * restricted で投げる文と同じ `D2A_EGRESS_DENIED: <route>: route <command> …`）。
- * 拒否しないなら null（開、または台帳の外の command。停止の command は台帳の外）。
+ * 拒否しないなら null（台帳の外の command。停止の command は台帳の外）。
  */
 export function profileEgressLocalRefusal(command: string): string | null {
-  if (globalThis.__grimodexProfileEgressClosed !== true) return null;
   deniedRoutes ??= new Map(RENDERER_DENIED_COMMANDS);
   const route = deniedRoutes.get(command);
   return route === undefined
@@ -86,6 +84,6 @@ export function rendererDeniedCommandsForTest(): ReadonlyArray<
 
 /** 試験だけが使う。process の中の閉を戻す。 */
 export function resetProfileEgressClosureForTest(): void {
-  globalThis.__grimodexProfileEgressClosed = undefined;
+  globalThis.__grimodexProfileEgressLocalRefusal = undefined;
   deniedRoutes = null;
 }

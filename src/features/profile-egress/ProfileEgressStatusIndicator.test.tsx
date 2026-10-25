@@ -288,7 +288,7 @@ describe("the AI entrances' closure written by the status display", () => {
   ): Promise<{ store: boolean; local: boolean }> {
     const { useAiSettingsStore } = await import("@/features/chat/store");
     useAiSettingsStore.setState({ profileEgressClosed: undefined });
-    globalThis.__grimodexProfileEgressClosed = undefined;
+    globalThis.__grimodexProfileEgressLocalRefusal = undefined;
     getMock.mockImplementation(answer);
     render(<ProfileEgressStatusIndicator />);
     await act(async () => {
@@ -297,14 +297,14 @@ describe("the AI entrances' closure written by the status display", () => {
     });
     return {
       store: useAiSettingsStore.getState().profileEgressClosed === true,
-      local: globalThis.__grimodexProfileEgressClosed === true,
+      local: globalThis.__grimodexProfileEgressLocalRefusal !== undefined,
     };
   }
 
   afterEach(async () => {
     const { useAiSettingsStore } = await import("@/features/chat/store");
     useAiSettingsStore.setState({ profileEgressClosed: undefined });
-    globalThis.__grimodexProfileEgressClosed = undefined;
+    globalThis.__grimodexProfileEgressLocalRefusal = undefined;
   });
 
   it.each([
@@ -341,6 +341,8 @@ describe("the AI entrances' closure written by the status display", () => {
     emit({ state: "activating" });
     const { useAiSettingsStore } = await import("@/features/chat/store");
     expect(useAiSettingsStore.getState().profileEgressClosed).toBe(true);
-    expect(globalThis.__grimodexProfileEgressClosed).toBe(true);
+    expect(globalThis.__grimodexProfileEgressLocalRefusal).toBeTypeOf(
+      "function",
+    );
   });
 });

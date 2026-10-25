@@ -77,15 +77,12 @@ describe("the renderer's local refusal before invoke (DR-DA2B-R22)", () => {
   });
 
   it("the writer closes both homes of the closure at once", () => {
+    expect(globalThis.__grimodexProfileEgressLocalRefusal).toBeUndefined();
     closeProfileEgressEntrances();
-    expect(globalThis.__grimodexProfileEgressClosed).toBe(true);
+    expect(globalThis.__grimodexProfileEgressLocalRefusal).toBe(
+      profileEgressLocalRefusal,
+    );
     expect(useAiSettingsStore.getState().profileEgressClosed).toBe(true);
-  });
-
-  it("refuses nothing while open", () => {
-    for (const [command] of rendererDeniedCommandsForTest()) {
-      expect(profileEgressLocalRefusal(command)).toBeNull();
-    }
   });
 
   it("never refuses the stop commands, the internal ones or an unknown one", () => {

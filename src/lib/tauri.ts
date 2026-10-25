@@ -2,7 +2,6 @@ import type { BrowserMock } from "./browser-mock";
 import { enqueueIpc } from "./ipcQueue";
 import { electronBridge, isElectron } from "./shell";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
-import { profileEgressLocalRefusal } from "@/features/profile-egress/profileEgressClosure";
 export type { BrowserMock };
 
 /** Check at call time, not module-load time, to avoid race with Tauri bridge injection. */
@@ -544,11 +543,14 @@ export async function invoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,
 ): Promise<T> {
-  // DA-2b の PUB-G 前の必須 3（DR-DA2B-R22〜）：閉鎖の状態が閉なら、Main の gate が
-  // 拒否する command を IPC に出さず、Main と同じ文で拒否する（どの transport でも）。
-  // 防御は Main の gate と Native のまま。定数が false の間はこの分岐ごと消える。
+  // DA-2b の PUB-G 前の必須 3（DR-DA2B-R22、R25）：閉なら（lazy な状態の表示が台帳の
+  // 関数を global に置いたら）、Main の gate が拒否する command を IPC に出さず、Main と
+  // 同じ文で拒否する（どの transport でも）。防御は Main の gate と Native のまま。定数が
+  // false の間はこの分岐ごと消える。台帳は起動時の chunk に載せない
+  // （`src/features/profile-egress/profileEgressClosure.ts`）。
   if (PROFILE_ACTIVATION_UI_ENABLED) {
-    const refusal = profileEgressLocalRefusal(cmd);
+    const refusal =
+      globalThis.__grimodexProfileEgressLocalRefusal?.(cmd) ?? null;
     if (refusal !== null) {
       throw new IpcInvokeError(cmd, classifyLegacyIpcError(refusal));
     }
