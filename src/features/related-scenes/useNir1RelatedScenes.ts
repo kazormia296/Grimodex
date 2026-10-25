@@ -67,6 +67,25 @@ export function useNir1RelatedScenes(enabled: boolean) {
     generation: number;
     sceneIds: Set<string>;
   } | null>(null);
+  // RS-JOIN (DR-RSJ-6): a `graph-ready` refresh of the same query keeps the
+  // shown result (and its session, with its invalidation watch) until the new
+  // generation publishes or ends, instead of showing "loading" in between.
+  const graphReadyRefresh = useRef(false);
+  // Whether the running generation was itself a `graph-ready` refresh: only
+  // the first refresh of such a chain skips the debounce (P2-A, DR-RSJ-6).
+  const startedByGraphReady = useRef(false);
+  const queryKey = useRef<readonly unknown[] | null>(null);
+  const carried = useRef<{
+    value: Nir1RelatedScenesFetchResult;
+    unsubscribe?: () => void;
+  } | null>(null);
+  const dropCarried = useRef(() => {
+    const kept = carried.current;
+    carried.current = null;
+    kept?.unsubscribe?.();
+    kept?.value.session?.release();
+    return kept !== null;
+  }).current;
 
   // A revoke of the author's declaration in this window hides the shown
   // Graph-only row of that Scene and queries once more. Closed with the UI.
@@ -117,6 +136,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
       }
       if (awaited !== current.current) return;
       graphReadyGeneration.current = null;
+      graphReadyRefresh.current = true;
       setRefresh((value) => value + 1);
     })
       .then((release) => {
@@ -154,7 +174,36 @@ export function useNir1RelatedScenes(enabled: boolean) {
     graphReadyGeneration.current = null;
     fetchingGeneration.current = null;
     graphReadyDuringFetch.current = null;
-    setFetch(null);
+    const key = [
+      enabled,
+      sceneId,
+      nodes,
+      mode,
+      projectId,
+      workspace,
+      openRevision,
+      listening,
+    ];
+    const sameQuery =
+      queryKey.current?.every((value, at) => Object.is(value, key[at])) ??
+      false;
+    queryKey.current = key;
+    const byGraphReady = graphReadyRefresh.current && sameQuery;
+    graphReadyRefresh.current = false;
+    const chained = startedByGraphReady.current;
+    startedByGraphReady.current = byGraphReady;
+    const kept = byGraphReady ? carried.current : null;
+    if (kept) {
+      // The kept result is withdrawn on its own invalidation, as it was while
+      // it was the current generation's.
+      kept.unsubscribe?.();
+      kept.unsubscribe = kept.value.session?.subscribeInvalidation(() => {
+        if (carried.current === kept && dropCarried()) setFetch(null);
+      });
+    } else {
+      dropCarried();
+      setFetch(null);
+    }
     if (!enabled || !sceneId || !listening) {
       setLoading(false);
       return;
@@ -169,6 +218,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
     const recoverRaw = () => {
       // An IR lease can be revoked for a source mutation too. Never publish
       // its old Raw snapshot; re-read the current S2 without waiting on IR.
+      dropCarried();
       setFetch(null);
       graphReadyGeneration.current = null;
       clearTimeout(timer);
@@ -228,9 +278,12 @@ export function useNir1RelatedScenes(enabled: boolean) {
             return;
           }
           published = value;
+          // The new generation has an answer: a kept result leaves now.
+          const hadKept = dropCarried();
           if (value.status !== "completed") {
             value.session?.release();
             if (value.status === "invalidated") recoverRaw();
+            else if (hadKept) setFetch(null);
             return;
           }
           setFetch(value);
@@ -252,8 +305,10 @@ export function useNir1RelatedScenes(enabled: boolean) {
           if (awaitsGraphReady(value)) {
             // A notice that came during the fetch is this generation's one
             // refresh; otherwise wait for the next one.
-            if (readyDuringFetch) setRefresh((count) => count + 1);
-            else graphReadyGeneration.current = generation;
+            if (readyDuringFetch) {
+              graphReadyRefresh.current = true;
+              setRefresh((count) => count + 1);
+            } else graphReadyGeneration.current = generation;
           }
           unsubscribe = value.session?.subscribeInvalidation(() => {
             if (disposed || current.current !== generation) return;
@@ -277,19 +332,34 @@ export function useNir1RelatedScenes(enabled: boolean) {
             fetchingGeneration.current = null;
             graphReadyDuringFetch.current = null;
           }
-          if (!disposed && current.current === generation) setFetch(null);
+          if (!disposed && current.current === generation) {
+            dropCarried();
+            setFetch(null);
+          }
         })
         .finally(() => {
           if (!disposed && current.current === generation) setLoading(false);
         });
     };
-    timer = setTimeout(() => run(), FETCH_DEBOUNCE_MS);
+    // DR-RSJ-6: the first `graph-ready` refresh runs at once; the Graph it
+    // waits for is cached already. Every other start keeps the debounce.
+    timer = setTimeout(
+      () => run(),
+      byGraphReady && !chained ? 0 : FETCH_DEBOUNCE_MS,
+    );
     return () => {
       disposed = true;
       clearTimeout(timer);
       abort.abort();
-      unsubscribe?.();
-      published?.session?.release();
+      // The shown result is carried to the next run, which keeps or drops it
+      // (the unmount effect below drops it when there is no next run).
+      dropCarried();
+      if (published !== null && published === shown.current)
+        carried.current = { value: published, unsubscribe };
+      else {
+        unsubscribe?.();
+        published?.session?.release();
+      }
     };
   }, [
     enabled,
@@ -301,6 +371,15 @@ export function useNir1RelatedScenes(enabled: boolean) {
     openRevision,
     listening,
     refresh,
+    dropCarried,
   ]);
+  // Declared after the query effect: on unmount its cleanup runs after that
+  // effect's cleanup has carried the shown result, and releases it.
+  useEffect(
+    () => () => {
+      dropCarried();
+    },
+    [dropCarried],
+  );
   return { sceneId, fetch, loading };
 }
