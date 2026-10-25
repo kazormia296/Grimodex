@@ -42,6 +42,7 @@ import {
   beginRelatedScenes,
   continueRelatedScenesGraph,
   listenRelatedScenesGraphReady,
+  listenRelatedScenesIndexReady,
   qualifyNir1Evidence,
   releaseRelatedScenes,
   settleRelatedScenesGraph,
@@ -587,11 +588,23 @@ async function heldSample(input: HeldInput) {
   return out;
 }
 
+const indexReadyEvents: { projectId: string; at: number }[] = [];
+let indexReadyListening: Promise<unknown> | null = null;
+
+function listenIndexReady() {
+  indexReadyListening ??= listenRelatedScenesIndexReady((projectId) =>
+    indexReadyEvents.push({ projectId, at: performance.now() }),
+  );
+  return indexReadyListening;
+}
+
 /**
- * §6.8 の 9：同じ project を待つ 2 つの表示（製品の fetch を `graph-ready` の
- * たびにやり直す消費者を 2 つ、同じ renderer に置く）と、別の Scene の連続の
- * 自動保存。`durationMs` の間 `editEveryMs` ごとに保存し、その後 `quietMs` の間
- * 保存を止めて観測する。
+ * §6.8 の 9：同じ project を待つ 2 つの表示と、別の Scene の連続の自動保存。
+ * 表示は製品の `useNir1RelatedScenes` の再取得の契機に倣い、`index-ready`
+ * （この project）と `graph-ready`（この project。前の取得の後に届いたもの）の
+ * たびに製品の fetch をやり直す消費者を同じ renderer に置く。最初の取得が
+ * 終わってから `durationMs` の間 `editEveryMs` ごとに保存し、その後
+ * `quietMs` の間は保存を止めて観測する。
  */
 async function twoViews(input: {
   projectId: string;
@@ -604,51 +617,72 @@ async function twoViews(input: {
   views: number;
 }) {
   await listenGraphReady();
+  await listenIndexReady();
   const startedAt = performance.now();
-  const editUntil = startedAt + input.durationMs;
-  const stopAt = editUntil + input.quietMs;
   const fetches: {
     view: number;
     at: number;
     trigger: string;
     graphOutcome: unknown;
+    status: string;
   }[] = [];
   const saves: { at: number; ok: boolean; error?: string }[] = [];
   let stopped = false;
-  const view = async (index: number) => {
-    let seen = graphReadyEvents.length;
-    let trigger = "initial";
-    while (!stopped) {
-      const at = performance.now();
-      const result = await fetchRelatedPastScenes(input.viewSceneId, {
-        mode: "hybrid",
-        graphSeedEntityId: input.seed,
-      });
-      fetches.push({
-        view: index,
-        at: at - startedAt,
-        trigger,
-        graphOutcome: result.graphOutcome ?? null,
-      });
-      result.session?.release();
-      // 次の `graph-ready`（この project）まで待つ。
+  let editStart = 0;
+  let editEnd = Number.POSITIVE_INFINITY;
+  let stopAt = Number.POSITIVE_INFINITY;
+  const graphBefore = graphReadyEvents.length;
+  const indexBefore = indexReadyEvents.length;
+  const initial: Promise<void>[] = [];
+  const view = (index: number) => {
+    let done: () => void = () => {};
+    initial.push(new Promise<void>((resolve) => (done = resolve)));
+    return (async () => {
+      let seenGraph = graphReadyEvents.length;
+      let seenIndex = indexReadyEvents.length;
+      let trigger = "initial";
       while (!stopped) {
-        const next = graphReadyEvents
-          .slice(seen)
-          .findIndex((event) => event.projectId === input.projectId);
-        if (next >= 0) {
-          seen += next + 1;
-          trigger = "graph-ready";
-          break;
+        const at = performance.now();
+        const result = await fetchRelatedPastScenes(input.viewSceneId, {
+          mode: "hybrid",
+          graphSeedEntityId: input.seed,
+        });
+        fetches.push({
+          view: index,
+          at: at - startedAt,
+          trigger,
+          graphOutcome: result.graphOutcome ?? null,
+          status: result.status,
+        });
+        result.session?.release();
+        done();
+        // 次の契機（この project の index-ready か graph-ready）まで待つ。
+        while (!stopped) {
+          const graph = graphReadyEvents
+            .slice(seenGraph)
+            .findIndex((event) => event.projectId === input.projectId);
+          const indexed = indexReadyEvents
+            .slice(seenIndex)
+            .findIndex((event) => event.projectId === input.projectId);
+          if (graph >= 0 || indexed >= 0) {
+            trigger = graph >= 0 ? "graph-ready" : "index-ready";
+            seenGraph = graphReadyEvents.length;
+            seenIndex = indexReadyEvents.length;
+            break;
+          }
+          if (performance.now() >= stopAt) stopped = true;
+          await sleep(5);
         }
-        if (performance.now() >= stopAt) stopped = true;
-        await sleep(5);
       }
-    }
+    })();
   };
   const editor = async () => {
+    await Promise.all(initial);
+    editStart = performance.now();
+    editEnd = editStart + input.durationMs;
+    stopAt = editEnd + input.quietMs;
     let at = 0;
-    while (performance.now() < editUntil) {
+    while (performance.now() < editEnd) {
       at += 1;
       try {
         const text = `Edit ${at} of the CP-4 D′ check at ${Math.round(performance.now())}.`;
@@ -670,32 +704,44 @@ async function twoViews(input: {
       await sleep(input.editEveryMs);
     }
   };
-  const eventsBefore = graphReadyEvents.length;
-  await Promise.all([
-    ...Array.from({ length: input.views }, (_, index) => view(index)),
-    editor(),
-  ]);
-  const events = graphReadyEvents
-    .slice(eventsBefore)
-    .filter((event) => event.projectId === input.projectId)
-    .map((event) => event.at - startedAt);
-  const editEndMs = input.durationMs;
+  const views = Array.from({ length: input.views }, (_, index) => view(index));
+  await Promise.all([...views, editor()]);
+  const pick = (rows: { projectId: string; at: number }[], from: number) =>
+    rows
+      .slice(from)
+      .filter((event) => event.projectId === input.projectId)
+      .map((event) => event.at - startedAt);
+  const graphAt = pick(graphReadyEvents, graphBefore);
+  const indexAt = pick(indexReadyEvents, indexBefore);
+  const startMs = editStart - startedAt;
+  const endMs = editEnd - startedAt;
+  const within = (rows: number[], from: number, to: number) =>
+    rows.filter((at) => at >= from && at < to).length;
+  const fetchAt = fetches.map((row) => row.at);
   return {
     durationMs: input.durationMs,
     quietMs: input.quietMs,
     views: input.views,
+    editStartMs: startMs,
+    editEndMs: endMs,
     saves,
     fetches,
-    graphReadyAtMs: events,
+    graphReadyAtMs: graphAt,
+    indexReadyAtMs: indexAt,
     duringEdits: {
-      graphReady: events.filter((at) => at < editEndMs).length,
-      fetches: fetches.filter((row) => row.at < editEndMs).length,
+      graphReady: within(graphAt, startMs, endMs),
+      indexReady: within(indexAt, startMs, endMs),
+      fetches: within(fetchAt, startMs, endMs),
     },
     afterEdits: {
-      graphReady: events.filter((at) => at >= editEndMs).length,
-      fetches: fetches.filter((row) => row.at >= editEndMs).length,
-      lastGraphReadyAfterEditEndMs:
-        events.filter((at) => at >= editEndMs).at(-1) ?? null,
+      graphReady: within(graphAt, endMs, Number.POSITIVE_INFINITY),
+      indexReady: within(indexAt, endMs, Number.POSITIVE_INFINITY),
+      fetches: within(fetchAt, endMs, Number.POSITIVE_INFINITY),
+      lastEventAfterEditEndMs:
+        [...graphAt, ...indexAt, ...fetchAt]
+          .filter((at) => at >= endMs)
+          .sort((a, b) => a - b)
+          .at(-1) ?? null,
     },
   };
 }

@@ -562,7 +562,18 @@ async function main() {
         auditRowsAdded:
           readRowCounts(dbPath, ["ai_audit_events"]).ai_audit_events - audit,
         unavailableAfter: after.unavailable,
+        slotAfter: after.slot,
       };
+      // 編集を止めた後の 1 回の seed つきの sample（owner が Suspended に
+      // 残るか、Graph が戻るか）。
+      await sleep(3_000);
+      report.twoViews.afterProbe = await oneSample({
+        session,
+        page,
+        input,
+        lastSeededEndedAt: null,
+        dbPath,
+      });
     }
   } catch (error) {
     report.problems.push(error?.stack ?? String(error));
