@@ -153,10 +153,12 @@ async function main() {
       recorded.set(`${row.pid}:${row.startTime}`, row);
   };
   try {
-    report.run = { startedAtMs: Date.now() };
     handle = await launchGraphEvalElectron({ observer, env, netLogPath });
     report.launch = { pid: handle.pid, removedEnv: handle.launch.removedEnv };
+    // The socket window is the Electron lifetime: the sampler's first sample
+    // precedes the run, its final sample follows it.
     sampler = startSocketSampler({ rootPid: handle.pid });
+    report.run = { startedAtMs: Date.now() };
     remember();
     const page = await handle.app.firstWindow();
     await page.waitForFunction(() => window.cp4Smoke?.ready === true, null, {
@@ -272,7 +274,16 @@ async function main() {
         exe,
       }));
       const expectedWorker = path.join(path.dirname(nativePath), WORKER_NAME);
-      if (!report.v10.workerProcesses.some((row) => row.exe === expectedWorker))
+      const begins = report.v10.native?.diagnostics?.begins ?? 0;
+      report.v10.ownerReached = begins > 0;
+      report.v10.workerFromEvalDir = report.v10.workerProcesses.some(
+        (row) => row.exe === expectedWorker,
+      );
+      if (!report.v10.ownerReached)
+        problem(
+          `V-10 not reached: the Native began no Graph (begin graph=${JSON.stringify(report.v10.begin?.graph)}, ir=${report.v10.begin?.ir}; the Graph starts only with an IR operation, which needs a usable Chronicle Index snapshot)`,
+        );
+      else if (!report.v10.workerFromEvalDir)
         problem(
           `V-10: no ${WORKER_NAME} process from ${path.dirname(nativePath)} was seen`,
         );
@@ -281,6 +292,7 @@ async function main() {
   } catch (error) {
     problem(`run: ${error?.stack ?? error}`);
   } finally {
+    report.run ??= { startedAtMs: Date.now() };
     report.run.finishedAtMs = Date.now();
     if (sampler) report.socketSamples = sampler.stop();
     if (handle) {
@@ -322,6 +334,24 @@ async function main() {
     : [];
   if (report.dictionaries.some((name) => name.endsWith(".bdic")))
     problem(`dictionaries were fetched: ${report.dictionaries.join(",")}`);
+  // S1 import (fix-round-1 profileEgressEvidence): servers Chromium persisted.
+  try {
+    const state = JSON.parse(
+      await readFile(path.join(userData, "Network Persistent State"), "utf8"),
+    );
+    report.networkPersistentServers = (
+      state?.net?.http_server_properties?.servers ?? []
+    ).map((entry) => entry.server);
+  } catch (error) {
+    report.networkPersistentServers =
+      error?.code === "ENOENT" ? [] : [`unreadable: ${error?.code}`];
+  }
+  if (
+    report.networkPersistentServers.some(
+      (server) => !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/u.test(server),
+    )
+  )
+    problem(`persisted servers: ${report.networkPersistentServers.join(",")}`);
   report.x11After = x11Listing();
   if (JSON.stringify(report.x11After) !== JSON.stringify(report.x11Before))
     problem("the /tmp/.X11-unix listing changed");

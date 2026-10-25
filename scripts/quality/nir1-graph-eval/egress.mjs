@@ -509,27 +509,62 @@ const EXPECTED_RESOLVER_NAMES = new Set([
   "grimodex-rule-sentinel.invalid",
 ]);
 
-/** A resolver job's host as Chromium logs it (scheme://host:port or host). */
+/**
+ * Chromium's IPv6 reachability check: a UDP connect (a route lookup; no
+ * datagram is sent) to this fixed address (disclosed in DA-1 and K3/3 as
+ * Chromium's own traffic). Counted apart only when no byte was sent on it.
+ */
+export const IPV6_REACHABILITY_PROBE = "[2001:4860:4860::8888]:443";
+
+/** A resolver request's host as Chromium logs it (scheme://host:port or host:port). */
 function resolverHost(value) {
   const text = String(value);
   const url = /^[a-z][a-z0-9+.-]*:\/\/(\[[^\]]+\]|[^/:]+)(?::\d+)?/iu.exec(
     text,
   );
-  const host = url ? url[1] : text.replace(/:\d+$/u, "");
+  const host = url
+    ? url[1]
+    : /^\[[^\]]+\](?::\d+)?$/u.test(text)
+      ? text.replace(/(?<=\]):\d+$/u, "")
+      : text.replace(/:\d+$/u, "");
   return host.replace(/^\[|\]$/gu, "");
 }
 
 const DICTIONARY_URL =
   /^https?:\/\/[^/]*\.gvt1\.com\/edgedl\/chrome\/dict\/[^/?#]+\.bdic(?:[?#].*)?$/u;
+const RESOLVER_EVENTS = new Set([
+  "HOST_RESOLVER_MANAGER_REQUEST",
+  "HOST_RESOLVER_MANAGER_JOB",
+]);
+const BYTES_SENT_EVENTS = new Set(["UDP_BYTES_SENT", "SOCKET_BYTES_SENT"]);
+
+/** Sources reachable from `roots` through `source_dependency` links. */
+function dependentSources(events, roots) {
+  const owner = new Map([...roots].map((id) => [id, id]));
+  for (let changed = true, rounds = 0; changed && rounds < 16; rounds++) {
+    changed = false;
+    for (const event of events) {
+      const from = owner.get(event.source?.id);
+      const to = event.params?.source_dependency?.id;
+      if (from !== undefined && to !== undefined && !owner.has(to)) {
+        owner.set(to, from);
+        changed = true;
+      }
+    }
+  }
+  return owner;
+}
 
 /**
  * Classifies one net log. `nonLoopbackAttempts` counts connect attempts
  * (TCP / UDP) to a non-loopback address, DNS transactions of Chromium's own
- * resolver, and resolver jobs for a name that the NC-1 rules did not reject
- * (`~NOTFOUND`) and that is not loopback, the sentinel or `localhost` (such a
- * name reaches the system resolver). Loopback connects are split into the
- * LS-1 blackhole port (K6/3 (a)) and the rest; dictionary URL requests
- * (K6/3 (b)) are listed with the proxy they resolved to.
+ * resolver, and resolver requests for a name that the NC-1 rules did not
+ * reject (`~NOTFOUND`) and that is not loopback, the sentinel or `localhost`
+ * (such a name reaches the system resolver). Chromium's IPv6 reachability
+ * check is counted apart (`ipv6ReachabilityProbe`) unless bytes were sent on
+ * it. Loopback connects are split into the LS-1 blackhole port (K6/3 (a))
+ * and the rest; dictionary URL requests (K6/3 (b)) are listed with the proxy
+ * they resolved to and their final error.
  */
 export function analyzeNetLog(log, { blackholePort = null } = {}) {
   const names = Object.fromEntries(
@@ -540,12 +575,14 @@ export function analyzeNetLog(log, { blackholePort = null } = {}) {
   );
   if (Object.keys(names).length === 0)
     throw new Error("[artifact] net log lacks its event type constants");
+  const events = log.events ?? [];
   const attempts = [];
   const loopback = { blackhole: 0, other: 0 };
-  const resolverJobs = [];
-  const dictionaryRequests = new Map();
-  const proxyOf = new Map();
-  for (const event of log.events ?? []) {
+  const resolverHosts = [];
+  const probeSources = new Map();
+  let reachabilityChecks = 0;
+  const dictionaryIds = new Map();
+  for (const event of events) {
     const name = names[event.type];
     const params = event.params ?? {};
     const endpoints = [];
@@ -563,21 +600,24 @@ export function analyzeNetLog(log, { blackholePort = null } = {}) {
         if (blackholePort !== null && port === blackholePort)
           loopback.blackhole += 1;
         else loopback.other += 1;
-      } else attempts.push({ event: name, endpoint: String(endpoint) });
+      } else if (
+        name === "UDP_CONNECT" &&
+        String(endpoint) === IPV6_REACHABILITY_PROBE
+      )
+        probeSources.set(event.source?.id, String(endpoint));
+      else attempts.push({ event: name, endpoint: String(endpoint) });
     }
+    if (name === "HOST_RESOLVER_MANAGER_IPV6_REACHABILITY_CHECK")
+      reachabilityChecks += 1;
     if (name === "DNS_TRANSACTION" && event.phase === 1)
       attempts.push({
         event: name,
         endpoint: String(params.hostname ?? "dns"),
       });
-    if (
-      name === "HOST_RESOLVER_MANAGER_JOB" &&
-      event.phase === 1 &&
-      params.host !== undefined
-    ) {
+    if (RESOLVER_EVENTS.has(name) && params.host !== undefined) {
       const host = resolverHost(params.host);
-      const rejected = host.startsWith("~NOTFOUND");
-      resolverJobs.push({ host: rejected ? "~NOTFOUND" : host });
+      const rejected = /^~notfound$/iu.test(host);
+      resolverHosts.push(rejected ? "~NOTFOUND" : host);
       if (
         !rejected &&
         !isLoopbackAddress(host) &&
@@ -590,32 +630,57 @@ export function analyzeNetLog(log, { blackholePort = null } = {}) {
       event.phase === 1 &&
       DICTIONARY_URL.test(String(params.url ?? ""))
     )
-      dictionaryRequests.set(event.source?.id, {
-        url: String(params.url).replace(/[?#].*$/u, ""),
-        proxy: null,
-      });
+      dictionaryIds.set(
+        event.source?.id,
+        String(params.url).replace(/[?#].*$/u, ""),
+      );
+  }
+  let ipv6ReachabilityProbe = 0;
+  for (const [id, endpoint] of probeSources) {
+    const sent = events.some(
+      (event) =>
+        event.source?.id === id && BYTES_SENT_EVENTS.has(names[event.type]),
+    );
+    if (sent) attempts.push({ event: "UDP_CONNECT+sent", endpoint });
+    else ipv6ReachabilityProbe += 1;
+  }
+  const owner = dependentSources(events, dictionaryIds.keys());
+  const dictionaryRequests = new Map(
+    [...dictionaryIds].map(([id, url]) => [
+      id,
+      { url, proxy: null, netError: null },
+    ]),
+  );
+  for (const event of events) {
+    const request = dictionaryRequests.get(owner.get(event.source?.id));
+    if (!request) continue;
+    const name = names[event.type];
+    const params = event.params ?? {};
     if (
       name === "PROXY_RESOLUTION_SERVICE_RESOLVED_PROXY_LIST" &&
       params.proxy_info !== undefined
     )
-      proxyOf.set(event.source?.id, String(params.proxy_info));
+      request.proxy ??= String(params.proxy_info);
+    if (
+      dictionaryIds.has(event.source?.id) &&
+      name === "URL_REQUEST_START_JOB" &&
+      event.phase === 2 &&
+      params.net_error !== undefined
+    )
+      request.netError = params.net_error;
   }
-  for (const [id, request] of dictionaryRequests)
-    request.proxy = proxyOf.get(id) ?? null;
   return {
-    eventCount: (log.events ?? []).length,
+    eventCount: events.length,
     nonLoopbackAttempts: attempts.length,
     attempts,
+    ipv6ReachabilityProbe,
+    ipv6ReachabilityChecks: reachabilityChecks,
     loopbackConnects: loopback,
-    resolverJobs: {
-      total: resolverJobs.length,
-      rejected: resolverJobs.filter((row) => row.host === "~NOTFOUND").length,
+    resolverRequests: {
+      total: resolverHosts.length,
+      rejected: resolverHosts.filter((host) => host === "~NOTFOUND").length,
       hosts: [
-        ...new Set(
-          resolverJobs
-            .map((row) => row.host)
-            .filter((host) => host !== "~NOTFOUND"),
-        ),
+        ...new Set(resolverHosts.filter((host) => host !== "~NOTFOUND")),
       ].sort(),
     },
     dictionaryRequests: [...dictionaryRequests.values()],

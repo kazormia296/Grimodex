@@ -338,9 +338,12 @@ function netLog(events) {
         TCP_CONNECT_ATTEMPT: 2,
         UDP_CONNECT: 3,
         DNS_TRANSACTION: 4,
-        HOST_RESOLVER_MANAGER_JOB: 5,
+        HOST_RESOLVER_MANAGER_REQUEST: 5,
         URL_REQUEST_START_JOB: 6,
         PROXY_RESOLUTION_SERVICE_RESOLVED_PROXY_LIST: 7,
+        HTTP_STREAM_JOB_CONTROLLER_BOUND: 8,
+        HOST_RESOLVER_MANAGER_IPV6_REACHABILITY_CHECK: 9,
+        UDP_BYTES_SENT: 10,
       },
     },
     events,
@@ -352,6 +355,7 @@ test("the net log counts non-loopback attempts and keeps K6/3's expected classes
     "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic?x=1";
   const clean = analyzeNetLog(
     netLog([
+      // Shapes seen in a real Electron 43.8.3 net log (s1c1-shakeout).
       {
         type: 1,
         phase: 1,
@@ -364,17 +368,18 @@ test("the net log counts non-loopback attempts and keeps K6/3's expected classes
         source: { id: 1 },
         params: { address: "127.0.0.1:41000" },
       },
+      { type: 5, phase: 1, source: { id: 2 }, params: { host: "~NOTFOUND:0" } },
       {
         type: 5,
         phase: 1,
         source: { id: 2 },
-        params: { host: "https://~NOTFOUND:443" },
+        params: { host: "https://~notfound" },
       },
       {
         type: 5,
         phase: 1,
         source: { id: 3 },
-        params: { host: "grimodex-rule-sentinel.invalid" },
+        params: { host: "grimodex-rule-sentinel.invalid:0" },
       },
       {
         type: 5,
@@ -382,27 +387,45 @@ test("the net log counts non-loopback attempts and keeps K6/3's expected classes
         source: { id: 4 },
         params: { host: "http://127.0.0.1:5173" },
       },
-      { type: 6, phase: 1, source: { id: 9 }, params: { url: dict } },
+      { type: 5, phase: 1, source: { id: 4 }, params: { host: "127.0.0.1:0" } },
+      { type: 9, phase: 0, source: { id: 5 }, params: {} },
+      {
+        type: 3,
+        phase: 0,
+        source: { id: 6 },
+        params: { address: "[2001:4860:4860::8888]:443" },
+      },
+      { type: 6, phase: 1, source: { id: 11 }, params: { url: dict } },
+      {
+        type: 8,
+        phase: 0,
+        source: { id: 11 },
+        params: { source_dependency: { id: 17 } },
+      },
       {
         type: 7,
         phase: 0,
-        source: { id: 9 },
+        source: { id: 17 },
         params: { proxy_info: "SOCKS5 127.0.0.1:40000" },
       },
+      { type: 6, phase: 2, source: { id: 11 }, params: { net_error: -120 } },
     ]),
     { blackholePort: 40000 },
   );
   assert.equal(clean.nonLoopbackAttempts, 0);
+  assert.equal(clean.ipv6ReachabilityProbe, 1);
+  assert.equal(clean.ipv6ReachabilityChecks, 1);
   assert.deepEqual(clean.loopbackConnects, { blackhole: 1, other: 1 });
-  assert.deepEqual(clean.resolverJobs, {
-    total: 3,
-    rejected: 1,
+  assert.deepEqual(clean.resolverRequests, {
+    total: 5,
+    rejected: 2,
     hosts: ["127.0.0.1", "grimodex-rule-sentinel.invalid"],
   });
   assert.deepEqual(clean.dictionaryRequests, [
     {
       url: "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
       proxy: "SOCKS5 127.0.0.1:40000",
+      netError: -120,
     },
   ]);
   const dirty = analyzeNetLog(
@@ -411,12 +434,35 @@ test("the net log counts non-loopback attempts and keeps K6/3's expected classes
       { type: 3, phase: 1, params: { address: "[2001:db8::1]:443" } },
       { type: 4, phase: 1, params: { hostname: "example.com" } },
       { type: 5, phase: 1, params: { host: "https://github.com:443" } },
+      // The probe address with a datagram sent is an attempt.
+      {
+        type: 3,
+        phase: 0,
+        source: { id: 30 },
+        params: { address: "[2001:4860:4860::8888]:443" },
+      },
+      { type: 10, phase: 0, source: { id: 30 }, params: { byte_count: 32 } },
+      // Another port on the probe address is not the probe.
+      {
+        type: 3,
+        phase: 0,
+        source: { id: 31 },
+        params: { address: "[2001:4860:4860::8888]:53" },
+      },
     ]),
   );
-  assert.equal(dirty.nonLoopbackAttempts, 4);
+  assert.equal(dirty.nonLoopbackAttempts, 6);
+  assert.equal(dirty.ipv6ReachabilityProbe, 0);
   assert.deepEqual(
     dirty.attempts.map((row) => row.endpoint),
-    ["142.250.0.1:443", "[2001:db8::1]:443", "example.com", "github.com"],
+    [
+      "142.250.0.1:443",
+      "[2001:db8::1]:443",
+      "example.com",
+      "github.com",
+      "[2001:4860:4860::8888]:53",
+      "[2001:4860:4860::8888]:443",
+    ],
   );
   assert.throws(() => analyzeNetLog({ events: [] }), /constants/);
 });
