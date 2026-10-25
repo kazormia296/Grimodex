@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "failures": [],
+  "recorded": {
+    "worker": {
+      "path": "resources/bin/nir1-c-query-worker",
+      "verified": true,
+      "bytes": 91502160
+    },
+    "asar": {
+      "entries": 797,
+      "forbidden": []
+    }
+  }
+}

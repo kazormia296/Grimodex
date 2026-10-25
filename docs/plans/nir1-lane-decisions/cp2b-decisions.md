@@ -178,3 +178,50 @@ harness が作る子 process は (1) packaged の実行体（Linux は `scripts/
 | DR-CP2B-P2-7 | 同 | 同 | workflow: 新規 `packaged-smoke.yml`。job は `unit`（ubuntu、harness の単体試験と workflow の契約試験）と `smoke`（matrix: `ubuntu-24.04`／`macos-15`／`windows-latest`）。build は `pnpm electron:native:release && pnpm electron:build && pnpm exec electron-builder --dir --publish never`（release と同じ script と `electron-builder.yml`、build の env を足さない）。Windows と macOS は `CSC_IDENTITY_AUTO_DISCOVERY=false`（secrets なし。macOS は無署名の `--dir`。A 案）。reranker の bootstrap はしない（外部の取得を足さず、smoke は Semantic Recall を使わない。release の package との差として記録に残す）。Linux は `sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0` で Chromium の namespace sandbox を使える状態にし（`--no-sandbox` を渡さない。runner の設定で製品ではない）、Xvfb は `scripts/local-ci-xvfb.mjs`。artifact は harness の出力 dir だけ（記録の JSON、判定の出力、stderr の末尾）、7 日。**raw の net log は上げない**（`capture-mode Everything` は socket の bytes を含み、public repo の artifact は誰でも読める。記録には raw の SHA-256 と派生の要約だけを残す。TASK §2.2 からの変更）。job の timeout は 90 分。初回は `pull_request` で走る形（default branch に無い workflow を dispatch できない可能性。推測）。`os` の入力は `all`／`linux`／`windows`／`mac` | `permissions: contents: read`、secrets なし、`pull_request_target` なし、action は 40 桁 SHA（既存の固定値を再利用）。送信先は GitHub の hosted runner と、packaged の製品の既存の通信（更新の確認など）だけで、harness は外部へ接続しない | (1) `release.yml` の debug run を使う案（B 案）: P4 の最終候補で推奨（TASK §2.3）。P2 では A 案。(2) Linux で `--no-sandbox`: 観測する packaged の構成が配布物と変わる | なし | 該当なし（TASK §6 の「当たらない」） | §8.4 | 記録済み（実装前） |
 | DR-CP2B-P2-8 | 同 | 同 | package の検査（S7）は worker の存在・通常 file・POSIX の実行可能・seam の文字列なし・`app.asar` に harness の file が無いことを合否に、Windows の PE subsystem と macOS の `codesign --verify` を記録だけにする。**env 名の数と Windows の console window（TASK §1.4、DR-CP2B-3 の役）の P2 の読み**: packaged の worker は gate が閉じた製品の経路で spawn できず、env 名を出す seam は worker の変更になるので、P2 では観測しない。既存の grimodex-db の試験（`configure_worker_process` の env 0／`SystemRoot` 1、`CREATE_NO_WINDOW`）が構成の段を固定していることを記録し、それで足りるかは integrator が決める（TASK §11） | worker を spawn しない（gate 閉）。worker を変えない | worker に seam を足す案: C-resource の受入れの対象の変更 | なし（integrator の判断） | 該当なし | — | 記録済み（実装前） |
 | DR-CP2B-P2-9 | 同 | 同 | P2 の Linux の記録は、ローカルの試運転として `docs/plans/nir1-lane-decisions/cp2b-p2-linux-trial/` に置く（`linux/` の下に構成ごとの記録 JSON、`package-check.json`、`verdict.json`、`verdict.txt`、全 file の `SHA256SUMS`、`README.md`）。G-pub の証跡ではない（候補の head でも hosted でもない）。harness の出力の形（`<out>/<os>/…` と `SHA256SUMS`）は P4 の `cp2b-g-pub/` がそのまま写せる形にする。記録を読んで判定の結果を固定する試験を足す（判定の規則の回帰を実データで見る） | 記録は LAN の IPv4 と hostname を伏せる。raw の net log は置かない | 記録を git に置かない案: レビューで判定を再現できない | なし | 該当なし | — | 記録済み（実装前） |
+
+## 9. P2 の実装後の追記
+
+2026-10-26、branch `claude/cp2b-p2-packaged-smoke`。§8 の本文は直さず、実装で分かったことと追加の判断をここに書く。
+
+### 9.1 マトリクスの最終状態
+
+§8.3 の S1〜S8 は `implemented`、S9 は `out of scope`（製品・renderer・IPC・N-API・Rust・MCP は変えていない。差分は `electron/scripts/packaged-smoke/`、`.github/workflows/packaged-smoke.yml`、`scripts/release-workflows.test.mjs`、この文書、試運転の記録だけ）。§8.4 の lifecycle matrix は実装と一致する（起動は `launchOwned()`、終了の証拠は `terminationProven()` で close・process group の消滅・実行体の dir の下の process 0 の合成。path で見つけた process は kill しない）。
+
+### 9.2 追加の判断
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界（actor・防御・受信先・受入れ） | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-CP2B-P2-10 | 2026-10-26 | CP-2b P2 | packaged の一時 userData に、旧版の keyring の移行の完了 marker（`legacy-keyring-migration-v1.json`、`version: 1`、`imported: 0`）だけを置いてから起動する。理由: 空の userData の packaged は起動時に OS の keyring を読み、Linux の D-Bus を外した環境では失敗して、窓の作成の前に modal の dialog（`index.ts` の移行の失敗の分岐）で止まった（実測。CDP の target が 120 秒出ない）。marker の名前と形は `credentialMigration.ts` が書くものと同じで、試験（`run.test.mjs`）が source から名前と version を読んで一致を固定する。「移行を済ませた利用者」の状態で、閉じ込めの経路は通る（NC-1 は `index.ts` で移行より前）。利用者の keyring を読まない副作用がある | 製品の code・設定・env の入口は変えない（userData の初期の file は製品自身が書く状態）。閉じ込めを止める入口ではない | (1) private な D-Bus の session bus を立てる案: Secret Service が無ければ移行は同じく失敗しうる。Windows／macOS の Credential Manager／Keychain の prompt を避けられない。(2) dialog を X の入力で閉じる案: Linux だけで、OS ごとに道具が要る | なし（開示事項） | 該当なし | §8.4 | 実装済み |
+| DR-CP2B-P2-11 | 2026-10-26 | 同 | 有限の待ちの timer は解決した時点で止める（`settlesWithin`）。試運転の 1 回目で、probe の main の 20 分の上限の timer が残り、判定の出力の後も harness が終わらなかった（PID 指定で止めた）。試験で解決後に `Timeout` が残らないことを固定した | — | — | なし | 該当なし | §8.4 の bounded wait | 実装済み |
+
+### 9.3 試験
+
+| 試験 | 件数・結果 |
+|---|---|
+| `node --test electron/scripts/packaged-smoke/*.test.mjs`（net log の解析、判定、package の検査、process の終了の証拠、harness の純関数、試運転の記録） | 61 件 passed（Linux、Node 24.18.0） |
+| `node --test scripts/release-workflows.test.mjs`（`packaged-smoke.yml` の契約 7 件と、action の 40 桁 SHA の固定の対象への追加を含む） | 29 件 passed |
+
+変異（どれも元に戻して再確認した）: 判定は 15 種（行列の一致・toolcheck の食い違い・正の対照・NL・`.local`・CDP・終了の証拠・flag・記録全体の必要条件・package・toolcheck の空の照合を外す、net log の LS-1 の宛先の照合・begin の限定・port の一意・JOB の host を外す）がすべて赤。harness は 9 種（asar の禁止・空の asar・`GRIMODEX_` と env の proxy の除去・form の shim の条件・未帰属の数え方・marker の version・group の残存での強制）が赤、`ok` の合成から group の消滅を外す変異が当初は緑だったので `terminationProven` の試験を足して赤にした。workflow は 12 種（`contents: write`、`pull_request_target`、action の tag 化、artifact の path を `release/`、保持 90 日、`secrets.`、`--publish always`、`--no-sandbox`、SHA の検査の緩和、`persist-credentials` の削除、`unit` への依存の削除、単体試験の削除）がすべて赤。
+
+### 9.4 Linux の実機（ローカル。試運転の記録 `cp2b-p2-linux-trial/`）
+
+- head `db76aef0`、3 構成 752 秒。判定は **pass**: RJ は 134 行（判定 118: TCP 57、UDP 45、DNS だけ 16。対象外 16。区分は活性 43、canary 不可 59、不活性 2〔`rs1.turn-tcp.localhost`、`rs1.turns.localhost`。G-open の `nc1-nl-final` と同じ 2 行〕）で不合格 0、記録全体の不合格 0。NL は net log の host 6 種がすべて許容集合 A の内側（`127.0.0.1`、RS-1 の 4 名、`~notfound`）。`.local` は対照で問合せ 3 件、packaged で 0（pass）。行列は 134 行で欠け・余り 0。toolcheck は TCP の 59 行で listener と net log の接続の有無が全行一致し、総数も 174 件で一致（G-open の記録とは別の run。§8.2 の quick の照合に続く 2 回目）。正の対照は net log の nonce を含む生の host 69 件、DoH の canary で STUN／TURN-UDP／TURN-TCP／TURNS／dns-prefetch の名前を観測。package は worker（91,502,160 bytes、seam なし、実行可能）、`app.asar` の 797 file に harness・probe の file なし。
+- 記録だけ: NC-1 の network の段の下限 1 ms（setProxy から自己確認の resolve 3 件まで。listener の起動と `resolveProxy` を含まない）、起動から CDP の target まで 507 ms（同じ機の別の負荷の回では 4,096 ms。Xvfb の起動を含む上限側の値で、5 秒の期限〔H7〕と直接は比べられない）。辞書の要求は 1 件で setProxy の 0 ms 後（H9）。OS の確認ダイアログは観測しない（headless）。
+- 終了: baseline／toolcheck は probe の main が自分で終了（close の code 0）、group 消滅、残り 0。packaged は wrapper への SIGTERM で wrapper が 143 で閉じた後も group に Chromium の子が残り（Xvfb の停止の後の X の接続の error）、group への SIGKILL で消えた（`forced: true`。証拠はそろった）。利用者の X0／X1 の socket は残った。一時 dir は消した。利用者に見える副作用はなかった（DR-CP2B-P2-5 の shim で OS の browser は起きない）。
+
+### 9.5 確かめていないこと（hosted で初めて分かること。PR 本文にも書く）
+
+- Windows／macOS の packaged で `--remote-debugging-port` と `--log-net-log` が効くか、CDP の `Runtime.evaluate` が製品の CSP の下で評価できるか（Linux では効いた）。
+- Windows／macOS の net log の `PROXY_CONFIG_CHANGED` と `TCP_CONNECT` の形で LS-1 の port と接続数が取れるか（toolcheck が照合する）。
+- macOS の `127.0.0.2`、Windows／macOS の UDP 5353 の bind、`[::1]`、LAN の IPv4 の canary（bind できない canary は記録して区分で扱う）。
+- macOS の無署名の `--dir` の出力が arm64 の runner で起動するか、Windows の `taskkill /T` と CIM の走査で終了の証拠が取れるか、macOS の `ps -axww -o args=` の走査。
+- DoH の canary の自己署名の証明書（Windows は Git の openssl、macOS は LibreSSL の代替の分岐）、hosted Linux の `kernel.apparmor_restrict_unprivileged_userns=0` での Chromium の sandbox。
+- 新しい workflow を default branch の外から `workflow_dispatch` できるか（推測では不可。初回は `pull_request`）。
+- 1 OS の所要（build を含む）と 90 分の timeout の余裕、flake の頻度（TCP の行の時間窓の帰属）。
+
+### 9.6 申し送り（判断は integrator）
+
+- DR-CP2B-P2-5（form の shim）と DR-CP2B-P2-10（移行の marker）は、(34) の行と述語を変えないが、packaged の環境を probe の main の環境（deny だけの handler）と「移行済みの利用者」にそろえる harness 側の手当てで、開示する。`dns.form-submit` の行は G-open と同じく対照でも 0 の DNS だけの行。製品の `window.open`／`target=_blank` の http(s) が `shell.openExternal` に渡る経路は K3/3 の影響表 8 のとおり閉じ込めの外で (34) の対象ではないが、乗っ取られた renderer が unrestricted で OS の browser を開ける事実として、PUB-G の開示（C-1）で扱うかを integrator が決める。
+- DR-CP2B-P2-8: env 名の数と Windows の console window は P2 では観測しない（既存の `configure_worker_process` の試験が構成の段を固定）。足りるかは integrator が決める。
+- packaged の終了は Linux で毎回 group への SIGKILL に進んだ（9.4）。close の後に group の消滅を数秒待ってから強制にすれば graceful に終わる見込み（推定）。記録の head を変えるので P2 では直していない。P4 の前に直すかは integrator が決める。
+- P4 は merge 後の master の SHA で `packaged-smoke.yml` を dispatch し、artifact の `<os>/` を `cp2b-g-pub/` に写して `README.md` を足す（この試運転の記録の形）。PUB-G の最終候補では B 案（署名・公証済みの配布物）で採り直す（TASK §2.3）。
