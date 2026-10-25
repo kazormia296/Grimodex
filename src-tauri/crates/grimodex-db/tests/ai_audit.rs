@@ -985,3 +985,84 @@ fn project_and_workspace_scopes_are_independent_and_pages_pin_the_tail() {
             .ok
     );
 }
+
+/// 送信前の commit の fsync と所要時間を測る probe（既定では走らない）。
+///
+/// `GRIMODEX_AI_AUDIT_DURABILITY_PROBE_DIR` に file DB を作り、各 execution で
+/// started＋prepared を書いたあと、`request.dispatched` の batch 1 回の commit を測る。
+/// `GRIMODEX_AI_AUDIT_DURABILITY_PROBE_MODE=durable` は外部送信用の append（FULL）、
+/// `normal` は汎用の append（NORMAL）。測る区間の前後で `probe-marker` を fsync するので、
+/// fsync を数える LD_PRELOAD の shim の log で区間内の回数を数えられる。
+#[test]
+#[ignore = "manual durability/latency probe; needs GRIMODEX_AI_AUDIT_DURABILITY_PROBE_DIR"]
+fn ai_audit_pre_dispatch_commit_durability_probe() {
+    use std::time::Instant;
+    let Ok(dir) = std::env::var("GRIMODEX_AI_AUDIT_DURABILITY_PROBE_DIR") else {
+        return;
+    };
+    let mode = std::env::var("GRIMODEX_AI_AUDIT_DURABILITY_PROBE_MODE")
+        .unwrap_or_else(|_| "durable".to_string());
+    let iterations: usize = std::env::var("GRIMODEX_AI_AUDIT_DURABILITY_PROBE_ITERATIONS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(50);
+    let dir = std::path::Path::new(&dir).join(&mode);
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("probe dir");
+    let db = Database::new(&dir.join("grimodex.db")).expect("open file db");
+    db.migrate().expect("migrate");
+    db.with_conn(|conn| {
+        conn.execute(
+            "INSERT INTO projects (id, title, created_at, updated_at)
+             VALUES ('project-1', 'Project', datetime('now'), datetime('now'))",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed project");
+    let with_execution = |mut item: AppendAiAuditEvent, execution: usize| {
+        item.event_id = format!("{}-{execution}", item.event_id);
+        item.execution_id = format!("execution-{execution}");
+        item
+    };
+    let marker = std::fs::File::create(dir.join("probe-marker")).expect("marker");
+    let mut durations = Vec::with_capacity(iterations);
+    for execution in 0..iterations {
+        db.append_ai_audit_events(
+            "project-1",
+            &[
+                with_execution(event("start", "execution.started", 1), execution),
+                with_execution(event("prepared", "request.prepared", 2), execution),
+            ],
+        )
+        .expect("begin batch");
+        let dispatched = [with_execution(
+            event("dispatched", "request.dispatched", 3),
+            execution,
+        )];
+        marker.sync_all().expect("marker before");
+        let started = Instant::now();
+        if mode == "durable" {
+            db.append_external_ai_audit_events("project-1", &dispatched)
+        } else {
+            db.append_ai_audit_events("project-1", &dispatched)
+        }
+        .expect("dispatched batch");
+        durations.push(started.elapsed().as_secs_f64() * 1_000.0);
+        marker.sync_all().expect("marker after");
+    }
+    durations.sort_by(f64::total_cmp);
+    let percentile = |p: f64| durations[((durations.len() - 1) as f64 * p).round() as usize];
+    let mean = durations.iter().sum::<f64>() / durations.len() as f64;
+    println!(
+        "{}",
+        json!({
+            "mode": mode,
+            "iterations": iterations,
+            "meanMs": mean,
+            "p50Ms": percentile(0.5),
+            "p90Ms": percentile(0.9),
+            "maxMs": percentile(1.0),
+        })
+    );
+}

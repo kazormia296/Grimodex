@@ -324,11 +324,14 @@ impl Database {
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DQS_DDL, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_DQS_DML, false)?;
         conn.set_db_config(DbConfig::SQLITE_DBCONFIG_WRITABLE_SCHEMA, false)?;
-        // synchronous=NORMAL is safe with WAL (committed txns survive crash;
-        // only the very last group commit can be lost on power loss). The
-        // SQLite default `FULL` issues an extra fsync per write — on WSL2 and
-        // some SSDs that adds 100s of ms per UPDATE, which dominated D&D
-        // commit latency in grid perf logs.
+        // synchronous=NORMAL is safe with WAL (committed txns survive a process
+        // crash; commits after the last WAL sync can be lost on power loss or an
+        // OS crash). The SQLite default `FULL` issues an extra fsync per write —
+        // on WSL2 and some SSDs that adds 100s of ms per UPDATE, which dominated
+        // D&D commit latency in grid perf logs.
+        // 例外：外部送信の前の AI 監査の commit（`request.dispatched` を含む batch と
+        // CLI の claim）だけは、その transaction の間だけ FULL にして WAL を fsync する
+        // （`ai_audit::PowerLossDurableCommitGuard`）。他の writer は NORMAL のまま。
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA synchronous=NORMAL;
