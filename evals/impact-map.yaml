@@ -365,6 +365,7 @@ rules:
       - evals/nir1-g01/**
       - evals/nir1-graph/**
       - scripts/quality/nir1-graph/**
+      - scripts/quality/nir1-graph-eval/**
       - docs/plans/nir1-c-scene-connection-candidate.md
       - docs/plans/nir1-d1-snapshot-candidate.md
       - docs/plans/nir1-d2b-dispatch-candidate.md

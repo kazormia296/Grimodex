@@ -497,6 +497,13 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph/contract.test.mjs",
       ],
       [
+        "node",
+        "--test",
+        // CP-4 S1a: the evaluation-only Graph arm of the Native.
+        "scripts/quality/nir1-graph-eval/native-architecture.test.mjs",
+        "scripts/quality/nir1-graph-eval/eval-native-build.test.mjs",
+      ],
+      [
         "cargo",
         "test",
         "--manifest-path",
@@ -629,6 +636,18 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "nir1-final-request-eval",
         "--lib",
         "nir1_final_request_eval",
+        "--",
+        "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+        "--features",
+        "nir1-graph-eval",
+        "--lib",
+        "nir1_graph_eval",
         "--",
         "--test-threads=1",
       ],

@@ -1751,3 +1751,49 @@ test("NIR-1 final-request (DP-H) assets are registered, selected and executed by
     assert.ok(commandLines.includes(command), command);
   }
 });
+
+test("CP-4 S1a evaluation-only Graph assets are registered, selected and executed by the nir1 suite", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const implementations = [
+    "electron/native/grimodex-node/src/nir1_graph_eval/mod.rs",
+    "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_eval.rs",
+    "scripts/quality/nir1-graph-eval/native-architecture.mjs",
+    "scripts/quality/nir1-graph-eval/eval-native-build.mjs",
+  ];
+  const tests = [
+    "electron/native/grimodex-node/src/nir1_graph_eval/tests.rs",
+    "scripts/quality/nir1-graph-eval/native-architecture.test.mjs",
+    "scripts/quality/nir1-graph-eval/eval-native-build.test.mjs",
+  ];
+  for (const changedPath of [...implementations, ...tests]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  for (const requirementId of ["GDX-ISOLATION-001", "GDX-TRACE-001"]) {
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
+    assert.ok(requirement, requirementId);
+    for (const implementation of implementations) {
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
+    }
+    for (const testPath of tests) {
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
+    }
+  }
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
+  for (const testPath of tests.filter((candidate) => !candidate.endsWith(".rs"))) {
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
+  }
+  assert.ok(
+    commandLines.includes(
+      "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features nir1-graph-eval --lib nir1_graph_eval -- --test-threads=1",
+    ),
+  );
+});
