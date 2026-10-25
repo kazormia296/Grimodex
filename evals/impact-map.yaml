@@ -589,11 +589,15 @@ rules:
       - src/features/chat/chatApi.cw.test.ts
       - src/features/chat/chatHistoryApi.ts
       - src/features/chat/chatTypedWrites.ts
+      - src/features/chat/chatEgressClosure.test.ts
+      - src/features/chat/chatEgressClosure.ts
       - src/features/chat/components/ChatInput.editClosed.test.tsx
+      - src/features/chat/components/ChatInput.nonSceneEdit.test.tsx
       - src/features/chat/components/ChatInput.tsx
       - src/features/chat/components/ContextCreatorDialog.tsx
       - src/features/chat/store.ts
       - src/features/chat/useChatMessageActions.editClosed.test.tsx
+      - src/features/chat/useChatMessageActions.nonSceneEdit.test.tsx
       - src/features/chat/useChatMessageActions.record.test.ts
       - src/features/chat/useChatMessageActions.ts
       - src/features/codex/components/CodexDetailContent.tsx
