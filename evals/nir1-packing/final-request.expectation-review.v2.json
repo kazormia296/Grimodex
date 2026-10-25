@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "nir1-final-request-expectation-review/1",
+  "verdict": "changes-required",
+  "status": "not-reviewed",
+  "note": "Template record written by the version-2 fixture author. No independent expectation review has been performed yet; the reviewer fields state the constraints the S2 reviewer must satisfy, and the reviewer replaces this file with the real record (agent, model, verdict, requiredChanges, per-case verdicts, fixtureSha256 of the bytes reviewed). Until the verdict is approve the freeze record stays pending-review.",
+  "reviewer": {
+    "agent": "dph-v2-expectation-reviewer (unassigned; S2)",
+    "model": "unassigned",
+    "distinctFromFixtureAuthor": true,
+    "distinctFromImplementers": true,
+    "readOnly": true,
+    "nativeOutputObserved": false
+  },
+  "fixtureSha256": "0b5d2912364ff738da599db6ab44da751f2b833cab495939bd183264356b9970",
+  "requiredChanges": [
+    "independent expectation review has not been performed (see evals/nir1-packing/final-request.v2.README.md, section 固定の手順)"
+  ],
+  "cases": [
+    {
+      "caseId": "P-01",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-02",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-04",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-05",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-06",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-07",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-08",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-10",
+      "verdict": "pending"
+    },
+    {
+      "caseId": "P-11",
+      "verdict": "pending"
+    }
+  ]
+}
