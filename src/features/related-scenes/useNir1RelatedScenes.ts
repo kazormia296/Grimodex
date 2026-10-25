@@ -225,7 +225,9 @@ export function useNir1RelatedScenes(enabled: boolean) {
       clearTimeout(timer);
       timer = setTimeout(() => run(true), FETCH_DEBOUNCE_MS);
     };
-    const run = (rawOnly = false) => {
+    // K6/4 の批准 12（DR-WF-3）：`graph-ready` を契機にした取り直しの最初の run
+    // だけが子。同じ effect の再試行と Raw の取り直しは別の契機（印なし）。
+    const run = (rawOnly = false, trigger: "graph-ready" | null = null) => {
       if (disposed) return;
       const generation = ++nextQueryGeneration;
       current.current = generation;
@@ -243,13 +245,13 @@ export function useNir1RelatedScenes(enabled: boolean) {
       // sent; otherwise begin is byte-identical to the one before CP-3a. A
       // failed read is no seed; Raw and IR still run. `rawOnly` has no begin.
       if (rawOnly || !isNir1GraphUiEnabled() || !projectId) {
-        start(rawOnly, generation, isCurrent, null);
+        start(rawOnly, generation, isCurrent, null, trigger);
         return;
       }
       void selectNir1GraphSeed(projectId, sceneId)
         .catch(() => null)
         .then((seed) => {
-          if (isCurrent()) start(false, generation, isCurrent, seed);
+          if (isCurrent()) start(false, generation, isCurrent, seed, trigger);
           else if (fetchingGeneration.current === generation)
             fetchingGeneration.current = null;
         });
@@ -259,6 +261,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
       generation: number,
       isCurrent: () => boolean,
       seed: string | null,
+      trigger: "graph-ready" | null,
     ) => {
       void fetchRelatedPastScenes(sceneId, {
         mode: "hybrid",
@@ -267,6 +270,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
         queryGeneration: generation,
         isCurrent,
         ...(seed !== null ? { graphSeedEntityId: seed } : {}),
+        ...(trigger !== null ? { refreshTrigger: trigger } : {}),
       })
         .then((value) => {
           const readyDuringFetch = graphReadyDuringFetch.current === generation;
@@ -345,7 +349,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
     // DR-RSJ-6: the first `graph-ready` refresh runs at once; the Graph it
     // waits for is cached already. Every other start keeps the debounce.
     timer = setTimeout(
-      () => run(),
+      () => run(false, byGraphReady ? "graph-ready" : null),
       byGraphReady && !chained ? 0 : FETCH_DEBOUNCE_MS,
     );
     return () => {

@@ -50,6 +50,8 @@ import type {
 import type { Nir1InitialUsabilitySnapshot } from "./nir1RelatedScenesDeadline";
 import {
   RELATED_SCENES_FETCH_LIMIT,
+  RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS,
+  RELATED_SCENES_IR_EXTRA_WAIT_MS,
   RELATED_SCENES_MAX,
   RELATED_SCENES_RELATIVE_GAP,
 } from "./relatedScenesConfig";
@@ -89,6 +91,10 @@ export async function fetchNir1RelatedPastScenes(
   let rawStatus: Nir1RelatedScenesFetchResult["rawStatus"] = "not-started";
   let tRawReadyMs: number | null = null;
   let nativeTiming: Nir1RelatedScenesFetchResult["timing"]["native"];
+  // K6/4 の批准 12（DR-WF-3・4）：`graph-ready` を契機にした取り直しの合流にだけ W_f。
+  const refreshTrigger =
+    options.refreshTrigger === "graph-ready" ? "graph-ready" : null;
+  let joinedGraphWindowMs: number | null = null;
   const isCurrent = () =>
     Boolean(
       workspace &&
@@ -149,6 +155,8 @@ export async function fetchNir1RelatedPastScenes(
         tRawReadyMs,
         tReturnMs: performance.now(),
         ...(nativeTiming ? { native: nativeTiming } : {}),
+        refreshTrigger,
+        graphWindowMs: joinedGraphWindowMs,
       },
     };
   }
@@ -292,7 +300,12 @@ export async function fetchNir1RelatedPastScenes(
         session,
         isCurrent,
         onGraphSettled: graphWait.settle,
+        graphWindowMs:
+          refreshTrigger === "graph-ready"
+            ? RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS
+            : RELATED_SCENES_IR_EXTRA_WAIT_MS,
       });
+      joinedGraphWindowMs = completed.graphWindowMs;
       return output(
         completed.status,
         "failed",
