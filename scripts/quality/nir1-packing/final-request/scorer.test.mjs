@@ -3176,3 +3176,107 @@ test("history_text_is_scanned: a canary in a history message is found", () => {
     ["canary-in-payload"],
   );
 });
+
+// ------------------------- negative-anchor Scene and unknown Scope (DPH-S0c)
+
+/**
+ * The P-02 reject setup as the harness records an unknown-Scope negative: the
+ * negative-anchor Scene is created and given its explicit Scope before any
+ * prepare (tree and scope events), and the invalidation is a Scene Scope write
+ * (`narrative_scene_scope_update`). The scorer's rules are unchanged.
+ */
+function unknownScopeSetup(w) {
+  const setup = setupFor(w, "P-02", rejectId("P-02"));
+  const firstPrepare = setup.events.findIndex(
+    (e) => e.kind === "prepare-negative",
+  );
+  setup.events.splice(
+    firstPrepare,
+    0,
+    {
+      stage: 1,
+      kind: "tree",
+      writer: "tree_node_create",
+      logicalId: "syn-p02-negative-anchor",
+      runtimeId: "rt:syn-p02-negative-anchor",
+    },
+    {
+      stage: 1,
+      kind: "scope",
+      writer: "narrative_scene_scope_update",
+      logicalId: "syn-p02-negative-anchor",
+      runtimeId: "rt:syn-p02-negative-anchor",
+    },
+  );
+  setup.events.find((e) => e.kind === "invalidate-negative").writer =
+    "narrative_scene_scope_update";
+  setup.events.forEach((event, index) => (event.seq = index + 1));
+  setup.writersUsed = [...new Set(setup.events.map((e) => e.writer))];
+  return setup;
+}
+
+test("setup-verification: an unknown-Scope negative on its own anchor is a valid setup; its writer and order are still checked", () => {
+  {
+    const w = world();
+    unknownScopeSetup(w);
+    const entry = result(score(w), "P-02", rejectId("P-02"));
+    assert.deepEqual(
+      codes(entry).filter((c) => c.startsWith("setup-invalid")),
+      [],
+    );
+    assert.equal(score(w).status, "passed");
+  }
+  {
+    const w = world();
+    const setup = unknownScopeSetup(w);
+    setup.events.find((e) => e.kind === "invalidate-negative").writer =
+      "db_execute:createSession";
+    setup.writersUsed = [...new Set(setup.events.map((e) => e.writer))];
+    const entry = result(score(w), "P-02", rejectId("P-02"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(
+      codes(entry).includes("setup-invalid:writer-kind-mismatch"),
+      String(codes(entry)),
+    );
+  }
+  {
+    // The negative-anchor Scene created after the first positive prepare.
+    const w = world();
+    const setup = unknownScopeSetup(w);
+    const tree = setup.events.findIndex(
+      (e) => e.logicalId === "syn-p02-negative-anchor" && e.kind === "tree",
+    );
+    const [moved] = setup.events.splice(tree, 1);
+    const firstPrepare = setup.events.findIndex((e) => e.kind === "prepare");
+    setup.events.splice(firstPrepare + 1, 0, moved);
+    setup.events.forEach((event, index) => (event.seq = index + 1));
+    const entry = result(score(w), "P-02", rejectId("P-02"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(
+      codes(entry).includes("setup-invalid:write-after-first-prepare"),
+      String(codes(entry)),
+    );
+  }
+  {
+    // Invalidated before it was approved.
+    const w = world();
+    const setup = unknownScopeSetup(w);
+    const approve = setup.events.findIndex(
+      (e) => e.kind === "approve-negative",
+    );
+    const invalidate = setup.events.findIndex(
+      (e) => e.kind === "invalidate-negative",
+    );
+    [setup.events[approve], setup.events[invalidate]] = [
+      setup.events[invalidate],
+      setup.events[approve],
+    ];
+    setup.events.forEach((event, index) => (event.seq = index + 1));
+    const entry = result(score(w), "P-02", rejectId("P-02"));
+    assert.equal(entry.status, "invalid");
+    assert.ok(
+      codes(entry).includes("setup-invalid:invalidate-before-approve"),
+      String(codes(entry)),
+    );
+  }
+});

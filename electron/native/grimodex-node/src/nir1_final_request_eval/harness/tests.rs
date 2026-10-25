@@ -4,7 +4,7 @@
 //!
 //! The mechanics tests run on `mechanics-fixture.json`, a synthetic fixture with
 //! its own logical IDs, texts and canaries. They never read the frozen
-//! fixture (`evals/nir1-packing/final-request.v1.json`): that fixture's
+//! fixture (`FIXTURE_PATH`, version 2; version 1 is superseded): that fixture's
 //! materials reach Native only through `evidence_run`, behind the freeze gate
 //! (draft K6/2 観測前の固定). `mechanics_fixture_shares_no_material_with_the_
 //! frozen_fixture` pins the separation.
@@ -17,8 +17,11 @@ use anyhow::{Context, Result};
 use grimodex_db::narrative_extraction::final_request_eval::sha256_hex;
 use serde_json::{json, Value};
 
-use super::fixture::Fixture;
-use super::freeze::{check_freeze, FIXTURE_PATH, FREEZE_PATH};
+use super::fixture::{validate_variant_setup, Fixture};
+use super::freeze::{
+    check_freeze, EVIDENCE_FIXTURE_VERSION, FIXTURE_PATH, FREEZE_PATH, REVIEW_PATH,
+    SUPERSEDED_FIXTURE_PATH, SUPERSEDED_FREEZE_PATH,
+};
 use super::run::{run_variant, VariantOutcome};
 use super::workspace::CaseWorkspace;
 use super::{evidence_run, run_all_variants, EvidenceOutcome};
@@ -806,7 +809,7 @@ fn git(root: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-const GATE_FIXTURE_TEXT: &str = "{\"fixture\":true}\n";
+const GATE_FIXTURE_TEXT: &str = "{\"fixture\":true,\"fixtureVersion\":2}\n";
 
 /// A review record as the independent reviewer writes it.
 fn review_text(verdict: &str, fixture_text: &str, native_output_observed: bool) -> String {
@@ -823,11 +826,11 @@ fn bound_files() -> Vec<(&'static str, String)> {
     vec![
         (FIXTURE_PATH, GATE_FIXTURE_TEXT.to_owned()),
         (
-            "evals/nir1-packing/final-request.expectation-review.v1.json",
+            REVIEW_PATH,
             review_text("approve", GATE_FIXTURE_TEXT, false),
         ),
         (
-            "evals/nir1-packing/final-request.README.md",
+            "evals/nir1-packing/final-request.v2.README.md",
             "readme\n".to_owned(),
         ),
         (
@@ -864,6 +867,7 @@ fn freeze_record_for(status: &str, files: &[(&'static str, String)]) -> Value {
     let entry =
         |path: &str, text: &str| json!({"path": path, "sha256": sha256_hex(text.as_bytes())});
     json!({
+        "fixtureVersion": EVIDENCE_FIXTURE_VERSION,
         "status": status,
         "reviewVerdict": if status == "frozen" { "approve" } else { "pending" },
         "nativeOutputObservedBeforeFreeze": false,
@@ -1162,18 +1166,40 @@ fn material_strings(value: &Value, out: &mut Vec<String>) {
 #[test]
 fn mechanics_fixture_shares_no_material_with_the_frozen_fixture() -> Result<()> {
     let root = super::freeze::repository_root()?;
-    let frozen: Value = serde_json::from_str(&std::fs::read_to_string(root.join(FIXTURE_PATH))?)?;
+    // Both versions: the superseded version 1 (always placed, the HOLD
+    // history) and the evidence version 2 once it is placed.
     let mut materials = Vec::new();
-    material_strings(&frozen, &mut materials);
-    assert!(materials.len() > 100, "{}", materials.len());
-    for canary in frozen["canaries"].as_array().context("canaries")? {
-        materials.push(canary["text"].as_str().context("canary text")?.to_owned());
+    for (path, required) in [
+        (root.join(SUPERSEDED_FIXTURE_PATH), true),
+        (root.join(FIXTURE_PATH), false),
+    ] {
+        if !required && !path.exists() {
+            continue;
+        }
+        let frozen: Value = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        let before = materials.len();
+        material_strings(&frozen, &mut materials);
+        assert!(
+            materials.len() - before > 100,
+            "{}",
+            materials.len() - before
+        );
+        for canary in frozen["canaries"].as_array().context("canaries")? {
+            materials.push(canary["text"].as_str().context("canary text")?.to_owned());
+        }
     }
     for material in &materials {
         assert!(
             !MECHANICS_FIXTURE.contains(material.as_str()),
             "the mechanics fixture contains a material of the frozen fixture: {material}"
         );
+        // The S0c writer test's synthetic texts are not frozen materials.
+        for text in S0C_SYNTHETIC_TEXTS.iter().chain(S0C_POSITIVE_TEXTS.iter()) {
+            assert!(
+                !text.contains(material.as_str()) && !material.contains(text),
+                "an S0c synthetic text overlaps a material of the frozen fixture: {text}"
+            );
+        }
     }
     // And the other way: the mechanics fixture is parseable and is not a P case.
     let (fixture, _, _) = fixture_text()?;
@@ -1247,5 +1273,479 @@ fn final_request_evidence_run() -> Result<()> {
             eprintln!("setup receipt: {}", setup_receipt_path.display());
         }
     }
+    Ok(())
+}
+
+// ------------------------------- versions and the unknown-Scope negative (S0c)
+
+#[test]
+fn harness_refuses_a_superseded_or_mismatched_fixture_version() -> Result<()> {
+    // Only a version-1 record (the superseded HOLD history): the gate reads the
+    // version-2 record, which does not exist, so Native never runs.
+    let only_v1 = temp_repo("frozen")?;
+    git(&only_v1.root, &["mv", FREEZE_PATH, SUPERSEDED_FREEZE_PATH])?;
+    git(
+        &only_v1.root,
+        &["commit", "--quiet", "-m", "a v1 record only"],
+    )?;
+    let reasons = refusal_reasons(&only_v1.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains(FREEZE_PATH) && reason.contains("could not be read")),
+        "{reasons:?}"
+    );
+
+    // A record that names another version.
+    let other = temp_repo_with("frozen", &bound_files(), |record| {
+        record["fixtureVersion"] = json!(1);
+    })?;
+    let reasons = refusal_reasons(&other.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("fixture-version-mismatch")
+                && reason.contains("freeze record")),
+        "{reasons:?}"
+    );
+
+    // A fixture under the version-2 path that names version 1.
+    let mut v1_text = bound_files();
+    v1_text[0].1 = "{\"fixture\":true,\"fixtureVersion\":1}\n".to_owned();
+    v1_text[1].1 = review_text("approve", &v1_text[0].1, false);
+    let named = temp_repo_with("frozen", &v1_text, |_| {})?;
+    let reasons = refusal_reasons(&named.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("fixture-version-mismatch")
+                && reason.contains(FIXTURE_PATH)),
+        "{reasons:?}"
+    );
+
+    // A record that binds the version-1 review record.
+    let mut v1_review = bound_files();
+    v1_review[1].0 = "evals/nir1-packing/final-request.expectation-review.v1.json";
+    let wrong_review = temp_repo_with("frozen", &v1_review, |_| {})?;
+    let reasons = refusal_reasons(&wrong_review.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("binds the review record")),
+        "{reasons:?}"
+    );
+    Ok(())
+}
+
+/// A minimal fixture for the setup-shape checks: one case (anchor, query) with
+/// a positive variant and a reject variant whose negative anchors its own
+/// Scene and is invalidated by `scene-scope-unknown`.
+fn shape_fixture(version: u32) -> Value {
+    let positive_steps = json!([
+        {"stage": 1, "op": "prepare", "revision": "s-pos", "entity": "s-ent", "anchorScene": "s-anchor", "proposalKey": "k-pos"},
+        {"stage": 1, "op": "approve", "revision": "s-pos"},
+    ]);
+    let mut reject_steps = json!([
+        {"stage": 1, "op": "prepare-negative", "revision": "s-neg", "entity": "s-neg-ent", "anchorScene": "s-neg-anchor", "proposalKey": "k-neg"},
+        {"stage": 1, "op": "approve-negative", "revision": "s-neg"},
+        {"stage": 1, "op": "invalidate-negative", "revision": "s-neg", "write": "scene-scope-unknown", "scene": "s-neg-anchor", "unresolvedReason": "shape test"},
+    ]);
+    reject_steps
+        .as_array_mut()
+        .expect("steps")
+        .extend(positive_steps.as_array().expect("steps").iter().cloned());
+    json!({
+        "fixtureVersion": version,
+        "estimatorVersion": "x",
+        "route": {"model": "m", "contextWindowTokens": 1000, "outputTokens": 10},
+        "setupContract": {"sceneScope": {"registry": {}, "perScene": {}}},
+        "cases": [{
+            "caseId": "S-1",
+            "userMessage": "u",
+            "isolation": {"workspaceId": "s-ws"},
+            "setup": {
+                "project": {"logicalId": "s-project"},
+                "scenes": [
+                    {"logicalId": "s-anchor", "role": "anchor", "title": "t", "body": "b"},
+                    {"logicalId": "s-query", "role": "query", "title": "t", "body": "b"},
+                ],
+                "codexEntities": [],
+            },
+            "variants": [
+                {"variantId": "s-positive", "kind": "positive",
+                 "setup": {"steps": positive_steps, "chatSessions": []},
+                 "requests": [{"stage": 1, "revisionIds": ["s-pos"]}]},
+                {"variantId": "s-reject", "kind": "reject", "ineligibleLogicalId": "s-neg",
+                 "setup": {
+                     "scenes": [{"logicalId": "s-neg-anchor", "role": "negative-anchor", "title": "t", "body": "b"}],
+                     "steps": reject_steps, "chatSessions": []},
+                 "requests": [{"stage": 1, "revisionIds": ["s-pos", "s-neg"]}]},
+            ],
+        }],
+    })
+}
+
+/// One mutation of the shape fixture.
+type ShapeMutation = Box<dyn Fn(&mut Value)>;
+
+fn shape_errors(raw: Value) -> Vec<String> {
+    let fixture: Fixture = serde_json::from_value(raw).expect("the shape fixture parses");
+    let case = &fixture.cases[0];
+    case.variants
+        .iter()
+        .filter_map(|variant| validate_variant_setup(&fixture, case, variant).err())
+        .map(|error| format!("{error:#}"))
+        .collect()
+}
+
+#[test]
+fn setup_shapes_allow_an_unknown_scope_negative_on_its_own_anchor_only() {
+    assert!(shape_errors(shape_fixture(2)).is_empty());
+    // The same shapes are refused in a version-1 fixture.
+    let errors = shape_errors(shape_fixture(1));
+    assert!(
+        errors
+            .iter()
+            .any(|error| error.contains("may not declare a negative-anchor Scene")),
+        "{errors:?}"
+    );
+    let cases: Vec<(&str, ShapeMutation)> = vec![
+        (
+            "may not target the case's anchor or query",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["scene"] = json!("s-anchor");
+            }),
+        ),
+        (
+            "may not target the case's anchor or query",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["scene"] = json!("s-query");
+            }),
+        ),
+        (
+            "is an invalidate-negative write only",
+            Box::new(|raw: &mut Value| {
+                // The scene is not a negative-anchor Scene, so only the op
+                // rule applies (the harness reports the first error).
+                let step = &mut raw["cases"][0]["variants"][1]["setup"]["steps"][2];
+                step["op"] = json!("binding-change");
+                step["scene"] = json!("s-other");
+            }),
+        ),
+        (
+            "unknown setup write",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["write"] =
+                    json!("scene-delete");
+            }),
+        ),
+        (
+            "unresolvedReason must be",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["unresolvedReason"] =
+                    json!(" x ");
+            }),
+        ),
+        (
+            "used outside its own variant's",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][3]["anchorScene"] =
+                    json!("s-neg-anchor");
+            }),
+        ),
+        (
+            "is not the anchor of the invalidated negative",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][0]["anchorScene"] =
+                    json!("s-anchor");
+            }),
+        ),
+        (
+            "neither the case's anchor nor a negative-anchor",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][0]["anchorScene"] =
+                    json!("s-other");
+            }),
+        ),
+        (
+            "only a reject variant may declare",
+            Box::new(|raw: &mut Value| {
+                let scenes = raw["cases"][0]["variants"][1]["setup"]["scenes"].clone();
+                raw["cases"][0]["variants"][0]["setup"]["scenes"] = scenes;
+            }),
+        ),
+        (
+            "is a Scene of the case",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["scenes"][0]["logicalId"] =
+                    json!("s-query");
+            }),
+        ),
+        (
+            "must be a negative-anchor",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["scenes"][0]["role"] = json!("anchor");
+            }),
+        ),
+        (
+            "at most one negative-anchor Scene",
+            Box::new(|raw: &mut Value| {
+                let scene = raw["cases"][0]["variants"][1]["setup"]["scenes"][0].clone();
+                raw["cases"][0]["variants"][1]["setup"]["scenes"]
+                    .as_array_mut()
+                    .expect("scenes")
+                    .push(scene);
+            }),
+        ),
+        // Review fixes (DR-DPH-111..114).
+        (
+            "used outside its own variant's",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][0]["setup"]["steps"][0]["anchorScene"] =
+                    json!("s-neg-anchor");
+            }),
+        ),
+        (
+            "must anchor the case's anchor Scene",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][0]["setup"]["steps"][0]["anchorScene"] =
+                    json!("s-query");
+            }),
+        ),
+        (
+            "used outside its own variant's",
+            Box::new(|raw: &mut Value| {
+                let mut other = raw["cases"][0]["variants"][1].clone();
+                other["variantId"] = json!("s-reject-other");
+                other["setup"]["scenes"] = json!([]);
+                other["setup"]["steps"]
+                    .as_array_mut()
+                    .expect("steps")
+                    .remove(2);
+                raw["cases"][0]["variants"]
+                    .as_array_mut()
+                    .expect("variants")
+                    .push(other);
+            }),
+        ),
+        (
+            "contract-trimmed",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["unresolvedReason"] =
+                    json!("\u{0085}x");
+            }),
+        ),
+        (
+            "contract-trimmed",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["steps"][2]["unresolvedReason"] =
+                    json!("\u{feff}x");
+            }),
+        ),
+        (
+            "invalidated before it is prepared and approved",
+            Box::new(|raw: &mut Value| {
+                let steps = raw["cases"][0]["variants"][1]["setup"]["steps"]
+                    .as_array_mut()
+                    .expect("steps");
+                let invalidate = steps.remove(2);
+                steps.insert(0, invalidate);
+            }),
+        ),
+        (
+            "after the stage's first positive prepare",
+            Box::new(|raw: &mut Value| {
+                let steps = raw["cases"][0]["variants"][1]["setup"]["steps"]
+                    .as_array_mut()
+                    .expect("steps");
+                let invalidate = steps.remove(2);
+                steps.insert(3, invalidate);
+            }),
+        ),
+        (
+            "role belongs to a reject variant's setup.scenes",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["setup"]["scenes"][1]["role"] = json!("negative-anchor");
+            }),
+        ),
+        (
+            "names two materials of the variant's workspace",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["setup"]["codexEntities"] = json!([{"logicalId": "s-neg-anchor", "type": "lore", "name": "n", "summary": "s"}]);
+            }),
+        ),
+        (
+            "a chat session may not sit on a negative-anchor Scene",
+            Box::new(|raw: &mut Value| {
+                raw["cases"][0]["variants"][1]["setup"]["chatSessions"] =
+                    json!([{"stage": 1, "nodeScene": "s-neg-anchor", "title": "t"}]);
+            }),
+        ),
+    ];
+    for (expected, mutate) in cases {
+        let mut raw = shape_fixture(2);
+        mutate(&mut raw);
+        let errors = shape_errors(raw);
+        assert!(
+            errors.iter().any(|error| error.contains(expected)),
+            "{expected}: {errors:?}"
+        );
+    }
+}
+
+#[test]
+fn unknown_scope_value_is_unknown_with_an_unresolved_query_identity() {
+    let (_, raw, _) = fixture_text().expect("the mechanics fixture");
+    let per_scene = &raw["setupContract"]["sceneScope"]["perScene"];
+    let explicit = super::workspace::scene_scope_value(per_scene, None);
+    let unknown = super::workspace::scene_scope_value(per_scene, Some("not yet placed"));
+    assert_eq!(explicit["compatibilityMarker"], "explicit");
+    assert_eq!(unknown["compatibilityMarker"], "unknown");
+    for axis in ["timeline", "worldline", "narrativeLayer"] {
+        assert_eq!(explicit["queryIdentity"][axis]["kind"], "exact");
+        assert_eq!(
+            unknown["queryIdentity"][axis],
+            json!({"kind": "unresolved", "reason": "not yet placed"})
+        );
+    }
+    assert_eq!(
+        unknown["materialConstraint"],
+        explicit["materialConstraint"]
+    );
+    assert_eq!(unknown["knowledgeHolder"], explicit["knowledgeHolder"]);
+    assert_eq!(unknown["audience"], explicit["audience"]);
+}
+
+/// The product writer accepts the unknown Scope, and the setup's own reader
+/// (`evaluate_nir1_entity_relation_disclosure`, the setup verification; no
+/// packer, renderer or D-final runs) sees the negative anchored on that Scene
+/// as not eligible and a positive prepared afterwards on the case's anchor as
+/// eligible. Synthetic materials only.
+/// The synthetic materials the S0c writer test writes; the separation test
+/// checks that no frozen fixture material is among them.
+const S0C_SYNTHETIC_TEXTS: [&str; 9] = [
+    "合成の起点",
+    "合成の起点の本文。",
+    "合成の問い",
+    "合成の問いの本文。",
+    "合成の負例の場面",
+    "合成の負例専用の本文。",
+    "合成の負例",
+    "合成の負例の要約。",
+    "合成の負例の Scope は未確定",
+];
+const S0C_POSITIVE_TEXTS: [&str; 2] = ["合成の正例", "合成の正例の要約。"];
+
+#[test]
+fn unknown_scope_write_makes_only_the_negative_ineligible() -> Result<()> {
+    let (_, raw, _) = fixture_text()?;
+    let scope = &raw["setupContract"]["sceneScope"];
+    let mut ws = CaseWorkspace::open("s0c/unknown-scope")?;
+    ws.write_project("S0c unknown scope")?;
+    let [anchor_title, anchor_body, query_title, query_body, negative_title, negative_body, negative_name, negative_summary, reason] =
+        S0C_SYNTHETIC_TEXTS;
+    let [positive_name, positive_summary] = S0C_POSITIVE_TEXTS;
+    let anchor = ws.write_scene(anchor_title, "a0", anchor_body)?;
+    let query = ws.write_scene(query_title, "a1", query_body)?;
+    let negative_anchor = ws.write_scene(negative_title, "a2", negative_body)?;
+    ws.write_scope_registry(&anchor, Some(&scope["registry"]), None)?;
+    for scene in [&anchor, &query, &negative_anchor] {
+        ws.write_scene_scope(scene, &scope["perScene"])?;
+    }
+    let negative_entity = ws.write_codex_entity("lore", negative_name, negative_summary)?;
+    let positive_entity = ws.write_codex_entity("lore", positive_name, positive_summary)?;
+    ws.run_product_maintenance(12)?;
+
+    let negative = ws.prepare_revision(&negative_anchor, &negative_entity, "s0c:negative")?;
+    ws.append_decision(&negative, "approved", None, "s0c-reviewer")?;
+    ws.run_product_maintenance(12)?;
+    ws.write_scene_scope_unknown(&negative_anchor, &scope["perScene"], reason)?;
+    ws.run_product_maintenance(12)?;
+    assert_eq!(ws.scene_scope_marker(&negative_anchor)?, "unknown");
+    assert_eq!(ws.scene_scope_marker(&anchor)?, "explicit");
+
+    let positive = ws.prepare_revision(&anchor, &positive_entity, "s0c:positive")?;
+    ws.append_decision(&positive, "approved", None, "s0c-reviewer")?;
+    ws.run_product_maintenance(12)?;
+    let negative_read = ws.read_revision(&negative.revision_id, &query)?;
+    let positive_read = ws.read_revision(&positive.revision_id, &query)?;
+    assert!(
+        negative_read.a2 != "eligible" || negative_read.a3 != "eligible",
+        "the negative on the unknown Scene must not be eligible"
+    );
+    assert_eq!(
+        (
+            positive_read.a2.as_str(),
+            positive_read.a3.as_str(),
+            positive_read.freshness.as_str()
+        ),
+        ("eligible", "eligible", "fresh"),
+        "a positive on the case's anchor stays eligible"
+    );
+    assert!(
+        ws.audit.direct_writes().is_empty(),
+        "every write went through a product writer"
+    );
+    Ok(())
+}
+
+#[test]
+fn setup_shapes_refuse_a_declared_but_unused_negative_anchor() {
+    // The negative anchors the case's anchor and is invalidated by a Codex
+    // write: the declared negative-anchor Scene is left unused, alone.
+    let mut raw = shape_fixture(2);
+    let steps = &mut raw["cases"][0]["variants"][1]["setup"]["steps"];
+    steps[0]["anchorScene"] = json!("s-anchor");
+    steps[2] = json!({"stage": 1, "op": "invalidate-negative", "revision": "s-neg",
+        "write": "codex-update", "entity": "s-neg-ent", "summary": "changed"});
+    let errors = shape_errors(raw);
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert!(
+        errors[0].contains("is not the anchor of the variant's prepare-negative step"),
+        "{errors:?}"
+    );
+}
+
+/// A frozen fixture whose later variant has a setup-shape error holds before
+/// Native runs on any variant (no receipt is written).
+#[test]
+fn evidence_run_holds_on_a_setup_shape_error_before_any_variant_runs() -> Result<()> {
+    let mut raw = shape_fixture(2);
+    raw["cases"][0]["variants"][1]["setup"]["steps"][2]["scene"] = json!("s-anchor");
+    let text = format!("{}\n", serde_json::to_string_pretty(&raw)?);
+    let mut files = bound_files();
+    files[0].1 = text.clone();
+    files[1].1 = review_text("approve", &text, false);
+    let repo = temp_repo_with("frozen", &files, |_| {})?;
+    let out = repo
+        .root
+        .join(".artifacts/nir1-final-request-eval/test")
+        .join(format!("hold-{}", uuid::Uuid::new_v4()));
+    let outcome = evidence_run(&repo.root, Some(out.clone()))?;
+    let EvidenceOutcome::Held { reasons, .. } = outcome else {
+        anyhow::bail!("the evidence entry ran a fixture with a setup-shape error");
+    };
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("NIR1_EVAL_SETUP_SHAPE")),
+        "{reasons:?}"
+    );
+    assert!(!out.join("receipt.json").exists());
+    Ok(())
+}
+
+#[test]
+fn harness_refuses_a_record_that_binds_another_fixture_path() -> Result<()> {
+    let mut files = bound_files();
+    files[0].0 = SUPERSEDED_FIXTURE_PATH;
+    let repo = temp_repo_with("frozen", &files, |_| {})?;
+    let reasons = refusal_reasons(&repo.root, None);
+    assert!(
+        reasons
+            .iter()
+            .any(|reason| reason.contains("binds the fixture") && reason.contains(FIXTURE_PATH)),
+        "{reasons:?}"
+    );
     Ok(())
 }
