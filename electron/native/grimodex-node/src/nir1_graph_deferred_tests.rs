@@ -277,6 +277,7 @@ fn p4_the_held_querys_own_stale_answer_is_not_announced() {
 #[test]
 fn n1_a_commit_after_the_release_is_still_stale() {
     let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
     *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
     let ticket = pending(begin_deferred(&fixture, "entity"));
     ticket.release_after_own_commits();
@@ -290,6 +291,11 @@ fn n1_a_commit_after_the_release_is_still_stale() {
     assert_eq!(fixture.diagnostics().stamp_stale, 1);
     assert_eq!(fixture.plan.queries.load(Ordering::SeqCst), 0);
     ticket.finish(GraphTicketUse::Unused);
+    wait_until("the end of the session", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
+    assert!(lock(&notices).is_empty(), "{:?}", lock(&notices));
 }
 
 /// P2-1: the hold outlasts a begin that takes longer than the Related Scenes
@@ -653,6 +659,8 @@ struct DriftPlan {
     drifted: AtomicUsize,
     registering: AtomicBool,
     registration_ms: AtomicU64,
+    /// Holds a query after it entered the worker, before its drift check.
+    query_gate_closed: AtomicBool,
 }
 
 struct DriftFactory {
@@ -712,6 +720,9 @@ impl GraphWorker for DriftWorker {
         _cancel: &AtomicBool,
     ) -> Result<Nir1GraphProjection> {
         self.plan.queries.fetch_add(1, Ordering::SeqCst);
+        while self.plan.query_gate_closed.load(Ordering::SeqCst) {
+            thread::sleep(Duration::from_millis(1));
+        }
         let db = self
             .connection
             .as_ref()
@@ -815,6 +826,7 @@ fn i_a_a_query_released_after_the_begins_commits_is_valid_and_the_controls_are_r
     // window is wide enough to contain both appends in the controls.
     let inference = Duration::from_millis(11);
     let (fixture, plan) = drift_fixture(Duration::from_millis(150));
+    let notices = recording_notifier(&fixture);
     let workspace = active_workspace_snapshot(&fixture.state.ws).expect("workspace");
     let authority: Arc<grimodex_db::WorkspaceAuthority> = Arc::clone(workspace.db());
     let product_writer: Arc<dyn SemanticAuditAppender> = authority;
@@ -867,6 +879,8 @@ fn i_a_a_query_released_after_the_begins_commits_is_valid_and_the_controls_are_r
     wait_until("the end of the session", || {
         fixture.kind() == GraphSlotKind::Empty
     });
+    assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
+    assert!(lock(&notices).is_empty(), "{:?}", lock(&notices));
 
     // Control 2: a READY prepared before the begin's commits (D-final's
     // warming, as a held query never keeps one) is stale at its query.
@@ -889,6 +903,123 @@ fn i_a_a_query_released_after_the_begins_commits_is_valid_and_the_controls_are_r
     late.finish(GraphTicketUse::Unused);
     let diagnostics = fixture.diagnostics();
     assert_eq!(diagnostics.stamp_stale + diagnostics.drift_at_query, 1);
+}
+
+/// (i-a) Without S0 (the release's admission found the workspace connection
+/// busy, `stamp_unavailable`), a commit between the READY and the query is
+/// still caught: by the worker's own drift check (`drift_at_query`, stale).
+#[test]
+fn i_a_without_s0_a_commit_before_the_query_is_caught_by_the_worker_drift() {
+    let (fixture, plan) = drift_fixture(Duration::ZERO);
+    let notices = recording_notifier(&fixture);
+    plan.query_gate_closed.store(true, Ordering::SeqCst);
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    active_workspace_snapshot(&fixture.state.ws)
+        .expect("workspace")
+        .db()
+        .with_read_transaction(|_conn| {
+            ticket.release_after_own_commits();
+            wait_until("the prepare", || plan.prepares.load(Ordering::SeqCst) == 1);
+            Ok(())
+        })
+        .expect("read");
+    wait_until("the query to reach the worker", || {
+        plan.queries.load(Ordering::SeqCst) == 1
+    });
+    commit_an_edit(&fixture, "Edited before the query");
+    plan.query_gate_closed.store(false, Ordering::SeqCst);
+    assert_unavailable(outcome(&ticket), GraphUnavailable::Stale);
+    ticket.finish(GraphTicketUse::Unused);
+    let diagnostics = fixture.diagnostics();
+    assert_eq!(diagnostics.stamp0_missing, 1);
+    assert_eq!(diagnostics.stamp_unavailable, 1);
+    assert_eq!(diagnostics.drift_at_query, 1);
+    assert_eq!(plan.drifted.load(Ordering::SeqCst), 1);
+    wait_until("the end of the session", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
+    assert!(lock(&notices).is_empty(), "{:?}", lock(&notices));
+}
+
+// ---- the end of an owner thread with a held query (lifecycle P3-2) -----------
+
+/// A panic while the released query runs settles it once, as `failed`,
+/// through the session's in-flight ticket (not as a left-behind hold).
+#[test]
+fn a_panic_of_the_held_query_settles_it_once_as_failed() {
+    let fixture = ProductFixture::new();
+    *lock(&fixture.plan.query_mode) = QueryMode::Panic;
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    ticket.release_after_own_commits();
+    assert_unavailable(outcome(&ticket), GraphUnavailable::Failed);
+    wait_until("the end of the session", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    let diagnostics = fixture.diagnostics();
+    assert_eq!(diagnostics.panics, 1);
+    assert_eq!(
+        diagnostics.deferred_dropped, 0,
+        "settled in flight, not left behind"
+    );
+    assert_unavailable(ticket.poll().expect("settled"), GraphUnavailable::Failed);
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+/// An owner thread that ends while it still holds the query (here: the READY
+/// it retires for the hold quarantines) settles the hold once in its guard,
+/// as `restart-required`.
+#[test]
+fn an_owner_thread_that_ends_while_holding_settles_the_hold_once() {
+    let fixture = ProductFixture::new();
+    fixture.warm();
+    fixture
+        .plan
+        .retire_quarantines
+        .store(true, Ordering::SeqCst);
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    assert_unavailable(outcome(&ticket), GraphUnavailable::RestartRequired);
+    wait_until("the quarantined slot", || {
+        fixture.kind() == GraphSlotKind::Quarantined
+    });
+    let diagnostics = fixture.diagnostics();
+    assert_eq!(diagnostics.deferred_dropped, 1);
+    assert_eq!(diagnostics.deferred_released, 0);
+    // A late release does nothing; the answer stays the first one.
+    ticket.release_after_own_commits();
+    thread::sleep(Duration::from_millis(60));
+    assert_eq!(creates(&fixture), 1);
+    assert_unavailable(
+        ticket.poll().expect("settled"),
+        GraphUnavailable::RestartRequired,
+    );
+    ticket.finish(GraphTicketUse::Unused);
+}
+
+/// The release itself refuses a hold of another lifecycle epoch. The epoch is
+/// moved without a Wake, so the owner thread cannot answer first; only
+/// `release_deferred`'s own check keeps `deferred_released` at 0.
+#[test]
+fn a_release_in_another_lifecycle_epoch_is_refused_by_the_release_itself() {
+    let fixture = ProductFixture::new();
+    fixture
+        .state
+        .nir1_graph
+        .set_deferred_release_limit_for_test(Duration::from_millis(200));
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    fixture
+        .state
+        .nir1_graph
+        .shared
+        .edge_epoch
+        .fetch_add(1, Ordering::SeqCst);
+    ticket.release_after_own_commits();
+    assert_eq!(fixture.diagnostics().deferred_released, 0);
+    assert_eq!(fixture.kind(), GraphSlotKind::Deferred);
+    assert_unavailable(outcome(&ticket), GraphUnavailable::Invalidated);
+    assert_eq!(creates(&fixture), 0);
+    assert_eq!(fixture.diagnostics().deferred_released, 0);
+    ticket.finish(GraphTicketUse::Unused);
 }
 
 // ---- (i-b) the same with the real worker binary (opt-in) ---------------------
