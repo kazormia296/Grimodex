@@ -271,6 +271,66 @@ fn p4_the_held_querys_own_stale_answer_is_not_announced() {
     assert!(lock(&notices).is_empty(), "{:?}", lock(&notices));
 }
 
+/// P1-1: the end-of-session notices are made outside every lock of the owner.
+/// The notifier calls back into the owner (`begin_deferred`, which takes the
+/// slot lock) and is answered at once. It calls from another thread with a
+/// bound, so a notice made under the slot lock fails this test instead of
+/// hanging it.
+#[test]
+fn p4_a_notifier_that_calls_back_into_the_owner_is_answered() {
+    let fixture = ProductFixture::new();
+    let answers = Arc::new(Mutex::new(Vec::<&'static str>::new()));
+    let recorded = Arc::clone(&answers);
+    let weak = Arc::downgrade(&fixture.state);
+    assert!(fixture.state.nir1_graph.set_graph_ready_notifier(Arc::new(
+        move |notice: &GraphReadyNotice| {
+            let Some(state) = weak.upgrade() else {
+                return;
+            };
+            let query = GraphQuery {
+                project_id: notice.project_id.clone(),
+                query_scene_id: SCENE.into(),
+                seed_entity_id: "entity".into(),
+            };
+            let (sent, received) = mpsc::channel();
+            thread::spawn(move || {
+                let answer = match state.nir1_graph.begin_deferred(&state, query) {
+                    GraphBegin::Pending(ticket) => {
+                        ticket.finish(GraphTicketUse::Cancelled);
+                        "pending"
+                    }
+                    GraphBegin::Cached(_) => "cached",
+                    GraphBegin::Unavailable(_) => "unavailable",
+                };
+                let _ = sent.send(answer);
+            });
+            let answer = received
+                .recv_timeout(Duration::from_secs(2))
+                .unwrap_or("blocked");
+            lock(&recorded).push(answer);
+        }
+    )));
+    *lock(&fixture.plan.query_mode) = QueryMode::Hold;
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    ticket.release_after_own_commits();
+    wait_until("the held query to reach the worker", || {
+        fixture.plan.queries.load(Ordering::SeqCst) == 1
+    });
+    assert!(matches!(
+        begin_deferred_for(&fixture, "other-project"),
+        GraphBegin::Unavailable(GraphUnavailable::Busy)
+    ));
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    assert!(matches!(outcome(&ticket), GraphTicketOutcome::Available(_)));
+    ticket.finish(GraphTicketUse::Used);
+    wait_until("the call-back's answer", || !lock(&answers).is_empty());
+    assert_eq!(
+        *lock(&answers),
+        vec!["pending"],
+        "the slot is free when the notice is made"
+    );
+}
+
 // ---- Negative ----------------------------------------------------------------
 
 /// N1: a commit between the release and the query (F10) is still stale.
