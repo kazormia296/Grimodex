@@ -496,6 +496,45 @@ impl Rig {
     }
 }
 
+impl Rig {
+    /// The attempt of `conversation` reached a terminal whose status is
+    /// `status` (waits up to 5 s for the terminal).
+    fn assert_terminal(&self, conversation: &str, status: &str) {
+        wait_until(
+            || {
+                self.query_text(
+                    "SELECT terminal_json FROM nir1_generation_attempts WHERE session_id=?1",
+                    conversation,
+                )
+                .is_some()
+            },
+            "the attempt's terminal",
+        );
+        assert_eq!(
+            self.query_text(
+                "SELECT json_extract(terminal_json,'$.observation.terminalStatus')
+                   FROM nir1_generation_attempts WHERE session_id=?1",
+                conversation,
+            )
+            .as_deref(),
+            Some(status)
+        );
+    }
+
+    /// The recorder saw the client close within `bound` of `since`. The
+    /// transport's own event-gap deadline (5 s in `fast_config`) is far
+    /// longer, so a close inside the bound is the stop's, not the deadline's.
+    fn assert_closed_within(&self, since: Instant, bound: Duration) {
+        while !self.recorder.peer_closed() {
+            assert!(
+                since.elapsed() < bound,
+                "the socket did not close within {bound:?}"
+            );
+            thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
 fn caller_json(caller: &CallerIdentity) -> String {
     json!({
         "profileId": caller.profile_id,
@@ -1209,12 +1248,18 @@ fn e7b_a_revoked_caller_stops_its_run_without_touching_the_capture() {
     rig.capture(&conversation, "e7b");
     let handle = rig.started("writing", &conversation);
     wait_until(|| rig.recorder.connections() == 1, "the send");
-    rig.state().profile_egress.invalidate_callers();
+    // The registration goes, the dispatch permit stays open: only the
+    // entry's own stop can close the send now.
+    rig.state()
+        .profile_egress
+        .forget_caller_for_test(rig.caller().sender_id);
+    let since = Instant::now();
     assert_eq!(
         reason(&rig.continue_as(&rig.caller(), &handle)),
         "NIR1_LOCAL_CALLER_REVOKED"
     );
-    wait_until(|| rig.recorder.peer_closed(), "the socket to close");
+    rig.assert_closed_within(since, Duration::from_millis(900));
+    rig.assert_terminal(&conversation, "cancelled");
     assert_eq!(rig.capture_state("e7b"), "current");
     assert_eq!(rig.state().nir1_local_entry.handle_count(), 0);
 }
@@ -1393,8 +1438,10 @@ fn e9_a_destroyed_sender_stops_the_run_and_leaves_the_capture() {
     let handle = rig.started("writing", &conversation);
     wait_until(|| rig.recorder.connections() == 1, "the send");
     assert_eq!(cancel_sender(rig.state(), rig.caller().sender_id + 1), 0);
+    let since = Instant::now();
     assert_eq!(cancel_sender(rig.state(), rig.caller().sender_id), 1);
-    wait_until(|| rig.recorder.peer_closed(), "the socket to close");
+    rig.assert_closed_within(since, Duration::from_millis(900));
+    rig.assert_terminal(&conversation, "cancelled");
     assert_eq!(rig.capture_state("e9"), "current");
     assert_eq!(
         reason(&rig.continue_as(&rig.caller(), &handle)),
@@ -1574,4 +1621,160 @@ fn e8d_the_owner_stops_even_when_the_capture_writer_cannot_run() {
         .store(false, Ordering::Release);
     assert_eq!(rig.cancel(&handle)["status"], "ok");
     assert_eq!(rig.capture_state("e8d"), "cancelled");
+}
+
+// ---------------------------------------------------------------------------
+// E11-E13: the starter's end, the bounds, the retention (DD-1a review).
+// ---------------------------------------------------------------------------
+
+/// E11: a starter thread that panics leaves no `starting` handle behind: the
+/// handle becomes final (`starter-ended`), nothing is attempted or sent, the
+/// owner's slot is released, and the retention can remove the handle.
+#[test]
+fn e11_a_panicking_starter_ends_its_handle() {
+    let rig = Rig::with_hooks(
+        ok_script(),
+        Nir1LocalEntryTestHooks {
+            attempt_probe: Some(Arc::new(|seen| {
+                if seen == Nir1LocalAttemptProbe::AfterPrepare {
+                    panic!("dd1a: injected starter panic");
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    rig.open_gate();
+    let conversation = rig.create("writing");
+    rig.capture(&conversation, "e11");
+    let handle = rig.started("writing", &conversation);
+    rig.wait_final(&handle);
+    let view = rig.continue_as(&rig.caller(), &handle);
+    assert_eq!(view["state"], "failed", "{view}");
+    assert_eq!(view["reason"], "starter-ended", "{view}");
+    assert_eq!(view["drained"], true);
+    assert_eq!((rig.attempts(), rig.recorder.connections()), (0, 0));
+    assert_eq!(rig.state().nir1_generation_registry.tracked_sessions(), 0);
+    assert_eq!(rig.state().nir1_local_entry.handle_count(), 0);
+}
+
+/// E11b: sixteen panicked starters do not block the entry for good: the
+/// seventeenth start is refused by the handle bound (before the capture, so it
+/// can be pressed again), and it starts once the retention has passed.
+#[test]
+fn e11b_final_handles_are_bounded_and_removed_after_the_retention() {
+    let rig = Rig::with_hooks(
+        ok_script(),
+        Nir1LocalEntryTestHooks {
+            attempt_probe: Some(Arc::new(|seen| {
+                if seen == Nir1LocalAttemptProbe::AfterPrepare {
+                    panic!("dd1a: injected starter panic");
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    rig.open_gate();
+    let conversation = rig.create("writing");
+    let mut handles = Vec::new();
+    for index in 0..NIR1_LOCAL_HANDLE_LIMIT {
+        rig.capture(&conversation, &format!("e11b-{index}"));
+        let handle = rig.started("writing", &conversation);
+        rig.wait_final(&handle);
+        handles.push(handle);
+    }
+    rig.capture(&conversation, "e11b-last");
+    let records = rig.state().nir1_local_entry.start_record_count();
+    assert_eq!(
+        reason(&rig.start("writing", &conversation)),
+        "NIR1_LOCAL_HANDLE_CAPACITY"
+    );
+    assert_eq!(rig.state().nir1_local_entry.start_record_count(), records);
+    rig.state()
+        .nir1_local_entry
+        .advance_clock_for_test(NIR1_LOCAL_FINAL_RETENTION + Duration::from_secs(1));
+    let _ = rig.started("writing", &conversation);
+    assert!(rig.state().nir1_local_entry.handle_count() <= 1);
+}
+
+/// E12 (checks 8 and 9 before the capture): with every handle slot reserved
+/// the start is refused and not recorded; a released reservation frees its
+/// slot; the retention is counted from the moment the run became final, not
+/// from the first time someone looked.
+#[test]
+fn e12_the_handle_bound_releases_reservations_and_counts_from_the_final_moment() {
+    let rig = Rig::new(ok_script());
+    rig.open_gate();
+    let conversation = rig.create("writing");
+    rig.capture(&conversation, "e12-a");
+    let entry_state = Arc::clone(&rig.state().nir1_local_entry);
+    let mut held: Vec<_> = (0..NIR1_LOCAL_HANDLE_LIMIT)
+        .map(|_| entry_state.reserve_handle().expect("a free slot"))
+        .collect();
+    assert_eq!(
+        reason(&rig.start("writing", &conversation)),
+        "NIR1_LOCAL_HANDLE_CAPACITY"
+    );
+    assert_eq!(rig.state().nir1_local_entry.start_record_count(), 0);
+    assert_eq!(rig.attempts(), 0);
+    // A released reservation returns its slot.
+    drop(held.pop());
+    let first = rig.started("writing", &conversation);
+    rig.wait_final(&first);
+    // Nobody looked at the final handle; the clock moves past the retention.
+    rig.state()
+        .nir1_local_entry
+        .advance_clock_for_test(NIR1_LOCAL_FINAL_RETENTION + Duration::from_secs(1));
+    rig.capture(&conversation, "e12-b");
+    let second = rig.start("writing", &conversation);
+    assert_eq!(second["status"], "started", "{second}");
+    drop(held);
+}
+
+/// E13 (check 9 before the capture): a full start record refuses before the
+/// capture (pressed again, it can start), and a record of another Ready entry
+/// is removed to make room.
+#[test]
+fn e13_a_full_start_record_refuses_before_the_capture_and_old_entries_go() {
+    let rig = Rig::new(ok_script());
+    rig.open_gate();
+    let conversation = rig.create("writing");
+    rig.capture(&conversation, "e13");
+    let binding = rig
+        .state()
+        .ws
+        .lifecycle_core()
+        .snapshot()
+        .expect("lifecycle")
+        .binding()
+        .expect("ready")
+        .clone();
+    let fill = |binding: &LiveBinding| {
+        let mut records = rig.state().nir1_local_entry.starts();
+        records.entries.clear();
+        for index in 0..NIR1_LOCAL_START_RECORD_LIMIT {
+            records.entries.push((
+                StartKey {
+                    binding: binding.clone(),
+                    project_id: PROJECT_ID.into(),
+                    chat_session_id: format!("dd1a-filler-{index}"),
+                },
+                format!("dd1a-filler-capture-{index}"),
+            ));
+        }
+    };
+    fill(&binding);
+    assert_eq!(
+        reason(&rig.start("writing", &conversation)),
+        "NIR1_LOCAL_START_RECORD_FULL"
+    );
+    assert_eq!((rig.attempts(), rig.recorder.connections()), (0, 0));
+    assert_eq!(rig.state().nir1_local_entry.handle_count(), 0);
+    assert_eq!(rig.capture_state("e13"), "current");
+    // Records of another Ready entry: they are removed and the start goes on.
+    let other = LiveBinding::new("/dd1a/other-workspace", "dd1a-other", 7, 1);
+    fill(&other);
+    let handle = rig.started("writing", &conversation);
+    assert_eq!(rig.state().nir1_local_entry.start_record_count(), 1);
+    let (_, _, view) = rig.drain(&handle);
+    assert_eq!(view["state"], "succeeded");
 }

@@ -449,7 +449,9 @@ struct HandleEntry {
     /// The owner's cancel handle (the same control the run's handle uses).
     cancel: Nir1OwnerCancel,
     phase: Mutex<Phase>,
-    final_since: Mutex<Option<Instant>>,
+    /// When a `Phase::Ended` was set (a running phase's final time is the
+    /// run's own `finished_at`).
+    ended_at: Mutex<Option<Instant>>,
     /// The user withdrew this generation (`generation_cancel` was called).
     withdrawn: AtomicBool,
     /// The capture writer of a withdrawal reached its terminal result.
@@ -462,7 +464,20 @@ impl HandleEntry {
     }
 
     fn set_phase(&self, phase: Phase) {
+        let ended = matches!(phase, Phase::Ended { .. });
         *self.lock_phase() = phase;
+        if ended {
+            *self.ended_at.lock().unwrap_or_else(PoisonError::into_inner) = Some(Instant::now());
+        }
+    }
+
+    /// When the generation became final, if it has.
+    fn final_at(&self) -> Option<Instant> {
+        match &*self.lock_phase() {
+            Phase::Starting => None,
+            Phase::Running(run) => run.finished_at(),
+            Phase::Ended { .. } => *self.ended_at.lock().unwrap_or_else(PoisonError::into_inner),
+        }
     }
 
     /// Whether the generation is over (a durable terminal, or no attempt).
@@ -480,16 +495,10 @@ impl HandleEntry {
         self.withdrawn.load(Ordering::Acquire) && !self.capture_settled.load(Ordering::Acquire)
     }
 
+    /// Counted from the moment the generation became final (DR-DD1A-7).
     fn final_for_longer_than(&self, retention: Duration, now: Instant) -> bool {
-        if !self.is_final() {
-            return false;
-        }
-        let mut since = self
-            .final_since
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        let started = *since.get_or_insert(now);
-        now.duration_since(started) >= retention
+        self.final_at()
+            .is_some_and(|final_at| now.saturating_duration_since(final_at) >= retention)
     }
 }
 
@@ -543,9 +552,36 @@ pub(crate) struct Nir1LocalEntryState {
     starts: Mutex<StartRecords>,
     #[cfg(test)]
     hooks: Mutex<Option<Arc<test_hooks::Nir1LocalEntryTestHooks>>>,
+    /// Test only: added to the clock the retention reads.
+    #[cfg(test)]
+    clock_offset: Mutex<Duration>,
 }
 
 impl Nir1LocalEntryState {
+    /// The clock of the retention (a test may move it forward).
+    fn now(&self) -> Instant {
+        #[cfg(test)]
+        {
+            Instant::now()
+                + *self
+                    .clock_offset
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+        }
+        #[cfg(not(test))]
+        {
+            Instant::now()
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn advance_clock_for_test(&self, by: Duration) {
+        *self
+            .clock_offset
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) += by;
+    }
+
     fn handles(&self) -> MutexGuard<'_, HandleTable> {
         self.handles.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -580,7 +616,7 @@ impl Nir1LocalEntryState {
     /// Reserve one handle slot, pruning final handles past the retention.
     fn reserve_handle(self: &Arc<Self>) -> Result<HandleReservation, Nir1LocalRefusal> {
         let mut table = self.handles();
-        let now = Instant::now();
+        let now = self.now();
         table
             .entries
             .retain(|entry| !entry.final_for_longer_than(NIR1_LOCAL_FINAL_RETENTION, now));
@@ -846,7 +882,7 @@ fn start_inner(
         submission: admitted.submission,
         cancel,
         phase: Mutex::new(Phase::Starting),
-        final_since: Mutex::new(None),
+        ended_at: Mutex::new(None),
         withdrawn: AtomicBool::new(false),
         capture_settled: AtomicBool::new(false),
     });
@@ -905,6 +941,24 @@ fn read_policy_before_attempt(
     }
 }
 
+/// Ends the handle when the starter thread ends without setting a phase (a
+/// panic): `Phase::Starting` never stays behind, so the handle is final and
+/// the retention removes it (the transport's `RunGuard` does the same for a
+/// run). The owner's own Drop records the attempt, as DT-2/DT-5 do.
+struct StarterGuard<'entry>(&'entry HandleEntry);
+
+impl Drop for StarterGuard<'_> {
+    fn drop(&mut self) {
+        let starting = matches!(&*self.0.lock_phase(), Phase::Starting);
+        if starting {
+            self.0.set_phase(Phase::Ended {
+                state: Nir1LocalRunState::Failed,
+                reason: "starter-ended",
+            });
+        }
+    }
+}
+
 /// The starter thread: the coordinator's run and then the transport. The
 /// thread is a plain thread, so an owner dropped here records synchronously.
 fn run_starter(
@@ -914,6 +968,7 @@ fn run_starter(
     basis: Nir1LocalSendPolicyBasis,
     config: Nir1LocalTransportConfig,
 ) {
+    let _guard = StarterGuard(entry);
     let phase = match attempt.run_for_dispatch() {
         Ok((Nir1LocalAttemptOutcome::Start(transport), Some(target))) => {
             let mut input = Nir1LocalGenerationInput::new(
