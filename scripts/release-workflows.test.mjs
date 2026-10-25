@@ -615,6 +615,7 @@ describe("release workflow boundary", () => {
       "aur-publish.yml",
       "migrate-semantic-models.yml",
       "release-public-smoke.yml",
+      "update-route-watch.yml",
     ]) {
       const workflow = await readWorkflow(name);
       for (const uses of collectUses(workflow)) {
@@ -1063,5 +1064,212 @@ describe("C-query worker packaging (CP-2b P1)", () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+});
+
+// ── CP-2b P3（H1）: 更新経路の定期 CI ───────────────────────────────────────
+// 判断の記録: docs/plans/nir1-lane-decisions/cp2b-decisions.md の DR-CP2B-P3-1〜4。
+describe("update route watch (CP-2b P3, H1)", () => {
+  const loadCheck = () => import("./update-route-redirect-check.mjs");
+  const RS1 = [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+  ];
+  const START =
+    "https://github.com/electron/electron/releases/download/v43.8.3/SHASUMS256.txt";
+
+  /** hop ごとの合成の応答を返し、要求された URL を記録する fetch。 */
+  function syntheticFetch(responses) {
+    const requested = [];
+    const fetchImpl = async (url, init) => {
+      requested.push({ url, redirect: init.redirect });
+      const next = responses.shift();
+      if (!next) throw new Error("unexpected request");
+      if (next instanceof Error) throw next;
+      return new Response(null, {
+        status: next.status,
+        headers: next.location ? { location: next.location } : {},
+      });
+    };
+    return { fetchImpl, requested };
+  }
+
+  async function refusal(promise) {
+    const { UpdateRouteError } = await loadCheck();
+    try {
+      await promise;
+    } catch (error) {
+      assert.ok(error instanceof UpdateRouteError, String(error));
+      return error;
+    }
+    assert.fail("the route check passed");
+  }
+
+  it("runs weekly and on demand with read-only, secret-free, bounded permissions", async () => {
+    const text = await readFile(
+      path.join(repoRoot, ".github", "workflows", "update-route-watch.yml"),
+      "utf8",
+    );
+    const workflow = load(text);
+    assert.deepEqual(Object.keys(workflow.on).sort(), [
+      "schedule",
+      "workflow_dispatch",
+    ]);
+    assert.deepEqual(workflow.on.schedule, [{ cron: "17 3 * * 1" }]);
+    assert.equal(workflow.on.workflow_dispatch, null);
+    assert.deepEqual(workflow.permissions, { contents: "read" });
+    assert.doesNotMatch(text, /secrets\.|pull_request|GITHUB_TOKEN|github\.token/);
+    assert.deepEqual(Object.keys(workflow.jobs), ["watch"]);
+    const job = workflow.jobs.watch;
+    assert.equal(job.permissions, undefined);
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.equal(job["timeout-minutes"], 10);
+    const checkout = job.steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    assert.equal(checkout.with["persist-credentials"], false);
+    assert.deepEqual(
+      job.steps.filter((step) => step.run).map((step) => step.run.trim()),
+      [
+        "pnpm install --frozen-lockfile --ignore-scripts",
+        "node scripts/update-route-redirect-check.mjs",
+      ],
+    );
+    for (const uses of collectUses(workflow)) {
+      assert.match(uses, /^[^@]+@[0-9a-f]{40}$/, uses);
+    }
+  });
+
+  it("reads RS-1 from the product constant and starts from the current Electron asset", async () => {
+    const {
+      electronShasumsUrl,
+      loadRs1GithubHosts,
+      readElectronVersion,
+      validateHostList,
+    } = await loadCheck();
+    assert.deepEqual([...(await loadRs1GithubHosts())], RS1);
+    const version = await readElectronVersion();
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+    assert.equal(
+      electronShasumsUrl(version),
+      `https://github.com/electron/electron/releases/download/v${version}/SHASUMS256.txt`,
+    );
+    assert.throws(() => electronShasumsUrl("^43.8.3"), /electron-version-not-exact/);
+    for (const invalid of [
+      RS1.slice(0, 2),
+      [...RS1, "github-releases.githubusercontent.com"],
+      ["*.github.com", RS1[1], RS1[2]],
+      ["GitHub.com", RS1[1], RS1[2]],
+      ["github.com.", RS1[1], RS1[2]],
+      [RS1[0], RS1[0], RS1[2]],
+    ]) {
+      assert.throws(() => validateHostList(invalid), /rs1-hosts-invalid/);
+    }
+  });
+
+  it("follows only RS-1 hosts hop by hop with manual redirects", async () => {
+    const { checkUpdateRoute } = await loadCheck();
+    const { fetchImpl, requested } = syntheticFetch([
+      { status: 302, location: "https://RELEASE-ASSETS.githubusercontent.com./a?sig=1" },
+      { status: 307, location: "/b" },
+      { status: 200 },
+    ]);
+    const lines = [];
+    const result = await checkUpdateRoute({
+      startUrl: START,
+      allowedHosts: RS1,
+      fetchImpl,
+      log: (line) => lines.push(line),
+    });
+    assert.deepEqual(result.hops, [
+      { host: "github.com", status: 302 },
+      { host: "release-assets.githubusercontent.com", status: 307 },
+      { host: "release-assets.githubusercontent.com", status: 200 },
+    ]);
+    assert.deepEqual(
+      requested.map(({ url }) => new URL(url).hostname),
+      ["github.com", "release-assets.githubusercontent.com.", "release-assets.githubusercontent.com."],
+    );
+    assert.ok(requested.every(({ redirect }) => redirect === "manual"));
+    // log は host と status だけで、署名付きの query を出さない。
+    assert.ok(lines.every((line) => !line.includes("sig=")), lines.join("\n"));
+  });
+
+  it("fails before contacting a redirect host outside RS-1", async () => {
+    const { checkUpdateRoute } = await loadCheck();
+    for (const [location, reason] of [
+      ["https://github-releases.githubusercontent.com/a", "host-outside-rs1"],
+      ["https://objects.githubusercontent.com.example/a", "host-outside-rs1"],
+      ["https://evil.example/github.com", "host-outside-rs1"],
+      ["https://github.com@evil.example/a", "userinfo-present"],
+      ["http://release-assets.githubusercontent.com/a", "not-https"],
+      ["https://release-assets.githubusercontent.com:8443/a", "non-default-port"],
+      ["https://[", "location-unparsable"],
+    ]) {
+      const { fetchImpl, requested } = syntheticFetch([
+        { status: 302, location },
+      ]);
+      const error = await refusal(
+        checkUpdateRoute({ startUrl: START, allowedHosts: RS1, fetchImpl }),
+      );
+      assert.equal(error.reason, reason, location);
+      assert.equal(requested.length, 1, location);
+    }
+    const { fetchImpl, requested } = syntheticFetch([]);
+    const error = await refusal(
+      checkUpdateRoute({
+        startUrl: "https://github-releases.githubusercontent.com/a",
+        allowedHosts: RS1,
+        fetchImpl,
+      }),
+    );
+    assert.equal(error.reason, "host-outside-rs1");
+    assert.equal(error.host, "github-releases.githubusercontent.com");
+    assert.equal(requested.length, 0);
+  });
+
+  it("fails on a missing Location, a redirect loop, a non-200 end or a network failure", async () => {
+    const { MAX_REDIRECTS, checkUpdateRoute } = await loadCheck();
+    const cases = [
+      [[{ status: 302 }], "location-missing"],
+      [
+        Array.from({ length: MAX_REDIRECTS + 1 }, () => ({
+          status: 302,
+          location: "/again",
+        })),
+        "too-many-redirects",
+      ],
+      [
+        [
+          { status: 302, location: "https://release-assets.githubusercontent.com/a" },
+          { status: 403 },
+        ],
+        "unexpected-status",
+      ],
+      [[{ status: 404 }], "unexpected-status"],
+      [[new TypeError("fetch failed")], "request-failed"],
+    ];
+    for (const [responses, reason] of cases) {
+      const { fetchImpl } = syntheticFetch(responses);
+      const error = await refusal(
+        checkUpdateRoute({ startUrl: START, allowedHosts: RS1, fetchImpl }),
+      );
+      assert.equal(error.reason, reason);
+    }
+    // 上限ちょうどの redirect は通る（electron-updater の maxRedirects と同じ）。
+    const { fetchImpl } = syntheticFetch([
+      ...Array.from({ length: MAX_REDIRECTS }, () => ({
+        status: 302,
+        location: "/again",
+      })),
+      { status: 200 },
+    ]);
+    const { hops } = await checkUpdateRoute({
+      startUrl: START,
+      allowedHosts: RS1,
+      fetchImpl,
+    });
+    assert.equal(hops.length, MAX_REDIRECTS + 1);
   });
 });
