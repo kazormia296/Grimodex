@@ -427,6 +427,59 @@ async function runProbeMain({ config, work, bundles, observers, nonce, lan, args
   };
 }
 
+/**
+ * CDP で攻撃 JS を注入する（packaged の構成）。target を待ち、**CDP の port を owned の process tree が listen していると確かめて
+ * から**接続する（別の Grimodex に攻撃 JS を注入しない。確かめられなければ接続も評価もしない）。依存（target の待ち、port の
+ * owner の確認、接続、評価、script の読込）は試験が差し替える。戻り値: { cdp, pageShims, pageShimIds, rendererResults }
+ */
+export async function injectAttack({
+  cdpPort, owner, platform, probeArgs, verifyPortOwner = verifyCdpPortOwner,
+  waitTarget = waitForTarget, connect = connectCdp, evaluateFn = evaluate, readScript = () => fs.readFileSync(RENDERER_SCRIPT, "utf8"),
+  fetchVersion = async (port) => {
+    const response = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(5_000) });
+    return response.json();
+  },
+}) {
+  const cdp = { port: cdpPort, injected: false, launchToTargetMs: null, error: null, version: null };
+  const pageShims = [];
+  const pageShimIds = [];
+  let rendererResults = [];
+  let session = null;
+  try {
+    const { target, waitedMs } = await waitTarget(cdpPort, { timeoutMs: LIMITS.targetMs, isAlive: owner.isAlive });
+    cdp.launchToTargetMs = waitedMs;
+    cdp.targetUrl = String(target.url).split("?")[0];
+    // CDP の port は起動前に選んで閉じた番号なので、別の process が先に取りうる。owned の process tree が listen していることを
+    // 確かめてから注入する（別の Grimodex に攻撃 JS を注入しない）。確かめられなければ注入しない（道具なし）
+    cdp.portOwner = verifyPortOwner({ port: cdpPort, owner, platform });
+    if (cdp.portOwner?.owned !== true) throw new Error(`CDP の port を owned の process tree が listen していると確かめられない（${cdp.portOwner?.reason}）`);
+    try {
+      const version = await fetchVersion(cdpPort);
+      cdp.version = { browser: version.Browser ?? null, userAgent: version["User-Agent"] ?? null };
+    } catch { /* 記録だけ */ }
+    session = await connect(target.webSocketDebuggerUrl);
+    const readyStarted = Date.now();
+    while (await evaluateFn(session, "document.readyState", { timeoutMs: 10_000 }) !== "complete") {
+      if (Date.now() - readyStarted > LIMITS.pageReadyMs) throw new Error("document.readyState が complete にならない");
+      await sleep(250);
+    }
+    if (await evaluateFn(session, FORM_SUBMIT_SHIM, { timeoutMs: 10_000 }) === "form-submit-shim") {
+      pageShims.push(FORM_SUBMIT_SHIM_NOTE);
+      pageShimIds.push(FORM_SUBMIT_SHIM_ID);
+    }
+    await evaluateFn(session, `globalThis.__probe = ${JSON.stringify(probeArgs)}; true`, { timeoutMs: 10_000 });
+    const value = await evaluateFn(session, readScript(), { timeoutMs: LIMITS.rendererMs });
+    if (!Array.isArray(value)) throw new Error(`攻撃 JS の結果が配列でない: ${typeof value}`);
+    rendererResults = value;
+    cdp.injected = rendererResults.length > 0;
+  } catch (error) {
+    cdp.error = String(error?.message ?? error).slice(0, 300);
+  } finally {
+    if (session) await session.close();
+  }
+  return { cdp, pageShims, pageShimIds, rendererResults };
+}
+
 /** packaged の実行体を走らせ、CDP で攻撃 JS を注入する */
 async function runPackaged({ work, observers, nonce, lan, args, platform, packagedApp, track, verifyPortOwner = verifyCdpPortOwner }) {
   const cdpPort = await freePort();
@@ -444,45 +497,9 @@ async function runPackaged({ work, observers, nonce, lan, args, platform, packag
   const appArgs = [`--remote-debugging-port=${cdpPort}`, `--log-net-log=${netLog}`, "--net-log-capture-mode=Everything"];
   const launch = wrapForPlatform(packagedApp.executable, appArgs, platform);
   const owner = track(launchOwned({ ...launch, env, cwd: work, exeDir: packagedApp.appDir, label: "packaged", platform }));
-  const cdp = { port: cdpPort, injected: false, launchToTargetMs: null, error: null, version: null };
-  const pageShims = [];
-  const pageShimIds = [];
-  let rendererResults = [];
-  let session = null;
-  try {
-    const { target, waitedMs } = await waitForTarget(cdpPort, { timeoutMs: LIMITS.targetMs, isAlive: owner.isAlive });
-    cdp.launchToTargetMs = waitedMs;
-    cdp.targetUrl = String(target.url).split("?")[0];
-    // CDP の port は起動前に選んで閉じた番号なので、別の process が先に取りうる。owned の process tree が listen していることを
-    // 確かめてから注入する（別の Grimodex に攻撃 JS を注入しない）。確かめられなければ注入しない（道具なし）
-    cdp.portOwner = verifyPortOwner({ port: cdpPort, owner, platform });
-    if (!cdp.portOwner.owned) throw new Error(`CDP の port を owned の process tree が listen していると確かめられない（${cdp.portOwner.reason}）`);
-    try {
-      const response = await fetch(`http://127.0.0.1:${cdpPort}/json/version`, { signal: AbortSignal.timeout(5_000) });
-      const version = await response.json();
-      cdp.version = { browser: version.Browser ?? null, userAgent: version["User-Agent"] ?? null };
-    } catch { /* 記録だけ */ }
-    session = await connectCdp(target.webSocketDebuggerUrl);
-    const readyStarted = Date.now();
-    while (await evaluate(session, "document.readyState", { timeoutMs: 10_000 }) !== "complete") {
-      if (Date.now() - readyStarted > LIMITS.pageReadyMs) throw new Error("document.readyState が complete にならない");
-      await sleep(250);
-    }
-    if (await evaluate(session, FORM_SUBMIT_SHIM, { timeoutMs: 10_000 }) === "form-submit-shim") {
-      pageShims.push(FORM_SUBMIT_SHIM_NOTE);
-      pageShimIds.push(FORM_SUBMIT_SHIM_ID);
-    }
-    await evaluate(session, `globalThis.__probe = ${JSON.stringify(probeArgsFor({ nonce, ports: observers.ports, lan: lan ?? "192.0.2.1" }))}; true`, { timeoutMs: 10_000 });
-    const script = fs.readFileSync(RENDERER_SCRIPT, "utf8");
-    const value = await evaluate(session, script, { timeoutMs: LIMITS.rendererMs });
-    if (!Array.isArray(value)) throw new Error(`攻撃 JS の結果が配列でない: ${typeof value}`);
-    rendererResults = value;
-    cdp.injected = rendererResults.length > 0;
-  } catch (error) {
-    cdp.error = String(error?.message ?? error).slice(0, 300);
-  } finally {
-    if (session) await session.close();
-  }
+  const { cdp, pageShims, pageShimIds, rendererResults } = await injectAttack({
+    cdpPort, owner, platform, probeArgs: probeArgsFor({ nonce, ports: observers.ports, lan: lan ?? "192.0.2.1" }), verifyPortOwner,
+  });
   const lifecycle = await terminateOwned(owner);
   track.release(owner, lifecycle);
   const { summary, connectTimes } = readNetLogSummary(netLog, nonce);

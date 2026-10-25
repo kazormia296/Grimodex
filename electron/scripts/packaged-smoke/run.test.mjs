@@ -9,6 +9,7 @@ import {
   FORM_SUBMIT_SHIM,
   closeAllWithin,
   createTracker,
+  injectAttack,
   installInterruptHandler,
   maskFreeText,
   maskRules,
@@ -225,3 +226,36 @@ test("伏せ字: repo・一時 dir・home の絶対 path（Windows の区切り�
   assert.equal(free.cdp.error, "port owned by <user>");
   assert.equal(free.environment.runner.os, "alice"); // 自由文の field 以外は変えない
 });
+
+test("注入: CDP の port を owned の process tree が listen していると確かめられなければ、接続も Runtime.evaluate もしない", async () => {
+  const calls = [];
+  const deps = (owned) => ({
+    cdpPort: 9222, owner: { isAlive: () => true }, platform: "linux", probeArgs: { nonce: "x" },
+    waitTarget: async () => ({ target: { url: "app://bundle/index.html", webSocketDebuggerUrl: "ws://127.0.0.1:9222/x" }, waitedMs: 5 }),
+    verifyPortOwner: () => ({ owned, reason: owned ? "owned" : "pid 9 の process group が違う" }),
+    fetchVersion: async () => { calls.push("version"); return {}; },
+    connect: async () => { calls.push("connect"); return { close: async () => {} }; },
+    evaluateFn: async (_session, expression) => {
+      calls.push("evaluate");
+      if (expression === "document.readyState") return "complete";
+      if (expression.includes("form-submit-shim")) return "form-submit-shim";
+      if (expression.startsWith("globalThis.__probe")) return true;
+      return [{ id: "main.stun.lo4", outcome: "gathering:complete", startedAt: 1, endedAt: 2 }];
+    },
+    readScript: () => "attack()",
+  });
+  const refused = await injectAttack(deps(false));
+  assert.deepEqual(calls, []);
+  assert.equal(refused.cdp.injected, false);
+  assert.match(refused.cdp.error, /確かめられない/);
+  assert.deepEqual(refused.rendererResults, []);
+  const injected = await injectAttack(deps(true));
+  assert.ok(calls.includes("connect") && calls.includes("evaluate"));
+  assert.equal(injected.cdp.injected, true);
+  assert.deepEqual(injected.pageShimIds, ["form-submit"]);
+  // owned が true 以外（undefined など）でも注入しない
+  calls.length = 0;
+  await injectAttack({ ...deps(true), verifyPortOwner: () => ({}) });
+  assert.deepEqual(calls, []);
+});
+
