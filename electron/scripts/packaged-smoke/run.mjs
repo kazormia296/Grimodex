@@ -33,6 +33,7 @@ import { freePort, lanAddress, startCanary, startCtlSocket, startDohCanary, star
 import { checkPackage } from "./package-check.mjs";
 import { launchOwned, settlesWithin, terminateOwned } from "./process-tree.mjs";
 import { verifyCdpPortOwner } from "./port-owner.mjs";
+import { NL_ALLOWED_NAMES, NL_NETLOG_ONLY } from "../webrtc-block-probe-nc1.mjs";
 import { CONFIGS, MATRIX_FLAGS, formatVerdict, judgeOs } from "./verdict.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -231,6 +232,15 @@ export function attributeRows({ results, canaries, connectTimes, listenerHits, d
  * 公開する記録の伏せ字（probe と同じ表記の nonce `<n>`、LAN の IPv4 `<lan>`、hostname `<host>` に加えて、絶対 path の
  * repo `<repo>`、一時 dir `<tmp>`、home `<home>`）。長い path から先に置き換える。Windows の path は区切りを `/` にした形も伏せる。
  */
+/** 伏せない hostname（NL の許容集合 A と、net log に限って許容する名前） */
+export const HOSTNAME_KEPT = new Set([...NL_ALLOWED_NAMES, NL_NETLOG_ONLY].map((name) => name.toLowerCase()));
+const warned = new Set();
+function warnOnce(line) {
+  if (warned.has(line)) return;
+  warned.add(line);
+  console.error(`[packaged-smoke] 警告: ${line}`);
+}
+
 export function maskRules({ nonce, lan, hostname, paths = {} }) {
   const rules = [];
   const pathEntries = Object.entries(paths).filter(([, value]) => typeof value === "string" && value.length > 1)
@@ -239,7 +249,10 @@ export function maskRules({ nonce, lan, hostname, paths = {} }) {
   rules.push(...pathEntries);
   if (nonce) rules.push([nonce, "<n>"]);
   if (lan) rules.push([lan, "<lan>"]);
-  if (hostname) rules.push([hostname, "<host>"]);
+  // hostname が許容集合 A の名前（container の `localhost` など）と同じなら伏せない（NL の host を `<host>` に変えて原因の分かりにくい
+  // 不合格にしないため）。伏せないことは警告として出す
+  if (hostname && !HOSTNAME_KEPT.has(String(hostname).toLowerCase())) rules.push([hostname, "<host>"]);
+  else if (hostname) warnOnce(`hostname（${hostname}）は許容集合 A の名前と同じなので伏せない`);
   return rules;
 }
 

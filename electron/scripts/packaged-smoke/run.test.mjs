@@ -8,6 +8,7 @@ import vm from "node:vm";
 import {
   FORM_SUBMIT_SHIM,
   closeAllWithin,
+  HOSTNAME_KEPT,
   createTracker,
   injectAttack,
   installInterruptHandler,
@@ -259,3 +260,10 @@ test("注入: CDP の port を owned の process tree が listen していると
   assert.deepEqual(calls, []);
 });
 
+test("hostname が許容集合 A の名前（localhost など）と同じ機では hostname を伏せない（NL の host を壊さない）", () => {
+  assert.ok(HOSTNAME_KEPT.has("localhost"));
+  const kept = maskValue({ requestHosts: { localhost: 1, "127.0.0.1": 2 } }, maskRules({ hostname: "localhost" }));
+  assert.deepEqual(kept, { requestHosts: { localhost: 1, "127.0.0.1": 2 } });
+  const masked = maskValue({ note: "runner-box", requestHosts: { localhost: 1 } }, maskRules({ hostname: "runner-box" }));
+  assert.deepEqual(masked, { note: "<host>", requestHosts: { localhost: 1 } });
+});
