@@ -185,7 +185,7 @@ harness が作る子 process は (1) packaged の実行体（Linux は `scripts/
 
 ### 9.1 マトリクスの最終状態
 
-§8.3 の S1〜S8 は `implemented`、S9 は `out of scope`（製品・renderer・IPC・N-API・Rust・MCP は変えていない。差分は `electron/scripts/packaged-smoke/`、`.github/workflows/packaged-smoke.yml`、`scripts/release-workflows.test.mjs`、この文書、試運転の記録だけ）。§8.4 の lifecycle matrix は実装と一致する（起動は `launchOwned()`、終了の証拠は `terminationProven()` で close・process group の消滅・実行体の dir の下の process 0 の合成。path で見つけた process は kill しない）。
+§8.3 の S1〜S8 は `implemented`、S9 は `out of scope`（製品・renderer・IPC・N-API・Rust・MCP は変えていない。差分は `electron/scripts/packaged-smoke/`、`.github/workflows/packaged-smoke.yml`、`scripts/release-workflows.test.mjs`、この文書、試運転の記録だけ）。§8.4 の lifecycle matrix は実装と一致する（起動は `launchOwned()`、終了の証拠は `terminationProven()` で close・process group の消滅・実行体の dir の下の process 0 の合成。path で見つけた process は kill しない）。**レビュー修正で訂正（§10）**: この時点の実装は cancellation の行（signal を受けたら起動中の owner を terminate して非 0 で終わる）を満たしておらず、flag を立てて構成の間でだけ見ていた。Linux の残存の走査も `/proc/<pid>/exe` を読めない process を飛ばしていた。どちらも §10 で直した。
 
 ### 9.2 追加の判断
 
@@ -225,3 +225,29 @@ harness が作る子 process は (1) packaged の実行体（Linux は `scripts/
 - DR-CP2B-P2-8: env 名の数と Windows の console window は P2 では観測しない（既存の `configure_worker_process` の試験が構成の段を固定）。足りるかは integrator が決める。
 - packaged の終了は Linux で毎回 group への SIGKILL に進んだ（9.4）。close の後に group の消滅を数秒待ってから強制にすれば graceful に終わる見込み（推定）。記録の head を変えるので P2 では直していない。P4 の前に直すかは integrator が決める。
 - P4 は merge 後の master の SHA で `packaged-smoke.yml` を dispatch し、artifact の `<os>/` を `cp2b-g-pub/` に写して `README.md` を足す（この試運転の記録の形）。PUB-G の最終候補では B 案（署名・公証済みの配布物）で採り直す（TASK §2.3）。
+
+## 10. 独立レビュー（lifecycle、security）の修正の追記（2026-10-26）
+
+どちらも P1 なし。lifecycle は P2 4 件、security は P2 1 件。直した点（どれも変異で赤になることを commit の後に確かめた）。
+
+| 指摘 | 直し | 試験（赤になる変異） |
+|---|---|---|
+| lifecycle P2-1: signal で子を止めない | `installInterruptHandler`: SIGINT／SIGTERM で起動中の owner（`createTracker` が登録。終了の証拠が取れた owner だけ外す）を `terminateOwned` で終わらせ、証拠を得てから記録を書かずに 130／143 で終わる。2 回目の signal は同じ処理を待つだけ。構成の直列を `runConfigsInOrder` にし、中断の後は記録を書かない。実機（Linux）で SIGINT を 2 回送り、終了コード 130、記録の file 0、`linux-unpacked` の下の process 0、利用者の X0／X1 は残った | handler の登録の削除、terminate せずに exit、admission の `break` の削除 |
+| lifecycle P2-2: non-dumpable な子の見落とし | `/proc/<pid>/exe` が EACCES のときは `/proc/<pid>/cmdline` の argv[0] で照合する（ENOENT は終わった process として飛ばす。cmdline も読めない pid は判断せず、group の消滅の確認が担う）。走査の失敗は null（観測できない）で `[]` にしない | EACCES を飛ばす、走査の失敗を `[]` にする |
+| lifecycle P2-3: kill しないことの固定 | node の copy を一時 dir に置いて exeDir にし、owner でない process（同じ copy から別 group）が残存として報告され、`ok: false` で、生きていることを assert する。`process.execPath` の dir を exeDir にする試験は無くした。`terminateOwned` の観測と kill を `deps` で差し替えられる形にし、group の残存・走査の失敗・残存の pid に kill を送らないことを固定した | 残存に SIGKILL、group の消滅を常に true |
+| lifecycle P2-4: concurrency に OS がない | `concurrency.group` に `inputs.os`（PR は `all`）を足し、契約試験で固定した | OS を group から外す |
+| lifecycle P3-5〜10 | 受け口の起動の途中の失敗で開いたものを上限つきで閉じてから throw、`listen` の error を reject、close は上限 10 秒、DoH の http2 の server は session と socket を持って close で壊す。一時 dir の削除に `maxRetries`／`retryDelay`。CDP は閉じた socket への send を即 reject、close の 2 秒の timer を close で止める、`/json/version` に 5 秒の timeout。Windows は exit を見た後に pid へ `taskkill` を送らない。macOS の走査の記述を実装（`ps -axww -o pid=,args=`）にそろえた（§8.4 の「`ps -axo pid=,comm=`」はこの記述で置き換える） | canary の close の no-op、起動失敗で閉じない、DoH の session を壊さない、閉じた後の send、close の timer。Windows の `else if (!isClosed)` を外す変異は緑（強制の分岐に入るのが `!isClosed` のときだけなので同値の変異） |
+| security P2 A: canary を置けない宛先の行の不合格 | 判定は変えず、合成（`main.turns-tcp.{lo4b,lo6,lan}` の proxied 0）と実データ（試運転の `main.turn-tcp.lan`）で不合格になることを固定した | `.lo4b`／`.lo6`／`.lan` の不合格を捨てる |
+| security B | NL の許容集合 A（`webrtc-block-probe-nc1.mjs` の定数。read-only の import）と `MATRIX_FLAGS` を deepEqual で固定した | （Y-1 の file を一時でも書き換えないので、変異は回していない） |
+| security C | 記録の伏せ字に repo・一時 dir・`os.tmpdir()`・home の絶対 path（Windows の区切りの両形）を足し、key と値を再帰で伏せる。子の出力の末尾・失敗の文・CDP の error だけは利用者名も伏せる（key の `runner` などを壊さないため全体には当てない）。package の検査の記録も伏せる | path を伏せない、利用者名を伏せない |
+| security D | この workflow は cache を使わない（`setup-node` の `cache: pnpm` と `rust-cache` を外した）。契約試験で固定。所要は伸びる（未測定） | cache を戻す |
+| security E | 注入の前に `port-owner.mjs` で CDP の port を listen している pid を引き（Linux `ss`、macOS `lsof`、Windows `Get-NetTCPConnection`）、owner の process group／owner の pid／実行体の dir に属することを確かめる。確かめられなければ注入しない（道具なし） | 別の pgid でも owned にする。`runPackaged` がこの確認を呼ぶことは単体試験ではなく実機（試運転の `cdp.portOwner`）でだけ確かめた |
+| security F | 判定は変えず、shim の影響を受けた行（`dns.form-submit`）を `recorded.shimmedRows` と判定の出力に行単位で明示する | 出力から外す |
+| security G | `app.asar` の中身（bytes）も harness・probe の固有の文字列（`dnsprobe.test` など）で走査する（chunk の境界をまたぐ一致も見る）。実 package では 0 件 | 中身の走査を外す |
+| security H | 契約試験で `run:` に `${{` を含まないことを固定した | `run:` に式を埋め込む |
+
+あわせて、workflow の単体試験は `--test-force-exit` で走らせる（開いた handle が残る回帰で job が止まらない）。試運転の記録は、伏せ字（C）の後の head で採り直した（§10.1）。
+
+### 10.1 試運転の記録の採り直し
+
+（採り直しの結果は、記録と同じ commit でこの節の後ろに足す。）
