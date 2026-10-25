@@ -422,6 +422,11 @@ requirements:
       - src/features/chat/chatHistoryApi.ts
       - src/features/chat/chatEgressClosure.ts
       - src/features/chat/chatTypedWrites.ts
+      - src/features/chat/useChatPinsController.ts
+      - src/features/ai-policy/useAiGate.ts
+      - src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx
+      - src/features/chat/closeProfileEgressEntrances.ts
+      - src/features/profile-egress/profileEgressClosure.ts
       - src/features/chat/components/ChatInput.tsx
       - src/features/chat/components/ContextCreatorDialog.tsx
       - src/features/chat/store.ts
@@ -561,6 +566,14 @@ requirements:
       - src/application/chat/chatStoreSupport.turnErrorText.test.ts
       - src/features/chat/chatApi.cw.test.ts
       - src/features/chat/chatEgressClosure.test.ts
+      - src/features/chat/chatEgressScope.test.ts
+      - src/features/chat/ChatPanel.egressScope.test.tsx
+      - src/features/chat/useChatPinsController.test.tsx
+      - src/application/chat/chatEntrances.egressClosure.test.ts
+      - src/features/ai-policy/useAiGate.egressClosure.test.tsx
+      - src/features/layout/adaptive/MobileWorkspaceSurfaces.egress.test.tsx
+      - src/features/profile-egress/profileEgressClosure.test.ts
+      - src/lib/tauri.egressClosure.test.ts
       - src/features/chat/components/ChatInput.editClosed.test.tsx
       - src/features/chat/components/ChatInput.nonSceneEdit.test.tsx
       - src/features/chat/useChatMessageActions.editClosed.test.tsx
