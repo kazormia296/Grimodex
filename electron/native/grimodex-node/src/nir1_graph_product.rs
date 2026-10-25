@@ -2152,14 +2152,14 @@ fn await_release(context: &SessionContext) -> Option<Released> {
         let wait = {
             let mut slot = lock(&shared.slot);
             let now = Instant::now();
-            let (epoch, cancelled, released, deadline) = match slot.deferred.as_ref() {
-                Some(held) => (
+            let (epoch, cancelled, released, deadline) = {
+                let held = slot.deferred.as_ref()?;
+                (
                     held.epoch,
                     held.ticket.cancel.load(Ordering::SeqCst),
                     held.released,
                     held.deadline,
-                ),
-                None => return None,
+                )
             };
             let ended = if edge_or_closed(shared, epoch) {
                 Some(Some(GraphUnavailable::Invalidated))
