@@ -16,6 +16,11 @@ import { toast } from "sonner";
 import i18next from "@/lib/i18n";
 import { canScheduleQuiescenceMutation } from "@/application/lifecycle/quiescenceLease";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+import {
+  admitConversationEdit,
+  isEditTargetCurrent,
+  snapshotEditTarget,
+} from "./chatEgressClosure";
 
 /**
  * The extraction record (CW 8; DR-DA2B-R2). The entry already exists when its
@@ -263,14 +268,31 @@ export function useChatMessageActions({
         toast.info(i18next.t("profileEgress.chat.editClosed"));
         return;
       }
-      const { content, mentionedSceneIds } = editUserMessage(messageId);
-      const editor = chatEditorRef.current;
-      if (!content || !editor) return;
-      editor.commands.setContent(content);
-      if (mentionedSceneIds && mentionedSceneIds.length > 0) {
-        restoreSceneMentionChips(editor, mentionedSceneIds);
-      }
-      editor.commands.focus("end");
+      // 場面の会話でないときは、定数に依らず状態を読んでから進む（DR-DA2B-R17）。
+      const target = snapshotEditTarget(useChatStore.getState(), messageId);
+      void admitConversationEdit({
+        sceneConversation: target.sceneConversation,
+        // 削除の前提：本文を戻す先の editor が生きていること（読取の間に ChatPanel を
+        // 閉じても、行だけを消さない。DR-DA2B-R21）。
+        isCurrent: () => {
+          const editor = chatEditorRef.current;
+          return (
+            editor !== null &&
+            !editor.isDestroyed &&
+            isEditTargetCurrent(target, useChatStore.getState())
+          );
+        },
+        proceed: () => {
+          const { content, mentionedSceneIds } = editUserMessage(messageId);
+          const editor = chatEditorRef.current;
+          if (!content || !editor) return;
+          editor.commands.setContent(content);
+          if (mentionedSceneIds && mentionedSceneIds.length > 0) {
+            restoreSceneMentionChips(editor, mentionedSceneIds);
+          }
+          editor.commands.focus("end");
+        },
+      });
     },
     [chatEditorRef, editClosed, editUserMessage],
   );

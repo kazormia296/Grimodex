@@ -19,16 +19,45 @@ vi.mock("@/features/profile-egress/profileActivationAvailability", () => ({
 }));
 vi.mock("sonner", () => ({ toast: { info: toastInfo, error: vi.fn() } }));
 
+import i18next from "@/lib/i18n";
 import { useChatStore } from "./chatStore";
 import { useChatMessageActions } from "./useChatMessageActions";
+import { resetNonSceneEditClosureForTest } from "./chatEgressClosure";
 
 function render(editClosed: boolean) {
   const editUserMessage = vi.fn(() => ({ content: "" }));
-  useChatStore.setState({ editUserMessage });
+  // 場面の会話（同期の経路）。非場面の会話の状態の読取は
+  // `useChatMessageActions.nonSceneEdit.test.tsx`（DR-DA2B-R17）。
+  useChatStore.setState({
+    editUserMessage,
+    // 対象の行は一覧にある（同期の経路でも対象の確認を通る。R21）。
+    activeProjectId: "p1",
+    activeSessionId: "s1",
+    isStreaming: false,
+    messages: [
+      {
+        id: "m1",
+        sessionId: "s1",
+        role: "user",
+        content: "question",
+        createdAt: "2026-10-25T00:00:00.000Z",
+      },
+    ] as never,
+    chatScope: "scene",
+    activeSceneId: "scene-1",
+    scopeAnchorId: null,
+    threadFocusOverride: null,
+  });
   const { result } = renderHook(() =>
     useChatMessageActions({
       aiSettings: null,
-      chatEditorRef: { current: null },
+      // 本文を戻す先の editor（生きた stub）。無いと編集は行を消さずに止まる（R21）。
+      chatEditorRef: {
+        current: {
+          isDestroyed: false,
+          commands: { setContent: vi.fn(), focus: vi.fn() },
+        },
+      } as never,
       syncInsertedToEditorMetadata: vi.fn(),
       editClosed,
     }),
@@ -62,5 +91,36 @@ describe("the closed edit-and-resend entrance", () => {
     const { result, editUserMessage } = render(true);
     result.current.handleEditMessage("m1");
     expect(editUserMessage).toHaveBeenCalledWith("m1");
+  });
+
+  // PUB-G で定数を開けたとき（DR-DA2B-R20）：probe がまだ開でも、非場面の会話の編集の
+  // 読取が閉なら、一般の文ではなく既存の理由の文（editClosed）を出す。
+  it("定数が true で probe が開でも、読取が閉なら editClosed の理由を出す", async () => {
+    enabled.value = true;
+    toastInfo.mockClear();
+    resetNonSceneEditClosureForTest();
+    await import("@/lib/profileEgressStatus");
+    const invoke = vi.fn(async () => ({
+      ok: true,
+      value: { state: "restricted" },
+    }));
+    (window as unknown as { grimodex?: unknown }).grimodex = {
+      invoke,
+      listen: vi.fn(() => () => undefined),
+    };
+    try {
+      const { result, editUserMessage } = render(false);
+      useChatStore.setState({ chatScope: "project", activeSceneId: "" });
+      result.current.handleEditMessage("m1");
+      await vi.waitFor(() =>
+        expect(toastInfo).toHaveBeenCalledWith(
+          i18next.t("profileEgress.chat.editClosed"),
+        ),
+      );
+      expect(invoke).toHaveBeenCalledWith("get_profile_egress_status");
+      expect(editUserMessage).not.toHaveBeenCalled();
+    } finally {
+      delete (window as unknown as { grimodex?: unknown }).grimodex;
+    }
   });
 });

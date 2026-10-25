@@ -11,6 +11,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const h = vi.hoisted(() => {
   const editor = {
     isDestroyed: false,
+    // ArrowUp は空の入力欄でだけ発火する。
+    isEmpty: true,
     // Not mounted: the input never reads the view's DOM in this test.
     get view(): never {
       throw new Error("The editor view is not available");
@@ -70,8 +72,14 @@ import { ChatInput } from "./ChatInput";
 
 function renderInput(editDisabled: boolean) {
   const editUserMessage = vi.fn(() => ({ content: "last question" }));
+  // 場面の会話（同期の経路）。非場面の会話の状態の読取は
+  // `ChatInput.nonSceneEdit.test.tsx`（DR-DA2B-R17）。
   useChatStore.setState({
     agentMode: false,
+    chatScope: "scene",
+    activeSceneId: "scene-1",
+    scopeAnchorId: null,
+    threadFocusOverride: null,
     editUserMessage,
     messages: [
       {

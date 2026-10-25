@@ -21,6 +21,11 @@ import type { Editor } from "@tiptap/core";
 import { Button } from "@/components/ui/button";
 import { useAiSettingsStore } from "../store";
 import { useChatStore } from "../chatStore";
+import {
+  admitConversationEdit,
+  isEditTargetCurrent,
+  snapshotEditTarget,
+} from "../chatEgressClosure";
 import { useSettingsStore } from "@/features/settings/settingsStore";
 import { resolveModelCapabilities } from "../agent/modelLimits";
 import {
@@ -533,18 +538,31 @@ export function ChatInput({
       const userMessages = messages.filter((m) => m.role === "user");
       const last = userMessages[userMessages.length - 1];
       if (!last) return;
-      const { content, mentionedSceneIds } = editUserMessage(last.id);
-      if (content) {
-        editor.commands.setContent(content);
-        // tiptap-markdown は mention を `@Title` plain text にシリアライズ
-        // してしまうため、metadata に保存していた scene id から chip を
-        // 再構築する。markdown 上の `@Title` 出現箇所を mention ノードに
-        // 置換する形を取る。
-        if (mentionedSceneIds && mentionedSceneIds.length > 0) {
-          restoreSceneMentionChips(editor, mentionedSceneIds);
-        }
-        editor.commands.focus("end");
-      }
+      // 場面の会話でないときは、定数に依らず状態を読んでから進む（DR-DA2B-R17）。
+      const target = snapshotEditTarget(useChatStore.getState(), last.id);
+      void admitConversationEdit({
+        sceneConversation: target.sceneConversation,
+        // 削除の前提：editor が生きていて、空のまま（ArrowUp は空の入力欄でだけ発火する。
+        // 読取の間に打った文字を上書きしない。DR-DA2B-R20、R21）。
+        isCurrent: () =>
+          !editor.isDestroyed &&
+          editor.isEmpty &&
+          isEditTargetCurrent(target, useChatStore.getState()),
+        proceed: () => {
+          const { content, mentionedSceneIds } = editUserMessage(last.id);
+          if (content) {
+            editor.commands.setContent(content);
+            // tiptap-markdown は mention を `@Title` plain text にシリアライズ
+            // してしまうため、metadata に保存していた scene id から chip を
+            // 再構築する。markdown 上の `@Title` 出現箇所を mention ノードに
+            // 置換する形を取る。
+            if (mentionedSceneIds && mentionedSceneIds.length > 0) {
+              restoreSceneMentionChips(editor, mentionedSceneIds);
+            }
+            editor.commands.focus("end");
+          }
+        },
+      });
     };
   }, [editor, editDisabled, messages, editUserMessage]);
 

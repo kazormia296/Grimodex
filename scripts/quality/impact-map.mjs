@@ -409,6 +409,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/chatApi.cw.test.ts",
         "src/features/chat/components/ChatInput.editClosed.test.tsx",
         "src/features/chat/useChatMessageActions.editClosed.test.tsx",
+        // DA-2b の PUB-G 前の必須 1（DR-DA2B-R17）：非場面の会話の編集の閉鎖。
+        "src/features/chat/chatEgressClosure.test.ts",
+        "src/features/chat/components/ChatInput.nonSceneEdit.test.tsx",
+        "src/features/chat/useChatMessageActions.nonSceneEdit.test.tsx",
         "src/features/chat/useChatMessageActions.record.test.ts",
         "src/features/concurrency/externalWriteFeed.test.ts",
         "src/features/editor/document/sceneSidecars.test.ts",

@@ -420,6 +420,7 @@ requirements:
       - src/application/chat/chatPersistenceStoreActions.ts
       - src/application/chat/chatSessionStoreActions.ts
       - src/features/chat/chatHistoryApi.ts
+      - src/features/chat/chatEgressClosure.ts
       - src/features/chat/chatTypedWrites.ts
       - src/features/chat/components/ChatInput.tsx
       - src/features/chat/components/ContextCreatorDialog.tsx
@@ -559,8 +560,11 @@ requirements:
       - src/application/chat/chatPersistenceStoreActions.test.ts
       - src/application/chat/chatStoreSupport.turnErrorText.test.ts
       - src/features/chat/chatApi.cw.test.ts
+      - src/features/chat/chatEgressClosure.test.ts
       - src/features/chat/components/ChatInput.editClosed.test.tsx
+      - src/features/chat/components/ChatInput.nonSceneEdit.test.tsx
       - src/features/chat/useChatMessageActions.editClosed.test.tsx
+      - src/features/chat/useChatMessageActions.nonSceneEdit.test.tsx
       - src/features/chat/useChatMessageActions.record.test.ts
       - src/features/concurrency/externalWriteFeed.test.ts
       - src/features/editor/document/sceneSidecars.test.ts
