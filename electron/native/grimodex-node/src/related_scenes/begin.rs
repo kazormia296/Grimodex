@@ -132,6 +132,7 @@ fn begin_blocking(
             result: Mutex::new(OperationResult::default()),
             completed: Notify::new(),
             graph: graph::GraphState::default(),
+            join: graph::IrJoin::default(),
         };
         let ticket = lock(&state.related_scenes.registry)?.insert(
             &dto.owner_key,
@@ -208,6 +209,7 @@ fn begin_blocking(
                         let _ = invalidate(&ir_state, &ir_ticket, &lease);
                     }
                     lease.data.completed.notify_waiters();
+                    lease.data.join.notify();
                 });
             }
         }

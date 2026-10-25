@@ -34,6 +34,7 @@ use crate::nir1_graph_product::{
     GraphUnavailable,
 };
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
+use std::sync::Condvar;
 
 /// D7: the most a `graph_continue` waits for the ticket and the IR response.
 /// A query normally resolves in about the worker's 100 ms; the cap only keeps a
@@ -118,6 +119,81 @@ pub(super) enum IrState {
     Pending,
     Available,
     Unavailable,
+}
+
+/// RS-JOIN (DR-RSJ-3, DR-RSJ-4): what the Graph await of one operation waits
+/// on besides its ticket. The scoring thread advances the generation once the
+/// IR response is in the slot; an IR continue of the same operation is counted
+/// while it delivers that response (its Chronicle recheck included), and
+/// advances the generation when it leaves.
+#[derive(Default)]
+pub(super) struct IrJoin {
+    state: Mutex<IrJoinState>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct IrJoinState {
+    generation: u64,
+    continues: usize,
+}
+
+/// An IR continue of the operation in flight (DR-RSJ-4). Dropped on every
+/// exit of `continue_query`, an unwind included.
+pub(super) struct IrContinueInFlight<'a>(&'a IrJoin);
+
+impl Drop for IrContinueInFlight<'_> {
+    fn drop(&mut self) {
+        let mut state = lock_inner(&self.0.state);
+        state.continues = state.continues.saturating_sub(1);
+        state.generation = state.generation.wrapping_add(1);
+        drop(state);
+        self.0.changed.notify_all();
+    }
+}
+
+impl IrJoin {
+    /// The IR response is in the slot (or the operation's IR has failed).
+    pub(super) fn notify(&self) {
+        let mut state = lock_inner(&self.state);
+        state.generation = state.generation.wrapping_add(1);
+        drop(state);
+        self.changed.notify_all();
+    }
+
+    pub(super) fn enter(&self) -> IrContinueInFlight<'_> {
+        lock_inner(&self.state).continues += 1;
+        IrContinueInFlight(self)
+    }
+
+    pub(super) fn in_flight(&self) -> bool {
+        lock_inner(&self.state).continues > 0
+    }
+
+    fn generation(&self) -> u64 {
+        lock_inner(&self.state).generation
+    }
+
+    /// Waits at most `step`, and not at all once something changed since
+    /// `seen`. A missed wake costs at most `step`, as the sleep it replaces.
+    fn wait_since(&self, seen: u64, step: Duration) {
+        let state = lock_inner(&self.state);
+        let _ = self
+            .changed
+            .wait_timeout_while(state, step, |state| state.generation == seen)
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+}
+
+/// DR-RSJ-4: an IR that an IR continue of this operation is still delivering
+/// is not the Graph's yet; that continue's recheck goes first. A stopped IR is
+/// never hidden.
+pub(super) fn ir_for_graph(ir: IrState, continue_in_flight: bool) -> IrState {
+    if ir == IrState::Available && continue_in_flight {
+        IrState::Pending
+    } else {
+        ir
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -247,7 +323,7 @@ impl GraphState {
     }
 }
 
-fn lock_inner(mutex: &Mutex<GraphInner>) -> MutexGuard<'_, GraphInner> {
+fn lock_inner<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -265,6 +341,7 @@ pub(super) fn graph_unavailable(reason: GraphUnavailable) -> Value {
 /// response, at most `limit`. Every step looks at the declaration, the lease,
 /// the owner and the lifecycle epoch, so a cancellation, a Chronicle stop or a
 /// shutdown ends the wait within one step. No verification happens here.
+#[cfg(test)]
 pub(super) fn await_graph(
     state: &AppState,
     graph: &GraphState,
@@ -272,8 +349,24 @@ pub(super) fn await_graph(
     limit: Duration,
     probe: impl Fn() -> LeaseProbe,
 ) -> GraphAwait {
+    await_graph_joined(state, graph, plan, limit, GRAPH_WAIT_STEP, None, probe)
+}
+
+/// `await_graph` that wakes on `join` (DR-RSJ-3) while only the IR is missing,
+/// instead of sleeping the whole step. Every check of the loop is unchanged.
+pub(super) fn await_graph_joined(
+    state: &AppState,
+    graph: &GraphState,
+    plan: &AwaitPlan,
+    limit: Duration,
+    step_limit: Duration,
+    join: Option<&IrJoin>,
+    probe: impl Fn() -> LeaseProbe,
+) -> GraphAwait {
     let deadline = Instant::now() + limit;
     loop {
+        // Read before the probe: a change after it ends the wait at once.
+        let seen = join.map(IrJoin::generation);
         if graph.is_settled() {
             return GraphAwait::Unavailable(GraphUnavailable::Cancelled);
         }
@@ -307,14 +400,15 @@ pub(super) fn await_graph(
         if now >= deadline {
             return GraphAwait::Unavailable(GraphUnavailable::Timeout);
         }
-        let step = GRAPH_WAIT_STEP.min(deadline - now);
-        match (&plan.source, &outcome) {
+        let step = step_limit.min(deadline - now);
+        match (&plan.source, &outcome, join.zip(seen)) {
             // The ticket is still running: sleep on it, not on a timer.
-            (AwaitSource::Ticket(waiter), None) => {
+            (AwaitSource::Ticket(waiter), None, _) => {
                 let _ = waiter.wait_timeout(step);
             }
-            // Only the IR response is missing.
-            _ => std::thread::sleep(step),
+            // Only the IR response is missing: wake when it arrives.
+            (_, _, Some((join, seen))) => join.wait_since(seen, step),
+            (_, _, None) => std::thread::sleep(step),
         }
     }
 }
@@ -483,7 +577,7 @@ fn lease_probe(lease: &Lease) -> LeaseProbe {
     };
     LeaseProbe {
         live: lease.is_live(Instant::now()),
-        ir,
+        ir: ir_for_graph(ir, lease.data.join.in_flight()),
     }
 }
 
@@ -598,9 +692,15 @@ async fn await_request(
         let state = Arc::clone(&state);
         let lease = lease.clone();
         tokio::task::spawn_blocking(move || {
-            await_graph(&state, &lease.data.graph, &plan, GRAPH_AWAIT_LIMIT, || {
-                lease_probe(&lease)
-            })
+            await_graph_joined(
+                &state,
+                &lease.data.graph,
+                &plan,
+                GRAPH_AWAIT_LIMIT,
+                GRAPH_WAIT_STEP,
+                Some(&lease.data.join),
+                || lease_probe(&lease),
+            )
         })
         .await
     };

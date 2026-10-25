@@ -67,6 +67,9 @@ struct Operation {
     completed: Notify,
     /// The Graph query of this operation (CP-3a). Its lifetime is the lease's.
     graph: graph::GraphState,
+    /// RS-JOIN: wakes the Graph await when the IR arrives, and orders it after
+    /// the IR continues of this operation (DR-RSJ-3, DR-RSJ-4).
+    join: graph::IrJoin,
 }
 
 /// What the end of an operation lease touches: its Graph slot and the tasks
@@ -282,6 +285,9 @@ pub(crate) async fn continue_query(
     let Some(lease) = state.related_scenes.owned(&owner, &ticket)? else {
         return Ok(unavailable("cancelled"));
     };
+    // DR-RSJ-4: the Graph await of this operation waits until this continue
+    // has rechecked and returned its IR.
+    let _in_flight = lease.data.join.enter();
     // Register before inspecting the slot: a completion between the check and
     // await must not be lost. The fixed lease lifetime is never extended.
     loop {

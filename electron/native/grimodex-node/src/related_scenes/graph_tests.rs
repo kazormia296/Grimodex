@@ -412,6 +412,155 @@ fn a_cache_hit_answers_pending_and_waits_for_nothing() {
     assert!(started.elapsed() < Duration::from_millis(500));
 }
 
+// ---- RS-JOIN: the IR arrival and the IR continue (DR-RSJ-3, DR-RSJ-4) -------
+
+/// A `Cached` slot of a second operation, as the child query of H5 has.
+fn cached_plan(fixture: &Fixture) -> (GraphState, AwaitPlan) {
+    let first = fixture.pending();
+    first.set_dense_scene_ids(dense(&[]));
+    let plan = plan_of(first.claim(&[]));
+    let outcome = await_graph(
+        &fixture.state,
+        &first,
+        &plan,
+        Duration::from_secs(2),
+        live_ir(IrState::Available),
+    );
+    assert!(matches!(outcome, GraphAwait::Ready(_)));
+    first.declare(GraphTicketUse::Unused);
+    let second = GraphState::default();
+    start_released(&second, &fixture.state);
+    second.set_dense_scene_ids(dense(&[]));
+    let plan = plan_of(second.claim(&[]));
+    (second, plan)
+}
+
+/// A step far above the test's bound: only a wake can end the wait in time.
+const LONG_STEP: Duration = Duration::from_secs(10);
+const WAKE_BOUND: Duration = Duration::from_secs(5);
+
+#[test]
+fn the_graph_await_wakes_when_the_ir_arrives_instead_of_sleeping_a_step() {
+    let fixture = Fixture::new();
+    let (graph, plan) = cached_plan(&fixture);
+    let join = Arc::new(IrJoin::default());
+    let ir_set = Arc::new(AtomicBool::new(false));
+    let setter = {
+        let join = Arc::clone(&join);
+        let ir_set = Arc::clone(&ir_set);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(30));
+            ir_set.store(true, Ordering::SeqCst);
+            join.notify();
+        })
+    };
+    let started = Instant::now();
+    let outcome = await_graph_joined(
+        &fixture.state,
+        &graph,
+        &plan,
+        LONG_STEP * 2,
+        LONG_STEP,
+        Some(&join),
+        || LeaseProbe {
+            live: true,
+            ir: if ir_set.load(Ordering::SeqCst) {
+                IrState::Available
+            } else {
+                IrState::Pending
+            },
+        },
+    );
+    setter.join().expect("setter");
+    assert!(matches!(outcome, GraphAwait::Ready(_)));
+    assert!(started.elapsed() >= Duration::from_millis(30));
+    assert!(started.elapsed() < WAKE_BOUND, "{:?}", started.elapsed());
+}
+
+#[test]
+fn the_graph_await_waits_for_an_ir_continue_of_its_operation_and_wakes_when_it_leaves() {
+    let fixture = Fixture::new();
+    let (graph, plan) = cached_plan(&fixture);
+    let join = Arc::new(IrJoin::default());
+    let in_flight = join.enter();
+    let finished = Arc::new(Mutex::new(None::<Instant>));
+    std::thread::scope(|scope| {
+        let waiter = scope.spawn(|| {
+            let outcome = await_graph_joined(
+                &fixture.state,
+                &graph,
+                &plan,
+                LONG_STEP * 2,
+                LONG_STEP,
+                Some(&join),
+                || LeaseProbe {
+                    live: true,
+                    ir: ir_for_graph(IrState::Available, join.in_flight()),
+                },
+            );
+            *finished.lock().expect("finished") = Some(Instant::now());
+            outcome
+        });
+        std::thread::sleep(Duration::from_millis(100));
+        // The IR is in the slot, but its continue has not rechecked it yet.
+        assert!(finished.lock().expect("finished").is_none());
+        let left = Instant::now();
+        drop(in_flight);
+        let outcome = waiter.join().expect("waiter");
+        assert!(matches!(outcome, GraphAwait::Ready(_)));
+        let at = finished.lock().expect("finished").expect("finished");
+        assert!(at >= left);
+        assert!(at - left < WAKE_BOUND, "{:?}", at - left);
+    });
+    assert!(!join.in_flight());
+}
+
+#[test]
+fn an_ir_continue_in_flight_never_hides_a_stopped_chronicle() {
+    assert_eq!(ir_for_graph(IrState::Available, true), IrState::Pending);
+    assert_eq!(ir_for_graph(IrState::Available, false), IrState::Available);
+    assert_eq!(ir_for_graph(IrState::Pending, true), IrState::Pending);
+    assert_eq!(
+        ir_for_graph(IrState::Unavailable, true),
+        IrState::Unavailable
+    );
+    // The await then stops at once, as without a continue (exact R).
+    let fixture = Fixture::new();
+    let (graph, plan) = cached_plan(&fixture);
+    let join = IrJoin::default();
+    let _in_flight = join.enter();
+    let started = Instant::now();
+    let outcome = await_graph_joined(
+        &fixture.state,
+        &graph,
+        &plan,
+        LONG_STEP * 2,
+        LONG_STEP,
+        Some(&join),
+        || LeaseProbe {
+            live: true,
+            ir: ir_for_graph(IrState::Unavailable, join.in_flight()),
+        },
+    );
+    assert!(matches!(
+        outcome,
+        GraphAwait::Unavailable(GraphUnavailable::Cancelled)
+    ));
+    assert!(started.elapsed() < WAKE_BOUND);
+}
+
+#[test]
+fn the_ir_continue_count_survives_nested_and_out_of_order_exits() {
+    let join = IrJoin::default();
+    let first = join.enter();
+    let second = join.enter();
+    assert!(join.in_flight());
+    drop(first);
+    assert!(join.in_flight());
+    drop(second);
+    assert!(!join.in_flight());
+}
+
 #[test]
 fn begin_never_waits_for_the_graph() {
     // N-4: the query holds, and `start` still returns at once.
