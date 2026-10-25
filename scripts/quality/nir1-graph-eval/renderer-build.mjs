@@ -124,6 +124,85 @@ export function assertAliasApplied({ state, target, stub, root }) {
   };
 }
 
+export const RELATED_SCENES_API_MODULE =
+  "src/features/related-scenes/nir1RelatedScenesApi.ts";
+export const RELATED_SCENES_API_TIMING_SHIM =
+  "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts";
+/** The product importers whose Graph wait the runner times (S1c-2). */
+export const RELATED_SCENES_API_REQUIRED_IMPORTERS = Object.freeze([
+  "src/features/related-scenes/fetchNir1RelatedScenes.ts",
+  "src/features/related-scenes/fetchNir1RelatedScenesGraph.ts",
+]);
+export const TIMING_PLUGIN_NAME = "cp4-related-scenes-api-timing";
+
+/**
+ * S1c-2 (DR-CP4-S1C2-9): the timing shim alias. Every import that resolves to
+ * the product `nir1RelatedScenesApi.ts` is resolved to the harness shim,
+ * except the shim's own import of the product module.
+ */
+export function relatedScenesTimingPlugin({ root }) {
+  const target = path.resolve(root, RELATED_SCENES_API_MODULE);
+  const shim = path.resolve(root, RELATED_SCENES_API_TIMING_SHIM);
+  const state = { redirects: [], moduleIds: null, targetImporters: null };
+  const plugin = {
+    name: TIMING_PLUGIN_NAME,
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (!importer || source.startsWith("\0")) return null;
+      if (!source.includes("nir1RelatedScenesApi")) return null;
+      if (path.resolve(importer.split("?")[0]) === shim) return null;
+      const resolved = await this.resolve(source, importer, {
+        ...options,
+        skipSelf: true,
+      });
+      if (!resolved) return null;
+      if (path.resolve(resolved.id.split("?")[0]) !== target) return null;
+      state.redirects.push({
+        importer: path.relative(root, importer.split("?")[0]),
+        source,
+      });
+      return shim;
+    },
+    buildEnd() {
+      state.moduleIds = [...this.getModuleIds()]
+        .filter((id) => !id.startsWith("\0"))
+        .map((id) => path.resolve(id.split("?")[0]));
+      const info = this.getModuleInfo(target);
+      state.targetImporters = (info?.importers ?? []).map((id) =>
+        path.resolve(id.split("?")[0]),
+      );
+    },
+  };
+  return { plugin, state, target, shim };
+}
+
+/** The timing shim is in, imported by the product importers, alone importing the product module. */
+export function assertTimingShimApplied({ state, target, shim, root }) {
+  if (!Array.isArray(state.moduleIds))
+    throw new Error(
+      "[precheck] the timing plugin did not see the module graph",
+    );
+  if (!state.moduleIds.includes(shim) || !state.moduleIds.includes(target))
+    throw new Error(
+      "[precheck] the timing shim or the product module is missing",
+    );
+  if (JSON.stringify(state.targetImporters) !== JSON.stringify([shim]))
+    throw new Error(
+      "[precheck] the product related-scenes API is imported around the timing shim",
+    );
+  const importers = [...new Set(state.redirects.map((row) => row.importer))]
+    .map((file) => file.split(path.sep).join("/"))
+    .sort();
+  for (const required of RELATED_SCENES_API_REQUIRED_IMPORTERS)
+    if (!importers.includes(required))
+      throw new Error(`[precheck] the timing shim does not serve ${required}`);
+  return {
+    from: RELATED_SCENES_API_MODULE,
+    to: path.relative(root, shim).split(path.sep).join("/"),
+    importers,
+  };
+}
+
 async function listFiles(directory, base = directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -161,17 +240,24 @@ export async function bundleIdentity(outDir) {
  * (S1c-2's harness page); without it the product `index.html` is built.
  * Returns the receipt fields of the build.
  */
-export async function buildHarnessRenderer({ root, outDir, input, vite }) {
+export async function buildHarnessRenderer({
+  root,
+  outDir,
+  input,
+  vite,
+  timingShim = false,
+}) {
   const out = assertRendererOutDir(root, outDir);
   const { build } = vite ?? (await import("vite"));
   const alias = graphAvailabilityAliasPlugin({ root });
+  const timing = timingShim ? relatedScenesTimingPlugin({ root }) : null;
   const startedAt = new Date().toISOString();
   await build({
     root,
     configFile: path.join(root, "vite.config.ts"),
     mode: "production",
     logLevel: "warn",
-    plugins: [alias.plugin],
+    plugins: timing ? [alias.plugin, timing.plugin] : [alias.plugin],
     build: {
       outDir: out,
       emptyOutDir: true,
@@ -179,6 +265,12 @@ export async function buildHarnessRenderer({ root, outDir, input, vite }) {
     },
   });
   const aliasRecord = assertAliasApplied({ ...alias, root });
+  const timingRecord = timing
+    ? {
+        ...assertTimingShimApplied({ ...timing, root }),
+        shimSha256: sha256(await readFile(timing.shim)),
+      }
+    : null;
   const identity = await bundleIdentity(out);
   return {
     schema: "nir1-cp4-renderer-build/1",
@@ -190,6 +282,7 @@ export async function buildHarnessRenderer({ root, outDir, input, vite }) {
       stubSha256: sha256(await readFile(alias.stub)),
       pluginSha256: sha256(await readFile(new URL(import.meta.url))),
     },
+    ...(timingRecord ? { timingShim: timingRecord } : {}),
     viteConfigSha256: sha256(await readFile(path.join(root, "vite.config.ts"))),
     ...identity,
   };

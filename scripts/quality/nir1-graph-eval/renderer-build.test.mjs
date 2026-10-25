@@ -16,7 +16,13 @@ import {
   GRAPH_AVAILABILITY_MODULE,
   GRAPH_AVAILABILITY_STUB,
   PLUGIN_NAME,
+  RELATED_SCENES_API_MODULE,
+  RELATED_SCENES_API_REQUIRED_IMPORTERS,
+  RELATED_SCENES_API_TIMING_SHIM,
+  TIMING_PLUGIN_NAME,
   assertAliasApplied,
+  assertTimingShimApplied,
+  relatedScenesTimingPlugin,
   assertRendererOutDir,
   bundleIdentity,
   graphAvailabilityAliasPlugin,
@@ -139,6 +145,101 @@ test("D11: a bundle that kept the product module or missed an importer is refuse
   );
 });
 
+test("S1c-2: the timing shim serves every product importer and alone imports the product module", async () => {
+  const { plugin, state, target, shim } = relatedScenesTimingPlugin({
+    root: ROOT,
+  });
+  assert.equal(plugin.name, TIMING_PLUGIN_NAME);
+  const [fetchHybrid, fetchGraph] = RELATED_SCENES_API_REQUIRED_IMPORTERS.map(
+    (file) => path.join(ROOT, file),
+  );
+  const ctx = fakeContext({
+    [`${fetchHybrid}|./nir1RelatedScenesApi`]: target,
+    [`${fetchGraph}|./nir1RelatedScenesApi`]: `${target}?v=1`,
+    [`${shim}|@/features/related-scenes/nir1RelatedScenesApi`]: target,
+    [`${path.join(ROOT, "src/other/x.ts")}|./nir1RelatedScenesApi`]: path.join(
+      ROOT,
+      "src/other/nir1RelatedScenesApi.ts",
+    ),
+  });
+  assert.equal(
+    await plugin.resolveId.call(ctx, "./nir1RelatedScenesApi", fetchHybrid, {}),
+    shim,
+  );
+  assert.equal(
+    await plugin.resolveId.call(ctx, "./nir1RelatedScenesApi", fetchGraph, {}),
+    shim,
+  );
+  // The shim's own import of the product module is not redirected.
+  assert.equal(
+    await plugin.resolveId.call(
+      ctx,
+      "@/features/related-scenes/nir1RelatedScenesApi",
+      shim,
+      {},
+    ),
+    null,
+  );
+  assert.equal(
+    await plugin.resolveId.call(
+      ctx,
+      "./nir1RelatedScenesApi",
+      path.join(ROOT, "src/other/x.ts"),
+      {},
+    ),
+    null,
+  );
+  plugin.buildEnd.call({
+    getModuleIds: () => [shim, target, "\0vite/x"],
+    getModuleInfo: (id) => (id === target ? { importers: [shim] } : null),
+  });
+  assert.deepEqual(
+    assertTimingShimApplied({ state, target, shim, root: ROOT }),
+    {
+      from: RELATED_SCENES_API_MODULE,
+      to: RELATED_SCENES_API_TIMING_SHIM,
+      importers: [...RELATED_SCENES_API_REQUIRED_IMPORTERS],
+    },
+  );
+  state.targetImporters = [shim, fetchHybrid];
+  assert.throws(
+    () => assertTimingShimApplied({ state, target, shim, root: ROOT }),
+    /imported around the timing shim/,
+  );
+  state.targetImporters = [shim];
+  state.redirects.splice(0, 1);
+  assert.throws(
+    () => assertTimingShimApplied({ state, target, shim, root: ROOT }),
+    /does not serve/,
+  );
+  state.moduleIds = [target];
+  assert.throws(
+    () => assertTimingShimApplied({ state, target, shim, root: ROOT }),
+    /missing/,
+  );
+});
+
+test("S1c-2: the timing shim re-exports the product module and wraps only the timed calls", () => {
+  const text = readFileSync(
+    path.join(ROOT, RELATED_SCENES_API_TIMING_SHIM),
+    "utf8",
+  );
+  assert.match(
+    text,
+    /export \* from "@\/features\/related-scenes\/nir1RelatedScenesApi";/u,
+  );
+  const wrapped = [...text.matchAll(/^export const (\w+)/gmu)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(wrapped.sort(), [
+    "beginRelatedScenes",
+    "continueRelatedScenesGraph",
+    "settleRelatedScenesGraph",
+  ]);
+  for (const name of wrapped)
+    assert.match(text, new RegExp(`product\\.${name}\\(`, "u"), name);
+});
+
 test("D11 / T-2: the product source, config and build never reference the stub", () => {
   const tracked = execFileSync(
     "git",
@@ -156,8 +257,10 @@ test("D11 / T-2: the product source, config and build never reference the stub",
     .filter(Boolean);
   const needles = [
     "nir1GraphAvailability.eval",
+    "nir1RelatedScenesApi.timing",
     "nir1-graph-eval/renderer",
     PLUGIN_NAME,
+    TIMING_PLUGIN_NAME,
   ];
   for (const file of tracked) {
     let text;
