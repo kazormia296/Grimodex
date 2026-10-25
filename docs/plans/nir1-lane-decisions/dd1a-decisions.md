@@ -171,3 +171,35 @@ E1（gate 閉で 6 command が引数・caller identity を読む前に拒否、D
 - cold reopen は、同じ DB の file を新しい AppState で開き直す形で確かめた。process の再起動で start の記録と handle が消えることは構造（process 内の値）による。
 - 高リスクの判断（印の置き場、capture の前の検査の配置、starter thread）について read-only の advisor の意見は取れていない（この builder に手段がない）。独立のレビュー（lifecycle とセキュリティの 2 名）と Fable の受入れは integrator に委ねる。
 - Quick／Full は走らせていない（integrator）。
+
+## 独立レビュー（lifecycle、security）の修正の追記（2026-10-26。base は master `8e93bb31` に rebase 済み）
+
+P1 は無し。lifecycle の P2 2 件と、P3 のうち取り込むと決めたものを直した。上の行は当時の記録のまま残し、訂正はこの節に書く。
+
+| ID | 判断・訂正 | 状態 |
+|---|---|---|
+| DR-DD1A-17 | （P2-1）starter thread が phase を置かずに終わる（panic）と、handle が `Phase::Starting` のまま final にならず、保持の掃除にも掛からず上限を塞いでいた。`run_starter` に Drop guard（`StarterGuard`）を置き、どの経路で終わっても phase が `Starting` なら `Phase::Ended{Failed, "starter-ended"}` を置く（DT-5 の `RunGuard` と同じ考え方）。owner の Drop が attempt を記録するのは DT-2／DT-5 のまま。matrix の P5 行の補足：「starter thread の終わり方に依らず、handle は final になる（正常は phase を置く、panic は guard が Failed を置く）」 | 実装・試験済み（E11、E11b） |
+| DR-DD1A-18 | （P2-2）E7b と E9 は、取消がなくても `fast_config` の event の間隔（5 s）で socket が閉じたため、owner の `cancel()` を外す変異が通っていた。閉じるまでを 900 ms 以内とし、attempt の終端が `cancelled` であることを DB で確かめる。E7b は、invalidate_callers が permit も revoke して transport が自分で止まるのと区別するため、permit を残して登録だけを外す試験用の `forget_caller_for_test`（`profile_egress.rs`、`cfg(test)`）を使う | 実装・試験済み |
+| DR-DD1A-19 | （P3-4。DR-DD1A-7 の訂正）final の handle の保持は「最初に掃除が見た時点から」になっていた。final になった時点から数える：`Phase::Ended` は置いた時刻、`Phase::Running` は `Nir1LocalRun::finished_at`（transport の `finish` と `RunGuard` が final を置く時刻。`nir1_local_transport.rs` に field と accessor だけ足した）。保持の時計は試験で進められる（`advance_clock_for_test`） | 実装・試験済み（E12） |
+| DR-DD1A-20 | （P3-3）上限・予約の返却・保持の掃除・start の記録の上限を試験に足した：E11b（final の handle 16 件で 17 件目は `HANDLE_CAPACITY`、記録は増えず押し直せる、保持の後に通る）、E12（予約で満ちると `HANDLE_CAPACITY`〔検査 8〕、予約を返すと通る、final から 60 s で掃除される）、E13（記録が満ちると `START_RECORD_FULL`〔検査 9〕で attempt・handle・送信 0、capture は current、他の Ready entry の記録は外れて通る） | 実装・試験済み |
+| DR-DD1A-21 | （P3-5 (a)。P5 行の訂正）thread を作れないとき、実装は run を Failed にするのではなく、handle を外して start の応答で typed `NIR1_LOCAL_STARTER_UNAVAILABLE` を返す（closure と一緒に attempt を drop し、attempt 行は作られていない）。記録をこの実装に合わせる | 訂正 |
+| DR-DD1A-22 | （P3-5 (b)。DR-DD1A-9 の補足）「終端の後の取消は capture を変えない」は、cancel の `is_final()` の確認と run の成功の間の競合の窓では成り立たない：確認の直後に run が成功しても、取消は owner の `cancel()`（効かない）と capture の writer を続け、capture が cancelled になりうる。K4/3:449 はどちらの扱いも許すので契約には反しない（その Human と出力は次の turn の規則で外れる） | 記録 |
+| DR-DD1A-23 | （P3-5 (c)。DR-DD1A-15 の補足）continue の CALLER_REVOKED は、取り下げの writer が未了の handle も外す。その後の取消の再実行は `HANDLE_NOT_FOUND` になり、capture の取消は既存の `cancel_current_chat_input`（同じ writer。登録し直した caller から）に頼る | 記録 |
+| DR-DD1A-24 | （P3-5 (d)。DR-DD1A-2 の補足）「gate は引数を読む前に見る」は、napi が JS の値を `serde_json::Value` に変換する分（napi の引数の受取り）を除く。Native の parse（caller identity の JSON、strict な serde、ID の検査）と DB・owner への到達は、すべて gate の後 | 記録 |
+| DR-DD1A-25 | （P3-5 (e)。threat model への 1 行。推測）drain されなかった生成出力の平文（text と thinking の各 2 MiB まで × handle 16 件）は、final から最長 60 s、process 内の handle に残りうる。workspace の切替の後も残り、渡すのは起動した caller の完全一致の continue だけで、event にも DB にも出ない。同じ OS ユーザーの process による memory の読取は K5/3 の Out-of-scope | 記録 |
+| DR-DD1A-26 | （P3-5 (f)）この route は GDX-AI-AUDIT-001（provider または local model への dispatch の前の記録）の対象である。DD-1a は DT-4／DT-5 の監査の経路（接続の前の 3 件と終端）を迂回せず（E10 が 5 件の順を固定）、この記録に「監査の対象外」とする記述はない（確かめた） | 確認 |
+| DR-DD1A-27 | （security P3-1）start の `submission.project_id() != project_id` の検査は、現行の writer では当たらない：session の段は Scene の project と session の project の一致を要し、capture の project は capture の writer が session から取った値で、restricted の下で `chat_sessions.project_id` を書く writer はない。当てる試験は作らず、多層防御として残す（外す変異は通る。M-P1） | 記録 |
+
+### 試験と変異（この節の修正の後）
+
+`cargo test --offline --lib nir1_local_entry`（heavy.sh 経由）23 件通過（E11、E11b、E12、E13 を足した）。`cargo +1.99.0 clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings` は警告 0。
+
+| 変異（commit しない） | 落ちた試験 |
+|---|---|
+| G0 `StarterGuard` を外す | E11、E11b |
+| R1 continue の CALLER_REVOKED から `entry.cancel.cancel()` を外す | E7b |
+| R2 `cancel_sender` で entry を外すが `cancel()` を呼ばない | E9 |
+| X1 `HandleReservation::drop` で予約を返さない | E12 |
+| X2 `reserve_handle` の保持の掃除を外す | E11b、E12 |
+| F2 保持を最初に見た時点から数える（修正前の形） | E12 |
+| P1 start の project の検査を外す | 通る（DR-DD1A-27。多層防御） |
