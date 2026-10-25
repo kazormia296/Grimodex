@@ -253,3 +253,15 @@ harness が作る子 process は (1) packaged の実行体（Linux は `scripts/
 （採り直しの結果は、記録と同じ commit でこの節の後ろに足す。）
 
 - head `de86d6e6`（clean）、3 構成 751 秒。判定は **pass** で、数は §9.4 と同じ（RJ 134 行・判定 118・不合格 0、不活性 2、NL・`.local` 合格、行列の欠け・余り 0、toolcheck の TCP の 59 行で食い違い 0）。新しく出力に `dns.form-submit` が shim 済みの行として出る。`cdp.portOwner` は owned（listen している pid が owner の process group）。packaged の終了は §9.4 と同じく group への SIGKILL に進んだ（証拠はそろった）。記録に repo・home・一時 dir の絶対 path、hostname、利用者名が無いことを確かめた。途中の 1 回（head `5a02b23f`）は文書の編集中で `trackedDirty: true` だったので使わず、文書を commit してから採り直した。
+
+### 10.2 security の再レビューの修正（2026-10-26）
+
+P1 なし、P2 1 件、P3 2 件。どれも commit の後に、保存した原本の copy からの変異で赤になることを確かめた。
+
+| 指摘 | 直し | 赤になる変異 |
+|---|---|---|
+| P2: port の owner の確認を呼ぶ側が試験されていない | 注入を `injectAttack`（export）に切り出し、target の待ち・owner の確認・接続・評価を差し替えられる形にした。`owned` が `true` でなければ（`false`・欠落とも）接続も `Runtime.evaluate` もしないことを試験で固定した | 確認の `throw` を外す（n4）、`owned === false` のときだけ止める |
+| P3: Linux の ss は別の利用者の socket に pid を出さない | pid の無い listen の行が 1 つでもあれば owned にしない（fail-safe）。macOS は `lsof -F pn` の socket の数が `netstat -an -p tcp` の listen の数より少なければ owned にしない | pid の無い行を無視する、macOS の照合を外す |
+| P3: hostname が許容集合 A の名前と同じ機 | hostname が A の名前（と `~notfound`）と一致するときは伏せず、警告を出す（NL の host を `<host>` に変えて原因の分かりにくい不合格にしない） | 常に伏せる |
+
+実機（Linux）で、`ss` による owner の確認が自分の子の listen を owned、別の pgid を owned でないと判定することを確かめた。試運転の記録（head `de86d6e6`）は採り直していない。その後の harness の変更（この節）で head の束縛は古くなったが、記録はもともと G-pub の証跡ではない（README）。

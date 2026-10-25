@@ -4,7 +4,7 @@
 
 ## 採取した条件
 
-- head: `de86d6e61085e86a27e51ef854559b5a98404b0f`（branch `claude/cp2b-p2-packaged-smoke`、基点 master `8e93bb31`。独立レビュー〔lifecycle、security〕の修正と記録の伏せ字の拡張の後）。追跡中の file の変更なし（記録の `environment.candidate`）。この head の後に変わるのは、この記録、文書だけ。harness か製品が変わったら、この記録は古い。最初の試運転（head `db76aef0`）の記録は、伏せ字（絶対 path）の拡張と判定の出力（shim 済みの行）の追加の前のものなので置き換えた。**この記録は G-pub の証跡ではない**（候補の head でも hosted の 3 OS でもない）。
+- head: `de86d6e61085e86a27e51ef854559b5a98404b0f`（branch `claude/cp2b-p2-packaged-smoke`、基点 master `8e93bb31`。独立レビュー〔lifecycle、security〕の修正と記録の伏せ字の拡張の後）。追跡中の file の変更なし（記録の `environment.candidate`）。この head の後に変わるのは、この記録、文書だけ。harness か製品が変わったら、この記録は古い（`de86d6e6` の後の security の再レビューの修正〔`cp2b-decisions.md` §10.2〕で harness は変わったので、この記録の head 束縛は既に古い。採り直していない）。最初の試運転（head `db76aef0`）の記録は、伏せ字（絶対 path）の拡張と判定の出力（shim 済みの行）の追加の前のものなので置き換えた。**この記録は G-pub の証跡ではない**（候補の head でも hosted の 3 OS でもない）。
 - 環境: Linux 7.2.11-arch1、Electron 43.8.3（Chromium 150.0.7871.250）、Node 24.18.0、2026-10-26。packaged は `electron-builder --dir --linux --publish never` の `linux-unpacked`（release と同じ `pnpm electron:native:release` と `pnpm electron:build`。semantic recall の reranker は bootstrap していない）。Chromium の sandbox は既定（`--no-sandbox` なし。この機は unprivileged user namespace を許す）。
 - 隔離: `scripts/local-ci-xvfb.mjs` を host の namespace で使い（`unshare` なし）、`WAYLAND_DISPLAY`／`WAYLAND_SOCKET`／`XDG_SESSION_TYPE`／`DBUS_SESSION_BUS_ADDRESS`／env の proxy を除き、一時の `HOME`／`XDG_*`／`TMPDIR`（短い path）／`GRIMODEX_USER_DATA_DIR` を与えた。利用者の `/tmp/.X11-unix/X0`、`X1` は採取の前後で残っていた。外部網なしは主張しない（辞書の要求、RS-1 の名前の行の実 DNS などは起きる）。
 - 所要: 3 構成で 751 秒（共有機。1 分負荷平均は記録の `environment.loadavg`）。
