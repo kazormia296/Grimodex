@@ -499,6 +499,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/receipt.test.mjs",
         "scripts/quality/nir1-graph-eval/outcome.test.mjs",
         "scripts/quality/nir1-graph-eval/admission.test.mjs",
+        // CP-4 S1c-1: the Electron launch side (pure parts only).
+        "scripts/quality/nir1-graph-eval/native-sample.test.mjs",
+        "scripts/quality/nir1-graph-eval/egress.test.mjs",
+        "scripts/quality/nir1-graph-eval/renderer-build.test.mjs",
+        "scripts/quality/nir1-graph-eval/observer-core.test.mjs",
+        "scripts/quality/nir1-graph-eval/launcher.test.mjs",
       ],
       [
         "node",
