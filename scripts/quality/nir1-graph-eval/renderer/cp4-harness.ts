@@ -67,6 +67,7 @@ import {
   readBodyDeclarationState,
 } from "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationApi";
 import { BODY_DECLARATION_AXES } from "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationTypes";
+import { hookProbe } from "./cp4-hook-probe";
 
 interface IpcRow {
   cmd: string;
@@ -765,5 +766,12 @@ async function twoViews(input: {
     twoViews: (input: Parameters<typeof twoViews>[0]) =>
       guarded(() => twoViews(input)),
     graphReadyCount: () => graphReadyEvents.length,
+  },
+  // H5 診断（DR-CP4-S1C2-27）：製品の hook を mount する消費者。
+  hook: {
+    prepare: (input: Parameters<typeof hookProbe.prepare>[0]) =>
+      guarded(async () => hookProbe.prepare(input)),
+    sample: (input: Parameters<typeof hookProbe.sample>[0]) =>
+      guarded(() => hookProbe.sample(input)),
   },
 };

@@ -203,6 +203,80 @@ export function assertTimingShimApplied({ state, target, shim, root }) {
   };
 }
 
+export const SHELL_MODULE = "src/lib/shell.ts";
+export const SHELL_TIMING_SHIM =
+  "scripts/quality/nir1-graph-eval/renderer/shell.timing.ts";
+export const BRIDGE_TIMING_PLUGIN_NAME = "cp4-bridge-timing";
+
+/**
+ * H5 診断（DR-CP4-S1C2-27）：製品の `src/lib/shell.ts` への import を、bridge の
+ * transport の時刻を取る shim に解決する（shim 自身の import を除く）。CP-4 の
+ * runner の build はこれを使わない（`bridgeTiming` の既定は false）。
+ */
+export function bridgeTimingPlugin({ root }) {
+  const target = path.resolve(root, SHELL_MODULE);
+  const shim = path.resolve(root, SHELL_TIMING_SHIM);
+  const state = { redirects: [], moduleIds: null, targetImporters: null };
+  const plugin = {
+    name: BRIDGE_TIMING_PLUGIN_NAME,
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (!importer || source.startsWith("\0")) return null;
+      if (!source.includes("shell")) return null;
+      if (path.resolve(importer.split("?")[0]) === shim) return null;
+      const resolved = await this.resolve(source, importer, {
+        ...options,
+        skipSelf: true,
+      });
+      if (!resolved) return null;
+      if (path.resolve(resolved.id.split("?")[0]) !== target) return null;
+      state.redirects.push({
+        importer: path.relative(root, importer.split("?")[0]),
+        source,
+      });
+      return shim;
+    },
+    buildEnd() {
+      state.moduleIds = [...this.getModuleIds()]
+        .filter((id) => !id.startsWith("\0"))
+        .map((id) => path.resolve(id.split("?")[0]));
+      const info = this.getModuleInfo(target);
+      state.targetImporters = (info?.importers ?? []).map((id) =>
+        path.resolve(id.split("?")[0]),
+      );
+    },
+  };
+  return { plugin, state, target, shim };
+}
+
+/** The bridge shim is in, serves `src/lib/tauri.ts`, and alone imports the product module. */
+export function assertBridgeTimingApplied({ state, target, shim, root }) {
+  if (!Array.isArray(state.moduleIds))
+    throw new Error(
+      "[precheck] the bridge timing plugin did not see the graph",
+    );
+  if (!state.moduleIds.includes(shim) || !state.moduleIds.includes(target))
+    throw new Error(
+      "[precheck] the bridge shim or the product shell is missing",
+    );
+  if (JSON.stringify(state.targetImporters) !== JSON.stringify([shim]))
+    throw new Error(
+      "[precheck] the product shell is imported around the bridge shim",
+    );
+  const importers = [...new Set(state.redirects.map((row) => row.importer))]
+    .map((file) => file.split(path.sep).join("/"))
+    .sort();
+  if (!importers.includes("src/lib/tauri.ts"))
+    throw new Error(
+      "[precheck] the bridge shim does not serve src/lib/tauri.ts",
+    );
+  return {
+    from: SHELL_MODULE,
+    to: path.relative(root, shim).split(path.sep).join("/"),
+    importers,
+  };
+}
+
 async function listFiles(directory, base = directory) {
   const files = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -246,18 +320,20 @@ export async function buildHarnessRenderer({
   input,
   vite,
   timingShim = false,
+  bridgeTiming = false,
 }) {
   const out = assertRendererOutDir(root, outDir);
   const { build } = vite ?? (await import("vite"));
   const alias = graphAvailabilityAliasPlugin({ root });
   const timing = timingShim ? relatedScenesTimingPlugin({ root }) : null;
+  const bridge = bridgeTiming ? bridgeTimingPlugin({ root }) : null;
   const startedAt = new Date().toISOString();
   await build({
     root,
     configFile: path.join(root, "vite.config.ts"),
     mode: "production",
     logLevel: "warn",
-    plugins: timing ? [alias.plugin, timing.plugin] : [alias.plugin],
+    plugins: [alias.plugin, timing?.plugin, bridge?.plugin].filter(Boolean),
     build: {
       outDir: out,
       emptyOutDir: true,
@@ -269,6 +345,12 @@ export async function buildHarnessRenderer({
     ? {
         ...assertTimingShimApplied({ ...timing, root }),
         shimSha256: sha256(await readFile(timing.shim)),
+      }
+    : null;
+  const bridgeRecord = bridge
+    ? {
+        ...assertBridgeTimingApplied({ ...bridge, root }),
+        shimSha256: sha256(await readFile(bridge.shim)),
       }
     : null;
   const identity = await bundleIdentity(out);
@@ -283,6 +365,7 @@ export async function buildHarnessRenderer({
       pluginSha256: sha256(await readFile(new URL(import.meta.url))),
     },
     ...(timingRecord ? { timingShim: timingRecord } : {}),
+    ...(bridgeRecord ? { bridgeTiming: bridgeRecord } : {}),
     viteConfigSha256: sha256(await readFile(path.join(root, "vite.config.ts"))),
     ...identity,
   };

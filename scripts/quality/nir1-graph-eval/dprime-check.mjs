@@ -40,7 +40,7 @@ import {
 const STATUS_WAIT_MS = 20_000;
 const QUIET_WAIT_MS = 5_000;
 const GRAPH_READY_WAIT_MS = 3_000;
-const COUNTERS = Object.freeze([
+export const COUNTERS = Object.freeze([
   "begins",
   "pending",
   "cacheHits",
@@ -85,16 +85,16 @@ function parseArgs(argv) {
   return options;
 }
 
-const json = async (promise) => JSON.parse(await promise);
+export const json = async (promise) => JSON.parse(await promise);
 
-function delta(after, before) {
+export function delta(after, before) {
   return Object.fromEntries(
     COUNTERS.map((key) => [key, (after[key] ?? 0) - (before[key] ?? 0)]),
   );
 }
 
 /** D′ の sample の前提（DR-CP4-S1C2-23）を待つ。runner の `waitQuiet` と同じ。 */
-async function waitQuiet(session, lastSeededEndedAt) {
+export async function waitQuiet(session, lastSeededEndedAt) {
   const started = Date.now();
   let status;
   let quiet = false;
@@ -127,7 +127,7 @@ async function waitQuiet(session, lastSeededEndedAt) {
 }
 
 /** Native の begin の記録を、ID を持たない形に縮める。 */
-function nativeRows(records) {
+export function nativeRows(records) {
   return records.map((record) => ({
     begin: record.begin,
     reason: record.reason ?? null,
@@ -149,7 +149,7 @@ function nativeRows(records) {
   }));
 }
 
-async function launch({ label, runDir, server, observer, options }) {
+export async function launch({ label, runDir, server, observer, options }) {
   const session = await startSession({
     runDir,
     label,
@@ -195,7 +195,7 @@ async function launch({ label, runDir, server, observer, options }) {
   return session;
 }
 
-async function openWorkspace(page, workspacePath, ids) {
+export async function openWorkspace(page, workspacePath, ids) {
   const opened = await page.evaluate(
     (input) => window.cp4Harness.openWorkspace(input),
     {
@@ -207,7 +207,7 @@ async function openWorkspace(page, workspacePath, ids) {
   if (!opened.ok) throw new Error(`open workspace: ${opened.error}`);
 }
 
-async function buildIndex(page, ids) {
+export async function buildIndex(page, ids) {
   const index = await page.evaluate(
     (input) => window.cp4Harness.buildIndex(input),
     { sceneId: ids.querySceneId, limitMs: 60_000 },
