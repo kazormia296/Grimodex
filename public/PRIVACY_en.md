@@ -1,11 +1,13 @@
 # Grimodex Privacy Notice
 
-Last updated: 2026-08-19
+Last updated: 2026-10-25
 Version: v2.0
 
 This notice explains where the Grimodex desktop application and Web Editor trial store data and what is transmitted when the User configures AI. The Terms of Use control if this notice conflicts with them.
 
 This revision updates the shared policy version for re-consent to Terms of Use v2.0. It makes no material change to the storage, transmission, or processing practices described in this notice.
+
+Addendum of 2026-10-25: The storage location of unsent chat input drafts has been added to the "Storage locations" table. This only states storage on the User's device; it does not change what is transmitted or how data is processed.
 
 ## 1. Scope of the service
 
@@ -13,12 +15,15 @@ The Web Editor is a trial for experiencing the editor and handing work off to Gr
 
 ## 2. Storage locations
 
-| Surface                                                 | Principal data                                                                                               | Storage                                      | Standard retention                          |
-| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------------------------------- | ------------------------------------------- |
-| Electron application                                    | Text, settings, chat history, editing metadata                                                               | SQLite on the User's device                  | Until the User deletes it                   |
-| Web Editor trial                                        | Workspace, text, story-setting materials, chat history, AI responses                                         | IndexedDB in the current browser profile     | Until the workspace or site data is deleted |
-| Web Editor UI and AI configuration (excluding API keys) | Display preferences, selected provider and model, Ollama or OpenAI-compatible endpoint, and similar settings | Local Storage in the current browser profile | Until site data is deleted                  |
-| AI data consent record                                  | Policy version, route, provider, actual destination, and acceptance time                                     | Local Storage in the current browser profile | Until site data is deleted                  |
+| Surface                                                 | Principal data                                                                                               | Storage                                                       | Standard retention                                                                                                                                                                                                                  |
+| ------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Electron application                                    | Text, settings, chat history, editing metadata                                                               | SQLite on the User's device                                   | Until the User deletes it                                                                                                                                                                                                           |
+| Web Editor trial                                        | Workspace, text, story-setting materials, chat history, AI responses                                         | IndexedDB in the current browser profile                      | Until the workspace or site data is deleted                                                                                                                                                                                         |
+| Web Editor UI and AI configuration (excluding API keys) | Display preferences, selected provider and model, Ollama or OpenAI-compatible endpoint, and similar settings | Local Storage in the current browser profile                  | Until site data is deleted                                                                                                                                                                                                          |
+| AI data consent record                                  | Policy version, route, provider, actual destination, and acceptance time                                     | Local Storage in the current browser profile                  | Until site data is deleted                                                                                                                                                                                                          |
+| Unsent chat input drafts in the Electron application    | Partially written chat input (text, mentions, and a selected command)                                        | Local Storage in the application profile on the User's device | Until the message is accepted for sending, the input is cleared, the conversation or work is deleted, the chat history is cleared, or the draft is removed as one of the oldest when the count (50) or total size limit is exceeded |
+
+Unsent chat input drafts in the Electron application are not transmitted externally until the User performs a send action. Saved drafts are not included in audit records, backups, exports, or synchronization. Drafts may remain in the application profile (up to 50) even after a workspace folder is deleted. See "User choices and deletion" for how to remove them.
 
 The Web Editor's IndexedDB is not cloud synchronization or a backup. Deleting browser site data or a browser profile may make the data unrecoverable. The Web Editor does not upload or store manuscripts on the Developer's servers.
 
@@ -103,6 +108,7 @@ The Electron application may connect to external services for license verificati
 - If the User declines the AI consent dialog, that AI request is not sent.
 - Web Editor data can be erased by deleting the workspace or the browser's site data.
 - A downloaded handoff file must be deleted from the device or storage location where the User saved it.
+- Unsent chat input drafts in the Electron application are deleted when the User clears the input, deletes the conversation or work, or clears the chat history. If a workspace folder was deleted first, quit the application and delete the `Local Storage` folder in the application profile (the user data folder). This may also delete other records stored there, such as display or consent records.
 - Reloading or closing the page removes a BYOK API key held in the Web Editor's runtime memory.
 - Data already sent to a configured destination is governed by that destination's retention and deletion policy.
 
