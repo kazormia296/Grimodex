@@ -1,56 +1,83 @@
 {
   "schemaVersion": "nir1-final-request-expectation-review/1",
   "verdict": "changes-required",
-  "status": "not-reviewed",
-  "note": "Template record written by the version-2 fixture author. No independent expectation review has been performed yet; the reviewer fields state the constraints the S2 reviewer must satisfy, and the reviewer replaces this file with the real record (agent, model, verdict, requiredChanges, per-case verdicts, fixtureSha256 of the bytes reviewed). Until the verdict is approve the freeze record stays pending-review.",
+  "status": "reviewed",
+  "reviewedAt": "2026-10-25",
+  "note": "S2 の独立期待値 review。17 の正例 request の期待 entry（5 部分、canonical JSON、key の順、pov:null、material Evidence、quote digest、qualification、entry の順、予算）、10 の拒否 request の code と reason、runtimeValues、P-10 の stage 2 の forbidden を製品のコードから確かめた。正例はすべて S2 が手で組んだ導出と一致し、拒否の reason もコードの gate の順で確かめた（登録簿の更新は update_narrative_scene_scope_registry の本体を読んで確かめた）。除外 8 件のうち P-02／P-05 の unknown-scope の理由がコードで支えられないので changes-required とする。fixture は直していない（作者に差し戻す）。",
   "reviewer": {
-    "agent": "dph-v2-expectation-reviewer (unassigned; S2)",
-    "model": "unassigned",
+    "agent": "dph-v2-expectation-reviewer (claude-opus-5-5, independent read-only)",
+    "model": "claude-opus-5-5",
     "distinctFromFixtureAuthor": true,
     "distinctFromImplementers": true,
     "readOnly": true,
     "nativeOutputObserved": false
   },
+  "reviewerConstraints": {
+    "nativeRun": "cargo、Electron、harness::tests::final_request_evidence_run のどれも動かしていない。走らせたのは node --test と pnpm eval:fixtures だけ。",
+    "notRead": "dp-h-decisions.md の DR-DPH-60〜76 の本文、hold.json、receipt、.artifacts/ の下、evals/nir1-packing/ の receipt、case ごとの判定、版 1 の freeze 記録の nativeObservations の本文。",
+    "read": "dp-h-decisions.md の DR-DPH-29〜36 と 77〜98（S1 の根拠は独立導出の後に読んだ）、K6/2 の packing-eval の節、版 1 と版 2 の fixture、D1 fixture、contract／scorer、製品のコード（下の各 case の箇所）、harness のコード（run.rs、workspace.rs。読むだけ）。"
+  },
   "fixtureSha256": "0b5d2912364ff738da599db6ab44da751f2b833cab495939bd183264356b9970",
   "requiredChanges": [
-    "independent expectation review has not been performed (see evals/nir1-packing/final-request.v2.README.md, section 固定の手順)"
+    "P-02／P-05 unknown-scope：excludedNegatives の unknown-scope の理由「No listed product writer can create it」がコードで支えられない。理由は unknown を『登録簿にない参照』と読んでいるが、K6/2 と l6-l9:600/603 の『unknown Scope』は Scene Scope の compatibilityMarker unknown と読むのが自然で、それは一覧の writer で書ける：narrative_scene_scope_update は legacy-absent への書込みだけを拒み（scene_scope.rs:1283-1289。メッセージも『explicit or unknown scope』）、validate_binding は unknown を query identity が unresolved なら受け（grimodex-core narrative_scene_scope.rs:165-171）、read_scope_extension は検証済みの binding として authority に入れる（scene_scope.rs:832）。scorer の順（prepare-negative→approve-negative→invalidate-negative→正例の prepare）に合わせて、負例の anchor Scene の Scope を invalidate で unknown に書くと、その binding の version が進み投影の token が動くので、A2 は validate_scope_binding（nir1_entity_relation.rs:4107-4113）→ source-revision-changed（2642-2646）と一意に導ける（S2 の読み。Native は動かしていない）。作れない本当の理由は、正例と同じ anchor を unknown にすると後で準備する正例が A3 の a3-material-scope-mismatch（2930-2941）で落ちるので負例に別の anchor Scene が要ること、版 2 の setupContract が 1 case に anchor 1 つと全 Scene 同じ perScene Scope を固定し、harness も anchor 1 つ（run.rs の anchor_runtime）と exact だけの write_scene_scope（workspace.rs:507-549）であること、つまり fixture／harness の構造の制約で、K6/2（360-375 行）が DD-1 に回すことを許す『reason を一意に導けない』にも、DR-DPH-32 の『製品の writer で作れない』にも当たらない。 作者は (a) 負例専用の anchor Scene を足して unknown-scope の拒否 variant（期待 reason は source-revision-changed）を P-02 と P-05 に置く（harness の対応が要るので integrator／S0b と調整）、または (b) 除外を残すなら理由を上の本当の根拠（fixture／harness の構造）に書き直し、K6/2 の除外の根拠に当たらない除外として integrator（必要ならユーザー）の判断を得る、のどちらかにする。どちらでも fixture の bytes が変わるので、S2 の review をやり直す。"
   ],
+  "derivation": {
+    "method": "作者の根拠（DR-DPH-90〜98、fixture-derive.v2.mjs）を読む前に、製品のコードから 5 部分の text、予算、exact quote、選択 group を全 17 正例 request について手で組み（S2 の scratch の script。estimator は narrative_nir1.rs の estimate_nir1_context_tokens、canonical JSON は sorted key＋serde_json の escape）、fixture と突き合わせた。不一致 0。",
+    "fixedSystemPromptTokens": 531,
+    "separatorReserveTokens": 171,
+    "budgetFormula": "16384 - (531 + estimate(userMessage) + 10 + 1024 + 32 + 171)（nir1_prepared_request.rs:1655-1699、定数 64-70、MAX_PACKING_ITEMS 512）"
+  },
   "cases": [
     {
       "caseId": "P-01",
-      "verdict": "pending"
+      "verdict": "approve",
+      "summary": "正例 1 request。独立導出と一致：statement＝{entity,family,kind:entity,materialEvidence}（nir1_packing.rs:3509-3531、group_parts 3369-3388）、Entity は build_live_typed_bundle の形（nir1_entity_relation.rs:4319-4337、4412-4429。reading exact scene:<anchor>、story any(nir1-entity-relation-review)、auto notApplicable、phase draft、reveal reader、pov null〔ScopeBinding の Option、narrative_nir1.rs〕、authorityRevision は anchor の投影 token〔scene_scope_projection.rs:205-257〕）、material Evidence（687-704、quoteDigest は quote の UTF-8 sha256）、closed marker（3328-3334）、qualification（3336-3354。actor electron:human-review／human、authorityScope project/<p>/proposal/<q>/revision/<r>、field_authority.rs:352-353）。entry の順は渡した ID の順（narrative_nir1.rs:1118-1135、AcceptedIr は同じ rank）。予算 14573。"
     },
     {
       "caseId": "P-02",
-      "verdict": "pending"
+      "verdict": "changes-required",
+      "summary": "正例と 2 つの拒否の期待値はコードに合う。scope-authority-changed：update_narrative_scene_scope_registry の本体（scene_scope.rs:1464-1531）が project の全 binding の version を +1 するので、投影の scopeGeneration（scene_scope_projection.rs:90、230）が変わり、負例の Entity の authorityRevision が live と合わず validate_scope_binding（nir1_entity_relation.rs:4107-4113）→ A2 の source-revision-changed（2642-2646）。A3 の a3-scope-authority-stale（2895-2902）には届かない。source-stale：codex_update で summary が変わると source token（4008-4013）か quote の照合（4025-4034）で落ち、どちらも source-revision-changed。D-final は caller の列で Reject（nir1_packing.rs:1758-1760、3752-3755）。指摘：除外の unknown-scope の理由がコードで支えられない（requiredChanges）。"
     },
     {
       "caseId": "P-04",
-      "verdict": "pending"
+      "verdict": "approve",
+      "summary": "正例 1 request は独立導出と一致（予算 14582）。除外 2 件を確かめた：approval-of-another-revision は、一覧の writer では Decision が (proposal, revision) に束縛され（repository.rs:5703-5750）、reader は revision_id の一致を要する（nir1_entity_relation.rs:2530-2536）ので作れない。evidence-missing は prepare が Entity ごとに Evidence を必ず 1 件作る（4412-4429）ので作れない。"
     },
     {
       "caseId": "P-05",
-      "verdict": "pending"
+      "verdict": "changes-required",
+      "summary": "正例 1 request は独立導出と一致（予算 14589）。指摘：K6/2 の DP-H の拒否の列の唯一の負例 unknown-scope を除外しているが、その理由がコードで支えられない（requiredChanges。P-02 と同じ）。この case は拒否 variant を持たない。"
     },
     {
       "caseId": "P-06",
-      "verdict": "pending"
+      "verdict": "approve",
+      "summary": "正例は独立導出と一致（予算 14584）。source-stale は P-02 と同じく source-revision-changed。approval-cancelled：単一の人間の取消だけが追記でき（repository.rs:5742-5743）、status が rejected（map_decision_to_status 5992-5996、UPDATE は append_decision_on_conn）になり、reader は status の検査（nir1_entity_relation.rs:2450-2452）で revision-not-human-approved。この検査は Decision の created_at の重なりの検査（2476-2478）より前なので、承認と取消が同じ ms でも reason は変わらない。"
     },
     {
       "caseId": "P-07",
-      "verdict": "pending"
+      "verdict": "approve",
+      "summary": "正例 1 request は独立導出と一致（予算 14585）。exact quote（Evidence の quote と label）は statement／evidence の text の部分文字列。拒否の列は K6/2 で空。"
     },
     {
       "caseId": "P-08",
-      "verdict": "pending"
+      "verdict": "approve",
+      "summary": "正例と 2 つの拒否（approval-cancelled→revision-not-human-approved、scope-authority-changed→source-revision-changed）は P-06／P-02 と同じ箇所で確かめた。除外 freshness-not-evaluated：reader は Source と投影の照合（2642）を Freshness（2673）より前に行い、setup の失効の writer（登録簿、codex_update、取消）はどれも先の gate で落ちることを確かめた。本文の保存が版 2 の Revision を pending にしないという x13 の試験の主張は読んでいない（一覧の writer の範囲では結論に効かない）。"
     },
     {
       "caseId": "P-10",
-      "verdict": "pending"
+      "verdict": "approve",
+      "summary": "3 binding × 正例／拒否の 6 variant、12 request。stage 2 は新しい Revision だけを渡し、期待 entry は stage 2 の runtimeValues で解決される（scorer は entry を request の stage、forbidden を前の stage で解決。scorer.mjs:1771-1778）。forbidden：decision は旧 statement／evidence が runtime でも同じ bytes（取消は投影も source token も動かさない）なので旧 qualification だけが正しい。scope は旧 evidence が同じ bytes、旧 statement は template が同じ（DR-DPH-98(3) の限界）で旧 qualification と旧 ID で見る。source は旧 quote を含む statement／evidence／qualification を forbidden に置き、stage 1 の値で解決される。拒否は [新, 旧] の順で、scope／source が source-revision-changed、decision が revision-not-human-approved。除外 revision（Revision は immutable、prepare は毎回新しい run。4491-4534）と freshness（P-08 と同じ gate の順）を確かめた。"
     },
     {
       "caseId": "P-11",
-      "verdict": "pending"
+      "verdict": "approve",
+      "summary": "正例 3 Revision・15 entry は独立導出と一致（予算 14584）。拒否 scope-authority-changed は P-02 と同じく source-revision-changed。除外 freshness-mismatch は P-08 と同じ理由で確かめた。"
     }
+  ],
+  "limitsReviewed": [
+    "DR-DPH-98(1)：revisionToken は Revision の保存値から取るので、期待 statement の authorityRevision が『anchor の投影の token であること』自体は payload の照合では独立に確かめられない（live との一致は D-final の A2 が保証する）。P の判定（保持、禁止 0、順）の解釈は誤らせないと判断した。",
+    "DR-DPH-98(3)：P-10 scope の旧 statement を forbidden に置けないが、atomic group は全部か無しで入り、旧 group には旧 Revision ID を含む qualification が伴うので、旧 ID と旧 qualification の禁止で検出できる。",
+    "DR-DPH-98(5)：登録簿の ref の名前の変更は harness が fixture の値を渡すだけで期待値に効かない。",
+    "材料：版 1 と版 2 の text は双方向の部分文字列で重ならない（S2 の script でも 0 件。版 1 の 3 文字以下の 9 件も含まれない）。logical ID は版 2 が『dh2-』を前に付けた別の ID で、契約の判定（ID は一致、text は包含）に合い、logical ID は payload に出ない。"
   ]
 }
