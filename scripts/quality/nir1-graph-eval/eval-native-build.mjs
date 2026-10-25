@@ -28,12 +28,14 @@
 import assert from "node:assert/strict";
 import console from "node:console";
 import { execFileSync } from "node:child_process";
+import { isDeepStrictEqual } from "node:util";
 import { createHash } from "node:crypto";
 import {
   copyFile,
   mkdir,
   readFile,
   realpath,
+  rm,
   stat,
   writeFile,
 } from "node:fs/promises";
@@ -41,6 +43,13 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { runLocalCiCommand } from "../../local-ci-process-supervisor.mjs";
+import {
+  captureCandidate,
+  cleanStatus,
+  sameCandidate,
+  sourceDigests,
+  sourcePaths,
+} from "../nir1-retrieval/standard-build.mjs";
 import {
   EVAL_FEATURE,
   EVAL_NAPI_EXPORTS,
@@ -70,9 +79,9 @@ function isInside(parent, child) {
 }
 
 /**
- * The absolute output directory. It must be under `<root>/.artifacts/`, must
- * not be inside the grimodex-node package, and its `.node` must not be the
- * default `.node`.
+ * The absolute output directory: exactly `<root>/.artifacts/cp4/eval-build`
+ * (the only directory the Graph arm's receipt guard accepts). The other
+ * checks stay as a second line.
  */
 export function resolveEvalOutputDir(root, outDir = DEFAULT_OUT_DIR) {
   assert.ok(path.isAbsolute(root), "root must be absolute");
@@ -81,6 +90,11 @@ export function resolveEvalOutputDir(root, outDir = DEFAULT_OUT_DIR) {
   if (!isInside(artifacts, out) || out === artifacts) {
     throw precheck(
       `the evaluation build must be written under .artifacts/ (got ${out})`,
+    );
+  }
+  if (out !== path.join(root, DEFAULT_OUT_DIR)) {
+    throw precheck(
+      `the evaluation build is written to ${DEFAULT_OUT_DIR} only (got ${out})`,
     );
   }
   if (isInside(path.join(root, NATIVE_DIR), out)) {
@@ -246,16 +260,56 @@ export function verifyEvalBuild({
   return violations;
 }
 
+/** The source identity of the candidate: clean, its HEAD, base and tree, its file hashes. */
+async function sourceIdentity(root) {
+  const status = cleanStatus(root);
+  const candidate = {
+    ...captureCandidate(root),
+    worktreeClean: status.length === 0,
+  };
+  const paths = sourcePaths(root, candidate.resolvedHeadSha);
+  return { candidate, paths, digests: await sourceDigests(root, paths) };
+}
+
+function commandRecord(entry, result) {
+  return {
+    id: entry.id,
+    argv: [entry.command, ...entry.args],
+    status: commandStatus(result),
+    exitCode: result?.exitCode ?? null,
+    signal: result?.signal ?? null,
+    closeObserved: result?.closeObserved ?? null,
+    termination: result?.termination ?? null,
+    cleanup: { complete: result?.cleanup?.complete === true },
+  };
+}
+
+/**
+ * Builds the evaluation `.node` and the worker on a clean candidate and writes
+ * `eval-build.json` in the shape the Graph arm's guard reads
+ * (`assertEvalBuildReceipt` in `scripts/quality/nir1-retrieval/contract.mjs`).
+ * The candidate is resolved and compared before and after the build with the
+ * standard build's own functions (`standard-build.mjs`); any difference, a
+ * failed command or a failed check leaves no manifest. A manifest of an
+ * earlier run is removed first.
+ */
 export async function runEvalNativeBuild({
   root: requestedRoot,
   outDir = DEFAULT_OUT_DIR,
   runCommand = runLocalCiCommand,
   inspect = inspectEvalModule,
-  head = null,
 }) {
   const root = await realpath(requestedRoot);
   const plan = planEvalNativeBuild({ root, outDir });
+  const startedAt = new Date().toISOString();
   await mkdir(plan.out, { recursive: true });
+  await rm(plan.outputs.manifest, { force: true });
+  const before = await sourceIdentity(root);
+  if (!before.candidate.worktreeClean) {
+    throw precheck(
+      "the evaluation build needs a clean candidate worktree; no manifest was written",
+    );
+  }
   const defaultNodeBefore = await optionalSha256(path.join(root, DEFAULT_NODE));
   const declarationsBefore = await optionalSha256(
     path.join(root, TRACKED_DECLARATIONS),
@@ -274,16 +328,11 @@ export async function runEvalNativeBuild({
         closeGraceMs: GRACE_MS,
       },
     );
-    const status = commandStatus(result);
-    commands.push({
-      id: entry.id,
-      argv: [entry.command, ...entry.args],
-      status,
-      exitCode: result?.exitCode ?? null,
-    });
-    if (status !== "passed") {
+    const record = commandRecord(entry, result);
+    commands.push(record);
+    if (record.status !== "passed") {
       throw new Error(
-        `the ${entry.id} build ${status}; no manifest was written`,
+        `the ${entry.id} build ${record.status}; no manifest was written`,
       );
     }
   }
@@ -291,9 +340,21 @@ export async function runEvalNativeBuild({
     await stat(copy.from);
     await copyFile(copy.from, copy.to);
   }
+  const after = await sourceIdentity(root);
+  const sourceUnchanged =
+    after.candidate.worktreeClean &&
+    sameCandidate(before.candidate, after.candidate) &&
+    isDeepStrictEqual(before.paths, after.paths) &&
+    isDeepStrictEqual(before.digests, after.digests);
+  if (!sourceUnchanged) {
+    throw precheck(
+      "the candidate changed during the evaluation build (dirty, HEAD, base, tree or file hashes); no manifest was written",
+    );
+  }
   const binary = await readFile(plan.outputs.node);
+  const inspection = inspect(plan.outputs.node);
   const violations = verifyEvalBuild({
-    inspection: inspect(plan.outputs.node),
+    inspection,
     binary,
     defaultNodeBefore,
     defaultNodeAfter: await optionalSha256(path.join(root, DEFAULT_NODE)),
@@ -307,32 +368,34 @@ export async function runEvalNativeBuild({
       `the evaluation build failed its checks; no manifest was written:\n${violations.join("\n")}`,
     );
   }
+  const nodePath = path.relative(root, plan.outputs.node);
+  const workerPath = path.relative(root, plan.outputs.worker);
+  const workerSha256 = await sha256File(plan.outputs.worker);
   const manifest = {
-    schema: MANIFEST_SCHEMA,
-    head:
-      head ??
-      execFileSync("git", ["rev-parse", "HEAD"], {
-        cwd: root,
-        encoding: "utf8",
-      }).trim(),
+    schemaVersion: MANIFEST_SCHEMA,
+    status: "passed",
+    standardBuild: false,
+    evaluationBuild: true,
+    sourceUnchanged: true,
+    root,
+    candidate: before.candidate,
     features: plan.features,
-    commands,
-    outputs: {
-      node: {
-        path: path.relative(root, plan.outputs.node),
-        sha256: createHash("sha256").update(binary).digest("hex"),
-      },
-      declarations: {
-        path: path.relative(root, plan.outputs.declarations),
-        sha256: await sha256File(plan.outputs.declarations),
-      },
-      worker: {
-        path: path.relative(root, plan.outputs.worker),
-        sha256: await sha256File(plan.outputs.worker),
-      },
+    capabilities: inspection.capabilities,
+    exports: inspection.exports,
+    artifacts: {
+      [nodePath]: createHash("sha256").update(binary).digest("hex"),
+      [workerPath]: workerSha256,
     },
+    worker: { path: workerPath, sha256: workerSha256 },
+    declarations: {
+      path: path.relative(root, plan.outputs.declarations),
+      sha256: await sha256File(plan.outputs.declarations),
+    },
+    commands,
     defaultNodeUnchanged: { path: DEFAULT_NODE, sha256: defaultNodeBefore },
     distributed: false,
+    startedAt,
+    finishedAt: new Date().toISOString(),
   };
   await writeFile(
     plan.outputs.manifest,

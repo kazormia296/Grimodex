@@ -47,7 +47,9 @@ function requireRepoRelative(file) {
   return file;
 }
 
-function sourcePaths(root, head) {
+// The candidate and source checks below are shared with the CP-4 evaluation
+// build (`scripts/quality/nir1-graph-eval/eval-native-build.mjs`).
+export function sourcePaths(root, head) {
   const paths = git(
     root,
     ["ls-tree", "-r", "--name-only", "-z", head],
@@ -63,7 +65,7 @@ function sourcePaths(root, head) {
   return paths;
 }
 
-async function sourceDigests(root, paths) {
+export async function sourceDigests(root, paths) {
   const entries = {};
   for (const file of paths)
     entries[file] = sha256(await readFile(path.join(root, file)));
@@ -76,7 +78,7 @@ function assertDigestMap(value, paths) {
   for (const digest of Object.values(value)) assert.match(digest, SHA256);
 }
 
-function cleanStatus(root) {
+export function cleanStatus(root) {
   const indexEntries = git(root, ["ls-files", "-v", "-z"], "buffer")
     .toString("utf8")
     .split("\0");
@@ -91,7 +93,7 @@ function cleanStatus(root) {
   );
 }
 
-function captureCandidate(root) {
+export function captureCandidate(root) {
   const resolvedBaseSha = git(root, [
     "rev-parse",
     "--verify",
@@ -120,7 +122,7 @@ function captureCandidate(root) {
   };
 }
 
-function sameCandidate(left, right) {
+export function sameCandidate(left, right) {
   return [
     "requestedBase",
     "requestedHead",
