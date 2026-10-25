@@ -576,9 +576,6 @@ impl ProfileEgressState {
         })
     }
 
-    /// Invalidate every process-local registration when the trusted workspace
-    /// binding changes. Old tuples must not remain usable until each sender
-    /// happens to make a new invoke.
     /// Test only: drop one sender's registration without revoking dispatch
     /// permits, so a test can tell a Native stop from the permit's own stop.
     #[cfg(test)]
@@ -586,6 +583,9 @@ impl ProfileEgressState {
         self.lock().registered_callers.remove(&sender_id);
     }
 
+    /// Invalidate every process-local registration when the trusted workspace
+    /// binding changes. Old tuples must not remain usable until each sender
+    /// happens to make a new invoke.
     pub fn invalidate_callers(&self) {
         let mut state = self.lock();
         state.registered_callers.clear();
