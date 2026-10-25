@@ -317,7 +317,44 @@ test("an owner hook outside the feature, or a Busy answer without its hook, is r
     checkEvalFeatureAllowlist(extraBusy)
       .map((violation) => violation.message)
       .join("\n"),
-    /every Busy answer of `begin` needs its cause hook/,
+    /every Busy answer of `begin` and `begin_deferred` needs its cause hook/,
+  );
+});
+
+test("CQ-DEFER: a Busy answer of begin_deferred without its hook, or a begin outside the probe, is refused", () => {
+  const held = mutate(
+    PATHS.nodeProduct,
+    `                #[cfg(feature = "${EVAL_FEATURE}")]\n                crate::nir1_graph_eval::note_busy_cause("deferred-held");\n`,
+    "",
+  );
+  assert.match(
+    checkEvalFeatureAllowlist(held)
+      .map((violation) => violation.message)
+      .join("\n"),
+    /allowlisted site must appear exactly once/,
+  );
+  // 共有の snippet：保留の側を消すと 2 つのうち 1 つだけが残る。
+  const shared = mutate(
+    PATHS.nodeProduct,
+    `                    #[cfg(feature = "${EVAL_FEATURE}")]\n                    crate::nir1_graph_eval::note_busy_cause("preparing-other-key");\n                    self.unserved(GraphUnavailable::Busy, &demand.key.project_id)\n                }\n                Some(session) => {\n                    session.last_demand = demand.now;\n                    self.unserved(GraphUnavailable::Warming, &demand.key.project_id)\n                }\n                None => self.unserved(GraphUnavailable::Warming, &demand.key.project_id),\n            },\n            Phase::InUse`,
+    `                    self.unserved(GraphUnavailable::Busy, &demand.key.project_id)\n                }\n                Some(session) => {\n                    session.last_demand = demand.now;\n                    self.unserved(GraphUnavailable::Warming, &demand.key.project_id)\n                }\n                None => self.unserved(GraphUnavailable::Warming, &demand.key.project_id),\n            },\n            Phase::InUse`,
+  );
+  assert.match(
+    checkEvalFeatureAllowlist(shared)
+      .map((violation) => violation.message)
+      .join("\n"),
+    /allowlisted site must appear exactly 2 times \(found 1\)/,
+  );
+  const unprobed = mutate(
+    PATHS.nodeProduct,
+    "        self.begin_probed(state, query, Shared::demand_deferred)",
+    "        self.admit_and_route(state, query, Shared::demand_deferred)",
+  );
+  assert.match(
+    checkEvalFeatureAllowlist(unprobed)
+      .map((violation) => violation.message)
+      .join("\n"),
+    /`fn begin_deferred` must have exactly its fixed body/,
   );
 });
 

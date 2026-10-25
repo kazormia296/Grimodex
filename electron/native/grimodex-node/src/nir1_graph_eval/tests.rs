@@ -165,6 +165,18 @@ impl OwnerFixture {
         )
     }
 
+    /// CQ-DEFER：Related Scenes の入口（release まで保留される）。
+    fn begin_deferred(&self, seed: &str) -> GraphBegin {
+        self.state.nir1_graph.begin_deferred(
+            &self.state,
+            GraphQuery {
+                project_id: PROJECT.into(),
+                query_scene_id: SCENE.into(),
+                seed_entity_id: seed.into(),
+            },
+        )
+    }
+
     fn install_echo_worker(&self) {
         self.state
             .nir1_graph
@@ -683,5 +695,57 @@ fn a_settled_ticket_is_kept_as_its_summary() {
     assert_eq!(first["outcome"], "available");
     assert_eq!(first["tSettledNs"], open["tSettledNs"]);
     assert_eq!(first["freshnessStamp"], open["freshnessStamp"]);
+    clear_samples();
+}
+
+// ---- CQ-DEFER（D′）：保留の入口も `begin` と同じく記録される ----------------
+
+#[test]
+fn a_held_begin_is_recorded_and_its_release_is_counted() {
+    let _serial = serial();
+    let fixture = OwnerFixture::new(true);
+    fixture.install_echo_worker();
+    record_registration(&fixture.state, WorkerSetup::NotAttempted);
+    clear_samples();
+    let before = diagnostics_json(&fixture.state);
+    let ticket = match fixture.begin_deferred("entity") {
+        GraphBegin::Pending(ticket) => ticket,
+        GraphBegin::Cached(_) => panic!("expected a held ticket, got a cache hit"),
+        GraphBegin::Unavailable(reason) => panic!("expected pending, got {}", reason.as_str()),
+    };
+    // 保留中：release まで worker は無い。
+    assert_eq!(diagnostics_json(&fixture.state)["slot"], "deferred");
+    // 保留中の 2 件目の Related Scenes の begin は busy で、原因が記録される。
+    assert!(matches!(
+        fixture.begin_deferred("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Busy)
+    ));
+    ticket.release_after_own_commits();
+    match ticket.wait_timeout(Duration::from_secs(2)) {
+        Some(GraphTicketOutcome::Available(_)) => {}
+        other => panic!("expected an available Graph, got {other:?}"),
+    }
+    ticket.finish(GraphTicketUse::Used);
+    // 保留つきの session は READY を残さない。
+    wait_until("empty slot", || {
+        fixture.state.nir1_graph.slot_kind_for_eval() == GraphSlotKind::Empty
+    });
+    let records = sample_records();
+    assert_eq!(records.len(), 2, "{records:?}");
+    assert_eq!(records[0]["startSlot"]["kind"], "empty");
+    assert_eq!(records[0]["begin"], "pending");
+    assert_eq!(records[0]["ticket"]["outcome"], "available");
+    assert_eq!(records[0]["ticket"]["disposition"], "used");
+    assert_eq!(records[1]["startSlot"]["kind"], "deferred");
+    assert_eq!(records[1]["reason"], "busy");
+    assert_eq!(records[1]["busyCause"], "deferred-held");
+    let after = diagnostics_json(&fixture.state);
+    let delta = |key: &str| after[key].as_u64().expect(key) - before[key].as_u64().expect(key);
+    assert_eq!(delta("deferredReleased"), 1, "{after}");
+    assert_eq!(delta("deferredExpired"), 0, "{after}");
+    assert_eq!(delta("deferredDropped"), 0, "{after}");
+    assert_eq!(delta("staleReadyRetired"), 0, "{after}");
+    assert_eq!(delta("preparesReady"), 1, "{after}");
+    assert_eq!(after["slot"], "empty");
     clear_samples();
 }

@@ -9,8 +9,9 @@
 //   eval-feature-allowlist   every mention of the evaluation feature, module,
 //                            N-API names and owner hooks outside the
 //                            evaluation module files is one of the fixed
-//                            snippets or blocks; the two hook functions
-//                            (`publication_open`, `begin`) have a fixed body;
+//                            snippets or blocks; the hook functions
+//                            (`publication_open`, `begin`, `begin_deferred`,
+//                            `begin_probed`) have a fixed body;
 //                            `PRODUCT_GRAPH_PUBLISHED` stays false;
 //   cargo-features           the feature is defined only in the two
 //                            Cargo.toml files, enables only the grimodex-db
@@ -150,12 +151,31 @@ const BUSY_ANSWER =
   "self.unserved(GraphUnavailable::Busy, &demand.key.project_id)";
 
 /** Every Busy answer of `begin` (DSN §1.2) and the hook in front of it. */
-export const BUSY_HOOKS = Object.freeze([
+const BEGIN_BUSY_HOOKS = [
   `${CFG} crate::nir1_graph_eval::note_busy_cause("preparing-other-key"); ${BUSY_ANSWER}`,
   `${CFG} crate::nir1_graph_eval::note_busy_cause(if matches!(phase, Phase::InUse) { "in-use" } else { "retiring" }); ${BUSY_ANSWER}`,
   `${CFG} crate::nir1_graph_eval::note_busy_cause("edge-before-query"); return ${BUSY_ANSWER};`,
   `${CFG} crate::nir1_graph_eval::note_busy_cause("command-queue"); ${BUSY_ANSWER}`,
   `${CFG} crate::nir1_graph_eval::note_busy_cause("other-key"); let busy = ${BUSY_ANSWER};`,
+];
+
+/**
+ * CQ-DEFER（D′）：`begin_deferred`（`demand_deferred` と `defer_on_ready`）の
+ * Busy の答えとその前の hook。3 つは `begin` のものと同じ snippet なので、
+ * snippet は一覧に載った回数だけ現れることを求める。
+ */
+const DEFERRED_BUSY_HOOKS = [
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("deferred-held"); ${BUSY_ANSWER}`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("preparing-other-key"); ${BUSY_ANSWER}`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause(if matches!(phase, Phase::InUse) { "in-use" } else { "retiring" }); ${BUSY_ANSWER}`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("edge-before-query"); return ${BUSY_ANSWER};`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("other-key"); return ${BUSY_ANSWER};`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("command-queue"); return ${BUSY_ANSWER};`,
+];
+
+export const BUSY_HOOKS = Object.freeze([
+  ...BEGIN_BUSY_HOOKS,
+  ...DEFERRED_BUSY_HOOKS,
 ]);
 
 export const SNIPPETS = Object.freeze({
@@ -174,7 +194,8 @@ export const SNIPPETS = Object.freeze({
     // The per-ticket notes (stamp attempt and Busy cause), CP-4 S1a review.
     `${CFG} eval_notes: crate::nir1_graph_eval::TicketNotes,`,
     `${CFG} eval_notes: crate::nir1_graph_eval::TicketNotes::default(),`,
-    // The five Busy answers of `begin`, each with the statement it precedes.
+    // The Busy answers of `begin` and `begin_deferred`, each with the
+    // statement it precedes.
     ...BUSY_HOOKS,
     `${CFG} ticket.eval_notes.busy("rebuild-window"); ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Busy));`,
     `let failure = classify_c_query_failure(&error); ${CFG} if matches!(failure, CQueryFailure::CapacityBusy) { ticket.eval_notes.busy("worker-capacity"); }`,
@@ -191,10 +212,15 @@ export const BLOCKS = Object.freeze({
   ],
 });
 
-/** Fixed bodies of the two hooked product functions. */
+/**
+ * Fixed bodies of the hooked product functions. CQ-DEFER（D′）：`begin` と
+ * `begin_deferred` はどちらも `begin_probed`（probe の唯一の場所）を通る。
+ */
 export const FIXED_BODIES = Object.freeze({
   publication_open: `if PRODUCT_GRAPH_PUBLISHED { return true; } ${CFG} if self.publication_open_for_eval.load(Ordering::SeqCst) { return true; } #[cfg(test)] { self.publication_open_for_test.load(Ordering::SeqCst) } #[cfg(not(test))] { false }`,
-  begin: `${CFG} let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self); let result = self.admit(state, query); ${CFG} eval_probe.finish(&result); result`,
+  begin: `self.begin_probed(state, query, Shared::demand)`,
+  begin_deferred: `self.begin_probed(state, query, Shared::demand_deferred)`,
+  begin_probed: `${CFG} let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self); let result = self.admit_and_route(state, query, route); ${CFG} eval_probe.finish(&result); result`,
 });
 
 const BACKEND_REGISTRATION = `let state = Arc::new(state); #[cfg(all(feature = "${EVAL_FEATURE}", not(test)))] nir1_graph_eval::register(&state); Ok(Backend { state })`;
@@ -206,18 +232,24 @@ const FEATURE_CFG = new RegExp(
 /** Masks the allowlisted snippets and blocks of `file`; counts each. */
 function maskAllowed(file, masked, counts) {
   let out = masked;
+  // n 回載った snippet はちょうど n 回現れる（CQ-DEFER：`begin_deferred` が
+  // `begin` と共有する Busy の hook）。
+  const expected = new Map();
   for (const snippet of SNIPPETS[file] ?? []) {
+    expected.set(snippet, (expected.get(snippet) ?? 0) + 1);
+  }
+  for (const [snippet, want] of expected) {
     let count = 0;
     out = out.replace(snippetPattern(snippet), (match) => {
       count += 1;
       return " ".repeat(match.length);
     });
-    counts.push({ snippet, count });
+    counts.push({ snippet, count, want });
   }
   for (const header of BLOCKS[file] ?? []) {
     const pattern = snippetPattern(header);
     const matches = [...out.matchAll(pattern)];
-    counts.push({ snippet: header, count: matches.length });
+    counts.push({ snippet: header, count: matches.length, want: 1 });
     // Mask from the last match so earlier offsets stay valid.
     for (const match of matches.reverse()) {
       const block = braceBlock(out, match.index + match[0].length - 1);
@@ -252,11 +284,11 @@ export function checkEvalFeatureAllowlist(sources) {
       maskRust(source, { maskStrings: false }),
       counts,
     );
-    for (const { snippet, count } of counts) {
-      if (count !== 1) {
+    for (const { snippet, count, want } of counts) {
+      if (count !== want) {
         fail(
           file,
-          `the allowlisted site must appear exactly once (found ${count}): ${snippet.slice(0, 90)}`,
+          `the allowlisted site must appear exactly ${want === 1 ? "once" : `${want} times`} (found ${count}): ${snippet.slice(0, 90)}`,
         );
       }
     }
@@ -324,7 +356,7 @@ export function checkEvalFeatureAllowlist(sources) {
     if (busyAnswers !== BUSY_HOOKS.length) {
       fail(
         PATHS.nodeProduct,
-        `every Busy answer of \`begin\` needs its cause hook (${busyAnswers} answers, ${BUSY_HOOKS.length} hooks)`,
+        `every Busy answer of \`begin\` and \`begin_deferred\` needs its cause hook (${busyAnswers} answers, ${BUSY_HOOKS.length} hooks)`,
       );
     }
     const constant = maskRust(product, { maskStrings: true });

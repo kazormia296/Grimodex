@@ -1061,10 +1061,15 @@ impl Nir1GraphProductOwner {
         self.begin_probed(state, query, Shared::demand_deferred)
     }
 
-    /// CP-4 S1a: both entries take the same evaluation probe around the
-    /// admission. Without the `nir1-graph-eval` feature this is only
-    /// `admit_and_route`.
-    fn begin_probed(&self, state: &Arc<AppState>, query: GraphQuery, route: DemandRoute) -> GraphBegin {
+    /// CP-4 S1a：2 つの入口（`begin` と `begin_deferred`）は、admission を同じ
+    /// 評価の probe で包む。`nir1-graph-eval` feature の無い build では
+    /// `admit_and_route` を呼ぶだけである。
+    fn begin_probed(
+        &self,
+        state: &Arc<AppState>,
+        query: GraphQuery,
+        route: DemandRoute,
+    ) -> GraphBegin {
         #[cfg(feature = "nir1-graph-eval")]
         let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self);
         let result = self.admit_and_route(state, query, route);
@@ -1717,10 +1722,16 @@ impl Shared {
                 }
             }
             Phase::Empty => self.defer_on_empty(&mut slot, state, demand, &config, limit),
-            Phase::Deferred => self.unserved(GraphUnavailable::Busy, &demand.key.project_id),
+            Phase::Deferred => {
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause("deferred-held");
+                self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
+            }
             Phase::Ready => self.defer_on_ready(&mut slot, demand, &config, limit),
             Phase::Preparing => match slot.session.as_mut() {
                 Some(session) if session.key != demand.key => {
+                    #[cfg(feature = "nir1-graph-eval")]
+                    crate::nir1_graph_eval::note_busy_cause("preparing-other-key");
                     self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
                 }
                 Some(session) => {
@@ -1735,6 +1746,12 @@ impl Shared {
                         session.last_demand = demand.now;
                     }
                 }
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause(if matches!(phase, Phase::InUse) {
+                    "in-use"
+                } else {
+                    "retiring"
+                });
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
@@ -1805,15 +1822,21 @@ impl Shared {
         if session.epoch != demand.epoch || self.edge_epoch.load(Ordering::SeqCst) != session.epoch
         {
             // An edge already happened; the owner retires before any query.
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("edge-before-query");
             return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
         }
         if session.key != demand.key
             && demand.now.saturating_duration_since(session.last_demand)
                 < config.rebuild_min_interval
         {
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("other-key");
             return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
         }
         if session.commands.try_send(Command::Defer).is_err() {
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("command-queue");
             return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
         }
         session.key = demand.key.clone();

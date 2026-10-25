@@ -361,8 +361,8 @@ impl SampleLog {
 static SAMPLES: Mutex<SampleLog> = Mutex::new(SampleLog::new());
 static NEXT_SEQ: AtomicU64 = AtomicU64::new(1);
 
-/// Taken by `Nir1GraphProductOwner::begin` before admission and finished with
-/// its result. Inert for an owner whose gate `register` did not open.
+/// Taken by `Nir1GraphProductOwner::begin` and `begin_deferred` before
+/// admission and finished with its result. Inert for an owner whose gate `register` did not open.
 pub(crate) struct BeginProbe(Option<ProbeStart>);
 
 struct ProbeStart {
@@ -448,6 +448,7 @@ impl BeginProbe {
 pub(crate) fn slot_name(kind: GraphSlotKind) -> &'static str {
     match kind {
         GraphSlotKind::Empty => "empty",
+        GraphSlotKind::Deferred => "deferred",
         GraphSlotKind::Preparing => "preparing",
         GraphSlotKind::Ready => "ready",
         GraphSlotKind::InUse => "in-use",
@@ -649,6 +650,10 @@ pub(crate) fn diagnostics_json(state: &AppState) -> Value {
         "sceneTotalOverCap": d.scene_total_over_cap,
         "querySceneAssociated": d.query_scene_associated,
         "panics": d.panics,
+        "deferredReleased": d.deferred_released,
+        "deferredExpired": d.deferred_expired,
+        "deferredDropped": d.deferred_dropped,
+        "staleReadyRetired": d.stale_ready_retired,
         "slot": slot_name(state.nir1_graph.slot_kind_for_eval()),
         "cacheOccupied": state.nir1_graph.cache_occupied_for_eval(),
         "clockNs": clock_ns(Instant::now()),
