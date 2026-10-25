@@ -126,6 +126,10 @@ async fn configured_worker_is_never_started_while_the_graph_is_unpublished() {
         assert!(marker.exists(), "the start detector must work");
         std::fs::remove_file(&marker).expect("reset marker");
     }
+    // Outside unix the worker is an empty file: there is no start detector and no
+    // positive control, so the marker assertions below hold vacuously there. On
+    // those platforms this test only shows that the closed gate answers
+    // `not-activated` and that no prepare starts (the counters and the slot).
     #[cfg(not(unix))]
     std::fs::write(&worker, b"").expect("worker file");
 
@@ -181,10 +185,156 @@ async fn configured_worker_is_never_started_while_the_graph_is_unpublished() {
     let _ = std::fs::remove_dir_all(root);
 }
 
+/// Removes `#[cfg(test)]` items (a `mod x;` declaration, a braced item or
+/// block, or a one-line field / statement ending in `,` or `;`), so a scan sees
+/// only what the product build compiles. Braces are counted per character;
+/// a cfg(test) item with an unbalanced brace literal would be cut short, which
+/// only makes the scan stricter.
+fn strip_cfg_test_items(source: &str) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let mut kept = String::with_capacity(source.len());
+    let mut index = 0;
+    while index < lines.len() {
+        let trimmed = lines[index].trim();
+        if !trimmed.starts_with("#[cfg(test)]") {
+            kept.push_str(lines[index]);
+            kept.push('\n');
+            index += 1;
+            continue;
+        }
+        let mut cursor = index;
+        if trimmed == "#[cfg(test)]" {
+            cursor += 1;
+            while cursor < lines.len() {
+                let next = lines[cursor].trim_start();
+                if next.starts_with("#[") || next.starts_with("///") || next.starts_with("//") {
+                    cursor += 1;
+                } else {
+                    break;
+                }
+            }
+        }
+        let mut depth: i64 = 0;
+        let mut opened = false;
+        while cursor < lines.len() {
+            let line = lines[cursor];
+            for character in line.chars() {
+                match character {
+                    '{' => {
+                        depth += 1;
+                        opened = true;
+                    }
+                    '}' => depth -= 1,
+                    _ => {}
+                }
+            }
+            cursor += 1;
+            let end = line.trim_end();
+            if depth < 0
+                || (opened && depth == 0)
+                || (!opened && (end.ends_with(';') || end.ends_with(',')))
+            {
+                break;
+            }
+        }
+        index = cursor;
+    }
+    kept
+}
+
+/// Every `src/**/*.rs` the product build compiles: test files (`*tests.rs`)
+/// are left out and `#[cfg(test)]` items are stripped. Paths are relative to `src`.
+fn product_sources() -> Vec<(String, String)> {
+    fn visit(directory: &std::path::Path, files: &mut Vec<std::path::PathBuf>) {
+        for entry in std::fs::read_dir(directory).expect("read src") {
+            let path = entry.expect("entry").path();
+            if path.is_dir() {
+                visit(&path, files);
+            } else if path.extension().is_some_and(|extension| extension == "rs") {
+                files.push(path);
+            }
+        }
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    visit(&root, &mut files);
+    files.sort();
+    files
+        .into_iter()
+        .filter(|path| {
+            !path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with("tests.rs"))
+        })
+        .map(|path| {
+            let relative = path
+                .strip_prefix(&root)
+                .expect("under src")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let source = std::fs::read_to_string(&path).expect("read source");
+            (relative, strip_cfg_test_items(&source))
+        })
+        .collect()
+}
+
+#[test]
+fn cfg_test_items_are_stripped_from_the_product_scan() {
+    let sample = "fn kept() {}\n#[cfg(test)]\nmod tests;\n#[cfg(test)]\n/// doc\n#[allow(dead_code)]\nfn gone() {\n    if x { y(); }\n}\nstruct S {\n    a: u8,\n    #[cfg(test)]\n    b: u8,\n    c: u8,\n}\n#[cfg(test)] fn inline_gone() { z(); }\nfn after() {}\n";
+    let stripped = strip_cfg_test_items(sample);
+    for kept in ["fn kept()", "a: u8,", "c: u8,", "fn after()", "struct S {"] {
+        assert!(stripped.contains(kept), "{kept}: {stripped}");
+    }
+    for gone in ["mod tests;", "fn gone()", "y();", "b: u8,", "inline_gone"] {
+        assert!(!stripped.contains(gone), "{gone}: {stripped}");
+    }
+    // The real files: the product owner keeps its setter, loses its test seams.
+    let sources = product_sources();
+    let product = &sources
+        .iter()
+        .find(|(path, _)| path == "nir1_graph_product.rs")
+        .expect("product owner")
+        .1;
+    assert!(product.contains("pub(crate) fn configure_worker_path("));
+    assert!(!product.contains("fn install_worker_factory_for_test("));
+    assert!(!product.contains("publication_open_for_test"));
+    assert!(sources.iter().all(|(path, _)| !path.ends_with("tests.rs")));
+    assert!(sources.iter().any(|(path, _)| path == "lib.rs"));
+}
+
 #[test]
 fn only_the_main_constructor_configures_the_worker_path() {
-    let lib = include_str!("lib.rs");
-    assert_eq!(lib.matches(".configure_worker_path(").count(), 1);
+    let sources = product_sources();
+    let compact = |source: &str| source.split_whitespace().collect::<String>();
+    // Every product use of the setter, in any module, other than its definition.
+    let mut setters = Vec::new();
+    let mut factories = Vec::new();
+    let mut slot_writes = Vec::new();
+    for (path, source) in &sources {
+        let uses = source.matches("configure_worker_path").count()
+            - source.matches("fn configure_worker_path").count();
+        setters.extend(std::iter::repeat_n(path.clone(), uses));
+        factories.extend(std::iter::repeat_n(
+            path.clone(),
+            source
+                .matches("ProcessGraphWorkerFactory::from_path(")
+                .count(),
+        ));
+        slot_writes.extend(std::iter::repeat_n(
+            path.clone(),
+            compact(source).matches(".worker.set(").count(),
+        ));
+    }
+    assert_eq!(setters, ["lib.rs"], "the product sets the worker path once");
+    assert_eq!(factories, ["nir1_graph_product.rs"]);
+    assert_eq!(slot_writes, ["nir1_graph_product.rs"]);
+
+    let lib = &sources
+        .iter()
+        .find(|(path, _)| path == "lib.rs")
+        .expect("lib.rs")
+        .1;
     let constructor_start = lib
         .find("pub fn new_from_main(")
         .expect("the napi constructor");
@@ -195,13 +345,12 @@ fn only_the_main_constructor_configures_the_worker_path() {
     let attribute = preceding.rfind("#[napi").expect("attribute");
     assert!(preceding[attribute..].starts_with("#[napi(constructor)]"));
     // The worker path is never read from the environment by Native either.
-    for source in [
-        lib,
-        include_str!("nir1_graph_product.rs"),
-        include_str!("state.rs"),
-    ] {
+    for (path, source) in &sources {
         for line in source.lines().filter(|line| line.contains("env::var")) {
-            assert!(!line.to_ascii_uppercase().contains("WORKER"), "{line}");
+            assert!(
+                !line.to_ascii_uppercase().contains("WORKER"),
+                "{path}: {line}"
+            );
         }
     }
 }

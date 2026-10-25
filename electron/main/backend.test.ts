@@ -428,6 +428,10 @@ describe("initBackend graph worker wiring", () => {
       expect(path.isAbsolute(workerPath as string)).toBe(true);
       // Main does not check existence: a missing worker still loads the
       // backend (Native refuses the path and leaves the Graph unavailable).
+      // Under vitest `__dirname` is `electron/main`, so this default resolves to
+      // `electron/src-tauri/target/release/…`, which never exists; that is why
+      // the absence holds here. The real dev path (`<repo>/src-tauri/…` from
+      // `dist-electron`) is fixed only by the pure resolver tests above.
       expect(existsSync(workerPath as string)).toBe(false);
       expect(dialogMock.showErrorBox).not.toHaveBeenCalled();
     } finally {
