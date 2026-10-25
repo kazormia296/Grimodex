@@ -7,9 +7,11 @@ export declare class Backend {
   /**
    * `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
    * (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
-   * com.miyakey.grimodex には触らない)。
+   * com.miyakey.grimodex には触らない)。`graph_worker_path` は Main が解決した
+   * NIR-1 C-query worker の絶対 path（CP-2b）。検証に落ちても Backend は作り、
+   * Graph だけが worker-unavailable になる。公開 gate が閉じている間は起動しない。
    */
-  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
+  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null, graphWorkerPath?: string | undefined | null)
   /**
    * Main-only D2a startup status. A fresh profile remains unrestricted until
    * the main process explicitly activates the first protected publication;

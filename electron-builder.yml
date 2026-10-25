@@ -29,6 +29,9 @@ extraResources:
     filter:
       - grimodex-mcp
       - grimodex-mcp.exe
+      # CP-2b: the seam-free NIR-1 C-query worker (inert while the Graph gate is closed).
+      - nir1-c-query-worker
+      - nir1-c-query-worker.exe
   - from: src-tauri/resources/semantic
     to: resources/semantic
     filter:
