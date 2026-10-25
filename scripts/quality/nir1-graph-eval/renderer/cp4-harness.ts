@@ -46,7 +46,20 @@ import {
   releaseRelatedScenes,
   settleRelatedScenesGraph,
 } from "@/features/related-scenes/nir1RelatedScenesApi";
-import { buildSemanticRecallQuery } from "@/features/chat/semanticRecall";
+import {
+  buildSemanticRecallQuery,
+  fetchSparseSceneIds,
+  recallParamsForLang,
+  SEMANTIC_RECALL_RESCUE_MARGIN,
+} from "@/features/chat/semanticRecall";
+import { computeSceneTimeIndex } from "@/features/codex/phaseResolver";
+import { getCurrentProjectLanguage } from "@/features/project/projectStore";
+import { selectRelatedPastScenesWithAnchor } from "@/features/related-scenes/selectRelatedScenes";
+import {
+  RELATED_SCENES_MAX,
+  RELATED_SCENES_RELATIVE_GAP,
+} from "@/features/related-scenes/relatedScenesConfig";
+import { buildSparseQuery } from "@/features/related-scenes/seedTerms";
 import { fuseNir1RelatedScenesGraph } from "@/features/related-scenes/nir1GraphFusion";
 import {
   declareBody,
@@ -400,7 +413,45 @@ function listenGraphReady() {
 /** 製品の begin と同じ query（`fetchNir1RelatedPastScenes` の組み立て）。 */
 async function savedQuery(sceneId: string) {
   const body = prosemirrorToText((await loadSceneContent(sceneId)) ?? "");
-  return buildSemanticRecallQuery({ userMessage: "", sceneBody: body });
+  return {
+    body,
+    query: buildSemanticRecallQuery({ userMessage: "", sceneBody: body }),
+  };
+}
+
+/**
+ * 製品が Graph の continue に渡す Raw R（`fetchNir1RelatedPastScenes` と同じ
+ * 選択：現在の Scene と読書順で後の Scene を除き、閾値と救済、sparse を使う）。
+ */
+async function productRawR(
+  sceneId: string,
+  projectId: string,
+  saved: { body: string; query: string },
+  denseHits: readonly { sceneId: string }[],
+) {
+  const params = recallParamsForLang(getCurrentProjectLanguage());
+  const sparseSceneIds = await fetchSparseSceneIds({
+    projectId,
+    query: buildSparseQuery(saved.query, saved.body),
+  }).catch(() => [] as string[]);
+  const raw = selectRelatedPastScenesWithAnchor(
+    denseHits.map((hit) => ({ ...hit })) as Parameters<
+      typeof selectRelatedPastScenesWithAnchor
+    >[0],
+    {
+      currentSceneId: sceneId,
+      sceneOrder: computeSceneTimeIndex(
+        useTreeStore.getState().nodes,
+        usePhaseStore.getState().resolutionMode,
+      ),
+      minScore: params.gateScore,
+      maxScenes: RELATED_SCENES_MAX,
+      rescueMargin: SEMANTIC_RECALL_RESCUE_MARGIN,
+      relativeRescue: { gap: RELATED_SCENES_RELATIVE_GAP },
+      sparseSceneIds,
+    },
+  );
+  return raw.scenes.map((scene) => scene.sceneId);
 }
 
 interface HeldInput {
@@ -431,6 +482,8 @@ async function timedBegin(input: HeldInput, query: string) {
       ir: response.ir.status === "pending" ? "pending" : response.ir.reason,
       graph: response.graph ?? null,
       denseHits: response.denseHits.length,
+      snapshotUsable: response.snapshot.originalSnapshotUsable,
+      supportedProfile: response.snapshot.supportedProfile,
       firstSnapshotElapsedMs: response.timing?.firstSnapshotElapsedMs ?? null,
       rawReadyElapsedMs: response.timing?.rawReadyElapsedMs ?? null,
     },
@@ -446,13 +499,20 @@ async function timedBegin(input: HeldInput, query: string) {
  */
 async function heldSample(input: HeldInput) {
   await listenGraphReady();
-  const query = await savedQuery(input.sceneId);
+  const saved = await savedQuery(input.sceneId);
+  const query = saved.query;
   const eventsBefore = graphReadyEvents.length;
   const out: Record<string, unknown> = {};
   const errors: string[] = [];
   const first = await timedBegin(input, query);
   out.begin = first.row;
-  const rawIds = first.response.denseHits.map((hit) => hit.sceneId);
+  const rawIds = await productRawR(
+    input.sceneId,
+    input.projectId,
+    saved,
+    first.response.denseHits,
+  );
+  out.rawR = rawIds.length;
   try {
     if (first.ticket && first.response.graph?.status === "pending") {
       const waitAt = performance.now();
@@ -501,7 +561,12 @@ async function heldSample(input: HeldInput) {
         if (again.ticket && again.response.graph?.status === "pending") {
           const wait = await continueRelatedScenesGraph(
             again.ticket,
-            again.response.denseHits.map((hit) => hit.sceneId),
+            await productRawR(
+              input.sceneId,
+              input.projectId,
+              saved,
+              again.response.denseHits,
+            ),
           );
           requery.graph = {
             status: wait.status,

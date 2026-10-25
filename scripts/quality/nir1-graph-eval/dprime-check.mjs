@@ -31,7 +31,11 @@ import {
   quietAtStart,
 } from "./run-sample.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
-import { openDataVersionProbe, readRowCounts } from "./workspace-db.mjs";
+import {
+  openDataVersionProbe,
+  readIndexMetadata,
+  readRowCounts,
+} from "./workspace-db.mjs";
 
 const STATUS_WAIT_MS = 20_000;
 const QUIET_WAIT_MS = 5_000;
@@ -65,6 +69,8 @@ function parseArgs(argv) {
     "two-views-ms": "60000",
     "quiet-ms": "20000",
     views: "2",
+    "cold-delay-ms": "0",
+    "pin-query-seed": "0",
   };
   for (let at = 0; at < argv.length; at += 2) {
     if (!argv[at].startsWith("--") || argv[at + 1] === undefined)
@@ -393,8 +399,9 @@ async function main() {
   });
   const stopSession = async (label, session) => {
     if (!session) return;
-    const stderr = session.stderr();
     const evidence = await session.stop();
+    const stderr = session.stderr();
+    await writeFile(path.join(runDir, `${label}-main-stderr.log`), stderr);
     report.sessions[label] = {
       problems: evidence.problems,
       registrationRefusedInMainStderr: (
@@ -424,6 +431,21 @@ async function main() {
       options,
     });
     await openWorkspace(session.page, workspacePath, ids);
+    if (options["pin-query-seed"] === "1") {
+      // dev fixture の query の Scene には pin が無く、製品の seed の規則
+      // （最初の pin）では seed が無い。harness の seed が規則の答えになるよう、
+      // 測定用の写しにだけ製品の API で pin を足す（DR-CP4-S1C2-26）。
+      const before = readIndexMetadata(dbPath, ids.projectId);
+      const pinned = await session.page.evaluate(
+        (value) => window.cp4Harness.api.upsertScenePin(value),
+        { sceneId: ids.querySceneId, entryId: seed },
+      );
+      report.pinQuerySeed = {
+        ok: pinned.ok,
+        error: pinned.error ?? null,
+        indexBefore: { b: before.b, chronicle: before.chronicle },
+      };
+    }
     const raw = await session.page.evaluate(
       (input) => window.cp4Harness.buildRaw(input),
       {
@@ -439,6 +461,13 @@ async function main() {
       rawBuildMs: raw.value.buildMs,
       index: await buildIndex(session.page, ids),
     };
+    if (report.pinQuerySeed) {
+      const after = readIndexMetadata(dbPath, ids.projectId);
+      report.pinQuerySeed.indexAfterPrep = {
+        b: after.b,
+        chronicle: after.chronicle,
+      };
+    }
     await stopSession("prep", session);
     session = null;
 
@@ -461,6 +490,8 @@ async function main() {
       readyWaitMs: GRAPH_READY_WAIT_MS,
     };
     if (options.phases.has("cold")) {
+      // open の後、何も query せずに待つ（Index が query なしで usable になるか）。
+      await sleep(Number(options["cold-delay-ms"]));
       const row = await oneSample({
         session,
         page,
