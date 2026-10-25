@@ -16,6 +16,8 @@ import {
   maskRules,
   maskValue,
   runConfigsInOrder,
+  runPackaged,
+  runProbeMain,
   startObservers,
   LEGACY_KEYRING_MARKER_FILE,
   attributeRows,
@@ -266,4 +268,38 @@ test("hostname が許容集合 A の名前（localhost など）と同じ機で�
   assert.deepEqual(kept, { requestHosts: { localhost: 1, "127.0.0.1": 2 } });
   const masked = maskValue({ note: "runner-box", requestHosts: { localhost: 1 } }, maskRules({ hostname: "runner-box" }));
   assert.deepEqual(masked, { note: "<host>", requestHosts: { localhost: 1 } });
+});
+
+test("配線: runPackaged と runProbeMain は launch した owner を必ず中断の対象に登録し、終了の証拠が取れなければ外さない（signal で terminate される）", async () => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "gps-wire-"));
+  const observers = { canaries: [], mdns: { packets: [] }, httpd: { hits: [] }, doh: null, ports: { p: 1, q: 2 } };
+  const fakeOwner = (label) => ({ label, exited: Promise.resolve({ code: 0 }), closed: () => ({ code: 0 }), isAlive: () => false, output: () => "" });
+  for (const [name, run] of [
+    ["packaged", (common) => runPackaged({ ...common, packagedApp: { appDir: work, executable: path.join(work, "grimodex") },
+      inject: async () => ({ cdp: { injected: false }, pageShims: [], pageShimIds: [], rendererResults: [] }) })],
+    ["probe", (common) => runProbeMain({ ...common, config: "baseline", bundles: { bundle: work, dist: work },
+      electron: () => ({ distDir: work, binary: path.join(work, "electron") }) })],
+  ]) {
+    for (const ok of [false, true]) {
+      const active = new Set();
+      const launched = [];
+      const common = {
+        work: fs.mkdtempSync(path.join(work, "w-")), observers, nonce: "abc", lan: null, args: { dnsLog: "" }, platform: "linux",
+        track: createTracker(active),
+        launch: (options) => { const owner = fakeOwner(options.label); launched.push(owner); return owner; },
+        terminate: async (owner) => { assert.ok(active.has(owner), `${name}: terminate の時点で登録されている`); return { ok }; },
+      };
+      await run(common);
+      assert.equal(launched.length, 1, name);
+      assert.equal(active.has(launched[0]), !ok, `${name} ok=${ok}`);
+      if (!ok) {
+        // 登録が残った owner は中断の処理が terminate する
+        const terminated = [];
+        const interrupt = installInterruptHandler({ active, terminate: async (owner) => { terminated.push(owner); return { ok: true }; }, exit: () => {}, on: () => {}, off: () => {}, log: () => {} });
+        await interrupt.handler("SIGTERM");
+        assert.deepEqual(terminated, [launched[0]], name);
+      }
+    }
+  }
+  fs.rmSync(work, { recursive: true, force: true });
 });

@@ -371,8 +371,9 @@ function environmentFacts() {
 }
 
 /** probe の main を node_modules の Electron で走らせる（baseline／toolcheck） */
-async function runProbeMain({ config, work, bundles, observers, nonce, lan, args, platform, track }) {
-  const { distDir, binary } = electronDist();
+/** probe の main の構成（export は配線の試験のため。launch／terminate は試験が差し替える） */
+export async function runProbeMain({ config, work, bundles, observers, nonce, lan, args, platform, track, launch: launchFn = launchOwned, terminate = terminateOwned, electron = electronDist }) {
+  const { distDir, binary } = electron();
   const cfg = {
     userData: path.join(work, "userData"),
     distRoot: bundles.dist,
@@ -398,9 +399,9 @@ async function runProbeMain({ config, work, bundles, observers, nonce, lan, args
     },
   });
   const launch = wrapForPlatform(binary, [`--log-net-log=${netLog}`, "--net-log-capture-mode=Everything", path.join(bundles.bundle, "main.cjs")], platform);
-  const owner = track(launchOwned({ ...launch, env, cwd: work, exeDir: distDir, label: config, platform }));
+  const owner = track(launchFn({ ...launch, env, cwd: work, exeDir: distDir, label: config, platform }));
   const closedInTime = await settlesWithin(owner.exited, LIMITS.probeMainMs);
-  const lifecycle = await terminateOwned(owner);
+  const lifecycle = await terminate(owner);
   track.release(owner, lifecycle);
   const result = fs.existsSync(cfg.resultPath) ? JSON.parse(fs.readFileSync(cfg.resultPath, "utf8")) : null;
   if (!result || result.fatal) {
@@ -494,7 +495,8 @@ export async function injectAttack({
 }
 
 /** packaged の実行体を走らせ、CDP で攻撃 JS を注入する */
-async function runPackaged({ work, observers, nonce, lan, args, platform, packagedApp, track, verifyPortOwner = verifyCdpPortOwner }) {
+/** packaged の構成（export は配線の試験のため。launch／terminate／inject は試験が差し替える） */
+export async function runPackaged({ work, observers, nonce, lan, args, platform, packagedApp, track, verifyPortOwner = verifyCdpPortOwner, launch: launchFn = launchOwned, terminate = terminateOwned, inject = injectAttack }) {
   const cdpPort = await freePort();
   const netLog = path.join(work, "netlog.json");
   const home = path.join(work, "home");
@@ -509,11 +511,11 @@ async function runPackaged({ work, observers, nonce, lan, args, platform, packag
   });
   const appArgs = [`--remote-debugging-port=${cdpPort}`, `--log-net-log=${netLog}`, "--net-log-capture-mode=Everything"];
   const launch = wrapForPlatform(packagedApp.executable, appArgs, platform);
-  const owner = track(launchOwned({ ...launch, env, cwd: work, exeDir: packagedApp.appDir, label: "packaged", platform }));
-  const { cdp, pageShims, pageShimIds, rendererResults } = await injectAttack({
+  const owner = track(launchFn({ ...launch, env, cwd: work, exeDir: packagedApp.appDir, label: "packaged", platform }));
+  const { cdp, pageShims, pageShimIds, rendererResults } = await inject({
     cdpPort, owner, platform, probeArgs: probeArgsFor({ nonce, ports: observers.ports, lan: lan ?? "192.0.2.1" }), verifyPortOwner,
   });
-  const lifecycle = await terminateOwned(owner);
+  const lifecycle = await terminate(owner);
   track.release(owner, lifecycle);
   const { summary, connectTimes } = readNetLogSummary(netLog, nonce);
   const attributed = attributeRows({
