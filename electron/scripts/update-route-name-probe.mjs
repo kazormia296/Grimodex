@@ -200,15 +200,66 @@ function processesInGroup(pgid) {
   return left;
 }
 
+/** 実行中の子と一時 dir。signal の handler が片付けに使う。 */
+const active = { child: null, work: null, stopping: false };
+
+/**
+ * SIGINT／SIGTERM で、実行中の子の process group（`-child.pid`）に SIGTERM を送り、
+ * `close` を上限まで待ってから SIGKILL を送り、一時 dir を消して終了する。
+ * wrapper（`local-ci-xvfb.mjs`）は SIGTERM で Xvfb を片付けるので、先に SIGTERM を送る。
+ */
+export function createSignalCleanup(
+  state,
+  {
+    kill = (pid, signal) => process.kill(pid, signal),
+    remove = (dir) => fs.rmSync(dir, { recursive: true, force: true }),
+    exit = (code) => process.exit(code),
+    graceMs = 5000,
+  } = {},
+) {
+  let entered = false;
+  return async (signal) => {
+    if (entered) return;
+    entered = true;
+    // 以後の起動を止める（待つ間に次の起動が始まらないようにする）。
+    state.stopping = true;
+    const child = state.child;
+    const killGroup = (target, name) => {
+      try {
+        kill(-target.pid, name);
+      } catch {
+        // すでに終了している。
+      }
+    };
+    if (child?.pid && child.exitCode === null && child.signalCode === null) {
+      const closed = new Promise((resolve) => child.once("close", resolve));
+      killGroup(child, "SIGTERM");
+      let timer;
+      await Promise.race([
+        closed,
+        new Promise((resolve) => (timer = setTimeout(resolve, graceMs))),
+      ]);
+      clearTimeout(timer);
+    }
+    for (const target of new Set([child, state.child])) {
+      if (target?.pid) killGroup(target, "SIGKILL");
+    }
+    if (state.work) remove(state.work);
+    exit(signal === "SIGINT" ? 130 : 143);
+  };
+}
+
 function runElectron(appDir, work, mode) {
   const env = isolatedEnv(work, mode);
   const wrapper = path.join(root, "scripts", "local-ci-xvfb.mjs");
+  if (active.stopping) throw new Error("stopping on a signal");
   return new Promise((resolve) => {
     const child = spawn(
       process.execPath,
       [wrapper, electronBinary(), "--no-sandbox", appDir],
       { env, stdio: ["ignore", "pipe", "pipe"], detached: true },
     );
+    active.child = child;
     let output = "";
     child.stdout.on("data", (chunk) => (output += chunk));
     child.stderr.on("data", (chunk) => (output += chunk));
@@ -227,6 +278,7 @@ function runElectron(appDir, work, mode) {
     }, RUN_TIMEOUT_MS);
     child.on("close", (code, signal) => {
       clearTimeout(timer);
+      if (active.child === child) active.child = null;
       let left = processesInGroup(child.pid);
       if (left.length) {
         killGroup("SIGKILL");
@@ -248,6 +300,10 @@ async function main() {
     throw new Error("this probe runs on Linux only");
   }
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "h1b-"));
+  active.work = work;
+  const cleanup = createSignalCleanup(active);
+  process.once("SIGINT", cleanup);
+  process.once("SIGTERM", cleanup);
   try {
     const appDir = await bundle(work);
     const runs = [];
@@ -274,6 +330,9 @@ async function main() {
     );
     process.exitCode = verdict.pass ? 0 : 1;
   } finally {
+    process.removeListener("SIGINT", cleanup);
+    process.removeListener("SIGTERM", cleanup);
+    active.work = null;
     fs.rmSync(work, { recursive: true, force: true });
   }
 }
