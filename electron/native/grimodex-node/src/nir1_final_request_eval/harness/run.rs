@@ -116,6 +116,13 @@ impl IdMap {
     }
 }
 
+/// 試験だけが差し込む setup の介入点。`scene-scope-unknown` の書込みの直後、
+/// marker の確認（DR-DPH-112）の前に、その Scene の runtime id で呼ばれる。
+/// evidence の経路（`run_variant`、`run_all_variants`）は常に `None` を渡すので、
+/// 動作は変わらない。確認が D-final を含む経路で実際に効くことを、
+/// mechanics 試験で確かめるために置く（DR-DPH-118）。
+pub(super) type AfterUnknownScopeWrite<'p> = &'p dyn Fn(&mut CaseWorkspace, &str) -> Result<()>;
+
 /// What a finished variant hands to the receipt writers.
 pub(super) struct VariantOutcome {
     pub(super) variant_id: String,
@@ -145,6 +152,8 @@ struct Runner<'a> {
     /// Stages whose first (positive) prepare has happened: no data write may
     /// follow it in that stage.
     positive_prepared_stages: HashSet<u32>,
+    /// 試験の介入点（evidence の経路では `None`）。
+    after_unknown_write: Option<AfterUnknownScopeWrite<'a>>,
 }
 
 fn nonempty(value: &Option<String>, what: &str) -> Result<String> {
@@ -396,6 +405,9 @@ impl<'a> Runner<'a> {
                             &self.fixture.setup_contract.scene_scope.per_scene,
                             &reason,
                         )?;
+                        if let Some(probe) = self.after_unknown_write {
+                            probe(&mut self.ws, &runtime)?;
+                        }
                         // A2 answers this negative with the same reason as the
                         // other source-changing writes, so the receipt cannot
                         // show the Scope was unknown: the harness does, fail
@@ -523,6 +535,17 @@ pub(super) fn run_variant(
     case: &CaseSpec,
     variant: &VariantSpec,
 ) -> Result<VariantOutcome> {
+    run_variant_with(fixture, case, variant, None)
+}
+
+/// `run_variant` に試験の介入点を足したもの。`after_unknown_write` を渡すのは
+/// mechanics 試験だけである。
+pub(super) fn run_variant_with<'a>(
+    fixture: &'a Fixture,
+    case: &'a CaseSpec,
+    variant: &'a VariantSpec,
+    after_unknown_write: Option<AfterUnknownScopeWrite<'a>>,
+) -> Result<VariantOutcome> {
     // The setup shapes are checked before any workspace exists (DR-DPH-102).
     validate_variant_setup(fixture, case, variant)?;
     let _exclusive = ONE_VARIANT_AT_A_TIME
@@ -544,6 +567,7 @@ pub(super) fn run_variant(
         invoked_writers: Vec::new(),
         prepared_stage: HashMap::new(),
         positive_prepared_stages: HashSet::new(),
+        after_unknown_write,
     };
     let stages = variant.stages();
     let first_stage = *stages.first().context("a variant has no request")?;
