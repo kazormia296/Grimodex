@@ -255,8 +255,17 @@ fn begin_blocking(
     // CQ-DEFER: the outcome is decided, so every commit of this begin (the
     // query embedding's audit) is over and the participant reads above are
     // closed. Only now may the owner prepare a worker for the held Graph query;
-    // one prepared or queried earlier would drift on these very commits. An
-    // `Err` drops the hold instead (the operation's release cancels it too).
+    // one prepared or queried earlier would drift on these very commits.
+    // - An `Err` outcome (the closure's own errors) drops the hold instead; the
+    //   operation's `release` below cancels it too, and if that `release` fails
+    //   (`?`) the hold is already cancelled.
+    // - On the `Ok` path the guard is spent once it released. A later `?` here
+    //   (`current_request`, `build::schedule`) returns `Err` without
+    //   cancelling the released query: Main never receives this operation, so
+    //   no one awaits or settles its Graph, its result is never cached (only an
+    //   `unused` declaration caches), and the sweep of its expired lease
+    //   cancels the ticket.
+    // - An unwind before this point drops the guard, which cancels.
     if outcome.is_ok() {
         graph_release.release();
     } else {
