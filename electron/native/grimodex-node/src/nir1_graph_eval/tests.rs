@@ -34,11 +34,25 @@ fn wait_until(what: &str, condition: impl Fn() -> bool) {
 
 struct EchoFactory;
 
-struct EchoWorker;
+struct EchoWorker {
+    /// Set: the query waits (at most 5 s) until the flag is cleared.
+    hold: Option<Arc<AtomicBool>>,
+}
 
 impl GraphWorkerFactory for EchoFactory {
     fn create(&self, _start: GraphWorkerStart) -> Box<dyn GraphWorker> {
-        Box::new(EchoWorker)
+        Box::new(EchoWorker { hold: None })
+    }
+}
+
+/// A worker whose queries wait while `hold` is set.
+struct HoldFactory(Arc<AtomicBool>);
+
+impl GraphWorkerFactory for HoldFactory {
+    fn create(&self, _start: GraphWorkerStart) -> Box<dyn GraphWorker> {
+        Box::new(EchoWorker {
+            hold: Some(Arc::clone(&self.0)),
+        })
     }
 }
 
@@ -52,6 +66,12 @@ impl GraphWorker for EchoWorker {
         request: &Nir1GraphRequest,
         _cancel: &AtomicBool,
     ) -> anyhow::Result<Nir1GraphProjection> {
+        if let Some(hold) = &self.hold {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while hold.load(std::sync::atomic::Ordering::SeqCst) && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         Ok(Nir1GraphProjection {
             project_id: request.project_id.clone(),
             query_scene_id: request.query_scene_id.clone(),
@@ -151,6 +171,17 @@ impl OwnerFixture {
             .install_worker_factory_for_test(Arc::new(EchoFactory));
     }
 
+    fn begin_in(&self, project: &str, seed: &str) -> GraphBegin {
+        self.state.nir1_graph.begin(
+            &self.state,
+            GraphQuery {
+                project_id: project.into(),
+                query_scene_id: SCENE.into(),
+                seed_entity_id: seed.into(),
+            },
+        )
+    }
+
     /// Warming, then READY, then a pending ticket.
     fn pending_after_warm(&self) -> GraphTicket {
         assert!(matches!(
@@ -247,12 +278,26 @@ fn begin_records_carry_the_slot_the_outcome_and_the_settlement() {
     let records = sample_records();
     assert_eq!(records.len(), 2, "{records:?}");
     let warming = &records[0];
-    assert_eq!(warming["slotAtBegin"], "empty");
+    assert_eq!(warming["startSlot"]["kind"], "empty");
+    assert_eq!(warming["startSlot"]["readyFresh"], false);
     assert_eq!(warming["begin"], "unavailable");
     assert_eq!(warming["reason"], "warming");
     assert!(warming["ticket"].is_null());
     let pending = &records[1];
-    assert_eq!(pending["slotAtBegin"], "ready");
+    assert_eq!(pending["startSlot"]["kind"], "ready");
+    assert_eq!(pending["startSlot"]["readyFresh"], true, "the first READY is new");
+    assert!(pending["startSlot"]["preparesReady"].as_u64() >= Some(1));
+    assert!(pending["busyCause"].is_null());
+    // The owner thread tried the second stamp between the hand-over and the
+    // settlement, on the eval clock.
+    let stamp = &pending["ticket"]["freshnessStamp"];
+    let attempted = stamp["attemptedAtNs"].as_u64().expect("stamp attempt");
+    let result = stamp["result"].as_str().expect("stamp result");
+    assert!(
+        ["fresh", "stale", "unavailable", "stamp0-missing"].contains(&result),
+        "{stamp}"
+    );
+    assert_eq!(stamp["matched"].is_boolean(), ["fresh", "stale"].contains(&result));
     assert_eq!(pending["begin"], "pending");
     assert!(pending["reason"].is_null());
     assert_eq!(pending["ticket"]["settled"], true);
@@ -264,6 +309,7 @@ fn begin_records_carry_the_slot_the_outcome_and_the_settlement() {
         .as_u64()
         .expect("settle time");
     assert!(begun <= returned && returned <= settled + 1_000_000_000);
+    assert!(begun <= attempted && attempted <= settled);
     assert!(records[0]["seq"].as_u64() < records[1]["seq"].as_u64());
     // Records carry no identifier of the query.
     let text = samples_json().to_string();
@@ -422,8 +468,14 @@ fn the_a3_record_matches_the_product_qualification_without_the_database_mutex() 
     };
     use grimodex_db::state::active_workspace_snapshot;
     let fixture = Fixture::new().expect("prepared fixture");
-    // The harness reads A3 with a registered AppState whose workspace is open.
-    record_registration(&fixture.state, WorkerSetup::NotAttempted);
+    // The registered AppState has no workspace at all: a record that took a
+    // lifecycle participant or the DB of the registered state could not run.
+    let bare_root =
+        std::env::temp_dir().join(format!("nir1-graph-eval-bare-{}", uuid::Uuid::new_v4()));
+    let bare = crate::Backend::new(bare_root.to_string_lossy().into_owned(), None, None)
+        .expect("bare backend");
+    let bare_state = Arc::clone(&bare.state);
+    record_registration(&bare_state, WorkerSetup::NotAttempted);
     let database = fixture.root.join("grimodex.db");
     let revision_ids = vec![fixture.revision_id.clone(), "missing-revision".to_owned()];
     // Hold the workspace's DB mutex on another thread for the whole record.
@@ -461,6 +513,8 @@ fn the_a3_record_matches_the_product_qualification_without_the_database_mutex() 
     release_tx.send(()).expect("release");
     holder.join().expect("holder");
     assert_eq!(record["connection"], "read-only-own");
+    assert_eq!(record["readOnly"], true, "read back from the open connection");
+    assert_eq!(record["queryOnly"], true);
     let revisions = record["revisions"].as_array().expect("revisions");
     assert_eq!(revisions.len(), 2);
     // The same verdict as the product's qualification on the workspace's own
@@ -534,4 +588,100 @@ async fn the_build_capabilities_report_the_evaluation_feature() {
     )
     .expect("json");
     assert_eq!(capabilities["nir1GraphEval"], true);
+}
+
+// ---- review follow-up: fail closed, busy causes, summaries -----------------------
+
+#[test]
+fn a_refused_worker_leaves_the_gate_closed() {
+    let _serial = serial();
+    let fixture = OwnerFixture::new(true);
+    fixture.install_echo_worker();
+    record_registration(
+        &fixture.state,
+        WorkerSetup::Refused {
+            path: None,
+            reason: "NIR1_GRAPH_WORKER_PATH".into(),
+        },
+    );
+    assert!(!fixture.state.nir1_graph.publication_is_open());
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::NotActivated)
+    ));
+    let status = status_json();
+    assert_eq!(status["gateOpened"], false);
+    assert_eq!(status["worker"]["state"], "refused");
+    assert_eq!(status["owner"]["publicationOpen"], false);
+}
+
+#[test]
+fn busy_answers_name_their_cause() {
+    let _serial = serial();
+    let fixture = OwnerFixture::new(true);
+    let hold = Arc::new(AtomicBool::new(true));
+    fixture
+        .state
+        .nir1_graph
+        .install_worker_factory_for_test(Arc::new(HoldFactory(Arc::clone(&hold))));
+    record_registration(&fixture.state, WorkerSetup::NotAttempted);
+    clear_samples();
+    let ticket = fixture.pending_after_warm();
+    // The slot is in use while the held query runs.
+    assert!(matches!(
+        fixture.begin("entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Busy)
+    ));
+    hold.store(false, std::sync::atomic::Ordering::SeqCst);
+    assert!(ticket.wait_timeout(Duration::from_secs(5)).is_some());
+    ticket.finish(GraphTicketUse::Used);
+    wait_until("READY again", || {
+        fixture.state.nir1_graph.slot_kind_for_eval() == GraphSlotKind::Ready
+    });
+    // Another project's demand on a READY slot of this one.
+    assert!(matches!(
+        fixture.begin_in("eval-project-other", "entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Busy)
+    ));
+    let records = sample_records();
+    let causes: Vec<_> = records
+        .iter()
+        .filter(|record| record["reason"] == "busy")
+        .map(|record| record["busyCause"].as_str().unwrap_or("").to_owned())
+        .collect();
+    assert_eq!(causes, vec!["in-use".to_owned(), "other-key".to_owned()], "{records:?}");
+    let in_use = records
+        .iter()
+        .find(|record| record["busyCause"] == "in-use")
+        .expect("in-use record");
+    assert_eq!(in_use["startSlot"]["kind"], "in-use");
+    assert_eq!(in_use["startSlot"]["readyFresh"], false);
+    // A begin that is not busy carries no cause.
+    assert!(records
+        .iter()
+        .filter(|record| record["reason"] != "busy")
+        .all(|record| record["busyCause"].is_null()));
+    clear_samples();
+}
+
+#[test]
+fn a_settled_ticket_is_kept_as_its_summary() {
+    let _serial = serial();
+    let fixture = OwnerFixture::new(true);
+    fixture.install_echo_worker();
+    record_registration(&fixture.state, WorkerSetup::NotAttempted);
+    clear_samples();
+    let ticket = fixture.pending_after_warm();
+    assert!(ticket.wait_timeout(Duration::from_secs(2)).is_some());
+    let open = samples_json()["records"][1]["ticket"].clone();
+    assert_eq!(open["disposition"], Value::Null, "not declared yet");
+    ticket.finish(GraphTicketUse::Used);
+    let first = samples_json()["records"][1]["ticket"].clone();
+    let second = samples_json()["records"][1]["ticket"].clone();
+    assert_eq!(first, second, "the summary shows what the waiter showed");
+    assert_eq!(first["disposition"], "used");
+    assert_eq!(first["outcome"], "available");
+    assert_eq!(first["tSettledNs"], open["tSettledNs"]);
+    assert_eq!(first["freshnessStamp"], open["freshnessStamp"]);
+    clear_samples();
 }

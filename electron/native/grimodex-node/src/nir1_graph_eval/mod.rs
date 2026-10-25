@@ -26,6 +26,7 @@
 // only, so a test build does not call them.
 #![cfg_attr(test, allow(dead_code))]
 
+use std::cell::Cell;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -35,6 +36,8 @@ use std::time::Instant;
 use napi::bindgen_prelude::Error;
 use napi_derive::napi;
 use serde_json::{json, Value};
+
+use grimodex_db::narrative_extraction::nir1_graph::c_query_freshness::CQueryFreshnessStamp;
 
 use crate::nir1_graph_product::{
     GraphBegin, GraphSlotKind, GraphTicketUse, GraphTicketWaiter, GraphUnavailable,
@@ -100,13 +103,15 @@ struct Registration {
     registrations: u64,
     registered_at: Instant,
     worker: WorkerSetup,
+    gate_opened: bool,
 }
 
 /// A leaf lock: it is never held while another lock is taken.
 static REGISTRY: Mutex<Option<Registration>> = Mutex::new(None);
 
-/// `Backend::new` of the evaluation build. The worker is configured before the
-/// gate opens, so a `begin` never sees an open gate without its worker.
+/// `Backend::new` of the evaluation build. The worker is configured first; a
+/// refused worker leaves the gate closed (fail closed), so a measurement never
+/// runs against an owner that answers `worker-unavailable`.
 pub(crate) fn register(state: &Arc<AppState>) {
     let worker = match loaded_library_path() {
         Ok(library) => configure_worker(state, &library),
@@ -118,10 +123,16 @@ pub(crate) fn register(state: &Arc<AppState>) {
     record_registration(state, worker);
 }
 
+/// The only place that opens the gate (`open_publication_for_eval`). It is
+/// called by `register` and, with `WorkerSetup::NotAttempted`, by the tests.
 pub(crate) fn record_registration(state: &Arc<AppState>, worker: WorkerSetup) {
     let registered_at = Instant::now();
     let _ = anchor();
-    state.nir1_graph.open_publication_for_eval();
+    let gate_opened = !matches!(worker, WorkerSetup::Refused { .. });
+    LAST_CONSUMED_PREPARES_READY.store(0, Ordering::SeqCst);
+    if gate_opened {
+        state.nir1_graph.open_publication_for_eval();
+    }
     let mut registry = lock(&REGISTRY);
     let registrations = registry.as_ref().map_or(0, |r| r.registrations) + 1;
     *registry = Some(Registration {
@@ -129,6 +140,7 @@ pub(crate) fn record_registration(state: &Arc<AppState>, worker: WorkerSetup) {
         registrations,
         registered_at,
         worker,
+        gate_opened,
     });
 }
 
@@ -211,15 +223,125 @@ pub(crate) fn mapping_path_for(maps: &str, address: usize) -> Option<PathBuf> {
 
 // ---- the begin records ------------------------------------------------------
 
+// ---- per-ticket notes (written by the owner's hooks under the feature) -----
+
+/// The freshness stamp attempt of one query (`serve_query`): when the owner
+/// thread tried to read the second stamp, and how it compared with the stamp
+/// of the READY. `matched` is `None` when either stamp was unreadable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct StampNote {
+    pub(crate) attempted_at: Instant,
+    pub(crate) result: &'static str,
+    pub(crate) matched: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct TicketNoteSnapshot {
+    pub(crate) stamp: Option<StampNote>,
+    pub(crate) busy_cause: Option<&'static str>,
+}
+
+/// Held by a `TicketShared` of the evaluation build only. A leaf lock.
+#[derive(Debug, Default)]
+pub(crate) struct TicketNotes(Mutex<TicketNoteSnapshot>);
+
+impl TicketNotes {
+    pub(crate) fn stamp(
+        &self,
+        attempted_at: Instant,
+        before: Option<&CQueryFreshnessStamp>,
+        after: Option<&CQueryFreshnessStamp>,
+    ) {
+        let (result, matched) = match (before, after) {
+            (Some(before), Some(after)) if before == after => ("fresh", Some(true)),
+            (Some(_), Some(_)) => ("stale", Some(false)),
+            (None, _) => ("stamp0-missing", None),
+            (Some(_), None) => ("unavailable", None),
+        };
+        lock(&self.0).stamp = Some(StampNote {
+            attempted_at,
+            result,
+            matched,
+        });
+    }
+
+    pub(crate) fn busy(&self, cause: &'static str) {
+        lock(&self.0).busy_cause = Some(cause);
+    }
+
+    pub(crate) fn snapshot(&self) -> TicketNoteSnapshot {
+        *lock(&self.0)
+    }
+}
+
+thread_local! {
+    /// The cause of a `busy` that `begin` answers on this thread. `demand`
+    /// runs synchronously inside `begin`, so the probe reads it on the same
+    /// thread; the probe clears it before admission.
+    static BEGIN_BUSY_CAUSE: Cell<Option<&'static str>> = const { Cell::new(None) };
+}
+
+/// The owner's hook at each of the five `busy` answers of `begin`.
+pub(crate) fn note_busy_cause(cause: &'static str) {
+    BEGIN_BUSY_CAUSE.with(|slot| slot.set(Some(cause)));
+}
+
+/// `preparesReady` when the last `begin` took the READY slot (`pending`).
+static LAST_CONSUMED_PREPARES_READY: AtomicU64 = AtomicU64::new(0);
+
+/// A settled ticket, reduced to what the record shows. Once a ticket has both
+/// an outcome and a declaration, the record drops its waiter (and with it the
+/// owner's `Shared`, the cache key and the projection).
+#[derive(Clone, Copy, Debug)]
+struct SettledTicket {
+    begun_at: Instant,
+    settled_at: Instant,
+    reason: Option<GraphUnavailable>,
+    disposition: GraphTicketUse,
+    notes: TicketNoteSnapshot,
+}
+
+enum TicketRecord {
+    Open(GraphTicketWaiter),
+    Settled(SettledTicket),
+}
+
+impl TicketRecord {
+    /// Replaces an open waiter by its summary once it is final.
+    fn settle(&mut self) {
+        let Self::Open(waiter) = self else {
+            return;
+        };
+        if let Some((settled_at, reason, Some(disposition))) = waiter.settlement_for_eval() {
+            *self = Self::Settled(SettledTicket {
+                begun_at: waiter.begun_at_for_eval(),
+                settled_at,
+                reason,
+                disposition,
+                notes: waiter.notes_for_eval(),
+            });
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct StartSlot {
+    kind: GraphSlotKind,
+    ready_fresh: bool,
+    prepares_ready: u64,
+    ready_generation: u64,
+}
+
 struct SampleRecord {
     seq: u64,
     begun_at: Instant,
     returned_at: Instant,
-    slot_at_begin: GraphSlotKind,
+    start_slot: StartSlot,
     cache_occupied_at_begin: bool,
     begin: &'static str,
     reason: Option<GraphUnavailable>,
-    ticket: Option<GraphTicketWaiter>,
+    busy_cause: Option<&'static str>,
+    ticket: Option<TicketRecord>,
 }
 
 struct SampleLog {
@@ -246,20 +368,36 @@ pub(crate) struct BeginProbe(Option<ProbeStart>);
 struct ProbeStart {
     seq: u64,
     begun_at: Instant,
-    slot: GraphSlotKind,
+    slot: StartSlot,
     cache_occupied: bool,
 }
 
 impl BeginProbe {
+    /// Reads the slot and the cache of the owner before admission. In the
+    /// evaluation build this adds two short lock acquisitions to every
+    /// `begin` of the registered owner, also on its early refusals; the
+    /// record's `tBeginNs..tReturnedNs` includes them.
     pub(crate) fn start(owner: &Nir1GraphProductOwner) -> Self {
         if !owner.publication_open_for_eval() {
             return Self(None);
         }
+        BEGIN_BUSY_CAUSE.with(|slot| slot.set(None));
         let begun_at = Instant::now();
+        let kind = owner.slot_kind_for_eval();
+        let prepares_ready = owner.prepares_ready_for_eval();
         Self(Some(ProbeStart {
             seq: NEXT_SEQ.fetch_add(1, Ordering::SeqCst),
             begun_at,
-            slot: owner.slot_kind_for_eval(),
+            slot: StartSlot {
+                kind,
+                // A READY the last `pending` did not take: a new prepare
+                // reached READY since. A slot that only returned to Ready
+                // after a used or cancelled query is not new.
+                ready_fresh: kind == GraphSlotKind::Ready
+                    && prepares_ready > LAST_CONSUMED_PREPARES_READY.load(Ordering::SeqCst),
+                prepares_ready,
+                ready_generation: owner.ready_signal_generation(),
+            },
             cache_occupied: owner.cache_occupied_for_eval(),
         }))
     }
@@ -269,12 +407,26 @@ impl BeginProbe {
             return;
         };
         let returned_at = Instant::now();
+        let noted = BEGIN_BUSY_CAUSE.with(Cell::take);
         let (begin, reason, ticket) = match result {
-            GraphBegin::Pending(ticket) => ("pending", None, Some(ticket.waiter())),
+            GraphBegin::Pending(ticket) => {
+                LAST_CONSUMED_PREPARES_READY.store(start.slot.prepares_ready, Ordering::SeqCst);
+                ("pending", None, Some(TicketRecord::Open(ticket.waiter())))
+            }
             GraphBegin::Cached(_) => ("cached", None, None),
             GraphBegin::Unavailable(reason) => ("unavailable", Some(*reason), None),
         };
+        let busy_cause = match reason {
+            // A `busy` without a hook (for example a remembered failure) says so.
+            Some(GraphUnavailable::Busy) => Some(noted.unwrap_or("unrecorded")),
+            _ => None,
+        };
         let mut log = lock(&SAMPLES);
+        for record in &mut log.records {
+            if let Some(ticket) = record.ticket.as_mut() {
+                ticket.settle();
+            }
+        }
         if log.records.len() == SAMPLE_CAPACITY {
             log.records.pop_front();
             log.dropped += 1;
@@ -283,10 +435,11 @@ impl BeginProbe {
             seq: start.seq,
             begun_at: start.begun_at,
             returned_at,
-            slot_at_begin: start.slot,
+            start_slot: start.slot,
             cache_occupied_at_begin: start.cache_occupied,
             begin,
             reason,
+            busy_cause,
             ticket,
         });
     }
@@ -313,30 +466,62 @@ fn disposition_name(use_: GraphTicketUse) -> &'static str {
     }
 }
 
-fn ticket_json(waiter: &GraphTicketWaiter) -> Value {
-    let begun = clock_ns(waiter.begun_at_for_eval());
-    match waiter.settlement_for_eval() {
-        None => json!({
-            "tTicketNs": begun,
-            "settled": false,
-            "tSettledNs": null,
-            "outcome": null,
-            "reason": null,
-            "disposition": null,
-        }),
-        Some((at, reason, disposition)) => json!({
-            "tTicketNs": begun,
-            "settled": true,
-            "tSettledNs": clock_ns(at),
-            "outcome": if reason.is_some() { "unavailable" } else { "available" },
-            "reason": reason.map(GraphUnavailable::as_str),
-            "disposition": disposition.map(disposition_name),
-        }),
+fn stamp_json(note: Option<StampNote>) -> Value {
+    note.map_or(Value::Null, |note| {
+        json!({
+            "attemptedAtNs": clock_ns(note.attempted_at),
+            "result": note.result,
+            "matched": note.matched,
+        })
+    })
+}
+
+fn ticket_fields(
+    begun_at: Instant,
+    settlement: Option<(Instant, Option<GraphUnavailable>, Option<GraphTicketUse>)>,
+    notes: TicketNoteSnapshot,
+) -> Value {
+    let (settled_at, reason, disposition) = match settlement {
+        Some((at, reason, disposition)) => (Some(at), reason, disposition),
+        None => (None, None, None),
+    };
+    json!({
+        "tTicketNs": clock_ns(begun_at),
+        "settled": settled_at.is_some(),
+        "tSettledNs": settled_at.map(clock_ns),
+        "outcome": settled_at.map(|_| if reason.is_some() { "unavailable" } else { "available" }),
+        "reason": reason.map(GraphUnavailable::as_str),
+        "disposition": disposition.map(disposition_name),
+        "busyCause": match reason {
+            Some(GraphUnavailable::Busy) => Some(notes.busy_cause.unwrap_or("unrecorded")),
+            _ => None,
+        },
+        "freshnessStamp": stamp_json(notes.stamp),
+    })
+}
+
+fn ticket_json(ticket: &TicketRecord) -> Value {
+    match ticket {
+        TicketRecord::Open(waiter) => ticket_fields(
+            waiter.begun_at_for_eval(),
+            waiter.settlement_for_eval(),
+            waiter.notes_for_eval(),
+        ),
+        TicketRecord::Settled(settled) => ticket_fields(
+            settled.begun_at,
+            Some((settled.settled_at, settled.reason, Some(settled.disposition))),
+            settled.notes,
+        ),
     }
 }
 
 pub(crate) fn samples_json() -> Value {
-    let log = lock(&SAMPLES);
+    let mut log = lock(&SAMPLES);
+    for record in &mut log.records {
+        if let Some(ticket) = record.ticket.as_mut() {
+            ticket.settle();
+        }
+    }
     let records: Vec<Value> = log
         .records
         .iter()
@@ -345,10 +530,16 @@ pub(crate) fn samples_json() -> Value {
                 "seq": record.seq,
                 "tBeginNs": clock_ns(record.begun_at),
                 "tReturnedNs": clock_ns(record.returned_at),
-                "slotAtBegin": slot_name(record.slot_at_begin),
+                "startSlot": {
+                    "kind": slot_name(record.start_slot.kind),
+                    "readyFresh": record.start_slot.ready_fresh,
+                    "preparesReady": record.start_slot.prepares_ready,
+                    "readyGeneration": record.start_slot.ready_generation,
+                },
                 "cacheOccupiedAtBegin": record.cache_occupied_at_begin,
                 "begin": record.begin,
                 "reason": record.reason.map(GraphUnavailable::as_str),
+                "busyCause": record.busy_cause,
                 "ticket": record.ticket.as_ref().map(ticket_json),
             })
         })
@@ -423,6 +614,7 @@ pub(crate) fn status_json() -> Value {
         "registeredAtNs": clock_ns(registration.registered_at),
         "alive": state.is_some(),
         "worker": worker_json(&registration.worker),
+        "gateOpened": registration.gate_opened,
         "owner": owner,
         "workerFileName": WORKER_FILE_NAME,
         "clockNs": now,
@@ -487,7 +679,9 @@ pub(crate) fn read_a3_json(
         .collect();
     Ok(json!({
         "schema": A3_SCHEMA,
-        "connection": "read-only-own",
+        "connection": if record.read_only && record.query_only { "read-only-own" } else { "writable" },
+        "readOnly": record.read_only,
+        "queryOnly": record.query_only,
         "tOpenStartedNs": clock_ns(record.open_started),
         "tSnapshotNs": clock_ns(record.snapshot_at),
         "tFinishedNs": clock_ns(record.finished_at),

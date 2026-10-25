@@ -1793,7 +1793,7 @@ test("CP-4 S1a evaluation-only Graph assets are registered, selected and execute
   }
   assert.ok(
     commandLines.includes(
-      "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features nir1-graph-eval --lib nir1_graph_eval -- --test-threads=1",
+      "cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features nir1-graph-eval --lib nir1_graph",
     ),
   );
 });

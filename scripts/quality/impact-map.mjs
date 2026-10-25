@@ -651,9 +651,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--features",
         "nir1-graph-eval",
         "--lib",
-        "nir1_graph_eval",
-        "--",
-        "--test-threads=1",
+        // The whole Graph owner set: the evaluation hooks sit in the product
+        // owner, so its own tests run with the feature too. The evaluation
+        // tests serialize themselves on one mutex.
+        "nir1_graph",
       ],
       [
         "cargo",

@@ -89,6 +89,9 @@ const SCRIPT_ALLOWLIST = Object.freeze([
   "scripts/quality/nir1-graph-eval/",
   "scripts/quality/impact-map.mjs",
   "scripts/quality/impact-map.test.mjs",
+  // S1b's guard of the evaluation build receipt names the feature it requires.
+  "scripts/quality/nir1-retrieval/contract.mjs",
+  "scripts/quality/nir1-retrieval/contract.test.mjs",
 ]);
 
 function isEvalModuleFile(file) {
@@ -102,6 +105,9 @@ const EVAL_IDENTIFIERS = Object.freeze([
   "BeginProbe",
   "eval_probe",
   "_for_eval",
+  "eval_notes",
+  "eval_stamp",
+  "note_busy_cause",
 ]);
 
 // ------------------------------------------------------------- helpers
@@ -140,6 +146,18 @@ function braceBlock(masked, from) {
 
 const CFG = `#[cfg(feature = "${EVAL_FEATURE}")]`;
 
+const BUSY_ANSWER =
+  "self.unserved(GraphUnavailable::Busy, &demand.key.project_id)";
+
+/** Every Busy answer of `begin` (DSN §1.2) and the hook in front of it. */
+export const BUSY_HOOKS = Object.freeze([
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("preparing-other-key"); ${BUSY_ANSWER}`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause(if matches!(phase, Phase::InUse) { "in-use" } else { "retiring" }); ${BUSY_ANSWER}`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("edge-before-query"); return ${BUSY_ANSWER};`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("command-queue"); ${BUSY_ANSWER}`,
+  `${CFG} crate::nir1_graph_eval::note_busy_cause("other-key"); let busy = ${BUSY_ANSWER};`,
+]);
+
 export const SNIPPETS = Object.freeze({
   [PATHS.nodeLib]: [
     `${CFG} mod nir1_graph_eval;`,
@@ -153,6 +171,14 @@ export const SNIPPETS = Object.freeze({
     `${CFG} let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self);`,
     `${CFG} eval_probe.finish(&result);`,
     `#[cfg(any(test, feature = "${EVAL_FEATURE}"))] fn slot_kind(&self) -> GraphSlotKind {`,
+    // The per-ticket notes (stamp attempt and Busy cause), CP-4 S1a review.
+    `${CFG} eval_notes: crate::nir1_graph_eval::TicketNotes,`,
+    `${CFG} eval_notes: crate::nir1_graph_eval::TicketNotes::default(),`,
+    // The five Busy answers of `begin`, each with the statement it precedes.
+    ...BUSY_HOOKS,
+    `${CFG} ticket.eval_notes.busy("rebuild-window"); ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Busy));`,
+    `let failure = classify_c_query_failure(&error); ${CFG} if matches!(failure, CQueryFailure::CapacityBusy) { ticket.eval_notes.busy("worker-capacity"); }`,
+    `${CFG} let eval_stamp_attempted_at = Instant::now(); let stamp1 = read_stamp_for_query(context, &guard.binding); ${CFG} ticket.eval_notes.stamp(eval_stamp_attempted_at, stamp0, stamp1.as_ref());`,
   ],
   [PATHS.dbNarrativeMod]: [`${CFG} pub mod nir1_graph_eval;`],
 });
@@ -290,6 +316,17 @@ export function checkEvalFeatureAllowlist(sources) {
         );
       }
     }
+    const busyAnswers = (
+      maskRust(product, { maskStrings: false }).match(
+        /\bunserved\(\s*GraphUnavailable::Busy\b/g,
+      ) ?? []
+    ).length;
+    if (busyAnswers !== BUSY_HOOKS.length) {
+      fail(
+        PATHS.nodeProduct,
+        `every Busy answer of \`begin\` needs its cause hook (${busyAnswers} answers, ${BUSY_HOOKS.length} hooks)`,
+      );
+    }
     const constant = maskRust(product, { maskStrings: true });
     if (
       (
@@ -325,6 +362,10 @@ export function checkEvalFeatureAllowlist(sources) {
 function listItems(value) {
   return [...(value ?? "").matchAll(/"([^"]*)"/g)].map((match) => match[1]);
 }
+
+const FEATURE_WORD = new RegExp(
+  `(?<![\\w/-])${escapeRegExp(EVAL_FEATURE)}(?![\\w/-])`,
+);
 
 const BUILD_COMMAND = /\b(?:cargo|napi)\s+build\b|--release\b/;
 
@@ -433,7 +474,9 @@ export function checkCargoFeatures(sources) {
       /\.(?:[cm]?js|sh|json)$/.test(file);
     if (!script || SCRIPT_ALLOWLIST.some((allowed) => file.startsWith(allowed)))
       continue;
-    if (text.includes(EVAL_FEATURE)) {
+    // The feature as a word: not the `scripts/quality/nir1-graph-eval/`
+    // directory of the harness, nor a schema name such as `nir1-graph-eval-…`.
+    if (FEATURE_WORD.test(text)) {
       fail(
         file,
         "a script outside the evaluation tools names the evaluation feature",
@@ -602,11 +645,77 @@ export function checkNotReachable(sources) {
         "`configure_worker` must be called from `register` only",
       );
     }
+    // Only `record_registration` opens the gate, and only `register` (and the
+    // tests) call it.
+    const recordBody = functionBody(mod, "record_registration");
+    const opens = [...masked.matchAll(/\.open_publication_for_eval\(/g)];
+    if (
+      opens.length !== 1 ||
+      recordBody === null ||
+      !/\.open_publication_for_eval\(/.test(recordBody)
+    ) {
+      fail(
+        PATHS.nodeEvalMod,
+        "`open_publication_for_eval` must be called once, from `record_registration`",
+      );
+    }
+    const records = [...masked.matchAll(/(?<!fn\s)\brecord_registration\(/g)];
+    if (
+      records.length !== 1 ||
+      registerBody === null ||
+      !/\brecord_registration\(/.test(registerBody)
+    ) {
+      fail(
+        PATHS.nodeEvalMod,
+        "`record_registration` must be called from `register` only (outside the tests)",
+      );
+    }
+  }
+  for (const [file, text] of Object.entries(sources)) {
+    if (!isEvalModuleFile(file) || file === PATHS.nodeEvalMod) continue;
+    if (file.endsWith("/tests.rs")) continue;
+    if (
+      /\.open_publication_for_eval\(|\brecord_registration\(/.test(
+        maskRust(text, { maskStrings: true }),
+      )
+    ) {
+      fail(
+        file,
+        "only `record_registration` in the module root opens the gate",
+      );
+    }
   }
   return violations;
 }
 
 // -------------------------------------------------- build capabilities
+
+/** JavaScript without `//` and block comments (strings are kept). */
+export function stripJsComments(source) {
+  let out = "";
+  let index = 0;
+  while (index < source.length) {
+    const char = source[index];
+    if (char === '"' || char === "'" || char === "`") {
+      let cursor = index + 1;
+      while (cursor < source.length && source[cursor] !== char) {
+        cursor += source[cursor] === "\\" ? 2 : 1;
+      }
+      out += source.slice(index, cursor + 1);
+      index = cursor + 1;
+    } else if (source.startsWith("//", index)) {
+      const end = source.indexOf("\n", index);
+      index = end === -1 ? source.length : end;
+    } else if (source.startsWith("/*", index)) {
+      const end = source.indexOf("*/", index + 2);
+      index = end === -1 ? source.length : end + 2;
+    } else {
+      out += char;
+      index += 1;
+    }
+  }
+  return out;
+}
 
 export function checkBuildCapabilities(sources) {
   const violations = [];
@@ -616,15 +725,23 @@ export function checkBuildCapabilities(sources) {
   if (release === undefined) {
     fail(PATHS.verifyRelease, "the release check is missing");
   } else {
+    // Comments do not count: the expectations must be the asserted values.
+    const code = stripJsComments(release);
     if (
-      !new RegExp(`\\b${NODE_CAPABILITY_FLAG}\\s*:\\s*false\\b`).test(release)
+      !new RegExp(
+        `assert\\.deepEqual\\(\\s*JSON\\.parse\\(\\s*await\\s+backend\\.getNativeBuildCapabilities\\(\\)\\s*\\)\\s*,\\s*\\{[^{}]*\\b${NODE_CAPABILITY_FLAG}\\s*:\\s*false\\b[^{}]*\\}\\s*,?\\s*\\)`,
+      ).test(code)
     ) {
       fail(
         PATHS.verifyRelease,
         `the release check must expect ${NODE_CAPABILITY_FLAG}: false`,
       );
     }
-    if (!/startsWith\(\s*"nir1GraphEval"\s*\)/.test(release)) {
+    if (
+      !/assert\.deepEqual\(\s*Object\.keys\(\s*native\s*\)\.filter\(\s*\(\s*name\s*\)\s*=>\s*name\.startsWith\(\s*"nir1GraphEval"\s*\)\s*,?\s*\)\s*,\s*\[\s*\]\s*,?\s*\)/.test(
+        code,
+      )
+    ) {
       fail(
         PATHS.verifyRelease,
         "the release check must refuse any `nir1GraphEval*` export",

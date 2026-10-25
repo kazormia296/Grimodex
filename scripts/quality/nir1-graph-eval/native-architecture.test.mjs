@@ -281,3 +281,69 @@ test("the N-API export names are napi-rs's camel case of the fixed Rust names", 
     "nir1GraphEvalReadA3",
   ]);
 });
+
+// ---- CP-4 S1a review follow-up ---------------------------------------------------
+
+test("an owner hook outside the feature, or a Busy answer without its hook, is refused", () => {
+  const busy = mutate(
+    PATHS.nodeProduct,
+    `                    #[cfg(feature = "${EVAL_FEATURE}")]\n                    crate::nir1_graph_eval::note_busy_cause("command-queue");`,
+    `                    crate::nir1_graph_eval::note_busy_cause("command-queue");`,
+  );
+  assert.ok(checkEvalFeatureAllowlist(busy).length > 0);
+  const stamp = mutate(
+    PATHS.nodeProduct,
+    `    #[cfg(feature = "${EVAL_FEATURE}")]\n    ticket.eval_notes.stamp(`,
+    "    ticket.eval_notes.stamp(",
+  );
+  assert.ok(checkEvalFeatureAllowlist(stamp).length > 0);
+  const unhooked = mutate(
+    PATHS.nodeProduct,
+    `                    #[cfg(feature = "${EVAL_FEATURE}")]\n                    crate::nir1_graph_eval::note_busy_cause("command-queue");\n`,
+    "",
+  );
+  assert.match(
+    checkEvalFeatureAllowlist(unhooked)
+      .map((violation) => violation.message)
+      .join("\n"),
+    /allowlisted site must appear exactly once/,
+  );
+  const extraBusy = mutate(
+    PATHS.nodeProduct,
+    "            Phase::Empty => self.start_session(&mut slot, state, demand, &config),",
+    "            Phase::Empty if false => self.unserved(GraphUnavailable::Busy, &demand.key.project_id),\n            Phase::Empty => self.start_session(&mut slot, state, demand, &config),",
+  );
+  assert.match(
+    checkEvalFeatureAllowlist(extraBusy)
+      .map((violation) => violation.message)
+      .join("\n"),
+    /every Busy answer of `begin` needs its cause hook/,
+  );
+});
+
+test("an N-API function that opens the gate or registers is refused", () => {
+  const anchor =
+    "pub fn nir1_graph_eval_clear_samples() -> napi::Result<String> {\n    let cleared = clear_samples();\n";
+  for (const inserted of [
+    "    registered_state()?.nir1_graph.open_publication_for_eval();\n",
+    "    record_registration(&registered_state()?, WorkerSetup::NotAttempted);\n",
+  ]) {
+    const sources = mutate(PATHS.nodeEvalMod, anchor, `${anchor}${inserted}`);
+    assert.ok(checkNotReachable(sources).length > 0, inserted);
+  }
+});
+
+test("a release check whose expectations live only in comments is refused", () => {
+  const commentedFlag = mutate(
+    PATHS.verifyRelease,
+    "    nir1GraphEval: false,\n",
+    "    nir1GraphEval: true, // nir1GraphEval: false\n",
+  );
+  assert.ok(checkBuildCapabilities(commentedFlag).length > 0);
+  const commentedExports = mutate(
+    PATHS.verifyRelease,
+    'Object.keys(native).filter((name) => name.startsWith("nir1GraphEval")),',
+    'Object.keys(native).filter(() => false), // name.startsWith("nir1GraphEval")',
+  );
+  assert.ok(checkBuildCapabilities(commentedExports).length > 0);
+});

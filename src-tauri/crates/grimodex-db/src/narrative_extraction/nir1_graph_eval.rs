@@ -11,7 +11,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::{ensure, Result};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, MAIN_DB};
 
 use super::nir1_entity_relation::{
     evaluate_nir1_entity_relation_disclosure, Nir1EntityRelationDisclosureRead,
@@ -39,6 +39,10 @@ pub struct A3ReadOnlyRecord {
     pub snapshot_at: Instant,
     /// After the last Revision was evaluated, before the transaction ended.
     pub finished_at: Instant,
+    /// Read back from the open connection (`sqlite3_db_readonly` and
+    /// `PRAGMA query_only`), not assumed from the flags passed.
+    pub read_only: bool,
+    pub query_only: bool,
     pub revisions: Vec<A3RevisionRecord>,
 }
 
@@ -75,6 +79,9 @@ pub fn read_a3_read_only(
     )?;
     conn.busy_timeout(Duration::ZERO)?;
     conn.execute_batch("PRAGMA query_only=ON")?;
+    let read_only = conn.is_readonly(MAIN_DB)?;
+    let query_only = conn.query_row("PRAGMA query_only", [], |row| row.get::<_, i64>(0))? == 1;
+    ensure!(read_only && query_only, "NIR1_GRAPH_EVAL_A3_CONNECTION_WRITABLE");
     let tx = conn.transaction()?;
     // A deferred transaction takes its snapshot at the first read.
     tx.query_row("SELECT count(*) FROM sqlite_master", [], |row| {
@@ -108,6 +115,8 @@ pub fn read_a3_read_only(
         open_started,
         snapshot_at,
         finished_at,
+        read_only,
+        query_only,
         revisions,
     })
 }

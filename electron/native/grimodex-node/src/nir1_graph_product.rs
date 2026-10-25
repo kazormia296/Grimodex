@@ -699,6 +699,9 @@ struct TicketShared {
     edge_epoch: u64,
     begun_at: Instant,
     owner: Arc<Shared>,
+    /// CP-4 S1a: the stamp attempt and the Busy cause of this ticket.
+    #[cfg(feature = "nir1-graph-eval")]
+    eval_notes: crate::nir1_graph_eval::TicketNotes,
 }
 
 struct TicketState {
@@ -719,6 +722,8 @@ impl TicketShared {
             edge_epoch,
             begun_at: Instant::now(),
             owner,
+            #[cfg(feature = "nir1-graph-eval")]
+            eval_notes: crate::nir1_graph_eval::TicketNotes::default(),
         })
     }
 
@@ -1254,6 +1259,10 @@ impl Nir1GraphProductOwner {
     pub(crate) fn slot_kind_for_eval(&self) -> GraphSlotKind {
         self.slot_kind()
     }
+
+    pub(crate) fn prepares_ready_for_eval(&self) -> u64 {
+        read(&self.shared.diagnostics.prepares_ready)
+    }
 }
 
 /// CP-4 S1a: the evaluation record reads when a ticket settled. It never
@@ -1262,6 +1271,10 @@ impl Nir1GraphProductOwner {
 impl GraphTicketWaiter {
     pub(crate) fn begun_at_for_eval(&self) -> Instant {
         self.shared.begun_at
+    }
+
+    pub(crate) fn notes_for_eval(&self) -> crate::nir1_graph_eval::TicketNoteSnapshot {
+        self.shared.eval_notes.snapshot()
     }
 
     pub(crate) fn settlement_for_eval(
@@ -1327,6 +1340,8 @@ impl Shared {
             Phase::Empty => self.start_session(&mut slot, state, demand, &config),
             Phase::Preparing => match slot.session.as_mut() {
                 Some(session) if session.key != demand.key => {
+                    #[cfg(feature = "nir1-graph-eval")]
+                    crate::nir1_graph_eval::note_busy_cause("preparing-other-key");
                     self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
                 }
                 Some(session) => {
@@ -1344,6 +1359,8 @@ impl Shared {
                         session.last_demand = demand.now;
                     }
                 }
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause(if matches!(phase, Phase::InUse) { "in-use" } else { "retiring" });
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
@@ -1422,6 +1439,8 @@ impl Shared {
                 || self.edge_epoch.load(Ordering::SeqCst) != session.epoch
             {
                 // An edge already happened; the owner retires before any query.
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause("edge-before-query");
                 return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
             }
             session.last_demand = demand.now;
@@ -1440,10 +1459,14 @@ impl Shared {
                     })
                 }
                 Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                    #[cfg(feature = "nir1-graph-eval")]
+                    crate::nir1_graph_eval::note_busy_cause("command-queue");
                     self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
                 }
             }
         } else {
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("other-key");
             let busy = self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
             if demand.now.saturating_duration_since(session.last_demand)
                 >= config.rebuild_min_interval
@@ -1716,6 +1739,8 @@ fn wait_rebuild_window(context: &SessionContext, epoch: u64) -> bool {
             // No rekey is pending while preparing, so a Retire here is stale.
             Ok(Command::Retire) => {}
             Ok(Command::Query { ticket, .. }) => {
+                #[cfg(feature = "nir1-graph-eval")]
+                ticket.eval_notes.busy("rebuild-window");
                 ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Busy));
             }
         }
@@ -1915,7 +1940,11 @@ fn serve_query(
         return_to_ready(shared);
         return ServeNext::Ready;
     }
+    #[cfg(feature = "nir1-graph-eval")]
+    let eval_stamp_attempted_at = Instant::now();
     let stamp1 = read_stamp_for_query(context, &guard.binding);
+    #[cfg(feature = "nir1-graph-eval")]
+    ticket.eval_notes.stamp(eval_stamp_attempted_at, stamp0, stamp1.as_ref());
     match (stamp0, stamp1.as_ref()) {
         (Some(before), Some(after)) if before != after => {
             bump(&shared.diagnostics.stamp_stale);
@@ -1970,6 +1999,10 @@ fn serve_query(
         }
         Err(error) => {
             let failure = classify_c_query_failure(&error);
+            #[cfg(feature = "nir1-graph-eval")]
+            if matches!(failure, CQueryFailure::CapacityBusy) {
+                ticket.eval_notes.busy("worker-capacity");
+            }
             if matches!(
                 failure,
                 CQueryFailure::Unavailable(UnavailableReason::RegistrationDrift)
