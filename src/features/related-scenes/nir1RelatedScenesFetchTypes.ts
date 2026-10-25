@@ -38,6 +38,11 @@ export interface Nir1RelatedScenesFetchOptions {
    * DR-CP3B-3). Ignored for `rawOnly` (no begin).
    */
   readonly graphSeedEntityId?: string;
+  /**
+   * この世代の契機。`"graph-ready"` は `graph-ready` を契機にした取り直し（子）で、
+   * その合流にだけ Graph の窓 W_f を渡す（K6/4 の批准 12、DR-WF-3）。
+   */
+  readonly refreshTrigger?: "graph-ready";
 }
 
 export interface Nir1RelatedScenesFetchResult {
@@ -60,5 +65,11 @@ export interface Nir1RelatedScenesFetchResult {
     readonly tFetchMs: number;
     readonly tRawReadyMs: number | null;
     readonly tReturnMs: number;
+    /**
+     * 評価でだけ読む（K6/4 の R7・F4・N30、DR-WF-4）。この世代の契機の印と、Graph の
+     * 合流に渡した窓（ms。Graph の合流が無い query は null）。製品は読まない。
+     */
+    readonly refreshTrigger?: "graph-ready" | null;
+    readonly graphWindowMs?: number | null;
   };
 }

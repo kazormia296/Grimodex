@@ -24,9 +24,8 @@ use grimodex_db::nir1_generation::{
 };
 use grimodex_db::state::{active_workspace_snapshot, ActiveWorkspaceSnapshot};
 use serde_json::json;
-use std::cell::RefCell;
-use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 const READ: ReadBudget = NIR1_LOCAL_ATTEMPT_READ_BUDGET;
 
@@ -335,7 +334,7 @@ pub(crate) fn inject(target: &Target, change: Change) {
     }
 }
 
-type Seen = Rc<RefCell<Vec<Nir1LocalAttemptProbe>>>;
+type Seen = Arc<Mutex<Vec<Nir1LocalAttemptProbe>>>;
 
 /// A coordinator whose probe injects `change` at `point` and records the
 /// probe points it saw.
@@ -344,11 +343,11 @@ fn attempt_with_change(
     point: Nir1LocalAttemptProbe,
     change: Change,
 ) -> (Nir1LocalAttempt, Seen) {
-    let seen: Seen = Rc::default();
-    let recorded = Rc::clone(&seen);
+    let seen: Seen = Arc::default();
+    let recorded = Arc::clone(&seen);
     let target = Target::of(fixture);
     let attempt = capture(fixture).with_probe(move |probe| {
-        recorded.borrow_mut().push(probe);
+        recorded.lock().expect("probe log").push(probe);
         if probe == point {
             inject(&target, change);
         }
@@ -670,11 +669,16 @@ fn a9_every_change_after_the_create_abandons_the_attempt() {
         let (fixture, recorder, seen, result) =
             run_with_change(Nir1LocalAttemptProbe::AfterCreate, change);
         assert!(
-            seen.borrow().contains(&Nir1LocalAttemptProbe::AfterCreate),
+            seen.lock()
+                .expect("probe log")
+                .contains(&Nir1LocalAttemptProbe::AfterCreate),
             "{change:?}: the change was injected after the create"
         );
         assert!(
-            !seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim),
+            !seen
+                .lock()
+                .expect("probe log")
+                .contains(&Nir1LocalAttemptProbe::BeforeClaim),
             "{change:?}: the claim is never reached"
         );
         let reason = abandoned_reason(&result).to_owned();
@@ -747,7 +751,10 @@ fn a9_every_change_after_the_preparation_is_stopped_before_a_send() {
 fn a9_a_scope_save_just_before_the_claim_stops_the_claim() {
     let (fixture, recorder, seen, result) =
         run_with_change(Nir1LocalAttemptProbe::BeforeClaim, Change::Scope);
-    assert!(seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim));
+    assert!(seen
+        .lock()
+        .expect("probe log")
+        .contains(&Nir1LocalAttemptProbe::BeforeClaim));
     assert_zero_send_settlement(&result);
     let ids = attempt_ids(&fixture);
     assert_eq!(ids.len(), 1);
@@ -803,7 +810,10 @@ fn a18_before_the_claim_the_claim_stops_what_it_reads_and_the_rest_is_observed()
     for change in CHANGES {
         let (fixture, recorder, seen, result) =
             run_with_change(Nir1LocalAttemptProbe::BeforeClaim, change);
-        assert!(seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim));
+        assert!(seen
+            .lock()
+            .expect("probe log")
+            .contains(&Nir1LocalAttemptProbe::BeforeClaim));
         let started = matches!(result, Ok(Nir1LocalAttemptOutcome::Start(_)));
         assert_eq!(recorder.sends(), usize::from(started), "{change:?}");
         let by_design = matches!(change, Change::Scope | Change::Route | Change::Revocation);
@@ -1031,17 +1041,19 @@ fn a11_an_ineligible_attempt_is_not_persisted() {
 fn a19_no_lease_or_lock_spans_the_stages() {
     let fixture = ready_fixture();
     let state = Arc::clone(&fixture.state);
-    let observed = Rc::new(RefCell::new(Vec::new()));
-    let sink = Rc::clone(&observed);
+    let observed = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&observed);
     let attempt = capture(&fixture).with_probe(move |point| {
         let gate = state.workspace_lifecycle.nir1_startup_gate();
-        sink.borrow_mut().push((point, gate.active_lease_count()));
+        sink.lock()
+            .expect("probe log")
+            .push((point, gate.active_lease_count()));
     });
     let outcome = attempt.run().expect("the coordinator runs");
     let recorder = Recorder::default();
     recorder.send(outcome, "a19-answer");
     assert_eq!(recorder.sends(), 1);
-    let observed = observed.borrow();
+    let observed = observed.lock().expect("probe log");
     assert_eq!(
         observed.iter().map(|(point, _)| *point).collect::<Vec<_>>(),
         vec![
@@ -1278,9 +1290,15 @@ fn a3_an_index_generation_change_stops_a_graph_request_before_the_claim() {
         let result = attempt.run();
         let recorder = Recorder::default();
         recorder.observe(&result);
-        assert!(seen.borrow().contains(&point), "{point:?}: injected");
         assert!(
-            !seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim),
+            seen.lock().expect("probe log").contains(&point),
+            "{point:?}: injected"
+        );
+        assert!(
+            !seen
+                .lock()
+                .expect("probe log")
+                .contains(&Nir1LocalAttemptProbe::BeforeClaim),
             "{point:?}: the claim is never reached"
         );
         let reason = abandoned_reason(&result).to_owned();
@@ -1308,7 +1326,10 @@ fn a3_an_index_generation_change_stops_a_graph_request_before_the_claim() {
         let result = attempt.run();
         let recorder = Recorder::default();
         recorder.observe(&result);
-        assert!(seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim));
+        assert!(seen
+            .lock()
+            .expect("probe log")
+            .contains(&Nir1LocalAttemptProbe::BeforeClaim));
         assert_eq!(
             recorder.sends(),
             1,
@@ -1339,7 +1360,10 @@ fn a3_every_change_after_the_create_abandons_a_graph_request() {
         let recorder = Recorder::default();
         recorder.observe(&result);
         assert!(
-            !seen.borrow().contains(&Nir1LocalAttemptProbe::BeforeClaim),
+            !seen
+                .lock()
+                .expect("probe log")
+                .contains(&Nir1LocalAttemptProbe::BeforeClaim),
             "{change:?}: the claim is never reached"
         );
         let reason = abandoned_reason(&result).to_owned();
