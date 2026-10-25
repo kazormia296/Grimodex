@@ -59,4 +59,41 @@ lifecycle note（P1、P3、P5、P10 が subprocess に関わる。下の §3 の
 
 ## 6. 実装後の追記
 
-（実装の後に足す）
+2026-10-25、branch `claude/cp2b-p1`（基点 `bdc892d7`）。
+
+### 6.1 マトリクスの最終状態
+
+P1〜P6、P8、P10 は `implemented`（P4 は `verified unchanged`：既存の 3 引数以下の呼出しは変えていない）。P7、P9 は `out of scope`（記録のとおり）。§3 の lifecycle matrix の各項目は実装と一致する（start の経路を足していない。constructor が足したのは stat 1 回と `OnceLock` への設定だけ）。
+
+### 6.2 実装の要点
+
+- Main: `resolveGraphWorkerPath()`（`electron/main/backend.ts`）。引数は `isPackaged`、`resourcesPath`、`mainDir`、`platform` だけで env を受け取らない。`initBackend` は既存の resource root の解決の隣で解決し、constructor の 4 番目に渡す。`index.ts` の呼出し順は変えていない。
+- Native: napi の constructor は `Backend::new_from_main`（4 引数）。3 引数の `Backend::new` は Rust 専用の別 `impl` に置き、`None` で `new_from_main` を呼ぶ。constructor は `AppState` の構築の後で `configure_worker_path` を 1 回呼び、`Err` は `tracing::warn!(code = %error, …)`（閉じた code だけ）にして構築を続ける。`state.rs` は変えていない。
+- 補足（実装で分かったこと）: grimodex-node は tracing の subscriber を入れていないので、この warn は製品では表に出ない（既存の warn と同じ）。path の受理・拒否は Rust の試験で確かめ、packaged では file の存在と検査 script で確かめる。P2 で受理を観測したくなっても、N-API の観測口は足さない（新しい surface になる）。
+- release 段: `worker:build:release`／`worker:verify:release`（`electron/scripts/verify-release-graph-worker.mjs`）を `electron:native:release` の末尾に足した。`electron-builder.yml` は `bin` の filter の 2 名だけ。
+- `index.d.ts` は手で直した後、`pnpm napi:build:release` の再生成が同じ内容になることを確かめた。
+- `scripts/local-ci-full-workload-allocation.json` の `package.json` の sha256 を更新した（`registryDigest` は registry の digest で変わらない）。
+
+### 6.3 試験
+
+| 試験 | 件数・結果 |
+|---|---|
+| `electron/main/backend.test.ts`（packaged 3 OS と dev の path、絶対 path、env を読まない〔stub と関数本体の静的検査〕、renderer・preload・`electron/shared` に worker 名が無く Main で解決するのは backend.ts だけ、`initBackend` が 4 番目に解決値を渡し存在を確かめない） | 新規 6 件。file 全体 17 passed |
+| `electron/main/packagingConfig.test.ts`（既存の packaging の契約。native release の連鎖、worker の build／verify の script、`extraResources`） | 期待値を更新。`pnpm test:electron --run` 全体 96 files／2259 passed |
+| `scripts/release-workflows.test.mjs`（`bin` の filter、他の block と app.asar の `files` に worker・target が無い、packaging の hook が無い、seam の feature なしの build と検査の連鎖、worker の bin に required-features が無い、検査 script が不在・別名・directory・相対・非実行・chunk の境界をまたぐ seam の文字列を拒否） | 新規 4 件。22 passed |
+| Rust `nir1_graph_activation_tests`（不正な path 7 通りで Backend が作れ worker が未設定、正しい path で設定、3 引数の入口は設定しない／実行されると marker を書く worker を設定し、`begin`・`begin_deferred`・`nir1_graph_query` を 8 回ずつ叩いても marker 0、`prepares_started` 0、`pending` 0、slot Empty、drop の後も marker 0。marker の正の対照つき／lib.rs の `.configure_worker_path(` は napi constructor の中の 1 か所だけ、env からの読取りが無い） | 新規 3 件。`cargo test --lib`（grimodex-node）669 passed／7 ignored |
+| `cargo +1.99.0 clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings` | 警告 0 |
+| `node --test --test-name-pattern="workload\|sizing\|allocation" scripts/ci-pause.test.mjs scripts/local-ci.test.mjs` | 8 passed（sizing digest の更新の確認） |
+
+変異（どれも元に戻して再確認した）: Main が env から path を読む／4 番目を渡さない／Main が存在を確かめて投げる／dev で debug を指す → vitest が赤。filter を消す／build に seam の feature を足す／verify を連鎖から外す／検査 script の seam の検査を外す／chunk 境界の持越しを外す／app.asar の `files` に worker を足す → release 契約試験が赤。constructor が worker を直接実行する／不正な path で constructor を失敗させる／`from_path` の検証を外す／試験用の gate を既定で開ける／napi method で 2 つ目の設定口を足す → Rust の試験が赤（それぞれ該当の 1 件）。
+
+### 6.4 実機・package で確かめたこと（Linux、ローカル）
+
+- `cargo build --locked --release -p grimodex-db --bin nir1-c-query-worker`（この worktree の `src-tauri/target`）の binary に `NIR1_C_QUERY_TEST_` の byte 列は無い（検査 script と `strings`）。
+- `pnpm napi:build:release`、`pnpm napi:verify:release`、`pnpm mcp:build:release`、`pnpm worker:build:release`、`pnpm worker:verify:release`、`pnpm electron:build`、`electron-builder --dir --linux --publish never`: `linux-unpacked/resources/bin/nir1-c-query-worker` は build 物と byte 同一、mode 755、検査 script を通る。`app.asar`（805 entries）に worker、`src-tauri`、harness の file は無い。electron-builder は Electron の zip を取得した（既存の build の挙動）。
+- packaged の起動（`scripts/local-ci-xvfb.mjs` を host の namespace で使い、`WAYLAND_DISPLAY`／`WAYLAND_SOCKET`／`XDG_SESSION_TYPE`／`DBUS_SESSION_BUS_ADDRESS` と env の proxy を除去、一時の `HOME`／`XDG_CONFIG_HOME`／`XDG_DATA_HOME`／`XDG_CACHE_HOME`／`GRIMODEX_USER_DATA_DIR`）: `napi backend loaded` が出て（4 引数の constructor で Backend が作れた）、15 秒の間 100 ms ごとに `/proc/*/exe` を見て（136 回）worker の process は 0。app の process group に SIGTERM を送り、`close` の exit code 0、残りの process 0 を終了の証拠とした。利用者の `/tmp/.X11-unix/X0`、`X1` は残っている。一時 dir は消した。外部網なしは主張しない（辞書・更新の確認など既存の通信は起きうる）。
+
+### 6.5 確かめていないこと（P2 以降）
+
+- Windows／macOS の package（存在、実行可能、macOS の署名と公証〔`grimodex-mcp` と同じく electron-builder が bundle の中の Mach-O を署名する見込み。推定〕、Windows の console window、env 名の数）。P2 の workflow と B 案。
+- 申し送り（判断は integrator）: worker の binary は約 91.5 MB で、うち約 84 MB が `.data` の `WORKER_ALLOCATOR`（`c_query_fixed_allocator` の固定の arena。`Heap::new(Manual)` が 0 でない初期値を持つので、0 の `backing` も含めて `.bss` でなく `.data` に入る）。gzip で約 3.2 MB、xz で約 2.4 MB なので installer と更新の zip の増分は数 MB だが、展開後（install 後の disk、AppImage の mount、deb／rpm）は約 90 MB 増える。arena を別の 0 初期化の static に分ければ `.bss` に移せる見込み（推定）だが、worker は C-resource の受入れの対象なので P1 では変えていない。

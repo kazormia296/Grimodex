@@ -5,6 +5,10 @@ import { describe, it } from "node:test";
 import { load } from "js-yaml";
 
 import { RELEASE_BUILD_TARGETS } from "./resolve-release-workflow.mjs";
+import {
+  GRAPH_WORKER_SEAM_MARKER,
+  verifyReleaseGraphWorker,
+} from "../electron/scripts/verify-release-graph-worker.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -881,5 +885,161 @@ describe("release workflow boundary", () => {
     assert.match(windowsCommands, /Language\.Parser.*ParseFile/s);
     assert.match(windowsCommands, /electron-builder --win nsis --x64/);
     assert.match(windowsCommands, /electron-contract/);
+  });
+});
+
+// CP-2b P1（docs/plans/nir1-lane-decisions/cp2b-decisions.md の DR-CP2B-P1-4、5）:
+// C-query の worker を seam なしで build し、MCP と同じ `bin` に同梱する。
+// 署名・公証・publish・app.asar の中身は変えない。
+describe("C-query worker packaging (CP-2b P1)", () => {
+  async function readBuilder() {
+    return load(
+      await readFile(path.join(repoRoot, "electron-builder.yml"), "utf8"),
+    );
+  }
+
+  it("bundles the worker beside the MCP sidecar from the release target", async () => {
+    const builder = await readBuilder();
+    const bin = builder.extraResources.filter((entry) => entry.to === "bin");
+    assert.equal(bin.length, 1);
+    assert.equal(bin[0].from, "src-tauri/target/release");
+    assert.deepEqual(bin[0].filter, [
+      "grimodex-mcp",
+      "grimodex-mcp.exe",
+      "nir1-c-query-worker",
+      "nir1-c-query-worker.exe",
+    ]);
+    // Nothing else ships the worker, and app.asar never holds a target dir
+    // (the full `files`, `mac`, `win` and `publish` are pinned by
+    // electron/main/packagingConfig.test.ts).
+    const others = builder.extraResources.filter((entry) => entry.to !== "bin");
+    assert.doesNotMatch(JSON.stringify(others), /nir1-c-query-worker/);
+    for (const entry of builder.files) {
+      assert.doesNotMatch(entry, /src-tauri|target|scripts/);
+    }
+  });
+
+  it("adds no packaging hook around signing", async () => {
+    const builder = await readBuilder();
+    for (const hook of [
+      "afterPack",
+      "afterSign",
+      "afterAllArtifactBuild",
+      "artifactBuildCompleted",
+      "beforePack",
+    ]) {
+      assert.equal(builder[hook], undefined, hook);
+    }
+    assert.equal(builder.beforeBuild, "./electron/scripts/beforeBuild.mjs");
+    assert.equal(builder.mac.hardenedRuntime, true);
+  });
+
+  it("builds the worker without the test seam and verifies it in the native release step", async () => {
+    const { scripts } = JSON.parse(
+      await readFile(path.join(repoRoot, "package.json"), "utf8"),
+    );
+    assert.deepEqual(
+      scripts["electron:native:release"].split("&&").map((part) => part.trim()),
+      [
+        "pnpm napi:build:release",
+        "pnpm napi:verify:release",
+        "pnpm mcp:build:release",
+        "pnpm worker:build:release",
+        "pnpm worker:verify:release",
+      ],
+    );
+    assert.equal(
+      scripts["worker:build:release"],
+      "cargo build --locked --release --manifest-path src-tauri/Cargo.toml -p grimodex-db --bin nir1-c-query-worker",
+    );
+    assert.doesNotMatch(
+      scripts["worker:build:release"],
+      /--features|--all-features|-F\b|test-seam/,
+    );
+    assert.equal(
+      scripts["worker:verify:release"],
+      "node electron/scripts/verify-release-graph-worker.mjs",
+    );
+    // Both packaging entries go through the native release step.
+    for (const name of ["electron:package", "electron:package:dir"]) {
+      assert.match(scripts[name], /^pnpm electron:native:release && /);
+    }
+
+    // The seam is never a default feature, and the worker bin has no
+    // required feature that could pull one in.
+    const cargo = await readFile(
+      path.join(repoRoot, "src-tauri/crates/grimodex-db/Cargo.toml"),
+      "utf8",
+    );
+    assert.match(cargo, /^default = \[\]$/m);
+    assert.match(cargo, /^nir1-c-query-test-seam = \[\]$/m);
+    const workerBin = cargo
+      .split("[[bin]]")
+      .filter((block) => /^name = "nir1-c-query-worker"$/m.test(block));
+    assert.equal(workerBin.length, 1);
+    assert.match(workerBin[0], /^path = "src\/bin\/nir1-c-query-worker\.rs"$/m);
+    assert.doesNotMatch(workerBin[0].split("\n[")[0], /required-features/);
+  });
+
+  it("refuses a worker that is missing, misnamed, not a file, not executable or carries the seam", async () => {
+    const { mkdtemp, writeFile, chmod, mkdir, rm } = await import(
+      "node:fs/promises"
+    );
+    const os = await import("node:os");
+    const dir = await mkdtemp(path.join(os.tmpdir(), "grimodex-worker-verify-"));
+    const place = async (name, body, mode = 0o755) => {
+      const directory = path.join(dir, name);
+      await mkdir(directory);
+      const file = path.join(directory, "nir1-c-query-worker");
+      await writeFile(file, body);
+      await chmod(file, mode);
+      return file;
+    };
+    try {
+      const clean = await place("clean", Buffer.from("\x7fELF clean worker body"));
+      assert.deepEqual(await verifyReleaseGraphWorker(clean, "linux"), {
+        path: clean,
+      });
+
+      await assert.rejects(
+        verifyReleaseGraphWorker(path.join(dir, "missing", "nir1-c-query-worker"), "linux"),
+        /not found/,
+      );
+      const asDirectory = path.join(dir, "as-directory", "nir1-c-query-worker");
+      await mkdir(asDirectory, { recursive: true });
+      await assert.rejects(
+        verifyReleaseGraphWorker(asDirectory, "linux"),
+        /regular file/,
+      );
+      await assert.rejects(
+        verifyReleaseGraphWorker("nir1-c-query-worker", "linux"),
+        /absolute/,
+      );
+      // Windows ships `.exe`; the POSIX name is refused there and vice versa.
+      await assert.rejects(verifyReleaseGraphWorker(clean, "win32"), /name/);
+      const misnamed = path.join(path.dirname(clean), "grimodex-mcp");
+      await writeFile(misnamed, "body");
+      await assert.rejects(verifyReleaseGraphWorker(misnamed, "linux"), /name/);
+      if (process.platform !== "win32") {
+        const plain = await place("not-executable", "body", 0o644);
+        await assert.rejects(
+          verifyReleaseGraphWorker(plain, "linux"),
+          /executable/,
+        );
+      }
+      // The marker split across the read chunk boundary is still found.
+      const filler = Buffer.alloc(1024 * 1024 - 5, 0x41);
+      const seam = await place(
+        "seam",
+        Buffer.concat([filler, Buffer.from(`${GRAPH_WORKER_SEAM_MARKER}HOLD`)]),
+      );
+      await assert.rejects(
+        verifyReleaseGraphWorker(seam, "linux"),
+        /test seam/,
+      );
+      assert.equal(GRAPH_WORKER_SEAM_MARKER, "NIR1_C_QUERY_TEST_");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

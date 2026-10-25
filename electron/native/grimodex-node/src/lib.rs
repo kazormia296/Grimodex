@@ -6681,16 +6681,36 @@ pub(crate) async fn settle_profile_egress_bounded(
     )
 }
 
-#[napi]
 impl Backend {
-    /// `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
-    /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
-    /// com.miyakey.grimodex には触らない)。
-    #[napi(constructor)]
+    /// Rust だけの入口（試験と評価 harness）。NIR-1 Graph の worker を設定しない。
+    /// JS の constructor は `new_from_main`（CP-2b、cp2b-decisions.md DR-CP2B-P1-3）。
     pub fn new(
         app_data_dir: String,
         semantic_resource_root: Option<String>,
         reranker_resource_root: Option<String>,
+    ) -> Result<Backend> {
+        Self::new_from_main(
+            app_data_dir,
+            semantic_resource_root,
+            reranker_resource_root,
+            None,
+        )
+    }
+}
+
+#[napi]
+impl Backend {
+    /// `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
+    /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
+    /// com.miyakey.grimodex には触らない)。`graph_worker_path` は Main が解決した
+    /// NIR-1 C-query worker の絶対 path（CP-2b）。検証に落ちても Backend は作り、
+    /// Graph だけが worker-unavailable になる。公開 gate が閉じている間は起動しない。
+    #[napi(constructor)]
+    pub fn new_from_main(
+        app_data_dir: String,
+        semantic_resource_root: Option<String>,
+        reranker_resource_root: Option<String>,
+        graph_worker_path: Option<String>,
     ) -> Result<Backend> {
         // 旧 .node E2E / 外部callerとのconstructor互換を維持する。省略時はcwdや
         // build-time manifestへfallbackせず、必ず存在しないappData配下sentinelを使い、
@@ -6707,6 +6727,13 @@ impl Backend {
             reranker_resource_root.as_deref(),
         )
         .map_err(|e| Error::from_reason(format!("{e:#}")))?;
+        // CP-2b（DR-CP2B-P1-2）: 検証は Native の `from_path` の 1 か所。log には閉じた
+        // code だけを出し、path（利用者の home を含みうる）は出さない。
+        if let Some(path) = graph_worker_path {
+            if let Err(error) = state.nir1_graph.configure_worker_path(PathBuf::from(path)) {
+                tracing::warn!(code = %error, "nir1 graph worker path was not configured");
+            }
+        }
         // §7.1 の end-to-end 実証チャネルその 1。onEvent 登録前なので
         // EventQueue にバッファされ、登録時に flush される。schemaVersion は
         // スモークテストが PRAGMA user_version との一致検証に使う。

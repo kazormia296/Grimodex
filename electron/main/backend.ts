@@ -16,7 +16,15 @@ interface GrimodexNodeModule {
     appDataDir: string,
     semanticResourceRoot?: string | null,
     rerankerResourceRoot?: string | null,
+    graphWorkerPath?: string | null,
   ) => NapiBackendLike;
+}
+
+interface GraphWorkerResolution {
+  isPackaged: boolean;
+  resourcesPath?: string;
+  mainDir: string;
+  platform: NodeJS.Platform;
 }
 
 interface SemanticResourceResolution {
@@ -157,6 +165,46 @@ export function resolveRerankerResourceRoot(
 }
 
 /**
+ * NIR-1 Graph の C-query worker（`nir1-c-query-worker`）の絶対 path（CP-2b）。
+ * package では electron-builder の `extraResources` が MCP と同じ
+ * `<resources>/bin` に置き、dev ではその `from`（`src-tauri/target/release`）を指す。
+ * path の出所は Main のこの解決だけで、env・argv・renderer・IPC からは受け取らない
+ * （実行する binary を差し替える入口を作らない。cp2b-decisions.md DR-CP2B-P1-1）。
+ * 存在や形の検証は Native の `ProcessGraphWorkerFactory::from_path` の 1 か所で行い、
+ * 失敗しても Backend は起動して Graph だけが使えない（DR-CP2B-P1-2）。
+ * 公開 gate（`PRODUCT_GRAPH_PUBLISHED`）が閉じている間、worker は起動しない。
+ */
+export function resolveGraphWorkerPath(
+  resolution: GraphWorkerResolution = {
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    mainDir: __dirname,
+    platform: process.platform,
+  },
+): string {
+  const pathApi = resolution.platform === "win32" ? path.win32 : path.posix;
+  const executableName =
+    resolution.platform === "win32"
+      ? "nir1-c-query-worker.exe"
+      : "nir1-c-query-worker";
+  if (resolution.isPackaged) {
+    return pathApi.join(
+      resolution.resourcesPath ?? process.resourcesPath,
+      "bin",
+      executableName,
+    );
+  }
+  return pathApi.join(
+    resolution.mainDir,
+    "..",
+    "src-tauri",
+    "target",
+    "release",
+    executableName,
+  );
+}
+
+/**
  * app ready 後に 1 回だけ呼ぶ。Backend コンストラクタには起動ロック前に
  * `configureAppUserData` が確定した `app.getPath("userData")` を明示注入する。
  * packaged版は既存Tauriのdata_dir、developmentはGrimodexElectronDevを使う。
@@ -171,6 +219,7 @@ export function initBackend({
 }: InitBackendOptions = {}): NapiBackendLike | null {
   const binaryPath = resolveNodeBinaryPath();
   const semanticResourceRoot = resolveSemanticResourceRoot();
+  const graphWorkerPath = resolveGraphWorkerPath();
   constructionFailure = null;
   try {
     const rerankerResourceRoot = resolveRerankerResourceRoot();
@@ -187,6 +236,7 @@ export function initBackend({
       app.getPath("userData"),
       semanticResourceRoot,
       rerankerResourceRoot,
+      graphWorkerPath,
     );
     console.log(`[grimodex-electron] napi backend loaded: ${binaryPath}`);
     return instance;
