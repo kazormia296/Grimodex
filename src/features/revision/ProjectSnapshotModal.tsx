@@ -24,6 +24,7 @@ import {
   type RestoreScope,
   type SkipReport,
 } from "./projectSnapshotScopes";
+import { reloadRendererAfterReleasingGpuSurfaces } from "@/lib/rendererReload";
 
 function countSkipped(r: SkipReport): number {
   return (
@@ -182,7 +183,7 @@ export function ProjectSnapshotModal({
       setSelectedId(null);
       onClose();
       // Content is restored in DB; page reload ensures editors reflect changes
-      window.location.reload();
+      void reloadRendererAfterReleasingGpuSurfaces();
     } catch (err) {
       debugLog.error("ProjectSnapshot", "restore failed", errorDetail(err));
       toast.error(t("snapshot.restoreError"));
