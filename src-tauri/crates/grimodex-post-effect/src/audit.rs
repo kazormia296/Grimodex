@@ -16,16 +16,19 @@ pub(crate) trait PostEffectAuditAppender: Send + Sync + 'static {
     fn append(&self, project_id: &str, events: &[AppendAiAuditEvent]) -> anyhow::Result<()>;
 }
 
+// post-effect は外部送信の経路。最初の batch（started／prepared／dispatched）は
+// `ai.call` の前に WAL を fsync して commit する。
 impl PostEffectAuditAppender for Database {
     fn append(&self, project_id: &str, events: &[AppendAiAuditEvent]) -> anyhow::Result<()> {
-        self.append_ai_audit_events(project_id, events).map(|_| ())
+        self.append_external_ai_audit_events(project_id, events)
+            .map(|_| ())
     }
 }
 
 impl PostEffectAuditAppender for WorkspaceAuthority {
     fn append(&self, project_id: &str, events: &[AppendAiAuditEvent]) -> anyhow::Result<()> {
         self.db()
-            .append_ai_audit_events(project_id, events)
+            .append_external_ai_audit_events(project_id, events)
             .map(|_| ())
     }
 }

@@ -1,0 +1,246 @@
+{
+  "schemaVersion": "nir1-final-request-freeze/1",
+  "contractId": "nir1-final-request-packing-eval",
+  "draftRef": "nir1-final-request-eval-proposal/2",
+  "fixtureVersion": 2,
+  "status": "frozen",
+  "nativeOutputObservedBeforeFreeze": false,
+  "frozenAt": "2026-10-25T07:35:18Z",
+  "reviewVerdict": "approve",
+  "note": "Frozen by the S3 step at the integrator's instruction (executed by dph-s0-builder; recorded in dp-h-decisions.md DR-DPH-115..). The independent expectation review approved every case (review record bound below; its reviewer is the expectationReviewer here). The fixture author derived every expectation from the product's source after X1-3 without running Native. Disclosures: (i) the author read the one-sentence summary in the version-1 freeze record's nativeObservations (a prototype run failed with other-case-material, which led to the harness's project_create change); no expectation was derived from it (the author's own statement, DR-DPH-96..98 and 107..110). (ii) The reviewer did not see the DPH-4 observation record. (iii) The S0c writer test calls the setup-verification reader on synthetic materials; it runs no packer, renderer or D-final, so it is not an observation (K6/2, 観測前の固定). (iv) The paths that include D-final (the unknown-marker check, the IdMap duplicate error, the unknown-scope variants end to end) still need the mechanics tests before S4. (v) contract.mjs carries a copy of the product's contract-whitespace list, kept equal to grimodex-core and the TS contract by a parity test. Native has not run on this fixture's materials; the first such run must have this record's commit as an ancestor.",
+  "fixture": {
+    "path": "evals/nir1-packing/final-request.v2.json",
+    "sha256": "cc52f8e6b5a9b894371334617e237cf6d4abab2a01be66c41c95b737217016cc"
+  },
+  "reviewRecord": {
+    "path": "evals/nir1-packing/final-request.expectation-review.v2.json",
+    "sha256": "5b46be5b8480cbe3144c5c9d45e886bb1262be2b34892df9e77e6b383bddd8d9"
+  },
+  "readme": {
+    "path": "evals/nir1-packing/final-request.v2.README.md",
+    "sha256": "f1a1b69c6933467f9fd964332bc651db9a069384247e7d4d7942bf8ee65fc99d"
+  },
+  "parityVector": {
+    "path": "evals/nir1-packing/final-request-baseline-parity.v1.json",
+    "sha256": "9a6daf65e4d7cec70ca760f1ad06432585711fae50d981d46044bb39f74caf31"
+  },
+  "scorer": {
+    "files": [
+      {
+        "path": "scripts/quality/nir1-packing/final-request/scorer.mjs",
+        "sha256": "440f39971beae80ee64ce184fa38c54811aa9ea99fa63331b893d1ebe26a55ca"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/contract.mjs",
+        "sha256": "1b10bc5ac7f7405a0c2441fb70eb6da5c819a62c131619b3c18ae21f8babee88"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/receipt.mjs",
+        "sha256": "e37aa05ddf7e2faa07242d58dee8d7e187dd9b9599691a49fe1f1bb0e209572c"
+      },
+      {
+        "path": "scripts/quality/nir1-packing/final-request/payload.mjs",
+        "sha256": "19c99da8fda46c567e5ccd6909498b57c9faed6dc4af3b4cb05f57ec171e5ed8"
+      }
+    ]
+  },
+  "supersedes": {
+    "fixtureVersion": 1,
+    "fixture": {
+      "path": "evals/nir1-packing/final-request.v1.json",
+      "sha256": "0d277e0cc00dc42f61ad583b7bb59a6b2f9f038a2932684d9bc823ac8dc9ac49"
+    },
+    "freezeRecord": {
+      "path": "evals/nir1-packing/final-request.freeze.v1.json",
+      "sha256": "0bc52f5e8e5b97842e800ceecb943dc97f7ab1cd5adde5cf765f0347b1f50dd7"
+    },
+    "freezeRecordCommit": "bf69e2f00a3b68e23059431cd931e2a86e4b2cbe",
+    "decision": "DR-DPH-70"
+  },
+  "contextBudget": {
+    "formula": "contextBudgetTokens = contextWindowTokens - (fixedSystemTokens + userTokens + envelopeTokens + outputTokens + safetyMarginTokens + separatorReserveTokens); selectedTokens = estimateTokens(rawText) + sum(estimateTemplateTokens(entry.text)) with each placeholder counted as maxLength ASCII characters (36 for ids, 128 for tokens); marginTokens = contextBudgetTokens - selectedTokens. Estimator: nir1-context-estimator-v1 applied to the template files and the fixture strings; no Native packer, renderer or D-final was run.",
+    "terms": {
+      "route": {
+        "model": "dph-fixture-local-model",
+        "contextWindowTokens": 16384,
+        "outputTokens": 1024
+      },
+      "fixedSystemTokens": 531,
+      "fixedTemplate": {
+        "version": "nir1-local-chat-system-ja-v1",
+        "ref": "src/prompts/ja/chatSystemBase.txt+src/prompts/ja/chatSystemDataBoundaryReminder.txt"
+      },
+      "envelopeTokens": 10,
+      "safetyMarginTokens": 32,
+      "separatorReserveTokens": 171,
+      "userTokensByCase": {
+        "P-01": 43,
+        "P-02": 31,
+        "P-04": 34,
+        "P-05": 27,
+        "P-06": 32,
+        "P-07": 31,
+        "P-08": 34,
+        "P-10": 27,
+        "P-11": 32
+      },
+      "source": "route values equal the existing D-final test route (16384 / 1024); they are fixture values, not product limits (nir1_prepared_request.rs non_context_budget_for_user / context_budget_for_user)"
+    },
+    "perRequest": [
+      {
+        "caseId": "P-01",
+        "variantId": "dh2-p01-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14573,
+        "selectedTokens": 1977,
+        "marginTokens": 12596
+      },
+      {
+        "caseId": "P-02",
+        "variantId": "dh2-p02-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14585,
+        "selectedTokens": 1962,
+        "marginTokens": 12623
+      },
+      {
+        "caseId": "P-04",
+        "variantId": "dh2-p04-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14582,
+        "selectedTokens": 1982,
+        "marginTokens": 12600
+      },
+      {
+        "caseId": "P-05",
+        "variantId": "dh2-p05-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1988,
+        "marginTokens": 12601
+      },
+      {
+        "caseId": "P-06",
+        "variantId": "dh2-p06-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14584,
+        "selectedTokens": 1957,
+        "marginTokens": 12627
+      },
+      {
+        "caseId": "P-07",
+        "variantId": "dh2-p07-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14585,
+        "selectedTokens": 1957,
+        "marginTokens": 12628
+      },
+      {
+        "caseId": "P-08",
+        "variantId": "dh2-p08-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14582,
+        "selectedTokens": 1999,
+        "marginTokens": 12583
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-positive-scope",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-positive-scope",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-reject-old-revision-after-scope",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-positive-source",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-positive-source",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1020,
+        "marginTokens": 13569
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-reject-old-revision-after-source",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-positive-decision",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-positive-decision",
+        "stage": 2,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-10",
+        "variantId": "dh2-p10-reject-old-revision-after-decision",
+        "stage": 1,
+        "contextBudgetTokens": 14589,
+        "selectedTokens": 1014,
+        "marginTokens": 13575
+      },
+      {
+        "caseId": "P-11",
+        "variantId": "dh2-p11-positive",
+        "stage": 1,
+        "contextBudgetTokens": 14584,
+        "selectedTokens": 2916,
+        "marginTokens": 11668
+      }
+    ]
+  },
+  "authorSeparation": {
+    "fixtureAuthor": {
+      "agent": "dph-v2-fixture-author (claude-opus-5-5, independent)",
+      "role": "writes the version-2 fixture, README, derivation module and consistency test; no harness, baseline, capture, scorer or contract code; did not see the version-1 receipts, the DPH-4 observations or per-case verdicts"
+    },
+    "expectationReviewer": {
+      "agent": "dph-v2-expectation-reviewer (claude-opus-5-5, independent read-only)",
+      "role": "independent, read-only, has not seen Native output; distinct from the version-2 author, the version-1 author and every implementer listed here"
+    },
+    "harnessImplementers": [
+      "dph-1-builder (contract, scorer, parity vector)",
+      "dph-1b-builder (template placeholders)",
+      "dph-3-builder (evaluation feature, capture, baseline)",
+      "dph-4-builder (harness, setup, registration)",
+      "dph-s0-builder (versioned contract and gate)"
+    ],
+    "nativeReceiptProvidedToAuthor": false
+  }
+}

@@ -689,6 +689,9 @@ requirements:
       - evals/nir1-packing/final-request.v1.json
       - evals/nir1-packing/final-request.freeze.v1.json
       - evals/nir1-packing/final-request.expectation-review.v1.json
+      - evals/nir1-packing/final-request.v2.json
+      - evals/nir1-packing/final-request.freeze.v2.json
+      - evals/nir1-packing/final-request.expectation-review.v2.json
       - evals/nir1-packing/final-request-baseline-parity.v1.json
       - evals/nir1-packing/final-request-create-session-statement.v1.json
       - scripts/quality/nir1-packing/final-request/contract.mjs
@@ -699,6 +702,7 @@ requirements:
       - scripts/quality/nir1-packing/final-request/architecture.mjs
       - scripts/quality/nir1-packing/final-request/synthetic.mjs
       - scripts/quality/nir1-packing/final-request/fixture-derive.mjs
+      - scripts/quality/nir1-packing/final-request/fixture-derive.v2.mjs
       - electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/baseline.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/capture.rs
@@ -770,6 +774,7 @@ requirements:
       - scripts/quality/nir1-packing/final-request/receipt.test.mjs
       - scripts/quality/nir1-packing/final-request/payload.test.mjs
       - scripts/quality/nir1-packing/final-request/fixture.test.mjs
+      - scripts/quality/nir1-packing/final-request/fixture.v2.test.mjs
       - scripts/quality/nir1-packing/final-request/scorer.test.mjs
       - scripts/quality/nir1-packing/final-request/architecture.test.mjs
       - scripts/quality/nir1-packing/final-request/runner.test.mjs
@@ -1581,6 +1586,9 @@ requirements:
       - evals/nir1-packing/final-request.v1.json
       - evals/nir1-packing/final-request.freeze.v1.json
       - evals/nir1-packing/final-request.expectation-review.v1.json
+      - evals/nir1-packing/final-request.v2.json
+      - evals/nir1-packing/final-request.freeze.v2.json
+      - evals/nir1-packing/final-request.expectation-review.v2.json
       - evals/nir1-packing/final-request-baseline-parity.v1.json
       - evals/nir1-packing/final-request-create-session-statement.v1.json
       - scripts/quality/nir1-packing/final-request/contract.mjs
@@ -1591,6 +1599,7 @@ requirements:
       - scripts/quality/nir1-packing/final-request/architecture.mjs
       - scripts/quality/nir1-packing/final-request/synthetic.mjs
       - scripts/quality/nir1-packing/final-request/fixture-derive.mjs
+      - scripts/quality/nir1-packing/final-request/fixture-derive.v2.mjs
       - electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/baseline.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/capture.rs
@@ -1671,6 +1680,7 @@ requirements:
       - scripts/quality/nir1-packing/final-request/receipt.test.mjs
       - scripts/quality/nir1-packing/final-request/payload.test.mjs
       - scripts/quality/nir1-packing/final-request/fixture.test.mjs
+      - scripts/quality/nir1-packing/final-request/fixture.v2.test.mjs
       - scripts/quality/nir1-packing/final-request/scorer.test.mjs
       - scripts/quality/nir1-packing/final-request/architecture.test.mjs
       - scripts/quality/nir1-packing/final-request/runner.test.mjs
@@ -1771,6 +1781,9 @@ requirements:
       - evals/nir1-packing/final-request.v1.json
       - evals/nir1-packing/final-request.freeze.v1.json
       - evals/nir1-packing/final-request.expectation-review.v1.json
+      - evals/nir1-packing/final-request.v2.json
+      - evals/nir1-packing/final-request.freeze.v2.json
+      - evals/nir1-packing/final-request.expectation-review.v2.json
       - evals/nir1-packing/final-request-baseline-parity.v1.json
       - evals/nir1-packing/final-request-create-session-statement.v1.json
       - scripts/quality/nir1-packing/final-request/contract.mjs
@@ -1781,6 +1794,7 @@ requirements:
       - scripts/quality/nir1-packing/final-request/architecture.mjs
       - scripts/quality/nir1-packing/final-request/synthetic.mjs
       - scripts/quality/nir1-packing/final-request/fixture-derive.mjs
+      - scripts/quality/nir1-packing/final-request/fixture-derive.v2.mjs
       - electron/native/grimodex-node/src/nir1_final_request_eval/mod.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/baseline.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/capture.rs
@@ -1846,6 +1860,7 @@ requirements:
       - scripts/quality/nir1-packing/final-request/receipt.test.mjs
       - scripts/quality/nir1-packing/final-request/payload.test.mjs
       - scripts/quality/nir1-packing/final-request/fixture.test.mjs
+      - scripts/quality/nir1-packing/final-request/fixture.v2.test.mjs
       - scripts/quality/nir1-packing/final-request/scorer.test.mjs
       - scripts/quality/nir1-packing/final-request/architecture.test.mjs
       - scripts/quality/nir1-packing/final-request/runner.test.mjs

@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { drizzle } from "drizzle-orm/sqlite-proxy";
 import { eq, getTableName } from "drizzle-orm";
 import { projects } from "@/db/schema";
+import {
+  getChatInputDraftPurges,
+  hashChatInputDraftWorkspace,
+} from "@/features/chat/chatInputDraftPurge";
 import * as schema from "@/db/schema";
 
 const invokeMock = vi.fn().mockResolvedValue({
@@ -339,6 +343,13 @@ describe("deleteProject", () => {
       "default-project",
       imeWorkspaceIdentity,
     );
+    // チャット入力の書きかけも Project と一緒に消す（恒久の削除記録）。
+    expect(getChatInputDraftPurges()).toContainEqual([
+      hashChatInputDraftWorkspace(imeWorkspaceIdentity.path),
+      "default-project",
+      null,
+      true,
+    ]);
     expect(
       cancelScheduledImeExportsMock.mock.invocationCallOrder[1],
     ).toBeLessThan(

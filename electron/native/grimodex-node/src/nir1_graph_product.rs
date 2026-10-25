@@ -5,11 +5,19 @@
 //! One slot holds at most one demand session; each session owns one thread
 //! that prepares and queries the worker, so the worker never leaves the thread.
 //! `begin` never waits on the database, a child process or a join.
+//!
+//! CQ-DEFER (design D′): a Related Scenes begin commits the audit of its query
+//! embedding right after it hands the Graph its query, so a worker prepared or
+//! queried meanwhile always drifts. `begin_deferred` therefore holds that query
+//! in the slot until the begin releases it, after its own commits; only then
+//! does the owner thread prepare a worker and answer the held query at once.
 #![cfg_attr(not(test), allow(dead_code))] // Still unused: the process worker (CP-2b), its path configuration, the Suspended resume hook (PUB-G/CP-4) and test-only inspection. CP-3a's callers are in related_scenes/graph.rs.
 
 use std::{
+    cell::RefCell,
     panic::{catch_unwind, AssertUnwindSafe},
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
@@ -61,6 +69,13 @@ const UNAVAILABLE_KINDS: usize = 14;
 /// Most distinct projects whose unserved demand is remembered for a graph-ready
 /// notice. Past it the oldest is forgotten; that window waits for its own next query.
 const MAX_UNSERVED_PROJECTS: usize = 8;
+/// CQ-DEFER: how long a held Related Scenes query waits for its begin's release,
+/// counted from the begin's hand-over. It bounds a hold that is never released
+/// (a leak), not the Graph's latency: the begin has no upper bound of its own
+/// (a cold start loads the embedding model before its first audit commit), so
+/// it is far above the Related Scenes await (`GRAPH_AWAIT_LIMIT`, 2 s), which
+/// only starts after the begin returned. A slow begin keeps its Graph.
+pub(crate) const DEFERRED_RELEASE_LIMIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GraphOwnerConfig {
@@ -217,6 +232,36 @@ impl GraphTicket {
         self.finished = true;
         self.shared.finish(use_);
     }
+
+    /// CQ-DEFER: every commit of the begin that holds this query is over, so
+    /// the owner may now prepare a worker and answer it. Wait-free. Only the
+    /// held query of this very ticket is released (by `Arc` identity, within
+    /// the lifecycle epoch it was held in); otherwise nothing happens, and a
+    /// second call, a call after a cancellation or after the hold expired does
+    /// nothing either. A ticket that was never held ignores it.
+    pub(crate) fn release_after_own_commits(&self) {
+        self.shared.owner.release_deferred(&self.shared);
+    }
+
+    /// A handle that can release the held query and do nothing else, for a
+    /// caller that must not call the owner under its own lock.
+    pub(crate) fn release_handle(&self) -> GraphTicketRelease {
+        GraphTicketRelease {
+            shared: Arc::clone(&self.shared),
+        }
+    }
+}
+
+/// CQ-DEFER: releases a held query (see `GraphTicket::release_after_own_commits`).
+/// It cannot settle, wait for or read the ticket.
+pub(crate) struct GraphTicketRelease {
+    shared: Arc<TicketShared>,
+}
+
+impl GraphTicketRelease {
+    pub(crate) fn release_after_own_commits(&self) {
+        self.shared.owner.release_deferred(&self.shared);
+    }
 }
 
 impl Drop for GraphTicket {
@@ -354,6 +399,16 @@ pub(crate) struct GraphOwnerDiagnostics {
     pub(crate) scene_total_over_cap: u64,
     pub(crate) query_scene_associated: u64,
     pub(crate) panics: u64,
+    /// CQ-DEFER: held queries released by their begin.
+    pub(crate) deferred_released: u64,
+    /// CQ-DEFER: held queries whose begin never released them in time.
+    pub(crate) deferred_expired: u64,
+    /// CQ-DEFER: held queries dropped before a release (cancelled, a lifecycle
+    /// edge, a shutdown).
+    pub(crate) deferred_dropped: u64,
+    /// CQ-DEFER: READY workers retired unqueried because they were prepared
+    /// before the begin's own commits.
+    pub(crate) stale_ready_retired: u64,
 }
 
 #[derive(Debug, Default)]
@@ -377,6 +432,10 @@ struct DiagnosticCounters {
     scene_total_over_cap: AtomicU64,
     query_scene_associated: AtomicU64,
     panics: AtomicU64,
+    deferred_released: AtomicU64,
+    deferred_expired: AtomicU64,
+    deferred_dropped: AtomicU64,
+    stale_ready_retired: AtomicU64,
 }
 
 fn bump(counter: &AtomicU64) {
@@ -417,6 +476,9 @@ struct Shared {
     /// D-final's wait budget and step. The constants in production; a test
     /// installs shorter values.
     dfinal_wait: Mutex<GraphWaitPlan>,
+    /// CQ-DEFER: `DEFERRED_RELEASE_LIMIT` in production; a test installs a
+    /// shorter one. A leaf lock, read before the slot is taken.
+    deferred_limit: Mutex<Duration>,
     diagnostics: DiagnosticCounters,
     #[cfg(test)]
     publication_open_for_test: AtomicBool,
@@ -425,6 +487,10 @@ struct Shared {
     /// product build.
     #[cfg(feature = "nir1-graph-eval")]
     publication_open_for_eval: AtomicBool,
+    /// Test-only: runs inside `admit`, after its first edge check, on the
+    /// owner thread with no lock of this owner held.
+    #[cfg(test)]
+    admit_hook_for_test: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl Shared {
@@ -435,6 +501,7 @@ impl Shared {
                 session: None,
                 rebuild: RebuildLedger::default(),
                 exited: Vec::new(),
+                deferred: None,
             }),
             edge_epoch: AtomicU64::new(0),
             ready_generation: AtomicU64::new(0),
@@ -450,11 +517,14 @@ impl Shared {
             cache: Mutex::new(None),
             config: Mutex::new(GraphOwnerConfig::default()),
             dfinal_wait: Mutex::new(GraphWaitPlan::default()),
+            deferred_limit: Mutex::new(DEFERRED_RELEASE_LIMIT),
             diagnostics: DiagnosticCounters::default(),
             #[cfg(test)]
             publication_open_for_test: AtomicBool::new(false),
             #[cfg(feature = "nir1-graph-eval")]
             publication_open_for_eval: AtomicBool::new(false),
+            #[cfg(test)]
+            admit_hook_for_test: Mutex::new(None),
         }
     }
 
@@ -592,6 +662,44 @@ impl Shared {
         }
         self.signal_ready();
     }
+
+    /// CQ-DEFER: the begin of `ticket` has finished its own commits. Marks the
+    /// held query released when it is this ticket's (by `Arc` identity), still
+    /// live (not cancelled, not past its hold, no edge or shutdown since it was
+    /// held) and not released before, and wakes the owner thread. Wait-free:
+    /// the slot lock is held only to look and to mark.
+    fn release_deferred(&self, ticket: &Arc<TicketShared>) {
+        let mut slot = lock(&self.slot);
+        let Some(held) = slot.deferred.as_mut() else {
+            return;
+        };
+        if !Arc::ptr_eq(&held.ticket, ticket)
+            || held.released
+            || ticket.cancel.load(Ordering::SeqCst)
+            || edge_or_closed(self, held.epoch)
+            || Instant::now() >= held.deadline
+        {
+            return;
+        }
+        held.released = true;
+        bump(&self.diagnostics.deferred_released);
+        if let Some(session) = slot.session.as_ref() {
+            let _ = session.commands.try_send(Command::Wake);
+        }
+    }
+
+    /// CQ-DEFER: a held query was cancelled. The owner thread drops it at once
+    /// instead of at the end of its hold. Called with no other lock held.
+    fn wake_deferred(&self) {
+        let slot = lock(&self.slot);
+        if let Some(session) = slot
+            .session
+            .as_ref()
+            .filter(|session| session.held.is_some())
+        {
+            let _ = session.commands.try_send(Command::Wake);
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -625,11 +733,30 @@ struct SlotState {
     session: Option<Session>,
     rebuild: RebuildLedger,
     exited: Vec<JoinHandle<()>>,
+    /// CQ-DEFER: the one held Related Scenes query. Some exactly while the
+    /// phase is `Deferred`; only the owner thread of the slot's session takes it.
+    deferred: Option<DeferredDemand>,
+}
+
+/// CQ-DEFER: a Related Scenes query held until its begin's own commits are
+/// over. Identifiers only (DSN P2-1): the request's three strings and the ticket.
+struct DeferredDemand {
+    ticket: Arc<TicketShared>,
+    key: GraphKey,
+    request: Nir1GraphRequest,
+    /// The lifecycle edge epoch the query was held in; a release in another
+    /// epoch does nothing, and the owner thread drops the query on an edge.
+    epoch: u64,
+    deadline: Instant,
+    released: bool,
 }
 
 #[derive(Clone, Debug)]
 enum Phase {
     Empty,
+    /// CQ-DEFER: a held Related Scenes query waits for its begin's release. An
+    /// owner thread exists; no worker does.
+    Deferred,
     Preparing,
     Ready,
     InUse,
@@ -648,6 +775,7 @@ enum Phase {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum GraphSlotKind {
     Empty,
+    Deferred,
     Preparing,
     Ready,
     InUse,
@@ -665,6 +793,37 @@ struct Session {
     commands: SyncSender<Command>,
     join: Option<JoinHandle<()>>,
     pending_rekey: Option<PendingRekey>,
+    /// CQ-DEFER: Some while this session holds (or serves) a Related Scenes
+    /// query: the projects whose demand was answered `warming` or `busy`
+    /// meanwhile. The held session's READY announces nothing, so they are
+    /// announced once when the session ends (`session_main`). The held query's
+    /// own answer is never added here.
+    held: Option<Vec<String>>,
+}
+
+/// CQ-DEFER: remembers a demand that a held session made wait (distinct,
+/// bounded like `unserved`). Under the slot lock.
+fn note_held_unserved(slot: &mut SlotState, result: &GraphBegin, project_id: &str) {
+    if !matches!(
+        result,
+        GraphBegin::Unavailable(GraphUnavailable::Warming | GraphUnavailable::Busy)
+    ) {
+        return;
+    }
+    let Some(waiting) = slot
+        .session
+        .as_mut()
+        .and_then(|session| session.held.as_mut())
+    else {
+        return;
+    };
+    if waiting.iter().any(|existing| existing == project_id) {
+        return;
+    }
+    if waiting.len() == MAX_UNSERVED_PROJECTS {
+        waiting.remove(0);
+    }
+    waiting.push(project_id.to_owned());
 }
 
 /// The other key a READY session is asked to rekey to, and when that demand
@@ -689,6 +848,9 @@ enum Command {
     },
     Retire,
     Wake,
+    /// CQ-DEFER: a READY session was taken over by a held query. Its worker
+    /// was prepared before the begin's own commits and is retired unqueried.
+    Defer,
 }
 
 struct TicketShared {
@@ -702,6 +864,9 @@ struct TicketShared {
     /// CP-4 S1a: the stamp attempt and the Busy cause of this ticket.
     #[cfg(feature = "nir1-graph-eval")]
     eval_notes: crate::nir1_graph_eval::TicketNotes,
+    /// CQ-DEFER: the ticket of a held Related Scenes query. Its cancellation
+    /// wakes the owner thread, which drops the hold at once.
+    deferred: bool,
 }
 
 struct TicketState {
@@ -710,7 +875,7 @@ struct TicketState {
 }
 
 impl TicketShared {
-    fn new(owner: Arc<Shared>, cache_key: CacheKey, edge_epoch: u64) -> Arc<Self> {
+    fn new(owner: Arc<Shared>, cache_key: CacheKey, edge_epoch: u64, deferred: bool) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(TicketState {
                 outcome: None,
@@ -724,6 +889,7 @@ impl TicketShared {
             owner,
             #[cfg(feature = "nir1-graph-eval")]
             eval_notes: crate::nir1_graph_eval::TicketNotes::default(),
+            deferred,
         })
     }
 
@@ -794,6 +960,10 @@ impl TicketShared {
         if let Some(projection) = candidate {
             self.owner
                 .store_late_cache(&self.cache_key, self.edge_epoch, projection);
+        }
+        // No lock of this ticket is held here: ticket -> slot is never nested.
+        if self.deferred && use_ == GraphTicketUse::Cancelled {
+            self.owner.wake_deferred();
         }
     }
 
@@ -877,16 +1047,38 @@ impl Nir1GraphProductOwner {
     }
 
     /// Wait-free admission. Every refusal names its reason; nothing is awaited.
+    /// D-final's entry: an Empty slot starts preparing at once (`warming`).
     pub(crate) fn begin(&self, state: &Arc<AppState>, query: GraphQuery) -> GraphBegin {
+        self.begin_probed(state, query, Shared::demand)
+    }
+
+    /// CQ-DEFER: the Related Scenes entry. The same wait-free admission as
+    /// `begin`, but an Empty (or READY) slot holds the query instead: the
+    /// answer is a `Pending` ticket, and no worker is prepared (and a READY one
+    /// is retired unqueried) until the begin calls
+    /// `GraphTicket::release_after_own_commits` after its own audit commits.
+    pub(crate) fn begin_deferred(&self, state: &Arc<AppState>, query: GraphQuery) -> GraphBegin {
+        self.begin_probed(state, query, Shared::demand_deferred)
+    }
+
+    /// CP-4 S1a: both entries take the same evaluation probe around the
+    /// admission. Without the `nir1-graph-eval` feature this is only
+    /// `admit_and_route`.
+    fn begin_probed(&self, state: &Arc<AppState>, query: GraphQuery, route: DemandRoute) -> GraphBegin {
         #[cfg(feature = "nir1-graph-eval")]
         let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self);
-        let result = self.admit(state, query);
+        let result = self.admit_and_route(state, query, route);
         #[cfg(feature = "nir1-graph-eval")]
         eval_probe.finish(&result);
         result
     }
 
-    fn admit(&self, state: &Arc<AppState>, query: GraphQuery) -> GraphBegin {
+    fn admit_and_route(
+        &self,
+        state: &Arc<AppState>,
+        query: GraphQuery,
+        route: DemandRoute,
+    ) -> GraphBegin {
         let shared = &self.shared;
         bump(&shared.diagnostics.begins);
         if query.seed_entity_id.is_empty() {
@@ -953,7 +1145,7 @@ impl Nir1GraphProductOwner {
             now,
             factory,
         };
-        let (result, finished) = shared.demand(state, demand, config);
+        let (result, finished) = route(shared, state, demand, config);
         for handle in finished {
             let _ = handle.join();
         }
@@ -1162,6 +1354,10 @@ impl Nir1GraphProductOwner {
             scene_total_over_cap: read(&d.scene_total_over_cap),
             query_scene_associated: read(&d.query_scene_associated),
             panics: read(&d.panics),
+            deferred_released: read(&d.deferred_released),
+            deferred_expired: read(&d.deferred_expired),
+            deferred_dropped: read(&d.deferred_dropped),
+            stale_ready_retired: read(&d.stale_ready_retired),
         }
     }
 
@@ -1189,6 +1385,16 @@ impl Nir1GraphProductOwner {
     }
 
     #[cfg(test)]
+    pub(crate) fn set_deferred_release_limit_for_test(&self, limit: Duration) {
+        *lock(&self.shared.deferred_limit) = limit;
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_admit_hook_for_test(&self, hook: Arc<dyn Fn() + Send + Sync>) {
+        *lock(&self.shared.admit_hook_for_test) = Some(hook);
+    }
+
+    #[cfg(test)]
     pub(crate) fn slot_kind_for_test(&self) -> GraphSlotKind {
         self.slot_kind()
     }
@@ -1197,6 +1403,7 @@ impl Nir1GraphProductOwner {
     fn slot_kind(&self) -> GraphSlotKind {
         match lock(&self.shared.slot).phase {
             Phase::Empty => GraphSlotKind::Empty,
+            Phase::Deferred => GraphSlotKind::Deferred,
             Phase::Preparing => GraphSlotKind::Preparing,
             Phase::Ready => GraphSlotKind::Ready,
             Phase::InUse => GraphSlotKind::InUse,
@@ -1300,6 +1507,11 @@ enum QuarantineHold {
     Participant,
 }
 
+/// The slot transition table a begin is routed to: `Shared::demand` (D-final)
+/// or `Shared::demand_deferred` (Related Scenes).
+type DemandRoute =
+    fn(&Arc<Shared>, &Arc<AppState>, Demand, GraphOwnerConfig) -> (GraphBegin, Vec<JoinHandle<()>>);
+
 struct Demand {
     key: GraphKey,
     request: Nir1GraphRequest,
@@ -1318,6 +1530,7 @@ impl Shared {
         demand: Demand,
         config: GraphOwnerConfig,
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
+        let project_id = demand.key.project_id.clone();
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1338,7 +1551,10 @@ impl Shared {
                 }
             }
             Phase::Empty => self.start_session(&mut slot, state, demand, &config),
-            Phase::Preparing => match slot.session.as_mut() {
+            // CQ-DEFER: a held query (and the session that will prepare for
+            // it) answers D-final as a preparing slot does: the same key waits
+            // for the session's end, which signals; another key is busy.
+            Phase::Deferred | Phase::Preparing => match slot.session.as_mut() {
                 Some(session) if session.key != demand.key => {
                     #[cfg(feature = "nir1-graph-eval")]
                     crate::nir1_graph_eval::note_busy_cause("preparing-other-key");
@@ -1364,6 +1580,7 @@ impl Shared {
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
+        note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
         (result, finished)
     }
@@ -1375,54 +1592,249 @@ impl Shared {
         demand: Demand,
         config: &GraphOwnerConfig,
     ) -> GraphBegin {
-        let failures = slot.rebuild.consecutive_failures;
-        if failures > 0 {
-            if let Some(failed_at) = slot.rebuild.last_failure_at {
-                if demand.now < failed_at + failure_backoff(config, failures) {
-                    let reason = slot
-                        .rebuild
-                        .last_failure
-                        .unwrap_or(GraphUnavailable::WorkerUnavailable);
-                    return self.count_unavailable(reason);
-                }
-            }
+        if let Some(refusal) = self.backoff_refusal(slot, demand.now, config) {
+            return refusal;
         }
+        let project_id = demand.key.project_id.clone();
+        if self.spawn_session(
+            slot,
+            state,
+            demand.key,
+            demand.epoch,
+            demand.now,
+            demand.factory,
+            Phase::Preparing,
+        ) {
+            self.unserved(GraphUnavailable::Warming, &project_id)
+        } else {
+            self.count_unavailable(GraphUnavailable::WorkerUnavailable)
+        }
+    }
+
+    /// The answer of a slot still inside its failure backoff, if any.
+    fn backoff_refusal(
+        &self,
+        slot: &SlotState,
+        now: Instant,
+        config: &GraphOwnerConfig,
+    ) -> Option<GraphBegin> {
+        let failures = slot.rebuild.consecutive_failures;
+        if failures == 0 {
+            return None;
+        }
+        let failed_at = slot.rebuild.last_failure_at?;
+        if now < failed_at + failure_backoff(config, failures) {
+            let reason = slot
+                .rebuild
+                .last_failure
+                .unwrap_or(GraphUnavailable::WorkerUnavailable);
+            return Some(self.count_unavailable(reason));
+        }
+        None
+    }
+
+    /// Spawns the slot's owner thread (under the slot lock) and publishes its
+    /// session in `phase`. False, with the failure recorded, if no thread starts.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_session(
+        self: &Arc<Self>,
+        slot: &mut SlotState,
+        state: &Arc<AppState>,
+        key: GraphKey,
+        epoch: u64,
+        now: Instant,
+        factory: Arc<dyn GraphWorkerFactory>,
+        phase: Phase,
+    ) -> bool {
         let thread_id = self.next_thread_id.fetch_add(1, Ordering::SeqCst);
         let (commands, receiver) = mpsc::sync_channel(COMMAND_CAPACITY);
         let context = SessionContext {
             shared: Arc::clone(self),
             state: Arc::downgrade(state),
-            factory: demand.factory,
+            factory,
             receiver,
             thread_id,
-            key: demand.key.clone(),
-            epoch: demand.epoch,
+            key: key.clone(),
+            epoch,
         };
         let spawned = thread::Builder::new()
             .name(OWNER_THREAD_NAME.into())
             .spawn(move || session_main(context));
         match spawned {
             Ok(join) => {
-                let warming = self.unserved(GraphUnavailable::Warming, &demand.key.project_id);
-                slot.phase = Phase::Preparing;
+                slot.phase = phase;
                 slot.session = Some(Session {
                     thread_id,
-                    key: demand.key,
-                    epoch: demand.epoch,
-                    last_demand: demand.now,
+                    key,
+                    epoch,
+                    last_demand: now,
                     commands,
                     join: Some(join),
                     pending_rekey: None,
+                    held: None,
                 });
-                warming
+                true
             }
             Err(_) => {
+                let failures = slot.rebuild.consecutive_failures;
                 slot.rebuild.consecutive_failures = failures.saturating_add(1);
-                slot.rebuild.last_failure_at = Some(demand.now);
+                slot.rebuild.last_failure_at = Some(now);
                 slot.rebuild.last_failure = Some(GraphUnavailable::WorkerUnavailable);
-                self.count_unavailable(GraphUnavailable::WorkerUnavailable)
+                false
             }
         }
+    }
+
+    /// CQ-DEFER: the slot transition table for a Related Scenes query
+    /// (`begin_deferred`). Empty and READY hold the query; every other phase
+    /// answers as `demand` does, except that a second query is busy while one
+    /// is held.
+    fn demand_deferred(
+        self: &Arc<Self>,
+        state: &Arc<AppState>,
+        demand: Demand,
+        config: GraphOwnerConfig,
+    ) -> (GraphBegin, Vec<JoinHandle<()>>) {
+        let limit = *lock(&self.deferred_limit);
+        let project_id = demand.key.project_id.clone();
+        let mut slot = lock(&self.slot);
+        let finished = take_finished(&mut slot.exited);
+        let phase = slot.phase.clone();
+        let result = match phase {
+            Phase::Closed => self.count_unavailable(GraphUnavailable::Invalidated),
+            Phase::Quarantined { .. } => self.count_unavailable(GraphUnavailable::RestartRequired),
+            Phase::Suspended {
+                ready_generation,
+                reason,
+            } => {
+                if ready_generation == self.ready_generation.load(Ordering::SeqCst) {
+                    self.unserved(reason, &demand.key.project_id)
+                } else {
+                    slot.phase = Phase::Empty;
+                    slot.rebuild.consecutive_failures = 0;
+                    slot.rebuild.last_failure = None;
+                    self.defer_on_empty(&mut slot, state, demand, &config, limit)
+                }
+            }
+            Phase::Empty => self.defer_on_empty(&mut slot, state, demand, &config, limit),
+            Phase::Deferred => self.unserved(GraphUnavailable::Busy, &demand.key.project_id),
+            Phase::Ready => self.defer_on_ready(&mut slot, demand, &config, limit),
+            Phase::Preparing => match slot.session.as_mut() {
+                Some(session) if session.key != demand.key => {
+                    self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
+                }
+                Some(session) => {
+                    session.last_demand = demand.now;
+                    self.unserved(GraphUnavailable::Warming, &demand.key.project_id)
+                }
+                None => self.unserved(GraphUnavailable::Warming, &demand.key.project_id),
+            },
+            Phase::InUse | Phase::Retiring => {
+                if let Some(session) = slot.session.as_mut() {
+                    if session.key == demand.key {
+                        session.last_demand = demand.now;
+                    }
+                }
+                self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
+            }
+        };
+        note_held_unserved(&mut slot, &result, &project_id);
+        drop(slot);
+        (result, finished)
+    }
+
+    /// CQ-DEFER: holds the query in an Empty slot. An owner thread starts (it
+    /// waits for the release and prepares nothing before it).
+    fn defer_on_empty(
+        self: &Arc<Self>,
+        slot: &mut SlotState,
+        state: &Arc<AppState>,
+        demand: Demand,
+        config: &GraphOwnerConfig,
+        limit: Duration,
+    ) -> GraphBegin {
+        if let Some(refusal) = self.backoff_refusal(slot, demand.now, config) {
+            return refusal;
+        }
+        // The ticket becomes a `GraphTicket` only once the hold exists: a
+        // dropped `GraphTicket` cancels, which takes this slot lock.
+        let ticket = TicketShared::new(Arc::clone(self), demand.cache_key, demand.epoch, true);
+        let held = DeferredDemand {
+            ticket: Arc::clone(&ticket),
+            key: demand.key.clone(),
+            request: demand.request,
+            epoch: demand.epoch,
+            deadline: demand.now + limit,
+            released: false,
+        };
+        if !self.spawn_session(
+            slot,
+            state,
+            demand.key,
+            demand.epoch,
+            demand.now,
+            demand.factory,
+            Phase::Deferred,
+        ) {
+            return self.count_unavailable(GraphUnavailable::WorkerUnavailable);
+        }
+        if let Some(session) = slot.session.as_mut() {
+            session.held = Some(Vec::new());
+        }
+        slot.deferred = Some(held);
+        GraphBegin::Pending(GraphTicket {
+            shared: ticket,
+            finished: false,
+        })
+    }
+
+    /// CQ-DEFER: a READY worker was prepared before this begin's own commits,
+    /// so it would drift; the session retires it unqueried and holds the query.
+    /// Another key's READY is taken over only under the rekey rule (its last
+    /// demand is at least `rebuild_min_interval` old); otherwise busy.
+    fn defer_on_ready(
+        self: &Arc<Self>,
+        slot: &mut SlotState,
+        demand: Demand,
+        config: &GraphOwnerConfig,
+        limit: Duration,
+    ) -> GraphBegin {
+        let Some(session) = slot.session.as_mut() else {
+            return self.count_unavailable(GraphUnavailable::Invalidated);
+        };
+        if session.epoch != demand.epoch || self.edge_epoch.load(Ordering::SeqCst) != session.epoch
+        {
+            // An edge already happened; the owner retires before any query.
+            return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
+        }
+        if session.key != demand.key
+            && demand.now.saturating_duration_since(session.last_demand)
+                < config.rebuild_min_interval
+        {
+            return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
+        }
+        if session.commands.try_send(Command::Defer).is_err() {
+            return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
+        }
+        session.key = demand.key.clone();
+        session.epoch = demand.epoch;
+        session.last_demand = demand.now;
+        session.pending_rekey = None;
+        session.held = Some(Vec::new());
+        let ticket = TicketShared::new(Arc::clone(self), demand.cache_key, demand.epoch, true);
+        slot.phase = Phase::Deferred;
+        slot.deferred = Some(DeferredDemand {
+            ticket: Arc::clone(&ticket),
+            key: demand.key,
+            request: demand.request,
+            epoch: demand.epoch,
+            deadline: demand.now + limit,
+            released: false,
+        });
+        GraphBegin::Pending(GraphTicket {
+            shared: ticket,
+            finished: false,
+        })
     }
 
     fn serve_ready(
@@ -1445,7 +1857,7 @@ impl Shared {
             }
             session.last_demand = demand.now;
             let cache_key = demand.cache_key;
-            let ticket = TicketShared::new(Arc::clone(self), cache_key, demand.epoch);
+            let ticket = TicketShared::new(Arc::clone(self), cache_key, demand.epoch, false);
             let request = demand.request;
             match session.commands.try_send(Command::Query {
                 request,
@@ -1511,6 +1923,9 @@ struct SessionGuard {
     in_flight: Option<Arc<TicketShared>>,
     exit: Option<Phase>,
     quarantined: bool,
+    /// CQ-DEFER: filled by the Drop with the held session's waiting projects;
+    /// `session_main` announces them once the slot shows the session's end.
+    announce_after: Rc<RefCell<Vec<String>>>,
 }
 
 impl Drop for SessionGuard {
@@ -1527,6 +1942,7 @@ impl Drop for SessionGuard {
             }
         }
         let mut slot = lock(&self.shared.slot);
+        let mut left_held = None;
         if slot
             .session
             .as_ref()
@@ -1536,7 +1952,25 @@ impl Drop for SessionGuard {
                 if let Some(join) = session.join.take() {
                     slot.exited.push(join);
                 }
+                if let Some(waiting) = session.held.take() {
+                    *self.announce_after.borrow_mut() = waiting;
+                }
             }
+            // CQ-DEFER: a held query outlives no owner thread (a panic, or an
+            // exit before the hold was looked at). It is settled below, outside
+            // the slot lock.
+            left_held = slot.deferred.take();
+        }
+        if let Some(held) = left_held {
+            bump(&self.shared.diagnostics.deferred_dropped);
+            let reason = if self.quarantined {
+                GraphUnavailable::RestartRequired
+            } else {
+                GraphUnavailable::Invalidated
+            };
+            drop(slot);
+            held.ticket.deliver(GraphTicketOutcome::Unavailable(reason));
+            slot = lock(&self.shared.slot);
         }
         if self.quarantined {
             // slot -> cache is an allowed lock order. The flag and the clear are one
@@ -1561,6 +1995,7 @@ impl Drop for SessionGuard {
 
 fn session_main(context: SessionContext) {
     let shared = Arc::clone(&context.shared);
+    let announce_after = Rc::new(RefCell::new(Vec::new()));
     {
         let mut guard = SessionGuard {
             shared: Arc::clone(&shared),
@@ -1570,6 +2005,7 @@ fn session_main(context: SessionContext) {
             in_flight: None,
             exit: None,
             quarantined: false,
+            announce_after: Rc::clone(&announce_after),
         };
         let outcome = catch_unwind(AssertUnwindSafe(|| run_session(&mut guard, &context)));
         if outcome.is_err() {
@@ -1580,8 +2016,20 @@ fn session_main(context: SessionContext) {
     // waiter that wakes now reads the final state.
     shared.signal_ready();
     // The guard has removed this session from the slot and dropped its sender,
-    // so nothing can be queued behind this drain.
+    // so nothing can be queued behind this drain. It runs before the notices
+    // below: a notifier that panics (it is outside `catch_unwind`) must not
+    // leave a queued ticket unsettled.
     settle_queued(&context.receiver);
+    // CQ-DEFER: the demands a held session made wait are announced once, now
+    // that the slot is free (outside every lock). The held query's own stale
+    // answer is not among them: announcing it would repeat notice → re-query →
+    // stale (and five audit rows each time) for as long as edits continue.
+    let waiting = std::mem::take(&mut *announce_after.borrow_mut());
+    for project_id in waiting {
+        if shared.take_unserved(&project_id) {
+            shared.notify_ready(&project_id);
+        }
+    }
 }
 
 /// A Query queued for a session that ended before serving it settles as
@@ -1608,11 +2056,26 @@ fn run_session(guard: &mut SessionGuard, context: &SessionContext) {
         if guard.quarantined {
             return;
         }
+        // CQ-DEFER: a held query (spawned for it, or a READY taken over) is
+        // this thread's last work.
+        if matches!(lock(&context.shared.slot).phase, Phase::Deferred) {
+            run_deferred(guard, context, &mut key, &mut epoch);
+            return;
+        }
         match build_and_serve(guard, context, &mut key, &mut epoch) {
             Next::Rebuild => continue,
             Next::Exit => return,
         }
     }
+}
+
+/// How far `build_worker` got.
+enum Built {
+    /// The worker is prepared on this thread and not yet queried; the slot is
+    /// not yet published as READY.
+    Ready(Option<CQueryFreshnessStamp>),
+    /// The thread must exit; the reason is what a held query is told.
+    Exit(GraphUnavailable),
 }
 
 fn build_and_serve(
@@ -1622,12 +2085,49 @@ fn build_and_serve(
     epoch: &mut u64,
 ) -> Next {
     let shared = Arc::clone(&context.shared);
-    if !wait_rebuild_window(context, *epoch) {
-        return Next::Exit;
-    }
-    let Some((snapshot, core, stamp)) = admit(context, key, *epoch) else {
-        return Next::Exit;
+    let stamp = match build_worker(guard, context, key, *epoch, None) {
+        Built::Ready(stamp) => stamp,
+        Built::Exit(_) => return Next::Exit,
     };
+    {
+        let mut slot = lock(&shared.slot);
+        slot.phase = Phase::Ready;
+        slot.rebuild.consecutive_failures = 0;
+        slot.rebuild.last_failure = None;
+    }
+    bump(&shared.diagnostics.prepares_ready);
+    shared.signal_ready();
+    if shared.take_unserved(&key.project_id) {
+        shared.notify_ready(&key.project_id);
+    }
+    serve_until_retired(guard, context, key, epoch, stamp)
+}
+
+/// The rebuild window, the admission (with the S0 stamp), the worker's
+/// creation and its prepare, with the failure ledger. Ends at READY, which the
+/// caller publishes (or not) itself.
+fn build_worker(
+    guard: &mut SessionGuard,
+    context: &SessionContext,
+    key: &GraphKey,
+    epoch: u64,
+    held: Option<&TicketShared>,
+) -> Built {
+    let shared = Arc::clone(&context.shared);
+    if !wait_rebuild_window(context, epoch, held) {
+        return Built::Exit(if held_cancelled(held) {
+            GraphUnavailable::Cancelled
+        } else {
+            GraphUnavailable::Invalidated
+        });
+    }
+    let Some((snapshot, core, stamp)) = admit(context, key, epoch) else {
+        return Built::Exit(GraphUnavailable::Invalidated);
+    };
+    // CQ-DEFER: a held query cancelled meanwhile creates no worker.
+    if held_cancelled(held) {
+        return Built::Exit(GraphUnavailable::Cancelled);
+    }
     guard.worker = Some(context.factory.create(GraphWorkerStart {
         snapshot,
         binding: key.binding.clone(),
@@ -1654,7 +2154,7 @@ fn build_and_serve(
             }
             if effect == PrepareFailureEffect::DoNotCount {
                 guard.exit = Some(Phase::Empty);
-                return Next::Exit;
+                return Built::Exit(reason);
             }
             bump(&shared.diagnostics.prepare_failures);
             if effect == PrepareFailureEffect::Count {
@@ -1675,27 +2175,156 @@ fn build_and_serve(
                     Phase::Empty
                 });
             }
-            return Next::Exit;
+            return Built::Exit(reason);
         }
-        None => return Next::Exit,
+        None => return Built::Exit(GraphUnavailable::Failed),
     }
     // READY: the worker is prepared on this thread and not yet queried.
-    if shared.edge_epoch.load(Ordering::SeqCst) != *epoch || shared.closed.load(Ordering::SeqCst) {
+    if shared.edge_epoch.load(Ordering::SeqCst) != epoch || shared.closed.load(Ordering::SeqCst) {
         retire_current(guard);
-        return Next::Exit;
+        return Built::Exit(GraphUnavailable::Invalidated);
+    }
+    Built::Ready(stamp)
+}
+
+/// What the owner thread takes out of the slot once the begin released it.
+struct Released {
+    key: GraphKey,
+    epoch: u64,
+    request: Nir1GraphRequest,
+    ticket: Arc<TicketShared>,
+}
+
+/// CQ-DEFER: waits for the release of the held query, then prepares a worker
+/// for it and answers it at once. The READY is not published (the slot goes
+/// from Preparing to InUse), so nothing else queues a query in between, and it
+/// announces nothing: the one notice is the late result's cache fill. After
+/// the query the worker is retired and the slot is Empty (no rebuild: the next
+/// begin's own commits would only drift a READY made now).
+fn run_deferred(
+    guard: &mut SessionGuard,
+    context: &SessionContext,
+    key: &mut GraphKey,
+    epoch: &mut u64,
+) {
+    let shared = Arc::clone(&context.shared);
+    guard.exit = Some(Phase::Empty);
+    let Some(held) = await_release(context) else {
+        return;
+    };
+    *key = held.key;
+    *epoch = held.epoch;
+    guard.binding = key.binding.clone();
+    // Until it is answered the held query is this thread's in-flight ticket,
+    // so a panic settles it too.
+    guard.in_flight = Some(Arc::clone(&held.ticket));
+    let stamp = match build_worker(guard, context, key, *epoch, Some(&held.ticket)) {
+        Built::Ready(stamp) => stamp,
+        Built::Exit(reason) => {
+            if let Some(ticket) = guard.in_flight.take() {
+                ticket.deliver(GraphTicketOutcome::Unavailable(reason));
+            }
+            return;
+        }
+    };
+    if held.ticket.cancel.load(Ordering::SeqCst) {
+        // Settled as cancelled already: nothing is queried.
+        guard.in_flight = None;
+        retire_current(guard);
+        return;
     }
     {
         let mut slot = lock(&shared.slot);
-        slot.phase = Phase::Ready;
+        slot.phase = Phase::InUse;
         slot.rebuild.consecutive_failures = 0;
         slot.rebuild.last_failure = None;
     }
     bump(&shared.diagnostics.prepares_ready);
-    shared.signal_ready();
-    if shared.take_unserved(&key.project_id) {
-        shared.notify_ready(&key.project_id);
+    let _ = serve_query(
+        guard,
+        context,
+        *epoch,
+        stamp.as_ref(),
+        held.request,
+        held.ticket,
+        true,
+    );
+    retire_current(guard);
+}
+
+/// CQ-DEFER: the hold. Returns the released query, or None when it ended
+/// otherwise; then it was settled here (`timeout`, `invalidated`) or by its
+/// cancellation, and taken out of the slot.
+fn await_release(context: &SessionContext) -> Option<Released> {
+    let shared = &context.shared;
+    loop {
+        let wait = {
+            let mut slot = lock(&shared.slot);
+            let now = Instant::now();
+            let (epoch, cancelled, released, deadline) = {
+                let held = slot.deferred.as_ref()?;
+                (
+                    held.epoch,
+                    held.ticket.cancel.load(Ordering::SeqCst),
+                    held.released,
+                    held.deadline,
+                )
+            };
+            let ended = if edge_or_closed(shared, epoch) {
+                Some(Some(GraphUnavailable::Invalidated))
+            } else if cancelled {
+                Some(None)
+            } else if released {
+                let held = slot.deferred.take()?;
+                slot.phase = Phase::Preparing;
+                if let Some(session) = slot.session.as_mut() {
+                    session.key = held.key.clone();
+                    session.epoch = held.epoch;
+                    session.last_demand = now;
+                    session.pending_rekey = None;
+                }
+                return Some(Released {
+                    key: held.key,
+                    epoch: held.epoch,
+                    request: held.request,
+                    ticket: held.ticket,
+                });
+            } else if now >= deadline {
+                Some(Some(GraphUnavailable::Timeout))
+            } else {
+                None
+            };
+            match ended {
+                Some(answer) => {
+                    let held = slot.deferred.take()?;
+                    // Deferred holds exactly while a query is held.
+                    slot.phase = Phase::Retiring;
+                    drop(slot);
+                    if answer == Some(GraphUnavailable::Timeout) {
+                        bump(&shared.diagnostics.deferred_expired);
+                    } else {
+                        bump(&shared.diagnostics.deferred_dropped);
+                    }
+                    if let Some(reason) = answer {
+                        held.ticket.deliver(GraphTicketOutcome::Unavailable(reason));
+                    }
+                    return None;
+                }
+                None => deadline - now,
+            }
+        };
+        match context.receiver.recv_timeout(wait) {
+            Err(RecvTimeoutError::Timeout) => {}
+            // The slot still holds this session's sender while it holds the
+            // query, so this does not happen; the guard settles the hold.
+            Err(RecvTimeoutError::Disconnected) => return None,
+            // No query is queued while Deferred; refuse one as busy.
+            Ok(Command::Query { ticket, .. }) => {
+                ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Busy));
+            }
+            Ok(Command::Wake | Command::Retire | Command::Defer) => {}
+        }
     }
-    serve_until_retired(guard, context, key, epoch, stamp)
 }
 
 fn retire_current(guard: &mut SessionGuard) {
@@ -1711,10 +2340,16 @@ fn retire_current(guard: &mut SessionGuard) {
 
 /// Waits out the minimum rebuild interval and failure backoff, serving only
 /// edge and retire commands meanwhile. Returns false when the thread must exit.
-fn wait_rebuild_window(context: &SessionContext, epoch: u64) -> bool {
+/// `held` is the ticket of a CQ-DEFER query: its cancellation (which wakes
+/// this thread) ends the wait too, so it does not occupy the slot for the rest
+/// of the window.
+fn wait_rebuild_window(context: &SessionContext, epoch: u64, held: Option<&TicketShared>) -> bool {
     let shared = Arc::clone(&context.shared);
     lock(&shared.slot).phase = Phase::Preparing;
     loop {
+        if held_cancelled(held) {
+            return false;
+        }
         let config = shared.config();
         let not_before = {
             let slot = lock(&shared.slot);
@@ -1736,8 +2371,9 @@ fn wait_rebuild_window(context: &SessionContext, epoch: u64) -> bool {
                     return false;
                 }
             }
-            // No rekey is pending while preparing, so a Retire here is stale.
-            Ok(Command::Retire) => {}
+            // No rekey is pending while preparing, so a Retire here is stale,
+            // and a Defer can only be a stale one of the READY this replaced.
+            Ok(Command::Retire | Command::Defer) => {}
             Ok(Command::Query { ticket, .. }) => {
                 #[cfg(feature = "nir1-graph-eval")]
                 ticket.eval_notes.busy("rebuild-window");
@@ -1745,6 +2381,10 @@ fn wait_rebuild_window(context: &SessionContext, epoch: u64) -> bool {
             }
         }
     }
+}
+
+fn held_cancelled(held: Option<&TicketShared>) -> bool {
+    held.is_some_and(|ticket| ticket.cancel.load(Ordering::SeqCst))
 }
 
 fn edge_or_closed(shared: &Shared, epoch: u64) -> bool {
@@ -1792,6 +2432,13 @@ fn admit(
     if edge_or_closed(shared, epoch) {
         return None;
     }
+    #[cfg(test)]
+    {
+        let hook = lock(&shared.admit_hook_for_test).clone();
+        if let Some(hook) = hook {
+            hook();
+        }
+    }
     let state = context.state.upgrade()?;
     let status = state.profile_egress.status();
     if !(status.restricted && status.in_flight_stopped) {
@@ -1838,6 +2485,14 @@ fn serve_until_retired(
         let config = shared.config();
         let idle_remaining = {
             let mut slot = lock(&shared.slot);
+            if matches!(slot.phase, Phase::Deferred) {
+                // CQ-DEFER: a held query took this READY over. The worker was
+                // prepared before that begin's own commits: retire it unqueried.
+                drop(slot);
+                retire_current(guard);
+                bump(&shared.diagnostics.stale_ready_retired);
+                return Next::Rebuild;
+            }
             let remaining = slot.session.as_ref().map_or(Duration::ZERO, |session| {
                 idle_deadline(&config, session.last_demand)
                     .saturating_duration_since(Instant::now())
@@ -1876,8 +2531,18 @@ fn serve_until_retired(
                     return retire_then_rekey_or_exit(guard, &shared, key, epoch);
                 }
             }
+            // Looked at above, under the slot lock.
+            Ok(Command::Defer) => {}
             Ok(Command::Query { request, ticket }) => {
-                match serve_query(guard, context, *epoch, stamp0.as_ref(), request, ticket) {
+                match serve_query(
+                    guard,
+                    context,
+                    *epoch,
+                    stamp0.as_ref(),
+                    request,
+                    ticket,
+                    false,
+                ) {
                     ServeNext::Ready => {}
                     ServeNext::Rebuild => return Next::Rebuild,
                     ServeNext::Exit => return Next::Exit,
@@ -1918,6 +2583,8 @@ fn retire_then_rekey_or_exit(
     }
 }
 
+/// `held` is a CQ-DEFER query: a cancellation then leaves the slot as it is
+/// (InUse until the thread exits) instead of publishing the worker as READY.
 fn serve_query(
     guard: &mut SessionGuard,
     context: &SessionContext,
@@ -1925,6 +2592,7 @@ fn serve_query(
     stamp0: Option<&CQueryFreshnessStamp>,
     request: Nir1GraphRequest,
     ticket: Arc<TicketShared>,
+    held: bool,
 ) -> ServeNext {
     let shared = &context.shared;
     guard.in_flight = Some(Arc::clone(&ticket));
@@ -1937,7 +2605,9 @@ fn serve_query(
     if ticket.cancel.load(Ordering::SeqCst) {
         ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Cancelled));
         guard.in_flight = None;
-        return_to_ready(shared);
+        if !held {
+            return_to_ready(shared);
+        }
         return ServeNext::Ready;
     }
     #[cfg(feature = "nir1-graph-eval")]
@@ -1962,7 +2632,9 @@ fn serve_query(
     if ticket.cancel.load(Ordering::SeqCst) {
         ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Cancelled));
         guard.in_flight = None;
-        return_to_ready(shared);
+        if !held {
+            return_to_ready(shared);
+        }
         return ServeNext::Ready;
     }
     let Some(worker) = guard.worker.as_mut() else {

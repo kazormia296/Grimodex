@@ -24,4 +24,6 @@ grimodex-lint = { path = "../grimodex-lint" }
 
 [dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled", "backup"] }
+# 送信前の監査 commit が FULL で行われることを試験で確かめる（試験専用の feature）。
+grimodex-db = { path = "../grimodex-db", features = ["ai-audit-commit-test-probe"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }

@@ -9,7 +9,10 @@ use std::sync::Arc;
 use anyhow::{bail, ensure, Context, Result};
 use serde_json::{json, Map, Value};
 
-use super::fixture::{CaseSpec, EntitySpec, Fixture, Step, VariantSpec};
+use super::fixture::{
+    validate_variant_setup, CaseSpec, EntitySpec, Fixture, SceneSpec, Step, VariantSpec,
+    SCENE_SCOPE_UNKNOWN_WRITE,
+};
 use super::workspace::{CaseWorkspace, PreparedRevision};
 use crate::nir1_prepared_request::nir1_final_request_eval::run_dfinal_with_capture;
 use crate::nir1_prepared_request::tests::{prepare_local_chat_request, NO_UNSUPPORTED_INPUTS};
@@ -75,13 +78,20 @@ struct IdMap {
 }
 
 impl IdMap {
-    fn add(&mut self, logical_id: &str, runtime_id: &str) {
+    /// One runtime id per logical id: a second material under the same
+    /// logical id is a setup error, not an overwrite (DR-DPH-114).
+    fn add(&mut self, logical_id: &str, runtime_id: &str) -> Result<()> {
+        ensure!(
+            !self.runtime.contains_key(logical_id),
+            "NIR1_EVAL_SETUP_DUPLICATE_LOGICAL_ID: {logical_id} already names a material of this workspace"
+        );
         let mut row = Map::new();
         row.insert("logicalId".into(), json!(logical_id));
         row.insert("runtimeId".into(), json!(runtime_id));
         self.rows.push(row);
         self.runtime
             .insert(logical_id.to_owned(), runtime_id.to_owned());
+        Ok(())
     }
 
     fn set(&mut self, logical_id: &str, key: &str, value: &str) {
@@ -105,6 +115,13 @@ impl IdMap {
         Value::Array(self.rows.iter().cloned().map(Value::Object).collect())
     }
 }
+
+/// 試験だけが差し込む setup の介入点。`scene-scope-unknown` の書込みの直後、
+/// marker の確認（DR-DPH-112）の前に、その Scene の runtime id で呼ばれる。
+/// evidence の経路（`run_variant`、`run_all_variants`）は常に `None` を渡すので、
+/// 動作は変わらない。確認が D-final を含む経路で実際に効くことを、
+/// mechanics 試験で確かめるために置く（DR-DPH-118）。
+pub(super) type AfterUnknownScopeWrite<'p> = &'p dyn Fn(&mut CaseWorkspace, &str) -> Result<()>;
 
 /// What a finished variant hands to the receipt writers.
 pub(super) struct VariantOutcome {
@@ -135,6 +152,8 @@ struct Runner<'a> {
     /// Stages whose first (positive) prepare has happened: no data write may
     /// follow it in that stage.
     positive_prepared_stages: HashSet<u32>,
+    /// 試験の介入点（evidence の経路では `None`）。
+    after_unknown_write: Option<AfterUnknownScopeWrite<'a>>,
 }
 
 fn nonempty(value: &Option<String>, what: &str) -> Result<String> {
@@ -187,7 +206,8 @@ impl<'a> Runner<'a> {
         let project = self
             .ws
             .write_project(&format!("DP-H {}", self.case.case_id))?;
-        self.ids.add(&self.case.setup.project.logical_id, &project);
+        self.ids
+            .add(&self.case.setup.project.logical_id, &project)?;
         self.note_writer("project_create");
         self.log.push(
             1,
@@ -198,11 +218,20 @@ impl<'a> Runner<'a> {
             None,
         );
 
-        for (index, scene) in self.case.setup.scenes.iter().enumerate() {
+        // The case's Scenes, then a reject variant's own negative-anchor Scene
+        // (DR-DPH-99), after them in reading order.
+        let scenes: Vec<&SceneSpec> = self
+            .case
+            .setup
+            .scenes
+            .iter()
+            .chain(self.variant.setup.scenes.iter())
+            .collect();
+        for (index, scene) in scenes.iter().enumerate() {
             let runtime = self
                 .ws
                 .write_scene(&scene.title, &format!("a{index}"), &scene.body)?;
-            self.ids.add(&scene.logical_id, &runtime);
+            self.ids.add(&scene.logical_id, &runtime)?;
             self.note_writer("tree_node_create");
             self.log.push(
                 1,
@@ -228,7 +257,7 @@ impl<'a> Runner<'a> {
             None,
             None,
         );
-        for scene in &self.case.setup.scenes {
+        for scene in &scenes {
             let runtime = self.ids.runtime_of(&scene.logical_id)?.to_owned();
             self.ws
                 .write_scene_scope(&runtime, &self.fixture.setup_contract.scene_scope.per_scene)?;
@@ -254,7 +283,7 @@ impl<'a> Runner<'a> {
             let runtime =
                 self.ws
                     .write_codex_entity(&entity.type_slug, &entity.name, &entity.summary)?;
-            self.ids.add(&entity.logical_id, &runtime);
+            self.ids.add(&entity.logical_id, &runtime)?;
             self.note_writer("codex_create");
             self.log.push(
                 1,
@@ -294,7 +323,7 @@ impl<'a> Runner<'a> {
                 let anchor = self.ids.runtime_of(&anchor_logical)?.to_owned();
                 let entity_runtime = self.ids.runtime_of(&entity)?.to_owned();
                 let prepared = self.ws.prepare_revision(&anchor, &entity_runtime, &key)?;
-                self.ids.add(&revision, &prepared.revision_id);
+                self.ids.add(&revision, &prepared.revision_id)?;
                 self.ids.set(&revision, "proposalId", &prepared.proposal_id);
                 self.revision_entity.insert(revision.clone(), entity);
                 self.prepared_stage.insert(revision.clone(), stage);
@@ -360,6 +389,35 @@ impl<'a> Runner<'a> {
                         self.ws
                             .write_scope_registry(&anchor, None, Some(&reference))?;
                         ("narrative_scene_scope_registry_update", None, None)
+                    }
+                    SCENE_SCOPE_UNKNOWN_WRITE => {
+                        // The negative's own anchor Scene turns unknown
+                        // (`validate_variant_setup` checked the target).
+                        ensure!(
+                            kind == "invalidate-negative",
+                            "{SCENE_SCOPE_UNKNOWN_WRITE} is an invalidate-negative write only"
+                        );
+                        let scene = nonempty(&step.scene, "scene")?;
+                        let reason = nonempty(&step.unresolved_reason, "unresolvedReason")?;
+                        let runtime = self.ids.runtime_of(&scene)?.to_owned();
+                        self.ws.write_scene_scope_unknown(
+                            &runtime,
+                            &self.fixture.setup_contract.scene_scope.per_scene,
+                            &reason,
+                        )?;
+                        if let Some(probe) = self.after_unknown_write {
+                            probe(&mut self.ws, &runtime)?;
+                        }
+                        // A2 answers this negative with the same reason as the
+                        // other source-changing writes, so the receipt cannot
+                        // show the Scope was unknown: the harness does, fail
+                        // closed (DR-DPH-112).
+                        let marker = self.ws.scene_scope_marker(&runtime)?;
+                        ensure!(
+                            marker == "unknown",
+                            "NIR1_EVAL_SETUP_SCOPE_NOT_UNKNOWN: {scene} has compatibilityMarker {marker} after the unknown write"
+                        );
+                        ("narrative_scene_scope_update", None, None)
                     }
                     "codex-update" => {
                         let entity = nonempty(&step.entity, "entity")?;
@@ -477,6 +535,19 @@ pub(super) fn run_variant(
     case: &CaseSpec,
     variant: &VariantSpec,
 ) -> Result<VariantOutcome> {
+    run_variant_with(fixture, case, variant, None)
+}
+
+/// `run_variant` に試験の介入点を足したもの。`after_unknown_write` を渡すのは
+/// mechanics 試験だけである。
+pub(super) fn run_variant_with<'a>(
+    fixture: &'a Fixture,
+    case: &'a CaseSpec,
+    variant: &'a VariantSpec,
+    after_unknown_write: Option<AfterUnknownScopeWrite<'a>>,
+) -> Result<VariantOutcome> {
+    // The setup shapes are checked before any workspace exists (DR-DPH-102).
+    validate_variant_setup(fixture, case, variant)?;
     let _exclusive = ONE_VARIANT_AT_A_TIME
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -496,6 +567,7 @@ pub(super) fn run_variant(
         invoked_writers: Vec::new(),
         prepared_stage: HashMap::new(),
         positive_prepared_stages: HashSet::new(),
+        after_unknown_write,
     };
     let stages = variant.stages();
     let first_stage = *stages.first().context("a variant has no request")?;
@@ -603,6 +675,10 @@ pub(super) fn run_variant(
                     // carry in their own Scope bindings (the `scope.
                     // authorityRevision` of the rendered entries). All of them
                     // must agree: one value stands for the stage.
+                    // A Revision that is not eligible carries no token (the
+                    // reader returns none), and a negative that is eligible
+                    // stops the run at request-pre, so the negative never
+                    // adds one (DR-DPH-114).
                     let mut tokens: Vec<&String> = stage_revisions
                         .iter()
                         .flat_map(|(_, reading)| reading.entity_scope_authority_revisions.iter())

@@ -831,3 +831,71 @@ async fn separate_scenes_receive_distinct_execution_ids() {
     assert_eq!(started[0].payload["sceneId"], "scene-a");
     assert_eq!(started[1].payload["sceneId"], "scene-b");
 }
+
+/// post-effect の appender（`Database`／`WorkspaceAuthority`）は外部送信用の append を通り、
+/// 最初の batch（started／prepared／dispatched）を COMMIT の時点で FULL にする。
+#[test]
+fn post_effect_appenders_commit_the_pre_dispatch_batch_at_full_on_a_wal_database() {
+    use grimodex_db::ai_audit::commit_test_probe::take_observed_commit_synchronous;
+    use grimodex_db::{Database, WorkspaceAuthority};
+
+    let root = std::env::temp_dir().join(format!(
+        "grimodex-post-effect-durable-audit-{}",
+        Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&root).expect("database directory");
+    let db = Database::new(&root.join("grimodex.db")).expect("file database");
+    db.migrate().expect("migrate");
+    db.with_conn(|conn| {
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0))?;
+        assert_eq!(journal_mode, "wal");
+        conn.execute(
+            "INSERT INTO projects (id, title, created_at, updated_at)
+             VALUES ('project-1', 'Project', datetime('now'), datetime('now'))",
+            [],
+        )?;
+        Ok(())
+    })
+    .expect("seed project");
+    let event = |execution_id: &str, event_type: &str| AppendAiAuditEvent {
+        event_id: format!("{execution_id}-{event_type}"),
+        execution_id: execution_id.to_string(),
+        operation_id: "operation-1".to_string(),
+        parent_execution_id: None,
+        path_id: "post_effect.test".to_string(),
+        event_type: event_type.to_string(),
+        timestamp: 1,
+        payload: serde_json::json!({"captureState": "complete", "credentialsExcluded": true}),
+    };
+    let initial = |execution_id: &str| {
+        [
+            event(execution_id, "execution.started"),
+            event(execution_id, "request.prepared"),
+            event(execution_id, "request.dispatched"),
+        ]
+    };
+    take_observed_commit_synchronous();
+
+    PostEffectAuditAppender::append(&db, "project-1", &initial("via-database"))
+        .expect("database appender");
+    PostEffectAuditAppender::append(
+        &db,
+        "project-1",
+        &[event("via-database", "execution.failed")],
+    )
+    .expect("terminal via database");
+    assert_eq!(take_observed_commit_synchronous(), [2, 1]);
+
+    let authority =
+        WorkspaceAuthority::from_database_for_test(db, root.clone()).expect("authority");
+    PostEffectAuditAppender::append(authority.as_ref(), "project-1", &initial("via-authority"))
+        .expect("authority appender");
+    assert_eq!(take_observed_commit_synchronous(), [2]);
+    let synchronous: i64 = authority
+        .db()
+        .with_conn(|conn| Ok(conn.query_row("PRAGMA synchronous", [], |row| row.get(0))?))
+        .expect("read synchronous");
+    assert_eq!(synchronous, 1, "the connection default is restored");
+    drop(authority);
+    let _ = std::fs::remove_dir_all(root);
+}

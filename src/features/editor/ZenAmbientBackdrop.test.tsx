@@ -130,6 +130,7 @@ vi.mock("motion/react", () => ({
 
 import { ZenAmbientBackdrop } from "./ZenAmbientBackdrop";
 import { _resetZenWebGl2SupportForTests } from "./zen/zenWebGlSupport";
+import { useRendererReloadStore } from "@/lib/rendererReload";
 
 describe("ZenAmbientBackdrop", () => {
   beforeEach(() => {
@@ -146,9 +147,25 @@ describe("ZenAmbientBackdrop", () => {
 
   afterEach(() => {
     _resetZenWebGl2SupportForTests();
+    useRendererReloadStore.setState({ gpuSurfacesReleased: false });
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     vi.useRealTimers();
+  });
+
+  it("removes the live WebGL surface before a renderer reload and keeps the static backdrop", () => {
+    const { container } = render(<ZenAmbientBackdrop active />);
+    expect(container.querySelector("[data-zen-shader-surface]")).not.toBeNull();
+    expect(container.querySelector("[data-zen-static-backdrop]")).toBeNull();
+
+    act(() => {
+      useRendererReloadStore.setState({ gpuSurfacesReleased: true });
+    });
+
+    expect(container.querySelector("[data-zen-shader-surface]")).toBeNull();
+    expect(container.querySelector("[data-zen-static-backdrop]")).toHaveStyle({
+      opacity: "0.8",
+    });
   });
 
   it("renders the selected Paper shader and both post filters behind the editor paper", () => {

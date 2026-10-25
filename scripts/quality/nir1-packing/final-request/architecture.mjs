@@ -802,6 +802,11 @@ export function checkHarness(sources) {
 /** The only test that reads the frozen fixture's bytes (as text, never into Native). */
 const FROZEN_READ_TEST =
   "mechanics_fixture_shares_no_material_with_the_frozen_fixture";
+/**
+ * A read of a frozen fixture file in the harness tests: the evidence version's
+ * `FIXTURE_PATH` or the superseded version's `SUPERSEDED_FIXTURE_PATH`.
+ */
+const FROZEN_FIXTURE_READ = /\.join\(\s*(?:SUPERSEDED_)?FIXTURE_PATH\s*\)/g;
 
 /**
  * Native runs on the frozen fixture's materials only after the freeze gate
@@ -837,7 +842,7 @@ function checkFreezeOrder(sources, files, fail) {
       fail(file, "a run without the freeze gate (a development dump)");
     }
     if (file.endsWith("/tests.rs")) {
-      const reads = [...masked.matchAll(/\.join\(\s*FIXTURE_PATH\s*\)/g)];
+      const reads = [...masked.matchAll(FROZEN_FIXTURE_READ)];
       if (reads.length > 0) {
         const body = functionBody(text, FROZEN_READ_TEST);
         const inside =
@@ -845,7 +850,7 @@ function checkFreezeOrder(sources, files, fail) {
             ? 0
             : [
                 ...maskRust(body, { maskStrings: true }).matchAll(
-                  /\.join\(\s*FIXTURE_PATH\s*\)/g,
+                  FROZEN_FIXTURE_READ,
                 ),
               ].length;
         if (reads.length !== inside) {

@@ -51,6 +51,10 @@ nir1-final-request-eval = []
 # is never enabled by the normal N-API build or release packaging. Only
 # grimodex-node's feature of the same name enables it.
 nir1-graph-eval = []
+# Test-only: record PRAGMA synchronous right before each AI audit COMMIT so
+# downstream crate tests can prove the pre-dispatch commit runs at FULL.
+# Never enable in production builds.
+ai-audit-commit-test-probe = []
 
 [[bin]]
 name = "migration-crash-harness"

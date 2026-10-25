@@ -99,7 +99,8 @@ describe("BackupRestoreSection", () => {
       ),
     );
     await waitFor(() => expect(toastMock.success).toHaveBeenCalled());
-    expect(reloadSpy).toHaveBeenCalled();
+    // reload は WebGL の面を外した frame の後（rendererReload.ts）。
+    await waitFor(() => expect(reloadSpy).toHaveBeenCalled());
   });
 
   it("gzip (.db.gz) バックアップも 2 クリックで復元できる", async () => {

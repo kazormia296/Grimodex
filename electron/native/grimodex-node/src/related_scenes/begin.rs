@@ -147,10 +147,12 @@ fn begin_blocking(
     } else {
         None
     };
-    // The Graph starts once the IR operation exists, in parallel with it, and
-    // `begin` waits for neither: the owner call is wait-free and reads no
+    // The Graph query is handed over once the IR operation exists, and
+    // `begin` waits for nothing: the owner call is wait-free and reads no
     // database. A seedless request touches neither the owner nor the response.
-    let graph_wire = match dto.graph_seed_entity_id.as_deref() {
+    // CQ-DEFER: the owner holds the query until `graph_release` releases it
+    // below, after this begin's own audit commits (DR-CQD-6).
+    let (graph_wire, graph_release) = match dto.graph_seed_entity_id.as_deref() {
         Some(seed) => {
             let lease = match &ticket {
                 // A lock failure leaves no lease: `not-requested`, and the
@@ -162,15 +164,16 @@ fn begin_blocking(
                     .flatten(),
                 None => None,
             };
-            Some(graph::begin_graph(
+            let wire = graph::begin_graph(
                 &state,
                 lease.as_ref(),
                 &dto.project_id,
                 &dto.current_scene_id,
                 seed,
-            ))
+            );
+            (Some(wire), graph::DeferredRelease::new(lease))
         }
-        None => None,
+        None => (None, graph::DeferredRelease::new(None)),
     };
     // Exactly one audited query embedding serves both consumers. Raw uses the
     // same limit, scope and description mode as the previous entry point.
@@ -249,6 +252,25 @@ fn begin_blocking(
         }
         Ok(value)
     })();
+    // CQ-DEFER: the outcome is decided, so every commit of this begin (the
+    // query embedding's audit) is over and the participant reads above are
+    // closed. Only now may the owner prepare a worker for the held Graph query;
+    // one prepared or queried earlier would drift on these very commits.
+    // - An `Err` outcome (the closure's own errors) drops the hold instead; the
+    //   operation's `release` below cancels it too, and if that `release` fails
+    //   (`?`) the hold is already cancelled.
+    // - On the `Ok` path the guard is spent once it released. A later `?` here
+    //   (`current_request`, `build::schedule`) returns `Err` without
+    //   cancelling the released query: Main never receives this operation, so
+    //   no one awaits or settles its Graph, its result is never cached (only an
+    //   `unused` declaration caches), and the sweep of its expired lease
+    //   cancels the ticket.
+    // - An unwind before this point drops the guard, which cancels.
+    if outcome.is_ok() {
+        graph_release.release();
+    } else {
+        drop(graph_release);
+    }
     if outcome.is_err() {
         if let Some(ticket) = &ticket {
             release(&state, &dto.owner_key, ticket)?;

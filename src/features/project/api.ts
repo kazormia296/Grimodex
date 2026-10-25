@@ -11,6 +11,7 @@ import {
   scheduleImeExportRefresh,
 } from "@/features/ime/scheduler";
 import { removeImeProjectExportWithRetry } from "@/features/ime/api";
+import { purgeChatInputDrafts } from "@/features/chat/chatInputDraftPurge";
 import { getCurrentImeWorkspaceIdentity } from "@/features/ime/workspaceScope";
 import { pendingCompletedTurnPersistence } from "@/application/chat/pendingCompletedTurnPersistence";
 import {
@@ -162,5 +163,7 @@ export async function deleteProject(id: string): Promise<void> {
   // Cancel again after the awaited DB work: another window/local mutation may
   // have scheduled while deletion was in flight.
   cancelScheduledImeExports(id);
+  // チャット入力の書きかけ（端末の localStorage）も Project と一緒に消す。
+  purgeChatInputDrafts(imeWorkspaceIdentity?.path ?? null, id, null, true);
   await removeImeProjectExportWithRetry(id, imeWorkspaceIdentity);
 }

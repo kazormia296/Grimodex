@@ -18,6 +18,10 @@
 //!   response, an excerpt or a body (P2-1, Mandatory defense 5).
 //! * The await is bounded by `GRAPH_AWAIT_LIMIT` (D7), which covers only the
 //!   wait for the ticket and the IR response, never a verification (P1-1).
+//! * CQ-DEFER (D′): `begin` hands the query over as a *held* one
+//!   (`begin_deferred`), and releases it only once its own audit commits are
+//!   over (`DeferredRelease`); a worker prepared or queried before them would
+//!   drift. The Graph therefore always arrives after Raw-ready (graph-late).
 //!
 //! The response assembly (path additions, the Graph-only row, click-time
 //! requalification) is `graph_response.rs`; this module stops at "the Graph is
@@ -123,11 +127,12 @@ pub(super) struct LeaseProbe {
 }
 
 impl GraphState {
-    /// Hands the query to the owner and keeps the answer. Never waits and
-    /// reads no database. Returns the `graph` field of the `begin` response.
+    /// Hands the query to the owner, held until `release_after_own_commits`,
+    /// and keeps the answer. Never waits and reads no database. Returns the
+    /// `graph` field of the `begin` response.
     pub(super) fn start(&self, state: &Arc<AppState>, query: GraphQuery) -> Value {
         let edge_epoch = state.nir1_graph.edge_epoch();
-        let begin = state.nir1_graph.begin(state, query);
+        let begin = state.nir1_graph.begin_deferred(state, query);
         let (slot, wire) = match begin {
             GraphBegin::Pending(ticket) => (GraphSlot::Pending(ticket), graph_pending()),
             // A cache hit also answers `pending`: it is re-verified in the
@@ -165,6 +170,19 @@ impl GraphState {
 
     pub(super) fn set_dense_scene_ids(&self, ids: HashSet<String>) {
         lock_inner(&self.inner).dense_scene_ids = Some(ids);
+    }
+
+    /// CQ-DEFER: the begin's own commits are over; the owner may prepare for
+    /// the held query now. Like `declare`, the owner is called outside the
+    /// lock. Wait-free; does nothing unless a query is held for this slot.
+    pub(super) fn release_after_own_commits(&self) {
+        let release = match &lock_inner(&self.inner).slot {
+            GraphSlot::Pending(ticket) => Some(ticket.release_handle()),
+            _ => None,
+        };
+        if let Some(release) = release {
+            release.release_after_own_commits();
+        }
     }
 
     /// Cancels a running query. The ticket is finished outside the lock: its
@@ -423,6 +441,35 @@ pub(super) fn begin_graph<T: LeaseEnd>(
         lease.data.graph().cancel();
     }
     wire
+}
+
+/// CQ-DEFER: the begin's hold on its Graph query (DR-CQD-6). Made right after
+/// `begin_graph`; `release` once the begin's outcome is `Ok` (every commit of
+/// the begin is over and no participant read is open). Every other exit (an
+/// `Err`, an early return, an unwind) drops it, which cancels the held query,
+/// so a begin never leaves a hold behind.
+pub(super) struct DeferredRelease<T: LeaseEnd> {
+    lease: Option<LeaseOf<T>>,
+}
+
+impl<T: LeaseEnd> DeferredRelease<T> {
+    pub(super) fn new(lease: Option<LeaseOf<T>>) -> Self {
+        Self { lease }
+    }
+
+    pub(super) fn release(mut self) {
+        if let Some(lease) = self.lease.take() {
+            lease.data.graph().release_after_own_commits();
+        }
+    }
+}
+
+impl<T: LeaseEnd> Drop for DeferredRelease<T> {
+    fn drop(&mut self) {
+        if let Some(lease) = self.lease.take() {
+            lease.data.graph().cancel();
+        }
+    }
 }
 
 fn lease_probe(lease: &Lease) -> LeaseProbe {

@@ -69,7 +69,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/Cargo.toml",
-      "sha256": "4933c58d5a5eecd3cd8ccf632fe47ddce9a6c1fe58aab0c921076eb038b8e992"
+      "sha256": "844f8a6f18354f38f55b6bee05248bfbc6dc6970a8ab770f6f2a5b8add1122fd"
     },
     {
       "path": "src-tauri/crates/grimodex-lint/Cargo.toml",

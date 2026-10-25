@@ -93,6 +93,14 @@ fn evidence_run(repo_root: &Path, out_dir: Option<PathBuf>) -> Result<EvidenceOu
         let hold_path = output::write_hold(&out_dir, head.as_deref(), &reasons)?;
         return Ok(EvidenceOutcome::Held { hold_path, reasons });
     }
+    // Every variant's setup shapes before Native runs on any of them: a shape
+    // error found in a later variant would otherwise come after Native ran on
+    // the earlier ones (DR-DPH-113).
+    if let Err(error) = fixture::validate_fixture_setup(&fixture) {
+        let reasons = vec![format!("{error:#}")];
+        let hold_path = output::write_hold(&out_dir, head.as_deref(), &reasons)?;
+        return Ok(EvidenceOutcome::Held { hold_path, reasons });
+    }
     let outcomes = run_all_variants(&fixture)?;
     let receipts = output::assemble(&fixture, &snapshot, &outcomes, false)?;
     let (receipt_path, setup_receipt_path) = output::write_receipts(&out_dir, &receipts)?;
