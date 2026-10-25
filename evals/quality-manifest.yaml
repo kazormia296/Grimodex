@@ -573,6 +573,7 @@ requirements:
       - src/features/ai-policy/useAiGate.egressClosure.test.tsx
       - src/features/layout/adaptive/MobileWorkspaceSurfaces.egress.test.tsx
       - src/features/profile-egress/profileEgressClosure.test.ts
+      - src/features/profile-egress/ProfileEgressStatusIndicator.closure.test.tsx
       - src/lib/tauri.egressClosure.test.ts
       - src/features/chat/components/ChatInput.editClosed.test.tsx
       - src/features/chat/components/ChatInput.nonSceneEdit.test.tsx

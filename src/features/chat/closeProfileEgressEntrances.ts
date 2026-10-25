@@ -14,9 +14,20 @@ import { useAiSettingsStore } from "./store";
  * 見える control と chat の会話の作成は `useAiSettingsStore` の `profileEgressClosed`
  * （各起動時の chunk が既に import している store。新しい import と export を足さない）。
  * どちらもここで同時に立てる（R23）。
+ *
+ * 一方向は実行時にも守る（DR-DA2B-R27）：global は書換えも削除も再定義もできない
+ * property として 1 回だけ置き、store の欄は true にしかしない。2 回目以降の呼出しと、
+ * React の StrictMode の effect の再実行は何も戻さない。
  */
 export function closeProfileEgressEntrances(): void {
-  globalThis.__grimodexProfileEgressLocalRefusal = profileEgressLocalRefusal;
+  if (globalThis.__grimodexProfileEgressLocalRefusal === undefined) {
+    Object.defineProperty(globalThis, "__grimodexProfileEgressLocalRefusal", {
+      value: profileEgressLocalRefusal,
+      writable: false,
+      configurable: false,
+      enumerable: false,
+    });
+  }
   if (useAiSettingsStore.getState().profileEgressClosed !== true) {
     useAiSettingsStore.setState({ profileEgressClosed: true });
   }

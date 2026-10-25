@@ -82,8 +82,11 @@ export function rendererDeniedCommandsForTest(): ReadonlyArray<
   return RENDERER_DENIED_COMMANDS;
 }
 
-/** 試験だけが使う。process の中の閉を戻す。 */
+/**
+ * 試験だけが使う。台帳の遅延の Map を捨てる。閉（global）は書き手が戻せない property
+ * として置くので戻さない（DR-DA2B-R27）。開の場合を確かめる試験は、閉にする試験より前に
+ * 置くか、別の file にする（vitest は file ごとに global を分ける）。
+ */
 export function resetProfileEgressClosureForTest(): void {
-  globalThis.__grimodexProfileEgressLocalRefusal = undefined;
   deniedRoutes = null;
 }

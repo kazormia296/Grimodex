@@ -422,6 +422,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/layout/adaptive/MobileWorkspaceSurfaces.egress.test.tsx",
         "src/features/profile-egress/ProfileEgressStatusIndicator.test.tsx",
         "src/features/profile-egress/profileEgressClosure.test.ts",
+        "src/features/profile-egress/ProfileEgressStatusIndicator.closure.test.tsx",
         "src/lib/tauri.egressClosure.test.ts",
         "src/features/chat/useChatMessageActions.record.test.ts",
         "src/features/concurrency/externalWriteFeed.test.ts",

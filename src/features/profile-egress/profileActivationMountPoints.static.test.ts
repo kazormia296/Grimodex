@@ -256,11 +256,21 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
       "src/features/profile-egress/profileEgressClosure.ts",
       "src/lib/tauri.ts",
     ]);
+    // Set once as a property that cannot be written, deleted or redefined
+    // (one-way, DR-DA2B-R27); nothing assigns it.
+    const writer = code(
+      read("src/features/chat/closeProfileEgressEntrances.ts"),
+    );
     expect(
-      code(read("src/features/chat/closeProfileEgressEntrances.ts")).match(
-        /__grimodexProfileEgressLocalRefusal\s*=/g,
+      writer.match(
+        /Object\.defineProperty\(globalThis, "__grimodexProfileEgressLocalRefusal", \{\s*value: profileEgressLocalRefusal,\s*writable: false,\s*configurable: false,/g,
       )?.length,
     ).toBe(1);
+    for (const file of globalUsers) {
+      expect(code(read(file)), file).not.toMatch(
+        /__grimodexProfileEgressLocalRefusal\s*=(?!=)/,
+      );
+    }
   });
 
   it("reads the store's closure only under the constant, in the listed files", () => {

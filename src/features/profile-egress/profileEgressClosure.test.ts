@@ -68,7 +68,6 @@ describe("the renderer's local refusal before invoke (DR-DA2B-R22)", () => {
   it("refuses each command with the text Main's restricted gate throws", async () => {
     const gate = await createProfileEgressGate(restrictedBackend());
     expect(gate.restricted).toBe(true);
-    closeProfileEgressEntrances();
     for (const [command] of rendererDeniedCommandsForTest()) {
       expect(profileEgressLocalRefusal(command), command).toBe(
         mainRefusal(gate, command),
@@ -76,17 +75,7 @@ describe("the renderer's local refusal before invoke (DR-DA2B-R22)", () => {
     }
   });
 
-  it("the writer closes both homes of the closure at once", () => {
-    expect(globalThis.__grimodexProfileEgressLocalRefusal).toBeUndefined();
-    closeProfileEgressEntrances();
-    expect(globalThis.__grimodexProfileEgressLocalRefusal).toBe(
-      profileEgressLocalRefusal,
-    );
-    expect(useAiSettingsStore.getState().profileEgressClosed).toBe(true);
-  });
-
   it("never refuses the stop commands, the internal ones or an unknown one", () => {
-    closeProfileEgressEntrances();
     for (const command of [
       ...d2aRouteLedgersForTest().stop,
       ...d2aRouteLedgersForTest().internal,
@@ -100,7 +89,6 @@ describe("the renderer's local refusal before invoke (DR-DA2B-R22)", () => {
   });
 
   it("is a D2a refusal that the displays show as the generic text, never the marker", () => {
-    closeProfileEgressEntrances();
     const refusal = profileEgressLocalRefusal("send_inline_ai_stream");
     expect(refusal).not.toBeNull();
     expect(isD2aEgressDenied(new Error(refusal!))).toBe(true);
@@ -129,5 +117,15 @@ describe("the renderer's local refusal before invoke (DR-DA2B-R22)", () => {
         expect(line).not.toMatch(/\bnew\b|\w\(/);
       }
     }
+  });
+
+  // Last in the file: the global stays set (one-way, DR-DA2B-R27).
+  it("the writer closes both homes of the closure at once", () => {
+    expect(globalThis.__grimodexProfileEgressLocalRefusal).toBeUndefined();
+    closeProfileEgressEntrances();
+    expect(globalThis.__grimodexProfileEgressLocalRefusal).toBe(
+      profileEgressLocalRefusal,
+    );
+    expect(useAiSettingsStore.getState().profileEgressClosed).toBe(true);
   });
 });
