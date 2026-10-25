@@ -10,6 +10,7 @@ import {
   isTerminalRestoreError,
   restoreBackupWithWorkspaceAuthority,
 } from "../backupRestoreAuthority";
+import { reloadRendererAfterReleasingGpuSurfaces } from "@/lib/rendererReload";
 
 /** 復元に対応する形式（無圧縮 .db / gzip .db.gz）。 */
 function isSupportedFormat(format: string): boolean {
@@ -34,7 +35,8 @@ export function backupRestoreTestId(fileName: string): string {
  * バックアップ一覧＋復元 UI（backup restore Phase 1）。設定 > データ >
  * バックアップ セクションに埋め込む。復元は破壊的（ワークスペース全体を置換）
  * なので 2 クリック確認とし、成功後は ProjectSnapshotModal と同様に
- * `window.location.reload()` で全状態を作り直す。
+ * reload で全状態を作り直す（WebGL の面を外してから reload する。
+ * `reloadRendererAfterReleasingGpuSurfaces`）。
  */
 export function BackupRestoreSection() {
   const { t } = useTranslation();
@@ -93,7 +95,7 @@ export function BackupRestoreSection() {
       await restoreBackupWithWorkspaceAuthority(b.fileName);
       toast.success(t("settings.data.restoreSuccess"));
       // DB を丸ごと差し替えたので全フロント状態を捨てて作り直す。
-      window.location.reload();
+      void reloadRendererAfterReleasingGpuSurfaces();
     } catch (err) {
       debugLog.error("backup-restore", "restore failed", errorDetail(err));
       toast.error(t("settings.data.restoreFail"));
@@ -103,7 +105,7 @@ export function BackupRestoreSection() {
       // identityを再開せずbootstrap open_workspaceへ戻す。それ以外の事前失敗だけが
       // 旧セッションを継続できる。
       if (isTerminalRestoreError(err)) {
-        window.location.reload();
+        void reloadRendererAfterReleasingGpuSurfaces();
       }
     }
   }

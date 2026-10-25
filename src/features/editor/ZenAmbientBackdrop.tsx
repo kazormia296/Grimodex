@@ -5,6 +5,7 @@ import {
   ZEN_AMBIENT_DURATIONS,
   useReducedMotion,
 } from "@/lib/animation";
+import { useRendererReloadStore } from "@/lib/rendererReload";
 import {
   ZenShaderSurface,
   type ZenShaderRendererStatus,
@@ -52,6 +53,12 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
   const reduced = useReducedMotion();
   const windowActive = useWindowActive();
   const config = useZenShaderConfig();
+  // A pending renderer reload removes the live WebGL canvas first, so the
+  // compositor's last frame of this document never references its drawing
+  // buffer after the document is torn down (see rendererReload.ts).
+  const gpuSurfacesReleased = useRendererReloadStore(
+    (s) => s.gpuSurfacesReleased,
+  );
   // The WebGL2 probe is deferred past first paint; until it answers, keep the
   // cheap static gradient and report "initializing".
   const webGlSupport = useZenWebGl2Support(config.enabled);
@@ -107,10 +114,11 @@ export function ZenAmbientBackdrop({ active }: ZenAmbientBackdropProps) {
         ease: EASINGS.easeOut,
       }}
     >
-      {config.enabled && webGlSupport === "pending" && (
-        <ZenStaticBackdrop opacity={config.opacity} />
-      )}
-      {config.enabled && webGlSupport !== "pending" && (
+      {config.enabled &&
+        (webGlSupport === "pending" || gpuSurfacesReleased) && (
+          <ZenStaticBackdrop opacity={config.opacity} />
+        )}
+      {config.enabled && webGlSupport !== "pending" && !gpuSurfacesReleased && (
         <ZenShaderSurface
           config={config}
           playing={playing}
