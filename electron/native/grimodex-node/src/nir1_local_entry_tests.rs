@@ -1531,3 +1531,47 @@ fn e10_writing_and_review_reach_the_recorder_once_and_survive_a_cold_reopen() {
     assert_eq!(page["total"], 2, "{page}");
     assert_eq!(page["rows"][1]["text"], "Hello");
 }
+
+/// E8d (K4/3 順序): the owner is stopped first, without the database, even
+/// when the capture writer's entry is refused (here, a workspace shutdown was
+/// requested): the cancel is not a success, nothing is created or sent, and a
+/// retry after the refusal clears finishes the capture.
+#[test]
+fn e8d_the_owner_stops_even_when_the_capture_writer_cannot_run() {
+    let (gate, control) = pause(1);
+    let rig = Rig::with_hooks(
+        hold_script(),
+        Nir1LocalEntryTestHooks {
+            attempt_probe: Some(Arc::new(move |seen| {
+                if seen == Nir1LocalAttemptProbe::AfterPrepare {
+                    gate.hit();
+                }
+            })),
+            ..Default::default()
+        },
+    );
+    rig.open_gate();
+    let conversation = rig.create("writing");
+    rig.capture(&conversation, "e8d");
+    let handle = rig.started("writing", &conversation);
+    control.wait("AfterPrepare");
+    rig.state()
+        .workspace_shutdown_requested
+        .store(true, Ordering::Release);
+    assert_eq!(
+        reason(&rig.cancel(&handle)),
+        "NIR1_LOCAL_CANCEL_CAPTURE_FAILED"
+    );
+    control.release();
+    rig.wait_final(&handle);
+    let view = rig.continue_as(&rig.caller(), &handle);
+    assert_eq!(view["state"], "cancelled", "{view}");
+    assert_eq!(rig.attempts(), 0);
+    assert_eq!(rig.recorder.connections(), 0);
+    assert_eq!(rig.capture_state("e8d"), "current");
+    rig.state()
+        .workspace_shutdown_requested
+        .store(false, Ordering::Release);
+    assert_eq!(rig.cancel(&handle)["status"], "ok");
+    assert_eq!(rig.capture_state("e8d"), "cancelled");
+}
