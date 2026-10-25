@@ -18,8 +18,10 @@
 //      after, checked by `assertDeclarationCurrent`.
 //   4. the AB/BA schedule (warm-up 5, measured 30): before each R+IR+Graph
 //      sample the evaluation record log and the next-query cache are cleared,
-//      the owner is given a bounded wait for a READY slot, and the A3 record
-//      is read on its own read-only connection.
+//      the owner is given a bounded wait for the D′ start (an empty slot, an
+//      empty cache, the rebuild interval since the last seeded sample;
+//      DR-CP4-S1C2-23), and the A3 record is read on its own read-only
+//      connection.
 //   5. the run receipt (`nir1-cp4-run-receipt/1`, `preview: true`), checked
 //      by `validateCp4Receipt`, with the egress and window samples.
 // A preview is never a formal CP-4 measurement; the runner stops after it.
@@ -46,6 +48,7 @@ import {
   MAINTENANCE_MODES,
   assembleRunReceipt,
   measurementSeamEnv,
+  quietAtStart,
   runSchedule,
   sampleRow,
 } from "./run-sample.mjs";
@@ -68,7 +71,7 @@ const BODY_SEAM = Object.freeze({
   nonceEnv: "GRIMODEX_BODY_DECLARATION_CI_NONCE",
   receiptRoot: ".grimodex-body-declaration-ci-receipts",
 });
-const READY_WAIT_MS = 3_000;
+const QUIET_WAIT_MS = 3_000;
 const DEFAULT_ADDON = "electron/native/grimodex-node/grimodex-node.node";
 
 function git(args) {
@@ -150,28 +153,50 @@ async function readSeamReceipt(userData, nonce) {
   return { sha256: sha256(bytes), value: JSON.parse(bytes) };
 }
 
-/** Bounded wait for the owner's READY slot before one Graph sample. */
-async function waitReady(session, lastReady) {
+/**
+ * CQ-DEFER（D′、DR-CP4-S1C2-23）：Graph の sample の前の有界の待ち。D′ では
+ * Related Scenes の query は READY を残さないので、slot が `empty` に戻り
+ * （前の保留つきの session の終わり）、next-query cache が空で、前の seed つきの
+ * sample の終わり（`lastSeededEndedAt`、null なら問わない）から owner の
+ * rebuild の間隔が経つのを待つ。前の sample の `unused` の settle が遅れて cache を
+ * 埋めることがあるので、slot が `empty` の間は cache を毎回空にする。
+ */
+async function waitQuiet(session, lastSeededEndedAt) {
   const started = Date.now();
   let status;
-  let diagnostics;
-  while (Date.now() - started < READY_WAIT_MS) {
+  let cacheCleared = 0;
+  let quiet = false;
+  while (Date.now() - started < QUIET_WAIT_MS) {
     status = await json(session.addon("nir1GraphEvalStatus"));
-    diagnostics = await json(session.addon("nir1GraphEvalDiagnostics"));
-    if (
-      status.owner?.slot === "ready" &&
-      (diagnostics.preparesReady ?? 0) > lastReady
-    )
-      break;
+    if (status.owner?.slot === "empty" && status.owner?.cacheOccupied) {
+      cacheCleared += (
+        await json(session.addon("nir1GraphEvalClearNextQueryCache"))
+      ).cleared
+        ? 1
+        : 0;
+      status = await json(session.addon("nir1GraphEvalStatus"));
+    }
+    quiet = quietAtStart({
+      slot: status.owner?.slot ?? null,
+      cacheOccupied: status.owner?.cacheOccupied,
+      sinceLastSeededMs:
+        lastSeededEndedAt === null ? null : Date.now() - lastSeededEndedAt,
+    });
+    if (quiet) break;
     await sleep(5);
   }
+  const diagnostics = await json(session.addon("nir1GraphEvalDiagnostics"));
   return {
+    precondition: "dprime-empty-slot",
     waitedMs: Date.now() - started,
     slot: status?.owner?.slot ?? null,
+    cacheOccupied: status?.owner?.cacheOccupied ?? null,
+    cacheCleared,
+    sinceLastSeededMs:
+      lastSeededEndedAt === null ? null : Date.now() - lastSeededEndedAt,
     preparesReady: diagnostics?.preparesReady ?? null,
-    reachedNewReady:
-      status?.owner?.slot === "ready" &&
-      (diagnostics?.preparesReady ?? 0) > lastReady,
+    deferredReleased: diagnostics?.deferredReleased ?? null,
+    reachedQuiet: quiet,
   };
 }
 
@@ -403,7 +428,8 @@ async function main() {
           seed,
         },
       );
-      const ready = await waitReady(session, -1);
+      // D′：保留つきの session が終わる（slot が empty に戻る）まで待つ。
+      const ready = await waitQuiet(session, null);
       diagnostics = await json(session.addon("nir1GraphEvalDiagnostics"));
       probes.push({
         atMs: Date.now() - v10Started,
@@ -416,10 +442,10 @@ async function main() {
       });
       if ((diagnostics.preparesReady ?? 0) < 1) await sleep(1_000);
     }
-    const readyAfterProbe = await waitReady(session, -1);
+    const quietAfterProbe = await waitQuiet(session, null);
     checks.v10Ready = {
       probes,
-      after: readyAfterProbe,
+      after: quietAfterProbe,
       diagnostics,
       status: await json(session.addon("nir1GraphEvalStatus")),
     };
@@ -519,12 +545,12 @@ async function main() {
     checks.rowCountsBefore = readRowCounts(dbPath, WRITER_TABLES);
     dataVersion = openDataVersionProbe(dbPath);
     run = { startedAtMs: Date.now() };
-    let lastReady = readyAfterProbe.preparesReady ?? -1;
+    let lastSeededEndedAt = Date.now();
     for (const slot of runSchedule()) {
       if (slot.arm === "graph") {
         await session.addon("nir1GraphEvalClearSamples");
         await session.addon("nir1GraphEvalClearNextQueryCache");
-        const readyWait = await waitReady(session, lastReady);
+        const readyWait = await waitQuiet(session, lastSeededEndedAt);
         const dvAtReady = dataVersion.read();
         const a3 = await json(
           session.addon(
@@ -544,13 +570,13 @@ async function main() {
           },
         );
         const dvAfterQuery = dataVersion.read();
+        lastSeededEndedAt = Date.now();
         const records = (await json(session.addon("nir1GraphEvalSamples")))
           .records;
         if (records.length !== 1)
           throw new Error(
             `[artifact] expected one Native begin record per sample, saw ${records.length}`,
           );
-        lastReady = records[0].startSlot?.preparesReady ?? lastReady;
         samples.push(
           sampleRow({
             variantKey: variant.key,

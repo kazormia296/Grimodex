@@ -13,6 +13,7 @@ import {
   graphRecord,
   measurementSeamEnv,
   previewSummary,
+  quietAtStart,
   runSchedule,
   sampleRow,
   scheduledArms,
@@ -524,4 +525,27 @@ test("an assembled dev preview receipt passes the §7.2 validator with recompute
       /aggregates differ/u.test(error),
     ),
   );
+});
+
+test("D′: a Graph sample starts on an empty slot, an empty cache and after the rebuild interval", () => {
+  const quiet = {
+    slot: "empty",
+    cacheOccupied: false,
+    sinceLastSeededMs: 1_000,
+  };
+  assert.equal(quietAtStart(quiet), true);
+  assert.equal(quietAtStart({ ...quiet, sinceLastSeededMs: null }), true);
+  for (const slot of [
+    "deferred",
+    "preparing",
+    "in-use",
+    "ready",
+    "suspended",
+    "retiring",
+    null,
+  ])
+    assert.equal(quietAtStart({ ...quiet, slot }), false, slot);
+  assert.equal(quietAtStart({ ...quiet, cacheOccupied: true }), false);
+  assert.equal(quietAtStart({ ...quiet, cacheOccupied: undefined }), false);
+  assert.equal(quietAtStart({ ...quiet, sinceLastSeededMs: 999 }), false);
 });

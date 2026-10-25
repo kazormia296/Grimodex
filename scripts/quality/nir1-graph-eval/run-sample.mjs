@@ -78,6 +78,27 @@ export function measurementSeamEnv({
 }
 
 /** The arms of each repeat, AB then BA (K6/2 step 2). */
+/**
+ * CQ-DEFER（D′、DR-CP4-S1C2-23）：Graph の sample の前の owner の前提。D′ の
+ * Related Scenes の query は READY を残さない（保留つきの session は query の
+ * 後に worker を退役させて slot を `empty` に戻す）ので、D′ 以前の「slot が新しい
+ * READY」は成り立たない。代わりに、slot が `empty`（保留も、保留つきの session も、
+ * Suspended も無い）、next-query cache が空、前の seed つきの sample の終わりから
+ * owner の `rebuild_min_interval`（既定 1 s）以上経っていること（保留の release の
+ * 後の rebuild の窓が 0 になり、prepare が release ですぐ始まる。製品の普通の場合）
+ * を前提にする。
+ */
+export const OWNER_REBUILD_MIN_INTERVAL_MS = 1_000;
+
+export function quietAtStart({ slot, cacheOccupied, sinceLastSeededMs }) {
+  return (
+    slot === "empty" &&
+    cacheOccupied === false &&
+    (sinceLastSeededMs === null ||
+      sinceLastSeededMs >= OWNER_REBUILD_MIN_INTERVAL_MS)
+  );
+}
+
 export function scheduledArms(repeat) {
   return repeat % 2 === 0 ? ["hybrid", "graph"] : ["graph", "hybrid"];
 }
