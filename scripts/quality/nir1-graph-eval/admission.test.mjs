@@ -1,8 +1,11 @@
-// Git facts are read from a throwaway repository; nothing reaches a network.
+// Git facts are read from throwaway repositories; nothing reaches a network.
+// The frozen freeze record and G-01 fixture bytes are copied only so that
+// their digests can be bound (they are never a Graph input).
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import process from "node:process";
-import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -10,16 +13,32 @@ import {
   GRAPH_ARM_SCOPES,
   GRAPH_ARM_WIRED,
   assertGraphArmRequestable,
+  assertObservationPrepAdmits,
 } from "../nir1-retrieval/contract.mjs";
 import {
-  assertDefaultAddonIsNotEvaluation,
+  assertDefaultAddonIsProduct,
   collectObservationPrepFacts,
   readK62FreezeHead,
+  readNetNamespaces,
 } from "./admission.mjs";
-import { K62_FREEZE } from "./constants.mjs";
+import {
+  FROZEN_FIXTURE_SHA256,
+  G01_FIXTURE,
+  GRAPH_CASE_FREEZE,
+  K62_FREEZE,
+  OBSERVATION_PREP_RECORD_PATH,
+  OBSERVATION_PREP_RECORD_SCHEMA,
+} from "./constants.mjs";
+import {
+  H64,
+  candidate,
+  evalReceipt,
+  productReceipt,
+} from "./test-support.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
-const RECORD = "evals/nir1-graph/observation-prep-freeze.v1.json";
+const TRACE = "evals/nir1-graph/trace-editing.v1.json";
+const FIXTURE = "evals/nir1-graph/g05-current-revision-freshness.v1.json";
 
 function git(cwd, ...args) {
   return execFileSync("git", args, {
@@ -37,155 +56,197 @@ function git(cwd, ...args) {
   }).trim();
 }
 
-async function commitFile(cwd, file, text, message) {
+async function put(cwd, file, bytes) {
   await mkdir(path.dirname(path.join(cwd, file)), { recursive: true });
-  await writeFile(path.join(cwd, file), text);
+  await writeFile(path.join(cwd, file), bytes);
   git(cwd, "add", "--", file);
+}
+
+function commit(cwd, message) {
   git(cwd, "commit", "-q", "--no-gpg-sign", "-m", message);
   return git(cwd, "rev-parse", "HEAD");
 }
 
-function evalReceipt(head) {
-  return {
-    schemaVersion: "nir1-graph-eval-build/1",
-    status: "passed",
-    standardBuild: false,
-    evaluationBuild: true,
-    sourceUnchanged: true,
-    candidate: {
-      worktreeClean: true,
-      resolvedBaseSha: head,
-      resolvedHeadSha: head,
-      resolvedHeadTreeSha: head,
-      currentHeadSha: head,
-    },
-    features: ["nir1-graph-eval"],
-    capabilities: { nir1GraphEval: true },
-    artifacts: {
-      ".artifacts/cp4/eval-build/grimodex-node.node": "e".repeat(64),
-      ".artifacts/cp4/eval-build/nir1-c-query-worker": "f".repeat(64),
-    },
-    worker: {
-      path: ".artifacts/cp4/eval-build/nir1-c-query-worker",
-      sha256: "f".repeat(64),
-    },
-  };
+function record(overrides = {}) {
+  return `${JSON.stringify({
+    schemaVersion: OBSERVATION_PREP_RECORD_SCHEMA,
+    graphRuntimeObservedBeforeFreeze: false,
+    k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
+    graphCaseFreeze: { ...GRAPH_CASE_FREEZE },
+    g01Fixture: { path: G01_FIXTURE.path, sha256: G01_FIXTURE.sha256 },
+    boundFiles: { [TRACE]: sha256Of("trace\n") },
+    ...overrides,
+  })}\n`;
 }
 
-test("N-1: observation-prep facts gate a frozen fixture end to end", async () => {
+async function repository() {
   const repo = await mkdtemp(path.join(tmpdir(), "cp4-prep-"));
+  git(repo, "init", "-q", "-b", "main");
+  await put(
+    repo,
+    GRAPH_CASE_FREEZE.path,
+    await readFile(path.join(ROOT, GRAPH_CASE_FREEZE.path)),
+  );
+  await put(
+    repo,
+    G01_FIXTURE.path,
+    await readFile(path.join(ROOT, G01_FIXTURE.path)),
+  );
+  await put(repo, TRACE, "trace\n");
+  const base = commit(repo, "frozen material");
+  return { repo, base };
+}
+
+const sha256Of = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+function graphCase(head, observationPrep) {
+  const tree = head;
+  return assertGraphArmRequestable(GRAPH_ARM_WIRED, {
+    scope: GRAPH_ARM_SCOPES.graphCase,
+    buildReceipt: evalReceipt({ candidate: candidate(head, tree) }),
+    productReceipt: productReceipt({ candidate: candidate(head, tree) }),
+    fixtures: [{ path: FIXTURE, sha256: FROZEN_FIXTURE_SHA256[FIXTURE] }],
+    observationPrep,
+  });
+}
+
+test("N-1 / P1-1 / P2-1: observation-prep facts gate a frozen fixture end to end", async () => {
+  const { repo } = await repository();
   try {
-    git(repo, "init", "-q", "-b", "main");
-    const prep = await commitFile(
+    const traceDigest = sha256Of("trace\n");
+    await put(
       repo,
-      RECORD,
-      '{"v":1}\n',
-      "observation prep",
+      OBSERVATION_PREP_RECORD_PATH,
+      record({ boundFiles: { [TRACE]: traceDigest } }),
     );
+    const prep = commit(repo, "observation prep");
     git(repo, "update-ref", "refs/remotes/origin/master", prep);
-    const head = await commitFile(
-      repo,
-      "candidate.txt",
-      "candidate\n",
-      "candidate",
-    );
+    await put(repo, "candidate.txt", "candidate\n");
+    const head = commit(repo, "candidate");
     const facts = collectObservationPrepFacts({
       root: repo,
       commit: prep,
       candidateHead: head,
-      freezeRecordPath: RECORD,
     });
-    assert.equal(facts.ancestorOfCandidateHead, true);
-    assert.deepEqual(facts.remoteRefs, ["refs/remotes/origin/master"]);
-    assert.equal(
-      facts.freezeRecordSha256AtCommit,
-      facts.freezeRecordSha256AtHead,
-    );
-    const request = (observationPrep) =>
-      assertGraphArmRequestable(GRAPH_ARM_WIRED, {
-        scope: GRAPH_ARM_SCOPES.graphCase,
-        buildReceipt: evalReceipt(head),
-        fixturePaths: [
-          "evals/nir1-graph/g05-current-revision-freshness.v1.json",
-        ],
-        observationPrep,
-      });
-    assert.equal(request(facts).fixtureClass, "frozen");
-
-    // Not on any remote-tracking ref.
-    git(repo, "checkout", "-q", "-b", "local-only");
-    const local = await commitFile(repo, "local.txt", "x\n", "local prep");
-    const localHead = await commitFile(repo, "local2.txt", "y\n", "local head");
-    const localFacts = collectObservationPrepFacts({
-      root: repo,
-      commit: local,
-      candidateHead: localHead,
-      freezeRecordPath: RECORD,
-    });
-    assert.deepEqual(localFacts.remoteRefs, []);
+    assert.equal(facts.recordPath, OBSERVATION_PREP_RECORD_PATH);
+    assert.equal(facts.recordIntroducedByCommit, true);
+    assert.equal(facts.onRemoteRef, true);
+    assert.equal(facts.remoteRef, "refs/remotes/origin/master");
+    assert.equal(graphCase(head, facts).fixtureClass, "frozen");
     assert.throws(
       () =>
-        assertGraphArmRequestable(GRAPH_ARM_WIRED, {
-          scope: GRAPH_ARM_SCOPES.graphCase,
-          buildReceipt: evalReceipt(localHead),
-          fixturePaths: [
-            "evals/nir1-graph/g05-current-revision-freshness.v1.json",
-          ],
-          observationPrep: localFacts,
+        collectObservationPrepFacts({
+          root: repo,
+          commit: prep,
+          candidateHead: head,
+          freezeRecordPath: GRAPH_CASE_FREEZE.path,
         }),
-      /remote-tracking ref/,
+      /unsupported option/,
     );
 
-    // The freeze record changed after the pre-observation commit.
-    git(repo, "checkout", "-q", "main");
-    const edited = await commitFile(repo, RECORD, '{"v":2}\n', "edit record");
-    const editedFacts = collectObservationPrepFacts({
+    // A later commit does not introduce the record.
+    const later = facts.candidateHead;
+    git(repo, "update-ref", "refs/remotes/origin/master", later);
+    const laterFacts = collectObservationPrepFacts({
+      root: repo,
+      commit: later,
+      candidateHead: later,
+    });
+    assert.equal(laterFacts.recordIntroducedByCommit, false);
+    assert.equal(laterFacts.onRemoteRef, true);
+    assert.throws(() => graphCase(later, laterFacts), /did not introduce/);
+
+    // On another remote-tracking ref only.
+    git(repo, "update-ref", "refs/remotes/origin/master", facts.commit + "~1");
+    git(repo, "update-ref", "refs/remotes/fork/feature", prep);
+    const forkFacts = collectObservationPrepFacts({
       root: repo,
       commit: prep,
-      candidateHead: edited,
-      freezeRecordPath: RECORD,
+      candidateHead: head,
     });
-    assert.notEqual(
-      editedFacts.freezeRecordSha256AtCommit,
-      editedFacts.freezeRecordSha256AtHead,
+    assert.equal(forkFacts.onRemoteRef, false);
+    assert.throws(
+      () => graphCase(head, forkFacts),
+      /not on refs\/remotes\/origin\/master/,
     );
+    git(repo, "update-ref", "refs/remotes/origin/master", prep);
+
+    // A bound file changed after the pre-observation commit.
+    await put(repo, TRACE, "trace v2\n");
+    const edited = commit(repo, "edit trace");
     assert.throws(
       () =>
-        assertGraphArmRequestable(GRAPH_ARM_WIRED, {
-          scope: GRAPH_ARM_SCOPES.graphCase,
-          buildReceipt: evalReceipt(edited),
-          fixturePaths: [
-            "evals/nir1-graph/g05-current-revision-freshness.v1.json",
-          ],
-          observationPrep: editedFacts,
-        }),
+        graphCase(
+          edited,
+          collectObservationPrepFacts({
+            root: repo,
+            commit: prep,
+            candidateHead: edited,
+          }),
+        ),
+      /differs from the record/,
+    );
+    // The record itself changed.
+    await put(repo, TRACE, "trace\n");
+    await put(
+      repo,
+      OBSERVATION_PREP_RECORD_PATH,
+      record({ boundFiles: { [TRACE]: traceDigest }, note: "x" }),
+    );
+    const rewritten = commit(repo, "rewrite record");
+    assert.throws(
+      () =>
+        graphCase(
+          rewritten,
+          collectObservationPrepFacts({
+            root: repo,
+            commit: prep,
+            candidateHead: rewritten,
+          }),
+        ),
       /freeze record differs/,
-    );
-
-    // A candidate that does not descend from the pre-observation commit.
-    git(repo, "checkout", "-q", "--orphan", "unrelated");
-    git(repo, "rm", "-rq", "--cached", ".");
-    const unrelated = await commitFile(repo, RECORD, '{"v":1}\n', "unrelated");
-    const unrelatedFacts = collectObservationPrepFacts({
-      root: repo,
-      commit: prep,
-      candidateHead: unrelated,
-      freezeRecordPath: RECORD,
-    });
-    assert.equal(unrelatedFacts.ancestorOfCandidateHead, false);
-    assert.throws(
-      () =>
-        assertGraphArmRequestable(GRAPH_ARM_WIRED, {
-          scope: GRAPH_ARM_SCOPES.graphCase,
-          buildReceipt: evalReceipt(unrelated),
-          fixturePaths: ["evals/nir1-g01/fixture.v1.json"],
-          observationPrep: unrelatedFacts,
-        }),
-      /not an ancestor/,
     );
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
+});
+
+test("P1-1: a record that does not bind the frozen digests is refused", async () => {
+  const { repo } = await repository();
+  try {
+    await put(
+      repo,
+      OBSERVATION_PREP_RECORD_PATH,
+      record({ graphRuntimeObservedBeforeFreeze: true }),
+    );
+    const prep = commit(repo, "observed record");
+    git(repo, "update-ref", "refs/remotes/origin/master", prep);
+    assert.throws(
+      () =>
+        graphCase(
+          prep,
+          collectObservationPrepFacts({
+            root: repo,
+            commit: prep,
+            candidateHead: prep,
+          }),
+        ),
+      /graphRuntimeObservedBeforeFreeze/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("P1-1: the reviewer's reproduction (a commit without the record) is refused", () => {
+  const head = git(ROOT, "rev-parse", "HEAD");
+  const facts = collectObservationPrepFacts({
+    root: ROOT,
+    commit: "HEAD",
+    candidateHead: "HEAD",
+  });
+  assert.equal(facts.recordIntroducedByCommit, false);
+  assert.throws(() => assertObservationPrepAdmits(facts, head), /\[precheck\]/);
 });
 
 test("N-4: the K6/2 freeze head is read from the freeze commit or no receipt is written", (t) => {
@@ -212,20 +273,69 @@ test("N-4: the K6/2 freeze head is read from the freeze commit or no receipt is 
   );
 });
 
-test("§15.2: the harness refuses a default addon that is the evaluation build", () => {
-  const receipt = evalReceipt("a".repeat(40));
+test("P2-10: the default addon path must hold the product .node (positive check)", () => {
+  const product = productReceipt();
+  const evaluation = evalReceipt();
+  const productNode =
+    product.artifacts["electron/native/grimodex-node/grimodex-node.node"];
   assert.doesNotThrow(() =>
-    assertDefaultAddonIsNotEvaluation({
-      defaultAddonSha256: "d".repeat(64),
-      evalReceipt: receipt,
+    assertDefaultAddonIsProduct({
+      defaultAddonSha256: productNode,
+      productReceipt: product,
+      evalReceipt: evaluation,
     }),
   );
   assert.throws(
     () =>
-      assertDefaultAddonIsNotEvaluation({
-        defaultAddonSha256: "e".repeat(64),
-        evalReceipt: receipt,
+      assertDefaultAddonIsProduct({
+        defaultAddonSha256: H64("0"),
+        productReceipt: product,
+        evalReceipt: evaluation,
       }),
-    /\[precheck\] the default addon path holds the evaluation build/,
+    /does not hold the product/,
   );
+  assert.throws(
+    () =>
+      assertDefaultAddonIsProduct({
+        defaultAddonSha256: productNode,
+        productReceipt: product,
+        evalReceipt: null,
+      }),
+    /\[precheck\]/,
+  );
+  assert.throws(
+    () =>
+      assertDefaultAddonIsProduct({
+        defaultAddonSha256: productNode,
+        productReceipt: null,
+        evalReceipt: evaluation,
+      }),
+    /\[precheck\]/,
+  );
+  const sameAsEval = productReceipt({
+    artifacts: {
+      ...product.artifacts,
+      "electron/native/grimodex-node/grimodex-node.node": H64("e"),
+    },
+  });
+  assert.throws(
+    () =>
+      assertDefaultAddonIsProduct({
+        defaultAddonSha256: H64("e"),
+        productReceipt: sameAsEval,
+        evalReceipt: evaluation,
+      }),
+    /holds the evaluation build/,
+  );
+});
+
+test("P2-9: the network namespaces of the harness and its parent are readable on Linux", (t) => {
+  const netns = readNetNamespaces();
+  if (process.platform !== "linux") {
+    assert.equal(netns.unavailable, true);
+    t.skip("not Linux");
+    return;
+  }
+  assert.match(netns.self, /^net:\[\d+\]$/u);
+  assert.match(netns.parent, /^net:\[\d+\]$/u);
 });

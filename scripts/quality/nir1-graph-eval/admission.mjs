@@ -1,13 +1,28 @@
-// CP-4 admission facts collected from the local git object store.
+// CP-4 admission facts collected from the local git object store and /proc.
 //
 // These readers run `git` synchronously and never touch the network (no
-// fetch, no ls-remote): "on a remote" means contained in a remote-tracking
-// ref, the same convention as standard-build.mjs. The guards that use the
-// facts are pure and live in ../nir1-retrieval/contract.mjs.
+// fetch, no ls-remote): "on the remote" means contained in
+// refs/remotes/origin/master, the same convention as standard-build.mjs.
+// The guards that use the facts are pure and live in
+// ../nir1-retrieval/contract.mjs.
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { K62_FREEZE } from "./constants.mjs";
+import { readlinkSync } from "node:fs";
+import process from "node:process";
+import {
+  assertEvalBuildReceipt,
+  assertProductBuildReceipt,
+  PRODUCT_NATIVE_ARTIFACT,
+} from "../nir1-retrieval/contract.mjs";
+import {
+  G01_FIXTURE,
+  GRAPH_CASE_FREEZE,
+  K62_FREEZE,
+  OBSERVATION_PREP_RECORD_PATH,
+  OBSERVATION_PREP_REMOTE_REF,
+  rejectOverrides,
+} from "./constants.mjs";
 
 const HEX40 = /^[0-9a-f]{40}$/u;
 
@@ -32,6 +47,15 @@ function resolveCommit(root, ref) {
   return commit;
 }
 
+function refExists(root, ref) {
+  try {
+    git(root, ["rev-parse", "--verify", "-q", `${ref}^{commit}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function isAncestor(root, ancestor, descendant) {
   try {
     git(root, ["merge-base", "--is-ancestor", ancestor, descendant]);
@@ -42,45 +66,71 @@ function isAncestor(root, ancestor, descendant) {
   }
 }
 
-function blobSha256(root, commit, file) {
+function blob(root, commit, file) {
   try {
-    return sha256(git(root, ["show", `${commit}:${file}`]));
+    return git(root, ["show", `${commit}:${file}`]);
   } catch {
     return null;
   }
 }
 
+function parents(root, commit) {
+  return git(root, ["rev-list", "--parents", "-n", "1", commit])
+    .toString("utf8")
+    .trim()
+    .split(" ")
+    .slice(1);
+}
+
 /**
- * Facts for assertObservationPrepAdmits: whether the observation-prep commit
- * is an ancestor of the candidate head, which remote-tracking refs contain
- * it, and the freeze record digest at that commit and at the head.
+ * Facts for assertObservationPrepAdmits. The record path is the fixed
+ * OBSERVATION_PREP_RECORD_PATH, never an argument. The facts say whether the
+ * commit introduced the record (no parent has it), is an ancestor of the
+ * candidate head and of origin/master, the record digests at the commit and
+ * the head, the record parsed at the head, and the head digests of every
+ * file the record binds.
  */
-export function collectObservationPrepFacts({
-  root,
-  commit,
-  candidateHead,
-  freezeRecordPath,
-}) {
+export function collectObservationPrepFacts(input) {
+  rejectOverrides(input, ["root", "commit", "candidateHead"]);
+  const { root, commit, candidateHead } = input;
   const prep = resolveCommit(root, commit);
   const head = resolveCommit(root, candidateHead);
-  const remoteRefs = git(root, [
-    "for-each-ref",
-    "--format=%(refname)",
-    "--contains",
-    prep,
-    "refs/remotes",
-  ])
-    .toString("utf8")
-    .split("\n")
-    .filter(Boolean);
+  const atCommit = blob(root, prep, OBSERVATION_PREP_RECORD_PATH);
+  const atHead = blob(root, head, OBSERVATION_PREP_RECORD_PATH);
+  const parentHas = parents(root, prep).some(
+    (parent) => blob(root, parent, OBSERVATION_PREP_RECORD_PATH) !== null,
+  );
+  let record;
+  try {
+    record = atHead === null ? null : JSON.parse(atHead.toString("utf8"));
+  } catch {
+    record = null;
+  }
+  const bound = new Set([GRAPH_CASE_FREEZE.path, G01_FIXTURE.path]);
+  if (record?.boundFiles && typeof record.boundFiles === "object")
+    for (const file of Object.keys(record.boundFiles)) bound.add(file);
+  const headFileSha256 = {};
+  for (const file of bound) {
+    const bytes =
+      typeof file === "string" && !file.startsWith("-")
+        ? blob(root, head, file)
+        : null;
+    headFileSha256[file] = bytes === null ? null : sha256(bytes);
+  }
+  const remoteKnown = refExists(root, OBSERVATION_PREP_REMOTE_REF);
   return {
+    recordPath: OBSERVATION_PREP_RECORD_PATH,
     commit: prep,
     candidateHead: head,
     ancestorOfCandidateHead: isAncestor(root, prep, head),
-    remoteRefs,
-    freezeRecordPath,
-    freezeRecordSha256AtCommit: blobSha256(root, prep, freezeRecordPath),
-    freezeRecordSha256AtHead: blobSha256(root, head, freezeRecordPath),
+    remoteRef: OBSERVATION_PREP_REMOTE_REF,
+    onRemoteRef:
+      remoteKnown && isAncestor(root, prep, OBSERVATION_PREP_REMOTE_REF),
+    recordIntroducedByCommit: atCommit !== null && !parentHas,
+    recordSha256AtCommit: atCommit === null ? null : sha256(atCommit),
+    recordSha256AtHead: atHead === null ? null : sha256(atHead),
+    record,
+    headFileSha256,
   };
 }
 
@@ -95,11 +145,12 @@ export function readK62FreezeHead({ root, commit }) {
       "[precheck] the K6/2 freeze commit is not given; no receipt is written",
     );
   const resolved = resolveCommit(root, commit);
-  const digest = blobSha256(root, resolved, K62_FREEZE.path);
-  if (digest === null)
+  const bytes = blob(root, resolved, K62_FREEZE.path);
+  if (bytes === null)
     throw new Error(
       "[precheck] K6/2 cannot be read from the freeze commit; no receipt is written",
     );
+  const digest = sha256(bytes);
   if (resolved !== K62_FREEZE.commit || digest !== K62_FREEZE.sha256)
     throw new Error(
       "[precheck] K6/2 freeze commit or bytes differ; no receipt is written",
@@ -108,18 +159,35 @@ export function readK62FreezeHead({ root, commit }) {
 }
 
 /**
- * §15.2: the harness refuses to launch when the default addon path holds the
- * evaluation build.
+ * §15.2 (positive form): the default addon path holds exactly the product
+ * standard-build `.node` of the candidate, and never the evaluation addon.
  */
-export function assertDefaultAddonIsNotEvaluation({
+export function assertDefaultAddonIsProduct({
   defaultAddonSha256,
+  productReceipt,
   evalReceipt,
 }) {
-  const evalDigests = Object.entries(evalReceipt?.artifacts ?? {})
+  assertProductBuildReceipt(productReceipt);
+  assertEvalBuildReceipt(evalReceipt);
+  if (defaultAddonSha256 !== productReceipt.artifacts[PRODUCT_NATIVE_ARTIFACT])
+    throw new Error(
+      "[precheck] the default addon path does not hold the product standard-build .node; refusing to launch",
+    );
+  const evalDigests = Object.entries(evalReceipt.artifacts)
     .filter(([file]) => file.endsWith(".node"))
     .map(([, digest]) => digest);
   if (evalDigests.includes(defaultAddonSha256))
     throw new Error(
       "[precheck] the default addon path holds the evaluation build; refusing to launch",
     );
+}
+
+/** The network namespace links of this process and its parent (Linux). */
+export function readNetNamespaces() {
+  if (process.platform !== "linux")
+    return { unavailable: true, reason: `no /proc on ${process.platform}` };
+  return {
+    self: readlinkSync("/proc/self/ns/net"),
+    parent: readlinkSync(`/proc/${process.ppid}/ns/net`),
+  };
 }

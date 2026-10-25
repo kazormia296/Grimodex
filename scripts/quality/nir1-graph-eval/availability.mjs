@@ -3,13 +3,14 @@
 //
 // Pure module: it classifies samples that a harness already recorded and
 // never observes a runtime. Every rule is the frozen K6/2 text; D, the lease,
-// the 1% yardstick and the run counts come from constants.mjs only.
+// the 1% yardstick, the boundary tolerance and the run counts come from
+// constants.mjs only.
 //
 // Sample record (one Related Scenes query of one arm):
 //   variantKey, arm ("hybrid" | "graph"), phase ("warmup" | "measured"),
 //   repeat, trigger ("user-operation" | "graph-ready-requery" |
 //   "index-ready-requery"), seeded, graphEnabled, d2aMode,
-//   tFetch, tRawReady, tReturn            monotonic ms
+//   tFetch, tRawReady, tReturn            renderer performance.now() ms
 //   snapshot: { usable, reason }          B seal current at start
 //   irOutcome                             same query's IR outcome
 //   a3AtStart: { eligible, reasons }      expected materials at start
@@ -17,21 +18,22 @@
 //   freshnessStamp: { matched, attemptedAt }
 //   recordRead: { startedAt, finishedAt } read-only record connection
 //   graph: { outcome, reason, source, joined, arrivedAt, revalidation,
-//            edgeCount, busyCause }
+//            edgeCount, busyCause }       arrivedAt: the same renderer clock
+//                                         the product's join helper compared
 //   finalSceneIds                         the returned final list
 //   expectedMaterials                     trace queries only
 
 import {
+  BOUNDARY_TOLERANCE_MS,
   GRAPH_CASE_ARMS,
   GRAPH_EVAL_D_MS,
-  GRAPH_EVAL_VARIANTS,
   MEASURED_RUNS_PER_ARM,
   TRACE_MIN_QUERIES,
   WARMUP_RUNS_PER_ARM,
   exceedsYardstick,
   ratio,
   rejectOverrides,
-  variantByKey,
+  resolvePlan,
 } from "./constants.mjs";
 
 const USER_OPERATION = "user-operation";
@@ -42,18 +44,29 @@ const SETUP_DEFECT_REASONS = new Set([
 ]);
 const FRESHNESS_REASONS = new Set(["stale", "warming"]);
 const FRESHNESS_STAMP_BUSY = "freshness-stamp-read-failed";
+export const BOUNDARY_DISAGREEMENTS = Object.freeze({
+  notJoinedInTime: "not-joined-in-time",
+  joinedLateWithinTolerance: "joined-late-within-tolerance",
+});
 
 function finite(value) {
   return typeof value === "number" && Number.isFinite(value);
 }
 
 /**
- * Whether the product joined this sample's Graph result into the final
- * result within `t_raw_ready + D` (K6/2 step 5, inclusive). A joined result
- * that failed revalidation or arrived after the window is a mixed late
- * result and is refused (N-7) instead of being counted.
+ * Join classification of one sample (K6/2 step 5 and the integrator's
+ * boundary decision). In window = the product joined the result AND its
+ * arrival is at or before `t_raw_ready + D`. Two disagreements are kept:
+ * not joined although in time (a plain window-out, disclosed), and joined
+ * although late within the 10 µs tolerance (conservatively window-out,
+ * disclosed). Joined and later than the tolerance stops with `[precheck]`
+ * as a suspected product N-7 violation.
  */
-export function joinedWithinWindow(sample) {
+export function classifyJoin(sample, ...extra) {
+  if (extra.length > 0)
+    throw new Error(
+      "[precheck] classifyJoin takes only the sample (D is frozen)",
+    );
   if (!finite(sample?.tFetch) || !finite(sample?.tRawReady))
     throw new Error("[artifact] sample lacks t_fetch / t_raw_ready");
   if (!finite(sample.tReturn))
@@ -65,29 +78,53 @@ export function joinedWithinWindow(sample) {
   const graph = sample.graph;
   if (!graph || typeof graph.joined !== "boolean")
     throw new Error("[artifact] sample lacks the Graph join record");
-  if (!graph.joined) return false;
+  const deadline = sample.tRawReady + GRAPH_EVAL_D_MS;
+  if (!graph.joined) {
+    const inTime = finite(graph.arrivedAt) && graph.arrivedAt <= deadline;
+    return {
+      joined: false,
+      inWindow: false,
+      disagreement: inTime ? BOUNDARY_DISAGREEMENTS.notJoinedInTime : null,
+    };
+  }
   if (graph.revalidation !== "passed")
     throw new Error(
       "[artifact] a Graph result that did not pass return-time revalidation was joined",
     );
   if (!finite(graph.arrivedAt))
     throw new Error("[artifact] joined Graph result lacks its arrival time");
-  if (graph.arrivedAt > sample.tRawReady + GRAPH_EVAL_D_MS)
-    throw new Error(
-      "[artifact] a late Graph result was mixed into its query (N-7)",
-    );
-  return true;
+  if (graph.arrivedAt <= deadline)
+    return { joined: true, inWindow: true, disagreement: null };
+  if (graph.arrivedAt <= deadline + BOUNDARY_TOLERANCE_MS)
+    return {
+      joined: true,
+      inWindow: false,
+      disagreement: BOUNDARY_DISAGREEMENTS.joinedLateWithinTolerance,
+    };
+  throw new Error(
+    "[precheck] the product joined a Graph result later than t_raw_ready + D beyond the boundary tolerance (suspected N-7)",
+  );
 }
 
-/** (a): only a worker result of this query's ticket counts as in-window. */
+export function joinedWithinWindow(sample) {
+  return classifyJoin(sample).inWindow;
+}
+
+/**
+ * (a): only a worker result of this query's ticket, started on a new READY
+ * with a matching freshness stamp, counts as in-window (K6/2 step 3).
+ */
 export function steadyStateInWindow(sample) {
-  const joined = joinedWithinWindow(sample);
-  return joined && sample.graph.source === "worker";
+  return (
+    classifyJoin(sample).inWindow &&
+    sample.graph.source === "worker" &&
+    sample.startSlot?.readyFresh === true &&
+    sample.freshnessStamp?.matched === true
+  );
 }
 
 /** The predeclared AB/BA order for one variant (K6/2 step 2, P schedule). */
 export function graphCaseScheduleKeys(variantKey) {
-  variantByKey(variantKey);
   const keys = [];
   for (const [phase, count] of [
     ["warmup", WARMUP_RUNS_PER_ARM],
@@ -104,6 +141,8 @@ export function graphCaseScheduleKeys(variantKey) {
 
 /** Re-queries are recorded separately and never scheduled. */
 export function validateGraphCaseSchedule(samples, variantKeys) {
+  if (!Array.isArray(variantKeys) || variantKeys.length === 0)
+    throw new Error("[artifact] the schedule names no variant");
   const actual = samples
     .filter((sample) => sample.trigger === USER_OPERATION)
     .map(
@@ -144,22 +183,40 @@ export function separateRequeries(samples) {
   return { counted, requeries };
 }
 
+function emptyDisagreement() {
+  return {
+    [BOUNDARY_DISAGREEMENTS.notJoinedInTime]: 0,
+    [BOUNDARY_DISAGREEMENTS.joinedLateWithinTolerance]: 0,
+  };
+}
+
 /**
- * (a): steady-state out-of-window rate over the pool of every measured
- * R+IR+Graph sample of the variants not expected unavailable (K6/2 (a),
- * steps 1, 3, 5, 7, 8). Case rates are disclosed, never chosen instead of the
- * pool. A case with no in-window sample is quality HOLD.
+ * The (a) record of one variant from its measured R+IR+Graph samples.
+ * Returns the case entry and the reasons that invalidate the run.
  */
-export function summarizeSteadyState(input) {
-  rejectOverrides(input, ["samples", "fixedGraphMode"]);
-  const { samples, fixedGraphMode } = input;
-  const graphRows = samples.filter((row) => row.arm === "graph");
-  const { counted, requeries } = separateRequeries(graphRows);
-  const measured = counted.filter((row) => row.phase === "measured");
+export function summarizeSteadyStateCase({ rows, variant, fixedGraphMode }) {
   const invalid = [];
-  const perVariant = new Map();
+  const measured = rows.filter(
+    (row) =>
+      row.arm === "graph" &&
+      row.trigger === USER_OPERATION &&
+      row.phase === "measured" &&
+      row.variantKey === variant.key,
+  );
+  const entry = {
+    variantKey: variant.key,
+    inPool: variant.expectedGraph !== "unavailable",
+    n: measured.length,
+    inWindow: 0,
+    outOfWindow: 0,
+    outOfWindowRate: null,
+    cacheOrigin: 0,
+    notReadyAtStart: 0,
+    stampMismatch: 0,
+    boundaryDisagreement: emptyDisagreement(),
+    qualityHold: false,
+  };
   for (const row of measured) {
-    const variant = variantByKey(row.variantKey);
     if (!row.seeded || !row.graphEnabled)
       invalid.push(
         `${row.variantKey}#${row.repeat} is not a seeded Graph query`,
@@ -168,55 +225,67 @@ export function summarizeSteadyState(input) {
       invalid.push(
         `${row.variantKey}#${row.repeat} ran in ${row.d2aMode}, not the fixed ${fixedGraphMode}`,
       );
-    if (
-      variant.expectedGraph !== "unavailable" &&
-      row.snapshot?.usable !== true
-    )
+    if (entry.inPool && row.snapshot?.usable !== true)
       invalid.push(
         `${row.variantKey}#${row.repeat} started without a usable snapshot (steady-state setup defect)`,
       );
-    const entry = perVariant.get(variant.key) ?? {
-      variant,
-      n: 0,
-      inWindow: 0,
-      cacheOrigin: 0,
-      notReadyAtStart: 0,
-      stampMismatch: 0,
-    };
-    entry.n += 1;
+    const join = classifyJoin(row);
+    if (join.disagreement) entry.boundaryDisagreement[join.disagreement] += 1;
     if (steadyStateInWindow(row)) entry.inWindow += 1;
     if (row.graph.source === "cache") entry.cacheOrigin += 1;
     if (row.startSlot?.readyFresh !== true) entry.notReadyAtStart += 1;
     if (row.freshnessStamp?.matched !== true) entry.stampMismatch += 1;
-    perVariant.set(variant.key, entry);
   }
-  for (const entry of perVariant.values())
-    if (entry.n !== MEASURED_RUNS_PER_ARM)
-      invalid.push(
-        `${entry.variant.key} has ${entry.n} measured Graph samples, not ${MEASURED_RUNS_PER_ARM}`,
-      );
-  const pooled = [...perVariant.values()].filter(
-    (entry) => entry.variant.expectedGraph !== "unavailable",
+  if (entry.n !== MEASURED_RUNS_PER_ARM)
+    invalid.push(
+      `${variant.key} has ${entry.n} measured Graph samples, not ${MEASURED_RUNS_PER_ARM}`,
+    );
+  entry.outOfWindow = entry.n - entry.inWindow;
+  entry.outOfWindowRate = ratio(entry.outOfWindow, entry.n);
+  entry.qualityHold = entry.inPool && entry.inWindow === 0;
+  return { entry, invalid };
+}
+
+/**
+ * (a): steady-state out-of-window rate over the pool of every measured
+ * R+IR+Graph sample of the planned variants not expected unavailable (K6/2
+ * (a), steps 1, 3, 5, 7, 8). The plan's full AB/BA schedule must be present;
+ * a frozen plan is always all 13 variants. Case rates are disclosed, never
+ * chosen instead of the pool. A case with no in-window sample is HOLD.
+ */
+export function summarizeSteadyState(input) {
+  rejectOverrides(input, ["samples", "fixedGraphMode", "plan"]);
+  const { samples, fixedGraphMode } = input;
+  const plan = resolvePlan(input.plan);
+  validateGraphCaseSchedule(
+    samples,
+    plan.variants.map((row) => row.key),
   );
-  const n = pooled.reduce((sum, entry) => sum + entry.n, 0);
-  const inWindow = pooled.reduce((sum, entry) => sum + entry.inWindow, 0);
+  const { requeries } = separateRequeries(
+    samples.filter((row) => row.arm === "graph"),
+  );
+  const invalid = [];
+  const cases = plan.variants.map((variant) => {
+    const result = summarizeSteadyStateCase({
+      rows: samples,
+      variant,
+      fixedGraphMode,
+    });
+    invalid.push(...result.invalid);
+    return result.entry;
+  });
+  const pooled = cases.filter((row) => row.inPool);
+  const n = pooled.reduce((sum, row) => sum + row.n, 0);
+  const inWindow = pooled.reduce((sum, row) => sum + row.inWindow, 0);
   const outOfWindow = n - inWindow;
-  const cases = [...perVariant.values()].map((entry) => ({
-    variantKey: entry.variant.key,
-    inPool: entry.variant.expectedGraph !== "unavailable",
-    n: entry.n,
-    inWindow: entry.inWindow,
-    outOfWindow: entry.n - entry.inWindow,
-    outOfWindowRate: ratio(entry.n - entry.inWindow, entry.n),
-    cacheOrigin: entry.cacheOrigin,
-    notReadyAtStart: entry.notReadyAtStart,
-    stampMismatch: entry.stampMismatch,
-    qualityHold:
-      entry.variant.expectedGraph !== "unavailable" && entry.inWindow === 0,
-  }));
+  const boundaryDisagreement = emptyDisagreement();
+  for (const row of cases)
+    for (const [name, count] of Object.entries(row.boundaryDisagreement))
+      boundaryDisagreement[name] += count;
   return {
     status: invalid.length === 0 ? "valid" : "invalid",
     invalid,
+    planKind: plan.kind,
     pool: {
       n,
       inWindow,
@@ -225,6 +294,7 @@ export function summarizeSteadyState(input) {
       exceeds: exceedsYardstick(outOfWindow, n),
     },
     cases,
+    boundaryDisagreement,
     qualityHoldVariants: cases
       .filter((row) => row.qualityHold)
       .map((row) => row.variantKey),
@@ -254,16 +324,21 @@ export function lapseKind(query, inWindow) {
   return null;
 }
 
-function busyOverlap(query, counted) {
+/**
+ * Rule 4 overlap: the stamp attempt against every record read of the trace
+ * (any sample, including re-queries). A missing time anywhere makes the
+ * overlap undecidable.
+ */
+function busyOverlap(query, allQueries) {
   const attempted = query.freshnessStamp?.attemptedAt;
   if (!finite(attempted)) return "overlap-record-missing";
-  for (const row of counted)
+  for (const row of allQueries)
     if (
       !finite(row.recordRead?.startedAt) ||
       !finite(row.recordRead?.finishedAt)
     )
       return "overlap-record-missing";
-  return counted.some(
+  return allQueries.some(
     (row) =>
       row.recordRead.startedAt <= attempted &&
       attempted <= row.recordRead.finishedAt,
@@ -276,10 +351,12 @@ function busyOverlap(query, counted) {
  * Rule 4: lapse, then other, then freshness. Returns the category and the
  * reason name used for it. `setup-defect` reasons invalidate the run.
  */
-export function outOfWindowCategory(query, counted) {
+export function outOfWindowCategory(query, allQueries, join) {
   const kind = lapseKind(query, false);
   if (kind && kind !== "iv-empty-contribution")
     return { category: "lapse", reason: kind };
+  if (join?.disagreement === BOUNDARY_DISAGREEMENTS.joinedLateWithinTolerance)
+    return { category: "other", reason: "boundary-disagreement:joined-late" };
   const graph = query.graph;
   const reason = graph.outcome === "graph-late" ? "graph-late" : graph.reason;
   if (SETUP_DEFECT_REASONS.has(reason))
@@ -288,7 +365,7 @@ export function outOfWindowCategory(query, counted) {
   if (reason === "busy") {
     if (graph.busyCause !== FRESHNESS_STAMP_BUSY)
       return { category: "other", reason: `busy:${graph.busyCause ?? "none"}` };
-    const overlap = busyOverlap(query, counted);
+    const overlap = busyOverlap(query, allQueries);
     return overlap === "clear"
       ? { category: "freshness", reason: "busy:freshness-stamp" }
       : { category: "other", reason: `busy:freshness-stamp:${overlap}` };
@@ -316,11 +393,21 @@ export function mainReason(categories, outOfWindow) {
   return "none";
 }
 
+function invalidTrace(trace, invalid, Q, requeries) {
+  return {
+    kind: trace.kind,
+    status: "invalid",
+    invalid,
+    Q,
+    requeryCount: requeries.length,
+  };
+}
+
 /**
  * (b) for one trace (rules 1-8). The trace is invalid (retake it, keep the
  * record) when Q < 200, a counted query lacks its expected materials or
- * records, a query is not a seeded Graph query in the fixed mode, or a
- * setup-defect reason appears.
+ * records, a joined query lacks its edge count, a query is not a seeded
+ * Graph query in the fixed mode, or a setup-defect reason appears.
  */
 export function summarizeTrace(input) {
   rejectOverrides(input, ["trace", "fixedGraphMode"]);
@@ -343,18 +430,18 @@ export function summarizeTrace(input) {
       invalid.push(`${query.queryId} lacks the snapshot record`);
     if (typeof query.a3AtStart?.eligible !== "boolean")
       invalid.push(`${query.queryId} lacks the start-time A3 record`);
+    if (
+      query.graph?.joined === true &&
+      !(Number.isInteger(query.graph.edgeCount) && query.graph.edgeCount >= 0)
+    )
+      invalid.push(
+        `${query.queryId} joined a Graph result without its edge count`,
+      );
   }
   const Q = counted.length;
   if (Q < TRACE_MIN_QUERIES)
     invalid.push(`trace has Q=${Q}, fewer than ${TRACE_MIN_QUERIES}`);
-  if (invalid.length > 0)
-    return {
-      kind: trace.kind,
-      status: "invalid",
-      invalid,
-      Q,
-      requeryCount: requeries.length,
-    };
+  if (invalid.length > 0) return invalidTrace(trace, invalid, Q, requeries);
   const usable = counted.filter((query) => query.snapshot.usable === true);
   const lapses = {
     "i-b-seal": 0,
@@ -365,19 +452,25 @@ export function summarizeTrace(input) {
   };
   const categories = { lapse: 0, other: 0, freshness: 0 };
   const reasons = {};
+  const boundaryDisagreement = emptyDisagreement();
   let inWindow = 0;
   let overlapped = 0;
   let overlapMissing = 0;
   let freshnessStampBusy = 0;
   for (const query of counted) {
-    // Rule 2: only a query of U can be in-window; joinedWithinWindow still
-    // refuses a mixed late result on every counted query.
-    const joined = joinedWithinWindow(query) && query.snapshot.usable === true;
-    if (joined) inWindow += 1;
-    const kind = lapseKind(query, joined);
+    const join = classifyJoin(query);
+    if (join.disagreement) boundaryDisagreement[join.disagreement] += 1;
+    // Rule 2: only a query of U can be in-window.
+    const inside = join.inWindow && query.snapshot.usable === true;
+    if (inside) inWindow += 1;
+    const kind = lapseKind(query, inside);
     if (kind) lapses[kind] += 1;
-    if (joined) continue;
-    const { category, reason } = outOfWindowCategory(query, counted);
+    if (inside) continue;
+    const { category, reason } = outOfWindowCategory(
+      query,
+      trace.queries,
+      join,
+    );
     if (category === "setup-defect")
       invalid.push(`${query.queryId} reported ${reason} (setup defect)`);
     else categories[category] += 1;
@@ -387,14 +480,7 @@ export function summarizeTrace(input) {
     if (reason === "busy:freshness-stamp:overlap-record-missing")
       overlapMissing += 1;
   }
-  if (invalid.length > 0)
-    return {
-      kind: trace.kind,
-      status: "invalid",
-      invalid,
-      Q,
-      requeryCount: requeries.length,
-    };
+  if (invalid.length > 0) return invalidTrace(trace, invalid, Q, requeries);
   const U = usable.length;
   const outOfWindowU = U - inWindow;
   const outOfWindow = Q - inWindow;
@@ -414,6 +500,7 @@ export function summarizeTrace(input) {
     lapseExceeds: exceedsYardstick(lapseTotal, Q),
     categories,
     reasons,
+    boundaryDisagreement,
     busy: {
       freshnessStamp: freshnessStampBusy,
       overlapped,
@@ -502,18 +589,28 @@ export function validateTraceEvents(kind, events) {
  * disclosed only. (a) inside with a trace above it is HOLD and asks for the
  * (iii) diagnostic. This function never raises `[precheck]`.
  */
-export function decideCp4Availability({ steadyState, traces }) {
+export function decideCp4Availability(input) {
+  rejectOverrides(input, ["steadyState", "traces"]);
+  const { steadyState, traces } = input;
   const disclose = {
     steadyState: steadyState?.pool ?? null,
+    boundaryDisagreement: steadyState?.boundaryDisagreement ?? null,
     traces: (traces ?? []).map((trace) => ({
       kind: trace.kind,
       status: trace.status,
       outOfWindowRate: trace.outOfWindowRate ?? null,
       lapseRate: trace.lapseRate ?? null,
+      boundaryDisagreement: trace.boundaryDisagreement ?? null,
     })),
   };
   if (steadyState?.status !== "valid")
     return { verdict: "invalid", reason: "steady-state-run-invalid", disclose };
+  if (steadyState.planKind !== "frozen")
+    return {
+      verdict: "preview-only",
+      reason: "dev-plan-is-never-a-cp4-result",
+      disclose,
+    };
   if (steadyState.pool.exceeds)
     return {
       verdict: "HOLD",
@@ -564,13 +661,15 @@ export function decideCp4Availability({ steadyState, traces }) {
  * can a trace's lapse rate raise `[precheck]`. (iii) must reuse the trace
  * file fixed before CP-4's observation.
  */
-export function evaluateDiagnosticCondition({
-  kind,
-  steadyState,
-  traces,
-  traceFile,
-  cp4TraceFile = null,
-}) {
+export function evaluateDiagnosticCondition(input) {
+  rejectOverrides(input, [
+    "kind",
+    "steadyState",
+    "traces",
+    "traceFile",
+    "cp4TraceFile",
+  ]);
+  const { kind, steadyState, traces, traceFile, cp4TraceFile = null } = input;
   if (!["i", "ii", "iii"].includes(kind))
     throw new Error(`[precheck] unknown diagnostic kind ${kind}`);
   if (kind === "iii") {
@@ -617,7 +716,3 @@ export function evaluateDiagnosticCondition({
     return { result: "row-not-used", reason: "main-reason-other", mains };
   return { result: "condition-met-confirmation-required", mains };
 }
-
-export const ALL_VARIANT_KEYS = Object.freeze(
-  GRAPH_EVAL_VARIANTS.map((row) => row.key),
-);

@@ -1,11 +1,31 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import {
+  FROZEN_FIXTURE_SHA256,
+  G01_FIXTURE,
+  GRAPH_CASE_FREEZE,
+  K62_FREEZE,
+  OBSERVATION_PREP_RECORD_PATH,
+  OBSERVATION_PREP_RECORD_SCHEMA,
+} from "../nir1-graph-eval/constants.mjs";
+import {
+  H40,
+  H64,
+  candidate,
+  evalReceipt,
+  productReceipt,
+} from "../nir1-graph-eval/test-support.mjs";
 import {
   GRAPH_ARM_SCOPES,
   GRAPH_ARM_UNAVAILABLE_REASON,
   GRAPH_ARM_WIRED,
   GRAPH_ARM_WIRING,
   RETRIEVAL_ARMS,
+  assertFixtureReadAllowed,
   assertGraphArmRequestable,
   classifyGraphFixturePath,
   describeGraphArm,
@@ -199,64 +219,54 @@ test("the frozen 24 queries take no Graph seed and the retrieval scope stays not
   );
 });
 
-const H40 = (c) => c.repeat(40);
-const H64 = (c) => c.repeat(64);
+const SEED_NONE = { manualSeed: "none" };
+const FROZEN = "evals/nir1-graph/g02-directed-relation.v1.json";
+const DEV = "scripts/quality/nir1-graph-eval/dev-fixtures/dev-g02.v1.json";
+const frozenFixture = { path: FROZEN, sha256: FROZEN_FIXTURE_SHA256[FROZEN] };
+const devFixture = { path: DEV, sha256: H64("d") };
 
-function productReceipt(overrides = {}) {
+function prepRecord(overrides = {}) {
   return {
-    schemaVersion: "nir1-standard-build/1",
-    status: "passed",
-    standardBuild: true,
-    sourceUnchanged: true,
-    candidate: {
-      worktreeClean: true,
-      resolvedBaseSha: H40("a"),
-      resolvedHeadSha: H40("b"),
-      resolvedHeadTreeSha: H40("c"),
-      currentHeadSha: H40("b"),
-    },
-    artifacts: { "electron/native/grimodex-node/grimodex-node.node": H64("d") },
-    ...overrides,
-  };
-}
-
-function evalReceipt(overrides = {}) {
-  return {
-    schemaVersion: "nir1-graph-eval-build/1",
-    status: "passed",
-    standardBuild: false,
-    evaluationBuild: true,
-    sourceUnchanged: true,
-    candidate: productReceipt().candidate,
-    features: ["nir1-graph-eval"],
-    capabilities: { nir1GraphEval: true },
-    artifacts: {
-      ".artifacts/cp4/eval-build/grimodex-node.node": H64("e"),
-      ".artifacts/cp4/eval-build/nir1-c-query-worker": H64("f"),
-    },
-    worker: {
-      path: ".artifacts/cp4/eval-build/nir1-c-query-worker",
-      sha256: H64("f"),
-    },
+    schemaVersion: OBSERVATION_PREP_RECORD_SCHEMA,
+    graphRuntimeObservedBeforeFreeze: false,
+    k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
+    graphCaseFreeze: { ...GRAPH_CASE_FREEZE },
+    g01Fixture: { path: G01_FIXTURE.path, sha256: G01_FIXTURE.sha256 },
+    boundFiles: { "evals/nir1-graph/trace-editing.v1.json": H64("7") },
     ...overrides,
   };
 }
 
 function prepFacts(overrides = {}) {
   return {
+    recordPath: OBSERVATION_PREP_RECORD_PATH,
     commit: H40("9"),
     candidateHead: H40("b"),
     ancestorOfCandidateHead: true,
-    remoteRefs: ["refs/remotes/origin/master"],
-    freezeRecordSha256AtCommit: H64("1"),
-    freezeRecordSha256AtHead: H64("1"),
+    remoteRef: "refs/remotes/origin/master",
+    onRemoteRef: true,
+    recordIntroducedByCommit: true,
+    recordSha256AtCommit: H64("1"),
+    recordSha256AtHead: H64("1"),
+    record: prepRecord(),
+    headFileSha256: {
+      [GRAPH_CASE_FREEZE.path]: GRAPH_CASE_FREEZE.sha256,
+      [G01_FIXTURE.path]: G01_FIXTURE.sha256,
+      "evals/nir1-graph/trace-editing.v1.json": H64("7"),
+    },
     ...overrides,
   };
 }
 
-const SEED_NONE = { manualSeed: "none" };
-const FROZEN = "evals/nir1-graph/g02-directed-relation.v1.json";
-const DEV = "scripts/quality/nir1-graph-eval/dev-fixtures/dev-g02.v1.json";
+function graphCase(overrides = {}) {
+  return assertGraphArmRequestable(GRAPH_ARM_WIRED, {
+    scope: GRAPH_ARM_SCOPES.graphCase,
+    buildReceipt: evalReceipt(),
+    productReceipt: productReceipt(),
+    fixtures: [devFixture],
+    ...overrides,
+  });
+}
 
 test("P-1: the existing queries' Graph arm is wired on the product receipt, not-requested and equal to R+IR", () => {
   const admission = assertGraphArmRequestable(GRAPH_ARM_WIRED, {
@@ -264,28 +274,80 @@ test("P-1: the existing queries' Graph arm is wired on the product receipt, not-
     buildReceipt: productReceipt(),
     seedPolicy: SEED_NONE,
   });
-  assert.equal(admission.wiring, GRAPH_ARM_WIRED);
   assert.equal(admission.receiptKind, "product");
   assert.equal(admission.expectedGraphContribution, 0);
   const arm = describeGraphArm({ seedPolicy: SEED_NONE, admission });
   assert.equal(arm.status, "not-requested");
-  assert.equal(arm.expectedGraphContribution, 0);
   assert.equal(arm.pass, false);
-  const equal = summarizeGraphArm(arm, [{ equal: true, violations: [] }]);
+  const ids = ["q1", "q2"];
+  const equal = summarizeGraphArm(
+    arm,
+    [
+      { queryId: "q1", equal: true },
+      { queryId: "q2", equal: true },
+    ],
+    { queryIds: ids },
+  );
   assert.equal(equal.status, "equal-to-hybrid");
-  assert.equal(equal.equalsHybrid, true);
   assert.equal(equal.pass, false);
-  const differs = summarizeGraphArm(arm, [
-    { equal: true, violations: [] },
-    { equal: false, violations: ["forbidden-contribution:seed"] },
-  ]);
+  const differs = summarizeGraphArm(
+    arm,
+    [
+      { queryId: "q1", equal: true },
+      {
+        queryId: "q2",
+        equal: false,
+        violations: ["forbidden-contribution:seed"],
+      },
+    ],
+    { queryIds: ids },
+  );
   assert.equal(differs.status, "hold");
   assert.deepEqual(differs.violations, ["forbidden-contribution:seed"]);
-  // Without comparisons a wired arm is still not a result.
   assert.equal(summarizeGraphArm(arm).status, "hold");
 });
 
-test("P-1 / N-3: the existing queries refuse a missing, unclean or evaluation receipt and a seed", () => {
+test("P2-11: the 24 queries' equality must cover every query and no other", () => {
+  const arm = describeGraphArm({
+    admission: assertGraphArmRequestable(GRAPH_ARM_WIRED, {
+      scope: GRAPH_ARM_SCOPES.existing,
+      buildReceipt: productReceipt(),
+      seedPolicy: SEED_NONE,
+    }),
+  });
+  const ids = ["q1", "q2"];
+  for (const [comparisons, queryIds] of [
+    [[{ queryId: "q1", equal: true }], ids],
+    [
+      [
+        { queryId: "q1", equal: true },
+        { queryId: "q2", equal: true },
+        { queryId: "q3", equal: true },
+      ],
+      ids,
+    ],
+    [
+      [
+        { queryId: "q1", equal: true },
+        { queryId: "q2", equal: true },
+      ],
+      undefined,
+    ],
+    [
+      [
+        { queryId: "q1", equal: true },
+        { queryId: "q2", equal: true },
+      ],
+      ["q1", "q1", "q2"],
+    ],
+  ]) {
+    const result = summarizeGraphArm(arm, comparisons, { queryIds });
+    assert.equal(result.status, "hold");
+    assert.equal(result.reason, "comparisons-do-not-cover-every-query");
+  }
+});
+
+test("P-1 / N-3 / P3: the existing queries refuse a missing, unclean or evaluation receipt and a seed", () => {
   const request = (overrides) =>
     assertGraphArmRequestable(GRAPH_ARM_WIRED, {
       scope: GRAPH_ARM_SCOPES.existing,
@@ -315,6 +377,17 @@ test("P-1 / N-3: the existing queries refuse a missing, unclean or evaluation re
     () => request({ buildReceipt: productReceipt({ status: "failed" }) }),
     /\[precheck\]/,
   );
+  // The producer's full check: commands and the exact artifact set.
+  assert.throws(
+    () => request({ buildReceipt: productReceipt({ commands: [] }) }),
+    /not a clean passed build/,
+  );
+  const artifacts = { ...productReceipt().artifacts };
+  delete artifacts["dist/index.html"];
+  assert.throws(
+    () => request({ buildReceipt: productReceipt({ artifacts }) }),
+    /not a clean passed build/,
+  );
   assert.throws(
     () => request({ seedPolicy: { manualSeed: "case" } }),
     /no Graph seed/,
@@ -322,137 +395,332 @@ test("P-1 / N-3: the existing queries refuse a missing, unclean or evaluation re
   assert.throws(() => request({ scope: "something-else" }), /unknown/);
 });
 
-test("N-3: a G-case Graph arm refuses the product receipt and a malformed evaluation receipt", () => {
-  const request = (buildReceipt) =>
-    assertGraphArmRequestable(GRAPH_ARM_WIRED, {
-      scope: GRAPH_ARM_SCOPES.graphCase,
-      buildReceipt,
-      fixturePaths: [DEV],
-    });
-  assert.equal(request(evalReceipt()).fixtureClass, "dev");
+test("N-3 / P1-2: a G-case Graph arm needs a strict evaluation receipt", () => {
+  const withEval = (buildReceipt) => () => graphCase({ buildReceipt });
+  assert.equal(graphCase().fixtureClass, "dev");
+  assert.throws(withEval(productReceipt()), /cannot run on the product build/);
   assert.throws(
-    () => request(productReceipt()),
-    /cannot run on the product build/,
-  );
-  assert.throws(
-    () => request(evalReceipt({ capabilities: { nir1GraphEval: false } })),
+    withEval(evalReceipt({ capabilities: { nir1GraphEval: false } })),
     /capability/,
   );
-  assert.throws(() => request(evalReceipt({ features: [] })), /feature/);
+  assert.throws(withEval(evalReceipt({ features: [] })), /feature/);
   assert.throws(
-    () =>
-      request(
-        evalReceipt({
-          artifacts: {
-            ...evalReceipt().artifacts,
-            "electron/native/grimodex-node/grimodex-node.node": H64("e"),
-          },
-        }),
-      ),
-    /default addon path/,
+    withEval(evalReceipt({ features: "xx-nir1-graph-eval-yy" })),
+    /feature/,
   );
   assert.throws(
-    () =>
-      request(
+    withEval(evalReceipt({ features: ["xx-nir1-graph-eval-yy"] })),
+    /feature/,
+  );
+  const escape =
+    ".artifacts/cp4/eval-build/../../../electron/native/grimodex-node/grimodex-node.node";
+  const escapeWorker =
+    ".artifacts/cp4/eval-build/../../../electron/native/grimodex-node/nir1-c-query-worker";
+  assert.throws(
+    withEval(
+      evalReceipt({
+        artifacts: { [escape]: H64("e"), [escapeWorker]: H64("f") },
+        worker: { path: escapeWorker, sha256: H64("f") },
+      }),
+    ),
+    /clean repo-relative path/,
+  );
+  for (const bad of [
+    ".artifacts/cp4/eval-build//grimodex-node.node",
+    ".artifacts/cp4/eval-build/./grimodex-node.node",
+    "/abs/.artifacts/cp4/eval-build/x.node",
+    ".artifacts\\cp4\\eval-build\\x.node",
+  ])
+    assert.throws(
+      withEval(
         evalReceipt({
           artifacts: {
-            "dist/grimodex-node.node": H64("e"),
+            [bad]: H64("e"),
             ".artifacts/cp4/eval-build/nir1-c-query-worker": H64("f"),
           },
         }),
       ),
-    /single artifact under/,
+      /\[precheck\]/,
+      bad,
+    );
+  assert.throws(
+    withEval(
+      evalReceipt({
+        artifacts: {
+          ...evalReceipt().artifacts,
+          "electron/native/grimodex-node/grimodex-node.node": H64("e"),
+        },
+      }),
+    ),
+    /must be inside/,
   );
   assert.throws(
-    () =>
-      request(
+    withEval(
+      evalReceipt({
+        artifacts: {
+          "dist/grimodex-node.node": H64("e"),
+          ".artifacts/cp4/eval-build/nir1-c-query-worker": H64("f"),
+        },
+      }),
+    ),
+    /must be inside/,
+  );
+  for (const workerPath of [
+    ".artifacts/cp4/eval-build/nir1-c-query-workerx",
+    ".artifacts/cp4/eval-build/sub/nir1-c-query-worker",
+    ".artifacts/cp4/eval-build/other-worker",
+  ])
+    assert.throws(
+      withEval(
         evalReceipt({
-          worker: {
-            path: ".artifacts/cp4/other/nir1-c-query-worker",
-            sha256: H64("f"),
+          artifacts: {
+            ".artifacts/cp4/eval-build/grimodex-node.node": H64("e"),
+            [workerPath]: H64("f"),
           },
+          worker: { path: workerPath, sha256: H64("f") },
         }),
       ),
+      /fixed name beside/,
+      workerPath,
+    );
+  assert.throws(
+    withEval(
+      evalReceipt({
+        worker: {
+          path: ".artifacts/cp4/eval-build/nir1-c-query-worker",
+          sha256: H64("0"),
+        },
+      }),
+    ),
     /fixed name beside/,
   );
   assert.throws(
-    () =>
-      request(
-        evalReceipt({
-          candidate: {
-            ...productReceipt().candidate,
-            currentHeadSha: H40("0"),
-          },
-        }),
-      ),
+    withEval(
+      evalReceipt({
+        candidate: { ...productReceipt().candidate, currentHeadSha: H40("0") },
+      }),
+    ),
     /not a clean passed evaluation build/,
   );
 });
 
-test("N-1: a frozen fixture needs the pre-observation commit as a remote ancestor with the same freeze record", () => {
-  const request = (observationPrep, fixturePaths = [FROZEN]) =>
-    assertGraphArmRequestable(GRAPH_ARM_WIRED, {
-      scope: GRAPH_ARM_SCOPES.graphCase,
-      buildReceipt: evalReceipt(),
-      fixturePaths,
-      observationPrep,
-    });
+test("P2-10: the evaluation and product receipts must be the same candidate", () => {
+  assert.throws(() => graphCase({ productReceipt: undefined }), /\[precheck\]/);
+  assert.throws(
+    () =>
+      graphCase({
+        productReceipt: productReceipt({ candidate: candidate(H40("e")) }),
+      }),
+    /different candidates/,
+  );
+  assert.throws(
+    () =>
+      graphCase({
+        productReceipt: productReceipt({
+          candidate: candidate(H40("b"), H40("f")),
+        }),
+      }),
+    /different candidates/,
+  );
+});
+
+test("N-1 / P1-1: a frozen fixture needs the introducing, remote, content-checked pre-observation commit", () => {
+  const request = (observationPrep, fixtures = [frozenFixture]) =>
+    graphCase({ fixtures, observationPrep });
   const admitted = request(prepFacts());
   assert.equal(admitted.fixtureClass, "frozen");
   assert.equal(admitted.observationPrepCommit, H40("9"));
-  assert.throws(() => request(undefined), /\[precheck\].*not given/);
+  const cases = [
+    [undefined, /not given/],
+    [
+      prepFacts({ recordPath: GRAPH_CASE_FREEZE.path }),
+      /pre-observation record must be/,
+    ],
+    [prepFacts({ ancestorOfCandidateHead: false }), /not an ancestor/],
+    [
+      prepFacts({ remoteRef: "refs/remotes/fork/feature" }),
+      /not on refs\/remotes\/origin\/master/,
+    ],
+    [prepFacts({ onRemoteRef: false }), /not on refs\/remotes\/origin\/master/],
+    [prepFacts({ recordIntroducedByCommit: false }), /did not introduce/],
+    [prepFacts({ recordSha256AtHead: H64("2") }), /freeze record differs/],
+    [prepFacts({ recordSha256AtCommit: null }), /freeze record differs/],
+    [prepFacts({ candidateHead: H40("8") }), /another candidate head/],
+    [prepFacts({ commit: "abc" }), /40-hex/],
+    [prepFacts({ record: null }), /schemaVersion/],
+    [
+      prepFacts({
+        record: prepRecord({ graphRuntimeObservedBeforeFreeze: true }),
+      }),
+      /graphRuntimeObservedBeforeFreeze/,
+    ],
+    [
+      prepFacts({
+        record: prepRecord({
+          graphCaseFreeze: { path: GRAPH_CASE_FREEZE.path, sha256: H64("0") },
+        }),
+      }),
+      /graphCaseFreeze/,
+    ],
+    [
+      prepFacts({
+        record: prepRecord({
+          g01Fixture: { path: G01_FIXTURE.path, sha256: H64("0") },
+        }),
+      }),
+      /g01Fixture/,
+    ],
+    [
+      prepFacts({
+        record: prepRecord({
+          k62: { freezeCommit: H40("0"), sha256: K62_FREEZE.sha256 },
+        }),
+      }),
+      /k62/,
+    ],
+    [prepFacts({ record: prepRecord({ boundFiles: {} }) }), /boundFiles/],
+    [
+      prepFacts({
+        headFileSha256: {
+          ...prepFacts().headFileSha256,
+          "evals/nir1-graph/trace-editing.v1.json": H64("8"),
+        },
+      }),
+      /differs from the record/,
+    ],
+    [
+      prepFacts({
+        headFileSha256: {
+          ...prepFacts().headFileSha256,
+          [GRAPH_CASE_FREEZE.path]: H64("8"),
+        },
+      }),
+      /differs from the record/,
+    ],
+    [
+      prepFacts({ record: prepRecord({ boundFiles: { "../x": H64("7") } }) }),
+      /clean repo-relative/,
+    ],
+  ];
+  for (const [facts, message] of cases)
+    assert.throws(() => request(facts), message, String(message));
+  // Mixing a dev fixture does not lift the frozen rule; dev alone needs none.
   assert.throws(
-    () => request(prepFacts({ ancestorOfCandidateHead: false })),
-    /not an ancestor/,
-  );
-  assert.throws(
-    () => request(prepFacts({ remoteRefs: [] })),
-    /remote-tracking ref/,
-  );
-  assert.throws(
-    () => request(prepFacts({ freezeRecordSha256AtHead: H64("2") })),
-    /freeze record differs/,
-  );
-  assert.throws(
-    () => request(prepFacts({ freezeRecordSha256AtCommit: null })),
-    /freeze record differs/,
-  );
-  assert.throws(
-    () => request(prepFacts({ candidateHead: H40("8") })),
-    /another candidate head/,
-  );
-  assert.throws(() => request(prepFacts({ commit: "abc" })), /40-hex/);
-  // Mixing a dev fixture does not lift the frozen-path rule.
-  assert.throws(
-    () => request(undefined, [DEV, "evals/nir1-g01/fixture.v1.json"]),
+    () => request(undefined, [devFixture, frozenFixture]),
     /not given/,
   );
-  // Dev fixtures alone need no pre-observation commit.
-  assert.equal(request(undefined, [DEV]).fixtureClass, "dev");
+  assert.equal(request(undefined, [devFixture]).fixtureClass, "dev");
 });
 
-test("N-16: Graph input paths are allowlisted by fixture class", () => {
+test("N-16 / P1-3: the admission lists the fixtures it allows by path and digest", () => {
   assert.equal(classifyGraphFixturePath(FROZEN), "frozen");
-  assert.equal(
-    classifyGraphFixturePath("evals/nir1-g01/fixture.v1.json"),
-    "frozen",
-  );
   assert.equal(classifyGraphFixturePath(DEV), "dev");
   for (const bad of [
     "/abs/evals/nir1-graph/g02.json",
     "scripts/quality/nir1-graph-eval/dev-fixtures/../../../evals/nir1-graph/g02-directed-relation.v1.json",
+    "scripts/quality/nir1-graph-eval/dev-fixtures//x.json",
     "evals/nir1-retrieval/corpus.json",
     "scripts/quality/nir1-graph-eval/dev-fixtures/readme.md",
     "",
   ])
     assert.throws(() => classifyGraphFixturePath(bad), /\[precheck\]/, bad);
+  assert.throws(() => graphCase({ fixtures: [] }), /names no fixture/);
   assert.throws(
     () =>
-      assertGraphArmRequestable(GRAPH_ARM_WIRED, {
-        scope: GRAPH_ARM_SCOPES.graphCase,
-        buildReceipt: evalReceipt(),
-        fixturePaths: [],
+      graphCase({
+        fixtures: [{ path: FROZEN, sha256: H64("0") }],
+        observationPrep: prepFacts(),
       }),
-    /names no fixture path/,
+    /frozen digest/,
   );
+  assert.throws(
+    () =>
+      graphCase({
+        fixtures: [{ path: DEV, sha256: FROZEN_FIXTURE_SHA256[FROZEN] }],
+      }),
+    /copy of frozen material/,
+  );
+  assert.throws(
+    () =>
+      graphCase({
+        fixtures: [{ path: DEV, sha256: GRAPH_CASE_FREEZE.sha256 }],
+      }),
+    /copy of frozen material/,
+  );
+  assert.throws(
+    () => graphCase({ fixtures: [devFixture, devFixture] }),
+    /duplicate/,
+  );
+  assert.deepEqual(graphCase().allowedFixtures, [
+    { ...devFixture, kind: "dev" },
+  ]);
+});
+
+test("P1-3: every fixture read is checked against the admission, symlinks and digest", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "cp4-read-"));
+  try {
+    const bytes = Buffer.from('{"caseId":"DEV"}\n');
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    await mkdir(
+      path.join(root, "scripts/quality/nir1-graph-eval/dev-fixtures"),
+      { recursive: true },
+    );
+    await writeFile(path.join(root, DEV), bytes);
+    const admission = graphCase({ fixtures: [{ path: DEV, sha256: digest }] });
+    assert.deepEqual(
+      assertFixtureReadAllowed(admission, { root, path: DEV }),
+      bytes,
+    );
+    const other = "scripts/quality/nir1-graph-eval/dev-fixtures/other.json";
+    await writeFile(path.join(root, other), bytes);
+    assert.throws(
+      () => assertFixtureReadAllowed(admission, { root, path: other }),
+      /not a fixture this admission allowed/,
+    );
+    assert.throws(
+      () => assertFixtureReadAllowed(admission, { root, path: FROZEN }),
+      /not a fixture this admission allowed/,
+    );
+    assert.throws(
+      () =>
+        assertFixtureReadAllowed(
+          { ...admission, wiring: GRAPH_ARM_WIRING },
+          { root, path: DEV },
+        ),
+      /wired G-case admission/,
+    );
+    await writeFile(path.join(root, DEV), '{"changed":true}\n');
+    assert.throws(
+      () => assertFixtureReadAllowed(admission, { root, path: DEV }),
+      /differ from the admitted digest/,
+    );
+    await rm(path.join(root, DEV));
+    await symlink(path.join(root, other), path.join(root, DEV));
+    assert.throws(
+      () => assertFixtureReadAllowed(admission, { root, path: DEV }),
+      /not a symlink/,
+    );
+    // A symlinked directory component is refused too.
+    const linkedRoot = await mkdtemp(path.join(tmpdir(), "cp4-read-link-"));
+    try {
+      await mkdir(path.join(linkedRoot, "scripts/quality/nir1-graph-eval"), {
+        recursive: true,
+      });
+      await symlink(
+        path.join(root, "scripts/quality/nir1-graph-eval/dev-fixtures"),
+        path.join(linkedRoot, "scripts/quality/nir1-graph-eval/dev-fixtures"),
+      );
+      await rm(path.join(root, DEV));
+      await writeFile(path.join(root, DEV), bytes);
+      assert.throws(
+        () =>
+          assertFixtureReadAllowed(admission, { root: linkedRoot, path: DEV }),
+        /through a symlink/,
+      );
+    } finally {
+      await rm(linkedRoot, { recursive: true, force: true });
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

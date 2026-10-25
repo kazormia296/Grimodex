@@ -672,6 +672,7 @@ requirements:
       - evals/nir1-retrieval/corpus.json
       - scripts/quality/nir1-retrieval/contract.mjs
       - scripts/quality/nir1-retrieval/standard-build.mjs
+      - scripts/quality/nir1-retrieval/standard-build-receipt.mjs
       - scripts/quality/nir1-retrieval/paired.mjs
       - scripts/quality/nir1-retrieval/renderer.ts
       - scripts/quality/run-nir1-retrieval.mjs
@@ -1612,6 +1613,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/receipt.mjs
       - scripts/quality/nir1-graph-eval/outcome.mjs
       - scripts/quality/nir1-graph-eval/admission.mjs
+      - scripts/quality/nir1-graph-eval/test-support.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md

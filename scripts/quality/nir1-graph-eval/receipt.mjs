@@ -1,16 +1,29 @@
 // CP-4 run receipt (TASK §7.2): schema validator, the K2/4 declaration check,
 // D3 measurement-window evidence, launch environment checks and SHA256SUMS.
 //
-// The validators are pure. Only `writeSha256Sums` / `verifySha256Sums` read
-// files; nothing here launches Electron, Xvfb or Native.
+// The validators are pure and recompute every derived value (declaration
+// check, window assessment, aggregates) from the recorded rows instead of
+// trusting the receipt's own claim. Only `writeSha256Sums` /
+// `verifySha256Sums` read files; nothing here launches Electron, Xvfb or
+// Native.
 
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { classifyGraphFixturePath } from "../nir1-retrieval/contract.mjs";
+import {
+  separateRequeries,
+  summarizeSteadyStateCase,
+  summarizeTrace,
+  validateGraphCaseSchedule,
+} from "./availability.mjs";
 import {
   D2A_MODES,
+  FROZEN_FIXTURE_SHA256,
+  FROZEN_MATERIAL_SHA256,
   K62_FREEZE,
   WINDOW_SAMPLE_INTERVAL_MS,
+  devVariant,
   variantByKey,
 } from "./constants.mjs";
 
@@ -24,7 +37,15 @@ export const RUN_KINDS = Object.freeze([
   "existing-24-compare",
   "g01-pair",
 ]);
-const GRAPH_RUN_KINDS = new Set(["g-case-gold", "trace", "iii-diagnostic"]);
+/** Run kinds that observe R+IR+Graph (K2/4 negatives observe it too). */
+export const GRAPH_RUN_KINDS = Object.freeze(
+  new Set([
+    "g-case-gold",
+    "g-case-diagnostic-negative",
+    "trace",
+    "iii-diagnostic",
+  ]),
+);
 const TRACE_RUN_KINDS = new Set(["trace", "iii-diagnostic"]);
 const SHA256 = /^[0-9a-f]{64}$/u;
 const COMMIT = /^[0-9a-f]{40}$/u;
@@ -53,11 +74,24 @@ function indexMetadataErrors(errors, value, label) {
   }
 }
 
+/** Stable JSON (sorted keys) for comparing recomputed values. */
+function stable(value) {
+  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .filter((key) => value[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${stable(value[key])}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+
 /**
  * K2/4 measurement-workspace check before the first Graph query (D1 (ii)).
- * A declaration that is not current, or Index metadata that changed across
- * the declaration step, stops before measuring with `[precheck]`; it is
- * never turned into `blocked` (N-5, N-6).
+ * A declaration that is not current, a seam binding that differs from the
+ * declaration, or Index metadata that changed across the declaration step
+ * stops before measuring with `[precheck]`; it is never turned into
+ * `blocked` (N-5, N-6).
  */
 export function assertDeclarationCurrent({
   declaration,
@@ -82,6 +116,8 @@ export function assertDeclarationCurrent({
       throw new Error(
         `[precheck] the body declaration is not current for the measurement workspace (${field})`,
       );
+  if (declaration.seamReceipt?.bindingDigest !== declaration.bindingDigest)
+    throw new Error("[precheck] the seam receipt binds another declaration");
   for (const index of ["b", "chronicle"])
     for (const field of ["generation", "dirty"])
       if (
@@ -94,15 +130,37 @@ export function assertDeclarationCurrent({
   return { proceed: true };
 }
 
+function windowSampleErrors(sample, at) {
+  const errors = [];
+  if (!Number.isFinite(sample?.atMs))
+    errors.push(`window sample ${at} lacks atMs`);
+  if (!Number.isInteger(sample?.heavySlotsInUse))
+    errors.push(`window sample ${at} lacks heavySlotsInUse`);
+  if (!Array.isArray(sample?.buildProcesses))
+    errors.push(`window sample ${at} lacks buildProcesses`);
+  if (!Array.isArray(sample?.otherMeasurements))
+    errors.push(`window sample ${at} lacks otherMeasurements`);
+  if (typeof sample?.sameWorktreeBuild !== "boolean")
+    errors.push(`window sample ${at} lacks sameWorktreeBuild`);
+  return errors;
+}
+
 /**
  * D3: the window samples cover the run (before, after, gaps at most twice
- * the 20 s interval) and observe no heavy build, test, other measurement or
- * same-worktree build. The harness's own processes are excluded by pid.
+ * the 20 s interval), every sample records every field, and none observes a
+ * heavy build, test, other measurement or same-worktree build. The
+ * harness's own processes are excluded by pid.
  */
 export function assessMeasurementWindow({ samples, run, ownPids = [] }) {
   const violations = [];
   const gaps = [];
-  const sorted = [...(samples ?? [])].sort((a, b) => a.atMs - b.atMs);
+  if (!Array.isArray(samples)) gaps.push("window samples missing");
+  const rows = Array.isArray(samples) ? samples : [];
+  rows.forEach((sample, at) => gaps.push(...windowSampleErrors(sample, at)));
+  if (!Number.isFinite(run?.startedAtMs) || !Number.isFinite(run?.finishedAtMs))
+    gaps.push("run start/finish times missing");
+  if (gaps.length > 0) return { clean: false, violations, gaps };
+  const sorted = [...rows].sort((a, b) => a.atMs - b.atMs);
   if (sorted.length < 2) gaps.push("fewer than two window samples");
   else {
     if (sorted[0].atMs > run.startedAtMs)
@@ -115,14 +173,14 @@ export function assessMeasurementWindow({ samples, run, ownPids = [] }) {
   }
   const own = new Set(ownPids);
   for (const sample of sorted) {
-    if ((sample.heavySlotsInUse ?? 0) > 0)
+    if (sample.heavySlotsInUse > 0)
       violations.push(`heavy slot in use at ${sample.atMs}`);
-    for (const process of sample.buildProcesses ?? [])
+    for (const process of sample.buildProcesses)
       if (!own.has(process.pid))
         violations.push(`build process ${process.command} at ${sample.atMs}`);
-    for (const other of sample.otherMeasurements ?? [])
+    for (const other of sample.otherMeasurements)
       violations.push(`other measurement ${other} at ${sample.atMs}`);
-    if (sample.sameWorktreeBuild === true)
+    if (sample.sameWorktreeBuild)
       violations.push(`same-worktree build at ${sample.atMs}`);
   }
   return {
@@ -134,19 +192,24 @@ export function assessMeasurementWindow({ samples, run, ownPids = [] }) {
 
 /**
  * Splits receipts into those used for aggregation and those excluded with a
- * reason (N-14). Excluded receipts are kept, never deleted.
+ * reason (N-14), recomputing each window assessment. Excluded receipts are
+ * kept, never deleted.
  */
 export function selectReceiptsForAggregation(receipts) {
   const included = [];
   const excluded = [];
   for (const receipt of receipts) {
-    const window = receipt?.environment?.windowAssessment;
-    if (!window?.clean)
+    const window = assessMeasurementWindow({
+      samples: receipt?.environment?.windowSamples,
+      run: receipt?.run,
+      ownPids: receipt?.environment?.ownPids ?? [],
+    });
+    if (!window.clean)
       excluded.push({
         runId: receipt?.runId ?? null,
         reason: "measurement-window-requirement-not-met",
-        violations: window?.violations ?? [],
-        gaps: window?.gaps ?? ["window assessment missing"],
+        violations: window.violations,
+        gaps: window.gaps,
       });
     else included.push(receipt);
   }
@@ -159,11 +222,40 @@ const DESKTOP_ENV = [
   "DBUS_SESSION_BUS_ADDRESS",
 ];
 
+function netnsArgv(argv) {
+  return argv.some(
+    (arg, at) =>
+      /(^|\/)(unshare|nsenter|firejail)$/u.test(arg) ||
+      /^--unshare-(net|all)$/u.test(arg) ||
+      /^--net(=|$)/u.test(arg) ||
+      (arg === "netns" && /(^|\/)ip$/u.test(argv[at - 1] ?? "")),
+  );
+}
+
+function ozoneArgv(argv) {
+  return argv.some(
+    (arg, at) =>
+      (/^--ozone-platform=/u.test(arg) && arg !== "--ozone-platform=x11") ||
+      (arg === "--ozone-platform" && argv[at + 1] !== "x11") ||
+      /^--enable-features=.*(UseOzonePlatform|WaylandWindowDecorations)/u.test(
+        arg,
+      ),
+  );
+}
+
 /**
- * §8 / §15.7: Electron launches without Wayland or the session D-Bus, with
- * the X11 ozone hint, outside a network namespace (N-11).
+ * §8 / §13 P-9 / §15.7: Electron launches on the run's Xvfb display (never
+ * `:0`), without Wayland or the session D-Bus, with the X11 ozone hint and
+ * no ozone override in argv, and in the parent's network namespace (N-11).
+ * `netns` is readNetNamespaces() of the launching harness.
  */
-export function assertElectronLaunch({ env, argv = [] }) {
+export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
+  if (typeof xvfbDisplay !== "string" || !/^:\d+$/u.test(xvfbDisplay))
+    throw new Error("[precheck] the run's Xvfb display number is required");
+  if (xvfbDisplay === ":0" || env?.DISPLAY !== xvfbDisplay)
+    throw new Error(
+      "[precheck] Electron must draw only on the run's Xvfb display, never :0",
+    );
   for (const name of DESKTOP_ENV)
     if (env?.[name] !== undefined)
       throw new Error(`[precheck] Electron launch env still carries ${name}`);
@@ -173,20 +265,24 @@ export function assertElectronLaunch({ env, argv = [] }) {
     throw new Error(
       "[precheck] Electron launch env must set the x11 ozone hint",
     );
-  if (
-    argv.some((arg) => /(^|\/)(unshare|nsenter)$/u.test(arg)) ||
-    argv.some(
-      (arg, at) => arg === "netns" && /(^|\/)ip$/u.test(argv[at - 1] ?? ""),
-    )
-  )
+  if (ozoneArgv(argv))
+    throw new Error("[precheck] argv must not override the x11 ozone platform");
+  if (netnsArgv(argv))
     throw new Error(
       "[precheck] Xvfb/Electron must not start inside a network namespace",
     );
-  return { removedEnv: [...DESKTOP_ENV] };
+  if (
+    !netns ||
+    (!netns.unavailable && (!netns.self || netns.self !== netns.parent))
+  )
+    throw new Error(
+      "[precheck] the harness is not in its parent's network namespace",
+    );
+  return { removedEnv: [...DESKTOP_ENV], display: xvfbDisplay };
 }
 
 /** The head every receipt writes before measuring (K6/2 "事前登録の凍結" 2). */
-export function receiptHeadErrors(head, runKind) {
+export function receiptHeadErrors(head, runKind, fixtureKind) {
   const errors = [];
   if (head?.k62?.freezeCommit !== K62_FREEZE.commit)
     errors.push("head.k62.freezeCommit must be the K6/2 freeze commit");
@@ -197,7 +293,7 @@ export function receiptHeadErrors(head, runKind) {
     !ISO_UTC.test(head.runStartedAtUtc)
   )
     errors.push("head.runStartedAtUtc must be an ISO UTC time");
-  if (GRAPH_RUN_KINDS.has(runKind)) {
+  if (GRAPH_RUN_KINDS.has(runKind) && fixtureKind !== "dev") {
     commitErrors(
       errors,
       head?.observationPrep?.commit,
@@ -217,6 +313,87 @@ export function receiptHeadErrors(head, runKind) {
 }
 
 /**
+ * The run's variant from its fixture block: a catalog variant whose fixture
+ * path and frozen digest match, or a declared dev variant on a dev fixture
+ * that is not a copy of frozen material.
+ */
+export function resolveRunVariant(receipt) {
+  const fixture = receipt?.fixture;
+  const kind = classifyGraphFixturePath(fixture?.path);
+  if (fixture.kind !== kind)
+    throw new Error(
+      `[precheck] fixture.kind must be ${kind} for ${fixture.path}`,
+    );
+  if (typeof fixture.sha256 !== "string" || !SHA256.test(fixture.sha256))
+    throw new Error("[precheck] fixture.sha256 must be a sha256");
+  if (kind === "frozen") {
+    const variant = variantByKey(receipt.settings?.variantKey);
+    if (
+      variant.fixturePath !== fixture.path ||
+      FROZEN_FIXTURE_SHA256[fixture.path] !== fixture.sha256
+    )
+      throw new Error(
+        "[precheck] the variant, fixture path and frozen digest do not match",
+      );
+    return variant;
+  }
+  if (FROZEN_MATERIAL_SHA256.has(fixture.sha256))
+    throw new Error(
+      "[precheck] a dev fixture must not be a copy of frozen material",
+    );
+  const variant = devVariant(receipt.settings?.devVariant ?? {});
+  if (variant.key !== receipt.settings?.variantKey)
+    throw new Error(
+      "[precheck] settings.variantKey must be the declared dev variant",
+    );
+  return variant;
+}
+
+/**
+ * The aggregates a receipt must carry, recomputed from its rows. Graph-free
+ * run kinds only count rows; the R+IR+Graph runs recompute the (a) case
+ * entry or the (b) trace summary.
+ */
+export function computeRunAggregates(receipt, variant) {
+  const samples = receipt.samples ?? [];
+  const requeries = receipt.requeries ?? [];
+  const graphSamples = samples.filter((row) => row.arm === "graph").length;
+  switch (receipt.runKind) {
+    case "g-case-gold": {
+      validateGraphCaseSchedule(samples, [variant.key]);
+      const { entry, invalid } = summarizeSteadyStateCase({
+        rows: samples,
+        variant,
+        fixedGraphMode: receipt.settings?.d2aModes?.graph,
+      });
+      return {
+        steadyStateCase: entry,
+        invalid,
+        requeryCount: requeries.length,
+      };
+    }
+    case "trace":
+    case "iii-diagnostic":
+      return {
+        trace: summarizeTrace({
+          trace: {
+            kind: receipt.settings?.traceKind,
+            queries: [...samples, ...requeries],
+          },
+          fixedGraphMode: receipt.settings?.d2aModes?.graph,
+        }),
+      };
+    default:
+      separateRequeries(requeries);
+      return {
+        sampleCount: samples.length,
+        graphSampleCount: graphSamples,
+        requeryCount: requeries.length,
+      };
+  }
+}
+
+/**
  * Validates the §7.2 minimum set of one run receipt. Returns error strings;
  * `assertCp4Receipt` throws them as `[precheck]`.
  */
@@ -226,13 +403,28 @@ export function validateCp4Receipt(receipt) {
     errors.push(`schemaVersion must be ${CP4_RECEIPT_SCHEMA}`);
   if (!RUN_KINDS.includes(receipt?.runKind))
     errors.push(`runKind must be one of ${RUN_KINDS.join(", ")}`);
+  const graphRun = GRAPH_RUN_KINDS.has(receipt?.runKind);
   if (typeof receipt?.runId !== "string" || receipt.runId.length === 0)
     errors.push("runId is required");
   if (typeof receipt?.preview !== "boolean")
     errors.push(
       "preview must record whether this is a predeclared preview run",
     );
-  errors.push(...receiptHeadErrors(receipt?.head, receipt?.runKind));
+
+  let variant = null;
+  if (receipt?.runKind !== "existing-24-compare") {
+    try {
+      variant = resolveRunVariant(receipt);
+    } catch (error) {
+      errors.push(error.message);
+    }
+    if (variant?.kind === "dev" && receipt.preview !== true)
+      errors.push("a dev-fixture run is always a preview");
+  } else if (receipt?.fixture !== undefined && receipt.fixture !== null)
+    errors.push("the existing 24 queries carry no G-case fixture");
+  errors.push(
+    ...receiptHeadErrors(receipt?.head, receipt?.runKind, variant?.kind),
+  );
 
   const candidate = receipt?.candidate;
   commitErrors(errors, candidate?.commit, "candidate.commit");
@@ -243,7 +435,7 @@ export function validateCp4Receipt(receipt) {
     candidate?.productReceiptSha256,
     "candidate.productReceiptSha256",
   );
-  if (GRAPH_RUN_KINDS.has(receipt?.runKind)) {
+  if (graphRun) {
     digestErrors(
       errors,
       candidate?.evalReceiptSha256,
@@ -282,12 +474,22 @@ export function validateCp4Receipt(receipt) {
   const environment = receipt?.environment;
   if (!environment?.hostSnapshot)
     errors.push("environment.hostSnapshot is required");
-  if (!Array.isArray(environment?.windowSamples))
-    errors.push("environment.windowSamples must be an array");
-  if (typeof environment?.windowAssessment?.clean !== "boolean")
-    errors.push("environment.windowAssessment is required");
-  if (!/^:\d+$/u.test(environment?.xvfbDisplay ?? ""))
-    errors.push("environment.xvfbDisplay must be the display number only");
+  const window = assessMeasurementWindow({
+    samples: environment?.windowSamples,
+    run: receipt?.run,
+    ownPids: environment?.ownPids ?? [],
+  });
+  if (stable(window) !== stable(environment?.windowAssessment))
+    errors.push(
+      "environment.windowAssessment differs from the recomputed window samples",
+    );
+  if (
+    !/^:\d+$/u.test(environment?.xvfbDisplay ?? "") ||
+    environment?.xvfbDisplay === ":0"
+  )
+    errors.push(
+      "environment.xvfbDisplay must be the run's display number, never :0",
+    );
   if (!Array.isArray(environment?.removedEnv))
     errors.push("environment.removedEnv must list removed env names");
   digestErrors(
@@ -295,19 +497,14 @@ export function validateCp4Receipt(receipt) {
     environment?.netLog?.sha256,
     "environment.netLog.sha256",
   );
-  if (!Number.isInteger(environment?.netLog?.nonLoopbackAttempts))
-    errors.push("environment.netLog.nonLoopbackAttempts is required");
+  if (environment?.netLog?.nonLoopbackAttempts !== 0)
+    errors.push(
+      "[precheck] N-12: the net log shows (or lacks the count of) non-loopback attempts",
+    );
   if (!Array.isArray(environment?.socketSamples))
     errors.push("environment.socketSamples must record non-Chromium sockets");
 
   const settings = receipt?.settings;
-  if (receipt?.runKind !== "existing-24-compare") {
-    try {
-      variantByKey(settings?.variantKey);
-    } catch (error) {
-      errors.push(error.message);
-    }
-  }
   for (const arm of ["raw", "hybrid", "graph"])
     if (
       settings?.d2aModes?.[arm] !== undefined &&
@@ -316,10 +513,7 @@ export function validateCp4Receipt(receipt) {
       errors.push(`settings.d2aModes.${arm} is not a D2a mode`);
   if (!settings?.d2aModes?.hybrid)
     errors.push("settings.d2aModes.hybrid is required");
-  if (
-    GRAPH_RUN_KINDS.has(receipt?.runKind) &&
-    settings?.d2aModes?.graph !== "restricted"
-  )
+  if (graphRun && settings?.d2aModes?.graph !== "restricted")
     errors.push("the R+IR+Graph arm is measured restricted (D10)");
   if (!settings?.reauthorization)
     errors.push("settings.reauthorization breakdown is required");
@@ -329,17 +523,7 @@ export function validateCp4Receipt(receipt) {
   )
     errors.push("settings.setupReceipt.logicalToRuntime is required");
 
-  if (
-    receipt?.runKind === "g-case-gold" &&
-    settings?.variantKey &&
-    (() => {
-      try {
-        return variantByKey(settings.variantKey).declaration;
-      } catch {
-        return false;
-      }
-    })()
-  ) {
+  if (receipt?.runKind === "g-case-gold" && variant?.declaration) {
     const declaration = receipt?.declaration;
     for (const field of [
       "workspaceId",
@@ -369,33 +553,65 @@ export function validateCp4Receipt(receipt) {
       seam?.bindingDigest,
       "declaration.seamReceipt.bindingDigest",
     );
-    indexMetadataErrors(
-      errors,
-      declaration?.indexBefore,
-      "declaration.indexBefore",
-    );
-    indexMetadataErrors(
-      errors,
-      declaration?.indexAfter,
-      "declaration.indexAfter",
-    );
     if (declaration?.verified !== true)
       errors.push(
         "declaration.verified must be true before the first Graph query",
       );
+    try {
+      assertDeclarationCurrent({
+        declaration,
+        measurementWorkspace: receipt?.measurementWorkspace,
+      });
+    } catch (error) {
+      errors.push(error.message);
+    }
   }
 
-  if (!Array.isArray(receipt?.samples)) errors.push("samples must be an array");
+  const samples = receipt?.samples;
+  if (!Array.isArray(samples)) errors.push("samples must be an array");
   if (!Array.isArray(receipt?.requeries))
     errors.push("requeries must be a separate array (D5/A3 column)");
   else if (receipt.requeries.some((row) => row.trigger === "user-operation"))
     errors.push("requeries must not hold user-operation queries");
   if (
-    Array.isArray(receipt?.samples) &&
-    receipt.samples.some((row) => row.trigger !== "user-operation")
+    Array.isArray(samples) &&
+    samples.some((row) => row.trigger !== "user-operation")
   )
     errors.push("samples must not hold re-query rows");
+  if (Array.isArray(samples) && !graphRun) {
+    const graphRows = samples.filter((row) => row.arm === "graph");
+    if (receipt.runKind !== "existing-24-compare" && graphRows.length > 0)
+      errors.push(`${receipt.runKind} does not run the R+IR+Graph arm`);
+    if (
+      receipt.runKind === "existing-24-compare" &&
+      graphRows.some(
+        (row) =>
+          row.graph?.status !== "not-requested" ||
+          (row.graph?.seed ?? null) !== null,
+      )
+    )
+      errors.push(
+        "the existing queries' Graph arm is only ever not-requested without a seed",
+      );
+  }
   if (!receipt?.aggregates) errors.push("aggregates are required");
+  else if (
+    Array.isArray(samples) &&
+    Array.isArray(receipt.requeries) &&
+    (variant || receipt.runKind === "existing-24-compare")
+  ) {
+    try {
+      if (
+        stable(computeRunAggregates(receipt, variant)) !==
+        stable(receipt.aggregates)
+      )
+        errors.push(
+          "aggregates differ from the values recomputed from the samples",
+        );
+    } catch (error) {
+      errors.push(error.message);
+    }
+  }
   if (!receipt?.verdict?.outcome) errors.push("verdict.outcome is required");
   return errors;
 }
