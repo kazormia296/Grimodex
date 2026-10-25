@@ -24,6 +24,7 @@ import type {
   ChatSummary,
 } from "@/features/chat/chatTypes";
 import { scopeSessionKeysEqual } from "@/features/chat/chatScope";
+import { purgeChatInputDrafts } from "@/features/chat/chatInputDraftPurge";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
 
@@ -137,6 +138,11 @@ export function createChatSessionStoreActions(
           // the destructive statement and the in-memory authority reset.
           quiescenceLease.sealReadsForAuthorityCommit();
           await repository.clearProjectChatHistory(projectId);
+          // 全 session と一緒に、チャット入力の書きかけも消す。
+          purgeChatInputDrafts(
+            authority.workspaceIdentity?.path ?? null,
+            projectId,
+          );
 
           if (!isSessionMutationAuthorityCurrent(authority, get())) {
             failStaleAuthority();
@@ -640,6 +646,11 @@ export function createChatSessionStoreActions(
             return;
           }
           await repository.deleteSession(sessionId);
+          purgeChatInputDrafts(
+            workspaceIdentity?.path ?? null,
+            projectId,
+            sessionId,
+          );
           if (!isSessionMutationAuthorityCurrent(authority, get())) return;
           const { activeSessionId } = get();
           set((state) => ({
