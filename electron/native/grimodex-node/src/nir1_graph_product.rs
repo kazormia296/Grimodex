@@ -1887,6 +1887,11 @@ fn session_main(context: SessionContext) {
     // The guard has published the session's end (the slot phase), so a D-final
     // waiter that wakes now reads the final state.
     shared.signal_ready();
+    // The guard has removed this session from the slot and dropped its sender,
+    // so nothing can be queued behind this drain. It runs before the notices
+    // below: a notifier that panics (it is outside `catch_unwind`) must not
+    // leave a queued ticket unsettled.
+    settle_queued(&context.receiver);
     // CQ-DEFER: the demands a held session made wait are announced once, now
     // that the slot is free (outside every lock). The held query's own stale
     // answer is not among them: announcing it would repeat notice → re-query →
@@ -1897,9 +1902,6 @@ fn session_main(context: SessionContext) {
             shared.notify_ready(&project_id);
         }
     }
-    // The guard has removed this session from the slot and dropped its sender,
-    // so nothing can be queued behind this drain.
-    settle_queued(&context.receiver);
 }
 
 /// A Query queued for a session that ended before serving it settles as
