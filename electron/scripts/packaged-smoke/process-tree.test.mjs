@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { groupAlive, launchOwned, processesUnder, terminateOwned, terminationProven } from "./process-tree.mjs";
+import { groupAlive, launchOwned, processesUnder, settlesWithin, terminateOwned, terminationProven } from "./process-tree.mjs";
 
 // POSIX の process group と終了の証拠の試験（Windows の taskkill は hosted でだけ確かめる）
 const posixOnly = { skip: process.platform === "win32" };
@@ -77,4 +77,13 @@ test("終了の証拠の合成: close・group の消滅・実行体の dir の�
   assert.equal(terminationProven({ isClosed: true, groupGone: false, residual: [] }), false);
   assert.equal(terminationProven({ isClosed: true, groupGone: true, residual: [42] }), false);
   assert.equal(terminationProven({ isClosed: true, groupGone: true, residual: null }), false); // 観測できない
+});
+
+test("有限の待ちは解決した時点で timer を止める（残った timer で harness の終了が遅れない）", async () => {
+  const started = Date.now();
+  assert.equal(await settlesWithin(Promise.resolve(), 60_000), true);
+  assert.equal(await settlesWithin(new Promise(() => {}), 20), false);
+  assert.ok(Date.now() - started < 5_000);
+  // 解決後に 60 秒の timer が event loop に残っていない
+  assert.equal(process.getActiveResourcesInfo().filter((name) => name === "Timeout").length, 0);
 });

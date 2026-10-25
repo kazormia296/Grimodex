@@ -31,7 +31,7 @@ import { connectCdp, evaluate, waitForTarget } from "./cdp.mjs";
 import { connectsInWindow, parseNetLog, sha256, summarizeNetLog } from "./netlog.mjs";
 import { freePort, lanAddress, startCanary, startCtlSocket, startDohCanary, startHttp, startMdnsObserver } from "./observers.mjs";
 import { checkPackage } from "./package-check.mjs";
-import { launchOwned, terminateOwned } from "./process-tree.mjs";
+import { launchOwned, settlesWithin, terminateOwned } from "./process-tree.mjs";
 import { CONFIGS, MATRIX_FLAGS, formatVerdict, judgeOs } from "./verdict.mjs";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -327,7 +327,7 @@ async function runProbeMain({ config, work, bundles, observers, nonce, lan, args
   });
   const launch = wrapForPlatform(binary, [`--log-net-log=${netLog}`, "--net-log-capture-mode=Everything", path.join(bundles.bundle, "main.cjs")], platform);
   const owner = launchOwned({ ...launch, env, cwd: work, exeDir: distDir, label: config, platform });
-  const closedInTime = await Promise.race([owner.exited.then(() => true), sleep(LIMITS.probeMainMs).then(() => false)]);
+  const closedInTime = await settlesWithin(owner.exited, LIMITS.probeMainMs);
   const lifecycle = await terminateOwned(owner);
   const result = fs.existsSync(cfg.resultPath) ? JSON.parse(fs.readFileSync(cfg.resultPath, "utf8")) : null;
   if (!result || result.fatal) {

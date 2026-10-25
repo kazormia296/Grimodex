@@ -114,9 +114,18 @@ export function launchOwned({ command, args, env, cwd, exeDir, label, platform =
   };
 }
 
+/**
+ * promise が ms 以内に解決すれば true。timer は解決した時点で止める（残った timer が harness の終了を待たせない）。
+ */
+export function settlesWithin(promise, ms) {
+  let timer;
+  const timeout = new Promise((resolve) => { timer = setTimeout(() => resolve(false), ms); });
+  return Promise.race([promise.then(() => true), timeout]).finally(() => clearTimeout(timer));
+}
+
 async function waitClosed(owner, ms) {
   if (owner.closed()) return true;
-  return Promise.race([owner.exited.then(() => true), sleep(ms).then(() => false)]);
+  return settlesWithin(owner.exited, ms);
 }
 
 function taskkill(pid, force) {
