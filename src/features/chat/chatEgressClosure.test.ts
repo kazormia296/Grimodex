@@ -77,18 +77,25 @@ describe("isEditTargetCurrent", () => {
     [{ activeSessionId: "s2" }],
     [{ isStreaming: true }],
     [{ messages: [{ id: "a1", role: "assistant" }] }],
+    [
+      {
+        messages: [...base.messages, { id: "a2", role: "assistant" }],
+      },
+    ],
     [{ chatScope: "scene" }],
   ] as Array<[Partial<EditTargetState>]>)("%o では偽", (patch) => {
     expect(isEditTargetCurrent(snap, { ...project, ...patch })).toBe(false);
   });
 
-  it("lastUser では最後の user 行であることも求める", () => {
+  it("最後の user 行の後ろに行が足されたら偽（入力欄の最後の行の編集）", () => {
+    const last = snapshotEditTarget(project, "u2");
+    expect(isEditTargetCurrent(last, project)).toBe(true);
     expect(
-      isEditTargetCurrent(snapshotEditTarget(project, "u2"), project, {
-        lastUser: true,
+      isEditTargetCurrent(last, {
+        ...project,
+        messages: [...project.messages, { id: "u3", role: "user" }],
       }),
-    ).toBe(true);
-    expect(isEditTargetCurrent(snap, project, { lastUser: true })).toBe(false);
+    ).toBe(false);
   });
 });
 

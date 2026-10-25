@@ -65,10 +65,16 @@ export function isNonSceneEditClosed(outcome: unknown): boolean {
 
 /**
  * restricted は process の中で戻らない（K3/2 の可用性。一方向）ので、それを読めたときだけ
- * 保持する。開と、restricted 以外の閉（例外、unavailable、activating）は保持しない。
+ * 保持する。開と、restricted 以外の閉（例外、unavailable、activating、時間切れ）は
+ * 保持しない。
  */
 let restrictedObserved = false;
-let pendingRead: Promise<boolean> | null = null;
+
+/**
+ * 状態の読取の上限（ms）。Main は自分で答えるのでふつうは即座に戻るが、戻らないときに
+ * 編集の入口が process の間ふさがらないよう、超えたら閉として扱う（DR-DA2B-R20）。
+ */
+export const NON_SCENE_EDIT_STATUS_TIMEOUT_MS = 5_000;
 
 async function readClosureOnce(): Promise<boolean> {
   try {
@@ -82,15 +88,19 @@ async function readClosureOnce(): Promise<boolean> {
   }
 }
 
-/** 閉なら true。同時の読取は 1 本にまとめる。 */
+/**
+ * 閉なら true。時間切れも閉。読取は `admitConversationEdit` の `editInFlight` が
+ * 1 本に限るので、ここでは束ねない。
+ */
 export function readNonSceneEditClosed(): Promise<boolean> {
   if (restrictedObserved) return Promise.resolve(true);
-  if (pendingRead) return pendingRead;
-  const read = readClosureOnce().finally(() => {
-    if (pendingRead === read) pendingRead = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(true), NON_SCENE_EDIT_STATUS_TIMEOUT_MS);
   });
-  pendingRead = read;
-  return read;
+  return Promise.race([readClosureOnce(), timeout]).finally(() => {
+    clearTimeout(timer);
+  });
 }
 
 /** 閉のときの表示。理由の文言は Session C-1 の承認まで定数の後ろに置く（R5 の P3-7）。 */
@@ -105,6 +115,8 @@ export interface EditTargetSnapshot {
   readonly projectId: string | null;
   readonly sessionId: string | null;
   readonly messageId: string;
+  /** click の時点の一覧の最後の行（後ろに足された行を消さないため）。 */
+  readonly lastMessageId: string | null;
   readonly sceneConversation: boolean;
 }
 
@@ -127,33 +139,29 @@ export function snapshotEditTarget(
     projectId: state.activeProjectId,
     sessionId: state.activeSessionId,
     messageId,
+    lastMessageId: state.messages.at(-1)?.id ?? null,
     sceneConversation: isSceneConversation(state),
   };
 }
 
 /**
- * 読取の後も同じ workspace・会話・行で、stream が始まっていないか。`lastUser` のときは、
- * 対象がまだ最後の user 行であること（入力欄の「最後の行の編集」）も求める。
+ * 読取の後も同じ workspace・会話・行で、stream が始まっておらず、一覧の最後の行が
+ * click の時点と同じか（後ろに行が足されていたら、見えていなかった行まで消さない）。
+ * chat の一覧は追記と削除しか起きないので、最後の行が同じで対象が残っていれば、入力欄の
+ * 「最後の行の編集」の対象もまだ最後の user 行である（別の確認は要らない）。
  */
 export function isEditTargetCurrent(
   snapshot: EditTargetSnapshot,
   state: EditTargetState,
-  options: { readonly lastUser?: boolean } = {},
 ): boolean {
   if (
     state.activeProjectId !== snapshot.projectId ||
     state.activeSessionId !== snapshot.sessionId ||
     state.isStreaming ||
-    isSceneConversation(state) !== snapshot.sceneConversation
+    isSceneConversation(state) !== snapshot.sceneConversation ||
+    (state.messages.at(-1)?.id ?? null) !== snapshot.lastMessageId
   ) {
     return false;
-  }
-  if (options.lastUser) {
-    let lastUserId: string | undefined;
-    for (const message of state.messages) {
-      if (message.role === "user") lastUserId = message.id;
-    }
-    return lastUserId === snapshot.messageId;
   }
   return state.messages.some((message) => message.id === snapshot.messageId);
 }
@@ -164,8 +172,10 @@ let editInFlight = false;
 /**
  * 編集の入口を通す。場面の会話では読まずに、同期で `proceed` を呼ぶ（今のまま）。
  * 場面の会話でないときは、状態を読み、開で、かつ `isCurrent()` が真のときだけ
- * `proceed` を呼ぶ。閉なら `notifyNonSceneEditClosed` を出して何もしない。読取の途中の
- * 2 回目以降の要求は捨てる。
+ * `proceed` を呼ぶ。閉（時間切れを含む）なら `notifyNonSceneEditClosed` を出して何も
+ * しない。読取の途中の 2 回目以降の要求は、1 回目が進行中なので通知せずに捨てる。
+ * `isCurrent()` が偽（会話や workspace を移った、stream が始まった、行が変わった）の
+ * ときも通知しない（利用者は既に別の操作に移っており、失敗の文は誤解を招く）。
  */
 export async function admitConversationEdit(input: {
   readonly sceneConversation: boolean;
@@ -195,6 +205,5 @@ export async function admitConversationEdit(input: {
 /** 試験だけが使う。process の中の保持を戻す。 */
 export function resetNonSceneEditClosureForTest(): void {
   restrictedObserved = false;
-  pendingRead = null;
   editInFlight = false;
 }

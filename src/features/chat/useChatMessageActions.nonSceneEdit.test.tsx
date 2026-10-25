@@ -30,7 +30,10 @@ import i18next from "@/lib/i18n";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import { useChatStore } from "./chatStore";
 import { useChatMessageActions } from "./useChatMessageActions";
-import { resetNonSceneEditClosureForTest } from "./chatEgressClosure";
+import {
+  NON_SCENE_EDIT_STATUS_TIMEOUT_MS,
+  resetNonSceneEditClosureForTest,
+} from "./chatEgressClosure";
 
 type Answer = () => Promise<unknown>;
 const STATUS = "get_profile_egress_status";
@@ -289,6 +292,22 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
     ["stream の開始", () => useChatStore.setState({ isStreaming: true })],
     ["行が消えた", () => useChatStore.setState({ messages: [] as never })],
     [
+      "後ろに行が足された",
+      () =>
+        useChatStore.setState({
+          messages: [
+            ...useChatStore.getState().messages,
+            {
+              id: "u2",
+              sessionId: "s1",
+              role: "user",
+              content: "later",
+              createdAt: "2026-10-25T00:00:02.000Z",
+            },
+          ] as never,
+        }),
+    ],
+    [
       "場面の会話への切替",
       () =>
         useChatStore.setState({ chatScope: "scene", activeSceneId: "scene-1" }),
@@ -308,6 +327,30 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
       expect(toastError).not.toHaveBeenCalled();
     },
   );
+
+  it("読取が戻らなければ時間切れで閉にし、入口をふさがない", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      let answer: Answer = () => new Promise(() => undefined);
+      const invoke = installBridge(() => answer());
+      seed("project");
+      const result = renderActions();
+      result.current.handleEditMessage("u1");
+      await vi.advanceTimersByTimeAsync(NON_SCENE_EDIT_STATUS_TIMEOUT_MS - 1);
+      expect(toastError).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(toastError).toHaveBeenCalledWith(i18next.t("common.error"));
+      expect(deleteMessages).not.toHaveBeenCalled();
+      // 時間切れは保持しない。次の編集は読み直して進む。
+      answer = ok({ state: "unrestricted" });
+      result.current.handleEditMessage("u1");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(invoke).toHaveBeenCalledTimes(2);
+      expect(deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 
   it("bridge が無い（Electron の外）ときは unrestricted として編集する", async () => {
     seed("project");

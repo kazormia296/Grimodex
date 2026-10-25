@@ -542,11 +542,11 @@ export function ChatInput({
       const target = snapshotEditTarget(useChatStore.getState(), last.id);
       void admitConversationEdit({
         sceneConversation: target.sceneConversation,
+        // ArrowUp は空の入力欄でだけ発火する。読取の間に打った文字を上書きしない。
         isCurrent: () =>
           !editor.isDestroyed &&
-          isEditTargetCurrent(target, useChatStore.getState(), {
-            lastUser: true,
-          }),
+          editor.isEmpty &&
+          isEditTargetCurrent(target, useChatStore.getState()),
         proceed: () => {
           const { content, mentionedSceneIds } = editUserMessage(last.id);
           if (content) {

@@ -17,6 +17,7 @@ import {
 const h = vi.hoisted(() => {
   const editor = {
     isDestroyed: false,
+    isEmpty: true,
     // Not mounted: the input never reads the view's DOM in this test.
     get view(): never {
       throw new Error("The editor view is not available");
@@ -137,6 +138,8 @@ beforeAll(async () => {
 describe("入力欄の最後の行の編集（本物の定数のまま）", () => {
   beforeEach(() => {
     resetNonSceneEditClosureForTest();
+    h.editor.isDestroyed = false;
+    h.editor.isEmpty = true;
     h.editor.commands.setContent.mockClear();
     h.toastError.mockClear();
     h.deleteMessages.mockClear();
@@ -213,6 +216,35 @@ describe("入力欄の最後の行の編集（本物の定数のまま）", () =
     expect(h.deleteMessages).not.toHaveBeenCalled();
     expect(h.editor.commands.setContent).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["文字を打った", () => (h.editor.isEmpty = false)],
+    ["editor が破棄された", () => (h.editor.isDestroyed = true)],
+  ] as Array<[string, () => void]>)(
+    "読取の間に%sら編集しない",
+    async (_label, change) => {
+      let release!: () => void;
+      const invoke = vi.fn(
+        () =>
+          new Promise((resolve) => {
+            release = () =>
+              resolve({ ok: true, value: { state: "unrestricted" } });
+          }),
+      );
+      (window as unknown as { grimodex: unknown }).grimodex = {
+        invoke,
+        listen: vi.fn(() => () => undefined),
+      };
+      renderInput("project");
+      h.onEditLast.current();
+      await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+      change();
+      release();
+      await flush();
+      expect(h.deleteMessages).not.toHaveBeenCalled();
+      expect(h.editor.commands.setContent).not.toHaveBeenCalled();
+    },
+  );
 
   it("場面の会話では状態を読まず、同期で編集する", () => {
     const invoke = installBridge({ state: "restricted" });
