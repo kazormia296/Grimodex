@@ -434,7 +434,7 @@ commit：`e5849231`（判断の表）、`161b8862`（B-ROUTE の trigger を mai
 
 ### D′ の実機の確認 (ii) の結果（2026-10-25。`dprime-check.mjs`、receipt なし、予告と同じく integrator だけが見る）
 
-build（すべて評価 feature つき、`.artifacts/cp4/` の下だけ。既定の `.node` は c71e2447… のまま）：D′＝`eval-build/`（`eval-native-build.mjs`、候補 `00f2bb09` の clean、`.node` sha256 `c4e6dc52…`、worker `ed84c0a5…`）、対照＝`eval-build-control/`（`a0bd88da` に `acc71304` を merge した local の branch `tmp/cp4-dprime-control`〔push しない〕、cargo で直接 build、`76c3dffb…`、worker は同じ source なので D′ と同じ）、M1＝`eval-build-m1/`（cb4 の begin.rs で release を `prepare_related_scene_query` の前に置いた変異、commit しない、build 後に sha で復元を確認、`e2bf1c81…`）。fixture は `dev-setup-1` の DB の写し、`--pin-query-seed 1`。dev fixture は Graph-only の行を作らない（click の経路は通っていない）。
+build（すべて評価 feature つき、`.artifacts/cp4/` の下だけ。既定の `.node` は c71e2447… のまま）：D′＝`eval-build/`（`eval-native-build.mjs`、候補 `b8241c37` の clean、base `bdc892d7`、`.node` sha256 `c4e6dc52…`、worker `ed84c0a5…`）、対照＝`eval-build-control/`（`a0bd88da` に `acc71304` を merge した local の branch `tmp/cp4-dprime-control`〔push しない〕、cargo で直接 build、`76c3dffb…`、worker は同じ source なので D′ と同じ）、M1＝`eval-build-m1/`（cb4 の begin.rs で release を `prepare_related_scene_query` の前に置いた変異、commit しない、build 後に sha で復元を確認、`e2bf1c81…`）。fixture は `dev-setup-1` の DB の写し、`--pin-query-seed 1`。dev fixture は Graph-only の行を作らない（click の経路は通っていない）。
 
 | 項目（§6.8） | D′（`dprime-1`、N=30） | 対照（`dprime-control-1`、N=30） | M1（`dprime-m1-1`、N=30） |
 |---|---|---|---|
