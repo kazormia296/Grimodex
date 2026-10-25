@@ -361,15 +361,18 @@ fn n3_dropping_an_unreleased_ticket_frees_the_slot_at_once() {
 }
 
 /// P2-3: a held query cancelled while its session waits out the rebuild window
-/// frees the slot at once and never creates a worker.
+/// frees the slot before the window ends and never creates a worker. The
+/// window is long (3 s) and every check is against the window itself, not a
+/// wall-clock margin, so CI load cannot make the window pass first.
 #[test]
 fn n3_a_cancellation_during_the_rebuild_window_creates_no_worker() {
+    const WINDOW: Duration = Duration::from_secs(3);
     let fixture = ProductFixture::new();
     fixture
         .state
         .nir1_graph
         .set_config_for_test(GraphOwnerConfig {
-            rebuild_min_interval: Duration::from_millis(600),
+            rebuild_min_interval: WINDOW,
             ..fast_config()
         });
     let first = pending(begin_deferred(&fixture, "entity"));
@@ -379,22 +382,27 @@ fn n3_a_cancellation_during_the_rebuild_window_creates_no_worker() {
     wait_until("the end of the first session", || {
         fixture.kind() == GraphSlotKind::Empty
     });
+    // The window runs from the first prepare, which follows its creation.
+    let window_end = lock(&fixture.plan.create_times)[0] + WINDOW;
     let second = pending(begin_deferred(&fixture, "entity"));
     second.release_after_own_commits();
     wait_until("the rebuild window", || {
         fixture.kind() == GraphSlotKind::Preparing
     });
-    thread::sleep(Duration::from_millis(50));
-    let cancelled_at = Instant::now();
+    assert!(
+        Instant::now() < window_end,
+        "precondition: the window is still open"
+    );
     second.finish(GraphTicketUse::Cancelled);
     wait_until("the slot to be free", || {
         fixture.kind() == GraphSlotKind::Empty
     });
     assert!(
-        cancelled_at.elapsed() < Duration::from_millis(300),
-        "the cancellation ends the window wait"
+        Instant::now() < window_end,
+        "the cancellation ends the window wait before the window does"
     );
-    thread::sleep(Duration::from_millis(700));
+    // Empty is published by the session's guard: the thread is done and
+    // can create nothing more.
     assert_eq!(creates(&fixture), 1, "no worker for the cancelled query");
 }
 
