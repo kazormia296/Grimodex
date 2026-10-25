@@ -29,6 +29,8 @@ mod nir1_generation_owner;
 #[cfg(test)]
 mod nir1_graph_activation_tests;
 mod nir1_graph_dfinal;
+#[cfg(feature = "nir1-graph-eval")]
+mod nir1_graph_eval;
 mod nir1_graph_product;
 mod nir1_local_attempt;
 mod nir1_local_send_policy;
@@ -6714,9 +6716,10 @@ impl Backend {
             "backend:ready",
             serde_json::json!({ "schemaVersion": grimodex_core::SCHEMA_VERSION }),
         );
-        Ok(Backend {
-            state: Arc::new(state),
-        })
+        let state = Arc::new(state);
+        #[cfg(all(feature = "nir1-graph-eval", not(test)))]
+        nir1_graph_eval::register(&state);
+        Ok(Backend { state })
     }
 
     /// Main-only D2a startup status. A fresh profile remains unrestricted until
@@ -6920,6 +6923,7 @@ impl Backend {
             "licensing": cfg!(feature = "licensing"),
             "legacyKeyringMigration": cfg!(feature = "legacy-keyring-migration"),
             "nir1FinalRequestEval": cfg!(feature = "nir1-final-request-eval"),
+            "nir1GraphEval": cfg!(feature = "nir1-graph-eval"),
         })
         .to_string())
     }

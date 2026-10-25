@@ -12,7 +12,8 @@ const nativePath = path.join(
   rootDir,
   "electron/native/grimodex-node/grimodex-node.node",
 );
-const { Backend } = require(nativePath);
+const native = require(nativePath);
+const { Backend } = native;
 const temp = mkdtempSync(path.join(tmpdir(), "grimodex-release-native-"));
 
 try {
@@ -22,7 +23,13 @@ try {
     licensing: true,
     legacyKeyringMigration: true,
     nir1FinalRequestEval: false,
+    nir1GraphEval: false,
   });
+  // CP-4 S1a: the evaluation-only Graph functions never ship.
+  assert.deepEqual(
+    Object.keys(native).filter((name) => name.startsWith("nir1GraphEval")),
+    [],
+  );
   const license = JSON.parse(await backend.getLicenseState());
   assert.equal(license.licensingEnabled, true);
   assert.equal(typeof backend.readLegacyApiKeysForMigration, "function");

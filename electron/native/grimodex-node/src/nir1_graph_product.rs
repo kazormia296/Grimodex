@@ -420,6 +420,11 @@ struct Shared {
     diagnostics: DiagnosticCounters,
     #[cfg(test)]
     publication_open_for_test: AtomicBool,
+    /// CP-4 S1a: set only by `nir1_graph_eval::register` for the AppState the
+    /// evaluation build's `Backend::new` made. The field does not exist in the
+    /// product build.
+    #[cfg(feature = "nir1-graph-eval")]
+    publication_open_for_eval: AtomicBool,
 }
 
 impl Shared {
@@ -448,11 +453,17 @@ impl Shared {
             diagnostics: DiagnosticCounters::default(),
             #[cfg(test)]
             publication_open_for_test: AtomicBool::new(false),
+            #[cfg(feature = "nir1-graph-eval")]
+            publication_open_for_eval: AtomicBool::new(false),
         }
     }
 
     fn publication_open(&self) -> bool {
         if PRODUCT_GRAPH_PUBLISHED {
+            return true;
+        }
+        #[cfg(feature = "nir1-graph-eval")]
+        if self.publication_open_for_eval.load(Ordering::SeqCst) {
             return true;
         }
         #[cfg(test)]
@@ -862,6 +873,15 @@ impl Nir1GraphProductOwner {
 
     /// Wait-free admission. Every refusal names its reason; nothing is awaited.
     pub(crate) fn begin(&self, state: &Arc<AppState>, query: GraphQuery) -> GraphBegin {
+        #[cfg(feature = "nir1-graph-eval")]
+        let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self);
+        let result = self.admit(state, query);
+        #[cfg(feature = "nir1-graph-eval")]
+        eval_probe.finish(&result);
+        result
+    }
+
+    fn admit(&self, state: &Arc<AppState>, query: GraphQuery) -> GraphBegin {
         let shared = &self.shared;
         bump(&shared.diagnostics.begins);
         if query.seed_entity_id.is_empty() {
@@ -1165,6 +1185,11 @@ impl Nir1GraphProductOwner {
 
     #[cfg(test)]
     pub(crate) fn slot_kind_for_test(&self) -> GraphSlotKind {
+        self.slot_kind()
+    }
+
+    #[cfg(any(test, feature = "nir1-graph-eval"))]
+    fn slot_kind(&self) -> GraphSlotKind {
         match lock(&self.shared.slot).phase {
             Phase::Empty => GraphSlotKind::Empty,
             Phase::Preparing => GraphSlotKind::Preparing,
@@ -1193,6 +1218,64 @@ impl Nir1GraphProductOwner {
 impl Drop for Nir1GraphProductOwner {
     fn drop(&mut self) {
         self.shared.close();
+    }
+}
+
+/// CP-4 S1a: what the evaluation module (`nir1_graph_eval`) may do to an owner.
+/// None of it exists in the product build, and none of it changes a rule of the
+/// owner: the publication flag is the only gate it opens, and only for the
+/// owner of the AppState the evaluation build's `Backend::new` registered.
+#[cfg(feature = "nir1-graph-eval")]
+impl Nir1GraphProductOwner {
+    pub(crate) fn open_publication_for_eval(&self) {
+        self.shared
+            .publication_open_for_eval
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn publication_open_for_eval(&self) -> bool {
+        self.shared.publication_open_for_eval.load(Ordering::SeqCst)
+    }
+
+    /// Empties the single-entry next-query cache, as K6/2 (a) asks before each
+    /// sample. True when an entry was there.
+    pub(crate) fn clear_next_query_cache_for_eval(&self) -> bool {
+        lock(&self.shared.cache).take().is_some()
+    }
+
+    pub(crate) fn cache_occupied_for_eval(&self) -> bool {
+        lock(&self.shared.cache).is_some()
+    }
+
+    pub(crate) fn worker_configured_for_eval(&self) -> bool {
+        self.shared.worker.get().is_some()
+    }
+
+    pub(crate) fn slot_kind_for_eval(&self) -> GraphSlotKind {
+        self.slot_kind()
+    }
+}
+
+/// CP-4 S1a: the evaluation record reads when a ticket settled. It never
+/// settles or declares one.
+#[cfg(feature = "nir1-graph-eval")]
+impl GraphTicketWaiter {
+    pub(crate) fn begun_at_for_eval(&self) -> Instant {
+        self.shared.begun_at
+    }
+
+    pub(crate) fn settlement_for_eval(
+        &self,
+    ) -> Option<(Instant, Option<GraphUnavailable>, Option<GraphTicketUse>)> {
+        let state = lock(&self.shared.state);
+        let disposition = state.disposition;
+        state.outcome.as_ref().map(|(outcome, at)| {
+            let reason = match outcome {
+                GraphTicketOutcome::Available(_) => None,
+                GraphTicketOutcome::Unavailable(reason) => Some(*reason),
+            };
+            (*at, reason, disposition)
+        })
     }
 }
 

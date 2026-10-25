@@ -38,6 +38,8 @@ pub mod nir1_chronicle_index;
 mod nir1_entity_relation;
 pub mod nir1_entity_relation_index;
 pub mod nir1_graph;
+#[cfg(feature = "nir1-graph-eval")]
+pub mod nir1_graph_eval;
 mod nir1_graph_index_maintenance;
 pub use declaration_storage::{
     read_active_dependency_declaration_set, verify_dependency_declaration_storage,
