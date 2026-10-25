@@ -692,7 +692,13 @@ describe("release workflow boundary", () => {
     assert.match(wrapper, /pnpm@11\.13\.0/);
     assert.match(wrapper, /--pm-on-fail=ignore/);
     assert.match(wrapper, /--audit-level/);
-    assert.match(wrapper, /GHSA-ch52-4w7c-c8xp/);
+    // http-cache-semantics 4.3.0 resolved GHSA-ch52-4w7c-c8xp, so the audit ignores no advisory.
+    assert.doesNotMatch(wrapper, /ignoreGhsas|--ignore\b|exception/);
+    const lockfile = await readFile(
+      path.join(repoRoot, "pnpm-lock.yaml"),
+      "utf8",
+    );
+    assert.doesNotMatch(lockfile, /^ {2}http-cache-semantics@4\.[0-2]\./m);
   });
 
   it("scopes the Rust audit exception to the zip crate pulled in by the legacy updater", async () => {
