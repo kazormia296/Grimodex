@@ -181,6 +181,12 @@ export function judgeOs({ baseline, toolcheck, packaged, packageCheck }) {
       dictionaryRequests: packaged?.netLog?.dictionaryRequests ?? [],
       h9: packaged?.netLog?.h9 ?? null,
       osDialogs: packaged?.osDialogs ?? null,
+      // 受け口（canary、DoH、mDNS など）の close が上限を超えた構成（判定には使わない。harness の後始末の警告。ある時だけ出す）
+      ...((() => {
+        const notClosed = [["baseline", baseline], ["toolcheck", toolcheck], ["packaged", packaged]]
+          .filter(([, record]) => record?.observersClosed === false).map(([config]) => config);
+        return notClosed.length ? { observersNotClosed: notClosed } : {};
+      })()),
       dictionariesOnDisk: packaged?.dictionariesOnDisk ?? null,
     },
   };
@@ -208,6 +214,7 @@ export function formatVerdict(os, verdict) {
   for (const row of verdict.recorded.shimmedRows ?? []) {
     lines.push(`  記録: shim 済みの行 ${row.id}（${row.kind ?? "?"}、判定 ${row.verdict}。packaged では送信しないので実質は実行されていない。合格の数には含む）`);
   }
+  for (const config of verdict.recorded.observersNotClosed ?? []) lines.push(`  警告: ${config} の受け口が上限の時間で閉じなかった（harness の後始末。判定には使わない）`);
   lines.push(`記録（合否にしない）: NC-1 の network の段の下限 ${verdict.recorded.nc1.networkPhaseLowerBoundMs} ms、起動から窓まで ${verdict.recorded.nc1.launchToWindowMs} ms（期限 5000 ms）、辞書の要求 ${verdict.recorded.dictionaryRequests.length} 件、H9 ${JSON.stringify(verdict.recorded.h9)}`);
   return lines.join("\n");
 }

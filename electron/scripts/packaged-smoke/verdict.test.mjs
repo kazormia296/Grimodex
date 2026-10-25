@@ -278,3 +278,13 @@ test("form の shim の影響を受けた行は、判定を変えずに出力で
   assert.deepEqual(verdict.recorded.shimmedRows, [{ id: "dns.form-submit", verdict: "pass", kind: "hint" }]);
   assert.match(formatVerdict("linux", verdict), /shim 済みの行 dns\.form-submit（hint、判定 pass。packaged では送信しない/);
 });
+
+test("受け口の close が上限を超えた構成は、判定を変えずに警告として出す", () => {
+  const set = passingSet();
+  set.toolcheck.observersClosed = false;
+  set.packaged.observersClosed = true;
+  const verdict = judgeOs(set);
+  assert.equal(verdict.status, "pass");
+  assert.deepEqual(verdict.recorded.observersNotClosed, ["toolcheck"]);
+  assert.match(formatVerdict("linux", verdict), /警告: toolcheck の受け口が上限の時間で閉じなかった/);
+});

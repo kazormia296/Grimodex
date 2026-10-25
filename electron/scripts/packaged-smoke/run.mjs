@@ -571,7 +571,9 @@ async function runConfig(config, context) {
       ...body,
     };
   } finally {
-    if (observers) await observers.close();
+    // 受け口の close は上限つき。上限を超えて閉じなかったら記録に残す（判定の出力に警告として出る）
+    const closedInTime = observers ? await observers.close() : true;
+    if (record) record.observersClosed = closedInTime === true;
     if (!context.args.keep) removeDir(work);
   }
   // raw の net log の SHA-256 は伏せ字の置換の外に置く（16 進の nonce が digest の中に現れうる）
