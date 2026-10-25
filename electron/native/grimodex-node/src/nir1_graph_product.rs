@@ -16,8 +16,8 @@
 use std::{
     cell::RefCell,
     panic::{catch_unwind, AssertUnwindSafe},
-    rc::Rc,
     path::{Path, PathBuf},
+    rc::Rc,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, Receiver, RecvTimeoutError, SyncSender, TrySendError},
@@ -681,7 +681,11 @@ impl Shared {
     /// instead of at the end of its hold. Called with no other lock held.
     fn wake_deferred(&self) {
         let slot = lock(&self.slot);
-        if let Some(session) = slot.session.as_ref().filter(|session| session.held.is_some()) {
+        if let Some(session) = slot
+            .session
+            .as_ref()
+            .filter(|session| session.held.is_some())
+        {
             let _ = session.commands.try_send(Command::Wake);
         }
     }
@@ -795,7 +799,11 @@ fn note_held_unserved(slot: &mut SlotState, result: &GraphBegin, project_id: &st
     ) {
         return;
     }
-    let Some(waiting) = slot.session.as_mut().and_then(|session| session.held.as_mut()) else {
+    let Some(waiting) = slot
+        .session
+        .as_mut()
+        .and_then(|session| session.held.as_mut())
+    else {
         return;
     };
     if waiting.iter().any(|existing| existing == project_id) {
