@@ -163,6 +163,8 @@ export async function startSession({
     addon,
     remember,
     pids: () => [...recorded.values()].map((row) => row.pid),
+    // Main の stderr の全体（D′ の確認で固定の失敗の code を数える）。
+    stderr: () => handle.stderr(),
     async stop() {
       remember();
       const socketSamples = sampler.stop();

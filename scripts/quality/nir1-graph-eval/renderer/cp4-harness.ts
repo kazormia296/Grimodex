@@ -23,7 +23,7 @@ import { setCurrentRuntimeProjectId } from "@/runtime/projectIdentity";
 import { publishCurrentProjectId } from "@/application/project/currentProjectAuthority";
 import { createProject, listProjects } from "@/features/project/api";
 import { useProjectStore } from "@/features/project/projectStore";
-import { loadSceneContent } from "@/features/tree/api";
+import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
@@ -38,6 +38,15 @@ import {
   semanticSearch,
 } from "@/features/semantic-search/api";
 import { fetchRelatedPastScenes } from "@/features/related-scenes/fetchRelatedScenes";
+import {
+  beginRelatedScenes,
+  continueRelatedScenesGraph,
+  listenRelatedScenesGraphReady,
+  qualifyNir1Evidence,
+  releaseRelatedScenes,
+  settleRelatedScenesGraph,
+} from "@/features/related-scenes/nir1RelatedScenesApi";
+import { buildSemanticRecallQuery } from "@/features/chat/semanticRecall";
 import { fuseNir1RelatedScenesGraph } from "@/features/related-scenes/nir1GraphFusion";
 import {
   declareBody,
@@ -373,6 +382,259 @@ async function buildIndex(input: { sceneId: string; limitMs: number }) {
   return { ok: false, durationMs: performance.now() - started, probes };
 }
 
+// ---- CQ-DEFER（D′）の実機の確認 (ii)（cq-deferred-decisions §6.8 の 3〜9） ----
+//
+// 製品の renderer API（timing shim の後ろの製品の関数）を 1 段ずつ呼ぶ。測定の
+// receipt は書かない（DR-CP4-S1C2-24）。
+
+const graphReadyEvents: { projectId: string; at: number }[] = [];
+let graphReadyListening: Promise<unknown> | null = null;
+
+function listenGraphReady() {
+  graphReadyListening ??= listenRelatedScenesGraphReady((projectId) =>
+    graphReadyEvents.push({ projectId, at: performance.now() }),
+  );
+  return graphReadyListening;
+}
+
+/** 製品の begin と同じ query（`fetchNir1RelatedPastScenes` の組み立て）。 */
+async function savedQuery(sceneId: string) {
+  const body = prosemirrorToText((await loadSceneContent(sceneId)) ?? "");
+  return buildSemanticRecallQuery({ userMessage: "", sceneBody: body });
+}
+
+interface HeldInput {
+  workspacePath: string;
+  projectId: string;
+  sceneId: string;
+  seed: string | null;
+  readyWaitMs: number;
+}
+
+async function timedBegin(input: HeldInput, query: string) {
+  const calledAt = performance.now();
+  const response = await beginRelatedScenes({
+    expectedWorkspacePath: input.workspacePath,
+    projectId: input.projectId,
+    currentSceneId: input.sceneId,
+    query,
+    ...(input.seed ? { graphSeedEntityId: input.seed } : {}),
+  });
+  const resolvedAt = performance.now();
+  return {
+    response,
+    ticket:
+      response.ir.status === "pending" ? response.ir.operationTicket : null,
+    row: {
+      roundTripMs: resolvedAt - calledAt,
+      calledAt,
+      ir: response.ir.status === "pending" ? "pending" : response.ir.reason,
+      graph: response.graph ?? null,
+      denseHits: response.denseHits.length,
+      firstSnapshotElapsedMs: response.timing?.firstSnapshotElapsedMs ?? null,
+      rawReadyElapsedMs: response.timing?.rawReadyElapsedMs ?? null,
+    },
+  };
+}
+
+/**
+ * §6.8 の 3：seed つきの begin → Graph の continue（Native の await、上限 2 s）→
+ * Graph-only の handle があれば click（`nir1_evidence_qualify`）→ `unused` の
+ * settle → `graph-ready` → 同じ query の再 begin（Native の記録で `cached` を
+ * 確かめる）→ continue → `used` の settle → release。seed が null なら begin と
+ * release だけ（§6.8 の 5 の比較）。
+ */
+async function heldSample(input: HeldInput) {
+  await listenGraphReady();
+  const query = await savedQuery(input.sceneId);
+  const eventsBefore = graphReadyEvents.length;
+  const out: Record<string, unknown> = {};
+  const errors: string[] = [];
+  const first = await timedBegin(input, query);
+  out.begin = first.row;
+  const rawIds = first.response.denseHits.map((hit) => hit.sceneId);
+  try {
+    if (first.ticket && first.response.graph?.status === "pending") {
+      const waitAt = performance.now();
+      const wait = await continueRelatedScenesGraph(first.ticket, rawIds);
+      out.graph = {
+        status: wait.status,
+        reason: wait.status === "unavailable" ? wait.reason : null,
+        waitMs: performance.now() - waitAt,
+        sinceBeginCallMs: performance.now() - first.row.calledAt,
+        pathAttachments:
+          wait.status === "available" ? wait.pathAttachments.length : null,
+        graphOnly: wait.status === "available" ? wait.graphOnly !== null : null,
+      };
+      if (wait.status === "available" && wait.graphOnly) {
+        const clickAt = performance.now();
+        const click = await qualifyNir1Evidence(
+          wait.graphOnly.navigationIdentity,
+        );
+        out.click = {
+          status: click.status,
+          reason: click.status === "unavailable" ? click.reason : null,
+          ms: performance.now() - clickAt,
+        };
+      }
+      const settleAt = performance.now();
+      const settled = await settleRelatedScenesGraph(first.ticket, "unused");
+      out.settle = { status: settled.status };
+      const deadline = settleAt + input.readyWaitMs;
+      while (
+        !graphReadyEvents
+          .slice(eventsBefore)
+          .some((event) => event.projectId === input.projectId) &&
+        performance.now() < deadline
+      )
+        await sleep(5);
+      const ready = graphReadyEvents
+        .slice(eventsBefore)
+        .filter((event) => event.projectId === input.projectId);
+      out.graphReady = {
+        count: ready.length,
+        afterSettleMs: ready[0] ? ready[0].at - settleAt : null,
+      };
+      if (ready.length > 0) {
+        const again = await timedBegin(input, query);
+        const requery: Record<string, unknown> = { begin: again.row };
+        if (again.ticket && again.response.graph?.status === "pending") {
+          const wait = await continueRelatedScenesGraph(
+            again.ticket,
+            again.response.denseHits.map((hit) => hit.sceneId),
+          );
+          requery.graph = {
+            status: wait.status,
+            reason: wait.status === "unavailable" ? wait.reason : null,
+          };
+          await settleRelatedScenesGraph(again.ticket, "used");
+        }
+        if (again.ticket) await releaseRelatedScenes(again.ticket);
+        out.requery = requery;
+      }
+    }
+  } catch (error) {
+    errors.push(describe(error));
+  } finally {
+    if (first.ticket) await releaseRelatedScenes(first.ticket).catch(() => {});
+  }
+  out.errors = errors;
+  return out;
+}
+
+/**
+ * §6.8 の 9：同じ project を待つ 2 つの表示（製品の fetch を `graph-ready` の
+ * たびにやり直す消費者を 2 つ、同じ renderer に置く）と、別の Scene の連続の
+ * 自動保存。`durationMs` の間 `editEveryMs` ごとに保存し、その後 `quietMs` の間
+ * 保存を止めて観測する。
+ */
+async function twoViews(input: {
+  projectId: string;
+  viewSceneId: string;
+  seed: string;
+  editSceneId: string;
+  durationMs: number;
+  editEveryMs: number;
+  quietMs: number;
+  views: number;
+}) {
+  await listenGraphReady();
+  const startedAt = performance.now();
+  const editUntil = startedAt + input.durationMs;
+  const stopAt = editUntil + input.quietMs;
+  const fetches: {
+    view: number;
+    at: number;
+    trigger: string;
+    graphOutcome: unknown;
+  }[] = [];
+  const saves: { at: number; ok: boolean; error?: string }[] = [];
+  let stopped = false;
+  const view = async (index: number) => {
+    let seen = graphReadyEvents.length;
+    let trigger = "initial";
+    while (!stopped) {
+      const at = performance.now();
+      const result = await fetchRelatedPastScenes(input.viewSceneId, {
+        mode: "hybrid",
+        graphSeedEntityId: input.seed,
+      });
+      fetches.push({
+        view: index,
+        at: at - startedAt,
+        trigger,
+        graphOutcome: result.graphOutcome ?? null,
+      });
+      result.session?.release();
+      // 次の `graph-ready`（この project）まで待つ。
+      while (!stopped) {
+        const next = graphReadyEvents
+          .slice(seen)
+          .findIndex((event) => event.projectId === input.projectId);
+        if (next >= 0) {
+          seen += next + 1;
+          trigger = "graph-ready";
+          break;
+        }
+        if (performance.now() >= stopAt) stopped = true;
+        await sleep(5);
+      }
+    }
+  };
+  const editor = async () => {
+    let at = 0;
+    while (performance.now() < editUntil) {
+      at += 1;
+      try {
+        const text = `Edit ${at} of the CP-4 D′ check at ${Math.round(performance.now())}.`;
+        await saveSceneContent(
+          input.editSceneId,
+          JSON.stringify({
+            type: "doc",
+            content: [{ type: "paragraph", content: [{ type: "text", text }] }],
+          }),
+        );
+        saves.push({ at: performance.now() - startedAt, ok: true });
+      } catch (error) {
+        saves.push({
+          at: performance.now() - startedAt,
+          ok: false,
+          error: describe(error),
+        });
+      }
+      await sleep(input.editEveryMs);
+    }
+  };
+  const eventsBefore = graphReadyEvents.length;
+  await Promise.all([
+    ...Array.from({ length: input.views }, (_, index) => view(index)),
+    editor(),
+  ]);
+  const events = graphReadyEvents
+    .slice(eventsBefore)
+    .filter((event) => event.projectId === input.projectId)
+    .map((event) => event.at - startedAt);
+  const editEndMs = input.durationMs;
+  return {
+    durationMs: input.durationMs,
+    quietMs: input.quietMs,
+    views: input.views,
+    saves,
+    fetches,
+    graphReadyAtMs: events,
+    duringEdits: {
+      graphReady: events.filter((at) => at < editEndMs).length,
+      fetches: fetches.filter((row) => row.at < editEndMs).length,
+    },
+    afterEdits: {
+      graphReady: events.filter((at) => at >= editEndMs).length,
+      fetches: fetches.filter((row) => row.at >= editEndMs).length,
+      lastGraphReadyAfterEditEndMs:
+        events.filter((at) => at >= editEndMs).at(-1) ?? null,
+    },
+  };
+}
+
 (window as unknown as { cp4Harness: unknown }).cp4Harness = {
   ready: true,
   instrument,
@@ -387,4 +649,10 @@ async function buildIndex(input: { sceneId: string; limitMs: number }) {
   buildRaw: (input: Parameters<typeof buildRaw>[0]) =>
     guarded(() => buildRaw(input)),
   buildIndex,
+  dprime: {
+    heldSample: (input: HeldInput) => guarded(() => heldSample(input)),
+    twoViews: (input: Parameters<typeof twoViews>[0]) =>
+      guarded(() => twoViews(input)),
+    graphReadyCount: () => graphReadyEvents.length,
+  },
 };
