@@ -114,3 +114,60 @@ DT-2 の `SessionUnresolved` の liveness（dt2-decisions §9）：入口では�
 - 実 local server／model の応答（DT-5 の DR-DT5-27 のまま未実測。U-1）。試験は loopback の script server だけ。
 - Windows／macOS での取消の join（DR-DT5-24）。DD-1a は Linux の cargo の試験だけ。
 - Main の gate、seam、sender の束縛、key の判定、`NIR1_RESTRICTED_ONLY_COMMANDS`（DD-1b）。
+
+## 実装後の追記（2026-10-26。上の行は実装前の記録のまま残し、変えた点はここに足す）
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-DD1A-13 | 2026-10-26 | DD-1a | 会話の current な capture の読取（P11）。`nir1_prepared_request::current_submission_for_session` が、caller から capture の writer と同じ `capture_owner`（今の route の revocation generation を含む）を作り、grimodex-db の `read_current_capture_for_session_bounded` で、その session の state が current の capture のうち owner_json と Scene が一致するものだけを、既存の current-capture の reader（`read_current_chat_input_capture_in_tx`）で確かめてから `NativeAcceptedChatSubmission` にする。historical な version ID は受けず、別の caller・epoch・workspace の incarnation・route の世代の capture は None（typed `NIR1_LOCAL_CAPTURE_NOT_CURRENT`）。DT-2 の create と claim がさらに読み直す | capture の能力を作れるのは、その session の今の capture をその owner が持つときだけ | capture の N-API が受理した能力を process 内に保存して start で引く（capture の入口の挙動を変える。K5/3:586 は capture の入口を変えないとする） | 不要 | 該当なし | P2 の 7 | 実装・試験済み（E5） |
+| DR-DD1A-14 | 2026-10-26 | DD-1a | 読取の行の順（DR-DD1A-10 の変更）。version の `created_at_ms` ではなく、version 行の rowid（書いた順）で並べる。Human の行の時刻は renderer の値（capture の `createdAt`）で、Native の時刻の出力と比べると順が入れ替わる（試験で入れ替わった）。表示には `createdAtMs` をそのまま返す | 並びは表示の順だけで、範囲（どの行を返すか）は変わらない | created_at の順のまま（renderer が順を決められる） | 不要 | 該当なし | 不要 | 実装・試験済み（E4） |
+| DR-DD1A-15 | 2026-10-26 | DD-1a | 取消の再実行（DR-DD1A-9 の補足）。entry に「取り下げた」（`withdrawn`）と「writer が終端の結果に達した」（`capture_settled`）を持つ。run が final でも、取り下げ済みで writer が未了なら、再実行は owner の `cancel()` と writer をやり直す（K4/3：同じ command の再実行で続けられる）。continue は、取り下げの writer が未了の handle を空の差分でも外さない（final から 60 s の保持の後は start の掃除が外す。その後は既存の `cancel_current_chat_input` が同じ writer を持つ） | 再実行も同じ caller の一致を要する | 終端の後は常に何もしない（writer の失敗の後に capture を cancelled にできなくなる） | 不要 | 該当なし | P8 の行 | 実装・試験済み（E8b、E8d） |
+| DR-DD1A-16 | 2026-10-26 | DD-1a | 分類と型。`evals/quality-manifest.yaml` の GDX-POLICY-001 に `nir1_local_entry.rs`（attempt の前の policy の検査を結線する場所）を `implementedBy` に、`nir1_local_entry_tests.rs`（E6、E6b）を `lightTests` に足した。impact-map は既存の glob で分類済み（変更なし）。`index.d.ts` に 7 つの method を、napi の生成と同じ形で手で足した（napi build は走らせていない）。`NAPI_COMMANDS`、`NapiBackendLike`、`AI_TRANSPORT_COMMANDS` は変えていない（DD-1b／c） | 分類だけ | manifest を変えない（policy の検査の結線の場所が分類に出ない） | 不要 | 該当なし | 不要 | 実装済み |
+
+### 試験（`electron/native/grimodex-node/src/nir1_local_entry_tests.rs`、19 件）と変異
+
+E1（gate 閉で 6 command が引数・caller identity を読む前に拒否、DB と recorder は不変、開けると同じ start が通る）、E1b（製品のコードが gate を開けない、entry が event を出さない）、E2（印は ID だけ、title と model は既定値、CW の改名で一覧・start・read が不変、live でない Scene・未登録の caller・形の違いを拒否）、E3（一覧は印のある会話だけ、偽の接頭辞と通常の session を返さない、表示名は purpose と作成時刻だけ）、E4（read は capture の入力とこの route の成功の出力だけ、capture のない user 行・他の provider の出力・改変した行の内容を返さない、印のない session は拒否、別の caller も読める、範囲と limit）、E5（capture の前の検査の各拒否で attempt・監査・接続・記録が 0、key を外して押し直すと 1 回送る）、E5b（DT-1 の gate が開く前の start は押し直せる）、E6（policy の拒否・create の清潔な失敗〔VetoCommit〕・成功の後の押し直しを記録で拒否）、E6a（進行中の 2 件目は `SessionBusy`、接続 1 のまま、押し直しは記録で拒否）、E6b（Writing の bodyWrite／Review の analysis が false、読めない値で attempt・監査・接続・owner が 0）、E7（別 sender・別 epoch・別 caller session・未知の handle は同じ拒否、1 回 64 KiB、drained の後は消える）、E7b（登録の外れた caller は CALLER_REVOKED で run が止まり capture は current）、E8（create の前・create と claim の間・claim の COMMIT の後・開始判断の前・送信の後の取消で、capture は cancelled、開始判断の前は送信 0〔create の前は attempt 0、その後は Cancelled の終端 1 件〕、送信の後は socket が閉じる）、E8b（writer の失敗は成功にならず、再実行で cancelled）、E8c（終端の後の取消は何も変えない）、E8d（writer の入口が拒否されても owner が先に止まる）、E9（sender の取消は capture を変えない）、E9b（transport の間に startup lease が 0、他が DB の接続を持つ間も continue と `cancel()` が 250 ms の内に戻る）、E10（Writing と Review が recorder に 1 回、body の digest が attempt の payload digest と一致、監査の 5 件の順、別の AppState で同じ DB を開き直した後も一覧と読取が会話を返す）。grimodex-db の `the_mark_parser_and_the_glob_agree`（parse と GLOB が同じ ID を選ぶ）。
+
+| 変異（commit しない） | 落ちた試験 |
+|---|---|
+| M1 Native gate を既定で開く | E1 |
+| M2 `check_before_attempt` を飛ばす（不許可でも既定の basis で進む） | E6、E6b |
+| M3 start の記録を DT-2 の `capture` の後に置く | E6a |
+| M4 start の記録で拒否しない | E6、E6a |
+| M5 cancel から capture の writer を外す | E8、E8b |
+| M6 cancel から entry の owner の `cancel()` を外す（registry 経由の cancel は残る） | E8d |
+| M7 印を title に置き、一覧を title で引く | E2 |
+| M8 continue／cancel が caller を照合しない | E7 |
+| M9 read が digest の照合に落ちた行の本文を返す | E4 |
+| M10 continue が登録を再確認しない | E7b |
+| M11 どの ID もこの route の会話とみなす | E2、E4、E5、E6b、E10 |
+| M12 owner の `cancel()` を writer の後に呼ぶ | E8d |
+
+実行：grimodex-node `--lib`（688 件通過、7 件 ignored。E8d を足す前の実行）、`--lib nir1_local_entry`（19 件通過）、grimodex-db `--features native-current-human-capture --lib local_conversation`（1 件）。`cargo +1.99.0 clippy --manifest-path electron/native/grimodex-node/Cargo.toml --all-targets --features licensing,legacy-keyring-migration -- -D warnings` は警告 0。grimodex-db を `native-current-human-capture` つきで 1.99.0 の clippy にかけると、master の既存の 5 件（`nir1_packing.rs:1488`、`nir1_generation.rs` の型の複雑さ 3 件、`nir1_packing_tests.rs:1223`）が出る（CI はこの feature で db を lint しない。DD-1a の file の指摘は 0 にした）。`node --test` の architecture（37）、impact-map（37）、quality-workflow（23）、certify-gate-b2-bindings（13）、freeze-gate-b2-candidate（1）、`eval-fixtures.mjs` と `impact-map.mjs`、vitest の `aiPathRegistry.test.ts`（71）と electron の 6 file（288）が通過。
+
+### capture の前に置いた検査の一覧（PR 本文に写す）
+
+1 Native gate → 2 引数の形と Main の key 判定の形 → 3 restricted・in-flight 停止済み・登録済みの caller → 4 key 判定 `absent` → 5 DT-1 の startup gate が Open → 6 会話の印・purpose・Scene（live） → 7 この caller の current な capture → 8 handle の空き → 9 start の記録の空き。以後（DT-2 の `capture` の段の拒否、AI 使用ポリシー、D-final、create、再観測、claim、送信）は押し直せない。
+
+### TASK §8 のうち確かめたこと
+
+- 6（印の置き場と既存の画面の共存）：import（Novelcrafter の chat）は session に新しい UUID を振り、通常の会話の作成は `crypto.randomUUID()`、IPC は chat の ID を 256 文字以下の trim 済み文字列として扱う。どれも印を作らず、印のある ID を拒否しない（コードで確認。E3 が偽の接頭辞を除くこと、E2 が既定の title のままであることを固定）。
+- 7（本文が空の成功）：continue は `succeeded` と空の text をそのまま返す（判断のみ。専用の試験はない）。
+- 12（heavy cargo の排他）：repo の外のローカルの道具（scratchpad の `heavy.sh`、flock の 3 slot）で、repo には無い。
+- ほか（1〜5、8〜11）は DD-1b 以降か評価の範囲で、DD-1a では確かめていない。
+
+### DD-1b への申し送り
+
+- N-API の形：`nir1LocalGenerationStart(intent, mainVerdict, callerIdentity)`（intent は `{purpose: "writing"|"review", conversationId, sceneId}`、mainVerdict は `{endpointId, keyVerdict: "absent"|"present"|"check-failed"}`）、`nir1LocalGenerationContinue({handle}, …)`、`nir1LocalGenerationCancel({handle}, …)`、`nir1LocalConversationCreate({purpose, sceneId}, …)`、`nir1LocalConversationList(callerIdentity)`、`nir1LocalConversationRead({conversationId, offset, limit 1〜64}, …)`。どれも JSON 文字列で `status` を持ち、拒否は `{status, reason}`（typed）。ID は 256 bytes 以下の trim 済み文字列。
+- Main 専用：`mainOpenPrePublicationGate("nir1-local-generation")`（seam だけ）、`mainNir1LocalGenerationCancelSender(senderId)`（sender の destroyed／window の close）。どちらも `NAPI_COMMANDS` に載せない。epoch の変化は Native の continue が登録の再確認で止めるが、Main からも sender の取消を呼ぶ。
+- key 判定は endpoint の id ごと（`default` は旧 account を含む）に Main が行い、`endpointId` は Native が解決した route の endpoint と一致しないと D-final が拒否する（`NIR1_PREPARED_ENDPOINT_ID_MISMATCH`。start の後の段で、押し直せない）。
+- renderer（DD-1c）：continue の間隔は 100 ms 以上を推奨、state は `starting`／`running`／終端の 3 種、`drained` で handle が消える。押し直せる拒否は上の一覧の 1〜9 の理由だけ。
+
+### 確かめられなかったこと（実装後）
+
+- 受入れ試験は実装と同じ commit で書いた。「修正前に落ちる」ことは、実装前の実行ではなく、上の変異 M1〜M12 で各試験が落ちることで確かめた。
+- `electron/native/grimodex-node/test/*.test.mjs`（node の addon の試験）は、この worktree に build した `.node` がなく実行していない。napi build も走らせていない（`index.d.ts` は手で追随）。
+- 実 Electron、Windows／macOS、実 local server／model、IPv6（`[::1]`）の route での入口の試験（transport の `[::1]` は DT-5 の C1c）。
+- cold reopen は、同じ DB の file を新しい AppState で開き直す形で確かめた。process の再起動で start の記録と handle が消えることは構造（process 内の値）による。
+- 高リスクの判断（印の置き場、capture の前の検査の配置、starter thread）について read-only の advisor の意見は取れていない（この builder に手段がない）。独立のレビュー（lifecycle とセキュリティの 2 名）と Fable の受入れは integrator に委ねる。
+- Quick／Full は走らせていない（integrator）。
