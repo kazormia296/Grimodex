@@ -169,6 +169,7 @@ release から Graph が届くまで：rebuild の窓（前の prepare から最
 6. 対照：本 lane の commit を外した build（master の owner）で同じ手順を行い、`prepareFailures>0` または `driftAtQuery>0` になること（DR-CP4-S1C2-19〜22 の再現）。
 7. M1 の動的検出（review P2-2）：begin.rs の release を `prepare_related_scene_query` の前に移した build で同じ手順を行い、`prepareFailures>0`（registration の拒否）または `driftAtQuery>0` になること。この lane の試験は M1 を source の順序でしか検出しない。
 8. cold start（review P2-1）：起動直後の最初の seed つきの begin（embedding の model の初回ロードを含む）で、begin の受渡しから release までの時間を記録し、2 s を超える場合も保留が `timeout` にならず（`deferredExpired=0`）Graph が届くこと。保留の期限は 10 s（§7.2）。10 s を超える cold start が見つかったら integrator に返す（期限は漏れの上限で、確認済みの値ではない）。
+9. 2 つの表示＋連続編集（再 review P2-A）：同じ project を 2 つの Related Scenes の表示が待ち、編集の自動保存を続けた状態で、一定時間（例 60 s）の `graph-ready` の通知の回数、begin の回数、`ai_audit_events` の増分を記録する。編集を止めた後に往復が止まることを確かめる。
 
 ### 6.9. 重要な変更への該当
 
@@ -193,6 +194,8 @@ release から Graph が届くまで：rebuild の窓（前の prepare から最
 
 D-final への影響：保留中（と持たせた session の間）に来た D-final の begin は、同じ key なら `warming` で待ち、その session の終わりの signal で自分の session を作る。保留が長い（cold start の begin、または release されず期限まで残る）と、D-final の待ちは延びうる。D-final には 4 s の予算（`GRAPH_WAIT_BUDGET`）があり、超えれば `WaitExpired` で Graph なしで進む（fail-soft。D-final の経路と予算は変えていない）。期限を 10 s にしたことで、release されない保留が D-final の待ちを予算の終わりまで占めうる範囲は広がった（2 s → 10 s）。どちらの場合も D-final は予算で止まる。この頻度は未測定。
 
+既知の制約（再 review P2-A。直さない）：同じ project を 2 つの表示（panel の窓として切り離した Related Scenes など）が待つと、保留された側が stale になり続ける間（編集の自動保存が prepare の窓に入り続ける間）、通知 → 再 query → 保留 → もう一方は busy → session の終わりの通知、が `rebuild_min_interval`＋prepare の周期で往復しうる（1 周ごとに begin が 2 回、監査が 5 行ずつ）。止まる条件は編集が止まること。「自分の stale を除けばループしない」（7.1 の P1-1）は表示が 1 つのときだけ成り立つ。通知に project ごとの間隔の下限を付ける案は採らない：抑止した通知は次の READY まで失われうるが、D′ には自動の Rebuild が無いので、その READY がいつ来るかは決まらない（待たされた表示が Graph を受け取れなくなる）。往復の回数は (ii) で測る（§6.8 の 9）。
+
 ### 7.3. 試験と変異
 
 足した試験（owner の試験 module）：`p4_a_demand_made_to_wait_by_a_held_session_is_announced_once_at_its_end`、`p4_the_held_querys_own_stale_answer_is_not_announced`、`n2_a_release_later_than_the_await_limit_is_still_served`、`n3_a_cancellation_during_the_rebuild_window_creates_no_worker`、`i_a_without_s0_a_commit_before_the_query_is_caught_by_the_worker_drift`（S0 欠落 → `stamp_unavailable` → query の前の commit → worker の drift で stale、`drift_at_query=1`）、`a_panic_of_the_held_query_settles_it_once_as_failed`（in-flight で 1 回、`deferred_dropped=0`）、`an_owner_thread_that_ends_while_holding_settles_the_hold_once`（takeover で退役する READY が quarantine → guard が `restart-required` で 1 回、`deferred_dropped=1`）、`a_release_in_another_lifecycle_epoch_is_refused_by_the_release_itself`。N1 と (i-a) の対照 1 に「`finish(Unused)` の後に cache が空、通知なし」を足した。RS の試験の等値の試験は `the_owner_hold_limit_outlasts_a_begin_longer_than_the_await` に替えた。
@@ -204,7 +207,7 @@ D-final への影響：保留中（と持たせた session の間）に来た D-
 | MB 期限を 2 s に戻す | `n2_…` と `the_owner_hold_limit_…` が落ちた |
 | MC 窓の待ちの cancel の検査を消す | `n3_a_cancellation_during_…`（取消から slot が空くまで 300 ms 未満）が落ちた |
 | ME `release_deferred` の epoch の検査を消す | `a_release_in_another_lifecycle_epoch_…` が落ちた |
-| MF create の直前の cancel の検査だけを消す | **生き残った**（窓の検査が先に止めるため）。create の直前の検査は、窓の後の admit の間の取消に対する多重の防御で、単独で落とす試験は無い |
+| MF create の直前の cancel の検査だけを消す | **生き残った**。このとき「窓の検査が先に止めるので冗長」と書いたのは誤り（再 review P3-1 による訂正）。窓が 0 s のとき（前の prepare から 1 s 以上経っている、本番の普通の場合）は、loop の先頭の検査が 1 回通るとすぐ return し、その後（admit の実行中）に来た取消を捕まえるのは create の直前の検査だけで、無いと worker の create と prepare を 1 回無駄に行ってから `run_deferred` で退役させる。冗長ではなく、当時は**試験が無かった**。§8 で admit の hook の試験を足し、この変異が落ちることを確かめた |
 
 ### 7.4. 確認だけの項目
 
@@ -218,6 +221,32 @@ D-final への影響：保留中（と持たせた session の間）に来た D-
 | `cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib -- nir1_graph related_scenes` | 192 passed、0 failed、5 ignored。負荷の下で 2 回続けて green |
 | 同 `i_b_the_real_worker -- --ignored`（実 worker） | passed（release 26.6 ms、結果 45.2 ms、`prepareFailures=0`、`driftAtQuery=0`、対照は stale） |
 | `cargo clippy … --lib --tests` | 各 commit で警告なし |
-| `rustfmt --check`（変更した file） | 新しい差分なし |
+| `rustfmt --check`（変更した file） | 新しい差分なし（**誤り**：`nir1_graph_product.rs` に 3 か所の差分が残っていた。再 review の対応で `917218bb` で直した。§8） |
 
 未実施：(ii)（実 Electron）、cold start の実測、D-final の待ちの延びの実測、Quick／Full。
+
+
+## 8. 独立再 review（「条件つきで可、P1 なし」）の指摘への対応（2026-10-25）
+
+| 指摘 | 対応 | commit |
+|---|---|---|
+| P3-2 窓の取消の試験が負荷の下で落ちうる（600 ms の窓が先に過ぎる、「300 ms 未満」が壁時計に依存） | 窓を 3 s に広げ、判定を窓の終わり（最初の create の時刻＋窓）との比較にした。窓が開いていることを前提として確かめ、slot が空いた後の create の数を見る（空になるのは session の guard の後なので、それ以上 create は起きない）。後の固定の sleep は消した | `feb5de22` |
+| P3-4 notifier の panic で `settle_queued` が走らない | `session_main` で `settle_queued` を通知より先に行う順にした | `5e9fec56` |
+| P3-3 lock の外で通知することの試験 | notifier の中から `begin_deferred` を呼ぶ試験 `p4_a_notifier_that_calls_back_into_the_owner_is_answered`。呼出しは別の thread から 2 s の上限つきで待つので、通知が slot の lock の中に移されると試験は止まらずに失敗する（同じ thread で呼ぶと std の Mutex の再入で test の process が止まるため、この形にした） | `2da69ed1` |
+| P3-1 create の直前の検査の記録 | §7.3 の MF の行を訂正した。admit の最初の edge の検査の後に試験用（`cfg(test)`）の hook を置き、admit を止めている間に取り消すと worker の create も prepare も起きない試験 `n3_a_cancellation_during_admit_creates_no_worker` を足した | `3340344a` |
+| P2-A 2 つの表示の往復 | 直さない。§7.2 に既知の制約として書き、§6.8 の (ii) に 9 を足した | この docs の commit |
+| （自己点検）rustfmt | 前回の修正で入った 3 か所（import の順、2 つの式）を rustfmt の形にした。§7.5 の記述を訂正 | `917218bb` |
+
+変異（1 つずつ入れて対象の試験を走らせ、sha256 と touch で復元を確かめた）：
+
+| 変異 | 結果 |
+|---|---|
+| MN session の終わりの通知を guard の Drop（slot の lock の中）に移す | `p4_a_notifier_…` が落ちた（`blocked`） |
+| MF create の直前の cancel の検査を消す | `n3_a_cancellation_during_admit_…` が落ちた（create 1 回） |
+| MC 窓の loop の先頭の cancel の検査を消す | 書き直した `n3_a_cancellation_during_the_rebuild_window_…` が落ちた（slot が空くのが窓の終わりの後） |
+
+notifier の panic の順（P3-4）を落とす試験は足していない（順の入替えだけ）。
+
+検証（最終の内容に対して）：`cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib -- nir1_graph related_scenes` を負荷の下（suite の並列実行）で 2 回続けて実行し、2 回とも 194 passed、0 failed、5 ignored（opt-in）。clippy（`--lib --tests`）は各 commit で警告なし。`rustfmt --check` は変更した file で master に元からある差分（`nir1_graph_product.rs` の 13 か所、`nir1_graph_product_tests.rs` の既存の差分）だけ。
+
+未実施：(ii)（実 Electron。§6.8 の 1〜9）、cold start と 2 窓の往復の実測、Quick／Full。
