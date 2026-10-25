@@ -23,6 +23,15 @@ export function lanAddress() {
   return null;
 }
 
+/** loopback の ephemeral port で listen する。listen の error は reject（握りつぶさない） */
+export function listenOn(server, host = "127.0.0.1") {
+  return new Promise((resolve, reject) => {
+    const onError = (error) => reject(error);
+    server.once("error", onError);
+    server.listen(0, host, () => { server.off("error", onError); resolve(); });
+  });
+}
+
 const closeServer = (server) => new Promise((resolve) => { try { server.close(() => resolve()); } catch { resolve(); } });
 const closeSocket = (socket) => new Promise((resolve) => { try { socket.close(() => resolve()); } catch { resolve(); } });
 
@@ -77,7 +86,7 @@ export async function startHttp() {
     hits.push({ at: Date.now(), host: req.headers.host, url: String(req.url).slice(0, 60) });
     res.end("ok");
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOn(server);
   return { port: server.address().port, hits, close: () => closeServer(server) };
 }
 
@@ -89,7 +98,7 @@ export async function startCtlSocket() {
     socket.on("error", () => {});
     socket.setTimeout(2000, () => socket.destroy());
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  await listenOn(server);
   return { port: server.address().port, hits, close: () => closeServer(server) };
 }
 
@@ -150,11 +159,18 @@ export async function startDohCanary(work) {
       finish(Buffer.from(new URL(req.url, "https://x").searchParams.get("dns") ?? "", "base64url"));
     }
   });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  // http2 の server の close は session が閉じるまで待つ（closeAllConnections は http2 に無い）。session を持って壊す
+  const sessions = new Set();
+  server.on("session", (session) => { sessions.add(session); session.once("close", () => sessions.delete(session)); });
+  server.on("connection", (socket) => { sessions.add(socket); socket.once("close", () => sessions.delete(socket)); });
+  await listenOn(server);
   return {
     port: server.address().port,
     queries,
-    close: () => new Promise((resolve) => { server.close(() => resolve()); server.closeAllConnections?.(); }),
+    close: () => new Promise((resolve) => {
+      server.close(() => resolve());
+      for (const entry of sessions) { try { entry.destroy(); } catch { /* 閉じている */ } }
+    }),
   };
 }
 
