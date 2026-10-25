@@ -14,7 +14,9 @@
 #![cfg_attr(not(test), allow(dead_code))] // Still unused: the process worker (CP-2b), its path configuration, the Suspended resume hook (PUB-G/CP-4) and test-only inspection. CP-3a's callers are in related_scenes/graph.rs.
 
 use std::{
+    cell::RefCell,
     panic::{catch_unwind, AssertUnwindSafe},
+    rc::Rc,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -769,6 +771,33 @@ struct Session {
     commands: SyncSender<Command>,
     join: Option<JoinHandle<()>>,
     pending_rekey: Option<PendingRekey>,
+    /// CQ-DEFER: Some while this session holds (or serves) a Related Scenes
+    /// query: the projects whose demand was answered `warming` or `busy`
+    /// meanwhile. The held session's READY announces nothing, so they are
+    /// announced once when the session ends (`session_main`). The held query's
+    /// own answer is never added here.
+    held: Option<Vec<String>>,
+}
+
+/// CQ-DEFER: remembers a demand that a held session made wait (distinct,
+/// bounded like `unserved`). Under the slot lock.
+fn note_held_unserved(slot: &mut SlotState, result: &GraphBegin, project_id: &str) {
+    if !matches!(
+        result,
+        GraphBegin::Unavailable(GraphUnavailable::Warming | GraphUnavailable::Busy)
+    ) {
+        return;
+    }
+    let Some(waiting) = slot.session.as_mut().and_then(|session| session.held.as_mut()) else {
+        return;
+    };
+    if waiting.iter().any(|existing| existing == project_id) {
+        return;
+    }
+    if waiting.len() == MAX_UNSERVED_PROJECTS {
+        waiting.remove(0);
+    }
+    waiting.push(project_id.to_owned());
 }
 
 /// The other key a READY session is asked to rekey to, and when that demand
@@ -1382,6 +1411,7 @@ impl Shared {
         demand: Demand,
         config: GraphOwnerConfig,
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
+        let project_id = demand.key.project_id.clone();
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1427,6 +1457,7 @@ impl Shared {
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
+        note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
         (result, finished)
     }
@@ -1517,6 +1548,7 @@ impl Shared {
                     commands,
                     join: Some(join),
                     pending_rekey: None,
+                    held: None,
                 });
                 true
             }
@@ -1541,6 +1573,7 @@ impl Shared {
         config: GraphOwnerConfig,
     ) -> (GraphBegin, Vec<JoinHandle<()>>) {
         let limit = *lock(&self.deferred_limit);
+        let project_id = demand.key.project_id.clone();
         let mut slot = lock(&self.slot);
         let finished = take_finished(&mut slot.exited);
         let phase = slot.phase.clone();
@@ -1582,6 +1615,7 @@ impl Shared {
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
+        note_held_unserved(&mut slot, &result, &project_id);
         drop(slot);
         (result, finished)
     }
@@ -1620,6 +1654,9 @@ impl Shared {
             Phase::Deferred,
         ) {
             return self.count_unavailable(GraphUnavailable::WorkerUnavailable);
+        }
+        if let Some(session) = slot.session.as_mut() {
+            session.held = Some(Vec::new());
         }
         slot.deferred = Some(held);
         GraphBegin::Pending(GraphTicket {
@@ -1660,6 +1697,7 @@ impl Shared {
         session.epoch = demand.epoch;
         session.last_demand = demand.now;
         session.pending_rekey = None;
+        session.held = Some(Vec::new());
         let ticket = TicketShared::new(Arc::clone(self), demand.cache_key, demand.epoch, true);
         slot.phase = Phase::Deferred;
         slot.deferred = Some(DeferredDemand {
@@ -1756,6 +1794,9 @@ struct SessionGuard {
     in_flight: Option<Arc<TicketShared>>,
     exit: Option<Phase>,
     quarantined: bool,
+    /// CQ-DEFER: filled by the Drop with the held session's waiting projects;
+    /// `session_main` announces them once the slot shows the session's end.
+    announce_after: Rc<RefCell<Vec<String>>>,
 }
 
 impl Drop for SessionGuard {
@@ -1781,6 +1822,9 @@ impl Drop for SessionGuard {
             if let Some(mut session) = slot.session.take() {
                 if let Some(join) = session.join.take() {
                     slot.exited.push(join);
+                }
+                if let Some(waiting) = session.held.take() {
+                    *self.announce_after.borrow_mut() = waiting;
                 }
             }
             // CQ-DEFER: a held query outlives no owner thread (a panic, or an
@@ -1822,6 +1866,7 @@ impl Drop for SessionGuard {
 
 fn session_main(context: SessionContext) {
     let shared = Arc::clone(&context.shared);
+    let announce_after = Rc::new(RefCell::new(Vec::new()));
     {
         let mut guard = SessionGuard {
             shared: Arc::clone(&shared),
@@ -1831,6 +1876,7 @@ fn session_main(context: SessionContext) {
             in_flight: None,
             exit: None,
             quarantined: false,
+            announce_after: Rc::clone(&announce_after),
         };
         let outcome = catch_unwind(AssertUnwindSafe(|| run_session(&mut guard, &context)));
         if outcome.is_err() {
@@ -1840,6 +1886,16 @@ fn session_main(context: SessionContext) {
     // The guard has published the session's end (the slot phase), so a D-final
     // waiter that wakes now reads the final state.
     shared.signal_ready();
+    // CQ-DEFER: the demands a held session made wait are announced once, now
+    // that the slot is free (outside every lock). The held query's own stale
+    // answer is not among them: announcing it would repeat notice → re-query →
+    // stale (and five audit rows each time) for as long as edits continue.
+    let waiting = std::mem::take(&mut *announce_after.borrow_mut());
+    for project_id in waiting {
+        if shared.take_unserved(&project_id) {
+            shared.notify_ready(&project_id);
+        }
+    }
     // The guard has removed this session from the slot and dropped its sender,
     // so nothing can be queued behind this drain.
     settle_queued(&context.receiver);

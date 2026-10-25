@@ -208,6 +208,69 @@ fn p3_a_ready_of_another_key_is_taken_over_only_under_the_rekey_rule() {
     ticket.finish(GraphTicketUse::Used);
 }
 
+/// P1-1 (a): a demand that a held session made wait (`busy`, `warming`) is
+/// announced once, when that session ends: the held session's READY announces
+/// nothing, so without this it would wait for an unrelated READY.
+#[test]
+fn p4_a_demand_made_to_wait_by_a_held_session_is_announced_once_at_its_end() {
+    let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
+    *lock(&fixture.plan.query_mode) = QueryMode::Hold;
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    ticket.release_after_own_commits();
+    wait_until("the held query to reach the worker", || {
+        fixture.plan.queries.load(Ordering::SeqCst) == 1
+    });
+    // Another window's begin, and one for another project, are made to wait.
+    assert!(matches!(
+        begin_deferred(&fixture, "entity"),
+        GraphBegin::Unavailable(GraphUnavailable::Busy)
+    ));
+    assert!(matches!(
+        begin_deferred_for(&fixture, "other-project"),
+        GraphBegin::Unavailable(GraphUnavailable::Busy)
+    ));
+    assert!(lock(&notices).is_empty());
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    assert!(matches!(outcome(&ticket), GraphTicketOutcome::Available(_)));
+    ticket.finish(GraphTicketUse::Used);
+    wait_until("the end of the session", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    wait_until("the end-of-session notices", || lock(&notices).len() == 2);
+    thread::sleep(Duration::from_millis(80));
+    let mut announced = lock(&notices).clone();
+    announced.sort();
+    assert_eq!(
+        announced,
+        vec!["other-project".to_string(), PROJECT.to_string()],
+        "each waiting project once"
+    );
+}
+
+/// P1-1 (b): the held query's own stale answer (F10) is not announced, or an
+/// edit in progress would loop notice → re-query → stale, five audit rows each.
+#[test]
+fn p4_the_held_querys_own_stale_answer_is_not_announced() {
+    let fixture = ProductFixture::new();
+    let notices = recording_notifier(&fixture);
+    *lock(&fixture.plan.prepare_mode) = PrepareMode::Hold;
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    ticket.release_after_own_commits();
+    wait_until("the prepare after the release", || {
+        fixture.plan.prepares.load(Ordering::SeqCst) == 1
+    });
+    commit_an_edit(&fixture, "Edited while the held query prepares");
+    fixture.plan.release.store(true, Ordering::SeqCst);
+    assert_unavailable(outcome(&ticket), GraphUnavailable::Stale);
+    ticket.finish(GraphTicketUse::Unused);
+    wait_until("the end of the session", || {
+        fixture.kind() == GraphSlotKind::Empty
+    });
+    thread::sleep(Duration::from_millis(80));
+    assert!(lock(&notices).is_empty(), "{:?}", lock(&notices));
+}
+
 // ---- Negative ----------------------------------------------------------------
 
 /// N1: a commit between the release and the query (F10) is still stale.
