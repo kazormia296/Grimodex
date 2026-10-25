@@ -105,6 +105,13 @@ function code(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
 }
 
+/** A static `from "…/name"` or a dynamic `import("…/name")` of the module. */
+function importsModule(body: string, name: string): boolean {
+  return new RegExp(`(?:from\\s+|\\bimport\\s*\\(\\s*)"[^"]*/${name}"`).test(
+    body,
+  );
+}
+
 function escape(text: string): string {
   return text.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&");
 }
@@ -228,7 +235,7 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
     // Only the status display's lazy writer imports the ledger; the startup
     // `tauri` chunk reads the global the writer sets, under the constant only.
     const importers = sources.filter((file) =>
-      /from\s+"[^"]*\/profileEgressClosure"/.test(code(read(file))),
+      importsModule(code(read(file)), "profileEgressClosure"),
     );
     expect(importers).toEqual([
       "src/features/chat/closeProfileEgressEntrances.ts",
@@ -243,7 +250,7 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
 
   it("writes the closure only from the status display's lazy chunk", () => {
     const importers = sources.filter((file) =>
-      /from\s+"[^"]*\/closeProfileEgressEntrances"/.test(code(read(file))),
+      importsModule(code(read(file)), "closeProfileEgressEntrances"),
     );
     expect(importers).toEqual([
       "src/features/profile-egress/ProfileEgressStatusIndicator.tsx",

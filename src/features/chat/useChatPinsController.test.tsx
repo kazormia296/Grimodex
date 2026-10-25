@@ -276,6 +276,36 @@ describe("useChatPinsController current-input mentions", () => {
     }
   });
 
+  // The suppression is only for the creation case: with a session already
+  // active, a null from ensureSession is another failure and keeps its text.
+  it("keeps the failure text while restricted when a session was already active", async () => {
+    mocks.activeSessionId = "session-1";
+    useAiSettingsStore.setState({ profileEgressClosed: true });
+    try {
+      const { result } = renderHook(() =>
+        useChatPinsController({
+          isActive: true,
+          activeSessionId: "session-1",
+          pinsVersion: 0,
+          allCodexEntries: [codex("alice")],
+          ensureSession: async () => null,
+          removeEntryFromAuto: vi.fn(),
+          excludeEntryFromAuto: vi.fn(),
+          clearAutoExclusion: vi.fn(),
+          refreshContextLayers: async () => null,
+        }),
+      );
+
+      await act(async () => result.current.handlePin("alice"));
+
+      expect(chatApi.pinCodexEntry).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledTimes(1);
+    } finally {
+      useAiSettingsStore.setState({ profileEgressClosed: undefined });
+      mocks.activeSessionId = null;
+    }
+  });
+
   it("reports a failed Spotlight write without leaving an unhandled rejection", async () => {
     mocks.activeSessionId = "session-1";
     mocks.pinCodexEntry.mockRejectedValueOnce(new Error("pin failed"));
