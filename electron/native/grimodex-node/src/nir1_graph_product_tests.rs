@@ -1702,6 +1702,7 @@ fn queued_query_is_settled_when_its_session_ends() {
             seed_entity_id: "entity".into(),
         },
         0,
+        false,
     );
     commands
         .try_send(Command::Query {
