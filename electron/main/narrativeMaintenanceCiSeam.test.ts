@@ -292,6 +292,31 @@ describe("C2-5B main-only CI seam", () => {
     expect(seam).not.toHaveProperty("graphContractDigest");
   });
 
+  it("accepts the B-ROUTE Graph Index build trigger only for the active owner-gated launch", () => {
+    const env = {
+      ...baseEnv,
+      GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER: "nir1-graph-index-build",
+    };
+    expect(
+      parseNarrativeMaintenanceCiSeam(env, { isPackaged: false }),
+    ).toMatchObject({ active: true, trigger: "nir1-graph-index-build" });
+    expect(parseNarrativeMaintenanceCiSeam(env, { isPackaged: true })).toEqual({
+      active: false,
+    });
+    expect(
+      parseNarrativeMaintenanceCiSeam(
+        { ...env, CI: "false" },
+        { isPackaged: false },
+      ),
+    ).toEqual({ active: false });
+    expect(
+      parseNarrativeMaintenanceCiSeam(
+        { ...env, [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: "other" },
+        { isPackaged: false },
+      ),
+    ).toEqual({ active: false });
+  });
+
   it("accepts the Freshness hold only for the active owner-gated launch", () => {
     expect(
       parseNarrativeMaintenanceCiSeam(

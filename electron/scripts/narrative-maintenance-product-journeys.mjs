@@ -96,6 +96,7 @@ export const NARRATIVE_MAINTENANCE_TRIGGERS = Object.freeze([
   "graphContractDigest-changed",
   "ruleRegistryDigest-changed",
   "producerGenerationSetDigest-changed",
+  "nir1-graph-index-build",
 ]);
 export const NARRATIVE_MAINTENANCE_SEAM_CONTRACT = Object.freeze({
   ownerTokenEnv: NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,

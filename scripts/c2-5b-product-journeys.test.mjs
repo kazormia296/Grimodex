@@ -1213,6 +1213,7 @@ test("C2-5B fault and trigger seams are closed enums", () => {
     "graphContractDigest-changed",
     "ruleRegistryDigest-changed",
     "producerGenerationSetDigest-changed",
+    "nir1-graph-index-build",
   ]);
 });
 
