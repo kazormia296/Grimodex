@@ -9,7 +9,8 @@
     },
     "asar": {
       "entries": 797,
-      "forbidden": []
+      "forbidden": [],
+      "forbiddenContent": []
     }
   }
 }

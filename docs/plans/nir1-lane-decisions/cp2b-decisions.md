@@ -251,3 +251,5 @@ harness が作る子 process は (1) packaged の実行体（Linux は `scripts/
 ### 10.1 試運転の記録の採り直し
 
 （採り直しの結果は、記録と同じ commit でこの節の後ろに足す。）
+
+- head `de86d6e6`（clean）、3 構成 751 秒。判定は **pass** で、数は §9.4 と同じ（RJ 134 行・判定 118・不合格 0、不活性 2、NL・`.local` 合格、行列の欠け・余り 0、toolcheck の TCP の 59 行で食い違い 0）。新しく出力に `dns.form-submit` が shim 済みの行として出る。`cdp.portOwner` は owned（listen している pid が owner の process group）。packaged の終了は §9.4 と同じく group への SIGKILL に進んだ（証拠はそろった）。記録に repo・home・一時 dir の絶対 path、hostname、利用者名が無いことを確かめた。途中の 1 回（head `5a02b23f`）は文書の編集中で `trackedDirty: true` だったので使わず、文書を commit してから採り直した。

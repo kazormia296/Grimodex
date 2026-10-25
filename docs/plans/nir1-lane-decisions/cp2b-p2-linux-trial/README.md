@@ -4,10 +4,10 @@
 
 ## 採取した条件
 
-- head: `db76aef0f85f3e9d55b4802af7257463d622fa03`（branch `claude/cp2b-p2-packaged-smoke`、基点 master `8e93bb31`）。追跡中の file の変更なし（記録の `environment.candidate`）。この head の後に変わるのは、この記録、記録を読む試験、文書だけ（harness の `.mjs` は変えていない）。harness か製品が変わったら、この記録は古い。
+- head: `de86d6e61085e86a27e51ef854559b5a98404b0f`（branch `claude/cp2b-p2-packaged-smoke`、基点 master `8e93bb31`。独立レビュー〔lifecycle、security〕の修正と記録の伏せ字の拡張の後）。追跡中の file の変更なし（記録の `environment.candidate`）。この head の後に変わるのは、この記録、文書だけ。harness か製品が変わったら、この記録は古い。最初の試運転（head `db76aef0`）の記録は、伏せ字（絶対 path）の拡張と判定の出力（shim 済みの行）の追加の前のものなので置き換えた。**この記録は G-pub の証跡ではない**（候補の head でも hosted の 3 OS でもない）。
 - 環境: Linux 7.2.11-arch1、Electron 43.8.3（Chromium 150.0.7871.250）、Node 24.18.0、2026-10-26。packaged は `electron-builder --dir --linux --publish never` の `linux-unpacked`（release と同じ `pnpm electron:native:release` と `pnpm electron:build`。semantic recall の reranker は bootstrap していない）。Chromium の sandbox は既定（`--no-sandbox` なし。この機は unprivileged user namespace を許す）。
 - 隔離: `scripts/local-ci-xvfb.mjs` を host の namespace で使い（`unshare` なし）、`WAYLAND_DISPLAY`／`WAYLAND_SOCKET`／`XDG_SESSION_TYPE`／`DBUS_SESSION_BUS_ADDRESS`／env の proxy を除き、一時の `HOME`／`XDG_*`／`TMPDIR`（短い path）／`GRIMODEX_USER_DATA_DIR` を与えた。利用者の `/tmp/.X11-unix/X0`、`X1` は採取の前後で残っていた。外部網なしは主張しない（辞書の要求、RS-1 の名前の行の実 DNS などは起きる）。
-- 所要: 3 構成で 752 秒（共有機。1 分負荷平均は記録の `environment.loadavg`）。
+- 所要: 3 構成で 751 秒（共有機。1 分負荷平均は記録の `environment.loadavg`）。
 
 ## 再走の手順
 
@@ -28,4 +28,4 @@ node electron/scripts/packaged-smoke/verdict.mjs <dir>/linux
 | `package-check.json` | 同梱の worker（seam なし、実行可能）と `app.asar` の file 一覧（harness・probe の file なし） |
 | `verdict.json`／`verdict.txt` | `verdict.mjs` の判定（RJ・NL・`.local`・行列・道具の対照・正の対照・package） |
 
-raw の net log、userData、packaged の binary は置かない（net log は SHA-256 と派生の要約だけを各記録の `netLog` に残す）。LAN の IPv4、hostname、試験ごとの nonce は `<lan>`、`<host>`、`<n>` に伏せた。
+raw の net log、userData、packaged の binary は置かない（net log は SHA-256 と派生の要約だけを各記録の `netLog` に残す）。LAN の IPv4、hostname、試験ごとの nonce は `<lan>`、`<host>`、`<n>` に、repo・一時 dir・home の絶対 path は `<repo>`、`<tmp>`、`<ostmp>`、`<home>` に、子の出力の末尾などの自由文の利用者名は `<user>` に伏せた。

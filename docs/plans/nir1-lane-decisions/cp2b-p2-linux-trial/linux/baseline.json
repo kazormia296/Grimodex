@@ -9,7 +9,7 @@
   },
   "environment": {
     "candidate": {
-      "head": "db76aef0f85f3e9d55b4802af7257463d622fa03",
+      "head": "de86d6e61085e86a27e51ef854559b5a98404b0f",
       "trackedDirty": false
     },
     "platform": "linux",
@@ -22,11 +22,11 @@
       "imageVersion": null
     },
     "loadavg": [
-      2.53,
-      0.91,
-      1.96
+      0.07,
+      0.14,
+      1.52
     ],
-    "at": "2026-10-25T22:37:59.239Z"
+    "at": "2026-10-25T23:30:27.510Z"
   },
   "canaries": [
     {
@@ -276,9 +276,9 @@
       "dohNames": [
         "stunsname-<n>.probe.test/1",
         "stunsname-<n>.probe.test/28",
+        "www.gstatic.com/1",
         "turnudpname-<n>.probe.test/1",
-        "turnudpname-<n>.probe.test/28",
-        "www.gstatic.com/1"
+        "turnudpname-<n>.probe.test/28"
       ],
       "mdnsQueries": 0
     },
@@ -290,9 +290,9 @@
       "proxied": 0,
       "httpHits": 0,
       "dohNames": [
+        "www.gstatic.com/1",
         "turnudpname-<n>.probe.test/1",
-        "turnudpname-<n>.probe.test/28",
-        "www.gstatic.com/1"
+        "turnudpname-<n>.probe.test/28"
       ],
       "mdnsQueries": 0
     },
@@ -418,9 +418,9 @@
       "proxied": 0,
       "httpHits": 0,
       "dohNames": [
-        "www.gstatic.com/1",
         "allowed-turnstcpallowed-<n>.probe.test/1",
         "allowed-turnstcpallowed-<n>.probe.test/28",
+        "www.gstatic.com/1",
         "allowed-stunallowedp-<n>.probe.test/1",
         "allowed-stunallowedp-<n>.probe.test/28"
       ],
@@ -478,8 +478,7 @@
       "httpHits": 0,
       "dohNames": [
         "allowed-turntcpallowedp-<n>.probe.test/1",
-        "allowed-turntcpallowedp-<n>.probe.test/28",
-        "www.gstatic.com/1"
+        "allowed-turntcpallowedp-<n>.probe.test/28"
       ],
       "mdnsQueries": 0
     },
@@ -492,7 +491,8 @@
       "httpHits": 0,
       "dohNames": [
         "allowed-turnsallowedp-<n>.probe.test/1",
-        "allowed-turnsallowedp-<n>.probe.test/28"
+        "allowed-turnsallowedp-<n>.probe.test/28",
+        "www.gstatic.com/1"
       ],
       "mdnsQueries": 0
     },
@@ -603,7 +603,9 @@
       },
       "proxied": 0,
       "httpHits": 0,
-      "dohNames": [],
+      "dohNames": [
+        "www.gstatic.com/1"
+      ],
       "mdnsQueries": 0
     },
     {
@@ -741,9 +743,7 @@
       },
       "proxied": 0,
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ],
+      "dohNames": [],
       "mdnsQueries": 0
     },
     {
@@ -755,7 +755,9 @@
       },
       "proxied": 0,
       "httpHits": 0,
-      "dohNames": [],
+      "dohNames": [
+        "www.gstatic.com/1"
+      ],
       "mdnsQueries": 0
     },
     {
@@ -942,9 +944,7 @@
       },
       "proxied": 0,
       "httpHits": 0,
-      "dohNames": [
-        "www.gstatic.com/1"
-      ],
+      "dohNames": [],
       "mdnsQueries": 0
     },
     {
@@ -957,7 +957,9 @@
       },
       "proxied": 0,
       "httpHits": 0,
-      "dohNames": [],
+      "dohNames": [
+        "www.gstatic.com/1"
+      ],
       "mdnsQueries": 0
     },
     {
@@ -1244,7 +1246,6 @@
       "dohNames": [
         "riframesrcdocturnsname-<n>.probe.test/1",
         "riframesrcdocturnsname-<n>.probe.test/28",
-        "www.gstatic.com/1",
         "riframesrcdocstunname-<n>.probe.test/1",
         "riframesrcdocstunname-<n>.probe.test/28"
       ],
@@ -1258,9 +1259,9 @@
       "proxied": 0,
       "httpHits": 0,
       "dohNames": [
-        "www.gstatic.com/1",
         "riframesrcdocstunname-<n>.probe.test/1",
-        "riframesrcdocstunname-<n>.probe.test/28"
+        "riframesrcdocstunname-<n>.probe.test/28",
+        "www.gstatic.com/1"
       ],
       "mdnsQueries": 0
     },
@@ -1814,7 +1815,9 @@
       "leakDetail": {},
       "proxied": 0,
       "httpHits": 0,
-      "dohNames": [],
+      "dohNames": [
+        "www.gstatic.com/1"
+      ],
       "mdnsQueries": 0
     },
     {
@@ -1960,8 +1963,7 @@
       "httpHits": 0,
       "dohNames": [
         "data-<n>.githubusercontent.com/1",
-        "data-<n>.githubusercontent.com/28",
-        "www.gstatic.com/1"
+        "data-<n>.githubusercontent.com/28"
       ],
       "mdnsQueries": 0
     },
@@ -1975,7 +1977,7 @@
       "dohNames": [
         "example.org/1",
         "example.org/28",
-        "_43945._https.winsess-<n>.probe.test/65",
+        "_43843._https.winsess-<n>.probe.test/65",
         "winsess-<n>.probe.test/1"
       ],
       "mdnsQueries": 0
@@ -1988,9 +1990,9 @@
       "proxied": 0,
       "httpHits": 0,
       "dohNames": [
-        "_43945._https.winsess-<n>.probe.test/65",
+        "_43843._https.winsess-<n>.probe.test/65",
         "winsess-<n>.probe.test/1",
-        "_43945._https.defsess-<n>.probe.test/65",
+        "_43843._https.defsess-<n>.probe.test/65",
         "defsess-<n>.probe.test/1"
       ],
       "mdnsQueries": 0
@@ -2003,12 +2005,12 @@
       "proxied": 0,
       "httpHits": 0,
       "dohNames": [
-        "_43945._https.defsess-<n>.probe.test/65",
+        "_43843._https.defsess-<n>.probe.test/65",
         "defsess-<n>.probe.test/1",
         "www.gstatic.com/1",
         "redirector.gvt1.com/65",
         "redirector.gvt1.com/1",
-        "_43945._https.updater-<n>.probe.test/65",
+        "_43843._https.updater-<n>.probe.test/65",
         "updater-<n>.probe.test/1"
       ],
       "mdnsQueries": 0
@@ -2024,7 +2026,7 @@
         "www.gstatic.com/1",
         "redirector.gvt1.com/65",
         "redirector.gvt1.com/1",
-        "_43945._https.updater-<n>.probe.test/65",
+        "_43843._https.updater-<n>.probe.test/65",
         "updater-<n>.probe.test/1"
       ],
       "mdnsQueries": 0
@@ -2047,7 +2049,7 @@
       "proxied": 0,
       "httpHits": 0,
       "dohNames": [
-        "_43945._https.utilfetch-<n>.probe.test/65",
+        "_43843._https.utilfetch-<n>.probe.test/65",
         "utilfetch-<n>.probe.test/1"
       ],
       "mdnsQueries": 0
@@ -2060,7 +2062,7 @@
       "proxied": 0,
       "httpHits": 0,
       "dohNames": [
-        "_43945._https.utilfetch-<n>.probe.test/65",
+        "_43843._https.utilfetch-<n>.probe.test/65",
         "utilfetch-<n>.probe.test/1"
       ],
       "mdnsQueries": 0
@@ -2235,16 +2237,16 @@
         "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test": 1
       },
       "rawRequestHosts": {
-        "127.0.0.1:35879": 10,
-        "127.0.0.2:45547": 3,
-        "<lan>:33361": 4,
-        "[::1]:44575": 3,
-        "allowed-turnsallowed-<n>.probe.test:35879": 3,
-        "allowed-turnsallowedp-<n>.probe.test:37741": 3,
-        "allowed-turnstcpallowed-<n>.probe.test:35879": 3,
-        "allowed-turnstcpallowedp-<n>.probe.test:37741": 3,
-        "allowed-turntcpallowed-<n>.probe.test:35879": 3,
-        "allowed-turntcpallowedp-<n>.probe.test:37741": 3,
+        "127.0.0.1:37665": 10,
+        "127.0.0.2:33647": 3,
+        "<lan>:44887": 4,
+        "[::1]:44579": 3,
+        "allowed-turnsallowed-<n>.probe.test:37665": 3,
+        "allowed-turnsallowedp-<n>.probe.test:39289": 3,
+        "allowed-turnstcpallowed-<n>.probe.test:37665": 3,
+        "allowed-turnstcpallowedp-<n>.probe.test:39289": 3,
+        "allowed-turntcpallowed-<n>.probe.test:37665": 3,
+        "allowed-turntcpallowedp-<n>.probe.test:39289": 3,
         "app://dnsdnsprefetch-<n>.dnsprobe.test": 2,
         "app://dnspf-<n>.local": 2,
         "app://github.com": 2,
@@ -2259,14 +2261,14 @@
         "ext-turntcpext-<n>.blocked.invalid:443": 3,
         "github.com:3478": 3,
         "github.com:443": 3,
-        "http://defsess-<n>.probe.test:43945": 3,
-        "http://updater-<n>.probe.test:43945": 3,
-        "http://utilfetch-<n>.probe.test:43945": 3,
-        "http://winsess-<n>.probe.test:43945": 3,
-        "https://127.0.0.1:33623": 920,
+        "http://defsess-<n>.probe.test:43843": 3,
+        "http://updater-<n>.probe.test:43843": 3,
+        "http://utilfetch-<n>.probe.test:43843": 3,
+        "http://winsess-<n>.probe.test:43843": 3,
+        "https://127.0.0.1:42573": 920,
         "https://redirector.gvt1.com": 10,
         "localhost:3478": 2,
-        "localhost:37741": 6,
+        "localhost:39289": 6,
         "localhost:443": 2,
         "m0-<n>.dnsprobe.test:3478": 3,
         "m1-<n>.dnsprobe.test:3478": 3,
@@ -2302,16 +2304,16 @@
         "objects.githubusercontent.com:443": 3,
         "release-assets.githubusercontent.com:3478": 3,
         "release-assets.githubusercontent.com:443": 3,
-        "riframeblankturnsname-<n>.probe.test:37741": 3,
-        "riframeblankturntcpname-<n>.probe.test:37741": 3,
-        "riframehtmlturnsname-<n>.probe.test:37741": 3,
-        "riframehtmlturntcpname-<n>.probe.test:37741": 3,
-        "riframejsonturnsname-<n>.probe.test:37741": 3,
-        "riframejsonturntcpname-<n>.probe.test:37741": 3,
-        "riframenotfoundturnsname-<n>.probe.test:37741": 3,
-        "riframenotfoundturntcpname-<n>.probe.test:37741": 3,
-        "riframesrcdocturnsname-<n>.probe.test:37741": 3,
-        "riframesrcdocturntcpname-<n>.probe.test:37741": 3,
+        "riframeblankturnsname-<n>.probe.test:39289": 3,
+        "riframeblankturntcpname-<n>.probe.test:39289": 3,
+        "riframehtmlturnsname-<n>.probe.test:39289": 3,
+        "riframehtmlturntcpname-<n>.probe.test:39289": 3,
+        "riframejsonturnsname-<n>.probe.test:39289": 3,
+        "riframejsonturntcpname-<n>.probe.test:39289": 3,
+        "riframenotfoundturnsname-<n>.probe.test:39289": 3,
+        "riframenotfoundturntcpname-<n>.probe.test:39289": 3,
+        "riframesrcdocturnsname-<n>.probe.test:39289": 3,
+        "riframesrcdocturntcpname-<n>.probe.test:39289": 3,
         "s0-<n>.dnsprobe.test:443": 3,
         "s1-<n>.dnsprobe.test:443": 3,
         "s2-<n>.dnsprobe.test:443": 3,
@@ -2320,9 +2322,9 @@
         "s5-<n>.dnsprobe.test:443": 3,
         "s6-<n>.dnsprobe.test:443": 3,
         "s7-<n>.dnsprobe.test:443": 3,
-        "turnsname-<n>.probe.test:37741": 3,
-        "turnstcpname-<n>.probe.test:37741": 3,
-        "turntcpname-<n>.probe.test:37741": 3,
+        "turnsname-<n>.probe.test:39289": 3,
+        "turnstcpname-<n>.probe.test:39289": 3,
+        "turntcpname-<n>.probe.test:39289": 3,
         "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.<n>.dnsprobe.test:443": 3
       },
       "nonceBearing": 69
@@ -2343,8 +2345,8 @@
     ],
     "updateRequests": [],
     "h9": null,
-    "rawSha256": "3a8c88b325ed275a4c558237f11f60421377ab58c747cf965292d0644d911866",
-    "rawBytes": 5674447,
+    "rawSha256": "a89ba807637c5a726759331d5a356a3ea400f87d9f155af175f381e8cd9843db",
+    "rawBytes": 5682498,
     "error": null
   },
   "nc1": null,
@@ -2352,8 +2354,8 @@
     "redirector.gvt1.com",
     "stunname-<n>.probe.test",
     "stunsname-<n>.probe.test",
-    "turnudpname-<n>.probe.test",
     "www.gstatic.com",
+    "turnudpname-<n>.probe.test",
     "turntcpname-<n>.probe.test",
     "turnsname-<n>.probe.test",
     "turnstcpname-<n>.probe.test",
@@ -2436,13 +2438,13 @@
     "data-<n>.gvt1.com",
     "data-<n>.githubusercontent.com",
     "example.org",
-    "_43945._https.winsess-<n>.probe.test",
+    "_43843._https.winsess-<n>.probe.test",
     "winsess-<n>.probe.test",
-    "_43945._https.defsess-<n>.probe.test",
+    "_43843._https.defsess-<n>.probe.test",
     "defsess-<n>.probe.test",
-    "_43945._https.updater-<n>.probe.test",
+    "_43843._https.updater-<n>.probe.test",
     "updater-<n>.probe.test",
-    "_43945._https.utilfetch-<n>.probe.test",
+    "_43843._https.utilfetch-<n>.probe.test",
     "utilfetch-<n>.probe.test"
   ],
   "dohQueryCount": 304,
@@ -2455,7 +2457,7 @@
     "closed": {
       "code": 0,
       "signal": null,
-      "at": 1792967879098
+      "at": 1792971027360
     },
     "groupGone": true,
     "residual": [],
@@ -2465,7 +2467,7 @@
   "exit": {
     "code": 0,
     "signal": null,
-    "at": 1792967879098
+    "at": 1792971027360
   },
-  "outputTail": "92:1026/073753.891329:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\nThe XKEYBOARD keymap compiler (xkbcomp) reports:\n> Warning:          Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+  "outputTail": "79:1026/083022.123227:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\nThe XKEYBOARD keymap compiler (xkbcomp) reports:\n> Warning:          Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
 }

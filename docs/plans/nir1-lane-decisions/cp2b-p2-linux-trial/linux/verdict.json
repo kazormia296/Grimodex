@@ -96,7 +96,8 @@
         },
         "asar": {
           "entries": 797,
-          "forbidden": []
+          "forbidden": [],
+          "forbiddenContent": []
         }
       }
     }
@@ -106,19 +107,26 @@
     "pageShims": [
       "HTMLFormElement.prototype.submit: target が空でも _self でもない form は送らない（製品の openExternal を起こさず、probe の main の deny と同じ結果にそろえる。DR-CP2B-P2-5）"
     ],
+    "shimmedRows": [
+      {
+        "id": "dns.form-submit",
+        "verdict": "pass",
+        "kind": "hint"
+      }
+    ],
     "nc1": {
       "networkPhaseLowerBoundMs": 1,
-      "launchToWindowMs": 507,
+      "launchToWindowMs": 528,
       "limitMs": 5000
     },
     "dictionaryRequests": [
       {
         "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-        "offsetFromProxyMs": 0
+        "offsetFromProxyMs": 1
       }
     ],
     "h9": {
-      "firstDictionaryOffsetFromProxyMs": 0,
+      "firstDictionaryOffsetFromProxyMs": 1,
       "dictionaryBeforeProxy": false
     },
     "osDialogs": {

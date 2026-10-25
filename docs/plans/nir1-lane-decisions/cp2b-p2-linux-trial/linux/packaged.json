@@ -9,7 +9,7 @@
   },
   "environment": {
     "candidate": {
-      "head": "db76aef0f85f3e9d55b4802af7257463d622fa03",
+      "head": "de86d6e61085e86a27e51ef854559b5a98404b0f",
       "trackedDirty": false
     },
     "platform": "linux",
@@ -22,11 +22,11 @@
       "imageVersion": null
     },
     "loadavg": [
-      4.81,
-      2.56,
-      2.21
+      0.03,
+      0.08,
+      0.9
     ],
-    "at": "2026-10-25T22:46:23.290Z"
+    "at": "2026-10-25T23:38:51.397Z"
   },
   "canaries": [
     {
@@ -68,18 +68,28 @@
     "legacy-keyring-migration-v1.json（旧版の keyring の移行の完了 marker。version 1、imported 0）"
   ],
   "cdp": {
-    "port": 44107,
+    "port": 44815,
     "injected": true,
-    "launchToTargetMs": 507,
+    "launchToTargetMs": 528,
     "error": null,
     "version": {
       "browser": "Chrome/150.0.7871.250",
       "userAgent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Grimodex/2.0.10 Chrome/150.0.7871.250 Electron/43.8.3 Safari/537.36"
     },
-    "targetUrl": "app://bundle/index.html"
+    "targetUrl": "app://bundle/index.html",
+    "portOwner": {
+      "owned": true,
+      "pids": [
+        1056206
+      ],
+      "reason": "owned"
+    }
   },
   "pageShims": [
     "HTMLFormElement.prototype.submit: target が空でも _self でもない form は送らない（製品の openExternal を起こさず、probe の main の deny と同じ結果にそろえる。DR-CP2B-P2-5）"
+  ],
+  "pageShimIds": [
+    "form-submit"
   ],
   "rendererRowIds": [
     "control.same-origin-fetch",
@@ -1317,7 +1327,7 @@
       },
       "rawRequestHosts": {
         "127.0.0.1:0": 1,
-        "127.0.0.1:40193": 171,
+        "127.0.0.1:35415": 171,
         "app://github.com": 2,
         "app://localhost": 1,
         "app://objects.githubusercontent.com": 2,
@@ -1329,16 +1339,16 @@
       "nonceBearing": 0
     },
     "ls1Ports": [
-      40193
+      35415
     ],
-    "ls1Port": 40193,
+    "ls1Port": 35415,
     "ls1Connects": 171,
     "nc1NetworkPhase": {
-      "proxyConfigAt": 1792968138260,
+      "proxyConfigAt": 1792971286431,
       "selfCheckResolves": [
         {
           "host": "127.0.0.1:0",
-          "offsetMs": 0
+          "offsetMs": 1
         },
         {
           "host": "~NOTFOUND:0",
@@ -1354,15 +1364,15 @@
     "dictionaryRequests": [
       {
         "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-        "offsetFromProxyMs": 0
+        "offsetFromProxyMs": 1
       }
     ],
     "updateRequests": [],
     "h9": {
-      "firstDictionaryOffsetFromProxyMs": 0,
+      "firstDictionaryOffsetFromProxyMs": 1,
       "dictionaryBeforeProxy": false
     },
-    "rawSha256": "dff4a8a17711e967f09b9d42245e089f4da0a508dcb11d2f2432543973f557f6",
+    "rawSha256": "ee06095849d06886778b92309bd191db498cf6b7bdb599eb9ca14c738d5727c2",
     "rawBytes": 734058,
     "error": null
   },
@@ -1381,7 +1391,7 @@
     "closed": {
       "code": 143,
       "signal": null,
-      "at": 1792968383006
+      "at": 1792971531092
     },
     "groupGone": true,
     "residual": [],
@@ -1391,7 +1401,7 @@
   "exit": {
     "code": 143,
     "signal": null,
-    "at": 1792968383006
+    "at": 1792971531092
   },
-  "outputTail": "githubusercontent.com., errorcode: -105\n[1018142:1026/074617.402134:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for data-<n>.githubusercontent.com., errorcode: -105\n[1018142:1026/074620.214677:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\n[1018142:1026/074620.214721:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\n[1018138:1026/074622.953932:ERROR:ui/gfx/x/connection.cc:66] X connection error received.\nXvfb command cancelled by SIGTERM\n"
+  "outputTail": "githubusercontent.com., errorcode: -105\n[1056244:1026/083845.480237:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for data-<n>.githubusercontent.com., errorcode: -105\n[1056244:1026/083848.277061:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\n[1056244:1026/083848.277098:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\n[1056240:1026/083851.029195:ERROR:ui/gfx/x/connection.cc:66] X connection error received.\nXvfb command cancelled by SIGTERM\n"
 }

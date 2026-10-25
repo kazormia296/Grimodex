@@ -9,7 +9,7 @@
   },
   "environment": {
     "candidate": {
-      "head": "db76aef0f85f3e9d55b4802af7257463d622fa03",
+      "head": "de86d6e61085e86a27e51ef854559b5a98404b0f",
       "trackedDirty": false
     },
     "platform": "linux",
@@ -22,11 +22,11 @@
       "imageVersion": null
     },
     "loadavg": [
-      0.56,
-      1.08,
-      1.82
+      0.12,
+      0.13,
+      1.17
     ],
-    "at": "2026-10-25T22:42:17.849Z"
+    "at": "2026-10-25T23:34:46.062Z"
   },
   "canaries": [
     {
@@ -73,7 +73,7 @@
   "electron": "43.8.3",
   "chrome": "150.0.7871.250",
   "events": [
-    "nc1 orchestrator start => true in 50.1 ms"
+    "nc1 orchestrator start => true in 32.2 ms"
   ],
   "rendererRowIds": [
     "control.same-origin-fetch",
@@ -1779,64 +1779,64 @@
       },
       "rawRequestHosts": {
         "127.0.0.1:0": 1,
-        "127.0.0.1:33943": 174,
+        "127.0.0.1:41111": 174,
         "app://github.com": 2,
         "app://localhost": 1,
         "app://objects.githubusercontent.com": 2,
         "app://release-assets.githubusercontent.com": 2,
         "app://~notfound": 2,
-        "http://~notfound:42591": 5,
+        "http://~notfound:41445": 5,
         "https://~notfound": 4,
         "~NOTFOUND:0": 2
       },
       "nonceBearing": 0
     },
     "ls1Ports": [
-      33943
+      41111
     ],
-    "ls1Port": 33943,
+    "ls1Port": 41111,
     "ls1Connects": 174,
     "nc1NetworkPhase": {
-      "proxyConfigAt": 1792967879586,
+      "proxyConfigAt": 1792971027831,
       "selfCheckResolves": [
         {
           "host": "127.0.0.1:0",
-          "offsetMs": 1
+          "offsetMs": 0
+        },
+        {
+          "host": "~NOTFOUND:0",
+          "offsetMs": 0
         },
         {
           "host": "~NOTFOUND:0",
           "offsetMs": 1
-        },
-        {
-          "host": "~NOTFOUND:0",
-          "offsetMs": 2
         }
       ],
-      "lowerBoundMs": 2
+      "lowerBoundMs": 1
     },
     "dictionaryRequests": [
       {
         "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-        "offsetFromProxyMs": 1
+        "offsetFromProxyMs": 0
       },
       {
         "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
-        "offsetFromProxyMs": 252357
+        "offsetFromProxyMs": 252352
       }
     ],
     "updateRequests": [],
     "h9": {
-      "firstDictionaryOffsetFromProxyMs": 1,
+      "firstDictionaryOffsetFromProxyMs": 0,
       "dictionaryBeforeProxy": false
     },
-    "rawSha256": "cf6047990289d95d28cb6d95dd092535000b541c8948c0cbb7316d4b47a64b32",
+    "rawSha256": "7487a5355ba67b91c3bd2727dcbd4b82cbe9837f4e932f8b6951b973fd0c85e7",
     "rawBytes": 799762,
     "error": null
   },
   "nc1": {
     "startOk": true,
-    "startMs": 50.1,
-    "listenerPort": 33943,
+    "startMs": 32.2,
+    "listenerPort": 41111,
     "listenerHits": 174,
     "failures": [],
     "uncaught": 0
@@ -1852,7 +1852,7 @@
     "closed": {
       "code": 0,
       "signal": null,
-      "at": 1792968137813
+      "at": 1792971286026
     },
     "groupGone": true,
     "residual": [],
@@ -1862,7 +1862,7 @@
   "exit": {
     "code": 0,
     "signal": null,
-    "at": 1792968137813
+    "at": 1792971286026
   },
-  "outputTail": "38:1026/074200.589673:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\nThe XKEYBOARD keymap compiler (xkbcomp) reports:\n> Warning:          Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
+  "outputTail": "71:1026/083428.824112:ERROR:services/network/p2p/socket_manager.cc:137] Failed to resolve address for example.org., errorcode: -105\nThe XKEYBOARD keymap compiler (xkbcomp) reports:\n> Warning:          Multiple symbols for level 1/group 1 on key <FK23>\n>                   Using F23, ignoring XF86TouchpadOff\n> Warning:          Symbol map for key <FK23> redefined\n>                   Using last definition for conflicting fields\n> Warning:          Symbol map for key <FK24> redefined\n>                   Using last definition for conflicting fields\nErrors from xkbcomp are not fatal to the X server\n"
 }
