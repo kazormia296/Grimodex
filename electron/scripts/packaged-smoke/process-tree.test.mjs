@@ -151,3 +151,33 @@ test("有限の待ちは解決した時点で timer を止める（残った tim
   // 解決後に 60 秒の timer が event loop に残っていない
   assert.equal(process.getActiveResourcesInfo().filter((name) => name === "Timeout").length, 0);
 });
+
+test("root が exit した後（close の前でも）は、その pid に taskkill も SIGTERM も送らない。exit 前なら送る（対照）", async () => {
+  const calls = [];
+  const deps = {
+    groupAlive: () => false, processesUnder: () => [],
+    taskkill: (pid, force) => { calls.push(["taskkill", pid, force]); return "requested"; },
+    killPid: (pid, signal) => calls.push(["killPid", pid, signal]), killGroup: () => {},
+  };
+  // exit 済みで close がまだ（stdio が開いている）owner。close は少し後に来る
+  const exitedNotClosed = (platform) => {
+    let closed = null;
+    const exited = new Promise((resolve) => setTimeout(() => { closed = { code: 0, signal: null, at: Date.now() }; resolve(closed); }, 100));
+    return { label: "x", platform, pid: 4242, pgid: platform === "win32" ? null : 4242, exeDir: "/opt/app", exited,
+      isAlive: () => closed == null, closed: () => closed, hasExited: () => true, spawnError: () => null };
+  };
+  await terminateOwned(exitedNotClosed("win32"), { graceMs: 10, forceMs: 1000, settleMs: 20, deps });
+  await terminateOwned(exitedNotClosed("linux"), { graceMs: 10, forceMs: 1000, settleMs: 20, deps });
+  assert.deepEqual(calls, []);
+  // 対照: exit していない root には送る
+  const running = { ...exitedNotClosed("win32"), hasExited: () => false };
+  await terminateOwned(running, { graceMs: 10, forceMs: 1000, settleMs: 20, deps });
+  assert.deepEqual(calls.map(([kind, , force]) => `${kind}:${force}`), ["taskkill:false", "taskkill:true"]);
+});
+
+test("launchOwned は exit を close と別に記録する（exit の後は hasExited が true）", posixOnly, async () => {
+  const owner = nodeChild("process.exit(0)", fs.mkdtempSync(path.join(os.tmpdir(), "gps-pt-")));
+  assert.equal(owner.hasExited(), false);
+  await owner.exited;
+  assert.equal(owner.hasExited(), true);
+});

@@ -10,7 +10,8 @@
  *   non-dumpable〕ときは `/proc/<pid>/cmdline` の argv[0]、macOS は `ps -axww -o pid=,args=` の先頭、Windows は
  *   `Get-CimInstance Win32_Process` の `ExecutablePath`）。path で見つけた process は kill しない（他人の process を殺さない）。報告だけで、
  *   残っていれば `ok: false`。走査できなければ null（観測できない＝証明にならない）。
- * - Windows は直接の子の exit を見た後に pid で `taskkill` を送らない（pid の再利用で無関係な process を殺しうる）。
+ * - 直接の子の `exit`（`close` より先に来る）を見た後は、その pid に signal も `taskkill` も送らない（pid の再利用で無関係な
+ *   process を殺しうる）。Windows の残存は CIM の走査で、POSIX は process group の消滅で確かめる。
  * - 観測と kill の関数は `deps` で差し替えられる（試験が配線を確かめる）。
  */
 import { execFileSync, spawn } from "node:child_process";
@@ -109,6 +110,9 @@ export function launchOwned({ command, args, env, cwd, exeDir, label, platform =
   child.stderr.on("data", append);
   let closed = null;
   let spawnError = null;
+  // 'exit'（process の終了。pid はこの後に再利用されうる）は 'close'（stdio も閉じた）より先に来る。両方を分けて持つ
+  let processExit = null;
+  child.once("exit", (code, signal) => { processExit = { code, signal, at: Date.now() }; });
   const exited = new Promise((resolve) => {
     child.once("error", (error) => { spawnError = String(error?.message ?? error); });
     child.once("close", (code, signal) => {
@@ -127,6 +131,7 @@ export function launchOwned({ command, args, env, cwd, exeDir, label, platform =
     exited,
     isAlive: () => closed == null && spawnError == null,
     closed: () => closed,
+    hasExited: () => processExit != null || closed != null,
     spawnError: () => spawnError,
     output: () => output,
   };
@@ -184,7 +189,9 @@ export async function terminateOwned(owner, { graceMs = 15_000, forceMs = 10_000
     return { ok: false, steps: ["spawn-failed"], closed: owner.closed(), groupGone: null, residual: [], forced, spawnError: owner.spawnError() };
   }
   const posix = owner.platform !== "win32";
-  if (owner.isAlive()) {
+  // root の process が exit した後は、その pid に signal／taskkill を送らない（pid の再利用で無関係な process に届きうる）
+  const rootExited = () => (typeof owner.hasExited === "function" ? owner.hasExited() : owner.closed() != null);
+  if (owner.isAlive() && !rootExited()) {
     if (posix) {
       try { use.killPid(owner.pid, "SIGTERM"); steps.push("SIGTERM(pid)"); } catch (error) { steps.push(`SIGTERM-failed:${error?.code}`); }
     } else {
@@ -200,8 +207,8 @@ export async function terminateOwned(owner, { graceMs = 15_000, forceMs = 10_000
     if (posix) {
       // process group は直接の子が作った自分のもの（detached）。group を抜けた process には届かない
       try { use.killGroup(owner.pgid, "SIGKILL"); steps.push("SIGKILL(group)"); } catch (error) { steps.push(`SIGKILL-failed:${error?.code}`); }
-    } else if (!isClosed) {
-      // exit を見た後は pid が再利用されうるので送らない（孤児は下の走査が残存として報告する）
+    } else if (!rootExited()) {
+      // exit を見た後は pid が再利用されうるので送らない（close の前でも。孤児は下の走査が残存として報告する）
       steps.push(`taskkill /T /F:${use.taskkill(owner.pid, true)}`);
     }
     isClosed = await waitClosed(owner, forceMs);
