@@ -232,11 +232,11 @@ impl Fixture {
             .store(self.all_graph_events().len(), Ordering::SeqCst);
     }
 
-    /// A state that started a pending query.
+    /// A state that started a pending query, released as `begin` releases it.
     fn pending(&self) -> GraphState {
         self.warm();
         let graph = GraphState::default();
-        let wire = graph.start(&self.state, Self::query());
+        let wire = start_released(&graph, &self.state);
         assert_eq!(wire, json!({"status": "pending"}));
         graph
     }
@@ -276,12 +276,24 @@ impl Drop for Fixture {
 }
 
 /// Lets a held query go and waits until the worker has returned it, so what
-/// the ticket's end caused (a cache entry, a notice) has happened by then.
+/// the ticket's end caused (a cache entry, a notice) has happened by then. A
+/// released (CQ-DEFER) query's session ends Empty; a D-final one rebuilds.
 fn let_the_query_end(fixture: &Fixture) {
     fixture.plan.release.store(true, Ordering::SeqCst);
     wait_until("the query to leave the worker", || {
-        fixture.state.nir1_graph.slot_kind_for_test() != GraphSlotKind::InUse
+        matches!(
+            fixture.state.nir1_graph.slot_kind_for_test(),
+            GraphSlotKind::Empty | GraphSlotKind::Ready | GraphSlotKind::Closed
+        )
     });
+}
+
+/// What `begin` does with the Graph of a seeded request: hand the query over
+/// (held) and, once its own commits are over, release it (CQ-DEFER).
+fn start_released(graph: &GraphState, state: &Arc<AppState>) -> Value {
+    let wire = graph.start(state, Fixture::query());
+    graph.release_after_own_commits();
+    wire
 }
 
 fn live_ir(ir: IrState) -> impl Fn() -> LeaseProbe {
@@ -384,7 +396,7 @@ fn a_cache_hit_answers_pending_and_waits_for_nothing() {
     first.declare(GraphTicketUse::Unused);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 1);
     let second = GraphState::default();
-    let wire = second.start(&fixture.state, Fixture::query());
+    let wire = start_released(&second, &fixture.state);
     assert_eq!(wire, json!({"status": "pending"}));
     second.set_dense_scene_ids(dense(&[]));
     let plan = plan_of(second.claim(&[]));
@@ -408,7 +420,7 @@ fn begin_never_waits_for_the_graph() {
     set_mode(&fixture.plan, QueryMode::Hold);
     let graph = GraphState::default();
     let started = Instant::now();
-    let wire = graph.start(&fixture.state, Fixture::query());
+    let wire = start_released(&graph, &fixture.state);
     assert!(started.elapsed() < Duration::from_millis(500));
     assert_eq!(wire, json!({"status": "pending"}));
     graph.cancel();
@@ -423,7 +435,7 @@ fn cancelling_the_slot_cancels_the_ticket_and_never_caches_or_announces() {
     fixture.warm();
     set_mode(&fixture.plan, QueryMode::Hold);
     let graph = GraphState::default();
-    graph.start(&fixture.state, Fixture::query());
+    start_released(&graph, &fixture.state);
     graph.set_dense_scene_ids(dense(&["a"]));
     let plan = plan_of(graph.claim(&ids(&["a"])));
     graph.cancel();
@@ -454,7 +466,7 @@ fn dropping_the_slot_cancels_a_running_query() {
     fixture.warm();
     set_mode(&fixture.plan, QueryMode::Hold);
     let graph = GraphState::default();
-    graph.start(&fixture.state, Fixture::query());
+    start_released(&graph, &fixture.state);
     drop(graph);
     let_the_query_end(&fixture);
     assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0);
@@ -524,6 +536,7 @@ impl Leases {
     fn running(&self, owner: &str) -> (String, LeaseOf<FakeOperation>) {
         let (ticket, lease) = self.idle(owner);
         let wire = begin_graph(&self.fixture.state, Some(&lease), PROJECT, SCENE, SEED);
+        lease.data.graph.release_after_own_commits();
         assert_eq!(wire, graph_pending());
         assert!(!lease.data.graph.is_settled());
         (ticket, lease)
@@ -552,6 +565,64 @@ impl Leases {
         );
         assert!(self.fixture.graph_events().is_empty(), "{path}");
     }
+}
+
+// ---- CQ-DEFER: the begin's hold (DR-CQD-6) ------------------------------------
+
+#[test]
+fn a_begin_that_fails_drops_its_hold_and_frees_the_slot_at_once() {
+    // N2: the `Err` exit of `begin` drops the guard without a release.
+    let leases = Leases::new(TTL);
+    let (_, lease) = leases.idle(OWNER);
+    let wire = begin_graph(&leases.fixture.state, Some(&lease), PROJECT, SCENE, SEED);
+    assert_eq!(wire, graph_pending());
+    let hold = DeferredRelease::new(Some(lease.clone()));
+    assert_eq!(
+        leases.fixture.state.nir1_graph.slot_kind_for_test(),
+        GraphSlotKind::Deferred
+    );
+    // The READY worker is retired; then the owner thread waits for the
+    // release, and the cancellation must wake it.
+    let owner = &leases.fixture.state.nir1_graph;
+    wait_until("the READY worker to retire", || {
+        owner.diagnostics().stale_ready_retired == 1
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let dropped_at = Instant::now();
+    drop(hold);
+    assert!(lease.data.graph.is_settled(), "the hold is cancelled");
+    wait_until("the slot to be free", || {
+        leases.fixture.state.nir1_graph.slot_kind_for_test() == GraphSlotKind::Empty
+    });
+    assert!(dropped_at.elapsed() < Duration::from_secs(1));
+    assert_eq!(leases.fixture.plan.queries.load(Ordering::SeqCst), 0);
+    assert_eq!(leases.fixture.state.nir1_graph.cache_len_for_test(), 0);
+    assert!(leases.fixture.graph_events().is_empty());
+}
+
+#[test]
+fn a_begin_that_succeeds_releases_its_hold_once() {
+    let leases = Leases::new(TTL);
+    let (_, lease) = leases.idle(OWNER);
+    begin_graph(&leases.fixture.state, Some(&lease), PROJECT, SCENE, SEED);
+    DeferredRelease::new(Some(lease.clone())).release();
+    wait_until("the released query to reach the worker", || {
+        leases.fixture.plan.queries.load(Ordering::SeqCst) == 1
+    });
+    assert!(!lease.data.graph.is_settled());
+    lease.data.graph.cancel();
+    let_the_query_end(&leases.fixture);
+    // A guard without a lease (a seedless begin) does nothing either way.
+    DeferredRelease::<FakeOperation>::new(None).release();
+    drop(DeferredRelease::<FakeOperation>::new(None));
+}
+
+#[test]
+fn the_owner_hold_limit_is_the_await_limit() {
+    assert_eq!(
+        crate::nir1_graph_product::DEFERRED_RELEASE_LIMIT,
+        GRAPH_AWAIT_LIMIT
+    );
 }
 
 #[test]
@@ -713,7 +784,7 @@ fn settle_unused_before_the_result_caches_and_announces_the_project_once() {
     fixture.warm();
     set_mode(&fixture.plan, QueryMode::Hold);
     let graph = GraphState::default();
-    graph.start(&fixture.state, Fixture::query());
+    start_released(&graph, &fixture.state);
     graph.declare(GraphTicketUse::Unused);
     // The declaration is first; a later one changes nothing.
     graph.declare(GraphTicketUse::Used);
@@ -721,6 +792,11 @@ fn settle_unused_before_the_result_caches_and_announces_the_project_once() {
     fixture.plan.release.store(true, Ordering::SeqCst);
     wait_until("late cache", || {
         fixture.state.nir1_graph.cache_len_for_test() == 1
+    });
+    // The cache is filled before the notice is emitted.
+    wait_until("the late notice", || !fixture.graph_events().is_empty());
+    wait_until("the end of the session", || {
+        fixture.state.nir1_graph.slot_kind_for_test() == GraphSlotKind::Empty
     });
     assert_eq!(
         fixture.graph_events(),
@@ -735,7 +811,7 @@ fn settle_used_and_cancelled_never_cache_or_announce() {
         fixture.warm();
         set_mode(&fixture.plan, QueryMode::Hold);
         let graph = GraphState::default();
-        graph.start(&fixture.state, Fixture::query());
+        start_released(&graph, &fixture.state);
         graph.declare(use_);
         let_the_query_end(&fixture);
         assert_eq!(fixture.state.nir1_graph.cache_len_for_test(), 0, "{use_:?}");
@@ -771,7 +847,7 @@ fn settle_releases_an_outstanding_await_without_reading_anything() {
     fixture.warm();
     set_mode(&fixture.plan, QueryMode::Hold);
     let graph = Arc::new(GraphState::default());
-    graph.start(&fixture.state, Fixture::query());
+    start_released(&graph, &fixture.state);
     graph.set_dense_scene_ids(dense(&[]));
     let plan = plan_of(graph.claim(&[]));
     let state = Arc::clone(&fixture.state);
@@ -805,7 +881,7 @@ fn the_await_is_bounded_and_returns_timeout() {
     fixture.warm();
     set_mode(&fixture.plan, QueryMode::Hold);
     let graph = GraphState::default();
-    graph.start(&fixture.state, Fixture::query());
+    start_released(&graph, &fixture.state);
     graph.set_dense_scene_ids(dense(&[]));
     let plan = plan_of(graph.claim(&[]));
     let started = Instant::now();
@@ -918,7 +994,7 @@ fn a_graph_that_failed_is_reported_with_its_own_reason() {
         QueryMode::Unavailable(UnavailableReason::SeedNotFound),
     );
     let graph = GraphState::default();
-    graph.start(&fixture.state, Fixture::query());
+    start_released(&graph, &fixture.state);
     graph.set_dense_scene_ids(dense(&[]));
     let plan = plan_of(graph.claim(&[]));
     let outcome = await_graph(
@@ -944,7 +1020,7 @@ fn shutdown_and_a_lifecycle_edge_end_the_await_in_finite_time() {
     fixture.warm();
     set_mode(&fixture.plan, QueryMode::Hold);
     let graph = Arc::new(GraphState::default());
-    graph.start(&fixture.state, Fixture::query());
+    start_released(&graph, &fixture.state);
     graph.set_dense_scene_ids(dense(&[]));
     let plan = plan_of(graph.claim(&[]));
     let state = Arc::clone(&fixture.state);

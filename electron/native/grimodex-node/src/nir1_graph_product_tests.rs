@@ -2390,3 +2390,7 @@ fn a_lifecycle_edge_moves_the_ready_signal_and_the_edge_epoch() {
     assert_ne!(owner.ready_signal_generation(), before);
     assert_ne!(owner.edge_epoch(), epoch);
 }
+
+/// CQ-DEFER: the held Related Scenes query (`begin_deferred`).
+#[path = "nir1_graph_deferred_tests.rs"]
+mod deferred;
