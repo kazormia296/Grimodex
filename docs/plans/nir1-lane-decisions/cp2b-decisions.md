@@ -189,3 +189,20 @@ branch `claude/cp2b-p3-update-route-watch`（基点 `8e93bb31`）。commit: `54a
 - `GrimodexReleases` の公開後の対象の付け替え（DR-CP2B-P3-2）。
 - 利用者に見える副作用: worktree の `node_modules` に Electron 43.8.3 の binary を利用者の cache（`~/.cache/electron`）の zip から展開した。Xvfb は `scripts/local-ci-xvfb.mjs` を host の namespace で使い、利用者の `/tmp/.X11-unix/X0`〜`X2` は実行の前後で残っている。一時 dir は消した。ローカルの検知の 1 回は github.com と release-assets.githubusercontent.com へ要求した。Chromium の他の通信（辞書など）は起きうるので「外部網なし」は主張しない。
 - Quick／Full はローカルで走らせていない。
+
+### P3.6 独立 security レビューの修正の追記（2026-10-26）
+
+レビューの結論は P1 なし、P2 が 1 件。直した点（commit `d4221d64`、`ffba278b`、`3a7083e5`）:
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界（actor・防御・受信先・受入れ） | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-CP2B-P3-7 | 2026-10-26 | CP-2b P3（レビュー修正） | 末尾ドットは検知側で拒否し、製品との差を作らない。host の末尾が `.`（URL が `.` へ写す全角の句点 `。` を含む）なら `trailing-dot` で失敗する（P3.5 の「`.` を外して照合し、付いたまま要求する」を改めた） | 製品の `EXCLUDE <host>` が末尾ドット付きの名前に当たるかは確かめていない（推測）。当たらない場合、検知が通っても製品は `~NOTFOUND` になりうる | `.` を外したまま照合を続ける案: 上の差が残る | なし | 該当なし | P3.2 | 記録済み（レビュー修正） |
+
+- P2（suffix 一致の変異が検出されない）: 「fails before contacting a redirect host outside RS-1」の表に RS-1 の host の subdomain 3 件（`evil.github.com`、`x.objects.githubusercontent.com`、`a.release-assets.githubusercontent.com`）を足した。`host === h || host.endsWith("." + h)` の変異で赤になった。DR-CP2B-P3-3 の「suffix 一致にしない」を固定する。
+- 末尾ドット（DR-CP2B-P3-7）: ASCII の `.` は表で、全角の句点は `admitUrl` を直接呼んで試す（合成の `Response` の header に非 ASCII を載せられないため）。末尾ドットを許す変異と、`.` を外して照合する変異のどちらでも赤になった。
+- error 文の回帰: 拒否の error 文に Location の path・query（`sig=`）が出ないことを表の各行で確かめる。error 文に Location を足す変異で赤になった。
+- workflow の契約の追加: concurrency（`update-route-watch`、`cancel-in-progress: false`）、`pnpm/action-setup` の版と `package.json` の `packageManager` の一致、`setup-node` の版と `release.yml` の pnpm を使う job の版（22。job の間で 1 つ）の一致、3 つの action の SHA が `release.yml` の pin と同じ値であること、step の一覧（3 action と 2 run。step の key は `name`／`uses`／`run`／`with` だけ）を固定した。変異 9 種（concurrency の除去、`cancel-in-progress: true`、pnpm の版、Node 24、3 つの action の SHA の差替え、step の追加、step への `env`）でそれぞれ赤になった。
+- harness の signal の片付け: runner が SIGINT／SIGTERM を受けると、まず次の起動を止める印を立て、実行中の子の process group（`-child.pid`）に SIGTERM を送り（wrapper が Xvfb を片付ける）、`close` を最大 5 秒待ってから SIGKILL を送り（待つ間に入れ替わった子にも）、一時 dir を消して 130／143 で終了する。単体試験 3 件（`createSignalCleanup` を偽の kill／remove／exit で試す）を足し、変異 5 種（SIGTERM を省く、SIGKILL を省く、一時 dir を消さない、止める印を立てない、入れ替わった子を止めない）で赤になった。手動の確認: Electron の実行中（group に 3 process）に runner へ SIGTERM を送ると、exit 143、group の残り 0、一時 dir 0、h1b の process 0、利用者の `/tmp/.X11-unix/X0`〜`X2` は残った（同時に動いていた別 lane〔P2〕の Xvfb には触れていない）。最初の手動の確認で、片付けの待ちの間に次の起動（mapped-control）が始まる競合が見つかったので、止める印を足した。
+- 判定の弱い変異 2 件: 判定の試験に、余分な case を持つ product の記録と、対照の server 到達が 1 回だけの記録を足した。case の集合の検査を外す変異と、`< 2` を `< 1` にする変異で赤になった。
+- 取り込まなかったもの: 5xx・通信の失敗の即失敗は安全側の設計として維持した。`error.cause.code` は log に出していない（host 名と status 以外を出さない原則を優先した）。
+- 再確認: `node --test scripts/release-workflows.test.mjs` 28 passed、`node --test electron/scripts/update-route-name-probe.test.mjs` 6 passed、実 Electron の harness `H1(b) PASS`、検知の script を公開 asset に 1 回（`github.com` → `release-assets.githubusercontent.com`、exit 0）。
