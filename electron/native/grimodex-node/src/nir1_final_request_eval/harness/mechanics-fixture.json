@@ -1,7 +1,7 @@
 {
   "schemaVersion": "nir1-final-request-harness-mechanics/1",
-  "purpose": "Synthetic material for the DPH-4 harness mechanics tests (cargo test). It shares no logical ID, text or canary with evals/nir1-packing/final-request.v1.json, is not a P-01..P-11 case and is never evidence: the real fixture's materials reach Native only through the freeze gate. The `expected` code and reason of a reject request are the synthetic expectations of these tests, calibrated to the product's rules.",
-  "fixtureVersion": 1,
+  "purpose": "Synthetic material for the DPH-4 harness mechanics tests (cargo test). It shares no logical ID, text or canary with evals/nir1-packing/final-request.v1.json or final-request.v2.json, is not a P-01..P-11 case and is never evidence: the real fixture's materials reach Native only through the freeze gate. The `expected` code and reason of a reject request are the synthetic expectations of these tests, calibrated to the product's rules. Its fixtureVersion is 2 so that the setup shapes of version 2 (a reject variant's own negative-anchor Scene and the scene-scope-unknown write, DR-DPH-99) run through D-final here before S4 (DR-DPH-117).",
+  "fixtureVersion": 2,
   "estimatorVersion": "nir1-context-estimator-v1",
   "route": {
     "model": "mech-local-model",
@@ -504,6 +504,131 @@
             }
           ],
           "ineligibleLogicalId": "ma-rev-neg-cancel"
+        },
+        {
+          "variantId": "ma-reject-unknown-scope",
+          "kind": "reject",
+          "setup": {
+            "scenes": [
+              {
+                "logicalId": "ma-scene-neg-anchor",
+                "role": "negative-anchor",
+                "title": "Synthetic negative anchor",
+                "body": "The synthetic negative anchor scene body, placed for the unknown Scope only."
+              }
+            ],
+            "steps": [
+              {
+                "stage": 1,
+                "op": "prepare-negative",
+                "revision": "ma-rev-neg-unknown",
+                "entity": "ma-ent-lantern",
+                "anchorScene": "ma-scene-neg-anchor",
+                "proposalKey": "mech:M-A:ma-rev-neg-unknown:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve-negative",
+                "revision": "ma-rev-neg-unknown",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "invalidate-negative",
+                "revision": "ma-rev-neg-unknown",
+                "write": "scene-scope-unknown",
+                "scene": "ma-scene-neg-anchor",
+                "unresolvedReason": "mechanics placement not yet decided"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-moss",
+                "entity": "ma-ent-moss",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-moss:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-moss",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              },
+              {
+                "stage": 1,
+                "op": "prepare",
+                "revision": "ma-rev-kiln",
+                "entity": "ma-ent-kiln",
+                "anchorScene": "ma-scene-anchor",
+                "proposalKey": "mech:M-A:ma-rev-kiln:MECH-META-canary-77c2"
+              },
+              {
+                "stage": 1,
+                "op": "approve",
+                "revision": "ma-rev-kiln",
+                "decision": "approved",
+                "decisionJson": {
+                  "note": "MECH-NOTE-canary-5e1f"
+                },
+                "createdBy": "mech-reviewer"
+              }
+            ],
+            "chatSessions": [
+              {
+                "stage": 1,
+                "nodeScene": "ma-scene-query",
+                "title": "M-A stage 1"
+              }
+            ],
+            "runtimeValues": [
+              {
+                "kind": "revisionToken",
+                "logicalId": "ma-scope-authority",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-moss",
+                "stage": 1
+              },
+              {
+                "kind": "sourceToken",
+                "logicalId": "ma-ent-kiln",
+                "stage": 1
+              }
+            ],
+            "codexEntities": [
+              {
+                "logicalId": "ma-ent-lantern",
+                "type": "item",
+                "name": "synthetic lantern",
+                "summary": "A synthetic lantern entry used by the harness mechanics tests only."
+              }
+            ]
+          },
+          "requests": [
+            {
+              "stage": 1,
+              "revisionIds": [
+                "ma-rev-moss",
+                "ma-rev-kiln",
+                "ma-rev-neg-unknown"
+              ],
+              "expected": {
+                "code": "NIR1_NATIVE_A2_UNAVAILABLE",
+                "reason": "source-revision-changed"
+              }
+            }
+          ],
+          "ineligibleLogicalId": "ma-rev-neg-unknown"
         }
       ]
     },

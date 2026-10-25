@@ -22,7 +22,7 @@ use super::freeze::{
     check_freeze, EVIDENCE_FIXTURE_VERSION, FIXTURE_PATH, FREEZE_PATH, REVIEW_PATH,
     SUPERSEDED_FIXTURE_PATH, SUPERSEDED_FREEZE_PATH,
 };
-use super::run::{run_variant, VariantOutcome};
+use super::run::{run_variant, run_variant_with, VariantOutcome};
 use super::workspace::CaseWorkspace;
 use super::{evidence_run, run_all_variants, EvidenceOutcome};
 
@@ -144,8 +144,9 @@ fn final_request_positive_variants_return_ok_matching_capture() -> Result<()> {
             );
         }
     }
-    // M-A: 1 positive request. M-B: 2 requests in each of 3 positive variants
-    // plus the stage-1 request of each of 3 reject variants.
+    // M-A: 1 positive request（M-A の拒否 variant 4 件は 1 stage で、最後の request が拒否）。
+    // M-B: 2 requests in each of 3 positive variants plus the stage-1 request of
+    // each of 3 reject variants.
     assert_eq!(positive_requests, 10);
     Ok(())
 }
@@ -185,8 +186,8 @@ fn final_request_reject_variants_fail_closed_with_expected_reason() -> Result<()
             assert_eq!(request["attemptRowsAdded"], 0, "{variant_id}");
         }
     }
-    // M-A: 3 reject variants. M-B: 3 reject variants.
-    assert_eq!(rejects, 6);
+    // M-A: 4 reject variants（unknown-scope を含む。DR-DPH-117）。M-B: 3 reject variants.
+    assert_eq!(rejects, 7);
     Ok(())
 }
 
@@ -664,6 +665,24 @@ fn setup_rejects_write_after_first_prepare() -> Result<()> {
     let error = result
         .err()
         .context("a write after the first prepare must stop the setup")?;
+    // 合成 fixture は版 2 なので（DR-DPH-117）、失効の順序は形の検査
+    // （DR-DPH-111 (3)）が workspace を作る前に止める。
+    assert!(
+        error.contains("NIR1_EVAL_SETUP_SHAPE")
+            && error.contains("after the stage's first positive prepare"),
+        "{error}"
+    );
+    // 形の検査が順序を見ない binding-change は、run の中の検査が止める
+    // （stage 2 の binding-change を、その stage の正例の準備の後に動かす）。
+    let result = run_mutated("mb-positive-scope", |variant| {
+        let steps = variant["setup"]["steps"].as_array_mut().expect("steps");
+        let change = steps.remove(2);
+        assert_eq!(change["op"], "binding-change");
+        steps.insert(3, change);
+    })?;
+    let error = result
+        .err()
+        .context("a binding change after the first prepare must stop the setup")?;
     assert!(
         error.contains("NIR1_EVAL_SETUP_WRITE_AFTER_FIRST_PREPARE"),
         "{error}"
@@ -767,6 +786,205 @@ fn p10_request2_uses_newly_prepared_revision_not_reapproved_old() {
         assert_ne!(runtime("mb-rev-1"), runtime("mb-rev-2"), "{variant_id}");
         assert!(runtime("mb-rev-1").is_some());
     }
+}
+
+// --------------------------------------- unknown Scope（S4 の前の確認）
+
+/// unknown-scope の拒否 variant（DR-DPH-99、108）。負例専用 anchor の Scope を
+/// unknown にした負例を最後に渡すと、D-final は request 全体を
+/// `NIR1_NATIVE_A2_UNAVAILABLE`／`source-revision-changed` で拒否する。
+const UNKNOWN_SCOPE_VARIANT: &str = "ma-reject-unknown-scope";
+const UNKNOWN_SCOPE_NEGATIVE: &str = "ma-rev-neg-unknown";
+const UNKNOWN_SCOPE_ANCHOR: &str = "ma-scene-neg-anchor";
+
+/// 合成 fixture の unknown-scope の拒否 variant を、D-final まで通す（DR-DPH-117）。
+/// 期待は fixture の `expected` と、製品の規則から導いた定数の両方で固定する。
+#[test]
+fn unknown_scope_reject_variant_fails_closed_through_dfinal() -> Result<()> {
+    let (_, raw, _) = fixture_text()?;
+    let variant = raw["cases"]
+        .as_array()
+        .context("cases")?
+        .iter()
+        .flat_map(|case| case["variants"].as_array().into_iter().flatten())
+        .find(|variant| variant["variantId"] == UNKNOWN_SCOPE_VARIANT)
+        .context("the unknown-scope variant")?;
+    assert_eq!(variant["kind"], "reject");
+    assert_eq!(variant["ineligibleLogicalId"], UNKNOWN_SCOPE_NEGATIVE);
+    assert_eq!(
+        variant["setup"]["scenes"][0]["role"], "negative-anchor",
+        "the negative has its own anchor"
+    );
+    let expected = &variant["requests"][0]["expected"];
+    assert_eq!(
+        *expected,
+        json!({"code": "NIR1_NATIVE_A2_UNAVAILABLE", "reason": "source-revision-changed"})
+    );
+
+    let outcome = outcome_of(all_outcomes(), UNKNOWN_SCOPE_VARIANT);
+    assert_eq!(outcome.requests.len(), 1);
+    let request = &outcome.requests[0];
+    assert_eq!(request["requestKind"], "reject");
+    assert_eq!(request["dfinal"]["outcome"], "err");
+    assert_eq!(request["dfinal"]["code"], expected["code"]);
+    assert_eq!(request["dfinal"]["reason"], expected["reason"]);
+    assert_eq!(request["dfinal"]["code"], "NIR1_NATIVE_A2_UNAVAILABLE");
+    assert_eq!(request["dfinal"]["reason"], "source-revision-changed");
+    assert!(request["capture"].is_null() && request["candidate"].is_null());
+    assert_eq!(request["attemptRowsAdded"], 0);
+
+    // 負例は最後に渡され、正例 2 件の後で落ちる。
+    let id_map = outcome.setup_case["idMap"].as_array().context("idMap")?;
+    let runtime = |logical: &str| {
+        id_map
+            .iter()
+            .find(|row| row["logicalId"] == logical)
+            .map(|row| row["runtimeId"].clone())
+            .unwrap_or_else(|| panic!("{logical} is not in the id map"))
+    };
+    assert_eq!(
+        request["passedRevisionIds"],
+        json!([
+            runtime("ma-rev-moss"),
+            runtime("ma-rev-kiln"),
+            runtime(UNKNOWN_SCOPE_NEGATIVE)
+        ])
+    );
+
+    // setup：負例専用 anchor の作成と explicit の Scope は最初の準備より前、
+    // unknown の書込みは Scope の writer による負例の失効で、負例の準備と承認の後、
+    // 最初の正例の準備より前。
+    let events = events(outcome);
+    let seq_where = |predicate: &dyn Fn(&Value) -> bool| {
+        events
+            .iter()
+            .find(|event| predicate(event))
+            .map(seq_of)
+            .unwrap_or_else(|| panic!("no such event in {UNKNOWN_SCOPE_VARIANT}"))
+    };
+    let anchor_tree =
+        seq_where(&|event| kind_of(event) == "tree" && event["logicalId"] == UNKNOWN_SCOPE_ANCHOR);
+    let anchor_scope = seq_where(&|event| {
+        kind_of(event) == "scope"
+            && event["writer"] == "narrative_scene_scope_update"
+            && event["logicalId"] == UNKNOWN_SCOPE_ANCHOR
+    });
+    let negative_prepare = seq_where(&|event| {
+        kind_of(event) == "prepare-negative" && event["logicalId"] == UNKNOWN_SCOPE_NEGATIVE
+    });
+    let negative_approve = seq_where(&|event| {
+        kind_of(event) == "approve-negative" && event["logicalId"] == UNKNOWN_SCOPE_NEGATIVE
+    });
+    let invalidate = seq_where(&|event| {
+        kind_of(event) == "invalidate-negative"
+            && event["writer"] == "narrative_scene_scope_update"
+            && event["logicalId"] == UNKNOWN_SCOPE_NEGATIVE
+    });
+    let first_positive = seq_where(&|event| kind_of(event) == "prepare");
+    assert!(anchor_tree < anchor_scope && anchor_scope < negative_prepare);
+    assert!(negative_prepare < negative_approve && negative_approve < invalidate);
+    assert!(invalidate < first_positive);
+
+    // request-pre：正例は適格、負例だけが A2 で適格でない。
+    let verifications = outcome.setup_case["verifications"]
+        .as_array()
+        .context("verifications")?;
+    let pre = verifications
+        .iter()
+        .find(|row| row["point"] == "request-pre")
+        .context("request-pre")?;
+    for row in pre["revisions"].as_array().context("revisions")? {
+        if row["logicalId"] == UNKNOWN_SCOPE_NEGATIVE {
+            assert_ne!(row["a2"], "eligible", "{row}");
+        } else {
+            assert_eq!(
+                (&row["a2"], &row["a3"], &row["freshness"]),
+                (&json!("eligible"), &json!("eligible"), &json!("fresh")),
+                "{row}"
+            );
+        }
+    }
+    assert_eq!(outcome.setup_case["valid"], true);
+    assert!(outcome.direct_writes.is_empty());
+    Ok(())
+}
+
+/// unknown の marker の確認（DR-DPH-112）が、D-final を含む経路（`run_variant`）で
+/// 効くこと。試験の介入点が unknown の書込みの直後に、製品の writer で Scope を
+/// explicit に書き戻す（製品の writer が unknown を保たなかった場合の模擬）。
+/// 確認がなければ負例は投影の token の不一致で落ち続け、run は D-final まで進んで
+/// 同じ拒否を返すので、受け取った receipt からは区別できない。
+#[test]
+fn unknown_scope_marker_check_stops_the_setup_when_the_scope_is_not_unknown() -> Result<()> {
+    let (fixture, raw, _) = fixture_text()?;
+    let per_scene = raw["setupContract"]["sceneScope"]["perScene"].clone();
+    let (case, variant) = fixture
+        .cases
+        .iter()
+        .find_map(|case| {
+            case.variants
+                .iter()
+                .find(|variant| variant.variant_id == UNKNOWN_SCOPE_VARIANT)
+                .map(|variant| (case, variant))
+        })
+        .context("the unknown-scope variant")?;
+    let calls = std::cell::Cell::new(0);
+    let rewrite_explicit = |ws: &mut CaseWorkspace, scene: &str| -> Result<()> {
+        calls.set(calls.get() + 1);
+        ws.write_scene_scope(scene, &per_scene)
+    };
+    let result = run_variant_with(&fixture, case, variant, Some(&rewrite_explicit));
+    assert_eq!(
+        calls.get(),
+        1,
+        "the probe runs once, right after the unknown write"
+    );
+    let error = format!(
+        "{:#}",
+        result
+            .err()
+            .context("a Scope that is not unknown after the unknown write must stop the setup")?
+    );
+    assert!(
+        error.contains("NIR1_EVAL_SETUP_SCOPE_NOT_UNKNOWN")
+            && error.contains(UNKNOWN_SCOPE_ANCHOR)
+            && error.contains("explicit"),
+        "{error}"
+    );
+    Ok(())
+}
+
+/// `IdMap::add` の重複の誤り（DR-DPH-114 (2)）が、到達する経路で誤りになること。
+/// 形の検査は準備する Revision の logical id を重複なしに集めるので、同じ Revision を
+/// 2 回準備する setup は形の検査を通り、run の中の `IdMap::add` でだけ止まる。
+/// 黙って上書きすると、2 回目の準備と承認が 1 回目を置き換え、run は D-final まで進む。
+#[test]
+fn a_second_material_under_one_logical_id_stops_the_run() -> Result<()> {
+    let duplicate = |variant: &mut Value| {
+        let steps = variant["setup"]["steps"].as_array_mut().expect("steps");
+        let mut prepare = steps[0].clone();
+        let approve = steps[1].clone();
+        assert_eq!(prepare["op"], "prepare");
+        assert_eq!(approve["op"], "approve");
+        assert_eq!(prepare["revision"], approve["revision"]);
+        // proposal key は別にする（製品の準備は新しい Revision を作る）。
+        prepare["proposalKey"] = json!("mech:M-A:ma-rev-moss:MECH-META-canary-77c2:again");
+        steps.insert(2, prepare);
+        steps.insert(3, approve);
+    };
+    // 形の検査は通る（重複は run の中でだけ見つかる）。
+    let (fixture, case_index, variant_index) = mutated_variant("ma-positive", duplicate)?;
+    let case = &fixture.cases[case_index];
+    validate_variant_setup(&fixture, case, &case.variants[variant_index])?;
+
+    let error = run_mutated("ma-positive", duplicate)?
+        .err()
+        .context("a second Revision under one logical id must stop the setup")?;
+    assert!(
+        error.contains("NIR1_EVAL_SETUP_DUPLICATE_LOGICAL_ID") && error.contains("ma-rev-moss"),
+        "{error}"
+    );
+    Ok(())
 }
 
 // ----------------------------------------------------------- freeze gate
