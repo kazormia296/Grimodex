@@ -505,6 +505,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/renderer-build.test.mjs",
         "scripts/quality/nir1-graph-eval/observer-core.test.mjs",
         "scripts/quality/nir1-graph-eval/launcher.test.mjs",
+        // CP-4 S1c-2: setup driver and runner (pure parts only).
+        "scripts/quality/nir1-graph-eval/run-sample.test.mjs",
+        "scripts/quality/nir1-graph-eval/window.test.mjs",
+        "scripts/quality/nir1-graph-eval/dev-fixture.test.mjs",
       ],
       [
         "node",

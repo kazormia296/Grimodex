@@ -1627,6 +1627,16 @@ requirements:
       - scripts/quality/nir1-graph-eval/smoke.mjs
       - scripts/quality/nir1-graph-eval/renderer/nir1GraphAvailability.eval.ts
       - scripts/quality/nir1-graph-eval/renderer/smoke.ts
+      - scripts/quality/nir1-graph-eval/dev-fixture.mjs
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-lantern.v1.json
+      - scripts/quality/nir1-graph-eval/workspace-db.mjs
+      - scripts/quality/nir1-graph-eval/window.mjs
+      - scripts/quality/nir1-graph-eval/session.mjs
+      - scripts/quality/nir1-graph-eval/setup-driver.mjs
+      - scripts/quality/nir1-graph-eval/run-sample.mjs
+      - scripts/quality/nir1-graph-eval/runner.mjs
+      - scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts
+      - scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
@@ -1681,6 +1691,9 @@ requirements:
       - scripts/quality/nir1-graph-eval/renderer-build.test.mjs
       - scripts/quality/nir1-graph-eval/observer-core.test.mjs
       - scripts/quality/nir1-graph-eval/launcher.test.mjs
+      - scripts/quality/nir1-graph-eval/run-sample.test.mjs
+      - scripts/quality/nir1-graph-eval/window.test.mjs
+      - scripts/quality/nir1-graph-eval/dev-fixture.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
