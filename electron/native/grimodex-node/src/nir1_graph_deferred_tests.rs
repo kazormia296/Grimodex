@@ -292,6 +292,21 @@ fn n1_a_commit_after_the_release_is_still_stale() {
     ticket.finish(GraphTicketUse::Unused);
 }
 
+/// P2-1: the hold outlasts a begin that takes longer than the Related Scenes
+/// await (a cold start loads the model before its first audit commit): a
+/// release more than `GRAPH_AWAIT_LIMIT` after the hand-over is still served.
+#[test]
+fn n2_a_release_later_than_the_await_limit_is_still_served() {
+    let fixture = ProductFixture::new();
+    let ticket = pending(begin_deferred(&fixture, "entity"));
+    thread::sleep(Duration::from_millis(2_300));
+    assert_eq!(fixture.kind(), GraphSlotKind::Deferred);
+    ticket.release_after_own_commits();
+    assert!(matches!(outcome(&ticket), GraphTicketOutcome::Available(_)));
+    ticket.finish(GraphTicketUse::Used);
+    assert_eq!(fixture.diagnostics().deferred_expired, 0);
+}
+
 /// N3: a hold that is never released ends at its limit; the slot is free.
 #[test]
 fn n3_an_unreleased_hold_expires_and_frees_the_slot() {

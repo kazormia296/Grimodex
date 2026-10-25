@@ -617,11 +617,16 @@ fn a_begin_that_succeeds_releases_its_hold_once() {
     drop(DeferredRelease::<FakeOperation>::new(None));
 }
 
+/// The hold is counted from the begin's hand-over and bounds only a hold that
+/// is never released, so it is well above the await, which starts after the
+/// begin returned (a cold begin can take longer than the await by itself).
 #[test]
-fn the_owner_hold_limit_is_the_await_limit() {
-    assert_eq!(
-        crate::nir1_graph_product::DEFERRED_RELEASE_LIMIT,
-        GRAPH_AWAIT_LIMIT
+fn the_owner_hold_limit_outlasts_a_begin_longer_than_the_await() {
+    let hold = crate::nir1_graph_product::DEFERRED_RELEASE_LIMIT;
+    assert!(hold >= GRAPH_AWAIT_LIMIT * 4, "{hold:?}");
+    assert!(
+        hold <= Duration::from_secs(30),
+        "a leak still ends: {hold:?}"
     );
 }
 

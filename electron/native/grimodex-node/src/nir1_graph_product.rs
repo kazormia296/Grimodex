@@ -69,10 +69,13 @@ const UNAVAILABLE_KINDS: usize = 14;
 /// Most distinct projects whose unserved demand is remembered for a graph-ready
 /// notice. Past it the oldest is forgotten; that window waits for its own next query.
 const MAX_UNSERVED_PROJECTS: usize = 8;
-/// CQ-DEFER: how long a held Related Scenes query waits for its begin's release
-/// (the same 2 s as the Related Scenes await, `GRAPH_AWAIT_LIMIT`). Past it the
-/// query answers `timeout` and the slot is free again.
-pub(crate) const DEFERRED_RELEASE_LIMIT: Duration = Duration::from_secs(2);
+/// CQ-DEFER: how long a held Related Scenes query waits for its begin's release,
+/// counted from the begin's hand-over. It bounds a hold that is never released
+/// (a leak), not the Graph's latency: the begin has no upper bound of its own
+/// (a cold start loads the embedding model before its first audit commit), so
+/// it is far above the Related Scenes await (`GRAPH_AWAIT_LIMIT`, 2 s), which
+/// only starts after the begin returned. A slow begin keeps its Graph.
+pub(crate) const DEFERRED_RELEASE_LIMIT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct GraphOwnerConfig {
