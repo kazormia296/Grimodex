@@ -52,15 +52,79 @@ test("直接の子が終わっても group に孫が残れば、group に SIGKIL
   assert.equal(groupAlive(owner.pgid), false);
 });
 
-test("実行体の dir の下の process を path で見つける（Linux の /proc/<pid>/exe）。見つけても kill しない", { skip: process.platform !== "linux" }, async () => {
-  const owner = nodeChild("setInterval(() => {}, 1000)", path.dirname(process.execPath));
-  await sleep(200);
-  const found = processesUnder(path.dirname(process.execPath));
-  assert.ok(found.includes(owner.pid), JSON.stringify(found));
-  assert.ok(!found.includes(process.pid));
-  // 実行体の dir の下に残っている間は ok にしない（ここでは自分の子なので最後に終わらせる）
-  const evidence = await terminateOwned(owner, { graceMs: 5000, forceMs: 5000, settleMs: 1000 });
-  assert.equal(evidence.closed != null, true);
+test("path の走査で見つけた owner でない process は kill せず、残存として ok を false にする（node の copy を一時 dir に置く）", { skip: process.platform !== "linux" }, async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "gps-nodecopy-"));
+  const copy = path.join(dir, "node");
+  fs.copyFileSync(process.execPath, copy);
+  fs.chmodSync(copy, 0o755);
+  // owner でない process: 同じ copy から別の process group で起動する（harness が起動していない利用者の process の代役）
+  const { spawn } = await import("node:child_process");
+  const stranger = spawn(copy, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" });
+  const owner = launchOwned({ command: copy, args: ["-e", "setInterval(() => {}, 1000)"], env: process.env, cwd: dir, exeDir: dir, label: "owned" });
+  try {
+    await sleep(300);
+    const found = processesUnder(dir);
+    assert.ok(found.includes(owner.pid) && found.includes(stranger.pid), JSON.stringify(found));
+    const evidence = await terminateOwned(owner, { graceMs: 5000, forceMs: 5000, settleMs: 1000 });
+    assert.equal(evidence.closed != null, true);
+    assert.deepEqual(evidence.residual, [stranger.pid]);
+    assert.equal(evidence.ok, false);
+    // owner でない process は生きている（kill していない）
+    assert.doesNotThrow(() => process.kill(stranger.pid, 0));
+  } finally {
+    try { process.kill(stranger.pid, "SIGKILL"); } catch { /* 終わっている */ }
+    try { process.kill(-owner.pgid, "SIGKILL"); } catch { /* 終わっている */ }
+    await sleep(200);
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Linux の走査: exe を読めない（EACCES。non-dumpable な sandbox の子）process は cmdline の argv[0] で照合する。消えた process は飛ばす", () => {
+  const proc = {
+    list: () => ["10", "11", "12", "13", "self"],
+    exe: (pid) => {
+      if (pid === "10" || pid === "13") throw Object.assign(new Error("denied"), { code: "EACCES" });
+      if (pid === "12") throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      return pid === "11" ? "/usr/bin/ssh-agent" : "";
+    },
+    cmdline: (pid) => {
+      if (pid === "13") throw Object.assign(new Error("hidepid"), { code: "EACCES" });
+      return "/opt/app/grimodex\0--type=zygote\0";
+    },
+  };
+  assert.deepEqual(processesUnder("/opt/app", "linux", { proc }), [10]);
+  // 走査そのものが失敗したら null（観測できない）。[] にしない
+  assert.equal(processesUnder("/opt/app", "linux", { proc: { ...proc, list: () => { throw new Error("no /proc"); } } }), null);
+  assert.equal(processesUnder("/opt/app", "darwin", { exec: () => { throw new Error("ps"); } }), null);
+  assert.deepEqual(processesUnder("/opt/app", "darwin", { exec: () => "  10 /opt/app/Contents/MacOS/Grimodex --x\n  11 /opt/application/x\n" }), [10]);
+});
+
+/** 終わった子の owner の代役（配線の試験用。process を作らない） */
+function closedOwner(platform) {
+  const closed = { code: 0, signal: null, at: Date.now() };
+  return { label: "fake", platform, pid: 424242, pgid: platform === "win32" ? null : 424242, exeDir: "/opt/app", exited: Promise.resolve(closed), isAlive: () => false, closed: () => closed, spawnError: () => null };
+}
+
+test("terminateOwned の配線: group が残る・走査できない・残存がある、のどれでも ok にしない。残存の pid に kill を送らない", async () => {
+  const calls = [];
+  const deps = (over) => ({
+    groupAlive: () => false, processesUnder: () => [], taskkill: (pid, force) => { calls.push(["taskkill", pid, force]); return "requested"; },
+    killPid: (pid, signal) => calls.push(["killPid", pid, signal]), killGroup: (pgid, signal) => calls.push(["killGroup", pgid, signal]), ...over,
+  });
+  const fast = { graceMs: 10, forceMs: 10, settleMs: 50 };
+  assert.equal((await terminateOwned(closedOwner("linux"), { ...fast, deps: deps({}) })).ok, true);
+  assert.equal((await terminateOwned(closedOwner("linux"), { ...fast, deps: deps({ groupAlive: () => true }) })).ok, false);
+  assert.equal((await terminateOwned(closedOwner("linux"), { ...fast, deps: deps({ processesUnder: () => null }) })).ok, false);
+  calls.length = 0;
+  const residual = await terminateOwned(closedOwner("linux"), { ...fast, deps: deps({ processesUnder: () => [777] }) });
+  assert.equal(residual.ok, false);
+  assert.deepEqual(residual.residual, [777]);
+  assert.ok(!calls.some(([, pid]) => pid === 777), JSON.stringify(calls));
+  // Windows: exit を見た後は pid に taskkill を送らない（pid の再利用）
+  calls.length = 0;
+  const win = await terminateOwned(closedOwner("win32"), { ...fast, deps: deps({ processesUnder: () => [888] }) });
+  assert.equal(win.ok, false);
+  assert.deepEqual(calls.filter(([kind]) => kind === "taskkill"), []);
 });
 
 test("起動できない command は ok にしない", posixOnly, async () => {

@@ -6,9 +6,12 @@
  * - 終了は `terminateOwned()`。graceful（POSIX は owner の pid に SIGTERM、Windows は `taskkill /PID <pid> /T`）→ 期限で強制
  *   （POSIX は process group に SIGKILL、Windows は `taskkill /PID <pid> /T /F`）→ 証拠の確認。
  * - 終了の証拠は kill の要求ではなく、(1) 直接の子の `close`、(2) POSIX は process group が消えたこと（`kill(-pgid, 0)` が ESRCH）、
- *   (3) 実行体の dir の下の実行ファイルを持つ process が 0（Linux は `/proc/<pid>/exe`、macOS は `ps -axo pid=,comm=`、Windows は
+ *   (3) 実行体の dir の下の実行ファイルを持つ process が 0（Linux は `/proc/<pid>/exe`、読めない〔EACCES。sandbox の子など
+ *   non-dumpable〕ときは `/proc/<pid>/cmdline` の argv[0]、macOS は `ps -axww -o pid=,args=` の先頭、Windows は
  *   `Get-CimInstance Win32_Process` の `ExecutablePath`）。path で見つけた process は kill しない（他人の process を殺さない）。報告だけで、
- *   残っていれば `ok: false`。
+ *   残っていれば `ok: false`。走査できなければ null（観測できない＝証明にならない）。
+ * - Windows は直接の子の exit を見た後に pid で `taskkill` を送らない（pid の再利用で無関係な process を殺しうる）。
+ * - 観測と kill の関数は `deps` で差し替えられる（試験が配線を確かめる）。
  */
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -17,39 +20,54 @@ import path from "node:path";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const OUTPUT_LIMIT = 64 * 1024;
 
-/** 実行体の dir の下の実行ファイルを持つ process の pid（自分自身は除く）。見られない OS は null */
-export function processesUnder(dir, platform = process.platform) {
+const defaultProc = {
+  list: () => fs.readdirSync("/proc"),
+  exe: (pid) => fs.readlinkSync(`/proc/${pid}/exe`),
+  cmdline: (pid) => fs.readFileSync(`/proc/${pid}/cmdline`, "latin1"),
+};
+const defaultExec = (command, args, options) => execFileSync(command, args, options);
+
+/**
+ * 実行体の dir の下の実行ファイルを持つ process の pid（自分自身は除く）。走査できない OS・失敗は null。
+ * options.proc（Linux の /proc の読取）と options.exec（macOS／Windows の command）は試験が差し替える。
+ */
+export function processesUnder(dir, platform = process.platform, { proc = defaultProc, exec = defaultExec } = {}) {
   const root = path.resolve(dir);
-  const inside = (file) => {
-    const resolved = path.resolve(file);
-    return platform === "win32"
-      ? resolved.toLowerCase().startsWith(root.toLowerCase() + path.sep)
-      : resolved.startsWith(root + path.sep);
-  };
+  const inside = (file) => typeof file === "string" && file.length > 0 && path.resolve(file).startsWith(root + path.sep);
   try {
     if (platform === "linux") {
       const out = [];
-      for (const name of fs.readdirSync("/proc")) {
+      for (const name of proc.list()) {
         if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
-        let exe;
-        try { exe = fs.readlinkSync(`/proc/${name}/exe`); } catch { continue; }
-        if (inside(exe.replace(/ \(deleted\)$/, ""))) out.push(Number(name));
+        let exe = null;
+        try {
+          exe = proc.exe(name).replace(/ \(deleted\)$/, "");
+        } catch (error) {
+          if (error?.code === "ENOENT" || error?.code === "ESRCH") continue; // 走査の間に終わった
+          // EACCES など: non-dumpable な子（Chromium の sandbox の子など）は exe を読めない。cmdline の argv[0] で照合する
+          try {
+            exe = proc.cmdline(name).split("\0")[0];
+          } catch {
+            continue; // cmdline も読めない（hidepid など）。この pid は判断できない。group の消滅の確認が担う
+          }
+        }
+        if (inside(exe)) out.push(Number(name));
       }
       return out;
     }
     if (platform === "darwin") {
       // args（-ww で切り詰めない）の先頭は実行体の path（Chromium は macOS で argv を書き換えない）
-      const text = execFileSync("ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8", timeout: 30_000 });
-      return text.split("\n").map((line) => /^\s*(\d+)\s+(.+)$/.exec(line)).filter(Boolean)
+      const text = exec("ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8", timeout: 30_000 });
+      return String(text).split("\n").map((line) => /^\s*(\d+)\s+(.+)$/.exec(line)).filter(Boolean)
         .filter((match) => Number(match[1]) !== process.pid && match[2].trim().startsWith(root + path.sep))
         .map((match) => Number(match[1]));
     }
     if (platform === "win32") {
       const script = "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($env:GRIMODEX_SMOKE_DIR + '\\', [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { $_.ProcessId }";
-      const text = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
+      const text = exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script], {
         encoding: "utf8", timeout: 60_000, env: { ...process.env, GRIMODEX_SMOKE_DIR: root }, windowsHide: true,
       });
-      return text.split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line)).map(Number)
+      return String(text).split(/\r?\n/).map((line) => line.trim()).filter((line) => /^\d+$/.test(line)).map(Number)
         .filter((pid) => pid !== process.pid);
     }
   } catch {
@@ -145,11 +163,21 @@ export function terminationProven({ isClosed, groupGone, residual }) {
   return isClosed === true && groupGone !== false && Array.isArray(residual) && residual.length === 0;
 }
 
+const defaultDeps = {
+  groupAlive,
+  processesUnder,
+  killPid: (pid, signal) => process.kill(pid, signal),
+  killGroup: (pgid, signal) => process.kill(-pgid, signal),
+  taskkill,
+};
+
 /**
  * 終了させて証拠を返す。戻り値: { ok, steps, closed, groupGone, residual, forced }
- * ok は「close を見た」かつ「group が消えた（POSIX）」かつ「実行体の dir の下の process が 0」。
+ * ok は「close を見た」かつ「group が消えた（POSIX）」かつ「実行体の dir の下の process が 0」（`terminationProven`）。
+ * deps（groupAlive、processesUnder、killPid、killGroup、taskkill）は試験が差し替える。
  */
-export async function terminateOwned(owner, { graceMs = 15_000, forceMs = 10_000, settleMs = 5_000 } = {}) {
+export async function terminateOwned(owner, { graceMs = 15_000, forceMs = 10_000, settleMs = 5_000, deps = {} } = {}) {
+  const use = { ...defaultDeps, ...deps };
   const steps = [];
   let forced = false;
   if (owner.pid == null) {
@@ -158,32 +186,35 @@ export async function terminateOwned(owner, { graceMs = 15_000, forceMs = 10_000
   const posix = owner.platform !== "win32";
   if (owner.isAlive()) {
     if (posix) {
-      try { process.kill(owner.pid, "SIGTERM"); steps.push("SIGTERM(pid)"); } catch (error) { steps.push(`SIGTERM-failed:${error?.code}`); }
+      try { use.killPid(owner.pid, "SIGTERM"); steps.push("SIGTERM(pid)"); } catch (error) { steps.push(`SIGTERM-failed:${error?.code}`); }
     } else {
-      steps.push(`taskkill /T:${taskkill(owner.pid, false)}`);
+      steps.push(`taskkill /T:${use.taskkill(owner.pid, false)}`);
     }
   } else {
     steps.push("already-closed");
   }
   let isClosed = await waitClosed(owner, graceMs);
-  const groupStillAlive = () => posix && owner.pgid != null && groupAlive(owner.pgid);
+  const groupStillAlive = () => posix && owner.pgid != null && use.groupAlive(owner.pgid);
   if (!isClosed || groupStillAlive()) {
     forced = true;
     if (posix) {
-      try { process.kill(-owner.pgid, "SIGKILL"); steps.push("SIGKILL(group)"); } catch (error) { steps.push(`SIGKILL-failed:${error?.code}`); }
-    } else {
-      steps.push(`taskkill /T /F:${taskkill(owner.pid, true)}`);
+      // process group は直接の子が作った自分のもの（detached）。group を抜けた process には届かない
+      try { use.killGroup(owner.pgid, "SIGKILL"); steps.push("SIGKILL(group)"); } catch (error) { steps.push(`SIGKILL-failed:${error?.code}`); }
+    } else if (!isClosed) {
+      // exit を見た後は pid が再利用されうるので送らない（孤児は下の走査が残存として報告する）
+      steps.push(`taskkill /T /F:${use.taskkill(owner.pid, true)}`);
     }
     isClosed = await waitClosed(owner, forceMs);
   }
-  // group と実行体の dir の下の process が消えるのを有限に待つ（close の後も孫が残りうる）
+  // group と実行体の dir の下の process が消えるのを有限に待つ（close の後も孫が残りうる）。path で見つけた process は kill しない
+  const scan = () => (owner.exeDir ? use.processesUnder(owner.exeDir, owner.platform) : null);
   let groupGone = posix ? !groupStillAlive() : null;
-  let residual = owner.exeDir ? processesUnder(owner.exeDir, owner.platform) : [];
+  let residual = scan();
   const deadline = Date.now() + settleMs;
   while ((groupGone === false || (residual?.length ?? 0) > 0) && Date.now() < deadline) {
     await sleep(250);
     groupGone = posix ? !groupStillAlive() : null;
-    residual = owner.exeDir ? processesUnder(owner.exeDir, owner.platform) : [];
+    residual = scan();
   }
   const ok = terminationProven({ isClosed, groupGone, residual });
   return { ok, steps, closed: owner.closed(), groupGone, residual, residualObservable: Array.isArray(residual), forced };
