@@ -4,8 +4,8 @@
  * harness は空いている port を選んで閉じてから `--remote-debugging-port` に渡すので、その間に別の process が port を取りうる。
  * 攻撃 JS を別の Grimodex（利用者の app など）に注入しないよう、注入の前に listen している pid を OS の道具で引き、owner の
  * process group（POSIX）か owner の pid／実行体の dir（Windows）に属することを確かめる。確かめられなければ owned: false（注入しない）。
- *   Linux: `ss -ltnpH "sport = :<port>"` の `pid=`、`/proc/<pid>/stat` の pgrp
- *   macOS: `lsof -nP -iTCP:<port> -sTCP:LISTEN -t`、`ps -o pgid= -p <pid>`
+ *   Linux: `ss -ltnpH "sport = :<port>"` の `pid=`（pid の無い listen の行があれば失敗）、`/proc/<pid>/stat` の pgrp
+ *   macOS: `lsof -nP -iTCP:<port> -sTCP:LISTEN -F pn`、`netstat -an -p tcp` の listen の数との照合、`ps -o pgid= -p <pid>`
  *   Windows: `Get-NetTCPConnection -LocalPort <port> -State Listen` の OwningProcess、`Win32_Process` の ExecutablePath
  * exec と readStat は試験が差し替える。
  */
@@ -25,11 +25,25 @@ export function pgrpFromStat(text) {
 
 export function listeningPids(port, platform, exec = run) {
   if (platform === "linux") {
-    const text = exec("ss", ["-ltnpH", `sport = :${port}`]);
-    return [...new Set([...String(text).matchAll(/pid=(\d+)/g)].map((match) => Number(match[1])))];
+    const lines = String(exec("ss", ["-ltnpH", `sport = :${port}`])).split("\n").filter((line) => line.trim().length > 0);
+    // ss は別の利用者の socket に pid を出さない。pid の無い listen の行が 1 つでもあれば、誰の socket か分からない（fail-safe）
+    if (lines.some((line) => !/pid=\d+/.test(line))) throw new Error("pid の分からない listen の socket がある");
+    return [...new Set(lines.flatMap((line) => [...line.matchAll(/pid=(\d+)/g)].map((match) => Number(match[1]))))];
   }
   if (platform === "darwin") {
-    return [...new Set(String(exec("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"])).split(/\s+/).filter((entry) => /^\d+$/.test(entry)).map(Number))];
+    // lsof は見えない（別の利用者の）socket を出さない。netstat の listen の数が lsof の socket の数より多ければ fail-safe で失敗
+    const sockets = String(exec("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-F", "pn"])).split("\n");
+    const pids = [];
+    let current = null;
+    let socketCount = 0;
+    for (const line of sockets) {
+      if (line.startsWith("p")) current = Number(line.slice(1));
+      if (line.startsWith("n")) { socketCount += 1; if (Number.isInteger(current)) pids.push(current); }
+    }
+    const listening = String(exec("netstat", ["-an", "-p", "tcp"])).split("\n")
+      .filter((line) => /LISTEN/.test(line) && new RegExp(`[.:]${Number(port)}\\s`).test(line)).length;
+    if (listening > socketCount) throw new Error(`pid の分からない listen の socket がある（netstat ${listening}、lsof ${socketCount}）`);
+    return [...new Set(pids)];
   }
   if (platform === "win32") {
     const text = exec("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",

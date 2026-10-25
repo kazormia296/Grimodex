@@ -18,7 +18,8 @@ test("Linux: listen している pid の process group が owner と同じとき
 });
 
 test("macOS: lsof の pid の pgid、Windows: OwningProcess が owner の pid か実行体が owner の dir の下", () => {
-  const mac = (pgid) => (command) => (command === "lsof" ? "101\n" : ` ${pgid}\n`);
+  const mac = (pgid, netstat = "tcp4  0  0  127.0.0.1.1  *.*  LISTEN\n") => (command) =>
+    (command === "lsof" ? "p101\nn127.0.0.1:1\n" : command === "netstat" ? netstat : ` ${pgid}\n`);
   assert.equal(verifyCdpPortOwner({ port: 1, owner, platform: "darwin", exec: mac(100) }).owned, true);
   assert.equal(verifyCdpPortOwner({ port: 1, owner, platform: "darwin", exec: mac(7) }).owned, false);
   const win = (pid, exe) => (_command, args) => (String(args.at(-1)).startsWith("Get-NetTCPConnection") ? `${pid}\r\n` : `${exe}\r\n`);
@@ -29,4 +30,20 @@ test("macOS: lsof の pid の pgid、Windows: OwningProcess が owner の pid �
   }
   assert.equal(verifyCdpPortOwner({ port: 1, owner: winOwner, platform: "win32", exec: win(5, "C:\\Users\\u\\Grimodex.exe") }).owned, false);
   assert.deepEqual(listeningPids(1, "freebsd", () => ""), []);
+});
+
+test("pid の分からない listen の socket があれば owned にしない（別の利用者の socket。fail-safe）", () => {
+  const stat = () => "101 (grimodex) S 100 100 100 0";
+  const linux = (text) => () => text;
+  const mixed = 'LISTEN 0 10 127.0.0.1:9222 0.0.0.0:*\nLISTEN 0 10 [::1]:9222 [::]:* users:(("grimodex",pid=101,fd=40))\n';
+  const result = verifyCdpPortOwner({ port: 9222, owner, platform: "linux", exec: linux(mixed), readStat: stat });
+  assert.equal(result.owned, false);
+  assert.match(result.reason, /pid の分からない/);
+  // macOS: netstat の listen が lsof に見える socket より多い
+  const mac = (command) => (command === "lsof" ? "p101\nn[::1]:9222\n"
+    : command === "netstat" ? "tcp4  0  0  127.0.0.1.9222  *.*  LISTEN\ntcp6  0  0  ::1.9222  *.*  LISTEN\n" : " 100\n");
+  assert.equal(verifyCdpPortOwner({ port: 9222, owner, platform: "darwin", exec: mac }).owned, false);
+  const macOk = (command) => (command === "lsof" ? "p101\nn127.0.0.1:9222\nn[::1]:9222\n"
+    : command === "netstat" ? "tcp4  0  0  127.0.0.1.9222  *.*  LISTEN\ntcp6  0  0  ::1.9222  *.*  LISTEN\ntcp4 0 0 127.0.0.1.19222 *.* LISTEN\n" : " 100\n");
+  assert.equal(verifyCdpPortOwner({ port: 9222, owner, platform: "darwin", exec: macOk }).owned, true);
 });
