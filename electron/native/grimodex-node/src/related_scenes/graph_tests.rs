@@ -550,6 +550,23 @@ fn an_ir_continue_in_flight_never_hides_a_stopped_chronicle() {
 }
 
 #[test]
+fn the_lease_probe_of_the_graph_await_hides_an_ir_while_its_continue_is_in_flight() {
+    // RS-JOIN P3-1: the production probe (`lease_probe`) is wired to the
+    // operation's own IR state and `IrJoin`, not only `ir_for_graph`.
+    let leases = Leases::new(Duration::from_secs(60));
+    let (_ticket, lease) = leases.idle(OWNER);
+    assert_eq!(lease_probe(&lease).ir, IrState::Pending);
+    lease.data.ir_available.store(true, Ordering::SeqCst);
+    assert_eq!(lease_probe(&lease).ir, IrState::Available);
+    let in_flight = lease.data.join.enter();
+    assert_eq!(lease_probe(&lease).ir, IrState::Pending);
+    drop(in_flight);
+    let probe = lease_probe(&lease);
+    assert!(probe.live);
+    assert_eq!(probe.ir, IrState::Available);
+}
+
+#[test]
 fn the_ir_continue_count_survives_nested_and_out_of_order_exits() {
     let join = IrJoin::default();
     let first = join.enter();
@@ -629,6 +646,8 @@ fn dropping_the_slot_cancels_a_running_query() {
 struct FakeOperation {
     graph: GraphState,
     completed: Notify,
+    ir_available: AtomicBool,
+    join: IrJoin,
 }
 
 impl LeaseEnd for FakeOperation {
@@ -638,6 +657,18 @@ impl LeaseEnd for FakeOperation {
 
     fn completed(&self) -> &Notify {
         &self.completed
+    }
+
+    fn ir_state(&self) -> IrState {
+        if self.ir_available.load(Ordering::SeqCst) {
+            IrState::Available
+        } else {
+            IrState::Pending
+        }
+    }
+
+    fn ir_join(&self) -> &IrJoin {
+        &self.join
     }
 }
 

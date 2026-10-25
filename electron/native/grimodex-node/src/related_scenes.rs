@@ -80,6 +80,10 @@ struct Operation {
 trait LeaseEnd {
     fn graph(&self) -> &graph::GraphState;
     fn completed(&self) -> &Notify;
+    /// The IR response as the Graph await sees it (RS-JOIN: `lease_probe`).
+    fn ir_state(&self) -> graph::IrState;
+    /// RS-JOIN (DR-RSJ-3, DR-RSJ-4): the IR arrival and the IR continues.
+    fn ir_join(&self) -> &graph::IrJoin;
 }
 
 impl LeaseEnd for Operation {
@@ -89,6 +93,21 @@ impl LeaseEnd for Operation {
 
     fn completed(&self) -> &Notify {
         &self.completed
+    }
+
+    fn ir_state(&self) -> graph::IrState {
+        match self.result.lock() {
+            Ok(result) => match result.response.as_ref() {
+                None => graph::IrState::Pending,
+                Some(response) if response["status"] == "available" => graph::IrState::Available,
+                Some(_) => graph::IrState::Unavailable,
+            },
+            Err(_) => graph::IrState::Unavailable,
+        }
+    }
+
+    fn ir_join(&self) -> &graph::IrJoin {
+        &self.join
     }
 }
 

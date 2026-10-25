@@ -566,18 +566,10 @@ impl<T: LeaseEnd> Drop for DeferredRelease<T> {
     }
 }
 
-fn lease_probe(lease: &Lease) -> LeaseProbe {
-    let ir = match lease.data.result.lock() {
-        Ok(result) => match result.response.as_ref() {
-            None => IrState::Pending,
-            Some(response) if response["status"] == "available" => IrState::Available,
-            Some(_) => IrState::Unavailable,
-        },
-        Err(_) => IrState::Unavailable,
-    };
+fn lease_probe<T: LeaseEnd>(lease: &LeaseOf<T>) -> LeaseProbe {
     LeaseProbe {
         live: lease.is_live(Instant::now()),
-        ir: ir_for_graph(ir, lease.data.join.in_flight()),
+        ir: ir_for_graph(lease.data.ir_state(), lease.data.ir_join().in_flight()),
     }
 }
 
