@@ -18,6 +18,7 @@
 // ない）。
 
 import { GRAPH_EVAL_VARIANTS } from "./constants.mjs";
+import { isLoadedSetupReceipt } from "./setup-receipt.mjs";
 import { isProductDbPinRead } from "./workspace-db.mjs";
 
 const SEED_UTF16_MAX = 200;
@@ -181,14 +182,94 @@ function frozenSeedPlan(seedPlan) {
 }
 
 /**
+ * One gate row bound to its sources (P2-1): the logical IDs (the frozen
+ * plan's, or the dev row's), the runtime IDs from the sealed setup receipt
+ * (never from the caller), and the sealed read checked against them (the
+ * same Scene and project; for a frozen variant, the setup's own cold DB).
+ */
+function bindRow(row, plan, planned) {
+  const key = rowKey({
+    caseId: row?.caseId ?? null,
+    variantId: row?.variantId ?? null,
+  });
+  const problems = [];
+  const setup = row?.setup;
+  const read = row?.read;
+  const sealedSetup = isLoadedSetupReceipt(setup);
+  const sealedRead = isProductDbPinRead(read);
+  if (!sealedSetup) problems.push("setup-self-reported");
+  if (!sealedRead)
+    problems.push("self-reported (not read from the product DB)");
+  let logicalQuery = row?.querySceneLogical;
+  let logicalSeed = row?.expectedSeedLogical;
+  if (plan === "frozen") {
+    const want = planned.get(key);
+    if (want) {
+      if (logicalQuery !== undefined && logicalQuery !== want.querySceneId)
+        problems.push("plan-query-scene-mismatch");
+      if (logicalSeed !== undefined && logicalSeed !== want.seedEntityId)
+        problems.push("plan-seed-mismatch");
+      logicalQuery = want.querySceneId;
+      logicalSeed = want.seedEntityId;
+    }
+  }
+  let runtimeQuery = null;
+  let runtimeSeed = null;
+  if (sealedSetup) {
+    const kind = plan === "frozen" ? "frozen" : "dev";
+    if (setup.fixtureKind !== kind) problems.push("setup-of-another-kind");
+    else if (
+      plan === "frozen" &&
+      (setup.caseId !== row.caseId || setup.variantId !== row.variantId)
+    )
+      problems.push("setup-of-another-variant");
+    runtimeQuery = setup.scenes[logicalQuery] ?? null;
+    runtimeSeed = setup.entities[logicalSeed] ?? null;
+    if (runtimeQuery === null) problems.push("query-scene-not-mapped");
+    if (runtimeSeed === null) problems.push("seed-not-mapped");
+    if (sealedRead) {
+      if (read.source.sceneId !== runtimeQuery)
+        problems.push("read-of-another-scene");
+      if (read.source.projectId !== setup.projectId)
+        problems.push("read-of-another-project");
+      if (
+        plan === "frozen" &&
+        (read.source.db.path !== setup.coldDatabase.path ||
+          read.source.db.sha256 !== setup.coldDatabase.sha256)
+      )
+        problems.push("read-of-another-workspace");
+    }
+  }
+  return {
+    key,
+    problems,
+    setup: sealedSetup ? setup : null,
+    read: sealedRead ? read : null,
+    verify: {
+      caseId: row?.caseId ?? null,
+      variantId: row?.variantId ?? null,
+      querySceneId: runtimeQuery,
+      expectedSeed: runtimeSeed,
+      expectedSeedLogical: logicalSeed ?? null,
+      read,
+    },
+  };
+}
+
+/**
  * The entry before a K6/4 judgement starts (R5, a precondition of the
- * freeze; SP/1 SP-P1, SP-P3). Each row is one workspace read from the
- * product DB (`read`, readQuerySceneSeedPins; a receipt's copy is
- * self-reported, SP-N13). "frozen" needs one row for each of the 13
- * variants of G-01〜G-08 (so every case, SP-N11, SP-N14), each with the
- * planned seed's logical ID equal to `seedPlan` (the fixture's value), the
- * setup's logical→runtime map, and a match; "dev" needs at least one row.
- * Anything else is `[precheck]`.
+ * freeze; SP/1 SP-P1, SP-P3). Each row is one workspace: `{ caseId,
+ * variantId, setup, read }` with `setup` from loadSetupReceipt and `read`
+ * from readQuerySceneSeedPins (a receipt's copy of either is self-reported,
+ * SP-N13). The runtime IDs come from the sealed setup receipt only, and the
+ * read must be of that runtime query Scene and project (P2-1). "frozen"
+ * needs one row for each of the 13 variants of G-01〜G-08 (so every case,
+ * SP-N11, SP-N14) with the logical IDs of `seedPlan` (the fixture's
+ * values), each read of that variant's own sealed cold DB and no workspace
+ * read twice; "dev" needs at least one row naming its logical IDs
+ * (`querySceneLogical`, `expectedSeedLogical`). Each row must match:
+ * exactly one pin on the query Scene, the product's first pin the planned
+ * seed. Anything else is `[precheck]`.
  */
 export function assertSeedPinsBeforeK64({ cases, plan, seedPlan }) {
   if (!SEED_PIN_PLANS.includes(plan))
@@ -197,16 +278,28 @@ export function assertSeedPinsBeforeK64({ cases, plan, seedPlan }) {
     );
   const planned = plan === "frozen" ? frozenSeedPlan(seedPlan) : null;
   const input = Array.isArray(cases) ? cases : [];
-  const result = verifySeedPins(input);
-  const keys = result.rows.map(rowKey);
+  const bound = input.map((row) => bindRow(row, plan, planned));
+  const keys = bound.map((row) => row.key);
+  const result = verifySeedPins(bound.map((row) => row.verify));
   const problems = [];
   if (new Set(keys).size !== keys.length)
     problems.push("a workspace is listed twice");
-  input.forEach((row, at) => {
-    if (!isProductDbPinRead(row?.read))
-      problems.push(
-        `${keys[at]}: self-reported (not read from the product DB)`,
-      );
+  const seen = new Map();
+  for (const row of bound) {
+    const marks = [
+      row.read
+        ? `db:${row.read.source.db.path}:${row.read.source.db.ino}`
+        : null,
+      row.setup ? `setup:${row.setup.sha256}` : null,
+    ].filter(Boolean);
+    for (const mark of marks) {
+      if (seen.has(mark) && seen.get(mark) !== row.key)
+        problems.push(`${row.key}: workspace-reused (with ${seen.get(mark)})`);
+      else seen.set(mark, row.key);
+    }
+  }
+  bound.forEach((row) => {
+    for (const problem of row.problems) problems.push(`${row.key}: ${problem}`);
   });
   if (plan === "frozen") {
     const missing = FROZEN_SEED_VARIANT_KEYS.filter(
@@ -216,16 +309,6 @@ export function assertSeedPinsBeforeK64({ cases, plan, seedPlan }) {
     if (missing.length > 0) problems.push(`missing ${missing.join(",")}`);
     if (extra.length > 0)
       problems.push(`not a G-case variant ${extra.join(",")}`);
-    input.forEach((row, at) => {
-      const want = planned.get(keys[at]);
-      if (!want) return;
-      if (row.entityRuntimeIds === undefined)
-        problems.push(`${keys[at]}: no logical-to-runtime map`);
-      if (row.expectedSeedLogical !== want.seedEntityId)
-        problems.push(`${keys[at]}: plan-seed-mismatch`);
-      if ((row.querySceneLogical ?? row.querySceneId) !== want.querySceneId)
-        problems.push(`${keys[at]}: plan-query-scene-mismatch`);
-    });
   }
   result.rows.forEach((row, at) => {
     if (row.status !== "match") problems.push(`${keys[at]}: ${row.status}`);
@@ -239,6 +322,14 @@ export function assertSeedPinsBeforeK64({ cases, plan, seedPlan }) {
   return Object.freeze({
     status: "match",
     plan,
-    rows: Object.freeze(result.rows.map((row) => Object.freeze(row))),
+    rows: Object.freeze(
+      result.rows.map((row, at) =>
+        Object.freeze({
+          ...row,
+          setupReceiptSha256: bound[at].setup.sha256,
+          db: bound[at].read.source.db.path,
+        }),
+      ),
+    ),
   });
 }

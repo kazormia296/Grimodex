@@ -4,7 +4,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { GRAPH_EVAL_VARIANTS } from "./constants.mjs";
-import { productDbPinReads } from "./test-support.mjs";
+import { seedPinWorkspace } from "./test-support.mjs";
 import {
   FROZEN_SEED_CASE_IDS,
   assertSeedPinsBeforeK64,
@@ -94,44 +94,45 @@ test("R5: 一致・不一致・確かめられないを分ける", () => {
 });
 
 /**
- * S1g-A (SP/1 SP-P3): the frozen plan's rows, one per variant workspace,
- * read from a product DB. `change(variantKey, row)` alters a row's pins or
- * mapping before the DB is written.
+ * S1g-A (SP/1 SP-P3) / P2-1: the frozen plan's rows, one variant workspace
+ * each (its own DB and setup receipt). `change(variantKey, spec)` alters a
+ * workspace before it is written.
  */
-function frozenRows(change = (_key, row) => row) {
-  const specs = GRAPH_EVAL_VARIANTS.map((variant) => {
-    const runtime = `rt-${variant.key}`;
-    return change(variant.key, {
+function frozenSpecs(change = (_key, spec) => spec) {
+  return GRAPH_EVAL_VARIANTS.map((variant) =>
+    change(variant.key, {
       caseId: variant.caseId,
       variantId: variant.variantId,
-      querySceneId: `${variant.key}/query`,
-      expectedSeedLogical: `${variant.caseId}-seed`,
-      expectedSeed: runtime,
-      entityRuntimeIds: {
-        [`${variant.caseId}-seed`]: runtime,
-        other: "rt-other",
-      },
+      fixtureKind: "frozen",
+      querySceneLogical: `${variant.caseId}-query`,
+      querySceneRuntime: `${variant.key}/query`,
+      seedLogical: `${variant.caseId}-seed`,
+      seedRuntime: `rt-${variant.key}`,
+      entities: { other: "rt-other" },
       live: true,
-      pins: [{ entryId: runtime, createdAt: "2026-10-27T00:00:01Z" }],
-    });
-  });
-  const reads = productDbPinReads(
-    specs.map((row) => ({
-      sceneId: row.querySceneId,
-      live: row.live,
-      pins: row.pins,
-    })),
+      pins: [
+        { entryId: `rt-${variant.key}`, createdAt: "2026-10-27T00:00:01Z" },
+      ],
+    }),
   );
-  return specs.map(({ live: _live, pins: _pins, ...row }) => ({
-    ...row,
-    read: reads[row.querySceneId],
-  }));
+}
+
+function frozenRows(change) {
+  return frozenSpecs(change).map((spec) => {
+    const workspace = seedPinWorkspace(spec);
+    return {
+      caseId: spec.caseId,
+      variantId: spec.variantId,
+      setup: workspace.setup,
+      read: workspace.read,
+    };
+  });
 }
 
 const SEED_PLAN = GRAPH_EVAL_VARIANTS.map((variant) => ({
   caseId: variant.caseId,
   variantId: variant.variantId,
-  querySceneId: `${variant.key}/query`,
+  querySceneId: `${variant.caseId}-query`,
   seedEntityId: `${variant.caseId}-seed`,
 }));
 
@@ -148,112 +149,79 @@ test("R5／SP-P3: 凍結の plan は 13 の variant の workspace を 1 行ず�
   assert.ok(Object.isFrozen(passed) && Object.isFrozen(passed.rows));
 });
 
-test("R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・runtime ID の取り違え・自己申告・variant や G-01 の欠けは [precheck]", () => {
+test("R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin なし・自己申告・variant や G-01 の欠けは [precheck]", () => {
   const other = { entryId: "rt-other", createdAt: "2026-10-27T00:00:00Z" };
-  const cases = [
-    // SP-N1: pin の entry が予定の seed でない。
+  const on = (target, change) => (key, spec) =>
+    key === target ? { ...spec, ...change(spec) } : spec;
+  for (const [name, rows, pattern] of [
     [
       "N1",
-      frozenRows((key, row) =>
-        key === "G-02/base" ? { ...row, pins: [{ ...other }] } : row,
-      ),
+      frozenRows(on("G-02/base", () => ({ pins: [other] }))),
       /G-02\/base: mismatch/u,
     ],
-    // SP-N2: 最初が予定の seed でも pin が 2 つ以上。
     [
       "N2",
-      frozenRows((key, row) =>
-        key === "G-04/base"
-          ? {
-              ...row,
-              pins: [
-                ...row.pins,
-                { entryId: "rt-other", createdAt: "2026-10-27T00:00:09Z" },
-              ],
-            }
-          : row,
+      frozenRows(
+        on("G-04/base", (spec) => ({
+          pins: [
+            ...spec.pins,
+            { entryId: "rt-other", createdAt: "2026-10-27T00:00:09Z" },
+          ],
+        })),
       ),
       /G-04\/base: multiple-pins/u,
     ],
-    // SP-N3: 最初が別の Entity、2 つ目が予定の seed。
     [
       "N3",
-      frozenRows((key, row) =>
-        key === "G-05/base" ? { ...row, pins: [other, ...row.pins] } : row,
-      ),
+      frozenRows(on("G-05/base", (spec) => ({ pins: [other, ...spec.pins] }))),
       /G-05\/base: (mismatch|multiple-pins)/u,
     ],
-    // SP-N9: archive された問いの Scene、別の project の entry。
     [
       "N9-archived",
-      frozenRows((key, row) =>
-        key === "G-06/base" ? { ...row, live: false } : row,
-      ),
+      frozenRows(on("G-06/base", () => ({ live: false }))),
       /G-06\/base: mismatch/u,
     ],
     [
       "N9-project",
-      frozenRows((key, row) =>
-        key === "G-07/base"
-          ? { ...row, pins: [{ ...row.pins[0], inProject: false }] }
-          : row,
+      frozenRows(
+        on("G-07/base", (spec) => ({
+          pins: [{ ...spec.pins[0], inProject: false }],
+        })),
       ),
       /G-07\/base: mismatch/u,
     ],
-    // SP-N11: unavailable を期待する variant に pin が無い。
     [
       "N11",
-      frozenRows((key, row) =>
-        key === "G-08/graph-index-unusable" ? { ...row, pins: [] } : row,
-      ),
+      frozenRows(on("G-08/graph-index-unusable", () => ({ pins: [] }))),
       /G-08\/graph-index-unusable: no-pin/u,
     ],
-    // seed の runtime ID の取り違え（別の Entity の runtime ID を予定の seed とした）。
-    [
-      "swap",
-      frozenRows((key, row) =>
-        key === "G-03/base"
-          ? {
-              ...row,
-              expectedSeed: "rt-other",
-              pins: [
-                { entryId: "rt-other", createdAt: "2026-10-27T00:00:01Z" },
-              ],
-            }
-          : row,
-      ),
-      /G-03\/base: seed-runtime-id-mismatch/u,
-    ],
-  ];
-  for (const [name, rows, pattern] of cases)
+  ])
     assert.throws(() => frozenGate(rows), pattern, name);
-  // 予定の seed の論理 ID が plan（fixture の値）と違う。
+  // 予定の seed の論理 ID を plan（fixture の値）と違う Entity にした setup。
   assert.throws(
     () =>
       frozenGate(
-        frozenRows((key, row) =>
-          key === "G-02/base"
-            ? {
-                ...row,
-                expectedSeedLogical: "other",
-                expectedSeed: "rt-other",
-                pins: [
-                  { entryId: "rt-other", createdAt: "2026-10-27T00:00:01Z" },
-                ],
-              }
-            : row,
-        ),
+        frozenRows(on("G-03/base", () => ({ seedLogical: "other-seed" }))),
       ),
-    /G-02\/base: plan-seed-mismatch/u,
+    /G-03\/base: seed-not-mapped/u,
   );
-  // SP-N13: receipt の自己申告（DB から読んでいない行）。
-  const self = frozenRows().map(({ read, ...row }) => ({
-    ...row,
-    read: JSON.parse(JSON.stringify(read)),
-  }));
-  assert.throws(() => frozenGate(self), /self-reported/u);
-  // SP-N11 と SP-N14: variant の欠け、G-01 の欠け、重なり、plan の無い呼出し。
+  // SP-N13: receipt の自己申告（封印の無い読取、封印の無い setup）。
   const all = frozenRows();
+  assert.throws(
+    () =>
+      frozenGate(
+        all.map((row) => ({
+          ...row,
+          read: JSON.parse(JSON.stringify(row.read)),
+        })),
+      ),
+    /self-reported/u,
+  );
+  assert.throws(
+    () => frozenGate(all.map((row) => ({ ...row, setup: { ...row.setup } }))),
+    /setup-self-reported/u,
+  );
+  // SP-N11 と SP-N14: variant の欠け、G-01 の欠け、重なり、plan の無い呼出し。
   for (const [rows, pattern] of [
     [
       all.filter((row) => row.variantId !== "graph-index-unusable"),
@@ -270,19 +238,97 @@ test("R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin な�
   assert.throws(() => frozenGate(all, SEED_PLAN.slice(1)), /seedPlan/u);
 });
 
-test("R5: dev の照合は dev の variant だけ（1 件以上、DB から読んだ行）", () => {
-  const reads = productDbPinReads([
-    {
-      sceneId: "q",
-      live: true,
-      pins: [{ entryId: "entity-seed", createdAt: "1" }],
-    },
-  ]);
+test("P2-1: 封印した読取は DB・project・Scene に束縛され、使い回し・別の Scene・別の workspace・呼出し側の対応表は通らない", () => {
+  const all = frozenRows();
+  // 1 つの workspace の読取を G-01〜G-03 に使い回す（配線の誤りで 1 つだけ読む）。
+  const reused = all.map((row, at) =>
+    at < 3 ? { ...row, read: all[0].read } : row,
+  );
+  assert.throws(
+    () => frozenGate(reused),
+    /read-of-another-scene|workspace-reused/u,
+  );
+  const shared = all.map((row, at) =>
+    at < 3 ? { ...row, read: all[0].read, setup: all[0].setup } : row,
+  );
+  assert.throws(
+    () => frozenGate(shared),
+    /workspace-reused|setup-of-another-variant/u,
+  );
+  // 同じ DB の別の Scene を読んだ。
+  const [wrongScene] = frozenSpecs()
+    .slice(1, 2)
+    .map((spec) =>
+      seedPinWorkspace({
+        ...spec,
+        otherScenes: ["elsewhere"],
+        readSceneId: "elsewhere",
+      }),
+    );
+  assert.throws(
+    () =>
+      frozenGate(
+        all.map((row, at) =>
+          at === 1 ? { ...row, read: wrongScene.read } : row,
+        ),
+      ),
+    /G-02\/base: read-of-another-scene/u,
+  );
+  // 受領書の cold DB と違う workspace（別の DB）を読んだ。
+  const [otherDb] = frozenSpecs()
+    .slice(2, 3)
+    .map((spec) => seedPinWorkspace(spec));
+  assert.throws(
+    () =>
+      frozenGate(
+        all.map((row, at) => (at === 2 ? { ...row, read: otherDb.read } : row)),
+      ),
+    /G-03\/base: read-of-another-workspace/u,
+  );
+  // 別の variant の setup の受領書。
+  assert.throws(
+    () =>
+      frozenGate(
+        all.map((row, at) =>
+          at === 4 ? { ...row, setup: all[5].setup } : row,
+        ),
+      ),
+    /setup-of-another-variant/u,
+  );
+  // 呼出し側が runtime の seed と対応表を渡しても使わない（setup の受領書から取る）。
+  const forged = frozenRows((key, spec) =>
+    key === "G-06/base"
+      ? { ...spec, pins: [{ entryId: "rt-other", createdAt: "1" }] }
+      : spec,
+  ).map((row) =>
+    row.caseId === "G-06"
+      ? {
+          ...row,
+          expectedSeed: "rt-other",
+          entityRuntimeIds: { "G-06-seed": "rt-other" },
+        }
+      : row,
+  );
+  assert.throws(() => frozenGate(forged), /G-06\/base: mismatch/u);
+});
+
+test("R5: dev の照合は dev の workspace だけ（1 件以上、受領書と DB の読取）", () => {
+  const workspace = seedPinWorkspace({
+    caseId: "dev:lantern",
+    fixtureKind: "dev",
+    querySceneLogical: "q",
+    querySceneRuntime: "q",
+    seedLogical: "seed",
+    seedRuntime: "entity-seed",
+    live: true,
+    pins: [{ entryId: "entity-seed", createdAt: "1" }],
+  });
   const row = {
     caseId: "dev:lantern",
-    querySceneId: "q",
-    expectedSeed: "entity-seed",
-    read: reads.q,
+    setup: workspace.setup,
+    read: workspace.read,
+    querySceneLogical: "q",
+    expectedSeedLogical: "seed",
   };
   assert.equal(
     assertSeedPinsBeforeK64({ cases: [row], plan: "dev" }).status,
@@ -291,10 +337,19 @@ test("R5: dev の照合は dev の variant だけ（1 件以上、DB から読�
   assert.throws(
     () =>
       assertSeedPinsBeforeK64({
-        cases: [{ ...row, read: { ...reads.q } }],
+        cases: [{ ...row, read: { ...workspace.read } }],
         plan: "dev",
       }),
     /self-reported/u,
+  );
+  // 凍結の setup の受領書は dev の照合に使えない（逆も同じ）。
+  assert.throws(
+    () =>
+      assertSeedPinsBeforeK64({
+        cases: [{ ...row, setup: frozenRows()[0].setup }],
+        plan: "dev",
+      }),
+    /setup-of-another-kind/u,
   );
   assert.throws(
     () => assertSeedPinsBeforeK64({ cases: [], plan: "dev" }),

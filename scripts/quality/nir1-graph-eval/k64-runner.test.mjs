@@ -2,7 +2,7 @@
 // 入口と時計）、query の Scene の pin の読取（一時の SQLite）、admission の分岐、
 // receipt の組立て（合成の記録）。
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -23,6 +23,7 @@ import {
 import { assessMeasurementWindow, validateCp4Receipt } from "./receipt.mjs";
 import { runSchedule, sampleRow } from "./run-sample.mjs";
 import { assertSeedPinsBeforeK64 } from "./seed-pin.mjs";
+import { loadSetupReceipt } from "./setup-receipt.mjs";
 import { readQuerySceneSeedPins } from "./workspace-db.mjs";
 import {
   H40,
@@ -173,30 +174,47 @@ test("R5: query の Scene の pin を製品の join と同じ形で DB から読
         entryInProject: true,
       },
     ]);
+    // P2-1: 論理→runtime の対応は封印した setup の受領書から取る。
+    const receiptFile = path.join(dir, "setup-receipt.json");
+    await writeFile(
+      receiptFile,
+      JSON.stringify({
+        schemaVersion: "nir1-cp4-dev-setup/1",
+        status: "setup-complete",
+        fixture: { kind: "dev" },
+        logicalToRuntime: {
+          projectId: "p",
+          querySceneId: "q",
+          scenes: { q: "q", q2: "q2" },
+          entities: { "seed-logical": "seed" },
+        },
+        coldDatabase: { path: file, sha256: "0".repeat(64) },
+      }),
+    );
+    const setup = loadSetupReceipt({ file: receiptFile });
+    const row = (scene, read) => ({
+      caseId: "dev:x",
+      setup,
+      read,
+      querySceneLogical: scene,
+      expectedSeedLogical: "seed-logical",
+    });
     // SP/1 SP-P1: 問いの Scene の pin は 1 つだけ（別の project の entry の pin も数える）。
     assert.throws(
-      () =>
-        assertSeedPinsBeforeK64({
-          cases: [
-            { caseId: "dev:x", querySceneId: "q", expectedSeed: "seed", read },
-          ],
-          plan: "dev",
-        }),
+      () => assertSeedPinsBeforeK64({ cases: [row("q", read)], plan: "dev" }),
       /multiple-pins/u,
     );
     assert.equal(
       assertSeedPinsBeforeK64({
-        cases: [
-          {
-            caseId: "dev:x",
-            querySceneId: "q2",
-            expectedSeed: "seed",
-            read: readQuerySceneSeedPins(file, "p", "q2"),
-          },
-        ],
+        cases: [row("q2", readQuerySceneSeedPins(file, "p", "q2"))],
         plan: "dev",
       }).status,
       "match",
+    );
+    // 別の Scene の読取は使えない。
+    assert.throws(
+      () => assertSeedPinsBeforeK64({ cases: [row("q2", read)], plan: "dev" }),
+      /read-of-another-scene/u,
     );
     assert.equal(readQuerySceneSeedPins(file, "p", "missing").sceneLive, false);
   } finally {

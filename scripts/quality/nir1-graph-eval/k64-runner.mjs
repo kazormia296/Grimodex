@@ -65,6 +65,7 @@ import {
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { runSchedule, sampleRow } from "./run-sample.mjs";
 import { assertSeedPinsBeforeK64 } from "./seed-pin.mjs";
+import { loadSetupReceipt } from "./setup-receipt.mjs";
 import { HARNESS_PAGE, sha256 } from "./session.mjs";
 import {
   hostSnapshot,
@@ -574,13 +575,16 @@ async function main() {
       ids.projectId,
       ids.querySceneId,
     );
+    // P2-1: the runtime IDs come from the sealed setup receipt, and the read
+    // is bound to the measurement copy's DB, project and query Scene.
     report.checks.seedPins = assertSeedPinsBeforeK64({
       cases: [
         {
           caseId: variant.key,
-          querySceneId: ids.querySceneId,
-          expectedSeed: seed,
+          setup: loadSetupReceipt({ root: ROOT, file: setupPath }),
           read: pins,
+          querySceneLogical: loaded.fixture.query.sceneId,
+          expectedSeedLogical: loaded.fixture.graphSeedEntityId,
         },
       ],
       plan: "dev",

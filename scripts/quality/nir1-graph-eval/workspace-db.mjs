@@ -6,6 +6,8 @@
 // The measured samples never call this (the A3 record of a sample is the
 // evaluation Native's own read-only connection).
 
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -173,6 +175,8 @@ export function isProductDbPinRead(value) {
 function sealPinRead(read) {
   for (const row of read.pins) Object.freeze(row);
   Object.freeze(read.pins);
+  Object.freeze(read.source.db);
+  Object.freeze(read.source);
   const sealed = Object.freeze(read);
   PRODUCT_DB_PIN_READS.add(sealed);
   return sealed;
@@ -187,7 +191,25 @@ function sealPinRead(read) {
  * DB; a copy (a receipt's record) is not (SP/1 SP-N13).
  */
 export function readQuerySceneSeedPins(file, projectId, sceneId) {
-  return sealPinRead(readQuerySceneSeedPinsUnsealed(file, projectId, sceneId));
+  // P2-1: the read is bound to the DB it read (resolved path, inode and the
+  // bytes' digest before the read-only open), the project and the Scene.
+  const resolved = realpathSync(file);
+  const bytes = readFileSync(resolved);
+  const info = statSync(resolved);
+  const source = {
+    db: {
+      path: resolved,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+      dev: info.dev,
+      ino: info.ino,
+    },
+    projectId,
+    sceneId,
+  };
+  return sealPinRead({
+    ...readQuerySceneSeedPinsUnsealed(resolved, projectId, sceneId),
+    source,
+  });
 }
 
 function readQuerySceneSeedPinsUnsealed(file, projectId, sceneId) {

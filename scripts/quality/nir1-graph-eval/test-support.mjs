@@ -17,6 +17,11 @@ import { claimTestEvidenceSealer } from "./admission-facts.mjs";
 import { r1Record, r2Record } from "./k64-record.mjs";
 import { readQuerySceneSeedPins } from "./workspace-db.mjs";
 import {
+  DEV_SETUP_RECEIPT_SCHEMA,
+  loadSetupReceipt,
+} from "./setup-receipt.mjs";
+import { createHash } from "node:crypto";
+import {
   DEV_DRAFT_PROCEDURE_VERSION,
   loadProcedureFile,
   procedureFilePath,
@@ -789,13 +794,16 @@ export function k64HookInput(overrides = {}) {
 }
 
 /**
- * S1g-A (SP/1): a throwaway workspace DB holding query Scenes and their
- * pins, read back through the product-DB reader (`readQuerySceneSeedPins`,
- * sealed as read from the DB). `scenes` is a list of `{ sceneId, live,
- * pins: [{ entryId, createdAt, inProject }] }`; returns the reads by Scene.
+ * S1g-A (SP/1) / P2-1: one throwaway variant workspace per spec — its own
+ * DB (the query Scene and its pins) and its setup receipt (the logical →
+ * runtime map and the cold DB's digest) — read back through the sealed
+ * loaders (`loadSetupReceipt`, `readQuerySceneSeedPins`). A spec is
+ * `{ caseId, variantId, fixtureKind, querySceneLogical, querySceneRuntime,
+ * seedLogical, seedRuntime, live, pins: [{ entryId, createdAt, inProject }],
+ * entities }`.
  */
-export function productDbPinReads(scenes) {
-  const dir = mkdtempSync(path.join(tmpdir(), "cp4-seed-pin-db-"));
+export function seedPinWorkspace(spec) {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-seed-pin-ws-"));
   process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
   const file = path.join(dir, "grimodex.db");
   const db = new DatabaseSync(file);
@@ -804,28 +812,58 @@ export function productDbPinReads(scenes) {
     CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT);
     CREATE TABLE scene_codex_pins (scene_id TEXT, entry_id TEXT, created_at TEXT);
   `);
-  const entries = new Map();
-  for (const scene of scenes) {
-    db.prepare("INSERT INTO tree_nodes VALUES (?, 'p', 'scene', ?)").run(
-      scene.sceneId,
-      scene.live === false ? "2026-10-27T00:00:00Z" : null,
+  const projectId = spec.projectId ?? "p";
+  for (const sceneId of [spec.querySceneRuntime, ...(spec.otherScenes ?? [])])
+    db.prepare("INSERT INTO tree_nodes VALUES (?, ?, 'scene', ?)").run(
+      sceneId,
+      projectId,
+      sceneId === spec.querySceneRuntime && spec.live === false
+        ? "2026-10-27T00:00:00Z"
+        : null,
     );
-    for (const pin of scene.pins) {
-      entries.set(pin.entryId, pin.inProject === false ? "p-other" : "p");
-      db.prepare("INSERT INTO scene_codex_pins VALUES (?, ?, ?)").run(
-        scene.sceneId,
-        pin.entryId,
-        pin.createdAt,
-      );
-    }
+  const entries = new Map();
+  for (const pin of spec.pins) {
+    entries.set(pin.entryId, pin.inProject === false ? "p-other" : projectId);
+    db.prepare("INSERT INTO scene_codex_pins VALUES (?, ?, ?)").run(
+      pin.sceneId ?? spec.querySceneRuntime,
+      pin.entryId,
+      pin.createdAt,
+    );
   }
   for (const [id, project] of entries)
     db.prepare("INSERT INTO codex_entries VALUES (?, ?)").run(id, project);
   db.close();
-  return Object.fromEntries(
-    scenes.map((scene) => [
-      scene.sceneId,
-      readQuerySceneSeedPins(file, "p", scene.sceneId),
-    ]),
+  const setupPath = path.join(dir, "setup-receipt.json");
+  writeFileSync(
+    setupPath,
+    `${JSON.stringify({
+      schemaVersion: DEV_SETUP_RECEIPT_SCHEMA,
+      status: "setup-complete",
+      fixture: {
+        kind: spec.fixtureKind ?? "frozen",
+        caseId: spec.caseId,
+        variantId: spec.variantId ?? null,
+      },
+      logicalToRuntime: {
+        projectId,
+        querySceneId: spec.querySceneLogical,
+        scenes: { [spec.querySceneLogical]: spec.querySceneRuntime },
+        entities: { [spec.seedLogical]: spec.seedRuntime, ...spec.entities },
+      },
+      coldDatabase: {
+        path: file,
+        sha256: createHash("sha256").update(readFileSync(file)).digest("hex"),
+      },
+    })}\n`,
   );
+  return {
+    dir,
+    file,
+    setup: loadSetupReceipt({ file: setupPath }),
+    read: readQuerySceneSeedPins(
+      file,
+      projectId,
+      spec.readSceneId ?? spec.querySceneRuntime,
+    ),
+  };
 }

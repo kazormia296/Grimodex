@@ -43,6 +43,7 @@ import { ROOT, bundleObserver, PRODUCT_MAIN } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
 import { readIndexMetadata, readWorkspaceRows } from "./workspace-db.mjs";
+import { DEV_SETUP_RECEIPT_SCHEMA } from "./setup-receipt.mjs";
 import {
   SCENE_SCOPE_BINDING_V1_COLUMNS,
   assertSeedPinSetup,
@@ -51,7 +52,8 @@ import {
 } from "./seed-pin-setup.mjs";
 import { hostSnapshot } from "./window.mjs";
 
-export const SETUP_RECEIPT_SCHEMA = "nir1-cp4-dev-setup/1";
+// P2-1: one definition, shared with the sealed loader (setup-receipt.mjs).
+export const SETUP_RECEIPT_SCHEMA = DEV_SETUP_RECEIPT_SCHEMA;
 const MAINTENANCE_SEAM = Object.freeze({
   ci: "CI",
   ownerTokenEnv: "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",

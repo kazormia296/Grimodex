@@ -34,7 +34,7 @@ import {
 } from "./seed-pin-setup.mjs";
 import { seedPinPageDeps } from "./setup-driver.mjs";
 import { assertSeedPinsBeforeK64 } from "./seed-pin.mjs";
-import { REPO_ROOT, productDbPinReads } from "./test-support.mjs";
+import { REPO_ROOT, seedPinWorkspace } from "./test-support.mjs";
 
 const G02 = {
   caseId: "G-02",
@@ -624,26 +624,29 @@ test("setup-driver の段: renderer の API の upsertScenePin を 1 回だけ�
   );
 });
 
-test("SP-P3: 凍結した fixture から写した plan が、そのまま R5 の照合の seedPlan になる（variant ごとの workspace、DB から読んだ行）", () => {
+test("SP-P3: 凍結した fixture から写した plan が、そのまま R5 の照合の seedPlan になる（variant ごとの workspace、封印した受領書と DB の読取）", () => {
   const plan = loadFrozenSeedPinPlan({ root: REPO_ROOT });
-  const rows = plan.map((row) => ({
-    caseId: row.caseId,
-    variantId: row.variantId,
-    // variant ごとの workspace（runtime の問いの Scene は workspace ごと）。
-    querySceneId: `${row.variantKey}/query`,
-    querySceneLogical: row.querySceneId,
-    expectedSeedLogical: row.seedEntityId,
-    expectedSeed: `rt-${row.variantKey}`,
-    entityRuntimeIds: { [row.seedEntityId]: `rt-${row.variantKey}` },
-  }));
-  const reads = productDbPinReads(
-    rows.map((row) => ({
-      sceneId: row.querySceneId,
+  const cases = plan.map((row) => {
+    const workspace = seedPinWorkspace({
+      caseId: row.caseId,
+      variantId: row.variantId,
+      fixtureKind: "frozen",
+      querySceneLogical: row.querySceneId,
+      querySceneRuntime: `${row.variantKey}/query`,
+      seedLogical: row.seedEntityId,
+      seedRuntime: `rt-${row.variantKey}`,
       live: true,
-      pins: [{ entryId: row.expectedSeed, createdAt: "2026-10-27T00:00:05Z" }],
-    })),
-  );
-  const cases = rows.map((row) => ({ ...row, read: reads[row.querySceneId] }));
+      pins: [
+        { entryId: `rt-${row.variantKey}`, createdAt: "2026-10-27T00:00:05Z" },
+      ],
+    });
+    return {
+      caseId: row.caseId,
+      variantId: row.variantId,
+      setup: workspace.setup,
+      read: workspace.read,
+    };
+  });
   assert.equal(
     assertSeedPinsBeforeK64({ cases, plan: "frozen", seedPlan: plan }).status,
     "match",
@@ -659,6 +662,6 @@ test("SP-P3: 凍結した fixture から写した plan が、そのまま R5 の
         plan: "frozen",
         seedPlan: plan,
       }),
-    /G-07\/base: (plan-seed-mismatch|seed-runtime-id-mismatch)/u,
+    /G-07\/base: plan-seed-mismatch/u,
   );
 });
