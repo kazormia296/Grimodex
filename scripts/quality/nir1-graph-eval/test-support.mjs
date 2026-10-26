@@ -359,12 +359,17 @@ export function k64Run(mutate = () => [{}, {}]) {
   });
 }
 
-export function summarizeK64(samples, candidate = ratification5()) {
+export function summarizeK64(
+  samples,
+  candidate = ratification5(),
+  candidateHead = TEST_CANDIDATE_HEAD,
+) {
   return summarizeSteadyState({
     samples,
     fixedGraphMode: "restricted",
     plan: { kind: "frozen" },
     candidate,
+    candidateHead,
   });
 }
 

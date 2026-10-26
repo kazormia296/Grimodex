@@ -682,7 +682,7 @@ test("D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試
     commit: "c7b091dadabac6cc098a932052cf817493205204",
     ancestor: false,
   });
-  assert.deepEqual(assessCandidateRegime(evidence), {
+  assert.deepEqual(assessCandidateRegime(evidence, evidence.candidateHead), {
     regime: "k62",
     missing: ["b:rs-join-hook"],
   });
@@ -718,8 +718,14 @@ test("D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試
   // 試験専用の封印（test-support の ratification5）は testOnly と書かれ、K6/4 の判定の試験にだけ使う。
   const testOnly = ratification5();
   assert.equal(testOnly.testOnly, true);
-  assert.equal(assessCandidateRegime(testOnly).regime, "k64");
-  assert.equal(assessCandidateRegime(testOnly).testOnly, true);
+  assert.equal(
+    assessCandidateRegime(testOnly, testOnly.candidateHead).regime,
+    "k64",
+  );
+  assert.equal(
+    assessCandidateRegime(testOnly, testOnly.candidateHead).testOnly,
+    true,
+  );
   // 試験専用の sealer は一度しか取れない（本番の module が先に取れば test-support が読み込めない）。
   assert.throws(() => claimTestEvidenceSealer(), /already claimed/);
   // D′ と W_f を含まない候補（その commit が無い repository）は (a)(c) を欠く。
@@ -731,7 +737,7 @@ test("D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試
     });
     assert.equal(bare.dPrime.ancestor, false);
     assert.equal(bare.wfWindow.ancestor, false);
-    assert.equal(assessCandidateRegime(bare).regime, "k62");
+    assert.equal(assessCandidateRegime(bare, bare.candidateHead).regime, "k62");
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

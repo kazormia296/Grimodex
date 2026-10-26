@@ -1143,3 +1143,17 @@ test("B-2: 停止の後の副作用の証拠（残った process、close、X11�
     assert.match(errors, pattern, label);
   }
 });
+
+test("E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 にしない（W8）", () => {
+  const value = receipt();
+  const other = {
+    ...value,
+    candidate: { ...value.candidate, commit: "1".repeat(40) },
+  };
+  assert.ok(otherErrors(other).some((error) => /self-reported/.test(error)));
+  assert.equal(
+    computeRunAggregates(other, variantByKey("G-03/base"), BOUND())
+      .candidateRegime.regime,
+    "k62",
+  );
+});

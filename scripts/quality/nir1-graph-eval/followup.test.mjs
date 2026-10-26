@@ -31,6 +31,7 @@ import {
   ratification5,
   sample,
   scheduleRows,
+  TEST_CANDIDATE_HEAD,
   k64Run,
   summarizeK64,
   unavailableRecord,
@@ -950,6 +951,7 @@ test("K6/4-N14: 表示された sample が 1 件もない case と pool が 0 �
       variants: [{ key: devKey, expectedGraph: "unavailable" }],
     },
     candidate: ratification5(),
+    candidateHead: TEST_CANDIDATE_HEAD,
   });
   assert.equal(empty.k64.display.n, 0);
   assert.equal(empty.k64.poolEmpty, true);
@@ -1087,8 +1089,17 @@ function k64Trace(kind, n, mutate = () => [{}, {}]) {
   };
 }
 
-const traceK64 = (value, candidate = ratification5()) =>
-  summarizeTrace({ trace: value, fixedGraphMode: "restricted", candidate });
+const traceK64 = (
+  value,
+  candidate = ratification5(),
+  candidateHead = TEST_CANDIDATE_HEAD,
+) =>
+  summarizeTrace({
+    trace: value,
+    fixedGraphMode: "restricted",
+    candidate,
+    candidateHead,
+  });
 
 const staleTicket = {
   settled: true,
@@ -1378,4 +1389,24 @@ test("(b) の K6/4 でも trace の不備（Q<200、queryId の重複、N16）�
     at === 3 ? [{}, { issuedVia: "low-level-continue" }] : [{}, {}],
   );
   assert.match(traceK64(lowLevel).invalid.join(), /N16/);
+});
+
+test("E-3: 封印した批准 5 の証拠が測った候補のものでなければ K6/4 を当てない", () => {
+  const steady = summarizeK64(k64Run(), ratification5(), "1".repeat(40));
+  assert.equal(steady.regime, "k62");
+  assert.match(steady.k64NotApplied.join(), /ratification5-other-candidate/);
+  const trace = traceK64(
+    k64Trace("browsing", 200),
+    ratification5(),
+    "1".repeat(40),
+  );
+  assert.equal(trace.regime, "k62");
+  // head を渡さない要約も当てない。
+  assert.deepEqual(assessCandidateRegime(ratification5()).missing, [
+    "ratification5-candidate-head-not-given",
+  ]);
+  assert.equal(
+    assessCandidateRegime(ratification5(), TEST_CANDIDATE_HEAD).regime,
+    "k64",
+  );
 });

@@ -769,7 +769,7 @@ export function followUpLapses(result) {
  * missing or different is `k62` (N31: K6/2 の文のまま). (b-3) and 批准 12 are
  * checked on the records by the summaries.
  */
-export function assessCandidateRegime(evidence) {
+export function assessCandidateRegime(evidence, candidateHead) {
   const need = K64_CANDIDATE_REQUIREMENTS;
   const missing = [];
   if (!evidence || typeof evidence !== "object")
@@ -784,6 +784,11 @@ export function assessCandidateRegime(evidence) {
       regime: "k62",
       missing: ["ratification5-not-collected"],
     });
+  // E-3: the evidence is the measured candidate's.
+  if (typeof candidateHead !== "string")
+    missing.push("ratification5-candidate-head-not-given");
+  else if (evidence.candidateHead !== candidateHead)
+    missing.push("ratification5-other-candidate");
   if (
     evidence.dPrime?.commit !== need.dPrimeCommit ||
     evidence.dPrime?.ancestor !== true
@@ -818,8 +823,8 @@ export function assessCandidateRegime(evidence) {
  * the records — any 批准 12 violation (N30) or a `graph-ready` refresh that
  * switched the list to loading ((b-3)) means K6/4 is not applied.
  */
-export function recordRegime(candidate, results) {
-  const assessed = assessCandidateRegime(candidate);
+export function recordRegime(candidate, results, candidateHead) {
+  const assessed = assessCandidateRegime(candidate, candidateHead);
   const notApplied = [...assessed.missing];
   for (const result of results) {
     for (const issue of result.ratification12)

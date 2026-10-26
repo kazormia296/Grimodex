@@ -455,7 +455,12 @@ export function computeRunAggregates(receipt, variant, bound = {}) {
       ? { candidate: boundRatification5(receipt, bound) }
       : null;
   const regime = k64
-    ? { candidateRegime: assessCandidateRegime(k64.candidate) }
+    ? {
+        candidateRegime: assessCandidateRegime(
+          k64.candidate,
+          receipt.candidate?.commit,
+        ),
+      }
     : {};
   switch (receipt.runKind) {
     case "g-case-gold": {
@@ -482,7 +487,7 @@ export function computeRunAggregates(receipt, variant, bound = {}) {
             queries: [...samples, ...requeries],
           },
           fixedGraphMode: receipt.settings?.d2aModes?.graph,
-          ...(k64 ?? {}),
+          ...(k64 ? { ...k64, candidateHead: receipt.candidate?.commit } : {}),
         }),
         ...regime,
       };

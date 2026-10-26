@@ -330,7 +330,13 @@ export function summarizeSteadyState(input) {
 }
 
 function summarizeSteadyStateUnsealed(input) {
-  rejectOverrides(input, ["samples", "fixedGraphMode", "plan", "candidate"]);
+  rejectOverrides(input, [
+    "samples",
+    "fixedGraphMode",
+    "plan",
+    "candidate",
+    "candidateHead",
+  ]);
   const { samples, fixedGraphMode } = input;
   const k64Era = Object.hasOwn(input, "candidate");
   const plan = resolvePlan(input.plan);
@@ -381,7 +387,7 @@ function summarizeSteadyStateUnsealed(input) {
     requeries,
   };
   if (!k64Era || invalid.length > 0) return base;
-  const assessed = assessCandidateRegime(input.candidate);
+  const assessed = assessCandidateRegime(input.candidate, input.candidateHead);
   const notApplied = [
     ...new Set([
       ...assessed.missing,
@@ -770,7 +776,12 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
  * when the candidate and the records qualify; otherwise K6/2 rules 2-5.
  */
 export function summarizeTrace(input) {
-  rejectOverrides(input, ["trace", "fixedGraphMode", "candidate"]);
+  rejectOverrides(input, [
+    "trace",
+    "fixedGraphMode",
+    "candidate",
+    "candidateHead",
+  ]);
   const { trace, fixedGraphMode } = input;
   const k64Era = Object.hasOwn(input, "candidate");
   if (trace?.kind !== "editing" && trace?.kind !== "browsing")
@@ -817,7 +828,7 @@ export function summarizeTrace(input) {
   const results = counted.map((query) =>
     classifyFollowUp(query, { context: "trace" }),
   );
-  const regime = recordRegime(input.candidate, results);
+  const regime = recordRegime(input.candidate, results, input.candidateHead);
   if (regime.regime !== "k64")
     return {
       ...summarizeTraceK62(trace, counted, requeries),
