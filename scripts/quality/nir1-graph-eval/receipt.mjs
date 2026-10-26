@@ -304,7 +304,20 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
     throw new Error(
       "[precheck] the harness is not in its parent's network namespace",
     );
-  return { removedEnv: [...DESKTOP_ENV], display: xvfbDisplay };
+  // B-4: the parent may itself be inside `unshare -rn`. The namespace must
+  // have an interface besides lo, and be the user's systemd manager's when
+  // that is readable.
+  if (
+    !netns.unavailable &&
+    (!Array.isArray(netns.hostInterfaces) ||
+      !netns.hostInterfaces.some((name) => name !== "lo") ||
+      (typeof netns.userManager === "string" &&
+        netns.userManager !== netns.self))
+  )
+    throw new Error(
+      "[precheck] the harness is not in the host network namespace (only lo, or not the user's systemd manager's)",
+    );
+  return { removedEnv: [...DESKTOP_ENV], display: xvfbDisplay, netns };
 }
 
 /**

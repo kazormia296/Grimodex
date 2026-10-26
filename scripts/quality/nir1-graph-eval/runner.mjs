@@ -656,6 +656,7 @@ async function main() {
     // B-2: the names the launch env actually dropped (handle.launch).
     removedEnv: evidence.launch?.removedEnv ?? null,
     launchEnvChecked: evidence.launch?.checkedAbsent ?? null,
+    netns: evidence.launch?.netns ?? null,
     netLog: evidence.netLog ?? null,
     socketSamples: evidence.socketSamples ?? [],
     x11: {

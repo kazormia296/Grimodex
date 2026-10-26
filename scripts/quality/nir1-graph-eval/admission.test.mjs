@@ -349,6 +349,66 @@ test("P2-9: the network namespaces of the harness and its parent are readable on
   }
   assert.match(netns.self, /^net:\[\d+\]$/u);
   assert.match(netns.parent, /^net:\[\d+\]$/u);
+  assert.ok(Array.isArray(netns.hostInterfaces));
+});
+
+test("B-4: readNetNamespaces は host の interface と利用者の systemd --user の netns を読む（合成の /proc）", async () => {
+  const proc = await mkdtemp(path.join(tmpdir(), "cp4-netns-"));
+  try {
+    const { symlink } = await import("node:fs/promises");
+    const pid = async (id, { name, uid, cmdline, ns }) => {
+      await mkdir(path.join(proc, id, "ns"), { recursive: true });
+      await writeFile(
+        path.join(proc, id, "status"),
+        `Name:\t${name}\nUid:\t${uid}\t${uid}\t${uid}\t${uid}\n`,
+      );
+      await writeFile(path.join(proc, id, "cmdline"), cmdline);
+      await symlink(ns, path.join(proc, id, "ns", "net"));
+    };
+    await pid("100", {
+      name: "node",
+      uid: 1000,
+      cmdline: "node\0x",
+      ns: "net:[5]",
+    });
+    await pid("90", {
+      name: "node",
+      uid: 1000,
+      cmdline: "node",
+      ns: "net:[5]",
+    });
+    await pid("50", {
+      name: "systemd",
+      uid: 1000,
+      cmdline: "/usr/lib/systemd/systemd\0--user",
+      ns: "net:[7]",
+    });
+    await pid("51", {
+      name: "systemd",
+      uid: 0,
+      cmdline: "/sbin/init",
+      ns: "net:[8]",
+    });
+    await mkdir(path.join(proc, "100", "net"), { recursive: true });
+    await writeFile(
+      path.join(proc, "100", "net", "dev"),
+      "Inter-|\n face |\n    lo: 0 0\n",
+    );
+    const netns = readNetNamespaces({
+      procRoot: proc,
+      selfPid: 100,
+      parentPid: 90,
+      uid: 1000,
+    });
+    assert.deepEqual(netns, {
+      self: "net:[5]",
+      parent: "net:[5]",
+      hostInterfaces: ["lo"],
+      userManager: "net:[7]",
+    });
+  } finally {
+    await rm(proc, { recursive: true, force: true });
+  }
 });
 
 /** A repo whose candidate head descends from an observation-prep commit. */

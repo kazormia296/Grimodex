@@ -858,7 +858,12 @@ test("N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus
     XDG_RUNTIME_DIR: "/r/.artifacts/cp4/run/tmp/xdg-runtime",
     NO_AT_BRIDGE: "1",
   };
-  const netns = { self: "net:[4026531840]", parent: "net:[4026531840]" };
+  const netns = {
+    self: "net:[4026531840]",
+    parent: "net:[4026531840]",
+    hostInterfaces: ["lo", "enp5s0"],
+    userManager: "net:[4026531840]",
+  };
   // B-3: libdbus／GDBus fall back to $XDG_RUNTIME_DIR/bus without an address.
   for (const runtime of [undefined, "/run/user/1000", "/run/user/1000/x"])
     assert.throws(
@@ -934,9 +939,37 @@ test("N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus
   ])
     assert.throws(() => launch({ argv }), /network namespace/, argv.join(" "));
   assert.throws(
-    () => launch({ netns: { self: "net:[1]", parent: "net:[2]" } }),
+    () => launch({ netns: { ...netns, self: "net:[1]", parent: "net:[2]" } }),
     /parent's network namespace/,
   );
+  // B-4: `unshare -rn node wrapper …` puts the harness and its parent in the
+  // same private namespace; only lo is there, and it differs from the user's
+  // systemd manager's.
+  assert.throws(
+    () =>
+      launch({
+        netns: {
+          self: "net:[9]",
+          parent: "net:[9]",
+          hostInterfaces: ["lo"],
+          userManager: null,
+        },
+      }),
+    /host network namespace/,
+  );
+  assert.throws(
+    () =>
+      launch({
+        netns: { ...netns, self: "net:[9]", parent: "net:[9]" },
+      }),
+    /host network namespace/,
+  );
+  assert.throws(
+    () => launch({ netns: { self: "net:[9]", parent: "net:[9]" } }),
+    /host network namespace/,
+  );
+  // systemd --user が見つからない環境は interface の基準だけで通す（開示する）。
+  assert.doesNotThrow(() => launch({ netns: { ...netns, userManager: null } }));
   assert.throws(
     () => launch({ netns: undefined }),
     /parent's network namespace/,

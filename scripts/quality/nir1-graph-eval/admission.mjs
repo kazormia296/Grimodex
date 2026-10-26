@@ -17,7 +17,8 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync, readlinkSync } from "node:fs";
+import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
 import {
   GRAPH_ARM_SCOPES,
@@ -305,13 +306,73 @@ export function assertDefaultAddonIsProduct({
     );
 }
 
-/** The network namespace links of this process and its parent (Linux). */
-export function readNetNamespaces() {
+function readOrNull(read) {
+  try {
+    return read();
+  } catch {
+    return null;
+  }
+}
+
+/** The netns of the user's `systemd --user` (same uid), or null. */
+function userManagerNetns(procRoot, uid) {
+  let entries;
+  try {
+    entries = readdirSync(procRoot);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!/^\d+$/u.test(entry)) continue;
+    const status = readOrNull(() =>
+      readFileSync(path.join(procRoot, entry, "status"), "utf8"),
+    );
+    if (!status || !/^Name:\s+systemd$/mu.test(status)) continue;
+    const owner = /^Uid:\s+(\d+)/mu.exec(status)?.[1];
+    if (Number(owner) !== uid) continue;
+    const cmdline = readOrNull(() =>
+      readFileSync(path.join(procRoot, entry, "cmdline"), "utf8"),
+    );
+    if (!cmdline?.split("\0").includes("--user")) continue;
+    const link = readOrNull(() =>
+      readlinkSync(path.join(procRoot, entry, "ns", "net")),
+    );
+    if (link) return link;
+  }
+  return null;
+}
+
+/**
+ * The network namespace links of this process and its parent (Linux), and
+ * the host baseline (B-4): the interfaces of this namespace (a private
+ * `unshare -n` one has only `lo`) and the namespace of the user's
+ * `systemd --user`. A wrapper started inside `unshare -rn` puts the harness
+ * and its parent in the same private namespace, which self === parent alone
+ * does not see.
+ */
+export function readNetNamespaces({
+  procRoot = "/proc",
+  selfPid = process.pid,
+  parentPid = process.ppid,
+  uid = process.getuid?.(),
+} = {}) {
   if (process.platform !== "linux")
     return { unavailable: true, reason: `no /proc on ${process.platform}` };
+  const dev = readOrNull(() =>
+    readFileSync(path.join(procRoot, String(selfPid), "net", "dev"), "utf8"),
+  );
   return {
-    self: readlinkSync("/proc/self/ns/net"),
-    parent: readlinkSync(`/proc/${process.ppid}/ns/net`),
+    self: readlinkSync(path.join(procRoot, String(selfPid), "ns", "net")),
+    parent: readlinkSync(path.join(procRoot, String(parentPid), "ns", "net")),
+    hostInterfaces:
+      dev === null
+        ? []
+        : dev
+            .split("\n")
+            .slice(2)
+            .map((line) => /^\s*([^:\s]+):/u.exec(line)?.[1])
+            .filter(Boolean),
+    userManager: userManagerNetns(procRoot, uid),
   };
 }
 

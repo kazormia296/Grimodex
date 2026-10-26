@@ -94,7 +94,12 @@ test("DR-CP4-S1C1-4: the launch env drops the desktop, the bus and proxies and p
     "--log-net-log=/r/.artifacts/cp4/run/netlog.json",
     "/r/.artifacts/cp4/run/observer/observer.cjs",
   ]);
-  const netns = { self: "net:[1]", parent: "net:[1]" };
+  const netns = {
+    self: "net:[1]",
+    parent: "net:[1]",
+    hostInterfaces: ["lo", "eth0"],
+    userManager: "net:[1]",
+  };
   assert.deepEqual(
     assertElectronLaunch({ env, argv: args, xvfbDisplay: ":7", netns }).display,
     ":7",
