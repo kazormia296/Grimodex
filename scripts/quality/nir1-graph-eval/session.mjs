@@ -11,7 +11,13 @@
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import {
+  existsSync,
+  readFileSync,
+  readdirSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { chmod, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -37,6 +43,7 @@ import {
   prepareEvalProfile,
   snapshotElectronPids,
   stopElectron,
+  survivingPids,
   runtimeDirOf,
 } from "./launcher.mjs";
 import { MAIN_WORKER, WORKER_FILE_NAME } from "./eval-native-build.mjs";
@@ -55,6 +62,56 @@ export function x11Listing() {
     .map((name) => {
       const info = statSync(path.join("/tmp/.X11-unix", name));
       return { name, ino: info.ino, mtimeMs: info.mtimeMs };
+    });
+}
+
+/**
+ * B-5: sessions not stopped yet. Playwright starts Electron `detached` (its
+ * own process group); the Xvfb wrapper cancels by SIGTERM to the harness and
+ * SIGKILL 500 ms later, which is shorter than Playwright's graceful
+ * `app.close()`. On SIGTERM／SIGINT the harness kills every recorded Electron
+ * process (the group of the root pid, then each surviving pid) synchronously
+ * before it exits; the pid list is also written to the session directory.
+ */
+const LIVE_SESSIONS = new Set();
+let signalCleanupInstalled = false;
+
+export function killLiveSessionsSync(
+  live,
+  { procRoot = "/proc", kill = process.kill } = {},
+) {
+  const killed = [];
+  for (const session of live) {
+    const recorded = session.recorded();
+    const alive = survivingPids(recorded, procRoot);
+    if (alive.some((row) => row.pid === session.rootPid))
+      try {
+        kill(-session.rootPid, "SIGKILL");
+      } catch {
+        // the group is gone
+      }
+    for (const row of alive) {
+      try {
+        kill(row.pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+      killed.push(row.pid);
+    }
+  }
+  return killed;
+}
+
+function installSignalCleanup() {
+  if (signalCleanupInstalled) return;
+  signalCleanupInstalled = true;
+  for (const [signal, code] of [
+    ["SIGTERM", 143],
+    ["SIGINT", 130],
+  ])
+    process.once(signal, () => {
+      killLiveSessionsSync(LIVE_SESSIONS);
+      process.exit(code);
     });
 }
 
@@ -185,7 +242,20 @@ export async function startSession({
   const remember = () => {
     for (const row of snapshotPids(handle.pid))
       recorded.set(`${row.pid}:${row.startTime}`, row);
+    try {
+      writeFileSync(
+        path.join(dir, "electron-pids.json"),
+        `${JSON.stringify([...recorded.values()])}\n`,
+      );
+    } catch {
+      // the list is a convenience for a check after the wrapper
+    }
   };
+  const live = { rootPid: handle.pid, recorded: () => [...recorded.values()] };
+  if (deps.signals !== false) {
+    installSignalCleanup();
+    LIVE_SESSIONS.add(live);
+  }
   remember();
   let page;
   try {
@@ -249,6 +319,7 @@ export async function startSession({
     remember();
     const socketSamples = sampler.stop();
     evidence.stop = await stopApp(handle, [...recorded.values()]);
+    LIVE_SESSIONS.delete(live);
     if (handle.addonCheck?.evaluation === true) {
       evidence.mainWorker = assessMainWorker({
         mainPath: mainWorkerPath,

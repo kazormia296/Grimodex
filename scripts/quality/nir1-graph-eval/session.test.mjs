@@ -8,7 +8,11 @@ import process from "node:process";
 import { test } from "node:test";
 import { launch } from "./dprime-check.mjs";
 import { launchGraphEvalElectron, stopElectron } from "./launcher.mjs";
-import { assessMainWorker, startSession } from "./session.mjs";
+import {
+  assessMainWorker,
+  killLiveSessionsSync,
+  startSession,
+} from "./session.mjs";
 
 const WRAPPER_ENV = Object.freeze({
   GRIMODEX_LOCAL_CI_XVFB: "1",
@@ -149,6 +153,7 @@ test("B-7: launchGraphEvalElectron の spawn の失敗はそのまま投げ、�
 
 function fakeDeps(calls, { firstWindow }) {
   return {
+    signals: false,
     wrapperEnv: WRAPPER_ENV,
     prepareProfile: async () => ({ d2aStateFile: null }),
     launch: async () => {
@@ -369,6 +374,41 @@ test("B-2: launch の記録の removedEnv は wrapper の env から実際に落
     for (const key of Object.keys(process.env))
       if (!(key in saved)) delete process.env[key];
     Object.assign(process.env, saved);
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("B-5: 取消しの signal では記録した Electron の process group と pid を同期で SIGKILL する", () => {
+  const { root, stat } = procTree();
+  try {
+    stat(4242, "10");
+    stat(4243, "11");
+    const sent = [];
+    const live = new Set([
+      {
+        rootPid: 4242,
+        recorded: () => [
+          { pid: 4242, startTime: "10" },
+          { pid: 4243, startTime: "11" },
+          { pid: 4244, startTime: "12" },
+        ],
+      },
+    ]);
+    const killed = killLiveSessionsSync(live, {
+      procRoot: root,
+      kill: (pid, signal) => sent.push(`${pid}:${signal}`),
+    });
+    assert.deepEqual(sent, ["-4242:SIGKILL", "4242:SIGKILL", "4243:SIGKILL"]);
+    assert.deepEqual(killed, [4242, 4243]);
+    // root の pid が別の process に再利用されていれば group には送らない。
+    stat(4242, "99");
+    sent.length = 0;
+    killLiveSessionsSync(live, {
+      procRoot: root,
+      kill: (pid, signal) => sent.push(`${pid}:${signal}`),
+    });
+    assert.deepEqual(sent, ["4243:SIGKILL"]);
+  } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
