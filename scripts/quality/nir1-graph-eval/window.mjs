@@ -85,13 +85,21 @@ export function classifyProcess(argv) {
   if (/run-nir1-retrieval\.mjs/u.test(joined))
     return { kind: "measurement", command: "nir1-retrieval" };
   // P3-10: the diagnostics (hook-check, dprime-check, diag-registration,
-  // smoke) are CP-4 measurements too.
+  // smoke) are CP-4 measurements too; S1f adds the K6/4 runner (P2-5).
   if (
-    /nir1-graph-eval\/(runner|setup-driver|hook-check|dprime-check|diag-registration|smoke)\.mjs/u.test(
+    /nir1-graph-eval\/(runner|k64-runner|setup-driver|hook-check|dprime-check|diag-registration|smoke)\.mjs/u.test(
       joined,
     )
   )
     return { kind: "measurement", command: "cp4" };
+  // P2-5: a measurement Electron (any worktree's harness or journey: its
+  // argv names a `.artifacts` run directory or a product `dist-electron`
+  // main) is another measurement too. A desktop Electron app names neither.
+  if (
+    /^electron/u.test(binary) &&
+    /\/\.artifacts\/|dist-electron\/main\.cjs/u.test(joined)
+  )
+    return { kind: "measurement", command: "electron" };
   return null;
 }
 
@@ -112,11 +120,21 @@ export function windowFields({
   heavySlotFiles,
 }) {
   const own = new Set(ownPids);
+  // P2-5: a child the harness's own Electron spawned after its pids were
+  // recorded is the harness's own too (followed through ppid).
+  const parent = new Map(processes.map((row) => [row.pid, row.ppid ?? null]));
+  const ownDescendant = (pid) => {
+    for (let at = pid, hops = 0; at !== null && hops < 64; hops += 1) {
+      if (own.has(at)) return true;
+      at = parent.get(at) ?? null;
+    }
+    return false;
+  };
   const buildProcesses = [];
   const otherMeasurements = [];
   let sameWorktreeBuild = false;
   for (const row of processes) {
-    if (own.has(row.pid)) continue;
+    if (ownDescendant(row.pid)) continue;
     const kind = classifyProcess(row.argv);
     if (!kind) continue;
     if (kind.kind === "build") {
@@ -158,8 +176,19 @@ function listProcesses(procRoot) {
     } catch {
       cwd = null;
     }
+    const stat = readMaybe(path.join(procRoot, name, "stat"));
+    // `pid (comm) state ppid …`; comm may hold ")", so read after the last.
+    const ppid = stat
+      ? Number(
+          stat
+            .slice(stat.lastIndexOf(")") + 1)
+            .trim()
+            .split(/\s+/u)[1],
+        )
+      : NaN;
     rows.push({
       pid: Number(name),
+      ppid: Number.isInteger(ppid) ? ppid : null,
       argv: cmdline.split("\0").filter(Boolean),
       cwd,
     });

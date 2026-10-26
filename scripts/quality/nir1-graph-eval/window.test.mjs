@@ -171,3 +171,55 @@ test("the launcher chain (the wrapper that carries the runner's argv) is the har
     [40],
   );
 });
+
+test("P2-5: k64-runner と測定の Electron（他の worktree の .artifacts を使うもの）も別の計測として数え、デスクトップの Electron と自分の子孫は数えない", () => {
+  assert.deepEqual(
+    classifyProcess([
+      "node",
+      "/w/other/scripts/quality/nir1-graph-eval/k64-runner.mjs",
+      "--run",
+      "x",
+    ]),
+    { kind: "measurement", command: "cp4" },
+  );
+  const harnessMain = [
+    "/w/other/node_modules/electron/dist/electron",
+    "--log-net-log=/w/other/.artifacts/cp4/r/measure/session/netlog.json",
+    "/w/other/.artifacts/cp4/r/observer/observer.cjs",
+  ];
+  const harnessRenderer = [
+    "/w/other/node_modules/electron/dist/electron",
+    "--type=renderer",
+    "--user-data-dir=/w/other/.artifacts/cp4/r/measure/session/user-data",
+  ];
+  const journey = [
+    "/w/other/node_modules/electron/dist/electron",
+    "/w/other/dist-electron/main.cjs",
+  ];
+  for (const argv of [harnessMain, harnessRenderer, journey])
+    assert.deepEqual(
+      classifyProcess(argv),
+      { kind: "measurement", command: "electron" },
+      argv.join(" "),
+    );
+  for (const argv of [
+    ["/usr/lib/electron43/electron", "/usr/lib/obsidian/app.asar"],
+    ["/usr/lib/electron43/electron", "--type=zygote"],
+  ])
+    assert.equal(classifyProcess(argv), null, argv.join(" "));
+  // 自分の Electron の子（記録の前に生まれた renderer）は ppid で自分のものとして除く。
+  const fields = windowFields({
+    processes: [
+      { pid: 10, ppid: 1, argv: harnessMain, cwd: "/w/this" },
+      { pid: 11, ppid: 10, argv: harnessRenderer, cwd: "/w/this" },
+      { pid: 12, ppid: 11, argv: harnessRenderer, cwd: "/w/this" },
+      { pid: 20, ppid: 1, argv: harnessMain, cwd: "/w/other" },
+    ],
+    ownPids: [10],
+    root: "/w/this",
+    heavySlots: 0,
+    locksReadable: true,
+    heavySlotFiles: 3,
+  });
+  assert.deepEqual(fields.otherMeasurements, ["measurement:electron:20"]);
+});
