@@ -622,6 +622,8 @@ async function main() {
     );
     await server.close();
   }
+  // B-2: a problem seen at a stop fails the check as much as a thrown error.
+  if (report.problems.length > 0) process.exitCode = 1;
   await writeFile(
     path.join(runDir, "dprime-report.json"),
     `${JSON.stringify(report, null, 2)}\n`,

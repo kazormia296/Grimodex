@@ -322,3 +322,47 @@ test("A-3: 評価の .node の session は worker の食い違いを problems �
     rmSync(runDir, { recursive: true, force: true });
   }
 });
+
+test("B-2: launch の記録の removedEnv は wrapper の env から実際に落とした名前", async () => {
+  const saved = { ...process.env };
+  Object.assign(process.env, WRAPPER_ENV, {
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+    CP4_KEPT: "1",
+  });
+  const root = mkdtempSync(path.join(os.tmpdir(), "cp4-removed-"));
+  try {
+    const product = path.join(root, "product.node");
+    writeFileSync(product, "\0napi\0product");
+    const env = {
+      ...process.env,
+      ELECTRON_OZONE_PLATFORM_HINT: "x11",
+      GRIMODEX_NODE_PATH: product,
+    };
+    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.WAYLAND_DISPLAY;
+    delete env.WAYLAND_SOCKET;
+    const on = () => {};
+    const handle = await launchGraphEvalElectron({
+      root,
+      observer: { path: path.join(root, "observer.cjs") },
+      env,
+      netLogPath: path.join(root, "netlog.json"),
+      netns: { unavailable: true },
+      electron: {
+        _electron: {
+          launch: async () => ({
+            process: () => ({ pid: 5, stderr: { on }, stdout: { on } }),
+          }),
+        },
+      },
+    });
+    assert.ok(handle.launch.removedEnv.includes("DBUS_SESSION_BUS_ADDRESS"));
+    assert.ok(!handle.launch.removedEnv.includes("CP4_KEPT"));
+    assert.ok(handle.launch.checkedAbsent.includes("WAYLAND_DISPLAY"));
+  } finally {
+    for (const key of Object.keys(process.env))
+      if (!(key in saved)) delete process.env[key];
+    Object.assign(process.env, saved);
+    rmSync(root, { recursive: true, force: true });
+  }
+});

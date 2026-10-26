@@ -653,11 +653,9 @@ async function main() {
     }),
     ownPids,
     xvfbDisplay: process.env.DISPLAY,
-    removedEnv: [
-      "WAYLAND_DISPLAY",
-      "WAYLAND_SOCKET",
-      "DBUS_SESSION_BUS_ADDRESS",
-    ],
+    // B-2: the names the launch env actually dropped (handle.launch).
+    removedEnv: evidence.launch?.removedEnv ?? null,
+    launchEnvChecked: evidence.launch?.checkedAbsent ?? null,
     netLog: evidence.netLog ?? null,
     socketSamples: evidence.socketSamples ?? [],
     x11: {
@@ -670,7 +668,11 @@ async function main() {
     },
     observer: evidence.observerCheck ?? null,
     stop: evidence.stop ?? null,
+    mainWorker: evidence.mainWorker ?? null,
   };
+  // B-2: a problem seen at the stop (processes left, X11, profile egress,
+  // net log, Main's worker) fails the run as much as a thrown error.
+  if (report.problems.length > 0) process.exitCode = 1;
   const settings = {
     maintenance: options.maintenance,
     d2aModes: { hybrid: "restricted", graph: "restricted" },

@@ -197,8 +197,22 @@ function receipt(overrides = {}, { recompute = true } = {}) {
         "WAYLAND_SOCKET",
         "DBUS_SESSION_BUS_ADDRESS",
       ],
-      netLog: { sha256: H64("7"), nonLoopbackAttempts: 0 },
+      netLog: { sha256: H64("7"), nonLoopbackAttempts: 0, truncated: false },
       socketSamples: socketSamples([0, 20_000, 40_000, 62_000]),
+      stop: { closed: true, signalled: [], remaining: [] },
+      x11: {
+        before: [{ name: "X99", ino: 1 }],
+        after: [{ name: "X99", ino: 1 }],
+      },
+      profileEgress: { dictionaries: [], networkPersistentServers: [] },
+      observer: { ok: true, problems: [] },
+      mainWorker: {
+        ok: true,
+        expectedSha256: H64("1"),
+        atStart: H64("1"),
+        atEnd: H64("1"),
+        problems: [],
+      },
     },
     settings: {
       variantKey,
@@ -1008,4 +1022,49 @@ test("DR-CP4-S1C1-6: socket samples cover the run and an external socket is [pre
     errorsOf(withSockets(external)),
     /\[precheck\].*external socket/,
   );
+});
+
+test("B-2: 停止の後の副作用の証拠（残った process、close、X11、辞書、外部の server、切れた net log、observer、worker）は合否に入る", () => {
+  const env = receipt().environment;
+  for (const [label, change, pattern] of [
+    ["remaining", { stop: { ...env.stop, remaining: [77] } }, /remaining/],
+    ["no-stop", { stop: null }, /environment\.stop/],
+    ["not-closed", { stop: { ...env.stop, closed: false } }, /closed/],
+    ["x11", { x11: { before: [], after: [{ name: "X5", ino: 2 }] } }, /X11/],
+    [
+      "bdic",
+      {
+        profileEgress: {
+          ...env.profileEgress,
+          dictionaries: ["en-US-10-1.bdic"],
+        },
+      },
+      /dictionar/,
+    ],
+    [
+      "persisted",
+      {
+        profileEgress: {
+          ...env.profileEgress,
+          networkPersistentServers: ["https://example.com"],
+        },
+      },
+      /persisted/,
+    ],
+    ["truncated", { netLog: { ...env.netLog, truncated: true } }, /truncated/],
+    ["observer", { observer: { ok: false, problems: ["x"] } }, /observer/],
+    ["worker", { mainWorker: { ...env.mainWorker, ok: false } }, /A-3|worker/],
+    [
+      "worker-other-build",
+      {
+        mainWorker: { ...env.mainWorker, atStart: H64("9"), atEnd: H64("9") },
+      },
+      /worker/,
+    ],
+  ]) {
+    const errors = otherErrors(
+      receipt({ environment: { ...env, ...change } }),
+    ).join(" | ");
+    assert.match(errors, pattern, label);
+  }
 });

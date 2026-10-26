@@ -486,6 +486,76 @@ export function computeRunVerdict(receipt, variant, aggregates) {
   return { outcome: "recorded" };
 }
 
+/**
+ * B-2: the side effects seen when the session stopped decide the run too:
+ * every recorded process gone after a clean close, the X11 listing
+ * unchanged, no fetched dictionary and no persisted non-loopback server, a
+ * net log that was not cut (a repaired log may lack its last attempts), the
+ * observer record passed, and (A-3) Main's worker the evaluation build's
+ * from start to end.
+ */
+function stopSideEffectErrors(environment, graphRun, candidate) {
+  const errors = [];
+  const stop = environment?.stop;
+  if (!stop || !Array.isArray(stop.remaining))
+    errors.push("environment.stop with its remaining pids is required");
+  else {
+    if (stop.remaining.length > 0)
+      errors.push(
+        `[precheck] processes remaining after the stop: ${stop.remaining.join(",")}`,
+      );
+    if (stop.closed !== true)
+      errors.push(
+        "[precheck] the app was not closed by app.close() (stopped by signals)",
+      );
+  }
+  const x11 = environment?.x11;
+  if (
+    !Array.isArray(x11?.before) ||
+    !Array.isArray(x11?.after) ||
+    stable(x11.before) !== stable(x11.after)
+  )
+    errors.push(
+      "[precheck] the /tmp/.X11-unix listing changed or was not recorded (an X11 side effect, or another lane's Xvfb: retake)",
+    );
+  const egress = environment?.profileEgress;
+  if (
+    !Array.isArray(egress?.dictionaries) ||
+    egress.dictionaries.some((name) => String(name).endsWith(".bdic"))
+  )
+    errors.push(
+      "[precheck] spellcheck dictionaries were fetched or not recorded",
+    );
+  if (
+    !Array.isArray(egress?.networkPersistentServers) ||
+    egress.networkPersistentServers.some(
+      (entry) =>
+        !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/u.test(String(entry)),
+    )
+  )
+    errors.push(
+      "[precheck] the profile persisted a non-loopback server (or it was not recorded)",
+    );
+  if (environment?.netLog?.truncated !== false)
+    errors.push(
+      "[precheck] the net log was truncated (an abrupt exit) or its state is unknown",
+    );
+  if (environment?.observer?.ok !== true)
+    errors.push("[precheck] the observer record did not pass");
+  if (graphRun) {
+    const worker = environment?.mainWorker;
+    if (
+      worker?.ok !== true ||
+      worker.atStart !== candidate?.workerSha256 ||
+      worker.atEnd !== candidate?.workerSha256
+    )
+      errors.push(
+        "[precheck] A-3: Main's worker was not the evaluation build's worker from start to end",
+      );
+  }
+  return errors;
+}
+
 /** settings.k64 of a formal K6/4 Graph run (K6/4 変える点 16, 技術点 2; N17). */
 function k64SettingsErrors(errors, value) {
   if (
@@ -648,6 +718,7 @@ export function validateCp4Receipt(receipt, bound = {}) {
     errors.push(
       `[precheck] the Electron process tree had an external socket: ${sockets.violations.join("; ")}`,
     );
+  errors.push(...stopSideEffectErrors(environment, graphRun, candidate));
 
   const settings = receipt?.settings;
   for (const arm of ["raw", "hybrid", "graph"])

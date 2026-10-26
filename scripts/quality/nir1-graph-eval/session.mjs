@@ -172,6 +172,10 @@ export async function startSession({
     electron: { _electron },
     admission,
   });
+  evidence.launch = {
+    removedEnv: handle.launch?.removedEnv ?? null,
+    checkedAbsent: handle.launch?.checkedAbsent ?? null,
+  };
   const sampler = sampleSockets({ rootPid: handle.pid });
   const remember = () => {
     for (const row of snapshotPids(handle.pid))

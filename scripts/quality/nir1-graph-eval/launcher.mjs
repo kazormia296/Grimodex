@@ -434,7 +434,15 @@ export async function launchGraphEvalElectron({
   return {
     app,
     pid: child.pid,
-    launch,
+    // B-2: the names this launch env actually lacks from the wrapper env,
+    // besides the desktop names assertElectronLaunch checked absent.
+    launch: {
+      ...launch,
+      checkedAbsent: launch.removedEnv,
+      removedEnv: Object.keys(process.env)
+        .filter((name) => !Object.hasOwn(env, name))
+        .sort(),
+    },
     addonCheck,
     args,
     stderr: () => stderr,
