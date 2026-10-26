@@ -147,6 +147,8 @@ export function createNir1LocalGenerationTurn(
   let continueInFlight = false;
   let timer: unknown = null;
   let cancelTimer: unknown = null;
+  /** The timer of a held start's resend (null: none waiting). */
+  let startRetry: unknown = null;
   let ipcFailures = 0;
   /** A refused cancel's reason, applied after the in-flight continue. */
   let pendingLoss: Nir1LocalReason | null = null;
@@ -219,6 +221,10 @@ export function createNir1LocalGenerationTurn(
     if (cancelTimer !== null) {
       ports.clearTimer(cancelTimer);
       cancelTimer = null;
+    }
+    if (startRetry !== null) {
+      ports.clearTimer(startRetry);
+      startRetry = null;
     }
     pendingLoss = null;
     reason = detail.reason ?? null;
@@ -382,13 +388,23 @@ export function createNir1LocalGenerationTurn(
         finish("refused", { reason: result.reason });
         return;
       case "error": {
+        if (result.error === "held" && cancelRequested) {
+          // Held before Main and stopped by the user: nothing was sent.
+          finish("cancelled");
+          return;
+        }
         const wait = result.error === "held" ? startHeld.next() : null;
         if (wait !== null) {
-          // Held before Main, so nothing started: send the start again.
+          // Held before Main, so nothing started: send the start again
+          // unless the user stops first (`cancel()` ends the wait).
           ipcError = "held";
           emit();
-          timer = ports.setTimer(() => {
-            timer = null;
+          startRetry = ports.setTimer(() => {
+            startRetry = null;
+            if (cancelRequested) {
+              finish("cancelled");
+              return;
+            }
             dispatchStart();
           }, wait);
           return;
@@ -414,6 +430,13 @@ export function createNir1LocalGenerationTurn(
     },
     cancel() {
       if (terminal() || phase === "idle" || cancelInFlight) return;
+      if (handle === null && startRetry !== null) {
+        // A held start waits to be sent again: nothing reached Main, so the
+        // stop ends the generation without sending anything.
+        cancelRequested = true;
+        finish("cancelled");
+        return;
+      }
       if (handle === null) {
         // The start is in flight: stop as soon as the handle arrives.
         if (!cancelRequested) {

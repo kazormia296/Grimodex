@@ -544,4 +544,34 @@ describe("the local generation state machine (DD-1c)", () => {
     h.turn.cancel();
     expect(h.turn.snapshot().reason).toBeNull();
   });
+
+  // Re-review P2: a stop pressed while a held start waits must keep the
+  // start from ever being sent again (nothing has reached Main yet).
+  it("never sends a held start again once the stop was pressed", async () => {
+    const h = harness();
+    h.turn.start();
+    h.starts[0].resolve({ status: "error", error: "held" });
+    await h.flush();
+    expect(h.turn.snapshot().canCancel).toBe(true);
+    h.turn.cancel();
+    await h.tick();
+    await h.tick();
+    expect(h.starts).toHaveLength(1);
+    expect(h.cancels).toHaveLength(0);
+    expect(h.turn.snapshot()).toMatchObject({
+      phase: "cancelled",
+      canCancel: false,
+    });
+  });
+
+  it("does not resend a start that comes back held after the stop was pressed", async () => {
+    const h = harness();
+    h.turn.start();
+    h.turn.cancel();
+    h.starts[0].resolve({ status: "error", error: "held" });
+    await h.flush();
+    await h.tick();
+    expect(h.starts).toHaveLength(1);
+    expect(h.turn.snapshot().phase).toBe("cancelled");
+  });
 });
