@@ -18,6 +18,7 @@ import { launchGraphEvalElectron, stopElectron } from "./launcher.mjs";
 import {
   assessMainWorker,
   SOCKET_SUFFIX_BYTES,
+  killChildElectronGroupsSync,
   killLiveSessionsSync,
   startSession,
 } from "./session.mjs";
@@ -277,6 +278,8 @@ test("A-3: Main の path の worker を開始時と終了時に hash し、評�
     atStart: "a".repeat(64),
     atEnd: "a".repeat(64),
     exes: [mainPath],
+    statStart: { ino: 1, mtimeMs: 1 },
+    statEnd: { ino: 1, mtimeMs: 1 },
   });
   assert.deepEqual(ok.problems, []);
   assert.equal(ok.ok, true);
@@ -298,6 +301,8 @@ test("A-3: Main の path の worker を開始時と終了時に hash し、評�
       atStart: "a".repeat(64),
       atEnd: "a".repeat(64),
       exes: [mainPath],
+      statStart: { ino: 1, mtimeMs: 1 },
+      statEnd: { ino: 1, mtimeMs: 1 },
       ...change,
     });
     assert.equal(result.ok, false, label);
@@ -466,4 +471,78 @@ test("B P3／E-9: session の TMPDIR は unix socket の上限に収まる短い
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }
+});
+
+test("E-12: Main の path の worker の ino と mtime が開始と終了で違えば、bytes が同じでも [precheck]", () => {
+  const mainPath = "/r/src-tauri/target/release/nir1-c-query-worker";
+  const base = {
+    mainPath,
+    expectedSha256: "a".repeat(64),
+    atStart: "a".repeat(64),
+    atEnd: "a".repeat(64),
+    exes: [mainPath],
+    statStart: { ino: 7, mtimeMs: 100 },
+    statEnd: { ino: 7, mtimeMs: 100 },
+  };
+  assert.equal(assessMainWorker(base).ok, true);
+  for (const statEnd of [
+    { ino: 8, mtimeMs: 100 },
+    { ino: 7, mtimeMs: 200 },
+    null,
+  ])
+    assert.match(
+      assessMainWorker({ ...base, statEnd }).problems.join(),
+      /\[precheck\] A-3: Main's worker file was replaced/,
+    );
+});
+
+test("E-13: 取消しの handler は harness の直接の子の electron の process group も止める（launch の最中）", () => {
+  const root = mkdtempSync(path.join("/tmp", "cp4-children-"));
+  try {
+    const proc = (pid, ppid, comm) => {
+      mkdirSync(path.join(root, String(pid)), { recursive: true });
+      const fields = Array.from({ length: 30 }, () => "0");
+      fields[1] = String(ppid);
+      writeFileSync(
+        path.join(root, String(pid), "stat"),
+        `${pid} (${comm}) ${fields.join(" ")}`,
+      );
+    };
+    proc(500, 99, "electron");
+    proc(501, 99, "node");
+    proc(502, 1, "electron");
+    const sent = [];
+    killChildElectronGroupsSync({
+      procRoot: root,
+      parentPid: 99,
+      kill: (pid, signal) => sent.push(`${pid}:${signal}`),
+    });
+    assert.deepEqual(sent, ["-500:SIGKILL"]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("E-14: dprime の launch の検査で addon の呼出しが返らなければ上限で投げ、Electron を止める", async () => {
+  let stops = 0;
+  const session = {
+    evidence: { problems: [] },
+    addon: () => new Promise(() => {}),
+    stop: async () => {
+      stops += 1;
+      return { problems: [] };
+    },
+  };
+  const error = await launch({
+    label: "prep",
+    options: { "eval-build": "/x", run: "r" },
+    start: async () => session,
+    statusWaitMs: 0,
+    addonTimeoutMs: 5,
+  }).then(
+    () => null,
+    (thrown) => thrown,
+  );
+  assert.match(String(error?.message), /timed out/);
+  assert.equal(stops, 1);
 });

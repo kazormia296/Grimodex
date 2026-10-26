@@ -43,6 +43,7 @@ import {
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { MAIN_WORKER } from "./eval-native-build.mjs";
 import { admitDevPreview } from "./admission.mjs";
+import { installSignalCleanup } from "./session.mjs";
 
 const SMOKE_PAGE = "/scripts/quality/nir1-graph-eval/renderer/smoke.html";
 const WORKER_NAME = "nir1-c-query-worker";
@@ -159,6 +160,8 @@ async function main() {
       recorded.set(`${row.pid}:${row.startTime}`, row);
   };
   try {
+    // E-13: the cancel handler is in place before the launch.
+    installSignalCleanup();
     handle = await launchGraphEvalElectron({
       observer,
       env,

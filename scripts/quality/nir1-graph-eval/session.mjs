@@ -31,6 +31,7 @@ import {
   assertX11Ozone,
   assessSocketSamples,
   parseNetLogText,
+  parseProcStat,
   readProcessTree,
   startSocketSampler,
 } from "./egress.mjs";
@@ -103,7 +104,50 @@ export function killLiveSessionsSync(
   return killed;
 }
 
-function installSignalCleanup() {
+/**
+ * E-13: Electron the harness launched but has not registered yet (during
+ * `_electron.launch`, up to 60 s): Playwright spawns it as a direct child of
+ * this process in its own group. Kill the group of every direct child whose
+ * comm is electron.
+ */
+export function killChildElectronGroupsSync({
+  procRoot = "/proc",
+  parentPid = process.pid,
+  kill = process.kill,
+} = {}) {
+  let entries;
+  try {
+    entries = readdirSync(procRoot);
+  } catch {
+    return [];
+  }
+  const killed = [];
+  for (const entry of entries) {
+    if (!/^\d+$/u.test(entry)) continue;
+    let stat;
+    try {
+      stat = parseProcStat(
+        readFileSync(path.join(procRoot, entry, "stat"), "utf8"),
+      );
+    } catch {
+      continue;
+    }
+    if (stat.ppid !== parentPid || !/electron/iu.test(stat.comm)) continue;
+    try {
+      kill(-stat.pid, "SIGKILL");
+      killed.push(stat.pid);
+    } catch {
+      // the group is gone
+    }
+  }
+  return killed;
+}
+
+/**
+ * B-5 / E-13: installed before the first launch (startSession, smoke), so a
+ * cancel during `_electron.launch` also kills Electron.
+ */
+export function installSignalCleanup() {
   if (signalCleanupInstalled) return;
   signalCleanupInstalled = true;
   for (const [signal, code] of [
@@ -112,6 +156,7 @@ function installSignalCleanup() {
   ])
     process.once(signal, () => {
       killLiveSessionsSync(LIVE_SESSIONS);
+      killChildElectronGroupsSync();
       process.exit(code);
     });
 }
@@ -139,6 +184,15 @@ function shortTmpBase(candidates) {
   return fits;
 }
 
+function statFileOrNull(file) {
+  try {
+    const info = statSync(file);
+    return { ino: info.ino, mtimeMs: info.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
 function hashFileOrNull(file) {
   return existsSync(file) ? sha256(readFileSync(file)) : null;
 }
@@ -158,6 +212,8 @@ export function assessMainWorker({
   atStart,
   atEnd,
   exes,
+  statStart = null,
+  statEnd = null,
 }) {
   const problems = [];
   const digest = /^[0-9a-f]{64}$/u;
@@ -167,6 +223,16 @@ export function assessMainWorker({
     problems.push("Main's worker differs from the evaluation build's at start");
   if (!digest.test(atEnd ?? "") || atEnd !== atStart)
     problems.push("Main's worker changed during the session");
+  // E-12: rebuilt twice back to the same bytes is still a replaced file.
+  if (
+    !statStart ||
+    !statEnd ||
+    statStart.ino !== statEnd.ino ||
+    statStart.mtimeMs !== statEnd.mtimeMs
+  )
+    problems.push(
+      "Main's worker file was replaced during the session (inode or mtime)",
+    );
   const others = [...new Set(exes)].filter((exe) => exe !== mainPath);
   if (others.length > 0)
     problems.push(`a worker ran from another file: ${others.join(", ")}`);
@@ -177,6 +243,8 @@ export function assessMainWorker({
     atStart,
     atEnd,
     exes: [...new Set(exes)],
+    statStart,
+    statEnd,
     problems: problems.map((row) => `[precheck] A-3: ${row}`),
   };
 }
@@ -208,6 +276,7 @@ export async function startSession({
     listX11 = x11Listing,
     wrapperEnv = process.env,
     hashFile = hashFileOrNull,
+    statFile = statFileOrNull,
     tmpBase = os.tmpdir(),
     tmpFallback = "/tmp",
   } = deps;
@@ -256,7 +325,10 @@ export async function startSession({
       path.join(path.dirname(nativePath), WORKER_FILE_NAME),
     ),
     atStart: hashFile(mainWorkerPath),
+    statStart: statFile(mainWorkerPath),
   };
+  // E-13: before the launch, not after it.
+  if (deps.signals !== false) installSignalCleanup();
   const handle = await launch({
     observer,
     env,
@@ -283,10 +355,7 @@ export async function startSession({
     }
   };
   const live = { rootPid: handle.pid, recorded: () => [...recorded.values()] };
-  if (deps.signals !== false) {
-    installSignalCleanup();
-    LIVE_SESSIONS.add(live);
-  }
+  if (deps.signals !== false) LIVE_SESSIONS.add(live);
   remember();
   let page;
   try {
@@ -356,6 +425,7 @@ export async function startSession({
         mainPath: mainWorkerPath,
         ...workerPin,
         atEnd: hashFile(mainWorkerPath),
+        statEnd: statFile(mainWorkerPath),
         exes: socketSamples
           .flatMap((sample) => sample.processes ?? [])
           .map((row) => row.exe)

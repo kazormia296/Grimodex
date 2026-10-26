@@ -21,6 +21,7 @@ import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { clearTimeout, setTimeout } from "node:timers";
 import { setTimeout as sleep } from "node:timers/promises";
 import { admitDevPreview } from "./admission.mjs";
 import { loadDevFixture } from "./dev-fixture.mjs";
@@ -159,6 +160,7 @@ export async function launch({
   admission,
   start = startSession,
   statusWaitMs = STATUS_WAIT_MS,
+  addonTimeoutMs = ADDON_CALL_TIMEOUT_MS,
 }) {
   const session = await start({
     runDir,
@@ -181,7 +183,7 @@ export async function launch({
   // B-1: a failed check stops the Electron it launched before throwing, and
   // hands the stopped session to the caller (its evidence is recorded).
   try {
-    await assertSessionReady(session, statusWaitMs);
+    await assertSessionReady(session, statusWaitMs, addonTimeoutMs);
   } catch (error) {
     error.launchedSession = session;
     error.launchLabel = label;
@@ -193,11 +195,33 @@ export async function launch({
   return session;
 }
 
-async function assertSessionReady(session, statusWaitMs) {
+/** E-14: one evaluation entry call through app.evaluate is bounded. */
+const ADDON_CALL_TIMEOUT_MS = 10_000;
+
+function bounded(promise, ms, label) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`[precheck] ${label} timed out after ${ms} ms`)),
+        ms,
+      );
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+async function assertSessionReady(session, statusWaitMs, addonTimeoutMs) {
   if (session.evidence.problems.length > 0)
     throw new Error(session.evidence.problems.join("; "));
+  const status0 = () =>
+    bounded(
+      session.addon("nir1GraphEvalStatus"),
+      addonTimeoutMs,
+      "nir1GraphEvalStatus",
+    );
   const started = Date.now();
-  let status = await json(session.addon("nir1GraphEvalStatus"));
+  let status = await json(status0());
   while (
     Date.now() - started < statusWaitMs &&
     !(
@@ -207,7 +231,7 @@ async function assertSessionReady(session, statusWaitMs) {
     )
   ) {
     await sleep(100);
-    status = await json(session.addon("nir1GraphEvalStatus"));
+    status = await json(status0());
   }
   if (
     status.registrations !== 1 ||
