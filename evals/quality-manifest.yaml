@@ -1644,6 +1644,10 @@ requirements:
       - scripts/quality/nir1-graph/contract.mjs
       - scripts/quality/nir1-graph-eval/constants.mjs
       - scripts/quality/nir1-graph-eval/availability.mjs
+      - scripts/quality/nir1-graph-eval/followup.mjs
+      - scripts/quality/nir1-graph-eval/join.mjs
+      - scripts/quality/nir1-graph-eval/stats.mjs
+      - scripts/quality/nir1-graph-eval/admission-facts.mjs
       - scripts/quality/nir1-graph-eval/receipt.mjs
       - scripts/quality/nir1-graph-eval/outcome.mjs
       - scripts/quality/nir1-graph-eval/admission.mjs
@@ -1714,6 +1718,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/eval-native-build.test.mjs
       - scripts/quality/nir1-graph/contract.test.mjs
       - scripts/quality/nir1-graph-eval/availability.test.mjs
+      - scripts/quality/nir1-graph-eval/followup.test.mjs
       - scripts/quality/nir1-graph-eval/receipt.test.mjs
       - scripts/quality/nir1-graph-eval/outcome.test.mjs
       - scripts/quality/nir1-graph-eval/admission.test.mjs
