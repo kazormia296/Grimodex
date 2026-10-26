@@ -8,7 +8,7 @@ import process from "node:process";
 import { test } from "node:test";
 import { launch } from "./dprime-check.mjs";
 import { launchGraphEvalElectron, stopElectron } from "./launcher.mjs";
-import { startSession } from "./session.mjs";
+import { assessMainWorker, startSession } from "./session.mjs";
 
 const WRAPPER_ENV = Object.freeze({
   GRIMODEX_LOCAL_CI_XVFB: "1",
@@ -252,4 +252,73 @@ test("B-1: dprime の launch は検査に落ちたら起動した Electron を�
     }),
     /no electron/,
   );
+});
+
+test("A-3: Main の path の worker を開始時と終了時に hash し、評価 build の worker と違えば [precheck]", () => {
+  const mainPath = "/r/src-tauri/target/release/nir1-c-query-worker";
+  const ok = assessMainWorker({
+    mainPath,
+    expectedSha256: "a".repeat(64),
+    atStart: "a".repeat(64),
+    atEnd: "a".repeat(64),
+    exes: [mainPath],
+  });
+  assert.deepEqual(ok.problems, []);
+  assert.equal(ok.ok, true);
+  for (const [label, change] of [
+    ["changed during the run", { atEnd: "b".repeat(64) }],
+    [
+      "another build at start",
+      { atStart: "c".repeat(64), atEnd: "c".repeat(64) },
+    ],
+    ["missing at start", { atStart: null }],
+    ["missing at end", { atEnd: null }],
+    ["replaced while running", { exes: [`${mainPath} (deleted)`] }],
+    ["another worker ran", { exes: ["/tmp/nir1-c-query-worker"] }],
+    ["expected unknown", { expectedSha256: null }],
+  ]) {
+    const result = assessMainWorker({
+      mainPath,
+      expectedSha256: "a".repeat(64),
+      atStart: "a".repeat(64),
+      atEnd: "a".repeat(64),
+      exes: [mainPath],
+      ...change,
+    });
+    assert.equal(result.ok, false, label);
+    assert.match(result.problems.join(), /\[precheck\] A-3/, label);
+  }
+});
+
+test("A-3: 評価の .node の session は worker の食い違いを problems に入れる", async () => {
+  const runDir = mkdtempSync(path.join(os.tmpdir(), "cp4-worker-"));
+  try {
+    const calls = { launch: 0, stop: 0 };
+    const hashes = ["a".repeat(64), "a".repeat(64), "b".repeat(64)];
+    const deps = fakeDeps(calls, {
+      firstWindow: () => Promise.reject(new Error("x")),
+    });
+    const launchFake = deps.launch;
+    deps.launch = async (input) => ({
+      ...(await launchFake(input)),
+      addonCheck: { evaluation: true },
+    });
+    // expected（.node の隣）、開始時、終了時の順に読む。
+    deps.hashFile = () => hashes.shift();
+    const session = await startSession({
+      runDir,
+      label: "s",
+      server: { url: (page) => `http://127.0.0.1:1${page}` },
+      observer: { path: "/x/observer.cjs" },
+      nativePath: "/x/grimodex-node.node",
+      d2aMode: "restricted",
+      models: {},
+      deps,
+    });
+    const evidence = await session.stop();
+    assert.equal(evidence.mainWorker.ok, false);
+    assert.match(evidence.problems.join(), /\[precheck\] A-3/);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
 });

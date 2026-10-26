@@ -11,7 +11,7 @@
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
@@ -38,6 +38,7 @@ import {
   snapshotElectronPids,
   stopElectron,
 } from "./launcher.mjs";
+import { MAIN_WORKER, WORKER_FILE_NAME } from "./eval-native-build.mjs";
 
 export const HARNESS_PAGE =
   "/scripts/quality/nir1-graph-eval/renderer/cp4-harness.html";
@@ -54,6 +55,48 @@ export function x11Listing() {
       const info = statSync(path.join("/tmp/.X11-unix", name));
       return { name, ino: info.ino, mtimeMs: info.mtimeMs };
     });
+}
+
+function hashFileOrNull(file) {
+  return existsSync(file) ? sha256(readFileSync(file)) : null;
+}
+
+/**
+ * A-3: the registration compares Main's worker with the evaluation build's
+ * once, when the Backend is built, but the owner spawns Main's path on every
+ * prepare. A build in the same worktree during the run would sample another
+ * worker than the receipt's. The worker at Main's path is hashed at the
+ * start and the end of the session and must equal the evaluation build's
+ * (`.node`'s sibling); every worker process seen ran Main's path (a replaced
+ * file reads "(deleted)").
+ */
+export function assessMainWorker({
+  mainPath,
+  expectedSha256,
+  atStart,
+  atEnd,
+  exes,
+}) {
+  const problems = [];
+  const digest = /^[0-9a-f]{64}$/u;
+  if (!digest.test(expectedSha256 ?? ""))
+    problems.push("the evaluation build's worker is unreadable");
+  else if (atStart !== expectedSha256)
+    problems.push("Main's worker differs from the evaluation build's at start");
+  if (!digest.test(atEnd ?? "") || atEnd !== atStart)
+    problems.push("Main's worker changed during the session");
+  const others = [...new Set(exes)].filter((exe) => exe !== mainPath);
+  if (others.length > 0)
+    problems.push(`a worker ran from another file: ${others.join(", ")}`);
+  return {
+    ok: problems.length === 0,
+    path: mainPath,
+    expectedSha256,
+    atStart,
+    atEnd,
+    exes: [...new Set(exes)],
+    problems: problems.map((row) => `[precheck] A-3: ${row}`),
+  };
 }
 
 /**
@@ -82,6 +125,7 @@ export async function startSession({
     stopApp = stopElectron,
     listX11 = x11Listing,
     wrapperEnv = process.env,
+    hashFile = hashFileOrNull,
   } = deps;
   assertXvfbWrapperEnv(wrapperEnv);
   const dir = path.join(runDir, label);
@@ -114,6 +158,13 @@ export async function startSession({
     problems: [],
   };
   const recorded = new Map();
+  const mainWorkerPath = path.join(ROOT, MAIN_WORKER);
+  const workerPin = {
+    expectedSha256: hashFile(
+      path.join(path.dirname(nativePath), WORKER_FILE_NAME),
+    ),
+    atStart: hashFile(mainWorkerPath),
+  };
   const handle = await launch({
     observer,
     env,
@@ -189,6 +240,22 @@ export async function startSession({
     remember();
     const socketSamples = sampler.stop();
     evidence.stop = await stopApp(handle, [...recorded.values()]);
+    if (handle.addonCheck?.evaluation === true) {
+      evidence.mainWorker = assessMainWorker({
+        mainPath: mainWorkerPath,
+        ...workerPin,
+        atEnd: hashFile(mainWorkerPath),
+        exes: socketSamples
+          .flatMap((sample) => sample.processes ?? [])
+          .map((row) => row.exe)
+          .filter(
+            (exe) =>
+              typeof exe === "string" &&
+              path.basename(exe).startsWith(WORKER_FILE_NAME),
+          ),
+      });
+      evidence.problems.push(...evidence.mainWorker.problems);
+    }
     evidence.recordedPids = [...recorded.values()];
     evidence.stderrTail = handle.stderr().slice(-4000);
     if (evidence.stop.remaining.length > 0)
