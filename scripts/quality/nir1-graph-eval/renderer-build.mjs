@@ -203,6 +203,87 @@ export function assertTimingShimApplied({ state, target, shim, root }) {
   };
 }
 
+export const RELATED_SCENES_FETCH_MODULE =
+  "src/features/related-scenes/fetchRelatedScenes.ts";
+export const FETCH_TIMING_SHIM =
+  "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts";
+/** The product hook whose queries the K6/4 runner records (S1f, R5). */
+export const FETCH_TIMING_REQUIRED_IMPORTERS = Object.freeze([
+  "src/features/related-scenes/useNir1RelatedScenes.ts",
+]);
+export const FETCH_TIMING_PLUGIN_NAME = "cp4-related-scenes-fetch-timing";
+
+/**
+ * S1f (DR-CP4-F-5): every import that resolves to the product
+ * `fetchRelatedScenes.ts` (the product hook among them) is resolved to the
+ * harness fetch timing shim, except the shim's own import of the product
+ * module.
+ */
+export function fetchTimingPlugin({ root }) {
+  const target = path.resolve(root, RELATED_SCENES_FETCH_MODULE);
+  const shim = path.resolve(root, FETCH_TIMING_SHIM);
+  const state = { redirects: [], moduleIds: null, targetImporters: null };
+  const plugin = {
+    name: FETCH_TIMING_PLUGIN_NAME,
+    enforce: "pre",
+    async resolveId(source, importer, options) {
+      if (!importer || source.startsWith("\0")) return null;
+      if (!source.includes("fetchRelatedScenes")) return null;
+      if (path.resolve(importer.split("?")[0]) === shim) return null;
+      const resolved = await this.resolve(source, importer, {
+        ...options,
+        skipSelf: true,
+      });
+      if (!resolved) return null;
+      if (path.resolve(resolved.id.split("?")[0]) !== target) return null;
+      state.redirects.push({
+        importer: path.relative(root, importer.split("?")[0]),
+        source,
+      });
+      return shim;
+    },
+    buildEnd() {
+      state.moduleIds = [...this.getModuleIds()]
+        .filter((id) => !id.startsWith("\0"))
+        .map((id) => path.resolve(id.split("?")[0]));
+      const info = this.getModuleInfo(target);
+      state.targetImporters = (info?.importers ?? []).map((id) =>
+        path.resolve(id.split("?")[0]),
+      );
+    },
+  };
+  return { plugin, state, target, shim };
+}
+
+/** The fetch shim is in, serves the product hook, and alone imports the product module. */
+export function assertFetchTimingApplied({ state, target, shim, root }) {
+  if (!Array.isArray(state.moduleIds))
+    throw new Error(
+      "[precheck] the fetch timing plugin did not see the module graph",
+    );
+  if (!state.moduleIds.includes(shim) || !state.moduleIds.includes(target))
+    throw new Error(
+      "[precheck] the fetch timing shim or the product module is missing",
+    );
+  if (JSON.stringify(state.targetImporters) !== JSON.stringify([shim]))
+    throw new Error(
+      "[precheck] the product fetch module is imported around the fetch timing shim",
+    );
+  const importers = [...new Set(state.redirects.map((row) => row.importer))]
+    .map((file) => file.split(path.sep).join("/"))
+    .sort();
+  for (const required of FETCH_TIMING_REQUIRED_IMPORTERS)
+    if (!importers.includes(required))
+      throw new Error(
+        `[precheck] the fetch timing shim does not serve ${required}`,
+      );
+  return {
+    from: RELATED_SCENES_FETCH_MODULE,
+    to: path.relative(root, shim).split(path.sep).join("/"),
+    importers,
+  };
+}
+
 export const SHELL_MODULE = "src/lib/shell.ts";
 export const SHELL_TIMING_SHIM =
   "scripts/quality/nir1-graph-eval/renderer/shell.timing.ts";
@@ -321,19 +402,26 @@ export async function buildHarnessRenderer({
   vite,
   timingShim = false,
   bridgeTiming = false,
+  fetchTiming = false,
 }) {
   const out = assertRendererOutDir(root, outDir);
   const { build } = vite ?? (await import("vite"));
   const alias = graphAvailabilityAliasPlugin({ root });
   const timing = timingShim ? relatedScenesTimingPlugin({ root }) : null;
   const bridge = bridgeTiming ? bridgeTimingPlugin({ root }) : null;
+  const fetchShim = fetchTiming ? fetchTimingPlugin({ root }) : null;
   const startedAt = new Date().toISOString();
   await build({
     root,
     configFile: path.join(root, "vite.config.ts"),
     mode: "production",
     logLevel: "warn",
-    plugins: [alias.plugin, timing?.plugin, bridge?.plugin].filter(Boolean),
+    plugins: [
+      alias.plugin,
+      timing?.plugin,
+      bridge?.plugin,
+      fetchShim?.plugin,
+    ].filter(Boolean),
     build: {
       outDir: out,
       emptyOutDir: true,
@@ -353,6 +441,12 @@ export async function buildHarnessRenderer({
         shimSha256: sha256(await readFile(bridge.shim)),
       }
     : null;
+  const fetchRecord = fetchShim
+    ? {
+        ...assertFetchTimingApplied({ ...fetchShim, root }),
+        shimSha256: sha256(await readFile(fetchShim.shim)),
+      }
+    : null;
   const identity = await bundleIdentity(out);
   return {
     schema: "nir1-cp4-renderer-build/1",
@@ -366,6 +460,7 @@ export async function buildHarnessRenderer({
     },
     ...(timingRecord ? { timingShim: timingRecord } : {}),
     ...(bridgeRecord ? { bridgeTiming: bridgeRecord } : {}),
+    ...(fetchRecord ? { fetchTiming: fetchRecord } : {}),
     viteConfigSha256: sha256(await readFile(path.join(root, "vite.config.ts"))),
     ...identity,
   };

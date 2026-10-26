@@ -12,10 +12,16 @@ import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import {
+  FETCH_TIMING_PLUGIN_NAME,
+  FETCH_TIMING_REQUIRED_IMPORTERS,
+  FETCH_TIMING_SHIM,
   GRAPH_AVAILABILITY_IMPORTERS,
   GRAPH_AVAILABILITY_MODULE,
   GRAPH_AVAILABILITY_STUB,
   PLUGIN_NAME,
+  RELATED_SCENES_FETCH_MODULE,
+  assertFetchTimingApplied,
+  fetchTimingPlugin,
   RELATED_SCENES_API_MODULE,
   RELATED_SCENES_API_REQUIRED_IMPORTERS,
   RELATED_SCENES_API_TIMING_SHIM,
@@ -233,11 +239,108 @@ test("S1c-2: the timing shim re-exports the product module and wraps only the ti
   );
   assert.deepEqual(wrapped.sort(), [
     "beginRelatedScenes",
+    "continueRelatedScenes",
     "continueRelatedScenesGraph",
     "settleRelatedScenesGraph",
   ]);
   for (const name of wrapped)
     assert.match(text, new RegExp(`product\\.${name}\\(`, "u"), name);
+});
+
+test("S1f: the fetch timing shim serves the product hook and alone imports the product module", async () => {
+  const { plugin, state, target, shim } = fetchTimingPlugin({ root: ROOT });
+  assert.equal(plugin.name, FETCH_TIMING_PLUGIN_NAME);
+  const hook = path.join(ROOT, FETCH_TIMING_REQUIRED_IMPORTERS[0]);
+  const harness = path.join(
+    ROOT,
+    "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+  );
+  const ctx = fakeContext({
+    [`${hook}|./fetchRelatedScenes`]: target,
+    [`${harness}|@/features/related-scenes/fetchRelatedScenes`]: `${target}?v=1`,
+    [`${shim}|@/features/related-scenes/fetchRelatedScenes`]: target,
+    [`${path.join(ROOT, "src/other/x.ts")}|./fetchRelatedScenes`]: path.join(
+      ROOT,
+      "src/other/fetchRelatedScenes.ts",
+    ),
+  });
+  assert.equal(
+    await plugin.resolveId.call(ctx, "./fetchRelatedScenes", hook, {}),
+    shim,
+  );
+  assert.equal(
+    await plugin.resolveId.call(
+      ctx,
+      "@/features/related-scenes/fetchRelatedScenes",
+      harness,
+      {},
+    ),
+    shim,
+  );
+  // The shim's own import of the product module is not redirected, nor is
+  // another module of the same name.
+  assert.equal(
+    await plugin.resolveId.call(
+      ctx,
+      "@/features/related-scenes/fetchRelatedScenes",
+      shim,
+      {},
+    ),
+    null,
+  );
+  assert.equal(
+    await plugin.resolveId.call(
+      ctx,
+      "./fetchRelatedScenes",
+      path.join(ROOT, "src/other/x.ts"),
+      {},
+    ),
+    null,
+  );
+  plugin.buildEnd.call({
+    getModuleIds: () => [shim, target, "\0vite/x"],
+    getModuleInfo: (id) => (id === target ? { importers: [shim] } : null),
+  });
+  assert.deepEqual(
+    assertFetchTimingApplied({ state, target, shim, root: ROOT }),
+    {
+      from: RELATED_SCENES_FETCH_MODULE,
+      to: FETCH_TIMING_SHIM,
+      importers: [
+        "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+        ...FETCH_TIMING_REQUIRED_IMPORTERS,
+      ],
+    },
+  );
+  state.targetImporters = [shim, hook];
+  assert.throws(
+    () => assertFetchTimingApplied({ state, target, shim, root: ROOT }),
+    /imported around the fetch timing shim/,
+  );
+  state.targetImporters = [shim];
+  state.redirects.splice(0, 1);
+  assert.throws(
+    () => assertFetchTimingApplied({ state, target, shim, root: ROOT }),
+    /does not serve/,
+  );
+  state.moduleIds = [target];
+  assert.throws(
+    () => assertFetchTimingApplied({ state, target, shim, root: ROOT }),
+    /missing/,
+  );
+});
+
+test("S1f: the fetch timing shim re-exports the product module and wraps only fetchRelatedPastScenes", () => {
+  const text = readFileSync(path.join(ROOT, FETCH_TIMING_SHIM), "utf8");
+  assert.match(
+    text,
+    /export \* from "@\/features\/related-scenes\/fetchRelatedScenes";/u,
+  );
+  const wrapped = [...text.matchAll(/^export const (\w+)/gmu)].map(
+    (match) => match[1],
+  );
+  assert.deepEqual(wrapped, ["fetchRelatedPastScenes"]);
+  assert.match(text, /product\.fetchRelatedPastScenes\(sceneId, options\)/u);
 });
 
 test("D11 / T-2: the product source, config and build never reference the stub", () => {
@@ -258,9 +361,11 @@ test("D11 / T-2: the product source, config and build never reference the stub",
   const needles = [
     "nir1GraphAvailability.eval",
     "nir1RelatedScenesApi.timing",
+    "fetchRelatedScenes.timing",
     "nir1-graph-eval/renderer",
     PLUGIN_NAME,
     TIMING_PLUGIN_NAME,
+    FETCH_TIMING_PLUGIN_NAME,
   ];
   for (const file of tracked) {
     let text;

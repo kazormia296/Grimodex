@@ -5,9 +5,10 @@
  * The harness renderer build resolves the product's imports of that module to
  * this file (matched on the resolved path, as the availability alias); this
  * file alone imports the product module itself. Every export is the
- * product's; three are wrapped only to note, with the renderer
- * `performance.now()` the product's join helper uses, when the begin and the
- * Graph wait were called and when their answers arrived. The arguments, the
+ * product's; four are wrapped only to note, with the renderer
+ * `performance.now()` the product's join helper uses, when the begin, the IR
+ * wait (S1f) and the Graph wait were called and when their answers arrived,
+ * and the Graph declaration. The arguments, the
  * answers and the product's control flow are unchanged; each wrapper adds one
  * promise reaction (µs). It never ships in the product `dist/`.
  */
@@ -85,6 +86,14 @@ export const beginRelatedScenes: typeof product.beginRelatedScenes = (
 ) =>
   timed("related_scenes_begin", null, () =>
     product.beginRelatedScenes(request),
+  );
+
+// S1f: the IR answer's renderer arrival (the child's IR deadline, N30).
+export const continueRelatedScenes: typeof product.continueRelatedScenes = (
+  operationTicket,
+) =>
+  timed("related_scenes_continue", null, () =>
+    product.continueRelatedScenes(operationTicket),
   );
 
 export const continueRelatedScenesGraph: typeof product.continueRelatedScenesGraph =

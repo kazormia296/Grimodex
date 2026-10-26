@@ -1676,6 +1676,8 @@ requirements:
       - scripts/quality/nir1-graph-eval/seed-pin.mjs
       - scripts/quality/nir1-graph-eval/keep-test.mjs
       - scripts/quality/nir1-graph-eval/k64-record.mjs
+      - scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx
+      - scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md

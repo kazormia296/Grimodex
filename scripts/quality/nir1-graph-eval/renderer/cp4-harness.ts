@@ -68,6 +68,7 @@ import {
 } from "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationApi";
 import { BODY_DECLARATION_AXES } from "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationTypes";
 import { hookProbe } from "./cp4-hook-probe";
+import { k64Probe } from "./cp4-k64-probe";
 
 interface IpcRow {
   cmd: string;
@@ -773,5 +774,11 @@ async function twoViews(input: {
       guarded(async () => hookProbe.prepare(input)),
     sample: (input: Parameters<typeof hookProbe.sample>[0]) =>
       guarded(() => hookProbe.sample(input)),
+  },
+  // S1f（K6/4 の R5）：正式の runner の hook の消費者。seed は hook が pin から読む。
+  k64: {
+    instrumented: () => k64Probe.instrumented(),
+    sample: (input: Parameters<typeof k64Probe.sample>[0]) =>
+      guarded(() => k64Probe.sample(input)),
   },
 };
