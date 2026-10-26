@@ -927,3 +927,22 @@ test("S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test な�
     await rm(repo, { recursive: true, force: true });
   }
 });
+
+test("P2-2: 試験用の sealer は node の試験の process の外では取れない（本番の node から自作の批准 5 を封印できない）", () => {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const script = `
+    import(${JSON.stringify(path.join(import.meta.dirname, "admission-facts.mjs"))}).then((m) => {
+      try { m.claimTestEvidenceSealer(); console.log("CLAIMED"); }
+      catch (error) { console.log("REFUSED " + error.message); }
+    });`;
+  const out = execFileSync(
+    process.execPath,
+    ["--input-type=module", "-e", script],
+    {
+      env,
+      encoding: "utf8",
+    },
+  );
+  assert.match(out, /^REFUSED \[precheck\].*node --test/mu);
+});

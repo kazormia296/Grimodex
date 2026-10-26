@@ -8,6 +8,8 @@
 // admission.mjs fail to load instead of passing silently. Sealed facts are
 // deep-frozen; a copy or an edit is no longer sealed.
 
+import process from "node:process";
+
 const COLLECTED = new WeakSet();
 let claimed = false;
 
@@ -33,13 +35,32 @@ export function claimFactsSealer() {
 let testClaimed = false;
 
 /**
+ * P2-2: whether this process is a node test run: the runner's child
+ * (`NODE_TEST_CONTEXT=child-v8`, process isolation) or `node --test` itself
+ * (no isolation). A production runner is neither.
+ */
+function underNodeTest() {
+  return (
+    process.env.NODE_TEST_CONTEXT === "child-v8" ||
+    process.execArgv.includes("--test")
+  );
+}
+
+/**
  * E-1: the sealer of the test suites' 批准 5 evidence (test-support.mjs claims
  * it at load). It marks every record `testOnly: true`; the formal entries
  * (admitGraphCaseRun, assertReceiptHeadBound) never produce such a record and
  * validateCp4Receipt refuses one. A second claim throws, so a production
- * module that claimed it would make the test suites fail to load.
+ * module that claimed it would make the test suites fail to load. P2-2: it is
+ * handed out only inside a node test run, so a production process cannot
+ * seal its own 批准 5; the summaries accept test-only evidence only after
+ * this claim (`isTestEvidenceAllowed`).
  */
 export function claimTestEvidenceSealer() {
+  if (!underNodeTest())
+    throw new Error(
+      "[precheck] the test evidence sealer exists only inside a node --test run (P2-2)",
+    );
   if (testClaimed)
     throw new Error(
       "[precheck] the test evidence sealer is already claimed (test-support.mjs only)",
@@ -50,6 +71,11 @@ export function claimTestEvidenceSealer() {
     COLLECTED.add(sealed);
     return sealed;
   };
+}
+
+/** P2-2: test-only evidence counts only in a test run that claimed its sealer. */
+export function isTestEvidenceAllowed() {
+  return testClaimed && underNodeTest();
 }
 
 export function isCollectedFacts(facts) {

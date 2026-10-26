@@ -50,6 +50,7 @@ import {
   resolvePlan,
 } from "./constants.mjs";
 import {
+  F6_FORMAL_BASIS,
   PRODUCT_HOOK,
   assessCandidateRegime,
   classifyFollowUp,
@@ -264,6 +265,17 @@ export function summarizeSteadyStateCase(input) {
     if (k64Era && row.followUp?.issuedVia !== PRODUCT_HOOK)
       invalid.push(
         `N16: ${row.variantKey}#${row.repeat} was not issued through the product hook consumer (R5)`,
+      );
+    // DR-CP4-F-6 / P2-2: a frozen variant's F6 is judged only on the
+    // materials' Revisions; the Scene-level match is preview only.
+    if (
+      k64Era &&
+      variant.kind !== "dev" &&
+      row.followUp?.child &&
+      row.followUp.child.contributionBasis !== F6_FORMAL_BASIS
+    )
+      invalid.push(
+        `DR-CP4-F-6: ${row.variantKey}#${row.repeat} matched F6 on another unit than the materials' Revisions`,
       );
     assertNoRetiredBusy(row);
     const join = classifyJoin(row);
@@ -845,6 +857,14 @@ export function summarizeTrace(input) {
     if (k64Era && query.followUp?.issuedVia !== PRODUCT_HOOK)
       invalid.push(
         `N16: ${query.queryId} was not issued through the product hook consumer (R5)`,
+      );
+    if (
+      k64Era &&
+      query.followUp?.child &&
+      query.followUp.child.contributionBasis !== F6_FORMAL_BASIS
+    )
+      invalid.push(
+        `DR-CP4-F-6: ${query.queryId} matched F6 on another unit than the materials' Revisions`,
       );
   }
   const Q = counted.length;

@@ -24,7 +24,7 @@
 // with null means the event did not happen; a missing key is a missing record
 // (X10).
 
-import { isCollectedFacts } from "./admission-facts.mjs";
+import { isCollectedFacts, isTestEvidenceAllowed } from "./admission-facts.mjs";
 import {
   BOUNDARY_TOLERANCE_MS,
   GRAPH_EVAL_D_MS,
@@ -793,6 +793,13 @@ export function assessCandidateRegime(evidence, candidateHead) {
     return Object.freeze({
       regime: "k62",
       missing: ["ratification5-not-collected"],
+    });
+  // P2-2: test-sealed evidence counts only inside a node test run that
+  // claimed the test sealer; anywhere else it is K6/2.
+  if (evidence.testOnly === true && !isTestEvidenceAllowed())
+    return Object.freeze({
+      regime: "k62",
+      missing: ["ratification5-test-only-outside-tests"],
     });
   // E-3: the evidence is the measured candidate's.
   if (typeof candidateHead !== "string")

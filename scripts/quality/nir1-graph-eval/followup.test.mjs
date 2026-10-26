@@ -1437,3 +1437,27 @@ test("E-6: (b) で R7 の記録が欠けた query は trace の不備（取り�
   assert.equal(result.status, "invalid");
   assert.match(result.invalid.join(), /q7 .*R7/);
 });
+
+test("P2-2（F6）: 凍結した variant と trace の要約は、Scene の単位で照合した F6 の記録を invalid にする（dev は予告として通る）", () => {
+  const scene = { child: { contributionBasis: "scene-level-preview" } };
+  const steady = summarizeK64(
+    k64Run((variant, repeat) =>
+      variant.key === "G-02/base" && repeat === 3 ? [{}, scene] : [{}, {}],
+    ),
+  );
+  assert.equal(steady.status, "invalid");
+  assert.match(steady.invalid.join(), /DR-CP4-F-6: G-02\/base#3/u);
+  assert.equal(steady.regime, "k62");
+  const trace = traceK64(
+    k64Trace("browsing", 200, (at) => (at === 5 ? [{}, scene] : [{}, {}])),
+  );
+  assert.equal(trace.status, "invalid");
+  assert.match(trace.invalid.join(), /DR-CP4-F-6: q5/u);
+  // 照合の単位の無い記録も同じ（正式の判定は material-revision だけ）。
+  const missing = traceK64(
+    k64Trace("browsing", 200, (at) =>
+      at === 6 ? [{}, { child: { contributionBasis: undefined } }] : [{}, {}],
+    ),
+  );
+  assert.match(missing.invalid.join(), /DR-CP4-F-6: q6/u);
+});
