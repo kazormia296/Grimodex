@@ -10,6 +10,7 @@ import {
   closeAllWithin,
   HOSTNAME_KEPT,
   createTracker,
+  electronDist,
   injectAttack,
   installInterruptHandler,
   maskFreeText,
@@ -303,3 +304,26 @@ test("配線: runPackaged と runProbeMain は launch した owner を必ず中�
   }
   fs.rmSync(work, { recursive: true, force: true });
 });
+
+test("node_modules の Electron が無ければ、原因の分かる Error を投げ、probe の構成は何も起動せずに fatal として記録される", async () => {
+  const resolve = () => "file:///repo/node_modules/electron/package.json";
+  assert.throws(() => electronDist({ resolve, exists: () => false }), (error) => error.code === "GPS_ELECTRON_MISSING" && /path\.txt が無い/.test(error.message) && /ensure-electron-binary/.test(error.message));
+  assert.throws(() => electronDist({ resolve, exists: (file) => file.endsWith("path.txt"), read: () => "electron" }), /dist の実行体が無い/);
+  assert.throws(() => electronDist({ resolve: () => { throw new Error("not found"); } }), /package を解決できない/);
+  const ok = electronDist({ resolve, exists: () => true, read: () => "electron\n" });
+  assert.equal(path.basename(ok.binary), "electron");
+  const launched = [];
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "gps-noelectron-"));
+  const body = await runProbeMain({
+    config: "baseline", work, bundles: { bundle: work, dist: work }, observers: { canaries: [], mdns: { packets: [] }, httpd: { hits: [] }, doh: null, ports: {} },
+    nonce: "abc", lan: null, args: { dnsLog: "" }, platform: "linux", track: createTracker(new Set()),
+    electron: () => electronDist({ resolve, exists: () => false }),
+    launch: (options) => { launched.push(options); return null; },
+  });
+  assert.deepEqual(launched, []);
+  assert.match(body.fatal, /Electron の binary が無い/);
+  assert.equal(body.notLaunched, true);
+  assert.equal(body.lifecycle.ok, true);
+  fs.rmSync(work, { recursive: true, force: true });
+});
+

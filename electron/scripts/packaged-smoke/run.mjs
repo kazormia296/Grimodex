@@ -103,18 +103,29 @@ export function resolvePackagedApp({ app, exe }, platform = process.platform, re
         : ["linux-unpacked"];
     appDir = candidates.map((candidate) => path.join(releaseDir, candidate)).find((candidate) => fs.existsSync(candidate)) ?? "";
   }
-  if (!appDir || !fs.existsSync(appDir)) throw new Error(`packaged の出力が見つからない: ${appDir || releaseDir}`);
+  if (!appDir || !fs.existsSync(appDir)) throw Object.assign(new Error(`packaged の出力が見つからない: ${appDir || releaseDir}（electron-builder --dir の出力。linux-unpacked／win-unpacked／mac-arm64 など）`), { code: "GPS_PACKAGED_MISSING" });
   const executable = exe || (platform === "win32" ? path.join(appDir, "Grimodex.exe")
     : platform === "darwin" ? path.join(appDir, "Contents", "MacOS", "Grimodex")
       : path.join(appDir, "grimodex"));
-  if (!fs.existsSync(executable)) throw new Error(`packaged の実行体が見つからない: ${executable}`);
+  if (!fs.existsSync(executable)) throw Object.assign(new Error(`packaged の実行体が見つからない: ${executable}`), { code: "GPS_PACKAGED_MISSING" });
   return { appDir, executable };
 }
 
-function electronDist() {
-  const electronDir = path.dirname(fileURLToPath(import.meta.resolve("electron/package.json")));
-  const relative = fs.readFileSync(path.join(electronDir, "path.txt"), "utf8").trim();
-  return { distDir: path.join(electronDir, "dist"), binary: path.join(electronDir, "dist", relative) };
+/**
+ * node_modules の Electron（baseline／toolcheck の probe の main が使う）。pnpm の設定では electron の postinstall が走らないので、
+ * `path.txt` と binary が無いことがある（hosted の run 40247277961）。無ければ原因と直し方の分かる Error（code
+ * `GPS_ELECTRON_MISSING`）を投げ、呼出し側は何も起動せずに構成を不合格として記録する。
+ */
+export function electronDist({ resolve = (specifier) => import.meta.resolve(specifier), exists = fs.existsSync, read = (file) => fs.readFileSync(file, "utf8") } = {}) {
+  const missing = (detail) => Object.assign(new Error(`node_modules の Electron の binary が無い（${detail}）。\`node scripts/ensure-electron-binary.mjs\` で固定の版を入れてから走らせる`), { code: "GPS_ELECTRON_MISSING" });
+  let electronDir;
+  try { electronDir = path.dirname(fileURLToPath(resolve("electron/package.json"))); } catch { throw missing("electron の package を解決できない"); }
+  const pathTxt = path.join(electronDir, "path.txt");
+  if (!exists(pathTxt)) throw missing("electron/path.txt が無い");
+  const relative = String(read(pathTxt)).trim();
+  const binary = path.join(electronDir, "dist", relative);
+  if (!relative || !exists(binary)) throw missing(`dist の実行体が無い: dist/${relative || "?"}`);
+  return { distDir: path.join(electronDir, "dist"), binary };
 }
 
 /** 子の env: desktop の session・env の proxy・Grimodex の既存の env を外し、一時の HOME／XDG／TMPDIR を与える */
@@ -373,7 +384,14 @@ function environmentFacts() {
 /** probe の main を node_modules の Electron で走らせる（baseline／toolcheck） */
 /** probe の main の構成（export は配線の試験のため。launch／terminate は試験が差し替える） */
 export async function runProbeMain({ config, work, bundles, observers, nonce, lan, args, platform, track, launch: launchFn = launchOwned, terminate = terminateOwned, electron = electronDist }) {
-  const { distDir, binary } = electron();
+  let resolved;
+  try {
+    resolved = electron();
+  } catch (error) {
+    // 何も起動していない（終了させる子が無い）。構成は fatal として記録し、判定で「観測の道具なし」になる
+    return { fatal: String(error?.message ?? error), notLaunched: true, lifecycle: { ok: true, steps: ["not-launched"], closed: null, groupGone: null, residual: [], forced: false } };
+  }
+  const { distDir, binary } = resolved;
   const cfg = {
     userData: path.join(work, "userData"),
     distRoot: bundles.dist,
@@ -704,7 +722,8 @@ const invokedDirectly = Boolean(process.argv[1])
   && path.resolve(process.argv[1]).toLowerCase() === fileURLToPath(import.meta.url).toLowerCase();
 if (invokedDirectly) {
   main().then((code) => { process.exitCode = code; }, (error) => {
-    console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+    // 使い方・前提の誤り（packaged の出力が無いなど）は message だけを出す。想定外の失敗は stack も出す
+    console.error(error instanceof Error ? (String(error.code ?? "").startsWith("GPS_") ? error.message : error.stack ?? error.message) : String(error));
     process.exitCode = 2;
   });
 }
