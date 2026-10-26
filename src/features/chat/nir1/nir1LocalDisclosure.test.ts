@@ -179,6 +179,10 @@ describe("what the full disclosure (placement 1) states", () => {
         "外部に届き",
         "課金",
         "loopback",
+        // K5/3:448 and :452 (review fix 4).
+        "port を変えて繰り返し試せます",
+        "応答を読む前に request の全体を書きます",
+        "検証の結果の表示",
       ],
     ],
     [
@@ -195,6 +199,9 @@ describe("what the full disclosure (placement 1) states", () => {
         "reaches the outside",
         "charge",
         "loopback",
+        "try other ports repeatedly",
+        "writes the whole request before reading any response",
+        "verification results",
       ],
     ],
   ] as const)("%s", (language, phrases) => {

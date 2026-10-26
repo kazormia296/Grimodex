@@ -44,7 +44,7 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
         },
         "4": {
           title: "設定が書き換えられうること",
-          body: "生成は利用者の操作で始まる設計ですが、アプリは画面からの開始の要求が利用者の操作によるかを確かめられません。画面の部分が侵害された場合、接続先（provider、endpoint の URL、model）と AI 使用ポリシーが書き換えられ、接続先が未設定でも新しく設定されて、利用者の操作なしに送信が始まりえます。この機能を使ったことがなくても、loopback で待ち受けているプログラムがあれば送信先になりえます。待ち受けが OpenAI 互換の server である必要はなく、どんなプログラムにも request の全体が届きます。受け取った bytes を別の host へ中継するもの（SSH の -L、IDE の remote の port 転送、kubectl port-forward、dev tunnel など）や外部の service で処理する server では、応答が失敗しても原稿が外部に届き、有料の API では課金も起こりえます。侵害された画面は、画面が読める自分のデータ（原稿の全文、閲覧できる会話の履歴、AI audit の記録、版の過去の本文、伏線とプロットの記録など）を入力に載せて、分けて繰り返し送れます。送り先は loopback の port に限られ、全 request は監査に残ります。",
+          body: "生成は利用者の操作で始まる設計ですが、アプリは画面からの開始の要求が利用者の操作によるかを確かめられません。画面の部分が侵害された場合、接続先（provider、endpoint の URL、model）と AI 使用ポリシーが書き換えられ、接続先が未設定でも新しく設定されて、利用者の操作なしに送信が始まりえます。この機能を使ったことがなくても、loopback で待ち受けているプログラムがあれば送信先になりえます。待ち受けが OpenAI 互換の server である必要はなく、どんなプログラムにも request の全体が届きます（Grimodex は応答を読む前に request の全体を書きます）。受け取った bytes を別の host へ中継するもの（SSH の -L、IDE の remote の port 転送、kubectl port-forward、dev tunnel など）や外部の service で処理する server では、応答が失敗しても原稿が外部に届き、有料の API では課金も起こりえます。待ち受けの port を知らなくても、侵害された画面は port を変えて繰り返し試せます。侵害された画面は、画面が読める自分のデータ（原稿の全文、閲覧できる会話の履歴、AI audit の記録、版の過去の本文、伏線とプロットの記録など）を入力に載せて、分けて繰り返し送れます。送り先は loopback の port に限られ、全 request は監査に残ります。",
           summary:
             "画面が侵害された場合、接続先が未設定でも新しく設定され、loopback で待ち受ける任意のプログラム（port 転送を含む）に、画面が読める自分のデータ（原稿の全文、閲覧できる会話の履歴、AI audit の記録、版の過去の本文、伏線とプロットの記録など）が届きえます。",
         },
@@ -68,7 +68,7 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
         },
         "9": {
           title: "止め方と事後の確認",
-          body: "AI 使用ポリシーの該当の項目（Writing はチャットと本文書き込み、Review はチャットと分析）を切るか、接続先の設定を消してください。次の開始から効きます。進行中の生成は取消で止めます。送った内容は監査の記録に残りますが、それで事後に確かめられるのは侵害のない起動に限ります。侵害が続く間は、監査の一覧や export もこの route の記録を隠して作られうるため、確認の手段になりません。",
+          body: "AI 使用ポリシーの該当の項目（Writing はチャットと本文書き込み、Review はチャットと分析）を切るか、接続先の設定を消してください。次の開始から効きます。進行中の生成は取消で止めます。送った内容は監査の記録に残りますが、それで事後に確かめられるのは侵害のない起動に限ります。侵害が続く間は、監査の一覧、検証の結果の表示、export も同じ画面の部分が作るので、この route の記録を隠して作られうるため、確認の手段になりません。",
         },
       },
     },
@@ -215,7 +215,7 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
         },
         "4": {
           title: "Settings can be rewritten",
-          body: "Generation is designed to start from your action, but the app cannot tell whether a start request from the screen came from you. If part of the screen is compromised, the endpoint (provider, endpoint URL, model) and the AI usage policy can be rewritten, an endpoint can be newly set even when none is set, and sending can start without your action. Even if you have never used this feature, any program listening on loopback can become the destination. It does not have to be an OpenAI-compatible server: the whole request reaches any program that listens. With something that relays the received bytes to another host (SSH -L, an IDE's remote port forwarding, kubectl port-forward, dev tunnels and so on) or a server that processes with an external service, your manuscript reaches the outside even when the response fails, and a paid API can charge you. A compromised screen can put your own data the screen can read (the full manuscript, the conversation history you can view, the AI audit records, past text of versions, the foreshadowing and plot records and so on) into the input and send it repeatedly in parts. The destination is limited to a loopback port, and every request stays in the audit.",
+          body: "Generation is designed to start from your action, but the app cannot tell whether a start request from the screen came from you. If part of the screen is compromised, the endpoint (provider, endpoint URL, model) and the AI usage policy can be rewritten, an endpoint can be newly set even when none is set, and sending can start without your action. Even if you have never used this feature, any program listening on loopback can become the destination. It does not have to be an OpenAI-compatible server: the whole request reaches any program that listens (Grimodex writes the whole request before reading any response). With something that relays the received bytes to another host (SSH -L, an IDE's remote port forwarding, kubectl port-forward, dev tunnels and so on) or a server that processes with an external service, your manuscript reaches the outside even when the response fails, and a paid API can charge you. Without knowing the listening port, a compromised screen can try other ports repeatedly. A compromised screen can put your own data the screen can read (the full manuscript, the conversation history you can view, the AI audit records, past text of versions, the foreshadowing and plot records and so on) into the input and send it repeatedly in parts. The destination is limited to a loopback port, and every request stays in the audit.",
           summary:
             "If the screen is compromised, an endpoint can be newly set even when none is set, and your own data the screen can read (the full manuscript, the conversation history you can view, the AI audit records, past text of versions, the foreshadowing and plot records and so on) can reach any program listening on loopback, port forwarding included.",
         },
@@ -239,7 +239,7 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
         },
         "9": {
           title: "How to stop and check afterwards",
-          body: "Turn off the matching AI usage policy items (Chat and Body writing for Writing, Chat and Analysis for Review), or remove the endpoint setting. This takes effect from the next start. Stop a running generation with Cancel. What was sent stays in the audit records, but checking them afterwards is reliable only in a launch without compromise. While a compromise continues, the audit list and exports can be produced with this route's records hidden, so they are not a means of checking.",
+          body: "Turn off the matching AI usage policy items (Chat and Body writing for Writing, Chat and Analysis for Review), or remove the endpoint setting. This takes effect from the next start. Stop a running generation with Cancel. What was sent stays in the audit records, but checking them afterwards is reliable only in a launch without compromise. While a compromise continues, the audit list, the display of verification results and exports are made by the same part of the screen and can be produced with this route's records hidden, so they are not a means of checking.",
         },
       },
     },
