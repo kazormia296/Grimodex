@@ -17,6 +17,8 @@ import {
   configureOpenaiCompatibleRoute,
 } from "./editCaptureRoute.testSupport";
 
+const NO_COMMAND = { commandInstruction: undefined };
+
 const scene: EditCaptureState = {
   agentMode: false,
   ragEnabled: false,
@@ -51,8 +53,8 @@ describe("isEditResendCaptureEligible（編集の時点の route の判定）", 
   });
 
   it("loopback の OpenAI 互換で、agent・RAG・mention が無い場面の会話は capture の内", () => {
-    expect(isEditResendCaptureEligible(scene, "u1")).toBe(true);
-    expect(snapshotEditTarget(scene, "u1")).toMatchObject({
+    expect(isEditResendCaptureEligible(scene, "u1", undefined)).toBe(true);
+    expect(snapshotEditTarget(scene, "u1", NO_COMMAND)).toMatchObject({
       sceneConversation: true,
       captureEligible: true,
     });
@@ -125,23 +127,38 @@ describe("isEditResendCaptureEligible（編集の時点の route の判定）", 
     "%s は capture の外（偽）",
     (_label, arrange) => {
       const state = arrange();
-      expect(isEditResendCaptureEligible(state, "u1")).toBe(false);
-      expect(snapshotEditTarget(state, "u1").captureEligible).toBe(false);
+      expect(isEditResendCaptureEligible(state, "u1", undefined)).toBe(false);
+      expect(snapshotEditTarget(state, "u1", NO_COMMAND).captureEligible).toBe(
+        false,
+      );
     },
   );
 
   it("非場面の会話は route が capture の内でも偽", () => {
     const project = { ...scene, chatScope: "project" };
-    expect(snapshotEditTarget(project, "u1")).toMatchObject({
+    expect(snapshotEditTarget(project, "u1", NO_COMMAND)).toMatchObject({
       sceneConversation: false,
       captureEligible: false,
     });
+  });
+
+  // 独立レビューの P2-1（DR-DA2B-R32）：保留中の slash command の指示は再送に付く。
+  it("保留中の command の指示があれば capture の外（偽）", () => {
+    expect(isEditResendCaptureEligible(scene, "u1", "instruction")).toBe(false);
+    expect(
+      snapshotEditTarget(scene, "u1", { commandInstruction: "instruction" })
+        .captureEligible,
+    ).toBe(false);
+  });
+
+  it("保留中の command が読めない（null）なら capture の外（偽）", () => {
+    expect(snapshotEditTarget(scene, "u1", null).captureEligible).toBe(false);
   });
 
   it("route の解決が投げたら偽（閉の側）", () => {
     vi.spyOn(routing, "resolveCurrentChatTurnPolicy").mockImplementation(() => {
       throw new Error("route unavailable");
     });
-    expect(isEditResendCaptureEligible(scene, "u1")).toBe(false);
+    expect(isEditResendCaptureEligible(scene, "u1", undefined)).toBe(false);
   });
 });

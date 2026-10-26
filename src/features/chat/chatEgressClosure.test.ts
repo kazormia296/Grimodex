@@ -69,7 +69,7 @@ describe("isSceneConversation（capture の会話の条件と同じ）", () => {
 
 describe("isEditTargetCurrent", () => {
   const project: EditCaptureState = { ...base, chatScope: "project" };
-  const snap = snapshotEditTarget(project, "u1");
+  const snap = snapshotEditTarget(project, "u1", null);
 
   it("同じなら真", () => {
     expect(isEditTargetCurrent(snap, project)).toBe(true);
@@ -91,7 +91,7 @@ describe("isEditTargetCurrent", () => {
   });
 
   it("最後の user 行の後ろに行が足されたら偽（入力欄の最後の行の編集）", () => {
-    const last = snapshotEditTarget(project, "u2");
+    const last = snapshotEditTarget(project, "u2", null);
     expect(isEditTargetCurrent(last, project)).toBe(true);
     expect(
       isEditTargetCurrent(last, {

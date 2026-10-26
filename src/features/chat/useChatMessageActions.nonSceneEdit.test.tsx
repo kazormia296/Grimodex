@@ -40,6 +40,7 @@ import { useChatStore } from "./chatStore";
 import { useChatMessageActions } from "./useChatMessageActions";
 import {
   NON_SCENE_EDIT_STATUS_TIMEOUT_MS,
+  registerPendingCommandReader,
   resetNonSceneEditClosureForTest,
 } from "./chatEgressClosure";
 import {
@@ -94,12 +95,18 @@ function seed(scope: "project" | "scene" | "folder" = "project") {
   });
 }
 
-/** 本文を戻す先の editor（生きた stub）。 */
+/**
+ * 本文を戻す先の editor（生きた stub）。入力欄（`ChatInput`）と同じく、保留中の slash
+ * command の読取を登録する（既定は command なし。R32）。
+ */
+const pendingCommand = { current: undefined as string | undefined };
 function liveEditor() {
-  return {
+  const editor = {
     isDestroyed: false,
     commands: { setContent: vi.fn(), focus: vi.fn() },
   };
+  registerPendingCommandReader(editor, () => pendingCommand.current);
+  return editor;
 }
 
 type EditorStub = ReturnType<typeof liveEditor>;
@@ -143,6 +150,7 @@ const closedShown = () =>
 describe("非場面の会話の編集して再送（本物の定数のまま）", () => {
   beforeEach(() => {
     resetNonSceneEditClosureForTest();
+    pendingCommand.current = undefined;
     toastInfo.mockClear();
     toastError.mockClear();
     deleteMessages.mockClear();
@@ -472,6 +480,7 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
 describe("場面の会話で route が capture の外の編集して再送（本物の定数のまま）", () => {
   beforeEach(() => {
     resetNonSceneEditClosureForTest();
+    pendingCommand.current = undefined;
     toastInfo.mockClear();
     toastError.mockClear();
     deleteMessages.mockClear();
@@ -598,6 +607,47 @@ describe("場面の会話で route が capture の外の編集して再送（本
     await flush();
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(toastError).toHaveBeenCalledTimes(1);
+    expect(deleteMessages).not.toHaveBeenCalled();
+  });
+});
+
+// 独立レビューの P2-1（DR-DA2B-R32）：入力欄に保留中の slash command の指示は再送に付き、
+// capture の外になる。loopback の場面の会話でも、restricted では行を消さない。
+describe("保留中の slash command がある編集して再送（本物の定数のまま）", () => {
+  beforeEach(() => {
+    resetNonSceneEditClosureForTest();
+    pendingCommand.current = undefined;
+    toastError.mockClear();
+    deleteMessages.mockClear();
+    configureOpenaiCompatibleRoute();
+  });
+  afterEach(() => {
+    delete (window as unknown as { grimodex?: unknown }).grimodex;
+    pendingCommand.current = undefined;
+  });
+
+  it("保留中の command の指示があれば restricted で行を消さない", async () => {
+    const invoke = installBridge(ok({ state: "restricted" }));
+    seed("scene");
+    useChatStore.setState({ agentMode: false, ragEnabled: false });
+    pendingCommand.current = "brainstorm instruction";
+    renderActions().current.handleEditMessage("u1");
+    await closedShown();
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(deleteMessages).not.toHaveBeenCalled();
+  });
+
+  it("保留中の command を読めない editor（未登録）なら閉の側（読取の経路）", async () => {
+    const invoke = installBridge(ok({ state: "restricted" }));
+    seed("scene");
+    useChatStore.setState({ agentMode: false, ragEnabled: false });
+    renderActions({
+      isDestroyed: false,
+      commands: { setContent: vi.fn(), focus: vi.fn() },
+    }).current.handleEditMessage("u1");
+    await closedShown();
+    expect(invoke).toHaveBeenCalledTimes(1);
     expect(deleteMessages).not.toHaveBeenCalled();
   });
 });

@@ -19,6 +19,7 @@ import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profile
 import {
   admitConversationEdit,
   isEditTargetCurrent,
+  readPendingCommand,
   snapshotEditTarget,
 } from "./chatEgressClosure";
 
@@ -270,7 +271,12 @@ export function useChatMessageActions({
       }
       // 再送が capture に入らない（場面の会話でない、または route が capture の外）
       // ときは、定数に依らず状態を読んでから進む（DR-DA2B-R17、R29）。
-      const target = snapshotEditTarget(useChatStore.getState(), messageId);
+      // 入力欄に保留中の slash command は再送に付くので判定に含める（R32）。
+      const target = snapshotEditTarget(
+        useChatStore.getState(),
+        messageId,
+        readPendingCommand(chatEditorRef.current),
+      );
       void admitConversationEdit({
         target,
         // 削除の前提：本文を戻す先の editor が生きていること（読取の間に ChatPanel を

@@ -22,7 +22,10 @@ vi.mock("sonner", () => ({ toast: { info: toastInfo, error: vi.fn() } }));
 import i18next from "@/lib/i18n";
 import { useChatStore } from "./chatStore";
 import { useChatMessageActions } from "./useChatMessageActions";
-import { resetNonSceneEditClosureForTest } from "./chatEgressClosure";
+import {
+  registerPendingCommandReader,
+  resetNonSceneEditClosureForTest,
+} from "./chatEgressClosure";
 import {
   configureCloudRoute,
   configureOpenaiCompatibleRoute,
@@ -72,16 +75,17 @@ function render(editClosed: boolean) {
     scopeAnchorId: null,
     threadFocusOverride: null,
   });
+  // 本文を戻す先の editor（生きた stub）。無いと編集は行を消さずに止まる（R21）。
+  // 入力欄と同じく、保留中の command（なし）の読取を登録する（R32）。
+  const editor = {
+    isDestroyed: false,
+    commands: { setContent: vi.fn(), focus: vi.fn() },
+  };
+  registerPendingCommandReader(editor, () => undefined);
   const { result } = renderHook(() =>
     useChatMessageActions({
       aiSettings: null,
-      // 本文を戻す先の editor（生きた stub）。無いと編集は行を消さずに止まる（R21）。
-      chatEditorRef: {
-        current: {
-          isDestroyed: false,
-          commands: { setContent: vi.fn(), focus: vi.fn() },
-        },
-      } as never,
+      chatEditorRef: { current: editor } as never,
       syncInsertedToEditorMetadata: vi.fn(),
       editClosed,
     }),

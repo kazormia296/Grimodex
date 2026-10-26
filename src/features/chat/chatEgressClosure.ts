@@ -194,13 +194,15 @@ export interface EditCaptureState extends EditTargetState {
 /**
  * 編集の時点の設定で再送したとき、送信の capture（`captureRouteIsEligible`、同じ関数）が
  * それを保存するか（表の 5 の案 (a)、DR-DA2B-R29）。route は送信の preflight の写し
- * （`resolveCurrentChatTurnPolicy`）で解き、再送は対象の行の scene の mention を持つ
- * （`editUserMessage` が chip を戻す）。slash command は無い前提。編集の後に利用者が
- * 設定や mention を変えた再送は予見しない（記録の残る点）。評価が投げたら偽（閉の側）。
+ * （`resolveCurrentChatTurnPolicy`）で解き、再送は対象の行の scene の mention と、click の
+ * 時点で入力欄に保留中の slash command の指示（`commandInstruction`）を持つ（R32）。編集の
+ * 後に利用者が設定や mention、command を変えた再送は予見しない（記録の残る点）。評価が
+ * 投げたら偽（閉の側）。
  */
 export function isEditResendCaptureEligible(
   state: EditCaptureState,
   messageId: string,
+  commandInstruction: string | undefined,
 ): boolean {
   try {
     const message = state.messages.find(
@@ -231,6 +233,7 @@ export function isEditResendCaptureEligible(
       capturedRagEnabled: state.ragEnabled,
       ragActive: policy.ragActive,
       publicWebSearchPath: policy.publicWebSearchPath,
+      commandInstruction,
       ...(mentionedSceneIds ? { options: { mentionedSceneIds } } : {}),
     });
   } catch {
@@ -238,9 +241,47 @@ export function isEditResendCaptureEligible(
   }
 }
 
+/**
+ * 入力欄の保留中の slash command（`ChatInput` の `pendingCommandRef`。本文からは消えるが
+ * 次の送信に付く）を、その入力欄の editor ごとに読む口（R32）。menu の編集の入口は
+ * `ChatInput` の外にあるので、本文を戻す先の editor から引く。
+ */
+export interface PendingCommand {
+  readonly commandInstruction: string | undefined;
+}
+
+const pendingCommandReaders = new WeakMap<object, () => string | undefined>();
+
+/** `ChatInput` が自分の editor に登録する。戻り値は登録の解除。 */
+export function registerPendingCommandReader(
+  editor: object,
+  read: () => string | undefined,
+): () => void {
+  pendingCommandReaders.set(editor, read);
+  return () => {
+    if (pendingCommandReaders.get(editor) === read) {
+      pendingCommandReaders.delete(editor);
+    }
+  };
+}
+
+/** 登録が無い・読めないときは null（不明。capture の外として閉の側に倒す）。 */
+export function readPendingCommand(
+  editor: object | null | undefined,
+): PendingCommand | null {
+  const read = editor ? pendingCommandReaders.get(editor) : undefined;
+  if (!read) return null;
+  try {
+    return { commandInstruction: read() };
+  } catch {
+    return null;
+  }
+}
+
 export function snapshotEditTarget(
   state: EditCaptureState,
   messageId: string,
+  pendingCommand: PendingCommand | null,
 ): EditTargetSnapshot {
   const sceneConversation = isSceneConversation(state);
   return {
@@ -250,7 +291,13 @@ export function snapshotEditTarget(
     lastMessageId: state.messages.at(-1)?.id ?? null,
     sceneConversation,
     captureEligible:
-      sceneConversation && isEditResendCaptureEligible(state, messageId),
+      sceneConversation &&
+      pendingCommand !== null &&
+      isEditResendCaptureEligible(
+        state,
+        messageId,
+        pendingCommand.commandInstruction,
+      ),
   };
 }
 
