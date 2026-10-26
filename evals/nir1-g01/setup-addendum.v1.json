@@ -1,0 +1,152 @@
+{
+  "schemaVersion": "nir1-c-body-setup-addendum/1",
+  "addendumId": "nir1-g01-setup-addendum/1",
+  "status": "draft-awaiting-independent-review",
+  "graphRuntimeObservedBeforeAuthoring": false,
+  "purpose": "K2/4 の「setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）」の G-01 の分。宣言する Scene と値、期待する excerpt の範囲、宣言の時期と場所、診断用の負例を、G-01 の R+IR+Graph（本文の開示を含む）を観測するどの実行よりも前に固定する。fixture v1 は変えない。",
+  "contract": {
+    "draftRef": "nir1-c-body-disclosure-proposal/4",
+    "contractIds": [
+      "graph-target-scene-body-disclosure",
+      "scope-storage-authority"
+    ],
+    "path": "docs/plans/nir1-c-body-disclosure-proposal-4-draft.md",
+    "sha256": "efc30cca32f2c91386baf3061836427ae7df3499c18188d31b5e2ba422a2fcfd",
+    "confirmedAt": "2026-10-17 Session B2（続行計画 §10.4。確認された版は claude/nir1-contracts の 40d10adff87e19fcb364b624a1b422ba4890b3e0）",
+    "sections": [
+      "確認の扱い（最後から 2 つ目の項: 観測前の commit）",
+      "Main の一回限りの確認（評価の harness の CI seam と、測定の workspace）",
+      "宣言の値（v1 は G-01 subset）",
+      "setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）"
+    ]
+  },
+  "references": {
+    "g01Fixture": {
+      "path": "evals/nir1-g01/fixture.v1.json",
+      "fixtureId": "nir1-g01-explicit-pin-design/1",
+      "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+    },
+    "graphCaseFreeze": {
+      "path": "evals/nir1-graph/freeze.v1.json",
+      "sha256": "6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7",
+      "note": "K2/4 :390 の 45d8a055… は CQ-LIM-4（#678、a789039a）が G-03 と freeze を作り直す前の値。K2/4 :390 と :418 は、proposal/7 が確認されて CQ-LIM-4 が freeze.v1.json を作り直した場合は作り直した後の sha256 を引くとする（proposal/7 は 2026-10-17 の Session B2 で確認、続行計画 §10.4 と :633）。G-01 の fixture v1 はこの作り直しで変わっていない（freeze.v1.json の cases の G-01 の sha256 と一致）。"
+    }
+  },
+  "declarationValues": {
+    "target": "saved-body-full-and-title",
+    "reading": "not-declared",
+    "story": "independent",
+    "auto": "independent",
+    "phase": "independent",
+    "reveal": "non-secret",
+    "pov": "independent",
+    "a1": "not-declared",
+    "note": "K2/4「宣言の値（v1 は G-01 subset）」の表のとおり。対象は保存された本文（tree_nodes.content）の全体と title で、unplaced beats とメモは含めない。1 回の確認で宣言できるのは 1 つの Scene だけ。independent と non-secret は作者の明示の宣言で、未入力や既定値として扱わない。reading と A1 は宣言せず、Native が live な project Scope authority から確かめる。"
+  },
+  "declarations": [
+    {
+      "caseId": "G-01",
+      "variantId": "v1",
+      "sceneId": "g01-mira",
+      "readingOrder": {
+        "scene": 20,
+        "query": 100
+      },
+      "vetoRecords": [],
+      "vetoNote": "なし。g01-mira に POV、secret の foreshadow、secret な Chronicle event を設定しない（候補 §7 の「非secret」と同じ）。fixture は foreshadow を持たず、qualifiedIr は g01-question だけに掛かる。",
+      "expectedExcerpt": {
+        "sceneId": "g01-mira",
+        "start": 0,
+        "end": 78,
+        "rule": "canonical な本文の先頭の非空行の UTF-16 の範囲（K2/4 利用時の判定の手順 4）"
+      }
+    }
+  ],
+  "declarationTiming": "候補 §7 の Scene（本文、title、tree の順序）、明示 A1、project の registry を通常の writer で設定し終えた後で、Graph arm の最初の query より前（K2/4 の「宣言の時期（G-01）」）。declarationPlace の (ii) により、測定に使う workspace を開いた後、その workspace で seed つきの query（V-10 の READY の確認の probe と warm-up を含む）を 1 件も出す前に宣言する。",
+  "declarationPlace": {
+    "choice": "ii",
+    "rule": "K2/4「Main の一回限りの確認」の「測定の workspace」の (ii): 測定に使う workspace を開いた後、Graph arm の最初の query の前に、評価の harness の CI seam を通して宣言する。4 つの Scene（G-01 と G-02／G-07／G-08 の追加 Scene）で同じ選択にする（evals/nir1-graph/declaration-addendum.v1.json の declarationPlace と同じ値）。",
+    "reason": "現行の paired harness は setup の DB を別の path に書き出して測定の workspace として開く（K2/4 の C13）。宣言は workspace ID と canonical locator に束縛されるので、(i)（setup の workspace で宣言）をこの方式のまま使うと、setup で行った宣言は測定の workspace で失効する。(i) を取るには setup と測定を同じ path で行うように harness を変える必要があり、R と R+IR の setup（S1 の SETUP_DECISIONS）に触れる。(ii) は setup を変えず、宣言が測定の workspace に束縛されるので、照合（宣言が current であること）が測定の receipt の中で閉じる。どちらを選んでも期待値は変わらない（K2/4 :418）。"
+  },
+  "declarationApproval": {
+    "main": "standard build の製品 Main（差し替えのない main。dist-electron/main.cjs）。決定論の provider の対応表を差し替えた S1 の setup 専用の Main（C14 の (c)）は宣言の段に使わない。",
+    "seam": "electron/main/bodyDeclarationCiSeam.ts の CI seam（packaged でない起動で、CI=true、owner token の env が source の公開の定数と exact に一致し、起動ごとの nonce〔UUIDv4〕が env にそろったときだけ有効）。seam が置き換えるのはダイアログの表示と押下だけで、Native の preview、issue、consume、writer、期限 60 秒、同時 1 件、sender と window の束縛は製品と同じ経路を使う。承認するのは BodyDeclaration だけ。",
+    "record": "seam を使った事実（seam の版、env の名前、nonce の digest、承認した grant の数と binding の digest）を Main の receipt に書き、宣言した段の receipt（測定の receipt）から参照する。"
+  },
+  "bSealProcedure": "Graph arm に要る B の sealed binding は、Revision の承認と pin の後に、正規の経路（B-ROUTE〔#643〕が maintenance の cycle に配線した B の build。setup の session で B-ROUTE の journey seam〔trigger nir1-graph-index-build〕で起動 gate を開け、workspace を開いたときの wake で cycle を走らせ、sealed の B の generation を待つ）で確立する。試験と診断用の publish の呼出し（C14 の (b)）は使わない。正規の経路で確立できなければ、G-01 は v1 期待値未達／Hold で、宣言では解けない（候補 :242-243）。",
+  "measurementWorkspaceCheck": [
+    "測定の receipt に、測定に使った workspace の workspace ID と canonical locator の digest と、宣言の token を書く。",
+    "Graph arm の最初の query の前に、宣言が current であること（束縛の digest が一致すること）を照合し、一致しなければ測定の前に [precheck] で止める（blocked にしない）。",
+    "宣言の段の直前と直後で、B の Graph index と Chronicle の IR の Index の metadata（generation と dirty）が同じであることを同じ receipt に記録して照合し、違えば測定の前に [precheck] で止める。",
+    "この照合は fixture の前提条件に加えない（CP-0 が freeze した前提条件の集合は変えない）。"
+  ],
+  "afterDeclaration": "宣言の後は、その Scene の本文、title、A1、順序、その Scene を含む folder の構造と、project の registry を変えない。宣言の writer は v1 の列、A1 の意味の列、registry を書かない（C15）。",
+  "recordPreconditions": "g01-mira には POV、secret の foreshadow、secret な Chronicle event を設定しない。g01-mira の story_time_order は NULL のまま（S1 の setup と同じ。C14 の (d)）。reading-before は、fixture の reading order（g01-mira 20、query 100）を setup が実現した読む順から、live な project Scope authority で導く。",
+  "cb4Inputs": "宣言の値は story と POV が independent なので、CB-4 は story position も POV も要求しない。宣言がなく追加 Scene が返らないことは cb4-inputs に当たらず、期待値と違うので Hold になる。",
+  "rAndRirSetup": "R と R+IR の setup は変えない。S1 が観測の前に固定した setup の選択（C14 の (d)。S1 の SETUP_DECISIONS）を取り込んだ harness のものを使う。この addendum は R と R+IR を変えない。",
+  "unchanged": {
+    "querySceneId": "g01-query",
+    "seedEntityId": "g01-orin",
+    "gold": {
+      "g01-mira": 3
+    },
+    "expectations": {
+      "raw": ["g01-question"],
+      "rPlusIr": ["g01-question"],
+      "rPlusIrPlusGraph": ["g01-question", "g01-mira"],
+      "excerptRange": {
+        "start": 0,
+        "end": 78
+      },
+      "metrics": {
+        "raw": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIr": {
+          "recallAt8": 0,
+          "ndcgAt8": 0
+        },
+        "rPlusIrPlusGraph": {
+          "recallAt8": 1,
+          "ndcgAt8": 0.6309297535714574
+        }
+      }
+    },
+    "note": "G-01 の query、corpus（本文と title）、seed、Gold、順序の規則、指標、期待値は変えない（K2/4「変えないもの」）。S1 で R+IR の IR が空（基底が raw）だったこと（C14 の (a)）は、共通追加 1 枠の条件を変えない。S1 の観測値は、この addendum の期待値に使わない。"
+  },
+  "diagnosticNegatives": [
+    {
+      "id": "K24-G01-N1",
+      "caseId": "G-01",
+      "variantId": "v1",
+      "declare": false,
+      "mutationAfterDeclaration": null,
+      "expectation": "宣言しない run では、R+IR+Graph が同じ run で観測した R+IR と同じになり、g01-mira が返らない。",
+      "countsInCaseJudgement": false
+    },
+    {
+      "id": "K24-G01-N2",
+      "caseId": "G-01",
+      "variantId": "v1",
+      "declare": true,
+      "mutationAfterDeclaration": "resave-same-body",
+      "mutationNote": "宣言の後に、g01-mira の本文を同じ文字列で、製品の本文の保存の writer で保存し直す。",
+      "expectation": "g01-mira は R+IR+Graph に返らない（宣言は本文 Source の token の前進で失効する）。",
+      "countsInCaseJudgement": false
+    },
+    {
+      "id": "K24-G01-N3",
+      "caseId": "G-01",
+      "variantId": "v1",
+      "declare": true,
+      "mutationAfterDeclaration": "restore-same-bytes-body-version",
+      "mutationNote": "宣言の後に、g01-mira の本文版を、製品の restore の経路で宣言の時点と同じ bytes の版に戻す。",
+      "expectation": "g01-mira は R+IR+Graph に返らない（app の中の restore は宣言を消す）。",
+      "countsInCaseJudgement": false
+    }
+  ],
+  "diagnosticNegativeRule": "負例は Gold ではなく診断用の期待値で、Gold の run とは別の run で行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。",
+  "reviewPlan": "観測前の commit の独立 reviewer（S3）が確かめること: g01-mira が v1 の subset で宣言できること（veto に当たる記録も POV もない）、宣言の段が fixture v1 の期待値と前提条件を変えないこと、診断用の負例、K2/4 の表との一致、参照した sha256。確かめた記録は観測前の commit に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は以後変えない。",
+  "review": null
+}
