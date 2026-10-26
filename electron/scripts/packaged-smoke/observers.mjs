@@ -131,11 +131,13 @@ export async function startDohCanary(work) {
   const key = path.join(work, "doh.key");
   const crt = path.join(work, "doh.crt");
   const request = ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "1", "-subj", "/CN=127.0.0.1"];
+  // Windows の Git の openssl（MSYS）は `/CN=…` を path に変換しうるので、変換を止める env を渡す（他の OS では無害）
+  const options = { stdio: "ignore", timeout: 30_000, env: { ...process.env, MSYS_NO_PATHCONV: "1", MSYS2_ARG_CONV_EXCL: "*" } };
   try {
-    execFileSync("openssl", [...request, "-addext", "subjectAltName=IP:127.0.0.1"], { stdio: "ignore", timeout: 30_000 });
+    execFileSync("openssl", [...request, "-addext", "subjectAltName=IP:127.0.0.1"], options);
   } catch {
     // `-addext` を持たない openssl（古い LibreSSL など）。probe の main は DoH の構成で証明書の検証を外すので SAN は要らない
-    execFileSync("openssl", request, { stdio: "ignore", timeout: 30_000 });
+    execFileSync("openssl", request, options);
   }
   const queries = [];
   const server = http2.createSecureServer({ key: fs.readFileSync(key), cert: fs.readFileSync(crt), allowHTTP1: true });
