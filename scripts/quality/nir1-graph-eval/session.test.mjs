@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { test } from "node:test";
 import { launch } from "./dprime-check.mjs";
 import { launchGraphEvalElectron, stopElectron } from "./launcher.mjs";
