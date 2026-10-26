@@ -697,7 +697,7 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
    * Every reference of the gate-opening N-API, by line. The `typeof` check
    * and the `Pick<NapiBackendLike, …>` type are named as such; any other
    * reference (a call in any form, `?.(`, `.call(`, `["…"](`, an alias) is
-   * kept as written, so only the two seams' exact calls pass (R-1).
+   * kept as written, so only the three seams' exact calls pass (R-1).
    */
   const gateOpenReferences = (
     sources: ReadonlyArray<{ file: string; text: string }>,
@@ -709,7 +709,7 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
         .map((line) => {
           const trimmed = line.trim();
           if (
-            /^if \(typeof backend\?\.mainOpenPrePublicationGate !== "function"\) return null;$/.test(
+            /^if \(typeof backend\?\.mainOpenPrePublicationGate !== "function"\) return (?:null|false);$/.test(
               trimmed,
             )
           ) {
@@ -726,15 +726,24 @@ describe("DA-2: spellchecker、grant を伴わない activation、gate の entry
         }),
     );
 
-  it("mainOpenPrePublicationGate を呼ぶのは 2 つの seam だけで、wire の値はそれぞれの定数だけ（P3-3、R-1）", () => {
+  it("mainOpenPrePublicationGate を呼ぶのは 3 つの seam だけで、wire の値はそれぞれの定数だけ（P3-3、R-1、DR-DD1B-4）", () => {
     expect(gateOpenReferences(productSources()).sort()).toEqual([
       "bodyDeclarationCiSeam.ts: backend.mainOpenPrePublicationGate(BODY_DECLARATION_CI_GATE_ENTRY);",
       "bodyDeclarationCiSeam.ts: type",
       "bodyDeclarationCiSeam.ts: typeof-check",
+      "nir1LocalGeneration.ts: backend.mainOpenPrePublicationGate(NIR1_LOCAL_GENERATION_CI_GATE_ENTRY);",
+      "nir1LocalGeneration.ts: type",
+      "nir1LocalGeneration.ts: typeof-check",
       "profileActivationCiSeam.ts: backend.mainOpenPrePublicationGate(PROFILE_ACTIVATION_CI_GATE_ENTRY);",
       "profileActivationCiSeam.ts: type",
       "profileActivationCiSeam.ts: typeof-check",
     ]);
+    // DD-1b: the local generation route's entry, opened only by its seam.
+    expect(
+      readFileSync(path.join(MAIN_DIR, "nir1LocalGeneration.ts"), "utf8"),
+    ).toMatch(
+      /export const NIR1_LOCAL_GENERATION_CI_GATE_ENTRY = "nir1-local-generation";/,
+    );
     const body = readFileSync(
       path.join(MAIN_DIR, "bodyDeclarationCiSeam.ts"),
       "utf8",
