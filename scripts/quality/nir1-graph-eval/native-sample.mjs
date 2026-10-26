@@ -48,6 +48,8 @@ export function nativeDurationMs(startNs, endNs) {
 
 const SLOT_KINDS = new Set([
   "empty",
+  // D′ (CQ-DEFER): a begin left the Graph demand pending (`slot_name`).
+  "deferred",
   "preparing",
   "ready",
   "in-use",

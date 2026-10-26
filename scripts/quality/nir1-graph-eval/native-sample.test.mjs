@@ -184,6 +184,14 @@ test("a cached begin is the cache source and has no ticket", () => {
       ),
     /unknown start slot/,
   );
+  // S1f: D′ の保留（Native の slot_name "deferred"）は開始時の slot として記録する
+  // （R1 が未達の sample を X10 として残すため、run を止めない）。
+  assert.equal(
+    sampleFieldsFromNativeRecord(
+      record({ startSlot: { ...record().startSlot, kind: "deferred" } }),
+    ).startSlot.kind,
+    "deferred",
+  );
   assert.throws(
     () => sampleFieldsFromNativeRecord(record({ tBeginNs: 1.5 })),
     /tBeginNs/,
