@@ -435,6 +435,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/nir1/nir1LocalGenerationApi.test.ts",
         "src/features/chat/nir1/nir1LocalGenerationHosts.test.tsx",
         "src/features/chat/nir1/nir1LocalGenerationMountPoints.static.test.ts",
+        "src/features/chat/nir1/nir1LocalGenerationStore.test.ts",
         "src/features/chat/nir1/nir1LocalPolicyGate.test.ts",
         "src/features/chat/nir1/nir1LocalRoutePreview.test.ts",
         "src/features/chat/useChatMessageActions.record.test.ts",
