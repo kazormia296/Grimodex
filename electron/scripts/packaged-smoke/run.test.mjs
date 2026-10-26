@@ -12,6 +12,7 @@ import {
   createTracker,
   electronDist,
   injectAttack,
+  withRealPaths,
   installInterruptHandler,
   maskFreeText,
   maskRules,
@@ -327,3 +328,9 @@ test("node_modules の Electron が無ければ、原因の分かる Error を�
   fs.rmSync(work, { recursive: true, force: true });
 });
 
+test("伏せる path に realpath の形を足し、同じ印で伏せる（macOS の /tmp → /private/tmp）", () => {
+  const paths = withRealPaths({ tmp: "/tmp/gpsAB", home: "/Users/u" }, (value) => (value.startsWith("/tmp") ? `/private${value}` : value));
+  assert.deepEqual(paths, { tmp: "/tmp/gpsAB", home: "/Users/u", "tmp-real": "/private/tmp/gpsAB" });
+  const masked = maskValue({ outputTail: "x /private/tmp/gpsAB/pa-1 and /tmp/gpsAB/y" }, maskRules({ paths }));
+  assert.equal(masked.outputTail, "x <tmp>/pa-1 and <tmp>/y");
+});

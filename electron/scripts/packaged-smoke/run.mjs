@@ -255,7 +255,7 @@ function warnOnce(line) {
 export function maskRules({ nonce, lan, hostname, paths = {} }) {
   const rules = [];
   const pathEntries = Object.entries(paths).filter(([, value]) => typeof value === "string" && value.length > 1)
-    .flatMap(([mark, value]) => [[value, `<${mark}>`], [value.replaceAll("\\", "/"), `<${mark}>`]])
+    .flatMap(([key, value]) => { const mark = key.replace(/-real$/, ""); return [[value, `<${mark}>`], [value.replaceAll("\\", "/"), `<${mark}>`]]; })
     .sort((a, b) => b[0].length - a[0].length);
   rules.push(...pathEntries);
   if (nonce) rules.push([nonce, "<n>"]);
@@ -292,6 +292,21 @@ export function maskFreeText(record, username) {
   const scrub = (text) => (typeof text === "string" ? text.split(username).join("<user>") : text);
   for (const field of FREE_TEXT_FIELDS) if (field in out) out[field] = scrub(out[field]);
   if (out.cdp && typeof out.cdp === "object") out.cdp = { ...out.cdp, error: scrub(out.cdp.error) };
+  return out;
+}
+
+/**
+ * 伏せる path に realpath の形を足す（macOS の `/tmp` → `/private/tmp` のように、子の出力が実体の path を出しうる）。
+ * 足した key は `<mark>-real` で、`maskRules` が同じ印 `<mark>` にする
+ */
+export function withRealPaths(paths, realpath = (value) => fs.realpathSync(value)) {
+  const out = { ...paths };
+  for (const [mark, value] of Object.entries(paths)) {
+    try {
+      const real = realpath(value);
+      if (real && real !== value) out[`${mark}-real`] = real;
+    } catch { /* 無い path */ }
+  }
   return out;
 }
 
@@ -682,7 +697,7 @@ export async function main(argv = process.argv.slice(2)) {
   const context = {
     args, platform, osLabel, packagedApp, tmpRoot, lan: lanAddress(), bundles: null, track: createTracker(active),
     username: (() => { try { return os.userInfo().username; } catch { return ""; } })(),
-    maskPaths: { repo: root, tmp: tmpRoot, ostmp: os.tmpdir(), home: os.homedir() },
+    maskPaths: withRealPaths({ repo: root, tmp: tmpRoot, ostmp: os.tmpdir(), home: os.homedir() }),
   };
   const interrupt = installInterruptHandler({ active, cleanup: () => { if (!args.keep) removeDir(tmpRoot); } });
   try {
