@@ -1,5 +1,5 @@
 import { d2aFailureText } from "@/lib/d2aFailureText";
-import { useState, useEffect, useRef } from "react";
+import { Suspense, lazy, useState, useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Check, Plus, Trash2, X } from "lucide-react";
 import {
@@ -17,6 +17,7 @@ import {
   removeEndpoint,
 } from "./openaiCompatibleEndpointsHelpers";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import { NIR1_LOCAL_GENERATION_UI_ENABLED } from "@/features/chat/nir1/nir1LocalGenerationAvailability";
 
 const PROVIDER = "openai-compatible" as const;
 
@@ -39,6 +40,17 @@ interface EndpointTestState {
  * baseUrl / コンテキスト窓 / 最大出力 / 構造化タスク許可 / API 経路 / 既定化 /
  * 削除、そして per-endpoint の API キー保存・削除・接続テストを持つ。
  */
+
+// DD-1c (DR-DD1C-2): the local generation disclosure is a lazy chunk requested
+// only while the constant is on; while it is false the bundler drops the
+// branch, this lazy import and the chunk from the startup graph. A chunk that
+// fails to load draws nothing.
+const Nir1LocalDisclosure = /* @__PURE__ */ lazy(() =>
+  import("@/features/chat/nir1/Nir1LocalDisclosure").catch(() => ({
+    default: () => null,
+  })),
+);
+
 export function OpenaiCompatibleEndpointsManager({
   endpoints,
   activeId,
@@ -202,6 +214,11 @@ export function OpenaiCompatibleEndpointsManager({
       <p className="text-xs text-muted-foreground">
         {t("settings.ai.openaiCompatDesc")}
       </p>
+      {NIR1_LOCAL_GENERATION_UI_ENABLED && (
+        <Suspense fallback={null}>
+          <Nir1LocalDisclosure placement={1} />
+        </Suspense>
+      )}
 
       {endpoints.length === 0 ? (
         <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
