@@ -1058,7 +1058,7 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
     ).toBeNull();
   });
 
-  it("keeps at most 64 handle bindings, dropping the oldest", async () => {
+  it("keeps at most 64 handle bindings, dropping a settled one first and a running one last", async () => {
     const issued = { senderId: 7 };
     const route = createNir1LocalGenerationRoute({
       open: true,
@@ -1074,7 +1074,7 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
       await route.admit("nir1_local_conversation_list", context, {}),
     ).toBeNull();
     const handleOf = (index: number) => index.toString(16).padStart(32, "0");
-    for (let index = 0; index < 65; index++) {
+    const start = (index: number) =>
       route.settle(
         "nir1_local_generation_start",
         context,
@@ -1084,20 +1084,134 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
           value: { status: "started", handle: handleOf(index) },
         },
       );
-    }
-    expect(
-      await route.admit("nir1_local_generation_continue", context, {
-        handle: handleOf(0),
-      }),
-    ).toEqual({
-      ok: true,
-      value: { status: "refused", reason: "NIR1_LOCAL_HANDLE_NOT_FOUND" },
+    const reachable = async (index: number) =>
+      (await route.admit("nir1_local_generation_continue", context, {
+        handle: handleOf(index),
+      })) === null;
+    for (let index = 0; index < 64; index++) start(index);
+    // 5 is final (not drained) and 9 had its cancel accepted: settled.
+    route.settle(
+      "nir1_local_generation_continue",
+      context,
+      { handle: handleOf(5) },
+      {
+        ok: true,
+        value: {
+          status: "ok",
+          text: "x",
+          thinking: "",
+          state: "failed",
+          drained: false,
+        },
+      },
+    );
+    route.settle(
+      "nir1_local_generation_cancel",
+      context,
+      { handle: handleOf(9) },
+      { ok: true, value: { status: "ok" } },
+    );
+    start(64);
+    expect(await reachable(5)).toBe(false);
+    expect(await reachable(0)).toBe(true); // the oldest, running, stays
+    start(65);
+    expect(await reachable(9)).toBe(false);
+    expect(await reachable(0)).toBe(true);
+    // No settled binding left: the oldest goes.
+    start(66);
+    expect(await reachable(0)).toBe(false);
+    expect(await reachable(66)).toBe(true);
+  });
+
+  it("keeps the bindings in step with Native (M2, M3, M4, M6)", async () => {
+    const { native, invoke, sender, win } = await rig({
+      launch: activeLaunch(),
     });
-    expect(
-      await route.admit("nir1_local_generation_continue", context, {
-        handle: handleOf(64),
-      }),
-    ).toBeNull();
+    const continues = () =>
+      callsOf(native, "nir1LocalGenerationContinue").length;
+    const cancels = () => callsOf(native, "nir1LocalGenerationCancel").length;
+    // M3: Native no longer knows the handle → Main forgets it.
+    await invoke("nir1_local_generation_start", START);
+    native.answer.nir1LocalGenerationContinue = {
+      status: "refused",
+      reason: "NIR1_LOCAL_HANDLE_NOT_FOUND",
+    };
+    await invoke("nir1_local_generation_continue", { handle: HANDLE });
+    await invoke("nir1_local_generation_continue", { handle: HANDLE });
+    expect(continues()).toBe(1);
+
+    // M2: a retried cancel that succeeds clears the pending withdrawal, so
+    // the drained continue drops the binding.
+    await invoke("nir1_local_generation_start", START);
+    native.answer.nir1LocalGenerationCancel = {
+      status: "refused",
+      reason: "NIR1_LOCAL_CANCEL_CAPTURE_FAILED",
+    };
+    await invoke("nir1_local_generation_cancel", { handle: HANDLE });
+    native.answer.nir1LocalGenerationCancel = { status: "ok" };
+    await invoke("nir1_local_generation_cancel", { handle: HANDLE });
+    native.answer.nir1LocalGenerationContinue = {
+      status: "ok",
+      text: "",
+      thinking: "",
+      state: "cancelled",
+      reason: "cancelled",
+      drained: true,
+    };
+    await invoke("nir1_local_generation_continue", { handle: HANDLE });
+    const before = continues();
+    await invoke("nir1_local_generation_continue", { handle: HANDLE });
+    expect(continues()).toBe(before);
+
+    // M6: the sender stop drops a binding with a pending withdrawal too.
+    await invoke("nir1_local_generation_start", START);
+    native.answer.nir1LocalGenerationCancel = {
+      status: "refused",
+      reason: "NIR1_LOCAL_CANCEL_CAPTURE_FAILED",
+    };
+    await invoke("nir1_local_generation_cancel", { handle: HANDLE });
+    const cancelsBefore = cancels();
+    win.emit("closed");
+    await invoke("nir1_local_generation_cancel", { handle: HANDLE });
+    expect(cancels()).toBe(cancelsBefore);
+
+    // M4: a destroyed sender's identity is forgotten; a later sender with
+    // the same id and another identity triggers no extra stop.
+    sender.destroyed = true;
+    sender.emit("destroyed");
+    const stops = callsOf(native, "mainNir1LocalGenerationCancelSender").length;
+    const route = createNir1LocalGenerationRoute({
+      open: true,
+      backend: native.backend,
+      profileEgress: { isIssuedCallerIdentity: () => true },
+    });
+    const reused = fakeSender(7);
+    const reusedWin = fakeWindow(71, reused);
+    await route.admit(
+      "nir1_local_conversation_list",
+      { sender: reused, win: reusedWin, callerIdentity: { senderId: 7, n: 1 } },
+      {},
+    );
+    reused.destroyed = true;
+    reused.emit("destroyed");
+    const afterDestroy = callsOf(
+      native,
+      "mainNir1LocalGenerationCancelSender",
+    ).length;
+    expect(afterDestroy).toBe(stops + 1);
+    const again = fakeSender(7);
+    await route.admit(
+      "nir1_local_conversation_list",
+      {
+        sender: again,
+        win: fakeWindow(72, again),
+        callerIdentity: { senderId: 7, n: 2 },
+      },
+      {},
+    );
+    expect(callsOf(native, "mainNir1LocalGenerationCancelSender").length).toBe(
+      afterDestroy,
+    );
   });
 });
 

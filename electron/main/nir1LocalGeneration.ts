@@ -194,6 +194,11 @@ interface BoundHandle {
    * drained continue so the cancel can be retried (DR-DD1A-15).
    */
   withdrawalPending: boolean;
+  /**
+   * Main saw the run final or its cancel accepted: such bindings are dropped
+   * first when the bound limit is reached (a running one last).
+   */
+  settled: boolean;
 }
 
 export interface Nir1LocalGenerationRoute {
@@ -362,7 +367,15 @@ export function createNir1LocalGenerationRoute(
   const bindHandle = (handle: string, bound: BoundHandle): void => {
     handles.set(handle, bound);
     while (handles.size > NIR1_LOCAL_BOUND_HANDLE_LIMIT) {
-      const victim = handles.keys().next().value;
+      // A settled binding first (oldest of them), a running one last.
+      let victim: string | undefined;
+      for (const [candidate, entry] of handles) {
+        if (entry.settled) {
+          victim = candidate;
+          break;
+        }
+      }
+      victim ??= handles.keys().next().value;
       if (victim === undefined) break;
       handles.delete(victim);
     }
@@ -470,6 +483,7 @@ export function createNir1LocalGenerationRoute(
           windowId: win.id,
           identity: callerIdentity,
           withdrawalPending: false,
+          settled: false,
         });
         return envelope;
       }
@@ -490,6 +504,7 @@ export function createNir1LocalGenerationRoute(
       if (command === "nir1_local_generation_cancel") {
         if (value.status === "ok") {
           bound.withdrawalPending = false;
+          bound.settled = true;
         } else if (value.reason === "NIR1_LOCAL_CANCEL_CAPTURE_FAILED") {
           bound.withdrawalPending = true;
         }
@@ -499,6 +514,13 @@ export function createNir1LocalGenerationRoute(
         command === "nir1_local_generation_continue" &&
         value.status === "ok"
       ) {
+        if (
+          value.state === "succeeded" ||
+          value.state === "failed" ||
+          value.state === "cancelled"
+        ) {
+          bound.settled = true;
+        }
         if (value.drained === true && !bound.withdrawalPending) {
           handles.delete(handle);
         }
