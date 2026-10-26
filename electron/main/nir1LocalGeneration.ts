@@ -256,6 +256,12 @@ export interface Nir1LocalGenerationRoute {
    * returned, so the sender's generations are stopped (DR-DD1B-7).
    */
   onUnpublished(command: Nir1LocalGenerationCommand, senderId: number): void;
+  /** Tests only: how many senders each per-sender table still holds. */
+  trackedSendersForTest(): {
+    live: number;
+    identities: number;
+    stopCounts: number;
+  };
 }
 
 export interface Nir1LocalGenerationRouteOptions {
@@ -340,6 +346,10 @@ export function createNir1LocalGenerationRoute(
         liveSenders.delete(senderId);
         lastIdentity.delete(senderId);
         cancelSender(senderId);
+        // After the stop (which counts it): the sender is gone, and a
+        // pending invoke of it is refused by `isDestroyed` first. The
+        // invokes' admitted counts live in a WeakMap keyed by their context.
+        stopCounts.delete(senderId);
       });
     }
     if (!boundWindows.has(win)) {
@@ -550,6 +560,14 @@ export function createNir1LocalGenerationRoute(
         }
       }
       return envelope;
+    },
+
+    trackedSendersForTest() {
+      return {
+        live: liveSenders.size,
+        identities: lastIdentity.size,
+        stopCounts: stopCounts.size,
+      };
     },
 
     onUnpublished(command, senderId) {
