@@ -69,6 +69,45 @@ function isRustBlank(raw: string): boolean {
   return true;
 }
 
+/** serde_json's recursion limit: the 128th nested array／object fails. */
+const SERDE_MAX_DEPTH = 128;
+
+function hasLoneSurrogate(text: string): boolean {
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        index += 1;
+        continue;
+      }
+      return true;
+    }
+    if (code >= 0xdc00 && code <= 0xdfff) return true;
+  }
+  return false;
+}
+
+/**
+ * Whether serde_json would refuse a value `JSON.parse` read: a number out of
+ * the f64 range (JS reads it as infinite), an escaped lone surrogate in a
+ * string or a key, or nesting at the recursion limit (DR-DD1C-21). The walk
+ * stops at the limit, so it stays bounded.
+ */
+function refusedBySerdeJson(value: unknown, depth: number): boolean {
+  if (typeof value === "number") return !Number.isFinite(value);
+  if (typeof value === "string") return hasLoneSurrogate(value);
+  if (value === null || typeof value !== "object") return false;
+  if (depth >= SERDE_MAX_DEPTH) return true;
+  if (Array.isArray(value)) {
+    return value.some((entry) => refusedBySerdeJson(entry, depth + 1));
+  }
+  return Object.entries(value).some(
+    ([key, entry]) =>
+      hasLoneSurrogate(key) || refusedBySerdeJson(entry, depth + 1),
+  );
+}
+
 /** A copy of Native's `decide` (the decision vectors pin the two together). */
 export function decideNir1LocalSendPolicy(
   raw: string | null,
@@ -85,6 +124,7 @@ export function decideNir1LocalSendPolicy(
   } catch {
     return { allow: false, code: "not-json" };
   }
+  if (refusedBySerdeJson(root, 1)) return { allow: false, code: "not-json" };
   if (root === null || typeof root !== "object" || Array.isArray(root)) {
     return { allow: false, code: "not-object" };
   }

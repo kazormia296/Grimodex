@@ -548,3 +548,57 @@ describe("the conversations under StrictMode", () => {
     expect(acceptedRef.current).not.toBeNull();
   });
 });
+
+describe("accessibility and language (review P3)", () => {
+  it("names the section and keeps the focus after the stop", async () => {
+    answer("nir1_local_conversation_read", emptyRead());
+    answer("nir1_local_generation_start", {
+      status: "started",
+      handle: HANDLE,
+    });
+    answer("nir1_local_generation_continue", {
+      status: "ok",
+      text: "",
+      thinking: "",
+      state: "running",
+      drained: false,
+    });
+    answer("nir1_local_generation_cancel", { status: "ok" });
+    const { acceptedRef } = renderPanel({ conversationId: WRITING });
+    expect(screen.getByRole("region", { name: ja.panel.title })).toBeTruthy();
+    await waitFor(() => expect(acceptedRef.current).not.toBeNull());
+    act(() =>
+      acceptedRef.current!({ conversationId: WRITING, sceneId: "scene-1" }),
+    );
+    const stop = await screen.findByTestId("nir1-local-cancel");
+    stop.focus();
+    fireEvent.click(stop);
+    await waitFor(() =>
+      expect(screen.queryByTestId("nir1-local-cancel")).toBeNull(),
+    );
+    expect(document.activeElement).toBe(
+      screen.getByTestId("nir1-local-turn-status"),
+    );
+  });
+
+  it("formats the creation time in the display language", async () => {
+    await i18n.changeLanguage("en");
+    answer("nir1_local_conversation_list", {
+      status: "ok",
+      conversations: [
+        {
+          conversationId: WRITING,
+          displayName: {
+            purpose: "writing",
+            createdAt: "2026-10-26T01:02:03Z",
+          },
+        },
+      ],
+      truncated: false,
+    });
+    renderPanel({ conversationId: null });
+    fireEvent.click(screen.getByTestId("nir1-local-show-conversations"));
+    const expected = new Date("2026-10-26T01:02:03Z").toLocaleString("en");
+    await screen.findByText(`Created ${expected}`);
+  });
+});

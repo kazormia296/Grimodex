@@ -65,14 +65,22 @@ describe("local generation disclosure geometry", () => {
           const host = document.createElement("div");
           host.style.width = `${Math.min(width - 16, 360)}px`;
           document.body.appendChild(host);
-          render(<Nir1LocalDisclosure placement={placement} />, {
-            container: host,
-          });
-          fireEvent.click(
-            screen.queryByText(
-              i18n.t("nir1Local.disclosure.showAll") as string,
-            ) ?? document.body,
+          render(
+            <Nir1LocalDisclosure placement={placement} purpose="writing" />,
+            {
+              container: host,
+            },
           );
+          const showAll = screen.queryByText(
+            i18n.t("nir1Local.disclosure.showAll") as string,
+          );
+          // Placement 3 opens every item; placement 1 already shows them.
+          if (placement === 3) {
+            expect(showAll).not.toBeNull();
+            fireEvent.click(showAll!);
+          } else {
+            expect(showAll).toBeNull();
+          }
           await act(async () => {});
           expectInside(screen.getByTestId("nir1-local-disclosure"), host);
           expectInside(screen.getByTestId("nir1-local-route"), host);

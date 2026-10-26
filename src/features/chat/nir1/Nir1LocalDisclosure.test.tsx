@@ -55,6 +55,10 @@ describe.each(["ja", "en"] as const)("the %s disclosure", (language) => {
     ]);
     for (const item of ["1", "4", "9"] as const) {
       expect(root.textContent).toContain(strings.disclosure.items[item].body);
+      // The separator follows the display language (review P3).
+      expect(root.textContent).toContain(
+        `${strings.disclosure.items[item].title}${strings.disclosure.separator}`,
+      );
     }
     expect(screen.getByTestId("nir1-local-route").textContent).toContain(
       "http://[::1]:11434/v1/chat/completions",

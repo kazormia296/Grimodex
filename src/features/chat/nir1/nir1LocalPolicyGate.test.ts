@@ -54,6 +54,44 @@ describe("the copy of Native's local send policy decision", () => {
     },
   );
 
+  // Values `JSON.parse` reads but serde_json refuses (review P3, DR-DD1C-21):
+  // a number out of the f64 range, an escaped lone surrogate, and nesting at
+  // serde_json's recursion limit (128).
+  it.each([
+    [
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true},"x":1e400}',
+    ],
+    [
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true},"x":"\\ud800"}',
+    ],
+    [
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true},"\\udc00":1}',
+    ],
+    [
+      `{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true},"x":${"[".repeat(127)}${"]".repeat(127)}}`,
+    ],
+  ])("denies %s as serde_json would", (raw) => {
+    expect(decideNir1LocalSendPolicy(raw, "writing")).toEqual({
+      allow: false,
+      code: "not-json",
+    });
+  });
+
+  it("allows the same shapes inside serde_json's limits", () => {
+    const base =
+      '{"preset":"full","toggles":{"chat":true,"bodyWrite":true,"analysis":true},"x":';
+    for (const value of [
+      "1e300",
+      '"\\ud83d\\ude00"',
+      `${"[".repeat(100)}${"]".repeat(100)}`,
+    ]) {
+      expect(decideNir1LocalSendPolicy(`${base}${value}}`, "writing")).toEqual({
+        allow: true,
+        source: "stored",
+      });
+    }
+  });
+
   it("denies a policy over 64 KiB", () => {
     const raw = JSON.stringify({
       preset: "full",

@@ -64,7 +64,7 @@ function ItemList({
               <span className="font-medium">
                 {t(`nir1Local.disclosure.items.${item}.title`)}
               </span>
-              {"："}
+              {t("nir1Local.disclosure.separator")}
               {t(`nir1Local.disclosure.items.${item}.body`)}
             </>
           )}

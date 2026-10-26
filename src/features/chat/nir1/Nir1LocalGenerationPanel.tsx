@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import type { MutableRefObject, ReactElement } from "react";
 import { useTranslation } from "react-i18next";
 import { isNir1LocalTurnTerminal } from "@/application/chat/nir1LocalGenerationTurn";
@@ -134,9 +134,11 @@ export default function Nir1LocalGenerationPanel({
 
   const turn = useNir1LocalTurn(localConversationId);
   const notice = useNir1LocalNotice(localConversationId);
+  const titleId = useId();
 
   return (
     <section
+      aria-labelledby={titleId}
       data-testid="nir1-local-generation"
       className="space-y-2 px-3 pb-2 text-xs"
     >
@@ -160,7 +162,9 @@ export default function Nir1LocalGenerationPanel({
         sceneId={sceneId}
         onOpenConversation={onOpenConversation}
       />
-      <span className="sr-only">{t("nir1Local.panel.title")}</span>
+      <span id={titleId} className="sr-only">
+        {t("nir1Local.panel.title")}
+      </span>
     </section>
   );
 }
@@ -179,6 +183,8 @@ function ActivePurposeGate({
 
 function TurnView({ turn }: { readonly turn: Nir1LocalTurnSnapshot }) {
   const { t } = useTranslation();
+  // The stop disappears once pressed; the focus moves to the state line.
+  const status = useRef<HTMLParagraphElement>(null);
   return (
     <div
       data-testid="nir1-local-turn"
@@ -187,12 +193,22 @@ function TurnView({ turn }: { readonly turn: Nir1LocalTurnSnapshot }) {
       className="space-y-1 rounded-md border border-border px-2 py-1.5"
     >
       <div className="flex items-center justify-between gap-2">
-        <p role="status">{t(`nir1Local.panel.phase.${turn.phase}`)}</p>
+        <p
+          ref={status}
+          role="status"
+          tabIndex={-1}
+          data-testid="nir1-local-turn-status"
+        >
+          {t(`nir1Local.panel.phase.${turn.phase}`)}
+        </p>
         {turn.canCancel && (
           <button
             type="button"
             data-testid="nir1-local-cancel"
-            onClick={() => cancelNir1LocalGenerationOf(turn.conversationId)}
+            onClick={() => {
+              status.current?.focus();
+              cancelNir1LocalGenerationOf(turn.conversationId);
+            }}
             className="shrink-0 rounded border border-border px-2 py-0.5 hover:bg-muted"
           >
             {t("nir1Local.panel.cancel")}
@@ -358,7 +374,7 @@ function Conversations({
   readonly sceneId: string | null;
   readonly onOpenConversation: (conversationId: string) => void;
 }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [list, setList] = useState<{
     readonly conversations: readonly Nir1LocalConversationView[];
@@ -459,7 +475,7 @@ function Conversations({
                         : t("nir1Local.panel.createdAt", {
                             date: new Date(
                               conversation.createdAt,
-                            ).toLocaleString(),
+                            ).toLocaleString(i18n.language),
                           })}
                     </span>
                   </span>
