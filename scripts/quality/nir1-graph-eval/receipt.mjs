@@ -23,10 +23,16 @@ import {
   FROZEN_FIXTURE_SHA256,
   FROZEN_MATERIAL_SHA256,
   K62_FREEZE,
+  K64_FREEZE,
+  K64_R1_R4_WAIT_CEILING_MS,
+  K64_T_LATE_MS,
+  K64_T_SHOW_MS,
+  K64_W_F_MS,
   WINDOW_SAMPLE_INTERVAL_MS,
   devVariant,
   variantByKey,
 } from "./constants.mjs";
+import { assessCandidateRegime } from "./followup.mjs";
 
 export const CP4_RECEIPT_SCHEMA = "nir1-cp4-run-receipt/1";
 export const RUN_KINDS = Object.freeze([
@@ -135,6 +141,11 @@ function windowSampleErrors(sample, at) {
   const errors = [];
   if (!Number.isFinite(sample?.atMs))
     errors.push(`window sample ${at} lacks atMs`);
+  // P3-10: an unreadable /proc/locks or no slot file seen is not "0 in use".
+  if (sample?.locksReadable !== true)
+    errors.push(`window sample ${at} could not read /proc/locks`);
+  if (!Number.isInteger(sample?.heavySlotFiles) || sample.heavySlotFiles <= 0)
+    errors.push(`window sample ${at} saw no heavy.sh slot file`);
   if (!Number.isInteger(sample?.heavySlotsInUse))
     errors.push(`window sample ${at} lacks heavySlotsInUse`);
   if (!Array.isArray(sample?.buildProcesses))
@@ -160,6 +171,8 @@ export function assessMeasurementWindow({ samples, run, ownPids = [] }) {
   rows.forEach((sample, at) => gaps.push(...windowSampleErrors(sample, at)));
   if (!Number.isFinite(run?.startedAtMs) || !Number.isFinite(run?.finishedAtMs))
     gaps.push("run start/finish times missing");
+  else if (run.finishedAtMs < run.startedAtMs)
+    gaps.push("the run finishes before it starts");
   if (gaps.length > 0) return { clean: false, violations, gaps };
   const sorted = [...rows].sort((a, b) => a.atMs - b.atMs);
   if (sorted.length < 2) gaps.push("fewer than two window samples");
@@ -282,13 +295,36 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
   return { removedEnv: [...DESKTOP_ENV], display: xvfbDisplay };
 }
 
-/** The head every receipt writes before measuring (K6/2 "事前登録の凍結" 2). */
+/**
+ * The head every receipt writes before measuring (K6/2 "事前登録の凍結" 2,
+ * read with K6/4 批准 7: a formal R+IR+Graph run writes the K6/4 freeze
+ * commit and bytes; a receipt with only K6/2 at its head is a preview). The
+ * K6/2 bytes stay as the baseline the /4 row amends. Until the integrator
+ * pins the K6/4 freeze commit (K64_FREEZE.freezeCommit), no formal Graph
+ * receipt validates.
+ */
 export function receiptHeadErrors(head, runKind, fixtureKind) {
   const errors = [];
   if (head?.k62?.freezeCommit !== K62_FREEZE.commit)
     errors.push("head.k62.freezeCommit must be the K6/2 freeze commit");
   if (head?.k62?.sha256 !== K62_FREEZE.sha256)
     errors.push("head.k62.sha256 must be the K6/2 bytes read from that commit");
+  const formalGraph = GRAPH_RUN_KINDS.has(runKind) && fixtureKind !== "dev";
+  if (formalGraph || head?.k64 !== undefined) {
+    if (head?.k64?.sha256 !== K64_FREEZE.sha256)
+      errors.push("head.k64.sha256 must be the K6/4 bytes (批准 7)");
+    commitErrors(errors, head?.k64?.freezeCommit, "head.k64.freezeCommit");
+    if (formalGraph) {
+      if (K64_FREEZE.freezeCommit === null)
+        errors.push(
+          "[precheck] the K6/4 freeze commit is not pinned (批准 7: the integrator freezes K6/4 on claude/nir1-contracts first); a formal Graph receipt is refused",
+        );
+      else if (head?.k64?.freezeCommit !== K64_FREEZE.freezeCommit)
+        errors.push(
+          "head.k64.freezeCommit must be the pinned K6/4 freeze commit",
+        );
+    }
+  }
   if (
     typeof head?.runStartedAtUtc !== "string" ||
     !ISO_UTC.test(head.runStartedAtUtc)
@@ -359,6 +395,15 @@ export function computeRunAggregates(receipt, variant) {
   const samples = receipt.samples ?? [];
   const requeries = receipt.requeries ?? [];
   const graphSamples = samples.filter((row) => row.arm === "graph").length;
+  // A K6/4-era receipt records the 批准 5 evidence; its regime is recomputed
+  // here and in the summaries (N31). Without it the receipt is K6/2-era.
+  const k64 =
+    receipt.candidate && Object.hasOwn(receipt.candidate, "ratification5")
+      ? { candidate: receipt.candidate.ratification5 }
+      : null;
+  const regime = k64
+    ? { candidateRegime: assessCandidateRegime(k64.candidate) }
+    : {};
   switch (receipt.runKind) {
     case "g-case-gold": {
       validateGraphCaseSchedule(samples, [variant.key]);
@@ -366,11 +411,13 @@ export function computeRunAggregates(receipt, variant) {
         rows: samples,
         variant,
         fixedGraphMode: receipt.settings?.d2aModes?.graph,
+        ...(k64 ?? {}),
       });
       return {
         steadyStateCase: entry,
         invalid,
         requeryCount: requeries.length,
+        ...regime,
       };
     }
     case "trace":
@@ -382,7 +429,9 @@ export function computeRunAggregates(receipt, variant) {
             queries: [...samples, ...requeries],
           },
           fixedGraphMode: receipt.settings?.d2aModes?.graph,
+          ...(k64 ?? {}),
         }),
+        ...regime,
       };
     default:
       separateRequeries(requeries);
@@ -392,6 +441,53 @@ export function computeRunAggregates(receipt, variant) {
         requeryCount: requeries.length,
       };
   }
+}
+
+/**
+ * The verdict one run receipt may carry, recomputed (P2-6). A run receipt
+ * never decides CP-4: a formal run is `recorded` for the pooled decision
+ * (decideCp4Availability over the receipts; the pool, never a case rate,
+ * N21), a dev or predeclared preview is `preview-only`, a run whose
+ * aggregates are invalid is `invalid` (kept as a record, never valid), and a
+ * K6/4 trace whose reading K6/4 leaves open is `precheck`.
+ */
+export function computeRunVerdict(receipt, variant, aggregates) {
+  const invalid = [
+    ...(aggregates?.invalid ?? []),
+    ...(aggregates?.trace?.status === "invalid"
+      ? (aggregates.trace.invalid ?? ["trace-invalid"])
+      : []),
+  ];
+  if (invalid.length > 0) return { outcome: "invalid" };
+  if (variant?.kind === "dev" || receipt?.preview === true)
+    return { outcome: "preview-only" };
+  if (aggregates?.trace?.status === "precheck") return { outcome: "precheck" };
+  return { outcome: "recorded" };
+}
+
+/** settings.k64 of a formal K6/4 Graph run (K6/4 変える点 16, 技術点 2; N17). */
+function k64SettingsErrors(errors, value) {
+  if (
+    value?.wFMs !== K64_W_F_MS ||
+    value?.tLateMs !== K64_T_LATE_MS ||
+    value?.tShowMs !== K64_T_SHOW_MS
+  )
+    errors.push(
+      `N17: settings.k64 must carry W_f ${K64_W_F_MS} ms, T_late ${K64_T_LATE_MS} ms and T_show ${K64_T_SHOW_MS} ms as frozen (narrowing needs a new procedure-file version and review, widening a new draftRef; neither is supported here)`,
+    );
+  if (
+    !Number.isInteger(value?.r1r4WaitMs) ||
+    value.r1r4WaitMs <= 0 ||
+    value.r1r4WaitMs > K64_R1_R4_WAIT_CEILING_MS
+  )
+    errors.push(
+      "settings.k64.r1r4WaitMs must be the procedure file's R1/R4 wait bound, at most 10 s (技術点 2)",
+    );
+  const file = value?.procedureFile;
+  if (typeof file?.path !== "string" || file.path.length === 0)
+    errors.push("settings.k64.procedureFile must name the procedure file");
+  commitErrors(errors, file?.commit, "settings.k64.procedureFile.commit");
+  digestErrors(errors, file?.sha256, "settings.k64.procedureFile.sha256");
 }
 
 /**
@@ -451,6 +547,16 @@ export function validateCp4Receipt(receipt) {
       errors.push(
         'candidate.features must be exactly the evaluation feature set ["nir1-graph-eval"]',
       );
+    if (variant?.kind !== "dev") {
+      if (
+        !candidate?.ratification5 ||
+        typeof candidate.ratification5 !== "object"
+      )
+        errors.push(
+          "candidate.ratification5 must record 批准 5 (a) D′, (b) the RS-JOIN hook, (c) W_f (N31)",
+        );
+      k64SettingsErrors(errors, receipt?.settings?.k64);
+    }
   }
   for (const language of ["ja", "en"]) {
     digestErrors(
@@ -615,12 +721,19 @@ export function validateCp4Receipt(receipt) {
     (variant || receipt.runKind === "existing-24-compare")
   ) {
     try {
-      if (
-        stable(computeRunAggregates(receipt, variant)) !==
-        stable(receipt.aggregates)
-      )
+      const recomputed = computeRunAggregates(receipt, variant);
+      if (stable(recomputed) !== stable(receipt.aggregates))
         errors.push(
           "aggregates differ from the values recomputed from the samples",
+        );
+      const verdict = computeRunVerdict(receipt, variant, recomputed);
+      if (verdict.outcome === "invalid")
+        errors.push(
+          "this is an invalid run (its aggregates name invalid samples); it is kept as a record and never validates (P2-6)",
+        );
+      if (receipt?.verdict?.outcome !== verdict.outcome)
+        errors.push(
+          `verdict.outcome must be the recomputed ${verdict.outcome} (P2-6)`,
         );
     } catch (error) {
       errors.push(error.message);

@@ -79,6 +79,8 @@ test("the harness's own processes are excluded and a build in this worktree is f
     ownPids: [1],
     root,
     heavySlots: 2,
+    locksReadable: true,
+    heavySlotFiles: 3,
   });
   assert.deepEqual(fields.buildProcesses, [
     { pid: 2, command: "cargo" },
@@ -105,9 +107,53 @@ test("the harness's own processes are excluded and a build in this worktree is f
     ownPids: [1],
     root,
     heavySlots: 0,
+    locksReadable: true,
+    heavySlotFiles: 3,
   });
   assert.equal(quiet.sameWorktreeBuild, false);
   assert.deepEqual(quiet.buildProcesses, []);
+});
+
+test("P3-10: /proc/locks が読めない標本は 0 でなく null で、見た slot の file の数を残す", () => {
+  const unread = windowFields({
+    processes: [],
+    ownPids: [],
+    root: "/w/tree",
+    heavySlots: 0,
+    locksReadable: false,
+    heavySlotFiles: 3,
+  });
+  assert.equal(unread.heavySlotsInUse, null);
+  assert.equal(unread.locksReadable, false);
+  assert.equal(unread.heavySlotFiles, 3);
+  const assessment = assessMeasurementWindow({
+    samples: [
+      { atMs: 0, ...unread },
+      { atMs: 30, ...unread },
+    ],
+    run: { startedAtMs: 10, finishedAtMs: 20 },
+  });
+  assert.equal(assessment.clean, false);
+  assert.match(assessment.gaps.join(), /\/proc\/locks/);
+});
+
+test("P3-10: hook-check、dprime-check、diag-registration、smoke の並走も別の計測として数える", () => {
+  for (const script of [
+    "hook-check",
+    "dprime-check",
+    "diag-registration",
+    "smoke",
+    "runner",
+    "setup-driver",
+  ])
+    assert.deepEqual(
+      classifyProcess([
+        "node",
+        `scripts/quality/nir1-graph-eval/${script}.mjs`,
+      ]),
+      { kind: "measurement", command: "cp4" },
+      script,
+    );
 });
 
 test("the launcher chain (the wrapper that carries the runner's argv) is the harness's own", () => {

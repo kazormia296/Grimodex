@@ -8,6 +8,7 @@ import { test } from "node:test";
 import {
   FROZEN_FIXTURE_SHA256,
   K62_FREEZE,
+  K64_FREEZE,
   variantByKey,
 } from "./constants.mjs";
 import {
@@ -24,7 +25,15 @@ import {
   verifySha256Sums,
   writeSha256Sums,
 } from "./receipt.mjs";
-import { H40, H64, sample, scheduleRows } from "./test-support.mjs";
+import {
+  H40,
+  H64,
+  followUpRecord,
+  k64Sample,
+  ratification5,
+  sample,
+  scheduleRows,
+} from "./test-support.mjs";
 
 function indexMeta(generation = 3, dirty = false) {
   return {
@@ -36,6 +45,8 @@ function indexMeta(generation = 3, dirty = false) {
 function windowSamples(times, extra = {}) {
   return times.map((atMs) => ({
     atMs,
+    locksReadable: true,
+    heavySlotFiles: 3,
     heavySlotsInUse: 0,
     buildProcesses: [],
     otherMeasurements: [],
@@ -86,11 +97,51 @@ function declaration(overrides = {}) {
   };
 }
 
+/** The K6/4 rows of one variant's AB/BA schedule (R5: the product hook). */
+function k64Rows(variant) {
+  return scheduleRows([variant]).map((row) =>
+    row.arm !== "graph"
+      ? row
+      : variant.expectedGraph === "unavailable"
+        ? {
+            ...row,
+            followUp: followUpRecord({
+              parent: { ticket: null },
+              notices: [],
+              child: null,
+            }),
+          }
+        : k64Sample({
+            variantKey: variant.key,
+            phase: row.phase,
+            repeat: row.repeat,
+          }),
+  );
+}
+
+/** The K6/4 freeze of a receipt head (批准 7). Pinned by the integrator. */
+const K64_HEAD = { freezeCommit: H40("4"), sha256: K64_FREEZE.sha256 };
+const FREEZE_PENDING = /K6\/4 freeze commit is not pinned/;
+/** Every error but the one the unpinned K6/4 freeze always gives. */
+const otherErrors = (value) =>
+  validateCp4Receipt(value).filter((error) => !FREEZE_PENDING.test(error));
+const K64_SETTINGS = {
+  wFMs: 100,
+  tLateMs: 100,
+  tShowMs: 2_000,
+  r1r4WaitMs: 3_000,
+  procedureFile: {
+    path: "evals/nir1-graph/procedure.v1.json",
+    commit: H40("5"),
+    sha256: H64("5"),
+  },
+};
+
 /** A self-consistent receipt; aggregates and window assessment are recomputed. */
 function receipt(overrides = {}, { recompute = true } = {}) {
   const variantKey = overrides.settings?.variantKey ?? "G-03/base";
   const variant = variantByKey(variantKey);
-  const samples = overrides.samples ?? scheduleRows([variant]);
+  const samples = overrides.samples ?? k64Rows(variant);
   const windowRows = windowSamples([0, 20_000, 40_000, 62_000]);
   const base = {
     schemaVersion: CP4_RECEIPT_SCHEMA,
@@ -105,6 +156,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
     },
     head: {
       k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
+      k64: K64_HEAD,
       runStartedAtUtc: "2026-10-25T01:02:03.456Z",
       observationPrep: { commit: H40("a"), freezeRecordSha256: H64("b") },
       traceFile: null,
@@ -125,6 +177,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
       harnessFiles: {
         "scripts/quality/nir1-graph-eval/availability.mjs": H64("6"),
       },
+      ratification5: ratification5(),
     },
     environment: {
       hostSnapshot: { loadavg: [0.1, 0.1, 0.1] },
@@ -152,10 +205,11 @@ function receipt(overrides = {}, { recompute = true } = {}) {
       },
       reauthorization: { totalMs: 1.5 },
       setupReceipt: { logicalToRuntime: { "dev-a": "rt-1" } },
+      k64: K64_SETTINGS,
     },
     samples,
     requeries: [sample({ trigger: "graph-ready-requery", variantKey })],
-    verdict: { outcome: "hold" },
+    verdict: { outcome: "recorded" },
   };
   const merged = {
     ...base,
@@ -173,8 +227,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
 const errorsOf = (value) => validateCp4Receipt(value).join(" | ");
 
 test("P-10: a complete receipt passes and its head carries the K6/2 freeze", () => {
-  assert.deepEqual(validateCp4Receipt(receipt()), []);
-  assert.doesNotThrow(() => assertCp4Receipt(receipt()));
+  assert.deepEqual(otherErrors(receipt()), []);
   const { k62, ...noFreeze } = receipt().head;
   assert.ok(k62);
   assert.match(errorsOf(receipt({ head: noFreeze })), /freezeCommit/);
@@ -204,13 +257,165 @@ test("P-10: a complete receipt passes and its head carries the K6/2 freeze", () 
   );
 });
 
+test("批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。凍結の commit が固定されるまで受け付けない", () => {
+  const errors = validateCp4Receipt(receipt());
+  assert.equal(errors.length, 1, errors.join(" | "));
+  assert.match(errors[0], FREEZE_PENDING);
+  assert.throws(() => assertCp4Receipt(receipt()), FREEZE_PENDING);
+  assert.equal(K64_FREEZE.freezeCommit, null);
+  const { k64, ...noK64 } = receipt().head;
+  assert.ok(k64);
+  assert.match(errorsOf(receipt({ head: noK64 })), /head\.k64/);
+  assert.match(
+    errorsOf(
+      receipt({
+        head: { ...receipt().head, k64: { ...k64, sha256: H64("0") } },
+      }),
+    ),
+    /K6\/4 bytes/,
+  );
+  // dev の予告は K6/4 の先頭を要しない（書くなら bytes は K6/4 のもの）。
+});
+
+test("K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ", () => {
+  const { ratification5: _drop, ...noEvidence } = receipt().candidate;
+  assert.match(errorsOf(receipt({ candidate: noEvidence })), /ratification5/);
+  assert.deepEqual(receipt().aggregates.candidateRegime, {
+    regime: "k64",
+    missing: [],
+  });
+  const lacking = receipt({
+    candidate: {
+      ...receipt().candidate,
+      ratification5: ratification5({
+        wfWindow: { commit: ratification5().wfWindow.commit, ancestor: false },
+      }),
+    },
+  });
+  assert.deepEqual(lacking.aggregates.candidateRegime.missing, [
+    "c:w-f-window",
+  ]);
+  assert.deepEqual(otherErrors(lacking), []);
+});
+
+test("K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない", () => {
+  for (const [key, value] of [
+    ["wFMs", 150],
+    ["tLateMs", 120],
+    ["tShowMs", 2_500],
+    ["wFMs", 80],
+  ])
+    assert.match(
+      errorsOf(
+        receipt({ settings: { k64: { ...K64_SETTINGS, [key]: value } } }),
+      ),
+      /N17/,
+      `${key}=${value}`,
+    );
+  assert.match(
+    errorsOf(
+      receipt({ settings: { k64: { ...K64_SETTINGS, r1r4WaitMs: 10_001 } } }),
+    ),
+    /10 s/,
+  );
+  assert.match(
+    errorsOf(
+      receipt({ settings: { k64: { ...K64_SETTINGS, procedureFile: null } } }),
+    ),
+    /procedureFile/,
+  );
+});
+
+test("K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない", () => {
+  const value = receipt();
+  const { outOfWindowRate: _dropped, ...rest } =
+    value.aggregates.steadyStateCase;
+  value.aggregates = { ...value.aggregates, steadyStateCase: rest };
+  assert.match(errorsOf(value), /aggregates differ/);
+  assert.equal(receipt().aggregates.steadyStateCase.outOfWindowRate, 1);
+  assert.equal(receipt().aggregates.steadyStateCase.k64.displayed, 30);
+});
+
+test("P2-6／K6/4-N21: verdict は計算し直して照合し、invalid を持つ receipt は有効にしない", () => {
+  for (const outcome of ["PASS", "hold", undefined])
+    assert.match(
+      errorsOf(receipt({ verdict: { outcome } })),
+      /verdict/,
+      String(outcome),
+    );
+  // 欠落が case ごとには 1/30 でも、判定は pool で行い、run の receipt は判定しない。
+  const caseWise = receipt({
+    samples: k64Rows(variantByKey("G-03/base")).map((row) =>
+      row.arm === "graph" && row.phase === "measured" && row.repeat === 0
+        ? { ...row, followUp: { ...row.followUp, notices: [], child: null } }
+        : row,
+    ),
+    verdict: { outcome: "HOLD", reason: "case-miss-rate-3.3%" },
+  });
+  assert.match(errorsOf(caseWise), /verdict/);
+  // aggregates.invalid が空でない receipt は、件数が一致しても有効にしない。
+  const short = receipt(
+    {
+      samples: k64Rows(variantByKey("G-03/base")).filter(
+        (row) =>
+          !(
+            row.arm === "graph" &&
+            row.phase === "measured" &&
+            row.repeat === 29
+          ),
+      ),
+      aggregates: receipt().aggregates,
+    },
+    { recompute: false },
+  );
+  assert.match(errorsOf(short), /AB\/BA/);
+  const lowLevel = receipt({
+    samples: k64Rows(variantByKey("G-03/base")).map((row) =>
+      row.arm === "graph" && row.phase === "measured" && row.repeat === 2
+        ? {
+            ...row,
+            followUp: { ...row.followUp, issuedVia: "low-level-continue" },
+          }
+        : row,
+    ),
+    verdict: { outcome: "invalid" },
+  });
+  assert.ok(lowLevel.aggregates.invalid.length > 0);
+  assert.match(errorsOf(lowLevel), /invalid run/);
+});
+
+test("P3-10: D3 の窓は /proc/locks が読めない標本、slot の file を見ていない標本、終わりが始まりより前の run を gap にする", () => {
+  const locks = windowSamples([0, 20_000, 40_000, 62_000]).map((row, at) =>
+    at === 2 ? { ...row, locksReadable: false, heavySlotsInUse: null } : row,
+  );
+  assert.match(
+    assessMeasurementWindow({ samples: locks, run: RUN }).gaps.join(),
+    /\/proc\/locks/,
+  );
+  const noSlots = windowSamples([0, 20_000, 40_000, 62_000], {
+    heavySlotFiles: 0,
+  });
+  assert.match(
+    assessMeasurementWindow({ samples: noSlots, run: RUN }).gaps.join(),
+    /slot file/,
+  );
+  const reversed = { startedAtMs: 61_000, finishedAtMs: 1_000 };
+  assert.match(
+    assessMeasurementWindow({
+      samples: windowSamples([0, 20_000, 40_000, 62_000]),
+      run: reversed,
+    }).gaps.join(),
+    /finishes before it starts/,
+  );
+});
+
 test("P1-5: a K2/4 diagnostic negative is a Graph run with the full Graph head", () => {
   const negative = receipt({
     runKind: "g-case-diagnostic-negative",
     samples: [sample({ variantKey: "G-02/base" })],
     settings: { variantKey: "G-02/base" },
   });
-  assert.deepEqual(validateCp4Receipt(negative), []);
+  assert.deepEqual(otherErrors(negative), []);
   assert.match(
     errorsOf({
       ...negative,
@@ -338,7 +543,7 @@ test("P2-7: a declaration run is checked against the measurement workspace and t
       measurementWorkspace: workspace,
     });
   assert.match(errorsOf(declared(undefined)), /declaration\.workspaceId/);
-  assert.deepEqual(validateCp4Receipt(declared(declaration())), []);
+  assert.deepEqual(otherErrors(declared(declaration())), []);
   assert.match(
     errorsOf(declared(declaration({ verified: false }))),
     /verified/,
@@ -406,6 +611,8 @@ test("P2-12: the fixture block binds the variant, path, digest and kind", () => 
       kind: "dev",
     },
     head: { ...receipt().head, observationPrep: null },
+    // A dev preview stays a K6/2-era preview (no 批准 5 evidence).
+    candidate: { ...receipt().candidate, ratification5: undefined },
     settings: {
       ...receipt().settings,
       variantKey: devKey,
@@ -413,7 +620,9 @@ test("P2-12: the fixture block binds the variant, path, digest and kind", () => 
     },
     samples: scheduleRows([devVariantRow]),
     requeries: [],
+    verdict: { outcome: "preview-only" },
   };
+  delete devRun.candidate.ratification5;
   devRun.aggregates = computeRunAggregates(devRun, {
     ...devVariantRow,
     kind: "dev",
@@ -720,7 +929,7 @@ test("SHA256SUMS is sha256sum -c compatible and detects tampering", async () => 
 test("DR-CP4-S1C1-9: the receipt's feature set is exactly the evaluation feature", () => {
   const withFeatures = (features) =>
     receipt({ candidate: { ...receipt().candidate, features } });
-  assert.deepEqual(validateCp4Receipt(withFeatures(["nir1-graph-eval"])), []);
+  assert.deepEqual(otherErrors(withFeatures(["nir1-graph-eval"])), []);
   for (const features of [
     ["nir1-graph-eval", "licensing"],
     ["licensing", "nir1-graph-eval"],

@@ -84,7 +84,13 @@ export function classifyProcess(argv) {
     return { kind: "test", command: "local-ci/journey" };
   if (/run-nir1-retrieval\.mjs/u.test(joined))
     return { kind: "measurement", command: "nir1-retrieval" };
-  if (/nir1-graph-eval\/(runner|setup-driver)\.mjs/u.test(joined))
+  // P3-10: the diagnostics (hook-check, dprime-check, diag-registration,
+  // smoke) are CP-4 measurements too.
+  if (
+    /nir1-graph-eval\/(runner|setup-driver|hook-check|dprime-check|diag-registration|smoke)\.mjs/u.test(
+      joined,
+    )
+  )
     return { kind: "measurement", command: "cp4" };
   return null;
 }
@@ -93,9 +99,18 @@ export function classifyProcess(argv) {
  * The window fields of one sample from a process listing
  * (`[{pid, argv, cwd}]`). Processes in `ownPids` are excluded (the harness,
  * its Electron tree); a build whose cwd is inside `root` is a same-worktree
- * build.
+ * build. `locksReadable` and `heavySlotFiles` record what the heavy-slot
+ * reading saw (P3-10): an unreadable /proc/locks is `heavySlotsInUse: null`,
+ * never 0, and the receipt treats it (and zero slot files) as a gap.
  */
-export function windowFields({ processes, ownPids, root, heavySlots }) {
+export function windowFields({
+  processes,
+  ownPids,
+  root,
+  heavySlots,
+  locksReadable,
+  heavySlotFiles,
+}) {
   const own = new Set(ownPids);
   const buildProcesses = [];
   const otherMeasurements = [];
@@ -114,7 +129,9 @@ export function windowFields({ processes, ownPids, root, heavySlots }) {
     } else otherMeasurements.push(`${kind.kind}:${kind.command}:${row.pid}`);
   }
   return {
-    heavySlotsInUse: heavySlots,
+    locksReadable: locksReadable === true,
+    heavySlotFiles,
+    heavySlotsInUse: locksReadable === true ? heavySlots : null,
     buildProcesses,
     otherMeasurements,
     sameWorktreeBuild,
@@ -213,9 +230,11 @@ export function readWindowSample({
   procRoot = "/proc",
   slotDir = HEAVY_SLOT_DIR,
 }) {
+  const locksText = readMaybe(path.join(procRoot, "locks"));
+  const inodes = slotInodes(slotDir);
   const heavySlots = heavySlotsInUse({
-    locksText: readMaybe(path.join(procRoot, "locks")) ?? "",
-    slotInodes: slotInodes(slotDir),
+    locksText: locksText ?? "",
+    slotInodes: inodes,
   });
   return {
     atMs: Date.now(),
@@ -224,6 +243,8 @@ export function readWindowSample({
       ownPids: ownPids(),
       root,
       heavySlots,
+      locksReadable: locksText !== null,
+      heavySlotFiles: inodes.length,
     }),
     loadAverage: os.loadavg(),
     cpuPressure: readMaybe(path.join(procRoot, "pressure/cpu")),
