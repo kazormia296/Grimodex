@@ -590,7 +590,9 @@ rules:
       - src/features/chat/chatHistoryApi.ts
       - src/features/chat/chatTypedWrites.ts
       - src/features/chat/chatEgressClosure.test.ts
+      - src/features/chat/chatEgressClosure.captureRoute.test.ts
       - src/features/chat/chatEgressClosure.ts
+      - src/features/chat/editCaptureRoute.testSupport.ts
       - src/features/chat/chatEgressScope.test.ts
       - src/features/chat/ChatPanel.egressScope.test.tsx
       - src/features/chat/closeProfileEgressEntrances.ts

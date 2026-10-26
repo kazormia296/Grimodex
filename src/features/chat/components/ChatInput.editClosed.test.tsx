@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { render } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // K3/2 "chat の書込みの入口" 4 (DR-DA2B-R6): while restricted, the input's
 // edit-the-last-message entrance (the editLast key) of a conversation that is
@@ -69,13 +69,21 @@ vi.mock("../useChatModelCatalog", () => ({
 
 import { useChatStore } from "../chatStore";
 import { ChatInput } from "./ChatInput";
+import { configureOpenaiCompatibleRoute } from "../editCaptureRoute.testSupport";
 
 function renderInput(editDisabled: boolean) {
   const editUserMessage = vi.fn(() => ({ content: "last question" }));
-  // 場面の会話（同期の経路）。非場面の会話の状態の読取は
-  // `ChatInput.nonSceneEdit.test.tsx`（DR-DA2B-R17）。
+  // 場面の会話で、再送が capture の内の route（同期の経路。Electron の bridge があり、
+  // loopback の OpenAI 互換）。状態の読取の経路は `ChatInput.nonSceneEdit.test.tsx`
+  // （DR-DA2B-R17、R29）。bridge の読取は同期の経路では呼ばれない。
+  (window as unknown as { grimodex?: unknown }).grimodex = {
+    invoke: vi.fn(async () => ({ ok: true, value: { state: "restricted" } })),
+    listen: vi.fn(() => () => undefined),
+  };
+  configureOpenaiCompatibleRoute();
   useChatStore.setState({
     agentMode: false,
+    ragEnabled: false,
     chatScope: "scene",
     activeSceneId: "scene-1",
     scopeAnchorId: null,
@@ -98,6 +106,9 @@ function renderInput(editDisabled: boolean) {
 describe("the input's closed edit-the-last-message entrance", () => {
   beforeEach(() => {
     h.editor.commands.setContent.mockClear();
+  });
+  afterEach(() => {
+    delete (window as unknown as { grimodex?: unknown }).grimodex;
   });
 
   it("edits nothing while closed", () => {

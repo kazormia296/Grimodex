@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { render } from "@testing-library/react";
+import { act, render, renderHook } from "@testing-library/react";
 import {
   afterEach,
   beforeAll,
@@ -37,6 +37,8 @@ const h = vi.hoisted(() => {
   return {
     editor,
     onEditLast: { current: (() => {}) as () => void },
+    setCommandPopup: { current: null as null | ((state: unknown) => void) },
+    onCommandSelect: { current: null as null | ((cmd: unknown) => void) },
     toastError: vi.fn(),
     deleteMessages: vi.fn(async (_ids: string[]) => undefined),
   };
@@ -58,9 +60,21 @@ vi.mock("@tiptap/react", () => ({
 }));
 
 vi.mock("../extensions/chatInputExtensions", () => ({
-  getChatInputExtensions: (options: { onEditLast: () => void }) => {
+  getChatInputExtensions: (options: {
+    onEditLast: () => void;
+    setCommandPopup: (state: unknown) => void;
+  }) => {
     h.onEditLast.current = options.onEditLast;
+    h.setCommandPopup.current = options.setCommandPopup;
     return [];
+  },
+}));
+
+// slash command の選択（`handleCommandSelect`）を試験から呼ぶ。
+vi.mock("./ChatCommandPopup", () => ({
+  ChatCommandPopup: (props: { onSelect: (cmd: unknown) => void }) => {
+    h.onCommandSelect.current = props.onSelect;
+    return null;
   },
 }));
 
@@ -81,6 +95,11 @@ import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profile
 import { useChatStore } from "../chatStore";
 import { resetNonSceneEditClosureForTest } from "../chatEgressClosure";
 import { ChatInput } from "./ChatInput";
+import { useChatMessageActions } from "../useChatMessageActions";
+import {
+  configureCloudRoute,
+  configureOpenaiCompatibleRoute,
+} from "../editCaptureRoute.testSupport";
 
 const STATUS = "get_profile_egress_status";
 
@@ -96,9 +115,13 @@ function installBridge(state: unknown) {
   return invoke;
 }
 
-function renderInput(scope: "project" | "scene") {
+function renderInput(
+  scope: "project" | "scene",
+  editorRef?: { current: unknown },
+) {
   useChatStore.setState({
     agentMode: false,
+    ragEnabled: false,
     activeProjectId: "p1",
     activeSessionId: "s1",
     activeSceneId: scope === "scene" ? "scene-1" : "",
@@ -123,7 +146,7 @@ function renderInput(scope: "project" | "scene") {
       },
     ] as never,
   });
-  render(<ChatInput onSend={vi.fn()} />);
+  render(<ChatInput onSend={vi.fn()} editorRef={editorRef as never} />);
 }
 
 async function flush() {
@@ -143,6 +166,7 @@ describe("入力欄の最後の行の編集（本物の定数のまま）", () =
     h.editor.commands.setContent.mockClear();
     h.toastError.mockClear();
     h.deleteMessages.mockClear();
+    configureOpenaiCompatibleRoute();
   });
   afterEach(() => {
     delete (window as unknown as { grimodex?: unknown }).grimodex;
@@ -246,12 +270,136 @@ describe("入力欄の最後の行の編集（本物の定数のまま）", () =
     },
   );
 
-  it("場面の会話では状態を読まず、同期で編集する", () => {
+  it("場面の会話で route が capture の内なら状態を読まず、同期で編集する", () => {
     const invoke = installBridge({ state: "restricted" });
     renderInput("scene");
     h.onEditLast.current();
     expect(invoke).not.toHaveBeenCalled();
     expect(h.deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
     expect(h.editor.commands.setContent).toHaveBeenCalledWith("last question");
+  });
+
+  // 表の 5（DR-DA2B-R29）：場面の会話でも route が capture の外なら状態を読む。
+  it.each([
+    ["cloud の provider", () => configureCloudRoute()],
+    ["agent", () => useChatStore.setState({ agentMode: true })],
+  ] as Array<[string, () => void]>)(
+    "場面の会話で %s なら restricted で行を消さない",
+    async (_label, arrange) => {
+      const invoke = installBridge({ state: "restricted" });
+      renderInput("scene");
+      arrange();
+      h.onEditLast.current();
+      await vi.waitFor(() =>
+        expect(h.toastError).toHaveBeenCalledWith(i18next.t("common.error")),
+      );
+      await flush();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(h.deleteMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toHaveLength(2);
+      expect(h.editor.commands.setContent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("場面の会話で cloud の route でも unrestricted なら今のとおり編集する", async () => {
+    const invoke = installBridge({ state: "unrestricted" });
+    configureCloudRoute();
+    renderInput("scene");
+    h.onEditLast.current();
+    await vi.waitFor(() =>
+      expect(h.editor.commands.setContent).toHaveBeenCalledWith(
+        "last question",
+      ),
+    );
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(h.deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
+  });
+
+  // 独立レビューの P2-1（DR-DA2B-R32）：編集の前に選んでおいた slash command（本文から
+  // 消えるが保留される）は、再送で `commandInstruction` になり capture の外になる。
+  // click の時点の保留中の command を判定に含め、restricted では行を消さない。
+  function selectBrainstorm() {
+    act(() => {
+      h.setCommandPopup.current?.({
+        items: [{ id: "brainstorm", label: "brainstorm" }],
+        selectedIndex: 0,
+        clientRect: null,
+        command: vi.fn(),
+      });
+    });
+    act(() => {
+      h.onCommandSelect.current?.({ id: "brainstorm", label: "brainstorm" });
+    });
+  }
+
+  it("保留中の command があれば、loopback の場面の会話の ArrowUp も restricted で行を消さない", async () => {
+    const invoke = installBridge({ state: "restricted" });
+    renderInput("scene");
+    selectBrainstorm();
+    h.onEditLast.current();
+    await vi.waitFor(() =>
+      expect(h.toastError).toHaveBeenCalledWith(i18next.t("common.error")),
+    );
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(h.deleteMessages).not.toHaveBeenCalled();
+    expect(useChatStore.getState().messages).toHaveLength(2);
+  });
+
+  it("保留中の command があれば、loopback の場面の会話の menu の編集も restricted で行を消さない", async () => {
+    const invoke = installBridge({ state: "restricted" });
+    const editorRef = { current: null as unknown };
+    renderInput("scene", editorRef);
+    selectBrainstorm();
+    const { result } = renderHook(() =>
+      useChatMessageActions({
+        aiSettings: null,
+        chatEditorRef: editorRef as never,
+        syncInsertedToEditorMetadata: vi.fn(),
+      }),
+    );
+    result.current.handleEditMessage("u1");
+    await vi.waitFor(() =>
+      expect(h.toastError).toHaveBeenCalledWith(i18next.t("common.error")),
+    );
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(h.deleteMessages).not.toHaveBeenCalled();
+    expect(useChatStore.getState().messages).toHaveLength(2);
+  });
+
+  it("保留中の command が無ければ、menu の編集は入力欄の登録を読み capture の内として同期で編集する", () => {
+    const invoke = installBridge({ state: "restricted" });
+    const editorRef = { current: null as unknown };
+    renderInput("scene", editorRef);
+    const { result } = renderHook(() =>
+      useChatMessageActions({
+        aiSettings: null,
+        chatEditorRef: editorRef as never,
+        syncInsertedToEditorMetadata: vi.fn(),
+      }),
+    );
+    result.current.handleEditMessage("u1");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(h.deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
+  });
+
+  it("指示を作らない command（continue）は capture の内のまま同期で編集する", () => {
+    const invoke = installBridge({ state: "restricted" });
+    renderInput("scene");
+    act(() => {
+      h.setCommandPopup.current?.({
+        items: [{ id: "continue", label: "continue" }],
+        selectedIndex: 0,
+        clientRect: null,
+        command: vi.fn(),
+      });
+    });
+    act(() => {
+      h.onCommandSelect.current?.({ id: "continue", label: "continue" });
+    });
+    h.onEditLast.current();
+    expect(invoke).not.toHaveBeenCalled();
+    expect(h.deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
   });
 });

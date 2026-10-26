@@ -24,6 +24,7 @@ import { useChatStore } from "../chatStore";
 import {
   admitConversationEdit,
   isEditTargetCurrent,
+  registerPendingCommandReader,
   snapshotEditTarget,
 } from "../chatEgressClosure";
 import { useSettingsStore } from "@/features/settings/settingsStore";
@@ -538,10 +539,13 @@ export function ChatInput({
       const userMessages = messages.filter((m) => m.role === "user");
       const last = userMessages[userMessages.length - 1];
       if (!last) return;
-      // 場面の会話でないときは、定数に依らず状態を読んでから進む（DR-DA2B-R17）。
-      const target = snapshotEditTarget(useChatStore.getState(), last.id);
+      // 再送が capture に入らないときは、定数に依らず状態を読む（DR-DA2B-R17、R29）。
+      const target = snapshotEditTarget(useChatStore.getState(), last.id, {
+        // 保留中の slash command は再送に付く（R32）。
+        commandInstruction: buildPendingCommandInstruction(),
+      });
       void admitConversationEdit({
-        sceneConversation: target.sceneConversation,
+        target,
         // 削除の前提：editor が生きていて、空のまま（ArrowUp は空の入力欄でだけ発火する。
         // 読取の間に打った文字を上書きしない。DR-DA2B-R20、R21）。
         isCurrent: () =>
@@ -564,7 +568,21 @@ export function ChatInput({
         },
       });
     };
-  }, [editor, editDisabled, messages, editUserMessage]);
+  }, [
+    editor,
+    editDisabled,
+    messages,
+    editUserMessage,
+    buildPendingCommandInstruction,
+  ]);
+
+  // menu の編集（ChatInput の外）が、この入力欄の保留中の command を読めるようにする（R32）。
+  useEffect(() => {
+    if (!editor) return;
+    return registerPendingCommandReader(editor, () =>
+      buildPendingCommandInstruction(),
+    );
+  }, [editor, buildPendingCommandInstruction]);
 
   // C: エディタ「チャットで調べる」から渡されたテキストを入力欄に pre-fill
   useEffect(() => {
