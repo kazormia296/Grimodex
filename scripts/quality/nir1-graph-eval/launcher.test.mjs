@@ -24,6 +24,7 @@ import {
 } from "./launcher.mjs";
 import { assertElectronLaunch } from "./receipt.mjs";
 import { admitDevPreview } from "./admission.mjs";
+import { loadDevFixture } from "./dev-fixture.mjs";
 import { BINARY_MARKERS } from "./native-architecture.mjs";
 
 const WRAPPER_ENV = Object.freeze({
@@ -286,10 +287,7 @@ test("D-6／A-4: 評価の .node の起動は admission を要し、既定の ad
     writeFileSync(evalNode, `\0${BINARY_MARKERS.join("\0")}\0eval`);
     const productNode = path.join(root, "product.node");
     writeFileSync(productNode, "\0napi_register_module_v1\0product");
-    const preview = admitDevPreview({
-      purpose: "smoke",
-      fixturePath: null,
-    });
+    const preview = admitDevPreview({ purpose: "smoke", fixture: null });
     // 既定の path が無い、または製品の .node なら、admission つきで起動できる。
     assert.equal(
       assertLaunchAdmitted({ root, nativePath: evalNode, admission: preview })
@@ -323,17 +321,37 @@ test("D-6／A-4: 評価の .node の起動は admission を要し、既定の ad
         () => assertLaunchAdmitted({ root, nativePath, admission: preview }),
         /default addon/,
       );
-    // dev の preview の admission は凍結した fixture の path を受けない。
+    // E-7: dev の preview の admission は loadDevFixture が読んだ fixture に束縛し、
+    // path の文字列や手で作った object（凍結した fixture の path を含む）は受けない。
+    const loaded = loadDevFixture({
+      root: ROOT,
+      fixturePath:
+        "scripts/quality/nir1-graph-eval/dev-fixtures/dev-lantern.v1.json",
+    });
+    const bound = admitDevPreview({
+      purpose: "runner-preview",
+      fixture: loaded,
+    });
+    assert.equal(bound.fixturePath, loaded.path);
+    assert.equal(bound.fixtureSha256, loaded.sha256);
+    for (const fixture of [
+      { ...loaded },
+      { path: "evals/nir1-graph/fixtures/g-02.v1.json", sha256: "0" },
+    ])
+      assert.throws(
+        () => admitDevPreview({ purpose: "runner-preview", fixture }),
+        /loadDevFixture/,
+      );
     assert.throws(
       () =>
         admitDevPreview({
           purpose: "runner-preview",
-          fixturePath: "evals/nir1-graph/fixtures/g-02.v1.json",
+          fixturePath: loaded.path,
         }),
-      /\[precheck\]/,
+      /unsupported option fixturePath/,
     );
     assert.throws(
-      () => admitDevPreview({ purpose: "formal", fixturePath: null }),
+      () => admitDevPreview({ purpose: "formal", fixture: null }),
       /\[precheck\]/,
     );
   } finally {

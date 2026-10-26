@@ -296,7 +296,7 @@ async function main() {
   });
   const admission = admitDevPreview({
     purpose: "hook-check",
-    fixturePath: loaded.path,
+    fixture: loaded,
   });
   if (loaded.sha256 !== setup.fixture.sha256)
     throw new Error("[precheck] the dev fixture changed since its setup");

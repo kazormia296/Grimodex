@@ -32,6 +32,7 @@ import {
   PRODUCT_NATIVE_ARTIFACT,
 } from "../nir1-retrieval/contract.mjs";
 import { claimFactsSealer } from "./admission-facts.mjs";
+import { isLoadedDevFixture } from "./dev-fixture.mjs";
 import {
   G01_FIXTURE,
   GRAPH_CASE_FREEZE,
@@ -444,20 +445,27 @@ export const DEV_PREVIEW_PURPOSES = Object.freeze([
  * frozen G-case is launched only with admitGraphCaseRun's admission.
  */
 export function admitDevPreview(input) {
-  rejectOverrides(input, ["purpose", "fixturePath"]);
+  rejectOverrides(input, ["purpose", "fixture"]);
   if (!DEV_PREVIEW_PURPOSES.includes(input.purpose))
     throw new Error(
       `[precheck] a dev preview launch names one of ${DEV_PREVIEW_PURPOSES.join(", ")}`,
     );
-  const fixturePath = input.fixturePath ?? null;
-  if (fixturePath !== null && classifyGraphFixturePath(fixturePath) !== "dev")
+  // E-7: bound to the fixture actually read (loadDevFixture's own object,
+  // which refuses frozen paths and copies of frozen material), never a path.
+  const fixture = input.fixture ?? null;
+  if (fixture !== null && !isLoadedDevFixture(fixture))
+    throw new Error(
+      "[precheck] a dev preview admission binds the fixture loadDevFixture returned",
+    );
+  if (fixture !== null && classifyGraphFixturePath(fixture.path) !== "dev")
     throw new Error(
       "[precheck] a dev preview never launches the evaluation build on a frozen fixture",
     );
   const admission = Object.freeze({
     kind: "dev-preview",
     purpose: input.purpose,
-    fixturePath,
+    fixturePath: fixture?.path ?? null,
+    fixtureSha256: fixture?.sha256 ?? null,
   });
   DEV_PREVIEWS.add(admission);
   return admission;

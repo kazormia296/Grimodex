@@ -297,7 +297,7 @@ async function main() {
       tmpRoot: options.tmp ? path.join(options.tmp, options.run) : null,
       admission: admitDevPreview({
         purpose: "runner-preview",
-        fixturePath: loaded.path,
+        fixture: loaded,
       }),
       extraEnv: measurementSeamEnv({
         bodyNonce: nonce,

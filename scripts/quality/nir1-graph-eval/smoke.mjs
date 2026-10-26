@@ -163,7 +163,7 @@ async function main() {
       observer,
       env,
       netLogPath,
-      admission: admitDevPreview({ purpose: "smoke", fixturePath: null }),
+      admission: admitDevPreview({ purpose: "smoke", fixture: null }),
     });
     report.launch = { pid: handle.pid, removedEnv: handle.launch.removedEnv };
     // The socket window is the Electron lifetime: the sampler's first sample

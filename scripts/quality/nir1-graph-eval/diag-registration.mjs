@@ -211,7 +211,7 @@ async function main() {
     tmpRoot: options.tmp ? path.join(options.tmp, options.run) : null,
     admission: admitDevPreview({
       purpose: "diag-registration",
-      fixturePath: loaded.path,
+      fixture: loaded,
     }),
     extraEnv: measurementSeamEnv({
       bodyNonce: randomUUID(),

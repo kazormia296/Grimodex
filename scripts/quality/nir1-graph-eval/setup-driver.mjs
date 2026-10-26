@@ -524,7 +524,7 @@ async function main() {
   const nativePath = path.resolve(options.native);
   const admission = admitDevPreview({
     purpose: "setup",
-    fixturePath: loaded.path,
+    fixture: loaded,
   });
   const receipt = {
     schemaVersion: SETUP_RECEIPT_SCHEMA,

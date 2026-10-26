@@ -144,6 +144,17 @@ export function validateDevFixture(fixture) {
  * under `root` reached without a symlink, and not be a copy of frozen
  * material. Returns `{ path, sha256, bytes, fixture, ordered }`.
  */
+/** Fixtures loadDevFixture returned (E-7: a dev preview admission binds one). */
+const LOADED_DEV_FIXTURES = new WeakSet();
+
+export function isLoadedDevFixture(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    LOADED_DEV_FIXTURES.has(value)
+  );
+}
+
 export function loadDevFixture({ root, fixturePath }) {
   if (classifyGraphFixturePath(fixturePath) !== "dev")
     fail(`${fixturePath} is not under the dev fixture directory`);
@@ -159,7 +170,15 @@ export function loadDevFixture({ root, fixturePath }) {
     fail(`${fixturePath} is a copy of frozen material`);
   const fixture = JSON.parse(bytes);
   const ordered = validateDevFixture(fixture);
-  return { path: fixturePath, sha256: digest, bytes, fixture, ordered };
+  const loaded = Object.freeze({
+    path: fixturePath,
+    sha256: digest,
+    bytes,
+    fixture,
+    ordered,
+  });
+  LOADED_DEV_FIXTURES.add(loaded);
+  return loaded;
 }
 
 /** The dev variant row (`dev:<file base>/<variant>`) of a loaded fixture. */

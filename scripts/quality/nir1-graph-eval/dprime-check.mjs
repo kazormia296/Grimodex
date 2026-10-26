@@ -386,7 +386,7 @@ async function main() {
     throw new Error("[precheck] the dev fixture changed since its setup");
   const admission = admitDevPreview({
     purpose: "dprime-check",
-    fixturePath: loaded.path,
+    fixture: loaded,
   });
   const ids = setup.logicalToRuntime;
   const seed = ids.entities[loaded.fixture.graphSeedEntityId];
