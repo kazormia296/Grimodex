@@ -367,12 +367,14 @@ function Conversations({
   const [outcome, setOutcome] = useState<Outcome | null>(null);
   const [creating, setCreating] = useState(false);
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    // Set again on setup: React's development double effect runs the
+    // cleanup once before the real mount (StrictMode).
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   const refresh = useCallback(async () => {
     const result = await listNir1LocalConversations();

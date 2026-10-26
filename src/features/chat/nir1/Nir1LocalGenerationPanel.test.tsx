@@ -7,7 +7,7 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { createRef } from "react";
+import { StrictMode, createRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const invokeMock = vi.hoisted(() => vi.fn());
@@ -492,5 +492,50 @@ describe("the conversations (create／list)", () => {
     fireEvent.click(screen.getByTestId("nir1-local-show-conversations"));
     await screen.findByText(ja.panel.ipc["egress-denied"]);
     expect(document.body.textContent).not.toContain("D2A_EGRESS_DENIED");
+  });
+});
+
+// Review fix 3: React's development double effect must not drop the answers.
+describe("the conversations under StrictMode", () => {
+  it("applies create and list answers after the double effect", async () => {
+    answer("nir1_local_conversation_create", {
+      status: "created",
+      conversationId: WRITING,
+      displayName: { purpose: "writing", createdAt: null },
+    });
+    answer("nir1_local_conversation_list", {
+      status: "ok",
+      conversations: [
+        {
+          conversationId: WRITING,
+          displayName: { purpose: "writing", createdAt: null },
+        },
+      ],
+      truncated: false,
+    });
+    const acceptedRef = { current: null as Nir1LocalAcceptedHandler | null };
+    const onOpenConversation = vi.fn();
+    render(
+      <StrictMode>
+        <Nir1LocalGenerationPanel
+          conversationId={null}
+          sceneId="scene-1"
+          acceptedRef={acceptedRef}
+          onOpenConversation={onOpenConversation}
+        />
+      </StrictMode>,
+    );
+    fireEvent.click(screen.getByTestId("nir1-local-create-writing"));
+    await waitFor(() =>
+      expect(onOpenConversation).toHaveBeenCalledWith(WRITING),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("nir1-local-create-writing").textContent).toBe(
+        ja.panel.create.writing,
+      ),
+    );
+    fireEvent.click(screen.getByTestId("nir1-local-show-conversations"));
+    await screen.findByText(ja.panel.createdAtUnknown);
+    expect(acceptedRef.current).not.toBeNull();
   });
 });
