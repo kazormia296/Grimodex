@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   createNir1LocalGenerationTurn,
+  isNir1LocalTurnTerminal,
   type Nir1LocalGenerationTurn,
   type Nir1LocalTurnPorts,
   type Nir1LocalTurnSnapshot,
@@ -12,6 +13,7 @@ import {
   startNir1LocalGeneration,
 } from "./nir1LocalGenerationApi";
 import type { Nir1LocalPurposeGate } from "./nir1LocalPolicyGate";
+import type { Nir1LocalReason } from "./nir1LocalGenerationApi";
 
 /**
  * The document's local generations (DD-1c, DR-DD1C-4): the latest generation
@@ -25,10 +27,15 @@ import type { Nir1LocalPurposeGate } from "./nir1LocalPolicyGate";
 interface Nir1LocalGenerationState {
   /** The latest generation's snapshot of each conversation. */
   readonly turns: Readonly<Record<string, Nir1LocalTurnSnapshot>>;
+  /**
+   * Why the latest accepted send of a conversation started nothing while its
+   * running generation stays shown (DR-DD1C-17).
+   */
+  readonly notices: Readonly<Record<string, Nir1LocalReason>>;
 }
 
 export const useNir1LocalGenerationStore = create<Nir1LocalGenerationState>(
-  () => ({ turns: {} }),
+  () => ({ turns: {}, notices: {} }),
 );
 
 const DEFAULT_PORTS: Nir1LocalTurnPorts = {
@@ -40,7 +47,10 @@ const DEFAULT_PORTS: Nir1LocalTurnPorts = {
   now: () => Date.now(),
 };
 
-/** The latest machine of each conversation (older ones finish on their own). */
+/**
+ * The latest machine of each conversation. A machine that is not at its
+ * terminal is never replaced, so its generation stays shown and stoppable.
+ */
 const latest = new Map<string, Nir1LocalGenerationTurn>();
 
 function publish(snapshot: Nir1LocalTurnSnapshot): void {
@@ -49,27 +59,49 @@ function publish(snapshot: Nir1LocalTurnSnapshot): void {
   }));
 }
 
+function setNotice(conversationId: string, reason: Nir1LocalReason | null) {
+  useNir1LocalGenerationStore.setState((state) => {
+    const { [conversationId]: _previous, ...rest } = state.notices;
+    return {
+      notices: reason === null ? rest : { ...rest, [conversationId]: reason },
+    };
+  });
+}
+
 /**
  * Start a generation for an accepted capture. A purpose the AI usage policy
  * hides or cannot read is refused here without IPC (the renderer's
- * `blockIfPolicyOff` layer; Native decides again).
+ * `blockIfPolicyOff` layer; Native decides again). While the conversation's
+ * generation is not at its terminal, a new send starts nothing and is refused
+ * as `NIR1_LOCAL_SESSION_BUSY` (Native's answer for a second generation of
+ * one conversation) or by the policy, shown beside the running generation
+ * (DR-DD1C-17).
  */
 export function dispatchNir1LocalGeneration(
   target: Nir1LocalTurnTarget,
   gate: Nir1LocalPurposeGate,
   ports: Nir1LocalTurnPorts = DEFAULT_PORTS,
 ): void {
-  if (gate.presentation !== "enabled") {
+  const refusal: Nir1LocalReason | null =
+    gate.presentation === "enabled"
+      ? null
+      : gate.presentation === "pending"
+        ? "NIR1_LOCAL_UNAVAILABLE"
+        : gate.reason;
+  const running = latest.get(target.conversationId);
+  if (running && !isNir1LocalTurnTerminal(running.snapshot().phase)) {
+    setNotice(target.conversationId, refusal ?? "NIR1_LOCAL_SESSION_BUSY");
+    return;
+  }
+  setNotice(target.conversationId, null);
+  if (refusal !== null) {
     latest.delete(target.conversationId);
     publish({
       ...target,
       phase: "refused",
       text: "",
       thinking: "",
-      reason:
-        gate.presentation === "pending"
-          ? "NIR1_LOCAL_UNAVAILABLE"
-          : gate.reason,
+      reason: refusal,
       ipcError: null,
       terminalCode: null,
       canCancel: false,
@@ -90,6 +122,14 @@ export function cancelNir1LocalGenerationOf(conversationId: string): void {
   latest.get(conversationId)?.cancel();
 }
 
+export function useNir1LocalNotice(
+  conversationId: string | null,
+): Nir1LocalReason | null {
+  return useNir1LocalGenerationStore((state) =>
+    conversationId === null ? null : (state.notices[conversationId] ?? null),
+  );
+}
+
 export function useNir1LocalTurn(
   conversationId: string | null,
 ): Nir1LocalTurnSnapshot | null {
@@ -101,5 +141,5 @@ export function useNir1LocalTurn(
 /** Tests only. */
 export function resetNir1LocalGenerationsForTest(): void {
   latest.clear();
-  useNir1LocalGenerationStore.setState({ turns: {} });
+  useNir1LocalGenerationStore.setState({ turns: {}, notices: {} });
 }

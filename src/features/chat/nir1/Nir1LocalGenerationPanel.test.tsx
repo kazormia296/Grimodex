@@ -267,6 +267,39 @@ describe("the generation screen of a local conversation", () => {
     );
   });
 
+  // Review fix 1 (DR-DD1C-17): a second accepted send while one runs.
+  it("keeps the running generation and its stop when another send is accepted", async () => {
+    answer("nir1_local_conversation_read", emptyRead());
+    answer("nir1_local_generation_start", {
+      status: "started",
+      handle: HANDLE,
+    });
+    answer("nir1_local_generation_continue", {
+      status: "ok",
+      text: "途中",
+      thinking: "",
+      state: "running",
+      drained: false,
+    });
+    const { acceptedRef } = renderPanel({ conversationId: WRITING });
+    await waitFor(() => expect(acceptedRef.current).not.toBeNull());
+    act(() =>
+      acceptedRef.current!({ conversationId: WRITING, sceneId: "scene-1" }),
+    );
+    await screen.findByText("途中");
+    act(() =>
+      acceptedRef.current!({ conversationId: WRITING, sceneId: "scene-1" }),
+    );
+    await screen.findByText(ja.reason.NIR1_LOCAL_SESSION_BUSY);
+    expect(calls("nir1_local_generation_start")).toHaveLength(1);
+    expect(
+      screen
+        .getByTestId("nir1-local-turn")
+        .getAttribute("data-nir1-local-phase"),
+    ).toBe("running");
+    expect(screen.getByTestId("nir1-local-cancel")).toBeTruthy();
+  });
+
   it("shows a typed refusal and offers no retry of the same capture", async () => {
     answer("nir1_local_conversation_read", emptyRead());
     answer("nir1_local_generation_start", {

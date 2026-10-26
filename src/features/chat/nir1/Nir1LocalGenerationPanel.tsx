@@ -18,6 +18,7 @@ import {
 import {
   cancelNir1LocalGenerationOf,
   dispatchNir1LocalGeneration,
+  useNir1LocalNotice,
   useNir1LocalTurn,
 } from "./nir1LocalGenerationStore";
 import {
@@ -132,6 +133,7 @@ export default function Nir1LocalGenerationPanel({
   }, [acceptedRef]);
 
   const turn = useNir1LocalTurn(localConversationId);
+  const notice = useNir1LocalNotice(localConversationId);
 
   return (
     <section
@@ -143,6 +145,9 @@ export default function Nir1LocalGenerationPanel({
           <Nir1LocalDisclosure placement={3} />
           <ActivePurposeGate purpose={activePurpose} />
           {turn && <TurnView turn={turn} />}
+          {notice !== null && (
+            <OutcomeText outcome={{ kind: "reason", reason: notice }} />
+          )}
           <ConversationRows
             conversationId={localConversationId}
             refreshKey={
