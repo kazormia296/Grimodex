@@ -95,3 +95,71 @@ phase：R0 定数 false、R1 受理の待ち（送信の後、`_onAccepted` の�
 
 - 実 Electron（定数 false では UI が見えない。DD-1d の入口条件）、Windows／macOS、実 local server／model。
 - 送信先と model の表示が Native の解決した route と一致すること（renderer は設定から読むだけ。Native の解決は開始の時。DD-1d で比べる）。
+
+## 実装後の追記（2026-10-26。上の行は実装前の記録のまま残し、変えた点と分かったことはここに足す）
+
+| ID | 判断・訂正・観察 | 状態 |
+|---|---|---|
+| DR-DD1C-12 | （DR-DD1C-2 の訂正）mount の置き方。開示の 3 か所（`OpenaiCompatibleEndpointsManager.tsx`、`AiProjectSettings.tsx`、`ProfileEgressStatusIndicator.tsx`）は、DA-2b と同じく host の file に局所の `/* @__PURE__ */ lazy` を置く。最初は共有の slot module（`Nir1LocalDisclosureSlot.tsx`）を置いたが、定数の分岐が minify で消える前に module の取り込みが決まるため、slot が SettingsDialog と状態の表示の共有 chunk になり、起動時の `index` の preload の表に載った（実測 +49 byte で上限を超えた）。生成の画面は `Nir1LocalGenerationSlot.tsx`（importer は ChatPanel だけで ChatPanel の lazy chunk に入る）を残す：`profileActivationMountPoints.static.test.ts` が ChatPanel の pure な `lazy(` を 1 つに固定しているため、ChatPanel に局所の lazy を足すと DA-2b の試験を変えることになる | 実装・実測済み |
+| DR-DD1C-13 | 開始の直前の防御は `policyGuard.ts` の `isAiFeatureBlockedByPolicy`（`blockIfPolicyOff` と同じ層）で項目を見る（`currentNir1LocalPurposeGate`）。lazy chunk が `evaluateAiCapability` だけに届くと、起動時の `policyGuard` chunk から `evaluateAiCapability` が分かれた（実測 +393 byte、chunk が 1 つ増える。DR-DA2B-R8 と同じ現象）。`policyGuard` にも届かせると分かれない | 実装・実測済み |
+| DR-DD1C-14 | （DR-DD1C-8 の補足）Native の `decide` の写しは、空白の判定を Rust の `char::is_whitespace`（Unicode White_Space）の code point の集合で行い（JS の `trim` は U+FEFF も外す）、toggle の有無は own property だけを見る。Native の判定ベクトル 152 件の全件で、Writing と Review の両方の結果（allow／source／code／item）が一致する | 試験済み |
+| DR-DD1C-15 | 試験が実装の不具合を見つけた（commit 前）：continue の state が非終端のとき、`terminalPhaseOf` が `unknown`（終端）を返すため「final で drained でない」と誤判定し、差分なしでも 0 ms で continue を続けていた。終端の state だけを final とする判定（`isFinalState`）に直した | 修正・試験済み |
+| DR-DD1C-16 | 変異 M4a（終端で `handle = null` を外すだけ）は等価：終端の後の continue／cancel は `terminal()` の確認で止まり、handle を読む経路が無い。終端の確認も一緒に外す M4b は落ちる | 記録 |
+
+### 試験と変異
+
+追加した試験（vitest 310 件、実 Chromium 12 件）：`nir1LocalGenerationApi.test.ts`（40。Main の本物の validator〔`dispatchInvoke`〕を通した 6 command の args と応答、IPC を出さない要求の拒否、閉じた parse、error の分類）、`nir1LocalGenerationTurn.test.ts`（19。lifecycle matrix の R2〜R5）、`nir1LocalPolicyGate.test.ts`（166。Native の判定ベクトルの全件と hide／disable）、`nir1LocalRoutePreview.test.ts`（29）、`nir1LocalDisclosure.test.ts`（16。日英の項目 1〜9、置き場、禁止語、開示の試験 (4)・(6) の範囲）、`Nir1LocalDisclosure.test.tsx`（8）、`Nir1LocalGenerationPanel.test.tsx`（12）、`nir1LocalGenerationHosts.test.tsx`（3。定数 false で要素と lazy の要求 0）、`nir1LocalGenerationMountPoints.static.test.ts`（13）、`ChatPanel.nir1Local.test.tsx`（4）、`Nir1LocalDisclosure.browser.test.tsx`（12。幅 320／768／1280、日英）。
+
+| 変異（commit の後、原本の copy から戻す） | 落ちた試験 |
+|---|---|
+| M1 定数を true にする | 静的（定数の module の形） |
+| M2 policy の hide を外す | policy gate、panel |
+| M3 読めない policy の disable を外す | policy gate、panel |
+| M4a 終端で handle を捨てない（単独） | 通る（等価。DR-DD1C-16） |
+| M4b 終端で handle を捨てず、取消の終端の確認も外す | 状態機械（4 件） |
+| M5 取消を 2 本に分ける（capture の取消も呼ぶ） | 静的、panel |
+| M6 未知の reason を通す | wrapper、panel |
+| M7 遅れた continue を適用する | 状態機械 |
+| M8 取消の受理の後の running で phase を戻す | 状態機械 |
+| M9 start を 2 回送れる | 状態機械 |
+| M10 同じ受理で 2 本の生成 | panel |
+| M11 `CANCEL_CAPTURE_FAILED` を終端にする | 状態機械 |
+| M12 IPC の失敗の上限を外す | 状態機械 |
+| M13 受理を定数なしで渡す | 静的、ChatPanel |
+| M14 置き場 2 の mount を定数の外に出す | 静的、host |
+| M15 lazy の pure の印を外す | 静的 |
+| M16 start に route を足して送る | wrapper（Main の validator が拒否） |
+| M17 continue の差分の上限を外す | wrapper |
+| M18 unmount で生成を取消す | panel |
+| M19 read で unavailable の行を捨てる | wrapper、panel |
+| M20 renderer が会話 ID を作る | panel |
+| M21 置き場 5 から項目 6 を外す | 開示（2 file） |
+| M22 reason の文言を 1 つ消す | 開示 |
+| M23 IPC の error の文を画面に出す | wrapper、panel |
+| M24 policy の写しで toggle の型を見ない | policy gate（判定ベクトル） |
+| M25 開始の直前の policy の防御を外す | panel |
+
+実行した検証：`pnpm exec tsc --noEmit`（0 件）、変更 file の eslint／prettier（0 件）、`npx vitest run src`（1,586 file、15,744 件 pass、skip 38）、`pnpm test:browser`（`Nir1LocalDisclosure.browser`、`ProfileEgressStatusIndicator.browser`、`ChatPanel.virtualization.browser`、`layoutInvariants.browser` の 4 file、38 件）、`pnpm validate:architecture`（23 件 pass、ratchet 不変）、`node --test scripts/quality/impact-map.test.mjs`（37 件）、`node scripts/quality/impact-map.mjs --base origin/master`（Fallback: no。分類 file を変えたので全 suite の選択）、`pnpm eval:fixtures`（32 件 pass）、`pnpm build` と `pnpm perf:budget`（下の表）。Quick／Full は走らせていない。
+
+### 起動時 JS graph の実測（`pnpm build` → `pnpm perf:budget`。この worktree）
+
+| build | 起動時 raw／gzip／chunk 数 | lazy chunk |
+|---|---|---|
+| base（master `58023306`） | 4,250,973／1,343,340／150 | ChatPanel 181,538、SettingsDialog 203,740 |
+| DD-1c、定数 false | 4,250,973／1,343,232／150（起動時の各 chunk の大きさは base と同じ） | ChatPanel 181,630（+92）、SettingsDialog 203,746（+6）。`Nir1LocalGenerationPanel` と `Nir1LocalDisclosure` の chunk は dist に出るが、どの chunk からも参照されない |
+| DD-1c、定数 true（commit しない変異の build） | 4,250,973／1,343,373／150 | ChatPanel 183,541（+2,003）、SettingsDialog 205,447（+1,707）、`Nir1LocalDisclosure` 27,723（gzip 9,601）、`Nir1LocalGenerationPanel` 19,360（gzip 6,459） |
+
+上限の緩和は要らなかった。build の出力の検査（DR-DA2B-R14 と同じ方法、repo には足さない）：定数 false の build で、起動時の 150 chunk はどれも DD-1c の chunk の file 名、`nir1_local_generation_start`、`nir1_local_conversation_list`、`NIR1_LOCAL_POLICY_UNREADABLE`、`nir1Local` を含まない。
+
+### 確かめられなかったこと（実装後）
+
+- 実 Electron（定数 false では UI が見えない）。DD-1d の入口条件：実 Main／Native を通した create → 送信（capture）→ `_onAccepted` → start → continue → cancel → cold reopen → list／read、送信先と model の表示と Native が解決した route の一致、chat の会話の一覧での local の会話の見え方。
+- `_onAccepted` は capture の receipt を渡さないので、受理の時点の（会話、Scene）は ChatPanel の store の値を写したもの。capture の Scene（`effectiveSceneId`）と食い違う場合や transport の経路で受理された場合は、Native が `SCENE_MISMATCH`／`CAPTURE_NOT_CURRENT` で typed に拒否する（capture の前の拒否は押し直し扱いにならない）。実際に食い違う経路があるかは DD-1d で確かめる。
+- 生成の出力の chat のメッセージ一覧への反映（DR-DD1C-11）、thinking の内容の表示（DR-DD1C-10）。
+- Windows／macOS、実 local server／model。Quick／Full は走らせていない。read-only の独立レビューと Fable の受入れは integrator に委ねる。
+
+### integrator に戻す事項
+
+1. contract：不足で止まるものは無い。任意：`NIR1_LOCAL_REFUSAL_REASONS` は 1 万行超の `ipcContract.ts` から値で import している（tree-shake で配列だけになり、lazy chunk でだけ実測。DR-DD1C-3）。小さな共有 module に移すかは DD-1b の持ち主の判断。
+2. ipcQueue：6 command は caller の timeout を持たないので `mutation` の枠に入る。continue の polling（差分なしで 250 ms ごと）は lifecycle の barrier の間は待たされ、mutation の枠を短く使う。`src/lib/tauri.ts` は起動時の chunk なので DD-1c では変えていない。
+3. Session C-2 に回す文言：`src/features/chat/nir1/nir1LocalGenerationTranslations.ts` の全部（開示の項目 1〜9 と要旨、置き場の導入文、送信先の表示と使えない理由、生成の画面、35 個の reason と unknown、IPC の失敗の分類）。置き場 4（規約・プライバシー通知・ガイド・開発者メッセージの改訂）は PUB-L の PR。
