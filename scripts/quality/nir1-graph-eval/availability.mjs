@@ -431,6 +431,17 @@ function summarizeSteadyStateUnsealed(input) {
         exceeds: exceedsYardstick(missed, n),
       },
       poolEmpty: n === 0,
+      // K6/4:167: the IR timeoutRate is the parent's IR outcome only; the
+      // child's IR timeout is X5 and never enters it (disclosed, D-8).
+      irTimeout: {
+        n: pooledSamples.length,
+        timeouts: pooledSamples.filter((row) => row.irOutcome === "timeout")
+          .length,
+        rate: ratio(
+          pooledSamples.filter((row) => row.irOutcome === "timeout").length,
+          pooledSamples.length,
+        ),
+      },
       holdCases: qualityHoldVariants,
       violations: pooled.flatMap((row) => row.k64.violations),
       x,

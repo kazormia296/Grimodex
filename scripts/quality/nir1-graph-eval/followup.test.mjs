@@ -807,6 +807,20 @@ test("D-7／D-9: t_pub_p と同時刻の通知は X3、定常状態の F2 は ca
   assert.equal(trace.displayed, 199);
 });
 
+test("D-8: IR の timeoutRate は親の IR の outcome だけで求め、子の IR の timeout は入れない（K6/4:167）", () => {
+  const summary = summarizeK64(
+    k64Run((variant, repeat) => {
+      if (variant.key === "G-02/base" && repeat === 1)
+        return [{ irOutcome: "timeout" }, {}];
+      if (variant.key === "G-02/base" && repeat === 2)
+        return [{}, { child: { irOutcome: "timeout" } }];
+      return [{}, {}];
+    }),
+  );
+  assert.equal(summary.k64.irTimeout.timeouts, 1);
+  assert.equal(summary.k64.irTimeout.n, summary.k64.display.n);
+});
+
 test("D-11: 記録の欠けた（X10）sample でも遅れた結果の混入は違反として残す", () => {
   const record = k64Sample().followUp;
   delete record.counters;
