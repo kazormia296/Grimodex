@@ -38,7 +38,8 @@
     "variantId": "base",
     "fixturePath": "evals/nir1-graph/g02-directed-relation.v1.json",
     "fixtureSha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c",
-    "setup": "G-02 base の Gold の run と同じ setup の手順（setupOrder、setupTimeline、measurementPoint after-maintenance-current、B の seal は B-ROUTE の正規の経路、K2/4 の宣言の段は declarationPlace (ii)〔evals/nir1-graph/declaration-addendum.v1.json〕）。setup の最後に、期待寄与の材料（expectedMaterials）が A3 で eligible、Freshness が fresh、B の seal が current であることを確かめ、logical ID と runtime ID を setup receipt に記録する（K6/2 の Mandatory defenses）。",
+    "seedPinAddendum": "evals/nir1-graph/seed-pin-addendum.v1.json",
+    "setup": "G-02 base の Gold の run と同じ setup の手順（setupOrder と、SP/1 の seed の pin の段〔evals/nir1-graph/seed-pin-addendum.v1.json。g02-query から g02-orla への pin を upsertScenePin で 1 つ〕、setupTimeline、measurementPoint after-maintenance-current、B の seal は B-ROUTE の正規の経路、K2/4 の宣言の段は declarationPlace (ii)〔evals/nir1-graph/declaration-addendum.v1.json〕）。setup の最後に、期待寄与の材料（expectedMaterials）が A3 で eligible、Freshness が fresh、B の seal が current であることを確かめ、logical ID と runtime ID を setup receipt に記録する（K6/2 の Mandatory defenses）。",
     "workspace": "trace ごとに新しい workspace（manifest の isolation。Gold の run とは別の workspace）。編集中と閲覧中は別の workspace で行う。",
     "d2aMode": "restricted（observation-prep.v1.json の d10 の graph arm と同じ。Graph は restricted でだけ出る）",
     "reason": "期待寄与の材料（資格付きの edge を 1 件以上生む Revision）を logical ID で持つ case のうち、mutation が測定点の前に終わり、secret の foreshadow と Index の保持（index-state-holding）を持たず、Graph が available な最も単純な case として G-02 base を選んだ。G-01 は typed Revision の logical ID を fixture に持たない。G-03〜G-06 も条件を満たすが、1 つに固定するために単純さで選んだ（観測した値では選んでいない）。"
@@ -46,7 +47,7 @@
   "querySceneId": "g02-query",
   "seed": {
     "entityId": "g02-orla",
-    "source": "製品が出す query の seed（query の Scene の最初の pin。selectNir1GraphSeed）。fixture の manualSeed の entity と一致することを K6/4 R5 の照合で確かめてから trace を走らせる。一致しない、または確かめられなければ trace を走らせず [precheck]（G-case の setup は K6/4 批准 9 により変えない）。"
+    "source": "製品が出す query の seed（query の Scene の最初の pin。selectNir1GraphSeed）。その pin は SP/1 の seed の pin の段が setup で書いた g02-query から g02-orla への 1 つで、編集中の trace は本文だけを編集し pin を変えないので、各 query の seed は製品の規則で g02-orla になる。trace の workspace で R5 の照合（段の後の DB からの読み直し）が match でなければ trace を走らせず [precheck]（observation-prep.v1.json の r5Gate）。g02-harbor には pin が無いので、その query は seed を持たない。"
   },
   "expectedMaterials": [
     {

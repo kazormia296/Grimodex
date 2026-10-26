@@ -165,5 +165,5 @@
   "diagnosticNegativeRule": "負例は Gold ではなく診断用の期待値で、Gold の run とは別の run で行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。",
   "reviewPlan": "観測前の commit の独立 reviewer（S3）が確かめること: g01-mira が v1 の subset で宣言できること（veto に当たる記録も POV もない）、宣言の段が fixture v1 の期待値と前提条件を変えないこと、診断用の負例、K2/4 の表との一致、参照した sha256。確かめた記録は観測前の commit に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は以後変えない。",
   "review": null,
-  "seedPinStepNote": "SP/1（query の Scene の seed の pin の契約の草案。ユーザーの確認待ち）が確認されたら、seed の pin を作る段の位置を、この addendum の宣言の段（setupOrder の「foreshadows, foreshadow Codex links and pins」の段の後）と整合させる新しい版を作り、独立 reviewer のレビューを受け直す。この版は pin の段を足さない。"
+  "seedPinStepNote": "SP/1（nir1-graph-case-seed-pin-proposal/1。2026-10-27 に確認）の seed の pin の段（evals/nir1-graph/seed-pin-addendum.v1.json）を先に置き、この addendum の宣言の段はその後に置く。G-02〜G-08 の seed の pin の段は setupOrder の「foreshadows, foreshadow Codex links and pins」の段の直後（maintenance の有効化と setupTimeline の前）、G-01 は g01-mira の pin の後（typed Revision の prepare と B の seal の前）にある。宣言の段は declarationPlace (ii) のとおり測定の workspace を開いた後、Graph の arm の最初の query の前で、K2/4 の内容（宣言する Scene、値、期待値、負例）は変えない。診断用の負例（宣言しない run を含む）も seed の pin の段を含む workspace で取る（SP/1 の設計: Graph が要求された状態の負例になる）。"
 }

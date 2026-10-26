@@ -763,3 +763,91 @@ test("the frozen files the record must not change keep their freeze digests", as
     assert.equal(sha256(bytes), entry.sha256, entry.path);
   }
 });
+
+test("SP/1: the record binds the seed pin addendum, gates R5 on it and plans SP-P4", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.ok(
+    prep.boundFiles.some(
+      (row) => row.path === OBSERVATION_PREP_FILES.seedPinAddendum,
+    ),
+  );
+  const noSp1 = clone(prep);
+  delete noSp1.contracts.sp1;
+  assert.ok(observationPrepErrors(noSp1, ctx).some((e) => /sp1/u.test(e)));
+
+  const unbound = clone(prep);
+  unbound.boundFiles = unbound.boundFiles.filter(
+    (row) => row.path !== OBSERVATION_PREP_FILES.seedPinAddendum,
+  );
+  assert.ok(
+    observationPrepErrors(unbound, ctx).some((e) => /boundFiles/u.test(e)),
+  );
+
+  const noStep = clone(prep);
+  noStep.r5Gate.matchRequires = noStep.r5Gate.matchRequires.filter(
+    (row) => row !== "seed-pin-step-executed-workspace",
+  );
+  assert.ok(observationPrepErrors(noStep, ctx).some((e) => /r5Gate/u.test(e)));
+
+  const noP4 = clone(prep);
+  noP4.diagnosticRuns = noP4.diagnosticRuns.filter((row) => row.id !== "SP-P4");
+  assert.ok(
+    observationPrepErrors(noP4, ctx).some((e) =>
+      /diagnosticRuns|SP-P4/u.test(e),
+    ),
+  );
+
+  const graphP4 = clone(prep);
+  graphP4.diagnosticRuns.find((row) => row.id === "SP-P4").arms = [
+    "hybrid",
+    "graph",
+  ];
+  assert.ok(observationPrepErrors(graphP4, ctx).some((e) => /SP-P4/u.test(e)));
+
+  const fewer = clone(prep);
+  fewer.diagnosticRuns.find((row) => row.id === "SP-P4").variants.pop();
+  assert.ok(observationPrepErrors(fewer, ctx).some((e) => /SP-P4/u.test(e)));
+
+  const notExempt = clone(prep);
+  notExempt.r5Gate.exempt = notExempt.r5Gate.exempt.filter(
+    (row) => row.run !== "sp-p4-seed-pin-parity",
+  );
+  assert.ok(
+    observationPrepErrors(notExempt, ctx).some((e) => /r5Gate/u.test(e)),
+  );
+
+  const order = clone(prep);
+  order.stepOrder.graphCases = [...order.stepOrder.graphCases].reverse();
+  assert.ok(
+    observationPrepErrors(order, ctx).some((e) => /stepOrder/u.test(e)),
+  );
+});
+
+test("SP/1: addenda and traces point at the seed pin step", async () => {
+  const ctx = await context();
+  for (const [file, check] of [
+    [OBSERVATION_PREP_FILES.setupAddendum, setupAddendumErrors],
+    [OBSERVATION_PREP_FILES.declarationAddendum, declarationAddendumErrors],
+  ]) {
+    const addendum = await json(file);
+    const stale = clone(addendum);
+    stale.seedPinStepNote = "pending";
+    assert.ok(
+      check(stale, ctx).some((e) => /seedPinStepNote/u.test(e)),
+      file,
+    );
+  }
+  for (const file of [
+    OBSERVATION_PREP_FILES.traceEditing,
+    OBSERVATION_PREP_FILES.traceBrowsing,
+  ]) {
+    const trace = await json(file);
+    const stale = clone(trace);
+    stale.project.seedPinAddendum = null;
+    assert.ok(
+      traceErrors(stale, ctx).some((e) => /seedPinAddendum/u.test(e)),
+      file,
+    );
+  }
+});

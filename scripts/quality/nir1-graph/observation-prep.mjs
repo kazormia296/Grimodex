@@ -21,6 +21,11 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import {
+  SEED_PIN_ADDENDUM_PATH,
+  SP1,
+  seedPinAddendumErrors,
+} from "./seed-pin-addendum.mjs";
 
 export const OBSERVATION_PREP_FILES = Object.freeze({
   setupAddendum: "evals/nir1-g01/setup-addendum.v1.json",
@@ -32,6 +37,7 @@ export const OBSERVATION_PREP_FILES = Object.freeze({
     "evals/nir1-graph/observation-prep-author-declaration.v1.json",
   procedureDraft:
     "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json",
+  seedPinAddendum: SEED_PIN_ADDENDUM_PATH,
 });
 
 /** The placeholder S4 replaces in the observation-prep commit. */
@@ -121,6 +127,46 @@ const TOLERANCE_USAGES = Object.freeze([
   "k64-record.mjs:198",
 ]);
 const STALL_ATTEMPT_LIMIT = 2;
+/** SP/1 SP-P4: the base variants measured with and without the seed pin step. */
+const SP_P4_VARIANTS = Object.freeze([
+  "G-01/v1",
+  "G-02/base",
+  "G-03/base",
+  "G-04/base",
+  "G-05/base",
+  "G-06/base",
+  "G-07/base",
+  "G-08/base-usable",
+]);
+const R5_MATCH_REQUIRES = Object.freeze([
+  "seed-pin-step-executed-workspace",
+  "product-db-reread",
+]);
+const R5_EXEMPT = Object.freeze([
+  "g-case-parity-unrestricted",
+  "sp-p4-seed-pin-parity",
+]);
+/** The order of the setup and measurement steps (SP/1 設計; K2/4 :406-408). */
+const STEP_ORDER = Object.freeze({
+  graphCases: Object.freeze([
+    "setupOrder: project and Scenes, Codex, registry and explicit A1, foreshadows/foreshadow links/fixture pins",
+    "SP/1 seed pin step",
+    "setupOrder: maintenance enabled",
+    "setupTimeline",
+    "measurementPoint",
+    "measurement workspace opened (copy of the setup DB)",
+    "K2/4 declaration step (declaration runs only; D1 (ii))",
+    "V-10 READY probe and the Graph arm",
+  ]),
+  g01: Object.freeze([
+    "candidate §7 Scenes, explicit A1, registry, the g01-mira pin",
+    "SP/1 seed pin step",
+    "typed Revision prepare/approval, qualified IR, B seal",
+    "measurement workspace opened (copy of the setup DB)",
+    "K2/4 declaration step (D1 (ii))",
+    "V-10 READY probe and the Graph arm",
+  ]),
+});
 const PROCEDURE_V1 =
   "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
 const GRAPH_NEGATIVES = Object.freeze([
@@ -174,6 +220,7 @@ const DIAGNOSTIC_IDS = Object.freeze([
   ...G01_NEGATIVES.map(([id]) => id),
   ...GRAPH_NEGATIVES.map(([id]) => id),
   "K62-iii",
+  "SP-P4",
 ]);
 
 const TRACE_KINDS = Object.freeze({
@@ -421,6 +468,13 @@ function commonAddendumErrors(errors, addendum, ctx, schemaVersion) {
   ])
     if (typeof addendum[key] !== "string" || addendum[key].trim() === "")
       errors.push(`${key} is required`);
+  if (
+    typeof addendum.seedPinStepNote !== "string" ||
+    !addendum.seedPinStepNote.includes(SEED_PIN_ADDENDUM_PATH)
+  )
+    errors.push(
+      `seedPinStepNote must place the K2/4 declaration step after the SP/1 seed pin step (${SEED_PIN_ADDENDUM_PATH})`,
+    );
   if (
     !Array.isArray(addendum.measurementWorkspaceCheck) ||
     addendum.measurementWorkspaceCheck.length < 3
@@ -870,6 +924,10 @@ export function traceErrors(trace, ctx) {
         );
     }
   }
+  if (project.seedPinAddendum !== SEED_PIN_ADDENDUM_PATH)
+    errors.push(
+      `project.seedPinAddendum must be ${SEED_PIN_ADDENDUM_PATH} (the product's seed comes from the SP/1 seed pin)`,
+    );
   triggerValueErrors(errors, trace, ctx);
   if (
     trace.maintenance?.gate === undefined ||
@@ -1014,6 +1072,13 @@ export function observationPrepErrors(prep, ctx) {
     k64?.confirmedCommit !== CONTRACTS.k64.confirmedCommit
   )
     errors.push("contracts.k64 must be the K6/4 bytes");
+  const sp1 = prep.contracts?.sp1;
+  if (
+    sp1?.draftRef !== SP1.draftRef ||
+    sp1?.contractId !== SP1.contractId ||
+    sp1?.sha256 !== SP1.sha256
+  )
+    errors.push("contracts.sp1 must be the SP/1 bytes");
   referenceErrors(
     errors,
     "contracts.k64.freezeCommit",
@@ -1151,11 +1216,25 @@ export function observationPrepErrors(prep, ctx) {
       errors.push(`r5Gate.blockedUntilMatch must be ${R5_GATED.join(", ")}`);
     const exempt = Array.isArray(gate.exempt) ? gate.exempt : [];
     if (
-      exempt.some((row) => row?.run !== "g-case-parity-unrestricted") ||
-      exempt.some((row) => R5_GATED.includes(row?.run))
+      !same(exempt.map((row) => row?.run).sort(), [...R5_EXEMPT].sort()) ||
+      exempt.some((row) => R5_GATED.includes(row?.run)) ||
+      exempt.some((row) => typeof row?.reason !== "string")
     )
       errors.push(
-        "r5Gate.exempt may name only g-case-parity-unrestricted (no Graph arm)",
+        `r5Gate.exempt must be exactly ${R5_EXEMPT.join(", ")} (no Graph arm), each with its reason`,
+      );
+    if (
+      !same(
+        [...(gate.matchRequires ?? [])].sort(),
+        [...R5_MATCH_REQUIRES].sort(),
+      )
+    )
+      errors.push(
+        `r5Gate.matchRequires must be ${R5_MATCH_REQUIRES.join(", ")} (SP/1 批准 6)`,
+      );
+    if (!same(gate.beforeFirstGatedRun, ["sp-p4-seed-pin-parity"]))
+      errors.push(
+        "r5Gate.beforeFirstGatedRun must be the SP-P4 diagnostic (SP-N7 stops before any Graph arm run)",
       );
     if (gate.k64FreezeAfterMatch !== true)
       errors.push("r5Gate.k64FreezeAfterMatch must be true (K6/4 :317)");
@@ -1174,6 +1253,12 @@ export function observationPrepErrors(prep, ctx) {
     !String(prep.preconditions[0] ?? "").startsWith("r5Gate")
   )
     errors.push("preconditions must start with the r5Gate (S3-P1-1)");
+
+  // Step order (SP/1 設計: the seed pin step first, the declaration later).
+  if (!same(prep.stepOrder?.graphCases, STEP_ORDER.graphCases))
+    errors.push("stepOrder.graphCases must be the SP/1 and K2/4 order");
+  if (!same(prep.stepOrder?.g01, STEP_ORDER.g01))
+    errors.push("stepOrder.g01 must be the SP/1 and K2/4 order");
 
   // Registered tolerance usages (S3-P3-4).
   const tolerance = (prep.registeredForReview ?? []).find(
@@ -1309,7 +1394,25 @@ export function observationPrepErrors(prep, ctx) {
       errors.push(`diagnosticRuns ${negative.id} must match its addendum row`);
   }
 
-  // Bound files: exactly the five documents (S3-P2-2).
+  const p4 = (prep.diagnosticRuns ?? []).find((run) => run.id === "SP-P4");
+  if (
+    !p4 ||
+    p4.runKind !== "seed-pin-parity" ||
+    !same(p4.arms, ["hybrid"]) ||
+    p4.graphArm !== false ||
+    p4.seedSent !== false ||
+    !same(p4.variants, SP_P4_VARIANTS) ||
+    !same(p4.sides, ["without-seed-pin-step", "with-seed-pin-step"]) ||
+    p4.runsPerSide !== 1 ||
+    typeof p4.comparison !== "string" ||
+    typeof p4.onDifference !== "string" ||
+    !p4.onDifference.includes("[precheck]")
+  )
+    errors.push(
+      "diagnosticRuns SP-P4 must be the seed pin parity (hybrid only, no Graph arm, no seed, 8 base variants, without/with the step, SP-N7 -> [precheck])",
+    );
+
+  // Bound files: exactly the documents (S3-P2-2).
   const boundPaths = (prep.boundFiles ?? []).map((row) => row.path);
   const requiredBound = [
     OBSERVATION_PREP_FILES.setupAddendum,
@@ -1317,6 +1420,7 @@ export function observationPrepErrors(prep, ctx) {
     OBSERVATION_PREP_FILES.traceEditing,
     OBSERVATION_PREP_FILES.traceBrowsing,
     OBSERVATION_PREP_FILES.authorDeclaration,
+    OBSERVATION_PREP_FILES.seedPinAddendum,
   ];
   if (!same([...boundPaths].sort(), [...requiredBound].sort()))
     errors.push(`boundFiles must be exactly ${requiredBound.join(", ")}`);
@@ -1524,6 +1628,10 @@ export async function validateNir1ObservationPrep({ repoRoot }) {
     OBSERVATION_PREP_FILES.authorDeclaration,
     authorDeclarationErrors(ctx.parsed.authorDeclaration),
   );
+  add(
+    OBSERVATION_PREP_FILES.seedPinAddendum,
+    seedPinAddendumErrors(ctx.parsed.seedPinAddendum, ctx),
+  );
   const placeholders = (ctx.parsed.prep?.placeholders ?? []).map(
     (row) => row.token,
   );
@@ -1536,6 +1644,7 @@ export async function validateNir1ObservationPrep({ repoRoot }) {
       ctx.parsed.declarationAddendum,
       ctx.parsed.traceEditing,
       ctx.parsed.traceBrowsing,
+      ctx.parsed.seedPinAddendum,
     ].every((document) => document?.status === ADDENDUM_STATUSES[1]);
   return {
     status: errors.length === 0 ? "passed" : "failed",
