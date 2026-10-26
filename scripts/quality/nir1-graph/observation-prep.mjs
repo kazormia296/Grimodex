@@ -95,7 +95,34 @@ const G01_NEGATIVES = Object.freeze([
   ["K24-G01-N1", false, null],
   ["K24-G01-N2", true, "resave-same-body"],
   ["K24-G01-N3", true, "restore-same-bytes-body-version"],
+  ["K24-G01-N4", true, "restore-different-bytes-body-version"],
 ]);
+/** K2/4 :416 restore negatives need a prepared body version (S3-P3-2). */
+const RESTORE_MUTATIONS = new Set([
+  "restore-same-bytes-body-version",
+  "restore-different-bytes-body-version",
+]);
+/** S3-P1-1: what R5 gates (every Graph arm run and the K6/4 freeze). */
+const R5_GATED = Object.freeze([
+  "g-case-gold",
+  "g-case-diagnostic-negative",
+  "v10-ready-probe",
+  "k62-ii-diagnostic",
+  "k62-iii-diagnostic",
+  "trace",
+  "k64-freeze-commit",
+]);
+/** S3-P3-4: every use of BOUNDARY_TOLERANCE_MS in claude/nir1-cp4. */
+const TOLERANCE_USAGES = Object.freeze([
+  "join.mjs:93",
+  "followup.mjs:437",
+  "followup.mjs:588",
+  "followup.mjs:614",
+  "k64-record.mjs:198",
+]);
+const STALL_ATTEMPT_LIMIT = 2;
+const PROCEDURE_V1 =
+  "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
 const GRAPH_NEGATIVES = Object.freeze([
   ["K24-G02-N1", "G-02", "base"],
   ["K24-G07-N1", "G-07", "base"],
@@ -349,6 +376,22 @@ function negativeErrors(errors, rows, expected) {
       );
     if (typeof row?.expectation !== "string" || row.expectation.trim() === "")
       errors.push(`diagnosticNegatives[${at}].expectation is required`);
+    if (
+      want.mutationAfterDeclaration !== null &&
+      (typeof row?.measurementProcess !== "string" ||
+        !row.measurementProcess.includes("nir1-graph-index-build"))
+    )
+      errors.push(
+        `diagnosticNegatives[${at}].measurementProcess must reseal B through the journey seam (nir1-graph-index-build)`,
+      );
+    if (
+      RESTORE_MUTATIONS.has(want.mutationAfterDeclaration) &&
+      (typeof row?.beforeDeclaration !== "string" ||
+        row.beforeDeclaration.trim() === "")
+    )
+      errors.push(
+        `diagnosticNegatives[${at}].beforeDeclaration must prepare the body version to restore`,
+      );
   });
 }
 
@@ -606,7 +649,12 @@ export function expandTraceOperations(trace) {
     ),
   });
   const ops = [
-    { op: "open-scene", sceneId: trace.querySceneId, query: counted(0) },
+    {
+      op: "open-scene",
+      sceneId: trace.querySceneId,
+      until: "cycle-end",
+      query: counted(0),
+    },
   ];
   for (let cycle = 1; cycle <= trace.cycles; cycle++) {
     if (trace.kind === "editing") {
@@ -620,12 +668,14 @@ export function expandTraceOperations(trace) {
       ops.push({
         op: "product-query",
         trigger: "autosave-commit",
+        until: "cycle-end",
         query: counted(cycle),
       });
     } else {
       ops.push({
         op: "navigate",
         sceneId: trace.browse?.otherSceneId,
+        until: "query-published",
         query: {
           counted: false,
           querySceneId: trace.browse?.otherSceneId,
@@ -636,6 +686,7 @@ export function expandTraceOperations(trace) {
       ops.push({
         op: "navigate",
         sceneId: trace.querySceneId,
+        until: "cycle-end",
         query: counted(cycle),
       });
     }
@@ -829,6 +880,20 @@ export function traceErrors(trace, ctx) {
     );
   if (!Number.isInteger(trace.cycles) || trace.cycles < 1)
     errors.push("cycles must be a positive integer");
+  if (
+    trace.stall?.attemptLimit !== STALL_ATTEMPT_LIMIT ||
+    typeof trace.stall?.attemptRule !== "string" ||
+    !trace.stall.attemptRule.includes("[precheck]")
+  )
+    errors.push(
+      `stall.attemptLimit must be ${STALL_ATTEMPT_LIMIT} with a disclosed attempt rule ending in [precheck] (S3-P3-3)`,
+    );
+  if (
+    trace.kind === "browsing" &&
+    (typeof trace.browse?.stayEnd !== "string" ||
+      trace.browse.stayEnd.trim() === "")
+  )
+    errors.push("browse.stayEnd must fix the end of the other Scene's stay");
   const queries = operationErrors(errors, trace);
   if (queries < TRACE_MIN_QUERIES)
     errors.push(`the trace has Q=${queries}, fewer than ${TRACE_MIN_QUERIES}`);
@@ -1006,12 +1071,33 @@ export function observationPrepErrors(prep, ctx) {
   for (const arm of ["raw", "hybrid"])
     if (arms[arm] !== "restricted" && arms[arm] !== "unrestricted")
       errors.push(`d10.arms.${arm} must be a D2a mode`);
-  if (
-    prep.d10?.g01?.rAndRirMode !== "restricted" &&
-    prep.d10?.g01?.rAndRirMode !== "unrestricted"
-  )
-    errors.push("d10.g01.rAndRirMode must be a D2a mode");
+  if (arms.raw !== arms.hybrid)
+    errors.push(
+      "d10.arms.raw must equal d10.arms.hybrid (R is the hybrid arm's Raw)",
+    );
   const record = prep.d10?.g01?.da1AcceptanceRecord;
+  const mode = prep.d10?.g01?.rAndRirMode;
+  const recordPlaceholder =
+    typeof record === "string" && PLACEHOLDER.test(record);
+  if (recordPlaceholder) {
+    if (typeof mode !== "string" || !PLACEHOLDER.test(mode))
+      errors.push(
+        "d10.g01.rAndRirMode must stay a placeholder until da1AcceptanceRecord is filled (S3-P2-4)",
+      );
+  } else {
+    const expectedMode = record === "none" ? "unrestricted" : "restricted";
+    if (mode !== expectedMode)
+      errors.push(
+        `d10.g01.rAndRirMode must be ${expectedMode} when da1AcceptanceRecord is ${record === "none" ? "none" : "a record"} (K6/2 CP-0 (a)/(d))`,
+      );
+  }
+  if (
+    prep.d10?.g01?.rAndRirModeRule?.recordPath !== "restricted" ||
+    prep.d10?.g01?.rAndRirModeRule?.none !== "unrestricted"
+  )
+    errors.push(
+      "d10.g01.rAndRirModeRule must map a record to restricted and none to unrestricted",
+    );
   if (
     typeof record !== "string" ||
     record.trim() === "" ||
@@ -1051,6 +1137,59 @@ export function observationPrepErrors(prep, ctx) {
   )
     errors.push(
       "samplePlan must be warm-up 5, measured 30, hybrid/graph AB/BA over the 13 variants",
+    );
+  if (plan.rFrom !== "hybrid-arm-raw" || typeof plan.rRule !== "string")
+    errors.push(
+      "samplePlan.rFrom must be hybrid-arm-raw with its rRule (S3-P3-5)",
+    );
+
+  // R5 gate (S3-P1-1; K6/4 R5 and :317, K2/4 :418-420).
+  const gate = prep.r5Gate;
+  if (!isObject(gate)) errors.push("r5Gate is required (S3-P1-1)");
+  else {
+    if (!same([...(gate.blockedUntilMatch ?? [])].sort(), [...R5_GATED].sort()))
+      errors.push(`r5Gate.blockedUntilMatch must be ${R5_GATED.join(", ")}`);
+    const exempt = Array.isArray(gate.exempt) ? gate.exempt : [];
+    if (
+      exempt.some((row) => row?.run !== "g-case-parity-unrestricted") ||
+      exempt.some((row) => R5_GATED.includes(row?.run))
+    )
+      errors.push(
+        "r5Gate.exempt may name only g-case-parity-unrestricted (no Graph arm)",
+      );
+    if (gate.k64FreezeAfterMatch !== true)
+      errors.push("r5Gate.k64FreezeAfterMatch must be true (K6/4 :317)");
+    if (
+      typeof gate.onFixtureRevision !== "string" ||
+      !gate.onFixtureRevision.includes("レビュー")
+    )
+      errors.push(
+        "r5Gate.onFixtureRevision must require new addendum and trace versions and a new review",
+      );
+    if (typeof gate.rule !== "string" || typeof gate.check !== "string")
+      errors.push("r5Gate.rule and r5Gate.check are required");
+  }
+  if (
+    !Array.isArray(prep.preconditions) ||
+    !String(prep.preconditions[0] ?? "").startsWith("r5Gate")
+  )
+    errors.push("preconditions must start with the r5Gate (S3-P1-1)");
+
+  // Registered tolerance usages (S3-P3-4).
+  const tolerance = (prep.registeredForReview ?? []).find(
+    (row) => row?.name === "BOUNDARY_TOLERANCE_MS",
+  );
+  if (
+    !same(
+      (tolerance?.usages ?? []).map((row) => row.site),
+      TOLERANCE_USAGES,
+    ) ||
+    (tolerance?.usages ?? []).some(
+      (row) => typeof row.use !== "string" || row.use.trim() === "",
+    )
+  )
+    errors.push(
+      `registeredForReview BOUNDARY_TOLERANCE_MS must list ${TOLERANCE_USAGES.join(", ")}`,
     );
 
   // Traces: both kinds, the reviewed bytes by commit and sha256.
@@ -1097,11 +1236,7 @@ export function observationPrepErrors(prep, ctx) {
     )
       errors.push(`k64Procedure.valueReasons.${key} is required`);
   const formal = procedure.formal ?? {};
-  if (
-    formal.version !== "v1" ||
-    formal.path !==
-      "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json"
-  )
+  if (formal.version !== "v1" || formal.path !== PROCEDURE_V1)
     errors.push("k64Procedure.formal must be the v1 file");
   referenceErrors(
     errors,
@@ -1130,6 +1265,26 @@ export function observationPrepErrors(prep, ctx) {
       !ISO_DATE.test(review.reviewedAt ?? "")
     )
       errors.push("k64Procedure.formal.review must be the v1 file's review");
+    const v1 = ctx.procedureFormal;
+    const draft = ctx.procedureDraft ?? {};
+    if (
+      !isObject(v1) ||
+      v1.version !== "v1" ||
+      v1.draft !== false ||
+      v1.schema !== draft.schema ||
+      !same(v1.contract, draft.contract) ||
+      !same(v1.values, draft.values) ||
+      !same(v1.conditions, draft.conditions)
+    )
+      errors.push(
+        "k64Procedure.formal: the v1 file must be the reviewed draft-2 (schema, contract, values, conditions) as version v1, draft false (S3-P2-3)",
+      );
+    else if (!same(v1.review, review))
+      errors.push("k64Procedure.formal.review must equal the v1 file's review");
+    if (review?.record !== prep.review?.record)
+      errors.push(
+        "k64Procedure.formal.review must cite the same independent review record as this record",
+      );
   } else if (formal.review !== null)
     errors.push("k64Procedure.formal.review must be null until S3 reviews");
 
@@ -1148,12 +1303,36 @@ export function observationPrepErrors(prep, ctx) {
     if (
       !row ||
       row.variant !== `${negative.caseId}/${negative.variantId}` ||
-      row.declare !== negative.declare
+      row.declare !== negative.declare ||
+      row.mutationAfterDeclaration !== negative.mutationAfterDeclaration
     )
       errors.push(`diagnosticRuns ${negative.id} must match its addendum row`);
   }
 
-  // Bound files.
+  // Bound files: exactly the five documents (S3-P2-2).
+  const boundPaths = (prep.boundFiles ?? []).map((row) => row.path);
+  const requiredBound = [
+    OBSERVATION_PREP_FILES.setupAddendum,
+    OBSERVATION_PREP_FILES.declarationAddendum,
+    OBSERVATION_PREP_FILES.traceEditing,
+    OBSERVATION_PREP_FILES.traceBrowsing,
+    OBSERVATION_PREP_FILES.authorDeclaration,
+  ];
+  if (!same([...boundPaths].sort(), [...requiredBound].sort()))
+    errors.push(`boundFiles must be exactly ${requiredBound.join(", ")}`);
+  for (const trace of traces) {
+    const bound = (prep.boundFiles ?? []).find(
+      (row) => row.path === trace.path,
+    );
+    if (
+      !bound ||
+      bound.commit !== trace.commit ||
+      bound.sha256 !== trace.sha256
+    )
+      errors.push(
+        `boundFiles ${trace.path} must carry the same commit and sha256 as traces`,
+      );
+  }
   for (const [at, row] of (prep.boundFiles ?? []).entries()) {
     if (ctx.fileSha256[row.path] === undefined)
       errors.push(
@@ -1277,10 +1456,12 @@ export async function loadObservationPrepContext({ repoRoot }) {
       parsed[name] = null;
     }
   }
-  const formal =
-    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
+  const formal = PROCEDURE_V1;
+  let procedureFormal = null;
   try {
-    fileSha256[formal] = sha256(await read(formal));
+    const bytes = await read(formal);
+    fileSha256[formal] = sha256(bytes);
+    procedureFormal = JSON.parse(bytes);
   } catch {
     // The v1 procedure file is S4's; absent in a draft.
   }
@@ -1296,6 +1477,7 @@ export async function loadObservationPrepContext({ repoRoot }) {
     setupAddendum: parsed.setupAddendum,
     declarationAddendum: parsed.declarationAddendum,
     procedureDraft: parsed.procedureDraft,
+    procedureFormal,
     parsed,
   };
 }

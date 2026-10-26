@@ -78,7 +78,8 @@
     "測定の receipt に、測定に使った workspace の workspace ID と canonical locator の digest と、宣言の token を書く。",
     "Graph arm の最初の query の前に、宣言が current であること（束縛の digest が一致すること）を照合し、一致しなければ測定の前に [precheck] で止める（blocked にしない）。",
     "宣言の段の直前と直後で、B の Graph index と Chronicle の IR の Index の metadata（generation と dirty）が同じであることを同じ receipt に記録して照合し、違えば測定の前に [precheck] で止める。",
-    "この照合は fixture の前提条件に加えない（CP-0 が freeze した前提条件の集合は変えない）。"
+    "この照合は fixture の前提条件に加えない（CP-0 が freeze した前提条件の集合は変えない）。",
+    "（推奨。S4／正式の runner への申し送り。K2/4 :407 の reviewer の確認を receipt で補う）宣言の段の直前と直後で、tree order、project の registry、全 Scene の v1 の列（version と token）、A1 の値の digest を測定の receipt に書き、一致を照合する。違えば測定の前に [precheck] で止める。"
   ],
   "afterDeclaration": "宣言の後は、その Scene の本文、title、A1、順序、その Scene を含む folder の構造と、project の registry を変えない。宣言の writer は v1 の列、A1 の意味の列、registry を書かない（C15）。",
   "recordPreconditions": "g01-mira には POV、secret の foreshadow、secret な Chronicle event を設定しない。g01-mira の story_time_order は NULL のまま（S1 の setup と同じ。C14 の (d)）。reading-before は、fixture の reading order（g01-mira 20、query 100）を setup が実現した読む順から、live な project Scope authority で導く。",
@@ -133,7 +134,8 @@
       "mutationAfterDeclaration": "resave-same-body",
       "mutationNote": "宣言の後に、g01-mira の本文を同じ文字列で、製品の本文の保存の writer で保存し直す。",
       "expectation": "g01-mira は R+IR+Graph に返らない（宣言は本文 Source の token の前進で失効する）。",
-      "countsInCaseJudgement": false
+      "countsInCaseJudgement": false,
+      "measurementProcess": "測定の Main を B-ROUTE の journey seam（CI=true、owner token、nonce、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build）で起動し、maintenance を製品の既定で動かす。mutation（と beforeDeclaration の保存）の後に、B の seal が current に戻り Chronicle の Index が使えることを、setup の B の seal の待ちと同じ上限で待ってから samplePlan の schedule で測る。届かなければこの診断を blocked として記録する（case の判定に数えない）。"
     },
     {
       "id": "K24-G01-N3",
@@ -141,12 +143,27 @@
       "variantId": "v1",
       "declare": true,
       "mutationAfterDeclaration": "restore-same-bytes-body-version",
-      "mutationNote": "宣言の後に、g01-mira の本文版を、製品の restore の経路で宣言の時点と同じ bytes の版に戻す。",
+      "mutationNote": "宣言の後に、g01-mira の本文版を、製品の restore の経路で、宣言の時点と同じ bytes の版に戻す。",
       "expectation": "g01-mira は R+IR+Graph に返らない（app の中の restore は宣言を消す）。",
+      "countsInCaseJudgement": false,
+      "beforeDeclaration": "restore の元にする、宣言の時点と同じ bytes の本文版が製品の版の履歴にあることを、宣言より前に確かめる。なければ、製品の本文の保存の writer で同じ文字列を 1 回保存して作る。どちらでも作れなければ、この診断を blocked として記録する。",
+      "measurementProcess": "測定の Main を B-ROUTE の journey seam（CI=true、owner token、nonce、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build）で起動し、maintenance を製品の既定で動かす。mutation（と beforeDeclaration の保存）の後に、B の seal が current に戻り Chronicle の Index が使えることを、setup の B の seal の待ちと同じ上限で待ってから samplePlan の schedule で測る。届かなければこの診断を blocked として記録する（case の判定に数えない）。"
+    },
+    {
+      "id": "K24-G01-N4",
+      "caseId": "G-01",
+      "variantId": "v1",
+      "declare": true,
+      "mutationAfterDeclaration": "restore-different-bytes-body-version",
+      "mutationNote": "宣言の後に、g01-mira の本文版を、製品の restore の経路で、宣言の時点と違う bytes の版に戻す（K2/4 :416 の一般の restore）。",
+      "beforeDeclaration": "宣言より前に、製品のエディタか本文の保存の writer で、g01-mira の本文の末尾に \" Draft.\" を足して保存し、次に元の本文で保存し直して、版の履歴に別の bytes の版を作る（宣言の時点の本文は fixture の本文のまま）。作れなければこの診断を blocked として記録する。",
+      "measurementProcess": "測定の Main を B-ROUTE の journey seam（CI=true、owner token、nonce、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build）で起動し、maintenance を製品の既定で動かす。mutation（と beforeDeclaration の保存）の後に、B の seal が current に戻り Chronicle の Index が使えることを、setup の B の seal の待ちと同じ上限で待ってから samplePlan の schedule で測る。届かなければこの診断を blocked として記録する（case の判定に数えない）。",
+      "expectation": "g01-mira は R+IR+Graph に返らない（restore は宣言を消し、本文も宣言の束縛と違う）。",
       "countsInCaseJudgement": false
     }
   ],
   "diagnosticNegativeRule": "負例は Gold ではなく診断用の期待値で、Gold の run とは別の run で行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。",
   "reviewPlan": "観測前の commit の独立 reviewer（S3）が確かめること: g01-mira が v1 の subset で宣言できること（veto に当たる記録も POV もない）、宣言の段が fixture v1 の期待値と前提条件を変えないこと、診断用の負例、K2/4 の表との一致、参照した sha256。確かめた記録は観測前の commit に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は以後変えない。",
-  "review": null
+  "review": null,
+  "seedPinStepNote": "SP/1（query の Scene の seed の pin の契約の草案。ユーザーの確認待ち）が確認されたら、seed の pin を作る段の位置を、この addendum の宣言の段（setupOrder の「foreshadows, foreshadow Codex links and pins」の段の後）と整合させる新しい版を作り、独立 reviewer のレビューを受け直す。この版は pin の段を足さない。"
 }

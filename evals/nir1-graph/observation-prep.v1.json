@@ -67,14 +67,19 @@
     },
     "rule": "G-case の run は全 arm を restricted で測る（K6/2 確認後の記録の CP-0 の項の推奨。Graph は restricted でだけ出るので、改善の比較の基準の R+IR と R+IR+Graph の条件をそろえる）。restricted の再認可にかかった時間を arm ごとに receipt に分けて書く。この推奨を取れるのは、restricted で測る case について R と R+IR の parity が確かめられる場合に限る（下の g01 と parity）。",
     "g01": {
-      "rAndRirMode": "restricted",
+      "rAndRirMode": "S4:g01-r-rir-mode",
       "da1AcceptanceRecord": "S4:da1-acceptance-record",
       "conditions": [
         "(a) K3/2 の受入れ（DA-1 の最終候補）が restricted 下の R と R+IR の parity を G-01 を含めて確かめた記録の所在を、CP-4 の G-01 を測る前に da1AcceptanceRecord に書く。",
         "(b) CP-4 の G-01 の restricted の R と R+IR の membership と順位が、同じ候補で同じ版の fixture について、同じ setup の手順（mode のほかは同じ。B の seal を含み、Graph の arm は動かさない）で取った unrestricted の組（g01-eval-revision の最後の判定の組）と一致することを確かめる。",
         "(c) 一致しなければ parity の回帰として扱い、G-01 の結果と不一致の記録は残すが期待値との比較と条件の判定に使わず、直した新しい候補で組と CP-4 の G-01 を取り直す。"
       ],
-      "fallback": "(a) の記録がない（DA-1 の受入れに G-01 の parity の記録がない場合を含む）か、(b) の組を同じ setup の手順で取れないときは、K6/2 の CP-0 の項の (d) により、CP-4 の G-01 の R と R+IR は unrestricted で測り、R+IR+Graph は restricted で測る。そのとき改善の比較の基準にする R+IR は、同じ run の unrestricted の R+IR とする。どちらになるかは記録と手順の有無で決まり、観測の結果では決めない。da1AcceptanceRecord に「none」と書いたときは fallback を使う。"
+      "fallback": "(a) の記録がない（DA-1 の受入れに G-01 の parity の記録がない場合を含む）か、(b) の組を同じ setup の手順で取れないときは、K6/2 の CP-0 の項の (d) により、CP-4 の G-01 の R と R+IR は unrestricted で測り、R+IR+Graph は restricted で測る。そのとき改善の比較の基準にする R+IR は、同じ run の unrestricted の R+IR とする。どちらになるかは記録と手順の有無で決まり、観測の結果では決めない。da1AcceptanceRecord に「none」と書いたときは fallback を使う。",
+      "rAndRirModeRule": {
+        "recordPath": "restricted",
+        "none": "unrestricted",
+        "rule": "da1AcceptanceRecord が記録の path なら restricted（条件 (b) と (c) を当てる）、none なら unrestricted（fallback。改善の比較の基準は同じ run の unrestricted の R+IR）。S4 は da1AcceptanceRecord と同時にこの欄を埋め、validator が関係を強制する。R+IR+Graph はどちらでも restricted。"
+      }
     },
     "parity": {
       "unrestrictedRunsPerVariant": 1,
@@ -97,7 +102,8 @@
       "countReason": "契約の下限（variant ごとに 1 回以上。K6/2 確認後の記録の CP-0 の項の (b)）に合わせて 1 回とする。比較は restricted の各 sample と unrestricted の run の各 sample の一致で、一致しない sample が 1 件でもあれば parity の回帰になるので、unrestricted の run を増やしても判定の規則は変わらない。数は取る前にこの file に書き、結果を見て増減しない。",
       "mismatch": "一致しなければ、その case の CP-4 の結果と不一致の記録は残すが、fixture の期待値との比較の判定に使わず、直した新しい候補で、その case の restricted の測定と unrestricted の run を取り直す。直すまでその case と CP-4 は PASS にならない。",
       "fallback": "同じ setup の手順で unrestricted の run を取れないときは、その case の R と R+IR は unrestricted で測り、R+IR+Graph は restricted で測り、改善の比較の基準の R+IR は同じ run の unrestricted の R+IR とする（K6/2 の CP-0 の項の (d)）。"
-    }
+    },
+    "rawArm": "d10.arms.raw は hybrid と同じ mode（R は hybrid の arm の各 sample の Raw から取る。samplePlan.rFrom）。"
   },
   "samplePlan": {
     "warmupPerArm": 5,
@@ -123,7 +129,9 @@
     "variantOrder": "上の順（catalog の順）。各 variant は manifest の isolation のとおり新しい workspace の setup から始める。",
     "steadyState": "K6/2 手順の 3 を K6/4 の R1〜R4 で読む: graph の arm の各 sample の前に次 query 用の cache を空にし（R2）、slot が empty、前の seed つきの sample の終わりから rebuild_min_interval（1 s）以上、前の sample の R4 の待ちが上限の内に終わったこと（R1）を、k64Procedure の r1r4WaitMs を上限に待つ。待つ時間は latency に含めない。届かなければ reachedQuiet:false を記録して sample を取り、分母から除かない。run の間は tree と Scene Scope を書かない。",
     "denominator": "(a) と表示の可用性の分母に、事前の期待値が Graph unavailable の variant（G-03/frontier-exceeded、G-08 の 3 つの unusable）を入れない（品質の case としては測る）。",
-    "measurementWindow": "計測は重い build を止めた窓で行う（D3 の window の sample を run の前後と 20 s ごとに取る）。"
+    "measurementWindow": "計測は重い build を止めた窓で行う（D3 の window の sample を run の前後と 20 s ごとに取る）。",
+    "rFrom": "hybrid-arm-raw",
+    "rRule": "R は独立の arm を置かず、hybrid（R+IR）の arm の各 sample が記録する Raw（t_raw_ready の Raw の Scene 列。receipt の rawSceneIds）から取る。回数は hybrid の arm と同じ（warm-up 5 の後に measured 30）、mode も hybrid と同じ。G-01 の raw の期待値と parity の R の比較はこの R で行う。graph の arm の sample の Raw も記録し、開示に使う。"
   },
   "traces": [
     {
@@ -177,7 +185,29 @@
       "name": "BOUNDARY_TOLERANCE_MS",
       "value": 0.01,
       "source": "統合 branch claude/nir1-cp4 の scripts/quality/nir1-graph-eval/constants.mjs",
-      "note": "S2 の作者が決めた値ではない。窓の境界の判定の不一致の許容（10 µs）で、製品が now < deadline を D = 10.840000000596048 ms で比べることとの 6e-7 ms の差を、窓外に倒して分類する幅。constants.mjs のコメントが「評価の閾値ではなく、観測前の記録でレビューに登録する」とするので、ここに登録する。S3 は、これが D を広げる方向に働かない（許容の内で窓内に合流した結果を窓外に数える）ことを確かめる。"
+      "note": "S2 の作者が決めた値ではない。窓の境界の不一致の許容（10 µs）で、製品が now < deadline を D = 10.840000000596048 ms で比べることとの 6e-7 ms の差を扱う。usages のとおり、窓内と follow-up の成功（数える側）を広げる使い方はなく、残りは製品の値の検査と違反の検出を許容の分だけ緩める側にある。S3 はこの分類を確かめる。",
+      "usages": [
+        {
+          "site": "join.mjs:93",
+          "use": "親の合流の窓の判定: 許容の内で窓内に合流した結果を窓外に倒す（joinedLateWithinTolerance）。許容を超えれば [precheck]。窓内を広げない。"
+        },
+        {
+          "site": "followup.mjs:437",
+          "use": "批准 12 の検査: 親の合流に渡した窓が D であること（製品の値の検査）を許容の内で比べる。数える側に影響しない。"
+        },
+        {
+          "site": "followup.mjs:588",
+          "use": "子の Graph の W_f の判定: 許容の内の遅れは X13（follow-up の失敗）に倒し、N29 の違反にはしない。成功を広げない。"
+        },
+        {
+          "site": "followup.mjs:614",
+          "use": "批准 12 の検査: 子の IR の到着が D を超えたかを許容の分だけ緩めて検出する（違反の検出の側）。数える側に影響しない。"
+        },
+        {
+          "site": "k64-record.mjs:198",
+          "use": "N1／N29 の検出: 表示に混ざった Graph が窓の後かを許容の分だけ緩めて検出する（違反の検出の側）。数える側に影響しない。"
+        }
+      ]
     }
   ],
   "diagnosticRuns": [
@@ -187,7 +217,8 @@
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-01/v1",
       "declare": false,
-      "schedule": "samplePlan と同じ（warm-up 5、measured 30、AB/BA）"
+      "schedule": "samplePlan と同じ（warm-up 5、measured 30、AB/BA）",
+      "mutationAfterDeclaration": null
     },
     {
       "id": "K24-G01-N2",
@@ -196,7 +227,7 @@
       "variant": "G-01/v1",
       "declare": true,
       "mutationAfterDeclaration": "resave-same-body",
-      "schedule": "宣言、mutation の後に B の seal が current に戻り Chronicle の Index が使えることを待ってから、samplePlan と同じ schedule。戻らなければ診断を blocked として記録する。"
+      "schedule": "addendum の measurementProcess のとおり、宣言と mutation の後に B の seal が current に戻り Chronicle の Index が使えることを待ってから、samplePlan と同じ schedule。戻らなければ診断を blocked として記録する。"
     },
     {
       "id": "K24-G01-N3",
@@ -205,7 +236,16 @@
       "variant": "G-01/v1",
       "declare": true,
       "mutationAfterDeclaration": "restore-same-bytes-body-version",
-      "schedule": "K24-G01-N2 と同じ。"
+      "schedule": "K24-G01-N2 と同じ（addendum の beforeDeclaration で restore の元の版を宣言より前に用意する）。"
+    },
+    {
+      "id": "K24-G01-N4",
+      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-01/v1",
+      "declare": true,
+      "mutationAfterDeclaration": "restore-different-bytes-body-version",
+      "schedule": "K24-G01-N2 と同じ（addendum の beforeDeclaration と measurementProcess のとおり）。"
     },
     {
       "id": "K24-G02-N1",
@@ -213,7 +253,8 @@
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-02/base",
       "declare": false,
-      "schedule": "samplePlan と同じ。"
+      "schedule": "samplePlan と同じ。",
+      "mutationAfterDeclaration": null
     },
     {
       "id": "K24-G07-N1",
@@ -221,7 +262,8 @@
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-07/base",
       "declare": false,
-      "schedule": "samplePlan と同じ。"
+      "schedule": "samplePlan と同じ。",
+      "mutationAfterDeclaration": null
     },
     {
       "id": "K24-G08-N1",
@@ -229,7 +271,8 @@
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-08/base-usable",
       "declare": false,
-      "schedule": "samplePlan と同じ。"
+      "schedule": "samplePlan と同じ。",
+      "mutationAfterDeclaration": null
     },
     {
       "id": "K62-iii",
@@ -241,8 +284,8 @@
   ],
   "diagnosticRule": "診断の run は Gold の run と別の workspace で行い、case の判定（pass、hold、blocked）に数えない。予定した診断の run はすべて残す。",
   "preconditions": [
-    "K6/4 の凍結（contracts.k64.freezeCommit）が claude/nir1-contracts にあり、統合 branch の constants.mjs の K64_FREEZE.freezeCommit に pin されていること。",
-    "K6/4 R5: G-case の各 query の Scene の最初の pin が、事前の期待値の seed と一致することの照合（統合 branch の seed-pin.mjs の assertSeedPinsBeforeK64、plan frozen）が match であること。S2 の作者が凍結した fixture を読んだ範囲では、G-01〜G-08 のどの fixture も query の Scene に pin を持たない（pins の sceneId に query の Scene が無い）。setup が fixture の pins だけを作るなら製品の seed は null になり一致しないので、CP-0 の側で扱うまで K6/4 の判定と trace の run を始めない（[precheck]。K6/4 批准 9 により G-case の setup は変えない）。",
+    "r5Gate: R5 が match になるまで、Graph arm を含む実行と K6/4 の凍結 commit を始めない（r5Gate の rule）。",
+    "K6/4 の凍結（contracts.k64.freezeCommit）を、R5 が match になった後に claude/nir1-contracts に置き、統合 branch の constants.mjs の K64_FREEZE.freezeCommit に pin すること。",
     "addendum 2 件、trace 2 件、K6/4 の手順の v1、この file が独立 reviewer のレビューを経て frozen になり、観測前の commit が remote（refs/remotes/origin/master）にあること。",
     "S4 の freeze 記録（observation-prep-freeze.v1.json）が graphRuntimeObservedBeforeFreeze: false で、boundFiles にこの file と下の boundFiles を束縛すること。"
   ],
@@ -288,6 +331,11 @@
       "token": "S4:da1-acceptance-record",
       "field": "d10.g01.da1AcceptanceRecord",
       "fill": "K3/2 の受入れの G-01 の parity の記録の所在。なければ none（d10.g01.fallback を使う）"
+    },
+    {
+      "token": "S4:g01-r-rir-mode",
+      "field": "d10.g01.rAndRirMode",
+      "fill": "da1AcceptanceRecord が path なら restricted、none なら unrestricted（rAndRirModeRule）"
     },
     {
       "token": "S4:trace-editing-commit",
@@ -352,5 +400,35 @@
   ],
   "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4 は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること）。",
   "reviewPlan": "S3 の独立 reviewer が確かめること: d1 の (ii) と順序、d2 の正規の経路、d10 の mode と parity の数と比較の規則と fallback、samplePlan、traces の長さ・密度・maintenance・期待寄与の材料・承認の操作がないこと（K6/2 手順の 4 の固定と再利用）、k64Procedure の値と r1r4WaitMs の理由、registeredForReview、diagnosticRuns、preconditions（特に R5 の seed の pin）。",
-  "review": null
+  "review": null,
+  "r5Gate": {
+    "check": "K6/4 R5: G-case の各 query の Scene の最初の pin が事前の期待値の seed と一致することの照合（統合 branch の seed-pin.mjs の assertSeedPinsBeforeK64、plan frozen）が match であること。",
+    "blockedUntilMatch": [
+      "g-case-gold",
+      "g-case-diagnostic-negative",
+      "v10-ready-probe",
+      "k62-ii-diagnostic",
+      "k62-iii-diagnostic",
+      "trace",
+      "k64-freeze-commit"
+    ],
+    "rule": "R5 が match になるまで、Graph arm を含む実行（Gold の run、診断の負例 K24-*、V-10 の READY の確認の probe、K6/2 の (ii) と (iii) の診断、trace の run。Graph を要求する seed つきの query を 1 件でも出す実行）を 1 件も始めない。K6/4 の凍結 commit（contracts.k64.freezeCommit）も R5 が match になった後に置く（K6/4 :317）。",
+    "k64FreezeAfterMatch": true,
+    "exempt": [
+      {
+        "run": "g-case-parity-unrestricted",
+        "reason": "unrestricted の R と R+IR だけを測り、Graph の arm を動かさず Graph を要求しないので、Graph の観測ではない。ただし CP-0 が fixture か setup を変えたら、その case の parity の run は新しい setup で取り直す。"
+      }
+    ],
+    "onFixtureRevision": "CP-0 が G-case の fixture を改版するか setup に段を足したら（query の Scene に seed の pin を作る段を含む）、新しい fixture の sha256 を引く addendum と trace の新しい版（v2）を作り、独立 reviewer のレビューを受け直してから観測前の commit をやり直す（K2/4 :419-420、K6/2 手順の 4 の「作り直した版は観測の前に再び固定」）。この版（v1）は使わず、消さずに残す。",
+    "seedPinStepNote": "SP/1（query の Scene の seed の pin の契約の草案。ユーザーの確認待ち）が確認されたら、seed の pin を作る段の位置を、この addendum の宣言の段（setupOrder の「foreshadows, foreshadow Codex links and pins」の段の後）と整合させる新しい版を作り、独立 reviewer のレビューを受け直す。この版は pin の段を足さない。",
+    "currentFinding": "S2 の作者が凍結した fixture を読んだ範囲では、G-01〜G-08 のどの fixture も query の Scene に pin を持たない。このままでは R5 は match にならない（契約の草案 SP/1 で扱う。ユーザーの確認待ち）。"
+  },
+  "runnerHandoff": [
+    "d1.orderNote: 宣言を V-10 の probe より前に置く（統合 branch の runner.mjs は probe の後）。",
+    "addendum の measurementWorkspaceCheck の最後の項: 宣言の段の前後の tree order、registry、全 Scene の v1 の列、A1 の digest の照合（S3-P3-6。推奨）。",
+    "samplePlan.rFrom: R は hybrid の arm の rawSceneIds から取る。",
+    "trace の stall.attemptLimit: stall した試行の回数を receipt に開示し、2 回目の stall で [precheck]。",
+    "診断の負例 K24-G01-N2〜N4 の measurementProcess（測定の Main で journey seam を開ける）と beforeDeclaration。"
+  ]
 }

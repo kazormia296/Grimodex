@@ -166,7 +166,8 @@
     "測定の receipt に、測定に使った workspace の workspace ID と canonical locator の digest と、宣言の token を書く。",
     "Graph arm の最初の query の前に、宣言が current であること（束縛の digest が一致すること）を照合し、一致しなければ測定の前に [precheck] で止める（blocked にしない）。",
     "宣言の段の直前と直後で、B の Graph index と Chronicle の IR の Index の metadata（generation と dirty）が同じであることを同じ receipt に記録して照合し、違えば測定の前に [precheck] で止める。",
-    "この照合は fixture の前提条件に加えない（CP-0 が freeze した前提条件の集合は変えない）。"
+    "この照合は fixture の前提条件に加えない（CP-0 が freeze した前提条件の集合は変えない）。",
+    "（推奨。S4／正式の runner への申し送り。K2/4 :407 の reviewer の確認を receipt で補う）宣言の段の直前と直後で、tree order、project の registry、全 Scene の v1 の列（version と token）、A1 の値の digest を測定の receipt に書き、一致を照合する。違えば測定の前に [precheck] で止める。"
   ],
   "afterDeclaration": "宣言の後は、その Scene の本文、title、A1、順序、その Scene を含む folder の構造と、project の registry を変えない（folder の構造の変更は X1-1 で配下の Scene の v1 を進める）。宣言は行の v1 の列（updated_at を含む）を書き換えないので Scope authority の revision を変えず、その kind の event だけの transaction は Index を dirty にしない（C8、C11、C15、C17）。",
   "recordPreconditions": "G-02、G-07、G-08 の fixture は POV、story time、Chronicle event を設定しない。v1 の story は independent を宣言するので story の位置は要らない。POV は、記録があれば veto になるだけで、明示の POV は要らない。reading-before は、fixture の reading order（追加 Scene は 20〜40、query は 100）を setup が実現した読む順から、live な project Scope authority で導く。",
@@ -203,5 +204,6 @@
   ],
   "diagnosticNegativeRule": "この run は Gold の run とは別に行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。失効の負例（再保存と restore）は、G-01 と CB-4 の経路ごとの試験で足りるので、G-02、G-07、G-08 では足さない（K2/4 :417）。",
   "reviewPlan": "観測前の commit の独立 reviewer（S3）が確かめること: 4 つの Scene が v1 の subset で宣言できること（veto に当たる記録も POV もない）、宣言の段が freeze 済みの期待値、前提条件、setupTimeline を変えないこと、診断用の負例、K2/4 の表との一致、参照した sha256。確かめた記録は観測前の commit に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は以後変えない。",
-  "review": null
+  "review": null,
+  "seedPinStepNote": "SP/1（query の Scene の seed の pin の契約の草案。ユーザーの確認待ち）が確認されたら、seed の pin を作る段の位置を、この addendum の宣言の段（setupOrder の「foreshadows, foreshadow Codex links and pins」の段の後）と整合させる新しい版を作り、独立 reviewer のレビューを受け直す。この版は pin の段を足さない。"
 }

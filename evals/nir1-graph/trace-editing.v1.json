@@ -104,6 +104,8 @@
   "cycleEnd": "各 counted query の観測の終わりは、その query の子（graph-ready を契機にした取り直し）の公開、t_raw_ready + T_show（2000 ms。K6/4 判断 4）の経過、session の停止のうち最も早いもの。次の操作はその終わりの直後に始め、ほかの待ちを足さない。T_show を超えた follow-up は成功に数えないので、それより前に次の操作を始めると、作者の台本の速さで follow-up を X6 にしうる。終わりを T_show に揃えるのは、それを防ぎ、台本の作者が間隔を選ばないため。",
   "stall": {
     "boundMs": 10000,
+    "attemptLimit": 2,
+    "attemptRule": "stall した試行も含めて、この file で取った試行の回数と各試行の記録を receipt に開示する。1 回目の stall の後は同じ file で 1 回だけ取り直す。2 回目の stall で取り直しをやめ、[precheck] でユーザーの判断に回す（完走した試行だけを選ぶ偏りを防ぐ。製品が応答しないこと自体が可用性の事象でありうるので、その記録も添える）。上限は観測の前に固定し、結果を見て変えない。",
     "rule": "操作の後に、製品の応答（編集中は autosave の commit と、その後の製品の query、閲覧中は場面の切替えの後の製品の query）が 10,000 ms 以内に来なければ、その trace の run を trace-stalled として止め、記録をすべて残し、trace の不備として判定に使わず、同じ file で取り直す。10,000 ms は liveness の guard で、測る値の閾値ではない（stall した run は全体を判定に使わないので、どの率の分子と分母も変えない）。値は autosave の既定 2000 ms と debounce 400 ms の和の 4 倍を超え、Native の保留の期限（DEFERRED_RELEASE_LIMIT 10 s）と同じ桁で、観測した値から選んでいない。"
   },
   "notInQ": "index-ready の event（related-scenes:index-ready）と graph-ready の event による再 query は Q に入れず別に数える（K6/2 手順の 7）。K6/4 の判断 8 の (ii) では、F1〜F7 を満たす子を親の follow-up として数える（分母には入れない）。",
@@ -127,6 +129,7 @@
       "seq": 0,
       "op": "open-scene",
       "sceneId": "g02-query",
+      "until": "cycle-end",
       "query": {
         "index": 0,
         "counted": true,
@@ -151,6 +154,7 @@
       "seq": 3,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 1,
         "counted": true,
@@ -175,6 +179,7 @@
       "seq": 6,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 2,
         "counted": true,
@@ -199,6 +204,7 @@
       "seq": 9,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 3,
         "counted": true,
@@ -223,6 +229,7 @@
       "seq": 12,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 4,
         "counted": true,
@@ -247,6 +254,7 @@
       "seq": 15,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 5,
         "counted": true,
@@ -271,6 +279,7 @@
       "seq": 18,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 6,
         "counted": true,
@@ -295,6 +304,7 @@
       "seq": 21,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 7,
         "counted": true,
@@ -319,6 +329,7 @@
       "seq": 24,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 8,
         "counted": true,
@@ -343,6 +354,7 @@
       "seq": 27,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 9,
         "counted": true,
@@ -367,6 +379,7 @@
       "seq": 30,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 10,
         "counted": true,
@@ -391,6 +404,7 @@
       "seq": 33,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 11,
         "counted": true,
@@ -415,6 +429,7 @@
       "seq": 36,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 12,
         "counted": true,
@@ -439,6 +454,7 @@
       "seq": 39,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 13,
         "counted": true,
@@ -463,6 +479,7 @@
       "seq": 42,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 14,
         "counted": true,
@@ -487,6 +504,7 @@
       "seq": 45,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 15,
         "counted": true,
@@ -511,6 +529,7 @@
       "seq": 48,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 16,
         "counted": true,
@@ -535,6 +554,7 @@
       "seq": 51,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 17,
         "counted": true,
@@ -559,6 +579,7 @@
       "seq": 54,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 18,
         "counted": true,
@@ -583,6 +604,7 @@
       "seq": 57,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 19,
         "counted": true,
@@ -607,6 +629,7 @@
       "seq": 60,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 20,
         "counted": true,
@@ -631,6 +654,7 @@
       "seq": 63,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 21,
         "counted": true,
@@ -655,6 +679,7 @@
       "seq": 66,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 22,
         "counted": true,
@@ -679,6 +704,7 @@
       "seq": 69,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 23,
         "counted": true,
@@ -703,6 +729,7 @@
       "seq": 72,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 24,
         "counted": true,
@@ -727,6 +754,7 @@
       "seq": 75,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 25,
         "counted": true,
@@ -751,6 +779,7 @@
       "seq": 78,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 26,
         "counted": true,
@@ -775,6 +804,7 @@
       "seq": 81,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 27,
         "counted": true,
@@ -799,6 +829,7 @@
       "seq": 84,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 28,
         "counted": true,
@@ -823,6 +854,7 @@
       "seq": 87,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 29,
         "counted": true,
@@ -847,6 +879,7 @@
       "seq": 90,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 30,
         "counted": true,
@@ -871,6 +904,7 @@
       "seq": 93,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 31,
         "counted": true,
@@ -895,6 +929,7 @@
       "seq": 96,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 32,
         "counted": true,
@@ -919,6 +954,7 @@
       "seq": 99,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 33,
         "counted": true,
@@ -943,6 +979,7 @@
       "seq": 102,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 34,
         "counted": true,
@@ -967,6 +1004,7 @@
       "seq": 105,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 35,
         "counted": true,
@@ -991,6 +1029,7 @@
       "seq": 108,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 36,
         "counted": true,
@@ -1015,6 +1054,7 @@
       "seq": 111,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 37,
         "counted": true,
@@ -1039,6 +1079,7 @@
       "seq": 114,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 38,
         "counted": true,
@@ -1063,6 +1104,7 @@
       "seq": 117,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 39,
         "counted": true,
@@ -1087,6 +1129,7 @@
       "seq": 120,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 40,
         "counted": true,
@@ -1111,6 +1154,7 @@
       "seq": 123,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 41,
         "counted": true,
@@ -1135,6 +1179,7 @@
       "seq": 126,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 42,
         "counted": true,
@@ -1159,6 +1204,7 @@
       "seq": 129,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 43,
         "counted": true,
@@ -1183,6 +1229,7 @@
       "seq": 132,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 44,
         "counted": true,
@@ -1207,6 +1254,7 @@
       "seq": 135,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 45,
         "counted": true,
@@ -1231,6 +1279,7 @@
       "seq": 138,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 46,
         "counted": true,
@@ -1255,6 +1304,7 @@
       "seq": 141,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 47,
         "counted": true,
@@ -1279,6 +1329,7 @@
       "seq": 144,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 48,
         "counted": true,
@@ -1303,6 +1354,7 @@
       "seq": 147,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 49,
         "counted": true,
@@ -1327,6 +1379,7 @@
       "seq": 150,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 50,
         "counted": true,
@@ -1351,6 +1404,7 @@
       "seq": 153,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 51,
         "counted": true,
@@ -1375,6 +1429,7 @@
       "seq": 156,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 52,
         "counted": true,
@@ -1399,6 +1454,7 @@
       "seq": 159,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 53,
         "counted": true,
@@ -1423,6 +1479,7 @@
       "seq": 162,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 54,
         "counted": true,
@@ -1447,6 +1504,7 @@
       "seq": 165,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 55,
         "counted": true,
@@ -1471,6 +1529,7 @@
       "seq": 168,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 56,
         "counted": true,
@@ -1495,6 +1554,7 @@
       "seq": 171,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 57,
         "counted": true,
@@ -1519,6 +1579,7 @@
       "seq": 174,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 58,
         "counted": true,
@@ -1543,6 +1604,7 @@
       "seq": 177,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 59,
         "counted": true,
@@ -1567,6 +1629,7 @@
       "seq": 180,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 60,
         "counted": true,
@@ -1591,6 +1654,7 @@
       "seq": 183,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 61,
         "counted": true,
@@ -1615,6 +1679,7 @@
       "seq": 186,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 62,
         "counted": true,
@@ -1639,6 +1704,7 @@
       "seq": 189,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 63,
         "counted": true,
@@ -1663,6 +1729,7 @@
       "seq": 192,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 64,
         "counted": true,
@@ -1687,6 +1754,7 @@
       "seq": 195,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 65,
         "counted": true,
@@ -1711,6 +1779,7 @@
       "seq": 198,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 66,
         "counted": true,
@@ -1735,6 +1804,7 @@
       "seq": 201,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 67,
         "counted": true,
@@ -1759,6 +1829,7 @@
       "seq": 204,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 68,
         "counted": true,
@@ -1783,6 +1854,7 @@
       "seq": 207,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 69,
         "counted": true,
@@ -1807,6 +1879,7 @@
       "seq": 210,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 70,
         "counted": true,
@@ -1831,6 +1904,7 @@
       "seq": 213,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 71,
         "counted": true,
@@ -1855,6 +1929,7 @@
       "seq": 216,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 72,
         "counted": true,
@@ -1879,6 +1954,7 @@
       "seq": 219,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 73,
         "counted": true,
@@ -1903,6 +1979,7 @@
       "seq": 222,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 74,
         "counted": true,
@@ -1927,6 +2004,7 @@
       "seq": 225,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 75,
         "counted": true,
@@ -1951,6 +2029,7 @@
       "seq": 228,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 76,
         "counted": true,
@@ -1975,6 +2054,7 @@
       "seq": 231,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 77,
         "counted": true,
@@ -1999,6 +2079,7 @@
       "seq": 234,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 78,
         "counted": true,
@@ -2023,6 +2104,7 @@
       "seq": 237,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 79,
         "counted": true,
@@ -2047,6 +2129,7 @@
       "seq": 240,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 80,
         "counted": true,
@@ -2071,6 +2154,7 @@
       "seq": 243,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 81,
         "counted": true,
@@ -2095,6 +2179,7 @@
       "seq": 246,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 82,
         "counted": true,
@@ -2119,6 +2204,7 @@
       "seq": 249,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 83,
         "counted": true,
@@ -2143,6 +2229,7 @@
       "seq": 252,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 84,
         "counted": true,
@@ -2167,6 +2254,7 @@
       "seq": 255,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 85,
         "counted": true,
@@ -2191,6 +2279,7 @@
       "seq": 258,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 86,
         "counted": true,
@@ -2215,6 +2304,7 @@
       "seq": 261,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 87,
         "counted": true,
@@ -2239,6 +2329,7 @@
       "seq": 264,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 88,
         "counted": true,
@@ -2263,6 +2354,7 @@
       "seq": 267,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 89,
         "counted": true,
@@ -2287,6 +2379,7 @@
       "seq": 270,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 90,
         "counted": true,
@@ -2311,6 +2404,7 @@
       "seq": 273,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 91,
         "counted": true,
@@ -2335,6 +2429,7 @@
       "seq": 276,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 92,
         "counted": true,
@@ -2359,6 +2454,7 @@
       "seq": 279,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 93,
         "counted": true,
@@ -2383,6 +2479,7 @@
       "seq": 282,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 94,
         "counted": true,
@@ -2407,6 +2504,7 @@
       "seq": 285,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 95,
         "counted": true,
@@ -2431,6 +2529,7 @@
       "seq": 288,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 96,
         "counted": true,
@@ -2455,6 +2554,7 @@
       "seq": 291,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 97,
         "counted": true,
@@ -2479,6 +2579,7 @@
       "seq": 294,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 98,
         "counted": true,
@@ -2503,6 +2604,7 @@
       "seq": 297,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 99,
         "counted": true,
@@ -2527,6 +2629,7 @@
       "seq": 300,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 100,
         "counted": true,
@@ -2551,6 +2654,7 @@
       "seq": 303,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 101,
         "counted": true,
@@ -2575,6 +2679,7 @@
       "seq": 306,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 102,
         "counted": true,
@@ -2599,6 +2704,7 @@
       "seq": 309,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 103,
         "counted": true,
@@ -2623,6 +2729,7 @@
       "seq": 312,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 104,
         "counted": true,
@@ -2647,6 +2754,7 @@
       "seq": 315,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 105,
         "counted": true,
@@ -2671,6 +2779,7 @@
       "seq": 318,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 106,
         "counted": true,
@@ -2695,6 +2804,7 @@
       "seq": 321,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 107,
         "counted": true,
@@ -2719,6 +2829,7 @@
       "seq": 324,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 108,
         "counted": true,
@@ -2743,6 +2854,7 @@
       "seq": 327,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 109,
         "counted": true,
@@ -2767,6 +2879,7 @@
       "seq": 330,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 110,
         "counted": true,
@@ -2791,6 +2904,7 @@
       "seq": 333,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 111,
         "counted": true,
@@ -2815,6 +2929,7 @@
       "seq": 336,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 112,
         "counted": true,
@@ -2839,6 +2954,7 @@
       "seq": 339,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 113,
         "counted": true,
@@ -2863,6 +2979,7 @@
       "seq": 342,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 114,
         "counted": true,
@@ -2887,6 +3004,7 @@
       "seq": 345,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 115,
         "counted": true,
@@ -2911,6 +3029,7 @@
       "seq": 348,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 116,
         "counted": true,
@@ -2935,6 +3054,7 @@
       "seq": 351,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 117,
         "counted": true,
@@ -2959,6 +3079,7 @@
       "seq": 354,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 118,
         "counted": true,
@@ -2983,6 +3104,7 @@
       "seq": 357,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 119,
         "counted": true,
@@ -3007,6 +3129,7 @@
       "seq": 360,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 120,
         "counted": true,
@@ -3031,6 +3154,7 @@
       "seq": 363,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 121,
         "counted": true,
@@ -3055,6 +3179,7 @@
       "seq": 366,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 122,
         "counted": true,
@@ -3079,6 +3204,7 @@
       "seq": 369,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 123,
         "counted": true,
@@ -3103,6 +3229,7 @@
       "seq": 372,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 124,
         "counted": true,
@@ -3127,6 +3254,7 @@
       "seq": 375,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 125,
         "counted": true,
@@ -3151,6 +3279,7 @@
       "seq": 378,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 126,
         "counted": true,
@@ -3175,6 +3304,7 @@
       "seq": 381,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 127,
         "counted": true,
@@ -3199,6 +3329,7 @@
       "seq": 384,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 128,
         "counted": true,
@@ -3223,6 +3354,7 @@
       "seq": 387,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 129,
         "counted": true,
@@ -3247,6 +3379,7 @@
       "seq": 390,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 130,
         "counted": true,
@@ -3271,6 +3404,7 @@
       "seq": 393,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 131,
         "counted": true,
@@ -3295,6 +3429,7 @@
       "seq": 396,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 132,
         "counted": true,
@@ -3319,6 +3454,7 @@
       "seq": 399,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 133,
         "counted": true,
@@ -3343,6 +3479,7 @@
       "seq": 402,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 134,
         "counted": true,
@@ -3367,6 +3504,7 @@
       "seq": 405,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 135,
         "counted": true,
@@ -3391,6 +3529,7 @@
       "seq": 408,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 136,
         "counted": true,
@@ -3415,6 +3554,7 @@
       "seq": 411,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 137,
         "counted": true,
@@ -3439,6 +3579,7 @@
       "seq": 414,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 138,
         "counted": true,
@@ -3463,6 +3604,7 @@
       "seq": 417,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 139,
         "counted": true,
@@ -3487,6 +3629,7 @@
       "seq": 420,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 140,
         "counted": true,
@@ -3511,6 +3654,7 @@
       "seq": 423,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 141,
         "counted": true,
@@ -3535,6 +3679,7 @@
       "seq": 426,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 142,
         "counted": true,
@@ -3559,6 +3704,7 @@
       "seq": 429,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 143,
         "counted": true,
@@ -3583,6 +3729,7 @@
       "seq": 432,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 144,
         "counted": true,
@@ -3607,6 +3754,7 @@
       "seq": 435,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 145,
         "counted": true,
@@ -3631,6 +3779,7 @@
       "seq": 438,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 146,
         "counted": true,
@@ -3655,6 +3804,7 @@
       "seq": 441,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 147,
         "counted": true,
@@ -3679,6 +3829,7 @@
       "seq": 444,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 148,
         "counted": true,
@@ -3703,6 +3854,7 @@
       "seq": 447,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 149,
         "counted": true,
@@ -3727,6 +3879,7 @@
       "seq": 450,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 150,
         "counted": true,
@@ -3751,6 +3904,7 @@
       "seq": 453,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 151,
         "counted": true,
@@ -3775,6 +3929,7 @@
       "seq": 456,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 152,
         "counted": true,
@@ -3799,6 +3954,7 @@
       "seq": 459,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 153,
         "counted": true,
@@ -3823,6 +3979,7 @@
       "seq": 462,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 154,
         "counted": true,
@@ -3847,6 +4004,7 @@
       "seq": 465,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 155,
         "counted": true,
@@ -3871,6 +4029,7 @@
       "seq": 468,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 156,
         "counted": true,
@@ -3895,6 +4054,7 @@
       "seq": 471,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 157,
         "counted": true,
@@ -3919,6 +4079,7 @@
       "seq": 474,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 158,
         "counted": true,
@@ -3943,6 +4104,7 @@
       "seq": 477,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 159,
         "counted": true,
@@ -3967,6 +4129,7 @@
       "seq": 480,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 160,
         "counted": true,
@@ -3991,6 +4154,7 @@
       "seq": 483,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 161,
         "counted": true,
@@ -4015,6 +4179,7 @@
       "seq": 486,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 162,
         "counted": true,
@@ -4039,6 +4204,7 @@
       "seq": 489,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 163,
         "counted": true,
@@ -4063,6 +4229,7 @@
       "seq": 492,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 164,
         "counted": true,
@@ -4087,6 +4254,7 @@
       "seq": 495,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 165,
         "counted": true,
@@ -4111,6 +4279,7 @@
       "seq": 498,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 166,
         "counted": true,
@@ -4135,6 +4304,7 @@
       "seq": 501,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 167,
         "counted": true,
@@ -4159,6 +4329,7 @@
       "seq": 504,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 168,
         "counted": true,
@@ -4183,6 +4354,7 @@
       "seq": 507,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 169,
         "counted": true,
@@ -4207,6 +4379,7 @@
       "seq": 510,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 170,
         "counted": true,
@@ -4231,6 +4404,7 @@
       "seq": 513,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 171,
         "counted": true,
@@ -4255,6 +4429,7 @@
       "seq": 516,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 172,
         "counted": true,
@@ -4279,6 +4454,7 @@
       "seq": 519,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 173,
         "counted": true,
@@ -4303,6 +4479,7 @@
       "seq": 522,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 174,
         "counted": true,
@@ -4327,6 +4504,7 @@
       "seq": 525,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 175,
         "counted": true,
@@ -4351,6 +4529,7 @@
       "seq": 528,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 176,
         "counted": true,
@@ -4375,6 +4554,7 @@
       "seq": 531,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 177,
         "counted": true,
@@ -4399,6 +4579,7 @@
       "seq": 534,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 178,
         "counted": true,
@@ -4423,6 +4604,7 @@
       "seq": 537,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 179,
         "counted": true,
@@ -4447,6 +4629,7 @@
       "seq": 540,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 180,
         "counted": true,
@@ -4471,6 +4654,7 @@
       "seq": 543,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 181,
         "counted": true,
@@ -4495,6 +4679,7 @@
       "seq": 546,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 182,
         "counted": true,
@@ -4519,6 +4704,7 @@
       "seq": 549,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 183,
         "counted": true,
@@ -4543,6 +4729,7 @@
       "seq": 552,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 184,
         "counted": true,
@@ -4567,6 +4754,7 @@
       "seq": 555,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 185,
         "counted": true,
@@ -4591,6 +4779,7 @@
       "seq": 558,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 186,
         "counted": true,
@@ -4615,6 +4804,7 @@
       "seq": 561,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 187,
         "counted": true,
@@ -4639,6 +4829,7 @@
       "seq": 564,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 188,
         "counted": true,
@@ -4663,6 +4854,7 @@
       "seq": 567,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 189,
         "counted": true,
@@ -4687,6 +4879,7 @@
       "seq": 570,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 190,
         "counted": true,
@@ -4711,6 +4904,7 @@
       "seq": 573,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 191,
         "counted": true,
@@ -4735,6 +4929,7 @@
       "seq": 576,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 192,
         "counted": true,
@@ -4759,6 +4954,7 @@
       "seq": 579,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 193,
         "counted": true,
@@ -4783,6 +4979,7 @@
       "seq": 582,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 194,
         "counted": true,
@@ -4807,6 +5004,7 @@
       "seq": 585,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 195,
         "counted": true,
@@ -4831,6 +5029,7 @@
       "seq": 588,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 196,
         "counted": true,
@@ -4855,6 +5054,7 @@
       "seq": 591,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 197,
         "counted": true,
@@ -4879,6 +5079,7 @@
       "seq": 594,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 198,
         "counted": true,
@@ -4903,6 +5104,7 @@
       "seq": 597,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 199,
         "counted": true,
@@ -4927,6 +5129,7 @@
       "seq": 600,
       "op": "product-query",
       "trigger": "autosave-commit",
+      "until": "cycle-end",
       "query": {
         "index": 200,
         "counted": true,

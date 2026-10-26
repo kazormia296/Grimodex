@@ -451,55 +451,56 @@ test("observation prep: D1, D10, sample plan, traces, procedure, diagnostics, pl
   );
 });
 
-test("observation prep frozen: every placeholder filled, commits 40-hex, digests match the files", async () => {
-  const ctx = await context();
+/** A frozen record as S4 would fill it, and a context that has the v1 file. */
+async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const filled = clone(prep);
   const hex40 = "a".repeat(40);
   const shaOf = (relative) => ctx.fileSha256[relative];
-  const fill = (value) => {
-    if (Array.isArray(value)) return value.map(fill);
-    if (value && typeof value === "object") {
-      const out = {};
-      for (const [key, inner] of Object.entries(value)) out[key] = fill(inner);
-      return out;
-    }
-    return value;
-  };
-  for (const trace of filled.traces) {
-    trace.commit = hex40;
-    trace.sha256 = shaOf(trace.path);
-  }
-  filled.k64Procedure.formal.commit = hex40;
-  filled.k64Procedure.formal.sha256 = "b".repeat(64);
-  filled.k64Procedure.formal.review = {
-    reviewer: "independent",
-    reviewedAt: "2026-10-28",
-    record: "docs/x.md",
-  };
-  filled.contracts.k64.freezeCommit = hex40;
   for (const entry of filled.boundFiles) {
     entry.commit = hex40;
     entry.sha256 = shaOf(entry.path);
   }
-  filled.d10.g01.da1AcceptanceRecord = "docs/plans/x.md";
-  filled.candidate.commit = hex40;
-  filled.review = {
+  for (const trace of filled.traces) {
+    trace.commit = hex40;
+    trace.sha256 = shaOf(trace.path);
+  }
+  const review = {
     reviewer: "independent",
     reviewedAt: "2026-10-28",
-    record: "docs/x.md",
-    recordSha256: "c".repeat(64),
+    record: "scratchpad/s3/observation-prep-review.v1.json",
   };
+  const v1 = {
+    ...clone(ctx.procedureDraft),
+    version: "v1",
+    draft: false,
+    review,
+  };
+  filled.k64Procedure.formal.commit = hex40;
+  filled.k64Procedure.formal.sha256 = "b".repeat(64);
+  filled.k64Procedure.formal.review = review;
+  filled.contracts.k64.freezeCommit = hex40;
+  filled.d10.g01.da1AcceptanceRecord = record;
+  filled.d10.g01.rAndRirMode =
+    record === "none" ? "unrestricted" : "restricted";
+  filled.candidate.commit = hex40;
+  filled.review = { ...review, recordSha256: "c".repeat(64) };
   filled.status = "frozen-before-observation";
   filled.placeholders = [];
-  const fixed = fill(filled);
   const frozenCtx = {
     ...ctx,
     fileSha256: {
       ...ctx.fileSha256,
-      [fixed.k64Procedure.formal.path]: "b".repeat(64),
+      [filled.k64Procedure.formal.path]: "b".repeat(64),
     },
+    procedureFormal: v1,
   };
+  return { fixed: filled, frozenCtx };
+}
+
+test("observation prep frozen: every placeholder filled, commits 40-hex, digests match the files", async () => {
+  const ctx = await context();
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
   assert.deepEqual(observationPrepErrors(fixed, frozenCtx), []);
   // v1 の file が無い（S4 が置いていない）なら frozen にできない。
   assert.ok(
@@ -526,6 +527,206 @@ test("observation prep frozen: every placeholder filled, commits 40-hex, digests
   noReview.review = null;
   assert.ok(
     observationPrepErrors(noReview, frozenCtx).some((e) => /review/u.test(e)),
+  );
+});
+
+test("S3-P2-2: boundFiles is exactly the five files, and traces agree with it", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const noAuthor = clone(prep);
+  noAuthor.boundFiles = noAuthor.boundFiles.filter(
+    (row) => row.path !== OBSERVATION_PREP_FILES.authorDeclaration,
+  );
+  assert.ok(
+    observationPrepErrors(noAuthor, ctx).some((e) => /boundFiles/u.test(e)),
+  );
+  const empty = clone(prep);
+  empty.boundFiles = [];
+  assert.ok(
+    observationPrepErrors(empty, ctx).some((e) => /boundFiles/u.test(e)),
+  );
+
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  const split = clone(fixed);
+  split.traces[0].commit = "d".repeat(40);
+  assert.ok(
+    observationPrepErrors(split, frozenCtx).some((e) => /boundFiles/u.test(e)),
+  );
+});
+
+test("S3-P2-3: the frozen v1 procedure must be the reviewed draft-2 values", async () => {
+  const ctx = await context();
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  const shorter = {
+    ...frozenCtx,
+    procedureFormal: {
+      ...frozenCtx.procedureFormal,
+      values: { ...frozenCtx.procedureFormal.values, r1r4WaitMs: 3_000 },
+    },
+  };
+  assert.ok(
+    observationPrepErrors(fixed, shorter).some((e) =>
+      /k64Procedure\.formal/u.test(e),
+    ),
+  );
+  const stillDraft = {
+    ...frozenCtx,
+    procedureFormal: { ...frozenCtx.procedureFormal, draft: true },
+  };
+  assert.ok(observationPrepErrors(fixed, stillDraft).length > 0);
+  const otherReview = clone(fixed);
+  otherReview.k64Procedure.formal.review = {
+    ...otherReview.k64Procedure.formal.review,
+    record: "docs/another.md",
+  };
+  assert.ok(
+    observationPrepErrors(otherReview, frozenCtx).some((e) =>
+      /k64Procedure\.formal\.review/u.test(e),
+    ),
+  );
+});
+
+test("S3-P2-4: the G-01 R and R+IR mode follows the DA-1 record", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.ok(PLACEHOLDER.test(prep.d10.g01.rAndRirMode));
+  const fixedDraft = clone(prep);
+  fixedDraft.d10.g01.rAndRirMode = "restricted";
+  assert.ok(
+    observationPrepErrors(fixedDraft, ctx).some((e) => /rAndRirMode/u.test(e)),
+  );
+
+  const none = await frozenRecord(ctx, { record: "none" });
+  assert.deepEqual(observationPrepErrors(none.fixed, none.frozenCtx), []);
+  const contradiction = clone(none.fixed);
+  contradiction.d10.g01.rAndRirMode = "restricted";
+  assert.ok(
+    observationPrepErrors(contradiction, none.frozenCtx).some((e) =>
+      /rAndRirMode/u.test(e),
+    ),
+  );
+  const path_ = await frozenRecord(ctx);
+  const unrestricted = clone(path_.fixed);
+  unrestricted.d10.g01.rAndRirMode = "unrestricted";
+  assert.ok(
+    observationPrepErrors(unrestricted, path_.frozenCtx).some((e) =>
+      /rAndRirMode/u.test(e),
+    ),
+  );
+});
+
+test("S3-P1-1: R5 gates every Graph arm run and the K6/4 freeze", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  for (const run of [
+    "g-case-gold",
+    "g-case-diagnostic-negative",
+    "v10-ready-probe",
+    "k62-ii-diagnostic",
+    "k62-iii-diagnostic",
+    "trace",
+    "k64-freeze-commit",
+  ]) {
+    const open = clone(prep);
+    open.r5Gate.blockedUntilMatch = open.r5Gate.blockedUntilMatch.filter(
+      (row) => row !== run,
+    );
+    assert.ok(
+      observationPrepErrors(open, ctx).some((e) => /r5Gate/u.test(e)),
+      run,
+    );
+  }
+  const exempt = clone(prep);
+  exempt.r5Gate.exempt.push({ run: "g-case-gold", reason: "x" });
+  assert.ok(observationPrepErrors(exempt, ctx).some((e) => /r5Gate/u.test(e)));
+  const order = clone(prep);
+  order.r5Gate.k64FreezeAfterMatch = false;
+  assert.ok(observationPrepErrors(order, ctx).some((e) => /r5Gate/u.test(e)));
+  const revision = clone(prep);
+  delete revision.r5Gate.onFixtureRevision;
+  assert.ok(
+    observationPrepErrors(revision, ctx).some((e) => /r5Gate/u.test(e)),
+  );
+  const missing = clone(prep);
+  delete missing.r5Gate;
+  assert.ok(observationPrepErrors(missing, ctx).some((e) => /r5Gate/u.test(e)));
+});
+
+test("S3-P3-1: diagnostic runs match their addendum rows including the mutation", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const mutated = clone(prep);
+  mutated.diagnosticRuns.find(
+    (row) => row.id === "K24-G01-N2",
+  ).mutationAfterDeclaration = "restore-same-bytes-body-version";
+  assert.ok(
+    observationPrepErrors(mutated, ctx).some((e) => /K24-G01-N2/u.test(e)),
+  );
+});
+
+test("S3-P3-2: G-01 negatives include a different-bytes restore and their procedure", async () => {
+  const ctx = await context();
+  const addendum = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  assert.deepEqual(
+    addendum.diagnosticNegatives.map((row) => row.id),
+    ["K24-G01-N1", "K24-G01-N2", "K24-G01-N3", "K24-G01-N4"],
+  );
+  const noPrep = clone(addendum);
+  delete noPrep.diagnosticNegatives[3].beforeDeclaration;
+  assert.ok(
+    setupAddendumErrors(noPrep, ctx).some((e) => /beforeDeclaration/u.test(e)),
+  );
+  const noSeam = clone(addendum);
+  delete noSeam.diagnosticNegatives[1].measurementProcess;
+  assert.ok(
+    setupAddendumErrors(noSeam, ctx).some((e) => /measurementProcess/u.test(e)),
+  );
+});
+
+test("S3-P2-1 / P3-3: the browsing stay ends on a product event; stall attempts are bounded", async () => {
+  const ctx = await context();
+  for (const file of [
+    OBSERVATION_PREP_FILES.traceEditing,
+    OBSERVATION_PREP_FILES.traceBrowsing,
+  ]) {
+    const trace = await json(file);
+    const stall = clone(trace);
+    stall.stall.attemptLimit = 5;
+    assert.ok(
+      traceErrors(stall, ctx).some((e) => /stall/u.test(e)),
+      file,
+    );
+  }
+  const trace = await json(OBSERVATION_PREP_FILES.traceBrowsing);
+  const harbor = trace.operations.find((op) => op.sceneId === "g02-harbor");
+  assert.equal(harbor.until, "query-published");
+  const free = clone(trace);
+  delete free.operations.find((op) => op.sceneId === "g02-harbor").until;
+  assert.ok(traceErrors(free, ctx).some((e) => /template/u.test(e)));
+  const timed = clone(trace);
+  timed.operations.find((op) => op.sceneId === "g02-harbor").until = "ms:500";
+  assert.ok(traceErrors(timed, ctx).some((e) => /template/u.test(e)));
+});
+
+test("S3-P3-4 / P3-5: tolerance usages registered; R comes from the hybrid arm's Raw", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const fewer = clone(prep);
+  fewer.registeredForReview[0].usages.pop();
+  assert.ok(
+    observationPrepErrors(fewer, ctx).some((e) =>
+      /registeredForReview/u.test(e),
+    ),
+  );
+  const raw = clone(prep);
+  raw.d10.arms.raw = "unrestricted";
+  assert.ok(
+    observationPrepErrors(raw, ctx).some((e) => /d10\.arms\.raw/u.test(e)),
+  );
+  const source = clone(prep);
+  delete source.samplePlan.rFrom;
+  assert.ok(
+    observationPrepErrors(source, ctx).some((e) => /samplePlan/u.test(e)),
   );
 });
 
