@@ -309,6 +309,37 @@ describe("the generation screen of a local conversation", () => {
     expect(screen.getByTestId("nir1-local-cancel")).toBeTruthy();
   });
 
+  it("never starts the same accepted send again after its generation ended", async () => {
+    answer("nir1_local_conversation_read", emptyRead());
+    answer("nir1_local_generation_start", {
+      status: "started",
+      handle: HANDLE,
+    });
+    answer("nir1_local_generation_continue", {
+      status: "ok",
+      text: "",
+      thinking: "",
+      state: "succeeded",
+      drained: true,
+    });
+    const { acceptedRef } = renderPanel({ conversationId: WRITING });
+    await waitFor(() => expect(acceptedRef.current).not.toBeNull());
+    const send = { conversationId: WRITING, sceneId: "scene-1" };
+    act(() => acceptedRef.current!(send));
+    await waitFor(() =>
+      expect(
+        screen
+          .getByTestId("nir1-local-turn")
+          .getAttribute("data-nir1-local-phase"),
+      ).toBe("succeeded"),
+    );
+    act(() => acceptedRef.current!(send));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    expect(calls("nir1_local_generation_start")).toHaveLength(1);
+  });
+
   it("shows a typed refusal and offers no retry of the same capture", async () => {
     answer("nir1_local_conversation_read", emptyRead());
     answer("nir1_local_generation_start", {
