@@ -355,3 +355,34 @@ test("R7 → case の要約: hook の消費者の 30 件から K6/4 の表示の
     "not-measured:no-native-notice-time",
   );
 });
+
+test("R7（実機で見つけた誤り）: 親の IR が timeout でも、子の呼出しの前に graph-ready が来ていれば子は通知の取り直し（再試行の timer は消える）", () => {
+  const timedOut = {
+    resultKind: "raw",
+    irStatus: "unavailable",
+    irReason: "timeout",
+    completion: { outcome: "timeout", deadlineExceeded: true },
+    irSceneIds: [],
+  };
+  const notified = observation({ parent: { result: result(timedOut) } });
+  const row = k64GraphSampleRow(input({ observation: notified }));
+  assert.equal(row.followUp.child.origin, "graph-ready");
+  assert.equal(row.followUp.parent.irRetryTimer, true);
+  const classified = classify(row);
+  // 親の IR が ready でないので成功にはならない（X11、F4 の timer の条件）。
+  assert.equal(classified.followUp, false);
+  assert.equal(classified.x.X11, "timeout");
+  assert.ok(
+    classified.stages.some((stage) => stage.detail === "ir-retry-timer"),
+  );
+  assert.ok(
+    !classified.stages.some((stage) => stage.detail === "origin:ir-retry"),
+  );
+  // 通知より前に子が呼ばれていれば、子は IR の再試行。
+  const retried = observation({ parent: { result: result(timedOut) } });
+  retried.notices = [{ kind: "graph-ready", at: 119 }];
+  assert.equal(
+    k64GraphSampleRow(input({ observation: retried })).followUp.child.origin,
+    "ir-retry",
+  );
+});

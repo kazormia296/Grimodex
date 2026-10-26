@@ -242,7 +242,11 @@ export function expectedContributionOf(graph, expected) {
   );
 }
 
-/** F4's observation of what started the child (the harness's view, not the mark). */
+/**
+ * F4's observation of what started the child (the harness's view, not the
+ * mark): a Raw recovery, an `index-ready` notice, a `graph-ready` notice
+ * before the child's call, else the parent's IR-timeout retry.
+ */
 function childOriginOf(view) {
   const { parent, child } = view;
   if (child.rawOnly) return "raw-recovery";
@@ -250,9 +254,12 @@ function childOriginOf(view) {
     row.at >= parent.calledAt && row.at <= child.calledAt;
   if (view.notices.some((row) => row.kind === "index-ready" && between(row)))
     return "index-ready";
-  if (irRetryTimerOf(parent.result)) return "ir-retry";
+  // A `graph-ready` refresh re-runs the hook's query effect, whose cleanup
+  // clears the IR-timeout retry timer; the retry starts the child only when
+  // it fired before any notice (found on the first real run, DR-CP4-F-14).
   if (view.notices.some((row) => row.kind === "graph-ready" && between(row)))
     return "graph-ready";
+  if (irRetryTimerOf(parent.result)) return "ir-retry";
   return "unattributed";
 }
 
