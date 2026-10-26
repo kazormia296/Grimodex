@@ -26,7 +26,10 @@ import type {
   DownloadNotice,
   DownloadWebContentsLike,
 } from "./downloadGuard.js";
-import { createProfileDataGuard } from "./profileDataGuard.js";
+import {
+  ProfileDataGuardError,
+  createProfileDataGuard,
+} from "./profileDataGuard.js";
 
 class FakeItem extends EventEmitter implements DownloadItemLike {
   savePath: string | null = null;
@@ -157,6 +160,42 @@ describe("handleWillDownload", () => {
     expect(readFileSync(state, "utf8")).toBe("genuine");
     expect(notices).toEqual(["rejected-destination"]);
     await expectEmptyDir(tmp);
+  });
+
+  it("完了時の拒否を通知し終えた後に、安全網の temp の検査が遅れて失敗しても、同じ通知を重ねず取消もしない", async () => {
+    // 遅い disk の模擬（hosted の Windows で、安全網の `assertOutside(temp)` が飛行中のうちに、
+    // 完了時の経路が temp を削除した）。完了時の経路が通知した後に、temp の検査が解決できずに拒否される。
+    const real = createProfileDataGuard(() => profile);
+    let releaseSafetyNet!: () => void;
+    const safetyNetGate = new Promise<void>((resolve) => {
+      releaseSafetyNet = resolve;
+    });
+    const state = path.join(profile, "profile-egress.json");
+    const { deps, notices } = makeDeps(() => state, {
+      guard: {
+        ...real,
+        assertOutside: async (target) => {
+          if (path.dirname(target) === tmp) {
+            await safetyNetGate;
+            throw new ProfileDataGuardError("unresolvable");
+          }
+          return real.assertOutside(target);
+        },
+      },
+    });
+    const item = new FakeItem("profile-egress.json", '{"restricted":false}');
+    handleWillDownload(item, new FakeWebContents(), deps);
+    item.finish("completed");
+    await settle();
+    // 完了時の経路: 保存先が profile data directory の中なので拒否して 1 件通知し、temp を削除した。
+    expect(readFileSync(state, "utf8")).toBe("genuine");
+    expect(notices).toEqual(["rejected-destination"]);
+    await expectEmptyDir(tmp);
+    // 安全網の検査がいまごろ失敗しても、すでに処理を終えたものを取り消さず、通知を重ねない。
+    releaseSafetyNet();
+    await settle();
+    expect(notices).toEqual(["rejected-destination"]);
+    expect(item.cancelled).toBe(false);
   });
 
   it("保存先が profile data directory の下の存在しない file でも拒否する", async () => {
