@@ -486,6 +486,7 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
     record === "none" ? "unrestricted" : "restricted";
   filled.contracts.sp1.bytesCommit = hex40;
   filled.r5Gate.syntheticDetection.record = "docs/plans/sp-synthetic.md";
+  filled.r5Gate.r5CheckRecord = "docs/plans/r5-check.md";
   filled.review = { ...review, recordSha256: "c".repeat(64) };
   filled.status = "frozen-before-observation";
   filled.placeholders = [];
@@ -996,4 +997,54 @@ test("S3v3-P3-2: SP-P4 retakes after a Graph begin are disclosed and capped at 2
   const silent = clone(prep);
   p4(silent).attemptRule = "retake";
   assert.ok(observationPrepErrors(silent, ctx).some((e) => /SP-P4/u.test(e)));
+});
+
+test("integrator: the R5 check run is a narrow exception and the phases run R5 -> K6/4 freeze -> S4 -> Graph", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const r5 = (value) =>
+    value.r5Gate.exempt.find((row) => row.run === "r5-seed-pin-check");
+  assert.ok(r5(prep));
+  const wide = clone(prep);
+  r5(wide).scope.push("rir-query");
+  assert.ok(
+    observationPrepErrors(wide, ctx).some((e) => /r5-seed-pin-check/u.test(e)),
+  );
+  const lax = clone(prep);
+  r5(lax).forbids = r5(lax).forbids.filter((row) => row !== "v10-ready-probe");
+  assert.ok(
+    observationPrepErrors(lax, ctx).some((e) => /r5-seed-pin-check/u.test(e)),
+  );
+  const gone = clone(prep);
+  gone.r5Gate.exempt = gone.r5Gate.exempt.filter(
+    (row) => row.run !== "r5-seed-pin-check",
+  );
+  assert.ok(observationPrepErrors(gone, ctx).some((e) => /r5Gate/u.test(e)));
+
+  const order = clone(prep);
+  const phases = order.stepOrder.phases;
+  [phases[1], phases[2]] = [phases[2], phases[1]];
+  assert.ok(
+    observationPrepErrors(order, ctx).some((e) => /stepOrder\.phases/u.test(e)),
+  );
+
+  const decided = clone(prep);
+  decided.contracts.k64.decidedIn = "after-s4";
+  assert.ok(
+    observationPrepErrors(decided, ctx).some((e) => /k64\.decidedIn/u.test(e)),
+  );
+
+  const record = clone(prep);
+  record.r5Gate.r5CheckRecord = "";
+  assert.ok(
+    observationPrepErrors(record, ctx).some((e) => /r5CheckRecord/u.test(e)),
+  );
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  const unfilled = clone(fixed);
+  unfilled.r5Gate.r5CheckRecord = "S4:r5-check-record";
+  assert.ok(
+    observationPrepErrors(unfilled, frozenCtx).some((e) =>
+      /r5CheckRecord/u.test(e),
+    ),
+  );
 });

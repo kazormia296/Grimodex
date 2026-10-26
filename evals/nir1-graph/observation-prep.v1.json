@@ -22,7 +22,8 @@
       "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
       "confirmedCommit": "18ebc7b8de2d4f2701c573b5d91561a6cc852024",
       "freezeCommit": "S4:k64-freeze-commit",
-      "freezeNote": "K6/4 批准 7: integrator が claude/nir1-contracts に K6/4 の bytes を凍結した commit。条件の判定に使う診断と (i) で判定する CP-4 の run は、この凍結の後に始めたものに限る。"
+      "freezeNote": "K6/4 批准 7: integrator が claude/nir1-contracts に K6/4 の bytes を凍結した commit。stepOrder.phases の ②（R5 の照合の match の後、S4 の前）で作り、S4 はこの commit を埋める。② が済んでいない間は S4 に進まない。条件の判定に使う診断と (i) で判定する CP-4 の run は、この凍結の後に始めたものに限る。",
+      "decidedIn": "k64-freeze-before-s4"
     },
     "sp1": {
       "draftRef": "nir1-graph-case-seed-pin-proposal/1",
@@ -341,7 +342,7 @@
   "diagnosticRule": "診断の run は Gold の run と別の workspace で行い、case の判定（pass、hold、blocked）に数えない。予定した診断の run はすべて残す。",
   "preconditions": [
     "r5Gate: SP/1 の seed の pin の段を実行した workspace で R5 が match になるまで、Graph arm を含む実行と K6/4 の凍結 commit を始めない。その前に SP-P4 の診断を終え、SP-N7 なら止める（r5Gate の rule と beforeFirstGatedRun）。",
-    "K6/4 の凍結（contracts.k64.freezeCommit）を、R5 が match になった後に claude/nir1-contracts に置き、統合 branch の constants.mjs の K64_FREEZE.freezeCommit に pin すること。",
+    "K6/4 の凍結（contracts.k64.freezeCommit）を、① R5 の照合が match になった後、S4 の前に claude/nir1-contracts に置き、統合 branch の constants.mjs の K64_FREEZE.freezeCommit に pin すること（stepOrder.phases の ②）。",
     "addendum 3 件（K2/4 の 2 件と SP/1 の seed の pin）、trace 2 件、K6/4 の手順の v1、この file が独立 reviewer のレビューを経て frozen になり、観測前の commit が remote（refs/remotes/origin/master）にあること。",
     "S4 の freeze 記録（observation-prep-freeze.v1.json）が graphRuntimeObservedBeforeFreeze: false で、boundFiles にこの file と下の boundFiles を束縛すること。"
   ],
@@ -381,7 +382,7 @@
     {
       "token": "S4:k64-freeze-commit",
       "field": "contracts.k64.freezeCommit",
-      "fill": "integrator が K6/4 の bytes を claude/nir1-contracts に凍結した commit（40 桁）"
+      "fill": "② で integrator が K6/4 の bytes を claude/nir1-contracts に凍結した commit（40 桁。S4 の前に存在する）"
     },
     {
       "token": "S4:da1-acceptance-record",
@@ -472,6 +473,11 @@
       "token": "S4:sp1-bytes-commit",
       "field": "contracts.sp1.bytesCommit",
       "fill": "SP/1 の確認済みの bytes を含む master の commit（40 桁。#740 の merge の後）"
+    },
+    {
+      "token": "S4:r5-check-record",
+      "field": "r5Gate.r5CheckRecord",
+      "fill": "① の R5 の照合の run の記録の所在（S4 の前に存在する）"
     }
   ],
   "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4 は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること、SP/1 の bytes が repo にあること）。S4 の placeholder はどれも S4 の時点で既にある commit か file を指す（S4 の子孫になるものは置かない）。CP-4 の候補の commit は S4 の子孫なので placeholder にせず、candidate.decidedIn のとおり S5 の台帳で決める。",
@@ -498,6 +504,19 @@
       {
         "run": "sp-p4-seed-pin-parity",
         "reason": "SP/1 の SP-P4 は「判定に使わない。Graph の arm を動かさない」診断で、seed なしの R+IR の arm だけを測り、Graph を要求しない。K2/4 :418 の「Graph arm を観測するどの実行」にも、K6/4 R5 の「K6/4 の判定」にも当たらないので、R5 の match の前に取ってよい（beforeFirstGatedRun）。"
+      },
+      {
+        "run": "r5-seed-pin-check",
+        "scope": ["setup", "product-db-read"],
+        "forbids": [
+          "graph-arm",
+          "rir-query",
+          "evaluation-run",
+          "diagnostic",
+          "trace",
+          "v10-ready-probe"
+        ],
+        "reason": "R5 の照合の run は、SP/1 の seed の pin の段を実行した variant ごとの workspace を setup で作り、製品の DB から問いの Scene の pin を読み戻して assertSeedPinsBeforeK64 と SP-P1 を当てるだけで、Graph の arm も R／IR の query も動かさない。K2/4 :418 の「Graph arm の観測」にも SP/1 の「足した pin を使う評価の run」にも当たらず、K6/4 :317 は R5 を K6/4 の凍結の前に済ませるとするので、K6/4 の凍結と S4（観測前の commit）より前に行う。評価、診断（SP-P4 を含む）、trace、V-10 の probe はこの例外に入らない。"
       }
     ],
     "onFixtureRevision": "CP-0 が G-case の fixture を改版するか、SP/1 の段のほかに setup に段を足したら、新しい fixture の sha256 を引く addendum（K2/4 の 2 件と seed の pin の 1 件）と trace の新しい版を作り、独立 reviewer のレビューを受け直してから観測前の commit をやり直す（K2/4 :419-420、K6/2 手順の 4）。この版（v1）は使わず、消さずに残す。SP-N7 で凍結のやり直し（SP/1 の D1）になった場合も同じ。",
@@ -522,7 +541,9 @@
       "owner": "S1g-A（統合 branch の setup-driver の seed の pin の段と variant ごとの照合の試験、seed-pin.mjs と workspace-db.mjs の照合の試験）",
       "record": "S4:sp-synthetic-detection-record",
       "recordRule": "試験の file と commit、観測前の commit の候補で走らせた結果（各 SP-N の検出と、違反の無い記録の通過）を記録し、S4 の freeze 記録から参照する。"
-    }
+    },
+    "r5CheckRecord": "S4:r5-check-record",
+    "r5CheckRecordRule": "R5 の照合の run（①）の記録: S1g-A の setup-driver が、13 variant の workspace ごとに、論理 ID と runtime ID、DB から読み戻した問いの Scene の pin の行、SP-P1 の結果、assertSeedPinsBeforeK64（plan frozen）の結果、段の前後の SP-P2 の記録、使った候補の commit を receipt に書く。integrator は receipt と要約（match か、variant ごとの結果）を merge しない追跡される branch（claude/nir1-contracts か記録の branch）に commit して push し、その所在を S4 がここに書く。match でなければ ② に進まない。"
   },
   "runnerHandoff": [
     "d1.orderNote: 宣言を V-10 の probe より前に置く（統合 branch の runner.mjs は probe の後）。",
@@ -535,7 +556,8 @@
     "SP/1 :178（S3v2-P2-1）: S1g-A は setup-driver の段と照合の試験に、SP-N1〜N5、N9〜N13 の合成の記録を 1 件ずつ置き、検出と違反の無い記録の通過を示す。結果の所在を r5Gate.syntheticDetection.record に S4 が書く。Graph arm を含む実行はその後。",
     "SP-P4（S3v2-P3-2）: 段の直前の DB の写しから両側を分岐させ、論理 ID で比べ、owner の counter（begins）の差分 0 を記録する。",
     "K24-G01-N2〜N4（S3v2-P3-3）: restore は Scene の本文版の restore に限り、mutation の後に SP-P1 を照合し直し、Graph が seed つきで要求され g01-mira-entity に届いたことを記録する。",
-    "integrator の決定: CP-4 の候補の commit は S5 の台帳（clean な候補の freeze の記録）で決める。observation-prep の candidate.commit は null のまま。"
+    "integrator の決定: CP-4 の候補の commit は S5 の台帳（clean な候補の freeze の記録）で決める。observation-prep の candidate.commit は null のまま。",
+    "integrator の順序: ① R5 の照合の run（S1g-A の setup-driver。setup と DB の読取だけ）→ ② K6/4 の凍結 → ③ S4 → ④ SP-P4 と合成の記録 → ⑤ Graph arm。① の記録は r5Gate.r5CheckRecordRule のとおり残し、S4 が所在を書く。"
   ],
   "stepOrder": {
     "graphCases": [
@@ -556,6 +578,14 @@
       "K2/4 declaration step (D1 (ii))",
       "V-10 READY probe and the Graph arm"
     ],
-    "rule": "SP/1 の設計（seed の pin の段を先、宣言の段は pin の段の後で Graph の arm の最初の query の前）と K2/4 :406-408 と D1 (ii)。setupOrder、setupTimeline、measurementPoint は変えない。"
+    "rule": "SP/1 の設計（seed の pin の段を先、宣言の段は pin の段の後で Graph の arm の最初の query の前）と K2/4 :406-408 と D1 (ii)。setupOrder、setupTimeline、measurementPoint は変えない。",
+    "phases": [
+      "r5-seed-pin-check",
+      "k64-freeze-commit",
+      "s4-observation-prep-commit",
+      "sp-p4-and-synthetic-detection",
+      "graph-arm-runs"
+    ],
+    "phasesRule": "① R5 の照合の run（setup と DB の読取だけ）→ ② K6/4 の凍結（claude/nir1-contracts への commit と push、server 側の時刻の記録。K6/4 :317）→ ③ S4（観測前の commit。② の commit と ① の記録を束縛）→ ④ SP-P4 の診断と合成の記録による検出（r5Gate.beforeFirstGatedRun）→ ⑤ Graph arm を含む実行。② が済んでいない間は S4 に進まない。① が match でなければ ② に進まない。"
   }
 }

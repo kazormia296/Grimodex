@@ -268,6 +268,10 @@
     {
       "at": "2026-10-27",
       "reason": "S3 の 3 回目のレビュー（accept、P3 2）と integrator の決定（CP-4 の候補の commit を S5 の台帳で決める）への対応。Graph の実行出力は読んでいない。"
+    },
+    {
+      "at": "2026-10-27",
+      "reason": "integrator の順序の決定（① R5 の照合の run → ② K6/4 の凍結 → ③ S4 → ④ SP-P4 と合成 → ⑤ Graph arm）を記録と validator に入れた。新しく読んだ file はなく、Graph の実行出力は読んでいない。"
     }
   ]
 }

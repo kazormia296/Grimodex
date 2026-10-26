@@ -146,6 +146,25 @@ const R5_MATCH_REQUIRES = Object.freeze([
 const R5_EXEMPT = Object.freeze([
   "g-case-parity-unrestricted",
   "sp-p4-seed-pin-parity",
+  "r5-seed-pin-check",
+]);
+/** The R5 check run: setup and a DB read only (integrator; K6/4 :317). */
+const R5_CHECK_SCOPE = Object.freeze(["setup", "product-db-read"]);
+const R5_CHECK_FORBIDS = Object.freeze([
+  "graph-arm",
+  "rir-query",
+  "evaluation-run",
+  "diagnostic",
+  "trace",
+  "v10-ready-probe",
+]);
+/** ① R5 -> ② K6/4 freeze -> ③ S4 -> ④ SP-P4 and synthetic -> ⑤ Graph arm. */
+const PHASES = Object.freeze([
+  "r5-seed-pin-check",
+  "k64-freeze-commit",
+  "s4-observation-prep-commit",
+  "sp-p4-and-synthetic-detection",
+  "graph-arm-runs",
 ]);
 /** The order of the setup and measurement steps (SP/1 設計; K2/4 :406-408). */
 const STEP_ORDER = Object.freeze({
@@ -1313,6 +1332,36 @@ export function observationPrepErrors(prep, ctx) {
     !String(prep.preconditions[0] ?? "").startsWith("r5Gate")
   )
     errors.push("preconditions must start with the r5Gate (S3-P1-1)");
+
+  // Phases (integrator; K6/4 :317, K2/4 :418, SP/1).
+  if (!same(prep.stepOrder?.phases, PHASES))
+    errors.push(`stepOrder.phases must be ${PHASES.join(" -> ")}`);
+  if (prep.contracts?.k64?.decidedIn !== "k64-freeze-before-s4")
+    errors.push(
+      "contracts.k64.decidedIn must be k64-freeze-before-s4 (phase ②; S4 fills the existing freeze commit)",
+    );
+  const r5Check = (prep.r5Gate?.exempt ?? []).find(
+    (row) => row?.run === "r5-seed-pin-check",
+  );
+  if (
+    r5Check &&
+    (!same(r5Check.scope, R5_CHECK_SCOPE) ||
+      !same([...(r5Check.forbids ?? [])].sort(), [...R5_CHECK_FORBIDS].sort()))
+  )
+    errors.push(
+      `r5Gate.exempt r5-seed-pin-check must be setup and product-db-read only and forbid ${R5_CHECK_FORBIDS.join(", ")}`,
+    );
+  const r5CheckRecord = prep.r5Gate?.r5CheckRecord;
+  if (
+    typeof r5CheckRecord !== "string" ||
+    r5CheckRecord.trim() === "" ||
+    (r5CheckRecord.startsWith("S4:") &&
+      (!PLACEHOLDER.test(r5CheckRecord) || frozen)) ||
+    typeof prep.r5Gate?.r5CheckRecordRule !== "string"
+  )
+    errors.push(
+      "r5Gate.r5CheckRecord must locate the R5 check run's record (filled when frozen) with its rule",
+    );
 
   // Step order (SP/1 設計: the seed pin step first, the declaration later).
   if (!same(prep.stepOrder?.graphCases, STEP_ORDER.graphCases))
