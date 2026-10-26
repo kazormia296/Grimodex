@@ -33,6 +33,7 @@ import {
 } from "../nir1-retrieval/contract.mjs";
 import { claimFactsSealer } from "./admission-facts.mjs";
 import { isLoadedDevFixture } from "./dev-fixture.mjs";
+import { loadProcedureFile, procedureSettings } from "./procedure-file.mjs";
 import {
   G01_FIXTURE,
   GRAPH_CASE_FREEZE,
@@ -576,5 +577,45 @@ export function assertReceiptHeadBound(input) {
   const k64 = readK64FreezeHead({ root, commit: head?.k64?.freezeCommit });
   if (k64.sha256 !== head.k64.sha256)
     throw new Error("[precheck] head.k64 differs from the K6/4 freeze");
-  return { observationPrep: facts.commit, k62, k64, ratification5 };
+  // S1f: the procedure file, read back from its commit (validateCp4Receipt
+  // takes it as `bound.procedure`).
+  const procedure = assertProcedureBound({ root, receipt });
+  return { observationPrep: facts.commit, k62, k64, ratification5, procedure };
+}
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .filter((key) => value[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  return JSON.stringify(value);
+}
+
+/**
+ * S1f: the procedure file a formal K6/4 receipt names (`settings.k64`), read
+ * from its commit with the production loader (a draft is refused); the
+ * receipt's record must equal it (版の食い違い otherwise).
+ */
+export function assertProcedureBound(input) {
+  rejectOverrides(input, ["root", "receipt"]);
+  const k64 = input.receipt?.settings?.k64;
+  const file = k64?.procedureFile;
+  if (!file || typeof file !== "object")
+    throw new Error(
+      "[precheck] settings.k64.procedureFile is missing; a formal K6/4 receipt names its procedure file",
+    );
+  const procedure = loadProcedureFile({
+    root: input.root,
+    version: file.version,
+    commit: file.commit ?? null,
+    purpose: "formal",
+  });
+  if (stableJson(procedureSettings(procedure)) !== stableJson(k64))
+    throw new Error(
+      "[precheck] settings.k64 differs from the procedure file read from its commit (版の食い違い)",
+    );
+  return procedure;
 }

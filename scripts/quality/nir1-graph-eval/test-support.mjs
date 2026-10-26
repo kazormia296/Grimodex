@@ -1,7 +1,22 @@
 // Synthetic records shared by the CP-4 harness tests. Nothing here is a
 // fixture of a G-case: every value is made up for the pure checks.
+import { execFileSync } from "node:child_process";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { claimTestEvidenceSealer } from "./admission-facts.mjs";
+import {
+  DEV_DRAFT_PROCEDURE_VERSION,
+  loadProcedureFile,
+  procedureFilePath,
+} from "./procedure-file.mjs";
 import {
   graphCaseScheduleKeys,
   summarizeSteadyState,
@@ -234,6 +249,69 @@ export function k64Sample(overrides = {}, followUp = {}) {
 }
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
+
+let formalProcedureLoaded = null;
+
+/**
+ * A reviewed (non-draft) procedure file `v1`, committed to a throwaway git
+ * repository and read with the production loader (no test-only sealer). The
+ * repository is removed when the process exits.
+ */
+export function formalProcedure() {
+  if (formalProcedureLoaded) return formalProcedureLoaded;
+  const repo = mkdtempSync(path.join(tmpdir(), "cp4-procedure-support-"));
+  process.once("exit", () => rmSync(repo, { recursive: true, force: true }));
+  const run = (...args) =>
+    execFileSync("git", args, {
+      cwd: repo,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "cp4",
+        GIT_AUTHOR_EMAIL: "cp4@example.invalid",
+        GIT_COMMITTER_NAME: "cp4",
+        GIT_COMMITTER_EMAIL: "cp4@example.invalid",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_NOSYSTEM: "1",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  run("init", "-q", "-b", "main");
+  const file = procedureFilePath("v1");
+  mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+  const draft = JSON.parse(
+    readFileSync(
+      path.join(REPO_ROOT, procedureFilePath(DEV_DRAFT_PROCEDURE_VERSION)),
+      "utf8",
+    ),
+  );
+  writeFileSync(
+    path.join(repo, file),
+    `${JSON.stringify(
+      {
+        ...draft,
+        version: "v1",
+        draft: false,
+        values: { ...draft.values, r1r4WaitMs: 3_000 },
+        review: {
+          reviewer: "synthetic-reviewer",
+          reviewedAt: "2026-10-27",
+          record: "synthetic",
+        },
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  run("add", "--", file);
+  run("commit", "-q", "--no-gpg-sign", "-m", "procedure v1");
+  formalProcedureLoaded = loadProcedureFile({
+    root: repo,
+    version: "v1",
+    commit: "HEAD",
+    purpose: "formal",
+  });
+  return formalProcedureLoaded;
+}
 
 /** The candidate commit the test-sealed evidence names. */
 export const TEST_CANDIDATE_HEAD = "e".repeat(40);

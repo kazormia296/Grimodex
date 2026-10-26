@@ -30,11 +30,13 @@ import {
   H40,
   H64,
   followUpRecord,
+  formalProcedure,
   k64Sample,
   ratification5,
   sample,
   scheduleRows,
 } from "./test-support.mjs";
+import { procedureSettings } from "./procedure-file.mjs";
 
 function indexMeta(generation = 3, dirty = false) {
   return {
@@ -127,23 +129,19 @@ const K64_HEAD = { freezeCommit: H40("4"), sha256: K64_FREEZE.sha256 };
 const FREEZE_PENDING =
   /K6\/4 freeze commit is not pinned|test-only evidence \(test-support\.mjs\)/;
 /** Every error but the one the unpinned K6/4 freeze always gives. */
-/** The 批准 5 evidence re-collected from git for the fixture's candidate (D-1). */
-const BOUND = () => ({ ratification5: ratification5() });
+/**
+ * The 批准 5 evidence re-collected from git for the fixture's candidate (D-1)
+ * and the procedure file loaded from its commit (S1f).
+ */
+const BOUND = () => ({
+  ratification5: ratification5(),
+  procedure: formalProcedure(),
+});
 const otherErrors = (value, bound = BOUND()) =>
   validateCp4Receipt(value, bound).filter(
     (error) => !FREEZE_PENDING.test(error),
   );
-const K64_SETTINGS = {
-  wFMs: 100,
-  tLateMs: 100,
-  tShowMs: 2_000,
-  r1r4WaitMs: 3_000,
-  procedureFile: {
-    path: "evals/nir1-graph/procedure.v1.json",
-    commit: H40("5"),
-    sha256: H64("5"),
-  },
-};
+const K64_SETTINGS = procedureSettings(formalProcedure());
 
 /** A self-consistent receipt; aggregates and window assessment are recomputed. */
 function receipt(overrides = {}, { recompute = true } = {}) {
@@ -385,6 +383,36 @@ test("K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイ�
     ),
     /procedureFile/,
   );
+});
+
+test("S1f: settings.k64 は loadProcedureFile が commit から読んだ手順のファイルと一致し、draft と版の無い記録を拒む", () => {
+  assert.deepEqual(otherErrors(receipt()), []);
+  // 読み込んだ手順のファイルを渡さない検証は、記録を自己申告として拒む。
+  assert.match(
+    otherErrors(receipt(), { ratification5: ratification5() }).join(" | "),
+    /self-reported until loadProcedureFile/,
+  );
+  // 写しは読み込んだものではない。
+  assert.match(
+    otherErrors(receipt(), {
+      ratification5: ratification5(),
+      procedure: { ...formalProcedure() },
+    }).join(" | "),
+    /self-reported until loadProcedureFile/,
+  );
+  const file = K64_SETTINGS.procedureFile;
+  for (const [change, pattern] of [
+    [{ procedureFile: { ...file, version: undefined } }, /version/],
+    [{ procedureFile: { ...file, version: "v2" } }, /版の食い違い/],
+    [{ procedureFile: { ...file, sha256: H64("5") } }, /版の食い違い/],
+    [{ procedureFile: { ...file, draft: true } }, /draft procedure file/],
+    [{ r1r4WaitMs: 2_000 }, /版の食い違い/],
+  ])
+    assert.match(
+      errorsOf(receipt({ settings: { k64: { ...K64_SETTINGS, ...change } } })),
+      pattern,
+      JSON.stringify(change),
+    );
 });
 
 test("K6/4-N18: first-render の窓外率を書いていない receipt は集計の再計算と合わない", () => {

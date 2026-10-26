@@ -19,6 +19,7 @@ import {
   admitFrozenDryRun,
   admitGraphCaseRun,
   assertDefaultAddonIsProduct,
+  assertProcedureBound,
   assertReceiptHeadBound,
   collectObservationPrepFacts,
   collectRatification5Evidence,
@@ -49,6 +50,12 @@ import {
   ratification5,
 } from "./test-support.mjs";
 import { assessCandidateRegime } from "./followup.mjs";
+import {
+  DEV_DRAFT_PROCEDURE_VERSION,
+  loadProcedureFile,
+  procedureFilePath,
+  procedureSettings,
+} from "./procedure-file.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const TRACE = "evals/nir1-graph/trace-editing.v1.json";
@@ -738,6 +745,77 @@ test("D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試
     assert.equal(bare.dPrime.ancestor, false);
     assert.equal(bare.wfWindow.ancestor, false);
     assert.equal(assessCandidateRegime(bare, bare.candidateHead).regime, "k62");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("S1f: 集計の前に、receipt の手順のファイルを commit から読み直して settings.k64 と照合する", async () => {
+  const { repo } = await repository();
+  try {
+    const draft = JSON.parse(
+      await readFile(
+        path.join(ROOT, procedureFilePath(DEV_DRAFT_PROCEDURE_VERSION)),
+        "utf8",
+      ),
+    );
+    const reviewed = {
+      ...draft,
+      version: "v1",
+      draft: false,
+      review: {
+        reviewer: "synthetic-reviewer",
+        reviewedAt: "2026-10-27",
+        record: "synthetic",
+      },
+    };
+    await put(repo, procedureFilePath("v1"), `${JSON.stringify(reviewed)}\n`);
+    await put(repo, procedureFilePath("draft-1"), `${JSON.stringify(draft)}\n`);
+    commit(repo, "procedure");
+    const loaded = loadProcedureFile({
+      root: repo,
+      version: "v1",
+      commit: "HEAD",
+      purpose: "formal",
+    });
+    const receipt = (k64) => ({ settings: { k64 } });
+    const bound = assertProcedureBound({
+      root: repo,
+      receipt: receipt(procedureSettings(loaded)),
+    });
+    assert.equal(bound.sha256, loaded.sha256);
+    const settings = procedureSettings(loaded);
+    for (const k64 of [
+      { ...settings, r1r4WaitMs: 9_000 },
+      {
+        ...settings,
+        procedureFile: { ...settings.procedureFile, sha256: H64("0") },
+      },
+    ])
+      assert.throws(
+        () => assertProcedureBound({ root: repo, receipt: receipt(k64) }),
+        /版の食い違い/,
+      );
+    // draft の版は正式の receipt の手順のファイルにならない。
+    assert.throws(
+      () =>
+        assertProcedureBound({
+          root: repo,
+          receipt: receipt({
+            ...settings,
+            procedureFile: {
+              ...settings.procedureFile,
+              version: "draft-1",
+              path: procedureFilePath("draft-1"),
+            },
+          }),
+        }),
+      /draft/,
+    );
+    assert.throws(
+      () => assertProcedureBound({ root: repo, receipt: receipt(null) }),
+      /procedureFile/,
+    );
   } finally {
     await rm(repo, { recursive: true, force: true });
   }

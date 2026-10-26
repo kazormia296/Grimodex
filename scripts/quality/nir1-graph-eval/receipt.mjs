@@ -34,6 +34,11 @@ import {
 } from "./constants.mjs";
 import { isCollectedFacts } from "./admission-facts.mjs";
 import { assessCandidateRegime } from "./followup.mjs";
+import {
+  PROCEDURE_VERSION,
+  isLoadedProcedure,
+  procedureSettings,
+} from "./procedure-file.mjs";
 
 export const CP4_RECEIPT_SCHEMA = "nir1-cp4-run-receipt/1";
 export const RUN_KINDS = Object.freeze([
@@ -633,8 +638,13 @@ function stopSideEffectErrors(environment, graphRun, candidate) {
   return errors;
 }
 
-/** settings.k64 of a formal K6/4 Graph run (K6/4 変える点 16, 技術点 2; N17). */
-function k64SettingsErrors(errors, value) {
+/**
+ * settings.k64 of a formal K6/4 Graph run (K6/4 変える点 16, 技術点 2; N17).
+ * S1f: the procedure file names its version and is not a draft, and the
+ * record must equal the procedure loadProcedureFile read from its commit
+ * (`bound.procedure`); without it the record is self-reported.
+ */
+function k64SettingsErrors(errors, value, bound = {}) {
   if (
     value?.wFMs !== K64_W_F_MS ||
     value?.tLateMs !== K64_T_LATE_MS ||
@@ -656,6 +666,26 @@ function k64SettingsErrors(errors, value) {
     errors.push("settings.k64.procedureFile must name the procedure file");
   commitErrors(errors, file?.commit, "settings.k64.procedureFile.commit");
   digestErrors(errors, file?.sha256, "settings.k64.procedureFile.sha256");
+  if (
+    typeof file?.version !== "string" ||
+    !PROCEDURE_VERSION.test(file.version)
+  )
+    errors.push(
+      "settings.k64.procedureFile.version must name the procedure file's version",
+    );
+  if (file?.draft !== false)
+    errors.push(
+      "[precheck] a formal Graph run never uses a draft procedure file (S1f)",
+    );
+  const procedure = bound?.procedure;
+  if (!isLoadedProcedure(procedure))
+    errors.push(
+      "[precheck] settings.k64 is self-reported until loadProcedureFile reads the procedure file from its commit (S1f)",
+    );
+  else if (stable(procedureSettings(procedure)) !== stable(value))
+    errors.push(
+      "settings.k64 differs from the procedure file loaded from its commit (版の食い違い)",
+    );
 }
 
 /**
@@ -731,7 +761,7 @@ export function validateCp4Receipt(receipt, bound = {}) {
         errors.push(
           "[precheck] candidate.ratification5 is test-only evidence (test-support.mjs); a formal receipt needs collectRatification5Evidence (E-1)",
         );
-      k64SettingsErrors(errors, receipt?.settings?.k64);
+      k64SettingsErrors(errors, receipt?.settings?.k64, bound);
     }
   }
   for (const language of ["ja", "en"]) {

@@ -1671,6 +1671,8 @@ requirements:
       - scripts/quality/nir1-graph-eval/runner.mjs
       - scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts
       - scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts
+      - scripts/quality/nir1-graph-eval/procedure-file.mjs
+      - scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-1.json
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
@@ -1731,6 +1733,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/window.test.mjs
       - scripts/quality/nir1-graph-eval/dev-fixture.test.mjs
       - scripts/quality/nir1-graph-eval/session.test.mjs
+      - scripts/quality/nir1-graph-eval/procedure-file.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
