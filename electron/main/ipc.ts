@@ -7,7 +7,7 @@
  * - 送信元窓の解決（保存ダイアログなど窓単位コマンドへの束縛）
  * - fail-soft outcome の main 側ログ（A6 監査の集計ポイント）
  */
-import { BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import { getSchema } from "@tiptap/core";
 import { Node as ProseMirrorNode } from "@tiptap/pm/model";
@@ -25,6 +25,7 @@ import {
   IPC,
   IPC_BACKEND_UNAVAILABLE_MARKER,
   IPC_UNIMPLEMENTED_MARKER,
+  isNir1LocalGenerationCommand,
   toErrorString,
 } from "../shared/ipcContract.js";
 import type {
@@ -61,6 +62,13 @@ import {
 import { createRelatedScenesReconciler } from "./relatedScenesReconciler.js";
 import type { ProfileActivationController } from "./profileActivation.js";
 import type { AiStreamTerminalTracker } from "./aiStreamTerminals.js";
+import {
+  createNir1LocalGenerationRoute,
+  parseNir1LocalGenerationCiSeam,
+  startNir1LocalGenerationCiSeam,
+  type Nir1LocalGenerationLaunch,
+} from "./nir1LocalGeneration.js";
+import { defaultUserDataDirectoriesForApp } from "./userData.js";
 import {
   PROFILE_ACTIVATION_REQUEST_COMMAND,
   PROFILE_EGRESS_STATUS_COMMAND,
@@ -2077,6 +2085,32 @@ function releaseUnpublishedRelatedScenesOperation(
 }
 
 /**
+ * The launch facts of the NIR-1 local generation journey seam (DR-DD1B-1),
+ * read once from Electron's `app` and `process.env` when the router is
+ * registered. Anything unreadable is a packaged (closed) launch; a packaged
+ * launch reads no environment value (K5/3 必須防御 17).
+ */
+function nir1LocalGenerationLaunchFromApp(): Nir1LocalGenerationLaunch {
+  const closed: Nir1LocalGenerationLaunch = {
+    isPackaged: true,
+    env: {},
+    userDataDir: "",
+    defaultUserDataDirs: () => [],
+  };
+  try {
+    if (app.isPackaged !== false) return closed;
+    return {
+      isPackaged: false,
+      env: process.env,
+      userDataDir: app.getPath("userData"),
+      defaultUserDataDirs: () => defaultUserDataDirectoriesForApp(app),
+    };
+  } catch {
+    return closed;
+  }
+}
+
+/**
  * app ready 後に 1 回だけ呼ぶ。`backend` は .node ロード失敗時 null
  * （napi コマンドは IPC_BACKEND_UNAVAILABLE の明示エラーで落ちる）。
  * `extraShellHandlers` は per-invoke に再生成できないステートフルな main-TS
@@ -2092,10 +2126,7 @@ export function registerIpcRouter(
   broadcast?: (channel: string, payload: unknown) => void,
   narrativeMaintenanceCiSeam: NarrativeMaintenanceCiSeam = { active: false },
   profileEgress?: ProfileEgressGate,
-  licenseValidation?: Pick<
-    LicenseValidationScheduler,
-    "runManualOperation"
-  >,
+  licenseValidation?: Pick<LicenseValidationScheduler, "runManualOperation">,
   narrativeMaintenance?: Pick<
     NarrativeMaintenanceScheduler,
     | "quiesceForWorkspaceSwitch"
@@ -2110,7 +2141,24 @@ export function registerIpcRouter(
   mainGrant?: MainGrantController,
   profileActivation?: ProfileActivationController,
   aiStreamTerminals?: AiStreamTerminalTracker,
+  /**
+   * The local generation journey seam's launch facts (DR-DD1B-1). The product
+   * omits it, and the router reads Electron's `app` once; tests pass it.
+   */
+  nir1LocalGenerationLaunch: Nir1LocalGenerationLaunch = nir1LocalGenerationLaunchFromApp(),
 ): void {
+  // NIR-1 local generation (DD-1b): Main's gate is open only when the journey
+  // seam opened Native's gate at this registration (DR-DD1B-3, DR-DD1B-4).
+  const nir1LocalGeneration = createNir1LocalGenerationRoute({
+    open: startNir1LocalGenerationCiSeam({
+      seam: parseNir1LocalGenerationCiSeam(nir1LocalGenerationLaunch),
+      backend,
+      isPackaged: nir1LocalGenerationLaunch.isPackaged,
+    }),
+    backend,
+    secrets,
+    profileEgress,
+  });
   const relatedScenesReconciler = createRelatedScenesReconciler({
     reconcile: async () => {
       if (!backend?.relatedScenesReconcile)
@@ -2147,6 +2195,11 @@ export function registerIpcRouter(
             error: "IPC_INVALID_REQUEST: command name must be a string",
           };
         }
+        // Main's gate of the local generation route comes first: while it is
+        // closed nothing of the invoke (identity, D2a, key store, Native) is
+        // reached (K5/3 必須防御 16).
+        const nir1LocalGateRefusal = nir1LocalGeneration.gateRefusal(cmd);
+        if (nir1LocalGateRefusal) return nir1LocalGateRefusal;
         if (
           cmd === "capture_current_chat_input" &&
           event.sender.isDestroyed()
@@ -2251,6 +2304,17 @@ export function registerIpcRouter(
               configurable: true,
             });
           }
+        }
+        const nir1LocalContext = isNir1LocalGenerationCommand(cmd)
+          ? { sender: event.sender, win, callerIdentity }
+          : null;
+        if (isNir1LocalGenerationCommand(cmd) && nir1LocalContext) {
+          const refusal = await nir1LocalGeneration.admit(
+            cmd,
+            nir1LocalContext,
+            dispatchArgs,
+          );
+          if (refusal) return refusal;
         }
         const dispatch = async (args = dispatchArgs): Promise<Envelope> => {
           // D-10 (DR-DA2-18): an admitted stream is recorded until its invoke
@@ -2578,10 +2642,23 @@ export function registerIpcRouter(
                     admittedValue,
                   );
                 }
+                if (isNir1LocalGenerationCommand(cmd)) {
+                  // A start whose handle is not returned leaves no running
+                  // generation behind (DR-DD1B-7).
+                  nir1LocalGeneration.onUnpublished(cmd, event.sender.id);
+                }
                 envelope = { ok: false, error: toErrorString(error) };
               }
             }
           }
+        }
+        if (isNir1LocalGenerationCommand(cmd) && nir1LocalContext) {
+          nir1LocalGeneration.observePublished(
+            cmd,
+            nir1LocalContext,
+            dispatchArgs,
+            envelope,
+          );
         }
         if (envelope.ok && typeof boundArgs.ownerKey === "string") {
           if (cmd === "related_scenes_begin" && isRecord(envelope.value)) {
