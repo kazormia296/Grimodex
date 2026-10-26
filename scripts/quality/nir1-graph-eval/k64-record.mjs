@@ -35,7 +35,6 @@ import { PRODUCT_HOOK } from "./followup.mjs";
 import { finite } from "./join.mjs";
 import { isNativeNs } from "./native-sample.mjs";
 import { BEGIN, GRAPH_CONTINUE, sampleRow } from "./run-sample.mjs";
-import { distribution } from "./stats.mjs";
 
 export const IR_CONTINUE = "related_scenes_continue";
 /** The receipt's runner kind of this producer (receipt.mjs RUNNER_KINDS). */
@@ -532,27 +531,4 @@ export function k64GraphSampleRow(input) {
   };
 }
 
-/** q4 distributions of a set of samples (K6/4-P3; disclosure only). */
-export function summarizeQ4(samples) {
-  const records = samples
-    .map((row) => row.followUp?.q4)
-    .filter((value) => value && typeof value === "object");
-  const values = (pick) => records.map(pick).filter(finite);
-  return {
-    clock: "native-ns, disclosure only (K6/4:133)",
-    parentHandOverToSettledMs: distribution(
-      values((row) => row.parent?.handOverToSettledMs),
-    ),
-    parentTicketToSettledMs: distribution(
-      values((row) => row.parent?.ticketToSettledMs),
-    ),
-    noticeAfterParentPublishMs: distribution(
-      values((row) => row.noticeAfterParentPublishMs),
-    ),
-    childBeginMs: distribution(values((row) => row.child?.beginMs)),
-    childNativeRawReadyElapsedMs: distribution(
-      values((row) => row.child?.nativeRawReadyElapsedMs),
-    ),
-    settledToNotice: "not-measured:no-native-notice-time",
-  };
-}
+export { summarizeQ4 } from "./q4.mjs";

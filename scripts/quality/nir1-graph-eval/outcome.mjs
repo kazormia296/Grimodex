@@ -21,7 +21,7 @@ import {
   rejectOverrides,
   variantByKey,
 } from "./constants.mjs";
-import { isSteadyStateSummary } from "./availability.mjs";
+import { isSteadyStateSummary, samplesDigest } from "./availability.mjs";
 import { classifyFollowUp } from "./followup.mjs";
 import {
   BOUNDARY_DISAGREEMENTS,
@@ -450,6 +450,12 @@ export function summarizeVariantQuality(input) {
   const { regime } = steadyState;
   const pairs = measuredPairs(variant, samples);
   if (pairs.invalid) return pairs.invalid;
+  // E-3 (S1f): the regime and the samples come from the same run; a summary
+  // computed from other samples (another run, a passing schedule) is refused.
+  if (samplesDigest(samples) !== steadyState.samplesDigest)
+    throw new Error(
+      "[precheck] the quality is measured on the same samples the steady-state summary read (E-3)",
+    );
   const { graph, hybrid } = pairs;
   if (variant.expectedGraph === "unavailable")
     return unavailableQuality(variant, graph, hybrid, regime);

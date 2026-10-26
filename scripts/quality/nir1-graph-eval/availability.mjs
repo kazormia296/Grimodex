@@ -36,6 +36,7 @@
 //   finalSceneIds                         the returned final list
 //   expectedMaterials                     trace queries only
 
+import { createHash } from "node:crypto";
 import { isNativeNs } from "./native-sample.mjs";
 import {
   AVAILABILITY_YARDSTICK,
@@ -68,6 +69,7 @@ import {
   lapseKind,
   steadyStateInWindow,
 } from "./join.mjs";
+import { summarizeQ4 } from "./q4.mjs";
 import { distribution } from "./stats.mjs";
 
 export {
@@ -287,6 +289,8 @@ export function summarizeSteadyStateCase(input) {
       q1: distribution(block.q1),
       q2: distribution(block.q2),
       q3: distribution(block.q3),
+      // S1f: q4 (K6/4:133), disclosure only.
+      q4: summarizeQ4(measured),
       missRate: ratio(block.missed, block.n),
     };
   }
@@ -295,6 +299,26 @@ export function summarizeSteadyStateCase(input) {
 
 /** Summaries summarizeSteadyState returned (D-1: quality reads the regime). */
 const STEADY_STATE_SUMMARIES = new WeakSet();
+
+function stableJson(value) {
+  if (Array.isArray(value)) return `[${value.map(stableJson).join(",")}]`;
+  if (value && typeof value === "object")
+    return `{${Object.keys(value)
+      .sort()
+      .filter((key) => value[key] !== undefined)
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+/**
+ * E-3 (S1f): the digest of the samples a summary read (sorted keys), so that
+ * the quality of a variant is measured on the same samples as the steady
+ * state (outcome.mjs `summarizeVariantQuality`).
+ */
+export function samplesDigest(samples) {
+  return createHash("sha256").update(stableJson(samples)).digest("hex");
+}
 
 export function isSteadyStateSummary(value) {
   return (
@@ -371,6 +395,7 @@ function summarizeSteadyStateUnsealed(input) {
     status: invalid.length === 0 ? "valid" : "invalid",
     invalid,
     planKind: plan.kind,
+    samplesDigest: samplesDigest(samples),
     regime: "k62",
     pool: {
       n,
@@ -457,6 +482,7 @@ function summarizeSteadyStateUnsealed(input) {
         q2: distribution(q.q2),
         q3: distribution(q.q3),
       },
+      q4: summarizeQ4(pooledSamples),
       firstRenderOutOfWindowRate: base.pool.outOfWindowRate,
     },
   };

@@ -3,6 +3,8 @@
 // 確かめる。値はすべて合成（H5／RS-JOIN の形を真似た時刻）。
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { summarizeSteadyStateCase } from "./availability.mjs";
+import { devVariant } from "./constants.mjs";
 import { classifyFollowUp, missingR7 } from "./followup.mjs";
 import {
   K64_RUNNER_KIND,
@@ -12,6 +14,7 @@ import {
   r2Record,
   summarizeQ4,
 } from "./k64-record.mjs";
+import { ratification5 } from "./test-support.mjs";
 
 const SEED = "entity-seed";
 const SCENE = "scene-q";
@@ -533,5 +536,30 @@ test("R7: 親の表示に D の後の Graph が混ざれば記録に残す（N1�
         }),
       ),
     /\[artifact\]/,
+  );
+});
+
+test("R7 → case の要約: hook の消費者の 30 件から K6/4 の表示の可用性と q1〜q4 の分布を出す", () => {
+  const rows = Array.from({ length: 30 }, (_, repeat) =>
+    k64GraphSampleRow(input({ repeat })),
+  );
+  const { entry, invalid } = summarizeSteadyStateCase({
+    rows,
+    variant: devVariant({
+      key: "dev:dev-lantern.v1/base",
+      expectedGraph: "available",
+    }),
+    fixedGraphMode: "restricted",
+    candidate: ratification5(),
+  });
+  assert.deepEqual(invalid, []);
+  assert.equal(entry.k64.followUp, 30);
+  assert.equal(entry.k64.missed, 0);
+  assert.equal(entry.k64.q1.n, 30);
+  assert.equal(entry.k64.q4.parentHandOverToSettledMs.n, 30);
+  assert.equal(entry.k64.q4.childBeginMs.n, 30);
+  assert.equal(
+    entry.k64.q4.settledToNotice,
+    "not-measured:no-native-notice-time",
   );
 });

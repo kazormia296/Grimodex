@@ -24,7 +24,14 @@ import {
   summarizeVariantQuality,
   unmetPreconditions,
 } from "./outcome.mjs";
-import { k64Sample, steadySummary } from "./test-support.mjs";
+import { summarizeSteadyState } from "./availability.mjs";
+import {
+  k64Run,
+  k64Sample,
+  scheduleRows,
+  steadySummary,
+  summarizeK64,
+} from "./test-support.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -330,12 +337,41 @@ const lateRow = {
   finalSceneIds: ["dev-a", "dev-b"],
   graph: { joined: false, source: null, revalidation: null, arrivedAt: null },
 };
-const quality = (key, rows) =>
-  summarizeVariantQuality({
-    variant: variantByKey(key),
-    samples: qualitySamples(key, rows),
-    steadyState: steadySummary("k62"),
+
+/**
+ * E-3 (S1f): a full frozen schedule whose measured rows of `variantKey` are
+ * `variantRows`, and the steady-state summary of exactly those samples.
+ */
+function boundRun(variantKey, variantRows, regime) {
+  const base = regime === "k64" ? k64Run() : scheduleRows(GRAPH_EVAL_VARIANTS);
+  const keyOf = (row) =>
+    `${row.variantKey}:${row.phase}:${row.repeat}:${row.arm}`;
+  const replaced = new Map(variantRows.map((row) => [keyOf(row), row]));
+  const samples = base.map((row) => replaced.get(keyOf(row)) ?? row);
+  const steadyState =
+    regime === "k64"
+      ? summarizeK64(samples)
+      : summarizeSteadyState({
+          samples,
+          fixedGraphMode: "restricted",
+          plan: { kind: "frozen" },
+        });
+  assert.equal(steadyState.regime, regime);
+  return { samples, steadyState };
+}
+
+/** The quality of one variant on the samples its steady-state summary read. */
+function boundQuality(variantKey, variantRows, regime) {
+  const { samples, steadyState } = boundRun(variantKey, variantRows, regime);
+  return summarizeVariantQuality({
+    variant: variantByKey(variantKey),
+    samples,
+    steadyState,
   });
+}
+
+const quality = (key, rows) =>
+  boundQuality(key, qualitySamples(key, rows), "k62");
 
 test("K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in window is HOLD", () => {
   assert.equal(
@@ -499,11 +535,47 @@ function k64QualitySamples(variantKey, graphRow) {
 }
 
 const k64Quality = (key, graphRow) =>
-  summarizeVariantQuality({
-    variant: variantByKey(key),
-    samples: k64QualitySamples(key, graphRow),
-    steadyState: steadySummary("k64"),
-  });
+  boundQuality(key, k64QualitySamples(key, graphRow), "k64");
+
+test("E-3（S1f）: 品質は定常状態の要約と同じ samples で測り、別の samples の要約は受け付けない", () => {
+  const key = "G-02/base";
+  const rows = k64QualitySamples(key, () => [{}, {}]);
+  const { samples, steadyState } = boundRun(key, rows, "k64");
+  assert.match(steadyState.samplesDigest, /^[0-9a-f]{64}$/u);
+  assert.equal(
+    summarizeVariantQuality({
+      variant: variantByKey(key),
+      samples,
+      steadyState,
+    }).status,
+    "measurable",
+  );
+  // 別の variant の 1 行だけが違う samples（品質の variant の行は同じ）でも止める。
+  const other = samples.map((row) =>
+    row.variantKey === "G-04/base" && row.arm === "hybrid" && row.repeat === 0
+      ? { ...row, finalSceneIds: ["dev-x"] }
+      : row,
+  );
+  assert.throws(
+    () =>
+      summarizeVariantQuality({
+        variant: variantByKey(key),
+        samples: other,
+        steadyState,
+      }),
+    /\[precheck\].*same samples/u,
+  );
+  // 封印した既定の要約（k64Run の samples）も、この variant の行が違えば使えない。
+  assert.throws(
+    () =>
+      summarizeVariantQuality({
+        variant: variantByKey(key),
+        samples: rows,
+        steadyState: steadySummary("k64"),
+      }),
+    /same samples/u,
+  );
+});
 
 test("K6/4 品質（批准 3、K6/4-P1）: 表示された sample の表示の結果で測り、表示の種類を書く", () => {
   const result = k64Quality("G-02/base", () => [{}, {}]);
@@ -576,11 +648,11 @@ test("K6/4: 表示されなかった sample の親の表示が R+IR と違う、
   );
   // unavailable の variant: 子が Graph を出したら FAIL、出さなければ fallback。
   const unavailable = (graphRow) =>
-    summarizeVariantQuality({
-      variant: variantByKey("G-03/frontier-exceeded"),
-      samples: k64QualitySamples("G-03/frontier-exceeded", graphRow),
-      steadyState: steadySummary("k64"),
-    });
+    boundQuality(
+      "G-03/frontier-exceeded",
+      k64QualitySamples("G-03/frontier-exceeded", graphRow),
+      "k64",
+    );
   assert.equal(
     unavailable((r) =>
       r === 3 ? [{}, {}] : [{}, { notices: [], child: null }],
