@@ -251,3 +251,22 @@ test("S3v2-P3-4: the SP/1 digest is recomputed when its bytes are in the reposit
     ),
   );
 });
+
+test("S3v3-P3-1: a frozen seed pin addendum needs the SP/1 bytes in the repository", async () => {
+  const { ctx, addendum } = await load();
+  const frozen = clone(addendum);
+  frozen.status = "frozen-after-independent-review";
+  frozen.review = {
+    reviewer: "S3",
+    reviewedAt: "2026-10-27",
+    record: "scratchpad/s3/observation-prep-review.v3.json",
+    recordSha256: "c".repeat(64),
+  };
+  assert.deepEqual(
+    seedPinAddendumErrors(frozen, { ...ctx, sp1Sha256: SP1.sha256 }),
+    [],
+  );
+  assert.ok(
+    has(seedPinAddendumErrors(frozen, { ...ctx, sp1Sha256: null }), /SP\/1/u),
+  );
+});

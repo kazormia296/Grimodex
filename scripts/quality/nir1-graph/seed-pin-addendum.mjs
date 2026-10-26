@@ -19,9 +19,10 @@ export const SEED_PIN_ADDENDUM_PATH =
 /**
  * SP/1 bytes (confirmed 2026-10-27 06:47 JST). The bytes live on
  * claude/seed-pin-draft until the integrator places them unedited at `path`
- * on master (S3v2-P3-4). While the file is absent, the addendum must name this
- * constant; once present, eval:fixtures recomputes its SHA-256 (ctx.sp1Sha256)
- * and the file must match it.
+ * on master (S3v2-P3-4, docs PR #740). While the file is absent, a draft
+ * addendum must name this constant; once present, eval:fixtures recomputes its
+ * SHA-256 (ctx.sp1Sha256) and the file must match it. A frozen addendum or
+ * observation-prep record needs the file (S3v3-P3-1).
  */
 export const SP1 = Object.freeze({
   draftRef: "nir1-graph-case-seed-pin-proposal/1",
@@ -157,7 +158,11 @@ export function seedPinAddendumErrors(addendum, ctx) {
   for (const key of ["draftRef", "contractId", "path", "sha256"])
     if (contract[key] !== SP1[key])
       errors.push(`contract.${key} must be SP/1's ${SP1[key]}`);
-  if (
+  if (addendum.status === STATUSES[1] && ctx.sp1Sha256 !== SP1.sha256)
+    errors.push(
+      `a frozen addendum needs the SP/1 bytes at ${SP1.path} with sha256 ${SP1.sha256} (S3v3-P3-1)`,
+    );
+  else if (
     ctx.sp1Sha256 !== null &&
     ctx.sp1Sha256 !== undefined &&
     ctx.sp1Sha256 !== SP1.sha256

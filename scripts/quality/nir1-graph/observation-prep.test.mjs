@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { SP1 } from "./seed-pin-addendum.mjs";
 import {
   K24_TABLE,
   OBSERVATION_PREP_FILES,
@@ -483,7 +484,7 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   filled.d10.g01.da1AcceptanceRecord = record;
   filled.d10.g01.rAndRirMode =
     record === "none" ? "unrestricted" : "restricted";
-  filled.candidate.commit = hex40;
+  filled.contracts.sp1.bytesCommit = hex40;
   filled.r5Gate.syntheticDetection.record = "docs/plans/sp-synthetic.md";
   filled.review = { ...review, recordSha256: "c".repeat(64) };
   filled.status = "frozen-before-observation";
@@ -495,6 +496,7 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
       [filled.k64Procedure.formal.path]: "b".repeat(64),
     },
     procedureFormal: v1,
+    sp1Sha256: SP1.sha256,
   };
   return { fixed: filled, frozenCtx };
 }
@@ -929,4 +931,69 @@ test("S3v2-P3-3: G-01 restore negatives use the Scene body version restore and r
       id,
     );
   }
+});
+
+test("integrator: the CP-4 candidate is decided in the S5 ledger, never an S4 placeholder", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.equal(prep.candidate.commit, null);
+  assert.ok(
+    !prep.placeholders.some((row) => row.token === "S4:cp4-candidate-commit"),
+  );
+  const asPlaceholder = clone(prep);
+  asPlaceholder.candidate.commit = "S4:cp4-candidate-commit";
+  asPlaceholder.placeholders.push({
+    token: "S4:cp4-candidate-commit",
+    field: "candidate.commit",
+    fill: "x",
+  });
+  assert.ok(
+    observationPrepErrors(asPlaceholder, ctx).some((e) => /candidate/u.test(e)),
+  );
+  const filledIn = clone(prep);
+  filledIn.candidate.commit = "a".repeat(40);
+  assert.ok(
+    observationPrepErrors(filledIn, ctx).some((e) => /candidate/u.test(e)),
+  );
+  const noLedger = clone(prep);
+  delete noLedger.candidate.decidedIn;
+  assert.ok(
+    observationPrepErrors(noLedger, ctx).some((e) => /candidate/u.test(e)),
+  );
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  assert.equal(fixed.candidate.commit, null);
+  assert.deepEqual(observationPrepErrors(fixed, frozenCtx), []);
+});
+
+test("S3v3-P3-1: a frozen record needs the SP/1 bytes in the repository and their commit", async () => {
+  const ctx = await context();
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  assert.ok(
+    observationPrepErrors(fixed, { ...frozenCtx, sp1Sha256: null }).some((e) =>
+      /SP\/1|sp1/u.test(e),
+    ),
+  );
+  const noCommit = clone(fixed);
+  noCommit.contracts.sp1.bytesCommit = "S4:sp1-bytes-commit";
+  assert.ok(
+    observationPrepErrors(noCommit, frozenCtx).some((e) => /sp1/u.test(e)),
+  );
+  const draft = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(
+    observationPrepErrors(draft, { ...ctx, sp1Sha256: null }),
+    [],
+  );
+});
+
+test("S3v3-P3-2: SP-P4 retakes after a Graph begin are disclosed and capped at 2", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const p4 = (value) => value.diagnosticRuns.find((row) => row.id === "SP-P4");
+  assert.equal(p4(prep).attemptLimit, 2);
+  const more = clone(prep);
+  p4(more).attemptLimit = 3;
+  assert.ok(observationPrepErrors(more, ctx).some((e) => /SP-P4/u.test(e)));
+  const silent = clone(prep);
+  p4(silent).attemptRule = "retake";
+  assert.ok(observationPrepErrors(silent, ctx).some((e) => /SP-P4/u.test(e)));
 });

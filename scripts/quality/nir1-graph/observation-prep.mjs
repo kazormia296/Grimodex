@@ -1117,13 +1117,29 @@ export function observationPrepErrors(prep, ctx) {
   )
     errors.push("references.g01Fixture must be the frozen G-01 fixture sha256");
   freezeReferenceErrors(errors, prep.references?.graphCaseFreeze, ctx);
+  // The CP-4 candidate descends from S4, so it is decided in the S5 ledger
+  // (integrator), never an S4 placeholder.
+  if (
+    !isObject(prep.candidate) ||
+    prep.candidate.commit !== null ||
+    prep.candidate.decidedIn !== "S5-ledger" ||
+    typeof prep.candidate.rule !== "string"
+  )
+    errors.push(
+      "candidate.commit must stay null and be decided in the S5 ledger (decidedIn S5-ledger)",
+    );
+  // SP/1 bytes bound in the repository once frozen (S3v3-P3-1).
   referenceErrors(
     errors,
-    "candidate.commit",
-    prep.candidate?.commit,
+    "contracts.sp1.bytesCommit",
+    sp1?.bytesCommit,
     "commit",
     frozen,
   );
+  if (frozen && ctx.sp1Sha256 !== SP1.sha256)
+    errors.push(
+      `contracts.sp1: a frozen record needs the SP/1 bytes at ${SP1.path} with sha256 ${SP1.sha256}`,
+    );
 
   // D1: the same declaration place as both addenda.
   const choices = [
@@ -1454,6 +1470,9 @@ export function observationPrepErrors(prep, ctx) {
     p4.d2aMode !== prep.d10?.arms?.hybrid ||
     p4.branch !== "single-pre-step-copy" ||
     p4.compareBy !== "logical-id" ||
+    p4.attemptLimit !== 2 ||
+    typeof p4.attemptRule !== "string" ||
+    !p4.attemptRule.includes("[precheck]") ||
     !(p4.requiredRecords ?? []).includes("owner-begins-delta-zero") ||
     !same([...(p4.notCountedAs ?? [])].sort(), [
       "case-judgement",
@@ -1766,6 +1785,11 @@ export async function assertObservationPrepFormal({ repoRoot, head = "HEAD" }) {
       path: prep.k64Procedure.formal.path,
       commit: prep.k64Procedure.formal.commit,
       sha256: prep.k64Procedure.formal.sha256,
+    },
+    {
+      path: SP1.path,
+      commit: prep.contracts.sp1.bytesCommit,
+      sha256: SP1.sha256,
     },
   ];
   for (const row of references) {

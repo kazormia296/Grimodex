@@ -30,7 +30,9 @@
       "path": "docs/plans/nir1-graph-case-seed-pin-proposal-1-draft.md",
       "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547",
       "confirmedAt": "2026-10-27 06:47 JST（推奨のまま。G-01 を含む）",
-      "bytesLocation": "今は claude/seed-pin-draft にある。integrator が別の docs の PR で master の同じ path に、本文を編集せずに置く。置かれた後は eval:fixtures が sha256 を計算し直して照合する（seed-pin-addendum.mjs）。"
+      "bytesLocation": "今は claude/seed-pin-draft にある。integrator が別の docs の PR で master の同じ path に、本文を編集せずに置く。置かれた後は eval:fixtures が sha256 を計算し直して照合する（seed-pin-addendum.mjs）。",
+      "bytesCommit": "S4:sp1-bytes-commit",
+      "bytesRule": "frozen では、SP/1 の bytes が repo の path（docs/plans/nir1-graph-case-seed-pin-proposal-1-draft.md。docs の PR #740）にあり、sha256 が確認済みの値と一致し、bytesCommit がその bytes を含む commit であることを求める（S3v3-P3-1）。S4 の freeze 記録はこの commit と sha256 を束縛する。#740 が master に入るまでは、非 frozen の間だけ file が無くてよい。"
     }
   },
   "references": {
@@ -44,8 +46,9 @@
     }
   },
   "candidate": {
-    "commit": "S4:cp4-candidate-commit",
-    "rule": "CP-4 の G-case と trace を測る候補の commit。観測前の commit の子孫で、K6/4 批准 5 の (a) D′（#715）、(b) RS-JOIN の hook（#722）、(c) W_f の製品の変更（#725）を含む。build の識別（commit と feature 集合、次 query 用の cache を置くか）を receipt に書く。"
+    "commit": null,
+    "decidedIn": "S5-ledger",
+    "rule": "CP-4 の G-case と trace を測る候補の commit は、S4（観測前の commit）の後の clean な worktree で決まり、S4 の子孫になるので、S4 では埋めない。S5 の台帳（clean な候補の freeze の記録）で決め、そこに commit と build の識別（feature 集合、次 query 用の cache を置くか）を書く。候補は観測前の commit の子孫で、K6/4 批准 5 の (a) D′（#715）、(b) RS-JOIN の hook（#722）、(c) W_f の製品の変更（#725）を含む。この欄は null のままにし、frozen でも埋めない（integrator の決定）。"
   },
   "d1": {
     "choice": "ii",
@@ -323,14 +326,16 @@
         "logical-to-runtime-both-sides",
         "d2a-mode-both-sides"
       ],
-      "requiredRecordsRule": "各 sample の前後で owner の counter（begins、cacheHits、lateCached）を読み、begins の差分が 0（Graph を要求していない）であることを記録する。0 でない sample があれば、その run は setup の不備として無効にし、取り直す（SP-N7 とは数えない）。",
+      "requiredRecordsRule": "各 sample の前後で owner の counter（begins、cacheHits、lateCached）を読み、begins の差分が 0（Graph を要求していない）であることを記録する。0 でない sample があれば、その run は setup の不備として無効にする（SP-N7 とは数えない）。",
       "notCountedAs": [
         "g01-eval-revision-receipt",
         "k3-parity-run",
         "g-case-parity-unrestricted",
         "case-judgement"
       ],
-      "notCountedRule": "SP-P4 の run（G-01 の R と R+IR を含む）は、g01-eval-revision の条件の receipt の組にも、K3/2 の受入れの parity の run にも、d10.parity の unrestricted の run にも、case の判定にも数えない。"
+      "notCountedRule": "SP-P4 の run（G-01 の R と R+IR を含む）は、g01-eval-revision の条件の receipt の組にも、K3/2 の受入れの parity の run にも、d10.parity の unrestricted の run にも、case の判定にも数えない。",
+      "attemptLimit": 2,
+      "attemptRule": "begins の差分が 0 でなかった試行も含めて、variant と側ごとに試行の回数と各試行の記録を開示する。1 回目の無効の後は同じ手順で 1 回だけ取り直す。2 回目も無効なら取り直しをやめ、[precheck] でユーザーの判断に回す（trace の stall と同じ形。上限は観測の前に固定し、結果を見て変えない）。"
     }
   ],
   "diagnosticRule": "診断の run は Gold の run と別の workspace で行い、case の判定（pass、hold、blocked）に数えない。予定した診断の run はすべて残す。",
@@ -377,11 +382,6 @@
       "token": "S4:k64-freeze-commit",
       "field": "contracts.k64.freezeCommit",
       "fill": "integrator が K6/4 の bytes を claude/nir1-contracts に凍結した commit（40 桁）"
-    },
-    {
-      "token": "S4:cp4-candidate-commit",
-      "field": "candidate.commit",
-      "fill": "CP-4 の G-case と trace を測る候補の commit（40 桁）"
     },
     {
       "token": "S4:da1-acceptance-record",
@@ -467,9 +467,14 @@
       "token": "S4:sp-synthetic-detection-record",
       "field": "r5Gate.syntheticDetection.record",
       "fill": "合成の記録による SP-N1〜N5、N9〜N13 の検出力の提示の記録（試験の commit と結果）の所在"
+    },
+    {
+      "token": "S4:sp1-bytes-commit",
+      "field": "contracts.sp1.bytesCommit",
+      "fill": "SP/1 の確認済みの bytes を含む master の commit（40 桁。#740 の merge の後）"
     }
   ],
-  "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4 は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること）。",
+  "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4 は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること、SP/1 の bytes が repo にあること）。S4 の placeholder はどれも S4 の時点で既にある commit か file を指す（S4 の子孫になるものは置かない）。CP-4 の候補の commit は S4 の子孫なので placeholder にせず、candidate.decidedIn のとおり S5 の台帳で決める。",
   "reviewPlan": "S3 の独立 reviewer が確かめること: d1 の (ii) と順序、d2 の正規の経路、d10 の mode と parity の数と比較の規則と fallback、samplePlan、traces の長さ・密度・maintenance・期待寄与の材料・承認の操作がないこと（K6/2 手順の 4 の固定と再利用）、k64Procedure の値と r1r4WaitMs の理由、registeredForReview、diagnosticRuns、preconditions（特に R5 の seed の pin）。 SP/1 の追加: seed の pin の addendum（13 variant の問いの Scene と seed が fixture の写しであること、置き場、SP-P1〜P5 と SP-N1〜N14 の対応表）、r5Gate の matchRequires と beforeFirstGatedRun、SP-P4 が r5Gate の例外に入る根拠、stepOrder。",
   "review": null,
   "r5Gate": {
@@ -529,7 +534,8 @@
     "SP-P4 の診断（diagnosticRuns）を、Graph arm を含むどの実行よりも前に取る。",
     "SP/1 :178（S3v2-P2-1）: S1g-A は setup-driver の段と照合の試験に、SP-N1〜N5、N9〜N13 の合成の記録を 1 件ずつ置き、検出と違反の無い記録の通過を示す。結果の所在を r5Gate.syntheticDetection.record に S4 が書く。Graph arm を含む実行はその後。",
     "SP-P4（S3v2-P3-2）: 段の直前の DB の写しから両側を分岐させ、論理 ID で比べ、owner の counter（begins）の差分 0 を記録する。",
-    "K24-G01-N2〜N4（S3v2-P3-3）: restore は Scene の本文版の restore に限り、mutation の後に SP-P1 を照合し直し、Graph が seed つきで要求され g01-mira-entity に届いたことを記録する。"
+    "K24-G01-N2〜N4（S3v2-P3-3）: restore は Scene の本文版の restore に限り、mutation の後に SP-P1 を照合し直し、Graph が seed つきで要求され g01-mira-entity に届いたことを記録する。",
+    "integrator の決定: CP-4 の候補の commit は S5 の台帳（clean な候補の freeze の記録）で決める。observation-prep の candidate.commit は null のまま。"
   ],
   "stepOrder": {
     "graphCases": [
