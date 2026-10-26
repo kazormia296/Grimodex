@@ -551,6 +551,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/eval-native-build.test.mjs",
       ],
       [
+        "node",
+        "--test",
+        // CP-4 S1a: the evaluation-only Graph arm of the Native.
+        "scripts/quality/nir1-graph-eval/native-architecture.test.mjs",
+      ],
+      [
         "cargo",
         "test",
         "--manifest-path",
