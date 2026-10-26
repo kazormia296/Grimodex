@@ -677,6 +677,10 @@ rules:
       - src/lib/i18n.ts
       - src/lib/typedWriters.test.ts
       - src/lib/typedWriters.ts
+      - src/features/chat/nir1/**
+      - src/features/chat/ChatPanel.nir1Local.test.tsx
+      - src/application/chat/nir1LocalGenerationTurn.ts
+      - src/application/chat/nir1LocalGenerationTurn.test.ts
     requirements:
       - GDX-PRECHECK-001
       - GDX-AI-CONSENT-001

@@ -1,3 +1,4 @@
+import { Suspense, lazy } from "react";
 import { useTranslation } from "react-i18next";
 import { useProjectSettings } from "../hooks/useProjectSettings";
 import { useSettingBoolean } from "../useSettingControl";
@@ -9,6 +10,7 @@ import { expandPreset, inferPreset } from "@/features/ai-policy/preset";
 import type { AiFeature, AiPolicyPreset } from "@/features/ai-policy/types";
 import { resolveSemanticRerankerCapability } from "@/features/chat/semanticRerankerMode";
 import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
+import { NIR1_LOCAL_GENERATION_UI_ENABLED } from "@/features/chat/nir1/nir1LocalGenerationAvailability";
 
 /**
  * AI タブの「プロジェクト」スコープに表示する、プロジェクト固有の AI 設定。
@@ -20,6 +22,17 @@ import { useRuntimeCapabilities } from "@/runtime/runtimeCapabilitiesContext";
  * 同じ AI タブに集約した（保存先はキー単位なので、タブ移動で挙動は変わらない）。
  * i18n キーは互換のため `settings.project.*` のまま（翻訳の移設は別途）。
  */
+
+// DD-1c (DR-DD1C-2): the local generation disclosure is a lazy chunk requested
+// only while the constant is on; while it is false the bundler drops the
+// branch, this lazy import and the chunk from the startup graph. A chunk that
+// fails to load draws nothing.
+const Nir1LocalDisclosure = /* @__PURE__ */ lazy(() =>
+  import("@/features/chat/nir1/Nir1LocalDisclosure").catch(() => ({
+    default: () => null,
+  })),
+);
+
 export function AiProjectSettings() {
   const { t } = useTranslation();
   const { project, isLoading, updateField } = useProjectSettings();
@@ -62,6 +75,11 @@ export function AiProjectSettings() {
   return (
     <>
       <SettingSection title={t("settings.project.aiPolicy", "AI使用ポリシー")}>
+        {NIR1_LOCAL_GENERATION_UI_ENABLED && (
+          <Suspense fallback={null}>
+            <Nir1LocalDisclosure placement={2} />
+          </Suspense>
+        )}
         <SettingRow
           label={t("settings.project.aiPolicyPreset", "プリセット")}
           description={t(
