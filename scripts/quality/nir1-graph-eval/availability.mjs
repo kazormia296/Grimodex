@@ -520,11 +520,14 @@ export function mainReason(categories, outOfWindow) {
   return "none";
 }
 
-function invalidTrace(trace, invalid, Q, requeries) {
+function invalidTrace(trace, invalid, Q, requeries, violations = []) {
   return {
     kind: trace.kind,
     status: "invalid",
     invalid,
+    // A late result mixed into a display stays a FAIL even when the trace
+    // must be retaken (K6/4:163; D-2).
+    violations,
     Q,
     requeryCount: requeries.length,
   };
@@ -657,6 +660,7 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
   const stampWithoutComparison = emptyStampWithoutComparison();
   const x = emptyX();
   const followUpLapse = {};
+  const violations = [];
   let U = 0;
   let displayed = 0;
   let firstRenderInWindow = 0;
@@ -664,6 +668,10 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
   const q = { q1: [], q2: [], q3: [] };
   counted.forEach((query, at) => {
     const result = results[at];
+    // K6/4:163: a late result mixed into a display is FAIL apart from
+    // whether the follow-up succeeded (D-2).
+    for (const code of result.violations)
+      violations.push({ queryId: query.queryId, code });
     if (result.boundary) boundaryDisagreement[result.boundary] += 1;
     const usable = query.snapshot.usable === true;
     if (usable) U += 1;
@@ -698,7 +706,8 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
     reasons[reason] = (reasons[reason] ?? 0) + 1;
     countStamp(stampWithoutComparison, reason);
   });
-  if (invalid.length > 0) return invalidTrace(trace, invalid, Q, requeries);
+  if (invalid.length > 0)
+    return invalidTrace(trace, invalid, Q, requeries, violations);
   const outOfWindowU = U - displayed;
   const outOfWindow = Q - displayed;
   const lapseTotal = Object.values(lapses).reduce((sum, n) => sum + n, 0);
@@ -707,6 +716,7 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
     status: "valid",
     invalid: [],
     precheck: [],
+    violations,
     followUpLapse,
     regime: "k64",
     candidate: regime,
@@ -940,6 +950,13 @@ function traceExceeds(trace) {
  * DR-CP4-K64-5 (A) the summaries no longer produce one, and the branch stays
  * fail-closed for a record written before that decision.
  */
+/** Late results mixed into a display, from every (b) trace (D-2). */
+function traceViolations(traces) {
+  return (traces ?? []).flatMap((trace) =>
+    (trace.violations ?? []).map((row) => ({ kind: trace.kind, ...row })),
+  );
+}
+
 export function decideCp4Availability(input) {
   rejectOverrides(input, ["steadyState", "traces"]);
   const { steadyState, traces } = input;
@@ -959,6 +976,16 @@ export function decideCp4Availability(input) {
       boundaryDisagreement: trace.boundaryDisagreement ?? null,
     })),
   };
+  const mixed = traceViolations(traces);
+  // K6/4:163: FAIL whatever the steady state and the rates say (D-2).
+  if (mixed.length > 0 && steadyState?.planKind === "frozen")
+    return {
+      verdict: "FAIL",
+      reason: "late-result-mixed-into-a-display",
+      traceViolations: mixed,
+      iiiDiagnosticRequired: false,
+      disclose,
+    };
   if (steadyState?.status !== "valid")
     return { verdict: "invalid", reason: "steady-state-run-invalid", disclose };
   if (steadyState.planKind !== "frozen")
@@ -1067,6 +1094,13 @@ export function evaluateDiagnosticCondition(input) {
         "[precheck] the (iii) diagnostic must reuse the trace file fixed before CP-4's observation",
       );
   }
+  const mixed = traceViolations(traces);
+  if (mixed.length > 0)
+    return {
+      result: "fail",
+      reason: "late-result-mixed-into-a-display",
+      traceViolations: mixed,
+    };
   if (
     steadyState?.status !== "valid" ||
     traces.some((t) => t.status === "invalid")

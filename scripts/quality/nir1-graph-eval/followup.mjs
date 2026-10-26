@@ -32,6 +32,7 @@ import {
   K64_T_LATE_MS,
   K64_T_SHOW_MS,
   K64_W_F_MS,
+  OWNER_REBUILD_MIN_INTERVAL_MS,
   rejectOverrides,
 } from "./constants.mjs";
 import {
@@ -268,6 +269,12 @@ export function missingR7(sample, context) {
         typeof child.lateGraphInDisplay === "boolean",
         "child.lateGraphInDisplay",
       );
+      // D-4: the child's initial snapshot (the product's completion never
+      // says index-unavailable, DR-CP4-K64-11).
+      need(
+        typeof child.chronicleIndexUsable === "boolean",
+        "child.chronicleIndexUsable",
+      );
       need(
         sceneIds(child.rSceneIds) &&
           sceneIds(child.irSceneIds) &&
@@ -306,6 +313,36 @@ export function missingR7(sample, context) {
   return missing;
 }
 
+/** R1 (1)〜(4) (K6/4:192) that the record's values do not meet (D-3). */
+function unmetR1(r1) {
+  const unmet = [];
+  if (r1.slotEmpty !== true) unmet.push("slot");
+  if (r1.cacheEmpty !== true) unmet.push("cache");
+  if (
+    r1.sinceLastSeededMs !== null &&
+    !(r1.sinceLastSeededMs >= OWNER_REBUILD_MIN_INTERVAL_MS)
+  )
+    unmet.push("interval");
+  if (r1.previousReleaseWithinLimit !== true) unmet.push("release");
+  return unmet;
+}
+
+/** N1 / N29 / N32 read defensively from a record that may be incomplete. */
+function mixedIntoDisplay(record) {
+  const out = [];
+  const parent = record?.parent;
+  const child = record?.child;
+  if (parent?.lateGraphInDisplay === true)
+    out.push("N1:late-graph-in-parent-display");
+  if (Number.isInteger(parent?.publishCount) && parent.publishCount > 1)
+    out.push("N1:parent-published-more-than-once");
+  if (child?.lateGraphInDisplay === true)
+    out.push("N29:late-graph-in-child-display");
+  if (Number.isInteger(child?.publishCount) && child.publishCount > 1)
+    out.push("N32:child-published-more-than-once");
+  return out;
+}
+
 /**
  * One query → its K6/4 classification. `context` is "steady" (定常状態: the
  * first render counts worker results only, K6/2 step 3; R1, R2 and the F2
@@ -321,10 +358,14 @@ export function classifyFollowUp(sample, options) {
     );
   assertNoRetiredBusy(sample);
   const join = classifyJoin(sample);
+  // (b): K6/2 rule 2 read through K6/4:165 — a parent that joined as
+  // `Cached` within D is not displayed (D-5, the strict reading).
   const firstRender =
     context === "steady"
       ? steadyStateInWindow(sample)
-      : join.inWindow && sample.snapshot?.usable === true;
+      : join.inWindow &&
+        sample.graph?.source === "worker" &&
+        sample.snapshot?.usable === true;
   const stages = [];
   const x = {};
   const violations = [];
@@ -371,6 +412,9 @@ export function classifyFollowUp(sample, options) {
   const missing = missingR7(sample, context);
   if (missing.length > 0) {
     add("records", "X10", `missing:${missing.join(",")}`);
+    // D-11: a late result mixed into a display stays a violation even when
+    // other records are missing (K6/4:163).
+    violations.push(...mixedIntoDisplay(sample.followUp));
     return finish(false);
   }
   const record = sample.followUp;
@@ -392,8 +436,14 @@ export function classifyFollowUp(sample, options) {
   if (firstRender) return finish(false);
 
   // records: R1 (4) / R4 (X10 :158). (b) では R1 と R2 を当てない (:109).
-  if (context === "steady" && record.r1.reachedQuiet !== true)
-    add("records", "X10", "reached-quiet-false");
+  // D-3: R1 is recomputed from its four items, never read from reachedQuiet.
+  if (context === "steady") {
+    const unmet = unmetR1(record.r1);
+    if (record.r1.reachedQuiet !== true)
+      add("records", "X10", "reached-quiet-false");
+    else if (unmet.length > 0)
+      add("records", "X10", `r1-self-report-disagrees:${unmet.join(",")}`);
+  }
 
   // parent: F1 (:139), X11 (:159), X12 (:160), X1 (:149).
   if (sample.irOutcome !== "ir-ready")
@@ -492,7 +542,11 @@ export function classifyFollowUp(sample, options) {
       add("child-begin", "X4", "cache-left-at-end");
   } else {
     if (
-      !(record.nativeBegins.length === 2 && record.nativeBegins[1] === "cached")
+      !(
+        record.nativeBegins.length === 2 &&
+        record.nativeBegins[0] === "pending" &&
+        record.nativeBegins[1] === "cached"
+      )
     )
       add(
         "child-begin",
@@ -512,6 +566,11 @@ export function classifyFollowUp(sample, options) {
     add("child-join", "X5", `join:${child.outcome}`);
   if (child.irOutcome !== "ir-ready")
     add("child-join", "X5", `ir:${child.irOutcome}`);
+  if (
+    child.chronicleIndexUsable === false &&
+    child.irOutcome !== "index-unavailable"
+  )
+    add("child-join", "X5", "ir:index-unavailable");
   if (finite(child.tGraph) && finite(child.tRawReady))
     q.q2 = child.tGraph - child.tRawReady;
   if (child.outcome === "graph-ready") {
@@ -613,13 +672,15 @@ function codeCategory(row) {
  * K6/2 rule 4's order inside the stage.
  */
 export function followUpFailureCategory(sample, result, stampReason = null) {
+  // A query whose B was not usable at its start is out of U whatever its
+  // display (K6/2 rule 3 (i)); it is a lapse.
+  const kind = lapseKind(sample, false);
+  if (kind && kind !== "iv-empty-contribution")
+    return { category: "lapse", reason: kind };
   if (result.displayed)
     throw new Error(
       "[artifact] a displayed query has no out-of-window category",
     );
-  const kind = lapseKind(sample, false);
-  if (kind && kind !== "iv-empty-contribution")
-    return { category: "lapse", reason: kind };
   if (result.boundary === BOUNDARY_DISAGREEMENTS.joinedLateWithinTolerance)
     return { category: "other", reason: "boundary-disagreement:joined-late" };
   const parentReason =

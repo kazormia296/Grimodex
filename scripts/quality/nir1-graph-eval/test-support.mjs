@@ -204,6 +204,7 @@ export function followUpRecord({ parent = {}, child = {}, ...rest } = {}) {
             tFollow: 145,
             reactCommitAt: 146,
             lateGraphInDisplay: false,
+            chronicleIndexUsable: true,
             rSceneIds: ["dev-a", "dev-b"],
             irSceneIds: ["dev-c"],
             finalSceneIds: ["dev-a", "dev-b", "dev-c", "dev-added"],

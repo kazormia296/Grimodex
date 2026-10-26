@@ -655,6 +655,177 @@ test("K6/4-N39: 親が Cached で D の窓内に合流した sample は first-re
   assert.ok(Object.hasOwn(result.x, "F1"));
 });
 
+test("D-3: R1 は 4 つの項目から計算し直し、自己申告の reachedQuiet と食い違えば X10", () => {
+  const r1 = (overrides) => ({
+    slotEmpty: true,
+    cacheEmpty: true,
+    sinceLastSeededMs: 1_500,
+    previousReleaseWithinLimit: true,
+    reachedQuiet: true,
+    ...overrides,
+  });
+  assert.equal(steady(k64Sample({}, { r1: r1({}) })).displayed, true);
+  // 前の seed つきの sample が無い（最初の sample）ときは (3) を満たす。
+  assert.equal(
+    steady(k64Sample({}, { r1: r1({ sinceLastSeededMs: null }) })).displayed,
+    true,
+  );
+  for (const [overrides, item] of [
+    [{ slotEmpty: false }, "slot"],
+    [{ cacheEmpty: false }, "cache"],
+    [{ sinceLastSeededMs: 5 }, "interval"],
+    [{ sinceLastSeededMs: 999 }, "interval"],
+    [{ previousReleaseWithinLimit: false }, "release"],
+  ])
+    missedWith(
+      steady(k64Sample({}, { r1: r1(overrides) })),
+      "X10",
+      `r1-self-report-disagrees:${item}`,
+    );
+  // 境界: 1 s ちょうどは「以上」で満たす。
+  assert.equal(
+    steady(k64Sample({}, { r1: r1({ sinceLastSeededMs: 1_000 }) })).displayed,
+    true,
+  );
+});
+
+test("D-5: (b) でも親が Cached で D の窓内に合流した query は表示に数えない（K6/4:165）", () => {
+  const cached = k64Sample(
+    {
+      graph: {
+        outcome: "graph-ready",
+        source: "cache",
+        joined: true,
+        arrivedAt: 105,
+        revalidation: "passed",
+        edgeCount: 2,
+      },
+    },
+    { child: null, notices: [] },
+  );
+  const result = inTrace(cached);
+  assert.equal(result.firstRender, false);
+  assert.equal(result.displayed, false);
+  // worker 由来なら (b) の first-render（K6/2 の規則 2、stamp は問わない）。
+  const worker = k64Sample(
+    {
+      graph: {
+        outcome: "graph-ready",
+        source: "worker",
+        joined: true,
+        arrivedAt: 105,
+        revalidation: "passed",
+        edgeCount: 2,
+      },
+    },
+    { child: null, notices: [] },
+  );
+  assert.equal(inTrace(worker).firstRender, true);
+  const trace = traceK64(
+    k64Trace("browsing", 200, (at) =>
+      at === 0
+        ? [
+            {
+              graph: {
+                outcome: "graph-ready",
+                source: "cache",
+                joined: true,
+                arrivedAt: 105,
+                revalidation: "passed",
+                edgeCount: 2,
+              },
+            },
+            { child: null, notices: [] },
+          ]
+        : [{}, {}],
+    ),
+  );
+  assert.equal(trace.displayed, 199);
+  assert.equal(trace.firstRenderInWindow, 0);
+});
+
+test("D-4: 子の初回 snapshot の chronicleIndexUsable が false なら子の Chronicle の停止として失効率に数える", () => {
+  const result = inTrace(
+    k64Sample({}, { child: { chronicleIndexUsable: false } }),
+  );
+  assert.equal(result.displayed, false);
+  assert.ok(
+    result.stages.some(
+      (row) => row.code === "X5" && row.detail === "ir:index-unavailable",
+    ),
+  );
+  const trace = traceK64(
+    k64Trace("editing", 200, (at) =>
+      at === 2 ? [{}, { child: { chronicleIndexUsable: false } }] : [{}, {}],
+    ),
+  );
+  assert.equal(trace.lapse["i-chronicle-stop"], 1);
+  // 記録に field が無い子は記録の不備（X10）。
+  const record = k64Sample().followUp;
+  delete record.child.chronicleIndexUsable;
+  missedWith(inTrace(k64Sample({ followUp: record })), "X10");
+});
+
+test("D-7／D-9: t_pub_p と同時刻の通知は X3、定常状態の F2 は cache_hits 1、(b) の F2 は最初の begin が pending", () => {
+  // (a) 境界: 親の公開と同時刻の通知は「公開の後」でない（DR-CP4-K64-4）。
+  missedWith(
+    steady(k64Sample({}, { notices: [{ kind: "graph-ready", at: 110.84 }] })),
+    "X3",
+    "before-publish",
+  );
+  // (b) cache_hits が 1 でなければ X4（begins と late_cached は合っている）。
+  missedWith(
+    steady(
+      k64Sample(
+        {},
+        {
+          counters: {
+            before: { begins: 10, cacheHits: 3, lateCached: 3 },
+            after: { begins: 12, cacheHits: 5, lateCached: 4 },
+          },
+        },
+      ),
+    ),
+    "X4",
+    "counters:begins=2,lateCached=1,cacheHits=2",
+  );
+  // D-9: (b) の最初の begin の記録が pending でなければ X4。
+  missedWith(
+    inTrace(k64Sample({}, { nativeBegins: ["cached", "cached"] })),
+    "X4",
+    "begin-records:cached>cached",
+  );
+  // (c) (b) の trace で開始時の B が使えない query は、follow-up が成功しても表示に数えない。
+  const trace = traceK64(
+    k64Trace("editing", 200, (at) =>
+      at === 3
+        ? [{ snapshot: { usable: false, reason: "sealed" } }, {}]
+        : [{}, {}],
+    ),
+  );
+  assert.equal(trace.U, 199);
+  assert.equal(trace.displayed, 199);
+});
+
+test("D-11: 記録の欠けた（X10）sample でも遅れた結果の混入は違反として残す", () => {
+  const record = k64Sample().followUp;
+  delete record.counters;
+  record.child.lateGraphInDisplay = true;
+  record.child.publishCount = 2;
+  const result = inTrace(k64Sample({ followUp: record }));
+  assert.ok(Object.hasOwn(result.x, "X10"));
+  assert.deepEqual(result.violations, [
+    "N29:late-graph-in-child-display",
+    "N32:child-published-more-than-once",
+  ]);
+  const parentRecord = k64Sample().followUp;
+  delete parentRecord.notices;
+  parentRecord.parent.lateGraphInDisplay = true;
+  assert.deepEqual(inTrace(k64Sample({ followUp: parentRecord })).violations, [
+    "N1:late-graph-in-parent-display",
+  ]);
+});
+
 test("K6/4-N40: 子の世代の契機の印が無いか graph-ready でなければ X7", () => {
   for (const refreshTrigger of [null, "index-ready"])
     missedWith(
@@ -1147,6 +1318,44 @@ test("DR-CP4-K64-5 (A): (b) の follow-up が失効の段で落ちたものは�
     [diagnosis.result, diagnosis.reason],
     ["precheck", "lapse-rate-exceeds"],
   );
+});
+
+test("D-2: (b) の trace でも遅れた結果の混入（N32、N1）は follow-up の成否と別に FAIL（K6/4:163）", () => {
+  const mixed = traceK64(
+    k64Trace("editing", 200, (at) => {
+      if (at === 4) return [{}, { child: { publishCount: 2 } }];
+      if (at === 9) return [{}, { parent: { lateGraphInDisplay: true } }];
+      return [{}, {}];
+    }),
+  );
+  assert.deepEqual(
+    mixed.violations.map((row) => [row.queryId, row.code]),
+    [
+      ["q4", "N32:child-published-more-than-once"],
+      ["q9", "N1:late-graph-in-parent-display"],
+    ],
+  );
+  const steadyState = summarizeK64(k64Run());
+  const browsing = traceK64(k64Trace("browsing", 200));
+  const decision = decideCp4Availability({
+    steadyState,
+    traces: [mixed, browsing],
+  });
+  assert.deepEqual(
+    [decision.verdict, decision.reason],
+    ["FAIL", "late-result-mixed-into-a-display"],
+  );
+  const diagnosis = evaluateDiagnosticCondition({
+    kind: "ii",
+    steadyState,
+    traces: [mixed, browsing],
+  });
+  assert.deepEqual(
+    [diagnosis.result, diagnosis.reason],
+    ["fail", "late-result-mixed-into-a-display"],
+  );
+  // 違反の無い trace は FAIL にならない。
+  assert.deepEqual(browsing.violations, []);
 });
 
 test("(b) の K6/4 でも trace の不備（Q<200、queryId の重複、N16）は取り直し", () => {

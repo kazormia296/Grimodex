@@ -240,9 +240,14 @@ function measuredPairs(variant, samples) {
   );
   const graph = measured.filter((row) => row.arm === "graph");
   const unpaired = graph.filter((row) => !hybrid.has(row.repeat));
+  const hybridRows = measured.filter((row) => row.arm === "hybrid").length;
+  const graphRepeats = new Set(graph.map((row) => row.repeat)).size;
+  // D-12: each repeat once per arm (a duplicate would hide a missing pair).
   if (
     graph.length !== MEASURED_RUNS_PER_ARM ||
+    graphRepeats !== MEASURED_RUNS_PER_ARM ||
     hybrid.size !== MEASURED_RUNS_PER_ARM ||
+    hybridRows !== MEASURED_RUNS_PER_ARM ||
     unpaired.length > 0
   )
     return {

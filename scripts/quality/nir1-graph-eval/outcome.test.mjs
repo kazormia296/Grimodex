@@ -434,6 +434,27 @@ test("P1-3: 測った件数が 30 でなければ invalid（0 件でも fallback
   );
 });
 
+test("D-12: 測った対の repeat が重複していれば invalid", () => {
+  const variant = variantByKey("G-02/base");
+  const rows = qualitySamples(variant.key, () => ({}));
+  const graphDup = rows.map((row) =>
+    row.arm === "graph" && row.repeat === 29 ? { ...row, repeat: 0 } : row,
+  );
+  const hybridExtra = [
+    ...rows,
+    { ...rows.find((row) => row.arm === "hybrid" && row.repeat === 3) },
+  ];
+  for (const samples of [graphDup, hybridExtra])
+    assert.equal(
+      summarizeVariantQuality({
+        variant,
+        samples,
+        steadyState: steadySummary("k62"),
+      }).status,
+      "invalid",
+    );
+});
+
 test("D-1: 品質の regime は封印した定常状態の要約から読み、呼び出し側が選べない", () => {
   const variant = variantByKey("G-02/base");
   const samples = qualitySamples(variant.key, () => ({}));
