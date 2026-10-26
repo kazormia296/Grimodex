@@ -1267,6 +1267,78 @@ mod tests {
         }
     }
 
+    /// Retry `remove` while it fails with `DirectoryNotEmpty`, for at most `bound`.
+    /// Every other error, and a race that outlasts the bound, is returned.
+    fn remove_root_retrying(
+        root: &Path,
+        bound: Duration,
+        mut remove: impl FnMut(&Path) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        let deadline = Instant::now() + bound;
+        loop {
+            match remove(root) {
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::DirectoryNotEmpty
+                        && Instant::now() < deadline =>
+                {
+                    thread::sleep(Duration::from_millis(25));
+                }
+                other => return other,
+            }
+        }
+    }
+
+    /// Teardown for a workspace whose shutdown is intentionally never published
+    /// (the retained failed-Join fence). The real Open scheduled DB workspace
+    /// maintenance (log pruning, auto-backup) that nothing joins here can still be
+    /// writing into the root, so `remove_dir_all` may see `DirectoryNotEmpty` until
+    /// it finishes. Only that race is retried; any other failure still fails.
+    fn remove_unjoined_workspace_root(root: &Path) {
+        remove_root_retrying(root, Duration::from_secs(10), |path| {
+            std::fs::remove_dir_all(path)
+        })
+        .unwrap_or_else(|error| panic!("strict cleanup of {}: {error}", root.display()));
+    }
+
+    #[test]
+    fn root_cleanup_retries_only_directory_not_empty_and_only_for_the_bound() {
+        let not_empty = || std::io::Error::from(std::io::ErrorKind::DirectoryNotEmpty);
+        let root = Path::new("unused");
+
+        let mut calls = 0;
+        remove_root_retrying(root, Duration::from_secs(5), |_| {
+            calls += 1;
+            if calls < 3 {
+                Err(not_empty())
+            } else {
+                Ok(())
+            }
+        })
+        .expect("a transient DirectoryNotEmpty is retried until it clears");
+        assert_eq!(calls, 3);
+
+        let mut calls = 0;
+        let error = remove_root_retrying(root, Duration::from_secs(5), |_| {
+            calls += 1;
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .expect_err("any other error is not retried");
+        assert_eq!(error.kind(), std::io::ErrorKind::PermissionDenied);
+        assert_eq!(calls, 1);
+
+        let mut calls = 0;
+        let error = remove_root_retrying(root, Duration::from_millis(60), |_| {
+            calls += 1;
+            Err(not_empty())
+        })
+        .expect_err("a race that outlasts the bound still fails");
+        assert_eq!(error.kind(), std::io::ErrorKind::DirectoryNotEmpty);
+        assert!(
+            calls >= 2,
+            "retried at least once before giving up: {calls}"
+        );
+    }
+
     fn recovery_workspace(attempt_count: usize) -> (PathBuf, Vec<StoredAttempt>) {
         let root =
             std::env::temp_dir().join(format!("nir1-generation-recovery-{}", uuid::Uuid::new_v4()));
@@ -3256,8 +3328,8 @@ mod tests {
         drop(shutdown);
         drop(backend);
         drop(state);
-        std::fs::remove_dir_all(root_a).expect("A strict cleanup");
-        std::fs::remove_dir_all(root_b).expect("B strict cleanup");
+        remove_unjoined_workspace_root(&root_a);
+        remove_unjoined_workspace_root(&root_b);
     }
 
     #[tokio::test]
