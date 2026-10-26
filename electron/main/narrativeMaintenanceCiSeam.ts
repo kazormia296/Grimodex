@@ -71,6 +71,11 @@ export const NARRATIVE_MAINTENANCE_TRIGGERS = Object.freeze([
   "graphContractDigest-changed",
   "ruleRegistryDigest-changed",
   "producerGenerationSetDigest-changed",
+  // B-ROUTE: opens the gated NIR-1 Graph Index build route for this validated
+  // unpackaged CI launch only (Rust `NarrativeMaintenanceCiTrigger::
+  // Nir1GraphIndexBuild`). It selects no coordinate; an existing wake
+  // (workspace-opened, restore, epoch rotation) starts the cycle.
+  "nir1-graph-index-build",
 ] as const);
 
 export type NarrativeMaintenanceCiFault =
