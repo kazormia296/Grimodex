@@ -473,6 +473,48 @@ describe("the journey seam's launch (K5/3 必須防御 17, DR-DD1B-4)", () => {
     }
   });
 
+  it("reads only own environment values and compares real directories (security P3-3, P3-4)", async () => {
+    const { symlinkSync, mkdirSync } = await import("node:fs");
+    // A seam value inherited through the prototype is not read.
+    const inherited = Object.create(activeLaunch().env) as NodeJS.ProcessEnv;
+    expect(
+      parseNir1LocalGenerationCiSeam({ ...activeLaunch(), env: inherited }),
+    ).toEqual({ active: false });
+    // A link to the launch's userData is the same directory …
+    const root = journeyDir();
+    const real = path.join(root, "user-data");
+    mkdirSync(real);
+    const link = path.join(root, "link");
+    symlinkSync(real, link);
+    expect(
+      parseNir1LocalGenerationCiSeam(
+        activeLaunch(
+          { userDataDir: real },
+          { [NIR1_LOCAL_GENERATION_CI_USER_DATA_ENV]: link },
+        ),
+      ).active,
+    ).toBe(true);
+    // … and a link to a default directory is still refused.
+    expect(
+      parseNir1LocalGenerationCiSeam(
+        activeLaunch(
+          { userDataDir: link, defaultUserDataDirs: () => [real] },
+          { [NIR1_LOCAL_GENERATION_CI_USER_DATA_ENV]: link },
+        ),
+      ),
+    ).toEqual({ active: false });
+    // A directory that does not resolve is inert.
+    const missing = path.join(root, "missing");
+    expect(
+      parseNir1LocalGenerationCiSeam(
+        activeLaunch(
+          { userDataDir: missing },
+          { [NIR1_LOCAL_GENERATION_CI_USER_DATA_ENV]: missing },
+        ),
+      ),
+    ).toEqual({ active: false });
+  });
+
   it("a packaged launch reads no environment value and no directory", () => {
     const defaultUserDataDirs = vi.fn(() => []);
     expect(

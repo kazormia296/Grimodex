@@ -22,6 +22,7 @@
  *   destroyed, its window closes or its caller identity is replaced.
  * - Main's key verdict for the route's endpoint, attached as a symbol sidecar.
  */
+import { realpathSync } from "node:fs";
 import path from "node:path";
 
 import {
@@ -90,23 +91,32 @@ export function parseNir1LocalGenerationCiSeam(
   if (launch.isPackaged !== false) return INACTIVE;
   try {
     const { env } = launch;
-    if (env.CI !== "true") return INACTIVE;
+    // Own properties only: a value inherited through a polluted prototype is
+    // never a seam value.
+    const read = (name: string): unknown =>
+      Object.hasOwn(env, name) ? env[name] : undefined;
+    if (read("CI") !== "true") return INACTIVE;
     if (
-      env[NIR1_LOCAL_GENERATION_CI_OWNER_TOKEN_ENV] !==
+      read(NIR1_LOCAL_GENERATION_CI_OWNER_TOKEN_ENV) !==
       NIR1_LOCAL_GENERATION_CI_OWNER_TOKEN
     ) {
       return INACTIVE;
     }
-    const nonce = env[NIR1_LOCAL_GENERATION_CI_NONCE_ENV];
+    const nonce = read(NIR1_LOCAL_GENERATION_CI_NONCE_ENV);
     if (typeof nonce !== "string" || !UUID_V4.test(nonce)) return INACTIVE;
-    const journeyUserData = env[NIR1_LOCAL_GENERATION_CI_USER_DATA_ENV];
+    const journeyUserData = read(NIR1_LOCAL_GENERATION_CI_USER_DATA_ENV);
     if (
       typeof journeyUserData !== "string" ||
       !path.isAbsolute(journeyUserData) ||
       typeof launch.userDataDir !== "string" ||
-      !path.isAbsolute(launch.userDataDir) ||
-      path.resolve(journeyUserData) !== path.resolve(launch.userDataDir)
+      !path.isAbsolute(launch.userDataDir)
     ) {
+      return INACTIVE;
+    }
+    // The same directory after links are resolved; an unresolvable one
+    // (missing, unreadable) is inert.
+    const journeyReal = realpathSync(journeyUserData);
+    if (!sameDirectory(journeyReal, realpathSync(launch.userDataDir))) {
       return INACTIVE;
     }
     const defaults = launch.defaultUserDataDirs();
@@ -115,7 +125,7 @@ export function parseNir1LocalGenerationCiSeam(
       defaults.some(
         (directory) =>
           typeof directory !== "string" ||
-          sameDirectory(directory, journeyUserData),
+          sameDirectory(resolvedDirectory(directory), journeyReal),
       )
     ) {
       return INACTIVE;
@@ -123,6 +133,15 @@ export function parseNir1LocalGenerationCiSeam(
     return { active: true, nonce: nonce.toLowerCase() };
   } catch {
     return INACTIVE;
+  }
+}
+
+/** A directory with its links resolved when it exists, else as written. */
+function resolvedDirectory(directory: string): string {
+  try {
+    return realpathSync(directory);
+  } catch {
+    return path.resolve(directory);
   }
 }
 
