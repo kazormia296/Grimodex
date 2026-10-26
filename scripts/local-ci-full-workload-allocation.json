@@ -57,7 +57,7 @@
     },
     {
       "path": "electron/native/grimodex-node/Cargo.toml",
-      "sha256": "40be69d0f84e4a3b227d9291fcc1c4e8554e6d7e2ea592f92a8be6c23efd4521"
+      "sha256": "e253ce65b420ebdfa1c262ce8002f464e911996aef4212f58791563e1e2bcb8d"
     },
     {
       "path": "electron/native/grimodex-node/Cargo.lock",
@@ -69,7 +69,7 @@
     },
     {
       "path": "src-tauri/crates/grimodex-db/Cargo.toml",
-      "sha256": "ab729f8e44b9da40c3ef9c4d47b6f8425c19012c38a2e888c7d870c0c63c2599"
+      "sha256": "844f8a6f18354f38f55b6bee05248bfbc6dc6970a8ab770f6f2a5b8add1122fd"
     },
     {
       "path": "src-tauri/crates/grimodex-lint/Cargo.toml",

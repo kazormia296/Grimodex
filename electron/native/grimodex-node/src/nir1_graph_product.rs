@@ -301,6 +301,13 @@ pub(crate) struct GraphWorkerStart {
 
 pub(crate) trait GraphWorkerFactory: Send + Sync {
     fn create(&self, start: GraphWorkerStart) -> Box<dyn GraphWorker>;
+
+    /// CP-4 (DR-CP4-M-1): the evaluation build reads the path Main configured;
+    /// only the process factory has one.
+    #[cfg(feature = "nir1-graph-eval")]
+    fn worker_path_for_eval(&self) -> Option<&Path> {
+        None
+    }
 }
 
 pub(crate) trait GraphWorker {
@@ -350,6 +357,11 @@ impl GraphWorkerFactory for ProcessGraphWorkerFactory {
             start.snapshot,
             self.worker.clone(),
         )))
+    }
+
+    #[cfg(feature = "nir1-graph-eval")]
+    fn worker_path_for_eval(&self) -> Option<&Path> {
+        Some(&self.worker)
     }
 }
 
@@ -483,6 +495,11 @@ struct Shared {
     diagnostics: DiagnosticCounters,
     #[cfg(test)]
     publication_open_for_test: AtomicBool,
+    /// CP-4 S1a: set only by `nir1_graph_eval::register` for the AppState the
+    /// evaluation build's `Backend::new` made. The field does not exist in the
+    /// product build.
+    #[cfg(feature = "nir1-graph-eval")]
+    publication_open_for_eval: AtomicBool,
     /// Test-only: runs inside `admit`, after its first edge check, on the
     /// owner thread with no lock of this owner held.
     #[cfg(test)]
@@ -517,6 +534,8 @@ impl Shared {
             diagnostics: DiagnosticCounters::default(),
             #[cfg(test)]
             publication_open_for_test: AtomicBool::new(false),
+            #[cfg(feature = "nir1-graph-eval")]
+            publication_open_for_eval: AtomicBool::new(false),
             #[cfg(test)]
             admit_hook_for_test: Mutex::new(None),
         }
@@ -524,6 +543,10 @@ impl Shared {
 
     fn publication_open(&self) -> bool {
         if PRODUCT_GRAPH_PUBLISHED {
+            return true;
+        }
+        #[cfg(feature = "nir1-graph-eval")]
+        if self.publication_open_for_eval.load(Ordering::SeqCst) {
             return true;
         }
         #[cfg(test)]
@@ -851,6 +874,9 @@ struct TicketShared {
     edge_epoch: u64,
     begun_at: Instant,
     owner: Arc<Shared>,
+    /// CP-4 S1a: the stamp attempt and the Busy cause of this ticket.
+    #[cfg(feature = "nir1-graph-eval")]
+    eval_notes: crate::nir1_graph_eval::TicketNotes,
     /// CQ-DEFER: the ticket of a held Related Scenes query. Its cancellation
     /// wakes the owner thread, which drops the hold at once.
     deferred: bool,
@@ -874,6 +900,8 @@ impl TicketShared {
             edge_epoch,
             begun_at: Instant::now(),
             owner,
+            #[cfg(feature = "nir1-graph-eval")]
+            eval_notes: crate::nir1_graph_eval::TicketNotes::default(),
             deferred,
         })
     }
@@ -1034,7 +1062,7 @@ impl Nir1GraphProductOwner {
     /// Wait-free admission. Every refusal names its reason; nothing is awaited.
     /// D-final's entry: an Empty slot starts preparing at once (`warming`).
     pub(crate) fn begin(&self, state: &Arc<AppState>, query: GraphQuery) -> GraphBegin {
-        self.admit_and_route(state, query, Shared::demand)
+        self.begin_probed(state, query, Shared::demand)
     }
 
     /// CQ-DEFER: the Related Scenes entry. The same wait-free admission as
@@ -1043,7 +1071,24 @@ impl Nir1GraphProductOwner {
     /// is retired unqueried) until the begin calls
     /// `GraphTicket::release_after_own_commits` after its own audit commits.
     pub(crate) fn begin_deferred(&self, state: &Arc<AppState>, query: GraphQuery) -> GraphBegin {
-        self.admit_and_route(state, query, Shared::demand_deferred)
+        self.begin_probed(state, query, Shared::demand_deferred)
+    }
+
+    /// CP-4 S1a：2 つの入口（`begin` と `begin_deferred`）は、admission を同じ
+    /// 評価の probe で包む。`nir1-graph-eval` feature の無い build では
+    /// `admit_and_route` を呼ぶだけである。
+    fn begin_probed(
+        &self,
+        state: &Arc<AppState>,
+        query: GraphQuery,
+        route: DemandRoute,
+    ) -> GraphBegin {
+        #[cfg(feature = "nir1-graph-eval")]
+        let eval_probe = crate::nir1_graph_eval::BeginProbe::start(self);
+        let result = self.admit_and_route(state, query, route);
+        #[cfg(feature = "nir1-graph-eval")]
+        eval_probe.finish(&result);
+        result
     }
 
     fn admit_and_route(
@@ -1377,6 +1422,11 @@ impl Nir1GraphProductOwner {
 
     #[cfg(test)]
     pub(crate) fn slot_kind_for_test(&self) -> GraphSlotKind {
+        self.slot_kind()
+    }
+
+    #[cfg(any(test, feature = "nir1-graph-eval"))]
+    fn slot_kind(&self) -> GraphSlotKind {
         match lock(&self.shared.slot).phase {
             Phase::Empty => GraphSlotKind::Empty,
             Phase::Deferred => GraphSlotKind::Deferred,
@@ -1406,6 +1456,82 @@ impl Nir1GraphProductOwner {
 impl Drop for Nir1GraphProductOwner {
     fn drop(&mut self) {
         self.shared.close();
+    }
+}
+
+/// CP-4 S1a: what the evaluation module (`nir1_graph_eval`) may do to an owner.
+/// None of it exists in the product build, and none of it changes a rule of the
+/// owner: the publication flag is the only gate it opens, and only for the
+/// owner of the AppState the evaluation build's `Backend::new` registered.
+#[cfg(feature = "nir1-graph-eval")]
+impl Nir1GraphProductOwner {
+    pub(crate) fn open_publication_for_eval(&self) {
+        self.shared
+            .publication_open_for_eval
+            .store(true, Ordering::SeqCst);
+    }
+
+    pub(crate) fn publication_open_for_eval(&self) -> bool {
+        self.shared.publication_open_for_eval.load(Ordering::SeqCst)
+    }
+
+    /// Empties the single-entry next-query cache, as K6/2 (a) asks before each
+    /// sample. True when an entry was there.
+    pub(crate) fn clear_next_query_cache_for_eval(&self) -> bool {
+        lock(&self.shared.cache).take().is_some()
+    }
+
+    pub(crate) fn cache_occupied_for_eval(&self) -> bool {
+        lock(&self.shared.cache).is_some()
+    }
+
+    pub(crate) fn worker_configured_for_eval(&self) -> bool {
+        self.shared.worker.get().is_some()
+    }
+
+    /// The worker path Main configured (CP-2b), read only. None when Main set
+    /// none or its path was refused. DR-CP4-M-1.
+    pub(crate) fn configured_worker_path_for_eval(&self) -> Option<PathBuf> {
+        self.shared
+            .worker
+            .get()
+            .and_then(|factory| factory.worker_path_for_eval())
+            .map(Path::to_path_buf)
+    }
+
+    pub(crate) fn slot_kind_for_eval(&self) -> GraphSlotKind {
+        self.slot_kind()
+    }
+
+    pub(crate) fn prepares_ready_for_eval(&self) -> u64 {
+        read(&self.shared.diagnostics.prepares_ready)
+    }
+}
+
+/// CP-4 S1a: the evaluation record reads when a ticket settled. It never
+/// settles or declares one.
+#[cfg(feature = "nir1-graph-eval")]
+impl GraphTicketWaiter {
+    pub(crate) fn begun_at_for_eval(&self) -> Instant {
+        self.shared.begun_at
+    }
+
+    pub(crate) fn notes_for_eval(&self) -> crate::nir1_graph_eval::TicketNoteSnapshot {
+        self.shared.eval_notes.snapshot()
+    }
+
+    pub(crate) fn settlement_for_eval(
+        &self,
+    ) -> Option<(Instant, Option<GraphUnavailable>, Option<GraphTicketUse>)> {
+        let state = lock(&self.shared.state);
+        let disposition = state.disposition;
+        state.outcome.as_ref().map(|(outcome, at)| {
+            let reason = match outcome {
+                GraphTicketOutcome::Available(_) => None,
+                GraphTicketOutcome::Unavailable(reason) => Some(*reason),
+            };
+            (*at, reason, disposition)
+        })
     }
 }
 
@@ -1466,6 +1592,8 @@ impl Shared {
             // for the session's end, which signals; another key is busy.
             Phase::Deferred | Phase::Preparing => match slot.session.as_mut() {
                 Some(session) if session.key != demand.key => {
+                    #[cfg(feature = "nir1-graph-eval")]
+                    crate::nir1_graph_eval::note_busy_cause("preparing-other-key");
                     self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
                 }
                 Some(session) => {
@@ -1483,6 +1611,8 @@ impl Shared {
                         session.last_demand = demand.now;
                     }
                 }
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause(if matches!(phase, Phase::InUse) { "in-use" } else { "retiring" });
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
@@ -1623,10 +1753,16 @@ impl Shared {
                 }
             }
             Phase::Empty => self.defer_on_empty(&mut slot, state, demand, &config, limit),
-            Phase::Deferred => self.unserved(GraphUnavailable::Busy, &demand.key.project_id),
+            Phase::Deferred => {
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause("deferred-held");
+                self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
+            }
             Phase::Ready => self.defer_on_ready(&mut slot, demand, &config, limit),
             Phase::Preparing => match slot.session.as_mut() {
                 Some(session) if session.key != demand.key => {
+                    #[cfg(feature = "nir1-graph-eval")]
+                    crate::nir1_graph_eval::note_busy_cause("preparing-other-key");
                     self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
                 }
                 Some(session) => {
@@ -1641,6 +1777,12 @@ impl Shared {
                         session.last_demand = demand.now;
                     }
                 }
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause(if matches!(phase, Phase::InUse) {
+                    "in-use"
+                } else {
+                    "retiring"
+                });
                 self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
             }
         };
@@ -1711,15 +1853,21 @@ impl Shared {
         if session.epoch != demand.epoch || self.edge_epoch.load(Ordering::SeqCst) != session.epoch
         {
             // An edge already happened; the owner retires before any query.
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("edge-before-query");
             return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
         }
         if session.key != demand.key
             && demand.now.saturating_duration_since(session.last_demand)
                 < config.rebuild_min_interval
         {
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("other-key");
             return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
         }
         if session.commands.try_send(Command::Defer).is_err() {
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("command-queue");
             return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
         }
         session.key = demand.key.clone();
@@ -1757,6 +1905,8 @@ impl Shared {
                 || self.edge_epoch.load(Ordering::SeqCst) != session.epoch
             {
                 // An edge already happened; the owner retires before any query.
+                #[cfg(feature = "nir1-graph-eval")]
+                crate::nir1_graph_eval::note_busy_cause("edge-before-query");
                 return self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
             }
             session.last_demand = demand.now;
@@ -1775,10 +1925,14 @@ impl Shared {
                     })
                 }
                 Err(TrySendError::Full(_)) | Err(TrySendError::Disconnected(_)) => {
+                    #[cfg(feature = "nir1-graph-eval")]
+                    crate::nir1_graph_eval::note_busy_cause("command-queue");
                     self.unserved(GraphUnavailable::Busy, &demand.key.project_id)
                 }
             }
         } else {
+            #[cfg(feature = "nir1-graph-eval")]
+            crate::nir1_graph_eval::note_busy_cause("other-key");
             let busy = self.unserved(GraphUnavailable::Busy, &demand.key.project_id);
             if demand.now.saturating_duration_since(session.last_demand)
                 >= config.rebuild_min_interval
@@ -2275,6 +2429,8 @@ fn wait_rebuild_window(context: &SessionContext, epoch: u64, held: Option<&Ticke
             // and a Defer can only be a stale one of the READY this replaced.
             Ok(Command::Retire | Command::Defer) => {}
             Ok(Command::Query { ticket, .. }) => {
+                #[cfg(feature = "nir1-graph-eval")]
+                ticket.eval_notes.busy("rebuild-window");
                 ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Busy));
             }
         }
@@ -2508,7 +2664,11 @@ fn serve_query(
         }
         return ServeNext::Ready;
     }
+    #[cfg(feature = "nir1-graph-eval")]
+    let eval_stamp_attempted_at = Instant::now();
     let stamp1 = read_stamp_for_query(context, &guard.binding);
+    #[cfg(feature = "nir1-graph-eval")]
+    ticket.eval_notes.stamp(eval_stamp_attempted_at, stamp0, stamp1.as_ref());
     match (stamp0, stamp1.as_ref()) {
         (Some(before), Some(after)) if before != after => {
             bump(&shared.diagnostics.stamp_stale);
@@ -2565,6 +2725,10 @@ fn serve_query(
         }
         Err(error) => {
             let failure = classify_c_query_failure(&error);
+            #[cfg(feature = "nir1-graph-eval")]
+            if matches!(failure, CQueryFailure::CapacityBusy) {
+                ticket.eval_notes.busy("worker-capacity");
+            }
             if matches!(
                 failure,
                 CQueryFailure::Unavailable(UnavailableReason::RegistrationDrift)
