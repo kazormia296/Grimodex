@@ -152,3 +152,44 @@ DD-1a の matrix（`dd1a-decisions.md` の P2〜P8）は変えない。DD-1b が
 - Windows／macOS、packaged の build での seam の不活性の実機確認（CP-2b の packaged smoke で確かめられる見込み。推測）。
 - `electron/shared/ipcContract.ts:7209`（`callerIdentityWire`）に master の既存の eslint の指摘（`preserve-caught-error`）が 1 件ある。CI の `pnpm lint` は `src` と `electron/preload` だけを見るので対象外。この lane では触れていない。
 - 高リスクの判断（seam の結線、handle の束縛、key の判定の置き場）について read-only の advisor の意見は取れていない（この builder に手段がない）。lifecycle とセキュリティの 2 名のレビューと Fable の受入れは integrator に委ねる。Quick／Full は走らせていない。
+
+## 独立レビュー（security、lifecycle）の修正の追記（2026-10-26。base は master `e0eecca7` のまま）
+
+security は P1／P2 なし。lifecycle は P1 が 1 件、P2 が 2 件。上の行は当時の記録のまま残し、訂正はこの節に書く。
+
+| ID | 判断・訂正 | 状態 |
+|---|---|---|
+| DR-DD1B-15 | （lifecycle P1-1。DR-DD1B-6 と matrix の M2 行の訂正）`admit` が destroyed／closed の listener を置いた後に key の判定（`getAiSettings`）や Native の start を await している間に sender が終わると、listener の停止は Native に entry ができる前に走って何も止めず、保留が明けると start が通り、死んだ sender に handle を束縛していた（listener は `once` で消費済み）。直し：sender ごとの停止の回数を数え、admit の時点の回数を invoke ごとに覚える（`WeakMap`）。key の判定の後に sender・window の終わり、`liveSenders`、停止の回数を確かめ直して `NIR1_LOCAL_SENDER_REFUSED`（RACE1）。`observePublished` を `settle` に改め、start の公開の前に同じ確かめをし、変わっていれば `cancelSender` を呼び直して handle を返さずに拒否する（RACE3）。停止の回数は status の変化や caller の交代による停止（sender は生きている）も捉える。matrix の M2 行は「listener の停止は Native の entry の前なら届かないので、公開の前に確かめ直して止め直す」と読む | 実装・試験済み（RACE1 の destroyed／closed、RACE3 の destroyed／closed、RACE4 は修正前に 5 件とも落ちることを確かめた） |
+| DR-DD1B-16 | （lifecycle P2-2。DR-DD1B-7 の補足）Native が handle を作った後に Main が応答の形を拒否する（`invalid result for command …start`）と、`onUnpublished` が呼ばれなかった。`settle` が start の error envelope のうち応答の形の拒否（`isNir1LocalResultRejection`）だけに `cancelSender` を呼ぶ。要求の段で拒否した start（Native に届いていない）は何も止めない | 実装・試験済み（RACE4） |
+| DR-DD1B-17 | （lifecycle P2-1）取消の経路の throw の安全と複数 sender を試験で固定した：3 つの sender を束縛して status の変化で全部に届く、1 つの停止が throw しても他に届く、destroyed／closed の listener から例外が漏れない、destroyed の後はその sender に届かない | 試験済み（M1、M5 が落ちる） |
+| DR-DD1B-18 | （lifecycle P3-3）束縛の上限（64）で、continue で終端を見たもの・cancel が受理されたもの（settled）の最も古いものを先に外し、走行中のものは最後に外す。束縛を Native と揃える処理（M2・M3・M4・M6）を試験で固定した | 実装・試験済み |
+| DR-DD1B-19 | （lifecycle P3-4。DR-DD1B-6 と matrix の M3 行、DR-DD1A-25 の訂正）「Native の保持 60 s で外れる」は不正確。保持を過ぎた final の entry の掃除は、次の start の `reserve_handle`（`nir1_local_entry.rs`）でしか起きない。renderer の crash／再読込の後、drain されなかった出力（text と thinking の各 2 MiB まで）は、次の start か window の close（sender の停止）まで process 内に残る（上限 16 件）。取消に結ばない判断は変えない（出力を渡すのは起動した caller の完全一致の continue だけで、新しい文書は handle を知らない）。DR-DD1A-25 の「最長 60 s」も同じく「次の start まで」と読む（`dd1a-decisions.md` は master にあるので編集しない） | 訂正 |
+| DR-DD1B-20 | （security P3-1。DR-DD1B-2 の訂正）read の応答の行を Native の値のまま返していた。thinking は output の行の配列（`thinking_blocks`）だけ、range の text と thinking（再 serialize した JSON）の bytes の合計は Native の上限 4 MiB の内だけを通し、既知の field だけで行を組み直す | 実装・試験済み |
+| DR-DD1B-21 | （security P3-2）作成と一覧の表示名の `createdAt` は RFC 3339 の時刻か null だけを通す（表示名に内容を入れない、を Main でも固める） | 実装・試験済み |
+| DR-DD1B-22 | （security P3-3・P3-4。DR-DD1B-4 の補足）seam の env は own property だけを読む（`Object.hasOwn`。prototype の汚染で継承した値を拾わない）。journey の userData と今の userData は `realpath` を通して比べ、解決できなければ無効（fail-closed）。既定の userData との比較も link を解決して行う。既存の `profileActivationCiSeam.ts` は変えていない | 実装・試験済み |
+| DR-DD1B-23 | （lifecycle P3-8）`hasApiKey` の戻り値が同期の boolean でなければ（Promise などの thenable を含む）`check-failed` にする | 実装・試験済み |
+| DR-DD1B-24 | 取り込まない・記録だけ：(1) security P3-5：束縛の 3 つの照合（sender、window、identity）を 1 つずつ外す変異は互いを補うので等価。(2) security P3-6：gate を開けた事実を Main は log に残さない。seam を使ったこと（版、env の名前）は DD-1d の journey の receipt に書くことを、DD-1d の入口条件とする。(3) `onStatusChange` の解除関数は捨てる（router は process に 1 回しか登録しない。コードに注記した） | 記録 |
+
+### 試験と変異（この節の修正の後）
+
+| 変異（修正を commit してから、原本の copy から戻す） | 落ちた試験 |
+|---|---|
+| M1 `cancelSender` の try/catch を外す | 全 sender の停止と throw の安全 |
+| M2 cancel の成功で取消の保留を戻さない | 束縛を Native と揃える |
+| M3 `HANDLE_NOT_FOUND` で束縛を外さない | 同上 |
+| M4 destroyed で `lastIdentity` を消さない | 同上 |
+| M5 status の変化で最初の 1 sender だけ止める | 全 sender の停止 |
+| M6 sender の停止が取消の保留中の束縛を残す | 束縛を Native と揃える |
+| R1 key の判定の後の確かめ直しを外す | RACE1（destroyed／closed） |
+| R3 start の公開の前の確かめ直しを外す | RACE3（destroyed／closed） |
+| R4 応答の形の拒否で止めない | RACE4 |
+| R5 停止の回数を数えない | 最初は通った（destroyed／close の試験では isDestroyed が先に当たる）。sender が生きたまま status の変化で止める試験を足して落ちるようにした |
+| F1 上限で settled を優先しない | 上限の優先 |
+| K1 thenable の防御を外す | key の判定の戻り値 |
+| S1 継承した env も読む | 最初は通った（試験の launch が別々の userData を作っていた）。同じ launch の env を継承させる形に直して落ちるようにした |
+| S2 userData を realpath で比べない | link の照合 |
+| C1 thinking の配列の確認を外す | read の行の検査 |
+| C2 range の bytes の上限を外す | 同上 |
+| C3 `createdAt` の形の確認を外す | 作成の表示名 |
+
+実行した検証：`npx tsc --noEmit -p electron/tsconfig.json`（0 件）、`vitest --config vitest.electron.config.ts`（98 file、2309 件。R5／S1 の試験を足す前）と、足した後の `nir1LocalGeneration.test.ts`（31 件）、`vitest --config vitest.electron-native.config.ts`（9 file、51 件）。
