@@ -408,7 +408,7 @@ export function assertLaunchAdmitted({
   if (evaluation) {
     // E-8: the build's own manifest beside the .node names these bytes and
     // the capability flag the module reported when it was built.
-    let manifest = null;
+    let manifest;
     try {
       manifest = JSON.parse(
         read(path.join(path.dirname(nativePath), "eval-build.json"), "utf8"),
