@@ -3767,19 +3767,25 @@ mod tests {
         let (dropped_tx, dropped_rx) = mpsc::channel();
         let owner = thread::spawn(move || {
             thread::sleep(Duration::from_millis(30));
+            // Stamped before the drop: Ready may be published the instant the
+            // lease is released, so a stamp taken after `drop` can land after
+            // the publisher's own and invert the order on a loaded runner. A
+            // publisher that did not wait for the drain would still publish
+            // ~30 ms before this stamp.
+            let dropping_at = Instant::now();
             drop(lease);
-            dropped_tx.send(Instant::now()).expect("lease dropped");
+            dropped_tx.send(dropping_at).expect("lease dropped");
         });
         let view = state
             .workspace_lifecycle
             .complete_transition_from_workspace(&state.ws)
             .expect("Ready after drain");
         let published_at = Instant::now();
-        let dropped_at = dropped_rx
+        let dropping_at = dropped_rx
             .recv_timeout(Duration::from_secs(1))
             .expect("lease owner dropped");
         owner.join().expect("lease owner joined");
-        assert!(dropped_at <= published_at);
+        assert!(dropping_at <= published_at);
         assert_eq!(
             view.status,
             crate::workspace_lifecycle_view::WorkspaceLifecycleStatus::Ready
