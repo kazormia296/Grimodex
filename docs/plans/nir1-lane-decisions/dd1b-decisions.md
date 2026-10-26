@@ -123,7 +123,7 @@ DD-1a の matrix（`dd1a-decisions.md` の P2〜P8）は変えない。DD-1b が
 
 ### 試験と変異
 
-追加・変更した試験：`electron/shared/nir1LocalGenerationIpcContract.test.ts`（14 件。6 command の形と上限、sidecar だけからの key の判定、Native の応答の検査、reason の一覧と Rust の突き合わせ）、`electron/main/nir1LocalGeneration.test.ts`（21 件。seam の parse と開始、Main の gate の順、packaged の不活性、unrestricted の拒否、key の判定〔endpoint ごと、`default` と旧 account、判定の失敗、endpoint 不明〕、sender・window・caller の確認、handle の束縛と上限、destroyed／closed／caller の交代／status の変化での取消、完了時の照合の拒否での停止）、`electron/main/nir1LocalGeneration.pipeline.spec.ts`（3 件。実 addon）、`d2aRouteClasses.test.ts`（台帳が 6 command）、`ipcContract.test.ts`（command の一覧、R-2 の Main 専用の名前）、`rendererIsolation.static.test.ts`（DR-DD1B-11）。
+追加・変更した試験：`electron/shared/nir1LocalGenerationIpcContract.test.ts`（16 件。6 command の形と上限、sidecar だけからの key の判定、Native の応答の検査、reason の一覧と Rust の突き合わせ）、`electron/main/nir1LocalGeneration.test.ts`（21 件。seam の parse と開始、Main の gate の順、packaged の不活性、unrestricted の拒否、key の判定〔endpoint ごと、`default` と旧 account、判定の失敗、endpoint 不明〕、sender・window・caller の確認、handle の束縛と上限、destroyed／closed／caller の交代／status の変化での取消、完了時の照合の拒否での停止）、`electron/main/nir1LocalGeneration.pipeline.spec.ts`（3 件。実 addon）、`d2aRouteClasses.test.ts`（台帳が 6 command）、`ipcContract.test.ts`（command の一覧、R-2 の Main 専用の名前）、`rendererIsolation.static.test.ts`（DR-DD1B-11）。
 
 | 変異（commit しない。原本の copy から戻す） | 落ちた試験 |
 |---|---|
@@ -143,7 +143,7 @@ DD-1a の matrix（`dd1a-decisions.md` の P2〜P8）は変えない。DD-1b が
 | B14 start の sidecar を renderer の `mainVerdict` で代える | 通る（等価の変異：exact key の検査が `mainVerdict` を先に拒否する。その拒否は契約の試験が固定） |
 | B15 Main の確認で identity の発行を見ない | 最初は通った（router では D2a の照合が先に拒否する）。route を直接呼ぶ試験を足して落ちるようにした |
 
-実行した検証：`npx tsc --noEmit -p electron/tsconfig.json`（0 件）、`vitest --config vitest.electron.config.ts`（全 98 file、2299 件。B15 の試験を足す前）と、足した後の該当 3 file（104 件）、`vitest --config vitest.electron-native.config.ts`（既存の d2a*／d2b*／bodyDeclaration の pipeline を含む 9 file、51 件。原本の addon で）、`pnpm validate:architecture`、`node --test scripts/quality/impact-map.test.mjs`（37 件）、`node scripts/quality/impact-map.mjs --base e0eecca7`（Fallback: no）、`pnpm napi:build:release`（heavy.sh 経由）。
+実行した検証：`npx tsc --noEmit -p electron/tsconfig.json`（0 件）、`vitest --config vitest.electron.config.ts`（全 98 file、2300 件。B15 の試験を足した後）、`vitest --config vitest.electron-native.config.ts`（既存の d2a*／d2b*／bodyDeclaration の pipeline を含む 9 file、51 件。原本の addon で）、`pnpm validate:architecture`、`node --test scripts/quality/impact-map.test.mjs`（37 件）、`node scripts/quality/impact-map.mjs --base e0eecca7`（Fallback: no）、`pnpm napi:build:release`（heavy.sh 経由）。
 
 ### 確かめられなかったこと（実装後）
 
