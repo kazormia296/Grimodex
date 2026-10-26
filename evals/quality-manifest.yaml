@@ -1730,6 +1730,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/run-sample.test.mjs
       - scripts/quality/nir1-graph-eval/window.test.mjs
       - scripts/quality/nir1-graph-eval/dev-fixture.test.mjs
+      - scripts/quality/nir1-graph-eval/session.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py

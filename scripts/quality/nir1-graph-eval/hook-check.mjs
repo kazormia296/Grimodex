@@ -454,6 +454,11 @@ async function main() {
   } catch (error) {
     report.problems.push(error?.stack ?? String(error));
     process.exitCode = 1;
+    if (error?.launchedSession)
+      await stopSession(error.launchLabel, error.launchedSession).catch(
+        (stopError) =>
+          report.problems.push(`stop: ${stopError?.stack ?? stopError}`),
+      );
   } finally {
     await stopSession("check", session).catch((error) =>
       report.problems.push(`stop: ${error?.stack ?? error}`),

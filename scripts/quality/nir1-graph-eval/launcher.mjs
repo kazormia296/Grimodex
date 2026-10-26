@@ -450,7 +450,12 @@ export async function launchGraphEvalElectron({
 export async function stopElectron(
   handle,
   recordedPids,
-  { closeTimeoutMs = 15_000 } = {},
+  {
+    closeTimeoutMs = 15_000,
+    signalWaitMs = 2_000,
+    procRoot = "/proc",
+    kill = process.kill,
+  } = {},
 ) {
   let closed = false;
   let timer;
@@ -470,22 +475,22 @@ export async function stopElectron(
   }
   const signalled = [];
   for (const signal of ["SIGTERM", "SIGKILL"]) {
-    const alive = survivingPids(recordedPids);
+    const alive = survivingPids(recordedPids, procRoot);
     if (alive.length === 0) break;
     for (const row of alive) {
       try {
-        process.kill(row.pid, signal);
+        kill(row.pid, signal);
         signalled.push({ pid: row.pid, signal });
       } catch {
         // already gone
       }
     }
-    await new Promise((resolve) => setTimeout(resolve, 2_000));
+    await new Promise((resolve) => setTimeout(resolve, signalWaitMs));
   }
   return {
     closed,
     signalled,
-    remaining: survivingPids(recordedPids).map((row) => row.pid),
+    remaining: survivingPids(recordedPids, procRoot).map((row) => row.pid),
   };
 }
 

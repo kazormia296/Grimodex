@@ -72,8 +72,18 @@ export async function startSession({
   extraEnv = {},
   tmpRoot = null,
   admission,
+  deps = {},
 }) {
-  assertXvfbWrapperEnv(process.env);
+  const {
+    launch = launchGraphEvalElectron,
+    prepareProfile = prepareEvalProfile,
+    sampleSockets = startSocketSampler,
+    snapshotPids = snapshotElectronPids,
+    stopApp = stopElectron,
+    listX11 = x11Listing,
+    wrapperEnv = process.env,
+  } = deps;
+  assertXvfbWrapperEnv(wrapperEnv);
   const dir = path.join(runDir, label);
   await mkdir(dir, { recursive: true });
   // Chromium's unix sockets live under TMPDIR (108-byte limit): a short
@@ -83,11 +93,11 @@ export async function startSession({
     : path.join(dir, "tmp");
   await mkdir(tmpDir, { recursive: true });
   const userData = path.join(dir, "user-data");
-  const profile = await prepareEvalProfile({ userData, d2aMode, models });
+  const profile = await prepareProfile({ userData, d2aMode, models });
   const netLogPath = path.join(dir, "netlog.json");
   const productMain = path.join(ROOT, PRODUCT_MAIN);
   const env = {
-    ...buildElectronLaunchEnv(process.env, {
+    ...buildElectronLaunchEnv(wrapperEnv, {
       userData,
       nativePath,
       rendererUrl: server.url(HARNESS_PAGE),
@@ -98,22 +108,22 @@ export async function startSession({
   };
   const evidence = {
     label,
-    x11Before: x11Listing(),
+    x11Before: listX11(),
     profile: { d2aMode, d2aStateFile: profile.d2aStateFile },
     extraEnvNames: Object.keys(extraEnv).sort(),
     problems: [],
   };
   const recorded = new Map();
-  const handle = await launchGraphEvalElectron({
+  const handle = await launch({
     observer,
     env,
     netLogPath,
     electron: { _electron },
     admission,
   });
-  const sampler = startSocketSampler({ rootPid: handle.pid });
+  const sampler = sampleSockets({ rootPid: handle.pid });
   const remember = () => {
-    for (const row of snapshotElectronPids(handle.pid))
+    for (const row of snapshotPids(handle.pid))
       recorded.set(`${row.pid}:${row.startTime}`, row);
   };
   remember();
@@ -143,6 +153,7 @@ export async function startSession({
   }
   // Only the free evaluation entries are called, in the Main, on the module
   // the Main loaded (V-9).
+  let stopping = null;
   const addon = (name, ...args) => {
     if (!/^nir1GraphEval[A-Za-z0-9]+$/u.test(name))
       throw new Error(`[precheck] ${name} is not an evaluation entry`);
@@ -167,77 +178,79 @@ export async function startSession({
     pids: () => [...recorded.values()].map((row) => row.pid),
     // Main の stderr の全体（D′ の確認で固定の失敗の code を数える）。
     stderr: () => handle.stderr(),
-    async stop() {
-      remember();
-      const socketSamples = sampler.stop();
-      evidence.stop = await stopElectron(handle, [...recorded.values()]);
-      evidence.recordedPids = [...recorded.values()];
-      evidence.stderrTail = handle.stderr().slice(-4000);
-      if (evidence.stop.remaining.length > 0)
-        evidence.problems.push(
-          `processes left: ${evidence.stop.remaining.join(",")}`,
-        );
-      evidence.socketSamples = socketSamples;
-      evidence.socketCheck = assessSocketSamples({
-        samples: socketSamples,
-        run: {
-          startedAtMs: socketSamples[0]?.atMs ?? Date.now(),
-          finishedAtMs: socketSamples.at(-1)?.atMs ?? Date.now(),
-        },
-      });
-      if (evidence.socketCheck.violations.length > 0)
-        evidence.problems.push(
-          `sockets: ${evidence.socketCheck.violations.join("; ")}`,
-        );
-      if (existsSync(netLogPath)) {
-        const text = await readFile(netLogPath, "utf8");
-        const { log, truncated } = parseNetLogText(text);
-        evidence.netLog = {
-          path: path.relative(ROOT, netLogPath),
-          sha256: sha256(Buffer.from(text)),
-          truncated,
-          ...analyzeNetLog(log, {
-            blackholePort: evidence.observer?.blackholePort ?? null,
-          }),
-        };
-        if (evidence.netLog.nonLoopbackAttempts !== 0)
-          evidence.problems.push(
-            `net log: ${JSON.stringify(evidence.netLog.attempts)}`,
-          );
-      } else evidence.problems.push("no net log was written");
-      const dictionaries = path.join(userData, "Dictionaries");
-      evidence.dictionaries = existsSync(dictionaries)
-        ? readdirSync(dictionaries)
-        : [];
-      if (evidence.dictionaries.some((name) => name.endsWith(".bdic")))
-        evidence.problems.push("dictionaries were fetched");
-      try {
-        const state = JSON.parse(
-          await readFile(
-            path.join(userData, "Network Persistent State"),
-            "utf8",
-          ),
-        );
-        evidence.networkPersistentServers = (
-          state?.net?.http_server_properties?.servers ?? []
-        ).map((entry) => entry.server);
-      } catch (error) {
-        evidence.networkPersistentServers =
-          error?.code === "ENOENT" ? [] : [`unreadable: ${error?.code}`];
-      }
-      if (
-        evidence.networkPersistentServers.some(
-          (entry) =>
-            !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/u.test(entry),
-        )
-      )
-        evidence.problems.push("persisted non-loopback servers");
-      evidence.x11After = x11Listing();
-      if (
-        JSON.stringify(evidence.x11After) !== JSON.stringify(evidence.x11Before)
-      )
-        evidence.problems.push("the /tmp/.X11-unix listing changed");
-      return evidence;
+    // Memoized: a caller that stops a session a failed check already
+    // stopped gets the same evidence (B-1).
+    stop() {
+      stopping ??= stopOnce();
+      return stopping;
     },
   };
+  async function stopOnce() {
+    remember();
+    const socketSamples = sampler.stop();
+    evidence.stop = await stopApp(handle, [...recorded.values()]);
+    evidence.recordedPids = [...recorded.values()];
+    evidence.stderrTail = handle.stderr().slice(-4000);
+    if (evidence.stop.remaining.length > 0)
+      evidence.problems.push(
+        `processes left: ${evidence.stop.remaining.join(",")}`,
+      );
+    evidence.socketSamples = socketSamples;
+    evidence.socketCheck = assessSocketSamples({
+      samples: socketSamples,
+      run: {
+        startedAtMs: socketSamples[0]?.atMs ?? Date.now(),
+        finishedAtMs: socketSamples.at(-1)?.atMs ?? Date.now(),
+      },
+    });
+    if (evidence.socketCheck.violations.length > 0)
+      evidence.problems.push(
+        `sockets: ${evidence.socketCheck.violations.join("; ")}`,
+      );
+    if (existsSync(netLogPath)) {
+      const text = await readFile(netLogPath, "utf8");
+      const { log, truncated } = parseNetLogText(text);
+      evidence.netLog = {
+        path: path.relative(ROOT, netLogPath),
+        sha256: sha256(Buffer.from(text)),
+        truncated,
+        ...analyzeNetLog(log, {
+          blackholePort: evidence.observer?.blackholePort ?? null,
+        }),
+      };
+      if (evidence.netLog.nonLoopbackAttempts !== 0)
+        evidence.problems.push(
+          `net log: ${JSON.stringify(evidence.netLog.attempts)}`,
+        );
+    } else evidence.problems.push("no net log was written");
+    const dictionaries = path.join(userData, "Dictionaries");
+    evidence.dictionaries = existsSync(dictionaries)
+      ? readdirSync(dictionaries)
+      : [];
+    if (evidence.dictionaries.some((name) => name.endsWith(".bdic")))
+      evidence.problems.push("dictionaries were fetched");
+    try {
+      const state = JSON.parse(
+        await readFile(path.join(userData, "Network Persistent State"), "utf8"),
+      );
+      evidence.networkPersistentServers = (
+        state?.net?.http_server_properties?.servers ?? []
+      ).map((entry) => entry.server);
+    } catch (error) {
+      evidence.networkPersistentServers =
+        error?.code === "ENOENT" ? [] : [`unreadable: ${error?.code}`];
+    }
+    if (
+      evidence.networkPersistentServers.some(
+        (entry) => !/^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/u.test(entry),
+      )
+    )
+      evidence.problems.push("persisted non-loopback servers");
+    evidence.x11After = listX11();
+    if (
+      JSON.stringify(evidence.x11After) !== JSON.stringify(evidence.x11Before)
+    )
+      evidence.problems.push("the /tmp/.X11-unix listing changed");
+    return evidence;
+  }
 }

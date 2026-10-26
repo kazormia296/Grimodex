@@ -157,8 +157,10 @@ export async function launch({
   observer,
   options,
   admission,
+  start = startSession,
+  statusWaitMs = STATUS_WAIT_MS,
 }) {
-  const session = await startSession({
+  const session = await start({
     runDir,
     label,
     server,
@@ -176,12 +178,28 @@ export async function launch({
       maintenance: "product",
     }),
   });
+  // B-1: a failed check stops the Electron it launched before throwing, and
+  // hands the stopped session to the caller (its evidence is recorded).
+  try {
+    await assertSessionReady(session, statusWaitMs);
+  } catch (error) {
+    error.launchedSession = session;
+    error.launchLabel = label;
+    await session.stop().catch((stopError) => {
+      error.stopError = String(stopError?.stack ?? stopError);
+    });
+    throw error;
+  }
+  return session;
+}
+
+async function assertSessionReady(session, statusWaitMs) {
   if (session.evidence.problems.length > 0)
     throw new Error(session.evidence.problems.join("; "));
   const started = Date.now();
   let status = await json(session.addon("nir1GraphEvalStatus"));
   while (
-    Date.now() - started < STATUS_WAIT_MS &&
+    Date.now() - started < statusWaitMs &&
     !(
       status.registrations === 1 &&
       status.worker?.state === "configured" &&
@@ -201,7 +219,6 @@ export async function launch({
     throw new Error(
       `[precheck] V-10: the evaluation owner is not ready: ${JSON.stringify(status)}`,
     );
-  return session;
 }
 
 export async function openWorkspace(page, workspacePath, ids) {
@@ -593,6 +610,11 @@ async function main() {
   } catch (error) {
     report.problems.push(error?.stack ?? String(error));
     process.exitCode = 1;
+    if (error?.launchedSession)
+      await stopSession(error.launchLabel, error.launchedSession).catch(
+        (stopError) =>
+          report.problems.push(`stop: ${stopError?.stack ?? stopError}`),
+      );
   } finally {
     dataVersion?.close();
     await stopSession("check", session).catch((error) =>
