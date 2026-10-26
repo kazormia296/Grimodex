@@ -476,9 +476,13 @@ describe("the journey seam's launch (K5/3 必須防御 17, DR-DD1B-4)", () => {
   it("reads only own environment values and compares real directories (security P3-3, P3-4)", async () => {
     const { symlinkSync, mkdirSync } = await import("node:fs");
     // A seam value inherited through the prototype is not read.
-    const inherited = Object.create(activeLaunch().env) as NodeJS.ProcessEnv;
+    const launch = activeLaunch();
+    expect(parseNir1LocalGenerationCiSeam(launch).active).toBe(true);
     expect(
-      parseNir1LocalGenerationCiSeam({ ...activeLaunch(), env: inherited }),
+      parseNir1LocalGenerationCiSeam({
+        ...launch,
+        env: Object.create(launch.env) as NodeJS.ProcessEnv,
+      }),
     ).toEqual({ active: false });
     // A link to the launch's userData is the same directory …
     const root = journeyDir();
@@ -1167,6 +1171,54 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
         {},
       ),
     ).toBeNull();
+  });
+
+  it("a stop by a status change while a start's verdict is pending refuses that start (the stop count)", async () => {
+    const listeners: Array<() => void> = [];
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const stopped: number[] = [];
+    const route = createNir1LocalGenerationRoute({
+      open: true,
+      backend: {
+        getAiSettings: async () => {
+          await pending;
+          return JSON.stringify({
+            activeOpenaiCompatibleEndpointId: "local-1",
+          });
+        },
+        mainNir1LocalGenerationCancelSender: (senderId: number) => {
+          stopped.push(senderId);
+          return 0;
+        },
+      } as unknown as NapiBackendLike,
+      secrets: { resolveApiKeyForRequest: () => "", hasApiKey: () => false },
+      profileEgress: {
+        isIssuedCallerIdentity: () => true,
+        onStatusChange: (listener) => {
+          listeners.push(() =>
+            listener({ state: "unavailable", reason: "activation-failed" }),
+          );
+          return () => undefined;
+        },
+      },
+    });
+    const sender = fakeSender(7);
+    const win = fakeWindow(70, sender);
+    const admitted = route.admit(
+      "nir1_local_generation_start",
+      { sender, win, callerIdentity: { senderId: 7 } },
+      {},
+    );
+    listeners.forEach((listener) => listener()); // the sender stays alive
+    release();
+    expect(await admitted).toEqual({
+      ok: true,
+      value: { status: "unavailable", reason: "NIR1_LOCAL_SENDER_REFUSED" },
+    });
+    expect(stopped).toEqual([7]);
   });
 
   it("keeps at most 64 handle bindings, dropping a settled one first and a running one last", async () => {
