@@ -1,0 +1,356 @@
+{
+  "schemaVersion": "nir1-cp4-observation-prep/1",
+  "status": "draft-awaiting-s3-review-and-s4-freeze",
+  "graphRuntimeObservedBeforeAuthoring": false,
+  "purpose": "CP-4 が G-01〜G-08 の Graph arm と trace を最初に観測する前に固定する、測り方の事前登録（S2 の起草）。K2/4 の宣言の場所（D1）、B の seal の手順（D2）、arm ごとの D2a の mode（D10）、G-02〜G-08 の parity の unrestricted run の数、sample の予定、trace の file、K6/4 の手順のファイル、診断の run を 1 か所に置く。commit と、S3 のレビューで bytes が変わりうる file の sha256 は、S4 の観測前の commit で確定するので、ここでは placeholder（S4:<名前>）を置き、validator は status が frozen-before-observation のとき placeholder を拒み、値と file の一致を求める。この file の draft は正式の run に使えない（scripts/quality/nir1-graph/observation-prep.mjs の assertObservationPrepFormal）。S4 の freeze 記録（evals/nir1-graph/observation-prep-freeze.v1.json。統合 branch の constants.mjs の OBSERVATION_PREP_RECORD_PATH）はこの file と boundFiles を束縛する。",
+  "contracts": {
+    "k24": {
+      "draftRef": "nir1-c-body-disclosure-proposal/4",
+      "path": "docs/plans/nir1-c-body-disclosure-proposal-4-draft.md",
+      "sha256": "efc30cca32f2c91386baf3061836427ae7df3499c18188d31b5e2ba422a2fcfd"
+    },
+    "k62": {
+      "draftRef": "nir1-final-request-eval-proposal/2",
+      "path": "docs/plans/nir1-final-request-eval-proposal-2-draft.md",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8",
+      "freezeCommit": "af643a93eeae7f937c9cd5a9dd87a6308c96fab6"
+    },
+    "k64": {
+      "draftRef": "nir1-final-request-eval-proposal/4",
+      "contractId": "graph-eval-procedure",
+      "path": "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
+      "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
+      "confirmedCommit": "18ebc7b8de2d4f2701c573b5d91561a6cc852024",
+      "freezeCommit": "S4:k64-freeze-commit",
+      "freezeNote": "K6/4 批准 7: integrator が claude/nir1-contracts に K6/4 の bytes を凍結した commit。条件の判定に使う診断と (i) で判定する CP-4 の run は、この凍結の後に始めたものに限る。"
+    }
+  },
+  "references": {
+    "g01Fixture": {
+      "path": "evals/nir1-g01/fixture.v1.json",
+      "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+    },
+    "graphCaseFreeze": {
+      "path": "evals/nir1-graph/freeze.v1.json",
+      "sha256": "6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7"
+    }
+  },
+  "candidate": {
+    "commit": "S4:cp4-candidate-commit",
+    "rule": "CP-4 の G-case と trace を測る候補の commit。観測前の commit の子孫で、K6/4 批准 5 の (a) D′（#715）、(b) RS-JOIN の hook（#722）、(c) W_f の製品の変更（#725）を含む。build の識別（commit と feature 集合、次 query 用の cache を置くか）を receipt に書く。"
+  },
+  "d1": {
+    "choice": "ii",
+    "rule": "K2/4「Main の一回限りの確認」の「測定の workspace」の (ii)。測定に使う workspace を開いた後、その workspace で seed つきの query（V-10 の READY の確認の probe と warm-up を含む）を 1 件も出す前に、製品 Main の body declaration CI seam を通して宣言する。宣言の直前と直後の Index の metadata、workspace ID、canonical locator の digest、宣言の token、binding の digest を測定の receipt に書き、Graph arm の最初の query の前に照合する（違えば [precheck]）。",
+    "addenda": [
+      "evals/nir1-g01/setup-addendum.v1.json",
+      "evals/nir1-graph/declaration-addendum.v1.json"
+    ],
+    "runs": [
+      "G-01/v1",
+      "G-02/base",
+      "G-07/base",
+      "G-08/base-usable",
+      "G-08/graph-recovered"
+    ],
+    "orderNote": "K2/4 は「Graph arm の最初の query の前」とする。V-10 の probe は seed つきの query なので、その前に宣言する（K2/4 の範囲の内で早い側に固定する）。統合 branch の runner.mjs（S1c-2 の dev preview）は V-10 の probe の後に宣言しているので、正式の runner はこの順に合わせる（S4／CP-4 への申し送り）。"
+  },
+  "d2": {
+    "rule": "B の sealed binding は、setup の session で B-ROUTE の journey seam（CI=true、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build）で maintenance の B の build の route の起動 gate を開け、workspace を開いたときの wake の cycle で build させ、sealed の B の generation を待って確立する（正規の経路。試験と診断用の publish の呼出しは使わない）。測定の process では、新しい path で B の seal が current で、Chronicle の Index が使えることを、測定を始める前に確かめる。確立できなければ、G-01 は v1 期待値未達／Hold、G-02〜G-08 は blocked:b-sealed-binding（宣言では解けない）。",
+    "fault": "seam の fault、setup、Freshness の hold、barrier の指定は使わない。"
+  },
+  "d10": {
+    "arms": {
+      "raw": "restricted",
+      "hybrid": "restricted",
+      "graph": "restricted"
+    },
+    "rule": "G-case の run は全 arm を restricted で測る（K6/2 確認後の記録の CP-0 の項の推奨。Graph は restricted でだけ出るので、改善の比較の基準の R+IR と R+IR+Graph の条件をそろえる）。restricted の再認可にかかった時間を arm ごとに receipt に分けて書く。この推奨を取れるのは、restricted で測る case について R と R+IR の parity が確かめられる場合に限る（下の g01 と parity）。",
+    "g01": {
+      "rAndRirMode": "restricted",
+      "da1AcceptanceRecord": "S4:da1-acceptance-record",
+      "conditions": [
+        "(a) K3/2 の受入れ（DA-1 の最終候補）が restricted 下の R と R+IR の parity を G-01 を含めて確かめた記録の所在を、CP-4 の G-01 を測る前に da1AcceptanceRecord に書く。",
+        "(b) CP-4 の G-01 の restricted の R と R+IR の membership と順位が、同じ候補で同じ版の fixture について、同じ setup の手順（mode のほかは同じ。B の seal を含み、Graph の arm は動かさない）で取った unrestricted の組（g01-eval-revision の最後の判定の組）と一致することを確かめる。",
+        "(c) 一致しなければ parity の回帰として扱い、G-01 の結果と不一致の記録は残すが期待値との比較と条件の判定に使わず、直した新しい候補で組と CP-4 の G-01 を取り直す。"
+      ],
+      "fallback": "(a) の記録がない（DA-1 の受入れに G-01 の parity の記録がない場合を含む）か、(b) の組を同じ setup の手順で取れないときは、K6/2 の CP-0 の項の (d) により、CP-4 の G-01 の R と R+IR は unrestricted で測り、R+IR+Graph は restricted で測る。そのとき改善の比較の基準にする R+IR は、同じ run の unrestricted の R+IR とする。どちらになるかは記録と手順の有無で決まり、観測の結果では決めない。da1AcceptanceRecord に「none」と書いたときは fallback を使う。"
+    },
+    "parity": {
+      "unrestrictedRunsPerVariant": 1,
+      "variants": [
+        "G-02/base",
+        "G-03/base",
+        "G-03/frontier-exceeded",
+        "G-04/base",
+        "G-05/base",
+        "G-06/base",
+        "G-07/base",
+        "G-08/base-usable",
+        "G-08/graph-index-unusable",
+        "G-08/graph-recovered",
+        "G-08/chronicle-index-unusable",
+        "G-08/both-indexes-unusable"
+      ],
+      "run": "各 variant で、同じ候補、同じ版の fixture、CP-4 の G-case と同じ setup の手順（mode のほかは同じ。B の seal を含み、Graph の arm は動かさない）で、新しい workspace に unrestricted の R+IR の arm を warm-up 5 回の後に 30 回測る。その variant の restricted の Gold の run より前に取る。",
+      "comparison": "restricted の R と R+IR の各 sample（warm-up を除く）の membership と順位が、unrestricted の run の measured の各 sample と一致することを確かめる。unrestricted の run の measured の sample どうしが一致しないときは、比較が定まらないので [precheck] で止める。",
+      "countReason": "契約の下限（variant ごとに 1 回以上。K6/2 確認後の記録の CP-0 の項の (b)）に合わせて 1 回とする。比較は restricted の各 sample と unrestricted の run の各 sample の一致で、一致しない sample が 1 件でもあれば parity の回帰になるので、unrestricted の run を増やしても判定の規則は変わらない。数は取る前にこの file に書き、結果を見て増減しない。",
+      "mismatch": "一致しなければ、その case の CP-4 の結果と不一致の記録は残すが、fixture の期待値との比較の判定に使わず、直した新しい候補で、その case の restricted の測定と unrestricted の run を取り直す。直すまでその case と CP-4 は PASS にならない。",
+      "fallback": "同じ setup の手順で unrestricted の run を取れないときは、その case の R と R+IR は unrestricted で測り、R+IR+Graph は restricted で測り、改善の比較の基準の R+IR は同じ run の unrestricted の R+IR とする（K6/2 の CP-0 の項の (d)）。"
+    }
+  },
+  "samplePlan": {
+    "warmupPerArm": 5,
+    "measuredPerArm": 30,
+    "arms": ["hybrid", "graph"],
+    "order": "AB/BA",
+    "orderRule": "variant ごとに、warm-up と measured のそれぞれで repeat を 0 から数え、repeat が偶数なら hybrid（R+IR）、graph（R+IR+Graph）の順、奇数ならその逆に回す（K6/2 手順の 2、P の schedule）。",
+    "variants": [
+      "G-01/v1",
+      "G-02/base",
+      "G-03/base",
+      "G-03/frontier-exceeded",
+      "G-04/base",
+      "G-05/base",
+      "G-06/base",
+      "G-07/base",
+      "G-08/base-usable",
+      "G-08/graph-index-unusable",
+      "G-08/graph-recovered",
+      "G-08/chronicle-index-unusable",
+      "G-08/both-indexes-unusable"
+    ],
+    "variantOrder": "上の順（catalog の順）。各 variant は manifest の isolation のとおり新しい workspace の setup から始める。",
+    "steadyState": "K6/2 手順の 3 を K6/4 の R1〜R4 で読む: graph の arm の各 sample の前に次 query 用の cache を空にし（R2）、slot が empty、前の seed つきの sample の終わりから rebuild_min_interval（1 s）以上、前の sample の R4 の待ちが上限の内に終わったこと（R1）を、k64Procedure の r1r4WaitMs を上限に待つ。待つ時間は latency に含めない。届かなければ reachedQuiet:false を記録して sample を取り、分母から除かない。run の間は tree と Scene Scope を書かない。",
+    "denominator": "(a) と表示の可用性の分母に、事前の期待値が Graph unavailable の variant（G-03/frontier-exceeded、G-08 の 3 つの unusable）を入れない（品質の case としては測る）。",
+    "measurementWindow": "計測は重い build を止めた窓で行う（D3 の window の sample を run の前後と 20 s ごとに取る）。"
+  },
+  "traces": [
+    {
+      "kind": "editing",
+      "path": "evals/nir1-graph/trace-editing.v1.json",
+      "commit": "S4:trace-editing-commit",
+      "sha256": "S4:trace-editing-sha256"
+    },
+    {
+      "kind": "browsing",
+      "path": "evals/nir1-graph/trace-browsing.v1.json",
+      "commit": "S4:trace-browsing-commit",
+      "sha256": "S4:trace-browsing-sha256"
+    }
+  ],
+  "tracesRule": "receipt の先頭に、診断の trace と sample の予定を固定した file の commit と SHA-256 を書く（K6/2 事前登録の凍結の 2）。commit は trace の file を含み、独立 reviewer のレビューの記録とともに置いた commit で、診断の run と CP-4 の run の候補の祖先にあり、run の前に remote に push する。",
+  "k64Procedure": {
+    "draft": {
+      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json",
+      "version": "draft-2"
+    },
+    "values": {
+      "dMs": 10.84,
+      "wFMs": 100,
+      "tLateMs": 100,
+      "tShowMs": 2000,
+      "r1r4WaitMs": 10000
+    },
+    "valueReasons": {
+      "dMs": "D = min(100 ms, 0.20 × B)、B = 54.2 ms。P の固定契約（l6-l9:349-361、post-B:214）で、K6/4 の「変えないもの」。作者は選んでいない。",
+      "wFMs": "K6/4 判断 2 の推奨（子の t_raw_ready_c から t_graph_c まで 100 ms）。2026-10-26 の Session B5 で確認された（続行計画 §10.7）。作者は選んでいない。",
+      "tLateMs": "K6/4 判断 3（t_notice − t_raw_ready ≤ 100 ms）。確認済み。作者は選んでいない。",
+      "tShowMs": "K6/4 判断 4（t_follow − t_raw_ready ≤ 2 s）。確認済み。作者は選んでいない。",
+      "r1r4WaitMs": "K6/4 技術点 2 は、R1 と R4 の待ちの上限を手順のファイルで観測の前に固定し、10 s（保留の期限 DEFERRED_RELEASE_LIMIT。electron/native/grimodex-node/src/nir1_graph_product.rs:78）を超えないとする。上限そのものの 10,000 ms を選ぶ。(1) R1 の (1)（slot が empty で保留が無い）は、製品が保留を release か expire で必ず解く期限（begin の受渡しから DEFERRED_RELEASE_LIMIT）でだけ上から押さえられる。受渡しは sample の終わりより前なので、sample の終わりから 10 s 待てば、製品の規則の範囲で保留は必ず解けている。これより短い値では、製品が自分の期限の内で正しく動いている sample を reachedQuiet:false（X10。follow-up の失敗）に数えうる。それは製品の挙動ではなく評価の待ちの短さによる欠落で、欠落率を作者の選んだ値で動かすことになる。(2) R1 の (3)（rebuild_min_interval 1 s。nir1_graph_product.rs:94）は 10 s の内に収まる。(3) 待ちを長くするほど、前の sample の ticket が R2 の後に同じ key で cache を埋める並び（K6/4-N3、Out-of-scope の 4）の余地が減り、F2 の推論が強まる。(4) 待つ時間は latency に含めず（R1）、q1〜q3、欠落率の分子と分母、P の timing を変えない。費用は run の時間だけで、静止に届かない sample でだけ生じる。値を小さくする根拠（観測）を S2 は持たず、観測から選ぶことは契約が禁じる（K6/4 の Mandatory defenses、変える点 16）。R4 の待ちは sample の終わりから、R1 の待ちは R4 の待ちの終わりから数え、それぞれこの値を上限とする。"
+    },
+    "formal": {
+      "version": "v1",
+      "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
+      "commit": "S4:k64-procedure-v1-commit",
+      "sha256": "S4:k64-procedure-v1-sha256",
+      "review": null
+    },
+    "promotion": [
+      "S3 の独立 reviewer が draft-2 の bytes（この file の valueReasons を含む）をレビューし、記録を書く。draft は review を null にしか持てず（統合 branch の procedure-file.mjs の procedureFileErrors）、正式の版 v<N> は review（reviewer、reviewedAt、record）なしでは loader が拒み、purpose formal は draft を拒む。",
+      "S4 は、draft-2 と schema、contract、values、conditions が同じで、version を v1、draft を false、review を S3 の記録にした k64-procedure.v1.json を観測前の commit に置き、formal の commit、sha256、review を埋める。draft-2 は消さずに残す。",
+      "values か conditions を変える必要が S3 で出たら、draft-3 を置いて同じ手順をやり直す（同じ版の書き直しはしない）。観測の後の変更は、狭める方向だけを新しい版とレビューで許す（K6/4 変える点 16）。"
+    ]
+  },
+  "registeredForReview": [
+    {
+      "name": "BOUNDARY_TOLERANCE_MS",
+      "value": 0.01,
+      "source": "統合 branch claude/nir1-cp4 の scripts/quality/nir1-graph-eval/constants.mjs",
+      "note": "S2 の作者が決めた値ではない。窓の境界の判定の不一致の許容（10 µs）で、製品が now < deadline を D = 10.840000000596048 ms で比べることとの 6e-7 ms の差を、窓外に倒して分類する幅。constants.mjs のコメントが「評価の閾値ではなく、観測前の記録でレビューに登録する」とするので、ここに登録する。S3 は、これが D を広げる方向に働かない（許容の内で窓内に合流した結果を窓外に数える）ことを確かめる。"
+    }
+  ],
+  "diagnosticRuns": [
+    {
+      "id": "K24-G01-N1",
+      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-01/v1",
+      "declare": false,
+      "schedule": "samplePlan と同じ（warm-up 5、measured 30、AB/BA）"
+    },
+    {
+      "id": "K24-G01-N2",
+      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-01/v1",
+      "declare": true,
+      "mutationAfterDeclaration": "resave-same-body",
+      "schedule": "宣言、mutation の後に B の seal が current に戻り Chronicle の Index が使えることを待ってから、samplePlan と同じ schedule。戻らなければ診断を blocked として記録する。"
+    },
+    {
+      "id": "K24-G01-N3",
+      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-01/v1",
+      "declare": true,
+      "mutationAfterDeclaration": "restore-same-bytes-body-version",
+      "schedule": "K24-G01-N2 と同じ。"
+    },
+    {
+      "id": "K24-G02-N1",
+      "source": "evals/nir1-graph/declaration-addendum.v1.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-02/base",
+      "declare": false,
+      "schedule": "samplePlan と同じ。"
+    },
+    {
+      "id": "K24-G07-N1",
+      "source": "evals/nir1-graph/declaration-addendum.v1.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-07/base",
+      "declare": false,
+      "schedule": "samplePlan と同じ。"
+    },
+    {
+      "id": "K24-G08-N1",
+      "source": "evals/nir1-graph/declaration-addendum.v1.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-08/base-usable",
+      "declare": false,
+      "schedule": "samplePlan と同じ。"
+    },
+    {
+      "id": "K62-iii",
+      "source": "docs/plans/nir1-final-request-eval-proposal-2-draft.md（graph-eval-procedure の条件の (iii)。K6/4 の変える点 3 で読む）",
+      "runKind": "iii-diagnostic",
+      "condition": "CP-4 が HOLD になり、(a)（表示の可用性の欠落率）が物差しの内側で、(b) の窓外率か失効率が物差しを超えたときだけ取る。",
+      "schedule": "CP-4 の receipt とは別に、同じ手順で、このファイルの traces（同じ commit と SHA-256）を作り直さずに使う。CP-4 の receipt は条件の判定に使わず、HOLD として残す。"
+    }
+  ],
+  "diagnosticRule": "診断の run は Gold の run と別の workspace で行い、case の判定（pass、hold、blocked）に数えない。予定した診断の run はすべて残す。",
+  "preconditions": [
+    "K6/4 の凍結（contracts.k64.freezeCommit）が claude/nir1-contracts にあり、統合 branch の constants.mjs の K64_FREEZE.freezeCommit に pin されていること。",
+    "K6/4 R5: G-case の各 query の Scene の最初の pin が、事前の期待値の seed と一致することの照合（統合 branch の seed-pin.mjs の assertSeedPinsBeforeK64、plan frozen）が match であること。S2 の作者が凍結した fixture を読んだ範囲では、G-01〜G-08 のどの fixture も query の Scene に pin を持たない（pins の sceneId に query の Scene が無い）。setup が fixture の pins だけを作るなら製品の seed は null になり一致しないので、CP-0 の側で扱うまで K6/4 の判定と trace の run を始めない（[precheck]。K6/4 批准 9 により G-case の setup は変えない）。",
+    "addendum 2 件、trace 2 件、K6/4 の手順の v1、この file が独立 reviewer のレビューを経て frozen になり、観測前の commit が remote（refs/remotes/origin/master）にあること。",
+    "S4 の freeze 記録（observation-prep-freeze.v1.json）が graphRuntimeObservedBeforeFreeze: false で、boundFiles にこの file と下の boundFiles を束縛すること。"
+  ],
+  "boundFiles": [
+    {
+      "path": "evals/nir1-g01/setup-addendum.v1.json",
+      "commit": "S4:setup-addendum-commit",
+      "sha256": "S4:setup-addendum-sha256"
+    },
+    {
+      "path": "evals/nir1-graph/declaration-addendum.v1.json",
+      "commit": "S4:declaration-addendum-commit",
+      "sha256": "S4:declaration-addendum-sha256"
+    },
+    {
+      "path": "evals/nir1-graph/trace-editing.v1.json",
+      "commit": "S4:trace-editing-commit",
+      "sha256": "S4:trace-editing-sha256"
+    },
+    {
+      "path": "evals/nir1-graph/trace-browsing.v1.json",
+      "commit": "S4:trace-browsing-commit",
+      "sha256": "S4:trace-browsing-sha256"
+    },
+    {
+      "path": "evals/nir1-graph/observation-prep-author-declaration.v1.json",
+      "commit": "S4:author-declaration-commit",
+      "sha256": "S4:author-declaration-sha256"
+    }
+  ],
+  "placeholders": [
+    {
+      "token": "S4:k64-freeze-commit",
+      "field": "contracts.k64.freezeCommit",
+      "fill": "integrator が K6/4 の bytes を claude/nir1-contracts に凍結した commit（40 桁）"
+    },
+    {
+      "token": "S4:cp4-candidate-commit",
+      "field": "candidate.commit",
+      "fill": "CP-4 の G-case と trace を測る候補の commit（40 桁）"
+    },
+    {
+      "token": "S4:da1-acceptance-record",
+      "field": "d10.g01.da1AcceptanceRecord",
+      "fill": "K3/2 の受入れの G-01 の parity の記録の所在。なければ none（d10.g01.fallback を使う）"
+    },
+    {
+      "token": "S4:trace-editing-commit",
+      "field": "traces[0].commit と boundFiles",
+      "fill": "trace-editing.v1.json の reviewed の bytes を含む commit（40 桁。観測前の commit かその祖先）"
+    },
+    {
+      "token": "S4:trace-editing-sha256",
+      "field": "traces[0].sha256 と boundFiles",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:trace-browsing-commit",
+      "field": "traces[1].commit と boundFiles",
+      "fill": "trace-browsing.v1.json の reviewed の bytes を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:trace-browsing-sha256",
+      "field": "traces[1].sha256 と boundFiles",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:k64-procedure-v1-commit",
+      "field": "k64Procedure.formal.commit",
+      "fill": "k64-procedure.v1.json を置いた commit（40 桁）"
+    },
+    {
+      "token": "S4:k64-procedure-v1-sha256",
+      "field": "k64Procedure.formal.sha256",
+      "fill": "k64-procedure.v1.json の SHA-256"
+    },
+    {
+      "token": "S4:setup-addendum-commit",
+      "field": "boundFiles[0].commit",
+      "fill": "frozen にした setup-addendum.v1.json を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:setup-addendum-sha256",
+      "field": "boundFiles[0].sha256",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:declaration-addendum-commit",
+      "field": "boundFiles[1].commit",
+      "fill": "frozen にした declaration-addendum.v1.json を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:declaration-addendum-sha256",
+      "field": "boundFiles[1].sha256",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:author-declaration-commit",
+      "field": "boundFiles[4].commit",
+      "fill": "作者の宣言の記録を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:author-declaration-sha256",
+      "field": "boundFiles[4].sha256",
+      "fill": "その bytes の SHA-256"
+    }
+  ],
+  "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4 は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること）。",
+  "reviewPlan": "S3 の独立 reviewer が確かめること: d1 の (ii) と順序、d2 の正規の経路、d10 の mode と parity の数と比較の規則と fallback、samplePlan、traces の長さ・密度・maintenance・期待寄与の材料・承認の操作がないこと（K6/2 手順の 4 の固定と再利用）、k64Procedure の値と r1r4WaitMs の理由、registeredForReview、diagnosticRuns、preconditions（特に R5 の seed の pin）。",
+  "review": null
+}

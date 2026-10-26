@@ -1,0 +1,231 @@
+{
+  "schemaVersion": "nir1-cp4-observation-prep-author/1",
+  "graphRuntimeOutputObserved": false,
+  "author": {
+    "role": "CP-4 S2 の作者（addendum、観測前の記録、trace、K6/4 の手順のファイルの起草）",
+    "model": "claude-opus-5-5",
+    "effort": "high"
+  },
+  "declaredAt": "2026-10-27",
+  "statement": "S2 の作者は、Graph の実行出力（Graph の run の receipt、log、net log、trace の実測値、worker の frame、Graph を含む Related Scenes の結果、.artifacts の下の出力）と、観測の記録（nir1-lane-decisions の cp4-decisions.md、cq-deferred-decisions.md、rsj-* と rs-join-decisions.md、実測を含む DP-H・DA-2・DD-1 の decisions、scratchpad の run の結果、cp4-task.md・cp4-hardening-task.md・cp4-s1f-task.md・cp4-k64-task.md、他の agent の transcript）を読んでいない。実 Electron、実 build、Graph の実行はしていない。値は契約と第一原理から決め、観測した値で閾値や待ちの上限を選んでいない。",
+  "contractObservationsSeen": "読んでよい範囲の契約と計画の文書には、観測の要約が本文として含まれる。K6/4 の「事実」の節（H5 と RS-JOIN の測定値。q1〜q3 の分布、子の到着、D の超過など）と「判断を求める点」の導出、K6/2 の S1／S3／S6 の記述、続行計画の CP-4 の行（DR-CP4-S1C2-19〜22 の原因の要約、D′、DR-CP3A-53 の見込み）を、契約の一部として読んだ。これらから値を選んでいない: 作者が決めた値は r1r4WaitMs（契約の上限 10 s と DEFERRED_RELEASE_LIMIT の意味から 10,000 ms）、parity の unrestricted run の数（契約の下限 1）、trace の長さ（200 回の台本と最初の query で Q=201）、stall の guard（10,000 ms。判定に使う値を変えない）、trace の project（G-02 base。fixture の構造で選んだ）で、どれも観測値を使っていない。",
+  "readFiles": [
+    {
+      "path": "docs/plans/nir1-c-body-disclosure-proposal-4-draft.md",
+      "sha256": "efc30cca32f2c91386baf3061836427ae7df3499c18188d31b5e2ba422a2fcfd",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "K2/4。確認の扱い、宣言の値、利用時の判定、Main の一回限りの確認、COMMIT、canonical locator、setup の addendum、資源の節"
+    },
+    {
+      "path": "docs/plans/nir1-final-request-eval-proposal-2-draft.md",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "K6/2。事前登録の凍結、graph-eval-procedure（条件、Mandatory defenses、測定の手順、(b) の判定の規則）、確認後の記録の CP-0 の項"
+    },
+    {
+      "path": "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
+      "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "K6/4。全文（「事実」の節の H5 と RS-JOIN の測定値を含む。契約の一部として読んだ）"
+    },
+    {
+      "path": "docs/plans/nir1-continuation-2026-10.md",
+      "sha256": "4791f735cbf9d56b3f4c716e9131e37c122ad5d5a970afe8d73223c1b130d796",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "§10.4 と、CP-4 を含む行（grep）"
+    },
+    {
+      "path": "evals/nir1-g01/fixture.v1.json",
+      "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "全文"
+    },
+    {
+      "path": "evals/nir1-graph/freeze.v1.json",
+      "sha256": "6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "cases 以外の項目と cases の digest"
+    },
+    {
+      "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+      "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "query、scenes、pins、revisions、variants、setupOrder ほか"
+    },
+    {
+      "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+      "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "query、pins、revisions、variants の要約"
+    },
+    {
+      "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+      "sha256": "4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "同上"
+    },
+    {
+      "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+      "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "同上"
+    },
+    {
+      "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+      "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "同上"
+    },
+    {
+      "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+      "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "query、foreshadows、variants、setupOrder、追加 Scene"
+    },
+    {
+      "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+      "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "query、variants、setupOrder、追加 Scene"
+    },
+    {
+      "path": "evals/nir1-graph/README.md",
+      "sha256": "fed96a764cd6e45bfdc7b83418464406e702214a5b83ae5cfddc0519daf48ce0",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "seed と d2a の grep"
+    },
+    {
+      "path": "evals/nir1-graph/manifest.v1.json",
+      "sha256": "6958613fa5a4c7b18e1306a3f5360fd4f263113a2acc25b374dc0b2c12a2a1c4",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "seed と d2a の grep"
+    },
+    {
+      "path": "scripts/quality/nir1-graph/contract.mjs",
+      "sha256": "56f15d8e15a491714ae54bcddae5b0543362e32dec5f049276ce6d6af8949356",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "冒頭と validateNir1GraphCases"
+    },
+    {
+      "path": "scripts/quality/eval-fixtures.mjs",
+      "sha256": "62f07959f66cba13d2f3a24e628ab5344003a37d381850ed6f3c457c22bb0f50",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "nir1 の report の部分"
+    },
+    {
+      "path": "evals/quality-manifest.yaml",
+      "sha256": "8dc847172c3a812ca26e1f90bf21a43330c805d6222c1a57548247bc59dc61ef",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "nir1-graph の登録の部分"
+    },
+    {
+      "path": "evals/impact-map.yaml",
+      "sha256": "4de20279b026d67d371fa89aead8d5252574a92c31292b77a1c0cc4d2b9aa389",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "nir1-graph の分類の部分"
+    },
+    {
+      "path": "scripts/quality/impact-map.mjs",
+      "sha256": "b857ed136c195305e1946912835c3510f09c9a559741d27d0f1401f4293fe1eb",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "LIGHT_SUITE_DEFINITIONS の nir1 の部分"
+    },
+    {
+      "path": "scripts/quality/impact-map.test.mjs",
+      "sha256": "783749df01bec73adf5c95fd729da05ffba7c6db5866a839b43e515e1f87818f",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "登録の検査の部分"
+    },
+    {
+      "path": "src/features/related-scenes/useNir1RelatedScenes.ts",
+      "sha256": "7675927f6a7e37f7e14cfac9072190a2b0570274decaeefdd95ada634af76068",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "query の契機と debounce"
+    },
+    {
+      "path": "src/features/settings/types.ts",
+      "sha256": "f7da1b7af08edc4328d4febf7a47662b6ea61621931184c5d11c7c68a0d8899e",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "editor.autoSaveDelay（grep）"
+    },
+    {
+      "path": "electron/main/narrativeMaintenanceCiSeam.ts",
+      "sha256": "1051004039eefec8ce59de92241a63cc63562ecf3b9608ba1ef1340e19342e77",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "env の名前と trigger"
+    },
+    {
+      "path": "electron/main/bodyDeclarationCiSeam.ts",
+      "sha256": "247341c16a35c890e6f8bc701b292c948eddfd0721029ee27f8dccf29f506e00",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "env の名前（grep）"
+    },
+    {
+      "path": "src-tauri/crates/grimodex-db/src/narrative_extraction/maintenance_runtime.rs",
+      "sha256": "2eadbd776f97c50e4f67317a6899481c32da620ec3a79c2f021c14c3a436d143",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "journey seam の gate と CI config"
+    },
+    {
+      "path": "electron/native/grimodex-node/src/nir1_graph_product.rs",
+      "sha256": "86e8b6e152d4450987b6a6483ce2a9993f3ca6b7a93e27f5e634ea2d4393f468",
+      "source": "origin/master 7a10dd11（作業 branch の基点）",
+      "scope": "DEFERRED_RELEASE_LIMIT と GraphOwnerConfig"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-graph-eval/procedure-file.mjs",
+      "sha256": "98efbb8d1cd41ea127b95c1a2ce4831d3af7c516a51889a580ec800dcf5a6574",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "全文（schema と loader）"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-graph-eval/constants.mjs",
+      "sha256": "ab0eb03229f47e76df04b50c314cbd6905b919717d6850182254f821c4786e5a",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "全文"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-graph-eval/seed-pin.mjs",
+      "sha256": "54c502a5aa898dc0f69760807c6eb4cab441d879cc0164244b9da8b6f7d9b7f4",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "全文"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-graph-eval/receipt.mjs",
+      "sha256": "2b7bef5e49cfe414e3e25951e5d031531ff96f15924772d29afd85f576bddf05",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "冒頭、head と settings の検査"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-graph-eval/availability.mjs",
+      "sha256": "dacb44f967e8d5f26f592931e34de6a55a586adf3bb9cba22c3ca4f181e9e1ac",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "冒頭、schedule、trace の事象の検査"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-graph-eval/setup-driver.mjs",
+      "sha256": "54661a39f9822decc7f3b018237c5417691eb4e6aecec502e875490c1efb1a5f",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "冒頭"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-graph-eval/runner.mjs",
+      "sha256": "f705f388da69ea5dfd33b85e63020d55ea9afbdfe370126c52912b911912882b",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "冒頭と宣言の段"
+    },
+    {
+      "path": "claude/nir1-cp4@cdc5451087df985f4b830a35e0c11981220dd070:scripts/quality/nir1-retrieval/contract.mjs",
+      "sha256": "0dd5cae5dbad3e5e32bffb2d04c9c3e59539f09ec0c2f73dda7faa3e8c913fce",
+      "source": "統合 branch（git show で読むだけ）",
+      "scope": "observationPrepRecordErrors と assertObservationPrepAdmits"
+    }
+  ],
+  "forbiddenFilesNotRead": true,
+  "accidentalReads": [],
+  "notes": [
+    "統合 branch（claude/nir1-cp4、worktree /home/grimodex/worktrees/Grimodex/claude-nir1-cb4）は git show で読むだけで、checkout も編集もしていない。git grep の対象は scripts、electron、src、evals に限った（docs/plans/nir1-lane-decisions を含めていない）。",
+    "統合 branch の procedure/k64-procedure.draft-1.json は、値の独立性のために読んでいない（loader と constants.mjs だけを読んだ）。",
+    "/home/grimodex/Grimodex（root の checkout）は読んでも編集してもいない（CLAUDE.md と AGENTS.md は harness が文脈に入れたもの）。"
+  ]
+}
