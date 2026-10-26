@@ -207,6 +207,11 @@ test("NIR-1 Entity/Relation paths select their dedicated suite without losing sh
     "scripts/codex-entity-relation-product-journey.test.mjs",
     "scripts/nir1-scene-scope-projection-product-journey.test.mjs",
     "electron/scripts/nir1-scene-scope-projection-product-journey.mjs",
+    // CP-4 S1e A-2: a PR that only adds the evaluation feature to `default`
+    // or `licensing`, or a build script that reads it, runs the Native
+    // architecture check.
+    "electron/native/grimodex-node/Cargo.toml",
+    "electron/native/grimodex-node/build.rs",
   ];
   for (const changedPath of dedicatedPaths) {
     const selection = selectImpact(map, [changedPath]);
