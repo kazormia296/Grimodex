@@ -173,6 +173,7 @@ export function planEvalNativeBuild({
         args: [
           "build",
           "--release",
+          "--locked",
           "--manifest-path",
           "src-tauri/Cargo.toml",
           "-p",
@@ -320,6 +321,29 @@ function commandRecord(entry, result) {
   };
 }
 
+/** B-6: the bytes at Main's worker path before the build, kept in `out`. */
+async function backUpMainWorker(root, plan) {
+  const main = plan.outputs.mainWorker;
+  const sha256 = await optionalSha256(main);
+  if (sha256 === null)
+    return {
+      path: MAIN_WORKER,
+      backup: null,
+      sha256: null,
+      restore: "nothing to restore: no worker was at Main's path",
+    };
+  const backup = path.join(plan.out, "previous-main-worker", WORKER_FILE_NAME);
+  await mkdir(path.dirname(backup), { recursive: true });
+  await copyFile(main, backup);
+  const relative = path.relative(root, backup);
+  return {
+    path: MAIN_WORKER,
+    backup: relative,
+    sha256,
+    restore: `cp -- ${relative} ${MAIN_WORKER}`,
+  };
+}
+
 /**
  * Builds the evaluation `.node` and the worker on a clean candidate and writes
  * `eval-build.json` in the shape the Graph arm's guard reads
@@ -351,6 +375,10 @@ export async function runEvalNativeBuild({
   const declarationsBefore = await optionalSha256(
     path.join(root, TRACKED_DECLARATIONS),
   );
+  // B-6: the worker at Main's dev path is overwritten by the build (cargo's
+  // own output or the copy). Keep the bytes that were there, with their sha
+  // in the manifest and the command that puts them back.
+  const previousMainWorker = await backUpMainWorker(root, plan);
   const commands = [];
   for (const entry of plan.commands) {
     const result = await runCommand(
@@ -372,11 +400,6 @@ export async function runEvalNativeBuild({
         `the ${entry.id} build ${record.status}; no manifest was written`,
       );
     }
-  }
-  for (const copy of plan.copies) {
-    await stat(copy.from);
-    await mkdir(path.dirname(copy.to), { recursive: true });
-    await copyFile(copy.from, copy.to);
   }
   const after = await sourceIdentity(root);
   const sourceUnchanged =
@@ -406,6 +429,13 @@ export async function runEvalNativeBuild({
       `the evaluation build failed its checks; no manifest was written:\n${violations.join("\n")}`,
     );
   }
+  // B-6: the copies (beside the .node, and to Main's path) only after the
+  // source and the checks passed.
+  for (const copy of plan.copies) {
+    await stat(copy.from);
+    await mkdir(path.dirname(copy.to), { recursive: true });
+    await copyFile(copy.from, copy.to);
+  }
   const nodePath = path.relative(root, plan.outputs.node);
   const workerPath = path.relative(root, plan.outputs.worker);
   const workerSha256 = await sha256File(plan.outputs.worker);
@@ -434,6 +464,7 @@ export async function runEvalNativeBuild({
     },
     worker: { path: workerPath, sha256: workerSha256 },
     mainWorker: { path: MAIN_WORKER, sha256: mainWorkerSha256 },
+    previousMainWorker,
     declarations: {
       path: path.relative(root, plan.outputs.declarations),
       sha256: await sha256File(plan.outputs.declarations),

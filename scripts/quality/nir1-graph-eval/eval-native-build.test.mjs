@@ -2,6 +2,7 @@
 // runs cargo or napi: the commands are replaced by a fake that writes files.
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import {
   mkdir,
@@ -374,6 +375,67 @@ test("with CARGO_TARGET_DIR the manifest's Main worker is the copy of the built 
       "fresh worker",
     );
     assert.equal(manifest.mainWorker.sha256, manifest.worker.sha256);
+    assert.equal(assertEvalBuildReceipt(manifest), manifest);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
+  }
+});
+
+test("B-6: Main の path の旧い worker は build の前に退避して sha を manifest に書き、検査に落ちた build は Main の path に写さない", async () => {
+  const root = await fakeRepository();
+  const target = await mkdtemp(path.join(os.tmpdir(), "cp4-eval-target-"));
+  try {
+    const plan = planEvalNativeBuild({ root, targetDir: null });
+    const worker = plan.commands.find((entry) => entry.id === "c-query-worker");
+    assert.ok(worker.args.includes("--locked"));
+    await mkdir(path.join(root, path.dirname(MAIN_WORKER)), {
+      recursive: true,
+    });
+    await writeFile(path.join(root, MAIN_WORKER), "dev worker");
+    const runCommand = async (entry, options) => {
+      if (entry.args.includes("napi")) return fakeRun(root)(entry, options);
+      await mkdir(path.join(target, "release"), { recursive: true });
+      await writeFile(
+        path.join(target, "release", path.basename(WORKER_ARTIFACT)),
+        "eval worker",
+      );
+      return passed;
+    };
+    // 検査に落ちる build（評価の文字列が無い）は Main の path を上書きしない。
+    await assert.rejects(
+      runEvalNativeBuild({
+        targetDir: target,
+        root,
+        runCommand,
+        inspect: () => ({ ...goodInspection, exports: [] }),
+      }),
+      /failed its checks/,
+    );
+    assert.equal(
+      await readFile(path.join(root, MAIN_WORKER), "utf8"),
+      "dev worker",
+    );
+    const manifest = await runEvalNativeBuild({
+      targetDir: target,
+      root,
+      runCommand,
+      inspect: () => goodInspection,
+    });
+    assert.equal(
+      await readFile(path.join(root, MAIN_WORKER), "utf8"),
+      "eval worker",
+    );
+    const backup = manifest.previousMainWorker;
+    assert.equal(
+      backup.sha256,
+      createHash("sha256").update("dev worker").digest("hex"),
+    );
+    assert.equal(
+      await readFile(path.join(root, backup.backup), "utf8"),
+      "dev worker",
+    );
+    assert.match(backup.restore, /nir1-c-query-worker/);
     assert.equal(assertEvalBuildReceipt(manifest), manifest);
   } finally {
     await rm(root, { recursive: true, force: true });
