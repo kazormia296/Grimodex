@@ -1,0 +1,209 @@
+# CP-2b P2: 3 OS の packaged smoke（K3/3 `nir1-d2a-activation-proposal/3` の Negative (34)。G-pub の道具）。
+#
+# - release.yml とは別の workflow（release を試験の harness に使わない）。release の artifact と混ざらないよう、
+#   packaged の binary と raw の net log は artifact にしない。上げるのは harness の出力（記録の JSON、判定の出力）だけ。
+# - secrets を使わない。pull_request_target を使わない。権限は contents: read だけ。action は 40 桁の SHA に固定する。
+# - cache を使わない（workflow_dispatch は任意の SHA を checkout できるので、release と共有する cache の scope に
+#   候補の build 物を書かない）。
+# - pull_request は workflow と harness の file の変更でだけ走る。G-pub の記録は merge 後に workflow_dispatch で
+#   最終候補の 40 桁の SHA を指定して採る（P4）。条件の正本は K3/3 のゲート表で、この workflow は条件を定義しない。
+name: Packaged smoke (G-pub)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/packaged-smoke.yml
+      - electron/scripts/packaged-smoke/**
+  workflow_dispatch:
+    inputs:
+      candidate_ref:
+        description: "最終候補の head（40 桁の commit SHA）"
+        required: true
+        type: string
+      os:
+        description: "走らせる OS"
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux
+          - windows
+          - mac
+
+permissions:
+  contents: read
+
+concurrency:
+  # 同じ候補でも OS ごとの dispatch が互いを cancel しないよう、OS の選択を group に入れる
+  group: packaged-smoke-${{ github.event_name }}-${{ github.event.pull_request.number || inputs.candidate_ref }}-${{ inputs.os || 'all' }}
+  cancel-in-progress: true
+
+jobs:
+  plan:
+    name: Resolve candidate and OS matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      ref: ${{ steps.plan.outputs.ref }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - id: plan
+        name: Validate the candidate SHA and the OS selection
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CANDIDATE_REF: ${{ inputs.candidate_ref }}
+          OS_INPUT: ${{ inputs.os }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            ref="$CANDIDATE_REF"
+            selection="$OS_INPUT"
+          else
+            ref="$PR_HEAD_SHA"
+            selection="all"
+          fi
+          if ! [[ "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::candidate must be a 40-character lowercase commit SHA" >&2
+            exit 1
+          fi
+          linux='{"id":"linux","os":"ubuntu-24.04"}'
+          mac='{"id":"mac","os":"macos-15"}'
+          windows='{"id":"windows","os":"windows-latest"}'
+          case "$selection" in
+            all) matrix="[$linux,$mac,$windows]" ;;
+            linux) matrix="[$linux]" ;;
+            mac) matrix="[$mac]" ;;
+            windows) matrix="[$windows]" ;;
+            *) echo "::error::unknown os selection: $selection" >&2; exit 1 ;;
+          esac
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "matrix={\"include\":$matrix}" >> "$GITHUB_OUTPUT"
+
+  unit:
+    name: Harness unit and workflow contract tests
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Packaged smoke judgement and workflow contract tests
+        run: >-
+          node --test
+          electron/scripts/packaged-smoke/netlog.test.mjs
+          electron/scripts/packaged-smoke/verdict.test.mjs
+          electron/scripts/packaged-smoke/package-check.test.mjs
+          electron/scripts/packaged-smoke/process-tree.test.mjs
+          electron/scripts/packaged-smoke/run.test.mjs
+          electron/scripts/packaged-smoke/cdp.test.mjs
+          electron/scripts/packaged-smoke/observers.test.mjs
+          electron/scripts/packaged-smoke/port-owner.test.mjs
+          electron/scripts/packaged-smoke/trial-record.test.mjs
+          scripts/release-workflows.test.mjs
+
+  smoke:
+    name: Packaged smoke (${{ matrix.id }})
+    needs: [plan, unit]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ needs.plan.outputs.ref }}
+          persist-credentials: false
+
+      - name: Linux build and display dependencies
+        if: matrix.id == 'linux'
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* /etc/apt/sources.list.d/*azure*
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            libdbus-1-dev \
+            libsecret-1-dev \
+            pkg-config \
+            xauth \
+            xvfb
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          version: 10.33.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+        with:
+          toolchain: stable
+
+      - run: pnpm install --frozen-lockfile
+
+      # pnpm の設定では electron の postinstall が走らないので、baseline／toolcheck の probe の main が使う
+      # node_modules の Electron（path.txt と dist）を固定の版で入れる（既存の CI と同じ script）
+      - name: Install pinned Electron binary
+        run: node scripts/ensure-electron-binary.mjs
+
+      # release と同じ native の段（seam なしの worker の build と検査を含む）。build の env を足さない
+      - name: Build licensed native runtime, MCP sidecar, and seam-free graph worker
+        run: pnpm electron:native:release
+
+      - name: Build Electron main, preload, and renderer
+        env:
+          NODE_OPTIONS: --max-old-space-size=4096
+        run: pnpm electron:build
+
+      # secrets を使わない無署名の --dir の出力（A 案）。runner の証明書を拾わない
+      - name: Disable code signing identity discovery
+        if: matrix.id != 'linux'
+        shell: bash
+        run: echo "CSC_IDENTITY_AUTO_DISCOVERY=false" >> "$GITHUB_ENV"
+
+      - name: Package the unpacked app without publishing
+        run: pnpm exec electron-builder --dir --publish never
+
+      # Chromium の namespace sandbox を使える状態にする（--no-sandbox を渡さない。runner の設定で製品ではない）
+      - name: Allow unprivileged user namespaces for the Chromium sandbox
+        if: matrix.id == 'linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Run the packaged smoke
+        shell: bash
+        env:
+          SMOKE_OS: ${{ matrix.id }}
+        run: |
+          set -euo pipefail
+          # 短い TMPDIR（長い path は Chromium の SingletonSocket が落ちる）
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            export TMPDIR="$(mktemp -d /tmp/gpsXXXX)"
+          fi
+          node electron/scripts/packaged-smoke/run.mjs --out-dir packaged-smoke-out --os "$SMOKE_OS"
+
+      - name: Upload packaged smoke records
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: packaged-smoke-${{ matrix.id }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: packaged-smoke-out/
+          if-no-files-found: warn
+          retention-days: 7

@@ -615,6 +615,7 @@ describe("release workflow boundary", () => {
       "aur-publish.yml",
       "migrate-semantic-models.yml",
       "release-public-smoke.yml",
+      "packaged-smoke.yml",
       "update-route-watch.yml",
     ]) {
       const workflow = await readWorkflow(name);
@@ -1063,6 +1064,126 @@ describe("C-query worker packaging (CP-2b P1)", () => {
       }
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// CP-2b P2: 3 OS の packaged smoke（K3/3 の Negative (34)。G-pub の道具）。cp2b-decisions DR-CP2B-P2-7。
+describe("packaged smoke workflow (CP-2b P2)", () => {
+  const workflowFile = path.join(repoRoot, ".github", "workflows", "packaged-smoke.yml");
+  // 説明の comment は禁止の語に触れうるので、YAML の本体（comment の行を除いた text）だけを走査する
+  const workflowBody = async () => (await readFile(workflowFile, "utf8"))
+    .split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+
+  it("runs only on harness pull requests and explicit dispatch, never with pull_request_target", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    assert.deepEqual(Object.keys(workflow.on).sort(), ["pull_request", "workflow_dispatch"]);
+    assert.deepEqual(workflow.on.pull_request.paths, [
+      ".github/workflows/packaged-smoke.yml",
+      "electron/scripts/packaged-smoke/**",
+    ]);
+    assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ["candidate_ref", "os"]);
+    assert.deepEqual(workflow.on.workflow_dispatch.inputs.os.options, ["all", "linux", "windows", "mac"]);
+    const text = await workflowBody();
+    assert.doesNotMatch(text, /pull_request_target|schedule:|workflow_run/);
+  });
+
+  it("keeps read-only permissions, no secrets, and no persisted checkout credentials", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    assert.deepEqual(workflow.permissions, { contents: "read" });
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      assert.equal(job.permissions, undefined, `${name} must not widen permissions`);
+      for (const step of job.steps ?? []) {
+        if (String(step.uses ?? "").startsWith("actions/checkout@")) {
+          assert.equal(step.with?.["persist-credentials"], false, `${name}: checkout`);
+        }
+      }
+    }
+    const text = await workflowBody();
+    assert.doesNotMatch(text, /secrets\.|GITHUB_TOKEN|CSC_LINK|CSC_KEY_PASSWORD|APPLE_|WINDOWS_CERTIFICATE/);
+  });
+
+  it("validates a 40-character candidate SHA and checks out exactly that commit", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const plan = workflow.jobs.plan.steps.find((step) => step.id === "plan");
+    assert.match(plan.run, /\^\[0-9a-f\]\{40\}\$/);
+    assert.equal(plan.env.CANDIDATE_REF, "${{ inputs.candidate_ref }}");
+    assert.equal(plan.env.PR_HEAD_SHA, "${{ github.event.pull_request.head.sha }}");
+    for (const jobName of ["unit", "smoke"]) {
+      const checkout = workflow.jobs[jobName].steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout@"));
+      assert.equal(checkout.with.ref, "${{ needs.plan.outputs.ref }}", jobName);
+    }
+  });
+
+  it("builds the unpacked app through the release scripts on the release runners without signing or publishing", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const text = await workflowBody();
+    for (const target of RELEASE_BUILD_TARGETS) {
+      assert.match(text, new RegExp(`"id":"${target.id}","os":"${target.os}"`), target.id);
+    }
+    const runs = workflow.jobs.smoke.steps.map((step) => String(step.run ?? "")).join("\n");
+    assert.match(runs, /pnpm electron:native:release/);
+    assert.match(runs, /pnpm electron:build/);
+    assert.match(runs, /pnpm exec electron-builder --dir --publish never/);
+    assert.match(runs, /CSC_IDENTITY_AUTO_DISCOVERY=false/);
+    assert.match(runs, /node electron\/scripts\/packaged-smoke\/run\.mjs --out-dir packaged-smoke-out/);
+    assert.doesNotMatch(text, /--publish always|--publish onTag|publish=true|release\.yml|--no-sandbox|ELECTRON_DISABLE_SANDBOX/);
+    assert.ok(workflow.jobs.smoke.needs.includes("unit"));
+    assert.ok(workflow.jobs.smoke["timeout-minutes"] <= 90);
+    assert.equal(workflow.jobs.smoke.strategy["fail-fast"], false);
+  });
+
+  it("uploads only the harness records, never packaged binaries or raw net logs", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const uploads = Object.values(workflow.jobs).flatMap((job) => job.steps ?? [])
+      .filter((step) => String(step.uses ?? "").startsWith("actions/upload-artifact@"));
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].with.path, "packaged-smoke-out/");
+    assert.equal(uploads[0].with["retention-days"], 7);
+    // harness は packaged-smoke-out に記録の JSON と判定の出力だけを書く（net log と userData は一時 dir に置いて消す）
+    const harness = await readFile(path.join(repoRoot, "electron", "scripts", "packaged-smoke", "run.mjs"), "utf8");
+    assert.match(harness, /const netLog = path\.join\(work, "netlog\.json"\)/);
+    assert.doesNotMatch(harness, /copyFileSync|cpSync/);
+  });
+
+  it("runs the harness unit tests before any packaged build", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const unit = workflow.jobs.unit.steps.map((step) => String(step.run ?? "")).join("\n");
+    for (const file of ["netlog", "verdict", "package-check", "process-tree", "run", "trial-record", "cdp", "observers", "port-owner"]) {
+      assert.match(unit, new RegExp(`electron/scripts/packaged-smoke/${file}\\.test\\.mjs`), file);
+    }
+    assert.match(unit, /scripts\/release-workflows\.test\.mjs/);
+  });
+
+  it("installs the pinned Electron binary after pnpm install and before the smoke runs (probe main needs it)", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const steps = workflow.jobs.smoke.steps;
+    const indexOf = (predicate) => steps.findIndex(predicate);
+    const install = indexOf((step) => String(step.run ?? "").trim() === "pnpm install --frozen-lockfile");
+    const electron = indexOf((step) => String(step.run ?? "").trim() === "node scripts/ensure-electron-binary.mjs");
+    const smoke = indexOf((step) => /electron\/scripts\/packaged-smoke\/run\.mjs/.test(String(step.run ?? "")));
+    assert.ok(install >= 0 && electron > install && smoke > electron, JSON.stringify({ install, electron, smoke }));
+  });
+
+  it("uses no build cache, keys concurrency by OS, and never interpolates expressions into run scripts", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    assert.match(workflow.concurrency.group, /inputs\.os/);
+    assert.equal(workflow.concurrency["cancel-in-progress"], true);
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      for (const step of job.steps ?? []) {
+        const uses = String(step.uses ?? "");
+        assert.doesNotMatch(uses, /rust-cache|actions\/cache@/, `${name}: ${uses}`);
+        if (uses.startsWith("actions/setup-node@")) assert.equal(step.with?.cache, undefined, `${name}: setup-node cache`);
+        if (uses.startsWith("pnpm/action-setup@")) assert.equal(step.with?.cache, undefined, `${name}: pnpm cache`);
+        assert.doesNotMatch(String(step.run ?? ""), /\$\{\{/, `${name}: ${step.name ?? step.run}`);
+      }
+    }
+  });
+
+  it("keeps the harness outside the packaged app.asar file set", async () => {
+    const builder = load(await readFile(path.join(repoRoot, "electron-builder.yml"), "utf8"));
+    for (const entry of builder.files) {
+      assert.doesNotMatch(String(entry), /^electron\/scripts|^electron\/\*\*|^\*\*/, String(entry));
     }
   });
 });

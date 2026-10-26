@@ -1,0 +1,138 @@
+{
+  "status": "pass",
+  "pass": true,
+  "gaps": [],
+  "failures": [],
+  "sections": {
+    "toolcheck": {
+      "ok": true,
+      "failures": [],
+      "tcpRows": 59,
+      "observedRows": 59,
+      "mismatched": []
+    },
+    "positive": {
+      "ok": true,
+      "failures": [],
+      "netLog": {
+        "ok": true,
+        "channel": "netLog",
+        "missing": [],
+        "observed": 69
+      },
+      "doh": {
+        "ok": true,
+        "channel": "doh",
+        "missing": [],
+        "observed": {
+          "stun": true,
+          "turn-udp": true,
+          "turn-tcp": true,
+          "turns": true,
+          "dns-prefetch": true
+        }
+      }
+    },
+    "matrix": {
+      "ok": true,
+      "failures": [],
+      "rows": 134,
+      "missing": [],
+      "extra": []
+    },
+    "rj": {
+      "rows": 134,
+      "pass": 118,
+      "fail": 0,
+      "na": 16,
+      "byRegion": {
+        "active": 43,
+        "canaryless": 59,
+        "inert": 2
+      },
+      "byKind": {
+        "tcp": 57,
+        "udp": 45,
+        "hint": 16,
+        "mdns": 0,
+        "unclassified": 0,
+        "excluded-leak": 0
+      },
+      "inert": [
+        {
+          "id": "rs1.turn-tcp.localhost",
+          "why": "不活性の行（対照でも接続を試みない: gathering:complete）"
+        },
+        {
+          "id": "rs1.turns.localhost",
+          "why": "不活性の行（対照でも接続を試みない: gathering:complete）"
+        }
+      ],
+      "recordFailures": []
+    },
+    "nl": {
+      "pass": true,
+      "outside": [],
+      "channels": {
+        "getaddrinfo": null,
+        "doh": null,
+        "netLog": 6
+      }
+    },
+    "local": {
+      "status": "pass",
+      "reason": "対照で観測した .local の問合せが最終構成で 0",
+      "baselineQueries": 3,
+      "finalQueries": 0
+    },
+    "package": {
+      "ok": true,
+      "failures": [],
+      "recorded": {
+        "worker": {
+          "path": "resources/bin/nir1-c-query-worker",
+          "verified": true,
+          "bytes": 91502160
+        },
+        "asar": {
+          "entries": 797,
+          "forbidden": [],
+          "forbiddenContent": []
+        }
+      }
+    }
+  },
+  "recorded": {
+    "unboundCanaries": [],
+    "pageShims": [
+      "HTMLFormElement.prototype.submit: target が空でも _self でもない form は送らない（製品の openExternal を起こさず、probe の main の deny と同じ結果にそろえる。DR-CP2B-P2-5）"
+    ],
+    "shimmedRows": [
+      {
+        "id": "dns.form-submit",
+        "verdict": "pass",
+        "kind": "hint"
+      }
+    ],
+    "nc1": {
+      "networkPhaseLowerBoundMs": 1,
+      "launchToWindowMs": 528,
+      "limitMs": 5000
+    },
+    "dictionaryRequests": [
+      {
+        "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+        "offsetFromProxyMs": 1
+      }
+    ],
+    "h9": {
+      "firstDictionaryOffsetFromProxyMs": 1,
+      "dictionaryBeforeProxy": false
+    },
+    "osDialogs": {
+      "observed": false,
+      "reason": "harness は UI を観測しない（headless の runner。記録だけで合否にしない）"
+    },
+    "dictionariesOnDisk": []
+  }
+}
