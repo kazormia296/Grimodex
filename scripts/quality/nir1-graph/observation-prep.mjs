@@ -24,6 +24,7 @@ import path from "node:path";
 import {
   SEED_PIN_ADDENDUM_PATH,
   SP1,
+  SYNTHETIC_NEGATIVES,
   seedPinAddendumErrors,
 } from "./seed-pin-addendum.mjs";
 
@@ -430,6 +431,30 @@ function negativeErrors(errors, rows, expected) {
     )
       errors.push(
         `diagnosticNegatives[${at}].measurementProcess must reseal B through the journey seam (nir1-graph-index-build)`,
+      );
+    if (
+      want.mutationAfterDeclaration !== null &&
+      !same(row?.afterMutationChecks, [
+        "sp-p1-recheck",
+        "graph-requested-with-seed",
+        "g01-mira-entity-reached",
+      ])
+    )
+      errors.push(
+        `diagnosticNegatives[${at}].afterMutationChecks must re-check the seed pin and record the seeded Graph reaching g01-mira-entity (S3v2-P3-3)`,
+      );
+    if (
+      want.mutationAfterDeclaration !== null &&
+      (typeof row?.inconclusiveWhen !== "string" ||
+        row.inconclusiveWhen.trim() === "")
+    )
+      errors.push(`diagnosticNegatives[${at}].inconclusiveWhen is required`);
+    if (
+      RESTORE_MUTATIONS.has(want.mutationAfterDeclaration) &&
+      row?.restorePath !== "scene-body-version"
+    )
+      errors.push(
+        `diagnosticNegatives[${at}].restorePath must be scene-body-version (a project snapshot restore can drop the seed pin)`,
       );
     if (
       RESTORE_MUTATIONS.has(want.mutationAfterDeclaration) &&
@@ -1232,9 +1257,28 @@ export function observationPrepErrors(prep, ctx) {
       errors.push(
         `r5Gate.matchRequires must be ${R5_MATCH_REQUIRES.join(", ")} (SP/1 批准 6)`,
       );
-    if (!same(gate.beforeFirstGatedRun, ["sp-p4-seed-pin-parity"]))
+    if (
+      !same(gate.beforeFirstGatedRun, [
+        "sp-p4-seed-pin-parity",
+        "sp-negative-synthetic",
+      ])
+    )
       errors.push(
-        "r5Gate.beforeFirstGatedRun must be the SP-P4 diagnostic (SP-N7 stops before any Graph arm run)",
+        "r5Gate.beforeFirstGatedRun must be the SP-P4 diagnostic and the synthetic detection (SP-N7 and SP/1 :178 before any Graph arm run)",
+      );
+    const synthetic = gate.syntheticDetection ?? {};
+    const syntheticRecord = synthetic.record;
+    if (
+      !same(synthetic.negatives, SYNTHETIC_NEGATIVES) ||
+      typeof synthetic.rule !== "string" ||
+      typeof synthetic.owner !== "string" ||
+      typeof syntheticRecord !== "string" ||
+      syntheticRecord.trim() === "" ||
+      (syntheticRecord.startsWith("S4:") &&
+        (!PLACEHOLDER.test(syntheticRecord) || frozen))
+    )
+      errors.push(
+        `r5Gate.syntheticDetection must list ${SYNTHETIC_NEGATIVES.join(", ")} with its rule, owner and record (SP/1 :178)`,
       );
     if (gate.k64FreezeAfterMatch !== true)
       errors.push("r5Gate.k64FreezeAfterMatch must be true (K6/4 :317)");
@@ -1406,7 +1450,17 @@ export function observationPrepErrors(prep, ctx) {
     p4.runsPerSide !== 1 ||
     typeof p4.comparison !== "string" ||
     typeof p4.onDifference !== "string" ||
-    !p4.onDifference.includes("[precheck]")
+    !p4.onDifference.includes("[precheck]") ||
+    p4.d2aMode !== prep.d10?.arms?.hybrid ||
+    p4.branch !== "single-pre-step-copy" ||
+    p4.compareBy !== "logical-id" ||
+    !(p4.requiredRecords ?? []).includes("owner-begins-delta-zero") ||
+    !same([...(p4.notCountedAs ?? [])].sort(), [
+      "case-judgement",
+      "g-case-parity-unrestricted",
+      "g01-eval-revision-receipt",
+      "k3-parity-run",
+    ])
   )
     errors.push(
       "diagnosticRuns SP-P4 must be the seed pin parity (hybrid only, no Graph arm, no seed, 8 base variants, without/with the step, SP-N7 -> [precheck])",
@@ -1569,6 +1623,13 @@ export async function loadObservationPrepContext({ repoRoot }) {
   } catch {
     // The v1 procedure file is S4's; absent in a draft.
   }
+  // SP/1 bytes, once placed on master (S3v2-P3-4); null while absent.
+  let sp1Sha256;
+  try {
+    sp1Sha256 = sha256(await read(SP1.path));
+  } catch {
+    sp1Sha256 = null;
+  }
   const productSources = {};
   for (const relative of Object.values(PRODUCT_SOURCES))
     productSources[relative] = (await read(relative)).toString("utf8");
@@ -1582,6 +1643,7 @@ export async function loadObservationPrepContext({ repoRoot }) {
     declarationAddendum: parsed.declarationAddendum,
     procedureDraft: parsed.procedureDraft,
     procedureFormal,
+    sp1Sha256,
     parsed,
   };
 }

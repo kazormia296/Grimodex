@@ -16,7 +16,13 @@
 export const SEED_PIN_ADDENDUM_PATH =
   "evals/nir1-graph/seed-pin-addendum.v1.json";
 
-/** SP/1 bytes (claude/seed-pin-draft; confirmed 2026-10-27 06:47 JST). */
+/**
+ * SP/1 bytes (confirmed 2026-10-27 06:47 JST). The bytes live on
+ * claude/seed-pin-draft until the integrator places them unedited at `path`
+ * on master (S3v2-P3-4). While the file is absent, the addendum must name this
+ * constant; once present, eval:fixtures recomputes its SHA-256 (ctx.sp1Sha256)
+ * and the file must match it.
+ */
 export const SP1 = Object.freeze({
   draftRef: "nir1-graph-case-seed-pin-proposal/1",
   contractId: "graph-case-seed-pin-setup",
@@ -30,25 +36,46 @@ export const SP_ACCEPTANCE_IDS = Object.freeze([
 ]);
 const STAGES = Object.freeze([
   "addendum-validator",
+  "addendum-declaration",
   "setup-runtime",
   "run-admission",
   "diagnostic",
+  "synthetic-detection",
 ]);
-/** Negatives this validator detects statically (the acceptance table must say so). */
+/**
+ * Negatives this validator detects by recomputing a value or a row set from
+ * the fixtures (S3v2-P3-1). The other static fields are declarations: the
+ * violation itself is detected at setup or admission.
+ */
 const STATIC_NEGATIVES = Object.freeze([
+  "SP-N1",
+  "SP-N2",
+  "SP-N3",
+  "SP-N8",
+  "SP-N9",
+  "SP-N11",
+  "SP-N14",
+]);
+const DECLARED_NEGATIVES = Object.freeze([
+  "SP-N4",
+  "SP-N5",
+  "SP-N6",
+  "SP-N10",
+  "SP-N12",
+  "SP-N13",
+]);
+/** SP/1 :178: shown on synthetic records before observation (S3v2-P2-1). */
+export const SYNTHETIC_NEGATIVES = Object.freeze([
   "SP-N1",
   "SP-N2",
   "SP-N3",
   "SP-N4",
   "SP-N5",
-  "SP-N6",
-  "SP-N8",
   "SP-N9",
   "SP-N10",
   "SP-N11",
   "SP-N12",
   "SP-N13",
-  "SP-N14",
 ]);
 const SETUP_ORDER_ANCHOR = "then foreshadows, foreshadow Codex links and pins";
 const MAINTENANCE_ANCHOR =
@@ -130,6 +157,14 @@ export function seedPinAddendumErrors(addendum, ctx) {
   for (const key of ["draftRef", "contractId", "path", "sha256"])
     if (contract[key] !== SP1[key])
       errors.push(`contract.${key} must be SP/1's ${SP1[key]}`);
+  if (
+    ctx.sp1Sha256 !== null &&
+    ctx.sp1Sha256 !== undefined &&
+    ctx.sp1Sha256 !== SP1.sha256
+  )
+    errors.push(
+      `the SP/1 bytes at ${SP1.path} hash to ${ctx.sp1Sha256}, not the confirmed ${SP1.sha256}`,
+    );
   if (contract.decision1 !== "A")
     errors.push("contract.decision1 must be A (the confirmed recommendation)");
   if (contract.decision2 !== "include-g01")
@@ -308,7 +343,43 @@ export function seedPinAddendumErrors(addendum, ctx) {
       !entry.stages?.includes("addendum-validator")
     )
       errors.push(`acceptance ${id} is checked by the addendum validator`);
+    if (DECLARED_NEGATIVES.includes(id)) {
+      if (entry.stages?.includes("addendum-validator"))
+        errors.push(
+          `acceptance ${id} is a declaration, not detected by the addendum validator (S3v2-P3-1)`,
+        );
+      if (
+        !entry.stages?.includes("addendum-declaration") ||
+        !entry.stages?.some(
+          (stage) => stage === "setup-runtime" || stage === "run-admission",
+        )
+      )
+        errors.push(
+          `acceptance ${id} must be a declaration detected at setup or admission`,
+        );
+    }
+    if (
+      SYNTHETIC_NEGATIVES.includes(id) &&
+      !entry.stages?.includes("synthetic-detection")
+    )
+      errors.push(
+        `acceptance ${id} must be shown on a synthetic record before observation (SP/1 :178)`,
+      );
   }
+  if (
+    !acceptance
+      .find((row) => row.id === "SP-N11")
+      ?.stages?.includes("setup-runtime")
+  )
+    errors.push(
+      "acceptance SP-N11 is a runtime fact: SP-P1 in each of the 13 workspaces",
+    );
+  for (const stage of STAGES)
+    if (
+      typeof addendum.acceptanceStages?.[stage] !== "string" ||
+      addendum.acceptanceStages[stage].trim() === ""
+    )
+      errors.push(`acceptanceStages.${stage} must say who checks it`);
   if (
     !acceptance
       .find((row) => row.id === "SP-N7")

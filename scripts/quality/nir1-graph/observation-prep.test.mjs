@@ -484,6 +484,7 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   filled.d10.g01.rAndRirMode =
     record === "none" ? "unrestricted" : "restricted";
   filled.candidate.commit = hex40;
+  filled.r5Gate.syntheticDetection.record = "docs/plans/sp-synthetic.md";
   filled.review = { ...review, recordSha256: "c".repeat(64) };
   filled.status = "frozen-before-observation";
   filled.placeholders = [];
@@ -848,6 +849,84 @@ test("SP/1: addenda and traces point at the seed pin step", async () => {
     assert.ok(
       traceErrors(stale, ctx).some((e) => /seedPinAddendum/u.test(e)),
       file,
+    );
+  }
+});
+
+test("S3v2-P2-1: synthetic detection runs before the first gated run", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const without = clone(prep);
+  without.r5Gate.beforeFirstGatedRun = ["sp-p4-seed-pin-parity"];
+  assert.ok(
+    observationPrepErrors(without, ctx).some((e) =>
+      /beforeFirstGatedRun/u.test(e),
+    ),
+  );
+  const ids = clone(prep);
+  ids.r5Gate.syntheticDetection.negatives.pop();
+  assert.ok(
+    observationPrepErrors(ids, ctx).some((e) => /syntheticDetection/u.test(e)),
+  );
+});
+
+test("S3v2-P3-2: SP-P4 fixes its mode, branches from one copy, compares logical IDs and records zero Graph begins", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const p4 = (value) => value.diagnosticRuns.find((row) => row.id === "SP-P4");
+  for (const mutate of [
+    (row) => {
+      row.d2aMode = "unrestricted";
+    },
+    (row) => {
+      row.branch = "independent-setups";
+    },
+    (row) => {
+      row.compareBy = "runtime-id";
+    },
+    (row) => {
+      row.requiredRecords = row.requiredRecords.filter(
+        (r) => r !== "owner-begins-delta-zero",
+      );
+    },
+    (row) => {
+      row.notCountedAs = [];
+    },
+  ]) {
+    const changed = clone(prep);
+    mutate(p4(changed));
+    assert.ok(
+      observationPrepErrors(changed, ctx).some((e) => /SP-P4/u.test(e)),
+    );
+  }
+});
+
+test("S3v2-P3-3: G-01 restore negatives use the Scene body version restore and re-check the seed pin", async () => {
+  const ctx = await context();
+  const addendum = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  const n = (value, id) =>
+    value.diagnosticNegatives.find((row) => row.id === id);
+  const snapshot = clone(addendum);
+  n(snapshot, "K24-G01-N3").restorePath = "project-snapshot";
+  assert.ok(
+    setupAddendumErrors(snapshot, ctx).some((e) => /restorePath/u.test(e)),
+  );
+  for (const id of ["K24-G01-N2", "K24-G01-N3", "K24-G01-N4"]) {
+    const unchecked = clone(addendum);
+    n(unchecked, id).afterMutationChecks = ["sp-p1-recheck"];
+    assert.ok(
+      setupAddendumErrors(unchecked, ctx).some((e) =>
+        /afterMutationChecks/u.test(e),
+      ),
+      id,
+    );
+    const noInconclusive = clone(addendum);
+    delete n(noInconclusive, id).inconclusiveWhen;
+    assert.ok(
+      setupAddendumErrors(noInconclusive, ctx).some((e) =>
+        /inconclusiveWhen/u.test(e),
+      ),
+      id,
     );
   }
 });

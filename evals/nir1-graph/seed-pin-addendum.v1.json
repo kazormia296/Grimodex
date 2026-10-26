@@ -252,33 +252,33 @@
     },
     {
       "id": "SP-N1",
-      "check": "addendum の validator: 各行の seedEntityId が fixture の値（G-02〜G-08 は manualSeed.entityId、G-01 は entitySeed.id）と一致する。setup の実行: SP-P1 の productSeedOf の照合。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の validator: 各行の seedEntityId が fixture の値（G-02〜G-08 は manualSeed.entityId、G-01 は entitySeed.id）と一致する。setup の実行: SP-P1 の productSeedOf の照合。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N2",
-      "check": "addendum の validator: case と variant ごとに 1 行だけ、pinsOnQuerySceneAfterStep が 1、fixture の pins が問いの Scene を含まない。setup の実行: SP-P1 の「ちょうど 1 つ」。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の validator: case と variant ごとに 1 行だけ、pinsOnQuerySceneAfterStep が 1、fixture の pins が問いの Scene を含まない。setup の実行: SP-P1 の「ちょうど 1 つ」。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N3",
-      "check": "addendum の validator: fixture の pins が問いの Scene を含まない（段の後の最初の pin は seed の pin だけ）。setup の実行: SP-P1 の productSeedOf（製品は次の pin を試さない）。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の validator: fixture の pins が問いの Scene を含まない（段の後の最初の pin は seed の pin だけ）。setup の実行: SP-P1 の productSeedOf（製品は次の pin を試さない）。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N4",
-      "check": "addendum の validator: writer が upsertScenePin で、SQL・注入・試験専用の入口を forbiddenWriters に挙げる。setup の実行: receipt に書込みの経路を書き、無ければ止める。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: writer が upsertScenePin で、SQL・注入・試験専用の入口を forbiddenWriters に挙げる。setup の実行: receipt に書込みの経路を書き、無ければ止める。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N5",
-      "check": "addendum の validator: otherPinsUnchanged と fixturePinsUnchanged が true。setup の実行: SP-P2 の pin の集合の照合。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: otherPinsUnchanged と fixturePinsUnchanged が true。setup の実行: SP-P2 の pin の集合の照合。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N6",
-      "check": "addendum の validator: 置き場（G-02〜G-08 は foreshadow と pin の段の直後で maintenance の有効化と setupTimeline の前、G-01 は g01-mira の pin の後で typed Revision の prepare と B の seal の前）と、各 fixture の setupOrder にその錨の文があること。観測前の記録: r5Gate と stepOrder（Graph arm の実行の前）。setup の実行: receipt の段の順序。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: 置き場（G-02〜G-08 は foreshadow と pin の段の直後で maintenance の有効化と setupTimeline の前、G-01 は g01-mira の pin の後で typed Revision の prepare と B の seal の前）と、各 fixture の setupOrder にその錨の文があること。観測前の記録: r5Gate と stepOrder（Graph arm の実行の前）。setup の実行: receipt の段の順序。",
+      "stages": ["addendum-declaration", "setup-runtime"]
     },
     {
       "id": "SP-N7",
@@ -292,28 +292,28 @@
     },
     {
       "id": "SP-N9",
-      "check": "addendum の validator: 予定の seed の論理 ID が空・空白だけ・200 UTF-16 超でない。setup の実行: SP-P1（問いの Scene が生きている、entry が同じ project、productSeedOf が null でない）。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の validator: 予定の seed の論理 ID が空・空白だけ・200 UTF-16 超でない。setup の実行: SP-P1（問いの Scene が生きている、entry が同じ project、productSeedOf が null でない）。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N10",
-      "check": "addendum の validator: allArmsSameWorkspace が true（R、R+IR、R+IR+Graph の arm は同じ setup の workspace）。setup の実行: run の receipt の workspace の pin の集合が arm の間で同じ。",
-      "stages": ["addendum-validator", "setup-runtime"]
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: allArmsSameWorkspace が true（R、R+IR、R+IR+Graph の arm は同じ setup の workspace）。setup の実行: run の receipt の workspace の pin の集合が arm の間で同じ。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N11",
-      "check": "addendum の validator: G-01〜G-08 の全 13 variant（G-03 frontier-exceeded と G-08 の 3 つの unusable を含む）に 1 行ずつある。",
-      "stages": ["addendum-validator"]
+      "check": "addendum の validator: G-01〜G-08 の全 13 variant（G-03 frontier-exceeded と G-08 の 3 つの unusable を含む）に 1 行ずつあること（行の集合）。setup の実行: 13 の workspace のそれぞれで SP-P1 を照合し、pin が無い variant を検出する。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
     },
     {
       "id": "SP-N12",
-      "check": "addendum の validator: r5.directFetchPreviewNeverJudged が true。run の受入れ: 統合 branch の receipt.mjs が direct-fetch-preview の runner の receipt を集計しない。",
-      "stages": ["addendum-validator", "run-admission"]
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: r5.directFetchPreviewNeverJudged が true。run の受入れ: 統合 branch の receipt.mjs が direct-fetch-preview の runner の receipt を集計しない。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "run-admission", "synthetic-detection"]
     },
     {
       "id": "SP-N13",
-      "check": "addendum の validator: r5.pinsReadFrom が product-db。run の受入れ: R5 の照合の入力を製品の DB から読み直す（workspace-db.mjs）。",
-      "stages": ["addendum-validator", "run-admission"]
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: r5.pinsReadFrom が product-db。run の受入れ: R5 の照合の入力を製品の DB から読み直す（workspace-db.mjs）。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "run-admission", "synthetic-detection"]
     },
     {
       "id": "SP-N14",
@@ -322,11 +322,14 @@
     }
   ],
   "acceptanceStages": {
-    "addendum-validator": "scripts/quality/nir1-graph/seed-pin-addendum.mjs（eval:fixtures）",
+    "addendum-validator": "scripts/quality/nir1-graph/seed-pin-addendum.mjs（eval:fixtures）が値か行の集合を fixture から計算し直して検出する（SP-N1〜N3、N8、N9、N11、N14 の静的な部分）",
+    "addendum-declaration": "addendum の真偽値や名前の欄（validator は宣言の値を確かめるだけで、違反そのものは実行時の段で検出する。SP-N4〜N6、N10、N12、N13）",
     "setup-runtime": "S1g-A の setup-driver の seed の pin の段と variant ごとの照合（統合 branch）",
     "run-admission": "正式の run の受入れ（R5 の照合、receipt の runner の種類）",
-    "diagnostic": "observation-prep.v1.json の diagnosticRuns の SP-P4"
+    "diagnostic": "observation-prep.v1.json の diagnosticRuns の SP-P4",
+    "synthetic-detection": "SP/1 :178: 観測の前に、合成の記録で SP-N1〜N5、SP-N9〜N13 を期待どおりに分けることを示す。observation-prep.v1.json の r5Gate.syntheticDetection と beforeFirstGatedRun"
   },
   "reviewPlan": "観測前の commit の独立 reviewer が確かめること: 予定の seed が fixture の値をそのまま写したこと、置き場、pin が R／IR／Graph の対応付けを変えないというコードの読取（SP/1 の (b)(c)）、段が凍結の bytes と期待値を変えないこと、K2/4 の addendum と重ならないこと、G-case の Graph の arm の観測がまだ無いこと。",
-  "review": null
+  "review": null,
+  "staticDetectionScope": "eval:fixtures が静的に検出するのは SP-N1〜N3、N8、N9（値）と SP-N11、N14（行の集合）だけである。SP-N4〜N6、N10、N12、N13 は addendum の宣言で、違反は setup の実行と run の受入れで検出し、合成の記録で検出力を示す。"
 }

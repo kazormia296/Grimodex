@@ -200,3 +200,54 @@ test("contract, status, review and the seed id shape (SP-N9)", async () => {
     if (entry.caseId === "G-03") entry.seedEntityId = "   ";
   assert.ok(has(seedPinAddendumErrors(blankAddendum, blank), /SP-N9|seed id/u));
 });
+
+test("S3v2-P2-1 / P3-1: synthetic detection for SP-N1〜N5, N9〜N13; runtime stage for SP-N11; honest static claims", async () => {
+  const { ctx, addendum } = await load();
+  assert.equal(
+    typeof addendum.acceptanceStages["synthetic-detection"],
+    "string",
+  );
+  for (const id of ["SP-N1", "SP-N5", "SP-N9", "SP-N13"]) {
+    const missing = clone(addendum);
+    const entry = missing.acceptance.find((row) => row.id === id);
+    entry.stages = entry.stages.filter(
+      (stage) => stage !== "synthetic-detection",
+    );
+    assert.ok(
+      has(seedPinAddendumErrors(missing, ctx), new RegExp(id, "u")),
+      id,
+    );
+  }
+  const noStage = clone(addendum);
+  delete noStage.acceptanceStages["synthetic-detection"];
+  assert.ok(has(seedPinAddendumErrors(noStage, ctx), /acceptanceStages/u));
+  const n11 = clone(addendum);
+  n11.acceptance.find((row) => row.id === "SP-N11").stages = [
+    "addendum-validator",
+  ];
+  assert.ok(has(seedPinAddendumErrors(n11, ctx), /SP-N11/u));
+  // A declared flag is not detection: SP-N10 must not claim the validator.
+  const claim = clone(addendum);
+  claim.acceptance
+    .find((row) => row.id === "SP-N10")
+    .stages.push("addendum-validator");
+  assert.ok(has(seedPinAddendumErrors(claim, ctx), /SP-N10/u));
+});
+
+test("S3v2-P3-4: the SP/1 digest is recomputed when its bytes are in the repository", async () => {
+  const { ctx, addendum } = await load();
+  assert.deepEqual(
+    seedPinAddendumErrors(addendum, { ...ctx, sp1Sha256: null }),
+    [],
+  );
+  assert.deepEqual(
+    seedPinAddendumErrors(addendum, { ...ctx, sp1Sha256: SP1.sha256 }),
+    [],
+  );
+  assert.ok(
+    has(
+      seedPinAddendumErrors(addendum, { ...ctx, sp1Sha256: "0".repeat(64) }),
+      /SP\/1 bytes/u,
+    ),
+  );
+});
