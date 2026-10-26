@@ -6231,6 +6231,12 @@ describe("NAPI_COMMANDS 引数アダプタ", () => {
       "nir1_entity_relation_revision_read_current",
       "nir1_entity_relation_revision_restore",
       "nir1_evidence_qualify",
+      "nir1_local_conversation_create",
+      "nir1_local_conversation_list",
+      "nir1_local_conversation_read",
+      "nir1_local_generation_cancel",
+      "nir1_local_generation_continue",
+      "nir1_local_generation_start",
       "nir1_pack_context",
       "open_workspace",
       "plot_thread_branch_create",
@@ -11746,7 +11752,7 @@ describe("DA-2 profile activation contract (DR-DA2-9, DR-DA2-16)", () => {
     expect(end).toBeGreaterThan(start);
     const body = source.slice(start, end);
     const MAIN_ONLY =
-      "profileActivation\\w+|mainOpenPrePublicationGate|mainGrant(?:Preview|Issue|Revoke\\w*)";
+      "profileActivation\\w+|mainOpenPrePublicationGate|mainGrant(?:Preview|Issue|Revoke\\w*)|mainNir1LocalGenerationCancelSender";
     // A call through the backend argument in any form.
     expect(
       [

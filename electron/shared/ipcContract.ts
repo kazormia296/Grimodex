@@ -925,6 +925,40 @@ export interface NapiBackendLike {
    */
   mainOpenPrePublicationGate?(kind: string): void;
   /**
+   * NIR-1 local generation (DD-1a's six `#[napi]` commands; K5/3 "IPC の
+   * command"). Each answers a JSON string with a `status`; refusals are
+   * `{status, reason}` with a closed reason. Behind Native's gate
+   * (`nir1-local-generation`) and Main's gate (DR-DD1B-3).
+   */
+  nir1LocalGenerationStart?(
+    intent: unknown,
+    mainVerdict: unknown,
+    callerIdentity: string,
+  ): Promise<string>;
+  nir1LocalGenerationContinue?(
+    request: unknown,
+    callerIdentity: string,
+  ): Promise<string>;
+  nir1LocalGenerationCancel?(
+    request: unknown,
+    callerIdentity: string,
+  ): Promise<string>;
+  nir1LocalConversationCreate?(
+    request: unknown,
+    callerIdentity: string,
+  ): Promise<string>;
+  nir1LocalConversationList?(callerIdentity: string): Promise<string>;
+  nir1LocalConversationRead?(
+    request: unknown,
+    callerIdentity: string,
+  ): Promise<string>;
+  /**
+   * Main-only (DR-DD1B-6): stop every local generation the sender started
+   * (not a withdrawal; captures stay). Deliberately absent from the renderer
+   * command map; only `electron/main/nir1LocalGeneration.ts` calls it.
+   */
+  mainNir1LocalGenerationCancelSender?(senderId: number): number;
+  /**
    * Main-only profile activation (DA-2, DR-DA2-3). Deliberately absent from
    * the renderer command map: only `electron/main/profileActivation.ts` and
    * `profileEgress.ts` reference them. The preview answers
@@ -1304,6 +1338,13 @@ export interface SecretsResolver {
     argProvider: unknown,
     argEndpointId: unknown,
   ): string | null;
+  /**
+   * Whether a key exists for (provider, endpoint): the endpoint's own account,
+   * and for the OpenAI-compatible `default` endpoint also the legacy account
+   * (`keyringUserCandidates`). Store or decryption errors throw. Only the
+   * presence leaves; the plaintext never does (DR-DD1B-5).
+   */
+  hasApiKey?(provider: string, endpointId: string | null): boolean;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -7493,6 +7534,568 @@ function parseCancelCurrentChatInputReceipt(
   return receipt;
 }
 
+// ── NIR-1 local generation (DD-1b, DR-DD1B-2..5) ─────────────────────────
+// K5/3 "IPC の command": six commands, Main-validated, behind Main's gate and
+// Native's gate (both closed until PUB-L; only the journey seam opens them).
+// Main re-validates the request (exact keys, the bounds of Native's
+// `wire_id`, the purpose enum, the handle form) and Native's answer (closed
+// statuses, closed reasons, the plaintext bounds), and never changes content.
+
+/** The six commands of the route, in K5/3's table order. */
+export const NIR1_LOCAL_GENERATION_COMMANDS = [
+  "nir1_local_generation_start",
+  "nir1_local_generation_continue",
+  "nir1_local_generation_cancel",
+  "nir1_local_conversation_create",
+  "nir1_local_conversation_list",
+  "nir1_local_conversation_read",
+] as const;
+export type Nir1LocalGenerationCommand =
+  (typeof NIR1_LOCAL_GENERATION_COMMANDS)[number];
+
+export function isNir1LocalGenerationCommand(
+  command: string,
+): command is Nir1LocalGenerationCommand {
+  return (NIR1_LOCAL_GENERATION_COMMANDS as readonly string[]).includes(
+    command,
+  );
+}
+
+/**
+ * Main's key verdict for the route's endpoint (DR-DD1B-5), attached by
+ * Electron main as a non-enumerable sidecar under this symbol just before a
+ * start is dispatched. A renderer input cannot carry a symbol key, so a
+ * renderer can neither supply nor forge it.
+ */
+export const NIR1_LOCAL_MAIN_KEY_VERDICT = Symbol(
+  "grimodex.nir1.localMainKeyVerdict",
+);
+
+export type Nir1LocalPurpose = "writing" | "review";
+export type Nir1LocalKeyVerdict = "absent" | "present" | "check-failed";
+
+export interface Nir1LocalMainKeyVerdict {
+  readonly endpointId: string;
+  readonly keyVerdict: Nir1LocalKeyVerdict;
+}
+
+/**
+ * Every closed reason the route returns: Native's `Nir1LocalRefusal::code`
+ * (`electron/native/grimodex-node/src/nir1_local_entry.rs`; a test pins the
+ * two lists together) and the two Main adds (DR-DD1B-3).
+ */
+export const NIR1_LOCAL_REFUSAL_REASONS = [
+  "NIR1_LOCAL_GATE_CLOSED",
+  "NIR1_LOCAL_REQUEST_INVALID",
+  "NIR1_LOCAL_PROFILE_NOT_ADMITTED",
+  "NIR1_LOCAL_WORKSPACE_NOT_READY",
+  "NIR1_LOCAL_KEY_PRESENT",
+  "NIR1_LOCAL_KEY_CHECK_FAILED",
+  "NIR1_LOCAL_STARTUP_GATE_CLOSED",
+  "NIR1_LOCAL_NOT_THIS_ROUTE",
+  "NIR1_LOCAL_CONVERSATION_MISSING",
+  "NIR1_LOCAL_PURPOSE_MISMATCH",
+  "NIR1_LOCAL_SCENE_MISMATCH",
+  "NIR1_LOCAL_CAPTURE_NOT_CURRENT",
+  "NIR1_LOCAL_HANDLE_CAPACITY",
+  "NIR1_LOCAL_START_RECORD_FULL",
+  "NIR1_LOCAL_ALREADY_STARTED",
+  "NIR1_LOCAL_SESSION_BUSY",
+  "NIR1_LOCAL_SAME_SUBMISSION_IN_FLIGHT",
+  "NIR1_LOCAL_SESSION_UNRESOLVED",
+  "NIR1_LOCAL_ALREADY_ATTEMPTED",
+  "NIR1_LOCAL_IN_FLIGHT_CAPACITY",
+  "NIR1_LOCAL_PROFILE_REVOKED",
+  "NIR1_LOCAL_ROUTE_CHANGED",
+  "NIR1_LOCAL_CANCELLED",
+  "NIR1_LOCAL_OWNER_REFUSED",
+  "NIR1_LOCAL_PREPARATION_FAILED",
+  "NIR1_LOCAL_POLICY_DENIED",
+  "NIR1_LOCAL_POLICY_UNREADABLE",
+  "NIR1_LOCAL_STARTER_UNAVAILABLE",
+  "NIR1_LOCAL_HANDLE_NOT_FOUND",
+  "NIR1_LOCAL_CALLER_REVOKED",
+  "NIR1_LOCAL_CANCEL_CAPTURE_FAILED",
+  "NIR1_LOCAL_CONVERSATION_ROW_LIMIT",
+  "NIR1_LOCAL_UNAVAILABLE",
+  // Main (DR-DD1B-3, DR-DD1B-5).
+  "NIR1_LOCAL_SENDER_REFUSED",
+  "NIR1_LOCAL_ENDPOINT_UNAVAILABLE",
+] as const;
+export type Nir1LocalRefusalReason =
+  (typeof NIR1_LOCAL_REFUSAL_REASONS)[number];
+
+/** Native's `MAX_WIRE_ID_BYTES` (the IPC bound for chat IDs). */
+const NIR1_LOCAL_MAX_ID_BYTES = 256;
+/** Native's `NIR1_LOCAL_CONVERSATION_PAGE_ROWS`. */
+export const NIR1_LOCAL_READ_MAX_LIMIT = 64;
+/** Native's `NIR1_LOCAL_CONTINUE_MAX_BYTES` (text and thinking each). */
+const NIR1_LOCAL_CONTINUE_MAX_BYTES = 64 * 1024;
+/** Native's `NIR1_LOCAL_CONVERSATION_LIST_LIMIT`. */
+const NIR1_LOCAL_LIST_LIMIT = 256;
+/** Native's u32 offset. */
+const NIR1_LOCAL_MAX_OFFSET = 0xffff_ffff;
+const NIR1_LOCAL_HANDLE = /^[0-9a-f]{32}$/u;
+const NIR1_LOCAL_CONVERSATION_ID =
+  /^nir1-local-(writing|review)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+/** A closed terminal word (`starter-ended`, `cancelled`, …). */
+const NIR1_LOCAL_CLOSED_WORD = /^[a-z][a-z0-9-]{0,63}$/u;
+/** A closed upper-case code (`NIR1_GENERATION_MESSAGE_BODY_MISMATCH`, …). */
+const NIR1_LOCAL_CLOSED_CODE = /^NIR1_[A-Z0-9_]{1,80}$/u;
+const NIR1_LOCAL_RUN_STATES = [
+  "starting",
+  "running",
+  "succeeded",
+  "failed",
+  "cancelled",
+] as const;
+const UTF8 = new TextEncoder();
+
+function utf8Bytes(value: string): number {
+  return UTF8.encode(value).byteLength;
+}
+
+/** Native's `wire_id`: non-empty, trimmed, ≤256 UTF-8 bytes, no control. */
+export function isNir1LocalWireId(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.trim() === value &&
+    utf8Bytes(value) <= NIR1_LOCAL_MAX_ID_BYTES &&
+    // eslint-disable-next-line no-control-regex
+    !/[\u0000-\u001f\u007f-\u009f]/u.test(value)
+  );
+}
+
+function requireNir1LocalId(
+  record: CommandArgs,
+  key: string,
+  command: string,
+): string {
+  const value = requireNonEmptyString(record, key, command);
+  if (!isNir1LocalWireId(value)) {
+    throw new Error(
+      `invalid args \`${key}\` for command \`${command}\`: expected a trimmed id of at most ${NIR1_LOCAL_MAX_ID_BYTES} bytes without control characters`,
+    );
+  }
+  return value;
+}
+
+function requireNir1LocalPurpose(
+  record: CommandArgs,
+  command: string,
+): Nir1LocalPurpose {
+  const value = record.purpose;
+  if (value !== "writing" && value !== "review") {
+    throw new Error(
+      `invalid args \`purpose\` for command \`${command}\`: expected writing or review`,
+    );
+  }
+  return value;
+}
+
+function requireNir1LocalHandle(args: CommandArgs, command: string): string {
+  requireExactKeys(args, ["handle"], command);
+  const handle = requireString(args, "handle", command);
+  if (!NIR1_LOCAL_HANDLE.test(handle)) {
+    throw new Error(
+      `invalid args \`handle\` for command \`${command}\`: expected an opaque handle`,
+    );
+  }
+  return handle;
+}
+
+function requireNir1LocalCaller(args: CommandArgs, command: string): string {
+  const callerIdentity = callerIdentityWire(args);
+  if (!callerIdentity) {
+    throw new Error(
+      `IPC_NIR1_LOCAL_CALLER_IDENTITY_REQUIRED: main-issued caller identity is missing for ${command}`,
+    );
+  }
+  return callerIdentity;
+}
+
+/** Main's verdict sidecar; never a renderer value (DR-DD1B-5). */
+function requireNir1LocalMainKeyVerdict(
+  args: CommandArgs,
+): Nir1LocalMainKeyVerdict {
+  const command = "nir1_local_generation_start";
+  const value = (args as Record<PropertyKey, unknown>)[
+    NIR1_LOCAL_MAIN_KEY_VERDICT
+  ];
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error(
+      `IPC_NIR1_LOCAL_KEY_VERDICT_REQUIRED: Main's key verdict is missing for ${command}`,
+    );
+  }
+  const verdict = value as Record<string, unknown>;
+  requireExactKeys(verdict, ["endpointId", "keyVerdict"], command);
+  const keyVerdict = verdict.keyVerdict;
+  if (
+    keyVerdict !== "absent" &&
+    keyVerdict !== "present" &&
+    keyVerdict !== "check-failed"
+  ) {
+    throw new Error(
+      `IPC_NIR1_LOCAL_KEY_VERDICT_REQUIRED: Main's key verdict is malformed for ${command}`,
+    );
+  }
+  return {
+    endpointId: requireNir1LocalId(verdict, "endpointId", command),
+    keyVerdict,
+  };
+}
+
+/** Exact keys of a Native answer; an unknown one is an invalid result. */
+function requireNir1LocalResultKeys(
+  result: CommandArgs,
+  allowedKeys: readonly string[],
+  command: string,
+): void {
+  for (const key of Object.keys(result)) {
+    if (!allowedKeys.includes(key)) {
+      throw nir1LocalResultError(
+        command,
+        `unknown field ${JSON.stringify(key.slice(0, 64))}`,
+      );
+    }
+  }
+}
+
+function nir1LocalResultError(command: string, detail: string): Error {
+  return new Error(`invalid result for command \`${command}\`: ${detail}`);
+}
+
+function nir1LocalResultRecord(raw: string, command: string): CommandArgs {
+  const value = parseWire(raw);
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw nir1LocalResultError(command, "expected an object");
+  }
+  return value as CommandArgs;
+}
+
+function nir1LocalReason(result: CommandArgs, command: string): string {
+  const reason = result.reason;
+  if (
+    typeof reason !== "string" ||
+    !(NIR1_LOCAL_REFUSAL_REASONS as readonly string[]).includes(reason)
+  ) {
+    throw nir1LocalResultError(command, "reason");
+  }
+  return reason;
+}
+
+/** `{status:"refused"|"unavailable", reason}` with a closed reason. */
+function nir1LocalRefusalResult(
+  result: CommandArgs,
+  status: "refused" | "unavailable",
+  command: string,
+): { status: typeof status; reason: string } | null {
+  if (result.status !== status) return null;
+  requireNir1LocalResultKeys(result, ["status", "reason"], command);
+  return { status, reason: nir1LocalReason(result, command) };
+}
+
+function nir1LocalClosedWord(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    (NIR1_LOCAL_CLOSED_WORD.test(value) || NIR1_LOCAL_CLOSED_CODE.test(value))
+  );
+}
+
+/** The value Main's gate answers instead of Native (DR-DD1B-3). */
+export function nir1LocalRefusalValue(
+  command: Nir1LocalGenerationCommand,
+  reason: Nir1LocalRefusalReason,
+): { status: "unavailable" | "refused"; reason: Nir1LocalRefusalReason } {
+  return {
+    status:
+      command === "nir1_local_generation_start" ? "unavailable" : "refused",
+    reason,
+  };
+}
+
+export function requireNir1LocalGenerationStartIntent(args: CommandArgs): {
+  purpose: Nir1LocalPurpose;
+  conversationId: string;
+  sceneId: string;
+} {
+  const command = "nir1_local_generation_start";
+  requireExactKeys(args, ["purpose", "conversationId", "sceneId"], command);
+  return {
+    purpose: requireNir1LocalPurpose(args, command),
+    conversationId: requireNir1LocalId(args, "conversationId", command),
+    sceneId: requireNir1LocalId(args, "sceneId", command),
+  };
+}
+
+function parseNir1LocalStartResult(raw: string): unknown {
+  const command = "nir1_local_generation_start";
+  const result = nir1LocalResultRecord(raw, command);
+  const refused = nir1LocalRefusalResult(result, "unavailable", command);
+  if (refused) return refused;
+  if (result.status !== "started") {
+    throw nir1LocalResultError(command, "status");
+  }
+  requireNir1LocalResultKeys(result, ["status", "handle"], command);
+  if (
+    typeof result.handle !== "string" ||
+    !NIR1_LOCAL_HANDLE.test(result.handle)
+  ) {
+    throw nir1LocalResultError(command, "handle");
+  }
+  return { status: "started", handle: result.handle };
+}
+
+function parseNir1LocalContinueResult(raw: string): unknown {
+  const command = "nir1_local_generation_continue";
+  const result = nir1LocalResultRecord(raw, command);
+  const refused = nir1LocalRefusalResult(result, "refused", command);
+  if (refused) return refused;
+  if (result.status !== "ok") throw nir1LocalResultError(command, "status");
+  requireNir1LocalResultKeys(
+    result,
+    ["status", "text", "thinking", "state", "reason", "drained"],
+    command,
+  );
+  const { text, thinking, state, reason, drained } = result;
+  if (
+    typeof text !== "string" ||
+    typeof thinking !== "string" ||
+    utf8Bytes(text) > NIR1_LOCAL_CONTINUE_MAX_BYTES ||
+    utf8Bytes(thinking) > NIR1_LOCAL_CONTINUE_MAX_BYTES
+  ) {
+    throw nir1LocalResultError(command, "delta");
+  }
+  if (
+    typeof state !== "string" ||
+    !(NIR1_LOCAL_RUN_STATES as readonly string[]).includes(state)
+  ) {
+    throw nir1LocalResultError(command, "state");
+  }
+  if (reason !== undefined && !nir1LocalClosedWord(reason)) {
+    throw nir1LocalResultError(command, "reason");
+  }
+  if (typeof drained !== "boolean") {
+    throw nir1LocalResultError(command, "drained");
+  }
+  return {
+    status: "ok",
+    text,
+    thinking,
+    state,
+    ...(reason === undefined ? {} : { reason }),
+    drained,
+  };
+}
+
+function parseNir1LocalCancelResult(raw: string): unknown {
+  const command = "nir1_local_generation_cancel";
+  const result = nir1LocalResultRecord(raw, command);
+  const refused = nir1LocalRefusalResult(result, "refused", command);
+  if (refused) return refused;
+  if (result.status !== "ok") throw nir1LocalResultError(command, "status");
+  requireNir1LocalResultKeys(result, ["status"], command);
+  return { status: "ok" };
+}
+
+function nir1LocalConversationView(
+  value: unknown,
+  command: string,
+  purpose?: Nir1LocalPurpose,
+): unknown {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw nir1LocalResultError(command, "conversation");
+  }
+  const view = value as CommandArgs;
+  requireNir1LocalResultKeys(view, ["conversationId", "displayName"], command);
+  const id = view.conversationId;
+  const match =
+    typeof id === "string" ? NIR1_LOCAL_CONVERSATION_ID.exec(id) : null;
+  if (!match || (purpose !== undefined && match[1] !== purpose)) {
+    throw nir1LocalResultError(command, "conversationId");
+  }
+  const displayName = view.displayName;
+  if (
+    displayName === null ||
+    typeof displayName !== "object" ||
+    Array.isArray(displayName)
+  ) {
+    throw nir1LocalResultError(command, "displayName");
+  }
+  const name = displayName as CommandArgs;
+  requireNir1LocalResultKeys(name, ["purpose", "createdAt"], command);
+  if (name.purpose !== match[1]) {
+    throw nir1LocalResultError(command, "displayName.purpose");
+  }
+  const createdAt = name.createdAt;
+  if (
+    createdAt !== null &&
+    (typeof createdAt !== "string" || createdAt.length > 64)
+  ) {
+    throw nir1LocalResultError(command, "displayName.createdAt");
+  }
+  return {
+    conversationId: id,
+    displayName: { purpose: name.purpose, createdAt },
+  };
+}
+
+function parseNir1LocalCreateResult(
+  raw: string,
+  purpose: Nir1LocalPurpose,
+): unknown {
+  const command = "nir1_local_conversation_create";
+  const result = nir1LocalResultRecord(raw, command);
+  const refused = nir1LocalRefusalResult(result, "refused", command);
+  if (refused) return refused;
+  if (result.status !== "created") {
+    throw nir1LocalResultError(command, "status");
+  }
+  const { status: _status, ...view } = result;
+  return {
+    status: "created",
+    ...(nir1LocalConversationView(view, command, purpose) as object),
+  };
+}
+
+function parseNir1LocalListResult(raw: string): unknown {
+  const command = "nir1_local_conversation_list";
+  const result = nir1LocalResultRecord(raw, command);
+  const refused = nir1LocalRefusalResult(result, "refused", command);
+  if (refused) return refused;
+  if (result.status !== "ok") throw nir1LocalResultError(command, "status");
+  requireNir1LocalResultKeys(
+    result,
+    ["status", "conversations", "truncated"],
+    command,
+  );
+  const { conversations, truncated } = result;
+  if (
+    !Array.isArray(conversations) ||
+    conversations.length > NIR1_LOCAL_LIST_LIMIT
+  ) {
+    throw nir1LocalResultError(command, "conversations");
+  }
+  if (typeof truncated !== "boolean") {
+    throw nir1LocalResultError(command, "truncated");
+  }
+  return {
+    status: "ok",
+    conversations: conversations.map((view) =>
+      nir1LocalConversationView(view, command),
+    ),
+    truncated,
+  };
+}
+
+export function requireNir1LocalConversationReadRequest(args: CommandArgs): {
+  conversationId: string;
+  offset: number;
+  limit: number;
+} {
+  const command = "nir1_local_conversation_read";
+  requireExactKeys(args, ["conversationId", "offset", "limit"], command);
+  const offset = requireSafeInteger(args, "offset", command);
+  const limit = requireSafeInteger(args, "limit", command);
+  if (offset < 0 || offset > NIR1_LOCAL_MAX_OFFSET) {
+    throw new Error(
+      `invalid args \`offset\` for command \`${command}\`: expected 0 to ${NIR1_LOCAL_MAX_OFFSET}`,
+    );
+  }
+  if (limit < 1 || limit > NIR1_LOCAL_READ_MAX_LIMIT) {
+    throw new Error(
+      `invalid args \`limit\` for command \`${command}\`: expected 1 to ${NIR1_LOCAL_READ_MAX_LIMIT}`,
+    );
+  }
+  return {
+    conversationId: requireNir1LocalId(args, "conversationId", command),
+    offset,
+    limit,
+  };
+}
+
+function parseNir1LocalReadResult(
+  raw: string,
+  request: { readonly limit: number },
+): unknown {
+  const command = "nir1_local_conversation_read";
+  const result = nir1LocalResultRecord(raw, command);
+  const refused = nir1LocalRefusalResult(result, "refused", command);
+  if (refused) return refused;
+  if (result.status !== "ok") throw nir1LocalResultError(command, "status");
+  requireNir1LocalResultKeys(
+    result,
+    ["status", "purpose", "rows", "total", "truncated"],
+    command,
+  );
+  const { purpose, rows, total, truncated } = result;
+  if (purpose !== "writing" && purpose !== "review") {
+    throw nir1LocalResultError(command, "purpose");
+  }
+  if (!Array.isArray(rows) || rows.length > request.limit) {
+    throw nir1LocalResultError(command, "rows");
+  }
+  if (
+    typeof total !== "number" ||
+    !Number.isSafeInteger(total) ||
+    total < 0 ||
+    typeof truncated !== "boolean"
+  ) {
+    throw nir1LocalResultError(command, "page");
+  }
+  const checkedRows = rows.map((value) => {
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      throw nir1LocalResultError(command, "row");
+    }
+    const row = value as CommandArgs;
+    requireNir1LocalResultKeys(
+      row,
+      [
+        "messageId",
+        "kind",
+        "createdAtMs",
+        "text",
+        "thinking",
+        "attemptStatus",
+        "unavailable",
+      ],
+      command,
+    );
+    if (
+      typeof row.messageId !== "string" ||
+      row.messageId.length === 0 ||
+      utf8Bytes(row.messageId) > NIR1_LOCAL_MAX_ID_BYTES ||
+      (row.kind !== "input" && row.kind !== "output") ||
+      typeof row.createdAtMs !== "number" ||
+      !Number.isSafeInteger(row.createdAtMs)
+    ) {
+      throw nir1LocalResultError(command, "row");
+    }
+    if (row.unavailable !== undefined) {
+      // A row of stage (a) or (b) that failed its verification: no content.
+      if (
+        !nir1LocalClosedWord(row.unavailable) ||
+        row.text !== undefined ||
+        row.thinking !== undefined ||
+        row.attemptStatus !== undefined
+      ) {
+        throw nir1LocalResultError(command, "row.unavailable");
+      }
+    } else if (typeof row.text !== "string") {
+      throw nir1LocalResultError(command, "row.text");
+    }
+    if (
+      row.attemptStatus !== undefined &&
+      !nir1LocalClosedWord(row.attemptStatus)
+    ) {
+      throw nir1LocalResultError(command, "row.attemptStatus");
+    }
+    return row;
+  });
+  return { status: "ok", purpose, rows: checkedRows, total, truncated };
+}
+
 // ── DA-2b typed writers (NIR-1 DA-2b ST4-A, DR-DA2-50..53) ──────────────
 // Main re-validates every request before Native: exact keys, id lengths,
 // array sizes, enums and integer ranges (the same bounds as grimodex-db's
@@ -10794,6 +11397,95 @@ export const NAPI_COMMANDS: Readonly<Record<string, NapiCommandSpec>> = {
         "cancelCurrentChatInput",
       )(submission, callerIdentity);
       return parseCancelCurrentChatInputReceipt(parseWire(raw), submission);
+    },
+  },
+  // NIR-1 local generation（DD-1b、DR-DD1B-2）。どれも Main が発行した caller
+  // identity を要し、Main の gate（`nir1LocalGeneration.ts`）と D2a の
+  // `nir1-restricted-only` を通った後にだけ届く。start の key の判定は Main の
+  // symbol sidecar だけから取る。
+  nir1_local_generation_start: {
+    run: async (b, a) => {
+      const intent = requireNir1LocalGenerationStartIntent(a);
+      const verdict = requireNir1LocalMainKeyVerdict(a);
+      const callerIdentity = requireNir1LocalCaller(
+        a,
+        "nir1_local_generation_start",
+      );
+      const raw = await requireNapiMethod(
+        b,
+        b.nir1LocalGenerationStart,
+        "nir1LocalGenerationStart",
+      )(intent, verdict, callerIdentity);
+      return parseNir1LocalStartResult(raw);
+    },
+  },
+  nir1_local_generation_continue: {
+    run: async (b, a) => {
+      const command = "nir1_local_generation_continue";
+      const handle = requireNir1LocalHandle(a, command);
+      const callerIdentity = requireNir1LocalCaller(a, command);
+      const raw = await requireNapiMethod(
+        b,
+        b.nir1LocalGenerationContinue,
+        "nir1LocalGenerationContinue",
+      )({ handle }, callerIdentity);
+      return parseNir1LocalContinueResult(raw);
+    },
+  },
+  nir1_local_generation_cancel: {
+    run: async (b, a) => {
+      const command = "nir1_local_generation_cancel";
+      const handle = requireNir1LocalHandle(a, command);
+      const callerIdentity = requireNir1LocalCaller(a, command);
+      const raw = await requireNapiMethod(
+        b,
+        b.nir1LocalGenerationCancel,
+        "nir1LocalGenerationCancel",
+      )({ handle }, callerIdentity);
+      return parseNir1LocalCancelResult(raw);
+    },
+  },
+  nir1_local_conversation_create: {
+    run: async (b, a) => {
+      const command = "nir1_local_conversation_create";
+      requireExactKeys(a, ["purpose", "sceneId"], command);
+      const purpose = requireNir1LocalPurpose(a, command);
+      const sceneId = requireNir1LocalId(a, "sceneId", command);
+      const callerIdentity = requireNir1LocalCaller(a, command);
+      const raw = await requireNapiMethod(
+        b,
+        b.nir1LocalConversationCreate,
+        "nir1LocalConversationCreate",
+      )({ purpose, sceneId }, callerIdentity);
+      return parseNir1LocalCreateResult(raw, purpose);
+    },
+  },
+  nir1_local_conversation_list: {
+    run: async (b, a) => {
+      const command = "nir1_local_conversation_list";
+      requireExactKeys(a, [], command);
+      const callerIdentity = requireNir1LocalCaller(a, command);
+      const raw = await requireNapiMethod(
+        b,
+        b.nir1LocalConversationList,
+        "nir1LocalConversationList",
+      )(callerIdentity);
+      return parseNir1LocalListResult(raw);
+    },
+  },
+  nir1_local_conversation_read: {
+    run: async (b, a) => {
+      const request = requireNir1LocalConversationReadRequest(a);
+      const callerIdentity = requireNir1LocalCaller(
+        a,
+        "nir1_local_conversation_read",
+      );
+      const raw = await requireNapiMethod(
+        b,
+        b.nir1LocalConversationRead,
+        "nir1LocalConversationRead",
+      )(request, callerIdentity);
+      return parseNir1LocalReadResult(raw, request);
     },
   },
   // AI チャット（Phase 3 バッチ3a）。send 系は napi に api キーを持たせない設計:

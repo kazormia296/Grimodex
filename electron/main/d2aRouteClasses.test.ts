@@ -9,7 +9,11 @@
 // behavior (every own-data-read reference is `plaintext-publication`).
 import { describe, expect, it, vi } from "vitest";
 
-import { IPC, NAPI_COMMANDS } from "../shared/ipcContract.js";
+import {
+  IPC,
+  NAPI_COMMANDS,
+  NIR1_LOCAL_GENERATION_COMMANDS,
+} from "../shared/ipcContract.js";
 import type { Envelope, NapiBackendLike } from "../shared/ipcContract.js";
 import {
   createProfileEgressGate,
@@ -264,7 +268,7 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
     }
   });
 
-  it("holds the seven NIR commands in nir1-publication and nothing in nir1-restricted-only", () => {
+  it("holds the seven NIR commands in nir1-publication and the six local generation commands in nir1-restricted-only", () => {
     const ledgers = d2aRouteLedgersForTest();
     expect([...ledgers.nir1Publication].sort()).toEqual(
       [
@@ -277,9 +281,19 @@ describe("own-data-read ledger (K3/2 区分の構成)", () => {
         "nir1_entity_relation_revision_restore",
       ].sort(),
     );
-    // K5's D-dispatch commands are added by DD-1.  The Graph wait/settle is one
-    // nir1-publication command (CP-3a), not a restricted-only one.
-    expect(ledgers.nir1RestrictedOnly).toEqual([]);
+    // K5/3's D-dispatch commands (DD-1b), exactly the route's table.  The
+    // Graph wait/settle is one nir1-publication command (CP-3a), not a
+    // restricted-only one.
+    expect([...ledgers.nir1RestrictedOnly]).toEqual([
+      ...NIR1_LOCAL_GENERATION_COMMANDS,
+    ]);
+    for (const command of NIR1_LOCAL_GENERATION_COMMANDS) {
+      expect(route(command), command).toBe("nir1-restricted-only");
+    }
+    // The Main-only sender stop is in no ledger and no renderer command.
+    for (const ledger of Object.values(ledgers)) {
+      expect(ledger).not.toContain("main_nir1_local_generation_cancel_sender");
+    }
   });
 });
 

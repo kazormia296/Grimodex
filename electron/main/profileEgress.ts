@@ -234,9 +234,14 @@ const OWN_DATA_READ_COMMANDS = [
  * `related_scenes_release_owner` carry no plaintext and stay `internal`.  The
  * Graph itself stays closed by Native's own gate (PUB-G), not by this ledger.
  *
- * `nir1-restricted-only` is empty here: K5's D-dispatch commands are added by
- * DD-1.  Both ledgers are `satisfies`-bound to `NAPI_COMMANDS`, and a command
- * is in at most one ledger (`d2aRouteLedgersForTest`).
+ * `nir1-restricted-only` (K3/2 D-dispatch, K5/3 "IPC の command"): the six
+ * commands of the local generation route, named by K5/3 (DD-1b). Refused
+ * while unrestricted; restricted needs a Main-issued identity outside an
+ * activation, and the result passes the same completion check as
+ * `nir1-publication`. The route stays closed by Main's gate and Native's gate
+ * until PUB-L (`nir1LocalGeneration.ts`), not by this ledger.  Both ledgers
+ * are `satisfies`-bound to `NAPI_COMMANDS`, and a command is in at most one
+ * ledger (`d2aRouteLedgersForTest`).
  */
 const NIR1_PUBLICATION_COMMANDS = [
   // Related Scenes R/IR and Evidence navigation
@@ -249,8 +254,14 @@ const NIR1_PUBLICATION_COMMANDS = [
   "nir1_entity_relation_revision_read_current",
   "nir1_entity_relation_revision_restore",
 ] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
-const NIR1_RESTRICTED_ONLY_COMMANDS =
-  [] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
+const NIR1_RESTRICTED_ONLY_COMMANDS = [
+  "nir1_local_generation_start",
+  "nir1_local_generation_continue",
+  "nir1_local_generation_cancel",
+  "nir1_local_conversation_create",
+  "nir1_local_conversation_list",
+  "nir1_local_conversation_read",
+] as const satisfies readonly (keyof typeof NAPI_COMMANDS)[];
 
 /**
  * `license-control` (K3/2 L-1): the three license mutations carry no
