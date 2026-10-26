@@ -7788,7 +7788,14 @@ export function isNir1LocalResultRejection(
 }
 
 function nir1LocalResultRecord(raw: string, command: string): CommandArgs {
-  const value = parseWire(raw);
+  let value: unknown;
+  try {
+    value = parseWire(raw);
+  } catch {
+    // An answer that is not JSON is the same refusal as a malformed one, so
+    // Main stops what Native may have started (DR-DD1B-16).
+    throw nir1LocalResultError(command, "not JSON");
+  }
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw nir1LocalResultError(command, "expected an object");
   }
