@@ -25,6 +25,14 @@ vi.mock("./chatApi", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./chatApi")>()),
   deleteMessages,
 }));
+// 編集の後の mention の chip の復元（editor の stub は schema を持たない）。
+const { restoreSceneMentionChips } = vi.hoisted(() => ({
+  restoreSceneMentionChips: vi.fn(),
+}));
+vi.mock("./components/ChatInput", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./components/ChatInput")>()),
+  restoreSceneMentionChips,
+}));
 
 import i18next from "@/lib/i18n";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
