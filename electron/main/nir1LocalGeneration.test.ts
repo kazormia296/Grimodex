@@ -765,6 +765,23 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
     }
   });
 
+  it("a key check that is not a synchronous boolean is check-failed (lifecycle P3-8)", async () => {
+    for (const answer of [Promise.resolve(false), undefined, "no"]) {
+      const { native, invoke } = await rig({
+        launch: activeLaunch(),
+        secrets: {
+          resolveApiKeyForRequest: () => "",
+          hasApiKey: () => answer as unknown as boolean,
+        },
+      });
+      await invoke("nir1_local_generation_start", START);
+      expect(
+        callsOf(native, "nir1LocalGenerationStart")[0][1],
+        String(answer),
+      ).toEqual({ endpointId: "local-1", keyVerdict: "check-failed" });
+    }
+  });
+
   it("a renderer cannot supply the verdict", async () => {
     const { native, invoke } = await rig({ launch: activeLaunch() });
     const envelope = await invoke("nir1_local_generation_start", {

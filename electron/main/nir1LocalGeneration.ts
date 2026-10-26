@@ -345,12 +345,17 @@ export function createNir1LocalGenerationRoute(
       return { endpointId, keyVerdict: "check-failed" };
     }
     try {
-      return {
+      const present: unknown = hasApiKey.call(
+        secrets,
+        "openai-compatible",
         endpointId,
-        keyVerdict: hasApiKey.call(secrets, "openai-compatible", endpointId)
-          ? "present"
-          : "absent",
-      };
+      );
+      // Only a synchronous boolean is a verdict; a thenable (an asynchronous
+      // store) or anything else is a failed check, never "present"/"absent".
+      if (typeof present !== "boolean") {
+        return { endpointId, keyVerdict: "check-failed" };
+      }
+      return { endpointId, keyVerdict: present ? "present" : "absent" };
     } catch {
       return { endpointId, keyVerdict: "check-failed" };
     }
