@@ -158,3 +158,40 @@ export function readWorkspaceRows(file, projectId) {
     ),
   }));
 }
+
+/**
+ * S1f (R5): the query Scene's pins as the product's seed reads them
+ * (`selectNir1GraphSeed`, Native `read_nir1_graph_seed_in_tx`): whether the
+ * Scene is a live Scene of the project, and each pin with whether its Codex
+ * entry belongs to the project. seed-pin.mjs applies the order and the
+ * first-pin rule.
+ */
+export function readQuerySceneSeedPins(file, projectId, sceneId) {
+  return withReadOnly(file, (db) => {
+    const scene = db
+      .prepare(
+        `SELECT 1 AS live FROM tree_nodes
+          WHERE id = ? AND project_id = ? AND node_type = 'scene'
+            AND archived_at IS NULL`,
+      )
+      .get(sceneId, projectId);
+    const pins = db
+      .prepare(
+        `SELECT p.entry_id AS entryId, p.created_at AS createdAt,
+                CASE WHEN c.id IS NULL THEN 0 ELSE 1 END AS inProject
+           FROM scene_codex_pins p
+           LEFT JOIN codex_entries c ON c.id = p.entry_id AND c.project_id = ?
+          WHERE p.scene_id = ?
+          ORDER BY p.created_at, p.entry_id`,
+      )
+      .all(projectId, sceneId);
+    return {
+      sceneLive: scene !== undefined,
+      pins: pins.map((row) => ({
+        entryId: String(row.entryId),
+        createdAt: row.createdAt,
+        entryInProject: Number(row.inProject) === 1,
+      })),
+    };
+  });
+}

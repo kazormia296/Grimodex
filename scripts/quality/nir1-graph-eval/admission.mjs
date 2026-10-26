@@ -8,8 +8,9 @@
 // ../nir1-retrieval/contract.mjs; the facts they accept are only those this
 // module collected (admission-facts.mjs seals them).
 //
-// The formal runner (S6) is not written yet; runner.mjs is the dev preview
-// runner (TASK §15.9). `admitGraphCaseRun` is the one function S6 must call
+// The formal runner's skeleton is k64-runner.mjs (S1f; K6/4 R1〜R8 with the
+// product hook consumer); runner.mjs is the S1c-2 dev preview runner (TASK
+// §15.9). `admitGraphCaseRun` is the one function the formal runner calls
 // before it launches Electron with the evaluation `.node` or reads a frozen
 // fixture; `admitFrozenDryRun` is the entry for the §15.8 dry runs, and
 // `assertReceiptHeadBound` binds a receipt's head to git before it is
@@ -462,6 +463,8 @@ export function admitGraphCaseRun(input) {
 const DEV_PREVIEWS = new WeakSet();
 export const DEV_PREVIEW_PURPOSES = Object.freeze([
   "runner-preview",
+  // S1f: the K6/4 runner's dev preview (k64-runner.mjs).
+  "k64-runner-preview",
   "dprime-check",
   "hook-check",
   "diag-registration",

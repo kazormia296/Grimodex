@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { claimTestEvidenceSealer } from "./admission-facts.mjs";
+import { r1Record, r2Record } from "./k64-record.mjs";
 import {
   DEV_DRAFT_PROCEDURE_VERSION,
   loadProcedureFile,
@@ -552,4 +553,232 @@ export function steadySummary(regime) {
       `the ${regime} summary fixture is ${steadySummaries[regime].regime}`,
     );
   return steadySummaries[regime];
+}
+
+const SEED = "entity-seed";
+const SCENE = "scene-q";
+
+/** S1f: one returned fetch of the hook consumer (k64-record.mjs reads it). */
+export function k64FetchResult(overrides = {}) {
+  const { timing = {}, ...rest } = overrides;
+  return {
+    status: "completed",
+    rawStatus: "completed",
+    resultKind: "fused",
+    irStatus: "available",
+    irReason: null,
+    completion: { outcome: "ir-ready", deadlineExceeded: false },
+    graphOutcome: "graph-late",
+    graph: null,
+    initialSnapshot: { indexUsable: true, querySupported: true },
+    rawSceneIds: ["dev-a", "dev-b"],
+    irSceneIds: ["dev-c"],
+    finalSceneIds: ["dev-a", "dev-b", "dev-c"],
+    ...rest,
+    timing: {
+      tFetchMs: 50,
+      tRawReadyMs: 100,
+      tReturnMs: 110.9,
+      refreshTrigger: null,
+      graphWindowMs: 10.840000000596048,
+      native: { rawReadyElapsedMs: 40, firstSnapshotElapsedMs: 5 },
+      ...timing,
+    },
+  };
+}
+
+export const K64_CHILD_RESULT = {
+  graphOutcome: "graph-ready",
+  graph: {
+    edgeCount: 2,
+    graphOnlySceneId: "dev-added",
+    pathAttachmentSceneIds: ["dev-b"],
+  },
+  finalSceneIds: ["dev-a", "dev-b", "dev-c", "dev-added"],
+  timing: {
+    tFetchMs: 118,
+    tRawReadyMs: 125,
+    tReturnMs: 145,
+    refreshTrigger: "graph-ready",
+    graphWindowMs: 100,
+  },
+};
+
+export const k64Api = (cmd, calledAt, resolvedAt, extra = {}) => ({
+  cmd,
+  calledAt,
+  resolvedAt,
+  ok: true,
+  settle: null,
+  status: null,
+  reason: null,
+  ...extra,
+});
+
+/**
+ * S1f: one D′ sample of the hook consumer: the parent graph-late, one
+ * notice, a Cached child that joins its Graph within W_f.
+ */
+export function k64Observation({ parent = {}, child = {}, ...rest } = {}) {
+  return {
+    endReason: "child-published",
+    mountedAt: 0,
+    endedAt: 146.5,
+    fetches: [
+      {
+        seq: 1,
+        sceneId: SCENE,
+        queryGeneration: 41,
+        refreshTrigger: null,
+        seed: SEED,
+        rawOnly: false,
+        calledAt: 50,
+        resolvedAt: 111,
+        result: k64FetchResult(),
+        ...parent,
+      },
+      ...(child === null
+        ? []
+        : [
+            {
+              seq: 2,
+              sceneId: SCENE,
+              queryGeneration: 43,
+              refreshTrigger: "graph-ready",
+              seed: SEED,
+              rawOnly: false,
+              calledAt: 118,
+              resolvedAt: 146,
+              result: k64FetchResult(K64_CHILD_RESULT),
+              ...child,
+            },
+          ]),
+    ],
+    commits: [
+      { at: 111.5, fetchSeq: 1, loading: false, display: "parent" },
+      { at: 117.5, fetchSeq: 1, loading: true, display: "parent" },
+      ...(child === null
+        ? []
+        : [{ at: 146, fetchSeq: 2, loading: false, display: "child" }]),
+    ],
+    notices: child === null ? [] : [{ kind: "graph-ready", at: 117 }],
+    api: [
+      k64Api("related_scenes_begin", 60, 80),
+      k64Api("related_scenes_continue", 100.5, 103),
+      k64Api("related_scenes_graph_continue", 100.5, 130, {
+        status: "unavailable",
+        reason: "cancelled",
+      }),
+      k64Api("related_scenes_graph_continue", 110.85, 112, {
+        settle: "unused",
+      }),
+      ...(child === null
+        ? []
+        : [
+            k64Api("related_scenes_begin", 118.5, 120),
+            k64Api("related_scenes_continue", 125.2, 131),
+            k64Api("related_scenes_graph_continue", 125.2, 139, {
+              status: "available",
+            }),
+            k64Api("related_scenes_graph_continue", 145, 146, {
+              settle: "used",
+            }),
+          ]),
+    ],
+    ...rest,
+  };
+}
+
+export function k64NativeRecord(overrides = {}) {
+  return {
+    seq: 1,
+    tBeginNs: 1_000_000,
+    tReturnedNs: 2_000_000,
+    startSlot: {
+      kind: "empty",
+      readyFresh: false,
+      preparesReady: 3,
+      readyGeneration: 3,
+    },
+    cacheOccupiedAtBegin: false,
+    begin: "pending",
+    reason: null,
+    busyCause: null,
+    ticket: {
+      tTicketNs: 1_500_000,
+      settled: true,
+      tSettledNs: 21_000_000,
+      outcome: "available",
+      reason: null,
+      disposition: "unused",
+      busyCause: null,
+      freshnessStamp: {
+        attemptedAtNs: 15_000_000,
+        result: "fresh",
+        matched: true,
+      },
+    },
+    ...overrides,
+  };
+}
+
+export const K64_CACHED_CHILD = k64NativeRecord({
+  seq: 2,
+  tBeginNs: 90_000_000,
+  tReturnedNs: 90_500_000,
+  startSlot: {
+    kind: "preparing",
+    readyFresh: false,
+    preparesReady: 3,
+    readyGeneration: 3,
+  },
+  begin: "cached",
+  ticket: null,
+});
+
+export const k64Diagnostics = (begins, cacheHits, lateCached, extra = {}) => ({
+  begins,
+  cacheHits,
+  lateCached,
+  quarantines: 0,
+  deferredReleased: 0,
+  deferredExpired: 0,
+  deferredDropped: 0,
+  staleReadyRetired: 0,
+  prepareFailures: 0,
+  driftAtQuery: 0,
+  stamp0Missing: 0,
+  ...extra,
+});
+
+/** S1f: the k64GraphSampleRow input of one synthetic steady-state sample. */
+export function k64HookInput(overrides = {}) {
+  return {
+    variantKey: "dev:dev-lantern.v1/base",
+    phase: "measured",
+    repeat: 0,
+    d2aMode: "restricted",
+    observation: k64Observation(),
+    nativeRecords: [k64NativeRecord(), K64_CACHED_CHILD],
+    a3: null,
+    r1: r1Record({
+      slot: "empty",
+      cacheOccupied: false,
+      cacheCleared: 1,
+      sinceLastSeededMs: 1_500,
+      previousReleaseWithinLimit: true,
+      waitedMs: 3,
+    }),
+    r2: r2Record({ cacheOccupiedAtEnd: false, cleared: false }),
+    counters: {
+      before: k64Diagnostics(10, 3, 3),
+      atEnd: k64Diagnostics(12, 4, 4),
+      afterRelease: k64Diagnostics(12, 4, 4, { deferredReleased: 1 }),
+    },
+    expectedContribution: {
+      appendedSceneIds: ["dev-added"],
+      pathAttachmentSceneIds: ["dev-b"],
+    },
+    ...overrides,
+  };
 }
