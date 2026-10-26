@@ -1660,14 +1660,22 @@ requirements:
       - scripts/quality/nir1-graph-eval/stats.mjs
       - scripts/quality/nir1-graph-eval/admission-facts.mjs
       - scripts/quality/nir1-graph-eval/receipt.mjs
+      - scripts/quality/nir1-graph-eval/outcome.mjs
+      - scripts/quality/nir1-graph-eval/admission.mjs
       - scripts/quality/nir1-graph-eval/test-support.mjs
       - scripts/quality/nir1-graph-eval/native-sample.mjs
       - scripts/quality/nir1-graph-eval/egress.mjs
+      - scripts/quality/nir1-graph-eval/dev-fixture.mjs
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-lantern.v1.json
       - scripts/quality/nir1-graph-eval/workspace-db.mjs
+      - scripts/quality/nir1-graph-eval/window.mjs
       - scripts/quality/nir1-graph-eval/run-sample.mjs
       - scripts/quality/nir1-graph-eval/procedure-file.mjs
       - scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-1.json
+      - scripts/quality/nir1-graph-eval/seed-pin.mjs
       - scripts/quality/nir1-graph-eval/setup-receipt.mjs
+      - scripts/quality/nir1-graph-eval/keep-test.mjs
+      - scripts/quality/nir1-graph-eval/signal-cleanup.mjs
       - scripts/quality/nir1-graph-eval/k64-record.mjs
       - scripts/quality/nir1-graph-eval/q4.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
@@ -1715,9 +1723,19 @@ requirements:
       - electron/native/grimodex-node/src/nir1_graph_eval/tests.rs
       - scripts/quality/nir1-graph-eval/native-architecture.test.mjs
       - scripts/quality/nir1-graph/contract.test.mjs
+      - scripts/quality/nir1-graph-eval/availability.test.mjs
+      - scripts/quality/nir1-graph-eval/followup.test.mjs
+      - scripts/quality/nir1-graph-eval/receipt.test.mjs
+      - scripts/quality/nir1-graph-eval/outcome.test.mjs
+      - scripts/quality/nir1-graph-eval/admission.test.mjs
       - scripts/quality/nir1-graph-eval/native-sample.test.mjs
+      - scripts/quality/nir1-graph-eval/egress.test.mjs
       - scripts/quality/nir1-graph-eval/run-sample.test.mjs
+      - scripts/quality/nir1-graph-eval/window.test.mjs
+      - scripts/quality/nir1-graph-eval/dev-fixture.test.mjs
       - scripts/quality/nir1-graph-eval/procedure-file.test.mjs
+      - scripts/quality/nir1-graph-eval/seed-pin.test.mjs
+      - scripts/quality/nir1-graph-eval/keep-test.test.mjs
       - scripts/quality/nir1-graph-eval/k64-record.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py

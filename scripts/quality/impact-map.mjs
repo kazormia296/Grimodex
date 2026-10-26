@@ -526,13 +526,25 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-packing/final-request/architecture.test.mjs",
         "scripts/quality/nir1-packing/final-request/runner.test.mjs",
         "scripts/quality/nir1-graph/contract.test.mjs",
+        "scripts/quality/nir1-graph-eval/availability.test.mjs",
+        // CP-4 S1d: the K6/4 follow-up classifier (K6/4-N1〜N40).
+        "scripts/quality/nir1-graph-eval/followup.test.mjs",
+        "scripts/quality/nir1-graph-eval/receipt.test.mjs",
+        "scripts/quality/nir1-graph-eval/outcome.test.mjs",
+        "scripts/quality/nir1-graph-eval/admission.test.mjs",
         // CP-4 S1c-1: the Electron launch side (pure parts only).
         "scripts/quality/nir1-graph-eval/native-sample.test.mjs",
+        "scripts/quality/nir1-graph-eval/egress.test.mjs",
         // CP-4 S1c-2: setup driver and runner (pure parts only).
         "scripts/quality/nir1-graph-eval/run-sample.test.mjs",
+        "scripts/quality/nir1-graph-eval/window.test.mjs",
+        "scripts/quality/nir1-graph-eval/dev-fixture.test.mjs",
         // CP-4 S1f: the K6/4 procedure file and the R7 record producer.
         "scripts/quality/nir1-graph-eval/procedure-file.test.mjs",
         "scripts/quality/nir1-graph-eval/k64-record.test.mjs",
+        // CP-4 S1f: the R5 seed pin check and the keep test (b) of ratification 5.
+        "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
+        "scripts/quality/nir1-graph-eval/keep-test.test.mjs",
       ],
       [
         "node",
