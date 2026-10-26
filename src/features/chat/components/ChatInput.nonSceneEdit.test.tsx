@@ -368,6 +368,22 @@ describe("入力欄の最後の行の編集（本物の定数のまま）", () =
     expect(useChatStore.getState().messages).toHaveLength(2);
   });
 
+  it("保留中の command が無ければ、menu の編集は入力欄の登録を読み capture の内として同期で編集する", () => {
+    const invoke = installBridge({ state: "restricted" });
+    const editorRef = { current: null as unknown };
+    renderInput("scene", editorRef);
+    const { result } = renderHook(() =>
+      useChatMessageActions({
+        aiSettings: null,
+        chatEditorRef: editorRef as never,
+        syncInsertedToEditorMetadata: vi.fn(),
+      }),
+    );
+    result.current.handleEditMessage("u1");
+    expect(invoke).not.toHaveBeenCalled();
+    expect(h.deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
+  });
+
   it("指示を作らない command（continue）は capture の内のまま同期で編集する", () => {
     const invoke = installBridge({ state: "restricted" });
     renderInput("scene");
