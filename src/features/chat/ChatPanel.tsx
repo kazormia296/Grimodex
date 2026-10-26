@@ -86,6 +86,9 @@ import {
   wholeMessageContent,
 } from "./useChatMessageActions";
 import { chatEgressClosureOf } from "./chatEgressClosure";
+import { NIR1_LOCAL_GENERATION_UI_ENABLED } from "./nir1/nir1LocalGenerationAvailability";
+import { Nir1LocalGenerationSlot } from "./nir1/Nir1LocalGenerationSlot";
+import type { Nir1LocalAcceptedHandler } from "./nir1/Nir1LocalGenerationPanel";
 
 // D-10 (a), DR-DA2-34: the strings of the profile activation's AI terminals
 // live in this lazy chunk; the startup `aiFailureText` reads them.
@@ -623,6 +626,9 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
   const codexApprovalsRef = useRef<CodexApproval[]>([]);
   const codexApprovalEpochRef = useRef(0);
   const sendPreparationRef = useRef(false);
+  // DD-1c (DR-DD1C-7): the lazy local generation screen's receiver of
+  // accepted sends. Only set while the constant is on.
+  const nir1LocalAcceptedRef = useRef<Nir1LocalAcceptedHandler | null>(null);
   const updateCodexApprovals = useCallback(
     (update: (current: CodexApproval[]) => CodexApproval[]) => {
       const next = update(codexApprovalsRef.current);
@@ -984,9 +990,26 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             resolve(result);
           };
         });
+        // DD-1c (DR-DD1C-7): the conversation and scene of this send, read
+        // now so an accepted capture starts the local generation for them.
+        const sendTarget = useChatStore.getState();
+        const nir1LocalSend =
+          NIR1_LOCAL_GENERATION_UI_ENABLED &&
+          sendTarget.activeSessionId &&
+          sendTarget.activeSceneId
+            ? {
+                conversationId: sendTarget.activeSessionId,
+                sceneId: sendTarget.activeSceneId,
+              }
+            : null;
         const send = sendMessage(trimmed, commandInstruction, {
           ...rest,
-          _onAccepted: () => settleAcceptance({ accepted: true }),
+          _onAccepted: () => {
+            settleAcceptance({ accepted: true });
+            if (NIR1_LOCAL_GENERATION_UI_ENABLED && nir1LocalSend) {
+              nir1LocalAcceptedRef.current?.(nir1LocalSend);
+            }
+          },
         });
         // Ollama selected-model preflight intentionally awaits before it can
         // publish placeholders. Wait for the explicit acceptance handshake,
@@ -1405,6 +1428,16 @@ export function ChatPanel({ isActive = true }: SlotPanelProps = {}) {
             <Suspense fallback={null}>
               <ProfileEgressChatClosureProbe onChange={setEgressClosed} />
             </Suspense>
+          )}
+          {NIR1_LOCAL_GENERATION_UI_ENABLED && (
+            <Nir1LocalGenerationSlot
+              conversationId={activeSessionId}
+              sceneId={chatSceneId}
+              acceptedRef={nir1LocalAcceptedRef}
+              onOpenConversation={(conversationId) =>
+                void selectSession(conversationId)
+              }
+            />
           )}
           <QuickActionStrip hidden={inputHasText} />
           {PROFILE_ACTIVATION_UI_ENABLED && egressClosed && (

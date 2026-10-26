@@ -1,12 +1,23 @@
-import { useEffect } from "react";
+import { Suspense, lazy, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, ShieldAlert, ShieldCheck } from "lucide-react";
 import { ensureProfileEgressTranslations } from "./profileEgressTranslations";
 import { useProfileEgressStatus } from "./useProfileEgressStatus";
 import { useWritesRetryAfterActivation } from "./profileActivationWriteRetry";
 import { closeProfileEgressEntrances } from "@/features/chat/closeProfileEgressEntrances";
+import { NIR1_LOCAL_GENERATION_UI_ENABLED } from "@/features/chat/nir1/nir1LocalGenerationAvailability";
 
 ensureProfileEgressTranslations();
+
+// DD-1c (DR-DD1C-2): the local generation disclosure is a lazy chunk requested
+// only while the constant is on; while it is false the bundler drops the
+// branch, this lazy import and the chunk from the startup graph. A chunk that
+// fails to load draws nothing.
+const Nir1LocalDisclosure = /* @__PURE__ */ lazy(() =>
+  import("@/features/chat/nir1/Nir1LocalDisclosure").catch(() => ({
+    default: () => null,
+  })),
+);
 
 /**
  * The app-wide profile egress status (K3/2 "状態の表示", Positive (6); NIR-1
@@ -90,6 +101,11 @@ export default function ProfileEgressStatusIndicator() {
         <span className="sr-only">
           {t("profileEgress.status.restrictedDetail")}
         </span>
+      )}
+      {NIR1_LOCAL_GENERATION_UI_ENABLED && restricted && (
+        <Suspense fallback={null}>
+          <Nir1LocalDisclosure placement={5} />
+        </Suspense>
       )}
     </div>
   );
