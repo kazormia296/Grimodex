@@ -528,6 +528,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph/contract.test.mjs",
       ],
       [
+        "node",
+        "--test",
+        // CP-4 S1a: the evaluation-only Graph arm of the Native.
+        "scripts/quality/nir1-graph-eval/native-architecture.test.mjs",
+      ],
+      [
         "cargo",
         "test",
         "--manifest-path",
@@ -662,6 +668,19 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "nir1_final_request_eval",
         "--",
         "--test-threads=1",
+      ],
+      [
+        "cargo",
+        "test",
+        "--manifest-path",
+        "electron/native/grimodex-node/Cargo.toml",
+        "--features",
+        "nir1-graph-eval",
+        "--lib",
+        // The whole Graph owner set: the evaluation hooks sit in the product
+        // owner, so its own tests run with the feature too. The evaluation
+        // tests serialize themselves on one mutex.
+        "nir1_graph",
       ],
       [
         "cargo",
