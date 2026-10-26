@@ -459,10 +459,15 @@ fn the_evaluation_build_verifies_the_worker_main_configured_and_sets_none() {
     // The evaluation build's worker is missing.
     let (path, reason) = refused_reason(verify_worker(&present.state.nir1_graph, &library));
     assert_eq!(path, Some(main_worker.clone()));
-    assert!(
-        reason.starts_with("NIR1_GRAPH_EVAL_WORKER_UNREADABLE"),
-        "{reason}"
-    );
+    // CP-4 S1e (A P3): a closed word, never the io error; the status never
+    // shows the refused path (it holds the home directory).
+    assert_eq!(reason, "NIR1_GRAPH_EVAL_WORKER_UNREADABLE");
+    let shown = worker_json(&WorkerSetup::Refused {
+        path: Some(main_worker.clone()),
+        reason,
+    });
+    assert!(shown["path"].is_null(), "{shown}");
+    assert_eq!(shown["reason"], "NIR1_GRAPH_EVAL_WORKER_UNREADABLE");
     // Another name next to the library is never taken.
     std::fs::write(eval_dir.join("nir1-c-query-worker-other"), &bytes).expect("decoy");
     assert!(matches!(

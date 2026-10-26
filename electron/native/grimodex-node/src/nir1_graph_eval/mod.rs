@@ -119,9 +119,10 @@ static REGISTRY: Mutex<Option<Registration>> = Mutex::new(None);
 pub(crate) fn register(state: &Arc<AppState>) {
     let worker = match loaded_library_path() {
         Ok(library) => verify_worker(&state.nir1_graph, &library),
-        Err(error) => WorkerSetup::Refused {
+        // CP-4 S1e (A P3): a closed word, never the error text.
+        Err(_) => WorkerSetup::Refused {
             path: None,
-            reason: format!("{error:#}"),
+            reason: "NIR1_GRAPH_EVAL_LIBRARY_PATH".into(),
         },
     };
     record_registration(state, worker);
@@ -174,9 +175,11 @@ pub(crate) fn verify_worker(owner: &Nir1GraphProductOwner, library: &Path) -> Wo
             path: Some(configured),
             reason: "NIR1_GRAPH_EVAL_WORKER_MISMATCH".into(),
         },
-        Err(error) => WorkerSetup::Refused {
+        // Either file unreadable (Main's path or the one beside the library):
+        // a closed word, never the io error (CP-4 S1e, A P3).
+        Err(_) => WorkerSetup::Refused {
             path: Some(configured),
-            reason: format!("NIR1_GRAPH_EVAL_WORKER_UNREADABLE: {error}"),
+            reason: "NIR1_GRAPH_EVAL_WORKER_UNREADABLE".into(),
         },
     }
 }
@@ -623,9 +626,10 @@ fn worker_json(worker: &WorkerSetup) -> Value {
             "path": path.to_string_lossy(),
             "reason": null,
         }),
-        WorkerSetup::Refused { path, reason } => json!({
+        // The refused path is never shown (it holds the home directory).
+        WorkerSetup::Refused { reason, .. } => json!({
             "state": "refused",
-            "path": path.as_ref().map(|path| path.to_string_lossy()),
+            "path": null,
             "reason": reason,
         }),
         WorkerSetup::NotAttempted => json!({
