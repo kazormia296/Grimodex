@@ -1013,6 +1013,45 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
     expect(cancelSender).toHaveBeenCalledTimes(2);
   });
 
+  it("refuses an identity Main did not issue, or issued to another sender (defense in depth behind D2a)", async () => {
+    const issued = { senderId: 7 };
+    const route = createNir1LocalGenerationRoute({
+      open: true,
+      backend: null,
+      profileEgress: {
+        isIssuedCallerIdentity: (identity) => identity === issued,
+      },
+    });
+    const sender = fakeSender(7);
+    const win = fakeWindow(70, sender);
+    const refused = {
+      ok: true,
+      value: { status: "refused", reason: "NIR1_LOCAL_SENDER_REFUSED" },
+    };
+    for (const callerIdentity of [
+      { senderId: 7 }, // a copy, not the issued object
+      { ...issued, senderId: 8 },
+      null,
+      "caller",
+    ]) {
+      expect(
+        await route.admit(
+          "nir1_local_conversation_list",
+          { sender, win, callerIdentity },
+          {},
+        ),
+        JSON.stringify(callerIdentity),
+      ).toEqual(refused);
+    }
+    expect(
+      await route.admit(
+        "nir1_local_conversation_list",
+        { sender, win, callerIdentity: issued },
+        {},
+      ),
+    ).toBeNull();
+  });
+
   it("keeps at most 64 handle bindings, dropping the oldest", async () => {
     const issued = { senderId: 7 };
     const route = createNir1LocalGenerationRoute({
