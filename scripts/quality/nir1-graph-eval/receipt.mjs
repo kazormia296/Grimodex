@@ -683,6 +683,10 @@ export function validateCp4Receipt(receipt, bound = {}) {
         errors.push(
           "[precheck] candidate.ratification5 is self-reported until it is re-collected from git for candidate.commit (collectRatification5Evidence; D-1)",
         );
+      else if (boundRatification5(receipt, bound).testOnly === true)
+        errors.push(
+          "[precheck] candidate.ratification5 is test-only evidence (test-support.mjs); a formal receipt needs collectRatification5Evidence (E-1)",
+        );
       k64SettingsErrors(errors, receipt?.settings?.k64);
     }
   }

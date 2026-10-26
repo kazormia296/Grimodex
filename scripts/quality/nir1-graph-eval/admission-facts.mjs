@@ -30,6 +30,28 @@ export function claimFactsSealer() {
   };
 }
 
+let testClaimed = false;
+
+/**
+ * E-1: the sealer of the test suites' 批准 5 evidence (test-support.mjs claims
+ * it at load). It marks every record `testOnly: true`; the formal entries
+ * (admitGraphCaseRun, assertReceiptHeadBound) never produce such a record and
+ * validateCp4Receipt refuses one. A second claim throws, so a production
+ * module that claimed it would make the test suites fail to load.
+ */
+export function claimTestEvidenceSealer() {
+  if (testClaimed)
+    throw new Error(
+      "[precheck] the test evidence sealer is already claimed (test-support.mjs only)",
+    );
+  testClaimed = true;
+  return (facts) => {
+    const sealed = deepFreeze({ ...facts, testOnly: true });
+    COLLECTED.add(sealed);
+    return sealed;
+  };
+}
+
 export function isCollectedFacts(facts) {
   return facts !== null && typeof facts === "object" && COLLECTED.has(facts);
 }

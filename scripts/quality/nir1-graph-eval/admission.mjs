@@ -158,9 +158,6 @@ export function collectObservationPrepFacts(input) {
   });
 }
 
-/** Schema of the RS-JOIN keep-test receipt (批准 5 (b), candidate-test). */
-export const RS_JOIN_TEST_RECEIPT_SCHEMA = "cp4-rs-join-keep-test/1";
-
 /** `ancestor` is an ancestor of `descendant`; a commit not in the store is not. */
 function ancestorOrMissing(root, ancestor, descendant) {
   if (!refExists(root, ancestor)) return false;
@@ -169,52 +166,25 @@ function ancestorOrMissing(root, ancestor, descendant) {
 
 /**
  * 批准 5 (K6/4:32) collected from git, never from a receipt (D-1): (a) D′ and
- * (c) W_f are `git merge-base --is-ancestor` of the candidate head; (b) is
- * the RS-JOIN keep test passed on the candidate, bound by the sha256 of its
- * receipt (the candidate head, the test file and its bytes at the head), or,
- * without a receipt, the hook commit as an ancestor. The evidence is sealed
- * like the N-1 facts; `assessCandidateRegime` applies K6/4 only to sealed
- * evidence, so a self-reported `ancestor: true` stays K6/2 (N31).
+ * (c) W_f are `git merge-base --is-ancestor` of the candidate head, (b) is the
+ * hook commit as an ancestor. The other (b) evidence K6/4 allows, the RS-JOIN
+ * keep test passed on the candidate, needs a collector that runs the test on
+ * the candidate's clean tree itself; it is not written yet (S1f), so that path
+ * is closed here and a candidate without the hook commit stays K6/2 (E-1,
+ * fail closed). A receipt a caller hands in is never read. The evidence is
+ * sealed like the N-1 facts; `assessCandidateRegime` applies K6/4 only to
+ * sealed evidence, so a self-reported `ancestor: true` stays K6/2 (N31).
  */
 export function collectRatification5Evidence(input) {
-  rejectOverrides(input, ["root", "candidateHead", "rsJoinTestReceiptPath"]);
+  rejectOverrides(input, ["root", "candidateHead"]);
   const { root } = input;
   const need = K64_CANDIDATE_REQUIREMENTS;
   const head = resolveCommit(root, input.candidateHead);
-  let rsJoinHook;
-  if (input.rsJoinTestReceiptPath) {
-    const bytes = readFileSync(input.rsJoinTestReceiptPath);
-    let receipt;
-    try {
-      receipt = JSON.parse(bytes.toString("utf8"));
-    } catch {
-      receipt = null;
-    }
-    const testBytes = blob(root, head, need.rsJoinKeepTest);
-    if (
-      receipt?.schema !== RS_JOIN_TEST_RECEIPT_SCHEMA ||
-      receipt.candidateHead !== head ||
-      receipt.testFile !== need.rsJoinKeepTest ||
-      receipt.passed !== true ||
-      testBytes === null ||
-      receipt.testFileSha256 !== sha256(testBytes)
-    )
-      throw new Error(
-        "[precheck] the RS-JOIN keep-test receipt is not a pass of the candidate's test file (批准 5 (b))",
-      );
-    rsJoinHook = {
-      evidence: "candidate-test",
-      testFile: need.rsJoinKeepTest,
-      testFileSha256: receipt.testFileSha256,
-      passed: true,
-      receiptSha256: sha256(bytes),
-    };
-  } else
-    rsJoinHook = {
-      evidence: "ancestor",
-      commit: need.rsJoinHookCommit,
-      ancestor: ancestorOrMissing(root, need.rsJoinHookCommit, head),
-    };
+  const rsJoinHook = {
+    evidence: "ancestor",
+    commit: need.rsJoinHookCommit,
+    ancestor: ancestorOrMissing(root, need.rsJoinHookCommit, head),
+  };
   return sealFacts({
     kind: "ratification5",
     candidateHead: head,
@@ -396,7 +366,6 @@ export function admitGraphCaseRun(input) {
     "defaultAddonSha256",
     "k62Commit",
     "k64Commit",
-    "rsJoinTestReceiptPath",
   ]);
   const { root } = input;
   const fixtures = Array.isArray(input.fixtures) ? input.fixtures : [];
@@ -438,9 +407,6 @@ export function admitGraphCaseRun(input) {
   const ratification5 = collectRatification5Evidence({
     root,
     candidateHead: head,
-    ...(input.rsJoinTestReceiptPath
-      ? { rsJoinTestReceiptPath: input.rsJoinTestReceiptPath }
-      : {}),
   });
   const k62 = readK62FreezeHead({ root, commit: input.k62Commit });
   const k64 = readK64FreezeHead({ root, commit: input.k64Commit });
@@ -566,7 +532,7 @@ export function admitFrozenDryRun(input) {
  * commits.
  */
 export function assertReceiptHeadBound(input) {
-  rejectOverrides(input, ["root", "receipt", "rsJoinTestReceiptPath"]);
+  rejectOverrides(input, ["root", "receipt"]);
   const { root, receipt } = input;
   const head = receipt?.head;
   const facts = collectObservationPrepFacts({
@@ -587,9 +553,6 @@ export function assertReceiptHeadBound(input) {
     ratification5 = collectRatification5Evidence({
       root,
       candidateHead: receipt.candidate.commit,
-      ...(input.rsJoinTestReceiptPath
-        ? { rsJoinTestReceiptPath: input.rsJoinTestReceiptPath }
-        : {}),
     });
     if (
       JSON.stringify(ratification5) !==

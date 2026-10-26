@@ -791,10 +791,12 @@ export function assessCandidateRegime(evidence) {
     missing.push("a:d-prime");
   const hook = evidence.rsJoinHook;
   const hookOk =
+    // E-1: the candidate-test path exists only in test-sealed evidence until
+    // a collector runs the keep test itself (S1f); production is fail closed.
     (hook?.evidence === "candidate-test" &&
+      evidence.testOnly === true &&
       hook.testFile === need.rsJoinKeepTest &&
-      hook.passed === true &&
-      /^[0-9a-f]{64}$/u.test(hook.receiptSha256 ?? "")) ||
+      hook.passed === true) ||
     (hook?.evidence === "ancestor" &&
       hook.commit === need.rsJoinHookCommit &&
       hook.ancestor === true);
@@ -807,6 +809,7 @@ export function assessCandidateRegime(evidence) {
   return Object.freeze({
     regime: missing.length === 0 ? "k64" : "k62",
     missing: Object.freeze(missing),
+    ...(evidence.testOnly === true ? { testOnly: true } : {}),
   });
 }
 

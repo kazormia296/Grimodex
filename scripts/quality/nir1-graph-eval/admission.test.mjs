@@ -27,7 +27,10 @@ import {
   readK64FreezeHead,
   readNetNamespaces,
 } from "./admission.mjs";
-import { claimFactsSealer } from "./admission-facts.mjs";
+import {
+  claimFactsSealer,
+  claimTestEvidenceSealer,
+} from "./admission-facts.mjs";
 import {
   FROZEN_FIXTURE_SHA256,
   G01_FIXTURE,
@@ -43,7 +46,7 @@ import {
   candidate,
   evalReceipt,
   productReceipt,
-  writeRsJoinTestReceipt,
+  ratification5,
 } from "./test-support.mjs";
 import { assessCandidateRegime } from "./followup.mjs";
 
@@ -663,57 +666,62 @@ test("P2-7: receipt の先頭の observationPrep を git の facts と freeze re
   }
 });
 
-test("D-1: 批准 5 の証拠は git から集めて封印し、自己申告の写しは K6/2 のまま", async () => {
-  const receiptPath = writeRsJoinTestReceipt();
+test("D-1／E-1: 批准 5 は git から集めて封印し、(b) の候補の試験の経路は collector が試験を走らせるまで K6/2（fail closed）", async () => {
   const evidence = collectRatification5Evidence({
     root: ROOT,
     candidateHead: "HEAD",
-    rsJoinTestReceiptPath: receiptPath,
   });
   assert.equal(evidence.kind, "ratification5");
   assert.ok(Object.isFrozen(evidence.dPrime));
+  assert.equal(evidence.testOnly, undefined);
   assert.equal(evidence.dPrime.ancestor, true);
   assert.equal(evidence.wfWindow.ancestor, true);
-  assert.equal(evidence.rsJoinHook.evidence, "candidate-test");
-  assert.equal(
-    evidence.rsJoinHook.receiptSha256,
-    createHash("sha256")
-      .update(await readFile(receiptPath))
-      .digest("hex"),
+  // (b) は hook の commit の祖先だけ。squash で祖先でないので、この repository の候補は K6/2。
+  assert.deepEqual(evidence.rsJoinHook, {
+    evidence: "ancestor",
+    commit: "c7b091dadabac6cc098a932052cf817493205204",
+    ancestor: false,
+  });
+  assert.deepEqual(assessCandidateRegime(evidence), {
+    regime: "k62",
+    missing: ["b:rs-join-hook"],
+  });
+  // E-1: 呼出し側の渡す試験の receipt（手書きの JSON）は受け付けない。
+  assert.throws(
+    () =>
+      collectRatification5Evidence({
+        root: ROOT,
+        candidateHead: "HEAD",
+        rsJoinTestReceiptPath: "/tmp/receipt.json",
+      }),
+    /unsupported option rsJoinTestReceiptPath/,
   );
-  assert.equal(assessCandidateRegime(evidence).regime, "k64");
+  for (const entry of [admitGraphCaseRun, assertReceiptHeadBound])
+    assert.throws(
+      () => entry({ root: ROOT, rsJoinTestReceiptPath: "/tmp/r.json" }),
+      /unsupported option rsJoinTestReceiptPath/,
+    );
   // 写し（JSON の往復や手書き）は封印が無いので緩和を当てない（N31 の迂回を閉じる）。
-  const copy = JSON.parse(JSON.stringify(evidence));
-  assert.deepEqual(assessCandidateRegime(copy), {
+  const forged = {
+    ...JSON.parse(JSON.stringify(evidence)),
+    rsJoinHook: {
+      evidence: "candidate-test",
+      testFile:
+        "src/features/related-scenes/useNir1RelatedScenes.graphReadyKeep.test.tsx",
+      passed: true,
+    },
+  };
+  assert.deepEqual(assessCandidateRegime(forged), {
     regime: "k62",
     missing: ["ratification5-not-collected"],
   });
-  // 試験の receipt が無ければ hook の祖先（c7b091da）を git で見る。squash で祖先でない。
-  const noTest = collectRatification5Evidence({
-    root: ROOT,
-    candidateHead: "HEAD",
-  });
-  assert.equal(noTest.rsJoinHook.evidence, "ancestor");
-  assert.equal(noTest.rsJoinHook.ancestor, false);
-  assert.deepEqual(assessCandidateRegime(noTest).missing, ["b:rs-join-hook"]);
-  // 別の候補・別の試験 file・passed でない・中身の違う試験の receipt は拒む。
-  for (const overrides of [
-    { candidateHead: H40("e") },
-    { testFile: "src/other.test.tsx" },
-    { passed: false },
-    { testFileSha256: H64("f") },
-    { schema: "other" },
-  ])
-    assert.throws(
-      () =>
-        collectRatification5Evidence({
-          root: ROOT,
-          candidateHead: "HEAD",
-          rsJoinTestReceiptPath: writeRsJoinTestReceipt("HEAD", overrides),
-        }),
-      /\[precheck\]/,
-      JSON.stringify(overrides),
-    );
+  // 試験専用の封印（test-support の ratification5）は testOnly と書かれ、K6/4 の判定の試験にだけ使う。
+  const testOnly = ratification5();
+  assert.equal(testOnly.testOnly, true);
+  assert.equal(assessCandidateRegime(testOnly).regime, "k64");
+  assert.equal(assessCandidateRegime(testOnly).testOnly, true);
+  // 試験専用の sealer は一度しか取れない（本番の module が先に取れば test-support が読み込めない）。
+  assert.throws(() => claimTestEvidenceSealer(), /already claimed/);
   // D′ と W_f を含まない候補（その commit が無い repository）は (a)(c) を欠く。
   const { repo } = await repository();
   try {
@@ -727,13 +735,4 @@ test("D-1: 批准 5 の証拠は git から集めて封印し、自己申告の�
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
-  assert.throws(
-    () =>
-      collectRatification5Evidence({
-        root: ROOT,
-        candidateHead: "HEAD",
-        dPrime: { ancestor: true },
-      }),
-    /unsupported option/,
-  );
 });

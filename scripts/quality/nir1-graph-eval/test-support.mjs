@@ -1,14 +1,7 @@
 // Synthetic records shared by the CP-4 harness tests. Nothing here is a
 // fixture of a G-case: every value is made up for the pure checks.
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import {
-  RS_JOIN_TEST_RECEIPT_SCHEMA,
-  collectRatification5Evidence,
-} from "./admission.mjs";
+import { claimTestEvidenceSealer } from "./admission-facts.mjs";
 import {
   graphCaseScheduleKeys,
   summarizeSteadyState,
@@ -242,55 +235,38 @@ export function k64Sample(overrides = {}, followUp = {}) {
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
 
-/**
- * An RS-JOIN keep-test receipt for `head` of this repository (D-1): the test
- * file's bytes at the head, `passed: true`. Written to a fresh temp dir.
- */
-export function writeRsJoinTestReceipt(head = "HEAD", overrides = {}) {
-  const resolved = execFileSync(
-    "git",
-    ["rev-parse", "--verify", `${head}^{commit}`],
-    {
-      cwd: REPO_ROOT,
-      encoding: "utf8",
-    },
-  ).trim();
-  const testFile = K64_CANDIDATE_REQUIREMENTS.rsJoinKeepTest;
-  const bytes = execFileSync("git", ["show", `${resolved}:${testFile}`], {
-    cwd: REPO_ROOT,
-  });
-  const dir = mkdtempSync(path.join(os.tmpdir(), "cp4-rs-join-"));
-  const file = path.join(dir, "rs-join-keep-test.json");
-  writeFileSync(
-    file,
-    JSON.stringify({
-      schema: RS_JOIN_TEST_RECEIPT_SCHEMA,
-      candidateHead: resolved,
-      testFile,
-      testFileSha256: createHash("sha256").update(bytes).digest("hex"),
-      passed: true,
-      ...overrides,
-    }),
-  );
-  return file;
-}
+/** The candidate commit the test-sealed evidence names. */
+export const TEST_CANDIDATE_HEAD = "e".repeat(40);
 
-let collected = null;
+/** E-1: test suites only; production 批准 5 comes from admission.mjs. */
+const sealTestEvidence = claimTestEvidenceSealer();
+let sealedForTests = null;
 
 /**
- * The 批准 5 evidence of this repository's HEAD (it has D′ and W_f), with the
- * RS-JOIN keep test bound by its receipt: collected from git and sealed by
- * admission.mjs (D-1). With `overrides` the result is a plain object, never
- * sealed, so the summaries read it as K6/2 (a self-reported record).
+ * TEST ONLY. The 批准 5 evidence of a candidate that has D′, the RS-JOIN keep
+ * test passed and W_f, sealed by the test sealer (`testOnly: true`) so the
+ * K6/4 summaries can be exercised. Nothing runs the keep test here; the
+ * production collector never accepts this path (E-1) and validateCp4Receipt
+ * refuses test-only evidence. With `overrides` the result is a plain object,
+ * never sealed, so the summaries read it as K6/2 (a self-reported record).
  */
 export function ratification5(overrides = null) {
-  collected ??= collectRatification5Evidence({
-    root: REPO_ROOT,
-    candidateHead: "HEAD",
-    rsJoinTestReceiptPath: writeRsJoinTestReceipt(),
+  sealedForTests ??= sealTestEvidence({
+    kind: "ratification5",
+    candidateHead: TEST_CANDIDATE_HEAD,
+    dPrime: { commit: K64_CANDIDATE_REQUIREMENTS.dPrimeCommit, ancestor: true },
+    rsJoinHook: {
+      evidence: "candidate-test",
+      testFile: K64_CANDIDATE_REQUIREMENTS.rsJoinKeepTest,
+      passed: true,
+    },
+    wfWindow: {
+      commit: K64_CANDIDATE_REQUIREMENTS.wfWindowCommit,
+      ancestor: true,
+    },
   });
-  if (overrides === null) return collected;
-  return { ...JSON.parse(JSON.stringify(collected)), ...overrides };
+  if (overrides === null) return sealedForTests;
+  return { ...JSON.parse(JSON.stringify(sealedForTests)), ...overrides };
 }
 
 export function candidate(head = H40("b"), tree = H40("c")) {

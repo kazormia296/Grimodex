@@ -123,7 +123,8 @@ function k64Rows(variant) {
 
 /** The K6/4 freeze of a receipt head (批准 7). Pinned by the integrator. */
 const K64_HEAD = { freezeCommit: H40("4"), sha256: K64_FREEZE.sha256 };
-const FREEZE_PENDING = /K6\/4 freeze commit is not pinned/;
+const FREEZE_PENDING =
+  /K6\/4 freeze commit is not pinned|test-only evidence \(test-support\.mjs\)/;
 /** Every error but the one the unpinned K6/4 freeze always gives. */
 /** The 批准 5 evidence re-collected from git for the fixture's candidate (D-1). */
 const BOUND = () => ({ ratification5: ratification5() });
@@ -281,8 +282,10 @@ test("P-10: a complete receipt passes and its head carries the K6/2 freeze", () 
 
 test("批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。凍結の commit が固定されるまで受け付けない", () => {
   const errors = validateCp4Receipt(receipt(), BOUND());
-  assert.equal(errors.length, 1, errors.join(" | "));
-  assert.match(errors[0], FREEZE_PENDING);
+  // The unpinned freeze, and (E-1) the test-only 批准 5 evidence.
+  assert.equal(errors.length, 2, errors.join(" | "));
+  assert.match(errors[0], /K6\/4 freeze commit is not pinned/);
+  assert.match(errors[1], /test-only evidence/);
   assert.throws(() => assertCp4Receipt(receipt(), BOUND()), FREEZE_PENDING);
   assert.equal(K64_FREEZE.freezeCommit, null);
   const { k64, ...noK64 } = receipt().head;
@@ -305,6 +308,7 @@ test("K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、そ�
   assert.deepEqual(receipt().aggregates.candidateRegime, {
     regime: "k64",
     missing: [],
+    testOnly: true,
   });
   // D-1: a recorded `ancestor: true` that git did not give is self-reported.
   const lacking = receipt({
