@@ -17,7 +17,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readlinkSync } from "node:fs";
+import { readFileSync, readlinkSync } from "node:fs";
 import process from "node:process";
 import {
   GRAPH_ARM_SCOPES,
@@ -35,6 +35,7 @@ import {
   G01_FIXTURE,
   GRAPH_CASE_FREEZE,
   K62_FREEZE,
+  K64_CANDIDATE_REQUIREMENTS,
   K64_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_REMOTE_REF,
@@ -156,6 +157,78 @@ export function collectObservationPrepFacts(input) {
   });
 }
 
+/** Schema of the RS-JOIN keep-test receipt (批准 5 (b), candidate-test). */
+export const RS_JOIN_TEST_RECEIPT_SCHEMA = "cp4-rs-join-keep-test/1";
+
+/** `ancestor` is an ancestor of `descendant`; a commit not in the store is not. */
+function ancestorOrMissing(root, ancestor, descendant) {
+  if (!refExists(root, ancestor)) return false;
+  return isAncestor(root, ancestor, descendant);
+}
+
+/**
+ * 批准 5 (K6/4:32) collected from git, never from a receipt (D-1): (a) D′ and
+ * (c) W_f are `git merge-base --is-ancestor` of the candidate head; (b) is
+ * the RS-JOIN keep test passed on the candidate, bound by the sha256 of its
+ * receipt (the candidate head, the test file and its bytes at the head), or,
+ * without a receipt, the hook commit as an ancestor. The evidence is sealed
+ * like the N-1 facts; `assessCandidateRegime` applies K6/4 only to sealed
+ * evidence, so a self-reported `ancestor: true` stays K6/2 (N31).
+ */
+export function collectRatification5Evidence(input) {
+  rejectOverrides(input, ["root", "candidateHead", "rsJoinTestReceiptPath"]);
+  const { root } = input;
+  const need = K64_CANDIDATE_REQUIREMENTS;
+  const head = resolveCommit(root, input.candidateHead);
+  let rsJoinHook;
+  if (input.rsJoinTestReceiptPath) {
+    const bytes = readFileSync(input.rsJoinTestReceiptPath);
+    let receipt;
+    try {
+      receipt = JSON.parse(bytes.toString("utf8"));
+    } catch {
+      receipt = null;
+    }
+    const testBytes = blob(root, head, need.rsJoinKeepTest);
+    if (
+      receipt?.schema !== RS_JOIN_TEST_RECEIPT_SCHEMA ||
+      receipt.candidateHead !== head ||
+      receipt.testFile !== need.rsJoinKeepTest ||
+      receipt.passed !== true ||
+      testBytes === null ||
+      receipt.testFileSha256 !== sha256(testBytes)
+    )
+      throw new Error(
+        "[precheck] the RS-JOIN keep-test receipt is not a pass of the candidate's test file (批准 5 (b))",
+      );
+    rsJoinHook = {
+      evidence: "candidate-test",
+      testFile: need.rsJoinKeepTest,
+      testFileSha256: receipt.testFileSha256,
+      passed: true,
+      receiptSha256: sha256(bytes),
+    };
+  } else
+    rsJoinHook = {
+      evidence: "ancestor",
+      commit: need.rsJoinHookCommit,
+      ancestor: ancestorOrMissing(root, need.rsJoinHookCommit, head),
+    };
+  return sealFacts({
+    kind: "ratification5",
+    candidateHead: head,
+    dPrime: {
+      commit: need.dPrimeCommit,
+      ancestor: ancestorOrMissing(root, need.dPrimeCommit, head),
+    },
+    rsJoinHook,
+    wfWindow: {
+      commit: need.wfWindowCommit,
+      ancestor: ancestorOrMissing(root, need.wfWindowCommit, head),
+    },
+  });
+}
+
 /**
  * K6/2 "事前登録の凍結" 2 / N-4: the freeze commit must be given and the
  * K6/2 bytes read from that commit must have the frozen sha256; otherwise the
@@ -247,7 +320,8 @@ export function readNetNamespaces() {
  * candidate head, collects the observation-prep facts from git itself (a
  * caller never hands them in), applies the N-1 guard
  * (`assertGraphArmRequestable`), refuses an evaluation build at the default
- * addon path, and reads the K6/2 and K6/4 freeze heads. The returned
+ * addon path, collects 批准 5 from git (D-1), and reads the K6/2 and K6/4
+ * freeze heads. The returned
  * admission is the only one `readAdmittedFixture` accepts.
  */
 export function admitGraphCaseRun(input) {
@@ -261,6 +335,7 @@ export function admitGraphCaseRun(input) {
     "defaultAddonSha256",
     "k62Commit",
     "k64Commit",
+    "rsJoinTestReceiptPath",
   ]);
   const { root } = input;
   const fixtures = Array.isArray(input.fixtures) ? input.fixtures : [];
@@ -297,10 +372,20 @@ export function admitGraphCaseRun(input) {
     productReceipt: input.productReceipt,
     evalReceipt: input.buildReceipt,
   });
+  // D-1: 批准 5 from git, sealed; the formal runner records it in the
+  // receipt and passes it to the summaries.
+  const ratification5 = collectRatification5Evidence({
+    root,
+    candidateHead: head,
+    ...(input.rsJoinTestReceiptPath
+      ? { rsJoinTestReceiptPath: input.rsJoinTestReceiptPath }
+      : {}),
+  });
   const k62 = readK62FreezeHead({ root, commit: input.k62Commit });
   const k64 = readK64FreezeHead({ root, commit: input.k64Commit });
   const sealed = Object.freeze({
     ...admission,
+    ratification5,
     head: Object.freeze({
       k62,
       k64,
@@ -374,7 +459,7 @@ export function admitFrozenDryRun(input) {
  * commits.
  */
 export function assertReceiptHeadBound(input) {
-  rejectOverrides(input, ["root", "receipt"]);
+  rejectOverrides(input, ["root", "receipt", "rsJoinTestReceiptPath"]);
   const { root, receipt } = input;
   const head = receipt?.head;
   const facts = collectObservationPrepFacts({
@@ -387,11 +472,31 @@ export function assertReceiptHeadBound(input) {
     throw new Error(
       "[precheck] head.observationPrep.freezeRecordSha256 differs from the freeze record at the pre-observation commit",
     );
+  // D-1: the recorded 批准 5 is self-reported; re-collect it from git for the
+  // candidate and require the same record. The sealed evidence is what
+  // validateCp4Receipt and the summaries may use.
+  let ratification5 = null;
+  if (receipt?.candidate && Object.hasOwn(receipt.candidate, "ratification5")) {
+    ratification5 = collectRatification5Evidence({
+      root,
+      candidateHead: receipt.candidate.commit,
+      ...(input.rsJoinTestReceiptPath
+        ? { rsJoinTestReceiptPath: input.rsJoinTestReceiptPath }
+        : {}),
+    });
+    if (
+      JSON.stringify(ratification5) !==
+      JSON.stringify(receipt.candidate.ratification5)
+    )
+      throw new Error(
+        "[precheck] candidate.ratification5 differs from the 批准 5 evidence re-collected from git (D-1)",
+      );
+  }
   const k62 = readK62FreezeHead({ root, commit: head?.k62?.freezeCommit });
   if (k62.sha256 !== head.k62.sha256)
     throw new Error("[precheck] head.k62 differs from the K6/2 freeze");
   const k64 = readK64FreezeHead({ root, commit: head?.k64?.freezeCommit });
   if (k64.sha256 !== head.k64.sha256)
     throw new Error("[precheck] head.k64 differs from the K6/4 freeze");
-  return { observationPrep: facts.commit, k62, k64 };
+  return { observationPrep: facts.commit, k62, k64, ratification5 };
 }

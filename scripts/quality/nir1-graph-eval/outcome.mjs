@@ -18,8 +18,10 @@ import {
   G01_FIXTURE,
   MEASURED_RUNS_PER_ARM,
   devVariant,
+  rejectOverrides,
   variantByKey,
 } from "./constants.mjs";
+import { isSteadyStateSummary } from "./availability.mjs";
 import { classifyFollowUp } from "./followup.mjs";
 import {
   BOUNDARY_DISAGREEMENTS,
@@ -424,18 +426,23 @@ function k64AvailableQuality(variant, graph, hybrid) {
 }
 
 /**
- * Steady-state quality of one variant. `regime` is the steady-state
- * summary's (`summarizeSteadyState().regime`; K6/4 only for a candidate that
+ * Steady-state quality of one variant. The regime is `steadyState.regime`
+ * of the sealed summary (`summarizeSteadyState()`; K6/4 only for a candidate that
  * qualifies, 批准 5): "k62" measures in-window samples (K6/2 step 8), "k64"
  * measures displayed samples (K6/4 品質). Both require exactly 30 paired
  * measured samples and refuse any Graph for a variant expected unavailable
  * (P1-3).
  */
-export function summarizeVariantQuality({ variant, samples, regime }) {
-  if (regime !== "k62" && regime !== "k64")
+export function summarizeVariantQuality(input) {
+  rejectOverrides(input, ["variant", "samples", "steadyState"]);
+  const { variant, samples, steadyState } = input;
+  // D-1: the regime is read from a summary summarizeSteadyState returned
+  // (sealed and frozen), never chosen by the caller.
+  if (!isSteadyStateSummary(steadyState))
     throw new Error(
-      "[precheck] the quality regime must be the steady-state summary's k62 or k64",
+      "[precheck] the quality regime must be read from a summary returned by summarizeSteadyState",
     );
+  const { regime } = steadyState;
   const pairs = measuredPairs(variant, samples);
   if (pairs.invalid) return pairs.invalid;
   const { graph, hybrid } = pairs;

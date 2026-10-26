@@ -292,6 +292,23 @@ export function summarizeSteadyStateCase(input) {
   return { entry, invalid };
 }
 
+/** Summaries summarizeSteadyState returned (D-1: quality reads the regime). */
+const STEADY_STATE_SUMMARIES = new WeakSet();
+
+export function isSteadyStateSummary(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    STEADY_STATE_SUMMARIES.has(value)
+  );
+}
+
+function sealSteadyState(summary) {
+  const sealed = Object.freeze(summary);
+  STEADY_STATE_SUMMARIES.add(sealed);
+  return sealed;
+}
+
 /**
  * Steady state over the pool of every measured R+IR+Graph sample of the
  * planned variants not expected unavailable (K6/2 (a), steps 1, 3, 5, 7, 8).
@@ -309,6 +326,10 @@ export function summarizeSteadyStateCase(input) {
  * (FAIL, :163).
  */
 export function summarizeSteadyState(input) {
+  return sealSteadyState(summarizeSteadyStateUnsealed(input));
+}
+
+function summarizeSteadyStateUnsealed(input) {
   rejectOverrides(input, ["samples", "fixedGraphMode", "plan", "candidate"]);
   const { samples, fixedGraphMode } = input;
   const k64Era = Object.hasOwn(input, "candidate");

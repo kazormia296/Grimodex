@@ -21,6 +21,7 @@ import {
   assertDefaultAddonIsProduct,
   assertReceiptHeadBound,
   collectObservationPrepFacts,
+  collectRatification5Evidence,
   readAdmittedFixture,
   readK62FreezeHead,
   readK64FreezeHead,
@@ -42,7 +43,9 @@ import {
   candidate,
   evalReceipt,
   productReceipt,
+  writeRsJoinTestReceipt,
 } from "./test-support.mjs";
+import { assessCandidateRegime } from "./followup.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const TRACE = "evals/nir1-graph/trace-editing.v1.json";
@@ -558,6 +561,30 @@ test("P2-7: receipt の先頭の observationPrep を git の facts と freeze re
         }),
       /not an ancestor/,
     );
+    // D-1: a recorded 批准 5 is re-collected from git for the candidate and
+    // must be the same; a self-reported `ancestor: true` is refused.
+    const forged = receipt({
+      commit: prep,
+      freezeRecordSha256: facts.recordSha256AtCommit,
+    });
+    const collected = JSON.parse(
+      JSON.stringify(
+        collectRatification5Evidence({ root: repo, candidateHead: head }),
+      ),
+    );
+    forged.candidate.ratification5 = {
+      ...collected,
+      dPrime: { ...collected.dPrime, ancestor: true },
+    };
+    assert.throws(
+      () => assertReceiptHeadBound({ root: repo, receipt: forged }),
+      /ratification5/,
+    );
+    forged.candidate.ratification5 = collected;
+    assert.throws(
+      () => assertReceiptHeadBound({ root: repo, receipt: forged }),
+      new RegExp(K62_FREEZE.commit),
+    );
     // The bound head passes the prep checks and stops at the K6/2 freeze,
     // which this temp repository does not hold.
     assert.throws(
@@ -574,4 +601,79 @@ test("P2-7: receipt の先頭の observationPrep を git の facts と freeze re
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
+});
+
+test("D-1: 批准 5 の証拠は git から集めて封印し、自己申告の写しは K6/2 のまま", async () => {
+  const receiptPath = writeRsJoinTestReceipt();
+  const evidence = collectRatification5Evidence({
+    root: ROOT,
+    candidateHead: "HEAD",
+    rsJoinTestReceiptPath: receiptPath,
+  });
+  assert.equal(evidence.kind, "ratification5");
+  assert.ok(Object.isFrozen(evidence.dPrime));
+  assert.equal(evidence.dPrime.ancestor, true);
+  assert.equal(evidence.wfWindow.ancestor, true);
+  assert.equal(evidence.rsJoinHook.evidence, "candidate-test");
+  assert.equal(
+    evidence.rsJoinHook.receiptSha256,
+    createHash("sha256")
+      .update(await readFile(receiptPath))
+      .digest("hex"),
+  );
+  assert.equal(assessCandidateRegime(evidence).regime, "k64");
+  // 写し（JSON の往復や手書き）は封印が無いので緩和を当てない（N31 の迂回を閉じる）。
+  const copy = JSON.parse(JSON.stringify(evidence));
+  assert.deepEqual(assessCandidateRegime(copy), {
+    regime: "k62",
+    missing: ["ratification5-not-collected"],
+  });
+  // 試験の receipt が無ければ hook の祖先（c7b091da）を git で見る。squash で祖先でない。
+  const noTest = collectRatification5Evidence({
+    root: ROOT,
+    candidateHead: "HEAD",
+  });
+  assert.equal(noTest.rsJoinHook.evidence, "ancestor");
+  assert.equal(noTest.rsJoinHook.ancestor, false);
+  assert.deepEqual(assessCandidateRegime(noTest).missing, ["b:rs-join-hook"]);
+  // 別の候補・別の試験 file・passed でない・中身の違う試験の receipt は拒む。
+  for (const overrides of [
+    { candidateHead: H40("e") },
+    { testFile: "src/other.test.tsx" },
+    { passed: false },
+    { testFileSha256: H64("f") },
+    { schema: "other" },
+  ])
+    assert.throws(
+      () =>
+        collectRatification5Evidence({
+          root: ROOT,
+          candidateHead: "HEAD",
+          rsJoinTestReceiptPath: writeRsJoinTestReceipt("HEAD", overrides),
+        }),
+      /\[precheck\]/,
+      JSON.stringify(overrides),
+    );
+  // D′ と W_f を含まない候補（その commit が無い repository）は (a)(c) を欠く。
+  const { repo } = await repository();
+  try {
+    const bare = collectRatification5Evidence({
+      root: repo,
+      candidateHead: "HEAD",
+    });
+    assert.equal(bare.dPrime.ancestor, false);
+    assert.equal(bare.wfWindow.ancestor, false);
+    assert.equal(assessCandidateRegime(bare).regime, "k62");
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+  assert.throws(
+    () =>
+      collectRatification5Evidence({
+        root: ROOT,
+        candidateHead: "HEAD",
+        dPrime: { ancestor: true },
+      }),
+    /unsupported option/,
+  );
 });

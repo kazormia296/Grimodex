@@ -1,6 +1,22 @@
 // Synthetic records shared by the CP-4 harness tests. Nothing here is a
 // fixture of a G-case: every value is made up for the pure checks.
-import { graphCaseScheduleKeys } from "./availability.mjs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import {
+  RS_JOIN_TEST_RECEIPT_SCHEMA,
+  collectRatification5Evidence,
+} from "./admission.mjs";
+import {
+  graphCaseScheduleKeys,
+  summarizeSteadyState,
+} from "./availability.mjs";
+import {
+  GRAPH_EVAL_VARIANTS,
+  K64_CANDIDATE_REQUIREMENTS,
+} from "./constants.mjs";
 import { REQUIRED_ARTIFACTS } from "../nir1-retrieval/standard-build-receipt.mjs";
 
 export const H40 = (c) => c.repeat(40);
@@ -223,25 +239,57 @@ export function k64Sample(overrides = {}, followUp = {}) {
   });
 }
 
-/** The 批准 5 evidence of a candidate that has D′, the RS-JOIN hook and W_f. */
-export function ratification5(overrides = {}) {
-  return {
-    dPrime: {
-      commit: "4d38d0d164e02a76a0e172214b259a11e0b2c5ff",
-      ancestor: true,
+export const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
+
+/**
+ * An RS-JOIN keep-test receipt for `head` of this repository (D-1): the test
+ * file's bytes at the head, `passed: true`. Written to a fresh temp dir.
+ */
+export function writeRsJoinTestReceipt(head = "HEAD", overrides = {}) {
+  const resolved = execFileSync(
+    "git",
+    ["rev-parse", "--verify", `${head}^{commit}`],
+    {
+      cwd: REPO_ROOT,
+      encoding: "utf8",
     },
-    rsJoinHook: {
-      evidence: "candidate-test",
-      testFile:
-        "src/features/related-scenes/useNir1RelatedScenes.graphReadyKeep.test.tsx",
+  ).trim();
+  const testFile = K64_CANDIDATE_REQUIREMENTS.rsJoinKeepTest;
+  const bytes = execFileSync("git", ["show", `${resolved}:${testFile}`], {
+    cwd: REPO_ROOT,
+  });
+  const dir = mkdtempSync(path.join(os.tmpdir(), "cp4-rs-join-"));
+  const file = path.join(dir, "rs-join-keep-test.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      schema: RS_JOIN_TEST_RECEIPT_SCHEMA,
+      candidateHead: resolved,
+      testFile,
+      testFileSha256: createHash("sha256").update(bytes).digest("hex"),
       passed: true,
-    },
-    wfWindow: {
-      commit: "c4333bbd081fb297cf2dddc598155791b9678be8",
-      ancestor: true,
-    },
-    ...overrides,
-  };
+      ...overrides,
+    }),
+  );
+  return file;
+}
+
+let collected = null;
+
+/**
+ * The 批准 5 evidence of this repository's HEAD (it has D′ and W_f), with the
+ * RS-JOIN keep test bound by its receipt: collected from git and sealed by
+ * admission.mjs (D-1). With `overrides` the result is a plain object, never
+ * sealed, so the summaries read it as K6/2 (a self-reported record).
+ */
+export function ratification5(overrides = null) {
+  collected ??= collectRatification5Evidence({
+    root: REPO_ROOT,
+    candidateHead: "HEAD",
+    rsJoinTestReceiptPath: writeRsJoinTestReceipt(),
+  });
+  if (overrides === null) return collected;
+  return { ...JSON.parse(JSON.stringify(collected)), ...overrides };
 }
 
 export function candidate(head = H40("b"), tree = H40("c")) {
@@ -303,4 +351,61 @@ export function evalReceipt(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+/** An unavailable variant's row still comes from the product hook (R5). */
+export const unavailableRecord = () =>
+  followUpRecord({ parent: { ticket: null }, notices: [], child: null });
+
+/**
+ * The full K6/4 frozen schedule; `mutate(variant, repeat)` returns [sample
+ * overrides, followUp overrides] for a measured row of a variant expected
+ * available.
+ */
+export function k64Run(mutate = () => [{}, {}]) {
+  return scheduleRows(GRAPH_EVAL_VARIANTS).map((row) => {
+    if (row.arm !== "graph") return row;
+    const variant = GRAPH_EVAL_VARIANTS.find((v) => v.key === row.variantKey);
+    if (variant.expectedGraph === "unavailable")
+      return { ...row, followUp: unavailableRecord() };
+    const [overrides = {}, followUp = {}] =
+      row.phase === "measured" ? mutate(variant, row.repeat) : [{}, {}];
+    return k64Sample(
+      {
+        variantKey: row.variantKey,
+        phase: row.phase,
+        repeat: row.repeat,
+        ...overrides,
+      },
+      followUp,
+    );
+  });
+}
+
+export function summarizeK64(samples, candidate = ratification5()) {
+  return summarizeSteadyState({
+    samples,
+    fixedGraphMode: "restricted",
+    plan: { kind: "frozen" },
+    candidate,
+  });
+}
+
+const steadySummaries = {};
+
+/** A sealed steady-state summary of the given regime (quality reads it, D-1). */
+export function steadySummary(regime) {
+  steadySummaries[regime] ??=
+    regime === "k64"
+      ? summarizeK64(k64Run())
+      : summarizeSteadyState({
+          samples: k64Run(),
+          fixedGraphMode: "restricted",
+          plan: { kind: "frozen" },
+        });
+  if (steadySummaries[regime].regime !== regime)
+    throw new Error(
+      `the ${regime} summary fixture is ${steadySummaries[regime].regime}`,
+    );
+  return steadySummaries[regime];
 }

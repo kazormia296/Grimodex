@@ -123,8 +123,12 @@ function k64Rows(variant) {
 const K64_HEAD = { freezeCommit: H40("4"), sha256: K64_FREEZE.sha256 };
 const FREEZE_PENDING = /K6\/4 freeze commit is not pinned/;
 /** Every error but the one the unpinned K6/4 freeze always gives. */
-const otherErrors = (value) =>
-  validateCp4Receipt(value).filter((error) => !FREEZE_PENDING.test(error));
+/** The 批准 5 evidence re-collected from git for the fixture's candidate (D-1). */
+const BOUND = () => ({ ratification5: ratification5() });
+const otherErrors = (value, bound = BOUND()) =>
+  validateCp4Receipt(value, bound).filter(
+    (error) => !FREEZE_PENDING.test(error),
+  );
 const K64_SETTINGS = {
   wFMs: 100,
   tLateMs: 100,
@@ -162,7 +166,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
       traceFile: null,
     },
     candidate: {
-      commit: H40("c"),
+      commit: ratification5().candidateHead,
       tree: H40("d"),
       clean: true,
       productReceiptSha256: H64("e"),
@@ -220,11 +224,13 @@ function receipt(overrides = {}, { recompute = true } = {}) {
     merged.aggregates = computeRunAggregates(
       merged,
       variant.kind === "frozen" ? variant : null,
+      BOUND(),
     );
   return merged;
 }
 
-const errorsOf = (value) => validateCp4Receipt(value).join(" | ");
+const errorsOf = (value, bound = BOUND()) =>
+  validateCp4Receipt(value, bound).join(" | ");
 
 test("P-10: a complete receipt passes and its head carries the K6/2 freeze", () => {
   assert.deepEqual(otherErrors(receipt()), []);
@@ -258,10 +264,10 @@ test("P-10: a complete receipt passes and its head carries the K6/2 freeze", () 
 });
 
 test("批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。凍結の commit が固定されるまで受け付けない", () => {
-  const errors = validateCp4Receipt(receipt());
+  const errors = validateCp4Receipt(receipt(), BOUND());
   assert.equal(errors.length, 1, errors.join(" | "));
   assert.match(errors[0], FREEZE_PENDING);
-  assert.throws(() => assertCp4Receipt(receipt()), FREEZE_PENDING);
+  assert.throws(() => assertCp4Receipt(receipt(), BOUND()), FREEZE_PENDING);
   assert.equal(K64_FREEZE.freezeCommit, null);
   const { k64, ...noK64 } = receipt().head;
   assert.ok(k64);
@@ -284,6 +290,7 @@ test("K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、そ�
     regime: "k64",
     missing: [],
   });
+  // D-1: a recorded `ancestor: true` that git did not give is self-reported.
   const lacking = receipt({
     candidate: {
       ...receipt().candidate,
@@ -293,9 +300,42 @@ test("K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、そ�
     },
   });
   assert.deepEqual(lacking.aggregates.candidateRegime.missing, [
-    "c:w-f-window",
+    "ratification5-not-collected",
   ]);
-  assert.deepEqual(otherErrors(lacking), []);
+  assert.match(otherErrors(lacking).join(), /self-reported/);
+});
+
+test("D-1: receipt の批准 5 は git から集め直した封印つきの証拠と一致するときだけ K6/4", () => {
+  const recorded = JSON.parse(JSON.stringify(ratification5()));
+  const value = receipt({
+    candidate: {
+      ...receipt().candidate,
+      commit: ratification5().candidateHead,
+      ratification5: recorded,
+    },
+  });
+  // 集め直した証拠を渡さない検証（JSON の receipt だけ）は K6/2 で計算し直す。
+  const unbound = otherErrors(value, {});
+  assert.ok(unbound.some((error) => /self-reported/.test(error)));
+  assert.ok(unbound.some((error) => /aggregates differ/.test(error)));
+  // 集め直した証拠と記録が一致すれば K6/4 のまま通る。
+  assert.deepEqual(otherErrors(value), []);
+  // 記録を書き換えた（祖先でないのに true と書いた）receipt は一致しない。
+  const forged = receipt(
+    {
+      candidate: {
+        ...receipt().candidate,
+        commit: ratification5().candidateHead,
+        ratification5: {
+          ...recorded,
+          rsJoinHook: { ...recorded.rsJoinHook, receiptSha256: H64("0") },
+        },
+      },
+    },
+    { recompute: false },
+  );
+  forged.aggregates = value.aggregates;
+  assert.ok(otherErrors(forged).some((error) => /self-reported/.test(error)));
 });
 
 test("K6/4-N17: W_f、T_late、T_show を広げた receipt、手順のファイルの版の無い receipt は受け付けない", () => {

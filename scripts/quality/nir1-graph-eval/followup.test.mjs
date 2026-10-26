@@ -33,6 +33,9 @@ import {
   ratification5,
   sample,
   scheduleRows,
+  k64Run,
+  summarizeK64,
+  unavailableRecord,
 } from "./test-support.mjs";
 
 const steady = (row) => classifyFollowUp(row, { context: "steady" });
@@ -690,38 +693,6 @@ test("F1: graph-late でも宣言が unused でなければ follow-up にしな�
  * repeat)` returns [sample overrides, followUp overrides] for a measured row
  * of a variant expected available.
  */
-/** An unavailable variant's row still comes from the product hook (R5). */
-const unavailableRecord = () =>
-  followUpRecord({ parent: { ticket: null }, notices: [], child: null });
-
-function k64Run(mutate = () => [{}, {}]) {
-  return scheduleRows(GRAPH_EVAL_VARIANTS).map((row) => {
-    if (row.arm !== "graph") return row;
-    const variant = GRAPH_EVAL_VARIANTS.find((v) => v.key === row.variantKey);
-    if (variant.expectedGraph === "unavailable")
-      return { ...row, followUp: unavailableRecord() };
-    const [overrides = {}, followUp = {}] =
-      row.phase === "measured" ? mutate(variant, row.repeat) : [{}, {}];
-    return k64Sample(
-      {
-        variantKey: row.variantKey,
-        phase: row.phase,
-        repeat: row.repeat,
-        ...overrides,
-      },
-      followUp,
-    );
-  });
-}
-
-function summarizeK64(samples, candidate = ratification5()) {
-  return summarizeSteadyState({
-    samples,
-    fixedGraphMode: "restricted",
-    plan: FROZEN,
-    candidate,
-  });
-}
 
 const failNotice = [{}, { notices: [], child: null }];
 
@@ -873,8 +844,9 @@ test("K6/4-N31: 批准 5 の (a)〜(c) のどれかを欠く候補には緩和�
       label,
     );
   }
-  // hook の commit を祖先に持つことでも (b-1)・(b-2) の根拠になる。
-  assert.equal(
+  // D-1: 手で書いた「hook の commit を祖先に持つ」は自己申告で、緩和を当てない
+  // （git から集める経路は admission.test.mjs の D-1）。
+  assert.deepEqual(
     assessCandidateRegime(
       ratification5({
         rsJoinHook: {
@@ -883,8 +855,8 @@ test("K6/4-N31: 批准 5 の (a)〜(c) のどれかを欠く候補には緩和�
           ancestor: true,
         },
       }),
-    ).regime,
-    "k64",
+    ),
+    { regime: "k62", missing: ["ratification5-not-collected"] },
   );
   // (b-3): graph-ready の取り直しで読込み中に替わった sample がある候補も (b) を欠く。
   const loading = summarizeK64(

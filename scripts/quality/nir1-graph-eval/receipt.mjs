@@ -32,6 +32,7 @@ import {
   devVariant,
   variantByKey,
 } from "./constants.mjs";
+import { isCollectedFacts } from "./admission-facts.mjs";
 import { assessCandidateRegime } from "./followup.mjs";
 
 export const CP4_RECEIPT_SCHEMA = "nir1-cp4-run-receipt/1";
@@ -386,20 +387,39 @@ export function resolveRunVariant(receipt) {
   return variant;
 }
 
+/** The sealed evidence when it is the receipt's record; else a plain copy. */
+function boundRatification5(receipt, bound) {
+  const recorded = receipt.candidate.ratification5;
+  const evidence = bound?.ratification5;
+  if (
+    isCollectedFacts(evidence) &&
+    evidence.kind === "ratification5" &&
+    evidence.candidateHead === receipt.candidate.commit &&
+    stable(evidence) === stable(recorded)
+  )
+    return evidence;
+  return recorded === undefined || recorded === null
+    ? recorded
+    : JSON.parse(JSON.stringify(recorded));
+}
+
 /**
  * The aggregates a receipt must carry, recomputed from its rows. Graph-free
  * run kinds only count rows; the R+IR+Graph runs recompute the (a) case
  * entry or the (b) trace summary.
  */
-export function computeRunAggregates(receipt, variant) {
+export function computeRunAggregates(receipt, variant, bound = {}) {
   const samples = receipt.samples ?? [];
   const requeries = receipt.requeries ?? [];
   const graphSamples = samples.filter((row) => row.arm === "graph").length;
   // A K6/4-era receipt records the 批准 5 evidence; its regime is recomputed
   // here and in the summaries (N31). Without it the receipt is K6/2-era.
+  // The record itself is self-reported (D-1): only the evidence re-collected
+  // from git (`bound.ratification5`, sealed, equal to the record) lets the
+  // summaries apply K6/4; otherwise a copy of the record is used (K6/2).
   const k64 =
     receipt.candidate && Object.hasOwn(receipt.candidate, "ratification5")
-      ? { candidate: receipt.candidate.ratification5 }
+      ? { candidate: boundRatification5(receipt, bound) }
       : null;
   const regime = k64
     ? { candidateRegime: assessCandidateRegime(k64.candidate) }
@@ -495,7 +515,7 @@ function k64SettingsErrors(errors, value) {
  * Validates the §7.2 minimum set of one run receipt. Returns error strings;
  * `assertCp4Receipt` throws them as `[precheck]`.
  */
-export function validateCp4Receipt(receipt) {
+export function validateCp4Receipt(receipt, bound = {}) {
   const errors = [];
   if (receipt?.schemaVersion !== CP4_RECEIPT_SCHEMA)
     errors.push(`schemaVersion must be ${CP4_RECEIPT_SCHEMA}`);
@@ -555,6 +575,10 @@ export function validateCp4Receipt(receipt) {
       )
         errors.push(
           "candidate.ratification5 must record 批准 5 (a) D′, (b) the RS-JOIN hook, (c) W_f (N31)",
+        );
+      else if (!isCollectedFacts(boundRatification5(receipt, bound)))
+        errors.push(
+          "[precheck] candidate.ratification5 is self-reported until it is re-collected from git for candidate.commit (collectRatification5Evidence; D-1)",
         );
       k64SettingsErrors(errors, receipt?.settings?.k64);
     }
@@ -722,7 +746,7 @@ export function validateCp4Receipt(receipt) {
     (variant || receipt.runKind === "existing-24-compare")
   ) {
     try {
-      const recomputed = computeRunAggregates(receipt, variant);
+      const recomputed = computeRunAggregates(receipt, variant, bound);
       if (stable(recomputed) !== stable(receipt.aggregates))
         errors.push(
           "aggregates differ from the values recomputed from the samples",
@@ -744,8 +768,8 @@ export function validateCp4Receipt(receipt) {
   return errors;
 }
 
-export function assertCp4Receipt(receipt) {
-  const errors = validateCp4Receipt(receipt);
+export function assertCp4Receipt(receipt, bound = {}) {
+  const errors = validateCp4Receipt(receipt, bound);
   if (errors.length > 0)
     throw new Error(`[precheck] CP-4 receipt invalid: ${errors.join("; ")}`);
   return receipt;

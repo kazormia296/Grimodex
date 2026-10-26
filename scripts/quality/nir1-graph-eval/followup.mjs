@@ -24,6 +24,7 @@
 // with null means the event did not happen; a missing key is a missing record
 // (X10).
 
+import { isCollectedFacts } from "./admission-facts.mjs";
 import {
   BOUNDARY_TOLERANCE_MS,
   GRAPH_EVAL_D_MS,
@@ -715,6 +716,13 @@ export function assessCandidateRegime(evidence) {
       regime: "k62",
       missing: ["ratification5-evidence"],
     });
+  // D-1: only the evidence admission.mjs collected from git and sealed; a
+  // receipt's record or a hand-written `ancestor: true` is self-reported.
+  if (!isCollectedFacts(evidence) || evidence.kind !== "ratification5")
+    return Object.freeze({
+      regime: "k62",
+      missing: ["ratification5-not-collected"],
+    });
   if (
     evidence.dPrime?.commit !== need.dPrimeCommit ||
     evidence.dPrime?.ancestor !== true
@@ -724,7 +732,8 @@ export function assessCandidateRegime(evidence) {
   const hookOk =
     (hook?.evidence === "candidate-test" &&
       hook.testFile === need.rsJoinKeepTest &&
-      hook.passed === true) ||
+      hook.passed === true &&
+      /^[0-9a-f]{64}$/u.test(hook.receiptSha256 ?? "")) ||
     (hook?.evidence === "ancestor" &&
       hook.commit === need.rsJoinHookCommit &&
       hook.ancestor === true);

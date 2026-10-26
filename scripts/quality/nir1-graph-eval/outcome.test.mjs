@@ -24,7 +24,7 @@ import {
   summarizeVariantQuality,
   unmetPreconditions,
 } from "./outcome.mjs";
-import { k64Sample } from "./test-support.mjs";
+import { k64Sample, steadySummary } from "./test-support.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -334,7 +334,7 @@ const quality = (key, rows) =>
   summarizeVariantQuality({
     variant: variantByKey(key),
     samples: qualitySamples(key, rows),
-    regime: "k62",
+    steadyState: steadySummary("k62"),
   });
 
 test("K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in window is HOLD", () => {
@@ -421,13 +421,37 @@ test("P1-3: 測った件数が 30 でなければ invalid（0 件でも fallback
     rows.filter((row) => !(row.arm === "graph" && row.repeat === 4)),
     rows.filter((row) => !(row.arm === "hybrid" && row.repeat === 9)),
   ]) {
-    const result = summarizeVariantQuality({ variant, samples, regime: "k62" });
+    const result = summarizeVariantQuality({
+      variant,
+      samples,
+      steadyState: steadySummary("k62"),
+    });
     assert.equal(result.status, "invalid");
   }
   assert.throws(
     () => summarizeVariantQuality({ variant, samples: rows }),
     /regime/,
   );
+});
+
+test("D-1: 品質の regime は封印した定常状態の要約から読み、呼び出し側が選べない", () => {
+  const variant = variantByKey("G-02/base");
+  const samples = qualitySamples(variant.key, () => ({}));
+  for (const steadyState of [
+    undefined,
+    { regime: "k64" },
+    { ...steadySummary("k64") },
+    JSON.parse(JSON.stringify(steadySummary("k64"))),
+  ])
+    assert.throws(
+      () => summarizeVariantQuality({ variant, samples, steadyState }),
+      /summarizeSteadyState/,
+    );
+  assert.throws(
+    () => summarizeVariantQuality({ variant, samples, regime: "k64" }),
+    /unsupported option regime/,
+  );
+  assert.ok(Object.isFrozen(steadySummary("k64")));
 });
 
 /** K6/4 rows of one variant: hybrid shows the parent's R+IR list. */
@@ -457,7 +481,7 @@ const k64Quality = (key, graphRow) =>
   summarizeVariantQuality({
     variant: variantByKey(key),
     samples: k64QualitySamples(key, graphRow),
-    regime: "k64",
+    steadyState: steadySummary("k64"),
   });
 
 test("K6/4 品質（批准 3、K6/4-P1）: 表示された sample の表示の結果で測り、表示の種類を書く", () => {
@@ -534,7 +558,7 @@ test("K6/4: 表示されなかった sample の親の表示が R+IR と違う、
     summarizeVariantQuality({
       variant: variantByKey("G-03/frontier-exceeded"),
       samples: k64QualitySamples("G-03/frontier-exceeded", graphRow),
-      regime: "k64",
+      steadyState: steadySummary("k64"),
     });
   assert.equal(
     unavailable((r) =>
