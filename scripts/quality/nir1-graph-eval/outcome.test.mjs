@@ -24,6 +24,7 @@ import {
   summarizeVariantQuality,
   unmetPreconditions,
 } from "./outcome.mjs";
+import { k64Sample } from "./test-support.mjs";
 
 const ROOT = path.resolve(import.meta.dirname, "../../..");
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -333,6 +334,7 @@ const quality = (key, rows) =>
   summarizeVariantQuality({
     variant: variantByKey(key),
     samples: qualitySamples(key, rows),
+    regime: "k62",
   });
 
 test("K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in window is HOLD", () => {
@@ -383,6 +385,166 @@ test("K6/2 step 8: in-window samples agree, unjoined samples equal R+IR, none in
   assert.equal(
     quality("G-08/graph-index-unusable", () => ({})).reason,
     "graph-joined-for-a-variant-expected-unavailable",
+  );
+});
+
+test("P1-3: 期待が unavailable の variant に Graph が join したら、cache 由来でも READY でなくても FAIL", () => {
+  for (const graph of [
+    { joined: true, source: "cache", revalidation: "passed", arrivedAt: 15 },
+    { joined: true, source: "worker", revalidation: "passed", arrivedAt: 15 },
+  ])
+    for (const startSlot of [{ readyFresh: true }, { readyFresh: false }])
+      assert.equal(
+        quality("G-03/frontier-exceeded", (r) =>
+          r === 7 ? { graph, startSlot } : lateRow,
+        ).reason,
+        "graph-joined-for-a-variant-expected-unavailable",
+        JSON.stringify({ graph, startSlot }),
+      );
+  // join しなくても、final list が同じ repeat の R+IR と違えば FAIL。
+  assert.equal(
+    quality("G-08/both-indexes-unusable", (r) =>
+      r === 2 ? { ...lateRow, finalSceneIds: ["dev-b", "dev-a"] } : lateRow,
+    ).reason,
+    "fallback-sample-differs-from-r-plus-ir",
+  );
+  const measured = quality("G-08/chronicle-index-unusable", () => lateRow);
+  assert.equal(measured.status, "fallback-measured");
+  assert.deepEqual(measured.finalSceneIds, ["dev-a", "dev-b"]);
+});
+
+test("P1-3: 測った件数が 30 でなければ invalid（0 件でも fallback-measured にしない）", () => {
+  const variant = variantByKey("G-08/graph-index-unusable");
+  const rows = qualitySamples(variant.key, () => lateRow);
+  for (const samples of [
+    [],
+    rows.filter((row) => !(row.arm === "graph" && row.repeat === 4)),
+    rows.filter((row) => !(row.arm === "hybrid" && row.repeat === 9)),
+  ]) {
+    const result = summarizeVariantQuality({ variant, samples, regime: "k62" });
+    assert.equal(result.status, "invalid");
+  }
+  assert.throws(
+    () => summarizeVariantQuality({ variant, samples: rows }),
+    /regime/,
+  );
+});
+
+/** K6/4 rows of one variant: hybrid shows the parent's R+IR list. */
+function k64QualitySamples(variantKey, graphRow) {
+  const rows = [];
+  for (let repeat = 0; repeat < 30; repeat++) {
+    rows.push({
+      variantKey,
+      arm: "hybrid",
+      phase: "measured",
+      repeat,
+      trigger: "user-operation",
+      finalSceneIds: ["dev-a", "dev-b", "dev-c"],
+    });
+    const [overrides = {}, followUp = {}] = graphRow(repeat);
+    rows.push(
+      k64Sample(
+        { variantKey, phase: "measured", repeat, ...overrides },
+        followUp,
+      ),
+    );
+  }
+  return rows;
+}
+
+const k64Quality = (key, graphRow) =>
+  summarizeVariantQuality({
+    variant: variantByKey(key),
+    samples: k64QualitySamples(key, graphRow),
+    regime: "k64",
+  });
+
+test("K6/4 品質（批准 3、K6/4-P1）: 表示された sample の表示の結果で測り、表示の種類を書く", () => {
+  const result = k64Quality("G-02/base", () => [{}, {}]);
+  assert.equal(result.status, "measurable");
+  assert.equal(result.steadyState, true);
+  assert.deepEqual(result.displays, { firstRender: 0, followUp: 30 });
+  assert.deepEqual(result.finalSceneIds, [
+    "dev-a",
+    "dev-b",
+    "dev-c",
+    "dev-added",
+  ]);
+  // 表示されなかった sample は R+IR に混ざりなく戻っていればよい。
+  assert.equal(
+    k64Quality("G-02/base", (r) =>
+      r % 3 === 0 ? [{}, { notices: [], child: null }] : [{}, {}],
+    ).status,
+    "measurable",
+  );
+});
+
+test("K6/4-N12: 子の R か IR が親と違えば品質は FAIL", () => {
+  assert.equal(
+    k64Quality("G-02/base", (r) =>
+      r === 4 ? [{}, { child: { irSceneIds: ["dev-z"] } }] : [{}, {}],
+    ).reason,
+    "follow-up-r-or-ir-differs",
+  );
+});
+
+test("K6/4-N13: 同じ case の表示の結果が sample の間で違えば FAIL", () => {
+  assert.equal(
+    k64Quality("G-02/base", (r) =>
+      r === 8
+        ? [
+            {},
+            {
+              child: {
+                finalSceneIds: ["dev-a", "dev-added", "dev-b", "dev-c"],
+              },
+            },
+          ]
+        : [{}, {}],
+    ).reason,
+    "displayed-samples-differ",
+  );
+});
+
+test("K6/4-N14: 表示された sample が無い case は HOLD", () => {
+  assert.deepEqual(
+    k64Quality("G-02/base", () => [{}, { notices: [], child: null }]),
+    { variantKey: "G-02/base", status: "hold", reason: "no-displayed-sample" },
+  );
+});
+
+test("K6/4: 表示されなかった sample の親の表示が R+IR と違う、遅れた結果が混ざった、期待が unavailable なのに子が Graph を出した、はどれも FAIL", () => {
+  assert.equal(
+    k64Quality("G-02/base", (r) =>
+      r === 1
+        ? [{ finalSceneIds: ["dev-a"] }, { notices: [], child: null }]
+        : [{}, {}],
+    ).reason,
+    "not-displayed-sample-differs-from-r-plus-ir",
+  );
+  assert.equal(
+    k64Quality("G-02/base", (r) =>
+      r === 1 ? [{}, { child: { lateGraphInDisplay: true } }] : [{}, {}],
+    ).reason,
+    "late-result-mixed-into-a-display",
+  );
+  // unavailable の variant: 子が Graph を出したら FAIL、出さなければ fallback。
+  const unavailable = (graphRow) =>
+    summarizeVariantQuality({
+      variant: variantByKey("G-03/frontier-exceeded"),
+      samples: k64QualitySamples("G-03/frontier-exceeded", graphRow),
+      regime: "k64",
+    });
+  assert.equal(
+    unavailable((r) =>
+      r === 3 ? [{}, {}] : [{}, { notices: [], child: null }],
+    ).reason,
+    "graph-shown-for-a-variant-expected-unavailable",
+  );
+  assert.equal(
+    unavailable(() => [{}, { notices: [], child: null }]).status,
+    "fallback-measured",
   );
 });
 

@@ -14,16 +14,18 @@ import {
   resolveVariantOutcome,
 } from "../nir1-graph/contract.mjs";
 import {
-  classifyJoin,
-  steadyStateInWindow,
-  BOUNDARY_DISAGREEMENTS,
-} from "./availability.mjs";
-import {
   FROZEN_MATERIAL_SHA256,
   G01_FIXTURE,
+  MEASURED_RUNS_PER_ARM,
   devVariant,
   variantByKey,
 } from "./constants.mjs";
+import { classifyFollowUp } from "./followup.mjs";
+import {
+  BOUNDARY_DISAGREEMENTS,
+  classifyJoin,
+  steadyStateInWindow,
+} from "./join.mjs";
 
 const PRODUCT_B_ROUTE = "b-route-maintenance";
 const MAINTENANCE_SETTING = "runtime-policy-setting";
@@ -218,18 +220,14 @@ export function unmetPreconditions(variant, evidence, expectations) {
 }
 
 /**
- * Steady-state quality of one variant (K6/2 step 8). In-window samples must
- * all return the same final list; samples whose Graph result was not joined
- * must equal the paired R+IR sample. A joined-but-late sample within the
- * boundary tolerance carries Graph rows; the variant is then HOLD
- * (`boundary-disagreement`), fixed before observation. No in-window sample
- * is HOLD for a variant expected available.
+ * The measured rows of one variant, paired by repeat. Anything but exactly
+ * 30 Graph samples, each with its R+IR sample of the same repeat, is
+ * `invalid` (P1-3: an empty or partial run never becomes fallback-measured).
  */
-export function summarizeVariantQuality({ variant, samples }) {
-  const key = variant.key;
+function measuredPairs(variant, samples) {
   const measured = samples.filter(
     (row) =>
-      row.variantKey === key &&
+      row.variantKey === variant.key &&
       row.phase === "measured" &&
       row.trigger === "user-operation",
   );
@@ -239,6 +237,75 @@ export function summarizeVariantQuality({ variant, samples }) {
       .map((row) => [row.repeat, row]),
   );
   const graph = measured.filter((row) => row.arm === "graph");
+  const unpaired = graph.filter((row) => !hybrid.has(row.repeat));
+  if (
+    graph.length !== MEASURED_RUNS_PER_ARM ||
+    hybrid.size !== MEASURED_RUNS_PER_ARM ||
+    unpaired.length > 0
+  )
+    return {
+      invalid: {
+        variantKey: variant.key,
+        status: "invalid",
+        reason: "measured-graph-and-r-plus-ir-samples-are-not-30-pairs",
+        graph: graph.length,
+        hybrid: hybrid.size,
+      },
+    };
+  return { graph, hybrid };
+}
+
+/**
+ * A variant expected Graph unavailable (G-03 frontier-exceeded, the four
+ * G-08 unusable variants): measured for quality only. Any joined Graph row
+ * (cache or worker, READY or not) or, under K6/4, any child that showed a
+ * Graph is FAIL; every Graph-arm display must equal its R+IR pair (P1-3).
+ */
+function unavailableQuality(variant, graph, hybrid, regime) {
+  for (const row of graph) {
+    if (row.graph?.joined === true)
+      return {
+        variantKey: variant.key,
+        status: "fail",
+        reason: "graph-joined-for-a-variant-expected-unavailable",
+        repeats: [row.repeat],
+      };
+    const child = regime === "k64" ? row.followUp?.child : null;
+    if (
+      child &&
+      child.outcome === "graph-ready" &&
+      child.publishCount > 0 &&
+      (child.edgeCount ?? 0) > 0
+    )
+      return {
+        variantKey: variant.key,
+        status: "fail",
+        reason: "graph-shown-for-a-variant-expected-unavailable",
+        repeats: [row.repeat],
+      };
+    const pair = hybrid.get(row.repeat).finalSceneIds;
+    const shown =
+      child && child.publishCount > 0
+        ? [row.finalSceneIds, child.finalSceneIds]
+        : [row.finalSceneIds];
+    if (!shown.every((list) => sameList(list, pair)))
+      return {
+        variantKey: variant.key,
+        status: "fail",
+        reason: "fallback-sample-differs-from-r-plus-ir",
+        repeats: [row.repeat],
+      };
+  }
+  return {
+    variantKey: variant.key,
+    status: "fallback-measured",
+    finalSceneIds: hybrid.get(graph[0].repeat).finalSceneIds,
+  };
+}
+
+/** K6/2 step 8 for an available variant (the K6/2 regime). */
+function k62AvailableQuality(variant, graph, hybrid) {
+  const key = variant.key;
   const inWindow = [];
   const mixed = [];
   const boundary = [];
@@ -267,19 +334,6 @@ export function summarizeVariantQuality({ variant, samples }) {
       reason: "boundary-disagreement",
       repeats: boundary,
     };
-  if (variant.expectedGraph === "unavailable") {
-    if (inWindow.length > 0)
-      return {
-        variantKey: key,
-        status: "fail",
-        reason: "graph-joined-for-a-variant-expected-unavailable",
-      };
-    return {
-      variantKey: key,
-      status: "fallback-measured",
-      finalSceneIds: graph[0]?.finalSceneIds ?? null,
-    };
-  }
   if (inWindow.length === 0)
     return { variantKey: key, status: "hold", reason: "no-in-window-sample" };
   const first = inWindow[0].finalSceneIds;
@@ -296,6 +350,100 @@ export function summarizeVariantQuality({ variant, samples }) {
     inWindowCount: inWindow.length,
     finalSceneIds: first,
   };
+}
+
+/**
+ * K6/4 品質 (:169-171, 批准 3) for an available variant: measured on the
+ * display of every displayed sample (the parent's join in the first-render
+ * window, or the child's join of a follow-up). All displays of the case are
+ * the same (N13); a follow-up's R and IR equal the parent's (X9, N12); a
+ * sample not displayed shows the parent's R+IR unmixed; a late result mixed
+ * into a display (N1, N29, N32) is FAIL; no displayed sample is HOLD (N14).
+ */
+function k64AvailableQuality(variant, graph, hybrid) {
+  const key = variant.key;
+  const displayed = [];
+  const counts = { firstRender: 0, followUp: 0 };
+  const boundary = [];
+  for (const row of graph) {
+    const result = classifyFollowUp(row, { context: "steady" });
+    if (result.violations.length > 0)
+      return {
+        variantKey: key,
+        status: "fail",
+        reason: "late-result-mixed-into-a-display",
+        repeats: [row.repeat],
+        violations: result.violations,
+      };
+    if (Object.hasOwn(result.x, "X9"))
+      return {
+        variantKey: key,
+        status: "fail",
+        reason: "follow-up-r-or-ir-differs",
+        repeats: [row.repeat],
+      };
+    if (result.boundary === BOUNDARY_DISAGREEMENTS.joinedLateWithinTolerance) {
+      boundary.push(row.repeat);
+      continue;
+    }
+    if (result.displayed) {
+      displayed.push(result.displayedSceneIds);
+      counts[result.firstRender ? "firstRender" : "followUp"] += 1;
+    } else if (
+      !sameList(row.finalSceneIds, hybrid.get(row.repeat).finalSceneIds)
+    )
+      return {
+        variantKey: key,
+        status: "fail",
+        reason: "not-displayed-sample-differs-from-r-plus-ir",
+        repeats: [row.repeat],
+      };
+  }
+  if (boundary.length > 0)
+    return {
+      variantKey: key,
+      status: "hold",
+      reason: "boundary-disagreement",
+      repeats: boundary,
+    };
+  if (displayed.length === 0)
+    return { variantKey: key, status: "hold", reason: "no-displayed-sample" };
+  if (!displayed.every((list) => sameList(list, displayed[0])))
+    return {
+      variantKey: key,
+      status: "fail",
+      reason: "displayed-samples-differ",
+    };
+  return {
+    variantKey: key,
+    status: "measurable",
+    steadyState: true,
+    displays: counts,
+    finalSceneIds: displayed[0],
+  };
+}
+
+/**
+ * Steady-state quality of one variant. `regime` is the steady-state
+ * summary's (`summarizeSteadyState().regime`; K6/4 only for a candidate that
+ * qualifies, 批准 5): "k62" measures in-window samples (K6/2 step 8), "k64"
+ * measures displayed samples (K6/4 品質). Both require exactly 30 paired
+ * measured samples and refuse any Graph for a variant expected unavailable
+ * (P1-3).
+ */
+export function summarizeVariantQuality({ variant, samples, regime }) {
+  if (regime !== "k62" && regime !== "k64")
+    throw new Error(
+      "[precheck] the quality regime must be the steady-state summary's k62 or k64",
+    );
+  const pairs = measuredPairs(variant, samples);
+  if (pairs.invalid) return pairs.invalid;
+  const { graph, hybrid } = pairs;
+  if (variant.expectedGraph === "unavailable")
+    return unavailableQuality(variant, graph, hybrid, regime);
+  return regime === "k64"
+    ? k64AvailableQuality(variant, graph, hybrid)
+    : k62AvailableQuality(variant, graph, hybrid);
 }
 
 /**
