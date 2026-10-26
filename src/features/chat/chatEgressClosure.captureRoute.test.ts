@@ -6,7 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // 写し（`resolveCurrentChatTurnPolicy`）で評価する。本物の設定 store と route の解決を使う。
 
 import {
+  admitConversationEdit,
   isEditResendCaptureEligible,
+  isEditTargetCurrent,
   snapshotEditTarget,
   type EditCaptureState,
 } from "./chatEgressClosure";
@@ -160,5 +162,47 @@ describe("isEditResendCaptureEligible（編集の時点の route の判定）", 
       throw new Error("route unavailable");
     });
     expect(isEditResendCaptureEligible(scene, "u1", undefined)).toBe(false);
+  });
+});
+
+// 最終受入れの P3-1（DR-DA2B-R33）：capture の内の同期の経路でも、削除（`proceed`）の
+// 直前に対象を確かめる（判定と削除の間に会話や workspace が替わったら消さない）。
+describe("admitConversationEdit の capture の内の同期の経路", () => {
+  beforeEach(() => {
+    installBridge();
+    configureOpenaiCompatibleRoute();
+  });
+  afterEach(() => {
+    delete (window as unknown as { grimodex?: unknown }).grimodex;
+  });
+
+  it.each([
+    ["会話", { activeSessionId: "s2" }],
+    ["workspace", { activeProjectId: "p2" }],
+  ] as Array<[string, Partial<EditCaptureState>]>)(
+    "判定の後に%sが替わったら proceed を呼ばない",
+    async (_label, patch) => {
+      const target = snapshotEditTarget(scene, "u1", NO_COMMAND);
+      expect(target.captureEligible).toBe(true);
+      const current = { ...scene, ...patch };
+      const proceed = vi.fn();
+      await admitConversationEdit({
+        target,
+        isCurrent: () => isEditTargetCurrent(target, current),
+        proceed,
+      });
+      expect(proceed).not.toHaveBeenCalled();
+    },
+  );
+
+  it("対象が同じなら同期で proceed を呼ぶ", () => {
+    const target = snapshotEditTarget(scene, "u1", NO_COMMAND);
+    const proceed = vi.fn();
+    void admitConversationEdit({
+      target,
+      isCurrent: () => isEditTargetCurrent(target, scene),
+      proceed,
+    });
+    expect(proceed).toHaveBeenCalledTimes(1);
   });
 });
