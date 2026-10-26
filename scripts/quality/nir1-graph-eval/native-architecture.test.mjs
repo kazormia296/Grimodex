@@ -525,3 +525,50 @@ test("A-1: a release check with a duplicate capability key is refused (M4)", () 
     /duplicate/,
   );
 });
+
+test("E-10: release 検査の capability object は固定の 4 つの key と値だけ（計算 key の M4b を拒む）", () => {
+  for (const extra of [
+    '    ["nir1GraphEval"]: true,\n',
+    "    extra: true,\n",
+  ]) {
+    const sources = mutate(
+      PATHS.verifyRelease,
+      "    nir1GraphEval: false,\n",
+      `    nir1GraphEval: false,\n${extra}`,
+    );
+    assert.match(
+      checkBuildCapabilities(sources)
+        .map((violation) => violation.message)
+        .join("\n"),
+      /exactly the fixed/,
+      extra,
+    );
+  }
+});
+
+test("E-11: grimodex-node の build.rs は固定の本文、grimodex-db に build script は無く、Cargo.toml は build を指定しない", () => {
+  const body = mutate(
+    "electron/native/grimodex-node/build.rs",
+    "    napi_build::setup();\n",
+    '    napi_build::setup();\n    println!("cargo:rustc-cfg=g\\x78");\n',
+  );
+  assert.ok(checkCargoFeatures(body).length > 0);
+  const dbScript = {
+    ...real,
+    "src-tauri/crates/grimodex-db/build.rs": "fn main() {}\n",
+  };
+  assert.ok(checkCargoFeatures(dbScript).length > 0);
+  for (const file of [PATHS.nodeCargo, PATHS.dbCargo]) {
+    const anchor = real[file].match(/^\[package\]\n/m)[0];
+    const sources = mutate(file, anchor, `${anchor}build = "gen.rs"\n`);
+    assert.ok(
+      checkCargoFeatures(sources).some((violation) =>
+        /build script/.test(violation.message),
+      ),
+      file,
+    );
+  }
+  const missing = { ...real };
+  delete missing["electron/native/grimodex-node/build.rs"];
+  assert.ok(checkCargoFeatures(missing).length > 0);
+});

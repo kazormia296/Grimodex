@@ -465,6 +465,10 @@ const FEATURE_WORD = new RegExp(
 
 const BUILD_COMMAND = /\b(?:cargo|napi)\s+build\b|--release\b/;
 
+const NODE_BUILD_SCRIPT = "electron/native/grimodex-node/build.rs";
+const NODE_BUILD_SCRIPT_BODY = "fn main() { napi_build::setup(); }";
+const DB_BUILD_SCRIPT = "src-tauri/crates/grimodex-db/build.rs";
+
 export function checkCargoFeatures(sources) {
   const violations = [];
   const fail = (file, message) =>
@@ -578,6 +582,26 @@ export function checkCargoFeatures(sources) {
         "a script outside the evaluation tools names the evaluation feature",
       );
     }
+  }
+  // E-11: no build script can turn the feature into another cfg. The
+  // grimodex-node build script is fixed, grimodex-db has none, and neither
+  // Cargo.toml names another one.
+  const buildScript = sources[NODE_BUILD_SCRIPT];
+  if (
+    buildScript === undefined ||
+    squash(maskRust(buildScript, { maskStrings: false })) !==
+      squash(NODE_BUILD_SCRIPT_BODY)
+  )
+    fail(
+      NODE_BUILD_SCRIPT,
+      "the grimodex-node build script must be exactly `fn main() { napi_build::setup(); }`",
+    );
+  if (sources[DB_BUILD_SCRIPT] !== undefined)
+    fail(DB_BUILD_SCRIPT, "grimodex-db must have no build script");
+  for (const file of [PATHS.nodeCargo, PATHS.dbCargo]) {
+    const text = sources[file];
+    if (text !== undefined && /^\s*build\s*=/m.test(text))
+      fail(file, "the Cargo.toml must not name a build script (`build =`)");
   }
   return violations;
 }
@@ -821,6 +845,9 @@ export function stripJsComments(source) {
   return out;
 }
 
+/** E-10: the capability object the release check asserts (squashed). */
+const RELEASE_CAPABILITIES = `licensing: true, legacyKeyringMigration: true, nir1FinalRequestEval: false, ${NODE_CAPABILITY_FLAG}: false,`;
+
 export function checkBuildCapabilities(sources) {
   const violations = [];
   const fail = (file, message) =>
@@ -854,6 +881,14 @@ export function checkBuildCapabilities(sources) {
       fail(
         PATHS.verifyRelease,
         `the release check's capability object has a duplicate or spread key: ${duplicates.join(", ") || "..."}`,
+      );
+    }
+    // E-10: and nothing else (a computed key `["nir1GraphEval"]: true` would
+    // pass the key scan, M4b): the object is exactly the fixed one.
+    if (squash(literal?.[1] ?? "") !== squash(RELEASE_CAPABILITIES)) {
+      fail(
+        PATHS.verifyRelease,
+        "the release check's capability object must be exactly the fixed four keys and values",
       );
     }
     if (
