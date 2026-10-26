@@ -2653,7 +2653,7 @@ export function registerIpcRouter(
           }
         }
         if (isNir1LocalGenerationCommand(cmd) && nir1LocalContext) {
-          nir1LocalGeneration.observePublished(
+          envelope = nir1LocalGeneration.settle(
             cmd,
             nir1LocalContext,
             dispatchArgs,

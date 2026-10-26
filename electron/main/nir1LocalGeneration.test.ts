@@ -202,6 +202,8 @@ interface FakeNative {
   calls: Array<{ method: string; args: unknown[] }>;
   answer: Record<string, unknown>;
   settings: unknown;
+  /** A method waits on this before answering (a pending Native call). */
+  hold: Partial<Record<string, Promise<void>>>;
 }
 
 const NATIVE_METHODS = [
@@ -248,6 +250,7 @@ function fakeNative(restricted: boolean): FakeNative {
       provider: "openai-compatible",
       activeOpenaiCompatibleEndpointId: "local-1",
     },
+    hold: {},
     backend: undefined as never,
   };
   const record =
@@ -262,6 +265,7 @@ function fakeNative(restricted: boolean): FakeNative {
     invalidateProfileEgressCallers: () => undefined,
     getAiSettings: async () => {
       native.calls.push({ method: "getAiSettings", args: [] });
+      await native.hold.getAiSettings;
       return JSON.stringify(native.settings);
     },
     mainOpenPrePublicationGate: record("mainOpenPrePublicationGate"),
@@ -273,6 +277,7 @@ function fakeNative(restricted: boolean): FakeNative {
   for (const method of NATIVE_METHODS) {
     backend[method] = async (...args: unknown[]) => {
       native.calls.push({ method, args });
+      await native.hold[method];
       return JSON.stringify(native.answer[method]);
     };
   }
@@ -981,12 +986,13 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
       win,
       callerIdentity,
     });
+    const firstContext = context(first);
     expect(
-      await route.admit("nir1_local_conversation_list", context(first), {}),
+      await route.admit("nir1_local_conversation_list", firstContext, {}),
     ).toBeNull();
-    route.observePublished(
+    route.settle(
       "nir1_local_generation_start",
-      context(first),
+      firstContext,
       {},
       { ok: true, value: { status: "started", handle: HANDLE } },
     );
@@ -1064,9 +1070,12 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
     const sender = fakeSender(7);
     const win = fakeWindow(70, sender);
     const context = { sender, win, callerIdentity: issued };
+    expect(
+      await route.admit("nir1_local_conversation_list", context, {}),
+    ).toBeNull();
     const handleOf = (index: number) => index.toString(16).padStart(32, "0");
     for (let index = 0; index < 65; index++) {
-      route.observePublished(
+      route.settle(
         "nir1_local_generation_start",
         context,
         {},
@@ -1089,5 +1098,96 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
         handle: handleOf(64),
       }),
     ).toBeNull();
+  });
+});
+
+describe("races between a pending start and the sender's end (lifecycle review P1-1, P2-2)", () => {
+  function deferred(): { promise: Promise<void>; release: () => void } {
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { promise, release };
+  }
+  const stops = (native: FakeNative) =>
+    callsOf(native, "mainNir1LocalGenerationCancelSender").length;
+
+  for (const end of ["destroyed", "closed"] as const) {
+    it(`a sender ${end} during Main's key verdict is refused before Native (RACE1)`, async () => {
+      const { native, invoke, sender, win } = await rig({
+        launch: activeLaunch(),
+      });
+      await invoke("nir1_local_conversation_list"); // binds the listeners
+      const pending = deferred();
+      native.hold.getAiSettings = pending.promise;
+      const started = invoke("nir1_local_generation_start", START);
+      await vi.waitFor(() =>
+        expect(callsOf(native, "getAiSettings")).toHaveLength(1),
+      );
+      if (end === "destroyed") {
+        sender.destroyed = true;
+        sender.emit("destroyed");
+      } else {
+        win.destroyed = true;
+        win.emit("closed");
+      }
+      pending.release();
+      expect(await started).toEqual({
+        ok: true,
+        value: { status: "unavailable", reason: "NIR1_LOCAL_SENDER_REFUSED" },
+      });
+      expect(callsOf(native, "nir1LocalGenerationStart")).toEqual([]);
+    });
+  }
+
+  it("a sender destroyed during Native's start: the handle is not returned and the generation is stopped (RACE3)", async () => {
+    const { native, invoke, sender } = await rig({ launch: activeLaunch() });
+    await invoke("nir1_local_conversation_list");
+    const pending = deferred();
+    native.hold.nir1LocalGenerationStart = pending.promise;
+    const started = invoke("nir1_local_generation_start", START);
+    await vi.waitFor(() =>
+      expect(callsOf(native, "nir1LocalGenerationStart")).toHaveLength(1),
+    );
+    sender.destroyed = true;
+    sender.emit("destroyed");
+    const stopsAtDestroy = stops(native);
+    pending.release();
+    const envelope = await started;
+    expect(JSON.stringify(envelope)).not.toContain(HANDLE);
+    // Stopped again once Native's entry exists.
+    expect(stops(native)).toBeGreaterThan(stopsAtDestroy);
+  });
+
+  it("a window closed during Native's start stops the generation too (RACE3)", async () => {
+    const { native, invoke, win } = await rig({ launch: activeLaunch() });
+    await invoke("nir1_local_conversation_list");
+    const pending = deferred();
+    native.hold.nir1LocalGenerationStart = pending.promise;
+    const started = invoke("nir1_local_generation_start", START);
+    await vi.waitFor(() =>
+      expect(callsOf(native, "nir1LocalGenerationStart")).toHaveLength(1),
+    );
+    win.destroyed = true;
+    win.emit("closed");
+    const stopsAtClose = stops(native);
+    pending.release();
+    expect(JSON.stringify(await started)).not.toContain(HANDLE);
+    expect(stops(native)).toBeGreaterThan(stopsAtClose);
+  });
+
+  it("a start answer Main refuses as malformed still stops what Native started (RACE4)", async () => {
+    const { native, invoke } = await rig({ launch: activeLaunch() });
+    native.answer.nir1LocalGenerationStart = {
+      status: "started",
+      handle: HANDLE,
+      extra: 1,
+    };
+    const envelope = await invoke("nir1_local_generation_start", START);
+    expect(envelope.ok).toBe(false);
+    expect(stops(native)).toBe(1);
+    // A start refused before Native (a malformed request) stops nothing.
+    await invoke("nir1_local_generation_start", { ...START, purpose: "x" });
+    expect(stops(native)).toBe(1);
   });
 });

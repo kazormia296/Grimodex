@@ -7763,7 +7763,19 @@ function requireNir1LocalResultKeys(
 }
 
 function nir1LocalResultError(command: string, detail: string): Error {
-  return new Error(`invalid result for command \`${command}\`: ${detail}`);
+  return new Error(`${nir1LocalResultRejectionPrefix(command)} ${detail}`);
+}
+
+function nir1LocalResultRejectionPrefix(command: string): string {
+  return `invalid result for command \`${command}\`:`;
+}
+
+/** Whether `error` is Main's refusal of Native's answer to `command`. */
+export function isNir1LocalResultRejection(
+  command: Nir1LocalGenerationCommand,
+  error: string,
+): boolean {
+  return error.startsWith(nir1LocalResultRejectionPrefix(command));
 }
 
 function nir1LocalResultRecord(raw: string, command: string): CommandArgs {

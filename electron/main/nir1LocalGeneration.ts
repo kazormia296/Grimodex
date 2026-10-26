@@ -26,6 +26,7 @@ import path from "node:path";
 
 import {
   isNir1LocalGenerationCommand,
+  isNir1LocalResultRejection,
   isNir1LocalWireId,
   NIR1_LOCAL_MAIN_KEY_VERDICT,
   nir1LocalRefusalValue,
@@ -213,13 +214,19 @@ export interface Nir1LocalGenerationRoute {
     context: Nir1LocalInvokeContext,
     dispatchArgs: Record<string, unknown>,
   ): Promise<Envelope | null>;
-  /** After the completion check published `envelope`: keeps the bindings. */
-  observePublished(
+  /**
+   * After the completion check, with the envelope the renderer would get:
+   * keeps the bindings, and for a start whose sender ended (destroyed,
+   * closed, stopped) while it was pending, or whose answer Main refused as
+   * malformed, stops what Native started and does not return the handle
+   * (DR-DD1B-7, DR-DD1B-15). Returns the envelope to publish.
+   */
+  settle(
     command: Nir1LocalGenerationCommand,
     context: Nir1LocalInvokeContext,
     args: Record<string, unknown>,
     envelope: Envelope,
-  ): void;
+  ): Envelope;
   /**
    * The completion check refused a start's result: the handle is not
    * returned, so the sender's generations are stopped (DR-DD1B-7).
@@ -257,9 +264,15 @@ export function createNir1LocalGenerationRoute(
   const boundSenders = new WeakSet<object>();
   const boundWindows = new WeakSet<object>();
   const liveSenders = new Set<number>();
+  /** How many times each sender's generations were stopped. */
+  const stopCounts = new Map<number, number>();
+  /** The sender's stop count when an invoke was admitted. */
+  const admittedAt = new WeakMap<Nir1LocalInvokeContext, number>();
+  const stopCount = (senderId: number): number => stopCounts.get(senderId) ?? 0;
 
   /** Not a withdrawal: the owner stops, the captures stay (DR-DD1A-7). */
   const cancelSender = (senderId: number): void => {
+    stopCounts.set(senderId, stopCount(senderId) + 1);
     for (const [handle, bound] of handles) {
       if (bound.senderId === senderId) handles.delete(handle);
     }
@@ -277,7 +290,8 @@ export function createNir1LocalGenerationRoute(
     try {
       // Activation, unavailability and the end of an activation replace the
       // caller identities; stop what the old identities started. Never
-      // throws (a throwing listener would fail stage 2).
+      // throws (a throwing listener would fail stage 2). The router is
+      // registered once per process, so the unsubscribe is not kept.
       profileEgress?.onStatusChange?.(() => {
         try {
           for (const senderId of [...liveSenders]) cancelSender(senderId);
@@ -337,6 +351,23 @@ export function createNir1LocalGenerationRoute(
     }
   };
 
+  /** The sender ended or was stopped since this invoke was admitted. */
+  const stale = (context: Nir1LocalInvokeContext): boolean =>
+    context.sender.isDestroyed() ||
+    !context.win ||
+    context.win.isDestroyed() ||
+    !liveSenders.has(context.sender.id) ||
+    admittedAt.get(context) !== stopCount(context.sender.id);
+
+  const bindHandle = (handle: string, bound: BoundHandle): void => {
+    handles.set(handle, bound);
+    while (handles.size > NIR1_LOCAL_BOUND_HANDLE_LIMIT) {
+      const victim = handles.keys().next().value;
+      if (victim === undefined) break;
+      handles.delete(victim);
+    }
+  };
+
   return {
     open,
 
@@ -368,6 +399,7 @@ export function createNir1LocalGenerationRoute(
       }
       lastIdentity.set(sender.id, callerIdentity);
       bindLifecycle(sender, win);
+      admittedAt.set(context, stopCount(sender.id));
 
       if (
         command === "nir1_local_generation_continue" ||
@@ -392,6 +424,10 @@ export function createNir1LocalGenerationRoute(
         Reflect.deleteProperty(dispatchArgs, NIR1_LOCAL_MAIN_KEY_VERDICT);
         if (!backend) return null; // the contract answers backend-unavailable
         const verdict = await keyVerdict();
+        // The sender may have ended while the verdict was pending (RACE1):
+        // its stop already ran and would not reach a start made now.
+        if (stale(context))
+          return refusal(command, "NIR1_LOCAL_SENDER_REFUSED");
         if (!verdict)
           return refusal(command, "NIR1_LOCAL_ENDPOINT_UNAVAILABLE");
         Object.defineProperty(dispatchArgs, NIR1_LOCAL_MAIN_KEY_VERDICT, {
@@ -403,55 +439,71 @@ export function createNir1LocalGenerationRoute(
       return null;
     },
 
-    observePublished(command, context, args, envelope) {
-      if (!envelope.ok || !isRecord(envelope.value)) return;
-      const value = envelope.value;
+    settle(command, context, args, envelope) {
       const { sender, win, callerIdentity } = context;
       if (command === "nir1_local_generation_start") {
-        if (value.status !== "started" || typeof value.handle !== "string") {
-          return;
+        if (!envelope.ok) {
+          // Native answered but Main refused the answer's shape: a handle
+          // may exist that nobody will reach (RACE4).
+          if (isNir1LocalResultRejection(command, envelope.error)) {
+            cancelSender(sender.id);
+          }
+          return envelope;
         }
-        if (!win) return;
-        handles.set(value.handle, {
+        const value = envelope.value;
+        if (
+          !isRecord(value) ||
+          value.status !== "started" ||
+          typeof value.handle !== "string"
+        ) {
+          return envelope;
+        }
+        if (!win || stale(context)) {
+          // The sender ended (or was stopped) while Native started (RACE3):
+          // its stop ran before Native's entry existed. Stop again and do
+          // not return the handle.
+          cancelSender(sender.id);
+          return refusal(command, "NIR1_LOCAL_SENDER_REFUSED");
+        }
+        bindHandle(value.handle, {
           senderId: sender.id,
           windowId: win.id,
           identity: callerIdentity,
           withdrawalPending: false,
         });
-        while (handles.size > NIR1_LOCAL_BOUND_HANDLE_LIMIT) {
-          const oldest = handles.keys().next().value;
-          if (oldest === undefined) break;
-          handles.delete(oldest);
-        }
-        return;
+        return envelope;
       }
+      if (!envelope.ok || !isRecord(envelope.value)) return envelope;
+      const value = envelope.value;
       const handle = args.handle;
-      if (typeof handle !== "string") return;
+      if (typeof handle !== "string") return envelope;
       const bound = handles.get(handle);
-      if (!bound) return;
+      if (!bound) return envelope;
       if (
         value.status === "refused" &&
         (value.reason === "NIR1_LOCAL_HANDLE_NOT_FOUND" ||
           value.reason === "NIR1_LOCAL_CALLER_REVOKED")
       ) {
         handles.delete(handle);
-        return;
+        return envelope;
       }
       if (command === "nir1_local_generation_cancel") {
-        if (value.status === "ok") bound.withdrawalPending = false;
-        else if (value.reason === "NIR1_LOCAL_CANCEL_CAPTURE_FAILED") {
+        if (value.status === "ok") {
+          bound.withdrawalPending = false;
+        } else if (value.reason === "NIR1_LOCAL_CANCEL_CAPTURE_FAILED") {
           bound.withdrawalPending = true;
         }
-        return;
+        return envelope;
       }
       if (
         command === "nir1_local_generation_continue" &&
-        value.status === "ok" &&
-        value.drained === true &&
-        !bound.withdrawalPending
+        value.status === "ok"
       ) {
-        handles.delete(handle);
+        if (value.drained === true && !bound.withdrawalPending) {
+          handles.delete(handle);
+        }
       }
+      return envelope;
     },
 
     onUnpublished(command, senderId) {
