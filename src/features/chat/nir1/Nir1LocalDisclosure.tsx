@@ -17,6 +17,7 @@ import {
 } from "./nir1LocalDisclosureItems";
 import { ensureNir1LocalGenerationTranslations } from "./nir1LocalGenerationTranslations";
 import { nir1LocalRoutePreview } from "./nir1LocalRoutePreview";
+import type { Nir1LocalPurpose } from "./nir1LocalGenerationApi";
 
 ensureNir1LocalGenerationTranslations();
 
@@ -30,11 +31,14 @@ ensureNir1LocalGenerationTranslations();
  */
 export default function Nir1LocalDisclosure({
   placement,
+  purpose,
 }: {
   readonly placement: Nir1LocalDisclosurePlacement;
+  /** The generation screen's purpose (placement 3, K5/3:438). */
+  readonly purpose?: Nir1LocalPurpose;
 }): ReactElement | null {
   if (placement === 5) return <Nir1LocalRestrictedSummary />;
-  return <Nir1LocalDisclosureBlock placement={placement} />;
+  return <Nir1LocalDisclosureBlock placement={placement} purpose={purpose} />;
 }
 
 function ItemList({
@@ -99,8 +103,10 @@ function RouteSummary() {
 
 function Nir1LocalDisclosureBlock({
   placement,
+  purpose,
 }: {
   readonly placement: Exclude<Nir1LocalDisclosurePlacement, 5>;
+  readonly purpose?: Nir1LocalPurpose;
 }) {
   const { t } = useTranslation();
   const [showAll, setShowAll] = useState(false);
@@ -114,6 +120,13 @@ function Nir1LocalDisclosureBlock({
       <p className="break-words">
         {t(`nir1Local.disclosure.placementLead.${placement}`)}
       </p>
+      {purpose !== undefined && (
+        <p data-testid="nir1-local-purpose" data-nir1-local-purpose={purpose}>
+          {t("nir1Local.disclosure.purposeLabel")}
+          {t("nir1Local.disclosure.separator")}
+          {t(`nir1Local.panel.purpose.${purpose}`)}
+        </p>
+      )}
       {NIR1_LOCAL_PLACEMENT_SHOWS_ROUTE[placement] && <RouteSummary />}
       <ItemList
         items={

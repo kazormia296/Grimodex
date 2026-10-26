@@ -20,6 +20,8 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
   ja: {
     disclosure: {
       title: "ローカル生成の送信について",
+      purposeLabel: "用途",
+      separator: "：",
       placementLead: {
         "1": "ここで OpenAI 互換の接続先（127.0.0.1 か [::1] の port）と model を設定すると、ローカル生成（Writing と Review）の送信先になります。接続先の設定が、送信の意思表示として扱われます。",
         "2": "ローカル生成は、Writing が「チャット」と「本文書き込み」、Review が「チャット」と「分析」の項目に従います。どちらかを切った用途は送りません。",
@@ -190,6 +192,8 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
   en: {
     disclosure: {
       title: "About sending in local generation",
+      purposeLabel: "Purpose",
+      separator: ": ",
       placementLead: {
         "1": "The OpenAI-compatible endpoint (a port of 127.0.0.1 or [::1]) and the model set here become the destination of local generation (Writing and Review). Setting the endpoint is treated as your intention to send.",
         "2": "Local generation follows the Chat and Body writing items for Writing, and the Chat and Analysis items for Review. A purpose with either item turned off is not sent.",

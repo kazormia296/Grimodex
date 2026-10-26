@@ -162,6 +162,15 @@ describe("the generation screen of a local conversation", () => {
     expect(screen.getByTestId("nir1-local-route").textContent).toContain(
       "http://127.0.0.1:8080/v1/chat/completions",
     );
+    // K5/3:438: the purpose is part of the permanent line (review fix 5).
+    expect(
+      screen
+        .getByTestId("nir1-local-purpose")
+        .getAttribute("data-nir1-local-purpose"),
+    ).toBe("writing");
+    expect(screen.getByTestId("nir1-local-purpose").textContent).toContain(
+      ja.panel.purpose.writing,
+    );
     await screen.findByText("入力の本文");
     expect(calls("nir1_local_conversation_read")).toEqual([
       { conversationId: WRITING, offset: 0, limit: 64 },

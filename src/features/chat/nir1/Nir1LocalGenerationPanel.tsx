@@ -142,7 +142,7 @@ export default function Nir1LocalGenerationPanel({
     >
       {localConversationId !== null && activePurpose !== null && (
         <>
-          <Nir1LocalDisclosure placement={3} />
+          <Nir1LocalDisclosure placement={3} purpose={activePurpose} />
           <ActivePurposeGate purpose={activePurpose} />
           {turn && <TurnView turn={turn} />}
           {notice !== null && (
