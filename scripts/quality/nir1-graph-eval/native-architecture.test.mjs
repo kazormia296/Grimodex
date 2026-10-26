@@ -450,3 +450,78 @@ test("a release check whose expectations live only in comments is refused", () =
   );
   assert.ok(checkBuildCapabilities(commentedExports).length > 0);
 });
+
+test("A-1: the product file opens the gate only in `open_publication_for_eval`, and only `record_registration` calls it (M1, M2)", () => {
+  const anchor =
+    "    pub(crate) fn cache_occupied_for_eval(&self) -> bool {\n        lock(&self.shared.cache).is_some()\n";
+  for (const inserted of [
+    // M1: a second store in another `*_for_eval` method of the eval block.
+    "        self.shared.publication_open_for_eval.store(true, Ordering::SeqCst);\n",
+    "        self.shared\n            .publication_open_for_eval\n            .store(true, Ordering::SeqCst);\n",
+    "        self.shared.publication_open_for_eval.fetch_or(true, Ordering::SeqCst);\n",
+    "        let _ = self.shared.publication_open_for_eval.swap(true, Ordering::SeqCst);\n",
+  ]) {
+    const sources = mutate(
+      PATHS.nodeProduct,
+      anchor,
+      anchor.replace(
+        "    pub(crate) fn cache_occupied_for_eval(&self) -> bool {\n",
+        (head) => `${head}${inserted}`,
+      ),
+    );
+    assert.ok(checkEvalFeatureAllowlist(sources).length > 0, inserted);
+  }
+  // M2: another method of the block calls the opener.
+  for (const call of [
+    "self.open_publication_for_eval();",
+    "Self::open_publication_for_eval(self);",
+    "Nir1GraphProductOwner::open_publication_for_eval(self);",
+  ]) {
+    const sources = mutate(
+      PATHS.nodeProduct,
+      "    pub(crate) fn slot_kind_for_eval(&self) -> GraphSlotKind {\n        self.slot_kind()\n",
+      `    pub(crate) fn slot_kind_for_eval(&self) -> GraphSlotKind {\n        ${call}\n        self.slot_kind()\n`,
+    );
+    assert.match(
+      checkEvalFeatureAllowlist(sources)
+        .map((violation) => violation.message)
+        .join("\n"),
+      /open_publication_for_eval/,
+      call,
+    );
+  }
+  // The store moved out of the opener (the opener left empty) is refused too.
+  const moved = mutate(
+    PATHS.nodeProduct,
+    "        self.shared\n            .publication_open_for_eval\n            .store(true, Ordering::SeqCst);\n    }\n",
+    "    }\n",
+  );
+  assert.ok(checkEvalFeatureAllowlist(moved).length > 0);
+});
+
+test("A-1: a build script that turns the evaluation feature into another cfg is refused (M5b)", () => {
+  for (const body of [
+    'fn main() {\n    napi_build::setup();\n    if std::env::var_os("CARGO_FEATURE_NIR1_GRAPH_EVAL").is_some() {\n        println!("cargo:rustc-cfg=gx");\n    }\n}\n',
+    'fn main() {\n    napi_build::setup();\n    if std::env::var("CARGO_CFG_FEATURE").unwrap_or_default().contains("graph") {\n        println!("cargo:rustc-cfg=gx");\n    }\n}\n',
+  ]) {
+    const sources = {
+      ...real,
+      "electron/native/grimodex-node/build.rs": body,
+    };
+    assert.ok(checkEvalFeatureAllowlist(sources).length > 0, body);
+  }
+});
+
+test("A-1: a release check with a duplicate capability key is refused (M4)", () => {
+  const duplicated = mutate(
+    PATHS.verifyRelease,
+    "    nir1GraphEval: false,\n",
+    "    nir1GraphEval: false,\n    nir1GraphEval: true,\n",
+  );
+  assert.match(
+    checkBuildCapabilities(duplicated)
+      .map((violation) => violation.message)
+      .join("\n"),
+    /duplicate/,
+  );
+});

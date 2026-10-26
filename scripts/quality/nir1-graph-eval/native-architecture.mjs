@@ -12,7 +12,10 @@
 //                            snippets or blocks; the hook functions
 //                            (`publication_open`, `begin`, `begin_deferred`,
 //                            `begin_probed`) have a fixed body;
-//                            `PRODUCT_GRAPH_PUBLISHED` stays false;
+//                            `PRODUCT_GRAPH_PUBLISHED` stays false; the gate
+//                            field is stored only by `open_publication_for_eval`
+//                            (fixed body) and only `record_registration` calls
+//                            it; no build script reads the feature (CP-4 S1e A-1);
 //   cargo-features           the feature is defined only in the two
 //                            Cargo.toml files, enables only the grimodex-db
 //                            feature of the same name, is not in `default`,
@@ -109,7 +112,62 @@ const EVAL_IDENTIFIERS = Object.freeze([
   "eval_notes",
   "eval_stamp",
   "note_busy_cause",
+  // A build script that reads the feature and emits another cfg (M5b), or
+  // reads the feature list, would compile evaluation code outside the
+  // allowlisted `#[cfg(feature)]` sites.
+  "NIR1_GRAPH_EVAL",
+  "CARGO_CFG_FEATURE",
 ]);
+
+/** The opener of the gate (product file) and its fixed body (A-1). */
+const GATE_OPENER = "open_publication_for_eval";
+const GATE_OPENER_BODY =
+  "self.shared.publication_open_for_eval.store(true, Ordering::SeqCst);";
+const GATE_FIELD = "publication_open_for_eval";
+
+/** Uses of `name` that are not its own `fn` definition. */
+function identifierUses(masked, name) {
+  return [...masked.matchAll(new RegExp(`(?<!\\bfn\\s+)\\b${name}\\b`, "g"))];
+}
+
+/**
+ * The gate field of the product file: declared, initialised, loaded, read by
+ * its getter, and stored `true` exactly once (in the opener's fixed body).
+ * Any other access (a second store, `swap`, `fetch_or`, a borrow) is refused.
+ */
+function gateFieldViolations(product) {
+  const masked = maskRust(product, { maskStrings: true });
+  const problems = [];
+  let stores = 0;
+  for (const match of identifierUses(masked, GATE_FIELD)) {
+    const after = masked.slice(match.index + match[0].length);
+    const before = masked.slice(0, match.index);
+    if (/^\s*:\s*AtomicBool\b/.test(after)) continue;
+    if (/^\s*\.\s*load\s*\(\s*Ordering::SeqCst\s*\)/.test(after)) continue;
+    if (/\.\s*$/.test(before) && /^\s*\(\s*\)/.test(after)) continue;
+    if (
+      /^\s*\.\s*store\s*\(\s*true\s*,\s*Ordering::SeqCst\s*,?\s*\)/.test(after)
+    ) {
+      stores += 1;
+      continue;
+    }
+    problems.push(
+      `\`${GATE_FIELD}\` is used other than declared, loaded or stored by \`${GATE_OPENER}\` (line ${before.split("\n").length})`,
+    );
+  }
+  if (stores !== 1)
+    problems.push(
+      `\`${GATE_FIELD}\` must be stored exactly once, by \`${GATE_OPENER}\` (found ${stores})`,
+    );
+  const body = functionBody(product, GATE_OPENER);
+  if (body === null || squash(body) !== squash(GATE_OPENER_BODY))
+    problems.push(`\`fn ${GATE_OPENER}\` must have exactly its fixed body`);
+  if (identifierUses(masked, GATE_OPENER).length !== 0)
+    problems.push(
+      `the product file must not call \`${GATE_OPENER}\` (only \`record_registration\` does)`,
+    );
+  return problems;
+}
 
 // ------------------------------------------------------------- helpers
 
@@ -343,6 +401,8 @@ export function checkEvalFeatureAllowlist(sources) {
         }
       }
     }
+    for (const message of gateFieldViolations(product))
+      fail(PATHS.nodeProduct, message);
     for (const [name, expected] of Object.entries(FIXED_BODIES)) {
       const body = functionBody(product, name);
       if (body === null || squash(body) !== squash(expected)) {
@@ -692,11 +752,11 @@ export function checkNotReachable(sources) {
     // Only `record_registration` opens the gate, and only `register` (and the
     // tests) call it.
     const recordBody = functionBody(mod, "record_registration");
-    const opens = [...masked.matchAll(/\.open_publication_for_eval\(/g)];
+    const opens = identifierUses(masked, GATE_OPENER);
     if (
       opens.length !== 1 ||
       recordBody === null ||
-      !/\.open_publication_for_eval\(/.test(recordBody)
+      identifierUses(recordBody, GATE_OPENER).length !== 1
     ) {
       fail(
         PATHS.nodeEvalMod,
@@ -718,10 +778,10 @@ export function checkNotReachable(sources) {
   for (const [file, text] of Object.entries(sources)) {
     if (!isEvalModuleFile(file) || file === PATHS.nodeEvalMod) continue;
     if (file.endsWith("/tests.rs")) continue;
+    const masked = maskRust(text, { maskStrings: true });
     if (
-      /\.open_publication_for_eval\(|\brecord_registration\(/.test(
-        maskRust(text, { maskStrings: true }),
-      )
+      identifierUses(masked, GATE_OPENER).length > 0 ||
+      /\brecord_registration\b/.test(masked)
     ) {
       fail(
         file,
@@ -779,6 +839,21 @@ export function checkBuildCapabilities(sources) {
       fail(
         PATHS.verifyRelease,
         `the release check must expect ${NODE_CAPABILITY_FLAG}: false`,
+      );
+    }
+    // A duplicate key would let a later `nir1GraphEval: true` win (M4).
+    const literal =
+      /assert\.deepEqual\(\s*JSON\.parse\(\s*await\s+backend\.getNativeBuildCapabilities\(\)\s*\)\s*,\s*\{([^{}]*)\}/.exec(
+        code,
+      );
+    const keys = [
+      ...(literal?.[1] ?? "").matchAll(/([A-Za-z0-9_$]+|"[^"]*"|'[^']*')\s*:/g),
+    ].map((match) => match[1].replace(/^["']|["']$/g, ""));
+    const duplicates = keys.filter((key, at) => keys.indexOf(key) !== at);
+    if (duplicates.length > 0 || /\.\.\./.test(literal?.[1] ?? "")) {
+      fail(
+        PATHS.verifyRelease,
+        `the release check's capability object has a duplicate or spread key: ${duplicates.join(", ") || "..."}`,
       );
     }
     if (
