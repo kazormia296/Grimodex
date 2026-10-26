@@ -12,6 +12,7 @@ import {
   OBSERVATION_PREP_FILES,
   PLACEHOLDER,
   assertObservationPrepFormal,
+  formalReferenceErrors,
   authorDeclarationErrors,
   declarationAddendumErrors,
   loadObservationPrepContext,
@@ -1046,5 +1047,100 @@ test("integrator: the R5 check run is a narrow exception and the phases run R5 -
     observationPrepErrors(unfilled, frozenCtx).some((e) =>
       /r5CheckRecord/u.test(e),
     ),
+  );
+});
+
+test("S3v4: synthetic detection before S4, a bounded R5 check run, discarded R5 workspaces, two-stage S4", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(prep.stepOrder.phases, [
+    "r5-seed-pin-check",
+    "k64-freeze-commit",
+    "sp-synthetic-detection",
+    "s4-observation-prep-commit",
+    "sp-p4-seed-pin-parity",
+    "graph-arm-runs",
+  ]);
+  const late = clone(prep);
+  late.stepOrder.phases = [
+    "r5-seed-pin-check",
+    "k64-freeze-commit",
+    "s4-observation-prep-commit",
+    "sp-synthetic-detection",
+    "sp-p4-seed-pin-parity",
+    "graph-arm-runs",
+  ];
+  assert.ok(
+    observationPrepErrors(late, ctx).some((e) => /stepOrder\.phases/u.test(e)),
+  );
+  const decided = clone(prep);
+  decided.r5Gate.syntheticDetection.decidedIn = "after-s4";
+  assert.ok(
+    observationPrepErrors(decided, ctx).some((e) =>
+      /syntheticDetection/u.test(e),
+    ),
+  );
+
+  const r5 = (value) =>
+    value.r5Gate.exempt.find((row) => row.run === "r5-seed-pin-check");
+  assert.deepEqual(r5(prep).scope, [
+    "setup-through-seed-pin-step",
+    "product-db-read",
+  ]);
+  const setup = clone(prep);
+  r5(setup).scope = ["setup", "product-db-read"];
+  assert.ok(
+    observationPrepErrors(setup, ctx).some((e) => /r5-seed-pin-check/u.test(e)),
+  );
+  const maint = clone(prep);
+  r5(maint).forbids = r5(maint).forbids.filter(
+    (row) => row !== "maintenance-enable",
+  );
+  assert.ok(
+    observationPrepErrors(maint, ctx).some((e) => /r5-seed-pin-check/u.test(e)),
+  );
+
+  const reuse = clone(prep);
+  reuse.r5Gate.r5CheckWorkspace.reuseFor = ["graph-arm-runs"];
+  assert.ok(
+    observationPrepErrors(reuse, ctx).some((e) => /r5CheckWorkspace/u.test(e)),
+  );
+  const noRecheck = clone(prep);
+  noRecheck.r5Gate.r5CheckWorkspace.recheckInLaterPhases = ["sp-p1"];
+  assert.ok(
+    observationPrepErrors(noRecheck, ctx).some((e) =>
+      /r5CheckWorkspace/u.test(e),
+    ),
+  );
+
+  const oneStage = clone(prep);
+  oneStage.s4Stages = ["s4"];
+  assert.ok(
+    observationPrepErrors(oneStage, ctx).some((e) => /s4Stages/u.test(e)),
+  );
+});
+
+test("S3v4-P3-3: referenced bytes sit in a strict ancestor of the frozen record's commit (S4a before S4b)", () => {
+  const head = "b".repeat(40);
+  const rows = [
+    { path: "evals/x.json", commit: "a".repeat(40), sha256: "c".repeat(64) },
+  ];
+  const git = {
+    blobSha: () => "c".repeat(64),
+    isAncestor: () => true,
+  };
+  assert.deepEqual(formalReferenceErrors(rows, head, git), []);
+  assert.ok(
+    formalReferenceErrors([{ ...rows[0], commit: head }], head, git).some((e) =>
+      /strict ancestor/u.test(e),
+    ),
+  );
+  assert.ok(
+    formalReferenceErrors(rows, head, { ...git, blobSha: () => "d".repeat(64) })
+      .length > 0,
+  );
+  assert.ok(
+    formalReferenceErrors(rows, head, { ...git, isAncestor: () => false })
+      .length > 0,
   );
 });

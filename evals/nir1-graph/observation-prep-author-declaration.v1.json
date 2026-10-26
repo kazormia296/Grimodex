@@ -243,6 +243,12 @@
       "sha256": "97bd4c3cf5f01a8c2d5447f0bc0da264728884418ecfcd09dd0282c0def2192b",
       "source": "session の scratchpad",
       "scope": "verdict と findings"
+    },
+    {
+      "path": "scratchpad/s3/observation-prep-review.v4.json（S3 の 4 回目のレビューの記録。実測値を含まない）",
+      "sha256": "4cd3ea8c6ae0277482512e1af7bd022e1f849507b4dfb5309b803ab910b55718",
+      "source": "session の scratchpad",
+      "scope": "verdict と findings"
     }
   ],
   "forbiddenFilesNotRead": true,
@@ -272,6 +278,10 @@
     {
       "at": "2026-10-27",
       "reason": "integrator の順序の決定（① R5 の照合の run → ② K6/4 の凍結 → ③ S4 → ④ SP-P4 と合成 → ⑤ Graph arm）を記録と validator に入れた。新しく読んだ file はなく、Graph の実行出力は読んでいない。"
+    },
+    {
+      "at": "2026-10-27",
+      "reason": "S3 の 4 回目のレビュー（P2 1、P3 3）への対応。Graph の実行出力は読んでいない。"
     }
   ]
 }

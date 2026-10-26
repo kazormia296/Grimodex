@@ -149,7 +149,10 @@ const R5_EXEMPT = Object.freeze([
   "r5-seed-pin-check",
 ]);
 /** The R5 check run: setup and a DB read only (integrator; K6/4 :317). */
-const R5_CHECK_SCOPE = Object.freeze(["setup", "product-db-read"]);
+const R5_CHECK_SCOPE = Object.freeze([
+  "setup-through-seed-pin-step",
+  "product-db-read",
+]);
 const R5_CHECK_FORBIDS = Object.freeze([
   "graph-arm",
   "rir-query",
@@ -157,13 +160,23 @@ const R5_CHECK_FORBIDS = Object.freeze([
   "diagnostic",
   "trace",
   "v10-ready-probe",
+  "maintenance-enable",
+  "setup-timeline",
+  "typed-revision-prepare",
+  "b-graph-index-build",
+  "chronicle-index-build",
+  "index-state-record",
 ]);
-/** ① R5 -> ② K6/4 freeze -> ③ S4 -> ④ SP-P4 and synthetic -> ⑤ Graph arm. */
+/**
+ * ① R5 -> ② K6/4 freeze -> ②' synthetic detection (node tests, no runtime)
+ * -> ③ S4 (S4a bytes, S4b fill and freeze) -> ④ SP-P4 -> ⑤ Graph arm.
+ */
 const PHASES = Object.freeze([
   "r5-seed-pin-check",
   "k64-freeze-commit",
+  "sp-synthetic-detection",
   "s4-observation-prep-commit",
-  "sp-p4-and-synthetic-detection",
+  "sp-p4-seed-pin-parity",
   "graph-arm-runs",
 ]);
 /** The order of the setup and measurement steps (SP/1 設計; K2/4 :406-408). */
@@ -1351,6 +1364,43 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       `r5Gate.exempt r5-seed-pin-check must be setup and product-db-read only and forbid ${R5_CHECK_FORBIDS.join(", ")}`,
     );
+  if (
+    r5Check &&
+    (typeof r5Check.stopsAt?.graphCases !== "string" ||
+      !r5Check.stopsAt.graphCases.includes("maintenance") ||
+      typeof r5Check.stopsAt?.g01 !== "string" ||
+      !r5Check.stopsAt.g01.includes("typed Revision"))
+  )
+    errors.push(
+      "r5Gate.exempt r5-seed-pin-check must stop after the seed pin step (before maintenance; G-01 before typed Revision prepare)",
+    );
+  const workspace = prep.r5Gate?.r5CheckWorkspace;
+  if (
+    !isObject(workspace) ||
+    workspace.disposition !== "discard" ||
+    !same(workspace.reuseFor, []) ||
+    !same(workspace.recheckInLaterPhases, ["sp-p1", "sp-p3-r5"]) ||
+    workspace.onMismatch !== "[precheck]" ||
+    typeof workspace.rule !== "string"
+  )
+    errors.push(
+      "r5Gate.r5CheckWorkspace must discard the R5 check workspaces and re-check SP-P1 and R5 in new workspaces, [precheck] on mismatch (S3v4-P3-2)",
+    );
+  if (
+    prep.r5Gate?.syntheticDetection?.decidedIn !==
+    "sp-synthetic-detection-before-s4"
+  )
+    errors.push(
+      "r5Gate.syntheticDetection.decidedIn must be sp-synthetic-detection-before-s4 (S3v4-P2-1)",
+    );
+  if (
+    !same(prep.s4Stages, ["s4a-bytes", "s4b-fill-and-freeze"]) ||
+    typeof prep.s4StagesRule !== "string" ||
+    !String(prep.placeholderRule).includes("真の祖先")
+  )
+    errors.push(
+      "s4Stages must be s4a-bytes then s4b-fill-and-freeze, and placeholderRule must make the referenced commits strict ancestors (S3v4-P3-3)",
+    );
   const r5CheckRecord = prep.r5Gate?.r5CheckRecord;
   if (
     typeof r5CheckRecord !== "string" ||
@@ -1810,11 +1860,34 @@ function isAncestor(repoRoot, ancestor, head) {
 }
 
 /**
+ * Each referenced (path, commit, sha256): the commit holds those bytes and is
+ * a strict ancestor of `head` (the commit that froze the record cannot name
+ * its own hash; S4a holds the bytes, S4b fills the placeholders).
+ */
+export function formalReferenceErrors(rows, head, git) {
+  const errors = [];
+  for (const row of rows) {
+    if (row.commit === head)
+      errors.push(
+        `${row.path} is referenced at the record's own commit ${head}; it must be a strict ancestor (S4a before S4b)`,
+      );
+    if (git.blobSha(row.commit, row.path) !== row.sha256)
+      errors.push(`${row.path} at ${row.commit} is not the referenced bytes`);
+    if (!git.isAncestor(row.commit, head))
+      errors.push(`${row.commit} is not an ancestor of ${head}`);
+  }
+  return errors;
+}
+
+/**
  * The gate a formal CP-4 Graph run passes before its first query: every
  * document frozen and reviewed, no placeholder, and (git) each referenced
  * commit holds the referenced bytes and is an ancestor of `head`.
  */
-export async function assertObservationPrepFormal({ repoRoot, head = "HEAD" }) {
+export async function assertObservationPrepFormal({
+  repoRoot,
+  head: headRef = "HEAD",
+}) {
   const result = await validateNir1ObservationPrep({ repoRoot });
   if (result.errors.length > 0)
     throw new Error(
@@ -1841,13 +1914,19 @@ export async function assertObservationPrepFormal({ repoRoot, head = "HEAD" }) {
       sha256: SP1.sha256,
     },
   ];
-  for (const row of references) {
-    if (gitBlobSha(repoRoot, row.commit, row.path) !== row.sha256)
-      throw new Error(
-        `[precheck] ${row.path} at ${row.commit} is not the referenced bytes`,
-      );
-    if (!isAncestor(repoRoot, row.commit, head))
-      throw new Error(`[precheck] ${row.commit} is not an ancestor of ${head}`);
-  }
+  const head = execFileSync(
+    "git",
+    ["rev-parse", "--verify", `${headRef}^{commit}`],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  ).trim();
+  const errors = formalReferenceErrors(references, head, {
+    blobSha: (commit, file) => gitBlobSha(repoRoot, commit, file),
+    isAncestor: (ancestor, descendant) =>
+      isAncestor(repoRoot, ancestor, descendant),
+  });
+  if (errors.length > 0) throw new Error(`[precheck] ${errors.join("; ")}`);
   return { proceed: true };
 }

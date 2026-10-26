@@ -467,7 +467,7 @@
     {
       "token": "S4:sp-synthetic-detection-record",
       "field": "r5Gate.syntheticDetection.record",
-      "fill": "合成の記録による SP-N1〜N5、N9〜N13 の検出力の提示の記録（試験の commit と結果）の所在"
+      "fill": "②' の合成の記録による検出の実行の所在（S4 の前に存在する記録。試験の commit と結果）"
     },
     {
       "token": "S4:sp1-bytes-commit",
@@ -480,7 +480,7 @@
       "fill": "① の R5 の照合の run の記録の所在（S4 の前に存在する）"
     }
   ],
-  "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4 は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること、SP/1 の bytes が repo にあること）。S4 の placeholder はどれも S4 の時点で既にある commit か file を指す（S4 の子孫になるものは置かない）。CP-4 の候補の commit は S4 の子孫なので placeholder にせず、candidate.decidedIn のとおり S5 の台帳で決める。",
+  "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4b は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること、SP/1 の bytes が repo にあること）。S4 の placeholder はどれも S4b の時点で既にある commit か記録を指し、参照する commit は S4b の真の祖先にする（s4Stages。S4a で bytes、S4b で埋める）。S4b の子孫になるもの（CP-4 の候補の commit）は placeholder にせず、candidate.decidedIn のとおり S5 の台帳で決める。",
   "reviewPlan": "S3 の独立 reviewer が確かめること: d1 の (ii) と順序、d2 の正規の経路、d10 の mode と parity の数と比較の規則と fallback、samplePlan、traces の長さ・密度・maintenance・期待寄与の材料・承認の操作がないこと（K6/2 手順の 4 の固定と再利用）、k64Procedure の値と r1r4WaitMs の理由、registeredForReview、diagnosticRuns、preconditions（特に R5 の seed の pin）。 SP/1 の追加: seed の pin の addendum（13 variant の問いの Scene と seed が fixture の写しであること、置き場、SP-P1〜P5 と SP-N1〜N14 の対応表）、r5Gate の matchRequires と beforeFirstGatedRun、SP-P4 が r5Gate の例外に入る根拠、stepOrder。",
   "review": null,
   "r5Gate": {
@@ -507,23 +507,33 @@
       },
       {
         "run": "r5-seed-pin-check",
-        "scope": ["setup", "product-db-read"],
+        "scope": ["setup-through-seed-pin-step", "product-db-read"],
         "forbids": [
           "graph-arm",
           "rir-query",
           "evaluation-run",
           "diagnostic",
           "trace",
-          "v10-ready-probe"
+          "v10-ready-probe",
+          "maintenance-enable",
+          "setup-timeline",
+          "typed-revision-prepare",
+          "b-graph-index-build",
+          "chronicle-index-build",
+          "index-state-record"
         ],
-        "reason": "R5 の照合の run は、SP/1 の seed の pin の段を実行した variant ごとの workspace を setup で作り、製品の DB から問いの Scene の pin を読み戻して assertSeedPinsBeforeK64 と SP-P1 を当てるだけで、Graph の arm も R／IR の query も動かさない。K2/4 :418 の「Graph arm の観測」にも SP/1 の「足した pin を使う評価の run」にも当たらず、K6/4 :317 は R5 を K6/4 の凍結の前に済ませるとするので、K6/4 の凍結と S4（観測前の commit）より前に行う。評価、診断（SP-P4 を含む）、trace、V-10 の probe はこの例外に入らない。"
+        "reason": "R5 の照合の run は、SP/1 の seed の pin の段を実行した variant ごとの workspace を setup で作り、製品の DB から問いの Scene の pin を読み戻して assertSeedPinsBeforeK64 と SP-P1 を当てるだけで、Graph の arm も R／IR の query も動かさない。K2/4 :418 の「Graph arm の観測」にも SP/1 の「足した pin を使う評価の run」にも当たらず、K6/4 :317 は R5 を K6/4 の凍結の前に済ませるとするので、K6/4 の凍結と S4（観測前の commit）より前に行う。評価、診断（SP-P4 を含む）、trace、V-10 の probe はこの例外に入らない。 ① の setup は seed の pin の段と SP-P2 の記録までで止め、maintenance、setupTimeline、typed Revision、B の Graph index と Chronicle の Index の build を走らせず、Graph index、B の seal、IR の状態を記録しない（S3v4-P3-1）。",
+        "stopsAt": {
+          "graphCases": "seed の pin の段と SP-P2 の記録の直後、maintenance の有効化の前",
+          "g01": "seed の pin の段と SP-P2 の記録の直後、typed Revision の prepare の前"
+        }
       }
     ],
     "onFixtureRevision": "CP-0 が G-case の fixture を改版するか、SP/1 の段のほかに setup に段を足したら、新しい fixture の sha256 を引く addendum（K2/4 の 2 件と seed の pin の 1 件）と trace の新しい版を作り、独立 reviewer のレビューを受け直してから観測前の commit をやり直す（K2/4 :419-420、K6/2 手順の 4）。この版（v1）は使わず、消さずに残す。SP-N7 で凍結のやり直し（SP/1 の D1）になった場合も同じ。",
     "currentFinding": "凍結した G-01〜G-08 の fixture は query の Scene に pin を持たない（SP/1 の事実 (e) と同じ）。SP/1 が 2026-10-27 に確認され、seed の pin の段（evals/nir1-graph/seed-pin-addendum.v1.json）で扱う。R5 が match になるのは、その段を実行した workspace で照合が通った後である（setup の段の実装は S1g-A、照合と SP-P4 は未実行）。",
     "matchRequires": ["seed-pin-step-executed-workspace", "product-db-reread"],
     "beforeFirstGatedRun": ["sp-p4-seed-pin-parity", "sp-negative-synthetic"],
-    "beforeFirstGatedRunRule": "blockedUntilMatch のどの実行よりも前に SP-P4 の診断を終える。SP-P4 で段の前後の R か R+IR が違えば（SP-N7）、seed の pin の addendum を使わず [precheck] で止め、Graph arm を含む実行を始めない（SP/1 の批准 7。凍結のやり直しは別の draft）。SP-N7 を Graph の観測の後に見つけると、その後の改版は観測の後の変更になるので、先に置く。 あわせて、SP/1 :178 の合成の記録による検出力の提示（syntheticDetection）を終える。示せなければ Graph arm を含む実行を始めない（K6/4 の「CP-4 の分類器は合成の記録で検出力を示してから使う」と同じ型）。",
+    "beforeFirstGatedRunRule": "blockedUntilMatch のどの実行よりも前に、②' の合成の記録による検出（SP/1 :178）と ④ の SP-P4 の診断を終える。SP-P4 で段の前後の R か R+IR が違えば（SP-N7）、seed の pin の addendum を使わず [precheck] で止め、Graph arm を含む実行を始めない（SP/1 の批准 7）。合成の記録で SP-N1〜N5、N9〜N13 を分けられなければ、S4 に進まない（K6/4 の「CP-4 の分類器は合成の記録で検出力を示してから使う」と同じ型）。",
     "syntheticDetection": {
       "negatives": [
         "SP-N1",
@@ -540,10 +550,18 @@
       "rule": "SP/1 :178: 観測の前に、SP-N1〜N5 と SP-N9〜N13 のそれぞれを 1 件ずつ含む合成の setup の記録（実際の setup の receipt と DB の pin の行を複製し、pin の entry、数、順序、書込みの経路、pin の集合、Scene の archive、entry の project と ID、arm ごとの workspace、runner の種類、R5 の入力の出所を書き換えたもの）を、SP-P1〜P3 と run の受入れの照合の関数に通し、それぞれを期待どおりに検出し、違反の無い記録を通すことを示す。",
       "owner": "S1g-A（統合 branch の setup-driver の seed の pin の段と variant ごとの照合の試験、seed-pin.mjs と workspace-db.mjs の照合の試験）",
       "record": "S4:sp-synthetic-detection-record",
-      "recordRule": "試験の file と commit、観測前の commit の候補で走らせた結果（各 SP-N の検出と、違反の無い記録の通過）を記録し、S4 の freeze 記録から参照する。"
+      "recordRule": "②' で、統合 branch の試験（製品の runtime を使わない node の試験）を、② の後の統合 branch の commit で走らせ、試験の file と commit、各 SP-N の検出と違反の無い記録の通過を記録し、merge しない追跡される branch に push する。S4 はその既にある記録の所在を書く。",
+      "decidedIn": "sp-synthetic-detection-before-s4"
     },
     "r5CheckRecord": "S4:r5-check-record",
-    "r5CheckRecordRule": "R5 の照合の run（①）の記録: S1g-A の setup-driver が、13 variant の workspace ごとに、論理 ID と runtime ID、DB から読み戻した問いの Scene の pin の行、SP-P1 の結果、assertSeedPinsBeforeK64（plan frozen）の結果、段の前後の SP-P2 の記録、使った候補の commit を receipt に書く。integrator は receipt と要約（match か、variant ごとの結果）を merge しない追跡される branch（claude/nir1-contracts か記録の branch）に commit して push し、その所在を S4 がここに書く。match でなければ ② に進まない。"
+    "r5CheckRecordRule": "R5 の照合の run（①）の記録: S1g-A の setup-driver が、13 variant の workspace ごとに、論理 ID と runtime ID、DB から読み戻した問いの Scene の pin の行、SP-P1 の結果、assertSeedPinsBeforeK64（plan frozen）の結果、段の前後の SP-P2 の記録、使った候補の commit を receipt に書く（Graph index、B の seal、IR の状態は書かない）。integrator は receipt と要約（match か、variant ごとの結果）を merge しない追跡される branch（claude/nir1-contracts か記録の branch）に commit して push し、その所在を S4 がここに書く。match でなければ ② に進まない。",
+    "r5CheckWorkspace": {
+      "disposition": "discard",
+      "reuseFor": [],
+      "recheckInLaterPhases": ["sp-p1", "sp-p3-r5"],
+      "rule": "① の workspace は捨て、④ と ⑤ に使わない。④ と ⑤ は S5 の候補で新しい workspace を setup し、各 workspace で SP-P1 と SP-P3（R5）を照合し直す。⑤ の R5 が match でなければ [precheck] で止める。⑤ で fixture か setup の改版や SP-N7 が起きると、R5 を K6/4 の凍結の後に照合することになり K6/4 :317 の順を満たせないので、その場合も [precheck] で integrator に回す。",
+      "onMismatch": "[precheck]"
+    }
   },
   "runnerHandoff": [
     "d1.orderNote: 宣言を V-10 の probe より前に置く（統合 branch の runner.mjs は probe の後）。",
@@ -557,7 +575,7 @@
     "SP-P4（S3v2-P3-2）: 段の直前の DB の写しから両側を分岐させ、論理 ID で比べ、owner の counter（begins）の差分 0 を記録する。",
     "K24-G01-N2〜N4（S3v2-P3-3）: restore は Scene の本文版の restore に限り、mutation の後に SP-P1 を照合し直し、Graph が seed つきで要求され g01-mira-entity に届いたことを記録する。",
     "integrator の決定: CP-4 の候補の commit は S5 の台帳（clean な候補の freeze の記録）で決める。observation-prep の candidate.commit は null のまま。",
-    "integrator の順序: ① R5 の照合の run（S1g-A の setup-driver。setup と DB の読取だけ）→ ② K6/4 の凍結 → ③ S4 → ④ SP-P4 と合成の記録 → ⑤ Graph arm。① の記録は r5Gate.r5CheckRecordRule のとおり残し、S4 が所在を書く。"
+    "integrator の順序（S3v4 の後）: ① R5 の照合の run（S1g-A の setup-driver。seed の pin の段と SP-P2 の記録までの setup と DB の読取だけ。workspace は捨てる）→ ② K6/4 の凍結 → ②' 合成の記録による検出（node の試験の実行記録）→ ③ S4a／S4b → ④ SP-P4 → ⑤ Graph arm（S5 の候補で新しい workspace、SP-P1 と R5 を照合し直す）。"
   ],
   "stepOrder": {
     "graphCases": [
@@ -582,10 +600,13 @@
     "phases": [
       "r5-seed-pin-check",
       "k64-freeze-commit",
+      "sp-synthetic-detection",
       "s4-observation-prep-commit",
-      "sp-p4-and-synthetic-detection",
+      "sp-p4-seed-pin-parity",
       "graph-arm-runs"
     ],
-    "phasesRule": "① R5 の照合の run（setup と DB の読取だけ）→ ② K6/4 の凍結（claude/nir1-contracts への commit と push、server 側の時刻の記録。K6/4 :317）→ ③ S4（観測前の commit。② の commit と ① の記録を束縛）→ ④ SP-P4 の診断と合成の記録による検出（r5Gate.beforeFirstGatedRun）→ ⑤ Graph arm を含む実行。② が済んでいない間は S4 に進まない。① が match でなければ ② に進まない。"
-  }
+    "phasesRule": "① R5 の照合の run（setup は seed の pin の段と SP-P2 の記録まで、と製品の DB の読取だけ）→ ② K6/4 の凍結（claude/nir1-contracts への commit と push、server 側の時刻の記録。K6/4 :317）→ ②' 合成の記録による検出（製品の runtime を使わない node の試験。S1g-A の setup-driver と照合の関数の試験の実行記録）→ ③ S4（観測前の commit。2 段: S4a で bytes、S4b で placeholder を埋めて frozen。②、②'、① の記録を束縛）→ ④ SP-P4 の診断 → ⑤ Graph arm を含む実行。① が match でなければ ② に、② が済まなければ ②' と S4 に、②' が済まなければ S4 に進まない。"
+  },
+  "s4Stages": ["s4a-bytes", "s4b-fill-and-freeze"],
+  "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。"
 }
