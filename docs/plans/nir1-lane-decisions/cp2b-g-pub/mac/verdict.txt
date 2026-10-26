@@ -1,0 +1,12 @@
+== (34) mac: pass
+RJ: 行 134（判定 118: tcp 57／udp 45／hint 16、対象外 16、区分: 活性 37／canary 不可 65／不活性 2）合格 118 不合格 0 記録全体の不合格 0
+不活性の行（合否に数えない）2 行: rs1.turn-tcp.localhost, rs1.turns.localhost
+NL: 合格（channels {"getaddrinfo":null,"doh":null,"netLog":6}）
+.local: unverified（ベースラインで .local の問合せ（UDP 5353）を観測できない（対照が取れない））
+行列: 134 行、欠け 0、余り 0
+道具の対照（toolcheck）: TCP の行 59、listener への接続あり 59、食い違い 0
+正の対照: net log の nonce つきの host 69、DoH {"stun":true,"turn-udp":true,"turn-tcp":true,"turns":true,"dns-prefetch":true}
+  記録: bind できない canary r-127.0.0.2（EADDRNOTAVAIL）の宛先の行: main.stun.lo4b=canaryless, main.stuns.lo4b=canaryless, main.turn-udp.lo4b=canaryless, main.turn-tcp.lo4b=canaryless, main.turns.lo4b=canaryless, main.turns-tcp.lo4b=canaryless
+  記録: page の shim HTMLFormElement.prototype.submit: target が空でも _self でもない form は送らない（製品の openExternal を起こさず、probe の main の deny と同じ結果にそろえる。DR-CP2B-P2-5）
+  記録: shim 済みの行 dns.form-submit（hint、判定 pass。packaged では送信しないので実質は実行されていない。合格の数には含む）
+記録（合否にしない）: NC-1 の network の段の下限 8 ms、起動から窓まで 1888 ms（期限 5000 ms）、辞書の要求 0 件、H9 null

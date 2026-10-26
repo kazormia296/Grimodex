@@ -1,0 +1,17 @@
+{
+  "ok": true,
+  "failures": [],
+  "recorded": {
+    "worker": {
+      "path": "Contents/Resources/bin/nir1-c-query-worker",
+      "verified": true,
+      "bytes": 90341264
+    },
+    "codesign": "not-verified:<repo>/release/electron/mac-arm64/Grimodex.app: code has no resources but signature indicates they must be present",
+    "asar": {
+      "entries": 797,
+      "forbidden": [],
+      "forbiddenContent": []
+    }
+  }
+}
