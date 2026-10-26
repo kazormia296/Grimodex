@@ -219,6 +219,12 @@
       "sha256": "0dd5cae5dbad3e5e32bffb2d04c9c3e59539f09ec0c2f73dda7faa3e8c913fce",
       "source": "統合 branch（git show で読むだけ）",
       "scope": "observationPrepRecordErrors と assertObservationPrepAdmits"
+    },
+    {
+      "path": "scratchpad/s3/observation-prep-review.v1.json（S3 の独立 reviewer の記録。実測値を含まない）",
+      "sha256": "0fea6f649171bc9f1f1200611f14df43fcd4702dc3e75552aeb2ef36bfde3dc2",
+      "source": "session の scratchpad",
+      "scope": "全文（findings と checks）"
     }
   ],
   "forbiddenFilesNotRead": true,
@@ -227,5 +233,11 @@
     "統合 branch（claude/nir1-cp4、worktree /home/grimodex/worktrees/Grimodex/claude-nir1-cb4）は git show で読むだけで、checkout も編集もしていない。git grep の対象は scripts、electron、src、evals に限った（docs/plans/nir1-lane-decisions を含めていない）。",
     "統合 branch の procedure/k64-procedure.draft-1.json は、値の独立性のために読んでいない（loader と constants.mjs だけを読んだ）。",
     "/home/grimodex/Grimodex（root の checkout）は読んでも編集してもいない（CLAUDE.md と AGENTS.md は harness が文脈に入れたもの）。"
+  ],
+  "revisions": [
+    {
+      "at": "2026-10-27",
+      "reason": "S3 のレビュー（changes-required。P1 1、P2 4、P3 6）への対応。読んだのは S3 の記録と、これまでに読んだ file だけで、Graph の実行出力は読んでいない。"
+    }
   ]
 }
