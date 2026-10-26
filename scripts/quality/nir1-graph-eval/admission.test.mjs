@@ -16,20 +16,28 @@ import {
   assertObservationPrepAdmits,
 } from "../nir1-retrieval/contract.mjs";
 import {
+  admitFrozenDryRun,
+  admitGraphCaseRun,
   assertDefaultAddonIsProduct,
+  assertReceiptHeadBound,
   collectObservationPrepFacts,
+  readAdmittedFixture,
   readK62FreezeHead,
+  readK64FreezeHead,
   readNetNamespaces,
 } from "./admission.mjs";
+import { claimFactsSealer } from "./admission-facts.mjs";
 import {
   FROZEN_FIXTURE_SHA256,
   G01_FIXTURE,
   GRAPH_CASE_FREEZE,
   K62_FREEZE,
+  K64_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
 import {
+  H40,
   H64,
   candidate,
   evalReceipt,
@@ -338,4 +346,232 @@ test("P2-9: the network namespaces of the harness and its parent are readable on
   }
   assert.match(netns.self, /^net:\[\d+\]$/u);
   assert.match(netns.parent, /^net:\[\d+\]$/u);
+});
+
+/** A repo whose candidate head descends from an observation-prep commit. */
+async function preparedRepository() {
+  const { repo, base } = await repository();
+  await put(repo, OBSERVATION_PREP_RECORD_PATH, record());
+  const prep = commit(repo, "observation prep");
+  git(repo, "update-ref", "refs/remotes/origin/master", prep);
+  await put(repo, "candidate.txt", "candidate\n");
+  const head = commit(repo, "candidate");
+  return { repo, base, prep, head };
+}
+
+const PRODUCT_NODE = "electron/native/grimodex-node/grimodex-node.node";
+
+test("P2-7（変異 M19）: prep が origin/master にあっても候補の祖先でなければ拒む（実 git）", async () => {
+  const { repo, base } = await repository();
+  try {
+    await put(repo, OBSERVATION_PREP_RECORD_PATH, record());
+    const prep = commit(repo, "observation prep");
+    git(repo, "update-ref", "refs/remotes/origin/master", prep);
+    git(repo, "checkout", "-q", "-b", "candidate", base);
+    await put(repo, "candidate.txt", "candidate\n");
+    const head = commit(repo, "candidate without the prep commit");
+    const facts = collectObservationPrepFacts({
+      root: repo,
+      commit: prep,
+      candidateHead: head,
+    });
+    assert.equal(facts.onRemoteRef, true);
+    assert.equal(facts.ancestorOfCandidateHead, false);
+    assert.throws(
+      () => graphCase(head, facts),
+      /not an ancestor of the candidate head/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("P2-7: 手で作った facts と書き換えた facts は N-1 の guard を通らない（出所の束縛）", async () => {
+  const { repo, head, prep } = await preparedRepository();
+  try {
+    const facts = collectObservationPrepFacts({
+      root: repo,
+      commit: prep,
+      candidateHead: head,
+    });
+    assert.equal(graphCase(head, facts).fixtureClass, "frozen");
+    for (const forged of [{ ...facts }, JSON.parse(JSON.stringify(facts))])
+      assert.throws(() => graphCase(head, forged), /collected/);
+    assert.throws(() => {
+      facts.ancestorOfCandidateHead = false;
+    }, TypeError);
+    assert.throws(() => {
+      facts.headFileSha256[TRACE] = H64("0");
+    }, TypeError);
+    assert.throws(() => claimFactsSealer(), /already claimed/);
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の addon、K6/2 と K6/4 の凍結を順に確かめる", async () => {
+  const { repo, base, prep, head } = await preparedRepository();
+  try {
+    const product = productReceipt({ candidate: candidate(head, head) });
+    const input = {
+      root: repo,
+      candidateHead: head,
+      prepCommit: prep,
+      buildReceipt: evalReceipt({ candidate: candidate(head, head) }),
+      productReceipt: product,
+      fixtures: [{ path: FIXTURE, sha256: FROZEN_FIXTURE_SHA256[FIXTURE] }],
+      defaultAddonSha256: product.artifacts[PRODUCT_NODE],
+      k62Commit: K62_FREEZE.commit,
+      k64Commit: H40("4"),
+    };
+    // Everything the temp repo can show passes; the K6/2 freeze commit lives
+    // only in the real repository, so the run stops there.
+    assert.throws(
+      () => admitGraphCaseRun(input),
+      new RegExp(K62_FREEZE.commit),
+    );
+    assert.throws(
+      () => admitGraphCaseRun({ ...input, prepCommit: undefined }),
+      /\[precheck\]/,
+    );
+    assert.throws(
+      () => admitGraphCaseRun({ ...input, prepCommit: base }),
+      /did not introduce/,
+    );
+    assert.throws(
+      () =>
+        admitGraphCaseRun({
+          ...input,
+          defaultAddonSha256: H64("e"),
+        }),
+      /default addon path/,
+    );
+    assert.throws(
+      () =>
+        admitGraphCaseRun({
+          ...input,
+          fixtures: [
+            {
+              path: "scripts/quality/nir1-graph-eval/dev-fixtures/dev-g02.v1.json",
+              sha256: H64("d"),
+            },
+          ],
+        }),
+      /frozen fixtures/,
+    );
+    assert.throws(
+      () => admitGraphCaseRun({ ...input, observationPrep: {} }),
+      /unsupported option/,
+    );
+    // A fixture read needs the admission this entry returns.
+    const direct = graphCase(
+      head,
+      collectObservationPrepFacts({
+        root: repo,
+        commit: prep,
+        candidateHead: head,
+      }),
+    );
+    assert.throws(
+      () => readAdmittedFixture(direct, { root: repo, path: FIXTURE }),
+      /admitGraphCaseRun/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("批准 7: K6/4 の凍結の commit が固定されるまで、正式の run の先頭を読まない", () => {
+  assert.equal(K64_FREEZE.freezeCommit, null);
+  assert.throws(
+    () => readK64FreezeHead({ root: ROOT, commit: K64_FREEZE.confirmedCommit }),
+    /not pinned/,
+  );
+});
+
+test("§15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む", () => {
+  const product = productReceipt();
+  const evaluation = evalReceipt();
+  const fixtures = [{ path: FIXTURE, sha256: FROZEN_FIXTURE_SHA256[FIXTURE] }];
+  const dry = admitFrozenDryRun({
+    fixtures,
+    nativeSha256: product.artifacts[PRODUCT_NODE],
+    productReceipt: product,
+    evalReceipt: evaluation,
+  });
+  assert.equal(dry.graphArm, "not-activated");
+  assert.throws(
+    () =>
+      admitFrozenDryRun({
+        fixtures,
+        nativeSha256:
+          evaluation.artifacts[".artifacts/cp4/eval-build/grimodex-node.node"],
+        productReceipt: product,
+        evalReceipt: evaluation,
+      }),
+    /product \.node/,
+  );
+  assert.throws(
+    () =>
+      admitFrozenDryRun({
+        fixtures,
+        nativeSha256: product.artifacts[PRODUCT_NODE],
+        productReceipt: evaluation,
+        evalReceipt: evaluation,
+      }),
+    /\[precheck\]/,
+  );
+});
+
+test("P2-7: receipt の先頭の observationPrep を git の facts と freeze record で照合する", async () => {
+  const { repo, base, prep, head } = await preparedRepository();
+  try {
+    const facts = collectObservationPrepFacts({
+      root: repo,
+      commit: prep,
+      candidateHead: head,
+    });
+    const receipt = (observationPrep, commitSha = head) => ({
+      head: {
+        k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
+        k64: { freezeCommit: H40("4"), sha256: K64_FREEZE.sha256 },
+        observationPrep,
+      },
+      candidate: { commit: commitSha },
+    });
+    assert.throws(
+      () =>
+        assertReceiptHeadBound({
+          root: repo,
+          receipt: receipt({ commit: prep, freezeRecordSha256: H64("0") }),
+        }),
+      /freezeRecordSha256/,
+    );
+    assert.throws(
+      () =>
+        assertReceiptHeadBound({
+          root: repo,
+          receipt: receipt(
+            { commit: prep, freezeRecordSha256: facts.recordSha256AtCommit },
+            base,
+          ),
+        }),
+      /not an ancestor/,
+    );
+    // The bound head passes the prep checks and stops at the K6/2 freeze,
+    // which this temp repository does not hold.
+    assert.throws(
+      () =>
+        assertReceiptHeadBound({
+          root: repo,
+          receipt: receipt({
+            commit: prep,
+            freezeRecordSha256: facts.recordSha256AtCommit,
+          }),
+        }),
+      new RegExp(K62_FREEZE.commit),
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
 });

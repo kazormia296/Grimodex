@@ -15,6 +15,7 @@ import {
   OBSERVATION_PREP_RECORD_SCHEMA,
   OBSERVATION_PREP_REMOTE_REF,
 } from "../nir1-graph-eval/constants.mjs";
+import { isCollectedFacts } from "../nir1-graph-eval/admission-facts.mjs";
 
 export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest("hex");
@@ -636,7 +637,9 @@ function fixtureAllowlist(fixtures) {
  *     observationPrep }
  *     the evaluation build receipt and the product receipt of the same head
  *     and tree; `fixtures` is [{ path, sha256 }]; any frozen fixture also
- *     needs the pre-observation facts (assertObservationPrepAdmits).
+ *     needs the pre-observation facts (assertObservationPrepAdmits) as
+ *     collected by admission.mjs (sealed; P2-7). A formal runner reaches this
+ *     only through admission.mjs `admitGraphCaseRun`.
  * Everything else is refused with `[precheck]`.
  */
 export function assertGraphArmRequestable(
@@ -688,8 +691,15 @@ export function assertGraphArmRequestable(
     const allowedFixtures = fixtureAllowlist(admission.fixtures);
     const candidateHead = evaluation.resolvedHeadSha;
     const frozen = allowedFixtures.some((row) => row.kind === "frozen");
-    if (frozen)
+    if (frozen) {
+      // P2-7: only facts that admission.mjs collected from git (sealed in
+      // admission-facts.mjs) are trusted; a hand-built or edited copy is not.
+      if (!isCollectedFacts(admission.observationPrep))
+        throw precheck(
+          "the pre-observation facts were not collected from git by admission.mjs",
+        );
       assertObservationPrepAdmits(admission.observationPrep, candidateHead);
+    }
     return Object.freeze({
       wiring: GRAPH_ARM_WIRED,
       scope: GRAPH_ARM_SCOPES.graphCase,

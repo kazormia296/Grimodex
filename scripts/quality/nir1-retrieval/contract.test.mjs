@@ -27,6 +27,7 @@ import {
   RETRIEVAL_ARMS,
   assertFixtureReadAllowed,
   assertGraphArmRequestable,
+  assertObservationPrepAdmits,
   classifyGraphFixturePath,
   describeGraphArm,
   graphSeedForExistingQuery,
@@ -534,11 +535,19 @@ test("P2-10: the evaluation and product receipts must be the same candidate", ()
 });
 
 test("N-1 / P1-1: a frozen fixture needs the introducing, remote, content-checked pre-observation commit", () => {
+  // The facts checks are pure (assertObservationPrepAdmits); through the
+  // guard, only facts admission.mjs collected from git are accepted (P2-7,
+  // the real-git end-to-end tests are in nir1-graph-eval/admission.test.mjs).
   const request = (observationPrep, fixtures = [frozenFixture]) =>
-    graphCase({ fixtures, observationPrep });
-  const admitted = request(prepFacts());
-  assert.equal(admitted.fixtureClass, "frozen");
-  assert.equal(admitted.observationPrepCommit, H40("9"));
+    fixtures.every((row) => row === devFixture)
+      ? graphCase({ fixtures, observationPrep })
+      : assertObservationPrepAdmits(observationPrep, H40("b"));
+  assert.equal(request(prepFacts()).commit, H40("9"));
+  assert.throws(
+    () =>
+      graphCase({ fixtures: [frozenFixture], observationPrep: prepFacts() }),
+    /not collected from git/,
+  );
   const cases = [
     [undefined, /not given/],
     [
@@ -615,8 +624,12 @@ test("N-1 / P1-1: a frozen fixture needs the introducing, remote, content-checke
     assert.throws(() => request(facts), message, String(message));
   // Mixing a dev fixture does not lift the frozen rule; dev alone needs none.
   assert.throws(
-    () => request(undefined, [devFixture, frozenFixture]),
-    /not given/,
+    () =>
+      graphCase({
+        fixtures: [devFixture, frozenFixture],
+        observationPrep: undefined,
+      }),
+    /not collected from git/,
   );
   assert.equal(request(undefined, [devFixture]).fixtureClass, "dev");
 });
