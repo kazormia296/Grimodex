@@ -54,6 +54,7 @@ import {
   classifyFollowUp,
   followUpFailureCategory,
   followUpLapses,
+  mixedIntoDisplay,
   recordRegime,
 } from "./followup.mjs";
 import {
@@ -823,15 +824,46 @@ export function summarizeTrace(input) {
   const Q = counted.length;
   if (Q < TRACE_MIN_QUERIES)
     invalid.push(`trace has Q=${Q}, fewer than ${TRACE_MIN_QUERIES}`);
-  if (invalid.length > 0) return invalidTrace(trace, invalid, Q, requeries);
-  if (!k64Era) return summarizeTraceK62(trace, counted, requeries);
+  // E-5: a late result mixed into a display is FAIL (K6/4:163) whether the
+  // trace must be retaken or K6/4 does not apply to it.
+  const mixed = counted.flatMap((query) =>
+    mixedIntoDisplay(query.followUp).map((code) => ({
+      queryId: query.queryId,
+      code,
+    })),
+  );
+  if (invalid.length > 0)
+    return invalidTrace(trace, invalid, Q, requeries, mixed);
+  if (!k64Era)
+    return {
+      ...summarizeTraceK62(trace, counted, requeries),
+      violations: mixed,
+    };
   const results = counted.map((query) =>
     classifyFollowUp(query, { context: "trace" }),
   );
+  // E-6: under K6/4 a counted query whose R7 records are missing is a trace
+  // defect (its child's lapse would not be seen; strict side).
+  const unrecorded = counted.filter((query, at) =>
+    results[at].stages.some(
+      (row) => row.code === "X10" && String(row.detail).startsWith("missing:"),
+    ),
+  );
+  if (unrecorded.length > 0)
+    return invalidTrace(
+      trace,
+      unrecorded.map(
+        (query) => `${query.queryId} lacks its R7 follow-up records`,
+      ),
+      Q,
+      requeries,
+      mixed,
+    );
   const regime = recordRegime(input.candidate, results, input.candidateHead);
   if (regime.regime !== "k64")
     return {
       ...summarizeTraceK62(trace, counted, requeries),
+      violations: mixed,
       k64NotApplied: regime.notApplied,
     };
   return summarizeTraceK64(trace, counted, requeries, results, regime);

@@ -1410,3 +1410,30 @@ test("E-3: 封印した批准 5 の証拠が測った候補のものでなけれ
     "k64",
   );
 });
+
+test("E-5: 入力の段で無効な trace と K6/2 の regime の trace でも遅れた結果の混入を集める", () => {
+  const mixedAt = (at) =>
+    at === 4 ? [{}, { child: { publishCount: 2 } }] : [{}, {}];
+  // Q<200 の trace（取り直し）。
+  const short = traceK64(k64Trace("editing", 150, mixedAt));
+  assert.equal(short.status, "invalid");
+  assert.deepEqual(
+    short.violations.map((row) => row.code),
+    ["N32:child-published-more-than-once"],
+  );
+  // 批准 5 を欠く候補（K6/2 の regime）の trace。
+  const k62 = traceK64(k64Trace("editing", 200, mixedAt), ratification5({}));
+  assert.equal(k62.regime, "k62");
+  assert.deepEqual(
+    k62.violations.map((row) => row.code),
+    ["N32:child-published-more-than-once"],
+  );
+});
+
+test("E-6: (b) で R7 の記録が欠けた query は trace の不備（取り直し）", () => {
+  const trace = k64Trace("editing", 200);
+  delete trace.queries[7].followUp.counters;
+  const result = traceK64(trace);
+  assert.equal(result.status, "invalid");
+  assert.match(result.invalid.join(), /q7 .*R7/);
+});

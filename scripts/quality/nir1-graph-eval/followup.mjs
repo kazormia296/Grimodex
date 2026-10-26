@@ -328,7 +328,7 @@ function unmetR1(r1) {
 }
 
 /** N1 / N29 / N32 read defensively from a record that may be incomplete. */
-function mixedIntoDisplay(record) {
+export function mixedIntoDisplay(record) {
   const out = [];
   const parent = record?.parent;
   const child = record?.child;
