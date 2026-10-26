@@ -8,7 +8,7 @@
   },
   "declaredAt": "2026-10-27",
   "statement": "S2 の作者は、Graph の実行出力（Graph の run の receipt、log、net log、trace の実測値、worker の frame、Graph を含む Related Scenes の結果、.artifacts の下の出力）と、観測の記録（nir1-lane-decisions の cp4-decisions.md、cq-deferred-decisions.md、rsj-* と rs-join-decisions.md、実測を含む DP-H・DA-2・DD-1 の decisions、scratchpad の run の結果、cp4-task.md・cp4-hardening-task.md・cp4-s1f-task.md・cp4-k64-task.md、他の agent の transcript）を読んでいない。実 Electron、実 build、Graph の実行はしていない。値は契約と第一原理から決め、観測した値で閾値や待ちの上限を選んでいない。",
-  "contractObservationsSeen": "読んでよい範囲の契約と計画の文書には、観測の要約が本文として含まれる。K6/4 の「事実」の節（H5 と RS-JOIN の測定値。q1〜q3 の分布、子の到着、D の超過など）と「判断を求める点」の導出、K6/2 の S1／S3／S6 の記述、続行計画の CP-4 の行（DR-CP4-S1C2-19〜22 の原因の要約、D′、DR-CP3A-53 の見込み）を、契約の一部として読んだ。これらから値を選んでいない: 作者が決めた値は r1r4WaitMs（契約の上限 10 s と DEFERRED_RELEASE_LIMIT の意味から 10,000 ms）、parity の unrestricted run の数（契約の下限 1）、trace の長さ（200 回の台本と最初の query で Q=201）、stall の guard（10,000 ms。判定に使う値を変えない）、trace の project（G-02 base。fixture の構造で選んだ）で、どれも観測値を使っていない。",
+  "contractObservationsSeen": "読んでよい範囲の契約と計画の文書には、観測の要約が本文として含まれる。K6/4 の「事実」の節（H5 と RS-JOIN の測定値。q1〜q3 の分布、子の到着、D の超過など）と「判断を求める点」の導出、K6/2 の S1／S3／S6 の記述、続行計画の CP-4 の行（DR-CP4-S1C2-19〜22 の原因の要約、D′、DR-CP3A-53 の見込み）を、契約の一部として読んだ。これらから値を選んでいない: 作者が決めた値は r1r4WaitMs（契約の上限 10 s と DEFERRED_RELEASE_LIMIT の意味から 10,000 ms）、parity の unrestricted run の数（契約の下限 1）、trace の長さ（200 回の台本と最初の query で Q=201）、stall の guard（10,000 ms。判定に使う値を変えない）、trace の project（G-02 base。fixture の構造で選んだ）で、どれも観測値を使っていない。 SP/1 の本文の dev fixture の記録の要約（SeedChanged の 4/4、遅い Raw-ready の 2/30 など）も契約の一部として読んだが、値の選択に使っていない。",
   "readFiles": [
     {
       "path": "docs/plans/nir1-c-body-disclosure-proposal-4-draft.md",
@@ -225,6 +225,12 @@
       "sha256": "0fea6f649171bc9f1f1200611f14df43fcd4702dc3e75552aeb2ef36bfde3dc2",
       "source": "session の scratchpad",
       "scope": "全文（findings と checks）"
+    },
+    {
+      "path": "claude/seed-pin-draft:docs/plans/nir1-graph-case-seed-pin-proposal-1-draft.md（SP/1。git -C /home/grimodex/worktrees/Grimodex/claude-seedpin-draft show で読んだ）",
+      "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547",
+      "source": "SP/1 の draft の branch（確認済みの bytes。編集していない）",
+      "scope": "全文（事実 (a)〜(e) の製品の code の読取と、dev fixture についての cp4 の記録の参照〔例: requalification が SeedChanged で落とした dev fixture の 4/4、DR-CP4-F-2〕を含む。契約の一部として読んだ）"
     }
   ],
   "forbiddenFilesNotRead": true,
@@ -238,6 +244,10 @@
     {
       "at": "2026-10-27",
       "reason": "S3 のレビュー（changes-required。P1 1、P2 4、P3 6）への対応。読んだのは S3 の記録と、これまでに読んだ file だけで、Graph の実行出力は読んでいない。"
+    },
+    {
+      "at": "2026-10-27",
+      "reason": "SP/1（2026-10-27 06:47 JST に推奨のまま確認）の seed の pin の addendum、validator、観測前の記録の更新（S1g-B）。読んだのは SP/1 の draft と既に読んだ file だけで、Graph の実行出力、cp4-decisions.md、.artifacts、run の結果、他の agent の transcript は読んでいない。SP/1 の本文にある dev fixture の記録の要約は G-case の Graph の出力ではなく、どの値の選択にも使っていない（seed と問いの Scene は fixture の値をそのまま写した）。"
     }
   ]
 }
