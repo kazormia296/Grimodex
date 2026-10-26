@@ -210,6 +210,21 @@ export function assessMeasurementWindow({ samples, run, ownPids = [] }) {
  * reason (N-14), recomputing each window assessment. Excluded receipts are
  * kept, never deleted.
  */
+/** E-15: X11 entries changed or gone (side effects) and new ones (others). */
+export function assessX11Listing(before, after) {
+  const now = new Map(after.map((row) => [row.name, row]));
+  const was = new Set(before.map((row) => row.name));
+  return {
+    sideEffects: before
+      .filter((row) => {
+        const later = now.get(row.name);
+        return !later || later.ino !== row.ino || later.mtimeMs !== row.mtimeMs;
+      })
+      .map((row) => row.name),
+    others: after.filter((row) => !was.has(row.name)).map((row) => row.name),
+  };
+}
+
 export function selectReceiptsForAggregation(receipts) {
   const included = [];
   const excluded = [];
@@ -220,6 +235,18 @@ export function selectReceiptsForAggregation(receipts) {
       excluded.push({
         runId: receipt?.runId ?? null,
         reason: "preview-is-never-aggregated",
+      });
+      continue;
+    }
+    const x11 = receipt?.environment?.x11;
+    if (
+      Array.isArray(x11?.before) &&
+      Array.isArray(x11?.after) &&
+      assessX11Listing(x11.before, x11.after).others.length > 0
+    ) {
+      excluded.push({
+        runId: receipt?.runId ?? null,
+        reason: "x11-listing-changed-by-another-process",
       });
       continue;
     }
@@ -245,6 +272,8 @@ const DESKTOP_ENV = [
   "WAYLAND_SOCKET",
   "DBUS_SESSION_BUS_ADDRESS",
 ];
+/** Checked absent; DBUS_SESSION_BUS_ADDRESS is checked to be the run's own. */
+const ABSENT_ENV = ["WAYLAND_DISPLAY", "WAYLAND_SOCKET"];
 
 function netnsArgv(argv) {
   return argv.some(
@@ -280,7 +309,7 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
     throw new Error(
       "[precheck] Electron must draw only on the run's Xvfb display, never :0",
     );
-  for (const name of DESKTOP_ENV)
+  for (const name of ABSENT_ENV)
     if (env?.[name] !== undefined)
       throw new Error(`[precheck] Electron launch env still carries ${name}`);
   if (env?.XDG_SESSION_TYPE === "wayland")
@@ -296,6 +325,13 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
     );
   if (env?.NO_AT_BRIDGE !== "1")
     throw new Error("[precheck] Electron launch env must set NO_AT_BRIDGE=1");
+  // E-16: the bus address is the run's own address that does not exist.
+  if (
+    env?.DBUS_SESSION_BUS_ADDRESS !== `unix:path=${env.XDG_RUNTIME_DIR}/no-bus`
+  )
+    throw new Error(
+      "[precheck] Electron launch env still carries DBUS_SESSION_BUS_ADDRESS other than unix:path=<XDG_RUNTIME_DIR>/no-bus",
+    );
   if (env?.ELECTRON_OZONE_PLATFORM_HINT !== "x11")
     throw new Error(
       "[precheck] Electron launch env must set the x11 ozone hint",
@@ -548,14 +584,17 @@ function stopSideEffectErrors(environment, graphRun, candidate) {
       );
   }
   const x11 = environment?.x11;
-  if (
-    !Array.isArray(x11?.before) ||
-    !Array.isArray(x11?.after) ||
-    stable(x11.before) !== stable(x11.after)
-  )
-    errors.push(
-      "[precheck] the /tmp/.X11-unix listing changed or was not recorded (an X11 side effect, or another lane's Xvfb: retake)",
-    );
+  if (!Array.isArray(x11?.before) || !Array.isArray(x11?.after))
+    errors.push("[precheck] the /tmp/.X11-unix listing was not recorded");
+  else {
+    // E-15: an entry that was there before and changed or vanished is a side
+    // effect; another process's new entry is a retake (aggregation excludes).
+    const { sideEffects } = assessX11Listing(x11.before, x11.after);
+    if (sideEffects.length > 0)
+      errors.push(
+        `[precheck] X11 entries present before the run changed or vanished: ${sideEffects.join(", ")}`,
+      );
+  }
   const egress = environment?.profileEgress;
   if (
     !Array.isArray(egress?.dictionaries) ||

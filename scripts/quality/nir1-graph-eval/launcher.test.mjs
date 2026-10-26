@@ -70,6 +70,7 @@ test("DR-CP4-S1C1-4: the harness runs only under the Xvfb wrapper", () => {
 test("DR-CP4-S1C1-4: the launch env drops the desktop, the bus and proxies and passes assertElectronLaunch", () => {
   const env = buildElectronLaunchEnv(WRAPPER_ENV, PATHS);
   const setAgain = new Set([
+    "DBUS_SESSION_BUS_ADDRESS",
     "ELECTRON_RENDERER_URL",
     "GRIMODEX_NODE_PATH",
     "GRIMODEX_USER_DATA_DIR",
@@ -83,6 +84,11 @@ test("DR-CP4-S1C1-4: the launch env drops the desktop, the bus and proxies and p
   // B-3: no session bus through XDG_RUNTIME_DIR, no AT-SPI bridge.
   assert.equal(env.XDG_RUNTIME_DIR, "/r/tmp/xdg-runtime");
   assert.equal(env.NO_AT_BRIDGE, "1");
+  // E-16: an address that does not exist, in the run's own directory.
+  assert.equal(
+    env.DBUS_SESSION_BUS_ADDRESS,
+    "unix:path=/r/tmp/xdg-runtime/no-bus",
+  );
   for (const name of ["auto_proxy", "SOCKS_SERVER", "ftp_proxy", "FTP_PROXY"])
     assert.ok(REMOVED_LAUNCH_ENV.includes(name), name);
   assert.equal(env.GRIMODEX_NODE_PATH, PATHS.nativePath);
@@ -110,7 +116,12 @@ test("DR-CP4-S1C1-4: the launch env drops the desktop, the bus and proxies and p
   assert.throws(
     () =>
       assertElectronLaunch({
-        env: { ...WRAPPER_ENV, ELECTRON_OZONE_PLATFORM_HINT: "x11" },
+        env: {
+          ...WRAPPER_ENV,
+          ELECTRON_OZONE_PLATFORM_HINT: "x11",
+          XDG_RUNTIME_DIR: "/r/tmp/xdg-runtime",
+          NO_AT_BRIDGE: "1",
+        },
         argv: args,
         xvfbDisplay: ":7",
         netns,

@@ -49,6 +49,7 @@ import {
   runtimeDirOf,
 } from "./launcher.mjs";
 import { MAIN_WORKER, WORKER_FILE_NAME } from "./eval-native-build.mjs";
+import { assessX11Listing } from "./receipt.mjs";
 
 export const HARNESS_PAGE =
   "/scripts/quality/nir1-graph-eval/renderer/cp4-harness.html";
@@ -505,10 +506,16 @@ export async function startSession({
       );
     }
     evidence.x11After = listX11();
-    if (
-      JSON.stringify(evidence.x11After) !== JSON.stringify(evidence.x11Before)
-    )
-      evidence.problems.push("the /tmp/.X11-unix listing changed");
+    // E-15: the run's side effects only; another process's new entry is
+    // recorded for the retake decision.
+    evidence.x11Assessment = assessX11Listing(
+      evidence.x11Before,
+      evidence.x11After,
+    );
+    if (evidence.x11Assessment.sideEffects.length > 0)
+      evidence.problems.push(
+        `X11 entries present before changed or vanished: ${evidence.x11Assessment.sideEffects.join(", ")}`,
+      );
     return evidence;
   }
 }

@@ -20,6 +20,7 @@ import {
   computeRunAggregates,
   formatSha256Sums,
   parseSha256Sums,
+  assessX11Listing,
   selectReceiptsForAggregation,
   validateCp4Receipt,
   verifySha256Sums,
@@ -873,6 +874,8 @@ test("N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus
     ELECTRON_OZONE_PLATFORM_HINT: "x11",
     XDG_RUNTIME_DIR: "/r/.artifacts/cp4/run/tmp/xdg-runtime",
     NO_AT_BRIDGE: "1",
+    DBUS_SESSION_BUS_ADDRESS:
+      "unix:path=/r/.artifacts/cp4/run/tmp/xdg-runtime/no-bus",
   };
   const netns = {
     self: "net:[4026531840]",
@@ -1105,7 +1108,7 @@ test("B-2: 停止の後の副作用の証拠（残った process、close、X11�
     ["remaining", { stop: { ...env.stop, remaining: [77] } }, /remaining/],
     ["no-stop", { stop: null }, /environment\.stop/],
     ["not-closed", { stop: { ...env.stop, closed: false } }, /closed/],
-    ["x11", { x11: { before: [], after: [{ name: "X5", ino: 2 }] } }, /X11/],
+    ["x11", { x11: { before: [{ name: "X99", ino: 1 }], after: [] } }, /X11/],
     [
       "bdic",
       {
@@ -1156,4 +1159,70 @@ test("E-4: 別の候補の封印つきの証拠を bound に渡しても K6/4 �
       .candidateRegime.regime,
     "k62",
   );
+});
+
+test("E-15: X11 の listing は前からある entry の変化・消失を副作用として不合格、他者の entry の出現は取り直し（集計から除く）", () => {
+  const before = [{ name: "X99", ino: 1, mtimeMs: 5 }];
+  assert.deepEqual(
+    assessX11Listing(before, [...before, { name: "X5", ino: 2, mtimeMs: 6 }]),
+    { sideEffects: [], others: ["X5"] },
+  );
+  assert.deepEqual(
+    assessX11Listing(before, [{ name: "X99", ino: 1, mtimeMs: 9 }]),
+    { sideEffects: ["X99"], others: [] },
+  );
+  const env = receipt().environment;
+  const appeared = receipt({
+    environment: {
+      ...env,
+      x11: {
+        before: env.x11.before,
+        after: [...env.x11.after, { name: "X5", ino: 2 }],
+      },
+    },
+  });
+  assert.ok(!otherErrors(appeared).some((error) => /X11/.test(error)));
+  const selected = selectReceiptsForAggregation([
+    { ...appeared, preview: false },
+  ]);
+  assert.deepEqual(
+    selected.excluded.map((row) => row.reason),
+    ["x11-listing-changed-by-another-process"],
+  );
+});
+
+test("E-16: launch の env の DBUS_SESSION_BUS_ADDRESS は run の dir の存在しない address だけ", () => {
+  const env = {
+    DISPLAY: ":99",
+    XDG_SESSION_TYPE: "x11",
+    ELECTRON_OZONE_PLATFORM_HINT: "x11",
+    XDG_RUNTIME_DIR: "/r/tmp/xdg-runtime",
+    NO_AT_BRIDGE: "1",
+    DBUS_SESSION_BUS_ADDRESS: "unix:path=/r/tmp/xdg-runtime/no-bus",
+  };
+  const netns = {
+    self: "net:[1]",
+    parent: "net:[1]",
+    hostInterfaces: ["lo", "eth0"],
+    userManager: "net:[1]",
+  };
+  const launch = (overrides) =>
+    assertElectronLaunch({
+      env: { ...env, ...overrides },
+      argv: [],
+      xvfbDisplay: ":99",
+      netns,
+    });
+  assert.doesNotThrow(() => launch({}));
+  for (const address of [
+    undefined,
+    "unix:path=/run/user/1000/bus",
+    "disabled:",
+    "unix:path=/r/tmp/other/no-bus",
+  ])
+    assert.throws(
+      () => launch({ DBUS_SESSION_BUS_ADDRESS: address }),
+      /DBUS_SESSION_BUS_ADDRESS/,
+      String(address),
+    );
 });

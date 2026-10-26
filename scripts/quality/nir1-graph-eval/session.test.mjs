@@ -88,7 +88,13 @@ test("B-7: stopElectron は close の timeout の後に SIGTERM、SIGKILL と進
       [],
       { closeTimeoutMs: 5, signalWaitMs: 1, procRoot: root },
     );
-    assert.deepEqual(thrown, { closed: false, signalled: [], remaining: [] });
+    assert.deepEqual(
+      [thrown.closed, thrown.signalled, thrown.remaining],
+      [false, [], []],
+    );
+    // E-15: the time app.close() took is recorded.
+    assert.equal(typeof thrown.closeMs, "number");
+    assert.ok(killed.closeMs >= 0);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -109,6 +115,7 @@ test("B-7: launchGraphEvalElectron の spawn の失敗はそのまま投げ、�
       GRIMODEX_NODE_PATH: product,
       XDG_RUNTIME_DIR: path.join(root, "xdg-runtime"),
       NO_AT_BRIDGE: "1",
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "xdg-runtime")}/no-bus`,
     };
     let spawned = 0;
     await assert.rejects(
@@ -347,6 +354,7 @@ test("B-2: launch の記録の removedEnv は wrapper の env から実際に落
   const saved = { ...process.env };
   Object.assign(process.env, WRAPPER_ENV, {
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
+    HTTPS_PROXY: "http://proxy.example:8080",
     CP4_KEPT: "1",
   });
   delete process.env.WAYLAND_DISPLAY;
@@ -361,8 +369,9 @@ test("B-2: launch の記録の removedEnv は wrapper の env から実際に落
       GRIMODEX_NODE_PATH: product,
       XDG_RUNTIME_DIR: path.join(root, "xdg-runtime"),
       NO_AT_BRIDGE: "1",
+      DBUS_SESSION_BUS_ADDRESS: `unix:path=${path.join(root, "xdg-runtime")}/no-bus`,
     };
-    delete env.DBUS_SESSION_BUS_ADDRESS;
+    delete env.HTTPS_PROXY;
     delete env.WAYLAND_DISPLAY;
     delete env.WAYLAND_SOCKET;
     const on = () => {};
@@ -380,7 +389,9 @@ test("B-2: launch の記録の removedEnv は wrapper の env から実際に落
         },
       },
     });
-    assert.ok(handle.launch.removedEnv.includes("DBUS_SESSION_BUS_ADDRESS"));
+    assert.ok(handle.launch.removedEnv.includes("HTTPS_PROXY"));
+    // E-16: the bus address is replaced (not removed) by the run's own one.
+    assert.ok(!handle.launch.removedEnv.includes("DBUS_SESSION_BUS_ADDRESS"));
     assert.ok(!handle.launch.removedEnv.includes("CP4_KEPT"));
     assert.ok(handle.launch.checkedAbsent.includes("WAYLAND_DISPLAY"));
   } finally {

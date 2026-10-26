@@ -134,6 +134,9 @@ export function buildElectronLaunchEnv(
     TMPDIR: tmpDir,
     XDG_RUNTIME_DIR: runtimeDirOf(tmpDir),
     NO_AT_BRIDGE: "1",
+    // E-16: an explicit address that does not exist (no fallback to
+    // $XDG_RUNTIME_DIR/bus or an X11 autolaunch, whatever the host).
+    DBUS_SESSION_BUS_ADDRESS: `unix:path=${runtimeDirOf(tmpDir)}/no-bus`,
     GRIMODEX_USER_DATA_DIR: userData,
     GRIMODEX_NODE_PATH: nativePath,
     ELECTRON_RENDERER_URL: rendererUrl,
@@ -513,6 +516,7 @@ export async function stopElectron(
 ) {
   let closed = false;
   let timer;
+  const closeStarted = Date.now();
   try {
     await Promise.race([
       handle.app.close().then(() => {
@@ -527,6 +531,8 @@ export async function stopElectron(
   } finally {
     clearTimeout(timer);
   }
+  // E-15: how long app.close() took (or the timeout).
+  const closeMs = Date.now() - closeStarted;
   const signalled = [];
   for (const signal of ["SIGTERM", "SIGKILL"]) {
     const alive = survivingPids(recordedPids, procRoot);
@@ -543,6 +549,7 @@ export async function stopElectron(
   }
   return {
     closed,
+    closeMs,
     signalled,
     remaining: survivingPids(recordedPids, procRoot).map((row) => row.pid),
   };
