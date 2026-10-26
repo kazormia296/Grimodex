@@ -554,6 +554,8 @@ describe("the local generation state machine (DD-1c)", () => {
     await h.flush();
     expect(h.turn.snapshot().canCancel).toBe(true);
     h.turn.cancel();
+    // Ends at once: nothing reached Main, so there is nothing to wait for.
+    expect(h.turn.snapshot().phase).toBe("cancelled");
     await h.tick();
     await h.tick();
     expect(h.starts).toHaveLength(1);
@@ -570,8 +572,10 @@ describe("the local generation state machine (DD-1c)", () => {
     h.turn.cancel();
     h.starts[0].resolve({ status: "error", error: "held" });
     await h.flush();
+    // Ends with the held answer itself, without waiting for a resend timer.
+    expect(h.turn.snapshot().phase).toBe("cancelled");
+    expect(h.timers.filter((timer) => !timer.cleared)).toHaveLength(0);
     await h.tick();
     expect(h.starts).toHaveLength(1);
-    expect(h.turn.snapshot().phase).toBe("cancelled");
   });
 });
