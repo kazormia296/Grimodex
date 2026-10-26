@@ -49,6 +49,8 @@ use crate::Database;
 
 mod expected_scope;
 mod local_audit_writer;
+#[cfg(feature = "native-current-human-capture")]
+pub mod local_conversation;
 mod project_ai_policy;
 pub use expected_scope::{
     read_expected_scope_in_tx, NewCaptureAttempt, Nir1ExpectedScope, Nir1RestoreEpochState,

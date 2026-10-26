@@ -54,8 +54,29 @@ const MOUNT_POINTS: ReadonlyArray<{
   },
   { file: "src/features/chat/components/ChatInput.tsx", lazyModule: null },
   { file: "src/features/chat/useChatMessageActions.ts", lazyModule: null },
+  // The non-scene edit closure (DR-DA2B-R17): the constant only picks the
+  // closed notice; the closure itself does not depend on it.
+  { file: "src/features/chat/chatEgressClosure.ts", lazyModule: null },
   // The import's notice of the conversations not taken in (DR-DA2B-R7).
   { file: "src/features/import/chatImportNotice.ts", lazyModule: null },
+  // The other AI entrances' closure (PUB-G 前の必須 3・4, DR-DA2B-R22〜R24):
+  // the local refusal before IPC, the visible controls, the conversation
+  // creation and the A/B adoption, the Spotlight's notice and the phone chat.
+  { file: "src/lib/tauri.ts", lazyModule: null },
+  { file: "src/features/ai-policy/useAiGate.ts", lazyModule: null },
+  {
+    file: "src/application/chat/chatSessionStoreActions.ts",
+    lazyModule: null,
+  },
+  {
+    file: "src/application/chat/chatPersistenceStoreActions.ts",
+    lazyModule: null,
+  },
+  { file: "src/features/chat/useChatPinsController.ts", lazyModule: null },
+  {
+    file: "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+    lazyModule: null,
+  },
 ];
 
 /** The lazy chunks behind the constant: never imported statically. */
@@ -82,6 +103,13 @@ function productSources(dir: string): string[] {
 /** The source without comments (the constant is named in many of them). */
 function code(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+}
+
+/** A static `from "…/name"` or a dynamic `import("…/name")` of the module. */
+function importsModule(body: string, name: string): boolean {
+  return new RegExp(`(?:from\\s+|\\bimport\\s*\\(\\s*)"[^"]*/${name}"`).test(
+    body,
+  );
 }
 
 function escape(text: string): string {
@@ -122,7 +150,9 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
         ),
       );
       // Read directly in a condition.
-      expect(body).toMatch(new RegExp(`\\b${CONSTANT}\\s*(?:&&|\\?)`));
+      expect(body).toMatch(
+        new RegExp(`\\b${CONSTANT}\\s*(?:&&|\\?)|if \\(${CONSTANT}\\) \\{`),
+      );
       // Never through a function, a plain alias or a call.
       expect(body).not.toMatch(/\bisProfileActivationUi\w*\s*\(/);
       expect(body).not.toMatch(new RegExp(`\\b${CONSTANT}\\s*\\(`));
@@ -194,5 +224,129 @@ describe("the closed profile activation UI stays out of the build (ST3-S6, DR-DA
     expect(
       code(read("src/features/profile-egress/profileActivationWriteRetry.ts")),
     ).toMatch(/^import "@\/features\/project\/projectStore";$/m);
+  });
+
+  // PUB-G 前の必須 3・4 (DR-DA2B-R23): while the constant is false the closure
+  // adds nothing to the startup graph only because no startup chunk refers to
+  // a symbol it did not already import. A reference from another chunk keeps
+  // an export and an import even when the call is gone (measured: +23 to +244
+  // bytes), so the homes of the closure are read only as follows.
+  it("keeps the local refusal's ledger out of the startup chunks", () => {
+    // Only the status display's lazy writer imports the ledger; the startup
+    // `tauri` chunk reads the global the writer sets, under the constant only.
+    const importers = sources.filter((file) =>
+      importsModule(code(read(file)), "profileEgressClosure"),
+    );
+    expect(importers).toEqual([
+      "src/features/chat/closeProfileEgressEntrances.ts",
+    ]);
+    expect(
+      code(read("src/features/profile-egress/profileEgressClosure.ts")),
+    ).not.toMatch(/^\s*import\b/m);
+    expect(code(read("src/lib/tauri.ts"))).toMatch(
+      /if \(PROFILE_ACTIVATION_UI_ENABLED\) \{\s*const refusal =\s*globalThis\.__grimodexProfileEgressLocalRefusal\?\.\(cmd\) \?\? null;/,
+    );
+  });
+
+  it("writes the closure only from the status display's lazy chunk", () => {
+    const importers = sources.filter((file) =>
+      importsModule(code(read(file)), "closeProfileEgressEntrances"),
+    );
+    expect(importers).toEqual([
+      "src/features/profile-egress/ProfileEgressStatusIndicator.tsx",
+    ]);
+    const globalUsers = sources.filter((file) =>
+      /__grimodexProfileEgressLocalRefusal/.test(code(read(file))),
+    );
+    expect(globalUsers.sort()).toEqual([
+      "src/features/chat/closeProfileEgressEntrances.ts",
+      "src/features/profile-egress/profileEgressClosure.ts",
+      "src/lib/tauri.ts",
+    ]);
+    // Set once as a property that cannot be written, deleted or redefined
+    // (one-way, DR-DA2B-R27); nothing assigns it.
+    const writer = code(
+      read("src/features/chat/closeProfileEgressEntrances.ts"),
+    );
+    expect(
+      writer.match(
+        /Object\.defineProperty\(globalThis, "__grimodexProfileEgressLocalRefusal", \{\s*value: profileEgressLocalRefusal,\s*writable: false,\s*configurable: false,/g,
+      )?.length,
+    ).toBe(1);
+    for (const file of globalUsers) {
+      expect(code(read(file)), file).not.toMatch(
+        /__grimodexProfileEgressLocalRefusal\s*=(?!=)/,
+      );
+    }
+  });
+
+  it("reads the store's closure only under the constant, in the listed files", () => {
+    const readers = sources.filter((file) =>
+      /\bprofileEgressClosed\b/.test(code(read(file))),
+    );
+    expect(readers.sort()).toEqual(
+      [
+        "src/application/chat/chatPersistenceStoreActions.ts",
+        "src/application/chat/chatSessionStoreActions.ts",
+        "src/features/ai-policy/useAiGate.ts",
+        "src/features/chat/store.ts",
+        "src/features/chat/useChatPinsController.ts",
+        "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+        "src/features/chat/closeProfileEgressEntrances.ts",
+      ].sort(),
+    );
+    // The hook reads sit directly behind the constant's ternary.
+    for (const file of [
+      "src/features/ai-policy/useAiGate.ts",
+      "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+    ]) {
+      expect(code(read(file))).toMatch(
+        new RegExp(
+          `${CONSTANT}\\s*\\?\\s*useAiSettingsStore\\(\\s*\\(\\w+\\) => \\w+\\.profileEgressClosed === true`,
+        ),
+      );
+    }
+    // The store actions call the closure only behind the constant.
+    const session = code(
+      read("src/application/chat/chatSessionStoreActions.ts"),
+    );
+    expect(session.match(/refuseNewConversation\(\)/g)?.length).toBe(3);
+    expect(
+      session.match(
+        new RegExp(`${CONSTANT} && refuseNewConversation\\(\\)`, "g"),
+      )?.length,
+    ).toBe(3);
+  });
+
+  it("passes the chat send's feature only through the constant's ternary", () => {
+    const users = sources.filter((file) =>
+      /(?<!data-testid=)"chat-send"/.test(code(read(file))),
+    );
+    expect(users.sort()).toEqual(
+      [
+        "src/features/ai-policy/useAiGate.ts",
+        "src/features/chat/ChatPanel.tsx",
+        "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+      ].sort(),
+    );
+    for (const file of [
+      "src/features/chat/ChatPanel.tsx",
+      "src/features/layout/adaptive/MobileWorkspaceSurfaces.tsx",
+    ]) {
+      expect(code(read(file))).toMatch(
+        new RegExp(
+          `useAiGate\\(\\s*${CONSTANT} \\? "chat-send" : "chat",?\\s*\\)`,
+        ),
+      );
+    }
+  });
+
+  // DR-DA2B-R26: the Enter submit reaches `onSend` without the send button, so
+  // the chat panel's send closure is checked there too, under the constant.
+  it("checks the chat send's closure in onSend, under the constant", () => {
+    const body = code(read("src/features/chat/ChatPanel.tsx"));
+    expect(
+      body.match(/if \(([\w ]*&& )?egressSendClosed\) return false;/g),
+    ).toEqual([`if (${CONSTANT} && egressSendClosed) return false;`]);
   });
 });

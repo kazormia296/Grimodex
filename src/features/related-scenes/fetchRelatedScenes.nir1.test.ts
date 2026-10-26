@@ -10,6 +10,10 @@ import { usePhaseStore } from "@/features/codex/phaseStore";
 import type { SemanticSearchHit } from "@/features/semantic-search/api";
 import type { Nir1AdmittedScene } from "./nir1RelatedScenesResult";
 import type { Nir1RelatedScenesSession } from "./nir1RelatedScenesSession";
+import {
+  RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS,
+  RELATED_SCENES_IR_EXTRA_WAIT_MS,
+} from "./relatedScenesConfig";
 
 const h = vi.hoisted(() => ({
   load: vi.fn(),
@@ -123,6 +127,7 @@ function fetchHybrid(
     queryGeneration?: number;
     graphSeedEntityId?: string;
     rawOnly?: boolean;
+    refreshTrigger?: "graph-ready";
   } = {},
 ) {
   const response = fetchRelatedPastScenes("current", {
@@ -814,5 +819,114 @@ describe("NIR1 Graph join wiring (CP-3a)", () => {
       await drain();
       expect(h.release).toHaveBeenCalledExactlyOnceWith("ticket-a");
     });
+  });
+});
+// K6/4 の批准 12（DR-WF-2〜4）：契機が `graph-ready` の query の合流にだけ W_f を渡し、
+// 契機の印と渡した窓の値を `timing` に出す。
+describe("follow-up の子の Graph の窓と timing の印（K6/4 の批准 12）", () => {
+  const child = () => ({
+    ...seeded(),
+    refreshTrigger: "graph-ready" as const,
+  });
+
+  it("子は D の後、W_f の内に届いた Graph で公開し、印と W_f を timing に出す", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    const graph = deferred<RelatedScenesGraphWaitResponse>();
+    h.graphContinue.mockReturnValue(graph.promise);
+    let returned = false;
+    const pending = fetchHybrid(child()).then((value) => {
+      returned = true;
+      return value;
+    });
+    await drain();
+    h.now = 120;
+    await vi.advanceTimersByTimeAsync(20);
+    expect(returned).toBe(false);
+    expect(h.graphSettle).not.toHaveBeenCalled();
+    h.now = 150;
+    graph.resolve(graphWire());
+    const response = await pending;
+    expect(response.graphOutcome).toBe("graph-ready");
+    expect(response.graph?.pathAttachments).toEqual(
+      graphWire().pathAttachments,
+    );
+    expect(response.result.kind).toBe("fused");
+    expect(response.timing.refreshTrigger).toBe("graph-ready");
+    expect(response.timing.graphWindowMs).toBe(
+      RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS,
+    );
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "used");
+  });
+
+  it("子は W_f の満了で graph-late を公開し、その後の Graph を混ぜない", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    const graph = deferred<RelatedScenesGraphWaitResponse>();
+    h.graphContinue.mockReturnValue(graph.promise);
+    const pending = fetchHybrid(child());
+    await drain();
+    h.now = 200;
+    await vi.advanceTimersByTimeAsync(200);
+    const response = await pending;
+    expect(response.graphOutcome).toBe("graph-late");
+    expect(response).not.toHaveProperty("graph");
+    expect(response.timing.graphWindowMs).toBe(
+      RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS,
+    );
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "unused");
+    graph.resolve(graphWire());
+    await drain();
+    expect(response).not.toHaveProperty("graph");
+    expect(h.graphSettle).toHaveBeenCalledOnce();
+  });
+
+  it("契機の無い query は D のままで、印は null、窓は D", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    const graph = deferred<RelatedScenesGraphWaitResponse>();
+    h.graphContinue.mockReturnValue(graph.promise);
+    const pending = fetchHybrid(seeded());
+    await drain();
+    h.now = 120;
+    await vi.advanceTimersByTimeAsync(20);
+    const response = await pending;
+    expect(response.graphOutcome).toBe("graph-late");
+    expect(response.timing.refreshTrigger).toBeNull();
+    expect(response.timing.graphWindowMs).toBe(RELATED_SCENES_IR_EXTRA_WAIT_MS);
+  });
+
+  it("子の IR の deadline は D のまま：IR が来なければ D で IR の timeout", async () => {
+    h.begin.mockResolvedValue(pendingBegin());
+    h.continue.mockReturnValue(new Promise(() => {}));
+    h.graphContinue.mockReturnValue(new Promise(() => {}));
+    const pending = fetchHybrid(child());
+    await drain();
+    h.now = 120;
+    await vi.advanceTimersByTimeAsync(20);
+    const response = await pending;
+    expect(response.result).toMatchObject({
+      kind: "raw",
+      ir: { status: "unavailable", reason: "timeout" },
+    });
+    expect(response.completion?.outcome).toBe("timeout");
+    expect(h.graphSettle).toHaveBeenCalledExactlyOnceWith("ticket-a", "unused");
+  });
+
+  it("Graph の合流が無い query は窓を null にし、印はそのまま出す（begin の unavailable は合流を通る）", async () => {
+    const unseeded = await fetchHybrid({ refreshTrigger: "graph-ready" });
+    expect(unseeded.timing.refreshTrigger).toBe("graph-ready");
+    expect(unseeded.timing.graphWindowMs).toBeNull();
+    h.begin.mockResolvedValue({
+      ...beginResponse(),
+      graph: { status: "unavailable", reason: "not-activated" },
+    });
+    // begin で Graph が unavailable の子も合流は通る（窓は W_f のまま、待たずに公開）。
+    const unavailable = await fetchHybrid(child());
+    expect(unavailable.graphOutcome).toBe("graph-unavailable:not-activated");
+    expect(unavailable.timing.graphWindowMs).toBe(
+      RELATED_SCENES_FOLLOW_UP_GRAPH_WINDOW_MS,
+    );
+    h.begin.mockResolvedValue(beginResponse());
+    const plain = await fetchHybrid();
+    expect(plain.timing.refreshTrigger).toBeNull();
+    expect(plain.timing.graphWindowMs).toBeNull();
   });
 });

@@ -62,7 +62,12 @@ tauri-plugin-window-state = "2"
 # アプリ自動更新 (Track2 updater 導入)。licensing / semantic feature とは独立の
 # 無条件依存。updater は署名付き latest.json を GitHub Releases から取得し、
 # process は更新後の再起動 (relaunch) に使う。
-tauri-plugin-updater = "2"
+#
+# default の `zip` feature（zip／tar／flate2 による更新物の展開）は意図的に外している。
+# zip 4.x に RUSTSEC-2026-0367〜0369 があり、updater 2.x／3.0.0-alpha はいずれも
+# zip ^4 のため依存更新では解消できない。旧 shell は frozen で build／配布されない。
+# default の他の feature（rustls-tls）はそのまま保つ。
+tauri-plugin-updater = { version = "2", default-features = false, features = ["rustls-tls"] }
 tauri-plugin-process = "2"
 # 校閲 run 完了/失敗のデスクトップ通知 (ウィンドウ非フォーカス時のみ FE が送る)
 tauri-plugin-notification = "2"

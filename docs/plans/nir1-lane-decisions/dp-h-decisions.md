@@ -487,3 +487,13 @@ DR-DPH-104 と DR-DPH-116 (iv) が S4 の前に残した 3 点（unknown-scope �
 - 変異（どれも commit に入れず、`git checkout --` で戻した）：(a) unknown の marker の確認を外す：marker の試験が落ちる（run が D-final まで進んで成功を返す）。(b) `IdMap::add` を黙った上書きに戻す：重複の試験が落ちる（run が成功を返す）。(c) 足した variant の期待の code を変える：end-to-end の試験と既存の `final_request_reject_variants_fail_closed_with_expected_reason` の両方が落ちる。
 
 未実行：ignored の `final_request_evidence_run` と `--ignored`（S4 の本番。版 2 の材料はこの作業で Native に届いていない）、Quick／Full、`pnpm test:quality` の全体。
+
+### DPH-S4（版 2 の evidence の実行結果。実施日 2026-10-25）
+
+S0（#709）、S0c（#712）、S1〜S3（版 2 の fixture・独立期待値 review・freeze。#713）、S4 の前の確認（#714）の後、版 2 の evidence を実行した（S4）。実施者は作者・reviewer とは別の Opus で、fixture、freeze 記録、review 記録、scorer、harness、製品のコードは変えていない。記録済みの行（DR-DPH-1〜119）は直さない。この節は docs だけの追記である。観測の中身（variant ごとの判定）は、DR-DPH-67 の規則により、この文書にも repo にも書かない。
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界 | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-DPH-120 | 2026-10-25 | DP-H／S4 | 【S4（版 2 の evidence の実行）は PASS。DP-H 単体の証跡】candidate head は master `6592b71b`、freeze commit は `d1cc8cb4`（版 2 の freeze。DR-DPH-115）。runner は exit 0 で、request 29 件（正例 17・拒否 12）がすべて pass、failed 0・invalid 0。scope は dp-h のみで、DP-1 の証跡でも P-12 の証跡でもない（`dp1Evidence: false`、`p12: not-measured`）。実行手順の注意が 2 つある。(1) cargo の filter は `nir1_prepared_request::nir1_final_request_eval::harness::tests::final_request_evidence_run` である。`nir1_prepared_request::` の接頭辞が要り、無いと `--exact` が 0 件にマッチして「成功」で終わる（0 件の成功は evidence ではない）。`runner.mjs` の header のコメントには接頭辞が無いが、runner は freeze が束縛する module なので直していない。(2) runner を receipt 無しで走らせたときの HOLD は、gate の通過の証拠にならない。`verifyFrozenSnapshot` まで進まないため | 実施だけで、fixture、期待値、freeze 記録、review 記録、scorer、harness、製品の経路は変えていない。観測の中身（variant ごとの判定）は repo に書かない（DR-DPH-67）。実施者は作者・reviewer とは別の Opus（requested／effective の model・effort は、この記録では確かめていない）で、期待値を観測に合わせて直さない（契約）。PASS を DP-1 の証跡、P-12 の証跡として扱わない | PASS の結果を DP-1 の証跡として記録する：scope が dp-h のみで、DP-1 の証跡には NC-1 を当てた起動の run など別の条件が要る（K6/3 の 2）ので採らない。runner の header のコメントを直す：freeze が束縛する module なので採らない | なし（実施の記録） | 該当なし | 不要（lifecycle を変えない） | 記録済み |
+
+実行した検証（S4）：版 2 の evidence を `final_request_evidence_run` で実行した（candidate head `6592b71b`）。結果は上の DR-DPH-120 のとおり。この記録の PR（docs だけ）では、Quick／Full は実行していない。

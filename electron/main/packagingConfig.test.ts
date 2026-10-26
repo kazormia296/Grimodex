@@ -64,7 +64,14 @@ describe("Electron release packaging contract", () => {
       "pnpm --dir electron/native/grimodex-node exec napi build --release --features licensing,legacy-keyring-migration",
     );
     expect(pkg.scripts?.["electron:native:release"]).toBe(
-      "pnpm napi:build:release && pnpm napi:verify:release && pnpm mcp:build:release",
+      "pnpm napi:build:release && pnpm napi:verify:release && pnpm mcp:build:release && pnpm worker:build:release && pnpm worker:verify:release",
+    );
+    // CP-2b: the NIR-1 C-query worker is built without the test seam.
+    expect(pkg.scripts?.["worker:build:release"]).toBe(
+      "cargo build --locked --release --manifest-path src-tauri/Cargo.toml -p grimodex-db --bin nir1-c-query-worker",
+    );
+    expect(pkg.scripts?.["worker:verify:release"]).toBe(
+      "node electron/scripts/verify-release-graph-worker.mjs",
     );
     expect(pkg.scripts?.["electron:package:dir"]).toBe(
       "pnpm electron:native:release && pnpm electron:build && electron-builder --dir",
@@ -100,14 +107,19 @@ describe("Electron release packaging contract", () => {
     ]);
   });
 
-  it("places MCP, semantic tokenizers, and selected rerankers at runtime paths", () => {
+  it("places MCP, the C-query worker, semantic tokenizers, and selected rerankers at runtime paths", () => {
     const config = readBuilderConfig();
 
     expect(config.extraResources).toEqual([
       {
         from: "src-tauri/target/release",
         to: "bin",
-        filter: ["grimodex-mcp", "grimodex-mcp.exe"],
+        filter: [
+          "grimodex-mcp",
+          "grimodex-mcp.exe",
+          "nir1-c-query-worker",
+          "nir1-c-query-worker.exe",
+        ],
       },
       {
         from: "src-tauri/resources/semantic",

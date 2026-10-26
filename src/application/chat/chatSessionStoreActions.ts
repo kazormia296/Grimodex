@@ -27,6 +27,8 @@ import { scopeSessionKeysEqual } from "@/features/chat/chatScope";
 import { purgeChatInputDrafts } from "@/features/chat/chatInputDraftPurge";
 import { isIpcLifecycleCancellation } from "@/lib/tauri";
 import { isTreeNavigationLeaseActive } from "@/lib/chatNavigationGuard";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+import { useAiSettingsStore } from "@/features/chat/store";
 
 interface ChatSessionRepository {
   listSessions: (
@@ -96,6 +98,20 @@ export function createChatSessionStoreActions(
     if (!runtime.hasPendingCompletedTurnPersistence()) return false;
     runtime.notifyError(
       runtime.translate("chat.pendingCompletedTurnPersistence"),
+    );
+    return true;
+  };
+  /**
+   * DA-2b の PUB-G 前の必須 3 の C（DR-DA2B-R22）：外部送信の制限で AI の入口が閉じている
+   * 間は、会話を作らない（`createSession` は汎用の INSERT で、Main の gate が拒否する）。
+   * 理由を示して true を返す。定数が false の間は呼出しごと消える。
+   */
+  const refuseNewConversation = (): boolean => {
+    if (useAiSettingsStore.getState().profileEgressClosed !== true) {
+      return false;
+    }
+    runtime.notifyError(
+      runtime.translate("profileEgress.chat.newConversationClosed"),
     );
     return true;
   };
@@ -174,6 +190,7 @@ export function createChatSessionStoreActions(
 
     createLinkedSession: async () => {
       if (blockSessionMutation()) return;
+      if (PROFILE_ACTIVATION_UI_ENABLED && refuseNewConversation()) return;
       const invocationState = get();
       if (invocationState.isStreaming) return;
       const authority = captureSessionMutationAuthority(invocationState);
@@ -473,6 +490,7 @@ export function createChatSessionStoreActions(
       snippetAnchorId?: string,
     ) => {
       if (blockSessionMutation()) return;
+      if (PROFILE_ACTIVATION_UI_ENABLED && refuseNewConversation()) return;
       const invocationState = get();
       if (invocationState.isStreaming) return;
       const authority = captureSessionMutationAuthority(invocationState);
@@ -562,6 +580,9 @@ export function createChatSessionStoreActions(
           return null;
         }
         if (capturedSessionId) return capturedSessionId;
+        if (PROFILE_ACTIVATION_UI_ENABLED && refuseNewConversation()) {
+          return null;
+        }
         const { projectId, scopeKey } = authority;
         try {
           const session = await repository.createSession(

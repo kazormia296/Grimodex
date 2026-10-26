@@ -703,6 +703,13 @@ impl OwnerCore {
     }
 }
 
+/// The read scope of [`Nir1GenerationOwner::policy_read_scope`].
+pub(crate) struct Nir1OwnerPolicyScope<'owner> {
+    pub(crate) workspace: &'owner ActiveWorkspaceSnapshot,
+    pub(crate) project_id: &'owner str,
+    pub(crate) budget: Nir1AdmissionSqlBudget,
+}
+
 /// An accepted submission's owner before its attempt exists.
 pub(crate) struct Nir1GenerationOwner {
     core: OwnerCore,
@@ -856,6 +863,31 @@ impl Nir1GenerationOwner {
 
     pub(crate) fn route_revision(&self) -> &str {
         &self.core.route_revision
+    }
+
+    /// What a read before the attempt is created needs (DD-1a, DR-DD1A-5):
+    /// this owner's pinned workspace, the capture's project, and an
+    /// admission budget fenced by this owner's cancel flag, the current
+    /// startup-gate entry and the profile permit. The lease is taken only to
+    /// read the entry witness and is released before this returns, so the
+    /// read holds no lease. The caller reads outside every owner lock.
+    pub(crate) fn policy_read_scope(
+        &self,
+    ) -> Result<Nir1OwnerPolicyScope<'_>, Nir1GenerationRefusal> {
+        let lease = self
+            .core
+            .gate()
+            .try_lease_for_binding(&self.core.live_binding)
+            .ok_or(Nir1GenerationRefusal::GateClosed)?;
+        let witness = lease.witness();
+        drop(lease);
+        Ok(Nir1OwnerPolicyScope {
+            workspace: &self.core.workspace,
+            project_id: self.core.capture.project_id(),
+            budget: self
+                .core
+                .admission_budget_for_witness(witness, "policy-before-attempt"),
+        })
     }
 
     /// Persist the final request as this submission's attempt. Only the

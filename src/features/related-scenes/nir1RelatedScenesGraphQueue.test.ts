@@ -105,6 +105,59 @@ afterEach(() => {
 });
 
 describe("Related Scenes Graph settle lane (CP-3a, DR-CP3A-45)", () => {
+  it("joins only the same operation's IR continue; another operation's Graph await and the next begin still wait (RS-JOIN, DR-RSJ-2)", async () => {
+    const transport = installTransport();
+    const [api, queue] = await Promise.all([
+      import("./nir1RelatedScenesApi"),
+      import("@/lib/ipcQueue"),
+    ]);
+    queue.resetIpcQueueForTests();
+
+    const ir = api.continueRelatedScenes("ticket-1");
+    const otherGraph = api
+      .continueRelatedScenesGraph("ticket-2", ["scene-a"])
+      .catch((error: unknown) => error);
+    const next = api.beginRelatedScenes({
+      expectedWorkspacePath: "/workspace",
+      projectId: "project-1",
+      currentSceneId: "scene-2",
+      query: "next scene",
+    });
+    await vi.advanceTimersByTimeAsync(5);
+    const sameGraph = api.continueRelatedScenesGraph("ticket-1", ["scene-a"]);
+    await vi.advanceTimersByTimeAsync(1);
+    // Only the same ticket's await joined the running IR continue.
+    const awaits = transport.calls.filter(
+      (call) =>
+        call.command === "related_scenes_graph_continue" &&
+        !("settle" in call.args),
+    );
+    expect(awaits).toEqual([
+      {
+        command: "related_scenes_graph_continue",
+        args: { operationTicket: "ticket-1", rawSceneIds: ["scene-a"] },
+        at: 5,
+      },
+    ]);
+    expect(callAt(transport.calls, "related_scenes_begin")).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(IR_CONTINUE_MS);
+    await expect(ir).resolves.toMatchObject({ status: "available" });
+    // The IR continue is over but the joined await still holds the one slot.
+    expect(callAt(transport.calls, "related_scenes_begin")).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(AWAIT_LIMIT_MS);
+    await expect(sameGraph).resolves.toMatchObject({ reason: "timeout" });
+    await vi.advanceTimersByTimeAsync(AWAIT_LIMIT_MS * 2);
+    await expect(next).resolves.toMatchObject({ status: "raw-ready" });
+    await otherGraph;
+    // FIFO among the rest, one at a time, once the pair has left the slot.
+    const begin = callAt(transport.calls, "related_scenes_begin")!;
+    const other = transport.calls.find(
+      (call) => call.args.operationTicket === "ticket-2",
+    )!;
+    expect(other.at).toBe(5 + AWAIT_LIMIT_MS);
+    expect(begin.at).toBe(5 + AWAIT_LIMIT_MS * 2);
+  });
+
   it("sends settle while the await holds the derived slot, so the await ends and the next begin does not wait 2 s", async () => {
     const transport = installTransport();
     const [api, graphModule, queue] = await Promise.all([
@@ -117,7 +170,8 @@ describe("Related Scenes Graph settle lane (CP-3a, DR-CP3A-45)", () => {
     // t=0: the IR continue occupies the derived slot for 30 ms.
     const ir = api.continueRelatedScenes("ticket-1");
     await vi.advanceTimersByTimeAsync(5);
-    // t=5: the Graph await is queued behind it (both are derived).
+    // t=5: the Graph await of the same operation joins it (RS-JOIN,
+    // DR-RSJ-2): the two are a derived pair, not queued one behind the other.
     const graphWait = graphModule.createNir1RelatedScenesGraphWait({
       begin: {
         graph: { status: "pending" },
@@ -146,10 +200,11 @@ describe("Related Scenes Graph settle lane (CP-3a, DR-CP3A-45)", () => {
     await vi.advanceTimersByTimeAsync(100);
 
     await expect(ir).resolves.toMatchObject({ status: "available" });
-    // The await itself stays in the derived lane, behind the IR continue.
+    // The await is sent while the IR continue still runs (RS-JOIN): Native
+    // waits for the IR itself, so it no longer waits in the renderer queue.
     expect(
       callAt(transport.calls, "related_scenes_graph_continue", "await")?.at,
-    ).toBe(IR_CONTINUE_MS);
+    ).toBe(5);
     // The settle is sent at once, not after the await's 2 s limit.
     expect(
       callAt(transport.calls, "related_scenes_graph_continue", "settle"),

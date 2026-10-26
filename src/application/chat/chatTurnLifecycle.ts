@@ -18,7 +18,7 @@ import type { ChatScope } from "@/features/chat/chatScope";
 
 type SendOptions = NonNullable<Parameters<ChatState["sendMessage"]>[2]>;
 
-interface CaptureRouteEligibilityInput {
+export interface CaptureRouteEligibilityInput {
   turnRoute: ResolvedChatTurnRoute | null;
   aiSettingsEarly: AiSettings | null;
   chatScope: ChatScope;
@@ -75,6 +75,83 @@ export interface ChatTurnCaptureLifecycle {
   resolveFinally: (workspaceIsCurrent: boolean) => boolean;
 }
 
+// Native accepts only 127.0.0.1 and [::1] IP literals (no localhost, other
+// 127/8 address, or alternate spelling); this mirrors that check up front.
+function isCaptureLoopbackEndpoint(baseUrl: string): boolean {
+  const match =
+    /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9]\d{0,4})\/v1\/?$/.exec(baseUrl);
+  return match !== null && Number(match[1]) <= 65535;
+}
+
+/**
+ * 送信の capture（場面の会話の Human の入力を transport の前に保存する）の対象になる route と
+ * 会話か。lifecycle の closure の依存を使わない純関数で、送信の capture と、編集して再送の
+ * 閉鎖（`chatEgressClosure.ts` の `isEditResendCaptureEligible`、DR-DA2B-R29）が同じ関数を使う。
+ */
+export function captureRouteIsEligible(
+  input: CaptureRouteEligibilityInput,
+): boolean {
+  const {
+    turnRoute,
+    aiSettingsEarly,
+    chatScope,
+    effectiveSceneId,
+    activeSceneId,
+    scopeAnchorId,
+    threadFocusOverride,
+    useAgentPath,
+    capturedRagEnabled,
+    ragActive,
+    publicWebSearchPath,
+    commandInstruction,
+    options,
+  } = input;
+  const captureEndpoint =
+    turnRoute && aiSettingsEarly
+      ? resolveActiveOpenaiCompatibleEndpoint(
+          aiSettingsEarly,
+          turnRoute.resolvedEndpointId,
+        )
+      : undefined;
+  return Boolean(
+    isElectron() &&
+    turnRoute &&
+    turnRoute.surface === "chat" &&
+    turnRoute.source === "active" &&
+    turnRoute.provider === "openai-compatible" &&
+    turnRoute.providerOverride === null &&
+    turnRoute.transport === "http" &&
+    turnRoute.endpointId === null &&
+    // The shared route resolver labels OpenAI-compatible's no-variant
+    // default as "legacy"; reject explicit variants and Responses routes.
+    (turnRoute.apiVariant === null || turnRoute.apiVariant === "legacy") &&
+    turnRoute.toolProtocol === "native" &&
+    turnRoute.model === aiSettingsEarly?.model &&
+    aiSettingsEarly?.provider === "openai-compatible" &&
+    aiSettingsEarly.model.trim().length > 0 &&
+    aiSettingsEarly.modelApiVariant == null &&
+    captureEndpoint !== undefined &&
+    captureEndpoint.apiVariant == null &&
+    captureEndpoint.id === turnRoute.resolvedEndpointId &&
+    captureEndpoint.baseUrl === captureEndpoint.baseUrl.trim() &&
+    isCaptureLoopbackEndpoint(captureEndpoint.baseUrl) &&
+    chatScope === "scene" &&
+    effectiveSceneId !== null &&
+    effectiveSceneId === activeSceneId &&
+    scopeAnchorId === null &&
+    threadFocusOverride === null &&
+    !useAgentPath &&
+    !capturedRagEnabled &&
+    !ragActive &&
+    !publicWebSearchPath &&
+    commandInstruction === undefined &&
+    options?.overrideAgentMode === undefined &&
+    !options?._replaceAssistantMessageId &&
+    !options?.mentionedSceneIds?.length &&
+    !options?.mentionedCodexIds?.length,
+  );
+}
+
 export function createChatTurnLifecycle(
   dependencies: ChatTurnLifecycleDependencies,
 ) {
@@ -99,78 +176,6 @@ export function createChatTurnLifecycle(
     () => Promise<void>
   >();
   let stopGenerationVersion = 0;
-
-  // Native accepts only 127.0.0.1 and [::1] IP literals (no localhost, other
-  // 127/8 address, or alternate spelling); this mirrors that check up front.
-  const isCaptureLoopbackEndpoint = (baseUrl: string): boolean => {
-    const match =
-      /^http:\/\/(?:127\.0\.0\.1|\[::1\]):([1-9]\d{0,4})\/v1\/?$/.exec(baseUrl);
-    return match !== null && Number(match[1]) <= 65535;
-  };
-
-  const captureRouteIsEligible = (
-    input: CaptureRouteEligibilityInput,
-  ): boolean => {
-    const {
-      turnRoute,
-      aiSettingsEarly,
-      chatScope,
-      effectiveSceneId,
-      activeSceneId,
-      scopeAnchorId,
-      threadFocusOverride,
-      useAgentPath,
-      capturedRagEnabled,
-      ragActive,
-      publicWebSearchPath,
-      commandInstruction,
-      options,
-    } = input;
-    const captureEndpoint =
-      turnRoute && aiSettingsEarly
-        ? resolveActiveOpenaiCompatibleEndpoint(
-            aiSettingsEarly,
-            turnRoute.resolvedEndpointId,
-          )
-        : undefined;
-    return Boolean(
-      isElectron() &&
-      turnRoute &&
-      turnRoute.surface === "chat" &&
-      turnRoute.source === "active" &&
-      turnRoute.provider === "openai-compatible" &&
-      turnRoute.providerOverride === null &&
-      turnRoute.transport === "http" &&
-      turnRoute.endpointId === null &&
-      // The shared route resolver labels OpenAI-compatible's no-variant
-      // default as "legacy"; reject explicit variants and Responses routes.
-      (turnRoute.apiVariant === null || turnRoute.apiVariant === "legacy") &&
-      turnRoute.toolProtocol === "native" &&
-      turnRoute.model === aiSettingsEarly?.model &&
-      aiSettingsEarly?.provider === "openai-compatible" &&
-      aiSettingsEarly.model.trim().length > 0 &&
-      aiSettingsEarly.modelApiVariant == null &&
-      captureEndpoint !== undefined &&
-      captureEndpoint.apiVariant == null &&
-      captureEndpoint.id === turnRoute.resolvedEndpointId &&
-      captureEndpoint.baseUrl === captureEndpoint.baseUrl.trim() &&
-      isCaptureLoopbackEndpoint(captureEndpoint.baseUrl) &&
-      chatScope === "scene" &&
-      effectiveSceneId !== null &&
-      effectiveSceneId === activeSceneId &&
-      scopeAnchorId === null &&
-      threadFocusOverride === null &&
-      !useAgentPath &&
-      !capturedRagEnabled &&
-      !ragActive &&
-      !publicWebSearchPath &&
-      commandInstruction === undefined &&
-      options?.overrideAgentMode === undefined &&
-      !options?._replaceAssistantMessageId &&
-      !options?.mentionedSceneIds?.length &&
-      !options?.mentionedCodexIds?.length,
-    );
-  };
 
   const beforeSend = (
     sendStopGeneration: number,

@@ -1,0 +1,370 @@
+/**
+ * 再送が capture の外になる「編集して再送」の閉鎖（NIR-1 DA-2b の PUB-G 前の必須 1 と 5、
+ * `docs/plans/nir1-lane-decisions/da2b-renderer-decisions.md` の DR-DA2B-R17〜R19、R29、R30）。
+ *
+ * 編集は対象の user 行と後続の行を typed な CW（`chat_messages_delete`）で消す。CW は
+ * restricted でも成功するが、再送は capture の外では保存されない（K3/2 の
+ * 「chat の書込みの入口」4）。そこで、再送が capture に入らない（場面の会話でない、または
+ * 場面の会話でも route が capture の外。表の 5 の案 (a)）ときは、編集の瞬間に状態の
+ * command を boolean の閉鎖のためだけに読み、`unrestricted` と読めたときだけ進める。定数（`PROFILE_ACTIVATION_UI_ENABLED`）には依らない。
+ * renderer の閉鎖は防御に数えない（Main と Native は変えていない）。
+ *
+ * 起動時の graph：この module は lazy な ChatPanel の chunk からだけ import する。
+ * 状態の wrapper（`@/lib/profileEgressStatus`）は動的 import にする（静的に import すると
+ * 共有の chunk が分かれ、起動時の preload の表が増える。DR-DA2B-R6 の (B)）。
+ * top level に呼出しを置かない。
+ */
+import { toast } from "sonner";
+import i18next from "@/lib/i18n";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
+import {
+  captureRouteIsEligible,
+  type CaptureRouteEligibilityInput,
+} from "@/application/chat/chatTurnLifecycle";
+import { resolveCurrentChatTurnPolicy } from "@/application/chat/chatTurnRouting";
+import { parseMentionedSceneIdsFromMetadata } from "@/application/chat/chatStoreSupport";
+import { useAiSettingsStore } from "./store";
+
+/** 会話の種類の判定に要る store の欄（`ChatState` の一部）。 */
+export interface ConversationKindState {
+  readonly chatScope: string;
+  readonly activeSceneId: string;
+  readonly scopeAnchorId: string | null;
+  readonly threadFocusOverride: unknown;
+}
+
+/**
+ * capture（`captureRouteIsEligible`）の会話の側の条件と同じ述語。場面の scope で、
+ * 場面が開いていて、anchor が無く、thread の focus でないときだけ真。route の側の条件
+ * （provider、agent、RAG など）は会話の種類ではないので見ない。編集して再送の閉鎖は、
+ * route の側を `isEditResendCaptureEligible` で別に見る（DR-DA2B-R29）。
+ */
+export function isSceneConversation(state: ConversationKindState): boolean {
+  return (
+    state.chatScope === "scene" &&
+    typeof state.activeSceneId === "string" &&
+    state.activeSceneId.length > 0 &&
+    state.scopeAnchorId === null &&
+    state.threadFocusOverride === null
+  );
+}
+
+/** chat の送信の閉鎖の種類（PUB-G 前の必須 4、DR-DA2B-R24）。 */
+export type ChatEgressClosure = "open" | "ai" | "newConversation" | "nonScene";
+
+/** 送信の閉鎖の判定に要る store の欄（`ChatState` の一部）。 */
+export interface ChatEgressScopeState extends ConversationKindState {
+  readonly activeSessionId: string | null;
+}
+
+/**
+ * 外部送信の制限で AI が閉じている（`closed`）ときの chat の送信の閉鎖。
+ * - `ai`：会話のある場面の会話。AI の応答だけが使えず、送信は開く（capture が保存する）。
+ * - `newConversation`：会話の無い場面の会話。最初の送信は会話の作成（汎用の INSERT）で
+ *   拒否されるので、送信も閉じる。
+ * - `nonScene`：場面の会話でない会話（capture の外）。送信を閉じる。
+ * 場面の会話の述語は `isSceneConversation`（capture の会話の条件、R18）と同じ。
+ * Mobile の chat は起動時の chunk なので、同じ判定を自分の module に写して持つ
+ * （`phoneChatEgressClosure`。`chatEgressScope.test.ts` が一致を固定する）。
+ */
+export function chatEgressClosureOf(
+  closed: boolean,
+  state: ChatEgressScopeState,
+): ChatEgressClosure {
+  if (!closed) return "open";
+  if (!isSceneConversation(state)) return "nonScene";
+  return state.activeSessionId === null ? "newConversation" : "ai";
+}
+
+/**
+ * 状態の読取の結果（view、または投げられた値）から閉鎖を決める。`{ state:
+ * "unrestricted" }` そのものだけが開。restricted、activating、unavailable、例外、
+ * 未知の値はどれも閉（fail-closed）。
+ */
+export function isNonSceneEditClosed(outcome: unknown): boolean {
+  if (
+    outcome === null ||
+    typeof outcome !== "object" ||
+    Array.isArray(outcome)
+  ) {
+    return true;
+  }
+  const keys = Object.keys(outcome);
+  return !(
+    keys.length === 1 &&
+    keys[0] === "state" &&
+    (outcome as { state?: unknown }).state === "unrestricted"
+  );
+}
+
+/**
+ * restricted は process の中で戻らない（K3/2 の可用性。一方向）ので、それを読めたときだけ
+ * 保持する。開と、restricted 以外の閉（例外、unavailable、activating、時間切れ）は
+ * 保持しない。
+ */
+let restrictedObserved = false;
+
+/**
+ * 状態の読取の上限（ms）。Main は自分で答えるのでふつうは即座に戻るが、戻らないときに
+ * 編集の入口が process の間ふさがらないよう、超えたら閉として扱う（DR-DA2B-R20）。
+ */
+export const NON_SCENE_EDIT_STATUS_TIMEOUT_MS = 5_000;
+
+async function readClosureOnce(): Promise<boolean> {
+  try {
+    const { getProfileEgressStatus } =
+      await import("@/lib/profileEgressStatus");
+    const view = await getProfileEgressStatus();
+    if (view.state === "restricted") restrictedObserved = true;
+    return isNonSceneEditClosed(view);
+  } catch (error) {
+    return isNonSceneEditClosed(error);
+  }
+}
+
+/**
+ * 閉なら true。時間切れも閉。読取は `admitConversationEdit` の `editInFlight` が
+ * 1 本に限るので、ここでは束ねない。
+ */
+export function readNonSceneEditClosed(): Promise<boolean> {
+  if (restrictedObserved) return Promise.resolve(true);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<boolean>((resolve) => {
+    timer = setTimeout(() => resolve(true), NON_SCENE_EDIT_STATUS_TIMEOUT_MS);
+  });
+  return Promise.race([readClosureOnce(), timeout]).finally(() => {
+    clearTimeout(timer);
+  });
+}
+
+/**
+ * 閉のときの表示。理由の文言は Session C-1 の承認まで定数の後ろに置く（R5 の P3-7）。
+ * 場面の会話（route が capture の外で閉じた）は、「場面の会話でない会話の」と言う
+ * `editClosed` では偽になるので、別の文（案、DR-DA2B-R29）を出す。
+ */
+export function notifyEditClosed(sceneConversation: boolean): void {
+  void (PROFILE_ACTIVATION_UI_ENABLED
+    ? toast.info(
+        i18next.t(
+          sceneConversation
+            ? "profileEgress.chat.editClosedRoute"
+            : "profileEgress.chat.editClosed",
+        ),
+      )
+    : toast.error(i18next.t("common.error")));
+}
+
+/** 編集の click の時点の対象（読取の間に変わっていないかを後で確かめる）。 */
+export interface EditTargetSnapshot {
+  readonly projectId: string | null;
+  readonly sessionId: string | null;
+  readonly messageId: string;
+  /** click の時点の一覧の最後の行（後ろに足された行を消さないため）。 */
+  readonly lastMessageId: string | null;
+  readonly sceneConversation: boolean;
+  /**
+   * click の時点で、再送が capture に入る（restricted でも保存される）か。真のときだけ
+   * 状態を読まずに進む（DR-DA2B-R29）。
+   */
+  readonly captureEligible: boolean;
+}
+
+/** 対象の確認に要る store の欄（`ChatState` の一部）。 */
+export interface EditTargetState extends ConversationKindState {
+  readonly activeProjectId: string | null;
+  readonly activeSessionId: string | null;
+  readonly isStreaming: boolean;
+  readonly messages: ReadonlyArray<{
+    readonly id: string;
+    readonly role: string;
+  }>;
+}
+
+/** route の判定に要る store の欄（`ChatState` の一部）。 */
+export interface EditCaptureState extends EditTargetState {
+  readonly agentMode: boolean;
+  readonly ragEnabled: boolean;
+  readonly messages: ReadonlyArray<{
+    readonly id: string;
+    readonly role: string;
+    readonly metadata?: string | null;
+  }>;
+}
+
+/**
+ * 編集の時点の設定で再送したとき、送信の capture（`captureRouteIsEligible`、同じ関数）が
+ * それを保存するか（表の 5 の案 (a)、DR-DA2B-R29）。route は送信の preflight の写し
+ * （`resolveCurrentChatTurnPolicy`）で解き、再送は対象の行の scene の mention と、click の
+ * 時点で入力欄に保留中の slash command の指示（`commandInstruction`）を持つ（R32）。編集の
+ * 後に利用者が設定や mention、command を変えた再送は予見しない（記録の残る点）。評価が
+ * 投げたら偽（閉の側）。
+ */
+export function isEditResendCaptureEligible(
+  state: EditCaptureState,
+  messageId: string,
+  commandInstruction: string | undefined,
+): boolean {
+  try {
+    const message = state.messages.find(
+      (candidate) => candidate.id === messageId,
+    );
+    if (!message) return false;
+    const policy = resolveCurrentChatTurnPolicy({
+      agentMode: state.agentMode,
+      ragEnabled: state.ragEnabled,
+    });
+    const mentionedSceneIds = parseMentionedSceneIdsFromMetadata(
+      message.metadata,
+    );
+    return captureRouteIsEligible({
+      turnRoute: policy.route,
+      aiSettingsEarly: useAiSettingsStore.getState().settings,
+      chatScope: state.chatScope as CaptureRouteEligibilityInput["chatScope"],
+      effectiveSceneId:
+        state.chatScope === "scene" && !state.threadFocusOverride
+          ? state.activeSceneId
+          : null,
+      activeSceneId: state.activeSceneId,
+      scopeAnchorId: state.scopeAnchorId,
+      // capture は null かどうかだけを見る。
+      threadFocusOverride:
+        state.threadFocusOverride as CaptureRouteEligibilityInput["threadFocusOverride"],
+      useAgentPath: policy.useAgentPath,
+      capturedRagEnabled: state.ragEnabled,
+      ragActive: policy.ragActive,
+      publicWebSearchPath: policy.publicWebSearchPath,
+      commandInstruction,
+      ...(mentionedSceneIds ? { options: { mentionedSceneIds } } : {}),
+    });
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 入力欄の保留中の slash command（`ChatInput` の `pendingCommandRef`。本文からは消えるが
+ * 次の送信に付く）を、その入力欄の editor ごとに読む口（R32）。menu の編集の入口は
+ * `ChatInput` の外にあるので、本文を戻す先の editor から引く。
+ */
+export interface PendingCommand {
+  readonly commandInstruction: string | undefined;
+}
+
+const pendingCommandReaders = new WeakMap<object, () => string | undefined>();
+
+/** `ChatInput` が自分の editor に登録する。戻り値は登録の解除。 */
+export function registerPendingCommandReader(
+  editor: object,
+  read: () => string | undefined,
+): () => void {
+  pendingCommandReaders.set(editor, read);
+  return () => {
+    if (pendingCommandReaders.get(editor) === read) {
+      pendingCommandReaders.delete(editor);
+    }
+  };
+}
+
+/** 登録が無い・読めないときは null（不明。capture の外として閉の側に倒す）。 */
+export function readPendingCommand(
+  editor: object | null | undefined,
+): PendingCommand | null {
+  const read = editor ? pendingCommandReaders.get(editor) : undefined;
+  if (!read) return null;
+  try {
+    return { commandInstruction: read() };
+  } catch {
+    return null;
+  }
+}
+
+export function snapshotEditTarget(
+  state: EditCaptureState,
+  messageId: string,
+  pendingCommand: PendingCommand | null,
+): EditTargetSnapshot {
+  const sceneConversation = isSceneConversation(state);
+  return {
+    projectId: state.activeProjectId,
+    sessionId: state.activeSessionId,
+    messageId,
+    lastMessageId: state.messages.at(-1)?.id ?? null,
+    sceneConversation,
+    captureEligible:
+      sceneConversation &&
+      pendingCommand !== null &&
+      isEditResendCaptureEligible(
+        state,
+        messageId,
+        pendingCommand.commandInstruction,
+      ),
+  };
+}
+
+/**
+ * 読取の後も同じ workspace・会話・行で、stream が始まっておらず、一覧の最後の行が
+ * click の時点と同じか（後ろに行が足されていたら、見えていなかった行まで消さない）。
+ * chat の一覧は追記と削除しか起きないので、最後の行が同じで対象が残っていれば、入力欄の
+ * 「最後の行の編集」の対象もまだ最後の user 行である（別の確認は要らない）。
+ */
+export function isEditTargetCurrent(
+  snapshot: EditTargetSnapshot,
+  state: EditTargetState,
+): boolean {
+  if (
+    state.activeProjectId !== snapshot.projectId ||
+    state.activeSessionId !== snapshot.sessionId ||
+    state.isStreaming ||
+    isSceneConversation(state) !== snapshot.sceneConversation ||
+    (state.messages.at(-1)?.id ?? null) !== snapshot.lastMessageId
+  ) {
+    return false;
+  }
+  return state.messages.some((message) => message.id === snapshot.messageId);
+}
+
+/** 非場面の会話の編集が読取の途中か（連打は in-flight の 1 本にまとめる）。 */
+let editInFlight = false;
+
+/**
+ * 編集の入口を通す。`proceed` は削除（`editUserMessage`）から始まるので、その前提
+ * （store の対象と、本文を戻す先の editor が生きていること）はすべて `isCurrent()` に
+ * 置き、`proceed` の直前に必ず確かめる（DR-DA2B-R21）。再送が capture に入る
+ * （`target.captureEligible`。場面の会話で、route も capture の内）ときは読まずに、同期で
+ * `isCurrent()` を確かめて `proceed` を呼ぶ。そうでない（場面の会話でない、または route が
+ * capture の外。DR-DA2B-R29）ときは、状態を読み、開で、かつ読取の後の `isCurrent()` が
+ * 真のときだけ `proceed` を呼ぶ。閉（時間切れを含む）なら `notifyEditClosed` を出して何も
+ * しない。読取の途中の 2 回目以降の要求は、1 回目が進行中なので通知せずに捨てる。
+ * `isCurrent()` が偽（会話や workspace を移った、stream が始まった、行が変わった）の
+ * ときも通知しない（利用者は既に別の操作に移っており、失敗の文は誤解を招く）。
+ */
+export async function admitConversationEdit(input: {
+  readonly target: EditTargetSnapshot;
+  readonly isCurrent: () => boolean;
+  readonly proceed: () => void;
+}): Promise<void> {
+  if (input.target.captureEligible) {
+    if (input.isCurrent()) input.proceed();
+    return;
+  }
+  if (editInFlight) return;
+  editInFlight = true;
+  let closed: boolean;
+  try {
+    closed = await readNonSceneEditClosed();
+  } finally {
+    editInFlight = false;
+  }
+  if (closed) {
+    notifyEditClosed(input.target.sceneConversation);
+    return;
+  }
+  if (!input.isCurrent()) return;
+  input.proceed();
+}
+
+/** 試験だけが使う。process の中の保持を戻す。 */
+export function resetNonSceneEditClosureForTest(): void {
+  restrictedObserved = false;
+  editInFlight = false;
+}

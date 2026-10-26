@@ -576,6 +576,13 @@ impl ProfileEgressState {
         })
     }
 
+    /// Test only: drop one sender's registration without revoking dispatch
+    /// permits, so a test can tell a Native stop from the permit's own stop.
+    #[cfg(test)]
+    pub(crate) fn forget_caller_for_test(&self, sender_id: u64) {
+        self.lock().registered_callers.remove(&sender_id);
+    }
+
     /// Invalidate every process-local registration when the trusted workspace
     /// binding changes. Old tuples must not remain usable until each sender
     /// happens to make a new invoke.

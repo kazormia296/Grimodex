@@ -286,6 +286,146 @@ describe("enqueueIpc", () => {
     await expect(late).resolves.toBe("late");
   });
 
+  it("lets only the pair of the running derived item join it, one extra item at most (RS-JOIN, DR-RSJ-2)", async () => {
+    const gate = () => {
+      let release!: () => void;
+      const promise = new Promise<string>((resolve) => {
+        release = () => resolve("done");
+      });
+      return { promise, release };
+    };
+    const ir = gate();
+    const graph = gate();
+    const irRun = vi.fn(() => ir.promise);
+    const graphRun = vi.fn(() => graph.promise);
+    const otherPairRun = vi.fn(async () => "other");
+    const secondPairRun = vi.fn(async () => "second");
+    const beginRun = vi.fn(async () => "begin");
+    const irCall = enqueueIpc(
+      "related_scenes_continue",
+      irRun,
+      null,
+      "derived",
+      "ticket-1",
+    );
+    // Queued first: neither a pairless item nor another operation's pair joins.
+    const begin = enqueueIpc("related_scenes_begin", beginRun, null, "derived");
+    const otherPair = enqueueIpc(
+      "related_scenes_graph_continue",
+      otherPairRun,
+      null,
+      "derived",
+      "ticket-2",
+    );
+    const graphCall = enqueueIpc(
+      "related_scenes_graph_continue",
+      graphRun,
+      null,
+      "derived",
+      "ticket-1",
+    );
+    // A second item of the same pair waits: the extra slot is one.
+    const secondPair = enqueueIpc(
+      "related_scenes_graph_continue",
+      secondPairRun,
+      null,
+      "derived",
+      "ticket-1",
+    );
+    await Promise.resolve();
+    expect(irRun).toHaveBeenCalledOnce();
+    expect(graphRun).toHaveBeenCalledOnce();
+    expect(beginRun).not.toHaveBeenCalled();
+    expect(otherPairRun).not.toHaveBeenCalled();
+    expect(secondPairRun).not.toHaveBeenCalled();
+
+    // The IR continue ends; the Graph await keeps the one derived slot, so the
+    // rest still wait (the pair's partner is gone).
+    ir.release();
+    await irCall;
+    await Promise.resolve();
+    expect(beginRun).not.toHaveBeenCalled();
+    expect(secondPairRun).not.toHaveBeenCalled();
+    graph.release();
+    await graphCall;
+    await expect(begin).resolves.toBe("begin");
+    await expect(otherPair).resolves.toBe("other");
+    await expect(secondPair).resolves.toBe("second");
+    expect(beginRun).toHaveBeenCalledOnce();
+  });
+
+  it("never runs two items of the same command and pair together (RS-JOIN, DR-RSJ-2)", async () => {
+    let release!: () => void;
+    const firstRun = vi.fn(
+      () =>
+        new Promise<string>((resolve) => (release = () => resolve("first"))),
+    );
+    const secondRun = vi.fn(async () => "second");
+    const first = enqueueIpc(
+      "related_scenes_continue",
+      firstRun,
+      null,
+      "derived",
+      "ticket-1",
+    );
+    const second = enqueueIpc(
+      "related_scenes_continue",
+      secondRun,
+      null,
+      "derived",
+      "ticket-1",
+    );
+    await Promise.resolve();
+    expect(firstRun).toHaveBeenCalledOnce();
+    expect(secondRun).not.toHaveBeenCalled();
+    release();
+    await expect(first).resolves.toBe("first");
+    await expect(second).resolves.toBe("second");
+  });
+
+  it("cancels a joined pair item with the derived callers (RS-JOIN, DR-RSJ-2)", async () => {
+    let releaseIr!: () => void;
+    let releaseGraph!: () => void;
+    const irRun = vi.fn(
+      () => new Promise<void>((resolve) => (releaseIr = resolve)),
+    );
+    const graphRun = vi.fn(
+      () => new Promise<void>((resolve) => (releaseGraph = resolve)),
+    );
+    const irCaller = enqueueIpc(
+      "related_scenes_continue",
+      irRun,
+      null,
+      "derived",
+      "ticket-1",
+    ).catch((error: unknown) => error);
+    const graphCaller = enqueueIpc(
+      "related_scenes_graph_continue",
+      graphRun,
+      null,
+      "derived",
+      "ticket-1",
+    ).catch((error: unknown) => error);
+    await Promise.resolve();
+    expect(graphRun).toHaveBeenCalledOnce();
+
+    cancelDerivedIpcCallersForLifecycle();
+    await expect(irCaller).resolves.toMatchObject({
+      message: expect.stringContaining("IPC_DERIVED_CANCELLED"),
+    });
+    await expect(graphCaller).resolves.toMatchObject({
+      message: expect.stringContaining("IPC_DERIVED_CANCELLED"),
+    });
+    // Both actual tasks keep their slots until they settle.
+    const lateRun = vi.fn(async () => "late");
+    const late = enqueueIpc("codex_reindex_all", lateRun, null, "derived");
+    releaseIr();
+    await Promise.resolve();
+    expect(lateRun).not.toHaveBeenCalled();
+    releaseGraph();
+    await expect(late).resolves.toBe("late");
+  });
+
   it("rejects new derived work while a lifecycle admission barrier is active", async () => {
     const releaseBarrier = acquireIpcDerivedAdmissionBarrier();
     const run = vi.fn(async () => "not-started");

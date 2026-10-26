@@ -33,6 +33,7 @@ mod nir1_graph_dfinal;
 mod nir1_graph_eval;
 mod nir1_graph_product;
 mod nir1_local_attempt;
+mod nir1_local_entry;
 mod nir1_local_send_policy;
 mod nir1_local_transport;
 mod nir1_prepared_request;
@@ -6683,16 +6684,36 @@ pub(crate) async fn settle_profile_egress_bounded(
     )
 }
 
-#[napi]
 impl Backend {
-    /// `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
-    /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
-    /// com.miyakey.grimodex には触らない)。
-    #[napi(constructor)]
+    /// Rust だけの入口（試験と評価 harness）。NIR-1 Graph の worker を設定しない。
+    /// JS の constructor は `new_from_main`（CP-2b、cp2b-decisions.md DR-CP2B-P1-3）。
     pub fn new(
         app_data_dir: String,
         semantic_resource_root: Option<String>,
         reranker_resource_root: Option<String>,
+    ) -> Result<Backend> {
+        Self::new_from_main(
+            app_data_dir,
+            semantic_resource_root,
+            reranker_resource_root,
+            None,
+        )
+    }
+}
+
+#[napi]
+impl Backend {
+    /// `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
+    /// (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
+    /// com.miyakey.grimodex には触らない)。`graph_worker_path` は Main が解決した
+    /// NIR-1 C-query worker の絶対 path（CP-2b）。検証に落ちても Backend は作り、
+    /// Graph だけが worker-unavailable になる。公開 gate が閉じている間は起動しない。
+    #[napi(constructor)]
+    pub fn new_from_main(
+        app_data_dir: String,
+        semantic_resource_root: Option<String>,
+        reranker_resource_root: Option<String>,
+        graph_worker_path: Option<String>,
     ) -> Result<Backend> {
         // 旧 .node E2E / 外部callerとのconstructor互換を維持する。省略時はcwdや
         // build-time manifestへfallbackせず、必ず存在しないappData配下sentinelを使い、
@@ -6709,6 +6730,13 @@ impl Backend {
             reranker_resource_root.as_deref(),
         )
         .map_err(|e| Error::from_reason(format!("{e:#}")))?;
+        // CP-2b（DR-CP2B-P1-2）: 検証は Native の `from_path` の 1 か所。log には閉じた
+        // code だけを出し、path（利用者の home を含みうる）は出さない。
+        if let Some(path) = graph_worker_path {
+            if let Err(error) = state.nir1_graph.configure_worker_path(PathBuf::from(path)) {
+                tracing::warn!(code = %error, "nir1 graph worker path was not configured");
+            }
+        }
         // §7.1 の end-to-end 実証チャネルその 1。onEvent 登録前なので
         // EventQueue にバッファされ、登録時に flush される。schemaVersion は
         // スモークテストが PRAGMA user_version との一致検証に使う。
@@ -15221,6 +15249,129 @@ impl Backend {
             Ok(serde_json::to_string(&receipt).map_err(anyhow::Error::from)?)
         })
         .await
+    }
+
+    // ─────── NIR-1 local generation（DD-1a。K5/3 の「IPC の command」の 6 つ。
+    // PUB-L まで Native gate〔`PrePublicationEntry::LocalGeneration`〕で閉じる。
+    // caller identity は Main が注入する。応答は invoke への応答だけで、event で
+    // 配らない。IPC の登録〔`NAPI_COMMANDS`〕と Main の gate は DD-1b）───────
+
+    /// 生成の開始。`intent` は Main が検証した typed な intent（purpose、
+    /// conversationId、sceneId）、`main_verdict` は Main の key の判定
+    /// （endpointId、keyVerdict）。応答は `{status:"started",handle}` か
+    /// `{status:"unavailable",reason}`（typed）だけ。
+    #[napi]
+    pub async fn nir1_local_generation_start(
+        &self,
+        intent: serde_json::Value,
+        main_verdict: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_generation_start(
+                &state,
+                intent,
+                main_verdict,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// 出力の取得。起動した caller（sender と epoch を含む）にだけ、上限の内の
+    /// text と thinking の差分と状態を返す。
+    #[napi]
+    pub async fn nir1_local_generation_continue(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_generation_continue(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// 取消。owner の `cancel()` と既存の capture の writer を 1 command で行う。
+    #[napi]
+    pub async fn nir1_local_generation_cancel(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_generation_cancel(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// この route の会話の作成。ID と表示名（purpose と作成時刻）だけを返す。
+    #[napi]
+    pub async fn nir1_local_conversation_create(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_conversation_create(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// この route の会話の一覧（ID と表示名だけ）。
+    #[napi]
+    pub async fn nir1_local_conversation_list(&self, caller_identity: String) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_conversation_list(
+                &state,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// この route の会話の読取（行の段の行だけ。上限の内）。
+    #[napi]
+    pub async fn nir1_local_conversation_read(
+        &self,
+        request: serde_json::Value,
+        caller_identity: String,
+    ) -> Result<String> {
+        let state = Arc::clone(&self.state);
+        run_blocking(move || {
+            Ok(nir1_local_entry::wire_conversation_read(
+                &state,
+                request,
+                &caller_identity,
+            ))
+        })
+        .await
+    }
+
+    /// Main 専用（`NAPI_COMMANDS` に載せない）。sender の destroyed／window の
+    /// close で、その sender が始めた生成の owner に `cancel()` を呼ぶ（取り下げ
+    /// でない停止なので capture は変えない）。届いた handle の数を返す。
+    #[napi]
+    pub fn main_nir1_local_generation_cancel_sender(&self, sender_id: u32) -> u32 {
+        let reached = nir1_local_entry::cancel_sender(&self.state, u64::from(sender_id));
+        u32::try_from(reached).unwrap_or(u32::MAX)
     }
 
     /// AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。

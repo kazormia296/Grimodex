@@ -465,3 +465,86 @@ describe("ElectronUpdaterManager lifecycle guards", () => {
     await expect(h.manager.handlers.updater_check({})).resolves.toBeNull();
   });
 });
+
+// CP-2b P3（H1。K3/3 の RS-1）: GitHub が redirect 先の host を RS-1 の外へ変えると、
+// 更新の確認か取得が Chromium の `net::ERR_NAME_NOT_RESOLVED` で止まる。その失敗が
+// 操作の reject（renderer が `invoke` する IPC handler の reject）として surface し、
+// 次の操作を汚さないことを固定する。記録: cp2b-decisions.md の DR-CP2B-P3-5。
+describe("ElectronUpdaterManager RS-1 name resolution failures", () => {
+  const NAME_NOT_RESOLVED = "net::ERR_NAME_NOT_RESOLVED";
+
+  it("rejects a check whose updater emits ERR_NAME_NOT_RESOLVED and permits a retry", async () => {
+    const h = createHarness();
+    const firstCheck = deferred<ReturnType<typeof availableResult>>();
+    h.updater.checkForUpdates
+      .mockReturnValueOnce(firstCheck.promise)
+      .mockResolvedValueOnce(availableResult());
+
+    const failed = h.manager.handlers.updater_check({});
+    await vi.waitFor(() =>
+      expect(h.updater.checkForUpdates).toHaveBeenCalledOnce(),
+    );
+    h.updater.emit("error", new Error(NAME_NOT_RESOLVED));
+    await expect(failed).rejects.toThrow(
+      `Update check failed: ${NAME_NOT_RESOLVED}`,
+    );
+    // electron-updater は event の後に promise も reject する。後から来ても漏れない。
+    firstCheck.reject(new Error(NAME_NOT_RESOLVED));
+    expect(h.warn).not.toHaveBeenCalled();
+    expect(h.broadcast).not.toHaveBeenCalled();
+
+    await expect(h.manager.handlers.updater_check({})).resolves.toEqual({
+      version: "2.0.0",
+      body: "新機能",
+    });
+  });
+
+  it("rejects a check whose checkForUpdates rejects with ERR_NAME_NOT_RESOLVED", async () => {
+    const h = createHarness();
+    h.updater.checkForUpdates.mockRejectedValueOnce(
+      new Error(NAME_NOT_RESOLVED),
+    );
+
+    await expect(h.manager.handlers.updater_check({})).rejects.toThrow(
+      `Update check failed: ${NAME_NOT_RESOLVED}`,
+    );
+  });
+
+  it("rejects a download on the asset host's ERR_NAME_NOT_RESOLVED and keeps the update retryable", async () => {
+    const h = createHarness();
+    const firstDownload = deferred<ReadonlyArray<string>>();
+    h.updater.checkForUpdates.mockResolvedValue(availableResult());
+    h.updater.downloadUpdate
+      .mockReturnValueOnce(firstDownload.promise)
+      .mockResolvedValueOnce(["/tmp/update"]);
+    await h.manager.handlers.updater_check({});
+
+    const failed = h.manager.handlers.updater_download({});
+    await vi.waitFor(() =>
+      expect(h.updater.downloadUpdate).toHaveBeenCalledOnce(),
+    );
+    h.updater.emit("error", new Error(NAME_NOT_RESOLVED));
+    await expect(failed).rejects.toThrow(
+      `Update download failed: ${NAME_NOT_RESOLVED}`,
+    );
+    firstDownload.reject(new Error(NAME_NOT_RESOLVED));
+    await expect(h.manager.handlers.updater_install({})).rejects.toThrow(
+      "No downloaded update is ready to install",
+    );
+    expect(h.updater.quitAndInstall).not.toHaveBeenCalled();
+
+    await expect(h.manager.handlers.updater_download({})).resolves.toBeNull();
+    await expect(h.manager.handlers.updater_install({})).resolves.toBeNull();
+  });
+
+  it("logs an ERR_NAME_NOT_RESOLVED that arrives outside an operation instead of crashing", () => {
+    const h = createHarness();
+    expect(() =>
+      h.updater.emit("error", new Error(NAME_NOT_RESOLVED)),
+    ).not.toThrow();
+    expect(h.warn).toHaveBeenCalledWith(
+      "Electron updater emitted an error outside an active operation",
+      expect.objectContaining({ message: NAME_NOT_RESOLVED }),
+    );
+  });
+});

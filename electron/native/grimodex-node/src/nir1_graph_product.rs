@@ -11,7 +11,7 @@
 //! queried meanwhile always drifts. `begin_deferred` therefore holds that query
 //! in the slot until the begin releases it, after its own commits; only then
 //! does the owner thread prepare a worker and answer the held query at once.
-#![cfg_attr(not(test), allow(dead_code))] // Still unused: the process worker (CP-2b), its path configuration, the Suspended resume hook (PUB-G/CP-4) and test-only inspection. CP-3a's callers are in related_scenes/graph.rs.
+#![cfg_attr(not(test), allow(dead_code))] // Still unused: the process worker's start (gated until PUB-G), the Suspended resume hook (PUB-G/CP-4) and test-only inspection. CP-2b configures the worker path from the Backend constructor; CP-3a's callers are in related_scenes/graph.rs.
 
 use std::{
     cell::RefCell,
@@ -312,7 +312,8 @@ pub(crate) trait GraphWorker {
 }
 
 /// The product worker factory: the validated absolute path of the packaged
-/// `nir1-c-query-worker` binary. CP-2a never calls this from a product path.
+/// `nir1-c-query-worker` binary. CP-2b sets it from Main's path in the Backend
+/// constructor; only an admitted demand (closed until PUB-G) ever creates one.
 pub(crate) struct ProcessGraphWorkerFactory {
     worker: PathBuf,
 }
@@ -1211,7 +1212,10 @@ impl Nir1GraphProductOwner {
         self.shared.closed.load(Ordering::SeqCst)
     }
 
-    /// CP-2a keeps this unused by products (the wiring is CP-2b / PUB-G).
+    /// CP-2b: called once, by the Backend constructor, with the path Main
+    /// resolved. Setting the factory starts nothing: a worker starts only for a
+    /// demand that `admit_and_route` admits, and the publication gate refuses
+    /// every demand before the factory is read until PUB-G.
     pub(crate) fn configure_worker_path(&self, path: PathBuf) -> Result<()> {
         let factory = ProcessGraphWorkerFactory::from_path(path)?;
         self.shared
@@ -1372,6 +1376,11 @@ impl Nir1GraphProductOwner {
         self.shared
             .publication_open_for_test
             .store(true, Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn worker_configured_for_test(&self) -> bool {
+        self.shared.worker.get().is_some()
     }
 
     #[cfg(test)]

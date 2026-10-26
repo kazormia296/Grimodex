@@ -7,9 +7,11 @@ export declare class Backend {
   /**
    * `app_data_dir` は Electron main の `app.getPath("userData")` を明示注入
    * (§4.2 / §6.8 — Phase 2 は `GrimodexElectronDev` 名で動かし、Tauri の
-   * com.miyakey.grimodex には触らない)。
+   * com.miyakey.grimodex には触らない)。`graph_worker_path` は Main が解決した
+   * NIR-1 C-query worker の絶対 path（CP-2b）。検証に落ちても Backend は作り、
+   * Graph だけが worker-unavailable になる。公開 gate が閉じている間は起動しない。
    */
-  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null)
+  constructor(appDataDir: string, semanticResourceRoot?: string | undefined | null, rerankerResourceRoot?: string | undefined | null, graphWorkerPath?: string | undefined | null)
   /**
    * Main-only D2a startup status. A fresh profile remains unrestricted until
    * the main process explicitly activates the first protected publication;
@@ -1176,6 +1178,32 @@ export declare class Backend {
    * It cannot create or return a capture capability.
    */
   cancelCurrentChatInput(submission: any, callerIdentity: string): Promise<string>
+  /**
+   * 生成の開始。`intent` は Main が検証した typed な intent（purpose、
+   * conversationId、sceneId）、`main_verdict` は Main の key の判定
+   * （endpointId、keyVerdict）。応答は `{status:"started",handle}` か
+   * `{status:"unavailable",reason}`（typed）だけ。
+   */
+  nir1LocalGenerationStart(intent: any, mainVerdict: any, callerIdentity: string): Promise<string>
+  /**
+   * 出力の取得。起動した caller（sender と epoch を含む）にだけ、上限の内の
+   * text と thinking の差分と状態を返す。
+   */
+  nir1LocalGenerationContinue(request: any, callerIdentity: string): Promise<string>
+  /** 取消。owner の `cancel()` と既存の capture の writer を 1 command で行う。 */
+  nir1LocalGenerationCancel(request: any, callerIdentity: string): Promise<string>
+  /** この route の会話の作成。ID と表示名（purpose と作成時刻）だけを返す。 */
+  nir1LocalConversationCreate(request: any, callerIdentity: string): Promise<string>
+  /** この route の会話の一覧（ID と表示名だけ）。 */
+  nir1LocalConversationList(callerIdentity: string): Promise<string>
+  /** この route の会話の読取（行の段の行だけ。上限の内）。 */
+  nir1LocalConversationRead(request: any, callerIdentity: string): Promise<string>
+  /**
+   * Main 専用（`NAPI_COMMANDS` に載せない）。sender の destroyed／window の
+   * close で、その sender が始めた生成の owner に `cancel()` を呼ぶ（取り下げ
+   * でない停止なので capture は変えない）。届いた handle の数を返す。
+   */
+  mainNir1LocalGenerationCancelSender(senderId: number): number
   /**
    * AI 設定を読む (Tauri の get_ai_settings と同一 — ai-settings.json、キー非含有)。
    * 返り値: `AiSettings` の JSON 文字列 (camelCase)。

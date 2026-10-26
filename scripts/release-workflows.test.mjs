@@ -5,6 +5,10 @@ import { describe, it } from "node:test";
 import { load } from "js-yaml";
 
 import { RELEASE_BUILD_TARGETS } from "./resolve-release-workflow.mjs";
+import {
+  GRAPH_WORKER_SEAM_MARKER,
+  verifyReleaseGraphWorker,
+} from "../electron/scripts/verify-release-graph-worker.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
@@ -611,6 +615,8 @@ describe("release workflow boundary", () => {
       "aur-publish.yml",
       "migrate-semantic-models.yml",
       "release-public-smoke.yml",
+      "packaged-smoke.yml",
+      "update-route-watch.yml",
     ]) {
       const workflow = await readWorkflow(name);
       for (const uses of collectUses(workflow)) {
@@ -701,7 +707,7 @@ describe("release workflow boundary", () => {
     assert.doesNotMatch(lockfile, /^ {2}http-cache-semantics@4\.[0-2]\./m);
   });
 
-  it("scopes the Rust audit exception to the zip crate pulled in by the legacy updater", async () => {
+  it("keeps the Rust audit exceptions empty and zip out of both Cargo.lock files", async () => {
     const config = await readFile(
       path.join(repoRoot, ".cargo/audit.toml"),
       "utf8",
@@ -709,14 +715,12 @@ describe("release workflow boundary", () => {
     const ignored = [...config.matchAll(/^\s*"(RUSTSEC-\d{4}-\d{4})"/gm)].map(
       (match) => match[1],
     );
-    const expiresAt = config.match(/^# expires-at: (\S+)$/m)?.[1];
     const packagesOf = async (lockfile) =>
       (await readFile(path.join(repoRoot, lockfile), "utf8"))
         .split("[[package]]")
         .slice(1)
         .map((block) => ({
           name: block.match(/^name = "([^"]+)"/m)?.[1],
-          version: block.match(/^version = "([^"]+)"/m)?.[1],
           dependencies: [...block.matchAll(/^ "([^" ]+)(?: [^"]*)?",$/gm)].map(
             (match) => match[1],
           ),
@@ -724,31 +728,20 @@ describe("release workflow boundary", () => {
     const shared = await packagesOf("src-tauri/Cargo.lock");
     const native = await packagesOf("electron/native/grimodex-node/Cargo.lock");
 
-    assert.deepEqual(ignored, [
-      "RUSTSEC-2026-0367",
-      "RUSTSEC-2026-0368",
-      "RUSTSEC-2026-0369",
-    ]);
-    assert.ok(expiresAt, "the exception must carry an expires-at line");
-    assert.ok(
-      Date.now() < Date.parse(expiresAt),
-      `the zip audit exception expired at ${expiresAt}`,
-    );
-    // The exception is only needed while zip 4.x is locked; drop it once zip >= 9 lands.
-    assert.deepEqual(
-      shared.filter((pkg) => pkg.name === "zip").map((pkg) => pkg.version),
-      ["4.6.1"],
-    );
-    assert.deepEqual(
-      shared
-        .filter((pkg) => pkg.dependencies.includes("zip"))
-        .map((pkg) => pkg.name),
-      ["tauri-plugin-updater"],
-    );
-    assert.equal(
-      native.some((pkg) => pkg.name === "zip"),
-      false,
-    );
+    // The former zip 4.x exception (RUSTSEC-2026-0367..0369) was removed by
+    // dropping the legacy shell's tauri-plugin-updater `zip` feature. A new
+    // exception needs its own scope, reason and expiry assertions here.
+    assert.deepEqual(ignored, []);
+    for (const lock of [shared, native]) {
+      assert.equal(
+        lock.some((pkg) => pkg.name === "zip"),
+        false,
+      );
+      assert.equal(
+        lock.some((pkg) => pkg.dependencies.includes("zip")),
+        false,
+      );
+    }
   });
 
   it("gives every root TypeScript build explicit Node heap headroom", async () => {
@@ -894,5 +887,581 @@ describe("release workflow boundary", () => {
     assert.match(windowsCommands, /Language\.Parser.*ParseFile/s);
     assert.match(windowsCommands, /electron-builder --win nsis --x64/);
     assert.match(windowsCommands, /electron-contract/);
+  });
+});
+
+// CP-2b P1（docs/plans/nir1-lane-decisions/cp2b-decisions.md の DR-CP2B-P1-4、5）:
+// C-query の worker を seam なしで build し、MCP と同じ `bin` に同梱する。
+// 署名・公証・publish・app.asar の中身は変えない。
+describe("C-query worker packaging (CP-2b P1)", () => {
+  async function readBuilder() {
+    return load(
+      await readFile(path.join(repoRoot, "electron-builder.yml"), "utf8"),
+    );
+  }
+
+  it("bundles the worker beside the MCP sidecar from the release target", async () => {
+    const builder = await readBuilder();
+    const bin = builder.extraResources.filter((entry) => entry.to === "bin");
+    assert.equal(bin.length, 1);
+    assert.equal(bin[0].from, "src-tauri/target/release");
+    assert.deepEqual(bin[0].filter, [
+      "grimodex-mcp",
+      "grimodex-mcp.exe",
+      "nir1-c-query-worker",
+      "nir1-c-query-worker.exe",
+    ]);
+    // Nothing else ships the worker, and app.asar never holds a target dir
+    // (the full `files`, `mac`, `win` and `publish` are pinned by
+    // electron/main/packagingConfig.test.ts).
+    const others = builder.extraResources.filter((entry) => entry.to !== "bin");
+    assert.doesNotMatch(JSON.stringify(others), /nir1-c-query-worker/);
+    for (const entry of builder.files) {
+      assert.doesNotMatch(entry, /src-tauri|target|scripts/);
+    }
+  });
+
+  it("adds no packaging hook around signing", async () => {
+    const builder = await readBuilder();
+    for (const hook of [
+      "afterPack",
+      "afterSign",
+      "afterAllArtifactBuild",
+      "artifactBuildCompleted",
+      "beforePack",
+    ]) {
+      assert.equal(builder[hook], undefined, hook);
+    }
+    assert.equal(builder.beforeBuild, "./electron/scripts/beforeBuild.mjs");
+    assert.equal(builder.mac.hardenedRuntime, true);
+  });
+
+  it("builds the worker without the test seam and verifies it in the native release step", async () => {
+    const { scripts } = JSON.parse(
+      await readFile(path.join(repoRoot, "package.json"), "utf8"),
+    );
+    assert.deepEqual(
+      scripts["electron:native:release"].split("&&").map((part) => part.trim()),
+      [
+        "pnpm napi:build:release",
+        "pnpm napi:verify:release",
+        "pnpm mcp:build:release",
+        "pnpm worker:build:release",
+        "pnpm worker:verify:release",
+      ],
+    );
+    assert.equal(
+      scripts["worker:build:release"],
+      "cargo build --locked --release --manifest-path src-tauri/Cargo.toml -p grimodex-db --bin nir1-c-query-worker",
+    );
+    assert.doesNotMatch(
+      scripts["worker:build:release"],
+      /--features|--all-features|-F\b|test-seam/,
+    );
+    assert.equal(
+      scripts["worker:verify:release"],
+      "node electron/scripts/verify-release-graph-worker.mjs",
+    );
+    // Both packaging entries go through the native release step.
+    for (const name of ["electron:package", "electron:package:dir"]) {
+      assert.match(scripts[name], /^pnpm electron:native:release && /);
+    }
+
+    // The seam is never a default feature, and the worker bin has no
+    // required feature that could pull one in.
+    const cargo = await readFile(
+      path.join(repoRoot, "src-tauri/crates/grimodex-db/Cargo.toml"),
+      "utf8",
+    );
+    assert.match(cargo, /^default = \[\]$/m);
+    assert.match(cargo, /^nir1-c-query-test-seam = \[\]$/m);
+    const workerBin = cargo
+      .split("[[bin]]")
+      .filter((block) => /^name = "nir1-c-query-worker"$/m.test(block));
+    assert.equal(workerBin.length, 1);
+    assert.match(workerBin[0], /^path = "src\/bin\/nir1-c-query-worker\.rs"$/m);
+    assert.doesNotMatch(workerBin[0].split("\n[")[0], /required-features/);
+  });
+
+  it("refuses a worker that is missing, misnamed, not a file, not executable or carries the seam", async () => {
+    const { mkdtemp, writeFile, chmod, mkdir, rm } = await import(
+      "node:fs/promises"
+    );
+    const os = await import("node:os");
+    const dir = await mkdtemp(path.join(os.tmpdir(), "grimodex-worker-verify-"));
+    const place = async (name, body, mode = 0o755) => {
+      const directory = path.join(dir, name);
+      await mkdir(directory);
+      const file = path.join(directory, "nir1-c-query-worker");
+      await writeFile(file, body);
+      await chmod(file, mode);
+      return file;
+    };
+    try {
+      const clean = await place("clean", Buffer.from("\x7fELF clean worker body"));
+      assert.deepEqual(await verifyReleaseGraphWorker(clean, "linux"), {
+        path: clean,
+      });
+
+      await assert.rejects(
+        verifyReleaseGraphWorker(path.join(dir, "missing", "nir1-c-query-worker"), "linux"),
+        /not found/,
+      );
+      const asDirectory = path.join(dir, "as-directory", "nir1-c-query-worker");
+      await mkdir(asDirectory, { recursive: true });
+      await assert.rejects(
+        verifyReleaseGraphWorker(asDirectory, "linux"),
+        /regular file/,
+      );
+      await assert.rejects(
+        verifyReleaseGraphWorker("nir1-c-query-worker", "linux"),
+        /absolute/,
+      );
+      // Windows ships `.exe`; the POSIX name is refused there and vice versa.
+      await assert.rejects(verifyReleaseGraphWorker(clean, "win32"), /name/);
+      const misnamed = path.join(path.dirname(clean), "grimodex-mcp");
+      await writeFile(misnamed, "body");
+      await assert.rejects(verifyReleaseGraphWorker(misnamed, "linux"), /name/);
+      if (process.platform !== "win32") {
+        const plain = await place("not-executable", "body", 0o644);
+        await assert.rejects(
+          verifyReleaseGraphWorker(plain, "linux"),
+          /executable/,
+        );
+      }
+      // The marker split across the read chunk boundary is still found.
+      const filler = Buffer.alloc(1024 * 1024 - 5, 0x41);
+      const seam = await place(
+        "seam",
+        Buffer.concat([filler, Buffer.from(`${GRAPH_WORKER_SEAM_MARKER}HOLD`)]),
+      );
+      await assert.rejects(
+        verifyReleaseGraphWorker(seam, "linux"),
+        /test seam/,
+      );
+      assert.equal(GRAPH_WORKER_SEAM_MARKER, "NIR1_C_QUERY_TEST_");
+
+      // The CLI the release step runs fails the step on a refused worker and
+      // passes a clean one (its direct-invocation guard must not skip the check).
+      const { spawnSync } = await import("node:child_process");
+      const cli = path.join(
+        repoRoot,
+        "electron",
+        "scripts",
+        "verify-release-graph-worker.mjs",
+      );
+      if (process.platform !== "win32") {
+        const refused = spawnSync(process.execPath, [cli, seam], {
+          encoding: "utf8",
+        });
+        assert.equal(refused.status, 1, refused.stderr);
+        assert.match(refused.stderr, /test seam/);
+        const passed = spawnSync(process.execPath, [cli, clean], {
+          encoding: "utf8",
+        });
+        assert.equal(passed.status, 0, passed.stderr);
+        assert.match(passed.stdout, /seam-free worker verified/);
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// CP-2b P2: 3 OS の packaged smoke（K3/3 の Negative (34)。G-pub の道具）。cp2b-decisions DR-CP2B-P2-7。
+describe("packaged smoke workflow (CP-2b P2)", () => {
+  const workflowFile = path.join(repoRoot, ".github", "workflows", "packaged-smoke.yml");
+  // 説明の comment は禁止の語に触れうるので、YAML の本体（comment の行を除いた text）だけを走査する
+  const workflowBody = async () => (await readFile(workflowFile, "utf8"))
+    .split("\n").filter((line) => !/^\s*#/.test(line)).join("\n");
+
+  it("runs only on harness pull requests and explicit dispatch, never with pull_request_target", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    assert.deepEqual(Object.keys(workflow.on).sort(), ["pull_request", "workflow_dispatch"]);
+    assert.deepEqual(workflow.on.pull_request.paths, [
+      ".github/workflows/packaged-smoke.yml",
+      "electron/scripts/packaged-smoke/**",
+    ]);
+    assert.deepEqual(Object.keys(workflow.on.workflow_dispatch.inputs).sort(), ["candidate_ref", "os"]);
+    assert.deepEqual(workflow.on.workflow_dispatch.inputs.os.options, ["all", "linux", "windows", "mac"]);
+    const text = await workflowBody();
+    assert.doesNotMatch(text, /pull_request_target|schedule:|workflow_run/);
+  });
+
+  it("keeps read-only permissions, no secrets, and no persisted checkout credentials", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    assert.deepEqual(workflow.permissions, { contents: "read" });
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      assert.equal(job.permissions, undefined, `${name} must not widen permissions`);
+      for (const step of job.steps ?? []) {
+        if (String(step.uses ?? "").startsWith("actions/checkout@")) {
+          assert.equal(step.with?.["persist-credentials"], false, `${name}: checkout`);
+        }
+      }
+    }
+    const text = await workflowBody();
+    assert.doesNotMatch(text, /secrets\.|GITHUB_TOKEN|CSC_LINK|CSC_KEY_PASSWORD|APPLE_|WINDOWS_CERTIFICATE/);
+  });
+
+  it("validates a 40-character candidate SHA and checks out exactly that commit", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const plan = workflow.jobs.plan.steps.find((step) => step.id === "plan");
+    assert.match(plan.run, /\^\[0-9a-f\]\{40\}\$/);
+    assert.equal(plan.env.CANDIDATE_REF, "${{ inputs.candidate_ref }}");
+    assert.equal(plan.env.PR_HEAD_SHA, "${{ github.event.pull_request.head.sha }}");
+    for (const jobName of ["unit", "smoke"]) {
+      const checkout = workflow.jobs[jobName].steps.find((step) => String(step.uses ?? "").startsWith("actions/checkout@"));
+      assert.equal(checkout.with.ref, "${{ needs.plan.outputs.ref }}", jobName);
+    }
+  });
+
+  it("builds the unpacked app through the release scripts on the release runners without signing or publishing", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const text = await workflowBody();
+    for (const target of RELEASE_BUILD_TARGETS) {
+      assert.match(text, new RegExp(`"id":"${target.id}","os":"${target.os}"`), target.id);
+    }
+    const runs = workflow.jobs.smoke.steps.map((step) => String(step.run ?? "")).join("\n");
+    assert.match(runs, /pnpm electron:native:release/);
+    assert.match(runs, /pnpm electron:build/);
+    assert.match(runs, /pnpm exec electron-builder --dir --publish never/);
+    assert.match(runs, /CSC_IDENTITY_AUTO_DISCOVERY=false/);
+    assert.match(runs, /node electron\/scripts\/packaged-smoke\/run\.mjs --out-dir packaged-smoke-out/);
+    assert.doesNotMatch(text, /--publish always|--publish onTag|publish=true|release\.yml|--no-sandbox|ELECTRON_DISABLE_SANDBOX/);
+    assert.ok(workflow.jobs.smoke.needs.includes("unit"));
+    assert.ok(workflow.jobs.smoke["timeout-minutes"] <= 90);
+    assert.equal(workflow.jobs.smoke.strategy["fail-fast"], false);
+  });
+
+  it("uploads only the harness records, never packaged binaries or raw net logs", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const uploads = Object.values(workflow.jobs).flatMap((job) => job.steps ?? [])
+      .filter((step) => String(step.uses ?? "").startsWith("actions/upload-artifact@"));
+    assert.equal(uploads.length, 1);
+    assert.equal(uploads[0].with.path, "packaged-smoke-out/");
+    assert.equal(uploads[0].with["retention-days"], 7);
+    // harness は packaged-smoke-out に記録の JSON と判定の出力だけを書く（net log と userData は一時 dir に置いて消す）
+    const harness = await readFile(path.join(repoRoot, "electron", "scripts", "packaged-smoke", "run.mjs"), "utf8");
+    assert.match(harness, /const netLog = path\.join\(work, "netlog\.json"\)/);
+    assert.doesNotMatch(harness, /copyFileSync|cpSync/);
+  });
+
+  it("runs the harness unit tests before any packaged build", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const unit = workflow.jobs.unit.steps.map((step) => String(step.run ?? "")).join("\n");
+    for (const file of ["netlog", "verdict", "package-check", "process-tree", "run", "trial-record", "cdp", "observers", "port-owner"]) {
+      assert.match(unit, new RegExp(`electron/scripts/packaged-smoke/${file}\\.test\\.mjs`), file);
+    }
+    assert.match(unit, /scripts\/release-workflows\.test\.mjs/);
+  });
+
+  it("installs the pinned Electron binary after pnpm install and before the smoke runs (probe main needs it)", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const steps = workflow.jobs.smoke.steps;
+    const indexOf = (predicate) => steps.findIndex(predicate);
+    const install = indexOf((step) => String(step.run ?? "").trim() === "pnpm install --frozen-lockfile");
+    const electron = indexOf((step) => String(step.run ?? "").trim() === "node scripts/ensure-electron-binary.mjs");
+    const smoke = indexOf((step) => /electron\/scripts\/packaged-smoke\/run\.mjs/.test(String(step.run ?? "")));
+    assert.ok(install >= 0 && electron > install && smoke > electron, JSON.stringify({ install, electron, smoke }));
+  });
+
+  it("uses no build cache, keys concurrency by OS, and never interpolates expressions into run scripts", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    assert.match(workflow.concurrency.group, /inputs\.os/);
+    assert.equal(workflow.concurrency["cancel-in-progress"], true);
+    for (const [name, job] of Object.entries(workflow.jobs)) {
+      for (const step of job.steps ?? []) {
+        const uses = String(step.uses ?? "");
+        assert.doesNotMatch(uses, /rust-cache|actions\/cache@/, `${name}: ${uses}`);
+        if (uses.startsWith("actions/setup-node@")) assert.equal(step.with?.cache, undefined, `${name}: setup-node cache`);
+        if (uses.startsWith("pnpm/action-setup@")) assert.equal(step.with?.cache, undefined, `${name}: pnpm cache`);
+        assert.doesNotMatch(String(step.run ?? ""), /\$\{\{/, `${name}: ${step.name ?? step.run}`);
+      }
+    }
+  });
+
+  it("keeps the harness outside the packaged app.asar file set", async () => {
+    const builder = load(await readFile(path.join(repoRoot, "electron-builder.yml"), "utf8"));
+    for (const entry of builder.files) {
+      assert.doesNotMatch(String(entry), /^electron\/scripts|^electron\/\*\*|^\*\*/, String(entry));
+    }
+  });
+});
+
+// ── CP-2b P3（H1）: 更新経路の定期 CI ───────────────────────────────────────
+// 判断の記録: docs/plans/nir1-lane-decisions/cp2b-decisions.md の DR-CP2B-P3-1〜4。
+describe("update route watch (CP-2b P3, H1)", () => {
+  const loadCheck = () => import("./update-route-redirect-check.mjs");
+  const RS1 = [
+    "github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com",
+  ];
+  const START =
+    "https://github.com/electron/electron/releases/download/v43.8.3/SHASUMS256.txt";
+
+  /** hop ごとの合成の応答を返し、要求された URL を記録する fetch。 */
+  function syntheticFetch(responses) {
+    const requested = [];
+    const fetchImpl = async (url, init) => {
+      requested.push({ url, redirect: init.redirect });
+      const next = responses.shift();
+      if (!next) throw new Error("unexpected request");
+      if (next instanceof Error) throw next;
+      return new Response(null, {
+        status: next.status,
+        headers: next.location ? { location: next.location } : {},
+      });
+    };
+    return { fetchImpl, requested };
+  }
+
+  async function refusal(promise) {
+    const { UpdateRouteError } = await loadCheck();
+    try {
+      await promise;
+    } catch (error) {
+      assert.ok(error instanceof UpdateRouteError, String(error));
+      return error;
+    }
+    assert.fail("the route check passed");
+  }
+
+  it("runs weekly and on demand with read-only, secret-free, bounded permissions", async () => {
+    const text = await readFile(
+      path.join(repoRoot, ".github", "workflows", "update-route-watch.yml"),
+      "utf8",
+    );
+    const workflow = load(text);
+    assert.deepEqual(Object.keys(workflow.on).sort(), [
+      "schedule",
+      "workflow_dispatch",
+    ]);
+    assert.deepEqual(workflow.on.schedule, [{ cron: "17 3 * * 1" }]);
+    assert.equal(workflow.on.workflow_dispatch, null);
+    assert.deepEqual(workflow.permissions, { contents: "read" });
+    assert.doesNotMatch(text, /secrets\.|pull_request|GITHUB_TOKEN|github\.token/);
+    assert.deepEqual(Object.keys(workflow.jobs), ["watch"]);
+    const job = workflow.jobs.watch;
+    assert.equal(job.permissions, undefined);
+    assert.equal(job["runs-on"], "ubuntu-24.04");
+    assert.equal(job["timeout-minutes"], 10);
+    const checkout = job.steps.find((step) =>
+      step.uses?.startsWith("actions/checkout@"),
+    );
+    assert.equal(checkout.with["persist-credentials"], false);
+    assert.deepEqual(
+      job.steps.filter((step) => step.run).map((step) => step.run.trim()),
+      [
+        "pnpm install --frozen-lockfile --ignore-scripts",
+        "node scripts/update-route-redirect-check.mjs",
+      ],
+    );
+    for (const uses of collectUses(workflow)) {
+      assert.match(uses, /^[^@]+@[0-9a-f]{40}$/, uses);
+    }
+  });
+
+  it("uses only the release workflow's pinned tools in a fixed step list", async () => {
+    const workflow = await readWorkflow("update-route-watch.yml");
+    const release = await readWorkflow("release.yml");
+    const manifest = JSON.parse(
+      await readFile(path.join(repoRoot, "package.json"), "utf8"),
+    );
+    assert.deepEqual(workflow.concurrency, {
+      group: "update-route-watch",
+      "cancel-in-progress": false,
+    });
+    const steps = workflow.jobs.watch.steps;
+    // 許可した 3 つの action と 2 つの run だけ。順序も固定する。
+    assert.deepEqual(
+      steps.map((step) => step.uses?.split("@")[0] ?? `run:${step.run.trim()}`),
+      [
+        "actions/checkout",
+        "pnpm/action-setup",
+        "actions/setup-node",
+        "run:pnpm install --frozen-lockfile --ignore-scripts",
+        "run:node scripts/update-route-redirect-check.mjs",
+      ],
+    );
+    for (const step of steps) {
+      assert.deepEqual(
+        Object.keys(step).filter((key) => !["name", "uses", "run", "with"].includes(key)),
+        [],
+        JSON.stringify(step),
+      );
+    }
+    // action の pin は release.yml と同じ値。
+    const releasePins = new Map();
+    for (const uses of collectUses(release)) {
+      const [name, ref] = uses.split("@");
+      releasePins.set(name, new Set([...(releasePins.get(name) ?? []), ref]));
+    }
+    for (const uses of collectUses(workflow)) {
+      const [name, ref] = uses.split("@");
+      assert.deepEqual([...(releasePins.get(name) ?? [])], [ref], uses);
+    }
+    const pnpm = steps.find((step) => step.uses?.startsWith("pnpm/action-setup@"));
+    assert.equal(`pnpm@${pnpm.with.version}`, manifest.packageManager);
+    // Node は release.yml の pnpm を使う job と同じ版。
+    const releaseNodeVersions = new Set(
+      Object.values(release.jobs)
+        .filter((job) =>
+          (job.steps ?? []).some((step) => step.uses?.startsWith("pnpm/action-setup@")),
+        )
+        .flatMap((job) =>
+          job.steps
+            .filter((step) => step.uses?.startsWith("actions/setup-node@"))
+            .map((step) => step.with["node-version"]),
+        ),
+    );
+    const node = steps.find((step) => step.uses?.startsWith("actions/setup-node@"));
+    assert.deepEqual([...releaseNodeVersions], [node.with["node-version"]]);
+  });
+
+  it("reads RS-1 from the product constant and starts from the current Electron asset", async () => {
+    const {
+      electronShasumsUrl,
+      loadRs1GithubHosts,
+      readElectronVersion,
+      validateHostList,
+    } = await loadCheck();
+    assert.deepEqual([...(await loadRs1GithubHosts())], RS1);
+    const version = await readElectronVersion();
+    assert.match(version, /^\d+\.\d+\.\d+$/);
+    assert.equal(
+      electronShasumsUrl(version),
+      `https://github.com/electron/electron/releases/download/v${version}/SHASUMS256.txt`,
+    );
+    assert.throws(() => electronShasumsUrl("^43.8.3"), /electron-version-not-exact/);
+    for (const invalid of [
+      RS1.slice(0, 2),
+      [...RS1, "github-releases.githubusercontent.com"],
+      ["*.github.com", RS1[1], RS1[2]],
+      ["GitHub.com", RS1[1], RS1[2]],
+      ["github.com.", RS1[1], RS1[2]],
+      [RS1[0], RS1[0], RS1[2]],
+    ]) {
+      assert.throws(() => validateHostList(invalid), /rs1-hosts-invalid/);
+    }
+  });
+
+  it("follows only RS-1 hosts hop by hop with manual redirects", async () => {
+    const { checkUpdateRoute } = await loadCheck();
+    const { fetchImpl, requested } = syntheticFetch([
+      { status: 302, location: "https://RELEASE-ASSETS.GitHubUserContent.com/a?sig=1" },
+      { status: 307, location: "/b" },
+      { status: 200 },
+    ]);
+    const lines = [];
+    const result = await checkUpdateRoute({
+      startUrl: START,
+      allowedHosts: RS1,
+      fetchImpl,
+      log: (line) => lines.push(line),
+    });
+    assert.deepEqual(result.hops, [
+      { host: "github.com", status: 302 },
+      { host: "release-assets.githubusercontent.com", status: 307 },
+      { host: "release-assets.githubusercontent.com", status: 200 },
+    ]);
+    assert.deepEqual(
+      requested.map(({ url }) => new URL(url).hostname),
+      ["github.com", "release-assets.githubusercontent.com", "release-assets.githubusercontent.com"],
+    );
+    assert.ok(requested.every(({ redirect }) => redirect === "manual"));
+    // log は host と status だけで、署名付きの query を出さない。
+    assert.ok(lines.every((line) => !line.includes("sig=")), lines.join("\n"));
+  });
+
+  it("fails before contacting a redirect host outside RS-1", async () => {
+    const { checkUpdateRoute } = await loadCheck();
+    for (const [location, reason] of [
+      ["https://github-releases.githubusercontent.com/a?sig=secret", "host-outside-rs1"],
+      // RS-1 の host の subdomain は通さない（suffix 一致にしない。DR-CP2B-P3-3）。
+      ["https://evil.github.com/a", "host-outside-rs1"],
+      ["https://x.objects.githubusercontent.com/a", "host-outside-rs1"],
+      ["https://a.release-assets.githubusercontent.com/a", "host-outside-rs1"],
+      // 末尾の `.`（全角の句点を含む）は外さずに拒否する（DR-CP2B-P3-7）。
+      ["https://release-assets.githubusercontent.com./a", "trailing-dot"],
+      ["https://objects.githubusercontent.com.example/a", "host-outside-rs1"],
+      ["https://evil.example/github.com", "host-outside-rs1"],
+      ["https://github.com@evil.example/a", "userinfo-present"],
+      ["http://release-assets.githubusercontent.com/a", "not-https"],
+      ["https://release-assets.githubusercontent.com:8443/a", "non-default-port"],
+      ["https://[", "location-unparsable"],
+    ]) {
+      const { fetchImpl, requested } = syntheticFetch([
+        { status: 302, location },
+      ]);
+      const error = await refusal(
+        checkUpdateRoute({ startUrl: START, allowedHosts: RS1, fetchImpl }),
+      );
+      assert.equal(error.reason, reason, location);
+      assert.equal(requested.length, 1, location);
+      // error 文は reason と host（と status）だけで、Location の path・query を出さない。
+      assert.doesNotMatch(error.message, /sig=|\/a\b/, location);
+    }
+    // 全角の句点は header に載らないので、要求の前の検査を直接確かめる（URL が `.` へ写す）。
+    const { UpdateRouteError, admitUrl } = await loadCheck();
+    assert.throws(
+      () => admitUrl("https://release-assets.githubusercontent.com\u3002/a", undefined, RS1),
+      (error) => error instanceof UpdateRouteError && error.reason === "trailing-dot",
+    );
+    const { fetchImpl, requested } = syntheticFetch([]);
+    const error = await refusal(
+      checkUpdateRoute({
+        startUrl: "https://github-releases.githubusercontent.com/a",
+        allowedHosts: RS1,
+        fetchImpl,
+      }),
+    );
+    assert.equal(error.reason, "host-outside-rs1");
+    assert.equal(error.host, "github-releases.githubusercontent.com");
+    assert.equal(requested.length, 0);
+  });
+
+  it("fails on a missing Location, a redirect loop, a non-200 end or a network failure", async () => {
+    const { MAX_REDIRECTS, checkUpdateRoute } = await loadCheck();
+    const cases = [
+      [[{ status: 302 }], "location-missing"],
+      [
+        Array.from({ length: MAX_REDIRECTS + 1 }, () => ({
+          status: 302,
+          location: "/again",
+        })),
+        "too-many-redirects",
+      ],
+      [
+        [
+          { status: 302, location: "https://release-assets.githubusercontent.com/a" },
+          { status: 403 },
+        ],
+        "unexpected-status",
+      ],
+      [[{ status: 404 }], "unexpected-status"],
+      [[new TypeError("fetch failed")], "request-failed"],
+    ];
+    for (const [responses, reason] of cases) {
+      const { fetchImpl } = syntheticFetch(responses);
+      const error = await refusal(
+        checkUpdateRoute({ startUrl: START, allowedHosts: RS1, fetchImpl }),
+      );
+      assert.equal(error.reason, reason);
+    }
+    // 上限ちょうどの redirect は通る（electron-updater の maxRedirects と同じ）。
+    const { fetchImpl } = syntheticFetch([
+      ...Array.from({ length: MAX_REDIRECTS }, () => ({
+        status: 302,
+        location: "/again",
+      })),
+      { status: 200 },
+    ]);
+    const { hops } = await checkUpdateRoute({
+      startUrl: START,
+      allowedHosts: RS1,
+      fetchImpl,
+    });
+    assert.equal(hops.length, MAX_REDIRECTS + 1);
   });
 });

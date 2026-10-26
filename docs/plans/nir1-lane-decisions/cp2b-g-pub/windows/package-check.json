@@ -1,0 +1,20 @@
+{
+  "ok": true,
+  "failures": [],
+  "recorded": {
+    "worker": {
+      "path": "resources/bin/nir1-c-query-worker.exe",
+      "verified": true,
+      "bytes": 88663040
+    },
+    "workerPeSubsystem": {
+      "value": 3,
+      "name": "windows-console"
+    },
+    "asar": {
+      "entries": 797,
+      "forbidden": [],
+      "forbiddenContent": []
+    }
+  }
+}

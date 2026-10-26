@@ -311,7 +311,10 @@ jobs:
   browser:
     name: Browser (Vitest browser)
     if: github.event_name != 'schedule' && !inputs.source_focused && !inputs.source_canonical_contracts && !inputs.canonical_profile && !inputs.candidate_base && !inputs.candidate_head && !inputs.max_parallel_tasks
-    runs-on: ubuntu-latest
+    # ubuntu-latest が 26.04 に移った 2026-10-26 から、related-scenes の幅の試験（上限 3000 ms）が
+    # 4〜13 秒かかって落ちた（24.04 では 0.4〜1.8 秒。同じ commit のローカル実行は通る）。
+    # image を明示し、26.04 への移行は試験の時間を測り直して意図して行う。
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

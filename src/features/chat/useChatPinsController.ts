@@ -10,6 +10,8 @@ import {
   useChatStore,
 } from "./chatStore";
 import * as chatApi from "./chatApi";
+import { useAiSettingsStore } from "./store";
+import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
 import type {
   PinnedSnippetEntryWithData,
   PinnedStickyEntryWithData,
@@ -266,7 +268,17 @@ export function useChatPinsController({
       }
       const sessionId = await ensureSession();
       if (!sessionId) {
-        reportUnavailable();
+        // 外部送信の制限で会話を作れないときは、ensureSession が理由を示した
+        // （DR-DA2B-R22）。別の失敗の文を重ねない。
+        if (
+          !(
+            PROFILE_ACTIVATION_UI_ENABLED &&
+            authority.activeSessionId === null &&
+            useAiSettingsStore.getState().profileEgressClosed === true
+          )
+        ) {
+          reportUnavailable();
+        }
         return null;
       }
       // Creating the first session is the one expected authority transition.
