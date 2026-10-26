@@ -33,7 +33,8 @@ import {
   seedPinPlanFromFixture,
 } from "./seed-pin-setup.mjs";
 import { seedPinPageDeps } from "./setup-driver.mjs";
-import { REPO_ROOT } from "./test-support.mjs";
+import { assertSeedPinsBeforeK64 } from "./seed-pin.mjs";
+import { REPO_ROOT, productDbPinReads } from "./test-support.mjs";
 
 const G02 = {
   caseId: "G-02",
@@ -620,5 +621,44 @@ test("setup-driver の段: renderer の API の upsertScenePin を 1 回だけ�
         fixturePins: fixturePinsRuntime(G02, IDS),
       }),
     /SP-N6/u,
+  );
+});
+
+test("SP-P3: 凍結した fixture から写した plan が、そのまま R5 の照合の seedPlan になる（variant ごとの workspace、DB から読んだ行）", () => {
+  const plan = loadFrozenSeedPinPlan({ root: REPO_ROOT });
+  const rows = plan.map((row) => ({
+    caseId: row.caseId,
+    variantId: row.variantId,
+    // variant ごとの workspace（runtime の問いの Scene は workspace ごと）。
+    querySceneId: `${row.variantKey}/query`,
+    querySceneLogical: row.querySceneId,
+    expectedSeedLogical: row.seedEntityId,
+    expectedSeed: `rt-${row.variantKey}`,
+    entityRuntimeIds: { [row.seedEntityId]: `rt-${row.variantKey}` },
+  }));
+  const reads = productDbPinReads(
+    rows.map((row) => ({
+      sceneId: row.querySceneId,
+      live: true,
+      pins: [{ entryId: row.expectedSeed, createdAt: "2026-10-27T00:00:05Z" }],
+    })),
+  );
+  const cases = rows.map((row) => ({ ...row, read: reads[row.querySceneId] }));
+  assert.equal(
+    assertSeedPinsBeforeK64({ cases, plan: "frozen", seedPlan: plan }).status,
+    "match",
+  );
+  // 予定の seed を fixture と違う Entity にした行は止める。
+  const swapped = cases.map((row) =>
+    row.caseId === "G-07" ? { ...row, expectedSeedLogical: "g07-other" } : row,
+  );
+  assert.throws(
+    () =>
+      assertSeedPinsBeforeK64({
+        cases: swapped,
+        plan: "frozen",
+        seedPlan: plan,
+      }),
+    /G-07\/base: (plan-seed-mismatch|seed-runtime-id-mismatch)/u,
   );
 });
