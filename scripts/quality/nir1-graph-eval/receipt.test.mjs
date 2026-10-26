@@ -153,6 +153,7 @@ function receipt(overrides = {}, { recompute = true } = {}) {
     schemaVersion: CP4_RECEIPT_SCHEMA,
     runId: "cp4-dev-1",
     runKind: "g-case-gold",
+    runnerKind: "k64-hook-consumer",
     preview: false,
     run: RUN,
     fixture: {
@@ -891,6 +892,54 @@ test("D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run
       ["preview", "preview-is-never-aggregated"],
       ["heavy", "measurement-window-requirement-not-met"],
       ["missing", "measurement-window-requirement-not-met"],
+    ],
+  );
+});
+
+test("S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない", () => {
+  assert.deepEqual(otherErrors(receipt()), []);
+  const { runnerKind: _drop, ...noRunner } = receipt();
+  for (const [value, pattern] of [
+    [noRunner, /runnerKind/],
+    [receipt({ runnerKind: "direct-fetch-preview" }), /runnerKind/],
+    [receipt({ runnerKind: "other" }), /runnerKind must be one of/],
+  ])
+    assert.match(otherErrors(value).join(" | "), pattern);
+  const window = { windowSamples: windowSamples([0, 20_000, 40_000, 62_000]) };
+  const kept = selectReceiptsForAggregation([
+    {
+      runId: "hook",
+      runKind: "g-case-gold",
+      runnerKind: "k64-hook-consumer",
+      preview: false,
+      run: RUN,
+      environment: window,
+    },
+    {
+      runId: "direct",
+      runKind: "g-case-gold",
+      runnerKind: "direct-fetch-preview",
+      preview: false,
+      run: RUN,
+      environment: window,
+    },
+    {
+      runId: "unmarked",
+      runKind: "trace",
+      preview: false,
+      run: RUN,
+      environment: window,
+    },
+  ]);
+  assert.deepEqual(
+    kept.included.map((row) => row.runId),
+    ["hook"],
+  );
+  assert.deepEqual(
+    kept.excluded.map((row) => [row.runId, row.reason]),
+    [
+      ["direct", "runner-is-not-the-k64-hook-consumer"],
+      ["unmarked", "runner-is-not-the-k64-hook-consumer"],
     ],
   );
 });

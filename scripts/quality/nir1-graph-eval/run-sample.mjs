@@ -533,6 +533,8 @@ export function assembleRunReceipt({
   const receipt = {
     schemaVersion: CP4_RECEIPT_SCHEMA,
     runKind: "g-case-gold",
+    // S1f: `fetchRelatedPastScenes` with a harness seed, never K6/4 R5.
+    runnerKind: "direct-fetch-preview",
     runId,
     preview: true,
     previewNote:

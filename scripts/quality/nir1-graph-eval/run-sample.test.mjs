@@ -582,6 +582,8 @@ test("an assembled dev preview receipt passes the §7.2 validator with recompute
     samples,
     checks: {},
   });
+  // S1f: the direct-fetch runner is a dev preview only (never K6/4 R5).
+  assert.equal(receipt.runnerKind, "direct-fetch-preview");
   assert.deepEqual(validateCp4Receipt(receipt), []);
   assert.equal(receipt.preview, true);
   assert.equal(receipt.verdict.outcome, "preview-only");

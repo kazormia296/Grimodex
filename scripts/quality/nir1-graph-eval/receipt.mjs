@@ -60,6 +60,18 @@ export const GRAPH_RUN_KINDS = Object.freeze(
   ]),
 );
 const TRACE_RUN_KINDS = new Set(["trace", "iii-diagnostic"]);
+/**
+ * S1f (R5, K6/4-N16): the runner a receipt came from. Only the K6/4 runner
+ * whose parent and child come from the product hook consumer
+ * (`k64-runner.mjs`) writes a formal Graph receipt; the S1c-2 runner that
+ * calls `fetchRelatedPastScenes` with a harness seed (`runner.mjs`) is a dev
+ * preview only and never aggregated.
+ */
+export const HOOK_CONSUMER_RUNNER = "k64-hook-consumer";
+export const RUNNER_KINDS = Object.freeze([
+  HOOK_CONSUMER_RUNNER,
+  "direct-fetch-preview",
+]);
 const SHA256 = /^[0-9a-f]{64}$/u;
 const COMMIT = /^[0-9a-f]{40}$/u;
 const ISO_UTC = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/u;
@@ -240,6 +252,17 @@ export function selectReceiptsForAggregation(receipts) {
       excluded.push({
         runId: receipt?.runId ?? null,
         reason: "preview-is-never-aggregated",
+      });
+      continue;
+    }
+    // S1f (R5): a Graph run is aggregated only from the hook-consumer runner.
+    if (
+      GRAPH_RUN_KINDS.has(receipt?.runKind) &&
+      receipt?.runnerKind !== HOOK_CONSUMER_RUNNER
+    ) {
+      excluded.push({
+        runId: receipt?.runId ?? null,
+        reason: "runner-is-not-the-k64-hook-consumer",
       });
       continue;
     }
@@ -701,6 +724,16 @@ export function validateCp4Receipt(receipt, bound = {}) {
   const graphRun = GRAPH_RUN_KINDS.has(receipt?.runKind);
   if (typeof receipt?.runId !== "string" || receipt.runId.length === 0)
     errors.push("runId is required");
+  if (
+    receipt?.runnerKind !== undefined &&
+    !RUNNER_KINDS.includes(receipt.runnerKind)
+  )
+    errors.push(`runnerKind must be one of ${RUNNER_KINDS.join(", ")}`);
+  if (
+    receipt?.runnerKind === "direct-fetch-preview" &&
+    receipt.preview !== true
+  )
+    errors.push("a direct-fetch runner receipt is always a preview (R5)");
   if (typeof receipt?.preview !== "boolean")
     errors.push(
       "preview must record whether this is a predeclared preview run",
@@ -746,6 +779,10 @@ export function validateCp4Receipt(receipt, bound = {}) {
         'candidate.features must be exactly the evaluation feature set ["nir1-graph-eval"]',
       );
     if (variant?.kind !== "dev") {
+      if (receipt?.runnerKind !== HOOK_CONSUMER_RUNNER)
+        errors.push(
+          `R5 / K6/4-N16: a formal Graph receipt comes from the hook-consumer runner (runnerKind ${HOOK_CONSUMER_RUNNER}); a direct fetch with a harness seed is a dev preview only`,
+        );
       if (
         !candidate?.ratification5 ||
         typeof candidate.ratification5 !== "object"
