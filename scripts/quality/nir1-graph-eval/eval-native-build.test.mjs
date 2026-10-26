@@ -19,6 +19,7 @@ import {
   DEFAULT_OUT_DIR,
   TRACKED_DECLARATIONS,
   WORKER_ARTIFACT,
+  MAIN_WORKER,
   commandStatus,
   planEvalNativeBuild,
   resolveEvalOutputDir,
@@ -92,6 +93,13 @@ test("the plan builds with the evaluation feature into the output directory only
     path.join(ROOT, DEFAULT_OUT_DIR, "nir1-c-query-worker"),
   );
   assert.equal(plan.copies[0].from, path.join(ROOT, WORKER_ARTIFACT));
+  // DR-CP4-M-1: Main's dev path is cargo's default output; no second copy.
+  assert.equal(plan.outputs.mainWorker, path.join(ROOT, MAIN_WORKER));
+  assert.equal(
+    plan.outputs.mainWorker,
+    path.join(ROOT, "src-tauri/target/release/nir1-c-query-worker"),
+  );
+  assert.equal(plan.copies.length, 1);
 });
 
 const passed = {
@@ -251,6 +259,11 @@ test("the manifest of a clean candidate passes the Graph arm's receipt guard", a
       `${DEFAULT_OUT_DIR}/nir1-c-query-worker`,
     ]);
     assert.equal(manifest.declarations.path, `${DEFAULT_OUT_DIR}/index.d.ts`);
+    // DR-CP4-M-1: Main's worker is recorded and equals the one beside the .node.
+    assert.deepEqual(manifest.mainWorker, {
+      path: MAIN_WORKER,
+      sha256: manifest.worker.sha256,
+    });
     assert.equal(manifest.distributed, false);
     assert.deepEqual(
       manifest.commands.map((command) => command.status),
@@ -324,4 +337,46 @@ test("the worker is copied from CARGO_TARGET_DIR when it is set", () => {
       .from,
     path.join("/abs/target/release", path.basename(WORKER_ARTIFACT)),
   );
+  // DR-CP4-M-1: the same worker also goes to the path Main resolves in dev.
+  assert.deepEqual(plan.copies[1], {
+    from: plan.copies[0].from,
+    to: path.join(ROOT, MAIN_WORKER),
+  });
+  assert.equal(plan.copies.length, 2);
+});
+
+test("with CARGO_TARGET_DIR the manifest's Main worker is the copy of the built worker", async () => {
+  const root = await fakeRepository();
+  const target = await mkdtemp(path.join(os.tmpdir(), "cp4-eval-target-"));
+  try {
+    const runCommand = async (entry, options) => {
+      if (entry.args.includes("napi")) return fakeRun(root)(entry, options);
+      await mkdir(path.join(target, "release"), { recursive: true });
+      await writeFile(
+        path.join(target, "release", path.basename(WORKER_ARTIFACT)),
+        "fresh worker",
+      );
+      return passed;
+    };
+    // A stale worker at Main's path is replaced.
+    await mkdir(path.join(root, path.dirname(MAIN_WORKER)), {
+      recursive: true,
+    });
+    await writeFile(path.join(root, MAIN_WORKER), "stale worker");
+    const manifest = await runEvalNativeBuild({
+      targetDir: target,
+      root,
+      runCommand,
+      inspect: () => goodInspection,
+    });
+    assert.equal(
+      await readFile(path.join(root, MAIN_WORKER), "utf8"),
+      "fresh worker",
+    );
+    assert.equal(manifest.mainWorker.sha256, manifest.worker.sha256);
+    assert.equal(assertEvalBuildReceipt(manifest), manifest);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
+  }
 });

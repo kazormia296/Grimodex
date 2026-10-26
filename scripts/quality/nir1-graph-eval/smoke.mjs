@@ -40,6 +40,7 @@ import {
   stopElectron,
 } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
+import { MAIN_WORKER } from "./eval-native-build.mjs";
 
 const SMOKE_PAGE = "/scripts/quality/nir1-graph-eval/renderer/smoke.html";
 const WORKER_NAME = "nir1-c-query-worker";
@@ -206,6 +207,7 @@ async function main() {
       !report.v9.sameAsCache ||
       status?.registrations !== 1 ||
       status?.worker?.state !== "configured" ||
+      status?.worker?.path !== path.join(ROOT, MAIN_WORKER) ||
       status?.gateOpened !== true
     )
       problem(`V-9: ${JSON.stringify(report.v9)}`);
@@ -273,19 +275,22 @@ async function main() {
         pid,
         exe,
       }));
-      const expectedWorker = path.join(path.dirname(nativePath), WORKER_NAME);
+      // DR-CP4-M-1: the worker runs from the path Main configured (dev:
+      // `src-tauri/target/release/`), verified equal to the one beside the
+      // evaluation `.node`.
+      const expectedWorker = path.join(ROOT, MAIN_WORKER);
       const begins = report.v10.native?.diagnostics?.begins ?? 0;
       report.v10.ownerReached = begins > 0;
-      report.v10.workerFromEvalDir = report.v10.workerProcesses.some(
+      report.v10.workerFromMainPath = report.v10.workerProcesses.some(
         (row) => row.exe === expectedWorker,
       );
       if (!report.v10.ownerReached)
         problem(
           `V-10 not reached: the Native began no Graph (begin graph=${JSON.stringify(report.v10.begin?.graph)}, ir=${report.v10.begin?.ir}; the Graph starts only with an IR operation, which needs a usable Chronicle Index snapshot)`,
         );
-      else if (!report.v10.workerFromEvalDir)
+      else if (!report.v10.workerFromMainPath)
         problem(
-          `V-10: no ${WORKER_NAME} process from ${path.dirname(nativePath)} was seen`,
+          `V-10: no ${WORKER_NAME} process from ${expectedWorker} was seen`,
         );
     }
     remember();

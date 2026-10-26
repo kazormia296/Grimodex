@@ -9,8 +9,17 @@
 //   <out>/index.d.ts             napi's declarations of that build (never the
 //                                tracked `electron/native/grimodex-node/index.d.ts`)
 //   <out>/nir1-c-query-worker    the worker, at the fixed name the evaluation
-//                                `.node` resolves next to itself
+//                                `.node` compares with next to itself
 //   <out>/eval-build.json        the manifest: features, commands, sha256s
+//
+// The worker that runs is the one Main configures (CP-2b; Main's constructor
+// is the only setter of the worker path). In dev Main resolves it at
+// `<dist-electron>/../src-tauri/target/release/nir1-c-query-worker`
+// (`resolveGraphWorkerPath` in `electron/main/backend.ts`), so the build also
+// puts the same bytes there (`MAIN_WORKER`; a copy when `CARGO_TARGET_DIR`
+// moved cargo's output) and records both. The evaluation `.node` opens its
+// gate only when Main's worker equals `<out>/nir1-c-query-worker` byte for
+// byte (`verify_worker`, DR-CP4-M-1).
 //
 // It refuses an output directory outside `.artifacts/` or inside the
 // grimodex-node package, and checks after the build that the default `.node`
@@ -65,6 +74,12 @@ export const TRACKED_DECLARATIONS = `${NATIVE_DIR}/index.d.ts`;
 export const NODE_FILE_NAME = "grimodex-node.node";
 export const WORKER_FILE_NAME = "nir1-c-query-worker";
 export const WORKER_ARTIFACT = `src-tauri/target/release/${WORKER_FILE_NAME}`;
+/**
+ * The worker path Main resolves in dev for the product `dist-electron/main.cjs`
+ * of `root` (`resolveGraphWorkerPath`: `<main dir>/../src-tauri/target/release`).
+ * DR-CP4-M-1.
+ */
+export const MAIN_WORKER = `src-tauri/target/release/${WORKER_FILE_NAME}`;
 const COMMAND_TIMEOUT_MS = 60 * 60 * 1000;
 const GRACE_MS = 2_000;
 
@@ -172,15 +187,20 @@ export function planEvalNativeBuild({
       node: path.join(out, NODE_FILE_NAME),
       declarations: path.join(out, "index.d.ts"),
       worker: path.join(out, WORKER_FILE_NAME),
+      mainWorker: path.join(root, MAIN_WORKER),
       manifest: path.join(out, "eval-build.json"),
     },
-    copies: [
-      {
-        from: workerArtifactPath(root, targetDir),
-        to: path.join(out, WORKER_FILE_NAME),
-      },
-    ],
+    copies: workerCopies(root, out, targetDir),
   };
+}
+
+/** The worker beside the `.node`, and at Main's path when cargo wrote elsewhere. */
+function workerCopies(root, out, targetDir) {
+  const from = workerArtifactPath(root, targetDir);
+  const copies = [{ from, to: path.join(out, WORKER_FILE_NAME) }];
+  const main = path.join(root, MAIN_WORKER);
+  if (path.resolve(from) !== main) copies.push({ from, to: main });
+  return copies;
 }
 
 export function commandStatus(result) {
@@ -355,6 +375,7 @@ export async function runEvalNativeBuild({
   }
   for (const copy of plan.copies) {
     await stat(copy.from);
+    await mkdir(path.dirname(copy.to), { recursive: true });
     await copyFile(copy.from, copy.to);
   }
   const after = await sourceIdentity(root);
@@ -388,6 +409,14 @@ export async function runEvalNativeBuild({
   const nodePath = path.relative(root, plan.outputs.node);
   const workerPath = path.relative(root, plan.outputs.worker);
   const workerSha256 = await sha256File(plan.outputs.worker);
+  // DR-CP4-M-1: the worker Main configures must be the recorded one, or the
+  // evaluation `.node` keeps its gate closed.
+  const mainWorkerSha256 = await sha256File(plan.outputs.mainWorker);
+  if (mainWorkerSha256 !== workerSha256) {
+    throw new Error(
+      `the worker at Main's path (${MAIN_WORKER}) differs from ${workerPath}; no manifest was written`,
+    );
+  }
   const manifest = {
     schemaVersion: MANIFEST_SCHEMA,
     status: "passed",
@@ -404,6 +433,7 @@ export async function runEvalNativeBuild({
       [workerPath]: workerSha256,
     },
     worker: { path: workerPath, sha256: workerSha256 },
+    mainWorker: { path: MAIN_WORKER, sha256: mainWorkerSha256 },
     declarations: {
       path: path.relative(root, plan.outputs.declarations),
       sha256: await sha256File(plan.outputs.declarations),

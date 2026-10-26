@@ -157,21 +157,87 @@ test("a #[napi] item outside the module that reaches the evaluation module is re
   assert.ok(checkEvalFeatureAllowlist(sources).length > 0);
 });
 
-test("a new N-API entry in the module, or one that configures the worker, is refused", () => {
+test("a new N-API entry in the module, or one that touches the worker, is refused", () => {
   const added = mutate(
     PATHS.nodeEvalMod,
     '/// The eval clock now, in nanoseconds since the anchor.\n#[napi(js_name = "nir1GraphEvalClockNs")]\n',
-    '#[napi(js_name = "nir1GraphEvalConfigureWorker")]\npub fn nir1_graph_eval_configure_worker(path: String) -> napi::Result<()> {\n    let state = registered_state()?;\n    let _ = configure_worker(&state, Path::new(&path));\n    Ok(())\n}\n\n/// The eval clock now, in nanoseconds since the anchor.\n#[napi(js_name = "nir1GraphEvalClockNs")]\n',
+    '#[napi(js_name = "nir1GraphEvalVerifyWorker")]\npub fn nir1_graph_eval_verify_worker(path: String) -> napi::Result<()> {\n    let state = registered_state()?;\n    let _ = verify_worker(&state.nir1_graph, Path::new(&path));\n    Ok(())\n}\n\n/// The eval clock now, in nanoseconds since the anchor.\n#[napi(js_name = "nir1GraphEvalClockNs")]\n',
   );
   const messages = checkNotReachable(added)
     .map((violation) => violation.message)
     .join("\n");
   assert.match(messages, /must be exactly/);
   assert.match(messages, /touches the worker configuration/);
-  assert.match(
-    messages,
-    /`configure_worker` must be called from `register` only/,
+  assert.match(messages, /`verify_worker` must be called from `register` only/);
+});
+
+// CP-2b (DR-CP4-M-1): Main's constructor is the only setter of the worker
+// path; the module only reads it, once, in `verify_worker`.
+test("the evaluation module setting the worker path, even in a comment, is refused", () => {
+  const SETTER = "the evaluation module must not set the worker path";
+  const verify =
+    "        Ok(library) => verify_worker(&state.nir1_graph, &library),\n";
+  for (const [label, to] of [
+    [
+      "setter call",
+      "        Ok(library) => {\n            let _ = state.nir1_graph.configure_worker_path(library.clone());\n            verify_worker(&state.nir1_graph, &library)\n        }\n",
+    ],
+    [
+      "setter in a comment",
+      "        // configure_worker_path is Main's.\n" + verify,
+    ],
+    [
+      "factory slot write",
+      "        Ok(library) => {\n            let _ = state.nir1_graph.shared.worker.set(todo!());\n            verify_worker(&state.nir1_graph, &library)\n        }\n",
+    ],
+    [
+      "own factory",
+      "        Ok(library) => {\n            let _ = ProcessGraphWorkerFactory::from_path(library.clone());\n            verify_worker(&state.nir1_graph, &library)\n        }\n",
+    ],
+  ]) {
+    const messages = checkNotReachable(mutate(PATHS.nodeEvalMod, verify, to))
+      .map((violation) => violation.message)
+      .join("\n");
+    assert.ok(messages.includes(SETTER), `${label}: ${messages}`);
+  }
+});
+
+test("reading Main's worker path outside `verify_worker`, or not verifying in `register`, is refused", () => {
+  const twice = mutate(
+    PATHS.nodeEvalMod,
+    "pub(crate) fn register(state: &Arc<AppState>) {\n",
+    "pub(crate) fn register(state: &Arc<AppState>) {\n    let _ = state.nir1_graph.configured_worker_path_for_eval();\n",
   );
+  assert.ok(
+    checkNotReachable(twice).some((violation) =>
+      /must be read once, from `verify_worker`/.test(violation.message),
+    ),
+  );
+  const unverified = mutate(
+    PATHS.nodeEvalMod,
+    "        Ok(library) => verify_worker(&state.nir1_graph, &library),\n",
+    "        Ok(_library) => WorkerSetup::NotAttempted,\n",
+  );
+  assert.ok(
+    checkNotReachable(unverified).some((violation) =>
+      /`verify_worker` must be called from `register` only/.test(
+        violation.message,
+      ),
+    ),
+  );
+});
+
+test("the worker path accessor of the product owner without the feature is refused", () => {
+  const sources = mutate(
+    PATHS.nodeProduct,
+    `    #[cfg(feature = "${EVAL_FEATURE}")]\n    fn worker_path_for_eval(&self) -> Option<&Path> {\n        Some(&self.worker)\n    }\n`,
+    "    fn worker_path_for_eval(&self) -> Option<&Path> {\n        Some(&self.worker)\n    }\n",
+  );
+  const messages = checkEvalFeatureAllowlist(sources)
+    .map((violation) => violation.message)
+    .join("\n");
+  assert.match(messages, /must appear exactly once \(found 0\)/);
+  assert.match(messages, /`_for_eval` appears outside the allowlist/);
 });
 
 test("opening the gate without the feature, or unconditionally, is refused", () => {

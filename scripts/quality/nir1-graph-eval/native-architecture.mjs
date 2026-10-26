@@ -200,6 +200,10 @@ export const SNIPPETS = Object.freeze({
     `${CFG} ticket.eval_notes.busy("rebuild-window"); ticket.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Busy));`,
     `let failure = classify_c_query_failure(&error); ${CFG} if matches!(failure, CQueryFailure::CapacityBusy) { ticket.eval_notes.busy("worker-capacity"); }`,
     `${CFG} let eval_stamp_attempted_at = Instant::now(); let stamp1 = read_stamp_for_query(context, &guard.binding); ${CFG} ticket.eval_notes.stamp(eval_stamp_attempted_at, stamp0, stamp1.as_ref());`,
+    // The read-only accessor of the path Main configured (CP-2b): the trait's
+    // default and the process factory's answer (DR-CP4-M-1).
+    `${CFG} fn worker_path_for_eval(&self) -> Option<&Path> { None }`,
+    `${CFG} fn worker_path_for_eval(&self) -> Option<&Path> { Some(&self.worker) }`,
   ],
   [PATHS.dbNarrativeMod]: [`${CFG} pub mod nir1_graph_eval;`],
 });
@@ -605,7 +609,7 @@ export function checkNotReachable(sources) {
     }
   }
   // The module's N-API surface is exactly the fixed set, and none of it
-  // configures the worker (the path is resolved from the loaded library).
+  // touches the worker (Main configures it; the module only verifies it).
   const mod = sources[PATHS.nodeEvalMod];
   if (mod === undefined) {
     fail(PATHS.nodeEvalMod, "the evaluation module is missing");
@@ -641,7 +645,7 @@ export function checkNotReachable(sources) {
     for (const item of items) {
       const text = masked.slice(item.start, item.end);
       if (
-        /\bworker\b|configure_worker|configure_worker_path|\bregister\(/.test(
+        /\bworker\b|configure_worker|verify_worker|configured_worker_path_for_eval|\bregister\(/.test(
           text,
         )
       ) {
@@ -651,30 +655,38 @@ export function checkNotReachable(sources) {
         );
       }
     }
-    const configurePath = [...masked.matchAll(/\.configure_worker_path\(/g)];
-    const configureBody = functionBody(mod, "configure_worker");
-    const registerBody = functionBody(mod, "register");
-    if (
-      configurePath.length !== 1 ||
-      configureBody === null ||
-      !/\.configure_worker_path\(/.test(configureBody)
-    ) {
+    // CP-2b (DR-CP4-M-1): Main's constructor is the only setter of the worker
+    // path. The module never names the setter, even in a comment (the CP-2b
+    // test counts every occurrence); it reads the path Main configured once,
+    // in `verify_worker`, and only `register` verifies.
+    if (/configure_worker_path|\.worker\.set\(|from_path\(/.test(mod)) {
       fail(
         PATHS.nodeEvalMod,
-        "`configure_worker_path` must be called once, from `configure_worker`",
+        "the evaluation module must not set the worker path (Main's constructor is the only setter)",
       );
     }
-    const configureCalls = [
-      ...masked.matchAll(/(?<!fn\s)\bconfigure_worker\(/g),
-    ];
+    const verifyBody = functionBody(mod, "verify_worker");
+    const registerBody = functionBody(mod, "register");
+    const reads = [...masked.matchAll(/\.configured_worker_path_for_eval\(/g)];
     if (
-      configureCalls.length !== 1 ||
-      registerBody === null ||
-      !/\bconfigure_worker\(/.test(registerBody)
+      reads.length !== 1 ||
+      verifyBody === null ||
+      !/\.configured_worker_path_for_eval\(/.test(verifyBody)
     ) {
       fail(
         PATHS.nodeEvalMod,
-        "`configure_worker` must be called from `register` only",
+        "`configured_worker_path_for_eval` must be read once, from `verify_worker`",
+      );
+    }
+    const verifyCalls = [...masked.matchAll(/(?<!fn\s)\bverify_worker\(/g)];
+    if (
+      verifyCalls.length !== 1 ||
+      registerBody === null ||
+      !/\bverify_worker\(/.test(registerBody)
+    ) {
+      fail(
+        PATHS.nodeEvalMod,
+        "`verify_worker` must be called from `register` only",
       );
     }
     // Only `record_registration` opens the gate, and only `register` (and the

@@ -399,41 +399,124 @@ fn clearing_the_next_query_cache_drops_a_late_result_before_the_next_sample() {
 
 // ---- the worker path --------------------------------------------------------------
 
-#[test]
-fn the_worker_is_the_fixed_name_next_to_the_loaded_library() {
-    let _serial = serial();
-    let directory =
-        std::env::temp_dir().join(format!("nir1-graph-eval-worker-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&directory).expect("directory");
-    let library = directory.join("grimodex-node.node");
-    let missing = OwnerFixture::new(true);
-    match configure_worker(&missing.state, &library) {
-        WorkerSetup::Refused { path, reason } => {
-            assert_eq!(path, Some(directory.join(WORKER_FILE_NAME)));
-            assert!(reason.contains("NIR1_GRAPH_WORKER_PATH"), "{reason}");
-        }
-        other => panic!("a missing worker must be refused, got {other:?}"),
+/// A Backend made by Main's constructor (CP-2b), with or without a worker path.
+fn backend_from_main(base: &Path, worker: Option<&Path>) -> crate::Backend {
+    let app_data = base.join(format!("app-{}", uuid::Uuid::new_v4()));
+    crate::Backend::new_from_main(
+        app_data.to_string_lossy().into_owned(),
+        None,
+        None,
+        worker.map(|path| path.to_string_lossy().into_owned()),
+    )
+    .expect("backend")
+}
+
+fn refused_reason(setup: WorkerSetup) -> (Option<PathBuf>, String) {
+    match setup {
+        WorkerSetup::Refused { path, reason } => (path, reason),
+        other => panic!("expected a refusal, got {other:?}"),
     }
-    assert!(!missing.state.nir1_graph.worker_configured_for_eval());
-    // Another name next to the library is never taken.
-    std::fs::write(directory.join("nir1-c-query-worker-other"), b"").expect("decoy");
-    let decoy = OwnerFixture::new(true);
-    assert!(matches!(
-        configure_worker(&decoy.state, &library),
-        WorkerSetup::Refused { .. }
-    ));
-    std::fs::write(directory.join(WORKER_FILE_NAME), b"").expect("worker file");
-    let present = OwnerFixture::new(true);
+}
+
+#[test]
+fn the_evaluation_build_verifies_the_worker_main_configured_and_sets_none() {
+    let _serial = serial();
+    let base =
+        std::env::temp_dir().join(format!("nir1-graph-eval-worker-{}", uuid::Uuid::new_v4()));
+    let eval_dir = base.join("eval-build");
+    let main_dir = base.join("target").join("release");
+    std::fs::create_dir_all(&eval_dir).expect("eval directory");
+    std::fs::create_dir_all(&main_dir).expect("main directory");
+    let library = eval_dir.join("grimodex-node.node");
+    let expected = eval_dir.join(WORKER_FILE_NAME);
+    let main_worker = main_dir.join(WORKER_FILE_NAME);
+
+    // Main set no path: nothing to verify, the gate stays closed.
+    let none = backend_from_main(&base, None);
     assert_eq!(
-        configure_worker(&present.state, &library),
-        WorkerSetup::Configured(directory.join(WORKER_FILE_NAME))
+        verify_worker(&none.state.nir1_graph, &library),
+        WorkerSetup::Refused {
+            path: None,
+            reason: "NIR1_GRAPH_EVAL_WORKER_NOT_CONFIGURED".into(),
+        }
     );
-    assert!(present.state.nir1_graph.worker_configured_for_eval());
-    // The product factory keeps its single configuration.
+    assert!(!none.state.nir1_graph.worker_configured_for_eval());
+    // Main's path was refused by the product factory (no file yet).
+    let missing = backend_from_main(&base, Some(&main_worker));
+    assert!(!missing.state.nir1_graph.worker_configured_for_eval());
+    assert_eq!(
+        refused_reason(verify_worker(&missing.state.nir1_graph, &library)).1,
+        "NIR1_GRAPH_EVAL_WORKER_NOT_CONFIGURED"
+    );
+
+    let mut bytes = vec![7_u8; 200_000];
+    std::fs::write(&main_worker, &bytes).expect("main worker");
+    let present = backend_from_main(&base, Some(&main_worker));
+    assert_eq!(
+        present.state.nir1_graph.configured_worker_path_for_eval(),
+        Some(main_worker.clone())
+    );
+    // The evaluation build's worker is missing.
+    let (path, reason) = refused_reason(verify_worker(&present.state.nir1_graph, &library));
+    assert_eq!(path, Some(main_worker.clone()));
+    assert!(
+        reason.starts_with("NIR1_GRAPH_EVAL_WORKER_UNREADABLE"),
+        "{reason}"
+    );
+    // Another name next to the library is never taken.
+    std::fs::write(eval_dir.join("nir1-c-query-worker-other"), &bytes).expect("decoy");
     assert!(matches!(
-        configure_worker(&present.state, &library),
+        verify_worker(&present.state.nir1_graph, &library),
         WorkerSetup::Refused { .. }
     ));
+    // Other bytes: the last byte of the last chunk, then another length.
+    bytes[199_999] = 8;
+    std::fs::write(&expected, &bytes).expect("other worker");
+    assert_eq!(
+        verify_worker(&present.state.nir1_graph, &library),
+        WorkerSetup::Refused {
+            path: Some(main_worker.clone()),
+            reason: "NIR1_GRAPH_EVAL_WORKER_MISMATCH".into(),
+        }
+    );
+    bytes[199_999] = 7;
+    std::fs::write(&expected, &bytes[..199_999]).expect("shorter worker");
+    assert_eq!(
+        refused_reason(verify_worker(&present.state.nir1_graph, &library)).1,
+        "NIR1_GRAPH_EVAL_WORKER_MISMATCH"
+    );
+    // The same bytes: Configured with Main's path. Verifying sets nothing, so
+    // the owner keeps Main's path and a second verification answers the same.
+    std::fs::write(&expected, &bytes).expect("same worker");
+    for _ in 0..2 {
+        assert_eq!(
+            verify_worker(&present.state.nir1_graph, &library),
+            WorkerSetup::Configured(main_worker.clone())
+        );
+    }
+    assert_eq!(
+        present.state.nir1_graph.configured_worker_path_for_eval(),
+        Some(main_worker.clone())
+    );
+    // The library at Main's directory: the same file is compared with itself.
+    assert_eq!(
+        verify_worker(
+            &present.state.nir1_graph,
+            &main_dir.join("grimodex-node.node")
+        ),
+        WorkerSetup::Configured(main_worker.clone())
+    );
+    // A factory that is not the process factory has no path.
+    let fake = OwnerFixture::new(true);
+    fake.state
+        .nir1_graph
+        .install_worker_factory_for_test(Arc::new(EchoFactory));
+    assert!(fake.state.nir1_graph.worker_configured_for_eval());
+    assert_eq!(
+        refused_reason(verify_worker(&fake.state.nir1_graph, &library)).1,
+        "NIR1_GRAPH_EVAL_WORKER_NOT_CONFIGURED"
+    );
+    let _ = std::fs::remove_dir_all(&base);
 }
 
 #[test]

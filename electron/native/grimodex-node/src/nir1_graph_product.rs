@@ -301,6 +301,13 @@ pub(crate) struct GraphWorkerStart {
 
 pub(crate) trait GraphWorkerFactory: Send + Sync {
     fn create(&self, start: GraphWorkerStart) -> Box<dyn GraphWorker>;
+
+    /// CP-4 (DR-CP4-M-1): the evaluation build reads the path Main configured;
+    /// only the process factory has one.
+    #[cfg(feature = "nir1-graph-eval")]
+    fn worker_path_for_eval(&self) -> Option<&Path> {
+        None
+    }
 }
 
 pub(crate) trait GraphWorker {
@@ -350,6 +357,11 @@ impl GraphWorkerFactory for ProcessGraphWorkerFactory {
             start.snapshot,
             self.worker.clone(),
         )))
+    }
+
+    #[cfg(feature = "nir1-graph-eval")]
+    fn worker_path_for_eval(&self) -> Option<&Path> {
+        Some(&self.worker)
     }
 }
 
@@ -1475,6 +1487,16 @@ impl Nir1GraphProductOwner {
 
     pub(crate) fn worker_configured_for_eval(&self) -> bool {
         self.shared.worker.get().is_some()
+    }
+
+    /// The worker path Main configured (CP-2b), read only. None when Main set
+    /// none or its path was refused. DR-CP4-M-1.
+    pub(crate) fn configured_worker_path_for_eval(&self) -> Option<PathBuf> {
+        self.shared
+            .worker
+            .get()
+            .and_then(|factory| factory.worker_path_for_eval())
+            .map(Path::to_path_buf)
     }
 
     pub(crate) fn slot_kind_for_eval(&self) -> GraphSlotKind {

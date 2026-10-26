@@ -8,10 +8,13 @@
 //! `PRODUCT_GRAPH_PUBLISHED` stays false; nothing here changes a product build.
 //!
 //! - `register` is called once by `Backend::new` of the evaluation build. It
-//!   keeps a `Weak<AppState>` in a process-wide registry, configures the
-//!   C-query worker from the fixed name next to the loaded `.node`
-//!   (`WORKER_FILE_NAME`; no N-API entry takes a worker path), and opens the
-//!   publication gate of that AppState's owner only.
+//!   keeps a `Weak<AppState>` in a process-wide registry, verifies the C-query
+//!   worker and opens the publication gate of that AppState's owner only. It
+//!   sets no worker path: Main's constructor (CP-2b, `new_from_main`) is the
+//!   only setter, before this registration. `verify_worker` reads the path
+//!   Main configured and opens the gate only when that file is, byte for
+//!   byte, the worker the evaluation build wrote next to the loaded `.node`
+//!   (`WORKER_FILE_NAME`; no N-API entry takes a worker path. DR-CP4-M-1).
 //! - The `nir1GraphEval*` functions are free N-API functions of the addon. The
 //!   harness reaches them from Main through Playwright's `app.evaluate`, by
 //!   requiring the same `.node` path (Node's module cache returns the module
@@ -109,12 +112,13 @@ struct Registration {
 /// A leaf lock: it is never held while another lock is taken.
 static REGISTRY: Mutex<Option<Registration>> = Mutex::new(None);
 
-/// `Backend::new` of the evaluation build. The worker is configured first; a
+/// `Backend::new` of the evaluation build. The worker is verified first; a
 /// refused worker leaves the gate closed (fail closed), so a measurement never
-/// runs against an owner that answers `worker-unavailable`.
+/// runs against an owner that answers `worker-unavailable` or that would start
+/// another worker than the evaluation build's.
 pub(crate) fn register(state: &Arc<AppState>) {
     let worker = match loaded_library_path() {
-        Ok(library) => configure_worker(state, &library),
+        Ok(library) => verify_worker(&state.nir1_graph, &library),
         Err(error) => WorkerSetup::Refused {
             path: None,
             reason: format!("{error:#}"),
@@ -144,23 +148,72 @@ pub(crate) fn record_registration(state: &Arc<AppState>, worker: WorkerSetup) {
     });
 }
 
-/// `<directory of the loaded library>/nir1-c-query-worker`, validated by the
-/// product factory (absolute, a file, the fixed name, an absolute parent).
-pub(crate) fn configure_worker(state: &AppState, library: &Path) -> WorkerSetup {
+/// Reads the worker path Main configured (CP-2b; the product factory validated
+/// it: absolute, a file, the fixed name, an absolute parent) and compares that
+/// file with `<directory of the loaded library>/nir1-c-query-worker`, the
+/// worker the evaluation build wrote (DR-CP4-M-1). It sets nothing: Configured
+/// carries Main's path when the two files are identical; anything else is
+/// Refused and keeps the gate closed.
+pub(crate) fn verify_worker(owner: &Nir1GraphProductOwner, library: &Path) -> WorkerSetup {
     let Some(directory) = library.parent() else {
         return WorkerSetup::Refused {
             path: None,
             reason: "NIR1_GRAPH_EVAL_LIBRARY_PATH".into(),
         };
     };
-    let path = directory.join(WORKER_FILE_NAME);
-    match state.nir1_graph.configure_worker_path(path.clone()) {
-        Ok(()) => WorkerSetup::Configured(path),
+    let expected = directory.join(WORKER_FILE_NAME);
+    let Some(configured) = owner.configured_worker_path_for_eval() else {
+        return WorkerSetup::Refused {
+            path: None,
+            reason: "NIR1_GRAPH_EVAL_WORKER_NOT_CONFIGURED".into(),
+        };
+    };
+    match same_contents(&configured, &expected) {
+        Ok(true) => WorkerSetup::Configured(configured),
+        Ok(false) => WorkerSetup::Refused {
+            path: Some(configured),
+            reason: "NIR1_GRAPH_EVAL_WORKER_MISMATCH".into(),
+        },
         Err(error) => WorkerSetup::Refused {
-            path: Some(path),
-            reason: format!("{error:#}"),
+            path: Some(configured),
+            reason: format!("NIR1_GRAPH_EVAL_WORKER_UNREADABLE: {error}"),
         },
     }
+}
+
+/// True when both files have the same bytes (the length first, then 64 KiB
+/// chunks; the worker is about 90 MB and is read once per registration).
+fn same_contents(left: &Path, right: &Path) -> std::io::Result<bool> {
+    let mut left = std::fs::File::open(left)?;
+    let mut right = std::fs::File::open(right)?;
+    if left.metadata()?.len() != right.metadata()?.len() {
+        return Ok(false);
+    }
+    let mut left_chunk = vec![0_u8; 1 << 16];
+    let mut right_chunk = vec![0_u8; 1 << 16];
+    loop {
+        let read = read_chunk(&mut left, &mut left_chunk)?;
+        if read != read_chunk(&mut right, &mut right_chunk)?
+            || left_chunk[..read] != right_chunk[..read]
+        {
+            return Ok(false);
+        }
+        if read == 0 {
+            return Ok(true);
+        }
+    }
+}
+
+fn read_chunk(file: &mut std::fs::File, chunk: &mut [u8]) -> std::io::Result<usize> {
+    use std::io::Read;
+    let mut filled = 0;
+    while filled < chunk.len() {
+        match file.read(&mut chunk[filled..])? {
+            0 => break,
+            read => filled += read,
+        }
+    }
+    Ok(filled)
 }
 
 fn registered() -> Option<(Registration, Option<Arc<AppState>>)> {
