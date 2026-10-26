@@ -128,7 +128,13 @@ describe.each(LANGUAGES)("the %s wording drafts", (language) => {
       ].sort(),
     );
     expect(Object.keys(strings.panel.ipc).sort()).toEqual(
-      ["egress-denied", "failed", "invalid-request", "invalid-result"].sort(),
+      [
+        "egress-denied",
+        "failed",
+        "held",
+        "invalid-request",
+        "invalid-result",
+      ].sort(),
     );
     expect(Object.keys(strings.route.unusable).sort()).toEqual(
       ["model-invalid", "no-endpoint", "not-loopback", "provider"].sort(),

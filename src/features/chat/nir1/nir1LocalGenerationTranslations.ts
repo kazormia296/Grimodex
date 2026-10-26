@@ -123,6 +123,7 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
         unknown: "生成の状態が分かりません。",
       },
       ipc: {
+        held: "AI 監査の書き出しが終わるのを待っています。",
         "egress-denied": "外部送信の制限を有効にした profile でだけ使えます。",
         "invalid-result": "応答の形が正しくありません。",
         "invalid-request": "要求の形が正しくありません。",
@@ -293,6 +294,7 @@ export const NIR1_LOCAL_GENERATION_TRANSLATIONS = {
         unknown: "The state of the generation is unknown.",
       },
       ipc: {
+        held: "Waiting for the AI audit export to finish.",
         "egress-denied":
           "Available only in a profile with the external sending restriction turned on.",
         "invalid-result": "The answer has an unexpected shape.",

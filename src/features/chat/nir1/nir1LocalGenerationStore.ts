@@ -37,6 +37,7 @@ const DEFAULT_PORTS: Nir1LocalTurnPorts = {
   cancel: cancelNir1LocalGeneration,
   setTimer: (run, ms) => setTimeout(run, ms),
   clearTimer: (timer) => clearTimeout(timer as ReturnType<typeof setTimeout>),
+  now: () => Date.now(),
 };
 
 /** The latest machine of each conversation (older ones finish on their own). */

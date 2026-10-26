@@ -6,6 +6,8 @@ import type {
 } from "@/features/chat/nir1/nir1LocalGenerationApi";
 import {
   createNir1LocalGenerationTurn,
+  NIR1_LOCAL_HELD_MAX_BACKOFF_MS,
+  NIR1_LOCAL_MAX_HELD_MS,
   NIR1_LOCAL_POLL_IDLE_MS,
   type Nir1LocalTurnPorts,
   type Nir1LocalTurnSnapshot,
@@ -35,6 +37,7 @@ function harness() {
   const cancels: Array<{ handle: string } & Deferred<Nir1LocalCancelResult>> =
     [];
   const timers: Array<{ run: () => void; ms: number; cleared: boolean }> = [];
+  const clock = { ms: 0 };
   let inFlightContinues = 0;
   let maxInFlightContinues = 0;
   const snapshots: Nir1LocalTurnSnapshot[] = [];
@@ -59,6 +62,7 @@ function harness() {
       timers.push(timer);
       return timer;
     },
+    now: () => clock.ms,
     clearTimer: (timer) => {
       (timer as { cleared: boolean }).cleared = true;
     },
@@ -70,6 +74,8 @@ function harness() {
   /** Run the pending timers (in order) and let their calls start. */
   const tick = async () => {
     const due = timers.splice(0).filter((timer) => !timer.cleared);
+    // The manual clock moves by the longest wait that was due.
+    clock.ms += Math.max(0, ...due.map((timer) => timer.ms));
     for (const timer of due) timer.run();
     await flush();
   };
@@ -95,6 +101,7 @@ function harness() {
     continues,
     cancels,
     timers,
+    clock,
     snapshots,
     flush,
     tick,
@@ -240,7 +247,9 @@ describe("the local generation state machine (DD-1c)", () => {
     });
   });
 
-  it("drops a continue that returns after the terminal", async () => {
+  // Review fix 6: a refused cancel while a continue is in flight waits for
+  // that continue, so its last delta is not lost.
+  it("waits for the in-flight continue before a refused cancel ends the generation", async () => {
     const h = harness();
     await h.begin();
     await h.tick();
@@ -250,16 +259,52 @@ describe("the local generation state machine (DD-1c)", () => {
       reason: "NIR1_LOCAL_HANDLE_NOT_FOUND",
     });
     await h.flush();
+    expect(h.turn.snapshot().phase).toBe("running");
+    h.continues[0].resolve(h.ok({ text: "最後の差分" }));
+    await h.flush();
+    await h.tick();
     expect(h.turn.snapshot()).toMatchObject({
       phase: "lost",
       reason: "NIR1_LOCAL_HANDLE_NOT_FOUND",
+      text: "最後の差分",
     });
-    h.continues[0].resolve(h.ok({ text: "遅れた差分" }));
-    await h.flush();
-    await h.tick();
-    expect(h.turn.snapshot().text).toBe("");
-    expect(h.turn.snapshot().phase).toBe("lost");
     expect(h.continues).toHaveLength(1);
+  });
+
+  it("lets the in-flight continue's drained terminal win over a refused cancel", async () => {
+    const h = harness();
+    await h.begin();
+    await h.tick();
+    h.turn.cancel();
+    h.cancels[0].resolve({
+      status: "refused",
+      reason: "NIR1_LOCAL_HANDLE_NOT_FOUND",
+    });
+    await h.flush();
+    h.continues[0].resolve(
+      h.ok({ text: "完", state: "succeeded", drained: true }),
+    );
+    await h.flush();
+    expect(h.turn.snapshot()).toMatchObject({
+      phase: "succeeded",
+      text: "完",
+      reason: null,
+    });
+  });
+
+  it("ends a refused cancel at once when no continue is in flight", async () => {
+    const h = harness();
+    await h.begin();
+    h.turn.cancel();
+    h.cancels[0].resolve({
+      status: "refused",
+      reason: "NIR1_LOCAL_CALLER_REVOKED",
+    });
+    await h.flush();
+    expect(h.turn.snapshot()).toMatchObject({
+      phase: "lost",
+      reason: "NIR1_LOCAL_CALLER_REVOKED",
+    });
   });
 
   it("drops a cancel answer that returns after the terminal", async () => {
@@ -395,5 +440,108 @@ describe("the local generation state machine (DD-1c)", () => {
     expect(h.turn.snapshot().cancelRequested).toBe(false);
     h.turn.start();
     expect(h.turn.snapshot().canCancel).toBe(true);
+  });
+
+  // Review fix 2: a mutation held by the frozen audit export
+  // (`IPC_MUTATION_CANCELLED`) never reached Main; it is not a failure.
+  it("waits with backoff while continues are held, without counting failures", async () => {
+    const h = harness();
+    await h.begin();
+    await h.tick();
+    h.continues[0].resolve({ status: "error", error: "failed" });
+    await h.flush();
+    for (let index = 1; index <= 6; index += 1) {
+      await h.tick();
+      h.continues[index].resolve({ status: "error", error: "held" });
+      await h.flush();
+    }
+    expect(h.turn.snapshot()).toMatchObject({
+      phase: "running",
+      ipcError: "held",
+    });
+    expect(h.timers.at(-1)?.ms).toBe(NIR1_LOCAL_HELD_MAX_BACKOFF_MS);
+    await h.tick();
+    h.continues[7].resolve({ status: "error", error: "failed" });
+    await h.flush();
+    // Two failures in all: still running.
+    expect(h.turn.snapshot().phase).toBe("running");
+    await h.tick();
+    h.continues[8].resolve(h.ok({ text: "再開" }));
+    await h.flush();
+    expect(h.turn.snapshot()).toMatchObject({
+      phase: "running",
+      text: "再開",
+      ipcError: null,
+    });
+    expect(h.cancels).toHaveLength(0);
+  });
+
+  it("ends a hold that lasts longer than the wall-clock bound", async () => {
+    const h = harness();
+    await h.begin();
+    await h.tick();
+    let index = 0;
+    while (
+      h.clock.ms <=
+      NIR1_LOCAL_MAX_HELD_MS + NIR1_LOCAL_HELD_MAX_BACKOFF_MS
+    ) {
+      h.continues[index].resolve({ status: "error", error: "held" });
+      await h.flush();
+      if (h.turn.snapshot().phase !== "running") break;
+      await h.tick();
+      index += 1;
+    }
+    expect(h.turn.snapshot()).toMatchObject({
+      phase: "lost",
+      ipcError: "held",
+    });
+    expect(h.clock.ms).toBeGreaterThan(NIR1_LOCAL_MAX_HELD_MS);
+    expect(h.clock.ms).toBeLessThanOrEqual(
+      NIR1_LOCAL_MAX_HELD_MS + NIR1_LOCAL_HELD_MAX_BACKOFF_MS,
+    );
+    expect(h.cancels.map(({ handle }) => handle)).toEqual([HANDLE]);
+  });
+
+  it("retries a held cancel by itself", async () => {
+    const h = harness();
+    await h.begin();
+    h.turn.cancel();
+    h.cancels[0].resolve({ status: "error", error: "held" });
+    await h.flush();
+    expect(h.turn.snapshot()).toMatchObject({
+      canCancel: false,
+      ipcError: "held",
+    });
+    await h.tick();
+    expect(h.cancels).toHaveLength(2);
+    h.cancels[1].resolve({ status: "ok" });
+    await h.flush();
+    expect(h.turn.snapshot().phase).toBe("cancelling");
+  });
+
+  it("retries a held start (it never reached Main)", async () => {
+    const h = harness();
+    h.turn.start();
+    h.starts[0].resolve({ status: "error", error: "held" });
+    await h.flush();
+    expect(h.turn.snapshot().phase).toBe("starting");
+    await h.tick();
+    expect(h.starts).toHaveLength(2);
+    h.starts[1].resolve({ status: "started", handle: HANDLE });
+    await h.flush();
+    expect(h.turn.snapshot().phase).toBe("running");
+  });
+
+  it("clears the capture-cancel reason when the stop is sent again", async () => {
+    const h = harness();
+    await h.begin();
+    h.turn.cancel();
+    h.cancels[0].resolve({
+      status: "refused",
+      reason: "NIR1_LOCAL_CANCEL_CAPTURE_FAILED",
+    });
+    await h.flush();
+    h.turn.cancel();
+    expect(h.turn.snapshot().reason).toBeNull();
   });
 });

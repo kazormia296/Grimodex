@@ -599,6 +599,19 @@ describe("closed parsing of the answers", () => {
       ),
     ).toBe("invalid-request");
     expect(classifyNir1LocalIpcError("boom /home/user/secret")).toBe("failed");
+    // Held before Main by the frozen audit export (review fix 2).
+    expect(
+      classifyNir1LocalIpcError(
+        Object.assign(new Error("held"), { code: "IPC_MUTATION_CANCELLED" }),
+      ),
+    ).toBe("held");
+    expect(
+      classifyNir1LocalIpcError(
+        new Error(
+          "IPC_MUTATION_CANCELLED: mutation blocked during frozen AI audit export: nir1_local_generation_continue",
+        ),
+      ),
+    ).toBe("held");
   });
 });
 

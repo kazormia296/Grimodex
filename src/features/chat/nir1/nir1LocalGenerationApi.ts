@@ -23,10 +23,8 @@ import {
 export type Nir1LocalPurpose = "writing" | "review";
 export type Nir1LocalReason = Nir1LocalRefusalReason | "unknown";
 export type Nir1LocalIpcError =
-  | "egress-denied"
-  | "invalid-result"
-  | "invalid-request"
-  | "failed";
+  /** Held before Main by the frozen audit export (`IPC_MUTATION_CANCELLED`). */
+  "held" | "egress-denied" | "invalid-result" | "invalid-request" | "failed";
 
 export type Nir1LocalFailure =
   | { readonly status: "error"; readonly error: Nir1LocalIpcError }
@@ -203,6 +201,12 @@ export function nir1LocalReasonOf(value: unknown): Nir1LocalReason {
 /** Classify a thrown IPC failure without keeping its text. */
 export function classifyNir1LocalIpcError(error: unknown): Nir1LocalIpcError {
   const message = error instanceof Error ? error.message : String(error);
+  if (
+    (error as { code?: unknown } | null)?.code === "IPC_MUTATION_CANCELLED" ||
+    message.includes("IPC_MUTATION_CANCELLED")
+  ) {
+    return "held";
+  }
   if (message.includes("D2A_EGRESS_DENIED")) return "egress-denied";
   if (message.includes("invalid result for command")) return "invalid-result";
   if (
