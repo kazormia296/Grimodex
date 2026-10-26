@@ -147,6 +147,13 @@ test("CI runs Browser, WebGL, and Storybook as independent jobs", async () => {
   assert.equal(browser.name, "Browser (Vitest browser)");
   assert.equal(webgl.name, "WebGL (deterministic SwiftShader)");
   assert.equal(storybook.name, "Storybook (Vitest browser)");
+  // ubuntu-latest が 26.04 に移ると related-scenes の幅の試験（上限 3000 ms）が 4〜13 秒かかって落ちた。
+  // image の移行は試験の時間を測り直して意図して行うので、24.04 に固定する。
+  assert.equal(
+    browser["runs-on"],
+    "ubuntu-24.04",
+    "the Browser job is pinned until its timing tests are re-measured on a newer image",
+  );
 
   assertMeasuredBrowserJob(browser, "browser");
   assertMeasuredBrowserJob(
