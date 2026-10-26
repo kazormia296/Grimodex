@@ -248,9 +248,6 @@ export const GRAPH_EVAL_VARIANTS = Object.freeze(
     }),
   ),
 );
-export const ALL_VARIANT_KEYS = Object.freeze(
-  GRAPH_EVAL_VARIANTS.map((row) => row.key),
-);
 
 /** Dev (synthetic, not frozen) variant keys: `dev:<fixture>/<variant>`. */
 export const DEV_VARIANT_KEY = /^dev:[a-z0-9][a-z0-9.-]*\/[a-z0-9][a-z0-9-]*$/u;

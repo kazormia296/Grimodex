@@ -1,7 +1,7 @@
 // CP-4 S1c-2 runner pure parts. Synthetic records only; no G-case fixture.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { validateGraphCaseSchedule } from "./availability.mjs";
+import { classifyJoin, validateGraphCaseSchedule } from "./availability.mjs";
 import { K62_FREEZE, devVariant } from "./constants.mjs";
 import { SOCKET_SAMPLE_SCHEMA } from "./egress.mjs";
 import { assessMeasurementWindow, validateCp4Receipt } from "./receipt.mjs";
@@ -232,7 +232,7 @@ test("the product join outcome maps to the S1b Graph record", () => {
   );
 });
 
-test("the B seal at the start is the begin's registration answer and the Chronicle snapshot", () => {
+test("P2-4: usable は B の seal だけで決め、Chronicle の停止は irOutcome:index-unavailable で識別する（U から除かない）", () => {
   assert.deepEqual(
     snapshotOf({
       measure: measure(),
@@ -241,22 +241,78 @@ test("the B seal at the start is the begin's registration answer and the Chronic
         reason: "registration-unavailable",
       }),
     }),
-    { usable: false, reason: "registration-unavailable" },
+    {
+      usable: false,
+      reason: "registration-unavailable",
+      chronicleIndexUsable: true,
+    },
   );
+  const chronicle = { ...measure(), initialSnapshot: { indexUsable: false } };
   assert.deepEqual(
-    snapshotOf({
-      measure: { ...measure(), initialSnapshot: { indexUsable: false } },
-      nativeRecord: nativeRecord(),
-    }),
-    { usable: false, reason: "chronicle-index-unusable" },
+    snapshotOf({ measure: chronicle, nativeRecord: nativeRecord() }),
+    { usable: true, reason: null, chronicleIndexUsable: false },
   );
   assert.deepEqual(
     snapshotOf({ measure: measure(), nativeRecord: nativeRecord() }),
-    {
-      usable: true,
-      reason: null,
-    },
+    { usable: true, reason: null, chronicleIndexUsable: true },
   );
+  const row = sampleRow({
+    variantKey: VARIANT.key,
+    arm: "graph",
+    phase: "measured",
+    repeat: 0,
+    d2aMode: "restricted",
+    measure: {
+      ...chronicle,
+      graphOutcome: "graph-unavailable:cancelled",
+      graph: null,
+    },
+    nativeRecord: nativeRecord(),
+    a3: A3,
+  });
+  assert.equal(row.snapshot.usable, true);
+  assert.equal(row.irOutcome, "index-unavailable");
+  assert.equal(row.irCompletion, "ir-ready");
+  // the initial snapshot is a required record of a seeded sample.
+  assert.throws(
+    () =>
+      sampleRow({
+        variantKey: VARIANT.key,
+        arm: "graph",
+        phase: "measured",
+        repeat: 0,
+        d2aMode: "restricted",
+        measure: { ...measure(), initialSnapshot: null },
+        nativeRecord: nativeRecord(),
+        a3: A3,
+      }),
+    /initial snapshot/,
+  );
+});
+
+test("P3-12: graph-ready の再検証は、requalify された Graph の内容が届いたときだけ passed にする（構成で passed にしない）", () => {
+  const missingPayload = graphRecord({
+    measure: { ...measure(), graph: null },
+    arrival: { resolvedAt: 121, status: "available" },
+    native: { source: "worker", busyCause: null },
+  });
+  assert.equal(missingPayload.revalidation, null);
+  assert.throws(
+    () =>
+      classifyJoin({
+        tFetch: 100,
+        tRawReady: 120,
+        tReturn: 125,
+        graph: missingPayload,
+      }),
+    /revalidation/,
+  );
+  const ready = graphRecord({
+    measure: measure(),
+    arrival: { resolvedAt: 121, status: "available" },
+    native: { source: "worker", busyCause: null },
+  });
+  assert.equal(ready.revalidation, "passed");
 });
 
 test("a seeded sample needs its Native record and the timing shim's begin", () => {

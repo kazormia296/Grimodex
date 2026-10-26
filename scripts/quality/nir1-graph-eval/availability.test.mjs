@@ -15,7 +15,6 @@ import {
   validateTraceEvents,
 } from "./availability.mjs";
 import {
-  ALL_VARIANT_KEYS,
   AVAILABILITY_YARDSTICK,
   BOUNDARY_TOLERANCE_MS,
   GRAPH_EVAL_D_MS,
@@ -38,7 +37,7 @@ test("frozen constants are referenced, not chosen", () => {
   assert.equal(WARMUP_RUNS_PER_ARM, 5);
   assert.equal(MEASURED_RUNS_PER_ARM, 30);
   assert.equal(TRACE_MIN_QUERIES, 200);
-  assert.equal(ALL_VARIANT_KEYS.length, 13);
+  assert.equal(GRAPH_EVAL_VARIANTS.length, 13);
 });
 
 test("P-4: in window = joined and arrived by t_raw_ready + D inclusive", () => {

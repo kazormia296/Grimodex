@@ -19,6 +19,7 @@ import {
 import {
   GRAPH_EVAL_D_MS,
   MEASURED_RUNS_PER_ARM,
+  OWNER_REBUILD_MIN_INTERVAL_MS,
   WARMUP_RUNS_PER_ARM,
   exceedsYardstick,
   ratio,
@@ -89,7 +90,7 @@ export function measurementSeamEnv({
  * 後の rebuild の窓が 0 になり、prepare が release ですぐ始まる。製品の普通の場合）
  * を前提にする。
  */
-export const OWNER_REBUILD_MIN_INTERVAL_MS = 1_000;
+export { OWNER_REBUILD_MIN_INTERVAL_MS };
 
 export function quietAtStart({ slot, cacheOccupied, sinceLastSeededMs }) {
   return (
@@ -150,16 +151,27 @@ export function graphRecord({ measure, arrival, native }) {
     arrival?.status === "available" && Number.isFinite(arrival.resolvedAt)
       ? arrival.resolvedAt
       : null;
-  if (outcome === "graph-ready")
+  if (outcome === "graph-ready") {
+    // P3-12: the product joins a Graph result only after the return-time
+    // requalification (`assemble`), so "passed" is inferred from the join
+    // contract; what this checks is that the requalified Graph payload (with
+    // its edge count) reached the renderer. Without it the revalidation is
+    // unknown and classifyJoin stops on the joined row.
+    const payload =
+      measure.graph !== null &&
+      typeof measure.graph === "object" &&
+      Number.isInteger(measure.graph.edgeCount) &&
+      measure.graph.edgeCount >= 0;
     return {
       outcome: "graph-ready",
       reason: null,
       joined: true,
       arrivedAt: arrivedAvailable,
-      revalidation: "passed",
-      edgeCount: measure.graph?.edgeCount ?? 0,
+      revalidation: payload ? "passed" : null,
+      edgeCount: payload ? measure.graph.edgeCount : null,
       ...base,
     };
+  }
   if (outcome === "graph-late")
     return {
       outcome: "graph-late",
@@ -195,19 +207,31 @@ export function a3AtStartOf(a3) {
 }
 
 /**
- * The B seal and the Chronicle Index at the start of one query: the begin's
- * Native answer (`registration-unavailable` is the B seal) and the product's
- * first snapshot.
+ * The B seal at the start of one query (K6/2 rule 1: U is the queries whose
+ * snapshot is usable, i.e. the B seal is current): the begin's Native answer
+ * (`registration-unavailable` is the B seal). The Chronicle Index is not part
+ * of `usable` (P2-4: rule 3 (i) keeps a Chronicle stop in U); it is recorded
+ * as `chronicleIndexUsable` and identifies the stop through `irOutcome`.
  */
 export function snapshotOf({ measure, nativeRecord }) {
+  const chronicleIndexUsable = measure.initialSnapshot?.indexUsable === true;
   if (
     nativeRecord?.begin === "unavailable" &&
     B_UNUSABLE_REASONS.has(nativeRecord.reason)
   )
-    return { usable: false, reason: nativeRecord.reason };
-  if (measure.initialSnapshot?.indexUsable !== true)
-    return { usable: false, reason: "chronicle-index-unusable" };
-  return { usable: true, reason: null };
+    return { usable: false, reason: nativeRecord.reason, chronicleIndexUsable };
+  return { usable: true, reason: null, chronicleIndexUsable };
+}
+
+/**
+ * The query's IR outcome for K6/2 rule 3 (i): `index-unavailable` when the
+ * Chronicle Index was not usable at the start (the product's first snapshot;
+ * `begin.rs` answers the IR unavailable then), otherwise the IR completion.
+ */
+export function irOutcomeOf(measure) {
+  if (measure.initialSnapshot?.indexUsable === false)
+    return "index-unavailable";
+  return measure.completion?.outcome ?? null;
 }
 
 /**
@@ -240,13 +264,22 @@ export function sampleRow({
     tRawReady: measure.timing.tRawReadyMs,
     tReturn: measure.timing.tReturnMs,
     status: measure.status,
-    irOutcome: measure.completion?.outcome ?? null,
+    irOutcome: irOutcomeOf(measure),
+    irCompletion: measure.completion?.outcome ?? null,
     rawSceneIds: measure.rawSceneIds,
     finalSceneIds: measure.finalSceneIds,
   };
   if (!seeded) return row;
   if (!nativeRecord)
     throw new Error("[artifact] a seeded query left no Native begin record");
+  if (
+    measure.initialSnapshot === null ||
+    typeof measure.initialSnapshot !== "object" ||
+    typeof measure.initialSnapshot.indexUsable !== "boolean"
+  )
+    throw new Error(
+      "[artifact] a seeded query lacks the product's initial snapshot (K6/2 Mandatory defenses)",
+    );
   const native = sampleFieldsFromNativeRecord(nativeRecord);
   const arrival = graphArrival(measure.ipc);
   const begin = beginCall(measure.ipc);

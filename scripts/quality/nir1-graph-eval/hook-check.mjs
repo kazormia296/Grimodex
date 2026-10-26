@@ -17,6 +17,7 @@
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
+import { GRAPH_EVAL_D_MS } from "./constants.mjs";
 import { loadDevFixture } from "./dev-fixture.mjs";
 import {
   buildIndex,
@@ -33,7 +34,9 @@ import { distribution } from "./run-sample.mjs";
 import { HARNESS_PAGE, sha256 } from "./session.mjs";
 import { readRowCounts } from "./workspace-db.mjs";
 
-const D_MS = 10.840000000596048;
+// P3-11: D is read from constants.mjs only (the product compares with
+// 10.840000000596048; the 6e-7 ms difference is within BOUNDARY_TOLERANCE_MS).
+const D_MS = GRAPH_EVAL_D_MS;
 const GRAPH_CONTINUE = "related_scenes_graph_continue";
 
 function parseArgs(argv) {
