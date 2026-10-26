@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import yaml from "js-yaml";
 import { validateNir1FinalRequestFixtures } from "./nir1-packing/final-request/contract.mjs";
 import { validateNir1GraphCases } from "./nir1-graph/contract.mjs";
+import { validateNir1ObservationPrep } from "./nir1-graph/observation-prep.mjs";
 
 const DEFAULT_REPO_ROOT = path.resolve(import.meta.dirname, "../..");
 
@@ -894,6 +895,27 @@ export async function buildNir1GraphCaseReport({
 }
 
 /**
+ * NIR-1 CP-4 observation-prep documents (K2/4 addenda, observation-prep
+ * record, (b) traces, K6/4 procedure draft, author declaration): copies of the
+ * contracts and the frozen fixtures, referenced digests, Q >= 200, the editing
+ * density and no approval operation. A draft with S4 placeholders validates
+ * but is reported as not formal-ready. No runtime result is read.
+ */
+export async function buildNir1ObservationPrepReport({
+  repoRoot = DEFAULT_REPO_ROOT,
+} = {}) {
+  const result = await validateNir1ObservationPrep({ repoRoot });
+  return {
+    status: result.status,
+    formalReady: result.formalReady,
+    placeholders: result.placeholders,
+    scope:
+      "Pre-observation documents only (contract copies, frozen-fixture digests, trace density and length, procedure values); no Raw, IR or Graph runtime result.",
+    errors: result.errors,
+  };
+}
+
+/**
  * NIR-1 final-request (DP-H) fixture: shape, freeze record, independent review
  * and sha256 bindings of every fixture version. The state is the evidence
  * version's (`not-placed` until its file is placed, not an error); `versions`
@@ -930,6 +952,7 @@ async function main() {
   const blocked = buildBlockedEvaluationReport(model);
   const nir1Graph = await buildNir1GraphCaseReport();
   const nir1FinalRequest = await buildNir1FinalRequestFixtureReport();
+  const nir1ObservationPrep = await buildNir1ObservationPrepReport();
   const report = {
     version: 1,
     generatedAt: new Date().toISOString(),
@@ -948,13 +971,15 @@ async function main() {
     blocked,
     nir1Graph,
     nir1FinalRequest,
+    nir1ObservationPrep,
   };
   process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
   if (
     validation.errors.length > 0 ||
     fixtureContracts.failed > 0 ||
     nir1Graph.errors.length > 0 ||
-    nir1FinalRequest.errors.length > 0
+    nir1FinalRequest.errors.length > 0 ||
+    nir1ObservationPrep.errors.length > 0
   )
     process.exitCode = 1;
 }
