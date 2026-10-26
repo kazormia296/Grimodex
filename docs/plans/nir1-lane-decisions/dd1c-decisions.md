@@ -163,3 +163,63 @@ phase：R0 定数 false、R1 受理の待ち（送信の後、`_onAccepted` の�
 1. contract：不足で止まるものは無い。任意：`NIR1_LOCAL_REFUSAL_REASONS` は 1 万行超の `ipcContract.ts` から値で import している（tree-shake で配列だけになり、lazy chunk でだけ実測。DR-DD1C-3）。小さな共有 module に移すかは DD-1b の持ち主の判断。
 2. ipcQueue：6 command は caller の timeout を持たないので `mutation` の枠に入る。continue の polling（差分なしで 250 ms ごと）は lifecycle の barrier の間は待たされ、mutation の枠を短く使う。`src/lib/tauri.ts` は起動時の chunk なので DD-1c では変えていない。
 3. Session C-2 に回す文言：`src/features/chat/nir1/nir1LocalGenerationTranslations.ts` の全部（開示の項目 1〜9 と要旨、置き場の導入文、送信先の表示と使えない理由、生成の画面、35 個の reason と unknown、IPC の失敗の分類）。置き場 4（規約・プライバシー通知・ガイド・開発者メッセージの改訂）は PUB-L の PR。
+
+## 独立レビュー（契約・安全性、lifecycle）の修正の追記（2026-10-26）
+
+P1 はなし。P2 の 6 件と P3 の小さな指摘を直し、直さないものはここに記録する。上の行は当時の記録のまま残す。
+
+| ID | 判断・訂正 | 状態 |
+|---|---|---|
+| DR-DD1C-17 | （P2 指摘 1。DR-DD1C-4 の訂正）会話の生成が終端でない間に同じ会話の新しい送信が受理されても、新しい機械を作らない。受理は typed な通知（policy の拒否はその理由、ほかは Native が 2 本目に返すのと同じ `NIR1_LOCAL_SESSION_BUSY`）として、走っている生成の横に出す。走っている生成の表示と取消はそのまま残る。それまでは新しい機械が `latest` を置き換え、`SESSION_BUSY` で終わると古い生成の表示と取消が消えていた（policy の拒否の `latest.delete` も同じ）。その受理の capture は保存されたまま start されない。もう一度生成するには新しく送る（Native の規則と同じ）。終端でない機械を全部持って表示と取消を向ける案は採らない：Native が同じ会話の 2 本目を拒否するので、並ぶのは拒否された 1 本だけで、表示が増えるだけになる | 実装・試験済み |
+| DR-DD1C-18 | （P2 指摘 2）監査の書出しの間に ipcQueue が Main の前で mutation を拒否する `IPC_MUTATION_CANCELLED` は、typed な `held` に分類し、失敗の回数（3 回）に数えない。start・continue・cancel を、それぞれ backoff（250 ms から倍にして 2 s まで）で送り直す。上限は回数でなく壁時計の 60 s で、超えたら `lost` にして、最後に best-effort の cancel を 1 回だけ送る。start の送り直しは Main に届いていない呼出しのやり直しなので、二重 start には当たらない（DR-DD1C-6 の「start は 1 回」は Main に届いた start の数）。ports に `now()` を足した | 実装・試験済み |
+| DR-DD1C-19 | （P2 指摘 3）会話の一覧と作成の `mounted` を effect の setup で true に戻す（StrictMode の二重 effect で結果が捨てられ、`creating` が固まっていた） | 実装・試験済み |
+| DR-DD1C-20 | （P2 指摘 6）continue が in flight の間に cancel が refused なら、終端を決めずにその continue の結果を待つ。drained ならその終端、そうでなければ差分を足してから `lost` にする。`NIR1_LOCAL_CANCEL_CAPTURE_FAILED` の理由は、取消を送り直す時と終端で消す。指示の「後の ok の continue で消す」は採らない：次の continue は 250 ms 後なので、取消をもう一度押す必要があるという理由が見えなくなる。`ipcError` は今までどおり ok の continue で消す。この修正の後、continue が in flight の間に終端になる経路は無いので、変異 M7（遅れた continue を適用する）は等価になった（`onContinue` の終端の確認は防御として残す） | 実装・試験済み |
+| DR-DD1C-21 | （P3）Native の `decide` の写しに、`JSON.parse` は読むが serde_json は拒否するはずの値を足し、`not-json` とした。対象は、f64 の範囲の外の数（`1e400`）、escape した単独の surrogate（値と key の両方）、深さ 128 の入れ子（serde_json の recursion limit 128 を「128 段目で失敗」と読んだ）。Rust を実行して確かめてはいないので、TS の試験だけに足し、Native の判定ベクトルには足していない。境界の読み違いがあっても、UI が Native より厳しく disable する向きにだけずれる | 実装・試験済み（Rust 未確認） |
+| DR-DD1C-22 | （P3）section を sr-only の題名に `aria-labelledby` で結ぶ。取消を押したら、focus を状態の行（`tabIndex -1`）へ移す。開示の区切りの文字は表示の言語のものにする。作成日時は i18n の言語の書式で出す。実 Chromium の試験は、置き場 3 で「すべて表示」が無いとき・置き場 1 で有るときに落ちる形に直した | 実装・試験済み |
+| DR-DD1C-23 | （P2 指摘 5）開示の置き場 3 に purpose（Writing／Review）を常設で示す（K5/3:438）。指摘 4 として、項目 4 に K5/3:448 の 2 文、項目 9 に「検証の結果の表示」（:452）を日英で足した。文言は案のまま | 実装・試験済み |
+
+### 直さず記録する（コードは変えない）
+
+| ID | 内容 | 次の lane／入口条件 |
+|---|---|---|
+| DR-DD1C-24 | **chat の capture-only の turn と local 生成の lifecycle が結ばれていない**（lifecycle P2-3。推測を含む）。(1) capture-only の間、`chatTurnStoreActions.ts:2693` は `isStreaming` を true のまま残し、control も解放しない。そのため local 生成が終端しても、composer は送信中のまま固まりうる。(2) chat の停止は、`chatTurnLifecycle.ts:212-240` で capture の取消を別に呼び、local 生成は止めない。これは K4/3:445-451 の「取消は 1 本」に実質で反する。(3) `ChatPanel.nir1Local.test.tsx` は `sendMessage` を mock しているので、この結線の欠けを捉えられない。本 lane は両 file を触らない（DSN §6.2）。下の lifecycle matrix の列を足し、次の lane の入口条件にする | **DD-1c-2**：chat の停止・capture-only の turn の解放を local 生成に結ぶ（port が要る）。DD-1d の入口条件 |
+| DR-DD1C-25 | （DR-DD1C-11 の補足）`ChatPanel` の `selectSession(localId)` で local の会話を開く。own-data-read が開いているので、その会話の `chat_messages` の行は ChatStore と通常のメッセージ一覧にも載る。そこには K5/3 の「行の段」の外の行（失効した行など）も出うる。read の panel が出すのは Native が照合した行だけ | DD-1c-2／DD-1d の入口条件（一覧の行の範囲を read の範囲にそろえるか、local の会話では一覧を隠す） |
+| DR-DD1C-26 | 置き場 5 は状態の表示の info の popover の中にある。K5/3 の「restricted の利用者が常に見られる表示」に当たるかは、Session C-2 で決める | Session C-2 |
+| DR-DD1C-27 | reason `NIR1_LOCAL_PREPARATION_FAILED` の文「送信はしていません」の根拠は、DR-DD1B-12（準備の失敗は送信 0）。C-2 で文を確かめる | Session C-2 |
+| DR-DD1C-28 | lazy の panel の chunk を読み込む前、または読込みに失敗した後は、受け口が null になる。その間に受理された送信は、何も示さずに start されない（`Nir1LocalGenerationSlot.tsx`。定数 false の間は無害） | DD-1c-2 の入口（受理を chunk の読込みまで保留するか、読込みの失敗を示す） |
+| DR-DD1C-29 | polling の壁時計の上限は、`held` の待ち（DR-DD1C-18）にだけ入れた。通常の running の polling には上限を置かない（Native の transport の上限と K1b で必ず終端する） | 記録 |
+| DR-DD1C-30 | Tailwind の任意値の class（`max-w-[calc(100vw-1.5rem)]`、`z-[95]`、`max-h-[70vh]` など）は、定数に関係なく起動時の CSS に入る。実測は起動時 CSS raw 220,859／上限 240,000（base は 220,783） | 記録 |
+| DR-DD1C-31 | M4a（終端で handle を捨てない、単独）は等価（lifecycle レビューが確認した）。handle を読むのは `poll`、`cancel`、`loseWithStop` だけで、どれも `terminal()` で止まるか `finish` の前に読む。実装は終端で handle を捨てている。内部の値を出さずに M4a を落とす試験は足していない（turn が `latest` に残るので、変異の下では handle が heap に残るという衛生上の差はある） | 記録 |
+
+### lifecycle matrix に足す列（DR-DD1C-24。現状の記録）
+
+| phase ＼ chat store（capture-only の turn） | `isStreaming` と control | chat の停止 |
+|---|---|---|
+| R1 受理の待ち | 既存の turn が持つ | capture の取消（既存）。local 生成はまだ無い |
+| R2 start の応答待ち | `isStreaming` は true のまま、control は解放されない（推測） | capture の取消を別に呼ぶ。local 生成は止めない（Native の start の記録は残る） |
+| R3／R4 polling | 同上 | 同上（local 生成は止まらない。取消は panel の 1 本だけ） |
+| R5 終端 | local 生成の終端では解放されない（推測。composer が送信中のまま固まりうる） | — |
+
+### レビューの修正の後の検証
+
+- `pnpm exec tsc --noEmit`：0 件。
+- 変更 file の eslint と prettier：0 件。
+- `npx vitest run src`：1,587 file、15,763 件 pass（skip 38）。その後に試験 1 件（終端の後の同じ受理）を足し、その file を回して 17 件 pass。
+- `pnpm test:browser`：`Nir1LocalDisclosure`、`ProfileEgressStatusIndicator`、`ChatPanel.virtualization`、`layoutInvariants` の 4 file、38 件 pass。
+- `pnpm validate:architecture`：23 件 pass、ratchet 不変。
+- `impact-map.test.mjs`：37 件 pass。`eval:impact`：Fallback no。`eval:fixtures`：32 件 pass。
+- 定数 false の `pnpm build` の後の `pnpm perf:budget`：起動時 JS raw 4,250,973（base と同じ）、gzip 1,343,232、150 chunk。起動時の chunk は DD-1c の chunk・command・文言を参照しない。lazy の chunk は開示 28,680、panel 21,279、ChatPanel 181,630、SettingsDialog 203,746。worktree の `dist/` は、この定数 false の build に置き換えた。
+
+### 変異の再実行（commit の後、原本の copy から戻す）
+
+| 変異 | 結果 |
+|---|---|
+| 前回の 25 件 | 23 件が落ちた。M4a は等価（DR-DD1C-31）、M7 は修正 6 の後は等価（DR-DD1C-20）。M10 は修正 1 で隠れたので、終端の後の同じ受理の試験を足して落ちるようにした。M25 は store の書き換えに合わせて変異の文を直して落ちた |
+| N1 `latest` の置換を戻す | 落ちた（store、panel） |
+| N2a 分類を failed に戻す、N2b held を failed と同じに数える、N2c 壁時計の上限を外す、N2d held の cancel を送り直さない、N2e held の start を送り直さない | すべて落ちた |
+| N3 setup の `mounted.current = true` を外す | 落ちた |
+| N4 項目 4 の文を落とす、N4b 項目 9 の検証の結果の表示を落とす | 落ちた |
+| N5 置き場 3 の purpose を外す | 落ちた |
+| N6 in flight の continue を待たない | 落ちた |
+| N7 serde_json の拒否の写しを外す | 落ちた |
+| N8 取消の後の focus の移動を外す | 落ちた |
