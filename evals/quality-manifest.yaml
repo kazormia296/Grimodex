@@ -1686,6 +1686,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/procedure-file.mjs
       - scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-1.json
       - scripts/quality/nir1-graph-eval/seed-pin.mjs
+      - scripts/quality/nir1-graph-eval/seed-pin-setup.mjs
       - scripts/quality/nir1-graph-eval/keep-test.mjs
       - scripts/quality/nir1-graph-eval/k64-record.mjs
       - scripts/quality/nir1-graph-eval/q4.mjs
@@ -1754,6 +1755,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/session.test.mjs
       - scripts/quality/nir1-graph-eval/procedure-file.test.mjs
       - scripts/quality/nir1-graph-eval/seed-pin.test.mjs
+      - scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs
       - scripts/quality/nir1-graph-eval/keep-test.test.mjs
       - scripts/quality/nir1-graph-eval/k64-record.test.mjs
       - scripts/quality/nir1-graph-eval/k64-runner.test.mjs

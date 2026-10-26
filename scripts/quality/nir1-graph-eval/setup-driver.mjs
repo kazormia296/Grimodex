@@ -43,6 +43,12 @@ import { ROOT, bundleObserver, PRODUCT_MAIN } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
 import { readIndexMetadata, readWorkspaceRows } from "./workspace-db.mjs";
+import {
+  SCENE_SCOPE_BINDING_V1_COLUMNS,
+  assertSeedPinSetup,
+  fixturePinsRuntime,
+  runSeedPinStep,
+} from "./seed-pin-setup.mjs";
 import { hostSnapshot } from "./window.mjs";
 
 export const SETUP_RECEIPT_SCHEMA = "nir1-cp4-dev-setup/1";
@@ -97,7 +103,90 @@ async function selectRows(page, sql, params = []) {
     .rows;
 }
 
-async function author({ page, workspacePath, loaded, ids, phase }) {
+/**
+ * SP/1 (graph-case-seed-pin-setup): the seed pin step's read and write on
+ * the harness page. The write is the product renderer API `upsertScenePin`
+ * (the one the fixture pins above use); the state is read back with SELECTs
+ * only (the query Scene's tree node, its pins in the product's seed order,
+ * every pin of the workspace and the Scene Scope binding's v1 columns).
+ */
+export function seedPinPageDeps({ page, projectId, querySceneId }) {
+  return {
+    readState: async () => {
+      const node =
+        (
+          await selectRows(
+            page,
+            "SELECT project_id AS projectId, node_type AS nodeType, archived_at AS archivedAt, version, updated_at AS updatedAt FROM tree_nodes WHERE id = ?",
+            [querySceneId],
+          )
+        )[0] ?? null;
+      const queryScenePins = (
+        await selectRows(
+          page,
+          `SELECT p.entry_id AS entryId, p.created_at AS createdAt,
+                  CASE WHEN c.id IS NULL THEN 0 ELSE 1 END AS inProject
+             FROM scene_codex_pins p
+             LEFT JOIN codex_entries c ON c.id = p.entry_id AND c.project_id = ?
+            WHERE p.scene_id = ?
+            ORDER BY p.created_at, p.entry_id`,
+          [projectId, querySceneId],
+        )
+      ).map((row) => ({
+        entryId: String(row.entryId),
+        createdAt: row.createdAt,
+        entryInProject: Number(row.inProject) === 1,
+      }));
+      const workspacePins = (
+        await selectRows(
+          page,
+          "SELECT scene_id AS sceneId, entry_id AS entryId FROM scene_codex_pins ORDER BY scene_id, entry_id",
+        )
+      ).map((row) => ({
+        sceneId: String(row.sceneId),
+        entryId: String(row.entryId),
+      }));
+      const binding =
+        (
+          await selectRows(
+            page,
+            `SELECT ${SCENE_SCOPE_BINDING_V1_COLUMNS.join(", ")} FROM narrative_scene_scope_bindings WHERE project_id = ? AND scene_id = ?`,
+            [projectId, querySceneId],
+          )
+        )[0] ?? null;
+      return {
+        queryScene: {
+          live:
+            node !== null &&
+            node.projectId === projectId &&
+            node.nodeType === "scene" &&
+            node.archivedAt === null,
+          version: node?.version ?? null,
+          updatedAt: node?.updatedAt ?? null,
+        },
+        queryScenePins,
+        workspacePins,
+        sceneScopeBinding: binding === null ? null : { ...binding },
+      };
+    },
+    upsertScenePin: (input) =>
+      evaluateOk(
+        page,
+        "seed pin",
+        (value) => window.cp4Harness.api.upsertScenePin(value),
+        input,
+      ),
+  };
+}
+
+async function author({
+  page,
+  workspacePath,
+  loaded,
+  ids,
+  phase,
+  seedPin = null,
+}) {
   const fixture = loaded.fixture;
   const projectId = ids.projectId;
   await evaluateOk(
@@ -360,6 +449,22 @@ async function author({ page, workspacePath, loaded, ids, phase }) {
     });
   }
   phase("pins", { pins: ids.pins });
+  // SP/1: the seed pin step, outside setupOrder, right after the pins. Only a
+  // frozen G-case setup passes a plan row (wired from S4); the dev fixture's
+  // seed pin stays in the K6/4 runner's prep (DR-CP4-G-5). The placement and
+  // the record are checked in main (assertSeedPinSetup).
+  const seedPinRecord = seedPin
+    ? await runSeedPinStep({
+        plan: seedPin.plan,
+        ids,
+        deps: seedPinPageDeps({
+          page,
+          projectId,
+          querySceneId: ids.scenes[seedPin.plan.querySceneId],
+        }),
+        phase,
+      })
+    : null;
 
   for (const revision of fixture.typedRevisions) {
     const workspaceBinding = await invokeOk(
@@ -444,7 +549,7 @@ async function author({ page, workspacePath, loaded, ids, phase }) {
   }
   phase("typed-revisions", { typedRevisions: ids.typedRevisions });
 
-  return { scopes, policy };
+  return { scopes, policy, seedPin: seedPinRecord };
 }
 
 async function seal({ page, workspacePath, ids, phase, userData }) {
@@ -608,6 +713,8 @@ async function main() {
         loaded,
         ids,
         phase,
+        // SP/1: a dev fixture runs no seed pin step here (DR-CP4-G-5).
+        seedPin: null,
       });
     } finally {
       receipt.sessions.push(await authorSession.stop());
@@ -684,6 +791,14 @@ async function main() {
       ),
     };
     receipt.logicalToRuntime = ids;
+    // SP/1: when the step ran, its place among the phases and its record
+    // (SP-N1〜N6, N8, N9, N14, SP-P1, SP-P2); `[precheck]` otherwise.
+    if (receipt.author?.seedPin)
+      receipt.seedPin = assertSeedPinSetup({
+        phases: receipt.phases.map((row) => row.name),
+        record: receipt.author.seedPin,
+        fixturePins: fixturePinsRuntime(loaded.fixture, ids),
+      });
     // The precondition evidence in the shape outcome.mjs reads (dev variants
     // declare no precondition; recorded for the formal setups to come).
     const sealPhase = receipt.phases.find((row) => row.name === "b-seal");
