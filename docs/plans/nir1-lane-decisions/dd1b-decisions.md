@@ -109,3 +109,46 @@ DD-1a の matrix（`dd1a-decisions.md` の P2〜P8）は変えない。DD-1b が
 
 - 実 Electron での seam の起動（DD-1d）、Windows／macOS、実 local server／model（U-1）。
 - `BrowserWindow.fromWebContents` と `win.webContents === sender` の関係を実 Electron で確かめていない（製品は webview／BrowserView を使わない見込み。推測）。
+
+## 実装後の追記（2026-10-26。上の行は実装前の記録のまま残し、変えた点と分かったことはここに足す）
+
+| ID | 判断・訂正・観察 | 状態 |
+|---|---|---|
+| DR-DD1B-9 | （DR-DD1B-2 の補足）Native の応答の exact key の外れは `invalid result`（要求の外れは `invalid args`）で区別する。continue の `reason` は Native の閉じた code か終端の閉じた語（`^[a-z][a-z0-9-]{0,63}$` か `^NIR1_[A-Z0-9_]{1,80}$`）、read の行の `attemptStatus` と `unavailable` も同じ形だけを通す。`NIR1_LOCAL_REFUSAL_REASONS` は `nir1_local_entry.rs` の `Nir1LocalRefusal::code` の一覧と試験で突き合わせる（Native に reason を足すと試験が落ちる） | 実装・試験済み |
+| DR-DD1B-10 | （DR-DD1B-6 の補足）Main の handle の束縛は、cancel が `NIR1_LOCAL_CANCEL_CAPTURE_FAILED` を返した handle を、drained の continue の後も残す（Native の DR-DD1A-15 と同じ。取消の再実行を Main が拒否しないため）。cancel が成功すれば通常どおり drained で外す | 実装・試験済み |
+| DR-DD1B-11 | `electron/main/rendererIsolation.static.test.ts`（DA-2 の静的試験。NC-1／Y-1 の禁止 file の一覧〔`rendererContainment*`、probe、`windows.ts`、`index.ts`〕には当たらない）の「`mainOpenPrePublicationGate` を呼ぶのは seam だけ」の一覧に、この seam の 3 行（呼出し、型、typeof の確認）を足し、typeof の確認の正規表現が `return false;` も受けるようにした。gate を開ける箇所を増やすときに意図して一覧を直す試験なので、この変更はその手順どおり。試験名は「3 つの seam」に改めた | 実装済み（開示） |
+| DR-DD1B-12 | （観察。DD-1c／DD-1d への申し送り）pipeline spec で、`seed_sample_workspace` の workspace からは送信まで届かないことが分かった。(1) `aiPolicy` が `{"preset":"full"}`（toggles なし）だと Native の `check_before_attempt` が `NIR1_LOCAL_POLICY_UNREADABLE`（capture の後なので押し直せない。K5/3 の「読めない値は不許可」のとおり）。renderer の既定 `DEFAULT_AI_POLICY` の JSON なら通る。(2) D-final は承認済みの typed Revision（accepted IR）を要し（`NIR1_NATIVE_PREPARED_REQUIRED_CONTEXT_MISSING`）、Revision の prepare は C2-ZC の cutover の marker を要する（`NIR1_ENTITY_RELATION_CURRENT_EPOCH_UNAVAILABLE`）。marker は Main の freshness scheduler の wake（liveness の heartbeat）で付き、router だけの試験では付かない。どちらも start は handle を返した後の starter thread での失敗（`NIR1_LOCAL_PREPARATION_FAILED`、送信 0、押し直せない）。DD-1d の journey は、通常の起動（scheduler あり）で cutover と Revision の承認を済ませてから start する必要がある（推測：`nir1-scene-scope-projection-product-journey.mjs` と同じ準備）。DD-1c は policy を読めない project で開始の操作を hide／disable する（K5/3:427） | 記録 |
+| DR-DD1B-13 | （逸脱）TASK の「renderer の関数を実 router・gate・Native に通す spec」は、renderer の汎用の `invoke`（`src/lib/tauri.ts`）を `window.grimodex` の shim（preload と同じ形）で Main の handler につないで通した。この route 専用の renderer の wrapper は DD-1c の範囲で、まだ無い。成功の送信（recorder への 1 回の到達）は、この spec では DR-DD1B-12 の理由で通していない（Native の E10 が同じ Native の経路を固定している） | 記録 |
+| DR-DD1B-14 | 診断のため、`nir1_local_entry.rs` に一時的な `eprintln!` を入れて addon を build し、準備失敗の理由を確かめた。commit せず、原本に戻して build し直し、原本の addon で全 pipeline spec を回した（`.node` は ignore 対象で commit されない） | 記録 |
+
+### 試験と変異
+
+追加・変更した試験：`electron/shared/nir1LocalGenerationIpcContract.test.ts`（14 件。6 command の形と上限、sidecar だけからの key の判定、Native の応答の検査、reason の一覧と Rust の突き合わせ）、`electron/main/nir1LocalGeneration.test.ts`（21 件。seam の parse と開始、Main の gate の順、packaged の不活性、unrestricted の拒否、key の判定〔endpoint ごと、`default` と旧 account、判定の失敗、endpoint 不明〕、sender・window・caller の確認、handle の束縛と上限、destroyed／closed／caller の交代／status の変化での取消、完了時の照合の拒否での停止）、`electron/main/nir1LocalGeneration.pipeline.spec.ts`（3 件。実 addon）、`d2aRouteClasses.test.ts`（台帳が 6 command）、`ipcContract.test.ts`（command の一覧、R-2 の Main 専用の名前）、`rendererIsolation.static.test.ts`（DR-DD1B-11）。
+
+| 変異（commit しない。原本の copy から戻す） | 落ちた試験 |
+|---|---|
+| B1 Main の gate を常に開く | 通常の起動で 6 command を拒否、packaged で閉、開放の失敗で閉 |
+| B2 seam の parse から packaged の判定を外す | seam の launch の条件 |
+| B3 seam の開始から packaged の判定を外す | Native の entry を packaged では開けない |
+| B4 restricted-only の台帳を空にする | unrestricted の拒否、seam での通過、台帳の試験 |
+| B5 key の判定で `hasApiKey` を見ない | Main の verdict、endpoint ごとの判定、判定の失敗 |
+| B6 window 自身の webContents の確認を外す | sender・window・caller の確認 |
+| B7 handle の束縛の確認を外す | 起動 sender への束縛、束縛の外し方、destroyed |
+| B8 sender の destroyed で取消を呼ばない | 単体の destroyed、pipeline の destroyed |
+| B9 caller の交代で取消を呼ばない | caller の交代と status の変化 |
+| B10 完了時の照合の拒否で停止しない | DR-DD1B-7 の試験 |
+| B11 Main の gate を identity の発行の前から外す | 通常の起動で Native（caller の登録を含む）に届かない |
+| B12 read の応答の検査を外す | read の行の検査 |
+| B13 read の limit の上限を 65 にする | read の範囲 |
+| B14 start の sidecar を renderer の `mainVerdict` で代える | 通る（等価の変異：exact key の検査が `mainVerdict` を先に拒否する。その拒否は契約の試験が固定） |
+| B15 Main の確認で identity の発行を見ない | 最初は通った（router では D2a の照合が先に拒否する）。route を直接呼ぶ試験を足して落ちるようにした |
+
+実行した検証：`npx tsc --noEmit -p electron/tsconfig.json`（0 件）、`vitest --config vitest.electron.config.ts`（全 98 file、2299 件。B15 の試験を足す前）と、足した後の該当 3 file（104 件）、`vitest --config vitest.electron-native.config.ts`（既存の d2a*／d2b*／bodyDeclaration の pipeline を含む 9 file、51 件。原本の addon で）、`pnpm validate:architecture`、`node --test scripts/quality/impact-map.test.mjs`（37 件）、`node scripts/quality/impact-map.mjs --base e0eecca7`（Fallback: no）、`pnpm napi:build:release`（heavy.sh 経由）。
+
+### 確かめられなかったこと（実装後）
+
+- 実 Electron での seam の起動、`BrowserWindow.fromWebContents` と `win.webContents === sender` の関係、window の `closed` と webContents の `destroyed` の順（DD-1d）。renderer の crash と再読込は取消に結んでいない（DR-DD1B-6）。
+- router を通した成功の送信と recorder への 1 回の到達（DR-DD1B-12。Native の E10 は DD-1a で固定済み）。sender の destroyed が transport を止めることは、Main が `mainNir1LocalGenerationCancelSender` を呼び Native の handle が消えるところまで確かめ、socket が閉じることは DD-1a の E9 に依る。
+- Windows／macOS、packaged の build での seam の不活性の実機確認（CP-2b の packaged smoke で確かめられる見込み。推測）。
+- `electron/shared/ipcContract.ts:7209`（`callerIdentityWire`）に master の既存の eslint の指摘（`preserve-caught-error`）が 1 件ある。CI の `pnpm lint` は `src` と `electron/preload` だけを見るので対象外。この lane では触れていない。
+- 高リスクの判断（seam の結線、handle の束縛、key の判定の置き場）について read-only の advisor の意見は取れていない（この builder に手段がない）。lifecycle とセキュリティの 2 名のレビューと Fable の受入れは integrator に委ねる。Quick／Full は走らせていない。
