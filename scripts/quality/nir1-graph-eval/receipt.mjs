@@ -33,7 +33,7 @@ import {
   variantByKey,
 } from "./constants.mjs";
 import { isCollectedFacts } from "./admission-facts.mjs";
-import { assessCandidateRegime } from "./followup.mjs";
+import { F6_FORMAL_BASIS, assessCandidateRegime } from "./followup.mjs";
 import {
   PROCEDURE_VERSION,
   isLoadedProcedure,
@@ -799,6 +799,20 @@ export function validateCp4Receipt(receipt, bound = {}) {
           "[precheck] candidate.ratification5 is test-only evidence (test-support.mjs); a formal receipt needs collectRatification5Evidence (E-1)",
         );
       k64SettingsErrors(errors, receipt?.settings?.k64, bound);
+      // DR-CP4-F-6: a formal receipt carries only F6 judgements matched on
+      // the materials' Revisions; the Scene-level match is preview only.
+      const sceneLevel = [
+        ...(Array.isArray(receipt?.samples) ? receipt.samples : []),
+        ...(Array.isArray(receipt?.requeries) ? receipt.requeries : []),
+      ].filter(
+        (row) =>
+          row?.followUp?.child &&
+          row.followUp.child.contributionBasis !== F6_FORMAL_BASIS,
+      ).length;
+      if (sceneLevel > 0)
+        errors.push(
+          `[precheck] DR-CP4-F-6: ${sceneLevel} follow-up(s) matched F6 on another unit than the materials' Revisions (${F6_FORMAL_BASIS}); the Scene-level match is preview only and a formal receipt waits for the Native record of the Graph result's materials`,
+        );
     }
   }
   for (const language of ["ja", "en"]) {

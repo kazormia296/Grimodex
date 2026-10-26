@@ -207,6 +207,9 @@ export function followUpRecord({ parent = {}, child = {}, ...rest } = {}) {
             reason: null,
             edgeCount: 2,
             expectedContribution: true,
+            // A synthetic formal record: matched on the materials' Revisions
+            // (DR-CP4-F-6 (b)); the producer's Scene-level match is preview only.
+            contributionBasis: "material-revision",
             requalification: "passed",
             completion: "completed",
             publishCount: 1,

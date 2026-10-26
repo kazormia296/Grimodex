@@ -896,6 +896,32 @@ test("D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run
   );
 });
 
+test("DR-CP4-F-6: Scene の単位で照合した F6 の判定（予告専用）は正式の receipt に入らない", () => {
+  // 合成の正式の記録は、材料の Revision で照合した形（(b)）を名乗る。
+  assert.deepEqual(otherErrors(receipt()), []);
+  const variant = variantByKey("G-03/base");
+  const withBasis = (basis) =>
+    receipt({
+      samples: k64Rows(variant).map((row) =>
+        row.followUp?.child
+          ? {
+              ...row,
+              followUp: {
+                ...row.followUp,
+                child: { ...row.followUp.child, contributionBasis: basis },
+              },
+            }
+          : row,
+      ),
+    });
+  for (const basis of ["scene-level-preview", undefined, "other"])
+    assert.match(
+      otherErrors(withBasis(basis)).join(" | "),
+      /\[precheck\] DR-CP4-F-6/u,
+      String(basis),
+    );
+});
+
 test("S1f（R5、K6/4-N16）: 正式の Graph の receipt は hook の消費者の runner のもの。direct-fetch の dev の runner は予告だけで集計に入らない", () => {
   assert.deepEqual(otherErrors(receipt()), []);
   const { runnerKind: _drop, ...noRunner } = receipt();

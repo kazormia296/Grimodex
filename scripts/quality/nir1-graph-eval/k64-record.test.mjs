@@ -63,6 +63,8 @@ test("R7: hook の消費者の観測から、分類器が F1〜F7 を判定で�
   assert.equal(child.reactCommitAt, 146);
   assert.equal(child.publishCount, 1);
   assert.equal(child.expectedContribution, true);
+  // DR-CP4-F-6: Scene の単位の照合は予告専用と記録に書く。
+  assert.equal(child.contributionBasis, "scene-level-preview");
   assert.equal(child.chronicleIndexUsable, true);
   assert.deepEqual(row.followUp.nativeBegins, ["pending", "cached"]);
   assert.deepEqual(row.followUp.counters, {

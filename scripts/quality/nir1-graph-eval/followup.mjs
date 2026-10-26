@@ -50,6 +50,15 @@ import {
 export const FOLLOW_UP_CONTEXTS = Object.freeze(["steady", "trace"]);
 /** R5: the only issuer whose queries K6/4 judges (N16). */
 export const PRODUCT_HOOK = "product-hook";
+/**
+ * DR-CP4-F-6 (integrator, 2026-10-27): the unit F6's 「事前登録した期待寄与の
+ * 材料から寄与がある」 was matched on. A formal receipt carries only F6
+ * judgements matched on the materials' Revisions (option (b): the evaluation
+ * Native records the Graph result's material Revisions; not built yet, so a
+ * formal receipt stops). The Scene-level approximation is preview only.
+ */
+export const F6_FORMAL_BASIS = "material-revision";
+export const F6_PREVIEW_BASIS = "scene-level-preview";
 
 const NOTICE_KINDS = new Set(["graph-ready", "index-ready"]);
 const COUNTER_KEYS = Object.freeze(["begins", "cacheHits", "lateCached"]);

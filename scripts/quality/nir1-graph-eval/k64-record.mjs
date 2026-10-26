@@ -31,7 +31,7 @@ import {
   K64_W_F_MS,
   OWNER_REBUILD_MIN_INTERVAL_MS,
 } from "./constants.mjs";
-import { PRODUCT_HOOK } from "./followup.mjs";
+import { F6_PREVIEW_BASIS, PRODUCT_HOOK } from "./followup.mjs";
 import { finite } from "./join.mjs";
 import { isNativeNs } from "./native-sample.mjs";
 import { BEGIN, GRAPH_CONTINUE, sampleRow } from "./run-sample.mjs";
@@ -430,6 +430,8 @@ function childRecordOf(view, child, records, aligned) {
         result?.graph,
         view.expectedContribution,
       ),
+      // DR-CP4-F-6: the Scene-level match is preview only.
+      contributionBasis: F6_PREVIEW_BASIS,
       requalification: requalificationOf(result),
       completion: result?.status ?? "not-returned",
       publishCount: publishCountOf(view, child),
