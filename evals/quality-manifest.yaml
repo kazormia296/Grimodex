@@ -1646,6 +1646,9 @@ requirements:
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mechanics-fixture.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
       - electron/scripts/verify-release-native.mjs
+      - electron/native/grimodex-node/src/nir1_graph_eval/mod.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_eval.rs
+      - scripts/quality/nir1-graph-eval/native-architecture.mjs
       - scripts/quality/nir1-packing/runner.mjs
       - evals/nir1-graph/manifest.v1.json
       - scripts/quality/nir1-graph/contract.mjs
@@ -1691,6 +1694,8 @@ requirements:
       - src/features/chat/chatApi.createSessionStatement.test.ts
       - electron/native/grimodex-node/src/nir1_final_request_eval/tests.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/tests.rs
+      - electron/native/grimodex-node/src/nir1_graph_eval/tests.rs
+      - scripts/quality/nir1-graph-eval/native-architecture.test.mjs
       - scripts/quality/nir1-graph/contract.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
@@ -1797,6 +1802,9 @@ requirements:
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/mechanics-fixture.json
       - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_packing/final_request_eval.rs
       - electron/scripts/verify-release-native.mjs
+      - electron/native/grimodex-node/src/nir1_graph_eval/mod.rs
+      - src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_eval.rs
+      - scripts/quality/nir1-graph-eval/native-architecture.mjs
       - scripts/quality/nir1-packing/contract.mjs
       - scripts/quality/nir1-packing/runner.mjs
       - scripts/quality/nir1-packing/scorer.mjs
@@ -1852,6 +1860,8 @@ requirements:
       - src/features/chat/chatApi.createSessionStatement.test.ts
       - electron/native/grimodex-node/src/nir1_final_request_eval/tests.rs
       - electron/native/grimodex-node/src/nir1_final_request_eval/harness/tests.rs
+      - electron/native/grimodex-node/src/nir1_graph_eval/tests.rs
+      - scripts/quality/nir1-graph-eval/native-architecture.test.mjs
       - src/features/ai-context/nir1Packing.test.ts
       - scripts/quality/impact-map.test.mjs
       - scripts/quality/certify-gate-b2.test.mjs
