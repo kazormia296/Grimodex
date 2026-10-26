@@ -535,10 +535,14 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         // CP-4 S1c-1: the Electron launch side (pure parts only).
         "scripts/quality/nir1-graph-eval/native-sample.test.mjs",
         "scripts/quality/nir1-graph-eval/egress.test.mjs",
+        "scripts/quality/nir1-graph-eval/renderer-build.test.mjs",
+        "scripts/quality/nir1-graph-eval/observer-core.test.mjs",
+        "scripts/quality/nir1-graph-eval/launcher.test.mjs",
         // CP-4 S1c-2: setup driver and runner (pure parts only).
         "scripts/quality/nir1-graph-eval/run-sample.test.mjs",
         "scripts/quality/nir1-graph-eval/window.test.mjs",
         "scripts/quality/nir1-graph-eval/dev-fixture.test.mjs",
+        "scripts/quality/nir1-graph-eval/session.test.mjs",
         // CP-4 S1f: the K6/4 procedure file and the R7 record producer.
         "scripts/quality/nir1-graph-eval/procedure-file.test.mjs",
         "scripts/quality/nir1-graph-eval/k64-record.test.mjs",
@@ -551,6 +555,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "--test",
         // CP-4 S1a: the evaluation-only Graph arm of the Native.
         "scripts/quality/nir1-graph-eval/native-architecture.test.mjs",
+        "scripts/quality/nir1-graph-eval/eval-native-build.test.mjs",
       ],
       [
         "cargo",

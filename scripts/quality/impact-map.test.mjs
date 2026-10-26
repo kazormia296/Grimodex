@@ -1773,7 +1773,10 @@ test("CP-4 S1c-2 setup driver and runner assets are registered, selected and exe
     "scripts/quality/nir1-graph-eval/dev-fixture.mjs",
     "scripts/quality/nir1-graph-eval/workspace-db.mjs",
     "scripts/quality/nir1-graph-eval/window.mjs",
+    "scripts/quality/nir1-graph-eval/session.mjs",
     "scripts/quality/nir1-graph-eval/run-sample.mjs",
+    "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+    "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
   ];
   const tests = [
     "scripts/quality/nir1-graph-eval/run-sample.test.mjs",
@@ -1812,10 +1815,12 @@ test("CP-4 S1a evaluation-only Graph assets are registered, selected and execute
     "electron/native/grimodex-node/src/nir1_graph_eval/mod.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_eval.rs",
     "scripts/quality/nir1-graph-eval/native-architecture.mjs",
+    "scripts/quality/nir1-graph-eval/eval-native-build.mjs",
   ];
   const tests = [
     "electron/native/grimodex-node/src/nir1_graph_eval/tests.rs",
     "scripts/quality/nir1-graph-eval/native-architecture.test.mjs",
+    "scripts/quality/nir1-graph-eval/eval-native-build.test.mjs",
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
