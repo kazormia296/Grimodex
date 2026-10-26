@@ -1036,6 +1036,58 @@ describe("with the seam open (DR-DD1B-2, -5, -6, -7)", () => {
     expect(cancelSender).toHaveBeenCalledTimes(2);
   });
 
+  it("stops every bound sender, and a failing stop never blocks the others (lifecycle P2-1)", async () => {
+    const listeners: Array<() => void> = [];
+    const stopped: number[] = [];
+    const route = createNir1LocalGenerationRoute({
+      open: true,
+      backend: {
+        mainNir1LocalGenerationCancelSender: (senderId: number) => {
+          stopped.push(senderId);
+          if (senderId === 7) throw new Error("native gone");
+          return 0;
+        },
+      } as unknown as NapiBackendLike,
+      profileEgress: {
+        isIssuedCallerIdentity: () => true,
+        onStatusChange: (listener) => {
+          listeners.push(() => listener({ state: "restricted" }));
+          return () => undefined;
+        },
+      },
+    });
+    const senders = [7, 8, 9].map((id) => {
+      const sender = fakeSender(id);
+      return { sender, win: fakeWindow(id * 10, sender) };
+    });
+    for (const { sender, win } of senders) {
+      expect(
+        await route.admit(
+          "nir1_local_conversation_list",
+          { sender, win, callerIdentity: { senderId: sender.id } },
+          {},
+        ),
+      ).toBeNull();
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      expect(() => listeners.forEach((listener) => listener())).not.toThrow();
+      expect([...stopped].sort()).toEqual([7, 8, 9]);
+      // A throwing stop inside the destroyed and closed listeners does not
+      // escape them.
+      stopped.length = 0;
+      expect(() => senders[0].win.emit("closed")).not.toThrow();
+      expect(() => senders[0].sender.emit("destroyed")).not.toThrow();
+      expect(stopped).toEqual([7, 7]);
+      // The destroyed sender is no longer bound; the others still are.
+      stopped.length = 0;
+      listeners.forEach((listener) => listener());
+      expect([...stopped].sort()).toEqual([8, 9]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("refuses an identity Main did not issue, or issued to another sender (defense in depth behind D2a)", async () => {
     const issued = { senderId: 7 };
     const route = createNir1LocalGenerationRoute({
