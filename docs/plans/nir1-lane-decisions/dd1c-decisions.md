@@ -223,3 +223,25 @@ P1 はなし。P2 の 6 件と P3 の小さな指摘を直し、直さないも�
 | N6 in flight の continue を待たない | 落ちた |
 | N7 serde_json の拒否の写しを外す | 落ちた |
 | N8 取消の後の focus の移動を外す | 落ちた |
+
+## 再レビュー（`034904f4..d0d4cd25`）の修正の追記（2026-10-26）
+
+P1 はなし。修正で入った退行 P2 を 1 件と、P3 を直した。
+
+| ID | 判断・訂正 | 状態 |
+|---|---|---|
+| DR-DD1C-32 | （P2。DR-DD1C-18 の訂正）held の start の送り直しを待つ間に、利用者が取消を押すと、何も送らずに直ちに `cancelled` で終える（timer も消す）。start が in flight の間に押され、応答が held で返った場合も、送り直さずにその場で `cancelled` にする。送り直しの timer の中でも `cancelRequested` を確かめる（防御。前の 2 つが timer を必ず消すので到達しない＝変異 R2 は等価）。それまでは取消が `cancelRequested` を立てるだけで、timer が start を送り直していた。barrier が外れていれば Native の start が通り、request の全体が loopback に書かれてから cancel が飛んでいた（開示の項目 8 に照らした退行）。<br>**送り直しの全数の確認**：(a) start の送り直しは上のとおり直した。(b) continue の送り直しは差分を読むだけで、loopback への送信も capture の記録も増やさない。取消を押した後も、drained まで読む必要がある（DR-DD1B-10）。(c) cancel の送り直しは止める操作だけを送り、`cancelling`（受理済み）と終端では送らない。(d) start の応答が `started` で、in flight の間に取消が押されていた場合の cancel は、start が押される前に Main に届いていたので避けられない（従来どおり） | 実装・試験済み |
+| DR-DD1C-33 | （P3）走っていた生成が終端になったら、その会話の通知も消す。held の判定は、invoke が付ける code だけで行う（文の部分一致はやめた。本物の invoke と ipcQueue の barrier を通す試験で、code の経路で held になることを確かめた）。policy の写しの深さの境界（全体で 127 段は許可、128 段は拒否）を試験で固定した。新しい 3 種（`1e400`、単独の surrogate、深さ 128）は、Native の判定ベクトル（`grimodex-core/.../decision_vectors.json`）に足すと lane の外（Rust 側）に触れるので足していない。Rust の側で同じ値の拒否を確かめるのは次の Native の lane に回す。項目 9 の和文の理由の節の重なりを直した。項目 4 には、K5/3:448 の「待ち受けが読めば」、request の骨格と入力の関係、データの範囲の条件を日英で写した。範囲の条件は「編集中・ほかの Scene の原稿。外部送信を制限した状態で画面が読める範囲によっては、会話の履歴、AI audit の記録、版の過去の本文、伏線とプロットの記録なども」とし、K3 の O-2 は利用者向けの語に置き換えた。置き場 5 の要旨は (d) より狭くしない規則（K5/3:441）に従い、条件を付けずに残した | 実装・試験済み |
+| DR-DD1C-34 | （記録）`loseWithStop` の best-effort の cancel は、hold が続くと held で捨てられる。Native には「poll されない handle を止める」処理が見当たらず、生成が最後まで走りうる（推測。修正前より悪くはなっていない）。hold が解けた後に停止を一度だけ送り直す案を DD-1c-2 の候補とする。また、continue が返らない場合、DR-DD1C-17 と重なって、その会話は reload まで BUSY のまま残りうる（低確率） | DD-1c-2 の候補 |
+
+### 再レビューの修正の後の検証
+
+- `pnpm exec tsc --noEmit`：0 件。変更 file の eslint／prettier：0 件。
+- `npx vitest run src`：1,588 file、15,770 件 pass（skip 38）。
+- `pnpm test:browser`：`Nir1LocalDisclosure.browser` 12 件 pass（文言が延びたため取り直した）。
+- `pnpm validate:architecture`：23 件 pass、ratchet 不変。`impact-map.test.mjs`：37 件 pass。`eval:impact`：Fallback no。`eval:fixtures`：32 件 pass。
+- 定数 false の `pnpm build` の後の `pnpm perf:budget`：起動時 JS raw 4,250,973（base と同じ）、起動時 CSS raw 220,859。起動時の chunk は DD-1c の chunk・command・文言を参照しない。lazy の chunk は開示 29,313、panel 21,425。
+- 変異（commit の後、原本の copy から）：
+  - R1（待機中の取消で終えない）と R3（held の分岐で取消を見ない）は、単独では最初落ちなかった（後ろの確認が補うため）。「その場で cancelled」の試験を足して落ちた。
+  - R2（timer の中の確認を外す）は等価（DR-DD1C-32）。
+  - R4（3 か所すべてを外す）、R5（終端で通知を消さない）、R6（held を文の部分一致に戻す）は落ちた。
