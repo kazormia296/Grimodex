@@ -1077,36 +1077,104 @@ test("K6/4-N34: follow-up の失敗は失敗した段の理由で区分する（
   assert.equal(mixed.mainReason, "freshness");
 });
 
-test("(b) の follow-up の失効を失効率に数えるかは K6/4 が述べないので [precheck] で止まる", () => {
-  for (const followUp of [
-    {
-      parent: {
-        ticket: { ...staleTicket, reason: "registration-unavailable" },
+test("DR-CP4-K64-5 (A): (b) の follow-up が失効の段で落ちたものは親の query の失効として失効率に数える", () => {
+  const cases = [
+    [
+      "parent-ticket-registration-unavailable",
+      {
+        parent: {
+          ticket: { ...staleTicket, reason: "registration-unavailable" },
+        },
+        notices: [],
+        child: null,
       },
-      notices: [],
-      child: null,
-    },
-    {
-      child: {
-        outcome: "graph-unavailable",
-        reason: "invalidated",
-        requalification: "invalidated",
-        tGraph: null,
+      "i-b-seal",
+    ],
+    [
+      "child-join-invalidated",
+      {
+        child: {
+          outcome: "graph-unavailable",
+          reason: "invalidated",
+          requalification: "invalidated",
+          tGraph: null,
+        },
       },
-    },
-    { child: { edgeCount: 0 } },
-  ]) {
+      "iii-invalidated",
+    ],
+    [
+      "child-join-registration-unavailable",
+      {
+        child: {
+          outcome: "graph-unavailable",
+          reason: "registration-unavailable",
+          tGraph: null,
+        },
+      },
+      "i-b-seal",
+    ],
+    [
+      "child-requalification-invalidated",
+      { child: { requalification: "invalidated" } },
+      "iii-invalidated",
+    ],
+    [
+      "child-empty-contribution",
+      { child: { edgeCount: 0 } },
+      "iv-empty-contribution",
+    ],
+    [
+      "child-chronicle-stop",
+      { child: { irOutcome: "index-unavailable" } },
+      "i-chronicle-stop",
+    ],
+  ];
+  for (const [question, followUp, kind] of cases) {
     const result = traceK64(
       k64Trace("editing", 200, (at) => (at === 5 ? [{}, followUp] : [{}, {}])),
     );
-    assert.equal(result.status, "precheck", JSON.stringify(followUp));
-    assert.match(result.precheck.join(), /lapse/);
+    assert.equal(result.status, "valid", question);
+    assert.deepEqual(result.precheck, [], question);
+    assert.equal(result.lapse.total, 1, question);
+    assert.equal(result.lapse[kind], 1, question);
+    assert.deepEqual(result.followUpLapse, { [question]: 1 }, question);
+    assert.equal(result.outOfWindowU, 1, question);
     const decision = decideCp4Availability({
       steadyState: summarizeK64(k64Run()),
       traces: [result, traceK64(k64Trace("browsing", 200))],
     });
-    assert.equal(decision.verdict, "precheck");
+    assert.notEqual(decision.verdict, "precheck", question);
   }
+  // 親の query が既に失効（開始時の B の seal）なら follow-up の失効を二重に数えない。
+  const once = traceK64(
+    k64Trace("editing", 200, (at) =>
+      at === 5
+        ? [
+            { snapshot: { usable: false } },
+            { child: { irOutcome: "index-unavailable" } },
+          ]
+        : [{}, {}],
+    ),
+  );
+  assert.equal(once.lapse.total, 1);
+  // 数えないと判定が変わる: 子の寄与の空（区分は「その他」）が 3 件で失効率が
+  // 1% を越え、(iii) の診断は失効率の超過で止まる（数えなければ row-not-used）。
+  const empty = traceK64(
+    k64Trace("editing", 200, (at) =>
+      at < 3 ? [{}, { child: { edgeCount: 0 } }] : [{}, {}],
+    ),
+  );
+  assert.equal(empty.lapse["iv-empty-contribution"], 3);
+  assert.equal(empty.lapseExceeds, true);
+  const diagnosis = evaluateDiagnosticCondition({
+    kind: "ii",
+    steadyState: summarizeK64(k64Run()),
+    traces: [empty, traceK64(k64Trace("browsing", 200))],
+  });
+  assert.deepEqual(
+    [diagnosis.result, diagnosis.reason],
+    ["precheck", "lapse-rate-exceeds"],
+  );
 });
 
 test("(b) の K6/4 でも trace の不備（Q<200、queryId の重複、N16）は取り直し", () => {

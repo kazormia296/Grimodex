@@ -449,7 +449,8 @@ export function computeRunAggregates(receipt, variant) {
  * (decideCp4Availability over the receipts; the pool, never a case rate,
  * N21), a dev or predeclared preview is `preview-only`, a run whose
  * aggregates are invalid is `invalid` (kept as a record, never valid), and a
- * K6/4 trace whose reading K6/4 leaves open is `precheck`.
+ * trace marked `precheck` (none since DR-CP4-K64-5 (A); a record written
+ * before it) is `precheck`.
  */
 export function computeRunVerdict(receipt, variant, aggregates) {
   const invalid = [

@@ -53,7 +53,7 @@ import {
   assessCandidateRegime,
   classifyFollowUp,
   followUpFailureCategory,
-  followUpLapseQuestions,
+  followUpLapses,
   recordRegime,
 } from "./followup.mjs";
 import {
@@ -622,9 +622,9 @@ function summarizeTraceK62(trace, counted, requeries) {
  * child's begin). The out-of-window rate is the share of U not displayed.
  * The category of a query not displayed is K6/2 rule 4 first and then the
  * stage where its follow-up failed; the D′ structural graph-late is never a
- * reason (N33). The lapse rate (K6/2 717 (i)〜(iv)) is unchanged; a trace in
- * which a follow-up failed on a lapse-like stage stops with `[precheck]`
- * because K6/4 does not say whether those count (DR-CP4-K64-5).
+ * reason (N33). The lapse rate (K6/2 717 (i)〜(iv)) counts a query whose
+ * follow-up failed on a lapse-like stage as the parent query's lapse, once
+ * per query (DR-CP4-K64-5 (A), the strict reading).
  */
 function summarizeTraceK64(trace, counted, requeries, results, regime) {
   const invalid = [];
@@ -635,7 +635,7 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
   const boundaryDisagreement = emptyDisagreement();
   const stampWithoutComparison = emptyStampWithoutComparison();
   const x = emptyX();
-  const lapseQuestions = {};
+  const followUpLapse = {};
   let U = 0;
   let displayed = 0;
   let firstRenderInWindow = 0;
@@ -658,8 +658,10 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
     if (kind) lapses[kind] += 1;
     if (shown) return;
     for (const code of Object.keys(result.x)) x[code] += 1;
-    for (const question of followUpLapseQuestions(result))
-      lapseQuestions[question] = (lapseQuestions[question] ?? 0) + 1;
+    const followUp = followUpLapses(result);
+    for (const question of followUp.questions)
+      followUpLapse[question] = (followUpLapse[question] ?? 0) + 1;
+    if (!kind && followUp.kind) lapses[followUp.kind] += 1;
     const stampResult = query.freshnessStamp?.result;
     const stampReason = STAMP_WITHOUT_COMPARISON.has(stampResult)
       ? `freshness-stamp-${stampResult}:${busyOverlap(query, trace.queries)}`
@@ -679,18 +681,12 @@ function summarizeTraceK64(trace, counted, requeries, results, regime) {
   const outOfWindowU = U - displayed;
   const outOfWindow = Q - displayed;
   const lapseTotal = Object.values(lapses).reduce((sum, n) => sum + n, 0);
-  const questions = Object.keys(lapseQuestions);
   return {
     kind: trace.kind,
-    status: questions.length > 0 ? "precheck" : "valid",
+    status: "valid",
     invalid: [],
-    precheck:
-      questions.length > 0
-        ? [
-            `[precheck] K6/4 変える点 15 keeps the lapse rate (K6/2 717 (i)〜(iv)) and does not say whether a follow-up that failed on these stages counts in it: ${questions.join(", ")}`,
-          ]
-        : [],
-    lapseQuestions,
+    precheck: [],
+    followUpLapse,
     regime: "k64",
     candidate: regime,
     Q,
@@ -918,9 +914,10 @@ function traceExceeds(trace) {
  * (a) above the yardstick is HOLD and the trace values are recorded and
  * disclosed only. (a) inside with a trace above it is HOLD and asks for the
  * (iii) diagnostic. A late result mixed into a display is FAIL (K6/4 :163).
- * Every yardstick decision is recomputed from counts (P2-5). A K6/4 trace
- * whose reading K6/4 leaves open returns `precheck` (blocked) instead of a
- * verdict.
+ * Every yardstick decision is recomputed from counts (P2-5). A trace marked
+ * `precheck` returns `precheck` (blocked) instead of a verdict; since
+ * DR-CP4-K64-5 (A) the summaries no longer produce one, and the branch stays
+ * fail-closed for a record written before that decision.
  */
 export function decideCp4Availability(input) {
   rejectOverrides(input, ["steadyState", "traces"]);

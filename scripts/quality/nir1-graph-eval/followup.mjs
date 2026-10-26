@@ -646,15 +646,34 @@ export function followUpFailureCategory(sample, result, stampReason = null) {
   return { category: "other", reason: `follow-up:${failed.stage}` };
 }
 
+/** The lapse kind (K6/2 717) each follow-up lapse is counted as. */
+const FOLLOW_UP_LAPSE_KINDS = Object.freeze({
+  "parent-ticket-registration-unavailable": "i-b-seal",
+  "parent-ticket-invalidated": "iii-invalidated",
+  "child-join-registration-unavailable": "i-b-seal",
+  "child-join-invalidated": "iii-invalidated",
+  "child-requalification-invalidated": "iii-invalidated",
+  "child-chronicle-stop": "i-chronicle-stop",
+  "child-empty-contribution": "iv-empty-contribution",
+});
+const LAPSE_KIND_ORDER = Object.freeze([
+  "i-b-seal",
+  "i-chronicle-stop",
+  "iii-invalidated",
+  "iv-empty-contribution",
+]);
+
 /**
- * Follow-up failures whose place in the lapse rate K6/4 does not settle:
- * 変える点 15 keeps the lapse rate (K6/2 717 (i)〜(iv)) unchanged, and (i)
- * is "開始時", (iii)/(iv) are the query's own join, but under D′ the
- * parent's Graph reaches the user only through the child. Counting them or
- * not is a reading the classifier does not choose (DR-CP4-K64-5); a trace
- * that has any stops with `[precheck]`.
+ * Follow-up failures on a lapse-like stage, counted as the parent query's
+ * lapse (DR-CP4-K64-5 (A), integrator 2026-10-26): K6/4 is silent, and not
+ * counting them (B) would loosen the lapse rate. Under D′ the parent's Graph
+ * reaches the user only through the child, so the child's invalidated (iii),
+ * empty contribution (iv), the parent ticket's / child's
+ * registration-unavailable and the child's Chronicle stop (i) are the
+ * query's lapse. Returns the questions and the one kind the query counts as
+ * (first in K6/2 717's order), or `kind: null` when there is none.
  */
-export function followUpLapseQuestions(result) {
+export function followUpLapses(result) {
   const out = [];
   for (const row of result.stages) {
     if (row.code === "X1" && LAPSE_TICKET_REASONS.has(row.detail))
@@ -672,7 +691,12 @@ export function followUpLapseQuestions(result) {
         out.push("child-chronicle-stop");
     }
   }
-  return [...new Set(out)];
+  const questions = [...new Set(out)];
+  const kinds = new Set(
+    questions.map((question) => FOLLOW_UP_LAPSE_KINDS[question]),
+  );
+  const kind = LAPSE_KIND_ORDER.find((name) => kinds.has(name)) ?? null;
+  return { questions, kind };
 }
 
 /**
