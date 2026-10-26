@@ -1155,6 +1155,16 @@ describe("packaged smoke workflow (CP-2b P2)", () => {
     assert.match(unit, /scripts\/release-workflows\.test\.mjs/);
   });
 
+  it("installs the pinned Electron binary after pnpm install and before the smoke runs (probe main needs it)", async () => {
+    const workflow = await readWorkflow("packaged-smoke.yml");
+    const steps = workflow.jobs.smoke.steps;
+    const indexOf = (predicate) => steps.findIndex(predicate);
+    const install = indexOf((step) => String(step.run ?? "").trim() === "pnpm install --frozen-lockfile");
+    const electron = indexOf((step) => String(step.run ?? "").trim() === "node scripts/ensure-electron-binary.mjs");
+    const smoke = indexOf((step) => /electron\/scripts\/packaged-smoke\/run\.mjs/.test(String(step.run ?? "")));
+    assert.ok(install >= 0 && electron > install && smoke > electron, JSON.stringify({ install, electron, smoke }));
+  });
+
   it("uses no build cache, keys concurrency by OS, and never interpolates expressions into run scripts", async () => {
     const workflow = await readWorkflow("packaged-smoke.yml");
     assert.match(workflow.concurrency.group, /inputs\.os/);

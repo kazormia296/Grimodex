@@ -159,6 +159,11 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # pnpm の設定では electron の postinstall が走らないので、baseline／toolcheck の probe の main が使う
+      # node_modules の Electron（path.txt と dist）を固定の版で入れる（既存の CI と同じ script）
+      - name: Install pinned Electron binary
+        run: node scripts/ensure-electron-binary.mjs
+
       # release と同じ native の段（seam なしの worker の build と検査を含む）。build の env を足さない
       - name: Build licensed native runtime, MCP sidecar, and seam-free graph worker
         run: pnpm electron:native:release
