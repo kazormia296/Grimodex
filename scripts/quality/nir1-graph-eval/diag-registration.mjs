@@ -30,6 +30,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { admitDevPreview } from "./admission.mjs";
 import { loadDevFixture } from "./dev-fixture.mjs";
 import { ROOT, bundleObserver } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
@@ -194,6 +195,10 @@ async function main() {
     d2aMode: "restricted",
     models: { ja: options["ja-model"], en: options["en-model"] },
     tmpRoot: options.tmp ? path.join(options.tmp, options.run) : null,
+    admission: admitDevPreview({
+      purpose: "diag-registration",
+      fixturePath: loaded.path,
+    }),
     extraEnv: measurementSeamEnv({
       bodyNonce: randomUUID(),
       maintenance: "product",

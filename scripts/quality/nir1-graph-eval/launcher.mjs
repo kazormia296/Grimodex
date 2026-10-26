@@ -17,8 +17,9 @@ import path from "node:path";
 import process from "node:process";
 import { clearTimeout, setTimeout } from "node:timers";
 import { placeD2aProfileState } from "../run-nir1-retrieval.mjs";
-import { readNetNamespaces } from "./admission.mjs";
+import { isLaunchAdmission, readNetNamespaces } from "./admission.mjs";
 import { parseProcStat, readProcessTree } from "./egress.mjs";
+import { scanNativeBinary } from "./native-architecture.mjs";
 import { OBSERVER_LINE_PREFIX, OBSERVER_SCHEMA } from "./observer-core.mjs";
 import { assertElectronLaunch } from "./receipt.mjs";
 
@@ -31,6 +32,8 @@ export const NC1_SOURCES = Object.freeze([
   "electron/main/rendererContainmentStartup.ts",
 ]);
 export const PRODUCT_MAIN = "dist-electron/main.cjs";
+/** The addon Main loads without GRIMODEX_NODE_PATH (§15.2). */
+export const DEFAULT_ADDON = "electron/native/grimodex-node/grimodex-node.node";
 export const ELECTRON_LAUNCH_TIMEOUT_MS = 60_000;
 
 /** Removed from the launch env (desktop, session bus, proxies, node mode). */
@@ -342,6 +345,48 @@ export function survivingPids(recorded, procRoot = "/proc") {
 }
 
 /**
+ * D-6 / A-4 (§15.2), checked at every launch: the default addon path holds
+ * no evaluation build (no evaluation string, and not the bytes launched),
+ * and an evaluation `.node` (it carries the evaluation strings) launches only
+ * with an admission (admitGraphCaseRun or admitDevPreview).
+ */
+export function assertLaunchAdmitted({
+  root = ROOT,
+  nativePath,
+  admission,
+  read = readFileSync,
+}) {
+  if (typeof nativePath !== "string" || !path.isAbsolute(nativePath))
+    throw new Error("[precheck] the launched addon path must be absolute");
+  const bytes = read(nativePath);
+  const evaluation = scanNativeBinary(bytes, "eval").length === 0;
+  const defaultPath = path.join(root, DEFAULT_ADDON);
+  let defaultAddon = null;
+  if (existsSync(defaultPath)) {
+    const defaultBytes = read(defaultPath);
+    const digest = sha256(defaultBytes);
+    if (
+      scanNativeBinary(defaultBytes, "product").length > 0 ||
+      (evaluation && digest === sha256(bytes))
+    )
+      throw new Error(
+        "[precheck] the default addon path holds an evaluation build; refusing to launch",
+      );
+    defaultAddon = { sha256: digest, product: true };
+  }
+  if (evaluation && !isLaunchAdmission(admission))
+    throw new Error(
+      "[precheck] launching the evaluation .node needs the admission of admitGraphCaseRun or admitDevPreview",
+    );
+  return {
+    evaluation,
+    nativeSha256: sha256(bytes),
+    defaultAddon,
+    admission: evaluation ? (admission.kind ?? "graph-case") : null,
+  };
+}
+
+/**
  * Launches the product Main behind the observer. Checks the wrapper env and
  * `assertElectronLaunch` before launching, captures the Main's stdout and
  * stderr, and returns the handle. The caller stops it with `stopElectron`.
@@ -353,8 +398,14 @@ export async function launchGraphEvalElectron({
   netLogPath,
   netns = readNetNamespaces(),
   electron,
+  admission,
 }) {
   assertXvfbWrapperEnv(process.env);
+  const addonCheck = assertLaunchAdmitted({
+    root,
+    nativePath: env?.GRIMODEX_NODE_PATH,
+    admission,
+  });
   const args = buildElectronArgs({ observerPath: observer.path, netLogPath });
   const launch = assertElectronLaunch({
     env,
@@ -384,6 +435,7 @@ export async function launchGraphEvalElectron({
     app,
     pid: child.pid,
     launch,
+    addonCheck,
     args,
     stderr: () => stderr,
     stdout: () => stdout,

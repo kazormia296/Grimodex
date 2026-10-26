@@ -71,6 +71,7 @@ export async function startSession({
   models,
   extraEnv = {},
   tmpRoot = null,
+  admission,
 }) {
   assertXvfbWrapperEnv(process.env);
   const dir = path.join(runDir, label);
@@ -108,6 +109,7 @@ export async function startSession({
     env,
     netLogPath,
     electron: { _electron },
+    admission,
   });
   const sampler = startSocketSampler({ rootPid: handle.pid });
   const remember = () => {

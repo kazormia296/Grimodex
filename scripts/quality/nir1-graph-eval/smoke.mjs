@@ -41,6 +41,7 @@ import {
 } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { MAIN_WORKER } from "./eval-native-build.mjs";
+import { admitDevPreview } from "./admission.mjs";
 
 const SMOKE_PAGE = "/scripts/quality/nir1-graph-eval/renderer/smoke.html";
 const WORKER_NAME = "nir1-c-query-worker";
@@ -154,7 +155,12 @@ async function main() {
       recorded.set(`${row.pid}:${row.startTime}`, row);
   };
   try {
-    handle = await launchGraphEvalElectron({ observer, env, netLogPath });
+    handle = await launchGraphEvalElectron({
+      observer,
+      env,
+      netLogPath,
+      admission: admitDevPreview({ purpose: "smoke", fixturePath: null }),
+    });
     report.launch = { pid: handle.pid, removedEnv: handle.launch.removedEnv };
     // The socket window is the Electron lifetime: the sampler's first sample
     // precedes the run, its final sample follows it.

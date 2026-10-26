@@ -399,6 +399,52 @@ export function admitGraphCaseRun(input) {
   return sealed;
 }
 
+/** Dev preview admissions (admitDevPreview); never a CP-4 result. */
+const DEV_PREVIEWS = new WeakSet();
+export const DEV_PREVIEW_PURPOSES = Object.freeze([
+  "runner-preview",
+  "dprime-check",
+  "hook-check",
+  "diag-registration",
+  "smoke",
+  "setup",
+]);
+
+/**
+ * D-6: the admission of a dev preview launch of the evaluation `.node`
+ * (TASK §15.9; seen by the integrator only, never aggregated). It accepts a
+ * dev fixture path or none (smoke, diagnostics), never a frozen fixture: a
+ * frozen G-case is launched only with admitGraphCaseRun's admission.
+ */
+export function admitDevPreview(input) {
+  rejectOverrides(input, ["purpose", "fixturePath"]);
+  if (!DEV_PREVIEW_PURPOSES.includes(input.purpose))
+    throw new Error(
+      `[precheck] a dev preview launch names one of ${DEV_PREVIEW_PURPOSES.join(", ")}`,
+    );
+  const fixturePath = input.fixturePath ?? null;
+  if (fixturePath !== null && classifyGraphFixturePath(fixturePath) !== "dev")
+    throw new Error(
+      "[precheck] a dev preview never launches the evaluation build on a frozen fixture",
+    );
+  const admission = Object.freeze({
+    kind: "dev-preview",
+    purpose: input.purpose,
+    fixturePath,
+  });
+  DEV_PREVIEWS.add(admission);
+  return admission;
+}
+
+/** D-6: an admission that may launch the evaluation `.node`. */
+export function isLaunchAdmission(admission) {
+  return (
+    admission !== null &&
+    typeof admission === "object" &&
+    (ADMITTED.has(admission) || DEV_PREVIEWS.has(admission))
+  );
+}
+
 /** A fixture read of a formal run: only with admitGraphCaseRun's admission. */
 export function readAdmittedFixture(admission, target) {
   if (!ADMITTED.has(admission))

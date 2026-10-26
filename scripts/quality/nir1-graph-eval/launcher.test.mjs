@@ -13,6 +13,7 @@ import {
   NC1_SOURCES,
   REMOVED_LAUNCH_ENV,
   ROOT,
+  assertLaunchAdmitted,
   assertXvfbWrapperEnv,
   assessObserverRecord,
   buildElectronArgs,
@@ -22,6 +23,8 @@ import {
   survivingPids,
 } from "./launcher.mjs";
 import { assertElectronLaunch } from "./receipt.mjs";
+import { admitDevPreview } from "./admission.mjs";
+import { BINARY_MARKERS } from "./native-architecture.mjs";
 
 const WRAPPER_ENV = Object.freeze({
   GRIMODEX_LOCAL_CI_XVFB: "1",
@@ -261,5 +264,69 @@ test("the observer bundle carries the product NC-1 modules and the core", async 
     );
   } finally {
     rmSync(outDir, { recursive: true, force: true });
+  }
+});
+
+test("D-6／A-4: 評価の .node の起動は admission を要し、既定の addon の path は製品の .node だけ", () => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "cp4-launch-"));
+  try {
+    const dir = path.join(root, "electron/native/grimodex-node");
+    mkdirSync(dir, { recursive: true });
+    const evalNode = path.join(root, "eval.node");
+    writeFileSync(evalNode, `\0${BINARY_MARKERS.join("\0")}\0eval`);
+    const productNode = path.join(root, "product.node");
+    writeFileSync(productNode, "\0napi_register_module_v1\0product");
+    const preview = admitDevPreview({
+      purpose: "smoke",
+      fixturePath: null,
+    });
+    // 既定の path が無い、または製品の .node なら、admission つきで起動できる。
+    assert.equal(
+      assertLaunchAdmitted({ root, nativePath: evalNode, admission: preview })
+        .evaluation,
+      true,
+    );
+    writeFileSync(path.join(dir, "grimodex-node.node"), "\0napi\0product");
+    assert.equal(
+      assertLaunchAdmitted({ root, nativePath: evalNode, admission: preview })
+        .defaultAddon.product,
+      true,
+    );
+    // admission の無い評価の .node、手で作った admission は拒む。
+    for (const admission of [undefined, null, { kind: "dev-preview" }])
+      assert.throws(
+        () => assertLaunchAdmitted({ root, nativePath: evalNode, admission }),
+        /admission/,
+      );
+    // 製品の .node は admission なしで起動できる（Graph は開かない）。
+    assert.equal(
+      assertLaunchAdmitted({ root, nativePath: productNode }).evaluation,
+      false,
+    );
+    // 既定の path に評価の文字列を持つ .node（今回のものと別の bytes でも）は拒む。
+    writeFileSync(
+      path.join(dir, "grimodex-node.node"),
+      `\0${BINARY_MARKERS[0]}\0older-eval`,
+    );
+    for (const nativePath of [evalNode, productNode])
+      assert.throws(
+        () => assertLaunchAdmitted({ root, nativePath, admission: preview }),
+        /default addon/,
+      );
+    // dev の preview の admission は凍結した fixture の path を受けない。
+    assert.throws(
+      () =>
+        admitDevPreview({
+          purpose: "runner-preview",
+          fixturePath: "evals/nir1-graph/fixtures/g-02.v1.json",
+        }),
+      /\[precheck\]/,
+    );
+    assert.throws(
+      () => admitDevPreview({ purpose: "formal", fixturePath: null }),
+      /\[precheck\]/,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

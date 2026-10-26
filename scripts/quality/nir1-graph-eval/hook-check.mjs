@@ -18,6 +18,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { GRAPH_EVAL_D_MS } from "./constants.mjs";
+import { admitDevPreview } from "./admission.mjs";
 import { loadDevFixture } from "./dev-fixture.mjs";
 import {
   buildIndex,
@@ -293,6 +294,10 @@ async function main() {
     root: ROOT,
     fixturePath: setup.fixture.path,
   });
+  const admission = admitDevPreview({
+    purpose: "hook-check",
+    fixturePath: loaded.path,
+  });
   if (loaded.sha256 !== setup.fixture.sha256)
     throw new Error("[precheck] the dev fixture changed since its setup");
   const ids = setup.logicalToRuntime;
@@ -366,6 +371,7 @@ async function main() {
       server,
       observer,
       options: launchOptions,
+      admission,
     });
     await openWorkspace(session.page, workspacePath, ids);
     const pinned = await session.page.evaluate(
@@ -393,6 +399,7 @@ async function main() {
       server,
       observer,
       options: launchOptions,
+      admission,
     });
     const page = session.page;
     await openWorkspace(page, workspacePath, ids);

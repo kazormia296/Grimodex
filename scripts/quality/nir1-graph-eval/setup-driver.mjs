@@ -37,6 +37,7 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { generateNKeysBetween } from "fractional-indexing";
+import { admitDevPreview } from "./admission.mjs";
 import { loadDevFixture, sceneRows } from "./dev-fixture.mjs";
 import { ROOT, bundleObserver, PRODUCT_MAIN } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
@@ -521,6 +522,10 @@ async function main() {
   await mkdir(setupDir, { recursive: false });
   const loaded = loadDevFixture({ root: ROOT, fixturePath: options.fixture });
   const nativePath = path.resolve(options.native);
+  const admission = admitDevPreview({
+    purpose: "setup",
+    fixturePath: loaded.path,
+  });
   const receipt = {
     schemaVersion: SETUP_RECEIPT_SCHEMA,
     status: "failed",
@@ -592,6 +597,7 @@ async function main() {
       d2aMode: "unrestricted",
       models,
       tmpRoot: options.tmp ? path.join(options.tmp, options.run) : null,
+      admission,
     });
     try {
       if (authorSession.evidence.problems.length > 0)
@@ -623,6 +629,7 @@ async function main() {
       d2aMode: "unrestricted",
       models,
       tmpRoot: options.tmp ? path.join(options.tmp, options.run) : null,
+      admission,
       extraEnv: {
         [MAINTENANCE_SEAM.ci]: "true",
         [MAINTENANCE_SEAM.ownerTokenEnv]: MAINTENANCE_SEAM.ownerToken,

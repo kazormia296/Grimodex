@@ -22,6 +22,7 @@ import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
+import { admitDevPreview } from "./admission.mjs";
 import { loadDevFixture } from "./dev-fixture.mjs";
 import { ROOT, bundleObserver } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
@@ -149,7 +150,14 @@ export function nativeRows(records) {
   }));
 }
 
-export async function launch({ label, runDir, server, observer, options }) {
+export async function launch({
+  label,
+  runDir,
+  server,
+  observer,
+  options,
+  admission,
+}) {
   const session = await startSession({
     runDir,
     label,
@@ -162,6 +170,7 @@ export async function launch({ label, runDir, server, observer, options }) {
     d2aMode: "restricted",
     models: { ja: options["ja-model"], en: options["en-model"] },
     tmpRoot: options.tmp ? path.join(options.tmp, options.run) : null,
+    admission,
     extraEnv: measurementSeamEnv({
       bodyNonce: randomUUID(),
       maintenance: "product",
@@ -358,6 +367,10 @@ async function main() {
   });
   if (loaded.sha256 !== setup.fixture.sha256)
     throw new Error("[precheck] the dev fixture changed since its setup");
+  const admission = admitDevPreview({
+    purpose: "dprime-check",
+    fixturePath: loaded.path,
+  });
   const ids = setup.logicalToRuntime;
   const seed = ids.entities[loaded.fixture.graphSeedEntityId];
   const evalDir = path.resolve(options["eval-build"]);
@@ -429,6 +442,7 @@ async function main() {
       server,
       observer,
       options,
+      admission,
     });
     await openWorkspace(session.page, workspacePath, ids);
     if (options["pin-query-seed"] === "1") {
@@ -478,6 +492,7 @@ async function main() {
       server,
       observer,
       options,
+      admission,
     });
     const page = session.page;
     const launchedAt = Date.now();
