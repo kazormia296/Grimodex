@@ -554,3 +554,41 @@ test("B-3: Electron の unix socket の相手が利用者の session bus（/run/
   });
   assert.equal(blind.unix.read, false);
 });
+
+test("B P3: 相手の port が 53 の socket（loopback の resolver を含む）は DNS の問い合わせとして違反", () => {
+  const sample = buildSocketSample({
+    atMs: 5,
+    rootPid: 10,
+    processes: [{ pid: 10, socketInodes: ["77", "78"], type: "utility" }],
+    tables: [
+      {
+        proto: "udp",
+        local: { address: "127.0.0.1", port: 40000 },
+        remote: { address: "127.0.0.53", port: 53 },
+        state: "established",
+        inode: "77",
+      },
+      {
+        proto: "tcp",
+        local: { address: "127.0.0.1", port: 40001 },
+        remote: { address: "127.0.0.1", port: 8080 },
+        state: "established",
+        inode: "78",
+      },
+    ],
+    unixRows: [],
+  });
+  assert.deepEqual(
+    sample.dns.map((row) => row.remote),
+    ["127.0.0.53:53"],
+  );
+  const RUN2 = { startedAtMs: 1_000, finishedAtMs: 21_000 };
+  const base = [0, 22_000].map(cleanSample);
+  assert.match(
+    assessSocketSamples({
+      samples: [base[0], { ...base[1], dns: sample.dns }],
+      run: RUN2,
+    }).violations.join(),
+    /DNS/,
+  );
+});

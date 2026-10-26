@@ -1,7 +1,13 @@
 // B-7: the failure paths of the Electron session (stop, launch, start) with a
 // fake app and a synthetic /proc. Nothing here launches Electron.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -410,5 +416,39 @@ test("B-5: 取消しの signal では記録した Electron の process group と
     assert.deepEqual(sent, ["4243:SIGKILL"]);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("B P3: session の TMPDIR は短い path で、停止の後に消える", async () => {
+  const runDir = mkdtempSync(path.join(os.tmpdir(), "cp4-tmp-"));
+  try {
+    const calls = { launch: 0, stop: 0 };
+    let launchedEnv = null;
+    const deps = fakeDeps(calls, {
+      firstWindow: () => Promise.reject(new Error("x")),
+    });
+    const launchFake = deps.launch;
+    deps.launch = async (input) => {
+      launchedEnv = input.env;
+      return launchFake(input);
+    };
+    const session = await startSession({
+      runDir: path.join(runDir, "a".repeat(80)),
+      label: "s",
+      server: { url: (page) => `http://127.0.0.1:1${page}` },
+      observer: { path: "/x/observer.cjs" },
+      nativePath: "/x/grimodex-node.node",
+      d2aMode: "restricted",
+      models: {},
+      deps,
+    });
+    const tmp = launchedEnv.TMPDIR;
+    assert.ok(tmp.length < 60, tmp);
+    assert.ok(existsSync(tmp));
+    const evidence = await session.stop();
+    assert.equal(existsSync(tmp), false);
+    assert.equal(evidence.tmp.removed, true);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
   }
 });

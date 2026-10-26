@@ -214,6 +214,15 @@ export function selectReceiptsForAggregation(receipts) {
   const included = [];
   const excluded = [];
   for (const receipt of receipts) {
+    // B P3: a dev or predeclared preview is never aggregated with the formal
+    // receipts (TASK §15.9), whatever its window.
+    if (receipt?.preview !== false) {
+      excluded.push({
+        runId: receipt?.runId ?? null,
+        reason: "preview-is-never-aggregated",
+      });
+      continue;
+    }
     const window = assessMeasurementWindow({
       samples: receipt?.environment?.windowSamples,
       run: receipt?.run,

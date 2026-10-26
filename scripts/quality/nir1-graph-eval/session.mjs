@@ -18,7 +18,8 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import { chmod, mkdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 // Imported before the harness renderer build: the build's Tailwind loader
@@ -188,11 +189,12 @@ export async function startSession({
   assertXvfbWrapperEnv(wrapperEnv);
   const dir = path.join(runDir, label);
   await mkdir(dir, { recursive: true });
-  // Chromium's unix sockets live under TMPDIR (108-byte limit): a short
-  // scratch root may be given; the default is the session directory.
+  // Chromium's unix sockets live under TMPDIR (108-byte limit): the given
+  // short root, or a fresh short directory under the OS temp dir (B P3; the
+  // session directory is too long). Removed after the stop.
   const tmpDir = tmpRoot
     ? path.join(tmpRoot, `${path.basename(runDir)}-${label}`)
-    : path.join(dir, "tmp");
+    : await mkdtemp(path.join(os.tmpdir(), "cp4-"));
   await mkdir(tmpDir, { recursive: true });
   // B-3: the run's own XDG_RUNTIME_DIR (0700), never the user's /run/user.
   await mkdir(runtimeDirOf(tmpDir), { recursive: true, mode: 0o700 });
@@ -393,6 +395,16 @@ export async function startSession({
       )
     )
       evidence.problems.push("persisted non-loopback servers");
+    // B P3: the scratch TMPDIR (sockets, the run's XDG_RUNTIME_DIR) goes.
+    evidence.tmp = { path: tmpDir, removed: false };
+    try {
+      await rm(tmpDir, { recursive: true, force: true });
+      evidence.tmp.removed = true;
+    } catch (error) {
+      evidence.problems.push(
+        `the session TMPDIR was not removed: ${error?.code}`,
+      );
+    }
     evidence.x11After = listX11();
     if (
       JSON.stringify(evidence.x11After) !== JSON.stringify(evidence.x11Before)

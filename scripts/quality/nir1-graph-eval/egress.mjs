@@ -247,6 +247,9 @@ export function buildSocketSample({
     unix: { read: Array.isArray(unixRows) },
     userSessionPeers: [],
     systemBusPeers: 0,
+    // B P3: a connected socket to port 53 is a DNS lookup (Native／Node
+    // getaddrinfo never shows in the net log), even to a loopback resolver.
+    dns: [],
   };
   // B-3: a server-side row bound under the user's runtime dir whose peer is
   // one of the tree's sockets is a connection to the user's session.
@@ -276,6 +279,8 @@ export function buildSocketSample({
       remote: `${row.remote.address}:${row.remote.port}`,
       state: row.state,
     };
+    if (row.remote.port === 53 && kind !== "unconnected")
+      sample.dns.push(entry);
     if (kind === "loopback") sample.sockets.loopback += 1;
     else if (kind === "unconnected") sample.sockets.unconnected += 1;
     else if (kind === "external") sample.external.push(entry);
@@ -533,6 +538,10 @@ export function assessSocketSamples({ samples, run }) {
     for (const entry of sample.externalListeners)
       violations.push(
         `listener reachable from outside ${entry.proto} ${entry.local} (pid ${entry.pid}) at ${sample.atMs}`,
+      );
+    for (const entry of sample.dns ?? [])
+      violations.push(
+        `a DNS lookup ${entry.proto} ${entry.local} -> ${entry.remote} (pid ${entry.pid}) at ${sample.atMs}`,
       );
     for (const entry of sample.userSessionPeers)
       violations.push(

@@ -820,6 +820,16 @@ test("D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run
   const kept = selectReceiptsForAggregation([
     {
       runId: "ok",
+      preview: false,
+      run: RUN,
+      environment: {
+        windowSamples: windowSamples([0, 20_000, 40_000, 62_000]),
+      },
+    },
+    // B P3: a preview with a clean window is never aggregated.
+    {
+      runId: "preview",
+      preview: true,
       run: RUN,
       environment: {
         windowSamples: windowSamples([0, 20_000, 40_000, 62_000]),
@@ -827,6 +837,7 @@ test("D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run
     },
     {
       runId: "heavy",
+      preview: false,
       run: RUN,
       environment: {
         windowSamples: windowSamples([0, 20_000, 40_000, 62_000], {
@@ -835,7 +846,7 @@ test("D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run
         windowAssessment: { clean: true },
       },
     },
-    { runId: "missing", environment: {} },
+    { runId: "missing", preview: false, environment: {} },
   ]);
   assert.deepEqual(
     kept.included.map((row) => row.runId),
@@ -844,6 +855,7 @@ test("D3 / N-14 / P2-8: window violations, gaps and missing fields exclude a run
   assert.deepEqual(
     kept.excluded.map((row) => [row.runId, row.reason]),
     [
+      ["preview", "preview-is-never-aggregated"],
       ["heavy", "measurement-window-requirement-not-met"],
       ["missing", "measurement-window-requirement-not-met"],
     ],

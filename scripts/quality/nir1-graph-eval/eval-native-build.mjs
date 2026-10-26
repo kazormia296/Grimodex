@@ -255,6 +255,9 @@ export function inspectEvalModule(nodeFile) {
   return JSON.parse(
     execFileSync(process.execPath, ["-e", script], {
       encoding: "utf8",
+      // B P3: a hung load of the module is bounded.
+      timeout: 120_000,
+      killSignal: "SIGKILL",
       maxBuffer: 4 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
     }),

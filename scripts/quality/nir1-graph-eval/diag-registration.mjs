@@ -56,6 +56,9 @@ function parseArgs(argv) {
   return options;
 }
 
+/** One standalone worker start is bounded (B P3: no hang, no lost error). */
+const WORKER_START_TIMEOUT_MS = 30_000;
+
 /** One standalone worker start; resolves with its answer and timing. */
 function startWorker(worker, workspace, project) {
   return new Promise((resolve) => {
@@ -64,6 +67,17 @@ function startWorker(worker, workspace, project) {
       cwd: path.dirname(worker),
       env: {},
       stdio: ["pipe", "pipe", "pipe"],
+      timeout: WORKER_START_TIMEOUT_MS,
+      killSignal: "SIGKILL",
+    });
+    child.on("error", (error) => {
+      resolve({
+        ready: false,
+        readyMs: null,
+        exitMs: Number(process.hrtime.bigint() - started) / 1e6,
+        code: null,
+        stage: `spawn-error:${error?.code ?? "unknown"}`,
+      });
     });
     let stdout = "";
     let stderr = "";
