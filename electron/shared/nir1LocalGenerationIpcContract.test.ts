@@ -431,6 +431,17 @@ describe("NIR-1 local generation IPC contract (DD-1b)", () => {
           ...view,
           displayName: { ...view.displayName, title: "本文" },
         },
+        // createdAt is an RFC 3339 instant only (security P3-2)
+        {
+          status: "created",
+          ...view,
+          displayName: { purpose: "writing", createdAt: "第一章の冒頭" },
+        },
+        {
+          status: "created",
+          ...view,
+          displayName: { purpose: "writing", createdAt: "2026-10-26" },
+        },
       ]) {
         const answered = backendWith("nir1LocalConversationCreate", answer);
         expect(
@@ -578,6 +589,22 @@ describe("NIR-1 local generation IPC contract (DD-1b)", () => {
         { ...page, rows: [{ ...page.rows[0], text: undefined }] },
         { ...page, rows: [{ ...page.rows[0], attemptStatus: "Free text" }] },
         { ...page, purpose: "agent" },
+        // thinking is an output's thinking_blocks array only (security P3-1)
+        { ...page, rows: [{ ...page.rows[1], thinking: "free text" }] },
+        { ...page, rows: [{ ...page.rows[1], thinking: { blocks: [] } }] },
+        { ...page, rows: [{ ...page.rows[0], thinking: [] }] },
+        // the page bytes stay inside Native's 4 MiB
+        {
+          ...page,
+          rows: [
+            { ...page.rows[0], text: "x".repeat(3 * 1024 * 1024) },
+            {
+              ...page.rows[1],
+              text: "y".repeat(512 * 1024),
+              thinking: [{ type: "thinking", text: "z".repeat(600 * 1024) }],
+            },
+          ],
+        },
       ]) {
         const answered = backendWith("nir1LocalConversationRead", answer);
         expect(

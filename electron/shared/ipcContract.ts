@@ -7631,6 +7631,15 @@ const NIR1_LOCAL_MAX_ID_BYTES = 256;
 export const NIR1_LOCAL_READ_MAX_LIMIT = 64;
 /** Native's `NIR1_LOCAL_CONTINUE_MAX_BYTES` (text and thinking each). */
 const NIR1_LOCAL_CONTINUE_MAX_BYTES = 64 * 1024;
+/**
+ * Native's `NIR1_LOCAL_CONVERSATION_PAGE_BYTES`: the text and thinking bytes
+ * of one read range (Native counts the body and the whole metadata, so the
+ * re-serialized `thinking_blocks` fit inside it).
+ */
+const NIR1_LOCAL_READ_PAGE_BYTES = 4 * 1024 * 1024;
+/** An RFC 3339 instant (the create time Native writes and parses). */
+const NIR1_LOCAL_RFC3339 =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u;
 /** Native's `NIR1_LOCAL_CONVERSATION_LIST_LIMIT`. */
 const NIR1_LOCAL_LIST_LIMIT = 256;
 /** Native's u32 offset. */
@@ -7943,7 +7952,7 @@ function nir1LocalConversationView(
   const createdAt = name.createdAt;
   if (
     createdAt !== null &&
-    (typeof createdAt !== "string" || createdAt.length > 64)
+    (typeof createdAt !== "string" || !NIR1_LOCAL_RFC3339.test(createdAt))
   ) {
     throw nir1LocalResultError(command, "displayName.createdAt");
   }
@@ -8056,6 +8065,7 @@ function parseNir1LocalReadResult(
   ) {
     throw nir1LocalResultError(command, "page");
   }
+  let pageBytes = 0;
   const checkedRows = rows.map((value) => {
     if (value === null || typeof value !== "object" || Array.isArray(value)) {
       throw nir1LocalResultError(command, "row");
@@ -8103,7 +8113,35 @@ function parseNir1LocalReadResult(
     ) {
       throw nir1LocalResultError(command, "row.attemptStatus");
     }
-    return row;
+    // `thinking` is an output's verified `thinking_blocks` (an array) only.
+    if (
+      row.thinking !== undefined &&
+      (row.kind !== "output" || !Array.isArray(row.thinking))
+    ) {
+      throw nir1LocalResultError(command, "row.thinking");
+    }
+    pageBytes +=
+      (typeof row.text === "string" ? utf8Bytes(row.text) : 0) +
+      (row.thinking === undefined
+        ? 0
+        : utf8Bytes(JSON.stringify(row.thinking)));
+    if (pageBytes > NIR1_LOCAL_READ_PAGE_BYTES) {
+      throw nir1LocalResultError(command, "page bytes");
+    }
+    // Only the known fields leave, rebuilt.
+    return {
+      messageId: row.messageId,
+      kind: row.kind,
+      createdAtMs: row.createdAtMs,
+      ...(row.text === undefined ? {} : { text: row.text }),
+      ...(row.thinking === undefined ? {} : { thinking: row.thinking }),
+      ...(row.attemptStatus === undefined
+        ? {}
+        : { attemptStatus: row.attemptStatus }),
+      ...(row.unavailable === undefined
+        ? {}
+        : { unavailable: row.unavailable }),
+    };
   });
   return { status: "ok", purpose, rows: checkedRows, total, truncated };
 }
