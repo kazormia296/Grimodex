@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 // K3/2 "chat の書込みの入口" 4 (DR-DA2B-R6): while restricted, the edit-and-
 // resend entrance of a conversation that is not a scene's is closed with its
@@ -23,12 +23,36 @@ import i18next from "@/lib/i18n";
 import { useChatStore } from "./chatStore";
 import { useChatMessageActions } from "./useChatMessageActions";
 import { resetNonSceneEditClosureForTest } from "./chatEgressClosure";
+import {
+  configureCloudRoute,
+  configureOpenaiCompatibleRoute,
+} from "./editCaptureRoute.testSupport";
+
+function installBridge(state: string) {
+  const invoke = vi.fn(async () => ({ ok: true, value: { state } }));
+  (window as unknown as { grimodex?: unknown }).grimodex = {
+    invoke,
+    listen: vi.fn(() => () => undefined),
+  };
+  return invoke;
+}
+
+afterEach(() => {
+  delete (window as unknown as { grimodex?: unknown }).grimodex;
+});
 
 function render(editClosed: boolean) {
   const editUserMessage = vi.fn(() => ({ content: "" }));
-  // 場面の会話（同期の経路）。非場面の会話の状態の読取は
-  // `useChatMessageActions.nonSceneEdit.test.tsx`（DR-DA2B-R17）。
+  // 場面の会話で、再送が capture の内の route（同期の経路。Electron の bridge があり、
+  // loopback の OpenAI 互換）。状態の読取の経路は
+  // `useChatMessageActions.nonSceneEdit.test.tsx`（DR-DA2B-R17、R29）。
+  if (!(window as unknown as { grimodex?: unknown }).grimodex) {
+    installBridge("restricted");
+  }
+  configureOpenaiCompatibleRoute();
   useChatStore.setState({
+    agentMode: false,
+    ragEnabled: false,
     editUserMessage,
     // 対象の行は一覧にある（同期の経路でも対象の確認を通る。R21）。
     activeProjectId: "p1",
@@ -100,27 +124,39 @@ describe("the closed edit-and-resend entrance", () => {
     toastInfo.mockClear();
     resetNonSceneEditClosureForTest();
     await import("@/lib/profileEgressStatus");
-    const invoke = vi.fn(async () => ({
-      ok: true,
-      value: { state: "restricted" },
-    }));
-    (window as unknown as { grimodex?: unknown }).grimodex = {
-      invoke,
-      listen: vi.fn(() => () => undefined),
-    };
-    try {
-      const { result, editUserMessage } = render(false);
-      useChatStore.setState({ chatScope: "project", activeSceneId: "" });
-      result.current.handleEditMessage("m1");
-      await vi.waitFor(() =>
-        expect(toastInfo).toHaveBeenCalledWith(
-          i18next.t("profileEgress.chat.editClosed"),
-        ),
-      );
-      expect(invoke).toHaveBeenCalledWith("get_profile_egress_status");
-      expect(editUserMessage).not.toHaveBeenCalled();
-    } finally {
-      delete (window as unknown as { grimodex?: unknown }).grimodex;
-    }
+    const invoke = installBridge("restricted");
+    const { result, editUserMessage } = render(false);
+    useChatStore.setState({ chatScope: "project", activeSceneId: "" });
+    result.current.handleEditMessage("m1");
+    await vi.waitFor(() =>
+      expect(toastInfo).toHaveBeenCalledWith(
+        i18next.t("profileEgress.chat.editClosed"),
+      ),
+    );
+    expect(invoke).toHaveBeenCalledWith("get_profile_egress_status");
+    expect(editUserMessage).not.toHaveBeenCalled();
+  });
+
+  // 表の 5（DR-DA2B-R29）：場面の会話で route が capture の外のときは、「場面の会話で
+  // ない会話の」と言う editClosed ではなく、route の文（案）を出す。
+  it("定数が true で、場面の会話の route が capture の外なら editClosedRoute を出す", async () => {
+    enabled.value = true;
+    toastInfo.mockClear();
+    resetNonSceneEditClosureForTest();
+    await import("@/lib/profileEgressStatus");
+    const invoke = installBridge("restricted");
+    const { result, editUserMessage } = render(false);
+    configureCloudRoute();
+    result.current.handleEditMessage("m1");
+    await vi.waitFor(() =>
+      expect(toastInfo).toHaveBeenCalledWith(
+        i18next.t("profileEgress.chat.editClosedRoute"),
+      ),
+    );
+    expect(i18next.t("profileEgress.chat.editClosedRoute")).not.toBe(
+      i18next.t("profileEgress.chat.editClosed"),
+    );
+    expect(invoke).toHaveBeenCalledWith("get_profile_egress_status");
+    expect(editUserMessage).not.toHaveBeenCalled();
   });
 });

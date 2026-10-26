@@ -82,6 +82,9 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
         "外部送信を制限中は、場面の会話でない会話に入力を保存できません。",
       editClosed:
         "外部送信を制限中は、場面の会話でない会話のメッセージを編集して送り直せません。削除はできます。",
+      // 場面の会話で、再送が capture の外の route（文言は案。承認は Session C-1、DR-DA2B-R29）。
+      editClosedRoute:
+        "外部送信を制限中は、いまの AI の設定では送り直した入力を保存できないため、このメッセージを編集して送り直せません。削除はできます。",
     },
     import: {
       chatsRestricted:
@@ -164,6 +167,8 @@ export const PROFILE_EGRESS_TRANSLATIONS = {
         "While external sending is restricted, input cannot be saved in a conversation that is not a scene's.",
       editClosed:
         "While external sending is restricted, messages in a conversation that is not a scene's cannot be edited and resent. They can still be deleted.",
+      editClosedRoute:
+        "While external sending is restricted, this message cannot be edited and resent, because the current AI settings cannot save the resent input. It can still be deleted.",
     },
     import: {
       chatsRestricted:

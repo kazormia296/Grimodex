@@ -538,10 +538,10 @@ export function ChatInput({
       const userMessages = messages.filter((m) => m.role === "user");
       const last = userMessages[userMessages.length - 1];
       if (!last) return;
-      // 場面の会話でないときは、定数に依らず状態を読んでから進む（DR-DA2B-R17）。
+      // 再送が capture に入らないときは、定数に依らず状態を読む（DR-DA2B-R17、R29）。
       const target = snapshotEditTarget(useChatStore.getState(), last.id);
       void admitConversationEdit({
-        sceneConversation: target.sceneConversation,
+        target,
         // 削除の前提：editor が生きていて、空のまま（ArrowUp は空の入力欄でだけ発火する。
         // 読取の間に打った文字を上書きしない。DR-DA2B-R20、R21）。
         isCurrent: () =>

@@ -81,6 +81,10 @@ import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profile
 import { useChatStore } from "../chatStore";
 import { resetNonSceneEditClosureForTest } from "../chatEgressClosure";
 import { ChatInput } from "./ChatInput";
+import {
+  configureCloudRoute,
+  configureOpenaiCompatibleRoute,
+} from "../editCaptureRoute.testSupport";
 
 const STATUS = "get_profile_egress_status";
 
@@ -99,6 +103,7 @@ function installBridge(state: unknown) {
 function renderInput(scope: "project" | "scene") {
   useChatStore.setState({
     agentMode: false,
+    ragEnabled: false,
     activeProjectId: "p1",
     activeSessionId: "s1",
     activeSceneId: scope === "scene" ? "scene-1" : "",
@@ -143,6 +148,7 @@ describe("入力欄の最後の行の編集（本物の定数のまま）", () =
     h.editor.commands.setContent.mockClear();
     h.toastError.mockClear();
     h.deleteMessages.mockClear();
+    configureOpenaiCompatibleRoute();
   });
   afterEach(() => {
     delete (window as unknown as { grimodex?: unknown }).grimodex;
@@ -246,12 +252,48 @@ describe("入力欄の最後の行の編集（本物の定数のまま）", () =
     },
   );
 
-  it("場面の会話では状態を読まず、同期で編集する", () => {
+  it("場面の会話で route が capture の内なら状態を読まず、同期で編集する", () => {
     const invoke = installBridge({ state: "restricted" });
     renderInput("scene");
     h.onEditLast.current();
     expect(invoke).not.toHaveBeenCalled();
     expect(h.deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
     expect(h.editor.commands.setContent).toHaveBeenCalledWith("last question");
+  });
+
+  // 表の 5（DR-DA2B-R29）：場面の会話でも route が capture の外なら状態を読む。
+  it.each([
+    ["cloud の provider", () => configureCloudRoute()],
+    ["agent", () => useChatStore.setState({ agentMode: true })],
+  ] as Array<[string, () => void]>)(
+    "場面の会話で %s なら restricted で行を消さない",
+    async (_label, arrange) => {
+      const invoke = installBridge({ state: "restricted" });
+      renderInput("scene");
+      arrange();
+      h.onEditLast.current();
+      await vi.waitFor(() =>
+        expect(h.toastError).toHaveBeenCalledWith(i18next.t("common.error")),
+      );
+      await flush();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(h.deleteMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages).toHaveLength(2);
+      expect(h.editor.commands.setContent).not.toHaveBeenCalled();
+    },
+  );
+
+  it("場面の会話で cloud の route でも unrestricted なら今のとおり編集する", async () => {
+    const invoke = installBridge({ state: "unrestricted" });
+    configureCloudRoute();
+    renderInput("scene");
+    h.onEditLast.current();
+    await vi.waitFor(() =>
+      expect(h.editor.commands.setContent).toHaveBeenCalledWith(
+        "last question",
+      ),
+    );
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(h.deleteMessages).toHaveBeenCalledWith(["u1", "a1"]);
   });
 });

@@ -568,6 +568,7 @@ requirements:
       - src/application/chat/chatStoreSupport.turnErrorText.test.ts
       - src/features/chat/chatApi.cw.test.ts
       - src/features/chat/chatEgressClosure.test.ts
+      - src/features/chat/chatEgressClosure.captureRoute.test.ts
       - src/features/chat/chatEgressScope.test.ts
       - src/features/chat/ChatPanel.egressScope.test.tsx
       - src/features/chat/useChatPinsController.test.tsx

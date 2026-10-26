@@ -268,10 +268,11 @@ export function useChatMessageActions({
         toast.info(i18next.t("profileEgress.chat.editClosed"));
         return;
       }
-      // 場面の会話でないときは、定数に依らず状態を読んでから進む（DR-DA2B-R17）。
+      // 再送が capture に入らない（場面の会話でない、または route が capture の外）
+      // ときは、定数に依らず状態を読んでから進む（DR-DA2B-R17、R29）。
       const target = snapshotEditTarget(useChatStore.getState(), messageId);
       void admitConversationEdit({
-        sceneConversation: target.sceneConversation,
+        target,
         // 削除の前提：本文を戻す先の editor が生きていること（読取の間に ChatPanel を
         // 閉じても、行だけを消さない。DR-DA2B-R21）。
         isCurrent: () => {

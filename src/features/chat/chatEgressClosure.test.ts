@@ -6,6 +6,7 @@ import {
   isNonSceneEditClosed,
   isSceneConversation,
   snapshotEditTarget,
+  type EditCaptureState,
   type EditTargetState,
 } from "./chatEgressClosure";
 
@@ -31,7 +32,9 @@ describe("isNonSceneEditClosed（fail-closed）", () => {
   });
 });
 
-const base: EditTargetState = {
+const base: EditCaptureState = {
+  agentMode: false,
+  ragEnabled: false,
   chatScope: "scene",
   activeSceneId: "scene-1",
   scopeAnchorId: null,
@@ -65,7 +68,7 @@ describe("isSceneConversation（capture の会話の条件と同じ）", () => {
 });
 
 describe("isEditTargetCurrent", () => {
-  const project: EditTargetState = { ...base, chatScope: "project" };
+  const project: EditCaptureState = { ...base, chatScope: "project" };
   const snap = snapshotEditTarget(project, "u1");
 
   it("同じなら真", () => {
@@ -144,9 +147,9 @@ describe("editUserMessage を呼ぶ製品の入口（静的）", () => {
     expect(body).toMatch(
       /isCurrent:\s*\(\)\s*=>[\s\S]*?isDestroyed[\s\S]*?isEditTargetCurrent\(/,
     );
-    // snapshot → admit（sceneConversation は snapshot から）→ proceed の中の呼出し。
+    // snapshot → admit（capture の判定は snapshot から、R29）→ proceed の中の呼出し。
     expect(body).toMatch(
-      /snapshotEditTarget\(\s*useChatStore\.getState\(\),[\s\S]*?admitConversationEdit\(\{\s*sceneConversation:\s*target\.sceneConversation,\s*isCurrent:[\s\S]*?isEditTargetCurrent\(\s*target,\s*useChatStore\.getState\(\)[\s\S]*?proceed:\s*\(\)\s*=>\s*\{\s*const \{ content, mentionedSceneIds \} = editUserMessage\(/,
+      /snapshotEditTarget\(\s*useChatStore\.getState\(\),[\s\S]*?admitConversationEdit\(\{\s*target,\s*isCurrent:[\s\S]*?isEditTargetCurrent\(\s*target,\s*useChatStore\.getState\(\)[\s\S]*?proceed:\s*\(\)\s*=>\s*\{\s*const \{ content, mentionedSceneIds \} = editUserMessage\(/,
     );
   });
 

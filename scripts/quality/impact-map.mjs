@@ -413,6 +413,8 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "src/features/chat/chatEgressClosure.test.ts",
         "src/features/chat/components/ChatInput.nonSceneEdit.test.tsx",
         "src/features/chat/useChatMessageActions.nonSceneEdit.test.tsx",
+        // DA-2b の PUB-G 前の必須 5（DR-DA2B-R29）：route が capture の外の場面の会話の編集。
+        "src/features/chat/chatEgressClosure.captureRoute.test.ts",
         // DA-2b の PUB-G 前の必須 3・4（DR-DA2B-R22〜R24）：AI の入口の UI の閉鎖。
         "src/application/chat/chatEntrances.egressClosure.test.ts",
         "src/features/ai-policy/useAiGate.egressClosure.test.tsx",

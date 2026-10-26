@@ -34,6 +34,10 @@ import {
   NON_SCENE_EDIT_STATUS_TIMEOUT_MS,
   resetNonSceneEditClosureForTest,
 } from "./chatEgressClosure";
+import {
+  configureCloudRoute,
+  configureOpenaiCompatibleRoute,
+} from "./editCaptureRoute.testSupport";
 
 type Answer = () => Promise<unknown>;
 const STATUS = "get_profile_egress_status";
@@ -250,8 +254,9 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
     },
   );
 
-  it("場面の会話では状態を読まず、同期で編集する", () => {
+  it("場面の会話で route が capture の内なら状態を読まず、同期で編集する", () => {
     const invoke = installBridge(ok({ state: "restricted" }));
+    configureOpenaiCompatibleRoute();
     seed("scene");
     renderActions().current.handleEditMessage("u1");
     expect(invoke).not.toHaveBeenCalled();
@@ -451,5 +456,140 @@ describe("非場面の会話の編集して再送（本物の定数のまま）"
     await vi.waitFor(() =>
       expect(deleteMessages).toHaveBeenCalledWith(["u1", "a1"]),
     );
+  });
+});
+
+// DA-2b の PUB-G 前の必須 5（DR-DA2B-R29、表の 5 の案 (a)）：場面の会話でも、再送が
+// capture の外になる route なら、非場面の会話と同じく状態を読み、unrestricted のときだけ進む。
+describe("場面の会話で route が capture の外の編集して再送（本物の定数のまま）", () => {
+  beforeEach(() => {
+    resetNonSceneEditClosureForTest();
+    toastInfo.mockClear();
+    toastError.mockClear();
+    deleteMessages.mockClear();
+    configureOpenaiCompatibleRoute();
+  });
+  afterEach(() => {
+    delete (window as unknown as { grimodex?: unknown }).grimodex;
+  });
+
+  const outside: Array<[string, () => void]> = [
+    ["cloud の provider", () => configureCloudRoute()],
+    [
+      "loopback でない OpenAI 互換",
+      () => configureOpenaiCompatibleRoute("http://192.168.1.20:12345/v1"),
+    ],
+    ["agent", () => useChatStore.setState({ agentMode: true })],
+    ["RAG", () => useChatStore.setState({ ragEnabled: true })],
+    [
+      "対象の行の scene の mention",
+      () =>
+        useChatStore.setState({
+          messages: useChatStore.getState().messages.map((message) =>
+            message.id === "u1"
+              ? {
+                  ...message,
+                  metadata: JSON.stringify({
+                    mentioned_scene_ids: ["scene-2"],
+                  }),
+                }
+              : message,
+          ),
+        }),
+    ],
+  ];
+
+  it.each(outside)(
+    "%s では restricted で行を消さず、一般の文を出す",
+    async (_label, arrange) => {
+      const invoke = installBridge(ok({ state: "restricted" }));
+      seed("scene");
+      useChatStore.setState({ agentMode: false, ragEnabled: false });
+      arrange();
+      renderActions().current.handleEditMessage("u1");
+      await closedShown();
+      await flush();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(deleteMessages).not.toHaveBeenCalled();
+      expect(useChatStore.getState().messages.map((m) => m.id)).toEqual([
+        "u1",
+        "a1",
+      ]);
+      expect(toastError).toHaveBeenCalledTimes(1);
+      expect(toastInfo).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(outside)(
+    "%s でも unrestricted なら今のとおり編集する（往復 1 回）",
+    async (_label, arrange) => {
+      const invoke = installBridge(ok({ state: "unrestricted" }));
+      seed("scene");
+      useChatStore.setState({ agentMode: false, ragEnabled: false });
+      arrange();
+      renderActions().current.handleEditMessage("u1");
+      await vi.waitFor(() =>
+        expect(deleteMessages).toHaveBeenCalledWith(["u1", "a1"]),
+      );
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(toastError).not.toHaveBeenCalled();
+    },
+  );
+
+  it("restricted を読めたら保持し、capture の外の 2 回目は読まずに閉じる", async () => {
+    const invoke = installBridge(ok({ state: "restricted" }));
+    configureCloudRoute();
+    seed("scene");
+    const result = renderActions();
+    result.current.handleEditMessage("u1");
+    await closedShown();
+    toastError.mockClear();
+    result.current.handleEditMessage("u1");
+    await closedShown();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(deleteMessages).not.toHaveBeenCalled();
+  });
+
+  it("判定は click の時点：読取の間に capture の内の route へ切り替えても restricted なら閉じる", async () => {
+    const gate = deferred();
+    const invoke = installBridge(() => gate.promise);
+    configureCloudRoute();
+    seed("scene");
+    renderActions().current.handleEditMessage("u1");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    configureOpenaiCompatibleRoute();
+    gate.resolve({ ok: true, value: { state: "restricted" } });
+    await closedShown();
+    expect(deleteMessages).not.toHaveBeenCalled();
+  });
+
+  it("読取の間の会話の切替では、unrestricted でも編集せず通知もしない", async () => {
+    const gate = deferred();
+    const invoke = installBridge(() => gate.promise);
+    configureCloudRoute();
+    seed("scene");
+    renderActions().current.handleEditMessage("u1");
+    await vi.waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    useChatStore.setState({ activeSessionId: "s2" });
+    gate.resolve({ ok: true, value: { state: "unrestricted" } });
+    await flush();
+    expect(deleteMessages).not.toHaveBeenCalled();
+    expect(toastError).not.toHaveBeenCalled();
+  });
+
+  it("capture の外の連打は読取 1 本、表示 1 回にまとめる", async () => {
+    const gate = deferred();
+    const invoke = installBridge(() => gate.promise);
+    configureCloudRoute();
+    seed("scene");
+    const result = renderActions();
+    result.current.handleEditMessage("u1");
+    result.current.handleEditMessage("u1");
+    gate.resolve({ ok: true, value: { state: "restricted" } });
+    await closedShown();
+    await flush();
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(toastError).toHaveBeenCalledTimes(1);
+    expect(deleteMessages).not.toHaveBeenCalled();
   });
 });
