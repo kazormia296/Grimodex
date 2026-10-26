@@ -38,6 +38,7 @@ import assert from "node:assert/strict";
 import console from "node:console";
 import { execFileSync } from "node:child_process";
 import { isDeepStrictEqual } from "node:util";
+import { constants as fsConstants } from "node:fs";
 import { createHash } from "node:crypto";
 import {
   copyFile,
@@ -324,26 +325,101 @@ function commandRecord(entry, result) {
   };
 }
 
-/** B-6: the bytes at Main's worker path before the build, kept in `out`. */
-async function backUpMainWorker(root, plan) {
-  const main = plan.outputs.mainWorker;
-  const sha256 = await optionalSha256(main);
-  if (sha256 === null)
+/**
+ * B-6 / E-2: the worker bytes at Main's dev path are kept before a build
+ * overwrites them. A ledger (`previous-main-worker/ledger.json`, written at
+ * once, before any command) lists every kept file by its sha256 and the
+ * workers evaluation builds wrote. A backup is never overwritten (its
+ * directory is its sha256), an evaluation worker is never backed up, and a
+ * run that did not finish (`pending`) marks what is at Main's path now as
+ * written by that run. The command to restore names the latest backup.
+ */
+const LEDGER_FILE = "ledger.json";
+
+function backupDir(plan) {
+  return path.join(plan.out, "previous-main-worker");
+}
+
+async function readLedger(plan) {
+  try {
+    const ledger = JSON.parse(
+      await readFile(path.join(backupDir(plan), LEDGER_FILE), "utf8"),
+    );
     return {
-      path: MAIN_WORKER,
-      backup: null,
-      sha256: null,
-      restore: "nothing to restore: no worker was at Main's path",
+      backups: Array.isArray(ledger.backups) ? ledger.backups : [],
+      evalWorkers: Array.isArray(ledger.evalWorkers) ? ledger.evalWorkers : [],
+      pending: ledger.pending ?? null,
     };
-  const backup = path.join(plan.out, "previous-main-worker", WORKER_FILE_NAME);
-  await mkdir(path.dirname(backup), { recursive: true });
-  await copyFile(main, backup);
-  const relative = path.relative(root, backup);
+  } catch (error) {
+    if (error?.code === "ENOENT")
+      return { backups: [], evalWorkers: [], pending: null };
+    throw precheck(
+      `the worker backup ledger is unreadable; refusing to overwrite Main's worker (${error?.code ?? error})`,
+    );
+  }
+}
+
+async function writeLedger(plan, ledger) {
+  await mkdir(backupDir(plan), { recursive: true });
+  await writeFile(
+    path.join(backupDir(plan), LEDGER_FILE),
+    `${JSON.stringify(ledger, null, 2)}\n`,
+  );
+}
+
+async function backUpMainWorker(root, plan) {
+  const ledger = await readLedger(plan);
+  const sha256 = await optionalSha256(plan.outputs.mainWorker);
+  if (
+    ledger.pending &&
+    sha256 !== null &&
+    sha256 !== ledger.pending.mainSha256Before &&
+    !ledger.evalWorkers.includes(sha256)
+  )
+    ledger.evalWorkers.push(sha256);
+  if (
+    sha256 !== null &&
+    !ledger.evalWorkers.includes(sha256) &&
+    !ledger.backups.some((row) => row.sha256 === sha256)
+  ) {
+    const backup = path.join(backupDir(plan), sha256, WORKER_FILE_NAME);
+    await mkdir(path.dirname(backup), { recursive: true });
+    try {
+      await copyFile(
+        plan.outputs.mainWorker,
+        backup,
+        fsConstants.COPYFILE_EXCL,
+      );
+    } catch (error) {
+      // A backup named by this sha is already there: keep it as it is.
+      if (error?.code !== "EEXIST" || (await optionalSha256(backup)) !== sha256)
+        throw error;
+    }
+    ledger.backups.push({
+      sha256,
+      backup: path.relative(root, backup),
+      savedAt: new Date().toISOString(),
+    });
+  }
+  ledger.pending = {
+    startedAt: new Date().toISOString(),
+    mainSha256Before: sha256,
+  };
+  await writeLedger(plan, ledger);
+  return ledger;
+}
+
+/** The manifest block: the ledger and the latest backup to restore. */
+function previousMainWorkerRecord(root, plan, ledger) {
+  const latest = ledger.backups.at(-1) ?? null;
   return {
     path: MAIN_WORKER,
-    backup: relative,
-    sha256,
-    restore: `cp -- ${relative} ${MAIN_WORKER}`,
+    ledger: path.relative(root, path.join(backupDir(plan), LEDGER_FILE)),
+    backup: latest?.backup ?? null,
+    sha256: latest?.sha256 ?? null,
+    restore: latest
+      ? `cp -- ${latest.backup} ${MAIN_WORKER}`
+      : "nothing to restore: no worker was at Main's path",
   };
 }
 
@@ -381,7 +457,7 @@ export async function runEvalNativeBuild({
   // B-6: the worker at Main's dev path is overwritten by the build (cargo's
   // own output or the copy). Keep the bytes that were there, with their sha
   // in the manifest and the command that puts them back.
-  const previousMainWorker = await backUpMainWorker(root, plan);
+  const ledger = await backUpMainWorker(root, plan);
   const commands = [];
   for (const entry of plan.commands) {
     const result = await runCommand(
@@ -398,6 +474,14 @@ export async function runEvalNativeBuild({
     );
     const record = commandRecord(entry, result);
     commands.push(record);
+    if (entry.id === "c-query-worker") {
+      // E-2: the worker this build wrote is never backed up later.
+      const built = await optionalSha256(plan.copies[0].from);
+      if (built !== null && !ledger.evalWorkers.includes(built)) {
+        ledger.evalWorkers.push(built);
+        await writeLedger(plan, ledger);
+      }
+    }
     if (record.status !== "passed") {
       throw new Error(
         `the ${entry.id} build ${record.status}; no manifest was written`,
@@ -467,7 +551,7 @@ export async function runEvalNativeBuild({
     },
     worker: { path: workerPath, sha256: workerSha256 },
     mainWorker: { path: MAIN_WORKER, sha256: mainWorkerSha256 },
-    previousMainWorker,
+    previousMainWorker: previousMainWorkerRecord(root, plan, ledger),
     declarations: {
       path: path.relative(root, plan.outputs.declarations),
       sha256: await sha256File(plan.outputs.declarations),
@@ -478,6 +562,8 @@ export async function runEvalNativeBuild({
     startedAt,
     finishedAt: new Date().toISOString(),
   };
+  ledger.pending = null;
+  await writeLedger(plan, ledger);
   await writeFile(
     plan.outputs.manifest,
     `${JSON.stringify(manifest, null, 2)}\n`,

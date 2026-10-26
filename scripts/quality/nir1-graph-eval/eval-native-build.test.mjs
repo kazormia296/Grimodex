@@ -442,3 +442,109 @@ test("B-6: Main の path の旧い worker は build の前に退避して sha �
     await rm(target, { recursive: true, force: true });
   }
 });
+
+test("E-2: 2 回目の評価 build は 1 回目の dev の worker の退避を上書きせず、戻す手順は dev の worker を指す", async () => {
+  const root = await fakeRepository();
+  const target = await mkdtemp(path.join(os.tmpdir(), "cp4-eval-target-"));
+  try {
+    await mkdir(path.join(root, path.dirname(MAIN_WORKER)), {
+      recursive: true,
+    });
+    await writeFile(path.join(root, MAIN_WORKER), "dev worker");
+    let build = 0;
+    const runCommand = async (entry, options) => {
+      if (entry.args.includes("napi")) return fakeRun(root)(entry, options);
+      build += 1;
+      await mkdir(path.join(target, "release"), { recursive: true });
+      await writeFile(
+        path.join(target, "release", path.basename(WORKER_ARTIFACT)),
+        `eval worker ${build}`,
+      );
+      return passed;
+    };
+    const run = () =>
+      runEvalNativeBuild({
+        targetDir: target,
+        root,
+        runCommand,
+        inspect: () => goodInspection,
+      });
+    const first = await run();
+    const second = await run();
+    const dev = createHash("sha256").update("dev worker").digest("hex");
+    for (const manifest of [first, second]) {
+      assert.equal(manifest.previousMainWorker.sha256, dev);
+      assert.equal(
+        await readFile(
+          path.join(root, manifest.previousMainWorker.backup),
+          "utf8",
+        ),
+        "dev worker",
+      );
+    }
+    // 退避は dev の worker の 1 件だけ（1 回目の評価 worker は退避しない）。
+    const ledger = JSON.parse(
+      await readFile(path.join(root, second.previousMainWorker.ledger), "utf8"),
+    );
+    assert.deepEqual(
+      ledger.backups.map((row) => row.sha256),
+      [dev],
+    );
+    assert.equal(ledger.pending, null);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(target, { recursive: true, force: true });
+  }
+});
+
+test("E-2: cargo が Main の path を書いた後に中断しても、退避と sidecar は残り、次の実行は途中の worker を退避しない", async () => {
+  const root = await fakeRepository();
+  try {
+    await mkdir(path.join(root, path.dirname(MAIN_WORKER)), {
+      recursive: true,
+    });
+    await writeFile(path.join(root, MAIN_WORKER), "dev worker");
+    // CARGO_TARGET_DIR が無いとき cargo の出力は Main の path。書いた後に止まる。
+    const interrupted = async (entry, options) => {
+      if (entry.args.includes("napi")) return fakeRun(root)(entry, options);
+      await writeFile(path.join(root, WORKER_ARTIFACT), "half-built eval");
+      throw new Error("killed");
+    };
+    await assert.rejects(
+      runEvalNativeBuild({
+        targetDir: null,
+        root,
+        runCommand: interrupted,
+        inspect: () => goodInspection,
+      }),
+      /killed/,
+    );
+    const ledgerFile = path.join(
+      root,
+      DEFAULT_OUT_DIR,
+      "previous-main-worker/ledger.json",
+    );
+    const dev = createHash("sha256").update("dev worker").digest("hex");
+    const pending = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.deepEqual(
+      pending.backups.map((row) => row.sha256),
+      [dev],
+    );
+    assert.equal(pending.pending.mainSha256Before, dev);
+    const manifest = await runEvalNativeBuild({
+      targetDir: null,
+      root,
+      runCommand: fakeRun(root),
+      inspect: () => goodInspection,
+    });
+    assert.equal(manifest.previousMainWorker.sha256, dev);
+    assert.match(manifest.previousMainWorker.restore, /cp -- /);
+    const ledger = JSON.parse(await readFile(ledgerFile, "utf8"));
+    assert.deepEqual(
+      ledger.backups.map((row) => row.sha256),
+      [dev],
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
