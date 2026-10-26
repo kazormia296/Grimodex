@@ -1,6 +1,7 @@
 // B-7: the failure paths of the Electron session (stop, launch, start) with a
 // fake app and a synthetic /proc. Nothing here launches Electron.
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import {
   existsSync,
   mkdirSync,
@@ -16,6 +17,7 @@ import { launch } from "./dprime-check.mjs";
 import { launchGraphEvalElectron, stopElectron } from "./launcher.mjs";
 import {
   assessMainWorker,
+  SOCKET_SUFFIX_BYTES,
   killLiveSessionsSync,
   startSession,
 } from "./session.mjs";
@@ -419,8 +421,20 @@ test("B-5: 取消しの signal では記録した Electron の process group と
   }
 });
 
-test("B P3: session の TMPDIR は短い path で、停止の後に消える", async () => {
-  const runDir = mkdtempSync(path.join(os.tmpdir(), "cp4-tmp-"));
+test("B P3／E-9: session の TMPDIR は unix socket の上限に収まる短い path で、停止の後に消える（環境の TMPDIR に依らない）", async () => {
+  const runDir = mkdtempSync(path.join("/tmp", "cp4-tmp-"));
+  const start = async (deps, tmpRoot = null) =>
+    startSession({
+      runDir: path.join(runDir, "a".repeat(80)),
+      label: "s",
+      server: { url: (page) => `http://127.0.0.1:1${page}` },
+      observer: { path: "/x/observer.cjs" },
+      nativePath: "/x/grimodex-node.node",
+      d2aMode: "restricted",
+      models: {},
+      tmpRoot,
+      deps,
+    });
   try {
     const calls = { launch: 0, stop: 0 };
     let launchedEnv = null;
@@ -432,22 +446,23 @@ test("B P3: session の TMPDIR は短い path で、停止の後に消える", a
       launchedEnv = input.env;
       return launchFake(input);
     };
-    const session = await startSession({
-      runDir: path.join(runDir, "a".repeat(80)),
-      label: "s",
-      server: { url: (page) => `http://127.0.0.1:1${page}` },
-      observer: { path: "/x/observer.cjs" },
-      nativePath: "/x/grimodex-node.node",
-      d2aMode: "restricted",
-      models: {},
-      deps,
-    });
+    // 長い TMPDIR の環境では短い /tmp に落ちる。
+    const longBase = path.join(runDir, "b".repeat(90));
+    mkdirSync(longBase, { recursive: true });
+    const session = await start({ ...deps, tmpBase: longBase });
     const tmp = launchedEnv.TMPDIR;
-    assert.ok(tmp.length < 60, tmp);
+    assert.ok(tmp.startsWith("/tmp/cp4-"), tmp);
+    assert.ok(Buffer.byteLength(tmp) + SOCKET_SUFFIX_BYTES <= 107, tmp);
     assert.ok(existsSync(tmp));
     const evidence = await session.stop();
     assert.equal(existsSync(tmp), false);
     assert.equal(evidence.tmp.removed, true);
+    // どの候補も長ければ、起動の前に [precheck]。
+    await assert.rejects(
+      start({ ...deps, tmpBase: longBase, tmpFallback: longBase }),
+      /\[precheck\].*108/,
+    );
+    await assert.rejects(start(deps, longBase), /\[precheck\].*108/);
   } finally {
     rmSync(runDir, { recursive: true, force: true });
   }

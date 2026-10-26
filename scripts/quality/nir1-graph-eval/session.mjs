@@ -116,6 +116,29 @@ function installSignalCleanup() {
     });
 }
 
+/**
+ * E-9: a unix socket path is at most 107 bytes. Chromium puts its sockets at
+ * `<TMPDIR>/.org.chromium.Chromium.XXXXXX/SingletonSocket` (46 bytes after
+ * TMPDIR).
+ */
+export const SOCKET_PATH_MAX_BYTES = 107;
+export const SOCKET_SUFFIX_BYTES =
+  "/.org.chromium.Chromium.XXXXXX/SingletonSocket".length;
+const MKDTEMP_BYTES = "/cp4-XXXXXX".length;
+
+function shortTmpBase(candidates) {
+  const fits = candidates.find(
+    (base) =>
+      Buffer.byteLength(base) + MKDTEMP_BYTES + SOCKET_SUFFIX_BYTES <=
+      SOCKET_PATH_MAX_BYTES,
+  );
+  if (!fits)
+    throw new Error(
+      `[precheck] no temp directory keeps Chromium's unix socket path within the 108-byte limit (${candidates.join(", ")})`,
+    );
+  return fits;
+}
+
 function hashFileOrNull(file) {
   return existsSync(file) ? sha256(readFileSync(file)) : null;
 }
@@ -185,16 +208,22 @@ export async function startSession({
     listX11 = x11Listing,
     wrapperEnv = process.env,
     hashFile = hashFileOrNull,
+    tmpBase = os.tmpdir(),
+    tmpFallback = "/tmp",
   } = deps;
   assertXvfbWrapperEnv(wrapperEnv);
   const dir = path.join(runDir, label);
   await mkdir(dir, { recursive: true });
   // Chromium's unix sockets live under TMPDIR (108-byte limit): the given
-  // short root, or a fresh short directory under the OS temp dir (B P3; the
-  // session directory is too long). Removed after the stop.
+  // root, or a fresh directory under the OS temp dir, else /tmp, whichever
+  // keeps the socket path within the limit (B P3, E-9). Removed after the stop.
   const tmpDir = tmpRoot
     ? path.join(tmpRoot, `${path.basename(runDir)}-${label}`)
-    : await mkdtemp(path.join(os.tmpdir(), "cp4-"));
+    : await mkdtemp(path.join(shortTmpBase([tmpBase, tmpFallback]), "cp4-"));
+  if (Buffer.byteLength(tmpDir) + SOCKET_SUFFIX_BYTES > SOCKET_PATH_MAX_BYTES)
+    throw new Error(
+      `[precheck] TMPDIR ${tmpDir} leaves no room for Chromium's unix socket path (108-byte limit)`,
+    );
   await mkdir(tmpDir, { recursive: true });
   // B-3: the run's own XDG_RUNTIME_DIR (0700), never the user's /run/user.
   await mkdir(runtimeDirOf(tmpDir), { recursive: true, mode: 0o700 });
