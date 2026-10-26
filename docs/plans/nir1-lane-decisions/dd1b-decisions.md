@@ -193,3 +193,16 @@ security は P1／P2 なし。lifecycle は P1 が 1 件、P2 が 2 件。上の
 | C3 `createdAt` の形の確認を外す | 作成の表示名 |
 
 実行した検証：`npx tsc --noEmit -p electron/tsconfig.json`（0 件）、`vitest --config vitest.electron.config.ts`（98 file、2309 件。R5／S1 の試験を足す前）と、足した後の `nir1LocalGeneration.test.ts`（31 件）、`vitest --config vitest.electron-native.config.ts`（9 file、51 件）。
+
+## 再レビュー（lifecycle、security。HEAD `3c4f8f18`）の P3 の追記（2026-10-26）
+
+新しい P1／P2 はなし。残る P3 のうち 5 点を直すか、記録した。
+
+| ID | 判断・訂正 | 状態 |
+|---|---|---|
+| DR-DD1B-25 | （lifecycle P3-1。DR-DD1B-16 の補足）Main が応答の形を拒否したときの `cancelSender` は、同じ sender の全生成を止める（走行中の handle は Main の束縛と Native の entry ごと外れ、保留中の別の start は `SENDER_REFUSED`）。Main は handle を 1 つだけ止める Main 専用の手段を持たないための保守的な線引きで、影響は同じ sender の可用性だけで、他の sender には及ばない。試験 X1 で固定した（停止の呼出しは拒否した start の 1 回。保留中の start は停止の回数の変化で拒否される） | 記録・試験済み |
+| DR-DD1B-26 | （lifecycle P3-2）JSON でない Native の応答（`parseWire` の失敗）も、形の拒否と同じ `invalid result … not JSON` として扱い、start なら `cancelSender` を呼ぶ | 実装・試験済み（修正前に落ちることを確かめた） |
+| DR-DD1B-27 | （lifecycle P3-3）destroyed の listener は停止の後に `stopCounts` からその sender を消す（`liveSenders`、`lastIdentity` と同じく、webContents ごとに表が増え続けない）。保留中の invoke は `isDestroyed` が先に拒否する。invoke ごとの admit の時点の回数は context を key にする `WeakMap` なので掃除は要らない | 実装・試験済み（修正前に落ちることを確かめた） |
+| DR-DD1B-28 | （lifecycle P3-4、security P3-1）試験だけを足した：caller の交代の後の最初の start が通る（N8）、running の continue で束縛が settled にならない（N9）、既定の userData を親の link を解決して照合する（M20） | 試験済み |
+
+変異（修正を commit してから、原本の copy から戻す）：N8（admit の時点の回数の記録を交代の取消の前へ移す）、N9、M20、P2（JSON でない応答を拒否として扱わない）、P3（destroyed で停止の回数を消さない）はすべて落ちた。N8 は、最初は記録を前に足しただけの変異（後ろの記録が上書きする等価の形）で通り、記録を移す形に直して落ちることを確かめた。
