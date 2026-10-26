@@ -27,16 +27,19 @@ import {
   readK62FreezeHead,
   readK64FreezeHead,
   readNetNamespaces,
+  rebindRatification5,
 } from "./admission.mjs";
 import {
   claimFactsSealer,
   claimTestEvidenceSealer,
+  isCollectedFacts,
 } from "./admission-facts.mjs";
 import {
   FROZEN_FIXTURE_SHA256,
   G01_FIXTURE,
   GRAPH_CASE_FREEZE,
   K62_FREEZE,
+  K64_CANDIDATE_REQUIREMENTS,
   K64_FREEZE,
   OBSERVATION_PREP_RECORD_PATH,
   OBSERVATION_PREP_RECORD_SCHEMA,
@@ -46,6 +49,7 @@ import {
   H64,
   candidate,
   evalReceipt,
+  keepTestCandidate,
   productReceipt,
   ratification5,
 } from "./test-support.mjs";
@@ -815,6 +819,109 @@ test("S1f: 集計の前に、receipt の手順のファイルを commit から�
     assert.throws(
       () => assertProcedureBound({ root: repo, receipt: receipt(null) }),
       /procedureFile/,
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("S1f 批准 5 (b): collector が候補の clean な worktree で keep test を走らせ、pass を封印する。落ちれば hook の祖先だけ（K6/2）", async () => {
+  const { repo, head, mode } = await keepTestCandidate();
+  try {
+    const collect = () =>
+      collectRatification5Evidence({
+        root: repo,
+        candidateHead: head,
+        keepTestWorktree: repo,
+      });
+    const passed = collect();
+    assert.equal(isCollectedFacts(passed), true);
+    assert.equal(passed.testOnly, undefined);
+    assert.equal(passed.rsJoinHook.evidence, "candidate-test");
+    assert.equal(passed.rsJoinHook.head, head);
+    assert.equal(passed.rsJoinHook.passed, true);
+    assert.equal(
+      passed.rsJoinHook.testFile,
+      K64_CANDIDATE_REQUIREMENTS.rsJoinKeepTest,
+    );
+    assert.match(passed.rsJoinHook.testFileSha256, /^[0-9a-f]{64}$/u);
+    assert.match(passed.rsJoinHook.runDigest, /^[0-9a-f]{64}$/u);
+    assert.equal(passed.rsJoinHook.tests, 2);
+    // (a)(c) の commit が無い一時の repository なので K6/2 だが、(b) は欠けない。
+    assert.deepEqual(assessCandidateRegime(passed, head).missing, [
+      "a:d-prime",
+      "c:w-f-window",
+    ]);
+    assert.ok(
+      assessCandidateRegime(passed, H40("0")).missing.includes(
+        "ratification5-other-candidate",
+      ),
+    );
+    // 集め直しても同じ（digest は時刻を含まない）。
+    assert.equal(JSON.stringify(collect()), JSON.stringify(passed));
+    // 写しは封印が無い。
+    assert.deepEqual(
+      assessCandidateRegime(JSON.parse(JSON.stringify(passed)), head).missing,
+      ["ratification5-not-collected"],
+    );
+    // 落ちた・0 件の試験は (b) を満たさず、hook の commit の祖先だけで判定する。
+    for (const [value, reason] of [
+      [{ kind: "report", assertions: [["a", "failed"]] }, "failed"],
+      [{ kind: "report", assertions: [] }, "no-tests"],
+    ]) {
+      await mode(value);
+      const refused = collect();
+      assert.deepEqual(JSON.parse(JSON.stringify(refused.rsJoinHook)), {
+        evidence: "ancestor",
+        commit: K64_CANDIDATE_REQUIREMENTS.rsJoinHookCommit,
+        ancestor: false,
+        keepTest: { status: "refused", reason },
+      });
+      assert.ok(
+        assessCandidateRegime(refused, head).missing.includes("b:rs-join-hook"),
+      );
+    }
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
+});
+
+test("S1f 批准 5 (b): 集計の前の照合は、記録が candidate-test なら worktree で keep test を走らせ直す", async () => {
+  const { repo, head, mode } = await keepTestCandidate();
+  try {
+    const recorded = JSON.parse(
+      JSON.stringify(
+        collectRatification5Evidence({
+          root: repo,
+          candidateHead: head,
+          keepTestWorktree: repo,
+        }),
+      ),
+    );
+    const receipt = { candidate: { commit: head, ratification5: recorded } };
+    assert.throws(
+      () => rebindRatification5({ root: repo, receipt }),
+      /keepTestWorktree/,
+    );
+    const rebound = rebindRatification5({
+      root: repo,
+      receipt,
+      keepTestWorktree: repo,
+    });
+    assert.equal(isCollectedFacts(rebound), true);
+    assert.equal(rebound.rsJoinHook.evidence, "candidate-test");
+    await mode({ kind: "report", assertions: [["a", "failed"]] });
+    assert.throws(
+      () =>
+        rebindRatification5({ root: repo, receipt, keepTestWorktree: repo }),
+      /ratification5 differs/,
+    );
+    assert.equal(
+      rebindRatification5({
+        root: repo,
+        receipt: { candidate: { commit: head } },
+      }),
+      null,
     );
   } finally {
     await rm(repo, { recursive: true, force: true });

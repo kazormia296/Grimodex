@@ -79,6 +79,7 @@ export const FOLLOW_UP_STAGES = Object.freeze([
   "quality",
 ]);
 const CATEGORY_ORDER = Object.freeze(["lapse", "other", "freshness"]);
+const SHA256_HEX = /^[0-9a-f]{64}$/u;
 const LAPSE_TICKET_REASONS = new Set([
   "registration-unavailable",
   "invalidated",
@@ -796,12 +797,21 @@ export function assessCandidateRegime(evidence, candidateHead) {
     missing.push("a:d-prime");
   const hook = evidence.rsJoinHook;
   const hookOk =
-    // E-1: the candidate-test path exists only in test-sealed evidence until
-    // a collector runs the keep test itself (S1f); production is fail closed.
+    // E-1 / S1f: the candidate-test path is the keep test the collector ran
+    // itself on the candidate's clean worktree (admission.mjs, keep-test.mjs):
+    // the run's head is the candidate, the test file's digest and the run's
+    // digest are recorded and at least one test passed. Test-sealed evidence
+    // (`testOnly`) keeps its own path for the summaries' tests only;
+    // validateCp4Receipt refuses it.
     (hook?.evidence === "candidate-test" &&
-      evidence.testOnly === true &&
       hook.testFile === need.rsJoinKeepTest &&
-      hook.passed === true) ||
+      hook.passed === true &&
+      (evidence.testOnly === true ||
+        (hook.head === evidence.candidateHead &&
+          SHA256_HEX.test(hook.testFileSha256 ?? "") &&
+          SHA256_HEX.test(hook.runDigest ?? "") &&
+          Number.isInteger(hook.tests) &&
+          hook.tests > 0))) ||
     (hook?.evidence === "ancestor" &&
       hook.commit === need.rsJoinHookCommit &&
       hook.ancestor === true);

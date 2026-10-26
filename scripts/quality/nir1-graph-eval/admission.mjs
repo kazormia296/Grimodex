@@ -33,6 +33,7 @@ import {
 } from "../nir1-retrieval/contract.mjs";
 import { claimFactsSealer } from "./admission-facts.mjs";
 import { isLoadedDevFixture } from "./dev-fixture.mjs";
+import { runKeepTest } from "./keep-test.mjs";
 import { loadProcedureFile, procedureSettings } from "./procedure-file.mjs";
 import {
   G01_FIXTURE,
@@ -168,25 +169,50 @@ function ancestorOrMissing(root, ancestor, descendant) {
 
 /**
  * 批准 5 (K6/4:32) collected from git, never from a receipt (D-1): (a) D′ and
- * (c) W_f are `git merge-base --is-ancestor` of the candidate head, (b) is the
- * hook commit as an ancestor. The other (b) evidence K6/4 allows, the RS-JOIN
- * keep test passed on the candidate, needs a collector that runs the test on
- * the candidate's clean tree itself; it is not written yet (S1f), so that path
- * is closed here and a candidate without the hook commit stays K6/2 (E-1,
- * fail closed). A receipt a caller hands in is never read. The evidence is
- * sealed like the N-1 facts; `assessCandidateRegime` applies K6/4 only to
- * sealed evidence, so a self-reported `ancestor: true` stays K6/2 (N31).
+ * (c) W_f are `git merge-base --is-ancestor` of the candidate head. (b) is
+ * the RS-JOIN keep test passed on the candidate, which this collector runs
+ * itself on `keepTestWorktree` (a clean worktree whose HEAD is the
+ * candidate; keep-test.mjs, S1f), or else the hook commit as an ancestor. A
+ * keep test that is refused for any reason (not clean, another head, failed,
+ * zero tests, …) leaves (b) to the ancestor check, which for this
+ * repository's candidates is K6/2 (fail closed; the reason is kept). A
+ * receipt a caller hands in is never read. The evidence is sealed like the
+ * N-1 facts; `assessCandidateRegime` applies K6/4 only to sealed evidence,
+ * so a self-reported `ancestor: true` or `passed: true` stays K6/2 (N31).
  */
 export function collectRatification5Evidence(input) {
-  rejectOverrides(input, ["root", "candidateHead"]);
+  rejectOverrides(input, ["root", "candidateHead", "keepTestWorktree"]);
   const { root } = input;
   const need = K64_CANDIDATE_REQUIREMENTS;
   const head = resolveCommit(root, input.candidateHead);
-  const rsJoinHook = {
-    evidence: "ancestor",
-    commit: need.rsJoinHookCommit,
-    ancestor: ancestorOrMissing(root, need.rsJoinHookCommit, head),
-  };
+  const keepTest =
+    typeof input.keepTestWorktree === "string"
+      ? runKeepTest({
+          root,
+          worktree: input.keepTestWorktree,
+          candidateHead: head,
+          testFile: need.rsJoinKeepTest,
+        })
+      : null;
+  const rsJoinHook =
+    keepTest?.status === "passed"
+      ? {
+          evidence: "candidate-test",
+          testFile: need.rsJoinKeepTest,
+          head: keepTest.worktreeHead,
+          testFileSha256: keepTest.testFileSha256,
+          passed: true,
+          tests: keepTest.tests.total,
+          runDigest: keepTest.runDigest,
+        }
+      : {
+          evidence: "ancestor",
+          commit: need.rsJoinHookCommit,
+          ancestor: ancestorOrMissing(root, need.rsJoinHookCommit, head),
+          ...(keepTest
+            ? { keepTest: { status: "refused", reason: keepTest.reason } }
+            : {}),
+        };
   return sealFacts({
     kind: "ratification5",
     candidateHead: head,
@@ -368,6 +394,7 @@ export function admitGraphCaseRun(input) {
     "defaultAddonSha256",
     "k62Commit",
     "k64Commit",
+    "keepTestWorktree",
   ]);
   const { root } = input;
   const fixtures = Array.isArray(input.fixtures) ? input.fixtures : [];
@@ -409,6 +436,9 @@ export function admitGraphCaseRun(input) {
   const ratification5 = collectRatification5Evidence({
     root,
     candidateHead: head,
+    ...(typeof input.keepTestWorktree === "string"
+      ? { keepTestWorktree: input.keepTestWorktree }
+      : {}),
   });
   const k62 = readK62FreezeHead({ root, commit: input.k62Commit });
   const k64 = readK64FreezeHead({ root, commit: input.k64Commit });
@@ -541,7 +571,7 @@ export function admitFrozenDryRun(input) {
  * commits.
  */
 export function assertReceiptHeadBound(input) {
-  rejectOverrides(input, ["root", "receipt"]);
+  rejectOverrides(input, ["root", "receipt", "keepTestWorktree"]);
   const { root, receipt } = input;
   const head = receipt?.head;
   const facts = collectObservationPrepFacts({
@@ -554,23 +584,11 @@ export function assertReceiptHeadBound(input) {
     throw new Error(
       "[precheck] head.observationPrep.freezeRecordSha256 differs from the freeze record at the pre-observation commit",
     );
-  // D-1: the recorded 批准 5 is self-reported; re-collect it from git for the
-  // candidate and require the same record. The sealed evidence is what
-  // validateCp4Receipt and the summaries may use.
-  let ratification5 = null;
-  if (receipt?.candidate && Object.hasOwn(receipt.candidate, "ratification5")) {
-    ratification5 = collectRatification5Evidence({
-      root,
-      candidateHead: receipt.candidate.commit,
-    });
-    if (
-      JSON.stringify(ratification5) !==
-      JSON.stringify(receipt.candidate.ratification5)
-    )
-      throw new Error(
-        "[precheck] candidate.ratification5 differs from the 批准 5 evidence re-collected from git (D-1)",
-      );
-  }
+  const ratification5 = rebindRatification5({
+    root,
+    receipt,
+    keepTestWorktree: input.keepTestWorktree,
+  });
   const k62 = readK62FreezeHead({ root, commit: head?.k62?.freezeCommit });
   if (k62.sha256 !== head.k62.sha256)
     throw new Error("[precheck] head.k62 differs from the K6/2 freeze");
@@ -581,6 +599,40 @@ export function assertReceiptHeadBound(input) {
   // takes it as `bound.procedure`).
   const procedure = assertProcedureBound({ root, receipt });
   return { observationPrep: facts.commit, k62, k64, ratification5, procedure };
+}
+
+/**
+ * D-1 / S1f: a receipt's recorded 批准 5 is self-reported; it is re-collected
+ * for the receipt's candidate and must be the same record. A record whose
+ * (b) is the keep test is re-collected by running the keep test again on
+ * `keepTestWorktree` (the digest holds no time, so a passing run repeats it).
+ * Returns the sealed evidence, or null when the receipt records none.
+ */
+export function rebindRatification5(input) {
+  rejectOverrides(input, ["root", "receipt", "keepTestWorktree"]);
+  const { root, receipt } = input;
+  if (!receipt?.candidate || !Object.hasOwn(receipt.candidate, "ratification5"))
+    return null;
+  const recorded = receipt.candidate.ratification5;
+  if (
+    recorded?.rsJoinHook?.evidence === "candidate-test" &&
+    typeof input.keepTestWorktree !== "string"
+  )
+    throw new Error(
+      "[precheck] candidate.ratification5 (b) is the keep test; re-collecting it runs the keep test again on the candidate's clean worktree (keepTestWorktree)",
+    );
+  const ratification5 = collectRatification5Evidence({
+    root,
+    candidateHead: receipt.candidate.commit,
+    ...(typeof input.keepTestWorktree === "string"
+      ? { keepTestWorktree: input.keepTestWorktree }
+      : {}),
+  });
+  if (JSON.stringify(ratification5) !== JSON.stringify(recorded))
+    throw new Error(
+      "[precheck] candidate.ratification5 differs from the 批准 5 evidence re-collected from git (D-1)",
+    );
+  return ratification5;
 }
 
 function stableJson(value) {

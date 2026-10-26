@@ -8,6 +8,7 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -249,6 +250,89 @@ export function k64Sample(overrides = {}, followUp = {}) {
 }
 
 export const REPO_ROOT = path.resolve(import.meta.dirname, "../../..");
+
+/** git in a throwaway repository (no user config, fixed identity). */
+export function testGit(cwd, ...args) {
+  return execFileSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      GIT_AUTHOR_NAME: "cp4",
+      GIT_AUTHOR_EMAIL: "cp4@example.invalid",
+      GIT_COMMITTER_NAME: "cp4",
+      GIT_COMMITTER_EMAIL: "cp4@example.invalid",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+    },
+  }).trim();
+}
+
+const FAKE_VITEST = `
+import { readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+const here = path.dirname(new URL(import.meta.url).pathname);
+const mode = JSON.parse(readFileSync(path.join(here, "mode.json"), "utf8"));
+const out = process.argv.find((arg) => arg.startsWith("--outputFile=")).slice(13);
+const file = process.argv.at(-1);
+if (mode.kind === "hang") setTimeout(() => {}, 60_000);
+else if (mode.kind === "crash") process.exit(2);
+else {
+  if (mode.touch) writeFileSync(path.join(process.cwd(), mode.touch), "x");
+  const name = mode.name ?? path.join(process.cwd(), file);
+  const assertions = mode.assertions.map(([title, status]) => ({
+    fullName: "keep " + title, status, title, ancestorTitles: ["keep"],
+  }));
+  const count = (status) => assertions.filter((row) => row.status === status).length;
+  writeFileSync(out, JSON.stringify({
+    numTotalTests: assertions.length,
+    numPassedTests: count("passed"),
+    numFailedTests: count("failed"),
+    numPendingTests: count("skipped"),
+    numTodoTests: count("todo"),
+    startTime: Date.now(),
+    success: count("failed") === 0,
+    testResults: [{ name, status: count("failed") ? "failed" : "passed", assertionResults: assertions }],
+  }));
+  process.exit(mode.exit ?? (count("failed") ? 1 : 0));
+}
+`;
+
+/**
+ * S1f: a throwaway candidate repository holding the RS-JOIN keep test file
+ * and, in the ignored `node_modules/vitest/vitest.mjs`, a fake runner that
+ * writes the JSON report `mode.json` asks for. Nothing runs vitest.
+ */
+export async function keepTestCandidate() {
+  const repo = await mkdtemp(path.join(tmpdir(), "cp4-keep-"));
+  testGit(repo, "init", "-q", "-b", "main");
+  await writeFile(path.join(repo, ".gitignore"), "node_modules/\n");
+  await mkdir(
+    path.dirname(path.join(repo, K64_CANDIDATE_REQUIREMENTS.rsJoinKeepTest)),
+    { recursive: true },
+  );
+  await writeFile(
+    path.join(repo, K64_CANDIDATE_REQUIREMENTS.rsJoinKeepTest),
+    "// keep test\n",
+  );
+  await writeFile(path.join(repo, "vitest.config.ts"), "export default {};\n");
+  testGit(repo, "add", "-A");
+  testGit(repo, "commit", "-q", "--no-gpg-sign", "-m", "candidate");
+  const head = testGit(repo, "rev-parse", "HEAD");
+  const runner = path.join(repo, "node_modules/vitest");
+  await mkdir(runner, { recursive: true });
+  await writeFile(path.join(runner, "vitest.mjs"), FAKE_VITEST);
+  const mode = (value) =>
+    writeFile(path.join(runner, "mode.json"), JSON.stringify(value));
+  await mode({
+    kind: "report",
+    assertions: [
+      ["a", "passed"],
+      ["b", "passed"],
+    ],
+  });
+  return { repo, head, mode };
+}
 
 let formalProcedureLoaded = null;
 
