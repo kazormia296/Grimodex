@@ -9,11 +9,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { claimTestEvidenceSealer } from "./admission-facts.mjs";
 import { r1Record, r2Record } from "./k64-record.mjs";
+import { readQuerySceneSeedPins } from "./workspace-db.mjs";
 import {
   DEV_DRAFT_PROCEDURE_VERSION,
   loadProcedureFile,
@@ -784,4 +786,46 @@ export function k64HookInput(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+/**
+ * S1g-A (SP/1): a throwaway workspace DB holding query Scenes and their
+ * pins, read back through the product-DB reader (`readQuerySceneSeedPins`,
+ * sealed as read from the DB). `scenes` is a list of `{ sceneId, live,
+ * pins: [{ entryId, createdAt, inProject }] }`; returns the reads by Scene.
+ */
+export function productDbPinReads(scenes) {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-seed-pin-db-"));
+  process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "grimodex.db");
+  const db = new DatabaseSync(file);
+  db.exec(`
+    CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT, node_type TEXT, archived_at TEXT);
+    CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT);
+    CREATE TABLE scene_codex_pins (scene_id TEXT, entry_id TEXT, created_at TEXT);
+  `);
+  const entries = new Map();
+  for (const scene of scenes) {
+    db.prepare("INSERT INTO tree_nodes VALUES (?, 'p', 'scene', ?)").run(
+      scene.sceneId,
+      scene.live === false ? "2026-10-27T00:00:00Z" : null,
+    );
+    for (const pin of scene.pins) {
+      entries.set(pin.entryId, pin.inProject === false ? "p-other" : "p");
+      db.prepare("INSERT INTO scene_codex_pins VALUES (?, ?, ?)").run(
+        scene.sceneId,
+        pin.entryId,
+        pin.createdAt,
+      );
+    }
+  }
+  for (const [id, project] of entries)
+    db.prepare("INSERT INTO codex_entries VALUES (?, ?)").run(id, project);
+  db.close();
+  return Object.fromEntries(
+    scenes.map((scene) => [
+      scene.sceneId,
+      readQuerySceneSeedPins(file, "p", scene.sceneId),
+    ]),
+  );
 }

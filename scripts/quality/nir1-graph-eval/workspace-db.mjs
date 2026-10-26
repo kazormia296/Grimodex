@@ -159,14 +159,38 @@ export function readWorkspaceRows(file, projectId) {
   }));
 }
 
+/** Reads readQuerySceneSeedPins returned (SP/1 SP-N13: never self-reported). */
+const PRODUCT_DB_PIN_READS = new WeakSet();
+
+export function isProductDbPinRead(value) {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    PRODUCT_DB_PIN_READS.has(value)
+  );
+}
+
+function sealPinRead(read) {
+  for (const row of read.pins) Object.freeze(row);
+  Object.freeze(read.pins);
+  const sealed = Object.freeze(read);
+  PRODUCT_DB_PIN_READS.add(sealed);
+  return sealed;
+}
+
 /**
  * S1f (R5): the query Scene's pins as the product's seed reads them
  * (`selectNir1GraphSeed`, Native `read_nir1_graph_seed_in_tx`): whether the
  * Scene is a live Scene of the project, and each pin with whether its Codex
  * entry belongs to the project. seed-pin.mjs applies the order and the
- * first-pin rule.
+ * first-pin rule. The result is frozen and sealed as read from the product
+ * DB; a copy (a receipt's record) is not (SP/1 SP-N13).
  */
 export function readQuerySceneSeedPins(file, projectId, sceneId) {
+  return sealPinRead(readQuerySceneSeedPinsUnsealed(file, projectId, sceneId));
+}
+
+function readQuerySceneSeedPinsUnsealed(file, projectId, sceneId) {
   return withReadOnly(file, (db) => {
     const scene = db
       .prepare(

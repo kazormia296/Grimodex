@@ -580,7 +580,7 @@ async function main() {
           caseId: variant.key,
           querySceneId: ids.querySceneId,
           expectedSeed: seed,
-          ...pins,
+          read: pins,
         },
       ],
       plan: "dev",

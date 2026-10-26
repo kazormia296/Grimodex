@@ -152,10 +152,11 @@ test("R5: query の Scene の pin を製品の join と同じ形で DB から読
       CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT, node_type TEXT, archived_at TEXT);
       CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT);
       CREATE TABLE scene_codex_pins (scene_id TEXT, entry_id TEXT, created_at TEXT);
-      INSERT INTO tree_nodes VALUES ('q', 'p', 'scene', NULL);
+      INSERT INTO tree_nodes VALUES ('q', 'p', 'scene', NULL), ('q2', 'p', 'scene', NULL);
       INSERT INTO codex_entries VALUES ('seed', 'p'), ('other', 'p2');
       INSERT INTO scene_codex_pins VALUES ('q', 'seed', '2026-10-26T00:00:01Z'),
-        ('q', 'other', '2026-10-26T00:00:00Z');
+        ('q', 'other', '2026-10-26T00:00:00Z'),
+        ('q2', 'seed', '2026-10-26T00:00:02Z');
     `);
     db.close();
     const read = readQuerySceneSeedPins(file, "p", "q");
@@ -172,10 +173,26 @@ test("R5: query の Scene の pin を製品の join と同じ形で DB から読
         entryInProject: true,
       },
     ]);
+    // SP/1 SP-P1: 問いの Scene の pin は 1 つだけ（別の project の entry の pin も数える）。
+    assert.throws(
+      () =>
+        assertSeedPinsBeforeK64({
+          cases: [
+            { caseId: "dev:x", querySceneId: "q", expectedSeed: "seed", read },
+          ],
+          plan: "dev",
+        }),
+      /multiple-pins/u,
+    );
     assert.equal(
       assertSeedPinsBeforeK64({
         cases: [
-          { caseId: "dev:x", querySceneId: "q", expectedSeed: "seed", ...read },
+          {
+            caseId: "dev:x",
+            querySceneId: "q2",
+            expectedSeed: "seed",
+            read: readQuerySceneSeedPins(file, "p", "q2"),
+          },
         ],
         plan: "dev",
       }).status,
