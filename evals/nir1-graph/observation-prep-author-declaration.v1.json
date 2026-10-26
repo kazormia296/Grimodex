@@ -231,6 +231,12 @@
       "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547",
       "source": "SP/1 の draft の branch（確認済みの bytes。編集していない）",
       "scope": "全文（事実 (a)〜(e) の製品の code の読取と、dev fixture についての cp4 の記録の参照〔例: requalification が SeedChanged で落とした dev fixture の 4/4、DR-CP4-F-2〕を含む。契約の一部として読んだ）"
+    },
+    {
+      "path": "scratchpad/s3/observation-prep-review.v2.json（S3 の再レビューの記録。実測値を含まない）",
+      "sha256": "2eff4230439d63e3f5345713c5d8c75ef2b00d31b75d72eb327112b12b98be6f",
+      "source": "session の scratchpad",
+      "scope": "verdict と findings"
     }
   ],
   "forbiddenFilesNotRead": true,
@@ -248,6 +254,10 @@
     {
       "at": "2026-10-27",
       "reason": "SP/1（2026-10-27 06:47 JST に推奨のまま確認）の seed の pin の addendum、validator、観測前の記録の更新（S1g-B）。読んだのは SP/1 の draft と既に読んだ file だけで、Graph の実行出力、cp4-decisions.md、.artifacts、run の結果、他の agent の transcript は読んでいない。SP/1 の本文にある dev fixture の記録の要約は G-case の Graph の出力ではなく、どの値の選択にも使っていない（seed と問いの Scene は fixture の値をそのまま写した）。"
+    },
+    {
+      "at": "2026-10-27",
+      "reason": "S3 の再レビュー（P2 1、P3 4）への対応。読んだのは再レビューの記録だけで、Graph の実行出力は読んでいない。"
     }
   ]
 }
