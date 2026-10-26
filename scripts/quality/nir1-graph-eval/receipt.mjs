@@ -276,6 +276,17 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
       throw new Error(`[precheck] Electron launch env still carries ${name}`);
   if (env?.XDG_SESSION_TYPE === "wayland")
     throw new Error("[precheck] Electron launch env is a Wayland session");
+  // B-3: without a bus address, libdbus／GDBus use $XDG_RUNTIME_DIR/bus.
+  if (
+    typeof env?.XDG_RUNTIME_DIR !== "string" ||
+    !env.XDG_RUNTIME_DIR.startsWith("/") ||
+    /^\/run\/user(\/|$)/u.test(env.XDG_RUNTIME_DIR)
+  )
+    throw new Error(
+      "[precheck] Electron launch env must set XDG_RUNTIME_DIR to the run's own directory, never /run/user",
+    );
+  if (env?.NO_AT_BRIDGE !== "1")
+    throw new Error("[precheck] Electron launch env must set NO_AT_BRIDGE=1");
   if (env?.ELECTRON_OZONE_PLATFORM_HINT !== "x11")
     throw new Error(
       "[precheck] Electron launch env must set the x11 ozone hint",

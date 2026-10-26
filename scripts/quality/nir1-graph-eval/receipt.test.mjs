@@ -66,6 +66,8 @@ function socketSamples(times, extra = {}) {
     sockets: { tcp: 2, udp: 0, loopback: 2, unconnected: 0 },
     external: [],
     externalListeners: [],
+    unix: { read: true },
+    userSessionPeers: [],
     ...extra,
   }));
 }
@@ -853,8 +855,32 @@ test("N-11 / P2-9: Electron draws only on the run's Xvfb, without Wayland, D-Bus
     DISPLAY: ":99",
     XDG_SESSION_TYPE: "x11",
     ELECTRON_OZONE_PLATFORM_HINT: "x11",
+    XDG_RUNTIME_DIR: "/r/.artifacts/cp4/run/tmp/xdg-runtime",
+    NO_AT_BRIDGE: "1",
   };
   const netns = { self: "net:[4026531840]", parent: "net:[4026531840]" };
+  // B-3: libdbus／GDBus fall back to $XDG_RUNTIME_DIR/bus without an address.
+  for (const runtime of [undefined, "/run/user/1000", "/run/user/1000/x"])
+    assert.throws(
+      () =>
+        assertElectronLaunch({
+          env: { ...env, XDG_RUNTIME_DIR: runtime },
+          argv: [],
+          xvfbDisplay: ":99",
+          netns,
+        }),
+      /XDG_RUNTIME_DIR/,
+    );
+  assert.throws(
+    () =>
+      assertElectronLaunch({
+        env: { ...env, NO_AT_BRIDGE: undefined },
+        argv: [],
+        xvfbDisplay: ":99",
+        netns,
+      }),
+    /NO_AT_BRIDGE/,
+  );
   const launch = (overrides = {}) =>
     assertElectronLaunch({
       env,

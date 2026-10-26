@@ -16,6 +16,7 @@ import {
   assertX11Ozone,
   assessSocketSamples,
   buildSocketSample,
+  parseUnixTable,
   classifySocket,
   decodeProcAddress,
   descendantsOf,
@@ -187,6 +188,8 @@ function cleanSample(atMs) {
     sockets: { tcp: 1, udp: 0, loopback: 1, unconnected: 0 },
     external: [],
     externalListeners: [],
+    unix: { read: true },
+    userSessionPeers: [],
   };
 }
 
@@ -484,4 +487,70 @@ test("a net log cut by an abrupt exit is repaired and marked", () => {
   assert.equal(repaired.truncated, true);
   assert.equal(repaired.log.events.length, 1);
   assert.throws(() => parseNetLogText("not json"), /could not be repaired/);
+});
+
+const SS = [
+  "u_str ESTAB 0 0 /run/user/1000/bus 27901 * 1111",
+  "u_str ESTAB 0 0 * 1111 * 27901",
+  "u_str ESTAB 0 0 /run/dbus/system_bus_socket 30000 * 3333",
+  "u_str ESTAB 0 0 @/tmp/dbus-AbCd 40000 * 2222",
+  "u_str ESTAB 0 0 /run/user/1000/bus 50000 * 9999",
+  "u_str LISTEN 0 0 /r/tmp/xdg-runtime/x 60000 * 0",
+].join("\n");
+
+test("B-3: Electron の unix socket の相手が利用者の session bus（/run/user/*）なら違反、読めない標本は gap", () => {
+  const rows = parseUnixTable(SS);
+  assert.equal(rows.length, 6);
+  assert.deepEqual(rows[0], {
+    local: "/run/user/1000/bus",
+    localInode: "27901",
+    peer: "*",
+    peerInode: "1111",
+  });
+  const sample = buildSocketSample({
+    atMs: 5,
+    rootPid: 10,
+    processes: [
+      { pid: 10, socketInodes: ["1111"], type: "browser" },
+      { pid: 11, socketInodes: ["2222", "3333"], type: "utility" },
+    ],
+    tables: [],
+    unixRows: rows,
+  });
+  assert.deepEqual(
+    sample.userSessionPeers.map((row) => [row.pid, row.peer]),
+    [
+      [10, "/run/user/1000/bus"],
+      [11, "@/tmp/dbus-AbCd"],
+    ],
+  );
+  // system bus は開示だけ（違反にしない）。外の process（9999）は数えない。
+  assert.equal(sample.systemBusPeers, 1);
+  const RUN2 = { startedAtMs: 1_000, finishedAtMs: 21_000 };
+  const base = [0, 22_000].map(cleanSample);
+  const peers = assessSocketSamples({
+    samples: [
+      base[0],
+      { ...base[1], userSessionPeers: sample.userSessionPeers },
+    ],
+    run: RUN2,
+  });
+  assert.match(peers.violations.join(), /user session/);
+  const unread = assessSocketSamples({
+    samples: [
+      base[0],
+      { ...base[1], unix: { read: false, error: "ss: ENOENT" } },
+    ],
+    run: RUN2,
+  });
+  assert.match(unread.gaps.join(), /unix/);
+  // unix の表が読めない標本は userSessionPeers を空にせず unreadable と書く。
+  const blind = buildSocketSample({
+    atMs: 5,
+    rootPid: 10,
+    processes: [{ pid: 10, socketInodes: ["1111"] }],
+    tables: [],
+    unixRows: null,
+  });
+  assert.equal(blind.unix.read, false);
 });

@@ -504,6 +504,8 @@ function socketSamples(times) {
     sockets: { tcp: 1, udp: 0, loopback: 1, unconnected: 0 },
     external: [],
     externalListeners: [],
+    unix: { read: true },
+    userSessionPeers: [],
   }));
 }
 

@@ -16,6 +16,7 @@
 // The parsers and assessments are pure; `readProcessTree`,
 // `sampleElectronSockets` and `startSocketSampler` read /proc only.
 
+import { execFileSync } from "node:child_process";
 import { readFileSync, readdirSync, readlinkSync } from "node:fs";
 import path from "node:path";
 import { clearInterval, setInterval } from "node:timers";
@@ -202,7 +203,33 @@ export function argvOfCmdline(text) {
  * Builds one socket sample from what was read: the tree's pids with their
  * socket inodes, and the socket tables of their network namespace(s).
  */
-export function buildSocketSample({ atMs, rootPid, processes, tables }) {
+/** `ss -x -a -n -H` → rows (local path and inode, peer and its inode). */
+export function parseUnixTable(text) {
+  const rows = [];
+  for (const line of String(text).split("\n")) {
+    const fields = line.trim().split(/\s+/u);
+    if (fields.length < 8) continue;
+    rows.push({
+      local: fields[4],
+      localInode: fields[5],
+      peer: fields[6],
+      peerInode: fields[7],
+    });
+  }
+  return rows;
+}
+
+/** The user's session bus, AT-SPI, keyring and portals live here. */
+const USER_SESSION_SOCKET = /^(\/run\/user\/\d+\/|@\/tmp\/dbus-)/u;
+const SYSTEM_BUS_SOCKET = /^\/run\/dbus\/system_bus_socket$/u;
+
+export function buildSocketSample({
+  atMs,
+  rootPid,
+  processes,
+  tables,
+  unixRows = [],
+}) {
   const owner = new Map();
   for (const process of processes)
     for (const inode of process.socketInodes ?? []) owner.set(inode, process);
@@ -217,7 +244,23 @@ export function buildSocketSample({ atMs, rootPid, processes, tables }) {
     sockets: { tcp: 0, udp: 0, loopback: 0, unconnected: 0 },
     external: [],
     externalListeners: [],
+    unix: { read: Array.isArray(unixRows) },
+    userSessionPeers: [],
+    systemBusPeers: 0,
   };
+  // B-3: a server-side row bound under the user's runtime dir whose peer is
+  // one of the tree's sockets is a connection to the user's session.
+  for (const row of Array.isArray(unixRows) ? unixRows : []) {
+    const process = owner.get(row.peerInode);
+    if (!process) continue;
+    if (USER_SESSION_SOCKET.test(row.local))
+      sample.userSessionPeers.push({
+        pid: process.pid,
+        type: process.type ?? null,
+        peer: row.local,
+      });
+    else if (SYSTEM_BUS_SOCKET.test(row.local)) sample.systemBusPeers += 1;
+  }
   const seen = new Set();
   for (const row of tables) {
     const process = owner.get(row.inode);
@@ -331,10 +374,20 @@ function readSocketInodes(pid, procRoot) {
 }
 
 /** One socket sample of the Electron tree rooted at `rootPid`. */
+function readUnixTable() {
+  return execFileSync("ss", ["-x", "-a", "-n", "-H"], {
+    encoding: "utf8",
+    timeout: 5_000,
+    maxBuffer: 32 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "ignore"],
+  });
+}
+
 export function sampleElectronSockets({
   rootPid,
   atMs = Date.now(),
   procRoot = "/proc",
+  readUnix = readUnixTable,
 }) {
   const tree = readProcessTree(rootPid, procRoot);
   const processes = tree.map((row) => ({
@@ -357,7 +410,22 @@ export function sampleElectronSockets({
       if (text !== null) tables.push(...parseProcNetTable(text, proto));
     }
   }
-  const sample = buildSocketSample({ atMs, rootPid, processes, tables });
+  let unixRows;
+  let unixError = null;
+  try {
+    unixRows = parseUnixTable(readUnix());
+  } catch (error) {
+    unixRows = null;
+    unixError = String(error?.message ?? error).slice(0, 200);
+  }
+  const sample = buildSocketSample({
+    atMs,
+    rootPid,
+    processes,
+    tables,
+    unixRows,
+  });
+  if (unixError) sample.unix.error = unixError;
   sample.processes = tree.map(({ pid, ppid, exe, type }) => ({
     pid,
     ppid,
@@ -417,9 +485,18 @@ function sampleShapeErrors(sample, at) {
     errors.push(`socket sample ${at} lacks atMs`);
   if (!Array.isArray(sample?.pids) || sample.pids.length === 0)
     errors.push(`socket sample ${at} saw no Electron process`);
-  for (const field of ["external", "externalListeners", "unreadable"])
+  for (const field of [
+    "external",
+    "externalListeners",
+    "unreadable",
+    "userSessionPeers",
+  ])
     if (!Array.isArray(sample?.[field]))
       errors.push(`socket sample ${at} lacks ${field}`);
+  if (sample?.unix?.read !== true)
+    errors.push(
+      `socket sample ${at} could not read the unix socket table (${sample?.unix?.error ?? "unknown"})`,
+    );
   return errors;
 }
 
@@ -456,6 +533,10 @@ export function assessSocketSamples({ samples, run }) {
     for (const entry of sample.externalListeners)
       violations.push(
         `listener reachable from outside ${entry.proto} ${entry.local} (pid ${entry.pid}) at ${sample.atMs}`,
+      );
+    for (const entry of sample.userSessionPeers)
+      violations.push(
+        `a connection to the user session socket ${entry.peer} (pid ${entry.pid}) at ${sample.atMs}`,
       );
   }
   return {

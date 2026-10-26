@@ -94,6 +94,8 @@ test("B-7: launchGraphEvalElectron の spawn の失敗はそのまま投げ、�
       DISPLAY: ":7",
       ELECTRON_OZONE_PLATFORM_HINT: "x11",
       GRIMODEX_NODE_PATH: product,
+      XDG_RUNTIME_DIR: path.join(root, "xdg-runtime"),
+      NO_AT_BRIDGE: "1",
     };
     let spawned = 0;
     await assert.rejects(
@@ -339,6 +341,8 @@ test("B-2: launch の記録の removedEnv は wrapper の env から実際に落
       ...process.env,
       ELECTRON_OZONE_PLATFORM_HINT: "x11",
       GRIMODEX_NODE_PATH: product,
+      XDG_RUNTIME_DIR: path.join(root, "xdg-runtime"),
+      NO_AT_BRIDGE: "1",
     };
     delete env.DBUS_SESSION_BUS_ADDRESS;
     delete env.WAYLAND_DISPLAY;

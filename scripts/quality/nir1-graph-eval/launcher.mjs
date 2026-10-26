@@ -54,6 +54,11 @@ export const REMOVED_LAUNCH_ENV = Object.freeze([
   "https_proxy",
   "all_proxy",
   "no_proxy",
+  // B-3 (P3): the other proxy variables Chromium reads.
+  "auto_proxy",
+  "SOCKS_SERVER",
+  "ftp_proxy",
+  "FTP_PROXY",
   "XDG_CURRENT_DESKTOP",
   "XDG_SESSION_DESKTOP",
   "DESKTOP_SESSION",
@@ -94,6 +99,16 @@ export function assertXvfbWrapperEnv(env) {
 }
 
 /**
+ * B-3: the run's XDG_RUNTIME_DIR (0700, created by the caller). Without
+ * DBUS_SESSION_BUS_ADDRESS, libdbus／GDBus connect to `$XDG_RUNTIME_DIR/bus`,
+ * the user's real session bus (AT-SPI, libsecret, portals); the run's own
+ * directory has none.
+ */
+export function runtimeDirOf(tmpDir) {
+  return path.join(tmpDir, "xdg-runtime");
+}
+
+/**
  * The `_electron.launch` env, built from the wrapper env: the desktop,
  * session-bus, proxy and node-mode variables are removed; the x11 ozone hint,
  * the run's TMPDIR, profile, addon, renderer URL and product main are set.
@@ -116,6 +131,8 @@ export function buildElectronLaunchEnv(
     ...env,
     ELECTRON_OZONE_PLATFORM_HINT: "x11",
     TMPDIR: tmpDir,
+    XDG_RUNTIME_DIR: runtimeDirOf(tmpDir),
+    NO_AT_BRIDGE: "1",
     GRIMODEX_USER_DATA_DIR: userData,
     GRIMODEX_NODE_PATH: nativePath,
     ELECTRON_RENDERER_URL: rendererUrl,

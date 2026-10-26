@@ -12,7 +12,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { mkdir, readFile } from "node:fs/promises";
+import { chmod, mkdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 // Imported before the harness renderer build: the build's Tailwind loader
@@ -37,6 +37,7 @@ import {
   prepareEvalProfile,
   snapshotElectronPids,
   stopElectron,
+  runtimeDirOf,
 } from "./launcher.mjs";
 import { MAIN_WORKER, WORKER_FILE_NAME } from "./eval-native-build.mjs";
 
@@ -136,6 +137,9 @@ export async function startSession({
     ? path.join(tmpRoot, `${path.basename(runDir)}-${label}`)
     : path.join(dir, "tmp");
   await mkdir(tmpDir, { recursive: true });
+  // B-3: the run's own XDG_RUNTIME_DIR (0700), never the user's /run/user.
+  await mkdir(runtimeDirOf(tmpDir), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDirOf(tmpDir), 0o700);
   const userData = path.join(dir, "user-data");
   const profile = await prepareProfile({ userData, d2aMode, models });
   const netLogPath = path.join(dir, "netlog.json");

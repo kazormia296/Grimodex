@@ -78,6 +78,11 @@ test("DR-CP4-S1C1-4: the launch env drops the desktop, the bus and proxies and p
   assert.equal(env.DISPLAY, ":7");
   assert.equal(env.XDG_SESSION_TYPE, "x11");
   assert.equal(env.TMPDIR, "/r/tmp");
+  // B-3: no session bus through XDG_RUNTIME_DIR, no AT-SPI bridge.
+  assert.equal(env.XDG_RUNTIME_DIR, "/r/tmp/xdg-runtime");
+  assert.equal(env.NO_AT_BRIDGE, "1");
+  for (const name of ["auto_proxy", "SOCKS_SERVER", "ftp_proxy", "FTP_PROXY"])
+    assert.ok(REMOVED_LAUNCH_ENV.includes(name), name);
   assert.equal(env.GRIMODEX_NODE_PATH, PATHS.nativePath);
   assert.equal(env.ELECTRON_RENDERER_URL, PATHS.rendererUrl);
   assert.equal(env.GRIMODEX_CP4_PRODUCT_MAIN, PATHS.productMain);

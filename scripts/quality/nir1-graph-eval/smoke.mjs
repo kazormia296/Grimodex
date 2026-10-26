@@ -14,7 +14,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import console from "node:console";
@@ -38,6 +38,7 @@ import {
   prepareEvalProfile,
   snapshotElectronPids,
   stopElectron,
+  runtimeDirOf,
 } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { MAIN_WORKER } from "./eval-native-build.mjs";
@@ -81,6 +82,9 @@ async function main() {
   await mkdir(runDir, { recursive: true });
   const tmpDir = path.resolve(options.tmp ?? path.join(runDir, "tmp"));
   await mkdir(tmpDir, { recursive: true });
+  // B-3: the run's own XDG_RUNTIME_DIR (0700), never the user's /run/user.
+  await mkdir(runtimeDirOf(tmpDir), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDirOf(tmpDir), 0o700);
   const report = {
     schema: "nir1-cp4-s1c1-smoke/1",
     run: options.run,
