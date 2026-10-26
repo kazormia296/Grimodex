@@ -329,6 +329,8 @@ test("B-2: launch の記録の removedEnv は wrapper の env から実際に落
     DBUS_SESSION_BUS_ADDRESS: "unix:path=/run/user/1000/bus",
     CP4_KEPT: "1",
   });
+  delete process.env.WAYLAND_DISPLAY;
+  delete process.env.WAYLAND_SOCKET;
   const root = mkdtempSync(path.join(os.tmpdir(), "cp4-removed-"));
   try {
     const product = path.join(root, "product.node");
