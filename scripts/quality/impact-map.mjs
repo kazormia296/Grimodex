@@ -514,6 +514,8 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-packing/final-request/runner.test.mjs",
         "scripts/quality/nir1-graph/contract.test.mjs",
         "scripts/quality/nir1-graph-eval/availability.test.mjs",
+        // CP-4 S1d: the K6/4 follow-up classifier (K6/4-N1〜N40).
+        "scripts/quality/nir1-graph-eval/followup.test.mjs",
         "scripts/quality/nir1-graph-eval/receipt.test.mjs",
         "scripts/quality/nir1-graph-eval/outcome.test.mjs",
         "scripts/quality/nir1-graph-eval/admission.test.mjs",

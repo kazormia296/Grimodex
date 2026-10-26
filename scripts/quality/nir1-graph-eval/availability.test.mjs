@@ -650,7 +650,7 @@ test("DR-CP4-S1C1-10: the Native ns fields never move the window", () => {
   );
 });
 
-test("rule 4: graph-late splits by the start slot and stamp; Chronicle stop is a lapse", () => {
+test("K6/2 の文のまま（批准 5 を欠く候補、変える点 12）: graph-late は開始時の slot と stamp で分ける。K6/4 の候補では使わない（followup.test.mjs の N33）", () => {
   assert.equal(
     traceOf(
       trace("browsing", 200, (at) => (at === 1 ? late("graph-late") : {})),
@@ -717,6 +717,10 @@ const EXCEEDING_A = {
 const quietTrace = (kind) => ({
   kind,
   status: "valid",
+  Q: 200,
+  U: 200,
+  outOfWindowU: 0,
+  lapse: { total: 0 },
   outOfWindowExceeds: false,
   lapseExceeds: false,
   outOfWindowRate: 0,
@@ -743,8 +747,8 @@ test("§15.4: (a) above 1% is HOLD and the trace values are only recorded", () =
 
 test("§15.4: (a) inside with a trace above 1% is HOLD with the (iii) diagnostic, never precheck", () => {
   for (const exceeding of [
-    { ...quietTrace("editing"), lapseExceeds: true },
-    { ...quietTrace("editing"), outOfWindowExceeds: true },
+    { ...quietTrace("editing"), lapse: { total: 3 }, lapseExceeds: true },
+    { ...quietTrace("editing"), outOfWindowU: 3, outOfWindowExceeds: true },
   ]) {
     const decision = decideCp4Availability({
       steadyState: VALID_A,
@@ -772,6 +776,82 @@ test("§15.4: (a) inside with a trace above 1% is HOLD with the (iii) diagnostic
     decideCp4Availability({ steadyState: VALID_A, traces: null }).reason,
     "traces-not-measured",
   );
+});
+
+test("P2-5: 要約の件数が欠けたら trigger なしと読まず、件数から計算し直す", () => {
+  // 自己申告の exceeds:false でも、件数が物差しを超えていれば HOLD。
+  const lying = {
+    ...quietTrace("editing"),
+    outOfWindowU: 3,
+    outOfWindowExceeds: false,
+  };
+  assert.equal(
+    decideCp4Availability({
+      steadyState: VALID_A,
+      traces: [lying, quietTrace("browsing")],
+    }).reason,
+    "trace-exceeds-yardstick",
+  );
+  const hiddenPool = {
+    ...EXCEEDING_A,
+    pool: { ...EXCEEDING_A.pool, exceeds: false },
+  };
+  assert.equal(
+    decideCp4Availability({ steadyState: hiddenPool, traces: [] }).reason,
+    "steady-state-out-of-window-rate-exceeds",
+  );
+  for (const missing of [
+    { ...quietTrace("editing"), U: undefined },
+    { ...quietTrace("editing"), lapse: undefined },
+    {
+      kind: "editing",
+      status: "valid",
+      outOfWindowExceeds: false,
+      lapseExceeds: false,
+    },
+  ])
+    assert.throws(
+      () =>
+        decideCp4Availability({
+          steadyState: VALID_A,
+          traces: [missing, quietTrace("browsing")],
+        }),
+      /lacks its counts/,
+    );
+  assert.throws(
+    () =>
+      decideCp4Availability({
+        steadyState: {
+          status: "valid",
+          planKind: "frozen",
+          pool: { exceeds: false },
+        },
+        traces: [],
+      }),
+    /lacks its counts/,
+  );
+});
+
+test("P3-8: t_fetch より前の Graph の到着はこの query の答えではない", () => {
+  assert.throws(
+    () => classifyJoin(sample({ graph: { arrivedAt: 80 } })),
+    /precedes t_fetch/,
+  );
+  assert.throws(
+    () => classifyJoin(sample(late("graph-late", { arrivedAt: 50 }))),
+    /precedes t_fetch/,
+  );
+});
+
+test("P3-9: queryId の重複で Q≥200 を満たせない", () => {
+  const twice = trace("browsing", 200);
+  twice.queries[10].queryId = "q9";
+  const result = traceOf(twice);
+  assert.equal(result.status, "invalid");
+  assert.match(result.invalid.join(), /duplicate queryId/);
+  const unnamed = trace("browsing", 200);
+  delete unnamed.queries[3].queryId;
+  assert.match(traceOf(unnamed).invalid.join(), /lacks its queryId/);
 });
 
 test("rule 6: lapse-rate precheck happens only inside a diagnostic, in order", () => {

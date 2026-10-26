@@ -29,6 +29,7 @@ import {
   sampleFieldsFromNativeRecord,
 } from "./native-sample.mjs";
 import { CP4_RECEIPT_SCHEMA, computeRunAggregates } from "./receipt.mjs";
+import { distribution } from "./stats.mjs";
 
 export const GRAPH_CONTINUE = "related_scenes_graph_continue";
 export const BEGIN = "related_scenes_begin";
@@ -315,24 +316,7 @@ export function disclosureOf({ measure, native, arrival, begin }) {
   };
 }
 
-/** Nearest-rank percentile (the P harness's `nearestRank`). */
-export function nearestRank(values, q) {
-  const sorted = values.filter(Number.isFinite).sort((a, b) => a - b);
-  if (sorted.length === 0) return null;
-  return sorted[Math.min(sorted.length - 1, Math.ceil(q * sorted.length) - 1)];
-}
-
-export function distribution(values) {
-  const finite = values.filter(Number.isFinite);
-  return {
-    n: finite.length,
-    p50: nearestRank(finite, 0.5),
-    p90: nearestRank(finite, 0.9),
-    p99: nearestRank(finite, 0.99),
-    min: finite.length ? Math.min(...finite) : null,
-    max: finite.length ? Math.max(...finite) : null,
-  };
-}
+export { distribution, nearestRank } from "./stats.mjs";
 
 /**
  * The single attributed cause of one measured R+IR+Graph sample that is not

@@ -8,8 +8,67 @@
 
 /** D = min(100 ms, 0.20 * B), B = 54.2 ms. Confirmed; never recomputed. */
 export const GRAPH_EVAL_D_MS = 10.84;
-/** Graph result lease (separate from the P budget). */
+/**
+ * Graph result lease (admission to result; separate from the P budget). No
+ * evaluation rule reads it: it is named only so that an option carrying it is
+ * refused (rejectOverrides). T_late borrows the value, not the interval.
+ */
 export const GRAPH_RESULT_LEASE_MS = 100;
+
+/**
+ * K6/4 (draftRef `nir1-final-request-eval-proposal/4`, contractId
+ * `graph-eval-procedure`, confirmed 2026-10-26, Session B5). Each value is
+ * written here once and read from here only (K6/4 判断 2〜4、技術点 2).
+ *   W_f    = t_graph_c − t_raw_ready_c ≤ 100 ms (the child's Graph only;
+ *            the child's IR keeps D; K6/4:64, 技術点 3)
+ *   T_late = t_notice − t_raw_ready ≤ 100 ms (K6/4:65)
+ *   T_show = t_follow − t_raw_ready ≤ 2 s (K6/4:66)
+ * K6/4「変える点」16 allows only narrowing after observation, with a new
+ * procedure-file version and review; no function here takes them as options.
+ */
+export const K64_W_F_MS = 100;
+export const K64_T_LATE_MS = 100;
+export const K64_T_SHOW_MS = 2_000;
+/**
+ * The R1 / R4 wait upper bound must be fixed in the procedure file before
+ * observation and must not exceed 10 s (`DEFERRED_RELEASE_LIMIT`; K6/4 技術点
+ * 2). The value itself is the procedure file's (not written yet, K6/4 確かめ
+ * られなかったこと 9); only the ceiling is the contract's.
+ */
+export const K64_R1_R4_WAIT_CEILING_MS = 10_000;
+/** The owner's `rebuild_min_interval` (R1 (3); `nir1_graph_product.rs:94`). */
+export const OWNER_REBUILD_MIN_INTERVAL_MS = 1_000;
+
+/**
+ * The K6/4 bytes (批准 7). The freeze commit on `claude/nir1-contracts` is
+ * made by the integrator after the confirmation and is not made yet
+ * (continuation §10.7「この記録で行わないこと」); until it is pinned here, no
+ * formal K6/4 receipt validates (fail closed).
+ */
+export const K64_FREEZE = Object.freeze({
+  path: "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
+  sha256: "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
+  draftRef: "nir1-final-request-eval-proposal/4",
+  contractId: "graph-eval-procedure",
+  /** The confirmed version (continuation §10.7). Not the freeze commit. */
+  confirmedCommit: "18ebc7b8de2d4f2701c573b5d91561a6cc852024",
+  freezeCommit: null,
+});
+
+/**
+ * 批准 5: the K6/4 relaxation applies only to a candidate that has all of
+ * (a) D′ (#715), (b) the hook that keeps the list on a `graph-ready` refresh
+ * (DR-RSJ-6; evidence: the candidate passes the RS-JOIN keep test, or has the
+ * hook commit `c7b091da` as an ancestor; (b-3) from R7) and (c) the W_f
+ * product change (批准 12, #725).
+ */
+export const K64_CANDIDATE_REQUIREMENTS = Object.freeze({
+  dPrimeCommit: "4d38d0d164e02a76a0e172214b259a11e0b2c5ff",
+  rsJoinHookCommit: "c7b091dadabac6cc098a932052cf817493205204",
+  rsJoinKeepTest:
+    "src/features/related-scenes/useNir1RelatedScenes.graphReadyKeep.test.tsx",
+  wfWindowCommit: "c4333bbd081fb297cf2dddc598155791b9678be8",
+});
 /** K6/2 option A yardstick (1%) as an exact integer ratio. */
 export const AVAILABILITY_YARDSTICK = Object.freeze({
   numerator: 1,
@@ -257,7 +316,7 @@ export function ratio(numerator, denominator) {
 }
 
 const THRESHOLD_OPTION =
-  /^(d|dms|d-ms|window|windowms|window-ms|deadline|deadlinems|deadline-ms|lease|leasems|lease-ms|yardstick|threshold|maxrate|max-rate|warmup|warmups|measured|minqueries|min-queries|tolerance|tolerancems|tolerance-ms)$/iu;
+  /^(d|dms|d-ms|window|windowms|window-ms|deadline|deadlinems|deadline-ms|lease|leasems|lease-ms|yardstick|threshold|maxrate|max-rate|warmup|warmups|measured|minqueries|min-queries|tolerance|tolerancems|tolerance-ms|wf|w-f|wfms|wf-ms|w_f|tlate|t-late|tlatems|tlate-ms|t_late|tshow|t-show|tshowms|tshow-ms|t_show|wait|waitms|wait-ms|ceiling)$/iu;
 
 /**
  * Refuses option maps that try to carry D, the lease, the yardstick, the
@@ -269,7 +328,7 @@ export function rejectOverrides(options, allowed) {
   for (const key of Object.keys(options)) {
     if (THRESHOLD_OPTION.test(key))
       throw new Error(
-        `[precheck] ${key} is frozen (D=${GRAPH_EVAL_D_MS} ms, lease ${GRAPH_RESULT_LEASE_MS} ms, 1%) and cannot be overridden`,
+        `[precheck] ${key} is frozen (D=${GRAPH_EVAL_D_MS} ms, lease ${GRAPH_RESULT_LEASE_MS} ms, W_f ${K64_W_F_MS} ms, T_late ${K64_T_LATE_MS} ms, T_show ${K64_T_SHOW_MS} ms, 1%) and cannot be overridden`,
       );
     if (!allowed.includes(key))
       throw new Error(`[precheck] unsupported option ${key}`);
