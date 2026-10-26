@@ -57,6 +57,11 @@ function publish(snapshot: Nir1LocalTurnSnapshot): void {
   useNir1LocalGenerationStore.setState((state) => ({
     turns: { ...state.turns, [snapshot.conversationId]: snapshot },
   }));
+  // A notice is about the generation that kept the send from starting; it
+  // ends with that generation (it would contradict the terminal state).
+  if (isNir1LocalTurnTerminal(snapshot.phase)) {
+    setNotice(snapshot.conversationId, null);
+  }
 }
 
 function setNotice(conversationId: string, reason: Nir1LocalReason | null) {

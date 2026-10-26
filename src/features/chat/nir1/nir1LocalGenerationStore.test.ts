@@ -101,4 +101,24 @@ describe("the local generations of the document", () => {
     expect(state().turns[CONVERSATION]?.phase).toBe("running");
     expect(state().notices[CONVERSATION]).toBeUndefined();
   });
+
+  // Re-review P3-1: the busy notice ends with the generation it was about.
+  it("clears the busy notice when the running generation ends", async () => {
+    const p = ports();
+    dispatchNir1LocalGeneration(TARGET, ENABLED, p.value);
+    await flush();
+    dispatchNir1LocalGeneration(TARGET, ENABLED, p.value);
+    expect(state().notices[CONVERSATION]).toBe("NIR1_LOCAL_SESSION_BUSY");
+    p.continues[0]({
+      status: "ok",
+      text: "",
+      thinking: "",
+      state: "succeeded",
+      terminalCode: null,
+      drained: true,
+    });
+    await flush();
+    expect(state().turns[CONVERSATION]?.phase).toBe("succeeded");
+    expect(state().notices[CONVERSATION]).toBeUndefined();
+  });
 });

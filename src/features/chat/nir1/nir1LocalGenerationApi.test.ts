@@ -605,13 +605,15 @@ describe("closed parsing of the answers", () => {
         Object.assign(new Error("held"), { code: "IPC_MUTATION_CANCELLED" }),
       ),
     ).toBe("held");
+    // The text alone is not trusted (the real path carries the code; see
+    // nir1LocalGenerationApi.held.test.ts).
     expect(
       classifyNir1LocalIpcError(
         new Error(
           "IPC_MUTATION_CANCELLED: mutation blocked during frozen AI audit export: nir1_local_generation_continue",
         ),
       ),
-    ).toBe("held");
+    ).toBe("failed");
   });
 });
 

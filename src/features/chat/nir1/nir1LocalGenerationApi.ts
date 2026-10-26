@@ -201,10 +201,9 @@ export function nir1LocalReasonOf(value: unknown): Nir1LocalReason {
 /** Classify a thrown IPC failure without keeping its text. */
 export function classifyNir1LocalIpcError(error: unknown): Nir1LocalIpcError {
   const message = error instanceof Error ? error.message : String(error);
-  if (
-    (error as { code?: unknown } | null)?.code === "IPC_MUTATION_CANCELLED" ||
-    message.includes("IPC_MUTATION_CANCELLED")
-  ) {
+  // Only the typed code that `invoke` attaches (never the text, which a
+  // Main or Native message could also contain).
+  if ((error as { code?: unknown } | null)?.code === "IPC_MUTATION_CANCELLED") {
     return "held";
   }
   if (message.includes("D2A_EGRESS_DENIED")) return "egress-denied";

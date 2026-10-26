@@ -183,6 +183,11 @@ describe("what the full disclosure (placement 1) states", () => {
         "port を変えて繰り返し試せます",
         "応答を読む前に request の全体を書きます",
         "検証の結果の表示",
+        // K5/3:448 (re-review P3-5): the listener's read and the conditional
+        // range of the data.
+        "待ち受けが読めば",
+        "画面が読める原稿の全文（編集中の Scene、ほかの Scene",
+        "画面が読める範囲によっては",
       ],
     ],
     [
@@ -202,6 +207,9 @@ describe("what the full disclosure (placement 1) states", () => {
         "try other ports repeatedly",
         "writes the whole request before reading any response",
         "verification results",
+        "as long as the listener reads it",
+        "the full manuscript the screen can read (the scene being edited and other scenes",
+        "depending on what the screen can read",
       ],
     ],
   ] as const)("%s", (language, phrases) => {
@@ -251,4 +259,10 @@ describe("what the restricted summary (placement 5) states", () => {
     );
     for (const phrase of phrases) expect(text).toContain(phrase);
   });
+});
+
+// Re-review P3-4: item 9's Japanese keeps one reason clause.
+it("states item 9's reason once in Japanese", () => {
+  const body = NIR1_LOCAL_GENERATION_TRANSLATIONS.ja.disclosure.items["9"].body;
+  expect(body).not.toMatch(/ので[^。]*ため/u);
 });

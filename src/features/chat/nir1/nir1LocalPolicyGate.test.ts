@@ -84,6 +84,9 @@ describe("the copy of Native's local send policy decision", () => {
       "1e300",
       '"\\ud83d\\ude00"',
       `${"[".repeat(100)}${"]".repeat(100)}`,
+      // 127 levels in all (the root object and 126 arrays): the deepest
+      // serde_json reads (re-review P3-3).
+      `${"[".repeat(126)}${"]".repeat(126)}`,
     ]) {
       expect(decideNir1LocalSendPolicy(`${base}${value}}`, "writing")).toEqual({
         allow: true,
