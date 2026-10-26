@@ -526,6 +526,13 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-packing/final-request/architecture.test.mjs",
         "scripts/quality/nir1-packing/final-request/runner.test.mjs",
         "scripts/quality/nir1-graph/contract.test.mjs",
+        // CP-4 S1c-1: the Electron launch side (pure parts only).
+        "scripts/quality/nir1-graph-eval/native-sample.test.mjs",
+        // CP-4 S1c-2: setup driver and runner (pure parts only).
+        "scripts/quality/nir1-graph-eval/run-sample.test.mjs",
+        // CP-4 S1f: the K6/4 procedure file and the R7 record producer.
+        "scripts/quality/nir1-graph-eval/procedure-file.test.mjs",
+        "scripts/quality/nir1-graph-eval/k64-record.test.mjs",
       ],
       [
         "node",
