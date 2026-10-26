@@ -13,7 +13,6 @@ import {
 } from "./availability.mjs";
 import {
   GRAPH_EVAL_D_MS,
-  GRAPH_EVAL_VARIANTS,
   K64_FREEZE,
   K64_R1_R4_WAIT_CEILING_MS,
   K64_T_LATE_MS,
@@ -27,7 +26,6 @@ import {
   followUpFailureCategory,
 } from "./followup.mjs";
 import {
-  followUpRecord,
   k64Sample,
   late,
   ratification5,
@@ -40,7 +38,6 @@ import {
 
 const steady = (row) => classifyFollowUp(row, { context: "steady" });
 const inTrace = (row) => classifyFollowUp(row, { context: "trace" });
-const FROZEN = { kind: "frozen" };
 
 /** Not displayed, and the X code (with its detail when given) is recorded. */
 function missedWith(result, code, detail) {
