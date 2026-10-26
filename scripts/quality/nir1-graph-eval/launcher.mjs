@@ -9,6 +9,7 @@
 // network namespace; never under `xvfb-run` or `unshare`.
 
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
@@ -19,7 +20,7 @@ import { clearTimeout, setTimeout } from "node:timers";
 import { placeD2aProfileState } from "../run-nir1-retrieval.mjs";
 import { isLaunchAdmission, readNetNamespaces } from "./admission.mjs";
 import { parseProcStat, readProcessTree } from "./egress.mjs";
-import { scanNativeBinary } from "./native-architecture.mjs";
+import { BINARY_MARKERS, scanNativeBinary } from "./native-architecture.mjs";
 import { OBSERVER_LINE_PREFIX, OBSERVER_SCHEMA } from "./observer-core.mjs";
 import { assertElectronLaunch } from "./receipt.mjs";
 
@@ -376,7 +377,16 @@ export function assertLaunchAdmitted({
   if (typeof nativePath !== "string" || !path.isAbsolute(nativePath))
     throw new Error("[precheck] the launched addon path must be absolute");
   const bytes = read(nativePath);
-  const evaluation = scanNativeBinary(bytes, "eval").length === 0;
+  // E-8: one evaluation string makes it an evaluation build; only some of
+  // them is a build of another version, refused.
+  const markers = BINARY_MARKERS.filter((marker) =>
+    bytes.includes(Buffer.from(marker, "utf8")),
+  );
+  if (markers.length > 0 && markers.length < BINARY_MARKERS.length)
+    throw new Error(
+      "[precheck] the addon carries some of the evaluation strings only (another version of the evaluation build); refusing to launch",
+    );
+  const evaluation = markers.length > 0;
   const defaultPath = path.join(root, DEFAULT_ADDON);
   let defaultAddon = null;
   if (existsSync(defaultPath)) {
@@ -395,6 +405,25 @@ export function assertLaunchAdmitted({
     throw new Error(
       "[precheck] launching the evaluation .node needs the admission of admitGraphCaseRun or admitDevPreview",
     );
+  if (evaluation) {
+    // E-8: the build's own manifest beside the .node names these bytes and
+    // the capability flag the module reported when it was built.
+    let manifest = null;
+    try {
+      manifest = JSON.parse(
+        read(path.join(path.dirname(nativePath), "eval-build.json"), "utf8"),
+      );
+    } catch {
+      manifest = null;
+    }
+    if (
+      manifest?.capabilities?.nir1GraphEval !== true ||
+      !Object.values(manifest?.artifacts ?? {}).includes(sha256(bytes))
+    )
+      throw new Error(
+        "[precheck] the evaluation .node is not the one its eval-build.json names with nir1GraphEval: true",
+      );
+  }
   return {
     evaluation,
     nativeSha256: sha256(bytes),

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -284,7 +285,24 @@ test("D-6／A-4: 評価の .node の起動は admission を要し、既定の ad
     const dir = path.join(root, "electron/native/grimodex-node");
     mkdirSync(dir, { recursive: true });
     const evalNode = path.join(root, "eval.node");
-    writeFileSync(evalNode, `\0${BINARY_MARKERS.join("\0")}\0eval`);
+    const evalBytes = `\0${BINARY_MARKERS.join("\0")}\0eval`;
+    writeFileSync(evalNode, evalBytes);
+    // E-8: the evaluation build's manifest beside the .node names its bytes
+    // and the capability flag.
+    const manifest = (overrides = {}) =>
+      writeFileSync(
+        path.join(root, "eval-build.json"),
+        JSON.stringify({
+          capabilities: { nir1GraphEval: true },
+          artifacts: {
+            ".artifacts/cp4/eval-build/grimodex-node.node": createHash("sha256")
+              .update(evalBytes)
+              .digest("hex"),
+          },
+          ...overrides,
+        }),
+      );
+    manifest();
     const productNode = path.join(root, "product.node");
     writeFileSync(productNode, "\0napi_register_module_v1\0product");
     const preview = admitDevPreview({ purpose: "smoke", fixture: null });
@@ -321,6 +339,42 @@ test("D-6／A-4: 評価の .node の起動は admission を要し、既定の ad
         () => assertLaunchAdmitted({ root, nativePath, admission: preview }),
         /default addon/,
       );
+    // E-8: 評価の文字列の一部だけの .node（版のずれた評価 build）は評価 build として拒む。
+    const partial = path.join(root, "partial.node");
+    writeFileSync(partial, `\0${BINARY_MARKERS[0]}\0partial`);
+    assert.throws(
+      () =>
+        assertLaunchAdmitted({ root, nativePath: partial, admission: preview }),
+      /some of the evaluation strings/,
+    );
+    // E-8: manifest の capability が無いか bytes が違えば拒む。
+    rmSync(path.join(dir, "grimodex-node.node"));
+    for (const overrides of [
+      { capabilities: { nir1GraphEval: false } },
+      { artifacts: { "x.node": "0".repeat(64) } },
+    ]) {
+      manifest(overrides);
+      assert.throws(
+        () =>
+          assertLaunchAdmitted({
+            root,
+            nativePath: evalNode,
+            admission: preview,
+          }),
+        /eval-build\.json/,
+        JSON.stringify(overrides),
+      );
+    }
+    rmSync(path.join(root, "eval-build.json"));
+    assert.throws(
+      () =>
+        assertLaunchAdmitted({
+          root,
+          nativePath: evalNode,
+          admission: preview,
+        }),
+      /eval-build\.json/,
+    );
     // E-7: dev の preview の admission は loadDevFixture が読んだ fixture に束縛し、
     // path の文字列や手で作った object（凍結した fixture の path を含む）は受けない。
     const loaded = loadDevFixture({
