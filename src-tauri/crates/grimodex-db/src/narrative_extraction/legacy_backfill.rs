@@ -767,13 +767,16 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
         return Err(error);
     }
 
+    // A held foreground Run records its outcome but stays running; only the
+    // durable success transaction terminalizes the Run (DR-MP-2).
+    let finalizes_success = transform_result.is_ok()
+        && !super::maintenance_runtime::foreground_system_work_barrier_requested();
     let finalize_result = run_maintenance_graph_phase_for_run(
         db,
         control,
         &run_id,
         |conn, graph| {
-            let should_finalize_success = transform_result.is_ok()
-                && !super::maintenance_runtime::foreground_system_work_barrier_requested();
+            let should_finalize_success = finalizes_success;
             // Keep the scope and optional reservation outside the transaction
             // closure.  A successful Backfill acquires the reservation only
             // after its final stop check, but the guard must survive COMMIT.
@@ -834,7 +837,12 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
     }
 
     match transform_result {
-        Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
+        Ok(summary) => {
+            if finalizes_success {
+                super::restore_rebuild::release_committed_run_ownership(control, &run_id)?;
+            }
+            Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary })
+        }
         Err(error) => {
             // The finalize transaction above has committed the failed
             // Run/Task/Attempt. Only now may the lifecycle owner drop this

@@ -1225,6 +1225,9 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control_within_capacit
         return Ok(RebuildDerivedStateOutcome::AlreadyRunning { run_id });
     }
 
+    // Set only after the durable success transaction has committed; a held
+    // foreground Run stays running and keeps its ownership.
+    let mut success_committed = false;
     let execution = (|| -> anyhow::Result<RebuildDerivedStateOutcome> {
     // Read the consumer roster and the V2 shadow in independent phases. Each
     // consumer publication below has its own transaction, so a later stop
@@ -1440,6 +1443,7 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control_within_capacit
                 )
             })
         })?;
+        success_committed = true;
     }
     Ok(RebuildDerivedStateOutcome::Ran {
         run_id: run_id.clone(),
@@ -1448,7 +1452,12 @@ fn rebuild_narrative_derived_state_for_project_with_cycle_control_within_capacit
     })();
 
     nir1_capacity::without_attempt(|| match execution {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => {
+            if success_committed {
+                release_committed_run_ownership(control, &run_id)?;
+            }
+            Ok(outcome)
+        }
         Err(error) if is_controlled_maintenance_termination(&error) => {
             // The Run is created before the first graph phase. A stop after
             // that commit must therefore close this exact Run (or hand it to
@@ -4333,6 +4342,23 @@ pub(crate) fn transfer_controlled_maintenance_run_to_owner(
     }
 }
 
+/// Drop this execution's process-local ownership of one exact Run after the
+/// transaction that durably completed it has committed (DR-MP-2). The Run is
+/// terminal in the database, so a later ordinary failure or a Main
+/// cancellation in the same cycle has no Run left for recovery to resolve;
+/// without this the supervisor would retire a clean connection for a Run
+/// that is already completed. A failing hook leaves the ownership in place
+/// and its error fails the cycle, which keeps the recovery path fail-closed.
+pub(crate) fn release_committed_run_ownership(
+    control: &MaintenanceCycleControl<'_>,
+    run_id: &str,
+) -> anyhow::Result<()> {
+    if let Some(mark_terminalized) = control.mark_run_terminalized {
+        mark_terminalized(run_id)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn is_controlled_maintenance_termination(error: &anyhow::Error) -> bool {
     (is_validation_terminated(error) && !super::source_revision::is_validation_capacity_exceeded(error))
         || is_transient_connection_preemption(error)
@@ -4548,6 +4574,9 @@ fn run_dependency_verify_for_project_with_coordinates_controlled_within_capacity
         );
     }
 
+    // Set only after the durable success transaction has committed; a held
+    // foreground Run stays running and keeps its ownership.
+    let mut success_committed = false;
     let execution = (|| -> anyhow::Result<VerifyRunOutcome> {
         let verification =
             run_maintenance_graph_phase_for_run(db, control, &run_id, |conn, graph| {
@@ -4704,6 +4733,7 @@ fn run_dependency_verify_for_project_with_coordinates_controlled_within_capacity
                 Ok(())
             })
         })?;
+        success_committed = true;
     }
 
     Ok(VerifyRunOutcome {
@@ -4716,7 +4746,12 @@ fn run_dependency_verify_for_project_with_coordinates_controlled_within_capacity
     })();
 
     nir1_capacity::without_attempt(|| match execution {
-        Ok(outcome) => Ok(outcome),
+        Ok(outcome) => {
+            if success_committed {
+                release_committed_run_ownership(control, &outcome.run_id)?;
+            }
+            Ok(outcome)
+        }
         Err(error) if is_controlled_maintenance_termination(&error) => {
             // Verify owns an exact durable Run from its creation commit. Keep
             // the typed stop as the public result, but close that Run (or
