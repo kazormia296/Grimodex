@@ -554,6 +554,10 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/frozen-setup-plan.test.mjs",
         "scripts/quality/nir1-graph-eval/frozen-setup-driver.test.mjs",
         "scripts/quality/nir1-graph-eval/r5-check-runner.test.mjs",
+        // CP-4 S1j-2: the complete setup (setup-only Main, IR, the G-02 type
+        // edit, the G-08 index-state sessions) on the same fakes.
+        "scripts/quality/nir1-graph-eval/frozen-setup-complete.test.mjs",
+        "scripts/quality/nir1-graph-eval/setup-main-build.test.mjs",
       ],
       [
         "node",
