@@ -2871,14 +2871,16 @@ mod tests {
             None,
         )
         .expect("canonical Backfill work key");
-        let marker = hold.then(|| super::super::maintenance_runtime::NarrativeSystemWorkMarker {
-            trigger: "workspace-opened".to_string(),
-            canonical_work_key: canonical_work_key.clone(),
-            authority_id: "authority:workspace-1".to_string(),
-            generation: 1,
-            product_journey_barrier_id: "barrier-post-commit".to_string(),
-            correlation: "correlation-post-commit".to_string(),
-        });
+        let marker = hold.then(
+            || super::super::maintenance_runtime::NarrativeSystemWorkMarker {
+                trigger: "workspace-opened".to_string(),
+                canonical_work_key: canonical_work_key.clone(),
+                authority_id: "authority:workspace-1".to_string(),
+                generation: 1,
+                product_journey_barrier_id: "barrier-post-commit".to_string(),
+                correlation: "correlation-post-commit".to_string(),
+            },
+        );
         let hook_calls = std::sync::Mutex::new(Vec::<(String, bool, String)>::new());
         let no_stop = || Ok::<_, anyhow::Error>(());
         let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());

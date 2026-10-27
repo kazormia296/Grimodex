@@ -11985,14 +11985,16 @@ mod tests {
             Some(&epoch_id),
         )
         .expect("canonical work key");
-        let marker = hold.then(|| super::super::maintenance_runtime::NarrativeSystemWorkMarker {
-            trigger: "workspace-opened".to_string(),
-            canonical_work_key: canonical_work_key.clone(),
-            authority_id: "authority:workspace-1".to_string(),
-            generation: 1,
-            product_journey_barrier_id: "barrier-post-commit".to_string(),
-            correlation: "correlation-post-commit".to_string(),
-        });
+        let marker = hold.then(
+            || super::super::maintenance_runtime::NarrativeSystemWorkMarker {
+                trigger: "workspace-opened".to_string(),
+                canonical_work_key: canonical_work_key.clone(),
+                authority_id: "authority:workspace-1".to_string(),
+                generation: 1,
+                product_journey_barrier_id: "barrier-post-commit".to_string(),
+                correlation: "correlation-post-commit".to_string(),
+            },
+        );
 
         let hook_calls = std::sync::Mutex::new(Vec::<(String, bool, String)>::new());
         let no_stop = || Ok::<_, anyhow::Error>(());
@@ -12035,8 +12037,8 @@ mod tests {
             reset_run_creation_tracking: None,
             mark_run_terminalized: Some(&mark_terminalized),
         };
-        let run_id = super::super::maintenance_runtime::with_system_work_marker(marker, || {
-            match adapter {
+        let run_id =
+            super::super::maintenance_runtime::with_system_work_marker(marker, || match adapter {
                 ControlledSuccessAdapter::Verify => {
                     run_dependency_verify_for_project_with_coordinates_and_control(
                         &db,
@@ -12059,9 +12061,8 @@ mod tests {
                         | RebuildDerivedStateOutcome::AlreadyRunning { run_id } => run_id,
                     })
                 }
-            }
-        })
-        .expect("controlled adapter succeeds");
+            })
+            .expect("controlled adapter succeeds");
         let status: String = db
             .with_conn(|conn| {
                 conn.query_row(
@@ -12112,6 +12113,132 @@ mod tests {
         );
         assert_eq!(status, "running", "a held Verify Run stays running");
         assert!(calls.is_empty(), "a held Run must keep its exact owner");
+    }
+
+    /// Run a controlled Verify whose attempt is cancelled at the first
+    /// boundary after its Run was created. With `quarantine`, the same
+    /// boundary quarantines the shared connection, so neither stop handler can
+    /// close the Run and both hand it to the process-local deferred owner.
+    /// Returns the error, every terminalization-hook call (run, autocommit,
+    /// status or "unreadable") and the deferred Run ids.
+    fn run_controlled_verify_cancelled_after_creation(
+        quarantine: bool,
+    ) -> (anyhow::Error, Vec<(String, bool, String)>, Vec<String>) {
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let run_attached = std::sync::atomic::AtomicBool::new(false);
+        let hook_calls = std::sync::Mutex::new(Vec::<(String, bool, String)>::new());
+        let deferred = std::sync::Mutex::new(Vec::<String>::new());
+        let stop_after_creation = || {
+            if run_attached.load(std::sync::atomic::Ordering::Acquire) {
+                if quarantine {
+                    db.quarantine_connection("test quarantine after Run creation");
+                }
+                anyhow::bail!(
+                    "NEX_MAINTENANCE_ATTEMPT_CANCELLED: test cancellation after Run creation"
+                );
+            }
+            Ok(())
+        };
+        let defer = |run_id: &str| {
+            deferred.lock().expect("deferred").push(run_id.to_owned());
+            Ok::<_, anyhow::Error>(())
+        };
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| Ok::<_, anyhow::Error>(());
+        let attach = |_ownership: crate::workspace_lifecycle::RunOwnership| {
+            run_attached.store(true, std::sync::atomic::Ordering::Release);
+            Ok::<_, anyhow::Error>(())
+        };
+        let mark_terminalized = |run_id: &str| -> anyhow::Result<()> {
+            let observed = db.with_conn(|conn| {
+                let status: String = conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )?;
+                Ok((conn.is_autocommit(), status))
+            });
+            let (autocommit, status) =
+                observed.unwrap_or_else(|_| (false, "unreadable".to_string()));
+            hook_calls
+                .lock()
+                .expect("hook calls")
+                .push((run_id.to_owned(), autocommit, status));
+            Ok(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &stop_after_creation,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+            attach_run: Some(&attach),
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: Some(&mark_terminalized),
+        };
+        let error = run_dependency_verify_for_project_with_coordinates_and_control(
+            &db,
+            "project-1",
+            None,
+            Some(&control),
+            &format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+        )
+        .expect_err("the cancelled Verify returns its typed stop");
+        (
+            error,
+            hook_calls.into_inner().expect("hook calls"),
+            deferred.into_inner().expect("deferred"),
+        )
+    }
+
+    #[test]
+    fn controlled_verify_cancellation_releases_ownership_only_after_the_run_is_closed() {
+        let (error, calls, deferred) = run_controlled_verify_cancelled_after_creation(false);
+        assert!(
+            format!("{error:#}").contains("NEX_MAINTENANCE_ATTEMPT_CANCELLED"),
+            "unexpected error: {error:#}"
+        );
+        assert!(deferred.is_empty(), "the Run was closed, not deferred");
+        // The phase-level and the adapter-level stop handlers both transfer
+        // the exact Run, so the idempotent close reports twice; every report
+        // comes after the durable close and outside any transaction.
+        assert!(!calls.is_empty(), "the closed Run releases its ownership");
+        assert!(
+            calls
+                .iter()
+                .all(|(_, autocommit, status)| *autocommit && status != "running"),
+            "ownership may drop only after the Run was durably closed: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn controlled_verify_stop_that_cannot_close_the_run_keeps_its_ownership() {
+        // DR-MP-7 (M2a): when the stop handlers cannot close the Run (the
+        // connection is quarantined), the Run stays running and only the
+        // deferred owner and the permit may own it.
+        let (error, calls, deferred) = run_controlled_verify_cancelled_after_creation(true);
+        assert!(
+            format!("{error:#}").contains("NEX_MAINTENANCE_ATTEMPT_CANCELLED"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            !deferred.is_empty(),
+            "the running Run goes to the deferred owner"
+        );
+        assert!(
+            calls.is_empty(),
+            "a Run that was not durably closed must keep its exact owner: {calls:?}"
+        );
     }
 
     #[test]
