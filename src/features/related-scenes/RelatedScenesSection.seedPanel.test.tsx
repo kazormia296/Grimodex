@@ -30,7 +30,9 @@ vi.mock("./nir1GraphAvailability", () => ({
 }));
 // The pins of "current" as the seed rule sees them: the first one decides.
 vi.mock("./nir1GraphSeed", () => ({
-  selectNir1GraphSeed: vi.fn(async () => h.pins[0] ?? null),
+  selectNir1GraphSeed: vi.fn(async (_project: string, sceneId: string) =>
+    sceneId === "current" ? (h.pins[0] ?? null) : null,
+  ),
 }));
 vi.mock("./nir1GraphSeedCandidates", () => ({
   readNir1GraphSeedEntryName: vi.fn(async (_project: string, id: string) =>
@@ -170,5 +172,99 @@ describe("RelatedScenesSection seed candidates (Graph UI on, mocked)", () => {
       expect(selectNir1GraphSeedCandidates).not.toHaveBeenCalled();
       cleanup();
     }
+  });
+
+  it("keeps the focus in the section after the pin (the candidates leave with the query)", async () => {
+    render(<RelatedScenesSection />);
+    await settle();
+    const button = await vi.waitFor(() =>
+      screen.getByRole("button", { name: "ボブ を起点にする" }),
+    );
+    button.focus();
+    fireEvent.click(button);
+    await settle();
+    await vi.waitFor(() => expect(h.fetch).toHaveBeenCalledTimes(2));
+    expect(document.activeElement).not.toBe(document.body);
+    expect(
+      document.activeElement?.contains(screen.getByText("Raw a")) ?? false,
+    ).toBe(true);
+    // The section header stayed (no remount of the section).
+    expect(screen.getByRole("button", { expanded: true }).isConnected).toBe(
+      true,
+    );
+  });
+
+  it("queries again with the new seed even when the shown query reset during the write", async () => {
+    let finish!: () => void;
+    h.upsert.mockImplementation(
+      (_sceneId: string, entryId: string) =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            h.pins.push(entryId);
+            resolve();
+          };
+        }),
+    );
+    render(<RelatedScenesSection />);
+    await settle();
+    fireEvent.click(
+      await vi.waitFor(() =>
+        screen.getByRole("button", { name: "ボブ を起点にする" }),
+      ),
+    );
+    // Another change of the tree resets the query (and unmounts the panel)
+    // while the pin is written; that query still sees no pin.
+    act(() => useTreeStore.setState({ nodes: [] } as never));
+    expect(screen.queryByTestId("nir1-graph-seed-candidates")).toBeNull();
+    await settle();
+    await vi.waitFor(() => expect(h.fetch).toHaveBeenCalledTimes(2));
+    expect(h.fetch.mock.calls[1][1]).not.toHaveProperty("graphSeedEntityId");
+
+    await act(async () => finish());
+    await settle();
+    await vi.waitFor(() => expect(h.fetch).toHaveBeenCalledTimes(3));
+    expect(h.fetch.mock.calls[2][0]).toBe("current");
+    expect(h.fetch.mock.calls[2][1].graphSeedEntityId).toBe("e-act");
+  });
+
+  it("does not query again when the active Scene moved away during the write", async () => {
+    h.fetch.mockImplementation(async (sceneId: string) => ({
+      ...rawFetch(),
+      origin: { ...rawFetch().origin!, querySceneId: sceneId },
+    }));
+    let finish!: () => void;
+    h.upsert.mockImplementation(
+      (_sceneId: string, entryId: string) =>
+        new Promise<void>((resolve) => {
+          finish = () => {
+            h.pins.push(entryId);
+            resolve();
+          };
+        }),
+    );
+    render(<RelatedScenesSection />);
+    await settle();
+    fireEvent.click(
+      await vi.waitFor(() =>
+        screen.getByRole("button", { name: "ボブ を起点にする" }),
+      ),
+    );
+    act(() => useTreeStore.setState({ activeSceneId: "other" }));
+    await settle();
+    await vi.waitFor(() =>
+      expect(h.fetch.mock.calls.map(([sceneId]) => sceneId)).toEqual([
+        "current",
+        "other",
+      ]),
+    );
+
+    await act(async () => finish());
+    await settle();
+    await settle();
+    expect(h.upsert).toHaveBeenCalledWith("current", "e-act");
+    expect(h.fetch.mock.calls.map(([sceneId]) => sceneId)).toEqual([
+      "current",
+      "other",
+    ]);
   });
 });

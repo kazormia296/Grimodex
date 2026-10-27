@@ -1,7 +1,16 @@
-import { Component, Suspense, lazy, useState, type ReactNode } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { CollapsibleSection } from "@/features/layout/CollapsibleSection";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { debugLog } from "@/lib/debugLog";
 import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
@@ -63,27 +72,36 @@ interface RelatedScenesSectionProps {
   enabled?: boolean;
 }
 
-export function RelatedScenesSection(props: RelatedScenesSectionProps = {}) {
-  // DR-SEEDSUG-3: a pin written from the seed candidates mounts the section
-  // anew, the same path as closing and reopening it. The hook then reads the
-  // seed again and begins with it; the hook itself is unchanged.
-  const [seedRevision, setSeedRevision] = useState(0);
-  return (
-    <RelatedScenesSectionView
-      key={seedRevision}
-      {...props}
-      onSeedPinned={() => setSeedRevision((value) => value + 1)}
-    />
-  );
-}
-
-function RelatedScenesSectionView({
+export function RelatedScenesSection({
   enabled = true,
-  onSeedPinned,
-}: RelatedScenesSectionProps & { readonly onSeedPinned: () => void }) {
+}: RelatedScenesSectionProps = {}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
-  const { sceneId, fetch, loading } = useNir1RelatedScenes(enabled && open);
+  // DR-SEEDSUG-3: after a pin from the seed candidates the query is paused for
+  // one commit, the same path as closing and reopening the section: the hook
+  // ends its query, then reads the seed again and begins with it. The hook
+  // itself is unchanged.
+  const [paused, setPaused] = useState(false);
+  useEffect(() => {
+    if (paused) setPaused(false);
+  }, [paused]);
+  const { sceneId, fetch, loading } = useNir1RelatedScenes(
+    enabled && open && !paused,
+  );
+  const content = useRef<HTMLDivElement>(null);
+  const onSeedPinned = (pinnedSceneId: string) => {
+    // A pin of a Scene that is no longer active needs no new query here.
+    if (useTreeStore.getState().activeSceneId !== pinnedSceneId) return;
+    const box = content.current;
+    const focused = document.activeElement;
+    // The candidates leave with the query: keep the focus in the section.
+    if (
+      box &&
+      (focused === null || focused === document.body || box.contains(focused))
+    )
+      box.focus();
+    setPaused(true);
+  };
   // DR-SEEDSUG-1: the seed panel belongs to the shown, completed query of the
   // active Scene, and reads again for each new query of it.
   const seedOrigin =
@@ -109,7 +127,13 @@ function RelatedScenesSectionView({
         ) : null
       }
     >
-      <div className="py-1">
+      <div
+        ref={content}
+        // The focus target after a seed pin (DR-SEEDSUG-3); only with the
+        // Graph UI on, so the closed product keeps its DOM.
+        tabIndex={isNir1GraphUiEnabled() ? -1 : undefined}
+        className={isNir1GraphUiEnabled() ? "py-1 outline-none" : "py-1"}
+      >
         {seedOrigin?.projectId && (
           <Nir1GraphBoundary
             fallback={null}

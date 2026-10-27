@@ -18,7 +18,10 @@ type SeedView =
   | {
       readonly kind: "candidates";
       readonly candidates: readonly Nir1GraphSeedCandidate[];
-    };
+    }
+  // The Scene is not a live scene of the project (archived, missing): nothing
+  // to offer, and no "pin it in the Matrix" hint either (DR-SEEDSUG-2).
+  | { readonly kind: "none" };
 
 const REASON_KEY: Record<Nir1GraphSeedCandidateReason, string> = {
   pov: "relatedScenes.graph.seedReasonPov",
@@ -31,8 +34,11 @@ interface Props {
   readonly sceneId: string;
   /** 表示中の問い合わせの世代。新しい問い合わせごとに読み直す（前の表示は残す）。 */
   readonly queryGeneration: number;
-  /** pin を書けた後。Related Scenes がこの seed で問い合わせ直す（DR-SEEDSUG-3）。 */
-  readonly onPinned: () => void;
+  /**
+   * pin を書けた後（この panel が外れた後でも呼ぶ）。Related Scenes は、active な
+   * Scene がまだ `sceneId` ならこの seed で問い合わせ直す（DR-SEEDSUG-3）。
+   */
+  readonly onPinned: (sceneId: string) => void;
 }
 
 /**
@@ -76,10 +82,13 @@ export default function Nir1GraphSeedPanel({
           kind: "seed",
           name: await readNir1GraphSeedEntryName(projectId, seed),
         };
-      return {
-        kind: "candidates",
-        candidates: await selectNir1GraphSeedCandidates(projectId, sceneId),
-      };
+      const candidates = await selectNir1GraphSeedCandidates(
+        projectId,
+        sceneId,
+      );
+      return candidates === null
+        ? { kind: "none" }
+        : { kind: "candidates", candidates };
     };
     read().then(
       (value) => {
@@ -97,6 +106,7 @@ export default function Nir1GraphSeedPanel({
 
   if (view === null || view.key !== key) return null;
   const shown = view.view;
+  if (shown.kind === "none") return null;
   if (shown.kind === "seed")
     return shown.name === null ? null : (
       <p
@@ -121,9 +131,11 @@ export default function Nir1GraphSeedPanel({
     upsertScenePin(target, entryId).then(
       () => {
         inFlight.current = false;
-        if (!mounted.current) return;
-        setPending(null);
-        onPinned();
+        // Only this panel's own state stops with it: the query may have reset
+        // (and unmounted the panel) while the pin was written, and still has to
+        // run again with the new seed (the parent checks the active Scene).
+        if (mounted.current) setPending(null);
+        onPinned(target);
       },
       () => {
         inFlight.current = false;
@@ -135,14 +147,15 @@ export default function Nir1GraphSeedPanel({
   };
 
   return (
-    <section
+    <div
+      role="group"
       aria-labelledby={headingId}
       data-testid="nir1-graph-seed-candidates"
       className="px-3 py-2 text-[11px]"
     >
-      <h3 id={headingId} className="font-medium text-foreground">
+      <p id={headingId} className="font-medium text-foreground">
         {t("relatedScenes.graph.seedCandidatesHeading")}
-      </h3>
+      </p>
       {shown.candidates.length === 0 ? (
         <p className="mt-0.5 text-muted-foreground">
           {t("relatedScenes.graph.seedNone")}
@@ -174,9 +187,12 @@ export default function Nir1GraphSeedPanel({
                     name: nir1GraphDisplayText(candidate.name),
                   })}
                   aria-busy={pending === candidate.entryId || undefined}
-                  disabled={pending !== null}
+                  // Not `disabled`: the focus stays on the button while the pin is
+                  // written and after a failure (DR-SEEDSUG-3). `inFlight` stops
+                  // a second write.
+                  aria-disabled={pending !== null || undefined}
                   onClick={() => pinAsSeed(candidate.entryId)}
-                  className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-primary hover:bg-primary/10 disabled:cursor-default disabled:opacity-50"
+                  className="shrink-0 cursor-pointer rounded px-1.5 py-0.5 text-primary hover:bg-primary/10 aria-disabled:cursor-default aria-disabled:opacity-50"
                 >
                   {t("relatedScenes.graph.seedUse")}
                 </button>
@@ -194,6 +210,6 @@ export default function Nir1GraphSeedPanel({
           {t("relatedScenes.graph.seedPinFailed")}
         </p>
       )}
-    </section>
+    </div>
   );
 }

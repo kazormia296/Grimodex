@@ -97,7 +97,7 @@ describe("Nir1GraphSeedPanel", () => {
     await flush();
 
     expect(h.candidates).toHaveBeenCalledWith("p", "s1");
-    const section = screen.getByRole("region", { name: "起点の候補" });
+    const section = screen.getByRole("group", { name: "起点の候補" });
     const items = within(section).getAllByRole("listitem");
     expect(
       items.map((item) => item.getAttribute("data-nir1-seed-reason")),
@@ -144,7 +144,98 @@ describe("Nir1GraphSeedPanel", () => {
     });
     await flush();
     expect(onPinned).toHaveBeenCalledTimes(1);
+    expect(onPinned).toHaveBeenCalledWith("s1");
     expect(h.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it("writes once for two clicks in the same event turn, before any re-render (inFlight)", async () => {
+    const write = deferred();
+    h.upsert.mockReturnValue(write.promise);
+    render(
+      <Nir1GraphSeedPanel
+        projectId="p"
+        sceneId="s1"
+        queryGeneration={1}
+        onPinned={vi.fn()}
+      />,
+    );
+    await flush();
+    const first = screen.getByRole("button", { name: "ボブ を起点にする" });
+    const second = screen.getByRole("button", { name: "王都 を起点にする" });
+    // One act: React commits nothing between the clicks, so no rendered
+    // state (aria-disabled, pending) can stop the second one.
+    act(() => {
+      first.click();
+      first.click();
+      second.click();
+    });
+    expect(h.upsert).toHaveBeenCalledTimes(1);
+    expect(h.upsert).toHaveBeenCalledWith("s1", "e-act");
+    await act(async () => {
+      write.resolve();
+      await write.promise;
+    });
+  });
+
+  it("keeps the focus on the button while writing (aria-disabled, not disabled)", async () => {
+    const write = deferred();
+    h.upsert.mockReturnValue(write.promise);
+    render(
+      <Nir1GraphSeedPanel
+        projectId="p"
+        sceneId="s1"
+        queryGeneration={1}
+        onPinned={vi.fn()}
+      />,
+    );
+    await flush();
+    const button = screen.getByRole("button", { name: "ボブ を起点にする" });
+    button.focus();
+    fireEvent.click(button);
+    expect(button.getAttribute("aria-disabled")).toBe("true");
+    expect((button as HTMLButtonElement).disabled).toBe(false);
+    expect(document.activeElement).toBe(button);
+    await act(async () => {
+      write.resolve();
+      await write.promise;
+    });
+  });
+
+  it("still reports the pin after the panel was unmounted during the write", async () => {
+    const write = deferred();
+    h.upsert.mockReturnValue(write.promise);
+    const onPinned = vi.fn();
+    const { unmount } = render(
+      <Nir1GraphSeedPanel
+        projectId="p"
+        sceneId="s1"
+        queryGeneration={1}
+        onPinned={onPinned}
+      />,
+    );
+    await flush();
+    fireEvent.click(screen.getByRole("button", { name: "ボブ を起点にする" }));
+    unmount();
+    await act(async () => {
+      write.resolve();
+      await write.promise;
+    });
+    expect(onPinned).toHaveBeenCalledWith("s1");
+  });
+
+  it("draws nothing for a scene that is not a live scene of the project", async () => {
+    h.candidates.mockResolvedValue(null);
+    const { container } = render(
+      <Nir1GraphSeedPanel
+        projectId="p"
+        sceneId="s1"
+        queryGeneration={1}
+        onPinned={vi.fn()}
+      />,
+    );
+    await flush();
+    expect(h.candidates).toHaveBeenCalled();
+    expect(container.textContent).toBe("");
   });
 
   it("keeps the candidates and tells the author when the pin cannot be written", async () => {
@@ -176,7 +267,7 @@ describe("Nir1GraphSeedPanel", () => {
 
     // The author can try again.
     const retry = screen.getByRole("button", { name: "アリス を起点にする" });
-    expect((retry as HTMLButtonElement).disabled).toBe(false);
+    expect(retry.getAttribute("aria-disabled")).toBeNull();
     fireEvent.click(retry);
     await flush();
     expect(h.upsert).toHaveBeenCalledTimes(2);
@@ -196,7 +287,7 @@ describe("Nir1GraphSeedPanel", () => {
     );
     await flush();
 
-    expect(screen.getByRole("region", { name: "起点の候補" })).toBeTruthy();
+    expect(screen.getByRole("group", { name: "起点の候補" })).toBeTruthy();
     expect(screen.queryAllByRole("button")).toEqual([]);
     expect(screen.getByText(/起点がありません/)).toBeTruthy();
   });

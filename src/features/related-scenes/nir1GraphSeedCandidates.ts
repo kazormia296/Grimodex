@@ -46,13 +46,14 @@ function seedable(entryId: string): boolean {
  * （source が body か semantic）。同順位は `entry_id` の昇順。1 つの項目は最も高い
  * 順位で 1 回だけ。結合は `selectNir1GraphSeed` と同じ（同じ project の archived で
  * ない Scene、同じ project の Codex 項目）。この Scene に pin 済みの項目と、起点に
- * なりえない ID（空白だけ、200 UTF-16 超）は出さない。
+ * なりえない ID（空白だけ、200 UTF-16 超）は出さない。Scene が同じ project の
+ * archived でない scene でなければ null（候補も「pin すると使える」の案内も出さない）。
  */
 export async function selectNir1GraphSeedCandidates(
   projectId: string,
   sceneId: string,
   limit = NIR1_GRAPH_SEED_CANDIDATE_LIMIT,
-): Promise<Nir1GraphSeedCandidate[]> {
+): Promise<Nir1GraphSeedCandidate[] | null> {
   const scene = await db
     .select({ pov: codexEntries.id, povName: codexEntries.name })
     .from(treeNodes)
@@ -72,7 +73,7 @@ export async function selectNir1GraphSeedCandidates(
       ),
     )
     .limit(1);
-  if (scene.length === 0) return [];
+  if (scene.length === 0) return null;
 
   const mentions = await db
     .select({

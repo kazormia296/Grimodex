@@ -66,10 +66,9 @@ async function pin(sceneId: string, entryId: string, createdAt: string) {
 }
 
 const ids = async (sceneId: string, projectId = P1) =>
-  (await selectNir1GraphSeedCandidates(projectId, sceneId)).map((candidate) => [
-    candidate.entryId,
-    candidate.reason,
-  ]);
+  (await selectNir1GraphSeedCandidates(projectId, sceneId))?.map(
+    (candidate) => [candidate.entryId, candidate.reason],
+  ) ?? null;
 
 // One in-memory database for the file (a fresh sql.js per test runs out of
 // memory); every test empties the tables it uses.
@@ -106,7 +105,7 @@ describe("selectNir1GraphSeedCandidates", () => {
       ["e-act", "beat-actor"],
       ["e-body", "body"],
     ]);
-    const [first] = await selectNir1GraphSeedCandidates(P1, "s1");
+    const [first] = (await selectNir1GraphSeedCandidates(P1, "s1")) ?? [];
     expect(first?.name).toBe("name e-pov");
   });
 
@@ -168,7 +167,7 @@ describe("selectNir1GraphSeedCandidates", () => {
     expect(await ids("s1")).toEqual([["e-mine", "body"]]);
   });
 
-  it("offers nothing for an archived scene, a scene of another project or a non-scene node", async () => {
+  it("answers null (no candidate, no hint) for an archived scene, a scene of another project, a non-scene node or a missing one", async () => {
     await entry("e1");
     await entry("e2", P2);
     await scene("s-archived", P1, {
@@ -180,10 +179,10 @@ describe("selectNir1GraphSeedCandidates", () => {
     for (const sceneId of ["s-archived", "s-other", "n1"])
       await mention(sceneId, "e1", "body");
 
-    expect(await ids("s-archived")).toEqual([]);
-    expect(await ids("s-other")).toEqual([]);
-    expect(await ids("n1")).toEqual([]);
-    expect(await ids("missing")).toEqual([]);
+    expect(await ids("s-archived")).toBeNull();
+    expect(await ids("s-other")).toBeNull();
+    expect(await ids("n1")).toBeNull();
+    expect(await ids("missing")).toBeNull();
   });
 
   it("leaves out an entry already pinned to this scene, not one pinned elsewhere", async () => {
