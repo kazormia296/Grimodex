@@ -23,11 +23,14 @@ try {
   if (
     !productMain ||
     !path.isAbsolute(productMain) ||
-    path.basename(productMain) !== "main.cjs" ||
+    // S1j-2: the setup-only Main of the qualified-ir session sits beside the
+    // product Main (setup-main-build.mjs; session.mjs launches it only with
+    // its sealed admission).
+    !["main.cjs", "main-setup-ir.cjs"].includes(path.basename(productMain)) ||
     path.basename(path.dirname(productMain)) !== "dist-electron"
   )
     throw new Error(
-      "CP4-OBS-INTERNAL: GRIMODEX_CP4_PRODUCT_MAIN must be <root>/dist-electron/main.cjs",
+      "CP4-OBS-INTERNAL: GRIMODEX_CP4_PRODUCT_MAIN must be <root>/dist-electron/main.cjs (or main-setup-ir.cjs)",
     );
   globalThis.__cp4Observer = installCp4Observer({
     app,

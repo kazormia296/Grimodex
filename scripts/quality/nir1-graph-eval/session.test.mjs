@@ -557,3 +557,93 @@ test("E-14: dprime の launch の検査で addon の呼出しが返らなけれ�
   assert.match(String(error?.message), /timed out/);
   assert.equal(stops, 1);
 });
+
+test("S1j-2: setup 専用の Main は封印した admission で起動し（決定論の provider の env を足す）、admission が無ければ製品の Main、検査に落ちれば起動しない", async () => {
+  const runDir = mkdtempSync(path.join(os.tmpdir(), "cp4-setup-main-"));
+  try {
+    const launched = [];
+    const deps = (assertSetupMain) => ({
+      ...fakeDeps(
+        { launch: 0, stop: 0 },
+        { firstWindow: () => Promise.reject(new Error("no window")) },
+      ),
+      launch: async ({ env }) => {
+        launched.push(env);
+        return {
+          pid: 4242,
+          app: {
+            firstWindow: () => Promise.reject(new Error("no window")),
+            evaluate: async () => null,
+          },
+          stderr: () => "",
+          launch: { removedEnv: [] },
+          addonCheck: { evaluation: false },
+        };
+      },
+      ...(assertSetupMain ? { assertSetupMain } : {}),
+    });
+    const base = {
+      runDir,
+      server: { url: (page) => `http://127.0.0.1:1${page}` },
+      observer: { path: "/x/observer.cjs" },
+      nativePath: "/x/grimodex-node.node",
+      d2aMode: "unrestricted",
+      models: {},
+    };
+    const setupMain = { sealed: true };
+    const ir = await startSession({
+      ...base,
+      label: "ir",
+      setupMain,
+      deps: deps((admission) => {
+        assert.equal(admission, setupMain);
+        return {
+          mainPath: "/repo/dist-electron/main-setup-ir.cjs",
+          env: { GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1" },
+          record: { kind: "setup-ir", sha256: "e".repeat(64) },
+        };
+      }),
+    });
+    await ir.stop();
+    assert.equal(
+      launched[0].GRIMODEX_CP4_PRODUCT_MAIN,
+      "/repo/dist-electron/main-setup-ir.cjs",
+    );
+    assert.equal(
+      launched[0].GRIMODEX_PRODUCT_JOURNEY_FAKE_AI,
+      "deterministic-v1",
+    );
+    assert.equal(ir.evidence.main.kind, "setup-ir");
+    assert.ok(
+      ir.evidence.extraEnvNames.includes("GRIMODEX_PRODUCT_JOURNEY_FAKE_AI"),
+    );
+    const author = await startSession({
+      ...base,
+      label: "author",
+      deps: deps(null),
+    });
+    await author.stop();
+    assert.match(
+      launched[1].GRIMODEX_CP4_PRODUCT_MAIN,
+      /dist-electron\/main\.cjs$/u,
+    );
+    assert.equal(launched[1].GRIMODEX_PRODUCT_JOURNEY_FAKE_AI, undefined);
+    assert.deepEqual(author.evidence.main, {
+      kind: "product",
+      path: "dist-electron/main.cjs",
+    });
+    // The real check refuses an admission it did not seal (no launch).
+    await assert.rejects(
+      startSession({
+        ...base,
+        label: "forged",
+        setupMain: { setupMain: { sha256: "0".repeat(64) } },
+        deps: deps(null),
+      }),
+      /\[precheck\] S1j-2 setup-main/u,
+    );
+    assert.equal(launched.length, 2);
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+});
