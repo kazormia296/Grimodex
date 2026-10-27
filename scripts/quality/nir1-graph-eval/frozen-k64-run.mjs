@@ -795,7 +795,9 @@ async function measureOneShot(ctx) {
     root: ROOT,
     ownPids: () => [...launcherChain, ...(current?.pids() ?? [])],
   });
-  ctx.run = { startedAtMs: Date.now() };
+  // The run spans the first measured query to the last one, inside the
+  // processes' lives (their socket samplers run from launch to stop).
+  ctx.run = { startedAtMs: null };
   try {
     for (const slot of schedule) {
       if (ctx.d2aMode !== "restricted" && slot.arm === "graph") continue;
@@ -829,6 +831,7 @@ async function measureOneShot(ctx) {
             (input) => window.cp4Harness.hook.prepare(input),
             { workspacePath: proc.workspacePath },
           );
+        ctx.run.startedAtMs ??= Date.now();
         const taken =
           slot.arm === "hybrid"
             ? await hybridSample({ ctx, slot })
@@ -838,6 +841,7 @@ async function measureOneShot(ctx) {
           measurement: ctx.oneShot.receiptLabel,
           process: slot.process,
         });
+        ctx.run.finishedAtMs = Date.now();
         const at = d2ProbeCheck({
           spec: ctx.spec,
           setupProbe: ctx.setupProbe,
@@ -871,7 +875,6 @@ async function measureOneShot(ctx) {
         current = null;
       }
     }
-    ctx.run.finishedAtMs = Date.now();
     return { status: "measured", samples, probes, processes, evidences };
   } finally {
     ctx.windowSamples = ctx.windowSampler?.stop() ?? [];
