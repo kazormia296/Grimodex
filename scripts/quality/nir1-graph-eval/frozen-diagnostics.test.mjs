@@ -28,6 +28,7 @@ import {
   traceAttemptKey,
   claimFrozenAttempt,
   frozenAttemptLedger,
+  COUNTED_ATTEMPT_STATUS,
   explainSpP4Instability,
   spP4IrDisclosure,
   spP4AttemptOutcome,
@@ -39,6 +40,7 @@ import {
 } from "./frozen-diagnostics.mjs";
 import { loadFrozenSeedPinPlan } from "./seed-pin-setup.mjs";
 import { REPO_ROOT, testGit } from "./test-support.mjs";
+import { finishAttempt } from "./frozen-k64-admission.mjs";
 import { s2Record } from "./s5b-test-support.mjs";
 
 const H = (c) => c.repeat(64);
@@ -1196,4 +1198,43 @@ test("DR-CP4-O-16: 台帳（A の #754）は同じ identity の SP-P4 の 2 回�
   });
   assert.equal(second.priorAttempts.length, 1);
   assert.equal(second.priorAttempts[0].runName, "tr-1");
+});
+
+test("レビュー P2-α: SP-P4 の台帳は測定を始めなかった試行（not-started）を数えず、測定を始めた試行（measured-stopped、completed）は数える", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "s5b-ledger-sp-"));
+  const ledger = (runName) =>
+    frozenAttemptLedger({
+      root,
+      candidate: { commit: C("b"), tree: C("t") },
+      s4Commit: C("5"),
+      runName,
+      startedAtUtc: "2026-10-28T00:00:00.000Z",
+    });
+  const key = spP4AttemptKey({ prepCommit: C("5"), candidateCommit: C("b") });
+  const first = claimFrozenAttempt({
+    kind: "sp-p4",
+    key,
+    ledger: ledger("sp-a"),
+  });
+  finishAttempt({ file: first.file, status: "not-started" });
+  const second = claimFrozenAttempt({
+    kind: "sp-p4",
+    key,
+    ledger: ledger("sp-b"),
+  });
+  finishAttempt({ file: second.file, status: "measured-stopped" });
+  assert.throws(
+    () => claimFrozenAttempt({ kind: "sp-p4", key, ledger: ledger("sp-c") }),
+    /1 earlier attempts are recorded \(expected 0\)/u,
+  );
+  assert.deepEqual(COUNTED_ATTEMPT_STATUS["sp-p4"], [
+    "started",
+    "completed",
+    "measured-stopped",
+  ]);
+  assert.deepEqual(COUNTED_ATTEMPT_STATUS.trace, [
+    "started",
+    "stalled",
+    "completed",
+  ]);
 });

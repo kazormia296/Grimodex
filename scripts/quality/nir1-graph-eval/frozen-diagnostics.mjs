@@ -1101,6 +1101,12 @@ export function claimFrozenAttempt({ kind, key, ledger = null }) {
  * n only when n − 1 are recorded. The attempt is written once (`wx`) under the
  * run name. Returns the claim function `claimFrozenAttempt` takes.
  */
+/** Review P2-α: the ledger statuses that use an attempt, by kind. */
+export const COUNTED_ATTEMPT_STATUS = Object.freeze({
+  trace: Object.freeze(["started", "stalled", "completed"]),
+  "sp-p4": Object.freeze(["started", "completed", "measured-stopped"]),
+});
+
 export function frozenAttemptLedger({
   root,
   candidate,
@@ -1123,7 +1129,14 @@ export function frozenAttemptLedger({
         "ledger",
         `an attempt file is unreadable (${rows.find((row) => row.unreadable).unreadable})`,
       );
-    const priors = rows.filter((row) => row.key === key);
+    // Review P2-α: only attempts that started measuring count (a trace:
+    // stalled or completed; SP-P4: completed or stopped after its measurement
+    // began); "started" (a process killed before it closed its row) counts
+    // too, the strict side. A refusal before the launch closes "not-started".
+    const priors = rows.filter(
+      (row) =>
+        row.key === key && COUNTED_ATTEMPT_STATUS[kind]?.includes(row.status),
+    );
     const expected = kind === "trace" ? attempt - 1 : 0;
     if (priors.length !== expected)
       fail(

@@ -239,7 +239,9 @@ async function main() {
   let server = null;
   let receiptWritten = false;
   let ledgerClaim = null;
-  let finalStatus = "stopped";
+  let claimLedger = null;
+  // Review P2-α: "not-started" until a side is measured.
+  let finalStatus = "not-started";
   try {
     let plans;
     let selected;
@@ -320,24 +322,27 @@ async function main() {
         k62Commit: options["k62-commit"],
         k64Commit: options["k64-commit"],
       });
-      // Review P3 (e): one ledger claim per frozen attempt (A's ledger).
-      ledgerClaim = claimFrozenAttempt({
-        kind: "sp-p4",
-        key: spP4AttemptKey({
-          prepCommit: admission.head.observationPrep.commit,
-          candidateCommit: admission.candidateHead,
-        }),
-        ledger: frozenAttemptLedger({
-          root: ROOT,
-          candidate: {
-            commit: admission.candidateHead,
-            tree: git(["rev-parse", `${admission.candidateHead}^{tree}`]),
-          },
-          s4Commit: admission.head.observationPrep.commit,
-          runName: options.run,
-          startedAtUtc: new Date().toISOString(),
-        }),
-      });
+      // Review P3 (e): one ledger claim per frozen attempt (A's ledger),
+      // made after the setups, right before head.json and the measurement
+      // (review P2-α: a refusal before it uses no attempt).
+      claimLedger = () =>
+        claimFrozenAttempt({
+          kind: "sp-p4",
+          key: spP4AttemptKey({
+            prepCommit: admission.head.observationPrep.commit,
+            candidateCommit: admission.candidateHead,
+          }),
+          ledger: frozenAttemptLedger({
+            root: ROOT,
+            candidate: {
+              commit: admission.candidateHead,
+              tree: git(["rev-parse", `${admission.candidateHead}^{tree}`]),
+            },
+            s4Commit: admission.head.observationPrep.commit,
+            runName: options.run,
+            startedAtUtc: new Date().toISOString(),
+          }),
+        });
       head = buildRunHead({
         kind: "sp-p4",
         k62: admission.head.k62,
@@ -346,8 +351,6 @@ async function main() {
         traces: readTraceFileHeads({ root: ROOT, traces: record?.traces }),
       });
     }
-    // K6/2 事前登録の凍結 2: the head before any launch.
-    const { sha256: headSha256 } = await writeRunHead({ runDir, head });
     const schedule = spP4Schedule({ warmup, measured });
     // Setups first (product `.node`), then the measurements (evaluation).
     setupShared = dev
@@ -417,6 +420,10 @@ async function main() {
     const setupCandidate = setupShared.candidate;
     setupShared = null;
 
+    // The attempt (frozen) and K6/2 事前登録の凍結 2: the head, both before
+    // the measurement's first launch.
+    if (claimLedger) ledgerClaim = claimLedger();
+    const { sha256: headSha256 } = await writeRunHead({ runDir, head });
     // The measurement renderer (timing shim) replaces the setup's in the
     // run's one renderer directory (renderer-build.mjs allows no other), and
     // the evaluation sessions.
@@ -437,6 +444,7 @@ async function main() {
       outDir: path.join(runDir, "observer"),
     });
     const measureSide = async ({ target, side, attempt, setup }) => {
+      finalStatus = "measured-stopped";
       const map = setup.receipt.logicalToRuntime;
       const ids = {
         projectId: map.projectId,

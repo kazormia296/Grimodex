@@ -200,17 +200,31 @@ export function createG01NegativeRun({ id, root, target = null }) {
       };
     },
     async askGraph(take) {
-      let last = null;
+      const takes = [];
       const asked = await askUntilDecided({
         ask: async () => {
-          last = await take();
-          return rowProbeOf(last.row);
+          const taken = await take();
+          takes.push(taken);
+          return rowProbeOf(taken.row);
         },
         limit: G01_SAMPLE_ATTEMPTS,
       });
+      const last = takes.at(-1);
+      // Review P3: every take set aside (a neutral answer) stays disclosed
+      // with its release and its index state at the query.
+      const discarded = takes.slice(0, -1).map((taken, at) => ({
+        at,
+        reason: "neutral-answer",
+        parentOutcome: taken.row?.graph?.outcome ?? null,
+        childOutcome: taken.row?.followUp?.child?.outcome ?? null,
+        release: taken.release ?? null,
+        indexUsable: taken.indexUsable ?? null,
+      }));
       state.graphTries.push({
         decided: asked.decided,
         tries: asked.tries,
+        discardedTakes: discarded.length,
+        discarded,
         retry: { limit: asked.limit, gapMs: asked.gapMs },
       });
       last.row = {

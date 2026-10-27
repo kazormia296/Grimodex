@@ -3,7 +3,8 @@
 // 先頭、setupFailure、論理→runtime、試行の履歴、開始時の封印の開示を確かめる。
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { finishAttempt } from "./frozen-k64-admission.mjs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -493,18 +494,19 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
       "tree",
       "facts",
       "trace-heads",
-      "tree",
-      "claim",
       "sp-p4",
       "plan",
       "declaration",
       "procedure",
+      // レビュー P2-α: 台帳の claim は起動の前の検査がすべて通った後。
+      "tree",
+      "claim",
     ],
   );
   // admission は setup の fixture（G-02 base の凍結の path と sha256）で。
   assert.deepEqual(calls[1][2], [{ path: G02.fixturePath, sha256: H("c") }]);
   // 手順の file は S4 の commit から正式の版で読む。
-  assert.deepEqual(calls.at(-1), ["procedure", "v1", C("5"), "formal"]);
+  assert.deepEqual(calls.at(-3), ["procedure", "v1", C("5"), "formal"]);
   const head = JSON.parse(readFileSync(path.join(dir, "head.json"), "utf8"));
   assert.equal(head.kind, "trace");
   assert.equal(head.runStartedAtUtc, "2026-10-28T00:00:00.000Z");
@@ -513,9 +515,9 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
   assert.equal(prepared.identity.sha256, H("1"));
   assert.equal(prepared.runtime.ids.querySceneId, "q-rt");
   assert.equal(prepared.declaration.sceneId, "g02-query");
-  assert.deepEqual(calls[7], ["sp-p4", C("b")]);
+  assert.deepEqual(calls[5], ["sp-p4", C("b")]);
   // レビュー P2-c: 台帳の key は run 名でなく trace の file と候補の identity。
-  assert.deepEqual(calls[6], [
+  assert.deepEqual(calls.at(-1), [
     "claim",
     "trace",
     `trace:evals/nir1-graph/trace-editing.v1.json:${C("a")}:${H("1")}:${C("b")}`,
@@ -846,5 +848,77 @@ test("レビュー P3: 試行の上限は trace の file の stall.attemptLimit�
       deps,
     }),
     /\[precheck\].*--attempt must be an integer from 1 to 2/u,
+  );
+});
+
+test("レビュー P2-α: 起動の前の [precheck]（gate の拒否、plan の不一致、試行の履歴の誤り）は試行を使わず、同じ identity で走り直せる。測定を始めた試行の後の試行 1 は拒む", async () => {
+  const root = tempDir();
+  const options = {
+    "trace-kind": "editing",
+    "prep-commit": C("5"),
+    "k62-commit": C("6"),
+    "k64-commit": C("4"),
+    "sp-p4-receipt": "x.json",
+  };
+  const runWith = async (runName, attempt, overrides = {}) => {
+    const run = tempDir();
+    const { deps } = fakeDeps(overrides);
+    delete deps.claimAttempt;
+    return prepareFrozenTrace({
+      root,
+      runDir: run,
+      options: {
+        ...options,
+        run: runName,
+        attempt: String(attempt),
+        setup: writeReceipt(run, setupReceipt()),
+      },
+      inputs,
+      deps,
+    });
+  };
+  const attemptsDir = path.join(root, ".artifacts/cp4/attempts");
+  const ledgerFiles = () => {
+    try {
+      return readdirSync(attemptsDir);
+    } catch {
+      return [];
+    }
+  };
+  await assert.rejects(
+    runWith("gate-refused", 1, {
+      readSpP4: () => {
+        throw new Error("[precheck] S5-B gate: SP-P4 is sp-n7");
+      },
+    }),
+    /\[precheck\] S5-B gate/u,
+  );
+  await assert.rejects(
+    runWith("plan-differs", 1, {
+      loadPlan: ({ file, commit }) => ({
+        plan: frozenPlan("editing"),
+        path: file,
+        commit,
+        sha256: H("7"),
+      }),
+    }),
+    /\[precheck\]/u,
+  );
+  await assert.rejects(runWith("history-wrong", 2), /\[precheck\]/u);
+  assert.deepEqual(ledgerFiles(), []);
+  // 走り直しは試行 1 のまま通る。
+  const first = await runWith("trace-1", 1);
+  assert.equal(
+    JSON.parse(readFileSync(first.ledger.file, "utf8")).status,
+    "started",
+  );
+  // 起動の前に止まって not-started で閉じた行は数えない。
+  finishAttempt({ file: first.ledger.file, status: "not-started" });
+  const again = await runWith("trace-2", 1);
+  // 測定を始めた（stalled）試行の後の試行 1 は拒む。
+  finishAttempt({ file: again.ledger.file, status: "stalled" });
+  await assert.rejects(
+    runWith("trace-3", 1),
+    /1 earlier attempts are recorded \(expected 0\)/u,
   );
 });

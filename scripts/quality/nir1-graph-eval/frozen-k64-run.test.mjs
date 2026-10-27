@@ -26,10 +26,12 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { K62_FREEZE, devVariant, variantByKey } from "./constants.mjs";
 import { ONE_SHOT_RECEIPT_LABEL } from "./frozen-k64-plan.mjs";
+import { createG01NegativeRun } from "./g01-negative-run.mjs";
 import {
   BLOCKED_RECORD_SCHEMA,
   K64_DISCLOSURE,
   graphArmGated,
+  measurementLaunchEnv,
   runKindVariantKeys,
   measureVariant,
   parseArgs,
@@ -1189,20 +1191,6 @@ test("S5-B 統合: Graph を要求する run の種類（gold、negative）は �
     ]).negative,
     "K24-G01-N3",
   );
-  // 診断が通っていなければ Graph arm は始まらない: runFrozenK64 は gate を
-  // 試行の台帳と測定の前に呼ぶ（gold／negative）。
-  const source = readFileSync(
-    path.join(REPO_ROOT, "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs"),
-    "utf8",
-  );
-  const body = source.slice(
-    source.indexOf("export async function runFrozenK64"),
-  );
-  const gate = body.indexOf("readSpP4Gate({");
-  assert.ok(gate > 0);
-  assert.ok(gate < body.indexOf("startAttempt({"));
-  assert.ok(gate < body.indexOf("measureVariant(ctx)"));
-  assert.ok(body.indexOf("selectParity({") < body.indexOf("startAttempt({"));
 });
 
 test("S5-B 統合: negative の run は宣言の前と後に B の段を呼び、後の段の開き直した Main で測り、graph の各 sample を B の聞き直しで取る", async () => {
@@ -1309,4 +1297,199 @@ test("S5-B 統合（変異 I9）: 宣言の前に開き直した Main の宣言�
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+function formalArgs(run, extra = []) {
+  // The receipts the admission's call reads (the injected admission ignores
+  // their content).
+  const inputs = mkdtempSync(path.join(tmpdir(), "s5b-formal-"));
+  writeFileSync(path.join(inputs, "eval-build.json"), "{}");
+  writeFileSync(path.join(inputs, "pr.json"), "{}");
+  return [
+    "--run",
+    run,
+    "--setups",
+    "s.json",
+    "--ja-model",
+    "j",
+    "--en-model",
+    "e",
+    "--candidate",
+    "c".repeat(40),
+    "--prep-commit",
+    "5".repeat(40),
+    "--k62-commit",
+    "6".repeat(40),
+    "--k64-commit",
+    "4".repeat(40),
+    "--product-receipt",
+    path.join(inputs, "pr.json"),
+    "--sp-p4-receipt",
+    "sp.json",
+    "--eval-build",
+    inputs,
+    ...extra,
+  ];
+}
+
+/** Injected formal admission (the frozen descriptor's shape; no git). */
+function formalDeps(log, overrides = {}) {
+  const candidate = { commit: "c".repeat(40), tree: "t".repeat(40) };
+  return {
+    assertCandidate: () => {
+      log.push("candidate");
+      return candidate;
+    },
+    readK64Head: () => {
+      log.push("k64");
+      return {};
+    },
+    admitFormal: () => {
+      log.push("admit");
+      return {
+        candidate,
+        pins: [],
+        procedure: formalProcedure(),
+        s2: {
+          commit: "5".repeat(40),
+          files: {
+            observationPrep: { value: {}, path: "o", sha256: "0".repeat(64) },
+            g01Addendum: { value: {}, path: "g", sha256: "0".repeat(64) },
+            declarationAddendum: {
+              value: {},
+              path: "d",
+              sha256: "0".repeat(64),
+            },
+          },
+        },
+        admission: {
+          candidateHead: candidate.commit,
+          ratification5: ratification5(),
+          head: {
+            k62: {},
+            k64: {},
+            observationPrep: { commit: "5".repeat(40) },
+          },
+        },
+      };
+    },
+    readGate: (input) => {
+      log.push(["gate", input.candidateCommit]);
+      return { summary: { status: "passed" } };
+    },
+    planRun: ({ plans }) => {
+      log.push("plan");
+      return plans.map((plan) => ({
+        variantKey: plan.variantKey,
+        caseId: plan.caseId,
+        variantId: plan.variantId,
+        g01Mode: { mode: "restricted" },
+      }));
+    },
+    readSetupsFn: async ({ plans }) => {
+      log.push("setups");
+      return new Map(
+        plans.map((plan) => [plan.variantKey, { blocked: false, value: {} }]),
+      );
+    },
+    listAttemptsFn: () => [],
+    selectParityFn: () => {
+      log.push("parity");
+      return { used: "parity-1", attempts: [] };
+    },
+    startAttemptFn: () => {
+      log.push("attempt");
+      throw new Error("[precheck] test: stop after the ledger");
+    },
+    ...overrides,
+  };
+}
+
+async function runFormal(run, deps, extra) {
+  const runDir = path.join(REPO_ROOT, ".artifacts/cp4", run);
+  // The parents this test creates (a CI checkout has no .artifacts) go after.
+  const created = [".artifacts", ".artifacts/cp4"]
+    .map((dir) => path.join(REPO_ROOT, dir))
+    .filter((dir) => !existsSync(dir));
+  const exitCode = process.exitCode;
+  try {
+    await runFrozenK64(formalArgs(run, extra), deps);
+    return JSON.parse(
+      readFileSync(path.join(runDir, "run-report.json"), "utf8"),
+    );
+  } finally {
+    process.exitCode = exitCode;
+    rmSync(runDir, { recursive: true, force: true });
+    for (const dir of created.reverse())
+      if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+  }
+}
+
+test("レビュー P2-β (a): 13 variant の gold と negative は ④ の SP-P4 の gate を試行の台帳と起動より前に呼び、gate が拒めば台帳も起動も起きない", async () => {
+  for (const extra of [
+    [],
+    ["--run-kind", "negative", "--negative", "K24-G01-N2"],
+  ]) {
+    const log = [];
+    const report = await runFormal(
+      `s5b-gate-order-${process.pid}-${extra.length}`,
+      formalDeps(log),
+      extra,
+    );
+    const names = log.map((row) => (Array.isArray(row) ? row[0] : row));
+    assert.ok(names.indexOf("gate") > names.indexOf("admit"));
+    assert.ok(names.indexOf("gate") < names.indexOf("plan"));
+    assert.ok(names.indexOf("gate") < names.indexOf("attempt"));
+    assert.deepEqual(
+      log.find((row) => Array.isArray(row)),
+      ["gate", "c".repeat(40)],
+    );
+    if (extra.length === 0)
+      assert.ok(names.indexOf("parity") < names.indexOf("attempt"));
+    assert.match(report.problems.join("\n"), /stop after the ledger/u);
+  }
+  const refused = [];
+  const report = await runFormal(
+    `s5b-gate-refused-${process.pid}`,
+    formalDeps(refused, {
+      readGate: () => {
+        refused.push("gate");
+        throw new Error("[precheck] S5-B gate: SP-P4 is sp-n7");
+      },
+    }),
+  );
+  assert.deepEqual(refused, ["candidate", "k64", "admit", "gate"]);
+  assert.match(report.problems.join("\n"), /S5-B gate: SP-P4 is sp-n7/u);
+  // parity は gate を呼ばない（S2 で除外）。
+  const parity = [];
+  await runFormal(
+    `s5b-gate-parity-${process.pid}`,
+    formalDeps(parity, {
+      readGate: () => {
+        parity.push("gate");
+        throw new Error("never");
+      },
+    }),
+    ["--run-kind", "parity"],
+  );
+  assert.ok(!parity.includes("gate"));
+});
+
+test("レビュー P2-β (b): B-ROUTE の seam の env は negative の起動にだけ入り、gold と parity には入らない", () => {
+  const nonce = "8c7f4a3e-6b1d-4c2a-9e5f-0a1b2c3d4e5f";
+  const trigger = "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER";
+  const gold = measurementLaunchEnv({ bodySeam: true, nonce, negative: null });
+  assert.equal(gold.GRIMODEX_BODY_DECLARATION_CI_NONCE, nonce);
+  assert.equal(gold[trigger], undefined);
+  assert.deepEqual(
+    measurementLaunchEnv({ bodySeam: false, nonce, negative: null }),
+    {},
+  );
+  const negative = measurementLaunchEnv({
+    bodySeam: true,
+    nonce,
+    negative: createG01NegativeRun({ id: "K24-G01-N2", root: REPO_ROOT }),
+  });
+  assert.equal(negative[trigger], "nir1-graph-index-build");
+  assert.equal(negative.GRIMODEX_BODY_DECLARATION_CI_NONCE, nonce);
 });

@@ -435,39 +435,44 @@ export async function prepareFrozenTrace({
     },
     { now },
   );
-  // Review P3 (e) / P2-c: one ledger claim per frozen trace attempt, keyed
-  // by the trace file's identity and the candidate (never the run name).
-  const claimed = claimAttempt(
-    {
-      kind: "trace",
-      key: traceAttemptKey({
-        trace: traces.find((row) => row.kind === kind),
-        candidateCommit: admission.candidateHead,
-      }),
-    },
-    frozenAttemptLedger({
-      root,
-      candidate: {
-        commit: admission.candidateHead,
-        tree: readTree(admission.candidateHead),
+  // Review P2-α: the ledger claim and head.json come after every check
+  // before the launch (the gate, the plan, the attempt history), so a
+  // refusal before the launch never uses an attempt.
+  const claimAndWriteHead = async () => {
+    // Review P3 (e) / P2-c: one ledger claim per frozen trace attempt, keyed
+    // by the trace file's identity and the candidate (never the run name).
+    const claimed = claimAttempt(
+      {
+        kind: "trace",
+        key: traceAttemptKey({
+          trace: traces.find((row) => row.kind === kind),
+          candidateCommit: admission.candidateHead,
+        }),
       },
-      s4Commit: admission.head.observationPrep.commit,
-      runName: options.run,
-      startedAtUtc: now().toISOString(),
-      attempt: Number(options.attempt ?? "1"),
-    }),
-  );
-  const written = await writeRunHead({ runDir, head });
-  const base = {
-    admission,
-    ledger: claimed ?? null,
-    head,
-    headSha256: written.sha256,
-    kind,
-    setup: state,
+      frozenAttemptLedger({
+        root,
+        candidate: {
+          commit: admission.candidateHead,
+          tree: readTree(admission.candidateHead),
+        },
+        s4Commit: admission.head.observationPrep.commit,
+        runName: options.run,
+        startedAtUtc: now().toISOString(),
+        attempt: Number(options.attempt ?? "1"),
+      }),
+    );
+    const written = await writeRunHead({ runDir, head });
+    return {
+      admission,
+      ledger: claimed ?? null,
+      head,
+      headSha256: written.sha256,
+      kind,
+      setup: state,
+    };
   };
   if (state.kind === "setup-failure")
-    return { ...base, setupFailure: state.setupFailure };
+    return { ...(await claimAndWriteHead()), setupFailure: state.setupFailure };
   // S2 r5Gate.beforeFirstGatedRun: no trace before ④'s SP-P4 passed.
   if (!options["sp-p4-receipt"])
     fail("sp-p4", "a frozen trace needs ④'s SP-P4 receipt (--sp-p4-receipt)");
@@ -507,7 +512,7 @@ export async function prepareFrozenTrace({
     purpose: "formal",
   });
   return {
-    ...base,
+    ...(await claimAndWriteHead()),
     setupFailure: null,
     plan: loaded.plan,
     identity,

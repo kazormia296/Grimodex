@@ -908,7 +908,9 @@ async function main() {
   let partial = null;
   // DR-CP4-O-16: the frozen attempt's ledger row (A's ledger), closed below.
   let ledgerFile = null;
-  let ledgerStatus = "stopped";
+  // Review P2-α: a refusal before the launch closes the row "not-started"
+  // (it does not use the attempt); after the launch "stopped".
+  let ledgerStatus = "not-started";
   try {
     const setupPath = path.resolve(options.setup);
     let setupRaw;
@@ -1019,6 +1021,7 @@ async function main() {
     // prep (as k64-runner): the Raw vectors and the Chronicle Index on the
     // measurement copy; the dev preview also writes its seed pin here
     // (DR-CP4-S1C2-26). A frozen setup holds its seed pin already (SP/1).
+    if (ledgerFile) ledgerStatus = "stopped";
     session = await launch({
       label: "prep",
       runDir,

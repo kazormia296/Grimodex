@@ -150,6 +150,18 @@ test("O-16: 起動の env に B-ROUTE の seam を重ね、graph の sample は�
     gapMs: G01_CONTROL_GAP_MS,
   });
   assert.equal(run.state.graphTries[0].tries.length, 3);
+  // 捨てた take は件数と理由を残す。
+  assert.equal(run.state.graphTries[0].discardedTakes, 2);
+  assert.deepEqual(
+    run.state.graphTries[0].discarded.map((row) => [
+      row.reason,
+      row.childOutcome,
+    ]),
+    [
+      ["neutral-answer", "graph-late"],
+      ["neutral-answer", "graph-late"],
+    ],
+  );
   assert.deepEqual(rowProbeOf({ graph: { outcome: "graph-ready" } }), {
     parent: { graphOutcome: "graph-ready" },
     child: null,

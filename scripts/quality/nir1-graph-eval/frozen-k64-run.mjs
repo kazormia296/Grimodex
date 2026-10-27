@@ -282,6 +282,17 @@ export async function readSetups({ file, plans, dev, candidate = null }) {
   return rows;
 }
 
+/**
+ * The measurement Main's env: the body declaration seam in a declaring
+ * process, and (S5-B, a negative only) the B-ROUTE journey seam on top.
+ */
+export function measurementLaunchEnv({ bodySeam, nonce, negative = null }) {
+  const base = bodySeam
+    ? measurementSeamEnv({ bodyNonce: nonce, maintenance: "product" })
+    : {};
+  return negative ? negative.launchEnv(base) : base;
+}
+
 async function launchMeasurement({ label, dir, shared, d2aMode, bodySeam }) {
   const nonce = randomUUID();
   const session = await startSession({
@@ -296,12 +307,11 @@ async function launchMeasurement({ label, dir, shared, d2aMode, bodySeam }) {
     admission: shared.admission,
     // Review P3 (e): the body declaration seam (and CI=true) only in a
     // process that declares.
-    extraEnv: ((base) =>
-      shared.negative ? shared.negative.launchEnv(base) : base)(
-      bodySeam
-        ? measurementSeamEnv({ bodyNonce: nonce, maintenance: "product" })
-        : {},
-    ),
+    extraEnv: measurementLaunchEnv({
+      bodySeam,
+      nonce,
+      negative: shared.negative,
+    }),
   });
   try {
     if (session.evidence.problems.length > 0)
@@ -1439,7 +1449,23 @@ function devVariantKeyOf(spec, fixturePath) {
 }
 
 /** The formal run (or the dev shape check) for `argv` (k64-runner.mjs hands `--setups` here). */
-export async function runFrozenK64(argv) {
+/**
+ * `deps` replace the formal admission's readers, the S5-B gate, the run plan,
+ * the setups and the attempt ledger in the tests only (review P2-β: the
+ * gate's place is tested at this layer).
+ */
+export async function runFrozenK64(argv, deps = {}) {
+  const {
+    assertCandidate = assertCandidateFixed,
+    readK64Head = readK64FreezeHead,
+    admitFormal = admitFormalK64Run,
+    readGate = readSpP4Gate,
+    planRun = formalRunPlan,
+    readSetupsFn = readSetups,
+    listAttemptsFn = listAttempts,
+    selectParityFn = selectParity,
+    startAttemptFn = startAttempt,
+  } = deps;
   const options = parseArgs(argv);
   const dev = Boolean(options["dev-fixture"]);
   const runKind = options["run-kind"];
@@ -1468,8 +1494,8 @@ export async function runFrozenK64(argv) {
     const evalDir = path.resolve(options["eval-build"]);
     let admitted;
     if (!dev) {
-      assertCandidateFixed({ root: ROOT, candidate: options.candidate });
-      readK64FreezeHead({ root: ROOT, commit: options["k64-commit"] });
+      assertCandidate({ root: ROOT, candidate: options.candidate });
+      readK64Head({ root: ROOT, commit: options["k64-commit"] });
       const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
       const ratification5 = options["keep-test-worktree"]
         ? await collectRatification5EvidenceWithKeepTest({
@@ -1479,7 +1505,7 @@ export async function runFrozenK64(argv) {
             keepTestLogDir: runDir,
           })
         : undefined;
-      const formal = admitFormalK64Run({
+      const formal = admitFormal({
         root: ROOT,
         candidate: options.candidate,
         prepCommit: options["prep-commit"],
@@ -1494,7 +1520,7 @@ export async function runFrozenK64(argv) {
       });
       // S5-B: no Graph-arm run (gold, negative) before ④'s SP-P4 passed.
       if (graphArmGated(runKind))
-        report.checks.spP4 = readSpP4Gate({
+        report.checks.spP4 = readGate({
           file: path.resolve(options["sp-p4-receipt"]),
           head: formal.admission.head,
           candidateCommit: formal.admission.candidateHead,
@@ -1550,7 +1576,7 @@ export async function runFrozenK64(argv) {
     const prep = admitted.s2?.files.observationPrep.value;
     const specs = dev
       ? plans.map((plan) => devRunSpec(plan))
-      : formalRunPlan({
+      : planRun({
           plans,
           prep,
           addenda: [
@@ -1579,7 +1605,7 @@ export async function runFrozenK64(argv) {
     // The candidate's identity for the records written before any launch;
     // the full block (receipts, models, harness files) before the launch.
     let candidate = candidateIdentity();
-    const setups = await readSetups({
+    const setups = await readSetupsFn({
       file: options.setups,
       plans,
       dev,
@@ -1600,18 +1626,18 @@ export async function runFrozenK64(argv) {
       // status) and the one parity it uses (fixed; two completed is
       // [precheck]).
       priorAttempts = {
-        [runKind]: listAttempts({ ...key, runKind }).map(attemptSummary),
+        [runKind]: listAttemptsFn({ ...key, runKind }).map(attemptSummary),
       };
       if (runKind === "gold") {
-        const parity = selectParity({
-          attempts: listAttempts({ ...key, runKind: "parity" }),
+        const parity = selectParityFn({
+          attempts: listAttemptsFn({ ...key, runKind: "parity" }),
           startedAtUtc: admitted.head.runStartedAtUtc,
         });
         priorAttempts.parity = parity.attempts;
         priorAttempts.parityUsed = parity.used;
         report.checks.parity = parity;
       }
-      attempt = startAttempt({
+      attempt = startAttemptFn({
         root: ROOT,
         runName: options.run,
         entry: {
