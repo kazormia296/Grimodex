@@ -13,8 +13,11 @@ import {
 import {
   TRACE_DEV_PREVIEW_PURPOSE,
   admitTraceRun,
+  captureBodyNonce,
+  confirmTraceDeclaration,
   counterPoller,
   checkTraceAttempt,
+  runTraceDeclaration,
   runTraceOperations,
   traceAttemptOutcome,
   traceMaintenanceStart,
@@ -497,5 +500,156 @@ test("レビュー P3 (d): --attempt は 1 から attemptLimit まで、最後�
   assert.equal(
     traceAttemptOutcome({ attempt: 2, attemptLimit: 2, stalled: null }),
     "completed",
+  );
+});
+
+test("O-1 (6): trace の起動の body declaration の nonce を保ち、宣言の段は Index の前後と seam の受領書を記録し、mount の前に current を照合する", async () => {
+  const sink = { nonce: null };
+  const started = [];
+  const start = captureBodyNonce(async (args) => {
+    started.push(args);
+    return "session";
+  }, sink);
+  assert.equal(
+    await start({ extraEnv: { GRIMODEX_BODY_DECLARATION_CI_NONCE: "n-1" } }),
+    "session",
+  );
+  assert.equal(sink.nonce, "n-1");
+  assert.equal(started.length, 1);
+  const state = (token, effective = true) => ({
+    ok: true,
+    snapshot: {
+      declarationToken: token,
+      state: { kind: "declared", effective },
+    },
+  });
+  let declared = false;
+  let currentToken = "t-1";
+  let authority = "w-1";
+  const calls = [];
+  globalThis.window = {
+    cp4Harness: {
+      call: async (name) => {
+        calls.push(name);
+        return { ok: true, value: { authorityId: authority } };
+      },
+      declaration: {
+        declare: async () => {
+          calls.push("declare");
+          declared = true;
+          return { ok: true };
+        },
+        state: async () => {
+          calls.push("state");
+          return declared ? state(currentToken) : { ok: true, snapshot: null };
+        },
+      },
+    },
+  };
+  const page = { evaluate: async (fn, arg) => fn(arg) };
+  const index = {
+    b: { generation: 3, dirty: false },
+    chronicle: { generation: 2, dirty: false },
+  };
+  const seam = {
+    sha256: "f".repeat(64),
+    value: {
+      version: 1,
+      envNames: { a: "X" },
+      nonceDigest: "sha256:abc",
+      approvedGrantCount: 1,
+      approvedBindingDigests: ["sha256:digest-1"],
+    },
+  };
+  const declaration = await runTraceDeclaration({
+    page,
+    workspacePath: "/w",
+    projectId: "p",
+    sceneId: "s",
+    readIndex: () => index,
+    readSeam: async () => seam,
+    locatorDigest: "loc",
+  });
+  assert.equal(declaration.token, "t-1");
+  assert.equal(declaration.bindingDigest, "digest-1");
+  assert.equal(declaration.workspaceId, "w-1");
+  assert.deepEqual(declaration.indexBefore, declaration.indexAfter);
+  assert.deepEqual(calls, [
+    "narrative_extraction_capture_workspace_binding",
+    "declare",
+    "state",
+  ]);
+  const confirmed = await confirmTraceDeclaration({
+    page,
+    declaration,
+    workspacePath: "/w",
+    projectId: "p",
+    locatorDigest: "loc",
+  });
+  assert.equal(confirmed.verified, true);
+  // token が変わる・workspace の authority が変わる・Index が動けば [precheck]。
+  currentToken = "t-2";
+  await assert.rejects(
+    confirmTraceDeclaration({
+      page,
+      declaration,
+      workspacePath: "/w",
+      projectId: "p",
+      locatorDigest: "loc",
+    }),
+    /\[precheck\]/u,
+  );
+  currentToken = "t-1";
+  authority = "w-2";
+  await assert.rejects(
+    confirmTraceDeclaration({
+      page,
+      declaration,
+      workspacePath: "/w",
+      projectId: "p",
+      locatorDigest: "loc",
+    }),
+    /\[precheck\].*workspaceId/u,
+  );
+  authority = "w-1";
+  let generation = 3;
+  const moving = await runTraceDeclaration({
+    page,
+    workspacePath: "/w",
+    projectId: "p",
+    sceneId: "s",
+    readIndex: () => ({
+      ...index,
+      b: { generation: generation++, dirty: false },
+    }),
+    readSeam: async () => seam,
+    locatorDigest: "loc",
+  });
+  await assert.rejects(
+    confirmTraceDeclaration({
+      page,
+      declaration: moving,
+      workspacePath: "/w",
+      projectId: "p",
+      locatorDigest: "loc",
+    }),
+    /\[precheck\] b Index generation changed/u,
+  );
+  // 宣言が拒まれれば [precheck]（blocked にしない）。
+  globalThis.window.cp4Harness.declaration.declare = async () => ({
+    ok: false,
+    stage: "declare",
+  });
+  await assert.rejects(
+    runTraceDeclaration({
+      page,
+      workspacePath: "/w",
+      projectId: "p",
+      sceneId: "s",
+      readIndex: () => index,
+      readSeam: async () => seam,
+      locatorDigest: "loc",
+    }),
+    /\[precheck\] the K2\/4 declaration of s was refused/u,
   );
 });
