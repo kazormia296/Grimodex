@@ -1003,3 +1003,11 @@ test("レビュー P3: 対照と sample の聞き直しの上限と間隔は記�
   });
   assert.deepEqual(sample.retry, sampleRetry);
 });
+
+test("レビュー P3（変異 X5）: 間隔が定数と違っても止める", () => {
+  const control = { retry: { limit: G01_CONTROL_ATTEMPTS, gapMs: 1000 } };
+  assert.throws(
+    () => assertG01RetryFixed({ control }),
+    /\[precheck\].*control/u,
+  );
+});
