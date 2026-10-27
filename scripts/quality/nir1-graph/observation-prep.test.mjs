@@ -2192,7 +2192,22 @@ test("S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CON
   const unread = { ...ctx, harnessBlockedTable: null };
   assert.ok(
     observationPrepErrors(prep, unread).some((e) =>
-      /BLOCKED_CONTRACT_TABLE/u.test(e),
+      /BLOCKED_CONTRACT_TABLE could not be read/u.test(e),
+    ),
+  );
+  // harness と S2 の両方が別の行を maintenance-enabled に写す（L-28 は P-5 の行だけ）。
+  const both = {
+    ...ctx,
+    harnessBlockedTable: ctx.harnessBlockedTable.map((row, at) =>
+      at === 0 ? { ...row, graphCases: "blocked:maintenance-enabled" } : row,
+    ),
+  };
+  const bothPrep = clone(prep);
+  bothPrep.setupReadings.blockedCaseJudgement.rows[0].graphCases =
+    "blocked:maintenance-enabled";
+  assert.ok(
+    observationPrepErrors(bothPrep, both).some((e) =>
+      /blockedCaseJudgement/u.test(e),
     ),
   );
   // pin の file の sha256 が harness の表の出所と違う。
