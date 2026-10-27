@@ -71,6 +71,7 @@ import {
   readChronicleSetupRows,
   readFrozenSetupRows,
   readIndexMetadata,
+  readRelationSourceTokens,
   readRunsSince,
 } from "./workspace-db.mjs";
 import { REQUIRED_ARTIFACTS } from "../nir1-retrieval/standard-build-receipt.mjs";
@@ -117,6 +118,12 @@ const MAINTENANCE_SEAM = Object.freeze({
 export const B_SEAL_WAIT_MS = 120_000;
 export const B_SEAL_REOPENS = 2;
 const B_SEAL_NOT_PUBLISHED = "blocked:b-seal-not-published";
+/**
+ * Review P2-4: the product's refusal to reuse a Relation ID (the primary key
+ * conflict of `codex_relations`). Only this switches to (B'') a new ID.
+ */
+export const RELATION_ID_REUSE_REFUSAL =
+  /UNIQUE constraint failed: codex_relations\.id/u;
 const EPOCH_WAIT_MS = 180_000;
 const PREPARE_WAIT_MS = 120_000;
 const SELECT_ONLY = /^\s*SELECT\b/iu;
@@ -1049,6 +1056,13 @@ async function recreateRelation(ctx, input) {
   let created = await create(previous);
   if (!created?.ok) {
     sameIdError = String(created?.error ?? "").slice(0, 400);
+    // Review P2-4: (B'') only when the product refuses the reuse of the ID;
+    // any other failure stops the setup.
+    if (!RELATION_ID_REUSE_REFUSAL.test(sameIdError))
+      fail(
+        "mutation",
+        `${input.id}: relation.create with the same ID failed for another reason than an ID reuse refusal: ${sameIdError}`,
+      );
     mode = "new-id";
     created = await create(ctx.uuid());
     if (!created?.ok)
@@ -1057,6 +1071,11 @@ async function recreateRelation(ctx, input) {
       );
   }
   const runtimeId = String(created.value.id);
+  if ((mode === "same-id") !== (runtimeId === previous))
+    fail(
+      "mutation",
+      `${input.id}: the ${mode} mode created ${runtimeId} (previous ${previous})`,
+    );
   ids.relations[input.relationId] = runtimeId;
   const after = await readRow(runtimeId);
   if (after?.relationType !== input.to || after.label !== input.label)
@@ -1074,6 +1093,27 @@ async function recreateRelation(ctx, input) {
     revisionsBefore,
     revisionsAfter: await revisionStatuses(ctx, input.relationId),
   };
+  // Review P2-3: every approved Revision bound to the Relation was current
+  // before the edit and is stale (unavailable) after it.
+  const approved = Object.entries(ids.typedRevisions ?? {})
+    .filter(
+      ([, row]) =>
+        row.decision === "approved" &&
+        (row.relationIds ?? []).includes(input.relationId),
+    )
+    .map(([id]) => id);
+  if (
+    approved.length === 0 ||
+    approved.some(
+      (id) =>
+        record.revisionsBefore[id] !== "available" ||
+        record.revisionsAfter[id] !== "unavailable",
+    )
+  )
+    fail(
+      "mutation",
+      `${input.id}: the approved Revisions of ${input.relationId} are not available → unavailable (${JSON.stringify({ before: record.revisionsBefore, after: record.revisionsAfter })})`,
+    );
   ids.relationRecreations ??= {};
   ids.relationRecreations[input.relationId] = record;
   return record;
@@ -1711,6 +1751,43 @@ export function assertChronicleSetup({ plan, ids, rows }) {
   };
 }
 
+/**
+ * Review P2-3 (cold DB): for each recreated Relation, every approved typed
+ * Revision bound to it keeps the Source token of the Relation as it was
+ * (`codex-relation:<previous ID>`), and the cold DB's current token of that
+ * key differs (same ID: a new `updated_at`; new ID: the row is gone).
+ */
+export function assertRelationStaleOnCold({
+  cold,
+  ids,
+  read = readRelationSourceTokens,
+}) {
+  const out = {};
+  for (const [logical, record] of Object.entries(
+    ids.relationRecreations ?? {},
+  )) {
+    for (const [revision, row] of Object.entries(ids.typedRevisions ?? {})) {
+      if (
+        row.decision !== "approved" ||
+        !(row.relationIds ?? []).includes(logical)
+      )
+        continue;
+      const tokens = read(cold, row.revisionId, record.previousRuntimeId);
+      if (
+        typeof tokens.stored !== "string" ||
+        tokens.stored.length === 0 ||
+        tokens.stored === tokens.current
+      )
+        fail(
+          "mutation",
+          `${record.mutation}: the cold DB does not show ${revision} stale against ${logical} (${JSON.stringify(tokens)})`,
+        );
+      out[revision] = { relation: logical, ...tokens };
+    }
+  }
+  return out;
+}
+
 function relativeToRoot(root, file) {
   const relative = path.relative(root, file);
   return relative.startsWith("..") || path.isAbsolute(relative)
@@ -2017,6 +2094,10 @@ export async function setupFrozenVariant({
         rows: readChronicleSetupRows(cold, ids.projectId),
       });
       receipt.readBack.indexMetadata = readIndexMetadata(cold, ids.projectId);
+      receipt.readBack.relationStaleness = assertRelationStaleOnCold({
+        cold,
+        ids,
+      });
       receipt.measurementPoint = ctx.measurementProbe ?? null;
       receipt.measurementSpec = plan.measurementSpec ?? null;
       if (shared.setupMain)

@@ -10,6 +10,8 @@ import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  RELATION_ID_REUSE_REFUSAL,
+  assertRelationStaleOnCold,
   B_SEAL_REOPENS,
   B_SEAL_WAIT_MS,
   assertChronicleSetup,
@@ -221,7 +223,7 @@ test("S1j-2 G-02 (B''): 製品が同じ ID の再利用を拒めば新しい ID 
     receipt.logicalToRuntime.relationRecreations["g02-dace-link"];
   assert.equal(recreated.mode, "new-id");
   assert.notEqual(recreated.runtimeId, recreated.previousRuntimeId);
-  assert.match(recreated.sameIdError, /ID reuse refused/u);
+  assert.match(recreated.sameIdError, /UNIQUE constraint failed/u);
   assert.equal(
     receipt.logicalToRuntime.relations["g02-dace-link"],
     recreated.runtimeId,
@@ -729,4 +731,51 @@ test("レビュー P3 (a): 凍結した材料の 1 variant の run でも、setu
     ["G-01", "G-02", "G-03", "G-04", "G-05", "G-06", "G-07", "G-08"],
   );
   assert.equal(shared.setupMain, SETUP_MAIN);
+});
+
+test("レビュー P2-3／P2-4: G-02 の旧 Revision は live でも cold DB でも stale、新しい ID は ID の再利用の拒否のときだけ", async () => {
+  const ok = await completeSetup("G-02/base");
+  assert.equal(
+    ok.receipt.status,
+    "setup-complete",
+    ok.receipt.errors.join("\n"),
+  );
+  const stale = ok.receipt.readBack.relationStaleness["g02-r-dace"];
+  assert.equal(stale.relation, "g02-dace-link");
+  assert.notEqual(stale.stored, stale.current);
+  // Another failure of the same-ID create (not a reuse refusal) stops.
+  const other = await completeSetup("G-02/base", {
+    relationCreateError: "WORKSPACE_SWITCHING: workspace is switching",
+  });
+  assert.equal(other.receipt.status, "blocked");
+  assert.match(
+    other.receipt.precheck.message,
+    /\[precheck\] S1i mutation: g02-m-dace-type: relation\.create with the same ID failed for another reason/u,
+  );
+  // The bound Revision staying available after the edit stops (live).
+  const live = await completeSetup("G-02/base", {
+    revisionStaysAvailable: true,
+  });
+  assert.equal(live.receipt.status, "blocked");
+  assert.match(live.receipt.precheck.message, /available → unavailable/u);
+  // The cold DB showing the stored token equal to the current one stops.
+  assert.throws(
+    () =>
+      assertRelationStaleOnCold({
+        cold: "/nonexistent",
+        ids: ok.receipt.logicalToRuntime,
+        read: () => ({ stored: "t", current: "t" }),
+      }),
+    /\[precheck\] S1i mutation: g02-m-dace-type: the cold DB does not show g02-r-dace stale/u,
+  );
+  assert.throws(
+    () =>
+      assertRelationStaleOnCold({
+        cold: "/nonexistent",
+        ids: ok.receipt.logicalToRuntime,
+        read: () => ({ stored: null, current: "t" }),
+      }),
+    /\[precheck\] S1i mutation/u,
+  );
+  assert.match(RELATION_ID_REUSE_REFUSAL.source, /codex_relations/u);
 });

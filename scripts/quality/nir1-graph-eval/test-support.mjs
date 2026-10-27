@@ -1354,6 +1354,8 @@ export function completeSetupExtension({
   bDirtiedByQueryTimes = Infinity,
   sealMissesOpens = 0,
   buildIndexFails = false,
+  relationCreateError = null,
+  revisionStaysAvailable = false,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1479,6 +1481,7 @@ export function completeSetupExtension({
         db().exec(`
           CREATE TABLE IF NOT EXISTS narrative_runtime_policy (singleton_id INTEGER PRIMARY KEY, maintenance_enabled INTEGER, version INTEGER);
           INSERT OR IGNORE INTO narrative_runtime_policy VALUES (1, 0, 1);
+          CREATE TABLE IF NOT EXISTS narrative_revision_source_basis (revision_id TEXT, source_key TEXT, revision_token TEXT);
           CREATE TABLE IF NOT EXISTS narrative_semantic_epochs (id TEXT, project_id TEXT, epoch_number INTEGER, reason TEXT);
           CREATE TABLE IF NOT EXISTS schema_data_migrations (migration_id TEXT, contract_version TEXT);
           CREATE TABLE IF NOT EXISTS narrative_semantic_index_metadata (project_id TEXT, index_key TEXT, generation INTEGER,
@@ -1522,10 +1525,10 @@ export function completeSetupExtension({
       },
       afterWrite: dirtyAll,
       beforeRelationCreate(input) {
+        if (relationCreateError && deleted.has(input.id))
+          throw new Error(relationCreateError);
         if (refuseRelationIdReuse && deleted.has(input.id))
-          throw new Error(
-            `codex relation '${input.id}' was deleted; ID reuse refused`,
-          );
+          throw new Error("UNIQUE constraint failed: codex_relations.id");
       },
       ipc: {
         narrative_runtime_policy_get: () => ({
@@ -1566,13 +1569,23 @@ export function completeSetupExtension({
             entityIds: payload.entityIds,
             relationIds: payload.relationIds,
           });
+          const revisionId = id("typed-revision");
+          for (const relationId of payload.relationIds) {
+            const row = one(
+              "SELECT version, updated_at AS updatedAt FROM codex_relations WHERE id = ?",
+              relationId,
+            );
+            run(
+              "INSERT INTO narrative_revision_source_basis VALUES (?, ?, ?)",
+              revisionId,
+              `codex-relation:${relationId}`,
+              `v${row.version}@${row.updatedAt}:relation:${relationId}`,
+            );
+          }
           return {
             runId,
             status: "draft",
-            receipt: {
-              proposalId: id("typed-proposal"),
-              revisionId: id("typed-revision"),
-            },
+            receipt: { proposalId: id("typed-proposal"), revisionId },
           };
         },
         narrative_extraction_append_human_decision: ({ payload }) => {
@@ -1586,7 +1599,10 @@ export function completeSetupExtension({
             ...revision.entityIds.map((row) => token("codex_entries", row)),
             ...revision.relationIds.map((row) => token("codex_relations", row)),
           ];
-          if (JSON.stringify(now) !== JSON.stringify(revision.tokens))
+          if (
+            !revisionStaysAvailable &&
+            JSON.stringify(now) !== JSON.stringify(revision.tokens)
+          )
             return { status: "unavailable" };
           return {
             status:

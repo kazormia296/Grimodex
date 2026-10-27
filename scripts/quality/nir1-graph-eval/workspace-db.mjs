@@ -459,3 +459,31 @@ export function readRunsSince(file, projectId, sinceIso) {
       }));
   });
 }
+
+/**
+ * Review P2-3: a typed Revision's stored Source token of one Relation
+ * (`narrative_revision_source_basis`, key `codex-relation:<id>`) and the
+ * token the Relation's current row gives (`v<version>@<updated_at>:relation:
+ * <id>`, the product's form; null when the row is gone). Read-only.
+ */
+export function readRelationSourceTokens(file, revisionId, relationId) {
+  return withReadOnly(file, (db) => {
+    const stored =
+      db
+        .prepare(
+          "SELECT revision_token AS token FROM narrative_revision_source_basis WHERE revision_id = ? AND source_key = ?",
+        )
+        .get(revisionId, `codex-relation:${relationId}`)?.token ?? null;
+    const row = db
+      .prepare(
+        "SELECT version, updated_at AS updatedAt FROM codex_relations WHERE id = ?",
+      )
+      .get(relationId);
+    return {
+      stored,
+      current: row
+        ? `v${row.version}@${row.updatedAt}:relation:${relationId}`
+        : null,
+    };
+  });
+}
