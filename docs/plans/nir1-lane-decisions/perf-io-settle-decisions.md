@@ -45,3 +45,19 @@ frame が遅れた 61 件の起動前の値の最小は 4.82、上限を超え�
 | DR-PIS-5 | 2026-10-28 | 補助の再計測（`ready − frame` < 10 ms、workspace の open の trace が正常、計測時の io full が高い、の全部が揃ったら 1 回だけ再計測）は**足さない** | (1) 本命の待ちが原因（計測の前の writeback）を計測から外すので、再計測の条件の「計測時の io が高い」は、待ちが上限に達した場合にしか起きない。(2) open-evidence は「budget、retry、pass/fail に関わらない」設計で、`runtime-performance-retry.mjs` が `openEvidence` を読まないことを既存の試験が固定している。(3) 計測中の io は Electron 自身の起動の読込みでも上がる（成功 run でも 12.8→13.5 など）ので、「io が高い」は製品の起動の I/O の増加（回帰）でも満たされうる。`ready − frame` が小さいのも、最初の frame の前の main thread の処理が重くなる回帰と区別できない。(4) 2 回のうち良い方を採れる形は、再計測の確率の分だけ回帰を通す（結果を選べる） | 条件を全部固定して足す（上の (3)(4) が残る）。待ちが上限に達した（`capReached`）run の FAIL が続くなら、そのときに evidence を見て再検討する | 記録済み（実装前） |
 | DR-PIS-6 | 2026-10-28 | `.github/workflows/` と `scripts/local-ci*.mjs` は変えない。両方の経路が同じ `performance-benchmark.mjs` を通るので、待ちは両方で効く：PR CI は `xvfb-run … pnpm electron:perf:ci`（`tar -xf` の直後）、Full の runtime part は `native.build`（support）→ `target/release` の削除（`cleanupNativeCargoTargetAfterTask`）→ `electron.typecheck`／`electron.build` → `runtime.benchmark`（`pnpm electron:perf:ci -- --output …`）。削除の metadata の書出しと build の出力は計測の前の `sync` と待ちが吸収する | 削除の順序（perf の後に削除）や `sync` を local-ci に入れると、receipt と part の契約に関わる runner の code が変わる。待ちは benchmark の中で完結するので不要 | local-ci の削除の後に `sync` を入れる。perf の後に削除する | 記録済み（実装前） |
 | DR-PIS-7 | 2026-10-28 | `scripts/local-ci-registry.json` の `runtime.benchmark` の command timeout を 180,000 ms から 300,000 ms にする（180 s ＋ 2 attempt 分の待ちの上限 2 × 60 s）。性能の閾値ではなく、runner が command を打ち切る時間 | Full の runtime part の 1 attempt は 64〜82 s（4 run）、PR CI は 70〜87 s。再計測（gesture の long task。過去 121 job で 0 回）が起きると今でも 2 × 87 ≈ 174 s で 180 s に近く、待ちが 2 回とも上限に達すると約 294 s になる。待ちを足したことで command が timeout で落ちるのを防ぐ。PR CI の job の timeout（30 分）は足りている | 待ちの上限を attempt で共有する（再計測の経路で 234 s になり、やはり超える）。attempt 1 の前だけ待つ（attempt 2 の計測を静定しない） | 記録済み（実装前） |
+
+## 実測（2026-10-28。実装の後に追記）
+
+開発機（Linux 7.2.11、Xvfb は host の namespace の `local-ci-xvfb.mjs`、Wayland／D-Bus／proxy の変数を除く。
+`.node` は `7a2669ea` の build の複製）で `performance-benchmark.mjs --output …` を 2 回走らせた。
+
+| 実行 | `CI` | io-settle の evidence | coldStartMs |
+|---|---|---|---|
+| 1 | `true` | `capped`（`maximum-wait-reached`）、`sync` は `completed` 258.8 ms、io full avg10 90.89 → 96.85、`ioFullStallMs` 58,255.6、`waitedMs` 60,000.2、`pollCount` 61、`capReached: true`。warning の行を出して計測した | 1,642.5（PASS） |
+| 2 | 未設定 | `skipped`（`not-ci`）、`sync` は `not-run`、`waitedMs` 0 | 1,635.4（PASS） |
+
+この機械の io PSI は、disk が idle（`Dirty` 132 kB、`Writeback` 0、sda の in-flight 0、load 0.1）でも
+full avg10 が約 90% を示し続けた（3 s の `total` の差分で 2,622 ms の stall）。frame の遅れは
+実行 1 で 3.2 ms（boot 303.4 → frame 306.6）で、実際の I/O の待ちではない計上と見られる。
+開発者の機械で待ちを有効にしない判断（DR-PIS-2）と、上限に達しても計測する判断（DR-PIS-1）の
+根拠になる。hosted runner で同じ計上が起きた場合も、上限の 60 s を待ってから測るだけで、gate の判定は変わらない。
