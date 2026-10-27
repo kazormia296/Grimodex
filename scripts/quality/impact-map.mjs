@@ -559,6 +559,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/frozen-setup-complete.test.mjs",
         "scripts/quality/nir1-graph-eval/setup-main-build.test.mjs",
         "scripts/quality/nir1-graph-eval/dev-shape-fixture.test.mjs",
+        // CP-4 TR: the (b) trace records and runner, and the build receipts' head.
+        "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+        "scripts/quality/nir1-graph-eval/trace-runner.test.mjs",
+        "scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs",
+        "scripts/quality/nir1-graph-eval/trace-seal.test.mjs",
+        "scripts/quality/nir1-graph-eval/trace-cycle.test.mjs",
       ],
       [
         "node",

@@ -87,7 +87,7 @@ function listen() {
 }
 
 /** The shown content (N32: a generation that showed two contents). */
-function displayKey(value: Nir1RelatedScenesFetchResult): string {
+export function displayKey(value: Nir1RelatedScenesFetchResult): string {
   const graph = value.graph ?? null;
   return JSON.stringify([
     value.graphOutcome ?? null,
@@ -125,7 +125,10 @@ function edgeCountOf(
 }
 
 /** The record of one returned fetch (k64-record.mjs reads it). */
-function summarize(value: Nir1RelatedScenesFetchResult, sceneId: string) {
+export function summarize(
+  value: Nir1RelatedScenesFetchResult,
+  sceneId: string,
+) {
   const ir = value.result.kind === "raw" ? value.result.ir : null;
   const graph = value.graph ?? null;
   const fused = value.graphOutcome

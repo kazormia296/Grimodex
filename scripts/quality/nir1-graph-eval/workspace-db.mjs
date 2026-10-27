@@ -17,8 +17,8 @@ export const INDEX_KEYS = Object.freeze({
   chronicle: "nir1-reviewed-chronicle:v1",
 });
 
-function withReadOnly(file, read) {
-  const db = new DatabaseSync(file, { readOnly: true });
+function withReadOnly(file, read, options = {}) {
+  const db = new DatabaseSync(file, { readOnly: true, ...options });
   try {
     return read(db);
   } finally {
@@ -45,19 +45,27 @@ export function indexMetadataFromRows(rows) {
   return out;
 }
 
-export function readIndexMetadata(file, projectId) {
-  return withReadOnly(file, (db) =>
-    indexMetadataFromRows(
-      db
-        .prepare(
-          `SELECT index_key AS indexKey, generation, dirty_cache_flag AS dirty,
+/**
+ * `options` are extra `DatabaseSync` options of the read-only connection
+ * (TR: the trace's start seal passes `timeout: 0`, so a busy database makes
+ * the read fail at once instead of waiting).
+ */
+export function readIndexMetadata(file, projectId, options = {}) {
+  return withReadOnly(
+    file,
+    (db) =>
+      indexMetadataFromRows(
+        db
+          .prepare(
+            `SELECT index_key AS indexKey, generation, dirty_cache_flag AS dirty,
                   source_digest AS sourceDigest,
                   dependency_set_digest AS dependencySetDigest,
                   producer_id AS producerId, producer_version AS producerVersion
              FROM narrative_semantic_index_metadata WHERE project_id = ?`,
-        )
-        .all(projectId),
-    ),
+          )
+          .all(projectId),
+      ),
+    options,
   );
 }
 
