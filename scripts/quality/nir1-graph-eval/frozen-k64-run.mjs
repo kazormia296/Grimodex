@@ -1359,6 +1359,9 @@ export async function runFrozenK64(argv) {
   const runKind = options["run-kind"];
   const d2aMode = runKind === "parity" ? "unrestricted" : "restricted";
   const runDir = path.join(ROOT, ".artifacts/cp4", options.run);
+  // The parents may not exist (a fresh checkout has no .artifacts); the run
+  // dir itself is new (a run name is used once).
+  await mkdir(path.dirname(runDir), { recursive: true });
   await mkdir(runDir, { recursive: false });
   const report = {
     schema: FROZEN_RUN_REPORT_SCHEMA,

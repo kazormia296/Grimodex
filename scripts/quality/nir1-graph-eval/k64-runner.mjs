@@ -449,6 +449,7 @@ async function main() {
   }
   const options = parseArgs(process.argv.slice(2));
   const runDir = path.join(ROOT, ".artifacts/cp4", options.run);
+  await mkdir(path.dirname(runDir), { recursive: true });
   await mkdir(runDir, { recursive: false });
   const report = {
     schema: "nir1-cp4-k64-run-report/1",

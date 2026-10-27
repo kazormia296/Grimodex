@@ -16,6 +16,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  rmdirSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1043,6 +1044,11 @@ test("再レビュー P3（P1-1 の runFrozenK64 の層）: setup が blocked �
   const dir = mkdtempSync(path.join(tmpdir(), "cp4-s5a-blocked-run-"));
   const run = `s5a-test-blocked-${process.pid}`;
   const runDir = path.join(REPO_ROOT, ".artifacts/cp4", run);
+  // The parents this test creates (a CI checkout has no .artifacts) are
+  // removed after it; the ones that existed stay.
+  const created = [".artifacts", ".artifacts/cp4"]
+    .map((dir) => path.join(REPO_ROOT, dir))
+    .filter((dir) => !existsSync(dir));
   const exitCode = process.exitCode;
   try {
     const receipt = path.join(dir, "setup-receipt.json");
@@ -1103,5 +1109,7 @@ test("再レビュー P3（P1-1 の runFrozenK64 の層）: setup が blocked �
     process.exitCode = exitCode;
     rmSync(dir, { recursive: true, force: true });
     rmSync(runDir, { recursive: true, force: true });
+    for (const dir of created.reverse())
+      if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
   }
 });
