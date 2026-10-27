@@ -1791,8 +1791,7 @@ function setupReadingErrors(errors, readings, ctx) {
     (judgement.rows ?? []).some(
       (row) =>
         typeof row?.harnessAgrees !== "boolean" ||
-        !nonBlank(row?.harnessContractBlockedId) ||
-        [row?.g01, row?.graphCases].includes("blocked:maintenance-enabled"),
+        !nonBlank(row?.harnessContractBlockedId),
     )
   )
     errors.push(

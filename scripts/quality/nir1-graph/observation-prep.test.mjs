@@ -2033,6 +2033,16 @@ for (const kind of ["editing", "browsing"]) {
       (t) => (t.setupFailure.projectSwapAllowed = true),
       /setupFailure/u,
     );
+    // 別の G-case への差し替え（setupFailure の project も合わせて替える）。
+    detects(
+      trace,
+      check,
+      (t) => {
+        t.project.caseId = "G-03";
+        t.setupFailure.project = "G-03/base";
+      },
+      /setupFailure/u,
+    );
     detects(
       trace,
       check,
@@ -2086,6 +2096,13 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
       hidden,
     );
   }
+  const vagueScope = clone(declaration);
+  vagueScope.graphRuntimeOutputObservedScope = "Graph の出力は見ていない。";
+  assert.ok(
+    authorDeclarationErrors(vagueScope).some((e) =>
+      /graphRuntimeOutputObservedScope/u.test(e),
+    ),
+  );
   const noScope = clone(declaration);
   delete noScope.graphRuntimeOutputObservedScope;
   assert.ok(
