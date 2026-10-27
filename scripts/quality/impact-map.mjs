@@ -549,6 +549,11 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         // CP-4 S1f: the R5 seed pin check and the keep test (b) of ratification 5.
         "scripts/quality/nir1-graph-eval/seed-pin.test.mjs",
         "scripts/quality/nir1-graph-eval/keep-test.test.mjs",
+        // CP-4 S1i: the frozen G-case setup driver and the R5 check run
+        // (fixture-derived plans, a fake product page and a scratch SQLite).
+        "scripts/quality/nir1-graph-eval/frozen-setup-plan.test.mjs",
+        "scripts/quality/nir1-graph-eval/frozen-setup-driver.test.mjs",
+        "scripts/quality/nir1-graph-eval/r5-check-runner.test.mjs",
       ],
       [
         "node",

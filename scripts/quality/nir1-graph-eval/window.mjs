@@ -86,8 +86,10 @@ export function classifyProcess(argv) {
     return { kind: "measurement", command: "nir1-retrieval" };
   // P3-10: the diagnostics (hook-check, dprime-check, diag-registration,
   // smoke) are CP-4 measurements too; S1f adds the K6/4 runner (P2-5).
+  // S1j P2-2: the R5 check run (①) and the frozen setup driver launch the
+  // product Electron 13 times; they are CP-4 measurements too.
   if (
-    /nir1-graph-eval\/(runner|k64-runner|setup-driver|hook-check|dprime-check|diag-registration|smoke)\.mjs/u.test(
+    /nir1-graph-eval\/(runner|k64-runner|setup-driver|frozen-setup-driver|r5-check-runner|hook-check|dprime-check|diag-registration|smoke)\.mjs/u.test(
       joined,
     )
   )
@@ -100,6 +102,11 @@ export function classifyProcess(argv) {
     /\/\.artifacts\/|dist-electron\/main\.cjs/u.test(joined)
   )
     return { kind: "measurement", command: "electron" };
+  // S1j P2-2: any process that loads a CP-4 run's observer bundle is a CP-4
+  // measurement, whatever its binary is named (an Electron binary is
+  // counted above).
+  if (/\/\.artifacts\/cp4\/[^/\s]+\/observer\/observer\.cjs/u.test(joined))
+    return { kind: "measurement", command: "cp4" };
   return null;
 }
 

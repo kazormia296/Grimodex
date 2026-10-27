@@ -141,7 +141,12 @@ const SEED_PLAN = GRAPH_EVAL_VARIANTS.map((variant) => ({
 }));
 
 const frozenGate = (cases, seedPlan = SEED_PLAN) =>
-  assertSeedPinsBeforeK64({ cases, plan: "frozen", seedPlan });
+  assertSeedPinsBeforeK64({
+    cases,
+    plan: "frozen",
+    seedPlan,
+    stage: "r5-check",
+  });
 
 test("R5／SP-P3: 凍結の plan は 13 の variant の workspace を 1 行ずつ、製品の DB から読んで照合し、すべて match のときだけ通る", () => {
   assert.deepEqual(FROZEN_SEED_CASE_IDS, [
@@ -236,7 +241,12 @@ test("R5／SP-N1〜N3、N9、N11、N13、N14: 不一致・2 つ以上・pin な�
   ])
     assert.throws(() => frozenGate(rows), pattern);
   assert.throws(
-    () => assertSeedPinsBeforeK64({ cases: all, plan: "frozen" }),
+    () =>
+      assertSeedPinsBeforeK64({
+        cases: all,
+        plan: "frozen",
+        stage: "r5-check",
+      }),
     /seedPlan/u,
   );
   assert.throws(() => frozenGate(all, SEED_PLAN.slice(1)), /seedPlan/u);
@@ -401,4 +411,67 @@ test("R5: dev の照合は dev の workspace だけ（1 件以上、受領書と
     () => assertSeedPinsBeforeK64({ cases: [row], plan: "other" }),
     /plan/u,
   );
+});
+
+test("S1j P2-4: 凍結の plan の照合は段（① の r5-check か ⑤ の evaluation）を要り、⑤ は ① の受領書を受けず、① は 2 つの run の受領書を混ぜない", () => {
+  const all = frozenRows();
+  // 段が無い、知らない段。
+  for (const stage of [undefined, "graph-arm", null])
+    assert.throws(
+      () =>
+        assertSeedPinsBeforeK64({
+          cases: all,
+          plan: "frozen",
+          seedPlan: SEED_PLAN,
+          stage,
+        }),
+      /\[precheck\] R5: .*stage/u,
+    );
+  // ⑤（evaluation）は ① の受領書（seed の pin で止めた、run の ID つき）を拒む。
+  assert.throws(
+    () =>
+      assertSeedPinsBeforeK64({
+        cases: all,
+        plan: "frozen",
+        seedPlan: SEED_PLAN,
+        stage: "evaluation",
+      }),
+    /G-01\/v1: setup-not-complete/u,
+  );
+  // ⑤ は完全な setup の受領書なら通る。
+  const complete = frozenSpecs().map((spec) => {
+    const workspace = seedPinWorkspace({ ...spec, stopsAt: "complete" });
+    return {
+      caseId: spec.caseId,
+      variantId: spec.variantId,
+      setup: workspace.setup,
+      read: workspace.read,
+    };
+  });
+  assert.equal(
+    assertSeedPinsBeforeK64({
+      cases: complete,
+      plan: "frozen",
+      seedPlan: SEED_PLAN,
+      stage: "evaluation",
+    }).status,
+    "match",
+  );
+  // ① は完全な setup の受領書を受けない。
+  assert.throws(() => frozenGate(complete), /setup-not-of-an-r5-check-run/u);
+  // ① は別の run の受領書を混ぜない。
+  const mixed = frozenSpecs().map((spec, at) => {
+    const workspace = seedPinWorkspace({
+      ...spec,
+      r5CheckRunId: at === 5 ? "r5-other-run" : undefined,
+    });
+    return {
+      caseId: spec.caseId,
+      variantId: spec.variantId,
+      setup: workspace.setup,
+      read: workspace.read,
+    };
+  });
+  assert.throws(() => frozenGate(mixed), /setups-of-two-r5-check-runs/u);
+  // dev の plan は段を要らない（dev の受領書は常に完全な setup）。
 });

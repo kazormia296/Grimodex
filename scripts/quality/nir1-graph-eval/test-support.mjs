@@ -18,6 +18,8 @@ import { r1Record, r2Record } from "./k64-record.mjs";
 import { readQuerySceneSeedPins } from "./workspace-db.mjs";
 import {
   DEV_SETUP_RECEIPT_SCHEMA,
+  FROZEN_SETUP_RECEIPT_SCHEMA,
+  SETUP_STATUS_BY_STOP,
   loadSetupReceipt,
 } from "./setup-receipt.mjs";
 import { createHash } from "node:crypto";
@@ -882,8 +884,21 @@ export function seedPinWorkspace(spec) {
   writeFileSync(
     setupPath,
     `${JSON.stringify({
-      schemaVersion: DEV_SETUP_RECEIPT_SCHEMA,
-      status: "setup-complete",
+      // S1i: a frozen setup uses the frozen schema and names where it stopped.
+      ...((spec.fixtureKind ?? "frozen") === "frozen"
+        ? {
+            schemaVersion: FROZEN_SETUP_RECEIPT_SCHEMA,
+            stopsAt: spec.stopsAt ?? "seed-pin",
+            status: SETUP_STATUS_BY_STOP[spec.stopsAt ?? "seed-pin"],
+            // S1j P2-4: a ① setup names its R5 check run.
+            ...((spec.stopsAt ?? "seed-pin") === "seed-pin"
+              ? { r5CheckRun: { id: spec.r5CheckRunId ?? "r5-test-run" } }
+              : {}),
+          }
+        : {
+            schemaVersion: DEV_SETUP_RECEIPT_SCHEMA,
+            status: "setup-complete",
+          }),
       fixture: {
         kind: spec.fixtureKind ?? "frozen",
         caseId: spec.caseId,
@@ -910,5 +925,367 @@ export function seedPinWorkspace(spec) {
       projectId,
       spec.readSceneId ?? spec.querySceneRuntime,
     ),
+  };
+}
+
+/**
+ * S1i: a fake harness page over a throwaway workspace SQLite that plays the
+ * product writers the frozen setup driver calls (the renderer API and the
+ * IPC commands of setupOrder up to the seed pin step), with the product's
+ * Scope rules the setup relies on (an unknown marker keeps an unresolved
+ * query identity, exact refs are registered, a character holder is a
+ * character entry of the project). Every other IPC command and page entry
+ * (maintenance, typed Revisions, the Index builds, queries, the declaration,
+ * the probes) is recorded in `forbidden` and refused. `opts.mutate(name,
+ * input)` may rewrite a writer's input (to test the read-back checks);
+ * `opts.maintenanceEnabled` leaves the runtime policy's maintenance on.
+ */
+export function frozenSetupFakeProduct(opts = {}) {
+  let db = null;
+  let file = null;
+  let clock = 0;
+  const at = () =>
+    new Date(Date.UTC(2026, 9, 27, 0, 0, 0, ++clock)).toISOString();
+  const calls = [];
+  const forbidden = [];
+  const token = () => `sha256:${"c".repeat(64)}`;
+  const UNRESOLVED = { kind: "unresolved", reason: "legacy-axis-unknown" };
+  const mutate = opts.mutate ?? ((_name, input) => input);
+  const refuse = (name) => {
+    forbidden.push(name);
+    return { ok: false, error: `${name} is not played by the fake product` };
+  };
+  const open = (workspacePath) => {
+    if (db) return;
+    mkdirSync(workspacePath, { recursive: true });
+    file = path.join(workspacePath, "grimodex.db");
+    db = new DatabaseSync(file);
+    db.exec(`
+      CREATE TABLE projects (id TEXT PRIMARY KEY, title TEXT, language TEXT, phase_resolution_mode TEXT, updated_at TEXT);
+      CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, node_type TEXT, title TEXT,
+        sort_order TEXT, version INTEGER, updated_at TEXT, archived_at TEXT, content TEXT,
+        story_time_order TEXT, pov_character_id TEXT);
+      CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT, type TEXT, name TEXT, summary TEXT);
+      CREATE TABLE codex_relations (id TEXT PRIMARY KEY, project_id TEXT, from_codex_id TEXT, to_codex_id TEXT,
+        relation_type TEXT, label TEXT, directionality TEXT);
+      CREATE TABLE scene_codex_pins (scene_id TEXT, entry_id TEXT, created_at TEXT, PRIMARY KEY (scene_id, entry_id));
+      CREATE TABLE foreshadows (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, secret INTEGER, payoff_scene_id TEXT,
+        payoff_confirmed INTEGER, abandoned INTEGER, version INTEGER);
+      CREATE TABLE foreshadow_codex_links (foreshadow_id TEXT, codex_entry_id TEXT);
+      CREATE TABLE narrative_scope_registries (project_id TEXT PRIMARY KEY, registry_version TEXT, timeline_refs_json TEXT,
+        worldline_refs_json TEXT, narrative_layer_refs_json TEXT, version INTEGER, source_token TEXT, updated_at TEXT);
+      CREATE TABLE narrative_scene_scope_bindings (project_id TEXT, scene_id TEXT, scene_incarnation_id TEXT,
+        compatibility_marker TEXT, query_identity_json TEXT, material_constraint_json TEXT, knowledge_holder_json TEXT,
+        audience_json TEXT, version INTEGER, source_token TEXT, updated_at TEXT, body_declaration_json TEXT,
+        body_declaration_token TEXT);
+    `);
+    // `opts.maintenanceEnabled`: a workspace whose runtime policy has
+    // maintenance on (a setting ① must never make, nor accept).
+    if (opts.maintenanceEnabled)
+      db.exec(`
+        CREATE TABLE narrative_runtime_policy (singleton_id INTEGER PRIMARY KEY, maintenance_enabled INTEGER);
+        INSERT INTO narrative_runtime_policy VALUES (1, 1);
+      `);
+  };
+  const one = (sql, ...params) => db.prepare(sql).get(...params);
+  const registryOf = (projectId) => {
+    const row = one(
+      "SELECT * FROM narrative_scope_registries WHERE project_id = ?",
+      projectId,
+    );
+    return {
+      revision: row.version,
+      registry: {
+        registryVersion: row.registry_version,
+        timelineRefs: JSON.parse(row.timeline_refs_json),
+        worldlineRefs: JSON.parse(row.worldline_refs_json),
+        narrativeLayerRefs: JSON.parse(row.narrative_layer_refs_json),
+      },
+    };
+  };
+  const ipc = {
+    db_execute: (input) => {
+      if (input.method !== "all" || !/^\s*SELECT\b/iu.test(input.sql))
+        return refuse("db_execute:write");
+      return { rows: db.prepare(input.sql).all(...(input.params ?? [])) };
+    },
+    project_patch: ({ payload }) => {
+      db.prepare(
+        "UPDATE projects SET phase_resolution_mode = ?, updated_at = ? WHERE id = ?",
+      ).run(payload.patch.phaseResolutionMode, at(), payload.projectId);
+      return true;
+    },
+    tree_node_create: ({ payload }) => {
+      const now = at();
+      db.prepare(
+        "INSERT INTO tree_nodes VALUES (?, ?, ?, ?, ?, ?, 1, ?, NULL, ?, ?, ?)",
+      ).run(
+        payload.id,
+        payload.projectId,
+        payload.parentId,
+        payload.nodeType,
+        payload.title,
+        payload.sortOrder,
+        now,
+        payload.content,
+        payload.storyTimeOrder ?? null,
+        payload.povCharacterId ?? null,
+      );
+      // A folder has no Scene Scope binding (the product binds Scenes).
+      if (payload.nodeType !== "scene") return { id: payload.id };
+      db.prepare(
+        "INSERT INTO narrative_scene_scope_bindings VALUES (?, ?, ?, 'unknown', ?, ?, ?, ?, 1, ?, ?, NULL, NULL)",
+      ).run(
+        payload.projectId,
+        payload.id,
+        `inc-${payload.id}`,
+        JSON.stringify({
+          timeline: UNRESOLVED,
+          worldline: UNRESOLVED,
+          narrativeLayer: UNRESOLVED,
+        }),
+        JSON.stringify({
+          timeline: { kind: "any" },
+          worldline: { kind: "any" },
+          narrativeLayer: { kind: "any" },
+        }),
+        JSON.stringify({ kind: "reader" }),
+        JSON.stringify({ kind: "reader" }),
+        token(),
+        now,
+      );
+      return { id: payload.id };
+    },
+    narrative_scene_scope_read: ({ projectId, sceneId }) => {
+      const { revision, registry } = registryOf(projectId);
+      const row = one(
+        "SELECT * FROM narrative_scene_scope_bindings WHERE project_id = ? AND scene_id = ?",
+        projectId,
+        sceneId,
+      );
+      return {
+        registry,
+        registryRevision: revision,
+        binding: {
+          compatibilityMarker: row.compatibility_marker,
+          version: row.version,
+        },
+      };
+    },
+    narrative_scene_scope_registry_update: ({ payload }) => {
+      const { revision } = registryOf(payload.projectId);
+      if (payload.baseVersion !== revision) throw new Error("registry OCC");
+      db.prepare(
+        `UPDATE narrative_scope_registries SET timeline_refs_json = ?, worldline_refs_json = ?,
+           narrative_layer_refs_json = ?, version = version + 1, updated_at = ? WHERE project_id = ?`,
+      ).run(
+        JSON.stringify(payload.registry.timelineRefs),
+        JSON.stringify(payload.registry.worldlineRefs),
+        JSON.stringify(payload.registry.narrativeLayerRefs),
+        at(),
+        payload.projectId,
+      );
+      return true;
+    },
+    narrative_scene_scope_update: ({ payload }) => {
+      const { registry } = registryOf(payload.projectId);
+      const row = one(
+        "SELECT version FROM narrative_scene_scope_bindings WHERE project_id = ? AND scene_id = ?",
+        payload.projectId,
+        payload.sceneId,
+      );
+      if (payload.baseVersion !== row.version) throw new Error("scope OCC");
+      const scope = payload.scope;
+      const axes = [
+        ["timeline", "timelineRefs"],
+        ["worldline", "worldlineRefs"],
+        ["narrativeLayer", "narrativeLayerRefs"],
+      ];
+      if (
+        scope.compatibilityMarker === "unknown" &&
+        !axes.every(([axis]) => scope.queryIdentity[axis].kind === "unresolved")
+      )
+        throw new Error(
+          "unknown scope must leave extension query identity unresolved",
+        );
+      for (const part of ["queryIdentity", "materialConstraint"])
+        for (const [axis, refs] of axes) {
+          const value = scope[part][axis];
+          if (value.kind === "exact" && !registry[refs].includes(value.ref))
+            throw new Error(`${part}.${axis} references an unregistered value`);
+        }
+      for (const principal of [scope.knowledgeHolder, scope.audience])
+        if (
+          principal.kind === "character" &&
+          !one(
+            "SELECT 1 AS ok FROM codex_entries WHERE id = ? AND project_id = ? AND type = 'character'",
+            principal.ref,
+            payload.projectId,
+          )
+        )
+          throw new Error("character is not in project");
+      db.prepare(
+        `UPDATE narrative_scene_scope_bindings SET compatibility_marker = ?, query_identity_json = ?,
+           material_constraint_json = ?, knowledge_holder_json = ?, audience_json = ?, version = version + 1,
+           updated_at = ? WHERE project_id = ? AND scene_id = ?`,
+      ).run(
+        scope.compatibilityMarker,
+        JSON.stringify(scope.queryIdentity),
+        JSON.stringify(scope.materialConstraint),
+        JSON.stringify(scope.knowledgeHolder),
+        JSON.stringify(scope.audience),
+        at(),
+        payload.projectId,
+        payload.sceneId,
+      );
+      return true;
+    },
+  };
+  const api = {
+    createProject: (input) => {
+      db.prepare("INSERT INTO projects VALUES (?, ?, ?, 'story', ?)").run(
+        input.id,
+        input.title,
+        input.language,
+        at(),
+      );
+      db.prepare(
+        "INSERT INTO narrative_scope_registries VALUES (?, 'narrative-scene-scope-registry/1', '[]', '[]', '[]', 1, ?, ?)",
+      ).run(input.id, token(), at());
+      return input.id;
+    },
+    createCodexEntry: (input) => {
+      db.prepare("INSERT INTO codex_entries VALUES (?, ?, ?, ?, ?)").run(
+        input.id,
+        input.projectId,
+        input.type,
+        input.name,
+        input.summary,
+      );
+      return { id: input.id };
+    },
+    createCodexRelation: (input) => {
+      if (!input.label) throw new Error("label is required");
+      db.prepare(
+        "INSERT INTO codex_relations VALUES (?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        input.id,
+        input.projectId,
+        input.fromCodexId,
+        input.toCodexId,
+        input.relationType,
+        input.label,
+        input.directionality,
+      );
+      return { id: input.id };
+    },
+    createForeshadow: (input) => {
+      db.prepare("INSERT INTO foreshadows VALUES (?, ?, ?, ?, ?, ?, ?, 1)").run(
+        input.id,
+        input.projectId,
+        input.title,
+        input.secret ? 1 : 0,
+        input.payoffSceneId,
+        input.payoffConfirmed ? 1 : 0,
+        input.abandoned ? 1 : 0,
+      );
+      return { id: input.id, version: 1 };
+    },
+    addForeshadowCodexLink: (input) => {
+      const row = one(
+        "SELECT version FROM foreshadows WHERE id = ?",
+        input.foreshadowId,
+      );
+      if (row.version !== input.baseVersion) throw new Error("foreshadow OCC");
+      db.prepare("INSERT INTO foreshadow_codex_links VALUES (?, ?)").run(
+        input.foreshadowId,
+        input.codexId,
+      );
+      db.prepare(
+        "UPDATE foreshadows SET version = version + 1 WHERE id = ?",
+      ).run(input.foreshadowId);
+      return { version: row.version + 1 };
+    },
+    upsertScenePin: (input) => {
+      db.prepare("INSERT OR IGNORE INTO scene_codex_pins VALUES (?, ?, ?)").run(
+        input.sceneId,
+        input.entryId,
+        at(),
+      );
+      return true;
+    },
+    sceneText: (sceneId) => {
+      const content = JSON.parse(
+        one("SELECT content FROM tree_nodes WHERE id = ?", sceneId).content,
+      );
+      return `${content.content.map((block) => block.content[0].text).join("\n")}\n`;
+    },
+  };
+  const wrap = (name, run) => async (input) => {
+    calls.push(name);
+    try {
+      return { ok: true, value: await run(mutate(name, input)) };
+    } catch (error) {
+      return { ok: false, error: String(error?.message ?? error) };
+    }
+  };
+  const forbiddenEntry = (name) => async () => refuse(name);
+  const window = {
+    cp4Harness: {
+      ready: true,
+      call: async (name, input) => {
+        if (!Object.hasOwn(ipc, name)) {
+          calls.push(name);
+          return refuse(name);
+        }
+        return wrap(name, ipc[name])(input);
+      },
+      openWorkspace: wrap("openWorkspace", (input) => {
+        open(input.workspacePath);
+        return { openRevision: 1 };
+      }),
+      selectProject: wrap("selectProject", () => ({ nodeCount: 0 })),
+      api: {
+        ...Object.fromEntries(
+          Object.entries(api).map(([name, run]) => [
+            name,
+            wrap(`api.${name}`, run),
+          ]),
+        ),
+        humanWriteContext: () => {
+          calls.push("api.humanWriteContext");
+          return { actor: "human" };
+        },
+        updateCodexEntrySummary: forbiddenEntry("api.updateCodexEntrySummary"),
+      },
+      measure: forbiddenEntry("measure"),
+      buildRaw: forbiddenEntry("buildRaw"),
+      buildIndex: forbiddenEntry("buildIndex"),
+      declaration: {
+        state: forbiddenEntry("declaration.state"),
+        declare: forbiddenEntry("declaration.declare"),
+      },
+      k64: { sample: forbiddenEntry("k64.sample") },
+      hook: { sample: forbiddenEntry("hook.sample") },
+    },
+  };
+  return {
+    calls,
+    forbidden,
+    file: () => file,
+    close: () => {
+      db?.close();
+      db = null;
+    },
+    page: {
+      evaluate: async (fn, arg) => {
+        globalThis.window = window;
+        try {
+          return await fn(arg);
+        } finally {
+          delete globalThis.window;
+        }
+      },
+    },
   };
 }

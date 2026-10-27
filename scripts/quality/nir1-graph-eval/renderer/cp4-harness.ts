@@ -6,10 +6,13 @@
  *
  * The page writes only through the product's renderer API (`invoke` of the
  * product's IPC wrapper, `createProject`, `createCodexEntry`,
- * `createCodexRelation`, `upsertScenePin`, the body declaration wrappers) and
+ * `createCodexRelation`, `upsertScenePin`, `createForeshadow`,
+ * `addCodexLink`, `updateCodexEntry`, the body declaration wrappers) and
  * measures only through `fetchRelatedPastScenes(…, { mode: "hybrid" })`,
- * the product's begin/continue path. No SQL is written here. It is used with
- * the synthetic dev fixture only; no G-case fixture is read.
+ * the product's begin/continue path. No SQL is written here. The page reads
+ * no fixture file: the drivers pass the values (the synthetic dev fixture,
+ * or S1i's frozen setup driver, which the integrator runs on the frozen
+ * G-case material).
  *
  * Clock: every time here is the renderer `performance.now()` (the clock the
  * product's join helper compares). The call and answer times of the begin
@@ -27,9 +30,10 @@ import { loadSceneContent, saveSceneContent } from "@/features/tree/api";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
-import { createCodexEntry } from "@/features/codex/api";
+import { createCodexEntry, updateCodexEntry } from "@/features/codex/api";
 import { createCodexRelation } from "@/features/codex/codexRelationApi";
 import { upsertScenePin } from "@/features/codex/sceneCodexPinsApi";
+import { addCodexLink, createForeshadow } from "@/features/foreshadow/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
 import { useDebugLogStore } from "@/lib/debugLog";
 import {
@@ -197,6 +201,56 @@ const api = {
   upsertScenePin: (input: { sceneId: string; entryId: string }) =>
     guarded(async () => {
       await upsertScenePin(input.sceneId, input.entryId);
+      return true;
+    }),
+  // S1i: the frozen G-case setup's foreshadow writers (the UI's renderer API).
+  createForeshadow: (input: {
+    id: string;
+    projectId: string;
+    title: string;
+    secret: boolean;
+    payoffSceneId: string | null;
+    payoffConfirmed: boolean;
+    abandoned: boolean;
+  }) =>
+    guarded(async () => {
+      const row = await createForeshadow({
+        id: input.id,
+        projectId: input.projectId,
+        title: input.title,
+        secret: input.secret,
+        payoffSceneId: input.payoffSceneId,
+        payoffConfirmed: input.payoffConfirmed,
+        abandoned: input.abandoned,
+      });
+      return { id: String(row.id), version: Number(row.version) };
+    }),
+  addForeshadowCodexLink: (input: {
+    foreshadowId: string;
+    codexId: string;
+    baseVersion: number;
+  }) =>
+    guarded(async () => {
+      const row = await addCodexLink(
+        input.foreshadowId,
+        input.codexId,
+        input.baseVersion,
+      );
+      return { version: Number(row.version) };
+    }),
+  // S1i: the codex-entry-summary-edit mutation (complete setup only).
+  updateCodexEntrySummary: (input: {
+    projectId: string;
+    id: string;
+    summary: string;
+  }) =>
+    guarded(async () => {
+      await updateCodexEntry(
+        input.projectId,
+        input.id,
+        { summary: input.summary },
+        { writeContext: human() },
+      );
       return true;
     }),
   sceneText: (sceneId: string) =>
