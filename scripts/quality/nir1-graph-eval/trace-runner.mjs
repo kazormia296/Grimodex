@@ -150,6 +150,32 @@ export function traceMaintenanceStart(start, nonce) {
     });
 }
 
+/**
+ * レビュー P3 (d): S2 `stall` — attempts are numbered from 1 up to
+ * `attemptLimit` (2) per trace file; a stall of the last allowed attempt goes
+ * to [precheck] (the user decides), an earlier stall is retaken with the same
+ * file, and every attempt is kept. S6 wires the attempt history; the rule is
+ * fixed here.
+ */
+export function checkTraceAttempt({ attempt, attemptLimit }) {
+  if (!Number.isInteger(attemptLimit) || attemptLimit < 1)
+    throw new Error(
+      "[precheck] the trace file's stall.attemptLimit is invalid",
+    );
+  if (!Number.isInteger(attempt) || attempt < 1 || attempt > attemptLimit)
+    throw new Error(
+      `[precheck] --attempt must be an integer from 1 to ${attemptLimit} (S2 stall.attemptLimit)`,
+    );
+  return attempt;
+}
+
+/** What follows an attempt (S2 `stall.attemptRule`). */
+export function traceAttemptOutcome({ attempt, attemptLimit, stalled }) {
+  checkTraceAttempt({ attempt, attemptLimit });
+  if (!stalled) return "completed";
+  return attempt >= attemptLimit ? "precheck" : "retake";
+}
+
 /** TR-2: the Main poller of the owner counters (one session's Main). */
 export function counterPoller({ app, nativePath }) {
   const run = async (source, arg) =>
@@ -171,9 +197,12 @@ export function counterPoller({ app, nativePath }) {
  * `runtime.scenes` maps the plan's logical Scene IDs to runtime IDs.
  * `readA3(parentSeq)` reads the A3 record of a counted query right after its
  * parent fetch was observed; `readNative()` reads the Native begin records at
- * each cycle end. Returns the operation log, the A3 reads and the stall (null
- * when the trace ran to its end). Between an autosave commit and its query
- * the runner only waits for the page's observation (K6/2 step 4 (2)→(3)).
+ * each cycle end. Returns the operation log, the A3 reads, the start seal
+ * reads and the stall (null when the trace ran to its end). Between an
+ * autosave commit and its query the runner adds no operation and no wait
+ * (K6/2 step 4 (2)→(3)): it reads the B seal once on its own read-only
+ * connection (logged as `seal-read`; DR-CP4-TR-13) and waits only for the
+ * page's observation of the product's query.
  */
 export async function runTraceOperations({
   plan,
@@ -191,21 +220,34 @@ export async function runTraceOperations({
   const scene = (logical) => runtime.scenes?.[logical] ?? logical;
   const log = [];
   const a3Reads = {};
-  // TR-9: the B seal at each counted query's start, by query index. Query 0's
-  // was read before the mount; the others after the operation that starts
-  // the query (the autosave commit, the move) and before the product's query,
-  // with the renderer time around the read (startSealOf compares it with the
-  // parent fetch's call).
-  const startSeals = openSeal ? { 0: openSeal } : {};
-  const sealFor = async (index) => {
+  // TR-9 / レビュー P2-1: the B seal of each counted query, by query index,
+  // read twice: `before` (query 0's before the mount; the others after the
+  // operation that starts the query — the autosave commit, the move — and
+  // before the product's query) and `after` (right after the parent fetch was
+  // observed, with the A3 record). The renderer time around each read lets
+  // startSealOf place it against the parent fetch's call.
+  const startSeals = {};
+  const logSeal = (index, phase, record) => {
+    startSeals[index] = { ...startSeals[index], [phase]: record };
+    log.push({
+      op: "seal-read",
+      phase,
+      index,
+      at: record.startedAt,
+      finishedAt: record.finishedAt,
+      read: record.read,
+    });
+  };
+  if (openSeal) logSeal(0, "before", openSeal);
+  const sealFor = async (index, phase) => {
     if (!readSeal || !Number.isInteger(index)) return;
     const startedAt = await driver.now();
     const record = await readSeal();
-    startSeals[index] = {
+    logSeal(index, phase, {
       ...record,
       startedAt,
       finishedAt: await driver.now(),
-    };
+    });
   };
   const nextCounted = (operation) =>
     plan.operations.find(
@@ -231,6 +273,7 @@ export async function runTraceOperations({
     lastSeq = Math.max(lastSeq, found.seq);
     // The A3 record at the query's start (its own read-only connection).
     a3Reads[found.seq] = await readA3(found.seq);
+    await sealFor(operation.query.index, "after");
     const end = await driver.awaitCycleEnd({
       parentSeq: found.seq,
       tShowMs,
@@ -291,7 +334,7 @@ export async function runTraceOperations({
         contentVersion: commit.contentVersion,
       });
       sinceAt = commit.at;
-      await sealFor(nextCounted(operation));
+      await sealFor(nextCounted(operation), "before");
       continue;
     }
     if (operation.op === "navigate") {
@@ -306,7 +349,7 @@ export async function runTraceOperations({
       });
       sinceAt = moved.at;
       if (operation.query?.counted) {
-        await sealFor(operation.query.index);
+        await sealFor(operation.query.index, "before");
         const result = await counted(operation);
         if (result.stalled) return stall(operation, result.stalled);
         continue;
@@ -464,6 +507,10 @@ async function main() {
       seedEntityId: fixture.graphSeedEntityId,
       materials: fixture.typedRevisions.map((row) => row.id),
     });
+    checkTraceAttempt({
+      attempt: Number(options.attempt),
+      attemptLimit: plan.stall.attemptLimit,
+    });
     const planErrors = validateTracePlan(plan, { preview: true });
     if (planErrors.length > 0)
       throw new Error(
@@ -500,6 +547,8 @@ async function main() {
       options,
       candidate,
       evalDir,
+      // レビュー P3 (c): a frozen run needs the standard-build receipt.
+      required: Boolean(options.fixture || options.trace),
     });
     const coldDb = path.join(ROOT, setup.coldDatabase.path);
     if (sha256(await readFile(coldDb)) !== setup.coldDatabase.sha256)
@@ -736,12 +785,14 @@ async function main() {
       observation,
       log: result.log,
       parentSeqs,
+      querySceneId: ids.querySceneId,
     });
     const k64 = summarizeTraceRun({
       plan,
       rows,
       events,
       fixedGraphMode: D2A_MODE,
+      stalled: result.stalled,
       candidate: ratification5,
       candidateHead: candidate.commit,
     });
@@ -750,6 +801,7 @@ async function main() {
       rows,
       events,
       fixedGraphMode: D2A_MODE,
+      stalled: result.stalled,
     });
     const ownPids = [
       ...readAncestorPids(),
@@ -787,7 +839,7 @@ async function main() {
         k64: procedureSettings(procedure),
         a3: "read once right after the counted query's parent fetch was observed",
         startSeal:
-          "B seal read read-only (busy timeout 0) before the parent's begin: after the autosave commit / the move, query 0 before the mount (DR-CP4-TR-9)",
+          "B seal read read-only (busy timeout 0) twice: before the parent's begin (after the autosave commit / the move; query 0 before the mount) and right after the parent was observed; current only when both agree (DR-CP4-TR-9, TR-13)",
         requeries: "counted apart (K6/2 step 7); never rows",
       },
       environment: {
@@ -805,6 +857,14 @@ async function main() {
       },
       run,
       stalled: result.stalled,
+      // レビュー P2-2: explicit; a stall or a defect is never valid.
+      status: k64.status,
+      statusReasons: k64.statusReasons,
+      attemptOutcome: traceAttemptOutcome({
+        attempt: Number(options.attempt),
+        attemptLimit: plan.stall.attemptLimit,
+        stalled: result.stalled,
+      }),
       counterPoll: {
         polls: counters.polls ?? null,
         errors: counters.errors ?? null,
@@ -812,7 +872,11 @@ async function main() {
         runs: counters.runs?.length ?? null,
       },
       native: { dropped: native.dropped, records: native.records.length },
-      requeries: traceRequeries({ observation, parentSeqs }).counts,
+      requeries: traceRequeries({
+        observation,
+        parentSeqs,
+        querySceneId: ids.querySceneId,
+      }).counts,
       // TR-9: unknown is counted apart (the classifier keeps it out of U and
       // in rule 3 (i), the strict side).
       startSeal: startSealCounts(rows),

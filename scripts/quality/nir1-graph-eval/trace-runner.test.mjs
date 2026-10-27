@@ -14,7 +14,9 @@ import {
   TRACE_DEV_PREVIEW_PURPOSE,
   admitTraceRun,
   counterPoller,
+  checkTraceAttempt,
   runTraceOperations,
+  traceAttemptOutcome,
   traceMaintenanceStart,
 } from "./trace-runner.mjs";
 import { DEV_PREVIEW_PURPOSES } from "./admission.mjs";
@@ -304,24 +306,45 @@ test("TR-9: 開始時の封印は親の begin の前（編集中は commit の�
       tShowMs: 2_000,
       parentLimitMs: 30_000,
     });
+    // Before each query (after the commit / the move) and after its parent
+    // was observed (レビュー P2-1).
     assert.deepEqual(
       sealCalls,
       kind === "editing"
-        ? ["awaitBodyCommit", "awaitBodyCommit"]
-        : ["navigate", "navigate"],
+        ? [
+            "awaitCounted",
+            "awaitBodyCommit",
+            "awaitCounted",
+            "awaitBodyCommit",
+            "awaitCounted",
+          ]
+        : [
+            "awaitCounted",
+            "navigate",
+            "awaitCounted",
+            "navigate",
+            "awaitCounted",
+          ],
       kind,
     );
     assert.deepEqual(Object.keys(result.startSeals).map(Number), [0, 1, 2]);
-    assert.equal(result.startSeals[0].finishedAt, 2);
-    assert.ok(Number.isFinite(result.startSeals[1].startedAt));
+    assert.equal(result.startSeals[0].before.finishedAt, 2);
+    for (const index of [0, 1, 2])
+      assert.deepEqual(Object.keys(result.startSeals[index]).sort(), [
+        "after",
+        "before",
+      ]);
+    // Every read is in the log as a seal-read (an event, not an operation).
+    assert.equal(result.log.filter((row) => row.op === "seal-read").length, 6);
     // The renderer time after the read (the read took 7 ms of the fake clock).
     assert.equal(
-      result.startSeals[1].finishedAt - result.startSeals[1].startedAt,
+      result.startSeals[1].before.finishedAt -
+        result.startSeals[1].before.startedAt,
       7,
     );
     // The read is before the counted query is looked for.
     const counted = calls.filter((row) => row.name === "awaitCounted");
-    assert.ok(result.startSeals[2].finishedAt <= counted[2].at);
+    assert.ok(result.startSeals[2].before.finishedAt <= counted[2].at);
   }
 });
 
@@ -406,4 +429,63 @@ test("TR-10: trace の測定の起動にだけ S2 の maintenance の gate の e
       /traceMaintenance/u,
       file,
     );
+});
+
+test("レビュー P3 (b): 閲覧中の Q の外の移動には parentSeq を付けず、counted query の数は plannedQ と同じ", async () => {
+  const { driver } = fakeDriver();
+  const browsing = plan("browsing", 3);
+  const result = await runTraceOperations({
+    plan: browsing,
+    runtime: RUNTIME,
+    driver,
+    mountedAt: 1_000,
+    readA3: async () => ({}),
+    readNative: async () => {},
+    tShowMs: 2_000,
+    parentLimitMs: 30_000,
+  });
+  const withParent = result.log.filter((row) =>
+    Number.isInteger(row.parentSeq),
+  );
+  assert.equal(withParent.length, browsing.plannedQ);
+  assert.ok(
+    withParent.every((row) => row.op !== "navigate"),
+    "a move carries no parent",
+  );
+  assert.deepEqual(
+    withParent.map((row) => row.index),
+    [0, 1, 2, 3],
+  );
+  // The outside-Q move to the other Scene is logged with its publish.
+  const moves = result.log.filter(
+    (row) => row.op === "navigate" && row.sceneId === "rt-o",
+  );
+  assert.equal(moves.length, 3);
+  assert.ok(moves.every((row) => row.published && row.parentSeq === undefined));
+});
+
+test("レビュー P3 (d): --attempt は 1 から attemptLimit まで、最後の試行の stall は [precheck]、それより前の stall は取り直し", () => {
+  assert.equal(checkTraceAttempt({ attempt: 1, attemptLimit: 2 }), 1);
+  for (const attempt of [0, 3, 1.5, Number.NaN])
+    assert.throws(
+      () => checkTraceAttempt({ attempt, attemptLimit: 2 }),
+      /\[precheck\].*--attempt/u,
+    );
+  assert.throws(
+    () => checkTraceAttempt({ attempt: 1, attemptLimit: 0 }),
+    /attemptLimit/u,
+  );
+  const stalled = { reason: "no-product-query" };
+  assert.equal(
+    traceAttemptOutcome({ attempt: 1, attemptLimit: 2, stalled }),
+    "retake",
+  );
+  assert.equal(
+    traceAttemptOutcome({ attempt: 2, attemptLimit: 2, stalled }),
+    "precheck",
+  );
+  assert.equal(
+    traceAttemptOutcome({ attempt: 2, attemptLimit: 2, stalled: null }),
+    "completed",
+  );
 });

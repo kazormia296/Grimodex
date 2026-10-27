@@ -298,6 +298,10 @@ function editingTrace(n, options = {}) {
   observation.api.forEach((row, at) => {
     row.id = at;
   });
+  // The Native's per-begin seq is consecutive (レビュー P2-4).
+  records.forEach((record, at) => {
+    record.seq = at + 1;
+  });
   return { observation, records, events, log, a3Reads };
 }
 
@@ -460,22 +464,44 @@ module.exports = {
   delete globalThis.__cp4TraceCounterPoll;
 });
 
-test("TR-3: Native の記録は seq で併合し（後の読取の ticket の状態を採る）、dropped を残す", () => {
+test("TR-3: Native の記録は seq で併合し（後の読取の ticket の状態を採る）、累積の dropped だけでは失わず、seq の欠けか最初の読取の dropped で失ったとする（レビュー P2-4）", () => {
   const first = k64NativeRecord({
     seq: 1,
     ticket: { ...k64NativeRecord().ticket, settled: false, outcome: null },
   });
   const later = k64NativeRecord({ seq: 1 });
+  // The log pushed out seq 1 and 2 after they were read: no loss.
   const merged = mergeNativeRecords([
-    { dropped: 0, records: [first] },
-    { dropped: 2, records: [later, k64NativeRecord({ seq: 3 })] },
+    { dropped: 0, records: [first, k64NativeRecord({ seq: 2 })] },
+    { dropped: 2, records: [k64NativeRecord({ seq: 3 })] },
+    { dropped: 2, records: [k64NativeRecord({ seq: 3 }), later] },
   ]);
   assert.deepEqual(
     merged.records.map((row) => row.seq),
-    [1, 3],
+    [1, 2, 3],
   );
   assert.equal(merged.records[0].ticket.settled, true);
   assert.equal(merged.dropped, 2);
+  assert.equal(merged.lost, false);
+  // seq 2 was pushed out before any read captured it.
+  const gap = mergeNativeRecords([
+    { dropped: 0, records: [k64NativeRecord({ seq: 1 })] },
+    { dropped: 2, records: [k64NativeRecord({ seq: 3 })] },
+  ]);
+  assert.equal(gap.lost, true);
+  assert.deepEqual(gap.gaps, [[1, 3]]);
+  // The first read already counts dropped records.
+  const front = mergeNativeRecords([
+    { dropped: 1, records: [k64NativeRecord({ seq: 2 })] },
+  ]);
+  assert.equal(front.lost, true);
+  assert.equal(front.frontLoss, true);
+  const aligned = alignSeededBegins({
+    observation: { fetches: [], api: [] },
+    native: gap,
+  });
+  assert.equal(aligned.aligned, false);
+  assert.match(aligned.reason, /lost records/u);
 });
 
 test("TR-3: seed つきの fetch の begin の呼出しと Native の記録を順に対応させ、seed の無い begin は除き、数が違えば整列の失敗にする", () => {
@@ -511,11 +537,12 @@ test("TR-3: seed つきの fetch の begin の呼出しと Native の記録を�
   });
   assert.equal(short.aligned, false);
   assert.match(short.reason, /4 seeded begins, 3 records/u);
+  // A cumulative dropped count without a gap aligns.
   const dropped = alignSeededBegins({
     observation,
     native: { ...merged, dropped: 1 },
   });
-  assert.equal(dropped.aligned, false);
+  assert.equal(dropped.aligned, true);
 });
 
 test("TR-3: counted query の行は分類器の trace の文脈で follow-up の成功になり、R7 の欄を欠かない", () => {
@@ -810,40 +837,68 @@ const sealRead = (index, b, extra = {}) => ({
   durationMs: 0.5,
   ...extra,
 });
+const sealAfter = (index, b, extra = {}) =>
+  sealRead(index, b, {
+    startedAt: 10_000 + index * 3_000 + 5,
+    finishedAt: 10_000 + index * 3_000 + 6,
+    ...extra,
+  });
+const CURRENT = { generation: 4, dirty: false };
+const pair = (index, before, after = before, extra = {}) => ({
+  before: sealRead(index, before, extra.before),
+  after: sealAfter(index, after, extra.after),
+});
 
-test("TR-9: 開始時の封印の規則（先に固定）: current／dirty／missing、読めない・query の開始の後に読み終えた・読んでいないは unknown", () => {
+test("TR-9: 開始時の封印の規則（先に固定）: 2 回とも current で generation が同じときだけ current。dirty／missing は前の読取、読めない・遅い・食い違い・読んでいないは unknown（レビュー P2-1）", () => {
+  const state = (value) => startSealOf(value, 10_000);
+  assert.equal(state(pair(0, CURRENT)).state, "current");
+  assert.equal(state(pair(0, CURRENT)).generation, 4);
+  assert.equal(state(pair(0, { generation: 4, dirty: true })).state, "dirty");
+  assert.equal(state(pair(0, null)).state, "missing");
   assert.equal(
-    startSealOf(sealRead(0, { generation: 4, dirty: false }), 10_000).state,
-    "current",
-  );
-  assert.equal(
-    startSealOf(sealRead(0, { generation: 4, dirty: true }), 10_000).state,
-    "dirty",
-  );
-  assert.equal(startSealOf(sealRead(0, null), 10_000).state, "missing");
-  assert.equal(
-    startSealOf(sealRead(0, null, { read: "failed", error: "busy" }), 10_000)
-      .reason,
+    state(
+      pair(0, CURRENT, CURRENT, { before: { read: "failed", error: "busy" } }),
+    ).reason,
     "read-failed:busy",
   );
-  const late = startSealOf(
-    sealRead(0, { generation: 4, dirty: false }, { finishedAt: 10_000 }),
-    10_000,
-  );
   assert.deepEqual(
-    [late.state, late.reason],
+    Object.values(
+      state(pair(0, CURRENT, CURRENT, { before: { finishedAt: 10_000 } })),
+    ).slice(0, 2),
     ["unknown", "read-not-before-query"],
   );
-  assert.equal(startSealOf(undefined, 10_000).reason, "not-read");
+  assert.equal(
+    state(pair(0, CURRENT, { generation: 5, dirty: false })).reason,
+    "changed-around-start",
+  );
+  assert.equal(
+    state(pair(0, CURRENT, { generation: 4, dirty: true })).reason,
+    "changed-around-start",
+  );
+  assert.equal(state(pair(0, CURRENT, null)).reason, "changed-around-start");
+  assert.equal(
+    state(pair(0, CURRENT, CURRENT, { after: { read: "failed", error: "x" } }))
+      .state,
+    "unknown",
+  );
+  assert.equal(
+    state(pair(0, CURRENT, CURRENT, { after: { startedAt: 9_999 } })).reason,
+    "read-after-start-not-after-query",
+  );
+  assert.equal(
+    state({ before: sealRead(0, CURRENT) }).reason,
+    "not-read-after-start",
+  );
+  assert.equal(state(undefined).reason, "not-read");
 });
 
 test("TR-9: 行の snapshot は開始時の封印で決め（current のときだけ U）、Native の begin からの snapshot は開示に残す。unknown は U に入れず別に数える", () => {
   const trace = editingTrace(4);
   const runs = pollRuns(trace.events, 9_000, 23_000, 1);
   const seals = {
-    0: sealRead(0, { generation: 4, dirty: false }),
-    1: sealRead(1, { generation: 4, dirty: true }),
-    2: sealRead(2, null, { read: "failed", error: "busy" }),
+    0: pair(0, CURRENT),
+    1: pair(1, { generation: 4, dirty: true }),
+    2: pair(2, CURRENT, CURRENT, { before: { read: "failed", error: "busy" } }),
     // 3: not read
   };
   const rows = rowsOf(trace, 4, runs, {
@@ -872,4 +927,168 @@ test("TR-9: 行の snapshot は開始時の封印で決め（current のとき�
     rows.map((row) => lapseKind(row, false)),
     [null, "i-b-seal", "i-b-seal", "i-b-seal"],
   );
+});
+
+test("レビュー P1-1: 閲覧中、子の無い親の窓に seed の無い場面の fetch と commit が入っても子にせず（X6 のまま、X10 にしない）、窓は次の移動で終わる", () => {
+  for (const withOutside of [false, true]) {
+    const trace = editingTrace(2, { 0: { child: false } });
+    if (withOutside) {
+      trace.observation.fetches.push({
+        seq: 60,
+        sceneId: OTHER,
+        seed: null,
+        refreshTrigger: null,
+        rawOnly: false,
+        queryGeneration: 9,
+        calledAt: 12_500,
+        resolvedAt: 12_560,
+        failed: false,
+        result: k64FetchResult({
+          timing: { tFetchMs: 12_500, tRawReadyMs: 12_540, tReturnMs: 12_559 },
+        }),
+      });
+      trace.observation.api.push({
+        ...k64Api("related_scenes_begin", 12_501, 12_510),
+        id: 900,
+      });
+      trace.observation.commits.push({
+        at: 12_561,
+        fetchSeq: 60,
+        loading: false,
+        display: "harbor",
+      });
+    }
+    // The moves of the browsing trace after query 0's cycle end.
+    const log = [
+      trace.log[0],
+      { op: "navigate", sceneId: OTHER, at: 12_400 },
+      { op: "navigate", sceneId: SCENE, at: 12_900 },
+      trace.log.at(-1),
+    ];
+    const runs = pollRuns(trace.events, 9_000, 18_000, 1);
+    const merged = mergeNativeRecords([{ dropped: 0, records: trace.records }]);
+    const rows = traceRows({
+      plan: plan("browsing", 1),
+      observation: trace.observation,
+      log,
+      native: merged,
+      runs,
+      a3Reads: trace.a3Reads,
+      startSeals: { 0: pair(0, CURRENT), 1: pair(1, CURRENT) },
+      d2aMode: "restricted",
+      ids: { revisions: { "rev-1": "rev-1" } },
+      expectedContribution: null,
+    });
+    const result = classifyFollowUp(rows[0], { context: "trace" });
+    assert.equal(rows[0].followUp.child, null, String(withOutside));
+    assert.equal(result.x.X6, "no-child");
+    assert.equal(result.x.X10, undefined, JSON.stringify(result.x));
+    assert.equal(
+      rows[0].followUp.parent.publishCount,
+      1,
+      "the other Scene's commit is not this generation's",
+    );
+  }
+});
+
+test("レビュー P3 (a): query の場面でない seed つきの fetch も Q の外に数える", () => {
+  const trace = editingTrace(1);
+  const counts = traceRequeries({
+    observation: {
+      ...trace.observation,
+      fetches: [
+        ...trace.observation.fetches,
+        {
+          seq: 70,
+          sceneId: OTHER,
+          seed: SEED,
+          refreshTrigger: null,
+          calledAt: 11_000,
+        },
+      ],
+    },
+    parentSeqs: [1],
+    querySceneId: SCENE,
+  }).counts;
+  assert.equal(counts["outside-q"], 1);
+  assert.equal(counts.unattributed, 0);
+});
+
+test("レビュー P2-1: 封印の読取は seal-read の event として流れに残り、密度の規則（commit と query の間に harness の操作を足さない）を破らない", () => {
+  const trace = editingTrace(2);
+  const log = [
+    ...trace.log.slice(0, 3),
+    { op: "seal-read", phase: "before", index: 1, at: 12_610 },
+    trace.log[3],
+  ];
+  const events = traceEvents({
+    plan: plan("editing", 1),
+    observation: trace.observation,
+    log,
+    parentSeqs: [1, 3],
+  });
+  assert.ok(events.some((row) => row.type === "seal-read"));
+  const commitAt = events.findIndex((row) => row.type === "autosave-commit");
+  const queryAt = events.findLastIndex(
+    (row) => row.type === "query" && row.trigger === "user-operation",
+  );
+  const sealAt = events.findIndex((row) => row.type === "seal-read");
+  assert.ok(commitAt < sealAt && sealAt < queryAt);
+  const runs = pollRuns(trace.events, 9_000, 18_000, 1);
+  const run = summarizeTraceRun({
+    plan: plan("editing", 1),
+    rows: rowsOf(trace, 2, runs),
+    events,
+    fixedGraphMode: "restricted",
+  });
+  assert.deepEqual(run.events.errors, []);
+});
+
+test("レビュー P2-2: stall か defects があれば、Q が 200 以上でも trace の status と summary は invalid（明示の欄）", () => {
+  const n = 200;
+  const trace = editingTrace(n);
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  // 201 planned (S2), 200 observed before a stall.
+  const longPlan = plan("editing", n);
+  const rows = rowsOf(trace, n, runs, { plan: longPlan });
+  const events = traceEvents({
+    plan: longPlan,
+    observation: trace.observation,
+    log: trace.log,
+    parentSeqs: rows.map((_, at) => 2 * at + 1),
+  });
+  const stalled = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+    stalled: {
+      seq: 600,
+      op: "confirm-autosave-commit",
+      reason: "no-autosave-commit",
+    },
+  });
+  assert.equal(stalled.status, "invalid");
+  assert.equal(stalled.summary.status, "invalid");
+  assert.match(stalled.summary.invalid.join("\n"), /trace-stalled/u);
+  assert.match(stalled.statusReasons.join("\n"), /the plan has 201/u);
+  // Without the stall and with the plan complete it is valid.
+  const complete = summarizeTraceRun({
+    plan: plan("editing", n - 1),
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+  });
+  assert.equal(complete.status, "valid");
+  assert.deepEqual(complete.statusReasons, []);
+});
+
+test("レビュー P3 (e): 親が結果を持たない query は throw せず、その query の defect として行に残す", () => {
+  const trace = editingTrace(2);
+  trace.observation.fetches.find((row) => row.seq === 3).result = null;
+  const runs = pollRuns(trace.events, 9_000, 18_000, 1);
+  const rows = rowsOf(trace, 2, runs, { plan: plan("editing", 1) });
+  assert.equal(rows[1].followUp, null);
+  assert.match(rows[1].rowError, /R7 record could not be built/u);
+  assert.equal(rows[0].followUp.issuedVia, "product-hook");
 });

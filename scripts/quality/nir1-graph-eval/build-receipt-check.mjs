@@ -32,6 +32,7 @@ export function checkCandidateBuildReceipts({
   productReceiptBytes,
   evalReceiptBytes,
   hashFile,
+  required = false,
 }) {
   const evaluation =
     evalReceiptBytes === null || evalReceiptBytes === undefined
@@ -39,7 +40,12 @@ export function checkCandidateBuildReceipts({
       : parse(evalReceiptBytes, "evaluation build");
   const evalHead = evaluation?.candidate?.resolvedHeadSha ?? null;
   const evalTree = evaluation?.candidate?.resolvedHeadTreeSha ?? null;
-  if (productReceiptBytes === null || productReceiptBytes === undefined)
+  if (productReceiptBytes === null || productReceiptBytes === undefined) {
+    // レビュー P3 (c): a frozen run (admitGraphCaseRun) needs the receipt.
+    if (required)
+      throw new Error(
+        "[precheck] a frozen run needs --product-receipt (the standard-build receipt of the candidate)",
+      );
     return {
       checked: false,
       reason: "no-product-receipt",
@@ -47,6 +53,7 @@ export function checkCandidateBuildReceipts({
       evalReceiptHeadMatchesCandidate:
         evaluation === null ? null : evalHead === candidate.commit,
     };
+  }
   const productReceipt = parse(productReceiptBytes, "standard-build");
   const build = assertBuildMatchesProductReceipt({
     root,
@@ -84,6 +91,7 @@ export function checkRunnerBuildReceipts({
   options,
   candidate,
   evalDir,
+  required = false,
 }) {
   const read = (file, label, required) => {
     try {
@@ -97,6 +105,7 @@ export function checkRunnerBuildReceipts({
   };
   return checkCandidateBuildReceipts({
     root,
+    required,
     candidate: { commit: candidate.commit, tree: candidate.tree },
     productReceiptBytes: options["product-receipt"]
       ? read(path.resolve(options["product-receipt"]), "standard-build", true)

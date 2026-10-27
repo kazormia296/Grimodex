@@ -220,3 +220,42 @@ test("TR-5: runner.mjs と k64-runner.mjs と trace-runner.mjs は起動の前�
     assert.match(source, /checks\.productBuild = /u, file);
   }
 });
+
+test("レビュー P3 (c): required（凍結の経路）では受領書が無ければ止まり、既定は従来どおり照合しない", () => {
+  const root = scratch();
+  const { evalReceiptBytes } = receipts();
+  assert.throws(
+    () =>
+      checkCandidateBuildReceipts({
+        root,
+        candidate: { commit: COMMIT, tree: TREE },
+        productReceiptBytes: null,
+        evalReceiptBytes,
+        required: true,
+      }),
+    /\[precheck\] a frozen run needs --product-receipt/u,
+  );
+  assert.equal(
+    checkCandidateBuildReceipts({
+      root,
+      candidate: { commit: COMMIT, tree: TREE },
+      productReceiptBytes: null,
+      evalReceiptBytes,
+    }).checked,
+    false,
+  );
+  const evalDir = path.join(root, ".artifacts/cp4/eval-build");
+  mkdirSync(evalDir, { recursive: true });
+  writeFileSync(path.join(evalDir, "eval-build.json"), evalReceiptBytes);
+  assert.throws(
+    () =>
+      checkRunnerBuildReceipts({
+        root,
+        options: {},
+        candidate: { commit: COMMIT, tree: TREE },
+        evalDir,
+        required: true,
+      }),
+    /\[precheck\] a frozen run/u,
+  );
+});

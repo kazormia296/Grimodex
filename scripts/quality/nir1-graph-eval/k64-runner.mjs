@@ -538,6 +538,7 @@ async function main() {
       options,
       candidate,
       evalDir,
+      required: Boolean(options.fixture),
     });
     const coldDb = path.join(ROOT, setup.coldDatabase.path);
     if (sha256(await readFile(coldDb)) !== setup.coldDatabase.sha256)

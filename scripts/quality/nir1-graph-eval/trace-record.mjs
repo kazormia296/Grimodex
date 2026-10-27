@@ -443,20 +443,37 @@ export const COUNTER_POLL_STOP_SOURCE = async () => {
 // ---- the Native begin records ----------------------------------------------
 
 /**
- * Merges `nir1GraphEvalSamples` reads taken during the trace (the log is not
- * cleared during it): one record per seq, the later read's state (a ticket
- * settles later), the largest `dropped`.
+ * Merges `nir1GraphEvalSamples` reads taken during the trace in read order
+ * (the log is cleared once before the trace, then only read): one record per
+ * seq, the later read's state (a ticket settles later). The Native log keeps
+ * 1,024 records and counts the ones it pushed out (`dropped`, cumulative since
+ * the clear), so `dropped` alone is not a loss (レビュー P2-4): a record is lost
+ * only when the merged seqs have a gap, or when the first read already counts
+ * dropped records (pushed out before any read). The seq is the Native's
+ * per-begin counter (`NEXT_SEQ`), consecutive for the registered owner.
  */
 export function mergeNativeRecords(reads) {
   const bySeq = new Map();
   let dropped = 0;
-  for (const read of reads) {
+  let frontLoss = false;
+  reads.forEach((read, at) => {
     dropped = Math.max(dropped, read?.dropped ?? 0);
     for (const record of read?.records ?? []) bySeq.set(record.seq, record);
-  }
+    if (at === 0 && (read?.dropped ?? 0) > 0) frontLoss = true;
+  });
+  const records = [...bySeq.values()].sort(
+    (left, right) => left.seq - right.seq,
+  );
+  const gaps = [];
+  for (let at = 1; at < records.length; at++)
+    if (records[at].seq !== records[at - 1].seq + 1)
+      gaps.push([records[at - 1].seq, records[at].seq]);
   return {
     dropped,
-    records: [...bySeq.values()].sort((left, right) => left.seq - right.seq),
+    records,
+    gaps,
+    frontLoss,
+    lost: frontLoss || gaps.length > 0,
   };
 }
 
@@ -473,7 +490,7 @@ const byCall = (left, right) => left.calledAt - right.calledAt;
 /**
  * The seeded fetches' begin calls, in call order, paired with the Native
  * records in seq order. Unaligned (no pairing at all) when the counts differ
- * or the log dropped records (a begin without a renderer call, e.g. another
+ * or the log lost records (mergeNativeRecords) (a begin without a renderer call, e.g. another
  * consumer, cannot be placed; the strict side).
  */
 export function alignSeededBegins({ observation, native }) {
@@ -486,8 +503,8 @@ export function alignSeededBegins({ observation, native }) {
   const recordOf = new Map();
   const indexOf = new Map();
   let reason = null;
-  if ((native?.dropped ?? 0) > 0)
-    reason = `the Native log dropped ${native.dropped} records`;
+  if (native?.lost === true)
+    reason = `the Native log lost records (gaps ${JSON.stringify(native.gaps ?? [])}, front loss ${native.frontLoss === true})`;
   else if (begins.length !== records.length)
     reason = `${begins.length} seeded begins, ${records.length} records`;
   if (reason === null)
@@ -515,30 +532,45 @@ export const START_SEAL_STATES = Object.freeze([
 ]);
 
 /**
- * The rule, fixed before any trace was observed (DR-CP4-TR-9): the B seal at
- * a counted query's start is `current` (the B row is not dirty), `dirty`,
- * `missing` (no B row), or `unknown` when the read failed (busy, timeout, no
- * table), was not taken, or did not finish before the parent fetch was called
- * (renderer clock on both sides). Only `current` puts the query in U; the
- * classifier counts every other state in rule 3 (i), and the receipt counts
- * `unknown` apart (「観測できなかった」).
+ * The rule, fixed before any trace was observed (DR-CP4-TR-9, レビュー P2-1):
+ * the B seal is read twice per counted query, `before` (after the operation
+ * that starts the query, before the product's query) and `after` (right after
+ * the parent fetch was observed, with the A3 record). The query's start seal
+ * is `missing` (no B row before) or `dirty` (dirty before) as read before;
+ * it is `current` only when both reads are current with the same generation;
+ * every other case is `unknown`: a read that failed (busy, timeout, no
+ * table) or was not taken, a `before` read that did not finish before the
+ * parent fetch was called, an `after` read that did not start after it
+ * (renderer clock on both sides), or a seal that changed between the reads.
+ * Only `current` puts the query in U; the classifier counts every other state
+ * in rule 3 (i), and the receipt counts `unknown` apart (「観測できなかった」).
  */
-export function startSealOf(record, parentCalledAt) {
-  if (!record) return { state: "unknown", reason: "not-read" };
-  if (record.read !== "ok")
-    return { state: "unknown", reason: `read-failed:${record.error}` };
+export function startSealOf(pair, parentCalledAt) {
+  const before = pair?.before;
+  const after = pair?.after;
+  if (!before) return { state: "unknown", reason: "not-read" };
+  if (before.read !== "ok")
+    return { state: "unknown", reason: `read-failed:${before.error}` };
   if (
-    !finite(record.finishedAt) ||
+    !finite(before.finishedAt) ||
     !finite(parentCalledAt) ||
-    !(record.finishedAt < parentCalledAt)
+    !(before.finishedAt < parentCalledAt)
   )
     return { state: "unknown", reason: "read-not-before-query" };
-  if (!record.b) return { state: "missing", reason: null };
-  return {
-    state: record.b.dirty ? "dirty" : "current",
-    reason: null,
-    generation: record.b.generation,
-  };
+  if (!before.b) return { state: "missing", reason: null };
+  if (before.b.dirty)
+    return { state: "dirty", reason: null, generation: before.b.generation };
+  if (!after) return { state: "unknown", reason: "not-read-after-start" };
+  if (after.read !== "ok")
+    return {
+      state: "unknown",
+      reason: `read-after-start-failed:${after.error}`,
+    };
+  if (!finite(after.startedAt) || !(after.startedAt >= parentCalledAt))
+    return { state: "unknown", reason: "read-after-start-not-after-query" };
+  if (!after.b || after.b.dirty || after.b.generation !== before.b.generation)
+    return { state: "unknown", reason: "changed-around-start" };
+  return { state: "current", reason: null, generation: before.b.generation };
 }
 
 /** The receipt's count of the start seal states (unknown apart). */
@@ -679,12 +711,32 @@ export function traceQueryRow({
     nextParentSeq === null
       ? null
       : (all.find((row) => row.seq === nextParentSeq) ?? null);
-  const windowEnd = nextParent?.calledAt ?? Infinity;
+  // レビュー P1-1: the window ends at the next parent's call or at the first
+  // navigation after this query, whichever is earlier, and holds only the
+  // query Scene's fetches, their API rows and the commits that showed them
+  // (a Scene without a pin is outside Q and never this query's child).
+  const windowEnd = Math.min(
+    nextParent?.calledAt ?? Infinity,
+    finite(logEntry.windowEndAt) ? logEntry.windowEndAt : Infinity,
+  );
   const inWindow = (at) => at >= parent.calledAt && at < windowEnd;
-  const fetches = all.filter((row) => inWindow(row.calledAt));
-  const api = (observation.api ?? []).filter((row) => inWindow(row.calledAt));
+  const sameScene = (fetch) => fetch?.sceneId === parent.sceneId;
+  const fetches = all.filter((row) => inWindow(row.calledAt) && sameScene(row));
+  const api = (observation.api ?? []).filter(
+    (row) => inWindow(row.calledAt) && sameScene(ownerOf(all, row)),
+  );
+  const generationScene = (commit) =>
+    commit.fetchSeq === null || commit.fetchSeq === -1
+      ? ownerOf(all, { calledAt: commit.at })
+      : all.find((row) => row.seq === commit.fetchSeq);
   const child = fetches[1] ?? null;
-  const observedUntil = Math.min(windowEnd, observation.observedUntil);
+  // The mixing is observed until the next parent of the Scene: after a move
+  // the display shows another Scene, so no commit of this Scene's
+  // generations can follow (DR-CP4-TR-13).
+  const observedUntil = Math.min(
+    nextParent?.calledAt ?? Infinity,
+    observation.observedUntil,
+  );
   const window = {
     endReason: logEntry.cycleEnd?.reason ?? null,
     mountedAt: parent.calledAt,
@@ -696,7 +748,9 @@ export function traceQueryRow({
       observedUntil,
     }),
     fetches,
-    commits: (observation.commits ?? []).filter((row) => inWindow(row.at)),
+    commits: (observation.commits ?? []).filter(
+      (row) => inWindow(row.at) && sameScene(generationScene(row)),
+    ),
     notices: (observation.notices ?? []).filter((row) => inWindow(row.at)),
     api,
   };
@@ -738,20 +792,34 @@ export function traceQueryRow({
     beginNs: parentRecord.tBeginNs,
     endNs: endRecord.tReturnedNs,
   });
-  const row = k64GraphSampleRow({
-    variantKey: plan.traceId,
-    phase: "trace",
-    repeat: index,
-    d2aMode,
-    observation: window,
-    nativeRecords,
-    a3,
-    r1: null,
-    counters: boundary
-      ? { before: boundary.before, atEnd: boundary.after }
-      : { before: {}, atEnd: {} },
-    expectedContribution,
-  });
+  let row;
+  try {
+    row = k64GraphSampleRow({
+      variantKey: plan.traceId,
+      phase: "trace",
+      repeat: index,
+      d2aMode,
+      observation: window,
+      nativeRecords,
+      a3,
+      r1: null,
+      counters: boundary
+        ? { before: boundary.before, atEnd: boundary.after }
+        : { before: {}, atEnd: {} },
+      expectedContribution,
+    });
+  } catch (error) {
+    // レビュー P3 (e): a parent that returned no result (or any record the
+    // producer refuses) is this query's defect; the receipt is kept.
+    if (String(error?.message).startsWith("[precheck] R5")) throw error;
+    return defectRow({
+      queryId,
+      d2aMode,
+      materials,
+      parent,
+      error: `the R7 record could not be built: ${error?.message ?? error}`,
+    });
+  }
   const records = native.records;
   const from = records.indexOf(parentRecord);
   const to = childRecord ? records.indexOf(childRecord) : from;
@@ -790,10 +858,21 @@ export function traceQueryRow({
     snapshotNative: row.snapshot,
     startSeal: {
       ...seal,
-      readStartedAt: startSeal?.startedAt ?? null,
-      readFinishedAt: startSeal?.finishedAt ?? null,
-      readDurationMs: startSeal?.durationMs ?? null,
-      chronicle: startSeal?.chronicle ?? null,
+      reads: Object.fromEntries(
+        ["before", "after"].map((phase) => [
+          phase,
+          startSeal?.[phase]
+            ? {
+                read: startSeal[phase].read,
+                b: startSeal[phase].b ?? null,
+                chronicle: startSeal[phase].chronicle ?? null,
+                startedAt: startSeal[phase].startedAt ?? null,
+                finishedAt: startSeal[phase].finishedAt ?? null,
+                durationMs: startSeal[phase].durationMs ?? null,
+              }
+            : null,
+        ]),
+      ),
     },
     queryId,
     trigger: "user-operation",
@@ -827,11 +906,15 @@ export function traceRows({
   });
   const counted = log.filter((row) => Number.isInteger(row.parentSeq));
   const alignment = alignSeededBegins({ observation, native });
+  // レビュー P1-1: the first move after each counted query ends its window.
+  const moveAfter = (entry) =>
+    log.slice(log.indexOf(entry) + 1).find((row) => row.op === "navigate")
+      ?.at ?? null;
   return counted.map((entry, at) =>
     traceQueryRow({
       plan,
       index: entry.index ?? at,
-      logEntry: entry,
+      logEntry: { ...entry, windowEndAt: moveAfter(entry) },
       nextParentSeq: counted[at + 1]?.parentSeq ?? null,
       observation,
       alignment,
@@ -858,13 +941,14 @@ function irRetried(result) {
 }
 
 /**
- * Every fetch that is not a counted parent: `outside-q` (no seed), or a
+ * Every fetch that is not a counted parent: `outside-q` (no seed, or not the
+ * query Scene when `querySceneId` is given), or a
  * re-query by what started it (K6/2 step 7: counted apart, never in a
  * denominator): the hook's `graph-ready` mark, an `index-ready` notice since
  * the previous fetch of the Scene, the previous fetch's IR-timeout retry, else
  * unattributed.
  */
-export function traceRequeries({ observation, parentSeqs }) {
+export function traceRequeries({ observation, parentSeqs, querySceneId }) {
   const parents = new Set(parentSeqs);
   const fetches = [...(observation.fetches ?? [])].sort(byCall);
   const counts = {
@@ -878,7 +962,12 @@ export function traceRequeries({ observation, parentSeqs }) {
   fetches.forEach((fetch, at) => {
     if (parents.has(fetch.seq)) return;
     let kind;
-    if (typeof fetch.seed !== "string") kind = "outside-q";
+    // レビュー P3 (a): outside Q is no seed or another Scene than the query's.
+    if (
+      typeof fetch.seed !== "string" ||
+      (querySceneId !== undefined && fetch.sceneId !== querySceneId)
+    )
+      kind = "outside-q";
     else if (fetch.refreshTrigger === "graph-ready") kind = "graph-ready";
     else {
       const previous = fetches
@@ -910,7 +999,13 @@ export function traceRequeries({ observation, parentSeqs }) {
  * and every fetch (`user-operation` for a counted parent, `outside-q` without
  * a seed, else `<kind>-requery`), in renderer time order.
  */
-export function traceEvents({ plan, observation, log, parentSeqs }) {
+export function traceEvents({
+  plan,
+  observation,
+  log,
+  parentSeqs,
+  querySceneId = plan.querySceneId,
+}) {
   const events = [];
   for (const entry of log) {
     if (entry.op === "edit") {
@@ -923,6 +1018,11 @@ export function traceEvents({ plan, observation, log, parentSeqs }) {
       });
     } else if (entry.op === "navigate")
       events.push({ type: "navigate", sceneId: entry.sceneId, at: entry.at });
+    else if (entry.op === "seal-read")
+      // レビュー P2-1: a read-only record read (DR-CP4-TR-13), kept in the
+      // stream; validateTraceEvents treats it as neither an operation nor a
+      // harness wait.
+      events.push({ type: "seal-read", phase: entry.phase, at: entry.at });
     else if (typeof entry.op === "string" && entry.op.startsWith("harness-"))
       events.push({ type: entry.op, at: entry.at });
   }
@@ -930,7 +1030,7 @@ export function traceEvents({ plan, observation, log, parentSeqs }) {
   for (const commit of [...(observation.bodyCommits ?? [])].sort(
     (left, right) => left.at - right.at,
   )) {
-    if (commit.sceneId !== plan.querySceneId) continue;
+    if (commit.sceneId !== querySceneId) continue;
     events.push({
       type: "autosave-commit",
       sceneId: commit.sceneId,
@@ -941,10 +1041,9 @@ export function traceEvents({ plan, observation, log, parentSeqs }) {
     version = commit.contentVersion;
   }
   const requeries = new Map(
-    traceRequeries({ observation, parentSeqs }).rows.map((row) => [
-      row.seq,
-      row.kind,
-    ]),
+    traceRequeries({ observation, parentSeqs, querySceneId }).rows.map(
+      (row) => [row.seq, row.kind],
+    ),
   );
   const parents = new Set(parentSeqs);
   for (const fetch of observation.fetches ?? []) {
@@ -982,6 +1081,7 @@ export function summarizeTraceRun({
   rows,
   events,
   fixedGraphMode,
+  stalled = null,
   ...rest
 }) {
   const check = validateTraceEvents(plan.kind, events);
@@ -1001,7 +1101,30 @@ export function summarizeTraceRun({
       ? { candidate: rest.candidate, candidateHead: rest.candidateHead }
       : {}),
   });
-  return { events: check, defects, summary };
+  // レビュー P2-2: a stalled attempt or a defective trace is never valid,
+  // whatever its Q (a run cut at 200 of 201 planned queries must not pass).
+  const statusReasons = [
+    ...(stalled ? [`trace-stalled:${stalled.reason}`] : []),
+    ...defects.map((row) => `trace-defect:${row}`),
+  ];
+  const status =
+    statusReasons.length === 0 && summary.status === "valid"
+      ? "valid"
+      : "invalid";
+  return {
+    status,
+    statusReasons,
+    events: check,
+    defects,
+    summary:
+      statusReasons.length === 0
+        ? summary
+        : {
+            ...summary,
+            status: "invalid",
+            invalid: [...(summary.invalid ?? []), ...statusReasons],
+          },
+  };
 }
 
 /** A trace receipt's identity block of the plan. */

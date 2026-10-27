@@ -25,6 +25,25 @@ import { getSceneVersion } from "@/features/tree/api";
 import { subscribeSceneBodyCommits } from "@/lib/sceneBodyCommitRegistry";
 import type { FetchTimingRow } from "./fetchRelatedScenes.timing";
 import { displayKey, summarize } from "./cp4-k64-probe";
+import {
+  cycleEndOf,
+  publishedOf,
+  selectCountedFetch,
+  type TraceFetchRow,
+} from "./trace-cycle";
+
+/** The pure rules' view of the timing shim's rows (trace-cycle.ts). */
+function cycleRows(): TraceFetchRow[] {
+  return fetchRows.map((row) => ({
+    seq: row.seq,
+    sceneId: row.sceneId,
+    refreshTrigger: row.refreshTrigger,
+    calledAt: row.calledAt,
+    resolvedAt: row.resolvedAt,
+    status: row.value?.status ?? null,
+    tRawReadyMs: row.value?.timing.tRawReadyMs ?? null,
+  }));
+}
 
 interface ApiRow {
   cmd: string;
@@ -253,15 +272,14 @@ async function awaitCounted(input: {
 }) {
   const started = performance.now();
   for (;;) {
-    const row = fetchRows.find(
-      (fetch) =>
-        fetch.seq > input.afterSeq &&
-        fetch.sceneId === input.sceneId &&
-        fetch.calledAt >= input.sinceAt &&
-        fetch.refreshTrigger === null,
-    );
+    const row = selectCountedFetch(cycleRows(), input);
     if (row)
-      return { ok: true, seq: row.seq, calledAt: row.calledAt, seed: row.seed };
+      return {
+        ok: true,
+        seq: row.seq,
+        calledAt: row.calledAt,
+        seed: fetchRows.find((fetch) => fetch.seq === row.seq)?.seed ?? null,
+      };
     if (performance.now() - started >= input.limitMs)
       return { ok: false, stalled: "no-product-query" };
     await sleep(2);
@@ -279,45 +297,23 @@ async function awaitCycleEnd(input: {
   limitMs: number;
 }) {
   const started = performance.now();
-  let reason = "harness-limit";
   for (;;) {
     await sleep(2);
     const now = performance.now();
-    const parent = fetchRows.find((row) => row.seq === input.parentSeq);
-    if (!parent || parent.resolvedAt === null) {
-      if (now - started >= input.limitMs) break;
-      continue;
-    }
-    if (parent.value?.status !== "completed") {
-      reason = "parent-ended";
-      break;
-    }
-    const child = fetchRows.find(
-      (row) =>
-        row.seq > input.parentSeq && row.refreshTrigger === "graph-ready",
-    );
-    if (child && child.resolvedAt !== null) {
-      if (child.value?.status !== "completed") {
-        reason = "child-ended";
-        break;
-      }
-      if (commits.some((commit) => commit.fetchSeq === child.seq)) {
-        reason = "child-published";
-        break;
-      }
-    }
-    const rawReady = parent.value.timing.tRawReadyMs;
-    if (rawReady !== null && now >= rawReady + input.tShowMs) {
-      reason = "t-show-elapsed";
-      break;
-    }
-    if (now - started >= input.limitMs) break;
+    const reason = cycleEndOf(cycleRows(), commits, {
+      parentSeq: input.parentSeq,
+      tShowMs: input.tShowMs,
+      now,
+      elapsedMs: now - started,
+      limitMs: input.limitMs,
+    });
+    if (reason !== null)
+      return {
+        reason,
+        at: performance.now(),
+        lastSeq: fetchRows.at(-1)?.seq ?? 0,
+      };
   }
-  return {
-    reason,
-    at: performance.now(),
-    lastSeq: fetchRows.at(-1)?.seq ?? 0,
-  };
 }
 
 /** The Scene the tree action selects (S2 browsing: 製品の tree の操作). */
@@ -334,22 +330,12 @@ async function awaitPublished(input: {
 }) {
   const started = performance.now();
   for (;;) {
-    const row = fetchRows.find(
-      (fetch) =>
-        fetch.sceneId === input.sceneId && fetch.calledAt >= input.sinceAt,
-    );
-    if (row && row.resolvedAt !== null) {
-      const shown = commits.find((commit) => commit.fetchSeq === row.seq);
-      if (shown)
-        return { ok: true, seq: row.seq, at: shown.at, published: true };
-      if (row.value?.status !== "completed")
-        return {
-          ok: true,
-          seq: row.seq,
-          at: performance.now(),
-          published: false,
-        };
-    }
+    const shown = publishedOf(cycleRows(), commits, {
+      sceneId: input.sceneId,
+      sinceAt: input.sinceAt,
+      now: performance.now(),
+    });
+    if (shown) return { ok: true, ...shown };
     if (performance.now() - started >= input.limitMs)
       return { ok: false, stalled: "no-query-published" };
     await sleep(2);

@@ -80,7 +80,7 @@ test("TR-9: busy（rollback journal で書込みが排他の lock を持つ）�
   const missing = readStartSeal(path.join(path.dirname(file), "none.db"), "p1");
   assert.equal(missing.read, "failed");
   assert.equal(
-    startSealOf({ ...busy, startedAt: 1, finishedAt: 2 }, 10).state,
+    startSealOf({ before: { ...busy, startedAt: 1, finishedAt: 2 } }, 10).state,
     "unknown",
   );
 });
