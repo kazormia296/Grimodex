@@ -274,11 +274,21 @@ test("TR-2: Main の poller は評価の入口の module を読み込んで inst
   assert.equal((await poller.drain()).polls, 3);
 });
 
-test("TR-1: admission は dev の予告だけを通し、凍結した trace は S6 の配線まで [precheck] で止める", () => {
+test("TR-1／O-1 (6): admission は dev の予告を通し、凍結した trace は admitGraphCaseRun の admission が無ければ [precheck] で止める", () => {
   assert.ok(DEV_PREVIEW_PURPOSES.includes(TRACE_DEV_PREVIEW_PURPOSE));
   assert.throws(
     () => admitTraceRun({ root: "/r", fixture: { kind: "frozen" } }),
-    /\[precheck\].*S6/u,
+    /\[precheck\].*admitGraphCaseRun/u,
+  );
+  // dev の予告の admission は凍結の trace に使えない。
+  assert.throws(
+    () =>
+      admitTraceRun({
+        root: "/r",
+        fixture: { kind: "frozen" },
+        admission: { kind: "dev-preview", purpose: TRACE_DEV_PREVIEW_PURPOSE },
+      }),
+    /\[precheck\]/u,
   );
   assert.throws(
     () => admitTraceRun({ root: "/r", fixture: {} }),
