@@ -607,9 +607,14 @@ export function g01NegativeSampleOf({
     frameReached: target
       ? g01FrameReached({ row, ids, target, control, inputsDigest })
       : null,
-    returnedSceneIds: (row.finalSceneIds ?? []).map(
-      (sceneId) => inverse.get(sceneId) ?? `unmapped:${sceneId}`,
-    ),
+    // Review P2-a: the Scenes of the decided answer (the parent's when the
+    // parent is decided, else the follow-up child's).
+    returnedSceneIds: (answerKindOf({
+      graphOutcome: graphOutcomeOf(row.graph?.outcome),
+    }) !== "neutral"
+      ? (row.finalSceneIds ?? [])
+      : (row.followUp?.child?.finalSceneIds ?? row.finalSceneIds ?? [])
+    ).map((sceneId) => inverse.get(sceneId) ?? `unmapped:${sceneId}`),
     ...(retry ? { retry } : {}),
   };
 }

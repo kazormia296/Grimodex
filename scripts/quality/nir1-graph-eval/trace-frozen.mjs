@@ -29,6 +29,7 @@ import {
 import {
   buildRunHead,
   claimFrozenAttempt,
+  frozenAttemptLedger,
   readBoundFile,
   readSpP4Gate,
   readTraceFileHeads,
@@ -383,7 +384,7 @@ export async function prepareFrozenTrace({
         cwd: root,
         encoding: "utf8",
       }).trim(),
-    claimAttempt = (input) => claimFrozenAttempt(input),
+    claimAttempt = (input, ledger) => claimFrozenAttempt({ ...input, ledger }),
     now = () => new Date(),
   } = deps;
   // The K6/4 freeze head first (cheap), before any other read.
@@ -436,16 +437,30 @@ export async function prepareFrozenTrace({
   );
   // Review P3 (e) / P2-c: one ledger claim per frozen trace attempt, keyed
   // by the trace file's identity and the candidate (never the run name).
-  claimAttempt({
-    kind: "trace",
-    key: traceAttemptKey({
-      trace: traces.find((row) => row.kind === kind),
-      candidateCommit: admission.candidateHead,
+  const claimed = claimAttempt(
+    {
+      kind: "trace",
+      key: traceAttemptKey({
+        trace: traces.find((row) => row.kind === kind),
+        candidateCommit: admission.candidateHead,
+      }),
+    },
+    frozenAttemptLedger({
+      root,
+      candidate: {
+        commit: admission.candidateHead,
+        tree: readTree(admission.candidateHead),
+      },
+      s4Commit: admission.head.observationPrep.commit,
+      runName: options.run,
+      startedAtUtc: now().toISOString(),
+      attempt: Number(options.attempt ?? "1"),
     }),
-  });
+  );
   const written = await writeRunHead({ runDir, head });
   const base = {
     admission,
+    ledger: claimed ?? null,
     head,
     headSha256: written.sha256,
     kind,

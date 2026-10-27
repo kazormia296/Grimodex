@@ -27,6 +27,7 @@ import {
   spP4AttemptKey,
   traceAttemptKey,
   claimFrozenAttempt,
+  frozenAttemptLedger,
   explainSpP4Instability,
   spP4IrDisclosure,
   spP4AttemptOutcome,
@@ -1133,4 +1134,66 @@ test("レビュー P2-c: 台帳の key は試行の identity（観測前の comm
     claimFrozenAttempt({ kind: "sp-p4", key: "k", ledger: (input) => input }),
     { kind: "sp-p4", key: "k" },
   );
+});
+
+test("DR-CP4-O-16: 台帳（A の #754）は同じ identity の SP-P4 の 2 回目を拒み、trace の試行 n は n − 1 回の記録の後だけ", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "s5b-ledger-"));
+  const candidate = { commit: C("b"), tree: C("t") };
+  const ledger = (runName, attempt = 1) =>
+    frozenAttemptLedger({
+      root,
+      candidate,
+      s4Commit: C("5"),
+      runName,
+      startedAtUtc: "2026-10-28T00:00:00.000Z",
+      attempt,
+    });
+  const spKey = spP4AttemptKey({ prepCommit: C("5"), candidateCommit: C("b") });
+  const first = claimFrozenAttempt({
+    kind: "sp-p4",
+    key: spKey,
+    ledger: ledger("sp-1"),
+  });
+  assert.match(first.file, /attempts\/sp-1\.json$/u);
+  assert.deepEqual(first.priorAttempts, []);
+  assert.throws(
+    () =>
+      claimFrozenAttempt({ kind: "sp-p4", key: spKey, ledger: ledger("sp-2") }),
+    /\[precheck\].*1 earlier attempts are recorded \(expected 0\)/u,
+  );
+  // 別の候補の SP-P4 は別の identity。
+  const other = spP4AttemptKey({ prepCommit: C("5"), candidateCommit: C("c") });
+  assert.throws(
+    () =>
+      claimFrozenAttempt({
+        kind: "sp-p4",
+        key: other,
+        ledger: frozenAttemptLedger({
+          root,
+          candidate: { commit: C("c"), tree: C("t") },
+          s4Commit: C("5"),
+          runName: "sp-1",
+          startedAtUtc: "t",
+        }),
+      }),
+    /already attempted/u,
+  );
+  const trace = {
+    path: "evals/nir1-graph/trace-editing.v1.json",
+    commit: C("a"),
+    sha256: H("1"),
+  };
+  const key = traceAttemptKey({ trace, candidateCommit: C("b") });
+  assert.throws(
+    () => claimFrozenAttempt({ kind: "trace", key, ledger: ledger("tr-2", 2) }),
+    /0 earlier attempts are recorded \(expected 1\)/u,
+  );
+  claimFrozenAttempt({ kind: "trace", key, ledger: ledger("tr-1", 1) });
+  const second = claimFrozenAttempt({
+    kind: "trace",
+    key,
+    ledger: ledger("tr-2", 2),
+  });
+  assert.equal(second.priorAttempts.length, 1);
+  assert.equal(second.priorAttempts[0].runName, "tr-1");
 });

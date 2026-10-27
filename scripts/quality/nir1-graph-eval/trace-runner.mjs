@@ -55,6 +55,7 @@ import { loadDevFixture } from "./dev-fixture.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import { candidateBlock, devExpectedContribution } from "./k64-runner.mjs";
 import { DEFAULT_ADDON, ROOT, bundleObserver } from "./launcher.mjs";
+import { finishAttempt } from "./frozen-k64-admission.mjs";
 import {
   outsideQReceiptCountByReason,
   readRunHead,
@@ -905,6 +906,9 @@ async function main() {
     return evidence;
   };
   let partial = null;
+  // DR-CP4-O-16: the frozen attempt's ledger row (A's ledger), closed below.
+  let ledgerFile = null;
+  let ledgerStatus = "stopped";
   try {
     const setupPath = path.resolve(options.setup);
     let setupRaw;
@@ -940,6 +944,7 @@ async function main() {
       });
       head = prepared.head;
       headSha256 = prepared.headSha256;
+      ledgerFile = prepared.ledger?.file ?? null;
       // S2 setupFailure: (b) unmeasured, HOLD, no launch (review P3).
       const started = await startFrozenTrace({
         runDir,
@@ -950,6 +955,7 @@ async function main() {
       });
       receiptWritten = started.receipt !== null;
       if (started.receipt) {
+        ledgerStatus = "unmeasured";
         process.stdout.write(
           `${JSON.stringify({ run: options.run, status: started.receipt.status, cp4Availability: started.receipt.cp4Availability, setupFailure: started.receipt.setupFailure.blocked })}\n`,
         );
@@ -1362,6 +1368,7 @@ async function main() {
       "head.json",
     ]);
     receiptWritten = true;
+    ledgerStatus = result.stalled ? "stalled" : "completed";
     if (result.stalled || report.problems.length > 0) process.exitCode = 1;
     process.stdout.write(
       `${JSON.stringify(
@@ -1408,6 +1415,7 @@ async function main() {
         report.problems.push(`stop: ${error?.stack ?? error}`),
       );
     await server?.close();
+    if (ledgerFile) finishAttempt({ file: ledgerFile, status: ledgerStatus });
   }
   if (report.problems.length > 0) process.exitCode = 1;
   await writeFile(

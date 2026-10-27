@@ -255,7 +255,14 @@ export function admitFormalK64Run(input, deps = {}) {
 /** P2-6: the attempt ledger (one file per run name, never overwritten). */
 export const ATTEMPTS_DIR = ".artifacts/cp4/attempts";
 export const ATTEMPT_SCHEMA = "nir1-cp4-attempt/1";
-export const RUN_KINDS = Object.freeze(["gold", "parity"]);
+// S5-B (DR-CP4-O-16): the diagnostics' attempts in the same ledger.
+export const RUN_KINDS = Object.freeze([
+  "gold",
+  "parity",
+  "negative",
+  "sp-p4",
+  "trace",
+]);
 
 function attemptsDir(root) {
   return path.join(root, ATTEMPTS_DIR);

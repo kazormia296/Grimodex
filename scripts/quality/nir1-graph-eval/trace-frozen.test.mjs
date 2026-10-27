@@ -493,6 +493,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
       "tree",
       "facts",
       "trace-heads",
+      "tree",
       "claim",
       "sp-p4",
       "plan",
@@ -512,9 +513,9 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
   assert.equal(prepared.identity.sha256, H("1"));
   assert.equal(prepared.runtime.ids.querySceneId, "q-rt");
   assert.equal(prepared.declaration.sceneId, "g02-query");
-  assert.deepEqual(calls[6], ["sp-p4", C("b")]);
+  assert.deepEqual(calls[7], ["sp-p4", C("b")]);
   // レビュー P2-c: 台帳の key は run 名でなく trace の file と候補の identity。
-  assert.deepEqual(calls[5], [
+  assert.deepEqual(calls[6], [
     "claim",
     "trace",
     `trace:evals/nir1-graph/trace-editing.v1.json:${C("a")}:${H("1")}:${C("b")}`,
@@ -765,28 +766,50 @@ test("レビュー P2-2: trace の setup は SP-P4 の分岐・R5 の照合の�
   );
 });
 
-test("レビュー P3 (e): 凍結の trace は試行の台帳（A の #754）が繋がるまで始めない", async () => {
-  const run = tempDir();
-  const { deps } = fakeDeps({ claimAttempt: undefined });
-  delete deps.claimAttempt;
-  await assert.rejects(
-    prepareFrozenTrace({
-      root: run,
+test("DR-CP4-O-16: 凍結の trace は A の台帳に試行を書き、同じ identity の試行 1 を別の run 名でやり直せない（試行 2 は 1 の後だけ）", async () => {
+  const root = tempDir();
+  const options = {
+    "trace-kind": "editing",
+    "prep-commit": C("5"),
+    "k62-commit": C("6"),
+    "k64-commit": C("4"),
+    "sp-p4-receipt": "x.json",
+  };
+  const runWith = async (runName, attempt) => {
+    const run = tempDir();
+    const { deps } = fakeDeps();
+    delete deps.claimAttempt;
+    return prepareFrozenTrace({
+      root,
       runDir: run,
       options: {
+        ...options,
+        run: runName,
+        attempt: String(attempt),
         setup: writeReceipt(run, setupReceipt()),
-        "trace-kind": "editing",
-        "prep-commit": C("5"),
-        "k62-commit": C("6"),
-        "k64-commit": C("4"),
-        "sp-p4-receipt": "x.json",
-        attempt: "1",
       },
       inputs,
       deps,
-    }),
-    /\[precheck\].*ledger/u,
+    });
+  };
+  const first = await runWith("trace-a", 1);
+  assert.match(first.ledger.file, /attempts\/trace-a\.json$/u);
+  const written = JSON.parse(readFileSync(first.ledger.file, "utf8"));
+  assert.deepEqual(
+    [
+      written.runKind,
+      written.attempt,
+      written.s4Commit,
+      written.candidate.commit,
+    ],
+    ["trace", 1, C("5"), C("b")],
   );
+  await assert.rejects(
+    runWith("trace-b", 1),
+    /\[precheck\].*1 earlier attempts are recorded \(expected 0\)/u,
+  );
+  // 同じ run 名は台帳が拒む（wx）。
+  await assert.rejects(runWith("trace-a", 2), /\[precheck\]/u);
 });
 
 test("レビュー P3: 試行の上限は trace の file の stall.attemptLimit（2）で、3 回目は前の 2 回が取り直しでも始めない", async () => {

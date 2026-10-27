@@ -29,6 +29,8 @@ import { ONE_SHOT_RECEIPT_LABEL } from "./frozen-k64-plan.mjs";
 import {
   BLOCKED_RECORD_SCHEMA,
   K64_DISCLOSURE,
+  graphArmGated,
+  runKindVariantKeys,
   measureVariant,
   parseArgs,
   readSetups,
@@ -993,6 +995,9 @@ test("再レビュー P3: 正式の run は --variant と --dev-g01-fallback を
     "k",
     "--product-receipt",
     "pr.json",
+    // S5-B (DR-CP4-O-16): a formal Graph-arm run names ④'s SP-P4 receipt.
+    "--sp-p4-receipt",
+    "sp.json",
   ];
   assert.equal(parseArgs(formal)["run-kind"], "gold");
   assert.throws(
@@ -1111,5 +1116,145 @@ test("再レビュー P3（P1-1 の runFrozenK64 の層）: setup が blocked �
     rmSync(runDir, { recursive: true, force: true });
     for (const dir of created.reverse())
       if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+  }
+});
+
+// ---- S5-B の統合（DR-CP4-O-16）-------------------------------------------
+
+test("S5-B 統合: Graph を要求する run の種類（gold、negative）は ④ の SP-P4 の gate の後だけ、parity は除外。13 variant のどれを測るかは run の種類で決まる", () => {
+  const prep = {
+    d10: {
+      parity: {
+        variants: PLANS.map((row) => row.variantKey).filter(
+          (key) => !key.startsWith("G-01/"),
+        ),
+        unrestrictedRunsPerVariant: 1,
+      },
+    },
+  };
+  assert.equal(PLANS.length, 13);
+  const all = PLANS.map((row) => row.variantKey);
+  const pick = (runKind) => {
+    const keys = runKindVariantKeys({ runKind, prep, dev: false });
+    return all.filter((key) => keys === null || keys.has(key));
+  };
+  assert.deepEqual(pick("gold"), all);
+  assert.deepEqual(pick("negative"), ["G-01/v1"]);
+  assert.deepEqual(
+    pick("parity"),
+    all.filter((key) => key !== "G-01/v1"),
+  );
+  assert.equal(graphArmGated("gold"), true);
+  assert.equal(graphArmGated("negative"), true);
+  assert.equal(graphArmGated("parity"), false);
+  const formal = [
+    "--run",
+    "r",
+    "--setups",
+    "s.json",
+    "--ja-model",
+    "j",
+    "--en-model",
+    "e",
+    "--candidate",
+    "c",
+    "--prep-commit",
+    "p",
+    "--k62-commit",
+    "k",
+    "--k64-commit",
+    "k",
+    "--product-receipt",
+    "pr.json",
+  ];
+  assert.throws(() => parseArgs(formal), /--sp-p4-receipt is required/u);
+  assert.throws(
+    () =>
+      parseArgs([...formal, "--run-kind", "negative", "--sp-p4-receipt", "s"]),
+    /--negative K24-G01-N2\|N3\|N4 is required/u,
+  );
+  assert.equal(
+    parseArgs([...formal, "--run-kind", "parity"])["run-kind"],
+    "parity",
+  );
+  assert.equal(
+    parseArgs([
+      ...formal,
+      "--run-kind",
+      "negative",
+      "--negative",
+      "K24-G01-N3",
+      "--sp-p4-receipt",
+      "s",
+    ]).negative,
+    "K24-G01-N3",
+  );
+  // 診断が通っていなければ Graph arm は始まらない: runFrozenK64 は gate を
+  // 試行の台帳と測定の前に呼ぶ（gold／negative）。
+  const source = readFileSync(
+    path.join(REPO_ROOT, "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs"),
+    "utf8",
+  );
+  const body = source.slice(
+    source.indexOf("export async function runFrozenK64"),
+  );
+  const gate = body.indexOf("readSpP4Gate({");
+  assert.ok(gate > 0);
+  assert.ok(gate < body.indexOf("startAttempt({"));
+  assert.ok(gate < body.indexOf("measureVariant(ctx)"));
+  assert.ok(body.indexOf("selectParity({") < body.indexOf("startAttempt({"));
+});
+
+test("S5-B 統合: negative の run は宣言の前と後に B の段を呼び、後の段の開き直した Main で測り、graph の各 sample を B の聞き直しで取る", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-01/v1",
+    spec: { declaration: { sceneId: "added-logical" } },
+    metadata: steadyState,
+    world: (base) =>
+      (world = fakeProduct({ dir: base, snapshotUsable: () => true })),
+  });
+  const calls = [];
+  let asked = 0;
+  ctx.negative = {
+    beforeDeclaration: async ({ proc }) => {
+      calls.push(["before", world.events.length, proc.session !== null]);
+      world.events.push("negative:before");
+      return null;
+    },
+    afterDeclaration: async ({ relaunch, stop, proc }) => {
+      world.events.push("negative:after");
+      await stop(proc.session);
+      const session = await relaunch("measure-reopen-0");
+      calls.push(["after", session.bodyNonce]);
+      return session;
+    },
+    askGraph: async (take) => {
+      asked += 1;
+      return take();
+    },
+  };
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.samples.length, 70);
+    const at = (name) => world.events.indexOf(name);
+    assert.ok(at("openWorkspace") < at("negative:before"));
+    assert.ok(at("negative:before") < at("declare"));
+    assert.ok(at("declare") < at("negative:after"));
+    assert.ok(at("negative:after") < at("buildRaw"));
+    assert.ok(at("negative:after") < at("query:graph"));
+    // The reopened Main opens the same workspace, then measures.
+    assert.equal(world.launches(), 2);
+    assert.equal(
+      world.events.filter((row) => row === "openWorkspace").length,
+      2,
+    );
+    assert.equal(typeof calls[1][1], "string");
+    // Every Graph-arm slot (warm-up 5 + measured 30) goes through askGraph.
+    assert.equal(asked, 35);
+    assert.equal(result.proc.declaration.verified, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

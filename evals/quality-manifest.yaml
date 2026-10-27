@@ -1716,6 +1716,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/g01-negatives.mjs
       - scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts
       - scripts/quality/nir1-graph-eval/g01-negative-preview.mjs
+      - scripts/quality/nir1-graph-eval/g01-negative-run.mjs
       - scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs
       - scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs
       - scripts/quality/nir1-graph-eval/frozen-k64-run.mjs
@@ -1801,6 +1802,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs
       - scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs
       - scripts/quality/nir1-graph-eval/g01-negatives.test.mjs
+      - scripts/quality/nir1-graph-eval/g01-negative-run.test.mjs
       - scripts/quality/nir1-graph-eval/frozen-k64-plan.test.mjs
       - scripts/quality/nir1-graph-eval/frozen-k64-admission.test.mjs
       - scripts/quality/nir1-graph-eval/frozen-k64-run.test.mjs

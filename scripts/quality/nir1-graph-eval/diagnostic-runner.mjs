@@ -42,6 +42,7 @@ import {
   SP_P4_COMPARISON_RULE,
   assertSpP4WorkspaceStable,
   claimFrozenAttempt,
+  frozenAttemptLedger,
   spP4AttemptKey,
   assessSpP4Attempt,
   buildRunHead,
@@ -71,6 +72,7 @@ import {
 } from "./frozen-setup-plan.mjs";
 import { DEFAULT_ADDON, ROOT, bundleObserver } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
+import { finishAttempt } from "./frozen-k64-admission.mjs";
 import { loadFrozenSeedPinPlan } from "./seed-pin-setup.mjs";
 import { removeSetupMain } from "./setup-main-build.mjs";
 import { HARNESS_PAGE, sha256 } from "./session.mjs";
@@ -236,6 +238,8 @@ async function main() {
   let setupShared = null;
   let server = null;
   let receiptWritten = false;
+  let ledgerClaim = null;
+  let finalStatus = "stopped";
   try {
     let plans;
     let selected;
@@ -317,11 +321,21 @@ async function main() {
         k64Commit: options["k64-commit"],
       });
       // Review P3 (e): one ledger claim per frozen attempt (A's ledger).
-      claimFrozenAttempt({
+      ledgerClaim = claimFrozenAttempt({
         kind: "sp-p4",
         key: spP4AttemptKey({
           prepCommit: admission.head.observationPrep.commit,
           candidateCommit: admission.candidateHead,
+        }),
+        ledger: frozenAttemptLedger({
+          root: ROOT,
+          candidate: {
+            commit: admission.candidateHead,
+            tree: git(["rev-parse", `${admission.candidateHead}^{tree}`]),
+          },
+          s4Commit: admission.head.observationPrep.commit,
+          runName: options.run,
+          startedAtUtc: new Date().toISOString(),
         }),
       });
       head = buildRunHead({
@@ -579,6 +593,7 @@ async function main() {
     );
     if (result.summary.status !== "passed" || report.problems.length > 0)
       process.exitCode = 1;
+    else finalStatus = "completed";
   } catch (error) {
     report.problems.push(error?.stack ?? String(error));
     process.exitCode = 1;
@@ -586,6 +601,9 @@ async function main() {
     await setupShared?.server?.close();
     if (setupShared) removeSetupMain(setupShared.setupMain);
     await server?.close();
+    // DR-CP4-O-16: the ledger row closed with the outcome (A's ledger).
+    if (ledgerClaim)
+      finishAttempt({ file: ledgerClaim.file, status: finalStatus });
   }
   await writeFile(
     path.join(runDir, "run-report.json"),

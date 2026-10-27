@@ -1938,6 +1938,7 @@ test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and
     "scripts/quality/nir1-graph-eval/g01-negatives.mjs",
     "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
     "scripts/quality/nir1-graph-eval/g01-negative-preview.mjs",
+    "scripts/quality/nir1-graph-eval/g01-negative-run.mjs",
   ];
   const tests = [
     "scripts/quality/nir1-graph-eval/frozen-diagnostics.test.mjs",
@@ -1945,6 +1946,7 @@ test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and
     "scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs",
     "scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs",
     "scripts/quality/nir1-graph-eval/g01-negatives.test.mjs",
+    "scripts/quality/nir1-graph-eval/g01-negative-run.test.mjs",
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);

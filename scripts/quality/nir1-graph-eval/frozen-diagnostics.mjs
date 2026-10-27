@@ -25,6 +25,11 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { G01_FIXTURE } from "./constants.mjs";
 import {
+  attemptSummary,
+  listAttempts,
+  startAttempt,
+} from "./frozen-k64-admission.mjs";
+import {
   PARITY_FIELDS,
   compareSeedPinParity,
   seedPinPlanFromFixture,
@@ -653,6 +658,11 @@ export function g01NegativeTargets({ root }) {
     if (String(error?.message ?? "").startsWith("[precheck]")) throw error;
     fail("g01", "the G-01 fixture cannot be read");
   }
+  return g01NegativeTargetsFromFixture(fixture);
+}
+
+/** The negative's targets from a G-01-shaped fixture (frozen or dev shape). */
+export function g01NegativeTargetsFromFixture(fixture) {
   const [plan] = seedPinPlanFromFixture({ caseId: "G-01", fixture });
   const pins = Array.isArray(fixture?.pins) ? fixture.pins : [];
   if (pins.length !== 1)
@@ -1081,4 +1091,50 @@ export function claimFrozenAttempt({ kind, key, ledger = null }) {
       `${kind} ${key}: the frozen attempt ledger (A's, #754) is wired after it merges; no frozen attempt starts`,
     );
   return ledger({ kind, key });
+}
+
+/**
+ * DR-CP4-O-16: A's attempt ledger (#754) for the diagnostics. Before a frozen
+ * SP-P4 or trace attempt starts, the earlier attempts of the same identity
+ * (`key`; same candidate and S4 commit and kind) are listed: SP-P4 starts only
+ * when there is none (a retake is the integrator's decision), a trace attempt
+ * n only when n − 1 are recorded. The attempt is written once (`wx`) under the
+ * run name. Returns the claim function `claimFrozenAttempt` takes.
+ */
+export function frozenAttemptLedger({
+  root,
+  candidate,
+  s4Commit,
+  runName,
+  startedAtUtc,
+  attempt = 1,
+  list = listAttempts,
+  start = startAttempt,
+}) {
+  return ({ kind, key }) => {
+    const rows = list({
+      root,
+      candidate: candidate.commit,
+      s4Commit,
+      runKind: kind,
+    });
+    if (rows.some((row) => row.unreadable))
+      fail(
+        "ledger",
+        `an attempt file is unreadable (${rows.find((row) => row.unreadable).unreadable})`,
+      );
+    const priors = rows.filter((row) => row.key === key);
+    const expected = kind === "trace" ? attempt - 1 : 0;
+    if (priors.length !== expected)
+      fail(
+        "ledger",
+        `${key}: ${priors.length} earlier attempts are recorded (expected ${expected}); a new run name does not restart an attempt`,
+      );
+    const started = start({
+      root,
+      runName,
+      entry: { candidate, s4Commit, runKind: kind, key, attempt, startedAtUtc },
+    });
+    return { ...started, priorAttempts: priors.map(attemptSummary) };
+  };
 }
