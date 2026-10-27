@@ -951,12 +951,13 @@ test("レビュー P1-1: 閲覧中、子の無い親の窓に seed の無い場�
         ...k64Api("related_scenes_begin", 12_501, 12_510),
         id: 900,
       });
-      trace.observation.commits.push({
-        at: 12_561,
-        fetchSeq: 60,
-        loading: false,
-        display: "harbor",
-      });
+      trace.observation.commits.push(
+        // The other Scene's loading state and its result.
+        { at: 12_502, fetchSeq: null, loading: true, display: null },
+        { at: 12_561, fetchSeq: 60, loading: false, display: "harbor" },
+      );
+      // A notice during the stay on the other Scene (after the move).
+      trace.observation.notices.push({ kind: "graph-ready", at: 12_700 });
     }
     // The moves of the browsing trace after query 0's cycle end.
     const log = [
@@ -988,6 +989,11 @@ test("レビュー P1-1: 閲覧中、子の無い親の窓に seed の無い場�
       1,
       "the other Scene's commit is not this generation's",
     );
+    // The other Scene's loading commit is not this query's loading switch,
+    // and the window ends at the move (no notice from the other Scene's stay).
+    assert.equal(rows[0].followUp.loading.switched, false);
+    assert.deepEqual(rows[0].followUp.notices, []);
+    assert.equal(result.x.X3, "no-notice");
   }
 });
 
@@ -1091,4 +1097,45 @@ test("レビュー P3 (e): 親が結果を持たない query は throw せず、
   assert.equal(rows[1].followUp, null);
   assert.match(rows[1].rowError, /R7 record could not be built/u);
   assert.equal(rows[0].followUp.issuedVia, "product-hook");
+});
+
+test("レビュー P1-1: 移動の記録が無くても、窓の中の別の場面の fetch と commit は query の行に入らない（場面での絞込み）", () => {
+  const trace = editingTrace(2, { 0: { child: false } });
+  trace.observation.fetches.push({
+    seq: 60,
+    sceneId: OTHER,
+    seed: null,
+    refreshTrigger: null,
+    rawOnly: false,
+    queryGeneration: 9,
+    calledAt: 12_500,
+    resolvedAt: 12_560,
+    failed: false,
+    result: k64FetchResult({
+      timing: { tFetchMs: 12_500, tRawReadyMs: 12_540, tReturnMs: 12_559 },
+    }),
+  });
+  trace.observation.api.push({
+    ...k64Api("related_scenes_begin", 12_501, 12_510),
+    id: 900,
+  });
+  trace.observation.commits.push(
+    { at: 12_502, fetchSeq: null, loading: true, display: null },
+    { at: 12_561, fetchSeq: 60, loading: false, display: "harbor" },
+    // A result the hook built itself for the other Scene (fetchSeq -1).
+    { at: 12_562, fetchSeq: -1, loading: false, display: "harbor-built" },
+  );
+  const runs = pollRuns(trace.events, 9_000, 18_000, 1);
+  const rows = rowsOf(trace, 2, runs, {
+    plan: plan("editing", 1),
+    startSeals: { 0: pair(0, CURRENT), 1: pair(1, CURRENT) },
+  });
+  const result = classifyFollowUp(rows[0], { context: "trace" });
+  assert.equal(rows[0].followUp.child, null);
+  assert.equal(result.x.X6, "no-child");
+  assert.equal(result.x.X10, undefined, JSON.stringify(result.x));
+  assert.equal(rows[0].followUp.loading.switched, false);
+  // Not counted as a second display of the parent's generation (N1).
+  assert.equal(rows[0].followUp.parent.publishCount, 1);
+  assert.deepEqual(result.violations, []);
 });
