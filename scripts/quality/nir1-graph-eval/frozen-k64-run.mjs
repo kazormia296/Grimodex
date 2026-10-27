@@ -788,6 +788,7 @@ async function measureOneShot(ctx) {
   const samples = [];
   const probes = [];
   const processes = [];
+  const evidences = [];
   const launcherChain = readAncestorPids();
   let current = null;
   ctx.windowSampler = (ctx.shared.startWindowSampler ?? startWindowSampler)({
@@ -812,7 +813,7 @@ async function measureOneShot(ctx) {
             ctx,
             check: proc.before,
             samples,
-            extra: { probes, processes },
+            extra: { probes, processes, evidences },
           });
         Object.assign(ctx, {
           page: proc.session.page,
@@ -858,20 +859,80 @@ async function measureOneShot(ctx) {
             ctx,
             check: at,
             samples,
-            extra: { probes, processes },
+            extra: { probes, processes, evidences },
           });
       } finally {
         if (proc?.session)
-          await stopSession(proc.session, dir, "session").catch(() => {});
+          evidences.push(
+            await stopSession(proc.session, dir, "session").catch((error) => ({
+              problems: [`stop: ${error?.stack ?? error}`],
+            })),
+          );
         current = null;
       }
     }
     ctx.run.finishedAtMs = Date.now();
-    return { status: "measured", samples, probes, processes };
+    return { status: "measured", samples, probes, processes, evidences };
   } finally {
     ctx.windowSamples = ctx.windowSampler?.stop() ?? [];
     ctx.windowSampler = null;
   }
+}
+
+/**
+ * The receipt's environment from the measurement processes' stop evidence
+ * (the k64-runner.mjs shape). A one-shot variant has one evidence per
+ * process: the X11 listing spans the first and the last, the socket
+ * samples are concatenated, and every other record is the last process's
+ * with all of them kept under `processes` (DR-CP4-N-9).
+ */
+function environmentOf({ ctx, evidences }) {
+  const first = evidences[0] ?? {};
+  const last = evidences.at(-1) ?? {};
+  const ownPids = [
+    ...readAncestorPids(),
+    ...evidences.flatMap((row) =>
+      (row.recordedPids ?? []).map((pid) => pid.pid),
+    ),
+  ];
+  return {
+    hostSnapshot: hostSnapshot(),
+    windowSamples: ctx.windowSamples,
+    windowAssessment: ctx.run?.finishedAtMs
+      ? assessMeasurementWindow({
+          samples: ctx.windowSamples,
+          run: ctx.run,
+          ownPids,
+        })
+      : null,
+    ownPids,
+    xvfbDisplay: process.env.DISPLAY,
+    removedEnv: last.launch?.removedEnv ?? null,
+    launchEnvChecked: last.launch?.checkedAbsent ?? null,
+    netns: last.launch?.netns ?? null,
+    netLog: last.netLog ?? null,
+    socketSamples: evidences.flatMap((row) => row.socketSamples ?? []),
+    x11: { before: first.x11Before ?? null, after: last.x11After ?? null },
+    profileEgress: {
+      dictionaries: last.dictionaries ?? null,
+      networkPersistentServers: last.networkPersistentServers ?? null,
+    },
+    observer: last.observerCheck ?? null,
+    stop: last.stop ?? null,
+    mainWorker: last.mainWorker ?? null,
+    ...(evidences.length > 1
+      ? {
+          processes: evidences.map((row) => ({
+            problems: row.problems ?? [],
+            stop: row.stop ?? null,
+            observer: row.observerCheck ?? null,
+            mainWorker: row.mainWorker ?? null,
+            dictionaries: row.dictionaries ?? null,
+            networkPersistentServers: row.networkPersistentServers ?? null,
+          })),
+        }
+      : {}),
+  };
 }
 
 /**
@@ -1206,24 +1267,10 @@ export async function runFrozenK64(argv) {
         if (String(error?.message ?? "").startsWith("[precheck]")) break;
         continue;
       }
-      const environment = {
-        hostSnapshot: hostSnapshot(),
-        windowSamples: ctx.windowSamples,
-        windowAssessment: ctx.run?.finishedAtMs
-          ? assessMeasurementWindow({
-              samples: ctx.windowSamples,
-              run: ctx.run,
-              ownPids: readAncestorPids(),
-            })
-          : null,
-        xvfbDisplay: process.env.DISPLAY,
-        stop: result.proc?.evidence?.stop ?? null,
-        netLog: result.proc?.evidence?.netLog ?? null,
-        socketSamples: result.proc?.evidence?.socketSamples ?? [],
-        removedEnv: result.proc?.evidence?.launch?.removedEnv ?? null,
-        launchEnvChecked: result.proc?.evidence?.launch?.checkedAbsent ?? null,
-        netns: result.proc?.evidence?.launch?.netns ?? null,
-      };
+      const environment = environmentOf({
+        ctx,
+        evidences: result.evidences ?? [result.proc?.evidence].filter(Boolean),
+      });
       const receipt = assembleK64Receipt({
         runId: `${options.run}/${spec.variantKey}`,
         preview: dev,
