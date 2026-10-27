@@ -39,7 +39,9 @@ import { FROZEN_FIXTURE_SHA256, GRAPH_EVAL_VARIANTS } from "./constants.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import {
   SP_P4,
+  SP_P4_COMPARISON_RULE,
   assertSpP4WorkspaceStable,
+  claimFrozenAttempt,
   assessSpP4Attempt,
   buildRunHead,
   compareSpP4Variant,
@@ -88,6 +90,7 @@ export async function runSpP4({
   measureSide,
   warmup,
   measured,
+  rule = SP_P4_COMPARISON_RULE,
 }) {
   const variants = [];
   let stop = null;
@@ -142,6 +145,7 @@ export async function runSpP4({
         assertSpP4WorkspaceStable(
           accepted.samples,
           `${target.variantKey}:${side}`,
+          { rule },
         );
       } catch (error) {
         stop = String(error?.message ?? error);
@@ -160,6 +164,7 @@ export async function runSpP4({
       variantKey: target.variantKey,
       without: accepted("without-seed-pin-step"),
       with: accepted("with-seed-pin-step"),
+      rule,
     });
     if (!record.comparison.same) break;
   }
@@ -310,6 +315,8 @@ async function main() {
         k62Commit: options["k62-commit"],
         k64Commit: options["k64-commit"],
       });
+      // Review P3 (e): one ledger claim per frozen attempt (A's ledger).
+      claimFrozenAttempt({ kind: "sp-p4", key: options.run });
       head = buildRunHead({
         kind: "sp-p4",
         k62: admission.head.k62,
@@ -531,6 +538,7 @@ async function main() {
         attemptLimit: SP_P4.attemptLimit,
         d2aMode: SP_P4.d2aMode,
         compareBy: SP_P4.compareBy,
+        rule: SP_P4_COMPARISON_RULE,
         branch: SP_P4.branch,
         sparse:
           "the product fetchSparseSceneIds on the same saved-body query, read after the fetch (DR-CP4-O-1 (4))",

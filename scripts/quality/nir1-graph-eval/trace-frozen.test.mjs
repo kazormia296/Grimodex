@@ -55,6 +55,7 @@ function setupReceipt(overrides = {}) {
       },
     },
     coldDatabase: { path: "cold/grimodex.db", sha256: H("d") },
+    candidate: { commit: C("b"), tree: "t-b", clean: true },
     ...COMPLETE_SETUP_FIELDS,
     ...overrides,
   };
@@ -432,6 +433,14 @@ function fakeDeps(overrides = {}) {
       return { values: { tShowMs: 2000 } };
     },
     readPrevious: () => [],
+    readTree: (commit) => {
+      calls.push(["tree", commit]);
+      return "t-b";
+    },
+    claimAttempt: (input) => {
+      calls.push(["claim", input.kind, input.key]);
+      return { claimed: true };
+    },
     readSpP4: (input) => {
       calls.push(["sp-p4", input.candidateCommit]);
       return { summary: { status: "passed" }, receiptSha256: H("8") };
@@ -481,8 +490,10 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
     [
       "k64",
       "admit",
+      "tree",
       "facts",
       "trace-heads",
+      "claim",
       "sp-p4",
       "plan",
       "declaration",
@@ -501,7 +512,8 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
   assert.equal(prepared.identity.sha256, H("1"));
   assert.equal(prepared.runtime.ids.querySceneId, "q-rt");
   assert.equal(prepared.declaration.sceneId, "g02-query");
-  assert.deepEqual(calls[4], ["sp-p4", C("b")]);
+  assert.deepEqual(calls[6], ["sp-p4", C("b")]);
+  assert.deepEqual(calls[5], ["claim", "trace", "editing:undefined"]);
   // ④ の SP-P4 の receipt が無ければ起動しない。
   const fifth = tempDir();
   const noSpP4 = fakeDeps();
@@ -669,5 +681,142 @@ test("O-1 (6): trace の宣言の Scene は観測前の記録の boundFiles の 
         read: addendum([rows[0], rows[0]]),
       }),
     /\[precheck\]/u,
+  );
+});
+
+test("レビュー P2-2: trace の setup は SP-P4 の分岐・R5 の照合の受領書を拒み、今の候補の commit と tree で走ったものだけ", async () => {
+  const dir = tempDir();
+  for (const [name, value] of [
+    [
+      "branch",
+      setupReceipt({
+        status: "blocked",
+        blocked: { harnessId: "b-seal-not-published", condition: "any" },
+        seedPinBranch: { stage: "side", side: "without-seed-pin-step" },
+      }),
+    ],
+    ["r5", setupReceipt({ r5CheckRun: { id: "r" } })],
+  ])
+    assert.throws(
+      () =>
+        readTraceSetup({
+          root: dir,
+          file: writeReceipt(dir, value, `${name}.json`),
+        }),
+      /\[precheck\].*SP-P4 branch or an R5 check/u,
+      name,
+    );
+  const options = {
+    "trace-kind": "editing",
+    "prep-commit": C("5"),
+    "k62-commit": C("6"),
+    "k64-commit": C("4"),
+    "sp-p4-receipt": "x.json",
+    attempt: "1",
+  };
+  for (const candidate of [
+    { commit: C("c"), tree: "t-b" },
+    { commit: C("b"), tree: "t-x" },
+    undefined,
+  ]) {
+    const run = tempDir();
+    const deps = fakeDeps();
+    await assert.rejects(
+      prepareFrozenTrace({
+        root: run,
+        runDir: run,
+        options: {
+          ...options,
+          setup: writeReceipt(run, setupReceipt({ candidate })),
+        },
+        inputs,
+        deps: deps.deps,
+      }),
+      /\[precheck\].*another candidate/u,
+    );
+    assert.ok(!deps.calls.some((row) => row[0] === "facts"));
+  }
+  // setupFailure の受領書も今の候補のものだけ。
+  const run = tempDir();
+  await assert.rejects(
+    prepareFrozenTrace({
+      root: run,
+      runDir: run,
+      options: {
+        ...options,
+        setup: writeReceipt(
+          run,
+          setupReceipt({
+            status: "blocked",
+            blocked: { harnessId: "b-seal-not-published", condition: "any" },
+            candidate: { commit: C("c"), tree: "t-b" },
+          }),
+        ),
+      },
+      inputs,
+      deps: fakeDeps().deps,
+    }),
+    /another candidate/u,
+  );
+});
+
+test("レビュー P3 (e): 凍結の trace は試行の台帳（A の #754）が繋がるまで始めない", async () => {
+  const run = tempDir();
+  const { deps } = fakeDeps({ claimAttempt: undefined });
+  delete deps.claimAttempt;
+  await assert.rejects(
+    prepareFrozenTrace({
+      root: run,
+      runDir: run,
+      options: {
+        setup: writeReceipt(run, setupReceipt()),
+        "trace-kind": "editing",
+        "prep-commit": C("5"),
+        "k62-commit": C("6"),
+        "k64-commit": C("4"),
+        "sp-p4-receipt": "x.json",
+        attempt: "1",
+      },
+      inputs,
+      deps,
+    }),
+    /\[precheck\].*ledger/u,
+  );
+});
+
+test("レビュー P3: 試行の上限は trace の file の stall.attemptLimit（2）で、3 回目は前の 2 回が取り直しでも始めない", async () => {
+  const run = tempDir();
+  const retake = (attempt) => ({
+    sha256: H(String(attempt)),
+    receipt: {
+      runId: `t-${attempt}`,
+      attempt,
+      trace: {
+        path: "evals/nir1-graph/trace-editing.v1.json",
+        sha256: H("1"),
+        commit: C("a"),
+      },
+      stalled: { seq: 1, op: "edit", reason: "x" },
+      attemptOutcome: "retake",
+    },
+  });
+  const { deps } = fakeDeps({ readPrevious: () => [retake(1), retake(2)] });
+  await assert.rejects(
+    prepareFrozenTrace({
+      root: run,
+      runDir: run,
+      options: {
+        setup: writeReceipt(run, setupReceipt()),
+        "trace-kind": "editing",
+        "prep-commit": C("5"),
+        "k62-commit": C("6"),
+        "k64-commit": C("4"),
+        "sp-p4-receipt": "x.json",
+        attempt: "3",
+      },
+      inputs,
+      deps,
+    }),
+    /\[precheck\].*--attempt must be an integer from 1 to 2/u,
   );
 });

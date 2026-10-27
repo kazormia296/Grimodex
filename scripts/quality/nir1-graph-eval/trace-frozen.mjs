@@ -16,6 +16,7 @@
 // 変えない。
 
 import { Buffer } from "node:buffer";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -27,6 +28,7 @@ import {
 } from "./admission.mjs";
 import {
   buildRunHead,
+  claimFrozenAttempt,
   readBoundFile,
   readSpP4Gate,
   readTraceFileHeads,
@@ -100,6 +102,12 @@ export function readTraceSetup({ root, file }) {
     fail(
       "setup",
       `${file} is not the G-02 base setup (S2 project; the version does not swap the project)`,
+    );
+  // Review P2-2: an SP-P4 branch or an R5 check setup is never the trace's.
+  if (raw?.seedPinBranch !== undefined || raw?.r5CheckRun !== undefined)
+    fail(
+      "setup",
+      `${file} is an SP-P4 branch or an R5 check setup, not the trace's G-02 base setup`,
     );
   if (raw?.stopsAt !== "complete")
     fail(
@@ -369,6 +377,12 @@ export async function prepareFrozenTrace({
     readPrevious = readPreviousAttempts,
     readDeclaration = readTraceDeclaration,
     readSpP4 = readSpP4Gate,
+    readTree = (commit) =>
+      execFileSync("git", ["rev-parse", `${commit}^{tree}`], {
+        cwd: root,
+        encoding: "utf8",
+      }).trim(),
+    claimAttempt = (input) => claimFrozenAttempt(input),
     now = () => new Date(),
   } = deps;
   // The K6/4 freeze head first (cheap), before any other read.
@@ -393,6 +407,15 @@ export async function prepareFrozenTrace({
       ? { ratification5: inputs.ratification5 }
       : {}),
   });
+  // Review P2-2: the setup (complete or failed) ran on this candidate.
+  if (
+    state.raw.candidate?.commit !== admission.candidateHead ||
+    state.raw.candidate?.tree !== readTree(admission.candidateHead)
+  )
+    fail(
+      "setup",
+      "the G-02 base setup ran on another candidate (commit or tree)",
+    );
   const record = collectFacts({
     root,
     commit: options["prep-commit"],
@@ -410,6 +433,8 @@ export async function prepareFrozenTrace({
     },
     { now },
   );
+  // Review P3 (e): one ledger claim per frozen trace attempt.
+  claimAttempt({ kind: "trace", key: `${kind}:${options.run}` });
   const written = await writeRunHead({ runDir, head });
   const base = {
     admission,

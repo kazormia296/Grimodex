@@ -599,6 +599,34 @@ export async function confirmTraceDeclaration({
   return { ...declaration, verified: true, measurementWorkspace };
 }
 
+/**
+ * S2 `setupFailure`: when the G-02 base setup never reached setup-complete,
+ * the trace's receipt says (b) unmeasured and HOLD, bound to the head written
+ * before; nothing is launched. Returns the receipt, or null when the setup
+ * is complete (the trace runs).
+ */
+export async function recordTraceSetupFailure({
+  runDir,
+  runId,
+  prepared,
+  candidate,
+}) {
+  if (!prepared.setupFailure) return null;
+  const receipt = setupFailureReceipt({
+    runId,
+    kind: prepared.kind,
+    prepared,
+    candidate,
+  });
+  readRunHead({ runDir, sha256: prepared.headSha256 });
+  await writeFile(
+    path.join(runDir, "receipt.json"),
+    `${JSON.stringify(receipt, null, 2)}\n`,
+  );
+  await writeSha256Sums(runDir, ["receipt.json", "head.json"]);
+  return receipt;
+}
+
 function parseArgs(argv) {
   const options = {
     "eval-build": path.join(ROOT, ".artifacts/cp4/eval-build"),
@@ -886,22 +914,17 @@ async function main() {
       });
       head = prepared.head;
       headSha256 = prepared.headSha256;
-      if (prepared.setupFailure) {
-        const receipt = setupFailureReceipt({
-          runId: options.run,
-          kind: prepared.kind,
-          prepared,
-          candidate: { ...candidate, commit: git(["rev-parse", "HEAD"]) },
-        });
-        readRunHead({ runDir, sha256: headSha256 });
-        await writeFile(
-          path.join(runDir, "receipt.json"),
-          `${JSON.stringify(receipt, null, 2)}\n`,
-        );
-        await writeSha256Sums(runDir, ["receipt.json", "head.json"]);
+      // S2 setupFailure: (b) unmeasured, HOLD, no launch (review P3).
+      const failure = await recordTraceSetupFailure({
+        runDir,
+        runId: options.run,
+        prepared,
+        candidate: { ...candidate, commit: git(["rev-parse", "HEAD"]) },
+      });
+      if (failure) {
         receiptWritten = true;
         process.stdout.write(
-          `${JSON.stringify({ run: options.run, status: receipt.status, cp4Availability: receipt.cp4Availability, setupFailure: receipt.setupFailure.blocked })}\n`,
+          `${JSON.stringify({ run: options.run, status: failure.status, cp4Availability: failure.cp4Availability, setupFailure: failure.setupFailure.blocked })}\n`,
         );
         return;
       }

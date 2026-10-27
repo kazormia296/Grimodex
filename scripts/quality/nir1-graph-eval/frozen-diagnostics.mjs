@@ -340,21 +340,81 @@ const parityOf = (row) =>
  * S2 `comparison`: the measured samples of one workspace agree with each
  * other; otherwise the comparison is undefined (`[precheck]`).
  */
-export function assertSpP4WorkspaceStable(samples, label) {
+/**
+ * DR-CP4-O-7: the SP-P4 comparison rules. `current` is S2's rule as frozen
+ * (every measured sample, every field). `ir-complete-pairs` is the
+ * integrator's proposed reading (S2／S3 confirm it first): R, the dense hits
+ * and the sparse Scenes over every measured sample; R+IR and the supplement
+ * slot only over the samples whose IR reached `ir-ready` (both sides, by
+ * repeat, for the comparison); a side with no IR-complete measured sample is
+ * `[precheck]`. No threshold is introduced.
+ */
+export const SP_P4_COMPARISON_RULES = Object.freeze([
+  "current",
+  "ir-complete-pairs",
+]);
+/** The rule in force (switched only after S2／S3; S2 pins this commit). */
+export const SP_P4_COMPARISON_RULE = "current";
+const R_SIDE_FIELDS = Object.freeze([
+  "rSceneIds",
+  "denseHitSceneIds",
+  "sparseSceneIds",
+]);
+const IR_SIDE_FIELDS = Object.freeze(["rIrSceneIds", "irSupplementSceneId"]);
+const irReady = (row) => row?.ir?.outcome === "ir-ready";
+
+function checkRule(rule) {
+  if (!SP_P4_COMPARISON_RULES.includes(rule))
+    fail("rule", `unknown SP-P4 comparison rule ${String(rule)}`);
+  return rule;
+}
+
+function firstDifference(rows, fields) {
+  if (rows.length === 0) return null;
+  const pick = (row) =>
+    stable(Object.fromEntries(fields.map((field) => [field, row?.[field]])));
+  const first = pick(rows[0]);
+  const differs = rows.find((row) => pick(row) !== first);
+  if (!differs) return null;
+  return {
+    repeat: differs.repeat,
+    reference: rows[0].repeat,
+    fields: fields.filter(
+      (field) => stable(differs[field]) !== stable(rows[0][field]),
+    ),
+  };
+}
+
+export function assertSpP4WorkspaceStable(
+  samples,
+  label,
+  { rule = SP_P4_COMPARISON_RULE } = {},
+) {
+  checkRule(rule);
   const rows = measuredOf(samples);
   if (rows.length === 0) fail("stable", `${label}: no measured sample`);
-  const first = stable(parityOf(rows[0]));
-  const differs = rows.find((row) => stable(parityOf(row)) !== first);
-  if (differs) {
-    const fields = PARITY_FIELDS.filter(
-      (field) => stable(differs[field]) !== stable(rows[0][field]),
-    );
+  const ready = rows.filter(irReady);
+  if (rule === "ir-complete-pairs" && ready.length === 0)
     fail(
       "stable",
-      `${label}: measured ${differs.repeat} differs from measured ${rows[0].repeat} in the same workspace (${fields.join(", ")}); the comparison is not defined`,
+      `${label}: no measured sample reached ir-ready; the IR contribution cannot be compared`,
     );
-  }
-  return { measured: rows.length };
+  const differs =
+    rule === "current"
+      ? firstDifference(rows, PARITY_FIELDS)
+      : (firstDifference(rows, R_SIDE_FIELDS) ??
+        firstDifference(ready, IR_SIDE_FIELDS));
+  if (differs)
+    fail(
+      "stable",
+      `${label}: measured ${differs.repeat} differs from measured ${differs.reference} in the same workspace (${differs.fields.join(", ")}); the comparison is not defined`,
+    );
+  return {
+    rule,
+    measured: rows.length,
+    irReady: ready.length,
+    irNotReady: rows.length - ready.length,
+  };
 }
 
 /**
@@ -437,11 +497,18 @@ export function explainSpP4Instability(samples) {
 }
 
 /** The two sides' measured samples, in order, by logical ID (SP-N7). */
-export function compareSpP4Variant({ variantKey, without, with: withSide }) {
+export function compareSpP4Variant({
+  variantKey,
+  without,
+  with: withSide,
+  rule = SP_P4_COMPARISON_RULE,
+}) {
+  checkRule(rule);
   const left = measuredOf(without);
   const right = measuredOf(withSide);
   const differences = [];
   const count = Math.max(left.length, right.length);
+  let irPairs = 0;
   for (let at = 0; at < count; at++) {
     const result = compareSeedPinParity({
       caseId: variantKey.split("/")[0],
@@ -449,19 +516,33 @@ export function compareSpP4Variant({ variantKey, without, with: withSide }) {
       before: left[at] ? parityOf(left[at]) : null,
       after: right[at] ? parityOf(right[at]) : null,
     });
-    if (!result.same)
-      differences.push({
-        index: at,
-        fields: [
-          ...result.differences.map((row) => row.field),
-          ...result.missing,
-        ],
-      });
+    // ir-complete-pairs: the IR fields count only where both sides' IR
+    // reached ir-ready; R's fields always count.
+    const pairReady = irReady(left[at]) && irReady(right[at]);
+    if (pairReady) irPairs += 1;
+    const ignored =
+      rule === "ir-complete-pairs" && !pairReady
+        ? new Set(IR_SIDE_FIELDS)
+        : new Set();
+    const fields = [
+      ...result.differences.map((row) => row.field),
+      ...result.missing.map((row) => row.split(".").at(-1)),
+    ].filter((field) => !ignored.has(field));
+    if (fields.length > 0 || !left[at] || !right[at])
+      differences.push({ index: at, fields: [...new Set(fields)] });
   }
+  const noPair = rule === "ir-complete-pairs" && irPairs === 0;
   return {
     variantKey,
+    rule,
     compared: count,
-    same: differences.length === 0 && left.length === right.length && count > 0,
+    irCompletePairs: irPairs,
+    same:
+      differences.length === 0 &&
+      left.length === right.length &&
+      count > 0 &&
+      !noPair,
+    ...(noPair ? { undefinedReason: "no-ir-complete-pair" } : {}),
     differences,
   };
 }
@@ -560,10 +641,13 @@ export function assertSpP4Passed(summary) {
 export function g01NegativeTargets({ root }) {
   let fixture;
   try {
-    fixture = JSON.parse(
-      readFileSync(path.join(root, G01_FIXTURE.path), "utf8"),
-    );
-  } catch {
+    const bytes = readFileSync(path.join(root, G01_FIXTURE.path));
+    // Review P3 (d): the frozen bytes only.
+    if (sha256(bytes) !== G01_FIXTURE.sha256)
+      fail("g01", "the G-01 fixture is not the frozen bytes");
+    fixture = JSON.parse(bytes.toString("utf8"));
+  } catch (error) {
+    if (String(error?.message ?? "").startsWith("[precheck]")) throw error;
     fail("g01", "the G-01 fixture cannot be read");
   }
   const [plan] = seedPinPlanFromFixture({ caseId: "G-01", fixture });
@@ -609,6 +693,23 @@ export function assessG01Negative({
   const graph = (samples ?? []).filter(
     (row) => row?.arm === "graph" && row?.phase === "measured",
   );
+  const returnedRows = graph.filter((row) =>
+    (row.returnedSceneIds ?? []).includes(target.sceneId),
+  );
+  // Review P2-4: a reached sample that returned the target defeats the
+  // negative whatever the other samples are (a product defect is never
+  // buried under undetermined samples).
+  const defeating = returnedRows.filter(
+    (row) =>
+      row.frameReached === true && row.seedRequested === target.seedEntityId,
+  );
+  if (spP1Recheck?.status === "match" && defeating.length > 0)
+    return {
+      ...base,
+      outcome: "not-established",
+      reasons: [],
+      returnedIn: defeating.map((row) => row.repeat),
+    };
   const reasons = [];
   if (spP1Recheck?.status !== "match") reasons.push("sp-p1-recheck");
   if (graph.length === 0) reasons.push("no-measured-graph-sample");
@@ -619,14 +720,11 @@ export function assessG01Negative({
   else if (graph.some((row) => row.frameReached !== true))
     reasons.push("g01-mira-entity-reached");
   if (reasons.length > 0) return { ...base, outcome: "inconclusive", reasons };
-  const returned = graph.filter((row) =>
-    (row.returnedSceneIds ?? []).includes(target.sceneId),
-  );
   return {
     ...base,
-    outcome: returned.length > 0 ? "not-established" : "established",
+    outcome: returnedRows.length > 0 ? "not-established" : "established",
     reasons: [],
-    returnedIn: returned.map((row) => row.repeat),
+    returnedIn: returnedRows.map((row) => row.repeat),
   };
 }
 
@@ -827,14 +925,38 @@ export function readBoundFile({ root, record, file }) {
   };
 }
 
+/** One recorded sample with its owner counter delta re-derived. */
+function rederivedSample(row) {
+  const before = row?.counters?.before;
+  const after = row?.counters?.after;
+  const delta =
+    Number.isInteger(before?.begins) && Number.isInteger(after?.begins)
+      ? after.begins - before.begins
+      : null;
+  return { ...row, beginsDeltaZero: delta === 0 };
+}
+
+const headBytes = (head) => `${JSON.stringify(head, null, 2)}\n`;
+
 /**
  * S2 `r5Gate.beforeFirstGatedRun`: a Graph-arm run (Gold, a K24 negative, a
  * trace, the V-10 probe) reads the SP-P4 receipt of ④ back and re-derives
- * the result from its samples (each side's accepted attempt compared again;
- * the recorded status is never trusted). The receipt is not a preview, is of
- * the same pre-observation commit and candidate commit, and passed.
+ * its result instead of trusting the record (review P2-1): every attempt's
+ * validity from the samples' counters before and after and the plan's counts
+ * (warm-up 5, measured 30), the attempt numbering and outcomes, each
+ * accepted side's stability and the sides' comparison under the rule in
+ * force; the run did not stop, its head is the head.json it wrote, its K6/2
+ * and K6/4 heads and pre-observation commit are this admission's, and the
+ * candidate is this one and clean. Otherwise `[precheck]`.
  */
-export function readSpP4Gate({ file, head, candidateCommit }) {
+export function readSpP4Gate({
+  file,
+  head,
+  candidateCommit,
+  warmup = 5,
+  measured = 30,
+  rule = SP_P4_COMPARISON_RULE,
+}) {
   let bytes;
   let receipt;
   try {
@@ -848,22 +970,87 @@ export function readSpP4Gate({ file, head, candidateCommit }) {
       "gate",
       "the SP-P4 receipt is not ④'s record (a preview or another run)",
     );
+  if (receipt.stop !== null)
+    fail("gate", "the SP-P4 run stopped before its end");
+  if (
+    typeof receipt.headSha256 !== "string" ||
+    sha256(Buffer.from(headBytes(receipt.head))) !== receipt.headSha256
+  )
+    fail("gate", "the SP-P4 receipt's head is not the head.json it wrote");
+  for (const key of ["k62", "k64"])
+    if (stable(receipt.head?.[key]) !== stable(head?.[key]))
+      fail("gate", `the SP-P4 receipt's ${key} head differs from this run's`);
   if (receipt.head?.observationPrep?.commit !== head?.observationPrep?.commit)
     fail("gate", "the SP-P4 receipt is of another pre-observation commit");
   if (receipt.candidate?.commit !== candidateCommit)
     fail("gate", "the SP-P4 receipt is of another candidate commit");
+  if (receipt.candidate?.clean !== true)
+    fail("gate", "the SP-P4 run's candidate was not clean");
+  if ((receipt.design?.rule ?? "current") !== checkRule(rule))
+    fail("gate", "the SP-P4 receipt used another comparison rule");
   const variants = (receipt.variants ?? []).map((row) => {
-    const accepted = (side) =>
-      (row?.sides?.[side]?.attempts ?? []).find(
-        (entry) => entry?.valid === true,
-      )?.samples ?? [];
+    const sides = {};
+    for (const side of SP_P4.sides) {
+      const recorded = row?.sides?.[side]?.attempts ?? [];
+      const attempts = recorded.map((entry, at) => {
+        const samples = (entry?.samples ?? []).map(rederivedSample);
+        const assessment = assessSpP4Attempt({ samples, warmup, measured });
+        const outcome = spP4AttemptOutcome({
+          attempt: at + 1,
+          valid: assessment.valid,
+        });
+        if (
+          entry?.attempt !== at + 1 ||
+          entry?.valid !== assessment.valid ||
+          entry?.outcome !== outcome
+        )
+          fail(
+            "gate",
+            `${String(row?.variantKey)} ${side} attempt ${at + 1}: the recorded validity or outcome is not the samples'`,
+          );
+        return { ...entry, samples, valid: assessment.valid, outcome };
+      });
+      if (attempts.findIndex((entry) => entry.valid) !== attempts.length - 1)
+        fail(
+          "gate",
+          `${String(row?.variantKey)} ${side}: the attempts do not end at the one accepted attempt`,
+        );
+      assertSpP4WorkspaceStable(
+        attempts.at(-1).samples,
+        `${String(row?.variantKey)}:${side}`,
+        { rule },
+      );
+      sides[side] = { ...row.sides[side], attempts };
+    }
+    const accepted = (side) => sides[side].attempts.at(-1).samples;
     const comparison = compareSpP4Variant({
       variantKey: String(row?.variantKey),
       without: accepted("without-seed-pin-step"),
       with: accepted("with-seed-pin-step"),
+      rule,
     });
-    return { ...row, comparison };
+    return { ...row, sides, comparison };
   });
   const summary = assertSpP4Passed(summarizeSpP4({ variants }));
   return { summary, receiptSha256: sha256(bytes) };
+}
+
+/**
+ * Review P3 (e), DR-CP4-O-12: the call site of the frozen attempt ledger. A's
+ * ledger (PR #754, `.artifacts/cp4/attempts/<run>.json` written `wx` with
+ * `priorAttempts`) is reused after #754 merges; until then no frozen SP-P4
+ * or trace attempt starts (`[precheck]`). `ledger({ kind, key })` claims one
+ * attempt and returns its record.
+ */
+export const ATTEMPT_LEDGER = Object.freeze({
+  dir: ".artifacts/cp4/attempts",
+  source: "PR #754 frozen-k64-admission.mjs / frozen-k64-run.mjs",
+});
+export function claimFrozenAttempt({ kind, key, ledger = null }) {
+  if (typeof ledger !== "function")
+    fail(
+      "ledger",
+      `${kind} ${key}: the frozen attempt ledger (A's, #754) is wired after it merges; no frozen attempt starts`,
+    );
+  return ledger({ kind, key });
 }

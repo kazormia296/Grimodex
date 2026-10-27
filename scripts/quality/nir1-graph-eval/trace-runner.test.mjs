@@ -3,7 +3,11 @@
 // A3 を親の開始の直後に読む、cycle end の直後に次の操作）、stall、閲覧中の往復、
 // Main の poller の install と取り出し、admission の分岐、receipt の組立てを確かめる。
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { writeRunHead } from "./frozen-diagnostics.mjs";
 import { URL } from "node:url";
 import {
   TRACE_MAINTENANCE_FORBIDDEN,
@@ -16,6 +20,7 @@ import {
   captureBodyNonce,
   confirmTraceDeclaration,
   counterPoller,
+  recordTraceSetupFailure,
   checkTraceAttempt,
   runTraceDeclaration,
   runTraceOperations,
@@ -651,5 +656,46 @@ test("O-1 (6): trace の起動の body declaration の nonce を保ち、宣言�
       locatorDigest: "loc",
     }),
     /\[precheck\] the K2\/4 declaration of s was refused/u,
+  );
+});
+
+test("レビュー P3: G-02 base が setup-complete に届かなければ trace は起動せず、先頭に束ねた (b) 未測定・HOLD の receipt を書く", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "s5b-tr-fail-"));
+  const head = { kind: "trace", runStartedAtUtc: "2026-10-28T00:00:00.000Z" };
+  const { sha256: headSha256 } = await writeRunHead({ runDir: dir, head });
+  const prepared = {
+    kind: "editing",
+    head,
+    headSha256,
+    setupFailure: {
+      b: "unmeasured",
+      cp4Availability: "HOLD",
+      blocked: { harnessId: "b-seal-not-published" },
+    },
+  };
+  const receipt = await recordTraceSetupFailure({
+    runDir: dir,
+    runId: "t",
+    prepared,
+    candidate: { commit: "c" },
+  });
+  assert.equal(receipt.status, "unmeasured");
+  assert.equal(receipt.cp4Availability, "HOLD");
+  const written = JSON.parse(
+    readFileSync(path.join(dir, "receipt.json"), "utf8"),
+  );
+  assert.equal(written.headSha256, headSha256);
+  assert.match(
+    readFileSync(path.join(dir, "SHA256SUMS"), "utf8"),
+    /head\.json/u,
+  );
+  assert.equal(
+    await recordTraceSetupFailure({
+      runDir: dir,
+      runId: "t",
+      prepared: { ...prepared, setupFailure: null },
+      candidate: {},
+    }),
+    null,
   );
 });

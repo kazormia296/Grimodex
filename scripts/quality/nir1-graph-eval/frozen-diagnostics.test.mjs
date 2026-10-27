@@ -8,6 +8,7 @@ import { GRAPH_EVAL_VARIANTS } from "./constants.mjs";
 import {
   G01_NEGATIVES,
   SP_P4,
+  SP_P4_COMPARISON_RULE,
   assertSpP4Passed,
   assertSpP4WorkspaceStable,
   assessG01Negative,
@@ -681,7 +682,15 @@ test("S5-B（変異 D7）: measured の sample の無い両側は一致としな
 
 test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直し、sample から比較し直して passed のときだけ始める", () => {
   const dir = mkdtempSync(path.join(tmpdir(), "s5b-gate-"));
-  const head = { observationPrep: { commit: C("5") } };
+  const head = {
+    kind: "sp-p4",
+    k62: { freezeCommit: C("6"), sha256: H("6") },
+    k64: { freezeCommit: C("4"), sha256: H("4") },
+    observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
+  };
+  const headSha256 = createHash("sha256")
+    .update(`${JSON.stringify(head, null, 2)}\n`)
+    .digest("hex");
   const sides = (change = () => ({})) =>
     Object.fromEntries(
       SP_P4.sides.map((side) => [
@@ -707,7 +716,10 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
     runKind: "seed-pin-parity",
     preview: false,
     head,
-    candidate: { commit: C("b") },
+    headSha256,
+    stop: null,
+    design: { rule: "current" },
+    candidate: { commit: C("b"), clean: true },
     variants: SP_P4.variants.map((variantKey) => ({
       variantKey,
       sides: sides(change),
@@ -737,6 +749,52 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
     ],
     ["other-candidate", receipt(), C("c")],
     ["missing", receipt({ variants: receipt().variants.slice(1) }), C("b")],
+    ["stopped", receipt({ stop: "[precheck] x" }), C("b")],
+    ["head-sha", receipt({ headSha256: H("0") }), C("b")],
+    [
+      "not-clean",
+      receipt({ candidate: { commit: C("b"), clean: false } }),
+      C("b"),
+    ],
+    ["other-rule", receipt({ design: { rule: "ir-complete-pairs" } }), C("b")],
+    // レビュー P2-1: 記録が valid でも sample の数と counter から計算し直す。
+    [
+      "forged-valid",
+      (() => {
+        const forged = receipt();
+        for (const row of forged.variants)
+          for (const side of SP_P4.sides) {
+            const attempt = row.sides[side].attempts[0];
+            attempt.samples = attempt.samples
+              .filter((at) => at.phase === "measured")
+              .slice(0, 1)
+              .map((at) => ({
+                ...at,
+                counters: {
+                  before: { begins: 0, cacheHits: 0, lateCached: 0 },
+                  after: { begins: 7, cacheHits: 0, lateCached: 0 },
+                  delta: { begins: 7, cacheHits: 0, lateCached: 0 },
+                },
+                beginsDeltaZero: true,
+              }));
+          }
+        return forged;
+      })(),
+      C("b"),
+    ],
+    [
+      "unstable-accepted",
+      (() => {
+        const unstable = receipt();
+        const attempt =
+          unstable.variants[0].sides["without-seed-pin-step"].attempts[0];
+        attempt.samples = attemptSamples((at) =>
+          at.phase === "measured" && at.repeat === 7 ? { sparse: ["rb"] } : {},
+        );
+        return unstable;
+      })(),
+      C("b"),
+    ],
   ])
     assert.throws(
       () =>
@@ -762,6 +820,16 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
         candidateCommit: C("b"),
       }),
     /SP-N7/u,
+  );
+  // K6/4 の head が今の admission と違えば通さない。
+  assert.throws(
+    () =>
+      readSpP4Gate({
+        file: write(receipt(), "k64.json"),
+        head: { ...head, k64: { freezeCommit: C("7"), sha256: H("7") } },
+        candidateCommit: C("b"),
+      }),
+    /k64 head/u,
   );
 });
 
@@ -846,4 +914,166 @@ test("O-7（変異 I4）: IR が完了した sample の違いは、行ごとに�
     result.rows.map((row) => [row.repeat, row.explained]),
     [[2, false]],
   );
+});
+
+test("レビュー P2-4: 届いた sample に g01-mira が返れば、ほかの sample が判定不能でも not-established", () => {
+  const base = { id: "K24-G01-N3", spP1Recheck: { status: "match" } };
+  const reachedReturned = negSample({
+    repeat: 4,
+    returnedSceneIds: ["g01-mira"],
+  });
+  const outcome = (samples) => assessG01Negative({ ...base, samples });
+  assert.equal(
+    outcome([negSample({ frameReached: null }), reachedReturned]).outcome,
+    "not-established",
+  );
+  assert.deepEqual(
+    outcome([negSample({ seedRequested: null }), reachedReturned]).returnedIn,
+    [4],
+  );
+  // 届いたと言えない sample の返りは負例を崩さない（判定不能のまま）。
+  assert.equal(
+    outcome([negSample({ frameReached: null, returnedSceneIds: ["g01-mira"] })])
+      .outcome,
+    "inconclusive",
+  );
+  // SP-P1 が合わなければ（条件が違う）not-established にしない。
+  assert.equal(
+    assessG01Negative({
+      ...base,
+      spP1Recheck: { status: "mismatch" },
+      samples: [reachedReturned],
+    }).outcome,
+    "inconclusive",
+  );
+});
+
+test("レビュー P2-5: 比較の規則は既定が今の規則（current）で、ir-complete-pairs は R を全 sample、IR の寄与を IR 完了の組だけで比べる", () => {
+  assert.equal(SP_P4_COMPARISON_RULE, "current");
+  const withIr = (change) =>
+    spP4Schedule({ warmup: 5, measured: 30 }).map((at) => {
+      const patch = change(at) ?? {};
+      return spP4SampleRecord({
+        ...at,
+        measure: {
+          ...measure(patch.measure),
+          resultKind: patch.ir === "timeout" ? "raw" : "fused",
+          completion: {
+            outcome: patch.ir ?? "ir-ready",
+            deadlineExceeded: patch.ir === "timeout",
+          },
+        },
+        denseHitSceneIds: patch.dense ?? ["rb", "ra"],
+        sparseSceneIds: ["ra"],
+        before: counters(0),
+        after: counters(0),
+        scenes,
+      });
+    });
+  const timeoutAt = (repeat) => (at) =>
+    at.phase === "measured" && at.repeat === repeat
+      ? { ir: "timeout", measure: { resultSceneIds: ["ra", "rb"] } }
+      : null;
+  const without = withIr(timeoutAt(3));
+  const withSide = withIr(timeoutAt(9));
+  // 今の規則: 期限切れで同じ workspace の中の一致が崩れ [precheck]。
+  assert.throws(() => assertSpP4WorkspaceStable(without, "x"), /\[precheck\]/u);
+  // 改訂の規則: 期限切れの sample は IR の比較から外し、R は全件で比べる。
+  const stableResult = assertSpP4WorkspaceStable(without, "x", {
+    rule: "ir-complete-pairs",
+  });
+  assert.deepEqual([stableResult.irReady, stableResult.irNotReady], [29, 1]);
+  const compared = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without,
+    with: withSide,
+    rule: "ir-complete-pairs",
+  });
+  assert.equal(compared.same, true);
+  assert.equal(compared.irCompletePairs, 28);
+  assert.equal(
+    compareSpP4Variant({ variantKey: "G-02/base", without, with: withSide })
+      .same,
+    false,
+  );
+  // R の違いは期限切れの sample でも数える。
+  const rDiffers = withIr((at) =>
+    at.phase === "measured" && at.repeat === 3
+      ? {
+          ir: "timeout",
+          measure: { rawSceneIds: ["rb", "ra"], resultSceneIds: ["rb", "ra"] },
+        }
+      : null,
+  );
+  assert.equal(
+    compareSpP4Variant({
+      variantKey: "G-02/base",
+      without: withIr(() => null),
+      with: rDiffers,
+      rule: "ir-complete-pairs",
+    }).same,
+    false,
+  );
+  // IR が完了した組の IR の違いは SP-N7。
+  const irDiffers = withIr((at) =>
+    at.phase === "measured" && at.repeat === 5
+      ? { measure: { resultSceneIds: ["ra", "rb", "rq"] } }
+      : null,
+  );
+  assert.deepEqual(
+    compareSpP4Variant({
+      variantKey: "G-02/base",
+      without: withIr(() => null),
+      with: irDiffers,
+      rule: "ir-complete-pairs",
+    }).differences.map((row) => [row.index, row.fields]),
+    [[5, ["rIrSceneIds", "irSupplementSceneId"]]],
+  );
+  // 片側に IR 完了の sample が無ければ比べられない。
+  const allTimeout = withIr((at) =>
+    at.phase === "measured"
+      ? { ir: "timeout", measure: { resultSceneIds: ["ra", "rb"] } }
+      : null,
+  );
+  assert.throws(
+    () =>
+      assertSpP4WorkspaceStable(allTimeout, "x", { rule: "ir-complete-pairs" }),
+    /no measured sample reached ir-ready/u,
+  );
+  const noPair = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: allTimeout,
+    with: withIr(() => null),
+    rule: "ir-complete-pairs",
+  });
+  assert.deepEqual(
+    [noPair.same, noPair.undefinedReason],
+    [false, "no-ir-complete-pair"],
+  );
+  assert.throws(
+    () =>
+      compareSpP4Variant({
+        variantKey: "x/y",
+        without,
+        with: withSide,
+        rule: "other",
+      }),
+    /\[precheck\]/u,
+  );
+});
+
+test("レビュー P3 (d): K24-G01-N2〜N4 の対象は凍結した G-01 の bytes からだけ読む", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "s5b-g01-"));
+  mkdirSync(path.join(root, "evals/nir1-g01"), { recursive: true });
+  const original = readFileSync(
+    path.join(REPO_ROOT, "evals/nir1-g01/fixture.v1.json"),
+    "utf8",
+  );
+  writeFileSync(
+    path.join(root, "evals/nir1-g01/fixture.v1.json"),
+    original.replace("Mira", "Myra"),
+  );
+  assert.throws(() => g01NegativeTargets({ root }), /not the frozen bytes/u);
+  writeFileSync(path.join(root, "evals/nir1-g01/fixture.v1.json"), original);
+  assert.equal(g01NegativeTargets({ root }).entityId, "g01-mira-entity");
 });
