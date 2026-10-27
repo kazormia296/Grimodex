@@ -142,20 +142,17 @@ export const INDEX_BUILD_INTERVAL_MS = 500;
 export const INDEX_BUILD_WAIT_MS = 120_000;
 
 /**
- * P-6: the README preconditions an index build timeout leaves unmet (the
- * L-24 table's rules): a while- variant's build after the mutation cannot
- * hold the declared state (index-state-holding); its build in the seal
- * session, before the mutation, did not reach the sealed generations
- * (maintenance-enabled, as the pre-mutation check); any other variant's
- * Chronicle alone not usable is Hold (none).
+ * P-6 (DR-CP4-L-28): the README preconditions an index build timeout leaves
+ * unmet. A while- variant cannot establish its declared index state
+ * (index-state-holding), whatever the step; any other variant's Chronicle
+ * alone not usable leaves none (Hold and [precheck]).
  */
-export function indexBuildUnmet(plan, phase) {
-  const holding = String(plan?.measurementPoint ?? "").startsWith("while-");
-  if (!holding) return [];
-  return phase === "chronicle-index"
-    ? ["maintenance-enabled"]
-    : ["index-state-holding"];
+export function indexBuildUnmet(plan) {
+  return isHoldingVariant(plan) ? ["index-state-holding"] : [];
 }
+
+const isHoldingVariant = (plan) =>
+  String(plan?.measurementPoint ?? "").startsWith("while-");
 export const MAINTENANCE_REOPENS = 2;
 const PREPARE_WAIT_MS = 120_000;
 const SELECT_ONLY = /^\s*SELECT\b/iu;
@@ -169,11 +166,11 @@ function fail(code, detail) {
  * names the README preconditions it leaves unmet. The receipt maps them to
  * the contract's id in a field of its own (`blockedRecord`).
  */
-function failBlocked(code, harnessId, unmet, detail) {
+function failBlocked(code, harnessId, condition, unmet, detail) {
   const error = new Error(
     `[precheck] S1i ${code}: blocked:${harnessId} — ${detail}`,
   );
-  error.blocked = { harnessId, unmet: [...unmet] };
+  error.blocked = { harnessId, condition, unmet: [...unmet] };
   throw error;
 }
 
@@ -188,24 +185,98 @@ export const README_PRECONDITION_ORDER = Object.freeze([
 ]);
 
 /**
- * The receipt's blocked record: the harness's name, every unmet README
- * precondition (definition order), and the contract's id — the first unmet
- * one the variant declares (`blocked:<id>`), or null with `hold: true` when
- * the variant declares none of them (G-01 is Hold; a Chronicle-only
- * mismatch is Hold and `[precheck]`).
+ * DR-CP4-L-28 (integrator's table, S3 の 6 回目の決定): the harness's
+ * blocked name and condition → the case judgement for G-01 and for
+ * G-02〜G-08 — `blocked:<README id>`, `hold` (Hold), `hold-and-precheck`
+ * (Hold and [precheck]) or `not-applicable`. The precondition
+ * maintenance-enabled is written only from the maintenance wait (P-5).
+ */
+export const BLOCKED_CONTRACT_TABLE = Object.freeze(
+  [
+    ["b-seal-not-published", "any", "hold", "blocked:b-sealed-binding"],
+    ["measurement-point-mismatch", "graph", "hold", "blocked:b-sealed-binding"],
+    [
+      "measurement-point-mismatch",
+      "chronicle-only",
+      "hold-and-precheck",
+      "hold-and-precheck",
+    ],
+    [
+      "index-state-holding",
+      "while-variant",
+      "not-applicable",
+      "blocked:index-state-holding",
+    ],
+    [
+      "pre-mutation-index-state",
+      "graph",
+      "not-applicable",
+      "blocked:b-sealed-binding",
+    ],
+    [
+      "pre-mutation-index-state",
+      "chronicle-only",
+      "not-applicable",
+      "hold-and-precheck",
+    ],
+    [
+      "maintenance-enabled",
+      "maintenance-wait-exhausted",
+      "blocked:maintenance-enabled",
+      "blocked:maintenance-enabled",
+    ],
+    [
+      "index-build-timeout",
+      "while-variant",
+      "not-applicable",
+      "blocked:index-state-holding",
+    ],
+    [
+      "index-build-timeout",
+      "other-variant",
+      "hold-and-precheck",
+      "hold-and-precheck",
+    ],
+  ].map(([harnessId, condition, g01, graphCases]) =>
+    Object.freeze({ harnessId, condition, g01, graphCases }),
+  ),
+);
+
+const isG01Plan = (plan) =>
+  (plan?.harnessChoices ?? []).some((row) => row.id === "g01-setup-order");
+
+/**
+ * The receipt's blocked record: the harness's name and condition, every
+ * unmet README precondition (definition order), and the case judgement of
+ * `BLOCKED_CONTRACT_TABLE` — the README id (`contractBlockedId`), or null
+ * with `hold: true` (and `precheck: true` for Hold and [precheck]). A pair
+ * the table does not name is a `[precheck]`.
  */
 export function blockedRecord({ plan, blocked }) {
-  const unmet = README_PRECONDITION_ORDER.filter((id) =>
-    (blocked?.unmet ?? []).includes(id),
+  const row = BLOCKED_CONTRACT_TABLE.find(
+    (entry) =>
+      entry.harnessId === blocked?.harnessId &&
+      entry.condition === blocked?.condition,
   );
-  const declared = plan.preconditions ?? [];
-  const contractBlockedId = unmet.find((id) => declared.includes(id)) ?? null;
+  const judgement = row ? (isG01Plan(plan) ? row.g01 : row.graphCases) : null;
+  if (!judgement || judgement === "not-applicable")
+    fail(
+      "blocked-map",
+      `${plan?.variantKey}: no case judgement for ${String(blocked?.harnessId)}/${String(blocked?.condition)}`,
+    );
+  const contractBlockedId = judgement.startsWith("blocked:")
+    ? judgement.slice("blocked:".length)
+    : null;
   return {
-    harnessId: blocked?.harnessId ?? null,
-    unmetPreconditions: unmet,
-    declaredPreconditions: [...declared],
+    harnessId: blocked.harnessId,
+    condition: blocked.condition,
+    unmetPreconditions: README_PRECONDITION_ORDER.filter((id) =>
+      (blocked.unmet ?? []).includes(id),
+    ),
+    declaredPreconditions: [...(plan.preconditions ?? [])],
     contractBlockedId,
     hold: contractBlockedId === null,
+    precheck: judgement === "hold-and-precheck",
   };
 }
 
@@ -754,6 +825,7 @@ const EXECUTORS = Object.freeze({
       );
       error.blocked = {
         harnessId: "maintenance-enabled",
+        condition: "maintenance-wait-exhausted",
         unmet: ["maintenance-enabled"],
       };
       error.maintenanceTimeout = {
@@ -893,7 +965,8 @@ const EXECUTORS = Object.freeze({
       failBlocked(
         "chronicle-index",
         "index-build-timeout",
-        indexBuildUnmet(ctx.plan, step.phase),
+        isHoldingVariant(ctx.plan) ? "while-variant" : "other-variant",
+        indexBuildUnmet(ctx.plan),
         `${ctx.plan.variantKey}: the Chronicle Index did not become usable in ${INDEX_BUILD_WAIT_MS} ms of queries every ${INDEX_BUILD_INTERVAL_MS} ms (${indexBuild.queries} queries, ${indexBuild.maintenanceCancelled} maintenance runs cancelled)`,
       );
     // S1j-2: the last query's snapshot is the probe's query side (B4).
@@ -960,6 +1033,11 @@ const EXECUTORS = Object.freeze({
       // sealed binding unmet, a Chronicle-only mismatch none (Hold).
       error.blocked = {
         harnessId,
+        condition: holding
+          ? "while-variant"
+          : probe.graph !== declared.graph
+            ? "graph"
+            : "chronicle-only",
         unmet: holding
           ? ["index-state-holding"]
           : probe.graph !== declared.graph
@@ -1354,14 +1432,15 @@ export function assertSealedBeforeMutation(ctx, read = readIndexMetadata) {
       generation !== null &&
       Number(row.generation) === generation,
     );
-  if (
-    !at(metadata?.b, state.expected.b) ||
-    !at(metadata?.chronicle, state.expected.chronicle)
-  )
+  const graphOk = at(metadata?.b, state.expected.b);
+  if (!graphOk || !at(metadata?.chronicle, state.expected.chronicle))
     failBlocked(
       "maintenance-enabled",
       "pre-mutation-index-state",
-      ["maintenance-enabled"],
+      // DR-CP4-L-28: a Graph mismatch is the sealed binding; Chronicle alone
+      // is Hold and [precheck].
+      graphOk ? "chronicle-only" : "graph",
+      graphOk ? [] : ["b-sealed-binding"],
       `${ctx.plan.variantKey}: before the first mutation B is ${JSON.stringify(metadata?.b ?? null)} and C is ${JSON.stringify(metadata?.chronicle ?? null)}, not the sealed generations ${JSON.stringify(state.expected)} clean`,
     );
   return state;
@@ -2300,6 +2379,7 @@ export async function setupFrozenVariant({
           failBlocked(
             "b-seal",
             "b-seal-not-published",
+            "any",
             ["b-sealed-binding"],
             `${plan.variantKey}: the ${row.label} session saw no new sealed B generation in ${attempt + 1} openings (${B_SEAL_REOPENS} reopens)`,
           );
@@ -2422,7 +2502,16 @@ export async function setupFrozenVariant({
       receipt.status = "blocked";
       receipt.precheck = { message: message.split("\n")[0] };
       if (error?.blocked)
-        receipt.blocked = blockedRecord({ plan, blocked: error.blocked });
+        try {
+          receipt.blocked = blockedRecord({ plan, blocked: error.blocked });
+        } catch (mapError) {
+          // An unmapped pair stays visible (no silent judgement).
+          receipt.blocked = {
+            harnessId: error.blocked.harnessId,
+            condition: error.blocked.condition ?? null,
+            mapError: String(mapError?.message ?? mapError),
+          };
+        }
     } else receipt.status = "failed";
   } finally {
     if (!partialRun(plan) && ctx.indexBuilds && !receipt.indexBuilds)
