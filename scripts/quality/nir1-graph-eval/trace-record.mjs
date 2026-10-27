@@ -464,6 +464,14 @@ export function mergeNativeRecords(reads) {
   const records = [...bySeq.values()].sort(
     (left, right) => left.seq - right.seq,
   );
+  // 再レビュー P3: every begin since the clear is either still in the last
+  // read's log or counted in its (cumulative) `dropped`; fewer merged records
+  // than that is a loss even without a gap in the seqs (an empty early read).
+  const last = reads.at(-1);
+  const missing = Math.max(
+    0,
+    (last?.dropped ?? 0) + (last?.records?.length ?? 0) - bySeq.size,
+  );
   const gaps = [];
   for (let at = 1; at < records.length; at++)
     if (records[at].seq !== records[at - 1].seq + 1)
@@ -473,7 +481,8 @@ export function mergeNativeRecords(reads) {
     records,
     gaps,
     frontLoss,
-    lost: frontLoss || gaps.length > 0,
+    missing,
+    lost: frontLoss || gaps.length > 0 || missing > 0,
   };
 }
 
@@ -748,8 +757,14 @@ export function traceQueryRow({
       observedUntil,
     }),
     fetches,
+    // 再レビュー P2: the commits stay until the next parent's call even after
+    // a move: whether the Scene's generations show anything after the move is
+    // what the mixing checks observe (N1, N29, N32), not an assumption.
     commits: (observation.commits ?? []).filter(
-      (row) => inWindow(row.at) && sameScene(generationScene(row)),
+      (row) =>
+        row.at >= parent.calledAt &&
+        row.at < observedUntil &&
+        sameScene(generationScene(row)),
     ),
     notices: (observation.notices ?? []).filter((row) => inWindow(row.at)),
     api,

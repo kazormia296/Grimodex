@@ -473,8 +473,15 @@ test("TR-3: Native の記録は seq で併合し（後の読取の ticket の状
   // The log pushed out seq 1 and 2 after they were read: no loss.
   const merged = mergeNativeRecords([
     { dropped: 0, records: [first, k64NativeRecord({ seq: 2 })] },
+    {
+      dropped: 0,
+      records: [
+        later,
+        k64NativeRecord({ seq: 2 }),
+        k64NativeRecord({ seq: 3 }),
+      ],
+    },
     { dropped: 2, records: [k64NativeRecord({ seq: 3 })] },
-    { dropped: 2, records: [k64NativeRecord({ seq: 3 }), later] },
   ]);
   assert.deepEqual(
     merged.records.map((row) => row.seq),
@@ -1138,4 +1145,66 @@ test("レビュー P1-1: 移動の記録が無くても、窓の中の別の場�
   // Not counted as a second display of the parent's generation (N1).
   assert.equal(rows[0].followUp.parent.publishCount, 1);
   assert.deepEqual(result.violations, []);
+});
+
+test("再レビュー P2: 移動の後に出た、この場面の世代の commit も混入の観測に入る（子の二度目の公開が N32 として検出される）", () => {
+  const trace = editingTrace(2);
+  const log = [
+    trace.log[0],
+    { op: "navigate", sceneId: OTHER, at: 12_100 },
+    { op: "navigate", sceneId: SCENE, at: 12_900 },
+    trace.log.at(-1),
+  ];
+  // Query 0's child (fetch seq 2) shown again 100 ms after the move.
+  trace.observation.commits.push({
+    at: 12_200,
+    fetchSeq: 2,
+    loading: false,
+    display: "late-child-0",
+  });
+  const runs = pollRuns(trace.events, 9_000, 18_000, 1);
+  const merged = mergeNativeRecords([{ dropped: 0, records: trace.records }]);
+  const rows = traceRows({
+    plan: plan("browsing", 1),
+    observation: trace.observation,
+    log,
+    native: merged,
+    runs,
+    a3Reads: trace.a3Reads,
+    startSeals: { 0: pair(0, CURRENT), 1: pair(1, CURRENT) },
+    d2aMode: "restricted",
+    ids: { revisions: { "rev-1": "rev-1" } },
+    expectedContribution: null,
+  });
+  assert.equal(rows[0].followUp.child.publishCount, 2);
+  const result = classifyFollowUp(rows[0], { context: "trace" });
+  assert.ok(
+    result.violations.includes("N32:child-published-more-than-once"),
+    JSON.stringify(result.violations),
+  );
+});
+
+test("再レビュー P3: 読取の件数が累積の dropped と最後の読取の件数に足りなければ取りこぼし。容量を超えても毎 cycle 読めば取りこぼしではない", () => {
+  const rec = (seq) => k64NativeRecord({ seq });
+  const reads = [];
+  const log = [];
+  for (let seq = 0; seq < 1500; seq++) {
+    log.push(rec(seq));
+    if (log.length > 1024) log.shift();
+    if (seq % 50 === 49)
+      reads.push({
+        dropped: Math.max(0, seq + 1 - 1024),
+        records: [...log],
+      });
+  }
+  const every = mergeNativeRecords(reads);
+  assert.equal(every.records.length, 1500);
+  assert.equal(every.lost, false);
+  // Read only at the start (empty) and at the end: 476 were pushed out.
+  const sparse = mergeNativeRecords([
+    { dropped: 0, records: [] },
+    reads.at(-1),
+  ]);
+  assert.equal(sparse.lost, true);
+  assert.equal(sparse.missing, 476);
 });
