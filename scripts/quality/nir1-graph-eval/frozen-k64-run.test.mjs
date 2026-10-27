@@ -1258,3 +1258,49 @@ test("S5-B 統合: negative の run は宣言の前と後に B の段を呼び�
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("S5-B 統合（変異 I9）: 宣言の前に開き直した Main の宣言は、その Main の body declaration の nonce の seam の受領書で確かめる", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-01/v1",
+    spec: { declaration: { sceneId: "added-logical" } },
+    metadata: steadyState,
+    world: (base) =>
+      (world = fakeProduct({ dir: base, snapshotUsable: () => true })),
+  });
+  ctx.negative = {
+    beforeDeclaration: async ({ relaunch, stop, proc }) => {
+      await stop(proc.session);
+      const session = await relaunch("before-declaration-reopen-0");
+      // The reopened Main has its own user data: only its nonce's receipt.
+      const userData = path.join(dir, "reopened-user-data");
+      const receiptDir = path.join(
+        userData,
+        ".grimodex-body-declaration-ci-receipts",
+        sha256(Buffer.from(session.bodyNonce)),
+      );
+      mkdirSync(receiptDir, { recursive: true });
+      writeFileSync(
+        path.join(receiptDir, "receipt.json"),
+        JSON.stringify({
+          version: 1,
+          envNames: { nonce: "GRIMODEX_BODY_DECLARATION_CI_NONCE" },
+          nonceDigest: `sha256:${"1".repeat(64)}`,
+          approvedGrantCount: 1,
+          approvedBindingDigests: [`sha256:${"2".repeat(64)}`],
+        }),
+      );
+      return { ...session, userData };
+    },
+    afterDeclaration: async ({ proc }) => proc.session,
+    askGraph: (take) => take(),
+  };
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.proc.declaration.verified, true);
+    assert.equal(world.launches(), 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
