@@ -1233,6 +1233,7 @@ test("S5-B 統合: negative の run は宣言の前と後に B の段を呼び�
       asked += 1;
       return take();
     },
+    measurementProbe: (base) => ({ ...base, negativeReopen: true }),
   };
   try {
     const result = await measureVariant(ctx);
@@ -1241,9 +1242,13 @@ test("S5-B 統合: negative の run は宣言の前と後に B の段を呼び�
     const at = (name) => world.events.indexOf(name);
     assert.ok(at("openWorkspace") < at("negative:before"));
     assert.ok(at("negative:before") < at("declare"));
-    assert.ok(at("declare") < at("negative:after"));
-    assert.ok(at("negative:after") < at("buildRaw"));
+    assert.ok(at("declare") < at("buildRaw"));
+    // The control and the mutation come after the Raw vectors and the
+    // Chronicle Index, before any measured or READY query.
+    assert.ok(at("buildRaw") < at("negative:after"));
+    assert.ok(at("query:index") < at("negative:after"));
     assert.ok(at("negative:after") < at("query:graph"));
+    assert.equal(ctx.setupProbe.negativeReopen, true);
     // The reopened Main opens the same workspace, then measures.
     assert.equal(world.launches(), 2);
     assert.equal(
@@ -1294,6 +1299,7 @@ test("S5-B 統合（変異 I9）: 宣言の前に開き直した Main の宣言�
     },
     afterDeclaration: async ({ proc }) => proc.session,
     askGraph: (take) => take(),
+    measurementProbe: (base) => base,
   };
   try {
     const result = await measureVariant(ctx);

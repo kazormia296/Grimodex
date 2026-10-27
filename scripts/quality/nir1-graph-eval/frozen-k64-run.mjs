@@ -718,16 +718,6 @@ async function openProcess({ ctx, dir, label }) {
       proc.declaration = declared.declaration;
       proc.measurementWorkspace = declared.measurementWorkspace;
     }
-    if (ctx.negative) {
-      const reopened = await ctx.negative.afterDeclaration({
-        page,
-        ids: ctx.ids,
-        proc,
-        relaunch,
-        stop: stopReopened,
-      });
-      [proc.session, page] = [reopened, reopened.page];
-    }
     proc.checks.raw = await evaluateOk(
       page,
       "build Raw",
@@ -758,6 +748,20 @@ async function openProcess({ ctx, dir, label }) {
         probes: index?.probes?.length ?? null,
         lastIndexUsable: indexUsable,
       };
+    }
+    // S5-B: a negative's control and mutation after the declaration, once
+    // the Raw vectors and the Chronicle Index exist; the Main reopened for
+    // B is measured, against the B and C it sealed (DR-CP4-O-16).
+    if (ctx.negative) {
+      const reopened = await ctx.negative.afterDeclaration({
+        page,
+        ids: ctx.ids,
+        proc,
+        relaunch,
+        stop: stopReopened,
+      });
+      [proc.session, page] = [reopened, reopened.page];
+      ctx.setupProbe = ctx.negative.measurementProbe(ctx.setupProbe);
     }
     // SP-P1 again on this copy (⑤), against the gate's row.
     proc.checks.seedPin = measurementCopySeedCheck({

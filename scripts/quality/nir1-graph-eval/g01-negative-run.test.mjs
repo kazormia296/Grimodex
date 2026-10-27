@@ -257,6 +257,13 @@ test("O-16: 宣言の後は対照・mutation・Main の開き直し（新しい�
         events.indexOf("launch:measure-reopen-0"),
     );
     assert.ok(events.includes("measure-reopen-0:buildIndex"));
+    // The measurement point is the reopened Main's seal.
+    assert.deepEqual(run.measurementProbe({ bGeneration: 4, other: 1 }), {
+      bGeneration: 5,
+      chronicleGeneration: 2,
+      other: 1,
+      negativeReopen: true,
+    });
     const row = (repeat, final) => ({
       phase: "measured",
       repeat,

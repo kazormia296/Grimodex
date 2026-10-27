@@ -184,6 +184,21 @@ export function createG01NegativeRun({ id, root, target = null }) {
       if (state.step.blocked) throw blocked(state, state.step.blocked);
       return state.step.session.session;
     },
+    /**
+     * The measurement point of a negative: the B (and C) generation sealed
+     * by the reopened Main after the mutation (S2: measured once B is
+     * current again), in place of the setup's.
+     */
+    measurementProbe(base) {
+      const last = state.step?.sealAttempts?.at(-1);
+      const metadata = last?.chronicle?.metadata ?? last?.metadata ?? null;
+      return {
+        ...base,
+        bGeneration: metadata?.b?.generation ?? null,
+        chronicleGeneration: metadata?.chronicle?.generation ?? null,
+        negativeReopen: true,
+      };
+    },
     async askGraph(take) {
       let last = null;
       const asked = await askUntilDecided({
