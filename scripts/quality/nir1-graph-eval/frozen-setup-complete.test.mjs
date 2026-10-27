@@ -629,6 +629,20 @@ test("S1j-2 P-0: B の generation が来なければ seal の session を開き�
     two.receipt.phases.filter((row) => row.name === "b-seal").length,
     1,
   );
+  // A later step of the seal session fails (no reopening): the attempt is
+  // still recorded.
+  const later = await completeSetup("G-03/base", { buildIndexFails: true });
+  assert.equal(later.receipt.status, "blocked");
+  assert.match(later.receipt.precheck.message, /chronicle-index/u);
+  assert.deepEqual(
+    later.receipt.sealAttempts.map((row) => [
+      row.session,
+      row.attempt,
+      row.outcome,
+      row.published,
+    ]),
+    [["seal", 0, "sealed", true]],
+  );
   // Three missed openings exhaust the bound: fail closed.
   const three = await completeSetup("G-02/base", { sealMissesOpens: 3 });
   assert.equal(three.receipt.status, "blocked");

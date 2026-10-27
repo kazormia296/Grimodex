@@ -1353,6 +1353,7 @@ export function completeSetupExtension({
   bDirtiedByQuery = false,
   bDirtiedByQueryTimes = Infinity,
   sealMissesOpens = 0,
+  buildIndexFails = false,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1735,6 +1736,7 @@ export function completeSetupExtension({
       },
       buildIndex: async () => {
         indexCalls.push(session.label);
+        if (buildIndexFails) return { ok: false, durationMs: 1, probes: [] };
         const projectId = projectOf();
         publish(projectId, "nir1-reviewed-chronicle:v1");
         // The product's freshness evaluation can dirty B after its seal.
