@@ -592,12 +592,73 @@ test("P2-7: admitGraphCaseRun は facts を自分で集め、N-1、既定の add
   }
 });
 
-test("批准 7: K6/4 の凍結の commit が固定されるまで、正式の run の先頭を読まない", () => {
-  assert.equal(K64_FREEZE.freezeCommit, null);
-  assert.throws(
-    () => readK64FreezeHead({ root: ROOT, commit: K64_FREEZE.confirmedCommit }),
-    /not pinned/,
+test("批准 7（DR-CP4-T14-1）: K6/4 の凍結の commit は claude/nir1-contracts の 5dea38af に固定されている", () => {
+  assert.equal(
+    K64_FREEZE.freezeCommit,
+    "5dea38af158283c2a925d68ef0d8b0771c0ea209",
   );
+  assert.match(K64_FREEZE.freezeCommit, /^[0-9a-f]{40}$/u);
+  assert.notEqual(K64_FREEZE.freezeCommit, K64_FREEZE.confirmedCommit);
+  assert.equal(
+    K64_FREEZE.sha256,
+    "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
+  );
+});
+
+// CI の clone は claude/nir1-contracts を fetch しないので、正の経路は一時 repo
+// の凍結の descriptor を注入して確かめる（製品の既定は K64_FREEZE のまま）。
+test("批准 7: K6/4 の先頭は固定した commit と bytes の両方が一致するときだけ読み、null の descriptor では止まる", async () => {
+  const repo = await mkdtemp(path.join(tmpdir(), "cp4-k64-freeze-"));
+  try {
+    git(repo, "init", "-q", "-b", "main");
+    const frozen = "# K6/4 (test bytes)\n";
+    await put(repo, K64_FREEZE.path, frozen);
+    const freezeCommit = commit(repo, "freeze");
+    git(repo, "tag", "k64-freeze", freezeCommit);
+    await put(repo, "other.txt", "after\n");
+    const later = commit(repo, "later, same K6/4 bytes");
+    await put(repo, K64_FREEZE.path, `${frozen}changed\n`);
+    const changed = commit(repo, "changed K6/4 bytes");
+    git(repo, "rm", "-q", "--", K64_FREEZE.path);
+    const removed = commit(repo, "removed K6/4");
+    const freeze = Object.freeze({
+      ...K64_FREEZE,
+      sha256: sha256Of(frozen),
+      freezeCommit,
+    });
+    const read = (commitRef, descriptor = freeze) =>
+      readK64FreezeHead({ root: repo, commit: commitRef }, descriptor);
+    // 正の経路：commit（ref でも）を git で解決し、bytes の SHA-256 も一致する。
+    const expected = { freezeCommit, sha256: sha256Of(frozen) };
+    assert.deepEqual(read(freezeCommit), expected);
+    assert.deepEqual(read("k64-freeze"), expected);
+    // 同じ bytes でも固定した commit でなければ拒む。
+    assert.throws(() => read(later), /freeze commit or bytes differ/);
+    // 固定した commit を指しても bytes が凍結と違えば拒む。
+    assert.throws(
+      () => read(changed, { ...freeze, freezeCommit: changed }),
+      /freeze commit or bytes differ/,
+    );
+    assert.throws(() => read(changed), /freeze commit or bytes differ/);
+    assert.throws(() => read(removed), /cannot be read/);
+    assert.throws(() => read(undefined), /not given/);
+    // 固定前の性質（fail closed）: freezeCommit が null なら何も読まずに止まる。
+    assert.throws(
+      () => read(freezeCommit, { ...freeze, freezeCommit: null }),
+      /\[precheck\] the K6\/4 freeze commit is not pinned/,
+    );
+    // 製品の既定（K64_FREEZE）は一時 repo の凍結を受け付けない。
+    assert.throws(
+      () => readK64FreezeHead({ root: repo, commit: freezeCommit }),
+      /freeze commit or bytes differ/,
+    );
+    assert.throws(
+      () => readK64FreezeHead({ root: repo, commit: K64_FREEZE.freezeCommit }),
+      new RegExp(K64_FREEZE.freezeCommit),
+    );
+  } finally {
+    await rm(repo, { recursive: true, force: true });
+  }
 });
 
 test("§15.8: 凍結した fixture の path の試走は製品の .node で、評価の .node を拒む", () => {
