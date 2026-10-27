@@ -10,6 +10,7 @@ import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  BLOCKED_CONTRACT_TABLE,
   INDEX_BUILD_INTERVAL_MS,
   INDEX_BUILD_WAIT_MS,
   indexBuildUnmet,
@@ -862,7 +863,7 @@ test("レビュー P2-1／P2-2: hold の最初の mutation の前に B と C が
   });
   assert.equal(ok.receipt.preMutationIndexState.metadata.b.dirty, false);
   // A B dirtied after the seal session (the P-1 race) stops before the
-  // mutation: the precondition maintenance-enabled.
+  // mutation: a Graph mismatch, README b-sealed-binding (DR-CP4-L-28).
   const raced = await completeSetup("G-08/graph-index-unusable", {
     bDirtiedByQuery: true,
   });
@@ -873,15 +874,17 @@ test("レビュー P2-1／P2-2: hold の最初の mutation の前に B と C が
   );
   assert.deepEqual(raced.receipt.blocked, {
     harnessId: "pre-mutation-index-state",
-    unmetPreconditions: ["maintenance-enabled"],
+    condition: "graph",
+    unmetPreconditions: ["b-sealed-binding"],
     declaredPreconditions: [
       "b-sealed-binding",
       "maintenance-enabled",
       "raw-membership",
       "index-state-holding",
     ],
-    contractBlockedId: "maintenance-enabled",
+    contractBlockedId: "b-sealed-binding",
     hold: false,
+    precheck: false,
   });
   // The mutation never ran.
   assert.ok(
@@ -902,46 +905,132 @@ test("レビュー P2-1／P2-2: hold の最初の mutation の前に B と C が
     ],
     ["b-seal-not-published", null, true],
   );
-  // A Graph mismatch at the measurement point maps to b-sealed-binding; a
-  // Chronicle-only mismatch is Hold.
-  const plan = planOf(COMPLETE, "G-02/base");
-  assert.equal(
+});
+
+/**
+ * DR-CP4-L-28 (integrator's table; S2's blockedCaseJudgement rows with the
+ * two undecided rows decided): harnessId × condition → G-01 and G-02〜G-08.
+ */
+const BLOCKED_TABLE_EXPECTED = [
+  ["b-seal-not-published", "any", "hold", "blocked:b-sealed-binding"],
+  ["measurement-point-mismatch", "graph", "hold", "blocked:b-sealed-binding"],
+  [
+    "measurement-point-mismatch",
+    "chronicle-only",
+    "hold-and-precheck",
+    "hold-and-precheck",
+  ],
+  [
+    "index-state-holding",
+    "while-variant",
+    "not-applicable",
+    "blocked:index-state-holding",
+  ],
+  [
+    "pre-mutation-index-state",
+    "graph",
+    "not-applicable",
+    "blocked:b-sealed-binding",
+  ],
+  [
+    "pre-mutation-index-state",
+    "chronicle-only",
+    "not-applicable",
+    "hold-and-precheck",
+  ],
+  [
+    "maintenance-enabled",
+    "maintenance-wait-exhausted",
+    "blocked:maintenance-enabled",
+    "blocked:maintenance-enabled",
+  ],
+  [
+    "index-build-timeout",
+    "while-variant",
+    "not-applicable",
+    "blocked:index-state-holding",
+  ],
+  [
+    "index-build-timeout",
+    "other-variant",
+    "hold-and-precheck",
+    "hold-and-precheck",
+  ],
+];
+
+test("DR-CP4-L-28: blocked の写しは integrator の表のとおり（G-01 と G-02〜G-08、S2 の blockedCaseJudgement の行ごと）", () => {
+  const judgement = (record) =>
+    record.contractBlockedId !== null
+      ? `blocked:${record.contractBlockedId}`
+      : record.precheck
+        ? "hold-and-precheck"
+        : "hold";
+  const g01 = planOf(COMPLETE, "G-01/v1");
+  const plans = {
+    "while-variant": planOf(COMPLETE, "G-08/graph-index-unusable"),
+    other: planOf(COMPLETE, "G-02/base"),
+  };
+  assert.deepEqual(
+    BLOCKED_CONTRACT_TABLE.map((row) => [
+      row.harnessId,
+      row.condition,
+      row.g01,
+      row.graphCases,
+    ]),
+    BLOCKED_TABLE_EXPECTED,
+  );
+  for (const [
+    harnessId,
+    condition,
+    wantG01,
+    wantGraph,
+  ] of BLOCKED_TABLE_EXPECTED) {
+    const graphPlan =
+      condition === "while-variant" ? plans["while-variant"] : plans.other;
+    assert.equal(
+      judgement(
+        blockedRecord({ plan: graphPlan, blocked: { harnessId, condition } }),
+      ),
+      wantGraph,
+      `${harnessId}/${condition} G-02〜G-08`,
+    );
+    if (wantG01 !== "not-applicable")
+      assert.equal(
+        judgement(
+          blockedRecord({ plan: g01, blocked: { harnessId, condition } }),
+        ),
+        wantG01,
+        `${harnessId}/${condition} G-01`,
+      );
+  }
+  // A pair the table does not name is a [precheck] (no silent mapping).
+  assert.throws(
+    () =>
+      blockedRecord({
+        plan: plans.other,
+        blocked: { harnessId: "b-seal-not-published", condition: "graph" },
+      }),
+    /\[precheck\] S1i blocked-map/u,
+  );
+  // maintenance-enabled is mapped only from the maintenance wait; the
+  // other harness names never write the precondition maintenance-enabled.
+  for (const row of BLOCKED_CONTRACT_TABLE)
+    if (row.harnessId !== "maintenance-enabled")
+      assert.ok(
+        ![row.g01, row.graphCases].includes("blocked:maintenance-enabled"),
+        row.harnessId,
+      );
+  // The unmet preconditions are recorded in README order.
+  assert.deepEqual(
     blockedRecord({
-      plan,
+      plan: plans.other,
       blocked: {
         harnessId: "measurement-point-mismatch",
-        unmet: ["b-sealed-binding"],
-      },
-    }).contractBlockedId,
-    "b-sealed-binding",
-  );
-  assert.deepEqual(
-    blockedRecord({
-      plan,
-      blocked: { harnessId: "measurement-point-mismatch", unmet: [] },
-    }),
-    {
-      harnessId: "measurement-point-mismatch",
-      unmetPreconditions: [],
-      declaredPreconditions: plan.preconditions,
-      contractBlockedId: null,
-      hold: true,
-    },
-  );
-  // Several unmet: README order, the first declared one names the block.
-  assert.deepEqual(
-    blockedRecord({
-      plan,
-      blocked: {
-        harnessId: "x",
-        unmet: [
-          "index-state-holding",
-          "maintenance-enabled",
-          "b-sealed-binding",
-        ],
+        condition: "graph",
+        unmet: ["index-state-holding", "b-sealed-binding"],
       },
     }).unmetPreconditions,
-    ["b-sealed-binding", "maintenance-enabled", "index-state-holding"],
+    ["b-sealed-binding", "index-state-holding"],
   );
 });
 
@@ -1071,7 +1160,9 @@ test("P-6: Chronicle の Index の build は照会の間隔 500 ms・待ち 120 
   const sealed = await completeSetup("G-08/graph-index-unusable", {
     buildIndexFailsIn: "seal",
   });
-  assert.equal(sealed.receipt.blocked.contractBlockedId, "maintenance-enabled");
+  // DR-CP4-L-28: a while- variant's timeout is index-state-holding,
+  // whatever the step.
+  assert.equal(sealed.receipt.blocked.contractBlockedId, "index-state-holding");
   assert.deepEqual(
     indexBuildUnmet({ measurementPoint: null }, "chronicle-index"),
     [],

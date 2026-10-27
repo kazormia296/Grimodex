@@ -331,6 +331,8 @@ pub(crate) use c2zc_canonical_cutover::{
     mint_c2zc_scan_publish_project_birth_epoch_in_tx,
 };
 pub use inbox_read_model::{build_maintenance_inbox, InboxEntry, InboxEntryKind};
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub use incremental_freshness::publish_race_for_test as incremental_freshness_publish_race_for_test;
 pub use incremental_freshness::FreshnessLifecycleControl;
 pub use incremental_freshness::{
     run_incremental_freshness_cycle, run_incremental_freshness_cycle_with_hold,
@@ -339,9 +341,9 @@ pub use incremental_freshness::{
     run_incremental_freshness_cycle_with_liveness_capability_and_hold,
     run_incremental_freshness_cycle_with_liveness_capability_and_hold_and_lifecycle_control,
     IncrementalFreshnessBatchSummary, IncrementalFreshnessCycleOutcome,
-    IncrementalFreshnessHeldSummary, IncrementalFreshnessShadowConsumerSummary,
-    IncrementalFreshnessShadowSummary, SuccessfulIncrementalFreshnessCycle,
-    NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
+    IncrementalFreshnessCycleRequeued, IncrementalFreshnessHeldSummary,
+    IncrementalFreshnessShadowConsumerSummary, IncrementalFreshnessShadowSummary,
+    SuccessfulIncrementalFreshnessCycle, NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME,
 };
 pub use maintenance_route_registry::{
     route_descriptor_by_id, route_descriptor_for_run_kind, route_descriptors,
