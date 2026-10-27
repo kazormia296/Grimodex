@@ -33,6 +33,9 @@ import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody"
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { fetchRelatedPastScenes } from "@/features/related-scenes/fetchRelatedScenes";
+import { listenRelatedScenesGraphReady } from "@/features/related-scenes/nir1RelatedScenesApi";
+import { fuseNir1RelatedScenesGraph } from "@/features/related-scenes/nir1GraphFusion";
+import type { Nir1RelatedScenesFetchResult } from "@/features/related-scenes/nir1RelatedScenesFetchTypes";
 import type { RelatedScenesGraphPathEdge } from "@/../electron/shared/relatedScenesSearchWire";
 
 function describe(error: unknown): string {
@@ -227,18 +230,34 @@ const edgeOf = (edge: RelatedScenesGraphPathEdge) => ({
   relationType: edge.relationType,
 });
 
-/**
- * K24-G01-N2〜N4 control (DR-CP4-O-6): one product fetch with the seed, and
- * the Graph answer's entities as the product's DTO carries them (the
- * Graph-only row's pin Entity and path edges, the path attachments' edges).
- */
-async function graphProbe(input: { sceneId: string; seed: string }) {
-  const result = await fetchRelatedPastScenes(input.sceneId, {
-    mode: "hybrid",
-    graphSeedEntityId: input.seed,
-  });
+const graphReadyMarks: { projectId: string; at: number }[] = [];
+let graphReadyListening: Promise<unknown> | null = null;
+
+function listenGraphReadyMarks() {
+  graphReadyListening ??= listenRelatedScenesGraphReady((projectId) =>
+    graphReadyMarks.push({ projectId, at: performance.now() }),
+  );
+  return graphReadyListening;
+}
+
+const sleepMs = (ms: number) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+type FetchResult = Nir1RelatedScenesFetchResult;
+
+/** One product answer as the DTO carries it (entities, displayed Scenes). */
+function answerOf(result: FetchResult, sceneId: string) {
   const graph = result.graph ?? null;
-  const out = {
+  const fused = result.graphOutcome
+    ? fuseNir1RelatedScenesGraph({
+        result: result.result,
+        queryBinding: result.queryBinding,
+        querySceneId: sceneId,
+        graphOutcome: result.graphOutcome,
+        ...(graph ? { graph } : {}),
+      })
+    : null;
+  return {
     status: result.status,
     graphOutcome: result.graphOutcome ?? null,
     graphOnly: graph?.graphOnly
@@ -254,8 +273,64 @@ async function graphProbe(input: { sceneId: string; seed: string }) {
       hop: row.hop,
       edges: row.edges.map(edgeOf),
     })),
+    finalSceneIds: fused
+      ? fused.rows.map((row) => row.sceneId)
+      : result.result.scenes.map((row) => row.sceneId),
   };
-  result.session?.release();
+}
+
+/**
+ * K24-G01-N2〜N4 (DR-CP4-O-6, review P2-3): one product fetch with the seed,
+ * as the product's hook consumes it — when the parent's Graph answer is not
+ * graph-ready, the parent's session is held (as the hook holds it, so the
+ * deferred prepare is not released) until the product's `graph-ready` mark
+ * for the project, at most `readyWaitMs`, and the same query is asked again
+ * (the hook's follow-up). Both answers are returned.
+ */
+async function graphProbe(input: {
+  projectId: string;
+  sceneId: string;
+  seed: string;
+  readyWaitMs: number;
+}) {
+  await listenGraphReadyMarks();
+  const marksBefore = graphReadyMarks.length;
+  const calledAt = performance.now();
+  const parent = await fetchRelatedPastScenes(input.sceneId, {
+    mode: "hybrid",
+    graphSeedEntityId: input.seed,
+  });
+  const out: {
+    parent: ReturnType<typeof answerOf>;
+    child: ReturnType<typeof answerOf> | null;
+    readyMarkAfterMs: number | null;
+  } = {
+    parent: answerOf(parent, input.sceneId),
+    child: null,
+    readyMarkAfterMs: null,
+  };
+  try {
+    if (parent.graphOutcome !== "graph-ready") {
+      const deadline = performance.now() + input.readyWaitMs;
+      const mark = () =>
+        graphReadyMarks
+          .slice(marksBefore)
+          .find((row) => row.projectId === input.projectId) ?? null;
+      while (!mark() && performance.now() < deadline) await sleepMs(5);
+      const ready = mark();
+      if (ready) {
+        out.readyMarkAfterMs = ready.at - calledAt;
+        const child = await fetchRelatedPastScenes(input.sceneId, {
+          mode: "hybrid",
+          graphSeedEntityId: input.seed,
+        });
+        out.child = answerOf(child, input.sceneId);
+        child.session?.release();
+      }
+    }
+  } finally {
+    parent.session?.release();
+  }
   return out;
 }
 

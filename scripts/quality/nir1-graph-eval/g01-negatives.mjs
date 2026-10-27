@@ -24,6 +24,7 @@ import { G01_N4_DRAFT_SUFFIX, G01_NEGATIVES } from "./frozen-diagnostics.mjs";
 import {
   B_SEAL_REOPENS,
   B_SEAL_WAIT_MS,
+  bSealPublished,
   indexStateProbe,
 } from "./frozen-setup-driver.mjs";
 import { verifySeedPins } from "./seed-pin.mjs";
@@ -136,11 +137,8 @@ export async function waitG01NegativeSealed({
   const previous = Number(before?.b?.generation ?? 0);
   for (;;) {
     const metadata = readIndex();
-    const probe = indexStateProbe({ metadata });
-    if (
-      Number(metadata?.b?.generation ?? 0) > previous &&
-      probe.graph === "usable"
-    )
+    // Review P3 (a): the driver's own b-seal rule.
+    if (bSealPublished(metadata, previous))
       return { ok: true, waitedMs: now() - started, metadata };
     if (now() - started >= limitMs)
       return { ok: false, waitedMs: now() - started, metadata };
@@ -186,13 +184,22 @@ export function graphInputsDigest(rows) {
 }
 
 /**
- * The control's attempts (D′: late answers until the deferred prepare is
- * cached; the dev check saw up to 5 late answers in a row). A harness value,
- * not a K6/4 value.
+ * The control's attempts (review P2-3: each is the hook's parent and, when
+ * that is not graph-ready, its follow-up after the product's graph-ready
+ * mark). Harness values, not K6/4 values.
  */
-export const G01_CONTROL_ATTEMPTS = 10;
-/** Longer than the owner's rebuild_min_interval (1 s), a harness value. */
+export const G01_CONTROL_ATTEMPTS = 3;
+/** The wait for the product's graph-ready mark after a late parent. */
+export const G01_GRAPH_READY_WAIT_MS = 10_000;
+/** Between attempts: longer than the owner's rebuild_min_interval (1 s). */
 export const G01_CONTROL_GAP_MS = 1_200;
+/** Review P3 (f): what the control does not cover, disclosed. */
+export const G01_CONTROL_LIMIT =
+  "the control and the measurement share the Graph's relational input (Codex entries, Relations, pins); the B index digest is disclosed, not compared";
+
+/** The answer a sample is judged on: the follow-up's when there is one. */
+export const effectiveAnswerOf = (probe) =>
+  probe?.child ?? probe?.parent ?? null;
 
 /**
  * DR-CP4-O-6: the control's verdict on one product answer — `reached` when
@@ -216,37 +223,56 @@ export function classifyG01Control({ answer, ids, target }) {
 
 /**
  * The control (after the declaration, before the mutation, same workspace
- * and seed): up to G01_CONTROL_ATTEMPTS product fetches until one is
- * graph-ready, each after the owner's next-query cache is filled
- * (`awaitCached`, e.g. `awaitOwnerCached`) or the gap; records every answer
- * and the Graph input digest.
+ * and seed): up to G01_CONTROL_ATTEMPTS product fetches as the hook consumes
+ * them (`graphProbe`: the parent and, when it is late, the follow-up after
+ * the graph-ready mark), until one answer is graph-ready; records every
+ * answer, the owner counters (cacheHits, lateCached) before and after each,
+ * the Graph input digest and the B index metadata (disclosed only).
  */
 export async function runG01NegativeControl({
   page,
   ids,
   target,
   readGraphInputs,
-  awaitCached = null,
+  readCounters = null,
+  readIndex = null,
   sleep = delay,
   attempts = G01_CONTROL_ATTEMPTS,
 }) {
   const answers = [];
   let status = "undetermined";
   for (let at = 0; at < attempts; at++) {
+    const before = readCounters ? await readCounters() : null;
     const result = await pageCall(page, "graphProbe", {
+      projectId: ids.projectId,
       sceneId: ids.scenes[target.querySceneId],
       seed: ids.entities[target.seedEntityId],
+      readyWaitMs: G01_GRAPH_READY_WAIT_MS,
     });
-    const answer = result?.ok ? result.value : { error: result?.error ?? null };
-    answers.push(answer);
+    const after = readCounters ? await readCounters() : null;
+    const probe = result?.ok ? result.value : { error: result?.error ?? null };
+    const counterDelta =
+      before && after
+        ? Object.fromEntries(
+            ["begins", "cacheHits", "lateCached"].map((key) => [
+              key,
+              (after[key] ?? 0) - (before[key] ?? 0),
+            ]),
+          )
+        : null;
+    answers.push({ ...probe, counters: counterDelta });
+    const answer = effectiveAnswerOf(probe);
     status = classifyG01Control({ answer, ids, target });
-    if (answer.graphOutcome === "graph-ready") break;
-    // D′: the late answer's deferred prepare fills the owner's next-query
-    // cache; the next fetch is asked once it is there (or after the gap).
-    if (awaitCached) answer.waitedForCache = await awaitCached();
-    else await sleep(G01_CONTROL_GAP_MS);
+    if (answer?.graphOutcome === "graph-ready") break;
+    await sleep(G01_CONTROL_GAP_MS);
   }
-  return { status, answers, graphInputs: graphInputsDigest(readGraphInputs()) };
+  return {
+    status,
+    answers,
+    graphInputs: graphInputsDigest(readGraphInputs()),
+    bIndex: readIndex ? (readIndex()?.b ?? null) : null,
+    limit: G01_CONTROL_LIMIT,
+  };
 }
 
 /**
@@ -296,6 +322,13 @@ export async function reopenUntilSealed({
         metadata,
         usable,
       };
+      // Review P3 (a): a B that went dirty again after its seal (the
+      // driver's bDirtiedAfterSeal) is rebuilt only by a new opening.
+      if (!bSealPublished(metadata, Number(before?.b?.generation ?? 0))) {
+        sealAttempts.at(-1).outcome = "sealed-then-dirty";
+        await session.close();
+        continue;
+      }
       if (usable) return { ok: true, session, sealAttempts };
       return {
         ok: false,
@@ -341,14 +374,24 @@ export async function runG01NegativeStep({
   let mutation;
   if (spec.mutation === "resave-same-body") {
     const result = await pageCall(page, "resaveBody", scene);
-    if (!result?.ok || result.value.after.sha256 !== result.value.before.sha256)
+    // Review P3 (b): the same bytes saved again as a new version.
+    const resaved =
+      result?.ok === true &&
+      result.value.after.sha256 === result.value.before.sha256 &&
+      Number.isInteger(result.value.before.version) &&
+      result.value.after.version > result.value.before.version;
+    if (!resaved)
       return {
         id,
         mutation: result ?? null,
         session: null,
         blocked: {
           reason: "mutation",
-          error: result?.error ?? "the body changed",
+          error:
+            result?.error ??
+            (result.value.after.sha256 !== result.value.before.sha256
+              ? "the body changed"
+              : "the resave did not advance the body version"),
         },
       };
     mutation = result.value;
@@ -484,30 +527,4 @@ export function g01NegativeSampleOf({
       (sceneId) => inverse.get(sceneId) ?? `unmapped:${sceneId}`,
     ),
   };
-}
-
-/**
- * The owner's next-query cache filled after a late answer (slot `empty`,
- * `cacheOccupied`), read from the evaluation status, at most `limitMs`.
- */
-export async function awaitOwnerCached({
-  readStatus,
-  limitMs = 10_000,
-  sleep = delay,
-  now = () => Date.now(),
-}) {
-  const started = now();
-  for (;;) {
-    const status = await readStatus();
-    const owner = status?.owner ?? {};
-    if (owner.slot === "empty" && owner.cacheOccupied === true)
-      return { cached: true, waitedMs: now() - started };
-    if (now() - started >= limitMs)
-      return {
-        cached: false,
-        waitedMs: now() - started,
-        slot: owner.slot ?? null,
-      };
-    await sleep(50);
-  }
 }

@@ -7,8 +7,9 @@ import { assessG01Negative } from "./frozen-diagnostics.mjs";
 import {
   G01_CONTROL_ATTEMPTS,
   G01_CONTROL_GAP_MS,
+  G01_GRAPH_READY_WAIT_MS,
+  effectiveAnswerOf,
   G01_NEGATIVE_POLL_MS,
-  awaitOwnerCached,
   classifyG01Control,
   g01FrameReached,
   graphInputsDigest,
@@ -361,7 +362,10 @@ test("O-1 (5): restore の経路が使えない、版の bytes が違う、B が
   const { page } = fakePage({
     resaveBody: () => ({
       ok: true,
-      value: { before: { sha256: "o" }, after: { sha256: "o" } },
+      value: {
+        before: { sha256: "o", version: 1 },
+        after: { sha256: "o", version: 2 },
+      },
     }),
   });
   const notSealed = await runG01NegativeStep({
@@ -515,50 +519,6 @@ test("O-6: 対照は graph-ready の答えの Graph-only の行が宣言の Scen
   );
 });
 
-test("O-6: 対照は graph-ready になるまで上限の回数だけ製品の fetch を繰り返し、答えと Graph の入力の digest を残す", async () => {
-  const answers = [
-    reachedAnswer({ graphOutcome: "graph-late", graphOnly: null }),
-    reachedAnswer(),
-  ];
-  const { calls, page } = fakePage({
-    graphProbe: () => ({ ok: true, value: answers.shift() }),
-  });
-  const slept = [];
-  const control = await runG01NegativeControl({
-    page,
-    ids: IDS,
-    target: T2,
-    readGraphInputs: () => ({ codexRelations: [{ id: "r" }] }),
-    sleep: async (ms) => slept.push(ms),
-  });
-  assert.equal(control.status, "reached");
-  assert.equal(control.answers.length, 2);
-  assert.deepEqual(slept, [G01_CONTROL_GAP_MS]);
-  assert.deepEqual(calls[0], [
-    "graphProbe",
-    { sceneId: "s-query", seed: "e-orin" },
-  ]);
-  assert.equal(
-    control.graphInputs,
-    graphInputsDigest({ codexRelations: [{ id: "r" }] }),
-  );
-  const never = fakePage({
-    graphProbe: () => ({
-      ok: true,
-      value: reachedAnswer({ graphOutcome: "graph-late" }),
-    }),
-  });
-  const late = await runG01NegativeControl({
-    page: never.page,
-    ids: IDS,
-    target: T2,
-    readGraphInputs: () => ({}),
-    sleep: async () => {},
-  });
-  assert.equal(late.status, "undetermined");
-  assert.equal(late.answers.length, G01_CONTROL_ATTEMPTS);
-});
-
 test("O-1 (7): mutation の後は Main を閉じて開き直し、setup の seal の session と同じ上限（1 + B_SEAL_REOPENS 回）で B を待ち、記録を残す", async () => {
   const events = [];
   let opened = 0;
@@ -575,7 +535,7 @@ test("O-1 (7): mutation の後は Main を閉じて開き直し、setup の seal
       events.push(["chronicle"]);
       return { ok: true };
     },
-    readIndex: () => metadata(4),
+    readIndex: () => (opened === sealedAt ? metadata(5) : metadata(4)),
     before: metadata(4),
     wait: async () =>
       opened === sealedAt
@@ -709,74 +669,111 @@ test("O-6: sample の「届いた」は、対照が reached・Graph の入力が
   );
 });
 
-test("O-6: 対照の聞き直しは owner の next-query cache が埋まるのを待ってから（無ければ間隔）", async () => {
-  const answers = [
-    reachedAnswer({ graphOutcome: "graph-late", graphOnly: null }),
-    reachedAnswer(),
+test("レビュー P2-3: 対照は hook と同じく親と、親が late なら graph-ready の印の後の follow-up の子の答えで取り、各回の owner の counter を残す", async () => {
+  const probes = [
+    {
+      parent: reachedAnswer({ graphOutcome: "graph-late", graphOnly: null }),
+      child: null,
+      readyMarkAfterMs: null,
+    },
+    {
+      parent: reachedAnswer({ graphOutcome: "graph-late", graphOnly: null }),
+      child: reachedAnswer(),
+      readyMarkAfterMs: 900,
+    },
   ];
-  const { page } = fakePage({
-    graphProbe: () => ({ ok: true, value: answers.shift() }),
+  const { calls, page } = fakePage({
+    graphProbe: () => ({ ok: true, value: probes.shift() }),
   });
-  const waits = [];
+  let begins = 0;
+  const slept = [];
   const control = await runG01NegativeControl({
     page,
     ids: IDS,
     target: T2,
-    readGraphInputs: () => ({}),
-    awaitCached: async () => {
-      waits.push("cache");
-      return { cached: true, waitedMs: 3 };
-    },
-    sleep: async () => waits.push("sleep"),
+    readGraphInputs: () => ({ codexRelations: [{ id: "r" }] }),
+    readCounters: async () => ({
+      begins: (begins += 1),
+      cacheHits: begins,
+      lateCached: 0,
+    }),
+    readIndex: () => metadata(4),
+    sleep: async (ms) => slept.push(ms),
   });
   assert.equal(control.status, "reached");
-  assert.deepEqual(waits, ["cache"]);
-  assert.deepEqual(control.answers[0].waitedForCache, {
-    cached: true,
-    waitedMs: 3,
-  });
-  const statuses = [
-    { owner: { slot: "deferred", cacheOccupied: false } },
-    { owner: { slot: "preparing", cacheOccupied: false } },
-    { owner: { slot: "empty", cacheOccupied: true } },
-  ];
-  let clock = 0;
-  const cached = await awaitOwnerCached({
-    readStatus: async () => statuses.shift(),
-    sleep: async (ms) => {
-      clock += ms;
+  assert.equal(control.answers.length, 2);
+  assert.deepEqual(slept, [G01_CONTROL_GAP_MS]);
+  assert.deepEqual(calls[0], [
+    "graphProbe",
+    {
+      projectId: "p",
+      sceneId: "s-query",
+      seed: "e-orin",
+      readyWaitMs: G01_GRAPH_READY_WAIT_MS,
     },
-    now: () => clock,
+  ]);
+  assert.deepEqual(control.answers[1].counters, {
+    begins: 1,
+    cacheHits: 1,
+    lateCached: 0,
   });
-  assert.deepEqual(cached, { cached: true, waitedMs: 100 });
-  clock = 0;
-  const never = await awaitOwnerCached({
-    readStatus: async () => ({ owner: { slot: "deferred" } }),
-    limitMs: 200,
-    sleep: async (ms) => {
-      clock += ms;
-    },
-    now: () => clock,
+  assert.equal(
+    control.graphInputs,
+    graphInputsDigest({ codexRelations: [{ id: "r" }] }),
+  );
+  // 開示: B の index の metadata と、対照が覆わないこと。
+  assert.deepEqual(control.bIndex, metadata(4).b);
+  assert.match(control.limit, /B index digest is disclosed, not compared/u);
+  assert.equal(effectiveAnswerOf({ parent: { a: 1 }, child: null }).a, 1);
+  assert.equal(effectiveAnswerOf({ parent: { a: 1 }, child: { a: 2 } }).a, 2);
+  const never = fakePage({
+    graphProbe: () => ({
+      ok: true,
+      value: {
+        parent: reachedAnswer({ graphOutcome: "graph-late" }),
+        child: null,
+      },
+    }),
   });
-  assert.equal(never.cached, false);
+  const late = await runG01NegativeControl({
+    page: never.page,
+    ids: IDS,
+    target: T2,
+    readGraphInputs: () => ({}),
+    sleep: async () => {},
+  });
+  assert.equal(late.status, "undetermined");
+  assert.equal(late.answers.length, G01_CONTROL_ATTEMPTS);
 });
 
-test("O-6／O-1 (7)（変異 W2、W4）: cache は slot が empty で埋まったときだけ、Chronicle は build の後の metadata でも使えること", async () => {
-  let clock = 0;
-  const statuses = [
-    { owner: { slot: "empty", cacheOccupied: false } },
-    { owner: { slot: "ready", cacheOccupied: true } },
-    { owner: { slot: "empty", cacheOccupied: true } },
-  ];
-  const cached = await awaitOwnerCached({
-    readStatus: async () => statuses.shift(),
-    sleep: async (ms) => {
-      clock += ms;
+test("レビュー P3 (a)(b): seal の後に B が再び dirty なら開き直し、Chronicle が使えなければ止め、N2 は版が進まなければ blocked", async () => {
+  let opened = 0;
+  const dirtyThenClean = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    buildChronicle: async () => ({ ok: true }),
+    openSession: async () => {
+      opened += 1;
+      return { close: async () => {} };
     },
-    now: () => clock,
+    readIndex: () =>
+      opened === 1
+        ? {
+            b: { generation: 5, dirty: true },
+            chronicle: { generation: 3, dirty: false },
+          }
+        : {
+            b: { generation: 6, dirty: false },
+            chronicle: { generation: 3, dirty: false },
+          },
+    before: metadata(4),
+    wait: async () => ({ ok: true, waitedMs: 1 }),
   });
-  assert.deepEqual(cached, { cached: true, waitedMs: 100 });
-  const dirty = await reopenUntilSealed({
+  assert.equal(dirtyThenClean.ok, true);
+  assert.deepEqual(
+    dirtyThenClean.sealAttempts.map((row) => row.outcome),
+    ["sealed-then-dirty", "sealed"],
+  );
+  const chronicleDirty = await reopenUntilSealed({
     closeCurrent: async () => {},
     buildChronicle: async () => ({ ok: true }),
     openSession: async () => ({ close: async () => {} }),
@@ -787,5 +784,27 @@ test("O-6／O-1 (7)（変異 W2、W4）: cache は slot が empty で埋まっ�
     before: metadata(4),
     wait: async () => ({ ok: true, waitedMs: 1 }),
   });
-  assert.equal(dirty.reason, "chronicle-index-not-usable");
+  assert.equal(chronicleDirty.reason, "chronicle-index-not-usable");
+  const { page } = fakePage({
+    resaveBody: () => ({
+      ok: true,
+      value: {
+        before: { sha256: "o", version: 3 },
+        after: { sha256: "o", version: 3 },
+      },
+    }),
+  });
+  const step = await runG01NegativeStep({
+    id: "K24-G01-N2",
+    page,
+    ids: IDS,
+    target: TARGET,
+    before: null,
+    readIndex: () => metadata(4),
+    readPins: () => pins([pin("e-orin")]),
+    readGraphInputs: () => ({}),
+    reopen: async () => ({ ok: true, session: {}, sealAttempts: [] }),
+  });
+  assert.equal(step.blocked.reason, "mutation");
+  assert.match(step.blocked.error, /did not advance the body version/u);
 });

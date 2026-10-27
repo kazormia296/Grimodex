@@ -4,7 +4,7 @@
 // 実 Electron を起動せず、setup も実行しない（fixture は fs で読むだけ）。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -279,4 +279,40 @@ test("O-1 (3): 分岐の入力の検査（① は分岐しない、側の欠け�
   assert.deepEqual(branchCarryOf({ page: {}, foreshadowVersions: { a: 1 } }), {
     foreshadowVersions: { a: 1 },
   });
+});
+
+test("レビュー P3 (c): pre-step の閉じた DB が SHM を残していれば写さない", async () => {
+  const plan = planOf(COMPLETE, "G-02/base");
+  const dir = scratch("cp4-sp-p4-shm-");
+  const setupDir = path.join(dir, "pre");
+  const fake = product(plan);
+  const started = sessions(fake);
+  const result = await setupFrozenVariant({
+    plan,
+    setupDir,
+    shared: SHARED,
+    branch: { stage: SP_P4_BRANCH.preStep },
+    deps: {
+      startSession: async (args) => {
+        const handle = await started.startSession(args);
+        return {
+          ...handle,
+          stop: async () => {
+            const stopped = await handle.stop();
+            writeFileSync(
+              path.join(setupDir, "workspace", "grimodex.db-shm"),
+              "shm",
+            );
+            return stopped;
+          },
+        };
+      },
+      uuid,
+      sleep: async () => {},
+      limits: { bSealMs: 50, maintenanceMs: 50 },
+    },
+  });
+  assert.equal(result.receipt.status, "failed");
+  assert.match(result.receipt.errors.join("\n"), /kept a SHM file/u);
+  assert.equal(result.branch, undefined);
 });

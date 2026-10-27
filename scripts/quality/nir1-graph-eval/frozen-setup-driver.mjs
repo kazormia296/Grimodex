@@ -116,6 +116,18 @@ const MAINTENANCE_SEAM = Object.freeze({
  * them); a setup never tunes them to its result.
  */
 export const B_SEAL_WAIT_MS = 120_000;
+
+/**
+ * The `b-seal` step's rule (shared with S5-B's reopening, DR-CP4-O-10): a B
+ * generation newer than `previous` that is not dirty.
+ */
+export function bSealPublished(metadata, previous) {
+  return Boolean(
+    metadata?.b &&
+    metadata.b.generation > previous &&
+    metadata.b.dirty === false,
+  );
+}
 export const B_SEAL_REOPENS = 2;
 const B_SEAL_NOT_PUBLISHED = "blocked:b-seal-not-published";
 /**
@@ -896,15 +908,10 @@ const EXECUTORS = Object.freeze({
     const limit = ctx.limits?.bSealMs ?? B_SEAL_WAIT_MS;
     while (Date.now() - started < limit) {
       metadata = readIndexMetadata(file, ctx.ids.projectId);
-      if (
-        metadata.b &&
-        metadata.b.generation > previous &&
-        metadata.b.dirty === false
-      )
-        break;
+      if (bSealPublished(metadata, previous)) break;
       await ctx.sleep(500);
     }
-    if (!(metadata?.b?.generation > previous && metadata.b.dirty === false)) {
+    if (!bSealPublished(metadata, previous)) {
       // P-0: the session loop may reopen the seam session (bounded).
       const error = new Error(
         `[precheck] S1i b-seal: ${B_SEAL_NOT_PUBLISHED} — no new sealed B generation within ${limit} ms`,
@@ -2573,6 +2580,11 @@ export async function setupFrozenVariant({
     // SP-P4 pre-step: the copy and the state a side resumes from; no read
     // back (the setup stops before the seed pin step by design).
     if (preStep) {
+      // DR-CP4-O-1 (3): the closed DB left neither WAL nor SHM behind.
+      if (existsSync(`${live}-shm`))
+        throw new Error(
+          "[artifact] the SP-P4 pre-step workspace kept a SHM file after close",
+        );
       const problems = receipt.sessions.flatMap((row) => row?.problems ?? []);
       receipt.errors.push(...problems);
       receipt.status =

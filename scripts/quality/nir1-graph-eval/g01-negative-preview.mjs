@@ -21,9 +21,9 @@ import { loadDevFixture } from "./dev-fixture.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import { assessG01Negative } from "./frozen-diagnostics.mjs";
 import {
-  G01_CONTROL_ATTEMPTS,
   G01_CONTROL_GAP_MS,
-  awaitOwnerCached,
+  G01_GRAPH_READY_WAIT_MS,
+  effectiveAnswerOf,
   g01NegativeLaunchEnv,
   g01NegativeSampleOf,
   prepareG01NegativeBeforeDeclaration,
@@ -155,6 +155,8 @@ async function main() {
     });
     const readIndex = () => readIndexMetadata(dbPath, ids.projectId);
     const readGraphInputs = () => readWorkspaceRows(dbPath, ids.projectId);
+    const readCounters = async () =>
+      JSON.parse(await current.session.addon("nir1GraphEvalDiagnostics"));
     // One measurement Main on the B-ROUTE journey seam (the addendum's
     // measurementProcess); its workspace open runs the gated B build.
     const open = async (label) => {
@@ -259,11 +261,8 @@ async function main() {
         ids,
         target,
         readGraphInputs,
-        awaitCached: () =>
-          awaitOwnerCached({
-            readStatus: async () =>
-              JSON.parse(await current.session.addon("nir1GraphEvalStatus")),
-          }),
+        readCounters,
+        readIndex,
       });
       report.control = control;
       step = await runG01NegativeStep({
@@ -313,23 +312,26 @@ async function main() {
             materials,
           ),
         );
-        // D′: the first answer is often late; the preview has no hook
-        // follow-up, so it asks again (as the control) until graph-ready.
-        let measure = null;
-        const tries = [];
-        for (let at = 0; at < G01_CONTROL_ATTEMPTS; at++) {
-          measure = await page.evaluate(
-            (input) => window.cp4Harness.measure(input),
-            { sceneId: ids.querySceneId, seed },
-          );
-          tries.push(measure.graphOutcome);
-          if (measure.graphOutcome === "graph-ready") break;
-          await awaitOwnerCached({
-            readStatus: async () =>
-              JSON.parse(await current.session.addon("nir1GraphEvalStatus")),
-          });
-        }
-        const outcome = measure.graphOutcome;
+        // As the product's hook: the parent, and its follow-up after the
+        // graph-ready mark when the parent is late (review P2-3).
+        const before = await readCounters();
+        const probed = await page.evaluate(
+          (input) => window.cp4Harness.diagnostic.graphProbe(input),
+          {
+            projectId: ids.projectId,
+            sceneId: ids.querySceneId,
+            seed,
+            readyWaitMs: G01_GRAPH_READY_WAIT_MS,
+          },
+        );
+        const after = await readCounters();
+        if (!probed?.ok)
+          throw new Error(`[artifact] graphProbe: ${probed?.error}`);
+        const probe = probed.value;
+        const norm = (value) =>
+          typeof value === "string" && value.startsWith("graph-unavailable")
+            ? "graph-unavailable"
+            : value;
         samples.push(
           g01NegativeSampleOf({
             row: {
@@ -337,15 +339,15 @@ async function main() {
               repeat,
               arm: "graph",
               seed,
-              graph: {
-                outcome:
-                  typeof outcome === "string" &&
-                  outcome.startsWith("graph-unavailable")
-                    ? "graph-unavailable"
-                    : outcome,
+              graph: { outcome: norm(probe.parent.graphOutcome) },
+              followUp: {
+                parent: { seed },
+                child: probe.child
+                  ? { outcome: norm(probe.child.graphOutcome) }
+                  : null,
               },
               a3AtStart: a3AtStartOf(a3),
-              finalSceneIds: measure.finalSceneIds,
+              finalSceneIds: effectiveAnswerOf(probe).finalSceneIds,
             },
             ids,
             target,
@@ -353,12 +355,23 @@ async function main() {
             inputsDigest: step.graphInputs,
           }),
         );
+        const outcome = effectiveAnswerOf(probe).graphOutcome;
+        const measure = { status: effectiveAnswerOf(probe).status };
+        const tries = [
+          probe.parent.graphOutcome,
+          probe.child?.graphOutcome ?? null,
+        ];
+        const counters = {
+          cacheHits: after.cacheHits - before.cacheHits,
+          lateCached: after.lateCached - before.lateCached,
+        };
         report.graphOutcomes ??= [];
         report.graphOutcomes.push({
           status: measure.status,
           graphOutcome: outcome,
           tries,
-          graph: measure.graph,
+          counters,
+          readyMarkAfterMs: probe.readyMarkAfterMs,
           a3: a3AtStartOf(a3),
         });
         await delay(G01_CONTROL_GAP_MS);
