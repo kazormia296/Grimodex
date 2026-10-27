@@ -11,6 +11,7 @@ import process from "node:process";
 import { test } from "node:test";
 import { setTimeout } from "node:timers";
 import { classifyFollowUp } from "./followup.mjs";
+import { lapseKind } from "./join.mjs";
 import {
   K64_CHILD_RESULT,
   k64Api,
@@ -29,6 +30,8 @@ import {
   devTracePlan,
   mergeNativeRecords,
   mixWindowAfter,
+  startSealCounts,
+  startSealOf,
   summarizeTraceRun,
   traceEvents,
   traceQueryRow,
@@ -795,5 +798,78 @@ test("TR-3: traceQueryRow は親の seed が無ければ [precheck]（R5）で�
         expectedContribution: null,
       }),
     /\[precheck\] R5/u,
+  );
+});
+
+const sealRead = (index, b, extra = {}) => ({
+  read: "ok",
+  b,
+  chronicle: { generation: 1, dirty: false },
+  startedAt: 10_000 + index * 3_000 - 300,
+  finishedAt: 10_000 + index * 3_000 - 299,
+  durationMs: 0.5,
+  ...extra,
+});
+
+test("TR-9: 開始時の封印の規則（先に固定）: current／dirty／missing、読めない・query の開始の後に読み終えた・読んでいないは unknown", () => {
+  assert.equal(
+    startSealOf(sealRead(0, { generation: 4, dirty: false }), 10_000).state,
+    "current",
+  );
+  assert.equal(
+    startSealOf(sealRead(0, { generation: 4, dirty: true }), 10_000).state,
+    "dirty",
+  );
+  assert.equal(startSealOf(sealRead(0, null), 10_000).state, "missing");
+  assert.equal(
+    startSealOf(sealRead(0, null, { read: "failed", error: "busy" }), 10_000)
+      .reason,
+    "read-failed:busy",
+  );
+  const late = startSealOf(
+    sealRead(0, { generation: 4, dirty: false }, { finishedAt: 10_000 }),
+    10_000,
+  );
+  assert.deepEqual(
+    [late.state, late.reason],
+    ["unknown", "read-not-before-query"],
+  );
+  assert.equal(startSealOf(undefined, 10_000).reason, "not-read");
+});
+
+test("TR-9: 行の snapshot は開始時の封印で決め（current のときだけ U）、Native の begin からの snapshot は開示に残す。unknown は U に入れず別に数える", () => {
+  const trace = editingTrace(4);
+  const runs = pollRuns(trace.events, 9_000, 23_000, 1);
+  const seals = {
+    0: sealRead(0, { generation: 4, dirty: false }),
+    1: sealRead(1, { generation: 4, dirty: true }),
+    2: sealRead(2, null, { read: "failed", error: "busy" }),
+    // 3: not read
+  };
+  const rows = rowsOf(trace, 4, runs, {
+    plan: plan("editing", 3),
+    startSeals: seals,
+  });
+  assert.deepEqual(
+    rows.map((row) => [row.startSeal.state, row.snapshot.usable]),
+    [
+      ["current", true],
+      ["dirty", false],
+      ["unknown", false],
+      ["unknown", false],
+    ],
+  );
+  assert.equal(rows[1].snapshot.reason, "start-seal:dirty");
+  assert.equal(rows[1].snapshotNative.usable, true);
+  assert.deepEqual(startSealCounts(rows), {
+    current: 1,
+    dirty: 1,
+    missing: 0,
+    unknown: 2,
+  });
+  // The classifier (unchanged) keeps them out of U: K6/2 rule 3 (i).
+  assert.deepEqual(
+    rows.map((row) => lapseKind(row, false)),
+    [null, "i-b-seal", "i-b-seal", "i-b-seal"],
   );
 });

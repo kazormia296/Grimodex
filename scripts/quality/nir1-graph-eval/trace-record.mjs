@@ -505,6 +505,87 @@ export function alignSeededBegins({ observation, native }) {
   };
 }
 
+// ---- the start seal (TR-9) and the maintenance gate (TR-10) ---------------
+
+export const START_SEAL_STATES = Object.freeze([
+  "current",
+  "dirty",
+  "missing",
+  "unknown",
+]);
+
+/**
+ * The rule, fixed before any trace was observed (DR-CP4-TR-9): the B seal at
+ * a counted query's start is `current` (the B row is not dirty), `dirty`,
+ * `missing` (no B row), or `unknown` when the read failed (busy, timeout, no
+ * table), was not taken, or did not finish before the parent fetch was called
+ * (renderer clock on both sides). Only `current` puts the query in U; the
+ * classifier counts every other state in rule 3 (i), and the receipt counts
+ * `unknown` apart (「観測できなかった」).
+ */
+export function startSealOf(record, parentCalledAt) {
+  if (!record) return { state: "unknown", reason: "not-read" };
+  if (record.read !== "ok")
+    return { state: "unknown", reason: `read-failed:${record.error}` };
+  if (
+    !finite(record.finishedAt) ||
+    !finite(parentCalledAt) ||
+    !(record.finishedAt < parentCalledAt)
+  )
+    return { state: "unknown", reason: "read-not-before-query" };
+  if (!record.b) return { state: "missing", reason: null };
+  return {
+    state: record.b.dirty ? "dirty" : "current",
+    reason: null,
+    generation: record.b.generation,
+  };
+}
+
+/** The receipt's count of the start seal states (unknown apart). */
+export function startSealCounts(rows) {
+  const counts = Object.fromEntries(START_SEAL_STATES.map((name) => [name, 0]));
+  for (const row of rows) counts[row.startSeal?.state ?? "unknown"] += 1;
+  return counts;
+}
+
+/**
+ * S2's maintenance gate of a trace run (trace files `maintenance.gate`;
+ * observation-prep `B-ROUTE`): CI=true, the owner token (the product source's
+ * public constant), a UUIDv4 nonce per launch and the B-ROUTE trigger. The
+ * S2 `forbiddenSeamOptions` never enter.
+ */
+export const TRACE_MAINTENANCE_SEAM = Object.freeze({
+  ownerTokenEnv: "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+  ownerToken: "c2-5b-product-journey-owner-v1",
+  nonceEnv: "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE",
+  triggerEnv: "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER",
+  trigger: "nir1-graph-index-build",
+});
+export const TRACE_MAINTENANCE_FORBIDDEN = Object.freeze([
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_FAULT",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP",
+  "GRIMODEX_PRODUCT_JOURNEY_NARRATIVE_FRESHNESS_HOLD_PROJECT_ID",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_BARRIER_ID",
+]);
+const UUID_V4 =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+
+/** The measurement launch's env (`base`) with the trace's maintenance gate. */
+export function traceMaintenanceEnv({ nonce, base }) {
+  if (!UUID_V4.test(nonce ?? ""))
+    throw new Error("[precheck] the maintenance seam nonce must be a UUIDv4");
+  for (const key of TRACE_MAINTENANCE_FORBIDDEN)
+    if (Object.hasOwn(base ?? {}, key))
+      throw new Error(`[precheck] S2 forbids ${key} in a trace launch`);
+  return {
+    ...base,
+    CI: "true",
+    [TRACE_MAINTENANCE_SEAM.ownerTokenEnv]: TRACE_MAINTENANCE_SEAM.ownerToken,
+    [TRACE_MAINTENANCE_SEAM.nonceEnv]: nonce,
+    [TRACE_MAINTENANCE_SEAM.triggerEnv]: TRACE_MAINTENANCE_SEAM.trigger,
+  };
+}
+
 // ---- one counted query (TR-3) ----------------------------------------------
 
 /**
@@ -554,6 +635,7 @@ function defectRow({ queryId, d2aMode, materials, parent, error }) {
     expectedMaterials: materials,
     tFetch: parent?.calledAt ?? null,
     followUp: null,
+    startSeal: { state: "unknown", reason: "row-defect" },
     rowError: error,
   };
 }
@@ -573,6 +655,7 @@ export function traceQueryRow({
   native,
   runs,
   a3,
+  startSeal = null,
   d2aMode,
   materials,
   expectedContribution,
@@ -689,8 +772,29 @@ export function traceQueryRow({
         toSeq: endRecord.seq,
       }
     : { read: "missing" };
+  // TR-9: U and rule 3 (i) read the start seal; the begin's own answer (D′
+  // always answers `pending`) stays as `snapshotNative` for disclosure.
+  const seal = startSealOf(startSeal, parent.calledAt);
+  const snapshot = {
+    usable: row.snapshot.usable === true && seal.state === "current",
+    reason:
+      seal.state === "current"
+        ? row.snapshot.reason
+        : `start-seal:${seal.state}`,
+    chronicleIndexUsable: row.snapshot.chronicleIndexUsable,
+    source: "start-seal",
+  };
   return {
     ...row,
+    snapshot,
+    snapshotNative: row.snapshot,
+    startSeal: {
+      ...seal,
+      readStartedAt: startSeal?.startedAt ?? null,
+      readFinishedAt: startSeal?.finishedAt ?? null,
+      readDurationMs: startSeal?.durationMs ?? null,
+      chronicle: startSeal?.chronicle ?? null,
+    },
     queryId,
     trigger: "user-operation",
     expectedMaterials: materials,
@@ -708,6 +812,7 @@ export function traceRows({
   native,
   runs,
   a3Reads,
+  startSeals = {},
   d2aMode,
   ids,
   expectedContribution,
@@ -733,6 +838,7 @@ export function traceRows({
       native,
       runs,
       a3: a3Reads?.[entry.parentSeq] ?? null,
+      startSeal: startSeals?.[entry.index ?? at] ?? null,
       d2aMode,
       materials,
       expectedContribution,

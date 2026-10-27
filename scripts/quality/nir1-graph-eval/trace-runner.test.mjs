@@ -4,12 +4,18 @@
 // Main の poller の install と取り出し、admission の分岐、receipt の組立てを確かめる。
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { devTracePlan } from "./trace-record.mjs";
+import { URL } from "node:url";
+import {
+  TRACE_MAINTENANCE_FORBIDDEN,
+  devTracePlan,
+  traceMaintenanceEnv,
+} from "./trace-record.mjs";
 import {
   TRACE_DEV_PREVIEW_PURPOSE,
   admitTraceRun,
   counterPoller,
   runTraceOperations,
+  traceMaintenanceStart,
 } from "./trace-runner.mjs";
 import { DEV_PREVIEW_PURPOSES } from "./admission.mjs";
 
@@ -275,4 +281,125 @@ test("TR-1: admission は dev の予告だけを通し、凍結した trace は 
     () => admitTraceRun({ root: "/r", fixture: {} }),
     /\[precheck\]/u,
   );
+});
+
+test("TR-9: 開始時の封印は親の begin の前（編集中は commit の観測の後、閲覧中は場面の移動の後、最初の query は mount の前の読取）に 1 回読み、query の番号に結び、読取の前後に renderer の時刻を取る", async () => {
+  for (const kind of ["editing", "browsing"]) {
+    const { calls, driver } = fakeDriver();
+    const sealCalls = [];
+    const result = await runTraceOperations({
+      plan: plan(kind, 2),
+      runtime: RUNTIME,
+      driver,
+      mountedAt: 1_000,
+      openSeal: { read: "ok", b: null, startedAt: 1, finishedAt: 2 },
+      readSeal: async () => {
+        sealCalls.push(calls.at(-1).name);
+        return { read: "ok", b: { generation: 1, dirty: false } };
+      },
+      readA3: async () => ({}),
+      readNative: async () => {},
+      tShowMs: 2_000,
+      parentLimitMs: 30_000,
+    });
+    assert.deepEqual(
+      sealCalls,
+      kind === "editing"
+        ? ["awaitBodyCommit", "awaitBodyCommit"]
+        : ["navigate", "navigate"],
+      kind,
+    );
+    assert.deepEqual(Object.keys(result.startSeals).map(Number), [0, 1, 2]);
+    assert.equal(result.startSeals[0].finishedAt, 2);
+    assert.ok(Number.isFinite(result.startSeals[1].startedAt));
+    assert.ok(
+      result.startSeals[1].finishedAt >= result.startSeals[1].startedAt,
+    );
+    // The read is before the counted query is looked for.
+    const counted = calls.filter((row) => row.name === "awaitCounted");
+    assert.ok(result.startSeals[2].finishedAt <= counted[2].at);
+  }
+});
+
+test("TR-10: trace の測定の起動にだけ S2 の maintenance の gate の env（CI、owner token、起動ごとの nonce、B-ROUTE の trigger）が入り、定常状態の起動の env は変わらない", async () => {
+  const { launch } = await import("./dprime-check.mjs");
+  const { readFile } = await import("node:fs/promises");
+  const seen = [];
+  const start = async (args) => {
+    seen.push(args.extraEnv);
+    return {
+      evidence: { problems: [] },
+      addon: async () =>
+        JSON.stringify({
+          registrations: 1,
+          worker: { state: "configured" },
+          gateOpened: true,
+          owner: { profile: { restricted: true, inFlightStopped: true } },
+        }),
+      stop: async () => ({}),
+    };
+  };
+  const options = {
+    "eval-build": "/x",
+    "ja-model": "j",
+    "en-model": "e",
+    run: "r",
+  };
+  const nonce = "0f8fad5b-d9cb-469f-a165-70867728950e";
+  await launch({ label: "measure", runDir: "/r", options, start });
+  await launch({
+    label: "measure",
+    runDir: "/r",
+    options,
+    start: traceMaintenanceStart(start, nonce),
+  });
+  const [steady, trace] = seen;
+  assert.equal(steady.GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER, undefined);
+  assert.equal(steady.GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE, undefined);
+  assert.equal(trace.CI, "true");
+  assert.equal(
+    trace.GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER,
+    "nir1-graph-index-build",
+  );
+  assert.equal(trace.GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE, nonce);
+  // The owner token is the product source's public constant (S2: 「source の
+  // 公開の定数」).
+  const source = await readFile(
+    new URL(
+      "../../../electron/main/narrativeMaintenanceCiSeam.ts",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const token = /NARRATIVE_MAINTENANCE_OWNER_TOKEN =\s*"([^"]+)"/u.exec(
+    source,
+  )[1];
+  assert.equal(trace.GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN, token);
+  // The body declaration seam of the measurement launch is kept.
+  for (const key of Object.keys(steady)) assert.ok(key in trace, key);
+  // S2 forbiddenSeamOptions never enter.
+  for (const key of TRACE_MAINTENANCE_FORBIDDEN)
+    assert.equal(trace[key], undefined, key);
+  assert.throws(
+    () =>
+      traceMaintenanceEnv({
+        nonce,
+        base: {
+          CI: "true",
+          GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP: "disabled",
+        },
+      }),
+    /\[precheck\].*SETUP/u,
+  );
+  assert.throws(
+    () => traceMaintenanceEnv({ nonce: "x", base: { CI: "true" } }),
+    /\[precheck\].*nonce/u,
+  );
+  // k64-runner and runner never use the trace's launch.
+  for (const file of ["k64-runner.mjs", "runner.mjs"])
+    assert.doesNotMatch(
+      await readFile(new URL(file, import.meta.url), "utf8"),
+      /traceMaintenance/u,
+      file,
+    );
 });

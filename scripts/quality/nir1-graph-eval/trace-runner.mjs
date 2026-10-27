@@ -27,6 +27,7 @@
 
 import { Buffer } from "node:buffer";
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -54,7 +55,8 @@ import { assessMeasurementWindow, writeSha256Sums } from "./receipt.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { assertSeedPinsBeforeK64 } from "./seed-pin.mjs";
 import { loadSetupReceipt } from "./setup-receipt.mjs";
-import { HARNESS_PAGE, sha256 } from "./session.mjs";
+import { readStartSeal } from "./trace-seal.mjs";
+import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
 import {
   COUNTER_POLL_DRAIN_SOURCE,
   COUNTER_POLL_INTERVAL_MS,
@@ -64,8 +66,11 @@ import {
   TRACE_RUN_SCHEMA,
   devTracePlan,
   mergeNativeRecords,
+  TRACE_MAINTENANCE_SEAM,
+  startSealCounts,
   summarizeTraceRun,
   traceEvents,
+  traceMaintenanceEnv,
   traceRequeries,
   traceRows,
   validateTracePlan,
@@ -132,6 +137,19 @@ export function admitTraceRun(input) {
   throw new Error("[precheck] a trace run names a frozen or a dev fixture");
 }
 
+/**
+ * TR-10: the trace's measurement launch only (`launch`'s `start`): the S2
+ * maintenance gate on top of the launch's own env. The steady-state runners
+ * keep `startSession` as it is.
+ */
+export function traceMaintenanceStart(start, nonce) {
+  return (args) =>
+    start({
+      ...args,
+      extraEnv: traceMaintenanceEnv({ nonce, base: args.extraEnv ?? {} }),
+    });
+}
+
 /** TR-2: the Main poller of the owner counters (one session's Main). */
 export function counterPoller({ app, nativePath }) {
   const run = async (source, arg) =>
@@ -162,6 +180,8 @@ export async function runTraceOperations({
   runtime,
   driver,
   mountedAt,
+  openSeal = null,
+  readSeal = null,
   readA3,
   readNative,
   tShowMs,
@@ -171,12 +191,33 @@ export async function runTraceOperations({
   const scene = (logical) => runtime.scenes?.[logical] ?? logical;
   const log = [];
   const a3Reads = {};
+  // TR-9: the B seal at each counted query's start, by query index. Query 0's
+  // was read before the mount; the others after the operation that starts
+  // the query (the autosave commit, the move) and before the product's query,
+  // with the renderer time around the read (startSealOf compares it with the
+  // parent fetch's call).
+  const startSeals = openSeal ? { 0: openSeal } : {};
+  const sealFor = async (index) => {
+    if (!readSeal || !Number.isInteger(index)) return;
+    const startedAt = await driver.now();
+    const record = await readSeal();
+    startSeals[index] = {
+      ...record,
+      startedAt,
+      finishedAt: await driver.now(),
+    };
+  };
+  const nextCounted = (operation) =>
+    plan.operations.find(
+      (row) => row.seq > operation.seq && row.query?.counted === true,
+    )?.query.index;
   let lastSeq = 0;
   let sinceAt = mountedAt;
   let lastEditEnd = mountedAt;
   const stall = (operation, reason) => ({
     log,
     a3Reads,
+    startSeals,
     stalled: { seq: operation.seq, op: operation.op, reason },
   });
   const counted = async (operation) => {
@@ -250,6 +291,7 @@ export async function runTraceOperations({
         contentVersion: commit.contentVersion,
       });
       sinceAt = commit.at;
+      await sealFor(nextCounted(operation));
       continue;
     }
     if (operation.op === "navigate") {
@@ -264,6 +306,7 @@ export async function runTraceOperations({
       });
       sinceAt = moved.at;
       if (operation.query?.counted) {
+        await sealFor(operation.query.index);
         const result = await counted(operation);
         if (result.stalled) return stall(operation, result.stalled);
         continue;
@@ -281,7 +324,7 @@ export async function runTraceOperations({
     }
     throw new Error(`[artifact] unknown trace operation ${operation.op}`);
   }
-  return { log, a3Reads, stalled: null };
+  return { log, a3Reads, startSeals, stalled: null };
 }
 
 /** The page side through Playwright (the keyboard goes to the product editor). */
@@ -322,6 +365,8 @@ export function pageDriver(page) {
 const TRACE_HARNESS_FILES = Object.freeze([
   "scripts/quality/nir1-graph-eval/trace-runner.mjs",
   "scripts/quality/nir1-graph-eval/trace-record.mjs",
+  "scripts/quality/nir1-graph-eval/trace-seal.mjs",
+  "scripts/quality/nir1-graph-eval/workspace-db.mjs",
   "scripts/quality/nir1-graph-eval/build-receipt-check.mjs",
   "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
 ]);
@@ -537,6 +582,18 @@ async function main() {
     });
 
     // The measurement session: one trace.
+    // TR-10: S2's maintenance gate, on the trace's measurement launch only.
+    const maintenanceNonce = randomUUID();
+    report.checks.maintenanceSeam = {
+      envNames: [
+        "CI",
+        TRACE_MAINTENANCE_SEAM.ownerTokenEnv,
+        TRACE_MAINTENANCE_SEAM.nonceEnv,
+        TRACE_MAINTENANCE_SEAM.triggerEnv,
+      ],
+      trigger: TRACE_MAINTENANCE_SEAM.trigger,
+      nonceSha256: sha256(Buffer.from(maintenanceNonce)),
+    };
     session = await launch({
       label: "measure",
       runDir,
@@ -544,6 +601,7 @@ async function main() {
       observer,
       options: launchOptions,
       admission,
+      start: traceMaintenanceStart(startSession, maintenanceNonce),
     });
     const page = session.page;
     const addon = session.addon;
@@ -569,6 +627,18 @@ async function main() {
     report.checks.counterPoll = { install: await poller.install() };
     report.checks.clearSamples = await call(addon, "nir1GraphEvalClearSamples");
     const nativeReads = [];
+    // TR-9: query 0's start seal, read before the mount (the hook's first
+    // query follows the mount).
+    const readSeal = async () => readStartSeal(dbPath, ids.projectId);
+    const openSealStartedAt = await page.evaluate(() =>
+      window.cp4Harness.trace.now(),
+    );
+    const openSealRecord = await readSeal();
+    const openSeal = {
+      ...openSealRecord,
+      startedAt: openSealStartedAt,
+      finishedAt: await page.evaluate(() => window.cp4Harness.trace.now()),
+    };
     const mountedAt = (
       await page.evaluate((input) => window.cp4Harness.trace.mount(input), {
         projectId: ids.projectId,
@@ -593,6 +663,8 @@ async function main() {
       runtime: { scenes: ids.scenes },
       driver: pageDriver(page),
       mountedAt,
+      openSeal,
+      readSeal,
       readA3: () =>
         call(
           addon,
@@ -635,7 +707,7 @@ async function main() {
     server = null;
     await writeFile(
       path.join(runDir, "observation.json"),
-      `${JSON.stringify({ observation, nativeReads, counters, log: result.log, a3Reads: result.a3Reads }, null, 1)}\n`,
+      `${JSON.stringify({ observation, nativeReads, counters, log: result.log, a3Reads: result.a3Reads, startSeals: result.startSeals }, null, 1)}\n`,
     );
     const native = mergeNativeRecords(nativeReads);
     const revisions = Object.fromEntries(
@@ -651,6 +723,7 @@ async function main() {
       native,
       runs: counters.runs ?? [],
       a3Reads: result.a3Reads,
+      startSeals: result.startSeals,
       d2aMode: D2A_MODE,
       ids: { revisions },
       expectedContribution: devExpectedContribution(loaded, "base", ids),
@@ -713,6 +786,8 @@ async function main() {
         finalSettleMs: FINAL_SETTLE_MS,
         k64: procedureSettings(procedure),
         a3: "read once right after the counted query's parent fetch was observed",
+        startSeal:
+          "B seal read read-only (busy timeout 0) before the parent's begin: after the autosave commit / the move, query 0 before the mount (DR-CP4-TR-9)",
         requeries: "counted apart (K6/2 step 7); never rows",
       },
       environment: {
@@ -738,6 +813,9 @@ async function main() {
       },
       native: { dropped: native.dropped, records: native.records.length },
       requeries: traceRequeries({ observation, parentSeqs }).counts,
+      // TR-9: unknown is counted apart (the classifier keeps it out of U and
+      // in rule 3 (i), the strict side).
+      startSeal: startSealCounts(rows),
       events: k64.events,
       defects: k64.defects,
       queries: rows,
