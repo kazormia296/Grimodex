@@ -1379,6 +1379,7 @@ export function completeSetupExtension({
   revisionStaysAvailable = false,
   recreatedReportsOtherId = false,
   cutoverMissesOpens = 0,
+  queryDirtiesC = false,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1804,7 +1805,9 @@ export function completeSetupExtension({
         // The product's freshness evaluation can dirty B after its seal.
         if (bDirtiedByQuery && dirtiedByQuery++ < bDirtiedByQueryTimes)
           run(
-            "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE index_key = ?",
+            queryDirtiesC
+              ? "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE index_key IN (?, 'nir1-reviewed-chronicle:v1')"
+              : "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE index_key = ?",
             "nir1-reviewed-entity-relation:v1",
           );
         return {

@@ -398,6 +398,22 @@ test("S1j-2 probe が宣言の状態を示さなければ blocked:index-state-ho
     executedPhaseNames(planOf(COMPLETE, "G-02/base")),
   );
   assert.equal(once.receipt.measurementPoint.probe.metadata.b.generation, 2);
+  // B and the session's C both dirtied after the seal: the reopening
+  // rebuilds both.
+  const both = await completeSetup("G-02/base", {
+    bDirtiedByQuery: true,
+    bDirtiedByQueryTimes: 1,
+    queryDirtiesC: true,
+  });
+  assert.equal(
+    both.receipt.status,
+    "setup-complete",
+    both.receipt.errors.join("\n"),
+  );
+  assert.deepEqual(
+    both.receipt.sealAttempts.map((row) => row.outcome),
+    ["sealed-then-dirty", "sealed"],
+  );
   assert.match(
     dirtied.receipt.precheck.message,
     /blocked:measurement-point-mismatch — G-02\/base: the probe shows graph unusable/u,
@@ -656,7 +672,7 @@ test("S1j-2 P-0: B の generation が来なければ seal の session を開き�
       row.outcome,
       row.published,
     ]),
-    [["seal", 0, "sealed", true]],
+    [["seal", 0, "failed", true]],
   );
   // Three missed openings exhaust the bound: fail closed.
   const three = await completeSetup("G-02/base", { sealMissesOpens: 3 });

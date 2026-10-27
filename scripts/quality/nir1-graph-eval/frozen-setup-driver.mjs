@@ -835,6 +835,7 @@ const EXECUTORS = Object.freeze({
     if (!index?.ok)
       fail("chronicle-index", "the Chronicle Index did not become usable");
     // S1j-2: the last query's snapshot is the probe's query side (B4).
+    ctx.cBuiltInSession = true;
     ctx.cGeneration =
       readIndexMetadata(
         path.join(ctx.workspacePath, "grimodex.db"),
@@ -906,11 +907,14 @@ const EXECUTORS = Object.freeze({
       // S1j-2 P-1 (DR-BSEAM-3): a B the session sealed and then saw go
       // dirty again (the Freshness evaluation after the publish) is rebuilt
       // only by a new seam opening; the session loop may reopen (bounded).
+      // The dev check also saw C, built by this session's query, go dirty
+      // with B (the same Freshness evaluation); the reopening rebuilds both.
       if (
         declared.graph === "usable" &&
         probe.graph === "unusable" &&
-        probe.chronicle === declared.chronicle &&
-        ctx.bSealedInSession === true
+        ctx.bSealedInSession === true &&
+        (probe.chronicle === declared.chronicle ||
+          (declared.chronicle === "usable" && ctx.cBuiltInSession === true))
       )
         error.bDirtiedAfterSeal = { metadata };
       throw error;
@@ -1435,6 +1439,7 @@ export async function runFrozenSetupSteps({
   ctx.session = session;
   ctx.sessionStepsDone = 0;
   ctx.bSealedInSession = false;
+  ctx.cBuiltInSession = false;
   // ① has the author session only (no B-ROUTE seam, no seal session).
   if (partialRun(plan) && session !== "author")
     fail(
@@ -2121,8 +2126,9 @@ export async function setupFrozenVariant({
             session: row.label,
             attempt,
             dirLabel,
-            outcome:
-              timeout === null
+            outcome: failure
+              ? "failed"
+              : timeout === null
                 ? "sealed"
                 : timeout.bDirtiedAfterSeal
                   ? "sealed-then-dirty"
