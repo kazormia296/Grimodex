@@ -1108,7 +1108,19 @@ export async function runFrozenK64(argv) {
       const plan = plans.find((row) => row.variantKey === spec.variantKey);
       const setup = setups.get(spec.variantKey);
       if (!setup || setup.blocked) continue;
-      const ids = setup.value.logicalToRuntime;
+      // The frozen setup's map names the logical query Scene; the process
+      // queries its runtime ID.
+      const ids = {
+        ...setup.value.logicalToRuntime,
+        querySceneId:
+          setup.value.logicalToRuntime.scenes?.[
+            setup.value.logicalToRuntime.querySceneId
+          ] ?? null,
+      };
+      if (ids.querySceneId === null)
+        throw new Error(
+          `[precheck] ${spec.variantKey}: the setup receipt maps no runtime query Scene`,
+        );
       const fixture = JSON.parse(
         readFileSync(path.join(ROOT, plan.fixturePath), "utf8"),
       );
@@ -1234,7 +1246,7 @@ export async function runFrozenK64(argv) {
           setupReceipt: {
             path: path.relative(ROOT, setup.path),
             sha256: setup.sha256,
-            logicalToRuntime: ids,
+            logicalToRuntime: setup.value.logicalToRuntime,
           },
           measurement: {
             kind: spec.kind,
