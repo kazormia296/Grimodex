@@ -2033,6 +2033,8 @@ for (const kind of ["editing", "browsing"]) {
       (t) => (t.setupFailure.projectSwapAllowed = true),
       /setupFailure/u,
     );
+    // trace の project だけを別の G-case に替える。
+    detects(trace, check, (t) => (t.project.caseId = "G-03"), /setupFailure/u);
     // 別の G-case への差し替え（setupFailure の project も合わせて替える）。
     detects(
       trace,
