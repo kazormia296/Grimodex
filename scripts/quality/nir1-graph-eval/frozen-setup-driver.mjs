@@ -1847,6 +1847,7 @@ export async function setupFrozenVariant({
           attempt === 0 ? row.label : `${row.label}-reopen-${attempt}`;
         const startedAt = now();
         let timeout = null;
+        let failure = null;
         try {
           await session(
             row.label,
@@ -1862,8 +1863,8 @@ export async function setupFrozenVariant({
             dirLabel,
           );
         } catch (error) {
-          if (!error?.bSealTimeout || !row.seam) throw error;
-          timeout = error;
+          if (error?.bSealTimeout && row.seam) timeout = error;
+          else failure = error;
         } finally {
           if (nonce) {
             receipt.seams ??= [];
@@ -1881,7 +1882,14 @@ export async function setupFrozenVariant({
             session: row.label,
             attempt,
             dirLabel,
-            published: timeout === null,
+            published:
+              timeout === null &&
+              receipt.phases.some(
+                (phaseRow) =>
+                  phaseRow.session === row.label &&
+                  /^b-seal(:|$)/u.test(phaseRow.name) &&
+                  phaseRow.at >= startedAt,
+              ),
             waitedMs: timeout?.bSealTimeout.waitedMs ?? null,
             metadata: timeout?.bSealTimeout.metadata ?? null,
             maintenanceRuns: (() => {
@@ -1897,6 +1905,8 @@ export async function setupFrozenVariant({
             })(),
           });
         }
+        // A later step of the session failed: the attempt is recorded above.
+        if (failure) throw failure;
         if (timeout === null) break;
         // Only a session whose B seal was its first step is reopened.
         const first = plan.steps.find((step) => step.session === row.label);
