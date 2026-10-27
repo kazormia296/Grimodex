@@ -283,11 +283,22 @@ const SETUP_READING_ITEMS = Object.freeze([
  * left unreachable). S5 checks the candidate's harness files against them.
  */
 const SOURCE_PINS = Object.freeze([
+  ["s1j2-blocked-map", "b1a87b0b81fbdce7f3d280e0671bced51306be1d"],
   ["s1j2-complete-setup", "3a6e65e400cac5d72e761f58eb1ae8eaec514e18"],
   ["trace-runner", "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba"],
   ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105"],
   ["t14-k64-freeze", "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f"],
+  ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775"],
 ]);
+/**
+ * S2 追補 #3: the harness file whose BLOCKED_CONTRACT_TABLE (DR-CP4-L-28)
+ * blockedCaseJudgement must equal, read at the pinned commit.
+ */
+export const BLOCKED_TABLE_SOURCE = Object.freeze({
+  role: "s1j2-blocked-map",
+  commit: "b1a87b0b81fbdce7f3d280e0671bced51306be1d",
+  path: "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+});
 const SETUP_SESSIONS = Object.freeze({
   author: Object.freeze({ main: "product", seam: false }),
   ir: Object.freeze({ main: "setup-ir", seam: false }),
@@ -389,63 +400,6 @@ const RECEIPT_BLOCKED_FIELDS = Object.freeze([
   "contractBlockedId",
   "hold",
 ]);
-/**
- * S3v6 の P-S2-2 (a) as a table: harness id and condition -> the case's
- * judgement for G-01 and G-02〜G-08. Never the fixture precondition
- * maintenance-enabled; `undecided` rows wait for P-S2-5.
- */
-const BLOCKED_CASE_JUDGEMENT = Object.freeze([
-  ["b-seal-not-published", "any", "hold", "blocked:b-sealed-binding"],
-  ["measurement-point-mismatch", "graph", "hold", "blocked:b-sealed-binding"],
-  [
-    "measurement-point-mismatch",
-    "chronicle-only",
-    "hold-and-precheck",
-    "hold-and-precheck",
-  ],
-  [
-    "index-state-holding",
-    "while-variant",
-    "not-applicable",
-    "blocked:index-state-holding",
-  ],
-  [
-    "pre-mutation-index-state",
-    "graph",
-    "not-applicable",
-    "blocked:b-sealed-binding",
-  ],
-  [
-    "pre-mutation-index-state",
-    "chronicle-only",
-    "not-applicable",
-    "hold-and-precheck",
-  ],
-  [
-    "maintenance-enabled",
-    "maintenance-wait-exhausted",
-    "undecided",
-    "undecided",
-  ],
-  [
-    "index-build-timeout",
-    "while-variant-seal-step",
-    "not-applicable",
-    "undecided",
-  ],
-  [
-    "index-build-timeout",
-    "while-variant-hold-step",
-    "not-applicable",
-    "blocked:index-state-holding",
-  ],
-  [
-    "index-build-timeout",
-    "other-variant",
-    "hold-and-precheck",
-    "hold-and-precheck",
-  ],
-]);
 /** P-4 (b) applies to these variants only (validator: no other variant). */
 const ONE_SHOT_VARIANTS = Object.freeze([
   "G-08/chronicle-index-unusable",
@@ -546,7 +500,7 @@ const PRODUCT_SOURCES = Object.freeze({
 /**
  * cp4-decisions.md is an observation record; the S2 addendum may list it only
  * for the DR rows the integrator permitted (DR-CP4-L-1〜L-15, L-18〜L-24,
- * L-27, TR-1〜TR-14). S3v6-P3-1: every pattern is searched anywhere in the
+ * L-27, L-28, TR-1〜TR-14). S3v6-P3-1: every pattern is searched anywhere in the
  * path as written (absolute paths, `git show <ref>:…`, `./…`).
  */
 const DECISIONS_RECORD = /nir1-lane-decisions\/cp4-decisions\.md/u;
@@ -554,6 +508,7 @@ const PERMITTED_DECISION_ROWS = new Set([
   ...Array.from({ length: 15 }, (_, at) => `DR-CP4-L-${at + 1}`),
   ...Array.from({ length: 7 }, (_, at) => `DR-CP4-L-${at + 18}`),
   "DR-CP4-L-27",
+  "DR-CP4-L-28",
   ...Array.from({ length: 14 }, (_, at) => `DR-CP4-TR-${at + 1}`),
 ]);
 const FORBIDDEN_READ = Object.freeze([
@@ -1785,17 +1740,44 @@ function setupReadingErrors(errors, readings, ctx) {
     row?.g01,
     row?.graphCases,
   ]);
+  // S2 追補 #3（DR-CP4-L-28）: the table is the pinned harness's
+  // BLOCKED_CONTRACT_TABLE, row by row; maintenance-enabled only from P-5.
+  const harness = ctx.harnessBlockedTable;
+  const source = ctx.harnessBlockedTableSource;
+  const pinned = pins
+    .find((row) => row?.role === BLOCKED_TABLE_SOURCE.role)
+    ?.files?.find((file) => file?.path === BLOCKED_TABLE_SOURCE.path);
+  if (!Array.isArray(harness) || !source)
+    errors.push(
+      `setupReadings.blockedCaseJudgement: the harness's BLOCKED_CONTRACT_TABLE could not be read from ${BLOCKED_TABLE_SOURCE.path} at ${BLOCKED_TABLE_SOURCE.commit}`,
+    );
+  else if (pinned?.sha256 !== source.sha256)
+    errors.push(
+      `setupReadings.source.pins ${BLOCKED_TABLE_SOURCE.role}: ${BLOCKED_TABLE_SOURCE.path} must be the bytes the BLOCKED_CONTRACT_TABLE was read from (${source.sha256})`,
+    );
+  const wanted = (harness ?? []).map((row) => [
+    row.harnessId,
+    row.condition,
+    row.g01,
+    row.graphCases,
+  ]);
+  const toMaintenance = judged
+    .filter((row) => row.includes("blocked:maintenance-enabled"))
+    .map((row) => `${row[0]}/${row[1]}`);
   if (
     judgement.receiptName !== "harness-id" ||
-    !same(judged, BLOCKED_CASE_JUDGEMENT) ||
+    !Array.isArray(harness) ||
+    !same(judged, wanted) ||
+    !same(toMaintenance, ["maintenance-enabled/maintenance-wait-exhausted"]) ||
     (judgement.rows ?? []).some(
       (row) =>
-        typeof row?.harnessAgrees !== "boolean" ||
-        !nonBlank(row?.harnessContractBlockedId),
+        row?.harnessAgrees !== true ||
+        !nonBlank(row?.harnessContractBlockedId) ||
+        !nonBlank(row?.source),
     )
   )
     errors.push(
-      "setupReadings.blockedCaseJudgement must be S3's P-S2-2 table (harness names in the receipt; b-seal-not-published and Graph mismatches -> d2, Chronicle-only -> Hold and [precheck], never the maintenance-enabled precondition)",
+      "setupReadings.blockedCaseJudgement must equal the pinned harness's BLOCKED_CONTRACT_TABLE row by row (DR-CP4-L-28; harness names in the receipt, the maintenance-enabled precondition only from the P-5 maintenance wait), every row harnessAgrees true",
     );
   if (!same(readings.switchingRetry, SWITCHING_RETRY))
     errors.push(
@@ -2601,7 +2583,7 @@ export function authorDeclarationErrors(declaration) {
         !nonBlank(row.permittedBy)
       )
         errors.push(
-          `readFiles[${at}] ${row.path} is a forbidden (observation) file unless its permittedRows are within DR-CP4-L-1〜L-15, L-18〜L-24, L-27 and DR-CP4-TR-1〜TR-14 with permittedBy`,
+          `readFiles[${at}] ${row.path} is a forbidden (observation) file unless its permittedRows are within DR-CP4-L-1〜L-15, L-18〜L-24, L-27, L-28 and DR-CP4-TR-1〜TR-14 with permittedBy`,
         );
       else decisionRows += 1;
     }
@@ -2637,6 +2619,77 @@ export function authorDeclarationErrors(declaration) {
   if (declaration.forbiddenFilesNotRead !== true)
     errors.push("forbiddenFilesNotRead must be true");
   return errors;
+}
+
+/**
+ * S2 追補 #3: BLOCKED_CONTRACT_TABLE parsed from the harness bytes (never
+ * imported or run). Returns the rows as { harnessId, condition, g01,
+ * graphCases }, or null when the literal is not found.
+ */
+export function parseBlockedContractTable(text) {
+  const head = "export const BLOCKED_CONTRACT_TABLE = Object.freeze(";
+  const start = String(text).indexOf(head);
+  if (start < 0) return null;
+  const end = String(text).indexOf("].map(", start);
+  if (end < 0) return null;
+  const literal = String(text)
+    .slice(start + head.length, end + 1)
+    .replace(/,(\s*\])/gu, "$1");
+  try {
+    const rows = JSON.parse(literal);
+    if (
+      !Array.isArray(rows) ||
+      rows.some(
+        (row) =>
+          !Array.isArray(row) ||
+          row.length !== 4 ||
+          row.some((cell) => typeof cell !== "string"),
+      )
+    )
+      return null;
+    return rows.map(([harnessId, condition, g01, graphCases]) => ({
+      harnessId,
+      condition,
+      g01,
+      graphCases,
+    }));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The pinned harness bytes: `git show <pin>:<path>` when the commit is
+ * present, else the working tree file (whose sha256 the validator compares
+ * with the pin).
+ */
+async function readHarnessBlockedTable({ repoRoot, read }) {
+  let bytes;
+  let from = "git";
+  try {
+    bytes = execFileSync(
+      "git",
+      ["show", `${BLOCKED_TABLE_SOURCE.commit}:${BLOCKED_TABLE_SOURCE.path}`],
+      {
+        cwd: repoRoot,
+        maxBuffer: 32 * 1024 * 1024,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+  } catch {
+    from = "worktree";
+    try {
+      bytes = await read(BLOCKED_TABLE_SOURCE.path);
+    } catch {
+      return null;
+    }
+  }
+  const table = parseBlockedContractTable(bytes.toString("utf8"));
+  if (!table) return null;
+  return {
+    table,
+    source: { ...BLOCKED_TABLE_SOURCE, from, sha256: sha256(bytes) },
+  };
 }
 
 /** Reads every file the validators compare against. */
@@ -2689,7 +2742,10 @@ export async function loadObservationPrepContext({ repoRoot }) {
   const productSources = {};
   for (const relative of Object.values(PRODUCT_SOURCES))
     productSources[relative] = (await read(relative)).toString("utf8");
+  const blocked = await readHarnessBlockedTable({ repoRoot, read });
   return {
+    harnessBlockedTable: blocked?.table ?? null,
+    harnessBlockedTableSource: blocked?.source ?? null,
     freeze: { sha256: sha256(freezeBytes), json: freezeJson },
     g01: fixtures["G-01"],
     fixtures,

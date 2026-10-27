@@ -7,7 +7,7 @@
     "effort": "high"
   },
   "declaredAt": "2026-10-27",
-  "statement": "S2 の作者は、Graph の実行出力（Graph の run の receipt、log、net log、trace の実測値、worker の frame、Graph を含む Related Scenes の結果、.artifacts の下の出力）と、観測の記録（nir1-lane-decisions の cp4-decisions.md、cq-deferred-decisions.md、rsj-* と rs-join-decisions.md、実測を含む DP-H・DA-2・DD-1 の decisions、scratchpad の run の結果、cp4-task.md・cp4-hardening-task.md・cp4-s1f-task.md・cp4-k64-task.md、他の agent の transcript）を読んでいない。実 Electron、実 build、Graph の実行はしていない。値は契約と第一原理から決め、観測した値で閾値や待ちの上限を選んでいない。 例外として、2026-10-27 の追補で、integrator の依頼により cp4-decisions.md の DR-CP4-L-1〜L-15（claude/cp4-s1j2）と DR-CP4-TR-1〜TR-14（claude/cp4-trace）の行に限って読んだ（readFiles の permittedRows。DR の本文に含まれる dev の実行の要約は decisionSummariesSeen）。 2026-10-28 の追補 #2 では、同じく integrator の依頼で master（3a6e65e4）の cp4-decisions.md の DR-CP4-L-18〜L-24 と L-27 の行に限って読み、S3 の 6 回目の記録を読んだ。",
+  "statement": "S2 の作者は、Graph の実行出力（Graph の run の receipt、log、net log、trace の実測値、worker の frame、Graph を含む Related Scenes の結果、.artifacts の下の出力）と、観測の記録（nir1-lane-decisions の cp4-decisions.md、cq-deferred-decisions.md、rsj-* と rs-join-decisions.md、実測を含む DP-H・DA-2・DD-1 の decisions、scratchpad の run の結果、cp4-task.md・cp4-hardening-task.md・cp4-s1f-task.md・cp4-k64-task.md、他の agent の transcript）を読んでいない。実 Electron、実 build、Graph の実行はしていない。値は契約と第一原理から決め、観測した値で閾値や待ちの上限を選んでいない。 例外として、2026-10-27 の追補で、integrator の依頼により cp4-decisions.md の DR-CP4-L-1〜L-15（claude/cp4-s1j2）と DR-CP4-TR-1〜TR-14（claude/cp4-trace）の行に限って読んだ（readFiles の permittedRows。DR の本文に含まれる dev の実行の要約は decisionSummariesSeen）。 2026-10-28 の追補 #2 では、同じく integrator の依頼で master（3a6e65e4）の cp4-decisions.md の DR-CP4-L-18〜L-24 と L-27 の行に限って読み、S3 の 6 回目の記録を読んだ。 2026-10-28 の追補 #3 では、integrator の依頼で master（b1a87b0b）の cp4-decisions.md の DR-CP4-L-28 の行に限って読んだ。",
   "contractObservationsSeen": "読んでよい範囲の契約と計画の文書には、観測の要約が本文として含まれる。K6/4 の「事実」の節（H5 と RS-JOIN の測定値。q1〜q3 の分布、子の到着、D の超過など）と「判断を求める点」の導出、K6/2 の S1／S3／S6 の記述、続行計画の CP-4 の行（DR-CP4-S1C2-19〜22 の原因の要約、D′、DR-CP3A-53 の見込み）を、契約の一部として読んだ。これらから値を選んでいない: 作者が決めた値は r1r4WaitMs（契約の上限 10 s と DEFERRED_RELEASE_LIMIT の意味から 10,000 ms）、parity の unrestricted run の数（契約の下限 1）、trace の長さ（200 回の台本と最初の query で Q=201）、stall の guard（10,000 ms。判定に使う値を変えない）、trace の project（G-02 base。fixture の構造で選んだ）で、どれも観測値を使っていない。 SP/1 の本文の dev fixture の記録の要約（SeedChanged の 4/4、遅い Raw-ready の 2/30 など）も契約の一部として読んだが、値の選択に使っていない。",
   "decisionSummariesSeen": "許された DR の行には、dev fixture（凍結した G-case の材料ではない合成の材料）での実行の要約が本文として含まれる: DR-CP4-L-7、L-9、L-12〜L-15（dev の setup の結果。B の seal の publish の有無、maintenance の run の数、測定点の probe の状態、session の problem と副作用）と、DR-CP4-TR-6（V-11 の dev の trace の短い 1 回。製品の自動保存の commit と query の発行、Native の記録の整列、境の counter、最初の query の follow-up の結果〔graph-late の親から Cached の子〕、B の封印が dirty で子が出なかったこと）、TR-12〜TR-14。これは DR の文として読んだもので、.artifacts の下の実行の出力そのもの（receipt、log、net log）は開いていない。凍結した G-case の Graph の出力は読んでいない。この追補で S2 に書いた値（待ち 120 s と開き直し 2 回、30 s の再試行、measurementSpecs、probe の定義、開始時の封印の分類、maintenance の env）は integrator の決定と harness の code の定数の写しで、作者が観測から選んだ値は無い。reviewerQuestions は論点・根拠・選択肢を並べただけで、dev の結果から推奨を選んでいない。 追補 #2 で読んだ DR-CP4-L-20、L-23、L-27 にも dev fixture の setup の実機の数値（setup-complete の回数、開き直しの回数と契機、maintenance の cancel の件数、C が使えるまでの時間）が本文として含まれる。これも凍結した G-case の Graph の出力ではなく、作者が値を選ぶのに使っていない（写した定数は integrator の決定と harness の code の値）。",
   "readFiles": [
@@ -416,6 +416,20 @@
       "sha256": "685db0ebc675d3b9a126f20227b3f5f05101d4fcc3e9d30954d8dbf3c36eb281",
       "source": "origin/master 3a6e65e4（作業 branch に merge。読むだけ）",
       "scope": "seal-read と now() の grep（bytes は前に読んだ file と同じ）"
+    },
+    {
+      "path": "master@b1a87b0b81fbdce7f3d280e0671bced51306be1d:docs/plans/nir1-lane-decisions/cp4-decisions.md",
+      "sha256": "6d9ea2e04f2239d81b9bb6c7908022f9004e742e03cbfccccd55efbc868e9c71",
+      "source": "origin/master b1a87b0b（git show で読むだけ）",
+      "scope": "DR-CP4-L-28 の行だけ（grep で行を探して、その行を読んだ）。ほかの行と節は読んでいない",
+      "permittedRows": ["DR-CP4-L-28"],
+      "permittedBy": "integrator（S2 追補 #3 の依頼。2026-10-28）"
+    },
+    {
+      "path": "master@b1a87b0b81fbdce7f3d280e0671bced51306be1d:scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+      "sha256": "78f36edf75c2b78ccbc36961d121d719eb6947e09068ef1bb8621e05dfe8eb1d",
+      "source": "origin/master b1a87b0b（作業 branch に merge。読むだけ）",
+      "scope": "README_PRECONDITION_ORDER の末尾から BLOCKED_CONTRACT_TABLE と isG01Plan まで（180〜250 行）"
     }
   ],
   "forbiddenFilesNotRead": true,
@@ -429,7 +443,8 @@
     "統合 branch（claude/nir1-cp4、worktree /home/grimodex/worktrees/Grimodex/claude-nir1-cb4）は git show で読むだけで、checkout も編集もしていない。git grep の対象は scripts、electron、src、evals に限った（docs/plans/nir1-lane-decisions を含めていない）。",
     "統合 branch の procedure/k64-procedure.draft-1.json は、値の独立性のために読んでいない（loader と constants.mjs だけを読んだ）。",
     "/home/grimodex/Grimodex（root の checkout）は読んでも編集してもいない（CLAUDE.md と AGENTS.md は harness が文脈に入れたもの）。",
-    "追補 #1 の readFiles の claude/cp4-s1j2@14ccf6ac と claude/cp4-trace@994aee61 の行は、そのときに読んだ bytes の記録として残す（branch の rebase で到達できなくなった可能性がある。bytes は sha256 で特定できる）。S2 の source の pin は master の commit（setupReadings.source.pins）に替えた。trace の runner の 5 file は 994aee61 と master の 35537447 で同じ bytes だった。"
+    "追補 #1 の readFiles の claude/cp4-s1j2@14ccf6ac と claude/cp4-trace@994aee61 の行は、そのときに読んだ bytes の記録として残す（branch の rebase で到達できなくなった可能性がある。bytes は sha256 で特定できる）。S2 の source の pin は master の commit（setupReadings.source.pins）に替えた。trace の runner の 5 file は 994aee61 と master の 35537447 で同じ bytes だった。",
+    "追補 #3 では、git show --stat で b1a87b0b（#751）と 02837f02（#752）の変更 file の一覧と、pin する harness の file の sha256（3a6e65e4 と b1a87b0b の bytes）を確かめた。#752 の本文（製品の Rust と journey-flake-decisions.md）は読んでいない。"
   ],
   "revisions": [
     {
@@ -463,6 +478,10 @@
     {
       "at": "2026-10-28",
       "reason": "S2 追補 #2（S3 の 6 回目の条件 P2-1〜P2-3、P3-1〜P3-4。master の harness への pin、開き直しの閉じた集合、blocked の写しの表、P-4 (b) の配線）。新しく読んだのは readFiles の追補 #2 の行（master の cp4-decisions.md の許された DR の行、S3 の 6 回目の記録、master の harness の code）だけ。.artifacts の下の実行の出力、claude/nir1-contracts の nir1-cp4-records、許された範囲の外の DR の本文は読んでいない。凍結した G-case の材料での Graph の実行出力は読んでいない。"
+    },
+    {
+      "at": "2026-10-28",
+      "reason": "S2 追補 #3（P-S2-5 の integrator の決定〔DR-CP4-L-28〕を blockedCaseJudgement に写し、harness の BLOCKED_CONTRACT_TABLE と行ごとに照合。source の pin を b1a87b0b、02837f02 まで更新）。新しく読んだのは readFiles の追補 #3 の 2 行だけ。凍結した G-case の材料での Graph の実行出力、.artifacts、nir1-cp4-records は読んでいない。"
     }
   ],
   "graphRuntimeOutputObservedScope": "graphRuntimeOutputObserved:false は、凍結した G-case の材料（G-01〜G-08 の凍結した fixture）での Graph の実行出力（receipt、log、net log、trace の実測値、Related Scenes の結果）を作者が見ていないことを指す。許された DR の本文にある dev fixture の実行の要約は decisionSummariesSeen に開示し、dev の観測の後に integrator や builder が選んだ読みは readingsChosenAfterDevObservation に挙げる。",

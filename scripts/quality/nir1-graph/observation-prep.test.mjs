@@ -1686,7 +1686,7 @@ test("S2 追補: the author may list the permitted DR rows of cp4-decisions.md o
   const decisions = declaration.readFiles.filter((row) =>
     /nir1-lane-decisions\/cp4-decisions\.md$/u.test(row.path),
   );
-  assert.equal(decisions.length, 3);
+  assert.equal(decisions.length, 4);
   assert.equal(typeof declaration.decisionSummariesSeen, "string");
 
   const extraRow = clone(declaration);
@@ -1739,10 +1739,12 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
   assert.deepEqual(
     readings.source.pins.map((row) => row.role),
     [
+      "s1j2-blocked-map",
       "s1j2-complete-setup",
       "trace-runner",
       "b-route-seam-fix",
       "t14-k64-freeze",
+      "freshness-requeue-fix",
     ],
   );
   assert.deepEqual(
@@ -1859,8 +1861,12 @@ test("S2 追補 #2 P2-3 / P3-4: blockedCaseJudgement is S3's table (harness name
     "blocked:b-sealed-binding",
   );
   assert.equal(row("b-seal-not-published", "any").g01, "hold");
-  assert.ok(
-    rows.every((entry) => entry.graphCases !== "blocked:maintenance-enabled"),
+  // DR-CP4-L-28: 前提条件 maintenance-enabled に写すのは P-5 の待ち切れの行だけ。
+  assert.deepEqual(
+    rows
+      .filter((entry) => entry.graphCases === "blocked:maintenance-enabled")
+      .map((entry) => `${entry.harnessId}/${entry.condition}`),
+    ["maintenance-enabled/maintenance-wait-exhausted"],
   );
   const check = (copy) => observationPrepErrors(copy, ctx);
   detects(
@@ -1987,7 +1993,7 @@ test("S2 追補 #2: S3's decisions are recorded, and P-S2-5 (the harness's block
   );
   for (const id of ["P-4", "P-S2-2", "P-S2-3", "P-S2-4"])
     assert.ok(byId[id].decision);
-  assert.equal(byId["P-S2-5"].decision, null);
+  assert.equal(byId["P-S2-5"].decision.by, "integrator（DR-CP4-L-28）");
   const check = (copy) => observationPrepErrors(copy, ctx);
   detects(
     prep,
@@ -2119,5 +2125,86 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
     authorDeclarationErrors(fewer).some((e) =>
       /readingsChosenAfterDevObservation/u.test(e),
     ),
+  );
+});
+
+// ---- S2 追補 #3（P-S2-5 の integrator の決定〔DR-CP4-L-28〕と harness の表の照合） ----
+
+test("S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CONTRACT_TABLE row by row", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(observationPrepErrors(prep, ctx), []);
+  // harness の表は pin した commit の bytes から導き直す。
+  assert.equal(ctx.harnessBlockedTable.length, 9);
+  assert.equal(
+    ctx.harnessBlockedTableSource.sha256,
+    prep.setupReadings.source.pins
+      .find((row) => row.role === "s1j2-blocked-map")
+      .files.find((file) => file.path.endsWith("frozen-setup-driver.mjs"))
+      .sha256,
+  );
+  const rows = prep.setupReadings.blockedCaseJudgement.rows;
+  assert.deepEqual(
+    rows.map((row) => [row.harnessId, row.condition, row.g01, row.graphCases]),
+    ctx.harnessBlockedTable.map((row) => [
+      row.harnessId,
+      row.condition,
+      row.g01,
+      row.graphCases,
+    ]),
+  );
+  assert.ok(rows.every((row) => row.harnessAgrees === true));
+  assert.ok(rows.every((row) => !/undecided/u.test(JSON.stringify(row))));
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  // 表の 1 行を harness と食い違わせる。
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.blockedCaseJudgement.rows[6].graphCases =
+        "hold-and-precheck"),
+    /blockedCaseJudgement/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.blockedCaseJudgement.rows[7].g01 = "hold"),
+    /blockedCaseJudgement/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.blockedCaseJudgement.rows[4].harnessAgrees = false),
+    /blockedCaseJudgement/u,
+  );
+  // harness の側が S2 と違う（pin の後に harness が変わった）なら通さない。
+  const drifted = {
+    ...ctx,
+    harnessBlockedTable: ctx.harnessBlockedTable.map((row, at) =>
+      at === 0 ? { ...row, graphCases: "blocked:maintenance-enabled" } : row,
+    ),
+  };
+  assert.ok(
+    observationPrepErrors(prep, drifted).some((e) =>
+      /blockedCaseJudgement/u.test(e),
+    ),
+  );
+  const unread = { ...ctx, harnessBlockedTable: null };
+  assert.ok(
+    observationPrepErrors(prep, unread).some((e) =>
+      /BLOCKED_CONTRACT_TABLE/u.test(e),
+    ),
+  );
+  // pin の file の sha256 が harness の表の出所と違う。
+  detects(
+    prep,
+    check,
+    (p) => {
+      const pin = p.setupReadings.source.pins.find(
+        (row) => row.role === "s1j2-blocked-map",
+      );
+      pin.files[0].sha256 = flip(pin.files[0].sha256);
+    },
+    /BLOCKED_CONTRACT_TABLE|pins/u,
   );
 });

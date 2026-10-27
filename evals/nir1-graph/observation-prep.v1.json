@@ -666,9 +666,9 @@
     "integrator の順序（S3v4 の後）: ① R5 の照合の run（S1g-A の setup-driver。seed の pin の段と SP-P2 の記録までの setup と DB の読取だけ。workspace は捨てる）→ ② K6/4 の凍結 → ②' 合成の記録による検出（node の試験の実行記録）→ ③ S4a／S4b → ④ SP-P4 → ⑤ Graph arm（S5 の候補で新しい workspace、SP-P1 と R5 を照合し直す）。",
     "S2 追補（S5）: setupReadings.measurementSpecs と variantSessions を runner に配線し、測定の前と query の時点の probe を d2.variantReadings のとおり受領書の measurementPoint.probe と照合する。",
     "S2 追補（S6）: trace の runnerReadings（commit の確認は contentVersion、A3 は親の fetch の呼出しの観測の直後、caret は Control+End、startSeal の 2 回読みと分類、maintenanceLaunch）を trace の runner の起動と記録に使う。",
-    "S2 追補 #2（S5）: setupReadings.source.pins の files の sha256 が、S5 の候補の harness の同じ path の file の bytes と同じであることを確かめる。違えば [precheck] で止め、S2 の読みを新しい pin で確かめ直す。",
+    "S2 追補 #2／#3（S5）: setupReadings.source.pins の check が bytes の pin は files の sha256 が S5 の候補の harness の同じ path の file の bytes と同じであること、check が ancestor の pin は候補がその commit を祖先に持つことを確かめる。違えば [precheck] で止め、S2 の読みを新しい pin で確かめ直す。",
     "S2 追補 #2（S5）: samplePlan.variantExceptions と d10.parity.oneShot（P-4 の C1〜C5）を runner に配線する。harness の plan の measurementSpec は process の数を持たないので、S5 が warm-up 5 と測定 30 の process を arm ごとに作る。",
-    "S2 追補 #2（S5）: case の判定は setupReadings.blockedCaseJudgement の表で行い、受領書の blocked.harnessId をそのまま残す。harnessAgrees が false の行と undecided の行は P-S2-5 の決定まで [precheck]。",
+    "S2 追補 #2／#3（S5）: case の判定は setupReadings.blockedCaseJudgement の表（= harness の BLOCKED_CONTRACT_TABLE、DR-CP4-L-28）で行い、受領書の blocked.harnessId と condition をそのまま残す。表に無い組は [precheck]。",
     "S2 追補 #2（S6）: trace の setupFailure（G-02 base が上限内の開き直しで setup-complete に届かなければ (b) は未測定、CP-4 の可用性は HOLD、project は差し替えない）、runnerReadings.startSeal.receipt（seal-read の時刻と回数、CDP の now() の開示）、navigate.outsideQ.receiptCountByReason（completed 以外の理由ごとの数）を trace の receipt に入れる。"
   ],
   "stepOrder": {
@@ -705,20 +705,28 @@
   "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。",
   "setupReadings": {
     "source": {
-      "decisions": "master（3a6e65e4）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27（開き直しの正本は L-24、blocked の写しは L-18 と L-24、Index の build の定数は L-27）と、TR-1〜TR-14",
+      "decisions": "master（b1a87b0b）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28（開き直しの正本は L-24、blocked の写しの表の正本は L-28、Index の build の定数は L-27）と、TR-1〜TR-14",
       "pins": [
+        {
+          "role": "s1j2-blocked-map",
+          "commit": "b1a87b0b81fbdce7f3d280e0671bced51306be1d",
+          "pr": "#751（blocked の README の id への写しを S3 の表に合わせる。BLOCKED_CONTRACT_TABLE）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+              "sha256": "78f36edf75c2b78ccbc36961d121d719eb6947e09068ef1bb8621e05dfe8eb1d"
+            }
+          ]
+        },
         {
           "role": "s1j2-complete-setup",
           "commit": "3a6e65e400cac5d72e761f58eb1ae8eaec514e18",
-          "pr": "#750（S1j-2 の squash）",
+          "pr": "#750（S1j-2 の squash。frozen-setup-driver.mjs は #751 の pin が持つ）",
           "files": [
             {
               "path": "scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs",
               "sha256": "2ac6bb9d8c4fe238938b4bec959f12d86e47e9a687ad8c811139c9225549da71"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
-              "sha256": "e20da89fe0051036f0e678e638b0b9330ef33fae0c6abca4591440524b6f6420"
             },
             {
               "path": "scripts/quality/nir1-graph-eval/setup-main-build.mjs",
@@ -728,7 +736,8 @@
               "path": "scripts/quality/nir1-graph-eval/setup-receipt.mjs",
               "sha256": "dcc742371fe2328a2a88eaa048ff0a7ab428b4343fe7d25f65ecd32a4c8259d3"
             }
-          ]
+          ],
+          "check": "bytes"
         },
         {
           "role": "trace-runner",
@@ -747,22 +756,32 @@
               "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
               "sha256": "685db0ebc675d3b9a126f20227b3f5f05101d4fcc3e9d30954d8dbf3c36eb281"
             }
-          ]
+          ],
+          "check": "bytes"
         },
         {
           "role": "b-route-seam-fix",
           "commit": "c06dc17ec86fa968c87176aece12b4a1d67e2105",
           "pr": "#748（durable chain が idle でも B を判定する cycle を始める）",
-          "files": []
+          "files": [],
+          "check": "ancestor"
         },
         {
           "role": "t14-k64-freeze",
           "commit": "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
           "pr": "#746（K6/4 の凍結の commit を K64_FREEZE.freezeCommit に固定）",
+          "files": [],
+          "check": "ancestor"
+        },
+        {
+          "role": "freshness-requeue-fix",
+          "commit": "02837f02bb9df82da6dc65b3d237bf17840ad775",
+          "pr": "#752（前景の書込みと重なった publish の競合を再試行として扱う。製品の Rust の修正で harness の file ではない）",
+          "check": "ancestor",
           "files": []
         }
       ],
-      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。files の sha256 は pin した commit の bytes。S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめ、違えば [precheck]（runnerHandoff）。"
+      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。check が bytes の pin は、files の sha256 が pin した commit の bytes で、S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめる。check が ancestor の pin（製品の修正と T14）は、S5 の候補がその commit を祖先に持つことを確かめる。どちらも違えば [precheck]（runnerHandoff）。起動時間の gate の改善（#753）は merge されたら追記する。validator は blockedCaseJudgement を、s1j2-blocked-map の pin の frozen-setup-driver.mjs の bytes（その commit から読むか、同じ sha256 の作業 tree の file）の BLOCKED_CONTRACT_TABLE から導き直して照合する。"
     },
     "status": "harness の読み（integrator の決定 B1〜B4、P-0、P-3、P-5、P-6、S1j-2 のレビューの修正）を観測の前に S2 に写したもの。master の harness（source.pins）に合わせた。fixture、契約、閾値、setupOrder、setupTimeline、measurementPoint は変えない。S3 の確認を受ける。",
     "rule": "⑤ の評価の run の setup（完全な setup）は、この欄の session の分け方、probe、blocked の名前、測定の仕様に従う。① R5 の照合の run は author の session の seed の pin の段で止まり、2 つ目以降の session を使わない（r5Gate.exempt）。setup の受領書は status setup-complete で、items の receipt に挙げた欄を持つ。食い違えば setup の不備として [precheck]。",
@@ -1153,7 +1172,7 @@
       {
         "name": "blocked:pre-mutation-index-state",
         "when": "hold の最初の mutation の前に、B か C が seal の session の generation で clean でない",
-        "unmet": "maintenance-enabled"
+        "unmet": "graph 側の不一致は b-sealed-binding、chronicle だけの不一致は無し（Hold と [precheck]）（DR-CP4-L-28）"
       },
       {
         "name": "blocked:maintenance-enabled",
@@ -1163,7 +1182,7 @@
       {
         "name": "blocked:index-build-timeout",
         "when": "Chronicle の Index の build が indexBuild の待ちを使い切った",
-        "unmet": "while- の variant の seal の段は maintenance-enabled、hold の段は index-state-holding、ほかの variant は無し（Hold）"
+        "unmet": "while- の variant（graph-index-unusable、chronicle-index-unusable、both-indexes-unusable）は段によらず index-state-holding、ほかの variant は無し（Hold と [precheck]）（DR-CP4-L-28）"
       }
     ],
     "measurementSpecs": {
@@ -1353,9 +1372,9 @@
       }
     },
     "blockedCaseJudgement": {
-      "decision": "S3v6 の P-S2-2 (a) と P2-3（受領書には harness の名前をそのまま書く。b-seal-not-published と graph 側の不一致は d2 の「確立できなければ」〔G-01 は Hold、G-02〜G-08 は blocked:b-sealed-binding〕。chronicle だけの不一致は Hold と [precheck]。fixture の前提条件 maintenance-enabled には写さない）",
+      "decision": "S3v6 の P-S2-2 (a) と P2-3、P-S2-5 の integrator の決定（DR-CP4-L-28。S3 が 7 回目で確かめる）。受領書には harness の名前をそのまま書く。前提条件 maintenance-enabled に写すのは P-5 の待ち切れの行だけ",
       "receiptName": "harness-id",
-      "rule": "受領書の blocked.harnessId は harness の名前のまま。case の判定はこの表で決める（受領書の contractBlockedId は harness の写しで、harnessAgrees が false の行では判定に使わない）。g01 と graphCases の値は hold（Hold）、hold-and-precheck（Hold と [precheck]）、blocked:<README の id>、not-applicable、undecided（reviewerQuestions の P-S2-5）。",
+      "rule": "受領書の blocked.harnessId と blocked.condition は harness の名前のまま。case の判定はこの表で決める（g01 と graphCases の値は hold、hold-and-precheck、blocked:<README の id>、not-applicable）。表は master の harness の BLOCKED_CONTRACT_TABLE（DR-CP4-L-28）と行ごとに同じで、validator が pin した bytes から導き直して照合する。追補 #2 の while-variant-seal-step と while-variant-hold-step の 2 行は L-28 の while-variant の 1 行にまとめた。",
       "rows": [
         {
           "harnessId": "b-seal-not-published",
@@ -1363,7 +1382,7 @@
           "g01": "hold",
           "graphCases": "blocked:b-sealed-binding",
           "source": "S3v6 P-S2-2",
-          "harnessContractBlockedId": "b-sealed-binding（G-01 は宣言が無く Hold）",
+          "harnessContractBlockedId": "b-sealed-binding（G-01 は hold）",
           "harnessAgrees": true
         },
         {
@@ -1372,7 +1391,7 @@
           "g01": "hold",
           "graphCases": "blocked:b-sealed-binding",
           "source": "S3v6 P-S2-2",
-          "harnessContractBlockedId": "b-sealed-binding（G-01 は Hold）",
+          "harnessContractBlockedId": "b-sealed-binding（G-01 は hold）",
           "harnessAgrees": true
         },
         {
@@ -1381,7 +1400,7 @@
           "g01": "hold-and-precheck",
           "graphCases": "hold-and-precheck",
           "source": "S3v6 P-S2-2",
-          "harnessContractBlockedId": "なし（Hold と [precheck]）",
+          "harnessContractBlockedId": "なし（hold-and-precheck）",
           "harnessAgrees": true
         },
         {
@@ -1399,8 +1418,8 @@
           "g01": "not-applicable",
           "graphCases": "blocked:b-sealed-binding",
           "source": "S3v6 P-S2-2（graph 側の不一致）",
-          "harnessContractBlockedId": "maintenance-enabled",
-          "harnessAgrees": false
+          "harnessContractBlockedId": "b-sealed-binding",
+          "harnessAgrees": true
         },
         {
           "harnessId": "pre-mutation-index-state",
@@ -1408,33 +1427,24 @@
           "g01": "not-applicable",
           "graphCases": "hold-and-precheck",
           "source": "S3v6 P-S2-2（chronicle だけの不一致）",
-          "harnessContractBlockedId": "maintenance-enabled",
-          "harnessAgrees": false
+          "harnessContractBlockedId": "なし（hold-and-precheck）",
+          "harnessAgrees": true
         },
         {
           "harnessId": "maintenance-enabled",
           "condition": "maintenance-wait-exhausted",
-          "g01": "undecided",
-          "graphCases": "undecided",
-          "source": "S3v6 の決定の外（fixture の maintenance-enabled には写さない、だけが決まっている）",
+          "g01": "blocked:maintenance-enabled",
+          "graphCases": "blocked:maintenance-enabled",
+          "source": "integrator の決定（DR-CP4-L-28 (7)。前提条件そのもの、全 variant）",
           "harnessContractBlockedId": "maintenance-enabled",
-          "harnessAgrees": false
+          "harnessAgrees": true
         },
         {
           "harnessId": "index-build-timeout",
-          "condition": "while-variant-seal-step",
-          "g01": "not-applicable",
-          "graphCases": "undecided",
-          "source": "S3v6 の決定の外",
-          "harnessContractBlockedId": "maintenance-enabled",
-          "harnessAgrees": false
-        },
-        {
-          "harnessId": "index-build-timeout",
-          "condition": "while-variant-hold-step",
+          "condition": "while-variant",
           "g01": "not-applicable",
           "graphCases": "blocked:index-state-holding",
-          "source": "d2.variantReadings（宣言の indexState と合わない）",
+          "source": "integrator の決定（DR-CP4-L-28 (8)。seal と hold の段によらない）",
           "harnessContractBlockedId": "index-state-holding",
           "harnessAgrees": true
         },
@@ -1443,8 +1453,8 @@
           "condition": "other-variant",
           "g01": "hold-and-precheck",
           "graphCases": "hold-and-precheck",
-          "source": "S3v6 P-S2-2（chronicle だけの不一致）",
-          "harnessContractBlockedId": "なし（Hold と [precheck]）",
+          "source": "S3v6 P-S2-2（chronicle だけの不一致）と DR-CP4-L-28 (9)",
+          "harnessContractBlockedId": "なし（hold-and-precheck）",
           "harnessAgrees": true
         }
       ]
@@ -1616,7 +1626,12 @@
       ],
       "s2Position": "S2 は判断しない",
       "decidedBy": "S3（harness の変更は integrator）",
-      "decision": null
+      "decision": {
+        "choice": "b",
+        "by": "integrator（DR-CP4-L-28）",
+        "record": "master b1a87b0b の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-28（#751）",
+        "conditions": "harness の blockedRecord を表（BLOCKED_CONTRACT_TABLE）に合わせて直した。未決の 2 行は integrator が決めた: P-5 の待ち切れ → blocked:maintenance-enabled（全 variant）、index-build-timeout の while- の variant → 段によらず blocked:index-state-holding。S3 が 7 回目で確かめる。"
+      }
     }
   ],
   "reviewerQuestionsRule": "S2 が判断しない点を、論点・根拠・選択肢で S3 に渡す。S3 が決めた問いは decision に S3 の記録（choice、by、record）を写し、決まっていない問いは null のままにする。frozen ではすべての問いに決定を要る。決定が setupReadings や trace の欄を変えるなら、その欄を直してから S4 に進む。"
