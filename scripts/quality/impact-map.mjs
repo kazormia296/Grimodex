@@ -559,6 +559,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/trace-runner.test.mjs",
         "scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs",
         "scripts/quality/nir1-graph-eval/trace-seal.test.mjs",
+        "scripts/quality/nir1-graph-eval/trace-cycle.test.mjs",
       ],
       [
         "node",
