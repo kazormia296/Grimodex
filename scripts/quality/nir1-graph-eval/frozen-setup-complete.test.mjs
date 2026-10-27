@@ -8,6 +8,8 @@ import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  B_SEAL_REOPENS,
+  B_SEAL_WAIT_MS,
   assertChronicleSetup,
   createSetupIds,
   guardPage,
@@ -335,7 +337,7 @@ test("S1j-2 probe が宣言の状態を示さなければ blocked:index-state-ho
   assert.equal(blocked.receipt.status, "blocked");
   assert.match(
     blocked.receipt.precheck.message,
-    /blocked:b-sealed-binding|blocked:maintenance-enabled/u,
+    /blocked:b-seal-not-published — G-08\/base-usable: the seal session saw no new sealed B generation in 3 openings/u,
   );
   // B sealed, then dirtied again before the measurement point.
   const dirtied = await completeSetup("G-02/base", { bDirtiedByQuery: true });
@@ -534,4 +536,74 @@ test("S1j-2 setup 専用の Main の表は fixture から導く: plan の行と 
     [...fromPlans].sort((x, y) => (key(x) < key(y) ? -1 : 1)),
     [...fromFixtures].sort((x, y) => (key(x) < key(y) ? -1 : 1)),
   );
+});
+
+test("S1j-2 P-0: B の generation が来なければ seal の session を開き直し（上限は 120 s × 開き直し 2 回の定数）、使った回数・各回の待ち・maintenance の run を受領書に残す", async () => {
+  assert.equal(B_SEAL_WAIT_MS, 120_000);
+  assert.equal(B_SEAL_REOPENS, 2);
+  // Two missed openings: the third publishes; the attempts are recorded.
+  const two = await completeSetup("G-08/graph-recovered", {
+    sealMissesOpens: 2,
+  });
+  assert.equal(
+    two.receipt.status,
+    "setup-complete",
+    two.receipt.errors.join("\n"),
+  );
+  assert.deepEqual(
+    two.sessions.started.map((row) => [row.label, row.seam]),
+    [
+      ["author", false],
+      ["ir", false],
+      ["seal", true],
+      ["seal-reopen-1", true],
+      ["seal-reopen-2", true],
+      ["hold", false],
+      ["reseal", true],
+    ],
+  );
+  assert.deepEqual(
+    two.receipt.sealAttempts.map((row) => [
+      row.session,
+      row.attempt,
+      row.dirLabel,
+      row.published,
+    ]),
+    [
+      ["seal", 0, "seal", false],
+      ["seal", 1, "seal-reopen-1", false],
+      ["seal", 2, "seal-reopen-2", true],
+      ["reseal", 0, "reseal", true],
+    ],
+  );
+  for (const row of two.receipt.sealAttempts.slice(0, 2)) {
+    assert.ok(row.waitedMs >= 0);
+    assert.deepEqual(
+      row.maintenanceRuns.map((run) => run.surface),
+      ["dependency-verify"],
+    );
+  }
+  // The B seal is recorded once, from the opening that published it.
+  assert.equal(
+    two.receipt.phases.filter((row) => row.name === "b-seal").length,
+    1,
+  );
+  // Three missed openings exhaust the bound: fail closed.
+  const three = await completeSetup("G-02/base", { sealMissesOpens: 3 });
+  assert.equal(three.receipt.status, "blocked");
+  assert.match(
+    three.receipt.precheck.message,
+    /blocked:b-seal-not-published — G-02\/base: the seal session saw no new sealed B generation in 3 openings/u,
+  );
+  assert.equal(three.receipt.sealAttempts.length, 3);
+  assert.ok(three.receipt.sealAttempts.every((row) => !row.published));
+  // In every plan the B seal is the first step of each seam session (the
+  // only step a reopening repeats).
+  for (const plan of COMPLETE)
+    for (const row of plan.sessions.filter((entry) => entry.seam))
+      assert.equal(
+        plan.steps.find((step) => step.session === row.label).executor,
+        "b-seal",
+        `${plan.variantKey} ${row.label}`,
+      );
 });

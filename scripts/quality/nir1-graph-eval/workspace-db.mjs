@@ -430,3 +430,32 @@ export function readChronicleSetupRows(file, projectId) {
     });
   });
 }
+
+/**
+ * S1j-2 P-0: the project's extraction／maintenance runs created at or after
+ * `sinceIso`, counted by surface and status (read-only). The seal attempts'
+ * evidence of whether the maintenance cycle ran at all.
+ */
+export function readRunsSince(file, projectId, sinceIso) {
+  return withReadOnly(file, (db) => {
+    const exists = db
+      .prepare(
+        "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'narrative_extraction_runs'",
+      )
+      .get();
+    if (!exists) return [];
+    return db
+      .prepare(
+        `SELECT surface_path_id AS surface, status, count(*) AS n
+           FROM narrative_extraction_runs
+          WHERE project_id = ? AND created_at >= ?
+          GROUP BY surface_path_id, status ORDER BY surface_path_id, status`,
+      )
+      .all(projectId, sinceIso)
+      .map((row) => ({
+        surface: row.surface,
+        status: row.status,
+        count: Number(row.n),
+      }));
+  });
+}

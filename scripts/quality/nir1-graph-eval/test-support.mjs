@@ -1342,7 +1342,8 @@ export function frozenSetupFakeProduct(opts = {}) {
  * is called by the test's session factory with the session's label, seam
  * and setup-only Main. Options: `refuseRelationIdReuse`, `extraContext`
  * (a third context in the IR envelope), `bStaysDirty`, `bDirtiedByQuery`
- * (B goes dirty again after the seal, as the dev check saw).
+ * (B goes dirty again after the seal, as the dev check saw), `sealMissesOpens`
+ * (the first seam opens publish no B, as the dev check's P-0 saw).
  */
 export function completeSetupExtension({
   irSeeds,
@@ -1350,9 +1351,11 @@ export function completeSetupExtension({
   extraContext = false,
   bStaysDirty = false,
   bDirtiedByQuery = false,
+  sealMissesOpens = 0,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
+    let seamOpens = 0;
     let counter = 0;
     const id = (prefix) => `${prefix}-${String(++counter).padStart(4, "0")}`;
     const deleted = new Set();
@@ -1477,7 +1480,8 @@ export function completeSetupExtension({
           CREATE TABLE IF NOT EXISTS schema_data_migrations (migration_id TEXT, contract_version TEXT);
           CREATE TABLE IF NOT EXISTS narrative_semantic_index_metadata (project_id TEXT, index_key TEXT, generation INTEGER,
             dirty_cache_flag INTEGER, source_digest TEXT, dependency_set_digest TEXT, producer_id TEXT, producer_version TEXT);
-          CREATE TABLE IF NOT EXISTS narrative_extraction_runs (id TEXT PRIMARY KEY, project_id TEXT, surface_path_id TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_extraction_runs (id TEXT PRIMARY KEY, project_id TEXT, surface_path_id TEXT,
+            status TEXT, created_at TEXT);
           CREATE TABLE IF NOT EXISTS narrative_proposal_sets (id TEXT PRIMARY KEY, run_id TEXT);
           CREATE TABLE IF NOT EXISTS narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT, status TEXT, current_revision_id TEXT);
           CREATE TABLE IF NOT EXISTS narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT, revision_number INTEGER,
@@ -1487,6 +1491,21 @@ export function completeSetupExtension({
         `);
         // A seam session's workspace-opened wake publishes B.
         const projectId = projectOf();
+        // `sealMissesOpens`: the first seam opens publish nothing (P-0).
+        if (
+          session.seam &&
+          projectId &&
+          maintenanceOn() &&
+          seamOpens++ < sealMissesOpens
+        ) {
+          run(
+            "INSERT INTO narrative_extraction_runs VALUES (?, ?, 'dependency-verify', 'completed', ?)",
+            id("verify"),
+            projectId,
+            new Date().toISOString(),
+          );
+          return;
+        }
         if (session.seam && projectId && maintenanceOn()) {
           const b = one(
             "SELECT dirty_cache_flag AS dirty FROM narrative_semantic_index_metadata WHERE project_id = ? AND index_key = ?",
@@ -1617,9 +1636,10 @@ export function completeSetupExtension({
             .all(folderId);
           const runId = id("chronicle-run");
           run(
-            "INSERT INTO narrative_extraction_runs VALUES (?, ?, 'chronicle.extract')",
+            "INSERT INTO narrative_extraction_runs VALUES (?, ?, 'chronicle.extract', 'completed', ?)",
             runId,
             projectId,
+            new Date().toISOString(),
           );
           const setId = id("set");
           run(

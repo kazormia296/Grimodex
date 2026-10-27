@@ -71,6 +71,7 @@ import {
   readChronicleSetupRows,
   readFrozenSetupRows,
   readIndexMetadata,
+  readRunsSince,
 } from "./workspace-db.mjs";
 import { REQUIRED_ARTIFACTS } from "../nir1-retrieval/standard-build-receipt.mjs";
 
@@ -107,7 +108,15 @@ const MAINTENANCE_SEAM = Object.freeze({
   triggerEnv: "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER",
   trigger: "nir1-graph-index-build",
 });
-const B_SEAL_WAIT_MS = 120_000;
+/**
+ * S1j-2 P-0 (integrator's decision (a)): one wait for a new sealed B
+ * generation, and how many times a seam session whose wait ran out is closed
+ * and reopened (a new workspace-opened wake). Fixed constants (the tests pin
+ * them); a setup never tunes them to its result.
+ */
+export const B_SEAL_WAIT_MS = 120_000;
+export const B_SEAL_REOPENS = 2;
+const B_SEAL_NOT_PUBLISHED = "blocked:b-seal-not-published";
 const EPOCH_WAIT_MS = 180_000;
 const PREPARE_WAIT_MS = 120_000;
 const SELECT_ONLY = /^\s*SELECT\b/iu;
@@ -719,11 +728,14 @@ const EXECUTORS = Object.freeze({
         break;
       await ctx.sleep(500);
     }
-    if (!(metadata?.b?.generation > previous && metadata.b.dirty === false))
-      fail(
-        "b-seal",
-        `blocked:b-sealed-binding — no new sealed B generation within ${limit} ms`,
+    if (!(metadata?.b?.generation > previous && metadata.b.dirty === false)) {
+      // P-0: the session loop may reopen the seam session (bounded).
+      const error = new Error(
+        `[precheck] S1i b-seal: ${B_SEAL_NOT_PUBLISHED} — no new sealed B generation within ${limit} ms`,
       );
+      error.bSealTimeout = { waitedMs: Date.now() - started, metadata };
+      throw error;
+    }
     ctx.bGeneration = metadata.b.generation;
     return { waitedMs: Date.now() - started, metadata };
   },
@@ -1242,6 +1254,7 @@ export async function runFrozenSetupSteps({
   ctx.refusedAtSetup ??= [];
   ctx.workspaceOpen ??= false;
   ctx.session = session;
+  ctx.sessionStepsDone = 0;
   // ① has the author session only (no B-ROUTE seam, no seal session).
   if (partialRun(plan) && session !== "author")
     fail(
@@ -1286,6 +1299,7 @@ export async function runFrozenSetupSteps({
     const details = await executor({ ctx, step });
     const stateAfter = await readState(ctx);
     phase(step.phase, { session, details, stateBefore, stateAfter });
+    ctx.sessionStepsDone += 1;
   }
   if (
     session === plan.steps.at(-1).session &&
@@ -1774,10 +1788,15 @@ export async function setupFrozenVariant({
   const save = () =>
     writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   const ctx = limits ? { limits } : {};
-  const session = async (label, extraEnv = {}, setupMain = null) => {
+  const session = async (
+    label,
+    extraEnv = {},
+    setupMain = null,
+    dirLabel = label,
+  ) => {
     const handle = await start({
       runDir: setupDir,
-      label,
+      label: dirLabel,
       server: shared.server,
       observer: shared.observer,
       nativePath: shared.nativePath,
@@ -1820,26 +1839,74 @@ export async function setupFrozenVariant({
           "setup-main",
           `${plan.variantKey}: the ${row.label} session needs the setup-only Main's admission`,
         );
-      const nonce = row.seam ? randomUUID() : null;
-      await session(
-        row.label,
-        nonce
-          ? {
-              [MAINTENANCE_SEAM.ci]: "true",
-              [MAINTENANCE_SEAM.ownerTokenEnv]: MAINTENANCE_SEAM.ownerToken,
-              [MAINTENANCE_SEAM.nonceEnv]: nonce,
-              [MAINTENANCE_SEAM.triggerEnv]: MAINTENANCE_SEAM.trigger,
-            }
-          : {},
-        row.main === "setup-ir" ? shared.setupMain : null,
-      );
-      if (nonce) {
-        receipt.seams ??= [];
-        receipt.seams.push({
-          session: row.label,
-          trigger: MAINTENANCE_SEAM.trigger,
-          nonceSha256: sha256(Buffer.from(nonce)),
-        });
+      // P-0: a seam session whose first step (the B seal) saw no new sealed
+      // generation is closed and reopened, at most B_SEAL_REOPENS times.
+      for (let attempt = 0; ; attempt++) {
+        const nonce = row.seam ? randomUUID() : null;
+        const dirLabel =
+          attempt === 0 ? row.label : `${row.label}-reopen-${attempt}`;
+        const startedAt = now();
+        let timeout = null;
+        try {
+          await session(
+            row.label,
+            nonce
+              ? {
+                  [MAINTENANCE_SEAM.ci]: "true",
+                  [MAINTENANCE_SEAM.ownerTokenEnv]: MAINTENANCE_SEAM.ownerToken,
+                  [MAINTENANCE_SEAM.nonceEnv]: nonce,
+                  [MAINTENANCE_SEAM.triggerEnv]: MAINTENANCE_SEAM.trigger,
+                }
+              : {},
+            row.main === "setup-ir" ? shared.setupMain : null,
+            dirLabel,
+          );
+        } catch (error) {
+          if (!error?.bSealTimeout || !row.seam) throw error;
+          timeout = error;
+        } finally {
+          if (nonce) {
+            receipt.seams ??= [];
+            receipt.seams.push({
+              session: row.label,
+              attempt,
+              trigger: MAINTENANCE_SEAM.trigger,
+              nonceSha256: sha256(Buffer.from(nonce)),
+            });
+          }
+        }
+        if (row.seam) {
+          receipt.sealAttempts ??= [];
+          receipt.sealAttempts.push({
+            session: row.label,
+            attempt,
+            dirLabel,
+            published: timeout === null,
+            waitedMs: timeout?.bSealTimeout.waitedMs ?? null,
+            metadata: timeout?.bSealTimeout.metadata ?? null,
+            maintenanceRuns: (() => {
+              try {
+                return readRunsSince(
+                  path.join(workspacePath, "grimodex.db"),
+                  ids.projectId,
+                  startedAt,
+                );
+              } catch {
+                return null;
+              }
+            })(),
+          });
+        }
+        if (timeout === null) break;
+        // Only a session whose B seal was its first step is reopened.
+        const first = plan.steps.find((step) => step.session === row.label);
+        if (first?.executor !== "b-seal" || ctx.sessionStepsDone > 0)
+          throw timeout;
+        if (attempt >= B_SEAL_REOPENS)
+          fail(
+            "b-seal",
+            `${B_SEAL_NOT_PUBLISHED} — ${plan.variantKey}: the ${row.label} session saw no new sealed B generation in ${attempt + 1} openings (${B_SEAL_REOPENS} reopens)`,
+          );
       }
     }
     // The cold DB: the workspace closed with no WAL left, copied once.
