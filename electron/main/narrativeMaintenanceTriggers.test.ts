@@ -62,6 +62,165 @@ describe("narrative maintenance trigger coordinator", () => {
     vi.restoreAllMocks();
   });
 
+  describe("DR-BSEAM-1 B-ROUTE Graph Index wakes", () => {
+    const binding = { authorityId: "authority-b-route", generation: 2 };
+    const wakeDiscovery = (wakeProjectIds: unknown) => ({
+      workspaceBinding: binding,
+      pages: [],
+      wakeProjectIds,
+    });
+    function makeWakeScheduler() {
+      return {
+        requestManyWithBinding: vi.fn(),
+        requestGraphIndexBuildWakesWithBinding: vi.fn(),
+      } as unknown as NarrativeMaintenanceScheduler & {
+        requestManyWithBinding: ReturnType<typeof vi.fn>;
+        requestGraphIndexBuildWakesWithBinding: ReturnType<typeof vi.fn>;
+      };
+    }
+
+    it("registers an idle project's wake once and ends the chain without rediscovery", async () => {
+      const scheduler = makeWakeScheduler();
+      const discoverNarrativeMaintenanceWork = vi
+        .fn()
+        .mockResolvedValue(wakeDiscovery(["project-b"]));
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        { discoverNarrativeMaintenanceWork },
+        scheduler,
+        { acceptGraphIndexBuildWakes: true },
+      );
+
+      coordinator.handleBackendEvent("workspace:opened", {});
+      await vi.runAllTimersAsync();
+      expect(scheduler.requestManyWithBinding).toHaveBeenCalledWith(
+        [],
+        binding,
+      );
+      expect(
+        scheduler.requestGraphIndexBuildWakesWithBinding,
+      ).toHaveBeenCalledExactlyOnceWith(["project-b"], binding);
+
+      // The accepted wake cycle calls requestRediscovery; the ended chain
+      // makes that a no-op, so a clean B does not loop.
+      coordinator.requestRediscovery();
+      await vi.runAllTimersAsync();
+      expect(discoverNarrativeMaintenanceWork).toHaveBeenCalledOnce();
+      coordinator.dispose();
+    });
+
+    it("never reports a discovery with Graph Index wakes as empty to the quiescence writer", async () => {
+      const scheduler = makeWakeScheduler();
+      const observations: boolean[] = [];
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        {
+          discoverNarrativeMaintenanceWork: vi
+            .fn()
+            .mockResolvedValue(wakeDiscovery(["project-b"])),
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          listNarrativeMaintenanceWakeOutbox: vi.fn().mockResolvedValue([]),
+          ackNarrativeMaintenanceWakeOutbox: vi.fn(),
+        },
+        scheduler,
+        {
+          acceptGraphIndexBuildWakes: true,
+          onDiscoverySettled: (observation) => {
+            observations.push(observation.discoveryEmpty);
+          },
+        },
+      );
+
+      coordinator.handleBackendEvent("workspace:opened", {});
+      await vi.runAllTimersAsync();
+      // Settled discovery, then an empty outbox drain of the same chain.
+      await coordinator.drainWakeOutbox();
+      await vi.runAllTimersAsync();
+      expect(
+        scheduler.requestGraphIndexBuildWakesWithBinding,
+      ).toHaveBeenCalledOnce();
+      expect(observations.length).toBeGreaterThanOrEqual(2);
+      expect(observations).not.toContain(true);
+      coordinator.dispose();
+    });
+
+    it("rejects malformed wake lists before any queue mutation", async () => {
+      for (const malformed of [
+        [],
+        ["project-b", "project-b"],
+        [" project-b"],
+        [7],
+        "project-b",
+      ]) {
+        const scheduler = makeWakeScheduler();
+        const warn = vi.fn();
+        const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+          {
+            discoverNarrativeMaintenanceWork: vi
+              .fn()
+              .mockResolvedValue(wakeDiscovery(malformed)),
+          },
+          scheduler,
+          { acceptGraphIndexBuildWakes: true, warn },
+        );
+        coordinator.handleBackendEvent("workspace:opened", {});
+        await vi.runAllTimersAsync();
+        expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
+        expect(
+          scheduler.requestGraphIndexBuildWakesWithBinding,
+        ).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalled();
+        coordinator.dispose();
+      }
+    });
+
+    it("keeps every other launch's discovery contract: a wake list is refused and never registered", async () => {
+      const scheduler = makeWakeScheduler();
+      const warn = vi.fn();
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        {
+          discoverNarrativeMaintenanceWork: vi
+            .fn()
+            .mockResolvedValue(wakeDiscovery(["project-b"])),
+        },
+        scheduler,
+        { warn },
+      );
+      coordinator.handleBackendEvent("workspace:opened", {});
+      await vi.runAllTimersAsync();
+      expect(scheduler.requestManyWithBinding).not.toHaveBeenCalled();
+      expect(
+        scheduler.requestGraphIndexBuildWakesWithBinding,
+      ).not.toHaveBeenCalled();
+      expect(
+        warn.mock.calls.some((call) =>
+          call.map(String).join(" ").includes("invalid response"),
+        ),
+      ).toBe(true);
+      coordinator.dispose();
+    });
+
+    it("leaves an ordinary discovery without wakes unchanged under the B-ROUTE", async () => {
+      const scheduler = makeWakeScheduler();
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        {
+          discoverNarrativeMaintenanceWork: vi
+            .fn()
+            .mockResolvedValue(
+              discovery("authority-b-route", 2, [[backfill("project-1")]]),
+            ),
+        },
+        scheduler,
+        { acceptGraphIndexBuildWakes: true },
+      );
+      coordinator.handleBackendEvent("workspace:opened", {});
+      await vi.runAllTimersAsync();
+      expect(scheduler.requestManyWithBinding).toHaveBeenCalledOnce();
+      expect(
+        scheduler.requestGraphIndexBuildWakesWithBinding,
+      ).not.toHaveBeenCalled();
+      coordinator.dispose();
+    });
+  });
+
   it("discovers workspace-wide work from workspace:opened and enqueues the returned binding", async () => {
     const scheduler = makeScheduler();
     const discoverNarrativeMaintenanceWork = vi.fn().mockResolvedValue(

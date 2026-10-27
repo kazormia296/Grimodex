@@ -3632,6 +3632,42 @@ describe("narrative maintenance scheduler", () => {
     });
   });
 
+  it("DR-BSEAM-1: a B-ROUTE Graph Index wake starts one empty-work cycle bound to the discovery", async () => {
+    const binding = { authorityId: "authority-b-route", generation: 3 };
+    const runNarrativeMaintenanceCycle = vi
+      .fn()
+      .mockResolvedValue(acceptedCycle());
+    const { scheduler } = createScheduler({
+      getNarrativeMaintenanceWorkspaceBinding: () => binding,
+      runNarrativeMaintenanceCycle,
+    });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).not.toHaveBeenCalled();
+
+    scheduler.requestGraphIndexBuildWakesWithBinding?.(["project-b"], binding);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+    expect(runNarrativeMaintenanceCycle.mock.calls[0]?.[0]).toEqual({
+      work: [],
+      wakeProjectIds: ["project-b"],
+      workspaceBinding: binding,
+    });
+
+    // An accepted wake is consumed: no idle loop of further cycles.
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 5);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+
+    expect(() =>
+      scheduler.requestGraphIndexBuildWakesWithBinding?.([" padded "], binding),
+    ).toThrow(/invalid Graph Index wake project/);
+    expect(() =>
+      scheduler.requestGraphIndexBuildWakesWithBinding?.([], binding),
+    ).toThrow(/invalid Graph Index wake project/);
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS);
+    expect(runNarrativeMaintenanceCycle).toHaveBeenCalledOnce();
+  });
+
   it("hasMore keeps a durable backlog wake and invokes the next cycle with an empty batch", async () => {
     const runNarrativeMaintenanceCycle = vi
       .fn()

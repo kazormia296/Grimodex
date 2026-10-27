@@ -1095,7 +1095,7 @@ test("CI runs the diff gate with full history and selected light suites", async 
   const workflow = await read(".github/workflows/ci.yml");
 
   assert.match(workflow, /^ {2}quality:\s*$/m);
-  assert.equal(yaml.load(workflow).jobs.quality["timeout-minutes"], 60);
+  assert.equal(yaml.load(workflow).jobs.quality["timeout-minutes"], 90);
   assert.match(workflow, /fetch-depth:\s*0/);
   assert.match(workflow, /pnpm eval:impact/);
   assert.match(workflow, /--run/);

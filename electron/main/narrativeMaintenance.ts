@@ -221,6 +221,16 @@ export interface NarrativeMaintenanceScheduler {
     work: readonly NarrativeMaintenanceRequest[],
     binding: NarrativeMaintenanceWorkspaceBinding,
   ): void;
+  /**
+   * B-ROUTE seam only (DR-BSEAM-1). Register an empty-work wake for each
+   * project of one discovery so its controlled native cycle judges the gated
+   * NIR-1 Graph Index build. Main never names that build; the projects come
+   * from the same pinned discovery as `requestManyWithBinding`.
+   */
+  requestGraphIndexBuildWakesWithBinding?(
+    projectIds: readonly string[],
+    binding: NarrativeMaintenanceWorkspaceBinding,
+  ): void;
   /** Main-only synchronous state recheck for the CI quiescence writer. */
   getQuiescenceState?(): {
     mutationRevision: number;
@@ -4511,6 +4521,43 @@ export function createNarrativeMaintenanceScheduler(
       const validatedWork = workItems.map(validateRequest);
       for (const work of validatedWork) {
         enqueue(work, normalizedBinding);
+      }
+    },
+    requestGraphIndexBuildWakesWithBinding(projectIds, binding): void {
+      const normalizedBinding = normalizeWorkspaceBinding(binding);
+      if (normalizedBinding === null) {
+        throw new Error(
+          "native maintenance discovery returned no workspace binding",
+        );
+      }
+      if (
+        projectIds.length === 0 ||
+        !projectIds.every((projectId) => isNonEmptyTrimmedString(projectId))
+      ) {
+        throw new Error(
+          "native maintenance discovery returned invalid Graph Index wake project",
+        );
+      }
+      if (disposed) return;
+      noteMutation();
+      for (const projectId of projectIds) {
+        const wakeKey = scopedWakeKey(projectId, normalizedBinding);
+        durableWakeProjects.set(wakeKey, {
+          projectId,
+          workspaceBinding: normalizedBinding,
+        });
+        deferredWakeProjects.delete(wakeKey);
+      }
+      // Same wakeup rule as `enqueue`: a pending timer or the in-flight
+      // cycle's finally block already owns the next cycle.
+      if (
+        started &&
+        !inFlight &&
+        activeAttemptId === null &&
+        pendingAttemptBegins.size === 0 &&
+        timer === null
+      ) {
+        schedule(NARRATIVE_MAINTENANCE_BACKLOG_DELAY_MS);
       }
     },
 

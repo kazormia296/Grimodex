@@ -2035,3 +2035,399 @@ fn injected_publish_failure_rolls_back_and_a_reopen_rebuilds() -> Result<()> {
     assert!(complete_registered(fixture.db())?);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// DR-BSEAM-1: main's wake -> discovery -> cycle path for the B-ROUTE seam.
+// ---------------------------------------------------------------------------
+
+/// Main's path from one wake to at most one cycle. Native discovery
+/// (`discover_all`) asks `discover_maintenance_project_for_main` about each
+/// project, and main starts a cycle only for what that discovery returns: a
+/// work item, or (B-ROUTE only) a project wake. `None` means main starts no
+/// cycle for this wake.
+fn main_wake_cycle(
+    fixture: &Fixture,
+    seam: Option<&NarrativeMaintenanceCiConfig>,
+    reason: &str,
+    recorder: &Recorder,
+) -> Result<Option<MaintenanceCycleResult>> {
+    main_wake_cycle_with_discovery(fixture, seam, reason, recorder).map(|(_, result)| result)
+}
+
+/// `main_wake_cycle` that also returns what main's discovery answered.
+fn main_wake_cycle_with_discovery(
+    fixture: &Fixture,
+    seam: Option<&NarrativeMaintenanceCiConfig>,
+    reason: &str,
+    recorder: &Recorder,
+) -> Result<(
+    crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery,
+    Option<MaintenanceCycleResult>,
+)> {
+    use crate::narrative_extraction::maintenance_runtime::{
+        discover_maintenance_project_for_main, effective_maintenance_coordinates,
+        MaintenanceProjectDiscovery,
+    };
+    let coordinates = effective_maintenance_coordinates(seam)?;
+    let discovered = discover_maintenance_project_for_main(
+        fixture.db(),
+        PROJECT,
+        reason,
+        Some(&coordinates),
+        seam,
+    )?;
+    let request = match discovered.clone() {
+        MaintenanceProjectDiscovery::Work(work) => MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: work.project_id,
+                run_kind: work.run_kind,
+                work_key: work.work_key,
+                semantic_epoch_id: work.semantic_epoch_id,
+                reasons: work.reasons,
+            }],
+            wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        },
+        MaintenanceProjectDiscovery::GraphIndexBuildWake => wake_request(),
+        MaintenanceProjectDiscovery::Idle => return Ok((discovered, None)),
+    };
+    let result = run_cycle_on(
+        fixture.db(),
+        Some(fixture.runtime()),
+        &request,
+        seam,
+        recorder,
+    )?;
+    Ok((discovered, Some(result)))
+}
+
+/// Run the product path (no seam) until main's discovery has nothing to do.
+fn drain_durable_chain(fixture: &Fixture) -> Result<()> {
+    for _ in 0..8 {
+        let recorder = Recorder::default();
+        if main_wake_cycle(fixture, None, "workspace-opened", &recorder)?.is_none() {
+            return Ok(());
+        }
+    }
+    bail!("the durable chain did not settle")
+}
+
+/// P-0. A missing binding is built only inside a cycle, after the durable
+/// chain has nothing to do. When the durable chain is already idle at the
+/// B-ROUTE session's wake, main's discovery must still lead to that cycle.
+#[test]
+fn b_route_wake_builds_a_missing_graph_when_the_durable_chain_is_idle() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    assert_eq!(
+        generation(fixture.db())?,
+        None,
+        "the product path never builds B"
+    );
+    assert_eq!(
+        fixture.judge()?,
+        build(
+            Nir1GraphIndexBuildMode::Rebuild,
+            Nir1GraphIndexBuildReason::BindingMissing
+        )
+    );
+
+    let recorder = Recorder::default();
+    let result = main_wake_cycle(&fixture, Some(&graph_seam()), "workspace-opened", &recorder)?;
+    assert_eq!(
+        result,
+        Some(MaintenanceCycleResult::accepted(false)),
+        "the B-ROUTE wake must start one cycle"
+    );
+    assert_eq!(Recorder::graph(&recorder.completed).len(), 1);
+    let (sealed_generation, dirty, ..) = sealed(fixture.db())?.expect("published binding");
+    assert_eq!((sealed_generation, dirty), (1, 0));
+    assert!(complete_registered(fixture.db())?);
+
+    // The next wake (a reopen) judges the current binding and builds nothing.
+    let again = Recorder::default();
+    main_wake_cycle(&fixture, Some(&graph_seam()), "workspace-opened", &again)?;
+    assert!(Recorder::graph(&again.registered).is_empty());
+    assert_eq!(generation(fixture.db())?, Some(1));
+    Ok(())
+}
+
+/// P-1. A source edit after the seal retires the approved Revision and the
+/// Freshness evaluation marks the Graph consumer stale, so the sealed B is no
+/// longer clean. The next B-ROUTE wake (a reopen) must rebuild it.
+#[test]
+fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()> {
+    use crate::narrative_extraction::incremental_freshness::IncrementalFreshnessCycleOutcome;
+    use crate::narrative_extraction::scope_storage_authority_tests::patch;
+
+    let _serial = serial();
+    // The first seal comes from a cycle that already ran (P-1 is not P-0).
+    let fixture = Fixture::published()?;
+    assert_eq!(generation(fixture.db())?, Some(1), "first seal");
+    assert!(complete_registered(fixture.db())?);
+
+    patch(
+        fixture.db(),
+        "a3-source",
+        "bseam-p1",
+        "povCharacterId",
+        json!("nir1-alice"),
+        true,
+        "2026-10-27T00:00:00.000Z",
+    )?;
+    while matches!(
+        run_incremental_freshness_cycle(fixture.db())?,
+        IncrementalFreshnessCycleOutcome::Processed(_)
+    ) {}
+    assert!(
+        !complete_registered(fixture.db())?,
+        "the sealed B is no longer clean after the Freshness evaluation"
+    );
+    assert!(matches!(
+        fixture.judge()?,
+        Nir1GraphIndexBuildDecision::Build { .. }
+    ));
+
+    // DR-BSEAM-1 (b): the uncontrolled durable planner cannot judge the
+    // sealed binding and fails as context-unavailable; the B-ROUTE turns
+    // exactly that into a wake.
+    let coordinates =
+        crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(Some(
+            &graph_seam(),
+        ))?;
+    let uncontrolled =
+        crate::narrative_extraction::maintenance_runtime::discover_durable_maintenance_work_with_coordinates(
+            fixture.db(),
+            PROJECT,
+            "workspace-opened",
+            Some(&coordinates),
+        )
+        .expect_err("the uncontrolled planner cannot judge the sealed binding");
+    assert!(
+        error_text(&uncontrolled).contains("context-unavailable"),
+        "{uncontrolled:#}"
+    );
+
+    let recorder = Recorder::default();
+    let (discovered, result) = main_wake_cycle_with_discovery(
+        &fixture,
+        Some(&graph_seam()),
+        "workspace-opened",
+        &recorder,
+    )?;
+    assert_eq!(
+        discovered,
+        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    assert_eq!(
+        result.map(|result| result.status),
+        Some(MaintenanceCycleStatus::Accepted)
+    );
+    let (sealed_generation, dirty, ..) = sealed(fixture.db())?.expect("rebuilt binding");
+    assert_eq!((sealed_generation, dirty), (2, 0));
+    assert!(complete_registered(fixture.db())?);
+    assert_eq!(
+        fixture.judge()?,
+        skip(Nir1GraphIndexSkipReason::BindingCurrent)
+    );
+    Ok(())
+}
+
+/// Every launch except the validated B-ROUTE seam keeps main's discovery
+/// exactly as before: the durable planner's answer, its errors unchanged, and
+/// no wake (so main starts no additional cycle).
+#[test]
+fn main_discovery_wake_is_closed_outside_the_b_route_seam() -> Result<()> {
+    use crate::narrative_extraction::maintenance_runtime::{
+        discover_maintenance_project_for_main, effective_maintenance_coordinates,
+        nir1_graph_index_build_wakes_main_discovery, MaintenanceProjectDiscovery,
+    };
+
+    let _serial = serial();
+    let with = |edit: &dyn Fn(&mut NarrativeMaintenanceCiConfig)| {
+        let mut config = graph_seam();
+        edit(&mut config);
+        config
+    };
+    let packaged = with(&|config| config.is_packaged = true);
+    let not_ci = with(&|config| config.ci = "false".to_string());
+    let forged_owner = with(&|config| config.owner_token = "forged-owner".to_string());
+    // Valid seams that did not select the B-ROUTE.
+    let mut other_triggers = vec![with(&|config| config.trigger = None)];
+    for trigger in [
+        NarrativeMaintenanceCiTrigger::DependencyGap,
+        NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake,
+        NarrativeMaintenanceCiTrigger::GraphContractDigestChanged,
+        NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged,
+        NarrativeMaintenanceCiTrigger::ProducerGenerationSetDigestChanged,
+    ] {
+        other_triggers.push(with(&|config| config.trigger = Some(trigger)));
+    }
+    let invalid = [&packaged, &not_ci, &forged_owner];
+
+    for reason in [
+        "workspace-opened",
+        "restore-completed",
+        "semantic-epoch-rotated",
+        "durable-wake",
+    ] {
+        assert!(nir1_graph_index_build_wakes_main_discovery(
+            Some(&graph_seam()),
+            reason
+        ));
+        assert!(!nir1_graph_index_build_wakes_main_discovery(None, reason));
+        for closed in invalid.into_iter().chain(other_triggers.iter()) {
+            assert!(
+                !nir1_graph_index_build_wakes_main_discovery(Some(closed), reason),
+                "{reason}: {closed:?}"
+            );
+        }
+    }
+    for reason in ["before-cutover", BEFORE_CUTOVER_FOLLOW_UP_REASON] {
+        assert!(!nir1_graph_index_build_wakes_main_discovery(
+            Some(&graph_seam()),
+            reason
+        ));
+    }
+
+    // Idle durable chain with B missing: no wake and no cycle without the seam.
+    let idle = Fixture::new()?;
+    drain_durable_chain(&idle)?;
+    let product_coordinates = effective_maintenance_coordinates(None)?;
+    let discover = |db: &Database, config: Option<&NarrativeMaintenanceCiConfig>| {
+        discover_maintenance_project_for_main(
+            db,
+            PROJECT,
+            "workspace-opened",
+            Some(&product_coordinates),
+            config,
+        )
+    };
+    assert_eq!(
+        discover(idle.db(), None)?,
+        MaintenanceProjectDiscovery::Idle
+    );
+    for closed in invalid.into_iter().chain(other_triggers.iter()) {
+        assert_eq!(
+            discover(idle.db(), Some(closed))?,
+            MaintenanceProjectDiscovery::Idle,
+            "{closed:?}"
+        );
+    }
+    let recorder = Recorder::default();
+    assert_eq!(
+        main_wake_cycle(&idle, None, "workspace-opened", &recorder)?,
+        None
+    );
+    // Triggers that perturb a coordinate still reach Verify as ordinary
+    // work, exactly as before; the others start no cycle.
+    for closed in other_triggers.iter().filter(|config| {
+        !matches!(
+            config.trigger,
+            Some(
+                NarrativeMaintenanceCiTrigger::GraphContractDigestChanged
+                    | NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged
+                    | NarrativeMaintenanceCiTrigger::ProducerGenerationSetDigestChanged
+            )
+        )
+    }) {
+        assert_eq!(
+            main_wake_cycle(&idle, Some(closed), "workspace-opened", &recorder)?,
+            None,
+            "{closed:?}"
+        );
+    }
+    // An invalid seam is refused before any discovery (as before).
+    for closed in invalid {
+        assert!(main_wake_cycle(&idle, Some(closed), "workspace-opened", &recorder).is_err());
+    }
+    assert!(recorder
+        .registered
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .is_empty());
+    assert_eq!(generation(idle.db())?, None);
+    assert_eq!(
+        discover(idle.db(), Some(&graph_seam()))?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+
+    // A sealed binding: the uncontrolled planner's context-unavailable error
+    // propagates unchanged unless the B-ROUTE selected the wake.
+    let sealed_fixture = Fixture::published()?;
+    for closed in std::iter::once(None)
+        .chain(invalid.into_iter().map(Some))
+        .chain(other_triggers.iter().map(Some))
+    {
+        let error = discover(sealed_fixture.db(), closed).expect_err("uncontrolled discovery");
+        assert!(
+            error_text(&error).contains("context-unavailable"),
+            "{closed:?}: {error:#}"
+        );
+    }
+    assert_eq!(
+        discover(sealed_fixture.db(), Some(&graph_seam()))?,
+        MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
+    Ok(())
+}
+
+/// DR-BSEAM-2: only `context-unavailable` becomes a B-ROUTE wake. Every other
+/// failure of main's discovery propagates as an error even with the seam.
+#[test]
+fn b_route_discovery_propagates_errors_other_than_context_unavailable() -> Result<()> {
+    use crate::narrative_extraction::maintenance_runtime::{
+        discover_maintenance_project_for_main, effective_maintenance_coordinates,
+        is_context_unavailable_termination,
+    };
+    use crate::narrative_extraction::source_revision::{
+        validation_terminated, ValidationTerminationReason,
+    };
+
+    let _serial = serial();
+    // The classifier: the typed context-unavailable marker (also under added
+    // context) and nothing else.
+    assert!(is_context_unavailable_termination(
+        &validation_terminated(ValidationTerminationReason::ContextUnavailable, "test")
+            .context("discovery")
+    ));
+    for reason in [
+        ValidationTerminationReason::Cancelled,
+        ValidationTerminationReason::TimedOut,
+        ValidationTerminationReason::Closed,
+        ValidationTerminationReason::WorkspaceGenerationChanged,
+        ValidationTerminationReason::ForegroundPreempted,
+        ValidationTerminationReason::CleanupFailed,
+        ValidationTerminationReason::CapacityExceeded,
+    ] {
+        assert!(
+            !is_context_unavailable_termination(&validation_terminated(reason, "test")),
+            "{reason:?}"
+        );
+    }
+    assert!(!is_context_unavailable_termination(&anyhow!(
+        "context-unavailable in plain text is not the typed marker"
+    )));
+
+    // A SQL failure of the durable planner under the open seam stays an error.
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    fixture.db().with_conn(|conn| {
+        conn.execute_batch("ALTER TABLE narrative_extraction_runs RENAME TO bseam_hidden_runs")?;
+        Ok(())
+    })?;
+    let coordinates = effective_maintenance_coordinates(Some(&graph_seam()))?;
+    let error = discover_maintenance_project_for_main(
+        fixture.db(),
+        PROJECT,
+        "workspace-opened",
+        Some(&coordinates),
+        Some(&graph_seam()),
+    )
+    .expect_err("a SQL failure is not a Graph Index wake");
+    assert!(!is_context_unavailable_termination(&error), "{error:#}");
+    Ok(())
+}
