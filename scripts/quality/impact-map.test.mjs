@@ -1888,3 +1888,41 @@ test("CP-4 TR trace runner and build receipt check assets are registered, select
   for (const testPath of tests)
     assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
 });
+
+test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and executed by the nir1 suite", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const implementations = [
+    "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
+    "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
+    "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
+    "scripts/quality/nir1-graph-eval/g01-negatives.mjs",
+    "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+  ];
+  const tests = [
+    "scripts/quality/nir1-graph-eval/frozen-diagnostics.test.mjs",
+    "scripts/quality/nir1-graph-eval/trace-frozen.test.mjs",
+    "scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs",
+    "scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs",
+    "scripts/quality/nir1-graph-eval/g01-negatives.test.mjs",
+  ];
+  for (const changedPath of [...implementations, ...tests]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  const requirement = manifest.requirements.find((candidate) => candidate.id === "GDX-ISOLATION-001");
+  assert.ok(requirement, "GDX-ISOLATION-001");
+  for (const implementation of implementations)
+    assert.ok(requirement.implementedBy.includes(implementation), implementation);
+  for (const testPath of tests) assert.ok(requirement.lightTests.includes(testPath), testPath);
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
+  for (const testPath of tests)
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
+});

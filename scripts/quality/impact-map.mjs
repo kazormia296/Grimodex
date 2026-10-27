@@ -565,6 +565,12 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs",
         "scripts/quality/nir1-graph-eval/trace-seal.test.mjs",
         "scripts/quality/nir1-graph-eval/trace-cycle.test.mjs",
+        // CP-4 S5-B: the diagnostics (SP-P4, K24-G01-N2〜N4) and the frozen trace.
+        "scripts/quality/nir1-graph-eval/frozen-diagnostics.test.mjs",
+        "scripts/quality/nir1-graph-eval/trace-frozen.test.mjs",
+        "scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs",
+        "scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs",
+        "scripts/quality/nir1-graph-eval/g01-negatives.test.mjs",
       ],
       [
         "node",
