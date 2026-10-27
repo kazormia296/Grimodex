@@ -1762,6 +1762,48 @@ test("NIR-1 final-request (DP-H) assets are registered, selected and executed by
   }
 });
 
+test("CP-4 S1c-2 setup driver and runner assets are registered, selected and executed by the nir1 suite", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const implementations = [
+    "scripts/quality/nir1-graph-eval/dev-fixture.mjs",
+    "scripts/quality/nir1-graph-eval/workspace-db.mjs",
+    "scripts/quality/nir1-graph-eval/window.mjs",
+    "scripts/quality/nir1-graph-eval/session.mjs",
+    "scripts/quality/nir1-graph-eval/run-sample.mjs",
+    "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts",
+    "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
+  ];
+  const tests = [
+    "scripts/quality/nir1-graph-eval/run-sample.test.mjs",
+    "scripts/quality/nir1-graph-eval/window.test.mjs",
+    "scripts/quality/nir1-graph-eval/dev-fixture.test.mjs",
+  ];
+  for (const changedPath of [...implementations, ...tests]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  // As S1b and S1c-1, the harness files belong to GDX-ISOLATION-001.
+  for (const requirementId of ["GDX-ISOLATION-001"]) {
+    const requirement = manifest.requirements.find((candidate) => candidate.id === requirementId);
+    assert.ok(requirement, requirementId);
+    for (const implementation of implementations)
+      assert.ok(requirement.implementedBy.includes(implementation), `${requirementId}: ${implementation}`);
+    for (const testPath of tests)
+      assert.ok(requirement.lightTests.includes(testPath), `${requirementId}: ${testPath}`);
+  }
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
+  for (const testPath of tests)
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
+});
+
 test("CP-4 S1a evaluation-only Graph assets are registered, selected and executed by the nir1 suite", async () => {
   const [impactSource, manifestSource] = await Promise.all([
     readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
@@ -1773,10 +1815,12 @@ test("CP-4 S1a evaluation-only Graph assets are registered, selected and execute
     "electron/native/grimodex-node/src/nir1_graph_eval/mod.rs",
     "src-tauri/crates/grimodex-db/src/narrative_extraction/nir1_graph_eval.rs",
     "scripts/quality/nir1-graph-eval/native-architecture.mjs",
+    "scripts/quality/nir1-graph-eval/eval-native-build.mjs",
   ];
   const tests = [
     "electron/native/grimodex-node/src/nir1_graph_eval/tests.rs",
     "scripts/quality/nir1-graph-eval/native-architecture.test.mjs",
+    "scripts/quality/nir1-graph-eval/eval-native-build.test.mjs",
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
