@@ -1208,7 +1208,7 @@ export function frozenSetupFakeProduct(opts = {}) {
         at(),
       );
       extension?.afterWrite?.();
-      return { id: input.id };
+      return { id: extension?.reportedRelationId?.(input.id) ?? input.id };
     },
     createForeshadow: (input) => {
       db.prepare("INSERT INTO foreshadows VALUES (?, ?, ?, ?, ?, ?, ?, 1)").run(
@@ -1376,6 +1376,7 @@ export function completeSetupExtension({
   buildIndexFails = false,
   relationCreateError = null,
   revisionStaysAvailable = false,
+  recreatedReportsOtherId = false,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1544,6 +1545,11 @@ export function completeSetupExtension({
         }
       },
       afterWrite: dirtyAll,
+      // The writer's answer names another ID for a recreated Relation.
+      reportedRelationId: (relationId) =>
+        recreatedReportsOtherId && deleted.has(relationId)
+          ? `${relationId}-other`
+          : null,
       beforeRelationCreate(input) {
         if (relationCreateError && deleted.has(input.id))
           throw new Error(relationCreateError);

@@ -759,6 +759,15 @@ test("レビュー P2-3／P2-4: G-02 の旧 Revision は live でも cold DB で
     other.receipt.precheck.message,
     /\[precheck\] S1i mutation: g02-m-dace-type: relation\.create with the same ID failed for another reason/u,
   );
+  // The same-ID create answering another ID stops (M40).
+  const otherId = await completeSetup("G-02/base", {
+    recreatedReportsOtherId: true,
+  });
+  assert.equal(otherId.receipt.status, "blocked");
+  assert.match(
+    otherId.receipt.precheck.message,
+    /g02-m-dace-type: the same-id mode created/u,
+  );
   // The bound Revision staying available after the edit stops (live).
   const live = await completeSetup("G-02/base", {
     revisionStaysAvailable: true,
