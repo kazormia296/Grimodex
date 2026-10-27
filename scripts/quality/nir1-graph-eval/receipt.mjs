@@ -398,11 +398,18 @@ export function assertElectronLaunch({ env, argv = [], xvfbDisplay, netns }) {
  * The head every receipt writes before measuring (K6/2 "事前登録の凍結" 2,
  * read with K6/4 批准 7: a formal R+IR+Graph run writes the K6/4 freeze
  * commit and bytes; a receipt with only K6/2 at its head is a preview). The
- * K6/2 bytes stay as the baseline the /4 row amends. Until the integrator
- * pins the K6/4 freeze commit (K64_FREEZE.freezeCommit), no formal Graph
- * receipt validates.
+ * K6/2 bytes stay as the baseline the /4 row amends. A formal Graph receipt
+ * validates only with the pinned K6/4 freeze commit (K64_FREEZE.freezeCommit);
+ * a descriptor whose freezeCommit is null refuses it (fail closed). `freeze`
+ * defaults to K64_FREEZE; only the tests pass another descriptor
+ * (DR-CP4-T14-1).
  */
-export function receiptHeadErrors(head, runKind, fixtureKind) {
+export function receiptHeadErrors(
+  head,
+  runKind,
+  fixtureKind,
+  freeze = K64_FREEZE,
+) {
   const errors = [];
   if (head?.k62?.freezeCommit !== K62_FREEZE.commit)
     errors.push("head.k62.freezeCommit must be the K6/2 freeze commit");
@@ -410,15 +417,15 @@ export function receiptHeadErrors(head, runKind, fixtureKind) {
     errors.push("head.k62.sha256 must be the K6/2 bytes read from that commit");
   const formalGraph = GRAPH_RUN_KINDS.has(runKind) && fixtureKind !== "dev";
   if (formalGraph || head?.k64 !== undefined) {
-    if (head?.k64?.sha256 !== K64_FREEZE.sha256)
+    if (head?.k64?.sha256 !== freeze.sha256)
       errors.push("head.k64.sha256 must be the K6/4 bytes (批准 7)");
     commitErrors(errors, head?.k64?.freezeCommit, "head.k64.freezeCommit");
     if (formalGraph) {
-      if (K64_FREEZE.freezeCommit === null)
+      if (freeze.freezeCommit === null)
         errors.push(
           "[precheck] the K6/4 freeze commit is not pinned (批准 7: the integrator freezes K6/4 on claude/nir1-contracts first); a formal Graph receipt is refused",
         );
-      else if (head?.k64?.freezeCommit !== K64_FREEZE.freezeCommit)
+      else if (head?.k64?.freezeCommit !== freeze.freezeCommit)
         errors.push(
           "head.k64.freezeCommit must be the pinned K6/4 freeze commit",
         );

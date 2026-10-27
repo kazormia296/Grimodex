@@ -222,8 +222,8 @@ test("R5: query の Scene の pin を製品の join と同じ形で DB から読
   }
 });
 
-test("admission: 凍結した fixture は admitGraphCaseRun を通り、K6/4 の凍結が無い今は [precheck] で止まる。dev は予告の admission", () => {
-  assert.equal(K64_FREEZE.freezeCommit, null);
+test("admission: 凍結した fixture は admitGraphCaseRun を通り、正式の入力（受領書、K6/2・K6/4 の凍結の commit など）が無ければ [precheck] で止まる。dev は予告の admission", () => {
+  assert.match(K64_FREEZE.freezeCommit, /^[0-9a-f]{40}$/u);
   assert.throws(
     () =>
       admitK64Run({

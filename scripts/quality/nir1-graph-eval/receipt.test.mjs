@@ -20,6 +20,7 @@ import {
   computeRunAggregates,
   formatSha256Sums,
   parseSha256Sums,
+  receiptHeadErrors,
   assessX11Listing,
   selectReceiptsForAggregation,
   validateCp4Receipt,
@@ -124,11 +125,13 @@ function k64Rows(variant) {
   );
 }
 
-/** The K6/4 freeze of a receipt head (批准 7). Pinned by the integrator. */
-const K64_HEAD = { freezeCommit: H40("4"), sha256: K64_FREEZE.sha256 };
-const FREEZE_PENDING =
-  /K6\/4 freeze commit is not pinned|test-only evidence \(test-support\.mjs\)/;
-/** Every error but the one the unpinned K6/4 freeze always gives. */
+/** The K6/4 freeze of a receipt head (批准 7), at the pinned commit. */
+const K64_HEAD = {
+  freezeCommit: K64_FREEZE.freezeCommit,
+  sha256: K64_FREEZE.sha256,
+};
+/** E-1: the error the test-only 批准 5 evidence always gives. */
+const TEST_ONLY_EVIDENCE = /test-only evidence \(test-support\.mjs\)/;
 /**
  * The 批准 5 evidence re-collected from git for the fixture's candidate (D-1)
  * and the procedure file loaded from its commit (S1f).
@@ -137,9 +140,10 @@ const BOUND = () => ({
   ratification5: ratification5(),
   procedure: formalProcedure(),
 });
+/** Every error but the one the test-only 批准 5 evidence always gives. */
 const otherErrors = (value, bound = BOUND()) =>
   validateCp4Receipt(value, bound).filter(
-    (error) => !FREEZE_PENDING.test(error),
+    (error) => !TEST_ONLY_EVIDENCE.test(error),
   );
 const K64_SETTINGS = procedureSettings(formalProcedure());
 
@@ -280,14 +284,16 @@ test("P-10: a complete receipt passes and its head carries the K6/2 freeze", () 
   );
 });
 
-test("批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。凍結の commit が固定されるまで受け付けない", () => {
+test("批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。固定した commit と bytes の先頭だけを受け付ける", () => {
   const errors = validateCp4Receipt(receipt(), BOUND());
-  // The unpinned freeze, and (E-1) the test-only 批准 5 evidence.
-  assert.equal(errors.length, 2, errors.join(" | "));
-  assert.match(errors[0], /K6\/4 freeze commit is not pinned/);
-  assert.match(errors[1], /test-only evidence/);
-  assert.throws(() => assertCp4Receipt(receipt(), BOUND()), FREEZE_PENDING);
-  assert.equal(K64_FREEZE.freezeCommit, null);
+  // Only (E-1) the test-only 批准 5 evidence: the pinned K6/4 head passes.
+  assert.equal(errors.length, 1, errors.join(" | "));
+  assert.match(errors[0], TEST_ONLY_EVIDENCE);
+  assert.throws(() => assertCp4Receipt(receipt(), BOUND()), TEST_ONLY_EVIDENCE);
+  assert.equal(
+    K64_FREEZE.freezeCommit,
+    "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+  );
   const { k64, ...noK64 } = receipt().head;
   assert.ok(k64);
   assert.match(errorsOf(receipt({ head: noK64 })), /head\.k64/);
@@ -299,7 +305,73 @@ test("批准 7: 正式の Graph の receipt の先頭は K6/4 の凍結。凍結
     ),
     /K6\/4 bytes/,
   );
+  // 固定した commit と違う commit（形は正しい）の先頭は拒む。
+  for (const other of [H40("4"), K64_FREEZE.confirmedCommit]) {
+    assert.match(
+      errorsOf(
+        receipt({
+          head: { ...receipt().head, k64: { ...k64, freezeCommit: other } },
+        }),
+      ),
+      /must be the pinned K6\/4 freeze commit/,
+    );
+  }
   // dev の予告は K6/4 の先頭を要しない（書くなら bytes は K6/4 のもの）。
+});
+
+test("批准 7（DR-CP4-T14-1）: receiptHeadErrors は注入した凍結の descriptor で照合し、null なら正式の Graph を拒む", () => {
+  const head = receipt().head;
+  const k64Errors = (value, runKind, fixtureKind, freeze) =>
+    receiptHeadErrors(value, runKind, fixtureKind, freeze).filter((error) =>
+      /k64|K6\/4/u.test(error),
+    );
+  // 製品の既定（K64_FREEZE）では固定した commit の先頭が通る。
+  assert.deepEqual(k64Errors(head, "g-case-gold", "frozen"), []);
+  // 一時の凍結の descriptor（commit も bytes も別）では、その先頭だけが通る。
+  const freeze = Object.freeze({
+    ...K64_FREEZE,
+    sha256: H64("7"),
+    freezeCommit: H40("7"),
+  });
+  const injected = {
+    ...head,
+    k64: { freezeCommit: H40("7"), sha256: H64("7") },
+  };
+  assert.deepEqual(k64Errors(injected, "g-case-gold", "frozen", freeze), []);
+  assert.match(
+    k64Errors(head, "g-case-gold", "frozen", freeze).join(" | "),
+    /K6\/4 bytes.*pinned K6\/4 freeze commit/u,
+  );
+  assert.match(
+    k64Errors(
+      { ...head, k64: { freezeCommit: H40("8"), sha256: H64("7") } },
+      "g-case-gold",
+      "frozen",
+      freeze,
+    ).join(),
+    /must be the pinned K6\/4 freeze commit/,
+  );
+  assert.match(
+    k64Errors(injected, "g-case-gold", "frozen").join(" | "),
+    /K6\/4 bytes.*pinned K6\/4 freeze commit/u,
+  );
+  // 固定前の性質（fail closed）: freezeCommit が null の descriptor は正式の
+  // Graph の receipt を、先頭が何であっても拒む。
+  const unpinned = { ...K64_FREEZE, freezeCommit: null };
+  for (const value of [head, injected]) {
+    assert.match(
+      k64Errors(value, "g-case-gold", "frozen", unpinned).join(" | "),
+      /\[precheck\] the K6\/4 freeze commit is not pinned/,
+    );
+  }
+  // 先頭が K6/2 だけの receipt は予告（dev）のまま通り、正式の Graph では拒む。
+  const { k64: _k64, ...k62Only } = head;
+  assert.deepEqual(k64Errors(k62Only, "g-case-gold", "dev"), []);
+  assert.deepEqual(k64Errors(k62Only, "g-case-gold", "dev", unpinned), []);
+  assert.match(
+    k64Errors(k62Only, "g-case-gold", "frozen").join(" | "),
+    /head\.k64/,
+  );
 });
 
 test("K6/4-N31: 正式の receipt は批准 5 の (a)〜(c) の記録と、その判定を持つ", () => {

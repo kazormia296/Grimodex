@@ -183,8 +183,9 @@ export async function waitRelease({
 /**
  * The admission of a K6/4 run. A frozen fixture goes through
  * `admitGraphCaseRun` (N-1, the default addon, 批准 5, the K6/2 and K6/4
- * freeze heads); until the integrator pins K64_FREEZE.freezeCommit it stops
- * with `[precheck]`. A dev fixture gets the dev preview admission.
+ * freeze heads, the K6/4 one at the pinned K64_FREEZE.freezeCommit); a
+ * missing or different input stops it with `[precheck]`. A dev fixture gets
+ * the dev preview admission.
  */
 export function admitK64Run(input) {
   const { root, fixture } = input;
@@ -456,10 +457,10 @@ async function main() {
   };
   try {
     // 1. admission. A frozen fixture is a formal run: admitGraphCaseRun stops
-    // it until the K6/4 freeze is pinned (fail closed).
+    // it unless the K6/4 head is the pinned freeze (fail closed).
     if (options.fixture) {
-      // The K6/4 freeze head first (cheap), so an unpinned freeze stops the
-      // run before the keep test (minutes) runs.
+      // The K6/4 freeze head first (cheap), so a missing or different K6/4
+      // commit stops the run before the keep test (minutes) runs.
       readK64FreezeHead({ root: ROOT, commit: options["k64-commit"] });
       admitK64Run({
         root: ROOT,
