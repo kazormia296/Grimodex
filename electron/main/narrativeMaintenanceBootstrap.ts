@@ -91,7 +91,17 @@ export function bootstrapNarrativeMaintenance(
   // The coordinator and scheduler retain their production owners. No
   // maintenance/scheduler callback is allowed to arm acceptance evidence;
   // the held-Freshness writer is fed directly by the Freshness scheduler.
-  coordinator = createCoordinator(backend, scheduler);
+  // B-ROUTE (DR-BSEAM-1): only the validated, unpackaged CI launch that
+  // selected the gated Graph Index build accepts discovery's project wakes.
+  // Every other launch constructs the coordinator exactly as before.
+  coordinator =
+    seam.active &&
+    seam.ownerToken === NARRATIVE_MAINTENANCE_OWNER_TOKEN &&
+    seam.trigger === "nir1-graph-index-build"
+      ? createCoordinator(backend, scheduler, {
+          acceptGraphIndexBuildWakes: true,
+        })
+      : createCoordinator(backend, scheduler);
   scheduler.start();
 
   return { scheduler, coordinator };
