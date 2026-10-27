@@ -11950,4 +11950,177 @@ mod tests {
         })
         .expect("registration walk");
     }
+
+    /// DR-MP-2: which controlled adapter a post-commit ownership test runs.
+    #[derive(Clone, Copy)]
+    enum ControlledSuccessAdapter {
+        Verify,
+        Rebuild,
+    }
+
+    /// Run one controlled Verify or Rebuild to success and record every
+    /// `mark_run_terminalized` call with the Run status and the connection's
+    /// autocommit state at that moment. `hold` runs it under a foreground
+    /// system-work marker, which records the outcome but keeps the Run running.
+    fn run_controlled_success_with_terminalization_hook(
+        adapter: ControlledSuccessAdapter,
+        hold: bool,
+    ) -> (String, String, Vec<(String, bool, String)>) {
+        let db = test_db();
+        let epoch_id = seed_epoch_for_rebuild(&db, "project-1");
+        let (run_kind, work_key) = match adapter {
+            ControlledSuccessAdapter::Verify => (
+                super::super::maintenance_runtime::AutomaticRunKind::Verify,
+                format!("{VERIFY_RUN_KIND}:{epoch_id}"),
+            ),
+            ControlledSuccessAdapter::Rebuild => (
+                super::super::maintenance_runtime::AutomaticRunKind::RebuildDerived,
+                REBUILD_DERIVED_WORK_KEY.to_string(),
+            ),
+        };
+        let canonical_work_key = super::super::maintenance_runtime::canonical_work_key_for_epoch(
+            "project-1",
+            run_kind,
+            &work_key,
+            Some(&epoch_id),
+        )
+        .expect("canonical work key");
+        let marker = hold.then(|| super::super::maintenance_runtime::NarrativeSystemWorkMarker {
+            trigger: "workspace-opened".to_string(),
+            canonical_work_key: canonical_work_key.clone(),
+            authority_id: "authority:workspace-1".to_string(),
+            generation: 1,
+            product_journey_barrier_id: "barrier-post-commit".to_string(),
+            correlation: "correlation-post-commit".to_string(),
+        });
+
+        let hook_calls = std::sync::Mutex::new(Vec::<(String, bool, String)>::new());
+        let no_stop = || Ok::<_, anyhow::Error>(());
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| Ok::<_, anyhow::Error>(());
+        let no_attach =
+            |_ownership: crate::workspace_lifecycle::RunOwnership| Ok::<_, anyhow::Error>(());
+        let mark_terminalized = |run_id: &str| -> anyhow::Result<()> {
+            let (autocommit, status) = db.with_conn(|conn| {
+                let status: String = conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )?;
+                Ok((conn.is_autocommit(), status))
+            })?;
+            hook_calls
+                .lock()
+                .expect("hook calls")
+                .push((run_id.to_owned(), autocommit, status));
+            Ok(())
+        };
+        let control = MaintenanceCycleControl {
+            should_stop: &no_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+            attach_run: Some(&no_attach),
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: Some(&mark_terminalized),
+        };
+        let run_id = super::super::maintenance_runtime::with_system_work_marker(marker, || {
+            match adapter {
+                ControlledSuccessAdapter::Verify => {
+                    run_dependency_verify_for_project_with_coordinates_and_control(
+                        &db,
+                        "project-1",
+                        None,
+                        Some(&control),
+                        &canonical_work_key,
+                    )
+                    .map(|outcome| outcome.run_id)
+                }
+                ControlledSuccessAdapter::Rebuild => {
+                    rebuild_narrative_derived_state_for_project_with_control(
+                        &db,
+                        "project-1",
+                        Some(&control),
+                        &canonical_work_key,
+                    )
+                    .map(|outcome| match outcome {
+                        RebuildDerivedStateOutcome::Ran { run_id, .. }
+                        | RebuildDerivedStateOutcome::AlreadyRunning { run_id } => run_id,
+                    })
+                }
+            }
+        })
+        .expect("controlled adapter succeeds");
+        let status: String = db
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("read Run status");
+        let calls = hook_calls.into_inner().expect("hook calls");
+        (run_id, status, calls)
+    }
+
+    #[test]
+    fn controlled_verify_success_releases_ownership_once_after_commit() {
+        let (run_id, status, calls) = run_controlled_success_with_terminalization_hook(
+            ControlledSuccessAdapter::Verify,
+            false,
+        );
+        assert_eq!(status, "completed");
+        assert_eq!(
+            calls,
+            vec![(run_id, true, "completed".to_string())],
+            "the hook runs once, outside any transaction, after the completed Run is durable"
+        );
+    }
+
+    #[test]
+    fn controlled_rebuild_success_releases_ownership_once_after_commit() {
+        let (run_id, status, calls) = run_controlled_success_with_terminalization_hook(
+            ControlledSuccessAdapter::Rebuild,
+            false,
+        );
+        assert_eq!(status, "completed");
+        assert_eq!(
+            calls,
+            vec![(run_id, true, "completed".to_string())],
+            "the hook runs once, outside any transaction, after the completed Run is durable"
+        );
+    }
+
+    #[test]
+    fn controlled_verify_hold_keeps_ownership_of_the_running_run() {
+        let (_run_id, status, calls) = run_controlled_success_with_terminalization_hook(
+            ControlledSuccessAdapter::Verify,
+            true,
+        );
+        assert_eq!(status, "running", "a held Verify Run stays running");
+        assert!(calls.is_empty(), "a held Run must keep its exact owner");
+    }
+
+    #[test]
+    fn controlled_rebuild_hold_keeps_ownership_of_the_running_run() {
+        let (_run_id, status, calls) = run_controlled_success_with_terminalization_hook(
+            ControlledSuccessAdapter::Rebuild,
+            true,
+        );
+        assert_eq!(status, "running", "a held Rebuild Run stays running");
+        assert!(calls.is_empty(), "a held Run must keep its exact owner");
+    }
 }
