@@ -823,3 +823,27 @@ test("O-7: 同じ workspace の不一致が IR の期限切れだけで説明で
     [1, 1, 2],
   );
 });
+
+test("O-7（変異 I4）: IR が完了した sample の違いは、行ごとにも期限切れで説明できるとしない", () => {
+  const rows = spP4Schedule({ warmup: 0, measured: 3 }).map((at) =>
+    spP4SampleRecord({
+      ...at,
+      measure: {
+        ...measure(at.repeat === 2 ? { resultSceneIds: ["ra", "rb"] } : {}),
+        resultKind: "fused",
+        completion: { outcome: "ir-ready", deadlineExceeded: false },
+      },
+      denseHitSceneIds: ["rb", "ra"],
+      sparseSceneIds: ["ra"],
+      before: counters(0),
+      after: counters(0),
+      scenes,
+    }),
+  );
+  const result = explainSpP4Instability(rows);
+  assert.equal(result.readyAgree, false);
+  assert.deepEqual(
+    result.rows.map((row) => [row.repeat, row.explained]),
+    [[2, false]],
+  );
+});
