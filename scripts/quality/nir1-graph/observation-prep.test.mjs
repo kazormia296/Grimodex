@@ -489,6 +489,13 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   filled.r5Gate.syntheticDetection.record = "docs/plans/sp-synthetic.md";
   filled.r5Gate.r5CheckRecord = "docs/plans/r5-check.md";
   filled.review = { ...review, recordSha256: "c".repeat(64) };
+  // S2 追補: S3 decides each reviewer question before S4b.
+  for (const question of filled.reviewerQuestions ?? [])
+    question.decision = {
+      choice: question.options[0].id,
+      by: "S3",
+      record: review.record,
+    };
   filled.status = "frozen-before-observation";
   filled.placeholders = [];
   const frozenCtx = {
@@ -1143,4 +1150,558 @@ test("S3v4-P3-3: referenced bytes sit in a strict ancestor of the frozen record'
     formalReferenceErrors(rows, head, { ...git, isAncestor: () => false })
       .length > 0,
   );
+});
+
+// ---- S2 追補（S1j-2 の setup の読み〔DR-CP4-L-11〕と trace の runner の提案〔DR-CP4-TR-8〜TR-10〕） ----
+
+/** Asserts that `mutate` on a clone of `value` makes `check` report `pattern`. */
+function detects(value, check, mutate, pattern) {
+  const copy = clone(value);
+  mutate(copy);
+  const errors = check(copy);
+  assert.ok(
+    errors.some((e) => pattern.test(e)),
+    `expected ${pattern} in ${JSON.stringify(errors)}`,
+  );
+}
+
+const rowOf = (rows, variant) => rows.find((row) => row.variant === variant);
+
+test("S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the probe, the blocked names, the specs and the seal reopen", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(observationPrepErrors(prep, ctx), []);
+  const readings = prep.setupReadings;
+  assert.ok(readings, "setupReadings is required");
+  assert.deepEqual(
+    readings.items.map((row) => row.l11),
+    [
+      "(1)",
+      "(2)",
+      "(3)",
+      "(4)",
+      "(5)",
+      "(6)",
+      "(7)",
+      "(8)",
+      "(9)",
+      "(10)",
+      "L-12",
+    ],
+  );
+  assert.equal(readings.variantSessions.length, 13);
+  assert.deepEqual(
+    rowOf(readings.variantSessions, "G-08/chronicle-index-unusable").sessions,
+    ["author", "ir", "seal", "hold", "reseal"],
+  );
+  const check = (copy) => observationPrepErrors(copy, ctx);
+
+  detects(
+    prep,
+    check,
+    (p) => p.setupReadings.items.splice(7, 1),
+    /setupReadings\.items/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.sessions.ir.main = "product"),
+    /setupReadings\.sessions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.sessions.hold.seam = true),
+    /setupReadings\.sessions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (rowOf(
+        p.setupReadings.variantSessions,
+        "G-08/chronicle-index-unusable",
+      ).sessions = ["author", "ir", "seal", "hold"]),
+    /variantSessions G-08\/chronicle-index-unusable/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      rowOf(
+        p.setupReadings.variantSessions,
+        "G-08/both-indexes-unusable",
+      ).chronicleQueryIn.push("hold"),
+    /variantSessions G-08\/both-indexes-unusable/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (rowOf(
+        p.setupReadings.variantSessions,
+        "G-08/graph-recovered",
+      ).measurementSession = "hold"),
+    /variantSessions G-08\/graph-recovered/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (rowOf(
+        p.setupReadings.variantSessions,
+        "G-02/base",
+      ).mutations[0].session = "hold"),
+    /variantSessions G-02\/base/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (rowOf(
+        p.setupReadings.variantSessions,
+        "G-08/graph-index-unusable",
+      ).specKind = "steady-state"),
+    /variantSessions G-08\/graph-index-unusable/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.measurementSpecs[
+        "while-chronicle-index-unusable"
+      ].warmUp = true),
+    /setupReadings\.measurementSpecs/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.measurementSpecs[
+        "while-both-indexes-unusable"
+      ].freshColdCopyPerProcess = false),
+    /setupReadings\.measurementSpecs/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.sealReopen.reopens = 3),
+    /setupReadings\.sealReopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.sealReopen.waitMs = 60_000),
+    /setupReadings\.sealReopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.sealReopen.receiptField = "seals"),
+    /setupReadings\.sealReopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.blocked = p.setupReadings.blocked.filter(
+        (row) => row.name !== "blocked:b-seal-not-published",
+      )),
+    /setupReadings\.blocked/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.probe.sources = ["readIndexMetadata"]),
+    /setupReadings\.probe/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.probe.readOnly = false),
+    /setupReadings\.probe/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.irPath.contextSetCount = 3),
+    /setupReadings\.irPath/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.irPath.aiSettings.model = "other"),
+    /setupReadings\.irPath/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.irPath.mainSessions = ["ir", "seal"]),
+    /setupReadings\.irPath/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.setupMain.env.GRIMODEX_PRODUCT_JOURNEY_FAKE_AI = "live"),
+    /setupReadings\.setupMain/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.setupMain.shaPerRun = false),
+    /setupReadings\.setupMain/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.typeEdit.mutation = "g02-m-other"),
+    /setupReadings\.typeEdit/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.typeEdit.firstMode = "new-id"),
+    /setupReadings\.typeEdit/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.irWithdrawal.decision = "rejected"),
+    /setupReadings\.irWithdrawal/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.invariantCheck.checkedAt = "first-session-end"),
+    /setupReadings\.invariantCheck/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.switchingRetry.boundMs = 120_000),
+    /setupReadings\.switchingRetry/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.switchingRetry.r5CheckRetries = true),
+    /setupReadings\.switchingRetry/u,
+  );
+});
+
+test("S2 追補 L-11 (P-3): d2 is read as the index-state probe only for the three unusable G-08 variants", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const readings = prep.d2.variantReadings;
+  assert.deepEqual(
+    readings.readAs.map((row) => row.variant),
+    [
+      "G-08/graph-index-unusable",
+      "G-08/chronicle-index-unusable",
+      "G-08/both-indexes-unusable",
+    ],
+  );
+  assert.equal(readings.unchanged.length, 10);
+  // d2.rule 本体は変えない（読み替えは別の欄）。
+  assert.ok(
+    prep.d2.rule.startsWith(
+      "B の sealed binding は、setup の session で B-ROUTE",
+    ),
+  );
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) =>
+      p.d2.variantReadings.readAs.push({
+        ...p.d2.variantReadings.readAs[0],
+        variant: "G-08/graph-recovered",
+      }),
+    /d2\.variantReadings/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.d2.variantReadings.unchanged = p.d2.variantReadings.unchanged.filter(
+        (v) => v !== "G-01/v1",
+      )),
+    /d2\.variantReadings/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d2.variantReadings.readAs[1].oneShot = false),
+    /d2\.variantReadings/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d2.variantReadings.readAs[0].b = "current"),
+    /d2\.variantReadings/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d2.variantReadings.readAs[2].chronicle = "usable"),
+    /d2\.variantReadings/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d2.variantReadings.readAs[0].maintenanceSeam = true),
+    /d2\.variantReadings/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d2.variantReadings.onMismatch = "blocked:b-sealed-binding"),
+    /d2\.variantReadings/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d2.variantReadings.checkedAt = ["before-measurement"]),
+    /d2\.variantReadings/u,
+  );
+});
+
+test("S2 追補: reviewerQuestions carry P-4 and the open readings for S3, undecided in a draft and decided when frozen", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const ids = prep.reviewerQuestions.map((row) => row.id);
+  assert.ok(ids.includes("P-4"));
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.reviewerQuestions = p.reviewerQuestions.filter(
+        (row) => row.id !== "P-4",
+      )),
+    /reviewerQuestions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.reviewerQuestions[0].decision = { choice: "a" }),
+    /reviewerQuestions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.reviewerQuestions[0].options = p.reviewerQuestions[0].options.slice(
+        0,
+        1,
+      )),
+    /reviewerQuestions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.reviewerQuestions[0].grounds = []),
+    /reviewerQuestions/u,
+  );
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  assert.deepEqual(observationPrepErrors(fixed, frozenCtx), []);
+  const undecided = clone(fixed);
+  undecided.reviewerQuestions[0].decision = null;
+  assert.ok(
+    observationPrepErrors(undecided, frozenCtx).some((e) =>
+      /reviewerQuestions/u.test(e),
+    ),
+  );
+});
+
+for (const kind of ["editing", "browsing"]) {
+  test(`S2 追補 TR-8〜TR-10: the ${kind} trace's runner readings (commit, A3, caret, start seal, maintenance launch) and proposals`, async () => {
+    const ctx = await context();
+    const file =
+      kind === "editing"
+        ? OBSERVATION_PREP_FILES.traceEditing
+        : OBSERVATION_PREP_FILES.traceBrowsing;
+    const trace = await json(file);
+    assert.deepEqual(traceErrors(trace, ctx), []);
+    const check = (copy) => traceErrors(copy, ctx);
+    const ops = trace.runnerReadings.operations;
+    assert.deepEqual(
+      Object.keys(ops).sort(),
+      kind === "editing"
+        ? ["confirm-autosave-commit", "edit", "open-scene", "product-query"]
+        : ["navigate", "open-scene"],
+    );
+    detects(
+      trace,
+      check,
+      (t) => delete t.runnerReadings.operations["open-scene"],
+      /runnerReadings\.operations/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.a3.readAt = "after-commit"),
+      /runnerReadings\.a3/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.startSeal.usableStates = ["current", "dirty"]),
+      /runnerReadings\.startSeal/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) =>
+        (t.runnerReadings.startSeal.states = ["current", "dirty", "missing"]),
+      /runnerReadings\.startSeal/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => t.runnerReadings.startSeal.reads.pop(),
+      /runnerReadings\.startSeal/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.startSeal.onDisagreement = "current"),
+      /runnerReadings\.startSeal/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.startSeal.connection.busyTimeoutMs = 300),
+      /runnerReadings\.startSeal/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.startSeal.insideTimingWindow = true),
+      /runnerReadings\.startSeal/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) =>
+        (t.runnerReadings.maintenanceLaunch.env =
+          t.runnerReadings.maintenanceLaunch.env.filter(
+            (name) => !/NONCE/u.test(name),
+          )),
+      /runnerReadings\.maintenanceLaunch/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.maintenanceLaunch.scope = "every-launch"),
+      /runnerReadings\.maintenanceLaunch/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.maintenanceLaunch.onForbiddenOption = "drop"),
+      /runnerReadings\.maintenanceLaunch/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.maintenanceLaunch.trigger = "other"),
+      /runnerReadings\.maintenanceLaunch/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) =>
+        t.contentProposals.push({
+          id: "x",
+          status: "applied",
+          proposal: "Q を 150 にする",
+        }),
+      /contentProposals/u,
+    );
+    if (kind === "editing") {
+      detects(
+        trace,
+        check,
+        (t) => (t.runnerReadings.operations.edit.caret = "click"),
+        /runnerReadings\.operations\.edit/u,
+      );
+      detects(
+        trace,
+        check,
+        (t) =>
+          (t.runnerReadings.operations["confirm-autosave-commit"].version =
+            "db-version"),
+        /runnerReadings\.operations\.confirm-autosave-commit/u,
+      );
+      detects(
+        trace,
+        check,
+        (t) =>
+          (t.runnerReadings.operations[
+            "confirm-autosave-commit"
+          ].harnessReadsDb = true),
+        /runnerReadings\.operations\.confirm-autosave-commit/u,
+      );
+    } else {
+      detects(
+        trace,
+        check,
+        (t) =>
+          (t.runnerReadings.operations.navigate.outsideQ.onNonCompleted =
+            "wait-for-publication"),
+        /runnerReadings\.operations\.navigate/u,
+      );
+    }
+  });
+}
+
+test("S2 追補: the author may list the permitted DR rows of cp4-decisions.md only, and a ref prefix does not hide a forbidden path", async () => {
+  const declaration = await json(OBSERVATION_PREP_FILES.authorDeclaration);
+  assert.deepEqual(authorDeclarationErrors(declaration), []);
+  const decisions = declaration.readFiles.filter((row) =>
+    /nir1-lane-decisions\/cp4-decisions\.md$/u.test(row.path),
+  );
+  assert.equal(decisions.length, 2);
+  assert.equal(typeof declaration.decisionSummariesSeen, "string");
+
+  const extraRow = clone(declaration);
+  extraRow.readFiles
+    .find((row) => /cp4-decisions/u.test(row.path))
+    .permittedRows.push("DR-CP4-K-5");
+  assert.ok(
+    authorDeclarationErrors(extraRow).some((e) =>
+      /forbidden|permittedRows/u.test(e),
+    ),
+  );
+
+  const noPermit = clone(declaration);
+  delete noPermit.readFiles.find((row) => /cp4-decisions/u.test(row.path))
+    .permittedBy;
+  assert.ok(
+    authorDeclarationErrors(noPermit).some((e) =>
+      /forbidden|permittedBy/u.test(e),
+    ),
+  );
+
+  const noSummary = clone(declaration);
+  delete noSummary.decisionSummariesSeen;
+  assert.ok(
+    authorDeclarationErrors(noSummary).some((e) =>
+      /decisionSummariesSeen/u.test(e),
+    ),
+  );
+
+  for (const hidden of [
+    "claude/x@0123456789abcdef0123456789abcdef01234567:docs/plans/nir1-lane-decisions/cp4-decisions.md",
+    "claude/x:.artifacts/cp4/run/receipt.json",
+  ]) {
+    const prefixed = clone(declaration);
+    prefixed.readFiles.push({ path: hidden, sha256: "0".repeat(64) });
+    assert.ok(
+      authorDeclarationErrors(prefixed).some((e) => /forbidden/u.test(e)),
+      hidden,
+    );
+  }
 });

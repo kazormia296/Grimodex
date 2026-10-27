@@ -256,6 +256,123 @@ const DIAGNOSTIC_IDS = Object.freeze([
   "SP-P4",
 ]);
 
+/**
+ * S2 追補（DR-CP4-L-1〜L-15。claude/cp4-s1j2 の frozen-setup-plan.mjs と
+ * frozen-setup-driver.mjs の写し）: the complete setup's sessions, the
+ * measurement spec of each measurementPoint, the seal reopen and the names a
+ * setup stops with. The validator re-derives each variant's sessions from the
+ * frozen fixtures with the plan's rule.
+ */
+const SETUP_READING_ITEMS = Object.freeze([
+  ["SR-1", "(1)"],
+  ["SR-2", "(2)"],
+  ["SR-3", "(3)"],
+  ["SR-4", "(4)"],
+  ["SR-5", "(5)"],
+  ["SR-6", "(6)"],
+  ["SR-7", "(7)"],
+  ["SR-8", "(8)"],
+  ["SR-9", "(9)"],
+  ["SR-10", "(10)"],
+  ["SR-11", "L-12"],
+]);
+const SETUP_SESSIONS = Object.freeze({
+  author: Object.freeze({ main: "product", seam: false }),
+  ir: Object.freeze({ main: "setup-ir", seam: false }),
+  seal: Object.freeze({ main: "product", seam: true }),
+  hold: Object.freeze({ main: "product", seam: false }),
+  reseal: Object.freeze({ main: "product", seam: true }),
+});
+const STEADY_POINT = "after-maintenance-current";
+const ONE_SHOT = Object.freeze({
+  kind: "one-shot",
+  maintenanceSeam: false,
+  warmUp: false,
+  queriesPerProcess: 1,
+  freshColdCopyPerProcess: true,
+});
+const MEASUREMENT_SPECS = Object.freeze({
+  [STEADY_POINT]: Object.freeze({
+    kind: "steady-state",
+    maintenanceSeam: "runner-procedure",
+    warmUp: true,
+    queriesPerProcess: "runner-procedure",
+    freshColdCopyPerProcess: false,
+  }),
+  "while-graph-index-unusable": Object.freeze({
+    kind: "graph-held-unusable",
+    maintenanceSeam: false,
+    warmUp: true,
+    queriesPerProcess: "runner-procedure",
+    freshColdCopyPerProcess: false,
+  }),
+  "while-chronicle-index-unusable": ONE_SHOT,
+  "while-both-indexes-unusable": ONE_SHOT,
+});
+const B_SEAL_NOT_PUBLISHED = "blocked:b-seal-not-published";
+const INDEX_STATE_HOLDING = "blocked:index-state-holding";
+const SETUP_BLOCKED = Object.freeze([
+  INDEX_STATE_HOLDING,
+  "blocked:maintenance-enabled",
+  B_SEAL_NOT_PUBLISHED,
+]);
+const SEAL_REOPEN = Object.freeze({
+  waitMs: 120_000,
+  reopens: 2,
+  maxOpenings: 3,
+  appliesTo: Object.freeze(["seal", "reseal"]),
+  firstStep: "b-seal",
+  newDirectoryAndNonce: true,
+  receiptField: "sealAttempts",
+  onExhausted: B_SEAL_NOT_PUBLISHED,
+});
+const SWITCHING_RETRY = Object.freeze({
+  error: "WORKSPACE_SWITCHING",
+  boundMs: 30_000,
+  scope: "complete-setup",
+  r5CheckRetries: false,
+});
+const SETUP_IR_AI_SETTINGS = Object.freeze({
+  provider: "ollama",
+  model: "product-journey-model",
+  ollamaEndpoint: "http://127.0.0.1:11434",
+});
+const PROBE_SOURCES = Object.freeze([
+  "readIndexMetadata",
+  "query.initialSnapshot.indexUsable",
+]);
+const DECLARED_DEFAULT = Object.freeze({
+  graph: "usable",
+  chronicle: "usable",
+});
+/** The open points S2 hands to S3 without deciding them. */
+const REVIEWER_QUESTIONS = Object.freeze(["P-4", "P-S2-2", "P-S2-3", "P-S2-4"]);
+
+/**
+ * S2 追補（DR-CP4-TR-8〜TR-10、TR-13。claude/cp4-trace の trace-record.mjs と
+ * trace-seal.mjs の写し）: how the trace runner reads the operations.
+ */
+const A3_READ = "once-right-after-parent-fetch-call-observed";
+const START_SEAL_STATES = Object.freeze([
+  "current",
+  "dirty",
+  "missing",
+  "unknown",
+]);
+const MAINTENANCE_LAUNCH_ENV = Object.freeze([
+  "CI",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER",
+]);
+const FORBIDDEN_SEAM_OPTIONS = Object.freeze([
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_FAULT",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP",
+  "GRIMODEX_PRODUCT_JOURNEY_NARRATIVE_FRESHNESS_HOLD_PROJECT_ID",
+  "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_BARRIER_ID",
+]);
+const CONTENT_PROPOSAL_STATUS = "proposal-awaiting-s3";
+
 const TRACE_KINDS = Object.freeze({
   editing: Object.freeze({ file: OBSERVATION_PREP_FILES.traceEditing }),
   browsing: Object.freeze({ file: OBSERVATION_PREP_FILES.traceBrowsing }),
@@ -265,8 +382,17 @@ const PRODUCT_SOURCES = Object.freeze({
   settings: "src/features/settings/types.ts",
   hook: "src/features/related-scenes/useNir1RelatedScenes.ts",
 });
+/**
+ * cp4-decisions.md is an observation record; the S2 addendum may list it only
+ * for the DR rows the integrator permitted (DR-CP4-L-1〜L-15, TR-1〜TR-14).
+ */
+const DECISIONS_RECORD =
+  /^docs\/plans\/nir1-lane-decisions\/cp4-decisions\.md$/u;
+const PERMITTED_DECISION_ROWS = new Set([
+  ...Array.from({ length: 15 }, (_, at) => `DR-CP4-L-${at + 1}`),
+  ...Array.from({ length: 14 }, (_, at) => `DR-CP4-TR-${at + 1}`),
+]);
 const FORBIDDEN_READ = Object.freeze([
-  /^docs\/plans\/nir1-lane-decisions\/cp4-decisions\.md$/u,
   /^docs\/plans\/nir1-lane-decisions\/cq-deferred-decisions\.md$/u,
   /^docs\/plans\/nir1-lane-decisions\/rsj-/u,
   /^docs\/plans\/nir1-lane-decisions\/rs-join-decisions\.md$/u,
@@ -901,6 +1027,138 @@ function triggerValueErrors(errors, trace, ctx) {
     errors.push("productTriggers.build.authoredAtBaseCommit must be a commit");
 }
 
+const nonBlank = (value) =>
+  typeof value === "string" && value.trim().length > 0;
+
+/** S2 追補: the runner's reading of a counted query (A3 and the start seal). */
+function countedReadingErrors(errors, label, row) {
+  if (
+    !isObject(row) ||
+    row.counted !== true ||
+    row.a3Read !== A3_READ ||
+    !nonBlank(row.startSeal)
+  )
+    errors.push(
+      `${label} must be a counted query read with A3 ${A3_READ} and its start seal reads`,
+    );
+}
+
+/**
+ * S2 追補（DR-CP4-TR-8〜TR-10、TR-13）: the trace runner's reading of each
+ * operation, the A3 timing, the start seal and the maintenance launch. The
+ * operations themselves (and Q) stay as the template; a change to them is a
+ * contentProposals entry awaiting S3, never applied here.
+ */
+function traceRunnerErrors(errors, trace) {
+  const readings = trace.runnerReadings;
+  if (!isObject(readings)) {
+    errors.push("runnerReadings is required (S2 追補、TR-8〜TR-10)");
+    return;
+  }
+  const ops = isObject(readings.operations) ? readings.operations : {};
+  const expected = [...(ALLOWED_OPS[trace.kind] ?? [])].sort();
+  if (!same(Object.keys(ops).sort(), expected))
+    errors.push(
+      `runnerReadings.operations must read exactly the ${trace.kind} operations ${expected.join(", ")}`,
+    );
+  countedReadingErrors(
+    errors,
+    "runnerReadings.operations.open-scene",
+    ops["open-scene"],
+  );
+  if (trace.kind === "editing") {
+    countedReadingErrors(
+      errors,
+      "runnerReadings.operations.product-query",
+      ops["product-query"],
+    );
+    const edit = ops.edit ?? {};
+    if (
+      edit.via !== "product-editor" ||
+      edit.caret !== "focus-editor-then-Control+End" ||
+      edit.input !== "playwright-keyboard"
+    )
+      errors.push(
+        "runnerReadings.operations.edit must type in the product editor after focus and Control+End (TR-8 (iv))",
+      );
+    const commit = ops["confirm-autosave-commit"] ?? {};
+    if (
+      commit.observe !== "subscribeSceneBodyCommits" ||
+      commit.version !== "contentVersion" ||
+      commit.initialVersion !== "getSceneVersion-before-trace" ||
+      commit.harnessReadsDb !== false
+    )
+      errors.push(
+        "runnerReadings.operations.confirm-autosave-commit must observe the product's body commit notification (contentVersion) without reading the DB (TR-8 (i))",
+      );
+  } else {
+    const navigate = ops.navigate ?? {};
+    countedReadingErrors(
+      errors,
+      "runnerReadings.operations.navigate.counted",
+      navigate.counted,
+    );
+    const outside = navigate.outsideQ ?? {};
+    if (
+      outside.counted !== false ||
+      outside.until !== "query-published" ||
+      outside.onNonCompleted !== "return-without-waiting-for-publication"
+    )
+      errors.push(
+        "runnerReadings.operations.navigate.outsideQ must end the seedless stay on publication, or return when the query ends other than completed (TR-8 (iii))",
+      );
+  }
+  if (readings.a3?.readAt !== A3_READ)
+    errors.push(`runnerReadings.a3.readAt must be ${A3_READ} (TR-8 (ii))`);
+  const seal = readings.startSeal ?? {};
+  if (
+    !same(
+      (seal.reads ?? []).map((row) => row?.id),
+      ["before", "after"],
+    ) ||
+    (seal.reads ?? []).some((row) => !nonBlank(row?.at)) ||
+    !same(seal.states, START_SEAL_STATES) ||
+    !same(seal.usableStates, ["current"]) ||
+    seal.onDisagreement !== "unknown" ||
+    !nonBlank(seal.rule) ||
+    seal.connection?.readOnly !== true ||
+    seal.connection?.busyTimeoutMs !== 0 ||
+    seal.insideTimingWindow !== false
+  )
+    errors.push(
+      "runnerReadings.startSeal must read the B seal twice (before the parent begin, after the parent is observed) on a read-only connection with busy timeout 0 outside the timing window, and count only current as U (disagreement is unknown) (TR-9, TR-13)",
+    );
+  const launch = readings.maintenanceLaunch ?? {};
+  const forbidden = trace.maintenance?.forbiddenSeamOptions ?? [];
+  if (!same(forbidden, FORBIDDEN_SEAM_OPTIONS))
+    errors.push(
+      `maintenance.forbiddenSeamOptions must be ${FORBIDDEN_SEAM_OPTIONS.join(", ")}`,
+    );
+  if (
+    !same([...(launch.env ?? [])].sort(), [...MAINTENANCE_LAUNCH_ENV].sort()) ||
+    (launch.env ?? []).some((name) => forbidden.includes(name)) ||
+    launch.trigger !== "nir1-graph-index-build" ||
+    launch.scope !== "trace-measurement-launch-only" ||
+    launch.onForbiddenOption !== "[precheck]" ||
+    !nonBlank(launch.record)
+  )
+    errors.push(
+      `runnerReadings.maintenanceLaunch must add ${MAINTENANCE_LAUNCH_ENV.join(", ")} (trigger nir1-graph-index-build) to the trace measurement launch only, [precheck] on a forbidden seam option (TR-10)`,
+    );
+  if (!Array.isArray(trace.contentProposals))
+    errors.push("contentProposals must be a list (empty when none)");
+  for (const [at, row] of (trace.contentProposals ?? []).entries())
+    if (
+      !isObject(row) ||
+      !nonBlank(row.id) ||
+      !nonBlank(row.proposal) ||
+      row.status !== CONTENT_PROPOSAL_STATUS
+    )
+      errors.push(
+        `contentProposals[${at}] must be a proposal (${CONTENT_PROPOSAL_STATUS}) that S3 decides; the trace body stays unchanged`,
+      );
+}
+
 /** One (b) trace file (K6/2 step 4 and (b) rule 1; K6/4 変える点 15). */
 export function traceErrors(trace, ctx) {
   const errors = [];
@@ -1009,6 +1267,7 @@ export function traceErrors(trace, ctx) {
       trace.browse.stayEnd.trim() === "")
   )
     errors.push("browse.stayEnd must fix the end of the other Scene's stay");
+  traceRunnerErrors(errors, trace);
   const queries = operationErrors(errors, trace);
   if (queries < TRACE_MIN_QUERIES)
     errors.push(`the trace has Q=${queries}, fewer than ${TRACE_MIN_QUERIES}`);
@@ -1102,6 +1361,304 @@ function referenceErrors(errors, label, value, kind, frozen, expectedSha) {
   }
   if (kind === "sha256" && expectedSha !== undefined && value !== expectedSha)
     errors.push(`${label} differs from the file's sha256 ${expectedSha}`);
+}
+
+/**
+ * S2 追補（DR-CP4-L-4、frozen-setup-plan.mjs の段の組み立て）: each plan
+ * variant's sessions, derived from the frozen fixture. Steps before the IR run
+ * in `author`, the IR in `ir`, the B seal and the C build in `seal`; mutations
+ * after the IR commit in `hold`, a usable declared graph adds `reseal` (B), a
+ * usable declared chronicle a C query after the mutations.
+ */
+export function expectedVariantSessions(ctx) {
+  return PLAN_VARIANTS.map((key) => {
+    const [caseId, variantId] = key.split("/");
+    const row = {
+      variant: key,
+      measurementPoint: STEADY_POINT,
+      specKind: MEASUREMENT_SPECS[STEADY_POINT].kind,
+      sessions: ["author", "ir", "seal"],
+      measurementSession: "seal",
+      bSealIn: ["seal"],
+      chronicleQueryIn: ["seal"],
+      mutations: [],
+    };
+    if (caseId === "G-01") return { ...row, measurementPoint: null };
+    const fixture = ctx.fixtures?.[caseId]?.json ?? {};
+    const variant =
+      (fixture.variants ?? []).find((entry) => entry.id === variantId) ?? {};
+    const point = variant.measurementPoint ?? STEADY_POINT;
+    row.measurementPoint = point;
+    row.specKind = MEASUREMENT_SPECS[point]?.kind ?? null;
+    const mutations = new Map(
+      (fixture.mutations ?? []).map((entry) => [entry.id, entry]),
+    );
+    const applies = (entry) =>
+      !Array.isArray(entry?.onlyInVariants) ||
+      entry.onlyInVariants.includes(variantId);
+    const timeline = (fixture.setupTimeline ?? []).filter(
+      (step) => step.kind !== "mutation" || applies(mutations.get(step.id)),
+    );
+    const irAt = timeline.findIndex((step) => step.kind === "qualified-ir");
+    const mutationRows = (steps, session) =>
+      steps
+        .filter((step) => step.kind === "mutation")
+        .map((step) => ({
+          id: step.id,
+          kind: mutations.get(step.id)?.kind ?? null,
+          session,
+        }));
+    const after = mutationRows(timeline.slice(irAt + 1), "hold");
+    row.mutations = [
+      ...mutationRows(timeline.slice(0, Math.max(irAt, 0)), "author"),
+      ...after,
+    ];
+    if (after.length > 0) {
+      const state = variant.indexState ?? {};
+      row.sessions.push("hold");
+      if (state.graph === "usable") {
+        row.sessions.push("reseal");
+        row.bSealIn.push("reseal");
+      }
+      if (state.chronicle === "usable")
+        row.chronicleQueryIn.push(state.graph === "usable" ? "reseal" : "hold");
+      row.measurementSession = row.sessions.at(-1);
+    }
+    return row;
+  });
+}
+
+function fixtureMutationIds(ctx, caseId, kind) {
+  return (ctx.fixtures?.[caseId]?.json?.mutations ?? [])
+    .filter((entry) => entry.kind === kind)
+    .map((entry) => entry.id);
+}
+
+/** S2 追補: setupReadings (DR-CP4-L-11 (1)〜(10) and L-12). */
+function setupReadingErrors(errors, readings, ctx) {
+  if (!isObject(readings)) {
+    errors.push("setupReadings is required (S2 追補、DR-CP4-L-11)");
+    return;
+  }
+  const items = Array.isArray(readings.items) ? readings.items : [];
+  if (
+    !same(
+      items.map((row) => [row?.id, row?.l11]),
+      SETUP_READING_ITEMS,
+    ) ||
+    items.some((row) => !nonBlank(row?.reading) || !nonBlank(row?.decision))
+  )
+    errors.push(
+      `setupReadings.items must be ${SETUP_READING_ITEMS.map(([id, l11]) => `${id} ${l11}`).join(", ")}, each with its decision and reading`,
+    );
+  if (!same(readings.sessions, SETUP_SESSIONS))
+    errors.push(
+      "setupReadings.sessions must be author/ir/seal/hold/reseal with their Main and seam (DR-CP4-L-4)",
+    );
+  const setupIrSessions = Object.entries(SETUP_SESSIONS)
+    .filter(([, row]) => row.main === "setup-ir")
+    .map(([label]) => label);
+  const main = readings.setupMain ?? {};
+  if (
+    main.output !== "dist-electron/main-setup-ir.cjs" ||
+    main.tableLanguage !== "cp4-setup-ir" ||
+    !same(main.env, { GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1" }) ||
+    !same(main.sessions, setupIrSessions) ||
+    main.shaPerRun !== true ||
+    main.receiptField !== "setupMain" ||
+    !Array.isArray(main.admission) ||
+    main.admission.length === 0
+  )
+    errors.push(
+      "setupMain: setupReadings.setupMain must be the setup-only Main of the ir session only, with its admission and a per-run sha256 in the receipt (DR-CP4-L-1)",
+    );
+  const ir = readings.irPath ?? {};
+  if (
+    !same(ir.mainSessions, setupIrSessions) ||
+    !same(ir.aiSettings, SETUP_IR_AI_SETTINGS) ||
+    ir.contextSetCount !== 2 ||
+    !same(ir.contextSet, ["cluster", "observation"]) ||
+    !nonBlank(ir.activeWorkspacePath)
+  )
+    errors.push(
+      "setupReadings.irPath must run in the ir session with the 24-case AI settings, set the active workspace path and check the two-item contextSet (DR-CP4-L-2)",
+    );
+  const typeEdit = readings.typeEdit ?? {};
+  if (
+    !same(
+      [typeEdit.mutation],
+      fixtureMutationIds(ctx, "G-02", "codex-relation-type-edit"),
+    ) ||
+    typeEdit.executor !== "codex-relation-type-edit" ||
+    typeEdit.firstMode !== "same-id" ||
+    typeEdit.fallbackMode !== "new-id" ||
+    typeEdit.receiptField !== "logicalToRuntime.relationRecreations"
+  )
+    errors.push(
+      "setupReadings.typeEdit must delete and recreate the G-02 Relation with the same runtime ID first (new ID when refused) (DR-CP4-L-3)",
+    );
+  const withdrawal = readings.irWithdrawal ?? {};
+  if (
+    !same(
+      [withdrawal.mutation],
+      fixtureMutationIds(ctx, "G-08", "ir-approval-withdrawal"),
+    ) ||
+    withdrawal.decision !== "deferred" ||
+    withdrawal.receiptField !== "logicalToRuntime.decisions"
+  )
+    errors.push(
+      "setupReadings.irWithdrawal must withdraw the G-08 IR approval with a deferred Decision (DR-CP4-L-5)",
+    );
+  const rows = Array.isArray(readings.variantSessions)
+    ? readings.variantSessions
+    : [];
+  const expected = expectedVariantSessions(ctx);
+  if (rows.length !== expected.length)
+    errors.push(
+      `setupReadings.variantSessions must list the ${expected.length} plan variants`,
+    );
+  for (const want of expected) {
+    const row = rows.find((entry) => entry?.variant === want.variant);
+    if (!same(row, want))
+      errors.push(
+        `setupReadings.variantSessions ${want.variant} must be ${JSON.stringify(want)} (derived from the frozen fixture)`,
+      );
+  }
+  const probe = readings.probe ?? {};
+  if (
+    !same(probe.sources, PROBE_SOURCES) ||
+    probe.readOnly !== true ||
+    !same(probe.defaultDeclared, DECLARED_DEFAULT) ||
+    !nonBlank(probe.graph) ||
+    !nonBlank(probe.chronicle)
+  )
+    errors.push(
+      "setupReadings.probe must be the read-only Index metadata and the query's initialSnapshot.indexUsable (DR-CP4-L-4)",
+    );
+  const blocked = (readings.blocked ?? []).map((row) => row?.name);
+  if (
+    !same([...blocked].sort(), [...SETUP_BLOCKED].sort()) ||
+    (readings.blocked ?? []).some((row) => !nonBlank(row?.when))
+  )
+    errors.push(
+      `setupReadings.blocked must name ${SETUP_BLOCKED.join(", ")} with when each applies`,
+    );
+  if (!same(readings.measurementSpecs, MEASUREMENT_SPECS))
+    errors.push(
+      "setupReadings.measurementSpecs must be steady-state, graph-held-unusable and one-shot (fresh cold copy, one query, no warm-up, no seam) per measurementPoint (DR-CP4-L-4)",
+    );
+  if (!same(readings.sealReopen, SEAL_REOPEN))
+    errors.push(
+      `setupReadings.sealReopen must wait ${SEAL_REOPEN.waitMs} ms and reopen at most ${SEAL_REOPEN.reopens} times, recorded in ${SEAL_REOPEN.receiptField}, then ${B_SEAL_NOT_PUBLISHED} (DR-CP4-L-12)`,
+    );
+  if (!same(readings.switchingRetry, SWITCHING_RETRY))
+    errors.push(
+      "setupReadings.switchingRetry must retry WORKSPACE_SWITCHING for 30 s in a complete setup only (not in the R5 check run)",
+    );
+  if (
+    readings.invariantCheck?.after !== "first-typed-revision" ||
+    readings.invariantCheck?.checkedAt !== "last-session-end"
+  )
+    errors.push(
+      "setupReadings.invariantCheck must compare the invariants after the first typed Revision at the last session's end",
+    );
+}
+
+/** S2 追補（P-3、DR-CP4-L-11）: d2 is read as the index-state probe for the unusable variants only. */
+function d2ReadingErrors(errors, readings, ctx) {
+  if (!isObject(readings)) {
+    errors.push("d2.variantReadings is required (S2 追補、P-3)");
+    return;
+  }
+  const rows = expectedVariantSessions(ctx);
+  const holding = rows.filter((row) =>
+    String(row.measurementPoint ?? "").startsWith("while-"),
+  );
+  const unchanged = rows
+    .filter((row) => !holding.includes(row))
+    .map((row) => row.variant);
+  const want = holding.map((row) => {
+    const [caseId, variantId] = row.variant.split("/");
+    const state =
+      (ctx.fixtures?.[caseId]?.json?.variants ?? []).find(
+        (entry) => entry.id === variantId,
+      )?.indexState ?? {};
+    return {
+      variant: row.variant,
+      b: state.graph === "usable" ? "current" : "not-current",
+      chronicle: state.chronicle,
+      maintenanceSeam: false,
+      oneShot: row.specKind === "one-shot",
+    };
+  });
+  const readAs = (readings.readAs ?? []).map((row) => ({
+    variant: row?.variant,
+    b: row?.b,
+    chronicle: row?.chronicle,
+    maintenanceSeam: row?.maintenanceSeam,
+    oneShot: row?.oneShot,
+  }));
+  if (
+    !same(readings.unchanged, unchanged) ||
+    !same(readAs, want) ||
+    (readings.readAs ?? []).some(
+      (row) => !nonBlank(row?.bCheck) || !nonBlank(row?.chronicleCheck),
+    ) ||
+    !same(readings.checkedAt, ["before-measurement", "at-query"]) ||
+    readings.onMismatch !== INDEX_STATE_HOLDING ||
+    readings.notBlockedAs !== "blocked:b-sealed-binding" ||
+    !nonBlank(readings.rule)
+  )
+    errors.push(
+      `d2.variantReadings must keep d2 for ${unchanged.join(", ")} and read it as the declared indexState probe (before the measurement and at the query, ${INDEX_STATE_HOLDING} on mismatch) for ${want.map((row) => row.variant).join(", ")}`,
+    );
+}
+
+/** S2 追補: the points S2 hands to S3 (undecided in a draft, decided when frozen). */
+function reviewerQuestionErrors(errors, questions, frozen) {
+  const rows = Array.isArray(questions) ? questions : [];
+  if (
+    !same(
+      rows.map((row) => row?.id),
+      REVIEWER_QUESTIONS,
+    )
+  )
+    errors.push(`reviewerQuestions must be ${REVIEWER_QUESTIONS.join(", ")}`);
+  for (const row of rows) {
+    const options = Array.isArray(row?.options) ? row.options : [];
+    const ids = options.map((option) => option?.id);
+    if (
+      !nonBlank(row?.topic) ||
+      !nonBlank(row?.issue) ||
+      !Array.isArray(row?.grounds) ||
+      row.grounds.length === 0 ||
+      row.grounds.some((ground) => !nonBlank(ground)) ||
+      options.length < 2 ||
+      options.some(
+        (option) => !nonBlank(option?.id) || !nonBlank(option?.text),
+      ) ||
+      new Set(ids).size !== ids.length ||
+      !nonBlank(row?.decidedBy)
+    )
+      errors.push(
+        `reviewerQuestions ${row?.id} must state the issue, its grounds, two or more options and who decides`,
+      );
+    if (frozen) {
+      const decision = row?.decision;
+      if (
+        !isObject(decision) ||
+        !ids.includes(decision.choice) ||
+        !nonBlank(decision.by) ||
+        !nonBlank(decision.record)
+      )
+        errors.push(
+          `reviewerQuestions ${row?.id} must carry S3's decision (choice, by, record) when frozen`,
+        );
+    } else if (row?.decision !== null)
+      errors.push(
+        `reviewerQuestions ${row?.id}: S2 does not decide; decision stays null until S3 reviews`,
+      );
+  }
 }
 
 /** The observation-prep record (D1, D2, D10, plan, traces, procedure, diagnostics). */
@@ -1199,6 +1756,9 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "d2.rule must establish the B seal through the B-ROUTE journey seam",
     );
+  d2ReadingErrors(errors, prep.d2?.variantReadings, ctx);
+  setupReadingErrors(errors, prep.setupReadings, ctx);
+  reviewerQuestionErrors(errors, prep.reviewerQuestions, frozen);
 
   // D10: modes and parity.
   const arms = prep.d10?.arms ?? {};
@@ -1662,6 +2222,16 @@ export function observationPrepErrors(prep, ctx) {
   return errors;
 }
 
+/** A read path as written, without a `<ref>:` prefix, and without a note. */
+function readPathForms(raw) {
+  const forms = [raw];
+  const prefixed = /^[^\s:（]+:([^\s（]+)/u.exec(raw);
+  if (prefixed) forms.push(prefixed[1]);
+  const plain = /^([^\s（]+)/u.exec(raw);
+  if (plain) forms.push(plain[1]);
+  return forms;
+}
+
 /** The author's declaration (S2 did not read Graph runtime output). */
 export function authorDeclarationErrors(declaration) {
   const errors = [];
@@ -1684,16 +2254,38 @@ export function authorDeclarationErrors(declaration) {
     : [];
   if (rows.length === 0)
     errors.push("readFiles must list what the author read");
+  let decisionRows = 0;
   for (const [at, row] of rows.entries()) {
     if (typeof row?.path !== "string" || row.path.trim() === "")
       errors.push(`readFiles[${at}].path is required`);
     if (!HEX64.test(row?.sha256 ?? ""))
       errors.push(`readFiles[${at}].sha256 must be a sha256`);
-    if (FORBIDDEN_READ.some((pattern) => pattern.test(row?.path ?? "")))
+    // A `<ref>:` prefix (git show) or a trailing note never hides a path.
+    const forms = readPathForms(row?.path ?? "");
+    if (
+      forms.some((form) => FORBIDDEN_READ.some((pattern) => pattern.test(form)))
+    )
       errors.push(
         `readFiles[${at}] ${row.path} is a forbidden (observation) file`,
       );
+    if (forms.some((form) => DECISIONS_RECORD.test(form))) {
+      const permitted = row.permittedRows;
+      if (
+        !Array.isArray(permitted) ||
+        permitted.length === 0 ||
+        permitted.some((id) => !PERMITTED_DECISION_ROWS.has(id)) ||
+        !nonBlank(row.permittedBy)
+      )
+        errors.push(
+          `readFiles[${at}] ${row.path} is a forbidden (observation) file unless its permittedRows are within DR-CP4-L-1〜L-15 and DR-CP4-TR-1〜TR-14 with permittedBy`,
+        );
+      else decisionRows += 1;
+    }
   }
+  if (decisionRows > 0 && !nonBlank(declaration.decisionSummariesSeen))
+    errors.push(
+      "decisionSummariesSeen must disclose the run summaries inside the permitted DR rows",
+    );
   if (!Array.isArray(declaration.accidentalReads))
     errors.push("accidentalReads must be a list (empty when none)");
   if (declaration.forbiddenFilesNotRead !== true)

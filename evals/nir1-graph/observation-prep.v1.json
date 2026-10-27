@@ -69,7 +69,55 @@
   },
   "d2": {
     "rule": "B の sealed binding は、setup の session で B-ROUTE の journey seam（CI=true、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build）で maintenance の B の build の route の起動 gate を開け、workspace を開いたときの wake の cycle で build させ、sealed の B の generation を待って確立する（正規の経路。試験と診断用の publish の呼出しは使わない）。測定の process では、新しい path で B の seal が current で、Chronicle の Index が使えることを、測定を始める前に確かめる。確立できなければ、G-01 は v1 期待値未達／Hold、G-02〜G-08 は blocked:b-sealed-binding（宣言では解けない）。",
-    "fault": "seam の fault、setup、Freshness の hold、barrier の指定は使わない。"
+    "fault": "seam の fault、setup、Freshness の hold、barrier の指定は使わない。",
+    "variantReadings": {
+      "decision": "DR-CP4-L-11（P-3。integrator の整理）",
+      "rule": "d2 の「測定の process で、新しい path で B の seal が current で、Chronicle の Index が使えることを、測定を始める前に確かめる」は unchanged の variant にそのまま当てる。G-08 の unusable の 3 variant（readAs）では「宣言の indexState を、測定の前と query の時点で probe（setupReadings.probe と同じ定義。readIndexMetadata の read-only の読取と query の initialSnapshot.indexUsable だけ）が示すこと」に読み替える。これは前提条件 index-state-holding の確かめ方で、合わなければ blocked:index-state-holding とし、blocked:b-sealed-binding にしない。d2.rule の本文は変えない。",
+      "unchanged": [
+        "G-01/v1",
+        "G-02/base",
+        "G-03/base",
+        "G-03/frontier-exceeded",
+        "G-04/base",
+        "G-05/base",
+        "G-06/base",
+        "G-07/base",
+        "G-08/base-usable",
+        "G-08/graph-recovered"
+      ],
+      "readAs": [
+        {
+          "variant": "G-08/graph-index-unusable",
+          "b": "not-current",
+          "bCheck": "B の metadata が dirty で、generation が setup の受領書の measurementPoint.probe.metadata.b の generation と同じ",
+          "chronicle": "usable",
+          "chronicleCheck": "最初の query の initialSnapshot.indexUsable が true で、warm-up の後も true",
+          "maintenanceSeam": false,
+          "oneShot": false
+        },
+        {
+          "variant": "G-08/chronicle-index-unusable",
+          "b": "current",
+          "bCheck": "B の metadata が dirty でなく、generation が reseal の session で作られた値",
+          "chronicle": "unusable",
+          "chronicleCheck": "C の metadata が dirty で、測る 1 回の query の initialSnapshot.indexUsable が false",
+          "maintenanceSeam": false,
+          "oneShot": true
+        },
+        {
+          "variant": "G-08/both-indexes-unusable",
+          "b": "not-current",
+          "bCheck": "B の metadata が dirty",
+          "chronicle": "unusable",
+          "chronicleCheck": "C の metadata が dirty で、測る 1 回の query の initialSnapshot.indexUsable が false",
+          "maintenanceSeam": false,
+          "oneShot": true
+        }
+      ],
+      "checkedAt": ["before-measurement", "at-query"],
+      "onMismatch": "blocked:index-state-holding",
+      "notBlockedAs": "blocked:b-sealed-binding"
+    }
   },
   "d10": {
     "arms": {
@@ -481,7 +529,7 @@
     }
   ],
   "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4b は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること、SP/1 の bytes が repo にあること）。S4 の placeholder はどれも S4b の時点で既にある commit か記録を指し、参照する commit は S4b の真の祖先にする（s4Stages。S4a で bytes、S4b で埋める）。S4b の子孫になるもの（CP-4 の候補の commit）は placeholder にせず、candidate.decidedIn のとおり S5 の台帳で決める。",
-  "reviewPlan": "S3 の独立 reviewer が確かめること: d1 の (ii) と順序、d2 の正規の経路、d10 の mode と parity の数と比較の規則と fallback、samplePlan、traces の長さ・密度・maintenance・期待寄与の材料・承認の操作がないこと（K6/2 手順の 4 の固定と再利用）、k64Procedure の値と r1r4WaitMs の理由、registeredForReview、diagnosticRuns、preconditions（特に R5 の seed の pin）。 SP/1 の追加: seed の pin の addendum（13 variant の問いの Scene と seed が fixture の写しであること、置き場、SP-P1〜P5 と SP-N1〜N14 の対応表）、r5Gate の matchRequires と beforeFirstGatedRun、SP-P4 が r5Gate の例外に入る根拠、stepOrder。",
+  "reviewPlan": "S3 の独立 reviewer が確かめること: d1 の (ii) と順序、d2 の正規の経路、d10 の mode と parity の数と比較の規則と fallback、samplePlan、traces の長さ・密度・maintenance・期待寄与の材料・承認の操作がないこと（K6/2 手順の 4 の固定と再利用）、k64Procedure の値と r1r4WaitMs の理由、registeredForReview、diagnosticRuns、preconditions（特に R5 の seed の pin）。 SP/1 の追加: seed の pin の addendum（13 variant の問いの Scene と seed が fixture の写しであること、置き場、SP-P1〜P5 と SP-N1〜N14 の対応表）、r5Gate の matchRequires と beforeFirstGatedRun、SP-P4 が r5Gate の例外に入る根拠、stepOrder。 S2 追補（S1j-2 と TR の後）: setupReadings（L-11 の (1)〜(10) と L-12 の開き直し、variantSessions が fixture から導けること、probe と blocked の名前、measurementSpecs）、d2.variantReadings（G-08 の unusable の 3 variant だけの読み替え）、reviewerQuestions（P-4、P-S2-2〜P-S2-4）、trace の runnerReadings と contentProposals、作者の宣言の permittedRows。",
   "review": null,
   "r5Gate": {
     "check": "K6/4 R5: SP/1 の seed の pin の段を実行した variant ごとの workspace で、製品の DB から問いの Scene の pin を読み直し（workspace-db.mjs）、統合 branch の seed-pin.mjs の assertSeedPinsBeforeK64（plan frozen）が match になること。G-03 と G-08 は variant ごとの SP-P1 の記録のどれか 1 つでも match でなければ全体を match にしない（SP/1 の SP-P3）。",
@@ -575,7 +623,9 @@
     "SP-P4（S3v2-P3-2）: 段の直前の DB の写しから両側を分岐させ、論理 ID で比べ、owner の counter（begins）の差分 0 を記録する。",
     "K24-G01-N2〜N4（S3v2-P3-3）: restore は Scene の本文版の restore に限り、mutation の後に SP-P1 を照合し直し、Graph が seed つきで要求され g01-mira-entity に届いたことを記録する。",
     "integrator の決定: CP-4 の候補の commit は S5 の台帳（clean な候補の freeze の記録）で決める。observation-prep の candidate.commit は null のまま。",
-    "integrator の順序（S3v4 の後）: ① R5 の照合の run（S1g-A の setup-driver。seed の pin の段と SP-P2 の記録までの setup と DB の読取だけ。workspace は捨てる）→ ② K6/4 の凍結 → ②' 合成の記録による検出（node の試験の実行記録）→ ③ S4a／S4b → ④ SP-P4 → ⑤ Graph arm（S5 の候補で新しい workspace、SP-P1 と R5 を照合し直す）。"
+    "integrator の順序（S3v4 の後）: ① R5 の照合の run（S1g-A の setup-driver。seed の pin の段と SP-P2 の記録までの setup と DB の読取だけ。workspace は捨てる）→ ② K6/4 の凍結 → ②' 合成の記録による検出（node の試験の実行記録）→ ③ S4a／S4b → ④ SP-P4 → ⑤ Graph arm（S5 の候補で新しい workspace、SP-P1 と R5 を照合し直す）。",
+    "S2 追補（S5）: setupReadings.measurementSpecs と variantSessions を runner に配線し、測定の前と query の時点の probe を d2.variantReadings のとおり受領書の measurementPoint.probe と照合する。",
+    "S2 追補（S6）: trace の runnerReadings（commit の確認は contentVersion、A3 は親の fetch の呼出しの観測の直後、caret は Control+End、startSeal の 2 回読みと分類、maintenanceLaunch）を trace の runner の起動と記録に使う。"
   ],
   "stepOrder": {
     "graphCases": [
@@ -608,5 +658,549 @@
     "phasesRule": "① R5 の照合の run（setup は seed の pin の段と SP-P2 の記録まで、と製品の DB の読取だけ）→ ② K6/4 の凍結（claude/nir1-contracts への commit と push、server 側の時刻の記録。K6/4 :317）→ ②' 合成の記録による検出（製品の runtime を使わない node の試験。S1g-A の setup-driver と照合の関数の試験の実行記録）→ ③ S4（観測前の commit。2 段: S4a で bytes、S4b で placeholder を埋めて frozen。②、②'、① の記録を束縛）→ ④ SP-P4 の診断 → ⑤ Graph arm を含む実行。① が match でなければ ② に、② が済まなければ ②' と S4 に、②' が済まなければ S4 に進まない。"
   },
   "s4Stages": ["s4a-bytes", "s4b-fill-and-freeze"],
-  "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。"
+  "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。",
+  "setupReadings": {
+    "source": {
+      "decisions": "DR-CP4-L-1〜L-15（claude/cp4-s1j2 14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9 の docs/plans/nir1-lane-decisions/cp4-decisions.md。integrator の依頼で読んだ範囲）",
+      "code": "claude/cp4-s1j2 14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9 の scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs（SETUP_SESSIONS、MEASUREMENT_SPECS、HARNESS_CHOICES、段の組み立て）、frozen-setup-driver.mjs（B_SEAL_WAIT_MS、B_SEAL_REOPENS、indexStateProbe、measurement-point の段、select の WORKSPACE_SWITCHING の再試行、SETUP_IR_AI_SETTINGS）、setup-main-build.mjs と setup-receipt.mjs の定数"
+    },
+    "status": "harness の読み（integrator の決定 B1〜B4、P-0 (a)、P-3）を観測の前に S2 に写したもの。fixture、契約、閾値、setupOrder、setupTimeline、measurementPoint は変えない。S3 の確認を受ける。",
+    "rule": "⑤ の評価の run の setup（完全な setup）は、この欄の session の分け方、probe、blocked の名前、測定の仕様に従う。① R5 の照合の run は author の session の seed の pin の段で止まり、2 つ目以降の session を使わない（r5Gate.exempt）。setup の受領書は status setup-complete で、items の receipt に挙げた欄を持つ。食い違えば setup の不備として [precheck]。",
+    "items": [
+      {
+        "id": "SR-1",
+        "l11": "(1)",
+        "decision": "DR-CP4-L-1",
+        "topic": "setup 専用の Main",
+        "reading": "qualified-ir の段は setup 専用の Main（setupMain.output）の session（ir）だけで行う。製品の Main と同じ build の設定（electron/scripts/build.mjs の main.cjs の設定）で、electron/main/productJourneyNir1Ai.ts の evals/nir1-retrieval/corpus.json の import だけを run の directory の表（setupMain.table）に向ける。表は 24 件の corpus をそのまま写し、言語 cp4-setup-ir に fixture の qualifiedIr の行（Scene の論理 ID、fixture の title と本文、seed の 4 値）を足したもの。admission は setupMain.admission。setup 専用の Main の sha256 は表の path が bundle に入るので run ごとに違い、受領書の setupMain が run ごとの値（path、sha256、表の path と sha256 と行、製品の Main の sha256、作り直しの sha256、input の差、env）を持つ。ほかの session と測定は製品の Main。",
+        "receipt": ["setupMain", "sessions[].main"]
+      },
+      {
+        "id": "SR-2",
+        "l11": "(2)",
+        "decision": "DR-CP4-L-2",
+        "topic": "IR の経路",
+        "reading": "IR は dialog の Analyze と同じ renderer の API（folder の配下の Scene を集めた抽出、live の event catalog、言語は dialog と同じく渡さない）、card の secret の checkbox と同じ改訂（secret を外した child）、card の承認で作り、SQL では書かない。AI 設定は irPath.aiSettings（24 件の setup と同じ。HTTP の edge は決定論の provider が置き換え、受領書に provider・model・endpoint だけを残し鍵は読まない）。AI の監査の前提として、抽出の直前に workspace の shell の active path（useWorkspaceStore の activeWorkspacePath）に開いた workspace の path を入れる（app の open の flow が入れる値。harness は IPC で workspace を開くため）。読み戻しで、IR の行ごとに run と proposal が 1 件、root は secret で child は非 secret、root の envelope の assertion.scope.scene.ref が runtime の Scene で seed の 4 値が fixture の値、contextSet が cluster 1 件と observation 1 件の 2 件（optional story inputs が無い）、child の最後の Decision が approved（撤回した行は deferred）、ほかの Chronicle の run が無いことを確かめる。",
+        "receipt": ["logicalToRuntime.chronicle", "readBack.chronicle"]
+      },
+      {
+        "id": "SR-3",
+        "l11": "(3)",
+        "decision": "DR-CP4-L-3",
+        "topic": "G-02 の型の編集",
+        "reading": "g02-m-dace-type（codex-relation-type-edit）は、UI の削除と同じ relation.delete の後に、同じ runtime ID で relation.create（型と label は to）する（typeEdit）。製品が同じ ID の再利用を拒めば新しい ID で作り、論理 ID の対応を新しい ID に向ける。どちらになったかは受領書の relationRecreations の mode（same-id／new-id）、前後の runtime ID、拒否の文、前後の行、その Relation を束縛した typed Revision の前後の status に残る。",
+        "receipt": ["logicalToRuntime.relationRecreations"]
+      },
+      {
+        "id": "SR-4",
+        "l11": "(4)",
+        "decision": "DR-CP4-L-5",
+        "topic": "G-08 の IR の承認の撤回",
+        "reading": "g08-m-ir-withdraw（ir-approval-withdrawal）は、qualified-ir の段が受領書に残した run・proposal・現行の child の revision に、review bundle で現行の child が承認済みと確かめてから、card の「保留」と同じ payload の recordChronicleProposalDecision で decision deferred を記録し、最新の Decision が deferred であることを読み直す（irWithdrawal）。",
+        "receipt": ["logicalToRuntime.decisions"]
+      },
+      {
+        "id": "SR-5",
+        "l11": "(5)",
+        "decision": "DR-CP4-L-4",
+        "topic": "session の分け方、seam、query",
+        "reading": "session ごとに新しい Electron で同じ workspace を開き直す（sessions、variantSessions）。author（製品の Main、seam なし）→ ir（setup 専用の Main、seam なし）→ seal（製品の Main、B-ROUTE の seam。B の seal と C の build）。IR の後の mutation は seam の無い hold で commit し（B は作り直されない）、宣言の graph が usable なら seam の reseal で B を作り直す（workspace を開いたときの wake の cycle）。C の build は seed なしの query の経路で、宣言の chronicle が usable の variant だけ mutation の後にも行う（chronicleQueryIn）。IR の前の mutation（G-02 の型の編集、G-05 の要約の編集）は author。",
+        "receipt": ["plan.sessions", "seams"]
+      },
+      {
+        "id": "SR-6",
+        "l11": "(6)",
+        "decision": "DR-CP4-L-4",
+        "topic": "測定点の probe と blocked",
+        "reading": "measurementPoint の段（その variant の最後の session）で probe を取り、宣言の indexState（G-01 のように宣言の無い variant は probe.defaultDeclared）と比べる。違えば while- の measurementPoint の variant は blocked:index-state-holding、ほかは blocked:maintenance-enabled で止まる（blocked）。",
+        "receipt": ["measurementPoint", "readBack.indexMetadata"]
+      },
+      {
+        "id": "SR-7",
+        "l11": "(7)",
+        "decision": "DR-CP4-L-4",
+        "topic": "測定の仕様",
+        "reading": "variant の measurementPoint ごとに測定の process の仕様を決める（measurementSpecs）。after-maintenance-current は K6/2・K6/4 の定常状態（steady-state）、while-graph-index-unusable は seam を開かない process（graph-held-unusable）、while-chronicle-index-unusable と while-both-indexes-unusable は one-shot（cold DB の新しい byte copy ごとに process を起動し、query は 1 回、warm-up なし、seam なし）。runner への配線は S5。one-shot が K6/4 の手順からの逸脱に当たるかは reviewerQuestions の P-4（S2 は判断しない）。",
+        "receipt": ["plan.measurementSpec", "measurementSpec"]
+      },
+      {
+        "id": "SR-8",
+        "l11": "(8)",
+        "decision": "DR-CP4-L-4",
+        "topic": "最初の typed Revision の後の不変",
+        "reading": "最初の typed Revision の後の tree order、registry、Scene Scope の不変は、最後の session の終わりに照合する（invariantCheck）。"
+      },
+      {
+        "id": "SR-9",
+        "l11": "(9)",
+        "decision": "DR-CP4-L-4",
+        "topic": "後の session の WORKSPACE_SWITCHING",
+        "reading": "2 つ目以降の session の最初の読取が WORKSPACE_SWITCHING で返ることがあるので、完全な setup に限り SELECT を 30 s まで再試行する（switchingRetry）。① R5 の照合の run は 1 回のまま再試行しない。"
+      },
+      {
+        "id": "SR-10",
+        "l11": "(10)",
+        "decision": "DR-CP4-L-11",
+        "topic": "folder と G-01 の S1 の選択",
+        "reading": "qualifiedIr を持つ Scene ごとに folder を 1 つ作り（論理 ID nir1-folder-<Scene の論理 ID>、title は包む Scene の title、Scene は folder の中）、tree は最初の typed Revision の前に作り終える。G-01 の query の title（Current query scene）と Scope の ref（S1 の SETUP_DECISIONS）は S1j-1 の選択のまま変えない。"
+      },
+      {
+        "id": "SR-11",
+        "l11": "L-12",
+        "decision": "DR-CP4-L-12",
+        "topic": "seal の session の上限つきの開き直し",
+        "reading": "seam の session で最初の段が B の seal の session（seal と reseal）は、待ち（sealReopen.waitMs）の内に新しい sealed B の generation が来なければ、その session を閉じ、新しい directory（<label>-reopen-n）と新しい nonce で開き直して最初の段からやり直す。開き直しは sealReopen.reopens 回まで。使い切れば blocked:b-seal-not-published で fail closed。各回を受領書の sealAttempts（session、回、directory、publish の有無、待ち、metadata、その回の maintenance の run の数〔read-only〕）に残し、後の段が止めた回も残す。待ちと回数は観測の前に固定し、結果を見て変えない。",
+        "receipt": ["sealAttempts", "seams"]
+      }
+    ],
+    "setupMain": {
+      "output": "dist-electron/main-setup-ir.cjs",
+      "table": ".artifacts/cp4/<run>/setup-main/ir-table.json",
+      "tableLanguage": "cp4-setup-ir",
+      "env": {
+        "GRIMODEX_PRODUCT_JOURNEY_FAKE_AI": "deterministic-v1"
+      },
+      "sessions": ["ir"],
+      "admission": [
+        "同じ設定で製品の Main を .artifacts/cp4/<run>/setup-main/repro/main.cjs に作り直し、dist-electron/main.cjs と byte で一致する",
+        "esbuild の metafile の input の差が corpus.json → 表の 1 file だけで、alias がその 1 つの importer（productJourneyNir1Ai.ts）にだけ当たる",
+        "起動の直前に setup 専用の Main の sha256 を照合し直す",
+        "corpus と表の全行で本文と要約が重なれば [precheck]（provider は完全一致で答える）"
+      ],
+      "shaPerRun": true,
+      "receiptField": "setupMain"
+    },
+    "irPath": {
+      "mainSessions": ["ir"],
+      "aiSettings": {
+        "provider": "ollama",
+        "model": "product-journey-model",
+        "ollamaEndpoint": "http://127.0.0.1:11434"
+      },
+      "activeWorkspacePath": "抽出の直前に useWorkspaceStore の activeWorkspacePath に開いた workspace の path を入れる",
+      "contextSetCount": 2,
+      "contextSet": ["cluster", "observation"],
+      "writes": "renderer の API だけ（SQL の書込みなし）"
+    },
+    "typeEdit": {
+      "mutation": "g02-m-dace-type",
+      "executor": "codex-relation-type-edit",
+      "steps": [
+        "relation.delete（UI の削除と同じ）",
+        "relation.create（同じ runtime ID。型と label は to）"
+      ],
+      "firstMode": "same-id",
+      "fallbackMode": "new-id",
+      "receiptField": "logicalToRuntime.relationRecreations"
+    },
+    "irWithdrawal": {
+      "mutation": "g08-m-ir-withdraw",
+      "executor": "ir-approval-withdrawal",
+      "decision": "deferred",
+      "api": "recordChronicleProposalDecision",
+      "receiptField": "logicalToRuntime.decisions"
+    },
+    "sessions": {
+      "author": {
+        "main": "product",
+        "seam": false
+      },
+      "ir": {
+        "main": "setup-ir",
+        "seam": false
+      },
+      "seal": {
+        "main": "product",
+        "seam": true
+      },
+      "hold": {
+        "main": "product",
+        "seam": false
+      },
+      "reseal": {
+        "main": "product",
+        "seam": true
+      }
+    },
+    "variantSessionsRule": "fixture の setupTimeline と onlyInVariants、variant の indexState と measurementPoint から導く（validator が同じ規則で導き直して照合する）: IR の前の段は author、IR は ir、B の seal と C の build は seal。IR の後に variant に当たる mutation があれば hold で commit し、宣言の graph が usable なら reseal で B を、宣言の chronicle が usable なら mutation の後の session（reseal か hold）で C の query を出す。measurementSession は最後の session。",
+    "variantSessions": [
+      {
+        "variant": "G-01/v1",
+        "measurementPoint": null,
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": []
+      },
+      {
+        "variant": "G-02/base",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": [
+          {
+            "id": "g02-m-dace-type",
+            "kind": "codex-relation-type-edit",
+            "session": "author"
+          }
+        ]
+      },
+      {
+        "variant": "G-03/base",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": []
+      },
+      {
+        "variant": "G-03/frontier-exceeded",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": []
+      },
+      {
+        "variant": "G-04/base",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": []
+      },
+      {
+        "variant": "G-05/base",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": [
+          {
+            "id": "g05-m-xan",
+            "kind": "codex-entry-summary-edit",
+            "session": "author"
+          },
+          {
+            "id": "g05-m-yara",
+            "kind": "codex-entry-summary-edit",
+            "session": "author"
+          },
+          {
+            "id": "g05-m-zeb",
+            "kind": "codex-entry-summary-edit",
+            "session": "author"
+          }
+        ]
+      },
+      {
+        "variant": "G-06/base",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": []
+      },
+      {
+        "variant": "G-07/base",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": []
+      },
+      {
+        "variant": "G-08/base-usable",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal"],
+        "measurementSession": "seal",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": []
+      },
+      {
+        "variant": "G-08/graph-index-unusable",
+        "measurementPoint": "while-graph-index-unusable",
+        "specKind": "graph-held-unusable",
+        "sessions": ["author", "ir", "seal", "hold"],
+        "measurementSession": "hold",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal", "hold"],
+        "mutations": [
+          {
+            "id": "g08-m-juno",
+            "kind": "codex-entry-summary-edit",
+            "session": "hold"
+          }
+        ]
+      },
+      {
+        "variant": "G-08/graph-recovered",
+        "measurementPoint": "after-maintenance-current",
+        "specKind": "steady-state",
+        "sessions": ["author", "ir", "seal", "hold", "reseal"],
+        "measurementSession": "reseal",
+        "bSealIn": ["seal", "reseal"],
+        "chronicleQueryIn": ["seal", "reseal"],
+        "mutations": [
+          {
+            "id": "g08-m-juno",
+            "kind": "codex-entry-summary-edit",
+            "session": "hold"
+          }
+        ]
+      },
+      {
+        "variant": "G-08/chronicle-index-unusable",
+        "measurementPoint": "while-chronicle-index-unusable",
+        "specKind": "one-shot",
+        "sessions": ["author", "ir", "seal", "hold", "reseal"],
+        "measurementSession": "reseal",
+        "bSealIn": ["seal", "reseal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": [
+          {
+            "id": "g08-m-ir-withdraw",
+            "kind": "ir-approval-withdrawal",
+            "session": "hold"
+          }
+        ]
+      },
+      {
+        "variant": "G-08/both-indexes-unusable",
+        "measurementPoint": "while-both-indexes-unusable",
+        "specKind": "one-shot",
+        "sessions": ["author", "ir", "seal", "hold"],
+        "measurementSession": "hold",
+        "bSealIn": ["seal"],
+        "chronicleQueryIn": ["seal"],
+        "mutations": [
+          {
+            "id": "g08-m-juno",
+            "kind": "codex-entry-summary-edit",
+            "session": "hold"
+          },
+          {
+            "id": "g08-m-ir-withdraw",
+            "kind": "ir-approval-withdrawal",
+            "session": "hold"
+          }
+        ]
+      }
+    ],
+    "probe": {
+      "sources": ["readIndexMetadata", "query.initialSnapshot.indexUsable"],
+      "readOnly": true,
+      "graph": "B の metadata の行に generation（> 0）があり dirty でなければ usable、ほかは unusable",
+      "chronicle": "C の metadata の行が同じく clean で、かつ測定点の session で C の query を出したなら、その最後の query の initialSnapshot.indexUsable が true のとき usable、ほかは unusable",
+      "defaultDeclared": {
+        "graph": "usable",
+        "chronicle": "usable"
+      }
+    },
+    "blocked": [
+      {
+        "name": "blocked:index-state-holding",
+        "when": "measurementPoint が while- の variant で、probe が宣言の indexState と違う"
+      },
+      {
+        "name": "blocked:maintenance-enabled",
+        "when": "measurementPoint が while- でない variant で、probe が宣言（usable／usable）と違う。maintenance の epoch が現れないときも同じ"
+      },
+      {
+        "name": "blocked:b-seal-not-published",
+        "when": "B の seal を最初の段に持つ seam の session が、sealReopen の待ちと開き直しを使い切っても新しい sealed B の generation を作らない"
+      }
+    ],
+    "blockedCaseJudgement": "これらは setup の受領書の止まった理由で、case の判定（d2 の blocked:b-sealed-binding、G-01 の Hold など）への写し方は S2 が決めない（reviewerQuestions の P-S2-2）。",
+    "measurementSpecs": {
+      "after-maintenance-current": {
+        "kind": "steady-state",
+        "maintenanceSeam": "runner-procedure",
+        "warmUp": true,
+        "queriesPerProcess": "runner-procedure",
+        "freshColdCopyPerProcess": false
+      },
+      "while-graph-index-unusable": {
+        "kind": "graph-held-unusable",
+        "maintenanceSeam": false,
+        "warmUp": true,
+        "queriesPerProcess": "runner-procedure",
+        "freshColdCopyPerProcess": false
+      },
+      "while-chronicle-index-unusable": {
+        "kind": "one-shot",
+        "maintenanceSeam": false,
+        "warmUp": false,
+        "queriesPerProcess": 1,
+        "freshColdCopyPerProcess": true
+      },
+      "while-both-indexes-unusable": {
+        "kind": "one-shot",
+        "maintenanceSeam": false,
+        "warmUp": false,
+        "queriesPerProcess": 1,
+        "freshColdCopyPerProcess": true
+      }
+    },
+    "measurementSpecsNote": "runner-procedure は K6/2 の手順の 2 と 3（K6/4 の R1〜R4）のとおり。graph-held-unusable は seam を開かない process では B が作り直されず、C は query の経路で作り直される状態（setup の hold の session が作り直した後）を測る。one-shot は最初の query が C を作り直すので、process ごとに cold DB の新しい byte copy から 1 query だけ測る。",
+    "sealReopen": {
+      "waitMs": 120000,
+      "reopens": 2,
+      "maxOpenings": 3,
+      "appliesTo": ["seal", "reseal"],
+      "firstStep": "b-seal",
+      "newDirectoryAndNonce": true,
+      "receiptField": "sealAttempts",
+      "onExhausted": "blocked:b-seal-not-published"
+    },
+    "switchingRetry": {
+      "error": "WORKSPACE_SWITCHING",
+      "boundMs": 30000,
+      "scope": "complete-setup",
+      "r5CheckRetries": false
+    },
+    "invariantCheck": {
+      "after": "first-typed-revision",
+      "checkedAt": "last-session-end",
+      "items": ["tree order", "registry", "Scene Scope"]
+    },
+    "openPoints": "DR-CP4-L-12 の P-0（seal の session で maintenance の cycle が始まらず B の seal が来ないことがある原因）と DR-CP4-L-13 の P-1（G-02 の型の編集の後、B の publish の直後に旧 Revision の Freshness の評価で B が dirty に戻る競合）は integrator の判断待ちで、S2 はこの欄の規則を変えない。止まった理由の写し方は P-S2-2、trace の project（G-02 base）への影響は P-S2-2 の論点に含める。"
+  },
+  "reviewerQuestions": [
+    {
+      "id": "P-4",
+      "topic": "one-shot の測定は K6/4 の「warm-up の後の定常状態」の手順からの逸脱か",
+      "issue": "setupReadings.measurementSpecs は G-08/chronicle-index-unusable と G-08/both-indexes-unusable を one-shot（cold DB の新しい byte copy ごとに process を起動し、query は 1 回、warm-up なし、seam なし）で測る。同じ process で 2 回目の query を出すと最初の query が C を作り直し、宣言の indexState（chronicle unusable）が保てない（d2.variantReadings）。一方、samplePlan と K6/2 の手順の 2 は arm ごとに warm-up 5 回の後に 30 回を測るとする。",
+      "grounds": [
+        "K6/2 :613（P の固定契約は warm-up と run の数、測定の起点を変えないことを定める）と :614（品質は warm-up の後の定常状態で測る）",
+        "K6/2 :694 の手順の 2（case と arm ごとに warm-up を 5 回行った後で 30 回測り、AB／BA で交互に回す）と、この file の samplePlan（warmupPerArm 5、measuredPerArm 30、AB/BA）",
+        "K6/4 の R1〜R4（定常状態の sample の前提、cache、sample の独立性）と、samplePlan.steadyState の読み",
+        "fixture の G-08 の 2 variant は Graph unavailable の期待値で、samplePlan.denominator により (a) と表示の可用性の分母に入らない（品質の case としては測る）",
+        "d10.parity.run も同じ 2 variant を warm-up 5 回の後に 30 回で測るとしているので、同じ問いが parity の unrestricted の run にも及ぶ",
+        "DR-CP4-L-4 と DR-CP4-L-15（integrator が引き取った確認点。plan と受領書の measurementSpec に one-shot と warm-up なしが書いてある）"
+      ],
+      "options": [
+        {
+          "id": "a",
+          "text": "逸脱に当たらないと読む: warm-up は同じ process の定常状態を作るためのもので、前提条件 index-state-holding を保てない測定では前提が先に立つ。arm ごとに one-shot の process を 30 回（warm-up 0）とし、開示に書く。"
+        },
+        {
+          "id": "b",
+          "text": "数を保つ形で読む: arm ごとに one-shot の process を warm-up として 5 回（結果は使わない）行った後に measured の 30 回を one-shot で行う。process を温めないので warm-up の効果は無いが、warm-up と run の数は契約の文に合う。"
+        },
+        {
+          "id": "c",
+          "text": "逸脱に当たると読む: P の固定契約（warm-up と run の数、定常状態）の変更として新しい draft とユーザーの確認を要する。それまで 2 variant の測定を始めず、S4 の前に integrator に返す。"
+        },
+        {
+          "id": "d",
+          "text": "（参考。採れない）同じ process で warm-up 5 回の後に 30 回を測る: 最初の query が C を作り直し、測定点の probe が宣言と合わず blocked:index-state-holding になる。"
+        }
+      ],
+      "subQuestions": [
+        "one-shot では process ごとに 1 arm の 1 query なので、AB／BA の順（samplePlan.orderRule）を process の並びで読むか",
+        "d10.parity.run と d10.parity.comparison（unrestricted の measured の sample どうしの一致）を one-shot の 2 variant でどう読むか"
+      ],
+      "s2Position": "S2 は判断しない（論点・根拠・選択肢だけを書く）",
+      "decidedBy": "S3（S3 が決められなければ integrator がユーザーに返す）",
+      "decision": null
+    },
+    {
+      "id": "P-S2-2",
+      "topic": "setup の止まった理由（blocked の名前）を case の判定にどう写すか",
+      "issue": "harness の setup は blocked:b-seal-not-published（B の seal が来ない。DR-CP4-L-12）と blocked:maintenance-enabled（while- でない variant の測定点で probe が宣言と違う。B が publish の後に dirty に戻った場合を含む。DR-CP4-L-13）で止まる。d2.rule は B の sealed binding を「確立できなければ、G-01 は v1 期待値未達／Hold、G-02〜G-08 は blocked:b-sealed-binding」とし、fixture の前提条件には b-sealed-binding と maintenance-enabled の両方がある。trace の project（G-02 base）が setup-complete に届かなければ trace も走らない。",
+      "grounds": [
+        "d2.rule（この file）",
+        "各 fixture の variant の preconditions（b-sealed-binding、maintenance-enabled、index-state-holding）",
+        "setupReadings.blocked と DR-CP4-L-12、L-13（P-0 と P-1 は integrator の判断待ち）",
+        "trace-editing.v1.json と trace-browsing.v1.json の project（G-02 base）"
+      ],
+      "options": [
+        {
+          "id": "a",
+          "text": "どちらも d2 の「確立できなければ」に当てる（G-01 は Hold、G-02〜G-08 は blocked:b-sealed-binding）。"
+        },
+        {
+          "id": "b",
+          "text": "blocked:b-seal-not-published は d2 の blocked:b-sealed-binding、blocked:maintenance-enabled は fixture の前提条件 maintenance-enabled の未成立として別に記録する。"
+        },
+        {
+          "id": "c",
+          "text": "harness の名前をそのまま受領書と case の判定に書き、どの fixture の前提条件が probe で未成立かを併記する。"
+        }
+      ],
+      "s2Position": "S2 は判断しない",
+      "decidedBy": "S3（P-0／P-1 の扱いは integrator）",
+      "decision": null
+    },
+    {
+      "id": "P-S2-3",
+      "topic": "編集中の trace で、開始時の封印の読取が (2) と (3) の間に入ること",
+      "issue": "trace の runnerReadings.startSeal（DR-CP4-TR-9、TR-13）は、編集中の各 counted query の 1 回目の封印の読取を、自動保存の commit を観測した後、製品の query の前（debounce の間）に置く。density は「harness は (2) と (3) の間に待ちも操作も足さない」（K6/2 の手順の 4）とする。",
+      "grounds": [
+        "trace-editing.v1.json の density と cyclePattern",
+        "DR-CP4-TR-13 の理由: 読取は製品の process と別の read-only の接続の SELECT 1 回で、製品の UI・store・IPC・DB の mutex に触れず（WAL の読み手、busy は待たずに失敗）、製品が query を出す時刻を変えず、harness は query を遅らせる待ちをしない",
+        "TR-9 が cycle の頭（編集の前）で読む案を採らなかった理由（その後の自動保存の commit が B を dirty にする）"
+      ],
+      "options": [
+        {
+          "id": "a",
+          "text": "density の「待ちも操作も」に当たらないと読み、runnerReadings のとおりにする。"
+        },
+        {
+          "id": "b",
+          "text": "当たると読み、1 回目の読取を外して 2 回目（親の観測の直後）だけで分類する（startSeal の規則の変更。S3 の判断で trace の版を改める）。"
+        },
+        {
+          "id": "c",
+          "text": "当たると読み、編集中の trace では開始時の封印を読まず、K6/4 の TR-7 (1) の (c)（開示だけ）に戻す。"
+        }
+      ],
+      "s2Position": "S2 は判断しない",
+      "decidedBy": "S3",
+      "decision": null
+    },
+    {
+      "id": "P-S2-4",
+      "topic": "閲覧中の trace で、seed の無い場面の query が completed 以外で返ったときの滞在の終わり",
+      "issue": "browse.stayEnd は g02-harbor の滞在を「query の結果が section に公開された直後」に終えるとする。runnerReadings.operations.navigate.outsideQ（DR-CP4-TR-8 (iii)）は、その query が completed 以外で返ったときは公開を待たずに g02-query に戻るとする。operations、cycles、plannedQ は変わらないが、滞在の終わりの条件が 1 つ増える。",
+      "grounds": [
+        "trace-browsing.v1.json の browse.stayEnd と stall.rule（応答が 10,000 ms 以内に来なければ trace-stalled）",
+        "DR-CP4-TR-8 (iii)"
+      ],
+      "options": [
+        {
+          "id": "a",
+          "text": "stayEnd の読み（製品で観測できる事象で終わる。completed 以外の返りも製品の応答）とし、この版のまま固定する。"
+        },
+        {
+          "id": "b",
+          "text": "trace の内容の変更とし、stayEnd の文を改めた新しい版の trace を作り、観測の前に固定し直す（contentProposals に移す）。"
+        }
+      ],
+      "s2Position": "S2 は判断しない",
+      "decidedBy": "S3",
+      "decision": null
+    }
+  ],
+  "reviewerQuestionsRule": "S2 が判断しない点を、論点・根拠・選択肢で S3 に渡す。draft の間は decision を null にし、frozen では S3（か integrator）の決定（choice、by、record）を埋める。決定が setupReadings や trace の欄を変えるなら、その欄を直してから S4 に進む。"
 }

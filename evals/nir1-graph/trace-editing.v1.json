@@ -125,6 +125,84 @@
   "afterScript": {
     "reapproval": "台本の後に、query の開始時に A3 で不適格になった期待寄与の材料があれば、利用者の通常の再承認の操作（製品の typed Revision の準備と人の承認）を実際に行い、手順と所要時間を開示する。不適格な材料がなければ「再承認を要さない」と、その時点の A3 の判定を書く。行わなければ「未測定」と書く。この操作は trace の Q に入れない。"
   },
+  "runnerReadings": {
+    "source": "DR-CP4-TR-8〜TR-10、TR-13（claude/cp4-trace 994aee6148f9a65969207f30fd1c64936ad0e367 の docs/plans/nir1-lane-decisions/cp4-decisions.md）と、同じ commit の scripts/quality/nir1-graph-eval/trace-record.mjs（startSealOf、traceMaintenanceEnv）、trace-seal.mjs（readStartSeal）、trace-runner.mjs の定数",
+    "status": "trace の runner の設計の提案（TR-8）と integrator の決定（TR-9、TR-10）を、この file の operations の読みとして観測の前に写したもの。operations、cycles、plannedQ（Q）は変えない。S3 の確認を受ける。",
+    "operations": {
+      "open-scene": {
+        "counted": true,
+        "a3Read": "once-right-after-parent-fetch-call-observed",
+        "startSeal": "mount の前と、親の fetch の呼出しの観測の直後"
+      },
+      "edit": {
+        "via": "product-editor",
+        "caret": "focus-editor-then-Control+End",
+        "input": "playwright-keyboard",
+        "note": "harness が製品の editor の DOM に focus し、Control+End で caret を本文の末尾（最後の段落の末尾）に置いてから、editText のとおり suffix を keyboard で入力するか Backspace で消す（events の harness-caret と edit）。"
+      },
+      "confirm-autosave-commit": {
+        "observe": "subscribeSceneBodyCommits",
+        "version": "contentVersion",
+        "initialVersion": "getSceneVersion-before-trace",
+        "harnessReadsDb": false,
+        "note": "density の (2)「対象 Scene の version が増えた」は、製品の本文 commit の通知（subscribeSceneBodyCommits）の contentVersion の増加で受け身に観測する。最初の前の値は trace の前に getSceneVersion で読む。commit の確認に DB は読まない（開始時の封印の読取は startSeal の別の read-only の接続）。"
+      },
+      "product-query": {
+        "counted": true,
+        "a3Read": "once-right-after-parent-fetch-call-observed",
+        "startSeal": "自動保存の commit を観測した後（製品の query の前）と、親の fetch の呼出しの観測の直後"
+      }
+    },
+    "a3": {
+      "readAt": "once-right-after-parent-fetch-call-observed",
+      "connection": "評価の自分の read-only の接続（nir1GraphEvalReadA3）",
+      "note": "各 counted query の A3 は、その親の fetch の呼出しを page の側で観測した直後に 1 回読む（「開始時」）。commit の後でなく query の開始の後に読むのは、(2) と (3) の間に harness の操作を入れないため。読取と S1 の stamp の重なりは K6/2 の規則 4 のまま分類器が数える。"
+    },
+    "startSeal": {
+      "reads": [
+        {
+          "id": "before",
+          "at": "親の begin の前の静かな時点（最初の query は mount の前、編集中は自動保存の commit を観測した後、閲覧中は場面を移した後。どれも製品の query の debounce の間で、timing の測定の窓の外）"
+        },
+        {
+          "id": "after",
+          "at": "親の fetch の呼出しを観測した直後（A3 と同じ時点）"
+        }
+      ],
+      "states": ["current", "dirty", "missing", "unknown"],
+      "usableStates": ["current"],
+      "onDisagreement": "unknown",
+      "rule": "before が B の行を持ち dirty でなく、after も B の行が dirty でなく generation が before と同じときだけ current。before の B の行が dirty なら dirty、行が無ければ missing。読取の失敗、読んでいない、before の終わりが親の fetch の呼出しより後、after の始まりが呼出しより前、2 回の食い違い（generation の変化か dirty）は unknown。current だけを U に入れ、ほかは K6/2 の規則 3 (i) の失効に数える（厳しい側。分類器は変えない）。行の snapshot.usable は Native の begin の答えからの snapshot も usable で、かつ current のとき。begin からの snapshot は snapshotNative として残し、receipt の startSeal に状態ごとの数を書く。",
+      "connection": {
+        "readOnly": true,
+        "busyTimeoutMs": 0,
+        "statements": "SELECT 1 回で閉じる（WAL の読み手。busy なら待たずに失敗して unknown）",
+        "api": "readIndexMetadata（workspace-db.mjs）"
+      },
+      "insideTimingWindow": false,
+      "reviewerQuestion": "P-S2-3（observation-prep.v1.json の reviewerQuestions）"
+    },
+    "maintenanceLaunch": {
+      "env": [
+        "CI",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER"
+      ],
+      "values": {
+        "CI": "true",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN": "製品の source の公開の定数 NARRATIVE_MAINTENANCE_OWNER_TOKEN（runner の試験が source から読んで一致を確かめる）",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE": "起動ごとの UUIDv4"
+      },
+      "trigger": "nir1-graph-index-build",
+      "scope": "trace-measurement-launch-only",
+      "onForbiddenOption": "[precheck]",
+      "record": "receipt に env の名前、trigger、nonce の sha256 を書く",
+      "note": "maintenance.gate の起動の手順。trace の測定の session の起動にだけ足し、定常状態とほかの runner の起動には足さない。maintenance.forbiddenSeamOptions のどれかが起動の env にあれば [precheck] で止める。"
+    }
+  },
+  "contentProposals": [],
+  "contentProposalsRule": "trace の内容（operations、cycles、plannedQ）を変える提案は、ここに status proposal-awaiting-s3 で書き、本体は変えない。S3 が採れば新しい版の trace を作り、観測の前に固定し直す。この追補の時点で内容を変える提案は無い（TR-8 の提案はどれも runnerReadings の読み。滞在の終わりの読みは observation-prep.v1.json の reviewerQuestions の P-S2-4）。",
   "operations": [
     {
       "seq": 0,

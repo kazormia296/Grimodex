@@ -7,8 +7,9 @@
     "effort": "high"
   },
   "declaredAt": "2026-10-27",
-  "statement": "S2 の作者は、Graph の実行出力（Graph の run の receipt、log、net log、trace の実測値、worker の frame、Graph を含む Related Scenes の結果、.artifacts の下の出力）と、観測の記録（nir1-lane-decisions の cp4-decisions.md、cq-deferred-decisions.md、rsj-* と rs-join-decisions.md、実測を含む DP-H・DA-2・DD-1 の decisions、scratchpad の run の結果、cp4-task.md・cp4-hardening-task.md・cp4-s1f-task.md・cp4-k64-task.md、他の agent の transcript）を読んでいない。実 Electron、実 build、Graph の実行はしていない。値は契約と第一原理から決め、観測した値で閾値や待ちの上限を選んでいない。",
+  "statement": "S2 の作者は、Graph の実行出力（Graph の run の receipt、log、net log、trace の実測値、worker の frame、Graph を含む Related Scenes の結果、.artifacts の下の出力）と、観測の記録（nir1-lane-decisions の cp4-decisions.md、cq-deferred-decisions.md、rsj-* と rs-join-decisions.md、実測を含む DP-H・DA-2・DD-1 の decisions、scratchpad の run の結果、cp4-task.md・cp4-hardening-task.md・cp4-s1f-task.md・cp4-k64-task.md、他の agent の transcript）を読んでいない。実 Electron、実 build、Graph の実行はしていない。値は契約と第一原理から決め、観測した値で閾値や待ちの上限を選んでいない。 例外として、2026-10-27 の追補で、integrator の依頼により cp4-decisions.md の DR-CP4-L-1〜L-15（claude/cp4-s1j2）と DR-CP4-TR-1〜TR-14（claude/cp4-trace）の行に限って読んだ（readFiles の permittedRows。DR の本文に含まれる dev の実行の要約は decisionSummariesSeen）。",
   "contractObservationsSeen": "読んでよい範囲の契約と計画の文書には、観測の要約が本文として含まれる。K6/4 の「事実」の節（H5 と RS-JOIN の測定値。q1〜q3 の分布、子の到着、D の超過など）と「判断を求める点」の導出、K6/2 の S1／S3／S6 の記述、続行計画の CP-4 の行（DR-CP4-S1C2-19〜22 の原因の要約、D′、DR-CP3A-53 の見込み）を、契約の一部として読んだ。これらから値を選んでいない: 作者が決めた値は r1r4WaitMs（契約の上限 10 s と DEFERRED_RELEASE_LIMIT の意味から 10,000 ms）、parity の unrestricted run の数（契約の下限 1）、trace の長さ（200 回の台本と最初の query で Q=201）、stall の guard（10,000 ms。判定に使う値を変えない）、trace の project（G-02 base。fixture の構造で選んだ）で、どれも観測値を使っていない。 SP/1 の本文の dev fixture の記録の要約（SeedChanged の 4/4、遅い Raw-ready の 2/30 など）も契約の一部として読んだが、値の選択に使っていない。",
+  "decisionSummariesSeen": "許された DR の行には、dev fixture（凍結した G-case の材料ではない合成の材料）での実行の要約が本文として含まれる: DR-CP4-L-7、L-9、L-12〜L-15（dev の setup の結果。B の seal の publish の有無、maintenance の run の数、測定点の probe の状態、session の problem と副作用）と、DR-CP4-TR-6（V-11 の dev の trace の短い 1 回。製品の自動保存の commit と query の発行、Native の記録の整列、境の counter、最初の query の follow-up の結果〔graph-late の親から Cached の子〕、B の封印が dirty で子が出なかったこと）、TR-12〜TR-14。これは DR の文として読んだもので、.artifacts の下の実行の出力そのもの（receipt、log、net log）は開いていない。凍結した G-case の Graph の出力は読んでいない。この追補で S2 に書いた値（待ち 120 s と開き直し 2 回、30 s の再試行、measurementSpecs、probe の定義、開始時の封印の分類、maintenance の env）は integrator の決定と harness の code の定数の写しで、作者が観測から選んだ値は無い。reviewerQuestions は論点・根拠・選択肢を並べただけで、dev の結果から推奨を選んでいない。",
   "readFiles": [
     {
       "path": "docs/plans/nir1-c-body-disclosure-proposal-4-draft.md",
@@ -249,10 +250,116 @@
       "sha256": "4cd3ea8c6ae0277482512e1af7bd022e1f849507b4dfb5309b803ab910b55718",
       "source": "session の scratchpad",
       "scope": "verdict と findings"
+    },
+    {
+      "path": "claude/cp4-s1j2@14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9:docs/plans/nir1-lane-decisions/cp4-decisions.md",
+      "sha256": "24c0e0eb9c5323c36345aec6ec0b9afd8cda1acbd021be3ea144bca6fa18b6d6",
+      "source": "S1j-2 の branch（git -C /home/grimodex/worktrees/Grimodex/claude-cp4-s1j2 show で読むだけ）",
+      "scope": "S1j-2 の節（699〜734 行）だけ: 節の前置き、DR-CP4-L-1〜L-15、⑤ 用の完全な setup の手順、S1j-2 の追補の前置き。ほかの節は見出しの行だけ（accidentalReads）",
+      "permittedRows": [
+        "DR-CP4-L-1",
+        "DR-CP4-L-2",
+        "DR-CP4-L-3",
+        "DR-CP4-L-4",
+        "DR-CP4-L-5",
+        "DR-CP4-L-6",
+        "DR-CP4-L-7",
+        "DR-CP4-L-8",
+        "DR-CP4-L-9",
+        "DR-CP4-L-10",
+        "DR-CP4-L-11",
+        "DR-CP4-L-12",
+        "DR-CP4-L-13",
+        "DR-CP4-L-14",
+        "DR-CP4-L-15"
+      ],
+      "permittedBy": "integrator（S2 追補の依頼。2026-10-27）"
+    },
+    {
+      "path": "claude/cp4-trace@994aee6148f9a65969207f30fd1c64936ad0e367:docs/plans/nir1-lane-decisions/cp4-decisions.md",
+      "sha256": "cbd1d9193c745defd2e402f7f550c89858cc744ab29cc5f0bddb488d9ae6920c",
+      "source": "TR の branch（git -C /home/grimodex/worktrees/Grimodex/claude-cp4-trace show で読むだけ）",
+      "scope": "DR-CP4-TR-1〜TR-14 の行（714〜727 行）と TR の節の見出し（708 行）だけ。ほかの節は見出しの行だけ（accidentalReads）",
+      "permittedRows": [
+        "DR-CP4-TR-1",
+        "DR-CP4-TR-2",
+        "DR-CP4-TR-3",
+        "DR-CP4-TR-4",
+        "DR-CP4-TR-5",
+        "DR-CP4-TR-6",
+        "DR-CP4-TR-7",
+        "DR-CP4-TR-8",
+        "DR-CP4-TR-9",
+        "DR-CP4-TR-10",
+        "DR-CP4-TR-11",
+        "DR-CP4-TR-12",
+        "DR-CP4-TR-13",
+        "DR-CP4-TR-14"
+      ],
+      "permittedBy": "integrator（S2 追補の依頼。2026-10-27）"
+    },
+    {
+      "path": "claude/cp4-s1j2@14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9:scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs",
+      "sha256": "9b17bb54f1360487ebcfb23e20b6769b4a18a0d1854b68b7152ba50fbe1cd552",
+      "source": "claude/cp4-s1j2（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "冒頭（1〜36 行）、phaseCategories から HARNESS_CHOICES まで（337〜520 行。SETUP_SESSIONS、MEASUREMENT_SPECS）、段の組み立て（880〜995 行）と grep"
+    },
+    {
+      "path": "claude/cp4-s1j2@14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9:scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+      "sha256": "cc690fe6818da634c513ffd5623c3b0d9b58701d245b3ca1515df4795daee823",
+      "source": "claude/cp4-s1j2（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "B_SEAL_WAIT_MS と B_SEAL_REOPENS、select の WORKSPACE_SWITCHING の再試行（225〜250 行）、measurement-point と qualified-ir の段と indexStateProbe（770〜890 行）、IR の読み戻し（1640〜1660 行）、seal の開き直し（1835〜1930 行）と grep"
+    },
+    {
+      "path": "claude/cp4-s1j2@14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9:scripts/quality/nir1-graph-eval/setup-main-build.mjs",
+      "sha256": "c9b97ec62c7eb37a15c0bd258fd65031e0e170ae1ba357658ffb670aade7151a",
+      "source": "claude/cp4-s1j2（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "冒頭の注釈と定数（grep）"
+    },
+    {
+      "path": "claude/cp4-s1j2@14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9:scripts/quality/nir1-graph-eval/setup-receipt.mjs",
+      "sha256": "e02997c54edf335f16bd802dbe892901dfbf004f408c5a9a899811d88e098565",
+      "source": "claude/cp4-s1j2（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "定数と export（grep）"
+    },
+    {
+      "path": "claude/cp4-trace@994aee6148f9a65969207f30fd1c64936ad0e367:scripts/quality/nir1-graph-eval/trace-seal.mjs",
+      "sha256": "d4459c38654eac64a71b5af3339bcc45a0f36ef6965bc7fd4c1aa2a9c6294f79",
+      "source": "claude/cp4-trace（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "冒頭の注釈と定数（grep）"
+    },
+    {
+      "path": "claude/cp4-trace@994aee6148f9a65969207f30fd1c64936ad0e367:scripts/quality/nir1-graph-eval/trace-record.mjs",
+      "sha256": "5fbadf15b980cbfac26d17b6ae6c5cd66fcd72a5ca1eaf8995dfd0b703663ab8",
+      "source": "claude/cp4-trace（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "startSealOf、startSealCounts、TRACE_MAINTENANCE_SEAM と traceMaintenanceEnv（557〜650 行の一部）"
+    },
+    {
+      "path": "claude/cp4-trace@994aee6148f9a65969207f30fd1c64936ad0e367:scripts/quality/nir1-graph-eval/trace-runner.mjs",
+      "sha256": "685db0ebc675d3b9a126f20227b3f5f05101d4fcc3e9d30954d8dbf3c36eb281",
+      "source": "claude/cp4-trace（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "admitTraceRun、traceMaintenanceStart、checkTraceAttempt（110〜170 行）と grep"
+    },
+    {
+      "path": "claude/cp4-trace@994aee6148f9a65969207f30fd1c64936ad0e367:scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
+      "sha256": "0a89661aacbc81a903acf1e2043375fc9049f73acf2f1a1c89e33b72028e6b5d",
+      "source": "claude/cp4-trace（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "navigate と awaitPublished（320〜345 行）"
+    },
+    {
+      "path": "claude/cp4-trace@994aee6148f9a65969207f30fd1c64936ad0e367:scripts/quality/nir1-graph-eval/renderer/trace-cycle.ts",
+      "sha256": "bef2fde68e64175ae42b30edb9e1ae4eec62051cfd534d6cee25f6bd5a89ed4c",
+      "source": "claude/cp4-trace（git show で読むだけ。checkout も編集もしていない）",
+      "scope": "publishedOf の completed の判定（grep）"
     }
   ],
   "forbiddenFilesNotRead": true,
-  "accidentalReads": [],
+  "accidentalReads": [
+    {
+      "what": "cp4-decisions.md（claude/cp4-s1j2 と claude/cp4-trace）の節の見出しの一覧（grep の出力の見出しの行だけ。S1c-1 の V-9／V-10 の smoke、D′ の実機の確認、H5 の診断などの節の題を含むが、節の本文と値は読んでいない）",
+      "at": "2026-10-27"
+    }
+  ],
   "notes": [
     "統合 branch（claude/nir1-cp4、worktree /home/grimodex/worktrees/Grimodex/claude-nir1-cb4）は git show で読むだけで、checkout も編集もしていない。git grep の対象は scripts、electron、src、evals に限った（docs/plans/nir1-lane-decisions を含めていない）。",
     "統合 branch の procedure/k64-procedure.draft-1.json は、値の独立性のために読んでいない（loader と constants.mjs だけを読んだ）。",
@@ -282,6 +389,10 @@
     {
       "at": "2026-10-27",
       "reason": "S3 の 4 回目のレビュー（P2 1、P3 3）への対応。Graph の実行出力は読んでいない。"
+    },
+    {
+      "at": "2026-10-27",
+      "reason": "S2 追補（S1j-2 の setup の読み〔DR-CP4-L-11〕、d2 の読み替え、trace の runner の提案〔TR-8〜TR-10〕、P-4 などの reviewerQuestions）。新しく読んだのは readFiles の追補の行（cp4-decisions.md の許された DR の行と、claude/cp4-s1j2 と claude/cp4-trace の harness の code）だけ。.artifacts の下の実行の出力、claude/nir1-contracts の nir1-cp4-records、許された範囲の外の DR の本文は読んでいない。Graph の実行出力は読んでいない（DR の本文にある dev の要約は decisionSummariesSeen に開示）。"
     }
   ]
 }
