@@ -47,6 +47,7 @@ function fakeDriver({ stallAt = null } = {}) {
   };
   return {
     calls,
+    advance: (ms) => tick(ms),
     driver: {
       now: async () => now,
       caretToEnd: async () => log("caretToEnd", null, { at: tick(5) }),
@@ -285,7 +286,7 @@ test("TR-1: admission は dev の予告だけを通し、凍結した trace は 
 
 test("TR-9: 開始時の封印は親の begin の前（編集中は commit の観測の後、閲覧中は場面の移動の後、最初の query は mount の前の読取）に 1 回読み、query の番号に結び、読取の前後に renderer の時刻を取る", async () => {
   for (const kind of ["editing", "browsing"]) {
-    const { calls, driver } = fakeDriver();
+    const { calls, driver, advance } = fakeDriver();
     const sealCalls = [];
     const result = await runTraceOperations({
       plan: plan(kind, 2),
@@ -295,6 +296,7 @@ test("TR-9: 開始時の封印は親の begin の前（編集中は commit の�
       openSeal: { read: "ok", b: null, startedAt: 1, finishedAt: 2 },
       readSeal: async () => {
         sealCalls.push(calls.at(-1).name);
+        advance(7);
         return { read: "ok", b: { generation: 1, dirty: false } };
       },
       readA3: async () => ({}),
@@ -312,8 +314,10 @@ test("TR-9: 開始時の封印は親の begin の前（編集中は commit の�
     assert.deepEqual(Object.keys(result.startSeals).map(Number), [0, 1, 2]);
     assert.equal(result.startSeals[0].finishedAt, 2);
     assert.ok(Number.isFinite(result.startSeals[1].startedAt));
-    assert.ok(
-      result.startSeals[1].finishedAt >= result.startSeals[1].startedAt,
+    // The renderer time after the read (the read took 7 ms of the fake clock).
+    assert.equal(
+      result.startSeals[1].finishedAt - result.startSeals[1].startedAt,
+      7,
     );
     // The read is before the counted query is looked for.
     const counted = calls.filter((row) => row.name === "awaitCounted");

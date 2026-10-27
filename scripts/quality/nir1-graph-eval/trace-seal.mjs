@@ -24,10 +24,14 @@ const pick = (row) =>
  * `{ generation, dirty }` or null when the project has no such Index row) or
  * `{ read: "failed", error, durationMs }`.
  */
-export function readStartSeal(file, projectId) {
+export function readStartSeal(
+  file,
+  projectId,
+  { read = readIndexMetadata } = {},
+) {
   const started = performance.now();
   try {
-    const metadata = readIndexMetadata(file, projectId, {
+    const metadata = read(file, projectId, {
       timeout: START_SEAL_BUSY_TIMEOUT_MS,
     });
     return {

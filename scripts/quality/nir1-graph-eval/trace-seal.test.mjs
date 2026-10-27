@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { START_SEAL_BUSY_TIMEOUT_MS, readStartSeal } from "./trace-seal.mjs";
 import { startSealOf } from "./trace-record.mjs";
-import { INDEX_KEYS } from "./workspace-db.mjs";
+import { INDEX_KEYS, readIndexMetadata } from "./workspace-db.mjs";
 
 function workspace({ wal = true } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "cp4-tr-seal-"));
@@ -83,4 +83,27 @@ test("TR-9: busy（rollback journal で書込みが排他の lock を持つ）�
     startSealOf({ ...busy, startedAt: 1, finishedAt: 2 }, 10).state,
     "unknown",
   );
+});
+
+test("TR-9: 読取は busy の timeout 0 を接続に渡し、readIndexMetadata はその option を read-only の接続に渡す", () => {
+  const seen = [];
+  readStartSeal("/x.db", "p1", {
+    read: (file, projectId, options) => {
+      seen.push(options);
+      return { b: null, chronicle: null };
+    },
+  });
+  assert.deepEqual(seen, [{ timeout: 0 }]);
+  // The option reaches the connection: with a busy timeout the same busy
+  // read waits, without it it does not.
+  const { file, writer } = workspace({ wal: false });
+  writer.exec("BEGIN EXCLUSIVE");
+  writer.exec(
+    `UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE index_key = '${INDEX_KEYS.b}'`,
+  );
+  const started = performance.now();
+  assert.throws(() => readIndexMetadata(file, "p1", { timeout: 300 }));
+  assert.ok(performance.now() - started >= 250, "the timeout was applied");
+  writer.exec("COMMIT");
+  writer.close();
 });
