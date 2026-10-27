@@ -93,6 +93,7 @@ import { useChronicleExtractionStore } from "@/features/chronicle/chronicleExtra
 import { hookProbe } from "./cp4-hook-probe";
 import { k64Probe } from "./cp4-k64-probe";
 import { traceProbe } from "./cp4-trace-probe";
+import { diagnosticProbe } from "./cp4-diagnostic-probe";
 
 interface IpcRow {
   cmd: string;
@@ -106,6 +107,7 @@ interface IpcRow {
   graphReason: string | null;
   pathAttachments: number | null;
   graphOnly: boolean | null;
+  denseHitSceneIds?: string[] | null;
 }
 
 /** The rows the timing shim writes (created here if the shim has not run). */
@@ -963,4 +965,6 @@ async function twoViews(input: {
   },
   // TR（DR-CP4-TR-1）：(b) の trace の page の側（製品の editor と hook の消費者）。
   trace: traceProbe,
+  // S5-B（DR-CP4-O-1）：SP-P4 の sparse と K24-G01-N2〜N4 の本文の段。
+  diagnostic: diagnosticProbe,
 };

@@ -535,6 +535,8 @@ export const DEV_PREVIEW_PURPOSES = Object.freeze([
   "dprime-check",
   "hook-check",
   "diag-registration",
+  // S5-B: the SP-P4 diagnostic's dev preview (diagnostic-runner.mjs).
+  "sp-p4-preview",
   "smoke",
   "setup",
 ]);
