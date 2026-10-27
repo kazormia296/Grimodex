@@ -8,6 +8,7 @@ import {
   G01_CONTROL_ATTEMPTS,
   G01_CONTROL_GAP_MS,
   G01_NEGATIVE_POLL_MS,
+  awaitOwnerCached,
   classifyG01Control,
   g01FrameReached,
   graphInputsDigest,
@@ -152,7 +153,7 @@ test("O-1 (5): 宣言の前に N3 は同じ bytes の版、N4 は Draft の版�
   );
 });
 
-test("O-1 (5): mutation の後は setup と同じ規則（新しい B の generation が dirty でなく、Chronicle が使える）で待ち、上限は B_SEAL_WAIT_MS", async () => {
+test("O-1 (5): mutation の後は setup の b-seal と同じ規則（新しい B の generation が dirty でない）で待ち、上限は B_SEAL_WAIT_MS", async () => {
   let clock = 0;
   const reads = [metadata(4, true), metadata(5, true), metadata(5, false)];
   const ok = await waitG01NegativeSealed({
@@ -177,7 +178,7 @@ test("O-1 (5): mutation の後は setup と同じ規則（新しい B の genera
   });
   assert.equal(stuck.ok, false);
   assert.equal(stuck.waitedMs, B_SEAL_WAIT_MS);
-  // Chronicle の Index が dirty なら使えない。
+  // B の規則だけで待つ（Chronicle は開き直しの後に query の経路で作る）。
   clock = 0;
   const chronicleDirty = await waitG01NegativeSealed({
     readIndex: () => ({
@@ -191,7 +192,7 @@ test("O-1 (5): mutation の後は setup と同じ規則（新しい B の genera
     },
     now: () => clock,
   });
-  assert.equal(chronicleDirty.ok, false);
+  assert.equal(chronicleDirty.ok, true);
 });
 
 const pin = (entryId) => ({
@@ -570,6 +571,10 @@ test("O-1 (7): mutation の後は Main を閉じて開き直し、setup の seal
   const result = await reopenUntilSealed({
     closeCurrent: async () => events.push(["close-current"]),
     openSession,
+    buildChronicle: async () => {
+      events.push(["chronicle"]);
+      return { ok: true };
+    },
     readIndex: () => metadata(4),
     before: metadata(4),
     wait: async () =>
@@ -583,7 +588,9 @@ test("O-1 (7): mutation の後は Main を閉じて開き直し、setup の seal
     ["open", 0, "measure-reopen-0"],
     ["close", 0],
     ["open", 1, "measure-reopen-1"],
+    ["chronicle"],
   ]);
+  assert.equal(result.sealAttempts[1].chronicle.usable, true);
   assert.deepEqual(
     result.sealAttempts.map((row) => [row.attempt, row.outcome, row.published]),
     [
@@ -594,6 +601,7 @@ test("O-1 (7): mutation の後は Main を閉じて開き直し、setup の seal
   opened = 0;
   const exhausted = await reopenUntilSealed({
     closeCurrent: async () => {},
+    buildChronicle: async () => ({ ok: true }),
     openSession: async () => ({ close: async () => {} }),
     readIndex: () => metadata(4),
     before: metadata(4),
@@ -601,6 +609,27 @@ test("O-1 (7): mutation の後は Main を閉じて開き直し、setup の seal
   });
   assert.equal(exhausted.ok, false);
   assert.equal(exhausted.sealAttempts.length, 1 + B_SEAL_REOPENS);
+  assert.equal(exhausted.reason, "b-seal-not-published");
+  // B は封印されたが Chronicle が使えなければ開き直さずに止める（setup の
+  // index-build-timeout と同じ）。
+  let opens = 0;
+  const chronicleDirty = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    buildChronicle: async () => ({ ok: false }),
+    openSession: async () => {
+      opens += 1;
+      return { close: async () => {} };
+    },
+    readIndex: () => ({
+      b: { generation: 5, dirty: false },
+      chronicle: { generation: 3, dirty: true },
+    }),
+    before: metadata(4),
+    wait: async () => ({ ok: true, waitedMs: 1 }),
+  });
+  assert.equal(chronicleDirty.ok, false);
+  assert.equal(chronicleDirty.reason, "chronicle-index-not-usable");
+  assert.equal(opens, 1);
 });
 
 test("O-6: sample の「届いた」は、対照が reached・Graph の入力が同じ・seed つき・graph-ready・A3 eligible のときだけ真", () => {
@@ -678,4 +707,56 @@ test("O-6: sample の「届いた」は、対照が reached・Graph の入力が
     }).outcome,
     "not-established",
   );
+});
+
+test("O-6: 対照の聞き直しは owner の next-query cache が埋まるのを待ってから（無ければ間隔）", async () => {
+  const answers = [
+    reachedAnswer({ graphOutcome: "graph-late", graphOnly: null }),
+    reachedAnswer(),
+  ];
+  const { page } = fakePage({
+    graphProbe: () => ({ ok: true, value: answers.shift() }),
+  });
+  const waits = [];
+  const control = await runG01NegativeControl({
+    page,
+    ids: IDS,
+    target: T2,
+    readGraphInputs: () => ({}),
+    awaitCached: async () => {
+      waits.push("cache");
+      return { cached: true, waitedMs: 3 };
+    },
+    sleep: async () => waits.push("sleep"),
+  });
+  assert.equal(control.status, "reached");
+  assert.deepEqual(waits, ["cache"]);
+  assert.deepEqual(control.answers[0].waitedForCache, {
+    cached: true,
+    waitedMs: 3,
+  });
+  const statuses = [
+    { owner: { slot: "deferred", cacheOccupied: false } },
+    { owner: { slot: "preparing", cacheOccupied: false } },
+    { owner: { slot: "empty", cacheOccupied: true } },
+  ];
+  let clock = 0;
+  const cached = await awaitOwnerCached({
+    readStatus: async () => statuses.shift(),
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    now: () => clock,
+  });
+  assert.deepEqual(cached, { cached: true, waitedMs: 100 });
+  clock = 0;
+  const never = await awaitOwnerCached({
+    readStatus: async () => ({ owner: { slot: "deferred" } }),
+    limitMs: 200,
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    now: () => clock,
+  });
+  assert.equal(never.cached, false);
 });

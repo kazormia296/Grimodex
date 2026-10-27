@@ -120,9 +120,10 @@ export async function prepareG01NegativeBeforeDeclaration({
 }
 
 /**
- * The wait after the mutation (the setup's B seal rule): a B generation newer
- * than the one before the mutation, not dirty, and a usable Chronicle Index
- * (`indexStateProbe`), within `limitMs` (B_SEAL_WAIT_MS).
+ * The wait after the mutation (the setup's `b-seal` rule): a B generation
+ * newer than the one before the mutation and not dirty, within `limitMs`
+ * (B_SEAL_WAIT_MS). The Chronicle Index is built after it through the query
+ * route, as the setup's `chronicle-index` step (`reopenUntilSealed`).
  */
 export async function waitG01NegativeSealed({
   readIndex,
@@ -138,8 +139,7 @@ export async function waitG01NegativeSealed({
     const probe = indexStateProbe({ metadata });
     if (
       Number(metadata?.b?.generation ?? 0) > previous &&
-      probe.graph === "usable" &&
-      probe.chronicle === "usable"
+      probe.graph === "usable"
     )
       return { ok: true, waitedMs: now() - started, metadata };
     if (now() - started >= limitMs)
@@ -185,8 +185,12 @@ export function graphInputsDigest(rows) {
   return createHash("sha256").update(JSON.stringify(pick)).digest("hex");
 }
 
-/** The control's attempts (D′: a late first answer, then the cached one). */
-export const G01_CONTROL_ATTEMPTS = 5;
+/**
+ * The control's attempts (D′: late answers until the deferred prepare is
+ * cached; the dev check saw up to 5 late answers in a row). A harness value,
+ * not a K6/4 value.
+ */
+export const G01_CONTROL_ATTEMPTS = 10;
 /** Longer than the owner's rebuild_min_interval (1 s), a harness value. */
 export const G01_CONTROL_GAP_MS = 1_200;
 
@@ -213,13 +217,16 @@ export function classifyG01Control({ answer, ids, target }) {
 /**
  * The control (after the declaration, before the mutation, same workspace
  * and seed): up to G01_CONTROL_ATTEMPTS product fetches until one is
- * graph-ready; records every answer and the Graph input digest.
+ * graph-ready, each after the owner's next-query cache is filled
+ * (`awaitCached`, e.g. `awaitOwnerCached`) or the gap; records every answer
+ * and the Graph input digest.
  */
 export async function runG01NegativeControl({
   page,
   ids,
   target,
   readGraphInputs,
+  awaitCached = null,
   sleep = delay,
   attempts = G01_CONTROL_ATTEMPTS,
 }) {
@@ -234,7 +241,10 @@ export async function runG01NegativeControl({
     answers.push(answer);
     status = classifyG01Control({ answer, ids, target });
     if (answer.graphOutcome === "graph-ready") break;
-    await sleep(G01_CONTROL_GAP_MS);
+    // D′: the late answer's deferred prepare fills the owner's next-query
+    // cache; the next fetch is asked once it is there (or after the gap).
+    if (awaitCached) answer.waitedForCache = await awaitCached();
+    else await sleep(G01_CONTROL_GAP_MS);
   }
   return { status, answers, graphInputs: graphInputsDigest(readGraphInputs()) };
 }
@@ -252,6 +262,7 @@ export async function reopenUntilSealed({
   openSession,
   readIndex,
   before,
+  buildChronicle,
   reopens = B_SEAL_REOPENS,
   wait = waitG01NegativeSealed,
   label = "measure",
@@ -271,10 +282,36 @@ export async function reopenUntilSealed({
       waitedMs: sealed.waitedMs,
       metadata: sealed.metadata ?? null,
     });
-    if (sealed.ok) return { ok: true, session, sealAttempts };
+    if (sealed.ok) {
+      // The setup's chronicle-index step: the Index through the query route
+      // in this Main, then usable in the metadata. Not reopened (as the
+      // setup's index-build-timeout).
+      const chronicleBuild = await buildChronicle(session);
+      const metadata = readIndex();
+      const usable =
+        indexStateProbe({ metadata }).chronicle === "usable" &&
+        chronicleBuild?.ok !== false;
+      sealAttempts.at(-1).chronicle = {
+        build: chronicleBuild,
+        metadata,
+        usable,
+      };
+      if (usable) return { ok: true, session, sealAttempts };
+      return {
+        ok: false,
+        session,
+        sealAttempts,
+        reason: "chronicle-index-not-usable",
+      };
+    }
     await session.close();
   }
-  return { ok: false, session: null, sealAttempts };
+  return {
+    ok: false,
+    session: null,
+    sealAttempts,
+    reason: "b-seal-not-published",
+  };
 }
 
 /**
@@ -295,6 +332,7 @@ export async function runG01NegativeStep({
   readGraphInputs,
   closeCurrent,
   openSession,
+  buildChronicle,
   reopen = reopenUntilSealed,
 }) {
   const spec = specOf(id);
@@ -352,6 +390,7 @@ export async function runG01NegativeStep({
     openSession,
     readIndex,
     before: indexBefore,
+    buildChronicle,
   });
   if (!reopened.ok)
     return {
@@ -359,9 +398,9 @@ export async function runG01NegativeStep({
       mutation,
       indexBefore,
       sealAttempts: reopened.sealAttempts,
-      session: null,
+      session: reopened.session ?? null,
       blocked: {
-        reason: "b-seal-not-published",
+        reason: reopened.reason ?? "b-seal-not-published",
         openings: reopened.sealAttempts.length,
       },
     };
@@ -445,4 +484,30 @@ export function g01NegativeSampleOf({
       (sceneId) => inverse.get(sceneId) ?? `unmapped:${sceneId}`,
     ),
   };
+}
+
+/**
+ * The owner's next-query cache filled after a late answer (slot `empty`,
+ * `cacheOccupied`), read from the evaluation status, at most `limitMs`.
+ */
+export async function awaitOwnerCached({
+  readStatus,
+  limitMs = 10_000,
+  sleep = delay,
+  now = () => Date.now(),
+}) {
+  const started = now();
+  for (;;) {
+    const status = await readStatus();
+    const owner = status?.owner ?? {};
+    if (owner.slot === "empty" && owner.cacheOccupied === true)
+      return { cached: true, waitedMs: now() - started };
+    if (now() - started >= limitMs)
+      return {
+        cached: false,
+        waitedMs: now() - started,
+        slot: owner.slot ?? null,
+      };
+    await sleep(50);
+  }
 }

@@ -21,7 +21,9 @@ import { loadDevFixture } from "./dev-fixture.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import { assessG01Negative } from "./frozen-diagnostics.mjs";
 import {
+  G01_CONTROL_ATTEMPTS,
   G01_CONTROL_GAP_MS,
+  awaitOwnerCached,
   g01NegativeLaunchEnv,
   g01NegativeSampleOf,
   prepareG01NegativeBeforeDeclaration,
@@ -189,6 +191,12 @@ async function main() {
         },
         readIndex,
         before,
+        label: "before-declaration",
+        buildChronicle: async (session) =>
+          buildIndex(session.session.page, ids).then(
+            (value) => ({ ok: true, ...value }),
+            (error) => ({ ok: false, error: String(error?.message ?? error) }),
+          ),
       });
       return reopened;
     };
@@ -251,6 +259,11 @@ async function main() {
         ids,
         target,
         readGraphInputs,
+        awaitCached: () =>
+          awaitOwnerCached({
+            readStatus: async () =>
+              JSON.parse(await current.session.addon("nir1GraphEvalStatus")),
+          }),
       });
       report.control = control;
       step = await runG01NegativeStep({
@@ -268,6 +281,11 @@ async function main() {
           const value = await open(dirLabel);
           return { ...value, close: stopCurrent };
         },
+        buildChronicle: async (session) =>
+          buildIndex(session.session.page, ids).then(
+            (value) => ({ ok: true, ...value }),
+            (error) => ({ ok: false, error: String(error?.message ?? error) }),
+          ),
       });
     }
     report.step = {
@@ -277,7 +295,6 @@ async function main() {
     const samples = [];
     if (!step.blocked) {
       const page = current.session.page;
-      report.indexAfterMutation = await buildIndex(page, ids);
       report.declarationAfterMutation = await page.evaluate(
         (input) => window.cp4Harness.declaration.state(input),
         {
@@ -296,10 +313,22 @@ async function main() {
             materials,
           ),
         );
-        const measure = await page.evaluate(
-          (input) => window.cp4Harness.measure(input),
-          { sceneId: ids.querySceneId, seed },
-        );
+        // D′: the first answer is often late; the preview has no hook
+        // follow-up, so it asks again (as the control) until graph-ready.
+        let measure = null;
+        const tries = [];
+        for (let at = 0; at < G01_CONTROL_ATTEMPTS; at++) {
+          measure = await page.evaluate(
+            (input) => window.cp4Harness.measure(input),
+            { sceneId: ids.querySceneId, seed },
+          );
+          tries.push(measure.graphOutcome);
+          if (measure.graphOutcome === "graph-ready") break;
+          await awaitOwnerCached({
+            readStatus: async () =>
+              JSON.parse(await current.session.addon("nir1GraphEvalStatus")),
+          });
+        }
         const outcome = measure.graphOutcome;
         samples.push(
           g01NegativeSampleOf({
@@ -328,6 +357,7 @@ async function main() {
         report.graphOutcomes.push({
           status: measure.status,
           graphOutcome: outcome,
+          tries,
           graph: measure.graph,
           a3: a3AtStartOf(a3),
         });
