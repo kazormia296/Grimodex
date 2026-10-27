@@ -571,6 +571,11 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         "scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs",
         "scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs",
         "scripts/quality/nir1-graph-eval/g01-negatives.test.mjs",
+        // CP-4 S5-A: the formal Graph arm runner (admission, run specs,
+        // F6 on the materials' Revisions, the measurement processes on fakes).
+        "scripts/quality/nir1-graph-eval/frozen-k64-plan.test.mjs",
+        "scripts/quality/nir1-graph-eval/frozen-k64-admission.test.mjs",
+        "scripts/quality/nir1-graph-eval/frozen-k64-run.test.mjs",
       ],
       [
         "node",

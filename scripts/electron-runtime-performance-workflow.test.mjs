@@ -31,7 +31,11 @@ import {
   runObservedRuntimeCommand,
   signalOwnedGroup,
 } from "../electron/scripts/runtime-performance-diagnostic.mjs";
-import { buildRuntimePerformanceAttemptPaths } from "../electron/scripts/runtime-performance-retry.mjs";
+import { RUNTIME_PERFORMANCE_IO_SETTLE_POLICY } from "../electron/scripts/runtime-performance-io-settle.mjs";
+import {
+  TRANSIENT_PERFORMANCE_RETRY_POLICY,
+  buildRuntimePerformanceAttemptPaths,
+} from "../electron/scripts/runtime-performance-retry.mjs";
 import {
   RUNTIME_OPEN_EVIDENCE_MAX_SPANS,
   aggregateAppProcessCpu,
@@ -97,7 +101,7 @@ test("package.json exposes deterministic Electron runtime performance contracts"
 
   assert.equal(
     packageJson.scripts["test:electron-perf"],
-    "node --test scripts/electron-runtime-performance-workflow.test.mjs scripts/runtime-performance-fixture.test.mjs scripts/runtime-performance-budget.test.mjs scripts/runtime-performance-retry.test.mjs",
+    "node --test scripts/electron-runtime-performance-workflow.test.mjs scripts/runtime-performance-fixture.test.mjs scripts/runtime-performance-budget.test.mjs scripts/runtime-performance-retry.test.mjs scripts/runtime-performance-io-settle.test.mjs",
   );
   assert.equal(
     packageJson.scripts["electron:perf:ci"],
@@ -229,6 +233,22 @@ test("local CI runtime evidence stays isolated across run-scoped benchmark outpu
       output,
     ]);
   }
+});
+
+test("local CI benchmark timeout covers every attempt's I/O settle cap (DR-PIS-7)", async () => {
+  const registry = JSON.parse(await read("scripts/local-ci-registry.json"));
+  const benchmark = Object.values(registry.stages)
+    .flatMap((stage) => stage?.commands ?? [])
+    .find(({ id }) => id === "runtime.benchmark");
+  assert.ok(benchmark, "runtime.benchmark is registered");
+  // 180 s was the pre-settle command budget; every attempt (one plus at most
+  // one transient retry) may wait the full settle cap before its launch.
+  const attempts = 1 + TRANSIENT_PERFORMANCE_RETRY_POLICY.maximumRetries;
+  assert.equal(benchmark.timeoutMs, 300_000);
+  assert.ok(
+    benchmark.timeoutMs >=
+      180_000 + attempts * RUNTIME_PERFORMANCE_IO_SETTLE_POLICY.maximumWaitMs,
+  );
 });
 
 test("CI runs a fixed Linux Electron runtime gate and always publishes its evidence", async () => {
