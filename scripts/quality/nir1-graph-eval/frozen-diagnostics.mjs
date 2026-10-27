@@ -737,3 +737,44 @@ export function readBoundFile({ root, record, file }) {
     bytes,
   };
 }
+
+/**
+ * S2 `r5Gate.beforeFirstGatedRun`: a Graph-arm run (Gold, a K24 negative, a
+ * trace, the V-10 probe) reads the SP-P4 receipt of ④ back and re-derives
+ * the result from its samples (each side's accepted attempt compared again;
+ * the recorded status is never trusted). The receipt is not a preview, is of
+ * the same pre-observation commit and candidate commit, and passed.
+ */
+export function readSpP4Gate({ file, head, candidateCommit }) {
+  let bytes;
+  let receipt;
+  try {
+    bytes = readFileSync(file);
+    receipt = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    fail("gate", `the SP-P4 receipt ${String(file)} cannot be read`);
+  }
+  if (receipt?.runKind !== SP_P4.runKind || receipt?.preview !== false)
+    fail(
+      "gate",
+      "the SP-P4 receipt is not ④'s record (a preview or another run)",
+    );
+  if (receipt.head?.observationPrep?.commit !== head?.observationPrep?.commit)
+    fail("gate", "the SP-P4 receipt is of another pre-observation commit");
+  if (receipt.candidate?.commit !== candidateCommit)
+    fail("gate", "the SP-P4 receipt is of another candidate commit");
+  const variants = (receipt.variants ?? []).map((row) => {
+    const accepted = (side) =>
+      (row?.sides?.[side]?.attempts ?? []).find(
+        (entry) => entry?.valid === true,
+      )?.samples ?? [];
+    const comparison = compareSpP4Variant({
+      variantKey: String(row?.variantKey),
+      without: accepted("without-seed-pin-step"),
+      with: accepted("with-seed-pin-step"),
+    });
+    return { ...row, comparison };
+  });
+  const summary = assertSpP4Passed(summarizeSpP4({ variants }));
+  return { summary, receiptSha256: sha256(bytes) };
+}

@@ -28,6 +28,7 @@ import {
 import {
   buildRunHead,
   readBoundFile,
+  readSpP4Gate,
   readTraceFileHeads,
   writeRunHead,
 } from "./frozen-diagnostics.mjs";
@@ -367,6 +368,7 @@ export async function prepareFrozenTrace({
     loadProcedure = loadProcedureFile,
     readPrevious = readPreviousAttempts,
     readDeclaration = readTraceDeclaration,
+    readSpP4 = readSpP4Gate,
     now = () => new Date(),
   } = deps;
   // The K6/4 freeze head first (cheap), before any other read.
@@ -418,6 +420,14 @@ export async function prepareFrozenTrace({
   };
   if (state.kind === "setup-failure")
     return { ...base, setupFailure: state.setupFailure };
+  // S2 r5Gate.beforeFirstGatedRun: no trace before ④'s SP-P4 passed.
+  if (!options["sp-p4-receipt"])
+    fail("sp-p4", "a frozen trace needs ④'s SP-P4 receipt (--sp-p4-receipt)");
+  const spP4 = readSpP4({
+    file: path.resolve(options["sp-p4-receipt"]),
+    head: admission.head,
+    candidateCommit: admission.candidateHead,
+  });
   const entry = traces.find((row) => row.kind === kind);
   const loaded = loadPlan({ root, file: entry.path, commit: entry.commit });
   if (loaded.sha256 !== entry.sha256 || loaded.commit !== entry.commit)
@@ -457,6 +467,7 @@ export async function prepareFrozenTrace({
     attempts,
     procedure,
     declaration,
+    spP4,
   };
 }
 

@@ -396,6 +396,7 @@ function fakeDeps(overrides = {}) {
       calls.push(["admit", input.prepCommit, input.fixtures]);
       return {
         kind: "graph-case",
+        candidateHead: C("b"),
         ratification5: { sealed: true },
         head: {
           k62: { freezeCommit: C("6"), sha256: H("6") },
@@ -431,6 +432,10 @@ function fakeDeps(overrides = {}) {
       return { values: { tShowMs: 2000 } };
     },
     readPrevious: () => [],
+    readSpP4: (input) => {
+      calls.push(["sp-p4", input.candidateCommit]);
+      return { summary: { status: "passed" }, receiptSha256: H("8") };
+    },
     readDeclaration: () => {
       calls.push(["declaration"]);
       return {
@@ -459,6 +464,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
     "k62-commit": C("6"),
     "k64-commit": C("4"),
     "procedure-version": "v1",
+    "sp-p4-receipt": "sp-p4-receipt.json",
     attempt: "1",
   };
   const { calls, deps } = fakeDeps();
@@ -477,6 +483,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
       "admit",
       "facts",
       "trace-heads",
+      "sp-p4",
       "plan",
       "declaration",
       "procedure",
@@ -494,6 +501,25 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
   assert.equal(prepared.identity.sha256, H("1"));
   assert.equal(prepared.runtime.ids.querySceneId, "q-rt");
   assert.equal(prepared.declaration.sceneId, "g02-query");
+  assert.deepEqual(calls[4], ["sp-p4", C("b")]);
+  // ④ の SP-P4 の receipt が無ければ起動しない。
+  const fifth = tempDir();
+  const noSpP4 = fakeDeps();
+  await assert.rejects(
+    prepareFrozenTrace({
+      root: fifth,
+      runDir: fifth,
+      options: {
+        ...options,
+        setup: writeReceipt(fifth, setupReceipt()),
+        "sp-p4-receipt": undefined,
+      },
+      inputs,
+      deps: noSpP4.deps,
+    }),
+    /\[precheck\].*SP-P4/u,
+  );
+  assert.ok(!noSpP4.calls.some((row) => row[0] === "plan"));
   // trace の file の bytes が S2 の sha256 と違えば [precheck]。
   const other = tempDir();
   await assert.rejects(
@@ -592,7 +618,9 @@ test("O-1 (6): G-02 base が setup-complete に届かなければ、先頭を書
   });
   assert.equal(prepared.setupFailure.b, "unmeasured");
   assert.ok(
-    !calls.some((row) => ["plan", "procedure", "declaration"].includes(row[0])),
+    !calls.some((row) =>
+      ["plan", "procedure", "declaration", "sp-p4"].includes(row[0]),
+    ),
   );
   const receipt = setupFailureReceipt({
     runId: "t",

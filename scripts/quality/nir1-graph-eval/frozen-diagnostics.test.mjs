@@ -21,6 +21,7 @@ import {
   readCommittedFile,
   readDiagnosticPlan,
   readRunHead,
+  readSpP4Gate,
   readTraceFileHeads,
   spP4AttemptOutcome,
   spP4Schedule,
@@ -657,4 +658,90 @@ test("S5-B（変異 D7）: measured の sample の無い両側は一致としな
   });
   assert.equal(result.compared, 0);
   assert.equal(result.same, false);
+});
+
+test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直し、sample から比較し直して passed のときだけ始める", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "s5b-gate-"));
+  const head = { observationPrep: { commit: C("5") } };
+  const sides = (change = () => ({})) =>
+    Object.fromEntries(
+      SP_P4.sides.map((side) => [
+        side,
+        {
+          attempts: [
+            {
+              side,
+              attempt: 1,
+              valid: true,
+              outcome: "accepted",
+              d2aMode: "restricted",
+              logicalToRuntime: { scenes },
+              samples: attemptSamples(
+                side === "with-seed-pin-step" ? change : () => ({}),
+              ),
+            },
+          ],
+        },
+      ]),
+    );
+  const receipt = (overrides = {}, change) => ({
+    runKind: "seed-pin-parity",
+    preview: false,
+    head,
+    candidate: { commit: C("b") },
+    variants: SP_P4.variants.map((variantKey) => ({
+      variantKey,
+      sides: sides(change),
+      // 記録された比較は信じない（読み直しで作り直す）。
+      comparison: { same: true },
+    })),
+    summary: { status: "passed" },
+    ...overrides,
+  });
+  const write = (value, name) => {
+    const file = path.join(dir, name);
+    writeFileSync(file, JSON.stringify(value));
+    return file;
+  };
+  const gate = readSpP4Gate({
+    file: write(receipt(), "ok.json"),
+    head,
+    candidateCommit: C("b"),
+  });
+  assert.equal(gate.summary.status, "passed");
+  for (const [name, value, commit] of [
+    ["preview", receipt({ preview: true }), C("b")],
+    [
+      "other-prep",
+      receipt({ head: { observationPrep: { commit: C("6") } } }),
+      C("b"),
+    ],
+    ["other-candidate", receipt(), C("c")],
+    ["missing", receipt({ variants: receipt().variants.slice(1) }), C("b")],
+  ])
+    assert.throws(
+      () =>
+        readSpP4Gate({
+          file: write(value, `${name}.json`),
+          head,
+          candidateCommit: commit,
+        }),
+      /\[precheck\]/u,
+      name,
+    );
+  // 記録が same でも sample が違えば SP-N7（読み直しで見つける）。
+  assert.throws(
+    () =>
+      readSpP4Gate({
+        file: write(
+          receipt({}, (at) =>
+            at.phase === "measured" ? { sparse: ["rb"] } : {},
+          ),
+          "differs.json",
+        ),
+        head,
+        candidateCommit: C("b"),
+      }),
+    /SP-N7/u,
+  );
 });

@@ -12,6 +12,7 @@
 //     [--product-receipt <standard-build.json>] [--attempt 1]
 //   frozen: --setup <G-02 base complete setup receipt> --prep-commit <S4> \
 //     --k64-commit <K6/4 freeze> --product-receipt <standard-build.json> \
+//     --sp-p4-receipt <④'s sp-p4-receipt.json> \
 //     [--attempt 2 --previous-attempts <attempt-1 receipt.json>]
 //
 // One measurement session per trace: the product editor and the product hook
@@ -658,7 +659,12 @@ function frozenInputs(options, evalDir) {
 function devContext({ options, setupPath, setup }) {
   if (setup.status !== "setup-complete")
     throw new Error("[precheck] the setup receipt is not setup-complete");
-  for (const name of ["prep-commit", "k64-commit", "previous-attempts"])
+  for (const name of [
+    "prep-commit",
+    "k64-commit",
+    "previous-attempts",
+    "sp-p4-receipt",
+  ])
     if (options.given.has(name))
       throw new Error(
         `[precheck] --${name} is a frozen trace's option; this setup receipt is a dev one`,
@@ -793,6 +799,7 @@ function frozenContext({ prepared, setupRaw }) {
     ),
     ratification5: prepared.admission.ratification5,
     declarationSceneId: prepared.declaration.sceneId,
+    spP4: prepared.spP4,
     declarationAddendum: prepared.declaration.addendum,
     attempts: prepared.attempts,
     identity: prepared.identity,
@@ -1205,6 +1212,13 @@ async function main() {
       attempt: Number(options.attempt),
       // S2 stall.attemptRule: every earlier attempt of this file, disclosed.
       attempts: context.attempts,
+      // S2 r5Gate.beforeFirstGatedRun: ④'s SP-P4, read back (frozen only).
+      spP4: context.spP4
+        ? {
+            status: context.spP4.summary.status,
+            receiptSha256: context.spP4.receiptSha256,
+          }
+        : null,
       fixture: context.fixtureRecord,
       trace: context.identity,
       head,
