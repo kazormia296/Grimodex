@@ -41,6 +41,7 @@ import {
   readK64FreezeHead,
 } from "./admission.mjs";
 import { summarizeSteadyState, samplesDigest } from "./availability.mjs";
+import { checkRunnerBuildReceipts } from "./build-receipt-check.mjs";
 import { K64_W_F_MS, OWNER_REBUILD_MIN_INTERVAL_MS } from "./constants.mjs";
 import { devVariantOf, loadDevFixture } from "./dev-fixture.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
@@ -530,6 +531,13 @@ async function main() {
       options,
       nativePath,
       workerPath: path.join(evalDir, "nir1-c-query-worker"),
+    });
+    // DR-CP4-TR-5: the receipts name this candidate (before any launch).
+    report.checks.productBuild = checkRunnerBuildReceipts({
+      root: ROOT,
+      options,
+      candidate,
+      evalDir,
     });
     const coldDb = path.join(ROOT, setup.coldDatabase.path);
     if (sha256(await readFile(coldDb)) !== setup.coldDatabase.sha256)

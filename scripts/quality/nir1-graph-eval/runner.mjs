@@ -35,6 +35,7 @@ import path from "node:path";
 import process from "node:process";
 import { setTimeout as sleep } from "node:timers/promises";
 import { admitDevPreview, readK62FreezeHead } from "./admission.mjs";
+import { checkRunnerBuildReceipts } from "./build-receipt-check.mjs";
 import { devVariantOf, loadDevFixture } from "./dev-fixture.mjs";
 import { PRODUCT_MAIN, ROOT, bundleObserver } from "./launcher.mjs";
 import {
@@ -251,6 +252,14 @@ async function main() {
     nativePath,
     workerPath,
   });
+  // DR-CP4-TR-5: the standard-build and evaluation-build receipts name this
+  // candidate (checked before any launch when --product-receipt is given).
+  const productBuild = checkRunnerBuildReceipts({
+    root: ROOT,
+    options,
+    candidate,
+    evalDir,
+  });
   const server = { close: async () => {} };
   let staticServer;
   let session;
@@ -261,6 +270,7 @@ async function main() {
   let measurementWorkspace = null;
   let dataVersion = null;
   const checks = {};
+  checks.productBuild = productBuild;
   try {
     const rendererBuild = await buildHarnessRenderer({
       root: ROOT,
