@@ -1035,7 +1035,7 @@ fn x13_scope_write_racing_freshness_publication_is_requeued_then_published() -> 
         "2026-10-18T19:00:00.000Z",
     )?;
     let token_before_race = projection(&db, "a3-future")?;
-    publish_race_for_test::arm(&db, |db| {
+    let _race = publish_race_for_test::arm(&db, |db| {
         patch(
             db,
             "a3-future",

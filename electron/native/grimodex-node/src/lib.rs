@@ -1086,7 +1086,10 @@ mod narrative_freshness_restore_lock_tests {
 
     /// The foreground write that lands between the next cycle's evaluation
     /// and its publication transaction.
-    fn arm_freshness_publish_race(authority: &PinnedWorkspaceDb) {
+    fn arm_freshness_publish_race(
+        authority: &PinnedWorkspaceDb,
+    ) -> grimodex_db::narrative_extraction::incremental_freshness_publish_race_for_test::ArmedPublishRace
+    {
         grimodex_db::narrative_extraction::incremental_freshness_publish_race_for_test::arm(
             authority.db(),
             |db| {
@@ -1100,7 +1103,7 @@ mod narrative_freshness_restore_lock_tests {
                 })
                 .expect("foreground write racing the publication");
             },
-        );
+        )
     }
 
     fn race_cursor_and_attempt(
@@ -1162,7 +1165,7 @@ mod narrative_freshness_restore_lock_tests {
             state: Arc::clone(&state),
         };
 
-        arm_freshness_publish_race(&authority);
+        let _race = arm_freshness_publish_race(&authority);
         let result = backend
             .run_narrative_freshness_cycle()
             .await
@@ -1234,7 +1237,7 @@ mod narrative_freshness_restore_lock_tests {
             state: Arc::clone(&state),
         };
         for attempt in 1..=2 {
-            arm_freshness_publish_race(&authority);
+            let _race = arm_freshness_publish_race(&authority);
             let result = backend
                 .run_narrative_freshness_cycle()
                 .await
@@ -1244,7 +1247,7 @@ mod narrative_freshness_restore_lock_tests {
             assert_eq!(result["requeued"], true, "attempt {attempt}: {result}");
         }
 
-        arm_freshness_publish_race(&authority);
+        let _race = arm_freshness_publish_race(&authority);
         let result = backend
             .run_narrative_freshness_cycle()
             .await
@@ -6219,6 +6222,14 @@ fn run_narrative_freshness_cycle_body(
             // normally (no retire, no recovery) and let the scheduler resume
             // the same range at once. No liveness is minted for an
             // incomplete cycle. Every other failure keeps the recovery path.
+            //
+            // This early return skips `revalidate_narrative_workspace_after_cycle`.
+            // If a workspace switch overlaps, the result names the old
+            // authority's project/run and `hasMore` makes the scheduler run
+            // once more on the new authority 10 ms later. That is harmless
+            // (the requeue is already durable in the old authority and the
+            // extra cycle only reads the new one), but it is asymmetric with
+            // the success path, which returns `None` after a switch.
             if let Some(requeued) =
                 error.downcast_ref::<narrative_extraction::IncrementalFreshnessCycleRequeued>()
             {

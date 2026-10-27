@@ -100,6 +100,18 @@ fn publish_guard_conflict(message: String) -> anyhow::Error {
     anyhow::Error::new(PublishGuardConflict(message))
 }
 
+/// Only an unwrapped guard conflict is a publication race. `downcast_ref`
+/// follows the context chain, so look at the outermost error: a guard error
+/// that a failed cleanup wrapped (for example
+/// `NEX_DB_TRANSACTION_CLEANUP_UNPROVEN` when ROLLBACK is not proven) stays an
+/// ordinary failure for the owner's recovery path.
+fn is_publish_guard_race(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .next()
+        .is_some_and(|outermost| outermost.is::<PublishGuardConflict>())
+}
+
 /// The cycle lost a publication race to a foreground writer and its Attempt
 /// was durably requeued as retryable in the same authority (Attempt failed
 /// with `NEX_INCREMENTAL_FRESHNESS_RETRYABLE`, Task queued, cursor reservation
@@ -169,17 +181,37 @@ pub mod publish_race_for_test {
         db as *const Database as usize
     }
 
-    /// Run `hook` once, on the next cycle of `db`, after its evaluation and
-    /// before its publication transaction. The hook may use `db`.
-    pub fn arm(db: &Database, hook: impl FnOnce(&Database) + Send + 'static) {
+    fn hooks() -> std::sync::MutexGuard<'static, BTreeMap<usize, Hook>> {
         HOOKS
             .lock()
-            .expect("publish race hooks")
-            .insert(key(db), Box::new(hook));
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Keeps the hook armed; dropping it (also on a test panic) removes a
+    /// hook that has not fired, so a later `Database` at the same address
+    /// can never run it.
+    #[must_use = "the hook is removed when this guard drops"]
+    pub struct ArmedPublishRace {
+        key: usize,
+    }
+
+    impl Drop for ArmedPublishRace {
+        fn drop(&mut self) {
+            hooks().remove(&self.key);
+        }
+    }
+
+    /// Run `hook` once, on the next cycle of `db`, after its evaluation and
+    /// before its publication transaction, while the returned guard lives.
+    /// The hook may use `db`.
+    pub fn arm(db: &Database, hook: impl FnOnce(&Database) + Send + 'static) -> ArmedPublishRace {
+        let key = key(db);
+        hooks().insert(key, Box::new(hook));
+        ArmedPublishRace { key }
     }
 
     pub(super) fn fire(db: &Database) {
-        let hook = HOOKS.lock().expect("publish race hooks").remove(&key(db));
+        let hook = hooks().remove(&key(db));
         if let Some(hook) = hook {
             hook(db);
         }
@@ -628,9 +660,7 @@ fn run_serialized_cycle_with_control(
             // after the retryable requeue committed; every other failure,
             // retry exhaustion and an unapplied requeue keep the original
             // error for the owner's recovery path.
-            if requeue == RequeueOutcome::Retryable
-                && error.downcast_ref::<PublishGuardConflict>().is_some()
-            {
+            if requeue == RequeueOutcome::Retryable && is_publish_guard_race(&error) {
                 return Err(anyhow::Error::new(IncrementalFreshnessCycleRequeued {
                     project_id: batch.project_id.clone(),
                     run_id: batch.run_id.clone(),
@@ -6663,7 +6693,7 @@ mod tests {
 
     /// Make the foreground write that races the next cycle of `db`: bump the
     /// Scene's version after the evaluation read it, before publication.
-    fn arm_scene_publish_race(db: &Database) {
+    fn arm_scene_publish_race(db: &Database) -> publish_race_for_test::ArmedPublishRace {
         publish_race_for_test::arm(db, |db| {
             db.with_conn(|conn| {
                 conn.execute(
@@ -6674,7 +6704,7 @@ mod tests {
                 Ok(())
             })
             .expect("foreground write between evaluation and publication");
-        });
+        })
     }
 
     fn latest_attempt(db: &Database) -> (String, Option<String>, Option<String>) {
@@ -6706,7 +6736,7 @@ mod tests {
     #[test]
     fn publish_race_is_a_typed_durable_requeue_and_the_next_cycle_publishes() {
         let db = fixture_db();
-        arm_scene_publish_race(&db);
+        let _race = arm_scene_publish_race(&db);
         let error =
             run_incremental_freshness_cycle(&db).expect_err("a raced publication never commits");
         let requeued = error
@@ -6748,7 +6778,7 @@ mod tests {
     fn publish_race_on_the_last_attempt_is_not_a_requeue() {
         let db = fixture_db();
         for attempt in 1..MAX_ATTEMPTS_PER_BATCH {
-            arm_scene_publish_race(&db);
+            let _race = arm_scene_publish_race(&db);
             let error = run_incremental_freshness_cycle(&db).expect_err("raced publication");
             assert!(
                 error
@@ -6757,7 +6787,7 @@ mod tests {
                 "attempt {attempt} is still retryable: {error:#}"
             );
         }
-        arm_scene_publish_race(&db);
+        let _race = arm_scene_publish_race(&db);
         let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
         assert!(
             error
@@ -6774,6 +6804,144 @@ mod tests {
                 Some("terminal".to_owned()),
             )
         );
+    }
+
+    /// The raced cycle is a typed, durable requeue whose message carries
+    /// `code`, and the next cycle publishes the same range.
+    fn assert_requeued_then_published(db: &Database, code: &str) {
+        let error =
+            run_incremental_freshness_cycle(db).expect_err("a raced publication never commits");
+        let requeued = error
+            .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+            .unwrap_or_else(|| panic!("{code} must be the typed requeue: {error:#}"));
+        assert!(
+            requeued.to_string().contains(code),
+            "the {code} guard caught the race: {requeued}"
+        );
+        assert_eq!(
+            latest_attempt(db),
+            (
+                "failed".to_owned(),
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRYABLE".to_owned()),
+                Some("retryable".to_owned()),
+            )
+        );
+        assert_eq!(
+            freshness_cursor(db),
+            (0, Some(requeued.run_id().to_owned()))
+        );
+        let outcome = run_incremental_freshness_cycle(db).expect("the next cycle resumes");
+        assert!(
+            matches!(
+                outcome,
+                IncrementalFreshnessCycleOutcome::Processed(ref summary)
+                    if summary.run_id == requeued.run_id()
+            ),
+            "the next cycle publishes the requeued range: {outcome:?}"
+        );
+        assert_eq!(freshness_cursor(db), (1, None));
+    }
+
+    #[test]
+    fn edge_redeclared_during_publication_is_a_typed_requeue() {
+        let db = fixture_db();
+        let _race = publish_race_for_test::arm(&db, |db| {
+            db.with_conn(|conn| {
+                let replacement_run_id = "consumer-run-c2-1-phase-cas-raced";
+                seed_completed_consumer_run(conn, replacement_run_id)?;
+                conn.execute(
+                    r#"UPDATE narrative_dependency_edges
+                        SET read_set_json = '["v99@2026-08-19T00:00:03.000Z"]',
+                            owning_run_id = ?1
+                      WHERE id = ?2 AND project_id = ?3"#,
+                    params![replacement_run_id, EDGE_ID, PROJECT_ID],
+                )?;
+                Ok(())
+            })
+            .expect("redeclare the Edge between evaluation and publication");
+        });
+        assert_requeued_then_published(&db, "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED");
+    }
+
+    #[test]
+    fn producer_epoch_changed_during_publication_is_a_typed_requeue() {
+        let db = fixture_db();
+        let _race = publish_race_for_test::arm(&db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs SET semantic_epoch_id = NULL
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![CONSUMER_RUN_ID, PROJECT_ID],
+                )?;
+                Ok(())
+            })
+            .expect("move the producer Epoch between evaluation and publication");
+        });
+        assert_requeued_then_published(&db, "NEX_SEMANTIC_EPOCH_CHANGED");
+    }
+
+    #[test]
+    fn a_guard_race_whose_attempt_another_owner_ended_is_not_a_requeue() {
+        let db = fixture_db();
+        let _race = publish_race_for_test::arm(&db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET version = version + 1
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![SCENE_ID, PROJECT_ID],
+                )?;
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts SET status = 'failed'
+                      WHERE status = 'running'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("race the guard and end the Attempt elsewhere");
+        });
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced publication");
+        assert!(format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"));
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                .is_none(),
+            "an unapplied requeue is never reported as one: {error:#}"
+        );
+    }
+
+    #[test]
+    fn only_an_unwrapped_guard_conflict_is_a_publish_race() {
+        let guard = publish_guard_conflict(
+            "NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED: 'x' changed after evaluation"
+                .to_owned(),
+        );
+        assert!(is_publish_guard_race(&guard));
+        let unproven = publish_guard_conflict(
+            "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: 'x' changed after evaluation".to_owned(),
+        )
+        .context("NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback did not restore autocommit");
+        assert!(
+            unproven.downcast_ref::<PublishGuardConflict>().is_some(),
+            "downcast_ref alone would see through the cleanup context"
+        );
+        assert!(
+            !is_publish_guard_race(&unproven),
+            "an unproven cleanup stays on the recovery path"
+        );
+        assert!(!is_publish_guard_race(&anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: untyped"
+        )));
+    }
+
+    #[test]
+    fn a_dropped_publish_race_guard_never_fires() {
+        let db = fixture_db();
+        drop(arm_scene_publish_race(&db));
+        let outcome = run_incremental_freshness_cycle(&db).expect("no race after the guard drops");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
     }
 
     #[test]
