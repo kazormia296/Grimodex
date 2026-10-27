@@ -191,6 +191,14 @@ test("admission: input の差は corpus → 表の 1 file だけ（ほかの fil
     ],
     ["the corpus kept", { setup: { inputs: { ...product.inputs } } }],
     [
+      "a product input dropped",
+      {
+        product: {
+          inputs: { ...product.inputs, "c.ts": { bytes: 3 } },
+        },
+      },
+    ],
+    [
       "another importer",
       { state: { ...state, otherImporters: ["electron/main/x.ts"] } },
     ],
