@@ -9,8 +9,8 @@
 //     --ja-model <pinned> --en-model <pinned> --k62-commit <K6/2 freeze> \
 //     [--procedure-version draft-1] [--keep-test-worktree <clean worktree>]
 //
-// 流れ: admission（凍結した fixture は `admitGraphCaseRun`。K6/4 の凍結の commit が
-// 固定されるまで [precheck] で止まる＝fail closed。dev fixture は予告の admission）
+// 流れ: admission（凍結した fixture の正式の run は `--setups` で
+// frozen-k64-run.mjs に渡す〔S5-A、DR-CP4-N-1〕。dev fixture は予告の admission）
 // → 手順のファイルの検証（`loadProcedureFile`）→ 批准 5 の証拠（git と keep test。
 // admission.mjs が封印）→ prep（dev の測定の写しの query の Scene に seed の pin、Raw と
 // Chronicle の Index）→ seed の pin の照合（R5。DB から読み、一致しなければ判定を
@@ -38,7 +38,6 @@ import {
   collectRatification5Evidence,
   collectRatification5EvidenceWithKeepTest,
   readK62FreezeHead,
-  readK64FreezeHead,
 } from "./admission.mjs";
 import { summarizeSteadyState, samplesDigest } from "./availability.mjs";
 import { checkRunnerBuildReceipts } from "./build-receipt-check.mjs";
@@ -426,6 +425,11 @@ async function evaluateOk(page, label, fn, arg) {
 }
 
 async function main() {
+  // S5-A: the formal run of the frozen G-cases (DR-CP4-N-1).
+  if (process.argv.includes("--setups")) {
+    const { runFrozenK64 } = await import("./frozen-k64-run.mjs");
+    return runFrozenK64(process.argv.slice(2));
+  }
   const options = parseArgs(process.argv.slice(2));
   const runDir = path.join(ROOT, ".artifacts/cp4", options.run);
   await mkdir(runDir, { recursive: false });
@@ -457,33 +461,12 @@ async function main() {
     return evidence;
   };
   try {
-    // 1. admission. A frozen fixture is a formal run: admitGraphCaseRun stops
-    // it unless the K6/4 head is the pinned freeze (fail closed).
-    if (options.fixture) {
-      // The K6/4 freeze head first (cheap), so a missing or different K6/4
-      // commit stops the run before the keep test (minutes) runs.
-      readK64FreezeHead({ root: ROOT, commit: options["k64-commit"] });
-      admitK64Run({
-        root: ROOT,
-        fixture: { kind: "frozen", path: options.fixture },
-        prepCommit: options["prep-commit"],
-        k62Commit: options["k62-commit"],
-        k64Commit: options["k64-commit"],
-        ...(options["keep-test-worktree"]
-          ? {
-              ratification5: await collectRatification5EvidenceWithKeepTest({
-                root: ROOT,
-                candidateHead: "HEAD",
-                keepTestWorktree: path.resolve(options["keep-test-worktree"]),
-                keepTestLogDir: runDir,
-              }),
-            }
-          : {}),
-      });
+    // 1. admission. A frozen fixture is a formal run: S5-A wires it in
+    // frozen-k64-run.mjs (`--setups`, DR-CP4-N-1); `--fixture` names no setups.
+    if (options.fixture)
       throw new Error(
-        "[precheck] S1f: the frozen-fixture steps (the frozen setup, the K2/4 declaration step, the seed pins read from the frozen setup) are wired after the K6/4 freeze (S2/S5); this skeleton measures the dev preview only",
+        "[precheck] a frozen G-case run takes its 13 complete setups (--setups) and runs through frozen-k64-run.mjs (DR-CP4-N-1); --fixture alone measures nothing",
       );
-    }
     const setupPath = path.resolve(options.setup);
     const setupBytes = await readFile(setupPath);
     const setup = JSON.parse(setupBytes);
