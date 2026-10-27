@@ -9,9 +9,11 @@ import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -292,13 +294,17 @@ function context({ key, spec, metadata, world, pins, setupB = 7 }) {
     queryBody: "q",
     revisionIds: [],
     expectedContribution: null,
-    materialContribution: (paths) => ({
-      basis: "material-revision",
-      contribution: paths?.graphOnly?.sceneId === "rt-added",
-      matched: [],
-      unresolvedEdges: 0,
-      observed: [],
-    }),
+    seenPaths: [],
+    materialContribution: (paths) => {
+      ctx.seenPaths.push(paths);
+      return {
+        basis: "material-revision",
+        contribution: paths?.graphOnly?.sceneId === "rt-added",
+        matched: [],
+        unresolvedEdges: 0,
+        observed: [],
+      };
+    },
     variantDir: path.join(dir, "variant"),
     clock: {
       now: () => fakeNow,
@@ -346,6 +352,13 @@ test("D1 (ii)／DR-CP4-N-1: 宣言の run は workspace を開いた後・seed �
     const graph = result.samples.find((row) => row.arm === "graph");
     assert.equal(graph.followUp.child.contributionBasis, "material-revision");
     assert.equal(JSON.stringify(result).includes("plain quote"), false);
+    // The resolver sees the child's paths with the quotes already hashed.
+    assert.ok(ctx.seenPaths.length > 0);
+    for (const paths of ctx.seenPaths) {
+      const evidence = paths.graphOnly.edges[0].evidence[0];
+      assert.equal(evidence.quote, undefined);
+      assert.equal(evidence.quoteSha256, sha256(Buffer.from("plain quote")));
+    }
     // The probe at every query, before the measurement too.
     assert.equal(result.probes.length, 71);
   } finally {
@@ -402,6 +415,11 @@ test("S2 P-4 (b) C5: one-shot は 70 の process をそれぞれ cold DB の新�
       assert.equal(events.at(-1), "stop");
     }
     assert.equal(new Set(result.processes.map((row) => row.process)).size, 70);
+    // A fresh byte copy of the cold DB per process (C1), at its own path.
+    const copies = readdirSync(ctx.variantDir).filter((name) =>
+      existsSync(path.join(ctx.variantDir, name, "workspace", "grimodex.db")),
+    );
+    assert.equal(copies.length, 70);
     assert.equal(
       result.samples.filter((row) => row.phase === "measured").length,
       60,

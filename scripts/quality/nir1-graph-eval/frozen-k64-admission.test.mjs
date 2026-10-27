@@ -229,6 +229,18 @@ test("DR-CP4-N-1 (1): 候補が clean でない・HEAD が候補でない・K6/4
         }),
       /not pinned/u,
     );
+    // K6/4 before S2: an S4 commit without the S2 files still stops at K6/4.
+    assert.throws(
+      () =>
+        admitFormalK64Run(
+          input(fixture, { prepCommit: fixture.freezeCommit }),
+          {
+            ...deps,
+            freeze: { ...fixture.freeze, freezeCommit: null },
+          },
+        ),
+      /not pinned/u,
+    );
     assert.throws(
       () =>
         admitFormalK64Run(input(fixture, { k64Commit: fixture.prep }), deps),
