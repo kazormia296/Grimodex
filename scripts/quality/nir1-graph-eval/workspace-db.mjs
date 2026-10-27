@@ -161,6 +161,119 @@ export function readWorkspaceRows(file, projectId) {
   }));
 }
 
+function tableExists(db, name) {
+  return (
+    db
+      .prepare(
+        "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = ?",
+      )
+      .get(name) !== undefined
+  );
+}
+
+/**
+ * S1i: the frozen setup's read-back of its cold DB (project-scoped rows the
+ * logical → runtime check compares with the plan; ids, names and Scope only,
+ * no body text). It reads no Index metadata (① forbids recording the Index
+ * state), and the runtime policy row only to confirm maintenance stayed off.
+ */
+export function readFrozenSetupRows(file, projectId) {
+  return withReadOnly(file, (db) => {
+    const all = (sql, ...params) => db.prepare(sql).all(...params);
+    const json = (text) => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+    const registry = db
+      .prepare(
+        `SELECT timeline_refs_json AS timelineRefs, worldline_refs_json AS worldlineRefs,
+                narrative_layer_refs_json AS narrativeLayerRefs
+           FROM narrative_scope_registries WHERE project_id = ?`,
+      )
+      .get(projectId);
+    const policy = tableExists(db, "narrative_runtime_policy")
+      ? all(
+          "SELECT maintenance_enabled AS maintenanceEnabled FROM narrative_runtime_policy",
+        )
+      : [];
+    return {
+      projects: all("SELECT id FROM projects WHERE id = ?", projectId).map(
+        (row) => String(row.id),
+      ),
+      scenes: all(
+        `SELECT id, title, sort_order AS sortOrder, node_type AS nodeType,
+                parent_id AS parentId, archived_at AS archivedAt,
+                story_time_order AS storyTimeOrder, pov_character_id AS povCharacterId
+           FROM tree_nodes WHERE project_id = ? ORDER BY sort_order, id`,
+        projectId,
+      ).map((row) => ({ ...row })),
+      codexEntries: all(
+        "SELECT id, type, name, summary FROM codex_entries WHERE project_id = ? ORDER BY id",
+        projectId,
+      ).map((row) => ({ ...row })),
+      codexRelations: all(
+        `SELECT id, from_codex_id AS fromCodexId, to_codex_id AS toCodexId,
+                relation_type AS relationType, label, directionality
+           FROM codex_relations WHERE project_id = ? ORDER BY id`,
+        projectId,
+      ).map((row) => ({ ...row })),
+      foreshadows: all(
+        `SELECT id, title, secret, payoff_scene_id AS payoffSceneId,
+                payoff_confirmed AS payoffConfirmed, abandoned
+           FROM foreshadows WHERE project_id = ? ORDER BY id`,
+        projectId,
+      ).map((row) => ({
+        id: String(row.id),
+        title: row.title,
+        secret: Number(row.secret) === 1,
+        payoffSceneId: row.payoffSceneId ?? null,
+        payoffConfirmed: Number(row.payoffConfirmed) === 1,
+        abandoned: Number(row.abandoned) === 1,
+      })),
+      foreshadowLinks: all(
+        `SELECT l.foreshadow_id AS foreshadowId, l.codex_entry_id AS entryId
+           FROM foreshadow_codex_links l JOIN foreshadows f ON f.id = l.foreshadow_id
+          WHERE f.project_id = ? ORDER BY l.foreshadow_id, l.codex_entry_id`,
+        projectId,
+      ).map((row) => ({ ...row })),
+      pins: all(
+        `SELECT p.scene_id AS sceneId, p.entry_id AS entryId
+           FROM scene_codex_pins p JOIN tree_nodes t ON t.id = p.scene_id
+          WHERE t.project_id = ? ORDER BY p.scene_id, p.entry_id`,
+        projectId,
+      ).map((row) => ({ ...row })),
+      registry: registry
+        ? {
+            timelineRefs: json(registry.timelineRefs),
+            worldlineRefs: json(registry.worldlineRefs),
+            narrativeLayerRefs: json(registry.narrativeLayerRefs),
+          }
+        : null,
+      bindings: all(
+        `SELECT scene_id AS sceneId, compatibility_marker AS marker,
+                query_identity_json AS queryIdentity, material_constraint_json AS materialConstraint,
+                knowledge_holder_json AS knowledgeHolder, audience_json AS audience
+           FROM narrative_scene_scope_bindings WHERE project_id = ? ORDER BY scene_id`,
+        projectId,
+      ).map((row) => ({
+        sceneId: String(row.sceneId),
+        marker: row.marker,
+        queryIdentity: json(row.queryIdentity),
+        materialConstraint: json(row.materialConstraint),
+        knowledgeHolder: json(row.knowledgeHolder),
+        audience: json(row.audience),
+      })),
+      // The product default (no row) is maintenance off.
+      maintenanceEnabled: policy.some(
+        (row) => Number(row.maintenanceEnabled) === 1,
+      ),
+    };
+  });
+}
+
 /** Reads readQuerySceneSeedPins returned (SP/1 SP-N13: never self-reported). */
 const PRODUCT_DB_PIN_READS = new WeakSet();
 

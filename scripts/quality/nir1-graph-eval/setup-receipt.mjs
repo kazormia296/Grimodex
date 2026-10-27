@@ -14,8 +14,26 @@ import process from "node:process";
 
 /** The setup driver's receipt (setup-driver.mjs writes it). */
 export const DEV_SETUP_RECEIPT_SCHEMA = "nir1-cp4-dev-setup/1";
-export const SETUP_RECEIPT_SCHEMAS = Object.freeze([DEV_SETUP_RECEIPT_SCHEMA]);
-const FIXTURE_KINDS = new Set(["dev", "frozen"]);
+/** S1i: the frozen G-case setup's receipt (frozen-setup-driver.mjs). */
+export const FROZEN_SETUP_RECEIPT_SCHEMA = "nir1-cp4-frozen-setup/1";
+export const SETUP_RECEIPT_SCHEMAS = Object.freeze([
+  DEV_SETUP_RECEIPT_SCHEMA,
+  FROZEN_SETUP_RECEIPT_SCHEMA,
+]);
+/** The fixture kind each schema carries (a frozen setup never uses dev's). */
+const KIND_OF_SCHEMA = Object.freeze({
+  [DEV_SETUP_RECEIPT_SCHEMA]: "dev",
+  [FROZEN_SETUP_RECEIPT_SCHEMA]: "frozen",
+});
+/**
+ * S1i: where a setup stopped and the status a finished setup records. `seed-pin`
+ * is ① the R5 check run (the setup through the SP/1 seed pin step and its
+ * SP-P2 record; the workspace is discarded); `complete` is the whole setup.
+ */
+export const SETUP_STATUS_BY_STOP = Object.freeze({
+  complete: "setup-complete",
+  "seed-pin": "setup-through-seed-pin",
+});
 const SHA256 = /^[0-9a-f]{64}$/u;
 const LOADED = new WeakSet();
 
@@ -65,10 +83,31 @@ export function loadSetupReceipt({ root = process.cwd(), file }) {
   const map = value?.logicalToRuntime;
   const cold = value?.coldDatabase;
   const problems = [];
-  if (!SETUP_RECEIPT_SCHEMAS.includes(value?.schemaVersion))
-    problems.push("schemaVersion");
-  if (value?.status !== "setup-complete") problems.push("status");
-  if (!FIXTURE_KINDS.has(value?.fixture?.kind)) problems.push("fixture.kind");
+  const kind = KIND_OF_SCHEMA[value?.schemaVersion];
+  if (kind === undefined) problems.push("schemaVersion");
+  else if (value?.fixture?.kind !== kind) problems.push("fixture.kind");
+  // A dev setup always runs to the end; a frozen one names where it stopped.
+  const stopsAt = kind === "frozen" ? value?.stopsAt : "complete";
+  if (!Object.hasOwn(SETUP_STATUS_BY_STOP, stopsAt ?? ""))
+    problems.push("stopsAt");
+  else if (value?.status !== SETUP_STATUS_BY_STOP[stopsAt])
+    problems.push("status");
+  if (
+    kind === "frozen" &&
+    !["caseId", "variantId"].every(
+      (field) =>
+        typeof value?.fixture?.[field] === "string" &&
+        value.fixture[field].length > 0,
+    )
+  )
+    problems.push("fixture.caseId/variantId");
+  // S1j P2-4: a ① setup names the R5 check run it belongs to; a complete
+  // setup (④⑤) never carries one.
+  const r5CheckRunId = value?.r5CheckRun?.id;
+  if (kind === "frozen" && stopsAt === "seed-pin") {
+    if (typeof r5CheckRunId !== "string" || r5CheckRunId.length === 0)
+      problems.push("r5CheckRun.id");
+  } else if (value?.r5CheckRun !== undefined) problems.push("r5CheckRun");
   if (typeof map?.projectId !== "string" || map.projectId.length === 0)
     problems.push("logicalToRuntime.projectId");
   if (!isMap(map?.scenes)) problems.push("logicalToRuntime.scenes");
@@ -83,6 +122,9 @@ export function loadSetupReceipt({ root = process.cwd(), file }) {
     path: absolute,
     sha256: createHash("sha256").update(bytes).digest("hex"),
     schemaVersion: value.schemaVersion,
+    status: value.status,
+    stopsAt,
+    r5CheckRunId: typeof r5CheckRunId === "string" ? r5CheckRunId : null,
     fixtureKind: value.fixture.kind,
     caseId: value.fixture.caseId ?? null,
     variantId: value.fixture.variantId ?? null,
@@ -97,5 +139,26 @@ export function loadSetupReceipt({ root = process.cwd(), file }) {
     },
   });
   LOADED.add(sealed);
+  return sealed;
+}
+
+/**
+ * S1i (S2 `r5CheckWorkspace`): ④ and ⑤ set up their own workspace on the S5
+ * candidate; a receipt of ① (stopped at the seed pin step) is never reused.
+ * `[precheck]` unless the receipt is a sealed, complete setup.
+ */
+export function assertCompleteSetupReceipt(sealed) {
+  if (!isLoadedSetupReceipt(sealed))
+    throw new Error(
+      "[precheck] the setup receipt is not one loadSetupReceipt read",
+    );
+  if (
+    sealed.stopsAt !== "complete" ||
+    sealed.status !== "setup-complete" ||
+    sealed.r5CheckRunId !== null
+  )
+    throw new Error(
+      `[precheck] the setup receipt ${sealed.path} stopped at ${sealed.stopsAt} (${sealed.status}); ④ and ⑤ need a complete setup, and the R5 check run's workspace is discarded`,
+    );
   return sealed;
 }

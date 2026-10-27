@@ -590,6 +590,9 @@ export function readAdmittedFixture(admission, target) {
  * on frozen fixture paths launch the product `.node` (Graph not activated),
  * never the evaluation build. Returns the dry-run admission (no Graph arm).
  */
+/** Dry-run admissions admitFrozenDryRun returned (S1j P3). */
+const FROZEN_DRY_RUNS = new WeakSet();
+
 export function admitFrozenDryRun(input) {
   rejectOverrides(input, [
     "fixtures",
@@ -621,11 +624,25 @@ export function admitFrozenDryRun(input) {
         "[precheck] a dry run on a frozen fixture path must launch the product .node, not the evaluation build (§15.8)",
       );
   }
-  return Object.freeze({
+  const admission = Object.freeze({
     dryRun: true,
     graphArm: "not-activated",
     fixtures: Object.freeze(fixtures.map((row) => Object.freeze({ ...row }))),
   });
+  FROZEN_DRY_RUNS.add(admission);
+  return admission;
+}
+
+/**
+ * S1j P3: an admission admitFrozenDryRun returned (the object itself, never
+ * a copy with the same values), for the R5 check run's entry.
+ */
+export function isFrozenDryRunAdmission(admission) {
+  return (
+    admission !== null &&
+    typeof admission === "object" &&
+    FROZEN_DRY_RUNS.has(admission)
+  );
 }
 
 /**

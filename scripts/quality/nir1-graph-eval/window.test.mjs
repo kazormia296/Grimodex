@@ -223,3 +223,46 @@ test("P2-5: k64-runner と測定の Electron（他の worktree の .artifacts �
   });
   assert.deepEqual(fields.otherMeasurements, ["measurement:electron:20"]);
 });
+
+test("S1j P2-2: ① の入口（r5-check-runner）と凍結した setup の driver、CP-4 の observer を引数に持つ Electron を別の計測として数える", () => {
+  for (const script of ["r5-check-runner", "frozen-setup-driver"])
+    assert.deepEqual(
+      classifyProcess([
+        "node",
+        `/w/other/scripts/quality/nir1-graph-eval/${script}.mjs`,
+        "--run",
+        "x",
+      ]),
+      { kind: "measurement", command: "cp4" },
+      script,
+    );
+  // binary の名前に依らず、CP-4 の run の observer を読み込む process は測定
+  // （Electron の binary は従来どおり electron の測定として数える）。
+  assert.deepEqual(
+    classifyProcess([
+      "/opt/app/chrome",
+      "/w/other/.artifacts/cp4/r5-1/observer/observer.cjs",
+    ]),
+    { kind: "measurement", command: "cp4" },
+  );
+  assert.deepEqual(
+    classifyProcess([
+      "/w/other/node_modules/electron/dist/electron",
+      "--require",
+      "/w/other/.artifacts/cp4/r5-1/observer/observer.cjs",
+    ]),
+    { kind: "measurement", command: "electron" },
+  );
+  // 測定でない node の script と、observer の無いデスクトップの Electron は数えない。
+  assert.equal(
+    classifyProcess([
+      "node",
+      "/w/other/scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs",
+    ]),
+    null,
+  );
+  assert.equal(
+    classifyProcess(["/usr/lib/electron/electron", "/usr/share/app"]),
+    null,
+  );
+});

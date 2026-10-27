@@ -18,11 +18,21 @@
 // ない）。
 
 import { GRAPH_EVAL_VARIANTS } from "./constants.mjs";
-import { isLoadedSetupReceipt } from "./setup-receipt.mjs";
+import {
+  assertCompleteSetupReceipt,
+  isLoadedSetupReceipt,
+} from "./setup-receipt.mjs";
 import { isProductDbPinRead } from "./workspace-db.mjs";
 
 const SEED_UTF16_MAX = 200;
 export const SEED_PIN_PLANS = Object.freeze(["frozen", "dev"]);
+/**
+ * S1j P2-4: the stage of a frozen-plan gate. `r5-check` is ① (setups that
+ * stopped at the seed pin step, all of one R5 check run); `evaluation` is ④
+ * and ⑤ (complete setups on the S5 candidate; ①'s receipts are refused,
+ * S2 `r5CheckWorkspace.reuseFor: []`).
+ */
+export const SEED_PIN_GATE_STAGES = Object.freeze(["r5-check", "evaluation"]);
 /** Every G-case of the frozen plan (each query Scene is checked). */
 export const FROZEN_SEED_CASE_IDS = Object.freeze([
   ...new Set(GRAPH_EVAL_VARIANTS.map((row) => row.caseId)),
@@ -187,7 +197,16 @@ function frozenSeedPlan(seedPlan) {
  * (never from the caller), and the sealed read checked against them (the
  * same Scene and project; for a frozen variant, the setup's own cold DB).
  */
-function bindRow(row, plan, planned) {
+function completeSetup(setup) {
+  try {
+    assertCompleteSetupReceipt(setup);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function bindRow(row, plan, planned, stage) {
   const key = rowKey({
     caseId: row?.caseId ?? null,
     variantId: row?.variantId ?? null,
@@ -218,11 +237,18 @@ function bindRow(row, plan, planned) {
   if (sealedSetup) {
     const kind = plan === "frozen" ? "frozen" : "dev";
     if (setup.fixtureKind !== kind) problems.push("setup-of-another-kind");
-    else if (
-      plan === "frozen" &&
-      (setup.caseId !== row.caseId || setup.variantId !== row.variantId)
-    )
-      problems.push("setup-of-another-variant");
+    else if (plan === "frozen") {
+      if (setup.caseId !== row.caseId || setup.variantId !== row.variantId)
+        problems.push("setup-of-another-variant");
+      // S1j P2-4: ① reads ①'s setups only; ④⑤ read complete setups only.
+      if (
+        stage === "r5-check" &&
+        (setup.stopsAt !== "seed-pin" || setup.r5CheckRunId === null)
+      )
+        problems.push("setup-not-of-an-r5-check-run");
+      if (stage === "evaluation" && !completeSetup(setup))
+        problems.push("setup-not-complete");
+    }
     runtimeQuery = setup.scenes[logicalQuery] ?? null;
     runtimeSeed = setup.entities[logicalSeed] ?? null;
     if (runtimeQuery === null) problems.push("query-scene-not-mapped");
@@ -271,19 +297,30 @@ function bindRow(row, plan, planned) {
  * exactly one pin on the query Scene, the product's first pin the planned
  * seed. Anything else is `[precheck]`.
  */
-export function assertSeedPinsBeforeK64({ cases, plan, seedPlan }) {
+export function assertSeedPinsBeforeK64({ cases, plan, seedPlan, stage }) {
   if (!SEED_PIN_PLANS.includes(plan))
     throw new Error(
       `[precheck] the seed pin plan is ${SEED_PIN_PLANS.join(" or ")}`,
     );
+  if (plan === "frozen" && !SEED_PIN_GATE_STAGES.includes(stage))
+    throw new Error(
+      `[precheck] R5: a frozen-plan gate names its stage (${SEED_PIN_GATE_STAGES.join(" or ")}), not ${String(stage)}`,
+    );
   const planned = plan === "frozen" ? frozenSeedPlan(seedPlan) : null;
   const input = Array.isArray(cases) ? cases : [];
-  const bound = input.map((row) => bindRow(row, plan, planned));
+  const bound = input.map((row) => bindRow(row, plan, planned, stage));
   const keys = bound.map((row) => row.key);
   const result = verifySeedPins(bound.map((row) => row.verify));
   const problems = [];
   if (new Set(keys).size !== keys.length)
     problems.push("a workspace is listed twice");
+  // ①: every setup of the gate is of one R5 check run.
+  if (plan === "frozen" && stage === "r5-check") {
+    const runs = new Set(
+      bound.map((row) => row.setup?.r5CheckRunId).filter(Boolean),
+    );
+    if (runs.size > 1) problems.push("setups-of-two-r5-check-runs");
+  }
   const seen = new Map();
   for (const row of bound) {
     const marks = [
