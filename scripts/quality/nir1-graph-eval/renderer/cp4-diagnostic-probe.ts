@@ -323,7 +323,13 @@ async function graphProbe(input: {
     readyMarkAfterMs: null,
   };
   try {
-    if (parent.graphOutcome !== "graph-ready") {
+    // Review P2-a: only a neutral parent (not graph-ready, not
+    // graph-unavailable) is followed up; a decided parent decides.
+    const parentDecided =
+      parent.graphOutcome === "graph-ready" ||
+      (typeof parent.graphOutcome === "string" &&
+        parent.graphOutcome.startsWith("graph-unavailable"));
+    if (!parentDecided) {
       const deadline = performance.now() + input.readyWaitMs;
       const mark = () =>
         graphReadyMarks

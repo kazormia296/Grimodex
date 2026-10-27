@@ -513,7 +513,12 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
   assert.equal(prepared.runtime.ids.querySceneId, "q-rt");
   assert.equal(prepared.declaration.sceneId, "g02-query");
   assert.deepEqual(calls[6], ["sp-p4", C("b")]);
-  assert.deepEqual(calls[5], ["claim", "trace", "editing:undefined"]);
+  // レビュー P2-c: 台帳の key は run 名でなく trace の file と候補の identity。
+  assert.deepEqual(calls[5], [
+    "claim",
+    "trace",
+    `trace:evals/nir1-graph/trace-editing.v1.json:${C("a")}:${H("1")}:${C("b")}`,
+  ]);
   // ④ の SP-P4 の receipt が無ければ起動しない。
   const fifth = tempDir();
   const noSpP4 = fakeDeps();

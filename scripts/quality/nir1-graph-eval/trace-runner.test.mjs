@@ -21,6 +21,8 @@ import {
   confirmTraceDeclaration,
   counterPoller,
   recordTraceSetupFailure,
+  startFrozenTrace,
+  frozenContext,
   checkTraceAttempt,
   runTraceDeclaration,
   runTraceOperations,
@@ -697,5 +699,46 @@ test("レビュー P3: G-02 base が setup-complete に届かなければ trace 
       candidate: {},
     }),
     null,
+  );
+});
+
+test("レビュー P3: 凍結の trace の開始は setupFailure なら記録して context を作らず、context の組立ても setupFailure を拒む", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "s5b-tr-start-"));
+  const head = { kind: "trace", runStartedAtUtc: "2026-10-28T00:00:00.000Z" };
+  const { sha256: headSha256 } = await writeRunHead({ runDir: dir, head });
+  let built = 0;
+  const failed = await startFrozenTrace({
+    runDir: dir,
+    runId: "t",
+    prepared: {
+      kind: "editing",
+      head,
+      headSha256,
+      setupFailure: { b: "unmeasured", cp4Availability: "HOLD", blocked: {} },
+    },
+    candidate: {},
+    makeContext: () => {
+      built += 1;
+      return {};
+    },
+  });
+  assert.equal(failed.context, null);
+  assert.equal(failed.receipt.status, "unmeasured");
+  assert.equal(built, 0);
+  const ok = await startFrozenTrace({
+    runDir: dir,
+    runId: "t",
+    prepared: { setupFailure: null },
+    candidate: {},
+    makeContext: () => ({ ready: true }),
+  });
+  assert.deepEqual(ok, { receipt: null, context: { ready: true } });
+  assert.throws(
+    () =>
+      frozenContext({
+        prepared: { setupFailure: { b: "unmeasured" } },
+        setupRaw: {},
+      }),
+    /\[precheck\].*does not launch/u,
   );
 });

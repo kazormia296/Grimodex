@@ -32,6 +32,7 @@ import {
   readBoundFile,
   readSpP4Gate,
   readTraceFileHeads,
+  traceAttemptKey,
   writeRunHead,
 } from "./frozen-diagnostics.mjs";
 import { loadProcedureFile } from "./procedure-file.mjs";
@@ -433,8 +434,15 @@ export async function prepareFrozenTrace({
     },
     { now },
   );
-  // Review P3 (e): one ledger claim per frozen trace attempt.
-  claimAttempt({ kind: "trace", key: `${kind}:${options.run}` });
+  // Review P3 (e) / P2-c: one ledger claim per frozen trace attempt, keyed
+  // by the trace file's identity and the candidate (never the run name).
+  claimAttempt({
+    kind: "trace",
+    key: traceAttemptKey({
+      trace: traces.find((row) => row.kind === kind),
+      candidateCommit: admission.candidateHead,
+    }),
+  });
   const written = await writeRunHead({ runDir, head });
   const base = {
     admission,

@@ -42,6 +42,7 @@ import {
   SP_P4_COMPARISON_RULE,
   assertSpP4WorkspaceStable,
   claimFrozenAttempt,
+  spP4AttemptKey,
   assessSpP4Attempt,
   buildRunHead,
   compareSpP4Variant,
@@ -316,7 +317,13 @@ async function main() {
         k64Commit: options["k64-commit"],
       });
       // Review P3 (e): one ledger claim per frozen attempt (A's ledger).
-      claimFrozenAttempt({ kind: "sp-p4", key: options.run });
+      claimFrozenAttempt({
+        kind: "sp-p4",
+        key: spP4AttemptKey({
+          prepCommit: admission.head.observationPrep.commit,
+          candidateCommit: admission.candidateHead,
+        }),
+      });
       head = buildRunHead({
         kind: "sp-p4",
         k62: admission.head.k62,

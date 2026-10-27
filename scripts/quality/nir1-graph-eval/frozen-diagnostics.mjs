@@ -577,7 +577,10 @@ export function summarizeSpP4({ variants }) {
       else if (!accepted[0].logicalToRuntime?.scenes)
         problems.push(`${key}:${side}: logical → runtime`);
     }
-    if (row.comparison?.same === false) differing = true;
+    // Review P2-b: an undefined comparison (no IR-complete pair) is a
+    // [precheck], never SP-N7.
+    if (row.comparison?.undefinedReason) precheck = true;
+    else if (row.comparison?.same === false) differing = true;
     else if (row.comparison?.same !== true)
       problems.push(`${key}: not compared`);
   }
@@ -1046,6 +1049,31 @@ export const ATTEMPT_LEDGER = Object.freeze({
   dir: ".artifacts/cp4/attempts",
   source: "PR #754 frozen-k64-admission.mjs / frozen-k64-run.mjs",
 });
+/**
+ * Review P2-c: the ledger key is the attempt's identity, not a run name —
+ * SP-P4: the pre-observation commit and the candidate commit; a trace: the
+ * trace file's path, commit and SHA-256 and the candidate commit. A new run
+ * name never restarts attempt 1 of the same identity.
+ */
+export function spP4AttemptKey({ prepCommit, candidateCommit }) {
+  if (!COMMIT.test(prepCommit ?? "") || !COMMIT.test(candidateCommit ?? ""))
+    fail("ledger", "the SP-P4 attempt key needs both commits");
+  return `sp-p4:${prepCommit}:${candidateCommit}`;
+}
+export function traceAttemptKey({ trace, candidateCommit }) {
+  if (
+    typeof trace?.path !== "string" ||
+    !COMMIT.test(trace?.commit ?? "") ||
+    !SHA256.test(trace?.sha256 ?? "") ||
+    !COMMIT.test(candidateCommit ?? "")
+  )
+    fail(
+      "ledger",
+      "the trace attempt key needs the trace file and the candidate",
+    );
+  return `trace:${trace.path}:${trace.commit}:${trace.sha256}:${candidateCommit}`;
+}
+
 export function claimFrozenAttempt({ kind, key, ledger = null }) {
   if (typeof ledger !== "function")
     fail(

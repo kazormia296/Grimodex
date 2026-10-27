@@ -201,7 +201,9 @@ export const G01_CONTROL_LIMIT =
 
 /** The answer a sample is judged on: the follow-up's when there is one. */
 export const effectiveAnswerOf = (probe) =>
-  probe?.child ?? probe?.parent ?? null;
+  answerKindOf(probe?.parent) !== "neutral"
+    ? probe.parent
+    : (probe?.child ?? probe?.parent ?? null);
 
 /**
  * DR-CP4-O-14: the kind of one Graph answer — `ready` (graph-ready) and
@@ -269,10 +271,18 @@ export async function askUntilDecided({
       error: probe?.error ?? null,
     });
     if (kind !== "neutral")
-      return { decided: true, probe, answer, kind, tries };
+      return { decided: true, probe, answer, kind, tries, limit, gapMs };
     if (at + 1 < limit) await sleep(gapMs);
   }
-  return { decided: false, probe: null, answer: null, kind: "neutral", tries };
+  return {
+    decided: false,
+    probe: null,
+    answer: null,
+    kind: "neutral",
+    tries,
+    limit,
+    gapMs,
+  };
 }
 
 /**
@@ -337,6 +347,7 @@ export async function runG01NegativeControl({
     decidedAt: asked.decided ? asked.tries.length - 1 : null,
     answer: asked.answer,
     tries: asked.tries,
+    retry: { limit: asked.limit, gapMs: asked.gapMs },
     graphInputs: graphInputsDigest(readGraphInputs()),
     bIndex: readIndex ? (readIndex()?.b ?? null) : null,
     limit: G01_CONTROL_LIMIT,
@@ -547,15 +558,19 @@ export function g01FrameReached({ row, ids, target, control, inputsDigest }) {
     return null;
   const seed = row.followUp?.parent?.seed ?? row.seed ?? null;
   if (seed !== ids.entities?.[target.seedEntityId]) return false;
-  const outcomes = [row.graph?.outcome, row.followUp?.child?.outcome].map(
-    graphOutcomeOf,
-  );
-  if (outcomes.includes("graph-ready")) {
+  // Review P2-a: the first decided answer — the parent's when it is decided,
+  // else the follow-up child's; never the best of the two.
+  const parentOutcome = graphOutcomeOf(row.graph?.outcome);
+  const decided =
+    parentOutcome === "graph-ready" || parentOutcome === "graph-unavailable"
+      ? parentOutcome
+      : graphOutcomeOf(row.followUp?.child?.outcome);
+  if (decided === "graph-ready") {
     if (row.a3AtStart?.eligible === true) return true;
     if (row.a3AtStart?.eligible === false) return false;
     return null;
   }
-  if (outcomes.includes("graph-unavailable")) return false;
+  if (decided === "graph-unavailable") return false;
   return null;
 }
 
@@ -570,6 +585,7 @@ export function g01NegativeSampleOf({
   target = null,
   control = null,
   inputsDigest = null,
+  retry = null,
 }) {
   const inverse = new Map(
     Object.entries(ids.scenes ?? {}).map(([logical, runtime]) => [
@@ -594,5 +610,27 @@ export function g01NegativeSampleOf({
     returnedSceneIds: (row.finalSceneIds ?? []).map(
       (sceneId) => inverse.get(sceneId) ?? `unmapped:${sceneId}`,
     ),
+    ...(retry ? { retry } : {}),
   };
+}
+
+/**
+ * Review P3: the re-ask limits and gap actually used (recorded with the
+ * control and each sample) are the fixed constants; otherwise `[precheck]`.
+ */
+export function assertG01RetryFixed({ control, samples = [] }) {
+  const want = {
+    control: { limit: G01_CONTROL_ATTEMPTS, gapMs: G01_CONTROL_GAP_MS },
+    sample: { limit: G01_SAMPLE_ATTEMPTS, gapMs: G01_CONTROL_GAP_MS },
+  };
+  const same = (value, expected) =>
+    value?.limit === expected.limit && value?.gapMs === expected.gapMs;
+  if (!same(control?.retry, want.control))
+    fail("the control's re-ask limit or gap is not the fixed constant");
+  for (const row of samples)
+    if (!same(row?.retry, want.sample))
+      fail(
+        `sample ${String(row?.repeat)}: the re-ask limit or gap is not the fixed constant`,
+      );
+  return want;
 }

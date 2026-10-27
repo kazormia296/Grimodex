@@ -24,6 +24,9 @@ import {
   readRunHead,
   readSpP4Gate,
   readTraceFileHeads,
+  spP4AttemptKey,
+  traceAttemptKey,
+  claimFrozenAttempt,
   explainSpP4Instability,
   spP4IrDisclosure,
   spP4AttemptOutcome,
@@ -1076,4 +1079,58 @@ test("レビュー P3 (d): K24-G01-N2〜N4 の対象は凍結した G-01 の byt
   assert.throws(() => g01NegativeTargets({ root }), /not the frozen bytes/u);
   writeFileSync(path.join(root, "evals/nir1-g01/fixture.v1.json"), original);
   assert.equal(g01NegativeTargets({ root }).entityId, "g01-mira-entity");
+});
+
+test("レビュー P2-b: ir-complete-pairs で IR 完了の組が無ければ要約は SP-N7 でなく [precheck]", () => {
+  const all = SP_P4.variants.map((key) => variantRecord(key));
+  all[2] = variantRecord(all[2].variantKey, {
+    same: false,
+    compared: 30,
+    irCompletePairs: 0,
+    undefinedReason: "no-ir-complete-pair",
+    differences: [],
+  });
+  const summary = summarizeSpP4({ variants: all });
+  assert.equal(summary.status, "precheck");
+  assert.throws(() => assertSpP4Passed(summary), /\[precheck\] S5-B gate/u);
+});
+
+test("レビュー P2-c: 台帳の key は試行の identity（観測前の commit、trace の file、候補）から導く", () => {
+  assert.equal(
+    spP4AttemptKey({ prepCommit: C("5"), candidateCommit: C("b") }),
+    `sp-p4:${C("5")}:${C("b")}`,
+  );
+  const trace = {
+    path: "evals/nir1-graph/trace-browsing.v1.json",
+    commit: C("a"),
+    sha256: H("2"),
+  };
+  assert.equal(
+    traceAttemptKey({ trace, candidateCommit: C("b") }),
+    `trace:${trace.path}:${C("a")}:${H("2")}:${C("b")}`,
+  );
+  assert.notEqual(
+    traceAttemptKey({ trace, candidateCommit: C("c") }),
+    traceAttemptKey({ trace, candidateCommit: C("b") }),
+  );
+  assert.throws(
+    () => spP4AttemptKey({ prepCommit: "run-1", candidateCommit: C("b") }),
+    /\[precheck\]/u,
+  );
+  assert.throws(
+    () =>
+      traceAttemptKey({
+        trace: { ...trace, sha256: "x" },
+        candidateCommit: C("b"),
+      }),
+    /\[precheck\]/u,
+  );
+  assert.throws(
+    () => claimFrozenAttempt({ kind: "sp-p4", key: "k" }),
+    /\[precheck\].*ledger/u,
+  );
+  assert.deepEqual(
+    claimFrozenAttempt({ kind: "sp-p4", key: "k", ledger: (input) => input }),
+    { kind: "sp-p4", key: "k" },
+  );
 });

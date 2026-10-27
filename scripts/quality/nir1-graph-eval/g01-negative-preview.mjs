@@ -24,6 +24,7 @@ import {
   G01_GRAPH_READY_WAIT_MS,
   G01_SAMPLE_ATTEMPTS,
   askUntilDecided,
+  assertG01RetryFixed,
   effectiveAnswerOf,
   g01NegativeLaunchEnv,
   g01NegativeSampleOf,
@@ -361,6 +362,7 @@ async function main() {
             target,
             control,
             inputsDigest: step.graphInputs,
+            retry: { limit: asked.limit, gapMs: asked.gapMs },
           }),
         );
         const outcome = effectiveAnswerOf(probe).graphOutcome;
@@ -374,6 +376,7 @@ async function main() {
       }
     }
     report.samples = samples;
+    if (control) assertG01RetryFixed({ control, samples });
     report.assessment = assessG01Negative({
       id,
       blocked: step.blocked,

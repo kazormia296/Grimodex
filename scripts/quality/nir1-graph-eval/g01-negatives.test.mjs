@@ -9,6 +9,7 @@ import {
   G01_SAMPLE_ATTEMPTS,
   answerKindOf,
   askUntilDecided,
+  assertG01RetryFixed,
   G01_CONTROL_GAP_MS,
   G01_GRAPH_READY_WAIT_MS,
   effectiveAnswerOf,
@@ -905,4 +906,100 @@ test("O-14: 中立の答え（late）だけを聞き直し、最初に決まっ�
     [control.status, control.decided, control.tries.length],
     ["not-reached", true, 1],
   );
+});
+
+test("レビュー P2-a: 親が決まった答えなら子を見ずに親で読む（親 unavailable → 子 ready は届かない、親 late → 子 ready は届いた）", () => {
+  const control = { status: "reached", graphInputs: "d1" };
+  const row = (parent, child) => ({
+    phase: "measured",
+    repeat: 0,
+    arm: "graph",
+    seed: "e-orin",
+    graph: { outcome: parent },
+    followUp: {
+      parent: { seed: "e-orin" },
+      child: child ? { outcome: child } : null,
+    },
+    a3AtStart: { eligible: true },
+  });
+  const reached = (value) =>
+    g01FrameReached({
+      row: value,
+      ids: IDS,
+      target: T2,
+      control,
+      inputsDigest: "d1",
+    });
+  assert.equal(reached(row("graph-unavailable", "graph-ready")), false);
+  assert.equal(reached(row("graph-ready", "graph-unavailable")), true);
+  assert.equal(reached(row("graph-late", "graph-ready")), true);
+  assert.equal(reached(row("graph-late", "graph-late")), null);
+  assert.equal(reached(row("graph-late", null)), null);
+  assert.equal(
+    effectiveAnswerOf({
+      parent: { graphOutcome: "graph-unavailable:failed" },
+      child: { graphOutcome: "graph-ready" },
+    }).graphOutcome,
+    "graph-unavailable:failed",
+  );
+  assert.equal(
+    effectiveAnswerOf({
+      parent: { graphOutcome: "graph-late" },
+      child: { graphOutcome: "graph-ready" },
+    }).graphOutcome,
+    "graph-ready",
+  );
+});
+
+test("レビュー P3: 対照と sample の聞き直しの上限と間隔は記録し、定数と違えば止める", async () => {
+  const { page } = fakePage({
+    graphProbe: () => ({
+      ok: true,
+      value: { parent: reachedAnswer(), child: null },
+    }),
+  });
+  const control = await runG01NegativeControl({
+    page,
+    ids: IDS,
+    target: T2,
+    readGraphInputs: () => ({}),
+    sleep: async () => {},
+  });
+  assert.deepEqual(control.retry, {
+    limit: G01_CONTROL_ATTEMPTS,
+    gapMs: G01_CONTROL_GAP_MS,
+  });
+  const sampleRetry = { limit: G01_SAMPLE_ATTEMPTS, gapMs: G01_CONTROL_GAP_MS };
+  assert.ok(
+    assertG01RetryFixed({
+      control,
+      samples: [{ repeat: 0, retry: sampleRetry }],
+    }),
+  );
+  const shortControl = await runG01NegativeControl({
+    page,
+    ids: IDS,
+    target: T2,
+    readGraphInputs: () => ({}),
+    sleep: async () => {},
+    attempts: 3,
+  });
+  assert.throws(
+    () => assertG01RetryFixed({ control: shortControl }),
+    /\[precheck\].*control/u,
+  );
+  assert.throws(
+    () =>
+      assertG01RetryFixed({
+        control,
+        samples: [{ repeat: 1, retry: { limit: 5, gapMs: 250 } }],
+      }),
+    /\[precheck\].*sample 1/u,
+  );
+  const sample = g01NegativeSampleOf({
+    row: { phase: "measured", repeat: 0, arm: "graph" },
+    ids: IDS,
+    retry: sampleRetry,
+  });
+  assert.deepEqual(sample.retry, sampleRetry);
 });

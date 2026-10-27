@@ -627,6 +627,28 @@ export async function recordTraceSetupFailure({
   return receipt;
 }
 
+/**
+ * Review P3: the frozen trace's start — a setup failure records its receipt
+ * and gives no context (nothing launches); otherwise the context. The context
+ * builder refuses a setup failure too, so a skipped branch fails closed.
+ */
+export async function startFrozenTrace({
+  runDir,
+  runId,
+  prepared,
+  candidate,
+  makeContext,
+}) {
+  const receipt = await recordTraceSetupFailure({
+    runDir,
+    runId,
+    prepared,
+    candidate,
+  });
+  if (receipt) return { receipt, context: null };
+  return { receipt: null, context: makeContext() };
+}
+
 function parseArgs(argv) {
   const options = {
     "eval-build": path.join(ROOT, ".artifacts/cp4/eval-build"),
@@ -797,7 +819,11 @@ function devContext({ options, setupPath, setup }) {
 }
 
 /** The frozen trace's context from `prepareFrozenTrace` (DR-CP4-O-1 (6)). */
-function frozenContext({ prepared, setupRaw }) {
+export function frozenContext({ prepared, setupRaw }) {
+  if (prepared?.setupFailure)
+    throw new Error(
+      "[precheck] the G-02 base setup failed; the trace does not launch (S2 setupFailure)",
+    );
   const admission = admitTraceRun({
     root: ROOT,
     fixture: { kind: "frozen" },
@@ -915,20 +941,21 @@ async function main() {
       head = prepared.head;
       headSha256 = prepared.headSha256;
       // S2 setupFailure: (b) unmeasured, HOLD, no launch (review P3).
-      const failure = await recordTraceSetupFailure({
+      const started = await startFrozenTrace({
         runDir,
         runId: options.run,
         prepared,
         candidate: { ...candidate, commit: git(["rev-parse", "HEAD"]) },
+        makeContext: () => frozenContext({ prepared, setupRaw }),
       });
-      if (failure) {
-        receiptWritten = true;
+      receiptWritten = started.receipt !== null;
+      if (started.receipt) {
         process.stdout.write(
-          `${JSON.stringify({ run: options.run, status: failure.status, cp4Availability: failure.cp4Availability, setupFailure: failure.setupFailure.blocked })}\n`,
+          `${JSON.stringify({ run: options.run, status: started.receipt.status, cp4Availability: started.receipt.cp4Availability, setupFailure: started.receipt.setupFailure.blocked })}\n`,
         );
         return;
       }
-      context = frozenContext({ prepared, setupRaw });
+      context = started.context;
     } else {
       context = devContext({ options, setupPath, setup: setupRaw });
       head = {
