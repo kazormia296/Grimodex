@@ -16,6 +16,7 @@ import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  B_SEAL_REOPENS,
   R5_CHECK_ALLOWED_IPC,
   R5_CHECK_ALLOWED_PAGE,
   assertBuildMatchesProductReceipt,
@@ -38,6 +39,7 @@ import { assessSeedPinStep, SEED_PIN_WRITER } from "./seed-pin-setup.mjs";
 import { assertSeedPinsBeforeK64 } from "./seed-pin.mjs";
 import {
   FROZEN_SETUP_RECEIPT_SCHEMA,
+  SEAL_OPENINGS_MAX,
   assertCompleteSetupReceipt,
   loadSetupReceipt,
 } from "./setup-receipt.mjs";
@@ -46,6 +48,7 @@ import {
   readQuerySceneSeedPins,
 } from "./workspace-db.mjs";
 import {
+  COMPLETE_SETUP_FIELDS,
   REPO_ROOT,
   frozenSetupFakeProduct,
   productReceipt,
@@ -584,66 +587,78 @@ test("① の guard: S2 の範囲の外の IPC と page の入口（maintenance�
   );
 });
 
-test("完全な setup の段は、対応できない step に着いたところで [precheck] で止まり、それより前の段だけを記録する", async () => {
-  const plan = planOf(COMPLETE, "G-04/base");
-  const phases = [];
-  const done = [];
-  const executors = Object.fromEntries(
-    [
-      "project",
-      "scenes",
-      "entities",
-      "relations",
-      "scope-registry",
-      "scene-scope",
-      "foreshadows",
-      "foreshadow-links",
-      "pins",
-      "seed-pin",
-      "maintenance-enabled",
-      "typed-revision",
-    ].map((name) => [
-      name,
-      async ({ step }) => {
-        done.push(step.phase);
-        return {};
-      },
-    ]),
+test("完全な setup の段は、executor の無い段や [precheck] の executor の段に着いたところで止まり、それより前の段だけを記録する", async () => {
+  const base = planOf(COMPLETE, "G-04/base");
+  const at = base.steps.findIndex(
+    (step) => step.phase === "setup-timeline:g04-ir",
   );
-  await assert.rejects(
-    runFrozenSetupSteps({
-      plan,
-      page: frozenSetupFakeProduct().page,
-      workspacePath: "/nonexistent",
-      ids: createSetupIds({ plan, uuid }),
-      session: "author",
-      phase: (name) => phases.push(name),
-      uuid,
-      executors,
-      readState: async () => null,
-    }),
-    /\[precheck\] S1i qualified-ir-provider-undecided/u,
-  );
-  assert.deepEqual(phases, done);
-  assert.equal(phases.at(-1), "setup-timeline:g04-r-sel");
-  // 着いた step の理由と選択肢を [precheck] の文に書く。
-  await assert.rejects(
-    runFrozenSetupSteps({
-      plan: planOf(COMPLETE, "G-02/base"),
-      page: frozenSetupFakeProduct().page,
-      workspacePath: "/nonexistent",
-      ids: createSetupIds({ plan, uuid }),
-      session: "author",
-      phase: () => {},
-      uuid,
-      executors,
-      readState: async () => null,
-    }),
-    (error) =>
-      /relation-type-writer-missing/u.test(error.message) &&
-      /\(A\)/u.test(error.message) &&
-      /\(B\)/u.test(error.message),
-  );
+  // S1j-2: the four S1i prechecks have executors; a step still marked
+  // `[precheck]` (or with an unknown executor) stops the run there.
+  const withStep = (step) => ({
+    ...base,
+    steps: base.steps.map((row, index) => (index === at ? step : row)),
+  });
+  const precheckPlan = withStep({
+    ...base.steps[at],
+    session: "author",
+    executor: "precheck",
+    precheck: {
+      code: "test-precheck",
+      reason: "the step is not mapped",
+      options: ["(A) one", "(B) two"],
+    },
+  });
+  const unknownPlan = withStep({
+    ...base.steps[at],
+    session: "author",
+    executor: "no-such-executor",
+  });
+  const names = [
+    "project",
+    "scenes",
+    "entities",
+    "relations",
+    "scope-registry",
+    "scene-scope",
+    "foreshadows",
+    "foreshadow-links",
+    "pins",
+    "seed-pin",
+    "maintenance-enabled",
+    "typed-revision",
+  ];
+  for (const [plan, pattern] of [
+    [precheckPlan, /\[precheck\] S1i test-precheck: .*\(A\) one.*\(B\) two/u],
+    [unknownPlan, /\[precheck\] S1i phase: .*no executor/u],
+  ]) {
+    const phases = [];
+    const done = [];
+    const executors = Object.fromEntries(
+      names.map((name) => [
+        name,
+        async ({ step }) => {
+          done.push(step.phase);
+          return {};
+        },
+      ]),
+    );
+    await assert.rejects(
+      runFrozenSetupSteps({
+        plan,
+        page: frozenSetupFakeProduct().page,
+        workspacePath: "/nonexistent",
+        ids: createSetupIds({ plan, uuid }),
+        session: "author",
+        phase: (name) => phases.push(name),
+        uuid,
+        executors,
+        readState: async () => null,
+      }),
+      pattern,
+    );
+    assert.deepEqual(phases, done);
+    assert.equal(phases.at(-1), "setup-timeline:g04-r-sel");
+  }
 });
 
 test("setup の受領書の loader: frozen は frozen の schema と停止位置・状態の組だけ、dev の schema の frozen は拒む", () => {
@@ -674,9 +689,84 @@ test("setup の受領書の loader: frozen は frozen の schema と停止位置
     stopsAt: "complete",
     status: "setup-complete",
     r5CheckRun: undefined,
+    ...COMPLETE_SETUP_FIELDS,
   });
   assert.equal(complete.r5CheckRunId, null);
   assert.equal(assertCompleteSetupReceipt(complete), complete);
+  // S1j-2 review P3 (e): a complete setup without its measurement point,
+  // with a seal that ended other than sealed, more than three openings, or
+  // no setup-only Main is not taken by ④⑤.
+  for (const change of [
+    { measurementPoint: undefined },
+    {
+      measurementPoint: {
+        ...COMPLETE_SETUP_FIELDS.measurementPoint,
+        probe: {
+          ...COMPLETE_SETUP_FIELDS.measurementPoint.probe,
+          graph: "unusable",
+        },
+      },
+    },
+    {
+      sealAttempts: [{ session: "seal", attempt: 0, outcome: "not-published" }],
+    },
+    {
+      sealAttempts: [0, 1, 2, 3].map((attempt) => ({
+        session: "seal",
+        attempt,
+        outcome: attempt === 3 ? "sealed" : "sealed-then-dirty",
+      })),
+    },
+    { sealAttempts: [] },
+    { setupMain: undefined },
+    // Re-review P3 (b): a variant with a hold session and no index state
+    // before its first mutation.
+    { plan: { sessions: [{ label: "author" }, { label: "hold" }] } },
+    // P-5: the author session's maintenance openings.
+    { maintenanceAttempts: undefined },
+    { maintenanceAttempts: [{ attempt: 0, outcome: "not-reached" }] },
+    {
+      maintenanceAttempts: [0, 1, 2, 3].map((attempt) => ({
+        attempt,
+        outcome: attempt === 3 ? "reached" : "not-reached",
+      })),
+    },
+  ])
+    assert.throws(
+      () =>
+        assertCompleteSetupReceipt(
+          load({
+            ...base,
+            stopsAt: "complete",
+            status: "setup-complete",
+            r5CheckRun: undefined,
+            ...COMPLETE_SETUP_FIELDS,
+            ...change,
+          }),
+        ),
+      /\[precheck\] the setup receipt .* is not a complete setup with its measurement point/u,
+    );
+  assert.equal(SEAL_OPENINGS_MAX, B_SEAL_REOPENS + 1);
+  // With its pre-mutation state, the hold variant's receipt is complete.
+  assert.equal(
+    assertCompleteSetupReceipt(
+      load({
+        ...base,
+        stopsAt: "complete",
+        status: "setup-complete",
+        r5CheckRun: undefined,
+        ...COMPLETE_SETUP_FIELDS,
+        plan: { sessions: [{ label: "author" }, { label: "hold" }] },
+        preMutationIndexState: {
+          metadata: {
+            b: { generation: 1, dirty: false },
+            chronicle: { generation: 1, dirty: false },
+          },
+        },
+      }),
+    ).status,
+    "setup-complete",
+  );
   for (const value of [
     { ...base, status: "setup-complete" },
     { ...base, stopsAt: "complete" },

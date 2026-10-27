@@ -17,8 +17,8 @@ export const INDEX_KEYS = Object.freeze({
   chronicle: "nir1-reviewed-chronicle:v1",
 });
 
-function withReadOnly(file, read) {
-  const db = new DatabaseSync(file, { readOnly: true });
+function withReadOnly(file, read, options = {}) {
+  const db = new DatabaseSync(file, { readOnly: true, ...options });
   try {
     return read(db);
   } finally {
@@ -45,19 +45,27 @@ export function indexMetadataFromRows(rows) {
   return out;
 }
 
-export function readIndexMetadata(file, projectId) {
-  return withReadOnly(file, (db) =>
-    indexMetadataFromRows(
-      db
-        .prepare(
-          `SELECT index_key AS indexKey, generation, dirty_cache_flag AS dirty,
+/**
+ * `options` are extra `DatabaseSync` options of the read-only connection
+ * (TR: the trace's start seal passes `timeout: 0`, so a busy database makes
+ * the read fail at once instead of waiting).
+ */
+export function readIndexMetadata(file, projectId, options = {}) {
+  return withReadOnly(
+    file,
+    (db) =>
+      indexMetadataFromRows(
+        db
+          .prepare(
+            `SELECT index_key AS indexKey, generation, dirty_cache_flag AS dirty,
                   source_digest AS sourceDigest,
                   dependency_set_digest AS dependencySetDigest,
                   producer_id AS producerId, producer_version AS producerVersion
              FROM narrative_semantic_index_metadata WHERE project_id = ?`,
-        )
-        .all(projectId),
-    ),
+          )
+          .all(projectId),
+      ),
+    options,
   );
 }
 
@@ -351,6 +359,139 @@ function readQuerySceneSeedPinsUnsealed(file, projectId, sceneId) {
         createdAt: row.createdAt,
         entryInProject: Number(row.inProject) === 1,
       })),
+    };
+  });
+}
+
+const parseJson = (text) => {
+  if (typeof text !== "string") return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * S1j-2: the project's Chronicle extraction rows (read-only): each
+ * `chronicle.extract` run with its proposals, every revision of those
+ * proposals (the payload and the reconciliation envelope, parsed) and every
+ * Decision in creation order. The setup's qualified-ir read-back.
+ */
+export function readChronicleSetupRows(file, projectId) {
+  return withReadOnly(file, (db) => {
+    const runs = db
+      .prepare(
+        `SELECT id AS runId FROM narrative_extraction_runs
+          WHERE project_id = ? AND surface_path_id = 'chronicle.extract'
+          ORDER BY id`,
+      )
+      .all(projectId)
+      .map((row) => String(row.runId));
+    return runs.map((runId) => {
+      const proposals = db
+        .prepare(
+          `SELECT p.id AS proposalId, p.status, p.current_revision_id AS currentRevisionId
+             FROM narrative_proposals p
+             JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+            WHERE s.run_id = ? ORDER BY p.id`,
+        )
+        .all(runId)
+        .map((proposal) => ({
+          proposalId: String(proposal.proposalId),
+          status: proposal.status,
+          currentRevisionId:
+            proposal.currentRevisionId === null
+              ? null
+              : String(proposal.currentRevisionId),
+          revisions: db
+            .prepare(
+              `SELECT id AS revisionId, revision_number AS revisionNumber,
+                      payload_json AS payloadJson,
+                      reconciliation_envelope_json AS envelopeJson
+                 FROM narrative_proposal_revisions
+                WHERE proposal_id = ? ORDER BY revision_number`,
+            )
+            .all(proposal.proposalId)
+            .map((row) => ({
+              revisionId: String(row.revisionId),
+              revisionNumber: Number(row.revisionNumber),
+              payload: parseJson(row.payloadJson),
+              envelope: parseJson(row.envelopeJson),
+            })),
+          decisions: db
+            .prepare(
+              `SELECT id AS decisionId, revision_id AS revisionId, decision,
+                      created_by AS createdBy, created_at AS createdAt
+                 FROM narrative_proposal_decisions
+                WHERE proposal_id = ? ORDER BY created_at, id`,
+            )
+            .all(proposal.proposalId)
+            .map((row) => ({
+              decisionId: String(row.decisionId),
+              revisionId: String(row.revisionId),
+              decision: row.decision,
+              createdBy: row.createdBy,
+            })),
+        }));
+      return { runId, proposals };
+    });
+  });
+}
+
+/**
+ * S1j-2 P-0: the project's extraction／maintenance runs created at or after
+ * `sinceIso`, counted by surface and status (read-only). The seal attempts'
+ * evidence of whether the maintenance cycle ran at all.
+ */
+export function readRunsSince(file, projectId, sinceIso) {
+  return withReadOnly(file, (db) => {
+    const exists = db
+      .prepare(
+        "SELECT 1 AS ok FROM sqlite_master WHERE type = 'table' AND name = 'narrative_extraction_runs'",
+      )
+      .get();
+    if (!exists) return [];
+    return db
+      .prepare(
+        `SELECT surface_path_id AS surface, status, count(*) AS n
+           FROM narrative_extraction_runs
+          WHERE project_id = ? AND created_at >= ?
+          GROUP BY surface_path_id, status ORDER BY surface_path_id, status`,
+      )
+      .all(projectId, sinceIso)
+      .map((row) => ({
+        surface: row.surface,
+        status: row.status,
+        count: Number(row.n),
+      }));
+  });
+}
+
+/**
+ * Review P2-3: a typed Revision's stored Source token of one Relation
+ * (`narrative_revision_source_basis`, key `codex-relation:<id>`) and the
+ * token the Relation's current row gives (`v<version>@<updated_at>:relation:
+ * <id>`, the product's form; null when the row is gone). Read-only.
+ */
+export function readRelationSourceTokens(file, revisionId, relationId) {
+  return withReadOnly(file, (db) => {
+    const stored =
+      db
+        .prepare(
+          "SELECT revision_token AS token FROM narrative_revision_source_basis WHERE revision_id = ? AND source_key = ?",
+        )
+        .get(revisionId, `codex-relation:${relationId}`)?.token ?? null;
+    const row = db
+      .prepare(
+        "SELECT version, updated_at AS updatedAt FROM codex_relations WHERE id = ?",
+      )
+      .get(relationId);
+    return {
+      stored,
+      current: row
+        ? `v${row.version}@${row.updatedAt}:relation:${relationId}`
+        : null,
     };
   });
 }

@@ -1849,3 +1849,42 @@ test("CP-4 S1a evaluation-only Graph assets are registered, selected and execute
     ),
   );
 });
+
+test("CP-4 TR trace runner and build receipt check assets are registered, selected and executed by the nir1 suite", async () => {
+  const [impactSource, manifestSource] = await Promise.all([
+    readFile(new URL("../../evals/impact-map.yaml", import.meta.url), "utf8"),
+    readFile(new URL("../../evals/quality-manifest.yaml", import.meta.url), "utf8"),
+  ]);
+  const map = parseImpactMap(impactSource);
+  const manifest = yaml.load(manifestSource);
+  const implementations = [
+    "scripts/quality/nir1-graph-eval/trace-record.mjs",
+    "scripts/quality/nir1-graph-eval/trace-runner.mjs",
+    "scripts/quality/nir1-graph-eval/build-receipt-check.mjs",
+    "scripts/quality/nir1-graph-eval/trace-seal.mjs",
+    "scripts/quality/nir1-graph-eval/renderer/trace-cycle.ts",
+    "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
+  ];
+  const tests = [
+    "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
+    "scripts/quality/nir1-graph-eval/trace-runner.test.mjs",
+    "scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs",
+    "scripts/quality/nir1-graph-eval/trace-seal.test.mjs",
+    "scripts/quality/nir1-graph-eval/trace-cycle.test.mjs",
+  ];
+  for (const changedPath of [...implementations, ...tests]) {
+    const selection = selectImpact(map, [changedPath]);
+    assert.ok(selection.suiteIds.includes("nir1-entity-relation-review"), changedPath);
+    assert.equal(selection.fallback, false, changedPath);
+  }
+  const requirement = manifest.requirements.find((candidate) => candidate.id === "GDX-ISOLATION-001");
+  assert.ok(requirement, "GDX-ISOLATION-001");
+  for (const implementation of implementations)
+    assert.ok(requirement.implementedBy.includes(implementation), implementation);
+  for (const testPath of tests) assert.ok(requirement.lightTests.includes(testPath), testPath);
+  const commandLines = LIGHT_SUITE_DEFINITIONS["nir1-entity-relation-review"].commands.map(
+    (command) => command.join(" "),
+  );
+  for (const testPath of tests)
+    assert.ok(commandLines.some((command) => command.includes(testPath)), testPath);
+});

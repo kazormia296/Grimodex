@@ -16,15 +16,19 @@
 //   - 停止位置: ① R5 の照合の run は seed の pin の段で止める（S2 の
 //     `r5Gate.exempt` の `r5-seed-pin-check`）。止めた後の段はすべて S2 の禁止の
 //     集合に入る（試験で固定）。完全な setup は ⑤ の評価の run 用。
-//   - 対応する製品の writer が無い、または決まっていない step（IR の provider、
-//     Relation の型の編集、IR の承認撤回、unusable の状態の保持）は plan に
-//     `[precheck]` の executor として残し、driver は着いたところで止める。
+//   - S1j-2（DR-CP4-L-*、integrator の決定 B1〜B4）: 完全な setup の段の
+//     executor と session。qualified-ir は setup 専用の Main の session（`ir`）、
+//     G-02 の型の編集は relation.delete と同じ runtime ID での relation.create、
+//     G-08 の IR の承認撤回は deferred の Decision、unusable の variant の状態は
+//     session の分け方と seam の有無で保つ（`hold`、`reseal`）。測定の側の仕様
+//     （one-shot など）は plan の `measurementSpec` に書き、runner への配線は S5。
 
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import path from "node:path";
 import { effectiveScope } from "../nir1-graph/contract.mjs";
-import { GRAPH_EVAL_VARIANTS } from "./constants.mjs";
+import { classifyGraphFixturePath } from "../nir1-retrieval/contract.mjs";
+import { FROZEN_MATERIAL_SHA256, GRAPH_EVAL_VARIANTS } from "./constants.mjs";
 import {
   SEED_PIN_PHASE,
   assertFrozenSetupBytes,
@@ -338,6 +342,71 @@ export function phaseCategories(name, { timelineKind = null } = {}) {
     : [...rule[1]];
 }
 
+/**
+ * S1j-2: the sessions of a complete setup (DR-CP4-L-4). Each launches a fresh
+ * Electron on the same workspace, in the plan's order: `main` names the Main
+ * (`setup-ir` is the setup-only Main of setup-main-build.mjs, launched with
+ * the deterministic Journey provider's env), `seam` whether the B-ROUTE
+ * journey seam (the gated B build) is open. ① runs the author session only.
+ */
+export const SETUP_SESSIONS = Object.freeze({
+  author: Object.freeze({ main: "product", seam: false }),
+  ir: Object.freeze({ main: "setup-ir", seam: false }),
+  seal: Object.freeze({ main: "product", seam: true }),
+  hold: Object.freeze({ main: "product", seam: false }),
+  reseal: Object.freeze({ main: "product", seam: true }),
+});
+
+/**
+ * S1j-2 (B4): how the measurement process of a variant must run so that the
+ * index state the setup left holds at the query (the runner's wiring is S5's;
+ * recorded in the plan and the receipt before observation).
+ */
+const MEASUREMENT_SPECS = Object.freeze({
+  "after-maintenance-current": {
+    kind: "steady-state",
+    maintenanceSeam: "as the runner's procedure (K6/2, K6/4)",
+    warmUp: true,
+    queriesPerProcess: "as the runner's procedure",
+    freshColdCopyPerProcess: false,
+  },
+  "while-graph-index-unusable": {
+    kind: "graph-held-unusable",
+    maintenanceSeam: false,
+    warmUp: true,
+    queriesPerProcess: "as the runner's procedure",
+    freshColdCopyPerProcess: false,
+    note: "B は seam の無い process では作り直されない。C は query の経路で作り直される（setup の hold の session が作り直した後の状態）",
+  },
+  "while-chronicle-index-unusable": {
+    kind: "one-shot",
+    maintenanceSeam: false,
+    warmUp: false,
+    queriesPerProcess: 1,
+    freshColdCopyPerProcess: true,
+    note: "最初の query が C を作り直すので、cold DB の新しい byte copy ごとに process を起動し、query は 1 回だけ（warm-up なし）。K6/4 の warm-up の手順からの逸脱かは integrator とユーザーの確認点",
+  },
+  "while-both-indexes-unusable": {
+    kind: "one-shot",
+    maintenanceSeam: false,
+    warmUp: false,
+    queriesPerProcess: 1,
+    freshColdCopyPerProcess: true,
+    note: "chronicle-index-unusable と同じ one-shot。seam を開かないので B も作り直されない",
+  },
+});
+
+export function measurementSpecOf(measurementPoint) {
+  const spec =
+    MEASUREMENT_SPECS[measurementPoint ?? "after-maintenance-current"];
+  if (!spec)
+    fail(
+      "measurement-point",
+      `no measurement spec for ${String(measurementPoint)}`,
+    );
+  return { measurementPoint: measurementPoint ?? null, ...spec };
+}
+
 /** The harness choices the fixture does not declare (recorded, never tuned). */
 const HARNESS_CHOICES = Object.freeze({
   "project-title": {
@@ -383,6 +452,29 @@ const HARNESS_CHOICES = Object.freeze({
     reason:
       "S1 の setup の順（session の seed → graph-input → graph-review → extract-and-review。S1 の SETUP_DECISIONS「書き込みの順序を固定し、Chronicle の承認を最後に置く」）に揃えた。唯一の pin と seed の pin を typed Revision の前に置くのは SP/1（確認済み）の置き場",
   },
+  "setup-ir-main": {
+    value:
+      "qualified-ir は setup 専用の Main（dist-electron/main-setup-ir.cjs）の session だけで作る。製品の Main と同じ build の command で、productJourneyNir1Ai.ts の corpus の import だけを「24 件の corpus＋fixture の qualifiedIr の行」の表に向ける。env は GRIMODEX_PRODUCT_JOURNEY_FAKE_AI=deterministic-v1。AI 設定は 24 件の setup と同じ（provider ollama、model product-journey-model、endpoint 127.0.0.1:11434。決定論の provider が HTTP の edge を置き換える）",
+    reason:
+      "integrator の決定 B1 (i)（K2/4 :352 と :99）。ほかの session と測定は製品の Main。抽出は dialog の Analyze と同じ renderer の API（folder の配下の Scene、live の event catalog、言語は dialog と同じく指定しない）、child は secret を外す改訂、承認は card の承認",
+  },
+  "relation-type-edit": {
+    value:
+      "relation.delete の後、同じ runtime ID で relation.create（型と label は to）。同じ ID の再利用を製品が拒めば新しい ID（受領書の relationRecreations の mode）",
+    reason:
+      "integrator の決定 B2 (B')／(B'')。製品の codex_mutate に型の編集は無い。旧 Revision は Source token（version と updated_at）が変わって stale になる",
+  },
+  "ir-approval-withdrawal": {
+    value:
+      "qualified-ir の段が受領書に残した run・proposal・現行の child の revision に、recordChronicleProposalDecision で decision deferred（UI の「保留」と同じ payload）",
+    reason: "integrator の決定 B3",
+  },
+  "index-state-holding": {
+    value:
+      "graph-index-unusable: seal の後に seam の無い hold の session で mutation と seed なしの query（C だけ作り直す）。chronicle-index-unusable: hold で撤回、seam の reseal で B の新しい generation を待ち query を出さない。both: hold で両方、query なし。graph-recovered: hold で mutation、reseal で B と C。probe は readIndexMetadata（read-only）と query の initialSnapshot",
+    reason:
+      "integrator の決定 B4 (c)(i)。通常の lifecycle の制御（起動の構成、閉じる、開く）と通常の query だけ。測定の側の one-shot は plan の measurementSpec（runner への配線は S5）",
+  },
   "g01-typed-revision": {
     value:
       "論理 ID g01-typed-revision（review Scene g01-review、Entity g01-orin と g01-mira-entity、Relation g01-handover、approved）",
@@ -398,55 +490,31 @@ function choices(ids) {
 const nonBlank = (value) =>
   typeof value === "string" && value.trim().length > 0;
 
-/** Precheck descriptors of the steps no normal writer covers yet. */
-const STEP_PRECHECKS = Object.freeze({
-  "qualified-ir": {
-    code: "qualified-ir-provider-undecided",
-    reason:
-      "fixture は qualifiedIr を「通常の fixture provider／Proposal／child／Decision の経路」で作るとするが、製品 Main の決定論の Journey provider（electron/main/productJourneyNir1Ai.ts）は nir1-retrieval の 24 件の corpus の本文にしか答えない。G-case の本文に答える対応表の置き場所は未決（README :227「決定論 provider の対応表の置き場所を決める」、K2/4 C14 (c)）",
-    options: [
-      "(A) setup 専用の Main で Journey provider の対応表だけを G-case の qualifiedIr に差し替える（K2/4 :352 は宣言の段以外の setup に許す。対応表の置き場所と review を integrator が決める）",
-      "(B) 製品の Journey provider に G-case の対応表を足す（製品の変更。別の lane と承認）",
-      "(C) 決めるまで完全な setup を作らない（⑤ は進まない。① は影響を受けない）",
-    ],
-  },
-  "relation-type-writer-missing": {
-    code: "relation-type-writer-missing",
-    reason:
-      "codex_mutate の Relation の操作は relation.create と relation.delete だけで、承認後の Relation の型を同じ行のまま変える通常の writer が無い（UI も型の編集を持たない）",
-    options: [
-      "(A) 型を変える writer が無いことを refused-at-setup として記録する（README 解釈 2「通常 writer が承認済み Relation の型編集を拒否したら refused-at-setup」を、writer が無い場合に読み替えてよいかを integrator が決める）",
-      "(B) relation.delete と relation.create で別の行を作る（Relation の ID が変わり、g02-dace-link の論理 ID の対応が変わる。fixture の意図と違いうる）",
-      "(C) 製品に型の編集の writer を足す（製品の変更）",
-    ],
-  },
-  "ir-approval-withdrawal-writer-undecided": {
-    code: "ir-approval-withdrawal-writer-undecided",
-    reason:
-      "IR の承認撤回の通常の writer（Decision の経路のどれを使うか）を S1i は特定していない。撤回する IR は qualified-ir の段が作るので、その段の決定にも依存する",
-    options: [
-      "(A) qualified-ir の provider を決めた後に、撤回の writer（Decision の経路）を integrator が指定する",
-      "(B) 決めるまで G-08 の chronicle-index-unusable と both-indexes-unusable の完全な setup を作らない",
-    ],
-  },
-  "index-state-holding-undesigned": {
-    code: "index-state-holding-undesigned",
-    reason:
-      "unusable の variant は mutation の commit の後、再 build の前に測る（index-state-holding）。maintenance を有効にしたままその状態を通常の lifecycle の制御だけで保つ方法（setup の session の閉じ方と、測定の process の起動の順）を S1i は決めていない",
-    options: [
-      "(A) mutation の commit の直後に setup の session を閉じて cold DB を取り、測定の process で probe が宣言どおりの状態を示す間に測る（runner の側の設計を integrator が決める）",
-      "(B) 保てなければ blocked:index-state-holding と記録する（README の規則。setup は変えない）",
-    ],
-  },
-});
+/**
+ * S1j-2: the four steps S1i left as `[precheck]` (DR-CP4-I-8) have executors
+ * now (integrator's decisions B1〜B4, DR-CP4-L-*). A step no executor maps is
+ * still refused when the plan is made.
+ */
+function qualifiedIrInput(id, fixture) {
+  return {
+    id,
+    rows: (fixture.qualifiedIr ?? []).map((row) => ({
+      sceneId: row.sceneId,
+      folderId: `${IR_FOLDER_PREFIX}${row.sceneId}`,
+      summary: row.summary,
+      actuality: row.actuality,
+      attribution: row.attribution,
+      narrativeFrame: row.narrativeFrame,
+    })),
+  };
+}
 
 function timelineStep(fixture, step, indexes) {
   if (step?.kind === "qualified-ir")
     return {
       timelineKind: "qualified-ir",
-      executor: "precheck",
-      precheck: STEP_PRECHECKS["qualified-ir"],
-      input: { id: step.id, rows: fixture.qualifiedIr ?? [] },
+      executor: "qualified-ir",
+      input: qualifiedIrInput(step.id, fixture),
     };
   if (step?.kind === "revision") {
     const revision = indexes.revisions.get(step.id);
@@ -484,20 +552,48 @@ function timelineStep(fixture, step, indexes) {
           to: mutation.to,
         },
       };
-    if (mutation.kind === "codex-relation-type-edit")
+    if (mutation.kind === "codex-relation-type-edit") {
+      const relation = (fixture.relations ?? []).find(
+        (row) => row.id === mutation.relationId,
+      );
+      if (!relation || relation.type !== mutation.from)
+        fail(
+          "setup-timeline",
+          `mutation ${step.id} edits ${String(mutation.relationId)}, not a Relation of type ${String(mutation.from)}`,
+        );
       return {
         timelineKind: "mutation",
-        executor: "precheck",
-        precheck: STEP_PRECHECKS["relation-type-writer-missing"],
-        input: { ...mutation },
+        executor: "codex-relation-type-edit",
+        input: {
+          id: mutation.id,
+          relationId: mutation.relationId,
+          from: mutation.from,
+          to: mutation.to,
+          // DR-CP4-I-4 (1): the label is the type.
+          label: mutation.to,
+        },
       };
-    if (mutation.kind === "ir-approval-withdrawal")
+    }
+    if (mutation.kind === "ir-approval-withdrawal") {
+      if (
+        !(fixture.qualifiedIr ?? []).some(
+          (row) => row.sceneId === mutation.sceneId,
+        )
+      )
+        fail(
+          "setup-timeline",
+          `mutation ${step.id} withdraws an IR of ${String(mutation.sceneId)} that qualifiedIr does not create`,
+        );
       return {
         timelineKind: "mutation",
-        executor: "precheck",
-        precheck: STEP_PRECHECKS["ir-approval-withdrawal-writer-undecided"],
-        input: { ...mutation },
+        executor: "ir-approval-withdrawal",
+        input: {
+          id: mutation.id,
+          sceneId: mutation.sceneId,
+          decision: "deferred",
+        },
       };
+    }
     fail(
       "setup-timeline",
       `mutation ${step.id} has kind ${String(mutation.kind)} that no normal writer maps`,
@@ -686,30 +782,47 @@ export function frozenSetupPlan({
   fixture,
   stopsAt,
   candidateDocument = null,
+  devCatalog = null,
 }) {
   if (!Object.values(SETUP_STOPS).includes(stopsAt))
     fail(
       "stop",
       `stopsAt is ${Object.values(SETUP_STOPS).join(" or ")}, not ${String(stopsAt)}`,
     );
-  const catalog = GRAPH_EVAL_VARIANTS.find(
-    (row) => row.caseId === caseId && row.variantId === variantId,
-  );
+  // S1j-2: a dev graph-case fixture (loadDevGraphCasePlans) runs the same
+  // plan for the dev fixture check in real Electron; never a CP-4 variant.
+  const catalog =
+    devCatalog === null
+      ? GRAPH_EVAL_VARIANTS.find(
+          (row) => row.caseId === caseId && row.variantId === variantId,
+        )
+      : DEV_CATALOGS.has(devCatalog) &&
+          devCatalog.caseId === caseId &&
+          devCatalog.variantId === variantId
+        ? devCatalog
+        : null;
   if (!catalog) fail("variant", `${caseId}/${variantId} is not a CP-4 variant`);
-  const g01 = caseId === "G-01";
+  // S1j-2: a dev shape fixture (dev-shape-fixture.mjs) takes the plan route
+  // of the G-case whose structure it copies.
+  const shape = devCatalog?.shape ?? caseId;
+  const g01 = shape === "G-01";
   const variant = g01
     ? { id: "v1", measurementPoint: null, indexState: null, preconditions: [] }
     : (fixture.variants ?? []).find((row) => row.id === variantId);
   if (!variant) fail("variant", `${caseId} has no variant ${variantId}`);
   const correspondence = setupOrderCorrespondence({
-    caseId,
+    caseId: shape,
     fixture,
     candidateDocument,
   });
-  const seedPin = seedPinPlanFromFixture({ caseId, fixture }).find(
+  const seedRow = seedPinPlanFromFixture({ caseId: shape, fixture }).find(
     (row) => row.variantId === variantId,
   );
-  const scenes = sceneRowsOf(caseId, fixture);
+  const seedPin =
+    seedRow && shape !== caseId
+      ? { ...seedRow, caseId, variantKey: `${caseId}/${variantId}` }
+      : seedRow;
+  const scenes = sceneRowsOf(shape, fixture);
   const steps = [];
   const add = (phase, input, extra = {}) =>
     steps.push({
@@ -725,10 +838,10 @@ export function frozenSetupPlan({
     phaseResolutionMode: "reading",
   });
   add("scenes", { rows: scenes });
-  const scope = sceneScopeInput(caseId, fixture, scenes);
+  const scope = sceneScopeInput(shape, fixture, scenes);
   const codex = () => {
-    add("entities", { rows: entityRowsOf(caseId, fixture) });
-    add("relations", { rows: relationRowsOf(caseId, fixture) });
+    add("entities", { rows: entityRowsOf(shape, fixture) });
+    add("relations", { rows: relationRowsOf(shape, fixture) });
   };
   const scopeSteps = () => {
     add("scope-registry", { registry: scope.registry });
@@ -772,6 +885,7 @@ export function frozenSetupPlan({
   add(SEED_PIN_PHASE, { ...seedPin });
   add("maintenance-enabled", { setting: "runtime-policy" });
   const skippedTimelineSteps = [];
+  const spec = measurementSpecOf(variant.measurementPoint ?? null);
   if (g01) {
     add(
       "typed-revisions",
@@ -779,7 +893,8 @@ export function frozenSetupPlan({
         rows: [
           {
             id: "g01-typed-revision",
-            reviewSceneId: "g01-review",
+            reviewSceneId:
+              shape === caseId ? "g01-review" : fixture.g01ReviewSceneId,
             entityIds: [fixture.entitySeed.id, fixture.targetEntity.id],
             relationIds: [fixture.relation.id],
             decision: "approved",
@@ -788,11 +903,9 @@ export function frozenSetupPlan({
       },
       { executor: "typed-revision" },
     );
-    add(
-      "qualified-ir",
-      { id: "g01-ir", rows: fixture.qualifiedIr ?? [] },
-      { executor: "precheck", precheck: STEP_PRECHECKS["qualified-ir"] },
-    );
+    add("qualified-ir", qualifiedIrInput("g01-ir", fixture), {
+      session: "ir",
+    });
     add("b-seal", {}, { session: "seal" });
     add("chronicle-index", {}, { session: "seal" });
   } else {
@@ -818,54 +931,70 @@ export function frozenSetupPlan({
       }
       timeline.push({ step, mapped: timelineStep(fixture, step, indexes) });
     }
-    // README :39: G-08 puts mutations after the IR to measure the unusable
-    // state; the variant reaches its sealed generation before they commit.
     const irAt = timeline.findIndex((row) => row.step.kind === "qualified-ir");
-    const afterIr = irAt >= 0 ? timeline.slice(irAt + 1) : [];
-    const sealBefore =
-      afterIr.length > 0 &&
-      afterIr.every((row) => row.step.kind === "mutation");
-    const sealAt = sealBefore ? irAt + 1 : timeline.length;
-    timeline.forEach((row, at) => {
-      if (at === sealAt) {
-        add("b-seal", {}, { session: "seal" });
-        add("chronicle-index", {}, { session: "seal" });
-      }
+    if (
+      irAt < 0 ||
+      timeline.filter((row) => row.step.kind === "qualified-ir").length !== 1
+    )
+      fail(
+        "setup-timeline",
+        `${caseId}: setupTimeline has no single qualified-ir step`,
+      );
+    const afterIr = timeline.slice(irAt + 1);
+    if (afterIr.some((row) => row.step.kind !== "mutation"))
+      fail(
+        "setup-timeline",
+        `${caseId}: only mutations follow the qualified-ir step (README :39)`,
+      );
+    const step = (row, session) =>
       add(`setup-timeline:${row.step.id}`, row.mapped.input, {
-        session: at >= sealAt ? "seal" : "author",
+        session,
         timelineKind: row.mapped.timelineKind,
         executor: row.mapped.executor,
-        ...(row.mapped.precheck ? { precheck: row.mapped.precheck } : {}),
       });
-    });
-    if (sealAt === timeline.length) {
-      add("b-seal", {}, { session: "seal" });
-      add("chronicle-index", {}, { session: "seal" });
-    } else if (variant.measurementPoint === "after-maintenance-current") {
-      add("b-seal:after-mutation", {}, { session: "seal", executor: "b-seal" });
-      add(
-        "chronicle-index:after-mutation",
-        {},
-        { session: "seal", executor: "chronicle-index" },
-      );
+    for (const row of timeline.slice(0, irAt)) step(row, "author");
+    step(timeline[irAt], "ir");
+    // README :39: G-08 commits its mutations after the IR, once the variant
+    // reached its sealed generation (precondition maintenance-enabled).
+    add("b-seal", {}, { session: "seal" });
+    add("chronicle-index", {}, { session: "seal" });
+    if (afterIr.length > 0) {
+      // B4: the mutations commit in a session without the B-ROUTE seam (B is
+      // not rebuilt there); a usable B after them needs a new seal session
+      // (the workspace-opened wake), a usable C a query.
+      const state = variant.indexState ?? {};
+      if (
+        !["usable", "unusable"].includes(state.graph) ||
+        !["usable", "unusable"].includes(state.chronicle)
+      )
+        fail(
+          "measurement-point",
+          `${caseId}/${variantId}: mutations after the IR need a declared indexState`,
+        );
+      for (const row of afterIr) step(row, "hold");
+      const after = state.graph === "usable" ? "reseal" : "hold";
+      if (state.graph === "usable")
+        add(
+          "b-seal:after-mutation",
+          {},
+          { session: after, executor: "b-seal" },
+        );
+      if (state.chronicle === "usable")
+        add(
+          "chronicle-index:after-mutation",
+          {},
+          { session: after, executor: "chronicle-index" },
+        );
     }
   }
-  const holding =
-    typeof variant.measurementPoint === "string" &&
-    variant.measurementPoint.startsWith("while-");
   add(
     "measurement-point",
     {
       measurementPoint: variant.measurementPoint ?? null,
       indexState: variant.indexState ?? null,
+      spec,
     },
-    holding
-      ? {
-          session: "seal",
-          executor: "precheck",
-          precheck: STEP_PRECHECKS["index-state-holding-undesigned"],
-        }
-      : { session: "seal" },
+    { session: steps.at(-1).session },
   );
   for (const step of steps)
     step.categories = phaseCategories(step.phase, {
@@ -876,11 +1005,11 @@ export function frozenSetupPlan({
       ? steps.findIndex((step) => step.phase === SEED_PIN_PHASE)
       : steps.length - 1;
   const declaration = catalog.declaration
-    ? declarationOf(caseId, fixture, variant)
+    ? declarationOf(shape, fixture, variant)
     : null;
   if (catalog.declaration && !nonBlank(declaration?.sceneId))
     fail("declaration", `${caseId}/${variantId} names no declaration Scene`);
-  if (!catalog.declaration && declarationOf(caseId, fixture, variant) !== null)
+  if (!catalog.declaration && declarationOf(shape, fixture, variant) !== null)
     fail(
       "declaration",
       `${caseId}/${variantId} has an added Scene the catalog does not declare`,
@@ -898,6 +1027,7 @@ export function frozenSetupPlan({
   }));
   return deepFreeze({
     schema: FROZEN_SETUP_PLAN_SCHEMA,
+    fixtureKind: devCatalog === null ? "frozen" : "dev",
     caseId,
     variantId,
     variantKey: `${caseId}/${variantId}`,
@@ -910,6 +1040,8 @@ export function frozenSetupPlan({
     querySceneId: fixture.query.sceneId,
     measurementPoint: variant.measurementPoint ?? null,
     indexState: variant.indexState ?? null,
+    // Review P2-2: the README preconditions the variant declares.
+    preconditions: (variant.preconditions ?? []).map((row) => row.id),
     correspondence,
     steps,
     stopIndex,
@@ -917,12 +1049,27 @@ export function frozenSetupPlan({
     declaration,
     runnerSteps,
     skippedTimelineSteps,
+    sessions: [...new Set(steps.map((row) => row.session))].map((label) => ({
+      label,
+      ...SETUP_SESSIONS[label],
+    })),
+    measurementSpec: spec,
     harnessChoices: choices([
       "project-title",
       "phase-resolution-mode",
       "relation-label",
       "scene-runtime-ids",
       "ir-scene-folders",
+      "setup-ir-main",
+      ...(steps.some((row) => row.executor === "codex-relation-type-edit")
+        ? ["relation-type-edit"]
+        : []),
+      ...(steps.some((row) => row.executor === "ir-approval-withdrawal")
+        ? ["ir-approval-withdrawal"]
+        : []),
+      ...(steps.some((row) => row.session === "hold")
+        ? ["index-state-holding"]
+        : []),
       ...(g01
         ? [
             "g01-query-title",
@@ -967,6 +1114,86 @@ export function loadFrozenSetupPlans({ root, stopsAt }) {
         variantId: variant.variantId,
         fixture: fixtures.get(variant.fixturePath),
         stopsAt,
+        candidateDocument,
+      });
+    }),
+  );
+}
+
+/** S1j-2: the dev graph-case fixture's schema (never a G-case's). */
+export const DEV_GRAPH_CASE_SCHEMA = "nir1-cp4-dev-graph-case/1";
+const DEV_CATALOGS = new WeakSet();
+
+/**
+ * S1j-2: the plans of a dev graph-case fixture (the G-case shape with
+ * synthetic material, for the dev fixture check of the complete setup in
+ * real Electron). The path must classify as dev, be a regular file under
+ * `root`, not be a copy of frozen material, and declare the dev schema, a
+ * `DEV-` case and `frozen: false`. The plans carry `fixtureKind: "dev"`.
+ */
+export function loadDevGraphCasePlans({ root, fixturePath, stopsAt }) {
+  if (classifyGraphFixturePath(fixturePath) !== "dev")
+    fail(
+      "dev-fixture",
+      `${fixturePath} is not under the dev fixture directory`,
+    );
+  const realRoot = realpathSync(root);
+  const full = path.join(realRoot, fixturePath);
+  const metadata = lstatSync(full);
+  if (
+    metadata.isSymbolicLink() ||
+    !metadata.isFile() ||
+    realpathSync(full) !== full
+  )
+    fail("dev-fixture", `${fixturePath} must be a regular file`);
+  const bytes = readFileSync(full);
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  if (FROZEN_MATERIAL_SHA256.has(digest))
+    fail("dev-fixture", `${fixturePath} is a copy of frozen material`);
+  const fixture = JSON.parse(bytes);
+  if (
+    fixture?.schemaVersion !== DEV_GRAPH_CASE_SCHEMA ||
+    fixture.kind !== "dev" ||
+    fixture.frozen !== false ||
+    !/^DEV-[A-Z0-9-]+$/u.test(fixture.caseId ?? "")
+  )
+    fail(
+      "dev-fixture",
+      `${fixturePath} is not a ${DEV_GRAPH_CASE_SCHEMA} fixture (kind dev, frozen false, a DEV- case)`,
+    );
+  const shape = fixture.shape ?? null;
+  if (
+    shape !== null &&
+    !GRAPH_EVAL_VARIANTS.some((row) => row.caseId === shape)
+  )
+    fail(
+      "dev-fixture",
+      `${fixturePath} names an unknown shape ${String(shape)}`,
+    );
+  const candidateDocument =
+    shape === "G-01" ? readCandidateDocument({ root }) : null;
+  return deepFreeze(
+    (fixture.variants ?? []).map((variant) => {
+      const devCatalog = Object.freeze({
+        kind: "dev",
+        caseId: fixture.caseId,
+        variantId: variant.id,
+        key: `${fixture.caseId}/${variant.id}`,
+        fixturePath,
+        fixtureSha256: digest,
+        shape,
+        // As the catalog: G-01 and a variant with an added Scene declare.
+        declaration:
+          shape === "G-01" ||
+          (variant.preconditions ?? []).some((row) => row.id === "cb4-inputs"),
+      });
+      DEV_CATALOGS.add(devCatalog);
+      return frozenSetupPlan({
+        caseId: fixture.caseId,
+        variantId: variant.id,
+        fixture,
+        stopsAt,
+        devCatalog,
         candidateDocument,
       });
     }),

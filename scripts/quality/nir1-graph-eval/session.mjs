@@ -51,6 +51,7 @@ import {
 } from "./launcher.mjs";
 import { MAIN_WORKER, WORKER_FILE_NAME } from "./eval-native-build.mjs";
 import { assessX11Listing } from "./receipt.mjs";
+import { assertSetupMainAtLaunch } from "./setup-main-build.mjs";
 
 export const HARNESS_PAGE =
   "/scripts/quality/nir1-graph-eval/renderer/cp4-harness.html";
@@ -252,7 +253,10 @@ export function assessMainWorker({
 /**
  * Starts one session. `extraEnv` carries only the documented Main seams
  * (maintenance / body declaration); it is added after the launch env is
- * built and still passes `assertElectronLaunch`.
+ * built and still passes `assertElectronLaunch`. `setupMain` (S1j-2) is the
+ * sealed admission of the setup-only Main (setup-main-build.mjs): the
+ * session then launches that Main with the deterministic Journey provider's
+ * env instead of the product Main. Only the qualified-ir session passes it.
  */
 export async function startSession({
   runDir,
@@ -265,6 +269,7 @@ export async function startSession({
   extraEnv = {},
   tmpRoot = null,
   admission,
+  setupMain = null,
   deps = {},
 }) {
   const {
@@ -300,7 +305,11 @@ export async function startSession({
   const userData = path.join(dir, "user-data");
   const profile = await prepareProfile({ userData, d2aMode, models });
   const netLogPath = path.join(dir, "netlog.json");
-  const productMain = path.join(ROOT, PRODUCT_MAIN);
+  const setup =
+    setupMain === null
+      ? null
+      : (deps.assertSetupMain ?? assertSetupMainAtLaunch)(setupMain);
+  const productMain = setup ? setup.mainPath : path.join(ROOT, PRODUCT_MAIN);
   const env = {
     ...buildElectronLaunchEnv(wrapperEnv, {
       userData,
@@ -310,12 +319,21 @@ export async function startSession({
       tmpDir,
     }),
     ...extraEnv,
+    ...(setup ? setup.env : {}),
   };
   const evidence = {
     label,
     x11Before: listX11(),
     profile: { d2aMode, d2aStateFile: profile.d2aStateFile },
-    extraEnvNames: Object.keys(extraEnv).sort(),
+    extraEnvNames: Object.keys({ ...extraEnv, ...(setup?.env ?? {}) }).sort(),
+    // Review P2-5: each added variable's value digest (the nonce never in
+    // clear).
+    extraEnvSha256: Object.fromEntries(
+      Object.entries({ ...extraEnv, ...(setup?.env ?? {}) })
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([name, value]) => [name, sha256(Buffer.from(String(value)))]),
+    ),
+    main: setup ? setup.record : { kind: "product", path: PRODUCT_MAIN },
     problems: [],
   };
   const recorded = new Map();
