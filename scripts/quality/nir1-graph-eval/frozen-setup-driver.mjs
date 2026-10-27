@@ -737,6 +737,7 @@ const EXECUTORS = Object.freeze({
       throw error;
     }
     ctx.bGeneration = metadata.b.generation;
+    ctx.bSealedInSession = true;
     return { waitedMs: Date.now() - started, metadata };
   },
   async "chronicle-index"({ ctx, step }) {
@@ -800,11 +801,22 @@ const EXECUTORS = Object.freeze({
     if (
       probe.graph !== declared.graph ||
       probe.chronicle !== declared.chronicle
-    )
-      fail(
-        holding ? "index-state-holding" : "measurement-point",
-        `blocked:${holding ? "index-state-holding" : "maintenance-enabled"} — ${ctx.plan.variantKey}: the probe shows graph ${probe.graph} and chronicle ${probe.chronicle}, the variant declares graph ${declared.graph} and chronicle ${declared.chronicle}`,
+    ) {
+      const error = new Error(
+        `[precheck] S1i ${holding ? "index-state-holding" : "measurement-point"}: blocked:${holding ? "index-state-holding" : "maintenance-enabled"} — ${ctx.plan.variantKey}: the probe shows graph ${probe.graph} and chronicle ${probe.chronicle}, the variant declares graph ${declared.graph} and chronicle ${declared.chronicle}`,
       );
+      // S1j-2 P-1 (DR-BSEAM-3): a B the session sealed and then saw go
+      // dirty again (the Freshness evaluation after the publish) is rebuilt
+      // only by a new seam opening; the session loop may reopen (bounded).
+      if (
+        declared.graph === "usable" &&
+        probe.graph === "unusable" &&
+        probe.chronicle === declared.chronicle &&
+        ctx.bSealedInSession === true
+      )
+        error.bDirtiedAfterSeal = { metadata };
+      throw error;
+    }
     return ctx.measurementProbe;
   },
   async "qualified-ir"({ ctx, step }) {
@@ -1255,6 +1267,7 @@ export async function runFrozenSetupSteps({
   ctx.workspaceOpen ??= false;
   ctx.session = session;
   ctx.sessionStepsDone = 0;
+  ctx.bSealedInSession = false;
   // ① has the author session only (no B-ROUTE seam, no seal session).
   if (partialRun(plan) && session !== "author")
     fail(
@@ -1863,7 +1876,8 @@ export async function setupFrozenVariant({
             dirLabel,
           );
         } catch (error) {
-          if (error?.bSealTimeout && row.seam) timeout = error;
+          if ((error?.bSealTimeout || error?.bDirtiedAfterSeal) && row.seam)
+            timeout = error;
           else failure = error;
         } finally {
           if (nonce) {
@@ -1882,16 +1896,36 @@ export async function setupFrozenVariant({
             session: row.label,
             attempt,
             dirLabel,
+            outcome:
+              timeout === null
+                ? "sealed"
+                : timeout.bDirtiedAfterSeal
+                  ? "sealed-then-dirty"
+                  : "not-published",
             published:
-              timeout === null &&
+              (timeout === null || Boolean(timeout.bDirtiedAfterSeal)) &&
               receipt.phases.some(
                 (phaseRow) =>
                   phaseRow.session === row.label &&
                   /^b-seal(:|$)/u.test(phaseRow.name) &&
                   phaseRow.at >= startedAt,
               ),
-            waitedMs: timeout?.bSealTimeout.waitedMs ?? null,
-            metadata: timeout?.bSealTimeout.metadata ?? null,
+            waitedMs: timeout?.bSealTimeout?.waitedMs ?? null,
+            metadata:
+              timeout?.bSealTimeout?.metadata ??
+              timeout?.bDirtiedAfterSeal?.metadata ??
+              null,
+            // The phases of an opening that is reopened are kept here, not
+            // in the receipt's phases (which hold the opening that counted).
+            discardedPhases: timeout
+              ? receipt.phases
+                  .filter(
+                    (phaseRow) =>
+                      phaseRow.session === row.label &&
+                      phaseRow.at >= startedAt,
+                  )
+                  .map((phaseRow) => phaseRow.name)
+              : [],
             maintenanceRuns: (() => {
               try {
                 return readRunsSince(
@@ -1908,15 +1942,25 @@ export async function setupFrozenVariant({
         // A later step of the session failed: the attempt is recorded above.
         if (failure) throw failure;
         if (timeout === null) break;
-        // Only a session whose B seal was its first step is reopened.
+        // Only a session whose B seal was its first step is reopened (from
+        // that step); a B that went dirty after the seal also reopens.
         const first = plan.steps.find((step) => step.session === row.label);
-        if (first?.executor !== "b-seal" || ctx.sessionStepsDone > 0)
+        if (
+          first?.executor !== "b-seal" ||
+          (ctx.sessionStepsDone > 0 && !timeout.bDirtiedAfterSeal)
+        )
           throw timeout;
-        if (attempt >= B_SEAL_REOPENS)
+        if (attempt >= B_SEAL_REOPENS) {
+          if (timeout.bDirtiedAfterSeal) throw timeout;
           fail(
             "b-seal",
             `${B_SEAL_NOT_PUBLISHED} — ${plan.variantKey}: the ${row.label} session saw no new sealed B generation in ${attempt + 1} openings (${B_SEAL_REOPENS} reopens)`,
           );
+        }
+        receipt.phases = receipt.phases.filter(
+          (phaseRow) =>
+            !(phaseRow.session === row.label && phaseRow.at >= startedAt),
+        );
       }
     }
     // The cold DB: the workspace closed with no WAL left, copied once.

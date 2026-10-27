@@ -342,11 +342,47 @@ test("S1j-2 probe が宣言の状態を示さなければ blocked:index-state-ho
   // B sealed, then dirtied again before the measurement point.
   const dirtied = await completeSetup("G-02/base", { bDirtiedByQuery: true });
   assert.equal(dirtied.receipt.status, "blocked");
-  // The seal attempt is recorded although a later step stopped the run.
+  // P-1 (DR-BSEAM-3): every opening sealed B and saw it go dirty; the
+  // bound is spent and the attempts are recorded.
   assert.deepEqual(
-    dirtied.receipt.sealAttempts.map((row) => [row.attempt, row.published]),
-    [[0, true]],
+    dirtied.receipt.sealAttempts.map((row) => [
+      row.attempt,
+      row.published,
+      row.outcome,
+    ]),
+    [
+      [0, true, "sealed-then-dirty"],
+      [1, true, "sealed-then-dirty"],
+      [2, true, "sealed-then-dirty"],
+    ],
   );
+  // Once dirtied after the seal: the reopening seals gen 2 and completes;
+  // the receipt's phases hold the counted opening only.
+  const once = await completeSetup("G-02/base", {
+    bDirtiedByQuery: true,
+    bDirtiedByQueryTimes: 1,
+  });
+  assert.equal(
+    once.receipt.status,
+    "setup-complete",
+    once.receipt.errors.join("\n"),
+  );
+  assert.deepEqual(
+    once.receipt.sealAttempts.map((row) => [row.attempt, row.outcome]),
+    [
+      [0, "sealed-then-dirty"],
+      [1, "sealed"],
+    ],
+  );
+  assert.deepEqual(once.receipt.sealAttempts[0].discardedPhases, [
+    "b-seal",
+    "chronicle-index",
+  ]);
+  assert.deepEqual(
+    once.receipt.phases.map((row) => row.name),
+    executedPhaseNames(planOf(COMPLETE, "G-02/base")),
+  );
+  assert.equal(once.receipt.measurementPoint.probe.metadata.b.generation, 2);
   assert.match(
     dirtied.receipt.precheck.message,
     /blocked:maintenance-enabled — G-02\/base: the probe shows graph unusable/u,

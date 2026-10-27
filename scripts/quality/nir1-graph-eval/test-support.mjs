@@ -1351,11 +1351,13 @@ export function completeSetupExtension({
   extraContext = false,
   bStaysDirty = false,
   bDirtiedByQuery = false,
+  bDirtiedByQueryTimes = Infinity,
   sealMissesOpens = 0,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
     let seamOpens = 0;
+    let dirtiedByQuery = 0;
     let counter = 0;
     const id = (prefix) => `${prefix}-${String(++counter).padStart(4, "0")}`;
     const deleted = new Set();
@@ -1736,7 +1738,7 @@ export function completeSetupExtension({
         const projectId = projectOf();
         publish(projectId, "nir1-reviewed-chronicle:v1");
         // The product's freshness evaluation can dirty B after its seal.
-        if (bDirtiedByQuery)
+        if (bDirtiedByQuery && dirtiedByQuery++ < bDirtiedByQueryTimes)
           run(
             "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE index_key = ?",
             "nir1-reviewed-entity-relation:v1",
