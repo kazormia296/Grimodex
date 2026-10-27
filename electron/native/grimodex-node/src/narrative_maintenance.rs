@@ -9,9 +9,9 @@ use serde::Serialize;
 
 use grimodex_db::narrative_extraction::{
     discover_before_cutover_maintenance_work_with_coordinates,
-    discover_durable_maintenance_work_with_coordinates, effective_maintenance_coordinates,
-    DesiredWork, MaintenanceWorkRequest, MaintenanceWorkspaceBinding, NarrativeMaintenanceCiConfig,
-    MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
+    discover_maintenance_project_for_main, effective_maintenance_coordinates, DesiredWork,
+    MaintenanceProjectDiscovery, MaintenanceWorkRequest, MaintenanceWorkspaceBinding,
+    NarrativeMaintenanceCiConfig, MAX_MAINTENANCE_WORK_ITEMS_PER_CYCLE,
 };
 use grimodex_db::Database;
 
@@ -57,6 +57,11 @@ pub(crate) struct DiscoveryWorkPage {
 pub(crate) struct DiscoveryResult {
     pub(crate) workspace_binding: MaintenanceWorkspaceBinding,
     pub(crate) pages: Vec<DiscoveryWorkPage>,
+    /// B-ROUTE seam only (DR-BSEAM-1): projects main wakes so the controlled
+    /// cycle judges the gated Graph Index build. Omitted from the wire when
+    /// empty, so every product discovery response is unchanged.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) wake_project_ids: Vec<String>,
 }
 
 fn work_request(work: DesiredWork) -> MaintenanceWorkRequest {
@@ -78,6 +83,11 @@ fn work_request(work: DesiredWork) -> MaintenanceWorkRequest {
 /// non-reentrant Database connection mutex. The `Database` itself remains the
 /// one pinned authority for every planner call, and JavaScript receives the
 /// complete result before any queue mutation occurs.
+///
+/// Under the B-ROUTE seam a project can also be returned as a wake
+/// (`wake_project_ids`, DR-BSEAM-1): main then starts an empty-work cycle for
+/// it, and that controlled cycle judges the gated Graph Index build. Without
+/// the seam the list is always empty and is omitted from the wire.
 pub(crate) fn discover_all(
     db: &Database,
     binding: MaintenanceWorkspaceBinding,
@@ -106,6 +116,7 @@ pub(crate) fn discover_all(
 
     let mut pages = Vec::new();
     let mut page_work = Vec::new();
+    let mut wake_project_ids = Vec::new();
     let effective_coordinates = effective_maintenance_coordinates(ci_config)?;
     for project_id in project_ids {
         let planned = match reason {
@@ -114,12 +125,20 @@ pub(crate) fn discover_all(
                 &project_id,
                 Some(&effective_coordinates),
             )?,
-            _ => discover_durable_maintenance_work_with_coordinates(
+            _ => match discover_maintenance_project_for_main(
                 db,
                 &project_id,
                 reason.durable_reason(),
                 Some(&effective_coordinates),
-            )?,
+                ci_config,
+            )? {
+                MaintenanceProjectDiscovery::Work(work) => Some(work),
+                MaintenanceProjectDiscovery::Idle => None,
+                MaintenanceProjectDiscovery::GraphIndexBuildWake => {
+                    wake_project_ids.push(project_id.clone());
+                    None
+                }
+            },
         }
         .into_iter()
         .map(work_request)
@@ -143,6 +162,7 @@ pub(crate) fn discover_all(
     Ok(DiscoveryResult {
         workspace_binding: binding,
         pages,
+        wake_project_ids,
     })
 }
 
@@ -151,9 +171,10 @@ mod tests {
     use super::*;
     use grimodex_db::narrative_extraction::maintenance_runtime::NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN;
     use grimodex_db::narrative_extraction::{
-        run_dependency_verify_for_project, run_incremental_freshness_cycle, run_system_work_cycle,
-        AutomaticRunKind, IncrementalFreshnessCycleOutcome, MaintenanceCycleRequest,
-        NarrativeMaintenanceCiTrigger, RecoveryMode,
+        discover_durable_maintenance_work_with_coordinates, run_dependency_verify_for_project,
+        run_incremental_freshness_cycle, run_system_work_cycle, AutomaticRunKind,
+        IncrementalFreshnessCycleOutcome, MaintenanceCycleRequest, NarrativeMaintenanceCiTrigger,
+        RecoveryMode,
     };
     use serde_json::json;
 
@@ -209,6 +230,172 @@ mod tests {
         })
         .expect("seed completed backfill boundary");
         db
+    }
+
+    fn test_binding() -> MaintenanceWorkspaceBinding {
+        MaintenanceWorkspaceBinding {
+            authority_id: "authority:test".to_string(),
+            generation: 1,
+        }
+    }
+
+    fn ci_seam(trigger: Option<NarrativeMaintenanceCiTrigger>) -> NarrativeMaintenanceCiConfig {
+        NarrativeMaintenanceCiConfig {
+            is_packaged: false,
+            ci: "true".to_string(),
+            owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+            fault: None,
+            trigger,
+            setup: None,
+            freshness_hold_project_id: None,
+            product_journey_barrier_id: None,
+            correlation: None,
+        }
+    }
+
+    /// A project whose durable Backfill -> Verify chain has nothing to do.
+    fn idle_durable_chain_database() -> Database {
+        let db = before_cutover_test_database(true);
+        run_dependency_verify_for_project(&db, "default-project")
+            .expect("baseline Verify must persist durable skip evidence");
+        let product = discover_all(&db, test_binding(), WakeReason::WorkspaceOpened, None)
+            .expect("product discovery");
+        assert!(product.pages.is_empty(), "precondition: idle durable chain");
+        db
+    }
+
+    /// DR-BSEAM-1 (P-0). Main starts a maintenance cycle only for what this
+    /// discovery returns, and the gated Graph Index build (B) is judged only
+    /// inside a cycle. With the B-ROUTE seam and an idle durable chain the
+    /// discovery must therefore still ask main to wake the project, or B is
+    /// never built (missing) or rebuilt (dirty) in that session.
+    #[test]
+    fn b_route_discovery_wakes_an_idle_project_so_the_cycle_judges_the_graph_index() {
+        let db = idle_durable_chain_database();
+        let seam = ci_seam(Some(NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild));
+        for reason in [
+            WakeReason::WorkspaceOpened,
+            WakeReason::RestoreCompleted,
+            WakeReason::SemanticEpochRotated,
+        ] {
+            let discovered =
+                discover_all(&db, test_binding(), reason, Some(&seam)).expect("B-ROUTE discovery");
+            assert!(
+                discovered.pages.is_empty(),
+                "main never names the gated Graph build work"
+            );
+            let wire = serde_json::to_value(&discovered).expect("serialize discovery");
+            assert_eq!(
+                wire.get("wakeProjectIds"),
+                Some(&json!(["default-project"])),
+                "{reason:?}: {wire}"
+            );
+        }
+    }
+
+    /// Without the B-ROUTE seam the discovery wire stays byte-identical (no
+    /// `wakeProjectIds` key) and an invalid seam is still refused before any
+    /// planner call, so main starts no additional cycle.
+    #[test]
+    fn discovery_wire_is_unchanged_outside_the_b_route_seam() {
+        let db = idle_durable_chain_database();
+        let product = serde_json::to_string(
+            &discover_all(&db, test_binding(), WakeReason::WorkspaceOpened, None)
+                .expect("product discovery"),
+        )
+        .expect("serialize product discovery");
+        assert_eq!(
+            product,
+            r#"{"workspaceBinding":{"authorityId":"authority:test","generation":1},"pages":[]}"#
+        );
+        let mut closed = vec![ci_seam(None)];
+        for trigger in [
+            NarrativeMaintenanceCiTrigger::DependencyGap,
+            NarrativeMaintenanceCiTrigger::ForegroundWorkspaceWake,
+        ] {
+            closed.push(ci_seam(Some(trigger)));
+        }
+        // Coordinate triggers still reach Verify as ordinary work, never a wake.
+        for trigger in [
+            NarrativeMaintenanceCiTrigger::GraphContractDigestChanged,
+            NarrativeMaintenanceCiTrigger::RuleRegistryDigestChanged,
+            NarrativeMaintenanceCiTrigger::ProducerGenerationSetDigestChanged,
+        ] {
+            let discovered = discover_all(
+                &db,
+                test_binding(),
+                WakeReason::WorkspaceOpened,
+                Some(&ci_seam(Some(trigger))),
+            )
+            .expect("coordinate trigger discovery");
+            assert!(!discovered.pages.is_empty(), "{trigger:?}");
+            assert!(discovered.wake_project_ids.is_empty(), "{trigger:?}");
+        }
+        for config in &closed {
+            let wire = serde_json::to_string(
+                &discover_all(
+                    &db,
+                    test_binding(),
+                    WakeReason::WorkspaceOpened,
+                    Some(config),
+                )
+                .expect("seam discovery"),
+            )
+            .expect("serialize seam discovery");
+            assert_eq!(wire, product, "{config:?}");
+        }
+
+        let mut packaged = ci_seam(Some(NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild));
+        packaged.is_packaged = true;
+        let mut not_ci = ci_seam(Some(NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild));
+        not_ci.ci = "false".to_string();
+        let mut forged_owner = ci_seam(Some(NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild));
+        forged_owner.owner_token = "forged-owner".to_string();
+        for config in [&packaged, &not_ci, &forged_owner] {
+            assert!(
+                discover_all(
+                    &db,
+                    test_binding(),
+                    WakeReason::WorkspaceOpened,
+                    Some(config)
+                )
+                .is_err(),
+                "{config:?}"
+            );
+        }
+
+        // The C2-ZC BeforeCutover flow is never a B-ROUTE wake.
+        let seam = ci_seam(Some(NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild));
+        let before_cutover =
+            discover_all(&db, test_binding(), WakeReason::BeforeCutover, Some(&seam))
+                .expect("before-cutover discovery");
+        assert!(before_cutover.wake_project_ids.is_empty());
+        assert!(serde_json::to_value(&before_cutover)
+            .expect("serialize")
+            .get("wakeProjectIds")
+            .is_none());
+    }
+
+    /// A project with durable work keeps its ordinary work item under the
+    /// B-ROUTE seam; the cycle that runs it judges B after the durable chain.
+    #[test]
+    fn b_route_discovery_keeps_durable_work_as_work_not_as_a_wake() {
+        let db = before_cutover_test_database(true);
+        let seam = ci_seam(Some(NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild));
+        let product = discover_all(&db, test_binding(), WakeReason::WorkspaceOpened, None)
+            .expect("product discovery");
+        let discovered = discover_all(
+            &db,
+            test_binding(),
+            WakeReason::WorkspaceOpened,
+            Some(&seam),
+        )
+        .expect("B-ROUTE discovery");
+        assert!(!product.pages.is_empty(), "precondition: durable work");
+        assert_eq!(
+            serde_json::to_value(&discovered).expect("serialize"),
+            serde_json::to_value(&product).expect("serialize")
+        );
     }
 
     #[test]

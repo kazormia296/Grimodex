@@ -2269,6 +2269,84 @@ pub(crate) fn discover_durable_maintenance_work_with_coordinates_and_control(
     result.into_result()
 }
 
+/// Main's discovery answer for one project (DR-BSEAM-1).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MaintenanceProjectDiscovery {
+    /// Durable phase work that main queues as an ordinary cycle item.
+    Work(DesiredWork),
+    /// Nothing to do: main starts no cycle for this project.
+    Idle,
+    /// B-ROUTE seam only: main wakes the project (an empty-work cycle with
+    /// `wake_project_ids`). Main still never names the gated Graph build; the
+    /// controlled cycle judges it and re-judges the durable chain under its
+    /// own validation context.
+    GraphIndexBuildWake,
+}
+
+/// Whether main's discovery wakes a project for the gated Graph Index build.
+/// True only when the validated, unpackaged CI journey seam selected
+/// `nir1-graph-index-build` (the same gate as the cycle) and the wake is not
+/// part of the C2-ZC BeforeCutover flow, which the gated route never judges.
+/// Every product launch has no seam, so this is false there.
+pub fn nir1_graph_index_build_wakes_main_discovery(
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+    reason: &str,
+) -> bool {
+    reason != "before-cutover"
+        && reason != BEFORE_CUTOVER_FOLLOW_UP_REASON
+        && Nir1GraphIndexBuildGate::from_journey_seam(ci_config).is_open()
+}
+
+pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<super::source_revision::ValidationTerminated>()
+            .is_some_and(|terminated| {
+                terminated.reason
+                    == super::source_revision::ValidationTerminationReason::ContextUnavailable
+            })
+    })
+}
+
+/// Main's (uncontrolled) discovery for one project.
+///
+/// The gated Graph Index build (B) is judged only inside a controlled cycle,
+/// and main starts a cycle only for what this discovery returns. Under the
+/// B-ROUTE seam two states would otherwise start no cycle at all:
+///
+/// * the durable chain is idle, so a missing or dirty B is never judged;
+/// * a sealed Graph or Chronicle binding makes the durable planner re-resolve
+///   an Entity/Relation or Chronicle eligibility Source, which this
+///   uncontrolled read refuses as `context-unavailable` (only a cycle owns a
+///   full-eligibility validation context).
+///
+/// In both cases the B-ROUTE asks main to wake the project instead. Without
+/// the seam the result is exactly the durable planner's answer, and its errors
+/// propagate unchanged.
+pub fn discover_maintenance_project_for_main(
+    db: &Database,
+    project_id: &str,
+    reason: &str,
+    coordinates: Option<&MaintenanceContractCoordinates>,
+    ci_config: Option<&NarrativeMaintenanceCiConfig>,
+) -> anyhow::Result<MaintenanceProjectDiscovery> {
+    let graph_wake = nir1_graph_index_build_wakes_main_discovery(ci_config, reason);
+    match discover_durable_maintenance_work_with_coordinates(db, project_id, reason, coordinates) {
+        Ok(Some(work)) => Ok(MaintenanceProjectDiscovery::Work(work)),
+        Ok(None) if graph_wake => Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake),
+        Ok(None) => Ok(MaintenanceProjectDiscovery::Idle),
+        Err(error) if graph_wake && is_context_unavailable_termination(&error) => {
+            tracing::debug!(
+                target: "narrative.nir1_graph_index_build",
+                project_id,
+                "NIR1_GRAPH_INDEX_BUILD_DISCOVERY_WAKE_CONTEXT_UNAVAILABLE"
+            );
+            Ok(MaintenanceProjectDiscovery::GraphIndexBuildWake)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 /// Plan the next cycle work for one project. The gated Graph Index build is
 /// judged first; its gate is checked before any SQL, so a closed gate (the
 /// product default) leaves this function exactly as before. With the gate

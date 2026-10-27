@@ -35,6 +35,11 @@ interface NarrativeMaintenanceDiscoveryBackend {
 interface NarrativeMaintenanceDiscoveryResult {
   workspaceBinding: NarrativeMaintenanceWorkspaceBinding;
   work: readonly NarrativeMaintenanceRequest[];
+  /**
+   * B-ROUTE seam only (DR-BSEAM-1): projects whose controlled cycle must judge
+   * the gated NIR-1 Graph Index build. Always empty without that seam.
+   */
+  graphIndexBuildWakeProjectIds: readonly string[];
 }
 
 interface NarrativeMaintenanceUnavailable {
@@ -78,6 +83,13 @@ export interface NarrativeMaintenanceTriggerCoordinator {
 
 export interface NarrativeMaintenanceTriggerCoordinatorOptions {
   warn?: (...args: unknown[]) => void;
+  /**
+   * B-ROUTE seam only (DR-BSEAM-1). Set by the bootstrap for a validated,
+   * unpackaged CI launch whose trigger is `nir1-graph-index-build`. Without
+   * it a discovery response that carries `wakeProjectIds` is rejected, so
+   * every other launch keeps the exact previous discovery contract.
+   */
+  acceptGraphIndexBuildWakes?: boolean;
   /** Publish main-owned coordinator state to the CI quiescence writer. */
   onDiscoverySettled?: (observation: {
     discoveryGeneration: number;
@@ -213,8 +225,33 @@ function normalizeWork(raw: unknown): NarrativeMaintenanceRequest[] {
   }));
 }
 
+function normalizeGraphIndexBuildWakes(raw: unknown): string[] {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(
+      "native maintenance discovery returned invalid Graph Index wake list",
+    );
+  }
+  const projectIds = new Set<string>();
+  for (const projectId of raw) {
+    if (
+      typeof projectId !== "string" ||
+      projectId.length === 0 ||
+      projectId !== projectId.trim() ||
+      projectId.includes("\u0000") ||
+      projectIds.has(projectId)
+    ) {
+      throw new Error(
+        "native maintenance discovery returned invalid Graph Index wake project",
+      );
+    }
+    projectIds.add(projectId);
+  }
+  return [...projectIds];
+}
+
 function normalizeDiscoveryResponse(
   rawResponse: unknown,
+  acceptGraphIndexBuildWakes: boolean,
 ): NarrativeMaintenanceDiscoveryResult | NarrativeMaintenanceUnavailable {
   const raw = parseJsonWire(rawResponse);
   if (!isRecord(raw)) {
@@ -231,9 +268,14 @@ function normalizeDiscoveryResponse(
   }
 
   const allowedKeys = new Set(["workspaceBinding", "pages"]);
+  if (acceptGraphIndexBuildWakes) allowedKeys.add("wakeProjectIds");
   if (Object.keys(raw).some((key) => !allowedKeys.has(key))) {
     throw new Error("native maintenance discovery returned invalid response");
   }
+  const graphIndexBuildWakeProjectIds =
+    raw.wakeProjectIds === undefined
+      ? []
+      : normalizeGraphIndexBuildWakes(raw.wakeProjectIds);
   if (!Array.isArray(raw.pages)) {
     throw new Error("native maintenance discovery returned invalid page list");
   }
@@ -262,6 +304,7 @@ function normalizeDiscoveryResponse(
   return {
     workspaceBinding: normalizeBinding(raw.workspaceBinding),
     work,
+    graphIndexBuildWakeProjectIds,
   };
 }
 
@@ -306,6 +349,8 @@ export function createNarrativeMaintenanceTriggerCoordinator(
   options: NarrativeMaintenanceTriggerCoordinatorOptions = {},
 ): NarrativeMaintenanceTriggerCoordinator {
   const warn = options.warn ?? console.warn;
+  const acceptGraphIndexBuildWakes =
+    options.acceptGraphIndexBuildWakes === true;
   let disposed = false;
   let discoveryInFlight = false;
   let discoveryReason: NarrativeMaintenanceWakeReason | null = null;
@@ -443,6 +488,7 @@ export function createNarrativeMaintenanceTriggerCoordinator(
       try {
         const response = normalizeDiscoveryResponse(
           await discover.call(backend, reason),
+          acceptGraphIndexBuildWakes,
         );
         if (disposed || discoveryGeneration !== chainGeneration) return;
         if ("status" in response) {
@@ -517,10 +563,31 @@ export function createNarrativeMaintenanceTriggerCoordinator(
             }
           }
         }
+        const requestGraphIndexBuildWakes =
+          scheduler.requestGraphIndexBuildWakesWithBinding;
+        if (
+          response.graphIndexBuildWakeProjectIds.length > 0 &&
+          typeof requestGraphIndexBuildWakes !== "function"
+        ) {
+          throw new Error(
+            "narrative maintenance scheduler cannot register Graph Index wakes",
+          );
+        }
         scheduler.requestManyWithBinding(
           response.work,
           response.workspaceBinding,
         );
+        // B-ROUTE only (DR-BSEAM-1): an empty-work cycle for each project
+        // lets the controlled native cycle judge the gated Graph Index build.
+        // The chain still ends below when `work` is empty, so the accepted
+        // wake cycle does not loop through rediscovery.
+        if (response.graphIndexBuildWakeProjectIds.length > 0) {
+          requestGraphIndexBuildWakes?.call(
+            scheduler,
+            response.graphIndexBuildWakeProjectIds,
+            response.workspaceBinding,
+          );
+        }
         if (recoveryBinding !== null && recoveryDiscoveryBinding === recoveryBinding) {
           recoveryDiscoveryBinding = null;
         }
@@ -665,7 +732,9 @@ export function createNarrativeMaintenanceTriggerCoordinator(
               discoveryGeneration,
               observedAtMs: Date.now(),
               workspaceBinding: currentBinding,
-              discoveryEmpty: completedResponse?.work.length === 0,
+              discoveryEmpty:
+                completedResponse?.work.length === 0 &&
+                completedResponse.graphIndexBuildWakeProjectIds.length === 0,
               discoveryInFlight: false,
               timerScheduled: timer !== null,
               pendingRetry: pendingRetryDelayMs !== null,
@@ -871,7 +940,9 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         emitDiscoveryObservation(
           chainGeneration,
           sameDiscovery
-            ? lastSettledDiscovery?.response.work.length === 0
+            ? lastSettledDiscovery?.response.work.length === 0 &&
+                lastSettledDiscovery.response.graphIndexBuildWakeProjectIds
+                  .length === 0
             : false,
           sameDiscovery
             ? (lastSettledDiscovery?.workspaceBinding ?? workspaceBinding)
