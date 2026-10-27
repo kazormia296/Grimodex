@@ -200,11 +200,12 @@ test("TR-5: runner の入口は --product-receipt と評価 build の directory 
   );
 });
 
-test("TR-5: runner.mjs と k64-runner.mjs は起動の前に同じ照合を呼び、結果を checks.productBuild に書く", async () => {
+test("TR-5: runner.mjs と k64-runner.mjs と trace-runner.mjs は起動の前に同じ照合を呼び、結果を checks.productBuild に書く", async () => {
   const { readFile } = await import("node:fs/promises");
   for (const [file, launchCall] of [
     ["runner.mjs", "startSession({"],
     ["k64-runner.mjs", "session = await launch({"],
+    ["trace-runner.mjs", "session = await launch({"],
   ]) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
     const check = source.indexOf("checkRunnerBuildReceipts({");

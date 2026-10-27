@@ -354,7 +354,7 @@ const HARNESS_FILES = Object.freeze([
 ]);
 
 /** Candidate block (§7.2): commit, tree, clean, receipts, models, harness. */
-function candidateBlock({ options, nativePath, workerPath }) {
+export function candidateBlock({ options, nativePath, workerPath }) {
   const evalDir = path.dirname(nativePath);
   const read = (file) => (existsSync(file) ? readFileSync(file) : null);
   const evalReceipt = read(path.join(evalDir, "eval-build.json"));
@@ -403,7 +403,7 @@ function candidateBlock({ options, nativePath, workerPath }) {
 }
 
 /** The dev variant's expected Graph contribution, as runtime Scene ids. */
-function devExpectedContribution(loaded, variantId, ids) {
+export function devExpectedContribution(loaded, variantId, ids) {
   const variant = loaded.fixture.variants.find((row) => row.id === variantId);
   const graph = variant?.expectations?.arms?.rPlusIrPlusGraph;
   if (!graph) return null;
