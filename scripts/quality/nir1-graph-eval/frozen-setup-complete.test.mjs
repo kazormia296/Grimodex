@@ -381,6 +381,24 @@ test("S1j-2 qualified-ir の取り違えと optional story inputs を拒む（Ch
     () => assertChronicleSetup({ plan, ids: swapped, rows }),
     /\[precheck\] S1i logical-runtime/u,
   );
+  // An envelope bound to another Scene, and a Chronicle run the plan did
+  // not make, are refused (S1j-2 mutation M25, M27).
+  const otherScene = JSON.parse(JSON.stringify(rows));
+  otherScene[0].proposals[0].revisions[0].envelope.assertion.scope.scene.ref =
+    "scene:another";
+  assert.throws(
+    () => assertChronicleSetup({ plan, ids, rows: otherScene }),
+    /envelope is not the fixture's seed/u,
+  );
+  assert.throws(
+    () =>
+      assertChronicleSetup({
+        plan,
+        ids,
+        rows: [...rows, { runId: "extra-run", proposals: [] }],
+      }),
+    /Chronicle runs/u,
+  );
   const missing = { ...ids, chronicle: { [a]: ids.chronicle[a] } };
   assert.throws(
     () => assertChronicleSetup({ plan, ids: missing, rows }),
@@ -402,6 +420,30 @@ test("S1j-2 qualified-ir の取り違えと optional story inputs を拒む（Ch
       }),
     /last Decision is not approved/u,
   );
+});
+
+test("S1j-2 測定点の段を持たない完全な setup は受領書を setup-complete にしない", async () => {
+  const base = planOf(COMPLETE, "G-03/base");
+  const plan = {
+    ...base,
+    steps: base.steps.slice(0, -1),
+    stopIndex: base.stopIndex - 1,
+  };
+  const product = completeProduct(plan);
+  const sessions = fakeSessions(product);
+  const { receipt } = await setupFrozenVariant({
+    plan,
+    setupDir: path.join(scratch("cp4-s1j2-nomp-"), "G-03", "base"),
+    shared: SHARED,
+    deps: {
+      startSession: sessions.startSession,
+      uuid,
+      sleep: noSleep,
+      limits: { bSealMs: 50 },
+    },
+  });
+  assert.equal(receipt.status, "blocked");
+  assert.match(receipt.precheck.message, /no measurement point/u);
 });
 
 test("S1j-2 Chronicle の入口は session で限る: 抽出・child・承認は ir の session だけ、撤回は製品の Main の session だけ、qualified-ir の段も ir の外では止まる", async () => {
