@@ -5,14 +5,21 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { assessG01Negative } from "./frozen-diagnostics.mjs";
 import {
+  G01_CONTROL_ATTEMPTS,
+  G01_CONTROL_GAP_MS,
   G01_NEGATIVE_POLL_MS,
+  classifyG01Control,
+  g01FrameReached,
+  graphInputsDigest,
+  reopenUntilSealed,
+  runG01NegativeControl,
   g01NegativeLaunchEnv,
   g01NegativeSampleOf,
   prepareG01NegativeBeforeDeclaration,
   runG01NegativeStep,
   waitG01NegativeSealed,
 } from "./g01-negatives.mjs";
-import { B_SEAL_WAIT_MS } from "./frozen-setup-driver.mjs";
+import { B_SEAL_REOPENS, B_SEAL_WAIT_MS } from "./frozen-setup-driver.mjs";
 import { TRACE_MAINTENANCE_SEAM } from "./trace-record.mjs";
 
 const TARGET = {
@@ -216,18 +223,20 @@ test("O-1 (5): 宣言の後の mutation は N2 が同じ本文の再保存、N3�
       },
     }),
   });
-  const wait = async ({ before }) => ({
-    ok: true,
-    waitedMs: 7,
-    metadata: before,
-  });
   const base = {
     page,
     ids: IDS,
     target: TARGET,
     readIndex: () => metadata(4),
     readPins: () => pins([pin("e-orin")]),
-    wait,
+    reopen: async () => ({
+      ok: true,
+      session: { id: "s2" },
+      sealAttempts: [{ attempt: 0, outcome: "sealed" }],
+    }),
+    readGraphInputs: () => ({ codexRelations: [] }),
+    closeCurrent: async () => {},
+    openSession: async () => ({}),
   };
   const n2 = await runG01NegativeStep({
     ...base,
@@ -236,6 +245,10 @@ test("O-1 (5): 宣言の後の mutation は N2 が同じ本文の再保存、N3�
   });
   assert.equal(n2.blocked, null);
   assert.equal(n2.spP1Recheck.status, "match");
+  // 開き直した session と記録を返す。
+  assert.deepEqual(n2.session, { id: "s2" });
+  assert.equal(n2.sealAttempts[0].outcome, "sealed");
+  assert.equal(n2.graphInputs.length, 64);
   const n3 = await runG01NegativeStep({
     ...base,
     id: "K24-G01-N3",
@@ -277,7 +290,6 @@ test("O-1 (5): 宣言の後の mutation は N2 が同じ本文の再保存、N3�
 });
 
 test("O-1 (5): restore の経路が使えない、版の bytes が違う、B が戻らなければ blocked（case の判定に数えない）", async () => {
-  const wait = async () => ({ ok: true, waitedMs: 1 });
   const cases = [
     [
       { restoreVersion: () => ({ ok: false, error: "restore unavailable" }) },
@@ -330,7 +342,14 @@ test("O-1 (5): restore の経路が使えない、版の bytes が違う、B が
       before,
       readIndex: () => metadata(4),
       readPins: () => pins([pin("e-orin")]),
-      wait,
+      reopen: async () => ({
+        ok: true,
+        session: { id: "s2" },
+        sealAttempts: [{ attempt: 0, outcome: "sealed" }],
+      }),
+      readGraphInputs: () => ({ codexRelations: [] }),
+      closeCurrent: async () => {},
+      openSession: async () => ({}),
     });
     assert.equal(step.blocked?.reason, reason, id);
     assert.equal(
@@ -352,12 +371,23 @@ test("O-1 (5): restore の経路が使えない、版の bytes が違う、B が
     before: null,
     readIndex: () => metadata(4),
     readPins: () => pins([pin("e-orin")]),
-    wait: async () => ({ ok: false, waitedMs: B_SEAL_WAIT_MS }),
+    readGraphInputs: () => ({}),
+    reopen: async () => ({
+      ok: false,
+      session: null,
+      sealAttempts: [0, 1, 2].map((attempt) => ({
+        attempt,
+        outcome: "not-published",
+        waitedMs: B_SEAL_WAIT_MS,
+      })),
+    }),
   });
-  assert.equal(notSealed.blocked.reason, "b-seal-not-current");
+  assert.equal(notSealed.blocked.reason, "b-seal-not-published");
+  assert.equal(notSealed.blocked.openings, 3);
+  assert.equal(notSealed.session, null);
 });
 
-test("O-1 (5): 測定の Main は B-ROUTE の journey seam、sample は論理 ID（frame を読む入口が無ければ null）", () => {
+test("O-1 (5): 測定の Main は B-ROUTE の journey seam、sample は論理 ID（対照が無ければ届いたかは判定不能）", () => {
   const env = g01NegativeLaunchEnv({
     nonce: "8c7f4a3e-6b1d-4c2a-9e5f-0a1b2c3d4e5f",
     base: { CI: "true" },
@@ -390,7 +420,7 @@ test("O-1 (5): 測定の Main は B-ROUTE の journey seam、sample は論理 ID
       spP1Recheck: { status: "match" },
       samples: [sample],
     }).reasons,
-    ["g01-mira-entity-reached:unobservable"],
+    ["g01-mira-entity-reached:undetermined"],
   );
 });
 
@@ -409,7 +439,14 @@ test("O-1 (5)（変異 G4）: restore の答えの版の bytes が用意した�
     before: { revisionId: "v1", sha256: "o" },
     readIndex: () => metadata(4),
     readPins: () => pins([pin("e-orin")]),
-    wait: async () => ({ ok: true, waitedMs: 1 }),
+    reopen: async () => ({
+      ok: true,
+      session: { id: "s2" },
+      sealAttempts: [{ attempt: 0, outcome: "sealed" }],
+    }),
+    readGraphInputs: () => ({ codexRelations: [] }),
+    closeCurrent: async () => {},
+    openSession: async () => ({}),
   });
   assert.equal(step.blocked?.reason, "mutation");
 });
@@ -419,4 +456,226 @@ test("O-1 (5): K24-G01-N2〜N4 の段の dev の予告は dev preview の目的�
   const { G01_NEGATIVE_PREVIEW_PURPOSE } =
     await import("./g01-negative-preview.mjs");
   assert.ok(DEV_PREVIEW_PURPOSES.includes(G01_NEGATIVE_PREVIEW_PURPOSE));
+});
+
+const T2 = { ...TARGET };
+const reachedAnswer = (overrides = {}) => ({
+  status: "completed",
+  graphOutcome: "graph-ready",
+  graphOnly: {
+    sceneId: "s-mira",
+    pinEntityId: "e-mira",
+    hop: 1,
+    edges: [{ from: "e-orin", to: "e-mira", relationType: "delivered-key-to" }],
+  },
+  pathAttachments: [],
+  ...overrides,
+});
+
+test("O-6: 対照は graph-ready の答えの Graph-only の行が宣言の Scene・pin の Entity・seed からの edge を持てば reached、持たなければ not-reached、ほかは undetermined", () => {
+  const classify = (answer) =>
+    classifyG01Control({ answer, ids: IDS, target: T2 });
+  assert.equal(classify(reachedAnswer()), "reached");
+  assert.equal(classify(reachedAnswer({ graphOnly: null })), "not-reached");
+  assert.equal(
+    classify(
+      reachedAnswer({
+        graphOnly: { ...reachedAnswer().graphOnly, pinEntityId: "e-orin" },
+      }),
+    ),
+    "not-reached",
+  );
+  assert.equal(
+    classify(
+      reachedAnswer({
+        graphOnly: { ...reachedAnswer().graphOnly, sceneId: "s-review" },
+      }),
+    ),
+    "not-reached",
+  );
+  assert.equal(
+    classify(
+      reachedAnswer({
+        graphOnly: {
+          ...reachedAnswer().graphOnly,
+          edges: [{ from: "e-x", to: "e-mira" }],
+        },
+      }),
+    ),
+    "not-reached",
+  );
+  assert.equal(
+    classify(reachedAnswer({ graphOutcome: "graph-late" })),
+    "undetermined",
+  );
+  assert.equal(
+    classify(reachedAnswer({ graphOutcome: "graph-unavailable:failed" })),
+    "undetermined",
+  );
+});
+
+test("O-6: 対照は graph-ready になるまで上限の回数だけ製品の fetch を繰り返し、答えと Graph の入力の digest を残す", async () => {
+  const answers = [
+    reachedAnswer({ graphOutcome: "graph-late", graphOnly: null }),
+    reachedAnswer(),
+  ];
+  const { calls, page } = fakePage({
+    graphProbe: () => ({ ok: true, value: answers.shift() }),
+  });
+  const slept = [];
+  const control = await runG01NegativeControl({
+    page,
+    ids: IDS,
+    target: T2,
+    readGraphInputs: () => ({ codexRelations: [{ id: "r" }] }),
+    sleep: async (ms) => slept.push(ms),
+  });
+  assert.equal(control.status, "reached");
+  assert.equal(control.answers.length, 2);
+  assert.deepEqual(slept, [G01_CONTROL_GAP_MS]);
+  assert.deepEqual(calls[0], [
+    "graphProbe",
+    { sceneId: "s-query", seed: "e-orin" },
+  ]);
+  assert.equal(
+    control.graphInputs,
+    graphInputsDigest({ codexRelations: [{ id: "r" }] }),
+  );
+  const never = fakePage({
+    graphProbe: () => ({
+      ok: true,
+      value: reachedAnswer({ graphOutcome: "graph-late" }),
+    }),
+  });
+  const late = await runG01NegativeControl({
+    page: never.page,
+    ids: IDS,
+    target: T2,
+    readGraphInputs: () => ({}),
+    sleep: async () => {},
+  });
+  assert.equal(late.status, "undetermined");
+  assert.equal(late.answers.length, G01_CONTROL_ATTEMPTS);
+});
+
+test("O-1 (7): mutation の後は Main を閉じて開き直し、setup の seal の session と同じ上限（1 + B_SEAL_REOPENS 回）で B を待ち、記録を残す", async () => {
+  const events = [];
+  let opened = 0;
+  const openSession = async ({ attempt, dirLabel }) => {
+    events.push(["open", attempt, dirLabel]);
+    opened += 1;
+    return { close: async () => events.push(["close", attempt]) };
+  };
+  const sealedAt = 2;
+  const result = await reopenUntilSealed({
+    closeCurrent: async () => events.push(["close-current"]),
+    openSession,
+    readIndex: () => metadata(4),
+    before: metadata(4),
+    wait: async () =>
+      opened === sealedAt
+        ? { ok: true, waitedMs: 5, metadata: metadata(5) }
+        : { ok: false, waitedMs: B_SEAL_WAIT_MS, metadata: metadata(4, true) },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, [
+    ["close-current"],
+    ["open", 0, "measure-reopen-0"],
+    ["close", 0],
+    ["open", 1, "measure-reopen-1"],
+  ]);
+  assert.deepEqual(
+    result.sealAttempts.map((row) => [row.attempt, row.outcome, row.published]),
+    [
+      [0, "not-published", false],
+      [1, "sealed", true],
+    ],
+  );
+  opened = 0;
+  const exhausted = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    openSession: async () => ({ close: async () => {} }),
+    readIndex: () => metadata(4),
+    before: metadata(4),
+    wait: async () => ({ ok: false, waitedMs: B_SEAL_WAIT_MS }),
+  });
+  assert.equal(exhausted.ok, false);
+  assert.equal(exhausted.sealAttempts.length, 1 + B_SEAL_REOPENS);
+});
+
+test("O-6: sample の「届いた」は、対照が reached・Graph の入力が同じ・seed つき・graph-ready・A3 eligible のときだけ真", () => {
+  const control = { status: "reached", graphInputs: "d1" };
+  const row = (overrides = {}) => ({
+    phase: "measured",
+    repeat: 0,
+    arm: "graph",
+    followUp: { parent: { seed: "e-orin" }, child: { outcome: "graph-ready" } },
+    graph: { outcome: "graph-late" },
+    a3AtStart: { eligible: true },
+    ...overrides,
+  });
+  const reached = (value, extra = {}) =>
+    g01FrameReached({
+      row: value,
+      ids: IDS,
+      target: T2,
+      control,
+      inputsDigest: "d1",
+      ...extra,
+    });
+  assert.equal(reached(row()), true);
+  assert.equal(reached(row({ followUp: { parent: { seed: "e-x" } } })), false);
+  assert.equal(reached(row({ a3AtStart: { eligible: false } })), false);
+  assert.equal(reached(row({ a3AtStart: null })), null);
+  assert.equal(
+    reached(
+      row({
+        followUp: { parent: { seed: "e-orin" } },
+        graph: { outcome: "graph-unavailable" },
+      }),
+    ),
+    false,
+  );
+  assert.equal(
+    reached(row({ followUp: { parent: { seed: "e-orin" } } })),
+    null,
+  );
+  assert.equal(reached(row(), { inputsDigest: "d2" }), null);
+  assert.equal(
+    reached(row(), { control: { status: "not-reached", graphInputs: "d1" } }),
+    null,
+  );
+  assert.equal(reached(row(), { control: null }), null);
+  // 結果: 届いて g01-mira が返らなければ established、返れば not-established。
+  const sample = g01NegativeSampleOf({
+    row: { ...row(), finalSceneIds: ["s-review"] },
+    ids: IDS,
+    target: T2,
+    control,
+    inputsDigest: "d1",
+  });
+  assert.equal(sample.frameReached, true);
+  assert.equal(
+    assessG01Negative({
+      id: "K24-G01-N2",
+      spP1Recheck: { status: "match" },
+      samples: [sample],
+    }).outcome,
+    "established",
+  );
+  const returned = g01NegativeSampleOf({
+    row: { ...row(), finalSceneIds: ["s-mira"] },
+    ids: IDS,
+    target: T2,
+    control,
+    inputsDigest: "d1",
+  });
+  assert.equal(
+    assessG01Negative({
+      id: "K24-G01-N2",
+      spP1Recheck: { status: "match" },
+      samples: [returned],
+    }).outcome,
+    "not-established",
+  );
 });

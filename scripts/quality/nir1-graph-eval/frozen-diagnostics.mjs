@@ -357,6 +357,85 @@ export function assertSpP4WorkspaceStable(samples, label) {
   return { measured: rows.length };
 }
 
+/**
+ * DR-CP4-O-7 (a): the IR wait's outcome per sample of one attempt, disclosed
+ * apart from the judgement — how many warm-up and measured samples did not
+ * reach `ir-ready`, and which.
+ */
+export function spP4IrDisclosure(samples) {
+  const rows = samples ?? [];
+  const count = (phase) => {
+    const of = rows.filter((row) => row?.phase === phase);
+    return {
+      samples: of.length,
+      notReady: of.filter((row) => row?.ir?.outcome !== "ir-ready").length,
+    };
+  };
+  return {
+    warmup: count("warmup"),
+    measured: count("measured"),
+    notReadySamples: rows
+      .filter((row) => row?.ir?.outcome !== "ir-ready")
+      .map((row) => ({
+        phase: row?.phase ?? null,
+        repeat: row?.repeat ?? null,
+        outcome: row?.ir?.outcome ?? null,
+        deadlineExceeded: row?.ir?.deadlineExceeded ?? null,
+        resultKind: row?.ir?.resultKind ?? null,
+      })),
+  };
+}
+
+const R_FIELDS = ["rSceneIds", "denseHitSceneIds", "sparseSceneIds"];
+
+/**
+ * DR-CP4-O-7 (b), disclosed apart from the judgement (the `[precheck]` of an
+ * unstable workspace stands): whether the measured samples that differ from
+ * the first `ir-ready` one are explained by the IR deadline alone — the IR
+ * did not reach `ir-ready`, R, the dense hits and the sparse Scenes are the
+ * reference's, and R+IR is R with no supplement (only the IR contribution is
+ * missing) — and every `ir-ready` sample agrees with the reference.
+ */
+export function explainSpP4Instability(samples) {
+  const measured = measuredOf(samples);
+  const ready = measured.filter((row) => row?.ir?.outcome === "ir-ready");
+  if (ready.length === 0)
+    return {
+      explainedByIrDeadline: false,
+      reason: "no-ir-ready-sample",
+      rows: [],
+    };
+  const reference = ready[0];
+  const same = (row, fields) =>
+    fields.every((field) => stable(row[field]) === stable(reference[field]));
+  const readyAgree = ready.every((row) => same(row, PARITY_FIELDS));
+  const rows = measured
+    .filter((row) => !same(row, PARITY_FIELDS))
+    .map((row) => {
+      const notReady = row?.ir?.outcome !== "ir-ready";
+      const rSame = same(row, R_FIELDS);
+      const irOnlyMissing =
+        row.irSupplementSceneId === null &&
+        stable(row.rIrSceneIds) === stable(row.rSceneIds);
+      return {
+        repeat: row.repeat,
+        irOutcome: row?.ir?.outcome ?? null,
+        rSame,
+        irOnlyMissing,
+        explained: notReady && rSame && irOnlyMissing,
+      };
+    });
+  return {
+    reference: { repeat: reference.repeat },
+    readyAgree,
+    differing: rows.length,
+    explained: rows.filter((row) => row.explained).length,
+    explainedByIrDeadline:
+      readyAgree && rows.length > 0 && rows.every((row) => row.explained),
+    rows,
+  };
+}
+
 /** The two sides' measured samples, in order, by logical ID (SP-N7). */
 export function compareSpP4Variant({ variantKey, without, with: withSide }) {
   const left = measuredOf(without);
@@ -505,8 +584,8 @@ export function g01NegativeTargets({ root }) {
  * The result of one negative from its measured Graph-arm samples (logical
  * IDs): `blocked` (the step could not be prepared or B never returned),
  * `inconclusive` (SP-P1 did not match again, a sample did not request the
- * Graph with the seed, or did not reach `g01-mira-entity` — `null` when no
- * entry reads the frame), `not-established` (g01-mira was returned) or
+ * Graph with the seed, or did not reach `g01-mira-entity` — `null` when
+ * undetermined, DR-CP4-O-6), `not-established` (g01-mira was returned) or
  * `established`. Never counted in a case judgement.
  */
 export function assessG01Negative({
@@ -536,7 +615,7 @@ export function assessG01Negative({
   if (graph.some((row) => row.seedRequested !== target.seedEntityId))
     reasons.push("graph-requested-with-seed");
   if (graph.some((row) => row.frameReached === null))
-    reasons.push("g01-mira-entity-reached:unobservable");
+    reasons.push("g01-mira-entity-reached:undetermined");
   else if (graph.some((row) => row.frameReached !== true))
     reasons.push("g01-mira-entity-reached");
   if (reasons.length > 0) return { ...base, outcome: "inconclusive", reasons };

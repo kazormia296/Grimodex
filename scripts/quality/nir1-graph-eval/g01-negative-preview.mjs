@@ -21,16 +21,25 @@ import { loadDevFixture } from "./dev-fixture.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import { assessG01Negative } from "./frozen-diagnostics.mjs";
 import {
+  G01_CONTROL_GAP_MS,
   g01NegativeLaunchEnv,
   g01NegativeSampleOf,
   prepareG01NegativeBeforeDeclaration,
+  reopenUntilSealed,
+  runG01NegativeControl,
   runG01NegativeStep,
 } from "./g01-negatives.mjs";
+import { a3AtStartOf } from "./run-sample.mjs";
+import { setTimeout as delay } from "node:timers/promises";
 import { ROOT, bundleObserver } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
 import { captureBodyNonce, runTraceDeclaration } from "./trace-runner.mjs";
-import { readIndexMetadata, readQuerySceneSeedPins } from "./workspace-db.mjs";
+import {
+  readIndexMetadata,
+  readQuerySceneSeedPins,
+  readWorkspaceRows,
+} from "./workspace-db.mjs";
 
 export const G01_NEGATIVE_PREVIEW_PURPOSE = "g01-negative-preview";
 
@@ -68,9 +77,26 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const runDir = path.join(ROOT, ".artifacts/cp4", options.run);
   await mkdir(runDir, { recursive: false });
-  const report = { run: options.run, problems: [] };
+  const report = { run: options.run, problems: [], sessions: [] };
   let server = null;
-  let session = null;
+  let current = null;
+  const stopCurrent = async () => {
+    if (!current) return;
+    const value = current;
+    current = null;
+    const stopped = await value.session.stop().catch((error) => ({
+      problems: [`stop: ${error?.stack ?? error}`],
+    }));
+    await writeFile(
+      path.join(runDir, `${value.label}-main-stderr.log`),
+      value.session.stderr(),
+    );
+    report.sessions.push({
+      label: value.label,
+      problems: stopped.problems ?? [],
+    });
+    report.problems.push(...(stopped.problems ?? []));
+  };
   try {
     const setup = JSON.parse(await readFile(path.resolve(options.setup)));
     const loaded = loadDevFixture({
@@ -81,8 +107,9 @@ async function main() {
       throw new Error("[precheck] the dev fixture changed since its setup");
     const fixture = loaded.fixture;
     const declared = fixture.declarations?.[0]?.sceneId;
-    if (!declared)
-      throw new Error("[precheck] the dev fixture declares no Scene");
+    const pin = (fixture.pins ?? []).find((row) => row.sceneId === declared);
+    if (!declared || !pin)
+      throw new Error("[precheck] the dev fixture declares no pinned Scene");
     const admission = admitDevPreview({
       purpose: G01_NEGATIVE_PREVIEW_PURPOSE,
       fixture: loaded,
@@ -96,10 +123,14 @@ async function main() {
     };
     const target = {
       sceneId: declared,
+      entityId: pin.entityId ?? pin.entryId,
       seedEntityId: fixture.graphSeedEntityId,
       querySceneId: fixture.query.sceneId,
     };
     const seed = map.entities[target.seedEntityId];
+    const materials = Object.values(map.typedRevisions ?? {}).map(
+      (row) => row.revisionId,
+    );
     const workspacePath = path.join(runDir, "workspace");
     await mkdir(workspacePath, { recursive: true });
     const dbPath = path.join(workspacePath, "grimodex.db");
@@ -120,36 +151,54 @@ async function main() {
     const observer = await bundleObserver({
       outDir: path.join(runDir, "observer"),
     });
-    const bodySeam = { nonce: null };
-    const maintenanceNonce = randomUUID();
-    session = await launch({
-      label: "measure",
-      runDir,
-      server,
-      observer,
-      options,
-      admission,
-      // The addendum's measurementProcess: the B-ROUTE journey seam.
-      start: (args) =>
-        captureBodyNonce(
-          startSession,
-          bodySeam,
-        )({
-          ...args,
-          extraEnv: g01NegativeLaunchEnv({
-            nonce: maintenanceNonce,
-            base: args.extraEnv ?? {},
+    const readIndex = () => readIndexMetadata(dbPath, ids.projectId);
+    const readGraphInputs = () => readWorkspaceRows(dbPath, ids.projectId);
+    // One measurement Main on the B-ROUTE journey seam (the addendum's
+    // measurementProcess); its workspace open runs the gated B build.
+    const open = async (label) => {
+      const bodySeam = { nonce: null };
+      const session = await launch({
+        label,
+        runDir,
+        server,
+        observer,
+        options,
+        admission,
+        start: (args) =>
+          captureBodyNonce(
+            startSession,
+            bodySeam,
+          )({
+            ...args,
+            extraEnv: g01NegativeLaunchEnv({
+              nonce: randomUUID(),
+              base: args.extraEnv ?? {},
+            }),
           }),
-        }),
-    });
-    const page = session.page;
-    await openWorkspace(page, workspacePath, ids);
+      });
+      current = { label, session, bodySeam };
+      await openWorkspace(session.page, workspacePath, ids);
+      return current;
+    };
+    const reopenAfterWrites = async (before) => {
+      const reopened = await reopenUntilSealed({
+        closeCurrent: stopCurrent,
+        openSession: async ({ dirLabel }) => {
+          const value = await open(dirLabel);
+          return { ...value, close: stopCurrent };
+        },
+        readIndex,
+        before,
+      });
+      return reopened;
+    };
+    await open("measure");
     // The dev fixture's query Scene has no pin (DR-CP4-S1C2-26): the seed.
-    report.seedPin = await page.evaluate(
+    report.seedPin = await current.session.page.evaluate(
       (value) => window.cp4Harness.api.upsertScenePin(value),
       { sceneId: ids.querySceneId, entryId: seed },
     );
-    const raw = await page.evaluate(
+    const raw = await current.session.page.evaluate(
       (input) => window.cp4Harness.buildRaw(input),
       {
         projectId: ids.projectId,
@@ -160,57 +209,98 @@ async function main() {
     );
     if (!raw.ok || !raw.value.ok)
       throw new Error("[artifact] the Raw index build failed");
-    report.index = await buildIndex(page, ids);
+    report.index = await buildIndex(current.session.page, ids);
     const id = options.negative;
+    const indexBeforeWrites = readIndex();
     const before = await prepareG01NegativeBeforeDeclaration({
       id,
-      page,
+      page: current.session.page,
       ids,
       target,
     });
     report.beforeDeclaration = before;
-    const declaration = await runTraceDeclaration({
-      page,
-      workspacePath,
-      projectId: ids.projectId,
-      sceneId: map.scenes[declared],
-      readIndex: () => readIndexMetadata(dbPath, ids.projectId),
-      readSeam: () => readSeamReceipt(session.userData, bodySeam.nonce),
-      locatorDigest: sha256(Buffer.from(realpathSync(workspacePath))),
-    });
-    report.declaration = {
-      token: declaration.token,
-      bindingDigest: declaration.bindingDigest,
-      stateAfter: declaration.stateAfter?.snapshot?.state ?? null,
-    };
-    const step = before.blocked
-      ? { blocked: before.blocked }
-      : await runG01NegativeStep({
-          id,
-          page,
-          ids,
-          target,
-          before: before.prepared,
-          readIndex: () => readIndexMetadata(dbPath, ids.projectId),
-          readPins: () =>
-            readQuerySceneSeedPins(dbPath, ids.projectId, ids.querySceneId),
-        });
-    report.step = step;
-    report.declarationAfterMutation = await page.evaluate(
-      (input) => window.cp4Harness.declaration.state(input),
-      {
+    let blocked = before.blocked;
+    // N4's saves before the declaration: B is sealed again first.
+    if (!blocked && before.prepared?.kind === "draft-then-original") {
+      const reopened = await reopenAfterWrites(indexBeforeWrites);
+      report.beforeDeclarationSealAttempts = reopened.sealAttempts;
+      if (!reopened.ok) blocked = { reason: "b-seal-not-published" };
+      else
+        report.indexAfterReopen = await buildIndex(current.session.page, ids);
+    }
+    let step = { blocked };
+    let control = null;
+    if (!blocked) {
+      const declaration = await runTraceDeclaration({
+        page: current.session.page,
         workspacePath,
         projectId: ids.projectId,
         sceneId: map.scenes[declared],
-      },
-    );
+        readIndex,
+        readSeam: () =>
+          readSeamReceipt(current.session.userData, current.bodySeam.nonce),
+        locatorDigest: sha256(Buffer.from(realpathSync(workspacePath))),
+      });
+      report.declaration = {
+        token: declaration.token,
+        bindingDigest: declaration.bindingDigest,
+        stateAfter: declaration.stateAfter?.snapshot?.state ?? null,
+      };
+      control = await runG01NegativeControl({
+        page: current.session.page,
+        ids,
+        target,
+        readGraphInputs,
+      });
+      report.control = control;
+      step = await runG01NegativeStep({
+        id,
+        page: current.session.page,
+        ids,
+        target,
+        before: before.prepared,
+        readIndex,
+        readPins: () =>
+          readQuerySceneSeedPins(dbPath, ids.projectId, ids.querySceneId),
+        readGraphInputs,
+        closeCurrent: stopCurrent,
+        openSession: async ({ dirLabel }) => {
+          const value = await open(dirLabel);
+          return { ...value, close: stopCurrent };
+        },
+      });
+    }
+    report.step = {
+      ...step,
+      session: step.session ? step.session.label : null,
+    };
     const samples = [];
-    if (!step.blocked)
+    if (!step.blocked) {
+      const page = current.session.page;
+      report.indexAfterMutation = await buildIndex(page, ids);
+      report.declarationAfterMutation = await page.evaluate(
+        (input) => window.cp4Harness.declaration.state(input),
+        {
+          workspacePath,
+          projectId: ids.projectId,
+          sceneId: map.scenes[declared],
+        },
+      );
       for (let repeat = 0; repeat < Number(options.samples); repeat++) {
+        const a3 = JSON.parse(
+          await current.session.addon(
+            "nir1GraphEvalReadA3",
+            dbPath,
+            ids.projectId,
+            ids.querySceneId,
+            materials,
+          ),
+        );
         const measure = await page.evaluate(
           (input) => window.cp4Harness.measure(input),
           { sceneId: ids.querySceneId, seed },
         );
+        const outcome = measure.graphOutcome;
         samples.push(
           g01NegativeSampleOf({
             row: {
@@ -218,18 +308,32 @@ async function main() {
               repeat,
               arm: "graph",
               seed,
+              graph: {
+                outcome:
+                  typeof outcome === "string" &&
+                  outcome.startsWith("graph-unavailable")
+                    ? "graph-unavailable"
+                    : outcome,
+              },
+              a3AtStart: a3AtStartOf(a3),
               finalSceneIds: measure.finalSceneIds,
             },
             ids,
+            target,
+            control,
+            inputsDigest: step.graphInputs,
           }),
         );
         report.graphOutcomes ??= [];
         report.graphOutcomes.push({
           status: measure.status,
-          graphOutcome: measure.graphOutcome,
+          graphOutcome: outcome,
           graph: measure.graph,
+          a3: a3AtStartOf(a3),
         });
+        await delay(G01_CONTROL_GAP_MS);
       }
+    }
     report.samples = samples;
     report.assessment = assessG01Negative({
       id,
@@ -242,13 +346,7 @@ async function main() {
     report.problems.push(error?.stack ?? String(error));
     process.exitCode = 1;
   } finally {
-    if (session) {
-      const stopped = await session.stop().catch((error) => ({
-        problems: [`stop: ${error?.stack ?? error}`],
-      }));
-      report.problems.push(...(stopped.problems ?? []));
-      await writeFile(path.join(runDir, "main-stderr.log"), session.stderr());
-    }
+    await stopCurrent();
     await server?.close();
   }
   await writeFile(
@@ -256,7 +354,7 @@ async function main() {
     `${JSON.stringify({ preview: true, ...report }, null, 1)}\n`,
   );
   process.stdout.write(
-    `${JSON.stringify({ run: options.run, step: report.step ? { blocked: report.step.blocked, spP1: report.step.spP1Recheck?.status, wait: report.step.wait?.waitedMs } : null, assessment: report.assessment ?? null, problems: report.problems.map((row) => row.split("\n")[0]) })}\n`,
+    `${JSON.stringify({ run: options.run, control: report.control?.status ?? null, sealAttempts: report.step?.sealAttempts?.map((row) => [row.attempt, row.outcome, row.waitedMs]) ?? null, step: report.step ? { blocked: report.step.blocked, spP1: report.step.spP1Recheck?.status } : null, frames: report.samples?.map((row) => row.frameReached) ?? null, assessment: report.assessment ?? null, problems: report.problems.map((row) => row.split("\n")[0]) })}\n`,
   );
 }
 

@@ -32,6 +32,8 @@ import { getRecorderSessionId } from "@/features/timelapse/recorder";
 import { countSceneBodyCharsFromJson } from "@/features/editor/charCountForBody";
 import { extractPlacedBeatPreviewFromString } from "@/features/editor/beat/placedBeatPreview";
 import { useTreeStore } from "@/features/tree/treeStore";
+import { fetchRelatedPastScenes } from "@/features/related-scenes/fetchRelatedScenes";
+import type { RelatedScenesGraphPathEdge } from "@/../electron/shared/relatedScenesSearchWire";
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -219,7 +221,47 @@ async function restoreVersion(input: {
   };
 }
 
+const edgeOf = (edge: RelatedScenesGraphPathEdge) => ({
+  from: edge.from.entityId,
+  to: edge.to.entityId,
+  relationType: edge.relationType,
+});
+
+/**
+ * K24-G01-N2〜N4 control (DR-CP4-O-6): one product fetch with the seed, and
+ * the Graph answer's entities as the product's DTO carries them (the
+ * Graph-only row's pin Entity and path edges, the path attachments' edges).
+ */
+async function graphProbe(input: { sceneId: string; seed: string }) {
+  const result = await fetchRelatedPastScenes(input.sceneId, {
+    mode: "hybrid",
+    graphSeedEntityId: input.seed,
+  });
+  const graph = result.graph ?? null;
+  const out = {
+    status: result.status,
+    graphOutcome: result.graphOutcome ?? null,
+    graphOnly: graph?.graphOnly
+      ? {
+          sceneId: graph.graphOnly.sceneId,
+          pinEntityId: graph.graphOnly.path.pinEntityId,
+          hop: graph.graphOnly.path.hop,
+          edges: graph.graphOnly.path.edges.map(edgeOf),
+        }
+      : null,
+    pathAttachments: (graph?.pathAttachments ?? []).map((row) => ({
+      sceneId: row.sceneId,
+      hop: row.hop,
+      edges: row.edges.map(edgeOf),
+    })),
+  };
+  result.session?.release();
+  return out;
+}
+
 export const diagnosticProbe = {
+  graphProbe: (input: Parameters<typeof graphProbe>[0]) =>
+    guarded(() => graphProbe(input)),
   sparseSceneIds: (input: Parameters<typeof sparseSceneIds>[0]) =>
     guarded(() => sparseSceneIds(input)),
   bodyState: (input: { sceneId: string }) =>

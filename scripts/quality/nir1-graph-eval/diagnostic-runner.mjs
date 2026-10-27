@@ -43,10 +43,12 @@ import {
   assessSpP4Attempt,
   buildRunHead,
   compareSpP4Variant,
+  explainSpP4Instability,
   readDiagnosticPlan,
   readRunHead,
   readTraceFileHeads,
   spP4AttemptOutcome,
+  spP4IrDisclosure,
   spP4SampleRecord,
   spP4Schedule,
   spP4Targets,
@@ -120,6 +122,8 @@ export async function runSpP4({
           outcome,
           counts: assessment.counts,
           invalidSamples: assessment.invalidSamples,
+          // DR-CP4-O-7 (a): the IR deadline's frequency, disclosed only.
+          ir: spP4IrDisclosure(result.samples),
           d2aMode: result.d2aMode,
           logicalToRuntime: result.logicalToRuntime,
           session: result.session ?? null,
@@ -142,6 +146,10 @@ export async function runSpP4({
       } catch (error) {
         stop = String(error?.message ?? error);
         record.sides[side].unstable = true;
+        // DR-CP4-O-7 (b): disclosed apart from the [precheck].
+        record.sides[side].instability = explainSpP4Instability(
+          accepted.samples,
+        );
         break;
       }
     }

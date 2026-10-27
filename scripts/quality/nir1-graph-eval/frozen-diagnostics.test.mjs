@@ -23,6 +23,8 @@ import {
   readRunHead,
   readSpP4Gate,
   readTraceFileHeads,
+  explainSpP4Instability,
+  spP4IrDisclosure,
   spP4AttemptOutcome,
   spP4Schedule,
   spP4SampleRecord,
@@ -482,7 +484,7 @@ test("S5-B: K24-G01-N2〜N4 の結果は blocked、inconclusive、not-establishe
   });
   assert.equal(unobservable.outcome, "inconclusive");
   assert.deepEqual(unobservable.reasons, [
-    "g01-mira-entity-reached:unobservable",
+    "g01-mira-entity-reached:undetermined",
   ]);
   assert.deepEqual(
     inconclusive({ samples: [negSample({ frameReached: false })] }).reasons,
@@ -760,5 +762,64 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
         candidateCommit: C("b"),
       }),
     /SP-N7/u,
+  );
+});
+
+test("O-7: 同じ workspace の不一致が IR の期限切れだけで説明できるかを判定とは別に開示する", () => {
+  const withIr = (change) =>
+    spP4Schedule({ warmup: 5, measured: 30 }).map((at) => {
+      const patch = change(at) ?? {};
+      return spP4SampleRecord({
+        ...at,
+        measure: {
+          ...measure(patch.measure),
+          resultKind: patch.ir === "timeout" ? "raw" : "fused",
+          completion: {
+            outcome: patch.ir ?? "ir-ready",
+            deadlineExceeded: patch.ir === "timeout",
+          },
+        },
+        denseHitSceneIds: patch.dense ?? ["rb", "ra"],
+        sparseSceneIds: ["ra"],
+        before: counters(0),
+        after: counters(0),
+        scenes,
+      });
+    });
+  const timeout = { ir: "timeout", measure: { resultSceneIds: ["ra", "rb"] } };
+  const explained = explainSpP4Instability(
+    withIr((at) =>
+      at.phase === "measured" && at.repeat === 3 ? timeout : null,
+    ),
+  );
+  assert.equal(explained.explainedByIrDeadline, true);
+  assert.equal(explained.differing, 1);
+  for (const patch of [
+    { measure: { resultSceneIds: ["ra", "rb"] } },
+    { ...timeout, dense: ["ra", "rb"] },
+    { ir: "timeout", measure: { resultSceneIds: ["rb", "ra"] } },
+  ])
+    assert.equal(
+      explainSpP4Instability(
+        withIr((at) =>
+          at.phase === "measured" && at.repeat === 3 ? patch : null,
+        ),
+      ).explainedByIrDeadline,
+      false,
+    );
+  assert.equal(
+    explainSpP4Instability(withIr(() => timeout)).reason,
+    "no-ir-ready-sample",
+  );
+  const disclosed = spP4IrDisclosure(
+    withIr((at) => (at.repeat === 1 ? timeout : null)),
+  );
+  assert.deepEqual(
+    [
+      disclosed.warmup.notReady,
+      disclosed.measured.notReady,
+      disclosed.notReadySamples.length,
+    ],
+    [1, 1, 2],
   );
 });

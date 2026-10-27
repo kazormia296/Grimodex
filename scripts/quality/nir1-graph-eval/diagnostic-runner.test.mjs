@@ -35,6 +35,11 @@ function samplesFor(side, change = () => ({})) {
         status: "completed",
         rawSceneIds: patch.raw ?? [scenes.a, scenes.b],
         resultSceneIds: patch.result ?? [scenes.a, scenes.b, scenes.c],
+        resultKind: patch.ir === "timeout" ? "raw" : "fused",
+        completion: {
+          outcome: patch.ir ?? "ir-ready",
+          deadlineExceeded: patch.ir === "timeout",
+        },
       },
       denseHitSceneIds: [scenes.b, scenes.a],
       sparseSceneIds: [scenes.a],
@@ -150,7 +155,7 @@ test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比
       key === "G-01/v1" && side === "without-seed-pin-step"
         ? (at) =>
             at.phase === "measured" && at.repeat === 10
-              ? { result: ["o-a", "o-b"] }
+              ? { result: ["o-a", "o-b"], ir: "timeout" }
               : {}
         : undefined,
     ),
@@ -165,6 +170,20 @@ test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比
     result.variants[0].sides["without-seed-pin-step"].unstable,
     true,
   );
+  // 判定とは別の開示: IR の期限切れの頻度と、不一致が期限切れだけで説明できるか。
+  const side = result.variants[0].sides["without-seed-pin-step"];
+  assert.equal(side.attempts[0].ir.measured.notReady, 1);
+  assert.deepEqual(side.attempts[0].ir.notReadySamples, [
+    {
+      phase: "measured",
+      repeat: 10,
+      outcome: "timeout",
+      deadlineExceeded: true,
+      resultKind: "raw",
+    },
+  ]);
+  assert.equal(side.instability.explainedByIrDeadline, true);
+  assert.equal(side.instability.differing, 1);
   assert.equal(
     result.variants[0].sides["without-seed-pin-step"].attempts[0].samples
       .length,
