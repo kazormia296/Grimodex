@@ -535,6 +535,8 @@ test("K2/4 (S3-P3-6): 宣言の段で v1 の列が変われば測定の前に [p
     try {
       await assert.rejects(measureVariant(ctx), /R5: .*multiple-pins/u);
       assert.equal(world.events.includes("query:graph"), false);
+      // A process that stops before its first query is stopped (no leak).
+      assert.equal(world.events.at(-1), "stop");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

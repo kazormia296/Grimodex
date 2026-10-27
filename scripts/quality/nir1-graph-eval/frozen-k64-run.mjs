@@ -626,7 +626,14 @@ async function openProcess({ ctx, dir, label }) {
     });
     return proc;
   } catch (error) {
+    // The caller never receives this process: stop its Main here (by its own
+    // handle), so a [precheck] before the first query leaks no Electron.
     error.process = proc;
+    proc.evidence = await stopSession(session, dir, label).catch(
+      (stopError) => ({
+        problems: [`stop: ${stopError?.stack ?? stopError}`],
+      }),
+    );
     throw error;
   }
 }
