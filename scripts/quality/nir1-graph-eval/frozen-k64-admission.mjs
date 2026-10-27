@@ -275,12 +275,21 @@ export function listAttempts({ root, candidate, s4Commit, runKind = null }) {
   return names
     .filter((name) => name.endsWith(".json"))
     .map((name) => {
+      // The file's digest goes with each row (re-review: the ledger's bytes
+      // are named in the receipt and in its copy on the remote, N-14).
+      let bytes;
       try {
-        return JSON.parse(
-          readFileSync(path.join(attemptsDir(root), name), "utf8"),
-        );
+        bytes = readFileSync(path.join(attemptsDir(root), name));
+        return {
+          ...JSON.parse(bytes.toString("utf8")),
+          fileSha256: sha256(bytes),
+        };
       } catch {
-        return { schema: null, unreadable: name };
+        return {
+          schema: null,
+          unreadable: name,
+          fileSha256: bytes ? sha256(bytes) : null,
+        };
       }
     })
     .filter(
@@ -323,7 +332,7 @@ export function startAttempt({ root, runName, entry }) {
       `[precheck] S5 attempts: ${runName} was already attempted; a new attempt takes a new run name`,
     );
   }
-  return { file, record };
+  return { file, record, fileSha256: sha256(readFileSync(file)) };
 }
 
 /** Closes an attempt with its outcome and finish time (UTC). */
@@ -339,25 +348,61 @@ export function finishAttempt({ file, status, variants = null }) {
   );
 }
 
+/** A ledger row as the receipts disclose it (every status, its digest). */
+export function attemptSummary(row) {
+  return {
+    runName: row.runName ?? row.unreadable ?? null,
+    runKind: row.runKind ?? null,
+    status: row.status ?? "unreadable",
+    startedAtUtc: row.startedAtUtc ?? null,
+    finishedAtUtc: row.finishedAtUtc ?? null,
+    fileSha256: row.fileSha256 ?? null,
+  };
+}
+
 /**
- * d10.parity (P1-2): the unrestricted parity run comes before the restricted
- * Gold run of the same candidate and S4 commit: a completed parity attempt
- * that finished before this run starts. `[precheck]` otherwise.
+ * The attempt's closing status (re-review P2-1): `completed` only when every
+ * variant has a valid record and none is blocked; a run with a blocked
+ * variant is `incomplete-blocked` (its records stay); anything else
+ * `stopped`.
  */
-export function assertParityBefore({ attempts, startedAtUtc }) {
+export function attemptStatusOf({ problems, variants }) {
+  const rows = Object.values(variants ?? {});
+  if (
+    (problems ?? []).length > 0 ||
+    rows.length === 0 ||
+    rows.some((row) => row.valid !== true)
+  )
+    return "stopped";
+  if (rows.some((row) => String(row.status).startsWith("blocked")))
+    return "incomplete-blocked";
+  return "completed";
+}
+
+/**
+ * d10.parity (P1-2, re-review P2-2): the unrestricted parity run comes before
+ * the restricted Gold run of the same candidate and S4 commit. The parity a
+ * Gold run uses is fixed: the one completed parity attempt of this
+ * candidate and S4 commit, finished before the Gold run starts. None, or two
+ * or more completed (a choice made after seeing results would be possible),
+ * is `[precheck]`. Every parity attempt (any status) is disclosed.
+ */
+export function selectParity({ attempts, startedAtUtc }) {
   const parity = attempts.filter(
-    (row) =>
-      row.runKind === "parity" &&
-      row.status === "completed" &&
-      typeof row.finishedAtUtc === "string" &&
-      row.finishedAtUtc < startedAtUtc,
+    (row) => row.runKind === "parity" || row.unreadable,
   );
-  if (parity.length === 0)
+  const completed = parity.filter((row) => row.status === "completed");
+  if (completed.length > 1)
+    throw new Error(
+      `[precheck] d10.parity: ${completed.length} completed parity runs of this candidate and S4 commit (${completed.map((row) => row.runName).join(", ")}); which one a Gold run compares with is not chosen after the results (the integrator decides)`,
+    );
+  const used = completed.find(
+    (row) =>
+      typeof row.finishedAtUtc === "string" && row.finishedAtUtc < startedAtUtc,
+  );
+  if (!used)
     throw new Error(
       "[precheck] d10.parity: no completed unrestricted parity run of this candidate and S4 commit precedes the restricted run",
     );
-  return parity.map((row) => ({
-    runName: row.runName,
-    finishedAtUtc: row.finishedAtUtc,
-  }));
+  return { used: used.runName, attempts: parity.map(attemptSummary) };
 }

@@ -18,6 +18,7 @@
 // 1 process、one-shot は 70 process）→ variant ごとの receipt と検証。
 
 import { Buffer } from "node:buffer";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -38,9 +39,11 @@ import { K64_W_F_MS, devVariant, variantByKey } from "./constants.mjs";
 import {
   admitFormalK64Run,
   assertCandidateFixed,
-  assertParityBefore,
+  attemptStatusOf,
+  attemptSummary,
   finishAttempt,
   listAttempts,
+  selectParity,
   startAttempt,
 } from "./frozen-k64-admission.mjs";
 import {
@@ -1124,6 +1127,17 @@ async function measureG01Fallback(ctx) {
   };
 }
 
+/** The candidate's commit, tree and cleanliness (git only). */
+function candidateIdentity() {
+  const run = (args) =>
+    execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
+  return {
+    commit: run(["rev-parse", "HEAD"]),
+    tree: run(["rev-parse", "HEAD^{tree}"]),
+    clean: run(["status", "--porcelain", "--untracked-files=all"]) === "",
+  };
+}
+
 /** The N-5 disclosure the receipt carries (review P3 (g)). */
 export const K64_DISCLOSURE = Object.freeze({
   x2: "X2 の TTL の切れと edge の epoch の進みは owner の counter に無く観測できない。起きた子は Cached で受けない（F5）か F2 の counter の差分が合わず X4 として失敗に数える（成功にも分母の外にもしない）。quarantine だけは counter で X2（DR-CP4-N-5）",
@@ -1363,7 +1377,6 @@ export async function runFrozenK64(argv) {
     // cheap checks (a clean, fixed candidate; the K6/4 freeze head) come
     // before the keep test (minutes).
     const evalDir = path.resolve(options["eval-build"]);
-    const nativePath = realpathSync(path.join(evalDir, "grimodex-node.node"));
     let admitted;
     if (!dev) {
       assertCandidateFixed({ root: ROOT, candidate: options.candidate });
@@ -1468,11 +1481,9 @@ export async function runFrozenK64(argv) {
         throw new Error(
           `[precheck] DR-CP4-N-6 (ii): G-01's R and R+IR mode is unresolved (${spec.g01Mode.reason}); S4 fills d10.g01 first`,
         );
-    const candidate = candidateBlock({
-      options,
-      nativePath,
-      workerPath: path.join(evalDir, "nir1-c-query-worker"),
-    });
+    // The candidate's identity for the records written before any launch;
+    // the full block (receipts, models, harness files) before the launch.
+    let candidate = candidateIdentity();
     const setups = await readSetups({
       file: options.setups,
       plans,
@@ -1490,17 +1501,21 @@ export async function runFrozenK64(argv) {
         candidate: admitted.candidate.commit,
         s4Commit: admitted.s2.commit,
       };
-      priorAttempts = listAttempts({ ...key, runKind }).map((row) => ({
-        runName: row.runName ?? row.unreadable ?? null,
-        status: row.status ?? "unreadable",
-        startedAtUtc: row.startedAtUtc ?? null,
-        finishedAtUtc: row.finishedAtUtc ?? null,
-      }));
-      if (runKind === "gold")
-        report.checks.parityBefore = assertParityBefore({
+      // Re-review P2-2: a Gold run discloses every parity attempt (any
+      // status) and the one parity it uses (fixed; two completed is
+      // [precheck]).
+      priorAttempts = {
+        [runKind]: listAttempts({ ...key, runKind }).map(attemptSummary),
+      };
+      if (runKind === "gold") {
+        const parity = selectParity({
           attempts: listAttempts({ ...key, runKind: "parity" }),
           startedAtUtc: admitted.head.runStartedAtUtc,
         });
+        priorAttempts.parity = parity.attempts;
+        priorAttempts.parityUsed = parity.used;
+        report.checks.parity = parity;
+      }
       attempt = startAttempt({
         root: ROOT,
         runName: options.run,
@@ -1517,6 +1532,12 @@ export async function runFrozenK64(argv) {
           ),
         },
       });
+      // The ledger file this run wrote, by its digest (copied to the remote
+      // before and after the run, DR-CP4-N-14).
+      priorAttempts.thisAttempt = {
+        runName: options.run,
+        fileSha256AtStart: attempt.fileSha256,
+      };
       report.checks.priorAttempts = priorAttempts;
     }
     // DR-CP4-N-2／N-11: a blocked setup is judged by the table and its record
@@ -1561,6 +1582,14 @@ export async function runFrozenK64(argv) {
       throw new Error(
         `[precheck] DR-CP4-N-11: ${blocked.join(", ")} stopped blocked at setup; the seed pin gate needs the 13 complete setups, so the K6/4 judgement does not start`,
       );
+    const toMeasure = selected.filter(
+      (spec) =>
+        setups.get(spec.variantKey) && !setups.get(spec.variantKey).blocked,
+    );
+    if (toMeasure.length === 0)
+      throw new Error(
+        "[precheck] no variant left to measure (every selected setup is blocked or missing)",
+      );
     // 3. the seed pin gate before any process that can query (frozen: the
     // 13 cold DBs at stage evaluation; dev: the receipts' own maps).
     const gateRows = new Map();
@@ -1600,6 +1629,12 @@ export async function runFrozenK64(argv) {
         });
       }
     // 4. the launch material, once.
+    const nativePath = realpathSync(path.join(evalDir, "grimodex-node.node"));
+    candidate = candidateBlock({
+      options,
+      nativePath,
+      workerPath: path.join(evalDir, "nir1-c-query-worker"),
+    });
     report.checks.productBuild = checkRunnerBuildReceipts({
       root: ROOT,
       options,
@@ -1768,11 +1803,7 @@ export async function runFrozenK64(argv) {
     if (attempt)
       finishAttempt({
         file: attempt.file,
-        status:
-          report.problems.length === 0 &&
-          Object.values(report.variants).every((row) => row.valid === true)
-            ? "completed"
-            : "stopped",
+        status: attemptStatusOf(report),
         variants: Object.fromEntries(
           Object.entries(report.variants).map(([key, row]) => [
             key,

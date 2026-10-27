@@ -21,10 +21,11 @@ import {
   ATTEMPTS_DIR,
   S2_FILES,
   admitFormalK64Run,
-  assertParityBefore,
+  attemptStatusOf,
   assertSourcePins,
   finishAttempt,
   listAttempts,
+  selectParity,
   startAttempt,
 } from "./frozen-k64-admission.mjs";
 import {
@@ -327,7 +328,7 @@ test("S2 追補 #2／#3: bytes の pin の file が違う、ancestor の pin が
   }
 });
 
-test("レビュー P2-6／P1-2: 試行の台帳は run の名前ごとに 1 回だけ書け、同じ候補・S4・種類の試行を上限なしに列挙し、Gold の前に完了した parity を求める", () => {
+test("レビュー P2-6、再レビュー P2-1／P2-2: 台帳は名前ごとに 1 回、全件を列挙し、Gold が使う parity は開始より前に完了した 1 つに固定（未完了・止まった・blocked を含む・2 つ以上は [precheck]）", () => {
   const root = mkdtempSync(path.join(tmpdir(), "cp4-s5a-attempts-"));
   try {
     const entry = (runKind, extra = {}) => ({
@@ -339,56 +340,82 @@ test("レビュー P2-6／P1-2: 試行の台帳は run の名前ごとに 1 回�
       ...extra,
     });
     const key = { root, candidate: "b".repeat(40), s4Commit: "d".repeat(40) };
+    const parityOf = () => listAttempts({ ...key, runKind: "parity" });
+    const later = "9999-01-01T00:00:00.000Z";
     assert.throws(
-      () =>
-        assertParityBefore({
-          attempts: listAttempts({ ...key, runKind: "parity" }),
-          startedAtUtc: "2026-10-28T02:00:00.000Z",
-        }),
+      () => selectParity({ attempts: parityOf(), startedAtUtc: later }),
       /no completed unrestricted parity run/u,
     );
-    const parity = startAttempt({
+    const started = startAttempt({
       root,
-      runName: "p1",
+      runName: "p0",
       entry: entry("parity"),
     });
+    assert.match(started.fileSha256, /^[0-9a-f]{64}$/u);
     assert.throws(
-      () => startAttempt({ root, runName: "p1", entry: entry("parity") }),
+      () => startAttempt({ root, runName: "p0", entry: entry("parity") }),
       /already attempted/u,
     );
     assert.throws(
       () => startAttempt({ root, runName: "x", entry: entry("other") }),
       /run kind/u,
     );
-    // A started (not completed) parity does not admit a Gold run.
+    // Started, stopped or blocked parity attempts never admit a Gold run.
     assert.throws(
-      () =>
-        assertParityBefore({
-          attempts: listAttempts({ ...key, runKind: "parity" }),
-          startedAtUtc: "2026-10-28T02:00:00.000Z",
-        }),
+      () => selectParity({ attempts: parityOf(), startedAtUtc: later }),
       /no completed/u,
     );
-    finishAttempt({ file: parity.file, status: "completed" });
-    const finished = listAttempts({ ...key, runKind: "parity" })[0]
-      .finishedAtUtc;
+    finishAttempt({ file: started.file, status: "stopped" });
+    const blocked = startAttempt({
+      root,
+      runName: "p1",
+      entry: entry("parity", { startedAtUtc: "2026-10-28T02:00:00.000Z" }),
+    });
+    finishAttempt({ file: blocked.file, status: "incomplete-blocked" });
+    assert.throws(
+      () => selectParity({ attempts: parityOf(), startedAtUtc: later }),
+      /no completed/u,
+    );
+    const done = startAttempt({
+      root,
+      runName: "p2",
+      entry: entry("parity", { startedAtUtc: "2026-10-28T03:00:00.000Z" }),
+    });
+    finishAttempt({ file: done.file, status: "completed" });
+    const chosen = selectParity({ attempts: parityOf(), startedAtUtc: later });
+    assert.equal(chosen.used, "p2");
+    // Every parity attempt is disclosed, with its status and file digest.
     assert.deepEqual(
-      assertParityBefore({
-        attempts: listAttempts({ ...key, runKind: "parity" }),
-        startedAtUtc: "9999-01-01T00:00:00.000Z",
-      }).map((row) => row.runName),
-      ["p1"],
+      chosen.attempts.map((row) => [row.runName, row.status]),
+      [
+        ["p0", "stopped"],
+        ["p1", "incomplete-blocked"],
+        ["p2", "completed"],
+      ],
+    );
+    assert.ok(
+      chosen.attempts.every((row) => /^[0-9a-f]{64}$/u.test(row.fileSha256)),
     );
     // A parity that finished after the Gold run started does not count.
     assert.throws(
       () =>
-        assertParityBefore({
-          attempts: listAttempts({ ...key, runKind: "parity" }),
+        selectParity({
+          attempts: parityOf(),
           startedAtUtc: "2000-01-01T00:00:00.000Z",
         }),
       /no completed/u,
     );
-    assert.match(finished, /^\d{4}-/u);
+    // A second completed parity: which one is used is not chosen later.
+    const again = startAttempt({
+      root,
+      runName: "p3",
+      entry: entry("parity", { startedAtUtc: "2026-10-28T04:00:00.000Z" }),
+    });
+    finishAttempt({ file: again.file, status: "completed" });
+    assert.throws(
+      () => selectParity({ attempts: parityOf(), startedAtUtc: later }),
+      /2 completed parity runs/u,
+    );
     for (const name of ["g1", "g2", "g3"])
       startAttempt({ root, runName: name, entry: entry("gold") });
     startAttempt({
@@ -397,12 +424,47 @@ test("レビュー P2-6／P1-2: 試行の台帳は run の名前ごとに 1 回�
       entry: entry("gold", { candidate: { commit: "e".repeat(40) } }),
     });
     writeFileSync(path.join(root, ATTEMPTS_DIR, "broken.json"), "{");
-    const gold = listAttempts({ ...key, runKind: "gold" });
     assert.deepEqual(
-      gold.map((row) => row.runName ?? row.unreadable),
+      listAttempts({ ...key, runKind: "gold" }).map(
+        (row) => row.runName ?? row.unreadable,
+      ),
       ["broken.json", "g1", "g2", "g3"],
     );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("再レビュー P2-1: 試行は blocked の variant を含めば completed にならない（incomplete-blocked）。誤りや問題があれば stopped", () => {
+  const ok = { status: "measured", valid: true };
+  assert.equal(
+    attemptStatusOf({ problems: [], variants: { a: ok, b: ok } }),
+    "completed",
+  );
+  assert.equal(
+    attemptStatusOf({
+      problems: [],
+      variants: { a: ok, b: { status: "blocked", valid: true } },
+    }),
+    "incomplete-blocked",
+  );
+  assert.equal(
+    attemptStatusOf({
+      problems: [],
+      variants: { a: { status: "blocked-at-setup", valid: true } },
+    }),
+    "incomplete-blocked",
+  );
+  assert.equal(
+    attemptStatusOf({ problems: ["x"], variants: { a: ok } }),
+    "stopped",
+  );
+  assert.equal(
+    attemptStatusOf({
+      problems: [],
+      variants: { a: { status: "measured", valid: false } },
+    }),
+    "stopped",
+  );
+  assert.equal(attemptStatusOf({ problems: [], variants: {} }), "stopped");
 });

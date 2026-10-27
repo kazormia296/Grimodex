@@ -910,6 +910,23 @@ test("d10.parity（レビュー P1-2）: parity の variant は G-02〜G-08 の 
   assert.deepEqual(validateParitySchedule(hybrid, "G-02/base"), {
     slots: 35,
   });
+  // The same count in another order (or of another variant) is refused.
+  assert.throws(
+    () =>
+      validateParitySchedule(
+        [hybrid[1], hybrid[0], ...hybrid.slice(2)],
+        "G-02/base",
+      ),
+    /R\+IR slots/u,
+  );
+  assert.throws(
+    () =>
+      validateParitySchedule(
+        hybrid.map((row) => ({ ...row, variantKey: "G-03/base" })),
+        "G-02/base",
+      ),
+    /R\+IR slots/u,
+  );
   assert.throws(
     () => validateParitySchedule(hybrid.slice(1), "G-02/base"),
     /R\+IR slots/u,

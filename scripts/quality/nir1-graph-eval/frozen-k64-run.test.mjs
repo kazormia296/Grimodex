@@ -7,6 +7,7 @@
 
 import assert from "node:assert/strict";
 import { Buffer } from "node:buffer";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   existsSync,
@@ -19,18 +20,24 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import process from "node:process";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { devVariant, variantByKey } from "./constants.mjs";
+import { K62_FREEZE, devVariant, variantByKey } from "./constants.mjs";
 import { ONE_SHOT_RECEIPT_LABEL } from "./frozen-k64-plan.mjs";
 import {
   BLOCKED_RECORD_SCHEMA,
   K64_DISCLOSURE,
   measureVariant,
+  parseArgs,
   readSetups,
+  runFrozenK64,
   writeVariantRecord,
 } from "./frozen-k64-run.mjs";
-import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
+import {
+  loadDevGraphCasePlans,
+  loadFrozenSetupPlans,
+} from "./frozen-setup-plan.mjs";
 import { INDEX_KEYS, readDeclarationInvariants } from "./workspace-db.mjs";
 import {
   K64_CACHED_CHILD,
@@ -933,6 +940,16 @@ test("レビュー P2-5: 完全な setup の受領書が run の候補（commit 
       }),
       /not the run's candidate/u,
     );
+    // The tree alone differing is refused too.
+    await assert.rejects(
+      readSetups({
+        file: map,
+        plans: [plan],
+        dev: false,
+        candidate: { commit: "1".repeat(40), tree: "4".repeat(40) },
+      }),
+      /not the run's candidate/u,
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -952,5 +969,139 @@ test("レビュー P3 (d): 宣言の前後の不変量の読取は列が欠け�
     );
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("再レビュー P3: 正式の run は --variant と --dev-g01-fallback を拒み、dev の形の確認では受ける", () => {
+  const formal = [
+    "--run",
+    "r",
+    "--setups",
+    "s.json",
+    "--ja-model",
+    "j",
+    "--en-model",
+    "e",
+    "--candidate",
+    "c",
+    "--prep-commit",
+    "p",
+    "--k62-commit",
+    "k",
+    "--k64-commit",
+    "k",
+    "--product-receipt",
+    "pr.json",
+  ];
+  assert.equal(parseArgs(formal)["run-kind"], "gold");
+  assert.throws(
+    () => parseArgs([...formal, "--variant", "G-02/base"]),
+    /--variant is a dev shape-check option/u,
+  );
+  assert.throws(
+    () => parseArgs([...formal, "--dev-g01-fallback", "true"]),
+    /dev shape-check option/u,
+  );
+  assert.throws(
+    () => parseArgs([...formal, "--d2a-mode", "unrestricted"]),
+    /--d2a-mode is gone/u,
+  );
+  const dev = [
+    "--run",
+    "r",
+    "--setups",
+    "s.json",
+    "--ja-model",
+    "j",
+    "--en-model",
+    "e",
+    "--k62-commit",
+    "k",
+    "--dev-fixture",
+    "f.json",
+  ];
+  assert.equal(parseArgs([...dev, "--variant", "X/y"]).variant, "X/y");
+});
+
+test("再レビュー P3（P1-1 の runFrozenK64 の層）: setup が blocked の variant は blocked の記録として残り、集計の receipt を作らない", async (t) => {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${K62_FREEZE.commit}^{commit}`], {
+      cwd: REPO_ROOT,
+      stdio: "ignore",
+    });
+  } catch {
+    t.skip("the K6/2 freeze commit is not in this clone (shallow checkout)");
+    return;
+  }
+  const fixturePath =
+    "scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-graph-case.v1.json";
+  const plan = loadDevGraphCasePlans({
+    root: REPO_ROOT,
+    fixturePath,
+    stopsAt: "complete",
+  }).find((row) => row.variantId === "base-usable");
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-s5a-blocked-run-"));
+  const run = `s5a-test-blocked-${process.pid}`;
+  const runDir = path.join(REPO_ROOT, ".artifacts/cp4", run);
+  const exitCode = process.exitCode;
+  try {
+    const receipt = path.join(dir, "setup-receipt.json");
+    writeFileSync(
+      receipt,
+      JSON.stringify({
+        status: "blocked",
+        fixture: {
+          kind: "dev",
+          path: plan.fixturePath,
+          sha256: plan.fixtureSha256,
+          variantId: plan.variantId,
+        },
+        blocked: {
+          harnessId: "b-seal-not-published",
+          condition: "any",
+          unmetPreconditions: ["b-sealed-binding"],
+          contractBlockedId: "b-sealed-binding",
+          hold: false,
+        },
+      }),
+    );
+    const map = path.join(dir, "setups.json");
+    writeFileSync(map, JSON.stringify({ [plan.variantKey]: receipt }));
+    await runFrozenK64([
+      "--run",
+      run,
+      "--dev-fixture",
+      fixturePath,
+      "--setups",
+      map,
+      "--variant",
+      plan.variantKey,
+      "--ja-model",
+      "j",
+      "--en-model",
+      "e",
+      "--k62-commit",
+      K62_FREEZE.commit,
+      "--eval-build",
+      path.join(dir, "no-eval-build"),
+    ]);
+    const variantDir = path.join(runDir, "DEV-HARBOR_base-usable");
+    const record = JSON.parse(
+      readFileSync(path.join(variantDir, "blocked-record.json"), "utf8"),
+    );
+    assert.equal(record.status, "blocked-at-setup");
+    assert.equal(record.blocked.harnessId, "b-seal-not-published");
+    assert.equal(record.blocked.contractBlockedId, "b-sealed-binding");
+    assert.equal(existsSync(path.join(variantDir, "receipt.json")), false);
+    // Nothing was launched: no renderer build, no observer.
+    assert.equal(existsSync(path.join(runDir, "renderer-dist")), false);
+    const report = JSON.parse(
+      readFileSync(path.join(runDir, "run-report.json"), "utf8"),
+    );
+    assert.equal(report.variants[plan.variantKey].status, "blocked-at-setup");
+  } finally {
+    process.exitCode = exitCode;
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(runDir, { recursive: true, force: true });
   }
 });
