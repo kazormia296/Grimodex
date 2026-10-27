@@ -2,7 +2,14 @@
 // 製品の Main は一時の directory の bytes。凍結した fixture は読むだけ。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -19,8 +26,10 @@ import {
   corpusAliasPlugin,
   irTableRows,
   isSetupMainAdmission,
+  removeSetupMain,
   setupIrTable,
 } from "./setup-main-build.mjs";
+import { REPO_ROOT } from "./test-support.mjs";
 
 function scratch(prefix) {
   const dir = mkdtempSync(path.join(tmpdir(), prefix));
@@ -345,4 +354,52 @@ test("build: 同じ command が製品の Main を再現しなければ止まる"
     }),
     /does not reproduce/u,
   );
+});
+
+test("レビュー P3 (a)(c): 表は source ごとの固定の path（setup 専用の Main の sha は run に依らない）、run の終わりに Main と map を消す（dist-electron は packaging に入る）", async () => {
+  const repo = fakeRepo();
+  const build = (run) =>
+    buildSetupMain({
+      root: repo.root,
+      outDir: path.join(repo.root, `.artifacts/cp4/${run}/setup-main`),
+      rows: [ROW],
+      source: "frozen",
+      deps: repo.deps,
+    });
+  const first = await build("run-a");
+  const second = await build("run-b");
+  assert.equal(first.setupMain.sha256, second.setupMain.sha256);
+  assert.equal(first.table.path, second.table.path);
+  assert.match(
+    first.table.path,
+    /^\.artifacts\/cp4\/setup-main-table\/frozen\//u,
+  );
+  // A dev source has its own table path.
+  const dev = await buildSetupMain({
+    root: repo.root,
+    outDir: path.join(repo.root, ".artifacts/cp4/run-c/setup-main"),
+    rows: [ROW],
+    source: "dev-x",
+    deps: repo.deps,
+  });
+  assert.notEqual(dev.table.path, first.table.path);
+  // The packaging takes dist-electron whole, so the run removes the Main.
+  const builder = readFileSync(
+    path.join(REPO_ROOT, "electron-builder.yml"),
+    "utf8",
+  );
+  assert.match(builder, /^\s+- dist-electron\/\*\*$/mu);
+  assert.ok(SETUP_MAIN.startsWith("dist-electron/"));
+  writeFileSync(path.join(repo.root, `${SETUP_MAIN}.map`), "{}");
+  assert.deepEqual(removeSetupMain(dev), [
+    path.join(repo.root, SETUP_MAIN),
+    path.join(repo.root, `${SETUP_MAIN}.map`),
+  ]);
+  assert.equal(existsSync(path.join(repo.root, SETUP_MAIN)), false);
+  assert.equal(existsSync(path.join(repo.root, `${SETUP_MAIN}.map`)), false);
+  assert.throws(
+    () => assertSetupMainAtLaunch(dev),
+    /\[precheck\] S1j-2 setup-main/u,
+  );
+  assert.deepEqual(removeSetupMain(null), []);
 });

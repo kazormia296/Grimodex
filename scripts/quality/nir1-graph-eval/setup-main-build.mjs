@@ -23,7 +23,7 @@
 
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -38,6 +38,15 @@ export const CORPUS_IMPORTER = "electron/main/productJourneyNir1Ai.ts";
 export const SETUP_TABLE_LANGUAGE = "cp4-setup-ir";
 export const SETUP_TABLE_FILE = "ir-table.json";
 export const SETUP_MAIN_MANIFEST = "setup-main.json";
+/** Review P3 (a): the table's directory (one per source, run independent). */
+export const SETUP_TABLE_PARENT = ".artifacts/cp4/setup-main-table";
+
+function tableSlug(source) {
+  const slug = String(source ?? "").replace(/[^A-Za-z0-9._-]+/gu, "-");
+  if (!/^[A-Za-z0-9]/u.test(slug))
+    fail("setup-main", `the table source ${String(source)} has no name`);
+  return slug;
+}
 /** The env gate of the product's deterministic Journey provider. */
 export const FAKE_AI_ENV = Object.freeze({
   GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1",
@@ -255,7 +264,16 @@ export async function buildSetupMain({
     readFileSync(path.join(root, CORPUS_MODULE), "utf8"),
   );
   const table = setupIrTable({ corpus, rows });
-  const tablePath = path.join(outDir, SETUP_TABLE_FILE);
+  // Review P3 (a): the table sits at one path per source (its path is in the
+  // bundle's comments), so the setup-only Main's bytes do not depend on the
+  // run; the bytes are the fixture's rows (rewritten, never appended).
+  const tablePath = path.join(
+    root,
+    SETUP_TABLE_PARENT,
+    tableSlug(source),
+    SETUP_TABLE_FILE,
+  );
+  await mkdir(path.dirname(tablePath), { recursive: true });
   const bytes = tableBytes(table);
   await writeFile(tablePath, bytes);
   const main = configs.find(
@@ -367,4 +385,16 @@ export function assertSetupMainAtLaunch(
       tableSha256: admission.table.sha256,
     },
   };
+}
+
+/**
+ * Review P3 (c): the setup-only Main lies under `dist-electron/`, which the
+ * packaging takes whole (`electron-builder.yml`); the run removes it and its
+ * source map when it ends. Returns the removed paths.
+ */
+export function removeSetupMain(admission, { remove = rmSync } = {}) {
+  if (!isSetupMainAdmission(admission)) return [];
+  const files = [admission.mainPath, `${admission.mainPath}.map`];
+  for (const file of files) remove(file, { force: true });
+  return files;
 }

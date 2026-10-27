@@ -617,12 +617,28 @@ test("S1j-2: setup 専用の Main は封印した admission で起動し（決�
     assert.ok(
       ir.evidence.extraEnvNames.includes("GRIMODEX_PRODUCT_JOURNEY_FAKE_AI"),
     );
+    // Review P2-5: the wrapper env's journey seam variables are never
+    // inherited; the ir session's provider env comes from its admission.
+    const leaking = {
+      ...WRAPPER_ENV,
+      GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1",
+      GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER: "nir1-graph-index-build",
+      GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN: "t",
+    };
     const author = await startSession({
       ...base,
       label: "author",
-      deps: deps(null),
+      deps: { ...deps(null), wrapperEnv: leaking },
     });
     await author.stop();
+    for (const name of Object.keys(leaking))
+      if (name.startsWith("GRIMODEX_PRODUCT_JOURNEY_"))
+        assert.equal(launched[1][name], undefined, name);
+    assert.deepEqual(author.evidence.extraEnvSha256, {});
+    assert.match(
+      ir.evidence.extraEnvSha256.GRIMODEX_PRODUCT_JOURNEY_FAKE_AI,
+      /^[0-9a-f]{64}$/u,
+    );
     assert.match(
       launched[1].GRIMODEX_CP4_PRODUCT_MAIN,
       /dist-electron\/main\.cjs$/u,

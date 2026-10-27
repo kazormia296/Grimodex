@@ -326,6 +326,13 @@ export async function startSession({
     x11Before: listX11(),
     profile: { d2aMode, d2aStateFile: profile.d2aStateFile },
     extraEnvNames: Object.keys({ ...extraEnv, ...(setup?.env ?? {}) }).sort(),
+    // Review P2-5: each added variable's value digest (the nonce never in
+    // clear).
+    extraEnvSha256: Object.fromEntries(
+      Object.entries({ ...extraEnv, ...(setup?.env ?? {}) })
+        .sort(([a], [b]) => (a < b ? -1 : 1))
+        .map(([name, value]) => [name, sha256(Buffer.from(String(value)))]),
+    ),
     main: setup ? setup.record : { kind: "product", path: PRODUCT_MAIN },
     problems: [],
   };

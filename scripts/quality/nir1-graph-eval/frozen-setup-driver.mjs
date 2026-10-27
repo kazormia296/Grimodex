@@ -54,7 +54,7 @@ import {
   phaseCategories,
   plannedPhaseNames,
 } from "./frozen-setup-plan.mjs";
-import { buildSetupMain } from "./setup-main-build.mjs";
+import { buildSetupMain, removeSetupMain } from "./setup-main-build.mjs";
 import {
   SEED_PIN_PHASE,
   SP1_CONTRACT,
@@ -2159,6 +2159,7 @@ export async function prepareFrozenSetupShared({
   runDir,
   options,
   plans,
+  irPlans = plans,
   deps = {},
 }) {
   const {
@@ -2198,10 +2199,12 @@ export async function prepareFrozenSetupShared({
     productReceipt,
   });
   // S1j-2 (B1): a complete setup builds the setup-only Main for this run.
+  // Review P3 (a): the table from every plan (13 variants), not the run's.
   const setupMain = await setupMainFor({
     root,
     runDir,
     plans,
+    irPlans,
     candidate,
     deps,
   });
@@ -2287,20 +2290,31 @@ export function setupIrRowsOfPlans(plans) {
   return [...rows.values()];
 }
 
-async function setupMainFor({ root, runDir, plans, candidate, deps }) {
+async function setupMainFor({
+  root,
+  runDir,
+  plans,
+  irPlans = plans,
+  candidate,
+  deps,
+}) {
   const needed = plans.some((plan) =>
     plan.steps
       .slice(0, plan.stopIndex + 1)
       .some((step) => step.session === "ir"),
   );
   if (!needed) return null;
+  const kinds = [
+    ...new Set(irPlans.map((plan) => plan.fixtureKind ?? "frozen")),
+  ];
   return (deps.buildSetupMain ?? buildSetupMain)({
     root,
     outDir: path.join(runDir, "setup-main"),
-    rows: setupIrRowsOfPlans(plans),
-    source: [
-      ...new Set(plans.map((plan) => plan.fixtureKind ?? "frozen")),
-    ].join(","),
+    rows: setupIrRowsOfPlans(irPlans),
+    source:
+      kinds.join(",") === "frozen"
+        ? "frozen"
+        : `dev-${path.basename(irPlans[0].fixturePath, ".json")}`,
     candidate,
   });
 }
@@ -2312,7 +2326,12 @@ async function setupMainFor({ root, runDir, plans, candidate, deps }) {
  * harness renderer, the observer and the setup-only Main. Never used for a
  * frozen fixture.
  */
-export async function prepareDevSetupShared({ runDir, options, plans }) {
+export async function prepareDevSetupShared({
+  runDir,
+  options,
+  plans,
+  irPlans = plans,
+}) {
   if (plans.some((plan) => plan.fixtureKind !== "dev"))
     fail("dev-fixture", "the dev launch takes dev graph-case plans only");
   const root = ROOT;
@@ -2323,6 +2342,7 @@ export async function prepareDevSetupShared({ runDir, options, plans }) {
     root,
     runDir,
     plans,
+    irPlans,
     candidate,
     deps: {},
   });
@@ -2395,6 +2415,7 @@ async function mainDev() {
     runDir,
     options,
     plans: selected,
+    irPlans: plans,
   });
   try {
     for (const plan of selected) {
@@ -2411,6 +2432,7 @@ async function mainDev() {
     }
   } finally {
     await shared.server?.close();
+    removeSetupMain(shared.setupMain);
   }
 }
 
@@ -2438,7 +2460,12 @@ async function main() {
   const runDir = path.join(ROOT, ".artifacts/cp4", options.run);
   await mkdir(runDir, { recursive: true });
   const shared = {
-    ...(await prepareFrozenSetupShared({ runDir, options, plans: [plan] })),
+    ...(await prepareFrozenSetupShared({
+      runDir,
+      options,
+      plans: [plan],
+      irPlans: plans,
+    })),
     // A single-variant seed-pin setup is its own R5 check run (never ①'s).
     ...(plan.stopsAt === SETUP_STOPS.seedPin
       ? { r5CheckRunId: randomUUID() }
@@ -2457,6 +2484,7 @@ async function main() {
       process.exitCode = 1;
   } finally {
     await shared.server?.close();
+    removeSetupMain(shared.setupMain);
   }
 }
 

@@ -2,7 +2,9 @@
 // SQLite）と fixture から導いた plan だけで確かめる。凍結した材料で実 Electron を
 // 起動せず、setup も実行しない（fixture は fs で読むだけ）。
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
@@ -14,6 +16,7 @@ import {
   createSetupIds,
   guardPage,
   indexStateProbe,
+  prepareFrozenSetupShared,
   runFrozenSetupSteps,
   setupFrozenVariant,
   setupIrRowsOfPlans,
@@ -33,6 +36,7 @@ import {
   REPO_ROOT,
   completeSetupExtension,
   frozenSetupFakeProduct,
+  productReceipt,
 } from "./test-support.mjs";
 import { GRAPH_EVAL_VARIANTS } from "./constants.mjs";
 import { readFileSync } from "node:fs";
@@ -661,4 +665,68 @@ test("S1j-2 P-0: B の generation が来なければ seal の session を開き�
         "b-seal",
         `${plan.variantKey} ${row.label}`,
       );
+});
+
+test("レビュー P3 (a): 凍結した材料の 1 variant の run でも、setup 専用の Main の表は 13 variant の plan の全行（10 行）から作る", async () => {
+  const root = scratch("cp4-s1j2-shared-");
+  const files = {
+    "dist/index.html": "index",
+    "dist-electron/main.cjs": "main",
+    "dist-electron/preload.cjs": "preload",
+    "electron/native/grimodex-node/grimodex-node.node": "node",
+  };
+  for (const [file, text] of Object.entries(files)) {
+    mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+    writeFileSync(path.join(root, file), text);
+  }
+  const digest = (text) => createHash("sha256").update(text).digest("hex");
+  const candidate = {
+    commit: "a".repeat(40),
+    tree: "b".repeat(40),
+    clean: true,
+  };
+  const receipt = productReceipt({
+    candidate: {
+      ...productReceipt().candidate,
+      resolvedHeadSha: candidate.commit,
+      currentHeadSha: candidate.commit,
+      resolvedHeadTreeSha: candidate.tree,
+    },
+    artifacts: Object.fromEntries(
+      Object.entries(files).map(([file, text]) => [file, digest(text)]),
+    ),
+  });
+  const built = [];
+  const shared = await prepareFrozenSetupShared({
+    runDir: path.join(root, "run"),
+    options: {
+      "product-receipt": "/nonexistent",
+      "ja-model": "j",
+      "en-model": "e",
+      run: "r",
+    },
+    plans: [planOf(COMPLETE, "G-02/base")],
+    irPlans: COMPLETE,
+    deps: {
+      candidateOf: () => candidate,
+      readProductReceipt: () => ({ bytes: Buffer.from("{}"), value: receipt }),
+      root,
+      admit: () => ({ dryRun: true }),
+      buildRenderer: async () => ({ rendererBundleSha256: null }),
+      startServer: async () => ({ close: async () => {} }),
+      bundle: async () => ({ sha256: "o".repeat(64) }),
+      buildSetupMain: async (input) => {
+        built.push(input);
+        return SETUP_MAIN;
+      },
+    },
+  });
+  assert.equal(built.length, 1);
+  assert.equal(built[0].source, "frozen");
+  assert.equal(built[0].rows.length, 10);
+  assert.deepEqual(
+    [...new Set(built[0].rows.map((row) => row.caseId))].sort(),
+    ["G-01", "G-02", "G-03", "G-04", "G-05", "G-06", "G-07", "G-08"],
+  );
+  assert.equal(shared.setupMain, SETUP_MAIN);
 });
