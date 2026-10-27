@@ -1401,6 +1401,8 @@ function formalDeps(log, overrides = {}) {
       log.push("attempt");
       throw new Error("[precheck] test: stop after the ledger");
     },
+    // No built addon in a CI checkout (the digest is the admission's input).
+    defaultAddonSha256Of: () => "a".repeat(64),
     ...overrides,
   };
 }

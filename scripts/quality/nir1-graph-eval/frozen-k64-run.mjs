@@ -1465,6 +1465,9 @@ export async function runFrozenK64(argv, deps = {}) {
     listAttemptsFn = listAttempts,
     selectParityFn = selectParity,
     startAttemptFn = startAttempt,
+    // A CI checkout has no built default addon; the tests inject its digest.
+    defaultAddonSha256Of = () =>
+      sha256(readFileSync(path.join(ROOT, DEFAULT_ADDON))),
   } = deps;
   const options = parseArgs(argv);
   const dev = Boolean(options["dev-fixture"]);
@@ -1513,9 +1516,7 @@ export async function runFrozenK64(argv, deps = {}) {
         k64Commit: options["k64-commit"],
         buildReceipt: readJson(path.join(evalDir, "eval-build.json")),
         productReceipt: readJson(path.resolve(options["product-receipt"])),
-        defaultAddonSha256: sha256(
-          readFileSync(path.join(ROOT, DEFAULT_ADDON)),
-        ),
+        defaultAddonSha256: defaultAddonSha256Of(),
         ...(ratification5 ? { ratification5 } : {}),
       });
       // S5-B: no Graph-arm run (gold, negative) before ④'s SP-P4 passed.
