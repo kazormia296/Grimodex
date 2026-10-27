@@ -169,6 +169,10 @@ export function parseArgs(argv) {
     throw new Error(
       "--d2a-mode is gone: the mode follows --run-kind (parity is unrestricted) and d10.g01",
     );
+  if (!dev && options["dev-g01-fallback"] !== undefined)
+    throw new Error(
+      "[precheck] --dev-g01-fallback is a dev shape-check option; a formal G-01 follows d10.g01",
+    );
   // Review P2-6 (a): a formal run measures every variant of its kind.
   if (!dev && options.variant !== undefined)
     throw new Error(
@@ -1700,10 +1704,13 @@ export async function runFrozenK64(argv) {
         d2aMode,
         arms: runKind === "parity" ? ["hybrid"] : ["hybrid", "graph"],
         // DR-CP4-N-10: G-01's fallback when S4 set rAndRirMode unrestricted.
+        // (dev: `--dev-g01-fallback true` exercises the same shape on a
+        // dev variant; never formal.)
         g01Fallback:
-          runKind === "gold" &&
-          spec.caseId === "G-01" &&
-          spec.g01Mode?.mode === "unrestricted",
+          (runKind === "gold" &&
+            spec.caseId === "G-01" &&
+            spec.g01Mode?.mode === "unrestricted") ||
+          (dev && options["dev-g01-fallback"] === "true"),
         resolverExpected: resolver.expected,
         queryBody: fixture.query?.body ?? fixture.query?.text ?? "",
         revisionIds: Object.values(ids.typedRevisions ?? {})
