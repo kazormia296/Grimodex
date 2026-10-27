@@ -496,7 +496,10 @@ export function readRelationSourceTokens(file, revisionId, relationId) {
   });
 }
 
-/** The columns of `table` among `wanted` (a column a schema lacks is skipped). */
+/**
+ * The columns of `table`, all of `wanted` (review P3 (d)): a column the
+ * schema lacks stops the read instead of being skipped silently.
+ */
 function existingColumns(db, table, wanted) {
   const have = new Set(
     db
@@ -504,7 +507,12 @@ function existingColumns(db, table, wanted) {
       .all()
       .map((row) => row.name),
   );
-  return wanted.filter((name) => have.has(name));
+  const missing = wanted.filter((name) => !have.has(name));
+  if (missing.length > 0)
+    throw new Error(
+      `[precheck] ${table} lacks ${missing.join(", ")}; the declaration invariants cannot be read`,
+    );
+  return wanted;
 }
 
 const digestRows = (rows) =>
@@ -523,7 +531,6 @@ export function readDeclarationInvariants(file, projectId) {
   return withReadOnly(file, (db) => {
     const select = (table, wanted, where, order) => {
       const columns = existingColumns(db, table, wanted);
-      if (columns.length === 0) return [];
       return db
         .prepare(
           `SELECT ${columns.join(", ")} FROM ${table} WHERE ${where} ORDER BY ${order}`,

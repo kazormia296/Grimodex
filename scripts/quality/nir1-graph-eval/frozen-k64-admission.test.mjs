@@ -18,9 +18,14 @@ import test from "node:test";
 import { readAdmittedFixture } from "./admission.mjs";
 import { FROZEN_FIXTURE_SHA256, K64_FREEZE } from "./constants.mjs";
 import {
+  ATTEMPTS_DIR,
   S2_FILES,
   admitFormalK64Run,
+  assertParityBefore,
   assertSourcePins,
+  finishAttempt,
+  listAttempts,
+  startAttempt,
 } from "./frozen-k64-admission.mjs";
 import {
   DEV_DRAFT_PROCEDURE_VERSION,
@@ -319,5 +324,85 @@ test("S2 追補 #2／#3: bytes の pin の file が違う、ancestor の pin が
   } finally {
     for (const row of [bad, unrelated, draft, moved])
       rmSync(row.repo, { recursive: true, force: true });
+  }
+});
+
+test("レビュー P2-6／P1-2: 試行の台帳は run の名前ごとに 1 回だけ書け、同じ候補・S4・種類の試行を上限なしに列挙し、Gold の前に完了した parity を求める", () => {
+  const root = mkdtempSync(path.join(tmpdir(), "cp4-s5a-attempts-"));
+  try {
+    const entry = (runKind, extra = {}) => ({
+      candidate: { commit: "b".repeat(40), tree: "c".repeat(40) },
+      s4Commit: "d".repeat(40),
+      runKind,
+      startedAtUtc: "2026-10-28T01:00:00.000Z",
+      setups: {},
+      ...extra,
+    });
+    const key = { root, candidate: "b".repeat(40), s4Commit: "d".repeat(40) };
+    assert.throws(
+      () =>
+        assertParityBefore({
+          attempts: listAttempts({ ...key, runKind: "parity" }),
+          startedAtUtc: "2026-10-28T02:00:00.000Z",
+        }),
+      /no completed unrestricted parity run/u,
+    );
+    const parity = startAttempt({
+      root,
+      runName: "p1",
+      entry: entry("parity"),
+    });
+    assert.throws(
+      () => startAttempt({ root, runName: "p1", entry: entry("parity") }),
+      /already attempted/u,
+    );
+    assert.throws(
+      () => startAttempt({ root, runName: "x", entry: entry("other") }),
+      /run kind/u,
+    );
+    // A started (not completed) parity does not admit a Gold run.
+    assert.throws(
+      () =>
+        assertParityBefore({
+          attempts: listAttempts({ ...key, runKind: "parity" }),
+          startedAtUtc: "2026-10-28T02:00:00.000Z",
+        }),
+      /no completed/u,
+    );
+    finishAttempt({ file: parity.file, status: "completed" });
+    const finished = listAttempts({ ...key, runKind: "parity" })[0]
+      .finishedAtUtc;
+    assert.deepEqual(
+      assertParityBefore({
+        attempts: listAttempts({ ...key, runKind: "parity" }),
+        startedAtUtc: "9999-01-01T00:00:00.000Z",
+      }).map((row) => row.runName),
+      ["p1"],
+    );
+    // A parity that finished after the Gold run started does not count.
+    assert.throws(
+      () =>
+        assertParityBefore({
+          attempts: listAttempts({ ...key, runKind: "parity" }),
+          startedAtUtc: "2000-01-01T00:00:00.000Z",
+        }),
+      /no completed/u,
+    );
+    assert.match(finished, /^\d{4}-/u);
+    for (const name of ["g1", "g2", "g3"])
+      startAttempt({ root, runName: name, entry: entry("gold") });
+    startAttempt({
+      root,
+      runName: "other-candidate",
+      entry: entry("gold", { candidate: { commit: "e".repeat(40) } }),
+    });
+    writeFileSync(path.join(root, ATTEMPTS_DIR, "broken.json"), "{");
+    const gold = listAttempts({ ...key, runKind: "gold" });
+    assert.deepEqual(
+      gold.map((row) => row.runName ?? row.unreadable),
+      ["broken.json", "g1", "g2", "g3"],
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });

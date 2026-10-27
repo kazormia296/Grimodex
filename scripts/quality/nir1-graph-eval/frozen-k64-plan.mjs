@@ -118,14 +118,18 @@ export function g01ModeOf(d10) {
   if (mode === "restricted" || mode === "unrestricted") {
     const expected = record === "none" ? "unrestricted" : "restricted";
     if (typeof record !== "string" || record.startsWith("S4:"))
-      return { mode: null, reason: "da1AcceptanceRecord-unresolved" };
+      return {
+        mode: null,
+        reason: "da1AcceptanceRecord-unresolved",
+        record: null,
+      };
     if (mode !== expected)
       fail(
         `d10.g01: rAndRirMode ${mode} does not follow da1AcceptanceRecord (${expected})`,
       );
-    return { mode, reason: null };
+    return { mode, reason: null, record };
   }
-  return { mode: null, reason: "rAndRirMode-unresolved" };
+  return { mode: null, reason: "rAndRirMode-unresolved", record: null };
 }
 
 /**
@@ -471,4 +475,62 @@ export function devRunSpec(plan) {
     readyProbe: !isOneShot,
     g01Mode: null,
   });
+}
+
+/**
+ * d10.parity (P1-2): the variants of the unrestricted R+IR parity run — the
+ * 12 G-02〜G-08 variants in catalog order (G-01 has its own rule, d10.g01).
+ */
+export function parityVariantKeys(prep) {
+  const named = prep?.d10?.parity?.variants;
+  const want = CATALOG.filter((key) => !key.startsWith("G-01/"));
+  if (
+    !Array.isArray(named) ||
+    JSON.stringify([...named].sort()) !== JSON.stringify([...want].sort())
+  )
+    fail("d10.parity.variants are the 12 G-02〜G-08 variants");
+  if (prep.d10.parity.unrestrictedRunsPerVariant !== 1)
+    fail("d10.parity: one unrestricted run per variant");
+  return want;
+}
+
+/**
+ * The parity run's schedule: the R+IR slots of the AB/BA schedule only
+ * (warm-up 5, measured 30, in runSchedule's order), one variant.
+ */
+export function validateParitySchedule(samples, variantKey) {
+  const want = [];
+  for (const [phase, count] of [
+    ["warmup", WARMUP_RUNS_PER_ARM],
+    ["measured", MEASURED_RUNS_PER_ARM],
+  ])
+    for (let repeat = 0; repeat < count; repeat += 1)
+      want.push(`${variantKey}:${phase}:${repeat}:hybrid`);
+  const actual = (samples ?? []).map(
+    (row) => `${row.variantKey}:${row.phase}:${row.repeat}:${row.arm}`,
+  );
+  if (JSON.stringify(actual) !== JSON.stringify(want))
+    throw new Error(
+      "[artifact] the parity run's samples are not the R+IR slots of the AB/BA schedule",
+    );
+  return { slots: want.length };
+}
+
+/** The AB/BA position of a sample (G-01 fallback: two processes merged). */
+export function scheduleOrder(samples) {
+  const index = new Map();
+  let at = 0;
+  for (const [phase, count] of [
+    ["warmup", WARMUP_RUNS_PER_ARM],
+    ["measured", MEASURED_RUNS_PER_ARM],
+  ])
+    for (let repeat = 0; repeat < count; repeat += 1)
+      for (const arm of repeat % 2 === 0
+        ? ["hybrid", "graph"]
+        : ["graph", "hybrid"])
+        index.set(`${phase}:${repeat}:${arm}`, at++);
+  const key = (row) => index.get(`${row.phase}:${row.repeat}:${row.arm}`);
+  if (samples.some((row) => key(row) === undefined))
+    throw new Error("[artifact] a sample is outside the AB/BA schedule");
+  return [...samples].sort((left, right) => key(left) - key(right));
 }

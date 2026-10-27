@@ -16,7 +16,7 @@
 
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { admitGraphCaseRun, readK64FreezeHead } from "./admission.mjs";
 import {
@@ -250,4 +250,114 @@ export function admitFormalK64Run(input, deps = {}) {
     procedure,
     admission,
   });
+}
+
+/** P2-6: the attempt ledger (one file per run name, never overwritten). */
+export const ATTEMPTS_DIR = ".artifacts/cp4/attempts";
+export const ATTEMPT_SCHEMA = "nir1-cp4-attempt/1";
+export const RUN_KINDS = Object.freeze(["gold", "parity"]);
+
+function attemptsDir(root) {
+  return path.join(root, ATTEMPTS_DIR);
+}
+
+/**
+ * Every recorded attempt of the same (candidate commit, S4 commit, run
+ * kind), oldest first. No upper bound: the count cannot be hidden.
+ */
+export function listAttempts({ root, candidate, s4Commit, runKind = null }) {
+  let names;
+  try {
+    names = readdirSync(attemptsDir(root));
+  } catch {
+    return [];
+  }
+  return names
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => {
+      try {
+        return JSON.parse(
+          readFileSync(path.join(attemptsDir(root), name), "utf8"),
+        );
+      } catch {
+        return { schema: null, unreadable: name };
+      }
+    })
+    .filter(
+      (row) =>
+        row.unreadable ||
+        (row.schema === ATTEMPT_SCHEMA &&
+          row.candidate?.commit === candidate &&
+          row.s4Commit === s4Commit &&
+          (runKind === null || row.runKind === runKind)),
+    )
+    .sort((left, right) =>
+      // An unreadable file sorts first (it is listed, never dropped).
+      String(left.startedAtUtc ?? "").localeCompare(
+        String(right.startedAtUtc ?? ""),
+      ),
+    );
+}
+
+/**
+ * Records an attempt before anything is measured. A run name is used once
+ * (the file is never overwritten); `[precheck]` otherwise.
+ */
+export function startAttempt({ root, runName, entry }) {
+  if (!RUN_KINDS.includes(entry?.runKind))
+    throw new Error(
+      `[precheck] S5 attempts: the run kind is ${RUN_KINDS.join(" or ")}`,
+    );
+  mkdirSync(attemptsDir(root), { recursive: true });
+  const file = path.join(attemptsDir(root), `${runName}.json`);
+  const record = {
+    schema: ATTEMPT_SCHEMA,
+    runName,
+    status: "started",
+    ...entry,
+  };
+  try {
+    writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { flag: "wx" });
+  } catch {
+    throw new Error(
+      `[precheck] S5 attempts: ${runName} was already attempted; a new attempt takes a new run name`,
+    );
+  }
+  return { file, record };
+}
+
+/** Closes an attempt with its outcome and finish time (UTC). */
+export function finishAttempt({ file, status, variants = null }) {
+  const record = JSON.parse(readFileSync(file, "utf8"));
+  writeFileSync(
+    file,
+    `${JSON.stringify(
+      { ...record, status, finishedAtUtc: new Date().toISOString(), variants },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+/**
+ * d10.parity (P1-2): the unrestricted parity run comes before the restricted
+ * Gold run of the same candidate and S4 commit: a completed parity attempt
+ * that finished before this run starts. `[precheck]` otherwise.
+ */
+export function assertParityBefore({ attempts, startedAtUtc }) {
+  const parity = attempts.filter(
+    (row) =>
+      row.runKind === "parity" &&
+      row.status === "completed" &&
+      typeof row.finishedAtUtc === "string" &&
+      row.finishedAtUtc < startedAtUtc,
+  );
+  if (parity.length === 0)
+    throw new Error(
+      "[precheck] d10.parity: no completed unrestricted parity run of this candidate and S4 commit precedes the restricted run",
+    );
+  return parity.map((row) => ({
+    runName: row.runName,
+    finishedAtUtc: row.finishedAtUtc,
+  }));
 }

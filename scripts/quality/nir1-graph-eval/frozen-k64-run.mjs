@@ -20,7 +20,7 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
 import process from "node:process";
@@ -31,10 +31,18 @@ import {
   collectRatification5Evidence,
   collectRatification5EvidenceWithKeepTest,
   readK62FreezeHead,
+  readK64FreezeHead,
 } from "./admission.mjs";
 import { checkRunnerBuildReceipts } from "./build-receipt-check.mjs";
 import { K64_W_F_MS, devVariant, variantByKey } from "./constants.mjs";
-import { admitFormalK64Run } from "./frozen-k64-admission.mjs";
+import {
+  admitFormalK64Run,
+  assertCandidateFixed,
+  assertParityBefore,
+  finishAttempt,
+  listAttempts,
+  startAttempt,
+} from "./frozen-k64-admission.mjs";
 import {
   blockedJudgement,
   d2ProbeCheck,
@@ -43,6 +51,9 @@ import {
   formalRunPlan,
   measurementCopySeedCheck,
   oneShotProcessSchedule,
+  parityVariantKeys,
+  scheduleOrder,
+  validateParitySchedule,
 } from "./frozen-k64-plan.mjs";
 import {
   loadDevGraphCasePlans,
@@ -126,7 +137,7 @@ const call = async (addon, name, ...args) =>
 export function parseArgs(argv) {
   const options = {
     "eval-build": path.join(ROOT, ".artifacts/cp4/eval-build"),
-    "d2a-mode": "restricted",
+    "run-kind": "gold",
   };
   for (let at = 0; at < argv.length; at += 2) {
     if (!argv[at].startsWith("--") || argv[at + 1] === undefined)
@@ -150,8 +161,19 @@ export function parseArgs(argv) {
       ];
   for (const name of required)
     if (!options[name]) throw new Error(`--${name} is required`);
-  if (!["restricted", "unrestricted"].includes(options["d2a-mode"]))
-    throw new Error("--d2a-mode is restricted or unrestricted");
+  // d10.parity (P1-2): `parity` is the unrestricted R+IR run; `gold` the
+  // restricted run of both arms (G-01 follows d10.g01).
+  if (!["gold", "parity"].includes(options["run-kind"]))
+    throw new Error("--run-kind is gold or parity");
+  if (options["d2a-mode"] !== undefined)
+    throw new Error(
+      "--d2a-mode is gone: the mode follows --run-kind (parity is unrestricted) and d10.g01",
+    );
+  // Review P2-6 (a): a formal run measures every variant of its kind.
+  if (!dev && options.variant !== undefined)
+    throw new Error(
+      "[precheck] a formal run measures all its variants; --variant is a dev shape-check option",
+    );
   // Dev only: fewer one-shot processes for the shape check (never formal).
   if (options["one-shot-processes"] !== undefined) {
     if (!dev)
@@ -166,7 +188,7 @@ export function parseArgs(argv) {
 }
 
 /** The setup receipts by variant key (`--setups` JSON). */
-async function readSetups({ file, plans, dev }) {
+export async function readSetups({ file, plans, dev, candidate = null }) {
   const map = JSON.parse(await readFile(path.resolve(file), "utf8"));
   const rows = new Map();
   for (const plan of plans) {
@@ -183,8 +205,22 @@ async function readSetups({ file, plans, dev }) {
       throw new Error(
         `[precheck] ${plan.variantKey}: the setup receipt is of another fixture or variant`,
       );
+    // Review P2-5: ⑤ sets up on the S5 candidate (a new workspace).
+    if (
+      candidate !== null &&
+      (value.candidate?.commit !== candidate.commit ||
+        value.candidate?.tree !== candidate.tree)
+    )
+      throw new Error(
+        `[precheck] ${plan.variantKey}: the setup ran on ${String(value.candidate?.commit)} (tree ${String(value.candidate?.tree)}), not the run's candidate ${candidate.commit}`,
+      );
     if (value.status === "blocked") {
-      rows.set(plan.variantKey, { path: absolute, value, blocked: true });
+      rows.set(plan.variantKey, {
+        path: absolute,
+        sha256: sha256(bytes),
+        value,
+        blocked: true,
+      });
       continue;
     }
     // A frozen receipt is sealed by loadSetupReceipt (④⑤ need complete
@@ -209,7 +245,7 @@ async function readSetups({ file, plans, dev }) {
   return rows;
 }
 
-async function launchMeasurement({ label, dir, shared, d2aMode }) {
+async function launchMeasurement({ label, dir, shared, d2aMode, bodySeam }) {
   const nonce = randomUUID();
   const session = await startSession({
     runDir: dir,
@@ -221,7 +257,11 @@ async function launchMeasurement({ label, dir, shared, d2aMode }) {
     models: shared.models,
     tmpRoot: shared.tmpRoot,
     admission: shared.admission,
-    extraEnv: measurementSeamEnv({ bodyNonce: nonce, maintenance: "product" }),
+    // Review P3 (e): the body declaration seam (and CI=true) only in a
+    // process that declares.
+    extraEnv: bodySeam
+      ? measurementSeamEnv({ bodyNonce: nonce, maintenance: "product" })
+      : {},
   });
   try {
     if (session.evidence.problems.length > 0)
@@ -432,6 +472,22 @@ async function freshCopy({ setup, dir }) {
 /** The R1／R4 clock (performance.now; the tests hand `ctx.clock`). */
 const nowOf = (ctx) => (ctx.clock?.now ?? (() => performance.now()))();
 
+/** Removes a one-shot process's copy after its stop, keeping its digest. */
+async function removeCopy(proc) {
+  let sha256After;
+  try {
+    sha256After = sha256(await readFile(proc.dbPath));
+  } catch {
+    sha256After = null;
+  }
+  await rm(proc.workspacePath, { recursive: true, force: true });
+  return {
+    path: path.relative(ROOT, proc.dbPath),
+    sha256After,
+    removed: !existsSync(proc.workspacePath),
+  };
+}
+
 /** One Graph-arm sample through the hook consumer (R1〜R4, R7). */
 async function graphSample({ ctx, slot }) {
   const { addon, page, procedure, ids, dbPath, revisionIds } = ctx;
@@ -506,6 +562,12 @@ async function graphSample({ ctx, slot }) {
       ? { materialContribution: ctx.materialContribution }
       : {}),
   });
+  // Review P3 (f): the dev preview judges F6 on Scenes (DR-CP4-F-6) and
+  // records the Revision match beside it.
+  if (ctx.materialPreview && row.followUp?.child)
+    row.followUp.child.materialRevisionPreview = ctx.materialPreview(
+      observed.fetches?.[1]?.paths ?? null,
+    );
   const parent = observed.fetches?.[0]?.result ?? null;
   return {
     row,
@@ -540,11 +602,17 @@ async function hybridSample({ ctx, slot }) {
 async function openProcess({ ctx, dir, label }) {
   const { spec, setup, shared } = ctx;
   const copy = await freshCopy({ setup, dir });
+  const declares = Boolean(
+    spec.declaration &&
+    ctx.d2aMode === "restricted" &&
+    ctx.arms.includes("graph"),
+  );
   const launched = await (shared.launchMeasurement ?? launchMeasurement)({
     label,
     dir,
     shared,
     d2aMode: ctx.d2aMode,
+    bodySeam: declares,
   });
   const { session } = launched;
   const proc = { session, ...copy, checks: { status: launched.status } };
@@ -564,7 +632,7 @@ async function openProcess({ ctx, dir, label }) {
       copy.dbPath,
       ctx.ids.projectId,
     );
-    if (spec.declaration && ctx.d2aMode === "restricted") {
+    if (declares) {
       const declared = await declarationStep({
         page,
         session,
@@ -678,6 +746,34 @@ async function readyProbe(ctx) {
   return { probes: ready, diagnostics };
 }
 
+/**
+ * d2 at a query. Review P2-4: S2 checks the index state at the query only
+ * for the three read-as variants (`holding`); for the others the probe is
+ * an observation (a C that turns unusable is a product failure the
+ * classifiers see), never a stop. Review P3 (i): a read-as variant's B
+ * metadata is read at the query too.
+ */
+function atQueryProbe({ ctx, taken }) {
+  const metadata = ctx.spec.holding
+    ? readIndexMetadata(ctx.dbPath, ctx.ids.projectId)
+    : null;
+  const at = d2ProbeCheck({
+    spec: ctx.spec,
+    setupProbe: ctx.setupProbe,
+    metadata,
+    indexUsable: taken.indexUsable,
+    at: "at-query",
+  });
+  return {
+    ...at,
+    stops: !at.ok && ctx.spec.holding,
+    probe: {
+      ...at.probe,
+      ...(at.ok ? {} : { mismatch: true, observedOnly: !ctx.spec.holding }),
+    },
+  };
+}
+
 function blockedResult({ ctx, check, samples, extra = {} }) {
   return {
     status: "blocked",
@@ -711,8 +807,7 @@ async function measureSteady(ctx) {
       lastSeededEndedAt: null,
       previousReleaseWithinLimit: true,
     });
-    const arms =
-      ctx.d2aMode === "restricted" ? ["hybrid", "graph"] : ["hybrid"];
+    const arms = ctx.arms;
     if (arms.includes("graph")) {
       await evaluateOk(
         ctx.page,
@@ -743,20 +838,14 @@ async function measureSteady(ctx) {
           : await graphSample({ ctx, slot });
       samples.push(taken.row);
       if (taken.release) releases.push({ ...slot, ...taken.release });
-      const at = d2ProbeCheck({
-        spec: ctx.spec,
-        setupProbe: ctx.setupProbe,
-        metadata: null,
-        indexUsable: taken.indexUsable,
-        at: "at-query",
-      });
+      const at = atQueryProbe({ ctx, taken });
       probes.push({
         ...at.probe,
         phase: slot.phase,
         repeat: slot.repeat,
         arm: slot.arm,
       });
-      if (!at.ok)
+      if (at.stops)
         return blockedResult({
           ctx,
           check: at,
@@ -800,7 +889,7 @@ async function measureOneShot(ctx) {
   ctx.run = { startedAtMs: null };
   try {
     for (const slot of schedule) {
-      if (ctx.d2aMode !== "restricted" && slot.arm === "graph") continue;
+      if (!ctx.arms.includes(slot.arm)) continue;
       const dir = path.join(
         ctx.variantDir,
         `process-${String(slot.process).padStart(2, "0")}`,
@@ -842,13 +931,7 @@ async function measureOneShot(ctx) {
           process: slot.process,
         });
         ctx.run.finishedAtMs = Date.now();
-        const at = d2ProbeCheck({
-          spec: ctx.spec,
-          setupProbe: ctx.setupProbe,
-          metadata: null,
-          indexUsable: taken.indexUsable,
-          at: "at-query",
-        });
+        const at = atQueryProbe({ ctx, taken });
         probes.push({ ...at.probe, process: slot.process, arm: slot.arm });
         processes.push({
           process: slot.process,
@@ -858,7 +941,7 @@ async function measureOneShot(ctx) {
           seedPin: proc.checks.seedPin.status,
           raw: proc.checks.raw.ok,
         });
-        if (!at.ok)
+        if (at.stops)
           return blockedResult({
             ctx,
             check: at,
@@ -873,6 +956,14 @@ async function measureOneShot(ctx) {
             })),
           );
         current = null;
+        // Review P3 (h): the process's copy is removed after its stop; its
+        // bytes' digest stays in the record.
+        if (proc?.dbPath) {
+          const copy = await removeCopy(proc);
+          const row = processes.find((entry) => entry.process === slot.process);
+          if (row) row.copy = copy;
+          else processes.push({ process: slot.process, copy });
+        }
       }
     }
     return { status: "measured", samples, probes, processes, evidences };
@@ -945,9 +1036,298 @@ function environmentOf({ ctx, evidences }) {
  * launch, the window sampler and the R1／R4 clock in the tests only.
  */
 export function measureVariant(ctx) {
-  return ctx.spec.kind === "one-shot"
-    ? measureOneShot(ctx)
-    : measureSteady(ctx);
+  if (ctx.spec.kind === "one-shot") return measureOneShot(ctx);
+  if (ctx.g01Fallback) return measureG01Fallback(ctx);
+  return measureSteady(ctx);
+}
+
+/**
+ * DR-CP4-N-10: G-01's fallback (d10.g01, `rAndRirMode` unrestricted). The
+ * D2a mode is a launch's profile state, so two processes on fresh copies of
+ * the same cold DB run in series: the unrestricted one takes the R+IR slots
+ * (no declaration, no READY probe, no Graph arm), the restricted one the
+ * R+IR+Graph slots (declaration, Index, READY probe). The samples are put
+ * in the AB/BA schedule's order, each naming its process; the comparison's
+ * baseline is this run's unrestricted R+IR.
+ */
+async function measureG01Fallback(ctx) {
+  const parts = [];
+  for (const [label, arm, d2aMode] of [
+    ["hybrid-unrestricted", "hybrid", "unrestricted"],
+    ["graph-restricted", "graph", "restricted"],
+  ]) {
+    const part = {
+      ...ctx,
+      arms: [arm],
+      d2aMode,
+      g01Fallback: false,
+      variantDir: path.join(ctx.variantDir, label),
+    };
+    await mkdir(part.variantDir, { recursive: true });
+    const result = await measureSteady(part);
+    parts.push({ label, part, result });
+    if (result.status !== "measured") {
+      Object.assign(ctx, {
+        run: part.run,
+        windowSamples: part.windowSamples,
+      });
+      return {
+        ...result,
+        samples: parts.flatMap((row) =>
+          row.result.samples.map((sample) => ({
+            ...sample,
+            armProcess: row.label,
+          })),
+        ),
+        armProcesses: parts.map((row) => row.label),
+      };
+    }
+  }
+  const [hybrid, graph] = parts;
+  ctx.run = {
+    startedAtMs: hybrid.part.run.startedAtMs,
+    finishedAtMs: graph.part.run.finishedAtMs,
+  };
+  ctx.windowSamples = [
+    ...(hybrid.part.windowSamples ?? []),
+    ...(graph.part.windowSamples ?? []),
+  ];
+  return {
+    status: "measured",
+    samples: scheduleOrder(
+      parts.flatMap((row) =>
+        row.result.samples.map((sample) => ({
+          ...sample,
+          armProcess: row.label,
+        })),
+      ),
+    ),
+    probes: parts.flatMap((row) =>
+      row.result.probes.map((probe) => ({ ...probe, armProcess: row.label })),
+    ),
+    proc: graph.result.proc,
+    evidences: [
+      hybrid.result.proc?.evidence,
+      graph.result.proc?.evidence,
+    ].filter(Boolean),
+    armProcesses: parts.map((row) => ({
+      label: row.label,
+      d2aMode: row.part.d2aMode,
+      arm: row.part.arms[0],
+      run: row.part.run,
+      seedPin: row.result.proc?.checks?.seedPin?.status ?? null,
+    })),
+  };
+}
+
+/** The N-5 disclosure the receipt carries (review P3 (g)). */
+export const K64_DISCLOSURE = Object.freeze({
+  x2: "X2 の TTL の切れと edge の epoch の進みは owner の counter に無く観測できない。起きた子は Cached で受けない（F5）か F2 の counter の差分が合わず X4 として失敗に数える（成功にも分母の外にもしない）。quarantine だけは counter で X2（DR-CP4-N-5）",
+  q4: "q4 の決着から通知までは通知に Native の時刻が無く測らない（R6、2 つの時計を混ぜない）。renderer の時計の親の公開から最初の通知までを開示する（DR-CP4-F-7、N-5）",
+});
+export const BLOCKED_RECORD_SCHEMA = "nir1-cp4-blocked-variant/1";
+
+const digestOf = (value) => sha256(Buffer.from(JSON.stringify(value)));
+
+/**
+ * One variant's record (review P1-1／P1-2): a blocked variant (at setup or
+ * during the measurement) gets a blocked record — the blocked fields as the
+ * table judged them, the probes, the samples taken so far with their
+ * digest — and never goes through the aggregates; a measured variant gets
+ * the run receipt of its kind (`g-case-gold`, or `g-case-parity-unrestricted`
+ * whose schedule is the R+IR slots only), validated. A receipt the
+ * aggregates refuse keeps its samples with their digest. Returns the run
+ * report's row.
+ */
+export async function writeVariantRecord({
+  ctx,
+  result,
+  runId,
+  runKind,
+  dev,
+  admitted,
+  candidate,
+  priorAttempts,
+  problems,
+}) {
+  const { spec, plan, setup, variantDir } = ctx;
+  await mkdir(variantDir, { recursive: true });
+  const base = {
+    runId,
+    variantKey: spec.variantKey,
+    runKind,
+    preview: dev,
+    fixture: {
+      path: plan.fixturePath,
+      sha256: plan.fixtureSha256,
+      kind: dev ? "dev" : "frozen",
+    },
+    head: admitted.head,
+    candidate: {
+      commit: candidate.commit,
+      tree: candidate.tree,
+      clean: candidate.clean,
+    },
+    setupReceipt: setup
+      ? { path: path.relative(ROOT, setup.path), sha256: setup.sha256 ?? null }
+      : null,
+    priorAttempts,
+  };
+  if (result.status === "blocked" || result.status === "blocked-at-setup") {
+    const samples = result.samples ?? [];
+    const record = {
+      schemaVersion: BLOCKED_RECORD_SCHEMA,
+      ...base,
+      status: result.status,
+      blocked: result.blocked,
+      probes: result.probes ?? (result.probe ? [result.probe] : []),
+      samples,
+      samplesSha256: digestOf(samples),
+      ...(result.armProcesses ? { armProcesses: result.armProcesses } : {}),
+    };
+    await writeFile(
+      path.join(variantDir, "blocked-record.json"),
+      `${JSON.stringify(record, null, 2)}\n`,
+    );
+    await writeSha256Sums(variantDir, ["blocked-record.json"]);
+    return {
+      status: result.status,
+      blocked: result.blocked,
+      samples: samples.length,
+      valid: true,
+    };
+  }
+  const environment = environmentOf({
+    ctx,
+    evidences: result.evidences ?? [result.proc?.evidence].filter(Boolean),
+  });
+  let receipt;
+  try {
+    if (runKind === "parity")
+      validateParitySchedule(result.samples, ctx.variant.key);
+    receipt = assembleK64Receipt({
+      runKind:
+        runKind === "parity" ? "g-case-parity-unrestricted" : "g-case-gold",
+      priorAttempts,
+      runId,
+      preview: dev,
+      fixture: base.fixture,
+      variant: ctx.variant,
+      head: admitted.head,
+      candidate,
+      ratification5: admitted.ratification5,
+      procedure: admitted.procedure,
+      environment,
+      run: ctx.run ?? null,
+      settings: {
+        maintenance: "product",
+        d2aModes: ctx.g01Fallback
+          ? { hybrid: "unrestricted", graph: "restricted" }
+          : ctx.arms.includes("graph")
+            ? { hybrid: ctx.d2aMode, graph: ctx.d2aMode }
+            : { hybrid: ctx.d2aMode },
+        reauthorization: {
+          mode: ctx.g01Fallback ? "per-arm-process" : ctx.d2aMode,
+          placedStateFile: true,
+          note: "the D2a profile state placed before each launch; no activation UI",
+        },
+        ...(ctx.g01Fallback
+          ? {
+              g01Fallback: {
+                decision: "DR-CP4-N-10",
+                rAndRirMode: "unrestricted",
+                da1AcceptanceRecord: ctx.spec.g01Mode?.record ?? "none",
+                baseline: "the same run's unrestricted R+IR",
+                armProcesses: result.armProcesses ?? null,
+                abba: "AB/BA is the slots' order; each arm ran in its own process (no alternation in time)",
+              },
+            }
+          : {}),
+        setupReceipt: {
+          path: base.setupReceipt.path,
+          sha256: base.setupReceipt.sha256,
+          logicalToRuntime: setup.value.logicalToRuntime,
+        },
+        measurement: {
+          kind: spec.kind,
+          ...(spec.kind === "one-shot"
+            ? {
+                label: ctx.oneShot.receiptLabel,
+                processes: oneShotProcessSchedule(ctx.oneShot).filter((row) =>
+                  ctx.arms.includes(row.arm),
+                ).length,
+              }
+            : {}),
+          measurementPoint: spec.measurementPoint,
+          indexState: spec.indexState,
+        },
+        seed: {
+          logical: plan.seedPin.seedEntityId,
+          runtime: ctx.gateRow.expectedSeed,
+          via: "product-hook-from-the-query-scene-pin",
+        },
+        f6: {
+          basis: dev ? "scene-level-preview" : "material-revision",
+          expected: ctx.resolverExpected ?? null,
+        },
+        k64Disclosure: K64_DISCLOSURE,
+      },
+      declaration: result.proc?.declaration ?? null,
+      measurementWorkspace: result.proc?.measurementWorkspace ?? null,
+      samples: result.samples,
+      checks: {
+        status: result.status,
+        d2Probes: result.probes ?? [],
+        process: result.proc?.checks ?? null,
+        processes: result.processes ?? null,
+        problems,
+      },
+    });
+  } catch (error) {
+    await writeFile(
+      path.join(variantDir, "samples.json"),
+      `${JSON.stringify(
+        {
+          ...base,
+          status: result.status,
+          refused: String(error?.message ?? error).split("\n")[0],
+          samples: result.samples,
+          samplesSha256: digestOf(result.samples),
+          probes: result.probes ?? [],
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    await writeSha256Sums(variantDir, ["samples.json"]);
+    problems.push(`${spec.variantKey}: ${error?.stack ?? error}`);
+    return {
+      status: "receipt-refused",
+      samples: result.samples.length,
+      valid: false,
+      error: String(error?.message ?? error).split("\n")[0],
+    };
+  }
+  const errors = validateCp4Receipt(receipt, {
+    ratification5: admitted.ratification5,
+    procedure: admitted.procedure,
+  });
+  await writeFile(
+    path.join(variantDir, "receipt.json"),
+    `${JSON.stringify(receipt, null, 2)}\n`,
+  );
+  await writeFile(
+    path.join(variantDir, "validation.json"),
+    `${JSON.stringify({ valid: errors.length === 0, errors }, null, 2)}\n`,
+  );
+  await writeSha256Sums(variantDir, ["receipt.json", "validation.json"]);
+  return {
+    status: result.status,
+    samples: result.samples.length,
+    valid: errors.length === 0,
+    errors: errors.slice(0, 20),
+    verdict: receipt.verdict ?? null,
+  };
 }
 
 function devVariantKeyOf(spec, fixturePath) {
@@ -958,24 +1338,32 @@ function devVariantKeyOf(spec, fixturePath) {
 export async function runFrozenK64(argv) {
   const options = parseArgs(argv);
   const dev = Boolean(options["dev-fixture"]);
+  const runKind = options["run-kind"];
+  const d2aMode = runKind === "parity" ? "unrestricted" : "restricted";
   const runDir = path.join(ROOT, ".artifacts/cp4", options.run);
   await mkdir(runDir, { recursive: false });
   const report = {
     schema: FROZEN_RUN_REPORT_SCHEMA,
     run: options.run,
     mode: dev ? "dev-shape-preview" : "formal",
-    d2aMode: options["d2a-mode"],
+    runKind,
+    d2aMode,
     problems: [],
     checks: {},
     variants: {},
   };
   let server = null;
+  let attempt = null;
   try {
-    // 1. admission (receipts are written only after it).
+    // 1. admission (receipts are written only after it). Review P3 (b): the
+    // cheap checks (a clean, fixed candidate; the K6/4 freeze head) come
+    // before the keep test (minutes).
     const evalDir = path.resolve(options["eval-build"]);
     const nativePath = realpathSync(path.join(evalDir, "grimodex-node.node"));
     let admitted;
     if (!dev) {
+      assertCandidateFixed({ root: ROOT, candidate: options.candidate });
+      readK64FreezeHead({ root: ROOT, commit: options["k64-commit"] });
       const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
       const ratification5 = options["keep-test-worktree"]
         ? await collectRatification5EvidenceWithKeepTest({
@@ -1007,6 +1395,7 @@ export async function runFrozenK64(argv) {
           runStartedAtUtc: new Date().toISOString(),
         },
         s2: formal.s2,
+        candidate: formal.candidate,
       };
       report.checks.sourcePins = formal.pins;
       report.checks.s2 = Object.fromEntries(
@@ -1034,6 +1423,7 @@ export async function runFrozenK64(argv) {
           k62: readK62FreezeHead({ root: ROOT, commit: options["k62-commit"] }),
           runStartedAtUtc: new Date().toISOString(),
         },
+        candidate: null,
       };
     }
     // 2. plans, run specifications and the setups.
@@ -1044,51 +1434,128 @@ export async function runFrozenK64(argv) {
           stopsAt: "complete",
         })
       : loadFrozenSetupPlans({ root: ROOT, stopsAt: "complete" });
+    const prep = admitted.s2?.files.observationPrep.value;
     const specs = dev
       ? plans.map((plan) => devRunSpec(plan))
       : formalRunPlan({
           plans,
-          prep: admitted.s2.files.observationPrep.value,
+          prep,
           addenda: [
             admitted.s2.files.g01Addendum.value,
             admitted.s2.files.declarationAddendum.value,
           ],
         });
+    // d10: a parity run measures the 12 G-02〜G-08 variants; a Gold run all 13.
+    const kindKeys =
+      !dev && runKind === "parity" ? new Set(parityVariantKeys(prep)) : null;
     const selected = specs.filter(
-      (spec) => !options.variant || spec.variantKey === options.variant,
+      (spec) =>
+        (!options.variant || spec.variantKey === options.variant) &&
+        (kindKeys === null || kindKeys.has(spec.variantKey)),
     );
     if (selected.length === 0)
       throw new Error(`[precheck] no variant ${options.variant}`);
     for (const spec of selected)
-      if (spec.caseId === "G-01" && spec.g01Mode?.mode === null)
+      if (
+        runKind === "gold" &&
+        spec.caseId === "G-01" &&
+        spec.g01Mode?.mode === null
+      )
         throw new Error(
           `[precheck] DR-CP4-N-6 (ii): G-01's R and R+IR mode is unresolved (${spec.g01Mode.reason}); S4 fills d10.g01 first`,
         );
-    const setups = await readSetups({ file: options.setups, plans, dev });
-    // DR-CP4-N-2／N-6 (i): a blocked setup is judged by the table; the seed
-    // pin gate needs 13 complete setups, so the K6/4 judgement does not start.
+    const candidate = candidateBlock({
+      options,
+      nativePath,
+      workerPath: path.join(evalDir, "nir1-c-query-worker"),
+    });
+    const setups = await readSetups({
+      file: options.setups,
+      plans,
+      dev,
+      candidate: dev ? null : admitted.candidate,
+    });
+    // Review P2-6 (b): the attempt ledger before anything is measured; the
+    // earlier attempts of the same candidate, S4 commit and kind are
+    // disclosed at every receipt's head. A Gold run needs a completed parity
+    // run before it (P1-2, d10.parity).
+    let priorAttempts;
+    if (!dev) {
+      const key = {
+        root: ROOT,
+        candidate: admitted.candidate.commit,
+        s4Commit: admitted.s2.commit,
+      };
+      priorAttempts = listAttempts({ ...key, runKind }).map((row) => ({
+        runName: row.runName ?? row.unreadable ?? null,
+        status: row.status ?? "unreadable",
+        startedAtUtc: row.startedAtUtc ?? null,
+        finishedAtUtc: row.finishedAtUtc ?? null,
+      }));
+      if (runKind === "gold")
+        report.checks.parityBefore = assertParityBefore({
+          attempts: listAttempts({ ...key, runKind: "parity" }),
+          startedAtUtc: admitted.head.runStartedAtUtc,
+        });
+      attempt = startAttempt({
+        root: ROOT,
+        runName: options.run,
+        entry: {
+          candidate: {
+            commit: admitted.candidate.commit,
+            tree: admitted.candidate.tree,
+          },
+          s4Commit: admitted.s2.commit,
+          runKind,
+          startedAtUtc: admitted.head.runStartedAtUtc,
+          setups: Object.fromEntries(
+            [...setups].map(([variantKey, row]) => [variantKey, row.sha256]),
+          ),
+        },
+      });
+      report.checks.priorAttempts = priorAttempts;
+    }
+    // DR-CP4-N-2／N-11: a blocked setup is judged by the table and its record
+    // is kept; the seed pin gate needs 13 complete setups, so the K6/4
+    // judgement does not start.
     const blocked = [];
     for (const plan of plans) {
       const setup = setups.get(plan.variantKey);
       if (!setup?.blocked) continue;
       const row = setup.value.blocked ?? {};
-      report.variants[plan.variantKey] = {
-        status: "blocked-at-setup",
-        blocked: blockedJudgement({
+      const judged = blockedJudgement({
+        plan,
+        blocked: {
+          harnessId: row.harnessId,
+          condition: row.condition,
+          unmet: row.unmetPreconditions ?? [],
+        },
+        recorded: row,
+      });
+      report.variants[plan.variantKey] = await writeVariantRecord({
+        ctx: {
+          spec: { variantKey: plan.variantKey },
           plan,
-          blocked: {
-            harnessId: row.harnessId,
-            condition: row.condition,
-            unmet: row.unmetPreconditions ?? [],
-          },
-          recorded: row,
-        }),
-      };
+          setup,
+          variantDir: path.join(
+            runDir,
+            plan.variantKey.replace(/[^A-Za-z0-9._-]+/gu, "_"),
+          ),
+        },
+        result: { status: "blocked-at-setup", blocked: judged, probes: [] },
+        runId: `${options.run}/${plan.variantKey}`,
+        runKind,
+        dev,
+        admitted,
+        candidate,
+        priorAttempts,
+        problems: report.problems,
+      });
       blocked.push(plan.variantKey);
     }
     if (!dev && blocked.length > 0)
       throw new Error(
-        `[precheck] DR-CP4-N-6 (i): ${blocked.join(", ")} stopped blocked at setup; the seed pin gate needs the 13 complete setups, so the K6/4 judgement does not start (integrator decides)`,
+        `[precheck] DR-CP4-N-11: ${blocked.join(", ")} stopped blocked at setup; the seed pin gate needs the 13 complete setups, so the K6/4 judgement does not start`,
       );
     // 3. the seed pin gate before any process that can query (frozen: the
     // 13 cold DBs at stage evaluation; dev: the receipts' own maps).
@@ -1129,11 +1596,6 @@ export async function runFrozenK64(argv) {
         });
       }
     // 4. the launch material, once.
-    const candidate = candidateBlock({
-      options,
-      nativePath,
-      workerPath: path.join(evalDir, "nir1-c-query-worker"),
-    });
     report.checks.productBuild = checkRunnerBuildReceipts({
       root: ROOT,
       options,
@@ -1155,9 +1617,6 @@ export async function runFrozenK64(argv) {
     });
     candidate.harnessFiles["renderer-bundle"] =
       rendererBuild.rendererBundleSha256;
-    candidate.harnessFiles[
-      "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs"
-    ] = sha256(readFileSync(import.meta.filename));
     server = await startStaticServer({
       dir: path.join(runDir, "renderer-dist"),
     });
@@ -1238,15 +1697,25 @@ export async function runFrozenK64(argv) {
             }
           : null,
         procedure: admitted.procedure,
-        d2aMode: options["d2a-mode"],
+        d2aMode,
+        arms: runKind === "parity" ? ["hybrid"] : ["hybrid", "graph"],
+        // DR-CP4-N-10: G-01's fallback when S4 set rAndRirMode unrestricted.
+        g01Fallback:
+          runKind === "gold" &&
+          spec.caseId === "G-01" &&
+          spec.g01Mode?.mode === "unrestricted",
+        resolverExpected: resolver.expected,
         queryBody: fixture.query?.body ?? fixture.query?.text ?? "",
         revisionIds: Object.values(ids.typedRevisions ?? {})
           .map((row) => row.revisionId)
           .filter(Boolean),
         expectedContribution: null,
         // DR-CP4-N-4: the formal run matches F6 on the Revisions; the dev
-        // shape check records the same match beside the Scene-level one.
-        materialContribution: (paths) => resolver.contribution(paths),
+        // preview keeps the Scene unit and records the Revision match beside
+        // it (DR-CP4-F-6, review P3 (f)).
+        ...(dev
+          ? { materialPreview: (paths) => resolver.contribution(paths) }
+          : { materialContribution: (paths) => resolver.contribution(paths) }),
         variantDir: path.join(
           runDir,
           spec.variantKey.replace(/[^A-Za-z0-9._-]+/gu, "_"),
@@ -1270,120 +1739,40 @@ export async function runFrozenK64(argv) {
         if (String(error?.message ?? "").startsWith("[precheck]")) break;
         continue;
       }
-      const environment = environmentOf({
+      const row = await writeVariantRecord({
         ctx,
-        evidences: result.evidences ?? [result.proc?.evidence].filter(Boolean),
+        result,
+        runId: `${options.run}/${spec.variantKey}`,
+        runKind,
+        dev,
+        admitted,
+        candidate,
+        priorAttempts,
+        problems: report.problems,
       });
-      // A receipt the aggregates refuse (e.g. a schedule that is not AB/BA)
-      // keeps the samples on disk and stops this variant only.
-      let receipt;
-      try {
-        receipt = assembleK64Receipt({
-          runId: `${options.run}/${spec.variantKey}`,
-          preview: dev,
-          fixture: {
-            path: plan.fixturePath,
-            sha256: plan.fixtureSha256,
-            kind: dev ? "dev" : "frozen",
-          },
-          variant,
-          head: admitted.head,
-          candidate,
-          ratification5: admitted.ratification5,
-          procedure: admitted.procedure,
-          environment,
-          run: ctx.run ?? null,
-          settings: {
-            maintenance: "product",
-            d2aModes:
-              ctx.d2aMode === "restricted"
-                ? { hybrid: "restricted", graph: "restricted" }
-                : { hybrid: "unrestricted" },
-            reauthorization: {
-              mode: ctx.d2aMode,
-              placedStateFile: true,
-              note: "the D2a profile state placed before launch; no activation UI",
-            },
-            setupReceipt: {
-              path: path.relative(ROOT, setup.path),
-              sha256: setup.sha256,
-              logicalToRuntime: setup.value.logicalToRuntime,
-            },
-            measurement: {
-              kind: spec.kind,
-              ...(spec.kind === "one-shot"
-                ? {
-                    label: oneShot.receiptLabel,
-                    processes: oneShotProcessSchedule(oneShot).length,
-                  }
-                : {}),
-              measurementPoint: spec.measurementPoint,
-              indexState: spec.indexState,
-            },
-            seed: {
-              logical: plan.seedPin.seedEntityId,
-              runtime: ctx.gateRow.expectedSeed,
-              via: "product-hook-from-the-query-scene-pin",
-            },
-            f6: { basis: "material-revision", expected: resolver.expected },
-          },
-          declaration: result.proc?.declaration ?? null,
-          measurementWorkspace: result.proc?.measurementWorkspace ?? null,
-          samples: result.samples,
-          checks: {
-            status: result.status,
-            ...(result.blocked ? { blocked: result.blocked } : {}),
-            d2Probes: result.probes ?? [],
-            process: result.proc?.checks ?? null,
-            processes: result.processes ?? null,
-            problems: report.problems,
-          },
-        });
-      } catch (error) {
-        await writeFile(
-          path.join(ctx.variantDir, "samples.json"),
-          `${JSON.stringify({ status: result.status, samples: result.samples, probes: result.probes ?? [] }, null, 2)}\n`,
-        );
-        report.problems.push(`${spec.variantKey}: ${error?.stack ?? error}`);
-        report.variants[spec.variantKey] = {
-          status: "receipt-refused",
-          samples: result.samples.length,
-          error: String(error?.message ?? error).split("\n")[0],
-        };
-        process.exitCode = 1;
-        continue;
-      }
-      const errors = validateCp4Receipt(receipt, {
-        ratification5: admitted.ratification5,
-        procedure: admitted.procedure,
-      });
-      await writeFile(
-        path.join(ctx.variantDir, "receipt.json"),
-        `${JSON.stringify(receipt, null, 2)}\n`,
-      );
-      await writeFile(
-        path.join(ctx.variantDir, "validation.json"),
-        `${JSON.stringify({ valid: errors.length === 0, errors }, null, 2)}\n`,
-      );
-      await writeSha256Sums(ctx.variantDir, [
-        "receipt.json",
-        "validation.json",
-      ]);
-      report.variants[spec.variantKey] = {
-        status: result.status,
-        blocked: result.blocked ?? null,
-        samples: result.samples.length,
-        valid: errors.length === 0,
-        errors: errors.slice(0, 20),
-        verdict: receipt.verdict ?? null,
-      };
-      if (errors.length > 0) process.exitCode = 1;
+      report.variants[spec.variantKey] = row;
+      if (row.valid !== true) process.exitCode = 1;
     }
   } catch (error) {
     report.problems.push(error?.stack ?? String(error));
     process.exitCode = 1;
   } finally {
     await server?.close();
+    if (attempt)
+      finishAttempt({
+        file: attempt.file,
+        status:
+          report.problems.length === 0 &&
+          Object.values(report.variants).every((row) => row.valid === true)
+            ? "completed"
+            : "stopped",
+        variants: Object.fromEntries(
+          Object.entries(report.variants).map(([key, row]) => [
+            key,
+            row.status,
+          ]),
+        ),
+      });
   }
   await writeFile(
     path.join(runDir, "run-report.json"),

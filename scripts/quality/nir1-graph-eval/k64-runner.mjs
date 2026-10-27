@@ -221,6 +221,8 @@ export function admitK64Run(input) {
  * dev plan and the quality measured on the same samples (E-3).
  */
 export function assembleK64Receipt({
+  runKind = "g-case-gold",
+  priorAttempts = undefined,
   runId,
   preview,
   fixture,
@@ -239,7 +241,10 @@ export function assembleK64Receipt({
 }) {
   const receipt = {
     schemaVersion: CP4_RECEIPT_SCHEMA,
-    runKind: "g-case-gold",
+    runKind,
+    // S5-A (review P2-6): the earlier attempts of the same candidate, S4
+    // commit and run kind, at the receipt's head.
+    ...(priorAttempts !== undefined ? { priorAttempts } : {}),
     runnerKind: K64_RUNNER_KIND,
     runId,
     preview,
@@ -349,6 +354,16 @@ const HARNESS_FILES = Object.freeze([
   "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx",
   "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts",
   "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts",
+  // S5-A (review P3 (c)): the formal runner and what it reads.
+  "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
+  "scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs",
+  "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs",
+  "scripts/quality/nir1-graph-eval/material-revision.mjs",
+  "scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs",
+  "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+  "scripts/quality/nir1-graph-eval/setup-receipt.mjs",
+  "scripts/quality/nir1-graph-eval/build-receipt-check.mjs",
+  "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx",
   PRODUCT_MAIN,
 ]);
 

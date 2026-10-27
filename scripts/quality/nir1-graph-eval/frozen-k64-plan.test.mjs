@@ -20,6 +20,9 @@ import {
   measurementCopySeedCheck,
   oneShotProcessSchedule,
   parityComparison,
+  parityVariantKeys,
+  scheduleOrder,
+  validateParitySchedule,
 } from "./frozen-k64-plan.mjs";
 import {
   loadDevGraphCasePlans,
@@ -119,7 +122,11 @@ function s2Prep(mutate = (value) => value) {
         rAndRirMode: "S4:g01-r-rir-mode",
         da1AcceptanceRecord: "S4:da1-acceptance-record",
       },
-      parity: { oneShot: { variants: [...ONE_SHOT] } },
+      parity: {
+        unrestrictedRunsPerVariant: 1,
+        variants: KEYS.filter((key) => !key.startsWith("G-01/")),
+        oneShot: { variants: [...ONE_SHOT] },
+      },
     },
     setupReadings: {
       measurementSpecs: {
@@ -181,6 +188,7 @@ test("DR-CP4-N-1: 13 variant の run の仕様を plan と S2 の値から導く
   assert.deepEqual(rows[0].g01Mode, {
     mode: null,
     reason: "rAndRirMode-unresolved",
+    record: null,
   });
 });
 
@@ -261,7 +269,7 @@ test("d10.g01: G-01 の R と R+IR の mode は S4 が埋めるまで未決（[p
     g01ModeOf({
       g01: { rAndRirMode: "unrestricted", da1AcceptanceRecord: "none" },
     }),
-    { mode: "unrestricted", reason: null },
+    { mode: "unrestricted", reason: null, record: "none" },
   );
   assert.deepEqual(
     g01ModeOf({
@@ -270,7 +278,7 @@ test("d10.g01: G-01 の R と R+IR の mode は S4 が埋めるまで未決（[p
         da1AcceptanceRecord: "docs/plans/da1.md",
       },
     }),
-    { mode: "restricted", reason: null },
+    { mode: "restricted", reason: null, record: "docs/plans/da1.md" },
   );
   assert.throws(
     () =>
@@ -881,4 +889,38 @@ test("dev の形の確認: dev の graph case の plan から同じ形の仕様�
     const expectations = fixtureExpectations(plan);
     assert.doesNotThrow(() => expectedMaterialPaths({ plan, expectations }));
   }
+});
+
+test("d10.parity（レビュー P1-2）: parity の variant は G-02〜G-08 の 12、列は R+IR の slot だけ。G-01 の fallback は AB/BA の順に並べ直せる", () => {
+  const keys = parityVariantKeys(s2Prep());
+  assert.equal(keys.length, 12);
+  assert.equal(keys.includes("G-01/v1"), false);
+  assert.throws(
+    () =>
+      parityVariantKeys(
+        s2Prep((v) => {
+          v.d10.parity.variants.pop();
+        }),
+      ),
+    /12 G-02/u,
+  );
+  const hybrid = runSchedule()
+    .filter((row) => row.arm === "hybrid")
+    .map((row) => ({ ...row, variantKey: "G-02/base" }));
+  assert.deepEqual(validateParitySchedule(hybrid, "G-02/base"), {
+    slots: 35,
+  });
+  assert.throws(
+    () => validateParitySchedule(hybrid.slice(1), "G-02/base"),
+    /R\+IR slots/u,
+  );
+  const graph = runSchedule().filter((row) => row.arm === "graph");
+  assert.deepEqual(
+    scheduleOrder([...hybrid, ...graph]).map(({ phase, repeat, arm }) => ({
+      phase,
+      repeat,
+      arm,
+    })),
+    runSchedule(),
+  );
 });

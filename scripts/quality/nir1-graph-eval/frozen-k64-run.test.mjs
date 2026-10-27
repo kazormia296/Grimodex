@@ -23,13 +23,20 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { variantByKey } from "./constants.mjs";
 import { ONE_SHOT_RECEIPT_LABEL } from "./frozen-k64-plan.mjs";
-import { measureVariant } from "./frozen-k64-run.mjs";
+import {
+  BLOCKED_RECORD_SCHEMA,
+  K64_DISCLOSURE,
+  measureVariant,
+  readSetups,
+  writeVariantRecord,
+} from "./frozen-k64-run.mjs";
 import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
-import { INDEX_KEYS } from "./workspace-db.mjs";
+import { INDEX_KEYS, readDeclarationInvariants } from "./workspace-db.mjs";
 import {
   K64_CACHED_CHILD,
   REPO_ROOT,
   formalProcedure,
+  ratification5,
   k64Diagnostics,
   k64NativeRecord,
   k64Observation,
@@ -49,8 +56,8 @@ function coldDb(dir, { b, chronicle, pins = [SEED] }) {
     CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT);
     CREATE TABLE scene_codex_pins (scene_id TEXT, entry_id TEXT, created_at TEXT);
     CREATE TABLE narrative_semantic_index_metadata (project_id TEXT, index_key TEXT, generation INTEGER, dirty_cache_flag INTEGER, source_digest TEXT, dependency_set_digest TEXT, producer_id TEXT, producer_version TEXT);
-    CREATE TABLE narrative_scope_registries (project_id TEXT, registry_version TEXT, timeline_refs_json TEXT, version INTEGER, source_token TEXT, updated_at TEXT);
-    CREATE TABLE narrative_scene_scope_bindings (project_id TEXT, scene_id TEXT, query_identity_json TEXT, version INTEGER, source_token TEXT, updated_at TEXT);
+    CREATE TABLE narrative_scope_registries (project_id TEXT, registry_version TEXT, timeline_refs_json TEXT, worldline_refs_json TEXT, narrative_layer_refs_json TEXT, version INTEGER, source_token TEXT, updated_at TEXT);
+    CREATE TABLE narrative_scene_scope_bindings (project_id TEXT, scene_id TEXT, scene_incarnation_id TEXT, compatibility_marker TEXT, query_identity_json TEXT, material_constraint_json TEXT, knowledge_holder_json TEXT, audience_json TEXT, version INTEGER, source_token TEXT, updated_at TEXT);
   `);
   for (const [id, order] of [
     [QUERY, "b"],
@@ -74,11 +81,11 @@ function coldDb(dir, { b, chronicle, pins = [SEED] }) {
       "INSERT INTO narrative_semantic_index_metadata VALUES (?, ?, ?, ?, NULL, NULL, NULL, NULL)",
     ).run(PROJECT, key, row.generation, row.dirty ? 1 : 0);
   db.prepare(
-    "INSERT INTO narrative_scope_registries VALUES (?, 'r1', '[]', 1, 'sha256:x', 't')",
+    "INSERT INTO narrative_scope_registries VALUES (?, 'r1', '[]', '[]', '[]', 1, 'sha256:x', 't')",
   ).run(PROJECT);
   for (const scene of [QUERY, "rt-added"])
     db.prepare(
-      "INSERT INTO narrative_scene_scope_bindings VALUES (?, ?, '{}', 1, 'sha256:y', 't')",
+      "INSERT INTO narrative_scene_scope_bindings VALUES (?, ?, 'i', 'm', '{}', '{}', '{}', '{}', 1, 'sha256:y', 't')",
     ).run(PROJECT, scene);
   db.close();
   return file;
@@ -91,7 +98,9 @@ function coldDb(dir, { b, chronicle, pins = [SEED] }) {
  */
 function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
   const events = [];
+  const launchArgs = [];
   let launches = 0;
+  let seededQueries = 0;
   let workspaceDb = null;
   const harness = {
     openWorkspace: async (input) => {
@@ -149,6 +158,7 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
     k64: {
       instrumented: async () => ({ fetchTiming: true }),
       sample: async () => {
+        seededQueries += 1;
         events.push("query:graph");
         const observation = k64Observation();
         observation.fetches[0].result.initialSnapshot = {
@@ -196,9 +206,11 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
   };
   const answers = {
     nir1GraphEvalStatus: () => status,
+    // Review P3 (a): READY only after the first seeded query, so a READY
+    // probe is a real query in the events.
     nir1GraphEvalDiagnostics: () => ({
       ...k64Diagnostics(2, 1, 1),
-      preparesReady: 1,
+      preparesReady: seededQueries > 0 ? 1 : 0,
     }),
     nir1GraphEvalSamples: () => ({
       records: [k64NativeRecord(), K64_CACHED_CHILD],
@@ -206,9 +218,11 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
     nir1GraphEvalClearSamples: () => ({ cleared: true }),
     nir1GraphEvalClearNextQueryCache: () => ({ cleared: false }),
   };
-  const launchMeasurement = async ({ dir: processDir }) => {
+  const launchMeasurement = async ({ dir: processDir, d2aMode, bodySeam }) => {
     launches += 1;
+    seededQueries = 0;
     events.push("launch");
+    launchArgs.push({ d2aMode, bodySeam });
     const nonce = `0000000${launches}-0000-4000-8000-000000000000`.slice(-36);
     const userData = path.join(processDir, "user-data");
     const receiptDir = path.join(
@@ -241,7 +255,13 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
     };
     return { session, nonce, status };
   };
-  return { events, launchMeasurement, dir, launches: () => launches };
+  return {
+    events,
+    launchArgs,
+    launchMeasurement,
+    dir,
+    launches: () => launches,
+  };
 }
 
 function context({ key, spec, metadata, world, pins, setupB = 7 }) {
@@ -291,6 +311,8 @@ function context({ key, spec, metadata, world, pins, setupB = 7 }) {
     setupProbe: { bGeneration: setupB },
     procedure: formalProcedure(),
     d2aMode: "restricted",
+    arms: ["hybrid", "graph"],
+    g01Fallback: false,
     queryBody: "q",
     revisionIds: [],
     expectedContribution: null,
@@ -342,6 +364,12 @@ test("D1 (ii)／DR-CP4-N-1: 宣言の run は workspace を開いた後・seed �
     assert.ok(at("declare") < at("query:graph"));
     assert.ok(at("declare") < at("query:hybrid"));
     assert.equal(events.filter((row) => row === "launch").length, 1);
+    // The declaring process alone opens the body declaration seam (P3 (e)).
+    assert.deepEqual(world.launchArgs, [
+      { d2aMode: "restricted", bodySeam: true },
+    ]);
+    // READY was reached through a seeded probe after the declaration.
+    assert.ok(result.proc.checks.ownerReady.probes.length >= 1);
     assert.equal(result.proc.declaration.verified, true);
     assert.equal(
       result.proc.declaration.invariants.before.sceneV1.sha256,
@@ -415,11 +443,23 @@ test("S2 P-4 (b) C5: one-shot は 70 の process をそれぞれ cold DB の新�
       assert.equal(events.at(-1), "stop");
     }
     assert.equal(new Set(result.processes.map((row) => row.process)).size, 70);
-    // A fresh byte copy of the cold DB per process (C1), at its own path.
-    const copies = readdirSync(ctx.variantDir).filter((name) =>
-      existsSync(path.join(ctx.variantDir, name, "workspace", "grimodex.db")),
+    // A fresh byte copy of the cold DB per process (C1), at its own path,
+    // removed after its stop with its digest kept (review P3 (h)).
+    const copies = result.processes.map((row) => row.copy);
+    assert.equal(new Set(copies.map((row) => row.path)).size, 70);
+    assert.ok(
+      copies.every(
+        (row) => row.removed && /^[0-9a-f]{64}$/u.test(row.sha256After),
+      ),
     );
-    assert.equal(copies.length, 70);
+    assert.equal(
+      readdirSync(ctx.variantDir).filter((name) =>
+        existsSync(path.join(ctx.variantDir, name, "workspace", "grimodex.db")),
+      ).length,
+      0,
+    );
+    // No body declaration seam in a process that does not declare (P3 (e)).
+    assert.ok(world.launchArgs.every((row) => row.bodySeam === false));
     assert.equal(
       result.samples.filter((row) => row.phase === "measured").length,
       60,
@@ -540,5 +580,353 @@ test("K2/4 (S3-P3-6): 宣言の段で v1 の列が変われば測定の前に [p
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  }
+});
+
+test("レビュー P2-4: unchanged の variant の query の時点の不一致は観測として記録し、止めない（readAs の 3 variant だけが止まる）", async () => {
+  let calls = 0;
+  const { ctx, dir } = context({
+    key: "G-03/base",
+    spec: {},
+    metadata: steadyState,
+    world: (base) =>
+      fakeProduct({
+        dir: base,
+        // The Index build is usable; one hybrid query later is not.
+        snapshotUsable: (kind) => !(kind === "hybrid" && ++calls === 3),
+      }),
+  });
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.samples.length, 70);
+    const observed = result.probes.filter((row) => row.mismatch);
+    assert.equal(observed.length, 1);
+    assert.equal(observed[0].observedOnly, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("C5（レビュー P3 (a)）: one-shot の query の時点の snapshot が無い（null）なら index-state-holding で止める", async () => {
+  const { ctx, dir } = context({
+    key: "G-08/chronicle-index-unusable",
+    spec: {
+      kind: "one-shot",
+      holding: true,
+      measurementPoint: "while-chronicle-index-unusable",
+      indexState: { graph: "usable", chronicle: "unusable" },
+      oneShot: {
+        warmupProcessesPerArm: 5,
+        measuredProcessesPerArm: 30,
+        receiptLabel: ONE_SHOT_RECEIPT_LABEL,
+      },
+      buildChronicleIndex: false,
+      readyProbe: false,
+    },
+    metadata: {
+      b: { generation: 7, dirty: false },
+      chronicle: { generation: 3, dirty: true },
+    },
+    world: (base) => fakeProduct({ dir: base, snapshotUsable: () => null }),
+  });
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.blocked.harnessId, "index-state-holding");
+    // The read-as variant's B metadata is read at the query (P3 (i)).
+    assert.equal(result.probes.at(-1).metadata.b.generation, 7);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-N-10: G-01 の fallback は unrestricted の R+IR の process と restricted の Graph の process を直列に起こし、sample を AB/BA の順に並べる", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-01/v1",
+    spec: { declaration: { sceneId: "added-logical" } },
+    metadata: steadyState,
+    world: (base) =>
+      (world = fakeProduct({ dir: base, snapshotUsable: () => true })),
+  });
+  ctx.g01Fallback = true;
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.deepEqual(world.launchArgs, [
+      { d2aMode: "unrestricted", bodySeam: false },
+      { d2aMode: "restricted", bodySeam: true },
+    ]);
+    // The unrestricted process issues R+IR queries only; the declaration
+    // and every seeded query are in the restricted one.
+    const second = world.events.lastIndexOf("launch");
+    assert.equal(world.events.slice(0, second).includes("query:graph"), false);
+    assert.equal(world.events.slice(0, second).includes("declare"), false);
+    assert.equal(world.events.slice(second).includes("query:hybrid"), false);
+    assert.equal(result.samples.length, 70);
+    assert.deepEqual(
+      result.samples.slice(0, 4).map((row) => [row.arm, row.armProcess]),
+      [
+        ["hybrid", "hybrid-unrestricted"],
+        ["graph", "graph-restricted"],
+        ["graph", "graph-restricted"],
+        ["hybrid", "hybrid-unrestricted"],
+      ],
+    );
+    assert.equal(
+      result.samples.find((row) => row.arm === "hybrid").d2aMode,
+      "unrestricted",
+    );
+    assert.equal(result.proc.declaration.verified, true);
+    assert.equal(result.armProcesses.length, 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("d10.parity: parity の run は unrestricted の R+IR の slot だけを取り、宣言も seed つきの query もしない", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-02/base",
+    spec: { declaration: { sceneId: "added-logical" } },
+    metadata: steadyState,
+    world: (base) =>
+      (world = fakeProduct({ dir: base, snapshotUsable: () => true })),
+  });
+  Object.assign(ctx, { arms: ["hybrid"], d2aMode: "unrestricted" });
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.samples.length, 35);
+    assert.ok(result.samples.every((row) => row.arm === "hybrid"));
+    assert.equal(world.events.includes("query:graph"), false);
+    assert.equal(world.events.includes("declare"), false);
+    assert.deepEqual(world.launchArgs, [
+      { d2aMode: "unrestricted", bodySeam: false },
+    ]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function recordInput(dir, key, extra = {}) {
+  const plan = PLANS.find((row) => row.variantKey === key);
+  return {
+    ctx: {
+      spec: {
+        variantKey: key,
+        kind: "steady-state",
+        measurementPoint: null,
+        indexState: { graph: "usable", chronicle: "usable" },
+      },
+      plan,
+      setup: {
+        path: path.join(dir, "setup-receipt.json"),
+        sha256: "a".repeat(64),
+        value: { logicalToRuntime: { projectId: PROJECT } },
+      },
+      variant: variantByKey(key),
+      variantDir: path.join(dir, "record"),
+      arms: ["hybrid", "graph"],
+      d2aMode: "restricted",
+      g01Fallback: false,
+      gateRow: { expectedSeed: SEED },
+      windowSamples: [],
+      run: { startedAtMs: 1, finishedAtMs: 2 },
+      ...extra,
+    },
+    runId: `t/${key}`,
+    runKind: "gold",
+    dev: false,
+    admitted: {
+      head: { runStartedAtUtc: "2026-10-28T00:00:00.000Z" },
+      ratification5: ratification5(),
+      procedure: formalProcedure(),
+    },
+    candidate: {
+      commit: "b".repeat(40),
+      tree: "c".repeat(40),
+      clean: true,
+      harnessFiles: {},
+    },
+    priorAttempts: [{ runName: "earlier", status: "stopped" }],
+    problems: [],
+  };
+}
+
+test("レビュー P1-1: blocked の variant は集計を通さず、表の判定・probe・途中までの sample（sha つき）を blocked の記録に残す（空、途中まで）", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-s5a-record-"));
+  try {
+    const blocked = {
+      harnessId: "index-state-holding",
+      condition: "while-variant",
+      unmetPreconditions: ["index-state-holding"],
+      contractBlockedId: "index-state-holding",
+      hold: false,
+      precheck: false,
+    };
+    for (const samples of [
+      [],
+      [
+        {
+          variantKey: "G-08/both-indexes-unusable",
+          phase: "warmup",
+          repeat: 0,
+          arm: "hybrid",
+        },
+      ],
+    ]) {
+      const input = recordInput(dir, "G-08/both-indexes-unusable");
+      const row = await writeVariantRecord({
+        ...input,
+        result: {
+          status: "blocked",
+          blocked,
+          probes: [{ at: "at-query", indexUsable: true }],
+          samples,
+        },
+      });
+      assert.equal(row.status, "blocked");
+      const record = JSON.parse(
+        readFileSync(
+          path.join(input.ctx.variantDir, "blocked-record.json"),
+          "utf8",
+        ),
+      );
+      assert.equal(record.schemaVersion, BLOCKED_RECORD_SCHEMA);
+      assert.deepEqual(record.blocked, blocked);
+      assert.equal(record.samples.length, samples.length);
+      assert.equal(
+        record.samplesSha256,
+        sha256(Buffer.from(JSON.stringify(samples))),
+      );
+      assert.deepEqual(record.priorAttempts, [
+        { runName: "earlier", status: "stopped" },
+      ]);
+      assert.equal(
+        existsSync(path.join(input.ctx.variantDir, "receipt.json")),
+        false,
+      );
+      rmSync(input.ctx.variantDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("レビュー P1-2: parity の run は R+IR の slot だけの receipt（g-case-parity-unrestricted）を作り、列が違えば sample を sha つきで残して拒む", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-s5a-parity-"));
+  try {
+    const key = "G-02/base";
+    const hybridRows = [];
+    for (const [phase, count] of [
+      ["warmup", 5],
+      ["measured", 30],
+    ])
+      for (let repeat = 0; repeat < count; repeat += 1)
+        hybridRows.push({
+          variantKey: key,
+          arm: "hybrid",
+          phase,
+          repeat,
+          trigger: "user-operation",
+          seeded: false,
+          graphEnabled: false,
+          d2aMode: "unrestricted",
+          tFetch: 1,
+          tRawReady: 5,
+          tReturn: 9,
+          status: "completed",
+          irOutcome: "ready",
+          irCompletion: "ir-ready",
+          rawSceneIds: [QUERY],
+          finalSceneIds: [QUERY],
+        });
+    const input = recordInput(dir, key, {
+      arms: ["hybrid"],
+      d2aMode: "unrestricted",
+    });
+    const row = await writeVariantRecord({
+      ...input,
+      runKind: "parity",
+      result: { status: "measured", samples: hybridRows, probes: [] },
+    });
+    const receipt = JSON.parse(
+      readFileSync(path.join(input.ctx.variantDir, "receipt.json"), "utf8"),
+    );
+    assert.equal(receipt.runKind, "g-case-parity-unrestricted");
+    assert.deepEqual(receipt.settings.d2aModes, { hybrid: "unrestricted" });
+    assert.deepEqual(receipt.settings.k64Disclosure, { ...K64_DISCLOSURE });
+    assert.deepEqual(receipt.priorAttempts, input.priorAttempts);
+    assert.notEqual(row.status, "receipt-refused");
+    const short = recordInput(dir, key, {
+      arms: ["hybrid"],
+      d2aMode: "unrestricted",
+    });
+    short.ctx.variantDir = path.join(dir, "short");
+    const refused = await writeVariantRecord({
+      ...short,
+      runKind: "parity",
+      result: { status: "measured", samples: hybridRows.slice(1), probes: [] },
+    });
+    assert.equal(refused.status, "receipt-refused");
+    const kept = JSON.parse(
+      readFileSync(path.join(short.ctx.variantDir, "samples.json"), "utf8"),
+    );
+    assert.equal(kept.samples.length, 34);
+    assert.match(kept.samplesSha256, /^[0-9a-f]{64}$/u);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("レビュー P2-5: 完全な setup の受領書が run の候補（commit と tree）でないなら [precheck]", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-s5a-setups-"));
+  try {
+    const plan = PLANS.find((row) => row.variantKey === "G-02/base");
+    const receipt = path.join(dir, "setup-receipt.json");
+    writeFileSync(
+      receipt,
+      JSON.stringify({
+        status: "setup-complete",
+        fixture: {
+          path: plan.fixturePath,
+          sha256: plan.fixtureSha256,
+          variantId: plan.variantId,
+        },
+        candidate: { commit: "1".repeat(40), tree: "2".repeat(40) },
+      }),
+    );
+    const map = path.join(dir, "setups.json");
+    writeFileSync(map, JSON.stringify({ [plan.variantKey]: receipt }));
+    await assert.rejects(
+      readSetups({
+        file: map,
+        plans: [plan],
+        dev: false,
+        candidate: { commit: "3".repeat(40), tree: "2".repeat(40) },
+      }),
+      /not the run's candidate/u,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("レビュー P3 (d): 宣言の前後の不変量の読取は列が欠けた表で止まる（黙って飛ばさない）", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-s5a-columns-"));
+  try {
+    const file = coldDb(dir, steadyState);
+    assert.equal(readDeclarationInvariants(file, PROJECT).sceneV1.rows, 2);
+    const db = new DatabaseSync(file);
+    db.exec("ALTER TABLE narrative_scene_scope_bindings DROP COLUMN version");
+    db.close();
+    assert.throws(
+      () => readDeclarationInvariants(file, PROJECT),
+      /lacks version/u,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
