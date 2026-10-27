@@ -802,20 +802,27 @@ export function frozenSetupPlan({
         ? devCatalog
         : null;
   if (!catalog) fail("variant", `${caseId}/${variantId} is not a CP-4 variant`);
-  const g01 = caseId === "G-01";
+  // S1j-2: a dev shape fixture (dev-shape-fixture.mjs) takes the plan route
+  // of the G-case whose structure it copies.
+  const shape = devCatalog?.shape ?? caseId;
+  const g01 = shape === "G-01";
   const variant = g01
     ? { id: "v1", measurementPoint: null, indexState: null, preconditions: [] }
     : (fixture.variants ?? []).find((row) => row.id === variantId);
   if (!variant) fail("variant", `${caseId} has no variant ${variantId}`);
   const correspondence = setupOrderCorrespondence({
-    caseId,
+    caseId: shape,
     fixture,
     candidateDocument,
   });
-  const seedPin = seedPinPlanFromFixture({ caseId, fixture }).find(
+  const seedRow = seedPinPlanFromFixture({ caseId: shape, fixture }).find(
     (row) => row.variantId === variantId,
   );
-  const scenes = sceneRowsOf(caseId, fixture);
+  const seedPin =
+    seedRow && shape !== caseId
+      ? { ...seedRow, caseId, variantKey: `${caseId}/${variantId}` }
+      : seedRow;
+  const scenes = sceneRowsOf(shape, fixture);
   const steps = [];
   const add = (phase, input, extra = {}) =>
     steps.push({
@@ -831,10 +838,10 @@ export function frozenSetupPlan({
     phaseResolutionMode: "reading",
   });
   add("scenes", { rows: scenes });
-  const scope = sceneScopeInput(caseId, fixture, scenes);
+  const scope = sceneScopeInput(shape, fixture, scenes);
   const codex = () => {
-    add("entities", { rows: entityRowsOf(caseId, fixture) });
-    add("relations", { rows: relationRowsOf(caseId, fixture) });
+    add("entities", { rows: entityRowsOf(shape, fixture) });
+    add("relations", { rows: relationRowsOf(shape, fixture) });
   };
   const scopeSteps = () => {
     add("scope-registry", { registry: scope.registry });
@@ -886,7 +893,8 @@ export function frozenSetupPlan({
         rows: [
           {
             id: "g01-typed-revision",
-            reviewSceneId: "g01-review",
+            reviewSceneId:
+              shape === caseId ? "g01-review" : fixture.g01ReviewSceneId,
             entityIds: [fixture.entitySeed.id, fixture.targetEntity.id],
             relationIds: [fixture.relation.id],
             decision: "approved",
@@ -997,11 +1005,11 @@ export function frozenSetupPlan({
       ? steps.findIndex((step) => step.phase === SEED_PIN_PHASE)
       : steps.length - 1;
   const declaration = catalog.declaration
-    ? declarationOf(caseId, fixture, variant)
+    ? declarationOf(shape, fixture, variant)
     : null;
   if (catalog.declaration && !nonBlank(declaration?.sceneId))
     fail("declaration", `${caseId}/${variantId} names no declaration Scene`);
-  if (!catalog.declaration && declarationOf(caseId, fixture, variant) !== null)
+  if (!catalog.declaration && declarationOf(shape, fixture, variant) !== null)
     fail(
       "declaration",
       `${caseId}/${variantId} has an added Scene the catalog does not declare`,
@@ -1153,6 +1161,17 @@ export function loadDevGraphCasePlans({ root, fixturePath, stopsAt }) {
       "dev-fixture",
       `${fixturePath} is not a ${DEV_GRAPH_CASE_SCHEMA} fixture (kind dev, frozen false, a DEV- case)`,
     );
+  const shape = fixture.shape ?? null;
+  if (
+    shape !== null &&
+    !GRAPH_EVAL_VARIANTS.some((row) => row.caseId === shape)
+  )
+    fail(
+      "dev-fixture",
+      `${fixturePath} names an unknown shape ${String(shape)}`,
+    );
+  const candidateDocument =
+    shape === "G-01" ? readCandidateDocument({ root }) : null;
   return deepFreeze(
     (fixture.variants ?? []).map((variant) => {
       const devCatalog = Object.freeze({
@@ -1162,7 +1181,11 @@ export function loadDevGraphCasePlans({ root, fixturePath, stopsAt }) {
         key: `${fixture.caseId}/${variant.id}`,
         fixturePath,
         fixtureSha256: digest,
-        declaration: false,
+        shape,
+        // As the catalog: G-01 and a variant with an added Scene declare.
+        declaration:
+          shape === "G-01" ||
+          (variant.preconditions ?? []).some((row) => row.id === "cb4-inputs"),
       });
       DEV_CATALOGS.add(devCatalog);
       return frozenSetupPlan({
@@ -1171,6 +1194,7 @@ export function loadDevGraphCasePlans({ root, fixturePath, stopsAt }) {
         fixture,
         stopsAt,
         devCatalog,
+        candidateDocument,
       });
     }),
   );

@@ -558,6 +558,7 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
         // edit, the G-08 index-state sessions) on the same fakes.
         "scripts/quality/nir1-graph-eval/frozen-setup-complete.test.mjs",
         "scripts/quality/nir1-graph-eval/setup-main-build.test.mjs",
+        "scripts/quality/nir1-graph-eval/dev-shape-fixture.test.mjs",
       ],
       [
         "node",
