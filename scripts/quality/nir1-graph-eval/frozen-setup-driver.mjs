@@ -124,7 +124,14 @@ const B_SEAL_NOT_PUBLISHED = "blocked:b-seal-not-published";
  */
 export const RELATION_ID_REUSE_REFUSAL =
   /UNIQUE constraint failed: codex_relations\.id/u;
-const EPOCH_WAIT_MS = 180_000;
+/**
+ * P-5 (integrator's decision (a)): one wait for the project's semantic epoch
+ * and the canonical cutover marker, and how many times an author session
+ * whose wait ran out is closed and reopened from the maintenance step.
+ * Fixed constants (the tests pin them).
+ */
+export const MAINTENANCE_WAIT_MS = 180_000;
+export const MAINTENANCE_REOPENS = 2;
 const PREPARE_WAIT_MS = 120_000;
 const SELECT_ONLY = /^\s*SELECT\b/iu;
 
@@ -688,32 +695,50 @@ const EXECUTORS = Object.freeze({
   },
   async "maintenance-enabled"({ ctx }) {
     const before = await ipc(ctx, "narrative_runtime_policy_get", {});
-    const policy = await ipc(ctx, "narrative_runtime_policy_set", {
-      payload: {
-        expectedVersion: before.version,
-        runtimeMode: before.runtimeMode,
-        maintenanceEnabled: true,
-        genericImportEnabled: before.genericImportEnabled,
-        backgroundAiEnabled: before.backgroundAiEnabled,
-      },
-    });
+    // P-5: a reopened author session finds the setting already on (written
+    // by the opening whose wait ran out) and does not write it again.
+    const policy =
+      before?.maintenanceEnabled === true
+        ? before
+        : await ipc(ctx, "narrative_runtime_policy_set", {
+            payload: {
+              expectedVersion: before.version,
+              runtimeMode: before.runtimeMode,
+              maintenanceEnabled: true,
+              genericImportEnabled: before.genericImportEnabled,
+              backgroundAiEnabled: before.backgroundAiEnabled,
+            },
+          });
+    ctx.maintenanceSettingWrites =
+      (ctx.maintenanceSettingWrites ?? 0) + (policy === before ? 0 : 1);
     if (policy?.maintenanceEnabled !== true)
       throw new Error(
         "[artifact] maintenance is not on after the runtime-policy setting",
       );
     const started = Date.now();
+    const limit = ctx.limits?.maintenanceMs ?? MAINTENANCE_WAIT_MS;
     const waitFor = async (sql, params, label) => {
-      while (Date.now() - started < EPOCH_WAIT_MS) {
+      while (Date.now() - started < limit) {
         const rows = await select(ctx, sql, params);
         if (rows.length > 0) return rows;
         await ctx.sleep(500);
       }
-      failBlocked(
-        "maintenance-enabled",
-        "maintenance-enabled",
-        ["maintenance-enabled"],
-        `${label} did not appear within ${EPOCH_WAIT_MS} ms`,
+      // P-5: the session loop may reopen the author session from this step.
+      const error = new Error(
+        `[precheck] S1i maintenance-enabled: blocked:maintenance-enabled — ${label} did not appear within ${limit} ms`,
       );
+      error.blocked = {
+        harnessId: "maintenance-enabled",
+        unmet: ["maintenance-enabled"],
+      };
+      error.maintenanceTimeout = {
+        waitedMs: Date.now() - started,
+        missing: label,
+        stepIndex: ctx.plan.steps.findIndex(
+          (row) => row.executor === "maintenance-enabled",
+        ),
+      };
+      throw error;
     };
     const epochs = await waitFor(
       "SELECT id, epoch_number AS epochNumber, reason FROM narrative_semantic_epochs WHERE project_id = ? ORDER BY epoch_number",
@@ -1418,7 +1443,10 @@ export async function runFrozenSetupSteps({
     );
   // S1j-2: every later session reopens the workspace (the seal sessions'
   // workspace-opened wake runs the gated B build).
-  if (session !== "author") {
+  // P-5: a reopened author session resumes at its maintenance step (the
+  // project and the materials before it are in the workspace already).
+  const resumeFrom = session === "author" ? (ctx.resumeAuthorFrom ?? 0) : 0;
+  if (session !== "author" || resumeFrom > 0) {
     await pageCall(ctx, "openWorkspace", {
       workspacePath,
       projectId: ids.projectId,
@@ -1433,6 +1461,7 @@ export async function runFrozenSetupSteps({
   for (const [at, step] of plan.steps.entries()) {
     if (at > plan.stopIndex) break;
     if (step.session !== session) continue;
+    if (at < resumeFrom) continue;
     // ①: a step of S2's forbidden set never starts, whatever the stop index.
     const forbidden = partialRun(plan)
       ? phaseCategories(step.phase, {
@@ -2049,6 +2078,8 @@ export async function setupFrozenVariant({
         const startedAt = now();
         let timeout = null;
         let failure = null;
+        let maintenanceTimeout = null;
+        const phasesBefore = receipt.phases.length;
         try {
           await session(
             row.label,
@@ -2066,6 +2097,12 @@ export async function setupFrozenVariant({
         } catch (error) {
           if ((error?.bSealTimeout || error?.bDirtiedAfterSeal) && row.seam)
             timeout = error;
+          else if (
+            error?.maintenanceTimeout &&
+            row.label === "author" &&
+            !partialRun(plan)
+          )
+            maintenanceTimeout = error;
           else failure = error;
         } finally {
           if (nonce) {
@@ -2127,8 +2164,51 @@ export async function setupFrozenVariant({
             })(),
           });
         }
+        // P-5: the author session's maintenance step and its openings.
+        const maintenanceStep = plan.steps.findIndex(
+          (step) => step.executor === "maintenance-enabled",
+        );
+        if (
+          row.label === "author" &&
+          maintenanceStep >= 0 &&
+          maintenanceStep <= plan.stopIndex &&
+          (maintenanceTimeout ||
+            receipt.phases
+              .slice(phasesBefore)
+              .some((phaseRow) => phaseRow.name === "maintenance-enabled"))
+        ) {
+          receipt.maintenanceAttempts ??= [];
+          receipt.maintenanceAttempts.push({
+            attempt,
+            dirLabel,
+            outcome: maintenanceTimeout ? "not-reached" : "reached",
+            missing: maintenanceTimeout?.maintenanceTimeout.missing ?? null,
+            waitedMs: maintenanceTimeout?.maintenanceTimeout.waitedMs ?? null,
+            settingWrites: ctx.maintenanceSettingWrites ?? 0,
+            maintenanceRuns: (() => {
+              try {
+                return readRunsSince(
+                  path.join(workspacePath, "grimodex.db"),
+                  ids.projectId,
+                  startedAt,
+                );
+              } catch {
+                return null;
+              }
+            })(),
+            // The failing step records no phase; the steps before it in the
+            // first opening stay (they ran once and are not repeated).
+            discardedPhases: [],
+          });
+        }
         // A later step of the session failed: the attempt is recorded above.
         if (failure) throw failure;
+        if (maintenanceTimeout) {
+          if (attempt >= MAINTENANCE_REOPENS) throw maintenanceTimeout;
+          ctx.resumeAuthorFrom =
+            maintenanceTimeout.maintenanceTimeout.stepIndex;
+          continue;
+        }
         if (timeout === null) break;
         // Only a session whose B seal was its first step is reopened (from
         // that step); a B that went dirty after the seal also reopens.

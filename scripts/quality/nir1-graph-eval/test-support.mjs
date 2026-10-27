@@ -867,6 +867,7 @@ export const COMPLETE_SETUP_FIELDS = Object.freeze({
     },
   },
   sealAttempts: [{ session: "seal", attempt: 0, outcome: "sealed" }],
+  maintenanceAttempts: [{ attempt: 0, outcome: "reached" }],
   setupMain: { sha256: "e".repeat(64) },
 });
 
@@ -1377,10 +1378,21 @@ export function completeSetupExtension({
   relationCreateError = null,
   revisionStaysAvailable = false,
   recreatedReportsOtherId = false,
+  cutoverMissesOpens = 0,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
     let seamOpens = 0;
+    // P-5: the cutover marker is written by the opening after the first
+    // `cutoverMissesOpens` (the setting and each later open count).
+    let cutoverAttempts = 0;
+    const policySets = [];
+    const maybeCutover = () => {
+      if (cutoverAttempts++ < cutoverMissesOpens) return;
+      run(
+        "INSERT INTO schema_data_migrations VALUES ('narrative-c2-canonical-freshness-v1', '1')",
+      );
+    };
     let dirtiedByQuery = 0;
     let counter = 0;
     const id = (prefix) => `${prefix}-${String(++counter).padStart(4, "0")}`;
@@ -1495,6 +1507,7 @@ export function completeSetupExtension({
     };
     return {
       indexCalls,
+      policySets,
       beginSession(next) {
         session = { ...next };
       },
@@ -1516,6 +1529,14 @@ export function completeSetupExtension({
           CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (id TEXT PRIMARY KEY, proposal_id TEXT, revision_id TEXT,
             decision TEXT, created_by TEXT, created_at TEXT);
         `);
+        // P-5: a reopening runs the cutover again while the marker is absent.
+        if (
+          maintenanceOn() &&
+          !one(
+            "SELECT 1 AS ok FROM schema_data_migrations WHERE migration_id = 'narrative-c2-canonical-freshness-v1'",
+          )
+        )
+          maybeCutover();
         // A seam session's workspace-opened wake publishes B.
         const projectId = projectOf();
         // `sealMissesOpens`: the first seam opens publish nothing (P-0).
@@ -1574,9 +1595,8 @@ export function completeSetupExtension({
             "INSERT INTO narrative_semantic_epochs VALUES ('epoch-1', ?, 1, 'initial')",
             projectId,
           );
-          run(
-            "INSERT INTO schema_data_migrations VALUES ('narrative-c2-canonical-freshness-v1', '1')",
-          );
+          maybeCutover();
+          policySets.push(payload);
           return { maintenanceEnabled: payload.maintenanceEnabled };
         },
         narrative_extraction_capture_workspace_binding: () => ({

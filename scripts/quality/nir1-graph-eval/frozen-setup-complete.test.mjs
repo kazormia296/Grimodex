@@ -10,6 +10,8 @@ import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  MAINTENANCE_REOPENS,
+  MAINTENANCE_WAIT_MS,
   RELATION_ID_REUSE_REFUSAL,
   blockedRecord,
   assertRelationStaleOnCold,
@@ -142,7 +144,7 @@ async function completeSetup(key, options = {}, shared = SHARED) {
       startSession: sessions.startSession,
       uuid,
       sleep: noSleep,
-      limits: { bSealMs: 50 },
+      limits: { bSealMs: 50, maintenanceMs: 50 },
     },
   });
   return { plan, product, sessions, ...result };
@@ -502,7 +504,7 @@ test("S1j-2 測定点の段を持たない完全な setup は受領書を setup-
       startSession: sessions.startSession,
       uuid,
       sleep: noSleep,
-      limits: { bSealMs: 50 },
+      limits: { bSealMs: 50, maintenanceMs: 50 },
     },
   });
   assert.equal(receipt.status, "blocked");
@@ -890,5 +892,62 @@ test("レビュー P2-1／P2-2: hold の最初の mutation の前に B と C が
       },
     }).unmetPreconditions,
     ["b-sealed-binding", "maintenance-enabled", "index-state-holding"],
+  );
+});
+
+test("P-5: author の session の maintenance の段（cutover marker）は 180 s × 開き直し 2 回の定数で開き直し、前の段を書き直さず、回の記録を受領書に残す", async () => {
+  assert.equal(MAINTENANCE_WAIT_MS, 180_000);
+  assert.equal(MAINTENANCE_REOPENS, 2);
+  const once = await completeSetup("G-02/base", { cutoverMissesOpens: 1 });
+  assert.equal(
+    once.receipt.status,
+    "setup-complete",
+    once.receipt.errors.join("\n"),
+  );
+  assert.deepEqual(
+    once.sessions.started.map((row) => row.label),
+    ["author", "author-reopen-1", "ir", "seal"],
+  );
+  assert.deepEqual(
+    once.receipt.maintenanceAttempts.map((row) => [
+      row.attempt,
+      row.dirLabel,
+      row.outcome,
+      row.settingWrites,
+    ]),
+    [
+      [0, "author", "not-reached", 1],
+      [1, "author-reopen-1", "reached", 1],
+    ],
+  );
+  assert.equal(
+    once.receipt.maintenanceAttempts[0].missing,
+    "the canonical cutover marker",
+  );
+  // Idempotent resumption: the setting is written once, every phase once,
+  // and the read-back finds no duplicate row.
+  assert.equal(once.product.extension.policySets.length, 1);
+  assert.deepEqual(
+    once.receipt.phases.map((row) => row.name),
+    executedPhaseNames(planOf(COMPLETE, "G-02/base")),
+  );
+  assert.equal(once.receipt.readBack.logicalRuntimeCheck.ok, true);
+  const sealed = loadSetupReceipt({ root: REPO_ROOT, file: once.receiptPath });
+  assert.equal(assertCompleteSetupReceipt(sealed), sealed);
+  // Three openings without the marker: fail closed.
+  const three = await completeSetup("G-05/base", { cutoverMissesOpens: 3 });
+  assert.equal(three.receipt.status, "blocked");
+  assert.match(
+    three.receipt.precheck.message,
+    /blocked:maintenance-enabled — the canonical cutover marker did not appear/u,
+  );
+  assert.equal(three.receipt.blocked.contractBlockedId, "maintenance-enabled");
+  assert.deepEqual(
+    three.receipt.maintenanceAttempts.map((row) => row.outcome),
+    ["not-reached", "not-reached", "not-reached"],
+  );
+  assert.deepEqual(
+    three.sessions.started.map((row) => row.label),
+    ["author", "author-reopen-1", "author-reopen-2"],
   );
 });

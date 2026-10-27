@@ -40,6 +40,8 @@ const SHA256 = /^[0-9a-f]{64}$/u;
  * (the first and `B_SEAL_REOPENS` = 2 reopens of frozen-setup-driver.mjs).
  */
 export const SEAL_OPENINGS_MAX = 3;
+/** P-5: the author session's openings (the first and 2 reopens). */
+export const MAINTENANCE_OPENINGS_MAX = 3;
 const INDEX_STATES = ["usable", "unusable"];
 
 /** The complete frozen setup's fields ④⑤ read (measurement point, seal, Main). */
@@ -69,6 +71,12 @@ function completeSetupFields(value) {
         }))
       : null,
     setupMainSha256: value?.setupMain?.sha256 ?? null,
+    maintenanceAttempts: Array.isArray(value?.maintenanceAttempts)
+      ? value.maintenanceAttempts.map((row) => ({
+          attempt: row?.attempt ?? null,
+          outcome: row?.outcome ?? null,
+        }))
+      : null,
   };
 }
 
@@ -99,6 +107,14 @@ function completeSetupProblems(fields) {
   )
     problems.push("sealAttempts");
   if (!SHA256.test(fields?.setupMainSha256 ?? "")) problems.push("setupMain");
+  const maintenance = fields?.maintenanceAttempts;
+  if (
+    !maintenance ||
+    maintenance.length === 0 ||
+    maintenance.length > MAINTENANCE_OPENINGS_MAX ||
+    maintenance.at(-1).outcome !== "reached"
+  )
+    problems.push("maintenanceAttempts");
   return problems;
 }
 const LOADED = new WeakSet();
@@ -236,7 +252,7 @@ export function assertCompleteSetupReceipt(sealed) {
     const problems = completeSetupProblems(sealed.completeSetup);
     if (problems.length > 0)
       throw new Error(
-        `[precheck] the setup receipt ${sealed.path} is not a complete setup with its measurement point, seal openings and setup-only Main (${problems.join(", ")})`,
+        `[precheck] the setup receipt ${sealed.path} is not a complete setup with its measurement point, seal openings, maintenance openings and setup-only Main (${problems.join(", ")})`,
       );
   }
   return sealed;
