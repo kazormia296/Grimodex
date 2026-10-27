@@ -584,66 +584,78 @@ test("① の guard: S2 の範囲の外の IPC と page の入口（maintenance�
   );
 });
 
-test("完全な setup の段は、対応できない step に着いたところで [precheck] で止まり、それより前の段だけを記録する", async () => {
-  const plan = planOf(COMPLETE, "G-04/base");
-  const phases = [];
-  const done = [];
-  const executors = Object.fromEntries(
-    [
-      "project",
-      "scenes",
-      "entities",
-      "relations",
-      "scope-registry",
-      "scene-scope",
-      "foreshadows",
-      "foreshadow-links",
-      "pins",
-      "seed-pin",
-      "maintenance-enabled",
-      "typed-revision",
-    ].map((name) => [
-      name,
-      async ({ step }) => {
-        done.push(step.phase);
-        return {};
-      },
-    ]),
+test("完全な setup の段は、executor の無い段や [precheck] の executor の段に着いたところで止まり、それより前の段だけを記録する", async () => {
+  const base = planOf(COMPLETE, "G-04/base");
+  const at = base.steps.findIndex(
+    (step) => step.phase === "setup-timeline:g04-ir",
   );
-  await assert.rejects(
-    runFrozenSetupSteps({
-      plan,
-      page: frozenSetupFakeProduct().page,
-      workspacePath: "/nonexistent",
-      ids: createSetupIds({ plan, uuid }),
-      session: "author",
-      phase: (name) => phases.push(name),
-      uuid,
-      executors,
-      readState: async () => null,
-    }),
-    /\[precheck\] S1i qualified-ir-provider-undecided/u,
-  );
-  assert.deepEqual(phases, done);
-  assert.equal(phases.at(-1), "setup-timeline:g04-r-sel");
-  // 着いた step の理由と選択肢を [precheck] の文に書く。
-  await assert.rejects(
-    runFrozenSetupSteps({
-      plan: planOf(COMPLETE, "G-02/base"),
-      page: frozenSetupFakeProduct().page,
-      workspacePath: "/nonexistent",
-      ids: createSetupIds({ plan, uuid }),
-      session: "author",
-      phase: () => {},
-      uuid,
-      executors,
-      readState: async () => null,
-    }),
-    (error) =>
-      /relation-type-writer-missing/u.test(error.message) &&
-      /\(A\)/u.test(error.message) &&
-      /\(B\)/u.test(error.message),
-  );
+  // S1j-2: the four S1i prechecks have executors; a step still marked
+  // `[precheck]` (or with an unknown executor) stops the run there.
+  const withStep = (step) => ({
+    ...base,
+    steps: base.steps.map((row, index) => (index === at ? step : row)),
+  });
+  const precheckPlan = withStep({
+    ...base.steps[at],
+    session: "author",
+    executor: "precheck",
+    precheck: {
+      code: "test-precheck",
+      reason: "the step is not mapped",
+      options: ["(A) one", "(B) two"],
+    },
+  });
+  const unknownPlan = withStep({
+    ...base.steps[at],
+    session: "author",
+    executor: "no-such-executor",
+  });
+  const names = [
+    "project",
+    "scenes",
+    "entities",
+    "relations",
+    "scope-registry",
+    "scene-scope",
+    "foreshadows",
+    "foreshadow-links",
+    "pins",
+    "seed-pin",
+    "maintenance-enabled",
+    "typed-revision",
+  ];
+  for (const [plan, pattern] of [
+    [precheckPlan, /\[precheck\] S1i test-precheck: .*\(A\) one.*\(B\) two/u],
+    [unknownPlan, /\[precheck\] S1i phase: .*no executor/u],
+  ]) {
+    const phases = [];
+    const done = [];
+    const executors = Object.fromEntries(
+      names.map((name) => [
+        name,
+        async ({ step }) => {
+          done.push(step.phase);
+          return {};
+        },
+      ]),
+    );
+    await assert.rejects(
+      runFrozenSetupSteps({
+        plan,
+        page: frozenSetupFakeProduct().page,
+        workspacePath: "/nonexistent",
+        ids: createSetupIds({ plan, uuid }),
+        session: "author",
+        phase: (name) => phases.push(name),
+        uuid,
+        executors,
+        readState: async () => null,
+      }),
+      pattern,
+    );
+    assert.deepEqual(phases, done);
+    assert.equal(phases.at(-1), "setup-timeline:g04-r-sel");
+  }
 });
 
 test("setup の受領書の loader: frozen は frozen の schema と停止位置・状態の組だけ、dev の schema の frozen は拒む", () => {

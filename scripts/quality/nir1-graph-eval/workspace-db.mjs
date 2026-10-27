@@ -354,3 +354,79 @@ function readQuerySceneSeedPinsUnsealed(file, projectId, sceneId) {
     };
   });
 }
+
+const parseJson = (text) => {
+  if (typeof text !== "string") return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * S1j-2: the project's Chronicle extraction rows (read-only): each
+ * `chronicle.extract` run with its proposals, every revision of those
+ * proposals (the payload and the reconciliation envelope, parsed) and every
+ * Decision in creation order. The setup's qualified-ir read-back.
+ */
+export function readChronicleSetupRows(file, projectId) {
+  return withReadOnly(file, (db) => {
+    const runs = db
+      .prepare(
+        `SELECT id AS runId FROM narrative_extraction_runs
+          WHERE project_id = ? AND surface_path_id = 'chronicle.extract'
+          ORDER BY id`,
+      )
+      .all(projectId)
+      .map((row) => String(row.runId));
+    return runs.map((runId) => {
+      const proposals = db
+        .prepare(
+          `SELECT p.id AS proposalId, p.status, p.current_revision_id AS currentRevisionId
+             FROM narrative_proposals p
+             JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id
+            WHERE s.run_id = ? ORDER BY p.id`,
+        )
+        .all(runId)
+        .map((proposal) => ({
+          proposalId: String(proposal.proposalId),
+          status: proposal.status,
+          currentRevisionId:
+            proposal.currentRevisionId === null
+              ? null
+              : String(proposal.currentRevisionId),
+          revisions: db
+            .prepare(
+              `SELECT id AS revisionId, revision_number AS revisionNumber,
+                      payload_json AS payloadJson,
+                      reconciliation_envelope_json AS envelopeJson
+                 FROM narrative_proposal_revisions
+                WHERE proposal_id = ? ORDER BY revision_number`,
+            )
+            .all(proposal.proposalId)
+            .map((row) => ({
+              revisionId: String(row.revisionId),
+              revisionNumber: Number(row.revisionNumber),
+              payload: parseJson(row.payloadJson),
+              envelope: parseJson(row.envelopeJson),
+            })),
+          decisions: db
+            .prepare(
+              `SELECT id AS decisionId, revision_id AS revisionId, decision,
+                      created_by AS createdBy, created_at AS createdAt
+                 FROM narrative_proposal_decisions
+                WHERE proposal_id = ? ORDER BY created_at, id`,
+            )
+            .all(proposal.proposalId)
+            .map((row) => ({
+              decisionId: String(row.decisionId),
+              revisionId: String(row.revisionId),
+              decision: row.decision,
+              createdBy: row.createdBy,
+            })),
+        }));
+      return { runId, proposals };
+    });
+  });
+}
