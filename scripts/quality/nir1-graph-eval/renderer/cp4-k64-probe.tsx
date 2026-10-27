@@ -189,6 +189,41 @@ export function summarize(
   };
 }
 
+/**
+ * S5-A (DR-CP4-N-4): the path edges of a returned Graph — both ends, the
+ * relation type and direction, and the Evidence — for the material-revision
+ * match of F6. The node side hashes the quotes before anything is written
+ * (material-revision.mjs `hashObservationPaths`); `summarize` stays as is.
+ */
+export function graphPathsOf(value: Nir1RelatedScenesFetchResult) {
+  const graph = value.graph ?? null;
+  if (!graph) return null;
+  type Edge = (typeof graph.pathAttachments)[number]["edges"][number];
+  const edges = (list: readonly Edge[]) =>
+    list.map((edge) => ({
+      relationType: edge.relationType,
+      directionality: edge.directionality,
+      from: { entityId: edge.from.entityId },
+      to: { entityId: edge.to.entityId },
+      evidence: edge.evidence.map((row) => ({
+        evidenceId: row.evidenceId,
+        quote: row.quote,
+      })),
+    }));
+  return {
+    graphOnly: graph.graphOnly
+      ? {
+          sceneId: graph.graphOnly.sceneId,
+          edges: edges(graph.graphOnly.path.edges),
+        }
+      : null,
+    pathAttachments: graph.pathAttachments.map((row) => ({
+      sceneId: row.sceneId,
+      edges: edges(row.edges),
+    })),
+  };
+}
+
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The Graph continue's wrapper command (run-sample.mjs `GRAPH_CONTINUE`). */
@@ -325,6 +360,7 @@ async function sample(input: {
       resolvedAt: row.resolvedAt,
       failed: row.failed,
       result: row.value ? summarize(row.value, row.sceneId) : null,
+      paths: row.value ? graphPathsOf(row.value) : null,
     })),
     commits: log,
     notices: notices
