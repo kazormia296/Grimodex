@@ -28,7 +28,8 @@ use crate::narrative_extraction::change_feed::NarrativeChangeOrigin;
 use crate::narrative_extraction::dependency_edges::find_edges_by_consumer;
 use crate::narrative_extraction::revision_eligibility::{pending, RevisionFreshnessReason};
 use crate::narrative_extraction::incremental_freshness::{
-    run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
+    publish_race_for_test, run_incremental_freshness_cycle, IncrementalFreshnessCycleOutcome,
+    IncrementalFreshnessCycleRequeued,
 };
 use crate::narrative_extraction::nir1_entity_relation::tests::{
     approve_typed_revision, rebind_scope_tokens, request_for_run,
@@ -1010,6 +1011,72 @@ fn x13_incremental_freshness_marks_only_anchor_stale() -> Result<()> {
     assert!(
         fresh(&projection_edge_state(&anchor_revision)?),
         "another Scene's Revision stays fresh"
+    );
+    Ok(())
+}
+
+/// A foreground Scope write that lands between a cycle's evaluation and its
+/// publication (the anchor's typed Scene Scope projection token moves) is a
+/// typed, durable requeue: the cycle reports it as such instead of an
+/// unexpected failure, and the next cycle publishes the same range and the
+/// newer write, so the cursor never stops.
+#[test]
+fn x13_scope_write_racing_freshness_publication_is_requeued_then_published() -> Result<()> {
+    let (db, _anchor_revision) = approved_fixture()?;
+    let other_revision = approve_anchored(&db, &["a3-future"], "nir1:review:x13-race")?;
+    drain_freshness(&db)?;
+    patch(
+        &db,
+        "a3-future",
+        "race-pov-set",
+        "povCharacterId",
+        json!("nir1-alice"),
+        true,
+        "2026-10-18T19:00:00.000Z",
+    )?;
+    let token_before_race = projection(&db, "a3-future")?;
+    publish_race_for_test::arm(&db, |db| {
+        patch(
+            db,
+            "a3-future",
+            "race-pov-clear",
+            "povCharacterId",
+            Value::Null,
+            true,
+            "2026-10-18T19:00:01.000Z",
+        )
+        .expect("foreground Scope write racing the publication");
+    });
+    let error = run_incremental_freshness_cycle(&db)
+        .expect_err("a publication that lost the race never commits");
+    let requeued = error
+        .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+        .unwrap_or_else(|| panic!("a publish race must be the typed requeue: {error:#}"));
+    assert!(
+        requeued
+            .to_string()
+            .contains("NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED"),
+        "the typed Scope projection guard caught the race: {requeued}"
+    );
+    assert_ne!(projection(&db, "a3-future")?, token_before_race);
+
+    drain_freshness(&db)?;
+    let (head, acknowledged): (i64, Option<i64>) = db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT
+                (SELECT COALESCE(MAX(canonical_sequence), 0)
+                   FROM narrative_change_events WHERE project_id = ?1),
+                (SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                  WHERE project_id = ?1
+                    AND consumer_id = 'narrative-incremental-freshness/v1')",
+            [PROJECT],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?)
+    })?;
+    assert_eq!(acknowledged, Some(head), "the cursor reaches the Feed head");
+    assert!(
+        !a2_available(&db, &other_revision)?,
+        "the raced Scope change still invalidates the anchor's Revision"
     );
     Ok(())
 }

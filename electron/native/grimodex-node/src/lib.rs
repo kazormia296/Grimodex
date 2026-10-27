@@ -997,6 +997,287 @@ mod narrative_freshness_restore_lock_tests {
         assert!(!root.exists(), "fixture must clean up");
     }
 
+    const RACE_PROJECT_ID: &str = "project-freshness-publish-race";
+    const RACE_SCENE_ID: &str = "scene-freshness-publish-race";
+
+    /// One Scene Source, one Dependency Edge on it and one canonical Change
+    /// Feed event: the smallest workspace whose next Freshness cycle
+    /// evaluates and publishes a guarded batch.
+    fn seed_freshness_publish_race_fixture(database: &Database) {
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES (?1, 'Publish race')",
+                    [RACE_PROJECT_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_semantic_epochs
+                        (id, project_id, epoch_number, reason, created_at)
+                     VALUES ('epoch-publish-race', ?1, 0, 'initial', '2026-08-19T00:00:00.000Z')",
+                    [RACE_PROJECT_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO tree_nodes
+                        (id, project_id, node_type, title, content, version, updated_at)
+                     VALUES (?1, ?2, 'scene', 'Race scene', '{}', 2, '2026-08-19T00:00:02.000Z')",
+                    [RACE_SCENE_ID, RACE_PROJECT_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_extraction_runs
+                        (id, project_id, surface_path_id, scope_json, spec_json, spec_digest,
+                         status, coverage_json, created_at, completed_at, run_kind,
+                         semantic_epoch_id)
+                     VALUES ('consumer-run-publish-race', ?1, 'chronicle.extract', '{}', '{}',
+                             'consumer-run-publish-race', 'completed', '{}',
+                             '2026-08-19T00:00:00.000Z', '2026-08-19T00:00:00.000Z',
+                             'interpretation', 'epoch-publish-race')",
+                    [RACE_PROJECT_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key, source_object_identity,
+                         read_set_json, generated_by_transaction_id, created_at, owning_run_id)
+                     VALUES ('edge-publish-race', ?1, 'narrative-extraction-run',
+                             'consumer-run-publish-race', ?2,
+                             '[\"v1@2026-08-19T00:00:01.000Z\"]', NULL,
+                             '2026-08-19T00:00:00.000Z', 'consumer-run-publish-race')",
+                    [RACE_PROJECT_ID, &format!("project:scene:{RACE_SCENE_ID}")],
+                )?;
+                conn.execute(
+                    "INSERT INTO change_events
+                        (event_uid, project_id, scene_id, domain, op_type, entity_type,
+                         entity_id, payload, session_id, sequence, timestamp, prev_hash, hash)
+                     VALUES ('canonical-publish-race', ?1, ?2, 'scene', 'scene.update', 'scene',
+                             ?2, '{}', 'publish-race', 1, 1787078400000,
+                             'fixture-prev', 'fixture-hash')",
+                    [RACE_PROJECT_ID, RACE_SCENE_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_change_transactions
+                        (id, project_id, request_id, source_domain, source_change_event_uid,
+                         source_change_event_sequence, cause_kind, origin, application_ids_json,
+                         payload_digest, created_at)
+                     VALUES ('transaction-publish-race', ?1, 'request-publish-race',
+                             'scene.update', 'canonical-publish-race', 1, 'forward', 'human',
+                             '[]', 'sha256:publish-race', '2026-08-19T00:00:00.000Z')",
+                    [RACE_PROJECT_ID],
+                )?;
+                conn.execute(
+                    "INSERT INTO narrative_change_events
+                        (id, project_id, transaction_id, canonical_change_event_uid,
+                         canonical_sequence, event_ordinal, object_key_json, change_kind,
+                         mutation_kind, before_version, before_digest, after_version,
+                         after_digest, changed_paths_json, text_impact_json,
+                         structural_impact_json, occurred_at)
+                     VALUES ('event-publish-race', ?1, 'transaction-publish-race',
+                             'canonical-publish-race', 1, 0, ?2, 'content', 'update',
+                             1, 'sha256:before', 2, 'sha256:after', '[\"/content\"]',
+                             '{\"normalizerVersion\":\"gdx-canonical-text/1\"}', NULL,
+                             '2026-08-19T00:00:00.000Z')",
+                    [
+                        RACE_PROJECT_ID,
+                        &format!("{{\"kind\":\"scene\",\"sceneId\":\"{RACE_SCENE_ID}\"}}"),
+                    ],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed Freshness publish race fixture");
+    }
+
+    /// The foreground write that lands between the next cycle's evaluation
+    /// and its publication transaction.
+    fn arm_freshness_publish_race(authority: &PinnedWorkspaceDb) {
+        grimodex_db::narrative_extraction::incremental_freshness_publish_race_for_test::arm(
+            authority.db(),
+            |db| {
+                db.with_conn(|conn| {
+                    conn.execute(
+                        "UPDATE tree_nodes SET version = version + 1
+                          WHERE id = ?1 AND project_id = ?2",
+                        [RACE_SCENE_ID, RACE_PROJECT_ID],
+                    )?;
+                    Ok(())
+                })
+                .expect("foreground write racing the publication");
+            },
+        );
+    }
+
+    fn race_cursor_and_attempt(
+        authority: &PinnedWorkspaceDb,
+    ) -> (i64, Option<String>, Option<String>) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT
+                        (SELECT acknowledged_through_sequence FROM narrative_change_cursors
+                          WHERE project_id = ?1
+                            AND consumer_id = 'narrative-incremental-freshness/v1'),
+                        (SELECT failure_code FROM narrative_extraction_attempts
+                          ORDER BY rowid DESC LIMIT 1),
+                        (SELECT retry_disposition FROM narrative_extraction_attempts
+                          ORDER BY rowid DESC LIMIT 1)",
+                    [RACE_PROJECT_ID],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .expect("cursor and latest Attempt")
+    }
+
+    fn freshness_publish_race_workspace(
+        label: &str,
+    ) -> (
+        TestRoot,
+        std::path::PathBuf,
+        Arc<AppState>,
+        PinnedWorkspaceDb,
+    ) {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-freshness-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let cleanup = TestRoot(root.clone());
+        let workspace_path = root.join("workspace");
+        let resources = root.join("resources");
+        std::fs::create_dir_all(&workspace_path).expect("workspace directory");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        seed_freshness_publish_race_fixture(&database);
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = Arc::new(
+            AppState::new(&root.to_string_lossy(), &resources.to_string_lossy())
+                .expect("app state"),
+        );
+        install_test_workspace(&state, Arc::clone(&authority));
+        (cleanup, root, state, authority)
+    }
+
+    #[tokio::test]
+    async fn freshness_publish_race_requeues_without_recovery_or_switching() {
+        let (cleanup, root, state, authority) = freshness_publish_race_workspace("publish-race");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+
+        arm_freshness_publish_race(&authority);
+        let result = backend
+            .run_narrative_freshness_cycle()
+            .await
+            .expect("a publish race is not a scheduler failure")
+            .expect("a requeued cycle reports its backlog");
+        let result: serde_json::Value = serde_json::from_str(&result).expect("result JSON");
+        assert_eq!(result["requeued"], true, "{result}");
+        assert_eq!(
+            result["hasMore"], true,
+            "the scheduler retries soon: {result}"
+        );
+        assert_eq!(result["projectId"], RACE_PROJECT_ID);
+        assert!(
+            result.get("reason").is_none(),
+            "no recovery transfer: {result}"
+        );
+        assert!(
+            matches!(
+                state
+                    .workspace_lifecycle
+                    .lifecycle_snapshot()
+                    .expect("lifecycle")
+                    .state,
+                LifecycleState::Ready(_)
+            ),
+            "the workspace stays Ready"
+        );
+        let snapshot = active_workspace_snapshot(&state.ws)
+            .expect("ordinary DB access is never WORKSPACE_SWITCHING after a publish race");
+        assert_eq!(snapshot.authority.identity(), authority.identity());
+        drop(snapshot);
+        assert_eq!(
+            race_cursor_and_attempt(&authority),
+            (
+                0,
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRYABLE".to_owned()),
+                Some("retryable".to_owned()),
+            ),
+            "the requeue is durable and the cursor has not moved yet"
+        );
+
+        let next = backend
+            .run_narrative_freshness_cycle()
+            .await
+            .expect("the next cycle")
+            .expect("the next cycle result");
+        let next: serde_json::Value = serde_json::from_str(&next).expect("next JSON");
+        assert_eq!(next["throughSequenceInclusive"], 1, "{next}");
+        assert_eq!(
+            race_cursor_and_attempt(&authority),
+            (1, None, None),
+            "the next cycle publishes the requeued range"
+        );
+
+        drop(authority);
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(backend);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[tokio::test]
+    async fn freshness_publish_race_after_retry_exhaustion_still_transfers_recovery() {
+        let (cleanup, root, state, authority) =
+            freshness_publish_race_workspace("publish-race-exhausted");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        for attempt in 1..=2 {
+            arm_freshness_publish_race(&authority);
+            let result = backend
+                .run_narrative_freshness_cycle()
+                .await
+                .expect("retryable race")
+                .expect("requeue result");
+            let result: serde_json::Value = serde_json::from_str(&result).expect("JSON");
+            assert_eq!(result["requeued"], true, "attempt {attempt}: {result}");
+        }
+
+        arm_freshness_publish_race(&authority);
+        let result = backend
+            .run_narrative_freshness_cycle()
+            .await
+            .expect("recovery transfer is reported as a result")
+            .expect("recovery result");
+        let result: serde_json::Value = serde_json::from_str(&result).expect("JSON");
+        assert_eq!(result["status"], "workspace-unavailable", "{result}");
+        assert_eq!(result["reason"], "freshness-recovery-required");
+        assert!(
+            matches!(
+                state
+                    .workspace_lifecycle
+                    .lifecycle_snapshot()
+                    .expect("lifecycle")
+                    .state,
+                LifecycleState::RecoveryRequired { .. }
+            ),
+            "a non-retryable failure keeps the recovery transfer"
+        );
+        assert!(matches!(
+            active_workspace_snapshot(&state.ws),
+            Err(AppError::WorkspaceSwitching)
+        ));
+
+        drop(authority);
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(backend);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
     #[test]
     fn freshness_scheduler_keeps_not_ready_workspace_fail_soft() {
         let root = std::env::temp_dir().join(format!(
@@ -5928,7 +6209,39 @@ fn run_narrative_freshness_cycle_body(
                 .and_then(|config| config.freshness_hold_project_id.as_deref()),
             &mut lifecycle_control,
         );
-    let (cycle_outcome, successful_cycle) = cycle_result?;
+    let (cycle_outcome, successful_cycle) = match cycle_result {
+        Ok(cycle) => cycle,
+        Err(error) => {
+            // A foreground write that lands between evaluation and
+            // publication is expected concurrency. The shared crate returns
+            // this type only after the Attempt was durably requeued as
+            // retryable, so the authority is intact: release the permit
+            // normally (no retire, no recovery) and let the scheduler resume
+            // the same range at once. No liveness is minted for an
+            // incomplete cycle. Every other failure keeps the recovery path.
+            if let Some(requeued) =
+                error.downcast_ref::<narrative_extraction::IncrementalFreshnessCycleRequeued>()
+            {
+                tracing::warn!(
+                    target: "narrative.maintenance",
+                    project_id = requeued.project_id(),
+                    run_id = requeued.run_id(),
+                    "freshness publication raced a foreground write; requeued for the next cycle"
+                );
+                return Ok(Some(
+                    serde_json::json!({
+                        "hasMore": true,
+                        "requeued": true,
+                        "projectId": requeued.project_id(),
+                        "runId": requeued.run_id(),
+                        "throughSequenceInclusive": requeued.through_sequence_inclusive(),
+                    })
+                    .to_string(),
+                ));
+            }
+            return Err(error.into());
+        }
+    };
     // A workspace swap may complete while the bounded cycle is
     // evaluating its pinned old authority. Re-resolve the active
     // authority before minting liveness so that a late old cycle can
