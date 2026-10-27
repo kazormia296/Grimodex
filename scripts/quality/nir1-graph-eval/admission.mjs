@@ -530,6 +530,8 @@ export const DEV_PREVIEW_PURPOSES = Object.freeze([
   "runner-preview",
   // S1f: the K6/4 runner's dev preview (k64-runner.mjs).
   "k64-runner-preview",
+  // TR: the (b) trace runner's dev preview (trace-runner.mjs).
+  "trace-runner-preview",
   "dprime-check",
   "hook-check",
   "diag-registration",

@@ -41,6 +41,7 @@ import {
   readK64FreezeHead,
 } from "./admission.mjs";
 import { summarizeSteadyState, samplesDigest } from "./availability.mjs";
+import { checkRunnerBuildReceipts } from "./build-receipt-check.mjs";
 import { K64_W_F_MS, OWNER_REBUILD_MIN_INTERVAL_MS } from "./constants.mjs";
 import { devVariantOf, loadDevFixture } from "./dev-fixture.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
@@ -353,7 +354,7 @@ const HARNESS_FILES = Object.freeze([
 ]);
 
 /** Candidate block (§7.2): commit, tree, clean, receipts, models, harness. */
-function candidateBlock({ options, nativePath, workerPath }) {
+export function candidateBlock({ options, nativePath, workerPath }) {
   const evalDir = path.dirname(nativePath);
   const read = (file) => (existsSync(file) ? readFileSync(file) : null);
   const evalReceipt = read(path.join(evalDir, "eval-build.json"));
@@ -402,7 +403,7 @@ function candidateBlock({ options, nativePath, workerPath }) {
 }
 
 /** The dev variant's expected Graph contribution, as runtime Scene ids. */
-function devExpectedContribution(loaded, variantId, ids) {
+export function devExpectedContribution(loaded, variantId, ids) {
   const variant = loaded.fixture.variants.find((row) => row.id === variantId);
   const graph = variant?.expectations?.arms?.rPlusIrPlusGraph;
   if (!graph) return null;
@@ -530,6 +531,14 @@ async function main() {
       options,
       nativePath,
       workerPath: path.join(evalDir, "nir1-c-query-worker"),
+    });
+    // DR-CP4-TR-5: the receipts name this candidate (before any launch).
+    report.checks.productBuild = checkRunnerBuildReceipts({
+      root: ROOT,
+      options,
+      candidate,
+      evalDir,
+      required: Boolean(options.fixture),
     });
     const coldDb = path.join(ROOT, setup.coldDatabase.path);
     if (sha256(await readFile(coldDb)) !== setup.coldDatabase.sha256)

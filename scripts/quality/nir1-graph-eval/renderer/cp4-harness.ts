@@ -73,6 +73,7 @@ import {
 import { BODY_DECLARATION_AXES } from "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationTypes";
 import { hookProbe } from "./cp4-hook-probe";
 import { k64Probe } from "./cp4-k64-probe";
+import { traceProbe } from "./cp4-trace-probe";
 
 interface IpcRow {
   cmd: string;
@@ -835,4 +836,6 @@ async function twoViews(input: {
     sample: (input: Parameters<typeof k64Probe.sample>[0]) =>
       guarded(() => k64Probe.sample(input)),
   },
+  // TR（DR-CP4-TR-1）：(b) の trace の page の側（製品の editor と hook の消費者）。
+  trace: traceProbe,
 };
