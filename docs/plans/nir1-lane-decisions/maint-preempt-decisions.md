@@ -147,3 +147,31 @@
   - PR の CI: Shared Rust crates（3 OS）、Native の development／release の build と test、Electron product journeys
     （impact map は `narrative-maintenance-product-journeys` と `narrative-runtime` を選ぶ）。c-query-lifecycle は
     impact map が選ばない（query の lifecycle は変えていない）。
+
+## DR-MP-7 独立レビュー（Opus）の指摘への対応（2026-10-28）
+
+- P2-1（commit の後にだけ所有を外す、という不変条件の試験が無い）: crate に試験を足した（Backfill の失敗の先例と同じく、
+  hook の中で `(run_id, autocommit, status)` を記録する）。
+  - Verify・Rebuild・Backfill の controlled な成功で、hook がちょうど 1 回、`status=completed`・`autocommit=true` で呼ばれる。
+  - foreground の hold（Run は running のまま）では 3 つとも hook が呼ばれない（P3-1 の hold の変異も閉じる）。
+  - Verify の取消が Run の作成の後に来る場合: Run を閉じられたら、閉じた後（`status≠running`、autocommit）にだけ呼ばれる。
+    接続の quarantine で閉じられず deferred の owner に渡したときは呼ばれない。
+  - 変異の再実行（`cargo test -p grimodex-db --lib -- restore_rebuild::tests legacy_backfill::tests`）: M1（Verify の解放を
+    成功の終端 transaction の前へ）、M3（Verify・Rebuild・Backfill のそれぞれで hold でも解放）、M2a（Verify の制御停止の分岐の
+    先頭で解放）が、どれも該当の試験 1 件で落ちた。M2a は、取消で Run を閉じられる場合は段の stop handler が先に Run を閉じて
+    いるので観測できず、閉じられない（quarantine）場合の試験で初めて落ちた（足す前は crate と grimodex-node の 709 件をすべて通った）。
+- 既存の挙動の所見（この修正の前から。変えていない）: Run の作成の後の取消では、段の stop handler
+  （`run_maintenance_graph_phase_for_run`）と adapter の stop handler の両方が `transfer_controlled_maintenance_run_to_owner`
+  を呼ぶので、閉じる処理（冪等）と `mark_run_terminalized` が 2 回走る。permit では 2 回目が `InvalidExecutionTransition` に
+  なり、返る Err は `NEX_VERIFY_INTERRUPTED_RUN_TERMINALIZE_FAILED` の context を付けた取消になる（所有は 1 回目で外れて
+  いるので、finalizer は通常の release を選ぶ）。整理は別の作業とする。
+- P3-2（DR-MP-3 の「変わるのは所有の行だけ」の訂正）: `mark_run_terminalized` は `release_project_creation_for_handle` も呼ぶ。
+  そのため、その project の作成の予約が外れる時点が、permit の release から「Run の commit の直後」に前へ動く。
+  project 単位の破壊的な permit は、その時点から入れる。二重の解放は無い（外した Run は permit の所有の表から消え、
+  `complete_execution` は残っている所有の分だけ解放する）。matrix には「project の作成の予約: 修正前は permit の release で解放、
+  修正後は commit の直後に解放」の行が加わる。
+- P3-3: 修正後の経路 (c) の Err は、その work の Main の再試行回数（`NARRATIVE_MAINTENANCE_MAX_RETRIES`=3、1 s 間隔）を
+  消費する。続けて 3 回起きると、完了済みの work に delivery の失敗の受領書が残りうる（まれ。次の cycle は ledger から noop に
+  なる）。修正前は同じ場面で workspace 全体が recovery になっていた。
+- P3-4: manual の経路（Native の manual maintenance の permit）も同じ adapter を通るので、成功の後に所有が早く外れる。
+  成功ならどのみち release するので害は無いが、DR-MP-2 の対象（automatic と manual の両方の permit）に含まれる。
