@@ -81,10 +81,14 @@ export function RelatedScenesSection({
   // one commit, the same path as closing and reopening the section: the hook
   // ends its query, then reads the seed again and begins with it. The hook
   // itself is unchanged.
-  const [paused, setPaused] = useState(false);
+  // A pair of counters, not a boolean: a pin reported after the resume was
+  // queued but before it rendered still pauses (and resumes) once more.
+  const [pauseTick, setPauseTick] = useState(0);
+  const [resumedTick, setResumedTick] = useState(0);
+  const paused = pauseTick !== resumedTick;
   useEffect(() => {
-    if (paused) setPaused(false);
-  }, [paused]);
+    setResumedTick(pauseTick);
+  }, [pauseTick]);
   const { sceneId, fetch, loading } = useNir1RelatedScenes(
     enabled && open && !paused,
   );
@@ -100,7 +104,7 @@ export function RelatedScenesSection({
       (focused === null || focused === document.body || box.contains(focused))
     )
       box.focus();
-    setPaused(true);
+    setPauseTick((tick) => tick + 1);
   };
   // DR-SEEDSUG-1: the seed panel belongs to the shown, completed query of the
   // active Scene, and reads again for each new query of it.

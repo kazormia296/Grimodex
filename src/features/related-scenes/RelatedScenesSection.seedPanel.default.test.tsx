@@ -109,5 +109,10 @@ describe("RelatedScenesSection seed panel with the product default (Graph UI clo
     expect(screen.queryByTestId("nir1-graph-seed")).toBeNull();
     expect(screen.queryByTestId("nir1-graph-seed-candidates")).toBeNull();
     expect(document.body.textContent).not.toMatch(/起点|Starting point/);
+    // The closed product keeps its DOM: no focus target on the section body.
+    const body = screen.getByText("Raw a").closest(".py-1");
+    expect(body).not.toBeNull();
+    expect(body!.hasAttribute("tabindex")).toBe(false);
+    expect(document.querySelector("[tabindex]")).toBeNull();
   });
 });
