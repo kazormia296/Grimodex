@@ -357,6 +357,97 @@ async function countRejectionTables(harness, page, projectId) {
   return counts;
 }
 
+// The Relation add shows a success Toast (sonner, bottom-right, 4 s) that can
+// cover the Details tab and take its pointer event; a pointer resting on the
+// Toast also pauses its timer, so a retried click never gets through (a
+// recorded flake of this journey). Move the pointer off the Toast area and wait
+// for every Toast to leave, then click as before.
+export const TOAST_CLEAR_TIMEOUT_MS = 15_000;
+
+export async function waitForToastsToClear(page) {
+  await page.mouse.move(0, 0);
+  await page
+    .locator("[data-sonner-toast]")
+    .first()
+    .waitFor({ state: "detached", timeout: TOAST_CLEAR_TIMEOUT_MS });
+}
+
+// Background owners (Incremental Freshness, Maintenance) write their own Runs
+// for a project after its Change Feed moves.  A "the rejection writes nothing"
+// comparison therefore starts only once they are quiescent; otherwise a
+// background Run lands between the two counts (#748: `runsAll` +1 from the
+// second project's Freshness Run).  The comparison itself is unchanged.
+export const BACKGROUND_QUIESCENCE_STABLE_MS = 2_500; // > 2 idle polls (1 s)
+export const BACKGROUND_QUIESCENCE_TIMEOUT_MS = 60_000;
+
+async function freshnessFeedSettled(harness, page, projectId) {
+  const [state] = await rows(
+    harness,
+    page,
+    `SELECT
+       (SELECT COALESCE(MAX(canonical_sequence), 0)
+          FROM narrative_change_events WHERE project_id = ?) AS head,
+       (SELECT acknowledged_through_sequence FROM narrative_change_cursors
+         WHERE project_id = ?
+           AND consumer_id = 'narrative-incremental-freshness/v1')
+         AS acknowledgedThrough,
+       (SELECT active_run_id FROM narrative_change_cursors
+         WHERE project_id = ?
+           AND consumer_id = 'narrative-incremental-freshness/v1')
+         AS activeRunId`,
+    [projectId, projectId, projectId],
+  );
+  return (
+    state !== undefined &&
+    state.acknowledgedThrough !== null &&
+    state.acknowledgedThrough !== undefined &&
+    Number(state.acknowledgedThrough) >= Number(state.head) &&
+    (state.activeRunId === null || state.activeRunId === undefined)
+  );
+}
+
+/**
+ * Wait until every project's Freshness Feed is acknowledged with no active
+ * reservation and the rejection-table counts stay unchanged for
+ * `stableMs`; return those counts as the "before" side of the comparison.
+ */
+export async function countRejectionTablesWhenQuiescent(
+  harness,
+  page,
+  projectId,
+  quiescentProjectIds,
+  label,
+  {
+    stableMs = BACKGROUND_QUIESCENCE_STABLE_MS,
+    timeoutMs = BACKGROUND_QUIESCENCE_TIMEOUT_MS,
+    count = countRejectionTables,
+    feedSettled = freshnessFeedSettled,
+    now = Date.now,
+  } = {},
+) {
+  let stable = null;
+  return harness.waitUntil(
+    async () => {
+      for (const id of quiescentProjectIds) {
+        if (!(await feedSettled(harness, page, id))) {
+          stable = null;
+          return null;
+        }
+      }
+      const counts = await count(harness, page, projectId);
+      const key = JSON.stringify(counts);
+      const at = now();
+      if (stable === null || stable.key !== key) {
+        stable = { key, since: at };
+        return null;
+      }
+      return at - stable.since >= stableMs ? counts : null;
+    },
+    `background owners are quiescent (${label})`,
+    timeoutMs,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // S2: Scope edit matrix.  Every writer below is the real Native writer the
 // product uses (IPC -> Main -> N-API -> shared Rust); nothing here touches
@@ -2778,10 +2869,12 @@ async function runSnapshotChecks(rootCtx, step) {
     rootCtx.page,
     rootCtx.workspace,
   );
-  const countsBefore = await countRejectionTables(
+  const countsBefore = await countRejectionTablesWhenQuiescent(
     rootCtx.harness,
     rootCtx.page,
     rootCtx.projectId,
+    [rootCtx.projectId, second.projectId],
+    "before the other project's Scene prepare",
   );
   const foreignRejection = await expectRejected(
     "prepare of another project's Scene",
@@ -3025,6 +3118,7 @@ export async function runNir1SceneScopeProjectionJourney(
       toEntry: leika,
       label: "友人",
     });
+    await waitForToastsToClear(page);
     await page.getByTestId("detail-tab-details").click();
     const mira = await createCodexEntryThroughUi(harness, page, {
       name: "ミラ",
@@ -3188,7 +3282,13 @@ export async function runNir1SceneScopeProjectionJourney(
       page,
       workspace,
     );
-    const countsBefore = await countRejectionTables(harness, page, projectId);
+    const countsBefore = await countRejectionTablesWhenQuiescent(
+      harness,
+      page,
+      projectId,
+      [projectId],
+      "before the rejected prepares",
+    );
     const rejections = {};
     for (const [label, expectedCode, payload] of [
       [
