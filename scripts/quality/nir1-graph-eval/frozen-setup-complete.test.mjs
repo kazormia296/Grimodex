@@ -824,6 +824,16 @@ test("レビュー P2-3／P2-4: G-02 の旧 Revision は live でも cold DB で
       }),
     /the cold DB does not show g02-r-dace stale/u,
   );
+  // The pre-edit token still current (the edit did not change the row).
+  assert.throws(
+    () =>
+      assertRelationStaleOnCold({
+        cold: "/nonexistent",
+        ids: ok.receipt.logicalToRuntime,
+        read: () => ({ stored: before, current: before }),
+      }),
+    /the cold DB does not show g02-r-dace stale/u,
+  );
   assert.equal(
     assertRelationStaleOnCold({
       cold: "/nonexistent",
