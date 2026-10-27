@@ -760,3 +760,32 @@ test("O-6: 対照の聞き直しは owner の next-query cache が埋まるの�
   });
   assert.equal(never.cached, false);
 });
+
+test("O-6／O-1 (7)（変異 W2、W4）: cache は slot が empty で埋まったときだけ、Chronicle は build の後の metadata でも使えること", async () => {
+  let clock = 0;
+  const statuses = [
+    { owner: { slot: "empty", cacheOccupied: false } },
+    { owner: { slot: "ready", cacheOccupied: true } },
+    { owner: { slot: "empty", cacheOccupied: true } },
+  ];
+  const cached = await awaitOwnerCached({
+    readStatus: async () => statuses.shift(),
+    sleep: async (ms) => {
+      clock += ms;
+    },
+    now: () => clock,
+  });
+  assert.deepEqual(cached, { cached: true, waitedMs: 100 });
+  const dirty = await reopenUntilSealed({
+    closeCurrent: async () => {},
+    buildChronicle: async () => ({ ok: true }),
+    openSession: async () => ({ close: async () => {} }),
+    readIndex: () => ({
+      b: { generation: 5, dirty: false },
+      chronicle: { generation: 3, dirty: true },
+    }),
+    before: metadata(4),
+    wait: async () => ({ ok: true, waitedMs: 1 }),
+  });
+  assert.equal(dirty.reason, "chronicle-index-not-usable");
+});
