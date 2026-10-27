@@ -2051,6 +2051,19 @@ fn main_wake_cycle(
     reason: &str,
     recorder: &Recorder,
 ) -> Result<Option<MaintenanceCycleResult>> {
+    main_wake_cycle_with_discovery(fixture, seam, reason, recorder).map(|(_, result)| result)
+}
+
+/// `main_wake_cycle` that also returns what main's discovery answered.
+fn main_wake_cycle_with_discovery(
+    fixture: &Fixture,
+    seam: Option<&NarrativeMaintenanceCiConfig>,
+    reason: &str,
+    recorder: &Recorder,
+) -> Result<(
+    crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery,
+    Option<MaintenanceCycleResult>,
+)> {
     use crate::narrative_extraction::maintenance_runtime::{
         discover_maintenance_project_for_main, effective_maintenance_coordinates,
         MaintenanceProjectDiscovery,
@@ -2063,7 +2076,7 @@ fn main_wake_cycle(
         Some(&coordinates),
         seam,
     )?;
-    let request = match discovered {
+    let request = match discovered.clone() {
         MaintenanceProjectDiscovery::Work(work) => MaintenanceCycleRequest {
             work: vec![MaintenanceWorkRequest {
                 project_id: work.project_id,
@@ -2078,16 +2091,16 @@ fn main_wake_cycle(
             workspace_binding: None,
         },
         MaintenanceProjectDiscovery::GraphIndexBuildWake => wake_request(),
-        MaintenanceProjectDiscovery::Idle => return Ok(None),
+        MaintenanceProjectDiscovery::Idle => return Ok((discovered, None)),
     };
-    run_cycle_on(
+    let result = run_cycle_on(
         fixture.db(),
         Some(fixture.runtime()),
         &request,
         seam,
         recorder,
-    )
-    .map(Some)
+    )?;
+    Ok((discovered, Some(result)))
 }
 
 /// Run the product path (no seam) until main's discovery has nothing to do.
@@ -2178,8 +2191,37 @@ fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()
         Nir1GraphIndexBuildDecision::Build { .. }
     ));
 
+    // DR-BSEAM-1 (b): the uncontrolled durable planner cannot judge the
+    // sealed binding and fails as context-unavailable; the B-ROUTE turns
+    // exactly that into a wake.
+    let coordinates =
+        crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(Some(
+            &graph_seam(),
+        ))?;
+    let uncontrolled =
+        crate::narrative_extraction::maintenance_runtime::discover_durable_maintenance_work_with_coordinates(
+            fixture.db(),
+            PROJECT,
+            "workspace-opened",
+            Some(&coordinates),
+        )
+        .expect_err("the uncontrolled planner cannot judge the sealed binding");
+    assert!(
+        error_text(&uncontrolled).contains("context-unavailable"),
+        "{uncontrolled:#}"
+    );
+
     let recorder = Recorder::default();
-    let result = main_wake_cycle(&fixture, Some(&graph_seam()), "workspace-opened", &recorder)?;
+    let (discovered, result) = main_wake_cycle_with_discovery(
+        &fixture,
+        Some(&graph_seam()),
+        "workspace-opened",
+        &recorder,
+    )?;
+    assert_eq!(
+        discovered,
+        crate::narrative_extraction::maintenance_runtime::MaintenanceProjectDiscovery::GraphIndexBuildWake
+    );
     assert_eq!(
         result.map(|result| result.status),
         Some(MaintenanceCycleStatus::Accepted)
@@ -2330,5 +2372,62 @@ fn main_discovery_wake_is_closed_outside_the_b_route_seam() -> Result<()> {
         discover(sealed_fixture.db(), Some(&graph_seam()))?,
         MaintenanceProjectDiscovery::GraphIndexBuildWake
     );
+    Ok(())
+}
+
+/// DR-BSEAM-2: only `context-unavailable` becomes a B-ROUTE wake. Every other
+/// failure of main's discovery propagates as an error even with the seam.
+#[test]
+fn b_route_discovery_propagates_errors_other_than_context_unavailable() -> Result<()> {
+    use crate::narrative_extraction::maintenance_runtime::{
+        discover_maintenance_project_for_main, effective_maintenance_coordinates,
+        is_context_unavailable_termination,
+    };
+    use crate::narrative_extraction::source_revision::{
+        validation_terminated, ValidationTerminationReason,
+    };
+
+    let _serial = serial();
+    // The classifier: the typed context-unavailable marker (also under added
+    // context) and nothing else.
+    assert!(is_context_unavailable_termination(
+        &validation_terminated(ValidationTerminationReason::ContextUnavailable, "test")
+            .context("discovery")
+    ));
+    for reason in [
+        ValidationTerminationReason::Cancelled,
+        ValidationTerminationReason::TimedOut,
+        ValidationTerminationReason::Closed,
+        ValidationTerminationReason::WorkspaceGenerationChanged,
+        ValidationTerminationReason::ForegroundPreempted,
+        ValidationTerminationReason::CleanupFailed,
+        ValidationTerminationReason::CapacityExceeded,
+    ] {
+        assert!(
+            !is_context_unavailable_termination(&validation_terminated(reason, "test")),
+            "{reason:?}"
+        );
+    }
+    assert!(!is_context_unavailable_termination(&anyhow!(
+        "context-unavailable in plain text is not the typed marker"
+    )));
+
+    // A SQL failure of the durable planner under the open seam stays an error.
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    fixture.db().with_conn(|conn| {
+        conn.execute_batch("ALTER TABLE narrative_extraction_runs RENAME TO bseam_hidden_runs")?;
+        Ok(())
+    })?;
+    let coordinates = effective_maintenance_coordinates(Some(&graph_seam()))?;
+    let error = discover_maintenance_project_for_main(
+        fixture.db(),
+        PROJECT,
+        "workspace-opened",
+        Some(&coordinates),
+        Some(&graph_seam()),
+    )
+    .expect_err("a SQL failure is not a Graph Index wake");
+    assert!(!is_context_unavailable_termination(&error), "{error:#}");
     Ok(())
 }

@@ -940,7 +940,9 @@ export function createNarrativeMaintenanceTriggerCoordinator(
         emitDiscoveryObservation(
           chainGeneration,
           sameDiscovery
-            ? lastSettledDiscovery?.response.work.length === 0
+            ? lastSettledDiscovery?.response.work.length === 0 &&
+                lastSettledDiscovery.response.graphIndexBuildWakeProjectIds
+                  .length === 0
             : false,
           sameDiscovery
             ? (lastSettledDiscovery?.workspaceBinding ?? workspaceBinding)

@@ -2297,7 +2297,7 @@ pub fn nir1_graph_index_build_wakes_main_discovery(
         && Nir1GraphIndexBuildGate::from_journey_seam(ci_config).is_open()
 }
 
-fn is_context_unavailable_termination(error: &anyhow::Error) -> bool {
+pub(crate) fn is_context_unavailable_termination(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<super::source_revision::ValidationTerminated>()

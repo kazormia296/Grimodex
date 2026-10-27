@@ -108,6 +108,40 @@ describe("narrative maintenance trigger coordinator", () => {
       coordinator.dispose();
     });
 
+    it("never reports a discovery with Graph Index wakes as empty to the quiescence writer", async () => {
+      const scheduler = makeWakeScheduler();
+      const observations: boolean[] = [];
+      const coordinator = createNarrativeMaintenanceTriggerCoordinator(
+        {
+          discoverNarrativeMaintenanceWork: vi
+            .fn()
+            .mockResolvedValue(wakeDiscovery(["project-b"])),
+          getNarrativeMaintenanceWorkspaceBinding: () => binding,
+          listNarrativeMaintenanceWakeOutbox: vi.fn().mockResolvedValue([]),
+          ackNarrativeMaintenanceWakeOutbox: vi.fn(),
+        },
+        scheduler,
+        {
+          acceptGraphIndexBuildWakes: true,
+          onDiscoverySettled: (observation) => {
+            observations.push(observation.discoveryEmpty);
+          },
+        },
+      );
+
+      coordinator.handleBackendEvent("workspace:opened", {});
+      await vi.runAllTimersAsync();
+      // Settled discovery, then an empty outbox drain of the same chain.
+      await coordinator.drainWakeOutbox();
+      await vi.runAllTimersAsync();
+      expect(
+        scheduler.requestGraphIndexBuildWakesWithBinding,
+      ).toHaveBeenCalledOnce();
+      expect(observations.length).toBeGreaterThanOrEqual(2);
+      expect(observations).not.toContain(true);
+      coordinator.dispose();
+    });
+
     it("rejects malformed wake lists before any queue mutation", async () => {
       for (const malformed of [
         [],
