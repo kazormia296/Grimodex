@@ -705,6 +705,7 @@ requirements:
       - evals/nir1-retrieval/corpus.json
       - scripts/quality/nir1-retrieval/contract.mjs
       - scripts/quality/nir1-retrieval/standard-build.mjs
+      - scripts/quality/nir1-retrieval/standard-build-receipt.mjs
       - scripts/quality/nir1-retrieval/paired.mjs
       - scripts/quality/nir1-retrieval/renderer.ts
       - scripts/quality/run-nir1-retrieval.mjs
@@ -1652,6 +1653,23 @@ requirements:
       - scripts/quality/nir1-packing/runner.mjs
       - evals/nir1-graph/manifest.v1.json
       - scripts/quality/nir1-graph/contract.mjs
+      - scripts/quality/nir1-graph-eval/constants.mjs
+      - scripts/quality/nir1-graph-eval/availability.mjs
+      - scripts/quality/nir1-graph-eval/followup.mjs
+      - scripts/quality/nir1-graph-eval/join.mjs
+      - scripts/quality/nir1-graph-eval/stats.mjs
+      - scripts/quality/nir1-graph-eval/admission-facts.mjs
+      - scripts/quality/nir1-graph-eval/receipt.mjs
+      - scripts/quality/nir1-graph-eval/test-support.mjs
+      - scripts/quality/nir1-graph-eval/native-sample.mjs
+      - scripts/quality/nir1-graph-eval/egress.mjs
+      - scripts/quality/nir1-graph-eval/workspace-db.mjs
+      - scripts/quality/nir1-graph-eval/run-sample.mjs
+      - scripts/quality/nir1-graph-eval/procedure-file.mjs
+      - scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-1.json
+      - scripts/quality/nir1-graph-eval/setup-receipt.mjs
+      - scripts/quality/nir1-graph-eval/k64-record.mjs
+      - scripts/quality/nir1-graph-eval/q4.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
@@ -1697,6 +1715,10 @@ requirements:
       - electron/native/grimodex-node/src/nir1_graph_eval/tests.rs
       - scripts/quality/nir1-graph-eval/native-architecture.test.mjs
       - scripts/quality/nir1-graph/contract.test.mjs
+      - scripts/quality/nir1-graph-eval/native-sample.test.mjs
+      - scripts/quality/nir1-graph-eval/run-sample.test.mjs
+      - scripts/quality/nir1-graph-eval/procedure-file.test.mjs
+      - scripts/quality/nir1-graph-eval/k64-record.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
