@@ -81,6 +81,143 @@ pub const NARRATIVE_DEPENDENCY_V2_SHADOW_RUNTIME: &str = "NARRATIVE_DEPENDENCY_V
 // the durable acknowledgement and returns Idle.
 static CYCLE_SERIALIZER: Mutex<()> = Mutex::new(());
 
+/// A publication guard saw that a Source, Edge or producer Epoch changed
+/// after the bounded evaluation read it (optimistic concurrency with a
+/// foreground writer). Only these guards construct it, so the cycle can
+/// classify the race by type instead of by message text.
+#[derive(Debug)]
+struct PublishGuardConflict(String);
+
+impl std::fmt::Display for PublishGuardConflict {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for PublishGuardConflict {}
+
+fn publish_guard_conflict(message: String) -> anyhow::Error {
+    anyhow::Error::new(PublishGuardConflict(message))
+}
+
+/// Only an unwrapped guard conflict is a publication race. `downcast_ref`
+/// follows the context chain, so look at the outermost error: a guard error
+/// that a failed cleanup wrapped (for example
+/// `NEX_DB_TRANSACTION_CLEANUP_UNPROVEN` when ROLLBACK is not proven) stays an
+/// ordinary failure for the owner's recovery path.
+fn is_publish_guard_race(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .next()
+        .is_some_and(|outermost| outermost.is::<PublishGuardConflict>())
+}
+
+/// The cycle lost a publication race to a foreground writer and its Attempt
+/// was durably requeued as retryable in the same authority (Attempt failed
+/// with `NEX_INCREMENTAL_FRESHNESS_RETRYABLE`, Task queued, cursor reservation
+/// kept for this Run). The next cycle resumes the same range.
+///
+/// It is still an `Err`: the cycle did not complete, so no liveness
+/// capability is minted. Only the shared crate constructs it, after the
+/// requeue transaction committed; a non-retryable failure (retry exhaustion,
+/// lost lease, evaluation or lifecycle failure, failed requeue) never takes
+/// this form. Its message is the guard's original message.
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct IncrementalFreshnessCycleRequeued {
+    project_id: String,
+    run_id: String,
+    through_sequence_inclusive: i64,
+    message: String,
+}
+
+impl IncrementalFreshnessCycleRequeued {
+    pub fn project_id(&self) -> &str {
+        &self.project_id
+    }
+
+    pub fn run_id(&self) -> &str {
+        &self.run_id
+    }
+
+    pub fn through_sequence_inclusive(&self) -> i64 {
+        self.through_sequence_inclusive
+    }
+}
+
+impl std::fmt::Display for IncrementalFreshnessCycleRequeued {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for IncrementalFreshnessCycleRequeued {}
+
+/// What `requeue_after_failure` durably recorded for the failed Attempt.
+#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+enum RequeueOutcome {
+    /// The Attempt was no longer running (another owner won); nothing changed.
+    NotApplied,
+    Retryable,
+    Terminal,
+}
+
+/// Test-only interposition between a successful evaluation and its
+/// publication, keyed by the [`Database`] the cycle runs on. It lets a test
+/// make the foreground write that races a real cycle deterministically.
+/// The seam is compiled only for tests and the cross-crate test-support
+/// feature; production builds have no hook.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub mod publish_race_for_test {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    use crate::Database;
+
+    type Hook = Box<dyn FnOnce(&Database) + Send>;
+
+    static HOOKS: Mutex<BTreeMap<usize, Hook>> = Mutex::new(BTreeMap::new());
+
+    fn key(db: &Database) -> usize {
+        db as *const Database as usize
+    }
+
+    fn hooks() -> std::sync::MutexGuard<'static, BTreeMap<usize, Hook>> {
+        HOOKS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Keeps the hook armed; dropping it (also on a test panic) removes a
+    /// hook that has not fired, so a later `Database` at the same address
+    /// can never run it.
+    #[must_use = "the hook is removed when this guard drops"]
+    pub struct ArmedPublishRace {
+        key: usize,
+    }
+
+    impl Drop for ArmedPublishRace {
+        fn drop(&mut self) {
+            hooks().remove(&self.key);
+        }
+    }
+
+    /// Run `hook` once, on the next cycle of `db`, after its evaluation and
+    /// before its publication transaction, while the returned guard lives.
+    /// The hook may use `db`.
+    pub fn arm(db: &Database, hook: impl FnOnce(&Database) + Send + 'static) -> ArmedPublishRace {
+        let key = key(db);
+        hooks().insert(key, Box::new(hook));
+        ArmedPublishRace { key }
+    }
+
+    pub(super) fn fire(db: &Database) {
+        let hook = hooks().remove(&key(db));
+        if let Some(hook) = hook {
+            hook(db);
+        }
+    }
+}
+
 /// Lifecycle-owned cancellation for a bounded Freshness cycle.  The public
 /// API deliberately exposes only a no-argument checkpoint: the Graph/NIR
 /// stages remain an implementation detail of the shared DB crate, while the
@@ -503,6 +640,8 @@ fn run_serialized_cycle_with_control(
             return Err(error);
         }
     };
+    #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+    publish_race_for_test::fire(db);
 
     let publish_result = db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
@@ -515,7 +654,20 @@ fn run_serialized_cycle_with_control(
             // A stale Epoch/reservation intentionally cannot publish.
             // Requeue is best effort and CAS-scoped to this attempt, so it
             // cannot disturb a newer owner that won the race.
-            requeue_after_failure(db, &batch, &error)?;
+            let requeue = requeue_after_failure(db, &batch, &error)?;
+            // A publication guard race with a foreground writer is expected
+            // concurrency, not a broken authority. Report it by type only
+            // after the retryable requeue committed; every other failure,
+            // retry exhaustion and an unapplied requeue keep the original
+            // error for the owner's recovery path.
+            if requeue == RequeueOutcome::Retryable && is_publish_guard_race(&error) {
+                return Err(anyhow::Error::new(IncrementalFreshnessCycleRequeued {
+                    project_id: batch.project_id.clone(),
+                    run_id: batch.run_id.clone(),
+                    through_sequence_inclusive: batch.through_sequence_inclusive,
+                    message: format!("{error:#}"),
+                }));
+            }
             return Err(error);
         }
     };
@@ -3076,11 +3228,12 @@ fn publish_batch_in_tx_with_control(
     }
     for edge in &plan.edge_declaration_guards {
         let current_edge = load_edge_by_id(conn, &edge.project_id, &edge.id)?;
-        anyhow::ensure!(
-            current_edge.as_ref() == Some(edge),
-            "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED: '{}' changed after evaluation",
-            edge.id
-        );
+        if current_edge.as_ref() != Some(edge) {
+            return Err(publish_guard_conflict(format!(
+                "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED: '{}' changed after evaluation",
+                edge.id
+            )));
+        }
     }
     for guard in &plan.source_state_guards {
         let current = if let Some(control) = control.as_deref_mut() {
@@ -3099,11 +3252,12 @@ fn publish_batch_in_tx_with_control(
                 &guard.edge,
             )?
         };
-        anyhow::ensure!(
-            current == guard.state,
-            "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: '{}' changed after evaluation",
-            guard.edge.source_object_identity
-        );
+        if current != guard.state {
+            return Err(publish_guard_conflict(format!(
+                "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: '{}' changed after evaluation",
+                guard.edge.source_object_identity
+            )));
+        }
     }
     // The guards re-read inside the publish transaction; the anchors share
     // one Scope read.
@@ -3115,19 +3269,22 @@ fn publish_batch_in_tx_with_control(
             &guard.source_object_identity,
             &mut shared_scope,
         )?;
-        anyhow::ensure!(
-            current == guard.revision_token,
-            "NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED: '{}' changed after evaluation",
-            guard.source_object_identity
-        );
+        if current != guard.revision_token {
+            return Err(publish_guard_conflict(format!(
+                "NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED: '{}' changed after evaluation",
+                guard.source_object_identity
+            )));
+        }
     }
     for guard in &plan.producer_epoch_guards {
         check_cycle_control(control, GraphWorkStage::Publish)?;
         let current = edge_producer_epoch_matches(conn, &guard.edge, &batch.semantic_epoch_id)?;
-        anyhow::ensure!(
-            current == guard.matched,
-            "NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication"
-        );
+        if current != guard.matched {
+            return Err(publish_guard_conflict(
+                "NEX_SEMANTIC_EPOCH_CHANGED: Edge producer Epoch changed before publication"
+                    .to_owned(),
+            ));
+        }
     }
     check_cycle_control(control, GraphWorkStage::Publish)?;
     // D2 is shadow-only: drift in the selected V2 head/key/state snapshot is
@@ -3422,7 +3579,7 @@ fn requeue_after_failure(
     db: &Database,
     batch: &ClaimedBatch,
     error: &anyhow::Error,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<RequeueOutcome> {
     db.with_conn(|conn| {
         with_immediate_transaction(conn, |conn| {
             let message = format!("{error:#}");
@@ -3483,7 +3640,7 @@ fn requeue_after_failure(
                 )?
             };
             if attempt_updated == 0 {
-                return Ok(());
+                return Ok(RequeueOutcome::NotApplied);
             }
             let task_status = if terminal { "failed" } else { "queued" };
             let task_updated = if let Some(lifecycle_at) = lifecycle_at.as_deref() {
@@ -3555,7 +3712,11 @@ fn requeue_after_failure(
                 cursor_updated == 1,
                 "NEX_INCREMENTAL_FRESHNESS_LEASE_LOST: failed Attempt lost its cursor reservation"
             );
-            Ok(())
+            Ok(if terminal {
+                RequeueOutcome::Terminal
+            } else {
+                RequeueOutcome::Retryable
+            })
         })
     })
 }
@@ -6528,6 +6689,287 @@ mod tests {
             Ok(())
         })
         .expect("inspect rolled-back publication");
+    }
+
+    /// Make the foreground write that races the next cycle of `db`: bump the
+    /// Scene's version after the evaluation read it, before publication.
+    fn arm_scene_publish_race(db: &Database) -> publish_race_for_test::ArmedPublishRace {
+        publish_race_for_test::arm(db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET version = version + 1
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![SCENE_ID, PROJECT_ID],
+                )?;
+                Ok(())
+            })
+            .expect("foreground write between evaluation and publication");
+        })
+    }
+
+    fn latest_attempt(db: &Database) -> (String, Option<String>, Option<String>) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT status, failure_code, retry_disposition
+                   FROM narrative_extraction_attempts
+                  ORDER BY rowid DESC LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?)
+        })
+        .expect("latest Freshness Attempt")
+    }
+
+    fn freshness_cursor(db: &Database) -> (i64, Option<String>) {
+        db.with_conn(|conn| {
+            Ok(conn.query_row(
+                "SELECT acknowledged_through_sequence, active_run_id
+                   FROM narrative_change_cursors
+                  WHERE project_id = ?1 AND consumer_id = ?2",
+                params![PROJECT_ID, CURSOR_CONSUMER_ID],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?)
+        })
+        .expect("Freshness cursor")
+    }
+
+    #[test]
+    fn publish_race_is_a_typed_durable_requeue_and_the_next_cycle_publishes() {
+        let db = fixture_db();
+        let _race = arm_scene_publish_race(&db);
+        let error =
+            run_incremental_freshness_cycle(&db).expect_err("a raced publication never commits");
+        let requeued = error
+            .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+            .unwrap_or_else(|| panic!("a publish race must be the typed requeue: {error:#}"));
+        assert!(
+            requeued
+                .to_string()
+                .contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"),
+            "the guard's message is kept: {requeued}"
+        );
+        assert_eq!(requeued.project_id(), PROJECT_ID);
+        assert_eq!(requeued.through_sequence_inclusive(), 1);
+        assert_eq!(
+            latest_attempt(&db),
+            (
+                "failed".to_owned(),
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRYABLE".to_owned()),
+                Some("retryable".to_owned()),
+            ),
+            "the requeue is durable before the typed result is returned"
+        );
+        assert_eq!(
+            freshness_cursor(&db),
+            (0, Some(requeued.run_id().to_owned())),
+            "the range stays reserved for the same Run"
+        );
+
+        let outcome =
+            run_incremental_freshness_cycle(&db).expect("the next cycle resumes the range");
+        let IncrementalFreshnessCycleOutcome::Processed(summary) = outcome else {
+            panic!("the next cycle must publish the requeued range: {outcome:?}");
+        };
+        assert_eq!(summary.run_id, requeued.run_id());
+        assert_eq!(freshness_cursor(&db), (1, None), "the cursor advances");
+    }
+
+    #[test]
+    fn publish_race_on_the_last_attempt_is_not_a_requeue() {
+        let db = fixture_db();
+        for attempt in 1..MAX_ATTEMPTS_PER_BATCH {
+            let _race = arm_scene_publish_race(&db);
+            let error = run_incremental_freshness_cycle(&db).expect_err("raced publication");
+            assert!(
+                error
+                    .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                    .is_some(),
+                "attempt {attempt} is still retryable: {error:#}"
+            );
+        }
+        let _race = arm_scene_publish_race(&db);
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced last attempt");
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                .is_none(),
+            "retry exhaustion is a real failure, never a requeue: {error:#}"
+        );
+        assert!(format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"));
+        assert_eq!(
+            latest_attempt(&db),
+            (
+                "failed".to_owned(),
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED".to_owned()),
+                Some("terminal".to_owned()),
+            )
+        );
+    }
+
+    /// The raced cycle is a typed, durable requeue whose message carries
+    /// `code`, and the next cycle publishes the same range.
+    fn assert_requeued_then_published(db: &Database, code: &str) {
+        let error =
+            run_incremental_freshness_cycle(db).expect_err("a raced publication never commits");
+        let requeued = error
+            .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+            .unwrap_or_else(|| panic!("{code} must be the typed requeue: {error:#}"));
+        assert!(
+            requeued.to_string().contains(code),
+            "the {code} guard caught the race: {requeued}"
+        );
+        assert_eq!(
+            latest_attempt(db),
+            (
+                "failed".to_owned(),
+                Some("NEX_INCREMENTAL_FRESHNESS_RETRYABLE".to_owned()),
+                Some("retryable".to_owned()),
+            )
+        );
+        assert_eq!(
+            freshness_cursor(db),
+            (0, Some(requeued.run_id().to_owned()))
+        );
+        let outcome = run_incremental_freshness_cycle(db).expect("the next cycle resumes");
+        assert!(
+            matches!(
+                outcome,
+                IncrementalFreshnessCycleOutcome::Processed(ref summary)
+                    if summary.run_id == requeued.run_id()
+            ),
+            "the next cycle publishes the requeued range: {outcome:?}"
+        );
+        assert_eq!(freshness_cursor(db), (1, None));
+    }
+
+    #[test]
+    fn edge_redeclared_during_publication_is_a_typed_requeue() {
+        let db = fixture_db();
+        let _race = publish_race_for_test::arm(&db, |db| {
+            db.with_conn(|conn| {
+                let replacement_run_id = "consumer-run-c2-1-phase-cas-raced";
+                seed_completed_consumer_run(conn, replacement_run_id)?;
+                conn.execute(
+                    r#"UPDATE narrative_dependency_edges
+                        SET read_set_json = '["v99@2026-08-19T00:00:03.000Z"]',
+                            owning_run_id = ?1
+                      WHERE id = ?2 AND project_id = ?3"#,
+                    params![replacement_run_id, EDGE_ID, PROJECT_ID],
+                )?;
+                Ok(())
+            })
+            .expect("redeclare the Edge between evaluation and publication");
+        });
+        assert_requeued_then_published(&db, "NEX_INCREMENTAL_FRESHNESS_EDGE_CHANGED");
+    }
+
+    #[test]
+    fn producer_epoch_changed_during_publication_is_a_typed_requeue() {
+        let db = fixture_db();
+        let _race = publish_race_for_test::arm(&db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE narrative_extraction_runs SET semantic_epoch_id = NULL
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![CONSUMER_RUN_ID, PROJECT_ID],
+                )?;
+                Ok(())
+            })
+            .expect("move the producer Epoch between evaluation and publication");
+        });
+        assert_requeued_then_published(&db, "NEX_SEMANTIC_EPOCH_CHANGED");
+    }
+
+    #[test]
+    fn a_guard_race_whose_attempt_another_owner_ended_is_not_a_requeue() {
+        let db = fixture_db();
+        let _race = publish_race_for_test::arm(&db, |db| {
+            db.with_conn(|conn| {
+                conn.execute(
+                    "UPDATE tree_nodes SET version = version + 1
+                      WHERE id = ?1 AND project_id = ?2",
+                    params![SCENE_ID, PROJECT_ID],
+                )?;
+                conn.execute(
+                    "UPDATE narrative_extraction_attempts SET status = 'failed'
+                      WHERE status = 'running'",
+                    [],
+                )?;
+                Ok(())
+            })
+            .expect("race the guard and end the Attempt elsewhere");
+        });
+        let error = run_incremental_freshness_cycle(&db).expect_err("raced publication");
+        assert!(format!("{error:#}").contains("NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED"));
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                .is_none(),
+            "an unapplied requeue is never reported as one: {error:#}"
+        );
+    }
+
+    #[test]
+    fn only_an_unwrapped_guard_conflict_is_a_publish_race() {
+        let guard = publish_guard_conflict(
+            "NEX_INCREMENTAL_FRESHNESS_TYPED_SOURCE_CHANGED: 'x' changed after evaluation"
+                .to_owned(),
+        );
+        assert!(is_publish_guard_race(&guard));
+        let unproven = publish_guard_conflict(
+            "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: 'x' changed after evaluation".to_owned(),
+        )
+        .context("NEX_DB_TRANSACTION_CLEANUP_UNPROVEN: rollback did not restore autocommit");
+        assert!(
+            unproven.downcast_ref::<PublishGuardConflict>().is_some(),
+            "downcast_ref alone would see through the cleanup context"
+        );
+        assert!(
+            !is_publish_guard_race(&unproven),
+            "an unproven cleanup stays on the recovery path"
+        );
+        assert!(!is_publish_guard_race(&anyhow::anyhow!(
+            "NEX_INCREMENTAL_FRESHNESS_SOURCE_CHANGED: untyped"
+        )));
+    }
+
+    #[test]
+    fn a_dropped_publish_race_guard_never_fires() {
+        let db = fixture_db();
+        drop(arm_scene_publish_race(&db));
+        let outcome = run_incremental_freshness_cycle(&db).expect("no race after the guard drops");
+        assert!(matches!(
+            outcome,
+            IncrementalFreshnessCycleOutcome::Processed(_)
+        ));
+    }
+
+    #[test]
+    fn a_non_guard_publication_failure_is_not_a_requeue() {
+        struct StopAtPublish;
+        impl GraphWorkControl for StopAtPublish {
+            fn check(&mut self, stage: GraphWorkStage) -> anyhow::Result<()> {
+                anyhow::ensure!(
+                    stage != GraphWorkStage::Publish,
+                    "NEX_VALIDATION_TERMINATED:workspace-transition-in-progress"
+                );
+                Ok(())
+            }
+        }
+        let db = fixture_db();
+        let mut control = StopAtPublish;
+        let error = db
+            .with_background_connection_priority(|| {
+                run_serialized_cycle_with_control(&db, None, Some(&mut control))
+            })
+            .expect_err("a lifecycle stop at publication fails the cycle");
+        assert!(
+            error
+                .downcast_ref::<IncrementalFreshnessCycleRequeued>()
+                .is_none(),
+            "only a publication guard race is a requeue: {error:#}"
+        );
+        assert!(format!("{error:#}").contains("NEX_VALIDATION_TERMINATED"));
     }
 
     #[test]

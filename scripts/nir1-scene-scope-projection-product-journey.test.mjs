@@ -5,12 +5,17 @@ import test from "node:test";
 
 import { CODEX_ENTITY_RELATION_REVIEW_SELECTORS } from "../electron/scripts/codex-entity-relation-product-journey.mjs";
 import {
+  BACKGROUND_QUIESCENCE_STABLE_MS,
+  BACKGROUND_QUIESCENCE_TIMEOUT_MS,
+  countRejectionTablesWhenQuiescent,
   NIR1_SCENE_SCOPE_PROJECTION_IPC_COMMANDS,
   NIR1_SCENE_SCOPE_PROJECTION_JOURNEY_ID,
   NIR1_SCENE_SCOPE_PROJECTION_REQUIRED_INTERACTIONS,
   NIR1_SCENE_SCOPE_PROJECTION_SELECTORS,
   NIR1_SCENE_SCOPE_PROJECTION_STEPS,
+  TOAST_CLEAR_TIMEOUT_MS,
   createNir1SceneScopeProjectionJourney,
+  waitForToastsToClear,
 } from "../electron/scripts/nir1-scene-scope-projection-product-journey.mjs";
 import {
   PRODUCT_CONTRACT_REQUIREMENTS,
@@ -366,5 +371,163 @@ test("journey is registered once in the catalog, runner and fixed shard 6", () =
     ),
     5,
     "the journey runs first in fixed shard 6 (lightest canonical shard)",
+  );
+});
+
+/**
+ * A fake harness whose `waitUntil` polls the predicate on a fake clock that
+ * advances `stepMs` per poll, up to `timeoutMs`.
+ */
+function fakeQuiescenceHarness(stepMs = 500) {
+  const clock = { at: 0 };
+  return {
+    clock,
+    labels: [],
+    async waitUntil(predicate, label, timeoutMs) {
+      this.labels.push([label, timeoutMs]);
+      for (; clock.at <= timeoutMs; clock.at += stepMs) {
+        const value = await predicate();
+        if (value) return value;
+      }
+      throw new Error(`timed out: ${label}`);
+    },
+  };
+}
+
+test("rejection counts start only after a stable, settled background", async () => {
+  const harness = fakeQuiescenceHarness();
+  // A background Run lands at t = 1000 ms (the #748 shape: runsAll + 1).
+  const count = async () => ({
+    runs: 90,
+    runsAll: harness.clock.at < 1_000 ? 90 : 91,
+  });
+  const settledQueries = [];
+  const counts = await countRejectionTablesWhenQuiescent(
+    harness,
+    null,
+    "project-a",
+    ["project-a", "project-b"],
+    "test",
+    {
+      count,
+      feedSettled: async (_harness, _page, id) => {
+        settledQueries.push(id);
+        // project-b's Feed is still pending until t = 500 ms.
+        return id !== "project-b" || harness.clock.at >= 500;
+      },
+      now: () => harness.clock.at,
+    },
+  );
+  assert.deepEqual(counts, { runs: 90, runsAll: 91 });
+  assert.ok(
+    harness.clock.at >= 1_000 + BACKGROUND_QUIESCENCE_STABLE_MS,
+    `counted only after ${BACKGROUND_QUIESCENCE_STABLE_MS} ms of stability`,
+  );
+  assert.ok(settledQueries.includes("project-b"), "every project is settled");
+  assert.deepEqual(harness.labels, [
+    [
+      "background owners are quiescent (test)",
+      BACKGROUND_QUIESCENCE_TIMEOUT_MS,
+    ],
+  ]);
+});
+
+test("an unsettled Feed restarts the stability window", async () => {
+  const harness = fakeQuiescenceHarness();
+  let polls = 0;
+  const counts = await countRejectionTablesWhenQuiescent(
+    harness,
+    null,
+    "project-a",
+    ["project-a"],
+    "test",
+    {
+      count: async () => ({ runs: 1 }),
+      // Settled, then a reservation appears once at t = 1500 ms.
+      feedSettled: async () => {
+        polls += 1;
+        return harness.clock.at !== 1_500;
+      },
+      now: () => harness.clock.at,
+    },
+  );
+  assert.deepEqual(counts, { runs: 1 });
+  assert.ok(
+    harness.clock.at >= 1_500 + 500 + BACKGROUND_QUIESCENCE_STABLE_MS,
+    "the window restarts after the unsettled poll",
+  );
+  assert.ok(polls > 0);
+});
+
+test("a background that never quiesces fails instead of counting", async () => {
+  const harness = fakeQuiescenceHarness();
+  await assert.rejects(
+    countRejectionTablesWhenQuiescent(
+      harness,
+      null,
+      "project-a",
+      ["project-a"],
+      "test",
+      {
+        count: async () => ({ runsAll: harness.clock.at }),
+        feedSettled: async () => true,
+        now: () => harness.clock.at,
+      },
+    ),
+    /timed out: background owners are quiescent \(test\)/u,
+  );
+});
+
+test("both rejection comparisons start from the quiescent counts", async () => {
+  const source = await readFile(journeySourcePath, "utf8");
+  assert.equal(
+    (
+      source.match(
+        /const countsBefore = await countRejectionTablesWhenQuiescent\(/gu,
+      ) ?? []
+    ).length,
+    2,
+  );
+  assert.doesNotMatch(
+    source,
+    /const countsBefore = await countRejectionTables\(/u,
+  );
+  assert.match(
+    source,
+    /\[rootCtx\.projectId, second\.projectId\],\s*"before the other project's Scene prepare"/u,
+  );
+});
+
+test("the Details tab is clicked only after the pointer leaves and Toasts clear", async () => {
+  const calls = [];
+  const page = {
+    mouse: {
+      async move(x, y) {
+        calls.push(["move", x, y]);
+      },
+    },
+    locator(selector) {
+      calls.push(["locator", selector]);
+      return {
+        first() {
+          return {
+            async waitFor(options) {
+              calls.push(["waitFor", options]);
+            },
+          };
+        },
+      };
+    },
+  };
+  await waitForToastsToClear(page);
+  assert.deepEqual(calls, [
+    ["move", 0, 0],
+    ["locator", "[data-sonner-toast]"],
+    ["waitFor", { state: "detached", timeout: TOAST_CLEAR_TIMEOUT_MS }],
+  ]);
+  const source = await readFile(journeySourcePath, "utf8");
+  assert.match(
+    source,
+    /await waitForToastsToClear\(page\);\s*await page\.getByTestId\("detail-tab-details"\)\.click\(\);/u,
   );
 });
