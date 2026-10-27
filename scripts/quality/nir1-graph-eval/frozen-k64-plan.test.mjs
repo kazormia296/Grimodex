@@ -26,6 +26,7 @@ import {
   loadFrozenSetupPlans,
 } from "./frozen-setup-plan.mjs";
 import { k64GraphSampleRow } from "./k64-record.mjs";
+import { runSchedule } from "./run-sample.mjs";
 import {
   expectedMaterialPaths,
   hashGraphPaths,
@@ -301,6 +302,12 @@ test("S2 P-4 (b): one-shot の process は arm ごとに warm-up 5＋測定 30�
     rows.map((_, at) => at),
   );
   assert.equal(spec.oneShot.receiptLabel, "one-shot（index-state-holding）");
+  // The receipt's aggregates read the AB/BA schedule: the processes in
+  // order are exactly runSchedule's slots.
+  assert.deepEqual(
+    rows.map(({ phase, repeat, arm }) => ({ phase, repeat, arm })),
+    runSchedule(),
+  );
 });
 
 const clean = (generation) => ({ generation, dirty: false });

@@ -1271,67 +1271,85 @@ export async function runFrozenK64(argv) {
         ctx,
         evidences: result.evidences ?? [result.proc?.evidence].filter(Boolean),
       });
-      const receipt = assembleK64Receipt({
-        runId: `${options.run}/${spec.variantKey}`,
-        preview: dev,
-        fixture: {
-          path: plan.fixturePath,
-          sha256: plan.fixtureSha256,
-          kind: dev ? "dev" : "frozen",
-        },
-        variant,
-        head: admitted.head,
-        candidate,
-        ratification5: admitted.ratification5,
-        procedure: admitted.procedure,
-        environment,
-        run: ctx.run ?? null,
-        settings: {
-          maintenance: "product",
-          d2aModes:
-            ctx.d2aMode === "restricted"
-              ? { hybrid: "restricted", graph: "restricted" }
-              : { hybrid: "unrestricted" },
-          reauthorization: {
-            mode: ctx.d2aMode,
-            placedStateFile: true,
-            note: "the D2a profile state placed before launch; no activation UI",
+      // A receipt the aggregates refuse (e.g. a schedule that is not AB/BA)
+      // keeps the samples on disk and stops this variant only.
+      let receipt;
+      try {
+        receipt = assembleK64Receipt({
+          runId: `${options.run}/${spec.variantKey}`,
+          preview: dev,
+          fixture: {
+            path: plan.fixturePath,
+            sha256: plan.fixtureSha256,
+            kind: dev ? "dev" : "frozen",
           },
-          setupReceipt: {
-            path: path.relative(ROOT, setup.path),
-            sha256: setup.sha256,
-            logicalToRuntime: setup.value.logicalToRuntime,
+          variant,
+          head: admitted.head,
+          candidate,
+          ratification5: admitted.ratification5,
+          procedure: admitted.procedure,
+          environment,
+          run: ctx.run ?? null,
+          settings: {
+            maintenance: "product",
+            d2aModes:
+              ctx.d2aMode === "restricted"
+                ? { hybrid: "restricted", graph: "restricted" }
+                : { hybrid: "unrestricted" },
+            reauthorization: {
+              mode: ctx.d2aMode,
+              placedStateFile: true,
+              note: "the D2a profile state placed before launch; no activation UI",
+            },
+            setupReceipt: {
+              path: path.relative(ROOT, setup.path),
+              sha256: setup.sha256,
+              logicalToRuntime: setup.value.logicalToRuntime,
+            },
+            measurement: {
+              kind: spec.kind,
+              ...(spec.kind === "one-shot"
+                ? {
+                    label: oneShot.receiptLabel,
+                    processes: oneShotProcessSchedule(oneShot).length,
+                  }
+                : {}),
+              measurementPoint: spec.measurementPoint,
+              indexState: spec.indexState,
+            },
+            seed: {
+              logical: plan.seedPin.seedEntityId,
+              runtime: ctx.gateRow.expectedSeed,
+              via: "product-hook-from-the-query-scene-pin",
+            },
+            f6: { basis: "material-revision", expected: resolver.expected },
           },
-          measurement: {
-            kind: spec.kind,
-            ...(spec.kind === "one-shot"
-              ? {
-                  label: oneShot.receiptLabel,
-                  processes: oneShotProcessSchedule(oneShot).length,
-                }
-              : {}),
-            measurementPoint: spec.measurementPoint,
-            indexState: spec.indexState,
+          declaration: result.proc?.declaration ?? null,
+          measurementWorkspace: result.proc?.measurementWorkspace ?? null,
+          samples: result.samples,
+          checks: {
+            status: result.status,
+            ...(result.blocked ? { blocked: result.blocked } : {}),
+            d2Probes: result.probes ?? [],
+            process: result.proc?.checks ?? null,
+            processes: result.processes ?? null,
+            problems: report.problems,
           },
-          seed: {
-            logical: plan.seedPin.seedEntityId,
-            runtime: ctx.gateRow.expectedSeed,
-            via: "product-hook-from-the-query-scene-pin",
-          },
-          f6: { basis: "material-revision", expected: resolver.expected },
-        },
-        declaration: result.proc?.declaration ?? null,
-        measurementWorkspace: result.proc?.measurementWorkspace ?? null,
-        samples: result.samples,
-        checks: {
-          status: result.status,
-          ...(result.blocked ? { blocked: result.blocked } : {}),
-          d2Probes: result.probes ?? [],
-          process: result.proc?.checks ?? null,
-          processes: result.processes ?? null,
-          problems: report.problems,
-        },
-      });
+        });
+      } catch (error) {
+        await writeFile(
+          path.join(ctx.variantDir, "samples.json"),
+          `${JSON.stringify({ status: result.status, samples: result.samples, probes: result.probes ?? [] }, null, 2)}\n`,
+        );
+        report.problems.push(`${spec.variantKey}: ${error?.stack ?? error}`);
+        report.variants[spec.variantKey] = {
+          status: "receipt-refused",
+          samples: result.samples.length,
+          error: String(error?.message ?? error).split("\n")[0],
+        };
+        process.exitCode = 1;
+        continue;
+      }
       const errors = validateCp4Receipt(receipt, {
         ratification5: admitted.ratification5,
         procedure: admitted.procedure,
