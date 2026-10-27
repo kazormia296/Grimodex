@@ -2035,3 +2035,152 @@ fn injected_publish_failure_rolls_back_and_a_reopen_rebuilds() -> Result<()> {
     assert!(complete_registered(fixture.db())?);
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// DR-BSEAM-1: main's wake -> discovery -> cycle path for the B-ROUTE seam.
+// ---------------------------------------------------------------------------
+
+/// Main's path from one wake to at most one cycle. Native discovery
+/// (`discover_all`) asks the durable planner about each project, and main
+/// starts a cycle only for what that discovery returns. `None` means main
+/// starts no cycle for this wake.
+fn main_wake_cycle(
+    fixture: &Fixture,
+    seam: Option<&NarrativeMaintenanceCiConfig>,
+    reason: &str,
+    recorder: &Recorder,
+) -> Result<Option<MaintenanceCycleResult>> {
+    let coordinates =
+        crate::narrative_extraction::maintenance_runtime::effective_maintenance_coordinates(seam)?;
+    let durable =
+        crate::narrative_extraction::maintenance_runtime::discover_durable_maintenance_work_with_coordinates(
+            fixture.db(),
+            PROJECT,
+            reason,
+            Some(&coordinates),
+        )?;
+    let request = match durable {
+        Some(work) => MaintenanceCycleRequest {
+            work: vec![MaintenanceWorkRequest {
+                project_id: work.project_id,
+                run_kind: work.run_kind,
+                work_key: work.work_key,
+                semantic_epoch_id: work.semantic_epoch_id,
+                reasons: work.reasons,
+            }],
+            wake_project_ids: Vec::new(),
+            delivery_sequence: None,
+            delivery_fingerprint: None,
+            workspace_binding: None,
+        },
+        None => return Ok(None),
+    };
+    run_cycle_on(
+        fixture.db(),
+        Some(fixture.runtime()),
+        &request,
+        seam,
+        recorder,
+    )
+    .map(Some)
+}
+
+/// Run the product path (no seam) until main's discovery has nothing to do.
+fn drain_durable_chain(fixture: &Fixture) -> Result<()> {
+    for _ in 0..8 {
+        let recorder = Recorder::default();
+        if main_wake_cycle(fixture, None, "workspace-opened", &recorder)?.is_none() {
+            return Ok(());
+        }
+    }
+    bail!("the durable chain did not settle")
+}
+
+/// P-0. A missing binding is built only inside a cycle, after the durable
+/// chain has nothing to do. When the durable chain is already idle at the
+/// B-ROUTE session's wake, main's discovery must still lead to that cycle.
+#[test]
+fn b_route_wake_builds_a_missing_graph_when_the_durable_chain_is_idle() -> Result<()> {
+    let _serial = serial();
+    let fixture = Fixture::new()?;
+    drain_durable_chain(&fixture)?;
+    assert_eq!(generation(fixture.db())?, None, "the product path never builds B");
+    assert_eq!(
+        fixture.judge()?,
+        build(
+            Nir1GraphIndexBuildMode::Rebuild,
+            Nir1GraphIndexBuildReason::BindingMissing
+        )
+    );
+
+    let recorder = Recorder::default();
+    let result = main_wake_cycle(&fixture, Some(&graph_seam()), "workspace-opened", &recorder)?;
+    assert_eq!(
+        result,
+        Some(MaintenanceCycleResult::accepted(false)),
+        "the B-ROUTE wake must start one cycle"
+    );
+    assert_eq!(Recorder::graph(&recorder.completed).len(), 1);
+    let (sealed_generation, dirty, ..) = sealed(fixture.db())?.expect("published binding");
+    assert_eq!((sealed_generation, dirty), (1, 0));
+    assert!(complete_registered(fixture.db())?);
+
+    // The next wake (a reopen) judges the current binding and builds nothing.
+    let again = Recorder::default();
+    main_wake_cycle(&fixture, Some(&graph_seam()), "workspace-opened", &again)?;
+    assert!(Recorder::graph(&again.registered).is_empty());
+    assert_eq!(generation(fixture.db())?, Some(1));
+    Ok(())
+}
+
+/// P-1. A source edit after the seal retires the approved Revision and the
+/// Freshness evaluation marks the Graph consumer stale, so the sealed B is no
+/// longer clean. The next B-ROUTE wake (a reopen) must rebuild it.
+#[test]
+fn b_route_wake_rebuilds_a_graph_made_stale_by_a_retired_revision() -> Result<()> {
+    use crate::narrative_extraction::incremental_freshness::IncrementalFreshnessCycleOutcome;
+    use crate::narrative_extraction::scope_storage_authority_tests::patch;
+
+    let _serial = serial();
+    // The first seal comes from a cycle that already ran (P-1 is not P-0).
+    let fixture = Fixture::published()?;
+    assert_eq!(generation(fixture.db())?, Some(1), "first seal");
+    assert!(complete_registered(fixture.db())?);
+
+    patch(
+        fixture.db(),
+        "a3-source",
+        "bseam-p1",
+        "povCharacterId",
+        json!("nir1-alice"),
+        true,
+        "2026-10-27T00:00:00.000Z",
+    )?;
+    while matches!(
+        run_incremental_freshness_cycle(fixture.db())?,
+        IncrementalFreshnessCycleOutcome::Processed(_)
+    ) {}
+    assert!(
+        !complete_registered(fixture.db())?,
+        "the sealed B is no longer clean after the Freshness evaluation"
+    );
+    assert!(matches!(
+        fixture.judge()?,
+        Nir1GraphIndexBuildDecision::Build { .. }
+    ));
+
+    let recorder = Recorder::default();
+    let result = main_wake_cycle(&fixture, Some(&graph_seam()), "workspace-opened", &recorder)?;
+    assert_eq!(
+        result.map(|result| result.status),
+        Some(MaintenanceCycleStatus::Accepted)
+    );
+    let (sealed_generation, dirty, ..) = sealed(fixture.db())?.expect("rebuilt binding");
+    assert_eq!((sealed_generation, dirty), (2, 0));
+    assert!(complete_registered(fixture.db())?);
+    assert_eq!(
+        fixture.judge()?,
+        skip(Nir1GraphIndexSkipReason::BindingCurrent)
+    );
+    Ok(())
+}

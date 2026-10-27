@@ -211,6 +211,67 @@ mod tests {
         db
     }
 
+    fn test_binding() -> MaintenanceWorkspaceBinding {
+        MaintenanceWorkspaceBinding {
+            authority_id: "authority:test".to_string(),
+            generation: 1,
+        }
+    }
+
+    fn ci_seam(trigger: Option<NarrativeMaintenanceCiTrigger>) -> NarrativeMaintenanceCiConfig {
+        NarrativeMaintenanceCiConfig {
+            is_packaged: false,
+            ci: "true".to_string(),
+            owner_token: NARRATIVE_MAINTENANCE_PRODUCT_JOURNEY_OWNER_TOKEN.to_string(),
+            fault: None,
+            trigger,
+            setup: None,
+            freshness_hold_project_id: None,
+            product_journey_barrier_id: None,
+            correlation: None,
+        }
+    }
+
+    /// A project whose durable Backfill -> Verify chain has nothing to do.
+    fn idle_durable_chain_database() -> Database {
+        let db = before_cutover_test_database(true);
+        run_dependency_verify_for_project(&db, "default-project")
+            .expect("baseline Verify must persist durable skip evidence");
+        let product = discover_all(&db, test_binding(), WakeReason::WorkspaceOpened, None)
+            .expect("product discovery");
+        assert!(product.pages.is_empty(), "precondition: idle durable chain");
+        db
+    }
+
+    /// DR-BSEAM-1 (P-0). Main starts a maintenance cycle only for what this
+    /// discovery returns, and the gated Graph Index build (B) is judged only
+    /// inside a cycle. With the B-ROUTE seam and an idle durable chain the
+    /// discovery must therefore still ask main to wake the project, or B is
+    /// never built (missing) or rebuilt (dirty) in that session.
+    #[test]
+    fn b_route_discovery_wakes_an_idle_project_so_the_cycle_judges_the_graph_index() {
+        let db = idle_durable_chain_database();
+        let seam = ci_seam(Some(NarrativeMaintenanceCiTrigger::Nir1GraphIndexBuild));
+        for reason in [
+            WakeReason::WorkspaceOpened,
+            WakeReason::RestoreCompleted,
+            WakeReason::SemanticEpochRotated,
+        ] {
+            let discovered = discover_all(&db, test_binding(), reason, Some(&seam))
+                .expect("B-ROUTE discovery");
+            assert!(
+                discovered.pages.is_empty(),
+                "main never names the gated Graph build work"
+            );
+            let wire = serde_json::to_value(&discovered).expect("serialize discovery");
+            assert_eq!(
+                wire.get("wakeProjectIds"),
+                Some(&json!(["default-project"])),
+                "{reason:?}: {wire}"
+            );
+        }
+    }
+
     #[test]
     fn wake_reason_is_closed_and_does_not_accept_renderer_phase_names() {
         assert_eq!(
