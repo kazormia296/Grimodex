@@ -2,6 +2,7 @@
 // fixture of a G-case: every value is made up for the pure checks.
 import { execFileSync } from "node:child_process";
 import {
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -959,7 +960,13 @@ export function frozenSetupFakeProduct(opts = {}) {
     if (db) return;
     mkdirSync(workspacePath, { recursive: true });
     file = path.join(workspacePath, "grimodex.db");
+    // S1j-2: a later session reopens the same workspace (the schema stays).
+    const reopened = existsSync(file);
     db = new DatabaseSync(file);
+    if (reopened) {
+      extension?.onOpen?.();
+      return;
+    }
     db.exec(`
       CREATE TABLE projects (id TEXT PRIMARY KEY, title TEXT, language TEXT, phase_resolution_mode TEXT, updated_at TEXT);
       CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT, parent_id TEXT, node_type TEXT, title TEXT,
@@ -967,7 +974,7 @@ export function frozenSetupFakeProduct(opts = {}) {
         story_time_order TEXT, pov_character_id TEXT);
       CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT, type TEXT, name TEXT, summary TEXT);
       CREATE TABLE codex_relations (id TEXT PRIMARY KEY, project_id TEXT, from_codex_id TEXT, to_codex_id TEXT,
-        relation_type TEXT, label TEXT, directionality TEXT);
+        relation_type TEXT, label TEXT, directionality TEXT, version INTEGER DEFAULT 1, updated_at TEXT);
       CREATE TABLE scene_codex_pins (scene_id TEXT, entry_id TEXT, created_at TEXT, PRIMARY KEY (scene_id, entry_id));
       CREATE TABLE foreshadows (id TEXT PRIMARY KEY, project_id TEXT, title TEXT, secret INTEGER, payoff_scene_id TEXT,
         payoff_confirmed INTEGER, abandoned INTEGER, version INTEGER);
@@ -986,6 +993,7 @@ export function frozenSetupFakeProduct(opts = {}) {
         CREATE TABLE narrative_runtime_policy (singleton_id INTEGER PRIMARY KEY, maintenance_enabled INTEGER);
         INSERT INTO narrative_runtime_policy VALUES (1, 1);
       `);
+    extension?.onOpen?.();
   };
   const one = (sql, ...params) => db.prepare(sql).get(...params);
   const registryOf = (projectId) => {
@@ -1166,8 +1174,9 @@ export function frozenSetupFakeProduct(opts = {}) {
     },
     createCodexRelation: (input) => {
       if (!input.label) throw new Error("label is required");
+      extension?.beforeRelationCreate?.(input);
       db.prepare(
-        "INSERT INTO codex_relations VALUES (?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO codex_relations VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)",
       ).run(
         input.id,
         input.projectId,
@@ -1176,7 +1185,9 @@ export function frozenSetupFakeProduct(opts = {}) {
         input.relationType,
         input.label,
         input.directionality,
+        at(),
       );
+      extension?.afterWrite?.();
       return { id: input.id };
     },
     createForeshadow: (input) => {
@@ -1221,6 +1232,12 @@ export function frozenSetupFakeProduct(opts = {}) {
       return `${content.content.map((block) => block.content[0].text).join("\n")}\n`;
     },
   };
+  // S1j-2: `opts.extend` plays the complete setup's writers on the same DB.
+  const extension = opts.extend
+    ? opts.extend({ db: () => db, file: () => file, at, refuse })
+    : null;
+  Object.assign(ipc, extension?.ipc ?? {});
+  Object.assign(api, extension?.api ?? {});
   const wrap = (name, run) => async (input) => {
     calls.push(name);
     try {
@@ -1256,11 +1273,32 @@ export function frozenSetupFakeProduct(opts = {}) {
           calls.push("api.humanWriteContext");
           return { actor: "human" };
         },
-        updateCodexEntrySummary: forbiddenEntry("api.updateCodexEntrySummary"),
+        ...(extension?.api?.updateCodexEntrySummary
+          ? {}
+          : {
+              updateCodexEntrySummary: forbiddenEntry(
+                "api.updateCodexEntrySummary",
+              ),
+            }),
       },
+      ...(extension?.chronicle
+        ? {
+            chronicle: Object.fromEntries(
+              Object.entries(extension.chronicle).map(([name, run]) => [
+                name,
+                wrap(`chronicle.${name}`, run),
+              ]),
+            ),
+          }
+        : {}),
       measure: forbiddenEntry("measure"),
       buildRaw: forbiddenEntry("buildRaw"),
-      buildIndex: forbiddenEntry("buildIndex"),
+      buildIndex: extension?.buildIndex
+        ? async (input) => {
+            calls.push("buildIndex");
+            return extension.buildIndex(input);
+          }
+        : forbiddenEntry("buildIndex"),
       declaration: {
         state: forbiddenEntry("declaration.state"),
         declare: forbiddenEntry("declaration.declare"),
@@ -1272,6 +1310,7 @@ export function frozenSetupFakeProduct(opts = {}) {
   return {
     calls,
     forbidden,
+    extension,
     file: () => file,
     close: () => {
       db?.close();
@@ -1287,5 +1326,405 @@ export function frozenSetupFakeProduct(opts = {}) {
         }
       },
     },
+  };
+}
+
+/**
+ * S1j-2: the complete setup's writers on `frozenSetupFakeProduct`'s DB, for
+ * `opts.extend`. Plays the runtime policy and the semantic epoch, the typed
+ * Revision prepare／Decision／read (a Revision goes stale when a Relation or
+ * Entity it bound changes), the AI settings, the Chronicle dialog route
+ * (extract → nonsecret child → Decision; only in a session launched with
+ * the setup-only Main, answering from `irSeeds` by the Scene body), the
+ * review bundle, the summary edit, the Relation delete, and the Index
+ * metadata: a seam session's workspace open publishes B, `buildIndex`
+ * publishes C, every write after maintenance dirties both. `beginSession`
+ * is called by the test's session factory with the session's label, seam
+ * and setup-only Main. Options: `refuseRelationIdReuse`, `extraContext`
+ * (a third context in the IR envelope), `bStaysDirty`.
+ */
+export function completeSetupExtension({
+  irSeeds,
+  refuseRelationIdReuse = false,
+  extraContext = false,
+  bStaysDirty = false,
+}) {
+  return ({ db, at }) => {
+    let session = { label: "author", seam: false, setupMain: null };
+    let counter = 0;
+    const id = (prefix) => `${prefix}-${String(++counter).padStart(4, "0")}`;
+    const deleted = new Set();
+    const revisions = new Map();
+    const indexCalls = [];
+    let ai = {
+      provider: "openrouter",
+      model: "",
+      ollamaEndpoint: "http://localhost:11434",
+    };
+    const one = (sql, ...params) =>
+      db()
+        .prepare(sql)
+        .get(...params);
+    const run = (sql, ...params) =>
+      db()
+        .prepare(sql)
+        .run(...params);
+    const maintenanceOn = () =>
+      Number(
+        one("SELECT maintenance_enabled AS m FROM narrative_runtime_policy")
+          ?.m ?? 0,
+      ) === 1;
+    const dirtyAll = () => {
+      if (!maintenanceOn()) return;
+      run("UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1");
+    };
+    const publish = (projectId, key) => {
+      const row = one(
+        "SELECT generation FROM narrative_semantic_index_metadata WHERE project_id = ? AND index_key = ?",
+        projectId,
+        key,
+      );
+      if (row)
+        run(
+          "UPDATE narrative_semantic_index_metadata SET generation = generation + 1, dirty_cache_flag = 0 WHERE project_id = ? AND index_key = ?",
+          projectId,
+          key,
+        );
+      else
+        run(
+          "INSERT INTO narrative_semantic_index_metadata VALUES (?, ?, 1, 0, 'sha256:s', 'sha256:d', 'p', 'v')",
+          projectId,
+          key,
+        );
+    };
+    const token = (table, rowId) =>
+      JSON.stringify(
+        db().prepare(`SELECT * FROM ${table} WHERE id = ?`).get(rowId) ?? null,
+      );
+    const projectOf = () => one("SELECT id FROM projects")?.id ?? null;
+    const proposalRows = (runId) =>
+      db()
+        .prepare(
+          `SELECT p.id, p.current_revision_id FROM narrative_proposals p
+             JOIN narrative_proposal_sets s ON s.id = p.proposal_set_id WHERE s.run_id = ?`,
+        )
+        .all(runId);
+    const latestDecision = (proposalId) =>
+      db()
+        .prepare(
+          "SELECT id AS decisionId, decision FROM narrative_proposal_decisions WHERE proposal_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
+        )
+        .get(proposalId) ?? null;
+    const projection = { runId: null };
+    const projected = () => ({
+      projectionRunId: projection.runId,
+      proposals: proposalRows(projection.runId).map((row) => {
+        const revision = one(
+          "SELECT payload_json FROM narrative_proposal_revisions WHERE id = ?",
+          row.current_revision_id,
+        );
+        const status = one(
+          "SELECT status FROM narrative_proposals WHERE id = ?",
+          row.id,
+        ).status;
+        return {
+          proposalId: row.id,
+          revisionId: row.current_revision_id,
+          status,
+          applicability: "applicable",
+          secret: JSON.parse(revision.payload_json).disclosure.secret,
+          applied: false,
+        };
+      }),
+    });
+    const decide = (proposalId, revisionId, decision, createdBy) => {
+      run(
+        "INSERT INTO narrative_proposal_decisions VALUES (?, ?, ?, ?, ?, ?)",
+        id("decision"),
+        proposalId,
+        revisionId,
+        decision,
+        createdBy,
+        at(),
+      );
+      run(
+        "UPDATE narrative_proposals SET status = ? WHERE id = ?",
+        decision,
+        proposalId,
+      );
+      dirtyAll();
+    };
+    const requireIrSession = () => {
+      if (session.label !== "ir" || !session.setupMain)
+        throw new Error(
+          "the deterministic provider answers only in the setup-only Main",
+        );
+      if (ai.provider !== "ollama")
+        throw new Error("no AI provider is configured");
+    };
+    return {
+      indexCalls,
+      beginSession(next) {
+        session = { ...next };
+      },
+      onOpen() {
+        db().exec(`
+          CREATE TABLE IF NOT EXISTS narrative_runtime_policy (singleton_id INTEGER PRIMARY KEY, maintenance_enabled INTEGER, version INTEGER);
+          INSERT OR IGNORE INTO narrative_runtime_policy VALUES (1, 0, 1);
+          CREATE TABLE IF NOT EXISTS narrative_semantic_epochs (id TEXT, project_id TEXT, epoch_number INTEGER, reason TEXT);
+          CREATE TABLE IF NOT EXISTS schema_data_migrations (migration_id TEXT, contract_version TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_semantic_index_metadata (project_id TEXT, index_key TEXT, generation INTEGER,
+            dirty_cache_flag INTEGER, source_digest TEXT, dependency_set_digest TEXT, producer_id TEXT, producer_version TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_extraction_runs (id TEXT PRIMARY KEY, project_id TEXT, surface_path_id TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_proposal_sets (id TEXT PRIMARY KEY, run_id TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_proposals (id TEXT PRIMARY KEY, proposal_set_id TEXT, status TEXT, current_revision_id TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_proposal_revisions (id TEXT PRIMARY KEY, proposal_id TEXT, revision_number INTEGER,
+            payload_json TEXT, reconciliation_envelope_json TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (id TEXT PRIMARY KEY, proposal_id TEXT, revision_id TEXT,
+            decision TEXT, created_by TEXT, created_at TEXT);
+        `);
+        // A seam session's workspace-opened wake publishes B.
+        const projectId = projectOf();
+        if (session.seam && projectId && maintenanceOn()) {
+          const b = one(
+            "SELECT dirty_cache_flag AS dirty FROM narrative_semantic_index_metadata WHERE project_id = ? AND index_key = ?",
+            projectId,
+            "nir1-reviewed-entity-relation:v1",
+          );
+          if (!b || Number(b.dirty) === 1)
+            publish(projectId, "nir1-reviewed-entity-relation:v1");
+          if (bStaysDirty) dirtyAll();
+        }
+      },
+      afterWrite: dirtyAll,
+      beforeRelationCreate(input) {
+        if (refuseRelationIdReuse && deleted.has(input.id))
+          throw new Error(
+            `codex relation '${input.id}' was deleted; ID reuse refused`,
+          );
+      },
+      ipc: {
+        narrative_runtime_policy_get: () => ({
+          version: 1,
+          runtimeMode: "normal",
+          maintenanceEnabled: maintenanceOn(),
+          genericImportEnabled: false,
+          backgroundAiEnabled: false,
+        }),
+        narrative_runtime_policy_set: ({ payload }) => {
+          run(
+            "UPDATE narrative_runtime_policy SET maintenance_enabled = ?, version = version + 1",
+            payload.maintenanceEnabled ? 1 : 0,
+          );
+          const projectId = projectOf();
+          run(
+            "INSERT INTO narrative_semantic_epochs VALUES ('epoch-1', ?, 1, 'initial')",
+            projectId,
+          );
+          run(
+            "INSERT INTO schema_data_migrations VALUES ('narrative-c2-canonical-freshness-v1', '1')",
+          );
+          return { maintenanceEnabled: payload.maintenanceEnabled };
+        },
+        narrative_extraction_capture_workspace_binding: () => ({
+          binding: "ws",
+        }),
+        nir1_entity_relation_revision_prepare: ({ payload }) => {
+          const runId = id("typed-run");
+          revisions.set(runId, {
+            decision: null,
+            tokens: [
+              ...payload.entityIds.map((row) => token("codex_entries", row)),
+              ...payload.relationIds.map((row) =>
+                token("codex_relations", row),
+              ),
+            ],
+            entityIds: payload.entityIds,
+            relationIds: payload.relationIds,
+          });
+          return {
+            runId,
+            status: "draft",
+            receipt: {
+              proposalId: id("typed-proposal"),
+              revisionId: id("typed-revision"),
+            },
+          };
+        },
+        narrative_extraction_append_human_decision: ({ payload }) => {
+          revisions.get(payload.runId).decision = payload.decision;
+          dirtyAll();
+          return true;
+        },
+        nir1_entity_relation_revision_read_current: ({ runId }) => {
+          const revision = revisions.get(runId);
+          const now = [
+            ...revision.entityIds.map((row) => token("codex_entries", row)),
+            ...revision.relationIds.map((row) => token("codex_relations", row)),
+          ];
+          if (JSON.stringify(now) !== JSON.stringify(revision.tokens))
+            return { status: "unavailable" };
+          return {
+            status:
+              revision.decision === "approved"
+                ? "available"
+                : (revision.decision ?? "draft"),
+          };
+        },
+        get_ai_settings: () => ({ ...ai, apiKeyPresent: false }),
+        save_ai_settings: ({ settings }) => {
+          ai = {
+            provider: settings.provider,
+            model: settings.model,
+            ollamaEndpoint: settings.ollamaEndpoint,
+          };
+          return true;
+        },
+        narrative_extraction_get_run_review_bundle: ({ payload }) => ({
+          proposals: proposalRows(payload.runId).map((row) => ({
+            proposalId: row.id,
+            currentRevisionId: row.current_revision_id,
+            latestDecision: latestDecision(row.id),
+          })),
+        }),
+      },
+      api: {
+        updateCodexEntrySummary: (input) => {
+          run(
+            "UPDATE codex_entries SET summary = ? WHERE id = ?",
+            input.summary,
+            input.id,
+          );
+          dirtyAll();
+          return true;
+        },
+        deleteCodexRelation: (input) => {
+          run("DELETE FROM codex_relations WHERE id = ?", input.id);
+          deleted.add(input.id);
+          dirtyAll();
+          return true;
+        },
+      },
+      chronicle: {
+        extract: ({ projectId, folderId }) => {
+          requireIrSession();
+          const scenes = db()
+            .prepare(
+              "SELECT id, content FROM tree_nodes WHERE parent_id = ? AND node_type = 'scene' ORDER BY sort_order",
+            )
+            .all(folderId);
+          const runId = id("chronicle-run");
+          run(
+            "INSERT INTO narrative_extraction_runs VALUES (?, ?, 'chronicle.extract')",
+            runId,
+            projectId,
+          );
+          const setId = id("set");
+          run(
+            "INSERT INTO narrative_proposal_sets VALUES (?, ?)",
+            setId,
+            runId,
+          );
+          for (const scene of scenes) {
+            const body = JSON.parse(scene.content).content[0].content[0].text;
+            const seed = irSeeds.get(body);
+            if (!seed) throw new Error("the provider returned no observation");
+            const proposalId = id("proposal");
+            const revisionId = id("root");
+            run(
+              "INSERT INTO narrative_proposal_revisions VALUES (?, ?, 1, ?, ?)",
+              revisionId,
+              proposalId,
+              JSON.stringify({ disclosure: { secret: true } }),
+              JSON.stringify({
+                revisionBasis: {
+                  contextSet: [
+                    { contextId: "event-cluster:c" },
+                    { contextId: "event-observation:o" },
+                    ...(extraContext ? [{ contextId: "codex-entry:x" }] : []),
+                  ],
+                },
+                assertion: {
+                  scope: { scene: { ref: `scene:${scene.id}` } },
+                  payload: { ...seed },
+                },
+              }),
+            );
+            run(
+              "INSERT INTO narrative_proposals VALUES (?, ?, 'unreviewed', ?)",
+              proposalId,
+              setId,
+              revisionId,
+            );
+          }
+          projection.runId = runId;
+          return {
+            runId,
+            sceneIds: scenes.map((scene) => scene.id),
+            ...projected(),
+          };
+        },
+        revise: ({ proposalId, secret }) => {
+          requireIrSession();
+          const current = one(
+            "SELECT current_revision_id AS id FROM narrative_proposals WHERE id = ?",
+            proposalId,
+          ).id;
+          const parent = one(
+            "SELECT revision_number AS n, reconciliation_envelope_json AS e FROM narrative_proposal_revisions WHERE id = ?",
+            current,
+          );
+          const child = id("child");
+          run(
+            "INSERT INTO narrative_proposal_revisions VALUES (?, ?, ?, ?, ?)",
+            child,
+            proposalId,
+            parent.n + 1,
+            JSON.stringify({ disclosure: { secret } }),
+            parent.e,
+          );
+          run(
+            "UPDATE narrative_proposals SET current_revision_id = ? WHERE id = ?",
+            child,
+            proposalId,
+          );
+          return projected();
+        },
+        decide: ({ proposalId, status }) => {
+          requireIrSession();
+          const current = one(
+            "SELECT current_revision_id AS id FROM narrative_proposals WHERE id = ?",
+            proposalId,
+          ).id;
+          decide(proposalId, current, status, "chronicle-extract-dialog");
+          return projected();
+        },
+        recordDecision: (input) => {
+          decide(
+            input.proposalId,
+            input.revisionId,
+            input.decision,
+            "chronicle-extract-dialog",
+          );
+          return true;
+        },
+      },
+      buildIndex: async () => {
+        indexCalls.push(session.label);
+        const projectId = projectOf();
+        publish(projectId, "nir1-reviewed-chronicle:v1");
+        return {
+          ok: true,
+          durationMs: 1,
+          probes: [
+            {
+              status: "completed",
+              initialSnapshot: { indexUsable: true },
+              completion: { outcome: "ir-ready", deadlineExceeded: false },
+            },
+          ],
+        };
+      },
+    };
   };
 }
