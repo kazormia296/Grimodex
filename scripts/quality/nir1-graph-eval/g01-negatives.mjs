@@ -188,9 +188,9 @@ export function graphInputsDigest(rows) {
  * that is not graph-ready, its follow-up after the product's graph-ready
  * mark). Harness values, not K6/4 values.
  */
-export const G01_CONTROL_ATTEMPTS = 30;
+export const G01_CONTROL_ATTEMPTS = 60;
 /** DR-CP4-O-14: the sample's re-asks of a neutral (late) answer. */
-export const G01_SAMPLE_ATTEMPTS = 30;
+export const G01_SAMPLE_ATTEMPTS = 60;
 /** The wait for the product's graph-ready mark after a late parent. */
 export const G01_GRAPH_READY_WAIT_MS = 10_000;
 /** Between re-asks (fixed; short against the product's follow-up). */

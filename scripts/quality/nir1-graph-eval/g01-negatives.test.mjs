@@ -749,7 +749,8 @@ test("レビュー P2-3: 対照は hook と同じく親と、親が late なら 
   });
   assert.equal(late.status, "undetermined");
   assert.equal(late.tries.length, G01_CONTROL_ATTEMPTS);
-  assert.equal(G01_CONTROL_ATTEMPTS, 30);
+  assert.equal(G01_CONTROL_ATTEMPTS, 60);
+  assert.equal(G01_SAMPLE_ATTEMPTS, 60);
 });
 
 test("レビュー P3 (a)(b): seal の後に B が再び dirty なら開き直し、Chronicle が使えなければ止め、N2 は版が進まなければ blocked", async () => {
@@ -880,8 +881,8 @@ test("O-14: 中立の答え（late）だけを聞き直し、最初に決まっ�
   });
   const never = await run([], G01_SAMPLE_ATTEMPTS);
   assert.equal(never.result.decided, false);
-  assert.equal(never.result.tries.length, 30);
-  assert.equal(never.slept.length, 29);
+  assert.equal(never.result.tries.length, 60);
+  assert.equal(never.slept.length, 59);
   // 対照は決まった unavailable を not-reached と読む（届かない）。
   const { page } = fakePage({
     graphProbe: () => ({
@@ -1009,5 +1010,31 @@ test("レビュー P3（変異 X5）: 間隔が定数と違っても止める", 
   assert.throws(
     () => assertG01RetryFixed({ control }),
     /\[precheck\].*control/u,
+  );
+});
+
+test("integrator の決定: 聞き直しの上限は対照・sample とも 60 回、間隔 250 ms で、上限 30 の記録は止める", () => {
+  assert.deepEqual(
+    assertG01RetryFixed({
+      control: { retry: { limit: 60, gapMs: 250 } },
+      samples: [{ repeat: 0, retry: { limit: 60, gapMs: 250 } }],
+    }),
+    {
+      control: { limit: 60, gapMs: 250 },
+      sample: { limit: 60, gapMs: 250 },
+    },
+  );
+  assert.throws(
+    () =>
+      assertG01RetryFixed({ control: { retry: { limit: 30, gapMs: 250 } } }),
+    /\[precheck\].*control/u,
+  );
+  assert.throws(
+    () =>
+      assertG01RetryFixed({
+        control: { retry: { limit: 60, gapMs: 250 } },
+        samples: [{ repeat: 2, retry: { limit: 30, gapMs: 250 } }],
+      }),
+    /\[precheck\].*sample 2/u,
   );
 });
