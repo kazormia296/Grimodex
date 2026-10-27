@@ -144,19 +144,31 @@ test("O-1 (4): 両側が 1 sample でも違えば SP-N7 で止め、後の varia
   assert.throws(() => assertSpP4Passed(result.summary), /SP-N7/u);
 });
 
-test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比較の前に [precheck]", async () => {
-  await assert.rejects(
-    run(
-      fake((key, side) =>
-        key === "G-01/v1" && side === "without-seed-pin-step"
-          ? (at) =>
-              at.phase === "measured" && at.repeat === 10
-                ? { result: ["o-a", "o-b"] }
-                : {}
-          : undefined,
-      ),
+test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比較の前に [precheck] で止め、記録は残す", async () => {
+  const result = await run(
+    fake((key, side) =>
+      key === "G-01/v1" && side === "without-seed-pin-step"
+        ? (at) =>
+            at.phase === "measured" && at.repeat === 10
+              ? { result: ["o-a", "o-b"] }
+              : {}
+        : undefined,
     ),
-    /\[precheck\].*G-01\/v1:without-seed-pin-step/u,
+  );
+  assert.match(
+    result.stop,
+    /\[precheck\].*G-01\/v1:without-seed-pin-step.*\(rIrSceneIds, irSupplementSceneId\)/u,
+  );
+  assert.equal(result.summary.status, "incomplete");
+  assert.equal(result.variants.length, 1);
+  assert.equal(
+    result.variants[0].sides["without-seed-pin-step"].unstable,
+    true,
+  );
+  assert.equal(
+    result.variants[0].sides["without-seed-pin-step"].attempts[0].samples
+      .length,
+    35,
   );
 });
 

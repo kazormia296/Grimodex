@@ -270,6 +270,12 @@ export function spP4SampleRecord({
     phase,
     repeat,
     status: measure?.status ?? null,
+    // Disclosed, not compared: the IR wait's outcome of this fetch.
+    ir: {
+      resultKind: measure?.resultKind ?? null,
+      outcome: measure?.completion?.outcome ?? null,
+      deadlineExceeded: measure?.completion?.deadlineExceeded ?? null,
+    },
     rSceneIds,
     denseHitSceneIds: logicalSceneIds(denseHitSceneIds, scenes),
     sparseSceneIds: logicalSceneIds(sparseSceneIds, scenes),
@@ -339,11 +345,15 @@ export function assertSpP4WorkspaceStable(samples, label) {
   if (rows.length === 0) fail("stable", `${label}: no measured sample`);
   const first = stable(parityOf(rows[0]));
   const differs = rows.find((row) => stable(parityOf(row)) !== first);
-  if (differs)
+  if (differs) {
+    const fields = PARITY_FIELDS.filter(
+      (field) => stable(differs[field]) !== stable(rows[0][field]),
+    );
     fail(
       "stable",
-      `${label}: measured ${differs.repeat} differs from measured ${rows[0].repeat} in the same workspace; the comparison is not defined`,
+      `${label}: measured ${differs.repeat} differs from measured ${rows[0].repeat} in the same workspace (${fields.join(", ")}); the comparison is not defined`,
     );
+  }
   return { measured: rows.length };
 }
 

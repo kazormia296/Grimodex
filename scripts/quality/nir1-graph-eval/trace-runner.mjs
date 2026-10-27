@@ -982,12 +982,14 @@ async function main() {
       {
         projectId: ids.projectId,
         label: `cp4-${options.run}`,
-        sceneIds: Object.keys(ids.scenes),
+        sceneIds: Object.values(ids.scenes),
         queryBody: context.rawLabelBody,
       },
     );
     if (!raw.ok || !raw.value.ok)
-      throw new Error("[artifact] the Raw index build failed");
+      throw new Error(
+        `[artifact] the Raw index build failed: ${JSON.stringify(raw.ok ? { status: raw.value.status, unsearchable: raw.value.unsearchable } : raw.error).slice(0, 600)}`,
+      );
     report.checks.prepIndex = await buildIndex(session.page, ids);
     await stopSession("prep", session);
     session = null;

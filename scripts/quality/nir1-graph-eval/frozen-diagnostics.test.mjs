@@ -177,6 +177,23 @@ test("S5-B: SP-P4 の sample は論理 ID で、共通追加枠は R+IR にあ�
   assert.deepEqual(row.sparseSceneIds, ["g02-a"]);
   assert.deepEqual(row.rIrSceneIds, ["g02-a", "g02-b", "g02-c"]);
   assert.equal(row.irSupplementSceneId, "g02-c");
+  assert.deepEqual(
+    spP4SampleRecord({
+      phase: "measured",
+      repeat: 0,
+      measure: {
+        ...measure(),
+        resultKind: "raw",
+        completion: { outcome: "ir-timeout", deadlineExceeded: true },
+      },
+      denseHitSceneIds: [],
+      sparseSceneIds: [],
+      before: counters(0),
+      after: counters(0),
+      scenes,
+    }).ir,
+    { resultKind: "raw", outcome: "ir-timeout", deadlineExceeded: true },
+  );
   assert.deepEqual(row.counters.delta, {
     begins: 0,
     cacheHits: 0,

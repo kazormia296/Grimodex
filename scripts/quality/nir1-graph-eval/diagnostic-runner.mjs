@@ -133,10 +133,17 @@ export async function runSpP4({
       }
       if (stop) break;
       const accepted = attempts.find((row) => row.valid);
-      assertSpP4WorkspaceStable(
-        accepted.samples,
-        `${target.variantKey}:${side}`,
-      );
+      // S2 comparison: an unstable workspace stops the run with its records.
+      try {
+        assertSpP4WorkspaceStable(
+          accepted.samples,
+          `${target.variantKey}:${side}`,
+        );
+      } catch (error) {
+        stop = String(error?.message ?? error);
+        record.sides[side].unstable = true;
+        break;
+      }
     }
     if (stop) break;
     const accepted = (side) =>
@@ -309,13 +316,13 @@ async function main() {
     // Setups first (product `.node`), then the measurements (evaluation).
     setupShared = dev
       ? await prepareDevSetupShared({
-          runDir: path.join(runDir, "setup-shared"),
+          runDir,
           options,
           plans: selected,
           irPlans: plans,
         })
       : await prepareFrozenSetupShared({
-          runDir: path.join(runDir, "setup-shared"),
+          runDir,
           options,
           plans: selected,
           irPlans: plans,
@@ -374,7 +381,9 @@ async function main() {
     const setupCandidate = setupShared.candidate;
     setupShared = null;
 
-    // The measurement renderer (timing shim) and the evaluation sessions.
+    // The measurement renderer (timing shim) replaces the setup's in the
+    // run's one renderer directory (renderer-build.mjs allows no other), and
+    // the evaluation sessions.
     await buildHarnessRenderer({
       root: ROOT,
       outDir: path.relative(ROOT, path.join(runDir, "renderer-dist")),
@@ -434,12 +443,14 @@ async function main() {
           {
             projectId: ids.projectId,
             label: `cp4-${options.run}`,
-            sceneIds: Object.keys(ids.scenes),
+            sceneIds: Object.values(ids.scenes),
             queryBody: body.value,
           },
         );
         if (!raw.ok || !raw.value.ok)
-          throw new Error("[artifact] the Raw index build failed");
+          throw new Error(
+            `[artifact] the Raw index build failed: ${JSON.stringify(raw.ok ? { status: raw.value.status, unsearchable: raw.value.unsearchable } : raw.error).slice(0, 600)}`,
+          );
         const index = await buildIndex(session.page, ids);
         for (const at of schedule)
           samples.push(
