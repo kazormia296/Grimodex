@@ -412,6 +412,8 @@ export const COUNTER_POLL_SOURCE = async (
   };
   tick();
   state.timer = setInterval(tick, intervalMs);
+  // Never what keeps a process alive (the Main's own loop does).
+  state.timer.unref?.();
   return JSON.stringify({ installed: true, intervalMs });
 };
 

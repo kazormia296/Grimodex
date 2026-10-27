@@ -685,6 +685,14 @@ test("TR-1/3: events は validateTraceEvents の密度の規則を満たし、co
   });
   assert.match(bad.events.errors.join("\n"), /harness wait or operation/u);
   assert.ok(bad.defects.length > 0);
+  // A plan with more counted queries than the trace observed is a defect.
+  const short = summarizeTraceRun({
+    plan: plan("editing", 3),
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+  });
+  assert.match(short.defects.join("\n"), /the plan has 4/u);
 });
 
 test("TR-3: 閲覧中の trace は seed の無い場面の query を Q の外にし、編集と保存を含まない", () => {

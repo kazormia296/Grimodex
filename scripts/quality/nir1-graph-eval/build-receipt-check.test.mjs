@@ -208,7 +208,10 @@ test("TR-5: runner.mjs と k64-runner.mjs と trace-runner.mjs は起動の前�
     ["trace-runner.mjs", "session = await launch({"],
   ]) {
     const source = await readFile(new URL(file, import.meta.url), "utf8");
-    const check = source.indexOf("checkRunnerBuildReceipts({");
+    // The result is assigned from the call itself (not short-circuited).
+    const check = source.search(
+      /(?:productBuild|checks\.productBuild) = checkRunnerBuildReceipts\(\{/u,
+    );
     assert.ok(check > 0, `${file} calls checkRunnerBuildReceipts`);
     assert.ok(
       check < source.indexOf(launchCall),
