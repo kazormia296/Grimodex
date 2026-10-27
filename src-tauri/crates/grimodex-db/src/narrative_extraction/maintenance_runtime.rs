@@ -3595,6 +3595,15 @@ pub fn run_system_work_cycle_with_nir1_graph_runtime(
                     mark_noop_completed(&effective_item)?;
                     continue;
                 }
+                // Test-only: something that happens after the adapter's
+                // durable terminal commit and before the follow-up discovery
+                // (a Main cancellation, a foreground owner, or an ordinary
+                // failure). Production builds compile no hook.
+                #[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+                if let Err(error) = post_commit_race_for_test::fire(db) {
+                    mark_completed(&effective_item)?;
+                    return Err(error);
+                }
                 // Register the next phase before marking this item complete.
                 // The per-work completion transition may close the attempt
                 // when this was the final registered item.
@@ -3873,6 +3882,65 @@ fn dispatch_enabled_work(
     // WorkspaceAuthority. It owns its transaction phases but never opens a
     // second filesystem connection.
     super::maintenance_route_registry::dispatch_enabled_work(db, item, coordinates, control, graph)
+}
+
+/// Test-only interposition after one automatic adapter has durably committed
+/// its terminal (completed) Run and before the cycle continues, keyed by the
+/// [`Database`] the cycle runs on. A hook may perform a side effect (cancel the
+/// attempt, occupy the connection) or return an ordinary error, which the
+/// cycle then returns exactly like a failed follow-up discovery. The seam is
+/// compiled only for tests and the cross-crate test-support feature.
+#[cfg(any(test, feature = "workspace-maintenance-test-support"))]
+pub mod post_commit_race_for_test {
+    use std::collections::BTreeMap;
+    use std::sync::Mutex;
+
+    use crate::Database;
+
+    type Hook = Box<dyn FnOnce(&Database) -> anyhow::Result<()> + Send>;
+
+    static HOOKS: Mutex<BTreeMap<usize, Hook>> = Mutex::new(BTreeMap::new());
+
+    fn key(db: &Database) -> usize {
+        db as *const Database as usize
+    }
+
+    fn hooks() -> std::sync::MutexGuard<'static, BTreeMap<usize, Hook>> {
+        HOOKS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Keeps the hook armed; dropping it (also on a test panic) removes a
+    /// hook that has not fired.
+    #[must_use = "the hook is removed when this guard drops"]
+    pub struct ArmedPostCommitRace {
+        key: usize,
+    }
+
+    impl Drop for ArmedPostCommitRace {
+        fn drop(&mut self) {
+            hooks().remove(&self.key);
+        }
+    }
+
+    /// Run `hook` once, after the next adapter commit of a cycle on `db`.
+    pub fn arm(
+        db: &Database,
+        hook: impl FnOnce(&Database) -> anyhow::Result<()> + Send + 'static,
+    ) -> ArmedPostCommitRace {
+        let key = key(db);
+        hooks().insert(key, Box::new(hook));
+        ArmedPostCommitRace { key }
+    }
+
+    pub(super) fn fire(db: &Database) -> anyhow::Result<()> {
+        let hook = hooks().remove(&key(db));
+        match hook {
+            Some(hook) => hook(db),
+            None => Ok(()),
+        }
+    }
 }
 
 /// Classify foreground/no-wait contention as a transient queue outcome.  It
