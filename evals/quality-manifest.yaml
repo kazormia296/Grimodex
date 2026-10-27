@@ -1715,6 +1715,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/diagnostic-runner.mjs
       - scripts/quality/nir1-graph-eval/g01-negatives.mjs
       - scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts
+      - scripts/quality/nir1-graph-eval/g01-negative-preview.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md

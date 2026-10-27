@@ -413,3 +413,10 @@ test("O-1 (5)（変異 G4）: restore の答えの版の bytes が用意した�
   });
   assert.equal(step.blocked?.reason, "mutation");
 });
+
+test("O-1 (5): K24-G01-N2〜N4 の段の dev の予告は dev preview の目的に登録されている", async () => {
+  const { DEV_PREVIEW_PURPOSES } = await import("./admission.mjs");
+  const { G01_NEGATIVE_PREVIEW_PURPOSE } =
+    await import("./g01-negative-preview.mjs");
+  assert.ok(DEV_PREVIEW_PURPOSES.includes(G01_NEGATIVE_PREVIEW_PURPOSE));
+});

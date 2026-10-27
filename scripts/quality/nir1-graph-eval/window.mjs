@@ -89,7 +89,7 @@ export function classifyProcess(argv) {
   // S1j P2-2: the R5 check run (①) and the frozen setup driver launch the
   // product Electron 13 times; they are CP-4 measurements too.
   if (
-    /nir1-graph-eval\/(runner|k64-runner|trace-runner|setup-driver|frozen-setup-driver|r5-check-runner|hook-check|dprime-check|diag-registration|diagnostic-runner|smoke)\.mjs/u.test(
+    /nir1-graph-eval\/(runner|k64-runner|trace-runner|setup-driver|frozen-setup-driver|r5-check-runner|hook-check|dprime-check|diag-registration|diagnostic-runner|g01-negative-preview|smoke)\.mjs/u.test(
       joined,
     )
   )

@@ -143,6 +143,7 @@ test("P3-10: hook-check、dprime-check、diag-registration、smoke の並走も�
     "dprime-check",
     "diag-registration",
     "diagnostic-runner",
+    "g01-negative-preview",
     "smoke",
     "runner",
     "setup-driver",

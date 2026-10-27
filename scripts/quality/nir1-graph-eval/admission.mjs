@@ -537,6 +537,8 @@ export const DEV_PREVIEW_PURPOSES = Object.freeze([
   "diag-registration",
   // S5-B: the SP-P4 diagnostic's dev preview (diagnostic-runner.mjs).
   "sp-p4-preview",
+  // S5-B: the K24-G01-N2〜N4 steps' dev preview (g01-negative-preview.mjs).
+  "g01-negative-preview",
   "smoke",
   "setup",
 ]);

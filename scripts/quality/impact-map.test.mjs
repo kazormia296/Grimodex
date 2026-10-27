@@ -1902,6 +1902,7 @@ test("CP-4 S5-B diagnostics and frozen trace assets are registered, selected and
     "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
     "scripts/quality/nir1-graph-eval/g01-negatives.mjs",
     "scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts",
+    "scripts/quality/nir1-graph-eval/g01-negative-preview.mjs",
   ];
   const tests = [
     "scripts/quality/nir1-graph-eval/frozen-diagnostics.test.mjs",
