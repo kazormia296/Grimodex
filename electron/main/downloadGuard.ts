@@ -115,6 +115,10 @@ export function handleWillDownload(
   // temp が profile data directory の中なら取り消す（temp の名前は renderer が決められない
   // ので、これは profile data directory を temp の下に置いた構成への安全網）。
   void deps.guard.assertOutside(tempDir).catch(() => {
+    // 完了時の経路がすでに処理を終えて temp を削除していたら、ここでの拒否は temp が消えて解決
+    // できなかっただけで（遅い disk で、この検査が飛行中のうちに削除が先に済む）、取り消すものも
+    // 通知するものも残っていない。重ねて通知すると同じ拒否が 2 件出る。
+    if (cleaned) return;
     item.cancel();
     cleanup();
     deps.notify("rejected-destination");

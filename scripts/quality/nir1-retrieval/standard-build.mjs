@@ -14,18 +14,16 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 import { sha256 } from "./contract.mjs";
+import {
+  REQUIRED_ARTIFACTS,
+  validateStandardBuildSuccessReceipt as validateSuccessReceipt,
+} from "./standard-build-receipt.mjs";
 import { runLocalCiCommand } from "../../local-ci-process-supervisor.mjs";
 
 const BASE_REF = "refs/remotes/origin/master";
 const COMMANDS = [
   { command: "pnpm", args: ["napi:build"] },
   { command: "pnpm", args: ["electron:build"] },
-];
-const REQUIRED_ARTIFACTS = [
-  "dist/index.html",
-  "dist-electron/main.cjs",
-  "dist-electron/preload.cjs",
-  "electron/native/grimodex-node/grimodex-node.node",
 ];
 const COMMAND_TIMEOUT_MS = 30 * 60 * 1000;
 const TERMINATION_GRACE_MS = 2_000;
@@ -49,7 +47,9 @@ function requireRepoRelative(file) {
   return file;
 }
 
-function sourcePaths(root, head) {
+// The candidate and source checks below are shared with the CP-4 evaluation
+// build (`scripts/quality/nir1-graph-eval/eval-native-build.mjs`).
+export function sourcePaths(root, head) {
   const paths = git(
     root,
     ["ls-tree", "-r", "--name-only", "-z", head],
@@ -65,7 +65,7 @@ function sourcePaths(root, head) {
   return paths;
 }
 
-async function sourceDigests(root, paths) {
+export async function sourceDigests(root, paths) {
   const entries = {};
   for (const file of paths)
     entries[file] = sha256(await readFile(path.join(root, file)));
@@ -78,7 +78,7 @@ function assertDigestMap(value, paths) {
   for (const digest of Object.values(value)) assert.match(digest, SHA256);
 }
 
-function cleanStatus(root) {
+export function cleanStatus(root) {
   const indexEntries = git(root, ["ls-files", "-v", "-z"], "buffer")
     .toString("utf8")
     .split("\0");
@@ -93,7 +93,7 @@ function cleanStatus(root) {
   );
 }
 
-function captureCandidate(root) {
+export function captureCandidate(root) {
   const resolvedBaseSha = git(root, [
     "rev-parse",
     "--verify",
@@ -122,7 +122,7 @@ function captureCandidate(root) {
   };
 }
 
-function sameCandidate(left, right) {
+export function sameCandidate(left, right) {
   return [
     "requestedBase",
     "requestedHead",
@@ -237,49 +237,6 @@ async function artifactDigests(root) {
     artifacts[file] = sha256(await readFile(fullPath));
   }
   return artifacts;
-}
-
-function validateSuccessReceipt(receipt, fixture) {
-  assert.equal(
-    receipt.schemaVersion,
-    fixture ? "nir1-standard-build-fixture/1" : "nir1-standard-build/1",
-  );
-  assert.equal(receipt.status, "passed");
-  assert.equal(receipt.standardBuild, !fixture);
-  assert.equal(receipt.sourceUnchanged, true);
-  assert.ok(path.isAbsolute(receipt.root));
-  assert.ok(receipt.candidate?.worktreeClean === true);
-  for (const field of [
-    "resolvedBaseSha",
-    "resolvedHeadSha",
-    "resolvedHeadTreeSha",
-  ])
-    assert.match(receipt.candidate[field], /^[0-9a-f]{40,64}$/u);
-  assert.equal(
-    receipt.candidate.currentHeadSha,
-    receipt.candidate.resolvedHeadSha,
-  );
-  assert.ok(path.isAbsolute(receipt.sourceManifest));
-  assert.match(receipt.sourceManifestSha256, SHA256);
-  assert.deepEqual(
-    receipt.commands.map(({ argv, exitCode }) => ({ argv, exitCode })),
-    [
-      { argv: ["pnpm", "napi:build"], exitCode: 0 },
-      { argv: ["pnpm", "electron:build"], exitCode: 0 },
-    ],
-  );
-  assert.ok(
-    receipt.commands.every(
-      (command) =>
-        command.status === "passed" &&
-        command.closeObserved === true &&
-        command.termination === "close-and-group-exit-observed" &&
-        command.cleanup?.complete === true,
-    ),
-  );
-  assert.deepEqual(Object.keys(receipt.artifacts), REQUIRED_ARTIFACTS);
-  for (const digest of Object.values(receipt.artifacts))
-    assert.match(digest, SHA256);
 }
 
 export async function produceStandardBuildReceipt({

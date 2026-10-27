@@ -1,7 +1,16 @@
-import { Component, Suspense, lazy, useState, type ReactNode } from "react";
+import {
+  Component,
+  Suspense,
+  lazy,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2 } from "lucide-react";
 import { CollapsibleSection } from "@/features/layout/CollapsibleSection";
+import { useTreeStore } from "@/features/tree/treeStore";
 import { debugLog } from "@/lib/debugLog";
 import { Nir1RelatedSceneRow } from "./Nir1RelatedSceneRow";
 import { PROFILE_ACTIVATION_UI_ENABLED } from "@/features/profile-egress/profileActivationAvailability";
@@ -14,10 +23,17 @@ import type { Nir1RelatedScenesFetchResult } from "./nir1RelatedScenesFetchTypes
 // (with `PROFILE_ACTIVATION_UI_ENABLED` on too) `profile-not-restricted`
 // (DR-CP3B-7, DR-DA2-33). While the constant is false nothing below fetches it.
 const Nir1GraphRelatedScenes = lazy(() => import("./Nir1GraphRelatedScenes"));
+// The seed line and the seed candidates (DR-SEEDSUG-1): their own lazy chunk,
+// requested only while the Graph UI constant is on.
+const Nir1GraphSeedPanel = lazy(() => import("./Nir1GraphSeedPanel"));
 
 /** A failed Graph chunk or render falls back to the R/R+IR rows. */
 class Nir1GraphBoundary extends Component<
-  { readonly fallback: ReactNode; readonly children: ReactNode },
+  {
+    readonly fallback: ReactNode;
+    readonly children: ReactNode;
+    readonly message?: string;
+  },
   { readonly failed: boolean }
 > {
   state = { failed: false };
@@ -28,7 +44,10 @@ class Nir1GraphBoundary extends Component<
 
   componentDidCatch() {
     // A fixed message only: the error may carry payload text.
-    debugLog.warn("related-scenes", "graph view unavailable");
+    debugLog.warn(
+      "related-scenes",
+      this.props.message ?? "graph view unavailable",
+    );
   }
 
   render() {
@@ -58,7 +77,44 @@ export function RelatedScenesSection({
 }: RelatedScenesSectionProps = {}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
-  const { sceneId, fetch, loading } = useNir1RelatedScenes(enabled && open);
+  // DR-SEEDSUG-3: after a pin from the seed candidates the query is paused for
+  // one commit, the same path as closing and reopening the section: the hook
+  // ends its query, then reads the seed again and begins with it. The hook
+  // itself is unchanged.
+  // A pair of counters, not a boolean: a pin reported after the resume was
+  // queued but before it rendered still pauses (and resumes) once more.
+  const [pauseTick, setPauseTick] = useState(0);
+  const [resumedTick, setResumedTick] = useState(0);
+  const paused = pauseTick !== resumedTick;
+  useEffect(() => {
+    setResumedTick(pauseTick);
+  }, [pauseTick]);
+  const { sceneId, fetch, loading } = useNir1RelatedScenes(
+    enabled && open && !paused,
+  );
+  const content = useRef<HTMLDivElement>(null);
+  const onSeedPinned = (pinnedSceneId: string) => {
+    // A pin of a Scene that is no longer active needs no new query here.
+    if (useTreeStore.getState().activeSceneId !== pinnedSceneId) return;
+    const box = content.current;
+    const focused = document.activeElement;
+    // The candidates leave with the query: keep the focus in the section.
+    if (
+      box &&
+      (focused === null || focused === document.body || box.contains(focused))
+    )
+      box.focus();
+    setPauseTick((tick) => tick + 1);
+  };
+  // DR-SEEDSUG-1: the seed panel belongs to the shown, completed query of the
+  // active Scene, and reads again for each new query of it.
+  const seedOrigin =
+    enabled &&
+    isNir1GraphUiEnabled() &&
+    fetch?.origin?.projectId &&
+    fetch.origin.querySceneId === sceneId
+      ? fetch.origin
+      : null;
   const result = fetch?.result;
   const unavailable =
     result?.kind === "raw" && result.ir.status === "unavailable"
@@ -75,7 +131,28 @@ export function RelatedScenesSection({
         ) : null
       }
     >
-      <div className="py-1">
+      <div
+        ref={content}
+        // The focus target after a seed pin (DR-SEEDSUG-3); only with the
+        // Graph UI on, so the closed product keeps its DOM.
+        tabIndex={isNir1GraphUiEnabled() ? -1 : undefined}
+        className={isNir1GraphUiEnabled() ? "py-1 outline-none" : "py-1"}
+      >
+        {seedOrigin?.projectId && (
+          <Nir1GraphBoundary
+            fallback={null}
+            message="graph seed panel unavailable"
+          >
+            <Suspense fallback={null}>
+              <Nir1GraphSeedPanel
+                projectId={seedOrigin.projectId}
+                sceneId={seedOrigin.querySceneId}
+                queryGeneration={seedOrigin.queryGeneration}
+                onPinned={onSeedPinned}
+              />
+            </Suspense>
+          </Nir1GraphBoundary>
+        )}
         {unavailable && (
           <p
             data-testid="nir1-unavailable"

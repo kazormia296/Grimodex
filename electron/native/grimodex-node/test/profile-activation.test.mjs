@@ -31,7 +31,18 @@ function rig(label) {
     appData,
     backend,
     statePath: join(appData, "profile-egress.json"),
-    close: () => rmSync(root, { recursive: true, force: true }),
+    // A Backend whose workspace was opened keeps workspace maintenance writing
+    // under it; removing the root before Native proves Closed races that
+    // (ENOTEMPTY in `rmSync`). Same proof as the other Native tests.
+    close: async () => {
+      const wire = await backend.shutdownWorkspaceLifecycle();
+      assert.equal(
+        JSON.parse(wire).status,
+        "closed",
+        "Native cleanup must prove Closed",
+      );
+      rmSync(root, { recursive: true, force: true });
+    },
   };
 }
 
@@ -45,7 +56,7 @@ async function issue(backend, previewed, digest) {
   ).grantId;
 }
 
-test("the backend has no grant-less activation (Negative (6))", () => {
+test("the backend has no grant-less activation (Negative (6))", async () => {
   const r = rig("surface");
   try {
     assert.equal(typeof r.backend.activateProfileEgress, "undefined");
@@ -66,7 +77,7 @@ test("the backend has no grant-less activation (Negative (6))", () => {
     assert.match(declarations, /profileActivationConsume\(grantId: string, senderId: number, windowId: number\): void/);
     assert.match(declarations, /profileActivationAbortInFlight\(\): boolean/);
   } finally {
-    r.close();
+    await r.close();
   }
 });
 
@@ -90,7 +101,7 @@ test("the closed gate refuses the preview before anything is written (A-1)", asy
       /MAIN_GRANT_KIND/,
     );
   } finally {
-    r.close();
+    await r.close();
   }
 });
 
@@ -131,7 +142,7 @@ test("Main's digest of the shown text is Native's; another text is refused (P2-3
     assert.equal(typeof grantId, "string");
     assert.ok(!raw.includes(grantId));
   } finally {
-    r.close();
+    await r.close();
   }
 });
 
@@ -184,7 +195,7 @@ test("preview, issue, synchronous consume and commit restrict the profile once (
       /already-restricted/,
     );
   } finally {
-    r.close();
+    await r.close();
   }
 });
 
@@ -210,7 +221,7 @@ test("a workspace open between issue and consume revokes the grant; nothing clos
     const status = JSON.parse(await activateThroughGrant(r.backend));
     assert.equal(status.restricted, true);
   } finally {
-    r.close();
+    await r.close();
   }
 });
 
@@ -244,6 +255,6 @@ test("Main's in-flight cancellation acts only on a reservation and restricts not
     assert.equal(status.inFlightStopped, true);
     assert.equal(r.backend.profileActivationAbortInFlight(), false);
   } finally {
-    r.close();
+    await r.close();
   }
 });

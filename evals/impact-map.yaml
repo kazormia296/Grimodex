@@ -387,6 +387,8 @@ rules:
       - electron/main/profileEgress.test.ts
       - electron/main/profileEgress.ts
       - electron/native/grimodex-node/index.d.ts
+      - electron/native/grimodex-node/Cargo.toml
+      - electron/native/grimodex-node/build.rs
       - electron/native/grimodex-node/src/lib.rs
       - electron/native/grimodex-node/src/nir1_generation.rs
       - electron/native/grimodex-node/src/nir1_prepared_request.rs

@@ -46,6 +46,11 @@ nir1-c-query-test-seam = []
 # release packaging. It needs `native-current-human-capture`, which
 # grimodex-node always enables.
 nir1-final-request-eval = []
+# Evaluation-only read-only A3 record of CP-4 (K6/2 graph-eval-procedure,
+# Mandatory defenses). It enables no other feature, is never in `default`, and
+# is never enabled by the normal N-API build or release packaging. Only
+# grimodex-node's feature of the same name enables it.
+nir1-graph-eval = []
 # Test-only: record PRAGMA synchronous right before each AI audit COMMIT so
 # downstream crate tests can prove the pre-dispatch commit runs at FULL.
 # Never enable in production builds.

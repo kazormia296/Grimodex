@@ -30,6 +30,16 @@ test-lifecycle = []
 # and is never enabled by the normal N-API build or release packaging. The
 # harness is `cargo test`; no bin is added and `crate-type` is unchanged.
 nir1-final-request-eval = ["grimodex-db/nir1-final-request-eval"]
+# Evaluation-only Graph arm of CP-4 (S1a; K6/2 graph-eval-procedure). It opens
+# the Graph publication gate only for the AppState that `Backend::new` made,
+# configures the C-query worker from the fixed name next to the loaded `.node`,
+# and adds the `nir1GraphEval*` record functions. It enables only the
+# grimodex-db feature of the same name, is never in `default`, and is never
+# enabled by the normal N-API build or release packaging. Its `.node` is
+# written outside `electron/native/grimodex-node/` only
+# (`scripts/quality/nir1-graph-eval/eval-native-build.mjs`) and is never
+# distributed; `PRODUCT_GRAPH_PUBLISHED` stays false.
+nir1-graph-eval = ["grimodex-db/nir1-graph-eval"]
 
 # 空 workspace: src-tauri workspace へ吸収させない (Phase 0 スパイク実証)
 [workspace]

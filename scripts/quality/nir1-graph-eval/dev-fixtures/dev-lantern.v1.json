@@ -1,0 +1,138 @@
+{
+  "schemaVersion": "nir1-cp4-dev-fixture/1",
+  "fixtureId": "cp4-dev-lantern/1",
+  "kind": "dev",
+  "frozen": false,
+  "note": "Synthetic CP-4 development fixture (S1c-2). Not a G-case, not frozen, not reviewed; its material is new and unrelated to evals/nir1-graph, evals/nir1-g01 and the 24 queries. Runs on it are previews only and never a CP-4 result.",
+  "caseId": null,
+  "language": "en",
+  "project": { "id": "cp4-dev-lantern", "title": "CP-4 dev lantern" },
+  "scopeRefs": {
+    "timeline": "cp4-dev-timeline",
+    "worldline": "cp4-dev-worldline",
+    "narrativeLayer": "cp4-dev-layer"
+  },
+  "query": {
+    "sceneId": "cp4-dev-query",
+    "readingOrder": 100,
+    "title": "Query scene",
+    "body": "Which earlier scene holds the person named in the pilot's message to the lantern keeper?"
+  },
+  "scenes": [
+    {
+      "id": "cp4-dev-log",
+      "readingOrder": 0,
+      "title": "Harbor log",
+      "body": "The harbor log lay open on the chart table."
+    },
+    {
+      "id": "cp4-dev-gulls",
+      "readingOrder": 10,
+      "title": "Gulls",
+      "body": "Gulls circled the drying nets while the tide slipped out past the breakwater."
+    },
+    {
+      "id": "cp4-dev-jars",
+      "readingOrder": 20,
+      "title": "Clay jars",
+      "body": "Tavi folded the sail canvas and stacked the clay jars beside the stove."
+    },
+    {
+      "id": "cp4-dev-margin",
+      "readingOrder": 30,
+      "title": "Margin",
+      "body": "The pilot wrote a question in the margin: Which earlier scene holds the person named in the pilot's message to the lantern keeper? Nobody answered it that night."
+    },
+    {
+      "id": "cp4-dev-board",
+      "readingOrder": 40,
+      "title": "Harbor board",
+      "body": "A copy of the pilot's message to the lantern keeper was nailed to the harbor board, but the name in it had been smudged."
+    },
+    {
+      "id": "cp4-dev-ink",
+      "readingOrder": 50,
+      "title": "Ink",
+      "body": "The lantern keeper asked again which person the pilot's message named; the ink had run and the clerk could not read it."
+    }
+  ],
+  "entities": [
+    {
+      "id": "cp4-dev-brann",
+      "role": "seed",
+      "type": "character",
+      "name": "Brann",
+      "summary": "Brann is a harbor pilot."
+    },
+    {
+      "id": "cp4-dev-tavi",
+      "role": "target",
+      "type": "character",
+      "name": "Tavi",
+      "summary": "Tavi keeps the clay jars."
+    }
+  ],
+  "relations": [
+    {
+      "id": "cp4-dev-sent-word",
+      "fromEntityId": "cp4-dev-brann",
+      "toEntityId": "cp4-dev-tavi",
+      "relationType": "custom",
+      "label": "sent word to",
+      "directionality": "directed"
+    }
+  ],
+  "pins": [
+    { "sceneId": "cp4-dev-jars", "entityId": "cp4-dev-tavi" },
+    { "sceneId": "cp4-dev-board", "entityId": "cp4-dev-tavi" }
+  ],
+  "typedRevisions": [
+    {
+      "id": "cp4-dev-typed",
+      "sceneId": "cp4-dev-log",
+      "entityIds": ["cp4-dev-brann", "cp4-dev-tavi"],
+      "relationIds": ["cp4-dev-sent-word"]
+    }
+  ],
+  "declarations": [{ "sceneId": "cp4-dev-jars", "values": "g01-subset" }],
+  "graphSeedEntityId": "cp4-dev-brann",
+  "measurementBoundary": {
+    "setupOrder": [
+      "project",
+      "maintenance-enabled",
+      "scenes",
+      "scope-registry",
+      "scene-scope",
+      "entities",
+      "relations",
+      "pins",
+      "typed-revisions",
+      "b-seal",
+      "chronicle-index"
+    ],
+    "declarationStep": "measurement-workspace-before-first-graph-query",
+    "chronicleIr": "none"
+  },
+  "variants": [
+    {
+      "id": "base",
+      "measurementPoint": "after the sealed B generation, at the measurement workspace",
+      "expectations": {
+        "graph": { "status": "available" },
+        "arms": {
+          "raw": {
+            "sceneIds": ["cp4-dev-margin", "cp4-dev-board", "cp4-dev-ink"],
+            "orderPredeclared": false,
+            "predictionOnly": true
+          },
+          "rPlusIr": { "irSupplementSceneId": null },
+          "rPlusIrPlusGraph": {
+            "appendedSceneId": "cp4-dev-jars",
+            "pathAttachmentSceneIds": ["cp4-dev-board"],
+            "predictionOnly": true
+          }
+        }
+      }
+    }
+  ]
+}

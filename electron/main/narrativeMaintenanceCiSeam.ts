@@ -71,6 +71,15 @@ export const NARRATIVE_MAINTENANCE_TRIGGERS = Object.freeze([
   "graphContractDigest-changed",
   "ruleRegistryDigest-changed",
   "producerGenerationSetDigest-changed",
+  // B-ROUTE: opens the gated NIR-1 Graph Index build route for this validated
+  // unpackaged CI launch only (Rust `NarrativeMaintenanceCiTrigger::
+  // Nir1GraphIndexBuild`). It selects no coordinate. An existing wake
+  // (workspace-opened, restore, epoch rotation) runs discovery; when the
+  // durable chain has no work for a project, or its uncontrolled planner
+  // cannot judge a sealed Graph/Chronicle binding (context-unavailable),
+  // discovery returns that project as a wake and main starts an empty-work
+  // cycle in which Rust judges B (DR-BSEAM-1). Main never names B itself.
+  "nir1-graph-index-build",
 ] as const);
 
 export type NarrativeMaintenanceCiFault =

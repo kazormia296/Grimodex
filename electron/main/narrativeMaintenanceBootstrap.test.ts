@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  NARRATIVE_MAINTENANCE_NONCE_ENV,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN,
   NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV,
+  NARRATIVE_MAINTENANCE_TRIGGER_ENV,
   parseNarrativeMaintenanceCiSeam,
   type NarrativeMaintenanceCiSeam,
 } from "./narrativeMaintenanceCiSeam.js";
@@ -133,6 +135,88 @@ describe("C2-5B production maintenance bootstrap", () => {
         expect(runtime).toEqual({ scheduler: null, coordinator: null });
       }
     }
+  });
+
+  it("DR-BSEAM-1: only the validated B-ROUTE launch lets the coordinator accept Graph Index wakes", () => {
+    const bRouteEnv = {
+      CI: "true",
+      [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]:
+        NARRATIVE_MAINTENANCE_OWNER_TOKEN,
+      [NARRATIVE_MAINTENANCE_NONCE_ENV]: "00000000-0000-4000-8000-000000000001",
+      [NARRATIVE_MAINTENANCE_TRIGGER_ENV]: "nir1-graph-index-build",
+    };
+    const cases: Array<{
+      name: string;
+      seam: NarrativeMaintenanceCiSeam;
+      accepts: boolean;
+    }> = [
+      {
+        name: "b-route",
+        seam: parseNarrativeMaintenanceCiSeam(bRouteEnv, { isPackaged: false }),
+        accepts: true,
+      },
+      {
+        name: "packaged",
+        seam: parseNarrativeMaintenanceCiSeam(bRouteEnv, { isPackaged: true }),
+        accepts: false,
+      },
+      {
+        name: "not-ci",
+        seam: parseNarrativeMaintenanceCiSeam(
+          { ...bRouteEnv, CI: "false" },
+          { isPackaged: false },
+        ),
+        accepts: false,
+      },
+      {
+        name: "wrong-owner",
+        seam: parseNarrativeMaintenanceCiSeam(
+          { ...bRouteEnv, [NARRATIVE_MAINTENANCE_OWNER_TOKEN_ENV]: "other" },
+          { isPackaged: false },
+        ),
+        accepts: false,
+      },
+      { name: "no-trigger", seam: activeSeam(), accepts: false },
+      {
+        name: "other-trigger",
+        seam: activeSeam({ trigger: "graphContractDigest-changed" }),
+        accepts: false,
+      },
+    ];
+    for (const { name, seam, accepts } of cases) {
+      const createScheduler = vi.fn(() => fakeScheduler());
+      const createCoordinator = vi.fn(
+        (_backend: unknown, _scheduler: unknown, _options?: unknown) =>
+          fakeCoordinator(),
+      );
+      bootstrapNarrativeMaintenance(null, seam, {
+        createScheduler: createScheduler as never,
+        createCoordinator: createCoordinator as never,
+      });
+      expect(createCoordinator, name).toHaveBeenCalledOnce();
+      if (accepts) {
+        expect(createCoordinator.mock.calls[0]?.[2], name).toEqual({
+          acceptGraphIndexBuildWakes: true,
+        });
+      } else {
+        // The exact previous construction: no third argument at all.
+        expect(createCoordinator.mock.calls[0], name).toHaveLength(2);
+      }
+    }
+
+    // A B-ROUTE launch without a valid nonce never becomes an active seam.
+    expect(() =>
+      parseNarrativeMaintenanceCiSeam(
+        { ...bRouteEnv, [NARRATIVE_MAINTENANCE_NONCE_ENV]: "not-a-uuid" },
+        { isPackaged: false },
+      ),
+    ).toThrow();
+    expect(() =>
+      parseNarrativeMaintenanceCiSeam(
+        { ...bRouteEnv, [NARRATIVE_MAINTENANCE_NONCE_ENV]: undefined },
+        { isPackaged: false },
+      ),
+    ).toThrow();
   });
 
   it("does not wire maintenance or scheduler observations into CI evidence", () => {
