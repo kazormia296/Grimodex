@@ -21750,3 +21750,420 @@ mod narrative_maintenance_foreground_release_tests {
         let _ = std::fs::remove_dir_all(root);
     }
 }
+
+/// DR-MP: an automatic adapter that has durably committed its terminal Run
+/// no longer owns that Run. A later ordinary failure or Main cancellation in
+/// the same cycle must keep its own result (or requeue) instead of retiring
+/// the clean workspace connection and publishing RecoveryRequired.
+#[cfg(test)]
+mod narrative_maintenance_post_commit_tests {
+    use super::*;
+    use grimodex_db::narrative_extraction::maintenance_runtime::post_commit_race_for_test;
+    use grimodex_db::state::{PinnedWorkspaceDb, WorkspaceAuthority};
+    use serde_json::Value;
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    fn backend_with_project(label: &str) -> (Backend, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "grimodex-node-post-commit-{label}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        let workspace_path = root.join("workspace");
+        let metadata_dir = workspace_path.join(".grimodex");
+        std::fs::create_dir_all(&metadata_dir).expect("workspace metadata directory");
+        std::fs::write(
+            metadata_dir.join("workspace.json"),
+            serde_json::json!({
+                "id": format!("workspace-{label}"),
+                "created_at": "2026-01-01T00:00:00.000Z"
+            })
+            .to_string(),
+        )
+        .expect("workspace metadata");
+        let database = Database::new(&workspace_path.join("grimodex.db")).expect("database");
+        database.migrate().expect("database migration");
+        database
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO projects (id, title) VALUES ('project-1', 'Project')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed project");
+        let authority = WorkspaceAuthority::from_database_for_test(database, workspace_path)
+            .expect("workspace authority");
+        let state = AppState::new(
+            &root.to_string_lossy(),
+            &root.join("resources").to_string_lossy(),
+        )
+        .expect("app state");
+        state
+            .narrative_maintenance_recovery_gate
+            .mark_workspace_swapped();
+        install_test_workspace(&state, authority);
+        (
+            Backend {
+                state: Arc::new(state),
+            },
+            root,
+        )
+    }
+
+    /// Backfill the project once (creating its first Semantic Epoch) so the
+    /// next automatic cycle dispatches a real Verify.
+    fn seed_completed_backfill(authority: &PinnedWorkspaceDb) -> String {
+        grimodex_db::narrative_extraction::bootstrap_legacy_dependency_backfill_for_project(
+            authority,
+            "project-1",
+        )
+        .expect("seed completed Backfill boundary");
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row(
+                    "SELECT id FROM narrative_semantic_epochs WHERE project_id = 'project-1'",
+                    [],
+                    |row| row.get::<_, String>(0),
+                )
+                .map_err(Into::into)
+            })
+            .expect("current Semantic Epoch")
+    }
+
+    async fn begin_attempt(
+        backend: &Backend,
+        authority: &PinnedWorkspaceDb,
+        attempt_id: &str,
+    ) -> MaintenanceWorkspaceBinding {
+        let binding = narrative_maintenance_binding_for_authority(&backend.state, authority);
+        backend
+            .begin_narrative_maintenance_attempt(
+                attempt_id.to_owned(),
+                serde_json::to_value(&binding).expect("binding JSON"),
+            )
+            .await
+            .expect("begin Native attempt");
+        binding
+    }
+
+    fn cycle_payload(
+        attempt_id: &str,
+        binding: &MaintenanceWorkspaceBinding,
+        work: Value,
+    ) -> Value {
+        serde_json::json!({
+            "attemptId": attempt_id,
+            "work": [work],
+            "wakeProjectIds": [],
+            "workspaceBinding": binding,
+        })
+    }
+
+    fn verify_work(epoch: &str) -> Value {
+        serde_json::json!({
+            "projectId": "project-1",
+            "runKind": "dependency-verify",
+            "workKey": format!("dependency-verify:{epoch}"),
+            "semanticEpochId": epoch,
+            "reasons": ["workspace-opened"],
+        })
+    }
+
+    fn run_statuses(authority: &PinnedWorkspaceDb, run_kind: &str) -> Vec<String> {
+        authority
+            .db()
+            .with_conn(|conn| {
+                let mut statement = conn.prepare(
+                    "SELECT status FROM narrative_extraction_runs
+                      WHERE project_id = 'project-1' AND run_kind = ?1
+                      ORDER BY created_at ASC, id ASC",
+                )?;
+                let rows = statement
+                    .query_map([run_kind], |row| row.get::<_, String>(0))?
+                    .collect::<std::result::Result<Vec<_>, _>>()?;
+                Ok(rows)
+            })
+            .expect("read Run statuses")
+    }
+
+    /// The workspace stays Ready on the same reusable authority and accepts
+    /// an ordinary DB command; no recovery descriptor was published.
+    fn assert_workspace_stays_ready(backend: &Backend, identity: u64) {
+        assert!(
+            backend
+                .state
+                .workspace_lifecycle
+                .recovery_descriptor_ids()
+                .expect("descriptor roots")
+                .is_empty(),
+            "a committed Run must not be transferred to recovery"
+        );
+        let snapshot = backend
+            .state
+            .workspace_lifecycle
+            .lifecycle_snapshot()
+            .expect("lifecycle snapshot");
+        assert!(
+            matches!(snapshot.state, LifecycleState::Ready(_)),
+            "lifecycle must stay Ready: {:?}",
+            snapshot.state
+        );
+        let authority = active_database(&backend.state.ws).expect("same Ready authority");
+        assert_eq!(authority.identity(), identity);
+        assert!(authority.db().connection_reusable());
+        let projects: i64 = authority
+            .db()
+            .with_conn(|conn| {
+                conn.query_row("SELECT COUNT(*) FROM projects", [], |row| row.get(0))
+                    .map_err(Into::into)
+            })
+            .expect("ordinary DB command after the cycle");
+        assert!(projects >= 1);
+    }
+
+    #[tokio::test]
+    async fn verify_commit_then_ordinary_error_keeps_the_error_without_recovery() {
+        let (backend, root) = backend_with_project("verify-ordinary-error");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let identity = authority.identity();
+        let epoch = seed_completed_backfill(&authority);
+        let attempt_id = "attempt-verify-ordinary-error";
+        let binding = begin_attempt(&backend, &authority, attempt_id).await;
+        let _race = post_commit_race_for_test::arm(authority.db(), |_| {
+            Err(anyhow::anyhow!(
+                "NEX_MAINTENANCE_TRANSIENT: injected after the Verify commit"
+            ))
+        });
+        let result = backend
+            .run_narrative_maintenance_cycle(cycle_payload(
+                attempt_id,
+                &binding,
+                verify_work(&epoch),
+            ))
+            .await;
+        assert_eq!(run_statuses(&authority, "dependency-verify"), ["completed"]);
+        let error = result.expect_err(
+            "an ordinary failure after the commit returns its own error to Main's retry policy",
+        );
+        assert!(
+            error.to_string().contains("NEX_MAINTENANCE_TRANSIENT"),
+            "Main must receive the original error: {error}"
+        );
+        drop(authority);
+        assert_workspace_stays_ready(&backend, identity);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn verify_commit_then_main_cancellation_releases_without_recovery() {
+        // Main's quiesce (workspace switch, app close) cancels the active
+        // attempt. When that lands just after the Verify commit, the cycle
+        // stops at its next boundary.
+        let (backend, root) = backend_with_project("verify-cancelled");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let identity = authority.identity();
+        let epoch = seed_completed_backfill(&authority);
+        let attempt_id = "attempt-verify-cancelled";
+        let binding = begin_attempt(&backend, &authority, attempt_id).await;
+        let state = Arc::clone(&backend.state);
+        let _race = post_commit_race_for_test::arm(authority.db(), move |_| {
+            state
+                .narrative_maintenance_attempts
+                .request_cancel("attempt-verify-cancelled", "workspace-generation-changed")?;
+            Ok(())
+        });
+        let result = backend
+            .run_narrative_maintenance_cycle(cycle_payload(
+                attempt_id,
+                &binding,
+                verify_work(&epoch),
+            ))
+            .await;
+        assert_eq!(run_statuses(&authority, "dependency-verify"), ["completed"]);
+        let error = result.expect_err("the cancelled cycle returns its stop to Main");
+        let message = error.to_string();
+        assert!(
+            message.contains("NEX_MAINTENANCE_ATTEMPT_CANCELLED")
+                || message.contains("NEX_VALIDATION_TERMINATED:cancelled"),
+            "the stop stays a typed cancellation: {message}"
+        );
+        let receipt: Value = serde_json::from_str(
+            &backend
+                .cancel_narrative_maintenance_attempt(attempt_id.to_owned(), "closed".to_owned())
+                .await
+                .expect("terminal receipt"),
+        )
+        .expect("receipt JSON");
+        assert_eq!(receipt["state"], "interrupted");
+        assert_eq!(receipt["cleanup"]["status"], "clean");
+        assert_eq!(receipt["connectionReusable"], true);
+        drop(authority);
+        assert_workspace_stays_ready(&backend, identity);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn verify_commit_then_foreground_owner_requeues_without_recovery() {
+        // A foreground command holding the shared connection after the
+        // commit makes the follow-up discovery lose its no-wait acquisition.
+        let (backend, root) = backend_with_project("verify-foreground");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let identity = authority.identity();
+        let epoch = seed_completed_backfill(&authority);
+        let attempt_id = "attempt-verify-foreground";
+        let binding = begin_attempt(&backend, &authority, attempt_id).await;
+        let holder_db = Arc::clone(&authority);
+        let (held_tx, held_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let holder = Arc::new(Mutex::new(None::<std::thread::JoinHandle<()>>));
+        let holder_slot = Arc::clone(&holder);
+        let _race = post_commit_race_for_test::arm(authority.db(), move |_| {
+            let handle = std::thread::spawn(move || {
+                holder_db
+                    .db()
+                    .with_conn(|_| {
+                        held_tx.send(()).expect("signal held connection");
+                        let _ = release_rx.recv_timeout(std::time::Duration::from_secs(5));
+                        Ok(())
+                    })
+                    .expect("foreground owner");
+            });
+            held_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("foreground owner holds the connection");
+            *holder_slot.lock().expect("holder slot") = Some(handle);
+            Ok(())
+        });
+        let result: Value = serde_json::from_str(
+            &backend
+                .run_narrative_maintenance_cycle(cycle_payload(
+                    attempt_id,
+                    &binding,
+                    verify_work(&epoch),
+                ))
+                .await
+                .expect("preempted cycle is an accepted requeue"),
+        )
+        .expect("cycle JSON");
+        release_tx.send(()).expect("release the foreground owner");
+        if let Some(handle) = holder.lock().expect("holder slot").take() {
+            handle.join().expect("foreground owner joins");
+        }
+        assert_eq!(result["status"], "accepted");
+        assert_eq!(result["hasMore"], true);
+        assert_eq!(result["preempted"], true);
+        assert_eq!(run_statuses(&authority, "dependency-verify"), ["completed"]);
+        drop(authority);
+        assert_workspace_stays_ready(&backend, identity);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn backfill_commit_then_ordinary_error_keeps_the_error_without_recovery() {
+        let (backend, root) = backend_with_project("backfill-ordinary-error");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let identity = authority.identity();
+        let attempt_id = "attempt-backfill-ordinary-error";
+        let binding = begin_attempt(&backend, &authority, attempt_id).await;
+        let _race = post_commit_race_for_test::arm(authority.db(), |_| {
+            Err(anyhow::anyhow!(
+                "NEX_MAINTENANCE_TRANSIENT: injected after the Backfill commit"
+            ))
+        });
+        let result = backend
+            .run_narrative_maintenance_cycle(cycle_payload(
+                attempt_id,
+                &binding,
+                serde_json::json!({
+                    "projectId": "project-1",
+                    "runKind": "backfill",
+                    "workKey": grimodex_db::narrative_extraction::LEGACY_BACKFILL_WORK_KEY,
+                    "semanticEpochId": null,
+                    "reasons": ["workspace-opened"],
+                }),
+            ))
+            .await;
+        assert_eq!(run_statuses(&authority, "backfill"), ["completed"]);
+        let error = result.expect_err("the injected failure is returned to Main");
+        assert!(
+            error.to_string().contains("NEX_MAINTENANCE_TRANSIENT"),
+            "{error}"
+        );
+        drop(authority);
+        assert_workspace_stays_ready(&backend, identity);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn rebuild_commit_then_ordinary_error_keeps_the_error_without_recovery() {
+        // Verify -> Rebuild in one cycle; the error lands after the Rebuild
+        // commit, when both committed Runs were attached to this execution.
+        let (backend, root) = backend_with_project("rebuild-ordinary-error");
+        let authority = active_database(&backend.state.ws).expect("active authority");
+        let identity = authority.identity();
+        let epoch = seed_completed_backfill(&authority);
+        authority
+            .db()
+            .with_conn(|conn| {
+                conn.execute(
+                    "INSERT INTO narrative_dependency_edges
+                        (id, project_id, consumer_kind, consumer_key,
+                         source_object_identity, read_set_json, created_at)
+                     VALUES ('edge-rebuild-post-commit', 'project-1',
+                             'narrative-extraction-run', 'run-1',
+                             'project:scene:missing', '[]',
+                             '2026-01-01T00:00:00.000Z')",
+                    [],
+                )?;
+                Ok::<_, anyhow::Error>(())
+            })
+            .expect("seed Verify -> Rebuild follow-up");
+        let attempt_id = "attempt-rebuild-ordinary-error";
+        let binding = begin_attempt(&backend, &authority, attempt_id).await;
+        // The first commit (Verify) re-arms the hook for the second (Rebuild).
+        let rearmed = Arc::new(Mutex::new(
+            None::<post_commit_race_for_test::ArmedPostCommitRace>,
+        ));
+        let rearmed_slot = Arc::clone(&rearmed);
+        let _race = post_commit_race_for_test::arm(authority.db(), move |db| {
+            let armed = post_commit_race_for_test::arm(db, |_| {
+                Err(anyhow::anyhow!(
+                    "NEX_MAINTENANCE_TRANSIENT: injected after the Rebuild commit"
+                ))
+            });
+            *rearmed_slot.lock().expect("rearm slot") = Some(armed);
+            Ok(())
+        });
+        let result = backend
+            .run_narrative_maintenance_cycle(cycle_payload(
+                attempt_id,
+                &binding,
+                verify_work(&epoch),
+            ))
+            .await;
+        rearmed.lock().expect("rearm slot").take();
+        assert_eq!(run_statuses(&authority, "dependency-verify"), ["completed"]);
+        assert_eq!(
+            run_statuses(&authority, "semantic-index-rebuild"),
+            ["completed"]
+        );
+        let error = result.expect_err("the injected failure is returned to Main");
+        assert!(
+            error
+                .to_string()
+                .contains("injected after the Rebuild commit"),
+            "{error}"
+        );
+        drop(authority);
+        assert_workspace_stays_ready(&backend, identity);
+        drop(backend);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
