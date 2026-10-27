@@ -11,6 +11,7 @@ import process from "node:process";
 import { test } from "node:test";
 import {
   RELATION_ID_REUSE_REFUSAL,
+  blockedRecord,
   assertRelationStaleOnCold,
   B_SEAL_REOPENS,
   B_SEAL_WAIT_MS,
@@ -380,10 +381,16 @@ test("S1j-2 probe が宣言の状態を示さなければ blocked:index-state-ho
       [1, "sealed"],
     ],
   );
-  assert.deepEqual(once.receipt.sealAttempts[0].discardedPhases, [
-    "b-seal",
-    "chronicle-index",
-  ]);
+  // Review P3 (d): the discarded rows keep their details and states.
+  assert.ok(
+    once.receipt.sealAttempts[0].discardedPhases.every(
+      (row) => row.details && row.stateAfter && row.session === "seal",
+    ),
+  );
+  assert.deepEqual(
+    once.receipt.sealAttempts[0].discardedPhases.map((row) => row.name),
+    ["b-seal", "chronicle-index"],
+  );
   assert.deepEqual(
     once.receipt.phases.map((row) => row.name),
     executedPhaseNames(planOf(COMPLETE, "G-02/base")),
@@ -391,7 +398,7 @@ test("S1j-2 probe が宣言の状態を示さなければ blocked:index-state-ho
   assert.equal(once.receipt.measurementPoint.probe.metadata.b.generation, 2);
   assert.match(
     dirtied.receipt.precheck.message,
-    /blocked:maintenance-enabled — G-02\/base: the probe shows graph unusable/u,
+    /blocked:measurement-point-mismatch — G-02\/base: the probe shows graph unusable/u,
   );
   const usable = { generation: 2, dirty: false };
   assert.equal(
@@ -778,4 +785,101 @@ test("レビュー P2-3／P2-4: G-02 の旧 Revision は live でも cold DB で
     /\[precheck\] S1i mutation/u,
   );
   assert.match(RELATION_ID_REUSE_REFUSAL.source, /codex_relations/u);
+});
+
+test("レビュー P2-1／P2-2: hold の最初の mutation の前に B と C が seal の generation で clean であることを照合し、blocked は harness の名前と README の id の写しを別の欄に残す", async () => {
+  // Success: the pre-mutation state is recorded.
+  const ok = await completeSetup("G-08/both-indexes-unusable");
+  assert.equal(
+    ok.receipt.status,
+    "setup-complete",
+    ok.receipt.errors.join("\n"),
+  );
+  assert.deepEqual(ok.receipt.preMutationIndexState.expected, {
+    b: ok.receipt.preMutationIndexState.metadata.b.generation,
+    chronicle: ok.receipt.preMutationIndexState.metadata.chronicle.generation,
+  });
+  assert.equal(ok.receipt.preMutationIndexState.metadata.b.dirty, false);
+  // A B dirtied after the seal session (the P-1 race) stops before the
+  // mutation: the precondition maintenance-enabled.
+  const raced = await completeSetup("G-08/graph-index-unusable", {
+    bDirtiedByQuery: true,
+  });
+  assert.equal(raced.receipt.status, "blocked");
+  assert.match(
+    raced.receipt.precheck.message,
+    /blocked:pre-mutation-index-state/u,
+  );
+  assert.deepEqual(raced.receipt.blocked, {
+    harnessId: "pre-mutation-index-state",
+    unmetPreconditions: ["maintenance-enabled"],
+    declaredPreconditions: [
+      "b-sealed-binding",
+      "maintenance-enabled",
+      "raw-membership",
+      "index-state-holding",
+    ],
+    contractBlockedId: "maintenance-enabled",
+    hold: false,
+  });
+  // The mutation never ran.
+  assert.ok(
+    !raced.receipt.phases.some(
+      (row) => row.name === "setup-timeline:g08-m-juno",
+    ),
+  );
+  // b-seal-not-published maps to b-sealed-binding (G-01 is Hold).
+  const g02 = await completeSetup("G-02/base", { sealMissesOpens: 3 });
+  assert.equal(g02.receipt.blocked.harnessId, "b-seal-not-published");
+  assert.equal(g02.receipt.blocked.contractBlockedId, "b-sealed-binding");
+  const g01 = await completeSetup("G-01/v1", { sealMissesOpens: 3 });
+  assert.deepEqual(
+    [
+      g01.receipt.blocked.harnessId,
+      g01.receipt.blocked.contractBlockedId,
+      g01.receipt.blocked.hold,
+    ],
+    ["b-seal-not-published", null, true],
+  );
+  // A Graph mismatch at the measurement point maps to b-sealed-binding; a
+  // Chronicle-only mismatch is Hold.
+  const plan = planOf(COMPLETE, "G-02/base");
+  assert.equal(
+    blockedRecord({
+      plan,
+      blocked: {
+        harnessId: "measurement-point-mismatch",
+        unmet: ["b-sealed-binding"],
+      },
+    }).contractBlockedId,
+    "b-sealed-binding",
+  );
+  assert.deepEqual(
+    blockedRecord({
+      plan,
+      blocked: { harnessId: "measurement-point-mismatch", unmet: [] },
+    }),
+    {
+      harnessId: "measurement-point-mismatch",
+      unmetPreconditions: [],
+      declaredPreconditions: plan.preconditions,
+      contractBlockedId: null,
+      hold: true,
+    },
+  );
+  // Several unmet: README order, the first declared one names the block.
+  assert.deepEqual(
+    blockedRecord({
+      plan,
+      blocked: {
+        harnessId: "x",
+        unmet: [
+          "index-state-holding",
+          "maintenance-enabled",
+          "b-sealed-binding",
+        ],
+      },
+    }).unmetPreconditions,
+    ["b-sealed-binding", "maintenance-enabled", "index-state-holding"],
+  );
 });

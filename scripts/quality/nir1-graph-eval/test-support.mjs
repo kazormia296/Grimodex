@@ -850,6 +850,26 @@ export function k64HookInput(overrides = {}) {
  * seedLogical, seedRuntime, live, pins: [{ entryId, createdAt, inProject }],
  * entities }`.
  */
+/**
+ * S1j-2 review P3 (e): the fields a complete frozen setup receipt carries
+ * (its measurement point, its seal openings, the setup-only Main's sha).
+ */
+export const COMPLETE_SETUP_FIELDS = Object.freeze({
+  measurementPoint: {
+    declared: { graph: "usable", chronicle: "usable" },
+    probe: {
+      graph: "usable",
+      chronicle: "usable",
+      metadata: {
+        b: { generation: 1, dirty: false },
+        chronicle: { generation: 1, dirty: false },
+      },
+    },
+  },
+  sealAttempts: [{ session: "seal", attempt: 0, outcome: "sealed" }],
+  setupMain: { sha256: "e".repeat(64) },
+});
+
 export function seedPinWorkspace(spec) {
   const dir = mkdtempSync(path.join(tmpdir(), "cp4-seed-pin-ws-"));
   process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
@@ -894,7 +914,7 @@ export function seedPinWorkspace(spec) {
             // S1j P2-4: a ① setup names its R5 check run.
             ...((spec.stopsAt ?? "seed-pin") === "seed-pin"
               ? { r5CheckRun: { id: spec.r5CheckRunId ?? "r5-test-run" } }
-              : {}),
+              : COMPLETE_SETUP_FIELDS),
           }
         : {
             schemaVersion: DEV_SETUP_RECEIPT_SCHEMA,

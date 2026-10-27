@@ -16,6 +16,7 @@ import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  B_SEAL_REOPENS,
   R5_CHECK_ALLOWED_IPC,
   R5_CHECK_ALLOWED_PAGE,
   assertBuildMatchesProductReceipt,
@@ -38,6 +39,7 @@ import { assessSeedPinStep, SEED_PIN_WRITER } from "./seed-pin-setup.mjs";
 import { assertSeedPinsBeforeK64 } from "./seed-pin.mjs";
 import {
   FROZEN_SETUP_RECEIPT_SCHEMA,
+  SEAL_OPENINGS_MAX,
   assertCompleteSetupReceipt,
   loadSetupReceipt,
 } from "./setup-receipt.mjs";
@@ -46,6 +48,7 @@ import {
   readQuerySceneSeedPins,
 } from "./workspace-db.mjs";
 import {
+  COMPLETE_SETUP_FIELDS,
   REPO_ROOT,
   frozenSetupFakeProduct,
   productReceipt,
@@ -686,9 +689,52 @@ test("setup の受領書の loader: frozen は frozen の schema と停止位置
     stopsAt: "complete",
     status: "setup-complete",
     r5CheckRun: undefined,
+    ...COMPLETE_SETUP_FIELDS,
   });
   assert.equal(complete.r5CheckRunId, null);
   assert.equal(assertCompleteSetupReceipt(complete), complete);
+  // S1j-2 review P3 (e): a complete setup without its measurement point,
+  // with a seal that ended other than sealed, more than three openings, or
+  // no setup-only Main is not taken by ④⑤.
+  for (const change of [
+    { measurementPoint: undefined },
+    {
+      measurementPoint: {
+        ...COMPLETE_SETUP_FIELDS.measurementPoint,
+        probe: {
+          ...COMPLETE_SETUP_FIELDS.measurementPoint.probe,
+          graph: "unusable",
+        },
+      },
+    },
+    {
+      sealAttempts: [{ session: "seal", attempt: 0, outcome: "not-published" }],
+    },
+    {
+      sealAttempts: [0, 1, 2, 3].map((attempt) => ({
+        session: "seal",
+        attempt,
+        outcome: attempt === 3 ? "sealed" : "sealed-then-dirty",
+      })),
+    },
+    { sealAttempts: [] },
+    { setupMain: undefined },
+  ])
+    assert.throws(
+      () =>
+        assertCompleteSetupReceipt(
+          load({
+            ...base,
+            stopsAt: "complete",
+            status: "setup-complete",
+            r5CheckRun: undefined,
+            ...COMPLETE_SETUP_FIELDS,
+            ...change,
+          }),
+        ),
+      /\[precheck\] the setup receipt .* is not a complete setup with its measurement point/u,
+    );
+  assert.equal(SEAL_OPENINGS_MAX, B_SEAL_REOPENS + 1);
   for (const value of [
     { ...base, status: "setup-complete" },
     { ...base, stopsAt: "complete" },

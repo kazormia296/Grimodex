@@ -1032,6 +1032,8 @@ export function frozenSetupPlan({
     querySceneId: fixture.query.sceneId,
     measurementPoint: variant.measurementPoint ?? null,
     indexState: variant.indexState ?? null,
+    // Review P2-2: the README preconditions the variant declares.
+    preconditions: (variant.preconditions ?? []).map((row) => row.id),
     correspondence,
     steps,
     stopIndex,

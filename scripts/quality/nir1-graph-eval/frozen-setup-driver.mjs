@@ -132,6 +132,51 @@ function fail(code, detail) {
   throw new Error(`[precheck] S1i ${code}: ${detail}`);
 }
 
+/**
+ * Review P2-2 (S3 の決定): a blocked setup keeps the harness's own name, and
+ * names the README preconditions it leaves unmet. The receipt maps them to
+ * the contract's id in a field of its own (`blockedRecord`).
+ */
+function failBlocked(code, harnessId, unmet, detail) {
+  const error = new Error(
+    `[precheck] S1i ${code}: blocked:${harnessId} — ${detail}`,
+  );
+  error.blocked = { harnessId, unmet: [...unmet] };
+  throw error;
+}
+
+/** README の前提条件の定義順（「観測時の前提条件と blocked」の表）. */
+export const README_PRECONDITION_ORDER = Object.freeze([
+  "b-sealed-binding",
+  "maintenance-enabled",
+  "raw-membership",
+  "ir-supplement-admission",
+  "index-state-holding",
+  "cb4-inputs",
+]);
+
+/**
+ * The receipt's blocked record: the harness's name, every unmet README
+ * precondition (definition order), and the contract's id — the first unmet
+ * one the variant declares (`blocked:<id>`), or null with `hold: true` when
+ * the variant declares none of them (G-01 is Hold; a Chronicle-only
+ * mismatch is Hold and `[precheck]`).
+ */
+export function blockedRecord({ plan, blocked }) {
+  const unmet = README_PRECONDITION_ORDER.filter((id) =>
+    (blocked?.unmet ?? []).includes(id),
+  );
+  const declared = plan.preconditions ?? [];
+  const contractBlockedId = unmet.find((id) => declared.includes(id)) ?? null;
+  return {
+    harnessId: blocked?.harnessId ?? null,
+    unmetPreconditions: unmet,
+    declaredPreconditions: [...declared],
+    contractBlockedId,
+    hold: contractBlockedId === null,
+  };
+}
+
 const partialRun = (plan) => plan?.stopsAt === SETUP_STOPS.seedPin;
 const nonBlankId = (value) => typeof value === "string" && value.length > 0;
 
@@ -663,9 +708,11 @@ const EXECUTORS = Object.freeze({
         if (rows.length > 0) return rows;
         await ctx.sleep(500);
       }
-      fail(
+      failBlocked(
         "maintenance-enabled",
-        `blocked:maintenance-enabled — ${label} did not appear within ${EPOCH_WAIT_MS} ms`,
+        "maintenance-enabled",
+        ["maintenance-enabled"],
+        `${label} did not appear within ${EPOCH_WAIT_MS} ms`,
       );
     };
     const epochs = await waitFor(
@@ -763,6 +810,11 @@ const EXECUTORS = Object.freeze({
     if (!index?.ok)
       fail("chronicle-index", "the Chronicle Index did not become usable");
     // S1j-2: the last query's snapshot is the probe's query side (B4).
+    ctx.cGeneration =
+      readIndexMetadata(
+        path.join(ctx.workspacePath, "grimodex.db"),
+        ctx.ids.projectId,
+      ).chronicle?.generation ?? null;
     ctx.lastIndexProbe = {
       session: ctx.session ?? null,
       phase: step.phase,
@@ -809,9 +861,23 @@ const EXECUTORS = Object.freeze({
       probe.graph !== declared.graph ||
       probe.chronicle !== declared.chronicle
     ) {
+      const harnessId = holding
+        ? "index-state-holding"
+        : "measurement-point-mismatch";
       const error = new Error(
-        `[precheck] S1i ${holding ? "index-state-holding" : "measurement-point"}: blocked:${holding ? "index-state-holding" : "maintenance-enabled"} — ${ctx.plan.variantKey}: the probe shows graph ${probe.graph} and chronicle ${probe.chronicle}, the variant declares graph ${declared.graph} and chronicle ${declared.chronicle}`,
+        `[precheck] S1i ${holding ? "index-state-holding" : "measurement-point"}: blocked:${harnessId} — ${ctx.plan.variantKey}: the probe shows graph ${probe.graph} and chronicle ${probe.chronicle}, the variant declares graph ${declared.graph} and chronicle ${declared.chronicle}`,
       );
+      // Review P2-2: every unmet precondition. A while- variant leaves
+      // index-state-holding unmet; otherwise a Graph mismatch leaves the
+      // sealed binding unmet, a Chronicle-only mismatch none (Hold).
+      error.blocked = {
+        harnessId,
+        unmet: holding
+          ? ["index-state-holding"]
+          : probe.graph !== declared.graph
+            ? ["b-sealed-binding"]
+            : [],
+      };
       // S1j-2 P-1 (DR-BSEAM-3): a B the session sealed and then saw go
       // dirty again (the Freshness evaluation after the publish) is rebuilt
       // only by a new seam opening; the session loop may reopen (bounded).
@@ -1174,6 +1240,42 @@ async function withdrawIrApproval(ctx, input) {
   return decision;
 }
 
+/**
+ * Review P2-1: B and C read (read-only) just before the first mutation of
+ * the hold session: both clean, at the generations the seal session left.
+ */
+export function assertSealedBeforeMutation(ctx, read = readIndexMetadata) {
+  const metadata = read(
+    path.join(ctx.workspacePath, "grimodex.db"),
+    ctx.ids.projectId,
+  );
+  const state = {
+    metadata,
+    expected: {
+      b: ctx.bGeneration ?? null,
+      chronicle: ctx.cGeneration ?? null,
+    },
+  };
+  const at = (row, generation) =>
+    Boolean(
+      row &&
+      row.dirty === false &&
+      generation !== null &&
+      Number(row.generation) === generation,
+    );
+  if (
+    !at(metadata?.b, state.expected.b) ||
+    !at(metadata?.chronicle, state.expected.chronicle)
+  )
+    failBlocked(
+      "maintenance-enabled",
+      "pre-mutation-index-state",
+      ["maintenance-enabled"],
+      `${ctx.plan.variantKey}: before the first mutation B is ${JSON.stringify(metadata?.b ?? null)} and C is ${JSON.stringify(metadata?.chronicle ?? null)}, not the sealed generations ${JSON.stringify(state.expected)} clean`,
+    );
+  return state;
+}
+
 /** One typed Revision: prepare against its review Scene, then the declared decision. */
 async function prepareRevision(ctx, revision) {
   const { ids, workspacePath } = ctx;
@@ -1348,6 +1450,15 @@ export async function runFrozenSetupSteps({
         : (executors[step.executor] ?? EXECUTORS[step.executor]);
     if (!executor)
       fail("phase", `${plan.variantKey}: no executor for ${step.phase}`);
+    // Review P2-1 (precondition maintenance-enabled): before the first
+    // mutation of the hold session, B and C are the sealed generations,
+    // clean.
+    if (
+      session === "hold" &&
+      step.timelineKind === "mutation" &&
+      !ctx.preMutationIndexState
+    )
+      ctx.preMutationIndexState = assertSealedBeforeMutation(ctx);
     const stateBefore = ctx.workspaceOpen ? await readState(ctx) : null;
     const details = await executor({ ctx, step });
     const stateAfter = await readState(ctx);
@@ -2001,7 +2112,7 @@ export async function setupFrozenVariant({
                       phaseRow.session === row.label &&
                       phaseRow.at >= startedAt,
                   )
-                  .map((phaseRow) => phaseRow.name)
+                  .map((phaseRow) => ({ ...phaseRow }))
               : [],
             maintenanceRuns: (() => {
               try {
@@ -2029,9 +2140,11 @@ export async function setupFrozenVariant({
           throw timeout;
         if (attempt >= B_SEAL_REOPENS) {
           if (timeout.bDirtiedAfterSeal) throw timeout;
-          fail(
+          failBlocked(
             "b-seal",
-            `${B_SEAL_NOT_PUBLISHED} — ${plan.variantKey}: the ${row.label} session saw no new sealed B generation in ${attempt + 1} openings (${B_SEAL_REOPENS} reopens)`,
+            "b-seal-not-published",
+            ["b-sealed-binding"],
+            `${plan.variantKey}: the ${row.label} session saw no new sealed B generation in ${attempt + 1} openings (${B_SEAL_REOPENS} reopens)`,
           );
         }
         receipt.phases = receipt.phases.filter(
@@ -2099,6 +2212,8 @@ export async function setupFrozenVariant({
         ids,
       });
       receipt.measurementPoint = ctx.measurementProbe ?? null;
+      if (ctx.preMutationIndexState)
+        receipt.preMutationIndexState = ctx.preMutationIndexState;
       receipt.measurementSpec = plan.measurementSpec ?? null;
       if (shared.setupMain)
         receipt.setupMain = {
@@ -2148,6 +2263,8 @@ export async function setupFrozenVariant({
     if (message.startsWith("[precheck]")) {
       receipt.status = "blocked";
       receipt.precheck = { message: message.split("\n")[0] };
+      if (error?.blocked)
+        receipt.blocked = blockedRecord({ plan, blocked: error.blocked });
     } else receipt.status = "failed";
   } finally {
     receipt.finishedAt = now();
