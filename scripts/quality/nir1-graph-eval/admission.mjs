@@ -318,12 +318,15 @@ export function readK62FreezeHead({ root, commit }) {
 }
 
 /**
- * K6/4 批准 7: the K6/4 freeze head, read from the freeze commit the
- * integrator pinned in K64_FREEZE. Until it is pinned (the freeze on
- * `claude/nir1-contracts` is not made yet), no formal run starts.
+ * K6/4 批准 7: the K6/4 freeze head, read from the freeze commit pinned in
+ * K64_FREEZE: the given commit must resolve to that commit and the K6/4 bytes
+ * read from it must have the frozen sha256. A descriptor whose freezeCommit
+ * is null starts no formal run (fail closed). `freeze` defaults to K64_FREEZE;
+ * only the tests pass another descriptor (a throwaway repository's freeze,
+ * since a CI clone does not fetch `claude/nir1-contracts`; DR-CP4-T14-1).
  */
-export function readK64FreezeHead({ root, commit }) {
-  if (K64_FREEZE.freezeCommit === null)
+export function readK64FreezeHead({ root, commit }, freeze = K64_FREEZE) {
+  if (freeze.freezeCommit === null)
     throw new Error(
       "[precheck] the K6/4 freeze commit is not pinned (批准 7); no formal receipt is written",
     );
@@ -332,13 +335,13 @@ export function readK64FreezeHead({ root, commit }) {
       "[precheck] the K6/4 freeze commit is not given; no receipt is written",
     );
   const resolved = resolveCommit(root, commit);
-  const bytes = blob(root, resolved, K64_FREEZE.path);
+  const bytes = blob(root, resolved, freeze.path);
   if (bytes === null)
     throw new Error(
       "[precheck] K6/4 cannot be read from the freeze commit; no receipt is written",
     );
   const digest = sha256(bytes);
-  if (resolved !== K64_FREEZE.freezeCommit || digest !== K64_FREEZE.sha256)
+  if (resolved !== freeze.freezeCommit || digest !== freeze.sha256)
     throw new Error(
       "[precheck] K6/4 freeze commit or bytes differ; no receipt is written",
     );

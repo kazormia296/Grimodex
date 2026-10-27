@@ -46,10 +46,12 @@ export const OWNER_REBUILD_MIN_INTERVAL_MS = 1_000;
 export const K64_HOOK_CONSUMER_RUNNER = "k64-hook-consumer";
 
 /**
- * The K6/4 bytes (批准 7). The freeze commit on `claude/nir1-contracts` is
- * made by the integrator after the confirmation and is not made yet
- * (continuation §10.7「この記録で行わないこと」); until it is pinned here, no
- * formal K6/4 receipt validates (fail closed).
+ * The K6/4 bytes (批准 7). The integrator froze them on
+ * `claude/nir1-contracts` at commit `5dea38af…` (pushed 2026-10-27T09:11:20Z;
+ * the freeze record is `docs/plans/nir1-cp4-records/k64-freeze-record.md` at
+ * `a0b20a38` on the same branch), and `freezeCommit` pins that commit here
+ * (DR-CP4-T14-1). A formal K6/4 receipt validates only with this commit and
+ * these bytes at its head; `null` would stop every formal run (fail closed).
  */
 export const K64_FREEZE = Object.freeze({
   path: "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
@@ -58,7 +60,8 @@ export const K64_FREEZE = Object.freeze({
   contractId: "graph-eval-procedure",
   /** The confirmed version (continuation §10.7). Not the freeze commit. */
   confirmedCommit: "18ebc7b8de2d4f2701c573b5d91561a6cc852024",
-  freezeCommit: null,
+  /** The freeze commit on `claude/nir1-contracts` (批准 7), pinned. */
+  freezeCommit: "5dea38af158283c2a925d68ef0d8b0771c0ea209",
 });
 
 /**
