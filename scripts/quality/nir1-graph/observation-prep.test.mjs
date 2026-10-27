@@ -1205,6 +1205,12 @@ test("S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the 
   detects(
     prep,
     check,
+    (p) => (p.setupReadings.items[10].reading = " "),
+    /setupReadings\.items/u,
+  );
+  detects(
+    prep,
+    check,
     (p) => (p.setupReadings.sessions.ir.main = "product"),
     /setupReadings\.sessions/u,
   );
@@ -1513,6 +1519,14 @@ test("S2 追補: reviewerQuestions carry P-4 and the open readings for S3, undec
       /reviewerQuestions/u.test(e),
     ),
   );
+  // 決定は選択肢のどれか（S2 の並べた選択肢の外の choice は通さない）。
+  const outside = clone(fixed);
+  outside.reviewerQuestions[0].decision.choice = "z";
+  assert.ok(
+    observationPrepErrors(outside, frozenCtx).some((e) =>
+      /reviewerQuestions P-4/u.test(e),
+    ),
+  );
 });
 
 for (const kind of ["editing", "browsing"]) {
@@ -1608,6 +1622,13 @@ for (const kind of ["editing", "browsing"]) {
       check,
       (t) => (t.runnerReadings.maintenanceLaunch.trigger = "other"),
       /runnerReadings\.maintenanceLaunch/u,
+    );
+    // 禁止の seam の option の一覧（[precheck] の対象）を減らさない。
+    detects(
+      trace,
+      check,
+      (t) => t.maintenance.forbiddenSeamOptions.pop(),
+      /maintenance\.forbiddenSeamOptions/u,
     );
     detects(
       trace,

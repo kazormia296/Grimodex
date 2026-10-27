@@ -1136,7 +1136,6 @@ function traceRunnerErrors(errors, trace) {
     );
   if (
     !same([...(launch.env ?? [])].sort(), [...MAINTENANCE_LAUNCH_ENV].sort()) ||
-    (launch.env ?? []).some((name) => forbidden.includes(name)) ||
     launch.trigger !== "nir1-graph-index-build" ||
     launch.scope !== "trace-measurement-launch-only" ||
     launch.onForbiddenOption !== "[precheck]" ||
