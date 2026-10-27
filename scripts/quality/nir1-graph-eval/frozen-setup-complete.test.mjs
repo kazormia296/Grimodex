@@ -768,6 +768,7 @@ test("レビュー P2-3／P2-4: G-02 の旧 Revision は live でも cold DB で
   const stale = ok.receipt.readBack.relationStaleness["g02-r-dace"];
   assert.equal(stale.relation, "g02-dace-link");
   assert.notEqual(stale.stored, stale.current);
+  assert.equal(stale.stored, stale.beforeToken);
   // Another failure of the same-ID create (not a reuse refusal) stops.
   const other = await completeSetup("G-02/base", {
     relationCreateError: "WORKSPACE_SWITCHING: workspace is switching",
@@ -810,6 +811,26 @@ test("レビュー P2-3／P2-4: G-02 の旧 Revision は live でも cold DB で
         read: () => ({ stored: null, current: "t" }),
       }),
     /\[precheck\] S1i mutation/u,
+  );
+  // Re-review P3 (a): a stored token that is not the Relation's token before
+  // the edit is no evidence, even when it differs from the current one.
+  const before = stale.beforeToken;
+  assert.throws(
+    () =>
+      assertRelationStaleOnCold({
+        cold: "/nonexistent",
+        ids: ok.receipt.logicalToRuntime,
+        read: () => ({ stored: "v9@x:relation:y", current: "t" }),
+      }),
+    /the cold DB does not show g02-r-dace stale/u,
+  );
+  assert.equal(
+    assertRelationStaleOnCold({
+      cold: "/nonexistent",
+      ids: ok.receipt.logicalToRuntime,
+      read: () => ({ stored: before, current: "t" }),
+    })["g02-r-dace"].stored,
+    before,
   );
   assert.match(RELATION_ID_REUSE_REFUSAL.source, /codex_relations/u);
 });
@@ -933,8 +954,12 @@ test("P-5: author の session の maintenance の段（cutover marker）は 180 
     ]),
     [
       [0, "author", "not-reached", 1],
-      [1, "author-reopen-1", "reached", 1],
+      [1, "author-reopen-1", "reached", 0],
     ],
+  );
+  assert.deepEqual(
+    once.receipt.maintenanceAttempts.map((row) => row.settingWritesTotal),
+    [1, 1],
   );
   assert.equal(
     once.receipt.maintenanceAttempts[0].missing,

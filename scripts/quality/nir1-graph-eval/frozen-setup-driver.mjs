@@ -1918,16 +1918,22 @@ export function assertRelationStaleOnCold({
       )
         continue;
       const tokens = read(cold, row.revisionId, record.previousRuntimeId);
+      // Re-review P3 (a): the stored token is the Relation's token before
+      // the edit (no vacuous match), and the current one differs.
+      const beforeToken = record.before
+        ? `v${record.before.version}@${record.before.updatedAt}:relation:${record.previousRuntimeId}`
+        : null;
       if (
         typeof tokens.stored !== "string" ||
         tokens.stored.length === 0 ||
+        tokens.stored !== beforeToken ||
         tokens.stored === tokens.current
       )
         fail(
           "mutation",
           `${record.mutation}: the cold DB does not show ${revision} stale against ${logical} (${JSON.stringify(tokens)})`,
         );
-      out[revision] = { relation: logical, ...tokens };
+      out[revision] = { relation: logical, beforeToken, ...tokens };
     }
   }
   return out;
@@ -2081,6 +2087,7 @@ export async function setupFrozenVariant({
         const dirLabel =
           attempt === 0 ? row.label : `${row.label}-reopen-${attempt}`;
         const startedAt = now();
+        const writesBefore = ctx.maintenanceSettingWrites ?? 0;
         let timeout = null;
         let failure = null;
         let maintenanceTimeout = null;
@@ -2190,7 +2197,9 @@ export async function setupFrozenVariant({
             outcome: maintenanceTimeout ? "not-reached" : "reached",
             missing: maintenanceTimeout?.maintenanceTimeout.missing ?? null,
             waitedMs: maintenanceTimeout?.maintenanceTimeout.waitedMs ?? null,
-            settingWrites: ctx.maintenanceSettingWrites ?? 0,
+            // Re-review P3 (c): this opening's writes, and the total.
+            settingWrites: (ctx.maintenanceSettingWrites ?? 0) - writesBefore,
+            settingWritesTotal: ctx.maintenanceSettingWrites ?? 0,
             maintenanceRuns: (() => {
               try {
                 return readRunsSince(

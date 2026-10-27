@@ -719,6 +719,9 @@ test("setup の受領書の loader: frozen は frozen の schema と停止位置
     },
     { sealAttempts: [] },
     { setupMain: undefined },
+    // Re-review P3 (b): a variant with a hold session and no index state
+    // before its first mutation.
+    { plan: { sessions: [{ label: "author" }, { label: "hold" }] } },
     // P-5: the author session's maintenance openings.
     { maintenanceAttempts: undefined },
     { maintenanceAttempts: [{ attempt: 0, outcome: "not-reached" }] },
@@ -744,6 +747,26 @@ test("setup の受領書の loader: frozen は frozen の schema と停止位置
       /\[precheck\] the setup receipt .* is not a complete setup with its measurement point/u,
     );
   assert.equal(SEAL_OPENINGS_MAX, B_SEAL_REOPENS + 1);
+  // With its pre-mutation state, the hold variant's receipt is complete.
+  assert.equal(
+    assertCompleteSetupReceipt(
+      load({
+        ...base,
+        stopsAt: "complete",
+        status: "setup-complete",
+        r5CheckRun: undefined,
+        ...COMPLETE_SETUP_FIELDS,
+        plan: { sessions: [{ label: "author" }, { label: "hold" }] },
+        preMutationIndexState: {
+          metadata: {
+            b: { generation: 1, dirty: false },
+            chronicle: { generation: 1, dirty: false },
+          },
+        },
+      }),
+    ).status,
+    "setup-complete",
+  );
   for (const value of [
     { ...base, status: "setup-complete" },
     { ...base, stopsAt: "complete" },

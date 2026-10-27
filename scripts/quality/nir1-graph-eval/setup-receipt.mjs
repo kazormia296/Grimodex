@@ -71,6 +71,18 @@ function completeSetupFields(value) {
         }))
       : null,
     setupMainSha256: value?.setupMain?.sha256 ?? null,
+    // Re-review P3 (b): a variant with a hold session records the index
+    // state before its first mutation.
+    hasHoldSession: Array.isArray(value?.plan?.sessions)
+      ? value.plan.sessions.some((row) => row?.label === "hold")
+      : false,
+    preMutationIndexState: value?.preMutationIndexState
+      ? {
+          b: value.preMutationIndexState.metadata?.b?.generation ?? null,
+          chronicle:
+            value.preMutationIndexState.metadata?.chronicle?.generation ?? null,
+        }
+      : null,
     maintenanceAttempts: Array.isArray(value?.maintenanceAttempts)
       ? value.maintenanceAttempts.map((row) => ({
           attempt: row?.attempt ?? null,
@@ -115,6 +127,8 @@ function completeSetupProblems(fields) {
     maintenance.at(-1).outcome !== "reached"
   )
     problems.push("maintenanceAttempts");
+  if (fields?.hasHoldSession && !fields?.preMutationIndexState)
+    problems.push("preMutationIndexState");
   return problems;
 }
 const LOADED = new WeakSet();
