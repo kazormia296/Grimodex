@@ -21,8 +21,9 @@ import { loadDevFixture } from "./dev-fixture.mjs";
 import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import { assessG01Negative } from "./frozen-diagnostics.mjs";
 import {
-  G01_CONTROL_GAP_MS,
   G01_GRAPH_READY_WAIT_MS,
+  G01_SAMPLE_ATTEMPTS,
+  askUntilDecided,
   effectiveAnswerOf,
   g01NegativeLaunchEnv,
   g01NegativeSampleOf,
@@ -32,7 +33,6 @@ import {
   runG01NegativeStep,
 } from "./g01-negatives.mjs";
 import { a3AtStartOf } from "./run-sample.mjs";
-import { setTimeout as delay } from "node:timers/promises";
 import { ROOT, bundleObserver } from "./launcher.mjs";
 import { buildHarnessRenderer, startStaticServer } from "./renderer-build.mjs";
 import { HARNESS_PAGE, sha256, startSession } from "./session.mjs";
@@ -312,22 +312,30 @@ async function main() {
             materials,
           ),
         );
-        // As the product's hook: the parent, and its follow-up after the
-        // graph-ready mark when the parent is late (review P2-3).
-        const before = await readCounters();
-        const probed = await page.evaluate(
-          (input) => window.cp4Harness.diagnostic.graphProbe(input),
-          {
-            projectId: ids.projectId,
-            sceneId: ids.querySceneId,
-            seed,
-            readyWaitMs: G01_GRAPH_READY_WAIT_MS,
+        // DR-CP4-O-14: the hook's parent and follow-up, asked again only
+        // while the answer is neutral (late); the first decided one counts.
+        const asked = await askUntilDecided({
+          ask: async () => {
+            const probed = await page.evaluate(
+              (input) => window.cp4Harness.diagnostic.graphProbe(input),
+              {
+                projectId: ids.projectId,
+                sceneId: ids.querySceneId,
+                seed,
+                readyWaitMs: G01_GRAPH_READY_WAIT_MS,
+              },
+            );
+            return probed?.ok ? probed.value : { error: probed?.error ?? null };
           },
-        );
-        const after = await readCounters();
-        if (!probed?.ok)
-          throw new Error(`[artifact] graphProbe: ${probed?.error}`);
-        const probe = probed.value;
+          limit: G01_SAMPLE_ATTEMPTS,
+          readCounters,
+        });
+        const probe = asked.decided
+          ? asked.probe
+          : {
+              parent: { graphOutcome: "graph-late", finalSceneIds: [] },
+              child: null,
+            };
         const norm = (value) =>
           typeof value === "string" && value.startsWith("graph-unavailable")
             ? "graph-unavailable"
@@ -356,25 +364,13 @@ async function main() {
           }),
         );
         const outcome = effectiveAnswerOf(probe).graphOutcome;
-        const measure = { status: effectiveAnswerOf(probe).status };
-        const tries = [
-          probe.parent.graphOutcome,
-          probe.child?.graphOutcome ?? null,
-        ];
-        const counters = {
-          cacheHits: after.cacheHits - before.cacheHits,
-          lateCached: after.lateCached - before.lateCached,
-        };
         report.graphOutcomes ??= [];
         report.graphOutcomes.push({
-          status: measure.status,
+          decided: asked.decided,
           graphOutcome: outcome,
-          tries,
-          counters,
-          readyMarkAfterMs: probe.readyMarkAfterMs,
+          tries: asked.tries,
           a3: a3AtStartOf(a3),
         });
-        await delay(G01_CONTROL_GAP_MS);
       }
     }
     report.samples = samples;

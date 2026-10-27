@@ -6,6 +6,9 @@ import { test } from "node:test";
 import { assessG01Negative } from "./frozen-diagnostics.mjs";
 import {
   G01_CONTROL_ATTEMPTS,
+  G01_SAMPLE_ATTEMPTS,
+  answerKindOf,
+  askUntilDecided,
   G01_CONTROL_GAP_MS,
   G01_GRAPH_READY_WAIT_MS,
   effectiveAnswerOf,
@@ -515,7 +518,7 @@ test("O-6: 対照は graph-ready の答えの Graph-only の行が宣言の Scen
   );
   assert.equal(
     classify(reachedAnswer({ graphOutcome: "graph-unavailable:failed" })),
-    "undetermined",
+    "not-reached",
   );
 });
 
@@ -701,7 +704,8 @@ test("レビュー P2-3: 対照は hook と同じく親と、親が late なら 
     sleep: async (ms) => slept.push(ms),
   });
   assert.equal(control.status, "reached");
-  assert.equal(control.answers.length, 2);
+  assert.equal(control.tries.length, 2);
+  assert.equal(control.decidedAt, 1);
   assert.deepEqual(slept, [G01_CONTROL_GAP_MS]);
   assert.deepEqual(calls[0], [
     "graphProbe",
@@ -712,7 +716,7 @@ test("レビュー P2-3: 対照は hook と同じく親と、親が late なら 
       readyWaitMs: G01_GRAPH_READY_WAIT_MS,
     },
   ]);
-  assert.deepEqual(control.answers[1].counters, {
+  assert.deepEqual(control.tries[1].counters, {
     begins: 1,
     cacheHits: 1,
     lateCached: 0,
@@ -743,7 +747,8 @@ test("レビュー P2-3: 対照は hook と同じく親と、親が late なら 
     sleep: async () => {},
   });
   assert.equal(late.status, "undetermined");
-  assert.equal(late.answers.length, G01_CONTROL_ATTEMPTS);
+  assert.equal(late.tries.length, G01_CONTROL_ATTEMPTS);
+  assert.equal(G01_CONTROL_ATTEMPTS, 30);
 });
 
 test("レビュー P3 (a)(b): seal の後に B が再び dirty なら開き直し、Chronicle が使えなければ止め、N2 は版が進まなければ blocked", async () => {
@@ -807,4 +812,97 @@ test("レビュー P3 (a)(b): seal の後に B が再び dirty なら開き直�
   });
   assert.equal(step.blocked.reason, "mutation");
   assert.match(step.blocked.error, /did not advance the body version/u);
+});
+
+test("O-14: 中立の答え（late）だけを聞き直し、最初に決まった答えで判定する（best-of ではない）。上限まで決まらなければ決まらない。全回を記録する", async () => {
+  assert.equal(answerKindOf({ graphOutcome: "graph-ready" }), "ready");
+  assert.equal(
+    answerKindOf({ graphOutcome: "graph-unavailable:invalidated" }),
+    "unavailable",
+  );
+  assert.equal(answerKindOf({ graphOutcome: "graph-late" }), "neutral");
+  assert.equal(answerKindOf(null), "neutral");
+  const run = async (outcomes, limit = 30) => {
+    const queue = [...outcomes];
+    const slept = [];
+    let clock = 0;
+    let begins = 0;
+    const result = await askUntilDecided({
+      ask: async () => {
+        clock += 7;
+        const outcome = queue.shift() ?? "graph-late";
+        return {
+          parent: { graphOutcome: "graph-late" },
+          child: { graphOutcome: outcome },
+        };
+      },
+      limit,
+      readCounters: async () => ({
+        begins: (begins += 1),
+        cacheHits: begins,
+        lateCached: 0,
+      }),
+      sleep: async (ms) => slept.push(ms),
+      clock: () => clock,
+    });
+    return { result, slept };
+  };
+  const first = await run([
+    "graph-late",
+    "graph-late",
+    "graph-unavailable:invalidated",
+    "graph-ready",
+  ]);
+  assert.equal(first.result.decided, true);
+  // 最初に決まった答え（unavailable）が決める。後の ready は聞かない。
+  assert.equal(first.result.kind, "unavailable");
+  assert.equal(first.result.tries.length, 3);
+  assert.deepEqual(first.slept, [G01_CONTROL_GAP_MS, G01_CONTROL_GAP_MS]);
+  assert.equal(G01_CONTROL_GAP_MS, 250);
+  assert.deepEqual(
+    first.result.tries.map((row) => [
+      row.at,
+      row.kind,
+      row.durationMs,
+      row.cached,
+    ]),
+    [
+      [0, "neutral", 7, true],
+      [1, "neutral", 7, true],
+      [2, "unavailable", 7, true],
+    ],
+  );
+  assert.deepEqual(first.result.tries[0].counters, {
+    begins: 1,
+    cacheHits: 1,
+    lateCached: 0,
+  });
+  const never = await run([], G01_SAMPLE_ATTEMPTS);
+  assert.equal(never.result.decided, false);
+  assert.equal(never.result.tries.length, 30);
+  assert.equal(never.slept.length, 29);
+  // 対照は決まった unavailable を not-reached と読む（届かない）。
+  const { page } = fakePage({
+    graphProbe: () => ({
+      ok: true,
+      value: {
+        parent: reachedAnswer({
+          graphOutcome: "graph-unavailable:failed",
+          graphOnly: null,
+        }),
+        child: null,
+      },
+    }),
+  });
+  const control = await runG01NegativeControl({
+    page,
+    ids: IDS,
+    target: T2,
+    readGraphInputs: () => ({}),
+    sleep: async () => {},
+  });
+  assert.deepEqual(
+    [control.status, control.decided, control.tries.length],
+    ["not-reached", true, 1],
+  );
 });

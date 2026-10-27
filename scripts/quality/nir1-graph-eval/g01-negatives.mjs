@@ -188,11 +188,13 @@ export function graphInputsDigest(rows) {
  * that is not graph-ready, its follow-up after the product's graph-ready
  * mark). Harness values, not K6/4 values.
  */
-export const G01_CONTROL_ATTEMPTS = 3;
+export const G01_CONTROL_ATTEMPTS = 30;
+/** DR-CP4-O-14: the sample's re-asks of a neutral (late) answer. */
+export const G01_SAMPLE_ATTEMPTS = 30;
 /** The wait for the product's graph-ready mark after a late parent. */
 export const G01_GRAPH_READY_WAIT_MS = 10_000;
-/** Between attempts: longer than the owner's rebuild_min_interval (1 s). */
-export const G01_CONTROL_GAP_MS = 1_200;
+/** Between re-asks (fixed; short against the product's follow-up). */
+export const G01_CONTROL_GAP_MS = 250;
 /** Review P3 (f): what the control does not cover, disclosed. */
 export const G01_CONTROL_LIMIT =
   "the control and the measurement share the Graph's relational input (Codex entries, Relations, pins); the B index digest is disclosed, not compared";
@@ -202,6 +204,78 @@ export const effectiveAnswerOf = (probe) =>
   probe?.child ?? probe?.parent ?? null;
 
 /**
+ * DR-CP4-O-14: the kind of one Graph answer — `ready` (graph-ready) and
+ * `unavailable` (graph-unavailable, any reason) are decided; anything else
+ * (late, no answer, a failed fetch) is neutral: it says neither reached nor
+ * not reached, and only a neutral answer is asked again.
+ */
+export function answerKindOf(answer) {
+  const outcome = answer?.graphOutcome;
+  if (outcome === "graph-ready") return "ready";
+  if (typeof outcome === "string" && outcome.startsWith("graph-unavailable"))
+    return "unavailable";
+  return "neutral";
+}
+
+/**
+ * DR-CP4-O-14: the same operation asked again while its answer is neutral,
+ * at most `limit` times with the fixed `gapMs` between; the FIRST decided
+ * answer decides (never a best-of). Every try is recorded: its kind and
+ * outcome, the owner counters' delta (begins, cacheHits, lateCached; a
+ * cached answer is read by the same kind rule as any other) and its time.
+ */
+export async function askUntilDecided({
+  ask,
+  limit,
+  gapMs = G01_CONTROL_GAP_MS,
+  readCounters = null,
+  sleep = delay,
+  clock = () => Date.now(),
+}) {
+  const tries = [];
+  for (let at = 0; at < limit; at++) {
+    const before = readCounters ? await readCounters() : null;
+    const started = clock();
+    const probe = await ask();
+    const durationMs = clock() - started;
+    const after = readCounters ? await readCounters() : null;
+    const answer = effectiveAnswerOf(probe);
+    const kind = answerKindOf(answer);
+    const counters =
+      before && after
+        ? Object.fromEntries(
+            ["begins", "cacheHits", "lateCached"].map((key) => [
+              key,
+              (after[key] ?? 0) - (before[key] ?? 0),
+            ]),
+          )
+        : null;
+    tries.push({
+      at,
+      kind,
+      outcome: answer?.graphOutcome ?? null,
+      parentOutcome: probe?.parent?.graphOutcome ?? null,
+      childOutcome: probe?.child?.graphOutcome ?? null,
+      cached: counters
+        ? counters.cacheHits > 0 || counters.lateCached > 0
+        : null,
+      counters,
+      durationMs,
+      timing: {
+        parent: probe?.parent?.timing ?? null,
+        child: probe?.child?.timing ?? null,
+        readyMarkAfterMs: probe?.readyMarkAfterMs ?? null,
+      },
+      error: probe?.error ?? null,
+    });
+    if (kind !== "neutral")
+      return { decided: true, probe, answer, kind, tries };
+    if (at + 1 < limit) await sleep(gapMs);
+  }
+  return { decided: false, probe: null, answer: null, kind: "neutral", tries };
+}
+
+/**
  * DR-CP4-O-6: the control's verdict on one product answer — `reached` when
  * the Graph answer is graph-ready and its Graph-only row is the declared
  * Scene, pinned to the target Entity, through an edge from the seed to the
@@ -209,7 +283,9 @@ export const effectiveAnswerOf = (probe) =>
  * `undetermined` otherwise (late, unavailable, failed).
  */
 export function classifyG01Control({ answer, ids, target }) {
-  if (answer?.graphOutcome !== "graph-ready") return "undetermined";
+  const kind = answerKindOf(answer);
+  if (kind === "unavailable") return "not-reached";
+  if (kind !== "ready") return "undetermined";
   const scene = ids.scenes?.[target.sceneId];
   const entity = ids.entities?.[target.entityId];
   const seed = ids.entities?.[target.seedEntityId];
@@ -239,36 +315,28 @@ export async function runG01NegativeControl({
   sleep = delay,
   attempts = G01_CONTROL_ATTEMPTS,
 }) {
-  const answers = [];
-  let status = "undetermined";
-  for (let at = 0; at < attempts; at++) {
-    const before = readCounters ? await readCounters() : null;
-    const result = await pageCall(page, "graphProbe", {
-      projectId: ids.projectId,
-      sceneId: ids.scenes[target.querySceneId],
-      seed: ids.entities[target.seedEntityId],
-      readyWaitMs: G01_GRAPH_READY_WAIT_MS,
-    });
-    const after = readCounters ? await readCounters() : null;
-    const probe = result?.ok ? result.value : { error: result?.error ?? null };
-    const counterDelta =
-      before && after
-        ? Object.fromEntries(
-            ["begins", "cacheHits", "lateCached"].map((key) => [
-              key,
-              (after[key] ?? 0) - (before[key] ?? 0),
-            ]),
-          )
-        : null;
-    answers.push({ ...probe, counters: counterDelta });
-    const answer = effectiveAnswerOf(probe);
-    status = classifyG01Control({ answer, ids, target });
-    if (answer?.graphOutcome === "graph-ready") break;
-    await sleep(G01_CONTROL_GAP_MS);
-  }
+  const asked = await askUntilDecided({
+    ask: async () => {
+      const result = await pageCall(page, "graphProbe", {
+        projectId: ids.projectId,
+        sceneId: ids.scenes[target.querySceneId],
+        seed: ids.entities[target.seedEntityId],
+        readyWaitMs: G01_GRAPH_READY_WAIT_MS,
+      });
+      return result?.ok ? result.value : { error: result?.error ?? null };
+    },
+    limit: attempts,
+    readCounters,
+    sleep,
+  });
   return {
-    status,
-    answers,
+    status: asked.decided
+      ? classifyG01Control({ answer: asked.answer, ids, target })
+      : "undetermined",
+    decided: asked.decided,
+    decidedAt: asked.decided ? asked.tries.length - 1 : null,
+    answer: asked.answer,
+    tries: asked.tries,
     graphInputs: graphInputsDigest(readGraphInputs()),
     bIndex: readIndex ? (readIndex()?.b ?? null) : null,
     limit: G01_CONTROL_LIMIT,

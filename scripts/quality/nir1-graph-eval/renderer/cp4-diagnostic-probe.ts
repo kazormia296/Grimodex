@@ -276,6 +276,19 @@ function answerOf(result: FetchResult, sceneId: string) {
     finalSceneIds: fused
       ? fused.rows.map((row) => row.sceneId)
       : result.result.scenes.map((row) => row.sceneId),
+    // DR-CP4-O-14 (3): disclosed only — when the answer's Raw was ready and
+    // when it returned, against which the Graph join was late.
+    timing: {
+      tFetchMs: result.timing.tFetchMs,
+      tRawReadyMs: result.timing.tRawReadyMs,
+      tReturnMs: result.timing.tReturnMs,
+    },
+    completion: result.completion
+      ? {
+          outcome: result.completion.outcome,
+          deadlineExceeded: result.completion.deadlineExceeded,
+        }
+      : null,
   };
 }
 
