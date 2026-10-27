@@ -1697,6 +1697,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/trace-record.mjs
       - scripts/quality/nir1-graph-eval/trace-runner.mjs
       - scripts/quality/nir1-graph-eval/build-receipt-check.mjs
+      - scripts/quality/nir1-graph-eval/trace-seal.mjs
       - scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
@@ -1769,6 +1770,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/trace-record.test.mjs
       - scripts/quality/nir1-graph-eval/trace-runner.test.mjs
       - scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs
+      - scripts/quality/nir1-graph-eval/trace-seal.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py

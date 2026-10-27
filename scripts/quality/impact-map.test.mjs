@@ -1861,12 +1861,14 @@ test("CP-4 TR trace runner and build receipt check assets are registered, select
     "scripts/quality/nir1-graph-eval/trace-record.mjs",
     "scripts/quality/nir1-graph-eval/trace-runner.mjs",
     "scripts/quality/nir1-graph-eval/build-receipt-check.mjs",
+    "scripts/quality/nir1-graph-eval/trace-seal.mjs",
     "scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx",
   ];
   const tests = [
     "scripts/quality/nir1-graph-eval/trace-record.test.mjs",
     "scripts/quality/nir1-graph-eval/trace-runner.test.mjs",
     "scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs",
+    "scripts/quality/nir1-graph-eval/trace-seal.test.mjs",
   ];
   for (const changedPath of [...implementations, ...tests]) {
     const selection = selectImpact(map, [changedPath]);
