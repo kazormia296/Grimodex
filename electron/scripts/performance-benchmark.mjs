@@ -22,6 +22,10 @@ import process from "node:process";
 import { rootDir } from "./build.mjs";
 import { buildRuntimePerformanceFixtureForReview } from "./runtime-performance-fixture.mjs";
 import {
+  buildRuntimePerformanceIoSettlePath,
+  runRuntimePerformanceIoSettleStep,
+} from "./runtime-performance-io-settle.mjs";
+import {
   buildRuntimePerformanceAttemptPaths,
   runRuntimePerformanceWithRetry,
 } from "./runtime-performance-retry.mjs";
@@ -316,6 +320,7 @@ export function prepareRuntimePerformanceArtifacts(metricsPath) {
     ...Object.values(attemptPaths).map(
       buildRuntimePerformanceTimeoutArtifactPath,
     ),
+    buildRuntimePerformanceIoSettlePath(attemptPaths.canonical),
   ];
   mkdirSync(path.dirname(attemptPaths.canonical), { recursive: true });
   for (const evidencePath of evidencePaths) {
@@ -360,6 +365,10 @@ export function runPerformanceBenchmark(argv = process.argv) {
   const expectedFixture = buildRuntimePerformanceFixtureForReview(
     options.reviewFixtureId,
   );
+  const ioSettlePath = buildRuntimePerformanceIoSettlePath(
+    attemptPaths.canonical,
+  );
+  const ioSettleAttempts = [];
   const executeAttempt = ({ attempt, metricsPath: attemptMetricsPath }) => {
     rmSync(attemptMetricsPath, { force: true });
     const smokeEnvironment = {
@@ -390,6 +399,13 @@ export function runPerformanceBenchmark(argv = process.argv) {
       smokeEnv.GDK_BACKEND = "x11";
       smokeEnv.QT_QPA_PLATFORM = "xcb";
     }
+    // Linux CI only: flush and wait (bounded) for host I/O to settle before
+    // the measured launch. Never fails or skips the measurement.
+    runRuntimePerformanceIoSettleStep({
+      attempt,
+      evidencePath: ioSettlePath,
+      attempts: ioSettleAttempts,
+    });
     console.log(
       `[electron:perf] measurement attempt ${attempt}${useFreshXvfb ? " (fresh Electron + Xvfb)" : ""}`,
     );

@@ -97,7 +97,7 @@ test("package.json exposes deterministic Electron runtime performance contracts"
 
   assert.equal(
     packageJson.scripts["test:electron-perf"],
-    "node --test scripts/electron-runtime-performance-workflow.test.mjs scripts/runtime-performance-fixture.test.mjs scripts/runtime-performance-budget.test.mjs scripts/runtime-performance-retry.test.mjs",
+    "node --test scripts/electron-runtime-performance-workflow.test.mjs scripts/runtime-performance-fixture.test.mjs scripts/runtime-performance-budget.test.mjs scripts/runtime-performance-retry.test.mjs scripts/runtime-performance-io-settle.test.mjs",
   );
   assert.equal(
     packageJson.scripts["electron:perf:ci"],
