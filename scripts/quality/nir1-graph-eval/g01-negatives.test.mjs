@@ -393,3 +393,23 @@ test("O-1 (5): 測定の Main は B-ROUTE の journey seam、sample は論理 ID
     ["g01-mira-entity-reached:unobservable"],
   );
 });
+
+test("O-1 (5)（変異 G4）: restore の答えの版の bytes が用意した版と違えば、本文が一致して見えても blocked", async () => {
+  const { page } = fakePage({
+    restoreVersion: () => ({
+      ok: true,
+      value: { restoredSha256: "other", afterSha256: "o" },
+    }),
+  });
+  const step = await runG01NegativeStep({
+    id: "K24-G01-N3",
+    page,
+    ids: IDS,
+    target: TARGET,
+    before: { revisionId: "v1", sha256: "o" },
+    readIndex: () => metadata(4),
+    readPins: () => pins([pin("e-orin")]),
+    wait: async () => ({ ok: true, waitedMs: 1 }),
+  });
+  assert.equal(step.blocked?.reason, "mutation");
+});

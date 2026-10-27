@@ -647,3 +647,14 @@ test("S5-B: S2 が commit と SHA-256 で指す file は、その commit から�
     commit,
   );
 });
+
+test("S5-B（変異 D7）: measured の sample の無い両側は一致としない", () => {
+  const warmOnly = attemptSamples().filter((row) => row.phase === "warmup");
+  const result = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: warmOnly,
+    with: warmOnly,
+  });
+  assert.equal(result.compared, 0);
+  assert.equal(result.same, false);
+});
