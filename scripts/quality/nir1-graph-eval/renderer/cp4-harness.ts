@@ -549,7 +549,14 @@ async function buildRaw(input: {
  * usable and the IR is ready. The Index proof lives in the process, so each
  * measurement Main builds it once.
  */
-async function buildIndex(input: { sceneId: string; limitMs: number }) {
+async function buildIndex(input: {
+  sceneId: string;
+  limitMs: number;
+  // S1j-2 P-6: the pause between the queries (default 50 ms as before; the
+  // frozen setup passes its constant so the maintenance Verify is not
+  // preempted by every query).
+  intervalMs?: number;
+}) {
   const started = performance.now();
   const probes = [];
   while (performance.now() - started < input.limitMs) {
@@ -564,7 +571,7 @@ async function buildIndex(input: { sceneId: string; limitMs: number }) {
       sample.completion?.outcome === "ir-ready"
     )
       return { ok: true, durationMs: performance.now() - started, probes };
-    await sleep(50);
+    await sleep(input.intervalMs ?? 50);
   }
   return { ok: false, durationMs: performance.now() - started, probes };
 }

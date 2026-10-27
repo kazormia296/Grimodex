@@ -131,6 +131,31 @@ export const RELATION_ID_REUSE_REFUSAL =
  * Fixed constants (the tests pin them).
  */
 export const MAINTENANCE_WAIT_MS = 180_000;
+/**
+ * P-6 (integrator's decision (b)): the Chronicle Index build's query loop
+ * pauses between queries (the 50 ms loop preempted the maintenance Verify
+ * hundreds of times) and waits longer. Fixed constants (the tests pin them);
+ * the usable test itself (`indexUsable` and `ir-ready`) is unchanged, and a
+ * timeout is no reopening trigger (DR-CP4-L-24).
+ */
+export const INDEX_BUILD_INTERVAL_MS = 500;
+export const INDEX_BUILD_WAIT_MS = 120_000;
+
+/**
+ * P-6: the README preconditions an index build timeout leaves unmet (the
+ * L-24 table's rules): a while- variant's build after the mutation cannot
+ * hold the declared state (index-state-holding); its build in the seal
+ * session, before the mutation, did not reach the sealed generations
+ * (maintenance-enabled, as the pre-mutation check); any other variant's
+ * Chronicle alone not usable is Hold (none).
+ */
+export function indexBuildUnmet(plan, phase) {
+  const holding = String(plan?.measurementPoint ?? "").startsWith("while-");
+  if (!holding) return [];
+  return phase === "chronicle-index"
+    ? ["maintenance-enabled"]
+    : ["index-state-holding"];
+}
 export const MAINTENANCE_REOPENS = 2;
 const PREPARE_WAIT_MS = 120_000;
 const SELECT_ONLY = /^\s*SELECT\b/iu;
@@ -821,6 +846,7 @@ const EXECUTORS = Object.freeze({
   },
   async "chronicle-index"({ ctx, step }) {
     guardPage(ctx.plan, "buildIndex");
+    const startedAt = ctx.now();
     const index = await ctx.page.evaluate(
       (input) => window.cp4Harness.buildIndex(input),
       {
@@ -829,11 +855,47 @@ const EXECUTORS = Object.freeze({
           ctx.plan.querySceneId,
           "the query Scene",
         ),
-        limitMs: 60_000,
+        limitMs: INDEX_BUILD_WAIT_MS,
+        intervalMs: INDEX_BUILD_INTERVAL_MS,
       },
     );
+    // P-6: the query loop's record (the maintenance Verify runs it preempted
+    // are read back read-only).
+    const runs = (() => {
+      try {
+        return readRunsSince(
+          path.join(ctx.workspacePath, "grimodex.db"),
+          ctx.ids.projectId,
+          startedAt,
+        );
+      } catch {
+        return null;
+      }
+    })();
+    const indexBuild = {
+      phase: step.phase,
+      session: ctx.session ?? null,
+      intervalMs: INDEX_BUILD_INTERVAL_MS,
+      limitMs: INDEX_BUILD_WAIT_MS,
+      queries: index?.probes?.length ?? null,
+      usableAfterMs: index?.ok ? index.durationMs : null,
+      maintenanceCancelled:
+        runs === null
+          ? null
+          : runs
+              .filter((row) => row.status === "cancelled")
+              .reduce((sum, row) => sum + row.count, 0),
+      maintenanceRuns: runs,
+    };
+    ctx.indexBuilds ??= [];
+    ctx.indexBuilds.push(indexBuild);
     if (!index?.ok)
-      fail("chronicle-index", "the Chronicle Index did not become usable");
+      failBlocked(
+        "chronicle-index",
+        "index-build-timeout",
+        indexBuildUnmet(ctx.plan, step.phase),
+        `${ctx.plan.variantKey}: the Chronicle Index did not become usable in ${INDEX_BUILD_WAIT_MS} ms of queries every ${INDEX_BUILD_INTERVAL_MS} ms (${indexBuild.queries} queries, ${indexBuild.maintenanceCancelled} maintenance runs cancelled)`,
+      );
     // S1j-2: the last query's snapshot is the probe's query side (B4).
     ctx.cBuiltInSession = true;
     ctx.cGeneration =
@@ -2309,6 +2371,7 @@ export async function setupFrozenVariant({
       receipt.measurementPoint = ctx.measurementProbe ?? null;
       if (ctx.preMutationIndexState)
         receipt.preMutationIndexState = ctx.preMutationIndexState;
+      receipt.indexBuilds = ctx.indexBuilds ?? [];
       receipt.measurementSpec = plan.measurementSpec ?? null;
       if (shared.setupMain)
         receipt.setupMain = {
@@ -2362,6 +2425,8 @@ export async function setupFrozenVariant({
         receipt.blocked = blockedRecord({ plan, blocked: error.blocked });
     } else receipt.status = "failed";
   } finally {
+    if (!partialRun(plan) && ctx.indexBuilds && !receipt.indexBuilds)
+      receipt.indexBuilds = ctx.indexBuilds;
     receipt.finishedAt = now();
     await save();
   }

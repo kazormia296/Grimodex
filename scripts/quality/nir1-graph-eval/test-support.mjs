@@ -1380,10 +1380,12 @@ export function completeSetupExtension({
   recreatedReportsOtherId = false,
   cutoverMissesOpens = 0,
   queryDirtiesC = false,
+  buildIndexFailsIn = null,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
     let seamOpens = 0;
+    const indexInputs = [];
     // P-5: the cutover marker is written by the opening after the first
     // `cutoverMissesOpens` (the setting and each later open count).
     let cutoverAttempts = 0;
@@ -1797,9 +1799,15 @@ export function completeSetupExtension({
           return true;
         },
       },
-      buildIndex: async () => {
+      indexInputs,
+      buildIndex: async (input) => {
         indexCalls.push(session.label);
-        if (buildIndexFails) return { ok: false, durationMs: 1, probes: [] };
+        indexInputs.push(input);
+        if (
+          buildIndexFails ||
+          (buildIndexFailsIn !== null && session.label === buildIndexFailsIn)
+        )
+          return { ok: false, durationMs: 1, probes: [] };
         const projectId = projectOf();
         publish(projectId, "nir1-reviewed-chronicle:v1");
         // The product's freshness evaluation can dirty B after its seal.

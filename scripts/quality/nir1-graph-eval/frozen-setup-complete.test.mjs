@@ -10,6 +10,9 @@ import path from "node:path";
 import process from "node:process";
 import { test } from "node:test";
 import {
+  INDEX_BUILD_INTERVAL_MS,
+  INDEX_BUILD_WAIT_MS,
+  indexBuildUnmet,
   MAINTENANCE_REOPENS,
   MAINTENANCE_WAIT_MS,
   RELATION_ID_REUSE_REFUSAL,
@@ -1000,5 +1003,77 @@ test("P-5: author の session の maintenance の段（cutover marker）は 180 
   assert.deepEqual(
     three.sessions.started.map((row) => row.label),
     ["author", "author-reopen-1", "author-reopen-2"],
+  );
+});
+
+test("P-6: Chronicle の Index の build は照会の間隔 500 ms・待ち 120 s の定数で、受領書に indexBuild を残し、使い切れば blocked:index-build-timeout（開き直さない）", async () => {
+  assert.equal(INDEX_BUILD_INTERVAL_MS, 500);
+  assert.equal(INDEX_BUILD_WAIT_MS, 120_000);
+  const ok = await completeSetup("G-08/graph-index-unusable");
+  assert.equal(
+    ok.receipt.status,
+    "setup-complete",
+    ok.receipt.errors.join("\n"),
+  );
+  assert.deepEqual(
+    ok.product.extension.indexInputs.map((row) => [
+      row.intervalMs,
+      row.limitMs,
+    ]),
+    [
+      [500, 120_000],
+      [500, 120_000],
+    ],
+  );
+  assert.deepEqual(
+    ok.receipt.indexBuilds.map((row) => [
+      row.phase,
+      row.session,
+      row.intervalMs,
+      row.limitMs,
+      row.queries,
+      typeof row.usableAfterMs,
+      typeof row.maintenanceCancelled,
+    ]),
+    [
+      ["chronicle-index", "seal", 500, 120_000, 1, "number", "number"],
+      [
+        "chronicle-index:after-mutation",
+        "hold",
+        500,
+        120_000,
+        1,
+        "number",
+        "number",
+      ],
+    ],
+  );
+  // Timeouts: no reopening, the harness's name, the README mapping.
+  const base = await completeSetup("G-02/base", { buildIndexFailsIn: "seal" });
+  assert.equal(base.receipt.status, "blocked");
+  assert.match(
+    base.receipt.precheck.message,
+    /blocked:index-build-timeout — G-02\/base/u,
+  );
+  assert.equal(
+    base.sessions.started.filter((row) => row.label.startsWith("seal")).length,
+    1,
+  );
+  assert.deepEqual(
+    [base.receipt.blocked.contractBlockedId, base.receipt.blocked.hold],
+    [null, true],
+  );
+  assert.equal(base.receipt.indexBuilds[0].usableAfterMs, null);
+  const held = await completeSetup("G-08/graph-index-unusable", {
+    buildIndexFailsIn: "hold",
+  });
+  assert.equal(held.receipt.blocked.contractBlockedId, "index-state-holding");
+  const sealed = await completeSetup("G-08/graph-index-unusable", {
+    buildIndexFailsIn: "seal",
+  });
+  assert.equal(sealed.receipt.blocked.contractBlockedId, "maintenance-enabled");
+  assert.deepEqual(
+    indexBuildUnmet({ measurementPoint: null }, "chronicle-index"),
+    [],
   );
 });
