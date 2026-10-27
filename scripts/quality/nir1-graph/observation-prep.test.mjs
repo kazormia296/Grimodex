@@ -1186,7 +1186,9 @@ test("S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the 
       "(8)",
       "(9)",
       "(10)",
-      "L-12",
+      "L-24",
+      "L-27",
+      "L-19",
     ],
   );
   assert.equal(readings.variantSessions.length, 13);
@@ -1291,20 +1293,20 @@ test("S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the 
   detects(
     prep,
     check,
-    (p) => (p.setupReadings.sealReopen.reopens = 3),
-    /setupReadings\.sealReopen/u,
+    (p) => (p.setupReadings.reopen.limits.seal.reopens = 3),
+    /setupReadings\.reopen/u,
   );
   detects(
     prep,
     check,
-    (p) => (p.setupReadings.sealReopen.waitMs = 60_000),
-    /setupReadings\.sealReopen/u,
+    (p) => (p.setupReadings.reopen.triggers[0].waitMs = 60_000),
+    /setupReadings\.reopen/u,
   );
   detects(
     prep,
     check,
-    (p) => (p.setupReadings.sealReopen.receiptField = "seals"),
-    /setupReadings\.sealReopen/u,
+    (p) => (p.setupReadings.receiptFields.sealAttempts = { outcomes: [] }),
+    /setupReadings\.receiptFields/u,
   );
   detects(
     prep,
@@ -1355,7 +1357,7 @@ test("S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the 
   detects(
     prep,
     check,
-    (p) => (p.setupReadings.setupMain.shaPerRun = false),
+    (p) => (p.setupReadings.setupMain.output = "dist-electron/main.cjs"),
     /setupReadings\.setupMain/u,
   );
   detects(
@@ -1684,7 +1686,7 @@ test("S2 追補: the author may list the permitted DR rows of cp4-decisions.md o
   const decisions = declaration.readFiles.filter((row) =>
     /nir1-lane-decisions\/cp4-decisions\.md$/u.test(row.path),
   );
-  assert.equal(decisions.length, 2);
+  assert.equal(decisions.length, 3);
   assert.equal(typeof declaration.decisionSummariesSeen, "string");
 
   const extraRow = clone(declaration);
@@ -1725,4 +1727,378 @@ test("S2 追補: the author may list the permitted DR rows of cp4-decisions.md o
       hidden,
     );
   }
+});
+
+// ---- S2 追補 #2（S3 の 6 回目の条件 P2-1〜P2-3、P3-1〜P3-4、master の harness への pin） ----
+
+test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed set of reopen triggers, limits, blocked names and receipt fields", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(observationPrepErrors(prep, ctx), []);
+  const readings = prep.setupReadings;
+  assert.deepEqual(
+    readings.source.pins.map((row) => row.role),
+    [
+      "s1j2-complete-setup",
+      "trace-runner",
+      "b-route-seam-fix",
+      "t14-k64-freeze",
+    ],
+  );
+  assert.deepEqual(
+    readings.reopen.triggers.map((row) => row.id),
+    ["not-published", "sealed-then-dirty", "maintenance-wait"],
+  );
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.source.pins[0].commit =
+        "14ccf6ac3470de28c37b9a9dd1e8d3db7d19adc9"),
+    /setupReadings\.source\.pins/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      p.setupReadings.reopen.triggers.push({
+        ...p.setupReadings.reopen.triggers[0],
+        id: "index-build-timeout",
+      }),
+    /setupReadings\.reopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.reopen.limits.author.waitMs = 120_000),
+    /setupReadings\.reopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.reopen.limits.hold.openings = 3),
+    /setupReadings\.reopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.reopen.totalReopenableOpenings = 10),
+    /setupReadings\.reopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.reopen.triggers[1].onExhausted =
+        "blocked:b-seal-not-published"),
+    /setupReadings\.reopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.reopen.closedSet = false),
+    /setupReadings\.reopen/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.blocked = p.setupReadings.blocked.filter(
+        (row) => row.name !== "blocked:index-build-timeout",
+      )),
+    /setupReadings\.blocked/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.indexBuild.intervalMs = 50),
+    /setupReadings\.indexBuild/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.indexBuild.reopenTrigger = true),
+    /setupReadings\.indexBuild/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.receiptFields.sealAttempts.outcomes = [
+        "sealed",
+        "not-published",
+        "failed",
+      ]),
+    /setupReadings\.receiptFields/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => delete p.setupReadings.receiptFields.preMutationIndexState,
+    /setupReadings\.receiptFields/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.setupMain.shaPerRun = true),
+    /setupReadings\.setupMain/u,
+  );
+});
+
+test("S2 追補 #2 P2-3 / P3-4: blockedCaseJudgement is S3's table (harness names kept, never mapped to the maintenance-enabled precondition)", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const rows = prep.setupReadings.blockedCaseJudgement.rows;
+  const row = (harnessId, condition) =>
+    rows.find(
+      (entry) => entry.harnessId === harnessId && entry.condition === condition,
+    );
+  assert.equal(
+    row("b-seal-not-published", "any").graphCases,
+    "blocked:b-sealed-binding",
+  );
+  assert.equal(row("b-seal-not-published", "any").g01, "hold");
+  assert.ok(
+    rows.every((entry) => entry.graphCases !== "blocked:maintenance-enabled"),
+  );
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.blockedCaseJudgement.rows[0].graphCases =
+        "blocked:maintenance-enabled"),
+    /setupReadings\.blockedCaseJudgement/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.blockedCaseJudgement.rows[2].graphCases =
+        "blocked:b-sealed-binding"),
+    /setupReadings\.blockedCaseJudgement/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => p.setupReadings.blockedCaseJudgement.rows.pop(),
+    /setupReadings\.blockedCaseJudgement/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.setupReadings.blockedCaseJudgement.receiptName = "contract-id"),
+    /setupReadings\.blockedCaseJudgement/u,
+  );
+});
+
+test("S2 追補 #2 P2-2: P-4 (b) is wired only for the two one-shot G-08 variants, the others keep warm-up 5 and 30 in the steady state", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const exceptions = prep.samplePlan.variantExceptions;
+  assert.deepEqual(
+    exceptions.map((row) => row.variants),
+    [["G-08/chronicle-index-unusable", "G-08/both-indexes-unusable"]],
+  );
+  assert.equal(prep.samplePlan.warmupPerArm, 5);
+  assert.equal(prep.samplePlan.measuredPerArm, 30);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) =>
+      p.samplePlan.variantExceptions[0].variants.push(
+        "G-08/graph-index-unusable",
+      ),
+    /samplePlan\.variantExceptions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.samplePlan.variantExceptions[0].warmupProcessesPerArm = 0),
+    /samplePlan\.variantExceptions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.samplePlan.variantExceptions[0].measuredProcessesPerArm = 20),
+    /samplePlan\.variantExceptions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.samplePlan.variantExceptions[0].receiptLabel = "定常状態"),
+    /samplePlan\.variantExceptions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.samplePlan.variantExceptions[0].excludeFromDefaultPools = true),
+    /samplePlan\.variantExceptions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.samplePlan.variantExceptions[0].preMeasurementQueries = true),
+    /samplePlan\.variantExceptions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      p.samplePlan.variantExceptions.push({
+        ...p.samplePlan.variantExceptions[0],
+        variants: ["G-02/base"],
+      }),
+    /samplePlan\.variantExceptions/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d10.parity.oneShot.variants = ["G-08/chronicle-index-unusable"]),
+    /d10\.parity\.oneShot/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => (p.d10.parity.oneShot.warmupProcessesPerArm = 0),
+    /d10\.parity\.oneShot/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.measurementSpecs[
+        "while-both-indexes-unusable"
+      ].warmupProcessesPerArm = 0),
+    /setupReadings\.measurementSpecs/u,
+  );
+  // P-4 の決定は S3 の記録の写し（S2 は決めない）。
+  const p4 = prep.reviewerQuestions.find((row) => row.id === "P-4");
+  assert.equal(p4.decision.choice, "b");
+});
+
+test("S2 追補 #2: S3's decisions are recorded, and P-S2-5 (the harness's blocked mapping against S3's table) stays open", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const byId = Object.fromEntries(
+    prep.reviewerQuestions.map((row) => [row.id, row]),
+  );
+  for (const id of ["P-4", "P-S2-2", "P-S2-3", "P-S2-4"])
+    assert.ok(byId[id].decision);
+  assert.equal(byId["P-S2-5"].decision, null);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.reviewerQuestions.find((row) => row.id === "P-4").decision.record =
+        ""),
+    /reviewerQuestions P-4/u,
+  );
+});
+
+test("S2 追補 #2 P3-3: a draft keeps exactly the S4 placeholder tokens", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.equal(prep.placeholders.length, 20);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) => {
+      p.contracts.k64.freezeCommit = "a".repeat(40);
+      p.placeholders = p.placeholders.filter(
+        (row) => row.token !== "S4:k64-freeze-commit",
+      );
+    },
+    /placeholders/u,
+  );
+});
+
+for (const kind of ["editing", "browsing"]) {
+  test(`S2 追補 #2 P2-3 / P-S2-3 / P-S2-4: the ${kind} trace keeps its project, records seal reads and outside-Q returns`, async () => {
+    const ctx = await context();
+    const file =
+      kind === "editing"
+        ? OBSERVATION_PREP_FILES.traceEditing
+        : OBSERVATION_PREP_FILES.traceBrowsing;
+    const trace = await json(file);
+    assert.deepEqual(traceErrors(trace, ctx), []);
+    const check = (copy) => traceErrors(copy, ctx);
+    detects(
+      trace,
+      check,
+      (t) => (t.setupFailure.projectSwapAllowed = true),
+      /setupFailure/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.setupFailure.onNotSetupComplete.cp4Availability = "PASS"),
+      /setupFailure/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) =>
+        (t.fixedBeforeObservation = `${t.fixedBeforeObservation} 作り直せるのは setup の検証を通らないとき。`),
+      /fixedBeforeObservation/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.startSeal.receipt.sealReadTimes = false),
+      /runnerReadings\.startSeal/u,
+    );
+    detects(
+      trace,
+      check,
+      (t) => (t.runnerReadings.startSeal.receipt.cdpNow = "omit"),
+      /runnerReadings\.startSeal/u,
+    );
+    if (kind === "browsing")
+      detects(
+        trace,
+        check,
+        (t) =>
+          (t.runnerReadings.operations.navigate.outsideQ.receiptCountByReason = false),
+        /runnerReadings\.operations\.navigate/u,
+      );
+  });
+}
+
+test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; the blindness scope and the readings chosen after dev runs are disclosed", async () => {
+  const declaration = await json(OBSERVATION_PREP_FILES.authorDeclaration);
+  assert.deepEqual(authorDeclarationErrors(declaration), []);
+  for (const hidden of [
+    "/home/grimodex/worktrees/Grimodex/x/docs/plans/nir1-lane-decisions/cp4-decisions.md",
+    "git show claude/x:docs/plans/nir1-lane-decisions/rs-join-decisions.md",
+    "./docs/plans/nir1-lane-decisions/cq-deferred-decisions.md",
+    "./.artifacts/cp4/run/receipt.json",
+    "claude/nir1-contracts:docs/plans/nir1-cp4-records/r.json",
+  ]) {
+    const copy = clone(declaration);
+    copy.readFiles.push({ path: hidden, sha256: "0".repeat(64) });
+    assert.ok(
+      authorDeclarationErrors(copy).some((e) => /forbidden/u.test(e)),
+      hidden,
+    );
+  }
+  const noScope = clone(declaration);
+  delete noScope.graphRuntimeOutputObservedScope;
+  assert.ok(
+    authorDeclarationErrors(noScope).some((e) =>
+      /graphRuntimeOutputObservedScope/u.test(e),
+    ),
+  );
+  const fewer = clone(declaration);
+  fewer.readingsChosenAfterDevObservation =
+    fewer.readingsChosenAfterDevObservation.slice(1);
+  assert.ok(
+    authorDeclarationErrors(fewer).some((e) =>
+      /readingsChosenAfterDevObservation/u.test(e),
+    ),
+  );
 });

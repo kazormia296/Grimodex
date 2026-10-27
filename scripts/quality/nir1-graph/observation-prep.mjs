@@ -257,7 +257,7 @@ const DIAGNOSTIC_IDS = Object.freeze([
 ]);
 
 /**
- * S2 追補（DR-CP4-L-1〜L-15。claude/cp4-s1j2 の frozen-setup-plan.mjs と
+ * S2 追補（DR-CP4-L-1〜L-15。master 3a6e65e4 の frozen-setup-plan.mjs と
  * frozen-setup-driver.mjs の写し）: the complete setup's sessions, the
  * measurement spec of each measurementPoint, the seal reopen and the names a
  * setup stops with. The validator re-derives each variant's sessions from the
@@ -274,7 +274,19 @@ const SETUP_READING_ITEMS = Object.freeze([
   ["SR-8", "(8)"],
   ["SR-9", "(9)"],
   ["SR-10", "(10)"],
-  ["SR-11", "L-12"],
+  ["SR-11", "L-24"],
+  ["SR-12", "L-27"],
+  ["SR-13", "L-19"],
+]);
+/**
+ * S2 追補 #2（S3v6-P2-1）: the master commits S2 pins (never a commit a rebase
+ * left unreachable). S5 checks the candidate's harness files against them.
+ */
+const SOURCE_PINS = Object.freeze([
+  ["s1j2-complete-setup", "3a6e65e400cac5d72e761f58eb1ae8eaec514e18"],
+  ["trace-runner", "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba"],
+  ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105"],
+  ["t14-k64-freeze", "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f"],
 ]);
 const SETUP_SESSIONS = Object.freeze({
   author: Object.freeze({ main: "product", seam: false }),
@@ -284,48 +296,161 @@ const SETUP_SESSIONS = Object.freeze({
   reseal: Object.freeze({ main: "product", seam: true }),
 });
 const STEADY_POINT = "after-maintenance-current";
+/** S3v6 の P-4 (b): warm-up 5 (unused) and 30 measured processes per arm. */
 const ONE_SHOT = Object.freeze({
   kind: "one-shot",
   maintenanceSeam: false,
-  warmUp: false,
+  warmUpInProcess: false,
+  warmupProcessesPerArm: WARMUP_PER_ARM,
+  measuredProcessesPerArm: MEASURED_PER_ARM,
   queriesPerProcess: 1,
   freshColdCopyPerProcess: true,
 });
+const inProcessSpec = (kind, maintenanceSeam) =>
+  Object.freeze({
+    kind,
+    maintenanceSeam,
+    warmUpInProcess: true,
+    warmupProcessesPerArm: null,
+    measuredProcessesPerArm: null,
+    queriesPerProcess: "runner-procedure",
+    freshColdCopyPerProcess: false,
+  });
 const MEASUREMENT_SPECS = Object.freeze({
-  [STEADY_POINT]: Object.freeze({
-    kind: "steady-state",
-    maintenanceSeam: "runner-procedure",
-    warmUp: true,
-    queriesPerProcess: "runner-procedure",
-    freshColdCopyPerProcess: false,
-  }),
-  "while-graph-index-unusable": Object.freeze({
-    kind: "graph-held-unusable",
-    maintenanceSeam: false,
-    warmUp: true,
-    queriesPerProcess: "runner-procedure",
-    freshColdCopyPerProcess: false,
-  }),
+  [STEADY_POINT]: inProcessSpec("steady-state", "runner-procedure"),
+  "while-graph-index-unusable": inProcessSpec("graph-held-unusable", false),
   "while-chronicle-index-unusable": ONE_SHOT,
   "while-both-indexes-unusable": ONE_SHOT,
 });
 const B_SEAL_NOT_PUBLISHED = "blocked:b-seal-not-published";
 const INDEX_STATE_HOLDING = "blocked:index-state-holding";
+/** The names the master harness stops a setup with (DR-CP4-L-18, L-24, L-27). */
 const SETUP_BLOCKED = Object.freeze([
-  INDEX_STATE_HOLDING,
-  "blocked:maintenance-enabled",
   B_SEAL_NOT_PUBLISHED,
+  "blocked:measurement-point-mismatch",
+  INDEX_STATE_HOLDING,
+  "blocked:pre-mutation-index-state",
+  "blocked:maintenance-enabled",
+  "blocked:index-build-timeout",
 ]);
-const SEAL_REOPEN = Object.freeze({
-  waitMs: 120_000,
-  reopens: 2,
-  maxOpenings: 3,
-  appliesTo: Object.freeze(["seal", "reseal"]),
-  firstStep: "b-seal",
-  newDirectoryAndNonce: true,
-  receiptField: "sealAttempts",
-  onExhausted: B_SEAL_NOT_PUBLISHED,
+/** DR-CP4-L-24: the closed set of reopen triggers and the limits. */
+const REOPEN_TRIGGERS = Object.freeze([
+  [
+    "not-published",
+    ["seal", "reseal"],
+    120_000,
+    "session-first-step",
+    B_SEAL_NOT_PUBLISHED,
+  ],
+  [
+    "sealed-then-dirty",
+    ["seal", "reseal"],
+    null,
+    "session-first-step",
+    "blocked:measurement-point-mismatch",
+  ],
+  [
+    "maintenance-wait",
+    ["author"],
+    180_000,
+    "maintenance-step",
+    "blocked:maintenance-enabled",
+  ],
+]);
+const REOPEN_LIMITS = Object.freeze({
+  author: { openings: 3, reopens: 2, waitMs: 180_000 },
+  ir: { openings: 1, reopens: 0, waitMs: null },
+  seal: { openings: 3, reopens: 2, waitMs: 120_000 },
+  hold: { openings: 1, reopens: 0, waitMs: null },
+  reseal: { openings: 3, reopens: 2, waitMs: 120_000 },
 });
+const REOPEN_TOTAL = 9;
+/** DR-CP4-L-27 (P-6). */
+const INDEX_BUILD = Object.freeze({
+  intervalMs: 500,
+  waitMs: 120_000,
+  reopenTrigger: false,
+  onExhausted: "blocked:index-build-timeout",
+  receiptField: "indexBuilds",
+});
+/** DR-CP4-L-24's receipt fields (and the closed outcome sets). */
+const RECEIPT_FIELDS = Object.freeze({
+  sealAttempts: ["sealed", "sealed-then-dirty", "not-published", "failed"],
+  maintenanceAttempts: ["reached", "not-reached"],
+  indexBuilds: null,
+  preMutationIndexState: null,
+  blocked: null,
+  "readBack.relationStaleness": null,
+});
+const RECEIPT_BLOCKED_FIELDS = Object.freeze([
+  "harnessId",
+  "unmetPreconditions",
+  "declaredPreconditions",
+  "contractBlockedId",
+  "hold",
+]);
+/**
+ * S3v6 の P-S2-2 (a) as a table: harness id and condition -> the case's
+ * judgement for G-01 and G-02〜G-08. Never the fixture precondition
+ * maintenance-enabled; `undecided` rows wait for P-S2-5.
+ */
+const BLOCKED_CASE_JUDGEMENT = Object.freeze([
+  ["b-seal-not-published", "any", "hold", "blocked:b-sealed-binding"],
+  ["measurement-point-mismatch", "graph", "hold", "blocked:b-sealed-binding"],
+  [
+    "measurement-point-mismatch",
+    "chronicle-only",
+    "hold-and-precheck",
+    "hold-and-precheck",
+  ],
+  [
+    "index-state-holding",
+    "while-variant",
+    "not-applicable",
+    "blocked:index-state-holding",
+  ],
+  [
+    "pre-mutation-index-state",
+    "graph",
+    "not-applicable",
+    "blocked:b-sealed-binding",
+  ],
+  [
+    "pre-mutation-index-state",
+    "chronicle-only",
+    "not-applicable",
+    "hold-and-precheck",
+  ],
+  [
+    "maintenance-enabled",
+    "maintenance-wait-exhausted",
+    "undecided",
+    "undecided",
+  ],
+  [
+    "index-build-timeout",
+    "while-variant-seal-step",
+    "not-applicable",
+    "undecided",
+  ],
+  [
+    "index-build-timeout",
+    "while-variant-hold-step",
+    "not-applicable",
+    "blocked:index-state-holding",
+  ],
+  [
+    "index-build-timeout",
+    "other-variant",
+    "hold-and-precheck",
+    "hold-and-precheck",
+  ],
+]);
+/** P-4 (b) applies to these variants only (validator: no other variant). */
+const ONE_SHOT_VARIANTS = Object.freeze([
+  "G-08/chronicle-index-unusable",
+  "G-08/both-indexes-unusable",
+]);
 const SWITCHING_RETRY = Object.freeze({
   error: "WORKSPACE_SWITCHING",
   boundMs: 30_000,
@@ -346,10 +471,44 @@ const DECLARED_DEFAULT = Object.freeze({
   chronicle: "usable",
 });
 /** The open points S2 hands to S3 without deciding them. */
-const REVIEWER_QUESTIONS = Object.freeze(["P-4", "P-S2-2", "P-S2-3", "P-S2-4"]);
+const REVIEWER_QUESTIONS = Object.freeze([
+  "P-4",
+  "P-S2-2",
+  "P-S2-3",
+  "P-S2-4",
+  "P-S2-5",
+]);
+/**
+ * S3v6-P3-3: the exact S4 placeholder tokens of the draft (filling one and
+ * dropping it from the list is S4b's work, never a draft's).
+ */
+const S4_PLACEHOLDERS = Object.freeze(
+  [
+    "k64-freeze-commit",
+    "da1-acceptance-record",
+    "g01-r-rir-mode",
+    "trace-editing-commit",
+    "trace-editing-sha256",
+    "trace-browsing-commit",
+    "trace-browsing-sha256",
+    "k64-procedure-v1-commit",
+    "k64-procedure-v1-sha256",
+    "setup-addendum-commit",
+    "setup-addendum-sha256",
+    "declaration-addendum-commit",
+    "declaration-addendum-sha256",
+    "author-declaration-commit",
+    "author-declaration-sha256",
+    "seed-pin-addendum-commit",
+    "seed-pin-addendum-sha256",
+    "sp-synthetic-detection-record",
+    "sp1-bytes-commit",
+    "r5-check-record",
+  ].map((name) => `S4:${name}`),
+);
 
 /**
- * S2 追補（DR-CP4-TR-8〜TR-10、TR-13。claude/cp4-trace の trace-record.mjs と
+ * S2 追補（DR-CP4-TR-8〜TR-10、TR-13。master 35537447 の trace-record.mjs と
  * trace-seal.mjs の写し）: how the trace runner reads the operations.
  */
 const A3_READ = "once-right-after-parent-fetch-call-observed";
@@ -372,6 +531,8 @@ const FORBIDDEN_SEAM_OPTIONS = Object.freeze([
   "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_BARRIER_ID",
 ]);
 const CONTENT_PROPOSAL_STATUS = "proposal-awaiting-s3";
+/** S3v6-P2-3: this version's trace project (never swapped in this version). */
+const TRACE_PROJECT = "G-02/base";
 
 const TRACE_KINDS = Object.freeze({
   editing: Object.freeze({ file: OBSERVATION_PREP_FILES.traceEditing }),
@@ -384,21 +545,35 @@ const PRODUCT_SOURCES = Object.freeze({
 });
 /**
  * cp4-decisions.md is an observation record; the S2 addendum may list it only
- * for the DR rows the integrator permitted (DR-CP4-L-1〜L-15, TR-1〜TR-14).
+ * for the DR rows the integrator permitted (DR-CP4-L-1〜L-15, L-18〜L-24,
+ * L-27, TR-1〜TR-14). S3v6-P3-1: every pattern is searched anywhere in the
+ * path as written (absolute paths, `git show <ref>:…`, `./…`).
  */
-const DECISIONS_RECORD =
-  /^docs\/plans\/nir1-lane-decisions\/cp4-decisions\.md$/u;
+const DECISIONS_RECORD = /nir1-lane-decisions\/cp4-decisions\.md/u;
 const PERMITTED_DECISION_ROWS = new Set([
   ...Array.from({ length: 15 }, (_, at) => `DR-CP4-L-${at + 1}`),
+  ...Array.from({ length: 7 }, (_, at) => `DR-CP4-L-${at + 18}`),
+  "DR-CP4-L-27",
   ...Array.from({ length: 14 }, (_, at) => `DR-CP4-TR-${at + 1}`),
 ]);
 const FORBIDDEN_READ = Object.freeze([
-  /^docs\/plans\/nir1-lane-decisions\/cq-deferred-decisions\.md$/u,
-  /^docs\/plans\/nir1-lane-decisions\/rsj-/u,
-  /^docs\/plans\/nir1-lane-decisions\/rs-join-decisions\.md$/u,
-  /(?:^|\/)\.artifacts\//u,
-  /\/tasks\/[^/]+\.output$/u,
-  /(?:^|\/)cp4-(?:task|hardening-task|s1f-task|k64-task)\.md$/u,
+  /nir1-lane-decisions\/cq-deferred-decisions\.md/u,
+  /nir1-lane-decisions\/rsj-/u,
+  /nir1-lane-decisions\/rs-join-decisions\.md/u,
+  /nir1-cp4-records\//u,
+  /\.artifacts\//u,
+  /\/tasks\/[^/\s]+\.output/u,
+  /cp4-(?:task|hardening-task|s1f-task|k64-task)\.md/u,
+]);
+/** S3v6-P3-2: the readings integrator or builders chose after dev runs. */
+const READINGS_AFTER_DEV = Object.freeze([
+  "reopen-triggers",
+  "sealed-then-dirty",
+  "start-seal-two-reads",
+  "maintenance-launch",
+  "d2-variant-readings",
+  "index-build-constants",
+  "one-shot-measurement",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -1102,7 +1277,9 @@ function traceRunnerErrors(errors, trace) {
     if (
       outside.counted !== false ||
       outside.until !== "query-published" ||
-      outside.onNonCompleted !== "return-without-waiting-for-publication"
+      outside.onNonCompleted !== "return-without-waiting-for-publication" ||
+      outside.receiptCountByReason !== true ||
+      !nonBlank(outside.receiptRule)
     )
       errors.push(
         "runnerReadings.operations.navigate.outsideQ must end the seedless stay on publication, or return when the query ends other than completed (TR-8 (iii))",
@@ -1123,10 +1300,31 @@ function traceRunnerErrors(errors, trace) {
     !nonBlank(seal.rule) ||
     seal.connection?.readOnly !== true ||
     seal.connection?.busyTimeoutMs !== 0 ||
-    seal.insideTimingWindow !== false
+    seal.insideTimingWindow !== false ||
+    seal.receipt?.sealReadTimes !== true ||
+    seal.receipt?.sealReadCount !== true ||
+    seal.receipt?.cdpNow !== "disclose"
   )
     errors.push(
       "runnerReadings.startSeal must read the B seal twice (before the parent begin, after the parent is observed) on a read-only connection with busy timeout 0 outside the timing window, and count only current as U (disagreement is unknown) (TR-9, TR-13)",
+    );
+  // S3v6-P2-3: a setup that does not complete leaves (b) unmeasured; this
+  // version never swaps the project.
+  const failure = trace.setupFailure ?? {};
+  if (
+    failure.project !== TRACE_PROJECT ||
+    `${trace.project?.caseId}/${trace.project?.variantId}` !== TRACE_PROJECT ||
+    failure.projectSwapAllowed !== false ||
+    failure.onNotSetupComplete?.b !== "未測定" ||
+    failure.onNotSetupComplete?.cp4Availability !== "HOLD" ||
+    !nonBlank(failure.rule)
+  )
+    errors.push(
+      "setupFailure must leave (b) unmeasured and CP-4's availability HOLD when the project's setup does not complete, without swapping the project (S3v6-P2-3)",
+    );
+  if (String(trace.fixedBeforeObservation).includes("setup の検証を通らない"))
+    errors.push(
+      "fixedBeforeObservation must not rebuild the trace because the setup does not pass (S3v6-P2-3; setupFailure)",
     );
   const launch = readings.maintenanceLaunch ?? {};
   const forbidden = trace.maintenance?.forbiddenSeamOptions ?? [];
@@ -1463,13 +1661,13 @@ function setupReadingErrors(errors, readings, ctx) {
     main.tableLanguage !== "cp4-setup-ir" ||
     !same(main.env, { GRIMODEX_PRODUCT_JOURNEY_FAKE_AI: "deterministic-v1" }) ||
     !same(main.sessions, setupIrSessions) ||
-    main.shaPerRun !== true ||
+    main.shaPerRun !== false ||
     main.receiptField !== "setupMain" ||
     !Array.isArray(main.admission) ||
     main.admission.length === 0
   )
     errors.push(
-      "setupMain: setupReadings.setupMain must be the setup-only Main of the ir session only, with its admission and a per-run sha256 in the receipt (DR-CP4-L-1)",
+      "setupMain: setupReadings.setupMain must be the setup-only Main of the ir session only, with its admission and run-independent bytes (DR-CP4-L-1, L-18 P3 (a))",
     );
   const ir = readings.irPath ?? {};
   if (
@@ -1546,9 +1744,59 @@ function setupReadingErrors(errors, readings, ctx) {
     errors.push(
       "setupReadings.measurementSpecs must be steady-state, graph-held-unusable and one-shot (fresh cold copy, one query, no warm-up, no seam) per measurementPoint (DR-CP4-L-4)",
     );
-  if (!same(readings.sealReopen, SEAL_REOPEN))
+  reopenErrors(errors, readings);
+  const pins = readings.source?.pins ?? [];
+  if (
+    !same(
+      pins.map((row) => [row?.role, row?.commit]),
+      SOURCE_PINS,
+    ) ||
+    pins.some((row) =>
+      (row.files ?? []).some(
+        (file) => !nonBlank(file?.path) || !HEX64.test(file?.sha256 ?? ""),
+      ),
+    ) ||
+    !nonBlank(readings.source?.pinRule)
+  )
     errors.push(
-      `setupReadings.sealReopen must wait ${SEAL_REOPEN.waitMs} ms and reopen at most ${SEAL_REOPEN.reopens} times, recorded in ${SEAL_REOPEN.receiptField}, then ${B_SEAL_NOT_PUBLISHED} (DR-CP4-L-12)`,
+      `setupReadings.source.pins must be the master commits ${SOURCE_PINS.map(([role, commit]) => `${role} ${commit.slice(0, 8)}`).join(", ")} with their files' sha256 (S3v6-P2-1)`,
+    );
+  const build = readings.indexBuild ?? {};
+  if (Object.entries(INDEX_BUILD).some(([key, value]) => build[key] !== value))
+    errors.push(
+      `setupReadings.indexBuild must poll every ${INDEX_BUILD.intervalMs} ms for ${INDEX_BUILD.waitMs} ms, never reopen, then ${INDEX_BUILD.onExhausted} (DR-CP4-L-27)`,
+    );
+  const fields = readings.receiptFields ?? {};
+  if (
+    !same(Object.keys(fields).sort(), Object.keys(RECEIPT_FIELDS).sort()) ||
+    Object.entries(RECEIPT_FIELDS).some(
+      ([key, outcomes]) =>
+        outcomes !== null && !same(fields[key]?.outcomes, outcomes),
+    ) ||
+    !same(fields.blocked?.fields, RECEIPT_BLOCKED_FIELDS)
+  )
+    errors.push(
+      `setupReadings.receiptFields must be ${Object.keys(RECEIPT_FIELDS).join(", ")} with the closed outcome sets (DR-CP4-L-24)`,
+    );
+  const judgement = readings.blockedCaseJudgement ?? {};
+  const judged = (judgement.rows ?? []).map((row) => [
+    row?.harnessId,
+    row?.condition,
+    row?.g01,
+    row?.graphCases,
+  ]);
+  if (
+    judgement.receiptName !== "harness-id" ||
+    !same(judged, BLOCKED_CASE_JUDGEMENT) ||
+    (judgement.rows ?? []).some(
+      (row) =>
+        typeof row?.harnessAgrees !== "boolean" ||
+        !nonBlank(row?.harnessContractBlockedId) ||
+        [row?.g01, row?.graphCases].includes("blocked:maintenance-enabled"),
+    )
+  )
+    errors.push(
+      "setupReadings.blockedCaseJudgement must be S3's P-S2-2 table (harness names in the receipt; b-seal-not-published and Graph mismatches -> d2, Chronicle-only -> Hold and [precheck], never the maintenance-enabled precondition)",
     );
   if (!same(readings.switchingRetry, SWITCHING_RETRY))
     errors.push(
@@ -1560,6 +1808,87 @@ function setupReadingErrors(errors, readings, ctx) {
   )
     errors.push(
       "setupReadings.invariantCheck must compare the invariants after the first typed Revision at the last session's end",
+    );
+}
+
+/**
+ * S2 追補 #2（S3v6 の P-4 (b)、C1〜C5）: the one-shot variants keep warm-up 5
+ * and 30 measured per arm, as fresh processes; only they are listed, and the
+ * one-shot variants are exactly those the fixtures' measurementPoint make
+ * one-shot.
+ */
+function oneShotPlanErrors(errors, prep, ctx) {
+  const derived = expectedVariantSessions(ctx)
+    .filter((row) => row.specKind === "one-shot")
+    .map((row) => row.variant);
+  if (!same(derived, ONE_SHOT_VARIANTS))
+    errors.push(
+      `the one-shot variants derived from the fixtures must be ${ONE_SHOT_VARIANTS.join(", ")}`,
+    );
+  const exceptions = prep.samplePlan?.variantExceptions;
+  const row = Array.isArray(exceptions) ? exceptions[0] : undefined;
+  if (
+    !Array.isArray(exceptions) ||
+    exceptions.length !== 1 ||
+    !same(row?.variants, ONE_SHOT_VARIANTS) ||
+    row.kind !== "one-shot" ||
+    row.warmupProcessesPerArm !== WARMUP_PER_ARM ||
+    row.warmupUsed !== false ||
+    row.measuredProcessesPerArm !== MEASURED_PER_ARM ||
+    row.queriesPerProcess !== 1 ||
+    row.freshColdCopyPerProcess !== true ||
+    row.maintenanceSeam !== false ||
+    row.receiptLabel !== "one-shot（index-state-holding）" ||
+    row.excludeFromDefaultPools !== false ||
+    row.preMeasurementQueries !== false ||
+    !same(row.conditions, ["C1", "C2", "C3", "C4", "C5"]) ||
+    ["order", "receiptLabelRule", "poolsRule", "preMeasurementRule"].some(
+      (key) => !nonBlank(row[key]),
+    )
+  )
+    errors.push(
+      `samplePlan.variantExceptions must list only ${ONE_SHOT_VARIANTS.join(", ")} as one-shot processes (warm-up ${WARMUP_PER_ARM} unused and ${MEASURED_PER_ARM} measured per arm, one query on a fresh cold copy, AB/BA over processes, labelled one-shot（index-state-holding）, kept in the default pools, no query before the measurement) (S3v6 P-4 C1〜C5)`,
+    );
+  const parity = prep.d10?.parity?.oneShot ?? {};
+  if (
+    !same(parity.variants, ONE_SHOT_VARIANTS) ||
+    parity.warmupProcessesPerArm !== WARMUP_PER_ARM ||
+    parity.measuredProcessesPerArm !== MEASURED_PER_ARM ||
+    parity.queriesPerProcess !== 1 ||
+    parity.freshColdCopyPerProcess !== true ||
+    !nonBlank(parity.run)
+  )
+    errors.push(
+      "d10.parity.oneShot must take the unrestricted run of the one-shot variants in the same one-shot form (S3v6 P-4 C4)",
+    );
+}
+
+/** S2 追補 #2（DR-CP4-L-24）: the closed set of reopen triggers and the limits. */
+function reopenErrors(errors, readings) {
+  const reopen = readings.reopen ?? {};
+  const triggers = (reopen.triggers ?? []).map((row) => [
+    row?.id,
+    row?.sessions,
+    row?.waitMs,
+    row?.resumeFrom,
+    row?.onExhausted,
+  ]);
+  if (
+    reopen.closedSet !== true ||
+    !same(triggers, REOPEN_TRIGGERS) ||
+    (reopen.triggers ?? []).some((row) => !nonBlank(row?.condition)) ||
+    !same(reopen.limits, REOPEN_LIMITS) ||
+    reopen.totalReopenableOpenings !== REOPEN_TOTAL ||
+    REOPEN_TOTAL !==
+      ["author", "seal", "reseal"].reduce(
+        (sum, label) => sum + REOPEN_LIMITS[label].openings,
+        0,
+      ) ||
+    reopen.newDirectoryAndNonce !== true ||
+    !nonBlank(reopen.otherFailures)
+  )
+    errors.push(
+      `setupReadings.reopen must be L-24's closed set (${REOPEN_TRIGGERS.map(([id]) => id).join(", ")}), author/seal/reseal 3 openings each (${REOPEN_TOTAL} in all), ir and hold never reopened`,
     );
 }
 
@@ -1642,20 +1971,22 @@ function reviewerQuestionErrors(errors, questions, frozen) {
       errors.push(
         `reviewerQuestions ${row?.id} must state the issue, its grounds, two or more options and who decides`,
       );
-    if (frozen) {
-      const decision = row?.decision;
-      if (
-        !isObject(decision) ||
-        !ids.includes(decision.choice) ||
-        !nonBlank(decision.by) ||
-        !nonBlank(decision.record)
-      )
+    // S2 never decides: a question is open (null) until S3's record decides it,
+    // and every question is decided when frozen.
+    const decision = row?.decision;
+    if (decision === null) {
+      if (frozen)
         errors.push(
           `reviewerQuestions ${row?.id} must carry S3's decision (choice, by, record) when frozen`,
         );
-    } else if (row?.decision !== null)
+    } else if (
+      !isObject(decision) ||
+      !ids.includes(decision.choice) ||
+      !nonBlank(decision.by) ||
+      !nonBlank(decision.record)
+    )
       errors.push(
-        `reviewerQuestions ${row?.id}: S2 does not decide; decision stays null until S3 reviews`,
+        `reviewerQuestions ${row?.id}: a decision must be S3's (a listed choice, by, record); S2 does not decide`,
       );
   }
 }
@@ -1839,6 +2170,7 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "samplePlan.rFrom must be hybrid-arm-raw with its rRule (S3-P3-5)",
     );
+  oneShotPlanErrors(errors, prep, ctx);
 
   // R5 gate (S3-P1-1; K6/4 R5 and :317, K2/4 :418-420).
   const gate = prep.r5Gate;
@@ -2205,6 +2537,11 @@ export function observationPrepErrors(prep, ctx) {
     );
   if (frozen && used.length > 0)
     errors.push(`a frozen record still has placeholder(s) ${used.join(", ")}`);
+  // S3v6-P3-3: a draft keeps exactly the S4 tokens (S4b fills them all).
+  if (!frozen && !same(documented, [...S4_PLACEHOLDERS].sort()))
+    errors.push(
+      `placeholders: a draft keeps exactly the ${S4_PLACEHOLDERS.length} S4 tokens (${S4_PLACEHOLDERS.join(", ")}); S4b fills them all at once`,
+    );
 
   if (frozen) {
     const review = prep.review;
@@ -2219,16 +2556,6 @@ export function observationPrepErrors(prep, ctx) {
   } else if (prep.review !== null)
     errors.push("review must be null until S3 reviews");
   return errors;
-}
-
-/** A read path as written, without a `<ref>:` prefix, and without a note. */
-function readPathForms(raw) {
-  const forms = [raw];
-  const prefixed = /^[^\s:（]+:([^\s（]+)/u.exec(raw);
-  if (prefixed) forms.push(prefixed[1]);
-  const plain = /^([^\s（]+)/u.exec(raw);
-  if (plain) forms.push(plain[1]);
-  return forms;
 }
 
 /** The author's declaration (S2 did not read Graph runtime output). */
@@ -2259,15 +2586,14 @@ export function authorDeclarationErrors(declaration) {
       errors.push(`readFiles[${at}].path is required`);
     if (!HEX64.test(row?.sha256 ?? ""))
       errors.push(`readFiles[${at}].sha256 must be a sha256`);
-    // A `<ref>:` prefix (git show) or a trailing note never hides a path.
-    const forms = readPathForms(row?.path ?? "");
-    if (
-      forms.some((form) => FORBIDDEN_READ.some((pattern) => pattern.test(form)))
-    )
+    // S3v6-P3-1: searched anywhere in the path as written, so a `<ref>:`
+    // prefix, an absolute path, `./` or a trailing note never hides it.
+    const raw = String(row?.path ?? "");
+    if (FORBIDDEN_READ.some((pattern) => pattern.test(raw)))
       errors.push(
         `readFiles[${at}] ${row.path} is a forbidden (observation) file`,
       );
-    if (forms.some((form) => DECISIONS_RECORD.test(form))) {
+    if (DECISIONS_RECORD.test(raw)) {
       const permitted = row.permittedRows;
       if (
         !Array.isArray(permitted) ||
@@ -2276,15 +2602,37 @@ export function authorDeclarationErrors(declaration) {
         !nonBlank(row.permittedBy)
       )
         errors.push(
-          `readFiles[${at}] ${row.path} is a forbidden (observation) file unless its permittedRows are within DR-CP4-L-1〜L-15 and DR-CP4-TR-1〜TR-14 with permittedBy`,
+          `readFiles[${at}] ${row.path} is a forbidden (observation) file unless its permittedRows are within DR-CP4-L-1〜L-15, L-18〜L-24, L-27 and DR-CP4-TR-1〜TR-14 with permittedBy`,
         );
       else decisionRows += 1;
     }
   }
-  if (decisionRows > 0 && !nonBlank(declaration.decisionSummariesSeen))
-    errors.push(
-      "decisionSummariesSeen must disclose the run summaries inside the permitted DR rows",
-    );
+  if (decisionRows > 0) {
+    if (!nonBlank(declaration.decisionSummariesSeen))
+      errors.push(
+        "decisionSummariesSeen must disclose the run summaries inside the permitted DR rows",
+      );
+    // S3v6-P3-2: what false covers, and the readings chosen after dev runs.
+    if (
+      !nonBlank(declaration.graphRuntimeOutputObservedScope) ||
+      !declaration.graphRuntimeOutputObservedScope.includes("凍結した G-case")
+    )
+      errors.push(
+        "graphRuntimeOutputObservedScope must say that false covers the frozen G-case materials",
+      );
+    const chosen = declaration.readingsChosenAfterDevObservation;
+    if (
+      !Array.isArray(chosen) ||
+      !same(
+        chosen.map((row) => row?.id),
+        READINGS_AFTER_DEV,
+      ) ||
+      chosen.some((row) => !nonBlank(row?.chosenBy) || !nonBlank(row?.basis))
+    )
+      errors.push(
+        `readingsChosenAfterDevObservation must list ${READINGS_AFTER_DEV.join(", ")} with who chose each and on what basis`,
+      );
+  }
   if (!Array.isArray(declaration.accidentalReads))
     errors.push("accidentalReads must be a list (empty when none)");
   if (declaration.forbiddenFilesNotRead !== true)

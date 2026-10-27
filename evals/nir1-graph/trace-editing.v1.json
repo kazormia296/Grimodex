@@ -110,7 +110,17 @@
     "rule": "操作の後に、製品の応答（編集中は autosave の commit と、その後の製品の query、閲覧中は場面の切替えの後の製品の query）が 10,000 ms 以内に来なければ、その trace の run を trace-stalled として止め、記録をすべて残し、trace の不備として判定に使わず、同じ file で取り直す。10,000 ms は liveness の guard で、測る値の閾値ではない（stall した run は全体を判定に使わないので、どの率の分子と分母も変えない）。値は autosave の既定 2000 ms と debounce 400 ms の和の 4 倍を超え、Native の保留の期限（DEFERRED_RELEASE_LIMIT 10 s）と同じ桁で、観測した値から選んでいない。"
   },
   "notInQ": "index-ready の event（related-scenes:index-ready）と graph-ready の event による再 query は Q に入れず別に数える（K6/2 手順の 7）。K6/4 の判断 8 の (ii) では、F1〜F7 を満たす子を親の follow-up として数える（分母には入れない）。",
-  "fixedBeforeObservation": "この file は CP-4 の観測の前に固定し、独立 reviewer のレビューを受ける。(ii)、CP-4、(iii) は同じ file（commit と SHA-256 が同じもの）を使う。作り直せるのは不備（Q が 200 件に満たない、密度の条件を満たさない、setup の検証を通らない、期待寄与の材料の記録が欠ける、書いた製品の契機か debounce の値が測る build と違う）があるときだけで、作り直した版は観測の前に再び固定し、それまでの版と receipt はすべて残す。",
+  "fixedBeforeObservation": "この file は CP-4 の観測の前に固定し、独立 reviewer のレビューを受ける。(ii)、CP-4、(iii) は同じ file（commit と SHA-256 が同じもの）を使う。作り直せるのは不備（Q が 200 件に満たない、密度の条件を満たさない、期待寄与の材料の記録が欠ける、書いた製品の契機か debounce の値が測る build と違う）があるときだけで、作り直した版は観測の前に再び固定し、それまでの版と receipt はすべて残す。 setup が通らないことは作り直しの理由にしない（setupFailure）。",
+  "setupFailure": {
+    "decision": "S3v6 の P2-3 と P-S2-2",
+    "project": "G-02/base",
+    "onNotSetupComplete": {
+      "b": "未測定",
+      "cp4Availability": "HOLD"
+    },
+    "projectSwapAllowed": false,
+    "rule": "G-02 base の setup が上限内の開き直し（observation-prep.v1.json の setupReadings.reopen）で setup-complete に届かなければ、この trace の (b) は「未測定」とし、CP-4 の可用性は HOLD とする。この版では trace の project を差し替えない（差し替えは新しい版と独立 reviewer のレビューを要する）。止まった理由は受領書に harness の名前のまま残す（setupReadings.blockedCaseJudgement）。"
+  },
   "review": null,
   "editText": {
     "suffix": " The lamp flickered.",
@@ -126,7 +136,7 @@
     "reapproval": "台本の後に、query の開始時に A3 で不適格になった期待寄与の材料があれば、利用者の通常の再承認の操作（製品の typed Revision の準備と人の承認）を実際に行い、手順と所要時間を開示する。不適格な材料がなければ「再承認を要さない」と、その時点の A3 の判定を書く。行わなければ「未測定」と書く。この操作は trace の Q に入れない。"
   },
   "runnerReadings": {
-    "source": "DR-CP4-TR-8〜TR-10、TR-13（claude/cp4-trace 994aee6148f9a65969207f30fd1c64936ad0e367 の docs/plans/nir1-lane-decisions/cp4-decisions.md）と、同じ commit の scripts/quality/nir1-graph-eval/trace-record.mjs（startSealOf、traceMaintenanceEnv）、trace-seal.mjs（readStartSeal）、trace-runner.mjs の定数",
+    "source": "DR-CP4-TR-8〜TR-10、TR-13（master の docs/plans/nir1-lane-decisions/cp4-decisions.md）と、master に入った trace の runner（35537447、#747）の scripts/quality/nir1-graph-eval/trace-record.mjs（startSealOf、traceMaintenanceEnv）、trace-seal.mjs（readStartSeal）、trace-runner.mjs の定数。S3v6 の P-S2-3、P-S2-4 の条件",
     "status": "trace の runner の設計の提案（TR-8）と integrator の決定（TR-9、TR-10）を、この file の operations の読みとして観測の前に写したもの。operations、cycles、plannedQ（Q）は変えない。S3 の確認を受ける。",
     "operations": {
       "open-scene": {
@@ -180,7 +190,13 @@
         "api": "readIndexMetadata（workspace-db.mjs）"
       },
       "insideTimingWindow": false,
-      "reviewerQuestion": "P-S2-3（observation-prep.v1.json の reviewerQuestions）"
+      "reviewerQuestion": "P-S2-3（observation-prep.v1.json の reviewerQuestions）",
+      "receipt": {
+        "sealReadTimes": true,
+        "sealReadCount": true,
+        "cdpNow": "disclose",
+        "rule": "各 seal-read の開始と終わりの時刻と、counted query ごとの読取の回数を receipt に残す（runner は seal-read を log と events に書く）。時刻は renderer の performance.now() を CDP で問い合わせた値（driver.now()）で、その往復の遅れは開示に回す（S3v6 の P-S2-3 の条件）。"
+      }
     },
     "maintenanceLaunch": {
       "env": [
