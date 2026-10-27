@@ -21,7 +21,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
-import { variantByKey } from "./constants.mjs";
+import { devVariant, variantByKey } from "./constants.mjs";
 import { ONE_SHOT_RECEIPT_LABEL } from "./frozen-k64-plan.mjs";
 import {
   BLOCKED_RECORD_SCHEMA,
@@ -860,6 +860,30 @@ test("レビュー P1-2: parity の run は R+IR の slot だけの receipt（g-
     assert.deepEqual(receipt.settings.k64Disclosure, { ...K64_DISCLOSURE });
     assert.deepEqual(receipt.priorAttempts, input.priorAttempts);
     assert.notEqual(row.status, "receipt-refused");
+    // A dev parity (shape check) is a preview without the Gold summaries.
+    const devInput = recordInput(dir, key, {
+      arms: ["hybrid"],
+      d2aMode: "unrestricted",
+      variant: devVariant({
+        key: "dev:dev-g05-shape.v1/base",
+        expectedGraph: "available",
+      }),
+    });
+    devInput.ctx.variantDir = path.join(dir, "dev");
+    const devRow = await writeVariantRecord({
+      ...devInput,
+      dev: true,
+      runKind: "parity",
+      result: {
+        status: "measured",
+        samples: hybridRows.map((row) => ({
+          ...row,
+          variantKey: "dev:dev-g05-shape.v1/base",
+        })),
+        probes: [],
+      },
+    });
+    assert.notEqual(devRow.status, "receipt-refused", devRow.error);
     const short = recordInput(dir, key, {
       arms: ["hybrid"],
       d2aMode: "unrestricted",

@@ -284,7 +284,9 @@ export function assembleK64Receipt({
   const bound = { ratification5, procedure };
   receipt.aggregates = computeRunAggregates(receipt, variant, bound);
   receipt.verdict = computeRunVerdict(receipt, variant, receipt.aggregates);
-  if (variant.kind === "dev") {
+  // The dev preview's steady-state summary reads the Gold AB/BA schedule;
+  // a parity run (R+IR only) has none.
+  if (variant.kind === "dev" && runKind === "g-case-gold") {
     const steadyState = summarizeSteadyState({
       samples,
       fixedGraphMode: settings.d2aModes.graph,
