@@ -719,6 +719,15 @@ test("setup の受領書の loader: frozen は frozen の schema と停止位置
     },
     { sealAttempts: [] },
     { setupMain: undefined },
+    // P-5: the author session's maintenance openings.
+    { maintenanceAttempts: undefined },
+    { maintenanceAttempts: [{ attempt: 0, outcome: "not-reached" }] },
+    {
+      maintenanceAttempts: [0, 1, 2, 3].map((attempt) => ({
+        attempt,
+        outcome: attempt === 3 ? "reached" : "not-reached",
+      })),
+    },
   ])
     assert.throws(
       () =>
