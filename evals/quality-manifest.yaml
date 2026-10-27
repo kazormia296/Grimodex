@@ -1691,6 +1691,7 @@ requirements:
       - scripts/quality/nir1-graph-eval/setup-main-build.mjs
       - scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-graph-case.v1.json
       - scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-type-edit.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-g05-shape.v1.json
       - scripts/quality/nir1-graph-eval/keep-test.mjs
       - scripts/quality/nir1-graph-eval/signal-cleanup.mjs
       - scripts/quality/nir1-graph-eval/k64-record.mjs

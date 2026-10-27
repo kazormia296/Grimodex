@@ -1,0 +1,388 @@
+{
+  "schemaVersion": "nir1-cp4-dev-graph-case/1",
+  "kind": "dev",
+  "frozen": false,
+  "caseId": "DEV-G05-SHAPE",
+  "fixtureId": "cp4-dev-g05-shape/1",
+  "note": "Synthetic CP-4 S1j-2 development fixture with the same setupTimeline structure as G-05 (seven revisions with approved／none／rejected decisions, three summary edits, two of them followed by a new revision of the same material, two qualifiedIr rows). New material unrelated to evals/nir1-graph, evals/nir1-g01 and the 24 queries; never a CP-4 result.",
+  "language": "en",
+  "query": {
+    "sceneId": "dev-g5-query",
+    "readingOrder": 100,
+    "title": "Open ledger",
+    "body": "Which earlier scene shows someone my chosen storekeeper provisioned?"
+  },
+  "scenes": [
+    {
+      "id": "dev-g5-review",
+      "readingOrder": 0,
+      "title": "Sack tallies",
+      "body": "Charcoal tallies ran along a beam above the grain sacks."
+    },
+    {
+      "id": "dev-g5-control",
+      "readingOrder": 10,
+      "title": "Mill notice",
+      "body": "A mill notice copied a line: Which earlier scene shows someone my chosen storekeeper provisioned? Nobody had answered."
+    },
+    {
+      "id": "dev-g5-bex-dawn",
+      "readingOrder": 20,
+      "title": "Dawn whistle",
+      "body": "Mist hung over the millrace and a heron lifted off the reeds. Tarn handed Bex a sack of tallow, matches and rye before the dawn shift. Far upstream, a bell rang twice."
+    },
+    {
+      "id": "dev-g5-olu-levee",
+      "readingOrder": 30,
+      "title": "Levee boots",
+      "body": "Olu sat on the levee and greased new boots beside a coil of rope."
+    }
+  ],
+  "scope": {
+    "registry": {
+      "timelineRefs": [
+        "dev-tl"
+      ],
+      "worldlineRefs": [
+        "dev-wl"
+      ],
+      "narrativeLayerRefs": [
+        "dev-layer"
+      ]
+    },
+    "default": {
+      "marker": "explicit",
+      "queryIdentity": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "dev-tl"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "dev-wl"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "dev-layer"
+        }
+      },
+      "materialConstraint": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "dev-tl"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "dev-wl"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "dev-layer"
+        }
+      },
+      "knowledgeHolder": {
+        "kind": "reader"
+      },
+      "audience": {
+        "kind": "reader"
+      }
+    },
+    "overrides": {}
+  },
+  "entities": [
+    {
+      "id": "dev-g5-tarn",
+      "kind": "character",
+      "label": "Tarn",
+      "summary": "Tarn keeps the stores of a river mill."
+    },
+    {
+      "id": "dev-g5-olu",
+      "kind": "character",
+      "label": "Olu",
+      "summary": "Olu walks the eastern levee."
+    },
+    {
+      "id": "dev-g5-bex",
+      "kind": "character",
+      "label": "Bex",
+      "summary": "Bex carries a brass whistle on the dawn shift."
+    },
+    {
+      "id": "dev-g5-ines",
+      "kind": "character",
+      "label": "Ines",
+      "summary": "Ines drives a grain barge."
+    },
+    {
+      "id": "dev-g5-cato",
+      "kind": "character",
+      "label": "Cato",
+      "summary": "Cato mends nets for the millers."
+    },
+    {
+      "id": "dev-g5-rho",
+      "kind": "character",
+      "label": "Rho",
+      "summary": "Rho watches the sluice gate."
+    }
+  ],
+  "relations": [
+    {
+      "id": "dev-g5-prov-olu",
+      "fromEntityId": "dev-g5-tarn",
+      "toEntityId": "dev-g5-olu",
+      "type": "provisioned",
+      "direction": "directed"
+    },
+    {
+      "id": "dev-g5-prov-bex",
+      "fromEntityId": "dev-g5-tarn",
+      "toEntityId": "dev-g5-bex",
+      "type": "provisioned",
+      "direction": "directed"
+    },
+    {
+      "id": "dev-g5-prov-ines",
+      "fromEntityId": "dev-g5-tarn",
+      "toEntityId": "dev-g5-ines",
+      "type": "provisioned",
+      "direction": "directed"
+    },
+    {
+      "id": "dev-g5-prov-cato",
+      "fromEntityId": "dev-g5-tarn",
+      "toEntityId": "dev-g5-cato",
+      "type": "provisioned",
+      "direction": "directed"
+    },
+    {
+      "id": "dev-g5-prov-rho",
+      "fromEntityId": "dev-g5-tarn",
+      "toEntityId": "dev-g5-rho",
+      "type": "provisioned",
+      "direction": "directed"
+    }
+  ],
+  "manualSeed": {
+    "entityId": "dev-g5-tarn",
+    "manualSeed": true
+  },
+  "pins": [
+    {
+      "sceneId": "dev-g5-bex-dawn",
+      "entryId": "dev-g5-bex"
+    },
+    {
+      "sceneId": "dev-g5-olu-levee",
+      "entryId": "dev-g5-olu"
+    },
+    {
+      "sceneId": "dev-g5-control",
+      "entryId": "dev-g5-ines"
+    },
+    {
+      "sceneId": "dev-g5-control",
+      "entryId": "dev-g5-cato"
+    },
+    {
+      "sceneId": "dev-g5-control",
+      "entryId": "dev-g5-rho"
+    }
+  ],
+  "foreshadows": [],
+  "qualifiedIr": [
+    {
+      "sceneId": "dev-g5-control",
+      "summary": "A mill notice repeated an unanswered question about whom a storekeeper had provisioned.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    },
+    {
+      "sceneId": "dev-g5-bex-dawn",
+      "summary": "Tarn, the mill's storekeeper, provisioned Bex with tallow, matches and rye before the dawn shift.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "revisions": [
+    {
+      "id": "dev-g5-r-olu",
+      "reviewSceneId": "dev-g5-review",
+      "entityIds": [
+        "dev-g5-tarn",
+        "dev-g5-olu"
+      ],
+      "relationIds": [
+        "dev-g5-prov-olu"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "dev-g5-r-bex-1",
+      "reviewSceneId": "dev-g5-review",
+      "entityIds": [
+        "dev-g5-tarn",
+        "dev-g5-bex"
+      ],
+      "relationIds": [
+        "dev-g5-prov-bex"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "dev-g5-r-bex-2",
+      "reviewSceneId": "dev-g5-review",
+      "entityIds": [
+        "dev-g5-tarn",
+        "dev-g5-bex"
+      ],
+      "relationIds": [
+        "dev-g5-prov-bex"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "dev-g5-r-ines",
+      "reviewSceneId": "dev-g5-review",
+      "entityIds": [
+        "dev-g5-tarn",
+        "dev-g5-ines"
+      ],
+      "relationIds": [
+        "dev-g5-prov-ines"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "dev-g5-r-cato-1",
+      "reviewSceneId": "dev-g5-review",
+      "entityIds": [
+        "dev-g5-tarn",
+        "dev-g5-cato"
+      ],
+      "relationIds": [
+        "dev-g5-prov-cato"
+      ],
+      "decision": "approved"
+    },
+    {
+      "id": "dev-g5-r-cato-2",
+      "reviewSceneId": "dev-g5-review",
+      "entityIds": [
+        "dev-g5-tarn",
+        "dev-g5-cato"
+      ],
+      "relationIds": [
+        "dev-g5-prov-cato"
+      ],
+      "decision": "none"
+    },
+    {
+      "id": "dev-g5-r-rho",
+      "reviewSceneId": "dev-g5-review",
+      "entityIds": [
+        "dev-g5-tarn",
+        "dev-g5-rho"
+      ],
+      "relationIds": [
+        "dev-g5-prov-rho"
+      ],
+      "decision": "rejected"
+    }
+  ],
+  "mutations": [
+    {
+      "id": "dev-g5-m-bex",
+      "kind": "codex-entry-summary-edit",
+      "entityId": "dev-g5-bex",
+      "from": "Bex carries a brass whistle on the dawn shift.",
+      "to": "Bex carries a tin whistle on the dawn shift."
+    },
+    {
+      "id": "dev-g5-m-ines",
+      "kind": "codex-entry-summary-edit",
+      "entityId": "dev-g5-ines",
+      "from": "Ines drives a grain barge.",
+      "to": "Ines drives a salt barge."
+    },
+    {
+      "id": "dev-g5-m-cato",
+      "kind": "codex-entry-summary-edit",
+      "entityId": "dev-g5-cato",
+      "from": "Cato mends nets for the millers.",
+      "to": "Cato mends sacks for the millers."
+    }
+  ],
+  "setupTimeline": [
+    {
+      "kind": "revision",
+      "id": "dev-g5-r-olu"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-g5-r-bex-1"
+    },
+    {
+      "kind": "mutation",
+      "id": "dev-g5-m-bex"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-g5-r-bex-2"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-g5-r-ines"
+    },
+    {
+      "kind": "mutation",
+      "id": "dev-g5-m-ines"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-g5-r-cato-1"
+    },
+    {
+      "kind": "mutation",
+      "id": "dev-g5-m-cato"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-g5-r-cato-2"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-g5-r-rho"
+    },
+    {
+      "kind": "qualified-ir",
+      "id": "dev-g5-ir"
+    }
+  ],
+  "measurementBoundary": {
+    "setupOrder": "Create the project and every Scene (including S2) in reading order; then Codex entities and relations; then the Scope registry and every explicit Scene Scope; then foreshadows, foreshadow Codex links and pins. Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled). Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings. Do not change tree order, registry or Scene Scope after the first typed revision is prepared. Then wait for the variant measurementPoint, record whether each declared precondition holds, and compare only the expectations that no unmet precondition blocks."
+  },
+  "variants": [
+    {
+      "id": "base",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        }
+      ]
+    }
+  ]
+}
