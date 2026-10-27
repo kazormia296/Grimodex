@@ -495,3 +495,93 @@ export function readRelationSourceTokens(file, revisionId, relationId) {
     };
   });
 }
+
+/**
+ * The columns of `table`, all of `wanted` (review P3 (d)): a column the
+ * schema lacks stops the read instead of being skipped silently.
+ */
+function existingColumns(db, table, wanted) {
+  const have = new Set(
+    db
+      .prepare(`PRAGMA table_info(${table})`)
+      .all()
+      .map((row) => row.name),
+  );
+  const missing = wanted.filter((name) => !have.has(name));
+  if (missing.length > 0)
+    throw new Error(
+      `[precheck] ${table} lacks ${missing.join(", ")}; the declaration invariants cannot be read`,
+    );
+  return wanted;
+}
+
+const digestRows = (rows) =>
+  createHash("sha256")
+    .update(JSON.stringify(rows.map((row) => ({ ...row }))))
+    .digest("hex");
+
+/**
+ * S5-A (K2/4 :407, S3-P3-6): the values the declaration writer never writes,
+ * as digests (read-only): the tree order, the project's registry, every
+ * Scene binding's v1 columns (version, source token, updated_at) and its A1
+ * columns (the explicit Scene Scope). The runner reads them just before and
+ * just after the declaration step and compares.
+ */
+export function readDeclarationInvariants(file, projectId) {
+  return withReadOnly(file, (db) => {
+    const select = (table, wanted, where, order) => {
+      const columns = existingColumns(db, table, wanted);
+      return db
+        .prepare(
+          `SELECT ${columns.join(", ")} FROM ${table} WHERE ${where} ORDER BY ${order}`,
+        )
+        .all(projectId);
+    };
+    const tree = select(
+      "tree_nodes",
+      ["id", "parent_id", "sort_order", "node_type", "archived_at"],
+      "project_id = ?",
+      "id",
+    );
+    const registry = select(
+      "narrative_scope_registries",
+      [
+        "registry_version",
+        "timeline_refs_json",
+        "worldline_refs_json",
+        "narrative_layer_refs_json",
+        "version",
+        "source_token",
+        "updated_at",
+      ],
+      "project_id = ?",
+      "project_id",
+    );
+    const v1 = select(
+      "narrative_scene_scope_bindings",
+      ["scene_id", "version", "source_token", "updated_at"],
+      "project_id = ?",
+      "scene_id",
+    );
+    const a1 = select(
+      "narrative_scene_scope_bindings",
+      [
+        "scene_id",
+        "scene_incarnation_id",
+        "compatibility_marker",
+        "query_identity_json",
+        "material_constraint_json",
+        "knowledge_holder_json",
+        "audience_json",
+      ],
+      "project_id = ?",
+      "scene_id",
+    );
+    return {
+      treeOrder: { rows: tree.length, sha256: digestRows(tree) },
+      registry: { rows: registry.length, sha256: digestRows(registry) },
+      sceneV1: { rows: v1.length, sha256: digestRows(v1) },
+      a1: { rows: a1.length, sha256: digestRows(a1) },
+    };
+  });
+}

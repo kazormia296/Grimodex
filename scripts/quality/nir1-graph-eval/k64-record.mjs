@@ -376,9 +376,13 @@ export function buildFollowUpRecord({
   r1,
   r2,
   expectedContribution,
+  materialContribution = null,
 }) {
   const view = viewOf(observation);
   view.expectedContribution = expectedContribution ?? null;
+  // DR-CP4-N-4: the formal run matches F6 on the materials' Revisions
+  // (material-revision.mjs); the dev preview keeps the Scene-level match.
+  view.materialContribution = materialContribution;
   view.mixWindow = mixWindowOf(observation);
   const { parent, child } = view;
   if (!parent?.result)
@@ -483,6 +487,36 @@ export function buildFollowUpRecord({
   };
 }
 
+/**
+ * F6's contribution of the child's Graph: the Scene-level preview match
+ * (DR-CP4-F-6), or, when the runner hands a material-revision resolver
+ * (DR-CP4-N-4), the match of the path edges' Revisions with requalified
+ * edges (≥ 1) as in `expectedContributionOf`.
+ */
+function contributionOf(view, child, result) {
+  const resolver = view.materialContribution;
+  if (typeof resolver !== "function")
+    return {
+      expectedContribution: expectedContributionOf(
+        result?.graph,
+        view.expectedContribution,
+      ),
+      contributionBasis: F6_PREVIEW_BASIS,
+    };
+  const edges =
+    Number.isInteger(result?.graph?.edgeCount) && result.graph.edgeCount >= 1;
+  const material = resolver(child?.paths ?? null);
+  return {
+    expectedContribution: edges && material.contribution === true,
+    contributionBasis: material.basis,
+    materialRevision: {
+      matched: material.matched,
+      unresolvedEdges: material.unresolvedEdges,
+      observed: material.observed,
+    },
+  };
+}
+
 function childRecordOf(view, child, records, aligned) {
   const result = child.result;
   const rows = view.rowsOf(child);
@@ -518,12 +552,7 @@ function childRecordOf(view, child, records, aligned) {
       edgeCount: Number.isInteger(result?.graph?.edgeCount)
         ? result.graph.edgeCount
         : null,
-      expectedContribution: expectedContributionOf(
-        result?.graph,
-        view.expectedContribution,
-      ),
-      // DR-CP4-F-6: the Scene-level match is preview only.
-      contributionBasis: F6_PREVIEW_BASIS,
+      ...contributionOf(view, child, result),
       requalification: requalificationOf(result),
       completion: result?.status ?? "not-returned",
       publishCount: publishCountOf(view, child),
