@@ -142,3 +142,23 @@
 - 観測（範囲外）: 手元の 13 回中 3 回、終了中（`Debugger ending` の後）に `automatic-maintenance` の
   handoff が recovery へ移った（直前の attempt は `NEX_VALIDATION_TERMINATED:foreground-preempted`）。
   終了中のため journey は落ちていない。freshness とは別の経路なので、この変更では扱わない。
+
+## DR-JF-8 独立レビュー（Opus）の指摘への対応（2026-10-28）
+
+- P2-1（試験の不足）: EDGE の再宣言と producer Epoch の変更を hook で起こし、どちらも型付きの requeue になり、
+  次の cycle が同じ range を publish する試験を足した。別の owner が attempt を終えた後の競合（`NotApplied`）は
+  requeue にならない（recovery 側に残る）試験も足した。レビュアーの変異 A（EDGE／EPOCH の guard を型の無い
+  `anyhow!` に戻す、`NotApplied` を `Retryable` として返す）は、組合せでも各部分の単独でも、対応する試験が落ちる。
+- P3-1（context の鎖）: `downcast_ref` は context の鎖を辿るので、分類は最外層の error の型だけを見る
+  （`is_publish_guard_race`）。`NEX_DB_TRANSACTION_CLEANUP_UNPROVEN` などの context で包まれた guard の error は、
+  従来どおり recovery へ移る。
+- P3-2（残余）: 前景の書込みが続き、同じ batch の競合が `MAX_ATTEMPTS_PER_BATCH`（3）回目に達すると、
+  従来どおり `NEX_INCREMENTAL_FRESHNESS_RETRY_EXHAUSTED` → retire → recovery になり、約 1 s の
+  `WORKSPACE_SWITCHING` が起きる。この変更で頻度は下がるが、無くならない。「競合による exhaustion を retire の
+  無い terminal にするか」は別の判断として残す（この変更では code を変えない）。
+- P3-3（revalidation の非対称）: requeue の早期 return は `revalidate_narrative_workspace_after_cycle` を通らない。
+  workspace の切替と重なると、旧 authority の `projectId`／`runId` と `hasMore: true` が返り、10 ms 後に新しい
+  authority で cycle が 1 回走る。requeue は旧 authority に永続化済みで、追加の cycle は新しい authority を読むだけ
+  なので無害。成功の経路が切替時に `None` を返すのとは非対称。code のコメントに書いた。
+- P3-4（試験の hook の残留）: `publish_race_for_test::arm` は RAII の guard（`ArmedPublishRace`）を返し、Drop で
+  hook を必ず消す（試験の panic でも残らない。mutex の poison も無視して消す）。Drop を外す変異は試験が検出する。
