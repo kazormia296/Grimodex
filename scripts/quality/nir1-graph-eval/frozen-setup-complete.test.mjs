@@ -337,6 +337,13 @@ test("S1j-2 probe が宣言の状態を示さなければ blocked:index-state-ho
     blocked.receipt.precheck.message,
     /blocked:b-sealed-binding|blocked:maintenance-enabled/u,
   );
+  // B sealed, then dirtied again before the measurement point.
+  const dirtied = await completeSetup("G-02/base", { bDirtiedByQuery: true });
+  assert.equal(dirtied.receipt.status, "blocked");
+  assert.match(
+    dirtied.receipt.precheck.message,
+    /blocked:maintenance-enabled — G-02\/base: the probe shows graph unusable/u,
+  );
   const usable = { generation: 2, dirty: false };
   assert.equal(
     indexStateProbe({

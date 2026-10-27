@@ -1341,13 +1341,15 @@ export function frozenSetupFakeProduct(opts = {}) {
  * publishes C, every write after maintenance dirties both. `beginSession`
  * is called by the test's session factory with the session's label, seam
  * and setup-only Main. Options: `refuseRelationIdReuse`, `extraContext`
- * (a third context in the IR envelope), `bStaysDirty`.
+ * (a third context in the IR envelope), `bStaysDirty`, `bDirtiedByQuery`
+ * (B goes dirty again after the seal, as the dev check saw).
  */
 export function completeSetupExtension({
   irSeeds,
   refuseRelationIdReuse = false,
   extraContext = false,
   bStaysDirty = false,
+  bDirtiedByQuery = false,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1713,6 +1715,12 @@ export function completeSetupExtension({
         indexCalls.push(session.label);
         const projectId = projectOf();
         publish(projectId, "nir1-reviewed-chronicle:v1");
+        // The product's freshness evaluation can dirty B after its seal.
+        if (bDirtiedByQuery)
+          run(
+            "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE index_key = ?",
+            "nir1-reviewed-entity-relation:v1",
+          );
         return {
           ok: true,
           durationMs: 1,

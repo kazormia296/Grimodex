@@ -191,6 +191,10 @@ test("admission: input の差は corpus → 表の 1 file だけ（ほかの fil
     ],
     ["the corpus kept", { setup: { inputs: { ...product.inputs } } }],
     [
+      "no corpus in the product build",
+      { product: { inputs: { "a.ts": { bytes: 1 } } } },
+    ],
+    [
       "a product input dropped",
       {
         product: {
