@@ -35,6 +35,102 @@ export const SETUP_STATUS_BY_STOP = Object.freeze({
   "seed-pin": "setup-through-seed-pin",
 });
 const SHA256 = /^[0-9a-f]{64}$/u;
+/**
+ * Review P3 (e): the openings of one seam session a complete setup may use
+ * (the first and `B_SEAL_REOPENS` = 2 reopens of frozen-setup-driver.mjs).
+ */
+export const SEAL_OPENINGS_MAX = 3;
+/** P-5: the author session's openings (the first and 2 reopens). */
+export const MAINTENANCE_OPENINGS_MAX = 3;
+const INDEX_STATES = ["usable", "unusable"];
+
+/** The complete frozen setup's fields ④⑤ read (measurement point, seal, Main). */
+function completeSetupFields(value) {
+  const point = value?.measurementPoint;
+  return {
+    measurementPoint: point
+      ? {
+          declared: {
+            graph: point.declared?.graph ?? null,
+            chronicle: point.declared?.chronicle ?? null,
+          },
+          probe: {
+            graph: point.probe?.graph ?? null,
+            chronicle: point.probe?.chronicle ?? null,
+            bGeneration: point.probe?.metadata?.b?.generation ?? null,
+            chronicleGeneration:
+              point.probe?.metadata?.chronicle?.generation ?? null,
+          },
+        }
+      : null,
+    sealAttempts: Array.isArray(value?.sealAttempts)
+      ? value.sealAttempts.map((row) => ({
+          session: row?.session ?? null,
+          attempt: row?.attempt ?? null,
+          outcome: row?.outcome ?? null,
+        }))
+      : null,
+    setupMainSha256: value?.setupMain?.sha256 ?? null,
+    // Re-review P3 (b): a variant with a hold session records the index
+    // state before its first mutation.
+    hasHoldSession: Array.isArray(value?.plan?.sessions)
+      ? value.plan.sessions.some((row) => row?.label === "hold")
+      : false,
+    preMutationIndexState: value?.preMutationIndexState
+      ? {
+          b: value.preMutationIndexState.metadata?.b?.generation ?? null,
+          chronicle:
+            value.preMutationIndexState.metadata?.chronicle?.generation ?? null,
+        }
+      : null,
+    maintenanceAttempts: Array.isArray(value?.maintenanceAttempts)
+      ? value.maintenanceAttempts.map((row) => ({
+          attempt: row?.attempt ?? null,
+          outcome: row?.outcome ?? null,
+        }))
+      : null,
+  };
+}
+
+function completeSetupProblems(fields) {
+  const problems = [];
+  const point = fields?.measurementPoint;
+  if (
+    !point ||
+    !INDEX_STATES.includes(point.declared.graph) ||
+    !INDEX_STATES.includes(point.declared.chronicle) ||
+    point.probe.graph !== point.declared.graph ||
+    point.probe.chronicle !== point.declared.chronicle
+  )
+    problems.push("measurementPoint");
+  const attempts = fields?.sealAttempts;
+  const sessions = new Map();
+  for (const row of attempts ?? []) {
+    if (!sessions.has(row.session)) sessions.set(row.session, []);
+    sessions.get(row.session).push(row);
+  }
+  if (
+    !attempts ||
+    !sessions.has("seal") ||
+    [...sessions.values()].some(
+      (rows) =>
+        rows.length > SEAL_OPENINGS_MAX || rows.at(-1).outcome !== "sealed",
+    )
+  )
+    problems.push("sealAttempts");
+  if (!SHA256.test(fields?.setupMainSha256 ?? "")) problems.push("setupMain");
+  const maintenance = fields?.maintenanceAttempts;
+  if (
+    !maintenance ||
+    maintenance.length === 0 ||
+    maintenance.length > MAINTENANCE_OPENINGS_MAX ||
+    maintenance.at(-1).outcome !== "reached"
+  )
+    problems.push("maintenanceAttempts");
+  if (fields?.hasHoldSession && !fields?.preMutationIndexState)
+    problems.push("preMutationIndexState");
+  return problems;
+}
 const LOADED = new WeakSet();
 
 function deepFreeze(value) {
@@ -131,6 +227,12 @@ export function loadSetupReceipt({ root = process.cwd(), file }) {
     projectId: map.projectId,
     querySceneId:
       typeof map.querySceneId === "string" ? map.querySceneId : null,
+    // Review P3 (e): a complete frozen setup's measurement point, seal
+    // openings and setup-only Main (S5 reads B's generation from here).
+    completeSetup:
+      kind === "frozen" && stopsAt === "complete"
+        ? completeSetupFields(value)
+        : null,
     scenes: { ...map.scenes },
     entities: { ...map.entities },
     coldDatabase: {
@@ -160,5 +262,12 @@ export function assertCompleteSetupReceipt(sealed) {
     throw new Error(
       `[precheck] the setup receipt ${sealed.path} stopped at ${sealed.stopsAt} (${sealed.status}); ④ and ⑤ need a complete setup, and the R5 check run's workspace is discarded`,
     );
+  if (sealed.fixtureKind === "frozen") {
+    const problems = completeSetupProblems(sealed.completeSetup);
+    if (problems.length > 0)
+      throw new Error(
+        `[precheck] the setup receipt ${sealed.path} is not a complete setup with its measurement point, seal openings, maintenance openings and setup-only Main (${problems.join(", ")})`,
+      );
+  }
   return sealed;
 }

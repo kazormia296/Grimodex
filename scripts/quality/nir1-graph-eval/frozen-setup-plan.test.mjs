@@ -15,11 +15,14 @@ import {
   R5_CHECK_RUN,
   R5_CHECK_SCOPE,
   SETUP_ORDER_CLAUSES,
+  SETUP_SESSIONS,
   SETUP_STOPS,
   assertR5CheckPhases,
   executedPhaseNames,
   frozenSetupPlan,
+  loadDevGraphCasePlans,
   loadFrozenSetupPlans,
+  measurementSpecOf,
   phaseCategories,
   plannedPhaseNames,
   readCandidateDocument,
@@ -286,6 +289,8 @@ test("13 の variant の plan: setupOrder の順、seed の pin の段は pins �
     "chronicle-index",
     "measurement-point",
   ]);
+  // S1j-2 (B4): graph-index-unusable rebuilds C only (a query in the hold
+  // session without the seam).
   assert.deepEqual(
     names["G-08/graph-index-unusable"].slice(GRAPH_CASE_PREFIX.length),
     [
@@ -295,6 +300,21 @@ test("13 の variant の plan: setupOrder の順、seed の pin の段は pins �
       "b-seal",
       "chronicle-index",
       "setup-timeline:g08-m-juno",
+      "chronicle-index:after-mutation",
+      "measurement-point",
+    ],
+  );
+  // chronicle-index-unusable: B is sealed again after the withdrawal, no query.
+  assert.deepEqual(
+    names["G-08/chronicle-index-unusable"].slice(GRAPH_CASE_PREFIX.length),
+    [
+      "setup-timeline:g08-r-cass",
+      "setup-timeline:g08-r-juno",
+      "setup-timeline:g08-ir",
+      "b-seal",
+      "chronicle-index",
+      "setup-timeline:g08-m-ir-withdraw",
+      "b-seal:after-mutation",
       "measurement-point",
     ],
   );
@@ -450,41 +470,126 @@ test("① の部分実行の plan: seed の pin の段で止まり、その後�
   );
 });
 
-test("対応できない step（IR の provider、Relation の型の編集、IR の承認撤回、unusable の状態の保持）は plan に [precheck] の executor として残す", () => {
+test("S1j-2: 完全な setup の段は executor を持ち（[precheck] の executor は残らない）、session と seam は integrator の決定 B1〜B4 のとおり", () => {
   const plans = loadFrozenSetupPlans({
     root: REPO_ROOT,
     stopsAt: SETUP_STOPS.complete,
   });
-  const prechecks = (plan) =>
-    plan.steps
-      .filter((step) => step.executor === "precheck")
-      .map((step) => [step.phase, step.precheck.code]);
+  for (const plan of plans) {
+    const key = `${plan.caseId}/${plan.variantId}`;
+    assert.ok(
+      plan.steps.every((step) => step.executor !== "precheck"),
+      `${key} keeps a [precheck] executor`,
+    );
+    // B1: the qualified-ir step alone runs in the setup-only Main's session.
+    const ir = plan.steps.filter((step) => step.session === "ir");
+    assert.equal(ir.length, 1, key);
+    assert.equal(ir[0].executor, "qualified-ir", key);
+    assert.deepEqual(
+      plan.sessions.find((row) => row.label === "ir"),
+      { label: "ir", ...SETUP_SESSIONS.ir },
+    );
+    assert.equal(SETUP_SESSIONS.ir.main, "setup-ir");
+    // Only the seal sessions open the B-ROUTE seam; the IR session and the
+    // hold session never do.
+    for (const row of plan.sessions)
+      assert.equal(row.seam, ["seal", "reseal"].includes(row.label), key);
+    assert.deepEqual(
+      plan.sessions.map((row) => row.label).slice(0, 3),
+      ["author", "ir", "seal"],
+      key,
+    );
+    // Each IR row names its harness folder.
+    for (const row of ir[0].input.rows)
+      assert.equal(row.folderId, `nir1-folder-${row.sceneId}`, key);
+    assert.equal(plan.steps.at(-1).phase, "measurement-point", key);
+    assert.deepEqual(
+      plan.steps.at(-1).input.spec,
+      measurementSpecOf(plan.measurementPoint),
+      key,
+    );
+  }
   const byKey = Object.fromEntries(
-    plans.map((plan) => [`${plan.caseId}/${plan.variantId}`, prechecks(plan)]),
+    plans.map((plan) => [`${plan.caseId}/${plan.variantId}`, plan]),
   );
-  assert.deepEqual(byKey["G-01/v1"], [
-    ["qualified-ir", "qualified-ir-provider-undecided"],
+  // B2: the G-02 type edit, in the author session, label = type.
+  const g02 = byKey["G-02/base"].steps.find(
+    (step) => step.phase === "setup-timeline:g02-m-dace-type",
+  );
+  assert.equal(g02.executor, "codex-relation-type-edit");
+  assert.equal(g02.session, "author");
+  assert.deepEqual(g02.input, {
+    id: "g02-m-dace-type",
+    relationId: "g02-dace-link",
+    from: "trained",
+    to: "buys-from",
+    label: "buys-from",
+  });
+  // B3: the withdrawal is a deferred Decision.
+  const withdraw = byKey["G-08/both-indexes-unusable"].steps.find(
+    (step) => step.phase === "setup-timeline:g08-m-ir-withdraw",
+  );
+  assert.equal(withdraw.executor, "ir-approval-withdrawal");
+  assert.deepEqual(withdraw.input, {
+    id: "g08-m-ir-withdraw",
+    sceneId: "g08-control",
+    decision: "deferred",
+  });
+  // B4: the session of every step after the first seal, per variant.
+  const tail = (key) =>
+    byKey[key].steps
+      .slice(byKey[key].steps.findIndex((step) => step.phase === "b-seal"))
+      .map((step) => `${step.phase}@${step.session}`);
+  assert.deepEqual(tail("G-08/base-usable"), [
+    "b-seal@seal",
+    "chronicle-index@seal",
+    "measurement-point@seal",
   ]);
-  assert.deepEqual(byKey["G-02/base"], [
-    ["setup-timeline:g02-m-dace-type", "relation-type-writer-missing"],
-    ["setup-timeline:g02-ir", "qualified-ir-provider-undecided"],
+  assert.deepEqual(tail("G-08/graph-index-unusable"), [
+    "b-seal@seal",
+    "chronicle-index@seal",
+    "setup-timeline:g08-m-juno@hold",
+    "chronicle-index:after-mutation@hold",
+    "measurement-point@hold",
   ]);
-  assert.deepEqual(byKey["G-08/both-indexes-unusable"], [
-    ["setup-timeline:g08-ir", "qualified-ir-provider-undecided"],
-    [
-      "setup-timeline:g08-m-ir-withdraw",
-      "ir-approval-withdrawal-writer-undecided",
-    ],
-    ["measurement-point", "index-state-holding-undesigned"],
+  assert.deepEqual(tail("G-08/graph-recovered"), [
+    "b-seal@seal",
+    "chronicle-index@seal",
+    "setup-timeline:g08-m-juno@hold",
+    "b-seal:after-mutation@reseal",
+    "chronicle-index:after-mutation@reseal",
+    "measurement-point@reseal",
   ]);
-  for (const plan of plans)
-    for (const step of plan.steps.filter(
-      (row) => row.executor === "precheck",
-    )) {
-      assert.ok(step.precheck.reason.length > 0);
-      assert.ok(step.precheck.options.length >= 2, step.phase);
-    }
-  // ① の部分実行は、どの [precheck] の step にも届かない。
+  assert.deepEqual(tail("G-08/chronicle-index-unusable"), [
+    "b-seal@seal",
+    "chronicle-index@seal",
+    "setup-timeline:g08-m-ir-withdraw@hold",
+    "b-seal:after-mutation@reseal",
+    "measurement-point@reseal",
+  ]);
+  assert.deepEqual(tail("G-08/both-indexes-unusable"), [
+    "b-seal@seal",
+    "chronicle-index@seal",
+    "setup-timeline:g08-m-juno@hold",
+    "setup-timeline:g08-m-ir-withdraw@hold",
+    "measurement-point@hold",
+  ]);
+  // The measurement spec (S5 wires it): one-shot for the Chronicle-unusable
+  // variants, no seam for every unusable variant.
+  assert.equal(
+    byKey["G-08/chronicle-index-unusable"].measurementSpec.kind,
+    "one-shot",
+  );
+  assert.equal(
+    byKey["G-08/both-indexes-unusable"].measurementSpec.queriesPerProcess,
+    1,
+  );
+  assert.equal(
+    byKey["G-08/graph-index-unusable"].measurementSpec.maintenanceSeam,
+    false,
+  );
+  assert.equal(byKey["G-02/base"].measurementSpec.kind, "steady-state");
+  // ① の部分実行は、author の session の外の段にも新しい executor の段にも届かない。
   for (const plan of loadFrozenSetupPlans({
     root: REPO_ROOT,
     stopsAt: SETUP_STOPS.seedPin,
@@ -492,8 +597,87 @@ test("対応できない step（IR の provider、Relation の型の編集、IR 
     assert.ok(
       plan.steps
         .slice(0, plan.stopIndex + 1)
-        .every((step) => step.executor !== "precheck"),
+        .every(
+          (step) =>
+            step.session === "author" &&
+            ![
+              "qualified-ir",
+              "codex-relation-type-edit",
+              "ir-approval-withdrawal",
+            ].includes(step.executor),
+        ),
     );
+  // A type edit of a Relation the fixture does not declare with `from`, and a
+  // withdrawal of an IR qualifiedIr does not create, make no plan.
+  const g02Fixture = fixtureOf("G-02");
+  assert.throws(
+    () =>
+      frozenSetupPlan({
+        caseId: "G-02",
+        variantId: "base",
+        fixture: {
+          ...g02Fixture,
+          mutations: g02Fixture.mutations.map((row) => ({
+            ...row,
+            from: "hired",
+          })),
+        },
+        stopsAt: SETUP_STOPS.complete,
+      }),
+    /\[precheck\] S1i setup-timeline/u,
+  );
+  const g08Fixture = fixtureOf("G-08");
+  assert.throws(
+    () =>
+      frozenSetupPlan({
+        caseId: "G-08",
+        variantId: "both-indexes-unusable",
+        fixture: {
+          ...g08Fixture,
+          mutations: g08Fixture.mutations.map((row) =>
+            row.kind === "ir-approval-withdrawal"
+              ? { ...row, sceneId: "g08-attach" }
+              : row,
+          ),
+        },
+        stopsAt: SETUP_STOPS.complete,
+      }),
+    /\[precheck\] S1i setup-timeline/u,
+  );
+  // A non-mutation step after the IR, and mutations after the IR without a
+  // declared index state, make no plan either.
+  assert.throws(
+    () =>
+      frozenSetupPlan({
+        caseId: "G-08",
+        variantId: "graph-index-unusable",
+        fixture: {
+          ...g08Fixture,
+          setupTimeline: [
+            ...g08Fixture.setupTimeline,
+            { kind: "revision", id: "g08-r-cass" },
+          ],
+        },
+        stopsAt: SETUP_STOPS.complete,
+      }),
+    /\[precheck\] S1i setup-timeline/u,
+  );
+  assert.throws(
+    () =>
+      frozenSetupPlan({
+        caseId: "G-08",
+        variantId: "graph-index-unusable",
+        fixture: {
+          ...g08Fixture,
+          variants: g08Fixture.variants.map((row) => ({
+            ...row,
+            indexState: null,
+          })),
+        },
+        stopsAt: SETUP_STOPS.complete,
+      }),
+    /\[precheck\] S1i measurement-point/u,
+  );
   // 知らない timeline の種類は plan を作らない。
   const g05 = fixtureOf("G-05");
   assert.throws(
@@ -747,5 +931,82 @@ test("IR を持つ Scene を folder に包む: fixture の qualifiedIr の 10 �
         stopsAt: SETUP_STOPS.seedPin,
       }),
     /\[precheck\] S1i scenes/u,
+  );
+});
+
+test("S1j-2: dev の graph-case fixture は dev の plan（fixtureKind dev）だけを作り、凍結した材料の写しと dev の外の path を拒む", () => {
+  const plans = loadDevGraphCasePlans({
+    root: REPO_ROOT,
+    fixturePath:
+      "scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-graph-case.v1.json",
+    stopsAt: SETUP_STOPS.complete,
+  });
+  assert.deepEqual(
+    plans.map((plan) => plan.variantId),
+    [
+      "base-usable",
+      "graph-index-unusable",
+      "graph-recovered",
+      "chronicle-index-unusable",
+      "both-indexes-unusable",
+    ],
+  );
+  for (const plan of plans) {
+    assert.equal(plan.fixtureKind, "dev");
+    assert.ok(plan.caseId.startsWith("DEV-"));
+    assert.equal(plan.declaration, null);
+  }
+  // The frozen plans are frozen.
+  for (const plan of loadFrozenSetupPlans({
+    root: REPO_ROOT,
+    stopsAt: SETUP_STOPS.complete,
+  }))
+    assert.equal(plan.fixtureKind, "frozen");
+  // A frozen fixture path, or a G-case's own bytes, never loads as dev.
+  assert.throws(
+    () =>
+      loadDevGraphCasePlans({
+        root: REPO_ROOT,
+        fixturePath: "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+        stopsAt: SETUP_STOPS.complete,
+      }),
+    /\[precheck\] S1i dev-fixture/u,
+  );
+  // The old dev fixture (another schema) is not a dev graph case.
+  assert.throws(
+    () =>
+      loadDevGraphCasePlans({
+        root: REPO_ROOT,
+        fixturePath:
+          "scripts/quality/nir1-graph-eval/dev-fixtures/dev-lantern.v1.json",
+        stopsAt: SETUP_STOPS.complete,
+      }),
+    /\[precheck\] S1i dev-fixture/u,
+  );
+  // A dev catalog not made by the loader is not a CP-4 variant.
+  const fixture = JSON.parse(
+    readFileSync(
+      path.join(
+        REPO_ROOT,
+        "scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-graph-case.v1.json",
+      ),
+      "utf8",
+    ),
+  );
+  assert.throws(
+    () =>
+      frozenSetupPlan({
+        caseId: fixture.caseId,
+        variantId: "base-usable",
+        fixture,
+        stopsAt: SETUP_STOPS.complete,
+        devCatalog: {
+          kind: "dev",
+          caseId: fixture.caseId,
+          variantId: "base-usable",
+          declaration: false,
+        },
+      }),
+    /\[precheck\] S1i variant/u,
   );
 });

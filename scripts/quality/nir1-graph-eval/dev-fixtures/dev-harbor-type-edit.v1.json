@@ -1,0 +1,268 @@
+{
+  "schemaVersion": "nir1-cp4-dev-graph-case/1",
+  "kind": "dev",
+  "frozen": false,
+  "caseId": "DEV-HARBOR-TYPE",
+  "fixtureId": "cp4-dev-harbor-type-edit/1",
+  "note": "Synthetic CP-4 S1j-2 development fixture in the G-case shape (Codex, foreshadows with Codex links, typed Revisions, the G-02 style Relation type edit before the IR, two qualifiedIr rows). Not a G-case, not frozen, not reviewed; its material is new and unrelated to evals/nir1-graph, evals/nir1-g01 and the 24 queries. Used only to check the complete setup's new routes in real Electron; never a CP-4 result.",
+  "language": "en",
+  "query": {
+    "sceneId": "dev-gc-query",
+    "readingOrder": 100,
+    "title": "Open ledger",
+    "body": "Which earlier scene shows a sailor hired by my chosen shipwright?"
+  },
+  "scenes": [
+    {
+      "id": "dev-gc-review",
+      "readingOrder": 0,
+      "title": "Rope locker",
+      "body": "Coils of tarred rope filled a narrow locker below the slipway."
+    },
+    {
+      "id": "dev-gc-control",
+      "readingOrder": 10,
+      "title": "Slip board",
+      "body": "A slip board carried a copied line: Which earlier scene shows a sailor hired by my chosen shipwright? Nobody had answered."
+    },
+    {
+      "id": "dev-gc-attach",
+      "readingOrder": 12,
+      "title": "Mast note",
+      "body": "A note tied to a mast asked: Which earlier scene shows a sailor hired by my chosen shipwright? It stayed unanswered."
+    },
+    {
+      "id": "dev-gc-ivo-deck",
+      "readingOrder": 20,
+      "title": "Deck pitch",
+      "body": "Ivo scraped old pitch from the deck planks of a half-built ketch while gulls watched."
+    },
+    {
+      "id": "dev-gc-fog",
+      "readingOrder": 30,
+      "title": "Fog bank",
+      "body": "A fog bank rolled over the harbor mouth before noon and hid the breakwater."
+    }
+  ],
+  "scope": {
+    "registry": {
+      "timelineRefs": ["dev-tl"],
+      "worldlineRefs": ["dev-wl"],
+      "narrativeLayerRefs": ["dev-layer"]
+    },
+    "default": {
+      "marker": "explicit",
+      "queryIdentity": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "dev-tl"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "dev-wl"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "dev-layer"
+        }
+      },
+      "materialConstraint": {
+        "timeline": {
+          "kind": "exact",
+          "ref": "dev-tl"
+        },
+        "worldline": {
+          "kind": "exact",
+          "ref": "dev-wl"
+        },
+        "narrativeLayer": {
+          "kind": "exact",
+          "ref": "dev-layer"
+        }
+      },
+      "knowledgeHolder": {
+        "kind": "reader"
+      },
+      "audience": {
+        "kind": "reader"
+      }
+    },
+    "overrides": {}
+  },
+  "entities": [
+    {
+      "id": "dev-gc-marra",
+      "kind": "character",
+      "label": "Marra",
+      "summary": "Marra builds ketches on the north slipway."
+    },
+    {
+      "id": "dev-gc-ivo",
+      "kind": "character",
+      "label": "Ivo",
+      "summary": "Ivo caulks hulls for a daily wage."
+    },
+    {
+      "id": "dev-gc-pell",
+      "kind": "character",
+      "label": "Pell",
+      "summary": "Pell mends sails in a loft above the yard."
+    },
+    {
+      "id": "dev-gc-oskar",
+      "kind": "character",
+      "label": "Oskar",
+      "summary": "Oskar sells oak planks at the timber market."
+    }
+  ],
+  "relations": [
+    {
+      "id": "dev-gc-hired-ivo",
+      "fromEntityId": "dev-gc-marra",
+      "toEntityId": "dev-gc-ivo",
+      "type": "hired",
+      "direction": "directed"
+    },
+    {
+      "id": "dev-gc-hired-pell",
+      "fromEntityId": "dev-gc-marra",
+      "toEntityId": "dev-gc-pell",
+      "type": "hired",
+      "direction": "directed"
+    },
+    {
+      "id": "dev-gc-oskar-link",
+      "fromEntityId": "dev-gc-marra",
+      "toEntityId": "dev-gc-oskar",
+      "type": "trained",
+      "direction": "directed"
+    }
+  ],
+  "manualSeed": {
+    "entityId": "dev-gc-marra",
+    "manualSeed": true
+  },
+  "pins": [
+    {
+      "sceneId": "dev-gc-ivo-deck",
+      "entryId": "dev-gc-ivo"
+    },
+    {
+      "sceneId": "dev-gc-attach",
+      "entryId": "dev-gc-pell"
+    }
+  ],
+  "foreshadows": [
+    {
+      "id": "dev-gc-fs-loft",
+      "title": "The loft key",
+      "secret": true,
+      "payoffSceneId": "dev-gc-fog",
+      "payoffConfirmed": true,
+      "abandoned": false,
+      "linkedEntityIds": ["dev-gc-pell"]
+    },
+    {
+      "id": "dev-gc-fs-oak",
+      "title": "Oak delivery",
+      "secret": false,
+      "payoffSceneId": null,
+      "payoffConfirmed": false,
+      "abandoned": false,
+      "linkedEntityIds": ["dev-gc-oskar"]
+    }
+  ],
+  "qualifiedIr": [
+    {
+      "sceneId": "dev-gc-control",
+      "summary": "A slip board displayed an unanswered question about a shipwright's hired sailor.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    },
+    {
+      "sceneId": "dev-gc-ivo-deck",
+      "summary": "Ivo scraped pitch from a ketch deck at the shipwright's yard.",
+      "actuality": "actual",
+      "attribution": "narrator",
+      "narrativeFrame": "story-world"
+    }
+  ],
+  "revisions": [
+    {
+      "id": "dev-gc-r-ivo",
+      "reviewSceneId": "dev-gc-review",
+      "entityIds": ["dev-gc-marra", "dev-gc-ivo"],
+      "relationIds": ["dev-gc-hired-ivo"],
+      "decision": "approved"
+    },
+    {
+      "id": "dev-gc-r-pell",
+      "reviewSceneId": "dev-gc-review",
+      "entityIds": ["dev-gc-marra", "dev-gc-pell"],
+      "relationIds": ["dev-gc-hired-pell"],
+      "decision": "approved"
+    },
+    {
+      "id": "dev-gc-r-oskar",
+      "reviewSceneId": "dev-gc-review",
+      "entityIds": ["dev-gc-marra", "dev-gc-oskar"],
+      "relationIds": ["dev-gc-oskar-link"],
+      "decision": "approved"
+    }
+  ],
+  "mutations": [
+    {
+      "id": "dev-gc-m-oskar-type",
+      "kind": "codex-relation-type-edit",
+      "relationId": "dev-gc-oskar-link",
+      "from": "trained",
+      "to": "buys-from"
+    }
+  ],
+  "setupTimeline": [
+    {
+      "kind": "revision",
+      "id": "dev-gc-r-ivo"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-gc-r-pell"
+    },
+    {
+      "kind": "revision",
+      "id": "dev-gc-r-oskar"
+    },
+    {
+      "kind": "mutation",
+      "id": "dev-gc-m-oskar-type"
+    },
+    {
+      "kind": "qualified-ir",
+      "id": "dev-gc-ir"
+    }
+  ],
+  "measurementBoundary": {
+    "setupOrder": "Create the project and every Scene (including S2) in reading order; then Codex entities and relations; then the Scope registry and every explicit Scene Scope; then foreshadows, foreshadow Codex links and pins. Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled). Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings. Do not change tree order, registry or Scene Scope after the first typed revision is prepared. Then wait for the variant measurementPoint, record whether each declared precondition holds, and compare only the expectations that no unmet precondition blocks."
+  },
+  "variants": [
+    {
+      "id": "base",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      },
+      "preconditions": [
+        {
+          "id": "b-sealed-binding",
+          "scope": "variant"
+        },
+        {
+          "id": "maintenance-enabled",
+          "scope": "variant"
+        }
+      ]
+    }
+  ]
+}

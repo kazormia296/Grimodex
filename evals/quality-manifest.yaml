@@ -1688,6 +1688,16 @@ requirements:
       - scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs
       - scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs
       - scripts/quality/nir1-graph-eval/r5-check-runner.mjs
+      - scripts/quality/nir1-graph-eval/setup-main-build.mjs
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-graph-case.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-type-edit.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-g05-shape.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-shape-g01.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-shape-g03.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-shape-g04.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-shape-g06.v1.json
+      - scripts/quality/nir1-graph-eval/dev-fixtures/dev-shape-g07.v1.json
+      - scripts/quality/nir1-graph-eval/dev-shape-fixture.mjs
       - scripts/quality/nir1-graph-eval/keep-test.mjs
       - scripts/quality/nir1-graph-eval/signal-cleanup.mjs
       - scripts/quality/nir1-graph-eval/k64-record.mjs
@@ -1766,6 +1776,9 @@ requirements:
       - scripts/quality/nir1-graph-eval/frozen-setup-plan.test.mjs
       - scripts/quality/nir1-graph-eval/frozen-setup-driver.test.mjs
       - scripts/quality/nir1-graph-eval/r5-check-runner.test.mjs
+      - scripts/quality/nir1-graph-eval/frozen-setup-complete.test.mjs
+      - scripts/quality/nir1-graph-eval/setup-main-build.test.mjs
+      - scripts/quality/nir1-graph-eval/dev-shape-fixture.test.mjs
       - scripts/quality/nir1-graph-eval/keep-test.test.mjs
       - scripts/quality/nir1-graph-eval/k64-record.test.mjs
       - scripts/quality/nir1-graph-eval/trace-record.test.mjs

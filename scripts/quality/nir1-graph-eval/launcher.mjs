@@ -37,6 +37,13 @@ export const PRODUCT_MAIN = "dist-electron/main.cjs";
 export const DEFAULT_ADDON = "electron/native/grimodex-node/grimodex-node.node";
 export const ELECTRON_LAUNCH_TIMEOUT_MS = 60_000;
 
+/**
+ * S1j-2 review P2-5: the product journey seams' variables (the deterministic
+ * Journey provider, the B-ROUTE maintenance seam) are never inherited from
+ * the wrapper env; a session that needs one passes it in `extraEnv`.
+ */
+export const REMOVED_LAUNCH_ENV_PREFIX = "GRIMODEX_PRODUCT_JOURNEY_";
+
 /** Removed from the launch env (desktop, session bus, proxies, node mode). */
 export const REMOVED_LAUNCH_ENV = Object.freeze([
   "WAYLAND_DISPLAY",
@@ -128,6 +135,8 @@ export function buildElectronLaunchEnv(
       throw new Error(`[precheck] ${name} must be an absolute path`);
   const env = { ...baseEnv };
   for (const name of REMOVED_LAUNCH_ENV) delete env[name];
+  for (const name of Object.keys(env))
+    if (name.startsWith(REMOVED_LAUNCH_ENV_PREFIX)) delete env[name];
   return {
     ...env,
     ELECTRON_OZONE_PLATFORM_HINT: "x11",

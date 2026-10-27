@@ -23,11 +23,20 @@ try {
   if (
     !productMain ||
     !path.isAbsolute(productMain) ||
-    path.basename(productMain) !== "main.cjs" ||
+    // S1j-2: the setup-only Main of the qualified-ir session sits beside the
+    // product Main (setup-main-build.mjs; session.mjs launches it only with
+    // its sealed admission).
+    !(
+      path.basename(productMain) === "main.cjs" ||
+      // Review P3 (b): the setup-only Main only with the deterministic
+      // Journey provider's env (the qualified-ir session).
+      (path.basename(productMain) === "main-setup-ir.cjs" &&
+        process.env.GRIMODEX_PRODUCT_JOURNEY_FAKE_AI === "deterministic-v1")
+    ) ||
     path.basename(path.dirname(productMain)) !== "dist-electron"
   )
     throw new Error(
-      "CP4-OBS-INTERNAL: GRIMODEX_CP4_PRODUCT_MAIN must be <root>/dist-electron/main.cjs",
+      "CP4-OBS-INTERNAL: GRIMODEX_CP4_PRODUCT_MAIN must be <root>/dist-electron/main.cjs (or main-setup-ir.cjs)",
     );
   globalThis.__cp4Observer = installCp4Observer({
     app,

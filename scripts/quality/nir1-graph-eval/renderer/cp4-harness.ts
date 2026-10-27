@@ -7,7 +7,8 @@
  * The page writes only through the product's renderer API (`invoke` of the
  * product's IPC wrapper, `createProject`, `createCodexEntry`,
  * `createCodexRelation`, `upsertScenePin`, `createForeshadow`,
- * `addCodexLink`, `updateCodexEntry`, the body declaration wrappers) and
+ * `addCodexLink`, `updateCodexEntry`, `deleteCodexRelation`, the Chronicle
+ * dialog's extraction／revision／Decision API, the body declaration wrappers) and
  * measures only through `fetchRelatedPastScenes(…, { mode: "hybrid" })`,
  * the product's begin/continue path. No SQL is written here. The page reads
  * no fixture file: the drivers pass the values (the synthetic dev fixture,
@@ -31,7 +32,10 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { usePhaseStore } from "@/features/codex/phaseStore";
 import { createCanonicalWriteContext } from "@/features/native-writes/writeContext";
 import { createCodexEntry, updateCodexEntry } from "@/features/codex/api";
-import { createCodexRelation } from "@/features/codex/codexRelationApi";
+import {
+  createCodexRelation,
+  deleteCodexRelation,
+} from "@/features/codex/codexRelationApi";
 import { upsertScenePin } from "@/features/codex/sceneCodexPinsApi";
 import { addCodexLink, createForeshadow } from "@/features/foreshadow/api";
 import { prosemirrorToText } from "@/lib/prosemirror";
@@ -71,6 +75,21 @@ import {
   readBodyDeclarationState,
 } from "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationApi";
 import { BODY_DECLARATION_AXES } from "@/features/editor/sceneMeta/bodyDeclaration/bodyDeclarationTypes";
+import { getDescendantScenesInOrder } from "@/features/tree/treeStore";
+import { getCurrentProjectId } from "@/features/project/projectStore";
+import { getCurrentWorkspaceIdentity } from "@/runtime/workspaceIdentity";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { captureMutationAuthority } from "@/features/concurrency/mutationAuthority";
+import { loadChronicleExtractionScenes } from "@/features/chronicle/ChronicleExtractDialog";
+import { listEvents } from "@/features/chronicle/api";
+import { buildLiveChronicleExistingEventCatalog } from "@/features/chronicle/extraction/existingEventCatalog";
+import {
+  decideChronicleProposal,
+  recordChronicleProposalDecision,
+  reviseChronicleProposal,
+  startChronicleExtraction,
+} from "@/features/chronicle/chronicleExtractionApi";
+import { useChronicleExtractionStore } from "@/features/chronicle/chronicleExtractionStore";
 import { hookProbe } from "./cp4-hook-probe";
 import { k64Probe } from "./cp4-k64-probe";
 import { traceProbe } from "./cp4-trace-probe";
@@ -254,9 +273,107 @@ const api = {
       );
       return true;
     }),
+  // S1j-2: the G-02 Relation type edit (relation.delete, then relation.create
+  // through createCodexRelation above). The UI's delete (default context).
+  deleteCodexRelation: (input: { id: string }) =>
+    guarded(async () => {
+      await deleteCodexRelation(input.id);
+      return true;
+    }),
   sceneText: (sceneId: string) =>
     guarded(async () => prosemirrorToText(await loadSceneContent(sceneId))),
   humanWriteContext: () => human(),
+};
+
+/** The review projection's proposals (what the dialog's cards show). */
+function projectedProposals() {
+  const projection = useChronicleExtractionStore.getState().projection;
+  return {
+    projectionRunId: projection?.runId ?? null,
+    proposals: (projection?.proposals ?? []).map((row) => ({
+      proposalId: row.proposalId,
+      revisionId: row.revisionId,
+      status: row.status,
+      applicability: row.applicability,
+      secret: row.payload?.disclosure.secret ?? null,
+      applied: row.application !== null,
+    })),
+  };
+}
+
+/**
+ * S1j-2: the qualified-ir step through the Chronicle dialog's renderer API.
+ * `extract` is the dialog's Analyze for one folder (its descendant Scenes,
+ * the live event catalog, the mutation authority of the current workspace),
+ * `revise` the card's secret checkbox (a child revision), `decide` the
+ * card's approve／reject／defer buttons, `recordDecision` the Decision writer
+ * the buttons call, for a run whose review is no longer projected (the
+ * G-08 withdrawal in a later session).
+ */
+const chronicle = {
+  extract: (input: { projectId: string; folderId: string }) =>
+    guarded(async () => {
+      const workspace = getCurrentWorkspaceIdentity();
+      if (!workspace) throw new Error("no workspace is open");
+      // The AI audit reads the workspace shell's active path (the app's open
+      // flow sets it; this page opens the workspace through the IPC above).
+      if (useWorkspaceStore.getState().activeWorkspacePath !== workspace.path)
+        useWorkspaceStore.setState({ activeWorkspacePath: workspace.path });
+      const sceneNodes = getDescendantScenesInOrder(
+        useTreeStore.getState().nodes,
+        input.folderId,
+      );
+      const scenes = await loadChronicleExtractionScenes(sceneNodes);
+      const existing = await listEvents(input.projectId);
+      useChronicleExtractionStore.getState().clearProjection();
+      const { runId } = await startChronicleExtraction({
+        projectId: input.projectId,
+        folderId: input.folderId,
+        sceneIds: scenes.map((scene) => scene.sceneId),
+        authority: captureMutationAuthority(
+          input.projectId,
+          getCurrentProjectId,
+        ),
+        workspacePath: workspace.path,
+        openRevision: workspace.openRevision,
+        existingEvents: buildLiveChronicleExistingEventCatalog(existing),
+      });
+      return {
+        runId,
+        sceneIds: scenes.map((scene) => scene.sceneId),
+        ...projectedProposals(),
+      };
+    }),
+  revise: (input: { proposalId: string; secret: boolean }) =>
+    guarded(async () => {
+      await reviseChronicleProposal({
+        proposalId: input.proposalId,
+        patch: { secret: input.secret },
+      });
+      return projectedProposals();
+    }),
+  decide: (input: {
+    proposalId: string;
+    status: "approved" | "rejected" | "deferred";
+  }) =>
+    guarded(async () => {
+      await decideChronicleProposal({
+        proposalId: input.proposalId,
+        status: input.status,
+      });
+      return projectedProposals();
+    }),
+  recordDecision: (input: {
+    runId: string;
+    projectId: string;
+    proposalId: string;
+    revisionId: string;
+    decision: "approved" | "rejected" | "deferred";
+  }) =>
+    guarded(async () => {
+      await recordChronicleProposalDecision(input);
+      return true;
+    }),
 };
 
 /** K2/4 declaration through the product wrappers (Main's CI seam approves). */
@@ -433,7 +550,14 @@ async function buildRaw(input: {
  * usable and the IR is ready. The Index proof lives in the process, so each
  * measurement Main builds it once.
  */
-async function buildIndex(input: { sceneId: string; limitMs: number }) {
+async function buildIndex(input: {
+  sceneId: string;
+  limitMs: number;
+  // S1j-2 P-6: the pause between the queries (default 50 ms as before; the
+  // frozen setup passes its constant so the maintenance Verify is not
+  // preempted by every query).
+  intervalMs?: number;
+}) {
   const started = performance.now();
   const probes = [];
   while (performance.now() - started < input.limitMs) {
@@ -448,7 +572,7 @@ async function buildIndex(input: { sceneId: string; limitMs: number }) {
       sample.completion?.outcome === "ir-ready"
     )
       return { ok: true, durationMs: performance.now() - started, probes };
-    await sleep(50);
+    await sleep(input.intervalMs ?? 50);
   }
   return { ok: false, durationMs: performance.now() - started, probes };
 }
@@ -812,6 +936,7 @@ async function twoViews(input: {
   selectProject: (input: Parameters<typeof selectProject>[0]) =>
     guarded(() => selectProject(input)),
   api,
+  chronicle,
   declaration,
   measure,
   buildRaw: (input: Parameters<typeof buildRaw>[0]) =>
