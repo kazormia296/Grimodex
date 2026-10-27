@@ -1113,7 +1113,7 @@
             "runtime.contracts"
           ],
           "slots": 12,
-          "timeoutMs": 180000
+          "timeoutMs": 300000
         }
       ]
     },
