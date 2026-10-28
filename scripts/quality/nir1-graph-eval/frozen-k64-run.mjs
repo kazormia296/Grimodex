@@ -71,6 +71,12 @@ import {
   waitRelease,
 } from "./k64-runner.mjs";
 import { DEFAULT_ADDON, ROOT, bundleObserver } from "./launcher.mjs";
+// S5-B (DR-CP4-O-16): ④'s SP-P4 gate and the K24-G01-N2〜N4 hooks.
+import {
+  g01NegativeTargetsFromFixture,
+  readSpP4Gate,
+} from "./frozen-diagnostics.mjs";
+import { createG01NegativeRun } from "./g01-negative-run.mjs";
 import {
   hashObservationPaths,
   materialRevisionResolver,
@@ -137,6 +143,24 @@ function bounded(promise, label) {
 const call = async (addon, name, ...args) =>
   JSON.parse(await bounded(addon(name, ...args), name));
 
+/**
+ * S5-B (DR-CP4-O-16): the run kinds that request the Graph (gold, negative)
+ * start only after ④'s SP-P4 (S2 r5Gate.beforeFirstGatedRun); the
+ * unrestricted parity run is exempt.
+ */
+export const graphArmGated = (runKind) => runKind !== "parity";
+
+/**
+ * The variants a run kind measures: parity the 12 G-02〜G-08 variants
+ * (d10), a negative G-01/v1 only (K24-G01-N2〜N4), gold all (null).
+ */
+export function runKindVariantKeys({ runKind, prep, dev }) {
+  if (!dev && runKind === "parity") return new Set(parityVariantKeys(prep));
+  // A dev shape check names its G-01-shaped variant with --variant.
+  if (runKind === "negative") return dev ? null : new Set(["G-01/v1"]);
+  return null;
+}
+
 export function parseArgs(argv) {
   const options = {
     "eval-build": path.join(ROOT, ".artifacts/cp4/eval-build"),
@@ -166,8 +190,14 @@ export function parseArgs(argv) {
     if (!options[name]) throw new Error(`--${name} is required`);
   // d10.parity (P1-2): `parity` is the unrestricted R+IR run; `gold` the
   // restricted run of both arms (G-01 follows d10.g01).
-  if (!["gold", "parity"].includes(options["run-kind"]))
-    throw new Error("--run-kind is gold or parity");
+  if (!["gold", "parity", "negative"].includes(options["run-kind"]))
+    throw new Error("--run-kind is gold, parity or negative");
+  // S5-B: a negative names its diagnostic; a formal Graph-arm run (gold,
+  // negative) names ④'s SP-P4 receipt (S2 r5Gate.beforeFirstGatedRun).
+  if (options["run-kind"] === "negative" && !options.negative)
+    throw new Error("--negative K24-G01-N2|N3|N4 is required");
+  if (!dev && graphArmGated(options["run-kind"]) && !options["sp-p4-receipt"])
+    throw new Error("--sp-p4-receipt is required (S2 r5Gate)");
   if (options["d2a-mode"] !== undefined)
     throw new Error(
       "--d2a-mode is gone: the mode follows --run-kind (parity is unrestricted) and d10.g01",
@@ -252,6 +282,17 @@ export async function readSetups({ file, plans, dev, candidate = null }) {
   return rows;
 }
 
+/**
+ * The measurement Main's env: the body declaration seam in a declaring
+ * process, and (S5-B, a negative only) the B-ROUTE journey seam on top.
+ */
+export function measurementLaunchEnv({ bodySeam, nonce, negative = null }) {
+  const base = bodySeam
+    ? measurementSeamEnv({ bodyNonce: nonce, maintenance: "product" })
+    : {};
+  return negative ? negative.launchEnv(base) : base;
+}
+
 async function launchMeasurement({ label, dir, shared, d2aMode, bodySeam }) {
   const nonce = randomUUID();
   const session = await startSession({
@@ -266,9 +307,11 @@ async function launchMeasurement({ label, dir, shared, d2aMode, bodySeam }) {
     admission: shared.admission,
     // Review P3 (e): the body declaration seam (and CI=true) only in a
     // process that declares.
-    extraEnv: bodySeam
-      ? measurementSeamEnv({ bodyNonce: nonce, maintenance: "product" })
-      : {},
+    extraEnv: measurementLaunchEnv({
+      bodySeam,
+      nonce,
+      negative: shared.negative,
+    }),
   });
   try {
     if (session.evidence.problems.length > 0)
@@ -623,8 +666,31 @@ async function openProcess({ ctx, dir, label }) {
   });
   const { session } = launched;
   const proc = { session, ...copy, checks: { status: launched.status } };
+  // S5-B: a negative reopens the Main on the same copy (its hooks below).
+  let reopens = 0;
+  const relaunch = async (relabel) => {
+    const again = await (shared.launchMeasurement ?? launchMeasurement)({
+      label: relabel,
+      dir,
+      shared,
+      d2aMode: ctx.d2aMode,
+      bodySeam: declares,
+    });
+    again.session.bodyNonce = again.nonce;
+    await again.session.page.evaluate(
+      (input) => window.cp4Harness.openWorkspace(input),
+      {
+        workspacePath: copy.workspacePath,
+        projectId: ctx.ids.projectId,
+        activeSceneId: ctx.ids.querySceneId,
+      },
+    );
+    return again.session;
+  };
+  const stopReopened = async (value) =>
+    value ? stopSession(value, dir, `reopen-${(reopens += 1)}`) : null;
   try {
-    const page = session.page;
+    let page = session.page;
     await evaluateOk(
       page,
       "open workspace",
@@ -639,11 +705,21 @@ async function openProcess({ ctx, dir, label }) {
       copy.dbPath,
       ctx.ids.projectId,
     );
+    if (ctx.negative) {
+      const reopened = await ctx.negative.beforeDeclaration({
+        page,
+        ids: ctx.ids,
+        proc,
+        relaunch,
+        stop: stopReopened,
+      });
+      if (reopened) [proc.session, page] = [reopened, reopened.page];
+    }
     if (declares) {
       const declared = await declarationStep({
         page,
-        session,
-        nonce: launched.nonce,
+        session: proc.session,
+        nonce: proc.session.bodyNonce ?? launched.nonce,
         dbPath: copy.dbPath,
         ids: ctx.ids,
         sceneId: spec.declaration.sceneId,
@@ -683,6 +759,20 @@ async function openProcess({ ctx, dir, label }) {
         lastIndexUsable: indexUsable,
       };
     }
+    // S5-B: a negative's control and mutation after the declaration, once
+    // the Raw vectors and the Chronicle Index exist; the Main reopened for
+    // B is measured, against the B and C it sealed (DR-CP4-O-16).
+    if (ctx.negative) {
+      const reopened = await ctx.negative.afterDeclaration({
+        page,
+        ids: ctx.ids,
+        proc,
+        relaunch,
+        stop: stopReopened,
+      });
+      [proc.session, page] = [reopened, reopened.page];
+      ctx.setupProbe = ctx.negative.measurementProbe(ctx.setupProbe);
+    }
     // SP-P1 again on this copy (⑤), against the gate's row.
     proc.checks.seedPin = measurementCopySeedCheck({
       gateRow: ctx.gateRow,
@@ -704,7 +794,7 @@ async function openProcess({ ctx, dir, label }) {
     // The caller never receives this process: stop its Main here (by its own
     // handle), so a [precheck] before the first query leaks no Electron.
     error.process = proc;
-    proc.evidence = await stopSession(session, dir, label).catch(
+    proc.evidence = await stopSession(proc.session, dir, label).catch(
       (stopError) => ({
         problems: [`stop: ${stopError?.stack ?? stopError}`],
       }),
@@ -842,7 +932,9 @@ async function measureSteady(ctx) {
       const taken =
         slot.arm === "hybrid"
           ? await hybridSample({ ctx, slot })
-          : await graphSample({ ctx, slot });
+          : ctx.negative
+            ? await ctx.negative.askGraph(() => graphSample({ ctx, slot }))
+            : await graphSample({ ctx, slot });
       samples.push(taken.row);
       if (taken.release) releases.push({ ...slot, ...taken.release });
       const at = atQueryProbe({ ctx, taken });
@@ -1225,7 +1317,11 @@ export async function writeVariantRecord({
       validateParitySchedule(result.samples, ctx.variant.key);
     receipt = assembleK64Receipt({
       runKind:
-        runKind === "parity" ? "g-case-parity-unrestricted" : "g-case-gold",
+        runKind === "parity"
+          ? "g-case-parity-unrestricted"
+          : runKind === "negative"
+            ? "g-case-diagnostic-negative"
+            : "g-case-gold",
       priorAttempts,
       runId,
       preview: dev,
@@ -1353,7 +1449,26 @@ function devVariantKeyOf(spec, fixturePath) {
 }
 
 /** The formal run (or the dev shape check) for `argv` (k64-runner.mjs hands `--setups` here). */
-export async function runFrozenK64(argv) {
+/**
+ * `deps` replace the formal admission's readers, the S5-B gate, the run plan,
+ * the setups and the attempt ledger in the tests only (review P2-β: the
+ * gate's place is tested at this layer).
+ */
+export async function runFrozenK64(argv, deps = {}) {
+  const {
+    assertCandidate = assertCandidateFixed,
+    readK64Head = readK64FreezeHead,
+    admitFormal = admitFormalK64Run,
+    readGate = readSpP4Gate,
+    planRun = formalRunPlan,
+    readSetupsFn = readSetups,
+    listAttemptsFn = listAttempts,
+    selectParityFn = selectParity,
+    startAttemptFn = startAttempt,
+    // A CI checkout has no built default addon; the tests inject its digest.
+    defaultAddonSha256Of = () =>
+      sha256(readFileSync(path.join(ROOT, DEFAULT_ADDON))),
+  } = deps;
   const options = parseArgs(argv);
   const dev = Boolean(options["dev-fixture"]);
   const runKind = options["run-kind"];
@@ -1382,8 +1497,8 @@ export async function runFrozenK64(argv) {
     const evalDir = path.resolve(options["eval-build"]);
     let admitted;
     if (!dev) {
-      assertCandidateFixed({ root: ROOT, candidate: options.candidate });
-      readK64FreezeHead({ root: ROOT, commit: options["k64-commit"] });
+      assertCandidate({ root: ROOT, candidate: options.candidate });
+      readK64Head({ root: ROOT, commit: options["k64-commit"] });
       const readJson = (file) => JSON.parse(readFileSync(file, "utf8"));
       const ratification5 = options["keep-test-worktree"]
         ? await collectRatification5EvidenceWithKeepTest({
@@ -1393,7 +1508,7 @@ export async function runFrozenK64(argv) {
             keepTestLogDir: runDir,
           })
         : undefined;
-      const formal = admitFormalK64Run({
+      const formal = admitFormal({
         root: ROOT,
         candidate: options.candidate,
         prepCommit: options["prep-commit"],
@@ -1401,11 +1516,16 @@ export async function runFrozenK64(argv) {
         k64Commit: options["k64-commit"],
         buildReceipt: readJson(path.join(evalDir, "eval-build.json")),
         productReceipt: readJson(path.resolve(options["product-receipt"])),
-        defaultAddonSha256: sha256(
-          readFileSync(path.join(ROOT, DEFAULT_ADDON)),
-        ),
+        defaultAddonSha256: defaultAddonSha256Of(),
         ...(ratification5 ? { ratification5 } : {}),
       });
+      // S5-B: no Graph-arm run (gold, negative) before ④'s SP-P4 passed.
+      if (graphArmGated(runKind))
+        report.checks.spP4 = readGate({
+          file: path.resolve(options["sp-p4-receipt"]),
+          head: formal.admission.head,
+          candidateCommit: formal.admission.candidateHead,
+        });
       admitted = {
         launchAdmission: formal.admission,
         procedure: formal.procedure,
@@ -1457,7 +1577,7 @@ export async function runFrozenK64(argv) {
     const prep = admitted.s2?.files.observationPrep.value;
     const specs = dev
       ? plans.map((plan) => devRunSpec(plan))
-      : formalRunPlan({
+      : planRun({
           plans,
           prep,
           addenda: [
@@ -1466,8 +1586,7 @@ export async function runFrozenK64(argv) {
           ],
         });
     // d10: a parity run measures the 12 G-02〜G-08 variants; a Gold run all 13.
-    const kindKeys =
-      !dev && runKind === "parity" ? new Set(parityVariantKeys(prep)) : null;
+    const kindKeys = runKindVariantKeys({ runKind, prep, dev });
     const selected = specs.filter(
       (spec) =>
         (!options.variant || spec.variantKey === options.variant) &&
@@ -1487,7 +1606,7 @@ export async function runFrozenK64(argv) {
     // The candidate's identity for the records written before any launch;
     // the full block (receipts, models, harness files) before the launch.
     let candidate = candidateIdentity();
-    const setups = await readSetups({
+    const setups = await readSetupsFn({
       file: options.setups,
       plans,
       dev,
@@ -1508,18 +1627,18 @@ export async function runFrozenK64(argv) {
       // status) and the one parity it uses (fixed; two completed is
       // [precheck]).
       priorAttempts = {
-        [runKind]: listAttempts({ ...key, runKind }).map(attemptSummary),
+        [runKind]: listAttemptsFn({ ...key, runKind }).map(attemptSummary),
       };
       if (runKind === "gold") {
-        const parity = selectParity({
-          attempts: listAttempts({ ...key, runKind: "parity" }),
+        const parity = selectParityFn({
+          attempts: listAttemptsFn({ ...key, runKind: "parity" }),
           startedAtUtc: admitted.head.runStartedAtUtc,
         });
         priorAttempts.parity = parity.attempts;
         priorAttempts.parityUsed = parity.used;
         report.checks.parity = parity;
       }
-      attempt = startAttempt({
+      attempt = startAttemptFn({
         root: ROOT,
         runName: options.run,
         entry: {
@@ -1674,6 +1793,26 @@ export async function runFrozenK64(argv) {
       models: { ja: options["ja-model"], en: options["en-model"] },
       tmpRoot: options.tmp ? path.join(options.tmp, options.run) : null,
       admission: admitted.launchAdmission,
+      // S5-B: a negative's hooks (DR-CP4-O-16).
+      negative:
+        runKind === "negative"
+          ? createG01NegativeRun({
+              id: options.negative,
+              root: ROOT,
+              ...(dev
+                ? {
+                    target: g01NegativeTargetsFromFixture(
+                      JSON.parse(
+                        readFileSync(
+                          path.join(ROOT, options["dev-fixture"]),
+                          "utf8",
+                        ),
+                      ),
+                    ),
+                  }
+                : {}),
+            })
+          : null,
     };
     // 5. the variants, in catalog order.
     for (const spec of selected) {
@@ -1739,6 +1878,7 @@ export async function runFrozenK64(argv) {
             }
           : null,
         procedure: admitted.procedure,
+        negative: shared.negative,
         d2aMode,
         arms: runKind === "parity" ? ["hybrid"] : ["hybrid", "graph"],
         // DR-CP4-N-10: G-01's fallback when S4 set rAndRirMode unrestricted.
@@ -1779,6 +1919,9 @@ export async function runFrozenK64(argv) {
           error: String(error?.message ?? error).split("\n")[0],
           declaration:
             error?.declaration ?? error?.process?.declaration ?? null,
+          negative: error?.negative
+            ? { blocked: error.negativeBlocked ?? null, ...error.negative }
+            : null,
         };
         process.exitCode = 1;
         if (String(error?.message ?? "").startsWith("[precheck]")) break;
@@ -1796,6 +1939,8 @@ export async function runFrozenK64(argv) {
         problems: report.problems,
       });
       report.variants[spec.variantKey] = row;
+      if (ctx.negative)
+        row.negative = ctx.negative.assess({ samples: result.samples, ids });
       if (row.valid !== true) process.exitCode = 1;
     }
   } catch (error) {

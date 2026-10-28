@@ -116,6 +116,18 @@ const MAINTENANCE_SEAM = Object.freeze({
  * them); a setup never tunes them to its result.
  */
 export const B_SEAL_WAIT_MS = 120_000;
+
+/**
+ * The `b-seal` step's rule (shared with S5-B's reopening, DR-CP4-O-10): a B
+ * generation newer than `previous` that is not dirty.
+ */
+export function bSealPublished(metadata, previous) {
+  return Boolean(
+    metadata?.b &&
+    metadata.b.generation > previous &&
+    metadata.b.dirty === false,
+  );
+}
 export const B_SEAL_REOPENS = 2;
 const B_SEAL_NOT_PUBLISHED = "blocked:b-seal-not-published";
 /**
@@ -896,15 +908,10 @@ const EXECUTORS = Object.freeze({
     const limit = ctx.limits?.bSealMs ?? B_SEAL_WAIT_MS;
     while (Date.now() - started < limit) {
       metadata = readIndexMetadata(file, ctx.ids.projectId);
-      if (
-        metadata.b &&
-        metadata.b.generation > previous &&
-        metadata.b.dirty === false
-      )
-        break;
+      if (bSealPublished(metadata, previous)) break;
       await ctx.sleep(500);
     }
-    if (!(metadata?.b?.generation > previous && metadata.b.dirty === false)) {
+    if (!bSealPublished(metadata, previous)) {
       // P-0: the session loop may reopen the seam session (bounded).
       const error = new Error(
         `[precheck] S1i b-seal: ${B_SEAL_NOT_PUBLISHED} — no new sealed B generation within ${limit} ms`,
@@ -1698,7 +1705,12 @@ function mutatedExpectations(plan) {
   return { summaries, relations };
 }
 
-export function assertLogicalRuntimeMap({ plan, ids, rows }) {
+export function assertLogicalRuntimeMap({
+  plan,
+  ids,
+  rows,
+  withoutSeedPin = false,
+}) {
   const problems = [];
   const mutated = mutatedExpectations(plan);
   const input = (phase) =>
@@ -1874,18 +1886,28 @@ export function assertLogicalRuntimeMap({ plan, ids, rows }) {
   )
     problems.push("foreshadow-links: the links are not the plan's");
   const seed = plan.steps.find((step) => step.phase === SEED_PIN_PHASE).input;
+  // DR-CP4-O-1 (3): SP-P4's side without the seed pin step holds the
+  // fixture's pins only.
   const pins = [
     ...frozenSetupFixturePins(plan, ids),
-    {
-      sceneId: ids.scenes[seed.querySceneId],
-      entryId: ids.entities[seed.seedEntityId],
-    },
+    ...(withoutSeedPin
+      ? []
+      : [
+          {
+            sceneId: ids.scenes[seed.querySceneId],
+            entryId: ids.entities[seed.seedEntityId],
+          },
+        ]),
   ].map(key);
   if (
     JSON.stringify([...pins].sort()) !==
     JSON.stringify((rows?.pins ?? []).map(key).sort())
   )
-    problems.push("pins: the pins are not the fixture's plus the one seed pin");
+    problems.push(
+      withoutSeedPin
+        ? "pins: the pins are not the fixture's (SP-P4 side without the seed pin step)"
+        : "pins: the pins are not the fixture's plus the one seed pin",
+    );
   const registry = input("scope-registry").registry;
   if (!sameJson(rows?.registry, registry))
     problems.push("scope-registry: the refs are not the plan's");
@@ -2088,6 +2110,92 @@ function relativeToRoot(root, file) {
 }
 
 /**
+ * DR-CP4-O-1 (3): SP-P4's branch of one complete setup at the seed pin step
+ * (S2 `diagnosticRuns` SP-P4 `branch: single-pre-step-copy`). `pre-step`
+ * runs the author session up to the step before the seed pin step and
+ * copies the closed DB (no WAL left); a `side` starts a fresh setup from
+ * that copy with the same logical → runtime map and carried state, resumes
+ * the author session at the seed pin step (`with-seed-pin-step`) or the step
+ * after it (`without-seed-pin-step`), and runs the rest to the measurement
+ * point. The statuses are not `setup-complete`, so `loadSetupReceipt` never
+ * takes a branch receipt for a Graph-arm run (fail closed).
+ */
+export const SP_P4_BRANCH = Object.freeze({
+  preStep: "pre-step",
+  side: "side",
+  sides: Object.freeze(["without-seed-pin-step", "with-seed-pin-step"]),
+  status: Object.freeze({
+    "pre-step": "sp-p4-pre-step",
+    side: "sp-p4-branch-complete",
+  }),
+});
+
+/** The plan's seed pin step index (in the author session, after a step). */
+export function seedPinStepIndex(plan) {
+  const index = plan.steps.findIndex((step) => step.phase === SEED_PIN_PHASE);
+  if (index < 1 || plan.steps[index].session !== "author")
+    fail("sp-p4-branch", `${plan.variantKey}: no author seed pin step`);
+  return index;
+}
+
+/** ctx keys that belong to one run (never carried to a side). */
+const RUN_ONLY_CTX_KEYS = new Set([
+  "page",
+  "plan",
+  "workspacePath",
+  "ids",
+  "uuid",
+  "sleep",
+  "now",
+  "session",
+  "sessionStepsDone",
+  "bSealedInSession",
+  "cBuiltInSession",
+  "workspaceOpen",
+  "limits",
+  "resumeAuthorFrom",
+]);
+const cloneJson = (value) => JSON.parse(JSON.stringify(value));
+
+/** The pre-step's state a side resumes from (plain JSON only). */
+export function branchCarryOf(ctx) {
+  const carried = {};
+  for (const [key, value] of Object.entries(ctx)) {
+    if (RUN_ONLY_CTX_KEYS.has(key) || value === undefined) continue;
+    if (
+      typeof value === "function" ||
+      value instanceof Map ||
+      value instanceof Set
+    )
+      throw new Error(
+        `[artifact] the setup state ${key} is not plain data; the SP-P4 branch cannot carry it`,
+      );
+    carried[key] = cloneJson(value);
+  }
+  return carried;
+}
+
+function checkBranch(plan, branch) {
+  if (branch === null) return null;
+  if (partialRun(plan))
+    fail("sp-p4-branch", `${plan.variantKey}: ① never branches`);
+  if (branch?.stage === SP_P4_BRANCH.preStep) return branch;
+  if (
+    branch?.stage !== SP_P4_BRANCH.side ||
+    !SP_P4_BRANCH.sides.includes(branch.side) ||
+    !branch.carry?.ids ||
+    !Number.isInteger(branch.carry?.seedPinIndex) ||
+    typeof branch.preStepDb?.path !== "string" ||
+    !/^[0-9a-f]{64}$/u.test(branch.preStepDb?.sha256 ?? "")
+  )
+    fail(
+      "sp-p4-branch",
+      `${plan.variantKey}: the branch is not a pre-step or a side`,
+    );
+  return branch;
+}
+
+/**
  * One variant's setup in its own fresh workspace: the author session (and,
  * for a complete setup, the seal session on the B-ROUTE seam), the cold DB
  * copy, the read-back checks and the receipt. Returns the receipt and its
@@ -2098,6 +2206,7 @@ export async function setupFrozenVariant({
   setupDir,
   shared,
   deps = {},
+  branch = null,
 }) {
   const {
     startSession: start = startSession,
@@ -2128,7 +2237,14 @@ export async function setupFrozenVariant({
       `${plan.variantKey}: ${setupDir} already exists; a variant's setup starts in a fresh directory`,
     );
   await mkdir(setupDir, { recursive: true });
-  const ids = createSetupIds({ plan, uuid });
+  checkBranch(plan, branch);
+  const side = branch?.stage === SP_P4_BRANCH.side ? branch : null;
+  const preStep = branch?.stage === SP_P4_BRANCH.preStep;
+  // SP-P4: the pre-step stops before the seed pin step (author session only).
+  const runPlan = preStep
+    ? { ...plan, stopIndex: seedPinStepIndex(plan) - 1 }
+    : plan;
+  const ids = side ? cloneJson(side.carry.ids) : createSetupIds({ plan, uuid });
   const receipt = {
     schemaVersion: FROZEN_SETUP_RECEIPT_SCHEMA,
     status: "failed",
@@ -2160,7 +2276,10 @@ export async function setupFrozenVariant({
         : { sessions: plan.sessions, measurementSpec: plan.measurementSpec }),
     },
     startedAt: now(),
-    phases: [],
+    // SP-P4: a side starts with the pre-step's phases (run once, kept).
+    phases: side
+      ? side.carry.phases.map((row) => ({ ...row, preStep: true }))
+      : [],
     sessions: [],
     errors: [],
     precheck: null,
@@ -2170,6 +2289,29 @@ export async function setupFrozenVariant({
   const save = () =>
     writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`);
   const ctx = limits ? { limits } : {};
+  if (side) {
+    Object.assign(ctx, cloneJson(side.carry.ctx ?? {}));
+    // P-5's resume: from the seed pin step, or the step after it.
+    ctx.resumeAuthorFrom =
+      side.side === "with-seed-pin-step"
+        ? side.carry.seedPinIndex
+        : side.carry.seedPinIndex + 1;
+    receipt.seedPinBranch = {
+      stage: side.stage,
+      side: side.side,
+      preStepDb: {
+        path: relativeToRoot(root, side.preStepDb.path),
+        sha256: side.preStepDb.sha256,
+      },
+      seedPinIndex: side.carry.seedPinIndex,
+      resumedFrom: ctx.resumeAuthorFrom,
+    };
+  } else if (preStep)
+    receipt.seedPinBranch = {
+      stage: SP_P4_BRANCH.preStep,
+      seedPinIndex: seedPinStepIndex(plan),
+      stoppedAfter: runPlan.stopIndex,
+    };
   const session = async (
     label,
     extraEnv = {},
@@ -2193,7 +2335,7 @@ export async function setupFrozenVariant({
       if (handle.evidence?.problems?.length > 0)
         throw new Error(handle.evidence.problems.join("; "));
       await runFrozenSetupSteps({
-        plan,
+        plan: runPlan,
         page: handle.page,
         workspacePath,
         ids,
@@ -2210,8 +2352,19 @@ export async function setupFrozenVariant({
     }
   };
   try {
+    // SP-P4 side: the pre-step's DB (closed, no WAL) is the workspace.
+    if (side) {
+      await mkdir(workspacePath, { recursive: true });
+      const copy = path.join(workspacePath, "grimodex.db");
+      await copyFile(side.preStepDb.path, copy);
+      if (sha256(await readFile(copy)) !== side.preStepDb.sha256)
+        fail(
+          "sp-p4-branch",
+          `${plan.variantKey}: the pre-step DB copy differs`,
+        );
+    }
     // S1j-2: the plan's sessions in order (① reaches the author session only).
-    const executed = plan.steps.slice(0, plan.stopIndex + 1);
+    const executed = runPlan.steps.slice(0, runPlan.stopIndex + 1);
     const sessions = (plan.sessions ?? [{ label: "author", seam: false }])
       .filter((row) => executed.some((step) => step.session === row.label))
       .filter((row) => !partialRun(plan) || row.label === "author");
@@ -2325,7 +2478,7 @@ export async function setupFrozenVariant({
         if (
           row.label === "author" &&
           maintenanceStep >= 0 &&
-          maintenanceStep <= plan.stopIndex &&
+          maintenanceStep <= runPlan.stopIndex &&
           (maintenanceTimeout ||
             receipt.phases
               .slice(phasesBefore)
@@ -2424,10 +2577,43 @@ export async function setupFrozenVariant({
         : {}),
       ...(ids.decisions ? { decisions: { ...ids.decisions } } : {}),
     };
+    // SP-P4 pre-step: the copy and the state a side resumes from; no read
+    // back (the setup stops before the seed pin step by design).
+    if (preStep) {
+      // DR-CP4-O-1 (3): the closed DB left neither WAL nor SHM behind.
+      if (existsSync(`${live}-shm`))
+        throw new Error(
+          "[artifact] the SP-P4 pre-step workspace kept a SHM file after close",
+        );
+      const problems = receipt.sessions.flatMap((row) => row?.problems ?? []);
+      receipt.errors.push(...problems);
+      receipt.status =
+        problems.length === 0
+          ? SP_P4_BRANCH.status["pre-step"]
+          : "setup-with-problems";
+      return {
+        receipt,
+        receiptPath,
+        branch: {
+          preStepDb: { path: cold, sha256: receipt.coldDatabase.sha256 },
+          carry: {
+            ids: cloneJson(ids),
+            ctx: branchCarryOf(ctx),
+            phases: cloneJson(receipt.phases),
+            seedPinIndex: seedPinStepIndex(plan),
+          },
+        },
+      };
+    }
     // Product DB reads of the cold copy (① scope "product-db-read").
     const rows = readFrozenSetupRows(cold, ids.projectId);
     receipt.readBack = {
-      logicalRuntimeCheck: assertLogicalRuntimeMap({ plan, ids, rows }),
+      logicalRuntimeCheck: assertLogicalRuntimeMap({
+        plan,
+        ids,
+        rows,
+        withoutSeedPin: side?.side === "without-seed-pin-step",
+      }),
       maintenanceEnabled: rows.maintenanceEnabled,
     };
     if (partialRun(plan) && rows.maintenanceEnabled)
@@ -2471,18 +2657,26 @@ export async function setupFrozenVariant({
     // place is checked on the recorded phases followed by the planned ones.
     const recorded = receipt.phases.map((row) => row.name);
     receipt.seedPinStep = ctx.seedPinRecord ?? null;
-    receipt.seedPin = {
-      ...assertSeedPinSetup({
-        phases: partialRun(plan)
-          ? [...recorded, ...plannedPhaseNames(plan).slice(recorded.length)]
-          : recorded,
-        record: ctx.seedPinRecord,
-        fixturePins: frozenSetupFixturePins(plan, ids),
-      }),
-      placementCheckedOn: partialRun(plan)
-        ? "recorded-through-seed-pin-then-planned"
-        : "recorded",
-    };
+    if (side?.side === "without-seed-pin-step") {
+      if (ctx.seedPinRecord || recorded.includes(SEED_PIN_PHASE))
+        fail(
+          "sp-p4-branch",
+          `${plan.variantKey}: the side without the step ran it`,
+        );
+      receipt.seedPin = { skipped: "without-seed-pin-step" };
+    } else
+      receipt.seedPin = {
+        ...assertSeedPinSetup({
+          phases: partialRun(plan)
+            ? [...recorded, ...plannedPhaseNames(plan).slice(recorded.length)]
+            : recorded,
+          record: ctx.seedPinRecord,
+          fixturePins: frozenSetupFixturePins(plan, ids),
+        }),
+        placementCheckedOn: partialRun(plan)
+          ? "recorded-through-seed-pin-then-planned"
+          : "recorded",
+      };
     if (partialRun(plan))
       receipt.r5CheckPhases = assertR5CheckPhases({ plan, phases: recorded });
     if (ctx.refusedAtSetup?.length > 0)
@@ -2493,7 +2687,9 @@ export async function setupFrozenVariant({
     receipt.errors.push(...problems);
     receipt.status =
       problems.length === 0
-        ? SETUP_STATUS_BY_STOP[plan.stopsAt]
+        ? side
+          ? SP_P4_BRANCH.status.side
+          : SETUP_STATUS_BY_STOP[plan.stopsAt]
         : "setup-with-problems";
   } catch (error) {
     const message = String(error?.message ?? error);

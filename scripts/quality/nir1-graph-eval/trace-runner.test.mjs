@@ -3,7 +3,11 @@
 // A3 を親の開始の直後に読む、cycle end の直後に次の操作）、stall、閲覧中の往復、
 // Main の poller の install と取り出し、admission の分岐、receipt の組立てを確かめる。
 import assert from "node:assert/strict";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
+import { writeRunHead } from "./frozen-diagnostics.mjs";
 import { URL } from "node:url";
 import {
   TRACE_MAINTENANCE_FORBIDDEN,
@@ -13,8 +17,14 @@ import {
 import {
   TRACE_DEV_PREVIEW_PURPOSE,
   admitTraceRun,
+  captureBodyNonce,
+  confirmTraceDeclaration,
   counterPoller,
+  recordTraceSetupFailure,
+  startFrozenTrace,
+  frozenContext,
   checkTraceAttempt,
+  runTraceDeclaration,
   runTraceOperations,
   traceAttemptOutcome,
   traceMaintenanceStart,
@@ -274,11 +284,21 @@ test("TR-2: Main の poller は評価の入口の module を読み込んで inst
   assert.equal((await poller.drain()).polls, 3);
 });
 
-test("TR-1: admission は dev の予告だけを通し、凍結した trace は S6 の配線まで [precheck] で止める", () => {
+test("TR-1／O-1 (6): admission は dev の予告を通し、凍結した trace は admitGraphCaseRun の admission が無ければ [precheck] で止める", () => {
   assert.ok(DEV_PREVIEW_PURPOSES.includes(TRACE_DEV_PREVIEW_PURPOSE));
   assert.throws(
     () => admitTraceRun({ root: "/r", fixture: { kind: "frozen" } }),
-    /\[precheck\].*S6/u,
+    /\[precheck\].*admitGraphCaseRun/u,
+  );
+  // dev の予告の admission は凍結の trace に使えない。
+  assert.throws(
+    () =>
+      admitTraceRun({
+        root: "/r",
+        fixture: { kind: "frozen" },
+        admission: { kind: "dev-preview", purpose: TRACE_DEV_PREVIEW_PURPOSE },
+      }),
+    /\[precheck\]/u,
   );
   assert.throws(
     () => admitTraceRun({ root: "/r", fixture: {} }),
@@ -487,5 +507,238 @@ test("レビュー P3 (d): --attempt は 1 から attemptLimit まで、最後�
   assert.equal(
     traceAttemptOutcome({ attempt: 2, attemptLimit: 2, stalled: null }),
     "completed",
+  );
+});
+
+test("O-1 (6): trace の起動の body declaration の nonce を保ち、宣言の段は Index の前後と seam の受領書を記録し、mount の前に current を照合する", async () => {
+  const sink = { nonce: null };
+  const started = [];
+  const start = captureBodyNonce(async (args) => {
+    started.push(args);
+    return "session";
+  }, sink);
+  assert.equal(
+    await start({ extraEnv: { GRIMODEX_BODY_DECLARATION_CI_NONCE: "n-1" } }),
+    "session",
+  );
+  assert.equal(sink.nonce, "n-1");
+  assert.equal(started.length, 1);
+  const state = (token, effective = true) => ({
+    ok: true,
+    snapshot: {
+      declarationToken: token,
+      state: { kind: "declared", effective },
+    },
+  });
+  let declared = false;
+  let currentToken = "t-1";
+  let authority = "w-1";
+  const calls = [];
+  globalThis.window = {
+    cp4Harness: {
+      call: async (name) => {
+        calls.push(name);
+        return { ok: true, value: { authorityId: authority } };
+      },
+      declaration: {
+        declare: async () => {
+          calls.push("declare");
+          declared = true;
+          return { ok: true };
+        },
+        state: async () => {
+          calls.push("state");
+          return declared ? state(currentToken) : { ok: true, snapshot: null };
+        },
+      },
+    },
+  };
+  const page = { evaluate: async (fn, arg) => fn(arg) };
+  const index = {
+    b: { generation: 3, dirty: false },
+    chronicle: { generation: 2, dirty: false },
+  };
+  const seam = {
+    sha256: "f".repeat(64),
+    value: {
+      version: 1,
+      envNames: { a: "X" },
+      nonceDigest: "sha256:abc",
+      approvedGrantCount: 1,
+      approvedBindingDigests: ["sha256:digest-1"],
+    },
+  };
+  const declaration = await runTraceDeclaration({
+    page,
+    workspacePath: "/w",
+    projectId: "p",
+    sceneId: "s",
+    readIndex: () => index,
+    readSeam: async () => seam,
+    locatorDigest: "loc",
+  });
+  assert.equal(declaration.token, "t-1");
+  assert.equal(declaration.bindingDigest, "digest-1");
+  assert.equal(declaration.workspaceId, "w-1");
+  assert.deepEqual(declaration.indexBefore, declaration.indexAfter);
+  assert.deepEqual(calls, [
+    "narrative_extraction_capture_workspace_binding",
+    "declare",
+    "state",
+  ]);
+  const confirmed = await confirmTraceDeclaration({
+    page,
+    declaration,
+    workspacePath: "/w",
+    projectId: "p",
+    locatorDigest: "loc",
+  });
+  assert.equal(confirmed.verified, true);
+  // token が変わる・workspace の authority が変わる・Index が動けば [precheck]。
+  currentToken = "t-2";
+  await assert.rejects(
+    confirmTraceDeclaration({
+      page,
+      declaration,
+      workspacePath: "/w",
+      projectId: "p",
+      locatorDigest: "loc",
+    }),
+    /\[precheck\]/u,
+  );
+  currentToken = "t-1";
+  authority = "w-2";
+  await assert.rejects(
+    confirmTraceDeclaration({
+      page,
+      declaration,
+      workspacePath: "/w",
+      projectId: "p",
+      locatorDigest: "loc",
+    }),
+    /\[precheck\].*workspaceId/u,
+  );
+  authority = "w-1";
+  let generation = 3;
+  const moving = await runTraceDeclaration({
+    page,
+    workspacePath: "/w",
+    projectId: "p",
+    sceneId: "s",
+    readIndex: () => ({
+      ...index,
+      b: { generation: generation++, dirty: false },
+    }),
+    readSeam: async () => seam,
+    locatorDigest: "loc",
+  });
+  await assert.rejects(
+    confirmTraceDeclaration({
+      page,
+      declaration: moving,
+      workspacePath: "/w",
+      projectId: "p",
+      locatorDigest: "loc",
+    }),
+    /\[precheck\] b Index generation changed/u,
+  );
+  // 宣言が拒まれれば [precheck]（blocked にしない）。
+  globalThis.window.cp4Harness.declaration.declare = async () => ({
+    ok: false,
+    stage: "declare",
+  });
+  await assert.rejects(
+    runTraceDeclaration({
+      page,
+      workspacePath: "/w",
+      projectId: "p",
+      sceneId: "s",
+      readIndex: () => index,
+      readSeam: async () => seam,
+      locatorDigest: "loc",
+    }),
+    /\[precheck\] the K2\/4 declaration of s was refused/u,
+  );
+});
+
+test("レビュー P3: G-02 base が setup-complete に届かなければ trace は起動せず、先頭に束ねた (b) 未測定・HOLD の receipt を書く", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "s5b-tr-fail-"));
+  const head = { kind: "trace", runStartedAtUtc: "2026-10-28T00:00:00.000Z" };
+  const { sha256: headSha256 } = await writeRunHead({ runDir: dir, head });
+  const prepared = {
+    kind: "editing",
+    head,
+    headSha256,
+    setupFailure: {
+      b: "unmeasured",
+      cp4Availability: "HOLD",
+      blocked: { harnessId: "b-seal-not-published" },
+    },
+  };
+  const receipt = await recordTraceSetupFailure({
+    runDir: dir,
+    runId: "t",
+    prepared,
+    candidate: { commit: "c" },
+  });
+  assert.equal(receipt.status, "unmeasured");
+  assert.equal(receipt.cp4Availability, "HOLD");
+  const written = JSON.parse(
+    readFileSync(path.join(dir, "receipt.json"), "utf8"),
+  );
+  assert.equal(written.headSha256, headSha256);
+  assert.match(
+    readFileSync(path.join(dir, "SHA256SUMS"), "utf8"),
+    /head\.json/u,
+  );
+  assert.equal(
+    await recordTraceSetupFailure({
+      runDir: dir,
+      runId: "t",
+      prepared: { ...prepared, setupFailure: null },
+      candidate: {},
+    }),
+    null,
+  );
+});
+
+test("レビュー P3: 凍結の trace の開始は setupFailure なら記録して context を作らず、context の組立ても setupFailure を拒む", async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "s5b-tr-start-"));
+  const head = { kind: "trace", runStartedAtUtc: "2026-10-28T00:00:00.000Z" };
+  const { sha256: headSha256 } = await writeRunHead({ runDir: dir, head });
+  let built = 0;
+  const failed = await startFrozenTrace({
+    runDir: dir,
+    runId: "t",
+    prepared: {
+      kind: "editing",
+      head,
+      headSha256,
+      setupFailure: { b: "unmeasured", cp4Availability: "HOLD", blocked: {} },
+    },
+    candidate: {},
+    makeContext: () => {
+      built += 1;
+      return {};
+    },
+  });
+  assert.equal(failed.context, null);
+  assert.equal(failed.receipt.status, "unmeasured");
+  assert.equal(built, 0);
+  const ok = await startFrozenTrace({
+    runDir: dir,
+    runId: "t",
+    prepared: { setupFailure: null },
+    candidate: {},
+    makeContext: () => ({ ready: true }),
+  });
+  assert.deepEqual(ok, { receipt: null, context: { ready: true } });
+  assert.throws(
+    () =>
+      frozenContext({
+        prepared: { setupFailure: { b: "unmeasured" } },
+        setupRaw: {},
+      }),
+    /\[precheck\].*does not launch/u,
   );
 });

@@ -26,9 +26,13 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { K62_FREEZE, devVariant, variantByKey } from "./constants.mjs";
 import { ONE_SHOT_RECEIPT_LABEL } from "./frozen-k64-plan.mjs";
+import { createG01NegativeRun } from "./g01-negative-run.mjs";
 import {
   BLOCKED_RECORD_SCHEMA,
   K64_DISCLOSURE,
+  graphArmGated,
+  measurementLaunchEnv,
+  runKindVariantKeys,
   measureVariant,
   parseArgs,
   readSetups,
@@ -993,6 +997,9 @@ test("再レビュー P3: 正式の run は --variant と --dev-g01-fallback を
     "k",
     "--product-receipt",
     "pr.json",
+    // S5-B (DR-CP4-O-16): a formal Graph-arm run names ④'s SP-P4 receipt.
+    "--sp-p4-receipt",
+    "sp.json",
   ];
   assert.equal(parseArgs(formal)["run-kind"], "gold");
   assert.throws(
@@ -1112,4 +1119,379 @@ test("再レビュー P3（P1-1 の runFrozenK64 の層）: setup が blocked �
     for (const dir of created.reverse())
       if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
   }
+});
+
+// ---- S5-B の統合（DR-CP4-O-16）-------------------------------------------
+
+test("S5-B 統合: Graph を要求する run の種類（gold、negative）は ④ の SP-P4 の gate の後だけ、parity は除外。13 variant のどれを測るかは run の種類で決まる", () => {
+  const prep = {
+    d10: {
+      parity: {
+        variants: PLANS.map((row) => row.variantKey).filter(
+          (key) => !key.startsWith("G-01/"),
+        ),
+        unrestrictedRunsPerVariant: 1,
+      },
+    },
+  };
+  assert.equal(PLANS.length, 13);
+  const all = PLANS.map((row) => row.variantKey);
+  const pick = (runKind) => {
+    const keys = runKindVariantKeys({ runKind, prep, dev: false });
+    return all.filter((key) => keys === null || keys.has(key));
+  };
+  assert.deepEqual(pick("gold"), all);
+  assert.deepEqual(pick("negative"), ["G-01/v1"]);
+  assert.deepEqual(
+    pick("parity"),
+    all.filter((key) => key !== "G-01/v1"),
+  );
+  assert.equal(graphArmGated("gold"), true);
+  assert.equal(graphArmGated("negative"), true);
+  assert.equal(graphArmGated("parity"), false);
+  const formal = [
+    "--run",
+    "r",
+    "--setups",
+    "s.json",
+    "--ja-model",
+    "j",
+    "--en-model",
+    "e",
+    "--candidate",
+    "c",
+    "--prep-commit",
+    "p",
+    "--k62-commit",
+    "k",
+    "--k64-commit",
+    "k",
+    "--product-receipt",
+    "pr.json",
+  ];
+  assert.throws(() => parseArgs(formal), /--sp-p4-receipt is required/u);
+  assert.throws(
+    () =>
+      parseArgs([...formal, "--run-kind", "negative", "--sp-p4-receipt", "s"]),
+    /--negative K24-G01-N2\|N3\|N4 is required/u,
+  );
+  assert.equal(
+    parseArgs([...formal, "--run-kind", "parity"])["run-kind"],
+    "parity",
+  );
+  assert.equal(
+    parseArgs([
+      ...formal,
+      "--run-kind",
+      "negative",
+      "--negative",
+      "K24-G01-N3",
+      "--sp-p4-receipt",
+      "s",
+    ]).negative,
+    "K24-G01-N3",
+  );
+});
+
+test("S5-B 統合: negative の run は宣言の前と後に B の段を呼び、後の段の開き直した Main で測り、graph の各 sample を B の聞き直しで取る", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-01/v1",
+    spec: { declaration: { sceneId: "added-logical" } },
+    metadata: steadyState,
+    world: (base) =>
+      (world = fakeProduct({ dir: base, snapshotUsable: () => true })),
+  });
+  const calls = [];
+  let asked = 0;
+  ctx.negative = {
+    beforeDeclaration: async ({ proc }) => {
+      calls.push(["before", world.events.length, proc.session !== null]);
+      world.events.push("negative:before");
+      return null;
+    },
+    afterDeclaration: async ({ relaunch, stop, proc }) => {
+      world.events.push("negative:after");
+      await stop(proc.session);
+      const session = await relaunch("measure-reopen-0");
+      calls.push(["after", session.bodyNonce]);
+      return session;
+    },
+    askGraph: async (take) => {
+      asked += 1;
+      return take();
+    },
+    measurementProbe: (base) => ({ ...base, negativeReopen: true }),
+  };
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.samples.length, 70);
+    const at = (name) => world.events.indexOf(name);
+    assert.ok(at("openWorkspace") < at("negative:before"));
+    assert.ok(at("negative:before") < at("declare"));
+    assert.ok(at("declare") < at("buildRaw"));
+    // The control and the mutation come after the Raw vectors and the
+    // Chronicle Index, before any measured or READY query.
+    assert.ok(at("buildRaw") < at("negative:after"));
+    assert.ok(at("query:index") < at("negative:after"));
+    assert.ok(at("negative:after") < at("query:graph"));
+    assert.equal(ctx.setupProbe.negativeReopen, true);
+    // The reopened Main opens the same workspace, then measures.
+    assert.equal(world.launches(), 2);
+    assert.equal(
+      world.events.filter((row) => row === "openWorkspace").length,
+      2,
+    );
+    assert.equal(typeof calls[1][1], "string");
+    // Every Graph-arm slot (warm-up 5 + measured 30) goes through askGraph.
+    assert.equal(asked, 35);
+    assert.equal(result.proc.declaration.verified, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("S5-B 統合（変異 I9）: 宣言の前に開き直した Main の宣言は、その Main の body declaration の nonce の seam の受領書で確かめる", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-01/v1",
+    spec: { declaration: { sceneId: "added-logical" } },
+    metadata: steadyState,
+    world: (base) =>
+      (world = fakeProduct({ dir: base, snapshotUsable: () => true })),
+  });
+  ctx.negative = {
+    beforeDeclaration: async ({ relaunch, stop, proc }) => {
+      await stop(proc.session);
+      const session = await relaunch("before-declaration-reopen-0");
+      // The reopened Main has its own user data: only its nonce's receipt.
+      const userData = path.join(dir, "reopened-user-data");
+      const receiptDir = path.join(
+        userData,
+        ".grimodex-body-declaration-ci-receipts",
+        sha256(Buffer.from(session.bodyNonce)),
+      );
+      mkdirSync(receiptDir, { recursive: true });
+      writeFileSync(
+        path.join(receiptDir, "receipt.json"),
+        JSON.stringify({
+          version: 1,
+          envNames: { nonce: "GRIMODEX_BODY_DECLARATION_CI_NONCE" },
+          nonceDigest: `sha256:${"1".repeat(64)}`,
+          approvedGrantCount: 1,
+          approvedBindingDigests: [`sha256:${"2".repeat(64)}`],
+        }),
+      );
+      return { ...session, userData };
+    },
+    afterDeclaration: async ({ proc }) => proc.session,
+    askGraph: (take) => take(),
+    measurementProbe: (base) => base,
+  };
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.proc.declaration.verified, true);
+    assert.equal(world.launches(), 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function formalArgs(run, extra = []) {
+  // The receipts the admission's call reads (the injected admission ignores
+  // their content).
+  const inputs = mkdtempSync(path.join(tmpdir(), "s5b-formal-"));
+  writeFileSync(path.join(inputs, "eval-build.json"), "{}");
+  writeFileSync(path.join(inputs, "pr.json"), "{}");
+  return [
+    "--run",
+    run,
+    "--setups",
+    "s.json",
+    "--ja-model",
+    "j",
+    "--en-model",
+    "e",
+    "--candidate",
+    "c".repeat(40),
+    "--prep-commit",
+    "5".repeat(40),
+    "--k62-commit",
+    "6".repeat(40),
+    "--k64-commit",
+    "4".repeat(40),
+    "--product-receipt",
+    path.join(inputs, "pr.json"),
+    "--sp-p4-receipt",
+    "sp.json",
+    "--eval-build",
+    inputs,
+    ...extra,
+  ];
+}
+
+/** Injected formal admission (the frozen descriptor's shape; no git). */
+function formalDeps(log, overrides = {}) {
+  const candidate = { commit: "c".repeat(40), tree: "t".repeat(40) };
+  return {
+    assertCandidate: () => {
+      log.push("candidate");
+      return candidate;
+    },
+    readK64Head: () => {
+      log.push("k64");
+      return {};
+    },
+    admitFormal: () => {
+      log.push("admit");
+      return {
+        candidate,
+        pins: [],
+        procedure: formalProcedure(),
+        s2: {
+          commit: "5".repeat(40),
+          files: {
+            observationPrep: { value: {}, path: "o", sha256: "0".repeat(64) },
+            g01Addendum: { value: {}, path: "g", sha256: "0".repeat(64) },
+            declarationAddendum: {
+              value: {},
+              path: "d",
+              sha256: "0".repeat(64),
+            },
+          },
+        },
+        admission: {
+          candidateHead: candidate.commit,
+          ratification5: ratification5(),
+          head: {
+            k62: {},
+            k64: {},
+            observationPrep: { commit: "5".repeat(40) },
+          },
+        },
+      };
+    },
+    readGate: (input) => {
+      log.push(["gate", input.candidateCommit]);
+      return { summary: { status: "passed" } };
+    },
+    planRun: ({ plans }) => {
+      log.push("plan");
+      return plans.map((plan) => ({
+        variantKey: plan.variantKey,
+        caseId: plan.caseId,
+        variantId: plan.variantId,
+        g01Mode: { mode: "restricted" },
+      }));
+    },
+    readSetupsFn: async ({ plans }) => {
+      log.push("setups");
+      return new Map(
+        plans.map((plan) => [plan.variantKey, { blocked: false, value: {} }]),
+      );
+    },
+    listAttemptsFn: () => [],
+    selectParityFn: () => {
+      log.push("parity");
+      return { used: "parity-1", attempts: [] };
+    },
+    startAttemptFn: () => {
+      log.push("attempt");
+      throw new Error("[precheck] test: stop after the ledger");
+    },
+    // No built addon in a CI checkout (the digest is the admission's input).
+    defaultAddonSha256Of: () => "a".repeat(64),
+    ...overrides,
+  };
+}
+
+async function runFormal(run, deps, extra) {
+  const runDir = path.join(REPO_ROOT, ".artifacts/cp4", run);
+  // The parents this test creates (a CI checkout has no .artifacts) go after.
+  const created = [".artifacts", ".artifacts/cp4"]
+    .map((dir) => path.join(REPO_ROOT, dir))
+    .filter((dir) => !existsSync(dir));
+  const exitCode = process.exitCode;
+  try {
+    await runFrozenK64(formalArgs(run, extra), deps);
+    return JSON.parse(
+      readFileSync(path.join(runDir, "run-report.json"), "utf8"),
+    );
+  } finally {
+    process.exitCode = exitCode;
+    rmSync(runDir, { recursive: true, force: true });
+    for (const dir of created.reverse())
+      if (existsSync(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+  }
+}
+
+test("レビュー P2-β (a): 13 variant の gold と negative は ④ の SP-P4 の gate を試行の台帳と起動より前に呼び、gate が拒めば台帳も起動も起きない", async () => {
+  for (const extra of [
+    [],
+    ["--run-kind", "negative", "--negative", "K24-G01-N2"],
+  ]) {
+    const log = [];
+    const report = await runFormal(
+      `s5b-gate-order-${process.pid}-${extra.length}`,
+      formalDeps(log),
+      extra,
+    );
+    const names = log.map((row) => (Array.isArray(row) ? row[0] : row));
+    assert.ok(names.indexOf("gate") > names.indexOf("admit"));
+    assert.ok(names.indexOf("gate") < names.indexOf("plan"));
+    assert.ok(names.indexOf("gate") < names.indexOf("attempt"));
+    assert.deepEqual(
+      log.find((row) => Array.isArray(row)),
+      ["gate", "c".repeat(40)],
+    );
+    if (extra.length === 0)
+      assert.ok(names.indexOf("parity") < names.indexOf("attempt"));
+    assert.match(report.problems.join("\n"), /stop after the ledger/u);
+  }
+  const refused = [];
+  const report = await runFormal(
+    `s5b-gate-refused-${process.pid}`,
+    formalDeps(refused, {
+      readGate: () => {
+        refused.push("gate");
+        throw new Error("[precheck] S5-B gate: SP-P4 is sp-n7");
+      },
+    }),
+  );
+  assert.deepEqual(refused, ["candidate", "k64", "admit", "gate"]);
+  assert.match(report.problems.join("\n"), /S5-B gate: SP-P4 is sp-n7/u);
+  // parity は gate を呼ばない（S2 で除外）。
+  const parity = [];
+  await runFormal(
+    `s5b-gate-parity-${process.pid}`,
+    formalDeps(parity, {
+      readGate: () => {
+        parity.push("gate");
+        throw new Error("never");
+      },
+    }),
+    ["--run-kind", "parity"],
+  );
+  assert.ok(!parity.includes("gate"));
+});
+
+test("レビュー P2-β (b): B-ROUTE の seam の env は negative の起動にだけ入り、gold と parity には入らない", () => {
+  const nonce = "8c7f4a3e-6b1d-4c2a-9e5f-0a1b2c3d4e5f";
+  const trigger = "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER";
+  const gold = measurementLaunchEnv({ bodySeam: true, nonce, negative: null });
+  assert.equal(gold.GRIMODEX_BODY_DECLARATION_CI_NONCE, nonce);
+  assert.equal(gold[trigger], undefined);
+  assert.deepEqual(
+    measurementLaunchEnv({ bodySeam: false, nonce, negative: null }),
+    {},
+  );
+  const negative = measurementLaunchEnv({
+    bodySeam: true,
+    nonce,
+    negative: createG01NegativeRun({ id: "K24-G01-N2", root: REPO_ROOT }),
+  });
+  assert.equal(negative[trigger], "nir1-graph-index-build");
+  assert.equal(negative.GRIMODEX_BODY_DECLARATION_CI_NONCE, nonce);
 });
