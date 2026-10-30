@@ -206,6 +206,16 @@ test("S1j-2 完全な setup（G-02/base、fake の製品）: 段の順は plan �
   // The measurement point and its spec; the setup-only Main's identity.
   assert.deepEqual(receipt.measurementPoint.probe.graph, "usable");
   assert.deepEqual(receipt.measurementPoint.probe.chronicle, "usable");
+  // DR-CP4-T-1: the Freshness feed at the measurement point and on the cold
+  // DB (the fake product's feed is empty: nothing pending).
+  for (const feed of [
+    receipt.measurementPoint.freshnessFeed,
+    receipt.readBack.freshnessFeed,
+  ])
+    assert.deepEqual(
+      [feed.consumerId, feed.head, feed.pendingEvents, feed.cursor],
+      ["narrative-incremental-freshness/v1", 0, 0, false],
+    );
   assert.equal(receipt.measurementSpec.kind, "steady-state");
   assert.equal(receipt.setupMain.sha256, SETUP_MAIN.setupMain.sha256);
   assert.equal(receipt.setupMain.table.sha256, SETUP_MAIN.table.sha256);

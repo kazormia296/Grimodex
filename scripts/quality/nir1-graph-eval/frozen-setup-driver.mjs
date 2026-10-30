@@ -69,6 +69,7 @@ import {
 } from "./setup-receipt.mjs";
 import {
   readChronicleSetupRows,
+  readFreshnessFeed,
   readFrozenSetupRows,
   readIndexMetadata,
   readRelationSourceTokens,
@@ -1024,6 +1025,13 @@ const EXECUTORS = Object.freeze({
       declared,
       probe,
       spec: step.input.spec ?? null,
+      // DR-CP4-T-1 (disclosure): the Change Feed events the product's
+      // Freshness has not processed at the measurement point; a measurement
+      // process processes them (and invalidates B and C) after it opens.
+      freshnessFeed: readFreshnessFeed(
+        path.join(ctx.workspacePath, "grimodex.db"),
+        ctx.ids.projectId,
+      ),
     };
     if (
       probe.graph !== declared.graph ||
@@ -2630,6 +2638,8 @@ export async function setupFrozenVariant({
         rows: readChronicleSetupRows(cold, ids.projectId),
       });
       receipt.readBack.indexMetadata = readIndexMetadata(cold, ids.projectId);
+      // DR-CP4-T-1 (disclosure): the same on the sealed cold DB.
+      receipt.readBack.freshnessFeed = readFreshnessFeed(cold, ids.projectId);
       receipt.readBack.relationStaleness = assertRelationStaleOnCold({
         cold,
         ids,

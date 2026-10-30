@@ -1538,6 +1538,10 @@ export function completeSetupExtension({
             payload_json TEXT, reconciliation_envelope_json TEXT);
           CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (id TEXT PRIMARY KEY, proposal_id TEXT, revision_id TEXT,
             decision TEXT, created_by TEXT, created_at TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_change_events (id TEXT PRIMARY KEY, project_id TEXT, canonical_sequence INTEGER,
+            event_ordinal INTEGER);
+          CREATE TABLE IF NOT EXISTS narrative_change_cursors (project_id TEXT, consumer_id TEXT,
+            acknowledged_through_sequence INTEGER, active_run_id TEXT, reserved_through_sequence INTEGER);
         `);
         // P-5: a reopening runs the cutover again while the marker is absent.
         if (
