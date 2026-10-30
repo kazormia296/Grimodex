@@ -41,6 +41,7 @@ import {
   SP_P4,
   SP_P4_COMPARISON_RULE,
   SP_P4_IR_TIMEOUT_LIMIT,
+  SP_P4_IR_TIMEOUT_PAIR_LIMIT,
   assertSpP4WorkspaceStable,
   claimFrozenAttempt,
   frozenAttemptLedger,
@@ -83,8 +84,8 @@ export const SP_P4_DEV_PREVIEW_PURPOSE = "sp-p4-preview";
 
 /**
  * The receipt's `design` (the rule fields `readSpP4Gate` checks): the
- * comparison rule in force and, DR-CP4-Q-1 (C2), the IR deadline limit fixed
- * before the observation.
+ * comparison rule in force and, DR-CP4-Q-1 (C2) and DR-CP4-Q-2, the IR
+ * deadline limits (per side and per pair) fixed before the observation.
  */
 export function spP4ReceiptDesign({ targets, warmup, measured }) {
   return {
@@ -97,6 +98,7 @@ export function spP4ReceiptDesign({ targets, warmup, measured }) {
     compareBy: SP_P4.compareBy,
     rule: SP_P4_COMPARISON_RULE,
     irTimeoutLimit: SP_P4_IR_TIMEOUT_LIMIT,
+    irTimeoutPairLimit: SP_P4_IR_TIMEOUT_PAIR_LIMIT,
     branch: SP_P4.branch,
     sparse:
       "the product fetchSparseSceneIds on the same saved-body query, read after the fetch (DR-CP4-O-1 (4))",
