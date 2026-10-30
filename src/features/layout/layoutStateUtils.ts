@@ -1,3 +1,4 @@
+import { resolveViewportProfile } from "@/runtime/viewportProfile";
 import type { PanelId } from "./panelIds";
 import {
   DEFAULT_INDEX_MAP,
@@ -316,6 +317,24 @@ export function getOverlayRailReserve(state: LayoutState): number {
     if (overlays[id].panel !== null) reserve += OVERLAY_RAIL_SIZE;
   }
   return reserve;
+}
+
+/**
+ * 実画面の viewport から overlay の rail 幅を引いた、レイアウトが使える viewport。
+ * phone 幅では rail を出さない（エディタだけの表示）ので差し引かない。
+ * 差し引く前の幅で phone を判定する（rail で境界をまたいで phone 扱いにしない）。
+ */
+export function applyOverlayRailToViewport(
+  viewport: { width: number; height: number },
+  state: LayoutState,
+): { width: number; height: number } {
+  if (resolveViewportProfile(viewport.width) === "phone") return viewport;
+  const reserve = getOverlayRailReserve(state);
+  if (reserve === 0) return viewport;
+  return {
+    width: Math.max(0, viewport.width - reserve),
+    height: viewport.height,
+  };
 }
 
 function buildSlotsForRegion(

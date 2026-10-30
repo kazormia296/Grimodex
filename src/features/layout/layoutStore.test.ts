@@ -1,9 +1,14 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
-import { SPLITTER_GUTTER_PX, STRIPE_SIZE } from "./layoutConstants";
+import {
+  OVERLAY_RAIL_SIZE,
+  SPLITTER_GUTTER_PX,
+  STRIPE_SIZE,
+} from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import {
   buildDefaultLayoutState,
   findPanelLocation,
+  getOverlays,
   validateLayoutState,
 } from "./layoutStateUtils";
 import { TOOL_WINDOW_PANEL_IDS } from "./toolWindowDefaults";
@@ -36,6 +41,8 @@ function resetStore() {
     builtinPresetOverrides: {},
     initialized: false,
     hiddenStripePanels: new Set(),
+    openOverlay: null,
+    maximizedPanelId: null,
   });
 }
 
@@ -883,6 +890,59 @@ describe("layout store property invariants", () => {
     }
   });
 
+  it("maintains valid layout across random operations including overlay", () => {
+    let seed = 20261031;
+    const rand = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 0xffffffff;
+    };
+
+    for (let i = 0; i < 300; i++) {
+      const store = useLayoutStore.getState();
+      const panel =
+        TOOL_WINDOW_PANEL_IDS[
+          Math.floor(rand() * TOOL_WINDOW_PANEL_IDS.length)
+        ];
+      const region = REGIONS[Math.floor(rand() * REGIONS.length)];
+      const overlay = rand() < 0.5 ? "left" : "right";
+      const op = Math.floor(rand() * 9);
+
+      switch (op) {
+        case 0:
+          store.togglePanel(panel);
+          break;
+        case 1:
+          store.showPanel(panel);
+          break;
+        case 2:
+          store.movePanelToRegion(panel, region);
+          break;
+        case 3:
+          store.setRegionSize(region, 100 + Math.floor(rand() * 500), VIEWPORT);
+          break;
+        case 4:
+        case 5:
+          store.movePanelToOverlay(panel, overlay);
+          break;
+        case 6:
+          store.restorePanelFromOverlay(panel);
+          break;
+        case 7:
+          store.toggleOverlay(overlay);
+          break;
+        case 8:
+          store.removePanelFromStripe(panel);
+          break;
+      }
+
+      const { layout, openOverlay } = useLayoutStore.getState();
+      assertValidLayout(layout);
+      if (openOverlay !== null) {
+        expect(getOverlays(layout)[openOverlay].panel).not.toBeNull();
+      }
+    }
+  });
+
   it("setDragOverTarget tracks hovered drop zone and clears on drag end", () => {
     useLayoutStore.getState().setDraggingPanel("chat");
     useLayoutStore.getState().setDragOverTarget({
@@ -1367,5 +1427,381 @@ describe("applyPreset の perf 契約", () => {
     expect(
       useLayoutStore.getState().builtinPresetOverrides["builtin:plan"]!.state,
     ).toEqual(savedSnapshot);
+  });
+});
+
+describe("overlay（画面端の左右オーバーレイ）", () => {
+  const store = () => useLayoutStore.getState();
+  const layout = () => useLayoutStore.getState().layout;
+
+  beforeEach(() => {
+    resetStore();
+    vi.clearAllMocks();
+    mockInvoke.mockResolvedValue(undefined);
+  });
+
+  describe("movePanelToOverlay", () => {
+    it("slot に 1 枚だけのパネルを移すと、slot を空にして overlay に置く", () => {
+      store().movePanelToOverlay("scenes", "left");
+      expect(getOverlays(layout()).left.panel).toBe("scenes");
+      expect(findPanelLocation(layout(), "scenes")).toBeNull();
+      expect(layout().regions.left.slots.map((s) => s.id)).toEqual(["l1"]);
+      assertValidLayout(layout());
+    });
+
+    it("center の tool segment のパネルも移せる", () => {
+      store().addPanelToCenterStripe("grid");
+      store().movePanelToOverlay("grid", "right");
+      expect(getOverlays(layout()).right.panel).toBe("grid");
+      expect(
+        layout().center.segments.some(
+          (s) => s.kind === "tool" && s.panels.includes("grid"),
+        ),
+      ).toBe(false);
+      assertValidLayout(layout());
+    });
+
+    it("移動先に別のパネルがあれば、元の位置へ入れ替え、Stripe のアイコン順を変えない", () => {
+      store().movePanelToOverlay("command-center-results", "left");
+      expect(layout().regions.left.slots[1].panels).toEqual([
+        "codex",
+        "codex-quick",
+      ]);
+
+      store().movePanelToOverlay("codex", "left");
+      expect(getOverlays(layout()).left.panel).toBe("codex");
+      expect(layout().regions.left.slots[1].panels).toEqual([
+        "command-center-results",
+        "codex-quick",
+      ]);
+      assertValidLayout(layout());
+    });
+
+    it("入れ替えでは元のパネルの表示状態（active と region 幅）を引き継ぐ", () => {
+      store().movePanelToOverlay("chat-history", "right");
+      store().showPanel("chat");
+      const sizeBefore = layout().regions.right.size;
+
+      store().movePanelToOverlay("chat", "right");
+
+      const slot = layout().regions.right.slots[0];
+      expect(slot.panels).toEqual(["chat-history"]);
+      expect(slot.activePanel).toBe("chat-history");
+      expect(layout().regions.right.size).toBe(sizeBefore);
+      assertValidLayout(layout());
+    });
+
+    it("overlay どうしの移動は左右を入れ替える（移動先が空なら移すだけ）", () => {
+      store().movePanelToOverlay("scenes", "left");
+      store().movePanelToOverlay("chat", "right");
+
+      store().movePanelToOverlay("scenes", "right");
+      expect(getOverlays(layout()).left.panel).toBe("chat");
+      expect(getOverlays(layout()).right.panel).toBe("scenes");
+
+      store().movePanelToOverlay("chat", "right");
+      store().movePanelToOverlay("chat", "left");
+      expect(getOverlays(layout()).left.panel).toBe("chat");
+      expect(getOverlays(layout()).right.panel).toBe("scenes");
+      assertValidLayout(layout());
+    });
+
+    it("同じ overlay にあるパネルを同じ overlay へ移しても何も変わらない", () => {
+      store().movePanelToOverlay("scenes", "left");
+      const before = layout();
+      store().movePanelToOverlay("scenes", "left");
+      expect(layout()).toBe(before);
+    });
+
+    it("Stripe に表示していないパネルは移せない", () => {
+      store().removePanelFromStripe("chat");
+      const before = layout();
+      store().movePanelToOverlay("chat", "right");
+      expect(layout()).toBe(before);
+      expect(getOverlays(layout()).right.panel).toBeNull();
+    });
+
+    it("レイアウトのロック中は移せない", () => {
+      useLayoutStore.setState({ layoutLocked: true });
+      const before = layout();
+      store().movePanelToOverlay("scenes", "left");
+      store().restorePanelFromOverlay("scenes");
+      expect(layout()).toBe(before);
+    });
+
+    it("editor は移せない", () => {
+      const before = layout();
+      store().movePanelToOverlay("editor", "left");
+      expect(layout()).toBe(before);
+    });
+  });
+
+  describe("overlay から slot へ戻す", () => {
+    it("movePanelToSlot／addPanelToStripeSlot で overlay から外れ、slot に入る", () => {
+      store().movePanelToOverlay("codex", "left");
+      store().movePanelToSlot("codex", "left", "l0");
+      expect(getOverlays(layout()).left.panel).toBeNull();
+      expect(findPanelLocation(layout(), "codex")?.slot.id).toBe("l0");
+      assertValidLayout(layout());
+
+      store().movePanelToOverlay("chat", "right");
+      store().addPanelToStripeSlot("chat", "right", "r1");
+      expect(getOverlays(layout()).right.panel).toBeNull();
+      expect(findPanelLocation(layout(), "chat")?.slot.id).toBe("r1");
+      assertValidLayout(layout());
+    });
+
+    it("movePanelToRegion／movePanelToNewSlot でも overlay を空にする", () => {
+      store().movePanelToOverlay("scenes", "left");
+      store().movePanelToRegion("scenes", "bottom");
+      expect(getOverlays(layout()).left.panel).toBeNull();
+      expect(findPanelLocation(layout(), "scenes")?.region).toBe("bottom");
+
+      store().movePanelToOverlay("scenes", "left");
+      store().movePanelToNewSlot("scenes", "right", 0);
+      expect(getOverlays(layout()).left.panel).toBeNull();
+      expect(findPanelLocation(layout(), "scenes")?.region).toBe("right");
+      assertValidLayout(layout());
+    });
+
+    it("restorePanelFromOverlay は既定の領域の最後の slot の末尾へ戻す", () => {
+      store().movePanelToOverlay("codex", "left");
+      store().restorePanelFromOverlay("codex");
+      const left = layout().regions.left.slots;
+      expect(getOverlays(layout()).left.panel).toBeNull();
+      expect(left[left.length - 1].panels.at(-1)).toBe("codex");
+      assertValidLayout(layout());
+    });
+
+    it("既定の領域に slot が無くても戻せる", () => {
+      store().movePanelToOverlay("scenes", "left");
+      store().movePanelToOverlay("codex", "right");
+      // left の slot を全部 overlay に出した状態（codex 系は slot に残る）
+      store().restorePanelFromOverlay("scenes");
+      expect(findPanelLocation(layout(), "scenes")?.region).toBe("left");
+      assertValidLayout(layout());
+    });
+  });
+
+  describe("開閉（layout を変えない）", () => {
+    beforeEach(() => {
+      store().movePanelToOverlay("chat", "right");
+    });
+
+    it("togglePanel／showPanel で openOverlay だけが変わり、layout の参照は不変", () => {
+      const before = layout();
+      expect(store().isPanelActive("chat")).toBe(false);
+
+      store().togglePanel("chat");
+      expect(store().openOverlay).toBe("right");
+      expect(store().isPanelActive("chat")).toBe(true);
+      expect(layout()).toBe(before);
+
+      store().togglePanel("chat");
+      expect(store().openOverlay).toBeNull();
+      expect(store().isPanelActive("chat")).toBe(false);
+
+      store().showPanel("chat");
+      expect(store().openOverlay).toBe("right");
+      store().showPanel("chat");
+      expect(store().openOverlay).toBe("right");
+      expect(layout()).toBe(before);
+    });
+
+    it("toggleOverlay／closeOverlay も layout を変えない", () => {
+      const before = layout();
+      store().toggleOverlay("right");
+      expect(store().openOverlay).toBe("right");
+      store().closeOverlay();
+      expect(store().openOverlay).toBeNull();
+      expect(layout()).toBe(before);
+    });
+
+    it("空の overlay は開かない", () => {
+      store().toggleOverlay("left");
+      store().showOverlay("left");
+      expect(store().openOverlay).toBeNull();
+    });
+
+    it("ロック中でも開閉はできる", () => {
+      useLayoutStore.setState({ layoutLocked: true });
+      store().togglePanel("chat");
+      expect(store().openOverlay).toBe("right");
+    });
+
+    it("別の overlay を開くと切り替わり、開閉は永続化しない", async () => {
+      store().movePanelToOverlay("scenes", "left");
+      mockInvoke.mockClear();
+      store().toggleOverlay("right");
+      store().toggleOverlay("left");
+      expect(store().openOverlay).toBe("left");
+      await Promise.resolve();
+      expect(mockInvoke).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("自動で閉じる", () => {
+    beforeEach(() => {
+      store().movePanelToOverlay("chat", "right");
+      store().toggleOverlay("right");
+      expect(store().openOverlay).toBe("right");
+    });
+
+    it("layout の参照が変わる操作（パネル開閉・リサイズ・移動）で閉じる", () => {
+      store().togglePanel("scenes");
+      expect(store().openOverlay).toBeNull();
+
+      store().toggleOverlay("right");
+      store().setRegionSize("left", 300, VIEWPORT);
+      expect(store().openOverlay).toBeNull();
+
+      store().toggleOverlay("right");
+      store().movePanelToOverlay("scenes", "left");
+      expect(store().openOverlay).toBeNull();
+    });
+
+    it("overlay のパネルを slot に戻すと閉じる", () => {
+      store().restorePanelFromOverlay("chat");
+      expect(store().openOverlay).toBeNull();
+    });
+
+    it("zoom に入ると閉じる", () => {
+      store().showPanel("scenes");
+      store().toggleOverlay("right");
+      expect(store().openOverlay).toBe("right");
+      store().toggleMaximizePanel("scenes");
+      expect(store().maximizedPanelId).toBe("scenes");
+      expect(store().openOverlay).toBeNull();
+    });
+
+    it("zoom の対象にならないパネル（overlay）の zoom は拒否され、閉じない", () => {
+      store().toggleMaximizePanel("chat");
+      expect(store().maximizedPanelId).toBeNull();
+      expect(store().openOverlay).toBe("right");
+    });
+  });
+
+  describe("画面幅から rail を引く", () => {
+    afterEach(() => {
+      vi.unstubAllGlobals();
+    });
+
+    it("overlay にパネルがあると、その分だけ狭い画面として region を clamp する", () => {
+      vi.stubGlobal("innerHeight", 800);
+      vi.stubGlobal("innerWidth", 1000);
+      store().setRegionSize("left", 4000);
+      const wide = layout().regions.left.size;
+
+      // rail 無しで 970px（1000 - rail 1 本）の画面と同じ結果になる
+      resetStore();
+      vi.stubGlobal("innerWidth", 1000 - OVERLAY_RAIL_SIZE);
+      store().finalizeLayoutResize(); // right も 970px で clamp しておく
+      store().setRegionSize("left", 4000);
+      const narrow = layout().regions.left.size;
+
+      resetStore();
+      vi.stubGlobal("innerWidth", 1000);
+      store().movePanelToOverlay("chat", "right");
+      store().setRegionSize("left", 4000);
+      const withRail = layout().regions.left.size;
+
+      expect(narrow).toBeLessThan(wide);
+      expect(withRail).toBe(narrow);
+    });
+  });
+
+  describe("読み込みとプリセットの後の整合", () => {
+    it("保存済みの overlay は initializeLayout 後もそのまま読める", async () => {
+      useLayoutStore.getState().movePanelToOverlay("chat", "right");
+      const saved = structuredClone(layout());
+      resetStore();
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+        layout: { layoutVersion: 3, state: saved },
+        layoutPresets: [],
+      });
+
+      await store().initializeLayout();
+
+      expect(getOverlays(layout()).right.panel).toBe("chat");
+      expect(findPanelLocation(layout(), "chat")).toBeNull();
+      expect(store().openOverlay).toBeNull();
+      assertValidLayout(layout());
+    });
+
+    it("非表示のパネルが overlay に入った保存データは、読み込み時に既定の領域へ戻す", async () => {
+      useLayoutStore.getState().movePanelToOverlay("chat", "right");
+      const saved = structuredClone(layout());
+      resetStore();
+      mockInvoke.mockResolvedValue({
+        recentWorkspaces: [],
+        lastActiveWorkspace: null,
+        theme: "system",
+        showLauncherOnStartup: false,
+        layout: {
+          layoutVersion: 3,
+          state: saved,
+          hiddenStripePanels: ["chat"],
+        },
+        layoutPresets: [],
+      });
+
+      await store().initializeLayout();
+
+      expect(getOverlays(layout()).right.panel).toBeNull();
+      expect(findPanelLocation(layout(), "chat")?.region).toBe("right");
+      assertValidLayout(layout());
+    });
+
+    it("applyPreset：カスタムの非表示パネルが overlay にあれば、適用時に戻す", () => {
+      useLayoutStore.getState().movePanelToOverlay("chat", "right");
+      const state = structuredClone(layout());
+      resetStore();
+      useLayoutStore.setState({
+        customPresets: [
+          { id: "c-ovl", name: "c-ovl", state, hiddenStripePanels: ["chat"] },
+        ],
+      });
+
+      store().applyPreset("c-ovl");
+
+      expect(getOverlays(layout()).right.panel).toBeNull();
+      expect(findPanelLocation(layout(), "chat")).not.toBeNull();
+      expect(store().hiddenStripePanels.has("chat")).toBe(true);
+      assertValidLayout(layout());
+    });
+
+    it("applyPreset：overlay を持つ表示中のプリセットは overlay ごと適用する", () => {
+      useLayoutStore.getState().movePanelToOverlay("chat", "right");
+      const state = structuredClone(layout());
+      resetStore();
+      useLayoutStore.setState({
+        customPresets: [{ id: "c-ovl2", name: "c-ovl2", state }],
+      });
+
+      store().applyPreset("c-ovl2");
+
+      expect(getOverlays(layout()).right.panel).toBe("chat");
+      assertValidLayout(layout());
+    });
+
+    it("組込みプリセットの上書きでも、非表示のパネルを overlay から外す", () => {
+      useLayoutStore.getState().movePanelToOverlay("chat", "right");
+      const state = structuredClone(layout());
+      resetStore();
+      useLayoutStore.setState({
+        builtinPresetOverrides: {
+          "builtin:default": { state, hiddenStripePanels: ["chat"] },
+        },
+      });
+
+      store().applyPreset("builtin:default");
+
+      expect(getOverlays(layout()).right.panel).toBeNull();
+      assertValidLayout(layout());
+    });
   });
 });

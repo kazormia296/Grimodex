@@ -10,6 +10,7 @@ import {
 import {
   clampLayoutStateForViewport,
   cloneLayoutState,
+  detachHiddenOverlayPanels,
   ensureRegisteredPanels,
 } from "./layoutStateUtils";
 import type {
@@ -540,7 +541,11 @@ export function resolveBuiltinPresetState(
 ): LayoutState | undefined {
   if (override) {
     // ユーザー保存の override も、保存後に追加された新パネルを補充する。
-    return ensureRegisteredPanels(cloneLayoutState(override.state));
+    // 非表示のパネルが overlay に入った状態で保存されていたら、既定の領域へ戻す。
+    return detachHiddenOverlayPanels(
+      ensureRegisteredPanels(cloneLayoutState(override.state)),
+      new Set(override.hiddenStripePanels ?? []),
+    );
   }
   return getBuiltinPresetState(id, viewport);
 }
