@@ -35,6 +35,6 @@
   "review": {
     "reviewer": "S3 の独立 reviewer（agent、Opus）",
     "reviewedAt": "2026-10-30",
-    "record": "docs/plans/nir1-lane-decisions/cp4-decisions.md（commit 0749a4b4295022b135e7af5e51f599e4c5e9b81f の bytes）の DR-CP4-P-2（S3 の 7 回目の判定の要旨。accept-with-conditions）。条件の充足は同じ file の DR-CP4-P-3、DR-CP4-P-4"
+    "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4"
   }
 }
