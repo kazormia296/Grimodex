@@ -348,13 +348,10 @@ export const SOURCE_PINS = Object.freeze(
       "950751d040b29b6d78a067a003dc19b196cfb692",
       [
         "admission.mjs",
-        "diagnostic-runner.mjs",
-        "frozen-diagnostics.mjs",
         "frozen-k64-admission.mjs",
         "frozen-k64-run.mjs",
         "frozen-setup-driver.mjs",
         "g01-negative-preview.mjs",
-        "g01-negative-run.mjs",
         "g01-negatives.mjs",
         "renderer/cp4-diagnostic-probe.ts",
         "renderer/cp4-harness.ts",
@@ -362,6 +359,16 @@ export const SOURCE_PINS = Object.freeze(
         "trace-frozen.mjs",
         "trace-runner.mjs",
         "window.mjs",
+      ],
+    ],
+    // S2 追補 #6（DR-CP4-Q-1、DR-CP4-P-3）: #757 last changed these three.
+    [
+      "sp-p4-ir-timeout",
+      "43e3f40b5d653c62d5aca4ca795917b67310992c",
+      [
+        "diagnostic-runner.mjs",
+        "frozen-diagnostics.mjs",
+        "g01-negative-run.mjs",
       ],
     ],
     [
@@ -434,22 +441,28 @@ export const FORMAL_HARNESS_ENTRIES = Object.freeze([
   "frozen-setup-driver.mjs",
   "r5-check-runner.mjs",
 ]);
-/** S2 追補 #4: the pin whose bytes S2's readings are taken from. */
-const HARNESS_PIN = Object.freeze({
-  role: "s5b-diagnostics-wiring",
-  commit: "950751d040b29b6d78a067a003dc19b196cfb692",
-});
+/**
+ * S2 追補 #6: the bytes pin that holds a harness path (each path is held by
+ * exactly one pin), or undefined.
+ */
+export function harnessPinOf(file) {
+  return SOURCE_PINS.find((pin) => pin.paths.includes(file));
+}
 /**
  * S2 追補 #3／#4: the harness file whose BLOCKED_CONTRACT_TABLE (DR-CP4-L-28)
  * blockedCaseJudgement must equal, read at the pinned commit.
  */
 export const BLOCKED_TABLE_SOURCE = Object.freeze({
-  ...HARNESS_PIN,
+  role: harnessPinOf(`${HARNESS_DIR}frozen-setup-driver.mjs`).role,
+  commit: harnessPinOf(`${HARNESS_DIR}frozen-setup-driver.mjs`).commit,
   path: `${HARNESS_DIR}frozen-setup-driver.mjs`,
 });
 /**
  * S2 追補 #4: the harness constants S2's readings copy, parsed from the
  * pinned bytes (never imported or run) and compared with S2's values.
+ * S2 追補 #6: each file is read at the commit of the pin that holds it
+ * (frozen-diagnostics.mjs at sp-p4-ir-timeout, the others at
+ * s5b-diagnostics-wiring), and SP_P4_IR_TIMEOUT_LIMIT is DR-CP4-Q-1's C2 K.
  */
 export const HARNESS_CONSTANTS = Object.freeze({
   [`${HARNESS_DIR}frozen-setup-driver.mjs`]: Object.freeze([
@@ -464,6 +477,7 @@ export const HARNESS_CONSTANTS = Object.freeze({
   ]),
   [`${HARNESS_DIR}frozen-diagnostics.mjs`]: Object.freeze([
     "SP_P4_COMPARISON_RULE",
+    "SP_P4_IR_TIMEOUT_LIMIT",
   ]),
 });
 const SETUP_SESSIONS = Object.freeze({
@@ -632,7 +646,35 @@ const G01_RETRY = Object.freeze({
     "rawTimes",
     "readyMarkTime",
   ],
+  // S2 追補 #6（DR-CP4-Q-1 P3-2）: what the harness's askGraph keeps in
+  // graphTries for each measured sample, disclosed only (never judged).
+  graphTries: {
+    sample: ["phase", "repeat", "decided", "tries", "discardedTakes", "retry"],
+    perTry: ["kind", "outcome", "counters", "cached", "durationMs"],
+    counters: ["begins", "cacheHits", "lateCached"],
+    countersFrom: "reopened-measurement-main",
+    discarded: [
+      "reason",
+      "parentOutcome",
+      "childOutcome",
+      "release",
+      "indexUsable",
+      "returnedSceneIds",
+      "declaredSceneReturned",
+    ],
+    returnedSceneIds: "logical-parent-then-child-once",
+    judged: false,
+  },
 });
+/** S2 追補 #6: words retry.rule must carry for the P3-2 disclosure. */
+const G01_RETRY_RULE_WORDS = Object.freeze([
+  "graphTries",
+  "counters",
+  "cached",
+  "returnedSceneIds",
+  "declaredSceneReturned",
+  "判定には使わない",
+]);
 /** S2 追補 #4（DR-CP4-O-6）: the control and the per-sample reading. */
 const G01_REACHED_OUTCOMES = Object.freeze([
   "reached",
@@ -690,21 +732,91 @@ const G01_RESEAL = Object.freeze({
 const G01_MUTATED = Object.freeze(["K24-G01-N2", "K24-G01-N3", "K24-G01-N4"]);
 /** S2 追補 #4（DR-CP4-O-7）: the SP-P4 comparison rules. */
 const SP_P4_RULE_IDS = Object.freeze(["current", "ir-complete-pairs"]);
-const SP_P4_PROPOSED = Object.freeze({
+/**
+ * S2 追補 #6（DR-CP4-Q-1、P-S2-6 e、DR-CP4-P-3）: ir-complete-pairs as the
+ * harness's #757 implements it. C1: only a sample whose IR is a `timeout`
+ * with `deadlineExceeded` true, R+IR equal to R (same order) and no
+ * supplement leaves the IR comparison (`spP4IrTimeoutExcluded`); a pair
+ * leaves when either side does; any other non-ready sample is compared as
+ * `current` does. C2: more than the harness's SP_P4_IR_TIMEOUT_LIMIT
+ * excluded measured samples on a side of a variant, or no IR compared, is
+ * `[precheck]`. The limit is the harness constant (checked separately), so
+ * the earlier "no threshold" is withdrawn.
+ */
+const SP_P4_IR_COMPLETE_PAIRS = Object.freeze({
   rFields: ["rSceneIds", "denseHitSceneIds", "sparseSceneIds"],
   irFields: ["rIrSceneIds", "irSupplementSceneId"],
-  irComplete: "ir-ready",
+  irExcludedWhen: {
+    outcome: "timeout",
+    deadlineExceeded: true,
+    rIrSceneIds: "equals-rSceneIds-same-order",
+    irSupplementSceneId: null,
+  },
+  otherNotReady: "compared-as-current",
   pairing: "same-repeat",
-  disclose: ["ir-incomplete-count", "ir-incomplete-ratio"],
+  pairExcludedWhen: "either-side-excluded",
+  disclose: ["timeoutExcluded", "timeoutExcludedRate", "timeoutLimit"],
   discloseBy: ["side", "variant"],
-  onNoIrComplete: "[precheck]",
-  threshold: null,
+  timeoutLimitConstant: "SP_P4_IR_TIMEOUT_LIMIT",
+  timeoutLimitBy: ["side", "variant"],
+  onOverTimeoutLimit: "[precheck]",
+  onNoIrCompared: "[precheck]",
+  undefinedReasons: ["ir-timeout-limit", "no-ir-complete-pair"],
+});
+/**
+ * S2 追補 #6: words each condition's body must carry (C1 its four
+ * conditions, C2 the limit's constant, C3 the switch and the pin).
+ */
+const SP_P4_CONDITION_WORDS = Object.freeze({
+  C1: [
+    "timeout",
+    "deadlineExceeded",
+    "R+IR",
+    "共通追加枠",
+    "spP4IrTimeoutExcluded",
+    "current と同じ",
+  ],
+  C2: ["SP_P4_IR_TIMEOUT_LIMIT", "[precheck]", "24"],
+  C3: ["SP_P4_COMPARISON_RULE", "43e3f40b", "sp-p4-ir-timeout"],
+});
+/**
+ * S2 追補 #6: the receipt fields S2 reads for the rule (the harness's
+ * spP4ReceiptDesign, spP4IrDisclosure, assertSpP4WorkspaceStable and
+ * compareSpP4Variant at the sp-p4-ir-timeout pin).
+ */
+const SP_P4_RECEIPT_READING = Object.freeze({
+  design: ["rule", "irTimeoutLimit"],
+  attemptIrMeasured: [
+    "samples",
+    "notReady",
+    "timeoutExcluded",
+    "timeoutExcludedRate",
+    "timeoutLimit",
+  ],
+  sideStability: [
+    "rule",
+    "measured",
+    "irReady",
+    "irNotReady",
+    "irCompared",
+    "irTimeoutExcluded",
+    "irTimeoutLimit",
+  ],
+  comparison: [
+    "irCompletePairs",
+    "irComparedPairs",
+    "irTimeouts",
+    "irTimeoutLimit",
+    "undefinedReason",
+  ],
+  gate: "readSpP4Gate",
 });
 /**
  * S2 追補 #5（S3 の 7 回目、DR-CP4-P-2）: the P-S2-6 choices that let
  * ir-complete-pairs come into force. "a" is the proposal as written; "e" is
  * S3's conditional decision (C1〜C3), which needs the rule's conditions body
- * (written after the harness PR that wires C1〜C3 is merged).
+ * (written after the harness PR that wires C1〜C3 is merged; S2 追補 #6
+ * wrote it after #757 and puts ir-complete-pairs in force).
  */
 const SP_P4_SWITCH_CHOICES = Object.freeze({
   a: "as-proposed",
@@ -1145,10 +1257,11 @@ function afterMutationReadingErrors(errors, addendum, ctx) {
     retry.gapMs !== c.G01_CONTROL_GAP_MS ||
     retry.controlLimit !== c.G01_CONTROL_ATTEMPTS ||
     retry.sampleLimit !== c.G01_SAMPLE_ATTEMPTS ||
-    !nonBlank(retry.rule)
+    !nonBlank(retry.rule) ||
+    !G01_RETRY_RULE_WORDS.every((word) => retry.rule.includes(word))
   )
     errors.push(
-      "afterMutationReadings.retry must re-ask a neutral answer only, decide on the first decided answer (graph-ready or graph-unavailable of any reason; never a best-of), stop inconclusive at the harness's limits, disclose every try and [precheck] on a limit or gap other than the constants (DR-CP4-O-5 (xi)、O-14、O-15)",
+      "afterMutationReadings.retry must re-ask a neutral answer only, decide on the first decided answer (graph-ready or graph-unavailable of any reason; never a best-of), stop inconclusive at the harness's limits, disclose every try (each sample's graphTries with every try's counters and cached, and each discarded take's returnedSceneIds and declaredSceneReturned, never judged) and [precheck] on a limit or gap other than the constants (DR-CP4-O-5 (xi)、O-14、O-15、DR-CP4-Q-1 P3-2)",
     );
   if (
     !holds(readings.verdict, G01_VERDICT) ||
@@ -2192,14 +2305,16 @@ function setupReadingErrors(errors, readings, ctx) {
     errors.push(
       ...sourcePinGitErrors(pins, ctx.sourcePinGit.head, ctx.sourcePinGit),
     );
-  // S2 追補 #4: the harness constants S2 copies are read from the pinned
-  // bytes of the s5b-diagnostics-wiring pin.
-  const harnessPin = pins.find((row) => row?.role === HARNESS_PIN.role);
+  // S2 追補 #4／#6: the harness constants S2 copies are read from the pinned
+  // bytes of the pin that holds each file.
   for (const source of ctx.harnessConstantSources ?? []) {
-    const held = harnessPin?.files?.find((file) => file?.path === source.path);
+    const role = harnessPinOf(source.path)?.role;
+    const held = pins
+      .find((row) => row?.role === role)
+      ?.files?.find((file) => file?.path === source.path);
     if (held?.sha256 !== source.sha256)
       errors.push(
-        `setupReadings.source.pins ${HARNESS_PIN.role}: ${source.path} must be the bytes the harness constants were read from (${source.sha256})`,
+        `setupReadings.source.pins ${String(role)}: ${source.path} must be the bytes the harness constants were read from (${source.sha256})`,
       );
   }
   const build = readings.indexBuild ?? {};
@@ -2423,15 +2538,22 @@ function spP4SwitchDecided(decided, proposed) {
     kind === "conditional" &&
     nonBlank(decided?.conditions) &&
     isObject(proposed?.conditions) &&
-    SP_P4_CONDITIONS.every((id) => nonBlank(proposed.conditions[id]))
+    same(Object.keys(proposed.conditions), SP_P4_CONDITIONS) &&
+    SP_P4_CONDITIONS.every(
+      (id) =>
+        nonBlank(proposed.conditions[id]) &&
+        SP_P4_CONDITION_WORDS[id].every((word) =>
+          proposed.conditions[id].includes(word),
+        ),
+    )
   );
 }
 
 /**
  * S2 追補 #4（DR-CP4-O-5 (ii)(iii)(iv)(ix)、O-7）: SP-P4's sparse re-read,
  * the supplement slot, the retake scope and the comparison rule. The rule
- * in force is the pinned harness's SP_P4_COMPARISON_RULE; the proposed
- * ir-complete-pairs is in force only once S3 decided P-S2-6 for it.
+ * in force is the pinned harness's SP_P4_COMPARISON_RULE; S2 追補 #6 puts
+ * ir-complete-pairs in force on S3's P-S2-6 decision e (C1〜C3 in #757).
  */
 function spP4ReadingErrors(errors, p4, prep, ctx) {
   if (!isObject(p4)) return;
@@ -2467,30 +2589,57 @@ function spP4ReadingErrors(errors, p4, prep, ctx) {
   const rule = p4.comparisonRule;
   const rows = Array.isArray(rule?.rules) ? rule.rules : [];
   const harness = ctx.harnessConstants?.SP_P4_COMPARISON_RULE;
+  const limit = ctx.harnessConstants?.SP_P4_IR_TIMEOUT_LIMIT;
   const decided = (prep.reviewerQuestions ?? []).find(
     (row) => row?.id === "P-S2-6",
   )?.decision;
-  const proposed = rows.find((row) => row?.id === "ir-complete-pairs");
+  const pairs = rows.find((row) => row?.id === "ir-complete-pairs");
   const inForce = rows.find((row) => row?.id === rule?.inForce);
+  // S2 追補 #6（DR-CP4-P-3）: ir-complete-pairs is in force, as the pinned
+  // harness's SP_P4_COMPARISON_RULE is; current stays, not in force.
   if (
     !isObject(rule) ||
     !same(
       rows.map((row) => row?.id),
       SP_P4_RULE_IDS,
     ) ||
+    rule.inForce !== "ir-complete-pairs" ||
     rule.inForce !== harness ||
     inForce?.status !== "in-force" ||
-    rows.some((row) => row !== inForce && row?.status !== "proposed") ||
+    rows.some((row) => row !== inForce && row?.status !== "not-in-force") ||
     rows.some((row) => !nonBlank(row?.text)) ||
-    !holds(proposed, SP_P4_PROPOSED) ||
-    (proposed?.status === "proposed" && !nonBlank(proposed?.awaits)) ||
-    (rule.inForce === "ir-complete-pairs" &&
-      !spP4SwitchDecided(decided, proposed)) ||
+    rows.some((row) => Object.hasOwn(row ?? {}, "awaits")) ||
+    !spP4SwitchDecided(decided, pairs) ||
     !nonBlank(rule.switchRule) ||
-    !nonBlank(rule.disclosure)
+    !String(rule.harnessConstant ?? "").includes("SP_P4_IR_TIMEOUT_LIMIT")
   )
     errors.push(
-      `diagnosticRuns SP-P4.comparisonRule must keep the harness's rule in force (SP_P4_COMPARISON_RULE ${String(harness)}) and ir-complete-pairs as the proposal awaiting S3's P-S2-6 (R over every sample, IR only over IR-complete pairs, disclosed, [precheck] with no IR-complete sample, no threshold; DR-CP4-O-7)`,
+      `diagnosticRuns SP-P4.comparisonRule must put ir-complete-pairs in force as the pinned harness's SP_P4_COMPARISON_RULE (${String(harness)}) does, keep current as not-in-force, and rest on S3's P-S2-6 decision e with the C1〜C3 bodies (DR-CP4-Q-1、DR-CP4-P-3)`,
+    );
+  // C1〜C3 as the harness implements them, the limit K read from the pinned
+  // bytes, and "no threshold" withdrawn.
+  if (
+    !holds(pairs, SP_P4_IR_COMPLETE_PAIRS) ||
+    !Number.isInteger(limit) ||
+    pairs.timeoutLimit !== limit ||
+    !String(pairs.conditions?.C2 ?? "").includes(`${String(limit)}`) ||
+    Object.hasOwn(pairs, "threshold") ||
+    String(pairs.text ?? "").includes("足さない") ||
+    !String(pairs.withdrawn ?? "").includes("しきい値") ||
+    !String(pairs.text ?? "").includes("SP_P4_IR_TIMEOUT_LIMIT")
+  )
+    errors.push(
+      `diagnosticRuns SP-P4.comparisonRule ir-complete-pairs must be C1 (exclude the IR fields only for a timeout with deadlineExceeded true, R+IR equal to R and no supplement; either side excludes the pair; other non-ready samples compared as current), C2 (more than the harness's SP_P4_IR_TIMEOUT_LIMIT ${String(limit)} excluded measured samples on a side of a variant, or none compared, is [precheck]) and C3, with "no threshold" withdrawn (DR-CP4-Q-1)`,
+    );
+  const reading = rule?.receiptReading;
+  if (
+    !holds(reading, SP_P4_RECEIPT_READING) ||
+    !nonBlank(reading.rule) ||
+    !nonBlank(rule.disclosure) ||
+    !String(rule.disclosure).includes("explainedByIrDeadline")
+  )
+    errors.push(
+      `diagnosticRuns SP-P4.comparisonRule.receiptReading must read the receipt's design (${SP_P4_RECEIPT_READING.design.join(", ")}), each attempt's ir.measured (${SP_P4_RECEIPT_READING.attemptIrMeasured.join(", ")}), the side's stability and the comparison as the harness writes them, and the disclosure must say explainSpP4Instability's explainedByIrDeadline is disclosure only (DR-CP4-Q-1)`,
     );
 }
 
@@ -3284,15 +3433,17 @@ export function parseBlockedContractTable(text) {
 }
 
 /**
- * The pinned harness bytes: `git show <pin>:<path>` when the commit is
- * present, else the working tree file (whose sha256 the validator compares
- * with the pin).
+ * The pinned harness bytes: `git show <pin>:<path>` (the pin that holds the
+ * path) when the commit is present, else the working tree file (whose sha256
+ * the validator compares with the pin).
  */
 async function readPinnedHarnessFile({ repoRoot, read, file }) {
+  const pin = harnessPinOf(file);
+  if (!pin) return null;
   let bytes;
   let from = "git";
   try {
-    bytes = execFileSync("git", ["show", `${HARNESS_PIN.commit}:${file}`], {
+    bytes = execFileSync("git", ["show", `${pin.commit}:${file}`], {
       cwd: repoRoot,
       maxBuffer: 32 * 1024 * 1024,
       stdio: ["ignore", "pipe", "ignore"],
@@ -3305,7 +3456,7 @@ async function readPinnedHarnessFile({ repoRoot, read, file }) {
       return null;
     }
   }
-  return { bytes, from, sha256: sha256(bytes) };
+  return { bytes, from, commit: pin.commit, sha256: sha256(bytes) };
 }
 
 async function readHarnessBlockedTable({ repoRoot, read }) {
@@ -3356,7 +3507,12 @@ async function readHarnessConstants({ repoRoot, read }) {
       if (value === undefined) return null;
       values[name] = value;
     }
-    sources.push({ path: file, from: pinned.from, sha256: pinned.sha256 });
+    sources.push({
+      path: file,
+      commit: pinned.commit,
+      from: pinned.from,
+      sha256: pinned.sha256,
+    });
   }
   return { values, sources };
 }

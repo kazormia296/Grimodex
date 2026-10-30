@@ -252,7 +252,7 @@
       ]
     },
     "retry": {
-      "rule": "答えの種類は graph-ready と graph-unavailable（理由を問わない）が「決まった」答え、late・答え無し・fetch の失敗が「中立」の答え。中立のときだけ同じ操作を固定の間隔で聞き直し、最初に決まった答えで判定する（best-of ではない。unavailable も決まった答えとして止める）。上限は対照と測った sample ごとにそれぞれ定め、上限で決まらなければ判定不能（inconclusive の理由 g01-mira-entity-reached:undetermined）。cache に当たった答えも同じ種類の規則で読む。実際に使った上限と間隔を対照と各 sample に記録し、harness の定数と違えば [precheck]（assertG01RetryFixed）。各回の答えの種類と outcome（親と子）、owner の counter（begins、cacheHits、lateCached）の差分と cache に当たったか、所要時間、親と子の答えの Raw の時刻（t_fetch、t_raw_ready、t_return）と graph-ready の印の時刻を全回記録して開示する。聞き直しで捨てた回の数と理由も受領書の row.negative に残す（DR-CP4-O-5 (xi)、O-14、O-15、O-18 P3）。",
+      "rule": "答えの種類は graph-ready と graph-unavailable（理由を問わない）が「決まった」答え、late・答え無し・fetch の失敗が「中立」の答え。中立のときだけ同じ操作を固定の間隔で聞き直し、最初に決まった答えで判定する（best-of ではない。unavailable も決まった答えとして止める）。上限は対照と測った sample ごとにそれぞれ定め、上限で決まらなければ判定不能（inconclusive の理由 g01-mira-entity-reached:undetermined）。cache に当たった答えも同じ種類の規則で読む。実際に使った上限と間隔を対照と各 sample に記録し、harness の定数と違えば [precheck]（assertG01RetryFixed）。対照と測った sample の聞き直しの全回（askUntilDecided の tries）で、答えの種類（kind）と outcome（parentOutcome、childOutcome）、owner の counter の差分（counters の begins、cacheHits、lateCached。対照は宣言の後の Main で、sample は afterDeclaration で開き直した測定の Main で読み、読めなければ [artifact]）と cache に当たったか（cached: cacheHits か lateCached の差分が正）、所要時間（durationMs）、親と子の答えの Raw の時刻（t_fetch、t_raw_ready、t_return）と graph-ready の印の時刻を記録して開示する。測った sample ごとに graphTries（受領書の row.negative の graphTries）に phase、repeat、decided、tries、discardedTakes と retry（limit、gapMs）を残し、聞き直しで捨てた take（discarded）ごとに reason（neutral-answer）、parentOutcome、childOutcome、release、indexUsable と、その take が返した Scene（returnedSceneIds: 親の最終の Scene、次に follow-up の子の Scene を論理 ID で 1 回ずつ。対応の無い id は unmapped:<id>）と宣言の Scene が含まれたか（declaredSceneReturned）を残す。counters、cached、returnedSceneIds、declaredSceneReturned は開示だけで判定には使わない（判定は最初に決まった答えだけ。DR-CP4-O-5 (xi)、O-14、O-15、O-18 P3、DR-CP4-Q-1 P3-2）。",
       "decidedAnswers": ["graph-ready", "graph-unavailable"],
       "unavailableReasons": "any",
       "neutralAnswers": ["late", "no-answer", "fetch-failed"],
@@ -277,7 +277,31 @@
         "rawTimes",
         "readyMarkTime"
       ],
-      "onConstantMismatch": "[precheck]"
+      "onConstantMismatch": "[precheck]",
+      "graphTries": {
+        "sample": [
+          "phase",
+          "repeat",
+          "decided",
+          "tries",
+          "discardedTakes",
+          "retry"
+        ],
+        "perTry": ["kind", "outcome", "counters", "cached", "durationMs"],
+        "counters": ["begins", "cacheHits", "lateCached"],
+        "countersFrom": "reopened-measurement-main",
+        "discarded": [
+          "reason",
+          "parentOutcome",
+          "childOutcome",
+          "release",
+          "indexUsable",
+          "returnedSceneIds",
+          "declaredSceneReturned"
+        ],
+        "returnedSceneIds": "logical-parent-then-child-once",
+        "judged": false
+      }
     },
     "verdict": {
       "rule": "blocked なら blocked（数えない）。SP-P1 の照合し直しが match で、届いた（reached）かつ seed が g01-orin の sample で g01-mira が返れば、ほかの sample に依らず not-established。そうでなければ、SP-P1 が match でない、測った graph の sample が無い、seed つきでない sample がある、判定不能の sample がある（g01-mira-entity-reached:undetermined）、届かない sample がある（g01-mira-entity-reached）のどれかで inconclusive。どれでもなく g01-mira が返れば not-established、返らなければ established（assessG01Negative）。",

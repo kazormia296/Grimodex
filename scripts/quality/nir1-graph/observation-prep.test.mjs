@@ -18,6 +18,7 @@ import {
   PLACEHOLDER,
   SOURCE_PINS,
   assertObservationPrepFormal,
+  harnessPinOf,
   parseHarnessConstant,
   sourcePinGitErrors,
   formalReferenceErrors,
@@ -1758,6 +1759,8 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "s5a-graph-arm-runner",
       "maintenance-ownership-release",
       "s5b-diagnostics-wiring",
+      // S2 追補 #6（#757。DR-CP4-Q-1）。
+      "sp-p4-ir-timeout",
       // S2 追補 #5（P-S2-9 (b)。正式の入口の閉包の file を最後に変えた commit）。
       "pr1-native-eval-feature",
       "p1-harness-core",
@@ -2318,18 +2321,19 @@ test("S2 追補 #4 (A): each pin is a master commit and each bytes pin holds tha
   );
 });
 
-test("S2 追補 #4 (A): the bytes pins hold every non-test harness file #754 and #756 changed, each at the master commit that last changed it", async (t) => {
+test("S2 追補 #4／#6 (A): the bytes pins hold every non-test harness file #754, #756 and #757 changed, each at the master commit that last changed it", async (t) => {
   const ctx = await context();
   if (!ctx.sourcePinGit) {
     t.skip("shallow clone");
     return;
   }
-  const s5b = SOURCE_PINS.find((pin) => pin.role === "s5b-diagnostics-wiring");
+  // S2 追補 #6: the newest pin (#757) is the tip the last changes are read at.
+  const tip = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-timeout");
   const changed = gitText([
     "diff",
     "--name-only",
     "b1a87b0b81fbdce7f3d280e0671bced51306be1d",
-    s5b.commit,
+    tip.commit,
     "--",
     H4,
   ])
@@ -2342,23 +2346,41 @@ test("S2 追補 #4 (A): the bytes pins hold every non-test harness file #754 and
     )
     .sort();
   const held = SOURCE_PINS.filter((pin) =>
-    ["s5a-graph-arm-runner", "s5b-diagnostics-wiring"].includes(pin.role),
+    [
+      "s5a-graph-arm-runner",
+      "s5b-diagnostics-wiring",
+      "sp-p4-ir-timeout",
+    ].includes(pin.role),
   )
     .flatMap((pin) => pin.paths)
     .sort();
   assert.deepEqual(held, changed);
+  // #757 が変えた test 以外の file は 3 つで、すべて sp-p4-ir-timeout の pin にある。
+  assert.deepEqual(
+    gitText([
+      "diff",
+      "--name-only",
+      "950751d040b29b6d78a067a003dc19b196cfb692",
+      tip.commit,
+      "--",
+      H4,
+    ])
+      .split("\n")
+      .filter((file) => file !== "" && !file.endsWith(".test.mjs")),
+    [...tip.paths].sort(),
+  );
   for (const pin of SOURCE_PINS)
     for (const file of pin.paths)
       assert.equal(
-        gitText(["log", "-1", "--format=%H", s5b.commit, "--", file]),
+        gitText(["log", "-1", "--format=%H", tip.commit, "--", file]),
         pin.commit,
         `${file} is held by the commit that last changed it`,
       );
   // ancestor の pin は PR の squash の commit（#753、#755 ほか）。
   for (const pin of SOURCE_PINS)
     assert.ok(
-      ctx.sourcePinGit.isAncestor(pin.commit, s5b.commit),
-      `${pin.role} precedes ${s5b.commit}`,
+      ctx.sourcePinGit.isAncestor(pin.commit, tip.commit),
+      `${pin.role} precedes ${tip.commit}`,
     );
   // 変異: path を 2 つの pin に置く、pin から file を外す、check を変える。
   const prep = await json(OBSERVATION_PREP_FILES.prep);
@@ -2407,7 +2429,7 @@ test("S2 追補 #4 (A): the bytes pins hold every non-test harness file #754 and
   );
 });
 
-test("S2 追補 #4 (A): the blocked table and the harness constants are read from the s5b-diagnostics-wiring bytes", async () => {
+test("S2 追補 #4／#6 (A): the blocked table and the harness constants are read from the bytes of the pin that holds each file", async () => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   assert.equal(BLOCKED_TABLE_SOURCE.role, "s5b-diagnostics-wiring");
@@ -2415,14 +2437,15 @@ test("S2 追補 #4 (A): the blocked table and the harness constants are read fro
     BLOCKED_TABLE_SOURCE.commit,
     "950751d040b29b6d78a067a003dc19b196cfb692",
   );
-  const pin = prep.setupReadings.source.pins.find(
-    (row) => row.role === BLOCKED_TABLE_SOURCE.role,
-  );
+  const pinOf = (role) =>
+    prep.setupReadings.source.pins.find((row) => row.role === role);
+  const pin = pinOf(BLOCKED_TABLE_SOURCE.role);
   assert.equal(
     pin.files.find((file) => file.path === BLOCKED_TABLE_SOURCE.path).sha256,
     ctx.harnessBlockedTableSource.sha256,
   );
   // harness の定数（O-14 の文面でなく g01-negatives.mjs の値が正）。
+  // S2 追補 #6: SP-P4 の規則と K は #757 の frozen-diagnostics.mjs の値。
   assert.deepEqual(ctx.harnessConstants, {
     B_SEAL_REOPENS: 2,
     B_SEAL_WAIT_MS: 120000,
@@ -2430,17 +2453,64 @@ test("S2 追補 #4 (A): the blocked table and the harness constants are read fro
     G01_SAMPLE_ATTEMPTS: 60,
     G01_CONTROL_GAP_MS: 250,
     G01_GRAPH_READY_WAIT_MS: 10000,
-    SP_P4_COMPARISON_RULE: "current",
+    SP_P4_COMPARISON_RULE: "ir-complete-pairs",
+    SP_P4_IR_TIMEOUT_LIMIT: 6,
   });
   assert.deepEqual(
     ctx.harnessConstantSources.map((row) => row.path),
     Object.keys(HARNESS_CONSTANTS),
   );
+  // 各 file はそれを持つ pin の commit から読む（frozen-diagnostics.mjs は #757）。
+  assert.deepEqual(
+    ctx.harnessConstantSources.map((row) => [
+      row.path.slice(H4.length),
+      row.commit.slice(0, 8),
+    ]),
+    [
+      ["frozen-setup-driver.mjs", "950751d0"],
+      ["g01-negatives.mjs", "950751d0"],
+      ["frozen-diagnostics.mjs", "43e3f40b"],
+    ],
+  );
   for (const source of ctx.harnessConstantSources)
     assert.equal(
-      pin.files.find((file) => file.path === source.path)?.sha256,
+      pinOf(harnessPinOf(source.path).role).files.find(
+        (file) => file.path === source.path,
+      )?.sha256,
       source.sha256,
     );
+  assert.equal(
+    harnessPinOf(`${H4}frozen-diagnostics.mjs`).role,
+    "sp-p4-ir-timeout",
+  );
+  assert.equal(harnessPinOf(`${H4}not-a-harness-file.mjs`), undefined);
+  // 変異: 定数を古い pin（950751d0）の bytes から読むと、規則は current で K は無い。
+  const old = execFileSync(
+    "git",
+    [
+      "show",
+      `950751d040b29b6d78a067a003dc19b196cfb692:${H4}frozen-diagnostics.mjs`,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(parseHarnessConstant(old, "SP_P4_COMPARISON_RULE"), "current");
+  assert.equal(parseHarnessConstant(old, "SP_P4_IR_TIMEOUT_LIMIT"), undefined);
+  // 変異: frozen-diagnostics.mjs の sha256 を s5b の pin の旧い bytes と比べる。
+  const misread = {
+    ...ctx,
+    harnessConstantSources: ctx.harnessConstantSources.map((row) =>
+      row.path.endsWith("frozen-diagnostics.mjs")
+        ? { ...row, sha256: sha256(old) }
+        : row,
+    ),
+  };
+  assert.ok(
+    observationPrepErrors(prep, misread).some((e) =>
+      /sp-p4-ir-timeout: .*frozen-diagnostics\.mjs must be the bytes the harness constants were read from/u.test(
+        e,
+      ),
+    ),
+  );
   assert.equal(
     parseHarnessConstant(
       'export const A = 10_000;\nexport const B = "x";',
@@ -2581,28 +2651,128 @@ test("S2 追補 #4 (B): K24-G01-N2〜N4 read reached by the control and the samp
     );
 });
 
-test("S2 追補 #4 (C): SP-P4 re-reads sparse, R+IR − R, graph-recovered's reason, measurement-only retake, and keeps current in force", async () => {
+test("S2 追補 #4／#6 (C): SP-P4 re-reads sparse, R+IR − R, graph-recovered's reason, measurement-only retake, and puts ir-complete-pairs (C1〜C3) in force", async () => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
-  const { readDiagnosticPlan, SP_P4_COMPARISON_RULE } =
+  const { readDiagnosticPlan, SP_P4_COMPARISON_RULE, SP_P4_IR_TIMEOUT_LIMIT } =
     await import("../nir1-graph-eval/frozen-diagnostics.mjs");
   // harness の plan の読みは S2 の記録をそのまま受ける。
   assert.equal(readDiagnosticPlan(prep).spP4.variants.length, 8);
   const p4 = prep.diagnosticRuns.find((row) => row.id === "SP-P4");
+  // S2 追補 #6: 作業 tree の harness（#757 の後の master）と pin の bytes の両方で ir-complete-pairs と K=6。
   assert.equal(p4.comparisonRule.inForce, SP_P4_COMPARISON_RULE);
-  assert.equal(p4.comparisonRule.inForce, "current");
+  assert.equal(p4.comparisonRule.inForce, "ir-complete-pairs");
+  assert.equal(ctx.harnessConstants.SP_P4_COMPARISON_RULE, "ir-complete-pairs");
+  const pairs = p4.comparisonRule.rules.find(
+    (row) => row.id === "ir-complete-pairs",
+  );
+  assert.equal(pairs.timeoutLimit, SP_P4_IR_TIMEOUT_LIMIT);
+  assert.equal(pairs.timeoutLimit, ctx.harnessConstants.SP_P4_IR_TIMEOUT_LIMIT);
+  assert.equal(pairs.status, "in-force");
+  assert.equal(
+    p4.comparisonRule.rules.find((row) => row.id === "current").status,
+    "not-in-force",
+  );
   const at = prep.diagnosticRuns.indexOf(p4);
   const check = (copy) => observationPrepErrors(copy, ctx);
-  const R = (mutate) =>
-    detects(prep, check, (p) => mutate(p.diagnosticRuns[at]), /SP-P4/u);
-  R((r) => (r.comparisonRule.inForce = "ir-complete-pairs"));
-  R((r) => (r.comparisonRule.rules[1].status = "in-force"));
-  R((r) => (r.comparisonRule.rules[1].threshold = 0.1));
-  R((r) => (r.comparisonRule.rules[1].onNoIrComplete = "disclose"));
-  R((r) => r.comparisonRule.rules[1].rFields.pop());
-  R((r) => (r.comparisonRule.rules[1].pairing = "any-ready-sample"));
-  R((r) => delete r.comparisonRule.rules[1].awaits);
+  const R = (mutate, pattern = /SP-P4/u) =>
+    detects(prep, check, (p) => mutate(p.diagnosticRuns[at]), pattern);
+  const P = (r) => r.comparisonRule.rules[1];
+  // 変異: in force を current に戻す（status も）、current を in force のまま残す。
+  R((r) => (r.comparisonRule.inForce = "current"));
+  R((r) => {
+    r.comparisonRule.inForce = "current";
+    r.comparisonRule.rules[0].status = "in-force";
+    P(r).status = "not-in-force";
+  });
+  R((r) => (r.comparisonRule.rules[0].status = "in-force"));
+  R((r) => (r.comparisonRule.rules[0].status = "proposed"));
+  R((r) => (P(r).status = "proposed"));
+  R((r) => (P(r).awaits = "S3"));
+  // 変異: K を 5／7 に変える、文字列にする、欠く。
+  for (const value of [5, 7, "6", null])
+    R((r) => (P(r).timeoutLimit = value), /SP_P4_IR_TIMEOUT_LIMIT/u);
+  R((r) => delete P(r).timeoutLimit, /SP_P4_IR_TIMEOUT_LIMIT/u);
+  // 変異: 「しきい値は足さない」を戻す、撤回の記録を落とす。
+  R((r) => (P(r).threshold = null), /SP_P4_IR_TIMEOUT_LIMIT/u);
+  R(
+    (r) => (P(r).text += "しきい値（期限切れの数や割合の上限）は足さない。"),
+    /SP_P4_IR_TIMEOUT_LIMIT/u,
+  );
+  R((r) => delete P(r).withdrawn, /SP_P4_IR_TIMEOUT_LIMIT/u);
+  // 変異: C1 の 4 つの条件のそれぞれ、外す範囲、組の扱い。
+  for (const [key, value] of [
+    ["outcome", "not-ir-ready"],
+    ["deadlineExceeded", false],
+    ["rIrSceneIds", "any"],
+    ["irSupplementSceneId", "any"],
+  ])
+    R((r) => (P(r).irExcludedWhen[key] = value), /SP_P4_IR_TIMEOUT_LIMIT/u);
+  R((r) => delete P(r).irExcludedWhen.deadlineExceeded, /SP_P4/u);
+  R((r) => (P(r).otherNotReady = "excluded"), /SP_P4_IR_TIMEOUT_LIMIT/u);
+  R((r) => (P(r).pairExcludedWhen = "both-sides-excluded"), /SP_P4/u);
+  R((r) => (P(r).onOverTimeoutLimit = "disclose"), /SP_P4/u);
+  R((r) => (P(r).onNoIrCompared = "disclose"), /SP_P4/u);
+  R((r) => P(r).timeoutLimitBy.pop(), /SP_P4/u);
+  R((r) => P(r).undefinedReasons.pop(), /SP_P4/u);
+  R((r) => P(r).rFields.pop(), /SP_P4/u);
+  R((r) => (P(r).pairing = "any-ready-sample"), /SP_P4/u);
   R((r) => r.comparisonRule.rules.pop());
+  // 変異: C1〜C3 の本文を落とす・欠く、C1 の 4 つの条件の語を落とす。
+  for (const id of ["C1", "C2", "C3"]) {
+    R((r) => (P(r).conditions[id] = ""));
+    R((r) => delete P(r).conditions[id]);
+  }
+  for (const word of [
+    "timeout",
+    "deadlineExceeded",
+    "R+IR",
+    "共通追加枠",
+    "spP4IrTimeoutExcluded",
+    "current と同じ",
+  ])
+    R(
+      (r) => (P(r).conditions.C1 = P(r).conditions.C1.replaceAll(word, "")),
+      /comparisonRule must put ir-complete-pairs in force/u,
+    );
+  R(
+    (r) =>
+      (P(r).conditions.C2 = P(r).conditions.C2.replaceAll(
+        "SP_P4_IR_TIMEOUT_LIMIT",
+        "K",
+      )),
+  );
+  R(
+    (r) => (P(r).conditions.C3 = P(r).conditions.C3.replaceAll("43e3f40b", "")),
+  );
+  R((r) => (P(r).conditions.C4 = "extra"));
+  R((r) => (r.comparisonRule.harnessConstant = "SP_P4_COMPARISON_RULE だけ"));
+  // 変異: receipt の読み（harness の欄名）を変える、disclosure の注を落とす。
+  R(
+    (r) => (r.comparisonRule.receiptReading.design = ["rule"]),
+    /receiptReading/u,
+  );
+  R(
+    (r) => r.comparisonRule.receiptReading.attemptIrMeasured.pop(),
+    /receiptReading/u,
+  );
+  R(
+    (r) => (r.comparisonRule.receiptReading.sideStability[4] = "irComplete"),
+    /receiptReading/u,
+  );
+  R(
+    (r) => r.comparisonRule.receiptReading.comparison.shift(),
+    /receiptReading/u,
+  );
+  R((r) => delete r.comparisonRule.receiptReading, /receiptReading/u);
+  R(
+    (r) =>
+      (r.comparisonRule.disclosure = r.comparisonRule.disclosure.replaceAll(
+        "explainedByIrDeadline",
+        "explained",
+      )),
+    /receiptReading/u,
+  );
   R((r) => (r.sparseReading.when = "before-product-fetch"));
   R((r) => (r.sparseReading.via = "harness-sql"));
   R((r) => (r.supplementSlot.maxScenes = 2));
@@ -2614,78 +2784,48 @@ test("S2 追補 #4 (C): SP-P4 re-reads sparse, R+IR − R, graph-recovered's rea
       )),
   );
   R((r) => (r.retakeScope = "setup-and-measurement"));
-  // harness の既定が切り替わっても S2 が current のままなら通さない（S2 が追う）。
-  assert.ok(
+  // 変異: harness の定数を読み違える（規則が current、K が 5／7／欠け／文字列）。
+  const withConstants = (patch) =>
     observationPrepErrors(prep, {
+      ...ctx,
+      harnessConstants: { ...ctx.harnessConstants, ...patch },
+    }).filter((e) => /comparisonRule/u.test(e));
+  assert.deepEqual(withConstants({}), []);
+  for (const patch of [
+    { SP_P4_COMPARISON_RULE: "current" },
+    { SP_P4_IR_TIMEOUT_LIMIT: 5 },
+    { SP_P4_IR_TIMEOUT_LIMIT: 7 },
+    { SP_P4_IR_TIMEOUT_LIMIT: undefined },
+    { SP_P4_IR_TIMEOUT_LIMIT: "6" },
+  ])
+    assert.ok(withConstants(patch).length > 0, JSON.stringify(patch));
+  // harness が current のままなら、S2 の記録を current に戻しても ir-complete-pairs は通さない（S2 は #757 を pin する）。
+  const reverted = clone(prep);
+  const rule = reverted.diagnosticRuns[at].comparisonRule;
+  rule.inForce = "current";
+  rule.rules[0].status = "in-force";
+  rule.rules[1].status = "not-in-force";
+  assert.ok(
+    observationPrepErrors(reverted, {
       ...ctx,
       harnessConstants: {
         ...ctx.harnessConstants,
-        SP_P4_COMPARISON_RULE: "ir-complete-pairs",
+        SP_P4_COMPARISON_RULE: "current",
       },
-    }).some((e) => /comparisonRule/u.test(e)),
+    }).some((e) => /comparisonRule must put ir-complete-pairs/u.test(e)),
   );
-  // S3 が P-S2-6 を (a) で決め、harness の定数も切り替えた後だけ ir-complete-pairs を使える。
-  const switched = clone(prep);
-  const rule = switched.diagnosticRuns[at].comparisonRule;
-  rule.inForce = "ir-complete-pairs";
-  rule.rules[0].status = "proposed";
-  rule.rules[1].status = "in-force";
-  const switchedCtx = {
-    ...ctx,
-    harnessConstants: {
-      ...ctx.harnessConstants,
-      SP_P4_COMPARISON_RULE: "ir-complete-pairs",
-    },
-  };
-  assert.ok(
-    observationPrepErrors(switched, switchedCtx).some((e) =>
-      /comparisonRule/u.test(e),
-    ),
-    "undecided P-S2-6",
-  );
-  // S2 追補 #5: 記録した決定（e、条件つき）だけでは、C1〜C3 の本文が無いので切り替えない。
-  assert.equal(
-    switched.reviewerQuestions.find((row) => row.id === "P-S2-6").decision
-      .choice,
-    "e",
-  );
-  const switchErrors = (copy) =>
-    observationPrepErrors(copy, switchedCtx).some((e) =>
-      /comparisonRule/u.test(e),
+  // gate: P-S2-6 の決定が無い、e 以外（a を除く）、決定の conditions が無いと通さない。
+  const gate = (mutate) =>
+    detects(
+      prep,
+      check,
+      (p) => mutate(p.reviewerQuestions.find((row) => row.id === "P-S2-6")),
+      /comparisonRule must put ir-complete-pairs in force/u,
     );
-  assert.ok(switchErrors(switched), "e without the C1〜C3 body");
-  // C1〜C3 の本文（harness の PR の後に書く）があれば e で切り替えられる。
-  const conditional = clone(switched);
-  conditional.diagnosticRuns[at].comparisonRule.rules[1].conditions = {
-    C1: "timeout の sample だけ IR の欄を外す",
-    C2: "timeout が K を超えたら [precheck]",
-    C3: "harness の別の commit に pin し直す",
-  };
-  assert.ok(!switchErrors(conditional), "e with the C1〜C3 body");
-  // 変異: 条件の 1 つを欠く、決定の conditions を欠く、切替を許さない choice。
-  const noC2 = clone(conditional);
-  delete noC2.diagnosticRuns[at].comparisonRule.rules[1].conditions.C2;
-  assert.ok(switchErrors(noC2), "C2 missing");
-  const noConditions = clone(conditional);
-  delete noConditions.reviewerQuestions.find((row) => row.id === "P-S2-6")
-    .decision.conditions;
-  assert.ok(switchErrors(noConditions), "decision conditions missing");
-  for (const choice of ["b", "c", "d"]) {
-    const other = clone(conditional);
-    other.reviewerQuestions.find((row) => row.id === "P-S2-6").decision.choice =
-      choice;
-    assert.ok(switchErrors(other), `choice ${choice}`);
-  }
-  switched.reviewerQuestions.find((row) => row.id === "P-S2-6").decision = {
-    choice: "a",
-    by: "S3（7 回目）",
-    record: "scratchpad/s3/observation-prep-review.v7.json",
-  };
-  assert.ok(
-    !observationPrepErrors(switched, switchedCtx).some((e) =>
-      /comparisonRule/u.test(e),
-    ),
-  );
+  for (const choice of ["b", "c", "d"])
+    gate((row) => (row.decision.choice = choice));
+  gate((row) => delete row.decision.conditions);
+  gate((row) => (row.decision = null));
 });
 
 test("S2 追補 #4 (D): the Gold run uses the one completed parity before its start; the parity fallback is not wired", async () => {
@@ -2770,16 +2910,17 @@ test("S2 追補 #5: the S3 7th review's decisions are recorded (P-S2-6 condition
     assert.ok(decision.record.includes("DR-CP4-P-2"), id);
     assert.ok(decision.conditions.length > 0, id);
   }
-  // P-S2-6 の e は S3 の条件 C1〜C3 の選択肢。決定は記録するが、規則は current のまま。
+  // P-S2-6 の e は S3 の条件 C1〜C3 の選択肢。S2 追補 #6 で #757 の後に in force にした。
   const e = byId["P-S2-6"].options.find((row) => row.id === "e");
   for (const word of ["C1", "C2", "C3", "timeout", "K（=6）"])
     assert.ok(e.text.includes(word), word);
+  assert.ok(byId["P-S2-6"].decision.fulfilled.includes("DR-CP4-P-3"));
   const p4 = prep.diagnosticRuns.find((row) => row.id === "SP-P4");
-  assert.equal(p4.comparisonRule.inForce, "current");
+  assert.equal(p4.comparisonRule.inForce, "ir-complete-pairs");
   assert.equal(
     p4.comparisonRule.rules.find((row) => row.id === "ir-complete-pairs")
       .status,
-    "proposed",
+    "in-force",
   );
   const check = (copy) => observationPrepErrors(copy, ctx);
   detects(
@@ -3049,4 +3190,174 @@ test("S2 追補 #5 (P3-1): K24-G01-N4 makes its draft version as the harness doe
         "保存",
       )),
   );
+});
+
+// ---- S2 追補 #6（#757 の後の pin し直し、SP-P4 の C1〜C3 の in force、P3-2。DR-CP4-P-3） ----
+
+test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (spP4ReceiptDesign, spP4IrDisclosure, assertSpP4WorkspaceStable, compareSpP4Variant, spP4IrTimeoutExcluded)", async () => {
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const p4 = prep.diagnosticRuns.find((row) => row.id === "SP-P4");
+  const reading = p4.comparisonRule.receiptReading;
+  const pairs = p4.comparisonRule.rules.find(
+    (row) => row.id === "ir-complete-pairs",
+  );
+  const d = await import("../nir1-graph-eval/frozen-diagnostics.mjs");
+  const { spP4ReceiptDesign } =
+    await import("../nir1-graph-eval/diagnostic-runner.mjs");
+  // 作業 tree の harness は pin の bytes と同じ（import した関数が pin の挙動）。
+  for (const name of ["frozen-diagnostics.mjs", "diagnostic-runner.mjs"]) {
+    const pin = harnessPinOf(H4 + name);
+    assert.equal(pin.role, "sp-p4-ir-timeout");
+    const held = prep.setupReadings.source.pins
+      .find((row) => row.role === pin.role)
+      .files.find((file) => file.path === H4 + name);
+    assert.equal(
+      sha256(readFileSync(path.join(repoRoot, H4 + name))),
+      held.sha256,
+    );
+  }
+  const design = spP4ReceiptDesign({
+    targets: [{ variantKey: "G-01/v1" }],
+    warmup: 5,
+    measured: 30,
+  });
+  for (const key of reading.design) assert.ok(Object.hasOwn(design, key), key);
+  assert.equal(design.rule, p4.comparisonRule.inForce);
+  assert.equal(design.irTimeoutLimit, pairs.timeoutLimit);
+  const row = (repeat, outcome = "ir-ready", patch = {}) => ({
+    phase: "measured",
+    repeat,
+    rSceneIds: ["s1", "s2"],
+    denseHitSceneIds: ["s1"],
+    sparseSceneIds: ["s2"],
+    rIrSceneIds: ["s1", "s2"],
+    irSupplementSceneId: null,
+    ir: { outcome, deadlineExceeded: outcome === "timeout" },
+    ...patch,
+  });
+  const samples = (timeouts, count = 30) => [
+    { phase: "warmup", repeat: 0, ir: { outcome: "ir-ready" } },
+    ...Array.from({ length: count }, (_, at) =>
+      row(at + 1, at < timeouts ? "timeout" : "ir-ready"),
+    ),
+  ];
+  assert.deepEqual(
+    Object.keys(d.spP4IrDisclosure(samples(2)).measured),
+    reading.attemptIrMeasured,
+  );
+  assert.deepEqual(
+    Object.keys(d.assertSpP4WorkspaceStable(samples(2), "x")),
+    reading.sideStability,
+  );
+  // K 件までは比べ、K+1 件で ir-timeout-limit、IR を比べる組が 0 件で no-ir-complete-pair。
+  const K = pairs.timeoutLimit;
+  const compare = (left, right) =>
+    d.compareSpP4Variant({ variantKey: "G-01/v1", without: left, with: right });
+  assert.equal(compare(samples(K), samples(0)).same, true);
+  const over = compare(samples(K + 1), samples(0));
+  assert.equal(over.undefinedReason, pairs.undefinedReasons[0]);
+  for (const key of reading.comparison)
+    assert.ok(Object.hasOwn(over, key), key);
+  const none = compare(samples(K, K), samples(0, K));
+  assert.equal(none.undefinedReason, pairs.undefinedReasons[1]);
+  assert.throws(
+    () => d.assertSpP4WorkspaceStable(samples(K + 1), "x"),
+    /more than 6/u,
+  );
+  // C1 の 4 つの条件（S2 の irExcludedWhen）と harness の spP4IrTimeoutExcluded。
+  const when = pairs.irExcludedWhen;
+  assert.equal(when.outcome, "timeout");
+  const base = row(1, when.outcome);
+  assert.equal(d.spP4IrTimeoutExcluded(base), true);
+  for (const flipped of [
+    row(1, "failed", { ir: { outcome: "failed", deadlineExceeded: true } }),
+    row(1, "timeout", { ir: { outcome: "timeout", deadlineExceeded: false } }),
+    row(1, "timeout", { rIrSceneIds: ["s2", "s1"] }),
+    row(1, "timeout", { irSupplementSceneId: "s3" }),
+  ])
+    assert.equal(d.spP4IrTimeoutExcluded(flipped), false);
+  // 外さない非 ready（failed）は current と同じに比べる（片側だけなら違いが残る）。
+  const failed = samples(0).map((sample, at) =>
+    at === 1
+      ? { ...sample, rIrSceneIds: ["s1"], ir: { outcome: "failed" } }
+      : sample,
+  );
+  assert.equal(compare(failed, samples(0)).same, false);
+});
+
+test("S2 追補 #6 (P3-2): retry.rule and graphTries are the harness's re-ask disclosure (every try's counters and cached, the discarded takes' Scenes), never judged", async () => {
+  const ctx = await context();
+  const addendum = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  assert.deepEqual(setupAddendumErrors(addendum, ctx), []);
+  const retry = addendum.afterMutationReadings.retry;
+  // harness の askUntilDecided の各回の欄（g01-negatives.mjs、s5b の pin）。
+  const { askUntilDecided } =
+    await import("../nir1-graph-eval/g01-negatives.mjs");
+  let reads = 0;
+  const asked = await askUntilDecided({
+    ask: async () => ({
+      parent: { graphOutcome: reads > 2 ? "graph-ready" : "late" },
+    }),
+    limit: 3,
+    gapMs: 0,
+    readCounters: async () => ({
+      begins: ++reads,
+      cacheHits: 0,
+      lateCached: reads,
+    }),
+    sleep: async () => {},
+  });
+  assert.equal(asked.tries.length, 2);
+  for (const key of retry.graphTries.perTry)
+    assert.ok(Object.hasOwn(asked.tries[0], key), key);
+  assert.deepEqual(
+    Object.keys(asked.tries[0].counters),
+    retry.graphTries.counters,
+  );
+  assert.equal(asked.tries[0].cached, true);
+  // askGraph が graphTries に残す欄（g01-negative-run.mjs、sp-p4-ir-timeout の pin の bytes）。
+  const pin = harnessPinOf(`${H4}g01-negative-run.mjs`);
+  assert.equal(pin.role, "sp-p4-ir-timeout");
+  const text = execFileSync(
+    "git",
+    ["show", `${pin.commit}:${H4}g01-negative-run.mjs`],
+    {
+      cwd: repoRoot,
+      encoding: "utf8",
+    },
+  );
+  const pushed = text.slice(text.indexOf("state.graphTries.push({"));
+  for (const key of retry.graphTries.sample)
+    assert.match(pushed.slice(0, 400), new RegExp(`\\b${key}\\b`, "u"), key);
+  const discarded = text.slice(text.indexOf("const discarded = takes"));
+  for (const key of retry.graphTries.discarded)
+    assert.match(discarded.slice(0, 900), new RegExp(`\\b${key}\\b`, "u"), key);
+  assert.ok(text.includes("readCounters: state.readCounters"));
+  assert.ok(text.includes("...(row?.followUp?.child?.finalSceneIds ?? [])"));
+  // 変異: 文の欄名を落とす、開示の欄を変える、判定に使う。
+  const check = (copy) => setupAddendumErrors(copy, ctx);
+  const R = (mutate) =>
+    detects(
+      addendum,
+      check,
+      (a) => mutate(a.afterMutationReadings.retry),
+      /retry/u,
+    );
+  for (const word of [
+    "graphTries",
+    "counters",
+    "cached",
+    "returnedSceneIds",
+    "declaredSceneReturned",
+    "判定には使わない",
+  ])
+    R((r) => (r.rule = r.rule.replaceAll(word, "")));
+  R((r) => (r.graphTries.judged = true));
+  R((r) => r.graphTries.discarded.pop());
+  R((r) => r.graphTries.counters.pop());
+  R((r) => r.graphTries.perTry.splice(3, 1));
+  R((r) => r.graphTries.sample.shift());
+  R((r) => (r.graphTries.countersFrom = "declaration-main"));
+  R((r) => (r.graphTries.returnedSceneIds = "runtime"));
+  R((r) => delete r.graphTries);
 });
