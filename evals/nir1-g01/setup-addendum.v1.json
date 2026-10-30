@@ -1,7 +1,7 @@
 {
   "schemaVersion": "nir1-c-body-setup-addendum/1",
   "addendumId": "nir1-g01-setup-addendum/1",
-  "status": "draft-awaiting-independent-review",
+  "status": "frozen-after-independent-review",
   "graphRuntimeObservedBeforeAuthoring": false,
   "purpose": "K2/4 の「setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）」の G-01 の分。宣言する Scene と値、期待する excerpt の範囲、宣言の時期と場所、診断用の負例を、G-01 の R+IR+Graph（本文の開示を含む）を観測するどの実行よりも前に固定する。fixture v1 は変えない。",
   "contract": {
@@ -194,7 +194,14 @@
   ],
   "diagnosticNegativeRule": "負例は Gold ではなく診断用の期待値で、Gold の run とは別の run で行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。",
   "reviewPlan": "観測前の commit の独立 reviewer（S3）が確かめること: g01-mira が v1 の subset で宣言できること（veto に当たる記録も POV もない）、宣言の段が fixture v1 の期待値と前提条件を変えないこと、診断用の負例、K2/4 の表との一致、参照した sha256。確かめた記録は観測前の commit に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は以後変えない。",
-  "review": null,
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-lane-decisions/cp4-decisions.md（commit 0749a4b4295022b135e7af5e51f599e4c5e9b81f の bytes）の DR-CP4-P-2（S3 の 7 回目の判定の要旨。accept-with-conditions）。条件の充足は同じ file の DR-CP4-P-3、DR-CP4-P-4",
+    "recordSha256": "243f2fb13712bc1f8839db24cde0de09d5262d50a1bbb0c111a215ecc0564a10",
+    "verdict": "accept-with-conditions",
+    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たした（DR-CP4-P-2〜P-4）。repo の記録に、7 回目の後の S3 のレビューは無い（充足を S3 が見直した記録は無い）。S3 の 7 回目の記録の原本（session の scratchpad）は repo に無く、record はその要旨を写した DR の行で、recordSha256 はその commit の cp4-decisions.md の bytes の SHA-256。"
+  },
   "seedPinStepNote": "SP/1（nir1-graph-case-seed-pin-proposal/1。2026-10-27 に確認）の seed の pin の段（evals/nir1-graph/seed-pin-addendum.v1.json）を先に置き、この addendum の宣言の段はその後に置く。G-02〜G-08 の seed の pin の段は setupOrder の「foreshadows, foreshadow Codex links and pins」の段の直後（maintenance の有効化と setupTimeline の前）、G-01 は g01-mira の pin の後（typed Revision の prepare と B の seal の前）にある。宣言の段は declarationPlace (ii) のとおり測定の workspace を開いた後、Graph の arm の最初の query の前で、K2/4 の内容（宣言する Scene、値、期待値、負例）は変えない。診断用の負例（宣言しない run を含む）も seed の pin の段を含む workspace で取る（SP/1 の設計: Graph が要求された状態の負例になる）。",
   "afterMutationReadings": {
     "status": "S2 追補 #4 の提案（DR-CP4-O-6 の対照の読み、O-14／O-15 の聞き直しの規則、O-5 (v)(vii)(xi)、O-9、O-17。DR-CP4-P-1）。S3 の 7 回目の確認を受ける（observation-prep.v1.json の reviewerQuestions P-S2-7、P-S2-8）。数値は harness の定数（scripts/quality/nir1-graph-eval/g01-negatives.mjs の G01_CONTROL_ATTEMPTS、G01_SAMPLE_ATTEMPTS、G01_CONTROL_GAP_MS、G01_GRAPH_READY_WAIT_MS。master 950751d0）を正とした（O-6 の「最大 10 回、間隔 1.2 s」と O-15 の「30 回」は古い文面）。",

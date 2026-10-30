@@ -1,0 +1,40 @@
+{
+  "schema": "nir1-cp4-k64-procedure/1",
+  "version": "v1",
+  "draft": false,
+  "contract": {
+    "draftRef": "nir1-final-request-eval-proposal/4",
+    "contractId": "graph-eval-procedure",
+    "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+  },
+  "values": {
+    "dMs": 10.84,
+    "wFMs": 100,
+    "tLateMs": 100,
+    "tShowMs": 2000,
+    "r1r4WaitMs": 10000
+  },
+  "conditions": {
+    "follow": ["F1", "F2", "F3", "F4", "F5", "F6", "F7"],
+    "exclusions": [
+      "X1",
+      "X2",
+      "X3",
+      "X4",
+      "X5",
+      "X6",
+      "X7",
+      "X8",
+      "X9",
+      "X10",
+      "X11",
+      "X12",
+      "X13"
+    ]
+  },
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-lane-decisions/cp4-decisions.md（commit 0749a4b4295022b135e7af5e51f599e4c5e9b81f の bytes）の DR-CP4-P-2（S3 の 7 回目の判定の要旨。accept-with-conditions）。条件の充足は同じ file の DR-CP4-P-3、DR-CP4-P-4"
+  }
+}

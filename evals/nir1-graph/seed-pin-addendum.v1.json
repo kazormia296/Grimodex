@@ -1,7 +1,7 @@
 {
   "schemaVersion": "nir1-graph-case-seed-pin-addendum/1",
   "addendumId": "nir1-graph-seed-pin-addendum/1",
-  "status": "draft-awaiting-independent-review",
+  "status": "frozen-after-independent-review",
   "graphRuntimeObservedBeforeAuthoring": false,
   "purpose": "SP/1 の「設計」の「addendum の file」。G-01〜G-08 のすべての variant の setup に、問いの Scene から予定の seed の Entity への pin を 1 つ、製品の upsertScenePin で書く段を足す（setupOrder の外の 1 段）。freeze.v1.json が束縛しない別の file に置き、凍結した bytes、期待値、前提条件、setupTimeline、measurementPoint、K6/4 と K2/4 の内容は変えない。",
   "contract": {
@@ -330,6 +330,13 @@
     "synthetic-detection": "SP/1 :178: 観測の前に、合成の記録で SP-N1〜N5、SP-N9〜N13 を期待どおりに分けることを示す。observation-prep.v1.json の r5Gate.syntheticDetection と beforeFirstGatedRun"
   },
   "reviewPlan": "観測前の commit の独立 reviewer が確かめること: 予定の seed が fixture の値をそのまま写したこと、置き場、pin が R／IR／Graph の対応付けを変えないというコードの読取（SP/1 の (b)(c)）、段が凍結の bytes と期待値を変えないこと、K2/4 の addendum と重ならないこと、G-case の Graph の arm の観測がまだ無いこと。",
-  "review": null,
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-lane-decisions/cp4-decisions.md（commit 0749a4b4295022b135e7af5e51f599e4c5e9b81f の bytes）の DR-CP4-P-2（S3 の 7 回目の判定の要旨。accept-with-conditions）。条件の充足は同じ file の DR-CP4-P-3、DR-CP4-P-4",
+    "recordSha256": "243f2fb13712bc1f8839db24cde0de09d5262d50a1bbb0c111a215ecc0564a10",
+    "verdict": "accept-with-conditions",
+    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たした（DR-CP4-P-2〜P-4）。repo の記録に、7 回目の後の S3 のレビューは無い（充足を S3 が見直した記録は無い）。S3 の 7 回目の記録の原本（session の scratchpad）は repo に無く、record はその要旨を写した DR の行で、recordSha256 はその commit の cp4-decisions.md の bytes の SHA-256。"
+  },
   "staticDetectionScope": "eval:fixtures が静的に検出するのは SP-N1〜N3、N8、N9（値）と SP-N11、N14（行の集合）だけである。SP-N4〜N6、N10、N12、N13 は addendum の宣言で、違反は setup の実行と run の受入れで検出し、合成の記録で検出力を示す。"
 }

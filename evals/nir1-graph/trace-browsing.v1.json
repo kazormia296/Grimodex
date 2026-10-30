@@ -2,7 +2,7 @@
   "schemaVersion": "nir1-cp4-trace/1",
   "traceId": "nir1-cp4-trace-browsing/1",
   "kind": "browsing",
-  "status": "draft-awaiting-independent-review",
+  "status": "frozen-after-independent-review",
   "graphRuntimeObservedBeforeAuthoring": false,
   "contract": {
     "k62": {
@@ -122,7 +122,14 @@
     "rule": "G-02 base の setup が上限内の開き直し（observation-prep.v1.json の setupReadings.reopen）で setup-complete に届かなければ、この trace の (b) は「未測定」とし、CP-4 の可用性は HOLD とする。setupFailure にするのは harness の名前のある blocked（blocked.harnessId）で、開き直しの上限の内の受領書だけで、名前の無い失敗や上限を超えた記録は harness の不備として [precheck]（S2 追補 #4、DR-CP4-O-5 (vi)、O-2 (e)）。この版では trace の project を差し替えない（差し替えは新しい版と独立 reviewer のレビューを要する）。止まった理由は受領書に harness の名前のまま残す（setupReadings.blockedCaseJudgement）。",
     "acceptsOnly": "blocked-with-harness-id"
   },
-  "review": null,
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-lane-decisions/cp4-decisions.md（commit 0749a4b4295022b135e7af5e51f599e4c5e9b81f の bytes）の DR-CP4-P-2（S3 の 7 回目の判定の要旨。accept-with-conditions）。条件の充足は同じ file の DR-CP4-P-3、DR-CP4-P-4",
+    "recordSha256": "243f2fb13712bc1f8839db24cde0de09d5262d50a1bbb0c111a215ecc0564a10",
+    "verdict": "accept-with-conditions",
+    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たした（DR-CP4-P-2〜P-4）。repo の記録に、7 回目の後の S3 のレビューは無い（充足を S3 が見直した記録は無い）。S3 の 7 回目の記録の原本（session の scratchpad）は repo に無く、record はその要旨を写した DR の行で、recordSha256 はその commit の cp4-decisions.md の bytes の SHA-256。"
+  },
   "browse": {
     "otherSceneId": "g02-harbor",
     "rule": "query の Scene（g02-query）と、pin を持たない Scene（g02-harbor）を、製品の tree の操作で交互に開く。g02-query を開くたびに製品が seed つきの query を出し、Q に数える。g02-harbor の query は、その Scene に pin がないので製品が seed を送らず、Graph を要求しない（Q の定義〔seed がある〕の外。K6/2 の (b) の規則の 1）。本文の編集と保存はしない。",

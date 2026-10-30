@@ -236,8 +236,13 @@ test("S3v2-P2-1 / P3-1: synthetic detection for SP-N1〜N5, N9〜N13; runtime st
 
 test("S3v2-P3-4: the SP/1 digest is recomputed when its bytes are in the repository", async () => {
   const { ctx, addendum } = await load();
+  // S4a: the committed addendum is frozen, and a frozen one needs the bytes
+  // (S3v3-P3-1, the next test). The absent-bytes tolerance is a draft's.
+  const draft = clone(addendum);
+  draft.status = "draft-awaiting-independent-review";
+  draft.review = null;
   assert.deepEqual(
-    seedPinAddendumErrors(addendum, { ...ctx, sp1Sha256: null }),
+    seedPinAddendumErrors(draft, { ...ctx, sp1Sha256: null }),
     [],
   );
   assert.deepEqual(
