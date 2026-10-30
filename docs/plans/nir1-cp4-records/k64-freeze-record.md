@@ -35,4 +35,12 @@ K6/2 の「事前登録の凍結」の 1 と 7(a) に従う、integrator の作�
 
 ## (α) の取り直し
 
-（追記する）
+- 取り直した時刻：2026-10-30T13:48:48Z（2026-10-30 22:48 JST）。push（2026-10-27T09:11:20Z）の約 3 日後。
+- 取得：`gh api 'repos/kazormia296/Grimodex/events?per_page=100' --paginate` のうち `type=PushEvent` かつ `payload.ref=refs/heads/claude/nir1-contracts`。今回は 4 件が現れた（`created_at` の昇順）：
+  - `2026-10-27T09:11:01Z` id 25447971275 `payload.head=21ed9a9c…` `payload.before=14141248…`（①＝R5 の照合の記録）
+  - **`2026-10-27T09:11:20Z` id 25352607173 `payload.head=5dea38af158283c2a925d68ef0d8b0771c0ea209` `payload.before=21ed9a9c…`（凍結の commit）**
+  - `2026-10-27T09:11:55Z` id 25351646922 `payload.head=a0b20a38…` `payload.before=5dea38af…`（凍結の記録）
+  - `2026-10-27T10:29:29Z` id 25359365639 `payload.head=2f622c70…` `payload.before=a0b20a38…`（②'＝合成の記録による検出力）
+- 読み：(α) の PushEvent の `created_at` は (β) の repository activity の `timestamp` と秒まで一致した（凍結の commit は 09:11:20Z）。①の記録の commit は凍結の commit より 19 秒前（PushEvent）にあたり、(β) の 09:11:00Z とは 1 秒の差がある（server 側の取り込みの丸め。順序は変わらない）。凍結の commit の push が、CP-4 の最初の Graph の観測より前であるという (ii) の根拠は、(β) と (α) の 2 つの独立した server 側の記録で揃った。
+- 照合 3 の (c) の push の時刻は、(β) と (α) が一致するので 2026-10-27T09:11:20Z のまま変えない。
+- この追記は凍結の bytes（K6/4）を変えない。`claude/nir1-contracts` へは fast-forward だけで push する。
