@@ -34,9 +34,16 @@ import {
   summarizeSteadyState,
 } from "./availability.mjs";
 import {
+  G01_FIXTURE,
+  GRAPH_CASE_FREEZE,
   GRAPH_EVAL_VARIANTS,
+  K62_FREEZE,
   K64_CANDIDATE_REQUIREMENTS,
+  K64_FREEZE,
+  OBSERVATION_PREP_RECORD_PATH,
+  OBSERVATION_PREP_RECORD_SCHEMA,
 } from "./constants.mjs";
+import { s2Record } from "./s5b-test-support.mjs";
 import { REQUIRED_ARTIFACTS } from "../nir1-retrieval/standard-build-receipt.mjs";
 
 export const H40 = (c) => c.repeat(40);
@@ -1831,5 +1838,184 @@ export function completeSetupExtension({
         };
       },
     };
+  };
+}
+
+// ---- S4 の予行（DR-CP4-S4-1）-------------------------------------------------
+
+/** The S2 files of the rehearsal (the paths of `claude/cp4-s2-observation-prep`). */
+export const S4_REHEARSAL_FILES = Object.freeze({
+  prep: "evals/nir1-graph/observation-prep.v1.json",
+  setupAddendum: "evals/nir1-g01/setup-addendum.v1.json",
+  declarationAddendum: "evals/nir1-graph/declaration-addendum.v1.json",
+  traceEditing: "evals/nir1-graph/trace-editing.v1.json",
+  traceBrowsing: "evals/nir1-graph/trace-browsing.v1.json",
+  authorDeclaration:
+    "evals/nir1-graph/observation-prep-author-declaration.v1.json",
+  seedPinAddendum: "evals/nir1-graph/seed-pin-addendum.v1.json",
+});
+/** The declared Scene of G-02 base in the rehearsal's declaration addendum. */
+export const S4_REHEARSAL_G02_DECLARED = "g02-tamsin-first";
+const S4_REHEARSAL_K64_TEXT = "K6/4 frozen text (rehearsal)\n";
+
+function rehearsalProcedureText() {
+  const base = JSON.parse(
+    readFileSync(
+      path.join(REPO_ROOT, procedureFilePath(DEV_DRAFT_PROCEDURE_VERSION)),
+      "utf8",
+    ),
+  );
+  return `${JSON.stringify(
+    {
+      ...base,
+      version: "v1",
+      draft: false,
+      values: { ...base.values, r1r4WaitMs: 3_000 },
+      review: {
+        reviewer: "synthetic-reviewer",
+        reviewedAt: "2026-10-30",
+        record: "synthetic",
+      },
+    },
+    null,
+    2,
+  )}\n`;
+}
+
+/**
+ * S4 の予行（DR-CP4-S4-1）: a throwaway repository with the commits S4 makes
+ * (S2 `s4StagesRule`), in order:
+ *   ①   the frozen material (`freeze.v1.json`, the G-01 fixture, the K6/4
+ *        bytes of an injected T14-type descriptor);
+ *   S4a the frozen bytes (the addenda, the trace files, the author's
+ *        declaration, the K6/4 procedure v1);
+ *   S4b the S2 observation-prep (S2's shape, the minimal fields only: its
+ *        placeholders filled with S4a and the SHA-256, `boundFiles` the
+ *        array) and the contract's freeze record (`observation-prep-
+ *        freeze.v1.json`, `boundFiles` the object path → SHA-256 binding the
+ *        S2 file and the files S2 binds);
+ *   the candidate (a descendant of S4b).
+ * `refs/remotes/origin/master` is S4b. `s2(value, ctx)` and `freeze(value,
+ * ctx)` rewrite the two records before they are committed; `s4b` adds files
+ * to S4b; `candidate` adds files to the candidate commit (the mutations).
+ */
+export function s4RehearsalRepository({
+  s2 = (value) => value,
+  freeze = (value) => value,
+  s4b = {},
+  candidate = {},
+} = {}) {
+  const repo = mkdtempSync(path.join(tmpdir(), "cp4-s4-rehearsal-"));
+  testGit(repo, "init", "-q", "-b", "main");
+  const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+  const put = (file, bytes) => {
+    mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
+    writeFileSync(path.join(repo, file), bytes);
+    testGit(repo, "add", "--", file);
+  };
+  const commit = (message) => {
+    testGit(repo, "commit", "-q", "--no-gpg-sign", "-m", message);
+    return testGit(repo, "rev-parse", "HEAD");
+  };
+  for (const file of [GRAPH_CASE_FREEZE.path, G01_FIXTURE.path])
+    put(file, readFileSync(path.join(REPO_ROOT, file)));
+  put(K64_FREEZE.path, S4_REHEARSAL_K64_TEXT);
+  const base = commit("① frozen material");
+  const F = S4_REHEARSAL_FILES;
+  const frozenBytes = {
+    [F.setupAddendum]: `${JSON.stringify({ addendumId: "rehearsal-g01" })}\n`,
+    [F.declarationAddendum]: `${JSON.stringify({
+      declarations: [
+        {
+          caseId: "G-02",
+          variantId: "base",
+          sceneId: S4_REHEARSAL_G02_DECLARED,
+        },
+        { caseId: "G-07", variantId: "base", sceneId: "g07-pell-dock" },
+      ],
+    })}\n`,
+    [F.traceEditing]: `${JSON.stringify({ rehearsal: "editing" })}\n`,
+    [F.traceBrowsing]: `${JSON.stringify({ rehearsal: "browsing" })}\n`,
+    [F.authorDeclaration]: `${JSON.stringify({ rehearsal: "author" })}\n`,
+    [F.seedPinAddendum]: `${JSON.stringify({ rehearsal: "seed-pin" })}\n`,
+  };
+  for (const [file, bytes] of Object.entries(frozenBytes)) put(file, bytes);
+  put(procedureFilePath("v1"), rehearsalProcedureText());
+  const s4a = commit("S4a: the frozen bytes");
+  const digests = Object.fromEntries(
+    Object.entries(frozenBytes).map(([file, bytes]) => [file, sha(bytes)]),
+  );
+  const row = (file) => ({ path: file, commit: s4a, sha256: digests[file] });
+  const ctx = { base, s4a, digests };
+  const prepValue = s2(
+    {
+      schemaVersion: "nir1-cp4-observation-prep/1",
+      status: "frozen-before-observation",
+      samplePlan: { warmupPerArm: 5, measuredPerArm: 30 },
+      traces: [
+        { kind: "editing", ...row(F.traceEditing) },
+        { kind: "browsing", ...row(F.traceBrowsing) },
+      ],
+      diagnosticRuns: s2Record().diagnosticRuns,
+      boundFiles: [
+        row(F.setupAddendum),
+        row(F.declarationAddendum),
+        row(F.traceEditing),
+        row(F.traceBrowsing),
+        row(F.authorDeclaration),
+        row(F.seedPinAddendum),
+      ],
+      setupReadings: {
+        source: {
+          pins: [
+            { role: "rehearsal", commit: base, check: "ancestor", files: [] },
+          ],
+        },
+      },
+      placeholders: [],
+    },
+    ctx,
+  );
+  // A string is S2's bytes as they are (a file that is not JSON).
+  const prepBytes =
+    typeof prepValue === "string"
+      ? prepValue
+      : `${JSON.stringify(prepValue, null, 2)}\n`;
+  const freezeValue = freeze(
+    {
+      schemaVersion: OBSERVATION_PREP_RECORD_SCHEMA,
+      graphRuntimeObservedBeforeFreeze: false,
+      k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
+      graphCaseFreeze: { ...GRAPH_CASE_FREEZE },
+      g01Fixture: { path: G01_FIXTURE.path, sha256: G01_FIXTURE.sha256 },
+      boundFiles: { [F.prep]: sha(prepBytes), ...digests },
+    },
+    { ...ctx, prepSha256: sha(prepBytes) },
+  );
+  put(F.prep, prepBytes);
+  put(OBSERVATION_PREP_RECORD_PATH, `${JSON.stringify(freezeValue)}\n`);
+  for (const [file, bytes] of Object.entries(s4b)) put(file, bytes);
+  const s4bCommit = commit("S4b: fill the placeholders and freeze");
+  testGit(repo, "update-ref", "refs/remotes/origin/master", s4bCommit);
+  put("candidate.txt", "candidate\n");
+  for (const [file, bytes] of Object.entries(candidate)) put(file, bytes);
+  const head = commit("the candidate");
+  return {
+    repo,
+    base,
+    s4a,
+    s4b: s4bCommit,
+    head,
+    tree: testGit(repo, "rev-parse", "HEAD^{tree}"),
+    digests,
+    prepSha256: sha(prepBytes),
+    prepValue,
+    freezeValue,
+    k64Freeze: {
+      ...K64_FREEZE,
+      sha256: sha(S4_REHEARSAL_K64_TEXT),
+      freezeCommit: base,
+    },
+    cleanup: () => rmSync(repo, { recursive: true, force: true }),
   };
 }

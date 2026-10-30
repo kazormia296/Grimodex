@@ -7,8 +7,10 @@
 //      (b) は未測定、CP-4 の可用性は HOLD、project は差し替えない）。
 //   3. `admitGraphCaseRun`（凍結の path と sha256、観測前の commit、build の
 //      受領書、既定の addon、批准 5、K6/2 と K6/4 の head）。
-//   4. 観測前の記録の `traces`（S4 が commit と SHA-256 を埋める）を commit から
-//      読み直し、receipt の先頭（head.json）を測定の前に書く。
+//   4. S2 の observation-prep を候補の HEAD の blob として、S4 の freeze record の
+//      束縛の sha256 と照合して読み（`readAdmittedObservationPrep`、DR-CP4-S4-1）、
+//      その `traces`（S4 が commit と SHA-256 を埋める）を commit から読み直し、
+//      receipt の先頭（head.json）を測定の前に書く。
 //   5. trace の file（`loadTracePlan({ commit })`）、論理→runtime（setup の
 //      受領書の `typedRevisions` を含む）、試行の履歴、手順の file（正式の版）。
 // 測定の後の開示: 開始時の封印の読取（S2 `startSeal.receipt`）、Q の外の
@@ -23,7 +25,7 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import {
   admitGraphCaseRun,
-  collectObservationPrepFacts,
+  readAdmittedObservationPrep,
   readK64FreezeHead,
 } from "./admission.mjs";
 import {
@@ -372,7 +374,7 @@ export async function prepareFrozenTrace({
   const {
     readK64Head = readK64FreezeHead,
     admit = admitGraphCaseRun,
-    collectFacts = collectObservationPrepFacts,
+    readPrep = readAdmittedObservationPrep,
     readTraceHeads = readTraceFileHeads,
     loadPlan = loadTracePlan,
     loadProcedure = loadProcedureFile,
@@ -418,11 +420,22 @@ export async function prepareFrozenTrace({
       "setup",
       "the G-02 base setup ran on another candidate (commit or tree)",
     );
-  const record = collectFacts({
+  // DR-CP4-S4-1: S2's observation-prep, bound by the S4 freeze record (never
+  // the freeze record itself), for the commits the admission named.
+  const prep = readPrep({
     root,
-    commit: options["prep-commit"],
+    prepCommit: options["prep-commit"],
     candidateHead: "HEAD",
-  }).record;
+  });
+  if (
+    prep?.facts?.commit !== admission.head.observationPrep.commit ||
+    prep?.facts?.candidateHead !== admission.candidateHead
+  )
+    fail(
+      "prep",
+      "S2's observation-prep was read for another pre-observation commit or candidate head",
+    );
+  const record = prep.value;
   const traces = readTraceHeads({ root, traces: record?.traces });
   // K6/2 事前登録の凍結 2: the head is written before any measurement.
   const head = buildRunHead(
@@ -531,7 +544,9 @@ export const DECLARATION_ADDENDUM_PATH =
 /**
  * The trace project's declared Scene (S2 `project.setup`: the K2/4
  * declaration step, declarationPlace (ii)), read from the bound addendum at
- * its commit. `[precheck]` when the addendum or the G-02 base row is missing.
+ * its commit. `record` is S2's observation-prep (readAdmittedObservationPrep's
+ * `value`, whose array boundFiles the freeze record binds; DR-CP4-S4-1).
+ * `[precheck]` when the addendum or the G-02 base row is missing.
  */
 export function readTraceDeclaration({ root, record, read = readBoundFile }) {
   const bound = read({ root, record, file: DECLARATION_ADDENDUM_PATH });
