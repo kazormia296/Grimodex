@@ -59,11 +59,11 @@ export const OverlayRail = memo(function OverlayRail({
         onClick={() => toggleOverlay(side)}
         className={cn(
           "flex w-full select-none flex-col items-center gap-1.5 rounded-md border py-2 text-xs font-medium transition-colors",
-          "border-[color:color-mix(in_oklch,var(--attribution-unknown)_55%,transparent)]",
-          "text-[color:var(--attribution-unknown)]",
+          "border-[color:color-mix(in_oklch,var(--overlay-accent)_55%,transparent)]",
+          "text-[color:var(--overlay-accent)]",
           open
-            ? "bg-[color:color-mix(in_oklch,var(--attribution-unknown)_22%,transparent)]"
-            : "bg-[color:color-mix(in_oklch,var(--attribution-unknown)_9%,transparent)] hover:bg-[color:color-mix(in_oklch,var(--attribution-unknown)_16%,transparent)]",
+            ? "bg-[color:color-mix(in_oklch,var(--overlay-accent)_22%,transparent)]"
+            : "bg-[color:color-mix(in_oklch,var(--overlay-accent)_9%,transparent)] hover:bg-[color:color-mix(in_oklch,var(--overlay-accent)_16%,transparent)]",
         )}
       >
         <Icon className="h-4 w-4 shrink-0" aria-hidden />
