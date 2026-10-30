@@ -506,6 +506,18 @@
     {
       "at": "2026-10-31",
       "reason": "S4a(3)（S4 の builder、Claude の agent）: 独立 reviewer（S4 の最終関門）の P2-2 に従い、上の追補 #4〜#7 と S4 の revisions と、readingsChosenAfterDevObservation の 2 行（g01-retry-limit、sp-p4-ir-timeout-limit）を足した。値・測り方・閾値・fixture は変えていない。S4 の builder はこの行を書くために、cp4-decisions.md の DR-CP4-O-5 の (xi)、O-6、O-7、O-14、O-15、P-1、Q-1 の行（dev の実機の要約を含む）、S3 の 7 回目の記録と、追補 #4〜#7 の commit message を読んだ。凍結した G-case の材料での Graph の実行出力と .artifacts の下の出力は読んでいない。この版は S4b（S2 の S4 の placeholder を埋める commit）が束縛する bytes。"
+    },
+    {
+      "at": "2026-10-31",
+      "reason": "#757（DR-CP4-Q-1）の K＝6 の説明（「各側に IR を比べる sample を 24 以上残す最小数」）は、S3 の 7 回目の C2 の「最小の組数（24 以上）」の 24（組の数）と取り違えていた。側ごとの K＝6 だけでは組は最少 18 になる。#759（DR-CP4-Q-2）が IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）を足して直した（S4 の builder の記録）。"
+    },
+    {
+      "at": "2026-10-31",
+      "reason": "S2 追補 #8（DR-CP4-Q-2）: frozen-diagnostics.mjs と diagnostic-runner.mjs を #759 の pin（sp-p4-ir-pair-limit）へ移し、組の上限 SP_P4_IR_TIMEOUT_PAIR_LIMIT を pin の bytes から読んで照合し、C2 の本文と受領書の読みを組の上限に合わせ、P-S2-6 の帰属を書いた。あわせて S4 の最終関門の P3-1、P3-2、P3-3 を S2 と validator に入れた。この行は S4 の builder が書いた（追補の作者の申告ではない）。"
+    },
+    {
+      "at": "2026-10-31",
+      "reason": "S4a(4)（S4 の builder、Claude の agent）: addendum 3 件と trace 2 件の review.conditions の C2 の文を組の上限に合わせ、通知の記録の所在を contracts の bf5b3799（訂正の節を足した版）にした。readingsChosenAfterDevObservation の sp-p4-ir-timeout-limit を組の上限を含む読みに直し、この行と上の 2 行を足した。値・測り方・閾値・fixture は変えていない。S4 の builder はこのために cp4-decisions.md の DR-CP4-Q-2 の行、通知の記録の訂正の節と #759 の harness の差分を読んだ。凍結した G-case の材料での Graph の実行出力と .artifacts の下の出力は読んでいない。S4a(3) の行の「この版は S4b が束縛する bytes」は S4a(4) で改めたので、S4b が束縛するのはこの S4a(4) の版。"
     }
   ],
   "graphRuntimeOutputObservedScope": "graphRuntimeOutputObserved:false は、凍結した G-case の材料（G-01〜G-08 の凍結した fixture）での Graph の実行出力（receipt、log、net log、trace の実測値、Related Scenes の結果）を作者が見ていないことを指す。許された DR の本文にある dev fixture の実行の要約は decisionSummariesSeen に開示し、dev の観測の後に integrator や builder が選んだ読みは readingsChosenAfterDevObservation に挙げる。",
@@ -560,9 +572,9 @@
     },
     {
       "id": "sp-p4-ir-timeout-limit",
-      "reading": "diagnosticRuns SP-P4 の comparisonRule の ir-complete-pairs（C1〜C3）と、C2 の上限 K＝6（harness の SP_P4_IR_TIMEOUT_LIMIT）",
-      "chosenBy": "規則の改訂の提案は integrator（DR-CP4-O-7 の更新）、C1〜C3 の形は S3 の 7 回目（P-S2-6 の決定 e）、K＝6 は integrator（#757、DR-CP4-Q-1）。S3 は K の例として 3 と書いた",
-      "basis": "DR-CP4-O-7（dev で IR の期限切れが 35 sample のうち 2 件あり、current では SP-P4 が [precheck] になることを見た後の提案）と DR-CP4-Q-1（K は各側 24 以上を残す最小から決め、K＝3 は dev の期限切れの率〔2/35〕では止まりやすいので採らない）"
+      "reading": "diagnosticRuns SP-P4 の comparisonRule の ir-complete-pairs（C1〜C3）と、C2 の側ごとの上限 K＝6（harness の SP_P4_IR_TIMEOUT_LIMIT）と IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）",
+      "chosenBy": "規則の改訂の提案は integrator（DR-CP4-O-7 の更新）、C1〜C3 の形は S3 の 7 回目（P-S2-6 の決定 e）、側ごとの K＝6 は integrator（#757、DR-CP4-Q-1）、組の上限 6 は S3 の 7 回目の C2 の数値（組の最少 24）を満たすために integrator が足した（#759、DR-CP4-Q-2）。S3 は K の例として 3 と書いた",
+      "basis": "DR-CP4-O-7（dev で IR の期限切れが 35 sample のうち 2 件あり、current では SP-P4 が [precheck] になることを見た後の提案）、DR-CP4-Q-1（側ごとの K は各側 24 以上を残すことから決め、K＝3 は dev の期限切れの率〔2/35〕では止まりやすいので採らない）と DR-CP4-Q-2（組の上限 6 は S3 の数値そのもの。側ごとの K＝3 は dev の率で止まりやすいので引き続き採らない。止まる確率の目安を dev の率から見積もった）"
     }
   ]
 }
