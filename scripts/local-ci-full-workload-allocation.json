@@ -101,7 +101,7 @@
     },
     {
       "path": "electron/scripts/product-journey-harness.mjs",
-      "sha256": "14a6d88d053bc7d5161f110e47a82f22a9acd0dee2d12ce004c26e042166ca05"
+      "sha256": "572bcc4374ff72fa1701b1112d16e43090918faecd471b4fb284b617c0a6e92f"
     },
     {
       "path": "electron/scripts/product-journey-catalog.mjs",
