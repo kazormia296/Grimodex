@@ -7,7 +7,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { G01_CONTROL_GAP_MS, G01_SAMPLE_ATTEMPTS } from "./g01-negatives.mjs";
+import {
+  G01_CONTROL_ATTEMPTS,
+  G01_CONTROL_GAP_MS,
+  G01_SAMPLE_ATTEMPTS,
+} from "./g01-negatives.mjs";
 import { createG01NegativeRun, rowProbeOf } from "./g01-negative-run.mjs";
 import { TRACE_MAINTENANCE_SEAM } from "./trace-record.mjs";
 import { INDEX_KEYS } from "./workspace-db.mjs";
@@ -131,6 +135,11 @@ test("O-16: 起動の env に B-ROUTE の seam を重ね、graph の sample は�
   );
   const outcomes = ["graph-late", "graph-late", "graph-ready"];
   let takes = 0;
+  run.state.readCounters = async () => ({
+    begins: 0,
+    cacheHits: 0,
+    lateCached: 0,
+  });
   const taken = await run.askGraph(async () => {
     takes += 1;
     return {
@@ -245,7 +254,10 @@ test("O-16: 宣言の後は対照・mutation・Main の開き直し（新しい�
       opened += 1;
       events.push(`launch:${label}`);
       ws.set(INDEX_KEYS.b, 5, false);
-      return fakeSession(label, handlers, events);
+      const reopened = fakeSession(label, handlers, events);
+      reopened.addon = async () =>
+        JSON.stringify({ begins: 9, cacheHits: 0, lateCached: 0 });
+      return reopened;
     };
     const stopped = [];
     const session = await run.afterDeclaration({
@@ -257,6 +269,13 @@ test("O-16: 宣言の後は対照・mutation・Main の開き直し（新しい�
     });
     assert.equal(session.label, "measure-reopen-0");
     assert.equal(opened, 1);
+    // DR-CP4-Q-1 (P3-2): askGraph reads the counters of the reopened Main.
+    assert.deepEqual(await run.state.readCounters(), {
+      begins: 9,
+      cacheHits: 0,
+      lateCached: 0,
+    });
+    assert.equal(run.state.ids, IDS);
     assert.deepEqual(stopped, ["s0"]);
     assert.equal(run.state.control.status, "reached");
     assert.equal(run.state.step.spP1Recheck.status, "match");
@@ -312,4 +331,78 @@ test("O-16: 宣言の後は対照・mutation・Main の開き直し（新しい�
   } finally {
     rmSync(ws.dir, { recursive: true, force: true });
   }
+});
+
+test("Q-1（P3-2）: graph の sample の聞き直しは全回の owner の counter の差分と cached を記録し、捨てた take の返却 Scene を残す（判定には使わない）", async () => {
+  const run = createG01NegativeRun({ id: "K24-G01-N2", target: TARGET });
+  // counter を読めない（afterDeclaration の前）なら聞かない。
+  await assert.rejects(
+    run.askGraph(async () => ({ row: {} })),
+    /\[artifact\].*counter/u,
+  );
+  let reads = 0;
+  const steps = [
+    { begins: 0, cacheHits: 0, lateCached: 0 },
+    { begins: 1, cacheHits: 0, lateCached: 0 },
+    { begins: 1, cacheHits: 0, lateCached: 0 },
+    { begins: 2, cacheHits: 1, lateCached: 0 },
+  ];
+  run.state.readCounters = async () => steps[Math.min(reads++, 3)];
+  run.state.ids = IDS;
+  const outcomes = ["graph-late", "graph-ready"];
+  const finals = [
+    ["s-query", "s-mira"],
+    ["s-query", "s-other"],
+  ];
+  await run.askGraph(async () => ({
+    row: {
+      phase: "measured",
+      repeat: 3,
+      arm: "graph",
+      graph: { outcome: outcomes.shift() },
+      finalSceneIds: finals.shift(),
+      followUp: { child: null },
+    },
+  }));
+  const tries = run.state.graphTries[0];
+  assert.deepEqual([tries.phase, tries.repeat], ["measured", 3]);
+  assert.deepEqual(
+    tries.tries.map((row) => [row.counters, row.cached]),
+    [
+      [{ begins: 1, cacheHits: 0, lateCached: 0 }, false],
+      [{ begins: 1, cacheHits: 1, lateCached: 0 }, true],
+    ],
+  );
+  // 捨てた回に宣言の Scene（g01-mira）が出たかを開示する。
+  assert.deepEqual(tries.discarded[0].returnedSceneIds, [
+    "g01-query",
+    "g01-mira",
+  ]);
+  assert.equal(tries.discarded[0].declaredSceneReturned, true);
+  // 決まった sample の照合は捨てた回の Scene を使わない。
+  run.state.control = {
+    retry: { limit: G01_CONTROL_ATTEMPTS, gapMs: G01_CONTROL_GAP_MS },
+  };
+  assert.equal(
+    run
+      .assess({
+        samples: [
+          {
+            phase: "measured",
+            repeat: 3,
+            arm: "graph",
+            followUp: { parent: { seed: "e-orin" }, child: null },
+            graph: { outcome: "graph-ready" },
+            finalSceneIds: ["s-query"],
+            negativeRetry: {
+              limit: G01_SAMPLE_ATTEMPTS,
+              gapMs: G01_CONTROL_GAP_MS,
+            },
+          },
+        ],
+        ids: IDS,
+      })
+      .samples[0].returnedSceneIds.includes("g01-mira"),
+    false,
+  );
 });

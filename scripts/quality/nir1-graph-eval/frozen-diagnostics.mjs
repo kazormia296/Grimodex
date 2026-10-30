@@ -342,24 +342,33 @@ const parityOf = (row) =>
   Object.fromEntries(PARITY_FIELDS.map((field) => [field, row?.[field]]));
 
 /**
- * S2 `comparison`: the measured samples of one workspace agree with each
- * other; otherwise the comparison is undefined (`[precheck]`).
- */
-/**
- * DR-CP4-O-7: the SP-P4 comparison rules. `current` is S2's rule as frozen
- * (every measured sample, every field). `ir-complete-pairs` is the
- * integrator's proposed reading (S2／S3 confirm it first): R, the dense hits
- * and the sparse Scenes over every measured sample; R+IR and the supplement
- * slot only over the samples whose IR reached `ir-ready` (both sides, by
- * repeat, for the comparison); a side with no IR-complete measured sample is
- * `[precheck]`. No threshold is introduced.
+ * DR-CP4-O-7, DR-CP4-Q-1: the SP-P4 comparison rules. `current` is S2's rule
+ * as frozen (every measured sample, every field). `ir-complete-pairs`
+ * (DR-CP4-Q-1, S3 7th: not a loosening of SP/1 under C1〜C3): R, the dense
+ * hits and the sparse Scenes over every measured sample; R+IR and the
+ * supplement slot over every measured sample except those lost to the IR
+ * deadline alone (`spP4IrTimeoutExcluded`, C1; a pair leaves when either side
+ * is excluded); a side that excluded more than SP_P4_IR_TIMEOUT_LIMIT
+ * measured samples (C2), or a side or pair left with no compared IR, is
+ * `[precheck]`. Any other non-`ir-ready` outcome is compared as `current`
+ * does (a side whose IR is always unavailable stays SP-N7).
  */
 export const SP_P4_COMPARISON_RULES = Object.freeze([
   "current",
   "ir-complete-pairs",
 ]);
-/** The rule in force (switched only after S2／S3; S2 pins this commit). */
-export const SP_P4_COMPARISON_RULE = "current";
+/** The rule in force (DR-CP4-Q-1 C3; S2 pins this commit). */
+export const SP_P4_COMPARISON_RULE = "ir-complete-pairs";
+/**
+ * DR-CP4-Q-1 (C2): the most measured samples of one side of one variant that
+ * `ir-complete-pairs` may exclude as lost to the IR deadline, fixed before
+ * the observation. K = 6 of S2's measured 30 leaves at least 24 IR-compared
+ * samples per side (the minimum this rule accepts). With the dev deadline
+ * rate (2 of 35) a K of 3 would likely stop some side of the 8 variants; 6
+ * is set from the 24 minimum, not from the observed rate. If S2's measured
+ * count changes, this basis is revisited (`readDiagnosticPlan` checks 30).
+ */
+export const SP_P4_IR_TIMEOUT_LIMIT = 6;
 const R_SIDE_FIELDS = Object.freeze([
   "rSceneIds",
   "denseHitSceneIds",
@@ -367,6 +376,26 @@ const R_SIDE_FIELDS = Object.freeze([
 ]);
 const IR_SIDE_FIELDS = Object.freeze(["rIrSceneIds", "irSupplementSceneId"]);
 const irReady = (row) => row?.ir?.outcome === "ir-ready";
+
+/**
+ * DR-CP4-Q-1 (C1): a sample whose IR fields `ir-complete-pairs` may leave out
+ * of the comparison — its IR wait ended at the deadline (`timeout` with
+ * `deadlineExceeded: true`), R+IR is R (same order) and there is no
+ * supplement (only the IR contribution is missing; the condition of
+ * `explainSpP4Instability`'s `explained`, narrowed to `timeout`). Every other
+ * non-`ir-ready` sample (failed, ir-unavailable, cancelled, invalidated, a
+ * late failure, a timeout with a supplement) stays compared.
+ */
+export function spP4IrTimeoutExcluded(row) {
+  return (
+    row?.ir?.outcome === "timeout" &&
+    row?.ir?.deadlineExceeded === true &&
+    row?.irSupplementSceneId === null &&
+    Array.isArray(row?.rIrSceneIds) &&
+    Array.isArray(row?.rSceneIds) &&
+    sameList(row.rIrSceneIds, row.rSceneIds)
+  );
+}
 
 function checkRule(rule) {
   if (!SP_P4_COMPARISON_RULES.includes(rule))
@@ -390,6 +419,13 @@ function firstDifference(rows, fields) {
   };
 }
 
+/**
+ * S2 `comparison`: the measured samples of one workspace agree with each
+ * other; otherwise the comparison is undefined (`[precheck]`). Under
+ * `ir-complete-pairs` the IR fields agree over the samples not excluded by
+ * C1, and more than SP_P4_IR_TIMEOUT_LIMIT excluded samples, or none left
+ * compared, is `[precheck]` (C2).
+ */
 export function assertSpP4WorkspaceStable(
   samples,
   label,
@@ -399,27 +435,46 @@ export function assertSpP4WorkspaceStable(
   const rows = measuredOf(samples);
   if (rows.length === 0) fail("stable", `${label}: no measured sample`);
   const ready = rows.filter(irReady);
-  if (rule === "ir-complete-pairs" && ready.length === 0)
-    fail(
-      "stable",
-      `${label}: no measured sample reached ir-ready; the IR contribution cannot be compared`,
-    );
-  const differs =
-    rule === "current"
-      ? firstDifference(rows, PARITY_FIELDS)
-      : (firstDifference(rows, R_SIDE_FIELDS) ??
-        firstDifference(ready, IR_SIDE_FIELDS));
-  if (differs)
-    fail(
-      "stable",
-      `${label}: measured ${differs.repeat} differs from measured ${differs.reference} in the same workspace (${differs.fields.join(", ")}); the comparison is not defined`,
-    );
-  return {
+  const base = {
     rule,
     measured: rows.length,
     irReady: ready.length,
     irNotReady: rows.length - ready.length,
   };
+  if (rule === "current") {
+    const differs = firstDifference(rows, PARITY_FIELDS);
+    if (differs) unstable(label, differs);
+    return base;
+  }
+  const compared = rows.filter((row) => !spP4IrTimeoutExcluded(row));
+  const excluded = rows.length - compared.length;
+  if (excluded > SP_P4_IR_TIMEOUT_LIMIT)
+    fail(
+      "stable",
+      `${label}: ${excluded} of ${rows.length} measured samples lost the IR to the deadline, more than ${SP_P4_IR_TIMEOUT_LIMIT} (DR-CP4-Q-1 C2); the comparison is not defined`,
+    );
+  if (compared.length === 0)
+    fail(
+      "stable",
+      `${label}: no measured sample's IR is compared (all lost to the deadline); the IR contribution cannot be compared`,
+    );
+  const differs =
+    firstDifference(rows, R_SIDE_FIELDS) ??
+    firstDifference(compared, IR_SIDE_FIELDS);
+  if (differs) unstable(label, differs);
+  return {
+    ...base,
+    irCompared: compared.length,
+    irTimeoutExcluded: excluded,
+    irTimeoutLimit: SP_P4_IR_TIMEOUT_LIMIT,
+  };
+}
+
+function unstable(label, differs) {
+  fail(
+    "stable",
+    `${label}: measured ${differs.repeat} differs from measured ${differs.reference} in the same workspace (${differs.fields.join(", ")}); the comparison is not defined`,
+  );
 }
 
 /**
@@ -436,9 +491,19 @@ export function spP4IrDisclosure(samples) {
       notReady: of.filter((row) => row?.ir?.outcome !== "ir-ready").length,
     };
   };
+  // DR-CP4-Q-1 (C2): the measured samples `ir-complete-pairs` excludes as
+  // lost to the deadline, their rate, and the fixed limit.
+  const measured = count("measured");
+  const timeoutExcluded = measuredOf(rows).filter(spP4IrTimeoutExcluded).length;
   return {
     warmup: count("warmup"),
-    measured: count("measured"),
+    measured: {
+      ...measured,
+      timeoutExcluded,
+      timeoutExcludedRate:
+        measured.samples > 0 ? timeoutExcluded / measured.samples : null,
+      timeoutLimit: SP_P4_IR_TIMEOUT_LIMIT,
+    },
     notReadySamples: rows
       .filter((row) => row?.ir?.outcome !== "ir-ready")
       .map((row) => ({
@@ -513,7 +578,8 @@ export function compareSpP4Variant({
   const right = measuredOf(withSide);
   const differences = [];
   const count = Math.max(left.length, right.length);
-  let irPairs = 0;
+  let readyPairs = 0;
+  let comparedPairs = 0;
   for (let at = 0; at < count; at++) {
     const result = compareSeedPinParity({
       caseId: variantKey.split("/")[0],
@@ -521,14 +587,15 @@ export function compareSpP4Variant({
       before: left[at] ? parityOf(left[at]) : null,
       after: right[at] ? parityOf(right[at]) : null,
     });
-    // ir-complete-pairs: the IR fields count only where both sides' IR
-    // reached ir-ready; R's fields always count.
-    const pairReady = irReady(left[at]) && irReady(right[at]);
-    if (pairReady) irPairs += 1;
-    const ignored =
-      rule === "ir-complete-pairs" && !pairReady
-        ? new Set(IR_SIDE_FIELDS)
-        : new Set();
+    if (irReady(left[at]) && irReady(right[at])) readyPairs += 1;
+    // ir-complete-pairs (DR-CP4-Q-1 C1): the IR fields leave the pair only
+    // when a side's sample was lost to the deadline alone; R's fields always
+    // count.
+    const pairCompared =
+      rule === "current" ||
+      (!spP4IrTimeoutExcluded(left[at]) && !spP4IrTimeoutExcluded(right[at]));
+    if (pairCompared) comparedPairs += 1;
+    const ignored = pairCompared ? new Set() : new Set(IR_SIDE_FIELDS);
     const fields = [
       ...result.differences.map((row) => row.field),
       ...result.missing.map((row) => row.split(".").at(-1)),
@@ -536,18 +603,36 @@ export function compareSpP4Variant({
     if (fields.length > 0 || !left[at] || !right[at])
       differences.push({ index: at, fields: [...new Set(fields)] });
   }
-  const noPair = rule === "ir-complete-pairs" && irPairs === 0;
+  const timeouts = {
+    without: left.filter(spP4IrTimeoutExcluded).length,
+    with: right.filter(spP4IrTimeoutExcluded).length,
+  };
+  // C2: a side over the limit, or no pair whose IR is compared, leaves the
+  // comparison undefined ([precheck], never SP-N7 nor passed).
+  const undefinedReason =
+    rule === "current"
+      ? null
+      : Math.max(timeouts.without, timeouts.with) > SP_P4_IR_TIMEOUT_LIMIT
+        ? "ir-timeout-limit"
+        : comparedPairs === 0
+          ? "no-ir-complete-pair"
+          : null;
   return {
     variantKey,
     rule,
     compared: count,
-    irCompletePairs: irPairs,
+    // Disclosed: the pairs whose IR both reached ir-ready.
+    irCompletePairs: readyPairs,
+    irComparedPairs: comparedPairs,
+    ...(rule === "current"
+      ? {}
+      : { irTimeouts: timeouts, irTimeoutLimit: SP_P4_IR_TIMEOUT_LIMIT }),
     same:
       differences.length === 0 &&
       left.length === right.length &&
       count > 0 &&
-      !noPair,
-    ...(noPair ? { undefinedReason: "no-ir-complete-pair" } : {}),
+      undefinedReason === null,
+    ...(undefinedReason ? { undefinedReason } : {}),
     differences,
   };
 }
@@ -1001,6 +1086,16 @@ export function readSpP4Gate({
     fail("gate", "the SP-P4 run's candidate was not clean");
   if ((receipt.design?.rule ?? "current") !== checkRule(rule))
     fail("gate", "the SP-P4 receipt used another comparison rule");
+  // DR-CP4-Q-1 (C2): the deadline limit the receipt was judged under is the
+  // one fixed here.
+  if (
+    rule === "ir-complete-pairs" &&
+    receipt.design?.irTimeoutLimit !== SP_P4_IR_TIMEOUT_LIMIT
+  )
+    fail(
+      "gate",
+      `the SP-P4 receipt's IR deadline limit is not ${SP_P4_IR_TIMEOUT_LIMIT}`,
+    );
   const variants = (receipt.variants ?? []).map((row) => {
     const sides = {};
     for (const side of SP_P4.sides) {
