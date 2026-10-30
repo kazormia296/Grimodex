@@ -1,0 +1,3531 @@
+{
+  "schema": "nir1-cp4-r5-check-record/1",
+  "run": "r5-seed-pin-check",
+  "runId": "7ad99f81-fb68-48cb-9d57-7433db9b825b",
+  "status": "match",
+  "contracts": {
+    "sp1": {
+      "draftRef": "nir1-graph-case-seed-pin-proposal/1",
+      "contractId": "graph-case-seed-pin-setup",
+      "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547"
+    }
+  },
+  "candidate": {
+    "commit": "7a2669ead5262cc1a1126a7ab52bf808afeb98ff",
+    "tree": "003714c067e6f45091d73d6c7ce1dfecb3c23254",
+    "clean": true
+  },
+  "launch": {
+    "native": "product",
+    "nativePath": "electron/native/grimodex-node/grimodex-node.node",
+    "nativeSha256": "07a188878c082579e584aacceae8b47d8da007a449870afa17afa0aff8a3c9e2",
+    "productReceiptSha256": "f4ebbaf398bcf9212e08c9a6b54458718e9b1dac20dcd5022a6af0bc7e9231ad",
+    "build": {
+      "dist/index.html": "c632018d50c59c285a73b9aa8782c9a981056f845162fdbfada8c6aa35c560aa",
+      "dist-electron/main.cjs": "772b218009509fe34b040f6d32e2e737d2ec305b106cc12910a7718decc83761",
+      "dist-electron/preload.cjs": "9c37d32af100699a97fbd8ce068fb273f5e9387d9155cc471173add03ca489a8",
+      "electron/native/grimodex-node/grimodex-node.node": "07a188878c082579e584aacceae8b47d8da007a449870afa17afa0aff8a3c9e2"
+    },
+    "productMain": {
+      "path": "dist-electron/main.cjs",
+      "sha256": "772b218009509fe34b040f6d32e2e737d2ec305b106cc12910a7718decc83761"
+    },
+    "rendererBundleSha256": "38ee2ce7be06fe2e6f2b935152702873dbc94bceec8d015699f85748113d2a9b",
+    "observerSha256": "4b35fbfb52351933751e5bf92b7644a72363c8557d38dbe40d7187709dc8074b",
+    "admission": {
+      "dryRun": true,
+      "graphArm": "not-activated"
+    }
+  },
+  "scope": [
+    "setup-through-seed-pin-step",
+    "product-db-read"
+  ],
+  "notStarted": [
+    "graph-arm",
+    "rir-query",
+    "evaluation-run",
+    "diagnostic",
+    "trace",
+    "v10-ready-probe",
+    "maintenance-enable",
+    "setup-timeline",
+    "typed-revision-prepare",
+    "b-graph-index-build",
+    "chronicle-index-build",
+    "index-state-record"
+  ],
+  "workspace": {
+    "disposition": "discard",
+    "reuseFor": [],
+    "recheckInLaterPhases": [
+      "sp-p1",
+      "sp-p3-r5"
+    ],
+    "retainUntil": "k64-freeze-record-pushed"
+  },
+  "startedAt": "2026-10-27T09:07:09.878Z",
+  "finishedAt": "2026-10-27T09:08:27.763Z",
+  "gate": {
+    "status": "match",
+    "rows": [
+      {
+        "caseId": "G-01",
+        "variantId": "v1",
+        "status": "match",
+        "productSeed": "0e567280-69bd-41ad-a0c5-d56bb4f62cec",
+        "expectedSeed": "0e567280-69bd-41ad-a0c5-d56bb4f62cec",
+        "setupReceiptSha256": "b22f5c31ae5d0dba047e31d0a630b3155aebc7db20073c0d2a823ebe1bdb59e6",
+        "db": ".artifacts/cp4/r5-1027/setup/G-01/v1/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-02",
+        "variantId": "base",
+        "status": "match",
+        "productSeed": "1d3c0aa1-4a2b-4424-b41e-c9a9047c915b",
+        "expectedSeed": "1d3c0aa1-4a2b-4424-b41e-c9a9047c915b",
+        "setupReceiptSha256": "61e92a4b21d5c916bfc3cf6d8e42248c19d42fa299d89b2086d1dd9d401966b2",
+        "db": ".artifacts/cp4/r5-1027/setup/G-02/base/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-03",
+        "variantId": "base",
+        "status": "match",
+        "productSeed": "844d1443-cf0b-4718-a42e-7933674a0fc8",
+        "expectedSeed": "844d1443-cf0b-4718-a42e-7933674a0fc8",
+        "setupReceiptSha256": "0f6e24ab218905087e37ae7bdba1eb6c0693f485b38448727ab5d8ebc573b47d",
+        "db": ".artifacts/cp4/r5-1027/setup/G-03/base/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-03",
+        "variantId": "frontier-exceeded",
+        "status": "match",
+        "productSeed": "dffd488e-3acb-45bf-9f59-545b0de1024c",
+        "expectedSeed": "dffd488e-3acb-45bf-9f59-545b0de1024c",
+        "setupReceiptSha256": "2149809186a9934ac9747967e9ab9703e46676baedc6648f0da204a8309e9f27",
+        "db": ".artifacts/cp4/r5-1027/setup/G-03/frontier-exceeded/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-04",
+        "variantId": "base",
+        "status": "match",
+        "productSeed": "34f5da40-ae84-4f63-a963-704ab903b1bf",
+        "expectedSeed": "34f5da40-ae84-4f63-a963-704ab903b1bf",
+        "setupReceiptSha256": "a3fb4b280d8bed8eb8cf0660bd6a13e15788a5935c505e0af8bcdf5f695fad9e",
+        "db": ".artifacts/cp4/r5-1027/setup/G-04/base/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-05",
+        "variantId": "base",
+        "status": "match",
+        "productSeed": "43ac1307-9876-4bc1-89d0-30932ce12fcb",
+        "expectedSeed": "43ac1307-9876-4bc1-89d0-30932ce12fcb",
+        "setupReceiptSha256": "dc9821f9cf5f3530e7e7d2acf6d0beb9fba8c4612067aaaad825dc3c50acbdbb",
+        "db": ".artifacts/cp4/r5-1027/setup/G-05/base/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-06",
+        "variantId": "base",
+        "status": "match",
+        "productSeed": "00ee2aa9-9e6b-4585-9f31-85dc7861ae2e",
+        "expectedSeed": "00ee2aa9-9e6b-4585-9f31-85dc7861ae2e",
+        "setupReceiptSha256": "d788ad3c476e9d18ddd5d86d78480a590f15e8d75d39f5888ee8488331bc3603",
+        "db": ".artifacts/cp4/r5-1027/setup/G-06/base/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-07",
+        "variantId": "base",
+        "status": "match",
+        "productSeed": "8a9593b6-9a73-464d-98ed-a74395348e0e",
+        "expectedSeed": "8a9593b6-9a73-464d-98ed-a74395348e0e",
+        "setupReceiptSha256": "117d5164ba633524ca62313ff2bc432805a9b79f205178a99844afc20b4659a2",
+        "db": ".artifacts/cp4/r5-1027/setup/G-07/base/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-08",
+        "variantId": "base-usable",
+        "status": "match",
+        "productSeed": "54cccab3-9c3f-48fb-b10e-ed6430406ce8",
+        "expectedSeed": "54cccab3-9c3f-48fb-b10e-ed6430406ce8",
+        "setupReceiptSha256": "bf1232b50650e95fab565c5adc9a29998428a09edbecf0e86491c19cfd5ad321",
+        "db": ".artifacts/cp4/r5-1027/setup/G-08/base-usable/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-08",
+        "variantId": "graph-index-unusable",
+        "status": "match",
+        "productSeed": "0faf00bf-8f78-4a09-bfc9-5858cd7e6807",
+        "expectedSeed": "0faf00bf-8f78-4a09-bfc9-5858cd7e6807",
+        "setupReceiptSha256": "99303b2b158bcb7763b18a4fbfea681360523296c6a5bfec4c0c7a968e4e35fd",
+        "db": ".artifacts/cp4/r5-1027/setup/G-08/graph-index-unusable/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-08",
+        "variantId": "graph-recovered",
+        "status": "match",
+        "productSeed": "80b025cd-d658-489e-8eb4-399361630416",
+        "expectedSeed": "80b025cd-d658-489e-8eb4-399361630416",
+        "setupReceiptSha256": "2c0db4614c2d5f8f2ac6bac9baf5a41c12432068df8eb5843fc02456851d3365",
+        "db": ".artifacts/cp4/r5-1027/setup/G-08/graph-recovered/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-08",
+        "variantId": "chronicle-index-unusable",
+        "status": "match",
+        "productSeed": "d50da356-dcc9-4a2f-bbdc-7605edd9b9d0",
+        "expectedSeed": "d50da356-dcc9-4a2f-bbdc-7605edd9b9d0",
+        "setupReceiptSha256": "65838d0c6ac0c52d9e8b4cc0643c8395381d9806c11128ce2b8d021996cbd19f",
+        "db": ".artifacts/cp4/r5-1027/setup/G-08/chronicle-index-unusable/cold-workspace/grimodex.db"
+      },
+      {
+        "caseId": "G-08",
+        "variantId": "both-indexes-unusable",
+        "status": "match",
+        "productSeed": "29ce3dba-5099-4c1a-a754-41233d6ce3ba",
+        "expectedSeed": "29ce3dba-5099-4c1a-a754-41233d6ce3ba",
+        "setupReceiptSha256": "f5105de65afb4eeca306a1a4e8d27624a406d92ec5eed800e3a2c40b4e372b34",
+        "db": ".artifacts/cp4/r5-1027/setup/G-08/both-indexes-unusable/cold-workspace/grimodex.db"
+      }
+    ]
+  },
+  "variants": [
+    {
+      "caseId": "G-01",
+      "variantId": "v1",
+      "variantKey": "G-01/v1",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-01/v1/setup-receipt.json",
+        "sha256": "b22f5c31ae5d0dba047e31d0a630b3155aebc7db20073c0d2a823ebe1bdb59e6"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "scope-registry",
+        "scene-scope",
+        "entities",
+        "relations",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g01-query",
+        "runtime": "e019aade-4eca-48ee-b4cb-26acfd1d823f"
+      },
+      "seed": {
+        "logical": "g01-orin",
+        "runtime": "0e567280-69bd-41ad-a0c5-d56bb4f62cec"
+      },
+      "projectId": "84b42279-9752-4907-9287-0dee2b989c6b",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-01/v1/cold-workspace/grimodex.db",
+        "sha256": "dea84f6b332ebf4e9dc7bab591f609bbfb2d119731711be9d141db4ef53b0556"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "0e567280-69bd-41ad-a0c5-d56bb4f62cec",
+          "createdAt": "2026-10-27T09:07:14.618Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "0e567280-69bd-41ad-a0c5-d56bb4f62cec",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:07:14.618Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:14.407958018+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "7ccef1f5-2d6b-4b05-99f0-de58dc2f0461",
+              "entryId": "489d8263-9c42-4954-b35e-85b5674529ff"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "83b21cb5-bd5c-45a9-9362-0d854230c70d",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"timeline:main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"worldline:prime\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer:manuscript\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"timeline:main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"worldline:prime\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer:manuscript\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:319e096a110c636900499499b041b3cb8e582fb690a3b0bcaaccf46f3815be17",
+            "updated_at": "2026-10-27T09:07:14.538Z"
+          },
+          "treeOrder": [
+            [
+              "5a4e49f3-b6c3-44a5-8f3d-5f894f541a65",
+              "a43f68c6-b0b4-4bef-83f2-edbb519b7a76",
+              "a0"
+            ],
+            [
+              "7ccef1f5-2d6b-4b05-99f0-de58dc2f0461",
+              null,
+              "a2"
+            ],
+            [
+              "a43f68c6-b0b4-4bef-83f2-edbb519b7a76",
+              null,
+              "a3"
+            ],
+            [
+              "b00391ec-1095-4f5f-935e-37ad199cf1e7",
+              null,
+              "a0"
+            ],
+            [
+              "d99c1585-12d6-454d-879a-cfff3c4c8517",
+              null,
+              "a1"
+            ],
+            [
+              "e019aade-4eca-48ee-b4cb-26acfd1d823f",
+              null,
+              "a4"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:9d18978f0932945a624963aad2562c1b6f6b5d913da208f94d39c0c685e99387",
+            "updatedAt": "2026-10-27T09:07:14.445Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:14.407958018+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "0e567280-69bd-41ad-a0c5-d56bb4f62cec",
+              "createdAt": "2026-10-27T09:07:14.618Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "7ccef1f5-2d6b-4b05-99f0-de58dc2f0461",
+              "entryId": "489d8263-9c42-4954-b35e-85b5674529ff"
+            },
+            {
+              "sceneId": "e019aade-4eca-48ee-b4cb-26acfd1d823f",
+              "entryId": "0e567280-69bd-41ad-a0c5-d56bb4f62cec"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "83b21cb5-bd5c-45a9-9362-0d854230c70d",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"timeline:main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"worldline:prime\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer:manuscript\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"timeline:main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"worldline:prime\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer:manuscript\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:319e096a110c636900499499b041b3cb8e582fb690a3b0bcaaccf46f3815be17",
+            "updated_at": "2026-10-27T09:07:14.538Z"
+          },
+          "treeOrder": [
+            [
+              "5a4e49f3-b6c3-44a5-8f3d-5f894f541a65",
+              "a43f68c6-b0b4-4bef-83f2-edbb519b7a76",
+              "a0"
+            ],
+            [
+              "7ccef1f5-2d6b-4b05-99f0-de58dc2f0461",
+              null,
+              "a2"
+            ],
+            [
+              "a43f68c6-b0b4-4bef-83f2-edbb519b7a76",
+              null,
+              "a3"
+            ],
+            [
+              "b00391ec-1095-4f5f-935e-37ad199cf1e7",
+              null,
+              "a0"
+            ],
+            [
+              "d99c1585-12d6-454d-879a-cfff3c4c8517",
+              null,
+              "a1"
+            ],
+            [
+              "e019aade-4eca-48ee-b4cb-26acfd1d823f",
+              null,
+              "a4"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:9d18978f0932945a624963aad2562c1b6f6b5d913da208f94d39c0c685e99387",
+            "updatedAt": "2026-10-27T09:07:14.445Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 5,
+        "folders": 1,
+        "entities": 2,
+        "relations": 1,
+        "foreshadows": 0,
+        "pins": 2,
+        "explicitSceneScopes": 5,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-02",
+      "variantId": "base",
+      "variantKey": "G-02/base",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-02/base/setup-receipt.json",
+        "sha256": "61e92a4b21d5c916bfc3cf6d8e42248c19d42fa299d89b2086d1dd9d401966b2"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g02-query",
+        "runtime": "840bc838-4aac-4d4e-9dc6-6d85ae454240"
+      },
+      "seed": {
+        "logical": "g02-orla",
+        "runtime": "1d3c0aa1-4a2b-4424-b41e-c9a9047c915b"
+      },
+      "projectId": "b2dd1067-c832-4825-bf61-36bdc575d416",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-02/base/cold-workspace/grimodex.db",
+        "sha256": "ce3dee197c9493e32cc2bebf6689d38cc84c4699e00aa8fa35b734ee7ad64d12"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "1d3c0aa1-4a2b-4424-b41e-c9a9047c915b",
+          "createdAt": "2026-10-27T09:07:20.425Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "1d3c0aa1-4a2b-4424-b41e-c9a9047c915b",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:07:20.425Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:19.850166693+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "6e42dd33-e420-4b7e-af03-0302c717e328",
+              "entryId": "b067b6d4-7842-442b-96bc-0667be4a93b8"
+            },
+            {
+              "sceneId": "79ee406d-8a6e-404f-bea1-898a87fd40ec",
+              "entryId": "a6361d67-d6de-4a0d-87a0-fe2516191641"
+            },
+            {
+              "sceneId": "dc7616be-33a7-4a94-8495-6a37ca48d23d",
+              "entryId": "a6361d67-d6de-4a0d-87a0-fe2516191641"
+            },
+            {
+              "sceneId": "dc7616be-33a7-4a94-8495-6a37ca48d23d",
+              "entryId": "f6a4c244-a375-47db-bb41-1b033369e9f9"
+            },
+            {
+              "sceneId": "e245d9e9-13a9-4540-aa9e-c2bd72cb4c7e",
+              "entryId": "e07f7790-900b-442a-b64b-29daaf442b2a"
+            },
+            {
+              "sceneId": "e4c9f2c9-6aa7-4709-b529-f84c7f5df322",
+              "entryId": "f6a4c244-a375-47db-bb41-1b033369e9f9"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "c371be31-6096-41da-aea1-a79ac781e718",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:35fdf443d912b33ce947afd97a6372422b4c0ad432055e159ff100e5a3174b4f",
+            "updated_at": "2026-10-27T09:07:20.359Z"
+          },
+          "treeOrder": [
+            [
+              "2b01241e-c3a7-4db2-9b11-a97a7307afd8",
+              null,
+              "a0"
+            ],
+            [
+              "6e42dd33-e420-4b7e-af03-0302c717e328",
+              "a40ec09e-8765-4b98-acb5-db53eaff410e",
+              "a0"
+            ],
+            [
+              "79ee406d-8a6e-404f-bea1-898a87fd40ec",
+              null,
+              "a5"
+            ],
+            [
+              "840bc838-4aac-4d4e-9dc6-6d85ae454240",
+              null,
+              "a7"
+            ],
+            [
+              "a40ec09e-8765-4b98-acb5-db53eaff410e",
+              null,
+              "a2"
+            ],
+            [
+              "ae415974-8b11-4007-88cc-c921038f6832",
+              null,
+              "a6"
+            ],
+            [
+              "dc7616be-33a7-4a94-8495-6a37ca48d23d",
+              null,
+              "a1"
+            ],
+            [
+              "e245d9e9-13a9-4540-aa9e-c2bd72cb4c7e",
+              null,
+              "a3"
+            ],
+            [
+              "e4c9f2c9-6aa7-4709-b529-f84c7f5df322",
+              null,
+              "a4"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:19.979Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:19.850166693+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "1d3c0aa1-4a2b-4424-b41e-c9a9047c915b",
+              "createdAt": "2026-10-27T09:07:20.425Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "6e42dd33-e420-4b7e-af03-0302c717e328",
+              "entryId": "b067b6d4-7842-442b-96bc-0667be4a93b8"
+            },
+            {
+              "sceneId": "79ee406d-8a6e-404f-bea1-898a87fd40ec",
+              "entryId": "a6361d67-d6de-4a0d-87a0-fe2516191641"
+            },
+            {
+              "sceneId": "840bc838-4aac-4d4e-9dc6-6d85ae454240",
+              "entryId": "1d3c0aa1-4a2b-4424-b41e-c9a9047c915b"
+            },
+            {
+              "sceneId": "dc7616be-33a7-4a94-8495-6a37ca48d23d",
+              "entryId": "a6361d67-d6de-4a0d-87a0-fe2516191641"
+            },
+            {
+              "sceneId": "dc7616be-33a7-4a94-8495-6a37ca48d23d",
+              "entryId": "f6a4c244-a375-47db-bb41-1b033369e9f9"
+            },
+            {
+              "sceneId": "e245d9e9-13a9-4540-aa9e-c2bd72cb4c7e",
+              "entryId": "e07f7790-900b-442a-b64b-29daaf442b2a"
+            },
+            {
+              "sceneId": "e4c9f2c9-6aa7-4709-b529-f84c7f5df322",
+              "entryId": "f6a4c244-a375-47db-bb41-1b033369e9f9"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "c371be31-6096-41da-aea1-a79ac781e718",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:35fdf443d912b33ce947afd97a6372422b4c0ad432055e159ff100e5a3174b4f",
+            "updated_at": "2026-10-27T09:07:20.359Z"
+          },
+          "treeOrder": [
+            [
+              "2b01241e-c3a7-4db2-9b11-a97a7307afd8",
+              null,
+              "a0"
+            ],
+            [
+              "6e42dd33-e420-4b7e-af03-0302c717e328",
+              "a40ec09e-8765-4b98-acb5-db53eaff410e",
+              "a0"
+            ],
+            [
+              "79ee406d-8a6e-404f-bea1-898a87fd40ec",
+              null,
+              "a5"
+            ],
+            [
+              "840bc838-4aac-4d4e-9dc6-6d85ae454240",
+              null,
+              "a7"
+            ],
+            [
+              "a40ec09e-8765-4b98-acb5-db53eaff410e",
+              null,
+              "a2"
+            ],
+            [
+              "ae415974-8b11-4007-88cc-c921038f6832",
+              null,
+              "a6"
+            ],
+            [
+              "dc7616be-33a7-4a94-8495-6a37ca48d23d",
+              null,
+              "a1"
+            ],
+            [
+              "e245d9e9-13a9-4540-aa9e-c2bd72cb4c7e",
+              null,
+              "a3"
+            ],
+            [
+              "e4c9f2c9-6aa7-4709-b529-f84c7f5df322",
+              null,
+              "a4"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:19.979Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 8,
+        "folders": 1,
+        "entities": 5,
+        "relations": 4,
+        "foreshadows": 0,
+        "pins": 7,
+        "explicitSceneScopes": 8,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-03",
+      "variantId": "base",
+      "variantKey": "G-03/base",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-03/base/setup-receipt.json",
+        "sha256": "0f6e24ab218905087e37ae7bdba1eb6c0693f485b38448727ab5d8ebc573b47d"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g03-query",
+        "runtime": "b428cbce-545f-472c-925d-6e3cc9745adc"
+      },
+      "seed": {
+        "logical": "g03-wren",
+        "runtime": "844d1443-cf0b-4718-a42e-7933674a0fc8"
+      },
+      "projectId": "97762ee1-0fd4-489a-964e-84b8f3e95166",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-03/base/cold-workspace/grimodex.db",
+        "sha256": "30b59c720ce3cccc945b695e1eb334af6beeb54a7eaca29cc9e0e22fd16997c5"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "844d1443-cf0b-4718-a42e-7933674a0fc8",
+          "createdAt": "2026-10-27T09:07:28.049Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "844d1443-cf0b-4718-a42e-7933674a0fc8",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:07:28.049Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:25.384465125+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "129604fe-540b-4b65-8d37-a1742cdb0978",
+              "entryId": "02419f7d-663c-4c8e-846c-eed876f5a18c"
+            },
+            {
+              "sceneId": "b3344ed3-dba2-4c55-b9dc-8f444a5ae0bd",
+              "entryId": "009623b5-131c-43f4-aac4-8037db1437cf"
+            },
+            {
+              "sceneId": "c3625f2e-a688-4997-82d4-b9ee28b7701c",
+              "entryId": "009623b5-131c-43f4-aac4-8037db1437cf"
+            },
+            {
+              "sceneId": "d61238e1-12d8-49dc-aef7-10cf0572a663",
+              "entryId": "8f46624b-ade3-4966-bb9d-4d634b711a46"
+            },
+            {
+              "sceneId": "dd5be95d-2784-4166-9d1a-9ba72f32e09f",
+              "entryId": "02419f7d-663c-4c8e-846c-eed876f5a18c"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "f7ebefa8-6a7f-4655-9956-c1f85bd8f211",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:c4a86249aa055bd1c3822966cc4d8148a4fbf08a4a16607aaf4a66bb05eee7cd",
+            "updated_at": "2026-10-27T09:07:27.991Z"
+          },
+          "treeOrder": [
+            [
+              "129604fe-540b-4b65-8d37-a1742cdb0978",
+              null,
+              "a9"
+            ],
+            [
+              "1c635e27-dcd0-4069-b613-03d9e8224939",
+              "dc9c62c7-5678-4c6e-990d-ca3434694fc0",
+              "a0"
+            ],
+            [
+              "728a4852-ba08-46d8-ac5f-8ef43e7ebb97",
+              null,
+              "aB"
+            ],
+            [
+              "91bb5312-fecf-411c-b36c-0c7c7f129b95",
+              null,
+              "a4"
+            ],
+            [
+              "b3344ed3-dba2-4c55-b9dc-8f444a5ae0bd",
+              null,
+              "aA"
+            ],
+            [
+              "b428cbce-545f-472c-925d-6e3cc9745adc",
+              null,
+              "aC"
+            ],
+            [
+              "c3625f2e-a688-4997-82d4-b9ee28b7701c",
+              null,
+              "a3"
+            ],
+            [
+              "d51af61f-ecee-4768-8678-ee98763d9612",
+              null,
+              "a0"
+            ],
+            [
+              "d61238e1-12d8-49dc-aef7-10cf0572a663",
+              null,
+              "a1"
+            ],
+            [
+              "dc9c62c7-5678-4c6e-990d-ca3434694fc0",
+              null,
+              "a5"
+            ],
+            [
+              "dd5be95d-2784-4166-9d1a-9ba72f32e09f",
+              null,
+              "a2"
+            ],
+            [
+              "dd964fa2-0f92-474c-8a9f-9a48d8e61993",
+              null,
+              "a7"
+            ],
+            [
+              "f090c01a-8c94-4afa-be83-adfcc1e88933",
+              null,
+              "a8"
+            ],
+            [
+              "fd4ef9ef-e14c-4f8a-b95d-e4601eec0b50",
+              null,
+              "a6"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:27.773Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:25.384465125+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "844d1443-cf0b-4718-a42e-7933674a0fc8",
+              "createdAt": "2026-10-27T09:07:28.049Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "129604fe-540b-4b65-8d37-a1742cdb0978",
+              "entryId": "02419f7d-663c-4c8e-846c-eed876f5a18c"
+            },
+            {
+              "sceneId": "b3344ed3-dba2-4c55-b9dc-8f444a5ae0bd",
+              "entryId": "009623b5-131c-43f4-aac4-8037db1437cf"
+            },
+            {
+              "sceneId": "b428cbce-545f-472c-925d-6e3cc9745adc",
+              "entryId": "844d1443-cf0b-4718-a42e-7933674a0fc8"
+            },
+            {
+              "sceneId": "c3625f2e-a688-4997-82d4-b9ee28b7701c",
+              "entryId": "009623b5-131c-43f4-aac4-8037db1437cf"
+            },
+            {
+              "sceneId": "d61238e1-12d8-49dc-aef7-10cf0572a663",
+              "entryId": "8f46624b-ade3-4966-bb9d-4d634b711a46"
+            },
+            {
+              "sceneId": "dd5be95d-2784-4166-9d1a-9ba72f32e09f",
+              "entryId": "02419f7d-663c-4c8e-846c-eed876f5a18c"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "f7ebefa8-6a7f-4655-9956-c1f85bd8f211",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:c4a86249aa055bd1c3822966cc4d8148a4fbf08a4a16607aaf4a66bb05eee7cd",
+            "updated_at": "2026-10-27T09:07:27.991Z"
+          },
+          "treeOrder": [
+            [
+              "129604fe-540b-4b65-8d37-a1742cdb0978",
+              null,
+              "a9"
+            ],
+            [
+              "1c635e27-dcd0-4069-b613-03d9e8224939",
+              "dc9c62c7-5678-4c6e-990d-ca3434694fc0",
+              "a0"
+            ],
+            [
+              "728a4852-ba08-46d8-ac5f-8ef43e7ebb97",
+              null,
+              "aB"
+            ],
+            [
+              "91bb5312-fecf-411c-b36c-0c7c7f129b95",
+              null,
+              "a4"
+            ],
+            [
+              "b3344ed3-dba2-4c55-b9dc-8f444a5ae0bd",
+              null,
+              "aA"
+            ],
+            [
+              "b428cbce-545f-472c-925d-6e3cc9745adc",
+              null,
+              "aC"
+            ],
+            [
+              "c3625f2e-a688-4997-82d4-b9ee28b7701c",
+              null,
+              "a3"
+            ],
+            [
+              "d51af61f-ecee-4768-8678-ee98763d9612",
+              null,
+              "a0"
+            ],
+            [
+              "d61238e1-12d8-49dc-aef7-10cf0572a663",
+              null,
+              "a1"
+            ],
+            [
+              "dc9c62c7-5678-4c6e-990d-ca3434694fc0",
+              null,
+              "a5"
+            ],
+            [
+              "dd5be95d-2784-4166-9d1a-9ba72f32e09f",
+              null,
+              "a2"
+            ],
+            [
+              "dd964fa2-0f92-474c-8a9f-9a48d8e61993",
+              null,
+              "a7"
+            ],
+            [
+              "f090c01a-8c94-4afa-be83-adfcc1e88933",
+              null,
+              "a8"
+            ],
+            [
+              "fd4ef9ef-e14c-4f8a-b95d-e4601eec0b50",
+              null,
+              "a6"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:27.773Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 13,
+        "folders": 1,
+        "entities": 56,
+        "relations": 55,
+        "foreshadows": 0,
+        "pins": 6,
+        "explicitSceneScopes": 13,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-03",
+      "variantId": "frontier-exceeded",
+      "variantKey": "G-03/frontier-exceeded",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-03/frontier-exceeded/setup-receipt.json",
+        "sha256": "2149809186a9934ac9747967e9ab9703e46676baedc6648f0da204a8309e9f27"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g03-query",
+        "runtime": "29600b77-8024-4593-8859-24e04d0ef76e"
+      },
+      "seed": {
+        "logical": "g03-wren",
+        "runtime": "dffd488e-3acb-45bf-9f59-545b0de1024c"
+      },
+      "projectId": "4f54f59c-4064-4244-a9af-1cdba0b72ccc",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-03/frontier-exceeded/cold-workspace/grimodex.db",
+        "sha256": "d6bb325380d5f216b242ed5527bffc04849f7ab86ede52c3a7f9795f4fb8a497"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "dffd488e-3acb-45bf-9f59-545b0de1024c",
+          "createdAt": "2026-10-27T09:07:36.726Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "dffd488e-3acb-45bf-9f59-545b0de1024c",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:07:36.726Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:34.185280226+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "25faf785-b781-474a-bb4d-d8f0e81f90c0",
+              "entryId": "e2763e64-19d0-4ec1-a2a9-3291a0e78b82"
+            },
+            {
+              "sceneId": "84bb64b0-6c44-4ea0-8865-8cc136c6cdd4",
+              "entryId": "85fcdcf5-1436-4e68-b069-5650746de3a8"
+            },
+            {
+              "sceneId": "a66fc223-b0e7-439e-8bc7-aae799f9349f",
+              "entryId": "e52ddf70-b44d-4e03-8d7f-a1344978f235"
+            },
+            {
+              "sceneId": "c51b16fb-f418-4a5c-ab8d-83f492d5910b",
+              "entryId": "e2763e64-19d0-4ec1-a2a9-3291a0e78b82"
+            },
+            {
+              "sceneId": "ea951e6b-6c7c-4ef2-a053-054b8011e8d9",
+              "entryId": "85fcdcf5-1436-4e68-b069-5650746de3a8"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "2fa0eaf0-0e89-42a6-830a-9c76ed217a29",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:8870192beabb3a236d496dc0b2be70495adb28e933c13e9fe6eb81096e8b5ada",
+            "updated_at": "2026-10-27T09:07:36.668Z"
+          },
+          "treeOrder": [
+            [
+              "25faf785-b781-474a-bb4d-d8f0e81f90c0",
+              null,
+              "a9"
+            ],
+            [
+              "28e46512-cdbd-476b-a995-40c25ce01c44",
+              null,
+              "a5"
+            ],
+            [
+              "29600b77-8024-4593-8859-24e04d0ef76e",
+              null,
+              "aC"
+            ],
+            [
+              "2af20a90-1391-4a87-827a-a319dc40f3e5",
+              null,
+              "a8"
+            ],
+            [
+              "3cc622a3-4629-46c8-9655-3c7ecff0f937",
+              null,
+              "a7"
+            ],
+            [
+              "5e205713-731d-49b2-bfc9-3a8e2856d7ca",
+              null,
+              "a4"
+            ],
+            [
+              "743abb72-ffa6-46b6-b1e8-2f03e49170eb",
+              "28e46512-cdbd-476b-a995-40c25ce01c44",
+              "a0"
+            ],
+            [
+              "78eccf9b-9d83-491d-b330-e8f2b2c240a4",
+              null,
+              "aB"
+            ],
+            [
+              "84bb64b0-6c44-4ea0-8865-8cc136c6cdd4",
+              null,
+              "aA"
+            ],
+            [
+              "a66fc223-b0e7-439e-8bc7-aae799f9349f",
+              null,
+              "a1"
+            ],
+            [
+              "b6186357-d382-4164-a69c-bc8511708433",
+              null,
+              "a6"
+            ],
+            [
+              "c51b16fb-f418-4a5c-ab8d-83f492d5910b",
+              null,
+              "a2"
+            ],
+            [
+              "ea951e6b-6c7c-4ef2-a053-054b8011e8d9",
+              null,
+              "a3"
+            ],
+            [
+              "f75c64e9-b3bb-4c6e-b37f-1a6a74db3e49",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:36.453Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:34.185280226+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "dffd488e-3acb-45bf-9f59-545b0de1024c",
+              "createdAt": "2026-10-27T09:07:36.726Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "25faf785-b781-474a-bb4d-d8f0e81f90c0",
+              "entryId": "e2763e64-19d0-4ec1-a2a9-3291a0e78b82"
+            },
+            {
+              "sceneId": "29600b77-8024-4593-8859-24e04d0ef76e",
+              "entryId": "dffd488e-3acb-45bf-9f59-545b0de1024c"
+            },
+            {
+              "sceneId": "84bb64b0-6c44-4ea0-8865-8cc136c6cdd4",
+              "entryId": "85fcdcf5-1436-4e68-b069-5650746de3a8"
+            },
+            {
+              "sceneId": "a66fc223-b0e7-439e-8bc7-aae799f9349f",
+              "entryId": "e52ddf70-b44d-4e03-8d7f-a1344978f235"
+            },
+            {
+              "sceneId": "c51b16fb-f418-4a5c-ab8d-83f492d5910b",
+              "entryId": "e2763e64-19d0-4ec1-a2a9-3291a0e78b82"
+            },
+            {
+              "sceneId": "ea951e6b-6c7c-4ef2-a053-054b8011e8d9",
+              "entryId": "85fcdcf5-1436-4e68-b069-5650746de3a8"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "2fa0eaf0-0e89-42a6-830a-9c76ed217a29",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:8870192beabb3a236d496dc0b2be70495adb28e933c13e9fe6eb81096e8b5ada",
+            "updated_at": "2026-10-27T09:07:36.668Z"
+          },
+          "treeOrder": [
+            [
+              "25faf785-b781-474a-bb4d-d8f0e81f90c0",
+              null,
+              "a9"
+            ],
+            [
+              "28e46512-cdbd-476b-a995-40c25ce01c44",
+              null,
+              "a5"
+            ],
+            [
+              "29600b77-8024-4593-8859-24e04d0ef76e",
+              null,
+              "aC"
+            ],
+            [
+              "2af20a90-1391-4a87-827a-a319dc40f3e5",
+              null,
+              "a8"
+            ],
+            [
+              "3cc622a3-4629-46c8-9655-3c7ecff0f937",
+              null,
+              "a7"
+            ],
+            [
+              "5e205713-731d-49b2-bfc9-3a8e2856d7ca",
+              null,
+              "a4"
+            ],
+            [
+              "743abb72-ffa6-46b6-b1e8-2f03e49170eb",
+              "28e46512-cdbd-476b-a995-40c25ce01c44",
+              "a0"
+            ],
+            [
+              "78eccf9b-9d83-491d-b330-e8f2b2c240a4",
+              null,
+              "aB"
+            ],
+            [
+              "84bb64b0-6c44-4ea0-8865-8cc136c6cdd4",
+              null,
+              "aA"
+            ],
+            [
+              "a66fc223-b0e7-439e-8bc7-aae799f9349f",
+              null,
+              "a1"
+            ],
+            [
+              "b6186357-d382-4164-a69c-bc8511708433",
+              null,
+              "a6"
+            ],
+            [
+              "c51b16fb-f418-4a5c-ab8d-83f492d5910b",
+              null,
+              "a2"
+            ],
+            [
+              "ea951e6b-6c7c-4ef2-a053-054b8011e8d9",
+              null,
+              "a3"
+            ],
+            [
+              "f75c64e9-b3bb-4c6e-b37f-1a6a74db3e49",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:36.453Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 13,
+        "folders": 1,
+        "entities": 56,
+        "relations": 55,
+        "foreshadows": 0,
+        "pins": 6,
+        "explicitSceneScopes": 13,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-04",
+      "variantId": "base",
+      "variantKey": "G-04/base",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-04/base/setup-receipt.json",
+        "sha256": "a3fb4b280d8bed8eb8cf0660bd6a13e15788a5935c505e0af8bcdf5f695fad9e"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g04-query",
+        "runtime": "1db17a19-6533-462e-802b-0d04527be674"
+      },
+      "seed": {
+        "logical": "g04-bren",
+        "runtime": "34f5da40-ae84-4f63-a963-704ab903b1bf"
+      },
+      "projectId": "d95b85db-682d-4b73-88ba-cea50f9b5c20",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-04/base/cold-workspace/grimodex.db",
+        "sha256": "1ea3435add6c802f4f1d74eaeb858f30437ccc6922175ff82ad7f191673376aa"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "34f5da40-ae84-4f63-a963-704ab903b1bf",
+          "createdAt": "2026-10-27T09:07:43.195Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "34f5da40-ae84-4f63-a963-704ab903b1bf",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:07:43.195Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:42.320929953+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "291a5262-8406-46bb-b5ee-457a166e49ce",
+              "entryId": "0336c7eb-6c66-406b-9ed5-fe14fab26b4e"
+            },
+            {
+              "sceneId": "4baecf5b-c41d-46c4-b0c1-e0ea72e97ff4",
+              "entryId": "0336c7eb-6c66-406b-9ed5-fe14fab26b4e"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "0101fbd0-7184-4431-96a9-48b5dedcfce6"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "9ada495a-eadd-4baa-b4f2-247a656eaac6"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "9c985b9b-e4dc-482a-a8d7-657cb7a40a83"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "fe762830-3f83-43b3-941b-9cfa558f527e"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "c2358020-a918-4cdd-8e16-b7b461d3f692",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:53e5a55b5983d03bee46e176fc2dd8d202784c2e13ac9efaf54931b7b608966e",
+            "updated_at": "2026-10-27T09:07:43.130Z"
+          },
+          "treeOrder": [
+            [
+              "1db17a19-6533-462e-802b-0d04527be674",
+              null,
+              "a8"
+            ],
+            [
+              "291a5262-8406-46bb-b5ee-457a166e49ce",
+              "f96289c2-693d-44df-8012-172d8f9de92f",
+              "a0"
+            ],
+            [
+              "35fcf40d-dd65-4912-9d89-a59f5480c378",
+              null,
+              "a3"
+            ],
+            [
+              "4baecf5b-c41d-46c4-b0c1-e0ea72e97ff4",
+              null,
+              "a7"
+            ],
+            [
+              "6cc9dd50-0214-4e2f-b82e-b3820453b1c4",
+              null,
+              "a2"
+            ],
+            [
+              "70e4365f-bc11-4094-bbed-69a87b26c4cd",
+              null,
+              "a1"
+            ],
+            [
+              "733ae945-cb18-4e2d-bde5-9ac18a277993",
+              null,
+              "a4"
+            ],
+            [
+              "8f44c10a-64bb-41fa-84fd-f68c37278e10",
+              null,
+              "a0"
+            ],
+            [
+              "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "fb6e79a9-e5fb-45ed-b266-043491817a66",
+              "a0"
+            ],
+            [
+              "f96289c2-693d-44df-8012-172d8f9de92f",
+              null,
+              "a6"
+            ],
+            [
+              "fb6e79a9-e5fb-45ed-b266-043491817a66",
+              null,
+              "a5"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:39729ce590ccafb745b7bc3b1e35d48812a87998cb5cf71b5ddbc5d705f264d9",
+            "updatedAt": "2026-10-27T09:07:42.989Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:42.320929953+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "34f5da40-ae84-4f63-a963-704ab903b1bf",
+              "createdAt": "2026-10-27T09:07:43.195Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "1db17a19-6533-462e-802b-0d04527be674",
+              "entryId": "34f5da40-ae84-4f63-a963-704ab903b1bf"
+            },
+            {
+              "sceneId": "291a5262-8406-46bb-b5ee-457a166e49ce",
+              "entryId": "0336c7eb-6c66-406b-9ed5-fe14fab26b4e"
+            },
+            {
+              "sceneId": "4baecf5b-c41d-46c4-b0c1-e0ea72e97ff4",
+              "entryId": "0336c7eb-6c66-406b-9ed5-fe14fab26b4e"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "0101fbd0-7184-4431-96a9-48b5dedcfce6"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "9ada495a-eadd-4baa-b4f2-247a656eaac6"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "9c985b9b-e4dc-482a-a8d7-657cb7a40a83"
+            },
+            {
+              "sceneId": "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "entryId": "fe762830-3f83-43b3-941b-9cfa558f527e"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "c2358020-a918-4cdd-8e16-b7b461d3f692",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:53e5a55b5983d03bee46e176fc2dd8d202784c2e13ac9efaf54931b7b608966e",
+            "updated_at": "2026-10-27T09:07:43.130Z"
+          },
+          "treeOrder": [
+            [
+              "1db17a19-6533-462e-802b-0d04527be674",
+              null,
+              "a8"
+            ],
+            [
+              "291a5262-8406-46bb-b5ee-457a166e49ce",
+              "f96289c2-693d-44df-8012-172d8f9de92f",
+              "a0"
+            ],
+            [
+              "35fcf40d-dd65-4912-9d89-a59f5480c378",
+              null,
+              "a3"
+            ],
+            [
+              "4baecf5b-c41d-46c4-b0c1-e0ea72e97ff4",
+              null,
+              "a7"
+            ],
+            [
+              "6cc9dd50-0214-4e2f-b82e-b3820453b1c4",
+              null,
+              "a2"
+            ],
+            [
+              "70e4365f-bc11-4094-bbed-69a87b26c4cd",
+              null,
+              "a1"
+            ],
+            [
+              "733ae945-cb18-4e2d-bde5-9ac18a277993",
+              null,
+              "a4"
+            ],
+            [
+              "8f44c10a-64bb-41fa-84fd-f68c37278e10",
+              null,
+              "a0"
+            ],
+            [
+              "d7ebc641-df1a-46b7-b981-d96e34bae9dd",
+              "fb6e79a9-e5fb-45ed-b266-043491817a66",
+              "a0"
+            ],
+            [
+              "f96289c2-693d-44df-8012-172d8f9de92f",
+              null,
+              "a6"
+            ],
+            [
+              "fb6e79a9-e5fb-45ed-b266-043491817a66",
+              null,
+              "a5"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:39729ce590ccafb745b7bc3b1e35d48812a87998cb5cf71b5ddbc5d705f264d9",
+            "updatedAt": "2026-10-27T09:07:42.989Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 9,
+        "folders": 2,
+        "entities": 7,
+        "relations": 5,
+        "foreshadows": 0,
+        "pins": 7,
+        "explicitSceneScopes": 8,
+        "unwrittenSceneScopes": 1
+      }
+    },
+    {
+      "caseId": "G-05",
+      "variantId": "base",
+      "variantKey": "G-05/base",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-05/base/setup-receipt.json",
+        "sha256": "dc9821f9cf5f3530e7e7d2acf6d0beb9fba8c4612067aaaad825dc3c50acbdbb"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g05-query",
+        "runtime": "8701bcea-6314-4ddf-ac26-e46159914353"
+      },
+      "seed": {
+        "logical": "g05-hale",
+        "runtime": "43ac1307-9876-4bc1-89d0-30932ce12fcb"
+      },
+      "projectId": "872f14cc-60bb-4b88-aabb-f33ff87be868",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-05/base/cold-workspace/grimodex.db",
+        "sha256": "6fc4e271cd80c561ee5aaecfaa5045dc7abde8a1487e84b22537ba10494d4acb"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "43ac1307-9876-4bc1-89d0-30932ce12fcb",
+          "createdAt": "2026-10-27T09:07:49.034Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "43ac1307-9876-4bc1-89d0-30932ce12fcb",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:07:49.034Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:48.527321883+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "5b9ca71a-e369-4ee0-ba31-2d3145f0c20d",
+              "entryId": "90a8af86-85a5-4924-9d92-6e3e1227b513"
+            },
+            {
+              "sceneId": "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "entryId": "059de20f-c0c9-4134-9fa5-8ab357850ca9"
+            },
+            {
+              "sceneId": "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "entryId": "d53cda53-92e2-43d8-aabb-f12aced48d25"
+            },
+            {
+              "sceneId": "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "entryId": "ee80ae90-2a26-4016-9eeb-2b297560b383"
+            },
+            {
+              "sceneId": "8a77373a-75f3-4064-93fa-5d6aabe60f1d",
+              "entryId": "d2d69806-d8bc-4240-a28a-634d26a559db"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "0c46e802-a669-409c-8ff4-ebb085b66c7c",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:e2b72285688be2927dbb5c7cc70a556717dc865596f572559c02eec8de2b0f1c",
+            "updated_at": "2026-10-27T09:07:48.974Z"
+          },
+          "treeOrder": [
+            [
+              "53300b01-117f-4f62-ac45-6241617d3e32",
+              null,
+              "a1"
+            ],
+            [
+              "5b9ca71a-e369-4ee0-ba31-2d3145f0c20d",
+              "a7c33362-f8d6-4332-8912-30987f4bafa4",
+              "a0"
+            ],
+            [
+              "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "53300b01-117f-4f62-ac45-6241617d3e32",
+              "a0"
+            ],
+            [
+              "8701bcea-6314-4ddf-ac26-e46159914353",
+              null,
+              "a4"
+            ],
+            [
+              "8a77373a-75f3-4064-93fa-5d6aabe60f1d",
+              null,
+              "a3"
+            ],
+            [
+              "a1909146-2164-4987-9b1a-6be7256b1d7c",
+              null,
+              "a0"
+            ],
+            [
+              "a7c33362-f8d6-4332-8912-30987f4bafa4",
+              null,
+              "a2"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:48.661Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:48.527321883+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "43ac1307-9876-4bc1-89d0-30932ce12fcb",
+              "createdAt": "2026-10-27T09:07:49.034Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "5b9ca71a-e369-4ee0-ba31-2d3145f0c20d",
+              "entryId": "90a8af86-85a5-4924-9d92-6e3e1227b513"
+            },
+            {
+              "sceneId": "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "entryId": "059de20f-c0c9-4134-9fa5-8ab357850ca9"
+            },
+            {
+              "sceneId": "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "entryId": "d53cda53-92e2-43d8-aabb-f12aced48d25"
+            },
+            {
+              "sceneId": "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "entryId": "ee80ae90-2a26-4016-9eeb-2b297560b383"
+            },
+            {
+              "sceneId": "8701bcea-6314-4ddf-ac26-e46159914353",
+              "entryId": "43ac1307-9876-4bc1-89d0-30932ce12fcb"
+            },
+            {
+              "sceneId": "8a77373a-75f3-4064-93fa-5d6aabe60f1d",
+              "entryId": "d2d69806-d8bc-4240-a28a-634d26a559db"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "0c46e802-a669-409c-8ff4-ebb085b66c7c",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:e2b72285688be2927dbb5c7cc70a556717dc865596f572559c02eec8de2b0f1c",
+            "updated_at": "2026-10-27T09:07:48.974Z"
+          },
+          "treeOrder": [
+            [
+              "53300b01-117f-4f62-ac45-6241617d3e32",
+              null,
+              "a1"
+            ],
+            [
+              "5b9ca71a-e369-4ee0-ba31-2d3145f0c20d",
+              "a7c33362-f8d6-4332-8912-30987f4bafa4",
+              "a0"
+            ],
+            [
+              "77469728-61ab-487f-824b-c1fee4f7c6f6",
+              "53300b01-117f-4f62-ac45-6241617d3e32",
+              "a0"
+            ],
+            [
+              "8701bcea-6314-4ddf-ac26-e46159914353",
+              null,
+              "a4"
+            ],
+            [
+              "8a77373a-75f3-4064-93fa-5d6aabe60f1d",
+              null,
+              "a3"
+            ],
+            [
+              "a1909146-2164-4987-9b1a-6be7256b1d7c",
+              null,
+              "a0"
+            ],
+            [
+              "a7c33362-f8d6-4332-8912-30987f4bafa4",
+              null,
+              "a2"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:48.661Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 5,
+        "folders": 2,
+        "entities": 6,
+        "relations": 5,
+        "foreshadows": 0,
+        "pins": 6,
+        "explicitSceneScopes": 5,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-06",
+      "variantId": "base",
+      "variantKey": "G-06/base",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-06/base/setup-receipt.json",
+        "sha256": "d788ad3c476e9d18ddd5d86d78480a590f15e8d75d39f5888ee8488331bc3603"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g06-query",
+        "runtime": "09225125-1745-4dfc-a9cd-0e50731b4d4c"
+      },
+      "seed": {
+        "logical": "g06-maro",
+        "runtime": "00ee2aa9-9e6b-4585-9f31-85dc7861ae2e"
+      },
+      "projectId": "5827a03a-cd8a-4454-86af-0f335b747a01",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-06/base/cold-workspace/grimodex.db",
+        "sha256": "6012350fbac159e44a0875402c006676aa46f6f671ce1fc3deaa0503af044420"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "00ee2aa9-9e6b-4585-9f31-85dc7861ae2e",
+          "createdAt": "2026-10-27T09:07:54.903Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "00ee2aa9-9e6b-4585-9f31-85dc7861ae2e",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:07:54.903Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:54.271711803+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "0a6004e8-6e86-45bd-b636-973ec2f38c8b",
+              "entryId": "7fe69bfc-2c45-4a2e-b1e1-e4bcdfc37db8"
+            },
+            {
+              "sceneId": "1cb0e163-8198-45f6-8405-495e3d9c770c",
+              "entryId": "5e6e9f8d-162c-4ea5-9654-0f1b69d23748"
+            },
+            {
+              "sceneId": "42a2afa1-121a-4052-88e6-76b147d90640",
+              "entryId": "7fe69bfc-2c45-4a2e-b1e1-e4bcdfc37db8"
+            },
+            {
+              "sceneId": "47ae1e2e-1705-4e8e-822e-c066662aff4b",
+              "entryId": "2bd0f7c3-7561-478f-9029-12e78a896b54"
+            },
+            {
+              "sceneId": "7ba6d56a-18a1-4496-abc8-6918a78335a1",
+              "entryId": "5e6e9f8d-162c-4ea5-9654-0f1b69d23748"
+            },
+            {
+              "sceneId": "9e696ece-4392-4f90-a9ab-957275ee0c4b",
+              "entryId": "2bd0f7c3-7561-478f-9029-12e78a896b54"
+            },
+            {
+              "sceneId": "aa1f1c8f-5ca9-49d3-96a4-13d73ddd2e8e",
+              "entryId": "a7b00df4-7bc3-4558-9f4b-30db7a93b960"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "bc909271-6b83-4204-b0a0-80aca9b5421d",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:67ed8cbb679ce122f5fd47589c644360e530610261d6acae8bbeb1b04c845971",
+            "updated_at": "2026-10-27T09:07:54.832Z"
+          },
+          "treeOrder": [
+            [
+              "09225125-1745-4dfc-a9cd-0e50731b4d4c",
+              null,
+              "aC"
+            ],
+            [
+              "0a6004e8-6e86-45bd-b636-973ec2f38c8b",
+              null,
+              "a2"
+            ],
+            [
+              "0b5ea398-1561-46f9-943d-5a5eed0dd0ad",
+              null,
+              "a4"
+            ],
+            [
+              "1cb0e163-8198-45f6-8405-495e3d9c770c",
+              null,
+              "a5"
+            ],
+            [
+              "2d4c2b0b-5898-4c1f-94f4-c5277fe92727",
+              null,
+              "a8"
+            ],
+            [
+              "42a2afa1-121a-4052-88e6-76b147d90640",
+              null,
+              "a9"
+            ],
+            [
+              "47ae1e2e-1705-4e8e-822e-c066662aff4b",
+              null,
+              "a3"
+            ],
+            [
+              "4be48d26-4c6c-4ad4-bbf3-268a07bcc32a",
+              "55b2a453-7bba-47b8-95ba-c0fbb0116437",
+              "a0"
+            ],
+            [
+              "4c0f2586-d644-4fab-abb8-bdc6200374dd",
+              null,
+              "a0"
+            ],
+            [
+              "55b2a453-7bba-47b8-95ba-c0fbb0116437",
+              null,
+              "a6"
+            ],
+            [
+              "7ba6d56a-18a1-4496-abc8-6918a78335a1",
+              null,
+              "aA"
+            ],
+            [
+              "9e696ece-4392-4f90-a9ab-957275ee0c4b",
+              null,
+              "aB"
+            ],
+            [
+              "aa1f1c8f-5ca9-49d3-96a4-13d73ddd2e8e",
+              null,
+              "a1"
+            ],
+            [
+              "ce905a9b-95a0-4e63-875b-dd2300d60f56",
+              null,
+              "a7"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:54.614Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:54.271711803+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "00ee2aa9-9e6b-4585-9f31-85dc7861ae2e",
+              "createdAt": "2026-10-27T09:07:54.903Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "09225125-1745-4dfc-a9cd-0e50731b4d4c",
+              "entryId": "00ee2aa9-9e6b-4585-9f31-85dc7861ae2e"
+            },
+            {
+              "sceneId": "0a6004e8-6e86-45bd-b636-973ec2f38c8b",
+              "entryId": "7fe69bfc-2c45-4a2e-b1e1-e4bcdfc37db8"
+            },
+            {
+              "sceneId": "1cb0e163-8198-45f6-8405-495e3d9c770c",
+              "entryId": "5e6e9f8d-162c-4ea5-9654-0f1b69d23748"
+            },
+            {
+              "sceneId": "42a2afa1-121a-4052-88e6-76b147d90640",
+              "entryId": "7fe69bfc-2c45-4a2e-b1e1-e4bcdfc37db8"
+            },
+            {
+              "sceneId": "47ae1e2e-1705-4e8e-822e-c066662aff4b",
+              "entryId": "2bd0f7c3-7561-478f-9029-12e78a896b54"
+            },
+            {
+              "sceneId": "7ba6d56a-18a1-4496-abc8-6918a78335a1",
+              "entryId": "5e6e9f8d-162c-4ea5-9654-0f1b69d23748"
+            },
+            {
+              "sceneId": "9e696ece-4392-4f90-a9ab-957275ee0c4b",
+              "entryId": "2bd0f7c3-7561-478f-9029-12e78a896b54"
+            },
+            {
+              "sceneId": "aa1f1c8f-5ca9-49d3-96a4-13d73ddd2e8e",
+              "entryId": "a7b00df4-7bc3-4558-9f4b-30db7a93b960"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "bc909271-6b83-4204-b0a0-80aca9b5421d",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:67ed8cbb679ce122f5fd47589c644360e530610261d6acae8bbeb1b04c845971",
+            "updated_at": "2026-10-27T09:07:54.832Z"
+          },
+          "treeOrder": [
+            [
+              "09225125-1745-4dfc-a9cd-0e50731b4d4c",
+              null,
+              "aC"
+            ],
+            [
+              "0a6004e8-6e86-45bd-b636-973ec2f38c8b",
+              null,
+              "a2"
+            ],
+            [
+              "0b5ea398-1561-46f9-943d-5a5eed0dd0ad",
+              null,
+              "a4"
+            ],
+            [
+              "1cb0e163-8198-45f6-8405-495e3d9c770c",
+              null,
+              "a5"
+            ],
+            [
+              "2d4c2b0b-5898-4c1f-94f4-c5277fe92727",
+              null,
+              "a8"
+            ],
+            [
+              "42a2afa1-121a-4052-88e6-76b147d90640",
+              null,
+              "a9"
+            ],
+            [
+              "47ae1e2e-1705-4e8e-822e-c066662aff4b",
+              null,
+              "a3"
+            ],
+            [
+              "4be48d26-4c6c-4ad4-bbf3-268a07bcc32a",
+              "55b2a453-7bba-47b8-95ba-c0fbb0116437",
+              "a0"
+            ],
+            [
+              "4c0f2586-d644-4fab-abb8-bdc6200374dd",
+              null,
+              "a0"
+            ],
+            [
+              "55b2a453-7bba-47b8-95ba-c0fbb0116437",
+              null,
+              "a6"
+            ],
+            [
+              "7ba6d56a-18a1-4496-abc8-6918a78335a1",
+              null,
+              "aA"
+            ],
+            [
+              "9e696ece-4392-4f90-a9ab-957275ee0c4b",
+              null,
+              "aB"
+            ],
+            [
+              "aa1f1c8f-5ca9-49d3-96a4-13d73ddd2e8e",
+              null,
+              "a1"
+            ],
+            [
+              "ce905a9b-95a0-4e63-875b-dd2300d60f56",
+              null,
+              "a7"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:07:54.614Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 13,
+        "folders": 1,
+        "entities": 5,
+        "relations": 3,
+        "foreshadows": 0,
+        "pins": 8,
+        "explicitSceneScopes": 13,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-07",
+      "variantId": "base",
+      "variantKey": "G-07/base",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-07/base/setup-receipt.json",
+        "sha256": "117d5164ba633524ca62313ff2bc432805a9b79f205178a99844afc20b4659a2"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g07-query",
+        "runtime": "c0985eea-22f2-4385-8f90-4e0f6e1ca36b"
+      },
+      "seed": {
+        "logical": "g07-vesna",
+        "runtime": "8a9593b6-9a73-464d-98ed-a74395348e0e"
+      },
+      "projectId": "29befa3e-b52a-460f-a88d-c8fc87e64eab",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-07/base/cold-workspace/grimodex.db",
+        "sha256": "5dd0f10a92c9b73bfa54a138d68559eac100a1bfd68aadd484520f4fd5796dd5"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "8a9593b6-9a73-464d-98ed-a74395348e0e",
+          "createdAt": "2026-10-27T09:08:00.443Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "8a9593b6-9a73-464d-98ed-a74395348e0e",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:08:00.443Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:59.809533773+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "758ec222-4290-483f-9d2b-1ffe0d2de7bd",
+              "entryId": "0b44015c-1979-4ce6-95dd-082973d79f07"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "3d543657-b7ae-4648-affb-99ce8a1d3552"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "68e4f8f2-6467-4d36-ad9a-2c7f94fd90e0"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "cfb4adc5-2adc-4792-92ac-2b8029d44226"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "d4626c2e-c130-4e24-9292-0f33cc842040"
+            },
+            {
+              "sceneId": "e23f9e37-133b-411c-bcc2-0807a6626a75",
+              "entryId": "0fa83ffa-fba6-45e5-b57f-bbc8bb1d36a2"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "18c47617-34a7-4eae-b40f-2ac77bd7dda9",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:bede121d7a414148259316e334bdb1a31391fe7a54b03bbb05f5b29babaa347b",
+            "updated_at": "2026-10-27T09:08:00.312Z"
+          },
+          "treeOrder": [
+            [
+              "2f3fac2f-a250-42d7-b919-e0d0ad003e46",
+              null,
+              "a1"
+            ],
+            [
+              "487af8cb-c8de-4999-9623-6f01e7e0db08",
+              null,
+              "a3"
+            ],
+            [
+              "758ec222-4290-483f-9d2b-1ffe0d2de7bd",
+              null,
+              "a4"
+            ],
+            [
+              "81e20392-701d-4b03-a9aa-353a5020afc8",
+              null,
+              "a6"
+            ],
+            [
+              "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "2f3fac2f-a250-42d7-b919-e0d0ad003e46",
+              "a0"
+            ],
+            [
+              "c0985eea-22f2-4385-8f90-4e0f6e1ca36b",
+              null,
+              "a5"
+            ],
+            [
+              "ce42214d-33d1-49a9-aaaa-72f3a97a20ba",
+              null,
+              "a7"
+            ],
+            [
+              "e23f9e37-133b-411c-bcc2-0807a6626a75",
+              null,
+              "a2"
+            ],
+            [
+              "e8c1122d-9883-4b1c-9cbc-9d2d60cd762b",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:00.204Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:07:59.809533773+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "8a9593b6-9a73-464d-98ed-a74395348e0e",
+              "createdAt": "2026-10-27T09:08:00.443Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "758ec222-4290-483f-9d2b-1ffe0d2de7bd",
+              "entryId": "0b44015c-1979-4ce6-95dd-082973d79f07"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "3d543657-b7ae-4648-affb-99ce8a1d3552"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "68e4f8f2-6467-4d36-ad9a-2c7f94fd90e0"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "cfb4adc5-2adc-4792-92ac-2b8029d44226"
+            },
+            {
+              "sceneId": "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "entryId": "d4626c2e-c130-4e24-9292-0f33cc842040"
+            },
+            {
+              "sceneId": "c0985eea-22f2-4385-8f90-4e0f6e1ca36b",
+              "entryId": "8a9593b6-9a73-464d-98ed-a74395348e0e"
+            },
+            {
+              "sceneId": "e23f9e37-133b-411c-bcc2-0807a6626a75",
+              "entryId": "0fa83ffa-fba6-45e5-b57f-bbc8bb1d36a2"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "18c47617-34a7-4eae-b40f-2ac77bd7dda9",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:bede121d7a414148259316e334bdb1a31391fe7a54b03bbb05f5b29babaa347b",
+            "updated_at": "2026-10-27T09:08:00.312Z"
+          },
+          "treeOrder": [
+            [
+              "2f3fac2f-a250-42d7-b919-e0d0ad003e46",
+              null,
+              "a1"
+            ],
+            [
+              "487af8cb-c8de-4999-9623-6f01e7e0db08",
+              null,
+              "a3"
+            ],
+            [
+              "758ec222-4290-483f-9d2b-1ffe0d2de7bd",
+              null,
+              "a4"
+            ],
+            [
+              "81e20392-701d-4b03-a9aa-353a5020afc8",
+              null,
+              "a6"
+            ],
+            [
+              "a1f81e33-8ca2-43bd-977c-b2d57749ba57",
+              "2f3fac2f-a250-42d7-b919-e0d0ad003e46",
+              "a0"
+            ],
+            [
+              "c0985eea-22f2-4385-8f90-4e0f6e1ca36b",
+              null,
+              "a5"
+            ],
+            [
+              "ce42214d-33d1-49a9-aaaa-72f3a97a20ba",
+              null,
+              "a7"
+            ],
+            [
+              "e23f9e37-133b-411c-bcc2-0807a6626a75",
+              null,
+              "a2"
+            ],
+            [
+              "e8c1122d-9883-4b1c-9cbc-9d2d60cd762b",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:00.204Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 8,
+        "folders": 1,
+        "entities": 7,
+        "relations": 6,
+        "foreshadows": 3,
+        "pins": 7,
+        "explicitSceneScopes": 8,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "base-usable",
+      "variantKey": "G-08/base-usable",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/base-usable/setup-receipt.json",
+        "sha256": "bf1232b50650e95fab565c5adc9a29998428a09edbecf0e86491c19cfd5ad321"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g08-query",
+        "runtime": "0be42516-18c4-455c-aeb5-ca91b524293b"
+      },
+      "seed": {
+        "logical": "g08-odile",
+        "runtime": "54cccab3-9c3f-48fb-b10e-ed6430406ce8"
+      },
+      "projectId": "4bf32e1e-b1a3-467d-a942-9988606b21e1",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/base-usable/cold-workspace/grimodex.db",
+        "sha256": "79e04f791a34e9218943da58d126e39eaa33ba112b7360514f2c0a7a94da12e3"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "54cccab3-9c3f-48fb-b10e-ed6430406ce8",
+          "createdAt": "2026-10-27T09:08:05.991Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "54cccab3-9c3f-48fb-b10e-ed6430406ce8",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:08:05.991Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:05.751328698+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "36e632ad-6fdb-470a-a3c3-cdd95ce8c0e6",
+              "entryId": "382341ed-0d01-45de-afe5-b45bf630526c"
+            },
+            {
+              "sceneId": "a8b318e1-c83f-4d31-81a9-c202d92bb4a1",
+              "entryId": "6950225b-ff07-420c-a8e8-5a7ea14e4544"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "7b327a66-934d-410b-a934-d345b7ae6fa1",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:7e2255507eecdab5a437ca2cb4faae5a3985756ee10ef9bc1b4afbe16e816363",
+            "updated_at": "2026-10-27T09:08:05.944Z"
+          },
+          "treeOrder": [
+            [
+              "0be42516-18c4-455c-aeb5-ca91b524293b",
+              null,
+              "a5"
+            ],
+            [
+              "1a4ace49-a263-49d1-8eb2-5c768fa4450a",
+              null,
+              "a4"
+            ],
+            [
+              "36e632ad-6fdb-470a-a3c3-cdd95ce8c0e6",
+              null,
+              "a3"
+            ],
+            [
+              "5bcab59f-d2aa-47f8-a384-97ea7b504ca7",
+              null,
+              "a0"
+            ],
+            [
+              "a8b318e1-c83f-4d31-81a9-c202d92bb4a1",
+              null,
+              "a2"
+            ],
+            [
+              "ac71c191-8e4c-4c2d-86a5-4eccde893f6c",
+              "cd15e8e6-6b21-4b1c-8bc2-80c54f64cdb3",
+              "a0"
+            ],
+            [
+              "cd15e8e6-6b21-4b1c-8bc2-80c54f64cdb3",
+              null,
+              "a1"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:05.838Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:05.751328698+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "54cccab3-9c3f-48fb-b10e-ed6430406ce8",
+              "createdAt": "2026-10-27T09:08:05.991Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "0be42516-18c4-455c-aeb5-ca91b524293b",
+              "entryId": "54cccab3-9c3f-48fb-b10e-ed6430406ce8"
+            },
+            {
+              "sceneId": "36e632ad-6fdb-470a-a3c3-cdd95ce8c0e6",
+              "entryId": "382341ed-0d01-45de-afe5-b45bf630526c"
+            },
+            {
+              "sceneId": "a8b318e1-c83f-4d31-81a9-c202d92bb4a1",
+              "entryId": "6950225b-ff07-420c-a8e8-5a7ea14e4544"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "7b327a66-934d-410b-a934-d345b7ae6fa1",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:7e2255507eecdab5a437ca2cb4faae5a3985756ee10ef9bc1b4afbe16e816363",
+            "updated_at": "2026-10-27T09:08:05.944Z"
+          },
+          "treeOrder": [
+            [
+              "0be42516-18c4-455c-aeb5-ca91b524293b",
+              null,
+              "a5"
+            ],
+            [
+              "1a4ace49-a263-49d1-8eb2-5c768fa4450a",
+              null,
+              "a4"
+            ],
+            [
+              "36e632ad-6fdb-470a-a3c3-cdd95ce8c0e6",
+              null,
+              "a3"
+            ],
+            [
+              "5bcab59f-d2aa-47f8-a384-97ea7b504ca7",
+              null,
+              "a0"
+            ],
+            [
+              "a8b318e1-c83f-4d31-81a9-c202d92bb4a1",
+              null,
+              "a2"
+            ],
+            [
+              "ac71c191-8e4c-4c2d-86a5-4eccde893f6c",
+              "cd15e8e6-6b21-4b1c-8bc2-80c54f64cdb3",
+              "a0"
+            ],
+            [
+              "cd15e8e6-6b21-4b1c-8bc2-80c54f64cdb3",
+              null,
+              "a1"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:05.838Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 6,
+        "folders": 1,
+        "entities": 3,
+        "relations": 2,
+        "foreshadows": 0,
+        "pins": 3,
+        "explicitSceneScopes": 6,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "graph-index-unusable",
+      "variantKey": "G-08/graph-index-unusable",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/graph-index-unusable/setup-receipt.json",
+        "sha256": "99303b2b158bcb7763b18a4fbfea681360523296c6a5bfec4c0c7a968e4e35fd"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g08-query",
+        "runtime": "d8ebfeb4-ff06-4e6f-8e04-1587684faed2"
+      },
+      "seed": {
+        "logical": "g08-odile",
+        "runtime": "0faf00bf-8f78-4a09-bfc9-5858cd7e6807"
+      },
+      "projectId": "7fad5e83-4be3-41bb-aeaf-c8e80ee9afc7",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/graph-index-unusable/cold-workspace/grimodex.db",
+        "sha256": "99d350aee4a9e6f9b78f61b9fa2f3fd96340505ff27a7740a388574712404581"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "0faf00bf-8f78-4a09-bfc9-5858cd7e6807",
+          "createdAt": "2026-10-27T09:08:11.246Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "0faf00bf-8f78-4a09-bfc9-5858cd7e6807",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:08:11.246Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:11.009042240+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "18cf3a60-888e-4a91-9fc1-712b35a607d9",
+              "entryId": "68a7ed92-3369-4423-b9f3-f8796c62f0f8"
+            },
+            {
+              "sceneId": "ed2a6762-55b5-41e3-8d5a-67fd5da3ba86",
+              "entryId": "be2b3b39-b497-439a-b3a1-06852843a88b"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "1cdc0968-f9d0-4877-ba74-3abcb3c67222",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:1f9c15f3cdcd01ae73db8ba4043f4bb5fbfcabcbdde5ca2e889b08f36fbd4e58",
+            "updated_at": "2026-10-27T09:08:11.197Z"
+          },
+          "treeOrder": [
+            [
+              "18cf3a60-888e-4a91-9fc1-712b35a607d9",
+              null,
+              "a2"
+            ],
+            [
+              "447e6a56-2790-4beb-802a-ee5ec0ec1815",
+              null,
+              "a0"
+            ],
+            [
+              "93518b63-05ea-421c-9554-5e12c175d974",
+              null,
+              "a4"
+            ],
+            [
+              "b56e882d-a369-4ae2-8bae-9eedcf7017d9",
+              "e71b83fb-516d-4993-97b4-cbf301093b76",
+              "a0"
+            ],
+            [
+              "d8ebfeb4-ff06-4e6f-8e04-1587684faed2",
+              null,
+              "a5"
+            ],
+            [
+              "e71b83fb-516d-4993-97b4-cbf301093b76",
+              null,
+              "a1"
+            ],
+            [
+              "ed2a6762-55b5-41e3-8d5a-67fd5da3ba86",
+              null,
+              "a3"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:11.098Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:11.009042240+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "0faf00bf-8f78-4a09-bfc9-5858cd7e6807",
+              "createdAt": "2026-10-27T09:08:11.246Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "18cf3a60-888e-4a91-9fc1-712b35a607d9",
+              "entryId": "68a7ed92-3369-4423-b9f3-f8796c62f0f8"
+            },
+            {
+              "sceneId": "d8ebfeb4-ff06-4e6f-8e04-1587684faed2",
+              "entryId": "0faf00bf-8f78-4a09-bfc9-5858cd7e6807"
+            },
+            {
+              "sceneId": "ed2a6762-55b5-41e3-8d5a-67fd5da3ba86",
+              "entryId": "be2b3b39-b497-439a-b3a1-06852843a88b"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "1cdc0968-f9d0-4877-ba74-3abcb3c67222",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:1f9c15f3cdcd01ae73db8ba4043f4bb5fbfcabcbdde5ca2e889b08f36fbd4e58",
+            "updated_at": "2026-10-27T09:08:11.197Z"
+          },
+          "treeOrder": [
+            [
+              "18cf3a60-888e-4a91-9fc1-712b35a607d9",
+              null,
+              "a2"
+            ],
+            [
+              "447e6a56-2790-4beb-802a-ee5ec0ec1815",
+              null,
+              "a0"
+            ],
+            [
+              "93518b63-05ea-421c-9554-5e12c175d974",
+              null,
+              "a4"
+            ],
+            [
+              "b56e882d-a369-4ae2-8bae-9eedcf7017d9",
+              "e71b83fb-516d-4993-97b4-cbf301093b76",
+              "a0"
+            ],
+            [
+              "d8ebfeb4-ff06-4e6f-8e04-1587684faed2",
+              null,
+              "a5"
+            ],
+            [
+              "e71b83fb-516d-4993-97b4-cbf301093b76",
+              null,
+              "a1"
+            ],
+            [
+              "ed2a6762-55b5-41e3-8d5a-67fd5da3ba86",
+              null,
+              "a3"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:11.098Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 6,
+        "folders": 1,
+        "entities": 3,
+        "relations": 2,
+        "foreshadows": 0,
+        "pins": 3,
+        "explicitSceneScopes": 6,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "graph-recovered",
+      "variantKey": "G-08/graph-recovered",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/graph-recovered/setup-receipt.json",
+        "sha256": "2c0db4614c2d5f8f2ac6bac9baf5a41c12432068df8eb5843fc02456851d3365"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g08-query",
+        "runtime": "2f824fb1-078d-4da2-b525-7f402bbf2d4e"
+      },
+      "seed": {
+        "logical": "g08-odile",
+        "runtime": "80b025cd-d658-489e-8eb4-399361630416"
+      },
+      "projectId": "c45aaca9-9707-499a-b220-2d5fa9e69553",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/graph-recovered/cold-workspace/grimodex.db",
+        "sha256": "277ce3cec23521b8d462aaa28892e846b493029c06b679437698013b32941f0d"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "80b025cd-d658-489e-8eb4-399361630416",
+          "createdAt": "2026-10-27T09:08:16.620Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "80b025cd-d658-489e-8eb4-399361630416",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:08:16.620Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:16.377893964+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+              "entryId": "070eae77-5d5d-4e35-a9ed-ac12b125939b"
+            },
+            {
+              "sceneId": "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+              "entryId": "55232202-1107-429e-8a5c-a46effcd5e7d"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "60668c3b-272e-49d7-b21f-4f6bdffac1bd",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:70f5db0cfd87bfe5687ea194e93015f685359ac63050682a31e995ede1799ac4",
+            "updated_at": "2026-10-27T09:08:16.570Z"
+          },
+          "treeOrder": [
+            [
+              "2f824fb1-078d-4da2-b525-7f402bbf2d4e",
+              null,
+              "a5"
+            ],
+            [
+              "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+              null,
+              "a3"
+            ],
+            [
+              "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+              null,
+              "a2"
+            ],
+            [
+              "9865347b-2594-4f02-b453-ff476f0ea1ce",
+              "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+              "a0"
+            ],
+            [
+              "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+              null,
+              "a1"
+            ],
+            [
+              "cc5c61dc-2f4e-42a5-9320-c16b45be7e3d",
+              null,
+              "a4"
+            ],
+            [
+              "d2e833ce-c124-4257-99bb-fc002637a00b",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:16.468Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:16.377893964+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "80b025cd-d658-489e-8eb4-399361630416",
+              "createdAt": "2026-10-27T09:08:16.620Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "2f824fb1-078d-4da2-b525-7f402bbf2d4e",
+              "entryId": "80b025cd-d658-489e-8eb4-399361630416"
+            },
+            {
+              "sceneId": "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+              "entryId": "070eae77-5d5d-4e35-a9ed-ac12b125939b"
+            },
+            {
+              "sceneId": "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+              "entryId": "55232202-1107-429e-8a5c-a46effcd5e7d"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "60668c3b-272e-49d7-b21f-4f6bdffac1bd",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:70f5db0cfd87bfe5687ea194e93015f685359ac63050682a31e995ede1799ac4",
+            "updated_at": "2026-10-27T09:08:16.570Z"
+          },
+          "treeOrder": [
+            [
+              "2f824fb1-078d-4da2-b525-7f402bbf2d4e",
+              null,
+              "a5"
+            ],
+            [
+              "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+              null,
+              "a3"
+            ],
+            [
+              "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+              null,
+              "a2"
+            ],
+            [
+              "9865347b-2594-4f02-b453-ff476f0ea1ce",
+              "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+              "a0"
+            ],
+            [
+              "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+              null,
+              "a1"
+            ],
+            [
+              "cc5c61dc-2f4e-42a5-9320-c16b45be7e3d",
+              null,
+              "a4"
+            ],
+            [
+              "d2e833ce-c124-4257-99bb-fc002637a00b",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:16.468Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 6,
+        "folders": 1,
+        "entities": 3,
+        "relations": 2,
+        "foreshadows": 0,
+        "pins": 3,
+        "explicitSceneScopes": 6,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "chronicle-index-unusable",
+      "variantKey": "G-08/chronicle-index-unusable",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/chronicle-index-unusable/setup-receipt.json",
+        "sha256": "65838d0c6ac0c52d9e8b4cc0643c8395381d9806c11128ce2b8d021996cbd19f"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g08-query",
+        "runtime": "8b603be0-8615-4f7d-841d-1ff7d4fa6c51"
+      },
+      "seed": {
+        "logical": "g08-odile",
+        "runtime": "d50da356-dcc9-4a2f-bbdc-7605edd9b9d0"
+      },
+      "projectId": "5e8a13d0-9c62-40c7-8e54-47003a62c2f1",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/chronicle-index-unusable/cold-workspace/grimodex.db",
+        "sha256": "aa97a2a3d4131c1bc2265f259109943ebc69ef2b8f745812a5fbbe54576f860c"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "d50da356-dcc9-4a2f-bbdc-7605edd9b9d0",
+          "createdAt": "2026-10-27T09:08:21.851Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "d50da356-dcc9-4a2f-bbdc-7605edd9b9d0",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:08:21.851Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:21.608414220+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "1745146d-3fa9-4b68-ad23-775eb9a735e8",
+              "entryId": "c400c7d0-9c13-42d3-900f-6749a6ee1cf8"
+            },
+            {
+              "sceneId": "97cbb043-e5c6-4712-b505-23f76ad5f866",
+              "entryId": "19ff1aad-0c06-439d-a8a7-20c0ce824cc5"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "e7e5e5ef-d523-49cd-b0b6-65904e3cc20a",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:20275a7db14fd60f09c2dd247ca499196e5f01631c2ea8aff2adb9fde05df844",
+            "updated_at": "2026-10-27T09:08:21.799Z"
+          },
+          "treeOrder": [
+            [
+              "1745146d-3fa9-4b68-ad23-775eb9a735e8",
+              null,
+              "a3"
+            ],
+            [
+              "7eddc245-4be8-4b59-bd18-c3feea44446b",
+              "bdf98b98-81f3-47b5-b812-cc7fcde51340",
+              "a0"
+            ],
+            [
+              "8b603be0-8615-4f7d-841d-1ff7d4fa6c51",
+              null,
+              "a5"
+            ],
+            [
+              "97cbb043-e5c6-4712-b505-23f76ad5f866",
+              null,
+              "a2"
+            ],
+            [
+              "a6e1655f-a1b8-4c84-8a67-09d2e1e99681",
+              null,
+              "a4"
+            ],
+            [
+              "bdf98b98-81f3-47b5-b812-cc7fcde51340",
+              null,
+              "a1"
+            ],
+            [
+              "c2638e39-9a21-4ad5-80f1-cab427df9889",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:21.704Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:21.608414220+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "d50da356-dcc9-4a2f-bbdc-7605edd9b9d0",
+              "createdAt": "2026-10-27T09:08:21.851Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "1745146d-3fa9-4b68-ad23-775eb9a735e8",
+              "entryId": "c400c7d0-9c13-42d3-900f-6749a6ee1cf8"
+            },
+            {
+              "sceneId": "8b603be0-8615-4f7d-841d-1ff7d4fa6c51",
+              "entryId": "d50da356-dcc9-4a2f-bbdc-7605edd9b9d0"
+            },
+            {
+              "sceneId": "97cbb043-e5c6-4712-b505-23f76ad5f866",
+              "entryId": "19ff1aad-0c06-439d-a8a7-20c0ce824cc5"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "e7e5e5ef-d523-49cd-b0b6-65904e3cc20a",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:20275a7db14fd60f09c2dd247ca499196e5f01631c2ea8aff2adb9fde05df844",
+            "updated_at": "2026-10-27T09:08:21.799Z"
+          },
+          "treeOrder": [
+            [
+              "1745146d-3fa9-4b68-ad23-775eb9a735e8",
+              null,
+              "a3"
+            ],
+            [
+              "7eddc245-4be8-4b59-bd18-c3feea44446b",
+              "bdf98b98-81f3-47b5-b812-cc7fcde51340",
+              "a0"
+            ],
+            [
+              "8b603be0-8615-4f7d-841d-1ff7d4fa6c51",
+              null,
+              "a5"
+            ],
+            [
+              "97cbb043-e5c6-4712-b505-23f76ad5f866",
+              null,
+              "a2"
+            ],
+            [
+              "a6e1655f-a1b8-4c84-8a67-09d2e1e99681",
+              null,
+              "a4"
+            ],
+            [
+              "bdf98b98-81f3-47b5-b812-cc7fcde51340",
+              null,
+              "a1"
+            ],
+            [
+              "c2638e39-9a21-4ad5-80f1-cab427df9889",
+              null,
+              "a0"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:21.704Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 6,
+        "folders": 1,
+        "entities": 3,
+        "relations": 2,
+        "foreshadows": 0,
+        "pins": 3,
+        "explicitSceneScopes": 6,
+        "unwrittenSceneScopes": 0
+      }
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "both-indexes-unusable",
+      "variantKey": "G-08/both-indexes-unusable",
+      "receipt": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/both-indexes-unusable/setup-receipt.json",
+        "sha256": "f5105de65afb4eeca306a1a4e8d27624a406d92ec5eed800e3a2c40b4e372b34"
+      },
+      "setupStatus": "setup-through-seed-pin",
+      "phases": [
+        "project",
+        "scenes",
+        "entities",
+        "relations",
+        "scope-registry",
+        "scene-scope",
+        "foreshadows",
+        "foreshadow-links",
+        "pins",
+        "seed-pin"
+      ],
+      "querySceneId": {
+        "logical": "g08-query",
+        "runtime": "affadff3-a8ee-4406-a3f7-1e044b9d41f0"
+      },
+      "seed": {
+        "logical": "g08-odile",
+        "runtime": "29ce3dba-5099-4c1a-a754-41233d6ce3ba"
+      },
+      "projectId": "474c1b3a-8172-423e-87cb-f07a65190bce",
+      "db": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/both-indexes-unusable/cold-workspace/grimodex.db",
+        "sha256": "c4a0a26afa6e224856cb4b3ae1871bced9c323379555856c43edcc698ab3b083"
+      },
+      "sceneLive": true,
+      "pins": [
+        {
+          "entryId": "29ce3dba-5099-4c1a-a754-41233d6ce3ba",
+          "createdAt": "2026-10-27T09:08:27.242Z",
+          "entryInProject": true
+        }
+      ],
+      "spP1": {
+        "status": "match",
+        "productSeed": "29ce3dba-5099-4c1a-a754-41233d6ce3ba",
+        "pinCount": 1
+      },
+      "spP2": {
+        "ok": true,
+        "findings": []
+      },
+      "seedPinStep": {
+        "createdAt": "2026-10-27T09:08:27.242Z",
+        "before": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:27.012393508+00:00"
+          },
+          "queryScenePins": [],
+          "workspacePins": [
+            {
+              "sceneId": "0191117e-56ec-4ab6-a121-1aaf3b734332",
+              "entryId": "3f1e2477-7de4-4387-a35e-3eb1bbb94029"
+            },
+            {
+              "sceneId": "25243a32-d384-458a-8106-eb0a94ebb333",
+              "entryId": "21b46ca6-f6df-406b-8c98-e944cf882f8a"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "e6e8038d-86f6-4f93-872f-88abf6bc2ffc",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:bf5fc6e8d3975e1c623223aba613743cbe5558257faa515ad098397bb4448ce4",
+            "updated_at": "2026-10-27T09:08:27.192Z"
+          },
+          "treeOrder": [
+            [
+              "0191117e-56ec-4ab6-a121-1aaf3b734332",
+              null,
+              "a2"
+            ],
+            [
+              "25243a32-d384-458a-8106-eb0a94ebb333",
+              null,
+              "a3"
+            ],
+            [
+              "377e608b-3bae-421b-ba13-674a8ca6a198",
+              null,
+              "a4"
+            ],
+            [
+              "affadff3-a8ee-4406-a3f7-1e044b9d41f0",
+              null,
+              "a5"
+            ],
+            [
+              "b4855a05-d14d-440d-8d2a-1cfb898f637e",
+              null,
+              "a0"
+            ],
+            [
+              "c72282bf-23ce-433d-bb30-824ae3bebefd",
+              "e2ae7c6f-38aa-4082-924c-0d985cbefe80",
+              "a0"
+            ],
+            [
+              "e2ae7c6f-38aa-4082-924c-0d985cbefe80",
+              null,
+              "a1"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:27.100Z"
+          }
+        },
+        "after": {
+          "queryScene": {
+            "live": true,
+            "version": 0,
+            "updatedAt": "2026-10-27T09:08:27.012393508+00:00"
+          },
+          "queryScenePins": [
+            {
+              "entryId": "29ce3dba-5099-4c1a-a754-41233d6ce3ba",
+              "createdAt": "2026-10-27T09:08:27.242Z",
+              "entryInProject": true
+            }
+          ],
+          "workspacePins": [
+            {
+              "sceneId": "0191117e-56ec-4ab6-a121-1aaf3b734332",
+              "entryId": "3f1e2477-7de4-4387-a35e-3eb1bbb94029"
+            },
+            {
+              "sceneId": "25243a32-d384-458a-8106-eb0a94ebb333",
+              "entryId": "21b46ca6-f6df-406b-8c98-e944cf882f8a"
+            },
+            {
+              "sceneId": "affadff3-a8ee-4406-a3f7-1e044b9d41f0",
+              "entryId": "29ce3dba-5099-4c1a-a754-41233d6ce3ba"
+            }
+          ],
+          "sceneScopeBinding": {
+            "scene_incarnation_id": "e6e8038d-86f6-4f93-872f-88abf6bc2ffc",
+            "compatibility_marker": "explicit",
+            "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+            "knowledge_holder_json": "{\"kind\":\"reader\"}",
+            "audience_json": "{\"kind\":\"reader\"}",
+            "version": 3,
+            "source_token": "sha256:bf5fc6e8d3975e1c623223aba613743cbe5558257faa515ad098397bb4448ce4",
+            "updated_at": "2026-10-27T09:08:27.192Z"
+          },
+          "treeOrder": [
+            [
+              "0191117e-56ec-4ab6-a121-1aaf3b734332",
+              null,
+              "a2"
+            ],
+            [
+              "25243a32-d384-458a-8106-eb0a94ebb333",
+              null,
+              "a3"
+            ],
+            [
+              "377e608b-3bae-421b-ba13-674a8ca6a198",
+              null,
+              "a4"
+            ],
+            [
+              "affadff3-a8ee-4406-a3f7-1e044b9d41f0",
+              null,
+              "a5"
+            ],
+            [
+              "b4855a05-d14d-440d-8d2a-1cfb898f637e",
+              null,
+              "a0"
+            ],
+            [
+              "c72282bf-23ce-433d-bb30-824ae3bebefd",
+              "e2ae7c6f-38aa-4082-924c-0d985cbefe80",
+              "a0"
+            ],
+            [
+              "e2ae7c6f-38aa-4082-924c-0d985cbefe80",
+              null,
+              "a1"
+            ]
+          ],
+          "scopeRegistry": {
+            "registryVersion": "narrative-scene-scope-registry/1",
+            "version": 2,
+            "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+            "updatedAt": "2026-10-27T09:08:27.100Z"
+          }
+        }
+      },
+      "logicalRuntimeCheck": {
+        "ok": true,
+        "scenes": 6,
+        "folders": 1,
+        "entities": 3,
+        "relations": 2,
+        "foreshadows": 0,
+        "pins": 3,
+        "explicitSceneScopes": 6,
+        "unwrittenSceneScopes": 0
+      }
+    }
+  ]
+}

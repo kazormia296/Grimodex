@@ -1,0 +1,216 @@
+{
+  "schemaVersion": "nir1-c-body-declaration-addendum/1",
+  "addendumId": "nir1-graph-declaration-addendum/1",
+  "status": "frozen-after-independent-review",
+  "graphRuntimeObservedBeforeAuthoring": false,
+  "purpose": "K2/4 の「setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）」の G-02 base、G-07 base、G-08 base-usable と graph-recovered の分。freeze.v1.json が束縛しない新しい file に置き、CP-0 が freeze した fixture、setupOrder、setupTimeline、measurementPoint、前提条件、期待値は変えない。",
+  "contract": {
+    "draftRef": "nir1-c-body-disclosure-proposal/4",
+    "contractIds": [
+      "graph-target-scene-body-disclosure",
+      "scope-storage-authority"
+    ],
+    "path": "docs/plans/nir1-c-body-disclosure-proposal-4-draft.md",
+    "sha256": "efc30cca32f2c91386baf3061836427ae7df3499c18188d31b5e2ba422a2fcfd",
+    "confirmedAt": "2026-10-17 Session B2（続行計画 §10.4。確認された版は claude/nir1-contracts の 40d10adff87e19fcb364b624a1b422ba4890b3e0）",
+    "sections": [
+      "確認の扱い（最後から 2 つ目の項: 観測前の commit）",
+      "Main の一回限りの確認（評価の harness の CI seam と、測定の workspace）",
+      "宣言の値（v1 は G-01 subset）",
+      "setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）"
+    ]
+  },
+  "references": {
+    "graphCaseFreeze": {
+      "path": "evals/nir1-graph/freeze.v1.json",
+      "sha256": "6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7",
+      "note": "K2/4 :390 の 45d8a055… は CQ-LIM-4（#678、a789039a）が作り直す前の値。K2/4 :390 と :418 のとおり作り直した後の sha256 を引く。G-02、G-07、G-08 の fixture 3 件はこの作り直しで変わっていない（K2/4 :390 の c9e9ea0c…、385eaa73…、0415561e… と一致）。"
+    },
+    "fixtures": {
+      "G-02": {
+        "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+        "fixtureId": "nir1-g02-directed-relation/1",
+        "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c"
+      },
+      "G-07": {
+        "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+        "fixtureId": "nir1-g07-reading-before-reveal/1",
+        "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0"
+      },
+      "G-08": {
+        "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+        "fixtureId": "nir1-g08-graph-index-fallback/1",
+        "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9"
+      }
+    }
+  },
+  "declarationValues": {
+    "target": "saved-body-full-and-title",
+    "reading": "not-declared",
+    "story": "independent",
+    "auto": "independent",
+    "phase": "independent",
+    "reveal": "non-secret",
+    "pov": "independent",
+    "a1": "not-declared",
+    "note": "K2/4「宣言の値（v1 は G-01 subset）」の表のとおり。4 つの Scene で共通。"
+  },
+  "declarations": [
+    {
+      "caseId": "G-02",
+      "variantId": "base",
+      "sceneId": "g02-tamsin-first",
+      "readingOrder": {
+        "scene": 30,
+        "query": 100
+      },
+      "vetoRecords": [],
+      "vetoNote": "なし（foreshadow なし）",
+      "expectedExcerpt": {
+        "sceneId": "g02-tamsin-first",
+        "start": 0,
+        "end": 78
+      }
+    },
+    {
+      "caseId": "G-07",
+      "variantId": "base",
+      "sceneId": "g07-pell-dock",
+      "readingOrder": {
+        "scene": 40,
+        "query": 100
+      },
+      "vetoRecords": [],
+      "vetoNote": "なし（secret の foreshadow 3 件の payoff の Scene は g07-rhea-reveal、g07-late、なし。g07-pell-dock を参照しない）",
+      "expectedExcerpt": {
+        "sceneId": "g07-pell-dock",
+        "start": 0,
+        "end": 70
+      }
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "base-usable",
+      "sceneId": "g08-cass-attic",
+      "readingOrder": {
+        "scene": 20,
+        "query": 100
+      },
+      "vetoRecords": [],
+      "vetoNote": "なし（foreshadow なし）",
+      "expectedExcerpt": {
+        "sceneId": "g08-cass-attic",
+        "start": 0,
+        "end": 64
+      }
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "graph-recovered",
+      "sceneId": "g08-cass-attic",
+      "readingOrder": {
+        "scene": 20,
+        "query": 100
+      },
+      "vetoRecords": [],
+      "vetoNote": "なし（foreshadow なし）",
+      "expectedExcerpt": {
+        "sceneId": "g08-cass-attic",
+        "start": 0,
+        "end": 64
+      }
+    }
+  ],
+  "declarationsNote": "どの Scene も、POV、story time、Chronicle event を持たず、A1 は explicit で、reading が query より前なので、v1 の subset で宣言できる。宣言は workspace に束縛されるので、run ごと（G-02 base、G-07 base、G-08 base-usable、G-08 graph-recovered。G-01 を含めて 5 run）に行う。",
+  "variantsWithoutDeclaration": {
+    "variants": [
+      "G-03/base",
+      "G-03/frontier-exceeded",
+      "G-04/base",
+      "G-05/base",
+      "G-06/base",
+      "G-08/graph-index-unusable",
+      "G-08/chronicle-index-unusable",
+      "G-08/both-indexes-unusable"
+    ],
+    "reason": "期待値が Graph-only の追加（appendedSceneId）を持たない variant は宣言を要しない（C16）。G-08 の 3 つの unusable variant でも宣言しない。追加 Scene を期待せず、宣言の有無は期待値を変えない。"
+  },
+  "declarationStep": {
+    "outsideSetupOrder": true,
+    "after": "then foreshadows, foreshadow Codex links and pins",
+    "before": "the first Graph arm query",
+    "setupTimelineStep": false,
+    "measurementPoint": false,
+    "fixtureChanged": false,
+    "setupOrderChanged": false,
+    "rule": "3 件の fixture の measurementBoundary.setupOrder は同じ文で、宣言の段を持たない。この文は freeze.v1.json が束縛するので書き換えず、この addendum もこの文に段を足さない。宣言の段は setupOrder の外で、「foreshadows, foreshadow Codex links and pins」の段の後、Graph arm の最初の query の前に挟む 1 段である。setupOrder の各段の順序と内容、setupTimeline、measurementPoint は変えない。宣言の段は setupTimeline の step にも measurementPoint にも数えない。declarationPlace の (ii) により、実際には setupTimeline と measurementPoint の後、測定の workspace を開いた後、その workspace で seed つきの query（V-10 の probe と warm-up を含む）を出す前に置く（K2/4 :406 は setupTimeline の step の前でも後でもよいとする）。",
+    "setupOrderConstraint": "setupOrder の「Do not change tree order, registry or Scene Scope after the first typed revision is prepared」の Scene Scope は、setupOrder の「every explicit Scene Scope」の段が設定する明示 A1 の値を指す。宣言の writer は tree order と registry を書かず、v1 の列と A1 の意味の列も書かない（C15）ので、宣言が setupTimeline の後に入ってもこの制約に当たらない。観測前の commit の reviewer は、宣言の段の前後で tree order、registry、v1 の列、A1 の値、Index の metadata が変わらないことの確かめ方（測定の receipt の照合）を確かめる。"
+  },
+  "graphRecovered": {
+    "noDeclarationWriteBetweenMutationAndMeasurementPoint": true,
+    "rule": "G-08 の graph-recovered では、mutation の commit から測定点（再 build の後）までの間に、宣言の書込みを入れない（Index の状態の遷移を乱さない）。declarationPlace の (ii) では宣言は測定点の後、測定の workspace で行うので、この区間に入らない。"
+  },
+  "declarationTiming": "freeze 済みの setupOrder の「foreshadow、foreshadow の Codex link、pin」の段の後で、Graph arm の最初の query より前（K2/4 の「宣言の時期（G-02、G-07、G-08）」）。その時点で Scene、明示 A1、registry、foreshadow がそろい、writer の veto が最終の記録を読む。mutation は Codex の Relation の型と entry の summary の編集と IR の承認撤回で、追加 Scene の本文、title、A1 に触れないので、宣言は失効しない（C16）。",
+  "declarationPlace": {
+    "choice": "ii",
+    "rule": "K2/4「Main の一回限りの確認」の「測定の workspace」の (ii)。G-01 の addendum（evals/nir1-g01/setup-addendum.v1.json）と同じ選択。",
+    "reason": "現行の paired harness は setup の DB を別の path に書き出して開くので、setup の workspace で宣言すると測定の workspace で失効する（K2/4 の C13）。(ii) は setup を変えず、照合を測定の receipt の中で閉じる。どちらでも期待値は変わらない（K2/4 :418）。"
+  },
+  "declarationApproval": {
+    "main": "standard build の製品 Main（差し替えのない main）。setup のほかの段に決定論の provider の対応表だけを差し替えた Main を使う場合も、宣言の段には使わない。",
+    "seam": "electron/main/bodyDeclarationCiSeam.ts の CI seam（G-01 の addendum の declarationApproval と同じ）。",
+    "record": "seam の版、env の名前、nonce の digest、承認した grant の数と binding の digest を Main の receipt に書き、測定の receipt から参照する。"
+  },
+  "bSealProcedure": "B の sealed binding は、Revision の承認と pin の後に、正規の経路（B-ROUTE の maintenance の cycle の B の build。journey seam〔trigger nir1-graph-index-build〕で起動 gate を開け、sealed の B の generation を待つ）で確立する。試験と診断用の publish の呼出しは使わない。確立できなければ、前提条件 b-sealed-binding が成り立たず blocked:b-sealed-binding と記録される（宣言では解けない）。",
+  "measurementWorkspaceCheck": [
+    "測定の receipt に、測定に使った workspace の workspace ID と canonical locator の digest と、宣言の token を書く。",
+    "Graph arm の最初の query の前に、宣言が current であること（束縛の digest が一致すること）を照合し、一致しなければ測定の前に [precheck] で止める（blocked にしない）。",
+    "宣言の段の直前と直後で、B の Graph index と Chronicle の IR の Index の metadata（generation と dirty）が同じであることを同じ receipt に記録して照合し、違えば測定の前に [precheck] で止める。",
+    "この照合は fixture の前提条件に加えない（CP-0 が freeze した前提条件の集合は変えない）。",
+    "（推奨。S4／正式の runner への申し送り。K2/4 :407 の reviewer の確認を receipt で補う）宣言の段の直前と直後で、tree order、project の registry、全 Scene の v1 の列（version と token）、A1 の値の digest を測定の receipt に書き、一致を照合する。違えば測定の前に [precheck] で止める。"
+  ],
+  "afterDeclaration": "宣言の後は、その Scene の本文、title、A1、順序、その Scene を含む folder の構造と、project の registry を変えない（folder の構造の変更は X1-1 で配下の Scene の v1 を進める）。宣言は行の v1 の列（updated_at を含む）を書き換えないので Scope authority の revision を変えず、その kind の event だけの transaction は Index を dirty にしない（C8、C11、C15、C17）。",
+  "recordPreconditions": "G-02、G-07、G-08 の fixture は POV、story time、Chronicle event を設定しない。v1 の story は independent を宣言するので story の位置は要らない。POV は、記録があれば veto になるだけで、明示の POV は要らない。reading-before は、fixture の reading order（追加 Scene は 20〜40、query は 100）を setup が実現した読む順から、live な project Scope authority で導く。",
+  "cb4Inputs": "宣言の値は story と POV が independent なので、CB-4 は story position も POV も要求しない。G-02 base、G-07 base、G-08 の base-usable と graph-recovered の前提条件 cb4-inputs は成り立つ。宣言がなく追加 Scene が返らないことは cb4-inputs に当たらず、期待値と違うので Hold になる。",
+  "unchanged": "CP-0 が freeze した query、Scene、Gold、期待値、前提条件、setupTimeline、variant のまま（declarations の excerpt の範囲は freeze 済みの期待値である）。R と R+IR の setup は変えない。",
+  "diagnosticNegatives": [
+    {
+      "id": "K24-G02-N1",
+      "caseId": "G-02",
+      "variantId": "base",
+      "declare": false,
+      "mutationAfterDeclaration": null,
+      "expectation": "宣言しない run では、R+IR+Graph が同じ run で観測した R+IR と同じになり、g02-tamsin-first が返らない。",
+      "countsInCaseJudgement": false
+    },
+    {
+      "id": "K24-G07-N1",
+      "caseId": "G-07",
+      "variantId": "base",
+      "declare": false,
+      "mutationAfterDeclaration": null,
+      "expectation": "宣言しない run では、R+IR+Graph が同じ run で観測した R+IR と同じになり、g07-pell-dock が返らない。",
+      "countsInCaseJudgement": false
+    },
+    {
+      "id": "K24-G08-N1",
+      "caseId": "G-08",
+      "variantId": "base-usable",
+      "declare": false,
+      "mutationAfterDeclaration": null,
+      "expectation": "宣言しない run では、R+IR+Graph が同じ run で観測した R+IR と同じになり、g08-cass-attic が返らない。",
+      "countsInCaseJudgement": false
+    }
+  ],
+  "diagnosticNegativeRule": "この run は Gold の run とは別に行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。失効の負例（再保存と restore）は、G-01 と CB-4 の経路ごとの試験で足りるので、G-02、G-07、G-08 では足さない（K2/4 :417）。",
+  "reviewPlan": "観測前の commit の独立 reviewer（S3）が確かめること: 4 つの Scene が v1 の subset で宣言できること（veto に当たる記録も POV もない）、宣言の段が freeze 済みの期待値、前提条件、setupTimeline を変えないこと、診断用の負例、K2/4 の表との一致、参照した sha256。確かめた記録は観測前の commit に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は以後変えない。",
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4",
+    "recordSha256": "d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7",
+    "verdict": "accept-with-conditions",
+    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たしたと DR-CP4-P-2〜P-4 に記録されている（C2 の組の数は #759、DR-CP4-Q-2 で直した。S3 が充足を見直した記録は無い。repo の記録に、7 回目の後の S3 のレビューは無い）。C2 の K（側ごとの上限 6）は S3 でなく integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は「K は例えば 3（dev は 2/35）。これで偏りと最小の組数（24 以上）を同時に押さえます」と書いた（24 は組の数）。側ごとの上限 6 だけでは IR を比べる組が最少 18（30−12）になり S3 の条件より緩かったので、IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）を #759（DR-CP4-Q-2）で足し、S3 の組の最少 24 を満たす。7 回目が問い 1（P-S2-6）で求めた、予定しているユーザー通知に C1〜C3 の読みを明記することの記録は docs/plans/nir1-cp4-records/user-notification-2026-10-30.md（commit bf5b3799f9a8220d43f15e3479ad15e66b8c8928〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕、SHA-256 9597f5f4db5922ed1b65b9e1ea6f9deaccd8f243d80cc9db83b618da6fc91e06）にある。確認ではなく、返答も求めていない（K の帰属、組の最少 18 の取り違えと組の上限による訂正は、その記録の 2026-10-31 の補足と訂正）。record は S3 の 7 回目の報告の原文の記録で、recordSha256 はその commit のその file の bytes の SHA-256。記録の冒頭によれば、7 回目の報告の原本が repo に無かったので、integrator が 2026-10-30 に会話の記録から書き起こした。reviewer が使った scratchpad の script は repo に無い。1〜6 回目の報告の原文は repo に無い（要旨は作者の宣言の revisions、cp4-decisions.md の DR-CP4-L-28、P-1 など）。この file は 7 回目が見た差分（968f6782、bc2500da）に含まれない。前の回のレビューがこの bytes を見たかは、その原文が repo に無いので、この記録では示さない。7 回目の後に、この file を変えた commit は S4a（status と review だけ）のほかに無い。"
+  },
+  "seedPinStepNote": "SP/1（nir1-graph-case-seed-pin-proposal/1。2026-10-27 に確認）の seed の pin の段（evals/nir1-graph/seed-pin-addendum.v1.json）を先に置き、この addendum の宣言の段はその後に置く。G-02〜G-08 の seed の pin の段は setupOrder の「foreshadows, foreshadow Codex links and pins」の段の直後（maintenance の有効化と setupTimeline の前）、G-01 は g01-mira の pin の後（typed Revision の prepare と B の seal の前）にある。宣言の段は declarationPlace (ii) のとおり測定の workspace を開いた後、Graph の arm の最初の query の前で、K2/4 の内容（宣言する Scene、値、期待値、負例）は変えない。診断用の負例（宣言しない run を含む）も seed の pin の段を含む workspace で取る（SP/1 の設計: Graph が要求された状態の負例になる）。"
+}

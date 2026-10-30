@@ -514,6 +514,15 @@ export const LIGHT_SUITE_DEFINITIONS = Object.freeze({
       [
         "node",
         "--test",
+        // CP-4 S2: the documents fixed before the first Graph observation
+        // (K2/4 addenda, observation prep, (b) traces, K6/4 procedure draft).
+        "scripts/quality/nir1-graph/observation-prep.test.mjs",
+        // CP-4 S1g-B: the SP/1 seed pin addendum.
+        "scripts/quality/nir1-graph/seed-pin-addendum.test.mjs",
+      ],
+      [
+        "node",
+        "--test",
         "scripts/quality/nir1-packing/contract.test.mjs",
         "scripts/quality/nir1-packing/runner.test.mjs",
         "scripts/quality/nir1-packing/scorer.test.mjs",

@@ -1,0 +1,5266 @@
+{
+  "schemaVersion": "nir1-cp4-trace/1",
+  "traceId": "nir1-cp4-trace-editing/1",
+  "kind": "editing",
+  "status": "frozen-after-independent-review",
+  "graphRuntimeObservedBeforeAuthoring": false,
+  "contract": {
+    "k62": {
+      "draftRef": "nir1-final-request-eval-proposal/2",
+      "contractId": "graph-eval-procedure",
+      "path": "docs/plans/nir1-final-request-eval-proposal-2-draft.md",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8",
+      "sections": [
+        "graph-eval-procedure の測定の手順の 4（trace の run (b)）",
+        "条件の (b) の判定の規則の 1（Q≥200）",
+        "Mandatory defenses（trace の固定と再利用、maintenance）",
+        "事前登録の凍結の 2（診断の trace と sample の予定の file）"
+      ]
+    },
+    "k64": {
+      "draftRef": "nir1-final-request-eval-proposal/4",
+      "contractId": "graph-eval-procedure",
+      "path": "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
+      "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
+      "sections": [
+        "変える点 15（判断 8 の (ii)。(b) で follow-up を数える。R1 と R2 を当てない）",
+        "測定の手順の読み替え R8（2 つの表示と連続編集は (b) の trace で記録）",
+        "変える点 12（FETCH_DEBOUNCE_MS と graph-ready の取り直しの規則の変更で失効）"
+      ]
+    }
+  },
+  "usedBy": [
+    "CP-4 の (b) の記録（K6/2「条件が成立しない場合の CP-4 の可用性」を K6/4 の変える点 3 で読む）",
+    "K6/2 の条件の (ii) と (iii) の診断（(iii) は CP-4 の観測の前に固定したこの file を作り直さずに使う）"
+  ],
+  "project": {
+    "caseId": "G-02",
+    "variantId": "base",
+    "fixturePath": "evals/nir1-graph/g02-directed-relation.v1.json",
+    "fixtureSha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c",
+    "seedPinAddendum": "evals/nir1-graph/seed-pin-addendum.v1.json",
+    "setup": "G-02 base の Gold の run と同じ setup の手順（setupOrder と、SP/1 の seed の pin の段〔evals/nir1-graph/seed-pin-addendum.v1.json。g02-query から g02-orla への pin を upsertScenePin で 1 つ〕、setupTimeline、measurementPoint after-maintenance-current、B の seal は B-ROUTE の正規の経路、K2/4 の宣言の段は declarationPlace (ii)〔evals/nir1-graph/declaration-addendum.v1.json〕）。setup の最後に、期待寄与の材料（expectedMaterials）が A3 で eligible、Freshness が fresh、B の seal が current であることを確かめ、logical ID と runtime ID を setup receipt に記録する（K6/2 の Mandatory defenses）。",
+    "workspace": "trace ごとに新しい workspace（manifest の isolation。Gold の run とは別の workspace）。編集中と閲覧中は別の workspace で行う。",
+    "d2aMode": "restricted（observation-prep.v1.json の d10 の graph arm と同じ。Graph は restricted でだけ出る）",
+    "reason": "期待寄与の材料（資格付きの edge を 1 件以上生む Revision）を logical ID で持つ case のうち、mutation が測定点の前に終わり、secret の foreshadow と Index の保持（index-state-holding）を持たず、Graph が available な最も単純な case として G-02 base を選んだ。G-01 は typed Revision の logical ID を fixture に持たない。G-03〜G-06 も条件を満たすが、1 つに固定するために単純さで選んだ（観測した値では選んでいない）。"
+  },
+  "querySceneId": "g02-query",
+  "seed": {
+    "entityId": "g02-orla",
+    "source": "製品が出す query の seed（query の Scene の最初の pin。selectNir1GraphSeed）。その pin は SP/1 の seed の pin の段が setup で書いた g02-query から g02-orla への 1 つで、編集中の trace は本文だけを編集し pin を変えないので、各 query の seed は製品の規則で g02-orla になる。trace の workspace で R5 の照合（段の後の DB からの読み直し）が match でなければ trace を走らせず [precheck]（observation-prep.v1.json の r5Gate）。g02-harbor には pin が無いので、その query は seed を持たない。"
+  },
+  "expectedMaterials": [
+    {
+      "revisionId": "g02-r-tamsin",
+      "edgeIds": ["g02-trained-tamsin"]
+    },
+    {
+      "revisionId": "g02-r-sela",
+      "edgeIds": ["g02-works-beside"]
+    }
+  ],
+  "materialsNote": "G-02 base の qualifiedRevisionIds のうち、期待される Graph の edge（edgeIds）を生む Revision だけ。g02-r-rook は資格を持つが、その edge（g02-trained-orla）は reverse-direction で寄与しないので材料に入れない。g02-r-dace は stale-after-approval で資格がない。runtime ID は setup receipt の logicalToRuntime で対応づける（この file は runtime ID を持たない）。",
+  "productTriggers": {
+    "autoSaveDelayMs": {
+      "value": 2000,
+      "source": {
+        "path": "src/features/settings/types.ts",
+        "key": "editor.autoSaveDelay"
+      }
+    },
+    "fetchDebounceMs": {
+      "value": 400,
+      "source": {
+        "path": "src/features/related-scenes/useNir1RelatedScenes.ts",
+        "name": "FETCH_DEBOUNCE_MS"
+      }
+    },
+    "graphReadyFirstRefreshMs": {
+      "value": 0,
+      "source": {
+        "path": "src/features/related-scenes/useNir1RelatedScenes.ts",
+        "expression": "byGraphReady && !chained ? 0 : FETCH_DEBOUNCE_MS"
+      },
+      "note": "DR-RSJ-6: graph-ready を契機にした最初の取り直しは 0 ms、連鎖の取り直しとほかの契機は FETCH_DEBOUNCE_MS。"
+    },
+    "queryTrigger": "本文の保存が tree の node の updatedAt を更新し、useNir1RelatedScenes の query key（nodes を含む）が変わり、FETCH_DEBOUNCE_MS の後に製品が Related Scenes の query を出す。場面の切替えは activeSceneId の変化で同じく FETCH_DEBOUNCE_MS の後に出す。",
+    "build": {
+      "authoredAtBaseCommit": "7a10dd1101d2b28b095f10ec6cb7b617abdb7a09",
+      "rule": "測る build の候補の commit（run の receipt の candidate）で eval:fixtures のこの file の検査（productTriggers の値と src の値の一致）が通ること。候補の値がこの file と違えば、trace の不備（K6/2 手順の 4 の「書いた製品の契機か debounce の値が測る build と違う」）として作り直し、観測の前に再び固定する。"
+    }
+  },
+  "maintenance": {
+    "mode": "PUB-G の後の製品と同じ（製品の既定の頻度と時期。変えない）",
+    "gate": "PUB-G の前なので、B の Graph Index の build の maintenance の route の起動 gate を、B-ROUTE の検証済みの journey seam で開けた評価 build で測る。測定の Main の起動に、CI=true、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN（source の公開の定数）、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE（起動ごとの UUIDv4）、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build を与える。",
+    "forbiddenSeamOptions": [
+      "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_FAULT",
+      "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP",
+      "GRIMODEX_PRODUCT_JOURNEY_NARRATIVE_FRESHNESS_HOLD_PROJECT_ID",
+      "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_BARRIER_ID"
+    ],
+    "record": "開けたことと seam の receipt を run の receipt に書く。開けていない run は、本文の保存の後に B が封印し直されず (i) が続くので、setup の不備として無効にし、測り直す。",
+    "runtimePolicy": "maintenance_enabled は G-case の setup のとおり実際の runtime-policy の設定で有効にしたまま。"
+  },
+  "relatedScenesSection": "Related Scenes の section は trace の間、開いておく。表示は 1 つだけ（2 つ目の表示を開かない）。",
+  "cycleEnd": "各 counted query の観測の終わりは、その query の子（graph-ready を契機にした取り直し）の公開、t_raw_ready + T_show（2000 ms。K6/4 判断 4）の経過、session の停止のうち最も早いもの。次の操作はその終わりの直後に始め、ほかの待ちを足さない。T_show を超えた follow-up は成功に数えないので、それより前に次の操作を始めると、作者の台本の速さで follow-up を X6 にしうる。終わりを T_show に揃えるのは、それを防ぎ、台本の作者が間隔を選ばないため。",
+  "stall": {
+    "boundMs": 10000,
+    "attemptLimit": 2,
+    "attemptRule": "stall した試行も含めて、この file で取った試行の回数と各試行の記録を receipt に開示する。1 回目の stall の後は同じ file で 1 回だけ取り直す。2 回目の stall で取り直しをやめ、[precheck] でユーザーの判断に回す（完走した試行だけを選ぶ偏りを防ぐ。製品が応答しないこと自体が可用性の事象でありうるので、その記録も添える）。上限は観測の前に固定し、結果を見て変えない。",
+    "rule": "操作の後に、製品の応答（編集中は autosave の commit と、その後の製品の query、閲覧中は場面の切替えの後の製品の query）が 10,000 ms 以内に来なければ、その trace の run を trace-stalled として止め、記録をすべて残し、trace の不備として判定に使わず、同じ file で取り直す。10,000 ms は liveness の guard で、測る値の閾値ではない（stall した run は全体を判定に使わないので、どの率の分子と分母も変えない）。値は autosave の既定 2000 ms と debounce 400 ms の和の 4 倍を超え、Native の保留の期限（DEFERRED_RELEASE_LIMIT 10 s）と同じ桁で、観測した値から選んでいない。"
+  },
+  "notInQ": "index-ready の event（related-scenes:index-ready）と graph-ready の event による再 query は Q に入れず別に数える（K6/2 手順の 7）。K6/4 の判断 8 の (ii) では、F1〜F7 を満たす子を親の follow-up として数える（分母には入れない）。",
+  "fixedBeforeObservation": "この file は CP-4 の観測の前に固定し、独立 reviewer のレビューを受ける。(ii)、CP-4、(iii) は同じ file（commit と SHA-256 が同じもの）を使う。作り直せるのは不備（Q が 200 件に満たない、密度の条件を満たさない、期待寄与の材料の記録が欠ける、書いた製品の契機か debounce の値が測る build と違う）があるときだけで、作り直した版は観測の前に再び固定し、それまでの版と receipt はすべて残す。 setup が通らないことは作り直しの理由にしない（setupFailure）。",
+  "setupFailure": {
+    "decision": "S3v6 の P2-3 と P-S2-2",
+    "project": "G-02/base",
+    "onNotSetupComplete": {
+      "b": "未測定",
+      "cp4Availability": "HOLD"
+    },
+    "projectSwapAllowed": false,
+    "rule": "G-02 base の setup が上限内の開き直し（observation-prep.v1.json の setupReadings.reopen）で setup-complete に届かなければ、この trace の (b) は「未測定」とし、CP-4 の可用性は HOLD とする。setupFailure にするのは harness の名前のある blocked（blocked.harnessId）で、開き直しの上限の内の受領書だけで、名前の無い失敗や上限を超えた記録は harness の不備として [precheck]（S2 追補 #4、DR-CP4-O-5 (vi)、O-2 (e)）。この版では trace の project を差し替えない（差し替えは新しい版と独立 reviewer のレビューを要する）。止まった理由は受領書に harness の名前のまま残す（setupReadings.blockedCaseJudgement）。",
+    "acceptsOnly": "blocked-with-harness-id"
+  },
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4",
+    "recordSha256": "d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7",
+    "verdict": "accept-with-conditions",
+    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たしたと DR-CP4-P-2〜P-4 に記録されている（C2 の組の数は #759、DR-CP4-Q-2 で直した。S3 が充足を見直した記録は無い。repo の記録に、7 回目の後の S3 のレビューは無い）。C2 の K（側ごとの上限 6）は S3 でなく integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は「K は例えば 3（dev は 2/35）。これで偏りと最小の組数（24 以上）を同時に押さえます」と書いた（24 は組の数）。側ごとの上限 6 だけでは IR を比べる組が最少 18（30−12）になり S3 の条件より緩かったので、IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）を #759（DR-CP4-Q-2）で足し、S3 の組の最少 24 を満たす。7 回目が問い 1（P-S2-6）で求めた、予定しているユーザー通知に C1〜C3 の読みを明記することの記録は docs/plans/nir1-cp4-records/user-notification-2026-10-30.md（commit bf5b3799f9a8220d43f15e3479ad15e66b8c8928〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕、SHA-256 9597f5f4db5922ed1b65b9e1ea6f9deaccd8f243d80cc9db83b618da6fc91e06）にある。確認ではなく、返答も求めていない（K の帰属、組の最少 18 の取り違えと組の上限による訂正は、その記録の 2026-10-31 の補足と訂正）。record は S3 の 7 回目の報告の原文の記録で、recordSha256 はその commit のその file の bytes の SHA-256。記録の冒頭によれば、7 回目の報告の原本が repo に無かったので、integrator が 2026-10-30 に会話の記録から書き起こした。reviewer が使った scratchpad の script は repo に無い。1〜6 回目の報告の原文は repo に無い（要旨は作者の宣言の revisions、cp4-decisions.md の DR-CP4-L-28、P-1 など）。この file は 7 回目が見た差分（968f6782）に含まれる。7 回目の後に、この file を変えた commit は S4a（status と review だけ）のほかに無い。"
+  },
+  "editText": {
+    "suffix": " The lamp flickered.",
+    "appendSuffix": "製品のエディタ（TipTap）で、query の Scene の本文の最後の段落の末尾に caret を置き、suffix を keyboard で入力する。",
+    "removeSuffix": "製品のエディタで、直前に足した suffix を Backspace で文字数ぶん消す（本文は元の bytes に戻る）。",
+    "note": "編集の対象は query の Scene（g02-query。Related Scenes はこの Scene について query を出す）。直接の書込み（SQL や writer の API）で代えない。本文の title、A1、順序、folder の構造は変えない。query の Scene の pin は変えない（seed が変わらない）。"
+  },
+  "density": "編集と query を交互に置く固定の台本。各回は (1) edit（製品のエディタ）、(2) confirm-autosave-commit（対象 Scene の version が増えたことを観測で確かめる。harness は何もしない）、(3) product-query（(2) の commit を契機に製品が自分で出す query。harness は (2) と (3) の間に待ちも操作も足さない）。最初の query（場面を開いたときの query）を除くすべての query は、直前の query の後に commit が 1 件以上入っている。台本に承認の操作（typed Revision の準備と承認）を置かない。",
+  "cyclePattern": ["edit", "confirm-autosave-commit", "product-query"],
+  "cycles": 200,
+  "plannedQ": 201,
+  "afterScript": {
+    "reapproval": "台本の後に、query の開始時に A3 で不適格になった期待寄与の材料があれば、利用者の通常の再承認の操作（製品の typed Revision の準備と人の承認）を実際に行い、手順と所要時間を開示する。不適格な材料がなければ「再承認を要さない」と、その時点の A3 の判定を書く。行わなければ「未測定」と書く。この操作は trace の Q に入れない。"
+  },
+  "runnerReadings": {
+    "source": "DR-CP4-TR-8〜TR-10、TR-13（master の docs/plans/nir1-lane-decisions/cp4-decisions.md）と、master に入った trace の runner（35537447、#747）の scripts/quality/nir1-graph-eval/trace-record.mjs（startSealOf、traceMaintenanceEnv）、trace-seal.mjs（readStartSeal）と、S5-B（950751d0、#756）の trace-runner.mjs の定数と trace-frozen.mjs（readTraceSetup、traceSeedPinCheck。DR-CP4-O-2 (d)(e)、O-5 (vi)(x)、O-10 P2-2）。S3v6 の P-S2-3、P-S2-4 の条件",
+    "status": "trace の runner の設計の提案（TR-8）と integrator の決定（TR-9、TR-10）を、この file の operations の読みとして観測の前に写したもの。operations、cycles、plannedQ（Q）は変えない。S3 のレビューの記録はこの file の review にある（S3 の 7 回目。対象の差分 968f6782 にこの file は含まれる）。",
+    "operations": {
+      "open-scene": {
+        "counted": true,
+        "a3Read": "once-right-after-parent-fetch-call-observed",
+        "startSeal": "mount の前と、親の fetch の呼出しの観測の直後"
+      },
+      "edit": {
+        "via": "product-editor",
+        "caret": "focus-editor-then-Control+End",
+        "input": "playwright-keyboard",
+        "note": "harness が製品の editor の DOM に focus し、Control+End で caret を本文の末尾（最後の段落の末尾）に置いてから、editText のとおり suffix を keyboard で入力するか Backspace で消す（events の harness-caret と edit）。"
+      },
+      "confirm-autosave-commit": {
+        "observe": "subscribeSceneBodyCommits",
+        "version": "contentVersion",
+        "initialVersion": "getSceneVersion-before-trace",
+        "harnessReadsDb": false,
+        "note": "density の (2)「対象 Scene の version が増えた」は、製品の本文 commit の通知（subscribeSceneBodyCommits）の contentVersion の増加で受け身に観測する。最初の前の値は trace の前に getSceneVersion で読む。commit の確認に DB は読まない（開始時の封印の読取は startSeal の別の read-only の接続）。"
+      },
+      "product-query": {
+        "counted": true,
+        "a3Read": "once-right-after-parent-fetch-call-observed",
+        "startSeal": "自動保存の commit を観測した後（製品の query の前）と、親の fetch の呼出しの観測の直後"
+      }
+    },
+    "a3": {
+      "readAt": "once-right-after-parent-fetch-call-observed",
+      "connection": "評価の自分の read-only の接続（nir1GraphEvalReadA3）",
+      "note": "各 counted query の A3 は、その親の fetch の呼出しを page の側で観測した直後に 1 回読む（「開始時」）。commit の後でなく query の開始の後に読むのは、(2) と (3) の間に harness の操作を入れないため。読取と S1 の stamp の重なりは K6/2 の規則 4 のまま分類器が数える。"
+    },
+    "startSeal": {
+      "reads": [
+        {
+          "id": "before",
+          "at": "親の begin の前の静かな時点（最初の query は mount の前、編集中は自動保存の commit を観測した後、閲覧中は場面を移した後。どれも製品の query の debounce の間で、timing の測定の窓の外）"
+        },
+        {
+          "id": "after",
+          "at": "親の fetch の呼出しを観測した直後（A3 と同じ時点）"
+        }
+      ],
+      "states": ["current", "dirty", "missing", "unknown"],
+      "usableStates": ["current"],
+      "onDisagreement": "unknown",
+      "rule": "before が B の行を持ち dirty でなく、after も B の行が dirty でなく generation が before と同じときだけ current。before の B の行が dirty なら dirty、行が無ければ missing。読取の失敗、読んでいない、before の終わりが親の fetch の呼出しより後、after の始まりが呼出しより前、2 回の食い違い（generation の変化か dirty）は unknown。current だけを U に入れ、ほかは K6/2 の規則 3 (i) の失効に数える（厳しい側。分類器は変えない）。行の snapshot.usable は Native の begin の答えからの snapshot も usable で、かつ current のとき。begin からの snapshot は snapshotNative として残し、receipt の startSeal に状態ごとの数を書く。",
+      "connection": {
+        "readOnly": true,
+        "busyTimeoutMs": 0,
+        "statements": "SELECT 1 回で閉じる（WAL の読み手。busy なら待たずに失敗して unknown）",
+        "api": "readIndexMetadata（workspace-db.mjs）"
+      },
+      "insideTimingWindow": false,
+      "reviewerQuestion": "P-S2-3（observation-prep.v1.json の reviewerQuestions）",
+      "receipt": {
+        "sealReadTimes": true,
+        "sealReadCount": true,
+        "cdpNow": "disclose",
+        "rule": "各 seal-read の開始と終わりの時刻と、counted query ごとの読取の回数を receipt に残す（runner は seal-read を log と events に書く）。時刻は renderer の performance.now() を CDP で問い合わせた値（driver.now()）で、その往復の遅れは開示に回す（S3v6 の P-S2-3 の条件）。"
+      }
+    },
+    "maintenanceLaunch": {
+      "env": [
+        "CI",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER"
+      ],
+      "values": {
+        "CI": "true",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN": "製品の source の公開の定数 NARRATIVE_MAINTENANCE_OWNER_TOKEN（runner の試験が source から読んで一致を確かめる）",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE": "起動ごとの UUIDv4"
+      },
+      "trigger": "nir1-graph-index-build",
+      "scope": "trace-measurement-launch-only",
+      "onForbiddenOption": "[precheck]",
+      "record": "receipt に env の名前、trigger、nonce の sha256 を書く",
+      "note": "maintenance.gate の起動の手順。trace の測定の session の起動にだけ足し、定常状態とほかの runner の起動には足さない。maintenance.forbiddenSeamOptions のどれかが起動の env にあれば [precheck] で止める。"
+    },
+    "setupReceipt": {
+      "rule": "trace の setup は、今の候補の commit と tree で走った G-02 base の完全な setup（frozen-setup-driver.mjs --case G-02 --variant base --stops-at complete）の受領書だけを受ける。status setup-complete なら trace を測り、status blocked で harness の名前（blocked.harnessId）があり開き直しの上限の内なら setupFailure（(b) は未測定、HOLD）とする。ほかの case や variant、R5 の照合の run の受領書（r5CheckRun）、SP-P4 の分岐（seedPinBranch）、dev の setup、stopsAt が complete でない受領書、名前の無い失敗、別の候補（commit か tree が違う）の受領書は [precheck] で拒む（S2 追補 #4、DR-CP4-O-5 (x)、O-10 P2-2）。編集中と閲覧中は別に作った setup を使う。",
+      "accepts": "frozen-g02-base-complete-setup",
+      "candidate": "same-commit-and-tree",
+      "rejects": [
+        "other-case-or-variant",
+        "r5-check-run",
+        "sp-p4-branch",
+        "dev-setup",
+        "not-stops-at-complete",
+        "blocked-without-harness-id",
+        "other-candidate"
+      ],
+      "onReject": "[precheck]"
+    },
+    "r5Check": {
+      "rule": "trace の R5 は、trace の測定の写しの DB で SP/1 の SP-P1 の 1 行（問いの Scene の pin がちょうど 1 つで、製品の最初の pin が予定の seed g02-orla）を照合する（13 variant の照合ではない）。match でなければ trace を起動せず [precheck]（S2 追補 #4、DR-CP4-O-2 (d)、O-5 (vi)。r5Gate）。",
+      "check": "sp-p1-one-row",
+      "on": "trace-measurement-copy",
+      "onMismatch": "[precheck]"
+    }
+  },
+  "contentProposals": [],
+  "contentProposalsRule": "trace の内容（operations、cycles、plannedQ）を変える提案は、ここに status proposal-awaiting-s3 で書き、本体は変えない。S3 が採れば新しい版の trace を作り、観測の前に固定し直す。この追補の時点で内容を変える提案は無い（TR-8 の提案はどれも runnerReadings の読み。滞在の終わりの読みは observation-prep.v1.json の reviewerQuestions の P-S2-4）。",
+  "operations": [
+    {
+      "seq": 0,
+      "op": "open-scene",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 0,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 1,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 2,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 3,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 1,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 4,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 5,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 6,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 2,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 7,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 8,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 9,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 3,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 10,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 11,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 12,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 4,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 13,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 14,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 15,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 5,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 16,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 17,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 18,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 6,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 19,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 20,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 21,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 7,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 22,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 23,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 24,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 8,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 25,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 26,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 27,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 9,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 28,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 29,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 30,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 10,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 31,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 32,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 33,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 11,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 34,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 35,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 36,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 12,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 37,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 38,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 39,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 13,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 40,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 41,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 42,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 14,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 43,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 44,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 45,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 15,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 46,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 47,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 48,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 16,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 49,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 50,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 51,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 17,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 52,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 53,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 54,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 18,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 55,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 56,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 57,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 19,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 58,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 59,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 60,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 20,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 61,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 62,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 63,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 21,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 64,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 65,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 66,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 22,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 67,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 68,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 69,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 23,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 70,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 71,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 72,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 24,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 73,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 74,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 75,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 25,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 76,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 77,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 78,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 26,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 79,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 80,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 81,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 27,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 82,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 83,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 84,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 28,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 85,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 86,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 87,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 29,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 88,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 89,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 90,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 30,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 91,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 92,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 93,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 31,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 94,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 95,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 96,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 32,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 97,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 98,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 99,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 33,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 100,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 101,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 102,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 34,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 103,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 104,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 105,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 35,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 106,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 107,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 108,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 36,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 109,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 110,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 111,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 37,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 112,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 113,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 114,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 38,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 115,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 116,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 117,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 39,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 118,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 119,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 120,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 40,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 121,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 122,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 123,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 41,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 124,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 125,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 126,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 42,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 127,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 128,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 129,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 43,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 130,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 131,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 132,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 44,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 133,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 134,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 135,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 45,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 136,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 137,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 138,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 46,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 139,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 140,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 141,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 47,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 142,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 143,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 144,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 48,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 145,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 146,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 147,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 49,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 148,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 149,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 150,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 50,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 151,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 152,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 153,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 51,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 154,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 155,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 156,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 52,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 157,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 158,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 159,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 53,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 160,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 161,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 162,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 54,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 163,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 164,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 165,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 55,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 166,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 167,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 168,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 56,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 169,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 170,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 171,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 57,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 172,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 173,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 174,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 58,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 175,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 176,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 177,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 59,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 178,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 179,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 180,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 60,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 181,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 182,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 183,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 61,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 184,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 185,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 186,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 62,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 187,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 188,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 189,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 63,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 190,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 191,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 192,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 64,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 193,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 194,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 195,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 65,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 196,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 197,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 198,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 66,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 199,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 200,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 201,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 67,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 202,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 203,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 204,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 68,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 205,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 206,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 207,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 69,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 208,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 209,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 210,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 70,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 211,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 212,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 213,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 71,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 214,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 215,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 216,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 72,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 217,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 218,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 219,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 73,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 220,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 221,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 222,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 74,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 223,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 224,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 225,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 75,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 226,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 227,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 228,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 76,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 229,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 230,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 231,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 77,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 232,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 233,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 234,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 78,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 235,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 236,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 237,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 79,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 238,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 239,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 240,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 80,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 241,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 242,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 243,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 81,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 244,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 245,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 246,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 82,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 247,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 248,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 249,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 83,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 250,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 251,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 252,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 84,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 253,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 254,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 255,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 85,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 256,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 257,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 258,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 86,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 259,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 260,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 261,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 87,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 262,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 263,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 264,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 88,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 265,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 266,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 267,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 89,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 268,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 269,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 270,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 90,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 271,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 272,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 273,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 91,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 274,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 275,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 276,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 92,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 277,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 278,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 279,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 93,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 280,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 281,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 282,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 94,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 283,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 284,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 285,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 95,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 286,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 287,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 288,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 96,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 289,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 290,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 291,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 97,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 292,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 293,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 294,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 98,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 295,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 296,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 297,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 99,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 298,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 299,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 300,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 100,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 301,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 302,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 303,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 101,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 304,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 305,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 306,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 102,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 307,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 308,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 309,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 103,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 310,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 311,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 312,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 104,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 313,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 314,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 315,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 105,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 316,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 317,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 318,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 106,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 319,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 320,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 321,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 107,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 322,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 323,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 324,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 108,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 325,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 326,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 327,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 109,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 328,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 329,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 330,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 110,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 331,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 332,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 333,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 111,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 334,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 335,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 336,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 112,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 337,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 338,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 339,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 113,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 340,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 341,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 342,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 114,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 343,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 344,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 345,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 115,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 346,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 347,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 348,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 116,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 349,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 350,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 351,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 117,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 352,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 353,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 354,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 118,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 355,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 356,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 357,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 119,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 358,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 359,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 360,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 120,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 361,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 362,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 363,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 121,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 364,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 365,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 366,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 122,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 367,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 368,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 369,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 123,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 370,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 371,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 372,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 124,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 373,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 374,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 375,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 125,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 376,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 377,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 378,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 126,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 379,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 380,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 381,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 127,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 382,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 383,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 384,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 128,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 385,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 386,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 387,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 129,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 388,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 389,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 390,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 130,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 391,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 392,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 393,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 131,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 394,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 395,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 396,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 132,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 397,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 398,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 399,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 133,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 400,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 401,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 402,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 134,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 403,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 404,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 405,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 135,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 406,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 407,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 408,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 136,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 409,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 410,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 411,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 137,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 412,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 413,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 414,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 138,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 415,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 416,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 417,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 139,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 418,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 419,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 420,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 140,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 421,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 422,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 423,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 141,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 424,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 425,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 426,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 142,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 427,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 428,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 429,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 143,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 430,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 431,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 432,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 144,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 433,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 434,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 435,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 145,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 436,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 437,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 438,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 146,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 439,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 440,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 441,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 147,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 442,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 443,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 444,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 148,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 445,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 446,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 447,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 149,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 448,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 449,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 450,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 150,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 451,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 452,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 453,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 151,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 454,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 455,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 456,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 152,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 457,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 458,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 459,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 153,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 460,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 461,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 462,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 154,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 463,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 464,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 465,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 155,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 466,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 467,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 468,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 156,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 469,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 470,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 471,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 157,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 472,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 473,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 474,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 158,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 475,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 476,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 477,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 159,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 478,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 479,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 480,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 160,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 481,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 482,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 483,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 161,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 484,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 485,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 486,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 162,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 487,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 488,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 489,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 163,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 490,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 491,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 492,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 164,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 493,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 494,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 495,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 165,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 496,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 497,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 498,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 166,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 499,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 500,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 501,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 167,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 502,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 503,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 504,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 168,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 505,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 506,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 507,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 169,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 508,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 509,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 510,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 170,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 511,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 512,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 513,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 171,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 514,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 515,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 516,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 172,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 517,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 518,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 519,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 173,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 520,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 521,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 522,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 174,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 523,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 524,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 525,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 175,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 526,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 527,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 528,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 176,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 529,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 530,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 531,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 177,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 532,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 533,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 534,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 178,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 535,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 536,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 537,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 179,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 538,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 539,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 540,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 180,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 541,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 542,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 543,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 181,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 544,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 545,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 546,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 182,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 547,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 548,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 549,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 183,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 550,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 551,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 552,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 184,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 553,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 554,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 555,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 185,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 556,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 557,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 558,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 186,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 559,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 560,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 561,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 187,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 562,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 563,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 564,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 188,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 565,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 566,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 567,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 189,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 568,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 569,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 570,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 190,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 571,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 572,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 573,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 191,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 574,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 575,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 576,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 192,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 577,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 578,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 579,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 193,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 580,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 581,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 582,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 194,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 583,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 584,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 585,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 195,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 586,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 587,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 588,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 196,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 589,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 590,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 591,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 197,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 592,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 593,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 594,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 198,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 595,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "append-suffix"
+    },
+    {
+      "seq": 596,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 597,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 199,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 598,
+      "op": "edit",
+      "via": "product-editor",
+      "sceneId": "g02-query",
+      "action": "remove-suffix"
+    },
+    {
+      "seq": 599,
+      "op": "confirm-autosave-commit",
+      "sceneId": "g02-query"
+    },
+    {
+      "seq": 600,
+      "op": "product-query",
+      "trigger": "autosave-commit",
+      "until": "cycle-end",
+      "query": {
+        "index": 200,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    }
+  ]
+}

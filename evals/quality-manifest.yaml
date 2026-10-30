@@ -690,6 +690,18 @@ requirements:
       - evals/nir1-graph/freeze.v1.json
       - scripts/quality/nir1-graph/contract.mjs
       - scripts/quality/nir1-graph/porter.mjs
+      - evals/nir1-g01/setup-addendum.v1.json
+      - evals/nir1-graph/declaration-addendum.v1.json
+      - evals/nir1-graph/observation-prep.v1.json
+      - evals/nir1-graph/trace-editing.v1.json
+      - evals/nir1-graph/trace-browsing.v1.json
+      - evals/nir1-graph/observation-prep-author-declaration.v1.json
+      - scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json
+      - scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json
+      - evals/nir1-graph/observation-prep-freeze.v1.json
+      - scripts/quality/nir1-graph/observation-prep.mjs
+      - evals/nir1-graph/seed-pin-addendum.v1.json
+      - scripts/quality/nir1-graph/seed-pin-addendum.mjs
       - test-fixtures/nir1-df06-plain-chat.json
       - src/prompts/ja/chatSystem.ts
       - src/prompts/ja/chatSystemBase.txt
@@ -788,6 +800,8 @@ requirements:
       - src/features/related-scenes/useNir1EvidenceNavigation.graphOnly.test.tsx
       - src/features/narrative-semantic-core/nir1GraphApi.test.ts
       - scripts/quality/nir1-graph/contract.test.mjs
+      - scripts/quality/nir1-graph/observation-prep.test.mjs
+      - scripts/quality/nir1-graph/seed-pin-addendum.test.mjs
       - scripts/quality/nir1-retrieval/contract.test.mjs
       - scripts/quality/nir1-retrieval/standard-build.test.mjs
       - scripts/quality/nir1-retrieval/candidate-policy.test.mjs

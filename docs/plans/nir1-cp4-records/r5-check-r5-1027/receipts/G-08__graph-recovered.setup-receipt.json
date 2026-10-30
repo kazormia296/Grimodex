@@ -1,0 +1,1189 @@
+{
+  "schemaVersion": "nir1-cp4-frozen-setup/1",
+  "status": "setup-through-seed-pin",
+  "stopsAt": "seed-pin",
+  "run": "r5-seed-pin-check",
+  "r5CheckRun": {
+    "id": "7ad99f81-fb68-48cb-9d57-7433db9b825b"
+  },
+  "fixture": {
+    "kind": "frozen",
+    "caseId": "G-08",
+    "variantId": "graph-recovered",
+    "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+    "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9",
+    "fixtureId": "nir1-g08-graph-index-fallback/1"
+  },
+  "contracts": {
+    "sp1": {
+      "draftRef": "nir1-graph-case-seed-pin-proposal/1",
+      "contractId": "graph-case-seed-pin-setup",
+      "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547"
+    }
+  },
+  "candidate": {
+    "commit": "7a2669ead5262cc1a1126a7ab52bf808afeb98ff",
+    "tree": "003714c067e6f45091d73d6c7ce1dfecb3c23254",
+    "clean": true
+  },
+  "launch": {
+    "native": "product",
+    "nativePath": "electron/native/grimodex-node/grimodex-node.node",
+    "nativeSha256": "07a188878c082579e584aacceae8b47d8da007a449870afa17afa0aff8a3c9e2",
+    "productReceiptSha256": "f4ebbaf398bcf9212e08c9a6b54458718e9b1dac20dcd5022a6af0bc7e9231ad",
+    "build": {
+      "dist/index.html": "c632018d50c59c285a73b9aa8782c9a981056f845162fdbfada8c6aa35c560aa",
+      "dist-electron/main.cjs": "772b218009509fe34b040f6d32e2e737d2ec305b106cc12910a7718decc83761",
+      "dist-electron/preload.cjs": "9c37d32af100699a97fbd8ce068fb273f5e9387d9155cc471173add03ca489a8",
+      "electron/native/grimodex-node/grimodex-node.node": "07a188878c082579e584aacceae8b47d8da007a449870afa17afa0aff8a3c9e2"
+    },
+    "productMain": {
+      "path": "dist-electron/main.cjs",
+      "sha256": "772b218009509fe34b040f6d32e2e737d2ec305b106cc12910a7718decc83761"
+    },
+    "rendererBundleSha256": "38ee2ce7be06fe2e6f2b935152702873dbc94bceec8d015699f85748113d2a9b",
+    "observerSha256": "4b35fbfb52351933751e5bf92b7644a72363c8557d38dbe40d7187709dc8074b",
+    "admission": {
+      "dryRun": true,
+      "graphArm": "not-activated"
+    }
+  },
+  "plan": {
+    "schema": "nir1-cp4-frozen-setup-plan/1",
+    "phases": [
+      "project",
+      "scenes",
+      "entities",
+      "relations",
+      "scope-registry",
+      "scene-scope",
+      "foreshadows",
+      "foreshadow-links",
+      "pins",
+      "seed-pin",
+      "maintenance-enabled",
+      "setup-timeline:g08-r-cass",
+      "setup-timeline:g08-r-juno",
+      "setup-timeline:g08-ir",
+      "b-seal",
+      "chronicle-index",
+      "setup-timeline:g08-m-juno",
+      "b-seal:after-mutation",
+      "chronicle-index:after-mutation",
+      "measurement-point"
+    ],
+    "executed": [
+      "project",
+      "scenes",
+      "entities",
+      "relations",
+      "scope-registry",
+      "scene-scope",
+      "foreshadows",
+      "foreshadow-links",
+      "pins",
+      "seed-pin"
+    ],
+    "correspondence": [
+      {
+        "clauseId": "project-and-scenes",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "Create the project and every Scene (including S2) in reading order",
+        "after": "; ",
+        "owner": "driver",
+        "phases": [
+          "project",
+          "scenes"
+        ]
+      },
+      {
+        "clauseId": "codex",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "then Codex entities and relations",
+        "after": "; ",
+        "owner": "driver",
+        "phases": [
+          "entities",
+          "relations"
+        ]
+      },
+      {
+        "clauseId": "scope",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "then the Scope registry and every explicit Scene Scope",
+        "after": "; ",
+        "owner": "driver",
+        "phases": [
+          "scope-registry",
+          "scene-scope"
+        ]
+      },
+      {
+        "clauseId": "foreshadows-and-pins",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "then foreshadows, foreshadow Codex links and pins",
+        "after": ". ",
+        "owner": "driver",
+        "phases": [
+          "foreshadows",
+          "foreshadow-links",
+          "pins"
+        ]
+      },
+      {
+        "clauseId": "maintenance",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "Before the first setupTimeline step, enable maintenance through the real runtime-policy setting (the product default is maintenance_enabled=0; never through SQL or injected state; precondition maintenance-enabled)",
+        "after": ". ",
+        "owner": "driver",
+        "phases": [
+          "maintenance-enabled"
+        ]
+      },
+      {
+        "clauseId": "setup-timeline",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "Then follow setupTimeline in order: each revision is prepared against its review Scene and receives its declared decision, each mutation uses its normal writer, and the qualified-ir step creates every qualifiedIr through the normal fixture provider/Proposal/child/Decision route with optional story inputs disabled only through real planner settings",
+        "after": ". ",
+        "owner": "driver",
+        "phases": [
+          "setup-timeline"
+        ]
+      },
+      {
+        "clauseId": "freeze-after-first-revision",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "Do not change tree order, registry or Scene Scope after the first typed revision is prepared",
+        "after": ". ",
+        "owner": "driver",
+        "phases": [],
+        "guard": "no-tree-registry-scope-write-after-first-typed-revision"
+      },
+      {
+        "clauseId": "measurement-point",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "Then wait for the variant measurementPoint",
+        "after": ", ",
+        "owner": "driver",
+        "phases": [
+          "b-seal",
+          "chronicle-index",
+          "measurement-point"
+        ]
+      },
+      {
+        "clauseId": "preconditions",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "record whether each declared precondition holds",
+        "after": ", ",
+        "owner": "runner",
+        "phases": [
+          "preconditions"
+        ]
+      },
+      {
+        "clauseId": "compare",
+        "source": "fixture.measurementBoundary.setupOrder",
+        "text": "and compare only the expectations that no unmet precondition blocks",
+        "after": ".",
+        "owner": "runner",
+        "phases": [
+          "compare-expectations"
+        ]
+      }
+    ],
+    "skippedTimelineSteps": [
+      {
+        "id": "g08-m-ir-withdraw",
+        "kind": "mutation",
+        "reason": "not-in-variant"
+      }
+    ],
+    "harnessChoices": [
+      {
+        "id": "project-title",
+        "value": "NIR-1 <caseId>/<variantId>",
+        "reason": "fixture は project の title を宣言しない。R／IR の query は問いの Scene の本文を読み、project の title を読まない"
+      },
+      {
+        "id": "phase-resolution-mode",
+        "value": "reading",
+        "reason": "dev の setup-driver と P harness と同じ。fixture は story time を設定しないので、前後は reading 順で決まる（README の secret／reveal 行）"
+      },
+      {
+        "id": "relation-label",
+        "value": "label = relation type",
+        "reason": "製品の relation.create は空でない label を要る。UI（CodexTypedRelationsSection）は入力の label から slugifyRelationType で型を作るので、型をそのまま label にすると UI と同じ行になる（fixture の型はどれも slugify で同じ文字列に戻る）"
+      },
+      {
+        "id": "scene-runtime-ids",
+        "value": "harness が UUID を発行して writer に渡し、受領書で対応付ける",
+        "reason": "README :36（runtime ID は setup receipt で対応付け、Gold には書かない）。S1 は G-01 の Scene の runtime ID を論理 ID と同じにしたが、K2/4 はそれを求めず（宣言は runtime の Scene ID に束縛され、addendum の Scene は論理 ID）、R／IR の score は本文から作り、G-01 の R と R+IR の期待値は 1 件なので ID の順に依らない（README :56）"
+      },
+      {
+        "id": "ir-scene-folders",
+        "value": "qualifiedIr を持つ Scene ごとに folder を 1 つ作る（論理 ID nir1-folder-<Scene の論理 ID>、title は包む Scene の title、位置はその Scene の読む順の位置、Scene は folder の中の a0）",
+        "reason": "fixture に folder は無く、folder の論理 ID と title は fixture の値ではない harness の値。製品の Chronicle の抽出は folder 単位で動き、決定論の provider は citation window が 1 つであることを要る（Scene 1 つだけの folder）。24 件の setup（scripts/quality/setup-nir1-retrieval.mjs の folder の作成）と S1（g01-question を nir1-folder-g01-question に置いた）と同じ型。tree は最初の typed Revision の前に作り終える。folder の title が Raw に効かないことは確かめていない"
+      }
+    ],
+    "declaration": {
+      "sceneId": "g08-cass-attic"
+    },
+    "runnerSteps": [
+      "measurement-workspace",
+      "declaration",
+      "v10-ready-probe",
+      "graph-arm"
+    ]
+  },
+  "startedAt": "2026-10-27T09:08:11.987Z",
+  "phases": [
+    {
+      "name": "project",
+      "at": "2026-10-27T09:08:16.316Z",
+      "session": "author",
+      "details": {
+        "projectId": "c45aaca9-9707-499a-b220-2d5fa9e69553",
+        "modeBefore": "auto"
+      },
+      "stateBefore": null,
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 0,
+        "codexEntries": 0,
+        "codexRelations": 0,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "scenes",
+      "at": "2026-10-27T09:08:16.410Z",
+      "session": "author",
+      "details": {
+        "count": 6,
+        "folders": 1,
+        "sortOrder": [
+          "a0",
+          "a1",
+          "a2",
+          "a3",
+          "a4",
+          "a5"
+        ]
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 0,
+        "codexEntries": 0,
+        "codexRelations": 0,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 0,
+        "codexRelations": 0,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "entities",
+      "at": "2026-10-27T09:08:16.442Z",
+      "session": "author",
+      "details": {
+        "count": 3
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 0,
+        "codexRelations": 0,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 0,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "relations",
+      "at": "2026-10-27T09:08:16.462Z",
+      "session": "author",
+      "details": {
+        "count": 2
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 0,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "scope-registry",
+      "at": "2026-10-27T09:08:16.497Z",
+      "session": "author",
+      "details": {
+        "registry": {
+          "timelineRefs": [
+            "tl-main"
+          ],
+          "worldlineRefs": [
+            "wl-main"
+          ],
+          "narrativeLayerRefs": [
+            "layer-story"
+          ]
+        }
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 0,
+        "registryVersion": 1,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 0,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "scene-scope",
+      "at": "2026-10-27T09:08:16.583Z",
+      "session": "author",
+      "details": {
+        "written": 6,
+        "skipped": []
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 0,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "foreshadows",
+      "at": "2026-10-27T09:08:16.588Z",
+      "session": "author",
+      "details": {
+        "count": 0
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "foreshadow-links",
+      "at": "2026-10-27T09:08:16.592Z",
+      "session": "author",
+      "details": {
+        "count": 0
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      }
+    },
+    {
+      "name": "pins",
+      "at": "2026-10-27T09:08:16.605Z",
+      "session": "author",
+      "details": {
+        "count": 2
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 0
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 2
+      }
+    },
+    {
+      "name": "seed-pin",
+      "at": "2026-10-27T09:08:16.637Z",
+      "session": "author",
+      "details": {
+        "querySceneId": {
+          "logical": "g08-query",
+          "runtime": "2f824fb1-078d-4da2-b525-7f402bbf2d4e"
+        },
+        "seed": {
+          "logical": "g08-odile",
+          "runtime": "80b025cd-d658-489e-8eb4-399361630416"
+        }
+      },
+      "stateBefore": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 2
+      },
+      "stateAfter": {
+        "projects": 1,
+        "treeNodes": 7,
+        "codexEntries": 3,
+        "codexRelations": 2,
+        "explicitSceneScopes": 6,
+        "registryVersion": 2,
+        "foreshadows": 0,
+        "foreshadowLinks": 0,
+        "pins": 3
+      }
+    }
+  ],
+  "sessions": [
+    {
+      "label": "author",
+      "x11Before": [
+        {
+          "name": "X0",
+          "ino": 117,
+          "mtimeMs": 1792892973833.2798
+        },
+        {
+          "name": "X1",
+          "ino": 119,
+          "mtimeMs": 1792892973834.7053
+        },
+        {
+          "name": "X2",
+          "ino": 3319173,
+          "mtimeMs": 1793092025509.0164
+        }
+      ],
+      "profile": {
+        "d2aMode": "unrestricted",
+        "d2aStateFile": null
+      },
+      "extraEnvNames": [],
+      "problems": [],
+      "launch": {
+        "removedEnv": [
+          "DESKTOP_SESSION",
+          "GDMSESSION",
+          "XDG_CURRENT_DESKTOP",
+          "XDG_SESSION_DESKTOP"
+        ],
+        "checkedAbsent": [
+          "WAYLAND_DISPLAY",
+          "WAYLAND_SOCKET",
+          "DBUS_SESSION_BUS_ADDRESS"
+        ],
+        "netns": {
+          "self": "net:[4026531833]",
+          "parent": "net:[4026531833]",
+          "hostInterfaces": [
+            "lo",
+            "enp5s0"
+          ],
+          "userManager": null
+        }
+      },
+      "observer": {
+        "schema": "nir1-cp4-observer/1",
+        "rendererUrlPresent": true,
+        "k63Nc1Launch": false,
+        "staticOrigin": "http://127.0.0.1:38697",
+        "hostResolverRules": "MAP grimodex-rule-sentinel.invalid 127.0.0.1, MAP * ~NOTFOUND, EXCLUDE github.com, EXCLUDE objects.githubusercontent.com, EXCLUDE release-assets.githubusercontent.com, EXCLUDE 127.0.0.1, EXCLUDE localhost",
+        "proxyConfig": {
+          "mode": "fixed_servers",
+          "proxyRules": "socks5://127.0.0.1:38201",
+          "proxyBypassRules": "<-loopback>;http://127.0.0.1:38697"
+        },
+        "blackholePort": 38201,
+        "marks": [
+          {
+            "name": "appendSwitch host-resolver-rules",
+            "at": 1793092093994
+          },
+          {
+            "name": "registerWebContentsPolicy",
+            "at": 1793092093994
+          },
+          {
+            "name": "product main require",
+            "at": 1793092093995
+          },
+          {
+            "name": "product main required",
+            "at": 1793092094063
+          },
+          {
+            "name": "ready",
+            "at": 1793092094109
+          },
+          {
+            "name": "listener up",
+            "at": 1793092094113
+          },
+          {
+            "name": "defaultSession first touch",
+            "at": 1793092094115
+          },
+          {
+            "name": "setProxy start",
+            "at": 1793092094115
+          },
+          {
+            "name": "setProxy done",
+            "at": 1793092094119
+          },
+          {
+            "name": "nc1 start done",
+            "at": 1793092094146
+          },
+          {
+            "name": "released",
+            "at": 1793092094146
+          }
+        ],
+        "webContentsCreated": 1,
+        "startOk": true,
+        "readBack": {
+          "staticOrigin": "DIRECT",
+          "otherLoopbackPort": "SOCKS5 127.0.0.1:38201",
+          "loopbackPort1": "SOCKS5 127.0.0.1:38201",
+          "external": "SOCKS5 127.0.0.1:38201",
+          "expectedBlackhole": "SOCKS5 127.0.0.1:38201"
+        },
+        "spellcheckerEnabledAfter": false,
+        "released": true,
+        "failures": []
+      },
+      "observerCheck": {
+        "ok": true,
+        "problems": [],
+        "failureCodes": []
+      },
+      "ozone": {
+        "processCount": 6,
+        "ozonePlatforms": [
+          "x11"
+        ],
+        "types": [
+          "browser",
+          "gpu-process",
+          "renderer",
+          "utility",
+          "zygote"
+        ]
+      },
+      "instrumentation": {
+        "wrapped": true,
+        "method": "harness-build-timing-shim"
+      },
+      "stop": {
+        "closed": true,
+        "closeMs": 408,
+        "signalled": [],
+        "remaining": []
+      },
+      "recordedPids": [
+        {
+          "pid": 2174519,
+          "startTime": "20136112",
+          "type": "browser"
+        },
+        {
+          "pid": 2174521,
+          "startTime": "20136116",
+          "type": "zygote"
+        },
+        {
+          "pid": 2174522,
+          "startTime": "20136116",
+          "type": "zygote"
+        },
+        {
+          "pid": 2174553,
+          "startTime": "20136134",
+          "type": "utility"
+        },
+        {
+          "pid": 2174549,
+          "startTime": "20136134",
+          "type": "gpu-process"
+        },
+        {
+          "pid": 2174600,
+          "startTime": "20136142",
+          "type": "renderer"
+        }
+      ],
+      "stderrTail": "Debugger ending on ws://127.0.0.1:38479/b97d688e-bfbd-44eb-bc2b-c0bbfd734317\nFor help, see: https://nodejs.org/learn/getting-started/debugging\n",
+      "socketSamples": [
+        {
+          "schema": "nir1-cp4-socket-sample/1",
+          "atMs": 1793092094164,
+          "rootPid": 2174519,
+          "pids": [
+            2174519,
+            2174521,
+            2174522,
+            2174553,
+            2174549
+          ],
+          "unreadable": [],
+          "sockets": {
+            "tcp": 7,
+            "udp": 0,
+            "loopback": 7,
+            "unconnected": 0
+          },
+          "external": [],
+          "externalListeners": [],
+          "unix": {
+            "read": true
+          },
+          "userSessionPeers": [],
+          "systemBusPeers": 1,
+          "dns": [],
+          "processes": [
+            {
+              "pid": 2174519,
+              "ppid": 2172880,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "browser"
+            },
+            {
+              "pid": 2174521,
+              "ppid": 2174519,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "zygote"
+            },
+            {
+              "pid": 2174522,
+              "ppid": 2174519,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "zygote"
+            },
+            {
+              "pid": 2174553,
+              "ppid": 2174519,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "utility"
+            },
+            {
+              "pid": 2174549,
+              "ppid": 2174521,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "gpu-process"
+            }
+          ]
+        },
+        {
+          "schema": "nir1-cp4-socket-sample/1",
+          "atMs": 1793092096646,
+          "rootPid": 2174519,
+          "pids": [
+            2174519,
+            2174521,
+            2174522,
+            2174553,
+            2174549,
+            2174600
+          ],
+          "unreadable": [],
+          "sockets": {
+            "tcp": 13,
+            "udp": 0,
+            "loopback": 13,
+            "unconnected": 0
+          },
+          "external": [],
+          "externalListeners": [],
+          "unix": {
+            "read": true
+          },
+          "userSessionPeers": [],
+          "systemBusPeers": 1,
+          "dns": [],
+          "processes": [
+            {
+              "pid": 2174519,
+              "ppid": 2172880,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "browser"
+            },
+            {
+              "pid": 2174521,
+              "ppid": 2174519,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "zygote"
+            },
+            {
+              "pid": 2174522,
+              "ppid": 2174519,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "zygote"
+            },
+            {
+              "pid": 2174553,
+              "ppid": 2174519,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "utility"
+            },
+            {
+              "pid": 2174549,
+              "ppid": 2174521,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "gpu-process"
+            },
+            {
+              "pid": 2174600,
+              "ppid": 2174522,
+              "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-r5/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+              "type": "renderer"
+            }
+          ]
+        }
+      ],
+      "socketCheck": {
+        "clean": true,
+        "violations": [],
+        "gaps": []
+      },
+      "netLog": {
+        "path": ".artifacts/cp4/r5-1027/setup/G-08/graph-recovered/author/netlog.json",
+        "sha256": "1f62694eededc319c22011b087070c50dd0517e4a2ff13e1fe4d8d1fede94e7a",
+        "truncated": false,
+        "eventCount": 4651,
+        "nonLoopbackAttempts": 0,
+        "attempts": [],
+        "ipv6ReachabilityProbe": 2,
+        "ipv6ReachabilityChecks": 101,
+        "loopbackConnects": {
+          "blackhole": 2,
+          "other": 12
+        },
+        "resolverRequests": {
+          "total": 101,
+          "rejected": 3,
+          "hosts": [
+            "127.0.0.1"
+          ]
+        },
+        "dictionaryRequests": [
+          {
+            "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+            "proxy": "SOCKS5 127.0.0.1:38201",
+            "netError": -120
+          }
+        ]
+      },
+      "dictionaries": [],
+      "networkPersistentServers": [],
+      "tmp": {
+        "path": "/tmp/gr5/cp4-TJnqAe",
+        "removed": true
+      },
+      "x11After": [
+        {
+          "name": "X0",
+          "ino": 117,
+          "mtimeMs": 1792892973833.2798
+        },
+        {
+          "name": "X1",
+          "ino": 119,
+          "mtimeMs": 1792892973834.7053
+        },
+        {
+          "name": "X2",
+          "ino": 3319173,
+          "mtimeMs": 1793092025509.0164
+        }
+      ],
+      "x11Assessment": {
+        "sideEffects": [],
+        "others": []
+      }
+    }
+  ],
+  "errors": [],
+  "precheck": null,
+  "coldDatabase": {
+    "path": ".artifacts/cp4/r5-1027/setup/G-08/graph-recovered/cold-workspace/grimodex.db",
+    "sha256": "277ce3cec23521b8d462aaa28892e846b493029c06b679437698013b32941f0d"
+  },
+  "logicalToRuntime": {
+    "projectId": "c45aaca9-9707-499a-b220-2d5fa9e69553",
+    "querySceneId": "g08-query",
+    "scenes": {
+      "g08-review": "d2e833ce-c124-4257-99bb-fc002637a00b",
+      "g08-control": "9865347b-2594-4f02-b453-ff476f0ea1ce",
+      "g08-attach": "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+      "g08-cass-attic": "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+      "g08-ice": "cc5c61dc-2f4e-42a5-9320-c16b45be7e3d",
+      "g08-query": "2f824fb1-078d-4da2-b525-7f402bbf2d4e"
+    },
+    "folders": {
+      "nir1-folder-g08-control": "c25e3170-49cc-489c-b121-0ee7dd1a345b"
+    },
+    "entities": {
+      "g08-odile": "80b025cd-d658-489e-8eb4-399361630416",
+      "g08-cass": "070eae77-5d5d-4e35-a9ed-ac12b125939b",
+      "g08-juno": "55232202-1107-429e-8a5c-a46effcd5e7d"
+    },
+    "relations": {
+      "g08-rents-to-cass": "e0420743-fddc-4248-b99e-25cbd0e283a4",
+      "g08-rents-to-juno": "607dff7f-e8f1-4e03-998b-889c74b84703"
+    },
+    "foreshadows": {},
+    "pins": [
+      {
+        "sceneId": "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+        "entryId": "070eae77-5d5d-4e35-a9ed-ac12b125939b"
+      },
+      {
+        "sceneId": "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+        "entryId": "55232202-1107-429e-8a5c-a46effcd5e7d"
+      }
+    ]
+  },
+  "readBack": {
+    "logicalRuntimeCheck": {
+      "ok": true,
+      "scenes": 6,
+      "folders": 1,
+      "entities": 3,
+      "relations": 2,
+      "foreshadows": 0,
+      "pins": 3,
+      "explicitSceneScopes": 6,
+      "unwrittenSceneScopes": 0
+    },
+    "maintenanceEnabled": false
+  },
+  "seedPinStep": {
+    "schema": "nir1-cp4-seed-pin-step/1",
+    "contract": {
+      "draftRef": "nir1-graph-case-seed-pin-proposal/1",
+      "contractId": "graph-case-seed-pin-setup",
+      "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547"
+    },
+    "caseId": "G-08",
+    "variantId": "graph-recovered",
+    "anchor": "after-foreshadows-links-and-pins-before-maintenance-and-setup-timeline",
+    "querySceneId": {
+      "logical": "g08-query",
+      "runtime": "2f824fb1-078d-4da2-b525-7f402bbf2d4e"
+    },
+    "seed": {
+      "logical": "g08-odile",
+      "runtime": "80b025cd-d658-489e-8eb4-399361630416"
+    },
+    "writer": "upsertScenePin",
+    "createdAt": "2026-10-27T09:08:16.620Z",
+    "before": {
+      "queryScene": {
+        "live": true,
+        "version": 0,
+        "updatedAt": "2026-10-27T09:08:16.377893964+00:00"
+      },
+      "queryScenePins": [],
+      "workspacePins": [
+        {
+          "sceneId": "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+          "entryId": "070eae77-5d5d-4e35-a9ed-ac12b125939b"
+        },
+        {
+          "sceneId": "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+          "entryId": "55232202-1107-429e-8a5c-a46effcd5e7d"
+        }
+      ],
+      "sceneScopeBinding": {
+        "scene_incarnation_id": "60668c3b-272e-49d7-b21f-4f6bdffac1bd",
+        "compatibility_marker": "explicit",
+        "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+        "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+        "knowledge_holder_json": "{\"kind\":\"reader\"}",
+        "audience_json": "{\"kind\":\"reader\"}",
+        "version": 3,
+        "source_token": "sha256:70f5db0cfd87bfe5687ea194e93015f685359ac63050682a31e995ede1799ac4",
+        "updated_at": "2026-10-27T09:08:16.570Z"
+      },
+      "treeOrder": [
+        [
+          "2f824fb1-078d-4da2-b525-7f402bbf2d4e",
+          null,
+          "a5"
+        ],
+        [
+          "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+          null,
+          "a3"
+        ],
+        [
+          "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+          null,
+          "a2"
+        ],
+        [
+          "9865347b-2594-4f02-b453-ff476f0ea1ce",
+          "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+          "a0"
+        ],
+        [
+          "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+          null,
+          "a1"
+        ],
+        [
+          "cc5c61dc-2f4e-42a5-9320-c16b45be7e3d",
+          null,
+          "a4"
+        ],
+        [
+          "d2e833ce-c124-4257-99bb-fc002637a00b",
+          null,
+          "a0"
+        ]
+      ],
+      "scopeRegistry": {
+        "registryVersion": "narrative-scene-scope-registry/1",
+        "version": 2,
+        "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+        "updatedAt": "2026-10-27T09:08:16.468Z"
+      }
+    },
+    "after": {
+      "queryScene": {
+        "live": true,
+        "version": 0,
+        "updatedAt": "2026-10-27T09:08:16.377893964+00:00"
+      },
+      "queryScenePins": [
+        {
+          "entryId": "80b025cd-d658-489e-8eb4-399361630416",
+          "createdAt": "2026-10-27T09:08:16.620Z",
+          "entryInProject": true
+        }
+      ],
+      "workspacePins": [
+        {
+          "sceneId": "2f824fb1-078d-4da2-b525-7f402bbf2d4e",
+          "entryId": "80b025cd-d658-489e-8eb4-399361630416"
+        },
+        {
+          "sceneId": "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+          "entryId": "070eae77-5d5d-4e35-a9ed-ac12b125939b"
+        },
+        {
+          "sceneId": "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+          "entryId": "55232202-1107-429e-8a5c-a46effcd5e7d"
+        }
+      ],
+      "sceneScopeBinding": {
+        "scene_incarnation_id": "60668c3b-272e-49d7-b21f-4f6bdffac1bd",
+        "compatibility_marker": "explicit",
+        "query_identity_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+        "material_constraint_json": "{\"timeline\":{\"kind\":\"exact\",\"ref\":\"tl-main\"},\"worldline\":{\"kind\":\"exact\",\"ref\":\"wl-main\"},\"narrativeLayer\":{\"kind\":\"exact\",\"ref\":\"layer-story\"}}",
+        "knowledge_holder_json": "{\"kind\":\"reader\"}",
+        "audience_json": "{\"kind\":\"reader\"}",
+        "version": 3,
+        "source_token": "sha256:70f5db0cfd87bfe5687ea194e93015f685359ac63050682a31e995ede1799ac4",
+        "updated_at": "2026-10-27T09:08:16.570Z"
+      },
+      "treeOrder": [
+        [
+          "2f824fb1-078d-4da2-b525-7f402bbf2d4e",
+          null,
+          "a5"
+        ],
+        [
+          "36d8ca88-aab8-4d1b-bb36-f5041ef7a570",
+          null,
+          "a3"
+        ],
+        [
+          "7aff00ca-10f1-46b4-b86d-aacfd1f6a922",
+          null,
+          "a2"
+        ],
+        [
+          "9865347b-2594-4f02-b453-ff476f0ea1ce",
+          "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+          "a0"
+        ],
+        [
+          "c25e3170-49cc-489c-b121-0ee7dd1a345b",
+          null,
+          "a1"
+        ],
+        [
+          "cc5c61dc-2f4e-42a5-9320-c16b45be7e3d",
+          null,
+          "a4"
+        ],
+        [
+          "d2e833ce-c124-4257-99bb-fc002637a00b",
+          null,
+          "a0"
+        ]
+      ],
+      "scopeRegistry": {
+        "registryVersion": "narrative-scene-scope-registry/1",
+        "version": 2,
+        "sourceToken": "sha256:a645583eea36da1f94207e4fdbab1b010944eb1e68a767ba0cad1b44a4b56a59",
+        "updatedAt": "2026-10-27T09:08:16.468Z"
+      }
+    },
+    "countedAsSetupTimelineStep": false,
+    "countedAsMeasurementPoint": false
+  },
+  "seedPin": {
+    "ok": true,
+    "contract": {
+      "draftRef": "nir1-graph-case-seed-pin-proposal/1",
+      "contractId": "graph-case-seed-pin-setup",
+      "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547"
+    },
+    "caseId": "G-08",
+    "variantId": "graph-recovered",
+    "placementIndex": 9,
+    "placementCheckedOn": "recorded-through-seed-pin-then-planned"
+  },
+  "r5CheckPhases": {
+    "ok": true,
+    "phases": [
+      "project",
+      "scenes",
+      "entities",
+      "relations",
+      "scope-registry",
+      "scene-scope",
+      "foreshadows",
+      "foreshadow-links",
+      "pins",
+      "seed-pin"
+    ]
+  },
+  "finishedAt": "2026-10-27T09:08:17.135Z"
+}

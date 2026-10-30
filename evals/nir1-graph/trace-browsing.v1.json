@@ -1,0 +1,5260 @@
+{
+  "schemaVersion": "nir1-cp4-trace/1",
+  "traceId": "nir1-cp4-trace-browsing/1",
+  "kind": "browsing",
+  "status": "frozen-after-independent-review",
+  "graphRuntimeObservedBeforeAuthoring": false,
+  "contract": {
+    "k62": {
+      "draftRef": "nir1-final-request-eval-proposal/2",
+      "contractId": "graph-eval-procedure",
+      "path": "docs/plans/nir1-final-request-eval-proposal-2-draft.md",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8",
+      "sections": [
+        "graph-eval-procedure の測定の手順の 4（trace の run (b)）",
+        "条件の (b) の判定の規則の 1（Q≥200）",
+        "Mandatory defenses（trace の固定と再利用、maintenance）",
+        "事前登録の凍結の 2（診断の trace と sample の予定の file）"
+      ]
+    },
+    "k64": {
+      "draftRef": "nir1-final-request-eval-proposal/4",
+      "contractId": "graph-eval-procedure",
+      "path": "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
+      "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
+      "sections": [
+        "変える点 15（判断 8 の (ii)。(b) で follow-up を数える。R1 と R2 を当てない）",
+        "測定の手順の読み替え R8（2 つの表示と連続編集は (b) の trace で記録）",
+        "変える点 12（FETCH_DEBOUNCE_MS と graph-ready の取り直しの規則の変更で失効）"
+      ]
+    }
+  },
+  "usedBy": [
+    "CP-4 の (b) の記録（K6/2「条件が成立しない場合の CP-4 の可用性」を K6/4 の変える点 3 で読む）",
+    "K6/2 の条件の (ii) と (iii) の診断（(iii) は CP-4 の観測の前に固定したこの file を作り直さずに使う）"
+  ],
+  "project": {
+    "caseId": "G-02",
+    "variantId": "base",
+    "fixturePath": "evals/nir1-graph/g02-directed-relation.v1.json",
+    "fixtureSha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c",
+    "seedPinAddendum": "evals/nir1-graph/seed-pin-addendum.v1.json",
+    "setup": "G-02 base の Gold の run と同じ setup の手順（setupOrder と、SP/1 の seed の pin の段〔evals/nir1-graph/seed-pin-addendum.v1.json。g02-query から g02-orla への pin を upsertScenePin で 1 つ〕、setupTimeline、measurementPoint after-maintenance-current、B の seal は B-ROUTE の正規の経路、K2/4 の宣言の段は declarationPlace (ii)〔evals/nir1-graph/declaration-addendum.v1.json〕）。setup の最後に、期待寄与の材料（expectedMaterials）が A3 で eligible、Freshness が fresh、B の seal が current であることを確かめ、logical ID と runtime ID を setup receipt に記録する（K6/2 の Mandatory defenses）。",
+    "workspace": "trace ごとに新しい workspace（manifest の isolation。Gold の run とは別の workspace）。編集中と閲覧中は別の workspace で行う。",
+    "d2aMode": "restricted（observation-prep.v1.json の d10 の graph arm と同じ。Graph は restricted でだけ出る）",
+    "reason": "期待寄与の材料（資格付きの edge を 1 件以上生む Revision）を logical ID で持つ case のうち、mutation が測定点の前に終わり、secret の foreshadow と Index の保持（index-state-holding）を持たず、Graph が available な最も単純な case として G-02 base を選んだ。G-01 は typed Revision の logical ID を fixture に持たない。G-03〜G-06 も条件を満たすが、1 つに固定するために単純さで選んだ（観測した値では選んでいない）。"
+  },
+  "querySceneId": "g02-query",
+  "seed": {
+    "entityId": "g02-orla",
+    "source": "製品が出す query の seed（query の Scene の最初の pin。selectNir1GraphSeed）。その pin は SP/1 の seed の pin の段が setup で書いた g02-query から g02-orla への 1 つで、編集中の trace は本文だけを編集し pin を変えないので、各 query の seed は製品の規則で g02-orla になる。trace の workspace で R5 の照合（段の後の DB からの読み直し）が match でなければ trace を走らせず [precheck]（observation-prep.v1.json の r5Gate）。g02-harbor には pin が無いので、その query は seed を持たない。"
+  },
+  "expectedMaterials": [
+    {
+      "revisionId": "g02-r-tamsin",
+      "edgeIds": ["g02-trained-tamsin"]
+    },
+    {
+      "revisionId": "g02-r-sela",
+      "edgeIds": ["g02-works-beside"]
+    }
+  ],
+  "materialsNote": "G-02 base の qualifiedRevisionIds のうち、期待される Graph の edge（edgeIds）を生む Revision だけ。g02-r-rook は資格を持つが、その edge（g02-trained-orla）は reverse-direction で寄与しないので材料に入れない。g02-r-dace は stale-after-approval で資格がない。runtime ID は setup receipt の logicalToRuntime で対応づける（この file は runtime ID を持たない）。",
+  "productTriggers": {
+    "autoSaveDelayMs": {
+      "value": 2000,
+      "source": {
+        "path": "src/features/settings/types.ts",
+        "key": "editor.autoSaveDelay"
+      }
+    },
+    "fetchDebounceMs": {
+      "value": 400,
+      "source": {
+        "path": "src/features/related-scenes/useNir1RelatedScenes.ts",
+        "name": "FETCH_DEBOUNCE_MS"
+      }
+    },
+    "graphReadyFirstRefreshMs": {
+      "value": 0,
+      "source": {
+        "path": "src/features/related-scenes/useNir1RelatedScenes.ts",
+        "expression": "byGraphReady && !chained ? 0 : FETCH_DEBOUNCE_MS"
+      },
+      "note": "DR-RSJ-6: graph-ready を契機にした最初の取り直しは 0 ms、連鎖の取り直しとほかの契機は FETCH_DEBOUNCE_MS。"
+    },
+    "queryTrigger": "本文の保存が tree の node の updatedAt を更新し、useNir1RelatedScenes の query key（nodes を含む）が変わり、FETCH_DEBOUNCE_MS の後に製品が Related Scenes の query を出す。場面の切替えは activeSceneId の変化で同じく FETCH_DEBOUNCE_MS の後に出す。",
+    "build": {
+      "authoredAtBaseCommit": "7a10dd1101d2b28b095f10ec6cb7b617abdb7a09",
+      "rule": "測る build の候補の commit（run の receipt の candidate）で eval:fixtures のこの file の検査（productTriggers の値と src の値の一致）が通ること。候補の値がこの file と違えば、trace の不備（K6/2 手順の 4 の「書いた製品の契機か debounce の値が測る build と違う」）として作り直し、観測の前に再び固定する。"
+    }
+  },
+  "maintenance": {
+    "mode": "PUB-G の後の製品と同じ（製品の既定の頻度と時期。変えない）",
+    "gate": "PUB-G の前なので、B の Graph Index の build の maintenance の route の起動 gate を、B-ROUTE の検証済みの journey seam で開けた評価 build で測る。測定の Main の起動に、CI=true、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN（source の公開の定数）、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE（起動ごとの UUIDv4）、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build を与える。",
+    "forbiddenSeamOptions": [
+      "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_FAULT",
+      "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_SETUP",
+      "GRIMODEX_PRODUCT_JOURNEY_NARRATIVE_FRESHNESS_HOLD_PROJECT_ID",
+      "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_BARRIER_ID"
+    ],
+    "record": "開けたことと seam の receipt を run の receipt に書く。開けていない run は、本文の保存の後に B が封印し直されず (i) が続くので、setup の不備として無効にし、測り直す。",
+    "runtimePolicy": "maintenance_enabled は G-case の setup のとおり実際の runtime-policy の設定で有効にしたまま。"
+  },
+  "relatedScenesSection": "Related Scenes の section は trace の間、開いておく。表示は 1 つだけ（2 つ目の表示を開かない）。",
+  "cycleEnd": "各 counted query の観測の終わりは、その query の子（graph-ready を契機にした取り直し）の公開、t_raw_ready + T_show（2000 ms。K6/4 判断 4）の経過、session の停止のうち最も早いもの。次の操作はその終わりの直後に始め、ほかの待ちを足さない。T_show を超えた follow-up は成功に数えないので、それより前に次の操作を始めると、作者の台本の速さで follow-up を X6 にしうる。終わりを T_show に揃えるのは、それを防ぎ、台本の作者が間隔を選ばないため。",
+  "stall": {
+    "boundMs": 10000,
+    "attemptLimit": 2,
+    "attemptRule": "stall した試行も含めて、この file で取った試行の回数と各試行の記録を receipt に開示する。1 回目の stall の後は同じ file で 1 回だけ取り直す。2 回目の stall で取り直しをやめ、[precheck] でユーザーの判断に回す（完走した試行だけを選ぶ偏りを防ぐ。製品が応答しないこと自体が可用性の事象でありうるので、その記録も添える）。上限は観測の前に固定し、結果を見て変えない。",
+    "rule": "操作の後に、製品の応答（編集中は autosave の commit と、その後の製品の query、閲覧中は場面の切替えの後の製品の query）が 10,000 ms 以内に来なければ、その trace の run を trace-stalled として止め、記録をすべて残し、trace の不備として判定に使わず、同じ file で取り直す。10,000 ms は liveness の guard で、測る値の閾値ではない（stall した run は全体を判定に使わないので、どの率の分子と分母も変えない）。値は autosave の既定 2000 ms と debounce 400 ms の和の 4 倍を超え、Native の保留の期限（DEFERRED_RELEASE_LIMIT 10 s）と同じ桁で、観測した値から選んでいない。"
+  },
+  "notInQ": "index-ready の event（related-scenes:index-ready）と graph-ready の event による再 query は Q に入れず別に数える（K6/2 手順の 7）。K6/4 の判断 8 の (ii) では、F1〜F7 を満たす子を親の follow-up として数える（分母には入れない）。",
+  "fixedBeforeObservation": "この file は CP-4 の観測の前に固定し、独立 reviewer のレビューを受ける。(ii)、CP-4、(iii) は同じ file（commit と SHA-256 が同じもの）を使う。作り直せるのは不備（Q が 200 件に満たない、密度の条件を満たさない、期待寄与の材料の記録が欠ける、書いた製品の契機か debounce の値が測る build と違う）があるときだけで、作り直した版は観測の前に再び固定し、それまでの版と receipt はすべて残す。 setup が通らないことは作り直しの理由にしない（setupFailure）。",
+  "setupFailure": {
+    "decision": "S3v6 の P2-3 と P-S2-2",
+    "project": "G-02/base",
+    "onNotSetupComplete": {
+      "b": "未測定",
+      "cp4Availability": "HOLD"
+    },
+    "projectSwapAllowed": false,
+    "rule": "G-02 base の setup が上限内の開き直し（observation-prep.v1.json の setupReadings.reopen）で setup-complete に届かなければ、この trace の (b) は「未測定」とし、CP-4 の可用性は HOLD とする。setupFailure にするのは harness の名前のある blocked（blocked.harnessId）で、開き直しの上限の内の受領書だけで、名前の無い失敗や上限を超えた記録は harness の不備として [precheck]（S2 追補 #4、DR-CP4-O-5 (vi)、O-2 (e)）。この版では trace の project を差し替えない（差し替えは新しい版と独立 reviewer のレビューを要する）。止まった理由は受領書に harness の名前のまま残す（setupReadings.blockedCaseJudgement）。",
+    "acceptsOnly": "blocked-with-harness-id"
+  },
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4",
+    "recordSha256": "d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7",
+    "verdict": "accept-with-conditions",
+    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たしたと DR-CP4-P-2〜P-4 に記録されている（C2 の組の数は #759、DR-CP4-Q-2 で直した。S3 が充足を見直した記録は無い。repo の記録に、7 回目の後の S3 のレビューは無い）。C2 の K（側ごとの上限 6）は S3 でなく integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は「K は例えば 3（dev は 2/35）。これで偏りと最小の組数（24 以上）を同時に押さえます」と書いた（24 は組の数）。側ごとの上限 6 だけでは IR を比べる組が最少 18（30−12）になり S3 の条件より緩かったので、IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）を #759（DR-CP4-Q-2）で足し、S3 の組の最少 24 を満たす。7 回目が問い 1（P-S2-6）で求めた、予定しているユーザー通知に C1〜C3 の読みを明記することの記録は docs/plans/nir1-cp4-records/user-notification-2026-10-30.md（commit bf5b3799f9a8220d43f15e3479ad15e66b8c8928〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕、SHA-256 9597f5f4db5922ed1b65b9e1ea6f9deaccd8f243d80cc9db83b618da6fc91e06）にある。確認ではなく、返答も求めていない（K の帰属、組の最少 18 の取り違えと組の上限による訂正は、その記録の 2026-10-31 の補足と訂正）。record は S3 の 7 回目の報告の原文の記録で、recordSha256 はその commit のその file の bytes の SHA-256。記録の冒頭によれば、7 回目の報告の原本が repo に無かったので、integrator が 2026-10-30 に会話の記録から書き起こした。reviewer が使った scratchpad の script は repo に無い。1〜6 回目の報告の原文は repo に無い（要旨は作者の宣言の revisions、cp4-decisions.md の DR-CP4-L-28、P-1 など）。この file は 7 回目が見た差分（968f6782）に含まれる。7 回目の後に、この file を変えた commit は S4a（status と review だけ）のほかに無い。"
+  },
+  "browse": {
+    "otherSceneId": "g02-harbor",
+    "rule": "query の Scene（g02-query）と、pin を持たない Scene（g02-harbor）を、製品の tree の操作で交互に開く。g02-query を開くたびに製品が seed つきの query を出し、Q に数える。g02-harbor の query は、その Scene に pin がないので製品が seed を送らず、Graph を要求しない（Q の定義〔seed がある〕の外。K6/2 の (b) の規則の 1）。本文の編集と保存はしない。",
+    "stayEnd": "g02-harbor の滞在は、その Scene について製品が出した query の結果（Raw と IR。Graph は要求されない）が section に公開された直後に終わり、harness はそこで g02-query を開く（until: query-published）。g02-query の滞在は cycleEnd で終わる。どちらも製品で観測できる事象で終わりを決め、台本の作者は時間を選ばない。公開は FETCH_DEBOUNCE_MS の後なので、戻ったときに query key が変わり、製品は g02-query の query を必ず出す。"
+  },
+  "cyclePattern": ["navigate:g02-harbor", "navigate:g02-query"],
+  "cycles": 200,
+  "plannedQ": 201,
+  "runnerReadings": {
+    "source": "DR-CP4-TR-8〜TR-10、TR-13（master の docs/plans/nir1-lane-decisions/cp4-decisions.md）と、master に入った trace の runner（35537447、#747）の scripts/quality/nir1-graph-eval/trace-record.mjs（startSealOf、traceMaintenanceEnv）、trace-seal.mjs（readStartSeal）と、S5-B（950751d0、#756）の trace-runner.mjs の定数と trace-frozen.mjs（readTraceSetup、traceSeedPinCheck。DR-CP4-O-2 (d)(e)、O-5 (vi)(x)、O-10 P2-2）。S3v6 の P-S2-3、P-S2-4 の条件",
+    "status": "trace の runner の設計の提案（TR-8）と integrator の決定（TR-9、TR-10）を、この file の operations の読みとして観測の前に写したもの。operations、cycles、plannedQ（Q）は変えない。S3 のレビューの記録はこの file の review にある（S3 の 7 回目。対象の差分 968f6782 にこの file は含まれる）。",
+    "operations": {
+      "open-scene": {
+        "counted": true,
+        "a3Read": "once-right-after-parent-fetch-call-observed",
+        "startSeal": "mount の前と、親の fetch の呼出しの観測の直後"
+      },
+      "navigate": {
+        "counted": {
+          "counted": true,
+          "via": "tree の action setActiveScene（製品の tree の操作）",
+          "a3Read": "once-right-after-parent-fetch-call-observed",
+          "startSeal": "場面を移した後（製品の query の前）と、親の fetch の呼出しの観測の直後"
+        },
+        "outsideQ": {
+          "via": "tree の action setActiveScene（製品の tree の操作）",
+          "until": "query-published",
+          "onNonCompleted": "return-without-waiting-for-publication",
+          "counted": false,
+          "note": "seed の無い場面（g02-harbor）の query は Graph を要求しない Q の外の query で、別に数えて行にしない。その query が completed 以外で返ったら、公開を待たずに g02-query に戻る（browse.stayEnd の読み。reviewerQuestions の P-S2-4）。",
+          "receiptCountByReason": true,
+          "receiptRule": "completed 以外で返った Q の外の query を、返った status（理由）ごとに receipt で数える。stall の規則（stall.rule）は変えない（S3v6 の P-S2-4 の条件）。"
+        }
+      }
+    },
+    "a3": {
+      "readAt": "once-right-after-parent-fetch-call-observed",
+      "connection": "評価の自分の read-only の接続（nir1GraphEvalReadA3）",
+      "note": "各 counted query の A3 は、その親の fetch の呼出しを page の側で観測した直後に 1 回読む（「開始時」）。commit の後でなく query の開始の後に読むのは、(2) と (3) の間に harness の操作を入れないため。読取と S1 の stamp の重なりは K6/2 の規則 4 のまま分類器が数える。"
+    },
+    "startSeal": {
+      "reads": [
+        {
+          "id": "before",
+          "at": "親の begin の前の静かな時点（最初の query は mount の前、編集中は自動保存の commit を観測した後、閲覧中は場面を移した後。どれも製品の query の debounce の間で、timing の測定の窓の外）"
+        },
+        {
+          "id": "after",
+          "at": "親の fetch の呼出しを観測した直後（A3 と同じ時点）"
+        }
+      ],
+      "states": ["current", "dirty", "missing", "unknown"],
+      "usableStates": ["current"],
+      "onDisagreement": "unknown",
+      "rule": "before が B の行を持ち dirty でなく、after も B の行が dirty でなく generation が before と同じときだけ current。before の B の行が dirty なら dirty、行が無ければ missing。読取の失敗、読んでいない、before の終わりが親の fetch の呼出しより後、after の始まりが呼出しより前、2 回の食い違い（generation の変化か dirty）は unknown。current だけを U に入れ、ほかは K6/2 の規則 3 (i) の失効に数える（厳しい側。分類器は変えない）。行の snapshot.usable は Native の begin の答えからの snapshot も usable で、かつ current のとき。begin からの snapshot は snapshotNative として残し、receipt の startSeal に状態ごとの数を書く。",
+      "connection": {
+        "readOnly": true,
+        "busyTimeoutMs": 0,
+        "statements": "SELECT 1 回で閉じる（WAL の読み手。busy なら待たずに失敗して unknown）",
+        "api": "readIndexMetadata（workspace-db.mjs）"
+      },
+      "insideTimingWindow": false,
+      "reviewerQuestion": "P-S2-3（observation-prep.v1.json の reviewerQuestions）",
+      "receipt": {
+        "sealReadTimes": true,
+        "sealReadCount": true,
+        "cdpNow": "disclose",
+        "rule": "各 seal-read の開始と終わりの時刻と、counted query ごとの読取の回数を receipt に残す（runner は seal-read を log と events に書く）。時刻は renderer の performance.now() を CDP で問い合わせた値（driver.now()）で、その往復の遅れは開示に回す（S3v6 の P-S2-3 の条件）。"
+      }
+    },
+    "maintenanceLaunch": {
+      "env": [
+        "CI",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER"
+      ],
+      "values": {
+        "CI": "true",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_OWNER_TOKEN": "製品の source の公開の定数 NARRATIVE_MAINTENANCE_OWNER_TOKEN（runner の試験が source から読んで一致を確かめる）",
+        "GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_NONCE": "起動ごとの UUIDv4"
+      },
+      "trigger": "nir1-graph-index-build",
+      "scope": "trace-measurement-launch-only",
+      "onForbiddenOption": "[precheck]",
+      "record": "receipt に env の名前、trigger、nonce の sha256 を書く",
+      "note": "maintenance.gate の起動の手順。trace の測定の session の起動にだけ足し、定常状態とほかの runner の起動には足さない。maintenance.forbiddenSeamOptions のどれかが起動の env にあれば [precheck] で止める。"
+    },
+    "setupReceipt": {
+      "rule": "trace の setup は、今の候補の commit と tree で走った G-02 base の完全な setup（frozen-setup-driver.mjs --case G-02 --variant base --stops-at complete）の受領書だけを受ける。status setup-complete なら trace を測り、status blocked で harness の名前（blocked.harnessId）があり開き直しの上限の内なら setupFailure（(b) は未測定、HOLD）とする。ほかの case や variant、R5 の照合の run の受領書（r5CheckRun）、SP-P4 の分岐（seedPinBranch）、dev の setup、stopsAt が complete でない受領書、名前の無い失敗、別の候補（commit か tree が違う）の受領書は [precheck] で拒む（S2 追補 #4、DR-CP4-O-5 (x)、O-10 P2-2）。編集中と閲覧中は別に作った setup を使う。",
+      "accepts": "frozen-g02-base-complete-setup",
+      "candidate": "same-commit-and-tree",
+      "rejects": [
+        "other-case-or-variant",
+        "r5-check-run",
+        "sp-p4-branch",
+        "dev-setup",
+        "not-stops-at-complete",
+        "blocked-without-harness-id",
+        "other-candidate"
+      ],
+      "onReject": "[precheck]"
+    },
+    "r5Check": {
+      "rule": "trace の R5 は、trace の測定の写しの DB で SP/1 の SP-P1 の 1 行（問いの Scene の pin がちょうど 1 つで、製品の最初の pin が予定の seed g02-orla）を照合する（13 variant の照合ではない）。match でなければ trace を起動せず [precheck]（S2 追補 #4、DR-CP4-O-2 (d)、O-5 (vi)。r5Gate）。",
+      "check": "sp-p1-one-row",
+      "on": "trace-measurement-copy",
+      "onMismatch": "[precheck]"
+    }
+  },
+  "contentProposals": [],
+  "contentProposalsRule": "trace の内容（operations、cycles、plannedQ）を変える提案は、ここに status proposal-awaiting-s3 で書き、本体は変えない。S3 が採れば新しい版の trace を作り、観測の前に固定し直す。この追補の時点で内容を変える提案は無い（TR-8 の提案はどれも runnerReadings の読み。滞在の終わりの読みは observation-prep.v1.json の reviewerQuestions の P-S2-4）。",
+  "operations": [
+    {
+      "seq": 0,
+      "op": "open-scene",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 0,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 1,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 2,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 1,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 3,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 4,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 2,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 5,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 6,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 3,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 7,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 8,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 4,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 9,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 10,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 5,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 11,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 12,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 6,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 13,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 14,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 7,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 15,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 16,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 8,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 17,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 18,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 9,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 19,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 20,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 10,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 21,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 22,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 11,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 23,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 24,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 12,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 25,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 26,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 13,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 27,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 28,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 14,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 29,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 30,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 15,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 31,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 32,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 16,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 33,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 34,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 17,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 35,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 36,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 18,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 37,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 38,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 19,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 39,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 40,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 20,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 41,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 42,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 21,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 43,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 44,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 22,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 45,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 46,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 23,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 47,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 48,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 24,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 49,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 50,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 25,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 51,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 52,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 26,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 53,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 54,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 27,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 55,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 56,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 28,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 57,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 58,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 29,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 59,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 60,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 30,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 61,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 62,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 31,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 63,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 64,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 32,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 65,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 66,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 33,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 67,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 68,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 34,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 69,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 70,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 35,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 71,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 72,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 36,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 73,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 74,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 37,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 75,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 76,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 38,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 77,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 78,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 39,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 79,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 80,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 40,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 81,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 82,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 41,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 83,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 84,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 42,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 85,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 86,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 43,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 87,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 88,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 44,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 89,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 90,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 45,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 91,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 92,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 46,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 93,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 94,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 47,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 95,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 96,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 48,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 97,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 98,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 49,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 99,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 100,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 50,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 101,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 102,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 51,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 103,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 104,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 52,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 105,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 106,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 53,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 107,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 108,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 54,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 109,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 110,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 55,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 111,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 112,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 56,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 113,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 114,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 57,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 115,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 116,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 58,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 117,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 118,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 59,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 119,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 120,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 60,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 121,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 122,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 61,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 123,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 124,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 62,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 125,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 126,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 63,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 127,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 128,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 64,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 129,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 130,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 65,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 131,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 132,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 66,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 133,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 134,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 67,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 135,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 136,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 68,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 137,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 138,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 69,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 139,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 140,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 70,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 141,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 142,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 71,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 143,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 144,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 72,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 145,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 146,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 73,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 147,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 148,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 74,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 149,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 150,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 75,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 151,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 152,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 76,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 153,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 154,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 77,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 155,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 156,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 78,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 157,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 158,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 79,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 159,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 160,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 80,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 161,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 162,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 81,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 163,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 164,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 82,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 165,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 166,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 83,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 167,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 168,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 84,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 169,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 170,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 85,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 171,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 172,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 86,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 173,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 174,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 87,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 175,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 176,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 88,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 177,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 178,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 89,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 179,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 180,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 90,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 181,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 182,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 91,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 183,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 184,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 92,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 185,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 186,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 93,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 187,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 188,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 94,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 189,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 190,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 95,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 191,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 192,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 96,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 193,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 194,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 97,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 195,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 196,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 98,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 197,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 198,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 99,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 199,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 200,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 100,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 201,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 202,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 101,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 203,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 204,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 102,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 205,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 206,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 103,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 207,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 208,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 104,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 209,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 210,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 105,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 211,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 212,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 106,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 213,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 214,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 107,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 215,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 216,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 108,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 217,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 218,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 109,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 219,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 220,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 110,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 221,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 222,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 111,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 223,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 224,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 112,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 225,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 226,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 113,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 227,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 228,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 114,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 229,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 230,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 115,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 231,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 232,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 116,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 233,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 234,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 117,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 235,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 236,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 118,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 237,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 238,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 119,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 239,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 240,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 120,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 241,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 242,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 121,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 243,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 244,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 122,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 245,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 246,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 123,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 247,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 248,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 124,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 249,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 250,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 125,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 251,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 252,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 126,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 253,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 254,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 127,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 255,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 256,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 128,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 257,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 258,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 129,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 259,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 260,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 130,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 261,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 262,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 131,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 263,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 264,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 132,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 265,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 266,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 133,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 267,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 268,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 134,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 269,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 270,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 135,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 271,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 272,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 136,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 273,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 274,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 137,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 275,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 276,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 138,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 277,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 278,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 139,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 279,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 280,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 140,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 281,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 282,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 141,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 283,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 284,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 142,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 285,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 286,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 143,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 287,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 288,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 144,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 289,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 290,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 145,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 291,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 292,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 146,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 293,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 294,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 147,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 295,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 296,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 148,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 297,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 298,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 149,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 299,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 300,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 150,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 301,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 302,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 151,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 303,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 304,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 152,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 305,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 306,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 153,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 307,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 308,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 154,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 309,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 310,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 155,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 311,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 312,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 156,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 313,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 314,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 157,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 315,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 316,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 158,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 317,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 318,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 159,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 319,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 320,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 160,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 321,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 322,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 161,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 323,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 324,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 162,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 325,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 326,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 163,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 327,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 328,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 164,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 329,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 330,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 165,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 331,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 332,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 166,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 333,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 334,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 167,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 335,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 336,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 168,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 337,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 338,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 169,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 339,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 340,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 170,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 341,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 342,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 171,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 343,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 344,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 172,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 345,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 346,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 173,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 347,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 348,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 174,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 349,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 350,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 175,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 351,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 352,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 176,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 353,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 354,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 177,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 355,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 356,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 178,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 357,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 358,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 179,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 359,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 360,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 180,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 361,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 362,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 181,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 363,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 364,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 182,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 365,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 366,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 183,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 367,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 368,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 184,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 369,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 370,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 185,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 371,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 372,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 186,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 373,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 374,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 187,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 375,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 376,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 188,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 377,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 378,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 189,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 379,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 380,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 190,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 381,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 382,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 191,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 383,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 384,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 192,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 385,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 386,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 193,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 387,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 388,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 194,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 389,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 390,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 195,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 391,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 392,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 196,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 393,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 394,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 197,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 395,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 396,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 198,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 397,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 398,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 199,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    },
+    {
+      "seq": 399,
+      "op": "navigate",
+      "sceneId": "g02-harbor",
+      "until": "query-published",
+      "query": {
+        "counted": false,
+        "querySceneId": "g02-harbor",
+        "seed": null,
+        "expectedMaterials": []
+      }
+    },
+    {
+      "seq": 400,
+      "op": "navigate",
+      "sceneId": "g02-query",
+      "until": "cycle-end",
+      "query": {
+        "index": 200,
+        "counted": true,
+        "querySceneId": "g02-query",
+        "seed": "g02-orla",
+        "expectedMaterials": ["g02-r-tamsin", "g02-r-sela"]
+      }
+    }
+  ]
+}

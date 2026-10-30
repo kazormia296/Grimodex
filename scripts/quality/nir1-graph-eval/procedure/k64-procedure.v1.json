@@ -1,0 +1,40 @@
+{
+  "schema": "nir1-cp4-k64-procedure/1",
+  "version": "v1",
+  "draft": false,
+  "contract": {
+    "draftRef": "nir1-final-request-eval-proposal/4",
+    "contractId": "graph-eval-procedure",
+    "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+  },
+  "values": {
+    "dMs": 10.84,
+    "wFMs": 100,
+    "tLateMs": 100,
+    "tShowMs": 2000,
+    "r1r4WaitMs": 10000
+  },
+  "conditions": {
+    "follow": ["F1", "F2", "F3", "F4", "F5", "F6", "F7"],
+    "exclusions": [
+      "X1",
+      "X2",
+      "X3",
+      "X4",
+      "X5",
+      "X6",
+      "X7",
+      "X8",
+      "X9",
+      "X10",
+      "X11",
+      "X12",
+      "X13"
+    ]
+  },
+  "review": {
+    "reviewer": "S3 の独立 reviewer（agent、Opus）",
+    "reviewedAt": "2026-10-30",
+    "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4"
+  }
+}
