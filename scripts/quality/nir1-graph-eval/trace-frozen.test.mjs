@@ -21,7 +21,11 @@ import {
   traceAttemptHistory,
   traceSeedPinCheck,
 } from "./trace-frozen.mjs";
-import { COMPLETE_SETUP_FIELDS } from "./test-support.mjs";
+import {
+  COMPLETE_SETUP_FIELDS,
+  S4_REHEARSAL_G02_DECLARED,
+  s4RehearsalRepository,
+} from "./test-support.mjs";
 import { s2Record } from "./s5b-test-support.mjs";
 
 const H = (c) => c.repeat(64);
@@ -407,9 +411,12 @@ function fakeDeps(overrides = {}) {
         },
       };
     },
-    collectFacts: (input) => {
-      calls.push(["facts", input.commit]);
-      return { record };
+    readPrep: (input) => {
+      calls.push(["prep", input.prepCommit]);
+      return {
+        facts: { commit: C("5"), candidateHead: C("b") },
+        value: record,
+      };
     },
     readTraceHeads: ({ traces }) => {
       calls.push(["trace-heads"]);
@@ -492,7 +499,7 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
       "k64",
       "admit",
       "tree",
-      "facts",
+      "prep",
       "trace-heads",
       "sp-p4",
       "plan",
@@ -562,8 +569,9 @@ test("O-1 (6): 凍結の trace の準備は K6/4 の head → admission → 先�
   // placeholder の trace は先頭で止まり、plan も手順も読まない。
   const third = tempDir();
   const placeholder = fakeDeps({
-    collectFacts: () => ({
-      record: s2Record((r) => {
+    readPrep: () => ({
+      facts: { commit: C("5"), candidateHead: C("b") },
+      value: s2Record((r) => {
         r.traces[0].commit = "S4:trace-editing-commit";
         return r;
       }),
@@ -921,4 +929,109 @@ test("レビュー P2-α: 起動の前の [precheck]（gate の拒否、plan の
     runWith("trace-3", 1),
     /1 earlier attempts are recorded \(expected 0\)/u,
   );
+});
+
+test("DR-CP4-S4-1 予行: 凍結の trace の準備は、S4a→S4b の合成の repository で S2 の file を freeze record の束縛と照合して読み、trace の先頭と宣言まで進む", async () => {
+  const r = s4RehearsalRepository();
+  const runDir = tempDir();
+  try {
+    const setup = setupReceipt({
+      candidate: { commit: r.head, tree: r.tree, clean: true },
+    });
+    setup.logicalToRuntime.scenes[S4_REHEARSAL_G02_DECLARED] = "t-rt";
+    const calls = [];
+    // Only the parts that need the real repository (K6/2, the build
+    // receipts), the trace plan's content, the procedure, the SP-P4 gate and
+    // the ledger are replaced; the S4 records are read for real.
+    const deps = {
+      readK64Head: () => ({ freezeCommit: r.base, sha256: H("4") }),
+      admit: (input) => {
+        calls.push(["admit", input.prepCommit]);
+        return {
+          kind: "graph-case",
+          candidateHead: r.head,
+          ratification5: { sealed: true },
+          head: {
+            k62: { freezeCommit: C("6"), sha256: H("6") },
+            k64: { freezeCommit: r.base, sha256: H("4") },
+            observationPrep: { commit: r.s4b, freezeRecordSha256: H("5") },
+          },
+        };
+      },
+      loadPlan: ({ file, commit }) => ({
+        plan: frozenPlan("editing"),
+        path: file,
+        commit,
+        sha256: r.digests[file],
+      }),
+      loadProcedure: (input) => {
+        calls.push(["procedure", input.commit]);
+        return { values: { tShowMs: 2000 } };
+      },
+      readSpP4: () => ({ summary: { status: "passed" } }),
+      claimAttempt: () => ({ claimed: true }),
+    };
+    const prepared = await prepareFrozenTrace({
+      root: r.repo,
+      runDir,
+      options: {
+        setup: writeReceipt(runDir, setup),
+        "trace-kind": "editing",
+        "prep-commit": r.s4b,
+        "k62-commit": C("6"),
+        "k64-commit": r.base,
+        "procedure-version": "v1",
+        "sp-p4-receipt": "sp-p4-receipt.json",
+        attempt: "1",
+      },
+      inputs,
+      deps,
+    });
+    assert.equal(prepared.setupFailure, null);
+    assert.deepEqual(
+      prepared.head.traces.map((row) => [row.kind, row.commit, row.sha256]),
+      [
+        ["editing", r.s4a, r.digests["evals/nir1-graph/trace-editing.v1.json"]],
+        [
+          "browsing",
+          r.s4a,
+          r.digests["evals/nir1-graph/trace-browsing.v1.json"],
+        ],
+      ],
+    );
+    assert.equal(prepared.declaration.sceneId, S4_REHEARSAL_G02_DECLARED);
+    assert.equal(prepared.declaration.addendum.commit, r.s4a);
+    assert.deepEqual(calls.at(-1), ["procedure", r.s4b]);
+    // An admission for another pre-observation commit than the facts read.
+    const other = tempDir();
+    await assert.rejects(
+      prepareFrozenTrace({
+        root: r.repo,
+        runDir: other,
+        options: {
+          setup: writeReceipt(other, setup),
+          "trace-kind": "editing",
+          "prep-commit": r.s4b,
+          "k62-commit": C("6"),
+          "k64-commit": r.base,
+          "sp-p4-receipt": "sp-p4-receipt.json",
+          attempt: "1",
+        },
+        inputs,
+        deps: {
+          ...deps,
+          admit: (input) => ({
+            ...deps.admit(input),
+            head: {
+              ...deps.admit(input).head,
+              observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
+            },
+          }),
+        },
+      }),
+      /\[precheck\].*another pre-observation commit/u,
+    );
+  } finally {
+    r.cleanup();
+  }
 });

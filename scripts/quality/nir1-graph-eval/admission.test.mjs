@@ -14,8 +14,10 @@ import {
   GRAPH_ARM_WIRED,
   assertGraphArmRequestable,
   assertObservationPrepAdmits,
+  observationPrepRecordErrors,
 } from "../nir1-retrieval/contract.mjs";
 import {
+  OBSERVATION_PREP_S2_PATH,
   admitFrozenDryRun,
   admitGraphCaseRun,
   assertDefaultAddonIsProduct,
@@ -27,9 +29,23 @@ import {
   readAdmittedFixture,
   readK62FreezeHead,
   readK64FreezeHead,
+  readAdmittedObservationPrep,
+  readFreezeBoundFile,
   readNetNamespaces,
   rebindRatification5,
 } from "./admission.mjs";
+import {
+  assertPrepForAdmission,
+  readFrozenSpP4Plan,
+} from "./diagnostic-runner.mjs";
+import {
+  buildRunHead,
+  readBoundFile,
+  readDiagnosticPlan,
+  readTraceFileHeads,
+} from "./frozen-diagnostics.mjs";
+import { admitFormalK64Run } from "./frozen-k64-admission.mjs";
+import { readTraceDeclaration } from "./trace-frozen.mjs";
 import {
   claimFactsSealer,
   claimTestEvidenceSealer,
@@ -53,6 +69,9 @@ import {
   keepTestCandidate,
   productReceipt,
   ratification5,
+  S4_REHEARSAL_FILES,
+  S4_REHEARSAL_G02_DECLARED,
+  s4RehearsalRepository,
 } from "./test-support.mjs";
 import { assessCandidateRegime } from "./followup.mjs";
 import {
@@ -1135,4 +1154,393 @@ test("P2-2: 試験の run の中で封印した試験専用の証拠も、その
   const { inside, outside } = JSON.parse(out.trim().split("\n").at(-1));
   assert.ok(!inside.includes("ratification5-test-only-outside-tests"));
   assert.deepEqual(outside, ["ratification5-test-only-outside-tests"]);
+});
+
+// ---- S4 の予行（DR-CP4-S4-1）-------------------------------------------------
+// S4a → S4b → 候補の合成の repository（test-support の s4RehearsalRepository）で、
+// 正式の入口が S4 の記録を読む流れを通しで確かめる。契約の freeze record
+// （object の boundFiles）と S2 の observation-prep（配列の boundFiles、
+// diagnosticRuns、samplePlan、traces）は別の file で、S2 の file は freeze
+// record の束縛の sha256 と照合してから読む。
+
+const S2_PREP = S4_REHEARSAL_FILES.prep;
+
+test("DR-CP4-S4-1 予行: freeze record は S2 の plan ではない（修正前の入口はここで止まった）", () => {
+  const r = s4RehearsalRepository();
+  try {
+    const facts = collectObservationPrepFacts({
+      root: r.repo,
+      commit: r.s4b,
+      candidateHead: r.head,
+    });
+    // The contract admits the freeze record itself.
+    assert.equal(assertObservationPrepAdmits(facts, r.head), facts);
+    assert.equal(facts.headFileSha256[S2_PREP], r.prepSha256);
+    // The S5-B entries read `collectObservationPrepFacts(...).record` as if
+    // it were S2's file: SP-P4 (diagnostic-runner) and the trace stop.
+    assert.throws(
+      () => readDiagnosticPlan(facts.record),
+      /\[precheck\].*diagnosticRuns is missing/u,
+    );
+    assert.throws(
+      () => readTraceDeclaration({ root: r.repo, record: facts.record }),
+      /\[precheck\].*not in the observation-prep boundFiles/u,
+    );
+    assert.deepEqual(
+      readTraceFileHeads({ root: r.repo, traces: facts.record.traces }),
+      [],
+    );
+  } finally {
+    r.cleanup();
+  }
+});
+
+test("DR-CP4-S4-1 予行: S4a→S4b の記録を、admission → S2 の検証つき読取 → 診断の plan → trace の先頭と宣言 → A の S2 → 入口の関数の順に通る", () => {
+  const r = s4RehearsalRepository();
+  try {
+    // 1. The contract's facts and admission (unchanged).
+    const facts = collectObservationPrepFacts({
+      root: r.repo,
+      commit: r.s4b,
+      candidateHead: r.head,
+    });
+    assertObservationPrepAdmits(facts, r.head);
+    assert.equal(facts.recordIntroducedByCommit, true);
+    assert.equal(facts.onRemoteRef, true);
+    // 2. S2's file, read as the candidate head's blob and bound by sha256.
+    const prep = readAdmittedObservationPrep({
+      root: r.repo,
+      prepCommit: r.s4b,
+      candidateHead: r.head,
+    });
+    assert.equal(prep.path, OBSERVATION_PREP_S2_PATH);
+    assert.equal(prep.path, S2_PREP);
+    assert.equal(prep.commit, r.head);
+    assert.equal(prep.sha256, r.prepSha256);
+    assert.equal(prep.sha256, facts.record.boundFiles[S2_PREP]);
+    assert.equal(prep.facts.commit, r.s4b);
+    assert.ok(Array.isArray(prep.value.boundFiles));
+    // 3. The diagnostics' plan (S5-B) from S2's file.
+    const plan = readDiagnosticPlan(prep.value);
+    assert.equal(plan.spP4.warmup, 5);
+    assert.equal(plan.spP4.measured, 30);
+    assert.equal(plan.spP4.variants.length, 8);
+    // 4. The trace heads (S2 `traces`, at the S4a commit) and the receipt head.
+    const traces = readTraceFileHeads({
+      root: r.repo,
+      traces: prep.value.traces,
+    });
+    assert.deepEqual(
+      traces.map((row) => [row.kind, row.commit]),
+      [
+        ["editing", r.s4a],
+        ["browsing", r.s4a],
+      ],
+    );
+    const head = buildRunHead({
+      kind: "sp-p4",
+      k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
+      k64: { freezeCommit: r.k64Freeze.freezeCommit, sha256: H64("4") },
+      observationPrep: {
+        commit: facts.commit,
+        freezeRecordSha256: facts.recordSha256AtCommit,
+      },
+      traces,
+    });
+    assert.equal(head.traces.length, 2);
+    // 5. The trace's declaration and the other bound files (S2's array).
+    const declaration = readTraceDeclaration({
+      root: r.repo,
+      record: prep.value,
+    });
+    assert.equal(declaration.sceneId, S4_REHEARSAL_G02_DECLARED);
+    assert.equal(declaration.addendum.commit, r.s4a);
+    assert.equal(
+      declaration.addendum.sha256,
+      facts.record.boundFiles[S4_REHEARSAL_FILES.declarationAddendum],
+    );
+    assert.equal(
+      readBoundFile({
+        root: r.repo,
+        record: prep.value,
+        file: S4_REHEARSAL_FILES.setupAddendum,
+      }).sha256,
+      r.digests[S4_REHEARSAL_FILES.setupAddendum],
+    );
+    // 6. A (S5-A): the S2 files at the S4 commit, bound the same way.
+    const calls = [];
+    const formal = admitFormalK64Run(
+      {
+        root: r.repo,
+        candidate: r.head,
+        prepCommit: r.s4b,
+        k62Commit: K62_FREEZE.commit,
+        k64Commit: r.k64Freeze.freezeCommit,
+        buildReceipt: { kind: "eval" },
+        productReceipt: { kind: "product" },
+        defaultAddonSha256: H64("0"),
+      },
+      {
+        freeze: r.k64Freeze,
+        admitGraphCase: (value) => {
+          calls.push(value);
+          return Object.freeze({ stub: true });
+        },
+      },
+    );
+    assert.equal(formal.s2.files.observationPrep.sha256, r.prepSha256);
+    assert.deepEqual(
+      formal.s2.files.observationPrep.value.samplePlan,
+      prep.value.samplePlan,
+    );
+    for (const name of ["declarationAddendum", "g01Addendum"])
+      assert.equal(
+        formal.s2.files[name].sha256,
+        facts.record.boundFiles[formal.s2.files[name].path],
+      );
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].prepCommit, r.s4b);
+    // 7. The SP-P4 runner's entry (diagnostic-runner, without main).
+    const entry = readFrozenSpP4Plan({
+      root: r.repo,
+      prepCommit: r.s4b,
+      candidateHead: r.head,
+    });
+    assert.equal(entry.prep.sha256, r.prepSha256);
+    assert.deepEqual(entry.plan, plan);
+    // The admission is for the same S4 commit and candidate head.
+    const admitted = {
+      candidateHead: r.head,
+      head: { observationPrep: { commit: r.s4b } },
+    };
+    assert.equal(
+      assertPrepForAdmission({ prep: entry.prep, admission: admitted }),
+      entry.prep,
+    );
+    for (const other of [
+      { ...admitted, candidateHead: r.s4b },
+      { ...admitted, head: { observationPrep: { commit: r.s4a } } },
+    ])
+      assert.throws(
+        () => assertPrepForAdmission({ prep: entry.prep, admission: other }),
+        /\[precheck\].*another pre-observation commit or candidate head/u,
+      );
+  } finally {
+    r.cleanup();
+  }
+});
+
+test("DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配列と object の取り違え・S2 と freeze record の食い違いは [precheck]", () => {
+  const read = (r) => () =>
+    readAdmittedObservationPrep({
+      root: r.repo,
+      prepCommit: r.s4b,
+      candidateHead: r.head,
+    });
+  const cases = [
+    // S2's file changed on the candidate after S4b (the freeze record binds
+    // the S4b bytes).
+    [
+      { candidate: { [S2_PREP]: '{"changed":true}\n' } },
+      /at the candidate head differs from the record/u,
+    ],
+    // The freeze record does not bind S2's file.
+    [
+      {
+        freeze: (value) => {
+          delete value.boundFiles[S2_PREP];
+          return value;
+        },
+      },
+      /does not bind evals\/nir1-graph\/observation-prep\.v1\.json/u,
+    ],
+    // The freeze record's boundFiles is S2's array (path, commit, sha256).
+    [
+      {
+        freeze: (value, ctx) => ({
+          ...value,
+          boundFiles: Object.entries(value.boundFiles).map(
+            ([file, sha256]) => ({ path: file, commit: ctx.s4a, sha256 }),
+          ),
+        }),
+      },
+      /boundFiles must be an object of path → sha256/u,
+    ],
+    // S2's boundFiles is an object (the freeze record's shape).
+    [
+      {
+        s2: (value) => ({
+          ...value,
+          boundFiles: Object.fromEntries(
+            value.boundFiles.map((row) => [row.path, row.sha256]),
+          ),
+        }),
+      },
+      /S2 boundFiles must be the array/u,
+    ],
+    // S2 binds a file the freeze record does not.
+    [
+      {
+        freeze: (value) => {
+          delete value.boundFiles[S4_REHEARSAL_FILES.seedPinAddendum];
+          return value;
+        },
+      },
+      /seed-pin-addendum\.v1\.json: S2 and the freeze record bind different bytes/u,
+    ],
+    // S2's trace row names other bytes than the freeze record binds.
+    [
+      {
+        s2: (value) => {
+          value.traces[0] = { ...value.traces[0], sha256: H64("9") };
+          return value;
+        },
+      },
+      /trace-editing\.v1\.json: S2 and the freeze record bind different bytes/u,
+    ],
+    // The freeze record itself is not admitted (observed before freezing).
+    [
+      {
+        freeze: (value) => ({
+          ...value,
+          graphRuntimeObservedBeforeFreeze: true,
+        }),
+      },
+      /graphRuntimeObservedBeforeFreeze/u,
+    ],
+    // S2's file is not JSON (bound by its sha256 all the same).
+    [{ s2: () => "not json" }, /is not JSON/u],
+    // S2 is still the draft, or keeps a placeholder S4b did not fill.
+    [
+      {
+        s2: (value) => ({
+          ...value,
+          status: "draft-awaiting-s3-review-and-s4-freeze",
+        }),
+      },
+      /is not frozen-before-observation or keeps a placeholder/u,
+    ],
+    [
+      {
+        s2: (value) => ({
+          ...value,
+          placeholders: [{ token: "S4:k64-freeze-commit" }],
+        }),
+      },
+      /is not frozen-before-observation or keeps a placeholder/u,
+    ],
+    [
+      {
+        s2: (value) => ({
+          ...value,
+          contracts: { k64: { freezeCommit: "S4:k64-freeze-commit" } },
+        }),
+      },
+      /is not frozen-before-observation or keeps a placeholder/u,
+    ],
+  ];
+  for (const [options, pattern] of cases) {
+    const r = s4RehearsalRepository(options);
+    try {
+      assert.throws(read(r), (error) => {
+        assert.match(error.message, /^\[precheck\]/u);
+        assert.match(error.message, pattern);
+        return true;
+      });
+      // The entries stop the same way (they use the same reader).
+      assert.throws(
+        () =>
+          readFrozenSpP4Plan({
+            root: r.repo,
+            prepCommit: r.s4b,
+            candidateHead: r.head,
+          }),
+        pattern,
+      );
+    } finally {
+      r.cleanup();
+    }
+  }
+});
+
+test("DR-CP4-S4-1: 検証つき読取は admission.mjs が集めた facts だけを受け、freeze record の束縛の sha256 と blob を照合する", () => {
+  const r = s4RehearsalRepository();
+  try {
+    const facts = collectObservationPrepFacts({
+      root: r.repo,
+      commit: r.s4b,
+      candidateHead: r.head,
+    });
+    const bound = readFreezeBoundFile({
+      root: r.repo,
+      facts,
+      file: S4_REHEARSAL_FILES.traceBrowsing,
+    });
+    assert.equal(bound.sha256, r.digests[S4_REHEARSAL_FILES.traceBrowsing]);
+    assert.equal(
+      bound.bytes.toString("utf8"),
+      `${JSON.stringify({ rehearsal: "browsing" })}\n`,
+    );
+    for (const forged of [{ ...facts }, JSON.parse(JSON.stringify(facts))])
+      assert.throws(
+        () =>
+          readFreezeBoundFile({ root: r.repo, facts: forged, file: S2_PREP }),
+        /\[precheck\].*collected/u,
+      );
+    assert.throws(
+      () => readFreezeBoundFile({ root: r.repo, facts, file: "candidate.txt" }),
+      /\[precheck\].*does not bind candidate\.txt/u,
+    );
+    // An inherited key (`toString`) is not a binding.
+    assert.throws(
+      () => readFreezeBoundFile({ root: r.repo, facts, file: "toString" }),
+      /\[precheck\].*does not bind toString/u,
+    );
+    assert.throws(
+      () =>
+        readAdmittedObservationPrep({
+          root: r.repo,
+          prepCommit: r.s4b,
+          candidateHead: r.head,
+          file: "candidate.txt",
+        }),
+      /unsupported option/u,
+    );
+  } finally {
+    r.cleanup();
+  }
+});
+
+test("DR-CP4-S4-1: 配列の boundFiles は添字を束縛にしない（集める側と契約の両方）", () => {
+  // A file named "0" whose sha256 is the array's only element: an array read
+  // with Object.keys would bind it (the contract's per-entry check passes).
+  const zero = "zero\n";
+  const zeroSha = createHash("sha256").update(zero).digest("hex");
+  const r = s4RehearsalRepository({
+    s4b: { 0: zero },
+    freeze: (value) => ({ ...value, boundFiles: [zeroSha] }),
+  });
+  try {
+    const facts = collectObservationPrepFacts({
+      root: r.repo,
+      commit: r.s4b,
+      candidateHead: r.head,
+    });
+    assert.equal(Object.hasOwn(facts.headFileSha256, "0"), false);
+    assert.throws(
+      () => assertObservationPrepAdmits(facts, r.head),
+      /boundFiles must be an object of path → sha256/u,
+    );
+    // The contract alone, with the head digests an index read would collect.
+    const errors = observationPrepRecordErrors(
+      { ...r.freezeValue },
+      { 0: zeroSha, ...facts.headFileSha256 },
+    );
+    assert.ok(
+      errors.some((row) => /object of path → sha256/u.test(row)),
+      errors.join("; "),
+    );
+  } finally {
+    r.cleanup();
+  }
 });

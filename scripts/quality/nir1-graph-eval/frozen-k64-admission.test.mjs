@@ -16,7 +16,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { readAdmittedFixture } from "./admission.mjs";
-import { FROZEN_FIXTURE_SHA256, K64_FREEZE } from "./constants.mjs";
+import {
+  FROZEN_FIXTURE_SHA256,
+  G01_FIXTURE,
+  GRAPH_CASE_FREEZE,
+  K62_FREEZE,
+  K64_FREEZE,
+  OBSERVATION_PREP_RECORD_PATH,
+  OBSERVATION_PREP_RECORD_SCHEMA,
+} from "./constants.mjs";
 import {
   ATTEMPTS_DIR,
   S2_FILES,
@@ -75,15 +83,29 @@ function procedureText({ draft = false } = {}) {
 }
 
 /**
- * base: the K6/4 bytes (the freeze commit) and the pinned harness file;
- * prep (S4): the S2 files and the procedure v1; HEAD = the candidate.
+ * base: the K6/4 bytes (the freeze commit), the pinned harness file and the
+ * frozen material; prep (S4): the S2 files, the procedure v1 and the
+ * contract's freeze record binding the S2 files (DR-CP4-S4-1; on
+ * origin/master); HEAD = the candidate.
  */
-function repository({ pinSha = null, draft = false, ancestor = null } = {}) {
+function repository({
+  pinSha = null,
+  draft = false,
+  ancestor = null,
+  unbind = null,
+} = {}) {
   const repo = mkdtempSync(path.join(tmpdir(), "cp4-s5a-admission-"));
   testGit(repo, "init", "-q", "-b", "main");
   write(repo, K64_FREEZE.path, "K6/4 frozen text\n");
   write(repo, HARNESS, "export const pinned = 1;\n");
-  const freezeCommit = commit(repo, "freeze", [K64_FREEZE.path, HARNESS]);
+  for (const file of [GRAPH_CASE_FREEZE.path, G01_FIXTURE.path])
+    write(repo, file, readFileSync(path.join(REPO_ROOT, file)));
+  const freezeCommit = commit(repo, "freeze", [
+    K64_FREEZE.path,
+    HARNESS,
+    GRAPH_CASE_FREEZE.path,
+    G01_FIXTURE.path,
+  ]);
   const pins = [
     {
       role: "harness",
@@ -103,26 +125,40 @@ function repository({ pinSha = null, draft = false, ancestor = null } = {}) {
       files: [],
     },
   ];
-  write(
-    repo,
-    S2_FILES.observationPrep,
-    `${JSON.stringify({ setupReadings: { source: { pins } } })}\n`,
-  );
-  write(
-    repo,
-    S2_FILES.declarationAddendum,
-    `${JSON.stringify({ declarations: [] })}\n`,
-  );
-  write(
-    repo,
-    S2_FILES.g01Addendum,
-    `${JSON.stringify({ declarations: [] })}\n`,
-  );
+  const s2 = {
+    [S2_FILES.observationPrep]: `${JSON.stringify({
+      status: "frozen-before-observation",
+      placeholders: [],
+      boundFiles: [],
+      setupReadings: { source: { pins } },
+    })}\n`,
+    [S2_FILES.declarationAddendum]: `${JSON.stringify({ declarations: [] })}\n`,
+    [S2_FILES.g01Addendum]: `${JSON.stringify({ declarations: [] })}\n`,
+  };
+  for (const [file, text] of Object.entries(s2)) write(repo, file, text);
   write(repo, procedureFilePath("v1"), procedureText({ draft }));
+  write(
+    repo,
+    OBSERVATION_PREP_RECORD_PATH,
+    `${JSON.stringify({
+      schemaVersion: OBSERVATION_PREP_RECORD_SCHEMA,
+      graphRuntimeObservedBeforeFreeze: false,
+      k62: { freezeCommit: K62_FREEZE.commit, sha256: K62_FREEZE.sha256 },
+      graphCaseFreeze: { ...GRAPH_CASE_FREEZE },
+      g01Fixture: { path: G01_FIXTURE.path, sha256: G01_FIXTURE.sha256 },
+      boundFiles: Object.fromEntries(
+        Object.entries(s2)
+          .filter(([file]) => file !== unbind)
+          .map(([file, text]) => [file, sha256(text)]),
+      ),
+    })}\n`,
+  );
   const prep = commit(repo, "S4", [
     ...Object.values(S2_FILES),
     procedureFilePath("v1"),
+    OBSERVATION_PREP_RECORD_PATH,
   ]);
+  testGit(repo, "update-ref", "refs/remotes/origin/master", prep);
   const freeze = {
     ...K64_FREEZE,
     sha256: sha256("K6/4 frozen text\n"),
@@ -325,6 +361,29 @@ test("S2 追補 #2／#3: bytes の pin の file が違う、ancestor の pin が
   } finally {
     for (const row of [bad, unrelated, draft, moved])
       rmSync(row.repo, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-S4-1: A の S2 の file は S4 の freeze record が束縛した bytes だけ（束縛が無ければ [precheck]、admitGraphCaseRun を呼ばない）", () => {
+  for (const file of Object.values(S2_FILES)) {
+    const fixture = repository({ unbind: file });
+    try {
+      const { calls, admitGraphCase } = stub();
+      assert.throws(
+        () =>
+          admitFormalK64Run(input(fixture), {
+            freeze: fixture.freeze,
+            admitGraphCase,
+          }),
+        new RegExp(
+          `\\[precheck\\].*the freeze record does not bind ${file.replaceAll(".", "\\.")}`,
+          "u",
+        ),
+      );
+      assert.equal(calls.length, 0);
+    } finally {
+      rmSync(fixture.repo, { recursive: true, force: true });
+    }
   }
 });
 

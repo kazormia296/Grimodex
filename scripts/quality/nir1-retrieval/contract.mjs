@@ -487,10 +487,21 @@ export function observationPrepRecordErrors(record, headFileSha256) {
     )
       errors.push(`${field} must be ${expected.path} with its frozen sha256`);
   const bound = record?.boundFiles;
-  if (!bound || typeof bound !== "object" || Object.keys(bound).length === 0)
+  // DR-CP4-S4-1: S2's array (path, commit, sha256) is not this record's
+  // shape; its indices must never be read as bound paths.
+  const isArray = Array.isArray(bound);
+  if (isArray)
+    errors.push(
+      "boundFiles must be an object of path → sha256 (an array is S2's shape)",
+    );
+  else if (
+    !bound ||
+    typeof bound !== "object" ||
+    Object.keys(bound).length === 0
+  )
     errors.push("boundFiles must list the files the record binds");
   const declared = {
-    ...(bound ?? {}),
+    ...(isArray ? {} : (bound ?? {})),
     [GRAPH_CASE_FREEZE.path]: GRAPH_CASE_FREEZE.sha256,
     [G01_FIXTURE.path]: G01_FIXTURE.sha256,
   };
