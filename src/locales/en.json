@@ -1565,7 +1565,12 @@
       "chat": "Chat"
     },
     "overlay": {
-      "toggle": "Toggle overlay: {{panel}}"
+      "toggle": "Toggle overlay: {{panel}}",
+      "moveTo": {
+        "left": "To left overlay",
+        "right": "To right overlay"
+      },
+      "restore": "Restore to region"
     },
     "panelToggle": "Toggle panels",
     "panels": "Panels",

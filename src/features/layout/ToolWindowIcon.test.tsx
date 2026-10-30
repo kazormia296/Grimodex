@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { render, screen, act } from "@testing-library/react";
+import { render, screen, act, fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import { useLayoutStore } from "./layoutStore";
@@ -160,5 +160,93 @@ describe("ToolWindowIcon 校閲実行中バッジ", () => {
     });
     renderIcon("scenes");
     expect(screen.queryByTestId("stripe-busy-badge")).toBeNull();
+  });
+});
+
+describe("ToolWindowIcon のオーバーレイへ移すメニュー", () => {
+  beforeEach(() => {
+    useLayoutStore.setState({
+      layout: buildDefaultLayoutState({ allInactive: true }),
+      layoutLocked: false,
+      hiddenStripePanels: new Set(),
+      openOverlay: null,
+    });
+  });
+
+  async function openMoveSubmenu() {
+    const slotId = findPanelLocation(
+      useLayoutStore.getState().layout,
+      "snippets",
+    )!.slot.id;
+    render(
+      <ToolWindowIcon
+        region="left"
+        panelId="snippets"
+        slotId={slotId}
+        active={false}
+        slotOpen={false}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.pointer({
+      keys: "[MouseRight>]",
+      target: screen.getByRole("button"),
+    });
+    const trigger = await screen.findByTestId("ctx-move-to-snippets");
+    await user.click(trigger);
+  }
+
+  it("「左のオーバーレイへ」で左の overlay に置く", async () => {
+    await openMoveSubmenu();
+    fireEvent.click(
+      await screen.findByTestId("ctx-move-to-overlay-left-snippets"),
+    );
+    expect(useLayoutStore.getState().layout.overlays?.left.panel).toBe(
+      "snippets",
+    );
+    expect(
+      findPanelLocation(useLayoutStore.getState().layout, "snippets"),
+    ).toBeNull();
+  });
+
+  it("「右のオーバーレイへ」で右の overlay に置く", async () => {
+    await openMoveSubmenu();
+    fireEvent.click(
+      await screen.findByTestId("ctx-move-to-overlay-right-snippets"),
+    );
+    expect(useLayoutStore.getState().layout.overlays?.right.panel).toBe(
+      "snippets",
+    );
+  });
+
+  it("ロック中は移動先のメニューごと無効で、overlay には置けない", async () => {
+    useLayoutStore.setState({ layoutLocked: true });
+    const slotId = findPanelLocation(
+      useLayoutStore.getState().layout,
+      "snippets",
+    )!.slot.id;
+    render(
+      <ToolWindowIcon
+        region="left"
+        panelId="snippets"
+        slotId={slotId}
+        active={false}
+        slotOpen={false}
+      />,
+    );
+    const user = userEvent.setup();
+    await user.pointer({
+      keys: "[MouseRight>]",
+      target: screen.getByRole("button"),
+    });
+    const trigger = await screen.findByTestId("ctx-move-to-snippets");
+    expect(trigger).toHaveAttribute("aria-disabled", "true");
+    await user.click(trigger);
+    expect(
+      screen.queryByTestId("ctx-move-to-overlay-left-snippets"),
+    ).toBeNull();
+    expect(
+      useLayoutStore.getState().layout.overlays?.left.panel ?? null,
+    ).toBeNull();
   });
 });

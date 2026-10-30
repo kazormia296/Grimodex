@@ -1564,7 +1564,12 @@
       "chat": "チャット"
     },
     "overlay": {
-      "toggle": "{{panel}}のオーバーレイを開閉"
+      "toggle": "{{panel}}のオーバーレイを開閉",
+      "moveTo": {
+        "left": "左のオーバーレイへ",
+        "right": "右のオーバーレイへ"
+      },
+      "restore": "元に戻す（領域へ）"
     },
     "panelToggle": "パネルの表示切替",
     "panels": "パネル",

@@ -126,4 +126,22 @@ describe("LayoutShell overlay rail", () => {
     expect(useLayoutStore.getState().openOverlay).toBeNull();
     expect(knob).toHaveAttribute("aria-expanded", "false");
   });
+
+  it("Zen 中は rail なしで、ショートカット相当の showOverlay だけで層が開く", () => {
+    const { container } = render(<LayoutShell zenMode />);
+    expect(container.querySelector("[data-overlay-rail]")).toBeNull();
+    act(() => useLayoutStore.getState().showOverlay("left"));
+    expect(
+      container.querySelector('[data-overlay-layer="left"]'),
+    ).toHaveAttribute("data-state", "open");
+  });
+
+  it("ロック中でもつまみで開閉できる", () => {
+    useLayoutStore.setState({ layoutLocked: true });
+    const { container } = render(<LayoutShell />);
+    fireEvent.click(
+      container.querySelector<HTMLElement>('[data-overlay-knob="left"]')!,
+    );
+    expect(useLayoutStore.getState().openOverlay).toBe("left");
+  });
 });
