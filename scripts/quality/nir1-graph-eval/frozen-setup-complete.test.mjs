@@ -21,6 +21,8 @@ import {
   assertRelationStaleOnCold,
   B_SEAL_REOPENS,
   B_SEAL_WAIT_MS,
+  FRESHNESS_SETTLE_INTERVAL_MS,
+  FRESHNESS_SETTLE_WAIT_MS,
   assertChronicleSetup,
   createSetupIds,
   guardPage,
@@ -112,7 +114,7 @@ function completeProduct(plan, options = {}) {
 }
 
 /** Sessions over one fake product; records each label, seam and Main. */
-function fakeSessions(product) {
+function fakeSessions(product, onStop = null) {
   const started = [];
   return {
     started,
@@ -125,6 +127,7 @@ function fakeSessions(product) {
         userData: "/nonexistent",
         evidence: { label, problems: [] },
         stop: async () => {
+          onStop?.(label, product);
           product.close();
           return { label, problems: [] };
         },
@@ -135,10 +138,10 @@ function fakeSessions(product) {
 
 const noSleep = async () => {};
 
-async function completeSetup(key, options = {}, shared = SHARED) {
+async function completeSetup(key, options = {}, shared = SHARED, extra = {}) {
   const plan = planOf(COMPLETE, key);
   const product = completeProduct(plan, options);
-  const sessions = fakeSessions(product);
+  const sessions = fakeSessions(product, extra.onStop);
   const setupDir = path.join(scratch("cp4-s1j2-"), plan.caseId, plan.variantId);
   const result = await setupFrozenVariant({
     plan,
@@ -147,8 +150,15 @@ async function completeSetup(key, options = {}, shared = SHARED) {
     deps: {
       startSession: sessions.startSession,
       uuid,
-      sleep: noSleep,
-      limits: { bSealMs: 50, maintenanceMs: 50 },
+      // DR-CP4-T-3: the product's Freshness runs while the driver waits.
+      sleep: async () => product.extension.freshnessTick(),
+      limits: {
+        bSealMs: 50,
+        maintenanceMs: 50,
+        ...(extra.freshnessSettleMs
+          ? { freshnessSettleMs: extra.freshnessSettleMs }
+          : {}),
+      },
     },
   });
   return { plan, product, sessions, ...result };
@@ -1176,5 +1186,104 @@ test("P-6: Chronicle の Index の build は照会の間隔 500 ms・待ち 120 
   assert.deepEqual(
     indexBuildUnmet({ measurementPoint: null }, "chronicle-index"),
     [],
+  );
+});
+
+// DR-CP4-T-3: the complete setup waits for the product's Freshness before it
+// closes a session and before the Chronicle Index and the measurement point,
+// so the cold DB has nothing left that a measurement process would process.
+
+const settlePoints = (receipt) =>
+  receipt.freshnessSettles.map((row) => `${row.session}:${row.point}`);
+
+test("DR-CP4-T-3: 待ちの定数は 60 s・250 ms で、G-02 型の未処理（型の編集の feed）は author の session を閉じる前に処理され、B と C はその後に封印される", async () => {
+  assert.equal(FRESHNESS_SETTLE_WAIT_MS, 60_000);
+  assert.equal(FRESHNESS_SETTLE_INTERVAL_MS, 250);
+  const { receipt } = await completeSetup("G-02/base", {
+    freshness: { settles: true },
+  });
+  assert.equal(receipt.status, "setup-complete", receipt.errors.join("\n"));
+  assert.deepEqual(settlePoints(receipt), [
+    "author:session-end",
+    "ir:session-end",
+    "seal:before:chronicle-index",
+    "seal:before:measurement-point",
+    "seal:session-end",
+  ]);
+  const authorEnd = receipt.freshnessSettles[0].settle;
+  assert.ok(authorEnd.initial.pendingEvents > 0);
+  assert.equal(authorEnd.final.pendingEvents, 0);
+  assert.ok(receipt.freshnessSettles.every((row) => row.settle.settled));
+  // The seal session opened on a settled feed: one seal, B and C usable.
+  assert.deepEqual(
+    receipt.sealAttempts.map((row) => row.outcome),
+    ["sealed"],
+  );
+  assert.equal(receipt.measurementPoint.probe.graph, "usable");
+  assert.equal(receipt.measurementPoint.probe.chronicle, "usable");
+  assert.equal(receipt.measurementPoint.freshnessFeed.pendingEvents, 0);
+  assert.equal(receipt.readBack.freshnessFeed.pendingEvents, 0);
+  assert.equal(
+    receipt.readBack.freshnessFeed.acknowledged,
+    receipt.readBack.freshnessFeed.head,
+  );
+});
+
+test("DR-CP4-T-3: G-08/graph-index-unusable は hold の session の編集の feed を C の作り直しの前に処理し、作り直した C は使え B は dirty のまま", async () => {
+  const { receipt } = await completeSetup("G-08/graph-index-unusable", {
+    freshness: { settles: true },
+  });
+  assert.equal(receipt.status, "setup-complete", receipt.errors.join("\n"));
+  const before = receipt.freshnessSettles.find(
+    (row) =>
+      row.session === "hold" && row.point.startsWith("before:chronicle-index"),
+  );
+  assert.ok(before.settle.initial.pendingEvents > 0);
+  assert.equal(before.settle.final.pendingEvents, 0);
+  assert.equal(receipt.measurementPoint.probe.chronicle, "usable");
+  assert.equal(receipt.measurementPoint.probe.graph, "unusable");
+  assert.equal(receipt.readBack.freshnessFeed.pendingEvents, 0);
+});
+
+test("DR-CP4-T-3: Freshness が上限までに処理し終えなければ [precheck] freshness-settle で止める（blocked にしない）", async () => {
+  const { receipt, sessions } = await completeSetup(
+    "G-02/base",
+    { freshness: { settles: false } },
+    SHARED,
+    { freshnessSettleMs: 30 },
+  );
+  assert.notEqual(receipt.status, "setup-complete");
+  // It stops at the author session's end: no later session opens.
+  assert.deepEqual(
+    sessions.started.map((row) => row.label),
+    ["author"],
+  );
+  assert.equal(receipt.blocked ?? null, null);
+  assert.match(
+    [receipt.precheck?.message, ...receipt.errors].join("\n"),
+    /\[precheck\] S1i freshness-settle/u,
+  );
+  assert.equal(receipt.freshnessSettles.at(-1).settle.settled, false);
+  assert.equal(receipt.freshnessSettles.at(-1).point, "session-end");
+});
+
+test("DR-CP4-T-3: 最後の session を閉じた後の cold DB に未処理が残れば [precheck]（測定の process に無効化を残さない）", async () => {
+  const { receipt } = await completeSetup(
+    "G-02/base",
+    { freshness: { settles: true } },
+    SHARED,
+    {
+      // A write after the last wait (as if the product appended an event
+      // while the session closed).
+      onStop: (label, product) => {
+        if (label !== "seal") return;
+        product.extension.appendFeedEvent();
+      },
+    },
+  );
+  assert.notEqual(receipt.status, "setup-complete");
+  assert.match(
+    [receipt.precheck?.message, ...receipt.errors].join("\n"),
+    /\[precheck\] S1i freshness-settle: .*cold DB/u,
   );
 });

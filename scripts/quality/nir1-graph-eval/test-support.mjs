@@ -1388,6 +1388,11 @@ export function completeSetupExtension({
   cutoverMissesOpens = 0,
   queryDirtiesC = false,
   buildIndexFailsIn = null,
+  // DR-CP4-T-3: the product's Change Feed and Freshness. Each mutation the
+  // fake plays appends a feed event; `freshnessTick()` (the tests' sleep)
+  // acknowledges the feed and, in the same write, dirties B and C (as
+  // `suspend_project_in_tx`) unless `settles` is false.
+  freshness = null,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1428,8 +1433,46 @@ export function completeSetupExtension({
           ?.m ?? 0,
       ) === 1;
     const dirtyAll = () => {
+      feedEvent();
       if (!maintenanceOn()) return;
       run("UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1");
+    };
+    let feedHead = 0;
+    function feedEvent() {
+      if (!freshness) return;
+      const projectId = projectOf();
+      feedHead += 1;
+      run(
+        "INSERT INTO narrative_change_events VALUES (?, ?, ?, 0)",
+        `feed-${feedHead}`,
+        projectId,
+        feedHead,
+      );
+    }
+    const freshnessTick = () => {
+      if (!freshness?.settles || feedHead === 0) return;
+      const projectId = projectOf();
+      const cursor = one(
+        "SELECT acknowledged_through_sequence AS ack FROM narrative_change_cursors WHERE project_id = ?",
+        projectId,
+      );
+      if (cursor?.ack === feedHead) return;
+      if (cursor)
+        run(
+          "UPDATE narrative_change_cursors SET acknowledged_through_sequence = ? WHERE project_id = ?",
+          feedHead,
+          projectId,
+        );
+      else
+        run(
+          "INSERT INTO narrative_change_cursors VALUES (?, 'narrative-incremental-freshness/v1', ?, NULL, NULL)",
+          projectId,
+          feedHead,
+        );
+      run(
+        "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE project_id = ?",
+        projectId,
+      );
     };
     const publish = (projectId, key) => {
       const row = one(
@@ -1518,6 +1561,8 @@ export function completeSetupExtension({
     return {
       indexCalls,
       policySets,
+      freshnessTick,
+      appendFeedEvent: () => feedEvent(),
       beginSession(next) {
         session = { ...next };
       },

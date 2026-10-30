@@ -74,6 +74,8 @@ import {
   readIndexMetadata,
   readRelationSourceTokens,
   readRunsSince,
+  freshnessSettled,
+  waitFreshnessSettled,
 } from "./workspace-db.mjs";
 import { REQUIRED_ARTIFACTS } from "../nir1-retrieval/standard-build-receipt.mjs";
 
@@ -153,6 +155,44 @@ export const MAINTENANCE_WAIT_MS = 180_000;
  */
 export const INDEX_BUILD_INTERVAL_MS = 500;
 export const INDEX_BUILD_WAIT_MS = 120_000;
+/**
+ * DR-CP4-T-3: the wait for the product's Freshness to process the feed
+ * (cursor at the head, no run in progress) before a complete setup closes a
+ * session and before its Chronicle Index and measurement point steps. Longer
+ * than a measurement process's (15 s): in a setup session the IR extraction,
+ * the seam's B build and Verify hold the maintenance permit the Freshness
+ * cycle needs. Fixed constants (the tests pin them).
+ */
+export const FRESHNESS_SETTLE_WAIT_MS = 60_000;
+export const FRESHNESS_SETTLE_INTERVAL_MS = 250;
+const SETTLE_BEFORE_EXECUTORS = new Set([
+  "chronicle-index",
+  "measurement-point",
+]);
+
+/**
+ * DR-CP4-T-3: one wait (complete setups only; ① never waits). A wait that
+ * runs out is a `[precheck]`, never blocked and never a reopening trigger.
+ */
+async function settleFreshness(ctx, point) {
+  if (partialRun(ctx.plan)) return null;
+  const file = path.join(ctx.workspacePath, "grimodex.db");
+  if (!existsSync(file)) return null;
+  const settle = await waitFreshnessSettled({
+    read: () => readFreshnessFeed(file, ctx.ids.projectId),
+    limitMs: ctx.limits?.freshnessSettleMs ?? FRESHNESS_SETTLE_WAIT_MS,
+    intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
+    sleep: ctx.sleep,
+  });
+  ctx.freshnessSettles ??= [];
+  ctx.freshnessSettles.push({ session: ctx.session ?? null, point, settle });
+  if (!settle.settled)
+    fail(
+      "freshness-settle",
+      `${ctx.plan.variantKey}: the product's Freshness did not process the feed in ${settle.limitMs} ms (${point} of the ${ctx.session} session; cursor ${settle.final.acknowledged}, head ${settle.final.head}, run ${settle.final.activeRun}, reserved ${settle.final.reserved})`,
+    );
+  return settle;
+}
 
 /**
  * P-6 (DR-CP4-L-28): the README preconditions an index build timeout leaves
@@ -1649,12 +1689,18 @@ export async function runFrozenSetupSteps({
       !ctx.preMutationIndexState
     )
       ctx.preMutationIndexState = assertSealedBeforeMutation(ctx);
+    // DR-CP4-T-3: the Index build and the probe see the feed processed.
+    if (SETTLE_BEFORE_EXECUTORS.has(step.executor))
+      await settleFreshness(ctx, `before:${step.phase}`);
     const stateBefore = ctx.workspaceOpen ? await readState(ctx) : null;
     const details = await executor({ ctx, step });
     const stateAfter = await readState(ctx);
     phase(step.phase, { session, details, stateBefore, stateAfter });
     ctx.sessionStepsDone += 1;
   }
+  // DR-CP4-T-3: nothing left in the feed when the session closes (the next
+  // seam session's opening wake seals B on a processed feed).
+  if (ctx.sessionStepsDone > 0) await settleFreshness(ctx, "session-end");
   if (
     session === plan.steps.at(-1).session &&
     plan.stopIndex === plan.steps.length - 1 &&
@@ -2162,6 +2208,8 @@ const RUN_ONLY_CTX_KEYS = new Set([
   "workspaceOpen",
   "limits",
   "resumeAuthorFrom",
+  // DR-CP4-T-3: each receipt records its own waits.
+  "freshnessSettles",
 ]);
 const cloneJson = (value) => JSON.parse(JSON.stringify(value));
 
@@ -2320,6 +2368,9 @@ export async function setupFrozenVariant({
       seedPinIndex: seedPinStepIndex(plan),
       stoppedAfter: runPlan.stopIndex,
     };
+  // DR-CP4-T-3: the waits of this receipt (a complete setup only), kept
+  // when a later step stops.
+  if (!partialRun(plan)) receipt.freshnessSettles = ctx.freshnessSettles = [];
   const session = async (
     label,
     extraEnv = {},
@@ -2640,6 +2691,13 @@ export async function setupFrozenVariant({
       receipt.readBack.indexMetadata = readIndexMetadata(cold, ids.projectId);
       // DR-CP4-T-1 (disclosure): the same on the sealed cold DB.
       receipt.readBack.freshnessFeed = readFreshnessFeed(cold, ids.projectId);
+      // DR-CP4-T-3: the guarantee that a measurement process has nothing
+      // of the setup's feed left to process.
+      if (!freshnessSettled(receipt.readBack.freshnessFeed))
+        fail(
+          "freshness-settle",
+          `${plan.variantKey}: the cold DB's feed is not processed (cursor ${receipt.readBack.freshnessFeed.acknowledged}, head ${receipt.readBack.freshnessFeed.head})`,
+        );
       receipt.readBack.relationStaleness = assertRelationStaleOnCold({
         cold,
         ids,
