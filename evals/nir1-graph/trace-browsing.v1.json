@@ -119,7 +119,8 @@
       "cp4Availability": "HOLD"
     },
     "projectSwapAllowed": false,
-    "rule": "G-02 base の setup が上限内の開き直し（observation-prep.v1.json の setupReadings.reopen）で setup-complete に届かなければ、この trace の (b) は「未測定」とし、CP-4 の可用性は HOLD とする。この版では trace の project を差し替えない（差し替えは新しい版と独立 reviewer のレビューを要する）。止まった理由は受領書に harness の名前のまま残す（setupReadings.blockedCaseJudgement）。"
+    "rule": "G-02 base の setup が上限内の開き直し（observation-prep.v1.json の setupReadings.reopen）で setup-complete に届かなければ、この trace の (b) は「未測定」とし、CP-4 の可用性は HOLD とする。setupFailure にするのは harness の名前のある blocked（blocked.harnessId）で、開き直しの上限の内の受領書だけで、名前の無い失敗や上限を超えた記録は harness の不備として [precheck]（S2 追補 #4、DR-CP4-O-5 (vi)、O-2 (e)）。この版では trace の project を差し替えない（差し替えは新しい版と独立 reviewer のレビューを要する）。止まった理由は受領書に harness の名前のまま残す（setupReadings.blockedCaseJudgement）。",
+    "acceptsOnly": "blocked-with-harness-id"
   },
   "review": null,
   "browse": {
@@ -131,7 +132,7 @@
   "cycles": 200,
   "plannedQ": 201,
   "runnerReadings": {
-    "source": "DR-CP4-TR-8〜TR-10、TR-13（master の docs/plans/nir1-lane-decisions/cp4-decisions.md）と、master に入った trace の runner（35537447、#747）の scripts/quality/nir1-graph-eval/trace-record.mjs（startSealOf、traceMaintenanceEnv）、trace-seal.mjs（readStartSeal）、trace-runner.mjs の定数。S3v6 の P-S2-3、P-S2-4 の条件",
+    "source": "DR-CP4-TR-8〜TR-10、TR-13（master の docs/plans/nir1-lane-decisions/cp4-decisions.md）と、master に入った trace の runner（35537447、#747）の scripts/quality/nir1-graph-eval/trace-record.mjs（startSealOf、traceMaintenanceEnv）、trace-seal.mjs（readStartSeal）と、S5-B（950751d0、#756）の trace-runner.mjs の定数と trace-frozen.mjs（readTraceSetup、traceSeedPinCheck。DR-CP4-O-2 (d)(e)、O-5 (vi)(x)、O-10 P2-2）。S3v6 の P-S2-3、P-S2-4 の条件",
     "status": "trace の runner の設計の提案（TR-8）と integrator の決定（TR-9、TR-10）を、この file の operations の読みとして観測の前に写したもの。operations、cycles、plannedQ（Q）は変えない。S3 の確認を受ける。",
     "operations": {
       "open-scene": {
@@ -209,6 +210,27 @@
       "onForbiddenOption": "[precheck]",
       "record": "receipt に env の名前、trigger、nonce の sha256 を書く",
       "note": "maintenance.gate の起動の手順。trace の測定の session の起動にだけ足し、定常状態とほかの runner の起動には足さない。maintenance.forbiddenSeamOptions のどれかが起動の env にあれば [precheck] で止める。"
+    },
+    "setupReceipt": {
+      "rule": "trace の setup は、今の候補の commit と tree で走った G-02 base の完全な setup（frozen-setup-driver.mjs --case G-02 --variant base --stops-at complete）の受領書だけを受ける。status setup-complete なら trace を測り、status blocked で harness の名前（blocked.harnessId）があり開き直しの上限の内なら setupFailure（(b) は未測定、HOLD）とする。ほかの case や variant、R5 の照合の run の受領書（r5CheckRun）、SP-P4 の分岐（seedPinBranch）、dev の setup、stopsAt が complete でない受領書、名前の無い失敗、別の候補（commit か tree が違う）の受領書は [precheck] で拒む（S2 追補 #4、DR-CP4-O-5 (x)、O-10 P2-2）。編集中と閲覧中は別に作った setup を使う。",
+      "accepts": "frozen-g02-base-complete-setup",
+      "candidate": "same-commit-and-tree",
+      "rejects": [
+        "other-case-or-variant",
+        "r5-check-run",
+        "sp-p4-branch",
+        "dev-setup",
+        "not-stops-at-complete",
+        "blocked-without-harness-id",
+        "other-candidate"
+      ],
+      "onReject": "[precheck]"
+    },
+    "r5Check": {
+      "rule": "trace の R5 は、trace の測定の写しの DB で SP/1 の SP-P1 の 1 行（問いの Scene の pin がちょうど 1 つで、製品の最初の pin が予定の seed g02-orla）を照合する（13 variant の照合ではない）。match でなければ trace を起動せず [precheck]（S2 追補 #4、DR-CP4-O-2 (d)、O-5 (vi)。r5Gate）。",
+      "check": "sp-p1-one-row",
+      "on": "trace-measurement-copy",
+      "onMismatch": "[precheck]"
     }
   },
   "contentProposals": [],

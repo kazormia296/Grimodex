@@ -7,11 +7,17 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
 import { SP1 } from "./seed-pin-addendum.mjs";
+import { execFileSync } from "node:child_process";
 import {
+  BLOCKED_TABLE_SOURCE,
+  HARNESS_CONSTANTS,
   K24_TABLE,
   OBSERVATION_PREP_FILES,
   PLACEHOLDER,
+  SOURCE_PINS,
   assertObservationPrepFormal,
+  parseHarnessConstant,
+  sourcePinGitErrors,
   formalReferenceErrors,
   authorDeclarationErrors,
   declarationAddendumErrors,
@@ -1745,6 +1751,11 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "b-route-seam-fix",
       "t14-k64-freeze",
       "freshness-requeue-fix",
+      // S2 追補 #4（#753〜#756）。
+      "startup-gate-io-settle",
+      "s5a-graph-arm-runner",
+      "maintenance-ownership-release",
+      "s5b-diagnostics-wiring",
     ],
   );
   assert.deepEqual(
@@ -2139,7 +2150,7 @@ test("S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CON
   assert.equal(
     ctx.harnessBlockedTableSource.sha256,
     prep.setupReadings.source.pins
-      .find((row) => row.role === "s1j2-blocked-map")
+      .find((row) => row.role === BLOCKED_TABLE_SOURCE.role)
       .files.find((file) => file.path.endsWith("frozen-setup-driver.mjs"))
       .sha256,
   );
@@ -2216,10 +2227,516 @@ test("S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CON
     check,
     (p) => {
       const pin = p.setupReadings.source.pins.find(
-        (row) => row.role === "s1j2-blocked-map",
+        (row) => row.role === BLOCKED_TABLE_SOURCE.role,
       );
       pin.files[0].sha256 = flip(pin.files[0].sha256);
     },
     /BLOCKED_CONTRACT_TABLE|pins/u,
+  );
+});
+
+// ---- S2 追補 #4（S5 の配線 #754〜#756 の後の pin と、S5-B の読みの写し。DR-CP4-P-1） ----
+
+const H4 = "scripts/quality/nir1-graph-eval/";
+const ORPHAN = "0123456789abcdef0123456789abcdef01234567";
+const gitText = (args) =>
+  execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
+
+test("S2 追補 #4 (A): each pin is a master commit and each bytes pin holds that commit's bytes (git)", async (t) => {
+  const ctx = await context();
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the pins are checked by the formal gate");
+    return;
+  }
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const pins = prep.setupReadings.source.pins;
+  const { head } = ctx.sourcePinGit;
+  assert.deepEqual(sourcePinGitErrors(pins, head, ctx.sourcePinGit), []);
+  // 同じ path を 2 つの pin に置かない（SOURCE_PINS そのもの）。
+  const held = SOURCE_PINS.flatMap((pin) => pin.paths);
+  assert.equal(new Set(held).size, held.length);
+  assert.deepEqual(
+    pins.map((row) => [row.role, row.commit, row.check]),
+    SOURCE_PINS.map((pin) => [pin.role, pin.commit, pin.check]),
+  );
+  // 変異: bytes の pin の sha256 を 1 字変える（全 file）。
+  for (const [at, pin] of pins.entries())
+    for (const [index, file] of (pin.files ?? []).entries()) {
+      const copy = clone(pins);
+      copy[at].files[index].sha256 = flip(file.sha256);
+      assert.ok(
+        sourcePinGitErrors(copy, head, ctx.sourcePinGit).some((e) =>
+          e.includes(`${file.path} at ${pin.commit} is not the pinned bytes`),
+        ),
+        `${pin.role} ${file.path}`,
+      );
+      detects(
+        prep,
+        (p) => observationPrepErrors(p, ctx),
+        (p) => {
+          p.setupReadings.source.pins[at].files[index].sha256 = flip(
+            file.sha256,
+          );
+        },
+        /is not the pinned bytes|BLOCKED_CONTRACT_TABLE|harness constants/u,
+      );
+    }
+  // 変異: commit を孤立の hash に変える（bytes の pin と ancestor の pin）。
+  for (const role of [
+    "s5b-diagnostics-wiring",
+    "maintenance-ownership-release",
+  ]) {
+    const copy = clone(pins);
+    copy.find((row) => row.role === role).commit = ORPHAN;
+    const errors = sourcePinGitErrors(copy, head, ctx.sourcePinGit);
+    assert.ok(
+      errors.some((e) => e.includes(`${role}: ${ORPHAN} is not an ancestor`)),
+      role,
+    );
+    detects(
+      prep,
+      (p) => observationPrepErrors(p, ctx),
+      (p) => {
+        p.setupReadings.source.pins.find((row) => row.role === role).commit =
+          ORPHAN;
+      },
+      /is not an ancestor/u,
+    );
+  }
+  // 存在するが祖先でない commit（rebase で孤立した commit）も拒む。
+  const notAncestor = { ...ctx.sourcePinGit, isAncestor: () => false };
+  assert.equal(
+    sourcePinGitErrors(pins, head, notAncestor).length,
+    SOURCE_PINS.length,
+  );
+});
+
+test("S2 追補 #4 (A): the bytes pins hold every non-test harness file #754 and #756 changed, each at the master commit that last changed it", async (t) => {
+  const ctx = await context();
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone");
+    return;
+  }
+  const s5b = SOURCE_PINS.find((pin) => pin.role === "s5b-diagnostics-wiring");
+  const changed = gitText([
+    "diff",
+    "--name-only",
+    "b1a87b0b81fbdce7f3d280e0671bced51306be1d",
+    s5b.commit,
+    "--",
+    H4,
+  ])
+    .split("\n")
+    .filter(
+      (file) =>
+        file !== "" &&
+        !file.endsWith(".test.mjs") &&
+        !file.endsWith("s5b-test-support.mjs"),
+    )
+    .sort();
+  const held = SOURCE_PINS.filter((pin) =>
+    ["s5a-graph-arm-runner", "s5b-diagnostics-wiring"].includes(pin.role),
+  )
+    .flatMap((pin) => pin.paths)
+    .sort();
+  assert.deepEqual(held, changed);
+  for (const pin of SOURCE_PINS)
+    for (const file of pin.paths)
+      assert.equal(
+        gitText(["log", "-1", "--format=%H", s5b.commit, "--", file]),
+        pin.commit,
+        `${file} is held by the commit that last changed it`,
+      );
+  // ancestor の pin は PR の squash の commit（#753、#755 ほか）。
+  for (const pin of SOURCE_PINS)
+    assert.ok(
+      ctx.sourcePinGit.isAncestor(pin.commit, s5b.commit),
+      `${pin.role} precedes ${s5b.commit}`,
+    );
+  // 変異: path を 2 つの pin に置く、pin から file を外す、check を変える。
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) => {
+      const pins = p.setupReadings.source.pins;
+      const from = pins.find((row) => row.role === "s5b-diagnostics-wiring");
+      pins
+        .find((row) => row.role === "s5a-graph-arm-runner")
+        .files.push({ ...from.files[0] });
+    },
+    /setupReadings\.source\.pins must be/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => {
+      p.setupReadings.source.pins
+        .find((row) => row.role === "s5b-diagnostics-wiring")
+        .files.pop();
+    },
+    /setupReadings\.source\.pins must be/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => {
+      p.setupReadings.source.pins.find(
+        (row) => row.role === "s1j2-blocked-map",
+      ).check = "bytes";
+    },
+    /setupReadings\.source\.pins must be/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) => {
+      p.setupReadings.source.pins = p.setupReadings.source.pins.filter(
+        (row) => row.role !== "startup-gate-io-settle",
+      );
+    },
+    /setupReadings\.source\.pins must be/u,
+  );
+});
+
+test("S2 追補 #4 (A): the blocked table and the harness constants are read from the s5b-diagnostics-wiring bytes", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.equal(BLOCKED_TABLE_SOURCE.role, "s5b-diagnostics-wiring");
+  assert.equal(
+    BLOCKED_TABLE_SOURCE.commit,
+    "950751d040b29b6d78a067a003dc19b196cfb692",
+  );
+  const pin = prep.setupReadings.source.pins.find(
+    (row) => row.role === BLOCKED_TABLE_SOURCE.role,
+  );
+  assert.equal(
+    pin.files.find((file) => file.path === BLOCKED_TABLE_SOURCE.path).sha256,
+    ctx.harnessBlockedTableSource.sha256,
+  );
+  // harness の定数（O-14 の文面でなく g01-negatives.mjs の値が正）。
+  assert.deepEqual(ctx.harnessConstants, {
+    B_SEAL_REOPENS: 2,
+    B_SEAL_WAIT_MS: 120000,
+    G01_CONTROL_ATTEMPTS: 60,
+    G01_SAMPLE_ATTEMPTS: 60,
+    G01_CONTROL_GAP_MS: 250,
+    G01_GRAPH_READY_WAIT_MS: 10000,
+    SP_P4_COMPARISON_RULE: "current",
+  });
+  assert.deepEqual(
+    ctx.harnessConstantSources.map((row) => row.path),
+    Object.keys(HARNESS_CONSTANTS),
+  );
+  for (const source of ctx.harnessConstantSources)
+    assert.equal(
+      pin.files.find((file) => file.path === source.path)?.sha256,
+      source.sha256,
+    );
+  assert.equal(
+    parseHarnessConstant(
+      'export const A = 10_000;\nexport const B = "x";',
+      "A",
+    ),
+    10000,
+  );
+  assert.equal(parseHarnessConstant('export const B = "x";', "B"), "x");
+  assert.equal(parseHarnessConstant("const A = 1;", "A"), undefined);
+  // 定数の出所の bytes が pin と違う、または読めない。
+  const drifted = {
+    ...ctx,
+    harnessConstantSources: ctx.harnessConstantSources.map((row, at) =>
+      at === 1 ? { ...row, sha256: flip(row.sha256) } : row,
+    ),
+  };
+  assert.ok(
+    observationPrepErrors(prep, drifted).some((e) =>
+      /must be the bytes the harness constants were read from/u.test(e),
+    ),
+  );
+  const addendum = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  assert.ok(
+    setupAddendumErrors(addendum, { ...ctx, harnessConstants: null }).some(
+      (e) => /harness constants could not be read/u.test(e),
+    ),
+  );
+});
+
+test("S2 追補 #4 (B): K24-G01-N2〜N4 read reached by the control and the sample, with the re-ask rule fixed to the harness constants", async () => {
+  const ctx = await context();
+  const addendum = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  assert.deepEqual(setupAddendumErrors(addendum, ctx), []);
+  const readings = addendum.afterMutationReadings;
+  assert.equal(readings.control.attemptLimit, 60);
+  assert.equal(readings.sample.attemptLimit, 60);
+  assert.equal(readings.retry.gapMs, 250);
+  for (const row of addendum.diagnosticNegatives.slice(1))
+    assert.deepEqual(row.afterMutationChecks, [
+      "sp-p1-recheck",
+      "graph-requested-with-seed",
+      "g01-mira-entity-reached",
+    ]);
+  const check = (copy) => setupAddendumErrors(copy, ctx);
+  const R = (mutate, pattern) => detects(addendum, check, mutate, pattern);
+  R((a) => (a.afterMutationReadings.control.attemptLimit = 10), /control/u);
+  R((a) => (a.afterMutationReadings.control.gapMs = 1200), /control/u);
+  R((a) => (a.afterMutationReadings.control.workspace = "fresh"), /control/u);
+  R((a) => (a.afterMutationReadings.control.bIndex = "compare"), /control/u);
+  R((a) => (a.afterMutationReadings.sample.attemptLimit = 30), /sample/u);
+  R(
+    (a) => a.afterMutationReadings.sample.reachedWhen.pop(),
+    /afterMutationReadings\.sample/u,
+  );
+  R(
+    (a) => a.afterMutationReadings.sample.undeterminedWhen.shift(),
+    /afterMutationReadings\.sample/u,
+  );
+  R((a) => (a.afterMutationReadings.retry.sampleLimit = 30), /retry/u);
+  R((a) => (a.afterMutationReadings.retry.decision = "best-of"), /retry/u);
+  R((a) => (a.afterMutationReadings.retry.retryOn = "every-answer"), /retry/u);
+  R(
+    (a) => (a.afterMutationReadings.retry.decidedAnswers = ["graph-ready"]),
+    /retry/u,
+  );
+  R(
+    (a) => (a.afterMutationReadings.retry.parentChild = "best-of-parent-child"),
+    /retry/u,
+  );
+  R(
+    (a) => (a.afterMutationReadings.retry.onExhausted = "not-reached"),
+    /retry/u,
+  );
+  R(
+    (a) => (a.afterMutationReadings.retry.onConstantMismatch = "disclose"),
+    /retry/u,
+  );
+  R((a) => a.afterMutationReadings.retry.disclose.pop(), /retry/u);
+  R(
+    (a) =>
+      (a.afterMutationReadings.seedRequested.source = "native-begin-record"),
+    /seedRequested/u,
+  );
+  R(
+    (a) => (a.afterMutationReadings.seedRequested.notFrom = null),
+    /seedRequested/u,
+  );
+  R(
+    (a) => (a.afterMutationReadings.seedRequested.expected = "g01-mira-entity"),
+    /seedRequested/u,
+  );
+  R(
+    (a) => a.afterMutationReadings.verdict.inconclusiveReasons.splice(3, 1),
+    /verdict/u,
+  );
+  R(
+    (a) => (a.afterMutationReadings.resealAfterMutation.reopensMax = 3),
+    /reseal/u,
+  );
+  R(
+    (a) => (a.afterMutationReadings.resealAfterMutation.waitMs = 60000),
+    /reseal/u,
+  );
+  R(
+    (a) =>
+      (a.afterMutationReadings.resealAfterMutation.measurementPoint =
+        "setup-measurement-point"),
+    /reseal/u,
+  );
+  R(
+    (a) =>
+      (a.diagnosticNegatives[2].beforeDeclarationWriter = "saveSceneContent"),
+    /createRevision/u,
+  );
+  R(
+    (a) => delete a.diagnosticNegatives[3].afterMutationReading,
+    /afterMutationReading must name/u,
+  );
+  R(
+    (a) => delete a.afterMutationReadings,
+    /afterMutationReadings is required/u,
+  );
+  // harness の定数が S2 の値と違えば（例: 上限を 30 に戻した harness）通さない。
+  for (const [key, value] of [
+    ["G01_CONTROL_ATTEMPTS", 30],
+    ["G01_SAMPLE_ATTEMPTS", 30],
+    ["G01_CONTROL_GAP_MS", 1200],
+    ["G01_GRAPH_READY_WAIT_MS", 5000],
+    ["B_SEAL_REOPENS", 1],
+    ["B_SEAL_WAIT_MS", 60000],
+  ])
+    assert.ok(
+      setupAddendumErrors(addendum, {
+        ...ctx,
+        harnessConstants: { ...ctx.harnessConstants, [key]: value },
+      }).length > 0,
+      key,
+    );
+});
+
+test("S2 追補 #4 (C): SP-P4 re-reads sparse, R+IR − R, graph-recovered's reason, measurement-only retake, and keeps current in force", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const { readDiagnosticPlan, SP_P4_COMPARISON_RULE } =
+    await import("../nir1-graph-eval/frozen-diagnostics.mjs");
+  // harness の plan の読みは S2 の記録をそのまま受ける。
+  assert.equal(readDiagnosticPlan(prep).spP4.variants.length, 8);
+  const p4 = prep.diagnosticRuns.find((row) => row.id === "SP-P4");
+  assert.equal(p4.comparisonRule.inForce, SP_P4_COMPARISON_RULE);
+  assert.equal(p4.comparisonRule.inForce, "current");
+  const at = prep.diagnosticRuns.indexOf(p4);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  const R = (mutate) =>
+    detects(prep, check, (p) => mutate(p.diagnosticRuns[at]), /SP-P4/u);
+  R((r) => (r.comparisonRule.inForce = "ir-complete-pairs"));
+  R((r) => (r.comparisonRule.rules[1].status = "in-force"));
+  R((r) => (r.comparisonRule.rules[1].threshold = 0.1));
+  R((r) => (r.comparisonRule.rules[1].onNoIrComplete = "disclose"));
+  R((r) => r.comparisonRule.rules[1].rFields.pop());
+  R((r) => (r.comparisonRule.rules[1].pairing = "any-ready-sample"));
+  R((r) => delete r.comparisonRule.rules[1].awaits);
+  R((r) => r.comparisonRule.rules.pop());
+  R((r) => (r.sparseReading.when = "before-product-fetch"));
+  R((r) => (r.sparseReading.via = "harness-sql"));
+  R((r) => (r.supplementSlot.maxScenes = 2));
+  R(
+    (r) =>
+      (r.countReason = r.countReason.replaceAll(
+        "G-08/graph-recovered",
+        "G-08",
+      )),
+  );
+  R((r) => (r.retakeScope = "setup-and-measurement"));
+  // harness の既定が切り替わっても S2 が current のままなら通さない（S2 が追う）。
+  assert.ok(
+    observationPrepErrors(prep, {
+      ...ctx,
+      harnessConstants: {
+        ...ctx.harnessConstants,
+        SP_P4_COMPARISON_RULE: "ir-complete-pairs",
+      },
+    }).some((e) => /comparisonRule/u.test(e)),
+  );
+  // S3 が P-S2-6 を (a) で決め、harness の定数も切り替えた後だけ ir-complete-pairs を使える。
+  const switched = clone(prep);
+  const rule = switched.diagnosticRuns[at].comparisonRule;
+  rule.inForce = "ir-complete-pairs";
+  rule.rules[0].status = "proposed";
+  rule.rules[1].status = "in-force";
+  const switchedCtx = {
+    ...ctx,
+    harnessConstants: {
+      ...ctx.harnessConstants,
+      SP_P4_COMPARISON_RULE: "ir-complete-pairs",
+    },
+  };
+  assert.ok(
+    observationPrepErrors(switched, switchedCtx).some((e) =>
+      /comparisonRule/u.test(e),
+    ),
+    "undecided P-S2-6",
+  );
+  switched.reviewerQuestions.find((row) => row.id === "P-S2-6").decision = {
+    choice: "a",
+    by: "S3（7 回目）",
+    record: "scratchpad/s3/observation-prep-review.v7.json",
+  };
+  assert.ok(
+    !observationPrepErrors(switched, switchedCtx).some((e) =>
+      /comparisonRule/u.test(e),
+    ),
+  );
+});
+
+test("S2 追補 #4 (D): the Gold run uses the one completed parity before its start; the parity fallback is not wired", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.ok(
+    prep.runnerHandoff.some(
+      (row) =>
+        row.includes("claude/nir1-contracts") &&
+        row.includes("fileSha256AtStart"),
+    ),
+  );
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  const R = (mutate, pattern) =>
+    detects(prep, check, (p) => mutate(p.d10.parity), pattern);
+  R((d) => (d.fallbackWired = true), /fallback/u);
+  R((d) => (d.fallback = d.fallback.replaceAll("[precheck]", "")), /fallback/u);
+  R((d) => (d.selection.onTwoOrMore = "latest"), /selection/u);
+  R((d) => (d.selection.onNone = "unrestricted-fallback"), /selection/u);
+  R((d) => (d.selection.finishedBeforeGoldStart = false), /selection/u);
+  R((d) => (d.selection.completedOnly = false), /selection/u);
+  R((d) => (d.selection.blockedAttempt = "completed"), /selection/u);
+  R((d) => d.receipt.priorAttempts.splice(2, 1), /priorAttempts/u);
+  R((d) => d.receipt.thisAttempt.pop(), /priorAttempts/u);
+});
+
+test("S2 追補 #4 (E): the trace takes only the candidate's G-02 base complete setup, SP-P1's one-row R5 and a named blocked as setupFailure", async () => {
+  const ctx = await context();
+  for (const file of [
+    OBSERVATION_PREP_FILES.traceEditing,
+    OBSERVATION_PREP_FILES.traceBrowsing,
+  ]) {
+    const trace = await json(file);
+    assert.deepEqual(traceErrors(trace, ctx), []);
+    const check = (copy) => traceErrors(copy, ctx);
+    const R = (mutate, pattern) => detects(trace, check, mutate, pattern);
+    R(
+      (tr) =>
+        (tr.runnerReadings.setupReceipt.rejects =
+          tr.runnerReadings.setupReceipt.rejects.filter(
+            (row) => row !== "r5-check-run",
+          )),
+      /setupReceipt/u,
+    );
+    R(
+      (tr) =>
+        (tr.runnerReadings.setupReceipt.rejects =
+          tr.runnerReadings.setupReceipt.rejects.filter(
+            (row) => row !== "sp-p4-branch",
+          )),
+      /setupReceipt/u,
+    );
+    R(
+      (tr) => (tr.runnerReadings.setupReceipt.candidate = "any"),
+      /setupReceipt/u,
+    );
+    R(
+      (tr) => (tr.runnerReadings.r5Check.check = "thirteen-variants"),
+      /r5Check/u,
+    );
+    R((tr) => (tr.runnerReadings.r5Check.onMismatch = "disclose"), /r5Check/u);
+    R((tr) => (tr.setupFailure.acceptsOnly = "any-failure"), /acceptsOnly/u);
+  }
+});
+
+test("S2 追補 #4 (F): the S3 7th review's questions are open, with grounds and options", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const added = prep.reviewerQuestions.filter((row) =>
+    ["P-S2-6", "P-S2-7", "P-S2-8", "P-S2-9"].includes(row.id),
+  );
+  assert.equal(added.length, 4);
+  assert.ok(added.every((row) => row.decision === null));
+  assert.ok(added[0].topic.includes("loosening"));
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.reviewerQuestions.find((row) => row.id === "P-S2-6").decision = {
+        choice: "a",
+      }),
+    /reviewerQuestions P-S2-6/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.reviewerQuestions = p.reviewerQuestions.filter(
+        (row) => row.id !== "P-S2-9",
+      )),
+    /reviewerQuestions must be/u,
   );
 });

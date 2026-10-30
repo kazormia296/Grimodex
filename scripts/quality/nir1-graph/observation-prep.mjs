@@ -282,22 +282,108 @@ const SETUP_READING_ITEMS = Object.freeze([
  * S2 追補 #2（S3v6-P2-1）: the master commits S2 pins (never a commit a rebase
  * left unreachable). S5 checks the candidate's harness files against them.
  */
-const SOURCE_PINS = Object.freeze([
-  ["s1j2-blocked-map", "b1a87b0b81fbdce7f3d280e0671bced51306be1d"],
-  ["s1j2-complete-setup", "3a6e65e400cac5d72e761f58eb1ae8eaec514e18"],
-  ["trace-runner", "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba"],
-  ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105"],
-  ["t14-k64-freeze", "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f"],
-  ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775"],
-]);
+const HARNESS_DIR = "scripts/quality/nir1-graph-eval/";
 /**
- * S2 追補 #3: the harness file whose BLOCKED_CONTRACT_TABLE (DR-CP4-L-28)
+ * S2 追補 #4（DR-CP4-O-5 (i)、DR-CP4-P-1）: each pin's role, commit, check
+ * and (bytes) the exact harness paths it holds — a file is held by the
+ * master commit that last changed it, and no path is held twice. The pins
+ * after b1a87b0b hold every non-test harness file #754 and #756 changed.
+ */
+export const SOURCE_PINS = Object.freeze(
+  [
+    ["s1j2-blocked-map", "b1a87b0b81fbdce7f3d280e0671bced51306be1d", []],
+    [
+      "s1j2-complete-setup",
+      "3a6e65e400cac5d72e761f58eb1ae8eaec514e18",
+      ["frozen-setup-plan.mjs", "setup-main-build.mjs", "setup-receipt.mjs"],
+    ],
+    [
+      "trace-runner",
+      "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba",
+      ["trace-record.mjs", "trace-seal.mjs"],
+    ],
+    ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105", []],
+    ["t14-k64-freeze", "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f", []],
+    ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775", []],
+    ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
+    [
+      "s5a-graph-arm-runner",
+      "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
+      [
+        "frozen-k64-plan.mjs",
+        "k64-record.mjs",
+        "k64-runner.mjs",
+        "material-revision.mjs",
+        "renderer/cp4-k64-probe.tsx",
+        "workspace-db.mjs",
+      ],
+    ],
+    [
+      "maintenance-ownership-release",
+      "3f3d9999225007417708ab471bea307331f7e8a2",
+      [],
+    ],
+    [
+      "s5b-diagnostics-wiring",
+      "950751d040b29b6d78a067a003dc19b196cfb692",
+      [
+        "admission.mjs",
+        "diagnostic-runner.mjs",
+        "frozen-diagnostics.mjs",
+        "frozen-k64-admission.mjs",
+        "frozen-k64-run.mjs",
+        "frozen-setup-driver.mjs",
+        "g01-negative-preview.mjs",
+        "g01-negative-run.mjs",
+        "g01-negatives.mjs",
+        "renderer/cp4-diagnostic-probe.ts",
+        "renderer/cp4-harness.ts",
+        "renderer/nir1RelatedScenesApi.timing.ts",
+        "trace-frozen.mjs",
+        "trace-runner.mjs",
+        "window.mjs",
+      ],
+    ],
+  ].map(([role, commit, names]) =>
+    Object.freeze({
+      role,
+      commit,
+      check: names.length > 0 ? "bytes" : "ancestor",
+      paths: Object.freeze(names.map((name) => HARNESS_DIR + name)),
+    }),
+  ),
+);
+/** S2 追補 #4: the pin whose bytes S2's readings are taken from. */
+const HARNESS_PIN = Object.freeze({
+  role: "s5b-diagnostics-wiring",
+  commit: "950751d040b29b6d78a067a003dc19b196cfb692",
+});
+/**
+ * S2 追補 #3／#4: the harness file whose BLOCKED_CONTRACT_TABLE (DR-CP4-L-28)
  * blockedCaseJudgement must equal, read at the pinned commit.
  */
 export const BLOCKED_TABLE_SOURCE = Object.freeze({
-  role: "s1j2-blocked-map",
-  commit: "b1a87b0b81fbdce7f3d280e0671bced51306be1d",
-  path: "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs",
+  ...HARNESS_PIN,
+  path: `${HARNESS_DIR}frozen-setup-driver.mjs`,
+});
+/**
+ * S2 追補 #4: the harness constants S2's readings copy, parsed from the
+ * pinned bytes (never imported or run) and compared with S2's values.
+ */
+export const HARNESS_CONSTANTS = Object.freeze({
+  [`${HARNESS_DIR}frozen-setup-driver.mjs`]: Object.freeze([
+    "B_SEAL_REOPENS",
+    "B_SEAL_WAIT_MS",
+  ]),
+  [`${HARNESS_DIR}g01-negatives.mjs`]: Object.freeze([
+    "G01_CONTROL_ATTEMPTS",
+    "G01_SAMPLE_ATTEMPTS",
+    "G01_CONTROL_GAP_MS",
+    "G01_GRAPH_READY_WAIT_MS",
+  ]),
+  [`${HARNESS_DIR}frozen-diagnostics.mjs`]: Object.freeze([
+    "SP_P4_COMPARISON_RULE",
+  ]),
 });
 const SETUP_SESSIONS = Object.freeze({
   author: Object.freeze({ main: "product", seam: false }),
@@ -431,7 +517,142 @@ const REVIEWER_QUESTIONS = Object.freeze([
   "P-S2-3",
   "P-S2-4",
   "P-S2-5",
+  // S2 追補 #4: the S3 7th review's questions (DR-CP4-O-6, O-7, O-14, P-1).
+  "P-S2-6",
+  "P-S2-7",
+  "P-S2-8",
+  "P-S2-9",
 ]);
+/**
+ * S2 追補 #4（DR-CP4-O-5 (xi)、O-14、O-15）: the K24-G01-N2〜N4 re-ask rule,
+ * fixed before the observation. The limits and the gap are the harness's
+ * constants (HARNESS_CONSTANTS), compared separately.
+ */
+const G01_RETRY = Object.freeze({
+  decidedAnswers: ["graph-ready", "graph-unavailable"],
+  unavailableReasons: "any",
+  neutralAnswers: ["late", "no-answer", "fetch-failed"],
+  retryOn: "neutral-only",
+  decision: "first-decided",
+  parentChild: "parent-if-decided-else-child",
+  onExhausted: "inconclusive",
+  cachedAnswers: "same-kind-rule",
+  onConstantMismatch: "[precheck]",
+  disclose: [
+    "limit",
+    "gapMs",
+    "kind",
+    "outcome",
+    "parentOutcome",
+    "childOutcome",
+    "countersDelta",
+    "cached",
+    "durationMs",
+    "rawTimes",
+    "readyMarkTime",
+  ],
+});
+/** S2 追補 #4（DR-CP4-O-6）: the control and the per-sample reading. */
+const G01_REACHED_OUTCOMES = Object.freeze([
+  "reached",
+  "not-reached",
+  "undetermined",
+]);
+const G01_CONTROL = Object.freeze({
+  when: "after-declaration-before-mutation",
+  workspace: "same",
+  seed: "same",
+  outcomes: G01_REACHED_OUTCOMES,
+  graphInputs: ["codexEntries", "codexRelations", "pins"],
+  bIndex: "disclose",
+});
+const G01_SAMPLE = Object.freeze({
+  outcomes: G01_REACHED_OUTCOMES,
+  reachedWhen: [
+    "control-reached",
+    "graph-inputs-digest-equal",
+    "parent-fetch-seed-g01-orin",
+    "decided-answer-graph-ready",
+    "a3-eligible",
+  ],
+  notReachedWhen: [
+    "seed-differs",
+    "decided-answer-graph-unavailable",
+    "a3-not-eligible",
+  ],
+  undeterminedWhen: [
+    "control-not-reached",
+    "graph-inputs-digest-differs",
+    "no-decided-answer",
+    "a3-unread",
+  ],
+});
+/** S2 追補 #4（DR-CP4-O-6 (3)）: assessG01Negative's outcomes and reasons. */
+const G01_VERDICT = Object.freeze({
+  outcomes: ["blocked", "inconclusive", "not-established", "established"],
+  inconclusiveReasons: [
+    "sp-p1-recheck",
+    "no-measured-graph-sample",
+    "graph-requested-with-seed",
+    "g01-mira-entity-reached:undetermined",
+    "g01-mira-entity-reached",
+  ],
+});
+/** S2 追補 #4（DR-CP4-O-3 (7)、O-9、O-17 (2)）: the reseal after the mutation. */
+const G01_RESEAL = Object.freeze({
+  reopenMain: true,
+  sealRule: "new-b-generation-not-dirty",
+  chronicle: "query-route-build-then-usable",
+  blocked: ["b-seal-not-published", "chronicle-index-not-usable"],
+  measurementPoint: "reopened-main-sealed-generation",
+});
+const G01_MUTATED = Object.freeze(["K24-G01-N2", "K24-G01-N3", "K24-G01-N4"]);
+/** S2 追補 #4（DR-CP4-O-7）: the SP-P4 comparison rules. */
+const SP_P4_RULE_IDS = Object.freeze(["current", "ir-complete-pairs"]);
+const SP_P4_PROPOSED = Object.freeze({
+  rFields: ["rSceneIds", "denseHitSceneIds", "sparseSceneIds"],
+  irFields: ["rIrSceneIds", "irSupplementSceneId"],
+  irComplete: "ir-ready",
+  pairing: "same-repeat",
+  disclose: ["ir-incomplete-count", "ir-incomplete-ratio"],
+  discloseBy: ["side", "variant"],
+  onNoIrComplete: "[precheck]",
+  threshold: null,
+});
+/** S2 追補 #4（DR-CP4-N-14 (2)）: the Gold receipt's priorAttempts. */
+const PRIOR_ATTEMPTS = Object.freeze({
+  priorAttempts: ["gold", "parity", "parityUsed", "thisAttempt"],
+  attemptRow: [
+    "runName",
+    "runKind",
+    "status",
+    "startedAtUtc",
+    "finishedAtUtc",
+    "fileSha256",
+  ],
+  thisAttempt: ["runName", "fileSha256AtStart"],
+});
+/** S2 追補 #4（DR-CP4-O-5 (x)、O-10 P2-2）: what a trace's setup receipt is. */
+const TRACE_SETUP_RECEIPT = Object.freeze({
+  accepts: "frozen-g02-base-complete-setup",
+  candidate: "same-commit-and-tree",
+  rejects: [
+    "other-case-or-variant",
+    "r5-check-run",
+    "sp-p4-branch",
+    "dev-setup",
+    "not-stops-at-complete",
+    "blocked-without-harness-id",
+    "other-candidate",
+  ],
+  onReject: "[precheck]",
+});
+/** S2 追補 #4（DR-CP4-O-2 (d)、O-5 (vi)）: the trace's R5 check. */
+const TRACE_R5_CHECK = Object.freeze({
+  check: "sp-p1-one-row",
+  on: "trace-measurement-copy",
+  onMismatch: "[precheck]",
+});
 /**
  * S3v6-P3-3: the exact S4 placeholder tokens of the draft (filling one and
  * dropping it from the list is S4b's work, never a draft's).
@@ -755,6 +976,118 @@ function negativeErrors(errors, rows, expected) {
   });
 }
 
+/** Every key of `spec` holds the same value in `row` (key order free). */
+const holds = (row, spec) =>
+  isObject(row) &&
+  Object.entries(spec).every(([key, value]) => same(row[key], value));
+
+/**
+ * S2 追補 #4（DR-CP4-O-6、O-14、O-15、O-5 (v)(vii)(viii)(xi)）: the reading
+ * of K24-G01-N2〜N4 after the mutation — the reseal, the seed's source, the
+ * control and the sample (reached / not-reached / undetermined), the re-ask
+ * rule fixed before the observation, and the verdict. The limits, the gap
+ * and the reseal bounds are the pinned harness's constants.
+ */
+function afterMutationReadingErrors(errors, addendum, ctx) {
+  const readings = addendum.afterMutationReadings;
+  const constants = ctx.harnessConstants;
+  if (!isObject(readings)) {
+    errors.push(
+      "afterMutationReadings is required (S2 追補 #4、DR-CP4-O-6、O-14)",
+    );
+    return;
+  }
+  if (!isObject(constants))
+    errors.push(
+      "afterMutationReadings: the harness constants could not be read from the pinned bytes (HARNESS_CONSTANTS)",
+    );
+  const c = constants ?? {};
+  if (!same(readings.appliesTo, G01_MUTATED) || !nonBlank(readings.status))
+    errors.push(
+      `afterMutationReadings must apply to ${G01_MUTATED.join(", ")} with its status (a proposal S3 confirms)`,
+    );
+  const reseal = readings.resealAfterMutation;
+  if (
+    !holds(reseal, G01_RESEAL) ||
+    reseal.reopensMax !== c.B_SEAL_REOPENS ||
+    reseal.waitMs !== c.B_SEAL_WAIT_MS ||
+    !nonBlank(reseal.rule)
+  )
+    errors.push(
+      "afterMutationReadings.resealAfterMutation must reopen the measurement Main until a new B generation is sealed and the Chronicle Index is usable, within the setup's B_SEAL_REOPENS and B_SEAL_WAIT_MS, measuring at the reopened Main's sealed generation (DR-CP4-O-3 (7)、O-9、O-17)",
+    );
+  const seed = readings.seedRequested;
+  if (
+    seed?.source !== "renderer-parent-fetch-seed" ||
+    seed?.notFrom !== "native-begin-record" ||
+    seed?.expected !== ctx.g01?.json?.entitySeed?.id ||
+    !nonBlank(seed?.rule)
+  )
+    errors.push(
+      "afterMutationReadings.seedRequested must read the seed from the renderer's parent fetch (never the Native begin record) and expect the fixture's seed (DR-CP4-O-5 (vii))",
+    );
+  const control = readings.control;
+  if (
+    !holds(control, G01_CONTROL) ||
+    control.attemptLimit !== c.G01_CONTROL_ATTEMPTS ||
+    control.gapMs !== c.G01_CONTROL_GAP_MS ||
+    control.graphReadyWaitMs !== c.G01_GRAPH_READY_WAIT_MS ||
+    !nonBlank(control.rule)
+  )
+    errors.push(
+      `afterMutationReadings.control must be the same-workspace, same-seed control after the declaration and before the mutation, with the harness's limit ${c.G01_CONTROL_ATTEMPTS}, gap ${c.G01_CONTROL_GAP_MS} ms and graph-ready wait ${c.G01_GRAPH_READY_WAIT_MS} ms (DR-CP4-O-6 (1)、O-14)`,
+    );
+  const sample = readings.sample;
+  if (
+    !holds(sample, G01_SAMPLE) ||
+    sample.attemptLimit !== c.G01_SAMPLE_ATTEMPTS ||
+    sample.gapMs !== c.G01_CONTROL_GAP_MS ||
+    !nonBlank(sample.rule)
+  )
+    errors.push(
+      `afterMutationReadings.sample must judge reached / not-reached / undetermined by the control, the input digest, the parent's seed, the decided answer and A3, with the harness's limit ${c.G01_SAMPLE_ATTEMPTS} and gap ${c.G01_CONTROL_GAP_MS} ms (DR-CP4-O-6 (2))`,
+    );
+  const retry = readings.retry;
+  if (
+    !holds(retry, G01_RETRY) ||
+    retry.gapMs !== c.G01_CONTROL_GAP_MS ||
+    retry.controlLimit !== c.G01_CONTROL_ATTEMPTS ||
+    retry.sampleLimit !== c.G01_SAMPLE_ATTEMPTS ||
+    !nonBlank(retry.rule)
+  )
+    errors.push(
+      "afterMutationReadings.retry must re-ask a neutral answer only, decide on the first decided answer (graph-ready or graph-unavailable of any reason; never a best-of), stop inconclusive at the harness's limits, disclose every try and [precheck] on a limit or gap other than the constants (DR-CP4-O-5 (xi)、O-14、O-15)",
+    );
+  if (
+    !holds(readings.verdict, G01_VERDICT) ||
+    !nonBlank(readings.verdict?.rule)
+  )
+    errors.push(
+      "afterMutationReadings.verdict must be assessG01Negative's outcomes and inconclusive reasons (DR-CP4-O-6 (3))",
+    );
+  if (!nonBlank(readings.limits))
+    errors.push(
+      "afterMutationReadings.limits must disclose what the control does not observe",
+    );
+  for (const row of addendum.diagnosticNegatives ?? []) {
+    if (!G01_MUTATED.includes(row?.id)) continue;
+    if (row.afterMutationReading !== "afterMutationReadings")
+      errors.push(
+        `diagnosticNegatives ${row.id}.afterMutationReading must name afterMutationReadings (S2 追補 #4)`,
+      );
+  }
+  const n3 = (addendum.diagnosticNegatives ?? []).find(
+    (row) => row?.id === "K24-G01-N3",
+  );
+  if (
+    n3?.beforeDeclarationWriter !== "createRevision" ||
+    !String(n3?.beforeDeclaration ?? "").includes("createRevision")
+  )
+    errors.push(
+      "diagnosticNegatives K24-G01-N3 must make the same-bytes version with the manual version writer createRevision (DR-CP4-O-5 (viii))",
+    );
+}
+
 function commonAddendumErrors(errors, addendum, ctx, schemaVersion) {
   if (!isObject(addendum)) {
     errors.push("addendum must be an object");
@@ -862,6 +1195,7 @@ export function setupAddendumErrors(addendum, ctx) {
       mutationAfterDeclaration: mutation,
     })),
   );
+  afterMutationReadingErrors(errors, addendum, ctx);
   return errors;
 }
 
@@ -1276,6 +1610,25 @@ function traceRunnerErrors(errors, trace) {
   )
     errors.push(
       "setupFailure must leave (b) unmeasured and CP-4's availability HOLD when the project's setup does not complete, without swapping the project (S3v6-P2-3)",
+    );
+  // S2 追補 #4（DR-CP4-O-5 (vi)(x)、O-2 (d)(e)、O-10 P2-2）.
+  if (failure.acceptsOnly !== "blocked-with-harness-id")
+    errors.push(
+      "setupFailure.acceptsOnly must be blocked-with-harness-id (a failure without the harness's blocked name is [precheck]; DR-CP4-O-5 (vi))",
+    );
+  if (
+    !holds(readings.setupReceipt, TRACE_SETUP_RECEIPT) ||
+    !nonBlank(readings.setupReceipt?.rule)
+  )
+    errors.push(
+      "runnerReadings.setupReceipt must accept only the G-02 base complete setup run on the candidate's commit and tree, rejecting the R5 check run's and the SP-P4 branch's receipts (DR-CP4-O-5 (x))",
+    );
+  if (
+    !holds(readings.r5Check, TRACE_R5_CHECK) ||
+    !nonBlank(readings.r5Check?.rule)
+  )
+    errors.push(
+      "runnerReadings.r5Check must be SP-P1's one-row check on the trace's measurement copy, [precheck] unless it matches (DR-CP4-O-5 (vi))",
     );
   if (String(trace.fixedBeforeObservation).includes("setup の検証を通らない"))
     errors.push(
@@ -1701,21 +2054,48 @@ function setupReadingErrors(errors, readings, ctx) {
     );
   reopenErrors(errors, readings);
   const pins = readings.source?.pins ?? [];
+  // S2 追補 #4: role, commit, check and the exact paths of each pin.
+  const heldPaths = pins.flatMap((row) =>
+    (row?.files ?? []).map((file) => file?.path),
+  );
   if (
     !same(
-      pins.map((row) => [row?.role, row?.commit]),
-      SOURCE_PINS,
+      pins.map((row) => [
+        row?.role,
+        row?.commit,
+        row?.check,
+        (row?.files ?? []).map((file) => file?.path),
+      ]),
+      SOURCE_PINS.map((pin) => [pin.role, pin.commit, pin.check, pin.paths]),
     ) ||
     pins.some((row) =>
       (row.files ?? []).some(
         (file) => !nonBlank(file?.path) || !HEX64.test(file?.sha256 ?? ""),
       ),
     ) ||
+    new Set(heldPaths).size !== heldPaths.length ||
     !nonBlank(readings.source?.pinRule)
   )
     errors.push(
-      `setupReadings.source.pins must be the master commits ${SOURCE_PINS.map(([role, commit]) => `${role} ${commit.slice(0, 8)}`).join(", ")} with their files' sha256 (S3v6-P2-1)`,
+      `setupReadings.source.pins must be the master commits ${SOURCE_PINS.map((pin) => `${pin.role} ${pin.commit.slice(0, 8)} (${pin.check}${pin.paths.length > 0 ? `, ${pin.paths.length} files` : ""})`).join(", ")} with their files' sha256, no path held twice (S3v6-P2-1、S2 追補 #4)`,
     );
+  // S2 追補 #4: each bytes pin's sha256 is the pinned commit's bytes and
+  // every pin's commit is an ancestor of the record's HEAD (git; skipped in
+  // a shallow clone, always checked by the formal gate).
+  if (ctx.sourcePinGit)
+    errors.push(
+      ...sourcePinGitErrors(pins, ctx.sourcePinGit.head, ctx.sourcePinGit),
+    );
+  // S2 追補 #4: the harness constants S2 copies are read from the pinned
+  // bytes of the s5b-diagnostics-wiring pin.
+  const harnessPin = pins.find((row) => row?.role === HARNESS_PIN.role);
+  for (const source of ctx.harnessConstantSources ?? []) {
+    const held = harnessPin?.files?.find((file) => file?.path === source.path);
+    if (held?.sha256 !== source.sha256)
+      errors.push(
+        `setupReadings.source.pins ${HARNESS_PIN.role}: ${source.path} must be the bytes the harness constants were read from (${source.sha256})`,
+      );
+  }
   const build = readings.indexBuild ?? {};
   if (Object.entries(INDEX_BUILD).some(([key, value]) => build[key] !== value))
     errors.push(
@@ -1921,6 +2301,124 @@ function d2ReadingErrors(errors, readings, ctx) {
     errors.push(
       `d2.variantReadings must keep d2 for ${unchanged.join(", ")} and read it as the declared indexState probe (before the measurement and at the query, ${INDEX_STATE_HOLDING} on mismatch) for ${want.map((row) => row.variant).join(", ")}`,
     );
+}
+
+/**
+ * S2 追補 #4（DR-CP4-O-5 (ii)(iii)(iv)(ix)、O-7）: SP-P4's sparse re-read,
+ * the supplement slot, the retake scope and the comparison rule. The rule
+ * in force is the pinned harness's SP_P4_COMPARISON_RULE; the proposed
+ * ir-complete-pairs is in force only once S3 decided P-S2-6 for it.
+ */
+function spP4ReadingErrors(errors, p4, prep, ctx) {
+  if (!isObject(p4)) return;
+  const sparse = p4.sparseReading;
+  if (
+    sparse?.when !== "after-product-fetch" ||
+    sparse?.query !== "same-saved-body" ||
+    sparse?.via !== "product-functions" ||
+    !nonBlank(sparse?.rule)
+  )
+    errors.push(
+      "diagnosticRuns SP-P4.sparseReading must re-read the sparse Scenes after the product fetch from the same saved body through the product's functions (DR-CP4-O-2 (a)、O-5 (ii))",
+    );
+  if (
+    p4.supplementSlot?.definition !== "r-plus-ir-minus-r" ||
+    p4.supplementSlot?.maxScenes !== 1 ||
+    !nonBlank(p4.supplementSlot?.rule)
+  )
+    errors.push(
+      "diagnosticRuns SP-P4.supplementSlot must be R+IR − R, at most one Scene (DR-CP4-O-5 (ii))",
+    );
+  if (!String(p4.countReason ?? "").includes("G-08/graph-recovered"))
+    errors.push(
+      "diagnosticRuns SP-P4.countReason must give the reason G-08/graph-recovered is not measured (DR-CP4-O-3 (4)、O-5 (iii))",
+    );
+  if (
+    p4.retakeScope !== "measurement-only" ||
+    !String(p4.attemptRule ?? "").includes("setup")
+  )
+    errors.push(
+      "diagnosticRuns SP-P4 retakes the measurement only, never the setup (retakeScope measurement-only; DR-CP4-O-5 (ix))",
+    );
+  const rule = p4.comparisonRule;
+  const rows = Array.isArray(rule?.rules) ? rule.rules : [];
+  const harness = ctx.harnessConstants?.SP_P4_COMPARISON_RULE;
+  const decided = (prep.reviewerQuestions ?? []).find(
+    (row) => row?.id === "P-S2-6",
+  )?.decision;
+  const proposed = rows.find((row) => row?.id === "ir-complete-pairs");
+  const inForce = rows.find((row) => row?.id === rule?.inForce);
+  if (
+    !isObject(rule) ||
+    !same(
+      rows.map((row) => row?.id),
+      SP_P4_RULE_IDS,
+    ) ||
+    rule.inForce !== harness ||
+    inForce?.status !== "in-force" ||
+    rows.some((row) => row !== inForce && row?.status !== "proposed") ||
+    rows.some((row) => !nonBlank(row?.text)) ||
+    !holds(proposed, SP_P4_PROPOSED) ||
+    (proposed?.status === "proposed" && !nonBlank(proposed?.awaits)) ||
+    (rule.inForce === "ir-complete-pairs" && decided?.choice !== "a") ||
+    !nonBlank(rule.switchRule) ||
+    !nonBlank(rule.disclosure)
+  )
+    errors.push(
+      `diagnosticRuns SP-P4.comparisonRule must keep the harness's rule in force (SP_P4_COMPARISON_RULE ${String(harness)}) and ir-complete-pairs as the proposal awaiting S3's P-S2-6 (R over every sample, IR only over IR-complete pairs, disclosed, [precheck] with no IR-complete sample, no threshold; DR-CP4-O-7)`,
+    );
+}
+
+/**
+ * S2 追補 #4（DR-CP4-N-14 (2)(3)）: the parity a Gold run uses is the one
+ * completed parity finished before its start; the fallback is not wired.
+ */
+function parityReadingErrors(errors, parity) {
+  if (
+    parity.fallbackWired !== false ||
+    !String(parity.fallback ?? "").includes("[precheck]")
+  )
+    errors.push(
+      "d10.parity.fallback is not wired (fallbackWired false): a parity attempt with a blocked variant never completes and the Gold run stops at [precheck] (DR-CP4-N-14 (3))",
+    );
+  const selection = parity.selection;
+  if (
+    selection?.completedOnly !== true ||
+    selection?.finishedBeforeGoldStart !== true ||
+    selection?.onNone !== "[precheck]" ||
+    selection?.onTwoOrMore !== "[precheck]" ||
+    selection?.blockedAttempt !== "incomplete-blocked" ||
+    !nonBlank(selection?.rule)
+  )
+    errors.push(
+      "d10.parity.selection must use the one completed parity of the candidate and S4 commit finished before the Gold run's start ([precheck] with none or with two or more completed; DR-CP4-N-14 (2))",
+    );
+  if (!holds(parity.receipt, PRIOR_ATTEMPTS) || !nonBlank(parity.receipt?.rule))
+    errors.push(
+      `d10.parity.receipt.priorAttempts must be ${PRIOR_ATTEMPTS.priorAttempts.join(", ")} with every attempt's row and this attempt's sha256 at start (DR-CP4-N-14 (2)(5))`,
+    );
+}
+
+/**
+ * S2 追補 #4: each pin against git — a bytes pin's sha256 is the pinned
+ * commit's bytes of that path, and every pin's commit is an ancestor of
+ * `head` (an orphaned commit a rebase left is not). `git` has `blobSha` and
+ * `isAncestor`.
+ */
+export function sourcePinGitErrors(pins, head, git) {
+  const errors = [];
+  for (const pin of pins ?? []) {
+    if (!git.isAncestor(pin?.commit, head))
+      errors.push(
+        `setupReadings.source.pins ${pin?.role}: ${pin?.commit} is not an ancestor of ${head} (a master commit only; S3v6-P2-1)`,
+      );
+    for (const file of pin?.files ?? [])
+      if (git.blobSha(pin.commit, file?.path) !== file?.sha256)
+        errors.push(
+          `setupReadings.source.pins ${pin.role}: ${file?.path} at ${pin.commit} is not the pinned bytes ${file?.sha256}`,
+        );
+  }
+  return errors;
 }
 
 /** S2 追補: the points S2 hands to S3 (undecided in a draft, decided when frozen). */
@@ -2134,6 +2632,7 @@ export function observationPrepErrors(prep, ctx) {
   ])
     if (typeof parity[key] !== "string" || parity[key].trim() === "")
       errors.push(`d10.parity.${key} is required`);
+  parityReadingErrors(errors, parity);
 
   // Sample plan (K6/2 step 2).
   const plan = prep.samplePlan ?? {};
@@ -2455,6 +2954,7 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "diagnosticRuns SP-P4 must be the seed pin parity (hybrid only, no Graph arm, no seed, 8 base variants, without/with the step, SP-N7 -> [precheck])",
     );
+  spP4ReadingErrors(errors, p4, prep, ctx);
 
   // Bound files: exactly the documents (S3-P2-2).
   const boundPaths = (prep.boundFiles ?? []).map((row) => row.path);
@@ -2663,32 +3163,121 @@ export function parseBlockedContractTable(text) {
  * present, else the working tree file (whose sha256 the validator compares
  * with the pin).
  */
-async function readHarnessBlockedTable({ repoRoot, read }) {
+async function readPinnedHarnessFile({ repoRoot, read, file }) {
   let bytes;
   let from = "git";
   try {
-    bytes = execFileSync(
-      "git",
-      ["show", `${BLOCKED_TABLE_SOURCE.commit}:${BLOCKED_TABLE_SOURCE.path}`],
-      {
-        cwd: repoRoot,
-        maxBuffer: 32 * 1024 * 1024,
-        stdio: ["ignore", "pipe", "ignore"],
-      },
-    );
+    bytes = execFileSync("git", ["show", `${HARNESS_PIN.commit}:${file}`], {
+      cwd: repoRoot,
+      maxBuffer: 32 * 1024 * 1024,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
   } catch {
     from = "worktree";
     try {
-      bytes = await read(BLOCKED_TABLE_SOURCE.path);
+      bytes = await read(file);
     } catch {
       return null;
     }
   }
-  const table = parseBlockedContractTable(bytes.toString("utf8"));
+  return { bytes, from, sha256: sha256(bytes) };
+}
+
+async function readHarnessBlockedTable({ repoRoot, read }) {
+  const pinned = await readPinnedHarnessFile({
+    repoRoot,
+    read,
+    file: BLOCKED_TABLE_SOURCE.path,
+  });
+  if (!pinned) return null;
+  const table = parseBlockedContractTable(pinned.bytes.toString("utf8"));
   if (!table) return null;
   return {
     table,
-    source: { ...BLOCKED_TABLE_SOURCE, from, sha256: sha256(bytes) },
+    source: {
+      ...BLOCKED_TABLE_SOURCE,
+      from: pinned.from,
+      sha256: pinned.sha256,
+    },
+  };
+}
+
+/**
+ * S2 追補 #4: one exported constant's literal (a number with `_`
+ * separators, or a double-quoted string) in harness source text; undefined
+ * when absent.
+ */
+export function parseHarnessConstant(text, name) {
+  const match = new RegExp(
+    `^export const ${name} = (?:([0-9][0-9_]*)|"([^"\\n]*)");$`,
+    "mu",
+  ).exec(String(text));
+  if (!match) return undefined;
+  return match[1] !== undefined
+    ? Number(match[1].replaceAll("_", ""))
+    : match[2];
+}
+
+/** S2 追補 #4: HARNESS_CONSTANTS from the pinned bytes; null on any miss. */
+async function readHarnessConstants({ repoRoot, read }) {
+  const values = {};
+  const sources = [];
+  for (const [file, names] of Object.entries(HARNESS_CONSTANTS)) {
+    const pinned = await readPinnedHarnessFile({ repoRoot, read, file });
+    if (!pinned) return null;
+    const text = pinned.bytes.toString("utf8");
+    for (const name of names) {
+      const value = parseHarnessConstant(text, name);
+      if (value === undefined) return null;
+      values[name] = value;
+    }
+    sources.push({ path: file, from: pinned.from, sha256: pinned.sha256 });
+  }
+  return { values, sources };
+}
+
+/**
+ * S2 追補 #4: git for the pins (cached per commit and path), or null in a
+ * shallow clone or without git (the formal gate always checks).
+ */
+function sourcePinGitContext(repoRoot) {
+  try {
+    const shallow = execFileSync(
+      "git",
+      ["rev-parse", "--is-shallow-repository"],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+    ).trim();
+    if (shallow !== "false") return null;
+    const head = execFileSync("git", ["rev-parse", "--verify", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return { head, ...cachedGit(repoRoot) };
+  } catch {
+    return null;
+  }
+}
+
+function cachedGit(repoRoot) {
+  const blobs = new Map();
+  const ancestors = new Map();
+  return {
+    blobSha: (commit, file) => {
+      const key = `${commit}:${file}`;
+      if (!blobs.has(key)) blobs.set(key, gitBlobSha(repoRoot, commit, file));
+      return blobs.get(key);
+    },
+    isAncestor: (ancestor, descendant) => {
+      const key = `${ancestor}..${descendant}`;
+      if (!ancestors.has(key))
+        ancestors.set(
+          key,
+          HEX40.test(String(ancestor)) &&
+            isAncestor(repoRoot, ancestor, descendant),
+        );
+      return ancestors.get(key);
+    },
   };
 }
 
@@ -2743,9 +3332,13 @@ export async function loadObservationPrepContext({ repoRoot }) {
   for (const relative of Object.values(PRODUCT_SOURCES))
     productSources[relative] = (await read(relative)).toString("utf8");
   const blocked = await readHarnessBlockedTable({ repoRoot, read });
+  const constants = await readHarnessConstants({ repoRoot, read });
   return {
     harnessBlockedTable: blocked?.table ?? null,
     harnessBlockedTableSource: blocked?.source ?? null,
+    harnessConstants: constants?.values ?? null,
+    harnessConstantSources: constants?.sources ?? null,
+    sourcePinGit: sourcePinGitContext(repoRoot),
     freeze: { sha256: sha256(freezeBytes), json: freezeJson },
     g01: fixtures["G-01"],
     fixtures,
@@ -2916,11 +3509,17 @@ export async function assertObservationPrepFormal({
       encoding: "utf8",
     },
   ).trim();
-  const errors = formalReferenceErrors(references, head, {
+  const git = {
     blobSha: (commit, file) => gitBlobSha(repoRoot, commit, file),
     isAncestor: (ancestor, descendant) =>
       isAncestor(repoRoot, ancestor, descendant),
-  });
+  };
+  const errors = [
+    ...formalReferenceErrors(references, head, git),
+    // S2 追補 #4: the pins against git, also in a shallow clone (a missing
+    // commit is an error here).
+    ...sourcePinGitErrors(prep.setupReadings?.source?.pins ?? [], head, git),
+  ];
   if (errors.length > 0) throw new Error(`[precheck] ${errors.join("; ")}`);
   return { proceed: true };
 }
