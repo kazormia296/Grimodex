@@ -767,13 +767,16 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
         return Err(error);
     }
 
+    // A held foreground Run records its outcome but stays running; only the
+    // durable success transaction terminalizes the Run (DR-MP-2).
+    let finalizes_success = transform_result.is_ok()
+        && !super::maintenance_runtime::foreground_system_work_barrier_requested();
     let finalize_result = run_maintenance_graph_phase_for_run(
         db,
         control,
         &run_id,
         |conn, graph| {
-            let should_finalize_success = transform_result.is_ok()
-                && !super::maintenance_runtime::foreground_system_work_barrier_requested();
+            let should_finalize_success = finalizes_success;
             // Keep the scope and optional reservation outside the transaction
             // closure.  A successful Backfill acquires the reservation only
             // after its final stop check, but the guard must survive COMMIT.
@@ -834,7 +837,12 @@ fn bootstrap_legacy_dependency_backfill_for_project_controlled(
     }
 
     match transform_result {
-        Ok(summary) => Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary }),
+        Ok(summary) => {
+            if finalizes_success {
+                super::restore_rebuild::release_committed_run_ownership(control, &run_id)?;
+            }
+            Ok(LegacyBackfillBootstrapOutcome::Ran { run_id, summary })
+        }
         Err(error) => {
             // The finalize transaction above has committed the failed
             // Run/Task/Attempt. Only now may the lifecycle owner drop this
@@ -2844,5 +2852,110 @@ mod tests {
                 .expect("count backfill runs");
             assert_eq!(run_count, 1, "each project gets its own backfill run");
         }
+    }
+
+    /// DR-MP-2: run the controlled Backfill to success (optionally under a
+    /// foreground system-work marker that holds the Run) and record every
+    /// post-terminalization hook call.
+    fn run_controlled_backfill_success(hold: bool) -> (String, Vec<(String, bool, String)>) {
+        let db = test_db();
+        db.with_conn(|conn| {
+            seed_project(conn, "project-1");
+            Ok(())
+        })
+        .expect("seed project");
+        let canonical_work_key = super::super::maintenance_runtime::canonical_work_key_for_epoch(
+            "project-1",
+            super::super::maintenance_runtime::AutomaticRunKind::Backfill,
+            LEGACY_BACKFILL_WORK_KEY,
+            None,
+        )
+        .expect("canonical Backfill work key");
+        let marker = hold.then(
+            || super::super::maintenance_runtime::NarrativeSystemWorkMarker {
+                trigger: "workspace-opened".to_string(),
+                canonical_work_key: canonical_work_key.clone(),
+                authority_id: "authority:workspace-1".to_string(),
+                generation: 1,
+                product_journey_barrier_id: "barrier-post-commit".to_string(),
+                correlation: "correlation-post-commit".to_string(),
+            },
+        );
+        let hook_calls = std::sync::Mutex::new(Vec::<(String, bool, String)>::new());
+        let no_stop = || Ok::<_, anyhow::Error>(());
+        let no_defer = |_run_id: &str| Ok::<_, anyhow::Error>(());
+        let no_grant = |_work_key: &str| Ok::<_, anyhow::Error>(());
+        let no_work = |_item: &crate::narrative_extraction::DesiredWork| Ok::<_, anyhow::Error>(());
+        let no_attach =
+            |_ownership: crate::workspace_lifecycle::RunOwnership| Ok::<_, anyhow::Error>(());
+        let mark_terminalized = |run_id: &str| -> anyhow::Result<()> {
+            let (autocommit, status) = db.with_conn(|conn| {
+                let status: String = conn.query_row(
+                    "SELECT status FROM narrative_extraction_runs WHERE id = ?1",
+                    params![run_id],
+                    |row| row.get(0),
+                )?;
+                Ok((conn.is_autocommit(), status))
+            })?;
+            hook_calls
+                .lock()
+                .expect("hook calls")
+                .push((run_id.to_owned(), autocommit, status));
+            Ok(())
+        };
+        let control = super::super::maintenance_runtime::MaintenanceCycleControl {
+            should_stop: &no_stop,
+            stop_signal: None,
+            finalization_granted_signal: None,
+            defer_preempted_run: &no_defer,
+            grant_finalize: &no_grant,
+            register_work: &no_work,
+            work_started: &no_work,
+            work_completed: &no_work,
+            work_noop_completed: &no_work,
+            work_deferred: &no_work,
+            attach_run: Some(&no_attach),
+            reserve_run: None,
+            mark_run_creation_started: None,
+            mark_run_reuse_selection_unknown: None,
+            mark_run_creation_outcome: None,
+            reset_run_creation_tracking: None,
+            mark_run_terminalized: Some(&mark_terminalized),
+        };
+        let outcome = super::super::maintenance_runtime::with_system_work_marker(marker, || {
+            bootstrap_legacy_dependency_backfill_for_project_with_control(
+                &db,
+                "project-1",
+                Some(&control),
+                &canonical_work_key,
+            )
+        })
+        .expect("controlled Backfill succeeds");
+        let run_id = match outcome {
+            LegacyBackfillBootstrapOutcome::Ran { run_id, .. } => run_id,
+            LegacyBackfillBootstrapOutcome::AlreadyRun { .. } => {
+                panic!("first controlled Backfill must create a fresh Run")
+            }
+        };
+        let runs = backfill_statuses(&db);
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].0, run_id);
+        let calls = hook_calls.into_inner().expect("hook calls");
+        (runs[0].1.clone(), calls)
+    }
+
+    #[test]
+    fn controlled_backfill_success_releases_ownership_once_after_commit() {
+        let (status, calls) = run_controlled_backfill_success(false);
+        assert_eq!(status, "completed");
+        assert_eq!(calls.len(), 1, "the hook runs exactly once: {calls:?}");
+        assert_eq!((calls[0].1, calls[0].2.as_str()), (true, "completed"));
+    }
+
+    #[test]
+    fn controlled_backfill_hold_keeps_ownership_of_the_running_run() {
+        let (status, calls) = run_controlled_backfill_success(true);
+        assert_eq!(status, "running", "a held Backfill Run stays running");
+        assert!(calls.is_empty(), "a held Run must keep its exact owner");
     }
 }

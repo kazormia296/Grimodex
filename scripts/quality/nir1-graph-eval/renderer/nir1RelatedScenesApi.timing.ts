@@ -28,6 +28,8 @@ interface TimingRow {
   graphReason: string | null;
   pathAttachments: number | null;
   graphOnly: boolean | null;
+  /** S5-B (SP-P4): the begin's dense hits, as Scene IDs in order. */
+  denseHitSceneIds: string[] | null;
 }
 
 const host = globalThis as unknown as { __cp4IpcTiming?: TimingRow[] };
@@ -56,6 +58,7 @@ function timed<T>(cmd: string, settle: string | null, call: () => Promise<T>) {
     graphReason: null,
     pathAttachments: null,
     graphOnly: null,
+    denseHitSceneIds: null,
   };
   rows.push(row);
   return call().then(
@@ -71,6 +74,11 @@ function timed<T>(cmd: string, settle: string | null, call: () => Promise<T>) {
       if (Array.isArray(attachments)) row.pathAttachments = attachments.length;
       const graphOnly = field(value, "graphOnly");
       if (graphOnly !== undefined) row.graphOnly = graphOnly !== null;
+      const dense = field(value, "denseHits");
+      if (Array.isArray(dense))
+        row.denseHitSceneIds = dense.map(
+          (hit) => text(field(hit, "sceneId")) ?? "",
+        );
       return value;
     },
     (error: unknown) => {

@@ -1722,6 +1722,17 @@ requirements:
       - scripts/quality/nir1-graph-eval/trace-seal.mjs
       - scripts/quality/nir1-graph-eval/renderer/trace-cycle.ts
       - scripts/quality/nir1-graph-eval/renderer/cp4-trace-probe.tsx
+      - scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs
+      - scripts/quality/nir1-graph-eval/trace-frozen.mjs
+      - scripts/quality/nir1-graph-eval/diagnostic-runner.mjs
+      - scripts/quality/nir1-graph-eval/g01-negatives.mjs
+      - scripts/quality/nir1-graph-eval/renderer/cp4-diagnostic-probe.ts
+      - scripts/quality/nir1-graph-eval/g01-negative-preview.mjs
+      - scripts/quality/nir1-graph-eval/g01-negative-run.mjs
+      - scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs
+      - scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs
+      - scripts/quality/nir1-graph-eval/frozen-k64-run.mjs
+      - scripts/quality/nir1-graph-eval/material-revision.mjs
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/shadow_corpus.py
       - experiments/lfm25-encoder-phase0/grimodex_lfm_eval/impact_gate4.py
       - experiments/lfm25-encoder-phase0/IMPACT_GATE4_PROTOCOL.md
@@ -1798,6 +1809,15 @@ requirements:
       - scripts/quality/nir1-graph-eval/build-receipt-check.test.mjs
       - scripts/quality/nir1-graph-eval/trace-seal.test.mjs
       - scripts/quality/nir1-graph-eval/trace-cycle.test.mjs
+      - scripts/quality/nir1-graph-eval/frozen-diagnostics.test.mjs
+      - scripts/quality/nir1-graph-eval/trace-frozen.test.mjs
+      - scripts/quality/nir1-graph-eval/sp-p4-branch.test.mjs
+      - scripts/quality/nir1-graph-eval/diagnostic-runner.test.mjs
+      - scripts/quality/nir1-graph-eval/g01-negatives.test.mjs
+      - scripts/quality/nir1-graph-eval/g01-negative-run.test.mjs
+      - scripts/quality/nir1-graph-eval/frozen-k64-plan.test.mjs
+      - scripts/quality/nir1-graph-eval/frozen-k64-admission.test.mjs
+      - scripts/quality/nir1-graph-eval/frozen-k64-run.test.mjs
       - scripts/quality/run-live-model-qualification.test.mjs
       - experiments/lfm25-encoder-phase0/tests/test_shadow_corpus.py
       - experiments/lfm25-encoder-phase0/tests/test_impact_gate4.py
