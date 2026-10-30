@@ -59,6 +59,14 @@ export interface BottomCornerOwnership {
   right: boolean;
 }
 
+/** 画面端のオーバーレイ（左右）。 */
+export type OverlayId = "left" | "right";
+
+export interface OverlayState {
+  /** null = 空。1 つの overlay が持てる panel は 1 枚だけ。 */
+  panel: ToolWindowPanelId | null;
+}
+
 export interface LayoutState {
   regions: Record<RegionId, RegionState>;
   center: CenterState;
@@ -72,6 +80,12 @@ export interface LayoutState {
    * 未指定時は both false（side stripe が角を取る = 従来の挙動）。
    */
   bottomCorners?: BottomCornerOwnership;
+  /**
+   * 画面端のオーバーレイに置いた tool window。スキーマ版は 3 のまま任意項目とし、
+   * 未指定は両方空（getOverlays で補う）。overlay の panel は slot と重ならない。
+   * 開閉状態は揮発（store の openOverlay）で、ここには持たない。
+   */
+  overlays?: Record<OverlayId, OverlayState>;
 }
 
 /** v2 永続化（migrate 用） */

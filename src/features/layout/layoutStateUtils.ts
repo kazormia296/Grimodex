@@ -12,6 +12,7 @@ import {
   MIN_REGION_SIZE,
   MIN_SLOT_SIZE,
   OUTER_PAD_PX,
+  OVERLAY_RAIL_SIZE,
   regionSplitterPx,
   STRIPE_GAP_PX,
   STRIPE_SIZE,
@@ -32,6 +33,8 @@ import type {
   LayoutStateV2,
   LayoutValidationResult,
   LayoutRegionId,
+  OverlayId,
+  OverlayState,
   PanelLocation,
   RegionId,
   RegionState,
@@ -46,6 +49,8 @@ const REGION_SLOT_PREFIX: Record<RegionId, string> = {
 };
 
 const ALL_REGIONS: RegionId[] = ["left", "right", "bottom"];
+
+export const OVERLAY_IDS: readonly OverlayId[] = ["left", "right"];
 
 export const DEFAULT_EDITOR_SEGMENT_ID = "ceditor";
 
@@ -107,6 +112,11 @@ export function ensureRegisteredPanels(state: LayoutState): LayoutState {
       for (const p of slot.panels) seen.add(p);
   for (const seg of state.center.segments)
     if (seg.kind === "tool") for (const p of seg.panels) seen.add(p);
+  // overlay のパネルも登録済みとして数える（数えないと slot へ二重に注入される）
+  for (const id of OVERLAY_IDS) {
+    const p = getOverlays(state)[id].panel;
+    if (p) seen.add(p);
+  }
 
   for (const panelId of TOOL_WINDOW_PANEL_IDS) {
     if (seen.has(panelId)) continue;
@@ -195,7 +205,49 @@ function stripUnknownPanels(state: LayoutState): LayoutState {
     state.center.editorOpen,
   );
 
+  stripInvalidOverlays(state, known);
+
   return state;
+}
+
+/**
+ * overlay の未知 ID と、slot／他方の overlay と重なるパネルを外す。重なる場合は
+ * slot 側（先に見つかった側）を残す。slot の strip の後に呼ぶこと。冪等。
+ * `overlays` が無い永続データはそのまま（未指定 = 両方空）。
+ */
+function stripInvalidOverlays(
+  state: LayoutState,
+  known: ReadonlySet<string>,
+): void {
+  const raw = state.overlays as unknown;
+  if (raw === undefined) return;
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    delete state.overlays;
+    return;
+  }
+  const inSlots = new Set<string>();
+  for (const regionId of ALL_REGIONS)
+    for (const slot of state.regions[regionId]?.slots ?? [])
+      for (const p of slot.panels) inSlots.add(p);
+  for (const seg of state.center.segments)
+    if (seg.kind === "tool") for (const p of seg.panels) inSlots.add(p);
+
+  const next = { left: { panel: null }, right: { panel: null } } as Record<
+    OverlayId,
+    OverlayState
+  >;
+  for (const id of OVERLAY_IDS) {
+    const entry = (raw as Record<string, unknown>)[id];
+    const panel =
+      entry !== null && typeof entry === "object"
+        ? (entry as { panel?: unknown }).panel
+        : null;
+    if (typeof panel === "string" && known.has(panel) && !inSlots.has(panel)) {
+      next[id] = { panel: panel as ToolWindowPanelId };
+      inSlots.add(panel);
+    }
+  }
+  state.overlays = next;
 }
 
 export function buildDefaultLayoutState(
@@ -224,6 +276,46 @@ export function buildDefaultLayoutState(
  */
 export function getBottomCorners(state: LayoutState): BottomCornerOwnership {
   return state.bottomCorners ?? { left: false, right: false };
+}
+
+const EMPTY_OVERLAYS: Readonly<Record<OverlayId, OverlayState>> = {
+  left: { panel: null },
+  right: { panel: null },
+};
+
+/**
+ * overlay の割り当てを取得（未指定の永続データは両方空）。
+ * 返す値は読み取り専用として扱う（未指定のときは共有の空オブジェクト）。
+ */
+export function getOverlays(
+  state: LayoutState,
+): Readonly<Record<OverlayId, OverlayState>> {
+  return state.overlays ?? EMPTY_OVERLAYS;
+}
+
+/** panel が置かれている overlay。無ければ null。 */
+export function findOverlayOfPanel(
+  state: LayoutState,
+  panel: ToolWindowPanelId,
+): OverlayId | null {
+  const overlays = getOverlays(state);
+  for (const id of OVERLAY_IDS) {
+    if (overlays[id].panel === panel) return id;
+  }
+  return null;
+}
+
+/**
+ * overlay の rail が画面幅から差し引く合計 (px)。パネルを持つ overlay だけ数える
+ * （開閉に関わらず rail は常に出るため、開いていても幅は変わらない）。
+ */
+export function getOverlayRailReserve(state: LayoutState): number {
+  const overlays = getOverlays(state);
+  let reserve = 0;
+  for (const id of OVERLAY_IDS) {
+    if (overlays[id].panel !== null) reserve += OVERLAY_RAIL_SIZE;
+  }
+  return reserve;
 }
 
 function buildSlotsForRegion(
@@ -479,6 +571,27 @@ export function validateLayoutState(
         }
         seenPanels.add(panel);
       }
+    }
+  }
+
+  if (state.overlays !== undefined) {
+    const known = new Set<string>(TOOL_WINDOW_PANEL_IDS);
+    for (const id of OVERLAY_IDS) {
+      const panel = state.overlays?.[id]?.panel ?? null;
+      if (panel === null) continue;
+      if (!known.has(panel)) {
+        return {
+          valid: false,
+          reason: `unknown panel ${panel} in overlay ${id}`,
+        };
+      }
+      if (seenPanels.has(panel)) {
+        return {
+          valid: false,
+          reason: `panel ${panel} registered in multiple places (overlay ${id})`,
+        };
+      }
+      seenPanels.add(panel);
     }
   }
 
@@ -852,6 +965,134 @@ export function findPanelLocation(
     }
   }
   return null;
+}
+
+/**
+ * slot／center segment 内の `panel` を `replacement` に同じ index で置き換える
+ * （overlay との入れ替え用。Stripe のアイコン順を保つ）。activePanel が `panel`
+ * だった場合は `replacement` が引き継ぐ。`panel` がどこにも無ければ同じ参照を返す。
+ */
+export function replacePanelInPlace(
+  state: LayoutState,
+  panel: ToolWindowPanelId,
+  replacement: ToolWindowPanelId,
+): LayoutState {
+  const swap = (p: ToolWindowPanelId) => (p === panel ? replacement : p);
+  const swapActive = (p: ToolWindowPanelId | null) =>
+    p === panel ? replacement : p;
+
+  for (const seg of getToolSegments(state.center)) {
+    if (!seg.panels.includes(panel)) continue;
+    return {
+      ...state,
+      center: {
+        ...state.center,
+        segments: state.center.segments.map((s) =>
+          s === seg && s.kind === "tool"
+            ? {
+                ...s,
+                panels: s.panels.map(swap),
+                activePanel: swapActive(s.activePanel),
+              }
+            : s,
+        ),
+      },
+    };
+  }
+
+  for (const regionId of ALL_REGIONS) {
+    const region = state.regions[regionId];
+    if (!region.slots.some((slot) => slot.panels.includes(panel))) continue;
+    return {
+      ...state,
+      regions: {
+        ...state.regions,
+        [regionId]: {
+          ...region,
+          slots: region.slots.map((slot) =>
+            slot.panels.includes(panel)
+              ? {
+                  ...slot,
+                  panels: slot.panels.map(swap),
+                  activePanel: swapActive(slot.activePanel),
+                }
+              : slot,
+          ),
+          ...(region.collapsedActivePanels
+            ? {
+                collapsedActivePanels: Object.fromEntries(
+                  Object.entries(region.collapsedActivePanels).map(
+                    ([slotId, p]) => [slotId, swapActive(p)],
+                  ),
+                ),
+              }
+            : {}),
+        },
+      },
+    };
+  }
+  return state;
+}
+
+/**
+ * overlay から panel を外して、既定の領域（DEFAULT_REGION_MAP）の最後の slot の
+ * 末尾へ戻す。slot が無ければ閉じた新しい slot を作る。overlay に無ければ同じ参照を
+ * 返す。「元に戻す」の行き先と、非表示パネルの除去で共有する。
+ */
+export function restorePanelFromOverlay(
+  state: LayoutState,
+  panel: ToolWindowPanelId,
+): LayoutState {
+  const overlayId = findOverlayOfPanel(state, panel);
+  if (overlayId === null) return state;
+
+  const regionId = DEFAULT_REGION_MAP[panel];
+  const region = state.regions[regionId];
+  const slots = region.slots.map((slot) => ({ ...slot }));
+  const last = slots[slots.length - 1];
+  if (last) {
+    slots[slots.length - 1] = { ...last, panels: [...last.panels, panel] };
+  } else {
+    slots.push({
+      id: `auto-${panel}`,
+      sizeRatio: 1,
+      panels: [panel],
+      activePanel: null,
+    });
+  }
+  const nextRegion: RegionState = {
+    ...region,
+    slots: normalizeSlotRatios(slots),
+  };
+  return {
+    ...state,
+    regions: { ...state.regions, [regionId]: nextRegion },
+    overlays: {
+      ...getOverlays(state),
+      [overlayId]: { panel: null },
+    },
+  };
+}
+
+/**
+ * Stripe に表示しない（hiddenStripePanels）パネルを overlay から外し、既定の領域へ
+ * 戻す。`hiddenStripePanels` は LayoutState の外にあるため validate では検査できず、
+ * 読み込み・プリセット適用の後に別途通す。該当が無ければ同じ参照を返す。
+ */
+export function detachHiddenOverlayPanels(
+  state: LayoutState,
+  hiddenStripePanels: ReadonlySet<ToolWindowPanelId>,
+): LayoutState {
+  if (hiddenStripePanels.size === 0) return state;
+  let next = state;
+  const overlays = getOverlays(state);
+  for (const id of OVERLAY_IDS) {
+    const panel = overlays[id].panel;
+    if (panel !== null && hiddenStripePanels.has(panel)) {
+      next = restorePanelFromOverlay(next, panel);
+    }
+  }
+  return next;
 }
 
 export function removePanelFromSideSlots(

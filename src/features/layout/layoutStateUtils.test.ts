@@ -18,6 +18,12 @@ import {
   removePanelFromSlot,
   removePanelFromCenterSegment,
   DEFAULT_EDITOR_SEGMENT_ID,
+  detachHiddenOverlayPanels,
+  findOverlayOfPanel,
+  getOverlayRailReserve,
+  getOverlays,
+  replacePanelInPlace,
+  restorePanelFromOverlay,
 } from "./layoutStateUtils";
 import {
   DEFAULT_INDEX_MAP,
@@ -29,6 +35,7 @@ import {
   DEFAULT_REGION_SIZES,
   MIN_EDITOR_SIZE,
   MIN_REGION_SIZE,
+  OVERLAY_RAIL_SIZE,
   PANEL_GAP_PX,
 } from "./layoutConstants";
 
@@ -699,5 +706,257 @@ describe("ensureLayoutStateV3 auto-injects newly registered panels", () => {
 
     // (c) 自己修復後は validate を通る。
     expect(validateLayoutState(fixed).valid).toBe(true);
+  });
+});
+
+// ---------- overlay（画面端の左右オーバーレイ） ----------
+
+/** slot から panel を抜いて overlay に置いた状態を作る（空になった slot は残す）。 */
+function withOverlayPanel(
+  base: LayoutState,
+  overlay: "left" | "right",
+  panel: ToolWindowPanelId,
+): LayoutState {
+  const state = structuredClone(base);
+  for (const region of Object.values(state.regions)) {
+    for (const slot of region.slots) {
+      if (!slot.panels.includes(panel)) continue;
+      slot.panels = slot.panels.filter((p) => p !== panel);
+      if (slot.activePanel === panel) slot.activePanel = null;
+    }
+    region.slots = region.slots.filter((slot) => slot.panels.length > 0);
+  }
+  state.overlays = {
+    left: { panel: null },
+    right: { panel: null },
+    [overlay]: { panel },
+  };
+  return state;
+}
+
+describe("overlay: データと検証", () => {
+  it("overlays が無い v3 の保存データはそのまま読め、両方空として扱う", () => {
+    const base = buildDefaultLayoutState({ allInactive: true });
+    delete base.overlays;
+    const fixed = ensureLayoutStateV3(base);
+    expect(fixed.overlays).toBeUndefined();
+    expect(getOverlays(fixed)).toEqual({
+      left: { panel: null },
+      right: { panel: null },
+    });
+    expect(validateLayoutState(fixed).valid).toBe(true);
+    expect(getOverlayRailReserve(fixed)).toBe(0);
+  });
+
+  it("overlay のパネルは登録済みとして数え、slot へ二重に注入しない", () => {
+    const state = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "right",
+      "chat",
+    );
+    const fixed = ensureLayoutStateV3(state);
+    expect(fixed.overlays?.right.panel).toBe("chat");
+    const inSlots = Object.values(fixed.regions).flatMap((r) =>
+      r.slots.flatMap((s) => s.panels),
+    );
+    expect(inSlots).not.toContain("chat");
+    expect(validateLayoutState(fixed).valid).toBe(true);
+  });
+
+  it("overlays を知らない古い版は、overlay のパネルを未登録とみなして既定の領域へ自己修復する", () => {
+    const state = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "left",
+      "codex",
+    );
+    delete state.overlays; // 古い版のアプリは overlays を無視する
+    expect(validateLayoutState(state).valid).toBe(false);
+    const fixed = ensureLayoutStateV3(state);
+    expect(validateLayoutState(fixed).valid).toBe(true);
+    const location = findPanelLocation(fixed, "codex");
+    expect(location?.region).toBe(DEFAULT_REGION_MAP.codex);
+  });
+
+  it("slot と overlay の重複、overlay どうしの重複を検出する", () => {
+    const state = buildDefaultLayoutState({ allInactive: true });
+    state.overlays = { left: { panel: "scenes" }, right: { panel: null } };
+    const dup = validateLayoutState(state);
+    expect(dup.valid).toBe(false);
+
+    const both = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "left",
+      "chat",
+    );
+    both.overlays = { left: { panel: "chat" }, right: { panel: "chat" } };
+    expect(validateLayoutState(both).valid).toBe(false);
+  });
+
+  it("未知の overlay パネルは検証で弾かれ、ensureLayoutStateV3 で外れる", () => {
+    const state = buildDefaultLayoutState({ allInactive: true });
+    state.overlays = {
+      left: { panel: "timelapse" as ToolWindowPanelId },
+      right: { panel: null },
+    };
+    expect(validateLayoutState(state).valid).toBe(false);
+    const fixed = ensureLayoutStateV3(state);
+    expect(fixed.overlays?.left.panel).toBeNull();
+    expect(validateLayoutState(fixed).valid).toBe(true);
+  });
+
+  it("slot と重なる overlay は slot 側を残して外す（冪等）", () => {
+    const state = buildDefaultLayoutState({ allInactive: true });
+    state.overlays = { left: { panel: "scenes" }, right: { panel: "chat" } };
+    const fixed = ensureLayoutStateV3(state);
+    expect(findPanelLocation(fixed, "scenes")).not.toBeNull();
+    expect(fixed.overlays?.left.panel).toBeNull();
+    expect(fixed.overlays?.right.panel).toBeNull();
+    expect(ensureLayoutStateV3(fixed)).toEqual(fixed);
+  });
+
+  it("壊れた overlays（配列・null・欠けた側）は空として正規化する", () => {
+    for (const broken of [null, [], { left: null }, { right: { panel: 3 } }]) {
+      const state = buildDefaultLayoutState({ allInactive: true });
+      state.overlays = broken as unknown as LayoutState["overlays"];
+      const fixed = ensureLayoutStateV3(state);
+      expect(validateLayoutState(fixed).valid).toBe(true);
+      expect(getOverlays(fixed).left.panel).toBeNull();
+      expect(getOverlays(fixed).right.panel).toBeNull();
+    }
+  });
+
+  it("findOverlayOfPanel と getOverlayRailReserve は、パネルのある overlay だけ数える", () => {
+    const state = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "right",
+      "chat",
+    );
+    expect(findOverlayOfPanel(state, "chat")).toBe("right");
+    expect(findOverlayOfPanel(state, "scenes")).toBeNull();
+    expect(getOverlayRailReserve(state)).toBe(OVERLAY_RAIL_SIZE);
+    state.overlays = { left: { panel: "codex" }, right: { panel: "chat" } };
+    expect(getOverlayRailReserve(state)).toBe(OVERLAY_RAIL_SIZE * 2);
+  });
+
+  it("findPanelLocation は overlay のパネルに null を返す（zoom の対象外）", () => {
+    const state = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "right",
+      "chat",
+    );
+    expect(findPanelLocation(state, "chat")).toBeNull();
+  });
+});
+
+describe("replacePanelInPlace", () => {
+  it("同じ index に置き換え、ほかのパネルの順とアイコン順を変えない", () => {
+    const base = buildDefaultLayoutState({ allInactive: true });
+    const region = DEFAULT_REGION_MAP.chat;
+    const slot = base.regions[region].slots.find((s) =>
+      s.panels.includes("chat"),
+    )!;
+    // 3 枚以上並ぶ slot で真ん中のパネルを入れ替える
+    slot.panels = ["scenes", "chat", "codex"];
+    slot.activePanel = "chat";
+    const replaced = replacePanelInPlace(base, "chat", "chat-history");
+    const next = replaced.regions[region].slots.find((s) => s.id === slot.id)!;
+    expect(next.panels).toEqual(["scenes", "chat-history", "codex"]);
+    expect(next.activePanel).toBe("chat-history");
+    expect(slot.panels).toEqual(["scenes", "chat", "codex"]); // 元は変えない
+  });
+
+  it("collapsedActivePanels の参照も置き換える", () => {
+    const base = buildDefaultLayoutState({ allInactive: true });
+    const region = DEFAULT_REGION_MAP.chat;
+    const slot = base.regions[region].slots.find((s) =>
+      s.panels.includes("chat"),
+    )!;
+    base.regions[region].collapsedActivePanels = { [slot.id]: "chat" };
+    const replaced = replacePanelInPlace(base, "chat", "chat-history");
+    expect(replaced.regions[region].collapsedActivePanels).toEqual({
+      [slot.id]: "chat-history",
+    });
+  });
+
+  it("center segment 内のパネルも同じ index で置き換える", () => {
+    const base = buildDefaultLayoutState({ allInactive: true });
+    base.center.segments = [
+      ...base.center.segments,
+      {
+        id: "cseg",
+        kind: "tool",
+        sizeRatio: 1,
+        panels: ["codex", "chat-history"],
+        activePanel: "codex",
+      },
+    ];
+    for (const region of Object.values(base.regions))
+      for (const s of region.slots)
+        s.panels = s.panels.filter(
+          (p) => p !== "codex" && p !== "chat-history",
+        );
+    const replaced = replacePanelInPlace(base, "codex", "chat");
+    const seg = replaced.center.segments.find((s) => s.id === "cseg");
+    expect(seg?.kind === "tool" && seg.panels).toEqual([
+      "chat",
+      "chat-history",
+    ]);
+    expect(seg?.kind === "tool" && seg.activePanel).toBe("chat");
+  });
+
+  it("対象が slot にも center にも無ければ同じ参照を返す", () => {
+    const base = buildDefaultLayoutState({ allInactive: true });
+    const state = withOverlayPanel(base, "right", "chat");
+    expect(replacePanelInPlace(state, "chat", "codex")).toBe(state);
+  });
+});
+
+describe("restorePanelFromOverlay / detachHiddenOverlayPanels", () => {
+  it("既定の領域の最後の slot の末尾へ戻し、overlay を空にする", () => {
+    const state = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "left",
+      "chat",
+    );
+    const restored = restorePanelFromOverlay(state, "chat");
+    const region = restored.regions[DEFAULT_REGION_MAP.chat];
+    const last = region.slots[region.slots.length - 1];
+    expect(last.panels[last.panels.length - 1]).toBe("chat");
+    expect(restored.overlays?.left.panel).toBeNull();
+    expect(validateLayoutState(restored).valid).toBe(true);
+  });
+
+  it("既定の領域に slot が無ければ閉じた slot を作る", () => {
+    const state = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "left",
+      "chat",
+    );
+    state.regions[DEFAULT_REGION_MAP.chat].slots = [];
+    const restored = restorePanelFromOverlay(state, "chat");
+    const slots = restored.regions[DEFAULT_REGION_MAP.chat].slots;
+    expect(slots).toHaveLength(1);
+    expect(slots[0].panels).toEqual(["chat"]);
+    expect(slots[0].activePanel).toBeNull();
+  });
+
+  it("overlay に無いパネルは同じ参照を返す", () => {
+    const state = buildDefaultLayoutState({ allInactive: true });
+    expect(restorePanelFromOverlay(state, "chat")).toBe(state);
+  });
+
+  it("非表示のパネルだけを overlay から外し、該当が無ければ同じ参照を返す", () => {
+    const state = withOverlayPanel(
+      buildDefaultLayoutState({ allInactive: true }),
+      "left",
+      "chat",
+    );
+    state.overlays = { left: { panel: "chat" }, right: { panel: null } };
+    expect(detachHiddenOverlayPanels(state, new Set())).toBe(state);
+    expect(detachHiddenOverlayPanels(state, new Set(["codex"]))).toBe(state);
+    const detached = detachHiddenOverlayPanels(state, new Set(["chat"]));
+    expect(detached.overlays?.left.panel).toBeNull();
+    expect(findPanelLocation(detached, "chat")).not.toBeNull();
+    expect(validateLayoutState(detached).valid).toBe(true);
   });
 });

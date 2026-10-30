@@ -22,6 +22,15 @@ export const STRIPE_ICON_SIZE = 28;
 /** stripe 外周と icon 外周の同心オフセット。 */
 export const STRIPE_ICON_INSET_PX = (STRIPE_SIZE - STRIPE_ICON_SIZE) / 2;
 
+/**
+ * 画面端のオーバーレイ rail（つまみ）の固定幅 (px)。
+ * オーバーレイにパネルがあるとき、その側の画面幅からこの分を差し引く。
+ */
+export const OVERLAY_RAIL_SIZE = 30;
+
+/** オーバーレイ本体の幅 (px)。開いたときに grid と Stripe の上へ重ねる。 */
+export const OVERLAY_WIDTH = 440;
+
 /** 上下の水平 stripe は、視覚重量を抑えるため縦 stripe より一段細くする。 */
 export const HORIZONTAL_STRIPE_SIZE = 35;
 
