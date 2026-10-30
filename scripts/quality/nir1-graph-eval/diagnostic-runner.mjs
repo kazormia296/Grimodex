@@ -40,6 +40,7 @@ import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import {
   SP_P4,
   SP_P4_COMPARISON_RULE,
+  SP_P4_IR_TIMEOUT_LIMIT,
   assertSpP4WorkspaceStable,
   claimFrozenAttempt,
   frozenAttemptLedger,
@@ -79,6 +80,28 @@ import { HARNESS_PAGE, sha256 } from "./session.mjs";
 
 export const SP_P4_RECEIPT_SCHEMA = "nir1-cp4-sp-p4/1";
 export const SP_P4_DEV_PREVIEW_PURPOSE = "sp-p4-preview";
+
+/**
+ * The receipt's `design` (the rule fields `readSpP4Gate` checks): the
+ * comparison rule in force and, DR-CP4-Q-1 (C2), the IR deadline limit fixed
+ * before the observation.
+ */
+export function spP4ReceiptDesign({ targets, warmup, measured }) {
+  return {
+    variants: targets.map((row) => row.variantKey),
+    sides: [...SP_P4.sides],
+    warmup,
+    measured,
+    attemptLimit: SP_P4.attemptLimit,
+    d2aMode: SP_P4.d2aMode,
+    compareBy: SP_P4.compareBy,
+    rule: SP_P4_COMPARISON_RULE,
+    irTimeoutLimit: SP_P4_IR_TIMEOUT_LIMIT,
+    branch: SP_P4.branch,
+    sparse:
+      "the product fetchSparseSceneIds on the same saved-body query, read after the fetch (DR-CP4-O-1 (4))",
+  };
+}
 
 /**
  * The SP-P4 run over its targets (injected setup and measurement; the CLI
@@ -145,7 +168,9 @@ export async function runSpP4({
       const accepted = attempts.find((row) => row.valid);
       // S2 comparison: an unstable workspace stops the run with its records.
       try {
-        assertSpP4WorkspaceStable(
+        // DR-CP4-Q-1 (C2): the IR-compared and deadline-excluded counts of
+        // the accepted side, disclosed with the record.
+        record.sides[side].stability = assertSpP4WorkspaceStable(
           accepted.samples,
           `${target.variantKey}:${side}`,
           { rule },
@@ -559,19 +584,7 @@ async function main() {
           ),
         ),
       },
-      design: {
-        variants: targets.map((row) => row.variantKey),
-        sides: [...SP_P4.sides],
-        warmup,
-        measured,
-        attemptLimit: SP_P4.attemptLimit,
-        d2aMode: SP_P4.d2aMode,
-        compareBy: SP_P4.compareBy,
-        rule: SP_P4_COMPARISON_RULE,
-        branch: SP_P4.branch,
-        sparse:
-          "the product fetchSparseSceneIds on the same saved-body query, read after the fetch (DR-CP4-O-1 (4))",
-      },
+      design: spP4ReceiptDesign({ targets, warmup, measured }),
       setups: Object.fromEntries(
         [...setups].map(([key, value]) => [
           key,

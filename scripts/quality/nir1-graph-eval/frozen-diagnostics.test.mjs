@@ -9,6 +9,7 @@ import {
   G01_NEGATIVES,
   SP_P4,
   SP_P4_COMPARISON_RULE,
+  SP_P4_IR_TIMEOUT_LIMIT,
   assertSpP4Passed,
   assertSpP4WorkspaceStable,
   assessG01Negative,
@@ -31,6 +32,7 @@ import {
   COUNTED_ATTEMPT_STATUS,
   explainSpP4Instability,
   spP4IrDisclosure,
+  spP4IrTimeoutExcluded,
   spP4AttemptOutcome,
   spP4Schedule,
   spP4SampleRecord,
@@ -724,7 +726,7 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
     head,
     headSha256,
     stop: null,
-    design: { rule: "current" },
+    design: { rule: "ir-complete-pairs", irTimeoutLimit: 6 },
     candidate: { commit: C("b"), clean: true },
     variants: SP_P4.variants.map((variantKey) => ({
       variantKey,
@@ -762,7 +764,7 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
       receipt({ candidate: { commit: C("b"), clean: false } }),
       C("b"),
     ],
-    ["other-rule", receipt({ design: { rule: "ir-complete-pairs" } }), C("b")],
+    ["other-rule", receipt({ design: { rule: "current" } }), C("b")],
     // レビュー P2-1: 記録が valid でも sample の数と counter から計算し直す。
     [
       "forged-valid",
@@ -954,8 +956,8 @@ test("レビュー P2-4: 届いた sample に g01-mira が返れば、ほかの 
   );
 });
 
-test("レビュー P2-5: 比較の規則は既定が今の規則（current）で、ir-complete-pairs は R を全 sample、IR の寄与を IR 完了の組だけで比べる", () => {
-  assert.equal(SP_P4_COMPARISON_RULE, "current");
+test("レビュー P2-5、Q-1: current は全 sample の全欄、ir-complete-pairs は R を全 sample、IR の寄与を期限切れで外した組の外で比べる", () => {
+  assert.equal(SP_P4_COMPARISON_RULE, "ir-complete-pairs");
   const withIr = (change) =>
     spP4Schedule({ warmup: 5, measured: 30 }).map((at) => {
       const patch = change(at) ?? {};
@@ -983,7 +985,10 @@ test("レビュー P2-5: 比較の規則は既定が今の規則（current）で
   const without = withIr(timeoutAt(3));
   const withSide = withIr(timeoutAt(9));
   // 今の規則: 期限切れで同じ workspace の中の一致が崩れ [precheck]。
-  assert.throws(() => assertSpP4WorkspaceStable(without, "x"), /\[precheck\]/u);
+  assert.throws(
+    () => assertSpP4WorkspaceStable(without, "x", { rule: "current" }),
+    /\[precheck\]/u,
+  );
   // 改訂の規則: 期限切れの sample は IR の比較から外し、R は全件で比べる。
   const stableResult = assertSpP4WorkspaceStable(without, "x", {
     rule: "ir-complete-pairs",
@@ -998,8 +1003,12 @@ test("レビュー P2-5: 比較の規則は既定が今の規則（current）で
   assert.equal(compared.same, true);
   assert.equal(compared.irCompletePairs, 28);
   assert.equal(
-    compareSpP4Variant({ variantKey: "G-02/base", without, with: withSide })
-      .same,
+    compareSpP4Variant({
+      variantKey: "G-02/base",
+      without,
+      with: withSide,
+      rule: "current",
+    }).same,
     false,
   );
   // R の違いは期限切れの sample でも数える。
@@ -1041,10 +1050,11 @@ test("レビュー P2-5: 比較の規則は既定が今の規則（current）で
       ? { ir: "timeout", measure: { resultSceneIds: ["ra", "rb"] } }
       : null,
   );
+  // 30 件の期限切れは上限（6）を超える。
   assert.throws(
     () =>
       assertSpP4WorkspaceStable(allTimeout, "x", { rule: "ir-complete-pairs" }),
-    /no measured sample reached ir-ready/u,
+    /30 of 30 measured samples lost the IR to the deadline/u,
   );
   const noPair = compareSpP4Variant({
     variantKey: "G-02/base",
@@ -1054,7 +1064,7 @@ test("レビュー P2-5: 比較の規則は既定が今の規則（current）で
   });
   assert.deepEqual(
     [noPair.same, noPair.undefinedReason],
-    [false, "no-ir-complete-pair"],
+    [false, "ir-timeout-limit"],
   );
   assert.throws(
     () =>
@@ -1237,4 +1247,393 @@ test("レビュー P2-α: SP-P4 の台帳は測定を始めなかった試行（
     "stalled",
     "completed",
   ]);
+});
+
+// ---- DR-CP4-Q-1: IR の期限切れの扱い（C1〜C3） --------------------------------
+
+/**
+ * measured の sample の IR の outcome を変えた試行。`change(at)` は
+ * `{ ir, deadlineExceeded, result }`（result は R+IR の runtime ID）を返す。
+ * 既定は ir-ready で R+IR に追加枠 rc がある。
+ */
+function irAttempt(change = () => null, { warmup = 5, measured = 30 } = {}) {
+  return spP4Schedule({ warmup, measured }).map((at) => {
+    const patch = (at.phase === "measured" ? change(at) : null) ?? {};
+    const outcome = patch.ir ?? "ir-ready";
+    return spP4SampleRecord({
+      ...at,
+      measure: {
+        ...measure(patch.result ? { resultSceneIds: patch.result } : {}),
+        resultKind: outcome === "ir-ready" ? "fused" : "raw",
+        completion: {
+          outcome,
+          deadlineExceeded: patch.deadlineExceeded ?? outcome === "timeout",
+        },
+      },
+      denseHitSceneIds: ["rb", "ra"],
+      sparseSceneIds: ["ra"],
+      before: counters(0),
+      after: counters(0),
+      scenes,
+    });
+  });
+}
+/** R+IR が R と同じ（IR の寄与だけが欠けた）sample の patch。 */
+const lost = (ir, extra = {}) => ({ ir, result: ["ra", "rb"], ...extra });
+const atRepeats = (repeats, patch) => (at) =>
+  repeats.includes(at.repeat) ? patch : null;
+const range = (from, to) =>
+  Array.from({ length: to - from }, (_, at) => from + at);
+
+const GATE_HEAD = {
+  kind: "sp-p4",
+  k62: { freezeCommit: C("6"), sha256: H("6") },
+  k64: { freezeCommit: C("4"), sha256: H("4") },
+  observationPrep: { commit: C("5"), freezeRecordSha256: H("5") },
+};
+
+/** ④ の receipt（8 variant、側ごとに 1 試行）を書き、その path を返す。 */
+function writeGateReceipt({
+  name,
+  design = { rule: "ir-complete-pairs", irTimeoutLimit: 6 },
+  without = () => irAttempt(),
+  with: withSide = () => irAttempt(),
+}) {
+  const dir = mkdtempSync(path.join(tmpdir(), "q1-gate-"));
+  const headSha256 = createHash("sha256")
+    .update(`${JSON.stringify(GATE_HEAD, null, 2)}\n`)
+    .digest("hex");
+  const attempt = (side, samples) => ({
+    attempts: [
+      {
+        side,
+        attempt: 1,
+        valid: true,
+        outcome: "accepted",
+        d2aMode: "restricted",
+        logicalToRuntime: { scenes },
+        samples,
+      },
+    ],
+  });
+  const receipt = {
+    runKind: "seed-pin-parity",
+    preview: false,
+    head: GATE_HEAD,
+    headSha256,
+    stop: null,
+    design,
+    candidate: { commit: C("b"), clean: true },
+    variants: SP_P4.variants.map((variantKey) => ({
+      variantKey,
+      sides: {
+        "without-seed-pin-step": attempt("without-seed-pin-step", without()),
+        "with-seed-pin-step": attempt("with-seed-pin-step", withSide()),
+      },
+      comparison: { same: true },
+    })),
+    summary: { status: "passed" },
+  };
+  const file = path.join(dir, `${name}.json`);
+  writeFileSync(file, JSON.stringify(receipt));
+  return file;
+}
+const gateOf = (file, options = {}) =>
+  readSpP4Gate({
+    file,
+    head: GATE_HEAD,
+    candidateCommit: C("b"),
+    ...options,
+  });
+
+test("Q-1 (C3): 既定の規則は ir-complete-pairs、期限切れの上限は 6（measured 30 のうち各側 24 の組が残る）", () => {
+  assert.equal(SP_P4_COMPARISON_RULE, "ir-complete-pairs");
+  assert.equal(SP_P4_IR_TIMEOUT_LIMIT, 6);
+  // K の根拠: S2 の measured（30）から K を引いて 24。
+  const plan = readDiagnosticPlan(s2Record());
+  assert.equal(plan.spP4.measured - SP_P4_IR_TIMEOUT_LIMIT, 24);
+});
+
+test("Q-1 (C1): 外すのは timeout（deadlineExceeded）で R+IR が R と同じで追加枠の無い sample だけ", () => {
+  const [row] = irAttempt(() => lost("timeout"), { warmup: 0, measured: 1 });
+  assert.equal(spP4IrTimeoutExcluded(row), true);
+  for (const patch of [
+    lost("failed"),
+    lost("ir-unavailable"),
+    lost("cancelled"),
+    lost("invalidated"),
+    // 期限を過ぎた失敗（outcome は failed）も外さない。
+    lost("failed", { deadlineExceeded: true }),
+    // timeout でも deadlineExceeded が true でなければ外さない。
+    lost("timeout", { deadlineExceeded: false }),
+    // timeout でも追加枠がある。
+    { ir: "timeout", result: ["ra", "rb", "rc"] },
+    // timeout でも R+IR の順が R と違う。
+    { ir: "timeout", result: ["rb", "ra"] },
+    // ir-ready は外さない。
+    lost("ir-ready"),
+  ]) {
+    const [other] = irAttempt(() => patch, { warmup: 0, measured: 1 });
+    assert.equal(spP4IrTimeoutExcluded(other), false, JSON.stringify(patch));
+  }
+  // receipt から読み直した行: R+IR＝R でも記録の追加枠があれば外さない。
+  assert.equal(
+    spP4IrTimeoutExcluded({ ...row, irSupplementSceneId: "g02-c" }),
+    false,
+  );
+  assert.equal(
+    spP4IrTimeoutExcluded({ ...row, irSupplementSceneId: undefined }),
+    false,
+  );
+  // R+IR の欄が欠けた記録は外さない。
+  assert.equal(
+    spP4IrTimeoutExcluded({
+      ...row,
+      rIrSceneIds: undefined,
+      rSceneIds: undefined,
+    }),
+    false,
+  );
+  assert.equal(spP4IrTimeoutExcluded(null), false);
+});
+
+test("Q-1（反例）: without が 30/30 ready、with が 1/30 ready でも passed にならない（残りが timeout／failed／ir-unavailable）", () => {
+  const without = irAttempt();
+  const mixed = ["timeout", "failed", "ir-unavailable"];
+  const cases = [
+    ...mixed.map((bad) => [bad, () => lost(bad)]),
+    ["mixed", (at) => lost(mixed[at.repeat % 3])],
+  ];
+  for (const [name, bad] of cases) {
+    const withSide = irAttempt((at) => (at.repeat === 0 ? null : bad(at)));
+    assert.throws(
+      () => assertSpP4WorkspaceStable(withSide, name),
+      /\[precheck\]/u,
+      name,
+    );
+    const compared = compareSpP4Variant({
+      variantKey: "G-02/base",
+      without,
+      with: withSide,
+    });
+    assert.equal(compared.same, false, name);
+    assert.throws(
+      () =>
+        gateOf(
+          writeGateReceipt({
+            name,
+            without: () => without,
+            with: () => withSide,
+          }),
+        ),
+      /\[precheck\]/u,
+      name,
+    );
+  }
+});
+
+test("Q-1（反例）: with の 30 件が ir-unavailable なら SP-N7（[precheck] に下がらない）", () => {
+  for (const bad of ["ir-unavailable", "failed", "cancelled", "invalidated"]) {
+    const withSide = irAttempt(() => lost(bad));
+    // 片側の中では一致する（どの sample も R+IR＝R）。
+    const stableResult = assertSpP4WorkspaceStable(withSide, bad);
+    assert.equal(stableResult.irTimeoutExcluded, 0);
+    const compared = compareSpP4Variant({
+      variantKey: "G-02/base",
+      without: irAttempt(),
+      with: withSide,
+    });
+    assert.equal(compared.same, false, bad);
+    assert.equal(compared.undefinedReason, undefined, bad);
+    assert.equal(compared.irComparedPairs, 30, bad);
+    assert.throws(
+      () => gateOf(writeGateReceipt({ name: bad, with: () => withSide })),
+      /SP-N7/u,
+      bad,
+    );
+  }
+});
+
+test("Q-1 (C1): 外さない非 ready の sample は今の規則と同じに比べる（K 以下でも）", () => {
+  // 3 件の failed（R+IR＝R）: 同じ workspace の中で IR の欄が違う → [precheck]。
+  const failed = irAttempt(atRepeats([3, 9, 20], lost("failed")));
+  assert.throws(
+    () => assertSpP4WorkspaceStable(failed, "f"),
+    /measured 3 differs .*rIrSceneIds/u,
+  );
+  // 比べれば、その組の IR の欄が違う（SP-N7 の側）。
+  assert.deepEqual(
+    compareSpP4Variant({
+      variantKey: "G-02/base",
+      without: irAttempt(),
+      with: failed,
+    }).differences.map((row) => row.index),
+    [3, 9, 20],
+  );
+  for (const patch of [
+    lost("timeout", { deadlineExceeded: false }),
+    { ir: "timeout", result: ["ra", "rb", "rq"] },
+    { ir: "timeout", result: ["rb", "ra"] },
+  ]) {
+    const rows = irAttempt(atRepeats([4], patch));
+    assert.throws(
+      () => assertSpP4WorkspaceStable(rows, "t"),
+      /\[precheck\]/u,
+      JSON.stringify(patch),
+    );
+    assert.equal(
+      compareSpP4Variant({
+        variantKey: "G-02/base",
+        without: irAttempt(),
+        with: rows,
+      }).same,
+      false,
+      JSON.stringify(patch),
+    );
+  }
+});
+
+test("Q-1 (C2): 側ごとに期限切れで外した sample が 6 件なら通り、7 件で [precheck]", () => {
+  const six = irAttempt(atRepeats(range(10, 16), lost("timeout")));
+  const seven = irAttempt(atRepeats(range(10, 17), lost("timeout")));
+  const ok = assertSpP4WorkspaceStable(six, "six");
+  assert.deepEqual(
+    [ok.irTimeoutExcluded, ok.irTimeoutLimit, ok.irCompared],
+    [6, 6, 24],
+  );
+  assert.throws(
+    () => assertSpP4WorkspaceStable(seven, "seven"),
+    /\[precheck\].*seven: 7 of 30 measured samples .*more than 6/u,
+  );
+  const sixPair = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: irAttempt(),
+    with: six,
+  });
+  assert.deepEqual(
+    [sixPair.same, sixPair.irComparedPairs, sixPair.irTimeouts],
+    [true, 24, { without: 0, with: 6 }],
+  );
+  for (const [without, withSide] of [
+    [irAttempt(), seven],
+    [seven, irAttempt()],
+  ]) {
+    const result = compareSpP4Variant({
+      variantKey: "G-02/base",
+      without,
+      with: withSide,
+    });
+    assert.deepEqual(
+      [result.same, result.undefinedReason],
+      [false, "ir-timeout-limit"],
+    );
+  }
+  // 両側 6 件ずつ（別の repeat）でも側ごとの上限の内。組は 18 残る。
+  const other = irAttempt(atRepeats(range(20, 26), lost("timeout")));
+  const both = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: six,
+    with: other,
+  });
+  assert.deepEqual([both.same, both.irComparedPairs], [true, 18]);
+  // gate: 6 件は passed、7 件は [precheck]（SP-N7 でない）。
+  assert.equal(
+    gateOf(writeGateReceipt({ name: "six", with: () => six })).summary.status,
+    "passed",
+  );
+  assert.throws(
+    () => gateOf(writeGateReceipt({ name: "seven", with: () => seven })),
+    /\[precheck\] S5-B stable.*more than 6/u,
+  );
+  // 要約: 上限を超えた比較は [precheck]。
+  const all = SP_P4.variants.map((key) => variantRecord(key));
+  all[1] = variantRecord(all[1].variantKey, {
+    same: false,
+    compared: 30,
+    undefinedReason: "ir-timeout-limit",
+    differences: [],
+  });
+  assert.equal(summarizeSpP4({ variants: all }).status, "precheck");
+  // 期限切れの数と割合の開示。
+  const disclosed = spP4IrDisclosure(six);
+  assert.deepEqual(disclosed.measured, {
+    samples: 30,
+    notReady: 6,
+    timeoutExcluded: 6,
+    timeoutExcludedRate: 0.2,
+    timeoutLimit: 6,
+  });
+});
+
+test("Q-1 (C2): 外した sample が全部でも上限の内なら、IR を比べる sample が無いので [precheck]", () => {
+  const all = irAttempt(() => lost("timeout"), { warmup: 0, measured: 3 });
+  assert.throws(
+    () => assertSpP4WorkspaceStable(all, "x"),
+    /no measured sample's IR is compared/u,
+  );
+  const result = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: all,
+    with: irAttempt(() => null, { warmup: 0, measured: 3 }),
+  });
+  assert.deepEqual(
+    [result.same, result.undefinedReason],
+    [false, "no-ir-complete-pair"],
+  );
+});
+
+test("Q-1: gate は receipt の期限切れの上限が定数と違えば、規則が違えば [precheck]。current の receipt は current の規則で読む", () => {
+  assert.equal(
+    gateOf(writeGateReceipt({ name: "ok" })).summary.status,
+    "passed",
+  );
+  for (const [name, design] of [
+    ["limit-7", { rule: "ir-complete-pairs", irTimeoutLimit: 7 }],
+    ["limit-5", { rule: "ir-complete-pairs", irTimeoutLimit: 5 }],
+    ["limit-string", { rule: "ir-complete-pairs", irTimeoutLimit: "6" }],
+    ["limit-missing", { rule: "ir-complete-pairs" }],
+    ["rule-current", { rule: "current" }],
+    // 上限が定数と同じでも規則が違えば通さない。
+    ["rule-current-limit", { rule: "current", irTimeoutLimit: 6 }],
+    ["rule-missing", {}],
+  ])
+    assert.throws(
+      () => gateOf(writeGateReceipt({ name, design })),
+      /\[precheck\] S5-B gate/u,
+      name,
+    );
+  // current で読む gate は ir-complete-pairs の receipt を通さない。
+  assert.throws(
+    () => gateOf(writeGateReceipt({ name: "irc-as-cur" }), { rule: "current" }),
+    /another comparison rule/u,
+  );
+  // current の規則の receipt は rule: "current" で読める（期限切れは [precheck]）。
+  assert.equal(
+    gateOf(writeGateReceipt({ name: "cur", design: { rule: "current" } }), {
+      rule: "current",
+    }).summary.status,
+    "passed",
+  );
+  assert.throws(
+    () =>
+      gateOf(
+        writeGateReceipt({
+          name: "cur-timeout",
+          design: { rule: "current" },
+          with: () => irAttempt(atRepeats([4], lost("timeout"))),
+        }),
+        { rule: "current" },
+      ),
+    /\[precheck\] S5-B stable/u,
+  );
+  // 改訂の規則では同じ期限切れ 1 件は通る。
+  assert.equal(
+    gateOf(
+      writeGateReceipt({
+        name: "irc-timeout",
+        with: () => irAttempt(atRepeats([4], lost("timeout"))),
+      }),
+    ).summary.status,
+    "passed",
+  );
 });
