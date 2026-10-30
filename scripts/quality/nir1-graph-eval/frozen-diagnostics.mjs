@@ -349,9 +349,11 @@ const parityOf = (row) =>
  * supplement slot over every measured sample except those lost to the IR
  * deadline alone (`spP4IrTimeoutExcluded`, C1; a pair leaves when either side
  * is excluded); a side that excluded more than SP_P4_IR_TIMEOUT_LIMIT
- * measured samples (C2), or a side or pair left with no compared IR, is
- * `[precheck]`. Any other non-`ir-ready` outcome is compared as `current`
- * does (a side whose IR is always unavailable stays SP-N7).
+ * measured samples (C2), more than SP_P4_IR_TIMEOUT_PAIR_LIMIT pairs left
+ * without their IR (DR-CP4-Q-2, S3's 24-pair minimum), or a side or pair
+ * left with no compared IR, is `[precheck]`. Any other non-`ir-ready`
+ * outcome is compared as `current` does (a side whose IR is always
+ * unavailable stays SP-N7).
  */
 export const SP_P4_COMPARISON_RULES = Object.freeze([
   "current",
@@ -360,15 +362,27 @@ export const SP_P4_COMPARISON_RULES = Object.freeze([
 /** The rule in force (DR-CP4-Q-1 C3; S2 pins this commit). */
 export const SP_P4_COMPARISON_RULE = "ir-complete-pairs";
 /**
- * DR-CP4-Q-1 (C2): the most measured samples of one side of one variant that
- * `ir-complete-pairs` may exclude as lost to the IR deadline, fixed before
- * the observation. K = 6 of S2's measured 30 leaves at least 24 IR-compared
- * samples per side (the minimum this rule accepts). With the dev deadline
- * rate (2 of 35) a K of 3 would likely stop some side of the 8 variants; 6
- * is set from the 24 minimum, not from the observed rate. If S2's measured
- * count changes, this basis is revisited (`readDiagnosticPlan` checks 30).
+ * DR-CP4-Q-1 (C2), corrected by DR-CP4-Q-2: the most measured samples of one
+ * side of one variant that `ir-complete-pairs` may exclude as lost to the IR
+ * deadline, fixed before the observation. K = 6 of S2's measured 30 leaves
+ * at least 24 IR-compared samples per side, but not 24 pairs: a pair leaves
+ * when either side is excluded, so two sides excluding 6 each at different
+ * positions leave as few as 18. S3's minimum (24 pairs) is held by
+ * SP_P4_IR_TIMEOUT_PAIR_LIMIT; this per-side limit stays as the early check
+ * of one side (`assertSpP4WorkspaceStable`), implied by the pair limit.
+ * A per-side K of 3 is not used: with the dev deadline rate (2 of 35) it
+ * would likely stop some side of the 8 variants. If S2's measured count
+ * changes, this basis is revisited (`readDiagnosticPlan` checks 30).
  */
 export const SP_P4_IR_TIMEOUT_LIMIT = 6;
+/**
+ * DR-CP4-Q-2 (S3's C2 as written): the most measured pairs of one variant
+ * whose IR fields `ir-complete-pairs` may leave out — the positions where
+ * either side was lost to the deadline alone. 6 of S2's measured 30 leaves at
+ * least 24 IR-compared pairs (S3's minimum). More is `[precheck]`
+ * (`undefinedReason: "ir-timeout-pair-limit"`), never SP-N7 nor passed.
+ */
+export const SP_P4_IR_TIMEOUT_PAIR_LIMIT = 6;
 const R_SIDE_FIELDS = Object.freeze([
   "rSceneIds",
   "denseHitSceneIds",
@@ -492,7 +506,8 @@ export function spP4IrDisclosure(samples) {
     };
   };
   // DR-CP4-Q-1 (C2): the measured samples `ir-complete-pairs` excludes as
-  // lost to the deadline, their rate, and the fixed limit.
+  // lost to the deadline, their rate, and the fixed limits (per side, and
+  // DR-CP4-Q-2 the pairs, judged in compareSpP4Variant).
   const measured = count("measured");
   const timeoutExcluded = measuredOf(rows).filter(spP4IrTimeoutExcluded).length;
   return {
@@ -503,6 +518,7 @@ export function spP4IrDisclosure(samples) {
       timeoutExcludedRate:
         measured.samples > 0 ? timeoutExcluded / measured.samples : null,
       timeoutLimit: SP_P4_IR_TIMEOUT_LIMIT,
+      timeoutPairLimit: SP_P4_IR_TIMEOUT_PAIR_LIMIT,
     },
     notReadySamples: rows
       .filter((row) => row?.ir?.outcome !== "ir-ready")
@@ -607,16 +623,21 @@ export function compareSpP4Variant({
     without: left.filter(spP4IrTimeoutExcluded).length,
     with: right.filter(spP4IrTimeoutExcluded).length,
   };
-  // C2: a side over the limit, or no pair whose IR is compared, leaves the
-  // comparison undefined ([precheck], never SP-N7 nor passed).
+  // DR-CP4-Q-2: the pairs whose IR fields left (either side excluded).
+  const excludedPairs = count - comparedPairs;
+  // C2: a side over the limit, then (Q-2) more pairs without their IR than
+  // the pair limit, then no pair whose IR is compared, leaves the comparison
+  // undefined ([precheck], never SP-N7 nor passed).
   const undefinedReason =
     rule === "current"
       ? null
       : Math.max(timeouts.without, timeouts.with) > SP_P4_IR_TIMEOUT_LIMIT
         ? "ir-timeout-limit"
-        : comparedPairs === 0
-          ? "no-ir-complete-pair"
-          : null;
+        : excludedPairs > SP_P4_IR_TIMEOUT_PAIR_LIMIT
+          ? "ir-timeout-pair-limit"
+          : comparedPairs === 0
+            ? "no-ir-complete-pair"
+            : null;
   return {
     variantKey,
     rule,
@@ -626,7 +647,12 @@ export function compareSpP4Variant({
     irComparedPairs: comparedPairs,
     ...(rule === "current"
       ? {}
-      : { irTimeouts: timeouts, irTimeoutLimit: SP_P4_IR_TIMEOUT_LIMIT }),
+      : {
+          irTimeouts: timeouts,
+          irTimeoutLimit: SP_P4_IR_TIMEOUT_LIMIT,
+          irExcludedPairs: excludedPairs,
+          irTimeoutPairLimit: SP_P4_IR_TIMEOUT_PAIR_LIMIT,
+        }),
     same:
       differences.length === 0 &&
       left.length === right.length &&
@@ -1095,6 +1121,15 @@ export function readSpP4Gate({
     fail(
       "gate",
       `the SP-P4 receipt's IR deadline limit is not ${SP_P4_IR_TIMEOUT_LIMIT}`,
+    );
+  // DR-CP4-Q-2: and so is the pair limit.
+  if (
+    rule === "ir-complete-pairs" &&
+    receipt.design?.irTimeoutPairLimit !== SP_P4_IR_TIMEOUT_PAIR_LIMIT
+  )
+    fail(
+      "gate",
+      `the SP-P4 receipt's IR deadline pair limit is not ${SP_P4_IR_TIMEOUT_PAIR_LIMIT}`,
     );
   const variants = (receipt.variants ?? []).map((row) => {
     const sides = {};
