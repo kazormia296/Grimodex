@@ -1154,8 +1154,8 @@ jobs:
         run: |
           set -euo pipefail
           # Shards 2-7 use the same private Xvfb wrapper as canonical Full, so
-          # the restore-reload GPU noise guard sees the runtime it was scoped
-          # to. Shard 1 owns editor-persistence, which the wrapper would route
+          # the restore-reload journeys run under the canonical Full runtime.
+          # Shard 1 owns editor-persistence, which the wrapper would route
           # to native B; ordinary CI keeps that journey on plain Xvfb.
           if [[ "$SHARD" == 1 ]]; then
             xvfb=(xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24")

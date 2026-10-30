@@ -2358,24 +2358,7 @@ export const MAIN_PROCESS_NOISE_ALLOWLIST = Object.freeze([
     pattern:
       /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceMemory: Trying to Produce a Memory representation from a non-existent mailbox\.\r?\n?$/,
   }),
-  Object.freeze({
-    id: "ubuntu-xvfb-restore-reload-shared-image-skia",
-    phases: Object.freeze([
-      "c2-5b-restore-verify-rebuild-verify/restore",
-      "c2-zc-canonical-authority-cutover/restore",
-      "c2-zc-post-marker-lifecycle/bootstrap-restore",
-    ]),
-    reason:
-      "Temporary CI exception for one observed ProduceSkia warning during a production Settings restore reload on Electron 43.8.3 / Chromium 150.0.7871.250 under Linux Xvfb SwiftShader. It requires a bound main-frame navigation and recovered WebGL pixels and interaction; the GPU root cause and general harmlessness remain unproven. Extended to 2026-11-10 (once, no further extension without a root-cause fix): in CI logs of 2026-10-12 to 2026-10-13 the warning appeared in 8 of 40 restore-shard job runs before #633 and 11 of 40 after it (one line per job, only in the restore phases listed here, never in bootstrap-restore), so the #633 WebGL2 probe move did not change it. Every occurrence sits immediately after Settings window.location.reload() tears down the live editor WebGL canvas; the presumed cause is the GPU process referencing that canvas's destroyed shared image, which is not yet confirmed as a Chromium-side issue. The two warning-related job failures in that window were runs predating the Xvfb wrapper (#629). The allowance stays limited to these 3 phases and still requires one matching line per launch, a bound main-frame navigation, and recovered canvas pixels.",
-    expiresOn: "2026-11-10",
-    pattern:
-      /^\[\d+:\d+\/\d+\.\d+:ERROR:gpu\/command_buffer\/service\/shared_image\/shared_image_manager\.cc:\d+\] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox\.\r?\n?$/,
-  }),
 ]);
-
-const RESTORE_RELOAD_ALLOWANCE_ID =
-  "ubuntu-xvfb-restore-reload-shared-image-skia";
-const RESTORE_RELOAD_WARNING_WINDOW_MS = 5_000;
 
 const MAIN_PROCESS_ERROR_PATTERNS = Object.freeze([
   /\b(?:errors?|exceptions?|failed|failure|fatal|panic(?:ked)?|uncaught|unhandled|crash(?:ed)?)\b/i,
@@ -4417,8 +4400,6 @@ export function createProductJourneyHarness({
             mainProcessNoiseAllowlist,
           )
         : undefined;
-    const deferredRestoreAllowance =
-      allowance?.id === RESTORE_RELOAD_ALLOWANCE_ID ? allowance : null;
     mainDiagnostics.push({
       at: new Date().toISOString(),
       observedAtMs: Date.now(),
@@ -4427,21 +4408,15 @@ export function createProductJourneyHarness({
       phase,
       message: boundedDiagnosticText(message),
       classification: isError ? "error" : "noise",
-      deferredAllowanceId: deferredRestoreAllowance?.id ?? null,
-      guardReceiptId:
-        deferredRestoreAllowance && launchId
-          ? `restore-reload:${launchId}`
-          : null,
-      allowance:
-        allowance && !deferredRestoreAllowance
-          ? {
-              id: allowance.id,
-              phases: [...allowance.phases],
-              reason: allowance.reason,
-              expiresOn: allowance.expiresOn,
-              pattern: allowance.pattern.toString(),
-            }
-          : null,
+      allowance: allowance
+        ? {
+            id: allowance.id,
+            phases: [...allowance.phases],
+            reason: allowance.reason,
+            expiresOn: allowance.expiresOn,
+            pattern: allowance.pattern.toString(),
+          }
+        : null,
     });
   }
 
@@ -4588,9 +4563,6 @@ export function createProductJourneyHarness({
         "restore reload guard requires one live, unused launch and page",
       );
     }
-    const allowance = mainProcessNoiseAllowlist.find(
-      (entry) => entry.id === RESTORE_RELOAD_ALLOWANCE_ID,
-    );
     const state = {
       id: `restore-reload:${launchId}`,
       launchId,
@@ -4600,11 +4572,8 @@ export function createProductJourneyHarness({
       navigationAtMs: null,
       armedAtMs: null,
       callbackCompletedAtMs: null,
-      armedSequence: null,
-      completedSequence: null,
       previousTimeOrigin: null,
       recoveredTimeOrigin: null,
-      runtime: null,
       proof: null,
     };
     restoreReloadGuards.set(launchId, state);
@@ -4622,28 +4591,6 @@ export function createProductJourneyHarness({
     };
     let listening = false;
     try {
-      try {
-        state.runtime = await runHarnessOperation(
-          "app.evaluate:restore-reload-runtime",
-          () =>
-            app.evaluate(({ app: electronApp }) => ({
-              electron: process.versions.electron,
-              chrome: process.versions.chrome,
-              platform: process.platform,
-              x11Session: process.env.XDG_SESSION_TYPE === "x11",
-              display: Boolean(process.env.DISPLAY),
-              waylandDisplay: Boolean(process.env.WAYLAND_DISPLAY),
-              waylandSocket: Boolean(process.env.WAYLAND_SOCKET),
-              xvfbMarker: process.env.GRIMODEX_LOCAL_CI_XVFB === "1",
-              swiftshader:
-                electronApp.commandLine.getSwitchValue("use-angle") ===
-                "swiftshader",
-            })),
-          { phase, timeoutMs: 5_000, suppressTimeoutCleanup: true },
-        );
-      } catch (error) {
-        state.runtime = { probeError: operationErrorMessage(error) };
-      }
       state.previousTimeOrigin = await runHarnessOperation(
         "page.evaluate:restore-reload-old-time-origin",
         () => page.evaluate(() => performance.timeOrigin),
@@ -4655,10 +4602,8 @@ export function createProductJourneyHarness({
       page.on("framenavigated", onFrameNavigated);
       listening = true;
       state.armedAtMs = Date.now();
-      state.armedSequence = mainDiagnostics.length;
       const reportedProof = await callback();
       state.callbackCompletedAtMs = Date.now();
-      state.completedSequence = mainDiagnostics.length;
       if (!sameLaunch()) {
         throw new Error("restore reload guard lost its bound app or page");
       }
@@ -4796,20 +4741,7 @@ export function createProductJourneyHarness({
       ) {
         throw new Error("restore reload canvas pixels did not recover");
       }
-      state.status =
-        allowance?.phases.includes(phase) &&
-        allowance.expiresOn >= new Date().toISOString().slice(0, 10) &&
-        state.runtime?.electron === "43.8.3" &&
-        state.runtime?.chrome === "150.0.7871.250" &&
-        state.runtime?.platform === "linux" &&
-        state.runtime?.x11Session === true &&
-        state.runtime?.display === true &&
-        state.runtime?.waylandDisplay === false &&
-        state.runtime?.waylandSocket === false &&
-        state.runtime?.xvfbMarker === true &&
-        state.runtime?.swiftshader === true
-          ? "eligible"
-          : "unsupported";
+      state.status = "verified";
       recordTimeline("restore-reload-guard", { ...state });
       return reportedProof;
     } catch (error) {
@@ -4822,52 +4754,7 @@ export function createProductJourneyHarness({
     }
   }
 
-  function refreshRestoreReloadAllowances() {
-    const allowance = mainProcessNoiseAllowlist.find(
-      (entry) => entry.id === RESTORE_RELOAD_ALLOWANCE_ID,
-    );
-    if (!allowance) return;
-    for (const issue of mainDiagnostics) {
-      if (issue.deferredAllowanceId === RESTORE_RELOAD_ALLOWANCE_ID) {
-        issue.allowance = null;
-      }
-    }
-    if (allowance.expiresOn < new Date().toISOString().slice(0, 10)) return;
-    for (const state of restoreReloadGuards.values()) {
-      if (state.status !== "eligible") continue;
-      const matching = mainDiagnostics.filter((issue) => {
-        allowance.pattern.lastIndex = 0;
-        return (
-          issue.launchId === state.launchId &&
-          allowance.pattern.test(issue.message)
-        );
-      });
-      if (matching.length !== 1) continue;
-      const issue = matching[0];
-      if (
-        issue.deferredAllowanceId !== RESTORE_RELOAD_ALLOWANCE_ID ||
-        issue.sequence <= state.armedSequence ||
-        issue.sequence > state.completedSequence ||
-        issue.observedAtMs < state.armedAtMs ||
-        issue.observedAtMs > state.callbackCompletedAtMs ||
-        Math.abs(issue.observedAtMs - state.navigationAtMs) >
-          RESTORE_RELOAD_WARNING_WINDOW_MS
-      )
-        continue;
-      issue.allowance = {
-        id: allowance.id,
-        phases: [...allowance.phases],
-        reason: allowance.reason,
-        expiresOn: allowance.expiresOn,
-        pattern: allowance.pattern.toString(),
-        guardReceiptId: state.id,
-        screenshotSha256: state.proof.screenshotSha256,
-      };
-    }
-  }
-
   function diagnostics() {
-    refreshRestoreReloadAllowances();
     const mainErrors = mainDiagnostics.filter(
       (issue) => issue.classification === "error",
     );
@@ -4890,22 +4777,7 @@ export function createProductJourneyHarness({
     };
     if (restoreReloadGuards.size > 0) {
       summary.restoreReloadGuards = [...restoreReloadGuards.values()].map(
-        (state) => ({
-          ...state,
-          exactWarningCount: mainDiagnostics.filter((issue) => {
-            const allowance = mainProcessNoiseAllowlist.find(
-              (entry) => entry.id === RESTORE_RELOAD_ALLOWANCE_ID,
-            );
-            if (!allowance || issue.launchId !== state.launchId) return false;
-            allowance.pattern.lastIndex = 0;
-            return allowance.pattern.test(issue.message);
-          }).length,
-          allowanceApplied: mainDiagnostics.some(
-            (issue) =>
-              issue.launchId === state.launchId &&
-              issue.allowance?.guardReceiptId === state.id,
-          ),
-        }),
+        (state) => ({ ...state }),
       );
     }
     if (closeDiagnostics.length > 0) {
