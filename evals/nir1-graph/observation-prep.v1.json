@@ -814,10 +814,10 @@
     "phasesRule": "① R5 の照合の run（setup は seed の pin の段と SP-P2 の記録まで、と製品の DB の読取だけ）→ ② K6/4 の凍結（claude/nir1-contracts への commit と push、server 側の時刻の記録。K6/4 :317）→ ②' 合成の記録による検出（製品の runtime を使わない node の試験。S1g-A の setup-driver と照合の関数の試験の実行記録）→ ③ S4（観測前の commit。2 段: S4a で bytes、S4b で placeholder を埋めて frozen。②、②'、① の記録を束縛）→ ④ SP-P4 の診断 → ⑤ Graph arm を含む実行。① が match でなければ ② に、② が済まなければ ②' と S4 に、②' が済まなければ S4 に進まない。"
   },
   "s4Stages": ["s4a-bytes", "s4b-fill-and-freeze"],
-  "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。",
+  "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。 S4 の手順（S2 追補 #7、DR-CP4-S4-1）: (a) S4 の枝は origin/claude/nir1-contracts を merge commit で取り込み（force や rebase をしない）、S4b が参照する ①（R5 の照合の記録の commit）、②（K6/4 の凍結の commit）、②'（合成の記録の commit）を S4b の真の祖先にする。(b) S4 の PR は squash や rebase でなく merge commit（gh pr merge --merge）で master に入れる（squash や rebase では参照した hash が master の祖先に残らず、全件が落ちる）。(c) 実行時の正式の入口は assertObservationPrepFormal（S2 の validator。参照した commit の bytes と真の祖先の検査）を呼ばないので、integrator が S4 の手順の中で S4b の commit に対してこれを実行し、通ってから ④ に進む。(d) 正式の入口（diagnostic-runner.mjs の SP-P4、trace-frozen.mjs、frozen-k64-admission.mjs）は S2 の file を freeze record（evals/nir1-graph/observation-prep-freeze.v1.json）として読まず、admission.mjs の readAdmittedObservationPrep で候補の HEAD の blob を読み、その sha256 が freeze record の boundFiles の束縛と一致し、S2 の status が frozen-before-observation で placeholders が空、S2 の boundFiles（配列）と traces の各行の sha256 が freeze record の束縛と同じことを確かめてから parse する。違えば [precheck]。",
   "setupReadings": {
     "source": {
-      "decisions": "master（950751d0）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28（開き直しの正本は L-24、blocked の写しの表の正本は L-28、Index の build の定数は L-27）、DR-CP4-N-14（parity の固定と試行の台帳）、DR-CP4-O-1〜O-18（S5-B の配線。S2 に写す読みの正本は O-5、K24-G01-N2〜N4 は O-6／O-14／O-15、SP-P4 は O-7）と、TR-1〜TR-14。S2 追補 #4 の決定は DR-CP4-P-1。S2 追補 #5 の決定と S3 の 7 回目の判定は DR-CP4-P-2。SP-P4 の C1〜C3 と K24-G01 の負例の開示（#757）は DR-CP4-Q-1、S2 追補 #6 の決定は DR-CP4-P-3",
+      "decisions": "master（950751d0）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28（開き直しの正本は L-24、blocked の写しの表の正本は L-28、Index の build の定数は L-27）、DR-CP4-N-14（parity の固定と試行の台帳）、DR-CP4-O-1〜O-18（S5-B の配線。S2 に写す読みの正本は O-5、K24-G01-N2〜N4 は O-6／O-14／O-15、SP-P4 は O-7）と、TR-1〜TR-14。S2 追補 #4 の決定は DR-CP4-P-1。S2 追補 #5 の決定と S3 の 7 回目の判定は DR-CP4-P-2。SP-P4 の C1〜C3 と K24-G01 の負例の開示（#757）は DR-CP4-Q-1、S2 追補 #6 の決定は DR-CP4-P-3。S4 の予行（正式の入口が S2 の file を freeze record の束縛と照合して読む。#758）は DR-CP4-S4-1、S2 追補 #7 の決定は DR-CP4-P-4",
       "pins": [
         {
           "role": "s1j2-blocked-map",
@@ -965,17 +965,9 @@
         {
           "role": "s5b-diagnostics-wiring",
           "commit": "950751d040b29b6d78a067a003dc19b196cfb692",
-          "pr": "#756（S5-B。診断〔SP-P4、G-01 の負例〕と trace の正式の配線、A の runner への統合）。この pin は #756 で最後に変わった harness の file（#757 で変わった diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs は sp-p4-ir-timeout の pin が持つ。S2 追補 #6）",
+          "pr": "#756（S5-B。診断〔SP-P4、G-01 の負例〕と trace の正式の配線、A の runner への統合）。この pin は #756 で最後に変わった harness の file（#757 で変わった diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs は sp-p4-ir-timeout の pin が持つ。S2 追補 #6。#758 で変わった admission.mjs、frozen-k64-admission.mjs、trace-frozen.mjs と diagnostic-runner.mjs は s4-rehearsal-admission の pin が持つ。S2 追補 #7）",
           "check": "bytes",
           "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/admission.mjs",
-              "sha256": "d7a81970a08c125f401ef766206e8b6cec11844ff5c86d8fba1f178364d56fde"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
-              "sha256": "11ecd401f6f04175d4c50696aa44a32a7adfdc2d80068ab40516e6a78a9c511b"
-            },
             {
               "path": "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs",
               "sha256": "b1de061e82fbf0cfec515123a058238dbbec9be78449cee897e70041cd56e4a6"
@@ -1005,10 +997,6 @@
               "sha256": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd"
             },
             {
-              "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
-              "sha256": "78eae63b6bdcc84ce980661199b44ee421ce4c32b0cf87469f067de1e037b0e1"
-            },
-            {
               "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
               "sha256": "998ac3c7ffdc71e720e05046b3f6637e91e7ee534734678ff3ddcc854cf77d37"
             },
@@ -1021,13 +1009,9 @@
         {
           "role": "sp-p4-ir-timeout",
           "commit": "43e3f40b5d653c62d5aca4ca795917b67310992c",
-          "pr": "#757（SP-P4 の IR の期限切れを条件つきで比較から外す C1〜C3、K=6 と、K24-G01 の負例の開示。DR-CP4-Q-1）。この pin は #757 で最後に変わった harness の file（S2 追補 #6、DR-CP4-P-3）",
+          "pr": "#757（SP-P4 の IR の期限切れを条件つきで比較から外す C1〜C3、K=6 と、K24-G01 の負例の開示。DR-CP4-Q-1）。この pin は #757 で最後に変わった harness の file（S2 追補 #6、DR-CP4-P-3。#758 でも変わった diagnostic-runner.mjs は s4-rehearsal-admission の pin が持つ。S2 追補 #7）",
           "check": "bytes",
           "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
-              "sha256": "288def545341eb06247691a1c6fb2b027ef0f22e263eb036369a9e7a49d9eee9"
-            },
             {
               "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
               "sha256": "57f2336ec7a8b324b124fb6ad0776387222d661c9cc869260c93fe04aa5dc12f"
@@ -1035,6 +1019,34 @@
             {
               "path": "scripts/quality/nir1-graph-eval/g01-negative-run.mjs",
               "sha256": "dac896999acbc8f6654fa1b955f6da1625e35b02e311aa845aaa327714778b4b"
+            }
+          ]
+        },
+        {
+          "role": "s4-rehearsal-admission",
+          "commit": "82d427465b16a12809c6f93adad74ac97859c85a",
+          "pr": "#758（S4 の予行。正式の入口が S2 の observation-prep を S4 の freeze record の束縛と sha256 で照合して読む〔admission.mjs の readAdmittedObservationPrep〕。DR-CP4-S4-1）。この pin は #758 で最後に変わった file（試験の file と試験専用の test-support.mjs を除く admission.mjs、diagnostic-runner.mjs、frozen-k64-admission.mjs、trace-frozen.mjs と、harness の外の scripts/quality/nir1-retrieval/contract.mjs。S2 追補 #7、DR-CP4-P-4）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/admission.mjs",
+              "sha256": "e0b3877f0d118936348db948546e7c125710b1de9c07732b55b1d3f0efba4e14"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
+              "sha256": "c4222f035bd06224f68aa79200efcb09208cb559e8e415565b661ad42114a1ea"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
+              "sha256": "021bb096b34c901288bd748a4e06edf18f55df4da178fb9b9cd5c8af5a8974ca"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
+              "sha256": "b1ecee05b1a14a914b98b22110b5ad2932806fb921a5951b082abbb8851f42e2"
+            },
+            {
+              "path": "scripts/quality/nir1-retrieval/contract.mjs",
+              "sha256": "ec6a73277f3b26075c71bdfab945b2c2b83d9883067da4139d60d6cad090f963"
             }
           ]
         },
@@ -1053,7 +1065,7 @@
         {
           "role": "p1-harness-core",
           "commit": "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
-          "pr": "#741（CP-4 道具 P1/3。harness の核〔計算と記録〕）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）",
+          "pr": "#741（CP-4 道具 P1/3。harness の核〔計算と記録〕）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）。harness の外の eval 専用の script で、この PR で最後に変わった scripts/quality/nir1-retrieval/standard-build-receipt.mjs もこの pin が持つ（S2 追補 #7、DR-CP4-P-4）",
           "check": "bytes",
           "files": [
             {
@@ -1095,13 +1107,17 @@
             {
               "path": "scripts/quality/nir1-graph-eval/stats.mjs",
               "sha256": "6790e2d12de8839ef431196f4b5d02dfa98c269b65b8c551341079162f735f5b"
+            },
+            {
+              "path": "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
+              "sha256": "24f49e86d09e2243f5ba4b0528ed6b3fffb9d88aeea6d5b38ef3689e207416e9"
             }
           ]
         },
         {
           "role": "p2p3-harness-admission",
           "commit": "a4e65b66006dec7101f93340cdca70fcafabfc5d",
-          "pr": "#743（CP-4 道具 P2＋P3。判定・admission、実 Electron の起動）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）",
+          "pr": "#743（CP-4 道具 P2＋P3。判定・admission、実 Electron の起動）。この pin は正式の入口の閉包のうち、この PR で最後に変わった harness の file を持つ（S2 追補 #5、P-S2-9 (b)）。harness の外の eval 専用の script で、この PR で最後に変わった scripts/quality/nir1-retrieval/standard-build.mjs もこの pin が持つ（S2 追補 #7、DR-CP4-P-4）",
           "check": "bytes",
           "files": [
             {
@@ -1155,6 +1171,10 @@
             {
               "path": "scripts/quality/nir1-graph-eval/signal-cleanup.mjs",
               "sha256": "bd67b721168c780c3111462f79aa3e4f157aeb38295b421ab0582786608dd69d"
+            },
+            {
+              "path": "scripts/quality/nir1-retrieval/standard-build.mjs",
+              "sha256": "fed1a24fead2b8fed522e681a648324f5e347a01aa271543bfe3cb907f0d1e35"
             }
           ]
         },
@@ -1181,9 +1201,99 @@
               "sha256": "e3426fa0b799cf4a485248b2a38ada386a6b1acfff31d2f855c08047ec6d203c"
             }
           ]
+        },
+        {
+          "role": "nir1-retrieval-ir-base",
+          "commit": "ffa3c0adc56e9af0b385c0379b63a69278242240",
+          "pr": "#567（承認済みの narrative IR の retrieval と Evidence の navigation）。この pin は正式の入口の閉包のうち harness の外の eval 専用の script で、この PR で最後に変わったもの（nir1-retrieval の acceptance-policy.mjs と candidate-policy.mjs。S2 追補 #7、DR-CP4-P-4）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-retrieval/acceptance-policy.mjs",
+              "sha256": "bc7c63310bde90f9b2f6de74ad64b17f699bdb0dc2410da1ad4c02f265aa3afe"
+            },
+            {
+              "path": "scripts/quality/nir1-retrieval/candidate-policy.mjs",
+              "sha256": "05cb3f5142e3297cb521870bf9cfc9fa177f3084948e5af13a773e29e1f8ce67"
+            }
+          ]
+        },
+        {
+          "role": "cp0-graph-eval-freeze",
+          "commit": "6bdf61e99f80debd8c2c0c56f2c892e21534f924",
+          "pr": "#639（CP-0。G-02〜G-08 の Graph 評価を観測前に固定）。この pin は正式の入口の閉包のうち harness の外の eval 専用の script で、この PR で最後に変わったもの（nir1-graph/porter.mjs と nir1-retrieval/paired.mjs。S2 追補 #7、DR-CP4-P-4）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph/porter.mjs",
+              "sha256": "21c418de4ee17d6e337a7dd6fcc3791d4824394e70a13bf6802c43844ceb5026"
+            },
+            {
+              "path": "scripts/quality/nir1-retrieval/paired.mjs",
+              "sha256": "116c066e75a726449273ad3ecd9aeca5d23b9c9d88706de604d955346bb0aed6"
+            }
+          ]
+        },
+        {
+          "role": "da1-route-isolation",
+          "commit": "2b68fd4df67599ca2f277fc94f94956de463381e",
+          "pr": "#676（DA-1。D2a の route 区分と renderer の隔離）。この pin は正式の入口の閉包のうち harness の外の eval 専用の script で、この PR で最後に変わったもの（run-nir1-retrieval.mjs〔placeD2aProfileState、scoreQuery〕。S2 追補 #7、DR-CP4-P-4）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/run-nir1-retrieval.mjs",
+              "sha256": "7c9b0763c5d6f7c873f4c7658dff356505359ede8442255e3141d1f4bccdf7b2"
+            }
+          ]
+        },
+        {
+          "role": "cq-lim-graph-limits",
+          "commit": "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
+          "pr": "#678（CQ-LIM-1〜4。Graph の query と worker の上限）。この pin は正式の入口の閉包のうち harness の外の eval 専用の script で、この PR で最後に変わったもの（nir1-graph/contract.mjs。S2 追補 #7、DR-CP4-P-4）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph/contract.mjs",
+              "sha256": "56f15d8e15a491714ae54bcddae5b0543362e32dec5f049276ce6d6af8949356"
+            }
+          ]
+        },
+        {
+          "role": "dp-h-unknown-scope",
+          "commit": "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
+          "pr": "#712（S0c。DP-H の契約と harness の unknown Scope の拒否 variant）。この pin は正式の入口の閉包のうち harness の外の eval 専用の script で、この PR で最後に変わったもの（nir1-packing/final-request/architecture.mjs。native-architecture.mjs が import する。S2 追補 #7、DR-CP4-P-4）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-packing/final-request/architecture.mjs",
+              "sha256": "13621af323993eebd9345d83de5cc5f3f12b52691a64a6ac23f5488d71cecc64"
+            }
+          ]
         }
       ],
-      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。check が bytes の pin は、files の sha256 が pin した commit の bytes で、S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめる。check が ancestor の pin（製品の修正、T14、CI の改善、bytes を後の pin に移した PR）は、S5 の候補がその commit を祖先に持つことを確かめる。どちらも違えば [precheck]（runnerHandoff）。bytes の pin の file は、master でその file を最後に変えた commit（squash の後の hash）の pin が持ち、同じ path を 2 つの pin に置かない。追補 #4 では、追補 #3 の pin（b1a87b0b）の後に #754 と #756 が変えた harness の file のうち、試験の file（*.test.mjs と s5b-test-support.mjs）を除く全部を bytes の pin に足した（厳しい側。DR-CP4-P-1）。起動時間の gate の改善（#753）と maintenance の所有の解放（#755）は ancestor の pin に追記した。validator は blockedCaseJudgement を、BLOCKED_TABLE_SOURCE（s5b-diagnostics-wiring の pin の frozen-setup-driver.mjs）の bytes（その commit から読むか、同じ sha256 の作業 tree の file）の BLOCKED_CONTRACT_TABLE から導き直して照合し、bytes の pin の sha256 を pin した commit の bytes と、各 pin の commit が記録の HEAD の祖先であることを git で確かめる（shallow な clone では確かめず、正式の gate では必ず確かめる）。 追補 #5（S3 の 7 回目の P2-2、P-S2-9 の決定 b。DR-CP4-P-2）では、正式の入口（diagnostic-runner.mjs、trace-runner.mjs、frozen-k64-run.mjs、frozen-setup-driver.mjs、r5-check-runner.mjs）の閉包（静的な import と、harness の path の文字列で参照される file〔renderer の入口、cp4-harness.html の script、launcher が起動する electron-observer.entry.mjs〕をたどる。試験の file と文書は含めない）の harness の file のうち pin に無かった 36 file（静的な import の閉包の 28 file と、renderer の 7 file と electron-observer.entry.mjs）を、master でその file を最後に変えた commit の bytes の pin に足した（その commit の role が無ければ足した）。閉包の file がどの pin にも無ければ試験が落ちる。harness の directory の外の import（scripts/quality の nir1-retrieval、nir1-packing、run-nir1-retrieval.mjs、local-ci-process-supervisor.mjs と、製品の src・electron）は pin しない（製品は候補そのもの）。 追補 #6（DR-CP4-P-3）では、#757（43e3f40b）が変えた harness の file（試験の file を除く diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs）を s5b-diagnostics-wiring の pin から新しい role の sp-p4-ir-timeout の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 950751d0..43e3f40b で変わっていない。validator は harness の定数（HARNESS_CONSTANTS）を、その file を持つ pin の commit の bytes から読む（frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE と SP_P4_IR_TIMEOUT_LIMIT は sp-p4-ir-timeout、frozen-setup-driver.mjs と g01-negatives.mjs の定数と BLOCKED_CONTRACT_TABLE は s5b-diagnostics-wiring）。"
+      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。check が bytes の pin は、files の sha256 が pin した commit の bytes で、S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめる。check が ancestor の pin（製品の修正、T14、CI の改善、bytes を後の pin に移した PR）は、S5 の候補がその commit を祖先に持つことを確かめる。どちらも違えば [precheck]（runnerHandoff）。bytes の pin の file は、master でその file を最後に変えた commit（squash の後の hash）の pin が持ち、同じ path を 2 つの pin に置かない。追補 #4 では、追補 #3 の pin（b1a87b0b）の後に #754 と #756 が変えた harness の file のうち、試験の file（*.test.mjs と s5b-test-support.mjs）を除く全部を bytes の pin に足した（厳しい側。DR-CP4-P-1）。起動時間の gate の改善（#753）と maintenance の所有の解放（#755）は ancestor の pin に追記した。validator は blockedCaseJudgement を、BLOCKED_TABLE_SOURCE（s5b-diagnostics-wiring の pin の frozen-setup-driver.mjs）の bytes（その commit から読むか、同じ sha256 の作業 tree の file）の BLOCKED_CONTRACT_TABLE から導き直して照合し、bytes の pin の sha256 を pin した commit の bytes と、各 pin の commit が記録の HEAD の祖先であることを git で確かめる（shallow な clone では確かめず、正式の gate では必ず確かめる）。 追補 #5（S3 の 7 回目の P2-2、P-S2-9 の決定 b。DR-CP4-P-2）では、正式の入口（diagnostic-runner.mjs、trace-runner.mjs、frozen-k64-run.mjs、frozen-setup-driver.mjs、r5-check-runner.mjs）の閉包（静的な import と、harness の path の文字列で参照される file〔renderer の入口、cp4-harness.html の script、launcher が起動する electron-observer.entry.mjs〕をたどる。試験の file と文書は含めない）の harness の file のうち pin に無かった 36 file（静的な import の閉包の 28 file と、renderer の 7 file と electron-observer.entry.mjs）を、master でその file を最後に変えた commit の bytes の pin に足した（その commit の role が無ければ足した）。閉包の file がどの pin にも無ければ試験が落ちる。harness の directory の外の import は追補 #5 では pin しなかった（追補 #7 で改めた）。 追補 #6（DR-CP4-P-3）では、#757（43e3f40b）が変えた harness の file（試験の file を除く diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs）を s5b-diagnostics-wiring の pin から新しい role の sp-p4-ir-timeout の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 950751d0..43e3f40b で変わっていない。validator は harness の定数（HARNESS_CONSTANTS）を、その file を持つ pin の commit の bytes から読む（frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE と SP_P4_IR_TIMEOUT_LIMIT は sp-p4-ir-timeout、frozen-setup-driver.mjs と g01-negatives.mjs の定数と BLOCKED_CONTRACT_TABLE は s5b-diagnostics-wiring）。 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）では、#758（82d42746）で最後に変わった admission.mjs、diagnostic-runner.mjs、frozen-k64-admission.mjs、trace-frozen.mjs を s5b-diagnostics-wiring と sp-p4-ir-timeout の pin から新しい role の s4-rehearsal-admission の pin に移した（試験専用の test-support.mjs は pin しない）。ほかの pin の file は 43e3f40b..82d42746 で変わっていない。さらに、正式の入口の静的な import の閉包を harness の directory の外までたどり、外の eval 専用の script（scripts/quality/nir1-retrieval の contract.mjs、acceptance-policy.mjs、candidate-policy.mjs、paired.mjs、standard-build-receipt.mjs、standard-build.mjs、scripts/quality/nir1-graph の contract.mjs と porter.mjs、scripts/quality/run-nir1-retrieval.mjs、scripts/quality/nir1-packing/final-request/architecture.mjs の 10 file）を、master でその file を最後に変えた commit の bytes の pin に足した（P-S2-9 の決定 b〔harness の directory の閉包〕を厳しい側へ拡張した。S5 の admission は pin に挙がった file しか照合しないため、外の eval 専用の script が S4 の後に変わっても止まらない穴を閉じる）。閉包は closureExclusions の file（共有の CI 基盤と製品。製品は製品の build の受領書が束縛する）で止め、そこから先はたどらない。閉包の外の eval 専用の file がどの pin にも無い、または closureExclusions に無い共有基盤・製品の file が閉包に入ると試験が落ちる。",
+      "closureExclusions": [
+        {
+          "path": "electron/main/rendererContainment.ts",
+          "reason": "製品の electron の main（harness の electron-observer.entry.mjs が import する）。製品は候補そのもので、製品の build の受領書が束縛する"
+        },
+        {
+          "path": "electron/main/rendererContainmentListener.ts",
+          "reason": "製品の electron の main（electron-observer.entry.mjs が import する）。製品の build の受領書が束縛する"
+        },
+        {
+          "path": "electron/main/rendererContainmentStartup.ts",
+          "reason": "製品の electron の main（electron-observer.entry.mjs が import する）。製品の build の受領書が束縛する"
+        },
+        {
+          "path": "electron/scripts/build.mjs",
+          "reason": "製品の main の build（package.json の electron:build と ci:build:desktop。setup-main-build.mjs が import する）。製品の build の設定で、eval と無関係に変わる"
+        },
+        {
+          "path": "scripts/local-ci-process-supervisor.mjs",
+          "reason": "共有の CI 基盤（local-ci.mjs、local-ci-full-admission.mjs、.github/workflows/ci.yml ほかが使う。nir1-retrieval/standard-build.mjs と eval-native-build.mjs が import する）。eval と無関係の変更で pin が brittle になる"
+        }
+      ]
     },
     "status": "harness の読み（integrator の決定 B1〜B4、P-0、P-3、P-5、P-6、S1j-2 のレビューの修正）を観測の前に S2 に写したもの。master の harness（source.pins）に合わせた。fixture、契約、閾値、setupOrder、setupTimeline、measurementPoint は変えない。S3 の確認を受ける。",
     "rule": "⑤ の評価の run の setup（完全な setup）は、この欄の session の分け方、probe、blocked の名前、測定の仕様に従う。① R5 の照合の run は author の session の seed の pin の段で止まり、2 つ目以降の session を使わない（r5Gate.exempt）。setup の受領書は status setup-complete で、items の receipt に挙げた欄を持つ。食い違えば setup の不備として [precheck]。",

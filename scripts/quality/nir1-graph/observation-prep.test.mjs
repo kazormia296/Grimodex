@@ -3,7 +3,15 @@
 // ず、repo の file と、その変異（in-memory の複製）だけを読む。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import os from "node:os";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -11,14 +19,17 @@ import { SP1 } from "./seed-pin-addendum.mjs";
 import { execFileSync } from "node:child_process";
 import {
   BLOCKED_TABLE_SOURCE,
+  EVAL_CLOSURE_EXCLUSIONS,
   FORMAL_HARNESS_ENTRIES,
   HARNESS_CONSTANTS,
   K24_TABLE,
   OBSERVATION_PREP_FILES,
   PLACEHOLDER,
+  S4_PROCEDURE_WORDS,
   SOURCE_PINS,
   assertObservationPrepFormal,
   harnessPinOf,
+  isSharedClosureBoundary,
   parseHarnessConstant,
   sourcePinGitErrors,
   formalReferenceErrors,
@@ -1761,11 +1772,19 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "s5b-diagnostics-wiring",
       // S2 追補 #6（#757。DR-CP4-Q-1）。
       "sp-p4-ir-timeout",
+      // S2 追補 #7（#758。DR-CP4-S4-1）。
+      "s4-rehearsal-admission",
       // S2 追補 #5（P-S2-9 (b)。正式の入口の閉包の file を最後に変えた commit）。
       "pr1-native-eval-feature",
       "p1-harness-core",
       "p2p3-harness-admission",
       "p4-setup-driver-seed-pin",
+      // S2 追補 #7（harness の外の eval 専用 script を最後に変えた commit）。
+      "nir1-retrieval-ir-base",
+      "cp0-graph-eval-freeze",
+      "da1-route-isolation",
+      "cq-lim-graph-limits",
+      "dp-h-unknown-scope",
     ],
   );
   assert.deepEqual(
@@ -2321,14 +2340,15 @@ test("S2 追補 #4 (A): each pin is a master commit and each bytes pin holds tha
   );
 });
 
-test("S2 追補 #4／#6 (A): the bytes pins hold every non-test harness file #754, #756 and #757 changed, each at the master commit that last changed it", async (t) => {
+test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness file #754, #756, #757 and #758 changed, each at the master commit that last changed it", async (t) => {
   const ctx = await context();
   if (!ctx.sourcePinGit) {
     t.skip("shallow clone");
     return;
   }
-  // S2 追補 #6: the newest pin (#757) is the tip the last changes are read at.
-  const tip = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-timeout");
+  // S2 追補 #7: the newest pin (#758) is the tip the last changes are read at.
+  const tip = SOURCE_PINS.find((pin) => pin.role === "s4-rehearsal-admission");
+  const sp = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-timeout");
   const changed = gitText([
     "diff",
     "--name-only",
@@ -2342,7 +2362,7 @@ test("S2 追補 #4／#6 (A): the bytes pins hold every non-test harness file #75
       (file) =>
         file !== "" &&
         !file.endsWith(".test.mjs") &&
-        !file.endsWith("s5b-test-support.mjs"),
+        !file.endsWith("test-support.mjs"),
     )
     .sort();
   const held = SOURCE_PINS.filter((pin) =>
@@ -2350,23 +2370,38 @@ test("S2 追補 #4／#6 (A): the bytes pins hold every non-test harness file #75
       "s5a-graph-arm-runner",
       "s5b-diagnostics-wiring",
       "sp-p4-ir-timeout",
+      "s4-rehearsal-admission",
     ].includes(pin.role),
   )
     .flatMap((pin) => pin.paths)
+    .filter((file) => file.startsWith(H4))
     .sort();
   assert.deepEqual(held, changed);
-  // #757 が変えた test 以外の file は 3 つで、すべて sp-p4-ir-timeout の pin にある。
+  // #757 が変えた test 以外の file は 3 つ（diagnostic-runner.mjs は #758 でも変わり、その pin にある）。
   assert.deepEqual(
     gitText([
       "diff",
       "--name-only",
       "950751d040b29b6d78a067a003dc19b196cfb692",
-      tip.commit,
+      sp.commit,
       "--",
       H4,
     ])
       .split("\n")
       .filter((file) => file !== "" && !file.endsWith(".test.mjs")),
+    [...sp.paths, `${H4}diagnostic-runner.mjs`].sort(),
+  );
+  // #758 が変えた試験と文書以外の file は 5 つで、すべて s4-rehearsal-admission の pin にある
+  // （試験専用の test-support.mjs は pin しない）。ほかの pin の file は 43e3f40b..82d42746 で変わらない。
+  assert.deepEqual(
+    gitText(["diff", "--name-only", sp.commit, tip.commit, "--", "scripts"])
+      .split("\n")
+      .filter(
+        (file) =>
+          file !== "" &&
+          !file.endsWith(".test.mjs") &&
+          !file.endsWith("test-support.mjs"),
+      ),
     [...tip.paths].sort(),
   );
   for (const pin of SOURCE_PINS)
@@ -3205,9 +3240,13 @@ test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (s
   const { spP4ReceiptDesign } =
     await import("../nir1-graph-eval/diagnostic-runner.mjs");
   // 作業 tree の harness は pin の bytes と同じ（import した関数が pin の挙動）。
-  for (const name of ["frozen-diagnostics.mjs", "diagnostic-runner.mjs"]) {
+  // S2 追補 #7: diagnostic-runner.mjs は #758 の pin にある。
+  for (const [name, role] of [
+    ["frozen-diagnostics.mjs", "sp-p4-ir-timeout"],
+    ["diagnostic-runner.mjs", "s4-rehearsal-admission"],
+  ]) {
     const pin = harnessPinOf(H4 + name);
-    assert.equal(pin.role, "sp-p4-ir-timeout");
+    assert.equal(pin.role, role);
     const held = prep.setupReadings.source.pins
       .find((row) => row.role === pin.role)
       .files.find((file) => file.path === H4 + name);
@@ -3360,4 +3399,341 @@ test("S2 追補 #6 (P3-2): retry.rule and graphTries are the harness's re-ask di
   R((r) => (r.graphTries.countersFrom = "declaration-main"));
   R((r) => (r.graphTries.returnedSceneIds = "runtime"));
   R((r) => delete r.graphTries);
+});
+
+// ---- S2 追補 #7（#758 への pin し直し、harness の外の eval 専用 script の pin、S4 の手順。DR-CP4-P-4） ----
+
+/**
+ * S2 追補 #7: 正式の入口の閉包を harness の directory の外までたどる。相対の静的な
+ * import（と動的な import、cp4-harness.html の script）はどの directory でもたどり、
+ * harness の path の文字列はどの file でも、renderer/… の文字列は harness の file
+ * だけでたどる。共有の CI 基盤と製品（isSharedClosureBoundary）の file は境界として
+ * 記録し、その先はたどらない。bare な specifier（node:…、package、alias）はたどらない。
+ */
+function evalClosure(root, entries) {
+  const dir = path.join(root, H4);
+  const seen = new Set();
+  const boundaries = new Set();
+  const stack = entries.map((entry) => path.join(dir, entry));
+  const exists = (file) => {
+    try {
+      return statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
+  while (stack.length > 0) {
+    const file = stack.pop();
+    if (seen.has(file) || !exists(file)) continue;
+    const relative = path.relative(root, file);
+    if (isSharedClosureBoundary(relative)) {
+      boundaries.add(relative);
+      continue;
+    }
+    seen.add(file);
+    const text = readFileSync(file, "utf8");
+    for (const m of text.matchAll(
+      /(?:import|export)[^'"]*?from\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)|import\s+["']([^"']+)["']|<script[^>]*\ssrc=["']([^"']+)["']/gu,
+    )) {
+      const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
+      if (!spec.startsWith(".")) continue;
+      const base = path.resolve(path.dirname(file), spec);
+      stack.push(
+        ["", ".mjs", ".ts", ".tsx", ".js"]
+          .map((ext) => base + ext)
+          .find(exists) ?? base,
+      );
+    }
+    for (const m of text.matchAll(
+      /["'`](scripts\/quality\/nir1-graph-eval\/[\w./-]+\.(?:mjs|ts|tsx|html))["'`]/gu,
+    ))
+      stack.push(path.join(root, m[1]));
+    if (file.startsWith(dir))
+      for (const m of text.matchAll(
+        /["'`/](renderer\/[\w.-]+\.(?:ts|tsx|html))["'`]/gu,
+      ))
+        stack.push(path.join(dir, m[1]));
+  }
+  return {
+    files: [...seen].map((file) => path.relative(root, file)).sort(),
+    boundaries: [...boundaries].sort(),
+  };
+}
+
+/** S2 追補 #7 で足した harness の外の eval 専用 script（role ごと）。 */
+const ADDENDUM7_OUTSIDE = Object.freeze({
+  "s4-rehearsal-admission": ["scripts/quality/nir1-retrieval/contract.mjs"],
+  "p1-harness-core": [
+    "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
+  ],
+  "p2p3-harness-admission": [
+    "scripts/quality/nir1-retrieval/standard-build.mjs",
+  ],
+  "nir1-retrieval-ir-base": [
+    "scripts/quality/nir1-retrieval/acceptance-policy.mjs",
+    "scripts/quality/nir1-retrieval/candidate-policy.mjs",
+  ],
+  "cp0-graph-eval-freeze": [
+    "scripts/quality/nir1-graph/porter.mjs",
+    "scripts/quality/nir1-retrieval/paired.mjs",
+  ],
+  "da1-route-isolation": ["scripts/quality/run-nir1-retrieval.mjs"],
+  "cq-lim-graph-limits": ["scripts/quality/nir1-graph/contract.mjs"],
+  "dp-h-unknown-scope": [
+    "scripts/quality/nir1-packing/final-request/architecture.mjs",
+  ],
+});
+/** S2 追補 #7 で除外した共有の CI 基盤と製品（閉包の境界）。増えたら落ちる。 */
+const ADDENDUM7_EXCLUDED = Object.freeze([
+  "electron/main/rendererContainment.ts",
+  "electron/main/rendererContainmentListener.ts",
+  "electron/main/rendererContainmentStartup.ts",
+  "electron/scripts/build.mjs",
+  "scripts/local-ci-process-supervisor.mjs",
+]);
+
+test("S2 追補 #7: the formal entries' eval closure outside the harness directory is pinned, and only the fixed shared CI and product files are excluded", () => {
+  const { files, boundaries } = evalClosure(repoRoot, FORMAL_HARNESS_ENTRIES);
+  const outside = files.filter((file) => !file.startsWith(H4));
+  const added = Object.values(ADDENDUM7_OUTSIDE).flat().sort();
+  assert.equal(added.length, 10);
+  assert.deepEqual(outside, added);
+  // 閉包の harness の file は追補 #5 の 61 file と同じ（外からの戻りは無い）。
+  assert.deepEqual(
+    files.filter((file) => file.startsWith(H4)),
+    harnessClosure(repoRoot, FORMAL_HARNESS_ENTRIES),
+  );
+  assert.ok(
+    files.every((file) => !/\.test\.mjs$|test-support\.mjs$/u.test(file)),
+  );
+  assert.deepEqual(unpinned(files, SOURCE_PINS), []);
+  // 除外は固定の一覧（validator の EVAL_CLOSURE_EXCLUSIONS と試験の写し）で、どれも pin しない。
+  assert.deepEqual(boundaries, [...ADDENDUM7_EXCLUDED]);
+  assert.deepEqual([...EVAL_CLOSURE_EXCLUSIONS], [...ADDENDUM7_EXCLUDED]);
+  const held = new Set(SOURCE_PINS.flatMap((pin) => pin.paths));
+  for (const file of ADDENDUM7_EXCLUDED) {
+    assert.ok(isSharedClosureBoundary(file), file);
+    assert.ok(!held.has(file), file);
+  }
+  for (const file of added) {
+    assert.ok(!isSharedClosureBoundary(file), file);
+    assert.equal(
+      harnessPinOf(file)?.role,
+      Object.keys(ADDENDUM7_OUTSIDE).find((role) =>
+        ADDENDUM7_OUTSIDE[role].includes(file),
+      ),
+      file,
+    );
+  }
+  // 変異: 足した file を pin から外す（10 file のそれぞれ）。
+  for (const [role, names] of Object.entries(ADDENDUM7_OUTSIDE))
+    for (const name of names) {
+      const pins = SOURCE_PINS.map((pin) =>
+        pin.role === role
+          ? { ...pin, paths: pin.paths.filter((file) => file !== name) }
+          : pin,
+      );
+      assert.deepEqual(unpinned(files, pins), [name], name);
+    }
+  // 変異: harness の外の新しい eval 専用 script が閉包に入る（pin に無い）。
+  assert.deepEqual(
+    unpinned(
+      [...files, "scripts/quality/nir1-retrieval/new-helper.mjs"],
+      SOURCE_PINS,
+    ),
+    ["scripts/quality/nir1-retrieval/new-helper.mjs"],
+  );
+});
+
+test("S2 追補 #7: the eval closure stops at a shared CI or product file and a new one changes the fixed exclusions (synthetic repository)", (t) => {
+  const root = mkdtempSync(path.join(os.tmpdir(), "s2-closure-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const put = (relative, text) => {
+    mkdirSync(path.dirname(path.join(root, relative)), { recursive: true });
+    writeFileSync(path.join(root, relative), text);
+  };
+  put(
+    `${H4}entry.mjs`,
+    'import "./inner.mjs";\nimport { x } from "../nir1-retrieval/eval.mjs";\nimport "node:fs";\n',
+  );
+  put(`${H4}inner.mjs`, 'import "../../local-ci-new.mjs";\n');
+  put(
+    "scripts/quality/nir1-retrieval/eval.mjs",
+    'import "./more.mjs";\nimport "../../../electron/main/x.ts";\nconst p = "scripts/quality/nir1-graph-eval/late.mjs";\n',
+  );
+  put("scripts/quality/nir1-retrieval/more.mjs", "export const y = 1;\n");
+  put(`${H4}late.mjs`, "export const z = 1;\n");
+  put("scripts/local-ci-new.mjs", 'import "./quality/never.mjs";\n');
+  put("scripts/quality/never.mjs", "export const n = 1;\n");
+  put("electron/main/x.ts", "export const e = 1;\n");
+  const { files, boundaries } = evalClosure(root, ["entry.mjs"]);
+  assert.deepEqual(files, [
+    "scripts/quality/nir1-graph-eval/entry.mjs",
+    "scripts/quality/nir1-graph-eval/inner.mjs",
+    "scripts/quality/nir1-graph-eval/late.mjs",
+    "scripts/quality/nir1-retrieval/eval.mjs",
+    "scripts/quality/nir1-retrieval/more.mjs",
+  ]);
+  // 境界の先（local-ci-new.mjs が import する never.mjs）はたどらない。
+  assert.deepEqual(boundaries, [
+    "electron/main/x.ts",
+    "scripts/local-ci-new.mjs",
+  ]);
+  // 変異: 除外した共有基盤が閉包に増える → 固定の一覧と違う（試験が落ちる）。
+  assert.notDeepEqual(
+    [...ADDENDUM7_EXCLUDED, "scripts/local-ci-new.mjs"].sort(),
+    [...ADDENDUM7_EXCLUDED],
+  );
+  assert.ok(isSharedClosureBoundary("src/lib/x.ts"));
+  assert.ok(
+    !isSharedClosureBoundary("scripts/quality/nir1-graph/contract.mjs"),
+  );
+});
+
+test("S2 追補 #7: the record's closureExclusions are the fixed shared CI and product files with reasons, none of them pinned", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(observationPrepErrors(prep, ctx), []);
+  assert.deepEqual(
+    prep.setupReadings.source.closureExclusions.map((row) => row.path),
+    [...ADDENDUM7_EXCLUDED],
+  );
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  const X = (mutate) =>
+    detects(
+      prep,
+      check,
+      (p) => mutate(p.setupReadings.source),
+      /setupReadings\.source\.closureExclusions must be/u,
+    );
+  X((s) => s.closureExclusions.pop());
+  X((s) =>
+    s.closureExclusions.push({ path: "scripts/local-ci.mjs", reason: "x" }),
+  );
+  X((s) => (s.closureExclusions[0].reason = " "));
+  X(
+    (s) =>
+      (s.closureExclusions[4].path =
+        "scripts/quality/nir1-retrieval/paired.mjs"),
+  );
+  X((s) => delete s.closureExclusions);
+  // 除外した file を pin に置く（記録と SOURCE_PINS の両方で落ちる）。
+  detects(
+    prep,
+    check,
+    (p) =>
+      p.setupReadings.source.pins
+        .find((row) => row.role === "da1-route-isolation")
+        .files.push({ path: ADDENDUM7_EXCLUDED[4], sha256: "0".repeat(64) }),
+    /setupReadings\.source\.closureExclusions must be/u,
+  );
+  // 記録から足した file を外すと pins の照合が落ちる。
+  for (const [role, names] of Object.entries(ADDENDUM7_OUTSIDE))
+    detects(
+      prep,
+      check,
+      (p) => {
+        const pin = p.setupReadings.source.pins.find(
+          (row) => row.role === role,
+        );
+        pin.files = pin.files.filter((file) => file.path !== names[0]);
+      },
+      /setupReadings\.source\.pins must be/u,
+    );
+});
+
+test("S2 追補 #7: each added eval script and each #758 file is pinned at the master commit that last changed it with that commit's bytes; a changed sha256 fails", async (t) => {
+  const ctx = await context();
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the commits are checked by the formal gate");
+    return;
+  }
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const pins = prep.setupReadings.source.pins;
+  const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
+  const rehearsal = SOURCE_PINS.find(
+    (pin) => pin.role === "s4-rehearsal-admission",
+  );
+  assert.equal(rehearsal.commit, "82d427465b16a12809c6f93adad74ac97859c85a");
+  const targets = {
+    ...ADDENDUM7_OUTSIDE,
+    "s4-rehearsal-admission": rehearsal.paths,
+  };
+  let mutated = 0;
+  for (const [role, files] of Object.entries(targets)) {
+    const pin = SOURCE_PINS.find((row) => row.role === role);
+    assert.equal(pin.check, "bytes", role);
+    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, master), role);
+    for (const file of files) {
+      assert.equal(
+        gitText(["log", "-1", "--format=%H", master, "--", file]),
+        pin.commit,
+        file,
+      );
+      const at = pins.findIndex((row) => row.role === role);
+      const index = pins[at].files.findIndex((row) => row.path === file);
+      assert.equal(
+        pins[at].files[index].sha256,
+        sha256(
+          execFileSync("git", ["show", `${pin.commit}:${file}`], {
+            cwd: repoRoot,
+          }),
+        ),
+        file,
+      );
+      const copy = clone(pins);
+      copy[at].files[index].sha256 = flip(copy[at].files[index].sha256);
+      assert.ok(
+        sourcePinGitErrors(copy, ctx.sourcePinGit.head, ctx.sourcePinGit).some(
+          (e) => e.includes(`${file} at ${pin.commit} is not the pinned bytes`),
+        ),
+        file,
+      );
+      mutated += 1;
+    }
+  }
+  assert.equal(mutated, 14);
+  // 移した 4 file を旧い pin（950751d0、43e3f40b）の bytes と比べると落ちる。
+  for (const [name, old] of [
+    ["admission.mjs", "950751d040b29b6d78a067a003dc19b196cfb692"],
+    ["frozen-k64-admission.mjs", "950751d040b29b6d78a067a003dc19b196cfb692"],
+    ["trace-frozen.mjs", "950751d040b29b6d78a067a003dc19b196cfb692"],
+    ["diagnostic-runner.mjs", "43e3f40b5d653c62d5aca4ca795917b67310992c"],
+  ]) {
+    const copy = clone(pins);
+    const row = copy.find((p) => p.role === "s4-rehearsal-admission");
+    row.commit = old;
+    assert.ok(
+      sourcePinGitErrors(copy, ctx.sourcePinGit.head, ctx.sourcePinGit).some(
+        (e) => e.includes(`${H4}${name} at ${old} is not the pinned bytes`),
+      ),
+      name,
+    );
+  }
+});
+
+test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge commit of claude/nir1-contracts, merge-commit PR, the integrator's formal gate on S4b, the entries' read against the freeze record)", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(observationPrepErrors(prep, ctx), []);
+  assert.deepEqual(Object.keys(S4_PROCEDURE_WORDS), ["a", "b", "c", "d"]);
+  let mutated = 0;
+  for (const [item, words] of Object.entries(S4_PROCEDURE_WORDS))
+    for (const word of words) {
+      assert.ok(prep.s4StagesRule.includes(word), word);
+      detects(
+        prep,
+        (copy) => observationPrepErrors(copy, ctx),
+        (p) => (p.s4StagesRule = p.s4StagesRule.replaceAll(word, "")),
+        new RegExp(`s4StagesRule must state S4's procedure \\(${item}\\)`, "u"),
+      );
+      mutated += 1;
+    }
+  assert.equal(mutated, 15);
+  detects(
+    prep,
+    (copy) => observationPrepErrors(copy, ctx),
+    (p) => delete p.s4StagesRule,
+    /s4StagesRule must state S4's procedure \(a\)/u,
+  );
 });

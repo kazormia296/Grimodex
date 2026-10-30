@@ -291,6 +291,9 @@ const HARNESS_DIR = "scripts/quality/nir1-graph-eval/";
  * S2 追補 #5（S3 の 7 回目の P2-2、P-S2-9 (b)、DR-CP4-P-2）: every harness
  * file in the closure of FORMAL_HARNESS_ENTRIES (static imports and the
  * harness paths a file names) is held too.
+ * S2 追補 #7（DR-CP4-P-4。P-S2-9 (b) を厳しい側へ拡張）: the closure's
+ * eval-only scripts outside the harness directory are held too; only
+ * EVAL_CLOSURE_EXCLUSIONS (shared CI and product) are not.
  */
 export const SOURCE_PINS = Object.freeze(
   [
@@ -347,8 +350,6 @@ export const SOURCE_PINS = Object.freeze(
       "s5b-diagnostics-wiring",
       "950751d040b29b6d78a067a003dc19b196cfb692",
       [
-        "admission.mjs",
-        "frozen-k64-admission.mjs",
         "frozen-k64-run.mjs",
         "frozen-setup-driver.mjs",
         "g01-negative-preview.mjs",
@@ -356,7 +357,6 @@ export const SOURCE_PINS = Object.freeze(
         "renderer/cp4-diagnostic-probe.ts",
         "renderer/cp4-harness.ts",
         "renderer/nir1RelatedScenesApi.timing.ts",
-        "trace-frozen.mjs",
         "trace-runner.mjs",
         "window.mjs",
       ],
@@ -365,10 +365,19 @@ export const SOURCE_PINS = Object.freeze(
     [
       "sp-p4-ir-timeout",
       "43e3f40b5d653c62d5aca4ca795917b67310992c",
+      ["frozen-diagnostics.mjs", "g01-negative-run.mjs"],
+    ],
+    // S2 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）: #758 last changed these five
+    // (nir1-retrieval/contract.mjs is outside the harness directory).
+    [
+      "s4-rehearsal-admission",
+      "82d427465b16a12809c6f93adad74ac97859c85a",
       [
+        "admission.mjs",
         "diagnostic-runner.mjs",
-        "frozen-diagnostics.mjs",
-        "g01-negative-run.mjs",
+        "frozen-k64-admission.mjs",
+        "trace-frozen.mjs",
+        "scripts/quality/nir1-retrieval/contract.mjs",
       ],
     ],
     [
@@ -390,6 +399,7 @@ export const SOURCE_PINS = Object.freeze(
         "q4.mjs",
         "run-sample.mjs",
         "stats.mjs",
+        "scripts/quality/nir1-retrieval/standard-build-receipt.mjs",
       ],
     ],
     [
@@ -409,6 +419,7 @@ export const SOURCE_PINS = Object.freeze(
         "renderer/nir1GraphAvailability.eval.ts",
         "renderer/shell.timing.ts",
         "signal-cleanup.mjs",
+        "scripts/quality/nir1-retrieval/standard-build.mjs",
       ],
     ],
     [
@@ -421,15 +432,88 @@ export const SOURCE_PINS = Object.freeze(
         "setup-driver.mjs",
       ],
     ],
+    // S2 追補 #7（DR-CP4-P-4）: the eval-only scripts outside the harness
+    // directory in the formal entries' closure, each at the master commit
+    // that last changed it (the shared CI and product files are
+    // EVAL_CLOSURE_EXCLUSIONS).
+    [
+      "nir1-retrieval-ir-base",
+      "ffa3c0adc56e9af0b385c0379b63a69278242240",
+      [
+        "scripts/quality/nir1-retrieval/acceptance-policy.mjs",
+        "scripts/quality/nir1-retrieval/candidate-policy.mjs",
+      ],
+    ],
+    [
+      "cp0-graph-eval-freeze",
+      "6bdf61e99f80debd8c2c0c56f2c892e21534f924",
+      [
+        "scripts/quality/nir1-graph/porter.mjs",
+        "scripts/quality/nir1-retrieval/paired.mjs",
+      ],
+    ],
+    [
+      "da1-route-isolation",
+      "2b68fd4df67599ca2f277fc94f94956de463381e",
+      ["scripts/quality/run-nir1-retrieval.mjs"],
+    ],
+    [
+      "cq-lim-graph-limits",
+      "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
+      ["scripts/quality/nir1-graph/contract.mjs"],
+    ],
+    [
+      "dp-h-unknown-scope",
+      "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
+      ["scripts/quality/nir1-packing/final-request/architecture.mjs"],
+    ],
   ].map(([role, commit, names]) =>
     Object.freeze({
       role,
       commit,
       check: names.length > 0 ? "bytes" : "ancestor",
-      paths: Object.freeze(names.map((name) => HARNESS_DIR + name)),
+      // A name under scripts/ is a repository path (S2 追補 #7), any other a
+      // harness path.
+      paths: Object.freeze(
+        names.map((name) =>
+          name.startsWith("scripts/") ? name : HARNESS_DIR + name,
+        ),
+      ),
     }),
   ),
 );
+/**
+ * S2 追補 #7（DR-CP4-P-4）: the files the formal entries' closure reaches
+ * but no pin holds — shared CI and product files (the product build's
+ * receipt binds the product; the CI files change for reasons unrelated to
+ * the eval). The closure stops at them; a new one fails the closure test.
+ */
+export const EVAL_CLOSURE_EXCLUSIONS = Object.freeze([
+  "electron/main/rendererContainment.ts",
+  "electron/main/rendererContainmentListener.ts",
+  "electron/main/rendererContainmentStartup.ts",
+  "electron/scripts/build.mjs",
+  "scripts/local-ci-process-supervisor.mjs",
+]);
+/** S2 追補 #7: a file the eval closure does not pin (product or shared CI). */
+export function isSharedClosureBoundary(file) {
+  return /^(?:src\/|electron\/|scripts\/local-ci)/u.test(file);
+}
+/**
+ * S2 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）: the words S2's S4 procedure
+ * (s4StagesRule) carries — (a) S4's branch merges origin/claude/nir1-contracts
+ * with a merge commit so ①, ② and ②' are strict ancestors of S4b, (b) S4's
+ * PR is merged with a merge commit, never squash or rebase, (c) the
+ * integrator runs assertObservationPrepFormal on S4b's commit, which no
+ * runtime entry calls, (d) the formal entries read S2's file against the
+ * freeze record's binding and sha256.
+ */
+export const S4_PROCEDURE_WORDS = Object.freeze({
+  a: ["origin/claude/nir1-contracts", "merge commit", "①", "②'", "真の祖先"],
+  b: ["gh pr merge --merge", "squash", "rebase"],
+  c: ["assertObservationPrepFormal", "S4b の commit", "integrator"],
+  d: ["DR-CP4-S4-1", "freeze record", "sha256", "readAdmittedObservationPrep"],
+});
 /**
  * S2 追補 #5（P-S2-9 (b)）: the formal entries whose harness closure the
  * bytes pins cover.
@@ -781,8 +865,9 @@ const SP_P4_CONDITION_WORDS = Object.freeze({
 });
 /**
  * S2 追補 #6: the receipt fields S2 reads for the rule (the harness's
- * spP4ReceiptDesign, spP4IrDisclosure, assertSpP4WorkspaceStable and
- * compareSpP4Variant at the sp-p4-ir-timeout pin).
+ * spP4ReceiptDesign〔diagnostic-runner.mjs, at the s4-rehearsal-admission pin
+ * since S2 追補 #7〕, spP4IrDisclosure, assertSpP4WorkspaceStable and
+ * compareSpP4Variant〔frozen-diagnostics.mjs, at the sp-p4-ir-timeout pin〕).
  */
 const SP_P4_RECEIPT_READING = Object.freeze({
   design: ["rule", "irTimeoutLimit"],
@@ -2298,6 +2383,23 @@ function setupReadingErrors(errors, readings, ctx) {
     errors.push(
       `setupReadings.source.pins must be the master commits ${SOURCE_PINS.map((pin) => `${pin.role} ${pin.commit.slice(0, 8)} (${pin.check}${pin.paths.length > 0 ? `, ${pin.paths.length} files` : ""})`).join(", ")} with their files' sha256, no path held twice (S3v6-P2-1、S2 追補 #4)`,
     );
+  // S2 追補 #7: the closure files no pin holds are exactly the shared CI and
+  // product files, each with its reason, and none of them is pinned.
+  const exclusions = readings.source?.closureExclusions;
+  if (
+    !Array.isArray(exclusions) ||
+    !same(
+      exclusions.map((row) => row?.path),
+      EVAL_CLOSURE_EXCLUSIONS,
+    ) ||
+    exclusions.some(
+      (row) => !nonBlank(row?.reason) || !isSharedClosureBoundary(row.path),
+    ) ||
+    heldPaths.some((file) => EVAL_CLOSURE_EXCLUSIONS.includes(file))
+  )
+    errors.push(
+      `setupReadings.source.closureExclusions must be ${EVAL_CLOSURE_EXCLUSIONS.join(", ")} (shared CI and product files, each with its reason, none pinned; S2 追補 #7)`,
+    );
   // S2 追補 #4: each bytes pin's sha256 is the pinned commit's bytes and
   // every pin's commit is an ancestor of the record's HEAD (git; skipped in
   // a shallow clone, always checked by the formal gate).
@@ -3046,6 +3148,18 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "s4Stages must be s4a-bytes then s4b-fill-and-freeze, and placeholderRule must make the referenced commits strict ancestors (S3v4-P3-3)",
     );
+  // S2 追補 #7（DR-CP4-S4-1）: S4's procedure — the merge commit of
+  // claude/nir1-contracts, the merge-commit PR, the integrator's formal gate
+  // on S4b and the entries' read against the freeze record.
+  for (const [item, words] of Object.entries(S4_PROCEDURE_WORDS)) {
+    const missing = words.filter(
+      (word) => !String(prep.s4StagesRule ?? "").includes(word),
+    );
+    if (missing.length > 0)
+      errors.push(
+        `s4StagesRule must state S4's procedure (${item}) with ${missing.join(", ")} (S2 追補 #7、DR-CP4-S4-1)`,
+      );
+  }
   const r5CheckRecord = prep.r5Gate?.r5CheckRecord;
   if (
     typeof r5CheckRecord !== "string" ||
