@@ -361,24 +361,32 @@ export const SOURCE_PINS = Object.freeze(
         "window.mjs",
       ],
     ],
-    // S2 追補 #6（DR-CP4-Q-1、DR-CP4-P-3）: #757 last changed these three.
+    // S2 追補 #6（DR-CP4-Q-1、DR-CP4-P-3）: #757 last changed these three
+    // (frozen-diagnostics.mjs moved to sp-p4-ir-pair-limit in S2 追補 #8).
     [
       "sp-p4-ir-timeout",
       "43e3f40b5d653c62d5aca4ca795917b67310992c",
-      ["frozen-diagnostics.mjs", "g01-negative-run.mjs"],
+      ["g01-negative-run.mjs"],
     ],
     // S2 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）: #758 last changed these five
-    // (nir1-retrieval/contract.mjs is outside the harness directory).
+    // (nir1-retrieval/contract.mjs is outside the harness directory;
+    // diagnostic-runner.mjs moved to sp-p4-ir-pair-limit in S2 追補 #8).
     [
       "s4-rehearsal-admission",
       "82d427465b16a12809c6f93adad74ac97859c85a",
       [
         "admission.mjs",
-        "diagnostic-runner.mjs",
         "frozen-k64-admission.mjs",
         "trace-frozen.mjs",
         "scripts/quality/nir1-retrieval/contract.mjs",
       ],
+    ],
+    // S2 追補 #8（DR-CP4-Q-2）: #759 last changes these two (the pair limit).
+    // The commit is #759's squash on master (the same bytes as the PR head).
+    [
+      "sp-p4-ir-pair-limit",
+      "906da641befb8dfbb445e05ce5df814bf5b16c35",
+      ["diagnostic-runner.mjs", "frozen-diagnostics.mjs"],
     ],
     [
       "pr1-native-eval-feature",
@@ -547,6 +555,9 @@ export const BLOCKED_TABLE_SOURCE = Object.freeze({
  * S2 追補 #6: each file is read at the commit of the pin that holds it
  * (frozen-diagnostics.mjs at sp-p4-ir-timeout, the others at
  * s5b-diagnostics-wiring), and SP_P4_IR_TIMEOUT_LIMIT is DR-CP4-Q-1's C2 K.
+ * S2 追補 #8（DR-CP4-Q-2）: frozen-diagnostics.mjs is read at the
+ * sp-p4-ir-pair-limit pin, and SP_P4_IR_TIMEOUT_PAIR_LIMIT is the pair limit
+ * (S3's C2: at least 24 IR-compared pairs of 30).
  */
 export const HARNESS_CONSTANTS = Object.freeze({
   [`${HARNESS_DIR}frozen-setup-driver.mjs`]: Object.freeze([
@@ -562,6 +573,7 @@ export const HARNESS_CONSTANTS = Object.freeze({
   [`${HARNESS_DIR}frozen-diagnostics.mjs`]: Object.freeze([
     "SP_P4_COMPARISON_RULE",
     "SP_P4_IR_TIMEOUT_LIMIT",
+    "SP_P4_IR_TIMEOUT_PAIR_LIMIT",
   ]),
 });
 const SETUP_SESSIONS = Object.freeze({
@@ -826,6 +838,10 @@ const SP_P4_RULE_IDS = Object.freeze(["current", "ir-complete-pairs"]);
  * excluded measured samples on a side of a variant, or no IR compared, is
  * `[precheck]`. The limit is the harness constant (checked separately), so
  * the earlier "no threshold" is withdrawn.
+ * S2 追補 #8（DR-CP4-Q-2）: and more than SP_P4_IR_TIMEOUT_PAIR_LIMIT pairs of a
+ * variant left without their IR (either side excluded) is `[precheck]`
+ * (ir-timeout-pair-limit), which holds S3's C2 (at least 24 IR-compared pairs);
+ * the per-side limit stays as the earlier check of one side.
  */
 const SP_P4_IR_COMPLETE_PAIRS = Object.freeze({
   rFields: ["rSceneIds", "denseHitSceneIds", "sparseSceneIds"],
@@ -839,17 +855,30 @@ const SP_P4_IR_COMPLETE_PAIRS = Object.freeze({
   otherNotReady: "compared-as-current",
   pairing: "same-repeat",
   pairExcludedWhen: "either-side-excluded",
-  disclose: ["timeoutExcluded", "timeoutExcludedRate", "timeoutLimit"],
+  disclose: [
+    "timeoutExcluded",
+    "timeoutExcludedRate",
+    "timeoutLimit",
+    "timeoutPairLimit",
+  ],
   discloseBy: ["side", "variant"],
   timeoutLimitConstant: "SP_P4_IR_TIMEOUT_LIMIT",
   timeoutLimitBy: ["side", "variant"],
   onOverTimeoutLimit: "[precheck]",
+  timeoutPairLimitConstant: "SP_P4_IR_TIMEOUT_PAIR_LIMIT",
+  timeoutPairLimitBy: ["variant"],
+  onOverTimeoutPairLimit: "[precheck]",
   onNoIrCompared: "[precheck]",
-  undefinedReasons: ["ir-timeout-limit", "no-ir-complete-pair"],
+  undefinedReasons: [
+    "ir-timeout-limit",
+    "ir-timeout-pair-limit",
+    "no-ir-complete-pair",
+  ],
 });
 /**
  * S2 追補 #6: words each condition's body must carry (C1 its four
  * conditions, C2 the limit's constant, C3 the switch and the pin).
+ * S2 追補 #8（DR-CP4-Q-2）: C2 also carries the pair limit and S3's 24 pairs.
  */
 const SP_P4_CONDITION_WORDS = Object.freeze({
   C1: [
@@ -860,23 +889,31 @@ const SP_P4_CONDITION_WORDS = Object.freeze({
     "spP4IrTimeoutExcluded",
     "current と同じ",
   ],
-  C2: ["SP_P4_IR_TIMEOUT_LIMIT", "[precheck]", "24"],
+  C2: [
+    "SP_P4_IR_TIMEOUT_LIMIT",
+    "SP_P4_IR_TIMEOUT_PAIR_LIMIT",
+    "[precheck]",
+    "組の上限",
+    "組の最少 24",
+  ],
   C3: ["SP_P4_COMPARISON_RULE", "43e3f40b", "sp-p4-ir-timeout"],
 });
 /**
  * S2 追補 #6: the receipt fields S2 reads for the rule (the harness's
- * spP4ReceiptDesign〔diagnostic-runner.mjs, at the s4-rehearsal-admission pin
- * since S2 追補 #7〕, spP4IrDisclosure, assertSpP4WorkspaceStable and
- * compareSpP4Variant〔frozen-diagnostics.mjs, at the sp-p4-ir-timeout pin〕).
+ * spP4ReceiptDesign〔diagnostic-runner.mjs〕, spP4IrDisclosure,
+ * assertSpP4WorkspaceStable and compareSpP4Variant〔frozen-diagnostics.mjs〕;
+ * both at the sp-p4-ir-pair-limit pin since S2 追補 #8, which adds the pair
+ * limit's fields, DR-CP4-Q-2).
  */
 const SP_P4_RECEIPT_READING = Object.freeze({
-  design: ["rule", "irTimeoutLimit"],
+  design: ["rule", "irTimeoutLimit", "irTimeoutPairLimit"],
   attemptIrMeasured: [
     "samples",
     "notReady",
     "timeoutExcluded",
     "timeoutExcludedRate",
     "timeoutLimit",
+    "timeoutPairLimit",
   ],
   sideStability: [
     "rule",
@@ -892,6 +929,8 @@ const SP_P4_RECEIPT_READING = Object.freeze({
     "irComparedPairs",
     "irTimeouts",
     "irTimeoutLimit",
+    "irExcludedPairs",
+    "irTimeoutPairLimit",
     "undefinedReason",
   ],
   gate: "readSpP4Gate",
@@ -2412,8 +2451,12 @@ function setupReadingErrors(errors, readings, ctx) {
       ...sourcePinGitErrors(pins, ctx.sourcePinGit.head, ctx.sourcePinGit),
     );
   // S2 追補 #4／#6: the harness constants S2 copies are read from the pinned
-  // bytes of the pin that holds each file.
-  for (const source of ctx.harnessConstantSources ?? []) {
+  // bytes of the pin that holds each file (S4 の最終関門の P3-3: and the
+  // K64_FREEZE.freezeCommit source).
+  for (const source of [
+    ...(ctx.harnessConstantSources ?? []),
+    ...(ctx.harnessK64Freeze ? [ctx.harnessK64Freeze.source] : []),
+  ]) {
     const role = harnessPinOf(source.path)?.role;
     const held = pins
       .find((row) => row?.role === role)
@@ -2737,6 +2780,23 @@ function spP4ReadingErrors(errors, p4, prep, ctx) {
     errors.push(
       `diagnosticRuns SP-P4.comparisonRule ir-complete-pairs must be C1 (exclude the IR fields only for a timeout with deadlineExceeded true, R+IR equal to R and no supplement; either side excludes the pair; other non-ready samples compared as current), C2 (more than the harness's SP_P4_IR_TIMEOUT_LIMIT ${String(limit)} excluded measured samples on a side of a variant, or none compared, is [precheck]) and C3, with "no threshold" withdrawn (DR-CP4-Q-1)`,
     );
+  // S2 追補 #8（DR-CP4-Q-2）: the pair limit read from the pinned bytes — more
+  // pairs of a variant without their IR than it is [precheck] (S3's C2: at
+  // least 24 IR-compared pairs of the measured 30).
+  const pairLimit = ctx.harnessConstants?.SP_P4_IR_TIMEOUT_PAIR_LIMIT;
+  if (
+    !Number.isInteger(pairLimit) ||
+    pairs?.timeoutPairLimit !== pairLimit ||
+    !String(pairs?.conditions?.C2 ?? "").includes(
+      `SP_P4_IR_TIMEOUT_PAIR_LIMIT（${String(pairLimit)}）`,
+    ) ||
+    !String(pairs?.text ?? "").includes("SP_P4_IR_TIMEOUT_PAIR_LIMIT") ||
+    !String(pairs?.text ?? "").includes("ir-timeout-pair-limit") ||
+    !String(rule?.harnessConstant ?? "").includes("SP_P4_IR_TIMEOUT_PAIR_LIMIT")
+  )
+    errors.push(
+      `diagnosticRuns SP-P4.comparisonRule ir-complete-pairs must carry the pair limit: more than the harness's SP_P4_IR_TIMEOUT_PAIR_LIMIT ${String(pairLimit)} measured pairs of a variant left without their IR is [precheck] (ir-timeout-pair-limit; S3's C2, at least 24 IR-compared pairs; DR-CP4-Q-2)`,
+    );
   const reading = rule?.receiptReading;
   if (
     !holds(reading, SP_P4_RECEIPT_READING) ||
@@ -2889,6 +2949,16 @@ export function observationPrepErrors(prep, ctx) {
     "commit",
     frozen,
   );
+  // S4 の最終関門の P3-3: a filled K6/4 freeze commit is the pinned harness's
+  // K64_FREEZE.freezeCommit (constants.mjs read from its pin's bytes, as the
+  // harness constants are), never only a 40-hex.
+  if (
+    HEX40.test(String(k64?.freezeCommit ?? "")) &&
+    k64.freezeCommit !== ctx.harnessK64Freeze?.commit
+  )
+    errors.push(
+      `contracts.k64.freezeCommit must be the pinned harness's K64_FREEZE.freezeCommit (${String(ctx.harnessK64Freeze?.commit ?? "unreadable")}, ${K64_FREEZE_SOURCE.path} at its pin)`,
+    );
   if (
     prep.references?.g01Fixture?.sha256 !== ctx.g01.sha256 ||
     prep.references?.g01Fixture?.sha256 !== ctx.g01.frozenSha256
@@ -3612,6 +3682,55 @@ export function parseHarnessConstant(text, name) {
     : match[2];
 }
 
+/**
+ * S4 の最終関門の P3-3: the K6/4 freeze commit S2's contracts.k64.freezeCommit
+ * must equal, read from the pinned bytes of the harness's constants.mjs
+ * (never imported or run).
+ */
+export const K64_FREEZE_SOURCE = Object.freeze({
+  path: `${HARNESS_DIR}constants.mjs`,
+  name: "K64_FREEZE",
+  field: "freezeCommit",
+});
+
+/**
+ * S4 の最終関門の P3-3: K64_FREEZE.freezeCommit (a 40-hex) in the harness's
+ * constants.mjs text; undefined when the object literal or the field (exactly
+ * once) is absent.
+ */
+export function parseK64FreezeCommit(text) {
+  const block =
+    /^export const K64_FREEZE = Object\.freeze\(\{\n([\s\S]*?)\n\}\);$/mu.exec(
+      String(text),
+    );
+  if (!block) return undefined;
+  const rows = [
+    ...block[1].matchAll(/^ {2}freezeCommit: "([0-9a-f]{40})",$/gmu),
+  ];
+  return rows.length === 1 ? rows[0][1] : undefined;
+}
+
+/** S4 の最終関門の P3-3: K64_FREEZE.freezeCommit from the pinned bytes; null on a miss. */
+async function readHarnessK64Freeze({ repoRoot, read }) {
+  const pinned = await readPinnedHarnessFile({
+    repoRoot,
+    read,
+    file: K64_FREEZE_SOURCE.path,
+  });
+  if (!pinned) return null;
+  const commit = parseK64FreezeCommit(pinned.bytes.toString("utf8"));
+  if (commit === undefined) return null;
+  return {
+    commit,
+    source: {
+      path: K64_FREEZE_SOURCE.path,
+      commit: pinned.commit,
+      from: pinned.from,
+      sha256: pinned.sha256,
+    },
+  };
+}
+
 /** S2 追補 #4: HARNESS_CONSTANTS from the pinned bytes; null on any miss. */
 async function readHarnessConstants({ repoRoot, read }) {
   const values = {};
@@ -3732,7 +3851,9 @@ export async function loadObservationPrepContext({ repoRoot }) {
     productSources[relative] = (await read(relative)).toString("utf8");
   const blocked = await readHarnessBlockedTable({ repoRoot, read });
   const constants = await readHarnessConstants({ repoRoot, read });
+  const k64Freeze = await readHarnessK64Freeze({ repoRoot, read });
   return {
+    harnessK64Freeze: k64Freeze,
     harnessBlockedTable: blocked?.table ?? null,
     harnessBlockedTableSource: blocked?.source ?? null,
     harnessConstants: constants?.values ?? null,

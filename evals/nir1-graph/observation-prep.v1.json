@@ -461,7 +461,7 @@
       "retakeScope": "measurement-only",
       "comparisonRule": {
         "inForce": "ir-complete-pairs",
-        "harnessConstant": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE（sp-p4-ir-timeout の pin〔43e3f40b、#757〕の bytes で ir-complete-pairs）と SP_P4_IR_TIMEOUT_LIMIT（同じ bytes で 6）。validator は両方を pin の bytes から読んで照合する（追補 #4 の B_SEAL_*／G01_* と同じ方法）。receipt の design.rule が定数と違えば、また規則が ir-complete-pairs で design.irTimeoutLimit が定数と違えば（欠けも）readSpP4Gate が [precheck]",
+        "harnessConstant": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE（ir-complete-pairs。既定の切替は #757）、SP_P4_IR_TIMEOUT_LIMIT（6。#757）と SP_P4_IR_TIMEOUT_PAIR_LIMIT（6。#759）。どれも sp-p4-ir-pair-limit の pin（#759）の bytes の値で、validator は 3 つを pin の bytes から読んで照合する（追補 #4 の B_SEAL_*／G01_* と同じ方法）。receipt の design.rule が定数と違えば、また規則が ir-complete-pairs で design.irTimeoutLimit か design.irTimeoutPairLimit が定数と違えば（欠けも）readSpP4Gate が [precheck]",
         "rules": [
           {
             "id": "current",
@@ -471,13 +471,14 @@
           {
             "id": "ir-complete-pairs",
             "status": "in-force",
-            "text": "(1) R の membership と順位、begin の denseHits、sparse の Scene の並びは measured の全 sample で比べる。(2) IR の寄与（R+IR の membership と順位と共通追加枠）は、C1 で外した sample を除く measured の sample で比べる。組（同じ repeat）はどちらかの側の sample が C1 で外れたら IR の欄を比べない。(3) 同じ workspace の中の一致も同じ範囲（R の欄は全 sample、IR の欄は C1 で外さなかった sample）。(4) variant と側ごとに、C1 で外した measured の sample が SP_P4_IR_TIMEOUT_LIMIT（6）を超えたら [precheck]（undefinedReason ir-timeout-limit）。IR を比べる sample が側で 0 件、または IR を比べる組が 0 件でも [precheck]（no-ir-complete-pair）。どちらも SP-N7 にも passed にも数えず、integrator がユーザーに返す。(5) 外した数と割合と上限を側と variant ごとに開示する（receiptReading）。",
+            "text": "(1) R の membership と順位、begin の denseHits、sparse の Scene の並びは measured の全 sample で比べる。(2) IR の寄与（R+IR の membership と順位と共通追加枠）は、C1 で外した sample を除く measured の sample で比べる。組（同じ repeat）はどちらかの側の sample が C1 で外れたら IR の欄を比べない。(3) 同じ workspace の中の一致も同じ範囲（R の欄は全 sample、IR の欄は C1 で外さなかった sample）。(4) variant と側ごとに、C1 で外した measured の sample が SP_P4_IR_TIMEOUT_LIMIT（6）を超えたら [precheck]（undefinedReason ir-timeout-limit）。variant ごとに、IR の欄を比べなかった組（どちらかの側が C1 で外れた位置）が SP_P4_IR_TIMEOUT_PAIR_LIMIT（6）を超えたら [precheck]（undefinedReason ir-timeout-pair-limit）。判定の順は側ごとの上限、組の上限、IR を比べる組 0 件。IR を比べる sample が側で 0 件、または IR を比べる組が 0 件でも [precheck]（no-ir-complete-pair）。どれも SP-N7 にも passed にも数えず、integrator がユーザーに返す（止まる場合は [precheck]。SP-P4 の取り直しは測定だけで、試行は 2 回まで）。(5) 外した数と割合と上限を側と variant ごとに開示する（receiptReading）。",
             "conditions": {
               "C1": "IR の欄（R+IR と共通追加枠）を比較から外すのは、IR の outcome が timeout、deadlineExceeded が true、R+IR が R と同じ並び、共通追加枠が null の 4 つをすべて満たす sample だけ（harness の spP4IrTimeoutExcluded）。組はどちらかの側が外れたら外す。それ以外の非 ready の sample（failed、ir-unavailable、cancelled、invalidated、期限の後の失敗、追加枠のある timeout）は current と同じに比べる（片側が常に unavailable なら SP-N7 のまま）。",
-              "C2": "variant と側ごとに、C1 で外した measured の sample が K を超えたら [precheck]。K は harness の SP_P4_IR_TIMEOUT_LIMIT（6）で、validator は sp-p4-ir-timeout の pin の bytes から読んで timeoutLimit と照合する。根拠は S2 の measured 30 のうち IR を比べる sample を各側 24 以上残す最小数（measured が 30 でなくなれば根拠を直す）。観測の前に固定し、結果を見て変えない。",
+              "C2": "variant と側ごとに、C1 で外した measured の sample が K を超えたら [precheck]（undefinedReason ir-timeout-limit）。K は harness の SP_P4_IR_TIMEOUT_LIMIT（6）で、各側に IR を比べる sample が 24 以上残る。さらに variant ごとに、IR の欄を比べなかった組（どちらかの側が外れた位置）の数が組の上限 SP_P4_IR_TIMEOUT_PAIR_LIMIT（6）を超えたら [precheck]（undefinedReason ir-timeout-pair-limit）。組の上限は S3 の 7 回目の C2 の数値（measured 30 のうち IR を比べる組の最少 24）で、側ごとの上限はその早い検査（片側が 7 件外れれば組も 7 以上外れる）。validator は sp-p4-ir-pair-limit の pin の bytes から両方を読んで timeoutLimit と timeoutPairLimit と照合する。measured が 30 でなくなれば根拠を直す。観測の前に固定し、結果を見て変えない。止まる場合は [precheck]（SP-P4 の取り直しは測定だけ、試行は 2 回まで）。",
               "C3": "切替は harness の別の commit で行った: #757 の squash 43e3f40b で SP_P4_COMPARISON_RULE の既定を ir-complete-pairs にした。S2 は追補 #6 でその commit に pin し直した（role sp-p4-ir-timeout。S4 の前）。"
             },
             "withdrawn": "追補 #4 の提案の「しきい値（期限切れの数や割合の上限）は足さない」は、S3 の 7 回目の判定（DR-CP4-P-2）で撤回した。C2 の上限 K は比べる範囲を狭めすぎないための条件（厳しい側）で、観測の前に harness の定数として固定する。",
+            "history": "C2 の上限の経緯: #757（DR-CP4-Q-1）は側ごとの上限 K＝6 だけを入れ、その根拠を「各側に IR を比べる sample を 24 以上残す最小数」と説明した。S3 の 7 回目の C2 は「K は例えば 3（dev は 2/35）。これで偏りと最小の組数（24 以上）を同時に押さえます」で、24 は組の数（各側 3 件ずつ別の位置で外れて 30−6＝24）。側ごとの K＝6 だけでは組は最少 18（30−12）になり、S3 の条件より緩かった（integrator の取り違え。S4 の最終関門の独立 reviewer の指摘）。#759（DR-CP4-Q-2）が組の上限 6 を足して S3 の数値を満たした。側ごとの K＝6 は integrator が #757 で決めた値で、S3 が決めた値ではない。",
             "rFields": ["rSceneIds", "denseHitSceneIds", "sparseSceneIds"],
             "irFields": ["rIrSceneIds", "irSupplementSceneId"],
             "irExcludedWhen": {
@@ -492,27 +493,37 @@
             "disclose": [
               "timeoutExcluded",
               "timeoutExcludedRate",
-              "timeoutLimit"
+              "timeoutLimit",
+              "timeoutPairLimit"
             ],
             "discloseBy": ["side", "variant"],
             "timeoutLimitConstant": "SP_P4_IR_TIMEOUT_LIMIT",
             "timeoutLimit": 6,
             "timeoutLimitBy": ["side", "variant"],
             "onOverTimeoutLimit": "[precheck]",
+            "timeoutPairLimitConstant": "SP_P4_IR_TIMEOUT_PAIR_LIMIT",
+            "timeoutPairLimit": 6,
+            "timeoutPairLimitBy": ["variant"],
+            "onOverTimeoutPairLimit": "[precheck]",
             "onNoIrCompared": "[precheck]",
-            "undefinedReasons": ["ir-timeout-limit", "no-ir-complete-pair"]
+            "undefinedReasons": [
+              "ir-timeout-limit",
+              "ir-timeout-pair-limit",
+              "no-ir-complete-pair"
+            ]
           }
         ],
-        "switchRule": "S3 の 7 回目が P-S2-6 を条件つき（e、C1〜C3）で決め、C1〜C3 を実装した harness の PR #757（squash 43e3f40b、DR-CP4-Q-1）が master に入った。S2 は追補 #6 でその commit に pin し直し、inForce を ir-complete-pairs にした（DR-CP4-P-3）。SP/1 の本文と seed-pin-addendum.v1.json の SP-P4 の check の文は変えない（C1〜C3 を満たすので SP/1 の逸脱でない）。harness の規則か上限がまた変われば、S2 が pin し直して読みを改めるまで validator が落ちる。",
+        "switchRule": "S3 の 7 回目が P-S2-6 を条件つき（e、C1〜C3）で決め、C1〜C3 を実装した harness の PR #757（squash 43e3f40b、DR-CP4-Q-1）が master に入った。S2 は追補 #6 でその commit に pin し直し、inForce を ir-complete-pairs にした（DR-CP4-P-3）。#759（DR-CP4-Q-2）が C2 に組の上限を足し、S2 は追補 #8 で pin し直した（規則の切替ではない）。SP/1 の本文と seed-pin-addendum.v1.json の SP-P4 の check の文は変えない（C1〜C3 を満たすので SP/1 の逸脱でない）。harness の規則か上限がまた変われば、S2 が pin し直して読みを改めるまで validator が落ちる。",
         "receiptReading": {
-          "rule": "receipt（sp-p4-receipt.json）の design は spP4ReceiptDesign の rule（SP_P4_COMPARISON_RULE）と irTimeoutLimit（SP_P4_IR_TIMEOUT_LIMIT）。variants[].sides[side].attempts[].ir.measured は spP4IrDisclosure の samples、notReady、timeoutExcluded、timeoutExcludedRate（measured の sample が 0 なら null）、timeoutLimit。受け入れた試行の側の stability は assertSpP4WorkspaceStable の rule、measured、irReady、irNotReady、irCompared、irTimeoutExcluded、irTimeoutLimit（不安定なら unstable と instability）。variants[].comparison は compareSpP4Variant の irCompletePairs（両側とも ir-ready の組。開示）、irComparedPairs（IR を比べた組）、irTimeouts（without と with の外した数）、irTimeoutLimit、undefinedReason（ir-timeout-limit か no-ir-complete-pair）。readSpP4Gate は記録の値を信じず、sample から導き直して比べる。",
-          "design": ["rule", "irTimeoutLimit"],
+          "rule": "receipt（sp-p4-receipt.json）の design は spP4ReceiptDesign の rule（SP_P4_COMPARISON_RULE）、irTimeoutLimit（SP_P4_IR_TIMEOUT_LIMIT）と irTimeoutPairLimit（SP_P4_IR_TIMEOUT_PAIR_LIMIT）。variants[].sides[side].attempts[].ir.measured は spP4IrDisclosure の samples、notReady、timeoutExcluded、timeoutExcludedRate（measured の sample が 0 なら null）、timeoutLimit、timeoutPairLimit。受け入れた試行の側の stability は assertSpP4WorkspaceStable の rule、measured、irReady、irNotReady、irCompared、irTimeoutExcluded、irTimeoutLimit（不安定なら unstable と instability）。variants[].comparison は compareSpP4Variant の irCompletePairs（両側とも ir-ready の組。開示）、irComparedPairs（IR を比べた組）、irTimeouts（without と with の外した数）、irTimeoutLimit、irExcludedPairs（IR の欄を比べなかった組の数）、irTimeoutPairLimit、undefinedReason（ir-timeout-limit、ir-timeout-pair-limit か no-ir-complete-pair）。readSpP4Gate は記録の値を信じず、sample から導き直して比べる。",
+          "design": ["rule", "irTimeoutLimit", "irTimeoutPairLimit"],
           "attemptIrMeasured": [
             "samples",
             "notReady",
             "timeoutExcluded",
             "timeoutExcludedRate",
-            "timeoutLimit"
+            "timeoutLimit",
+            "timeoutPairLimit"
           ],
           "sideStability": [
             "rule",
@@ -528,11 +539,13 @@
             "irComparedPairs",
             "irTimeouts",
             "irTimeoutLimit",
+            "irExcludedPairs",
+            "irTimeoutPairLimit",
             "undefinedReason"
           ],
           "gate": "readSpP4Gate"
         },
-        "disclosure": "どちらの規則でも、試行ごとに IR の結果（spP4IrDisclosure: warm-up と measured の sample 数と ir-ready でない数、measured の timeoutExcluded・timeoutExcludedRate・timeoutLimit、該当 sample の outcome・deadlineExceeded・resultKind）と、不安定な側の instability（explainSpP4Instability: 最初の ir-ready の measured の sample を基準にした違いの説明）を receipt に開示し、判定には使わない（DR-CP4-O-7 の実装）。instability の explainedByIrDeadline は ir-ready でない outcome をすべて「IR の寄与だけが欠けた」と読める（timeout に限らない）ので C1 より広く、比較から外す範囲の規則ではない。C1 で外すのは spP4IrTimeoutExcluded の sample だけで、explained が true でも failed などの sample は比べたまま（同じ workspace で一致しなければ [precheck] のまま）。"
+        "disclosure": "どちらの規則でも、試行ごとに IR の結果（spP4IrDisclosure: warm-up と measured の sample 数と ir-ready でない数、measured の timeoutExcluded・timeoutExcludedRate・timeoutLimit・timeoutPairLimit、該当 sample の outcome・deadlineExceeded・resultKind）と、不安定な側の instability（explainSpP4Instability: 最初の ir-ready の measured の sample を基準にした違いの説明）を receipt に開示し、判定には使わない（DR-CP4-O-7 の実装）。instability の explainedByIrDeadline は ir-ready でない outcome をすべて「IR の寄与だけが欠けた」と読める（timeout に限らない）ので C1 より広く、比較から外す範囲の規則ではない。C1 で外すのは spP4IrTimeoutExcluded の sample だけで、explained が true でも failed などの sample は比べたまま（同じ workspace で一致しなければ [precheck] のまま）。"
       }
     }
   ],
@@ -744,7 +757,7 @@
         "SP-N12",
         "SP-N13"
       ],
-      "rule": "SP/1 :178: 観測の前に、SP-N1〜N5 と SP-N9〜N13 のそれぞれを 1 件ずつ含む合成の setup の記録（実際の setup の receipt と DB の pin の行を複製し、pin の entry、数、順序、書込みの経路、pin の集合、Scene の archive、entry の project と ID、arm ごとの workspace、runner の種類、R5 の入力の出所を書き換えたもの）を、SP-P1〜P3 と run の受入れの照合の関数に通し、それぞれを期待どおりに検出し、違反の無い記録を通すことを示す。",
+      "rule": "SP/1 :178 は「CP-4 は、合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを、観測の前に示す」と書き、合成の記録の作り方は書かない。次の文は S2 の読みで、括弧の中の作り方（実際の setup の receipt と DB の pin の行の複製）は S2 が足した言い換え（SP/1 :178 の文ではない）。record の記録の合成の記録は実際の setup の receipt の複製ではなく、試験が凍結の fixture と最小の schema の一時の DB から作ったもの（その記録の「合成の記録の作り方」）。S2 の読み: 観測の前に、SP-N1〜N5 と SP-N9〜N13 のそれぞれを 1 件ずつ含む合成の setup の記録（実際の setup の receipt と DB の pin の行を複製し、pin の entry、数、順序、書込みの経路、pin の集合、Scene の archive、entry の project と ID、arm ごとの workspace、runner の種類、R5 の入力の出所を書き換えたもの）を、SP-P1〜P3 と run の受入れの照合の関数に通し、それぞれを期待どおりに検出し、違反の無い記録を通すことを示す。",
       "owner": "S1g-A（統合 branch の setup-driver の seed の pin の段と variant ごとの照合の試験、seed-pin.mjs と workspace-db.mjs の照合の試験）",
       "record": "S4:sp-synthetic-detection-record",
       "recordRule": "②' で、統合 branch の試験（製品の runtime を使わない node の試験）を、② の後の統合 branch の commit で走らせ、試験の file と commit、各 SP-N の検出と違反の無い記録の通過を記録し、merge しない追跡される branch に push する。S4 はその既にある記録の所在を書く。",
@@ -781,7 +794,7 @@
     "S2 追補 #2（S6）: trace の setupFailure（G-02 base が上限内の開き直しで setup-complete に届かなければ (b) は未測定、CP-4 の可用性は HOLD、project は差し替えない）、runnerReadings.startSeal.receipt（seal-read の時刻と回数、CDP の now() の開示）、navigate.outsideQ.receiptCountByReason（completed 以外の理由ごとの数）を trace の receipt に入れる。",
     "S2 追補 #4（DR-CP4-N-14 (5)。実行は integrator）: 試行の台帳（.artifacts/cp4/attempts/<run 名>.json。ignore 対象）を、各試行の前（status started）と後（finishedAtUtc の後）に claude/nir1-contracts の docs/plans/nir1-cp4-records/attempts/<run 名>.json へ写して commit し、force を使わずに push する。写した file の sha256 を receipt の priorAttempts.thisAttempt.fileSha256AtStart と次の試行の receipt の priorAttempts の各行の fileSha256 に照合してから集計する（d10.parity.receipt）。",
     "S2 追補 #4（DR-CP4-N-14 (2)(3)）: Gold の run は d10.parity.selection の唯一の completed の parity だけを使い、d10.parity.fallback は配線しない（Gold は [precheck] で止まる）。",
-    "S2 追補 #4（DR-CP4-O-5 (ii)(iii)(iv)(ix)、O-7）: SP-P4 は diagnosticRuns の sparseReading、supplementSlot、retakeScope、comparisonRule（S2 追補 #6 で inForce ir-complete-pairs。C1〜C3 と上限 SP_P4_IR_TIMEOUT_LIMIT は #757 の harness。current は in force でない）のとおり。K24-G01-N2〜N4 は evals/nir1-g01/setup-addendum.v1.json の afterMutationReadings（対照と sample の判定、聞き直しの規則、mutation の後の開き直し）のとおり。trace は runnerReadings.setupReceipt と runnerReadings.r5Check のとおり。"
+    "S2 追補 #4（DR-CP4-O-5 (ii)(iii)(iv)(ix)、O-7）: SP-P4 は diagnosticRuns の sparseReading、supplementSlot、retakeScope、comparisonRule（S2 追補 #6 で inForce ir-complete-pairs。C1〜C3 と側ごとの上限 SP_P4_IR_TIMEOUT_LIMIT は #757、組の上限 SP_P4_IR_TIMEOUT_PAIR_LIMIT は #759 の harness。current は in force でない）のとおり。K24-G01-N2〜N4 は evals/nir1-g01/setup-addendum.v1.json の afterMutationReadings（対照と sample の判定、聞き直しの規則、mutation の後の開き直し）のとおり。trace は runnerReadings.setupReceipt と runnerReadings.r5Check のとおり。"
   ],
   "stepOrder": {
     "graphCases": [
@@ -817,7 +830,7 @@
   "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。 S4 の手順（S2 追補 #7、DR-CP4-S4-1）: (a) S4 の枝は origin/claude/nir1-contracts を merge commit で取り込み（force や rebase をしない）、S4b が参照する ①（R5 の照合の記録の commit）、②（K6/4 の凍結の commit）、②'（合成の記録の commit）を S4b の真の祖先にする。(b) S4 の PR は squash や rebase でなく merge commit（gh pr merge --merge）で master に入れる（squash や rebase では参照した hash が master の祖先に残らず、全件が落ちる）。(c) 実行時の正式の入口は assertObservationPrepFormal（S2 の validator。参照した commit の bytes と真の祖先の検査）を呼ばないので、integrator が S4 の手順の中で S4b の commit に対してこれを実行し、通ってから ④ に進む。(d) 正式の入口（diagnostic-runner.mjs の SP-P4、trace-frozen.mjs、frozen-k64-admission.mjs）は S2 の file を freeze record（evals/nir1-graph/observation-prep-freeze.v1.json）として読まず、admission.mjs の readAdmittedObservationPrep で候補の HEAD の blob を読み、その sha256 が freeze record の boundFiles の束縛と一致し、S2 の status が frozen-before-observation で placeholders が空、S2 の boundFiles（配列）と traces の各行の sha256 が freeze record の束縛と同じことを確かめてから parse する。違えば [precheck]。",
   "setupReadings": {
     "source": {
-      "decisions": "master（950751d0）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28（開き直しの正本は L-24、blocked の写しの表の正本は L-28、Index の build の定数は L-27）、DR-CP4-N-14（parity の固定と試行の台帳）、DR-CP4-O-1〜O-18（S5-B の配線。S2 に写す読みの正本は O-5、K24-G01-N2〜N4 は O-6／O-14／O-15、SP-P4 は O-7）と、TR-1〜TR-14。S2 追補 #4 の決定は DR-CP4-P-1。S2 追補 #5 の決定と S3 の 7 回目の判定は DR-CP4-P-2。SP-P4 の C1〜C3 と K24-G01 の負例の開示（#757）は DR-CP4-Q-1、S2 追補 #6 の決定は DR-CP4-P-3。S4 の予行（正式の入口が S2 の file を freeze record の束縛と照合して読む。#758）は DR-CP4-S4-1、S2 追補 #7 の決定は DR-CP4-P-4",
+      "decisions": "master（950751d0）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28（開き直しの正本は L-24、blocked の写しの表の正本は L-28、Index の build の定数は L-27）、DR-CP4-N-14（parity の固定と試行の台帳）、DR-CP4-O-1〜O-18（S5-B の配線。S2 に写す読みの正本は O-5、K24-G01-N2〜N4 は O-6／O-14／O-15、SP-P4 は O-7）と、TR-1〜TR-14。S2 追補 #4 の決定は DR-CP4-P-1。S2 追補 #5 の決定と S3 の 7 回目の判定は DR-CP4-P-2。SP-P4 の C1〜C3 と K24-G01 の負例の開示（#757）は DR-CP4-Q-1、S2 追補 #6 の決定は DR-CP4-P-3。S4 の予行（正式の入口が S2 の file を freeze record の束縛と照合して読む。#758）は DR-CP4-S4-1、S2 追補 #7 の決定は DR-CP4-P-4。SP-P4 の IR を外した組の上限（#759。DR-CP4-Q-1 の K＝6 の説明の取り違えの訂正）は DR-CP4-Q-2",
       "pins": [
         {
           "role": "s1j2-blocked-map",
@@ -965,7 +978,7 @@
         {
           "role": "s5b-diagnostics-wiring",
           "commit": "950751d040b29b6d78a067a003dc19b196cfb692",
-          "pr": "#756（S5-B。診断〔SP-P4、G-01 の負例〕と trace の正式の配線、A の runner への統合）。この pin は #756 で最後に変わった harness の file（#757 で変わった diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs は sp-p4-ir-timeout の pin が持つ。S2 追補 #6。#758 で変わった admission.mjs、frozen-k64-admission.mjs、trace-frozen.mjs と diagnostic-runner.mjs は s4-rehearsal-admission の pin が持つ。S2 追補 #7）",
+          "pr": "#756（S5-B。診断〔SP-P4、G-01 の負例〕と trace の正式の配線、A の runner への統合）。この pin は #756 で最後に変わった harness の file（#757 で変わった diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs は sp-p4-ir-timeout の pin が持つ。S2 追補 #6。#758 で変わった admission.mjs、frozen-k64-admission.mjs、trace-frozen.mjs は s4-rehearsal-admission の pin が持つ。S2 追補 #7。#759 で変わった diagnostic-runner.mjs と frozen-diagnostics.mjs は sp-p4-ir-pair-limit の pin が持つ。S2 追補 #8）",
           "check": "bytes",
           "files": [
             {
@@ -1009,13 +1022,9 @@
         {
           "role": "sp-p4-ir-timeout",
           "commit": "43e3f40b5d653c62d5aca4ca795917b67310992c",
-          "pr": "#757（SP-P4 の IR の期限切れを条件つきで比較から外す C1〜C3、K=6 と、K24-G01 の負例の開示。DR-CP4-Q-1）。この pin は #757 で最後に変わった harness の file（S2 追補 #6、DR-CP4-P-3。#758 でも変わった diagnostic-runner.mjs は s4-rehearsal-admission の pin が持つ。S2 追補 #7）",
+          "pr": "#757（SP-P4 の IR の期限切れを条件つきで比較から外す C1〜C3、K=6 と、K24-G01 の負例の開示。DR-CP4-Q-1）。この pin は #757 で最後に変わった harness の file（S2 追補 #6、DR-CP4-P-3。#758 でも変わった diagnostic-runner.mjs は S2 追補 #7 で s4-rehearsal-admission の pin へ、#759 で変わった frozen-diagnostics.mjs と diagnostic-runner.mjs は S2 追補 #8 で sp-p4-ir-pair-limit の pin へ移した）",
           "check": "bytes",
           "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
-              "sha256": "57f2336ec7a8b324b124fb6ad0776387222d661c9cc869260c93fe04aa5dc12f"
-            },
             {
               "path": "scripts/quality/nir1-graph-eval/g01-negative-run.mjs",
               "sha256": "dac896999acbc8f6654fa1b955f6da1625e35b02e311aa845aaa327714778b4b"
@@ -1025,16 +1034,12 @@
         {
           "role": "s4-rehearsal-admission",
           "commit": "82d427465b16a12809c6f93adad74ac97859c85a",
-          "pr": "#758（S4 の予行。正式の入口が S2 の observation-prep を S4 の freeze record の束縛と sha256 で照合して読む〔admission.mjs の readAdmittedObservationPrep〕。DR-CP4-S4-1）。この pin は #758 で最後に変わった file（試験の file と試験専用の test-support.mjs を除く admission.mjs、diagnostic-runner.mjs、frozen-k64-admission.mjs、trace-frozen.mjs と、harness の外の scripts/quality/nir1-retrieval/contract.mjs。S2 追補 #7、DR-CP4-P-4）",
+          "pr": "#758（S4 の予行。正式の入口が S2 の observation-prep を S4 の freeze record の束縛と sha256 で照合して読む〔admission.mjs の readAdmittedObservationPrep〕。DR-CP4-S4-1）。この pin は #758 で最後に変わった file（試験の file と試験専用の test-support.mjs を除く admission.mjs、frozen-k64-admission.mjs、trace-frozen.mjs と、harness の外の scripts/quality/nir1-retrieval/contract.mjs。S2 追補 #7、DR-CP4-P-4。#758 でも変わった diagnostic-runner.mjs は #759 でまた変わったので、S2 追補 #8 で sp-p4-ir-pair-limit の pin へ移した）",
           "check": "bytes",
           "files": [
             {
               "path": "scripts/quality/nir1-graph-eval/admission.mjs",
               "sha256": "e0b3877f0d118936348db948546e7c125710b1de9c07732b55b1d3f0efba4e14"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
-              "sha256": "c4222f035bd06224f68aa79200efcb09208cb559e8e415565b661ad42114a1ea"
             },
             {
               "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
@@ -1047,6 +1052,22 @@
             {
               "path": "scripts/quality/nir1-retrieval/contract.mjs",
               "sha256": "ec6a73277f3b26075c71bdfab945b2c2b83d9883067da4139d60d6cad090f963"
+            }
+          ]
+        },
+        {
+          "role": "sp-p4-ir-pair-limit",
+          "commit": "906da641befb8dfbb445e05ce5df814bf5b16c35",
+          "pr": "#759（SP-P4 の ir-complete-pairs に IR を外した組の上限 SP_P4_IR_TIMEOUT_PAIR_LIMIT＝6 を足す。S3 の 7 回目の C2 の組の最少 24。DR-CP4-Q-2）。この pin は #759 で最後に変わった harness の file（試験の file を除く diagnostic-runner.mjs と frozen-diagnostics.mjs。S2 追補 #8）。commit は #759 の squash の commit（bytes は PR の head と同じ）",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/diagnostic-runner.mjs",
+              "sha256": "febdce05aba8bb7f8cf891857157ee211a08f73a0882647dbb479c5fe4cbb388"
+            },
+            {
+              "path": "scripts/quality/nir1-graph-eval/frozen-diagnostics.mjs",
+              "sha256": "c21340904c89f2c6877dc4135b4a8a1c744ba9ad12aea113b23dd641d83a16f2"
             }
           ]
         },
@@ -1295,7 +1316,7 @@
         }
       ]
     },
-    "status": "harness の読み（integrator の決定 B1〜B4、P-0、P-3、P-5、P-6、S1j-2 のレビューの修正）を観測の前に S2 に写したもの。master の harness（source.pins）に合わせた。fixture、契約、閾値、setupOrder、setupTimeline、measurementPoint は変えない。S3 の確認を受ける。",
+    "status": "harness の読み（integrator の決定 B1〜B4、P-0、P-3、P-5、P-6、S1j-2 のレビューの修正）を観測の前に S2 に写したもの。master の harness（source.pins）に合わせた。fixture、契約、閾値、setupOrder、setupTimeline、measurementPoint は変えない。S3 のレビューの記録は S4 で review に書く（7 回目が見た差分は 968f6782 と bc2500da で、その後の追補 #5〜#8 の変更を S3 が見た記録は無い）。",
     "rule": "⑤ の評価の run の setup（完全な setup）は、この欄の session の分け方、probe、blocked の名前、測定の仕様に従う。① R5 の照合の run は author の session の seed の pin の段で止まり、2 つ目以降の session を使わない（r5Gate.exempt）。setup の受領書は status setup-complete で、items の receipt に挙げた欄を持つ。食い違えば setup の不備として [precheck]。",
     "items": [
       {
@@ -2174,7 +2195,7 @@
         },
         {
           "id": "e",
-          "text": "ir-complete-pairs を条件つきで採る（S3 の 7 回目の C1〜C3）。C1: IR の欄を比べる範囲から外すのは、outcome が timeout（deadlineExceeded true）で R+IR＝R、共通追加枠が null の sample だけにし、それ以外の非 ready の sample は current と同じに比べる。C2: variant と側ごとに measured の timeout が K（=6）を超えたら [precheck]（K は harness の定数にし、S2 が写し、validator が照合する）。C3: 切替は harness の別の commit で行い、S2 がその commit に pin し直す（S4 の前）。"
+          "text": "ir-complete-pairs を条件つきで採る（S3 の 7 回目の C1〜C3）。C1: IR の欄を比べる範囲から外すのは、outcome が timeout（deadlineExceeded true）で R+IR＝R、共通追加枠が null の sample だけにし、それ以外の非 ready の sample は current と同じに比べる。C2: variant と側ごとに measured の timeout が K（=6）を超えたら [precheck]（K は harness の定数にし、S2 が写し、validator が照合する）。C3: 切替は harness の別の commit で行い、S2 がその commit に pin し直す（S4 の前）。この選択肢の文は S3 の 7 回目の後に S2 の追補 #5（c5d481c4）で足した。K（側ごとの上限 6）は integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は K を例として 3 と書き、組の最少 24 を求めた。組の上限 6 は S3 の数値を満たすために #759（DR-CP4-Q-2）で足した。"
         }
       ],
       "subQuestions": [
@@ -2185,9 +2206,9 @@
       "s2Position": "S2 は判断しない（論点・根拠・選択肢だけを書く）",
       "decision": {
         "choice": "e",
-        "by": "S3 の 7 回目（独立 reviewer、Opus）",
+        "by": "S3 の 7 回目（独立 reviewer、Opus）。C1〜C3 の条件つきの選択。K（側ごとの上限 6）は integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は K を例として 3 と書き、組の最少 24 を求めた。組の上限 6 は S3 の数値を満たすために #759（DR-CP4-Q-2）で足した",
         "record": "docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2（S3 の 7 回目。accept-with-conditions）",
-        "conditions": "条件つきで逸脱でない（C1〜C3。選択肢 e の文）。提案のままの ir-complete-pairs（IR が完了した組だけで比べ、失敗系の outcome も外す）は逸脱で、ユーザーの確認が要る（反例: without 30/30 ready、with 1/30 ready でも passed になる）。ir-complete-pairs の「しきい値は足さない」は撤回する。comparisonRule を in force にするのは C1〜C3 を入れた harness の PR が merge された後で、それまで comparisonRule.inForce は current、ir-complete-pairs は proposed のまま（本文と harness の定数との照合も、その PR の後に C1〜C3 に改める）。",
+        "conditions": "条件つきで逸脱でない（C1〜C3。選択肢 e の文）。提案のままの ir-complete-pairs（IR が完了した組だけで比べ、失敗系の outcome も外す）は逸脱で、ユーザーの確認が要る（反例: without 30/30 ready、with 1/30 ready でも passed になる）。ir-complete-pairs の「しきい値は足さない」は撤回する。comparisonRule を in force にするのは C1〜C3 を入れた harness の PR が merge された後で、それまで comparisonRule.inForce は current、ir-complete-pairs は proposed のまま（本文と harness の定数との照合も、その PR の後に C1〜C3 に改める）。K（側ごとの上限 6）は integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は K を例として 3 と書き、組の最少 24 を求めた。組の上限 6 は S3 の数値を満たすために #759（DR-CP4-Q-2）で足した（S2 追補 #8）。",
         "fulfilled": "S2 追補 #6（DR-CP4-P-3）: C1〜C3 を実装した harness の #757（43e3f40b）の merge の後に、その commit に pin し直し、comparisonRule を ir-complete-pairs の in force にして本文を C1〜C3 に改めた"
       }
     },
@@ -2256,7 +2277,7 @@
         "choice": "a",
         "by": "S3 の 7 回目（独立 reviewer、Opus）",
         "record": "docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2（S3 の 7 回目。accept-with-conditions）",
-        "conditions": "結果を選ばない。定数は harness と一致（G01_CONTROL_ATTEMPTS 60、G01_SAMPLE_ATTEMPTS 60、G01_GRAPH_READY_WAIT_MS 10000、G01_CONTROL_GAP_MS 250、B_SEAL_REOPENS 2、B_SEAL_WAIT_MS 120000）。30 回から 60 回への引き上げは dev の fixture を見た後だが、凍結した G-case の観測の前で、効果は undetermined を decided に変えることだけ。retry.rule の counter と cached の記録の文（S3 の 7 回目の P3-2）は、harness の修正（sample の counter と cached の記録、捨てた take の返却 Scene の graphTries）が merge された後に合わせる。"
+        "conditions": "結果を選ばない。定数は harness と一致（G01_CONTROL_ATTEMPTS 60、G01_SAMPLE_ATTEMPTS 60、G01_GRAPH_READY_WAIT_MS 10000、G01_CONTROL_GAP_MS 250、B_SEAL_REOPENS 2、B_SEAL_WAIT_MS 120000）。30 回から 60 回への引き上げは dev の fixture を見た後だが、凍結した G-case の観測の前で、効果は undetermined を decided に変えることだけ。retry.rule の counter と cached の記録の文（S3 の 7 回目の P3-2）は、harness の修正（sample の counter と cached の記録、捨てた take の返却 Scene の graphTries）が merge された後に合わせる（#757〔43e3f40b〕の merge の後、S2 の追補 #6〔94fc8ed4、DR-CP4-P-3〕で setup-addendum の retry.rule と graphTries を合わせた）。"
       }
     },
     {

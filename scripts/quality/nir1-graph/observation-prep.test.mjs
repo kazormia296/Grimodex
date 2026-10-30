@@ -23,6 +23,7 @@ import {
   FORMAL_HARNESS_ENTRIES,
   HARNESS_CONSTANTS,
   K24_TABLE,
+  K64_FREEZE_SOURCE,
   OBSERVATION_PREP_FILES,
   PLACEHOLDER,
   S4_PROCEDURE_WORDS,
@@ -31,6 +32,7 @@ import {
   harnessPinOf,
   isSharedClosureBoundary,
   parseHarnessConstant,
+  parseK64FreezeCommit,
   sourcePinGitErrors,
   formalReferenceErrors,
   authorDeclarationErrors,
@@ -501,7 +503,8 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   filled.k64Procedure.formal.commit = hex40;
   filled.k64Procedure.formal.sha256 = "b".repeat(64);
   filled.k64Procedure.formal.review = review;
-  filled.contracts.k64.freezeCommit = hex40;
+  // S4 の最終関門の P3-3: the pinned harness's K64_FREEZE.freezeCommit.
+  filled.contracts.k64.freezeCommit = ctx.harnessK64Freeze.commit;
   filled.d10.g01.da1AcceptanceRecord = record;
   filled.d10.g01.rAndRirMode =
     record === "none" ? "unrestricted" : "restricted";
@@ -529,6 +532,86 @@ async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
   };
   return { fixed: filled, frozenCtx };
 }
+
+test("S4 の最終関門の P3-3: contracts.k64.freezeCommit is the pinned constants.mjs K64_FREEZE.freezeCommit", async () => {
+  const ctx = await context();
+  // Read from the t14-k64-freeze pin's bytes, the K6/4 freeze (批准 7).
+  assert.equal(
+    ctx.harnessK64Freeze?.commit,
+    "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+  );
+  assert.equal(ctx.harnessK64Freeze.source.path, K64_FREEZE_SOURCE.path);
+  const { fixed, frozenCtx } = await frozenRecord(ctx);
+  assert.deepEqual(observationPrepErrors(fixed, frozenCtx), []);
+  const check = (copy) => observationPrepErrors(copy, frozenCtx);
+  // Another 40-hex commit is refused (the form alone does not pass).
+  detects(
+    fixed,
+    check,
+    (p) => (p.contracts.k64.freezeCommit = "a".repeat(40)),
+    /contracts\.k64\.freezeCommit must be the pinned harness's K64_FREEZE/u,
+  );
+  // The confirmed commit of K6/4 is not its freeze commit.
+  detects(
+    fixed,
+    check,
+    (p) =>
+      (p.contracts.k64.freezeCommit =
+        "18ebc7b8de2d4f2701c573b5d91561a6cc852024"),
+    /K64_FREEZE/u,
+  );
+  // Unreadable pinned bytes close the check.
+  assert.ok(
+    observationPrepErrors(fixed, {
+      ...frozenCtx,
+      harnessK64Freeze: null,
+    }).some((e) => /K64_FREEZE.*unreadable/u.test(e)),
+  );
+  // The constants.mjs pin must hold the bytes the value was read from.
+  assert.ok(
+    observationPrepErrors(fixed, {
+      ...frozenCtx,
+      harnessK64Freeze: {
+        ...frozenCtx.harnessK64Freeze,
+        source: {
+          ...frozenCtx.harnessK64Freeze.source,
+          sha256: "d".repeat(64),
+        },
+      },
+    }).some((e) => /constants\.mjs must be the bytes/u.test(e)),
+  );
+  // A draft keeps the placeholder: not compared.
+  const draft = await json(OBSERVATION_PREP_FILES.prep);
+  assert.ok(PLACEHOLDER.test(draft.contracts.k64.freezeCommit));
+  assert.deepEqual(
+    observationPrepErrors(draft, { ...ctx, harnessK64Freeze: null }).filter(
+      (e) => /K64_FREEZE/u.test(e),
+    ),
+    [],
+  );
+});
+
+test("S4 の最終関門の P3-3: parseK64FreezeCommit reads the field once from the K64_FREEZE literal only", () => {
+  const commit = "5dea38af158283c2a925d68ef0d8b0771c0ea209";
+  const field = `  freezeCommit: "${commit}",`;
+  const text = [
+    "export const K64_FREEZE = Object.freeze({",
+    '  path: "docs/plans/x.md",',
+    '  confirmedCommit: "18ebc7b8de2d4f2701c573b5d91561a6cc852024",',
+    field,
+    "});",
+  ].join("\n");
+  assert.equal(parseK64FreezeCommit(text), commit);
+  // Absent, twice, short, another constant, or only outside the literal.
+  for (const changed of [
+    text.replace("freezeCommit", "freeze"),
+    text.replace(field, `${field}\n${field}`),
+    text.replace(commit, commit.slice(1)),
+    text.replace("K64_FREEZE", "K62_FREEZE"),
+    `export const K62_FREEZE = Object.freeze({\n${field}\n});\n${text.replace(`${field}\n`, "")}`,
+  ])
+    assert.equal(parseK64FreezeCommit(changed), undefined, changed);
+});
 
 test("observation prep frozen: every placeholder filled, commits 40-hex, digests match the files", async () => {
   const ctx = await context();
@@ -1774,6 +1857,8 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "sp-p4-ir-timeout",
       // S2 追補 #7（#758。DR-CP4-S4-1）。
       "s4-rehearsal-admission",
+      // S2 追補 #8（#759。DR-CP4-Q-2）。
+      "sp-p4-ir-pair-limit",
       // S2 追補 #5（P-S2-9 (b)。正式の入口の閉包の file を最後に変えた commit）。
       "pr1-native-eval-feature",
       "p1-harness-core",
@@ -2369,71 +2454,113 @@ test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness fil
     t.skip("shallow clone");
     return;
   }
-  // S2 追補 #7: the newest pin (#758) is the tip the last changes are read at.
-  const tip = SOURCE_PINS.find((pin) => pin.role === "s4-rehearsal-admission");
-  const sp = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-timeout");
-  const changed = gitText([
-    "diff",
-    "--name-only",
-    "b1a87b0b81fbdce7f3d280e0671bced51306be1d",
-    tip.commit,
-    "--",
-    H4,
-  ])
-    .split("\n")
-    .filter(
-      (file) =>
-        file !== "" &&
-        !file.endsWith(".test.mjs") &&
-        !file.endsWith("test-support.mjs"),
-    )
-    .sort();
-  const held = SOURCE_PINS.filter((pin) =>
-    [
-      "s5a-graph-arm-runner",
-      "s5b-diagnostics-wiring",
-      "sp-p4-ir-timeout",
-      "s4-rehearsal-admission",
-    ].includes(pin.role),
-  )
-    .flatMap((pin) => pin.paths)
-    .filter((file) => file.startsWith(H4))
-    .sort();
-  assert.deepEqual(held, changed);
-  // #757 が変えた test 以外の file は 3 つ（diagnostic-runner.mjs は #758 でも変わり、その pin にある）。
-  assert.deepEqual(
-    gitText([
-      "diff",
-      "--name-only",
-      "950751d040b29b6d78a067a003dc19b196cfb692",
-      sp.commit,
-      "--",
-      H4,
-    ])
-      .split("\n")
-      .filter((file) => file !== "" && !file.endsWith(".test.mjs")),
-    [...sp.paths, `${H4}diagnostic-runner.mjs`].sort(),
+  // S2 追補 #8: the newest pin (#759) is the tip the last changes are read at.
+  // Every pin, #759's included, is a master commit and holds the files it
+  // last changed on master (strict).
+  const rehearsal = SOURCE_PINS.find(
+    (pin) => pin.role === "s4-rehearsal-admission",
   );
-  // #758 が変えた試験と文書以外の file は 5 つで、すべて s4-rehearsal-admission の pin にある
-  // （試験専用の test-support.mjs は pin しない）。ほかの pin の file は 43e3f40b..82d42746 で変わらない。
-  assert.deepEqual(
-    gitText(["diff", "--name-only", sp.commit, tip.commit, "--", "scripts"])
+  const sp = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-timeout");
+  const tip = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-pair-limit");
+  const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
+  for (const pin of SOURCE_PINS)
+    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, master), pin.role);
+  const nonTest = (text) =>
+    text
       .split("\n")
       .filter(
         (file) =>
           file !== "" &&
           !file.endsWith(".test.mjs") &&
           !file.endsWith("test-support.mjs"),
-      ),
+      )
+      .sort();
+  const changed = nonTest(
+    gitText([
+      "diff",
+      "--name-only",
+      "b1a87b0b81fbdce7f3d280e0671bced51306be1d",
+      tip.commit,
+      "--",
+      H4,
+    ]),
+  );
+  const held = SOURCE_PINS.filter((pin) =>
+    [
+      "s5a-graph-arm-runner",
+      "s5b-diagnostics-wiring",
+      "sp-p4-ir-timeout",
+      "s4-rehearsal-admission",
+      "sp-p4-ir-pair-limit",
+    ].includes(pin.role),
+  )
+    .flatMap((pin) => pin.paths)
+    .filter((file) => file.startsWith(H4))
+    .sort();
+  assert.deepEqual(held, changed);
+  // #757 が変えた test 以外の file は 3 つ（diagnostic-runner.mjs と frozen-diagnostics.mjs は後の PR でも変わり、後の pin にある）。
+  assert.deepEqual(
+    nonTest(
+      gitText([
+        "diff",
+        "--name-only",
+        "950751d040b29b6d78a067a003dc19b196cfb692",
+        sp.commit,
+        "--",
+        H4,
+      ]),
+    ),
+    [
+      ...sp.paths,
+      `${H4}diagnostic-runner.mjs`,
+      `${H4}frozen-diagnostics.mjs`,
+    ].sort(),
+  );
+  // #758 が変えた試験と文書以外の file は 5 つ（試験専用の test-support.mjs は pin しない。
+  // diagnostic-runner.mjs は #759 でも変わり、その pin にある）。
+  assert.deepEqual(
+    nonTest(
+      gitText([
+        "diff",
+        "--name-only",
+        sp.commit,
+        rehearsal.commit,
+        "--",
+        "scripts",
+      ]),
+    ),
+    [...rehearsal.paths, `${H4}diagnostic-runner.mjs`].sort(),
+  );
+  // #759 が変えた試験と文書以外の file は 2 つで、すべて sp-p4-ir-pair-limit の pin にある。
+  assert.deepEqual(
+    nonTest(
+      gitText([
+        "diff",
+        "--name-only",
+        rehearsal.commit,
+        tip.commit,
+        "--",
+        "scripts",
+      ]),
+    ),
     [...tip.paths].sort(),
   );
   for (const pin of SOURCE_PINS)
-    for (const file of pin.paths)
+    for (const file of pin.paths) {
+      const last = gitText([
+        "log",
+        "-1",
+        "--format=%H",
+        tip.commit,
+        "--",
+        file,
+      ]);
       assert.equal(
-        gitText(["log", "-1", "--format=%H", tip.commit, "--", file]),
+        last,
         pin.commit,
         `${file} is held by the commit that last changed it`,
       );
+    }
   // ancestor の pin は PR の squash の commit（#753、#755 ほか）。
   for (const pin of SOURCE_PINS)
     assert.ok(
@@ -2513,6 +2640,8 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     G01_GRAPH_READY_WAIT_MS: 10000,
     SP_P4_COMPARISON_RULE: "ir-complete-pairs",
     SP_P4_IR_TIMEOUT_LIMIT: 6,
+    // S2 追補 #8: #759 の組の上限（S3 の C2 の組の最少 24）。
+    SP_P4_IR_TIMEOUT_PAIR_LIMIT: 6,
   });
   assert.deepEqual(
     ctx.harnessConstantSources.map((row) => row.path),
@@ -2527,7 +2656,13 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     [
       ["frozen-setup-driver.mjs", "950751d0"],
       ["g01-negatives.mjs", "950751d0"],
-      ["frozen-diagnostics.mjs", "43e3f40b"],
+      // S2 追補 #8: #759 の pin（値は SOURCE_PINS から読む）。
+      [
+        "frozen-diagnostics.mjs",
+        SOURCE_PINS.find(
+          (pin) => pin.role === "sp-p4-ir-pair-limit",
+        ).commit.slice(0, 8),
+      ],
     ],
   );
   for (const source of ctx.harnessConstantSources)
@@ -2539,8 +2674,22 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     );
   assert.equal(
     harnessPinOf(`${H4}frozen-diagnostics.mjs`).role,
-    "sp-p4-ir-timeout",
+    "sp-p4-ir-pair-limit",
   );
+  // 変異: 組の上限は #757（43e3f40b）の bytes には無い。
+  const before759 = execFileSync(
+    "git",
+    [
+      "show",
+      `43e3f40b5d653c62d5aca4ca795917b67310992c:${H4}frozen-diagnostics.mjs`,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(
+    parseHarnessConstant(before759, "SP_P4_IR_TIMEOUT_PAIR_LIMIT"),
+    undefined,
+  );
+  assert.equal(parseHarnessConstant(before759, "SP_P4_IR_TIMEOUT_LIMIT"), 6);
   assert.equal(harnessPinOf(`${H4}not-a-harness-file.mjs`), undefined);
   // 変異: 定数を古い pin（950751d0）の bytes から読むと、規則は current で K は無い。
   const old = execFileSync(
@@ -2564,7 +2713,7 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
   };
   assert.ok(
     observationPrepErrors(prep, misread).some((e) =>
-      /sp-p4-ir-timeout: .*frozen-diagnostics\.mjs must be the bytes the harness constants were read from/u.test(
+      /sp-p4-ir-pair-limit: .*frozen-diagnostics\.mjs must be the bytes the harness constants were read from/u.test(
         e,
       ),
     ),
@@ -2964,7 +3113,13 @@ test("S2 追補 #5: the S3 7th review's decisions are recorded (P-S2-6 condition
   ]) {
     const { decision } = byId[id];
     assert.equal(decision.choice, choice, id);
-    assert.equal(decision.by, "S3 の 7 回目（独立 reviewer、Opus）", id);
+    // S2 追補 #8（S4 の最終関門の P2-1）: P-S2-6 の by は K と組の上限の帰属を足す。
+    if (id === "P-S2-6")
+      assert.ok(
+        decision.by.startsWith("S3 の 7 回目（独立 reviewer、Opus）。"),
+        id,
+      );
+    else assert.equal(decision.by, "S3 の 7 回目（独立 reviewer、Opus）", id);
     assert.ok(decision.record.includes("DR-CP4-P-2"), id);
     assert.ok(decision.conditions.length > 0, id);
   }
@@ -2972,6 +3127,20 @@ test("S2 追補 #5: the S3 7th review's decisions are recorded (P-S2-6 condition
   const e = byId["P-S2-6"].options.find((row) => row.id === "e");
   for (const word of ["C1", "C2", "C3", "timeout", "K（=6）"])
     assert.ok(e.text.includes(word), word);
+  // S2 追補 #8: 側ごとの上限 6 は integrator（#757）、S3 は例として 3 と組の最少 24、
+  // 組の上限 6 は #759（DR-CP4-Q-2）。
+  for (const text of [
+    e.text,
+    byId["P-S2-6"].decision.by,
+    byId["P-S2-6"].decision.conditions,
+  ])
+    for (const word of [
+      "integrator が #757（DR-CP4-Q-1）",
+      "例として 3",
+      "組の最少 24",
+      "#759（DR-CP4-Q-2）",
+    ])
+      assert.ok(text.includes(word), word);
   assert.ok(byId["P-S2-6"].decision.fulfilled.includes("DR-CP4-P-3"));
   const p4 = prep.diagnosticRuns.find((row) => row.id === "SP-P4");
   assert.equal(p4.comparisonRule.inForce, "ir-complete-pairs");
@@ -3252,6 +3421,131 @@ test("S2 追補 #5 (P3-1): K24-G01-N4 makes its draft version as the harness doe
 
 // ---- S2 追補 #6（#757 の後の pin し直し、SP-P4 の C1〜C3 の in force、P3-2。DR-CP4-P-3） ----
 
+test("S2 追補 #8（DR-CP4-Q-2）: ir-complete-pairs carries the pinned pair limit SP_P4_IR_TIMEOUT_PAIR_LIMIT (S3's 24-pair minimum) and its receipt fields", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  assert.deepEqual(observationPrepErrors(prep, ctx), []);
+  assert.equal(ctx.harnessConstants.SP_P4_IR_TIMEOUT_PAIR_LIMIT, 6);
+  const pairsOf = (p) =>
+    p.diagnosticRuns
+      .find((row) => row.id === "SP-P4")
+      .comparisonRule.rules.find((row) => row.id === "ir-complete-pairs");
+  const ruleOf = (p) =>
+    p.diagnosticRuns.find((row) => row.id === "SP-P4").comparisonRule;
+  const pairs = pairsOf(prep);
+  assert.equal(pairs.timeoutPairLimit, 6);
+  assert.equal(pairs.timeoutPairLimitConstant, "SP_P4_IR_TIMEOUT_PAIR_LIMIT");
+  // C2 は現在形の事実（側ごとの上限と組の上限）。経緯（最少 18 の取り違え）は history。
+  for (const word of [
+    "組の上限",
+    "組の最少 24",
+    "各側に IR を比べる sample が 24 以上",
+  ])
+    assert.ok(pairs.conditions.C2.includes(word), word);
+  for (const word of ["最少 18", "最小数"])
+    assert.ok(!pairs.conditions.C2.includes(word), word);
+  assert.ok(pairs.history.includes("最少 18"));
+  assert.ok(pairs.history.includes("#759（DR-CP4-Q-2）"));
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  const PAIR = /must carry the pair limit/u;
+  detects(prep, check, (p) => (pairsOf(p).timeoutPairLimit = 7), PAIR);
+  detects(prep, check, (p) => delete pairsOf(p).timeoutPairLimit, PAIR);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (pairsOf(p).conditions.C2 = pairsOf(p).conditions.C2.replace(
+        "SP_P4_IR_TIMEOUT_PAIR_LIMIT（6）",
+        "SP_P4_IR_TIMEOUT_PAIR_LIMIT（7）",
+      )),
+    PAIR,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (pairsOf(p).text = pairsOf(p).text.replaceAll(
+        "ir-timeout-pair-limit",
+        "",
+      )),
+    PAIR,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (ruleOf(p).harnessConstant = ruleOf(p).harnessConstant.replaceAll(
+        "SP_P4_IR_TIMEOUT_PAIR_LIMIT",
+        "",
+      )),
+    PAIR,
+  );
+  // 定数が pin の bytes から読めない（または違う）と閉じる。
+  for (const value of [undefined, 7]) {
+    const errors = observationPrepErrors(prep, {
+      ...ctx,
+      harnessConstants: {
+        ...ctx.harnessConstants,
+        SP_P4_IR_TIMEOUT_PAIR_LIMIT: value,
+      },
+    });
+    assert.ok(
+      errors.some((e) => PAIR.test(e)),
+      String(value),
+    );
+  }
+  // C2 の語（組の上限、S3 の組の最少 24）と、規則の形（理由、開示の欄）。
+  const C123 = /comparisonRule must put ir-complete-pairs in force/u;
+  for (const word of ["組の上限", "組の最少 24", "SP_P4_IR_TIMEOUT_PAIR_LIMIT"])
+    detects(
+      prep,
+      check,
+      (p) =>
+        (pairsOf(p).conditions.C2 = pairsOf(p).conditions.C2.replaceAll(
+          word,
+          "",
+        )),
+      C123,
+    );
+  const SHAPE = /comparisonRule ir-complete-pairs must be C1/u;
+  detects(
+    prep,
+    check,
+    (p) =>
+      (pairsOf(p).undefinedReasons = [
+        "ir-timeout-limit",
+        "no-ir-complete-pair",
+      ]),
+    SHAPE,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (pairsOf(p).disclose = pairsOf(p).disclose.filter(
+        (key) => key !== "timeoutPairLimit",
+      )),
+    SHAPE,
+  );
+  detects(prep, check, (p) => delete pairsOf(p).onOverTimeoutPairLimit, SHAPE);
+  const READING = /comparisonRule\.receiptReading must read/u;
+  for (const [key, field] of [
+    ["design", "irTimeoutPairLimit"],
+    ["attemptIrMeasured", "timeoutPairLimit"],
+    ["comparison", "irExcludedPairs"],
+    ["comparison", "irTimeoutPairLimit"],
+  ])
+    detects(
+      prep,
+      check,
+      (p) =>
+        (ruleOf(p).receiptReading[key] = ruleOf(p).receiptReading[key].filter(
+          (name) => name !== field,
+        )),
+      READING,
+    );
+});
+
 test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (spP4ReceiptDesign, spP4IrDisclosure, assertSpP4WorkspaceStable, compareSpP4Variant, spP4IrTimeoutExcluded)", async () => {
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   const p4 = prep.diagnosticRuns.find((row) => row.id === "SP-P4");
@@ -3263,10 +3557,10 @@ test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (s
   const { spP4ReceiptDesign } =
     await import("../nir1-graph-eval/diagnostic-runner.mjs");
   // 作業 tree の harness は pin の bytes と同じ（import した関数が pin の挙動）。
-  // S2 追補 #7: diagnostic-runner.mjs は #758 の pin にある。
+  // S2 追補 #8: frozen-diagnostics.mjs と diagnostic-runner.mjs は #759 の pin にある。
   for (const [name, role] of [
-    ["frozen-diagnostics.mjs", "sp-p4-ir-timeout"],
-    ["diagnostic-runner.mjs", "s4-rehearsal-admission"],
+    ["frozen-diagnostics.mjs", "sp-p4-ir-pair-limit"],
+    ["diagnostic-runner.mjs", "sp-p4-ir-pair-limit"],
   ]) {
     const pin = harnessPinOf(H4 + name);
     assert.equal(pin.role, role);
@@ -3286,6 +3580,7 @@ test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (s
   for (const key of reading.design) assert.ok(Object.hasOwn(design, key), key);
   assert.equal(design.rule, p4.comparisonRule.inForce);
   assert.equal(design.irTimeoutLimit, pairs.timeoutLimit);
+  assert.equal(design.irTimeoutPairLimit, pairs.timeoutPairLimit);
   const row = (repeat, outcome = "ir-ready", patch = {}) => ({
     phase: "measured",
     repeat,
@@ -3321,7 +3616,36 @@ test("S2 追補 #6: the SP-P4 receipt reading and C1 are the pinned harness's (s
   for (const key of reading.comparison)
     assert.ok(Object.hasOwn(over, key), key);
   const none = compare(samples(K, K), samples(0, K));
-  assert.equal(none.undefinedReason, pairs.undefinedReasons[1]);
+  assert.equal(none.undefinedReason, "no-ir-complete-pair");
+  // S2 追補 #8（DR-CP4-Q-2）: 組の上限。別の位置で外れた組が上限を超えると
+  // ir-timeout-pair-limit、同じ位置なら組の除外は側の数のまま。
+  assert.deepEqual(pairs.undefinedReasons, [
+    "ir-timeout-limit",
+    "ir-timeout-pair-limit",
+    "no-ir-complete-pair",
+  ]);
+  const P = pairs.timeoutPairLimit;
+  const at = (positions, count = 30) => [
+    { phase: "warmup", repeat: 0, ir: { outcome: "ir-ready" } },
+    ...Array.from({ length: count }, (_, i) =>
+      row(i + 1, positions.includes(i) ? "timeout" : "ir-ready"),
+    ),
+  ];
+  const range = (from, n) => Array.from({ length: n }, (_, i) => from + i);
+  const sameSpots = compare(at(range(0, K)), at(range(0, K)));
+  assert.equal(sameSpots.same, true);
+  assert.equal(sameSpots.irExcludedPairs, K);
+  assert.equal(sameSpots.irTimeoutPairLimit, P);
+  const half = Math.floor(P / 2);
+  assert.equal(compare(at(range(0, half)), at(range(10, P - half))).same, true);
+  const split = compare(at(range(0, half)), at(range(10, P - half + 1)));
+  assert.equal(split.undefinedReason, "ir-timeout-pair-limit");
+  assert.equal(split.irExcludedPairs, P + 1);
+  assert.equal(30 - P, 24);
+  assert.equal(
+    d.spP4IrDisclosure(samples(2)).measured.timeoutPairLimit,
+    pairs.timeoutPairLimit,
+  );
   assert.throws(
     () => d.assertSpP4WorkspaceStable(samples(K + 1), "x"),
     /more than 6/u,
@@ -3715,16 +4039,38 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
       mutated += 1;
     }
   }
-  assert.equal(mutated, 14);
-  // 移した 4 file を旧い pin（950751d0、43e3f40b）の bytes と比べると落ちる。
-  for (const [name, old] of [
-    ["admission.mjs", "950751d040b29b6d78a067a003dc19b196cfb692"],
-    ["frozen-k64-admission.mjs", "950751d040b29b6d78a067a003dc19b196cfb692"],
-    ["trace-frozen.mjs", "950751d040b29b6d78a067a003dc19b196cfb692"],
-    ["diagnostic-runner.mjs", "43e3f40b5d653c62d5aca4ca795917b67310992c"],
+  // S2 追補 #8: diagnostic-runner.mjs は #759 の pin へ移った（13 file）。
+  assert.equal(mutated, 13);
+  // 移した file を旧い pin（950751d0、43e3f40b、82d42746）の bytes と比べると落ちる。
+  for (const [name, old, role] of [
+    [
+      "admission.mjs",
+      "950751d040b29b6d78a067a003dc19b196cfb692",
+      "s4-rehearsal-admission",
+    ],
+    [
+      "frozen-k64-admission.mjs",
+      "950751d040b29b6d78a067a003dc19b196cfb692",
+      "s4-rehearsal-admission",
+    ],
+    [
+      "trace-frozen.mjs",
+      "950751d040b29b6d78a067a003dc19b196cfb692",
+      "s4-rehearsal-admission",
+    ],
+    [
+      "diagnostic-runner.mjs",
+      "82d427465b16a12809c6f93adad74ac97859c85a",
+      "sp-p4-ir-pair-limit",
+    ],
+    [
+      "frozen-diagnostics.mjs",
+      "43e3f40b5d653c62d5aca4ca795917b67310992c",
+      "sp-p4-ir-pair-limit",
+    ],
   ]) {
     const copy = clone(pins);
-    const row = copy.find((p) => p.role === "s4-rehearsal-admission");
+    const row = copy.find((p) => p.role === role);
     row.commit = old;
     assert.ok(
       sourcePinGitErrors(copy, ctx.sourcePinGit.head, ctx.sourcePinGit).some(
