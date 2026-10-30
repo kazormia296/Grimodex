@@ -338,6 +338,33 @@ export function d2ProbeCheck({ spec, setupProbe, metadata, indexUsable, at }) {
 }
 
 /**
+ * DR-CP4-T-1: the measurement process's wait for the product's Freshness to
+ * reach the cold DB's feed head (`waitFreshnessSettled`), before the
+ * declaration step, the Raw vectors and the Chronicle Index. A wait that
+ * used up its limit is the existing `index-build-timeout` (DR-CP4-L-28 (8)
+ * a while- variant → `blocked:index-state-holding`, (9) another → Hold and
+ * [precheck]); the table gains no row.
+ */
+export function freshnessSettleCheck({ spec, settle }) {
+  if (settle?.settled === true) return { ok: true };
+  return {
+    ok: false,
+    probe: { at: "before-measurement", freshnessFeed: { settle } },
+    blocked: spec.holding
+      ? {
+          harnessId: "index-build-timeout",
+          condition: "while-variant",
+          unmet: ["index-state-holding"],
+        }
+      : {
+          harnessId: "index-build-timeout",
+          condition: "other-variant",
+          unmet: [],
+        },
+  };
+}
+
+/**
  * The receipt's blocked record of a measurement-time mismatch or of a setup
  * that stopped blocked: the harness's name and condition as they are, and
  * the case judgement of BLOCKED_CONTRACT_TABLE for the plan (G-01 has its

@@ -52,6 +52,7 @@ import {
   declarationInvariantCheck,
   devRunSpec,
   formalRunPlan,
+  freshnessSettleCheck,
   measurementCopySeedCheck,
   oneShotProcessSchedule,
   parityVariantKeys,
@@ -106,8 +107,10 @@ import {
 } from "./window.mjs";
 import {
   readDeclarationInvariants,
+  readFreshnessFeed,
   readIndexMetadata,
   readQuerySceneSeedPins,
+  waitFreshnessSettled,
 } from "./workspace-db.mjs";
 
 export const FROZEN_RUN_REPORT_SCHEMA = "nir1-cp4-frozen-k64-run/1";
@@ -119,6 +122,14 @@ const ADDON_CALL_TIMEOUT_MS = 10_000;
 const STATUS_WAIT_MS = 20_000;
 const OWNER_READY_WAIT_MS = 90_000;
 const INDEX_BUILD_LIMIT_MS = 60_000;
+/**
+ * DR-CP4-T-1: the wait for the product's Freshness to reach the cold DB's
+ * feed head. The poll is a tenth of the scheduler's idle poll (1 s); the
+ * limit lets the scheduler's first cycle (250 ms) and 14 more idle polls or
+ * error retries (1 s each) pass. A hang guard, not a K6/4 value.
+ */
+const FRESHNESS_SETTLE_LIMIT_MS = 15_000;
+const FRESHNESS_SETTLE_INTERVAL_MS = 100;
 
 const stripSha = (value) =>
   typeof value === "string" ? value.replace(/^sha256:/u, "") : value;
@@ -705,6 +716,29 @@ async function openProcess({ ctx, dir, label }) {
       copy.dbPath,
       ctx.ids.projectId,
     );
+    // DR-CP4-T-1: before the declaration step (its Index metadata must not
+    // change across it), the Raw vectors and the Chronicle Index, the
+    // product's Freshness processes what the setup left in the feed; its
+    // invalidation of B and C commits with its ack.
+    const settle = await waitFreshnessSettled({
+      read: () => readFreshnessFeed(copy.dbPath, ctx.ids.projectId),
+      limitMs: FRESHNESS_SETTLE_LIMIT_MS,
+      intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
+      now: () => nowOf(ctx),
+      sleep: ctx.clock?.sleep ?? ((ms) => delay(ms)),
+    });
+    proc.checks.freshnessSettle = { settle };
+    const settled = freshnessSettleCheck({ spec, settle });
+    if (!settled.ok) {
+      proc.before = {
+        ...settled,
+        probe: {
+          ...settled.probe,
+          metadata: readIndexMetadata(copy.dbPath, ctx.ids.projectId),
+        },
+      };
+      return proc;
+    }
     if (ctx.negative) {
       const reopened = await ctx.negative.beforeDeclaration({
         page,
@@ -789,6 +823,13 @@ async function openProcess({ ctx, dir, label }) {
       indexUsable,
       at: "before-measurement",
     });
+    // DR-CP4-T-1: the feed at the probe too (the steps after the wait may
+    // have written events of their own).
+    proc.checks.freshnessSettle.beforeMeasurement = readFreshnessFeed(
+      copy.dbPath,
+      ctx.ids.projectId,
+    );
+    proc.before.probe.freshnessFeed = proc.checks.freshnessSettle;
     return proc;
   } catch (error) {
     // The caller never receives this process: stop its Main here (by its own
