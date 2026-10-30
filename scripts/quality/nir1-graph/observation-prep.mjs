@@ -288,6 +288,9 @@ const HARNESS_DIR = "scripts/quality/nir1-graph-eval/";
  * and (bytes) the exact harness paths it holds — a file is held by the
  * master commit that last changed it, and no path is held twice. The pins
  * after b1a87b0b hold every non-test harness file #754 and #756 changed.
+ * S2 追補 #5（S3 の 7 回目の P2-2、P-S2-9 (b)、DR-CP4-P-2）: every harness
+ * file in the closure of FORMAL_HARNESS_ENTRIES (static imports and the
+ * harness paths a file names) is held too.
  */
 export const SOURCE_PINS = Object.freeze(
   [
@@ -295,15 +298,32 @@ export const SOURCE_PINS = Object.freeze(
     [
       "s1j2-complete-setup",
       "3a6e65e400cac5d72e761f58eb1ae8eaec514e18",
-      ["frozen-setup-plan.mjs", "setup-main-build.mjs", "setup-receipt.mjs"],
+      [
+        "electron-observer.entry.mjs",
+        "frozen-setup-plan.mjs",
+        "launcher.mjs",
+        "session.mjs",
+        "setup-main-build.mjs",
+        "setup-receipt.mjs",
+      ],
     ],
     [
       "trace-runner",
       "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba",
-      ["trace-record.mjs", "trace-seal.mjs"],
+      [
+        "build-receipt-check.mjs",
+        "renderer/cp4-trace-probe.tsx",
+        "renderer/trace-cycle.ts",
+        "trace-record.mjs",
+        "trace-seal.mjs",
+      ],
     ],
     ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105", []],
-    ["t14-k64-freeze", "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f", []],
+    [
+      "t14-k64-freeze",
+      "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
+      ["constants.mjs", "receipt.mjs"],
+    ],
     ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775", []],
     ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
     [
@@ -344,6 +364,56 @@ export const SOURCE_PINS = Object.freeze(
         "window.mjs",
       ],
     ],
+    [
+      "pr1-native-eval-feature",
+      "3739dbedb762ada8961f509c1b4d6885a11c3099",
+      ["native-architecture.mjs"],
+    ],
+    [
+      "p1-harness-core",
+      "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
+      [
+        "admission-facts.mjs",
+        "availability.mjs",
+        "egress.mjs",
+        "followup.mjs",
+        "join.mjs",
+        "native-sample.mjs",
+        "procedure-file.mjs",
+        "q4.mjs",
+        "run-sample.mjs",
+        "stats.mjs",
+      ],
+    ],
+    [
+      "p2p3-harness-admission",
+      "a4e65b66006dec7101f93340cdca70fcafabfc5d",
+      [
+        "dev-fixture.mjs",
+        "dprime-check.mjs",
+        "eval-native-build.mjs",
+        "keep-test.mjs",
+        "observer-core.mjs",
+        "outcome.mjs",
+        "renderer-build.mjs",
+        "renderer/cp4-harness.html",
+        "renderer/cp4-hook-probe.tsx",
+        "renderer/fetchRelatedScenes.timing.ts",
+        "renderer/nir1GraphAvailability.eval.ts",
+        "renderer/shell.timing.ts",
+        "signal-cleanup.mjs",
+      ],
+    ],
+    [
+      "p4-setup-driver-seed-pin",
+      "7a2669ead5262cc1a1126a7ab52bf808afeb98ff",
+      [
+        "r5-check-runner.mjs",
+        "seed-pin-setup.mjs",
+        "seed-pin.mjs",
+        "setup-driver.mjs",
+      ],
+    ],
   ].map(([role, commit, names]) =>
     Object.freeze({
       role,
@@ -353,6 +423,17 @@ export const SOURCE_PINS = Object.freeze(
     }),
   ),
 );
+/**
+ * S2 追補 #5（P-S2-9 (b)）: the formal entries whose harness closure the
+ * bytes pins cover.
+ */
+export const FORMAL_HARNESS_ENTRIES = Object.freeze([
+  "diagnostic-runner.mjs",
+  "trace-runner.mjs",
+  "frozen-k64-run.mjs",
+  "frozen-setup-driver.mjs",
+  "r5-check-runner.mjs",
+]);
 /** S2 追補 #4: the pin whose bytes S2's readings are taken from. */
 const HARNESS_PIN = Object.freeze({
   role: "s5b-diagnostics-wiring",
@@ -619,6 +700,17 @@ const SP_P4_PROPOSED = Object.freeze({
   onNoIrComplete: "[precheck]",
   threshold: null,
 });
+/**
+ * S2 追補 #5（S3 の 7 回目、DR-CP4-P-2）: the P-S2-6 choices that let
+ * ir-complete-pairs come into force. "a" is the proposal as written; "e" is
+ * S3's conditional decision (C1〜C3), which needs the rule's conditions body
+ * (written after the harness PR that wires C1〜C3 is merged).
+ */
+const SP_P4_SWITCH_CHOICES = Object.freeze({
+  a: "as-proposed",
+  e: "conditional",
+});
+const SP_P4_CONDITIONS = Object.freeze(["C1", "C2", "C3"]);
 /** S2 追補 #4（DR-CP4-N-14 (2)）: the Gold receipt's priorAttempts. */
 const PRIOR_ATTEMPTS = Object.freeze({
   priorAttempts: ["gold", "parity", "parityUsed", "thisAttempt"],
@@ -1085,6 +1177,20 @@ function afterMutationReadingErrors(errors, addendum, ctx) {
   )
     errors.push(
       "diagnosticNegatives K24-G01-N3 must make the same-bytes version with the manual version writer createRevision (DR-CP4-O-5 (viii))",
+    );
+  // S2 追補 #5（S3 の 7 回目の P3-1）: N4 saves the draft body with the body
+  // save writer and makes its version with createRevision, as the harness.
+  const n4 = (addendum.diagnosticNegatives ?? []).find(
+    (row) => row?.id === "K24-G01-N4",
+  );
+  const n4Text = String(n4?.beforeDeclaration ?? "");
+  if (
+    n4?.beforeDeclarationWriter !== "saveSceneContent-then-createRevision" ||
+    !n4Text.includes("saveSceneContent") ||
+    !n4Text.includes("createRevision")
+  )
+    errors.push(
+      "diagnosticNegatives K24-G01-N4 must save the draft body with saveSceneContent and make its version with the manual version writer createRevision (S3 の 7 回目の P3-1)",
     );
 }
 
@@ -2304,6 +2410,24 @@ function d2ReadingErrors(errors, readings, ctx) {
 }
 
 /**
+ * S2 追補 #5: S3's P-S2-6 decision lets ir-complete-pairs come into force
+ * only with a switch choice; the conditional one also needs its conditions
+ * recorded and the rule's C1〜C3 body.
+ */
+function spP4SwitchDecided(decided, proposed) {
+  const kind = Object.hasOwn(SP_P4_SWITCH_CHOICES, decided?.choice ?? "")
+    ? SP_P4_SWITCH_CHOICES[decided.choice]
+    : null;
+  if (kind === "as-proposed") return true;
+  return (
+    kind === "conditional" &&
+    nonBlank(decided?.conditions) &&
+    isObject(proposed?.conditions) &&
+    SP_P4_CONDITIONS.every((id) => nonBlank(proposed.conditions[id]))
+  );
+}
+
+/**
  * S2 追補 #4（DR-CP4-O-5 (ii)(iii)(iv)(ix)、O-7）: SP-P4's sparse re-read,
  * the supplement slot, the retake scope and the comparison rule. The rule
  * in force is the pinned harness's SP_P4_COMPARISON_RULE; the proposed
@@ -2360,7 +2484,8 @@ function spP4ReadingErrors(errors, p4, prep, ctx) {
     rows.some((row) => !nonBlank(row?.text)) ||
     !holds(proposed, SP_P4_PROPOSED) ||
     (proposed?.status === "proposed" && !nonBlank(proposed?.awaits)) ||
-    (rule.inForce === "ir-complete-pairs" && decided?.choice !== "a") ||
+    (rule.inForce === "ir-complete-pairs" &&
+      !spP4SwitchDecided(decided, proposed)) ||
     !nonBlank(rule.switchRule) ||
     !nonBlank(rule.disclosure)
   )

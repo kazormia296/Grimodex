@@ -175,7 +175,7 @@
       "declare": true,
       "mutationAfterDeclaration": "restore-different-bytes-body-version",
       "mutationNote": "宣言の後に、g01-mira の本文版を、製品の restore の経路で、宣言の時点と違う bytes の版に戻す（K2/4 :416 の一般の restore）。",
-      "beforeDeclaration": "宣言より前に、製品のエディタか本文の保存の writer で、g01-mira の本文の末尾に \" Draft.\" を足して保存し、次に元の本文で保存し直して、版の履歴に別の bytes の版を作る（宣言の時点の本文は fixture の本文のまま）。作れなければこの診断を blocked として記録する。",
+      "beforeDeclaration": "宣言より前に、g01-mira の本文の末尾に \" Draft.\" を足した本文を製品の本文の保存の writer（saveSceneContent）で保存し、その本文の版を製品の manual の版の writer（createRevision、snapshotType manual。エディタの保存が使う版の writer）で作り（最新の版がすでに同じ bytes なら〔writer は最新の版と同じ本文の写しを作らない〕その版を使う）、次に元の本文を本文の保存の writer で保存し直して、版の履歴に宣言の時点と違う bytes の版を残す（宣言の時点の本文は fixture の本文のまま）。版は本文の保存の writer ではなく manual の版の writer で作る（N3 と同じ。S2 追補 #5、S3 の 7 回目の P3-1）。どちらでも違う bytes の版を得られなければ、この診断を blocked として記録する。",
       "measurementProcess": "測定の Main を B-ROUTE の journey seam（CI=true、owner token、nonce、GRIMODEX_PRODUCT_JOURNEY_MAINTENANCE_TRIGGER=nir1-graph-index-build）で起動し、maintenance を製品の既定で動かす。mutation（と beforeDeclaration の保存）の後に、測定の Main を閉じて同じ workspace で開き直し、B の seal が current に戻り Chronicle の Index が使えることを、setup の B の seal の session と同じ開き直しと待ちの上限で待ってから samplePlan の schedule で測る（afterMutationReadings.resealAfterMutation）。届かなければこの診断を blocked として記録する（case の判定に数えない）。",
       "expectation": "g01-mira は R+IR+Graph に返らない（restore は宣言を消し、本文も宣言の束縛と違う）。",
       "countsInCaseJudgement": false,
@@ -188,7 +188,8 @@
       "inconclusiveWhen": "afterMutationReadings.verdict のとおり。SP-P1 の照合が通らない、Graph が seed つきで要求されない、g01-mira-entity に届かない、または判定不能（対照が reached でない、入力の digest が違う、聞き直しの上限で答えが決まらない、A3 を読んでいない）の sample があれば、その診断は inconclusive として残し、負例が成り立ったとは書かない（宣言の失効と無関係に g01-mira が返らない場合と区別できないため。再保存で Revision の鮮度が変わった場合を含む）。",
       "restorePath": "scene-body-version",
       "restorePathRule": "Scene の本文版の restore（1 つの Scene の版の履歴から、その Scene の本文だけを戻す製品の経路）に限る。project の snapshot の restore は使わない（project の全 Scene の scene_codex_pins と events を戻すので、seed の pin が消えうる。project_snapshots.rs:329、335）。製品にその経路が無い、または使えなければ、この診断を blocked として記録する。",
-      "afterMutationReading": "afterMutationReadings"
+      "afterMutationReading": "afterMutationReadings",
+      "beforeDeclarationWriter": "saveSceneContent-then-createRevision"
     }
   ],
   "diagnosticNegativeRule": "負例は Gold ではなく診断用の期待値で、Gold の run とは別の run で行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。",

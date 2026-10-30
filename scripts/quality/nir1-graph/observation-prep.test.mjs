@@ -3,6 +3,7 @@
 // ず、repo の file と、その変異（in-memory の複製）だけを読む。
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync, statSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
@@ -10,6 +11,7 @@ import { SP1 } from "./seed-pin-addendum.mjs";
 import { execFileSync } from "node:child_process";
 import {
   BLOCKED_TABLE_SOURCE,
+  FORMAL_HARNESS_ENTRIES,
   HARNESS_CONSTANTS,
   K24_TABLE,
   OBSERVATION_PREP_FILES,
@@ -1756,6 +1758,11 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "s5a-graph-arm-runner",
       "maintenance-ownership-release",
       "s5b-diagnostics-wiring",
+      // S2 追補 #5（P-S2-9 (b)。正式の入口の閉包の file を最後に変えた commit）。
+      "pr1-native-eval-feature",
+      "p1-harness-core",
+      "p2p3-harness-admission",
+      "p4-setup-driver-seed-pin",
     ],
   );
   assert.deepEqual(
@@ -2636,6 +2643,39 @@ test("S2 追補 #4 (C): SP-P4 re-reads sparse, R+IR − R, graph-recovered's rea
     ),
     "undecided P-S2-6",
   );
+  // S2 追補 #5: 記録した決定（e、条件つき）だけでは、C1〜C3 の本文が無いので切り替えない。
+  assert.equal(
+    switched.reviewerQuestions.find((row) => row.id === "P-S2-6").decision
+      .choice,
+    "e",
+  );
+  const switchErrors = (copy) =>
+    observationPrepErrors(copy, switchedCtx).some((e) =>
+      /comparisonRule/u.test(e),
+    );
+  assert.ok(switchErrors(switched), "e without the C1〜C3 body");
+  // C1〜C3 の本文（harness の PR の後に書く）があれば e で切り替えられる。
+  const conditional = clone(switched);
+  conditional.diagnosticRuns[at].comparisonRule.rules[1].conditions = {
+    C1: "timeout の sample だけ IR の欄を外す",
+    C2: "timeout が K を超えたら [precheck]",
+    C3: "harness の別の commit に pin し直す",
+  };
+  assert.ok(!switchErrors(conditional), "e with the C1〜C3 body");
+  // 変異: 条件の 1 つを欠く、決定の conditions を欠く、切替を許さない choice。
+  const noC2 = clone(conditional);
+  delete noC2.diagnosticRuns[at].comparisonRule.rules[1].conditions.C2;
+  assert.ok(switchErrors(noC2), "C2 missing");
+  const noConditions = clone(conditional);
+  delete noConditions.reviewerQuestions.find((row) => row.id === "P-S2-6")
+    .decision.conditions;
+  assert.ok(switchErrors(noConditions), "decision conditions missing");
+  for (const choice of ["b", "c", "d"]) {
+    const other = clone(conditional);
+    other.reviewerQuestions.find((row) => row.id === "P-S2-6").decision.choice =
+      choice;
+    assert.ok(switchErrors(other), `choice ${choice}`);
+  }
   switched.reviewerQuestions.find((row) => row.id === "P-S2-6").decision = {
     choice: "a",
     by: "S3（7 回目）",
@@ -2711,15 +2751,36 @@ test("S2 追補 #4 (E): the trace takes only the candidate's G-02 base complete 
   }
 });
 
-test("S2 追補 #4 (F): the S3 7th review's questions are open, with grounds and options", async () => {
+test("S2 追補 #5: the S3 7th review's decisions are recorded (P-S2-6 conditional e, P-S2-7 a, P-S2-8 a, P-S2-9 b)", async () => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
-  const added = prep.reviewerQuestions.filter((row) =>
-    ["P-S2-6", "P-S2-7", "P-S2-8", "P-S2-9"].includes(row.id),
+  const byId = Object.fromEntries(
+    prep.reviewerQuestions.map((row) => [row.id, row]),
   );
-  assert.equal(added.length, 4);
-  assert.ok(added.every((row) => row.decision === null));
-  assert.ok(added[0].topic.includes("loosening"));
+  assert.ok(byId["P-S2-6"].topic.includes("loosening"));
+  for (const [id, choice] of [
+    ["P-S2-6", "e"],
+    ["P-S2-7", "a"],
+    ["P-S2-8", "a"],
+    ["P-S2-9", "b"],
+  ]) {
+    const { decision } = byId[id];
+    assert.equal(decision.choice, choice, id);
+    assert.equal(decision.by, "S3 の 7 回目（独立 reviewer、Opus）", id);
+    assert.ok(decision.record.includes("DR-CP4-P-2"), id);
+    assert.ok(decision.conditions.length > 0, id);
+  }
+  // P-S2-6 の e は S3 の条件 C1〜C3 の選択肢。決定は記録するが、規則は current のまま。
+  const e = byId["P-S2-6"].options.find((row) => row.id === "e");
+  for (const word of ["C1", "C2", "C3", "timeout", "K（=6）"])
+    assert.ok(e.text.includes(word), word);
+  const p4 = prep.diagnosticRuns.find((row) => row.id === "SP-P4");
+  assert.equal(p4.comparisonRule.inForce, "current");
+  assert.equal(
+    p4.comparisonRule.rules.find((row) => row.id === "ir-complete-pairs")
+      .status,
+    "proposed",
+  );
   const check = (copy) => observationPrepErrors(copy, ctx);
   detects(
     prep,
@@ -2730,6 +2791,16 @@ test("S2 追補 #4 (F): the S3 7th review's questions are open, with grounds and
       }),
     /reviewerQuestions P-S2-6/u,
   );
+  // 選択肢に無い choice は拒む（e を外すと P-S2-6 の決定が宙に浮く）。
+  detects(
+    prep,
+    check,
+    (p) => {
+      const row = p.reviewerQuestions.find((r) => r.id === "P-S2-6");
+      row.options = row.options.filter((option) => option.id !== "e");
+    },
+    /reviewerQuestions P-S2-6: a decision must be S3's/u,
+  );
   detects(
     prep,
     check,
@@ -2738,5 +2809,244 @@ test("S2 追補 #4 (F): the S3 7th review's questions are open, with grounds and
         (row) => row.id !== "P-S2-9",
       )),
     /reviewerQuestions must be/u,
+  );
+});
+
+// ---- S2 追補 #5（S3 の 7 回目の P2-2〔P-S2-9 (b)〕、P3-1、P-S2-6〜9 の決定。DR-CP4-P-2） ----
+
+/**
+ * 正式の入口からの harness の閉包: 静的な import（相対）、HTML の script の src、
+ * harness の path の文字列（scripts/quality/nir1-graph-eval/… と renderer/…）を
+ * たどる。harness の directory の外の file は数えない（製品と別の評価の道具）。
+ */
+function harnessClosure(root, entries) {
+  const dir = path.join(root, H4);
+  const seen = new Set();
+  const stack = entries.map((entry) => path.join(dir, entry));
+  const exists = (file) => {
+    try {
+      return statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
+  while (stack.length > 0) {
+    const file = stack.pop();
+    if (seen.has(file) || !exists(file)) continue;
+    seen.add(file);
+    const text = readFileSync(file, "utf8");
+    for (const m of text.matchAll(
+      /(?:import|export)[^'"]*?from\s*["']([^"']+)["']|import\(\s*["']([^"']+)["']\s*\)|import\s+["']([^"']+)["']|<script[^>]*\ssrc=["']([^"']+)["']/gu,
+    )) {
+      const spec = m[1] ?? m[2] ?? m[3] ?? m[4];
+      if (!spec.startsWith(".")) continue;
+      const base = path.resolve(path.dirname(file), spec);
+      const target =
+        ["", ".mjs", ".ts", ".tsx", ".js"]
+          .map((ext) => base + ext)
+          .find(exists) ?? base;
+      if (target.startsWith(dir)) stack.push(target);
+    }
+    for (const m of text.matchAll(
+      /["'`](scripts\/quality\/nir1-graph-eval\/[\w./-]+\.(?:mjs|ts|tsx|html))["'`]/gu,
+    ))
+      stack.push(path.join(root, m[1]));
+    for (const m of text.matchAll(
+      /["'`/](renderer\/[\w.-]+\.(?:ts|tsx|html))["'`]/gu,
+    ))
+      stack.push(path.join(dir, m[1]));
+  }
+  return [...seen].map((file) => path.relative(root, file)).sort();
+}
+
+/** 閉包の file のうち、どの bytes の pin にも無いもの。 */
+const unpinned = (closure, pins) => {
+  const held = new Set(pins.flatMap((pin) => pin.paths));
+  return closure.filter((file) => !held.has(file));
+};
+
+/** S2 追補 #5 で足した 36 file（28 は静的な import、8 は renderer と observer の entry）。 */
+const ADDENDUM5_FILES = Object.freeze({
+  "s1j2-complete-setup": [
+    "electron-observer.entry.mjs",
+    "launcher.mjs",
+    "session.mjs",
+  ],
+  "trace-runner": [
+    "build-receipt-check.mjs",
+    "renderer/cp4-trace-probe.tsx",
+    "renderer/trace-cycle.ts",
+  ],
+  "t14-k64-freeze": ["constants.mjs", "receipt.mjs"],
+  "pr1-native-eval-feature": ["native-architecture.mjs"],
+  "p1-harness-core": [
+    "admission-facts.mjs",
+    "availability.mjs",
+    "egress.mjs",
+    "followup.mjs",
+    "join.mjs",
+    "native-sample.mjs",
+    "procedure-file.mjs",
+    "q4.mjs",
+    "run-sample.mjs",
+    "stats.mjs",
+  ],
+  "p2p3-harness-admission": [
+    "dev-fixture.mjs",
+    "dprime-check.mjs",
+    "eval-native-build.mjs",
+    "keep-test.mjs",
+    "observer-core.mjs",
+    "outcome.mjs",
+    "renderer-build.mjs",
+    "renderer/cp4-harness.html",
+    "renderer/cp4-hook-probe.tsx",
+    "renderer/fetchRelatedScenes.timing.ts",
+    "renderer/nir1GraphAvailability.eval.ts",
+    "renderer/shell.timing.ts",
+    "signal-cleanup.mjs",
+  ],
+  "p4-setup-driver-seed-pin": [
+    "r5-check-runner.mjs",
+    "seed-pin-setup.mjs",
+    "seed-pin.mjs",
+    "setup-driver.mjs",
+  ],
+});
+
+test("S2 追補 #5 (P2-2): the formal entries' harness closure is held by the bytes pins, and an unpinned closure file fails", async (t) => {
+  const closure = harnessClosure(repoRoot, FORMAL_HARNESS_ENTRIES);
+  // 静的な import の閉包は 49 file、path の参照をたどると renderer と observer の entry の 12 file が増える。
+  assert.equal(closure.length, 61);
+  assert.ok(
+    closure.every((file) => !/\.test\.mjs$|test-support\.mjs$/u.test(file)),
+  );
+  assert.deepEqual(unpinned(closure, SOURCE_PINS), []);
+  const added = Object.values(ADDENDUM5_FILES).flat();
+  assert.equal(added.length, 36);
+  for (const file of added) assert.ok(closure.includes(H4 + file), file);
+  // 変異: 閉包の file を pin から外す（36 file のそれぞれ）。
+  for (const [role, names] of Object.entries(ADDENDUM5_FILES))
+    for (const name of names) {
+      const pins = SOURCE_PINS.map((pin) =>
+        pin.role === role
+          ? { ...pin, paths: pin.paths.filter((file) => file !== H4 + name) }
+          : pin,
+      );
+      assert.deepEqual(unpinned(closure, pins), [H4 + name], name);
+    }
+  // 変異: 閉包に新しい file が入る（harness が新しい file を import する）。
+  assert.deepEqual(unpinned([...closure, `${H4}new-helper.mjs`], SOURCE_PINS), [
+    `${H4}new-helper.mjs`,
+  ]);
+  // 記録の pin と SOURCE_PINS は同じ path の列で、記録から外しても validator が落ちる。
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  for (const [role, names] of Object.entries(ADDENDUM5_FILES))
+    detects(
+      prep,
+      (copy) => observationPrepErrors(copy, ctx),
+      (p) => {
+        const pin = p.setupReadings.source.pins.find(
+          (row) => row.role === role,
+        );
+        pin.files = pin.files.filter((file) => file.path !== H4 + names[0]);
+      },
+      /setupReadings\.source\.pins must be/u,
+    );
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the commits are checked by the formal gate");
+    return;
+  }
+  // 各 file は master でそれを最後に変えた commit の pin にあり、その commit は master の祖先。
+  const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
+  for (const [role, names] of Object.entries(ADDENDUM5_FILES)) {
+    const pin = SOURCE_PINS.find((row) => row.role === role);
+    assert.equal(pin.check, "bytes", role);
+    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, master), role);
+    for (const name of names) {
+      assert.equal(
+        gitText(["log", "-1", "--format=%H", master, "--", H4 + name]),
+        pin.commit,
+        name,
+      );
+      const row = prep.setupReadings.source.pins
+        .find((p) => p.role === role)
+        .files.find((file) => file.path === H4 + name);
+      assert.equal(
+        row.sha256,
+        sha256(
+          execFileSync("git", ["show", `${pin.commit}:${H4}${name}`], {
+            cwd: repoRoot,
+          }),
+        ),
+        name,
+      );
+    }
+  }
+});
+
+test("S2 追補 #5 (P2-2): a changed sha256 of each added file fails the git check", async (t) => {
+  const ctx = await context();
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone");
+    return;
+  }
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const pins = prep.setupReadings.source.pins;
+  const { head } = ctx.sourcePinGit;
+  let mutated = 0;
+  for (const [role, names] of Object.entries(ADDENDUM5_FILES))
+    for (const name of names) {
+      const copy = clone(pins);
+      const row = copy
+        .find((p) => p.role === role)
+        .files.find((file) => file.path === H4 + name);
+      row.sha256 = flip(row.sha256);
+      assert.ok(
+        sourcePinGitErrors(copy, head, ctx.sourcePinGit).some((e) =>
+          e.includes(`${H4}${name} at `),
+        ),
+        name,
+      );
+      mutated += 1;
+    }
+  assert.equal(mutated, 36);
+});
+
+test("S2 追補 #5 (P3-1): K24-G01-N4 makes its draft version as the harness does (saveSceneContent, then createRevision)", async () => {
+  const ctx = await context();
+  const addendum = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  assert.deepEqual(setupAddendumErrors(addendum, ctx), []);
+  const n4 = addendum.diagnosticNegatives.find(
+    (row) => row.id === "K24-G01-N4",
+  );
+  assert.equal(
+    n4.beforeDeclarationWriter,
+    "saveSceneContent-then-createRevision",
+  );
+  const check = (copy) => setupAddendumErrors(copy, ctx);
+  const N4 = (mutate) =>
+    detects(
+      addendum,
+      check,
+      (a) =>
+        mutate(a.diagnosticNegatives.find((row) => row.id === "K24-G01-N4")),
+      /K24-G01-N4 must save the draft body/u,
+    );
+  N4((row) => (row.beforeDeclarationWriter = "saveSceneContent"));
+  N4(
+    (row) =>
+      (row.beforeDeclaration = row.beforeDeclaration.replaceAll(
+        "createRevision",
+        "保存",
+      )),
+  );
+  N4(
+    (row) =>
+      (row.beforeDeclaration = row.beforeDeclaration.replaceAll(
+        "saveSceneContent",
+        "保存",
+      )),
   );
 });
