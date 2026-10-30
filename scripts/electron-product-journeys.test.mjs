@@ -6313,7 +6313,15 @@ test("expired default Ubuntu Xvfb allowances leave every error unallowed", async
   });
   t.after(() => rm(harness.tmpRoot, { recursive: true, force: true }));
 
-  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 5);
+  assert.equal(MAIN_PROCESS_NOISE_ALLOWLIST.length, 4);
+  assert.ok(
+    MAIN_PROCESS_NOISE_ALLOWLIST.every(
+      (allowance) =>
+        allowance.id !== "ubuntu-xvfb-restore-reload-shared-image-skia" &&
+        !allowance.pattern.source.includes("ProduceSkia"),
+    ),
+    "the restore reload ProduceSkia exception was removed after #710",
+  );
   const mainMessages = [
     '[6341:0730/134519.105645:ERROR:dbus/bus.cc:405] Failed to connect to the bus: Could not parse server address: Unknown address type (examples of valid types are "tcp" and on UNIX "unix")\n',
     "[6341:0730/134519.106425:ERROR:dbus/object_proxy.cc:572] Failed to call method: org.freedesktop.DBus.NameHasOwner: object_path= /org/freedesktop/DBus: unknown error type: \n",
@@ -6341,40 +6349,39 @@ test("expired default Ubuntu Xvfb allowances leave every error unallowed", async
   );
 });
 
-test("restore reload warning has no static phase-and-message allowance", async (t) => {
+test("restore reload ProduceSkia warning has no allowance in any phase", async (t) => {
   const exact =
     "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
-  for (const { name, phase, message, allowed, now = "2026-10-03" } of [
-    {
-      name: "exact restore message",
-      phase: "c2-5b-restore-verify-rebuild-verify/restore",
+  for (const { name, phase, message, now = "2026-10-31" } of [
+    ...[
+      "c2-5b-restore-verify-rebuild-verify/restore",
+      "c2-zc-canonical-authority-cutover/restore",
+      "c2-zc-post-marker-lifecycle/bootstrap-restore",
+    ].map((phase) => ({
+      name: `exact message in former allowance phase ${phase}`,
+      phase,
       message: exact,
-      allowed: false,
-    },
+    })),
     {
-      name: "old open phase is rejected",
+      name: "exact message in an open phase",
       phase: "c2-5b-restore-verify-rebuild-verify/open",
       message: exact,
-      allowed: false,
     },
     {
-      name: "near match in restore is rejected",
+      name: "near match in restore",
       phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact.replace("ProduceSkia:", "ProduceSkiaNearMatch:"),
-      allowed: false,
     },
     {
-      name: "other GPU error in restore is rejected",
+      name: "other GPU error in restore",
       phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact.replace("ProduceSkia:", "ProduceMemory:"),
-      allowed: false,
     },
     {
-      name: "expired exact restore message is rejected",
+      name: "exact message before the former expiry date",
       phase: "c2-5b-restore-verify-rebuild-verify/restore",
       message: exact,
-      allowed: false,
-      now: "2026-11-11",
+      now: "2026-10-03",
     },
   ]) {
     await t.test(name, async (t) => {
@@ -6415,19 +6422,16 @@ test("restore reload warning has no static phase-and-message allowance", async (
         () => null,
         (cause) => cause,
       );
-      assert.equal(
-        error?.name ?? null,
-        allowed ? null : "MainProcessDiagnosticsError",
-      );
+      assert.equal(error?.name ?? null, "MainProcessDiagnosticsError");
       const diagnostics = harness.diagnostics();
       assert.equal(diagnostics.mainErrorCount, 1);
-      assert.equal(diagnostics.mainCleanPass, allowed);
+      assert.equal(diagnostics.mainCleanPass, false);
       assert.deepEqual(
         diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
           phase,
           message,
         })),
-        allowed ? [] : [{ phase, message }],
+        [{ phase, message }],
       );
       await harness.captureFailureArtifact("boundary");
       const records = JSON.parse(
@@ -6446,28 +6450,16 @@ test("restore reload warning has no static phase-and-message allowance", async (
       assert.equal(records[0].phase, phase);
       assert.equal(records[0].message, message);
       assert.equal(records[0].classification, "error");
-      assert.equal(
-        records[0].allowance?.id ?? null,
-        allowed ? "ubuntu-xvfb-restore-reload-shared-image-skia" : null,
-      );
+      assert.equal(records[0].allowance, null);
+      assert.equal(Object.hasOwn(records[0], "deferredAllowanceId"), false);
+      assert.equal(Object.hasOwn(records[0], "guardReceiptId"), false);
     });
   }
 });
 
-test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL reload", async (t) => {
+test("restore reload guard verifies a recovered WebGL reload and never allows a Skia warning", async (t) => {
   const exact =
     "[146128:0824/022134.434622:ERROR:gpu/command_buffer/service/shared_image/shared_image_manager.cc:254] SharedImageManager::ProduceSkia: Trying to Produce a Skia representation from a non-existent mailbox.\n";
-  const runtime = {
-    electron: "43.8.3",
-    chrome: "150.0.7871.250",
-    platform: "linux",
-    x11Session: true,
-    display: true,
-    waylandDisplay: false,
-    waylandSocket: false,
-    xvfbMarker: true,
-    swiftshader: true,
-  };
   const png = Buffer.alloc(24);
   Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]).copy(png);
   png.write("IHDR", 12, "ascii");
@@ -6478,15 +6470,22 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
     "c2-zc-canonical-authority-cutover/restore",
     "c2-zc-post-marker-lifecycle/bootstrap-restore",
   ];
+  // Without a warning a recovered reload passes. Any ProduceSkia warning, even
+  // one bound to a recovered reload inside the former allowance phases and
+  // before its former expiry, is an ordinary main-process error.
   const cases = [
     ...phases.map((phase) => ({
       name: `recovered ${phase}`,
       phase,
-      allowed: true,
+      message: null,
     })),
-    { name: "warning before the guard", emission: "before", allowed: false },
-    { name: "warning after the callback", emission: "after", allowed: false },
-    { name: "two exact warnings", warningCount: 2, allowed: false },
+    ...phases.map((phase) => ({
+      name: `recovered ${phase} with one exact warning`,
+      phase,
+    })),
+    { name: "warning before the guard", emission: "before" },
+    { name: "warning after the callback", emission: "after" },
+    { name: "two exact warnings", warningCount: 2 },
     {
       name: "no main-frame navigation",
       navigationCount: 0,
@@ -6529,36 +6528,22 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
       recoveryFails: true,
     },
     {
-      name: "wrong Chromium runtime",
-      runtime: { chrome: "150.0.7871.251" },
-      allowed: false,
-    },
-    {
-      name: "Wayland socket is still present",
-      runtime: { waylandSocket: true },
-      allowed: false,
-    },
-    {
-      name: "wrong restore phase",
+      name: "exact warning in a non-restore phase",
       phase: "c2-zc-canonical-authority-cutover/open",
-      allowed: false,
     },
-    { name: "expired exception", now: "2026-11-11", allowed: false },
+    { name: "exact warning after the former expiry date", now: "2026-11-11" },
     {
       name: "near-match GPU warning",
       message: exact.replace("ProduceSkia:", "ProduceSkiaNearMatch:"),
-      allowed: false,
     },
     {
-      name: "warning too early for navigation",
+      name: "warning long after the navigation",
       earlyMs: 5_001,
-      allowed: false,
     },
     {
-      name: "unsupported runtime without warning still runs",
-      runtime: { xvfbMarker: false },
+      name: "recovered non-restore phase without warning",
+      phase: "c2-zc-canonical-authority-cutover/open",
       message: null,
-      allowed: true,
     },
   ];
 
@@ -6611,10 +6596,6 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
         process: () => childProcessStub({ stderr }),
         evaluate: async (_fn, screenshotBase64) => {
           appEvaluations += 1;
-          if (appEvaluations === 1) {
-            assert.equal(screenshotBase64, undefined);
-            return { ...runtime, ...scenario.runtime };
-          }
           assert.equal(screenshotBase64, png.toString("base64"));
           return {
             width: 8,
@@ -6698,7 +6679,7 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
         () => null,
         (error) => error,
       );
-      const allowed = scenario.allowed === true;
+      const allowed = message === null && scenario.recoveryFails !== true;
       assert.equal(
         diagnosticError?.name ?? null,
         allowed ? null : "MainProcessDiagnosticsError",
@@ -6711,10 +6692,31 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
       );
       assert.equal(diagnostics.restoreReloadGuards.length, 1);
       assert.equal(page.listenerCount("framenavigated"), 0);
+      const receipt = diagnostics.restoreReloadGuards[0];
+      assert.equal(
+        receipt.status,
+        scenario.recoveryFails ? "failed" : "verified",
+      );
+      for (const removed of [
+        "runtime",
+        "armedSequence",
+        "completedSequence",
+        "exactWarningCount",
+        "allowanceApplied",
+      ]) {
+        assert.equal(Object.hasOwn(receipt, removed), false, removed);
+      }
+      if (!scenario.recoveryFails) assert.equal(appEvaluations, 1);
+      if (scenario.name === `recovered ${phases[0]} with one exact warning`) {
+        assert.deepEqual(
+          diagnostics.unallowedMainErrors.map(({ phase, message }) => ({
+            phase,
+            message,
+          })),
+          [{ phase: phases[0], message: exact }],
+        );
+      }
       if (scenario.name === `recovered ${phases[0]}`) {
-        const receipt = diagnostics.restoreReloadGuards[0];
-        assert.equal(receipt.status, "eligible");
-        assert.equal(receipt.allowanceApplied, true);
         assert.equal(receipt.proof.pixelSampleCount, 64);
         assert.equal(receipt.proof.nonBlankPixels, true);
         assert.equal(
@@ -6735,8 +6737,7 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
             "utf8",
           ),
         );
-        assert.equal(records[0].launchId, launched.launchId);
-        assert.equal(records[0].allowance.guardReceiptId, receipt.id);
+        assert.deepEqual(records, []);
         const timeline = JSON.parse(
           await readFile(
             path.join(
@@ -6752,8 +6753,6 @@ test("restore reload guard binds one Skia warning to a recovered Xvfb WebGL relo
         assert.ok(
           timeline.some((entry) => entry.event === "restore-reload-guard"),
         );
-        t.mock.timers.setTime(new Date("2026-11-11T00:00:00Z").getTime());
-        assert.equal(harness.diagnostics().mainCleanPass, false);
       }
     });
   }
