@@ -280,6 +280,26 @@ describe("DEFAULT_KEYBINDINGS", () => {
     const canon = Object.values(DEFAULT_KEYBINDINGS).map(canonicalizeBinding);
     expect(new Set(canon).size).toBe(canon.length);
   });
+
+  it("オーバーレイの開閉は Mod+Alt+[ ／ Mod+Alt+] で、物理キー（e.code）に一致する", () => {
+    expect(DEFAULT_KEYBINDINGS.toggleLeftOverlay).toBe("Mod+Alt+[");
+    expect(DEFAULT_KEYBINDINGS.toggleRightOverlay).toBe("Mod+Alt+]");
+    const left = ev({
+      ctrlKey: true,
+      altKey: true,
+      code: "BracketLeft",
+      key: "[",
+    });
+    const right = ev({
+      ctrlKey: true,
+      altKey: true,
+      code: "BracketRight",
+      key: "]",
+    });
+    expect(matchesBinding(left, "Mod+Alt+[", false)).toBe(true);
+    expect(matchesBinding(right, "Mod+Alt+[", false)).toBe(false);
+    expect(matchesBinding(right, "Mod+Alt+]", false)).toBe(true);
+  });
 });
 
 describe("parseStoredOverrides", () => {

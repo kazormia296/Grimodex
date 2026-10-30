@@ -4199,6 +4199,8 @@
     "focusGrid": "Grid パネルにフォーカス",
     "focusMatrix": "Matrix パネルにフォーカス",
     "focusWritingStats": "執筆統計パネルにフォーカス",
+    "toggleLeftOverlay": "左のオーバーレイを開閉",
+    "toggleRightOverlay": "右のオーバーレイを開閉",
     "openSettings": "Settings を開く",
     "splitVertical": "エディタを縦分割",
     "splitHorizontal": "エディタを横分割",

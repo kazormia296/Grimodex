@@ -4206,6 +4206,8 @@
     "focusGrid": "Focus Grid panel",
     "focusMatrix": "Focus Matrix panel",
     "focusWritingStats": "Focus Writing Stats panel",
+    "toggleLeftOverlay": "Toggle left overlay",
+    "toggleRightOverlay": "Toggle right overlay",
     "openSettings": "Open Settings",
     "splitVertical": "Split editor vertically",
     "splitHorizontal": "Split editor horizontally",
