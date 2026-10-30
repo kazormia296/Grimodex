@@ -7,8 +7,10 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import os from "node:os";
@@ -58,19 +60,155 @@ async function context() {
   return loadObservationPrepContext({ repoRoot });
 }
 
-test("the committed observation-prep files validate (draft status)", async () => {
+/**
+ * S4b: the committed S2 is frozen (every S4 token filled, review set). The
+ * draft's properties are checked on a draft copy: the 20 S4 tokens put back
+ * in the fields S4b filled, review and formal.review null, the draft status
+ * (the S2 bytes before S4b, but for the placeholder rows' field/fill text).
+ */
+const boundRow = (prep, file) =>
+  prep.boundFiles.find((row) => row.path === file);
+const S4_TOKEN_FIELDS = Object.freeze([
+  ["k64-freeze-commit", (p, t) => (p.contracts.k64.freezeCommit = t)],
+  ["da1-acceptance-record", (p, t) => (p.d10.g01.da1AcceptanceRecord = t)],
+  ["g01-r-rir-mode", (p, t) => (p.d10.g01.rAndRirMode = t)],
+  ...[
+    ["trace-editing", 0, OBSERVATION_PREP_FILES.traceEditing],
+    ["trace-browsing", 1, OBSERVATION_PREP_FILES.traceBrowsing],
+  ].flatMap(([name, at, file]) =>
+    ["commit", "sha256"].map((key) => [
+      `${name}-${key}`,
+      (p, t) => {
+        p.traces[at][key] = t;
+        boundRow(p, file)[key] = t;
+      },
+    ]),
+  ),
+  ["k64-procedure-v1-commit", (p, t) => (p.k64Procedure.formal.commit = t)],
+  ["k64-procedure-v1-sha256", (p, t) => (p.k64Procedure.formal.sha256 = t)],
+  ...[
+    ["setup-addendum", OBSERVATION_PREP_FILES.setupAddendum],
+    ["declaration-addendum", OBSERVATION_PREP_FILES.declarationAddendum],
+    ["author-declaration", OBSERVATION_PREP_FILES.authorDeclaration],
+    ["seed-pin-addendum", OBSERVATION_PREP_FILES.seedPinAddendum],
+  ].flatMap(([name, file]) =>
+    ["commit", "sha256"].map((key) => [
+      `${name}-${key}`,
+      (p, t) => (boundRow(p, file)[key] = t),
+    ]),
+  ),
+  [
+    "sp-synthetic-detection-record",
+    (p, t) => (p.r5Gate.syntheticDetection.record = t),
+  ],
+  ["sp1-bytes-commit", (p, t) => (p.contracts.sp1.bytesCommit = t)],
+  ["r5-check-record", (p, t) => (p.r5Gate.r5CheckRecord = t)],
+]);
+
+function draftOf(prep) {
+  const draft = clone(prep);
+  for (const [name, put] of S4_TOKEN_FIELDS) put(draft, `S4:${name}`);
+  draft.placeholders = S4_TOKEN_FIELDS.map(([name]) => ({
+    token: `S4:${name}`,
+    field: "S4b",
+    fill: "S4b",
+  }));
+  draft.review = null;
+  draft.k64Procedure.formal.review = null;
+  draft.status = "draft-awaiting-s3-review-and-s4-freeze";
+  return draft;
+}
+
+async function draftPrep() {
+  return draftOf(await json(OBSERVATION_PREP_FILES.prep));
+}
+
+/**
+ * A repository root whose files are the repo's (symlinks) but for the S2
+ * file, which is `prep`. No `.git`: the git checks are not reached.
+ */
+function rootWithPrep(prep) {
+  const root = mkdtempSync(path.join(os.tmpdir(), "s2-draft-root-"));
+  const target = OBSERVATION_PREP_FILES.prep.split("/");
+  const link = (from, to, depth) => {
+    for (const name of readdirSync(from)) {
+      if (depth === 0 && name === ".git") continue;
+      if (name !== target[depth])
+        symlinkSync(path.join(from, name), path.join(to, name));
+      else if (depth === target.length - 1)
+        writeFileSync(
+          path.join(to, name),
+          `${JSON.stringify(prep, null, 2)}\n`,
+        );
+      else {
+        mkdirSync(path.join(to, name));
+        link(path.join(from, name), path.join(to, name), depth + 1);
+      }
+    }
+  };
+  link(repoRoot, root, 0);
+  return root;
+}
+
+test("the committed observation-prep files validate (frozen by S4b)", async () => {
   const result = await validateNir1ObservationPrep({ repoRoot });
   assert.deepEqual(result.errors, []);
   assert.equal(result.status, "passed");
-  assert.equal(result.formalReady, false);
-  assert.ok(result.placeholders.length > 0);
+  assert.equal(result.formalReady, true);
+  assert.deepEqual(result.placeholders, []);
+  // S4 の最終関門の P2-1、DR-CP4-Q-2: the frozen S2's review states the facts
+  // (the notification record at bf5b3799, K's attribution, the pair limit).
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  for (const word of [
+    "docs/plans/nir1-cp4-records/user-notification-2026-10-30.md",
+    "bf5b3799f9a8220d43f15e3479ad15e66b8c8928",
+    "確認ではなく",
+    "integrator が #757（DR-CP4-Q-1）",
+    "#759（DR-CP4-Q-2）",
+    "組の最少 24 を満たす",
+  ])
+    assert.ok(prep.review.conditions.includes(word), word);
+  assert.ok(!prep.review.conditions.includes("S4b の時点で repo に無い"));
+  assert.ok(prep.r5Gate.syntheticDetection.record.includes("72dfa711"));
+});
+
+test("the draft copy of the committed S2 validates as a draft (S4 tokens, not formal)", async () => {
+  assert.equal(S4_TOKEN_FIELDS.length, 20);
+  const root = rootWithPrep(await draftPrep());
+  try {
+    const result = await validateNir1ObservationPrep({ repoRoot: root });
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.status, "passed");
+    assert.equal(result.formalReady, false);
+    assert.equal(result.placeholders.length, 20);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("a draft with placeholders is never usable for a formal run", async () => {
-  await assert.rejects(
-    assertObservationPrepFormal({ repoRoot }),
-    /\[precheck\].*(placeholder|draft)/u,
-  );
+  // S4b: the committed record is frozen; the draft copy is the S2 file of a
+  // temporary root that otherwise has the repo's files.
+  const root = rootWithPrep(await draftPrep());
+  try {
+    await assert.rejects(
+      assertObservationPrepFormal({ repoRoot: root }),
+      /\[precheck\].*(placeholder|draft)/u,
+    );
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("S4b: the committed frozen record passes the formal gate at HEAD (git)", async (t) => {
+  const ctx = await context();
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the commits are checked by the formal gate");
+    return;
+  }
+  assert.deepEqual(await assertObservationPrepFormal({ repoRoot }), {
+    proceed: true,
+  });
 });
 
 test("setup addendum: the K2/4 table row for G-01 and the fixture digests", async () => {
@@ -407,7 +545,7 @@ test("K6/4 procedure draft: contract values, wait bound, the F/X lists and no re
 
 test("observation prep: D1, D10, sample plan, traces, procedure, diagnostics, placeholders", async () => {
   const ctx = await context();
-  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const prep = await draftPrep();
   assert.deepEqual(observationPrepErrors(prep, ctx), []);
 
   const graphMode = clone(prep);
@@ -477,7 +615,7 @@ test("observation prep: D1, D10, sample plan, traces, procedure, diagnostics, pl
 
 /** A frozen record as S4 would fill it, and a context that has the v1 file. */
 async function frozenRecord(ctx, { record = "docs/plans/x.md" } = {}) {
-  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const prep = await draftPrep();
   const filled = clone(prep);
   const hex40 = "a".repeat(40);
   const shaOf = (relative) => ctx.fileSha256[relative];
@@ -581,7 +719,7 @@ test("S4 の最終関門の P3-3: contracts.k64.freezeCommit is the pinned const
     }).some((e) => /constants\.mjs must be the bytes/u.test(e)),
   );
   // A draft keeps the placeholder: not compared.
-  const draft = await json(OBSERVATION_PREP_FILES.prep);
+  const draft = await draftPrep();
   assert.ok(PLACEHOLDER.test(draft.contracts.k64.freezeCommit));
   assert.deepEqual(
     observationPrepErrors(draft, { ...ctx, harnessK64Freeze: null }).filter(
@@ -703,7 +841,7 @@ test("S3-P2-3: the frozen v1 procedure must be the reviewed draft-2 values", asy
 
 test("S3-P2-4: the G-01 R and R+IR mode follows the DA-1 record", async () => {
   const ctx = await context();
-  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const prep = await draftPrep();
   assert.ok(PLACEHOLDER.test(prep.d10.g01.rAndRirMode));
   const fixedDraft = clone(prep);
   fixedDraft.d10.g01.rAndRirMode = "restricted";
@@ -1090,7 +1228,7 @@ test("S3v3-P3-1: a frozen record needs the SP/1 bytes in the repository and thei
   assert.ok(
     observationPrepErrors(noCommit, frozenCtx).some((e) => /sp1/u.test(e)),
   );
-  const draft = await json(OBSERVATION_PREP_FILES.prep);
+  const draft = await draftPrep();
   assert.deepEqual(
     observationPrepErrors(draft, { ...ctx, sp1Sha256: null }),
     [],
@@ -2132,7 +2270,7 @@ test("S2 追補 #2: S3's decisions are recorded, and P-S2-5 (the harness's block
 
 test("S2 追補 #2 P3-3: a draft keeps exactly the S4 placeholder tokens", async () => {
   const ctx = await context();
-  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const prep = await draftPrep();
   assert.equal(prep.placeholders.length, 20);
   const check = (copy) => observationPrepErrors(copy, ctx);
   detects(
