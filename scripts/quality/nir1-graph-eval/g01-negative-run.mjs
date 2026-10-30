@@ -48,6 +48,25 @@ function blocked(state, reason) {
   return error;
 }
 
+/**
+ * DR-CP4-Q-1 (P3-2): the Scenes a take returned in logical IDs — the parent's
+ * final Scenes and the follow-up child's, in that order, once each.
+ */
+function takenSceneIds(row, ids) {
+  const inverse = new Map(
+    Object.entries(ids?.scenes ?? {}).map(([logical, runtime]) => [
+      runtime,
+      logical,
+    ]),
+  );
+  return [
+    ...new Set([
+      ...(row?.finalSceneIds ?? []),
+      ...(row?.followUp?.child?.finalSceneIds ?? []),
+    ]),
+  ].map((sceneId) => inverse.get(sceneId) ?? `unmapped:${sceneId}`);
+}
+
 /** The k64 row's Graph answer as the re-ask rule reads it (parent, child). */
 export function rowProbeOf(row) {
   return {
@@ -74,6 +93,10 @@ export function createG01NegativeRun({ id, root, target = null }) {
     control: null,
     step: null,
     graphTries: [],
+    // DR-CP4-Q-1 (P3-2): set by afterDeclaration — the measured Main's
+    // owner counters and the logical → runtime map, read by askGraph.
+    readCounters: null,
+    ids: null,
   };
   const reopen = async ({ proc, ids, relaunch, stop, label, before }) => {
     const readIndex = () => readIndexMetadata(proc.dbPath, ids.projectId);
@@ -182,7 +205,11 @@ export function createG01NegativeRun({ id, root, target = null }) {
             ),
       });
       if (state.step.blocked) throw blocked(state, state.step.blocked);
-      return state.step.session.session;
+      const measuring = state.step.session.session;
+      state.ids = ids;
+      state.readCounters = async () =>
+        JSON.parse(await measuring.addon("nir1GraphEvalDiagnostics"));
+      return measuring;
     },
     /**
      * The measurement point of a negative: the B (and C) generation sealed
@@ -200,6 +227,12 @@ export function createG01NegativeRun({ id, root, target = null }) {
       };
     },
     async askGraph(take) {
+      // DR-CP4-Q-1 (P3-2): every try's owner counter delta and cached are
+      // read on the measured Main (set by afterDeclaration).
+      if (typeof state.readCounters !== "function")
+        throw new Error(
+          `[artifact] S5-B ${id}: the owner counters are not readable (afterDeclaration did not run)`,
+        );
       const takes = [];
       const asked = await askUntilDecided({
         ask: async () => {
@@ -208,19 +241,29 @@ export function createG01NegativeRun({ id, root, target = null }) {
           return rowProbeOf(taken.row);
         },
         limit: G01_SAMPLE_ATTEMPTS,
+        readCounters: state.readCounters,
       });
       const last = takes.at(-1);
       // Review P3: every take set aside (a neutral answer) stays disclosed
-      // with its release and its index state at the query.
-      const discarded = takes.slice(0, -1).map((taken, at) => ({
-        at,
-        reason: "neutral-answer",
-        parentOutcome: taken.row?.graph?.outcome ?? null,
-        childOutcome: taken.row?.followUp?.child?.outcome ?? null,
-        release: taken.release ?? null,
-        indexUsable: taken.indexUsable ?? null,
-      }));
+      // with its release and its index state at the query. DR-CP4-Q-1
+      // (P3-2): and the Scenes it returned (logical IDs), whether the
+      // declared Scene was among them — disclosed only, never judged.
+      const discarded = takes.slice(0, -1).map((taken, at) => {
+        const returnedSceneIds = takenSceneIds(taken.row, state.ids);
+        return {
+          at,
+          reason: "neutral-answer",
+          parentOutcome: taken.row?.graph?.outcome ?? null,
+          childOutcome: taken.row?.followUp?.child?.outcome ?? null,
+          release: taken.release ?? null,
+          indexUsable: taken.indexUsable ?? null,
+          returnedSceneIds,
+          declaredSceneReturned: returnedSceneIds.includes(goal.sceneId),
+        };
+      });
       state.graphTries.push({
+        phase: last?.row?.phase ?? null,
+        repeat: last?.row?.repeat ?? null,
         decided: asked.decided,
         tries: asked.tries,
         discardedTakes: discarded.length,

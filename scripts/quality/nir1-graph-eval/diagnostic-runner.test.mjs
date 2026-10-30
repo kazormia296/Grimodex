@@ -4,9 +4,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { DEV_PREVIEW_PURPOSES } from "./admission.mjs";
-import { SP_P4_DEV_PREVIEW_PURPOSE, runSpP4 } from "./diagnostic-runner.mjs";
+import {
+  SP_P4_DEV_PREVIEW_PURPOSE,
+  runSpP4,
+  spP4ReceiptDesign,
+} from "./diagnostic-runner.mjs";
 import {
   SP_P4,
+  SP_P4_COMPARISON_RULE,
+  SP_P4_IR_TIMEOUT_LIMIT,
   assertSpP4Passed,
   spP4SampleRecord,
   spP4Schedule,
@@ -149,9 +155,9 @@ test("O-1 (4): 両側が 1 sample でも違えば SP-N7 で止め、後の varia
   assert.throws(() => assertSpP4Passed(result.summary), /SP-N7/u);
 });
 
-test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比較の前に [precheck] で止め、記録は残す", async () => {
-  const result = await run(
-    fake((key, side) =>
+test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比較の前に [precheck] で止め、記録は残す（current の規則）", async () => {
+  const result = await run({
+    ...fake((key, side) =>
       key === "G-01/v1" && side === "without-seed-pin-step"
         ? (at) =>
             at.phase === "measured" && at.repeat === 10
@@ -159,7 +165,8 @@ test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比
               : {}
         : undefined,
     ),
-  );
+    rule: "current",
+  });
   assert.match(
     result.stop,
     /\[precheck\].*G-01\/v1:without-seed-pin-step.*\(rIrSceneIds, irSupplementSceneId\)/u,
@@ -193,4 +200,45 @@ test("O-1 (4): 同じ workspace の measured の sample どうしが違えば比
 
 test("O-1 (1): SP-P4 の dev の予告は dev preview の目的に登録されている（diag-registration と同じ登録）", () => {
   assert.ok(DEV_PREVIEW_PURPOSES.includes(SP_P4_DEV_PREVIEW_PURPOSE));
+});
+
+test("Q-1: 既定の規則では期限切れだけの sample は IR の比較から外して passed、外した数を側ごとに開示し、failed は外さず止める", async () => {
+  const timeoutAt =
+    (repeats, ir = "timeout") =>
+    (key, side) =>
+      key === "G-01/v1" && side === "with-seed-pin-step"
+        ? (at) =>
+            at.phase === "measured" && repeats.includes(at.repeat)
+              ? { result: ["w-a", "w-b"], ir }
+              : {}
+        : undefined;
+  const passed = await run(fake(timeoutAt([10, 20])));
+  assert.equal(passed.stop, null);
+  assert.equal(passed.summary.status, "passed");
+  const side = passed.variants[0].sides["with-seed-pin-step"];
+  assert.deepEqual(
+    [side.stability.irTimeoutExcluded, side.stability.irCompared],
+    [2, 28],
+  );
+  assert.equal(side.attempts[0].ir.measured.timeoutExcluded, 2);
+  assert.deepEqual(passed.variants[0].comparison.irTimeouts, {
+    without: 0,
+    with: 2,
+  });
+  // 7 件は上限を超えて [precheck]（SP-N7 でない）。
+  const over = await run(fake(timeoutAt([1, 2, 3, 4, 5, 6, 7])));
+  assert.match(over.stop, /\[precheck\].*7 of 30 .*more than 6/u);
+  assert.notEqual(over.summary.status, "sp-n7");
+  // failed は外さない（同じ workspace の中の不一致で [precheck]）。
+  const failed = await run(fake(timeoutAt([10], "failed")));
+  assert.match(failed.stop, /\[precheck\].*measured 10 differs/u);
+});
+
+test("Q-1 (C2): receipt の design は規則と期限切れの上限（gate が照合する欄）を書く", () => {
+  const design = spP4ReceiptDesign({ targets, warmup: 5, measured: 30 });
+  assert.equal(design.rule, SP_P4_COMPARISON_RULE);
+  assert.equal(design.rule, "ir-complete-pairs");
+  assert.equal(design.irTimeoutLimit, SP_P4_IR_TIMEOUT_LIMIT);
+  assert.equal(design.irTimeoutLimit, 6);
+  assert.deepEqual(design.variants, SP_P4.variants);
 });
