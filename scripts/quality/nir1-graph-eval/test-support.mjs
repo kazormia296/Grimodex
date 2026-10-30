@@ -1393,6 +1393,10 @@ export function completeSetupExtension({
   // acknowledges the feed and, in the same write, dirties B and C (as
   // `suspend_project_in_tx`) unless `settles` is false.
   freshness = null,
+  // DR-CP4-T-5: a maintenance Verify that is `running` when a session in
+  // `verify.sessions` begins; the tests' sleep completes it unless
+  // `verify.settles` is false.
+  verify = null,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1449,7 +1453,22 @@ export function completeSetupExtension({
         feedHead,
       );
     }
+    let verifyRuns = 0;
+    let verifyPending = false;
+    const startVerify = () => {
+      verifyRuns += 1;
+      run(
+        "INSERT INTO narrative_extraction_runs VALUES (?, ?, 'dependency-verify', 'running', ?)",
+        `verify-${verifyRuns}`,
+        projectOf(),
+        at(),
+      );
+    };
     const freshnessTick = () => {
+      if (verify?.settles)
+        run(
+          "UPDATE narrative_extraction_runs SET status = 'completed' WHERE surface_path_id = 'dependency-verify' AND status = 'running'",
+        );
       if (!freshness?.settles || feedHead === 0) return;
       const projectId = projectOf();
       const cursor = one(
@@ -1563,8 +1582,10 @@ export function completeSetupExtension({
       policySets,
       freshnessTick,
       appendFeedEvent: () => feedEvent(),
+      startVerify: () => startVerify(),
       beginSession(next) {
         session = { ...next };
+        verifyPending = Boolean(verify?.sessions?.includes(next.label));
       },
       onOpen() {
         db().exec(`
@@ -1598,6 +1619,11 @@ export function completeSetupExtension({
           maybeCutover();
         // A seam session's workspace-opened wake publishes B.
         const projectId = projectOf();
+        // DR-CP4-T-5: a Verify the session's opening leaves running.
+        if (verifyPending && projectId) {
+          verifyPending = false;
+          startVerify();
+        }
         // `sealMissesOpens`: the first seam opens publish nothing (P-0).
         if (
           session.seam &&

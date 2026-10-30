@@ -75,6 +75,7 @@ import {
   readRelationSourceTokens,
   readRunsSince,
   freshnessSettled,
+  readMaintenanceActivity,
   waitFreshnessSettled,
 } from "./workspace-db.mjs";
 import { REQUIRED_ARTIFACTS } from "../nir1-retrieval/standard-build-receipt.mjs";
@@ -174,12 +175,17 @@ const SETTLE_BEFORE_EXECUTORS = new Set([
  * DR-CP4-T-3: one wait (complete setups only; ① never waits). A wait that
  * runs out is a `[precheck]`, never blocked and never a reopening trigger.
  */
-async function settleFreshness(ctx, point) {
+async function settleFreshness(ctx, point, { maintenance = true } = {}) {
   if (partialRun(ctx.plan)) return null;
   const file = path.join(ctx.workspacePath, "grimodex.db");
   if (!existsSync(file)) return null;
   const settle = await waitFreshnessSettled({
     read: () => readFreshnessFeed(file, ctx.ids.projectId),
+    // DR-CP4-T-5: the measurement point and a session's end also wait for
+    // maintenance to be still (after-maintenance-current).
+    readActivity: maintenance
+      ? () => readMaintenanceActivity(file, ctx.ids.projectId)
+      : null,
     limitMs: ctx.limits?.freshnessSettleMs ?? FRESHNESS_SETTLE_WAIT_MS,
     intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
     sleep: ctx.sleep,
@@ -189,7 +195,7 @@ async function settleFreshness(ctx, point) {
   if (!settle.settled)
     fail(
       "freshness-settle",
-      `${ctx.plan.variantKey}: the product's Freshness did not process the feed in ${settle.limitMs} ms (${point} of the ${ctx.session} session; cursor ${settle.final.acknowledged}, head ${settle.final.head}, run ${settle.final.activeRun}, reserved ${settle.final.reserved})`,
+      `${ctx.plan.variantKey}: the product's Freshness and maintenance did not settle in ${settle.limitMs} ms (${point} of the ${ctx.session} session; cursor ${settle.final.acknowledged}, head ${settle.final.head}, run ${settle.final.activeRun}, reserved ${settle.final.reserved}; maintenance running ${settle.maintenance?.final?.running ?? "not read"})`,
     );
   return settle;
 }
@@ -1690,8 +1696,12 @@ export async function runFrozenSetupSteps({
     )
       ctx.preMutationIndexState = assertSealedBeforeMutation(ctx);
     // DR-CP4-T-3: the Index build and the probe see the feed processed.
+    // DR-CP4-T-5: before the Chronicle Index the Freshness only (its own
+    // queries take the maintenance Verify's connection anyway).
     if (SETTLE_BEFORE_EXECUTORS.has(step.executor))
-      await settleFreshness(ctx, `before:${step.phase}`);
+      await settleFreshness(ctx, `before:${step.phase}`, {
+        maintenance: step.executor === "measurement-point",
+      });
     const stateBefore = ctx.workspaceOpen ? await readState(ctx) : null;
     const details = await executor({ ctx, step });
     const stateAfter = await readState(ctx);
@@ -2697,6 +2707,16 @@ export async function setupFrozenVariant({
         fail(
           "freshness-settle",
           `${plan.variantKey}: the cold DB's feed is not processed (cursor ${receipt.readBack.freshnessFeed.acknowledged}, head ${receipt.readBack.freshnessFeed.head})`,
+        );
+      // DR-CP4-T-5: no maintenance run left in progress in the cold DB.
+      receipt.readBack.maintenance = readMaintenanceActivity(
+        cold,
+        ids.projectId,
+      );
+      if (receipt.readBack.maintenance.running !== 0)
+        fail(
+          "freshness-settle",
+          `${plan.variantKey}: the cold DB keeps ${receipt.readBack.maintenance.running} maintenance run(s) in progress`,
         );
       receipt.readBack.relationStaleness = assertRelationStaleOnCold({
         cold,

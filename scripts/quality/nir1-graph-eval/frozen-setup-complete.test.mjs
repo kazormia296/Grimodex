@@ -1287,3 +1287,64 @@ test("DR-CP4-T-3: 最後の session を閉じた後の cold DB に未処理が�
     /\[precheck\] S1i freshness-settle: .*cold DB/u,
   );
 });
+
+// DR-CP4-T-5: the measurement point and a session's end also wait for the
+// maintenance (no run in progress, no run started or ended between two
+// reads); the cold DB keeps none in progress.
+
+test("DR-CP4-T-5: seal の session に実行中の Verify があれば測定点の前に終わるまで待ち、cold DB に実行中の run を残さない（C の build の前は待たない）", async () => {
+  const { receipt } = await completeSetup("G-02/base", {
+    verify: { sessions: ["seal"], settles: true },
+  });
+  assert.equal(receipt.status, "setup-complete", receipt.errors.join("\n"));
+  const at = (point) =>
+    receipt.freshnessSettles.find(
+      (row) => row.session === "seal" && row.point === point,
+    ).settle;
+  // Before the Chronicle Index: the Freshness only (no maintenance read).
+  assert.equal(at("before:chronicle-index").maintenance, undefined);
+  const point = at("before:measurement-point");
+  assert.equal(point.maintenance.initial.running, 1);
+  assert.equal(point.maintenance.final.running, 0);
+  assert.ok(point.polls >= 2);
+  assert.equal(receipt.readBack.maintenance.running, 0);
+});
+
+test("DR-CP4-T-5: Verify が上限までに終わらなければ測定点の前で [precheck] freshness-settle（maintenance が残ったと書く）", async () => {
+  const { receipt } = await completeSetup(
+    "G-02/base",
+    { verify: { sessions: ["seal"], settles: false } },
+    SHARED,
+    { freshnessSettleMs: 30 },
+  );
+  assert.notEqual(receipt.status, "setup-complete");
+  assert.match(
+    [receipt.precheck?.message, ...receipt.errors].join("\n"),
+    /\[precheck\] S1i freshness-settle: .*before:measurement-point of the seal session.*maintenance running 1/u,
+  );
+});
+
+test("DR-CP4-T-5: 最後の待ちの後に実行中の run が残った cold DB は [precheck]", async () => {
+  const { receipt } = await completeSetup("G-02/base", {}, SHARED, {
+    onStop: (label, product) => {
+      if (label === "seal") product.extension.startVerify();
+    },
+  });
+  assert.notEqual(receipt.status, "setup-complete");
+  assert.match(
+    [receipt.precheck?.message, ...receipt.errors].join("\n"),
+    /\[precheck\] S1i freshness-settle: .*cold DB keeps 1 maintenance run/u,
+  );
+});
+
+test("DR-CP4-T-5: session の終わりでも maintenance を待つ（ir の session の Verify はその session を閉じる前に終わる）", async () => {
+  const { receipt } = await completeSetup("G-02/base", {
+    verify: { sessions: ["ir"], settles: true },
+  });
+  assert.equal(receipt.status, "setup-complete", receipt.errors.join("\n"));
+  const irEnd = receipt.freshnessSettles.find(
+    (row) => row.session === "ir" && row.point === "session-end",
+  ).settle;
+  assert.equal(irEnd.maintenance.initial.running, 1);
+  assert.equal(irEnd.maintenance.final.running, 0);
+});

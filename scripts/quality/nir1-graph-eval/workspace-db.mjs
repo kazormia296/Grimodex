@@ -205,12 +205,56 @@ export function readFreshnessFeed(file, projectId, options = {}) {
 }
 
 /**
+ * DR-CP4-T-5: the project's maintenance activity — how many extraction runs
+ * are `running` (an `interpretation` that is `pending` waits for an AI
+ * provider and is no maintenance progress), and the run count and newest
+ * `created_at` (a stillness check compares two reads). SELECT only.
+ */
+export function readMaintenanceActivity(file, projectId, options = {}) {
+  return withReadOnly(
+    file,
+    (db) => {
+      const row = db
+        .prepare(
+          `SELECT count(*) AS runs, MAX(created_at) AS lastCreatedAt,
+                  COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running
+             FROM narrative_extraction_runs WHERE project_id = ?`,
+        )
+        .get(projectId);
+      return {
+        runs: Number(row.runs),
+        lastCreatedAt: row.lastCreatedAt ?? null,
+        running: Number(row.running),
+      };
+    },
+    options,
+  );
+}
+
+/**
+ * DR-CP4-T-5 (pure): maintenance is still — no run is in progress, and no run
+ * started or ended between two consecutive reads.
+ */
+export function maintenanceQuiet(previous, current) {
+  return Boolean(
+    previous &&
+    current &&
+    previous.running === 0 &&
+    current.running === 0 &&
+    previous.runs === current.runs &&
+    previous.lastCreatedAt === current.lastCreatedAt,
+  );
+}
+
+/**
  * DR-CP4-T-1: polls `read` every `intervalMs` until the state is settled or
  * `limitMs` has passed. `now`／`sleep` are the caller's clock (the tests'
- * fakes). Returns the record the probe discloses.
+ * fakes). DR-CP4-T-5: with `readActivity`, maintenance must be still too
+ * (two consecutive reads). Returns the record the probe discloses.
  */
 export async function waitFreshnessSettled({
   read,
+  readActivity = null,
   limitMs,
   intervalMs,
   now = () => performance.now(),
@@ -219,20 +263,33 @@ export async function waitFreshnessSettled({
   const started = now();
   const initial = read();
   let state = initial;
+  const initialActivity = readActivity ? readActivity() : null;
+  let previousActivity = null;
+  let activity = initialActivity;
   let polls = 1;
-  while (!freshnessSettled(state) && now() - started < limitMs) {
+  const done = () =>
+    freshnessSettled(state) &&
+    (readActivity === null || maintenanceQuiet(previousActivity, activity));
+  while (!done() && now() - started < limitMs) {
     await pause(intervalMs);
     state = read();
+    if (readActivity) {
+      previousActivity = activity;
+      activity = readActivity();
+    }
     polls += 1;
   }
   return {
-    settled: freshnessSettled(state),
+    settled: done(),
     waitedMs: now() - started,
     polls,
     limitMs,
     intervalMs,
     initial,
     final: state,
+    ...(readActivity
+      ? { maintenance: { initial: initialActivity, final: activity } }
+      : {}),
   };
 }
 
