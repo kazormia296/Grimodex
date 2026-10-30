@@ -20,7 +20,7 @@
 
 ## 合成の記録の作り方（規則との差の開示）
 
-SP/1 :178 と `syntheticDetection.rule` は「実際の setup の receipt と DB の pin の行を複製し、書き換えたもの」と書く。この候補の試験の合成の記録は、**実際の setup（①）の receipt の複製ではない**。試験の中で次のように作る。
+S2 の `syntheticDetection.rule` は「実際の setup の receipt と DB の pin の行を複製し、書き換えたもの」と書く。**この文は SP/1 :178 の言い換えに S2 が足したもので、SP/1 :178 自体は「合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを、観測の前に示す」としか書かない**（独立レビューの指摘で帰属を直した）。この候補の試験の合成の記録は、S2 の rule の文のとおりの**実際の setup（①）の receipt の複製ではない**。試験の中で次のように作る。
 
 - 段の記録（`seed-pin-setup.test.mjs`）：凍結の G-02 の fixture から `seedPinPlanFromFixture` で plan を作り、`runSeedPinStep` を fake の `readState`／`upsertScenePin` で走らせた記録（`state()` で作った前後の状態）を書き換える。
 - R5 の照合（`seed-pin.test.mjs`）：`test-support.mjs` の `seedPinWorkspace` が、variant ごとに一時の SQLite（`tree_nodes`、`codex_entries`、`scene_codex_pins` だけの最小の schema）と凍結の schema の setup の受領書を書き、`loadSetupReceipt` と `readQuerySceneSeedPins` で封印つきで読み戻した 13 の variant の行を書き換える。
