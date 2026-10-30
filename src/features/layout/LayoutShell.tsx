@@ -32,6 +32,7 @@ import { useZoomReveal } from "./useZoomReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
+import { OverlayLayer } from "./OverlayLayer";
 import { OverlayRail } from "./OverlayRail";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
@@ -476,6 +477,10 @@ export const LayoutShell = memo(function LayoutShell({
           )}
         </motion.div>
         {showOverlayRails && <OverlayRail side="right" />}
+        {/* オーバーレイの層。grid と Stripe より上、DnD のハイライトとドラッグゴースト
+            （fixed、z-[9998]〜）より下。エディタだけの表示（phone）では出さない。 */}
+        {!editorOnly && <OverlayLayer side="left" zenMode={zenMode} />}
+        {!editorOnly && <OverlayLayer side="right" zenMode={zenMode} />}
       </div>
     </>
   );

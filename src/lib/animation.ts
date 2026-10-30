@@ -22,6 +22,14 @@ export const ZEN_AMBIENT_DURATIONS = {
   secondaryDrift: 88,
 } as const;
 
+/**
+ * 画面端のオーバーレイの開閉。平らなスライドだけ（3D は P2）。
+ * 開閉で時間を変えない（設計メモ §3.4 の初期値）。
+ */
+export const OVERLAY_DURATIONS = {
+  slide: 0.3,
+} as const;
+
 export const EASINGS = {
   easeOut: [0.16, 1, 0.3, 1] as [number, number, number, number],
   spring: { type: "spring" as const, damping: 25, stiffness: 300 },
