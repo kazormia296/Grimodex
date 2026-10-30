@@ -10,6 +10,7 @@ import {
   SP_P4,
   SP_P4_COMPARISON_RULE,
   SP_P4_IR_TIMEOUT_LIMIT,
+  SP_P4_IR_TIMEOUT_PAIR_LIMIT,
   assertSpP4Passed,
   assertSpP4WorkspaceStable,
   assessG01Negative,
@@ -726,7 +727,11 @@ test("S5-B: Graph arm を含む実行は ④ の SP-P4 の receipt を読み直�
     head,
     headSha256,
     stop: null,
-    design: { rule: "ir-complete-pairs", irTimeoutLimit: 6 },
+    design: {
+      rule: "ir-complete-pairs",
+      irTimeoutLimit: 6,
+      irTimeoutPairLimit: 6,
+    },
     candidate: { commit: C("b"), clean: true },
     variants: SP_P4.variants.map((variantKey) => ({
       variantKey,
@@ -1295,7 +1300,11 @@ const GATE_HEAD = {
 /** ④ の receipt（8 variant、側ごとに 1 試行）を書き、その path を返す。 */
 function writeGateReceipt({
   name,
-  design = { rule: "ir-complete-pairs", irTimeoutLimit: 6 },
+  design = {
+    rule: "ir-complete-pairs",
+    irTimeoutLimit: 6,
+    irTimeoutPairLimit: 6,
+  },
   without = () => irAttempt(),
   with: withSide = () => irAttempt(),
 }) {
@@ -1346,12 +1355,16 @@ const gateOf = (file, options = {}) =>
     ...options,
   });
 
-test("Q-1 (C3): 既定の規則は ir-complete-pairs、期限切れの上限は 6（measured 30 のうち各側 24 の組が残る）", () => {
+test("Q-1 (C3)、Q-2: 既定の規則は ir-complete-pairs、側ごとの上限 6 と組の上限 6（measured 30 のうち組が 24 以上残る）", () => {
   assert.equal(SP_P4_COMPARISON_RULE, "ir-complete-pairs");
   assert.equal(SP_P4_IR_TIMEOUT_LIMIT, 6);
-  // K の根拠: S2 の measured（30）から K を引いて 24。
+  assert.equal(SP_P4_IR_TIMEOUT_PAIR_LIMIT, 6);
   const plan = readDiagnosticPlan(s2Record());
+  // 側ごとの上限は各側に 24 の sample を残すが、組は別の位置で外れると最少 18。
   assert.equal(plan.spP4.measured - SP_P4_IR_TIMEOUT_LIMIT, 24);
+  assert.equal(plan.spP4.measured - 2 * SP_P4_IR_TIMEOUT_LIMIT, 18);
+  // Q-2: S3 の C2 の最小（組 24 以上）は組の上限が押さえる。
+  assert.equal(plan.spP4.measured - SP_P4_IR_TIMEOUT_PAIR_LIMIT, 24);
 });
 
 test("Q-1 (C1): 外すのは timeout（deadlineExceeded）で R+IR が R と同じで追加枠の無い sample だけ", () => {
@@ -1528,14 +1541,23 @@ test("Q-1 (C2): 側ごとに期限切れで外した sample が 6 件なら通�
       [false, "ir-timeout-limit"],
     );
   }
-  // 両側 6 件ずつ（別の repeat）でも側ごとの上限の内。組は 18 残る。
+  // 両側 6 件ずつ（別の repeat）は側ごとの上限の内だが、組は 18 しか残らず
+  // 組の上限（Q-2）で [precheck]。
   const other = irAttempt(atRepeats(range(20, 26), lost("timeout")));
   const both = compareSpP4Variant({
     variantKey: "G-02/base",
     without: six,
     with: other,
   });
-  assert.deepEqual([both.same, both.irComparedPairs], [true, 18]);
+  assert.deepEqual(
+    [
+      both.same,
+      both.irComparedPairs,
+      both.irExcludedPairs,
+      both.undefinedReason,
+    ],
+    [false, 18, 12, "ir-timeout-pair-limit"],
+  );
   // gate: 6 件は passed、7 件は [precheck]（SP-N7 でない）。
   assert.equal(
     gateOf(writeGateReceipt({ name: "six", with: () => six })).summary.status,
@@ -1562,7 +1584,170 @@ test("Q-1 (C2): 側ごとに期限切れで外した sample が 6 件なら通�
     timeoutExcluded: 6,
     timeoutExcludedRate: 0.2,
     timeoutLimit: 6,
+    timeoutPairLimit: 6,
   });
+});
+
+/** 両側の measured の、期限切れだけで IR を外す位置を指定した比較。 */
+const pairOf = (withoutAt, withAt) =>
+  compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: irAttempt(atRepeats(withoutAt, lost("timeout"))),
+    with: irAttempt(atRepeats(withAt, lost("timeout"))),
+  });
+const pairView = (result) => [
+  result.same,
+  result.irComparedPairs,
+  result.irExcludedPairs,
+  result.irTimeoutPairLimit,
+  result.undefinedReason,
+];
+
+test("Q-2: IR を外した組（どちらかの側が外れた位置）が 6 までは通り、7 で ir-timeout-pair-limit の [precheck]", () => {
+  // (a) 両側が同じ位置で 6 件ずつ: 組の除外は 6。
+  assert.deepEqual(pairView(pairOf(range(10, 16), range(10, 16))), [
+    true,
+    24,
+    6,
+    6,
+    undefined,
+  ]);
+  // (b) 片側 6 件、他側 0 件: 組の除外は 6（両向き）。
+  for (const [withoutAt, withAt] of [
+    [range(10, 16), []],
+    [[], range(10, 16)],
+  ])
+    assert.deepEqual(pairView(pairOf(withoutAt, withAt)), [
+      true,
+      24,
+      6,
+      6,
+      undefined,
+    ]);
+  // (c) 両側が別の位置で 4 件ずつ: 側ごとは上限の内、組の除外は 8。
+  assert.deepEqual(pairView(pairOf(range(0, 4), range(20, 24))), [
+    false,
+    22,
+    8,
+    6,
+    "ir-timeout-pair-limit",
+  ]);
+  // (d) 境界: 組の除外 6（3＋3、別の位置）は通り、7（3＋4）は止まる。
+  assert.deepEqual(pairView(pairOf(range(0, 3), range(20, 23))), [
+    true,
+    24,
+    6,
+    6,
+    undefined,
+  ]);
+  assert.deepEqual(pairView(pairOf(range(0, 3), range(20, 24))), [
+    false,
+    23,
+    7,
+    6,
+    "ir-timeout-pair-limit",
+  ]);
+  // 一部が重なる: 同じ位置の 2 件は 1 組と数える（5＋5、重なり 3 → 組の除外 7）。
+  assert.deepEqual(pairView(pairOf(range(0, 5), range(2, 7))), [
+    false,
+    23,
+    7,
+    6,
+    "ir-timeout-pair-limit",
+  ]);
+  assert.deepEqual(pairView(pairOf(range(0, 5), range(1, 6))), [
+    true,
+    24,
+    6,
+    6,
+    undefined,
+  ]);
+  // 要約: 組の上限を超えた比較は [precheck]（SP-N7 でない）。
+  const all = SP_P4.variants.map((key) => variantRecord(key));
+  all[2] = variantRecord(all[2].variantKey, {
+    same: false,
+    compared: 30,
+    undefinedReason: "ir-timeout-pair-limit",
+    differences: [],
+  });
+  assert.equal(summarizeSpP4({ variants: all }).status, "precheck");
+});
+
+test("Q-2: undefinedReason の優先は側ごとの上限、組の上限、IR を比べる組 0 件の順", () => {
+  // (e) 側ごとの上限（7 件）が先: 組の除外も 7 を超えるが ir-timeout-limit。
+  for (const [withoutAt, withAt] of [
+    [range(0, 7), []],
+    [range(0, 7), range(20, 24)],
+    [range(20, 24), range(0, 7)],
+  ])
+    assert.equal(
+      pairOf(withoutAt, withAt).undefinedReason,
+      "ir-timeout-limit",
+      JSON.stringify([withoutAt, withAt]),
+    );
+  // 組の上限は組 0 件より先（measured 3 の全部が外れる: 組の除外 3 は上限の内
+  // なので no-ir-complete-pair。上限を超える例は 30 件で作れない〔側ごとが先〕）。
+  const short = (ir) =>
+    irAttempt(() => (ir ? lost(ir) : null), { warmup: 0, measured: 3 });
+  assert.equal(
+    compareSpP4Variant({
+      variantKey: "G-02/base",
+      without: short("timeout"),
+      with: short(null),
+    }).undefinedReason,
+    "no-ir-complete-pair",
+  );
+  // measured 8 の両側が別の位置で 4 件ずつ外れて組が 0: 組の除外 8 が先。
+  const eight = (at) =>
+    irAttempt(atRepeats(at, lost("timeout")), { warmup: 0, measured: 8 });
+  const zero = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: eight(range(0, 4)),
+    with: eight(range(4, 8)),
+  });
+  assert.deepEqual(
+    [zero.irComparedPairs, zero.irExcludedPairs, zero.undefinedReason],
+    [0, 8, "ir-timeout-pair-limit"],
+  );
+  // 側の measured の数が違っても、組の除外は期限切れで外れた位置だけを数える
+  // （欠けた位置は除外に数えず、比較の差分になる）。
+  const uneven = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: irAttempt(atRepeats(range(0, 4), lost("timeout"))),
+    with: irAttempt(atRepeats(range(20, 24), lost("timeout")), {
+      measured: 26,
+    }),
+  });
+  assert.deepEqual(
+    [uneven.compared, uneven.irExcludedPairs, uneven.undefinedReason],
+    [30, 8, "ir-timeout-pair-limit"],
+  );
+  // current は組の上限を見ず、開示も足さない。
+  const current = compareSpP4Variant({
+    variantKey: "G-02/base",
+    without: irAttempt(),
+    with: irAttempt(),
+    rule: "current",
+  });
+  assert.equal("irExcludedPairs" in current, false);
+  assert.equal("irTimeoutPairLimit" in current, false);
+  assert.equal(current.same, true);
+});
+
+test("Q-2: gate は組の除外が 6 を超える receipt を [precheck] にし、6 は通す", () => {
+  const sideA = () => irAttempt(atRepeats(range(0, 4), lost("timeout")));
+  const sideB = () => irAttempt(atRepeats(range(20, 24), lost("timeout")));
+  const sideC = () => irAttempt(atRepeats(range(20, 22), lost("timeout")));
+  assert.throws(
+    () =>
+      gateOf(writeGateReceipt({ name: "pair-8", without: sideA, with: sideB })),
+    /\[precheck\] S5-B gate: SP-P4 is precheck/u,
+  );
+  assert.equal(
+    gateOf(writeGateReceipt({ name: "pair-6", without: sideA, with: sideC }))
+      .summary.status,
+    "passed",
+  );
 });
 
 test("Q-1 (C2): 外した sample が全部でも上限の内なら、IR を比べる sample が無いので [precheck]", () => {
@@ -1587,11 +1772,15 @@ test("Q-1: gate は receipt の期限切れの上限が定数と違えば、規�
     gateOf(writeGateReceipt({ name: "ok" })).summary.status,
     "passed",
   );
+  const pairs = { irTimeoutPairLimit: 6 };
   for (const [name, design] of [
-    ["limit-7", { rule: "ir-complete-pairs", irTimeoutLimit: 7 }],
-    ["limit-5", { rule: "ir-complete-pairs", irTimeoutLimit: 5 }],
-    ["limit-string", { rule: "ir-complete-pairs", irTimeoutLimit: "6" }],
-    ["limit-missing", { rule: "ir-complete-pairs" }],
+    ["limit-7", { rule: "ir-complete-pairs", irTimeoutLimit: 7, ...pairs }],
+    ["limit-5", { rule: "ir-complete-pairs", irTimeoutLimit: 5, ...pairs }],
+    [
+      "limit-string",
+      { rule: "ir-complete-pairs", irTimeoutLimit: "6", ...pairs },
+    ],
+    ["limit-missing", { rule: "ir-complete-pairs", ...pairs }],
     ["rule-current", { rule: "current" }],
     // 上限が定数と同じでも規則が違えば通さない。
     ["rule-current-limit", { rule: "current", irTimeoutLimit: 6 }],
@@ -1600,6 +1789,31 @@ test("Q-1: gate は receipt の期限切れの上限が定数と違えば、規�
     assert.throws(
       () => gateOf(writeGateReceipt({ name, design })),
       /\[precheck\] S5-B gate/u,
+      name,
+    );
+  // Q-2 (f): 組の上限が定数と違う／欠ける receipt を拒む（側ごとの上限は 6）。
+  for (const [name, pairLimit] of [
+    ["pair-7", 7],
+    ["pair-5", 5],
+    ["pair-string", "6"],
+    ["pair-null", null],
+    ["pair-missing", undefined],
+  ])
+    assert.throws(
+      () =>
+        gateOf(
+          writeGateReceipt({
+            name,
+            design: {
+              rule: "ir-complete-pairs",
+              irTimeoutLimit: 6,
+              ...(pairLimit === undefined
+                ? {}
+                : { irTimeoutPairLimit: pairLimit }),
+            },
+          }),
+        ),
+      /\[precheck\] S5-B gate: the SP-P4 receipt's IR deadline pair limit is not 6/u,
       name,
     );
   // current で読む gate は ir-complete-pairs の receipt を通さない。

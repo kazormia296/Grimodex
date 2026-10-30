@@ -13,6 +13,7 @@ import {
   SP_P4,
   SP_P4_COMPARISON_RULE,
   SP_P4_IR_TIMEOUT_LIMIT,
+  SP_P4_IR_TIMEOUT_PAIR_LIMIT,
   assertSpP4Passed,
   spP4SampleRecord,
   spP4Schedule,
@@ -234,11 +235,42 @@ test("Q-1: 既定の規則では期限切れだけの sample は IR の比較か
   assert.match(failed.stop, /\[precheck\].*measured 10 differs/u);
 });
 
+test("Q-2: 両側が別の位置で 4 件ずつ期限切れなら、側ごとは上限の内でも組の上限で [precheck]（SP-N7 でない）", async () => {
+  // without は measured 0〜3、with は withAt で期限切れ（R+IR＝R）。
+  const timeoutAt = (withAt) => (key, side) => {
+    if (key !== "G-01/v1") return undefined;
+    const repeats = side === "with-seed-pin-step" ? withAt : [0, 1, 2, 3];
+    const scenes = sideScenes(side);
+    return (row) =>
+      row.phase === "measured" && repeats.includes(row.repeat)
+        ? { result: [scenes.a, scenes.b], ir: "timeout" }
+        : {};
+  };
+  const over = await run(fake(timeoutAt([20, 21, 22, 23])));
+  assert.equal(over.stop, null);
+  assert.equal(over.summary.status, "precheck");
+  assert.deepEqual(
+    [
+      over.variants[0].comparison.irExcludedPairs,
+      over.variants[0].comparison.irTimeoutPairLimit,
+      over.variants[0].comparison.undefinedReason,
+    ],
+    [8, 6, "ir-timeout-pair-limit"],
+  );
+  // 同じ位置なら組の除外は 4 で passed。
+  const same = await run(fake(timeoutAt([0, 1, 2, 3])));
+  assert.equal(same.summary.status, "passed");
+  assert.equal(same.variants[0].comparison.irExcludedPairs, 4);
+});
+
 test("Q-1 (C2): receipt の design は規則と期限切れの上限（gate が照合する欄）を書く", () => {
   const design = spP4ReceiptDesign({ targets, warmup: 5, measured: 30 });
   assert.equal(design.rule, SP_P4_COMPARISON_RULE);
   assert.equal(design.rule, "ir-complete-pairs");
   assert.equal(design.irTimeoutLimit, SP_P4_IR_TIMEOUT_LIMIT);
   assert.equal(design.irTimeoutLimit, 6);
+  // Q-2: 組の上限も書く（gate が照合する）。
+  assert.equal(design.irTimeoutPairLimit, SP_P4_IR_TIMEOUT_PAIR_LIMIT);
+  assert.equal(design.irTimeoutPairLimit, 6);
   assert.deepEqual(design.variants, SP_P4.variants);
 });
