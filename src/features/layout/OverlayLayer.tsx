@@ -11,6 +11,7 @@ import { getOverlays } from "./layoutStateUtils";
 import { useLayoutStore } from "./layoutStore";
 import type { OverlayId, ToolWindowPanelId } from "./layoutTypes";
 import { PANEL_COMPONENT_MAP } from "./panelComponents";
+import { useOverlayDismiss } from "./useOverlayDismiss";
 
 /** パネルの内側の端に取る、影のための余白 (px)。root の overflow clip で切れないようにする。 */
 const SHADOW_ROOM_PX = 24;
@@ -29,6 +30,8 @@ interface OverlayLayerProps {
  *   visibility:hidden + inert で paint とフォーカスを止める。ただし最初に開くまでは
  *   mount せず、起動時に重いパネルを描かない。
  * - 開閉は layout を変えない。PanelChromeMenu（最大化・折りたたみ）は付けない。
+ * - 閉じる条件（外の pointerdown／Tab で外へ／Esc）と focus の出し入れは
+ *   useOverlayDismiss。
  * - slide は root（overflow clip の窓）の中でパネルを translateX する。
  *   clip-path ではなく overflow を使うのは、clip-path が Backdrop Root になって
  *   中の Glass を背景から切り離すため（layoutAnimation.ts の REGION_OPEN_CLIP と同じ理由）。
@@ -40,6 +43,8 @@ export const OverlayLayer = memo(function OverlayLayer({
   const panel = useLayoutStore((s) => getOverlays(s.layout)[side].panel);
   const open = useLayoutStore((s) => s.openOverlay === side);
   const reduced = useReducedMotion();
+  const layerRef = useRef<HTMLDivElement>(null);
+  const dismissHandlers = useOverlayDismiss(side, layerRef);
 
   // 一度でも開いたパネルだけ保持する。パネルが変わる・空になったら捨てる。
   const seenRef = useRef<ToolWindowPanelId | null>(null);
@@ -55,11 +60,13 @@ export const OverlayLayer = memo(function OverlayLayer({
 
   return (
     <div
+      ref={layerRef}
       id={getOverlayLayerId(side)}
       data-overlay-layer={side}
       data-state={open ? "open" : "closed"}
       aria-hidden={!open}
       inert={!open}
+      {...dismissHandlers}
       className="pointer-events-none absolute z-40 overflow-clip"
       style={{
         top: 0,
@@ -75,9 +82,11 @@ export const OverlayLayer = memo(function OverlayLayer({
     >
       <div
         data-overlay-panel={side}
+        // 操作できる要素がまだ無い（lazy パネルの読込中）間の focus の置き場。
+        tabIndex={-1}
         data-slot-panel={open ? panel : undefined}
         data-ambient-glass-surface="panel"
-        className="gx-panel pointer-events-auto flex h-full min-h-0 min-w-0 flex-col overflow-hidden"
+        className="gx-panel pointer-events-auto flex outline-none h-full min-h-0 min-w-0 flex-col overflow-hidden"
         style={{
           width: `calc(100% - ${SHADOW_ROOM_PX}px)`,
           // 右のオーバーレイは影の余白が左側に来る。
