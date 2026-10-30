@@ -6,6 +6,8 @@
 //      `K64_FREEZE`、試験だけが T14 の型の descriptor を注入する）。
 //   3. S4 の commit から S2 の file（observation-prep と宣言の addendum 2 本）を
 //      git で読む（作業 tree は読まない）。候補の head の bytes も同じこと。
+//      どの file も S4 の freeze record が束縛した sha256 であること
+//      （`readAdmittedObservationPrep`／`readFreezeBoundFile`、DR-CP4-S4-1）。
 //   4. `setupReadings.source.pins` の照合（bytes の pin は候補の commit と作業
 //      tree の同じ path の sha256、ancestor の pin は候補の祖先）。
 //   5. 手順のファイル（`k64-procedure.v1.json`）を S4 の commit から formal で読む。
@@ -18,7 +20,13 @@ import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { admitGraphCaseRun, readK64FreezeHead } from "./admission.mjs";
+import {
+  OBSERVATION_PREP_S2_PATH,
+  admitGraphCaseRun,
+  readAdmittedObservationPrep,
+  readFreezeBoundFile,
+  readK64FreezeHead,
+} from "./admission.mjs";
 import {
   FROZEN_FIXTURE_SHA256,
   K64_FREEZE,
@@ -28,7 +36,7 @@ import { loadProcedureFile } from "./procedure-file.mjs";
 
 /** The S2 files the formal runner reads at the S4 commit. */
 export const S2_FILES = Object.freeze({
-  observationPrep: "evals/nir1-graph/observation-prep.v1.json",
+  observationPrep: OBSERVATION_PREP_S2_PATH,
   declarationAddendum: "evals/nir1-graph/declaration-addendum.v1.json",
   g01Addendum: "evals/nir1-g01/setup-addendum.v1.json",
 });
@@ -115,6 +123,23 @@ export function readS2AtCommit({ root, commit, candidate }) {
       throw new Error(`[precheck] S5 admission: ${file} is not JSON`);
     }
     files[name] = { path: file, sha256: sha256(bytes), value };
+  }
+  // DR-CP4-S4-1: the bytes are the ones the S4 freeze record binds (read
+  // as the candidate head's blob, the same reader as the S5-B entries).
+  const admitted = readAdmittedObservationPrep({
+    root,
+    prepCommit: prep,
+    candidateHead: candidate || prep,
+  });
+  for (const row of Object.values(files)) {
+    const bound =
+      row.path === OBSERVATION_PREP_S2_PATH
+        ? admitted
+        : readFreezeBoundFile({ root, facts: admitted.facts, file: row.path });
+    if (bound.sha256 !== row.sha256)
+      throw new Error(
+        `[precheck] S5 admission: ${row.path} at the S4 commit is not the bytes the freeze record binds`,
+      );
   }
   return { commit: prep, files };
 }

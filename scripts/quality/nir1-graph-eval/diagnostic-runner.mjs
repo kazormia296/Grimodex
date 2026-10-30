@@ -32,7 +32,7 @@ import process from "node:process";
 import {
   admitDevPreview,
   admitGraphCaseRun,
-  collectObservationPrepFacts,
+  readAdmittedObservationPrep,
   readK64FreezeHead,
 } from "./admission.mjs";
 import { FROZEN_FIXTURE_SHA256, GRAPH_EVAL_VARIANTS } from "./constants.mjs";
@@ -101,6 +101,32 @@ export function spP4ReceiptDesign({ targets, warmup, measured }) {
     sparse:
       "the product fetchSparseSceneIds on the same saved-body query, read after the fetch (DR-CP4-O-1 (4))",
   };
+}
+
+/**
+ * DR-CP4-S4-1: the frozen SP-P4's plan, from S2's observation-prep read
+ * through readAdmittedObservationPrep (the candidate head's blob, bound by
+ * the S4 freeze record's sha256), never from the freeze record itself.
+ */
+export function readFrozenSpP4Plan({ root, prepCommit, candidateHead }) {
+  const prep = readAdmittedObservationPrep({
+    root,
+    prepCommit,
+    candidateHead,
+  });
+  return { prep, plan: readDiagnosticPlan(prep.value) };
+}
+
+/** DR-CP4-S4-1: S2's file was read for the commits the admission names. */
+export function assertPrepForAdmission({ prep, admission }) {
+  if (
+    prep?.facts?.commit !== admission?.head?.observationPrep?.commit ||
+    prep?.facts?.candidateHead !== admission?.candidateHead
+  )
+    throw new Error(
+      "[precheck] SP-P4: S2's observation-prep was read for another pre-observation commit or candidate head",
+    );
+  return prep;
 }
 
 /**
@@ -314,12 +340,11 @@ async function main() {
       selected = targets.map((target) =>
         plans.find((plan) => plan.variantKey === target.variantKey),
       );
-      const record = collectObservationPrepFacts({
+      const { prep, plan } = readFrozenSpP4Plan({
         root: ROOT,
-        commit: options["prep-commit"],
+        prepCommit: options["prep-commit"],
         candidateHead: "HEAD",
-      }).record;
-      const plan = readDiagnosticPlan(record);
+      });
       warmup = plan.spP4.warmup;
       measured = plan.spP4.measured;
       const evalDir = path.resolve(options["eval-build"]);
@@ -347,6 +372,7 @@ async function main() {
         k62Commit: options["k62-commit"],
         k64Commit: options["k64-commit"],
       });
+      assertPrepForAdmission({ prep, admission });
       // Review P3 (e): one ledger claim per frozen attempt (A's ledger),
       // made after the setups, right before head.json and the measurement
       // (review P2-α: a refusal before it uses no attempt).
@@ -373,7 +399,7 @@ async function main() {
         k62: admission.head.k62,
         k64: admission.head.k64,
         observationPrep: admission.head.observationPrep,
-        traces: readTraceFileHeads({ root: ROOT, traces: record?.traces }),
+        traces: readTraceFileHeads({ root: ROOT, traces: prep.value.traces }),
       });
     }
     const schedule = spP4Schedule({ warmup, measured });

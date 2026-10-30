@@ -53,6 +53,10 @@ const sealFacts = claimFactsSealer();
 const ADMITTED = new WeakSet();
 
 const HEX40 = /^[0-9a-f]{40}$/u;
+const HEX64 = /^[0-9a-f]{64}$/u;
+
+const isPlainObject = (value) =>
+  value !== null && typeof value === "object" && !Array.isArray(value);
 
 function git(root, args) {
   return execFileSync("git", args, {
@@ -135,7 +139,10 @@ export function collectObservationPrepFacts(input) {
     record = null;
   }
   const bound = new Set([GRAPH_CASE_FREEZE.path, G01_FIXTURE.path]);
-  if (record?.boundFiles && typeof record.boundFiles === "object")
+  // DR-CP4-S4-1: the contract's boundFiles is an object path → sha256. An
+  // array (S2's shape) binds no file here: its indices are not paths (the
+  // contract refuses it, observationPrepRecordErrors).
+  if (isPlainObject(record?.boundFiles))
     for (const file of Object.keys(record.boundFiles)) bound.add(file);
   const headFileSha256 = {};
   for (const file of bound) {
@@ -159,6 +166,147 @@ export function collectObservationPrepFacts(input) {
     recordSha256AtHead: atHead === null ? null : sha256(atHead),
     record,
     headFileSha256,
+  });
+}
+
+/**
+ * S2's observation-prep (`claude/cp4-s2-observation-prep`): the
+ * pre-registration the formal entries read (`diagnosticRuns`, `samplePlan`,
+ * `traces`, the array `boundFiles`, `setupReadings`). It is not the freeze
+ * record (OBSERVATION_PREP_RECORD_PATH); the freeze record binds it by
+ * sha256 (DR-CP4-S4-1).
+ */
+export const OBSERVATION_PREP_S2_PATH =
+  "evals/nir1-graph/observation-prep.v1.json";
+/** S2's status after S4b (S2 `s4StagesRule`); a draft is never read here. */
+export const OBSERVATION_PREP_S2_FROZEN = "frozen-before-observation";
+
+/** S2's placeholder tokens (a string that starts with `S4:`), outside `placeholders`. */
+function s2PlaceholderCount(value) {
+  if (typeof value === "string") return value.startsWith("S4:") ? 1 : 0;
+  if (value === null || typeof value !== "object") return 0;
+  return Object.values(value).reduce(
+    (sum, inner) => sum + s2PlaceholderCount(inner),
+    0,
+  );
+}
+
+/**
+ * DR-CP4-S4-1: one file the freeze record binds, read as the candidate
+ * head's blob of that path. The facts must be the ones
+ * collectObservationPrepFacts collected (sealed) and the freeze record must
+ * admit (assertObservationPrepAdmits, unchanged); the record's boundFiles
+ * must be the contract's object and bind `file`, and the blob's sha256 must
+ * be the bound one. Otherwise `[precheck]`. The working tree is not read.
+ */
+export function readFreezeBoundFile(input) {
+  rejectOverrides(input, ["root", "facts", "file"]);
+  const { root, facts, file } = input;
+  if (!isCollectedFacts(facts))
+    throw new Error(
+      "[precheck] S4 bound file: the pre-observation facts were not collected from git by admission.mjs",
+    );
+  assertObservationPrepAdmits(facts, facts.candidateHead);
+  const bound = facts.record.boundFiles;
+  if (!isPlainObject(bound))
+    throw new Error(
+      "[precheck] S4 bound file: the freeze record's boundFiles must be an object of path → sha256",
+    );
+  const digest = Object.hasOwn(bound, file) ? bound[file] : undefined;
+  if (typeof file !== "string" || !HEX64.test(digest ?? ""))
+    throw new Error(
+      `[precheck] S4 bound file: the freeze record does not bind ${String(file)}`,
+    );
+  const bytes = file.startsWith("-")
+    ? null
+    : blob(root, facts.candidateHead, file);
+  if (bytes === null)
+    throw new Error(
+      `[precheck] S4 bound file: ${file} cannot be read from the candidate head ${facts.candidateHead}`,
+    );
+  const actual = sha256(bytes);
+  if (actual !== digest)
+    throw new Error(
+      `[precheck] S4 bound file: ${file} at the candidate head is not the bytes the freeze record binds`,
+    );
+  return Object.freeze({
+    path: file,
+    commit: facts.candidateHead,
+    sha256: actual,
+    bytes,
+  });
+}
+
+/**
+ * DR-CP4-S4-1: the one reader of S2's observation-prep for every formal
+ * entry (SP-P4, the trace, S5-A). Collects the facts for the S4 commit and
+ * the candidate head, reads S2's file through readFreezeBoundFile, parses
+ * it, and requires S2's own array `boundFiles` (and `traces`) to name the
+ * same sha256 the freeze record binds for each path, so the files S2 names
+ * by (commit, sha256) are the bytes the candidate head has. Returns the
+ * facts, the bound file and the parsed value.
+ */
+export function readAdmittedObservationPrep(input) {
+  rejectOverrides(input, ["root", "prepCommit", "candidateHead"]);
+  const { root } = input;
+  const facts = collectObservationPrepFacts({
+    root,
+    commit: input.prepCommit,
+    candidateHead: input.candidateHead,
+  });
+  const file = readFreezeBoundFile({
+    root,
+    facts,
+    file: OBSERVATION_PREP_S2_PATH,
+  });
+  let value;
+  try {
+    value = JSON.parse(file.bytes.toString("utf8"));
+  } catch {
+    throw new Error(
+      `[precheck] S4 bound file: ${OBSERVATION_PREP_S2_PATH} is not JSON`,
+    );
+  }
+  // S2's formal state (S2 assertObservationPrepFormal's first half): frozen
+  // and no placeholder left.
+  const { placeholders, ...filled } = value ?? {};
+  if (
+    value?.status !== OBSERVATION_PREP_S2_FROZEN ||
+    !(
+      placeholders === undefined ||
+      (Array.isArray(placeholders) && placeholders.length === 0)
+    ) ||
+    s2PlaceholderCount(filled) > 0
+  )
+    throw new Error(
+      `[precheck] S4 bound file: ${OBSERVATION_PREP_S2_PATH} is not ${OBSERVATION_PREP_S2_FROZEN} or keeps a placeholder (S4b fills them)`,
+    );
+  if (!Array.isArray(value?.boundFiles))
+    throw new Error(
+      "[precheck] S4 bound file: S2 boundFiles must be the array of path, commit and sha256",
+    );
+  const bound = facts.record.boundFiles;
+  const rows = [
+    ...value.boundFiles,
+    ...(Array.isArray(value.traces) ? value.traces : []),
+  ];
+  for (const row of rows) {
+    const named = typeof row?.path === "string" ? row.path : String(row?.path);
+    if (
+      typeof row?.path !== "string" ||
+      !Object.hasOwn(bound, row.path) ||
+      bound[row.path] !== row?.sha256
+    )
+      throw new Error(
+        `[precheck] S4 bound file: ${named}: S2 and the freeze record bind different bytes (or the freeze record does not bind it)`,
+      );
+  }
+  return Object.freeze({
+    facts,
+    path: file.path,
+    commit: file.commit,
+    sha256: file.sha256,
+    value,
   });
 }
 
