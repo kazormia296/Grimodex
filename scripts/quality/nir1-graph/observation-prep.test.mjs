@@ -2166,6 +2166,29 @@ test("S2 追補 #2 P3-1 / P3-2: forbidden paths are found anywhere in the path; 
       /readingsChosenAfterDevObservation/u.test(e),
     ),
   );
+  // S4a(3)（S4 の最終関門の P2-2）: the two readings chosen after the dev runs
+  // (K24-G01 retry limit 30→60, SP-P4 ir-complete-pairs and K=6) are listed.
+  for (const id of ["g01-retry-limit", "sp-p4-ir-timeout-limit"]) {
+    const without = clone(declaration);
+    without.readingsChosenAfterDevObservation =
+      without.readingsChosenAfterDevObservation.filter((row) => row.id !== id);
+    assert.ok(
+      authorDeclarationErrors(without).some((e) =>
+        /readingsChosenAfterDevObservation/u.test(e),
+      ),
+      id,
+    );
+    const unattributed = clone(declaration);
+    unattributed.readingsChosenAfterDevObservation.find(
+      (row) => row.id === id,
+    ).chosenBy = " ";
+    assert.ok(
+      authorDeclarationErrors(unattributed).some((e) =>
+        /readingsChosenAfterDevObservation/u.test(e),
+      ),
+      id,
+    );
+  }
 });
 
 // ---- S2 追補 #3（P-S2-5 の integrator の決定〔DR-CP4-L-28〕と harness の表の照合） ----

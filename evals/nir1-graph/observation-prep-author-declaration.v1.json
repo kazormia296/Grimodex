@@ -482,6 +482,30 @@
     {
       "at": "2026-10-28",
       "reason": "S2 追補 #3（P-S2-5 の integrator の決定〔DR-CP4-L-28〕を blockedCaseJudgement に写し、harness の BLOCKED_CONTRACT_TABLE と行ごとに照合。source の pin を b1a87b0b、02837f02 まで更新）。新しく読んだのは readFiles の追補 #3 の 2 行だけ。凍結した G-case の材料での Graph の実行出力、.artifacts、nir1-cp4-records は読んでいない。"
+    },
+    {
+      "at": "2026-10-30",
+      "reason": "S2 追補 #4（968f6782、DR-CP4-P-1 は bc2500da）: pin を master の harness（950751d0）にし、S5-B の規則（K24-G01-N2〜N4 の afterMutationReadings、SP-P4 の sparse の読み直し・共通追加枠・測定だけの取り直し・比較の規則、d10.parity、trace の setup の受領書と R5 の 1 行）を S2 と setup-addendum、trace に写し、reviewerQuestions に P-S2-6〜P-S2-9 を足した。宣言はこの追補で更新されていない。S2 の本文はこの追補の写しの出所として、readFiles の permittedRows（DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28、TR-1〜TR-14）の外の行（DR-CP4-O-1〜O-7、O-14、O-15、N-14、P-1。O-14 と O-15 は dev の実機の要約を含む）を挙げる。この追補の作者が読んだ file を readFiles の行として記録したものは無い。この行は S4a(3) で S4 の builder が commit message、DR と S2 の本文から書いた（追補の作者の申告ではない）。"
+    },
+    {
+      "at": "2026-10-30",
+      "reason": "S2 追補 #5（c5d481c4、DR-CP4-P-2）: 正式の入口の閉包の 36 file を bytes の pin に足し、K24-G01-N4 の beforeDeclaration を harness に合わせ、S3 の 7 回目の決定（P-S2-6 e、P-S2-7 a、P-S2-8 a、P-S2-9 b）を reviewerQuestions に写した。宣言はこの追補で更新されていない。S2 の本文はこの追補の写しの出所として、readFiles の permittedRows（DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28、TR-1〜TR-14）の外の行（DR-CP4-P-2 と、S3 の 7 回目の判定）を挙げる。この追補の作者が読んだ file を readFiles の行として記録したものは無い。この行は S4a(3) で S4 の builder が commit message、DR と S2 の本文から書いた（追補の作者の申告ではない）。"
+    },
+    {
+      "at": "2026-10-30",
+      "reason": "S2 追補 #6（94fc8ed4、DR-CP4-P-3）: #757（43e3f40b）に pin し直し、SP-P4 の comparisonRule を ir-complete-pairs（C1〜C3、K は harness の SP_P4_IR_TIMEOUT_LIMIT＝6）の in force にし、K24-G01 の retry.rule と graphTries を harness の記録に合わせた。宣言はこの追補で更新されていない。S2 の本文はこの追補の写しの出所として、readFiles の permittedRows（DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28、TR-1〜TR-14）の外の行（DR-CP4-O-5、O-7、P-3、Q-1。Q-1 は K＝3 を採らない理由に dev の期限切れの率〔2/35〕を挙げる）を挙げる。この追補の作者が読んだ file を readFiles の行として記録したものは無い。この行は S4a(3) で S4 の builder が commit message、DR と S2 の本文から書いた（追補の作者の申告ではない）。"
+    },
+    {
+      "at": "2026-10-31",
+      "reason": "S2 追補 #7（9fc5221d、DR-CP4-P-4 は 0749a4b4）: #758（82d42746）に pin し直し、harness の外の eval 専用 script 10 file を bytes の pin に足し、S4 の手順（DR-CP4-S4-1）を s4StagesRule に書いた。宣言はこの追補で更新されていない。S2 の本文はこの追補の写しの出所として、readFiles の permittedRows（DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28、TR-1〜TR-14）の外の行（DR-CP4-P-4、S4-1）を挙げる。この追補の作者が読んだ file を readFiles の行として記録したものは無い。この行は S4a(3) で S4 の builder が commit message、DR と S2 の本文から書いた（追補の作者の申告ではない）。"
+    },
+    {
+      "at": "2026-10-31",
+      "reason": "S4a（a107af77）と S4a(2)（17d9cc09）: addendum 3 件と trace 2 件の status と review、K6/4 の手順の v1。この宣言の bytes は変えていない（S4 の builder の記録）。"
+    },
+    {
+      "at": "2026-10-31",
+      "reason": "S4a(3)（S4 の builder、Claude の agent）: 独立 reviewer（S4 の最終関門）の P2-2 に従い、上の追補 #4〜#7 と S4 の revisions と、readingsChosenAfterDevObservation の 2 行（g01-retry-limit、sp-p4-ir-timeout-limit）を足した。値・測り方・閾値・fixture は変えていない。S4 の builder はこの行を書くために、cp4-decisions.md の DR-CP4-O-5 の (xi)、O-6、O-7、O-14、O-15、P-1、Q-1 の行（dev の実機の要約を含む）、S3 の 7 回目の記録と、追補 #4〜#7 の commit message を読んだ。凍結した G-case の材料での Graph の実行出力と .artifacts の下の出力は読んでいない。この版は S4b（S2 の S4 の placeholder を埋める commit）が束縛する bytes。"
     }
   ],
   "graphRuntimeOutputObservedScope": "graphRuntimeOutputObserved:false は、凍結した G-case の材料（G-01〜G-08 の凍結した fixture）での Graph の実行出力（receipt、log、net log、trace の実測値、Related Scenes の結果）を作者が見ていないことを指す。許された DR の本文にある dev fixture の実行の要約は decisionSummariesSeen に開示し、dev の観測の後に integrator や builder が選んだ読みは readingsChosenAfterDevObservation に挙げる。",
@@ -527,6 +551,18 @@
       "reading": "measurementSpecs の one-shot と samplePlan.variantExceptions",
       "chosenBy": "integrator（B4）と S3（P-4 (b)）",
       "basis": "DR-CP4-L-4、L-15 と S3v6（one-shot の形は dev の G-08 型の実機の後に決まった）"
+    },
+    {
+      "id": "g01-retry-limit",
+      "reading": "setup-addendum の afterMutationReadings.retry の上限（K24-G01-N2〜N4 の対照と sample ごとの聞き直し、30 回から 60 回。間隔 250 ms は変えていない）",
+      "chosenBy": "integrator（DR-CP4-O-14、O-5 (xi)。harness の commit dc1c9b29〔S5-B の branch。#756 の squash 950751d0 に入った〕）",
+      "basis": "DR-CP4-O-14 と O-15（dev の実機で N2 の sample が上限 30 の 30 回目でようやく決まった後に引き上げた）。S3 の 7 回目は P-S2-8 で、dev の fixture を見た後の決定だが凍結した G-case の観測の前で、効果は undetermined を decided に変えることだけと判定した（決定 a）"
+    },
+    {
+      "id": "sp-p4-ir-timeout-limit",
+      "reading": "diagnosticRuns SP-P4 の comparisonRule の ir-complete-pairs（C1〜C3）と、C2 の上限 K＝6（harness の SP_P4_IR_TIMEOUT_LIMIT）",
+      "chosenBy": "規則の改訂の提案は integrator（DR-CP4-O-7 の更新）、C1〜C3 の形は S3 の 7 回目（P-S2-6 の決定 e）、K＝6 は integrator（#757、DR-CP4-Q-1）。S3 は K の例として 3 と書いた",
+      "basis": "DR-CP4-O-7（dev で IR の期限切れが 35 sample のうち 2 件あり、current では SP-P4 が [precheck] になることを見た後の提案）と DR-CP4-Q-1（K は各側 24 以上を残す最小から決め、K＝3 は dev の期限切れの率〔2/35〕では止まりやすいので採らない）"
     }
   ]
 }

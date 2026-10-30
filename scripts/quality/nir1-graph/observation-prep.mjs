@@ -1039,6 +1039,10 @@ const READINGS_AFTER_DEV = Object.freeze([
   "d2-variant-readings",
   "index-build-constants",
   "one-shot-measurement",
+  // S4a(3)（S4 の最終関門の P2-2）: K24-G01 の聞き直しの上限 30→60（DR-CP4-O-14）
+  // と、SP-P4 の ir-complete-pairs（C1〜C3）と K=6（DR-CP4-Q-1）。
+  "g01-retry-limit",
+  "sp-p4-ir-timeout-limit",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
