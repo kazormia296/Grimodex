@@ -1,7 +1,7 @@
 {
   "schema": "nir1-cp4-attempt/1",
   "runName": "sp-p4-1",
-  "status": "started",
+  "status": "completed",
   "candidate": {
     "commit": "5ce1221158f9855725a3c87704c17586324a08a9",
     "tree": "291748e40d58bbbace9622b932d8ddac711a62de"
@@ -10,5 +10,7 @@
   "runKind": "sp-p4",
   "key": "sp-p4:b7d7495034ee693e82b9a6e55bbcbfd433215012:5ce1221158f9855725a3c87704c17586324a08a9",
   "attempt": 1,
-  "startedAtUtc": "2026-10-30T20:30:12.428Z"
+  "startedAtUtc": "2026-10-30T20:30:12.428Z",
+  "finishedAtUtc": "2026-10-30T20:32:06.193Z",
+  "variants": null
 }
