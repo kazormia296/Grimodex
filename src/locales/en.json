@@ -1564,6 +1564,9 @@
       "scene": "Scenes",
       "chat": "Chat"
     },
+    "overlay": {
+      "toggle": "Toggle overlay: {{panel}}"
+    },
     "panelToggle": "Toggle panels",
     "panels": "Panels",
     "bottomCorner": {

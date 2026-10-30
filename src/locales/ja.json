@@ -1563,6 +1563,9 @@
       "scene": "シーン",
       "chat": "チャット"
     },
+    "overlay": {
+      "toggle": "{{panel}}のオーバーレイを開閉"
+    },
     "panelToggle": "パネルの表示切替",
     "panels": "パネル",
     "bottomCorner": {

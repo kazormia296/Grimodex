@@ -16,6 +16,7 @@ import { render } from "@testing-library/react";
 import { LayoutShell } from "./LayoutShell";
 import { BOTTOM_CORNER_TOGGLE_CLEARANCE_PX } from "./BottomCornerToggle";
 import {
+  OVERLAY_RAIL_SIZE,
   HORIZONTAL_STRIPE_ICON_INSET_PX,
   HORIZONTAL_STRIPE_ICON_SIZE,
   HORIZONTAL_STRIPE_SIZE,
@@ -24,6 +25,7 @@ import {
 } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
+import type { OverlayId, ToolWindowPanelId } from "./layoutTypes";
 import type { PanelId } from "./panelIds";
 import { LayoutStoryPanelStub } from "./stories/LayoutStoryPanelStub";
 
@@ -506,3 +508,219 @@ describe("layout geometry invariants (real Chromium)", () => {
     expect(Math.abs(band1Top - slot1Top)).toBeLessThan(2);
   });
 });
+
+/**
+ * overlay の rail がある状態でも、同じ幾何の invariant が成り立つこと。
+ * rail は grid の外側（flex の両端）に置かれ、grid が使える幅は rail 分だけ狭い。
+ */
+const OVERLAY_CASES: Array<[string, Partial<Record<OverlayId, string>>]> = [
+  ["left only", { left: "snippets" }],
+  ["right only", { right: "snippets" }],
+  ["both sides", { left: "snippets", right: "attribution" }],
+];
+
+function setLayoutWithOverlays(
+  overlays: Partial<Record<OverlayId, string>>,
+  withBottom: boolean,
+) {
+  const layout = buildDefaultLayoutState({ allInactive: true });
+  const moved = new Set(Object.values(overlays));
+  const strip = (slots: typeof layout.regions.left.slots) =>
+    slots.map((slot) => ({
+      ...slot,
+      panels: slot.panels.filter((p) => !moved.has(p)),
+      activePanel:
+        slot.activePanel !== null && moved.has(slot.activePanel)
+          ? null
+          : slot.activePanel,
+    }));
+  layout.regions.left.slots = strip([
+    {
+      id: "l0",
+      sizeRatio: 1,
+      panels: ["scenes"],
+      activePanel: "scenes",
+    },
+    {
+      id: "l1",
+      sizeRatio: 1,
+      panels: ["codex-quick"],
+      activePanel: "codex-quick",
+    },
+  ]);
+  layout.regions.right.slots = strip([
+    { id: "r0", sizeRatio: 1, panels: ["chat"], activePanel: "chat" },
+  ]);
+  layout.regions.bottom.slots = withBottom
+    ? strip([
+        {
+          id: "b0",
+          sizeRatio: 1,
+          panels: ["timeline"],
+          activePanel: "timeline",
+        },
+      ])
+    : [];
+  layout.bottomCorners = { left: false, right: false };
+  layout.overlays = {
+    left: { panel: (overlays.left ?? null) as ToolWindowPanelId | null },
+    right: { panel: (overlays.right ?? null) as ToolWindowPanelId | null },
+  };
+  useLayoutStore.setState({
+    layout,
+    layoutLocked: false,
+    draggingPanel: null,
+    dragOverTarget: null,
+    hiddenStripePanels: new Set(),
+    initialized: true,
+    maximizedPanelId: null,
+    openOverlay: null,
+  });
+}
+
+describe.each(OVERLAY_CASES)(
+  "layout geometry invariants with overlay rails (%s)",
+  (_name, overlays) => {
+    const leftReserve = overlays.left ? OVERLAY_RAIL_SIZE : 0;
+    const rightReserve = overlays.right ? OVERLAY_RAIL_SIZE : 0;
+
+    async function renderWithRails(withBottom = false) {
+      setLayoutWithOverlays(overlays, withBottom);
+      const view = renderShell();
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      await new Promise((r) => requestAnimationFrame(() => r(null)));
+      return view;
+    }
+
+    it("puts each rail on the screen edge and shrinks the grid by exactly the rail width", async () => {
+      const { container } = await renderWithRails();
+      const shell = container
+        .querySelector<HTMLElement>("[data-layout-shell]")!
+        .getBoundingClientRect();
+      expect(shell.left).toBe(leftReserve);
+      expect(shell.right).toBe(SHELL_SIZE.width - rightReserve);
+      expect(shell.top).toBe(0);
+      expect(shell.bottom).toBe(SHELL_SIZE.height);
+
+      for (const side of ["left", "right"] as const) {
+        const rail = container.querySelector<HTMLElement>(
+          `[data-overlay-rail="${side}"]`,
+        );
+        if (!overlays[side]) {
+          expect(rail).toBeNull();
+          continue;
+        }
+        expect(rail).not.toBeNull();
+        const rect = rail!.getBoundingClientRect();
+        expect(rect.width).toBe(OVERLAY_RAIL_SIZE);
+        expect(rect.height).toBe(SHELL_SIZE.height);
+        if (side === "left") expect(rect.left).toBe(0);
+        else expect(rect.right).toBe(SHELL_SIZE.width);
+        // rail の背景は canvas の色（grid と同じ）。境目に別の色が出ない。
+        expect(getComputedStyle(rail!).backgroundColor).toBe(
+          getComputedStyle(
+            container.querySelector<HTMLElement>("[data-layout-shell]")!,
+          ).backgroundColor,
+        );
+      }
+    });
+
+    it("keeps rails, knobs and stripes from overlapping one another", async () => {
+      const { container } = await renderWithRails(true);
+      const stripes = [
+        ...container.querySelectorAll<HTMLElement>("[data-stripe-region]"),
+        ...container.querySelectorAll<HTMLElement>("[data-center-stripe]"),
+      ].map((el) => el.getBoundingClientRect());
+      expect(stripes.length).toBeGreaterThan(0);
+      const rails = [
+        ...container.querySelectorAll<HTMLElement>("[data-overlay-rail]"),
+      ];
+      expect(rails).toHaveLength(Object.values(overlays).length);
+      for (const rail of rails) {
+        const railRect = rail.getBoundingClientRect();
+        for (const stripe of stripes) {
+          expect(rectsOverlap(railRect, stripe)).toBe(false);
+        }
+        const knob = rail.querySelector<HTMLElement>("[data-overlay-knob]")!;
+        const knobRect = knob.getBoundingClientRect();
+        // つまみは rail の内側に収まり、縦書きの名前もはみ出さない。
+        expect(knobRect.left).toBeGreaterThanOrEqual(railRect.left - 0.5);
+        expect(knobRect.right).toBeLessThanOrEqual(railRect.right + 0.5);
+        expect(knobRect.bottom).toBeLessThanOrEqual(railRect.bottom + 0.5);
+        const label = knob.querySelector<HTMLElement>("span")!;
+        expect(label.getBoundingClientRect().height).toBeGreaterThan(
+          label.getBoundingClientRect().width,
+        );
+        expect(knob.getAttribute("aria-expanded")).toBe("false");
+        expect(knob.getAttribute("aria-controls")).toMatch(
+          /^gx-overlay-layer-/,
+        );
+      }
+    });
+
+    it("paints the same stripe rim and centres the corner toggles", async () => {
+      const { container } = await renderWithRails(true);
+      const stripes = [
+        ...container.querySelectorAll<HTMLElement>(
+          '[data-ambient-glass-surface="stripe"].gx-panel',
+        ),
+      ];
+      expect(stripes).toHaveLength(4);
+      for (const stripe of stripes) {
+        const rect = stripe.getBoundingClientRect();
+        const horizontal = rect.width > rect.height;
+        const expectedSize = horizontal ? HORIZONTAL_STRIPE_SIZE : STRIPE_SIZE;
+        expect(horizontal ? rect.height : rect.width).toBe(expectedSize);
+      }
+      const leftStripeRect = container
+        .querySelector<HTMLElement>('[data-stripe-region="left"]')!
+        .getBoundingClientRect();
+      const toggle = container
+        .querySelector<HTMLElement>('[data-bottom-corner-toggle="left"]')!
+        .getBoundingClientRect();
+      expect(toggle.left + toggle.width / 2).toBe(
+        leftStripeRect.left + leftStripeRect.width / 2,
+      );
+    });
+
+    it("keeps splitters hoverable and the bottom dock inside the shrunken grid", async () => {
+      const { container } = await renderWithRails(true);
+      const handles = container.querySelectorAll<HTMLElement>(
+        "[data-splitter-handle]",
+      );
+      expect(handles.length).toBeGreaterThan(0);
+      for (const handle of handles) {
+        const r = handle.getBoundingClientRect();
+        expect(r.width).toBeGreaterThan(4);
+        expect(r.height).toBeGreaterThan(4);
+      }
+      const shell = container
+        .querySelector<HTMLElement>("[data-layout-shell]")!
+        .getBoundingClientRect();
+      const dock = container
+        .querySelector<HTMLElement>('[data-region-dock="bottom"]')!
+        .getBoundingClientRect();
+      expect(dock.left).toBeGreaterThanOrEqual(shell.left - 0.5);
+      expect(dock.right).toBeLessThanOrEqual(shell.right + 0.5);
+      expect(dock.bottom).toBeLessThanOrEqual(shell.bottom + 0.5);
+    });
+
+    it("aligns side stripe bands with their content slots", async () => {
+      const { container } = await renderWithRails();
+      const slot1 = container.querySelector<HTMLElement>(
+        '[data-drop-slot="l1"]',
+      );
+      const band1 = container.querySelector<HTMLElement>(
+        '[data-stripe-region="left"] [data-drop-segment="l1"]',
+      );
+      expect(slot1).not.toBeNull();
+      expect(band1).not.toBeNull();
+      expect(
+        Math.abs(
+          band1!.getBoundingClientRect().top -
+            slot1!.getBoundingClientRect().top,
+        ),
+      ).toBeLessThan(2);
+    });
+  },
+);

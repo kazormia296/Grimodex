@@ -32,6 +32,7 @@ import { useZoomReveal } from "./useZoomReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
+import { OverlayRail } from "./OverlayRail";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
 import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
@@ -114,6 +115,10 @@ export const LayoutShell = memo(function LayoutShell({
   }, [maximizedPanelId, layout, centerBandVisible]);
   const effectiveZoomRegion: ZoomRegion | null =
     zenMode || editorOnly ? "center" : zoomRegion;
+
+  // overlay の rail（左右の端の操作の列）。Zen・エディタだけの表示・zoom 中は出さない
+  // （幅の差し引きは store 側で常に行うので、出さない間は grid が少し広いだけ）。
+  const showOverlayRails = !zenMode && !editorOnly && maximizedPanelId === null;
 
   // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
   useZoomReveal(zoomRegion, layout, shellRef);
@@ -264,208 +269,214 @@ export const LayoutShell = memo(function LayoutShell({
       {/* key={crossfadeKey} による remount 方式は禁止 — 配下の全エディタ/パネルが
           破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
           実現する（useLayoutPresetCrossfade 参照）。 */}
-      <motion.div
-        ref={shellRef}
-        data-workspace-glass-root
-        data-layout-shell
-        data-layout-initialized={initialized ? "true" : "false"}
-        data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
-        data-workspace-fluid-glass-refraction={glass.refraction}
-        data-zen-mode={zenMode ? "true" : undefined}
-        data-editor-only={editorOnly ? "true" : undefined}
-        // overflow-clip（hidden ではなく）: hidden はスクロールコンテナになり、最大化中に
-        // パネル内要素がフォーカスされるとブラウザが shell を自動スクロールして上端の
-        // ZoomRestoreBar 行をクリップ外へ追い出す（＝「元に戻す」ヘッダーが消える）。clip は
-        // スクロールコンテナを作らないのでフォーカススクロール自体が起きない。
-        className="relative grid h-full w-full overflow-clip"
-        initial={false}
-        animate={crossfadeControls}
-        style={{
-          ...workspaceGlassStyle,
-          gridTemplateColumns,
-          gridTemplateRows,
-          gridTemplateAreas,
-          padding: zenMode || editorOnly ? 0 : "var(--gx-outer-pad)",
-        }}
-      >
-        <div
-          style={cellStyle({ gridArea: "cstripe" }, cellHidden("chrome"))}
-          {...hiddenCellProps(cellHidden("chrome"))}
-          className="min-h-0 min-w-0"
+      {/* 外側を lrail | grid | rrail の flex で包む。grid（data-layout-shell）は
+          残りの幅を使い、rail の幅は画面幅から差し引かれた状態で grid に渡る。 */}
+      <div data-overlay-host className="relative flex h-full w-full min-w-0">
+        {showOverlayRails && <OverlayRail side="left" />}
+        <motion.div
+          ref={shellRef}
+          data-workspace-glass-root
+          data-layout-shell
+          data-layout-initialized={initialized ? "true" : "false"}
+          data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+          data-workspace-fluid-glass-refraction={glass.refraction}
+          data-zen-mode={zenMode ? "true" : undefined}
+          data-editor-only={editorOnly ? "true" : undefined}
+          // overflow-clip（hidden ではなく）: hidden はスクロールコンテナになり、最大化中に
+          // パネル内要素がフォーカスされるとブラウザが shell を自動スクロールして上端の
+          // ZoomRestoreBar 行をクリップ外へ追い出す（＝「元に戻す」ヘッダーが消える）。clip は
+          // スクロールコンテナを作らないのでフォーカススクロール自体が起きない。
+          className="relative grid h-full min-w-0 flex-1 overflow-clip"
+          initial={false}
+          animate={crossfadeControls}
+          style={{
+            ...workspaceGlassStyle,
+            gridTemplateColumns,
+            gridTemplateRows,
+            gridTemplateAreas,
+            padding: zenMode || editorOnly ? 0 : "var(--gx-outer-pad)",
+          }}
         >
-          <CenterStripe />
-        </div>
+          <div
+            style={cellStyle({ gridArea: "cstripe" }, cellHidden("chrome"))}
+            {...hiddenCellProps(cellHidden("chrome"))}
+            className="min-h-0 min-w-0"
+          >
+            <CenterStripe />
+          </div>
 
-        {/* zoom 中の復帰バー。CenterStripe と同じ grid area に重ねる
+          {/* zoom 中の復帰バー。CenterStripe と同じ grid area に重ねる
             （CenterStripe 側は visibility:hidden + inert で休眠中）。 */}
-        {!zenMode &&
-          !editorOnly &&
-          zoomRegion !== null &&
-          maximizedPanelId !== null && (
-            <div style={{ gridArea: "cstripe" }} className="min-h-0 min-w-0">
-              <ZoomRestoreBar panelId={maximizedPanelId} />
+          {!zenMode &&
+            !editorOnly &&
+            zoomRegion !== null &&
+            maximizedPanelId !== null && (
+              <div style={{ gridArea: "cstripe" }} className="min-h-0 min-w-0">
+                <ZoomRestoreBar panelId={maximizedPanelId} />
+              </div>
+            )}
+
+          {hasLeft && (
+            <div
+              style={cellStyle({ gridArea: "lstripe" }, cellHidden("chrome"))}
+              {...hiddenCellProps(cellHidden("chrome"))}
+              className="min-h-0"
+            >
+              <SideRegionStripeColumn
+                region="left"
+                stripeOrientation="vertical"
+                segments={segments.left}
+                reserveEndPx={
+                  hasBottom && !bottomCorners.left
+                    ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                    : 0
+                }
+              />
             </div>
           )}
 
-        {hasLeft && (
-          <div
-            style={cellStyle({ gridArea: "lstripe" }, cellHidden("chrome"))}
-            {...hiddenCellProps(cellHidden("chrome"))}
-            className="min-h-0"
-          >
-            <SideRegionStripeColumn
-              region="left"
-              stripeOrientation="vertical"
-              segments={segments.left}
-              reserveEndPx={
-                hasBottom && !bottomCorners.left
-                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
-                  : 0
-              }
-            />
-          </div>
-        )}
-
-        {hasLeft && (
-          <div
-            data-zoom-cell="left"
-            style={cellStyle({ gridArea: "lcontent" }, cellHidden("left"))}
-            {...hiddenCellProps(cellHidden("left"))}
-            className="min-h-0 min-w-0"
-          >
-            <AnimatedRegionChrome
-              region="left"
-              open={leftOpen}
-              className="h-full w-full min-h-0 min-w-0"
+          {hasLeft && (
+            <div
+              data-zoom-cell="left"
+              style={cellStyle({ gridArea: "lcontent" }, cellHidden("left"))}
+              {...hiddenCellProps(cellHidden("left"))}
+              className="min-h-0 min-w-0"
             >
-              <RegionContent
+              <AnimatedRegionChrome
                 region="left"
-                orientation="vertical"
-                dormant={editorOnly || cellHidden("left")}
-              />
-            </AnimatedRegionChrome>
-          </div>
-        )}
+                open={leftOpen}
+                className="h-full w-full min-h-0 min-w-0"
+              >
+                <RegionContent
+                  region="left"
+                  orientation="vertical"
+                  dormant={editorOnly || cellHidden("left")}
+                />
+              </AnimatedRegionChrome>
+            </div>
+          )}
 
-        {/* region 境界 splitter は zoom 中 unmount する（ステートレスな
+          {/* region 境界 splitter は zoom 中 unmount する（ステートレスな
             chrome なので安全。0 サイズで残すと dev のヒット領域 assertion
             に引っかかる）。 */}
-        {metrics.leftSplitterPx > 0 && effectiveZoomRegion === null && (
-          <div
-            style={{ gridArea: "lspl" }}
-            className="flex h-full min-h-0 overflow-hidden"
-          >
-            <RegionResizeSplitter region="left" />
-          </div>
-        )}
-
-        {projectedCenterBandVisible && (
-          <div
-            data-zoom-cell="center"
-            style={cellStyle({ gridArea: "editor" }, cellHidden("center"))}
-            {...hiddenCellProps(cellHidden("center"))}
-            className="min-h-0 min-w-0"
-          >
-            <CenterContent zenMode={zenMode} editorOnly={editorOnly} />
-          </div>
-        )}
-
-        {metrics.rightSplitterPx > 0 && effectiveZoomRegion === null && (
-          <div
-            style={{ gridArea: "rspl" }}
-            className="flex h-full min-h-0 overflow-hidden"
-          >
-            <RegionResizeSplitter region="right" />
-          </div>
-        )}
-
-        {hasRight && (
-          <div
-            data-zoom-cell="right"
-            style={cellStyle({ gridArea: "rcontent" }, cellHidden("right"))}
-            {...hiddenCellProps(cellHidden("right"))}
-            className="min-h-0 min-w-0"
-          >
-            <AnimatedRegionChrome
-              region="right"
-              open={rightOpen}
-              className="h-full w-full min-h-0 min-w-0"
+          {metrics.leftSplitterPx > 0 && effectiveZoomRegion === null && (
+            <div
+              style={{ gridArea: "lspl" }}
+              className="flex h-full min-h-0 overflow-hidden"
             >
-              <RegionContent
+              <RegionResizeSplitter region="left" />
+            </div>
+          )}
+
+          {projectedCenterBandVisible && (
+            <div
+              data-zoom-cell="center"
+              style={cellStyle({ gridArea: "editor" }, cellHidden("center"))}
+              {...hiddenCellProps(cellHidden("center"))}
+              className="min-h-0 min-w-0"
+            >
+              <CenterContent zenMode={zenMode} editorOnly={editorOnly} />
+            </div>
+          )}
+
+          {metrics.rightSplitterPx > 0 && effectiveZoomRegion === null && (
+            <div
+              style={{ gridArea: "rspl" }}
+              className="flex h-full min-h-0 overflow-hidden"
+            >
+              <RegionResizeSplitter region="right" />
+            </div>
+          )}
+
+          {hasRight && (
+            <div
+              data-zoom-cell="right"
+              style={cellStyle({ gridArea: "rcontent" }, cellHidden("right"))}
+              {...hiddenCellProps(cellHidden("right"))}
+              className="min-h-0 min-w-0"
+            >
+              <AnimatedRegionChrome
                 region="right"
-                orientation="vertical"
-                dormant={editorOnly || cellHidden("right")}
+                open={rightOpen}
+                className="h-full w-full min-h-0 min-w-0"
+              >
+                <RegionContent
+                  region="right"
+                  orientation="vertical"
+                  dormant={editorOnly || cellHidden("right")}
+                />
+              </AnimatedRegionChrome>
+            </div>
+          )}
+
+          {hasRight && (
+            <div
+              style={cellStyle({ gridArea: "rstripe" }, cellHidden("chrome"))}
+              {...hiddenCellProps(cellHidden("chrome"))}
+              className="min-h-0"
+            >
+              <SideRegionStripeColumn
+                region="right"
+                stripeOrientation="vertical"
+                segments={segments.right}
+                reserveEndPx={
+                  hasBottom && !bottomCorners.right
+                    ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                    : 0
+                }
               />
-            </AnimatedRegionChrome>
-          </div>
-        )}
+            </div>
+          )}
 
-        {hasRight && (
-          <div
-            style={cellStyle({ gridArea: "rstripe" }, cellHidden("chrome"))}
-            {...hiddenCellProps(cellHidden("chrome"))}
-            className="min-h-0"
-          >
-            <SideRegionStripeColumn
-              region="right"
-              stripeOrientation="vertical"
-              segments={segments.right}
-              reserveEndPx={
-                hasBottom && !bottomCorners.right
-                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
-                  : 0
-              }
-            />
-          </div>
-        )}
-
-        {hasBottom && (
-          <div
-            data-zoom-cell="bottom"
-            style={cellStyle({ gridArea: "bottom" }, cellHidden("bottom"))}
-            {...hiddenCellProps(cellHidden("bottom"))}
-            className="flex min-h-0 min-w-0 flex-col"
-          >
-            {effectiveZoomRegion !== null ? null : bottomOpen ? (
-              <RegionResizeSplitter region="bottom" />
-            ) : (
-              // content を閉じていても bottom stripe を浮かせるギャップ。
-              <div
-                aria-hidden
-                className="shrink-0"
-                style={{ height: "var(--gx-stripe-gap)" }}
+          {hasBottom && (
+            <div
+              data-zoom-cell="bottom"
+              style={cellStyle({ gridArea: "bottom" }, cellHidden("bottom"))}
+              {...hiddenCellProps(cellHidden("bottom"))}
+              className="flex min-h-0 min-w-0 flex-col"
+            >
+              {effectiveZoomRegion !== null ? null : bottomOpen ? (
+                <RegionResizeSplitter region="bottom" />
+              ) : (
+                // content を閉じていても bottom stripe を浮かせるギャップ。
+                <div
+                  aria-hidden
+                  className="shrink-0"
+                  style={{ height: "var(--gx-stripe-gap)" }}
+                />
+              )}
+              <RegionDock
+                region="bottom"
+                stripeOrientation="horizontal"
+                contentOrientation="horizontal"
+                segments={segments.bottom}
+                dormant={editorOnly || cellHidden("bottom")}
+                stripeReserveStartPx={
+                  hasLeft && bottomCorners.left
+                    ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                    : 0
+                }
+                stripeReserveEndPx={
+                  hasRight && bottomCorners.right
+                    ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
+                    : 0
+                }
               />
-            )}
-            <RegionDock
-              region="bottom"
-              stripeOrientation="horizontal"
-              contentOrientation="horizontal"
-              segments={segments.bottom}
-              dormant={editorOnly || cellHidden("bottom")}
-              stripeReserveStartPx={
-                hasLeft && bottomCorners.left
-                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
-                  : 0
-              }
-              stripeReserveEndPx={
-                hasRight && bottomCorners.right
-                  ? BOTTOM_CORNER_TOGGLE_CLEARANCE_PX
-                  : 0
-              }
-            />
-          </div>
-        )}
+            </div>
+          )}
 
-        {/* 角オーナーシップ切替。side region と bottom region の両方が
+          {/* 角オーナーシップ切替。side region と bottom region の両方が
             あるときだけ、その角の取り合いが意味を持つ。zoom 中は純装飾の
             chrome なので unmount で消す。 */}
-        {effectiveZoomRegion === null && hasBottom && hasLeft && (
-          <BottomCornerToggle side="left" />
-        )}
-        {effectiveZoomRegion === null && hasBottom && hasRight && (
-          <BottomCornerToggle side="right" />
-        )}
-      </motion.div>
+          {effectiveZoomRegion === null && hasBottom && hasLeft && (
+            <BottomCornerToggle side="left" />
+          )}
+          {effectiveZoomRegion === null && hasBottom && hasRight && (
+            <BottomCornerToggle side="right" />
+          )}
+        </motion.div>
+        {showOverlayRails && <OverlayRail side="right" />}
+      </div>
     </>
   );
 });
