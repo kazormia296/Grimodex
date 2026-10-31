@@ -48,18 +48,18 @@ describe("RecoveryShell", () => {
 
     render(<RecoveryShell recovery={recovery} />);
 
-    expect(screen.getByText("migration-snapshot")).toBeInTheDocument();
+    expect(screen.getByText("移行前スナップショット")).toBeInTheDocument();
     expect(screen.getByText("2026-08-10T12:00:00Z")).toBeInTheDocument();
     expect(screen.getByText("42")).toBeInTheDocument();
-    expect(screen.getByText("unverified")).toBeInTheDocument();
+    expect(screen.getByText("未検証")).toBeInTheDocument();
     expect(
-      screen.getByText(/normal workspace panels are unavailable/i),
+      screen.getByText(/通常のパネルはすべて使えません/),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("button", { name: /create quarantine copy/i }),
+      screen.getByRole("button", { name: "隔離用の複製を作成" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /restore/i }));
+    await user.click(screen.getByRole("button", { name: "復元" }));
 
     expect(restoreRecoveryCandidateMock).toHaveBeenCalledWith("rc_snapshot_1");
   });
