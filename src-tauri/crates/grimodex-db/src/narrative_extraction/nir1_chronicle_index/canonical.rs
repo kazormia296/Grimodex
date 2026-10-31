@@ -190,11 +190,21 @@ pub(super) fn proof_current_observed(
     if runtime.current_epoch(conn)? != Ok(proof.runtime_epoch) {
         return Ok(None);
     }
-    if read_identity.is_some() && super::read_identity::ReadIdentity::read(conn)? == read_identity {
-        *proof
-            .validated_read
-            .lock()
-            .map_err(|_| anyhow::anyhow!("NIR1 proof read lock poisoned"))? = read_identity.clone();
-    }
+    // The identity is returned (and kept for the verdict) only when it is the
+    // same after the complete check as before it; otherwise no later read of
+    // this check may be reused under it (DR-CP4-V-1 (b), (c)).
+    let read_identity = match read_identity {
+        Some(identity)
+            if super::read_identity::ReadIdentity::read(conn)?.as_ref() == Some(&identity) =>
+        {
+            *proof
+                .validated_read
+                .lock()
+                .map_err(|_| anyhow::anyhow!("NIR1 proof read lock poisoned"))? =
+                Some(identity.clone());
+            Some(identity)
+        }
+        _ => None,
+    };
     Ok(Some(read_identity))
 }

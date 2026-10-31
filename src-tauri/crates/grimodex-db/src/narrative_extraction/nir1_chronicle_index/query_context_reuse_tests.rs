@@ -177,7 +177,22 @@ fn nir1_reused_query_context_keeps_the_batch_identical_to_a_fresh_qualification(
             })
             .collect::<Vec<_>>()
     };
-    let reused = qualify(&f);
+    // Warm: the first qualify after the snapshot reads the context afresh.
+    let _ = qualify(&f);
+    let kept = snapshot
+        .proof
+        .validated_query_contexts
+        .lock()
+        .expect("context cache")
+        .iter()
+        .map(|entry| Arc::clone(&entry.context))
+        .collect::<Vec<_>>();
+    assert_eq!(kept.len(), 1, "one context kept");
+    // The qualify under test reuses it in another transaction (no Scope
+    // authority read, the kept context is the batch's).
+    let (reused, reads) = project_read_probe::recording(|| qualify(&f));
+    assert_eq!(reads.get(&Read::AuthorityTree).copied().unwrap_or(0), 0);
+    assert!(std::ptr::eq(reused.query_context(), &*kept[0]));
     *snapshot.proof.validated_read.lock().expect("proof cache") = None;
     snapshot
         .proof
@@ -186,6 +201,7 @@ fn nir1_reused_query_context_keeps_the_batch_identical_to_a_fresh_qualification(
         .expect("context cache")
         .clear();
     let fresh = qualify(&f);
+    assert!(!std::ptr::eq(fresh.query_context(), &*kept[0]));
     assert!(!reused.documents().is_empty());
     assert_eq!(shape(&reused), shape(&fresh));
     assert_eq!(
@@ -240,7 +256,15 @@ fn nir1_reused_query_context_is_still_compared_with_the_expected_binding() {
 /// verdict; the verdict is the one without any reuse.
 #[test]
 fn nir1_any_change_of_the_read_identity_takes_a_fresh_query_context() {
-    let changes: [Change; 5] = [
+    let changes: [Change; 6] = [
+        ("user_version change", |f| {
+            f.db.with_conn(|conn| {
+                let version: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+                conn.execute_batch(&format!("PRAGMA user_version = {}", version + 1))?;
+                Ok(())
+            })
+            .expect("user_version");
+        }),
         ("own connection commit (total_changes)", |f| {
             f.db.with_conn(|conn| {
                 conn.execute("INSERT INTO inv_unrelated_rows VALUES (1)", [])?;
@@ -295,6 +319,10 @@ fn nir1_any_change_of_the_read_identity_takes_a_fresh_query_context() {
                 .expect("identity");
         assert_ne!(identity, after_identity, "{name}: the identity moved");
         let (after, _) = read(&f, &snapshot);
+        assert!(
+            after.is_some(),
+            "{name}: still current, so the key is what decides"
+        );
         assert!(!same(&before, &after), "{name}: a fresh context");
         assert_eq!(
             binding(&after),
@@ -449,4 +477,255 @@ fn nir1_invalidating_changes_after_reuse_still_invalidate() {
         assert!(after.is_none(), "{name}: invalidated");
         assert_eq!(binding(&after), binding(&fresh), "{name}: as today");
     }
+}
+
+fn kept_contexts(snapshot: &NirQuerySnapshot) -> Vec<(ReadIdentity, String, String, Context)> {
+    snapshot
+        .proof
+        .validated_query_contexts
+        .lock()
+        .expect("context cache")
+        .iter()
+        .map(|entry| {
+            (
+                entry.identity.clone(),
+                entry.project.clone(),
+                entry.scene.clone(),
+                Arc::clone(&entry.context),
+            )
+        })
+        .collect()
+}
+
+/// The key's connection, project and state parts each decide alone: a
+/// different Database (its own connection epoch, change count and version), a
+/// state that differs only in its connection epoch, and another project never
+/// receive the kept context.
+#[test]
+fn nir1_query_context_key_includes_connection_and_project() {
+    let f = published();
+    let snapshot = snapshot(&f, s2(&f));
+    let (kept, _) = read(&f, &snapshot);
+    assert!(kept.is_some());
+    f.db.with_read_transaction(|conn| {
+        let identity = ReadIdentity::read(conn)?.expect("read state");
+        let epoch_only = identity.with_connection_epoch_for_test("another-connection");
+        let read =
+            validated_query_context(conn, &snapshot.proof, Some(epoch_only), f.project(), s2(&f))?;
+        assert!(
+            read.is_some() && !same(&read, &kept),
+            "only the connection epoch differs"
+        );
+        let elsewhere = validated_query_context(
+            conn,
+            &snapshot.proof,
+            Some(identity),
+            "another-project",
+            s2(&f),
+        )?;
+        assert!(
+            elsewhere.is_none(),
+            "another project's context is read, not reused"
+        );
+        Ok(())
+    })
+    .expect("same connection");
+    let entries = kept_contexts(&snapshot);
+    assert_eq!(entries.len(), 1, "nothing kept for a state never observed");
+    assert!(same(&Some(Arc::clone(&entries[0].3)), &kept));
+    let other = crate::Database::new(f.path()).expect("second connection");
+    let from_other = other
+        .with_read_transaction(|conn| {
+            let identity = ReadIdentity::read(conn)?;
+            assert!(identity.is_some());
+            validated_query_context(conn, &snapshot.proof, identity, f.project(), s2(&f))
+        })
+        .expect("other connection");
+    assert!(
+        from_other.is_some() && !same(&from_other, &kept),
+        "another Database reads its own"
+    );
+}
+
+/// A newer state's context replaces every entry of an older state.
+#[test]
+fn nir1_query_contexts_of_an_older_state_are_dropped() {
+    let f = published();
+    let first = snapshot(&f, s2(&f));
+    let other_scene = snapshot(&f, s1(&f));
+    assert!(read(&f, &first).0.is_some() && read(&f, &other_scene).0.is_some());
+    assert_eq!(kept_contexts(&first).len(), 2);
+    f.db.with_conn(|conn| {
+        conn.execute("INSERT INTO inv_unrelated_rows VALUES (5)", [])?;
+        Ok(())
+    })
+    .expect("own write");
+    let (after, _) = read(&f, &first);
+    assert!(after.is_some());
+    let current =
+        f.db.with_read_transaction(ReadIdentity::read)
+            .expect("identity");
+    let entries = kept_contexts(&first);
+    assert_eq!(entries.len(), 1, "the older state's entries are gone");
+    assert_eq!(Some(entries[0].0.clone()), current);
+    assert_eq!(entries[0].2, s2(&f));
+}
+
+/// The list is bounded: beyond the limit the oldest entry goes, the new one
+/// stays, and the verdict is the one without any reuse.
+#[test]
+fn nir1_query_context_reuse_is_bounded() {
+    let f = published();
+    let snapshot = snapshot(&f, s2(&f));
+    let (warm, _) = read(&f, &snapshot);
+    let warm = warm.expect("current");
+    let identity =
+        f.db.with_read_transaction(ReadIdentity::read)
+            .expect("identity")
+            .expect("read state");
+    {
+        let mut entries = snapshot
+            .proof
+            .validated_query_contexts
+            .lock()
+            .expect("cache");
+        entries.clear();
+        for index in 0..QUERY_CONTEXT_REUSE_LIMIT {
+            entries.push(ValidatedQueryContext {
+                identity: identity.clone(),
+                project: f.project().to_owned(),
+                scene: format!("filler-{index}"),
+                context: Arc::clone(&warm),
+            });
+        }
+    }
+    let (after, _) = read(&f, &snapshot);
+    assert!(after.is_some() && !same(&after, &Some(Arc::clone(&warm))));
+    let scenes = kept_contexts(&snapshot)
+        .into_iter()
+        .map(|entry| entry.2)
+        .collect::<Vec<_>>();
+    assert_eq!(scenes.len(), QUERY_CONTEXT_REUSE_LIMIT);
+    assert_eq!(
+        scenes.first().map(String::as_str),
+        Some("filler-1"),
+        "the oldest went"
+    );
+    assert_eq!(
+        scenes.last().map(String::as_str),
+        Some(s2(&f)),
+        "the new one stays"
+    );
+    assert_eq!(binding(&after), binding(&uncached(&f, &snapshot)));
+}
+
+/// An Evidence click (`read_chronicle_evidence_navigation`) reuses the kept
+/// context too, with the same verdict.
+#[test]
+fn nir1_evidence_navigation_reuses_the_query_context() {
+    let f = published();
+    let snapshot = snapshot(&f, s2(&f));
+    let batch =
+        f.db.with_read_transaction(|conn| {
+            let NirQualifiedRead::Qualified(batch) =
+                qualify_chronicle_index_snapshot(conn, &f.runtime, &snapshot)?
+            else {
+                panic!("qualified");
+            };
+            Ok(batch)
+        })
+        .expect("qualify");
+    let handle = batch.documents()[0].evidence_handles()[0].clone();
+    let navigate = || {
+        project_read_probe::recording(|| {
+            f.db.with_read_transaction(|conn| {
+                Ok(matches!(
+                    read_chronicle_evidence_navigation(conn, &f.runtime, &handle)?,
+                    NirEvidenceNavigationRead::Available(_)
+                ))
+            })
+            .expect("navigation")
+        })
+    };
+    let (available, reads) = navigate();
+    assert!(available);
+    assert_eq!(
+        reads.get(&Read::AuthorityTree).copied().unwrap_or(0),
+        0,
+        "reused"
+    );
+    snapshot
+        .proof
+        .validated_query_contexts
+        .lock()
+        .expect("cache")
+        .clear();
+    let (fresh, reads) = navigate();
+    assert!(fresh);
+    assert_eq!(
+        reads.get(&Read::AuthorityTree).copied().unwrap_or(0),
+        1,
+        "read afresh"
+    );
+}
+
+/// Writes on this connection while the complete proof check runs: the check
+/// reads no different data, but its read identity is not the same at the end.
+struct WriteDuringCheck<'a> {
+    conn: &'a Connection,
+    calls: usize,
+}
+
+impl GraphWorkControl for WriteDuringCheck<'_> {
+    fn check(&mut self, _stage: super::super::super::GraphWorkStage) -> anyhow::Result<()> {
+        self.calls += 1;
+        if self.calls == 2 {
+            self.conn
+                .execute("INSERT INTO inv_unrelated_rows VALUES (6)", [])?;
+        }
+        Ok(())
+    }
+
+    fn allows_full_eligibility(&self) -> bool {
+        true
+    }
+}
+
+/// DR-CP4-V-1 (b), (c): an identity that moved during the complete proof check
+/// is neither kept for the verdict nor returned for a context reuse.
+#[test]
+fn nir1_identity_moved_during_the_complete_check_is_not_returned() {
+    let f = published();
+    let snapshot = snapshot(&f, s2(&f));
+    *snapshot.proof.validated_read.lock().expect("proof cache") = None;
+    let observed =
+        f.db.with_conn(|conn| {
+            let tx = conn.unchecked_transaction()?;
+            let _ = ReadIdentity::read(&tx)?.expect("a Read transaction at the start");
+            let mut control = WriteDuringCheck {
+                conn: &tx,
+                calls: 0,
+            };
+            let observed = super::super::canonical::proof_current_observed(
+                &tx,
+                &f.runtime,
+                &snapshot.proof,
+                &mut control,
+            )?;
+            assert!(control.calls >= 2, "the write ran inside the check");
+            tx.rollback()?;
+            Ok(observed)
+        })
+        .expect("check");
+    assert_eq!(
+        observed,
+        Some(None),
+        "current, without an identity to reuse"
+    );
+    assert!(snapshot
+        .proof
+        .validated_read
+        .lock()
+        .expect("proof cache")
+        .is_none());
 }

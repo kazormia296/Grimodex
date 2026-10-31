@@ -473,6 +473,14 @@ fn validate_binding_with_control(
     )
 }
 
+/// DR-CP4-V-1 (P2): the most contexts one proof keeps for one committed state.
+/// Each holds the project's whole Scope authority. One IR operation reuses one
+/// (its qualify, title read, `continue` and Evidence clicks name the same
+/// Scene), and operations of different Scenes overlap only briefly within one
+/// committed state (any write moves the identity and empties the list), so a
+/// few entries cover the reuse; the oldest goes first beyond that.
+const QUERY_CONTEXT_REUSE_LIMIT: usize = 8;
+
 /// DR-CP4-V-1 (P2): the query context of `project`/`scene` in this snapshot.
 /// It reuses a context this proof's validation read earlier only for the same
 /// project, Scene and read identity (`identity`, observed by the proof check in
@@ -520,6 +528,9 @@ fn validated_query_context(
             // connection state; keep only the current state's contexts.
             entries.retain(|entry| entry.identity == identity);
             if kept(&entries, &identity).is_none() {
+                if entries.len() >= QUERY_CONTEXT_REUSE_LIMIT {
+                    entries.remove(0);
+                }
                 entries.push(ValidatedQueryContext {
                     identity,
                     project: project.into(),
