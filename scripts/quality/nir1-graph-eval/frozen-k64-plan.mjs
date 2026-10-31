@@ -24,6 +24,14 @@ export const RUN_KINDS = Object.freeze([
 ]);
 const CATALOG = Object.freeze(GRAPH_EVAL_VARIANTS.map((row) => row.key));
 
+/**
+ * DR-CP4-T-4: V-10 READY is a steady-state check. A graph-held-unusable
+ * variant holds B dirty, so the worker's prepare fails every time and READY
+ * never comes by the product's design; a one-shot process issues no query
+ * before its measured one (C5).
+ */
+const readyProbeOf = (kind) => kind === "steady-state";
+
 function fail(detail) {
   throw new Error(`[precheck] S5 ${detail}`);
 }
@@ -236,7 +244,7 @@ export function formalRunPlan({ plans, prep, addenda }) {
         oneShot: oneShotSpec,
         // C5: a one-shot process issues no query before its measured one.
         buildChronicleIndex: !isOneShot,
-        readyProbe: !isOneShot,
+        readyProbe: readyProbeOf(kind),
         g01Mode: plan.caseId === "G-01" ? g01 : null,
       });
     }),
@@ -499,7 +507,7 @@ export function devRunSpec(plan) {
         })
       : null,
     buildChronicleIndex: !isOneShot,
-    readyProbe: !isOneShot,
+    readyProbe: readyProbeOf(kind),
     g01Mode: null,
   });
 }

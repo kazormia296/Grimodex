@@ -174,7 +174,8 @@ test("DR-CP4-N-1: 13 variant の run の仕様を plan と S2 の値から導く
     assert.equal(Boolean(row.oneShot), oneShot);
     // C5: a one-shot process issues no query before its measured one.
     assert.equal(row.buildChronicleIndex, !oneShot);
-    assert.equal(row.readyProbe, !oneShot);
+    // DR-CP4-T-4: V-10 READY is a steady-state check only.
+    assert.equal(row.readyProbe, row.kind === "steady-state");
     assert.equal(
       row.declaration?.sceneId ?? null,
       DECLARED[row.variantKey] ?? null,
@@ -190,6 +191,34 @@ test("DR-CP4-N-1: 13 variant の run の仕様を plan と S2 の値から導く
     reason: "rAndRirMode-unresolved",
     record: null,
   });
+});
+
+test("DR-CP4-T-4: V-10 の READY の probe は steady-state の種類だけ（graph-held-unusable と one-shot は不適用）", () => {
+  const want = {
+    "steady-state": true,
+    "graph-held-unusable": false,
+    "one-shot": false,
+  };
+  const formal = specs();
+  const dev = loadDevGraphCasePlans({
+    root: REPO_ROOT,
+    fixturePath:
+      "scripts/quality/nir1-graph-eval/dev-fixtures/dev-harbor-graph-case.v1.json",
+    stopsAt: "complete",
+  }).map((plan) => devRunSpec(plan));
+  for (const rows of [formal, dev]) {
+    assert.deepEqual(
+      new Set(rows.map((row) => row.kind)),
+      new Set(Object.keys(want)),
+    );
+    for (const row of rows)
+      assert.equal(row.readyProbe, want[row.kind], row.variantKey);
+  }
+  const held = (rows) =>
+    rows.find((row) => row.variantKey.endsWith("/graph-index-unusable"));
+  assert.equal(held(formal).readyProbe, false);
+  assert.equal(held(dev).readyProbe, false);
+  assert.equal(held(dev).kind, "graph-held-unusable");
 });
 
 test("DR-CP4-N-1: S2 の値の食い違いは [precheck]（one-shot、宣言、d2 の読み、数、順）", () => {

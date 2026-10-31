@@ -152,7 +152,13 @@ function coldDb(dir, { b, chronicle, pins = [SEED], feed = null }) {
  * `suspend_project_in_tx`); `tick()` is its timer. With it, the Index build
  * rebuilds a dirty C and every query's snapshot is the copy's C.
  */
-function fakeProduct({ dir, snapshotUsable, onDeclare = () => {}, freshness }) {
+function fakeProduct({
+  dir,
+  snapshotUsable,
+  onDeclare = () => {},
+  freshness,
+  neverReady = false,
+}) {
   const events = [];
   const launchArgs = [];
   let launches = 0;
@@ -321,10 +327,19 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {}, freshness }) {
     nir1GraphEvalStatus: () => status,
     // Review P3 (a): READY only after the first seeded query, so a READY
     // probe is a real query in the events.
-    nir1GraphEvalDiagnostics: () => ({
-      ...k64Diagnostics(2, 1, 1),
-      preparesReady: seededQueries > 0 ? 1 : 0,
-    }),
+    // DR-CP4-T-4: with B held dirty the worker's prepare fails every time
+    // and READY never comes (the dev diagnostics of graph-index-unusable).
+    nir1GraphEvalDiagnostics: () =>
+      neverReady
+        ? {
+            ...k64Diagnostics(2, 0, 0, { prepareFailures: 1 }),
+            preparesStarted: 1,
+            preparesReady: 0,
+          }
+        : {
+            ...k64Diagnostics(2, 1, 1),
+            preparesReady: seededQueries > 0 ? 1 : 0,
+          },
     nir1GraphEvalSamples: () => ({
       records: [k64NativeRecord(), K64_CACHED_CHILD],
     }),
@@ -488,6 +503,7 @@ test("D1 (ii)／DR-CP4-N-1: 宣言の run は workspace を開いた後・seed �
     ]);
     // READY was reached through a seeded probe after the declaration.
     assert.ok(result.proc.checks.ownerReady.probes.length >= 1);
+    assert.equal(result.proc.checks.ownerReady.skipped, undefined);
     assert.equal(result.proc.declaration.verified, true);
     assert.equal(
       result.proc.declaration.invariants.before.sceneV1.sha256,
@@ -1779,6 +1795,8 @@ const graphHeld = {
   holding: true,
   measurementPoint: "while-graph-index-unusable",
   indexState: { graph: "unusable", chronicle: "usable" },
+  // DR-CP4-T-4: the plan's value for this kind.
+  readyProbe: false,
 };
 
 test("DR-CP4-T-1: 定常状態の process は Freshness が cold DB の feed を処理して C を汚すまで待ってから C を作り、query の間 C は使えるまま（待たなければ途中で汚れる）", async () => {
@@ -1974,6 +1992,49 @@ test("DR-CP4-T-1（帰結）: B が使える variant の cold DB に未処理の
     assert.equal(result.probe.freshnessFeed.settle.settled, true);
     assert.equal(result.probe.freshnessFeed.settle.initial.pendingEvents, 2);
     assert.equal(world.events.includes("query:graph"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-T-4: graph-held-unusable は V-10 の READY の probe を呼ばず、不適用とその時の prepare の状況を受領書に残し、Graph arm の query は fallback として測る", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-08/graph-index-unusable",
+    spec: graphHeld,
+    metadata: {
+      b: { generation: 7, dirty: true },
+      chronicle: { generation: 3, dirty: false },
+    },
+    world: (base) =>
+      (world = fakeProduct({
+        dir: base,
+        snapshotUsable: () => true,
+        neverReady: true,
+      })),
+  });
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.samples.length, 70);
+    const graph = result.samples.filter((row) => row.arm === "graph");
+    assert.equal(graph.length, 35);
+    // No seeded query outside the schedule: the Graph-arm queries are the
+    // 35 samples, after the hook prepare.
+    const events = world.events;
+    assert.equal(events.filter((row) => row === "query:graph").length, 35);
+    assert.ok(events.indexOf("hook.prepare") < events.indexOf("query:graph"));
+    // The disclosure: not applicable, with the prepare state at that time.
+    const ready = result.proc.checks.ownerReady;
+    assert.equal(ready.skipped, "not-applicable:graph-held-unusable");
+    assert.equal(ready.probes, undefined);
+    assert.equal(ready.diagnostics.preparesStarted, 1);
+    assert.equal(ready.diagnostics.prepareFailures, 1);
+    assert.equal(ready.diagnostics.preparesReady, 0);
+    // The at-query probe is unchanged (every query, C usable).
+    const queries = result.probes.filter((row) => row.at === "at-query");
+    assert.equal(queries.length, 70);
+    assert.ok(queries.every((row) => row.indexUsable === true));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

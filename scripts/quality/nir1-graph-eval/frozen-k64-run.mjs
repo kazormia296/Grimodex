@@ -844,7 +844,10 @@ async function openProcess({ ctx, dir, label }) {
   }
 }
 
-/** V-10 READY through the hook consumer (steady state only; seeded). */
+/**
+ * V-10 READY through the hook consumer (steady state only, the plan's
+ * `readyProbe`; seeded).
+ */
 async function readyProbe(ctx) {
   const ready = [];
   const started = performance.now();
@@ -958,7 +961,14 @@ async function measureSteady(ctx) {
       );
       if (instrumented?.fetchTiming !== true)
         throw new Error("[precheck] the fetch timing shim is not in the page");
-      proc.checks.ownerReady = await readyProbe(ctx);
+      // DR-CP4-T-4: READY where the plan applies it (steady state); else
+      // the non-application and the prepare state are disclosed, never judged.
+      proc.checks.ownerReady = ctx.spec.readyProbe
+        ? await readyProbe(ctx)
+        : {
+            skipped: `not-applicable:${ctx.spec.kind}`,
+            diagnostics: await call(ctx.addon, "nir1GraphEvalDiagnostics"),
+          };
     }
     const launcherChain = readAncestorPids();
     const measuring = proc.session;
