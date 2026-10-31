@@ -1059,12 +1059,12 @@ test("DR-CP4-V-3 (C): 観測の path の quote は page から受け取った直
       ),
     /\[precheck\].*receipt\.json/u,
   );
-  // sha256 の鍵、hash の値だけの quote の名前は止めない（DR-CP4-V-4 で、
-  // 平文の入りうる `quotes: ["b"]` は止める側へ移した）。
+  // hash の値だけの quote の名前は止めない（DR-CP4-V-4 で、平文の入りうる
+  // `quotes: ["b"]` と、欄名が hash の形でも値が平文のものは止める側へ移した）。
   const digest = createHash("sha256").update("b").digest("hex");
   assert.doesNotThrow(() =>
     assertNoQuotePlaintext(
-      { quoteSha256: "a", quotes: [digest, digest], q: null },
+      { quoteSha256: digest, quotes: [digest, digest], q: null },
       "x",
     ),
   );
@@ -1317,7 +1317,7 @@ test("DR-CP4-V-4: 受領書の記録は cycle end の後に呼ばれた fetch �
   assert.match(main, /requeryAfterCycleEnd: records\.requeryAfterCycleEnd,/u);
 });
 
-test("DR-CP4-V-4 (レビュー P3): quote の平文の guard は大文字小文字・複数形・別の形の鍵（配列と入れ子の中も）を止め、hash の欄名と hash の値だけのものは止めない", () => {
+test("DR-CP4-V-4 (レビュー P3): quote の平文の guard は大文字小文字・複数形・別の形の鍵（配列と入れ子の中も）を止め、許可は値が sha256 の 16 進（またはその配列）のときだけ。欄名が hash の形でも平文と null は止める", () => {
   const digest = createHash("sha256").update(QUOTE).digest("hex");
   for (const [name, value, at] of [
     ["Quote", { Quote: QUOTE }, "$.Quote"],
@@ -1330,6 +1330,20 @@ test("DR-CP4-V-4 (レビュー P3): quote の平文の guard は大文字小文�
     // `quote` itself stays refused whatever it holds (V-3).
     ["quote-null", { quote: null }, "$.quote"],
     ["quote-digest", { quote: digest }, "$.quote"],
+    // 欄名が hash の形でも、値が平文なら止める（レビュー P3、3 回目）。
+    ["quoteSha256-plain", { quoteSha256: "plain text" }, "$.quoteSha256"],
+    ["quote_sha256", { quote_sha256: "x" }, "$.quote_sha256"],
+    ["quoteHash", { a: [{ quoteHash: "y" }] }, "$.a.0.quoteHash"],
+    ["QuoteDigest", { QuoteDigest: "z" }, "$.QuoteDigest"],
+    ["quotesSha256-plain", { quotesSha256: [digest, "x"] }, "$.quotesSha256"],
+    ["quoteSha256-short", { quoteSha256: digest.slice(1) }, "$.quoteSha256"],
+    ["quoteSha256-object", { quoteSha256: { v: digest } }, "$.quoteSha256"],
+    // null はどの quote の鍵でも止める（`quote` と `Quote` で揃える）。
+    ["Quote-null", { Quote: null }, "$.Quote"],
+    ["quoteSha256-null", { quoteSha256: null }, "$.quoteSha256"],
+    ["Quotes-null", { Quotes: null }, "$.Quotes"],
+    ["quotes-null-item", { quotes: [digest, null] }, "$.quotes"],
+    ["quoted-null", { quoted: null }, "$.quoted"],
   ])
     assert.throws(
       () => assertNoQuotePlaintext(value, "observation.json"),
@@ -1338,14 +1352,17 @@ test("DR-CP4-V-4 (レビュー P3): quote の平文の guard は大文字小文�
         `[precheck] DR-CP4-V-3: observation.json would carry a path quote in clear at ${at}`,
       name,
     );
-  // 止めない: hash の欄名（値によらず）、hash の値か null だけの quote の名前。
+  // 止めない: 値が sha256 の 16 進（大文字小文字、`sha256:` の接頭辞）か、
+  // その配列だけの quote の名前（欄名の形は許可の条件にしない）。
   for (const value of [
     { quoteSha256: digest, fromQuoteSha256: digest, toQuoteSha256: digest },
+    { quoteSha256: digest.toUpperCase() },
+    { quoteSha256: `sha256:${digest}` },
     { evidence: [{ evidenceId: "e", quoteSha256: digest }] },
-    { quote_sha256: "x", quoteHash: "y", QuoteDigest: "z" },
+    { Quote: digest, quoteText: digest },
     { quotes: [digest, digest.toUpperCase()] },
-    { quotes: [], Quotes: null, quotesSha256: [digest] },
-    { quoted: null },
+    { quotes: [], quotesSha256: [digest, `sha256:${digest}`] },
+    { q: null, text: "plain", excerpt: "plain" },
   ])
     assert.doesNotThrow(
       () => assertNoQuotePlaintext(value, "receipt.json"),
