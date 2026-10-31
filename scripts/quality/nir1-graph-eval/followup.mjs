@@ -132,14 +132,55 @@ function ticketShape(ticket) {
 }
 
 /**
+ * DR-CP4-V-3 (rule P-b): a (b) trace's counted parent the product cancelled
+ * before its begin (no begin, no Native record, never published; the trace
+ * records it with `parent.cancelledBeforeBegin`). Only the observable items
+ * are recorded: the generation, the Scene and seed, the call and the return
+ * of the fetch, the publish count 0, no Native begin and no child. Any other
+ * shape is not this case (the usual R7 check applies, X10). DR-CP4-V-4
+ * (レビュー P3): the mark holds only with the sample's own values of that case
+ * (the fetch `cancelled` / `not-started`, the join `cancelled`, the snapshot
+ * not usable); a mark the sample contradicts is not this case either.
+ */
+function cancelledBeforeBeginRecord(sample, context) {
+  const record = sample?.followUp;
+  const parent = record?.parent;
+  return (
+    context === "trace" &&
+    sample?.status === "cancelled" &&
+    sample?.rawStatus === "not-started" &&
+    sample?.graph?.outcome === "cancelled" &&
+    sample?.snapshot?.usable === false &&
+    record !== null &&
+    typeof record === "object" &&
+    parent !== null &&
+    typeof parent === "object" &&
+    parent.cancelledBeforeBegin === true &&
+    Number.isInteger(parent.generation) &&
+    typeof parent.sceneId === "string" &&
+    typeof parent.seed === "string" &&
+    finite(parent.calledAt) &&
+    finite(parent.resolvedAt) &&
+    parent.calledAt <= parent.resolvedAt &&
+    parent.publishCount === 0 &&
+    Array.isArray(record.nativeBegins) &&
+    record.nativeBegins.length === 0 &&
+    has(record, "child") &&
+    record.child === null
+  );
+}
+
+/**
  * The R7 items a query lacks (K6/4:198; X10 :158). `null` means "did not
  * happen" and is allowed where the event is optional; an absent key or a
  * wrong type is missing. R1 / R2 are required in the steady state only
- * (変える点 15: (b) では R1 と R2 を当てず).
+ * (変える点 15: (b) では R1 と R2 を当てず). DR-CP4-V-3: a (b) parent
+ * cancelled before its begin needs only its observable items.
  */
 export function missingR7(sample, context) {
   const record = sample?.followUp;
   if (!record || typeof record !== "object") return ["followUp"];
+  if (cancelledBeforeBeginRecord(sample, context)) return [];
   const missing = [];
   const need = (ok, name) => {
     if (!ok) missing.push(name);
@@ -437,6 +478,13 @@ export function classifyFollowUp(sample, options) {
     // D-11: a late result mixed into a display stays a violation even when
     // other records are missing (K6/4:163).
     violations.push(...mixedIntoDisplay(sample.followUp));
+    return finish(false);
+  }
+  // DR-CP4-V-3 (rule P-b): the parent's generation was cancelled before its
+  // begin; K6/4:160 X12 (「親の合流が … `cancelled` … の世代」), a follow-up
+  // failure kept in the denominator. Nothing after the parent was recorded.
+  if (cancelledBeforeBeginRecord(sample, context)) {
+    add("parent", "X12", "cancelled-before-begin");
     return finish(false);
   }
   const record = sample.followUp;

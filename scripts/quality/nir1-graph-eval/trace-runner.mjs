@@ -56,6 +56,11 @@ import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import { candidateBlock, devExpectedContribution } from "./k64-runner.mjs";
 import { DEFAULT_ADDON, ROOT, bundleObserver } from "./launcher.mjs";
 import { finishAttempt } from "./frozen-k64-admission.mjs";
+import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
+import {
+  hashObservationPaths,
+  materialRevisionResolver,
+} from "./material-revision.mjs";
 import {
   outsideQReceiptCountByReason,
   readRunHead,
@@ -86,13 +91,21 @@ import {
   COUNTER_POLL_STOP_SOURCE,
   TRACE_COUNTER_KEYS,
   TRACE_RUN_SCHEMA,
+  alignmentDisclosure,
+  alignmentExclusionSummary,
+  assertTraceMaterialsMatch,
+  cancelledParentSeqsOf,
+  cancelledParentsDisclosure,
   devTracePlan,
+  lapseIBreakdown,
   mergeNativeRecords,
+  requeryAfterCycleEndDisclosure,
   TRACE_MAINTENANCE_SEAM,
   startSealCounts,
   summarizeTraceRun,
   traceEvents,
   traceMaintenanceEnv,
+  traceAlignment,
   traceRequeries,
   traceRows,
   validateTracePlan,
@@ -650,11 +663,15 @@ export async function startFrozenTrace({
   return { receipt: null, context: makeContext() };
 }
 
-function parseArgs(argv) {
+/**
+ * The CLI options. DR-CP4-V-2: the procedure version and commit have no
+ * default here, so a frozen trace takes `trace-frozen.mjs`'s (`v1`, the
+ * `--prep-commit`); the dev preview applies its draft defaults
+ * (`devProcedureOptions`).
+ */
+export function parseArgs(argv) {
   const options = {
     "eval-build": path.join(ROOT, ".artifacts/cp4/eval-build"),
-    "procedure-version": DEV_DRAFT_PROCEDURE_VERSION,
-    "procedure-commit": "HEAD",
     cycles: "3",
     attempt: "1",
   };
@@ -673,8 +690,218 @@ function parseArgs(argv) {
   return options;
 }
 
+/** The dev preview's procedure file (the draft, as before DR-CP4-V-2). */
+export function devProcedureOptions(options) {
+  return {
+    version: options["procedure-version"] ?? DEV_DRAFT_PROCEDURE_VERSION,
+    commit: options["procedure-commit"] ?? "HEAD",
+  };
+}
+
+/**
+ * DR-CP4-V-2 (DR-CP4-N-4 on the trace path): the formal trace's F6 resolver,
+ * built as Gold builds it for G-02 base (the frozen setup plan, the fixture's
+ * variant expectations, the setup receipt's logical → runtime map); its
+ * expected (Revision, edge) pairs must be the trace file's materials.
+ */
+export function traceMaterialResolver({ root, tracePlan, fixture, ids }) {
+  const setupPlan = loadFrozenSetupPlans({ root, stopsAt: "complete" }).find(
+    (row) =>
+      row.variantKey === `${TRACE_PROJECT.caseId}/${TRACE_PROJECT.variantId}`,
+  );
+  if (!setupPlan)
+    throw new Error(
+      `[precheck] DR-CP4-V-2: no frozen setup plan for ${TRACE_PROJECT.caseId}/${TRACE_PROJECT.variantId}`,
+    );
+  const expectations =
+    fixture?.variants?.find((row) => row.id === TRACE_PROJECT.variantId)
+      ?.expectations ??
+    fixture?.expectations ??
+    null;
+  const resolver = materialRevisionResolver({
+    plan: setupPlan,
+    expectations,
+    ids,
+  });
+  const pairs = assertTraceMaterialsMatch({
+    plan: tracePlan,
+    expected: resolver.expected,
+  });
+  return {
+    expected: resolver.expected,
+    pairs,
+    contribution: (paths) => resolver.contribution(paths),
+  };
+}
+
 function git(args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
+}
+
+const SHA256_DIGEST = /^(?:sha256:)?[0-9a-f]{64}$/iu;
+
+/**
+ * DR-CP4-V-4 (レビュー P3): a key that names a quote in any case and form
+ * (`quote`, `Quote`, `quotes`, `fromQuote`, `quoteSha256`). The key's shape
+ * never permits it: only its value does (digestShaped).
+ */
+function quoteKey(key) {
+  return key
+    .toLowerCase()
+    .replace(/[^a-z0-9]/gu, "")
+    .includes("quote");
+}
+
+/**
+ * A sha256 hex digest (either case, `sha256:` prefix allowed) or a list of
+ * them (material-revision `quotes`). null is refused under every quote key
+ * alike: no writer emits it (hashGraphPaths hashes `String(quote)`).
+ */
+function digestShaped(value) {
+  const one = (item) => typeof item === "string" && SHA256_DIGEST.test(item);
+  return one(value) || (Array.isArray(value) && value.every(one));
+}
+
+/**
+ * DR-CP4-V-3 (C): refuses a value that still carries a path quote in clear
+ * (a `quote` key at any depth, in objects and arrays; DR-CP4-V-4: also any
+ * other case and form of it, unless the value is digest-shaped); the trace
+ * writes only its sha256 (`hashGraphPaths`). `[precheck]`: the run stops
+ * before writing `label`.
+ */
+export function assertNoQuotePlaintext(value, label) {
+  const stack = [{ node: value, at: "$" }];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const { node, at } = stack.pop();
+    if (node === null || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    for (const [key, child] of Object.entries(node)) {
+      // `quote` itself is refused whatever it holds (DR-CP4-V-3, unchanged).
+      if (key === "quote" || (quoteKey(key) && !digestShaped(child)))
+        throw new Error(
+          `[precheck] DR-CP4-V-3: ${label} would carry a path quote in clear at ${at}.${key}`,
+        );
+      stack.push({ node: child, at: `${at}.${key}` });
+    }
+  }
+  return value;
+}
+
+/** DR-CP4-V-2/V-3: the page's observation with its path quotes hashed, checked. */
+export function hashTraceObservation(pageObservation) {
+  return assertNoQuotePlaintext(
+    hashObservationPaths(pageObservation),
+    "the trace observation",
+  );
+}
+
+/**
+ * DR-CP4-V-3 (C): the receipt's records of one trace run from what the run
+ * observed (`observation` already hashed, `nativeReads` with the read after
+ * the export last, the poller's `counters`, `result` of runTraceOperations)
+ * and its `context` (devContext / frozenContext: the F6 resolver of the
+ * formal trace is `context.materialContribution`). Pure; main writes it.
+ */
+export function traceRunRecords({
+  plan,
+  observation,
+  nativeReads,
+  counters,
+  result,
+  context,
+  querySceneId,
+  candidateHead,
+}) {
+  const native = mergeNativeRecords(nativeReads);
+  const rows = traceRows({
+    plan,
+    observation,
+    log: result.log,
+    native,
+    runs: counters?.runs ?? [],
+    a3Reads: result.a3Reads,
+    startSeals: result.startSeals,
+    d2aMode: D2A_MODE,
+    ids: { revisions: context.revisions },
+    expectedContribution: context.expectedContribution,
+    materialContribution: context.materialContribution,
+  });
+  const parentSeqs = result.log
+    .filter((row) => Number.isInteger(row.parentSeq))
+    .map((row) => row.parentSeq);
+  // DR-CP4-V-3: the re-query after a parent cancelled before its begin is
+  // attributed from the fetch before it that reached its begin.
+  const cancelledParentSeqs = cancelledParentSeqsOf(rows);
+  const events = traceEvents({
+    plan,
+    observation,
+    log: result.log,
+    parentSeqs,
+    querySceneId,
+    cancelledParentSeqs,
+  });
+  const k64 = summarizeTraceRun({
+    plan,
+    rows,
+    events,
+    fixedGraphMode: D2A_MODE,
+    stalled: result.stalled,
+    candidate: context.ratification5,
+    candidateHead,
+  });
+  const k62 = summarizeTraceRun({
+    plan,
+    rows,
+    events,
+    fixedGraphMode: D2A_MODE,
+    stalled: result.stalled,
+  });
+  const alignment = traceAlignment({ observation, native, log: result.log });
+  const requeryAfterCycleEnd = requeryAfterCycleEndDisclosure(rows);
+  return {
+    rows,
+    k64,
+    k62,
+    native: {
+      dropped: native.dropped,
+      records: native.records.length,
+      // DR-CP4-V-2: the pairing, and the records after the window it left
+      // out (disclosed); DR-CP4-V-3: with the Native reads' clock range.
+      alignment: alignmentDisclosure(alignment),
+    },
+    requeries: traceRequeries({
+      observation,
+      parentSeqs,
+      querySceneId,
+      cancelledParentSeqs,
+    }).counts,
+    // DR-CP4-V-3: the counted parents cancelled before their begin (in Q,
+    // out of U, rule 3 (i), K6/4 X12) and rule 3 (i) with them apart.
+    cancelledParents: cancelledParentsDisclosure(rows),
+    // DR-CP4-V-4: the fetches called after a counted query's cycle end (no
+    // child of it; outside Q), with their publish count and late Graph.
+    requeryAfterCycleEnd,
+    lapseI: {
+      k64: lapseIBreakdown(k64.summary, rows),
+      k62: lapseIBreakdown(k62.summary, rows),
+    },
+    // S2 navigate.outsideQ.receiptCountByReason (P-S2-4).
+    outsideQ: outsideQReceiptCountByReason({
+      observation,
+      parentSeqs,
+      querySceneId,
+    }),
+    summary: {
+      k64: k64.summary,
+      k62: k62.summary,
+      // DR-CP4-V-3 (D): the records left out after the window, counted here
+      // too (DR-CP4-V-2 (1); the details are in `native.alignment`).
+      alignmentExcludedAfterWindow: alignmentExclusionSummary(alignment),
+      // DR-CP4-V-4: counted here too (the details in `requeryAfterCycleEnd`).
+      requeryAfterCycleEnd: requeryAfterCycleEnd.count,
+    },
+  };
 }
 
 /** The frozen admission's inputs: the build receipts and the default addon. */
@@ -754,8 +981,7 @@ function devContext({ options, setupPath, setup }) {
     throw new Error(`[precheck] the dev trace plan: ${planErrors.join("; ")}`);
   const procedure = loadProcedureFile({
     root: ROOT,
-    version: options["procedure-version"],
-    commit: options["procedure-commit"],
+    ...devProcedureOptions(options),
     purpose: "dev-preview",
   });
   const revisions = Object.fromEntries(
@@ -778,6 +1004,10 @@ function devContext({ options, setupPath, setup }) {
       (row) => ids.typedRevisions[row.revisionId].revisionId,
     ),
     expectedContribution: devExpectedContribution(loaded, "base", ids),
+    // DR-CP4-V-2: the dev preview keeps the Scene-level F6 (no setup plan to
+    // derive the materials' Revisions from).
+    f6: { basis: "scene-level-preview", expected: null },
+    materialContribution: null,
     ratification5: collectRatification5Evidence({
       root: ROOT,
       candidateHead: "HEAD",
@@ -836,7 +1066,28 @@ export function frozenContext({ prepared, setupRaw }) {
       path: TRACE_PROJECT.fixturePath,
     }).toString("utf8"),
   );
+  return frozenContextOf({ admission, fixture, prepared, setupRaw });
+}
+
+/**
+ * The frozen trace's context after its admission read the fixture
+ * (DR-CP4-V-3 (C): split from `frozenContext` so the formal F6 wiring, the
+ * resolver of DR-CP4-V-2 (2), is tested without a sealed admission).
+ */
+export function frozenContextOf({
+  admission,
+  fixture,
+  prepared,
+  setupRaw,
+  root = ROOT,
+}) {
   const { ids } = prepared.runtime;
+  const material = traceMaterialResolver({
+    root,
+    tracePlan: prepared.plan,
+    fixture,
+    ids,
+  });
   return {
     frozen: true,
     admission,
@@ -852,6 +1103,12 @@ export function frozenContext({ prepared, setupRaw }) {
       TRACE_PROJECT.variantId,
       ids,
     ),
+    f6: {
+      basis: "material-revision",
+      expected: material.expected,
+      pairs: material.pairs,
+    },
+    materialContribution: material.contribution,
     ratification5: prepared.admission.ratification5,
     declarationSceneId: prepared.declaration.sceneId,
     spP4: prepared.spP4,
@@ -1191,8 +1448,10 @@ async function main() {
         window.cp4Harness.trace.editorText(),
       );
     await delay(FINAL_SETTLE_MS);
-    const observation = await page.evaluate(() =>
-      window.cp4Harness.trace.exportObservation(),
+    // DR-CP4-V-2: the path quotes are hashed right after the page returns
+    // (material-revision.mjs; never written in clear). DR-CP4-V-3: checked.
+    const observation = hashTraceObservation(
+      await page.evaluate(() => window.cp4Harness.trace.exportObservation()),
     );
     nativeReads.push(await call(addon, "nir1GraphEvalSamples"));
     report.checks.counterPoll.stop = await poller.stop();
@@ -1210,49 +1469,30 @@ async function main() {
     session = null;
     await server.close();
     server = null;
-    await writeFile(
-      path.join(runDir, "observation.json"),
-      `${JSON.stringify({ observation, nativeReads, counters, log: result.log, a3Reads: result.a3Reads, startSeals: result.startSeals }, null, 1)}\n`,
-    );
-    const native = mergeNativeRecords(nativeReads);
-    const rows = traceRows({
-      plan,
+    const observationFile = {
       observation,
+      nativeReads,
+      counters,
       log: result.log,
-      native,
-      runs: counters.runs ?? [],
       a3Reads: result.a3Reads,
       startSeals: result.startSeals,
-      d2aMode: D2A_MODE,
-      ids: { revisions: context.revisions },
-      expectedContribution: context.expectedContribution,
-    });
-    const parentSeqs = result.log
-      .filter((row) => Number.isInteger(row.parentSeq))
-      .map((row) => row.parentSeq);
-    const events = traceEvents({
+    };
+    assertNoQuotePlaintext(observationFile, "observation.json");
+    await writeFile(
+      path.join(runDir, "observation.json"),
+      `${JSON.stringify(observationFile, null, 1)}\n`,
+    );
+    const records = traceRunRecords({
       plan,
       observation,
-      log: result.log,
-      parentSeqs,
+      nativeReads,
+      counters,
+      result,
+      context,
       querySceneId: ids.querySceneId,
-    });
-    const k64 = summarizeTraceRun({
-      plan,
-      rows,
-      events,
-      fixedGraphMode: D2A_MODE,
-      stalled: result.stalled,
-      candidate: context.ratification5,
       candidateHead: candidate.commit,
     });
-    const k62 = summarizeTraceRun({
-      plan,
-      rows,
-      events,
-      fixedGraphMode: D2A_MODE,
-      stalled: result.stalled,
-    });
+    const { rows, k64, k62 } = records;
     const ownPids = [
       ...readAncestorPids(),
       ...(evidence.recordedPids ?? []).map((row) => row.pid),
@@ -1301,6 +1541,8 @@ async function main() {
         startSeal:
           "B seal read read-only (busy timeout 0) twice: before the parent's begin (after the autosave commit / the move; query 0 before the mount) and right after the parent was observed; current only when both agree (DR-CP4-TR-9, TR-13)",
         requeries: "counted apart (K6/2 step 7); never rows",
+        // DR-CP4-V-2: the F6 unit of the rows' children.
+        f6: context.f6,
       },
       declaration: declaration
         ? {
@@ -1337,18 +1579,12 @@ async function main() {
         lastError: counters.lastError ?? null,
         runs: counters.runs?.length ?? null,
       },
-      native: { dropped: native.dropped, records: native.records.length },
-      requeries: traceRequeries({
-        observation,
-        parentSeqs,
-        querySceneId: ids.querySceneId,
-      }).counts,
-      // S2 navigate.outsideQ.receiptCountByReason (P-S2-4).
-      outsideQ: outsideQReceiptCountByReason({
-        observation,
-        parentSeqs,
-        querySceneId: ids.querySceneId,
-      }),
+      native: records.native,
+      requeries: records.requeries,
+      cancelledParents: records.cancelledParents,
+      requeryAfterCycleEnd: records.requeryAfterCycleEnd,
+      lapseI: records.lapseI,
+      outsideQ: records.outsideQ,
       // TR-9: unknown is counted apart (the classifier keeps it out of U and
       // in rule 3 (i), the strict side). S2 startSeal.receipt: the reads.
       startSeal: {
@@ -1358,9 +1594,10 @@ async function main() {
       events: k64.events,
       defects: k64.defects,
       queries: rows,
-      summary: { k64: k64.summary, k62: k62.summary },
+      summary: records.summary,
       checks: { ...report.checks, problems: report.problems },
     };
+    assertNoQuotePlaintext(receipt, "receipt.json");
     await writeFile(
       path.join(runDir, "receipt.json"),
       `${JSON.stringify(receipt, null, 2)}\n`,

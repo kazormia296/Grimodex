@@ -314,16 +314,12 @@ export const SOURCE_PINS = Object.freeze(
         "setup-receipt.mjs",
       ],
     ],
+    // S2 追補 #10（DR-CP4-P-6）: renderer/cp4-trace-probe.tsx and
+    // trace-record.mjs moved to the V-2〜V-4 pins.
     [
       "trace-runner",
       "35537447b4e38c31a2dc9463b2d6fe8ccb54e4ba",
-      [
-        "build-receipt-check.mjs",
-        "renderer/cp4-trace-probe.tsx",
-        "renderer/trace-cycle.ts",
-        "trace-record.mjs",
-        "trace-seal.mjs",
-      ],
+      ["build-receipt-check.mjs", "renderer/trace-cycle.ts", "trace-seal.mjs"],
     ],
     ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105", []],
     [
@@ -351,7 +347,8 @@ export const SOURCE_PINS = Object.freeze(
       [],
     ],
     // S2 追補 #9（DR-CP4-P-5）: frozen-k64-run.mjs and frozen-setup-driver.mjs
-    // moved to the T-1〜T-5 pins.
+    // moved to the T-1〜T-5 pins. S2 追補 #10（DR-CP4-P-6）: trace-runner.mjs
+    // moved to the V-4 pin.
     [
       "s5b-diagnostics-wiring",
       "950751d040b29b6d78a067a003dc19b196cfb692",
@@ -361,7 +358,6 @@ export const SOURCE_PINS = Object.freeze(
         "renderer/cp4-diagnostic-probe.ts",
         "renderer/cp4-harness.ts",
         "renderer/nir1RelatedScenesApi.timing.ts",
-        "trace-runner.mjs",
         "window.mjs",
       ],
     ],
@@ -409,11 +405,39 @@ export const SOURCE_PINS = Object.freeze(
       "354b1ba6a997bc464fb2ee9d7a2276c9f7d0bc78",
       ["frozen-k64-plan.mjs", "frozen-k64-run.mjs"],
     ],
+    // S2 追補 #10（DR-CP4-P-6、DR-CP4-S4-6）: the harness fix of the trace
+    // path (DR-CP4-V-2〜V-4, branch claude/cp4-trace-path-fix). Each file is
+    // held by the branch commit that last changes it: 262be7a9 (V-2 (2), the
+    // probe's paths), 527589b6 (V-4 (B3), trace-record.mjs), 2854aa31 (V-4
+    // (B1), followup.mjs) and 759a4679 (V-4, the quote guard in
+    // trace-runner.mjs). Like the T-1〜T-5 pins, S4's PR brings them to
+    // master with its merge commit (gh pr merge --merge), never a squash.
+    [
+      "v2-trace-probe-paths",
+      "262be7a9f53834a8d2b2f4d2751757519b94c9d1",
+      ["renderer/cp4-trace-probe.tsx"],
+    ],
+    [
+      "v4-trace-record-requery",
+      "527589b6ca374d8c4e3933f6ec0b35632ca7cd2d",
+      ["trace-record.mjs"],
+    ],
+    [
+      "v4-followup-cancelled-match",
+      "2854aa31da9b172b3e6d5a847267fbc76b9accf6",
+      ["followup.mjs"],
+    ],
+    [
+      "v4-trace-runner-quote-guard",
+      "759a4679a7b90d25c13bc9a8517f8a64df43adda",
+      ["trace-runner.mjs"],
+    ],
     [
       "pr1-native-eval-feature",
       "3739dbedb762ada8961f509c1b4d6885a11c3099",
       ["native-architecture.mjs"],
     ],
+    // S2 追補 #10（DR-CP4-P-6）: followup.mjs moved to the V-4 pin.
     [
       "p1-harness-core",
       "865a3e2bad1ada5f6e5648e50c6902052b9b2a3c",
@@ -421,7 +445,6 @@ export const SOURCE_PINS = Object.freeze(
         "admission-facts.mjs",
         "availability.mjs",
         "egress.mjs",
-        "followup.mjs",
         "join.mjs",
         "native-sample.mjs",
         "procedure-file.mjs",
@@ -551,6 +574,17 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "失効",
     "recordIntroducedByCommit",
     "user-confirmation-2026-10-31-refreeze.md",
+  ],
+  // S2 追補 #10（DR-CP4-S4-6）: (f) the third re-freeze — the old S4b' is
+  // revoked after its trace was invalid from the harness's trace path
+  // (DR-CP4-V-2〜V-4), with the user's confirmation on record, and only the
+  // new S4's results are used.
+  f: [
+    "DR-CP4-S4-6",
+    "9f52e7da37b84603424d0b7e6ecee8e019d1c7c9",
+    "DR-CP4-V-2〜V-4",
+    "user-confirmation-2026-10-31-trace-refreeze.md",
+    "新しい S4 の結果だけ",
   ],
 });
 /**
@@ -1206,6 +1240,50 @@ const FORBIDDEN_READ = Object.freeze([
   /\/tasks\/[^/\s]+\.output/u,
   /cp4-(?:task|hardening-task|s1f-task|k64-task)\.md/u,
 ]);
+/**
+ * S2 追補 #10（DR-CP4-P-6）: the trace runner's readings (traceRunnerReadings)
+ * and the DR rows each copies.
+ */
+const TRACE_RUNNER_READING_ITEMS = Object.freeze([
+  ["TP-1", ["DR-CP4-V-2 (1)", "DR-CP4-V-3 (B)"]],
+  ["TP-2", ["DR-CP4-V-2 (2)", "DR-CP4-V-3 (C)"]],
+  ["TP-3", ["DR-CP4-V-2 (3)"]],
+  ["TP-4", ["DR-CP4-V-3 (A)", "DR-CP4-V-4 (B1)"]],
+  ["TP-5", ["DR-CP4-V-4 (A)"]],
+  ["TP-6", ["DR-CP4-V-4 (B2)"]],
+  ["TP-7", ["DR-CP4-V-4"]],
+]);
+/** S2 追補 #10: the V-2〜V-4 pins the trace runner's readings bind. */
+const TRACE_PATH_PIN_ROLES = Object.freeze([
+  "v2-trace-probe-paths",
+  "v4-trace-record-requery",
+  "v4-followup-cancelled-match",
+  "v4-trace-runner-quote-guard",
+]);
+/**
+ * S2 追補 #10 (c): what the limits disclose — editing's lapse (i) from the
+ * product side (DR-BSEAM-5) that can make (b) HOLD or [precheck], the rules
+ * chosen after the first (invalid) trace, and the frozen Graph arm runs
+ * before this freeze (the record's false is the contract's fixed value).
+ */
+const TRACE_RUNNER_LIMIT_WORDS = Object.freeze([
+  "失効 (i)",
+  "DR-BSEAM-5",
+  "HOLD または [precheck]",
+  "見た後",
+  "成功の方向へ動く判定は無い",
+  "graphRuntimeObservedBeforeFreeze",
+  "8913f127",
+  // S4 の独立レビュー（P2-1、P3-1、P3-2）: who decided each rule, DR-BSEAM-5's
+  // own wording, and the validity direction (invalid → valid).
+  "advisor に諮ったのは 2 つだけ",
+  "別 lane への報告（未確認）",
+  "invalid → valid",
+  // contracts acc5ec71 の抜粋: the discovery failure is in the prep Main's
+  // stderr (not the measurement Main's), with the extract as the source.
+  "prep の Main の stderr",
+  "acc5ec71c4af240b7455341e623f0ca9fb4df7b9",
+]);
 /** S3v6-P3-2: the readings integrator or builders chose after dev runs. */
 const READINGS_AFTER_DEV = Object.freeze([
   "reopen-triggers",
@@ -1223,6 +1301,9 @@ const READINGS_AFTER_DEV = Object.freeze([
   // DR-CP4-T-4 (a) の V-10 READY の適用。
   "freshness-settle",
   "ready-probe-not-applicable",
+  // S4a''（3 回目の凍結のやり直し、S2 追補 #10）: DR-CP4-V-3、V-4 の trace の規則
+  // （最初の正式の trace と dev の稽古を見た後に integrator が決めた）。
+  "trace-path-after-first-trace",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -3109,6 +3190,51 @@ export function sourcePinGitErrors(pins, head, git) {
   return errors;
 }
 
+/**
+ * S2 追補 #10（DR-CP4-P-6）: the trace runner's readings of the trace path fix
+ * (DR-CP4-V-2〜V-4) — each item with its decision rows and reading, the rule
+ * naming the four pins, and the limits (editing's lapse (i), the rules chosen
+ * after the first trace, the observation before this freeze).
+ */
+function traceRunnerReadingErrors(errors, readings) {
+  if (!isObject(readings)) {
+    errors.push("traceRunnerReadings is required (S2 追補 #10、DR-CP4-P-6)");
+    return;
+  }
+  const items = Array.isArray(readings.items) ? readings.items : [];
+  if (
+    !same(
+      items.map((row) => row?.id),
+      TRACE_RUNNER_READING_ITEMS.map(([id]) => id),
+    ) ||
+    items.some(
+      (row, at) =>
+        !nonBlank(row?.reading) ||
+        !nonBlank(row?.topic) ||
+        TRACE_RUNNER_READING_ITEMS[at][1].some(
+          (id) => !String(row?.decision ?? "").includes(id),
+        ),
+    )
+  )
+    errors.push(
+      `traceRunnerReadings.items must be ${TRACE_RUNNER_READING_ITEMS.map(([id, rows]) => `${id} (${rows.join(", ")})`).join(", ")}, each with its topic and reading`,
+    );
+  const pinRoles = TRACE_PATH_PIN_ROLES.filter(
+    (role) => !String(readings.rule ?? "").includes(role),
+  );
+  if (!nonBlank(readings.status) || pinRoles.length > 0)
+    errors.push(
+      `traceRunnerReadings.rule must bind the trace runner to the pins ${TRACE_PATH_PIN_ROLES.join(", ")} (S2 追補 #10)`,
+    );
+  const missing = TRACE_RUNNER_LIMIT_WORDS.filter(
+    (word) => !String(readings.limits ?? "").includes(word),
+  );
+  if (missing.length > 0)
+    errors.push(
+      `traceRunnerReadings.limits must disclose ${missing.join(", ")} (S2 追補 #10、DR-CP4-P-6)`,
+    );
+}
+
 /** S2 追補: the points S2 hands to S3 (undecided in a draft, decided when frozen). */
 function reviewerQuestionErrors(errors, questions, frozen) {
   const rows = Array.isArray(questions) ? questions : [];
@@ -3265,6 +3391,7 @@ export function observationPrepErrors(prep, ctx) {
     );
   d2ReadingErrors(errors, prep.d2?.variantReadings, ctx);
   setupReadingErrors(errors, prep.setupReadings, ctx);
+  traceRunnerReadingErrors(errors, prep.traceRunnerReadings);
   reviewerQuestionErrors(errors, prep.reviewerQuestions, frozen);
 
   // D10: modes and parity.

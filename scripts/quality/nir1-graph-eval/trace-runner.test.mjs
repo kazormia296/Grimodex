@@ -28,8 +28,25 @@ import {
   runTraceOperations,
   traceAttemptOutcome,
   traceMaintenanceStart,
+  devProcedureOptions,
+  parseArgs,
+  traceMaterialResolver,
+  assertNoQuotePlaintext,
+  frozenContextOf,
+  hashTraceObservation,
+  traceRunRecords,
 } from "./trace-runner.mjs";
+import {
+  K64_CHILD_RESULT,
+  k64Api,
+  k64FetchResult,
+  k64NativeRecord,
+} from "./test-support.mjs";
+import { createHash } from "node:crypto";
 import { DEV_PREVIEW_PURPOSES } from "./admission.mjs";
+import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
+import { typedRevisionMaterials } from "./material-revision.mjs";
+import { TRACE_PROJECT } from "./trace-frozen.mjs";
 
 function plan(kind, cycles = 2) {
   return devTracePlan({
@@ -741,4 +758,637 @@ test("レビュー P3: 凍結の trace の開始は setupFailure なら記録し
       }),
     /\[precheck\].*does not launch/u,
   );
+});
+
+const REPO_ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
+const BASE_ARGS = [
+  "--run",
+  "tfx-args",
+  "--setup",
+  "s.json",
+  "--ja-model",
+  "ja.onnx",
+  "--en-model",
+  "en.onnx",
+  "--k62-commit",
+  "k62",
+];
+
+test("DR-CP4-V-2: parseArgs は手順の版と commit を既定しない（凍結は trace-frozen の v1 と --prep-commit の fallback が効く）。dev は従来どおり draft-1 と HEAD を既定にする", () => {
+  const frozen = parseArgs([...BASE_ARGS, "--prep-commit", "p".repeat(40)]);
+  assert.equal(Object.hasOwn(frozen, "procedure-version"), false);
+  assert.equal(Object.hasOwn(frozen, "procedure-commit"), false);
+  assert.equal(frozen.given.has("procedure-version"), false);
+  // trace-frozen.mjs の fallback（prepareFrozenTrace の loadProcedure の引数）。
+  assert.equal(frozen["procedure-version"] ?? "v1", "v1");
+  assert.equal(
+    frozen["procedure-commit"] ?? frozen["prep-commit"],
+    "p".repeat(40),
+  );
+  assert.deepEqual(devProcedureOptions(parseArgs(BASE_ARGS)), {
+    version: "draft-1",
+    commit: "HEAD",
+  });
+  const explicit = parseArgs([
+    ...BASE_ARGS,
+    "--procedure-version",
+    "v1",
+    "--procedure-commit",
+    "c".repeat(40),
+  ]);
+  assert.equal(explicit.given.has("procedure-version"), true);
+  assert.deepEqual(devProcedureOptions(explicit), {
+    version: "v1",
+    commit: "c".repeat(40),
+  });
+  assert.equal(explicit.cycles, "3");
+  assert.equal(explicit.attempt, "1");
+  assert.throws(() => parseArgs(["--run"]), /--name value/u);
+});
+
+test("DR-CP4-V-2: 凍結の trace の F6 の resolver は Gold と同じ G-02 base の setup の plan から作り、期待は trace の file の材料と同じで、材料の path を material-revision で解決する", () => {
+  const tracePlan = JSON.parse(
+    readFileSync(
+      path.join(REPO_ROOT, "evals/nir1-graph/trace-browsing.v1.json"),
+      "utf8",
+    ),
+  );
+  const fixture = JSON.parse(
+    readFileSync(path.join(REPO_ROOT, TRACE_PROJECT.fixturePath), "utf8"),
+  );
+  const setupPlan = loadFrozenSetupPlans({
+    root: REPO_ROOT,
+    stopsAt: "complete",
+  }).find((row) => row.variantKey === "G-02/base");
+  const materials = typedRevisionMaterials(setupPlan);
+  // 論理 ID → runtime ID（setup の受領書の logicalToRuntime の形）。
+  const rt = (logical) => `rt-${logical}`;
+  const scenes = Object.fromEntries(
+    fixture.scenes.map((row) => [row.id, rt(row.id)]),
+  );
+  const entities = {};
+  const typedRevisions = {};
+  for (const revision of materials.values()) {
+    typedRevisions[revision.id] = { revisionId: rt(revision.id) };
+    for (const relation of revision.relations) {
+      entities[relation.from] = rt(relation.from);
+      entities[relation.to] = rt(relation.to);
+    }
+  }
+  const ids = { scenes, entities, typedRevisions };
+  const resolver = traceMaterialResolver({
+    root: REPO_ROOT,
+    tracePlan,
+    fixture,
+    ids,
+  });
+  assert.deepEqual(resolver.pairs, [
+    "g02-r-sela|g02-works-beside",
+    "g02-r-tamsin|g02-trained-tamsin",
+  ]);
+  const edgeOf = (revisionId, relationId) => {
+    const row = materials
+      .get(revisionId)
+      .relations.find((value) => value.relationId === relationId);
+    return {
+      relationType: row.relationType,
+      directionality: row.directionality,
+      from: rt(row.from),
+      to: rt(row.to),
+      evidence: [
+        { evidenceId: "ev-1", quoteSha256: row.fromQuoteSha256 },
+        { evidenceId: "ev-2", quoteSha256: row.toQuoteSha256 },
+      ],
+    };
+  };
+  const paths = {
+    graphOnly: {
+      sceneId: rt("g02-tamsin-first"),
+      edges: [edgeOf("g02-r-tamsin", "g02-trained-tamsin")],
+    },
+    pathAttachments: [
+      {
+        sceneId: rt("g02-attach"),
+        edges: [edgeOf("g02-r-sela", "g02-works-beside")],
+      },
+    ],
+  };
+  const matched = resolver.contribution(paths);
+  assert.equal(matched.basis, "material-revision");
+  assert.equal(matched.contribution, true);
+  assert.deepEqual(matched.matched, [
+    "graph-only:g02-tamsin-first",
+    "path-attachment:g02-attach",
+  ]);
+  assert.equal(matched.unresolvedEdges, 0);
+  // 観測の無い子（paths なし）は寄与なし、基底は material-revision のまま。
+  const none = resolver.contribution(null);
+  assert.equal(none.basis, "material-revision");
+  assert.equal(none.contribution, false);
+  // trace の file の材料が fixture の期待と食い違えば [precheck]。
+  assert.throws(
+    () =>
+      traceMaterialResolver({
+        root: REPO_ROOT,
+        tracePlan: {
+          ...tracePlan,
+          expectedMaterials: tracePlan.expectedMaterials.slice(0, 1),
+        },
+        fixture,
+        ids,
+      }),
+    /\[precheck\] DR-CP4-V-2/u,
+  );
+});
+
+// ---- DR-CP4-V-3 (C): the formal wiring, tested so that a mutation fails ---
+
+const QUOTE = "the quote in clear";
+const B0 = 10_000;
+const nsOf = (ms) => Math.round(ms * 1e6);
+
+/** One counted query (parent graph-late, a Cached child with paths). */
+function oneQueryRun() {
+  const edge = {
+    relationType: "trained",
+    directionality: "directed",
+    from: { entityId: "e-a" },
+    to: { entityId: "e-b" },
+    evidence: [{ evidenceId: "ev-1", quote: QUOTE }],
+  };
+  const fetches = [
+    {
+      seq: 1,
+      sceneId: "scene-q",
+      queryGeneration: 100,
+      refreshTrigger: null,
+      seed: "entity-seed",
+      rawOnly: false,
+      calledAt: B0,
+      resolvedAt: B0 + 61,
+      failed: false,
+      result: k64FetchResult({
+        timing: { tFetchMs: B0, tRawReadyMs: B0 + 50, tReturnMs: B0 + 60.9 },
+      }),
+    },
+    {
+      seq: 2,
+      sceneId: "scene-q",
+      queryGeneration: 101,
+      refreshTrigger: "graph-ready",
+      seed: "entity-seed",
+      rawOnly: false,
+      calledAt: B0 + 68,
+      resolvedAt: B0 + 96,
+      failed: false,
+      paths: {
+        graphOnly: { sceneId: "s-added", edges: [edge] },
+        pathAttachments: [],
+      },
+      result: k64FetchResult({
+        ...K64_CHILD_RESULT,
+        timing: {
+          ...K64_CHILD_RESULT.timing,
+          tFetchMs: B0 + 68,
+          tRawReadyMs: B0 + 75,
+          tReturnMs: B0 + 95,
+        },
+      }),
+    },
+  ];
+  const api = [
+    k64Api("related_scenes_begin", B0 + 10, B0 + 30),
+    k64Api("related_scenes_continue", B0 + 50.5, B0 + 53),
+    k64Api("related_scenes_graph_continue", B0 + 60.85, B0 + 62, {
+      settle: "unused",
+    }),
+    k64Api("related_scenes_begin", B0 + 68.5, B0 + 70),
+    k64Api("related_scenes_continue", B0 + 75.2, B0 + 81),
+    k64Api("related_scenes_graph_continue", B0 + 75.2, B0 + 89, {
+      status: "available",
+    }),
+    k64Api("related_scenes_graph_continue", B0 + 95, B0 + 96, {
+      settle: "used",
+    }),
+  ].map((row, id) => ({ ...row, id }));
+  const records = [
+    k64NativeRecord({
+      seq: 1,
+      tBeginNs: nsOf(B0 + 15),
+      tReturnedNs: nsOf(B0 + 16),
+      ticket: {
+        ...k64NativeRecord().ticket,
+        tTicketNs: nsOf(B0 + 15.5),
+        tSettledNs: nsOf(B0 + 64),
+        freshnessStamp: {
+          attemptedAtNs: nsOf(B0 + 15.2),
+          result: "fresh",
+          matched: true,
+        },
+      },
+    }),
+    k64NativeRecord({
+      seq: 2,
+      tBeginNs: nsOf(B0 + 69),
+      tReturnedNs: nsOf(B0 + 69.5),
+      begin: "cached",
+      ticket: null,
+    }),
+  ];
+  const observation = {
+    fetches,
+    api,
+    commits: [
+      { at: B0 + 61.5, fetchSeq: 1, loading: false, display: "parent" },
+      { at: B0 + 96, fetchSeq: 2, loading: false, display: "child" },
+    ],
+    notices: [{ kind: "graph-ready", at: B0 + 67 }],
+    bodyCommits: [],
+    initialVersion: 7,
+    observedUntil: B0 + 3_000,
+  };
+  const log = [
+    {
+      op: "open-scene",
+      index: 0,
+      parentSeq: 1,
+      calledAt: B0,
+      cycleEnd: { reason: "child-published", at: B0 + 96.5 },
+    },
+  ];
+  return {
+    observation,
+    nativeReads: [
+      { dropped: 0, clockNs: nsOf(B0 + 97.5), records },
+      { dropped: 0, clockNs: nsOf(B0 + 3_001), records },
+    ],
+    result: { log, a3Reads: {}, startSeals: {}, stalled: null },
+  };
+}
+
+const tracePlanOf = () =>
+  devTracePlan({
+    kind: "editing",
+    cycles: 1,
+    querySceneId: "scene-q",
+    otherSceneId: "scene-o",
+    seedEntityId: "entity-seed",
+    materials: ["rev-1"],
+  });
+
+test("DR-CP4-V-3 (C): 観測の path の quote は page から受け取った直後に sha256 にし、平文の quote の鍵が残れば observation／receipt を書く前に [precheck]", () => {
+  const run = oneQueryRun();
+  const hashed = hashTraceObservation(run.observation);
+  const evidence = hashed.fetches[1].paths.graphOnly.edges[0].evidence[0];
+  assert.equal(Object.hasOwn(evidence, "quote"), false);
+  assert.equal(
+    evidence.quoteSha256,
+    createHash("sha256").update(QUOTE).digest("hex"),
+  );
+  assert.doesNotMatch(JSON.stringify(hashed), new RegExp(QUOTE, "u"));
+  // hash を外した観測（変異）は guard が止める。
+  assert.throws(
+    () => assertNoQuotePlaintext(run.observation, "observation.json"),
+    /\[precheck\] DR-CP4-V-3: observation.json would carry a path quote in clear at \$\.fetches\.1\.paths\.graphOnly\.edges\.0\.evidence\.0\.quote/u,
+  );
+  assert.throws(
+    () =>
+      assertNoQuotePlaintext(
+        { queries: [{ a: { quote: "x" } }] },
+        "receipt.json",
+      ),
+    /\[precheck\].*receipt\.json/u,
+  );
+  // hash の値だけの quote の名前は止めない（DR-CP4-V-4 で、平文の入りうる
+  // `quotes: ["b"]` と、欄名が hash の形でも値が平文のものは止める側へ移した）。
+  const digest = createHash("sha256").update("b").digest("hex");
+  assert.doesNotThrow(() =>
+    assertNoQuotePlaintext(
+      { quoteSha256: digest, quotes: [digest, digest], q: null },
+      "x",
+    ),
+  );
+});
+
+test("DR-CP4-V-3 (C): 受領書の記録は context の F6 の resolver を行に渡し（凍結は material-revision）、resolver が無い dev は preview の単位。resolver が受け取る path は hash 済み", () => {
+  const run = oneQueryRun();
+  const observation = hashTraceObservation(run.observation);
+  const seen = [];
+  const context = {
+    revisions: { "rev-1": "rev-1" },
+    expectedContribution: {
+      appendedSceneIds: ["dev-added"],
+      pathAttachmentSceneIds: ["dev-b"],
+    },
+    ratification5: null,
+    materialContribution: (paths) => {
+      seen.push(paths);
+      return {
+        basis: "material-revision",
+        contribution: true,
+        observed: [],
+        matched: ["graph-only:s-added"],
+        unresolvedEdges: 0,
+      };
+    },
+  };
+  const records = traceRunRecords({
+    plan: tracePlanOf(),
+    observation,
+    nativeReads: run.nativeReads,
+    counters: { runs: [] },
+    result: run.result,
+    context,
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(records.rows.length, 1);
+  assert.equal(records.rows[0].rowError, undefined);
+  assert.equal(
+    records.rows[0].followUp.child.contributionBasis,
+    "material-revision",
+  );
+  assert.equal(seen.length, 1);
+  assert.doesNotMatch(JSON.stringify(seen), new RegExp(QUOTE, "u"));
+  assert.ok(seen[0].graphOnly.edges[0].evidence[0].quoteSha256);
+  assert.equal(records.native.alignment.aligned, true);
+  assert.equal(records.native.alignment.clock.readClockReason, null);
+  assert.deepEqual(records.cancelledParents.count, 0);
+  assert.doesNotThrow(() => assertNoQuotePlaintext(records, "receipt.json"));
+  const preview = traceRunRecords({
+    plan: tracePlanOf(),
+    observation,
+    nativeReads: run.nativeReads,
+    counters: { runs: [] },
+    result: run.result,
+    context: { ...context, materialContribution: null },
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(
+    preview.rows[0].followUp.child.contributionBasis,
+    "scene-level-preview",
+  );
+  // DR-CP4-V-3 (D): 末尾の除外の件数は summary 側にも出る（無ければ 0）。
+  assert.deepEqual(records.summary.alignmentExcludedAfterWindow, {
+    rule: "DR-CP4-V-2",
+    aligned: true,
+    count: 0,
+    seqs: [],
+  });
+  const trailing = k64NativeRecord({
+    seq: 3,
+    tBeginNs: nsOf(B0 + 3_200),
+    tReturnedNs: nsOf(B0 + 3_200.02),
+    begin: "unavailable",
+    reason: "registration-unavailable",
+    ticket: null,
+  });
+  const late = traceRunRecords({
+    plan: tracePlanOf(),
+    observation,
+    nativeReads: [
+      run.nativeReads[0],
+      {
+        ...run.nativeReads[1],
+        clockNs: nsOf(B0 + 3_300),
+        records: [...run.nativeReads[1].records, trailing],
+      },
+    ],
+    counters: { runs: [] },
+    result: run.result,
+    context,
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.deepEqual(late.summary.alignmentExcludedAfterWindow, {
+    rule: "DR-CP4-V-2",
+    aligned: true,
+    count: 1,
+    seqs: [3],
+  });
+  assert.equal(late.native.alignment.excludedAfterWindow.count, 1);
+  assert.equal(late.rows[0].rowError, undefined);
+});
+
+test("DR-CP4-V-3 (C): 凍結の context は G-02 base の resolver を materialContribution に配線し、f6 は material-revision", () => {
+  const tracePlan = JSON.parse(
+    readFileSync(
+      path.join(REPO_ROOT, "evals/nir1-graph/trace-browsing.v1.json"),
+      "utf8",
+    ),
+  );
+  const fixture = JSON.parse(
+    readFileSync(path.join(REPO_ROOT, TRACE_PROJECT.fixturePath), "utf8"),
+  );
+  const setupPlan = loadFrozenSetupPlans({
+    root: REPO_ROOT,
+    stopsAt: "complete",
+  }).find((row) => row.variantKey === "G-02/base");
+  const rt = (logical) => `rt-${logical}`;
+  const entities = {};
+  const typedRevisions = {};
+  for (const revision of typedRevisionMaterials(setupPlan).values()) {
+    typedRevisions[revision.id] = { revisionId: rt(revision.id) };
+    for (const relation of revision.relations) {
+      entities[relation.from] = rt(relation.from);
+      entities[relation.to] = rt(relation.to);
+    }
+  }
+  for (const row of fixture.entities ?? []) entities[row.id] ??= rt(row.id);
+  const ids = {
+    projectId: "rt-project",
+    querySceneId: rt(fixture.query.sceneId),
+    scenes: Object.fromEntries(
+      fixture.scenes.map((row) => [row.id, rt(row.id)]),
+    ),
+    entities,
+    typedRevisions,
+  };
+  const context = frozenContextOf({
+    root: REPO_ROOT,
+    admission: { ratification5: null },
+    fixture,
+    prepared: {
+      kind: "browsing",
+      plan: tracePlan,
+      procedure: {},
+      runtime: { ids, seed: "rt-seed", revisions: {}, materials: [] },
+      admission: { ratification5: null },
+      declaration: { sceneId: null, addendum: null },
+      spP4: null,
+      attempts: [],
+      identity: {},
+    },
+    setupRaw: { fixture: { path: TRACE_PROJECT.fixturePath, sha256: "h" } },
+  });
+  assert.equal(context.frozen, true);
+  assert.equal(context.f6.basis, "material-revision");
+  assert.deepEqual(context.f6.pairs, [
+    "g02-r-sela|g02-works-beside",
+    "g02-r-tamsin|g02-trained-tamsin",
+  ]);
+  assert.equal(typeof context.materialContribution, "function");
+  assert.equal(context.materialContribution(null).basis, "material-revision");
+});
+
+test("DR-CP4-V-3 (C): main は観測を hashTraceObservation で受け、observation.json と receipt.json を書く前に quote の guard を当て、記録を traceRunRecords に context ごと渡す", () => {
+  const source = readFileSync(
+    new URL("./trace-runner.mjs", import.meta.url),
+    "utf8",
+  );
+  const main = source.slice(source.indexOf("async function main()"));
+  assert.match(
+    main,
+    /hashTraceObservation\(\s*await page\.evaluate\(\(\) => window\.cp4Harness\.trace\.exportObservation\(\)\),?\s*\)/u,
+  );
+  assert.doesNotMatch(main, /hashObservationPaths\(/u);
+  const guardObservation = main.indexOf(
+    'assertNoQuotePlaintext(observationFile, "observation.json")',
+  );
+  const writeObservation = main.indexOf(
+    'path.join(runDir, "observation.json")',
+  );
+  assert.ok(guardObservation > 0 && guardObservation < writeObservation);
+  const guardReceipt = main.indexOf(
+    'assertNoQuotePlaintext(receipt, "receipt.json")',
+  );
+  const writeReceipt = main.indexOf(
+    'path.join(runDir, "receipt.json"),\n      `${JSON.stringify(receipt',
+  );
+  assert.ok(
+    guardReceipt > 0 && guardReceipt < writeReceipt,
+    `${guardReceipt} ${writeReceipt}`,
+  );
+  assert.match(main, /traceRunRecords\(\{[^}]*\bcontext,/u);
+  assert.match(
+    source,
+    /return frozenContextOf\(\{ admission, fixture, prepared, setupRaw \}\)/u,
+  );
+});
+
+test("DR-CP4-V-4: 受領書の記録は cycle end の後に呼ばれた fetch を子にせず requeryAfterCycleEnd（件数と行、summary の件数）に開示し、main はそれを受領書に書く", () => {
+  const run = oneQueryRun();
+  const observation = hashTraceObservation(run.observation);
+  const context = {
+    revisions: { "rev-1": "rev-1" },
+    expectedContribution: {
+      appendedSceneIds: ["dev-added"],
+      pathAttachmentSceneIds: ["dev-b"],
+    },
+    ratification5: null,
+    materialContribution: null,
+  };
+  const recordsOf = (cycleEnd) =>
+    traceRunRecords({
+      plan: tracePlanOf(),
+      observation,
+      nativeReads: run.nativeReads,
+      counters: { runs: [] },
+      result: {
+        ...run.result,
+        log: run.result.log.map((row) => ({ ...row, cycleEnd })),
+      },
+      context,
+      querySceneId: "scene-q",
+      candidateHead: "e".repeat(40),
+    });
+  const usual = recordsOf({ reason: "child-published", at: B0 + 96.5 });
+  assert.notEqual(usual.rows[0].followUp.child, null);
+  assert.deepEqual(usual.requeryAfterCycleEnd, {
+    rule: "DR-CP4-V-4",
+    count: 0,
+    rows: [],
+  });
+  assert.equal(usual.summary.requeryAfterCycleEnd, 0);
+  const ended = recordsOf({ reason: "parent-ended", at: B0 + 61.5 });
+  assert.equal(ended.rows[0].rowError, undefined);
+  assert.equal(ended.rows[0].followUp.child, null);
+  assert.equal(ended.requeryAfterCycleEnd.count, 1);
+  assert.equal(ended.requeryAfterCycleEnd.rows[0].seq, 2);
+  assert.equal(ended.requeryAfterCycleEnd.rows[0].afterCycleEndMs, 6.5);
+  assert.equal(ended.summary.requeryAfterCycleEnd, 1);
+  assert.doesNotThrow(() => assertNoQuotePlaintext(ended, "receipt.json"));
+  const source = readFileSync(
+    new URL("./trace-runner.mjs", import.meta.url),
+    "utf8",
+  );
+  const main = source.slice(source.indexOf("async function main()"));
+  assert.match(main, /requeryAfterCycleEnd: records\.requeryAfterCycleEnd,/u);
+});
+
+test("DR-CP4-V-4 (レビュー P3): quote の平文の guard は大文字小文字・複数形・別の形の鍵（配列と入れ子の中も）を止め、許可は値が sha256 の 16 進（またはその配列）のときだけ。欄名が hash の形でも平文と null は止める", () => {
+  const digest = createHash("sha256").update(QUOTE).digest("hex");
+  for (const [name, value, at] of [
+    ["Quote", { Quote: QUOTE }, "$.Quote"],
+    ["QUOTE", { a: { QUOTE: QUOTE } }, "$.a.QUOTE"],
+    ["quotes", { quotes: [QUOTE] }, "$.quotes"],
+    ["Quotes", { rows: [{ Quotes: ["x", digest] }] }, "$.rows.0.Quotes"],
+    ["fromQuote", { edges: [[{ fromQuote: QUOTE }]] }, "$.edges.0.0.fromQuote"],
+    ["quote_text", { quote_text: QUOTE }, "$.quote_text"],
+    ["quotes-object", { quotes: { from: QUOTE } }, "$.quotes"],
+    // `quote` itself stays refused whatever it holds (V-3).
+    ["quote-null", { quote: null }, "$.quote"],
+    ["quote-digest", { quote: digest }, "$.quote"],
+    // 欄名が hash の形でも、値が平文なら止める（レビュー P3、3 回目）。
+    ["quoteSha256-plain", { quoteSha256: "plain text" }, "$.quoteSha256"],
+    ["quote_sha256", { quote_sha256: "x" }, "$.quote_sha256"],
+    ["quoteHash", { a: [{ quoteHash: "y" }] }, "$.a.0.quoteHash"],
+    ["QuoteDigest", { QuoteDigest: "z" }, "$.QuoteDigest"],
+    ["quotesSha256-plain", { quotesSha256: [digest, "x"] }, "$.quotesSha256"],
+    ["quoteSha256-short", { quoteSha256: digest.slice(1) }, "$.quoteSha256"],
+    ["quoteSha256-object", { quoteSha256: { v: digest } }, "$.quoteSha256"],
+    // null はどの quote の鍵でも止める（`quote` と `Quote` で揃える）。
+    ["Quote-null", { Quote: null }, "$.Quote"],
+    ["quoteSha256-null", { quoteSha256: null }, "$.quoteSha256"],
+    ["Quotes-null", { Quotes: null }, "$.Quotes"],
+    ["quotes-null-item", { quotes: [digest, null] }, "$.quotes"],
+    ["quoted-null", { quoted: null }, "$.quoted"],
+  ])
+    assert.throws(
+      () => assertNoQuotePlaintext(value, "observation.json"),
+      (error) =>
+        error.message ===
+        `[precheck] DR-CP4-V-3: observation.json would carry a path quote in clear at ${at}`,
+      name,
+    );
+  // 止めない: 値が sha256 の 16 進（大文字小文字、`sha256:` の接頭辞）か、
+  // その配列だけの quote の名前（欄名の形は許可の条件にしない）。
+  for (const value of [
+    { quoteSha256: digest, fromQuoteSha256: digest, toQuoteSha256: digest },
+    { quoteSha256: digest.toUpperCase() },
+    { quoteSha256: `sha256:${digest}` },
+    { evidence: [{ evidenceId: "e", quoteSha256: digest }] },
+    { Quote: digest, quoteText: digest },
+    { quotes: [digest, digest.toUpperCase()] },
+    { quotes: [], quotesSha256: [digest, `sha256:${digest}`] },
+    { q: null, text: "plain", excerpt: "plain" },
+  ])
+    assert.doesNotThrow(
+      () => assertNoQuotePlaintext(value, "receipt.json"),
+      JSON.stringify(value),
+    );
+  // 実際の受領書の形: hash 済みの観測と、その記録（V-3 の試験と同じ入力）。
+  const run = oneQueryRun();
+  const hashed = hashTraceObservation(run.observation);
+  assert.doesNotThrow(() => assertNoQuotePlaintext(hashed, "observation.json"));
+  const records = traceRunRecords({
+    plan: tracePlanOf(),
+    observation: hashed,
+    nativeReads: run.nativeReads,
+    counters: { runs: [] },
+    result: run.result,
+    context: {
+      revisions: { "rev-1": "rev-1" },
+      expectedContribution: {
+        appendedSceneIds: ["dev-added"],
+        pathAttachmentSceneIds: ["dev-b"],
+      },
+      ratification5: null,
+      materialContribution: null,
+    },
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.doesNotThrow(() => assertNoQuotePlaintext(records, "receipt.json"));
 });

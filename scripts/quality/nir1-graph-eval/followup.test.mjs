@@ -24,6 +24,7 @@ import {
   assessCandidateRegime,
   classifyFollowUp,
   followUpFailureCategory,
+  missingR7,
 } from "./followup.mjs";
 import {
   k64Sample,
@@ -1460,4 +1461,251 @@ test("P2-2（F6）: 凍結した variant と trace の要約は、Scene の単�
     ),
   );
   assert.match(missing.invalid.join(), /DR-CP4-F-6: q6/u);
+});
+
+// ---- DR-CP4-V-3 (rule P-b): a (b) parent cancelled before its begin -------
+
+/** A (b) counted query whose parent the product cancelled before its begin. */
+function cancelledParentSample(at) {
+  const row = k64Sample({
+    queryId: `q${at}`,
+    status: "cancelled",
+    // As trace-record.mjs `cancelledParentRow` writes it (DR-CP4-V-4 B1).
+    rawStatus: "not-started",
+    irOutcome: "not-started",
+    tFetch: 90,
+    tRawReady: 91,
+    tReturn: 91,
+    snapshot: {
+      usable: false,
+      reason: "no-native-begin:cancelled-before-begin",
+      source: "start-seal",
+    },
+    startSlot: null,
+    freshnessStamp: null,
+    recordRead: null,
+    graph: {
+      outcome: "cancelled",
+      reason: "cancelled-before-begin",
+      source: null,
+      joined: false,
+      arrivedAt: null,
+      revalidation: null,
+      edgeCount: null,
+    },
+  });
+  row.followUp = {
+    issuedVia: "product-hook",
+    parent: {
+      generation: 1,
+      queryGeneration: 148,
+      sceneId: "scene-q",
+      seed: "entity-seed",
+      calledAt: 90,
+      resolvedAt: 91,
+      publishCount: 0,
+      cancelledBeforeBegin: true,
+    },
+    nativeBegins: [],
+    child: null,
+    requerySeq: 53,
+  };
+  return row;
+}
+
+test("DR-CP4-V-3: (b) で begin の前に取り消された親は観測できる欄だけを求め X12（cancelled-before-begin）で終える（X10 にしない）。trace は Q に数え U に入れず、K6/4 で X12、K6/2 と K6/4 で失効 (i)", () => {
+  const result = inTrace(cancelledParentSample(0));
+  missedWith(result, "X12", "cancelled-before-begin");
+  assert.equal(Object.hasOwn(result.x, "X10"), false);
+  assert.deepEqual(result.failedStage, {
+    stage: "parent",
+    codes: [{ stage: "parent", code: "X12", detail: "cancelled-before-begin" }],
+  });
+  assert.deepEqual(result.violations, []);
+  assert.deepEqual(result.ratification12, []);
+  assert.equal(result.loadingSwitched, false);
+  assert.deepEqual(followUpFailureCategory(cancelledParentSample(0), result), {
+    category: "lapse",
+    reason: "i-b-seal",
+  });
+  const trace = k64Trace("editing", 200);
+  trace.queries[5] = cancelledParentSample(5);
+  trace.queries[9] = cancelledParentSample(9);
+  const k64 = traceK64(trace);
+  assert.equal(k64.status, "valid", JSON.stringify(k64.invalid));
+  assert.equal(k64.regime, "k64");
+  assert.equal(k64.Q, 200);
+  assert.equal(k64.U, 198);
+  assert.equal(k64.x.X12, 2);
+  assert.equal(k64.lapse["i-b-seal"], 2);
+  assert.equal(k64.reasons["i-b-seal"], 2);
+  const k62 = summarizeTrace({ trace, fixedGraphMode: "restricted" });
+  assert.equal(k62.status, "valid", JSON.stringify(k62.invalid));
+  assert.equal(k62.Q, 200);
+  assert.equal(k62.U, 198);
+  assert.equal(k62.lapse["i-b-seal"], 2);
+  assert.equal(k62.categories.lapse >= 2, true);
+});
+
+test("DR-CP4-V-3: 印が無い・形が合わない・定常状態の文脈の記録は従来どおり（X10 か既存の分類）。Gold の既存の分類は変わらない", () => {
+  // 形が合わない取消しの印は従来の R7 の検査（X10）に落ちる。
+  const shapes = {
+    published: (row) => {
+      row.followUp.parent.publishCount = 1;
+    },
+    "native-begin": (row) => {
+      row.followUp.nativeBegins = ["pending"];
+    },
+    child: (row) => {
+      row.followUp.child = {};
+    },
+    "no-call-time": (row) => {
+      delete row.followUp.parent.calledAt;
+    },
+    "returned-before-call": (row) => {
+      row.followUp.parent.resolvedAt = 80;
+    },
+    "flag-false": (row) => {
+      row.followUp.parent.cancelledBeforeBegin = false;
+    },
+  };
+  for (const [name, mutate] of Object.entries(shapes)) {
+    const row = cancelledParentSample(0);
+    mutate(row);
+    const result = inTrace(row);
+    assert.equal(Object.hasOwn(result.x, "X10"), true, name);
+    assert.match(result.x.X10, /^missing:/u, name);
+  }
+  // 定常状態の文脈では印を読まない（R7 の欠けは X10）。
+  assert.match(steady(cancelledParentSample(0)).x.X10, /^missing:/u);
+  // Gold の既存の分類（印の無い入力）を固定する。印を足しても定常状態では同じ。
+  const pinned = [
+    [steady(k64Sample()), { followUp: true, x: {} }],
+    [inTrace(k64Sample()), { followUp: true, x: {} }],
+    [
+      steady(
+        k64Sample({
+          graph: { outcome: "graph-unavailable", reason: "warming" },
+        }),
+      ),
+      { followUp: false, x: { X12: "graph-unavailable:warming" } },
+    ],
+    [
+      inTrace(k64Sample({}, { child: null })),
+      { followUp: false, x: { X6: "no-child" } },
+    ],
+  ];
+  // 値は変更前の followup.mjs で同じ入力から求めたもの（同じ結果）。
+  for (const [result, expected] of pinned) {
+    assert.equal(result.followUp, expected.followUp);
+    assert.deepEqual(result.x, expected.x);
+  }
+  const flagged = k64Sample({}, { parent: { cancelledBeforeBegin: true } });
+  assert.deepEqual(steady(flagged), steady(k64Sample()));
+  assert.deepEqual(inTrace(flagged), inTrace(k64Sample()));
+});
+
+// ---- DR-CP4-V-4 (レビュー P3): the mark must agree with the sample -----------
+
+/** The sample-side values of a parent cancelled before its begin. */
+const CANCELLED_SAMPLE = Object.freeze({
+  status: "cancelled",
+  rawStatus: "not-started",
+  graphOutcome: "cancelled",
+  snapshotUsable: false,
+});
+
+function withSampleSide(row, side) {
+  row.status = side.status;
+  row.rawStatus = side.rawStatus;
+  row.graph = { ...row.graph, outcome: side.graphOutcome };
+  row.snapshot = { ...row.snapshot, usable: side.snapshotUsable };
+  return row;
+}
+
+function withoutMark(row) {
+  const copy = JSON.parse(JSON.stringify(row));
+  delete copy.followUp.parent.cancelledBeforeBegin;
+  return copy;
+}
+
+test("DR-CP4-V-4 (レビュー P3): 印 cancelledBeforeBegin は sample 側の値（cancelled／not-started／合流 cancelled／snapshot が usable でない）と合うときだけ効き、合わなければ印を外した記録と同じ分類（X10）になる", () => {
+  // 合う形は X12（V-3 のまま）。
+  const agreed = inTrace(
+    withSampleSide(cancelledParentSample(0), CANCELLED_SAMPLE),
+  );
+  missedWith(agreed, "X12", "cancelled-before-begin");
+  assert.deepEqual(missingR7(cancelledParentSample(0), "trace"), []);
+  const pool = {
+    status: ["cancelled", "completed", "failed", null, undefined],
+    rawStatus: ["not-started", "completed", "raw-ready", null, undefined],
+    graphOutcome: [
+      "cancelled",
+      "graph-unavailable",
+      "graph-late",
+      "graph-ready",
+      null,
+      undefined,
+    ],
+    snapshotUsable: [false, true, null, undefined],
+  };
+  // 決定的な乱数（LCG）で sample 側の値の組を作り、1 つでも合わない組を調べる。
+  let seed = 20_261_101;
+  const rnd = () => {
+    seed = (seed * 1_103_515_245 + 12_345) % 2 ** 31;
+    return seed / 2 ** 31;
+  };
+  const pick = (list) => list[Math.floor(rnd() * list.length)];
+  let checked = 0;
+  for (let at = 0; at < 2_000; at++) {
+    const side = Object.fromEntries(
+      Object.entries(pool).map(([key, list]) => [key, pick(list)]),
+    );
+    const agrees = Object.entries(CANCELLED_SAMPLE).every(
+      ([key, value]) => side[key] === value,
+    );
+    if (agrees) continue;
+    const row = withSampleSide(cancelledParentSample(at), side);
+    const label = JSON.stringify(side);
+    assert.deepEqual(inTrace(row), inTrace(withoutMark(row)), label);
+    assert.deepEqual(
+      missingR7(row, "trace"),
+      missingR7(withoutMark(row), "trace"),
+      label,
+    );
+    assert.match(inTrace(row).x.X10, /^missing:/u, label);
+    checked += 1;
+  }
+  assert.ok(checked > 1_500, `${checked}`);
+  // 1 つずつ外した形も同じ（どの照合も効く）。
+  for (const [key, value] of Object.entries({
+    status: "completed",
+    rawStatus: "completed",
+    graphOutcome: "graph-unavailable",
+    snapshotUsable: true,
+  })) {
+    const row = withSampleSide(cancelledParentSample(0), {
+      ...CANCELLED_SAMPLE,
+      [key]: value,
+    });
+    assert.deepEqual(inTrace(row), inTrace(withoutMark(row)), key);
+    assert.match(inTrace(row).x.X10, /^missing:/u, key);
+  }
+});
+
+test("DR-CP4-V-4 (レビュー P3): 印の無い入力の分類は sample 側の値が取消しの形でも変わらない（照合は印のある記録にだけ効く）", () => {
+  for (const base of [
+    () => k64Sample(),
+    () => k64Sample({}, { child: null }),
+    () => k64Sample({ graph: { outcome: "graph-unavailable", reason: "x" } }),
+    () => withoutMark(cancelledParentSample(0)),
+  ]) {
+    const plain = base();
+    const shaped = withSampleSide(base(), CANCELLED_SAMPLE);
+    for (const row of [plain, shaped]) {
+      assert.equal(row.followUp?.parent?.cancelledBeforeBegin, undefined);
+      // 印が無ければ X12（cancelled-before-begin）にはならない。
+      assert.notEqual(inTrace(row).x.X12, "cancelled-before-begin");
+    }
+  }
 });
