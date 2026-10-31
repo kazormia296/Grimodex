@@ -2442,3 +2442,59 @@ test("DR-CP4-V-4 (レビュー P3): 取り消された親の前に begin に至�
     "index-ready",
   );
 });
+
+// ---- DR-CP4-V-4 (レビュー P3): the cycle-end boundary of afterCycleEnd ----
+
+/** Row `index` of an `editingTrace(n)` with its log's cycle end replaced. */
+function rowWithCycleEnd(n, index, cycleEndOf) {
+  const trace = editingTrace(n);
+  const entry = trace.log.find((row) => row.index === index);
+  const parent = trace.observation.fetches.find(
+    (row) => row.seq === entry.parentSeq,
+  );
+  const child = trace.observation.fetches.find(
+    (row) => row.seq === entry.parentSeq + 1,
+  );
+  const cycleEnd = cycleEndOf({ parent, child });
+  if (cycleEnd === undefined) delete entry.cycleEnd;
+  else entry.cycleEnd = cycleEnd;
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  return { row: rowsOf(trace, n, runs)[index], parent, child };
+}
+
+test("DR-CP4-V-4 (レビュー P3): cycle end と同じ時刻に呼ばれた fetch は除かない（`>` の境界）。子のまま残り、再 query の開示は無い", () => {
+  const { row, child } = rowWithCycleEnd(6, 2, ({ child }) => ({
+    reason: "child-published",
+    at: child.calledAt,
+  }));
+  assert.equal(row.rowError, undefined);
+  assert.equal(Object.hasOwn(row, "requeryAfterCycleEnd"), false);
+  assert.equal(row.followUp.child.queryGeneration, child.queryGeneration);
+});
+
+test("DR-CP4-V-4 (レビュー P3): cycle end の時刻が null／欠けなら、どの fetch も除かない（finite の guard）", () => {
+  for (const cycleEndOf of [
+    () => ({ reason: "child-published", at: null }),
+    () => ({ reason: "child-published" }),
+    () => null,
+    () => undefined,
+  ]) {
+    const { row, parent, child } = rowWithCycleEnd(6, 2, cycleEndOf);
+    assert.equal(Object.hasOwn(row, "requeryAfterCycleEnd"), false);
+    assert.equal(row.followUp.parent.queryGeneration, parent.queryGeneration);
+    assert.equal(row.followUp.child.queryGeneration, child.queryGeneration);
+  }
+});
+
+test("DR-CP4-V-4 (レビュー P3): 親は cycle end より後に呼ばれても除外の対象にならない（除くのは親の後の fetch だけ）", () => {
+  const { row, parent, child } = rowWithCycleEnd(6, 2, ({ parent }) => ({
+    reason: "child-published",
+    at: parent.calledAt - 1,
+  }));
+  assert.deepEqual(
+    row.requeryAfterCycleEnd.rows.map((late) => late.seq),
+    [child.seq],
+  );
+  assert.equal(row.followUp.parent.queryGeneration, parent.queryGeneration);
+  assert.equal(row.followUp.child, null);
+});
