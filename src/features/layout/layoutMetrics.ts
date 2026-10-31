@@ -138,6 +138,36 @@ export function computeLayoutGridMetrics(
   };
 }
 
+/** overlay のつまみを置く側（パネルのある overlay で、つまみを出せる表示のとき）。 */
+export interface OverlayKnobSides {
+  left: boolean;
+  right: boolean;
+}
+
+const NO_OVERLAY_KNOBS: OverlayKnobSides = { left: false, right: false };
+
+/**
+ * center stripe の、つまみのある側の先頭（末尾）の 1 列。
+ * つまみ（STRIPE_SIZE）とギャップは center stripe の外（LayoutShell の cstripe セル）に
+ * 置くので、その分を stripe 列と gap 列から引いた残りに、ドック開閉トグルを載せる。
+ * - region の内容が出ていれば content＋splitter の幅で、bands は editor 列と揃う。
+ * - region が閉じていればトグルの 36px だけ取り、bands はその分 editor 列より内側から始まる
+ *   （grid の列は動かさない。ユーザー判断 2026-10-31）。
+ * - パネルが無ければトグルも無いので 0px（bands はつまみとギャップの分だけ内側から）。
+ */
+function knobSideStripeColumn(
+  hasRegion: boolean,
+  splitterPx: number,
+  contentPx: number,
+  isFiller: boolean,
+): string {
+  if (!hasRegion) return "0px";
+  if (isFiller) return `minmax(${STRIPE_SIZE}px, 1fr)`;
+  if (contentPx > 0)
+    return `${Math.max(STRIPE_SIZE, contentPx + splitterPx)}px`;
+  return `${STRIPE_SIZE}px`;
+}
+
 /**
  * center stripe 内側の 9 列テンプレート。center stripe は最上段を全幅で
  * 占有するため、メイングリッド（buildLayoutGridTemplateColumns）と同じ
@@ -146,6 +176,7 @@ export function computeLayoutGridMetrics(
  */
 export function buildCenterStripeGridTemplateColumns(
   metrics: LayoutGridMetrics,
+  overlayKnobs: OverlayKnobSides = NO_OVERLAY_KNOBS,
 ): string {
   const leftContentColumn =
     metrics.fillerRegion === "left"
@@ -158,17 +189,39 @@ export function buildCenterStripeGridTemplateColumns(
   const centerStripeColumn =
     metrics.centerColumnPx === "0px" ? "auto" : metrics.centerColumnPx;
 
-  return [
-    `${metrics.leftStripePx}px`,
-    `${metrics.gapLeftPx}px`,
-    leftContentColumn,
-    `${metrics.leftSplitterPx}px`,
-    centerStripeColumn,
-    `${metrics.rightSplitterPx}px`,
-    rightContentColumn,
-    `${metrics.gapRightPx}px`,
-    `${metrics.rightStripePx}px`,
-  ].join(" ");
+  // つまみのある側は、stripe／gap／content／splitter の 4 列を 1 列にまとめる。
+  const leading = overlayKnobs.left
+    ? [
+        knobSideStripeColumn(
+          metrics.leftStripePx > 0,
+          metrics.leftSplitterPx,
+          metrics.leftContentPx,
+          metrics.fillerRegion === "left",
+        ),
+      ]
+    : [
+        `${metrics.leftStripePx}px`,
+        `${metrics.gapLeftPx}px`,
+        leftContentColumn,
+        `${metrics.leftSplitterPx}px`,
+      ];
+  const trailing = overlayKnobs.right
+    ? [
+        knobSideStripeColumn(
+          metrics.rightStripePx > 0,
+          metrics.rightSplitterPx,
+          metrics.rightContentPx,
+          metrics.fillerRegion === "right",
+        ),
+      ]
+    : [
+        `${metrics.rightSplitterPx}px`,
+        rightContentColumn,
+        `${metrics.gapRightPx}px`,
+        `${metrics.rightStripePx}px`,
+      ];
+
+  return [...leading, centerStripeColumn, ...trailing].join(" ");
 }
 
 /**

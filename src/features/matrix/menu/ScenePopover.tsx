@@ -34,7 +34,10 @@ export function ScenePopover({
       }
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
     }
     document.addEventListener("mousedown", onOutside);
     document.addEventListener("keydown", onKey);

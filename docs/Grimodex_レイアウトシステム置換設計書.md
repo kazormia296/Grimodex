@@ -58,6 +58,10 @@ IntelliJ 式の **非対称レイアウト** (中央のエディタ領域は固�
    いるため、レイアウトシステムは中央の矩形を与えるだけでよい。
 5. **floating / pin は後付け**。undock 用の overlay 層はスコープ外。`LayoutState` に
    `viewMode` 等を混ぜない（§13）。
+   ただし、画面端の左右に 1 パネルずつ置く**固定のオーバーレイ**は、slot と center segment に次ぐ
+   3 種類目の置き場所として含める（`LayoutState.overlays?`、開閉は store の揮発状態 `openOverlay`）。
+   位置も大きさも自由な undock／floating とは別物である。詳細は
+   [オーバーレイ領域と切替演出 設計メモ](Grimodex_オーバーレイ領域と切替演出設計書.md)（2026-10-31）。
 
 ## 3. 全体構造
 
@@ -668,7 +672,7 @@ no-op または UI 無効化とする。Dockview パッケージは Phase 6 で 
 | 項目 | 対応時期 | メモ |
 |------|---------|------|
 | 非アクティブパネル DOM | Phase 2 | Grid 等の再マウントコストを計測。`hidden` 保持 vs アンマウント |
-| undock / floating | スコープ外 | 将来 overlay 層。`LayoutState` を汚さない |
+| undock / floating | スコープ外 | 将来 overlay 層。`LayoutState` を汚さない。画面端の固定オーバーレイ（`overlays?`）はこれと別で、2026-10-31 に導入（§2-5） |
 | pin / auto-hide | スコープ外 | 将来拡張 |
 | Sample Tour / screenshot | Phase 2–3 | `data-stripe-icon`、panel 固有 capture の動作確認 |
 | 重いパネル初回表示 | Phase 2+ | 必要なら `React.lazy` は `SlotView` 側 |

@@ -1,4 +1,9 @@
-import { DURATIONS, EASINGS } from "@/lib/animation";
+import {
+  CSS_EASINGS,
+  DURATIONS,
+  EASINGS,
+  OVERLAY_DURATIONS,
+} from "@/lib/animation";
 
 export const PRESET_ANIMATION_DEBOUNCE_MS = 300;
 
@@ -45,4 +50,21 @@ export function presetCrossfadeTransition(reduced: boolean) {
   return reduced
     ? { duration: 0 }
     : { duration: DURATIONS.fast, ease: EASINGS.easeOut };
+}
+
+/**
+ * オーバーレイの開閉（平らなスライド）の CSS transition。開閉で時間は同じ。
+ * Reduced Motion では transition 自体を外し、静的な最終状態に置き換える。
+ * visibility は閉じるときだけスライドが終わるまで遅らせる（開くときは即座に見える）。
+ */
+export function overlaySlideTransitions(
+  reduced: boolean,
+  open: boolean,
+): { panel: string; layer: string } {
+  if (reduced) return { panel: "none", layer: "none" };
+  const ms = `${OVERLAY_DURATIONS.slide * 1000}ms`;
+  return {
+    panel: `transform ${ms} ${CSS_EASINGS.easeOut}`,
+    layer: `visibility 0ms linear ${open ? "0ms" : ms}`,
+  };
 }

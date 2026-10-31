@@ -6,6 +6,10 @@ import { useResultsPanelStore } from "@/features/commandCenter";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
 import {
+  findOverlayOfPanel,
+  getOverlays,
+} from "@/features/layout/layoutStateUtils";
+import {
   PANEL_COMMANDS,
   getMergedBindings,
   matchesBinding,
@@ -34,6 +38,26 @@ export function GlobalCommandHost({
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent) => {
+      const merged = getMergedBindings();
+      const mac = isMac();
+
+      // オーバーレイの開閉。layout を変えない（揮発の状態だけ）ので、
+      // 静止待ちの guard より前に処理する。phone 幅と空の overlay では何もしない。
+      const overlay = matchesBinding(event, merged.toggleLeftOverlay ?? "", mac)
+        ? "left"
+        : matchesBinding(event, merged.toggleRightOverlay ?? "", mac)
+          ? "right"
+          : null;
+      if (overlay !== null) {
+        if (phoneWorkspace) return;
+        const layoutStore = useLayoutStore.getState();
+        if (getOverlays(layoutStore.layout)[overlay].panel === null) return;
+        event.preventDefault();
+        // zoom 中の解除は store の開く側が担う。
+        layoutStore.toggleOverlay(overlay);
+        return;
+      }
+
       if (!canScheduleQuiescenceMutation()) return;
       if (
         runtimeCapabilities.genericProjectTransfer &&
@@ -65,8 +89,6 @@ export function GlobalCommandHost({
         return;
       }
 
-      const merged = getMergedBindings();
-      const mac = isMac();
       for (const panelCommand of PANEL_COMMANDS) {
         if (!matchesBinding(event, merged[panelCommand.id] ?? "", mac)) {
           continue;
@@ -86,6 +108,17 @@ export function GlobalCommandHost({
                     ? "ai"
                     : "more";
           useCompactNavigationStore.getState().openSurface(surface);
+          return;
+        }
+        // overlay にあるパネルは、トグルすると閉じてすぐ開き直すので、開く側だけ呼ぶ。
+        if (
+          panelCommand.panel === "codex-quick" &&
+          findOverlayOfPanel(
+            useLayoutStore.getState().layout,
+            "codex-quick",
+          ) !== null
+        ) {
+          useLayoutStore.getState().showPanel("codex-quick");
           return;
         }
         togglePanel(panelCommand.panel);

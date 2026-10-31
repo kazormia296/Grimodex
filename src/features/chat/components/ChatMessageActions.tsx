@@ -89,7 +89,10 @@ export function ChatMessageActions({
       setOpen(false);
     };
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setOpen(false);
+      }
     };
     // fixed 配置はスクロール / リサイズで追従しないため、その間は閉じる。
     const close = () => setOpen(false);

@@ -226,6 +226,139 @@ describe("layoutMetrics", () => {
     expect(buildCenterStripeGridTemplateColumns(metrics)).toContain(" auto ");
   });
 
+  describe("overlay のつまみ（center stripe の両端）", () => {
+    const base = {
+      hasLeft: true,
+      hasRight: true,
+      hasBottom: false,
+      leftOpen: true,
+      rightOpen: true,
+      bottomOpen: false,
+      centerBandVisible: true,
+      leftSize: 260,
+      rightSize: 340,
+      bottomSize: 0,
+    };
+    const left = { left: true, right: false };
+    const right = { left: false, right: true };
+    const both = { left: true, right: true };
+    const none = { left: false, right: false };
+    const S = SPLITTER_GUTTER_PX;
+
+    it("つまみが無ければ従来どおり（引数なしと none が同じ）", () => {
+      const m = computeLayoutGridMetrics(base);
+      expect(buildCenterStripeGridTemplateColumns(m, none)).toBe(
+        buildCenterStripeGridTemplateColumns(m),
+      );
+      expect(buildCenterStripeGridTemplateColumns(m)).toBe(
+        buildLayoutGridTemplateColumns(m),
+      );
+    });
+
+    it("grid の列（metrics）はつまみに影響されない", () => {
+      const closed = { ...base, leftOpen: false, rightOpen: false };
+      const m = computeLayoutGridMetrics(closed);
+      // つまみの有無は metrics の入力に無く、メイングリッドの列は region の状態だけで決まる。
+      expect(buildLayoutGridTemplateColumns(m)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 0px 0px minmax(0, 1fr) 0px 0px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+      );
+      expect(Object.keys(m)).not.toContain("leftKnob");
+    });
+
+    it("region が開いている側は content＋splitter の 1 列（bands は editor 列と揃う）", () => {
+      const m = computeLayoutGridMetrics(base);
+      expect(buildCenterStripeGridTemplateColumns(m, left)).toBe(
+        `${260 + S}px minmax(0, 1fr) ${S}px 340px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, right)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 260px ${S}px minmax(0, 1fr) ${340 + S}px`,
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, both)).toBe(
+        `${260 + S}px minmax(0, 1fr) ${340 + S}px`,
+      );
+    });
+
+    it("開いていても content が狭ければ、トグルの 36px を下限にする", () => {
+      const m = computeLayoutGridMetrics({
+        ...base,
+        leftSize: 10,
+        rightSize: 10,
+      });
+      const cols = buildCenterStripeGridTemplateColumns(m, both).split(" ");
+      expect(parseFloat(cols[0])).toBeGreaterThanOrEqual(STRIPE_SIZE);
+      expect(parseFloat(cols[cols.length - 1])).toBeGreaterThanOrEqual(
+        STRIPE_SIZE,
+      );
+    });
+
+    it("region が閉じている側は、トグルの 36px だけ取る", () => {
+      const m = computeLayoutGridMetrics({
+        ...base,
+        leftOpen: false,
+        rightOpen: false,
+      });
+      expect(buildCenterStripeGridTemplateColumns(m, both)).toBe(
+        `${STRIPE_SIZE}px minmax(0, 1fr) ${STRIPE_SIZE}px`,
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, left)).toBe(
+        `${STRIPE_SIZE}px minmax(0, 1fr) 0px 0px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+      );
+    });
+
+    it("パネルが無い側は 0px（トグルも無い）", () => {
+      const m = computeLayoutGridMetrics({
+        ...base,
+        hasLeft: false,
+        hasRight: false,
+        leftOpen: false,
+        rightOpen: false,
+      });
+      expect(buildCenterStripeGridTemplateColumns(m, both)).toBe(
+        "0px minmax(0, 1fr) 0px",
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, right)).toBe(
+        "0px 0px 0px 0px minmax(0, 1fr) 0px",
+      );
+    });
+
+    it("center band 非表示で、その側が filler なら minmax(36px, 1fr)", () => {
+      const m = computeLayoutGridMetrics({ ...base, centerBandVisible: false });
+      expect(m.fillerRegion).toBe("right");
+      expect(buildCenterStripeGridTemplateColumns(m, right)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 260px ${S}px auto minmax(${STRIPE_SIZE}px, 1fr)`,
+      );
+      // filler でない側は content＋splitter の固定幅のまま。
+      expect(buildCenterStripeGridTemplateColumns(m, left)).toBe(
+        `${260 + S}px auto 0px minmax(0, 1fr) ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+      );
+    });
+
+    it("bands の左右の位置: 開=editor 列と同じ、閉=36px 内側、パネル無し=つまみ＋ギャップ分内側", () => {
+      // center stripe セルは [つまみ 36][ギャップ 12][CenterStripe] で、grid の左端から始まる。
+      const knobAndGap = STRIPE_SIZE + STRIPE_GAP_PX;
+      const bandsLeft = (m: ReturnType<typeof computeLayoutGridMetrics>) => {
+        const lead = parseFloat(
+          buildCenterStripeGridTemplateColumns(m, left).split(" ")[0],
+        );
+        return knobAndGap + lead;
+      };
+      const editorLeft = (m: ReturnType<typeof computeLayoutGridMetrics>) =>
+        m.leftStripePx + m.gapLeftPx + m.leftContentPx + m.leftSplitterPx;
+      const open = computeLayoutGridMetrics(base);
+      expect(bandsLeft(open)).toBe(editorLeft(open));
+      const closed = computeLayoutGridMetrics({ ...base, leftOpen: false });
+      expect(bandsLeft(closed) - editorLeft(closed)).toBe(STRIPE_SIZE);
+      const empty = computeLayoutGridMetrics({
+        ...base,
+        hasLeft: false,
+        leftOpen: false,
+      });
+      expect(bandsLeft(empty) - editorLeft(empty)).toBe(
+        STRIPE_SIZE + STRIPE_GAP_PX,
+      );
+    });
+  });
+
   describe("buildLayoutGridTemplateAreas", () => {
     it("spans the center stripe full-width and starts side stripes at the main row", () => {
       const areas = buildLayoutGridTemplateAreas(false, {

@@ -171,6 +171,8 @@ export function useAnchoredPopover(
       // 子レイヤーだけを閉じさせ、こちらは巻き込まれない。
       const target = e.target as Node | null;
       if (target && isInsideClickRef.current?.(target)) return;
+      // 外側の overlay 等が同じ Esc で一緒に閉じないよう、処理したと伝える。
+      e.preventDefault();
       onCloseRef.current();
     }
     document.addEventListener("mousedown", onMouseDown);

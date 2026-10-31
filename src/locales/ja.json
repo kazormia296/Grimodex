@@ -1563,6 +1563,14 @@
       "scene": "シーン",
       "chat": "チャット"
     },
+    "overlay": {
+      "toggle": "{{panel}}のオーバーレイを開閉",
+      "moveTo": {
+        "left": "左のオーバーレイへ",
+        "right": "右のオーバーレイへ"
+      },
+      "restore": "元に戻す（領域へ）"
+    },
     "panelToggle": "パネルの表示切替",
     "panels": "パネル",
     "bottomCorner": {
@@ -4196,6 +4204,8 @@
     "focusGrid": "Grid パネルにフォーカス",
     "focusMatrix": "Matrix パネルにフォーカス",
     "focusWritingStats": "執筆統計パネルにフォーカス",
+    "toggleLeftOverlay": "左のオーバーレイを開閉",
+    "toggleRightOverlay": "右のオーバーレイを開閉",
     "openSettings": "Settings を開く",
     "splitVertical": "エディタを縦分割",
     "splitHorizontal": "エディタを横分割",

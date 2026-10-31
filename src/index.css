@@ -724,6 +724,30 @@ button[role="switch"][aria-checked="true"] {
   background-color: color-mix(in oklch, var(--background) 70%, transparent);
 }
 
+/* Overlay panels float above the grid, so they cannot use the WebGL Glass
+   pass: that pass paints into the backmost canvas and would land beneath the
+   grid panels. A CSS backdrop blur over the composited page plus a veil keeps
+   the overlay legible over grid text. The fallback renderer drops the blur
+   like the other Glass surfaces and thickens the veil instead. */
+#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
+  [data-overlay-glass="true"]
+  [data-overlay-panel] {
+  background-color: color-mix(in oklch, var(--card) 78%, transparent);
+  background-image: none;
+  border-color: color-mix(in oklch, var(--border) 55%, transparent);
+  backdrop-filter: blur(var(--workspace-fluid-glass-blur, 14px))
+    saturate(var(--workspace-fluid-glass-saturate, 1.16));
+}
+
+#main-content:has(
+    > [data-editor-ambient][data-background-enabled="true"][data-background-renderer="fallback"]
+  )
+  [data-overlay-glass="true"]
+  [data-overlay-panel] {
+  background-color: color-mix(in oklch, var(--card) 92%, transparent);
+  backdrop-filter: none;
+}
+
 /* Dragging a panel lifts the card — a touch more shadow + scale.
    Hover is intentionally left alone (the user rejected hover motion). */
 .app-shell .gx-panel--dragging {

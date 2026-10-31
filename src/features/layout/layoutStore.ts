@@ -19,6 +19,8 @@ import {
   clearCollapsedActivePanelReferences,
   collectPanelsInLayoutRegion,
   cloneLayoutState,
+  detachHiddenOverlayPanels,
+  findOverlayOfPanel,
   clampLayoutStateForViewport,
   ensureLayoutStateV3,
   findPanelLocation,
@@ -27,6 +29,7 @@ import {
   getBottomCorners,
   getCenterContentWidthPx,
   getCenterHorizontalReserve,
+  getOverlays,
   getOpenSlotPixelSizes,
   nudgeAdjacentCenterSegmentPixelSizes,
   getOpenSlots,
@@ -37,7 +40,9 @@ import {
   removePanelFromSlot,
   reorderPanelInCenterSegment,
   reorderPanelInSlot,
+  replacePanelInPlace,
   resetLayoutStateToDefault,
+  restorePanelFromOverlay as restorePanelFromOverlayInLayout,
   updateCenter,
   updateCenterToolSegment,
   updateRegion,
@@ -61,6 +66,7 @@ import type {
   CustomLayoutPreset,
   LayoutRegionId,
   LayoutState,
+  OverlayId,
   PersistedLayout,
   RegionId,
   SlotState,
@@ -262,6 +268,12 @@ function movePanelInLayout(
     next = removePanelFromSource(next, panel, hiddenStripePanels);
   }
 
+  // overlay から出すときは overlay を空にする（外さないと slot と二重になり検証で弾かれる）。
+  const sourceOverlay = findOverlayOfPanel(next, panel);
+  if (sourceOverlay !== null) {
+    next.overlays = { ...getOverlays(next), [sourceOverlay]: { panel: null } };
+  }
+
   if (targetRegion === "center") {
     const adjustedInsertIndex =
       insertIndex != null &&
@@ -376,6 +388,14 @@ function unhideStripePanel(
   return next;
 }
 
+/** 非表示（hiddenStripePanels）のパネルを overlay から既定の領域へ戻す。 */
+function detachHidden(
+  layout: LayoutState,
+  hidden: readonly ToolWindowPanelId[] | undefined,
+): LayoutState {
+  return detachHiddenOverlayPanels(layout, new Set(hidden ?? []));
+}
+
 function parseBuiltinOverrides(
   raw: GlobalSettings["builtinLayoutPresetOverrides"],
 ): Partial<Record<BuiltinPresetId, BuiltinPresetOverride>> {
@@ -387,11 +407,15 @@ function parseBuiltinOverrides(
     }
     const entry = value as { state?: unknown; hiddenStripePanels?: unknown };
     if (entry.state == null) continue;
+    const hiddenStripePanels = Array.isArray(entry.hiddenStripePanels)
+      ? (entry.hiddenStripePanels as ToolWindowPanelId[])
+      : undefined;
     result[id] = {
-      state: ensureLayoutStateV3(entry.state as LayoutState),
-      hiddenStripePanels: Array.isArray(entry.hiddenStripePanels)
-        ? (entry.hiddenStripePanels as ToolWindowPanelId[])
-        : undefined,
+      state: detachHidden(
+        ensureLayoutStateV3(entry.state as LayoutState),
+        hiddenStripePanels,
+      ),
+      hiddenStripePanels,
     };
   }
   return result;
@@ -456,6 +480,12 @@ export interface LayoutStoreState {
    * 自動解除される（store 定義直後の subscribe 参照）。
    */
   maximizedPanelId: PanelId | null;
+  /**
+   * 開いている overlay。transient — 永続化せず、layout の参照が変わる mutation と
+   * zoom 突入で自動的に閉じる。overlay のパネルの開閉は layout を変えず、これだけを
+   * 変える（layout を変えると次の購読ですぐ閉じてしまう）。
+   */
+  openOverlay: OverlayId | null;
 
   togglePanel: (panel: PanelId) => void;
   showPanel: (panel: PanelId) => void;
@@ -465,6 +495,19 @@ export interface LayoutStoreState {
   /** 対象パネルが表示中のときのみ視覚 zoom をトグルする（非表示は no-op）。 */
   toggleMaximizePanel: (panel: PanelId) => void;
   clearMaximize: () => void;
+
+  /** overlay の開閉。空の overlay は開かない。layout は変えない。 */
+  toggleOverlay: (id: OverlayId) => void;
+  showOverlay: (id: OverlayId) => void;
+  closeOverlay: () => void;
+  /**
+   * panel を overlay へ移す。移動先に別のパネルがあれば、そのパネルが panel の元の
+   * 場所（slot／center segment の同じ位置）へ入れ替わる。overlay どうしの移動は
+   * 左右を入れ替える。ロック中と、Stripe に表示していないパネルは移せない。
+   */
+  movePanelToOverlay: (panel: PanelId, id: OverlayId) => void;
+  /** overlay のパネルを既定の領域（DEFAULT_REGION_MAP）の最後の slot へ戻す。 */
+  restorePanelFromOverlay: (panel: PanelId) => void;
 
   movePanelToSlot: (
     panel: PanelId,
@@ -594,6 +637,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   initialized: false,
   hiddenStripePanels: new Set<ToolWindowPanelId>(),
   maximizedPanelId: null,
+  openOverlay: null,
 
   setEditorOpen: (open) => {
     // editor を閉じる正本。togglePanel("editor") / collapseLayoutRegion("center")
@@ -624,6 +668,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     }
 
     const toolPanel = panel as ToolWindowPanelId;
+    const overlay = findOverlayOfPanel(get().layout, toolPanel);
+    if (overlay !== null) {
+      get().toggleOverlay(overlay);
+      return;
+    }
     const location = findPanelLocation(get().layout, toolPanel);
     if (!location) return;
 
@@ -649,6 +698,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     }
 
     const toolPanel = panel as ToolWindowPanelId;
+    const overlay = findOverlayOfPanel(get().layout, toolPanel);
+    if (overlay !== null) {
+      get().showOverlay(overlay);
+      return;
+    }
     const location = findPanelLocation(get().layout, toolPanel);
     if (!location) return;
     if (location.slot.activePanel === toolPanel) return;
@@ -670,6 +724,8 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   isPanelActive: (panel) => {
     if (panel === "editor") return get().layout.center.editorOpen;
+    const overlay = findOverlayOfPanel(get().layout, panel);
+    if (overlay !== null) return get().openOverlay === overlay;
     const location = findPanelLocation(get().layout, panel);
     return location?.slot.activePanel === panel;
   },
@@ -691,13 +747,90 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         );
         if (location?.slot.activePanel !== panel) return state;
       }
-      return { maximizedPanelId: panel };
+      // zoom 中は overlay を出さないので、突入時に閉じる。
+      return { maximizedPanelId: panel, openOverlay: null };
     });
   },
 
   clearMaximize: () => {
     if (get().maximizedPanelId === null) return;
     set({ maximizedPanelId: null });
+  },
+
+  toggleOverlay: (id) => {
+    set((state) => {
+      if (state.openOverlay === id) return { openOverlay: null };
+      if (getOverlays(state.layout)[id].panel === null) return state;
+      // zoom 中は overlay が見えないので、どの経路で開いても zoom を解く。
+      return { openOverlay: id, maximizedPanelId: null };
+    });
+  },
+
+  showOverlay: (id) => {
+    set((state) => {
+      if (state.openOverlay === id) return state;
+      if (getOverlays(state.layout)[id].panel === null) return state;
+      return { openOverlay: id, maximizedPanelId: null };
+    });
+  },
+
+  closeOverlay: () => {
+    if (get().openOverlay === null) return;
+    set({ openOverlay: null });
+  },
+
+  movePanelToOverlay: (panel, id) => {
+    if (panel === "editor" || get().layoutLocked) return;
+    const toolPanel = panel as ToolWindowPanelId;
+    if (get().hiddenStripePanels.has(toolPanel)) return;
+
+    set((state) => {
+      const overlays = getOverlays(state.layout);
+      const currentOverlay = findOverlayOfPanel(state.layout, toolPanel);
+      if (currentOverlay === id) return state;
+      const displaced = overlays[id].panel;
+
+      let next: LayoutState;
+      if (currentOverlay !== null) {
+        // overlay どうし: 左右を入れ替える（移動先が空なら移すだけ）。
+        next = cloneLayoutState(state.layout);
+        next.overlays = {
+          ...overlays,
+          [id]: { panel: toolPanel },
+          [currentOverlay]: { panel: displaced },
+        };
+      } else {
+        if (!findPanelLocation(state.layout, toolPanel)) return state;
+        // 移動先に別のパネルがあれば、元の場所の同じ位置へ入れ替える。
+        next =
+          displaced !== null
+            ? replacePanelInPlace(state.layout, toolPanel, displaced)
+            : removePanelFromSource(
+                cloneLayoutState(state.layout),
+                toolPanel,
+                state.hiddenStripePanels,
+              );
+        next = {
+          ...next,
+          overlays: { ...overlays, [id]: { panel: toolPanel } },
+        };
+      }
+      return { layout: applyValidatedLayout(next, state.layout) };
+    });
+    scheduleSave(get);
+  },
+
+  restorePanelFromOverlay: (panel) => {
+    if (panel === "editor" || get().layoutLocked) return;
+    const toolPanel = panel as ToolWindowPanelId;
+    set((state) => {
+      const restored = restorePanelFromOverlayInLayout(state.layout, toolPanel);
+      if (restored === state.layout) return state;
+      return {
+        layout: applyValidatedLayout(restored, state.layout),
+      };
+    });
+    scheduleSave(get);
   },
 
   movePanelToSlot: (panel, region, slotId) => {
@@ -964,7 +1097,6 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     }
 
     const index = insertIndex ?? get().layout.center.segments.length;
-    const vp = getViewport();
     set((state) => {
       const moved = movePanelInLayout(
         state.layout,
@@ -974,6 +1106,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         index,
         state.hiddenStripePanels,
       );
+      const vp = getViewport();
       if (moved.center.editorOpen) {
         const clamped = clampLayoutStateForViewport(moved, vp);
         if (
@@ -997,7 +1130,6 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   movePanelToNewSlot: (panel, region, insertIndex) => {
     if (panel === "editor" || get().layoutLocked) return;
     const toolPanel = panel as ToolWindowPanelId;
-    const vp = getViewport();
     set((state) => {
       const moved = movePanelInLayout(
         state.layout,
@@ -1007,6 +1139,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         insertIndex,
         state.hiddenStripePanels,
       );
+      const vp = getViewport();
       // 分割で editor が最低幅(MIN_EDITOR_SIZE)を割り込む場合は追加を拒否する。
       if (region === "center" && moved.center.editorOpen) {
         const clamped = clampLayoutStateForViewport(moved, vp);
@@ -1351,7 +1484,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         // から validate する。
         const viewport = getViewport();
         const validated = hydratePersistedLayout(
-          ensureLayoutStateV3(rawLayout.state),
+          detachHidden(
+            ensureLayoutStateV3(rawLayout.state),
+            rawLayout.hiddenStripePanels,
+          ),
           resetLayoutStateToDefault(),
           viewport,
         );
@@ -1382,7 +1518,10 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         // 未知パネル除去に加え、新パネル (chronicle 等) の自己修復注入も同時に
         // 行うため、active な v2→v3 アップグレード経路でも chronicle が
         // 注入され validate に弾かれない。
-        const migrated = ensureLayoutStateV3(v2Persisted.state);
+        const migrated = detachHidden(
+          ensureLayoutStateV3(v2Persisted.state),
+          v2Persisted.hiddenStripePanels,
+        );
         const viewport = getViewport();
         const validated = hydratePersistedLayout(
           migrated,
@@ -1453,16 +1592,14 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       const override = get().builtinPresetOverrides[presetId];
       const builtin = resolveBuiltinPresetState(presetId, vp, override);
       if (!builtin) return;
+      const hidden = resolveBuiltinPresetHiddenPanels(presetId, override);
       set({
         layout: applyValidatedLayout(
-          ensureLayoutStateV3(builtin),
+          detachHidden(ensureLayoutStateV3(builtin), hidden),
           resetLayoutStateToDefault(),
-          vp,
         ),
         activePresetId: presetId,
-        hiddenStripePanels: new Set(
-          resolveBuiltinPresetHiddenPanels(presetId, override),
-        ),
+        hiddenStripePanels: new Set(hidden),
       });
       scheduleSave(get);
       return;
@@ -1472,9 +1609,11 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     if (custom) {
       set({
         layout: applyValidatedLayout(
-          ensureLayoutStateV3(custom.state),
+          detachHidden(
+            ensureLayoutStateV3(custom.state),
+            custom.hiddenStripePanels,
+          ),
           resetLayoutStateToDefault(),
-          vp,
         ),
         activePresetId: presetId,
         hiddenStripePanels: new Set(custom.hiddenStripePanels ?? []),
@@ -1574,13 +1713,17 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
             .map((p) => {
               const rawHidden = (p as { hiddenStripePanels?: unknown })
                 .hiddenStripePanels;
+              const hiddenStripePanels = Array.isArray(rawHidden)
+                ? (rawHidden as ToolWindowPanelId[])
+                : undefined;
               return {
                 id: p.id,
                 name: p.name,
-                state: ensureLayoutStateV3(p.state),
-                hiddenStripePanels: Array.isArray(rawHidden)
-                  ? (rawHidden as ToolWindowPanelId[])
-                  : undefined,
+                state: detachHidden(
+                  ensureLayoutStateV3(p.state),
+                  hiddenStripePanels,
+                ),
+                hiddenStripePanels,
               };
             })
         : [];
@@ -1610,6 +1753,15 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 useLayoutStore.subscribe((state, prev) => {
   if (state.maximizedPanelId !== null && state.layout !== prev.layout) {
     useLayoutStore.setState({ maximizedPanelId: null });
+  }
+});
+
+// overlay も同じ規則で自動的に閉じる。overlay のパネルの開閉（togglePanel／
+// showPanel 経由を含む）は layout を変えず openOverlay だけを変えるので、
+// ここで閉じてしまうことはない（layout の参照を変えると即座に閉じる）。
+useLayoutStore.subscribe((state, prev) => {
+  if (state.openOverlay !== null && state.layout !== prev.layout) {
+    useLayoutStore.setState({ openOverlay: null });
   }
 });
 

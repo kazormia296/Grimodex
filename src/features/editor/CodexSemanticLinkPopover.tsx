@@ -127,7 +127,10 @@ export function CodexSemanticLinkPopover({
   useEffect(() => {
     if (!open || !editor || (owner !== null && owner !== editor)) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") close();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        close();
+      }
     };
     const onMouseDown = (event: MouseEvent) => {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) {

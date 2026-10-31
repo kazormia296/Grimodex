@@ -127,6 +127,17 @@ export function getCommands(): CommandDef[] {
       defaultBinding: "Mod+Alt+W",
       panel: "writing-stats",
     },
+    // ── Overlay（画面端の左右オーバーレイの開閉）──
+    {
+      id: "toggleLeftOverlay",
+      label: i18next.t("keys.toggleLeftOverlay"),
+      defaultBinding: "Mod+Alt+[",
+    },
+    {
+      id: "toggleRightOverlay",
+      label: i18next.t("keys.toggleRightOverlay"),
+      defaultBinding: "Mod+Alt+]",
+    },
     // ── Global ──
     {
       id: "openSettings",

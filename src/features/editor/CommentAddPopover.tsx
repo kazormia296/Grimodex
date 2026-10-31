@@ -80,7 +80,10 @@ export function CommentAddPopover({ editor }: Props) {
     if (!open) return;
 
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
     }
     function onMouseDown(e: MouseEvent) {
       const target = e.target as Node;

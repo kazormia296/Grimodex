@@ -22,8 +22,18 @@ export const STRIPE_ICON_SIZE = 28;
 /** stripe 外周と icon 外周の同心オフセット。 */
 export const STRIPE_ICON_INSET_PX = (STRIPE_SIZE - STRIPE_ICON_SIZE) / 2;
 
+/** オーバーレイ本体の幅 (px)。開いたときに grid と Stripe の上へ重ねる。 */
+export const OVERLAY_WIDTH = 440;
+
 /** 上下の水平 stripe は、視覚重量を抑えるため縦 stripe より一段細くする。 */
 export const HORIZONTAL_STRIPE_SIZE = 35;
+
+/**
+ * grid の内容域（center stripe と gap 行の下）の上端。オーバーレイの層の上端を
+ * ここに合わせ、上段の角のつまみを隠さない。
+ * CSS の --gx-outer-pad / --gx-stripe-gap と一致させること。
+ */
+export const OVERLAY_CONTENT_TOP_CSS = `calc(var(--gx-outer-pad) + ${HORIZONTAL_STRIPE_SIZE}px + var(--gx-stripe-gap))`;
 
 /** 水平 stripe 内の円形 icon 実寸。 */
 export const HORIZONTAL_STRIPE_ICON_SIZE = 27;
@@ -181,4 +191,9 @@ export function clampRegionSize(
 ): number {
   const max = getMaxRegionSize(region, viewport, context);
   return Math.min(Math.max(size, MIN_REGION_SIZE), max);
+}
+
+/** オーバーレイの層の DOM id。つまみの aria-controls が指す。 */
+export function getOverlayLayerId(side: "left" | "right"): string {
+  return `gx-overlay-layer-${side}`;
 }

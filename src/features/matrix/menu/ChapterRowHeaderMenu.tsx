@@ -30,7 +30,10 @@ export function ChapterRowHeaderMenu({
       if (ref.current && !ref.current.contains(e.target as Node)) onClose();
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
     }
     document.addEventListener("mousedown", onOutside);
     document.addEventListener("keydown", onKey);

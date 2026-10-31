@@ -26,9 +26,9 @@ import { useStripeIconPointerDrag } from "./useStripeIconPointerDrag";
 import { stripeAxisForRegion } from "./layoutStripeSwap";
 import type { PanelId } from "./panelIds";
 import { PANEL_ICON_MAP } from "./panelIcons";
-import { useAnyPostEffectRunning } from "@/features/post-effect/runStore";
+import { usePanelBusy } from "./usePanelBusy";
 import { KEYBOARD_SHORTCUT_MAP } from "./panelRegions";
-import type { LayoutRegionId, RegionId } from "./layoutTypes";
+import type { LayoutRegionId, OverlayId, RegionId } from "./layoutTypes";
 
 interface ToolWindowIconProps {
   panelId: Exclude<PanelId, "editor">;
@@ -41,6 +41,7 @@ interface ToolWindowIconProps {
 }
 
 const ALL_REGIONS: RegionId[] = ["left", "right", "bottom"];
+const OVERLAY_IDS: OverlayId[] = ["left", "right"];
 
 /**
  * Stripe icon — 3 states:
@@ -57,6 +58,7 @@ export function ToolWindowIcon({
   const { t } = useTranslation();
   const Icon = PANEL_ICON_MAP[panelId];
   const movePanelToRegion = useLayoutStore((s) => s.movePanelToRegion);
+  const movePanelToOverlay = useLayoutStore((s) => s.movePanelToOverlay);
   const removePanelFromStripe = useLayoutStore((s) => s.removePanelFromStripe);
   const showPanel = useLayoutStore((s) => s.showPanel);
   const toggleMaximizePanel = useLayoutStore((s) => s.toggleMaximizePanel);
@@ -77,10 +79,9 @@ export function ToolWindowIcon({
     layoutLocked,
   });
 
-  // 校閲 (post-effect) 実行中はパネルを閉じていても分かるよう kouetsu の
-  // stripe アイコンにドットバッジを出す。他パネルへ広げる時は map 化する。
-  const anyPostEffectRunning = useAnyPostEffectRunning();
-  const showBusyBadge = panelId === "kouetsu" && anyPostEffectRunning;
+  // 処理中はパネルを閉じていても分かるよう、アイコンにドットバッジを出す
+  // （判定はつまみと共有する usePanelBusy）。
+  const showBusyBadge = usePanelBusy(panelId);
 
   const label = t(`layout.panel.${panelId}`);
   // Prefer the live (possibly rebound) binding from the registry; fall back to
@@ -182,6 +183,17 @@ export function ToolWindowIcon({
                 onSelect={() => movePanelToRegion(panelId, r)}
               >
                 {t(`layout.stripe.region.${r}`)}
+              </ContextMenuItem>
+            ))}
+            <ContextMenuSeparator />
+            {OVERLAY_IDS.map((o) => (
+              <ContextMenuItem
+                key={o}
+                data-testid={`ctx-move-to-overlay-${o}-${panelId}`}
+                disabled={layoutLocked}
+                onSelect={() => movePanelToOverlay(panelId, o)}
+              >
+                {t(`layout.overlay.moveTo.${o}`)}
               </ContextMenuItem>
             ))}
           </ContextMenuSubContent>
