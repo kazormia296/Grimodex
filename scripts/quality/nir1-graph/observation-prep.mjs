@@ -1292,6 +1292,9 @@ const READINGS_AFTER_DEV = Object.freeze([
   // DR-CP4-T-4 (a) の V-10 READY の適用。
   "freshness-settle",
   "ready-probe-not-applicable",
+  // S4a''（3 回目の凍結のやり直し、S2 追補 #10）: DR-CP4-V-3、V-4 の trace の規則
+  // （最初の正式の trace と dev の稽古を見た後に integrator が決めた）。
+  "trace-path-after-first-trace",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
