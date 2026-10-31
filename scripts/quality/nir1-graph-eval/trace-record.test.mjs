@@ -29,7 +29,10 @@ import {
   appendCounterRun,
   assertTraceMaterialsMatch,
   boundaryCounters,
+  cancelledParentSeqsOf,
+  cancelledParentsDisclosure,
   devTracePlan,
+  lapseIBreakdown,
   mergeNativeRecords,
   mixWindowAfter,
   startSealCounts,
@@ -1462,4 +1465,277 @@ test("DR-CP4-V-2: resolver の期待する (Revision, edge) の組が trace の 
       }),
     /\[precheck\]/u,
   );
+});
+
+// ---- DR-CP4-V-3 (rule P-b): counted parents cancelled before their begin --
+
+/**
+ * Makes counted query `index` of an `editingTrace` a parent the product
+ * cancelled before its begin (as #48 of the formal editing trace): the fetch
+ * returns `cancelled` / `not-started` 1.2 ms after its call, 4 ms after an
+ * `index-ready` notice, with no API row, no display and no Native record. Its
+ * former child stays as the product's re-query (no trigger mark), or goes
+ * (`requery: false`, as #200 whose re-query came after the observation).
+ */
+function cancelParent(trace, index, { requery = true } = {}) {
+  const B = 10_000 + index * 3_000;
+  const p = 2 * index + 1;
+  const c = 2 * index + 2;
+  const observation = trace.observation;
+  const parent = observation.fetches.find((row) => row.seq === p);
+  parent.resolvedAt = B + 1.2;
+  parent.result = {
+    ...parent.result,
+    status: "cancelled",
+    rawStatus: "not-started",
+    resultKind: "raw",
+    irStatus: "unavailable",
+    irReason: "invalidated",
+    completion: null,
+    graphOutcome: null,
+    graph: null,
+    initialSnapshot: null,
+    rawSceneIds: [],
+    irSceneIds: [],
+    finalSceneIds: [],
+    timing: {
+      tFetchMs: B,
+      tRawReadyMs: null,
+      tReturnMs: B + 1.2,
+      refreshTrigger: null,
+      graphWindowMs: null,
+      native: null,
+    },
+  };
+  const parentWindow = (at) => at >= B && at < B + 68;
+  const childWindow = (at) => at >= B + 68 && at < B + 100;
+  observation.api = observation.api.filter(
+    (row) =>
+      !parentWindow(row.calledAt) && (requery || !childWindow(row.calledAt)),
+  );
+  observation.commits = observation.commits.filter(
+    (row) => row.fetchSeq !== p && (requery || row.fetchSeq !== c),
+  );
+  observation.notices = [
+    ...observation.notices.filter((row) => !parentWindow(row.at)),
+    { kind: "index-ready", at: B - 4 },
+  ];
+  const drop = new Set([ns(B + 15), ...(requery ? [] : [ns(B + 69)])]);
+  trace.records = trace.records
+    .filter((record) => !drop.has(record.tBeginNs))
+    .map((record, at) => ({ ...record, seq: at + 1 }));
+  trace.events = trace.events.filter(
+    (event) => event.at !== ns(B + 15) && event.at !== ns(B + 64),
+  );
+  if (requery)
+    observation.fetches.find((row) => row.seq === c).refreshTrigger = null;
+  else observation.fetches = observation.fetches.filter((row) => row.seq !== c);
+  return trace;
+}
+
+const STUB_RESOLVER = () => ({
+  basis: "material-revision",
+  contribution: true,
+  observed: [],
+  matched: ["graph-only:dev-added"],
+  unresolvedEdges: 0,
+});
+
+test("DR-CP4-V-3: begin の前に取り消された親は defect にせず Q に数え、U に入れない。K6/2 で失効 (i)、K6/4 で X12、trace は valid。再 query は Q の外で index-ready に帰属し、受領書に開示する", () => {
+  const n = 200;
+  const trace = editingTrace(n);
+  cancelParent(trace, 5);
+  cancelParent(trace, 9);
+  cancelParent(trace, n - 1, { requery: false });
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const longPlan = plan("editing", n - 1);
+  // 開始時の封印は全件 current（取り消された親も current でも U に入らない）。
+  const startSeals = Object.fromEntries(
+    Array.from({ length: n }, (_, at) => [at, pair(at, CURRENT)]),
+  );
+  const rows = rowsOf(trace, n, runs, {
+    plan: longPlan,
+    materialContribution: STUB_RESOLVER,
+    startSeals,
+  });
+  assert.deepEqual(
+    rows.filter((row) => row.rowError).map((row) => row.rowError),
+    [],
+  );
+  const row = rows[5];
+  assert.equal(row.queryId, `${longPlan.traceId}#5`);
+  assert.deepEqual(row.snapshot, {
+    usable: false,
+    reason: "no-native-begin:cancelled-before-begin",
+    chronicleIndexUsable: null,
+    source: "start-seal",
+  });
+  assert.deepEqual(row.graph, {
+    outcome: "cancelled",
+    reason: "cancelled-before-begin",
+    source: null,
+    joined: false,
+    arrivedAt: null,
+    revalidation: null,
+    edgeCount: null,
+    busyCause: null,
+  });
+  assert.equal(row.irOutcome, "not-started");
+  assert.equal(row.a3AtStart.eligible, true);
+  assert.equal(row.startSeal.state, "current");
+  assert.equal(row.startSeal.reads.after.read, "ok");
+  assert.equal(row.tRawReady, row.tReturn);
+  assert.equal(row.tRawReadyBasis, "t-return:raw-not-started");
+  assert.deepEqual(row.followUp, {
+    issuedVia: "product-hook",
+    parent: {
+      generation: 1,
+      queryGeneration: 110,
+      sceneId: SCENE,
+      seed: SEED,
+      calledAt: 25_000,
+      resolvedAt: 25_001.2,
+      publishCount: 0,
+      cancelledBeforeBegin: true,
+    },
+    nativeBegins: [],
+    child: null,
+    requerySeq: 12,
+  });
+  assert.equal(lapseKind(row, false), "i-b-seal");
+  const result = classifyFollowUp(row, { context: "trace" });
+  assert.equal(result.x.X12, "cancelled-before-begin");
+  assert.equal(Object.hasOwn(result.x, "X10"), false);
+  // 再 query は Q の外。直前の begin に至った fetch から見て index-ready。
+  const parentSeqs = rows.map((_, at) => 2 * at + 1);
+  const cancelledParentSeqs = cancelledParentSeqsOf(rows);
+  assert.deepEqual(cancelledParentSeqs, [11, 19, 399]);
+  const requeries = traceRequeries({
+    observation: trace.observation,
+    parentSeqs,
+    cancelledParentSeqs,
+  });
+  assert.equal(requeries.counts["index-ready"], 2);
+  assert.equal(requeries.counts.unattributed, 0);
+  // 印を渡さなければ従来の帰属（直前の fetch＝取り消された親から見る）。
+  assert.equal(
+    traceRequeries({ observation: trace.observation, parentSeqs }).counts
+      .unattributed,
+    2,
+  );
+  const events = traceEvents({
+    plan: longPlan,
+    observation: trace.observation,
+    log: trace.log,
+    parentSeqs,
+    cancelledParentSeqs,
+  });
+  assert.equal(
+    events.filter((event) => event.trigger === "index-ready-requery").length,
+    2,
+  );
+  const k62 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+  });
+  assert.deepEqual(k62.defects, []);
+  assert.equal(k62.summary.status, "valid", JSON.stringify(k62.summary));
+  assert.equal(k62.summary.Q, 200);
+  assert.equal(k62.summary.U, 197);
+  assert.equal(k62.summary.lapse["i-b-seal"], 3);
+  const k64 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+    candidate: ratification5(),
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(k64.summary.status, "valid", JSON.stringify(k64.summary));
+  assert.equal(k64.summary.regime, "k64");
+  assert.equal(k64.summary.Q, 200);
+  assert.equal(k64.summary.U, 197);
+  assert.equal(k64.summary.x.X12, 3);
+  assert.equal(k64.summary.lapse["i-b-seal"], 3);
+  // 受領書の開示。
+  const disclosed = cancelledParentsDisclosure(rows);
+  assert.equal(disclosed.count, 3);
+  assert.deepEqual(disclosed.rows[0], {
+    queryId: `${longPlan.traceId}#5`,
+    rule: "DR-CP4-V-3",
+    parentSeq: 11,
+    calledAt: 25_000,
+    resolvedAt: 25_001.2,
+    indexReadyAt: 24_996,
+    afterIndexReadyMs: 4,
+    startSeal: "current",
+    requery: { seq: 12, calledAt: 25_068, began: true },
+    requeryOutsideWindow: false,
+    windowEnd: 28_000,
+    observedUntil: 610_000,
+  });
+  assert.equal(disclosed.rows[2].requery, null);
+  assert.equal(disclosed.rows[2].requeryOutsideWindow, true);
+  assert.deepEqual(lapseIBreakdown(k64.summary, rows), {
+    "i-b-seal": 3,
+    cancelledBeforeBegin: 3,
+    other: 0,
+    "i-chronicle-stop": 0,
+  });
+  assert.equal(lapseIBreakdown({ status: "invalid" }, rows), null);
+  assert.doesNotThrow(() => JSON.stringify(disclosed));
+});
+
+test("DR-CP4-V-3: 他の形（begin の行があるのに記録が無い、completed、公開済み、A3 なし、rawStatus が not-started でない、整列の失敗）は従来どおり defect", () => {
+  const n = 12;
+  const runsOf = (trace) =>
+    pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const defectAt = (trace, at, pattern, overrides = {}) => {
+    const rows = rowsOf(trace, n, runsOf(trace), overrides);
+    assert.equal(rows[at].followUp, null);
+    assert.equal(rows[at].cancelledBeforeBegin, undefined);
+    assert.match(rows[at].rowError, pattern);
+    return rows;
+  };
+  const noRecord = /the parent's begin has no Native record/u;
+  // begin の行がある（記録だけが無い）。
+  const withBegin = cancelParent(editingTrace(n), 5);
+  withBegin.observation.api.push({
+    ...k64Api("related_scenes_begin", 25_000.5, 25_001),
+    id: 9_999,
+  });
+  // 記録の数が begin の数に足りず整列が失敗する（全行が defect）。
+  const unaligned = rowsOf(withBegin, n, runsOf(withBegin));
+  assert.ok(unaligned.every((row) => /not aligned/u.test(row.rowError)));
+  // 製品の返却が completed（取消しでない）。
+  const completed = cancelParent(editingTrace(n), 5);
+  completed.observation.fetches.find((row) => row.seq === 11).result.status =
+    "completed";
+  defectAt(completed, 5, noRecord);
+  // Raw が始まった後の取消し。
+  const started = cancelParent(editingTrace(n), 5);
+  started.observation.fetches.find((row) => row.seq === 11).result.rawStatus =
+    "raw-ready";
+  defectAt(started, 5, noRecord);
+  // 親の世代の表示が commit された（公開済み）。
+  const published = cancelParent(editingTrace(n), 5);
+  published.observation.commits.push({
+    at: 25_001.5,
+    fetchSeq: 11,
+    loading: false,
+    display: "parent-5",
+  });
+  defectAt(published, 5, noRecord);
+  // 開始時の A3 の読取が無い。
+  const noA3 = cancelParent(editingTrace(n), 5);
+  delete noA3.a3Reads[11];
+  defectAt(noA3, 5, noRecord);
+  // 取り消された親の無い trace の行は変わらない。
+  const plain = editingTrace(n);
+  const plainRows = rowsOf(plain, n, runsOf(plain));
+  assert.ok(plainRows.every((row) => row.cancelledBeforeBegin === undefined));
+  assert.deepEqual(cancelledParentSeqsOf(plainRows), []);
+  assert.equal(cancelledParentsDisclosure(plainRows).count, 0);
 });

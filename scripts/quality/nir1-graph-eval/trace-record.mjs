@@ -35,9 +35,10 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { summarizeTrace, validateTraceEvents } from "./availability.mjs";
 import { K64_W_F_MS, TRACE_MIN_QUERIES } from "./constants.mjs";
+import { PRODUCT_HOOK } from "./followup.mjs";
 import { finite } from "./join.mjs";
 import { k64GraphSampleRow } from "./k64-record.mjs";
-import { BEGIN, GRAPH_CONTINUE } from "./run-sample.mjs";
+import { BEGIN, GRAPH_CONTINUE, a3AtStartOf } from "./run-sample.mjs";
 
 export const TRACE_FILE_SCHEMA = "nir1-cp4-trace/1";
 export const TRACE_RUN_SCHEMA = "nir1-cp4-trace-run/1";
@@ -747,6 +748,155 @@ export function mixWindowAfter({ observation, parent, child, observedUntil }) {
     : { reason: "harness-limit", until: observedUntil ?? null };
 }
 
+/** The disclosure of the two start seal reads of one counted query. */
+function startSealReads(startSeal) {
+  return Object.fromEntries(
+    ["before", "after"].map((phase) => [
+      phase,
+      startSeal?.[phase]
+        ? {
+            read: startSeal[phase].read,
+            b: startSeal[phase].b ?? null,
+            chronicle: startSeal[phase].chronicle ?? null,
+            startedAt: startSeal[phase].startedAt ?? null,
+            finishedAt: startSeal[phase].finishedAt ?? null,
+            durationMs: startSeal[phase].durationMs ?? null,
+          }
+        : null,
+    ]),
+  );
+}
+
+export const CANCELLED_BEFORE_BEGIN = "cancelled-before-begin";
+
+/**
+ * DR-CP4-V-3 (rule P-b, integrator 2026-10-31): the row of a counted parent
+ * the product cancelled before its begin, or null when the parent is not that
+ * case (the caller keeps the defect row). The case is exactly: the fetch
+ * returned `status: cancelled` with `rawStatus: not-started`, no begin call
+ * of the observation belongs to it, none of its generation's displays was
+ * committed, and its start-time A3 read exists (the caller checked the
+ * alignment). The parent is in Q (K6/2 rule 1), not in U (no begin answer,
+ * so the snapshot is not usable; `lapseKind` counts it in (i)), and K6/4
+ * X12 (followup.mjs). `tRawReady` holds the parent's return (disclosed in
+ * `tRawReadyBasis`): `classifyJoin` needs the three renderer times, and a
+ * query that joined nothing is never in the window, so the value enters no
+ * count. The re-query the product issued after it stays outside Q.
+ */
+function cancelledParentRow({
+  queryId,
+  index,
+  parent,
+  all,
+  observation,
+  fetches,
+  logEntry,
+  a3,
+  startSeal,
+  d2aMode,
+  materials,
+  windowEnd,
+}) {
+  const result = parent.result;
+  if (result?.status !== "cancelled" || result?.rawStatus !== "not-started")
+    return null;
+  const beganBy = (fetch) =>
+    (observation.api ?? []).some(
+      (row) => row.cmd === BEGIN && ownerOf(all, row)?.seq === fetch.seq,
+    );
+  if (beganBy(parent)) return null;
+  if ((observation.commits ?? []).some((row) => row.fetchSeq === parent.seq))
+    return null;
+  if (!a3 || !Array.isArray(a3.revisions)) return null;
+  const tFetch = result.timing?.tFetchMs ?? parent.calledAt;
+  const tReturn = result.timing?.tReturnMs ?? parent.resolvedAt;
+  if (!finite(tFetch) || !finite(tReturn) || !(tFetch <= tReturn)) return null;
+  if (!finite(parent.calledAt) || !finite(parent.resolvedAt)) return null;
+  const seal = startSealOf(startSeal, parent.calledAt);
+  const requery = fetches.find((row) => row.seq !== parent.seq) ?? null;
+  const indexReady = (observation.notices ?? [])
+    .filter((row) => row.kind === "index-ready" && row.at <= parent.calledAt)
+    .sort((left, right) => left.at - right.at)
+    .at(-1);
+  return {
+    queryId,
+    trigger: "user-operation",
+    seeded: true,
+    graphEnabled: true,
+    d2aMode,
+    expectedMaterials: materials,
+    traceIndex: index,
+    tFetch,
+    tRawReady: tReturn,
+    tRawReadyBasis: "t-return:raw-not-started",
+    tReturn,
+    status: "cancelled",
+    rawStatus: "not-started",
+    irOutcome: "not-started",
+    irCompletion: null,
+    rawSceneIds: result.rawSceneIds ?? [],
+    finalSceneIds: result.finalSceneIds ?? [],
+    snapshot: {
+      usable: false,
+      reason: `no-native-begin:${CANCELLED_BEFORE_BEGIN}`,
+      chronicleIndexUsable: null,
+      source: "start-seal",
+    },
+    snapshotNative: null,
+    a3AtStart: a3AtStartOf(a3),
+    startSeal: { ...seal, reads: startSealReads(startSeal) },
+    graph: {
+      outcome: "cancelled",
+      reason: CANCELLED_BEFORE_BEGIN,
+      source: null,
+      joined: false,
+      arrivedAt: null,
+      revalidation: null,
+      edgeCount: null,
+      busyCause: null,
+    },
+    nativeBegin: null,
+    cycleEnd: logEntry.cycleEnd ?? null,
+    followUp: {
+      issuedVia: PRODUCT_HOOK,
+      parent: {
+        generation: 1,
+        queryGeneration: parent.queryGeneration ?? null,
+        sceneId: parent.sceneId,
+        seed: parent.seed,
+        calledAt: parent.calledAt,
+        resolvedAt: parent.resolvedAt,
+        publishCount: 0,
+        cancelledBeforeBegin: true,
+      },
+      nativeBegins: [],
+      child: null,
+      requerySeq: requery?.seq ?? null,
+    },
+    cancelledBeforeBegin: {
+      rule: "DR-CP4-V-3",
+      parentSeq: parent.seq,
+      calledAt: parent.calledAt,
+      resolvedAt: parent.resolvedAt,
+      indexReadyAt: indexReady?.at ?? null,
+      afterIndexReadyMs: indexReady ? parent.calledAt - indexReady.at : null,
+      startSeal: seal.state,
+      requery: requery
+        ? {
+            seq: requery.seq,
+            calledAt: requery.calledAt,
+            began: beganBy(requery),
+          }
+        : null,
+      // No re-query of the Scene in this query's window: it came after the
+      // window (the next parent's call, a move, or the observation's end).
+      requeryOutsideWindow: requery === null,
+      windowEnd: finite(windowEnd) ? windowEnd : null,
+      observedUntil: observation.observedUntil ?? null,
+    },
+  };
+}
+
 /** A row that cannot carry its R7 record (summarizeTrace makes the trace invalid). */
 function defectRow({ queryId, d2aMode, materials, parent, error }) {
   return {
@@ -877,7 +1027,26 @@ export function traceQueryRow({
   const childRecord = childBegin
     ? alignment.recordOf.get(childBegin.id)
     : undefined;
-  if (!parentRecord)
+  if (!parentRecord) {
+    // DR-CP4-V-3: a parent cancelled before its begin has no begin call and
+    // no Native record; every other parent without a record is a defect.
+    const cancelled = parentBegin
+      ? null
+      : cancelledParentRow({
+          queryId,
+          index,
+          parent,
+          all,
+          observation,
+          fetches,
+          logEntry,
+          a3,
+          startSeal,
+          d2aMode,
+          materials,
+          windowEnd: Math.min(windowEnd, observation.observedUntil ?? Infinity),
+        });
+    if (cancelled) return cancelled;
     return defectRow({
       queryId,
       d2aMode,
@@ -885,6 +1054,7 @@ export function traceQueryRow({
       parent,
       error: "the parent's begin has no Native record",
     });
+  }
   const endRecord = childRecord ?? parentRecord;
   const boundary = boundaryCounters(runs, {
     beginNs: parentRecord.tBeginNs,
@@ -959,24 +1129,7 @@ export function traceQueryRow({
     ...row,
     snapshot,
     snapshotNative: row.snapshot,
-    startSeal: {
-      ...seal,
-      reads: Object.fromEntries(
-        ["before", "after"].map((phase) => [
-          phase,
-          startSeal?.[phase]
-            ? {
-                read: startSeal[phase].read,
-                b: startSeal[phase].b ?? null,
-                chronicle: startSeal[phase].chronicle ?? null,
-                startedAt: startSeal[phase].startedAt ?? null,
-                finishedAt: startSeal[phase].finishedAt ?? null,
-                durationMs: startSeal[phase].durationMs ?? null,
-              }
-            : null,
-        ]),
-      ),
-    },
+    startSeal: { ...seal, reads: startSealReads(startSeal) },
     queryId,
     trigger: "user-operation",
     expectedMaterials: materials,
@@ -1077,11 +1230,25 @@ function irRetried(result) {
  * re-query by what started it (K6/2 step 7: counted apart, never in a
  * denominator): the hook's `graph-ready` mark, an `index-ready` notice since
  * the previous fetch of the Scene, the previous fetch's IR-timeout retry, else
- * unattributed.
+ * unattributed. DR-CP4-V-3: when the previous fetch of the Scene is a counted
+ * parent cancelled before its begin (`cancelledParentSeqs`), the notice is
+ * looked for since the Scene's fetch before it that reached its begin (the
+ * attribution only; the re-query stays outside Q).
  */
-export function traceRequeries({ observation, parentSeqs, querySceneId }) {
+export function traceRequeries({
+  observation,
+  parentSeqs,
+  querySceneId,
+  cancelledParentSeqs = [],
+}) {
   const parents = new Set(parentSeqs);
+  const cancelled = new Set(cancelledParentSeqs);
   const fetches = [...(observation.fetches ?? [])].sort(byCall);
+  const began = new Set(
+    (observation.api ?? [])
+      .filter((row) => row.cmd === BEGIN)
+      .map((row) => ownerOf(fetches, row)?.seq),
+  );
   const counts = {
     "graph-ready": 0,
     "index-ready": 0,
@@ -1104,7 +1271,17 @@ export function traceRequeries({ observation, parentSeqs, querySceneId }) {
       const previous = fetches
         .slice(0, at)
         .findLast((row) => row.sceneId === fetch.sceneId);
-      const since = previous?.calledAt ?? -Infinity;
+      const from = cancelled.has(previous?.seq)
+        ? fetches
+            .slice(0, at)
+            .findLast(
+              (row) =>
+                row.sceneId === fetch.sceneId &&
+                row.calledAt < previous.calledAt &&
+                began.has(row.seq),
+            )
+        : previous;
+      const since = from?.calledAt ?? -Infinity;
       if (
         (observation.notices ?? []).some(
           (row) =>
@@ -1136,6 +1313,7 @@ export function traceEvents({
   log,
   parentSeqs,
   querySceneId = plan.querySceneId,
+  cancelledParentSeqs = [],
 }) {
   const events = [];
   for (const entry of log) {
@@ -1172,9 +1350,12 @@ export function traceEvents({
     version = commit.contentVersion;
   }
   const requeries = new Map(
-    traceRequeries({ observation, parentSeqs, querySceneId }).rows.map(
-      (row) => [row.seq, row.kind],
-    ),
+    traceRequeries({
+      observation,
+      parentSeqs,
+      querySceneId,
+      cancelledParentSeqs,
+    }).rows.map((row) => [row.seq, row.kind]),
   );
   const parents = new Set(parentSeqs);
   for (const fetch of observation.fetches ?? []) {
@@ -1255,6 +1436,42 @@ export function summarizeTraceRun({
             status: "invalid",
             invalid: [...(summary.invalid ?? []), ...statusReasons],
           },
+  };
+}
+
+/** DR-CP4-V-3: the parent seqs of the counted parents cancelled before begin. */
+export function cancelledParentSeqsOf(rows) {
+  return rows
+    .filter((row) => row.cancelledBeforeBegin)
+    .map((row) => row.cancelledBeforeBegin.parentSeq);
+}
+
+/** DR-CP4-V-3: the receipt's disclosure of the cancelled parents. */
+export function cancelledParentsDisclosure(rows) {
+  const cancelled = rows.filter((row) => row.cancelledBeforeBegin);
+  return {
+    rule: "DR-CP4-V-3",
+    count: cancelled.length,
+    rows: cancelled.map((row) => ({
+      queryId: row.queryId,
+      ...row.cancelledBeforeBegin,
+    })),
+  };
+}
+
+/**
+ * DR-CP4-V-3: rule 3 (i) of one summary, with the parents cancelled before
+ * their begin apart (null when the summary has no lapse count).
+ */
+export function lapseIBreakdown(summary, rows) {
+  const total = summary?.lapse?.["i-b-seal"];
+  if (!Number.isInteger(total)) return null;
+  const cancelled = rows.filter((row) => row.cancelledBeforeBegin).length;
+  return {
+    "i-b-seal": total,
+    cancelledBeforeBegin: cancelled,
+    other: total - cancelled,
+    "i-chronicle-stop": summary.lapse["i-chronicle-stop"] ?? null,
   };
 }
 

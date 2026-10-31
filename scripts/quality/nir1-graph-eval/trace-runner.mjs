@@ -94,7 +94,10 @@ import {
   alignSeededBegins,
   alignmentDisclosure,
   assertTraceMaterialsMatch,
+  cancelledParentSeqsOf,
+  cancelledParentsDisclosure,
   devTracePlan,
+  lapseIBreakdown,
   mergeNativeRecords,
   TRACE_MAINTENANCE_SEAM,
   startSealCounts,
@@ -1304,12 +1307,16 @@ async function main() {
     const parentSeqs = result.log
       .filter((row) => Number.isInteger(row.parentSeq))
       .map((row) => row.parentSeq);
+    // DR-CP4-V-3: the re-query after a parent cancelled before its begin is
+    // attributed from the fetch before it that reached its begin.
+    const cancelledParentSeqs = cancelledParentSeqsOf(rows);
     const events = traceEvents({
       plan,
       observation,
       log: result.log,
       parentSeqs,
       querySceneId: ids.querySceneId,
+      cancelledParentSeqs,
     });
     const k64 = summarizeTraceRun({
       plan,
@@ -1426,7 +1433,15 @@ async function main() {
         observation,
         parentSeqs,
         querySceneId: ids.querySceneId,
+        cancelledParentSeqs,
       }).counts,
+      // DR-CP4-V-3: the counted parents cancelled before their begin (in Q,
+      // out of U, rule 3 (i), K6/4 X12) and rule 3 (i) with them apart.
+      cancelledParents: cancelledParentsDisclosure(rows),
+      lapseI: {
+        k64: lapseIBreakdown(k64.summary, rows),
+        k62: lapseIBreakdown(k62.summary, rows),
+      },
       // S2 navigate.outsideQ.receiptCountByReason (P-S2-4).
       outsideQ: outsideQReceiptCountByReason({
         observation,
