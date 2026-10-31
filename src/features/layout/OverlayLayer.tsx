@@ -33,9 +33,11 @@ interface OverlayLayerProps {
  * - 開閉は layout を変えない。PanelChromeMenu（最大化・折りたたみ）は付けない。
  * - 閉じる条件（外の pointerdown／Tab で外へ／Esc）と focus の出し入れは
  *   useOverlayDismiss。
- * - 層自身も Fluid Glass の root（data-workspace-glass-root）にする。層は grid の
- *   glass root の外（兄弟）にあるので、そうしないと背景を有効にしたときに
- *   overlay のパネルだけ Glass の規則（index.css）が効かない。
+ * - 層は Fluid Glass の root（data-workspace-glass-root）にしない。grid の Glass は
+ *   最背面の背景 WebGL canvas にパネルの矩形を切り抜いて描くので、overlay をそこに
+ *   入れるとガラスが grid のパネルの下に描かれ、閉じている間も矩形が残る。
+ *   代わりに data-overlay-glass で CSS の backdrop-filter と半透明の幕を当て、
+ *   grid のパネルを含む手前の合成結果をぼかす（index.css）。
  * - slide は root（overflow clip の窓）の中でパネルを translateX する。
  *   clip-path ではなく overflow を使うのは、clip-path が Backdrop Root になって
  *   中の Glass を背景から切り離すため（layoutAnimation.ts の REGION_OPEN_CLIP と同じ理由）。
@@ -71,9 +73,7 @@ export const OverlayLayer = memo(function OverlayLayer({
       data-state={open ? "open" : "closed"}
       aria-hidden={!open}
       inert={!open}
-      data-workspace-glass-root
-      data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
-      data-workspace-fluid-glass-refraction={glass.refraction}
+      data-overlay-glass={glass.enabled ? "true" : "false"}
       {...dismissHandlers}
       className="pointer-events-none absolute z-40 overflow-clip"
       style={

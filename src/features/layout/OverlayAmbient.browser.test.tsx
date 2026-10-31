@@ -100,19 +100,41 @@ describe("overlay with ambient background (real Chromium)", () => {
     expect(isTransparent(getComputedStyle(rail).backgroundColor)).toBe(true);
   });
 
-  it("applies the Fluid Glass rule to the overlay panel like a grid panel", async () => {
+  it("keeps the overlay out of the WebGL Glass pass and blurs above the grid instead", async () => {
     const { container } = renderHost(true);
     await frame();
     const layer = container.querySelector<HTMLElement>(
       '[data-overlay-layer="left"]',
     )!;
-    expect(layer.hasAttribute("data-workspace-glass-root")).toBe(true);
-    expect(layer.getAttribute("data-workspace-fluid-glass")).toBe("true");
+    // The WebGL pass collects surfaces under a glass root and paints them into
+    // the backmost canvas, i.e. beneath the grid panels.
+    expect(layer.closest("[data-workspace-glass-root]")).toBeNull();
+    expect(
+      layer.querySelector(
+        '[data-workspace-glass-root][data-workspace-fluid-glass="true"] [data-ambient-glass-surface]',
+      ),
+    ).toBeNull();
+    expect(layer.getAttribute("data-overlay-glass")).toBe("true");
     const panel = container.querySelector<HTMLElement>(
       '[data-overlay-panel="left"]',
     )!;
     const style = getComputedStyle(panel);
-    expect(style.backdropFilter).not.toBe("none");
-    expect(isTransparent(style.backgroundColor)).toBe(true);
+    expect(style.backdropFilter).toContain("blur");
+    // A veil, not a fully clear surface: grid text must not read through.
+    expect(isTransparent(style.backgroundColor)).toBe(false);
+  });
+
+  it("drops the overlay blur on the fallback renderer", async () => {
+    const { container } = renderHost(true);
+    container
+      .querySelector("[data-editor-ambient]")!
+      .setAttribute("data-background-renderer", "fallback");
+    await frame();
+    const panel = container.querySelector<HTMLElement>(
+      '[data-overlay-panel="left"]',
+    )!;
+    const style = getComputedStyle(panel);
+    expect(style.backdropFilter).toBe("none");
+    expect(isTransparent(style.backgroundColor)).toBe(false);
   });
 });
