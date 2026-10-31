@@ -25,6 +25,7 @@ import {
   COUNTER_POLL_STOP_SOURCE,
   TRACE_COUNTER_KEYS,
   alignSeededBegins,
+  alignmentDisclosure,
   appendCounterRun,
   boundaryCounters,
   devTracePlan,
@@ -1207,4 +1208,160 @@ test("再レビュー P3: 読取の件数が累積の dropped と最後の読取
   ]);
   assert.equal(sparse.lost, true);
   assert.equal(sparse.missing, 476);
+});
+
+/** DR-CP4-V-2: a Native record after the trace's last query (another begin). */
+function trailingRecord(atMs, seq = 0) {
+  return k64NativeRecord({
+    seq,
+    tBeginNs: ns(atMs),
+    tReturnedNs: ns(atMs + 0.02),
+    startSlot: {
+      kind: "suspended",
+      readyFresh: false,
+      preparesReady: 1,
+      readyGeneration: 8,
+    },
+    begin: "unavailable",
+    reason: "registration-unavailable",
+    ticket: null,
+  });
+}
+
+function withRecords(trace, records) {
+  return {
+    ...trace,
+    records: records.map((record, at) => ({ ...record, seq: at + 1 })),
+  };
+}
+
+test("DR-CP4-V-2: 観測の窓が閉じた後に始まった末尾の Native の記録だけを整列から除き、件数・seq・種別・時間を開示し、行は defect にならない", () => {
+  const trace = editingTrace(3);
+  const runs = pollRuns(trace.events, 9_000, 18_000, 1);
+  // observedUntil は 19,000 ms。末尾の begin は窓の 200 ms 後。
+  const late = withRecords(trace, [...trace.records, trailingRecord(19_200)]);
+  const merged = mergeNativeRecords([{ dropped: 0, records: late.records }]);
+  const aligned = alignSeededBegins({
+    observation: late.observation,
+    native: merged,
+  });
+  assert.equal(aligned.aligned, true, aligned.reason);
+  assert.equal(aligned.seededBegins, 6);
+  assert.equal(aligned.records, 7);
+  const excluded = aligned.excludedAfterWindow;
+  assert.equal(excluded.rule, "DR-CP4-V-2");
+  assert.equal(excluded.count, 1);
+  assert.equal(excluded.lastPairedSeq, 6);
+  assert.equal(excluded.observedUntil, 19_000);
+  assert.deepEqual(
+    excluded.records.map((row) => [
+      row.seq,
+      row.begin,
+      row.reason,
+      row.startSlot,
+    ]),
+    [[7, "unavailable", "registration-unavailable", "suspended"]],
+  );
+  // 直前の整列済みの記録（最後の子の begin、16,069 ms）からの時間。
+  assert.ok(Math.abs(excluded.records[0].afterLastPairedMs - 3_131) < 1e-6);
+  // 時計の差の範囲 [-0.5, 0.5] ms の上限で見ても窓の後。
+  assert.deepEqual(excluded.clockBracketMs, { lower: -0.5, upper: 0.5 });
+  assert.ok(
+    Math.abs(excluded.records[0].afterObservedUntilMsAtLeast - 199.5) < 1e-6,
+  );
+  // 受領書の形には対応の Map を入れない。
+  const disclosed = alignmentDisclosure(aligned);
+  assert.equal(disclosed.recordOf, undefined);
+  assert.equal(disclosed.excludedAfterWindow.count, 1);
+  assert.doesNotThrow(() => JSON.stringify(disclosed));
+  // 行は窓の内側の一対一の対応で作られ、除いた記録を使わない。
+  const rows = rowsOf(late, 3, runs);
+  for (const row of rows) {
+    assert.equal(row.rowError, undefined);
+    assert.deepEqual(row.followUp.nativeBegins, ["pending", "cached"]);
+  }
+  assert.equal(rows[2].followUp.boundary.toSeq, 6);
+  // 件数が合うときは従来どおり（除外なし）。
+  const exact = alignSeededBegins({
+    observation: trace.observation,
+    native: mergeNativeRecords([{ dropped: 0, records: trace.records }]),
+  });
+  assert.equal(exact.aligned, true);
+  assert.equal(exact.excludedAfterWindow, null);
+});
+
+test("DR-CP4-V-2: 窓の内側の不一致は defect のまま（末尾の記録が窓の内、窓の内側の余分、順序のずれ、記録の不足、取りこぼし、observedUntil なし）", () => {
+  const trace = editingTrace(3);
+  const runs = pollRuns(trace.events, 9_000, 18_000, 1);
+  const check = (records, pattern, observation = trace.observation) => {
+    const native = mergeNativeRecords([
+      { dropped: 0, records: withRecords(trace, records).records },
+    ]);
+    const aligned = alignSeededBegins({ observation, native });
+    assert.equal(aligned.aligned, false);
+    assert.equal(aligned.excludedAfterWindow, null);
+    assert.match(aligned.reason, pattern);
+    assert.equal(aligned.recordOf.size, 0);
+    return native;
+  };
+  // 末尾の記録が窓の内（観測の終わりの 100 ms 前）。
+  const inside = check(
+    [...trace.records, trailingRecord(18_900)],
+    /6 seeded begins, 7 records \(the trailing records \[7\] are not after the observation window\)/u,
+  );
+  // 時計の範囲の上限ちょうどの境界（下限 = observedUntil）は窓の外と言えない。
+  check(
+    [...trace.records, trailingRecord(19_000.5)],
+    /not after the observation window/u,
+  );
+  // 窓の内側に renderer の呼出しの無い begin がある（対応がずれ、範囲が空）。
+  const middle = [...trace.records];
+  middle.splice(2, 0, trailingRecord(13_005));
+  check(middle, /no consistent clock range/u);
+  // 先頭に余分がある（すべての組が 1 つずれる）。
+  check(
+    [trailingRecord(9_000), ...trace.records],
+    /no consistent clock range/u,
+  );
+  // renderer の begin に対応する記録が無い（不足）。
+  check(trace.records.slice(0, 5), /^6 seeded begins, 5 records$/u);
+  // observedUntil の無い観測では除けない。
+  const { observedUntil: _drop, ...noUntil } = trace.observation;
+  check(
+    [...trace.records, trailingRecord(19_200)],
+    /no observedUntil/u,
+    noUntil,
+  );
+  // 取りこぼし（seq の欠け）は件数より先に整列の失敗。
+  const gap = mergeNativeRecords([
+    {
+      dropped: 0,
+      records: [
+        ...withRecords(trace, trace.records).records,
+        { ...trailingRecord(19_200), seq: 9 },
+      ],
+    },
+  ]);
+  const lost = alignSeededBegins({
+    observation: trace.observation,
+    native: gap,
+  });
+  assert.equal(lost.aligned, false);
+  assert.match(lost.reason, /lost records/u);
+  // 行は従来どおり全行が defect row（R7 を欠く）。
+  const rows = traceRows({
+    plan: plan("editing", 2),
+    observation: trace.observation,
+    log: trace.log,
+    native: inside,
+    runs,
+    a3Reads: trace.a3Reads,
+    d2aMode: "restricted",
+    ids: { revisions: { "rev-1": "rev-1" } },
+    expectedContribution: null,
+  });
+  for (const row of rows) {
+    assert.equal(row.followUp, null);
+    assert.match(row.rowError, /the Native records are not aligned/u);
+  }
 });

@@ -86,6 +86,8 @@ import {
   COUNTER_POLL_STOP_SOURCE,
   TRACE_COUNTER_KEYS,
   TRACE_RUN_SCHEMA,
+  alignSeededBegins,
+  alignmentDisclosure,
   devTracePlan,
   mergeNativeRecords,
   TRACE_MAINTENANCE_SEAM,
@@ -1337,7 +1339,15 @@ async function main() {
         lastError: counters.lastError ?? null,
         runs: counters.runs?.length ?? null,
       },
-      native: { dropped: native.dropped, records: native.records.length },
+      native: {
+        dropped: native.dropped,
+        records: native.records.length,
+        // DR-CP4-V-2: the pairing, and the records after the window it left
+        // out (disclosed).
+        alignment: alignmentDisclosure(
+          alignSeededBegins({ observation, native }),
+        ),
+      },
       requeries: traceRequeries({
         observation,
         parentSeqs,

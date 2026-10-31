@@ -496,11 +496,39 @@ function ownerOf(fetches, row) {
 
 const byCall = (left, right) => left.calledAt - right.calledAt;
 
+const NS_PER_MS = 1e6;
+
+/**
+ * DR-CP4-V-2: the range of (Native clock − renderer clock), in ms, the paired
+ * begins allow: a Native begin starts after its renderer call and returns
+ * before the renderer sees the answer, so the difference is at most
+ * `tBeginNs − calledAt` and at least `tReturnedNs − resolvedAt` of every pair.
+ * Empty (lower > upper) when the pairs are out of order.
+ */
+function clockBracket(begins, records) {
+  let lower = -Infinity;
+  let upper = Infinity;
+  begins.forEach((row, at) => {
+    const record = records[at];
+    if (finite(record?.tBeginNs) && finite(row.calledAt))
+      upper = Math.min(upper, record.tBeginNs / NS_PER_MS - row.calledAt);
+    if (finite(record?.tReturnedNs) && finite(row.resolvedAt))
+      lower = Math.max(lower, record.tReturnedNs / NS_PER_MS - row.resolvedAt);
+  });
+  return { lower, upper };
+}
+
 /**
  * The seeded fetches' begin calls, in call order, paired with the Native
- * records in seq order. Unaligned (no pairing at all) when the counts differ
- * or the log lost records (mergeNativeRecords) (a begin without a renderer call, e.g. another
- * consumer, cannot be placed; the strict side).
+ * records in seq order. Unaligned (no pairing at all) when the log lost
+ * records (mergeNativeRecords) or holds fewer records than begins (a begin
+ * without a renderer call, e.g. another consumer, cannot be placed; the
+ * strict side). DR-CP4-V-2: records after the paired ones are left out of
+ * the pairing, and disclosed (`excludedAfterWindow`), only when the pairs
+ * give a consistent clock range and each such record's Native begin started
+ * after the observation window closed (`observation.observedUntil`) even at
+ * the range's upper end; otherwise the trace stays unaligned. The paired
+ * records keep the one-to-one match.
  */
 export function alignSeededBegins({ observation, native }) {
   const fetches = [...(observation?.fetches ?? [])].sort(byCall);
@@ -512,10 +540,52 @@ export function alignSeededBegins({ observation, native }) {
   const recordOf = new Map();
   const indexOf = new Map();
   let reason = null;
+  let excludedAfterWindow = null;
   if (native?.lost === true)
     reason = `the Native log lost records (gaps ${JSON.stringify(native.gaps ?? [])}, front loss ${native.frontLoss === true})`;
-  else if (begins.length !== records.length)
+  else if (begins.length > records.length)
     reason = `${begins.length} seeded begins, ${records.length} records`;
+  else if (begins.length < records.length) {
+    const paired = records.slice(0, begins.length);
+    const trailing = records.slice(begins.length);
+    const bracket = clockBracket(begins, paired);
+    const observedUntil = observation?.observedUntil;
+    const lowerBoundOf = (record) =>
+      finite(record?.tBeginNs)
+        ? record.tBeginNs / NS_PER_MS - bracket.upper
+        : NaN;
+    if (
+      begins.length === 0 ||
+      !finite(bracket.upper) ||
+      !finite(bracket.lower) ||
+      bracket.lower > bracket.upper
+    )
+      reason = `${begins.length} seeded begins, ${records.length} records (the paired begins give no consistent clock range [${bracket.lower}, ${bracket.upper}] ms)`;
+    else if (!finite(observedUntil))
+      reason = `${begins.length} seeded begins, ${records.length} records (the observation has no observedUntil)`;
+    else if (!trailing.every((record) => lowerBoundOf(record) > observedUntil))
+      reason = `${begins.length} seeded begins, ${records.length} records (the trailing records ${JSON.stringify(trailing.map((record) => record.seq))} are not after the observation window)`;
+    else {
+      const last = paired.at(-1);
+      excludedAfterWindow = {
+        rule: "DR-CP4-V-2",
+        count: trailing.length,
+        records: trailing.map((record) => ({
+          seq: record.seq,
+          begin: record.begin ?? null,
+          reason: record.reason ?? null,
+          startSlot: record.startSlot?.kind ?? null,
+          afterLastPairedMs: finite(last?.tBeginNs)
+            ? (record.tBeginNs - last.tBeginNs) / NS_PER_MS
+            : null,
+          afterObservedUntilMsAtLeast: lowerBoundOf(record) - observedUntil,
+        })),
+        lastPairedSeq: last?.seq ?? null,
+        observedUntil,
+        clockBracketMs: { lower: bracket.lower, upper: bracket.upper },
+      };
+    }
+  }
   if (reason === null)
     begins.forEach((row, at) => {
       recordOf.set(row.id, records[at]);
@@ -526,8 +596,20 @@ export function alignSeededBegins({ observation, native }) {
     reason,
     seededBegins: begins.length,
     records: records.length,
+    excludedAfterWindow,
     recordOf,
     indexOf,
+  };
+}
+
+/** The receipt's view of the alignment (DR-CP4-V-2; the maps are not data). */
+export function alignmentDisclosure(alignment) {
+  return {
+    aligned: alignment.aligned,
+    reason: alignment.reason,
+    seededBegins: alignment.seededBegins,
+    records: alignment.records,
+    excludedAfterWindow: alignment.excludedAfterWindow,
   };
 }
 
