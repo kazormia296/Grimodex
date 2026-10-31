@@ -477,8 +477,9 @@ fn validate_binding_with_control(
 /// Each holds the project's whole Scope authority. One IR operation reuses one
 /// (its qualify, title read, `continue` and Evidence clicks name the same
 /// Scene), and operations of different Scenes overlap only briefly within one
-/// committed state (any write moves the identity and empties the list), so a
-/// few entries cover the reuse; the oldest goes first beyond that.
+/// committed state (a write moves the identity, and the next store drops every
+/// entry of another identity), so a few entries cover the reuse; the oldest
+/// goes first beyond that.
 const QUERY_CONTEXT_REUSE_LIMIT: usize = 8;
 
 /// DR-CP4-V-1 (P2): the query context of `project`/`scene` in this snapshot.
