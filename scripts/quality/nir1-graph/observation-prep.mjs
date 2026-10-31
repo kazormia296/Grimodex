@@ -1274,6 +1274,15 @@ const TRACE_RUNNER_LIMIT_WORDS = Object.freeze([
   "成功の方向へ動く判定は無い",
   "graphRuntimeObservedBeforeFreeze",
   "8913f127",
+  // S4 の独立レビュー（P2-1、P3-1、P3-2）: who decided each rule, DR-BSEAM-5's
+  // own wording, and the validity direction (invalid → valid).
+  "advisor に諮ったのは 2 つだけ",
+  "別 lane への報告（未確認）",
+  "invalid → valid",
+  // contracts acc5ec71 の抜粋: the discovery failure is in the prep Main's
+  // stderr (not the measurement Main's), with the extract as the source.
+  "prep の Main の stderr",
+  "acc5ec71c4af240b7455341e623f0ca9fb4df7b9",
 ]);
 /** S3v6-P3-2: the readings integrator or builders chose after dev runs. */
 const READINGS_AFTER_DEV = Object.freeze([

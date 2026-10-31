@@ -4448,6 +4448,11 @@ test("S2 追補 #10（DR-CP4-P-6）: traceRunnerReadings copy DR-CP4-V-2〜V-4 (
     "成功の方向へ動く判定は無い",
     "graphRuntimeObservedBeforeFreeze",
     "8913f127",
+    "advisor に諮ったのは 2 つだけ",
+    "別 lane への報告（未確認）",
+    "invalid → valid",
+    "prep の Main の stderr",
+    "acc5ec71c4af240b7455341e623f0ca9fb4df7b9",
   ]) {
     assert.ok(readings.limits.includes(word), word);
     detects(
