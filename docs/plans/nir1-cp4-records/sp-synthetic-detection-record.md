@@ -4,19 +4,19 @@
 
 - SP/1 の draft（`docs/plans/nir1-graph-case-seed-pin-proposal-1-draft.md` :178）の「CP-4 は、合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを、観測の前に示す」に対する記録。
 - S2 の `evals/nir1-graph/observation-prep.v1.json`（branch `claude/cp4-s2-observation-prep`、読んだ commit `0749a4b4295022b135e7af5e51f599e4c5e9b81f`）の `r5Gate.syntheticDetection`（`record: "S4:sp-synthetic-detection-record"`）の `recordRule`（②' で統合 branch の node の試験を走らせ、試験の file と commit、各 SP-N の検出と違反の無い記録の通過を記録する）に従う。
+- **取り直し（2026-10-31）**: 前の版（contracts の `72dfa711`、候補 `82d42746`、SHA-256 `42609adf19680ab41a2379e994d2f690af2c2f2a699473e800c3335cd467ad9c`）の「取り直しの規則」に挙げた file のうち、`workspace-db.mjs`、`frozen-setup-driver.mjs`、`test-support.mjs` が S4 の凍結のやり直しの harness の修正（DR-CP4-T-1〜T-5、枝 `claude/cp4-freshness-settle`）で変わったので、その修正を含む候補で取り直した（規則のとおり、前の版はこの候補では無効）。対象の 3 試験 file（`seed-pin-setup.test.mjs`、`seed-pin.test.mjs`、`receipt.test.mjs`）と、検出の関数の 3 file（`seed-pin.mjs`、`seed-pin-setup.mjs`、`receipt.mjs`）は `82d42746` から bytes が変わっていない（`git diff --stat 82d42746 fc7770fd` が空）ので、試験の行番号と題は前の版と同じ。この版は S4b の作り直し（S4b'）が束縛する記録の候補で、実行は S4 の builder（Claude の agent）。
 - **この記録は K6/4 の分類器の Negative（K6/4-N1〜N40）の記録 `k64-synthetic-detection-record.md` とは別のもの**。あの記録は SP-N を扱っていない。
 - 製品の runtime（Electron、Graph の arm）は起動していない。node の試験と、試験の module を読み込み時に書き換える変異だけを行った。G-case の Graph の実行出力は見ていない。
 - 対象外の SP-N6、N7、N8、N14 は末尾の「参考」に、試験の題だけを載せる（この記録のための変異は当てていない）。
 
 ## 実行
 
-- 日時：試験の実行 2026-10-30T15:41Z（JST 2026-10-31 00:41）、変異の実行 2026-10-30T15:42〜15:45Z（JST 2026-10-31 00:42〜00:45）。
-- 候補：`82d427465b16a12809c6f93adad74ac97859c85a`（tree `2fd96d6dca0ee497472f010962edbf9dda70e55d`）。worktree `claude-cp4-synth2`（detach）。実行の前と変異の後に `git status --short` が空、`git rev-parse HEAD` が上の値であることを確かめた。`refs/remotes/origin/master` は同じ commit（`git merge-base --is-ancestor origin/master HEAD` は真）。
+- 日時：試験の実行 2026-10-31T01:41Z（JST 10:41）、変異の実行 2026-10-31T01:42:24〜01:42:33Z、全体の 2 回目 2026-10-31T01:43Z 頃。
+- 候補：`fc7770fd67f24f974509fd7aad5e16ddebff1eb6`（tree `d12e9918f30b0c2e27095e0bca0383ce34d53104`。harness の修正 T-1〜T-5 の枝 `claude/cp4-freshness-settle` の先頭で、origin/master `6f5c9c4a` を merge 済み。`docs/plans/nir1-cp4-records/refreeze-rehearsal-2026-10-31.md` の凍結済み 13 fixture の setup の予行と同じ候補）。worktree `claude-cp4-synth3`（detach。`new-worktree.sh` で node_modules を複製、install なし）。実行の前と変異の後に `git status --short` が空、`git rev-parse HEAD` が上の値であることを確かめた。この候補は origin/master の子孫だが、まだ origin/master の祖先ではない（S4 の PR を merge commit で入れると master の祖先になる）。harness の file（`scripts/quality/nir1-graph-eval/` の試験以外）は、この候補と S4b' の branch の先頭で同じ bytes（S4 の branch は harness の file を変えない）。
 - node：v24.18.0。
-- 対象の 3 file：`node --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs scripts/quality/nir1-graph-eval/seed-pin.test.mjs scripts/quality/nir1-graph-eval/receipt.test.mjs` → **45 件、pass 45、fail 0、skipped 0**。TAP の sha256 `30669f407675ae05382bf449e0686e7317cd5e009e5b48a72fab975620490d48`。
-- 全体：`node --test --test-reporter=tap scripts/quality/nir1-graph-eval/*.test.mjs` → **552 件、pass 552、fail 0、cancelled 0、skipped 0、todo 0**。TAP の sha256 `d4fa858a4df11b51648a02abdeb07eed79baf051d1a9e492f086805385b52ef5`。
-- TAP の sha256 について：k64 の記録の `ca2dc770…` とは**一致しない**。同じ候補で全体を 2 回走らせると TAP の sha256 は毎回変わった（2 回目 `91e28f50…`）。TAP に `duration_ms` と試験の中の pid を含む run の名前（例 `s5a-test-blocked-516031`）が入るため。件数（552、pass 552）は k64 の記録と同じ。再現できる値として、TAP の `ok`／`not ok` の行から ` # …` を除いた 552 行の sha256 を取った：`be95fb64b4081448ade4819f7ddab09707b56071487741a04f63a3588851ce59`（2 回の実行で同じ）。
-- TAP と変異の道具は記録の時の scratchpad にあり、追跡していない（この記録の file だけを commit する）。
+- 対象の 3 file：`node --test --test-reporter=tap scripts/quality/nir1-graph-eval/seed-pin-setup.test.mjs scripts/quality/nir1-graph-eval/seed-pin.test.mjs scripts/quality/nir1-graph-eval/receipt.test.mjs` → **45 件、pass 45、fail 0、skipped 0**。TAP の sha256 `e9f78c272fa4c43e8913c0959b9f0291a91883d261be2d6e8c5cef8ba1b1b253`。`ok` 行（` # …` を除く 45 行）の sha256 `1a25fa69e104389c4308571c34d13b2ff2b446df70c90f237e818121e656fc2c`。
+- 全体：`node --test --test-reporter=tap scripts/quality/nir1-graph-eval/*.test.mjs` → **572 件、pass 572、fail 0、cancelled 0、skipped 0、todo 0**（前の版の 552 件から 20 件増えた。`82d42746` の後の #759 と T-1〜T-5 で足された試験。件ごとの内訳は数えていない）。TAP の sha256 は 1 回目 `832689c2abfbb2b06d137af2d360ff0902d1046de6cbfd8b7c03037bfab844a7`、2 回目 `064701a26858fa2e1cf707092bf3f9744ae27d7724a280160e6f86e6660230f7`（前の版と同じく `duration_ms` と pid を含む run の名前で毎回変わる）。再現できる値として、TAP の `ok`／`not ok` の行から ` # …` を除いた 572 行の sha256：`e0333a104f37b1c8b516bf4047476464e9a78da2e34140d9cf6868b06f89610a`（2 回の実行で同じ）。
+- TAP と変異の道具（`--import` の load hook と、変異の一覧と結果の JSON）は記録の時の scratchpad にあり、追跡していない（この記録の file だけを commit する）。
 
 ## 合成の記録の作り方（規則との差の開示）
 
@@ -30,7 +30,7 @@ S2 の `syntheticDetection.rule` は「実際の setup の receipt と DB の pi
 
 ## SP-N ごとの結果
 
-試験の題は TAP のとおり（行は `test(` の行）。「陽性の対照」は違反の無い記録が通ることの assert。変異は、候補の file を書き換えず、node の module の load hook（`--import` で登録）で読み込んだ source の 1 か所を置き換えて、示した試験 file だけを走らせた。どの変異も置換が 1 か所だけ当たったことを確かめた。
+試験の題は TAP のとおり（行は `test(` の行）。「陽性の対照」は違反の無い記録が通ることの assert。変異は、候補の file を書き換えず、node の module の load hook（`--import` で登録）で読み込んだ source の 1 か所を置き換えて、示した試験 file だけを走らせた。どの変異も置換が 1 か所だけ当たったことを確かめた（hook は当たった数が 1 でなければ読込みを失敗させ、数を記録した。23 件すべて 1）。今回の取り直しでは、下の表の 23 件の変異（置換の文字列は前の版と同じ）をこの候補で当て直し、23 件すべてで表に書いた試験が落ちた（落ちた試験の題は前の版の表と同じ。SP-N12 の 2 件は `receipt.test.mjs:997`、SP-N13 の read 側の 2 件は :161 と :367）。表の本文（試験の行、assert、陽性の対照、限界）は前の版のまま。
 
 | SP-N | 違反 | 試験（file:行、題） | 検出の assert の要旨 | 陽性の対照 | 変異（置換）と結果 | 備考 |
 |---|---|---|---|---|---|---|
@@ -66,4 +66,4 @@ S2 の `syntheticDetection.rule` は「実際の setup の receipt と DB の pi
 
 ## 取り直しの規則
 
-この候補（`82d42746`）以後に、SP-N の検出に関わる file（`seed-pin.mjs`、`seed-pin-setup.mjs`、`workspace-db.mjs`、`receipt.mjs`、`run-sample.mjs`、`setup-receipt.mjs`、`test-support.mjs`、`constants.mjs`、`k64-runner.mjs`、`runner.mjs`、`r5-check-runner.mjs`、`frozen-setup-driver.mjs`、`setup-driver.mjs`、または上の試験 file）を変えた commit を S4 以後の判定に使うなら、この記録はその候補では無効で、その候補で取り直す。
+この候補（`fc7770fd`。前の版は `82d42746`）以後に、SP-N の検出に関わる file（`seed-pin.mjs`、`seed-pin-setup.mjs`、`workspace-db.mjs`、`receipt.mjs`、`run-sample.mjs`、`setup-receipt.mjs`、`test-support.mjs`、`constants.mjs`、`k64-runner.mjs`、`runner.mjs`、`r5-check-runner.mjs`、`frozen-setup-driver.mjs`、`setup-driver.mjs`、または上の試験 file）を変えた commit を S4 以後の判定に使うなら、この記録はその候補では無効で、その候補で取り直す。
