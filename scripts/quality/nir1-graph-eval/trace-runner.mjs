@@ -658,11 +658,15 @@ export async function startFrozenTrace({
   return { receipt: null, context: makeContext() };
 }
 
-function parseArgs(argv) {
+/**
+ * The CLI options. DR-CP4-V-2: the procedure version and commit have no
+ * default here, so a frozen trace takes `trace-frozen.mjs`'s (`v1`, the
+ * `--prep-commit`); the dev preview applies its draft defaults
+ * (`devProcedureOptions`).
+ */
+export function parseArgs(argv) {
   const options = {
     "eval-build": path.join(ROOT, ".artifacts/cp4/eval-build"),
-    "procedure-version": DEV_DRAFT_PROCEDURE_VERSION,
-    "procedure-commit": "HEAD",
     cycles: "3",
     attempt: "1",
   };
@@ -679,6 +683,14 @@ function parseArgs(argv) {
     if (!options[name]) throw new Error(`--${name} is required`);
   options.given = given;
   return options;
+}
+
+/** The dev preview's procedure file (the draft, as before DR-CP4-V-2). */
+export function devProcedureOptions(options) {
+  return {
+    version: options["procedure-version"] ?? DEV_DRAFT_PROCEDURE_VERSION,
+    commit: options["procedure-commit"] ?? "HEAD",
+  };
 }
 
 /**
@@ -798,8 +810,7 @@ function devContext({ options, setupPath, setup }) {
     throw new Error(`[precheck] the dev trace plan: ${planErrors.join("; ")}`);
   const procedure = loadProcedureFile({
     root: ROOT,
-    version: options["procedure-version"],
-    commit: options["procedure-commit"],
+    ...devProcedureOptions(options),
     purpose: "dev-preview",
   });
   const revisions = Object.fromEntries(

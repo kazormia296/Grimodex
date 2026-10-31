@@ -28,6 +28,8 @@ import {
   runTraceOperations,
   traceAttemptOutcome,
   traceMaintenanceStart,
+  devProcedureOptions,
+  parseArgs,
   traceMaterialResolver,
 } from "./trace-runner.mjs";
 import { DEV_PREVIEW_PURPOSES } from "./admission.mjs";
@@ -748,6 +750,51 @@ test("レビュー P3: 凍結の trace の開始は setupFailure なら記録し
 });
 
 const REPO_ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
+const BASE_ARGS = [
+  "--run",
+  "tfx-args",
+  "--setup",
+  "s.json",
+  "--ja-model",
+  "ja.onnx",
+  "--en-model",
+  "en.onnx",
+  "--k62-commit",
+  "k62",
+];
+
+test("DR-CP4-V-2: parseArgs は手順の版と commit を既定しない（凍結は trace-frozen の v1 と --prep-commit の fallback が効く）。dev は従来どおり draft-1 と HEAD を既定にする", () => {
+  const frozen = parseArgs([...BASE_ARGS, "--prep-commit", "p".repeat(40)]);
+  assert.equal(Object.hasOwn(frozen, "procedure-version"), false);
+  assert.equal(Object.hasOwn(frozen, "procedure-commit"), false);
+  assert.equal(frozen.given.has("procedure-version"), false);
+  // trace-frozen.mjs の fallback（prepareFrozenTrace の loadProcedure の引数）。
+  assert.equal(frozen["procedure-version"] ?? "v1", "v1");
+  assert.equal(
+    frozen["procedure-commit"] ?? frozen["prep-commit"],
+    "p".repeat(40),
+  );
+  assert.deepEqual(devProcedureOptions(parseArgs(BASE_ARGS)), {
+    version: "draft-1",
+    commit: "HEAD",
+  });
+  const explicit = parseArgs([
+    ...BASE_ARGS,
+    "--procedure-version",
+    "v1",
+    "--procedure-commit",
+    "c".repeat(40),
+  ]);
+  assert.equal(explicit.given.has("procedure-version"), true);
+  assert.deepEqual(devProcedureOptions(explicit), {
+    version: "v1",
+    commit: "c".repeat(40),
+  });
+  assert.equal(explicit.cycles, "3");
+  assert.equal(explicit.attempt, "1");
+  assert.throws(() => parseArgs(["--run"]), /--name value/u);
+});
+
 test("DR-CP4-V-2: 凍結の trace の F6 の resolver は Gold と同じ G-02 base の setup の plan から作り、期待は trace の file の材料と同じで、材料の path を material-revision で解決する", () => {
   const tracePlan = JSON.parse(
     readFileSync(
