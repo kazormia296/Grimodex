@@ -23,3 +23,10 @@
 ## 関連する記録
 
 - `user-confirmation-2026-10-31-trace-refreeze.md`（範囲）、`user-confirmation-2026-10-31-measure-locally.md`、`traces-s5r3-1/README.md`。
+
+## 訂正（2026-11-01、通知の直後）
+
+- 通知の「測定の見込み」と、それ以前の会話の発言にあった「測定 Main の stderr に `discovery failed … context-unavailable` が出ている」は**不正確**だった。実物（`traces-s5r3-1/start-seal-extract.json`、観測の実物の sha256 つき）で確かめた事実：
+  - `[narrative-maintenance] discovery failed: … NEX_VALIDATION_TERMINATED:context-unavailable …` は、**prep の Main の stderr**（`prep-main-stderr.log`）に、editing でも browsing でも各 **3 回**出ている。**測定 Main の stderr（`measure-main-stderr.log`）には無い**（debugger の 2 行だけ）。
+  - editing の開始時の封印は、201 件中 200 件で B が `generation=1`・`dirty=true`（before・after とも。#0 だけ current）。Chronicle の generation は 3 から 202 まで進み、開始時に dirty=true が 200 件。
+  - B が作り直されない**原因**は未確認（prep の `discovery failed` との関係は推測）。DR-BSEAM-5 は別 lane への報告で、確認済みではない。
