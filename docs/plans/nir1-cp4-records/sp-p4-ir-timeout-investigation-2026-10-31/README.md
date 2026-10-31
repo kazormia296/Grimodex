@@ -27,3 +27,17 @@
 4. 閾値の扱い：側ごとの上限 6、組の上限 6、D そのものを変えるのは委任の外（ユーザーの判断）。
 
 SP-P4 の目的（R と IR が揃った組の一致）は、期限切れの sample を除いても比べられた variant で差異 0 だった。
+
+## 追加の観測：DB の置き場（HDD と tmpfs）の A/B（調査担当、Q4）
+
+この機械の Linux の root は回転式 HDD（sda、WD20EZRX）で、`/proc/pressure/io` の some avg10 が 60〜90% だった。workspace の DB を RAM に置くと IR の裾が変わるかを、dev の G-06 相当で A（HDD 上の `.artifacts`）と B（`/tmp` の tmpfs へ `.artifacts` を symlink）を A→B→A→B→A→B の交互に測った（`dev-runs-ram-ab/`、各 run は `inv-ha*`／`inv-rb*`）。
+
+| 置き場 | IR の到着（begin の応答から）中央値／p10／p90 | 期限までの余裕の中央値 | 期限切れ（without の measured。with は without が上限超えで未測定の run が多い） |
+|---|---|---|---|
+| A HDD（140 sample） | 10.8／9.3／11.9 ms | +0.39 ms | 合計 33/140 |
+| B tmpfs（105 sample） | 10.9／9.0／12.4 ms | +0.24 ms | 合計 38/105 |
+
+- **DB を RAM に置いても期限切れは減らない（確信度：高）**。begin の中央値（18.2〜18.4 ms）と埋め込み＋Raw（13.8〜14.1 ms）も同じ。B の期限切れが多めなのは、B をいつも A の直後に走らせたための時刻の揺れと区別できず、悪化とは言えない（確信度：低）。製品の DB の fsync や I/O の揺れが IR の裾の主因だという仮説は支持されない。
+- **一般の負荷が効く**：この A/B の時間帯（05:50〜05:55Z）はユーザーの Chrome が複数の process で CPU 10〜20% を使い、load1 が 3.6〜9.5、iowait が 40〜56% だった。どの run も 4〜12/30 の期限切れで、前の静かな時間帯の `inv-q1`／`inv-q2`（05:32〜05:36Z。1〜2/30）の数倍。IR の到着の中央値はほぼ同じ（10.8〜10.9 ms）で、**p90 が 11.0 ms から 12 ms 台に伸びた**。期限切れの率は IR の到着の裾（CPU の揺れ）で決まる、という結論と合う。
+- 注意：`quiet-check`（D3 の分類）は build／test／他の測定を探すだけで、ブラウザや `electron:dev` などの一般の負荷は見ていない。毎回 `quiet` を返したが、上のとおり率は大きく変わった。
+- 製品の拒否：workspace を `/dev/shm` 以下に作ると `electron/main/externalMountFs.ts:136-146` が拒否する（システム dir の一覧に `/dev`）。`/tmp` は許可されている（同 135 行）。`.artifacts` の symlink は harness も製品も受け付けた。
