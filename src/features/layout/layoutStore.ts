@@ -777,7 +777,8 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set((state) => {
       if (state.openOverlay === id) return { openOverlay: null };
       if (getOverlays(state.layout)[id].panel === null) return state;
-      return { openOverlay: id };
+      // zoom 中は overlay が見えないので、どの経路で開いても zoom を解く。
+      return { openOverlay: id, maximizedPanelId: null };
     });
   },
 
@@ -785,7 +786,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
     set((state) => {
       if (state.openOverlay === id) return state;
       if (getOverlays(state.layout)[id].panel === null) return state;
-      return { openOverlay: id };
+      return { openOverlay: id, maximizedPanelId: null };
     });
   },
 

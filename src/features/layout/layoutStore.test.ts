@@ -6,9 +6,11 @@ import {
 } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import {
+  applyOverlayRailToViewport,
   buildDefaultLayoutState,
   findPanelLocation,
   getOverlays,
+  restorePanelFromOverlay,
   validateLayoutState,
 } from "./layoutStateUtils";
 import { TOOL_WINDOW_PANEL_IDS } from "./toolWindowDefaults";
@@ -753,6 +755,97 @@ describe("useLayoutStore", () => {
       expect(layout.center.segments.some((s) => s.kind === "editor")).toBe(
         true,
       );
+    });
+
+    // overlays を知らない古い版が書き戻した保存データ。自己修復で overlay のパネルが
+    // slot に戻り、overlays が消えている（A）／そのまま残っている（B）。
+    describe("overlays を知らない古い版が書き戻した保存データ", () => {
+      function p1Saved(): LayoutState {
+        const base = buildDefaultLayoutState({ allInactive: true });
+        useLayoutStore.setState({ layout: base });
+        useLayoutStore.getState().movePanelToOverlay("scenes", "left");
+        useLayoutStore.getState().movePanelToOverlay("chat", "right");
+        const saved = structuredClone(useLayoutStore.getState().layout);
+        resetStore();
+        return saved;
+      }
+
+      /** 古い版の自己修復: パネルを既定の slot に戻す。overlays は keep の指定で残す。 */
+      function oldAppWriteback(keepOverlays: boolean): LayoutState {
+        const saved = p1Saved();
+        const overlays = saved.overlays;
+        let healed = saved;
+        for (const panel of ["scenes", "chat"] as const) {
+          healed = restorePanelFromOverlay(healed, panel);
+        }
+        const next = structuredClone(healed);
+        if (keepOverlays) next.overlays = overlays;
+        else delete next.overlays;
+        return next;
+      }
+
+      function mockSaved(state: LayoutState) {
+        mockInvoke.mockResolvedValue({
+          recentWorkspaces: [],
+          lastActiveWorkspace: null,
+          theme: "system",
+          showLauncherOnStartup: false,
+          layout: { layoutVersion: 3, state },
+          layoutPresets: [],
+        });
+      }
+
+      function expectEachPanelOnce(state: LayoutState) {
+        const inOverlays = Object.values(getOverlays(state))
+          .map((o) => o.panel)
+          .filter((p): p is ToolWindowPanelId => p !== null);
+        const all = [...collectPanels(state), ...inOverlays];
+        expect(all.slice().sort()).toEqual([...TOOL_WINDOW_PANEL_IDS].sort());
+        expect(new Set(all).size).toBe(all.length);
+        expect(
+          validateLayoutState(state, {
+            viewport: applyOverlayRailToViewport(VIEWPORT, state),
+          }).valid,
+        ).toBe(true);
+      }
+
+      it("A: overlays が消えていて、パネルが slot に戻っている。slot の配置が残る", async () => {
+        const stale = oldAppWriteback(false);
+        expect(stale.overlays).toBeUndefined();
+        mockSaved(stale);
+        await useLayoutStore.getState().initializeLayout();
+        const { layout } = useLayoutStore.getState();
+        expect(findPanelLocation(layout, "scenes")).not.toBeNull();
+        expect(findPanelLocation(layout, "chat")).not.toBeNull();
+        expectEachPanelOnce(layout);
+      });
+
+      it("B: overlays が残っていてもパネルが slot に戻っているなら、二重登録にせず slot 側を残す", async () => {
+        const stale = oldAppWriteback(true);
+        expect(getOverlays(stale).left.panel).toBe("scenes");
+        // 生データのままなら二重登録で validate に落ちる（読み込み時に除去される）
+        expect(validateLayoutState(stale, { viewport: VIEWPORT }).valid).toBe(
+          false,
+        );
+        mockSaved(stale);
+        await useLayoutStore.getState().initializeLayout();
+        const { layout } = useLayoutStore.getState();
+        expect(findPanelLocation(layout, "scenes")).not.toBeNull();
+        expect(getOverlays(layout).left.panel).toBeNull();
+        expect(getOverlays(layout).right.panel).toBeNull();
+        expectEachPanelOnce(layout);
+      });
+
+      it("C: 古い版が触れていない保存データ（overlays に配置、slot には無い）は配置が残る", async () => {
+        const saved = p1Saved();
+        mockSaved(saved);
+        await useLayoutStore.getState().initializeLayout();
+        const { layout } = useLayoutStore.getState();
+        expect(getOverlays(layout).left.panel).toBe("scenes");
+        expect(getOverlays(layout).right.panel).toBe("chat");
+        expect(findPanelLocation(layout, "scenes")).toBeNull();
+        expectEachPanelOnce(layout);
+      });
     });
 
     it("hydrates a desktop layout on a phone without shrinking its saved dimensions", async () => {
@@ -1621,6 +1714,31 @@ describe("overlay（画面端の左右オーバーレイ）", () => {
       store().toggleOverlay("left");
       store().showOverlay("left");
       expect(store().openOverlay).toBeNull();
+    });
+
+    it("zoom 中に開くと zoom を解く（専用キー以外の経路でも overlay が隠れない）", () => {
+      store().showPanel("scenes");
+      store().toggleMaximizePanel("scenes");
+      expect(store().maximizedPanelId).toBe("scenes");
+      store().togglePanel("chat");
+      expect(store().openOverlay).toBe("right");
+      expect(store().maximizedPanelId).toBeNull();
+
+      store().closeOverlay();
+      store().toggleMaximizePanel("scenes");
+      store().showPanel("chat");
+      expect(store().openOverlay).toBe("right");
+      expect(store().maximizedPanelId).toBeNull();
+
+      store().closeOverlay();
+      store().toggleMaximizePanel("scenes");
+      store().toggleOverlay("right");
+      expect(store().maximizedPanelId).toBeNull();
+
+      store().closeOverlay();
+      store().toggleMaximizePanel("scenes");
+      store().showOverlay("right");
+      expect(store().maximizedPanelId).toBeNull();
     });
 
     it("ロック中でも開閉はできる", () => {

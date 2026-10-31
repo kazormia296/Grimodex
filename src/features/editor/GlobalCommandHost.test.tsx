@@ -110,6 +110,65 @@ describe("GlobalCommandHost — オーバーレイの開閉ショートカット
     expect(useLayoutStore.getState().openOverlay).toBe("left");
   });
 
+  it("専用キー以外（パネルのショートカット）で開いても zoom を解く", () => {
+    useLayoutStore.setState({ maximizedPanelId: "scenes" });
+    mount();
+    // Mod+Alt+A は attribution（右の overlay）のパネルのショートカット。
+    act(() => {
+      fireEvent.keyDown(window, {
+        ctrlKey: true,
+        altKey: true,
+        code: "KeyA",
+        key: "a",
+      });
+    });
+    expect(useLayoutStore.getState().openOverlay).toBe("right");
+    expect(useLayoutStore.getState().maximizedPanelId).toBeNull();
+  });
+
+  it("overlay にある codex-quick のショートカットは、開いていても閉じずに開いたままにする", () => {
+    const layout = buildDefaultLayoutState({ allInactive: true });
+    layout.overlays = {
+      left: { panel: "codex-quick" },
+      right: { panel: null },
+    };
+    // 古い版の自己修復と同じく、slot に同じパネルは無い状態にする。
+    for (const regionId of Object.keys(layout.regions) as Array<
+      keyof typeof layout.regions
+    >) {
+      for (const slot of layout.regions[regionId].slots) {
+        slot.panels = slot.panels.filter((p) => p !== "codex-quick");
+        if (slot.activePanel === "codex-quick") slot.activePanel = null;
+      }
+    }
+    useLayoutStore.setState({ layout, openOverlay: null });
+    const rafs: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      rafs.push(cb);
+      return rafs.length;
+    });
+    try {
+      mount();
+      const pressQ = () =>
+        act(() => {
+          fireEvent.keyDown(window, {
+            ctrlKey: true,
+            altKey: true,
+            code: "KeyQ",
+            key: "q",
+          });
+        });
+      pressQ();
+      expect(useLayoutStore.getState().openOverlay).toBe("left");
+      // 開いている間にもう一度押しても、requestAnimationFrame を待たずに開いたまま。
+      pressQ();
+      expect(useLayoutStore.getState().openOverlay).toBe("left");
+      expect(rafs).toHaveLength(0);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
   it("静止待ち（canScheduleQuiescenceMutation が false）でも開閉できる", () => {
     quiescence.allowed = false;
     mount();

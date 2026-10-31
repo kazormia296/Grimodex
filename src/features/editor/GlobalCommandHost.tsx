@@ -5,7 +5,10 @@ import type { RuntimeCapabilities } from "@/runtime/runtimeCapabilities";
 import { useResultsPanelStore } from "@/features/commandCenter";
 import { useCompactNavigationStore } from "@/features/layout/adaptive/compactNavigationStore";
 import { useLayoutStore } from "@/features/layout/layoutStore";
-import { getOverlays } from "@/features/layout/layoutStateUtils";
+import {
+  findOverlayOfPanel,
+  getOverlays,
+} from "@/features/layout/layoutStateUtils";
 import {
   PANEL_COMMANDS,
   getMergedBindings,
@@ -50,8 +53,7 @@ export function GlobalCommandHost({
         const layoutStore = useLayoutStore.getState();
         if (getOverlays(layoutStore.layout)[overlay].panel === null) return;
         event.preventDefault();
-        // zoom 中は overlay が見えないので、解いてから開く。
-        layoutStore.clearMaximize();
+        // zoom 中の解除は store の開く側が担う。
         layoutStore.toggleOverlay(overlay);
         return;
       }
@@ -106,6 +108,17 @@ export function GlobalCommandHost({
                     ? "ai"
                     : "more";
           useCompactNavigationStore.getState().openSurface(surface);
+          return;
+        }
+        // overlay にあるパネルは、トグルすると閉じてすぐ開き直すので、開く側だけ呼ぶ。
+        if (
+          panelCommand.panel === "codex-quick" &&
+          findOverlayOfPanel(
+            useLayoutStore.getState().layout,
+            "codex-quick",
+          ) !== null
+        ) {
+          useLayoutStore.getState().showPanel("codex-quick");
           return;
         }
         togglePanel(panelCommand.panel);
