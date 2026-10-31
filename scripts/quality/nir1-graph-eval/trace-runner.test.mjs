@@ -1124,6 +1124,46 @@ test("DR-CP4-V-3 (C): 受領書の記録は context の F6 の resolver を行�
     preview.rows[0].followUp.child.contributionBasis,
     "scene-level-preview",
   );
+  // DR-CP4-V-3 (D): 末尾の除外の件数は summary 側にも出る（無ければ 0）。
+  assert.deepEqual(records.summary.alignmentExcludedAfterWindow, {
+    rule: "DR-CP4-V-2",
+    aligned: true,
+    count: 0,
+    seqs: [],
+  });
+  const trailing = k64NativeRecord({
+    seq: 3,
+    tBeginNs: nsOf(B0 + 3_200),
+    tReturnedNs: nsOf(B0 + 3_200.02),
+    begin: "unavailable",
+    reason: "registration-unavailable",
+    ticket: null,
+  });
+  const late = traceRunRecords({
+    plan: tracePlanOf(),
+    observation,
+    nativeReads: [
+      run.nativeReads[0],
+      {
+        ...run.nativeReads[1],
+        clockNs: nsOf(B0 + 3_300),
+        records: [...run.nativeReads[1].records, trailing],
+      },
+    ],
+    counters: { runs: [] },
+    result: run.result,
+    context,
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.deepEqual(late.summary.alignmentExcludedAfterWindow, {
+    rule: "DR-CP4-V-2",
+    aligned: true,
+    count: 1,
+    seqs: [3],
+  });
+  assert.equal(late.native.alignment.excludedAfterWindow.count, 1);
+  assert.equal(late.rows[0].rowError, undefined);
 });
 
 test("DR-CP4-V-3 (C): 凍結の context は G-02 base の resolver を materialContribution に配線し、f6 は material-revision", () => {

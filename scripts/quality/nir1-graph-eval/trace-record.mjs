@@ -717,6 +717,21 @@ export function alignmentDisclosure(alignment) {
   };
 }
 
+/**
+ * DR-CP4-V-3 (D, レビュー P3-3): the count of the Native records the pairing
+ * left out after the observation window (DR-CP4-V-2 (1)), for the receipt's
+ * `summary` (the details stay in `native.alignment`).
+ */
+export function alignmentExclusionSummary(alignment) {
+  const excluded = alignment.excludedAfterWindow;
+  return {
+    rule: "DR-CP4-V-2",
+    aligned: alignment.aligned,
+    count: excluded?.count ?? 0,
+    seqs: (excluded?.records ?? []).map((row) => row.seq),
+  };
+}
+
 // ---- the start seal (TR-9) and the maintenance gate (TR-10) ---------------
 
 export const START_SEAL_STATES = Object.freeze([

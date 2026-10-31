@@ -92,6 +92,7 @@ import {
   TRACE_COUNTER_KEYS,
   TRACE_RUN_SCHEMA,
   alignmentDisclosure,
+  alignmentExclusionSummary,
   assertTraceMaterialsMatch,
   cancelledParentSeqsOf,
   cancelledParentsDisclosure,
@@ -828,6 +829,7 @@ export function traceRunRecords({
     fixedGraphMode: D2A_MODE,
     stalled: result.stalled,
   });
+  const alignment = traceAlignment({ observation, native, log: result.log });
   return {
     rows,
     k64,
@@ -837,9 +839,7 @@ export function traceRunRecords({
       records: native.records.length,
       // DR-CP4-V-2: the pairing, and the records after the window it left
       // out (disclosed); DR-CP4-V-3: with the Native reads' clock range.
-      alignment: alignmentDisclosure(
-        traceAlignment({ observation, native, log: result.log }),
-      ),
+      alignment: alignmentDisclosure(alignment),
     },
     requeries: traceRequeries({
       observation,
@@ -860,7 +860,13 @@ export function traceRunRecords({
       parentSeqs,
       querySceneId,
     }),
-    summary: { k64: k64.summary, k62: k62.summary },
+    summary: {
+      k64: k64.summary,
+      k62: k62.summary,
+      // DR-CP4-V-3 (D): the records left out after the window, counted here
+      // too (DR-CP4-V-2 (1); the details are in `native.alignment`).
+      alignmentExcludedAfterWindow: alignmentExclusionSummary(alignment),
+    },
   };
 }
 
