@@ -1,0 +1,2024 @@
+{
+  "schemaVersion": "nir1-cp4-run-receipt/1",
+  "runKind": "g-case-parity-unrestricted",
+  "priorAttempts": {
+    "parity": [],
+    "thisAttempt": {
+      "runName": "parity-s5r3-1",
+      "fileSha256AtStart": "5fee346700b8b0f7e5956d90849432b2738c670222c8d0734d3a920c3a03b72b"
+    }
+  },
+  "runnerKind": "k64-hook-consumer",
+  "runId": "parity-s5r3-1/G-08/base-usable",
+  "preview": false,
+  "fixture": {
+    "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+    "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9",
+    "kind": "frozen"
+  },
+  "head": {
+    "k62": {
+      "freezeCommit": "af643a93eeae7f937c9cd5a9dd87a6308c96fab6",
+      "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8"
+    },
+    "k64": {
+      "freezeCommit": "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+      "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+    },
+    "observationPrep": {
+      "commit": "9f52e7da37b84603424d0b7e6ecee8e019d1c7c9",
+      "freezeRecordSha256": "fccb6c12e2f6cc323c9c9ad0096f8d51ecc0b6b39a7cf045df8e6ac17c802034"
+    },
+    "runStartedAtUtc": "2026-10-31T11:19:42.437Z"
+  },
+  "candidate": {
+    "commit": "0b1984dd68ec132aea394664e2ba61759e1e2830",
+    "tree": "900ba98bd43b38fb668df1f557276b789d3ed13b",
+    "clean": true,
+    "productReceiptSha256": "c181aab2d758b461e9929184e07b7c40667f70c764ec1935f119d0996056e0fd",
+    "evalReceiptSha256": "0066c8df0f26ec3e293a52984fab67518258facf816cdc93985f92162ab7a09a",
+    "evalReceiptHead": "0b1984dd68ec132aea394664e2ba61759e1e2830",
+    "nativeSha256": "230804940977f85084dc19ae85eef5f38f5524a16bc85b43147e02ce9a6f1418",
+    "workerSha256": "eebad9d6ae1857bdf49e39e3c2e127fd27eb38efb41518f4f730c93f8dfba3b1",
+    "features": [
+      "nir1-graph-eval"
+    ],
+    "models": {
+      "ja": {
+        "modelSha256": "946ae837c9cd3f78baf93af541e77facec62d31049921d7c00fbcb57b4610bcf",
+        "tokenizerSha256": "0a94ac9a0a02c067bdef25b72ae9f4ee33f48f552e55988d444f6d25eeb1d062"
+      },
+      "en": {
+        "modelSha256": "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
+        "tokenizerSha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66"
+      }
+    },
+    "electronVersion": "43.8.3",
+    "harnessFiles": {
+      "scripts/quality/nir1-graph-eval/k64-runner.mjs": "350227a9ffd02f1bcd67ab451f5aa30671c98be7931e4972e49ec05a970b3572",
+      "scripts/quality/nir1-graph-eval/k64-record.mjs": "4818d1c1d91956f8412e8b4ca1c9f0891017204299ad0ea52eafd626d1675df9",
+      "scripts/quality/nir1-graph-eval/q4.mjs": "862475877f49b8b202ef1cbf9c1702c4f13f50a37141241f25b5f43f4c1306ef",
+      "scripts/quality/nir1-graph-eval/procedure-file.mjs": "98efbb8d1cd41ea127b95c1a2ce4831d3af7c516a51889a580ec800dcf5a6574",
+      "scripts/quality/nir1-graph-eval/seed-pin.mjs": "4ef057a3b1eb3c65195a28fbc08aef8184deffb8a1af295c8b23c8ce5289816b",
+      "scripts/quality/nir1-graph-eval/keep-test.mjs": "fa103a56d1d992193e79cba3b82207deb25331540728774a274916687235f62c",
+      "scripts/quality/nir1-graph-eval/followup.mjs": "40c7cb1f2c8293c21272f5bfc234880ea00ea8c1d25bc0c7930638b13246795a",
+      "scripts/quality/nir1-graph-eval/availability.mjs": "04c17b33cd89a2dda3beb5a27e462fa7718b8eb2ced424f8639efa55cf2fe5f0",
+      "scripts/quality/nir1-graph-eval/outcome.mjs": "8640f775c77f718bca1c85af004ad5210e80e1b0ee9e083ff3cbb42a314dfaf3",
+      "scripts/quality/nir1-graph-eval/receipt.mjs": "77a181a9f6ee430a2fe3c647ccba206f2e1f34dae0e605081fe86ccbd53aebe8",
+      "scripts/quality/nir1-graph-eval/admission.mjs": "e0b3877f0d118936348db948546e7c125710b1de9c07732b55b1d3f0efba4e14",
+      "scripts/quality/nir1-graph-eval/run-sample.mjs": "add07154efe3d0bc71feaf11bea4ffb56bdc0167e42b2fe00f870247c0f5a754",
+      "scripts/quality/nir1-graph-eval/native-sample.mjs": "ec8d3cbaae613b6cba02eef2732b26550fb95ccf0f05f9b48e31e67896349fb9",
+      "scripts/quality/nir1-graph-eval/session.mjs": "9e69cb076b2e3101586d3ea2aa477bee027bc093fdc21b8b37dcac92454c6354",
+      "scripts/quality/nir1-graph-eval/launcher.mjs": "41653af87884ac89fa135c19d51eaee6b74dc677b21a5037f348056bc0c3b671",
+      "scripts/quality/nir1-graph-eval/egress.mjs": "77c0aa177007d9bb8c0da5f0ad5a23c09b4dac02f2d5d5b718089edbb8dcac54",
+      "scripts/quality/nir1-graph-eval/window.mjs": "2a378aa4d16ef80341f70bb3c71d4907c38df266003214d5e5d16ce5a54f121a",
+      "scripts/quality/nir1-graph-eval/workspace-db.mjs": "e61cb4fcbec2fd019fccab0c77f5e4f331bc01f3e19ee359681873b5d0638b41",
+      "scripts/quality/nir1-graph-eval/dev-fixture.mjs": "e087f40275b203a30618a5fe4c2a5c14fc86dd545a49383da54116998b3eac89",
+      "scripts/quality/nir1-graph-eval/dprime-check.mjs": "df1c40e3bdb17cd5b86bcebd16a4f84d3c823144d7a5685fc1bedbe19b3828d6",
+      "scripts/quality/nir1-graph-eval/renderer/cp4-harness.ts": "9f0229918e0f4839b9908d792bd93a1842d683bafdfa31ae057089e5af6e0be4",
+      "scripts/quality/nir1-graph-eval/renderer/cp4-k64-probe.tsx": "d05bb4a1955994a67233d9dc2aa78d6203393731a8af731246fc0fb4240d0c6c",
+      "scripts/quality/nir1-graph-eval/renderer/fetchRelatedScenes.timing.ts": "ed89754939755608a5d13ca19c2757bfeefeeef1d52368860dfd484daec03c6c",
+      "scripts/quality/nir1-graph-eval/renderer/nir1RelatedScenesApi.timing.ts": "bf67fd28982c0560d8488250f769295569145292e82480325d7464046d3cb3fd",
+      "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs": "021bb096b34c901288bd748a4e06edf18f55df4da178fb9b9cd5c8af5a8974ca",
+      "scripts/quality/nir1-graph-eval/frozen-k64-plan.mjs": "faa7fd4d6541b5b6896568ac7e958f181fd6eb19094b5692ffeb37ba83b6e81d",
+      "scripts/quality/nir1-graph-eval/frozen-k64-run.mjs": "a56ba1fee1aafa99414db952947a3866683ef3c5bbeb92de7d4051d623b79a77",
+      "scripts/quality/nir1-graph-eval/material-revision.mjs": "ac2f1f794dbc640d5ff910f7f74a3d5438ed8ce01402cc8895944aefd7c853a5",
+      "scripts/quality/nir1-graph-eval/frozen-setup-plan.mjs": "2ac6bb9d8c4fe238938b4bec959f12d86e47e9a687ad8c811139c9225549da71",
+      "scripts/quality/nir1-graph-eval/frozen-setup-driver.mjs": "0ea96056614b7af6b8227d9fd2444f070ec1e75eaa84117098748b781e4b1dc3",
+      "scripts/quality/nir1-graph-eval/setup-receipt.mjs": "dcc742371fe2328a2a88eaa048ff0a7ab428b4343fe7d25f65ecd32a4c8259d3",
+      "scripts/quality/nir1-graph-eval/build-receipt-check.mjs": "29db8ed5a7d9e1ba2e2825c96f9465e5f4bb56b03d99ce9b304e228ed43f5520",
+      "scripts/quality/nir1-graph-eval/renderer/cp4-hook-probe.tsx": "050e3db7476c2631cb07fa300d4f527825e0b78e3516eb7e8df2eec13fe2e7c1",
+      "dist-electron/main.cjs": "31023f585fcdd080afe530a1e3b19a26e6812c0aa2ec35f33bf2c886db528278",
+      "renderer-bundle": "d3e32f578b098db02361c8fdaa515c0a8266f9dc0daea043948b0ce874c0c5f3",
+      "observer.cjs": "99f750c5886936b56c626ef861524d29a73b3e72dbf481964194df6684560533"
+    },
+    "ratification5": {
+      "kind": "ratification5",
+      "candidateHead": "0b1984dd68ec132aea394664e2ba61759e1e2830",
+      "dPrime": {
+        "commit": "4d38d0d164e02a76a0e172214b259a11e0b2c5ff",
+        "ancestor": true
+      },
+      "rsJoinHook": {
+        "evidence": "candidate-test",
+        "testFile": "src/features/related-scenes/useNir1RelatedScenes.graphReadyKeep.test.tsx",
+        "head": "0b1984dd68ec132aea394664e2ba61759e1e2830",
+        "testFileSha256": "2a6422166d79d616c6bfb7516bedb6d10058820da26bd3c8b8aabd4bd6222ed3",
+        "passed": true,
+        "tests": 8,
+        "runDigest": "7adf240fd68198babe9728ed3daf5ef649d207f0db53586fafbba75014f45b4c",
+        "dependencies": {
+          "lockfileSha256": "ea07b2ae3954559ef69b5717cc20a5058903af14bcded8306f732e935817533a",
+          "installedLockSha256": "ea07b2ae3954559ef69b5717cc20a5058903af14bcded8306f732e935817533a",
+          "vitestVersion": "4.1.12",
+          "lockedVitestVersion": "4.1.12"
+        }
+      },
+      "wfWindow": {
+        "commit": "c4333bbd081fb297cf2dddc598155791b9678be8",
+        "ancestor": true
+      }
+    }
+  },
+  "environment": {
+    "hostSnapshot": {
+      "timestamp": "2026-10-31T11:20:42.628Z",
+      "os": "Linux",
+      "kernel": "7.2.11-arch1-1",
+      "arch": "x64",
+      "cpuModel": "AMD Ryzen 5 3600 6-Core Processor",
+      "logicalCpus": 12,
+      "totalMemory": 84272189440,
+      "freeMemory": 72137617408,
+      "loadAverage": [
+        1.58,
+        1.37,
+        1.05
+      ],
+      "node": "v24.18.0",
+      "cpuPressure": "some avg10=0.41 avg60=0.28 avg300=0.12 total=1056321053\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n",
+      "ioPressure": "some avg10=85.15 avg60=87.60 avg300=88.55 total=103024574375\nfull avg10=75.60 avg60=80.21 avg300=82.72 total=96319109867\n",
+      "memoryPressure": "some avg10=0.00 avg60=0.00 avg300=0.00 total=7975231\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=7620986\n"
+    },
+    "windowSamples": [
+      {
+        "atMs": 1793445640193,
+        "locksReadable": true,
+        "heavySlotFiles": 2,
+        "heavySlotsInUse": 0,
+        "buildProcesses": [],
+        "otherMeasurements": [],
+        "sameWorktreeBuild": false,
+        "loadAverage": [
+          1.58,
+          1.37,
+          1.05
+        ],
+        "cpuPressure": "some avg10=0.34 avg60=0.27 avg300=0.11 total=1056289772\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+      },
+      {
+        "atMs": 1793445641308,
+        "locksReadable": true,
+        "heavySlotFiles": 2,
+        "heavySlotsInUse": 0,
+        "buildProcesses": [],
+        "otherMeasurements": [],
+        "sameWorktreeBuild": false,
+        "loadAverage": [
+          1.58,
+          1.37,
+          1.05
+        ],
+        "cpuPressure": "some avg10=0.28 avg60=0.26 avg300=0.11 total=1056316869\nfull avg10=0.00 avg60=0.00 avg300=0.00 total=0\n"
+      }
+    ],
+    "windowAssessment": {
+      "clean": true,
+      "violations": [],
+      "gaps": []
+    },
+    "ownPids": [
+      1719387,
+      1719372,
+      1719368,
+      1719120,
+      156139,
+      15861,
+      10237,
+      2246,
+      1720972,
+      1720974,
+      1720975,
+      1721008,
+      1721004,
+      1721039
+    ],
+    "xvfbDisplay": ":2",
+    "removedEnv": [
+      "DESKTOP_SESSION",
+      "GDMSESSION",
+      "XDG_CURRENT_DESKTOP",
+      "XDG_SESSION_DESKTOP"
+    ],
+    "launchEnvChecked": [
+      "WAYLAND_DISPLAY",
+      "WAYLAND_SOCKET",
+      "DBUS_SESSION_BUS_ADDRESS"
+    ],
+    "netns": {
+      "self": "net:[4026531833]",
+      "parent": "net:[4026531833]",
+      "hostInterfaces": [
+        "lo",
+        "enp5s0"
+      ],
+      "userManager": null
+    },
+    "netLog": {
+      "path": ".artifacts/cp4/parity-s5r3-1/G-08_base-usable/measure/session/netlog.json",
+      "sha256": "06c39470331e8e3a75f29f3f3f78c5e8a7202c5784539834fc122a473f687763",
+      "truncated": false,
+      "eventCount": 5945,
+      "nonLoopbackAttempts": 0,
+      "attempts": [],
+      "ipv6ReachabilityProbe": 2,
+      "ipv6ReachabilityChecks": 127,
+      "loopbackConnects": {
+        "blackhole": 2,
+        "other": 12
+      },
+      "resolverRequests": {
+        "total": 127,
+        "rejected": 3,
+        "hosts": [
+          "127.0.0.1"
+        ]
+      },
+      "dictionaryRequests": [
+        {
+          "url": "https://redirector.gvt1.com/edgedl/chrome/dict/en-us-10-1.bdic",
+          "proxy": "SOCKS5 127.0.0.1:38111",
+          "netError": -120
+        }
+      ]
+    },
+    "socketSamples": [
+      {
+        "schema": "nir1-cp4-socket-sample/1",
+        "atMs": 1793445638579,
+        "rootPid": 1720972,
+        "pids": [
+          1720972,
+          1720974,
+          1720975,
+          1721008,
+          1721004
+        ],
+        "unreadable": [],
+        "sockets": {
+          "tcp": 7,
+          "udp": 0,
+          "loopback": 7,
+          "unconnected": 0
+        },
+        "external": [],
+        "externalListeners": [],
+        "unix": {
+          "read": true
+        },
+        "userSessionPeers": [],
+        "systemBusPeers": 1,
+        "dns": [],
+        "processes": [
+          {
+            "pid": 1720972,
+            "ppid": 1719387,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "browser"
+          },
+          {
+            "pid": 1720974,
+            "ppid": 1720972,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 1720975,
+            "ppid": 1720972,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 1721008,
+            "ppid": 1720972,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "utility"
+          },
+          {
+            "pid": 1721004,
+            "ppid": 1720974,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "gpu-process"
+          }
+        ]
+      },
+      {
+        "schema": "nir1-cp4-socket-sample/1",
+        "atMs": 1793445641319,
+        "rootPid": 1720972,
+        "pids": [
+          1720972,
+          1720974,
+          1720975,
+          1721008,
+          1721004,
+          1721039
+        ],
+        "unreadable": [],
+        "sockets": {
+          "tcp": 13,
+          "udp": 0,
+          "loopback": 13,
+          "unconnected": 0
+        },
+        "external": [],
+        "externalListeners": [],
+        "unix": {
+          "read": true
+        },
+        "userSessionPeers": [],
+        "systemBusPeers": 1,
+        "dns": [],
+        "processes": [
+          {
+            "pid": 1720972,
+            "ppid": 1719387,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "browser"
+          },
+          {
+            "pid": 1720974,
+            "ppid": 1720972,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 1720975,
+            "ppid": 1720972,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "zygote"
+          },
+          {
+            "pid": 1721008,
+            "ppid": 1720972,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "utility"
+          },
+          {
+            "pid": 1721004,
+            "ppid": 1720974,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "gpu-process"
+          },
+          {
+            "pid": 1721039,
+            "ppid": 1720975,
+            "exe": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/node_modules/.pnpm/electron@43.8.3/node_modules/electron/dist/electron",
+            "type": "renderer"
+          }
+        ]
+      }
+    ],
+    "x11": {
+      "before": [
+        {
+          "name": "X0",
+          "ino": 99,
+          "mtimeMs": 1793181327487.0674
+        },
+        {
+          "name": "X1",
+          "ino": 101,
+          "mtimeMs": 1793181327487.6296
+        },
+        {
+          "name": "X2",
+          "ino": 2085707,
+          "mtimeMs": 1793445579118.786
+        }
+      ],
+      "after": [
+        {
+          "name": "X0",
+          "ino": 99,
+          "mtimeMs": 1793181327487.0674
+        },
+        {
+          "name": "X1",
+          "ino": 101,
+          "mtimeMs": 1793181327487.6296
+        },
+        {
+          "name": "X2",
+          "ino": 2085707,
+          "mtimeMs": 1793445579118.786
+        }
+      ]
+    },
+    "profileEgress": {
+      "dictionaries": [],
+      "networkPersistentServers": []
+    },
+    "observer": {
+      "ok": true,
+      "problems": [],
+      "failureCodes": []
+    },
+    "stop": {
+      "closed": true,
+      "closeMs": 1052,
+      "signalled": [],
+      "remaining": []
+    },
+    "mainWorker": {
+      "ok": true,
+      "path": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/src-tauri/target/release/nir1-c-query-worker",
+      "expectedSha256": "eebad9d6ae1857bdf49e39e3c2e127fd27eb38efb41518f4f730c93f8dfba3b1",
+      "atStart": "eebad9d6ae1857bdf49e39e3c2e127fd27eb38efb41518f4f730c93f8dfba3b1",
+      "atEnd": "eebad9d6ae1857bdf49e39e3c2e127fd27eb38efb41518f4f730c93f8dfba3b1",
+      "exes": [],
+      "statStart": {
+        "ino": 20091422,
+        "mtimeMs": 1793440337196.9685
+      },
+      "statEnd": {
+        "ino": 20091422,
+        "mtimeMs": 1793440337196.9685
+      },
+      "problems": []
+    }
+  },
+  "run": {
+    "startedAtMs": 1793445640203,
+    "finishedAtMs": 1793445641305
+  },
+  "settings": {
+    "maintenance": "product",
+    "d2aModes": {
+      "hybrid": "unrestricted"
+    },
+    "reauthorization": {
+      "mode": "unrestricted",
+      "placedStateFile": true,
+      "note": "the D2a profile state placed before each launch; no activation UI"
+    },
+    "setupReceipt": {
+      "path": ".artifacts/cp4/s5r3-g-08-base-usable/setup/G-08/base-usable/setup-receipt.json",
+      "sha256": "f720041df1213506dcf51ac356e69529511dda13287f7c309ef9719e841e8b05",
+      "logicalToRuntime": {
+        "projectId": "4b820772-5126-4a1e-8902-d69ed23cacb4",
+        "querySceneId": "g08-query",
+        "scenes": {
+          "g08-review": "974372eb-68fb-4103-9b06-fc761f1048fe",
+          "g08-control": "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+          "g08-attach": "1b2908ec-5c24-4004-9a25-8410c1f4776f",
+          "g08-cass-attic": "2f8ec6e1-2ab6-4d0b-8a8e-b0cc72f63e04",
+          "g08-ice": "542fde27-3e90-4c68-b295-cf4d83610871",
+          "g08-query": "c935de7c-faeb-4183-9a2d-f768311afedc"
+        },
+        "folders": {
+          "nir1-folder-g08-control": "54008342-d6f9-4a63-838c-e2ec0109cadb"
+        },
+        "entities": {
+          "g08-odile": "912ba9d5-4912-49fb-839d-2c0b31871191",
+          "g08-cass": "85486c28-282a-42d9-b2fd-0e7f47cdf5e9",
+          "g08-juno": "be99da36-d4a8-4a35-8c24-404570619004"
+        },
+        "relations": {
+          "g08-rents-to-cass": "ae9247ed-f5a2-4892-8ddd-d60a86936400",
+          "g08-rents-to-juno": "99a9bff3-9a59-4689-8dd5-5fbda99af3bb"
+        },
+        "foreshadows": {},
+        "pins": [
+          {
+            "sceneId": "2f8ec6e1-2ab6-4d0b-8a8e-b0cc72f63e04",
+            "entryId": "85486c28-282a-42d9-b2fd-0e7f47cdf5e9"
+          },
+          {
+            "sceneId": "1b2908ec-5c24-4004-9a25-8410c1f4776f",
+            "entryId": "be99da36-d4a8-4a35-8c24-404570619004"
+          }
+        ],
+        "typedRevisions": {
+          "g08-r-cass": {
+            "id": "g08-r-cass",
+            "reviewSceneId": "g08-review",
+            "relationIds": [
+              "g08-rents-to-cass"
+            ],
+            "decision": "approved",
+            "prepareWaitMs": 15,
+            "prepareRefusals": 0,
+            "runId": "63e64101-c6fd-4e58-9744-c14abd43cab9",
+            "proposalId": "18f16c42-0e17-4f42-853e-b025d2d93226",
+            "revisionId": "0cf80a90-66e2-4f99-8435-c2ea0229c19b",
+            "statusAfter": "available"
+          },
+          "g08-r-juno": {
+            "id": "g08-r-juno",
+            "reviewSceneId": "g08-review",
+            "relationIds": [
+              "g08-rents-to-juno"
+            ],
+            "decision": "approved",
+            "prepareWaitMs": 13,
+            "prepareRefusals": 0,
+            "runId": "5cc373d3-b22a-48e3-aed3-c77da38e279c",
+            "proposalId": "da1dd617-c74f-41ca-a68c-a636a2a87e27",
+            "revisionId": "fe3c5005-9ac9-479a-b17a-95fe0eb88666",
+            "statusAfter": "available"
+          }
+        },
+        "chronicle": {
+          "g08-control": {
+            "sceneId": "g08-control",
+            "folderId": "54008342-d6f9-4a63-838c-e2ec0109cadb",
+            "runId": "45f4df88-5e3e-499a-bdf1-85847536a0f1",
+            "proposalId": "a035ade9-d282-4030-b620-7099961eb5dc",
+            "rootRevisionId": "fe502a55-8eb8-4281-a3f5-ea74e7a0f790",
+            "childRevisionId": "dec7e715-ac2b-4772-bf4f-18e7cbd7509d",
+            "decision": "approved",
+            "decisionId": "ef6e33e3-f360-4a3b-9d8b-08a19e3fc6be"
+          }
+        }
+      }
+    },
+    "measurement": {
+      "kind": "steady-state",
+      "measurementPoint": "after-maintenance-current",
+      "indexState": {
+        "chronicle": "usable",
+        "graph": "usable"
+      }
+    },
+    "seed": {
+      "logical": "g08-odile",
+      "runtime": "912ba9d5-4912-49fb-839d-2c0b31871191",
+      "via": "product-hook-from-the-query-scene-pin"
+    },
+    "f6": {
+      "basis": "material-revision",
+      "expected": [
+        {
+          "kind": "graph-only",
+          "sceneId": "g08-cass-attic",
+          "pairs": [
+            "g08-r-cass|g08-rents-to-cass"
+          ]
+        },
+        {
+          "kind": "path-attachment",
+          "sceneId": "g08-attach",
+          "pairs": [
+            "g08-r-juno|g08-rents-to-juno"
+          ]
+        }
+      ]
+    },
+    "k64Disclosure": {
+      "x2": "X2 の TTL の切れと edge の epoch の進みは owner の counter に無く観測できない。起きた子は Cached で受けない（F5）か F2 の counter の差分が合わず X4 として失敗に数える（成功にも分母の外にもしない）。quarantine だけは counter で X2（DR-CP4-N-5）",
+      "q4": "q4 の決着から通知までは通知に Native の時刻が無く測らない（R6、2 つの時計を混ぜない）。renderer の時計の親の公開から最初の通知までを開示する（DR-CP4-F-7、N-5）"
+    },
+    "variantKey": "G-08/base-usable",
+    "k64": {
+      "wFMs": 100,
+      "tLateMs": 100,
+      "tShowMs": 2000,
+      "r1r4WaitMs": 10000,
+      "procedureFile": {
+        "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
+        "commit": "9f52e7da37b84603424d0b7e6ecee8e019d1c7c9",
+        "sha256": "1c2428df322fa717d1a3ae5d4c99fb2dbafcbac2c8fb5b4126499dcc36cc0bea",
+        "version": "v1",
+        "draft": false
+      }
+    }
+  },
+  "declaration": null,
+  "measurementWorkspace": null,
+  "samples": [
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 0,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1591.7999999970198,
+      "tRawReady": 1608.7999999970198,
+      "tReturn": 1613.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 1,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1617.7999999970198,
+      "tRawReady": 1635.5,
+      "tReturn": 1639.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 2,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1643.4000000059605,
+      "tRawReady": 1660,
+      "tReturn": 1664.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 3,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1668.5999999940395,
+      "tRawReady": 1685.4000000059605,
+      "tReturn": 1690.0999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "warmup",
+      "repeat": 4,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1693.4000000059605,
+      "tRawReady": 1710.2999999970198,
+      "tReturn": 1714.7999999970198,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 0,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1718.7000000029802,
+      "tRawReady": 1735.2999999970198,
+      "tReturn": 1739.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 1,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1743.2999999970198,
+      "tRawReady": 1759.5,
+      "tReturn": 1764.2000000029802,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 2,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1767.7000000029802,
+      "tRawReady": 1783.7000000029802,
+      "tReturn": 1788.5,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 3,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1792.5,
+      "tRawReady": 1809,
+      "tReturn": 1813.5,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 4,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1816.7999999970198,
+      "tRawReady": 1833.5999999940395,
+      "tReturn": 1838.2999999970198,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 5,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1881.7000000029802,
+      "tRawReady": 1898.4000000059605,
+      "tReturn": 1902.7999999970198,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 6,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1906.4000000059605,
+      "tRawReady": 1922.0999999940395,
+      "tReturn": 1927,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 7,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1930.5999999940395,
+      "tRawReady": 1946.5,
+      "tReturn": 1951.4000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 8,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1954.5,
+      "tRawReady": 1970.5999999940395,
+      "tReturn": 1975.4000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 9,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 1978.5,
+      "tRawReady": 1993.5,
+      "tReturn": 1997.2000000029802,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 10,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2000.5999999940395,
+      "tRawReady": 2189.5999999940395,
+      "tReturn": 2194.2999999970198,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 11,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2198.2000000029802,
+      "tRawReady": 2255.9000000059605,
+      "tReturn": 2260.5,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 12,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2264,
+      "tRawReady": 2279.5999999940395,
+      "tReturn": 2284.4000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 13,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2287.9000000059605,
+      "tRawReady": 2303.2000000029802,
+      "tReturn": 2308.0999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 14,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2311.2999999970198,
+      "tRawReady": 2325.2000000029802,
+      "tReturn": 2330.2000000029802,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 15,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2333.4000000059605,
+      "tRawReady": 2349.2999999970198,
+      "tReturn": 2353.7999999970198,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 16,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2357.2999999970198,
+      "tRawReady": 2372.7000000029802,
+      "tReturn": 2377.4000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 17,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2380.5999999940395,
+      "tRawReady": 2395.7999999970198,
+      "tReturn": 2400.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 18,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2403.7000000029802,
+      "tRawReady": 2419.9000000059605,
+      "tReturn": 2424.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 19,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2428.2000000029802,
+      "tRawReady": 2444.2000000029802,
+      "tReturn": 2448.7999999970198,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 20,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2452,
+      "tRawReady": 2468,
+      "tReturn": 2472.5999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 21,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2476.2999999970198,
+      "tRawReady": 2491.7999999970198,
+      "tReturn": 2496.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 22,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2500.2000000029802,
+      "tRawReady": 2516.2999999970198,
+      "tReturn": 2520.7000000029802,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 23,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2524,
+      "tRawReady": 2540.2000000029802,
+      "tReturn": 2545.0999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 24,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2548.7999999970198,
+      "tRawReady": 2564.0999999940395,
+      "tReturn": 2569.0999999940395,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 25,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2572.2999999970198,
+      "tRawReady": 2588.2000000029802,
+      "tReturn": 2592.7000000029802,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 26,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2596.2999999970198,
+      "tRawReady": 2612.7999999970198,
+      "tReturn": 2617.5,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 27,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2621.2000000029802,
+      "tRawReady": 2637.0999999940395,
+      "tReturn": 2641.9000000059605,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 28,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2645.2000000029802,
+      "tRawReady": 2661.2000000029802,
+      "tReturn": 2666,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    },
+    {
+      "variantKey": "G-08/base-usable",
+      "arm": "hybrid",
+      "phase": "measured",
+      "repeat": 29,
+      "trigger": "user-operation",
+      "seeded": false,
+      "graphEnabled": false,
+      "d2aMode": "unrestricted",
+      "tFetch": 2669.5999999940395,
+      "tRawReady": 2685.7999999970198,
+      "tReturn": 2689.2999999970198,
+      "status": "completed",
+      "irOutcome": "ir-ready",
+      "irCompletion": "ir-ready",
+      "rawSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ],
+      "finalSceneIds": [
+        "6b2557f7-fcf1-4001-86e6-08a186d32dad",
+        "1b2908ec-5c24-4004-9a25-8410c1f4776f"
+      ]
+    }
+  ],
+  "requeries": [],
+  "checks": {
+    "status": "measured",
+    "d2Probes": [
+      {
+        "at": "before-measurement",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": {
+          "b": {
+            "generation": 1,
+            "dirty": false,
+            "sourceDigest": "sha256:075a8245c462ac31b6c323d928250a2940175c743e989af95642d072a37f955d",
+            "dependencySetDigest": "sha256:e2fc8ae84da77ae5047cb5a17ea1d1a8600070b094ff6d85602ef4b074dde6f8",
+            "producerId": "nir1-reviewed-entity-relation-v1",
+            "producerVersion": "nir1-reviewed-entity-relation/v1"
+          },
+          "chronicle": {
+            "generation": 2,
+            "dirty": false,
+            "sourceDigest": "sha256:640d24d0ac1870e19876c3eccf9fea79421b156c12464e5513ef6f3c9cb78639",
+            "dependencySetDigest": "sha256:85edd36fe92b3fe22d927cd2e33e0c47684b3fcf454224a1e47b0e9c069cd2b9",
+            "producerId": "nir1-reviewed-chronicle-v1",
+            "producerVersion": "nir1-reviewed-chronicle/v1"
+          }
+        },
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "freshnessFeed": {
+          "settle": {
+            "settled": true,
+            "waitedMs": 4.640737000001536,
+            "polls": 1,
+            "limitMs": 15000,
+            "intervalMs": 100,
+            "initial": {
+              "consumerId": "narrative-incremental-freshness/v1",
+              "head": 21,
+              "cursor": true,
+              "acknowledged": 21,
+              "activeRun": false,
+              "reserved": false,
+              "pendingEvents": 0,
+              "pendingSequences": 0
+            },
+            "final": {
+              "consumerId": "narrative-incremental-freshness/v1",
+              "head": 21,
+              "cursor": true,
+              "acknowledged": 21,
+              "activeRun": false,
+              "reserved": false,
+              "pendingEvents": 0,
+              "pendingSequences": 0
+            }
+          },
+          "beforeMeasurement": {
+            "consumerId": "narrative-incremental-freshness/v1",
+            "head": 21,
+            "cursor": true,
+            "acknowledged": 21,
+            "activeRun": false,
+            "reserved": false,
+            "pendingEvents": 0,
+            "pendingSequences": 0
+          }
+        }
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 0,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 1,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 2,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 3,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "warmup",
+        "repeat": 4,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 0,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 1,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 2,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 3,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 4,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 5,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 6,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 7,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 8,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 9,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 10,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 11,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 12,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 13,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 14,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 15,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 16,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 17,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 18,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 19,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 20,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 21,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 22,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 23,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 24,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 25,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 26,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 27,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 28,
+        "arm": "hybrid"
+      },
+      {
+        "at": "at-query",
+        "graph": "usable",
+        "chronicle": "usable",
+        "metadata": null,
+        "indexUsable": true,
+        "setupBGeneration": 1,
+        "phase": "measured",
+        "repeat": 29,
+        "arm": "hybrid"
+      }
+    ],
+    "process": {
+      "status": {
+        "schema": "nir1-graph-eval-status/1",
+        "feature": "nir1-graph-eval",
+        "registered": true,
+        "registrations": 1,
+        "registeredAtNs": 0,
+        "alive": true,
+        "worker": {
+          "state": "configured",
+          "path": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/src-tauri/target/release/nir1-c-query-worker",
+          "reason": null
+        },
+        "gateOpened": true,
+        "owner": {
+          "publicationOpen": true,
+          "workerConfigured": true,
+          "slot": "empty",
+          "cacheOccupied": false,
+          "closed": false,
+          "profile": {
+            "restricted": false,
+            "inFlightStopped": true
+          }
+        },
+        "workerFileName": "nir1-c-query-worker",
+        "clockNs": 972771514
+      },
+      "metadataAtOpen": {
+        "b": {
+          "generation": 1,
+          "dirty": false,
+          "sourceDigest": "sha256:075a8245c462ac31b6c323d928250a2940175c743e989af95642d072a37f955d",
+          "dependencySetDigest": "sha256:e2fc8ae84da77ae5047cb5a17ea1d1a8600070b094ff6d85602ef4b074dde6f8",
+          "producerId": "nir1-reviewed-entity-relation-v1",
+          "producerVersion": "nir1-reviewed-entity-relation/v1"
+        },
+        "chronicle": {
+          "generation": 1,
+          "dirty": false,
+          "sourceDigest": "sha256:640d24d0ac1870e19876c3eccf9fea79421b156c12464e5513ef6f3c9cb78639",
+          "dependencySetDigest": "sha256:85edd36fe92b3fe22d927cd2e33e0c47684b3fcf454224a1e47b0e9c069cd2b9",
+          "producerId": "nir1-reviewed-chronicle-v1",
+          "producerVersion": "nir1-reviewed-chronicle/v1"
+        }
+      },
+      "freshnessSettle": {
+        "settle": {
+          "settled": true,
+          "waitedMs": 4.640737000001536,
+          "polls": 1,
+          "limitMs": 15000,
+          "intervalMs": 100,
+          "initial": {
+            "consumerId": "narrative-incremental-freshness/v1",
+            "head": 21,
+            "cursor": true,
+            "acknowledged": 21,
+            "activeRun": false,
+            "reserved": false,
+            "pendingEvents": 0,
+            "pendingSequences": 0
+          },
+          "final": {
+            "consumerId": "narrative-incremental-freshness/v1",
+            "head": 21,
+            "cursor": true,
+            "acknowledged": 21,
+            "activeRun": false,
+            "reserved": false,
+            "pendingEvents": 0,
+            "pendingSequences": 0
+          }
+        },
+        "beforeMeasurement": {
+          "consumerId": "narrative-incremental-freshness/v1",
+          "head": 21,
+          "cursor": true,
+          "acknowledged": 21,
+          "activeRun": false,
+          "reserved": false,
+          "pendingEvents": 0,
+          "pendingSequences": 0
+        }
+      },
+      "raw": {
+        "ok": true,
+        "before": {
+          "indexedChunkCount": 0,
+          "staleChunkCount": 0,
+          "indexedSceneCount": 0,
+          "nonemptySceneCount": 6,
+          "currentModelId": "BAAI/bge-small-en-v1.5@local/model_int8.onnx/en-v1",
+          "currentEmbeddingDim": 384,
+          "currentChunkerVersion": "semantic-prose-chunker-en-v1"
+        },
+        "status": {
+          "indexedChunkCount": 6,
+          "staleChunkCount": 0,
+          "indexedSceneCount": 6,
+          "nonemptySceneCount": 6,
+          "currentModelId": "BAAI/bge-small-en-v1.5@local/model_int8.onnx/en-v1",
+          "currentEmbeddingDim": 384,
+          "currentChunkerVersion": "semantic-prose-chunker-en-v1"
+        },
+        "indexed": 6,
+        "unsearchable": [],
+        "modelWarmupMs": 272.20000000298023,
+        "buildMs": 125.20000000298023
+      },
+      "chronicleIndex": {
+        "ok": true,
+        "durationMs": 88.70000000298023,
+        "probes": 2,
+        "lastIndexUsable": true
+      },
+      "seedPin": {
+        "caseId": "G-08",
+        "variantId": "base-usable",
+        "querySceneId": "c935de7c-faeb-4183-9a2d-f768311afedc",
+        "productSeed": "912ba9d5-4912-49fb-839d-2c0b31871191",
+        "expectedSeed": "912ba9d5-4912-49fb-839d-2c0b31871191",
+        "expectedSeedLogical": null,
+        "pinCount": 1,
+        "status": "match"
+      },
+      "releases": []
+    },
+    "processes": null,
+    "problems": []
+  },
+  "aggregates": {
+    "sampleCount": 35,
+    "graphSampleCount": 0,
+    "requeryCount": 0
+  },
+  "verdict": {
+    "outcome": "recorded"
+  }
+}
