@@ -185,34 +185,46 @@ fn begin_blocking(
             source.query(),
             RAW_LIMIT,
         )?);
+        let mut scoring = None;
         if let Some(ticket) = &ticket {
             if let Some(lease) = state.related_scenes.owned(&dto.owner_key, ticket)? {
                 lock(&lease.data.result)?.query = Some(query.clone());
-                let ir_state = state.clone();
-                let ir_ticket = ticket.clone();
-                let ir_query = query.clone();
-                spawn.spawn_blocking(move || {
-                    let result = scoring::run(&ir_state, &lease, &ir_query);
-                    match result {
-                        Ok(result) => {
-                            if let Ok(mut slot) = lock(&lease.data.result) {
-                                *slot = result;
-                            }
-                        }
-                        Err(_) => {
-                            if let Ok(mut slot) = lock(&lease.data.result) {
-                                slot.response = Some(unavailable("failed"));
-                            }
-                        }
-                    }
-                    if !lease.is_live(Instant::now()) {
-                        let _ = invalidate(&ir_state, &ir_ticket, &lease);
-                    }
-                    lease.data.completed.notify_waiters();
-                    lease.data.join.notify();
-                });
+                scoring = Some((lease, ticket.clone()));
             }
         }
+        // DR-CP4-V-1 (P3): the IR scoring is launched only at the end of the
+        // Ok path below, after the Raw search and the source recheck (this
+        // begin's last participant read), so its first connection access
+        // follows them instead of sleeping on the connection mutex they hold.
+        // Every `?` before it leaves no scoring task; the operation is then
+        // released below.
+        let launch = || {
+            let Some((lease, ir_ticket)) = scoring else {
+                return;
+            };
+            let ir_state = state.clone();
+            let ir_query = query.clone();
+            spawn.spawn_blocking(move || {
+                let result = scoring::run(&ir_state, &lease, &ir_query);
+                match result {
+                    Ok(result) => {
+                        if let Ok(mut slot) = lock(&lease.data.result) {
+                            *slot = result;
+                        }
+                    }
+                    Err(_) => {
+                        if let Ok(mut slot) = lock(&lease.data.result) {
+                            slot.response = Some(unavailable("failed"));
+                        }
+                    }
+                }
+                if !lease.is_live(Instant::now()) {
+                    let _ = invalidate(&ir_state, &ir_ticket, &lease);
+                }
+                lease.data.completed.notify_waiters();
+                lease.data.join.notify();
+            });
+        };
         let hits = state
             .semantic
             .semantic_search_with_query(&query, RAW_LIMIT, None, None)?;
@@ -252,6 +264,7 @@ fn begin_blocking(
         if let Some(graph) = &graph_wire {
             value["graph"] = graph.clone();
         }
+        launch();
         Ok(value)
     })();
     // CQ-DEFER: the outcome is decided, so every commit of this begin (the
@@ -287,6 +300,42 @@ fn begin_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DR-CP4-V-1 (P3): the begin launches the IR scoring once, at the end of
+    /// its Ok path: after the Raw search and the source recheck (its last
+    /// participant read), with no fallible step after it, so a failed Raw
+    /// search or a changed source launches nothing and releases the operation.
+    /// The query is stored on the operation before the Raw search, and an
+    /// operation's IR is `pending` with its ticket.
+    #[test]
+    fn begin_launches_the_ir_scoring_only_at_the_end_of_the_ok_path() {
+        let source = include_str!("begin.rs");
+        let body = &source[..source.find("#[cfg(test)]").expect("tests")];
+        let at = |needle: &str| {
+            assert_eq!(body.matches(needle).count(), 1, "{needle}");
+            body.find(needle).expect("needle")
+        };
+        let stored = at("lock(&lease.data.result)?.query = Some(query.clone());");
+        let defined = at("let launch = || {");
+        let scoring = at("scoring::run(");
+        let search = at("semantic_search_with_query(");
+        let last_read = body
+            .rfind("with_participant_read_transaction(")
+            .expect("a participant read");
+        let recheck = at("ensure!(source_current");
+        let launched = at("launch();");
+        let outcome = at("})();");
+        assert!(stored < defined && defined < scoring && scoring < search);
+        assert!(search < last_read && last_read < recheck && recheck < launched);
+        let tail = &body[launched..outcome];
+        assert_eq!(tail, "launch();\n        Ok(value)\n    ");
+        assert!(body.contains(
+            "if outcome.is_err() {\n        if let Some(ticket) = &ticket {\n            release(&state, &dto.owner_key, ticket)?;"
+        ));
+        assert!(body
+            .contains(r#"Some(ticket) => json!({"status":"pending","operationTicket":ticket}),"#));
+    }
+
     #[test]
     fn raw_scores_preserve_the_original_direct_f32_json_transport() {
         #[derive(serde::Serialize)]
