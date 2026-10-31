@@ -277,6 +277,10 @@ const SETUP_READING_ITEMS = Object.freeze([
   ["SR-11", "L-24"],
   ["SR-12", "L-27"],
   ["SR-13", "L-19"],
+  // S2 追補 #9（DR-CP4-P-5）: the re-freeze's harness readings.
+  ["SR-14", "T-3、T-5"],
+  ["SR-15", "T-1"],
+  ["SR-16", "T-4"],
 ]);
 /**
  * S2 追補 #2（S3v6-P2-1）: the master commits S2 pins (never a commit a rebase
@@ -329,16 +333,16 @@ export const SOURCE_PINS = Object.freeze(
     ],
     ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775", []],
     ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
+    // S2 追補 #9（DR-CP4-P-5）: frozen-k64-plan.mjs and workspace-db.mjs moved
+    // to the T-1〜T-5 pins.
     [
       "s5a-graph-arm-runner",
       "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
       [
-        "frozen-k64-plan.mjs",
         "k64-record.mjs",
         "k64-runner.mjs",
         "material-revision.mjs",
         "renderer/cp4-k64-probe.tsx",
-        "workspace-db.mjs",
       ],
     ],
     [
@@ -346,12 +350,12 @@ export const SOURCE_PINS = Object.freeze(
       "3f3d9999225007417708ab471bea307331f7e8a2",
       [],
     ],
+    // S2 追補 #9（DR-CP4-P-5）: frozen-k64-run.mjs and frozen-setup-driver.mjs
+    // moved to the T-1〜T-5 pins.
     [
       "s5b-diagnostics-wiring",
       "950751d040b29b6d78a067a003dc19b196cfb692",
       [
-        "frozen-k64-run.mjs",
-        "frozen-setup-driver.mjs",
         "g01-negative-preview.mjs",
         "g01-negatives.mjs",
         "renderer/cp4-diagnostic-probe.ts",
@@ -387,6 +391,23 @@ export const SOURCE_PINS = Object.freeze(
       "sp-p4-ir-pair-limit",
       "906da641befb8dfbb445e05ce5df814bf5b16c35",
       ["diagnostic-runner.mjs", "frozen-diagnostics.mjs"],
+    ],
+    // S2 追補 #9（DR-CP4-P-5、DR-CP4-S4-5）: the harness fix of the re-freeze
+    // (DR-CP4-T-1〜T-5, branch claude/cp4-freshness-settle). b0df31f0 (T-5)
+    // last changes the setup's Freshness/maintenance wait and the read-only
+    // reads; 354b1ba6 (T-4) last changes the measurement process's wait (T-1)
+    // and the V-10 READY applicability. These are branch commits that S4's PR
+    // brings to master with its merge commit (gh pr merge --merge), never a
+    // squash, so they stay master's ancestors with these hashes.
+    [
+      "t3-t5-setup-freshness-settle",
+      "b0df31f076ea1e11fd187c5c6fdf179d0df337b5",
+      ["frozen-setup-driver.mjs", "workspace-db.mjs"],
+    ],
+    [
+      "t1-t4-measurement-settle-ready",
+      "354b1ba6a997bc464fb2ee9d7a2276c9f7d0bc78",
+      ["frozen-k64-plan.mjs", "frozen-k64-run.mjs"],
     ],
     [
       "pr1-native-eval-feature",
@@ -521,6 +542,16 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
   b: ["gh pr merge --merge", "squash", "rebase"],
   c: ["assertObservationPrepFormal", "S4b の commit", "integrator"],
   d: ["DR-CP4-S4-1", "freeze record", "sha256", "readAdmittedObservationPrep"],
+  // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze — a revocation commit deletes
+  // the old S4b's record and S4b' introduces the new one at the same path
+  // (recordIntroducedByCommit), with the user's confirmation on record.
+  e: [
+    "DR-CP4-S4-5",
+    "b7d7495034ee693e82b9a6e55bbcbfd433215012",
+    "失効",
+    "recordIntroducedByCommit",
+    "user-confirmation-2026-10-31-refreeze.md",
+  ],
 });
 /**
  * S2 追補 #5（P-S2-9 (b)）: the formal entries whose harness closure the
@@ -560,9 +591,13 @@ export const BLOCKED_TABLE_SOURCE = Object.freeze({
  * (S3's C2: at least 24 IR-compared pairs of 30).
  */
 export const HARNESS_CONSTANTS = Object.freeze({
+  // S2 追補 #9（DR-CP4-T-3）: the complete setup's Freshness wait (read at the
+  // t3-t5-setup-freshness-settle pin).
   [`${HARNESS_DIR}frozen-setup-driver.mjs`]: Object.freeze([
     "B_SEAL_REOPENS",
     "B_SEAL_WAIT_MS",
+    "FRESHNESS_SETTLE_WAIT_MS",
+    "FRESHNESS_SETTLE_INTERVAL_MS",
   ]),
   [`${HARNESS_DIR}g01-negatives.mjs`]: Object.freeze([
     "G01_CONTROL_ATTEMPTS",
@@ -576,6 +611,31 @@ export const HARNESS_CONSTANTS = Object.freeze({
     "SP_P4_IR_TIMEOUT_PAIR_LIMIT",
   ]),
 });
+/**
+ * S2 追補 #9（DR-CP4-T-1）: the measurement process's Freshness wait. The
+ * harness keeps these module constants unexported (`const`, not `export
+ * const`) and its names are the setup's names, so S2 reads each once from
+ * the pinned bytes under its own name `as` (never imported or run).
+ */
+export const HARNESS_MODULE_CONSTANTS = Object.freeze({
+  [`${HARNESS_DIR}frozen-k64-run.mjs`]: Object.freeze([
+    Object.freeze({
+      name: "FRESHNESS_SETTLE_LIMIT_MS",
+      as: "RUN_FRESHNESS_SETTLE_LIMIT_MS",
+    }),
+    Object.freeze({
+      name: "FRESHNESS_SETTLE_INTERVAL_MS",
+      as: "RUN_FRESHNESS_SETTLE_INTERVAL_MS",
+    }),
+  ]),
+});
+/**
+ * S2 追補 #9（DR-CP4-T-4 (a)）: the plan file whose `readyProbeOf` decides the
+ * kinds V-10 READY applies to (read from its pin's bytes).
+ */
+export const READY_PROBE_SOURCE = Object.freeze({
+  path: `${HARNESS_DIR}frozen-k64-plan.mjs`,
+});
 const SETUP_SESSIONS = Object.freeze({
   author: Object.freeze({ main: "product", seam: false }),
   ir: Object.freeze({ main: "setup-ir", seam: false }),
@@ -585,6 +645,8 @@ const SETUP_SESSIONS = Object.freeze({
 });
 const STEADY_POINT = "after-maintenance-current";
 /** S3v6 の P-4 (b): warm-up 5 (unused) and 30 measured processes per arm. */
+// S2 追補 #9（DR-CP4-T-4 (a)）: readyProbe is the harness plan's (V-10 READY
+// only in the steady state; never in graph-held-unusable or one-shot).
 const ONE_SHOT = Object.freeze({
   kind: "one-shot",
   maintenanceSeam: false,
@@ -593,8 +655,9 @@ const ONE_SHOT = Object.freeze({
   measuredProcessesPerArm: MEASURED_PER_ARM,
   queriesPerProcess: 1,
   freshColdCopyPerProcess: true,
+  readyProbe: false,
 });
-const inProcessSpec = (kind, maintenanceSeam) =>
+const inProcessSpec = (kind, maintenanceSeam, readyProbe) =>
   Object.freeze({
     kind,
     maintenanceSeam,
@@ -603,10 +666,15 @@ const inProcessSpec = (kind, maintenanceSeam) =>
     measuredProcessesPerArm: null,
     queriesPerProcess: "runner-procedure",
     freshColdCopyPerProcess: false,
+    readyProbe,
   });
 const MEASUREMENT_SPECS = Object.freeze({
-  [STEADY_POINT]: inProcessSpec("steady-state", "runner-procedure"),
-  "while-graph-index-unusable": inProcessSpec("graph-held-unusable", false),
+  [STEADY_POINT]: inProcessSpec("steady-state", "runner-procedure", true),
+  "while-graph-index-unusable": inProcessSpec(
+    "graph-held-unusable",
+    false,
+    false,
+  ),
   "while-chronicle-index-unusable": ONE_SHOT,
   "while-both-indexes-unusable": ONE_SHOT,
 });
@@ -669,7 +737,76 @@ const RECEIPT_FIELDS = Object.freeze({
   preMutationIndexState: null,
   blocked: null,
   "readBack.relationStaleness": null,
+  // S2 追補 #9（DR-CP4-T-1、T-3、T-5）: the complete setup's waits and the
+  // feed and maintenance state at the measurement point and on the cold DB.
+  freshnessSettles: null,
+  "measurementPoint.freshnessFeed": null,
+  "readBack.freshnessFeed": null,
+  "readBack.maintenance": null,
 });
+/**
+ * S2 追補 #9（DR-CP4-T-1、T-3、T-5。harness b0df31f0 と 354b1ba6）: the waits
+ * for the product's Freshness (and, in a complete setup, maintenance) before
+ * the measurement. The limits and intervals are the pinned harness's
+ * constants (compared separately); the rest is fixed here.
+ */
+const FRESHNESS_SETTLE = Object.freeze({
+  settledWhen: Object.freeze([
+    "acknowledged>=head",
+    "no-active-run",
+    "no-reservation",
+  ]),
+  consumerId: "narrative-incremental-freshness/v1",
+  readOnly: true,
+  setup: Object.freeze({
+    scope: "complete-setup",
+    r5CheckWaits: false,
+    beforeExecutors: Object.freeze(["chronicle-index", "measurement-point"]),
+    sessionEnd: true,
+    maintenanceStillAt: Object.freeze([
+      "before:measurement-point",
+      "session-end",
+    ]),
+    maintenanceStillWhen: Object.freeze([
+      "no-running-run",
+      "same-run-count-and-newest-created-at-on-two-consecutive-reads",
+    ]),
+    onExhausted: "[precheck] S1i freshness-settle",
+    maintenanceOnExhausted: "disclosed",
+    blocked: false,
+    reopenTrigger: false,
+    coldDbNotSettled: "[precheck] S1i freshness-settle",
+    coldDbRunningRuns: "disclosed",
+  }),
+  measurement: Object.freeze({
+    at: "open-process-after-open-before-negative-hook-declaration-raw-index",
+    maintenanceStill: false,
+    onExhausted: "index-build-timeout",
+    onExhaustedConditions: Object.freeze({
+      "while-variant": "blocked:index-state-holding",
+      "other-variant": "hold-and-precheck",
+    }),
+    receiptFields: Object.freeze([
+      "checks.process.freshnessSettle",
+      "checks.d2Probes[].freshnessFeed",
+    ]),
+  }),
+});
+/** S2 追補 #9（DR-CP4-T-4 (a)）: V-10 READY only where B is current. */
+const READY_PROBE = Object.freeze({
+  receiptField: "checks.process.ownerReady",
+  skipped: "not-applicable:<kind>",
+  disclosure: Object.freeze(["skipped", "diagnostics"]),
+  judged: false,
+});
+const READY_PROBE_WORDS = Object.freeze([
+  "steady-state",
+  "graph-held-unusable",
+  "ownerReady.skipped",
+  "fallback",
+  "at-query",
+  "閾値",
+]);
 const RECEIPT_BLOCKED_FIELDS = Object.freeze([
   "harnessId",
   "unmetPreconditions",
@@ -2400,6 +2537,8 @@ function setupReadingErrors(errors, readings, ctx) {
       "setupReadings.measurementSpecs must be steady-state, graph-held-unusable and one-shot (fresh cold copy, one query, no warm-up, no seam) per measurementPoint (DR-CP4-L-4)",
     );
   reopenErrors(errors, readings);
+  freshnessSettleErrors(errors, readings, ctx);
+  readyProbeErrors(errors, readings, ctx);
   const pins = readings.source?.pins ?? [];
   // S2 追補 #4: role, commit, check and the exact paths of each pin.
   const heldPaths = pins.flatMap((row) =>
@@ -2453,9 +2592,11 @@ function setupReadingErrors(errors, readings, ctx) {
   // S2 追補 #4／#6: the harness constants S2 copies are read from the pinned
   // bytes of the pin that holds each file (S4 の最終関門の P3-3: and the
   // K64_FREEZE.freezeCommit source).
+  // S2 追補 #9: and the readyProbeOf source (frozen-k64-plan.mjs).
   for (const source of [
     ...(ctx.harnessConstantSources ?? []),
     ...(ctx.harnessK64Freeze ? [ctx.harnessK64Freeze.source] : []),
+    ...(ctx.harnessReadyProbe ? [ctx.harnessReadyProbe.source] : []),
   ]) {
     const role = harnessPinOf(source.path)?.role;
     const held = pins
@@ -2594,6 +2735,102 @@ function oneShotPlanErrors(errors, prep, ctx) {
     );
 }
 
+/**
+ * S2 追補 #9（DR-CP4-T-1、T-3、T-5）: the Freshness waits — the settled
+ * condition, the complete setup's points (and the maintenance stillness),
+ * the measurement process's point and its mapping to the blocked table, with
+ * the limits and intervals the pinned harness's constants.
+ */
+function freshnessSettleErrors(errors, readings, ctx) {
+  const settle = readings.freshnessSettle;
+  const c = ctx.harnessConstants ?? {};
+  const setup = settle?.setup ?? {};
+  const measurement = settle?.measurement ?? {};
+  const fixed = (row, spec) =>
+    Object.entries(spec).every(([key, value]) => same(row?.[key], value));
+  const {
+    setup: setupSpec,
+    measurement: measurementSpec,
+    ...top
+  } = FRESHNESS_SETTLE;
+  if (
+    !isObject(settle) ||
+    !fixed(settle, top) ||
+    !nonBlank(settle.decision) ||
+    !nonBlank(settle.settledRule) ||
+    !fixed(setup, setupSpec) ||
+    !Number.isInteger(c.FRESHNESS_SETTLE_WAIT_MS) ||
+    !Number.isInteger(c.FRESHNESS_SETTLE_INTERVAL_MS) ||
+    setup.waitMs !== c.FRESHNESS_SETTLE_WAIT_MS ||
+    setup.intervalMs !== c.FRESHNESS_SETTLE_INTERVAL_MS ||
+    !same(setup.harnessConstants, [
+      "FRESHNESS_SETTLE_WAIT_MS",
+      "FRESHNESS_SETTLE_INTERVAL_MS",
+    ]) ||
+    !nonBlank(setup.rule) ||
+    !fixed(measurement, measurementSpec) ||
+    !Number.isInteger(c.RUN_FRESHNESS_SETTLE_LIMIT_MS) ||
+    !Number.isInteger(c.RUN_FRESHNESS_SETTLE_INTERVAL_MS) ||
+    measurement.waitMs !== c.RUN_FRESHNESS_SETTLE_LIMIT_MS ||
+    measurement.intervalMs !== c.RUN_FRESHNESS_SETTLE_INTERVAL_MS ||
+    !same(measurement.harnessConstants, [
+      "FRESHNESS_SETTLE_LIMIT_MS",
+      "FRESHNESS_SETTLE_INTERVAL_MS",
+    ]) ||
+    !nonBlank(measurement.rule)
+  )
+    errors.push(
+      `setupReadings.freshnessSettle must wait read-only for the product's Freshness (cursor at the feed head, no run, no reservation) in a complete setup before chronicle-index and measurement-point and at each session's end (maintenance still before measurement-point and at the end; ${String(c.FRESHNESS_SETTLE_WAIT_MS)} ms / ${String(c.FRESHNESS_SETTLE_INTERVAL_MS)} ms, [precheck] when the Freshness runs out, the maintenance disclosed) and in each measurement process before the declaration step (${String(c.RUN_FRESHNESS_SETTLE_LIMIT_MS)} ms / ${String(c.RUN_FRESHNESS_SETTLE_INTERVAL_MS)} ms, index-build-timeout when it runs out), with the pinned harness's constants (DR-CP4-T-1、T-3、T-5)`,
+    );
+  // The measurement's exhaustion is the existing index-build-timeout rows of
+  // the blocked table (DR-CP4-L-28 (8)(9)); the table gains no row.
+  for (const [condition, judged] of Object.entries(
+    FRESHNESS_SETTLE.measurement.onExhaustedConditions,
+  )) {
+    const row = (ctx.harnessBlockedTable ?? []).find(
+      (entry) =>
+        entry.harnessId === "index-build-timeout" &&
+        entry.condition === condition,
+    );
+    if (row?.graphCases !== judged)
+      errors.push(
+        `setupReadings.freshnessSettle.measurement: the blocked table's index-build-timeout/${condition} must be ${judged} (DR-CP4-L-28)`,
+      );
+  }
+}
+
+/**
+ * S2 追補 #9（DR-CP4-T-4 (a)）: V-10 READY applies to the kinds the pinned
+ * harness plan's readyProbeOf names (the steady state); graph-held-unusable
+ * and one-shot disclose the non-application, never judged.
+ */
+function readyProbeErrors(errors, readings, ctx) {
+  const ready = readings.readyProbe;
+  const kinds = ctx.harnessReadyProbe?.kinds ?? null;
+  const specs = Object.values(MEASUREMENT_SPECS);
+  const applies = [
+    ...new Set(specs.filter((s) => s.readyProbe).map((s) => s.kind)),
+  ];
+  const notApplicable = [
+    ...new Set(specs.filter((s) => !s.readyProbe).map((s) => s.kind)),
+  ];
+  if (
+    !Array.isArray(kinds) ||
+    !same(kinds, applies) ||
+    !isObject(ready) ||
+    !same(ready.appliesTo, applies) ||
+    !same(ready.notApplicable, notApplicable) ||
+    Object.entries(READY_PROBE).some(
+      ([key, value]) => !same(ready[key], value),
+    ) ||
+    !nonBlank(ready.decision) ||
+    READY_PROBE_WORDS.some((word) => !String(ready.rule ?? "").includes(word))
+  )
+    errors.push(
+      `setupReadings.readyProbe must apply V-10 READY to ${applies.join(", ")} only (the pinned harness plan's readyProbeOf: ${JSON.stringify(kinds)}), disclose ${READY_PROBE.skipped} and the prepare diagnostics in ${READY_PROBE.receiptField} for ${notApplicable.join(", ")} without judging them, and keep the Graph arm's fallback, the at-query probe and the thresholds (DR-CP4-T-4 (a))`,
+    );
+}
+
 /** S2 追補 #2（DR-CP4-L-24）: the closed set of reopen triggers and the limits. */
 function reopenErrors(errors, readings) {
   const reopen = readings.reopen ?? {};
@@ -2663,6 +2900,13 @@ function d2ReadingErrors(errors, readings, ctx) {
     (readings.readAs ?? []).some(
       (row) => !nonBlank(row?.bCheck) || !nonBlank(row?.chronicleCheck),
     ) ||
+    // S2 追補 #9（DR-CP4-T-3）: graph-index-unusable's C is rebuilt after the
+    // Freshness processed the feed (the Freshness's invalidation lands first).
+    !String(
+      (readings.readAs ?? []).find(
+        (row) => row?.variant === "G-08/graph-index-unusable",
+      )?.readmeNote ?? "",
+    ).includes("DR-CP4-T-3") ||
     !same(readings.checkedAt, ["before-measurement", "at-query"]) ||
     readings.onMismatch !== INDEX_STATE_HOLDING ||
     readings.notBlockedAs !== "blocked:b-sealed-binding" ||
@@ -3731,18 +3975,89 @@ async function readHarnessK64Freeze({ repoRoot, read }) {
   };
 }
 
-/** S2 追補 #4: HARNESS_CONSTANTS from the pinned bytes; null on any miss. */
+/**
+ * S2 追補 #9（DR-CP4-T-1）: one unexported module constant (`const NAME =
+ * literal;` at the start of a line, exactly once) in harness source text;
+ * undefined when absent, exported or repeated.
+ */
+export function parseHarnessModuleConstant(text, name) {
+  const rows = [
+    ...String(text).matchAll(
+      new RegExp(`^const ${name} = (?:([0-9][0-9_]*)|"([^"\\n]*)");$`, "gmu"),
+    ),
+  ];
+  if (rows.length !== 1) return undefined;
+  const [match] = rows;
+  return match[1] !== undefined
+    ? Number(match[1].replaceAll("_", ""))
+    : match[2];
+}
+
+/**
+ * S2 追補 #9（DR-CP4-T-4 (a)）: the kinds the harness plan's readyProbeOf
+ * applies V-10 READY to, when the plan defines it once as one equality and
+ * both formalRunPlan and devRunSpec use it (and the earlier `!isOneShot`
+ * reading is gone); undefined otherwise.
+ */
+export function parseReadyProbeKinds(text) {
+  const source = String(text);
+  const rows = [
+    ...source.matchAll(
+      /^const readyProbeOf = \(kind\) => kind === "([a-z-]+)";$/gmu,
+    ),
+  ];
+  if (rows.length !== 1) return undefined;
+  const uses = source.split("readyProbe: readyProbeOf(kind),").length - 1;
+  if (uses !== 2 || source.includes("readyProbe: !isOneShot")) return undefined;
+  return [rows[0][1]];
+}
+
+/** S2 追補 #9: readyProbeOf's kinds from the pinned bytes; null on a miss. */
+async function readHarnessReadyProbe({ repoRoot, read }) {
+  const pinned = await readPinnedHarnessFile({
+    repoRoot,
+    read,
+    file: READY_PROBE_SOURCE.path,
+  });
+  if (!pinned) return null;
+  const kinds = parseReadyProbeKinds(pinned.bytes.toString("utf8"));
+  if (kinds === undefined) return null;
+  return {
+    kinds,
+    source: {
+      path: READY_PROBE_SOURCE.path,
+      commit: pinned.commit,
+      from: pinned.from,
+      sha256: pinned.sha256,
+    },
+  };
+}
+
+/**
+ * S2 追補 #4: HARNESS_CONSTANTS from the pinned bytes; null on any miss.
+ * S2 追補 #9: and HARNESS_MODULE_CONSTANTS under their `as` names.
+ */
 async function readHarnessConstants({ repoRoot, read }) {
   const values = {};
   const sources = [];
-  for (const [file, names] of Object.entries(HARNESS_CONSTANTS)) {
+  const files = [
+    ...Object.entries(HARNESS_CONSTANTS).map(([file, names]) => [
+      file,
+      names.map((name) => ({ name, as: name, parse: parseHarnessConstant })),
+    ]),
+    ...Object.entries(HARNESS_MODULE_CONSTANTS).map(([file, rows]) => [
+      file,
+      rows.map((row) => ({ ...row, parse: parseHarnessModuleConstant })),
+    ]),
+  ];
+  for (const [file, names] of files) {
     const pinned = await readPinnedHarnessFile({ repoRoot, read, file });
     if (!pinned) return null;
     const text = pinned.bytes.toString("utf8");
-    for (const name of names) {
-      const value = parseHarnessConstant(text, name);
-      if (value === undefined) return null;
-      values[name] = value;
+    for (const { name, as, parse } of names) {
+      const value = parse(text, name);
+      if (value === undefined || Object.hasOwn(values, as)) return null;
+      values[as] = value;
     }
     sources.push({
       path: file,
@@ -3852,8 +4167,10 @@ export async function loadObservationPrepContext({ repoRoot }) {
   const blocked = await readHarnessBlockedTable({ repoRoot, read });
   const constants = await readHarnessConstants({ repoRoot, read });
   const k64Freeze = await readHarnessK64Freeze({ repoRoot, read });
+  const readyProbe = await readHarnessReadyProbe({ repoRoot, read });
   return {
     harnessK64Freeze: k64Freeze,
+    harnessReadyProbe: readyProbe,
     harnessBlockedTable: blocked?.table ?? null,
     harnessBlockedTableSource: blocked?.source ?? null,
     harnessConstants: constants?.values ?? null,
