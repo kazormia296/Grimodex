@@ -267,6 +267,7 @@ pub(super) fn publish_chronicle_index_build_in_tx(
     };
     Ok(IndexProof {
         validated_read: std::sync::Mutex::new(None),
+        validated_query_contexts: std::sync::Mutex::new(Vec::new()),
         project: project.into(),
         runtime_epoch,
         binding,

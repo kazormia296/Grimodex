@@ -46,13 +46,26 @@ pub(super) fn proof_current_with_control(
     proof: &IndexProof,
     control: &mut dyn GraphWorkControl,
 ) -> Result<bool> {
+    Ok(proof_current_observed(conn, runtime, proof, control)?.is_some())
+}
+
+/// [`proof_current_with_control`] that also returns the read identity this
+/// check observed at its start (DR-CP4-V-1 (c)): `Some(identity)` when the
+/// proof is current, where `identity` is `None` outside a Read transaction.
+/// A caller may reuse a read of this snapshot only under that same identity.
+pub(super) fn proof_current_observed(
+    conn: &Connection,
+    runtime: &NirChronicleIndexRuntime,
+    proof: &IndexProof,
+    control: &mut dyn GraphWorkControl,
+) -> Result<Option<Option<super::read_identity::ReadIdentity>>> {
     control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Source)?;
     ensure!(
         !conn.is_autocommit(),
         "NIR1 query validation requires a read transaction"
     );
     if runtime.current_epoch(conn)? != Ok(proof.runtime_epoch) {
-        return Ok(false);
+        return Ok(None);
     }
     let read_identity = super::read_identity::ReadIdentity::read(conn)?;
     if let Some(identity) = &read_identity {
@@ -61,11 +74,12 @@ pub(super) fn proof_current_with_control(
             .lock()
             .map_err(|_| anyhow::anyhow!("NIR1 proof read lock poisoned"))?;
         if validated.as_ref() == Some(identity) {
-            return Ok(runtime.current_epoch(conn)? == Ok(proof.runtime_epoch));
+            return Ok((runtime.current_epoch(conn)? == Ok(proof.runtime_epoch))
+                .then(|| read_identity.clone()));
         }
     }
     if !is_generic_freshness_canonical(conn)? {
-        return Ok(false);
+        return Ok(None);
     }
     let language: String = conn.query_row(
         "SELECT language FROM projects WHERE id=?1",
@@ -73,10 +87,10 @@ pub(super) fn proof_current_with_control(
         |row| row.get(0),
     )?;
     if language != proof.language {
-        return Ok(false);
+        return Ok(None);
     }
     let BindingRead::Registered(current) = binding::read(conn, &proof.project)? else {
-        return Ok(false);
+        return Ok(None);
     };
     if current.dirty
         || current != proof.binding
@@ -88,14 +102,14 @@ pub(super) fn proof_current_with_control(
         || get_current_epoch(conn, &proof.project)?
             .is_none_or(|epoch| epoch.id != proof.semantic_epoch)
     {
-        return Ok(false);
+        return Ok(None);
     }
     let row = conn.query_row("SELECT evidence_freshness,build_action,semantic_epoch_id,last_evaluated_run_id,dependency_set_digest,updated_at
         FROM narrative_consumer_freshness WHERE project_id=?1 AND consumer_kind='semantic-index' AND consumer_key=?2",
         params![proof.project,INDEX_KEY],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,
             r.get::<_,Option<String>>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,String>(5)?))).optional()?;
     let Some((freshness, action, epoch, publisher, digest, updated)) = row else {
-        return Ok(false);
+        return Ok(None);
     };
     if freshness != "fresh"
         || action != "none"
@@ -109,7 +123,7 @@ pub(super) fn proof_current_with_control(
                 INDEX_KEY,
             )?)
     {
-        return Ok(false);
+        return Ok(None);
     }
     if let Some(publisher) = publisher {
         if let Err(error) = validate_current_evaluation_run_reference(
@@ -124,12 +138,12 @@ pub(super) fn proof_current_with_control(
             {
                 return Err(error);
             }
-            return Ok(false);
+            return Ok(None);
         }
     }
     let edges = find_edges_by_consumer(conn, &proof.project, "semantic-index", INDEX_KEY)?;
     if edges != proof.input_edges || pending::read(conn, &proof.project, &edges)?.is_err() {
-        return Ok(false);
+        return Ok(None);
     }
     let mut statement = conn.prepare("SELECT project_id,evidence_freshness,reason_code,build_action,evaluated_at_epoch_id,evaluated_at
         FROM narrative_dependency_edge_states WHERE edge_id=?1")?;
@@ -148,7 +162,7 @@ pub(super) fn proof_current_with_control(
             })
             .optional()?;
         let Some((project, freshness, reason, action, epoch, updated)) = state else {
-            return Ok(false);
+            return Ok(None);
         };
         if project != proof.project
             || freshness != "fresh"
@@ -157,7 +171,7 @@ pub(super) fn proof_current_with_control(
             || epoch != proof.semantic_epoch
             || !canonical_instant(&updated)
         {
-            return Ok(false);
+            return Ok(None);
         }
     }
     for observation in
@@ -167,20 +181,20 @@ pub(super) fn proof_current_with_control(
             || observation.build_action != BuildAction::None
             || observation.reason_code.is_some()
         {
-            return Ok(false);
+            return Ok(None);
         }
     }
     if !super::revision_bindings::still_current(conn, proof, control)? {
-        return Ok(false);
+        return Ok(None);
     }
     if runtime.current_epoch(conn)? != Ok(proof.runtime_epoch) {
-        return Ok(false);
+        return Ok(None);
     }
     if read_identity.is_some() && super::read_identity::ReadIdentity::read(conn)? == read_identity {
         *proof
             .validated_read
             .lock()
-            .map_err(|_| anyhow::anyhow!("NIR1 proof read lock poisoned"))? = read_identity;
+            .map_err(|_| anyhow::anyhow!("NIR1 proof read lock poisoned"))? = read_identity.clone();
     }
-    Ok(true)
+    Ok(Some(read_identity))
 }

@@ -10,9 +10,10 @@ use super::super::retrieval_admission::{
     RetrievalSceneSourceBinding, RetrievalSceneSourceRead,
 };
 use super::{
-    canonical::{proof_current, proof_current_with_control},
+    canonical::{proof_current, proof_current_observed, proof_current_with_control},
     evidence::exact_utf16_quote,
-    runtime::IndexProof,
+    read_identity::ReadIdentity,
+    runtime::{IndexProof, ValidatedQueryContext},
     NirChronicleIndexRuntime, NirEmbeddingIdentity, NirIndexUnavailableReason as Reason,
 };
 
@@ -61,7 +62,7 @@ impl From<&RetrievalQueryContext> for QueryBinding {
 pub struct NirQualifiedBatch {
     owner: u64,
     proof: Arc<IndexProof>,
-    query: RetrievalQueryContext,
+    query: Arc<RetrievalQueryContext>,
     documents: Vec<NirQualifiedDocument>,
 }
 
@@ -290,7 +291,7 @@ pub fn qualify_chronicle_index_query(
         });
     };
     let mut control = super::super::source_revision::ForegroundValidationControl;
-    qualify_proof(runtime, proof, query, &mut control)
+    qualify_proof(runtime, proof, Arc::new(query), &mut control)
 }
 
 /// Lend only the exact capability captured before query embedding. One full
@@ -329,10 +330,10 @@ pub fn qualify_chronicle_index_snapshot_with_control(
 fn qualify_proof(
     runtime: &NirChronicleIndexRuntime,
     proof: Arc<IndexProof>,
-    query: RetrievalQueryContext,
+    query: Arc<RetrievalQueryContext>,
     control: &mut dyn GraphWorkControl,
 ) -> Result<NirQualifiedRead> {
-    let binding = QueryBinding::from(&query);
+    let binding = QueryBinding::from(&*query);
     let mut documents = Vec::new();
     for (index, candidate) in proof.candidates.iter().enumerate() {
         control.check(super::super::nir1_entity_relation_index::GraphWorkStage::Row)?;
@@ -398,7 +399,7 @@ pub fn validate_chronicle_query_snapshot_with_control(
         runtime,
         batch.owner,
         &batch.proof,
-        &QueryBinding::from(&batch.query),
+        &QueryBinding::from(&*batch.query),
         control,
     )
     .map(|query| query.is_some())
@@ -425,7 +426,7 @@ pub fn validate_chronicle_bound_batch_with_control(
 ) -> Result<bool> {
     if original.owner != batch.owner
         || !Arc::ptr_eq(&original.proof, &batch.proof)
-        || original.query != QueryBinding::from(&batch.query)
+        || original.query != QueryBinding::from(&*batch.query)
     {
         return Ok(false);
     }
@@ -439,7 +440,7 @@ fn validate_binding_with_control(
     proof: &Arc<IndexProof>,
     expected: &QueryBinding,
     control: &mut dyn GraphWorkControl,
-) -> Result<Option<RetrievalQueryContext>> {
+) -> Result<Option<Arc<RetrievalQueryContext>>> {
     ensure!(
         !conn.is_autocommit(),
         "NIR1 result validation requires a read transaction"
@@ -448,18 +449,21 @@ fn validate_binding_with_control(
         return Ok(None);
     }
     let current = runtime.lock()?.proofs.get(&proof.project).cloned();
-    if current.is_none_or(|current| !Arc::ptr_eq(&current, proof))
-        || !proof_current_with_control(conn, runtime, proof, control)?
-    {
+    if current.is_none_or(|current| !Arc::ptr_eq(&current, proof)) {
         return Ok(None);
     }
-    let RetrievalQueryContextRead::Available(query) =
-        read_retrieval_query_context(conn, &expected.project, &expected.scene)?
+    let Some(identity) = proof_current_observed(conn, runtime, proof, control)? else {
+        return Ok(None);
+    };
+    let Some(query) =
+        validated_query_context(conn, proof, identity, &expected.project, &expected.scene)?
     else {
         return Ok(None);
     };
+    // DR-CP4-V-1 (d): a reused context is still compared with the expected
+    // binding and the runtime epoch, every time, outside the reuse.
     Ok(
-        if QueryBinding::from(&query) == *expected
+        if QueryBinding::from(&*query) == *expected
             && runtime.current_epoch(conn)? == Ok(proof.runtime_epoch)
         {
             Some(query)
@@ -467,6 +471,65 @@ fn validate_binding_with_control(
             None
         },
     )
+}
+
+/// DR-CP4-V-1 (P2): the query context of `project`/`scene` in this snapshot.
+/// It reuses a context this proof's validation read earlier only for the same
+/// project, Scene and read identity (`identity`, observed by the proof check in
+/// this same transaction; `None` outside a Read transaction, which neither
+/// reuses nor keeps anything). A context read here is kept only when the
+/// identity read again after it still matches, as `validated_read` is
+/// (`canonical.rs`). An unavailable context is never kept.
+fn validated_query_context(
+    conn: &Connection,
+    proof: &IndexProof,
+    identity: Option<ReadIdentity>,
+    project: &str,
+    scene: &str,
+) -> Result<Option<Arc<RetrievalQueryContext>>> {
+    let kept = |entries: &[ValidatedQueryContext], identity: &ReadIdentity| {
+        entries
+            .iter()
+            .find(|entry| {
+                entry.identity == *identity && entry.project == project && entry.scene == scene
+            })
+            .map(|entry| Arc::clone(&entry.context))
+    };
+    if let Some(identity) = &identity {
+        let entries = proof
+            .validated_query_contexts
+            .lock()
+            .map_err(|_| anyhow::anyhow!("NIR1 query context lock poisoned"))?;
+        if let Some(context) = kept(&entries, identity) {
+            return Ok(Some(context));
+        }
+    }
+    let RetrievalQueryContextRead::Available(query) =
+        read_retrieval_query_context(conn, project, scene)?
+    else {
+        return Ok(None);
+    };
+    let query = Arc::new(query);
+    if let Some(identity) = identity {
+        if ReadIdentity::read(conn)?.as_ref() == Some(&identity) {
+            let mut entries = proof
+                .validated_query_contexts
+                .lock()
+                .map_err(|_| anyhow::anyhow!("NIR1 query context lock poisoned"))?;
+            // An entry of another state can never match again for this
+            // connection state; keep only the current state's contexts.
+            entries.retain(|entry| entry.identity == identity);
+            if kept(&entries, &identity).is_none() {
+                entries.push(ValidatedQueryContext {
+                    identity,
+                    project: project.into(),
+                    scene: scene.into(),
+                    context: Arc::clone(&query),
+                });
+            }
+        }
+    }
+    Ok(Some(query))
 }
 
 pub fn read_chronicle_evidence_navigation(
@@ -560,3 +623,7 @@ pub fn reconcile_chronicle_index_runtime(
     changed.sort();
     Ok(changed)
 }
+
+#[cfg(test)]
+#[path = "query_context_reuse_tests.rs"]
+mod query_context_reuse_tests;
