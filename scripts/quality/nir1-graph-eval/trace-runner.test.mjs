@@ -28,8 +28,12 @@ import {
   runTraceOperations,
   traceAttemptOutcome,
   traceMaintenanceStart,
+  traceMaterialResolver,
 } from "./trace-runner.mjs";
 import { DEV_PREVIEW_PURPOSES } from "./admission.mjs";
+import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
+import { typedRevisionMaterials } from "./material-revision.mjs";
+import { TRACE_PROJECT } from "./trace-frozen.mjs";
 
 function plan(kind, cycles = 2) {
   return devTracePlan({
@@ -740,5 +744,101 @@ test("レビュー P3: 凍結の trace の開始は setupFailure なら記録し
         setupRaw: {},
       }),
     /\[precheck\].*does not launch/u,
+  );
+});
+
+const REPO_ROOT = path.resolve(new URL("../../..", import.meta.url).pathname);
+test("DR-CP4-V-2: 凍結の trace の F6 の resolver は Gold と同じ G-02 base の setup の plan から作り、期待は trace の file の材料と同じで、材料の path を material-revision で解決する", () => {
+  const tracePlan = JSON.parse(
+    readFileSync(
+      path.join(REPO_ROOT, "evals/nir1-graph/trace-browsing.v1.json"),
+      "utf8",
+    ),
+  );
+  const fixture = JSON.parse(
+    readFileSync(path.join(REPO_ROOT, TRACE_PROJECT.fixturePath), "utf8"),
+  );
+  const setupPlan = loadFrozenSetupPlans({
+    root: REPO_ROOT,
+    stopsAt: "complete",
+  }).find((row) => row.variantKey === "G-02/base");
+  const materials = typedRevisionMaterials(setupPlan);
+  // 論理 ID → runtime ID（setup の受領書の logicalToRuntime の形）。
+  const rt = (logical) => `rt-${logical}`;
+  const scenes = Object.fromEntries(
+    fixture.scenes.map((row) => [row.id, rt(row.id)]),
+  );
+  const entities = {};
+  const typedRevisions = {};
+  for (const revision of materials.values()) {
+    typedRevisions[revision.id] = { revisionId: rt(revision.id) };
+    for (const relation of revision.relations) {
+      entities[relation.from] = rt(relation.from);
+      entities[relation.to] = rt(relation.to);
+    }
+  }
+  const ids = { scenes, entities, typedRevisions };
+  const resolver = traceMaterialResolver({
+    root: REPO_ROOT,
+    tracePlan,
+    fixture,
+    ids,
+  });
+  assert.deepEqual(resolver.pairs, [
+    "g02-r-sela|g02-works-beside",
+    "g02-r-tamsin|g02-trained-tamsin",
+  ]);
+  const edgeOf = (revisionId, relationId) => {
+    const row = materials
+      .get(revisionId)
+      .relations.find((value) => value.relationId === relationId);
+    return {
+      relationType: row.relationType,
+      directionality: row.directionality,
+      from: rt(row.from),
+      to: rt(row.to),
+      evidence: [
+        { evidenceId: "ev-1", quoteSha256: row.fromQuoteSha256 },
+        { evidenceId: "ev-2", quoteSha256: row.toQuoteSha256 },
+      ],
+    };
+  };
+  const paths = {
+    graphOnly: {
+      sceneId: rt("g02-tamsin-first"),
+      edges: [edgeOf("g02-r-tamsin", "g02-trained-tamsin")],
+    },
+    pathAttachments: [
+      {
+        sceneId: rt("g02-attach"),
+        edges: [edgeOf("g02-r-sela", "g02-works-beside")],
+      },
+    ],
+  };
+  const matched = resolver.contribution(paths);
+  assert.equal(matched.basis, "material-revision");
+  assert.equal(matched.contribution, true);
+  assert.deepEqual(matched.matched, [
+    "graph-only:g02-tamsin-first",
+    "path-attachment:g02-attach",
+  ]);
+  assert.equal(matched.unresolvedEdges, 0);
+  // 観測の無い子（paths なし）は寄与なし、基底は material-revision のまま。
+  const none = resolver.contribution(null);
+  assert.equal(none.basis, "material-revision");
+  assert.equal(none.contribution, false);
+  // trace の file の材料が fixture の期待と食い違えば [precheck]。
+  assert.throws(
+    () =>
+      traceMaterialResolver({
+        root: REPO_ROOT,
+        tracePlan: {
+          ...tracePlan,
+          expectedMaterials: tracePlan.expectedMaterials.slice(0, 1),
+        },
+        fixture,
+        ids,
+      }),
+    /\[precheck\] DR-CP4-V-2/u,
   );
 });

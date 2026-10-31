@@ -24,7 +24,7 @@ import { useTreeStore } from "@/features/tree/treeStore";
 import { getSceneVersion } from "@/features/tree/api";
 import { subscribeSceneBodyCommits } from "@/lib/sceneBodyCommitRegistry";
 import type { FetchTimingRow } from "./fetchRelatedScenes.timing";
-import { displayKey, summarize } from "./cp4-k64-probe";
+import { displayKey, graphPathsOf, summarize } from "./cp4-k64-probe";
 import {
   cycleEndOf,
   publishedOf,
@@ -359,6 +359,9 @@ function exportObservation() {
       resolvedAt: row.resolvedAt,
       failed: row.failed,
       result: row.value ? summarize(row.value, row.sceneId) : null,
+      // DR-CP4-V-2: the path edges F6 matches on the materials' Revisions
+      // (as the k64 probe; Node hashes the quotes right after the export).
+      paths: row.value ? graphPathsOf(row.value) : null,
     })),
     commits: [...commits],
     notices: notices

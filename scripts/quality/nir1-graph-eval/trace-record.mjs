@@ -782,6 +782,7 @@ export function traceQueryRow({
   d2aMode,
   materials,
   expectedContribution,
+  materialContribution = null,
 }) {
   const queryId = `${plan.traceId}#${index}`;
   const all = [...(observation.fetches ?? [])].sort(byCall);
@@ -904,6 +905,11 @@ export function traceQueryRow({
         ? { before: boundary.before, atEnd: boundary.after }
         : { before: {}, atEnd: {} },
       expectedContribution,
+      // DR-CP4-V-2: the formal trace matches F6 on the materials' Revisions
+      // (DR-CP4-N-4); the dev preview keeps the Scene-level match.
+      ...(typeof materialContribution === "function"
+        ? { materialContribution }
+        : {}),
     });
   } catch (error) {
     // レビュー P3 (e): a parent that returned no result (or any record the
@@ -992,6 +998,7 @@ export function traceRows({
   d2aMode,
   ids,
   expectedContribution,
+  materialContribution = null,
 }) {
   const materials = plan.expectedMaterials.map((row) => {
     const runtime = ids?.revisions?.[row.revisionId];
@@ -1022,8 +1029,35 @@ export function traceRows({
       d2aMode,
       materials,
       expectedContribution,
+      materialContribution,
     }),
   );
+}
+
+/**
+ * DR-CP4-V-2: the formal trace's F6 resolver (material-revision.mjs, built
+ * from the G-02 base setup plan as Gold builds it) must expect exactly the
+ * trace file's materials: the same (Revision, edge) pairs. `[precheck]`
+ * otherwise (the trace file and the fixture would disagree on F6).
+ */
+export function assertTraceMaterialsMatch({ plan, expected }) {
+  const fromPlan = new Set(
+    (plan?.expectedMaterials ?? []).flatMap((row) =>
+      (row.edgeIds ?? []).map((edgeId) => `${row.revisionId}|${edgeId}`),
+    ),
+  );
+  const fromResolver = new Set(
+    (expected ?? []).flatMap((row) => row.pairs ?? []),
+  );
+  const same =
+    fromPlan.size > 0 &&
+    fromPlan.size === fromResolver.size &&
+    [...fromPlan].every((pair) => fromResolver.has(pair));
+  if (!same)
+    throw new Error(
+      `[precheck] DR-CP4-V-2: the F6 resolver expects ${JSON.stringify([...fromResolver].sort())}, the trace file's materials are ${JSON.stringify([...fromPlan].sort())}`,
+    );
+  return [...fromPlan].sort();
 }
 
 // ---- re-queries, outside Q and events --------------------------------------

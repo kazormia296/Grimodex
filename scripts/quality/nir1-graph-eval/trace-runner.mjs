@@ -56,6 +56,11 @@ import { buildIndex, launch, openWorkspace } from "./dprime-check.mjs";
 import { candidateBlock, devExpectedContribution } from "./k64-runner.mjs";
 import { DEFAULT_ADDON, ROOT, bundleObserver } from "./launcher.mjs";
 import { finishAttempt } from "./frozen-k64-admission.mjs";
+import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
+import {
+  hashObservationPaths,
+  materialRevisionResolver,
+} from "./material-revision.mjs";
 import {
   outsideQReceiptCountByReason,
   readRunHead,
@@ -88,6 +93,7 @@ import {
   TRACE_RUN_SCHEMA,
   alignSeededBegins,
   alignmentDisclosure,
+  assertTraceMaterialsMatch,
   devTracePlan,
   mergeNativeRecords,
   TRACE_MAINTENANCE_SEAM,
@@ -675,6 +681,42 @@ function parseArgs(argv) {
   return options;
 }
 
+/**
+ * DR-CP4-V-2 (DR-CP4-N-4 on the trace path): the formal trace's F6 resolver,
+ * built as Gold builds it for G-02 base (the frozen setup plan, the fixture's
+ * variant expectations, the setup receipt's logical → runtime map); its
+ * expected (Revision, edge) pairs must be the trace file's materials.
+ */
+export function traceMaterialResolver({ root, tracePlan, fixture, ids }) {
+  const setupPlan = loadFrozenSetupPlans({ root, stopsAt: "complete" }).find(
+    (row) =>
+      row.variantKey === `${TRACE_PROJECT.caseId}/${TRACE_PROJECT.variantId}`,
+  );
+  if (!setupPlan)
+    throw new Error(
+      `[precheck] DR-CP4-V-2: no frozen setup plan for ${TRACE_PROJECT.caseId}/${TRACE_PROJECT.variantId}`,
+    );
+  const expectations =
+    fixture?.variants?.find((row) => row.id === TRACE_PROJECT.variantId)
+      ?.expectations ??
+    fixture?.expectations ??
+    null;
+  const resolver = materialRevisionResolver({
+    plan: setupPlan,
+    expectations,
+    ids,
+  });
+  const pairs = assertTraceMaterialsMatch({
+    plan: tracePlan,
+    expected: resolver.expected,
+  });
+  return {
+    expected: resolver.expected,
+    pairs,
+    contribution: (paths) => resolver.contribution(paths),
+  };
+}
+
 function git(args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
 }
@@ -780,6 +822,10 @@ function devContext({ options, setupPath, setup }) {
       (row) => ids.typedRevisions[row.revisionId].revisionId,
     ),
     expectedContribution: devExpectedContribution(loaded, "base", ids),
+    // DR-CP4-V-2: the dev preview keeps the Scene-level F6 (no setup plan to
+    // derive the materials' Revisions from).
+    f6: { basis: "scene-level-preview", expected: null },
+    materialContribution: null,
     ratification5: collectRatification5Evidence({
       root: ROOT,
       candidateHead: "HEAD",
@@ -839,6 +885,12 @@ export function frozenContext({ prepared, setupRaw }) {
     }).toString("utf8"),
   );
   const { ids } = prepared.runtime;
+  const material = traceMaterialResolver({
+    root: ROOT,
+    tracePlan: prepared.plan,
+    fixture,
+    ids,
+  });
   return {
     frozen: true,
     admission,
@@ -854,6 +906,12 @@ export function frozenContext({ prepared, setupRaw }) {
       TRACE_PROJECT.variantId,
       ids,
     ),
+    f6: {
+      basis: "material-revision",
+      expected: material.expected,
+      pairs: material.pairs,
+    },
+    materialContribution: material.contribution,
     ratification5: prepared.admission.ratification5,
     declarationSceneId: prepared.declaration.sceneId,
     spP4: prepared.spP4,
@@ -1193,8 +1251,10 @@ async function main() {
         window.cp4Harness.trace.editorText(),
       );
     await delay(FINAL_SETTLE_MS);
-    const observation = await page.evaluate(() =>
-      window.cp4Harness.trace.exportObservation(),
+    // DR-CP4-V-2: the path quotes are hashed right after the page returns
+    // (material-revision.mjs; never written in clear).
+    const observation = hashObservationPaths(
+      await page.evaluate(() => window.cp4Harness.trace.exportObservation()),
     );
     nativeReads.push(await call(addon, "nir1GraphEvalSamples"));
     report.checks.counterPoll.stop = await poller.stop();
@@ -1228,6 +1288,7 @@ async function main() {
       d2aMode: D2A_MODE,
       ids: { revisions: context.revisions },
       expectedContribution: context.expectedContribution,
+      materialContribution: context.materialContribution,
     });
     const parentSeqs = result.log
       .filter((row) => Number.isInteger(row.parentSeq))
@@ -1303,6 +1364,8 @@ async function main() {
         startSeal:
           "B seal read read-only (busy timeout 0) twice: before the parent's begin (after the autosave commit / the move; query 0 before the mount) and right after the parent was observed; current only when both agree (DR-CP4-TR-9, TR-13)",
         requeries: "counted apart (K6/2 step 7); never rows",
+        // DR-CP4-V-2: the F6 unit of the rows' children.
+        f6: context.f6,
       },
       declaration: declaration
         ? {

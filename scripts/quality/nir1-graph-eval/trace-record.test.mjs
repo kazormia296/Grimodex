@@ -27,6 +27,7 @@ import {
   alignSeededBegins,
   alignmentDisclosure,
   appendCounterRun,
+  assertTraceMaterialsMatch,
   boundaryCounters,
   devTracePlan,
   mergeNativeRecords,
@@ -1364,4 +1365,101 @@ test("DR-CP4-V-2: 窓の内側の不一致は defect のまま（末尾の記録
     assert.equal(row.followUp, null);
     assert.match(row.rowError, /the Native records are not aligned/u);
   }
+});
+
+test("DR-CP4-V-2: resolver を渡すと子の F6 は材料の Revision の単位（material-revision）で、Q=200 の K6/4 の読みは F-6 で無効にならない。渡さなければ preview の単位のまま", () => {
+  const n = 200;
+  const trace = editingTrace(n);
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const longPlan = plan("editing", n - 1);
+  const seen = [];
+  const materialContribution = (paths) => {
+    seen.push(paths);
+    return {
+      basis: "material-revision",
+      contribution: true,
+      observed: [],
+      matched: ["graph-only:dev-added"],
+      unresolvedEdges: 0,
+    };
+  };
+  const rows = rowsOf(trace, n, runs, {
+    plan: longPlan,
+    materialContribution,
+  });
+  assert.equal(seen.length, n);
+  for (const row of rows) {
+    assert.equal(row.followUp.child.contributionBasis, "material-revision");
+    assert.equal(row.followUp.child.expectedContribution, true);
+    assert.deepEqual(row.followUp.child.materialRevision.matched, [
+      "graph-only:dev-added",
+    ]);
+  }
+  const events = traceEvents({
+    plan: longPlan,
+    observation: trace.observation,
+    log: trace.log,
+    parentSeqs: rows.map((_, at) => 2 * at + 1),
+  });
+  const k64 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+    candidate: ratification5(),
+    candidateHead: "e".repeat(40),
+  });
+  assert.doesNotMatch((k64.summary.invalid ?? []).join("\n"), /DR-CP4-F-6/u);
+  assert.equal(
+    k64.summary.status,
+    "valid",
+    JSON.stringify(k64.summary.invalid),
+  );
+  // resolver が無ければ（dev preview）preview の単位。
+  const preview = rowsOf(
+    editingTrace(2),
+    2,
+    pollRuns(editingTrace(2).events, 9_000, 18_000, 1),
+  );
+  assert.equal(
+    preview[0].followUp.child.contributionBasis,
+    "scene-level-preview",
+  );
+});
+
+test("DR-CP4-V-2: resolver の期待する (Revision, edge) の組が trace の file の材料と同じでなければ [precheck]", () => {
+  const tracePlan = {
+    expectedMaterials: [
+      { revisionId: "r-a", edgeIds: ["e-a"] },
+      { revisionId: "r-b", edgeIds: ["e-b"] },
+    ],
+  };
+  const expected = [
+    { kind: "graph-only", sceneId: "s-a", pairs: ["r-a|e-a"] },
+    { kind: "path-attachment", sceneId: "s-b", pairs: ["r-b|e-b"] },
+  ];
+  assert.deepEqual(assertTraceMaterialsMatch({ plan: tracePlan, expected }), [
+    "r-a|e-a",
+    "r-b|e-b",
+  ]);
+  for (const other of [
+    [expected[0]],
+    [
+      ...expected,
+      { kind: "path-attachment", sceneId: "s-c", pairs: ["r-c|e-c"] },
+    ],
+    [{ ...expected[0], pairs: ["r-a|e-x"] }, expected[1]],
+  ])
+    assert.throws(
+      () => assertTraceMaterialsMatch({ plan: tracePlan, expected: other }),
+      /\[precheck\] DR-CP4-V-2/u,
+    );
+  assert.throws(
+    () =>
+      assertTraceMaterialsMatch({
+        plan: { expectedMaterials: [] },
+        expected: [],
+      }),
+    /\[precheck\]/u,
+  );
 });
