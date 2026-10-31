@@ -738,10 +738,32 @@ function git(args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
 }
 
+const SHA256_DIGEST = /^[0-9a-f]{64}$/iu;
+
+/**
+ * DR-CP4-V-4 (レビュー P3): a key that names a quote (any case, any form:
+ * `quote`, `Quote`, `quotes`, `fromQuote`), unless it names a hash of one
+ * (`…sha256`, `…hash`, `…digest`: `quoteSha256`, `fromQuoteSha256`).
+ */
+function quoteKey(key) {
+  const name = key.toLowerCase().replace(/[^a-z0-9]/gu, "");
+  return name.includes("quote") && !/(?:sha256|hash|digest)$/u.test(name);
+}
+
+/** null, a sha256 hex digest, or a list of them (material-revision `quotes`). */
+function digestShaped(value) {
+  const one = (item) =>
+    item === null || (typeof item === "string" && SHA256_DIGEST.test(item));
+  return one(value) || (Array.isArray(value) && value.every(one));
+}
+
 /**
  * DR-CP4-V-3 (C): refuses a value that still carries a path quote in clear
- * (any `quote` key at any depth); the trace writes only its sha256
- * (`hashGraphPaths`). `[precheck]`: the run stops before writing `label`.
+ * (a `quote` key at any depth, in objects and arrays; DR-CP4-V-4: also any
+ * other case and form of it, unless the key names a hash or the value is
+ * digest-shaped); the trace writes
+ * only its sha256 (`hashGraphPaths`). `[precheck]`: the run stops before
+ * writing `label`.
  */
 export function assertNoQuotePlaintext(value, label) {
   const stack = [{ node: value, at: "$" }];
@@ -751,7 +773,8 @@ export function assertNoQuotePlaintext(value, label) {
     if (node === null || typeof node !== "object" || seen.has(node)) continue;
     seen.add(node);
     for (const [key, child] of Object.entries(node)) {
-      if (key === "quote")
+      // `quote` itself is refused whatever it holds (DR-CP4-V-3, unchanged).
+      if (key === "quote" || (quoteKey(key) && !digestShaped(child)))
         throw new Error(
           `[precheck] DR-CP4-V-3: ${label} would carry a path quote in clear at ${at}.${key}`,
         );

@@ -1059,9 +1059,14 @@ test("DR-CP4-V-3 (C): 観測の path の quote は page から受け取った直
       ),
     /\[precheck\].*receipt\.json/u,
   );
-  // sha256 の鍵、quote を含む他の名前は止めない。
+  // sha256 の鍵、hash の値だけの quote の名前は止めない（DR-CP4-V-4 で、
+  // 平文の入りうる `quotes: ["b"]` は止める側へ移した）。
+  const digest = createHash("sha256").update("b").digest("hex");
   assert.doesNotThrow(() =>
-    assertNoQuotePlaintext({ quoteSha256: "a", quotes: ["b"], q: null }, "x"),
+    assertNoQuotePlaintext(
+      { quoteSha256: "a", quotes: [digest, digest], q: null },
+      "x",
+    ),
   );
 });
 
@@ -1310,4 +1315,63 @@ test("DR-CP4-V-4: 受領書の記録は cycle end の後に呼ばれた fetch �
   );
   const main = source.slice(source.indexOf("async function main()"));
   assert.match(main, /requeryAfterCycleEnd: records\.requeryAfterCycleEnd,/u);
+});
+
+test("DR-CP4-V-4 (レビュー P3): quote の平文の guard は大文字小文字・複数形・別の形の鍵（配列と入れ子の中も）を止め、hash の欄名と hash の値だけのものは止めない", () => {
+  const digest = createHash("sha256").update(QUOTE).digest("hex");
+  for (const [name, value, at] of [
+    ["Quote", { Quote: QUOTE }, "$.Quote"],
+    ["QUOTE", { a: { QUOTE: QUOTE } }, "$.a.QUOTE"],
+    ["quotes", { quotes: [QUOTE] }, "$.quotes"],
+    ["Quotes", { rows: [{ Quotes: ["x", digest] }] }, "$.rows.0.Quotes"],
+    ["fromQuote", { edges: [[{ fromQuote: QUOTE }]] }, "$.edges.0.0.fromQuote"],
+    ["quote_text", { quote_text: QUOTE }, "$.quote_text"],
+    ["quotes-object", { quotes: { from: QUOTE } }, "$.quotes"],
+    // `quote` itself stays refused whatever it holds (V-3).
+    ["quote-null", { quote: null }, "$.quote"],
+    ["quote-digest", { quote: digest }, "$.quote"],
+  ])
+    assert.throws(
+      () => assertNoQuotePlaintext(value, "observation.json"),
+      (error) =>
+        error.message ===
+        `[precheck] DR-CP4-V-3: observation.json would carry a path quote in clear at ${at}`,
+      name,
+    );
+  // 止めない: hash の欄名（値によらず）、hash の値か null だけの quote の名前。
+  for (const value of [
+    { quoteSha256: digest, fromQuoteSha256: digest, toQuoteSha256: digest },
+    { evidence: [{ evidenceId: "e", quoteSha256: digest }] },
+    { quote_sha256: "x", quoteHash: "y", QuoteDigest: "z" },
+    { quotes: [digest, digest.toUpperCase()] },
+    { quotes: [], Quotes: null, quotesSha256: [digest] },
+    { quoted: null },
+  ])
+    assert.doesNotThrow(
+      () => assertNoQuotePlaintext(value, "receipt.json"),
+      JSON.stringify(value),
+    );
+  // 実際の受領書の形: hash 済みの観測と、その記録（V-3 の試験と同じ入力）。
+  const run = oneQueryRun();
+  const hashed = hashTraceObservation(run.observation);
+  assert.doesNotThrow(() => assertNoQuotePlaintext(hashed, "observation.json"));
+  const records = traceRunRecords({
+    plan: tracePlanOf(),
+    observation: hashed,
+    nativeReads: run.nativeReads,
+    counters: { runs: [] },
+    result: run.result,
+    context: {
+      revisions: { "rev-1": "rev-1" },
+      expectedContribution: {
+        appendedSceneIds: ["dev-added"],
+        pathAttachmentSceneIds: ["dev-b"],
+      },
+      ratification5: null,
+      materialContribution: null,
+    },
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.doesNotThrow(() => assertNoQuotePlaintext(records, "receipt.json"));
 });
