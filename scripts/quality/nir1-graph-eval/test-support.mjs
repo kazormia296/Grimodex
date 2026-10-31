@@ -1388,6 +1388,15 @@ export function completeSetupExtension({
   cutoverMissesOpens = 0,
   queryDirtiesC = false,
   buildIndexFailsIn = null,
+  // DR-CP4-T-3: the product's Change Feed and Freshness. Each mutation the
+  // fake plays appends a feed event; `freshnessTick()` (the tests' sleep)
+  // acknowledges the feed and, in the same write, dirties B and C (as
+  // `suspend_project_in_tx`) unless `settles` is false.
+  freshness = null,
+  // DR-CP4-T-5: a maintenance Verify that is `running` when a session in
+  // `verify.sessions` begins; the tests' sleep completes it unless
+  // `verify.settles` is false.
+  verify = null,
 }) {
   return ({ db, at }) => {
     let session = { label: "author", seam: false, setupMain: null };
@@ -1428,8 +1437,61 @@ export function completeSetupExtension({
           ?.m ?? 0,
       ) === 1;
     const dirtyAll = () => {
+      feedEvent();
       if (!maintenanceOn()) return;
       run("UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1");
+    };
+    let feedHead = 0;
+    function feedEvent() {
+      if (!freshness) return;
+      const projectId = projectOf();
+      feedHead += 1;
+      run(
+        "INSERT INTO narrative_change_events VALUES (?, ?, ?, 0)",
+        `feed-${feedHead}`,
+        projectId,
+        feedHead,
+      );
+    }
+    let verifyRuns = 0;
+    let verifyPending = false;
+    const startVerify = () => {
+      verifyRuns += 1;
+      run(
+        "INSERT INTO narrative_extraction_runs VALUES (?, ?, 'dependency-verify', 'running', ?)",
+        `verify-${verifyRuns}`,
+        projectOf(),
+        at(),
+      );
+    };
+    const freshnessTick = () => {
+      if (verify?.settles)
+        run(
+          "UPDATE narrative_extraction_runs SET status = 'completed' WHERE surface_path_id = 'dependency-verify' AND status = 'running'",
+        );
+      if (!freshness?.settles || feedHead === 0) return;
+      const projectId = projectOf();
+      const cursor = one(
+        "SELECT acknowledged_through_sequence AS ack FROM narrative_change_cursors WHERE project_id = ?",
+        projectId,
+      );
+      if (cursor?.ack === feedHead) return;
+      if (cursor)
+        run(
+          "UPDATE narrative_change_cursors SET acknowledged_through_sequence = ? WHERE project_id = ?",
+          feedHead,
+          projectId,
+        );
+      else
+        run(
+          "INSERT INTO narrative_change_cursors VALUES (?, 'narrative-incremental-freshness/v1', ?, NULL, NULL)",
+          projectId,
+          feedHead,
+        );
+      run(
+        "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE project_id = ?",
+        projectId,
+      );
     };
     const publish = (projectId, key) => {
       const row = one(
@@ -1518,8 +1580,12 @@ export function completeSetupExtension({
     return {
       indexCalls,
       policySets,
+      freshnessTick,
+      appendFeedEvent: () => feedEvent(),
+      startVerify: () => startVerify(),
       beginSession(next) {
         session = { ...next };
+        verifyPending = Boolean(verify?.sessions?.includes(next.label));
       },
       onOpen() {
         db().exec(`
@@ -1538,6 +1604,10 @@ export function completeSetupExtension({
             payload_json TEXT, reconciliation_envelope_json TEXT);
           CREATE TABLE IF NOT EXISTS narrative_proposal_decisions (id TEXT PRIMARY KEY, proposal_id TEXT, revision_id TEXT,
             decision TEXT, created_by TEXT, created_at TEXT);
+          CREATE TABLE IF NOT EXISTS narrative_change_events (id TEXT PRIMARY KEY, project_id TEXT, canonical_sequence INTEGER,
+            event_ordinal INTEGER);
+          CREATE TABLE IF NOT EXISTS narrative_change_cursors (project_id TEXT, consumer_id TEXT,
+            acknowledged_through_sequence INTEGER, active_run_id TEXT, reserved_through_sequence INTEGER);
         `);
         // P-5: a reopening runs the cutover again while the marker is absent.
         if (
@@ -1549,6 +1619,11 @@ export function completeSetupExtension({
           maybeCutover();
         // A seam session's workspace-opened wake publishes B.
         const projectId = projectOf();
+        // DR-CP4-T-5: a Verify the session's opening leaves running.
+        if (verifyPending && projectId) {
+          verifyPending = false;
+          startVerify();
+        }
         // `sealMissesOpens`: the first seam opens publish nothing (P-0).
         if (
           session.seam &&

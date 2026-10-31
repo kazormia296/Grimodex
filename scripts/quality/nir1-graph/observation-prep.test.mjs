@@ -24,6 +24,7 @@ import {
   EVAL_CLOSURE_EXCLUSIONS,
   FORMAL_HARNESS_ENTRIES,
   HARNESS_CONSTANTS,
+  HARNESS_MODULE_CONSTANTS,
   K24_TABLE,
   K64_FREEZE_SOURCE,
   OBSERVATION_PREP_FILES,
@@ -34,6 +35,9 @@ import {
   harnessPinOf,
   isSharedClosureBoundary,
   parseHarnessConstant,
+  parseHarnessModuleConstant,
+  parseReadyProbeKinds,
+  READY_PROBE_SOURCE,
   parseK64FreezeCommit,
   sourcePinGitErrors,
   formalReferenceErrors,
@@ -150,7 +154,7 @@ function rootWithPrep(prep) {
   return root;
 }
 
-test("the committed observation-prep files validate (frozen by S4b)", async () => {
+test("the committed observation-prep files validate (frozen again by S4b')", async () => {
   const result = await validateNir1ObservationPrep({ repoRoot });
   assert.deepEqual(result.errors, []);
   assert.equal(result.status, "passed");
@@ -158,6 +162,8 @@ test("the committed observation-prep files validate (frozen by S4b)", async () =
   assert.deepEqual(result.placeholders, []);
   // S4 の最終関門の P2-1、DR-CP4-Q-2: the frozen S2's review states the facts
   // (the notification record at bf5b3799, K's attribution, the pair limit).
+  // DR-CP4-S4-5: and the re-freeze (the old S4b, its two attempts, the
+  // user's confirmation of the re-freeze).
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   for (const word of [
     "docs/plans/nir1-cp4-records/user-notification-2026-10-30.md",
@@ -166,10 +172,17 @@ test("the committed observation-prep files validate (frozen by S4b)", async () =
     "integrator が #757（DR-CP4-Q-1）",
     "#759（DR-CP4-Q-2）",
     "組の最少 24 を満たす",
+    "DR-CP4-S4-5",
+    "b7d7495034ee693e82b9a6e55bbcbfd433215012",
+    "sp-p4-1",
+    "parity-1",
+    "user-confirmation-2026-10-31-refreeze.md",
   ])
     assert.ok(prep.review.conditions.includes(word), word);
   assert.ok(!prep.review.conditions.includes("S4b の時点で repo に無い"));
-  assert.ok(prep.r5Gate.syntheticDetection.record.includes("72dfa711"));
+  // S4b': the SP-N record retaken on the T-1〜T-5 candidate (contracts 2d33e6a8).
+  assert.ok(prep.r5Gate.syntheticDetection.record.includes("2d33e6a8"));
+  assert.ok(prep.r5Gate.syntheticDetection.record.includes("fc7770fd"));
 });
 
 test("the draft copy of the committed S2 validates as a draft (S4 tokens, not formal)", async () => {
@@ -200,7 +213,7 @@ test("a draft with placeholders is never usable for a formal run", async () => {
   }
 });
 
-test("S4b: the committed frozen record passes the formal gate at HEAD (git)", async (t) => {
+test("S4b': the committed frozen record passes the formal gate at HEAD (git)", async (t) => {
   const ctx = await context();
   if (!ctx.sourcePinGit) {
     t.skip("shallow clone: the commits are checked by the formal gate");
@@ -1430,6 +1443,10 @@ test("S2 追補 L-11: setupReadings fix the sessions, the variant sessions, the 
       "L-24",
       "L-27",
       "L-19",
+      // S2 追補 #9（DR-CP4-P-5）: the re-freeze's harness readings.
+      "T-3、T-5",
+      "T-1",
+      "T-4",
     ],
   );
   assert.equal(readings.variantSessions.length, 13);
@@ -1997,6 +2014,9 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "s4-rehearsal-admission",
       // S2 追補 #8（#759。DR-CP4-Q-2）。
       "sp-p4-ir-pair-limit",
+      // S2 追補 #9（DR-CP4-T-1〜T-5。S4 の凍結のやり直し、DR-CP4-P-5）。
+      "t3-t5-setup-freshness-settle",
+      "t1-t4-measurement-settle-ready",
       // S2 追補 #5（P-S2-9 (b)。正式の入口の閉包の file を最後に変えた commit）。
       "pr1-native-eval-feature",
       "p1-harness-core",
@@ -2586,7 +2606,7 @@ test("S2 追補 #4 (A): each pin is a master commit and each bytes pin holds tha
   );
 });
 
-test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness file #754, #756, #757 and #758 changed, each at the master commit that last changed it", async (t) => {
+test("S2 追補 #4／#6／#7／#9 (A): the bytes pins hold every non-test harness file #754, #756, #757, #758, #759 and T-1〜T-5 changed, each at the commit that last changed it", async (t) => {
   const ctx = await context();
   if (!ctx.sourcePinGit) {
     t.skip("shallow clone");
@@ -2599,10 +2619,30 @@ test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness fil
     (pin) => pin.role === "s4-rehearsal-admission",
   );
   const sp = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-timeout");
-  const tip = SOURCE_PINS.find((pin) => pin.role === "sp-p4-ir-pair-limit");
+  const pairLimit = SOURCE_PINS.find(
+    (pin) => pin.role === "sp-p4-ir-pair-limit",
+  );
+  // S2 追補 #9: the newest pin (T-4, 354b1ba6) is the tip now.
+  const tip = SOURCE_PINS.find(
+    (pin) => pin.role === "t1-t4-measurement-settle-ready",
+  );
   const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
+  // S2 追補 #9（DR-CP4-P-5）: the two T-1〜T-5 pins are branch commits that
+  // S4's PR brings to master with its merge commit; before that merge they
+  // are ancestors of the record's HEAD (a descendant of master), after it of
+  // master. Every other pin is a master commit.
+  const branchPins = new Set([
+    "t3-t5-setup-freshness-settle",
+    "t1-t4-measurement-settle-ready",
+  ]);
+  assert.ok(ctx.sourcePinGit.isAncestor(master, ctx.sourcePinGit.head));
   for (const pin of SOURCE_PINS)
-    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, master), pin.role);
+    assert.ok(
+      ctx.sourcePinGit.isAncestor(pin.commit, master) ||
+        (branchPins.has(pin.role) &&
+          ctx.sourcePinGit.isAncestor(pin.commit, ctx.sourcePinGit.head)),
+      pin.role,
+    );
   const nonTest = (text) =>
     text
       .split("\n")
@@ -2622,6 +2662,10 @@ test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness fil
       "--",
       H4,
     ]),
+  ).filter(
+    // S4a の手順の file（k64-procedure の draft-2 と v1）は S2 の boundFiles と
+    // k64Procedure が束縛し、pin の対象でない。
+    (file) => !file.startsWith(`${H4}procedure/`),
   );
   const held = SOURCE_PINS.filter((pin) =>
     [
@@ -2630,6 +2674,8 @@ test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness fil
       "sp-p4-ir-timeout",
       "s4-rehearsal-admission",
       "sp-p4-ir-pair-limit",
+      "t3-t5-setup-freshness-settle",
+      "t1-t4-measurement-settle-ready",
     ].includes(pin.role),
   )
     .flatMap((pin) => pin.paths)
@@ -2676,13 +2722,32 @@ test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness fil
         "diff",
         "--name-only",
         rehearsal.commit,
+        pairLimit.commit,
+        "--",
+        "scripts",
+      ]),
+    ),
+    [...pairLimit.paths].sort(),
+  );
+  // S2 追補 #9: T-1〜T-5（master 5ce12211 から枝の 354b1ba6 まで）が変えた試験以外の
+  // scripts の file は 4 つで、すべて 2 つの新しい pin にある。
+  const settle = SOURCE_PINS.find(
+    (pin) => pin.role === "t3-t5-setup-freshness-settle",
+  );
+  assert.deepEqual(
+    nonTest(
+      gitText([
+        "diff",
+        "--name-only",
+        "5ce1221158f9855725a3c87704c17586324a08a9",
         tip.commit,
         "--",
         "scripts",
       ]),
     ),
-    [...tip.paths].sort(),
+    [...settle.paths, ...tip.paths].sort(),
   );
+  assert.ok(ctx.sourcePinGit.isAncestor(settle.commit, tip.commit));
   for (const pin of SOURCE_PINS)
     for (const file of pin.paths) {
       const last = gitText([
@@ -2755,10 +2820,11 @@ test("S2 追補 #4／#6／#7 (A): the bytes pins hold every non-test harness fil
 test("S2 追補 #4／#6 (A): the blocked table and the harness constants are read from the bytes of the pin that holds each file", async () => {
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
-  assert.equal(BLOCKED_TABLE_SOURCE.role, "s5b-diagnostics-wiring");
+  // S2 追補 #9: frozen-setup-driver.mjs is held by the T-3／T-5 pin (b0df31f0).
+  assert.equal(BLOCKED_TABLE_SOURCE.role, "t3-t5-setup-freshness-settle");
   assert.equal(
     BLOCKED_TABLE_SOURCE.commit,
-    "950751d040b29b6d78a067a003dc19b196cfb692",
+    "b0df31f076ea1e11fd187c5c6fdf179d0df337b5",
   );
   const pinOf = (role) =>
     prep.setupReadings.source.pins.find((row) => row.role === role);
@@ -2780,10 +2846,19 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
     SP_P4_IR_TIMEOUT_LIMIT: 6,
     // S2 追補 #8: #759 の組の上限（S3 の C2 の組の最少 24）。
     SP_P4_IR_TIMEOUT_PAIR_LIMIT: 6,
+    // S2 追補 #9（DR-CP4-T-3）: 完全な setup の Freshness の待ち。
+    FRESHNESS_SETTLE_WAIT_MS: 60000,
+    FRESHNESS_SETTLE_INTERVAL_MS: 250,
+    // S2 追補 #9（DR-CP4-T-1）: 測定の process の待ち（export しない module の定数）。
+    RUN_FRESHNESS_SETTLE_LIMIT_MS: 15000,
+    RUN_FRESHNESS_SETTLE_INTERVAL_MS: 100,
   });
   assert.deepEqual(
     ctx.harnessConstantSources.map((row) => row.path),
-    Object.keys(HARNESS_CONSTANTS),
+    [
+      ...Object.keys(HARNESS_CONSTANTS),
+      ...Object.keys(HARNESS_MODULE_CONSTANTS),
+    ],
   );
   // 各 file はそれを持つ pin の commit から読む（frozen-diagnostics.mjs は #757）。
   assert.deepEqual(
@@ -2792,7 +2867,8 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
       row.commit.slice(0, 8),
     ]),
     [
-      ["frozen-setup-driver.mjs", "950751d0"],
+      // S2 追補 #9: T-5（b0df31f0）の pin。
+      ["frozen-setup-driver.mjs", "b0df31f0"],
       ["g01-negatives.mjs", "950751d0"],
       // S2 追補 #8: #759 の pin（値は SOURCE_PINS から読む）。
       [
@@ -2801,6 +2877,8 @@ test("S2 追補 #4／#6 (A): the blocked table and the harness constants are rea
           (pin) => pin.role === "sp-p4-ir-pair-limit",
         ).commit.slice(0, 8),
       ],
+      // S2 追補 #9: T-4（354b1ba6）の pin。
+      ["frozen-k64-run.mjs", "354b1ba6"],
     ],
   );
   for (const source of ctx.harnessConstantSources)
@@ -4223,7 +4301,8 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
   const ctx = await context();
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   assert.deepEqual(observationPrepErrors(prep, ctx), []);
-  assert.deepEqual(Object.keys(S4_PROCEDURE_WORDS), ["a", "b", "c", "d"]);
+  // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze.
+  assert.deepEqual(Object.keys(S4_PROCEDURE_WORDS), ["a", "b", "c", "d", "e"]);
   let mutated = 0;
   for (const [item, words] of Object.entries(S4_PROCEDURE_WORDS))
     for (const word of words) {
@@ -4236,11 +4315,249 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
       );
       mutated += 1;
     }
-  assert.equal(mutated, 15);
+  assert.equal(mutated, 20);
   detects(
     prep,
     (copy) => observationPrepErrors(copy, ctx),
     (p) => delete p.s4StagesRule,
     /s4StagesRule must state S4's procedure \(a\)/u,
+  );
+});
+
+test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinned harness's waits (setup 60 s／250 ms with maintenance stillness, measurement 15 s／100 ms) and maps the measurement's exhaustion to the existing blocked rows", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  assert.deepEqual(check(prep), []);
+  const settle = prep.setupReadings.freshnessSettle;
+  assert.equal(
+    settle.setup.waitMs,
+    ctx.harnessConstants.FRESHNESS_SETTLE_WAIT_MS,
+  );
+  assert.equal(settle.measurement.waitMs, 15000);
+  assert.equal(settle.measurement.intervalMs, 100);
+  const word = /setupReadings\.freshnessSettle must wait/u;
+  for (const mutate of [
+    (p) => delete p.setupReadings.freshnessSettle,
+    (p) => (p.setupReadings.freshnessSettle.setup.waitMs = 120000),
+    (p) => (p.setupReadings.freshnessSettle.setup.intervalMs = 100),
+    (p) => (p.setupReadings.freshnessSettle.measurement.waitMs = 60000),
+    (p) => (p.setupReadings.freshnessSettle.measurement.intervalMs = 250),
+    (p) => (p.setupReadings.freshnessSettle.setup.r5CheckWaits = true),
+    (p) => p.setupReadings.freshnessSettle.setup.beforeExecutors.pop(),
+    (p) => (p.setupReadings.freshnessSettle.setup.sessionEnd = false),
+    (p) => (p.setupReadings.freshnessSettle.setup.onExhausted = "blocked"),
+    (p) =>
+      (p.setupReadings.freshnessSettle.setup.maintenanceOnExhausted =
+        "[precheck]"),
+    (p) => (p.setupReadings.freshnessSettle.setup.reopenTrigger = true),
+    (p) =>
+      (p.setupReadings.freshnessSettle.measurement.maintenanceStill = true),
+    (p) =>
+      (p.setupReadings.freshnessSettle.measurement.onExhaustedConditions[
+        "while-variant"
+      ] = "hold-and-precheck"),
+    (p) => p.setupReadings.freshnessSettle.settledWhen.pop(),
+    (p) => (p.setupReadings.freshnessSettle.readOnly = false),
+    (p) => (p.setupReadings.freshnessSettle.setup.harnessConstants = []),
+  ])
+    detects(prep, check, mutate, word);
+  // 定数は pin の bytes から読む（読めなければ照合できず落ちる）。
+  const unread = { ...ctx, harnessConstants: { ...ctx.harnessConstants } };
+  delete unread.harnessConstants.RUN_FRESHNESS_SETTLE_LIMIT_MS;
+  assert.ok(observationPrepErrors(prep, unread).some((e) => word.test(e)));
+  // 待ち切れは blocked の表の既存の 2 行（表は pin の bytes）。
+  const table = ctx.harnessBlockedTable.map((row) =>
+    row.harnessId === "index-build-timeout" && row.condition === "while-variant"
+      ? { ...row, graphCases: "hold-and-precheck" }
+      : row,
+  );
+  assert.ok(
+    observationPrepErrors(prep, { ...ctx, harnessBlockedTable: table }).some(
+      (e) =>
+        /freshnessSettle\.measurement: the blocked table's index-build-timeout\/while-variant/u.test(
+          e,
+        ),
+    ),
+  );
+  // 新しい受領書の欄。
+  for (const key of [
+    "freshnessSettles",
+    "measurementPoint.freshnessFeed",
+    "readBack.freshnessFeed",
+    "readBack.maintenance",
+  ])
+    detects(
+      prep,
+      check,
+      (p) => delete p.setupReadings.receiptFields[key],
+      /setupReadings\.receiptFields/u,
+    );
+  // graph-index-unusable の C の作り直しは Freshness の処理の後（T-3）。
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.d2.variantReadings.readAs.find(
+        (row) => row.variant === "G-08/graph-index-unusable",
+      ).readmeNote = "README :175 の読み"),
+    /d2\.variantReadings/u,
+  );
+});
+
+test("S2 追補 #9（DR-CP4-T-1）: the measurement process's constants are unexported module constants read once from the pinned bytes; the old bytes have none", () => {
+  const text = execFileSync(
+    "git",
+    [
+      "show",
+      `354b1ba6a997bc464fb2ee9d7a2276c9f7d0bc78:${H4}frozen-k64-run.mjs`,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(
+    parseHarnessModuleConstant(text, "FRESHNESS_SETTLE_LIMIT_MS"),
+    15000,
+  );
+  assert.equal(
+    parseHarnessModuleConstant(text, "FRESHNESS_SETTLE_INTERVAL_MS"),
+    100,
+  );
+  const old = execFileSync(
+    "git",
+    [
+      "show",
+      `950751d040b29b6d78a067a003dc19b196cfb692:${H4}frozen-k64-run.mjs`,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(
+    parseHarnessModuleConstant(old, "FRESHNESS_SETTLE_LIMIT_MS"),
+    undefined,
+  );
+  const driverOld = execFileSync(
+    "git",
+    [
+      "show",
+      `950751d040b29b6d78a067a003dc19b196cfb692:${H4}frozen-setup-driver.mjs`,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(
+    parseHarnessConstant(driverOld, "FRESHNESS_SETTLE_WAIT_MS"),
+    undefined,
+  );
+  // export された定数、2 回の定義、別名の衝突は読まない。
+  assert.equal(
+    parseHarnessModuleConstant("export const A = 1;", "A"),
+    undefined,
+  );
+  assert.equal(
+    parseHarnessModuleConstant("const A = 1;\nconst A = 2;", "A"),
+    undefined,
+  );
+  assert.equal(parseHarnessModuleConstant("const A = 1_000;", "A"), 1000);
+  const aliases = Object.values(HARNESS_MODULE_CONSTANTS).flatMap((rows) =>
+    rows.map((row) => row.as),
+  );
+  const names = Object.values(HARNESS_CONSTANTS).flat();
+  assert.ok(aliases.every((as) => !names.includes(as)));
+});
+
+test("S2 追補 #9（DR-CP4-T-4 (a)）: V-10 READY applies to the steady state only, as the pinned plan's readyProbeOf; graph-held-unusable discloses ownerReady.skipped", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  assert.deepEqual(ctx.harnessReadyProbe.kinds, ["steady-state"]);
+  assert.equal(ctx.harnessReadyProbe.source.path, READY_PROBE_SOURCE.path);
+  assert.equal(
+    harnessPinOf(READY_PROBE_SOURCE.path).role,
+    "t1-t4-measurement-settle-ready",
+  );
+  const specs = prep.setupReadings.measurementSpecs;
+  assert.deepEqual(
+    Object.fromEntries(
+      Object.entries(specs).map(([k, v]) => [k, v.readyProbe]),
+    ),
+    {
+      "after-maintenance-current": true,
+      "while-graph-index-unusable": false,
+      "while-chronicle-index-unusable": false,
+      "while-both-indexes-unusable": false,
+    },
+  );
+  const ready = /setupReadings\.readyProbe must apply V-10 READY/u;
+  for (const mutate of [
+    (p) => delete p.setupReadings.readyProbe,
+    (p) => p.setupReadings.readyProbe.appliesTo.push("graph-held-unusable"),
+    (p) => p.setupReadings.readyProbe.notApplicable.shift(),
+    (p) => (p.setupReadings.readyProbe.judged = true),
+    (p) => (p.setupReadings.readyProbe.skipped = "skipped"),
+    (p) =>
+      (p.setupReadings.readyProbe.rule =
+        p.setupReadings.readyProbe.rule.replaceAll("fallback", "")),
+    (p) =>
+      (p.setupReadings.readyProbe.rule =
+        p.setupReadings.readyProbe.rule.replaceAll("at-query", "")),
+  ])
+    detects(prep, check, mutate, ready);
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.setupReadings.measurementSpecs[
+        "while-graph-index-unusable"
+      ].readyProbe = true),
+    /setupReadings\.measurementSpecs/u,
+  );
+  // harness の plan が別の読み（!isOneShot）なら照合できない。
+  assert.ok(
+    observationPrepErrors(prep, {
+      ...ctx,
+      harnessReadyProbe: {
+        ...ctx.harnessReadyProbe,
+        kinds: ["graph-held-unusable"],
+      },
+    }).some((e) => ready.test(e)),
+  );
+  assert.ok(
+    observationPrepErrors(prep, { ...ctx, harnessReadyProbe: null }).some((e) =>
+      ready.test(e),
+    ),
+  );
+  for (const commit of [
+    "2c9316848ce028565c4d8e8af2d2779c3fd7e187",
+    "5b4b93400bc71c634c7d015658543a71f51cab30",
+  ]) {
+    // #754 と T-1 の bytes は readyProbe: !isOneShot（graph-held-unusable にも READY）。
+    const text = execFileSync(
+      "git",
+      ["show", `${commit}:${READY_PROBE_SOURCE.path}`],
+      { cwd: repoRoot, encoding: "utf8" },
+    );
+    assert.ok(text.includes("readyProbe: !isOneShot"), commit);
+    assert.equal(parseReadyProbeKinds(text), undefined, commit);
+  }
+  assert.equal(
+    parseReadyProbeKinds(
+      'const readyProbeOf = (kind) => kind === "steady-state";\nreadyProbe: readyProbeOf(kind),\n',
+    ),
+    undefined,
+  );
+  // 読み元の bytes が pin と違えば落ちる。
+  assert.ok(
+    observationPrepErrors(prep, {
+      ...ctx,
+      harnessReadyProbe: {
+        ...ctx.harnessReadyProbe,
+        source: {
+          ...ctx.harnessReadyProbe.source,
+          sha256: flip(ctx.harnessReadyProbe.source.sha256),
+        },
+      },
+    }).some((e) =>
+      /t1-t4-measurement-settle-ready: .*frozen-k64-plan\.mjs must be the bytes/u.test(
+        e,
+      ),
+    ),
   );
 });

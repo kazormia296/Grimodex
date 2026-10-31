@@ -43,7 +43,15 @@ import {
   loadDevGraphCasePlans,
   loadFrozenSetupPlans,
 } from "./frozen-setup-plan.mjs";
-import { INDEX_KEYS, readDeclarationInvariants } from "./workspace-db.mjs";
+import {
+  FRESHNESS_CONSUMER_ID,
+  INDEX_KEYS,
+  freshnessSettled,
+  readDeclarationInvariants,
+  readFreshnessFeed,
+  readIndexMetadata,
+  waitFreshnessSettled,
+} from "./workspace-db.mjs";
 import {
   K64_CACHED_CHILD,
   REPO_ROOT,
@@ -60,9 +68,39 @@ const PROJECT = "rt-p";
 const QUERY = "rt-query";
 const SEED = "rt-seed";
 
-function coldDb(dir, { b, chronicle, pins = [SEED] }) {
+/**
+ * DR-CP4-T-1: the product's Change Feed and the Freshness cursor. `feed`
+ * null leaves the feed empty and no cursor (settled); otherwise events
+ * 1..head and the cursor at `ack` (with an active run or a reservation).
+ */
+function writeFeed(db, feed) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS narrative_change_events (id TEXT PRIMARY KEY, project_id TEXT, canonical_sequence INTEGER, event_ordinal INTEGER);
+    CREATE TABLE IF NOT EXISTS narrative_change_cursors (project_id TEXT, consumer_id TEXT, acknowledged_through_sequence INTEGER, active_run_id TEXT, reserved_through_sequence INTEGER);
+  `);
+  if (!feed) return;
+  for (let sequence = 1; sequence <= feed.head; sequence += 1)
+    for (let ordinal = 0; ordinal < (feed.ordinals ?? 1); ordinal += 1)
+      db.prepare("INSERT INTO narrative_change_events VALUES (?, ?, ?, ?)").run(
+        `e-${sequence}-${ordinal}`,
+        PROJECT,
+        sequence,
+        ordinal,
+      );
+  if (feed.cursor === false) return;
+  db.prepare("INSERT INTO narrative_change_cursors VALUES (?, ?, ?, ?, ?)").run(
+    PROJECT,
+    FRESHNESS_CONSUMER_ID,
+    feed.ack,
+    feed.activeRun ?? null,
+    feed.reserved ?? null,
+  );
+}
+
+function coldDb(dir, { b, chronicle, pins = [SEED], feed = null }) {
   const file = path.join(dir, "cold.db");
   const db = new DatabaseSync(file);
+  writeFeed(db, feed);
   db.exec(`
     CREATE TABLE tree_nodes (id TEXT PRIMARY KEY, project_id TEXT, node_type TEXT, archived_at TEXT, parent_id TEXT, sort_order TEXT);
     CREATE TABLE codex_entries (id TEXT PRIMARY KEY, project_id TEXT);
@@ -107,13 +145,66 @@ function coldDb(dir, { b, chronicle, pins = [SEED] }) {
  * A fake product: the page's harness entries and the evaluation addon. Every
  * page entry and launch is an event; `snapshotUsable(kind)` gives the
  * Chronicle snapshot of a query (`index`, `hybrid`, `graph`).
+ *
+ * DR-CP4-T-1: `freshness` ({ atMs, now }) plays the product's Freshness
+ * scheduler: `atMs` after a launch (on the test's fake clock) it acknowledges
+ * the copy's feed and, in the same write, dirties B and C (`invalidate.rs`
+ * `suspend_project_in_tx`); `tick()` is its timer. With it, the Index build
+ * rebuilds a dirty C and every query's snapshot is the copy's C.
  */
-function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
+function fakeProduct({
+  dir,
+  snapshotUsable,
+  onDeclare = () => {},
+  freshness,
+  neverReady = false,
+}) {
   const events = [];
   const launchArgs = [];
   let launches = 0;
   let seededQueries = 0;
   let workspaceDb = null;
+  let launchedAt = null;
+  let processed = false;
+  let queries = 0;
+  const writeDb = (write) => {
+    const db = new DatabaseSync(workspaceDb);
+    try {
+      return write(db);
+    } finally {
+      db.close();
+    }
+  };
+  const chronicleUsable = () => {
+    const c = readIndexMetadata(workspaceDb, PROJECT).chronicle;
+    return Boolean(c && !c.dirty);
+  };
+  const tick = () => {
+    if (!freshness || processed || workspaceDb === null) return;
+    if (
+      freshness.now() - launchedAt < freshness.atMs &&
+      queries < (freshness.atQuery ?? Infinity)
+    )
+      return;
+    processed = true;
+    events.push("freshness:ack");
+    writeDb((db) => {
+      db.exec("BEGIN");
+      db.prepare(
+        "UPDATE narrative_change_cursors SET acknowledged_through_sequence = (SELECT COALESCE(MAX(canonical_sequence), 0) FROM narrative_change_events WHERE project_id = ?1) WHERE project_id = ?1",
+      ).run(PROJECT);
+      db.prepare(
+        "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag = 1 WHERE project_id = ?",
+      ).run(PROJECT);
+      db.exec("COMMIT");
+    });
+  };
+  const usable = (kind) => {
+    if (!freshness || kind === "index") return snapshotUsable(kind);
+    queries += 1;
+    tick();
+    return chronicleUsable();
+  };
   const harness = {
     openWorkspace: async (input) => {
       workspaceDb = path.join(input.workspacePath, "grimodex.db");
@@ -144,10 +235,25 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
     },
     buildIndex: async () => {
       events.push("query:index");
+      // DR-CP4-T-1: the query route rebuilds a dirty C (a new generation).
+      if (freshness && !chronicleUsable())
+        writeDb((db) =>
+          db
+            .prepare(
+              "UPDATE narrative_semantic_index_metadata SET generation = generation + 1, dirty_cache_flag = 0 WHERE project_id = ? AND index_key = ?",
+            )
+            .run(PROJECT, INDEX_KEYS.chronicle),
+        );
       return {
         ok: true,
         durationMs: 5,
-        probes: [{ initialSnapshot: { indexUsable: snapshotUsable("index") } }],
+        probes: [
+          {
+            initialSnapshot: {
+              indexUsable: freshness ? chronicleUsable() : usable("index"),
+            },
+          },
+        ],
       };
     },
     measure: async () => {
@@ -156,7 +262,7 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
         status: "completed",
         timing: { tFetchMs: 1, tRawReadyMs: 5, tReturnMs: 9 },
         completion: { outcome: "ir-ready" },
-        initialSnapshot: { indexUsable: snapshotUsable("hybrid") },
+        initialSnapshot: { indexUsable: usable("hybrid") },
         rawSceneIds: [QUERY],
         finalSceneIds: [QUERY],
       };
@@ -174,7 +280,7 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
         events.push("query:graph");
         const observation = k64Observation();
         observation.fetches[0].result.initialSnapshot = {
-          indexUsable: snapshotUsable("graph"),
+          indexUsable: usable("graph"),
           querySupported: true,
         };
         observation.fetches[1].paths = {
@@ -198,6 +304,7 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
   };
   const page = {
     evaluate: async (fn, arg) => {
+      tick();
       globalThis.window = { cp4Harness: harness };
       try {
         return await fn(arg);
@@ -220,10 +327,19 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
     nir1GraphEvalStatus: () => status,
     // Review P3 (a): READY only after the first seeded query, so a READY
     // probe is a real query in the events.
-    nir1GraphEvalDiagnostics: () => ({
-      ...k64Diagnostics(2, 1, 1),
-      preparesReady: seededQueries > 0 ? 1 : 0,
-    }),
+    // DR-CP4-T-4: with B held dirty the worker's prepare fails every time
+    // and READY never comes (the dev diagnostics of graph-index-unusable).
+    nir1GraphEvalDiagnostics: () =>
+      neverReady
+        ? {
+            ...k64Diagnostics(2, 0, 0, { prepareFailures: 1 }),
+            preparesStarted: 1,
+            preparesReady: 0,
+          }
+        : {
+            ...k64Diagnostics(2, 1, 1),
+            preparesReady: seededQueries > 0 ? 1 : 0,
+          },
     nir1GraphEvalSamples: () => ({
       records: [k64NativeRecord(), K64_CACHED_CHILD],
     }),
@@ -233,6 +349,10 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
   const launchMeasurement = async ({ dir: processDir, d2aMode, bodySeam }) => {
     launches += 1;
     seededQueries = 0;
+    workspaceDb = null;
+    processed = false;
+    queries = 0;
+    launchedAt = freshness?.now() ?? null;
     events.push("launch");
     launchArgs.push({ d2aMode, bodySeam });
     const nonce = `0000000${launches}-0000-4000-8000-000000000000`.slice(-36);
@@ -273,12 +393,13 @@ function fakeProduct({ dir, snapshotUsable, onDeclare = () => {} }) {
     launchMeasurement,
     dir,
     launches: () => launches,
+    tick,
   };
 }
 
-function context({ key, spec, metadata, world, pins, setupB = 7 }) {
+function context({ key, spec, metadata, world, pins, setupB = 7, feed }) {
   const dir = mkdtempSync(path.join(tmpdir(), "cp4-s5a-run-"));
-  const cold = coldDb(dir, { ...metadata, pins });
+  const cold = coldDb(dir, { ...metadata, pins, feed });
   let fakeNow = 0;
   const ctx = {
     spec: {
@@ -382,6 +503,7 @@ test("D1 (ii)／DR-CP4-N-1: 宣言の run は workspace を開いた後・seed �
     ]);
     // READY was reached through a seeded probe after the declaration.
     assert.ok(result.proc.checks.ownerReady.probes.length >= 1);
+    assert.equal(result.proc.checks.ownerReady.skipped, undefined);
     assert.equal(result.proc.declaration.verified, true);
     assert.equal(
       result.proc.declaration.invariants.before.sceneV1.sha256,
@@ -1494,4 +1616,426 @@ test("レビュー P2-β (b): B-ROUTE の seam の env は negative の起動に
   });
   assert.equal(negative[trigger], "nir1-graph-index-build");
   assert.equal(negative.GRIMODEX_BODY_DECLARATION_CI_NONCE, nonce);
+});
+
+// DR-CP4-T-1: the measurement process waits for the product's Freshness to
+// reach the cold DB's feed head before the declaration step, the Raw vectors
+// and the Chronicle Index (parity-1 G-08/graph-index-unusable: C turned dirty
+// at the 12th query when the Freshness acknowledged the setup's last event).
+
+test("DR-CP4-T-1: 落ち着きの判定は ack ≥ head かつ進行中の run も予約も無いときだけで、壊れた読みは落ち着かない", () => {
+  const base = {
+    head: 22,
+    acknowledged: 22,
+    activeRun: false,
+    reserved: false,
+  };
+  assert.equal(freshnessSettled(base), true);
+  assert.equal(freshnessSettled({ ...base, head: 0, acknowledged: 0 }), true);
+  assert.equal(freshnessSettled({ ...base, acknowledged: 21 }), false);
+  assert.equal(freshnessSettled({ ...base, activeRun: true }), false);
+  assert.equal(freshnessSettled({ ...base, reserved: true }), false);
+  for (const bad of [
+    null,
+    {},
+    { ...base, head: Number.NaN },
+    { ...base, acknowledged: "22" },
+    { ...base, activeRun: undefined },
+  ])
+    assert.equal(freshnessSettled(bad), false);
+});
+
+test("DR-CP4-T-1: Freshness の feed の読取は read-only で、未処理の件数・cursor・進行中の run を返し、製品の WAL の commit を読む", () => {
+  const dir = mkdtempSync(path.join(tmpdir(), "cp4-t1-feed-"));
+  try {
+    const at = (name, feed) => {
+      const file = path.join(dir, `${name}.db`);
+      const db = new DatabaseSync(file);
+      writeFeed(db, feed);
+      db.close();
+      return file;
+    };
+    // Behind by one sequence of two events (G-08/graph-index-unusable 21／22).
+    const behind = at("behind", { head: 22, ack: 21, ordinals: 2 });
+    const before = sha256(readFileSync(behind));
+    assert.deepEqual(readFreshnessFeed(behind, PROJECT), {
+      consumerId: FRESHNESS_CONSUMER_ID,
+      head: 22,
+      cursor: true,
+      acknowledged: 21,
+      activeRun: false,
+      reserved: false,
+      pendingEvents: 2,
+      pendingSequences: 1,
+    });
+    assert.equal(sha256(readFileSync(behind)), before);
+    // An empty feed without a cursor is settled; events without one are not.
+    const empty = readFreshnessFeed(at("empty", null), PROJECT);
+    assert.equal(empty.head, 0);
+    assert.equal(empty.cursor, false);
+    assert.equal(freshnessSettled(empty), true);
+    const noCursor = readFreshnessFeed(
+      at("no-cursor", { head: 3, cursor: false }),
+      PROJECT,
+    );
+    assert.equal(noCursor.acknowledged, 0);
+    assert.equal(noCursor.pendingEvents, 3);
+    assert.equal(freshnessSettled(noCursor), false);
+    // A run that reserved the range is in progress even at the head.
+    const running = readFreshnessFeed(
+      at("running", { head: 5, ack: 5, activeRun: "run-1", reserved: 5 }),
+      PROJECT,
+    );
+    assert.equal(running.activeRun, true);
+    assert.equal(running.reserved, true);
+    assert.equal(freshnessSettled(running), false);
+    // Not immutable: a commit the product's connection left in the WAL is
+    // read (the cursor advanced, not yet checkpointed).
+    const wal = at("wal", { head: 22, ack: 21 });
+    const writer = new DatabaseSync(wal);
+    writer.exec("PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0");
+    writer
+      .prepare(
+        "UPDATE narrative_change_cursors SET acknowledged_through_sequence = 22",
+      )
+      .run();
+    assert.ok(readFileSync(`${wal}-wal`).length > 0);
+    assert.equal(readFreshnessFeed(wal, PROJECT).acknowledged, 22);
+    writer.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-T-1: 待ちは追いついていればすぐ抜け、cursor が進めば落ち着いた時点で抜け、上限を使い切れば settled: false を返す", async () => {
+  const fakeClock = () => {
+    let now = 0;
+    let sleeps = 0;
+    return {
+      now: () => now,
+      sleep: async (ms) => {
+        sleeps += 1;
+        if (sleeps > 10_000) throw new Error("the wait never ended");
+        now += ms;
+      },
+      sleeps: () => sleeps,
+    };
+  };
+  const state = (acknowledged, extra = {}) => ({
+    head: 22,
+    acknowledged,
+    activeRun: false,
+    reserved: false,
+    pendingEvents: 22 - acknowledged,
+    ...extra,
+  });
+  {
+    const clock = fakeClock();
+    const out = await waitFreshnessSettled({
+      read: () => state(22),
+      limitMs: 15_000,
+      intervalMs: 100,
+      ...clock,
+    });
+    assert.equal(out.settled, true);
+    assert.equal(out.polls, 1);
+    assert.equal(out.waitedMs, 0);
+    assert.equal(clock.sleeps(), 0);
+    assert.deepEqual(out.initial, out.final);
+  }
+  {
+    // The cursor advances at the 4th read; a reservation holds it first.
+    const clock = fakeClock();
+    let reads = 0;
+    const out = await waitFreshnessSettled({
+      read: () => {
+        reads += 1;
+        if (reads < 3) return state(21);
+        if (reads === 3) return state(21, { activeRun: true, reserved: true });
+        return state(22);
+      },
+      limitMs: 15_000,
+      intervalMs: 100,
+      ...clock,
+    });
+    assert.equal(out.settled, true);
+    assert.equal(out.polls, 4);
+    assert.equal(out.waitedMs, 300);
+    assert.equal(out.initial.pendingEvents, 1);
+    assert.equal(out.final.pendingEvents, 0);
+  }
+  {
+    const clock = fakeClock();
+    const out = await waitFreshnessSettled({
+      read: () => state(21),
+      limitMs: 15_000,
+      intervalMs: 100,
+      ...clock,
+    });
+    assert.equal(out.settled, false);
+    assert.equal(out.polls, 151);
+    assert.equal(out.waitedMs, 15_000);
+    assert.equal(out.limitMs, 15_000);
+    assert.equal(out.intervalMs, 100);
+    assert.equal(out.final.pendingEvents, 1);
+  }
+});
+
+/** The test clock ticks the fake product's Freshness timer on each sleep. */
+function freshnessClock(ctx, worldOf) {
+  const sleep = ctx.clock.sleep;
+  ctx.clock.sleep = async (ms) => {
+    await sleep(ms);
+    worldOf().tick();
+  };
+}
+
+const graphHeld = {
+  kind: "graph-held-unusable",
+  holding: true,
+  measurementPoint: "while-graph-index-unusable",
+  indexState: { graph: "unusable", chronicle: "usable" },
+  // DR-CP4-T-4: the plan's value for this kind.
+  readyProbe: false,
+};
+
+test("DR-CP4-T-1: 定常状態の process は Freshness が cold DB の feed を処理して C を汚すまで待ってから C を作り、query の間 C は使えるまま（待たなければ途中で汚れる）", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-08/graph-index-unusable",
+    spec: graphHeld,
+    metadata: {
+      b: { generation: 7, dirty: true },
+      chronicle: { generation: 3, dirty: false },
+    },
+    feed: { head: 22, ack: 21 },
+    world: (base) =>
+      (world = fakeProduct({
+        dir: base,
+        // Like parity-1: about 2 s after the launch, or at the 12th query.
+        freshness: { atMs: 1_000, atQuery: 12, now: () => ctx.clock.now() },
+      })),
+  });
+  freshnessClock(ctx, () => world);
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.samples.length, 70);
+    const at = (name) => world.events.indexOf(name);
+    assert.ok(at("openWorkspace") < at("freshness:ack"));
+    assert.ok(at("freshness:ack") < at("buildRaw"));
+    assert.ok(at("freshness:ack") < at("query:index"));
+    const queries = result.probes.filter((row) => row.at === "at-query");
+    assert.equal(queries.length, 70);
+    assert.ok(queries.every((row) => row.indexUsable === true));
+    // The probe discloses the wait and the feed at the measurement.
+    const before = result.probes[0];
+    assert.equal(before.at, "before-measurement");
+    const { settle, beforeMeasurement } = before.freshnessFeed;
+    assert.equal(settle.settled, true);
+    assert.ok(settle.polls > 1);
+    assert.equal(settle.limitMs, 15_000);
+    assert.equal(settle.intervalMs, 100);
+    assert.equal(settle.initial.pendingEvents, 1);
+    assert.equal(settle.final.pendingEvents, 0);
+    assert.equal(beforeMeasurement.pendingEvents, 0);
+    assert.equal(beforeMeasurement.head, 22);
+    assert.deepEqual(result.proc.checks.freshnessSettle, before.freshnessFeed);
+    // C was rebuilt by the Index build after the invalidation; B is held.
+    assert.equal(before.metadata.chronicle.generation, 4);
+    assert.equal(before.metadata.b.dirty, true);
+    assert.equal(before.metadata.b.generation, 7);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-T-1: 待ちが上限を使い切れば既存の index-build-timeout（while- は blocked:index-state-holding、ほかは Hold と [precheck]、G-01 も）で、query・宣言・Raw の前に止める", async () => {
+  for (const [key, spec, condition, contract, precheck] of [
+    [
+      "G-08/graph-index-unusable",
+      graphHeld,
+      "while-variant",
+      "index-state-holding",
+      false,
+    ],
+    [
+      "G-02/base",
+      { declaration: { sceneId: "added-logical" } },
+      "other-variant",
+      null,
+      true,
+    ],
+    ["G-01/v1", {}, "other-variant", null, true],
+  ]) {
+    let world;
+    const { ctx, dir } = context({
+      key,
+      spec,
+      metadata: steadyState,
+      feed: { head: 22, ack: 21 },
+      world: (base) =>
+        (world = fakeProduct({ dir: base, snapshotUsable: () => true })),
+    });
+    try {
+      const result = await measureVariant(ctx);
+      assert.equal(result.status, "blocked", key);
+      assert.equal(result.blocked.harnessId, "index-build-timeout");
+      assert.equal(result.blocked.condition, condition);
+      assert.equal(result.blocked.contractBlockedId, contract);
+      assert.equal(result.blocked.hold, contract === null);
+      assert.equal(result.blocked.precheck, precheck);
+      assert.deepEqual(
+        result.blocked.unmetPreconditions,
+        contract ? ["index-state-holding"] : [],
+      );
+      assert.equal(
+        world.events.some(
+          (row) =>
+            row.startsWith("query:") || row === "declare" || row === "buildRaw",
+        ),
+        false,
+        key,
+      );
+      assert.equal(world.events.at(-1), "stop");
+      const settle = result.probe.freshnessFeed.settle;
+      assert.equal(settle.settled, false);
+      assert.equal(settle.polls, 151);
+      assert.equal(settle.limitMs, 15_000);
+      assert.equal(settle.final.pendingEvents, 1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("DR-CP4-T-1: one-shot は process ごとに新しい写しで同じ待ちをし、測る 1 回の query の前に Freshness が処理し終える", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-08/both-indexes-unusable",
+    spec: {
+      kind: "one-shot",
+      holding: true,
+      measurementPoint: "while-both-indexes-unusable",
+      indexState: { graph: "unusable", chronicle: "unusable" },
+      oneShot: {
+        warmupProcessesPerArm: 5,
+        measuredProcessesPerArm: 30,
+        receiptLabel: ONE_SHOT_RECEIPT_LABEL,
+      },
+      buildChronicleIndex: false,
+      readyProbe: false,
+    },
+    metadata: {
+      b: { generation: 7, dirty: true },
+      chronicle: { generation: 3, dirty: true },
+    },
+    feed: { head: 22, ack: 21 },
+    world: (base) =>
+      (world = fakeProduct({
+        dir: base,
+        freshness: { atMs: 1_000, atQuery: 1, now: () => ctx.clock.now() },
+      })),
+  });
+  freshnessClock(ctx, () => world);
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(world.launches(), 70);
+    const processes = [];
+    for (const event of world.events) {
+      if (event === "launch") processes.push([]);
+      else processes.at(-1).push(event);
+    }
+    for (const events of processes) {
+      const ack = events.indexOf("freshness:ack");
+      const query = events.findIndex((row) => row.startsWith("query:"));
+      assert.ok(ack >= 0 && ack < query);
+    }
+    const before = result.probes.filter(
+      (row) => row.at === "before-measurement",
+    );
+    assert.equal(before.length, 70);
+    assert.ok(
+      before.every(
+        (row) =>
+          row.freshnessFeed.settle.settled === true &&
+          row.freshnessFeed.settle.initial.pendingEvents === 1 &&
+          row.freshnessFeed.beforeMeasurement.pendingEvents === 0,
+      ),
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-T-1（帰結）: B が使える variant の cold DB に未処理のイベントがあれば、Freshness が B を汚した後の probe が blocked:b-sealed-binding で止める（汚れた B の Graph arm を測らない）", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-02/base",
+    spec: {},
+    metadata: steadyState,
+    feed: { head: 31, ack: 29 },
+    world: (base) =>
+      (world = fakeProduct({
+        dir: base,
+        freshness: { atMs: 1_000, atQuery: 12, now: () => ctx.clock.now() },
+      })),
+  });
+  freshnessClock(ctx, () => world);
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "blocked");
+    assert.equal(result.blocked.harnessId, "measurement-point-mismatch");
+    assert.equal(result.blocked.condition, "graph");
+    assert.equal(result.blocked.contractBlockedId, "b-sealed-binding");
+    assert.equal(result.probe.freshnessFeed.settle.settled, true);
+    assert.equal(result.probe.freshnessFeed.settle.initial.pendingEvents, 2);
+    assert.equal(world.events.includes("query:graph"), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("DR-CP4-T-4: graph-held-unusable は V-10 の READY の probe を呼ばず、不適用とその時の prepare の状況を受領書に残し、Graph arm の query は fallback として測る", async () => {
+  let world;
+  const { ctx, dir } = context({
+    key: "G-08/graph-index-unusable",
+    spec: graphHeld,
+    metadata: {
+      b: { generation: 7, dirty: true },
+      chronicle: { generation: 3, dirty: false },
+    },
+    world: (base) =>
+      (world = fakeProduct({
+        dir: base,
+        snapshotUsable: () => true,
+        neverReady: true,
+      })),
+  });
+  try {
+    const result = await measureVariant(ctx);
+    assert.equal(result.status, "measured");
+    assert.equal(result.samples.length, 70);
+    const graph = result.samples.filter((row) => row.arm === "graph");
+    assert.equal(graph.length, 35);
+    // No seeded query outside the schedule: the Graph-arm queries are the
+    // 35 samples, after the hook prepare.
+    const events = world.events;
+    assert.equal(events.filter((row) => row === "query:graph").length, 35);
+    assert.ok(events.indexOf("hook.prepare") < events.indexOf("query:graph"));
+    // The disclosure: not applicable, with the prepare state at that time.
+    const ready = result.proc.checks.ownerReady;
+    assert.equal(ready.skipped, "not-applicable:graph-held-unusable");
+    assert.equal(ready.probes, undefined);
+    assert.equal(ready.diagnostics.preparesStarted, 1);
+    assert.equal(ready.diagnostics.prepareFailures, 1);
+    assert.equal(ready.diagnostics.preparesReady, 0);
+    // The at-query probe is unchanged (every query, C usable).
+    const queries = result.probes.filter((row) => row.at === "at-query");
+    assert.equal(queries.length, 70);
+    assert.ok(queries.every((row) => row.indexUsable === true));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

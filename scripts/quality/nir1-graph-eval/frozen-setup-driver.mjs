@@ -69,10 +69,14 @@ import {
 } from "./setup-receipt.mjs";
 import {
   readChronicleSetupRows,
+  readFreshnessFeed,
   readFrozenSetupRows,
   readIndexMetadata,
   readRelationSourceTokens,
   readRunsSince,
+  freshnessSettled,
+  readMaintenanceActivity,
+  waitFreshnessSettled,
 } from "./workspace-db.mjs";
 import { REQUIRED_ARTIFACTS } from "../nir1-retrieval/standard-build-receipt.mjs";
 
@@ -152,6 +156,49 @@ export const MAINTENANCE_WAIT_MS = 180_000;
  */
 export const INDEX_BUILD_INTERVAL_MS = 500;
 export const INDEX_BUILD_WAIT_MS = 120_000;
+/**
+ * DR-CP4-T-3: the wait for the product's Freshness to process the feed
+ * (cursor at the head, no run in progress) before a complete setup closes a
+ * session and before its Chronicle Index and measurement point steps. Longer
+ * than a measurement process's (15 s): in a setup session the IR extraction,
+ * the seam's B build and Verify hold the maintenance permit the Freshness
+ * cycle needs. Fixed constants (the tests pin them).
+ */
+export const FRESHNESS_SETTLE_WAIT_MS = 60_000;
+export const FRESHNESS_SETTLE_INTERVAL_MS = 250;
+const SETTLE_BEFORE_EXECUTORS = new Set([
+  "chronicle-index",
+  "measurement-point",
+]);
+
+/**
+ * DR-CP4-T-3: one wait (complete setups only; ① never waits). A wait that
+ * runs out is a `[precheck]`, never blocked and never a reopening trigger.
+ */
+async function settleFreshness(ctx, point, { maintenance = true } = {}) {
+  if (partialRun(ctx.plan)) return null;
+  const file = path.join(ctx.workspacePath, "grimodex.db");
+  if (!existsSync(file)) return null;
+  const settle = await waitFreshnessSettled({
+    read: () => readFreshnessFeed(file, ctx.ids.projectId),
+    // DR-CP4-T-5: the measurement point and a session's end also wait for
+    // maintenance to be still (after-maintenance-current).
+    readActivity: maintenance
+      ? () => readMaintenanceActivity(file, ctx.ids.projectId)
+      : null,
+    limitMs: ctx.limits?.freshnessSettleMs ?? FRESHNESS_SETTLE_WAIT_MS,
+    intervalMs: FRESHNESS_SETTLE_INTERVAL_MS,
+    sleep: ctx.sleep,
+  });
+  ctx.freshnessSettles ??= [];
+  ctx.freshnessSettles.push({ session: ctx.session ?? null, point, settle });
+  if (!settle.settled)
+    fail(
+      "freshness-settle",
+      `${ctx.plan.variantKey}: the product's Freshness did not process the feed in ${settle.limitMs} ms (${point} of the ${ctx.session} session; cursor ${settle.final.acknowledged}, head ${settle.final.head}, run ${settle.final.activeRun}, reserved ${settle.final.reserved})`,
+    );
+  return settle;
+}
 
 /**
  * P-6 (DR-CP4-L-28): the README preconditions an index build timeout leaves
@@ -1024,6 +1071,13 @@ const EXECUTORS = Object.freeze({
       declared,
       probe,
       spec: step.input.spec ?? null,
+      // DR-CP4-T-1 (disclosure): the Change Feed events the product's
+      // Freshness has not processed at the measurement point; a measurement
+      // process processes them (and invalidates B and C) after it opens.
+      freshnessFeed: readFreshnessFeed(
+        path.join(ctx.workspacePath, "grimodex.db"),
+        ctx.ids.projectId,
+      ),
     };
     if (
       probe.graph !== declared.graph ||
@@ -1641,12 +1695,22 @@ export async function runFrozenSetupSteps({
       !ctx.preMutationIndexState
     )
       ctx.preMutationIndexState = assertSealedBeforeMutation(ctx);
+    // DR-CP4-T-3: the Index build and the probe see the feed processed.
+    // DR-CP4-T-5: before the Chronicle Index the Freshness only (its own
+    // queries take the maintenance Verify's connection anyway).
+    if (SETTLE_BEFORE_EXECUTORS.has(step.executor))
+      await settleFreshness(ctx, `before:${step.phase}`, {
+        maintenance: step.executor === "measurement-point",
+      });
     const stateBefore = ctx.workspaceOpen ? await readState(ctx) : null;
     const details = await executor({ ctx, step });
     const stateAfter = await readState(ctx);
     phase(step.phase, { session, details, stateBefore, stateAfter });
     ctx.sessionStepsDone += 1;
   }
+  // DR-CP4-T-3: nothing left in the feed when the session closes (the next
+  // seam session's opening wake seals B on a processed feed).
+  if (ctx.sessionStepsDone > 0) await settleFreshness(ctx, "session-end");
   if (
     session === plan.steps.at(-1).session &&
     plan.stopIndex === plan.steps.length - 1 &&
@@ -2154,6 +2218,8 @@ const RUN_ONLY_CTX_KEYS = new Set([
   "workspaceOpen",
   "limits",
   "resumeAuthorFrom",
+  // DR-CP4-T-3: each receipt records its own waits.
+  "freshnessSettles",
 ]);
 const cloneJson = (value) => JSON.parse(JSON.stringify(value));
 
@@ -2312,6 +2378,9 @@ export async function setupFrozenVariant({
       seedPinIndex: seedPinStepIndex(plan),
       stoppedAfter: runPlan.stopIndex,
     };
+  // DR-CP4-T-3: the waits of this receipt (a complete setup only), kept
+  // when a later step stops.
+  if (!partialRun(plan)) receipt.freshnessSettles = ctx.freshnessSettles = [];
   const session = async (
     label,
     extraEnv = {},
@@ -2630,6 +2699,22 @@ export async function setupFrozenVariant({
         rows: readChronicleSetupRows(cold, ids.projectId),
       });
       receipt.readBack.indexMetadata = readIndexMetadata(cold, ids.projectId);
+      // DR-CP4-T-1 (disclosure): the same on the sealed cold DB.
+      receipt.readBack.freshnessFeed = readFreshnessFeed(cold, ids.projectId);
+      // DR-CP4-T-3: the guarantee that a measurement process has nothing
+      // of the setup's feed left to process.
+      if (!freshnessSettled(receipt.readBack.freshnessFeed))
+        fail(
+          "freshness-settle",
+          `${plan.variantKey}: the cold DB's feed is not processed (cursor ${receipt.readBack.freshnessFeed.acknowledged}, head ${receipt.readBack.freshnessFeed.head})`,
+        );
+      // DR-CP4-T-5 (disclosure): the maintenance runs the cold DB keeps in
+      // progress (a Verify the product preempts without end is the
+      // product's, DR-CP4-L-27; it is recorded, not a stop).
+      receipt.readBack.maintenance = readMaintenanceActivity(
+        cold,
+        ids.projectId,
+      );
       receipt.readBack.relationStaleness = assertRelationStaleOnCold({
         cold,
         ids,

@@ -1,13 +1,15 @@
 // CP-4 S1c-2: read-only reads of a workspace `grimodex.db` from the harness
 // process (DR-CP4-S1C2-5). Used for evidence only: the Index metadata
 // (generation, dirty) before/after the declaration step and the sealed B
-// generation, and the setup read-back. Each read opens its own read-only
+// generation, the setup read-back, and the Freshness feed state a measurement
+// process waits on (DR-CP4-T-1). Each read opens its own read-only
 // connection (`node:sqlite`, `readOnly: true`) and closes it; nothing writes.
 // The measured samples never call this (the A3 record of a sample is the
 // evaluation Native's own read-only connection).
 
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
+import { performance } from "node:perf_hooks";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -113,6 +115,191 @@ export function openDataVersionProbe(file) {
   return {
     read: () => Number(statement.get().data_version),
     close: () => db.close(),
+  };
+}
+
+/** The product's Change Feed Freshness consumer (`narrative_extraction/mod.rs`). */
+export const FRESHNESS_CONSUMER_ID = "narrative-incremental-freshness/v1";
+
+/**
+ * DR-CP4-T-1 (pure): one project's Freshness feed state from its reads — the
+ * feed head (`COALESCE(MAX(canonical_sequence), 0)`), the consumer's cursor
+ * row (or null) and the events past its acknowledged sequence.
+ */
+export function freshnessFeedState({
+  head,
+  cursor,
+  pendingEvents,
+  pendingSequences,
+}) {
+  return {
+    consumerId: FRESHNESS_CONSUMER_ID,
+    head: Number(head),
+    cursor: cursor !== null && cursor !== undefined,
+    acknowledged: cursor ? Number(cursor.acknowledged) : 0,
+    activeRun:
+      cursor?.activeRunId !== null && cursor?.activeRunId !== undefined,
+    reserved: cursor?.reserved !== null && cursor?.reserved !== undefined,
+    pendingEvents: Number(pendingEvents),
+    pendingSequences: Number(pendingSequences),
+  };
+}
+
+/**
+ * DR-CP4-T-1 (pure): the product's Freshness has nothing left to do for the
+ * project — its cursor reached the feed head and no run holds a reservation
+ * (the selector `select_next_project`, `incremental_freshness.rs`). The ack
+ * and the Index invalidation commit together, so a settled state has no
+ * invalidation still to come from these events. Malformed reads never settle.
+ */
+export function freshnessSettled(state) {
+  return (
+    Number.isInteger(state?.head) &&
+    Number.isInteger(state?.acknowledged) &&
+    state.acknowledged >= state.head &&
+    state.activeRun === false &&
+    state.reserved === false
+  );
+}
+
+/**
+ * DR-CP4-T-1: one read-only read of the project's Freshness feed state on a
+ * workspace DB the product has open (not immutable: it sees the product's
+ * committed WAL). SELECT only; nothing writes.
+ */
+export function readFreshnessFeed(file, projectId, options = {}) {
+  return withReadOnly(
+    file,
+    (db) => {
+      const head = db
+        .prepare(
+          "SELECT COALESCE(MAX(canonical_sequence), 0) AS head FROM narrative_change_events WHERE project_id = ?",
+        )
+        .get(projectId).head;
+      const cursor =
+        db
+          .prepare(
+            `SELECT acknowledged_through_sequence AS acknowledged,
+                    active_run_id AS activeRunId,
+                    reserved_through_sequence AS reserved
+               FROM narrative_change_cursors
+              WHERE project_id = ? AND consumer_id = ?`,
+          )
+          .get(projectId, FRESHNESS_CONSUMER_ID) ?? null;
+      const pending = db
+        .prepare(
+          `SELECT count(*) AS events, count(DISTINCT canonical_sequence) AS sequences
+             FROM narrative_change_events
+            WHERE project_id = ? AND canonical_sequence > ?`,
+        )
+        .get(projectId, cursor ? Number(cursor.acknowledged) : 0);
+      return freshnessFeedState({
+        head,
+        cursor,
+        pendingEvents: pending.events,
+        pendingSequences: pending.sequences,
+      });
+    },
+    options,
+  );
+}
+
+/**
+ * DR-CP4-T-5: the project's maintenance activity — how many extraction runs
+ * are `running` (an `interpretation` that is `pending` waits for an AI
+ * provider and is no maintenance progress), and the run count and newest
+ * `created_at` (a stillness check compares two reads). SELECT only.
+ */
+export function readMaintenanceActivity(file, projectId, options = {}) {
+  return withReadOnly(
+    file,
+    (db) => {
+      const row = db
+        .prepare(
+          `SELECT count(*) AS runs, MAX(created_at) AS lastCreatedAt,
+                  COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) AS running
+             FROM narrative_extraction_runs WHERE project_id = ?`,
+        )
+        .get(projectId);
+      return {
+        runs: Number(row.runs),
+        lastCreatedAt: row.lastCreatedAt ?? null,
+        running: Number(row.running),
+      };
+    },
+    options,
+  );
+}
+
+/**
+ * DR-CP4-T-5 (pure): maintenance is still — no run is in progress, and no run
+ * started or ended between two consecutive reads.
+ */
+export function maintenanceQuiet(previous, current) {
+  return Boolean(
+    previous &&
+    current &&
+    previous.running === 0 &&
+    current.running === 0 &&
+    previous.runs === current.runs &&
+    previous.lastCreatedAt === current.lastCreatedAt,
+  );
+}
+
+/**
+ * DR-CP4-T-1: polls `read` every `intervalMs` until the state is settled or
+ * `limitMs` has passed. `now`／`sleep` are the caller's clock (the tests'
+ * fakes). DR-CP4-T-5: with `readActivity`, maintenance must be still too
+ * (two consecutive reads) before the wait ends early; `settled` stays the
+ * Freshness's, `maintenance.quiet` is reported. Returns the record the probe
+ * discloses.
+ */
+export async function waitFreshnessSettled({
+  read,
+  readActivity = null,
+  limitMs,
+  intervalMs,
+  now = () => performance.now(),
+  sleep: pause = (ms) => sleep(ms),
+}) {
+  const started = now();
+  const initial = read();
+  let state = initial;
+  const initialActivity = readActivity ? readActivity() : null;
+  let previousActivity = null;
+  let activity = initialActivity;
+  let polls = 1;
+  const done = () =>
+    freshnessSettled(state) &&
+    (readActivity === null || maintenanceQuiet(previousActivity, activity));
+  while (!done() && now() - started < limitMs) {
+    await pause(intervalMs);
+    state = read();
+    if (readActivity) {
+      previousActivity = activity;
+      activity = readActivity();
+    }
+    polls += 1;
+  }
+  // The Freshness decides `settled`; the maintenance's stillness is
+  // reported beside it (DR-CP4-T-5: its exhaustion is a disclosure).
+  return {
+    settled: freshnessSettled(state),
+    waitedMs: now() - started,
+    polls,
+    limitMs,
+    intervalMs,
+    initial,
+    final: state,
+    ...(readActivity
+      ? {
+          maintenance: {
+            quiet: maintenanceQuiet(previousActivity, activity),
+            initial: initialActivity,
+            final: activity,
+          },
+        }
+      : {}),
   };
 }
 

@@ -24,6 +24,14 @@ export const RUN_KINDS = Object.freeze([
 ]);
 const CATALOG = Object.freeze(GRAPH_EVAL_VARIANTS.map((row) => row.key));
 
+/**
+ * DR-CP4-T-4: V-10 READY is a steady-state check. A graph-held-unusable
+ * variant holds B dirty, so the worker's prepare fails every time and READY
+ * never comes by the product's design; a one-shot process issues no query
+ * before its measured one (C5).
+ */
+const readyProbeOf = (kind) => kind === "steady-state";
+
 function fail(detail) {
   throw new Error(`[precheck] S5 ${detail}`);
 }
@@ -236,7 +244,7 @@ export function formalRunPlan({ plans, prep, addenda }) {
         oneShot: oneShotSpec,
         // C5: a one-shot process issues no query before its measured one.
         buildChronicleIndex: !isOneShot,
-        readyProbe: !isOneShot,
+        readyProbe: readyProbeOf(kind),
         g01Mode: plan.caseId === "G-01" ? g01 : null,
       });
     }),
@@ -335,6 +343,33 @@ export function d2ProbeCheck({ spec, setupProbe, metadata, indexUsable, at }) {
         unmet: graphOk ? [] : ["b-sealed-binding"],
       };
   return { ok: false, probe, blocked };
+}
+
+/**
+ * DR-CP4-T-1: the measurement process's wait for the product's Freshness to
+ * reach the cold DB's feed head (`waitFreshnessSettled`), before the
+ * declaration step, the Raw vectors and the Chronicle Index. A wait that
+ * used up its limit is the existing `index-build-timeout` (DR-CP4-L-28 (8)
+ * a while- variant → `blocked:index-state-holding`, (9) another → Hold and
+ * [precheck]); the table gains no row.
+ */
+export function freshnessSettleCheck({ spec, settle }) {
+  if (settle?.settled === true) return { ok: true };
+  return {
+    ok: false,
+    probe: { at: "before-measurement", freshnessFeed: { settle } },
+    blocked: spec.holding
+      ? {
+          harnessId: "index-build-timeout",
+          condition: "while-variant",
+          unmet: ["index-state-holding"],
+        }
+      : {
+          harnessId: "index-build-timeout",
+          condition: "other-variant",
+          unmet: [],
+        },
+  };
 }
 
 /**
@@ -472,7 +507,7 @@ export function devRunSpec(plan) {
         })
       : null,
     buildChronicleIndex: !isOneShot,
-    readyProbe: !isOneShot,
+    readyProbe: readyProbeOf(kind),
     g01Mode: null,
   });
 }

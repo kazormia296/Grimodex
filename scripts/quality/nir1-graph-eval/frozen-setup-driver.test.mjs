@@ -138,6 +138,8 @@ test("① の部分実行（G-02/base、fake の製品）: 段は plan のとお
   assert.deepEqual(names, executedPhaseNames(plan));
   assert.equal(assertR5CheckPhases({ plan, phases: names }).ok, true);
   assert.deepEqual(product.forbidden, []);
+  // DR-CP4-T-3: ① never waits for the Freshness (no read of the feed).
+  assert.equal(ctx.freshnessSettles, undefined);
   for (const call of product.calls)
     assert.ok(
       R5_CHECK_ALLOWED_IPC.includes(call) ||
