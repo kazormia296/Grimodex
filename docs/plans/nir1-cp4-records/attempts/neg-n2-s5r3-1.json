@@ -1,7 +1,7 @@
 {
   "schema": "nir1-cp4-attempt/1",
   "runName": "neg-n2-s5r3-1",
-  "status": "started",
+  "status": "completed",
   "candidate": {
     "commit": "0b1984dd68ec132aea394664e2ba61759e1e2830",
     "tree": "900ba98bd43b38fb668df1f557276b789d3ed13b"
@@ -23,5 +23,9 @@
     "G-08/graph-recovered": "7c6902722bdd5802e27c4012c546e88e7c7c0565b9e5ed5f7acdaf6307e059eb",
     "G-08/chronicle-index-unusable": "af4881bc3da2476b525037854c61b1521c54233ac338fe5f44844eeb3e9d4f5c",
     "G-08/both-indexes-unusable": "1be7988029709e8190046478673b9146ad2a67e78b28127cab62f13561154018"
+  },
+  "finishedAtUtc": "2026-10-31T12:09:21.472Z",
+  "variants": {
+    "G-01/v1": "measured"
   }
 }
