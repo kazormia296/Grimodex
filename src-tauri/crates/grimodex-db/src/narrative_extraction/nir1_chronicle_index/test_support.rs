@@ -41,6 +41,11 @@ impl Fixture {
         }
     }
 
+    /// The workspace file, for a second connection (DR-CP4-V-1 tests).
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub fn project(&self) -> &str {
         self.manifest["projectId"].as_str().expect("project")
     }

@@ -35,6 +35,14 @@ impl ReadIdentity {
         }))
     }
 
+    /// The same state as `self` seen through another connection epoch.
+    #[cfg(test)]
+    pub(crate) fn with_connection_epoch_for_test(&self, epoch: &str) -> Self {
+        let mut other = self.clone();
+        other.source.connection_epoch = epoch.to_owned();
+        other
+    }
+
     pub fn read(conn: &Connection) -> Result<Option<Self>> {
         ensure!(
             !conn.is_autocommit(),

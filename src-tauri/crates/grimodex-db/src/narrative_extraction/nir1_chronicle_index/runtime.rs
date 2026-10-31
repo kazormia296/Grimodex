@@ -32,6 +32,11 @@ pub(super) struct RuntimeState {
 
 pub(super) struct IndexProof {
     pub validated_read: Mutex<Option<super::read_identity::ReadIdentity>>,
+    /// DR-CP4-V-1 (P2): query contexts this proof's validation read, each
+    /// reusable only for the exact same committed connection state, project
+    /// and Scene (`query.rs`, `validated_query_context`). Process-local; never
+    /// durable. Entries of an older state are dropped when a newer one is kept.
+    pub validated_query_contexts: Mutex<Vec<ValidatedQueryContext>>,
     pub project: String,
     pub runtime_epoch: u64,
     pub binding: StoredBinding,
@@ -40,6 +45,15 @@ pub(super) struct IndexProof {
     pub candidates: Vec<IndexedCandidate>,
     pub model: Option<NirEmbeddingIdentity>,
     pub input_edges: Vec<super::super::dependency_edges::DependencyEdge>,
+}
+
+/// One query context read inside a Read transaction whose identity was the
+/// same before and after the read (the `validated_read` rule).
+pub(super) struct ValidatedQueryContext {
+    pub identity: super::read_identity::ReadIdentity,
+    pub project: String,
+    pub scene: String,
+    pub context: Arc<super::super::retrieval_admission::RetrievalQueryContext>,
 }
 
 pub(super) struct IndexedCandidate {
