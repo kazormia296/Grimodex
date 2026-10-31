@@ -4624,7 +4624,61 @@
     "trustPath": "Path: {{path}}",
     "trustWarning": "Only open workspaces from sources you trust.",
     "trustAndOpen": "Trust & Open",
-    "trustCancel": "Cancel"
+    "trustCancel": "Cancel",
+    "recovery": {
+      "band": "Recovery Shell",
+      "title": "Workspace recovery is required",
+      "description": "Grimodex did not publish a normal workspace authority. The editor, Codex, chat, and all normal workspace panels are unavailable until a candidate is restored and the workspace opens successfully.",
+      "noSession": "No recovery session is active.",
+      "info": {
+        "mode": "Mode",
+        "workspace": "Workspace",
+        "reason": "Reason",
+        "errorCode": "Error code",
+        "preferredSnapshot": "Preferred snapshot"
+      },
+      "modes": {
+        "safe-mode": "Safe mode",
+        "recovery-required": "Recovery required"
+      },
+      "actions": {
+        "refresh": "Refresh candidates",
+        "quarantine": "Create quarantine copy",
+        "diagnostics": "Export diagnostics",
+        "retry": "Retry open",
+        "verify": "Verify",
+        "verifying": "Verifying...",
+        "restore": "Restore",
+        "restoring": "Restoring..."
+      },
+      "table": {
+        "kind": "Kind",
+        "created": "Created",
+        "schema": "Schema",
+        "checksum": "Checksum",
+        "actions": "Actions",
+        "unknownSchema": "unknown",
+        "recommended": "Recommended first",
+        "empty": "No recovery candidates were found. Export diagnostics before changing this workspace manually."
+      },
+      "kinds": {
+        "automatic-backup": "Automatic backup",
+        "manual-backup": "Manual backup",
+        "migration-snapshot": "Migration snapshot"
+      },
+      "checksum": {
+        "verified": "verified",
+        "unverified": "unverified",
+        "invalid": "invalid"
+      },
+      "toast": {
+        "refreshed": "Recovery candidates refreshed.",
+        "verified": "Candidate verified.",
+        "restored": "Restore completed. Retry opening the workspace to enter the editor.",
+        "quarantined": "Live database quarantined as {{fileName}}.",
+        "diagnosticsExported": "Diagnostics exported to {{path}}."
+      }
+    }
   },
   "vivliostyle": {
     "title": "Book Export (Vivliostyle)",
