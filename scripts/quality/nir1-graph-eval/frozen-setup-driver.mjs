@@ -195,7 +195,7 @@ async function settleFreshness(ctx, point, { maintenance = true } = {}) {
   if (!settle.settled)
     fail(
       "freshness-settle",
-      `${ctx.plan.variantKey}: the product's Freshness and maintenance did not settle in ${settle.limitMs} ms (${point} of the ${ctx.session} session; cursor ${settle.final.acknowledged}, head ${settle.final.head}, run ${settle.final.activeRun}, reserved ${settle.final.reserved}; maintenance running ${settle.maintenance?.final?.running ?? "not read"})`,
+      `${ctx.plan.variantKey}: the product's Freshness did not process the feed in ${settle.limitMs} ms (${point} of the ${ctx.session} session; cursor ${settle.final.acknowledged}, head ${settle.final.head}, run ${settle.final.activeRun}, reserved ${settle.final.reserved})`,
     );
   return settle;
 }
@@ -2708,16 +2708,13 @@ export async function setupFrozenVariant({
           "freshness-settle",
           `${plan.variantKey}: the cold DB's feed is not processed (cursor ${receipt.readBack.freshnessFeed.acknowledged}, head ${receipt.readBack.freshnessFeed.head})`,
         );
-      // DR-CP4-T-5: no maintenance run left in progress in the cold DB.
+      // DR-CP4-T-5 (disclosure): the maintenance runs the cold DB keeps in
+      // progress (a Verify the product preempts without end is the
+      // product's, DR-CP4-L-27; it is recorded, not a stop).
       receipt.readBack.maintenance = readMaintenanceActivity(
         cold,
         ids.projectId,
       );
-      if (receipt.readBack.maintenance.running !== 0)
-        fail(
-          "freshness-settle",
-          `${plan.variantKey}: the cold DB keeps ${receipt.readBack.maintenance.running} maintenance run(s) in progress`,
-        );
       receipt.readBack.relationStaleness = assertRelationStaleOnCold({
         cold,
         ids,

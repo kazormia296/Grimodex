@@ -1306,35 +1306,26 @@ test("DR-CP4-T-5: seal の session に実行中の Verify があれば測定点�
   const point = at("before:measurement-point");
   assert.equal(point.maintenance.initial.running, 1);
   assert.equal(point.maintenance.final.running, 0);
+  assert.equal(point.maintenance.quiet, true);
   assert.ok(point.polls >= 2);
   assert.equal(receipt.readBack.maintenance.running, 0);
 });
 
-test("DR-CP4-T-5: Verify が上限までに終わらなければ測定点の前で [precheck] freshness-settle（maintenance が残ったと書く）", async () => {
+test("DR-CP4-T-5: Verify が上限までに終わらなければ待ちを使い切って先へ進み（止めない）、静止しなかったことと cold DB の実行中の run を開示する", async () => {
   const { receipt } = await completeSetup(
     "G-02/base",
     { verify: { sessions: ["seal"], settles: false } },
     SHARED,
     { freshnessSettleMs: 30 },
   );
-  assert.notEqual(receipt.status, "setup-complete");
-  assert.match(
-    [receipt.precheck?.message, ...receipt.errors].join("\n"),
-    /\[precheck\] S1i freshness-settle: .*before:measurement-point of the seal session.*maintenance running 1/u,
-  );
-});
-
-test("DR-CP4-T-5: 最後の待ちの後に実行中の run が残った cold DB は [precheck]", async () => {
-  const { receipt } = await completeSetup("G-02/base", {}, SHARED, {
-    onStop: (label, product) => {
-      if (label === "seal") product.extension.startVerify();
-    },
-  });
-  assert.notEqual(receipt.status, "setup-complete");
-  assert.match(
-    [receipt.precheck?.message, ...receipt.errors].join("\n"),
-    /\[precheck\] S1i freshness-settle: .*cold DB keeps 1 maintenance run/u,
-  );
+  assert.equal(receipt.status, "setup-complete", receipt.errors.join("\n"));
+  const point = receipt.freshnessSettles.find(
+    (row) => row.session === "seal" && row.point === "before:measurement-point",
+  ).settle;
+  assert.equal(point.settled, true);
+  assert.equal(point.maintenance.quiet, false);
+  assert.equal(point.maintenance.final.running, 1);
+  assert.equal(receipt.readBack.maintenance.running, 1);
 });
 
 test("DR-CP4-T-5: session の終わりでも maintenance を待つ（ir の session の Verify はその session を閉じる前に終わる）", async () => {

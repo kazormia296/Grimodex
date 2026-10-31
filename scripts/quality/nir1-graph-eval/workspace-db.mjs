@@ -250,7 +250,9 @@ export function maintenanceQuiet(previous, current) {
  * DR-CP4-T-1: polls `read` every `intervalMs` until the state is settled or
  * `limitMs` has passed. `now`／`sleep` are the caller's clock (the tests'
  * fakes). DR-CP4-T-5: with `readActivity`, maintenance must be still too
- * (two consecutive reads). Returns the record the probe discloses.
+ * (two consecutive reads) before the wait ends early; `settled` stays the
+ * Freshness's, `maintenance.quiet` is reported. Returns the record the probe
+ * discloses.
  */
 export async function waitFreshnessSettled({
   read,
@@ -279,8 +281,10 @@ export async function waitFreshnessSettled({
     }
     polls += 1;
   }
+  // The Freshness decides `settled`; the maintenance's stillness is
+  // reported beside it (DR-CP4-T-5: its exhaustion is a disclosure).
   return {
-    settled: done(),
+    settled: freshnessSettled(state),
     waitedMs: now() - started,
     polls,
     limitMs,
@@ -288,7 +292,13 @@ export async function waitFreshnessSettled({
     initial,
     final: state,
     ...(readActivity
-      ? { maintenance: { initial: initialActivity, final: activity } }
+      ? {
+          maintenance: {
+            quiet: maintenanceQuiet(previousActivity, activity),
+            initial: initialActivity,
+            final: activity,
+          },
+        }
       : {}),
   };
 }
