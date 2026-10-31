@@ -23,7 +23,9 @@
 //   - `followUp.nativeBegins` are the Native begin records from the parent's
 //     to the child's (by seq), whoever issued them.
 // Re-queries (`graph-ready`, `index-ready`, the IR retry) and queries without
-// a seed (outside Q) are counted apart and are never rows (DR-CP4-TR-3).
+// a seed (outside Q) are counted apart and are never rows (DR-CP4-TR-3). A
+// fetch called after the counted query's cycle end (R4: the sample's end) is
+// never its child (DR-CP4-V-4): it leaves the record and is disclosed.
 //
 // Clocks (R6): renderer `performance.now()` ms for every window input; the
 // evaluation Native ns for the boundary counters and the begin records only.
@@ -34,7 +36,12 @@ import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { summarizeTrace, validateTraceEvents } from "./availability.mjs";
-import { K64_W_F_MS, TRACE_MIN_QUERIES } from "./constants.mjs";
+import {
+  BOUNDARY_TOLERANCE_MS,
+  GRAPH_EVAL_D_MS,
+  K64_W_F_MS,
+  TRACE_MIN_QUERIES,
+} from "./constants.mjs";
 import { PRODUCT_HOOK } from "./followup.mjs";
 import { finite } from "./join.mjs";
 import { k64GraphSampleRow } from "./k64-record.mjs";
@@ -1031,6 +1038,151 @@ function defectRow({ queryId, d2aMode, materials, parent, error }) {
   };
 }
 
+export const REQUERY_AFTER_CYCLE_END = "DR-CP4-V-4";
+
+/**
+ * DR-CP4-V-4: the window's fetches called after the cycle end (R4: the sample
+ * ends at the child's publish, t_raw_ready + T_show or the session's stop,
+ * whichever is first), in call order; never the parent, none without a
+ * finite cycle end.
+ */
+function afterCycleEnd({ fetches, parent, cycleEndAt }) {
+  if (!finite(cycleEndAt)) return [];
+  return fetches.filter(
+    (row) => row.seq !== parent.seq && row.calledAt > cycleEndAt,
+  );
+}
+
+/** Whether a display key (cp4-k64-probe `displayKey`) shows Graph content. */
+function displayShowsGraph(display) {
+  if (typeof display !== "string") return false;
+  try {
+    const value = JSON.parse(display);
+    return Array.isArray(value) && value[2] !== null && value[2] !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * DR-CP4-V-4: the disclosure of the re-queries called after the cycle end
+ * (null when none), read as k64-record.mjs reads a generation: its commits
+ * (`fetchSeq` its seq, or -1 for the latest fetch called by then), the
+ * distinct displays they published (N32 when more than one) and a late Graph
+ * in them (N29: Graph content not its own answer, or its own Graph arrived
+ * after its window, W_f for a `graph-ready` refresh, else D).
+ */
+function requeryAfterCycleEndOf({
+  late,
+  all,
+  fetches,
+  api,
+  commits,
+  cycleEndAt,
+}) {
+  if (late.length === 0) return null;
+  const generationOf = (commit) => {
+    if (commit.fetchSeq === null) return null;
+    if (commit.fetchSeq !== -1) return commit.fetchSeq;
+    return fetches.filter((row) => row.calledAt <= commit.at).at(-1)?.seq;
+  };
+  return {
+    rule: REQUERY_AFTER_CYCLE_END,
+    cycleEndAt,
+    rows: late.map((fetch) => {
+      const own = commits.filter((row) => generationOf(row) === fetch.seq);
+      const result = fetch.result ?? null;
+      const ownGraph = result?.graph !== null && result?.graph !== undefined;
+      const trigger =
+        result?.timing?.refreshTrigger ?? fetch.refreshTrigger ?? null;
+      const windowMs = trigger === "graph-ready" ? K64_W_F_MS : GRAPH_EVAL_D_MS;
+      const continued = api.find(
+        (row) =>
+          row.cmd === GRAPH_CONTINUE &&
+          row.settle === null &&
+          ownerOf(all, row)?.seq === fetch.seq,
+      );
+      const arrival =
+        continued?.status === "available" && finite(continued.resolvedAt)
+          ? continued.resolvedAt
+          : null;
+      const rawReady = result?.timing?.tRawReadyMs;
+      const lateGraphInDisplay =
+        own.length > 0 &&
+        result !== null &&
+        (own.some(
+          (row) =>
+            displayShowsGraph(row.display) &&
+            (row.fetchSeq !== fetch.seq || !ownGraph),
+        ) ||
+          (ownGraph &&
+            !(
+              finite(arrival) &&
+              finite(rawReady) &&
+              arrival - rawReady <= windowMs + BOUNDARY_TOLERANCE_MS
+            )));
+      return {
+        seq: fetch.seq,
+        calledAt: fetch.calledAt,
+        afterCycleEndMs: fetch.calledAt - cycleEndAt,
+        refreshTrigger: trigger,
+        publishCount: new Set(own.map((row) => row.display)).size,
+        lateGraphInDisplay,
+      };
+    }),
+  };
+}
+
+/**
+ * DR-CP4-V-4 (E-5, K6/4:163): the mixing of the re-queries after the cycle
+ * end, apart from the rows' own checks (they are no child any more; the net
+ * the child's N29 / N32 gave stays).
+ */
+export function requeryAfterCycleEndViolations(rows) {
+  return rows.flatMap((row) =>
+    (row.requeryAfterCycleEnd?.rows ?? []).flatMap((requery) => [
+      ...(requery.publishCount > 1
+        ? [
+            {
+              queryId: row.queryId,
+              code: "N32:requery-after-cycle-end-published-more-than-once",
+              seq: requery.seq,
+            },
+          ]
+        : []),
+      ...(requery.lateGraphInDisplay
+        ? [
+            {
+              queryId: row.queryId,
+              code: "N29:late-graph-in-requery-after-cycle-end-display",
+              seq: requery.seq,
+            },
+          ]
+        : []),
+    ]),
+  );
+}
+
+/** DR-CP4-V-4: the receipt's disclosure of the re-queries after the cycle end. */
+export function requeryAfterCycleEndDisclosure(rows) {
+  const disclosed = rows.filter((row) => row.requeryAfterCycleEnd);
+  return {
+    rule: REQUERY_AFTER_CYCLE_END,
+    count: disclosed.reduce(
+      (sum, row) => sum + row.requeryAfterCycleEnd.rows.length,
+      0,
+    ),
+    rows: disclosed.flatMap((row) =>
+      row.requeryAfterCycleEnd.rows.map((requery) => ({
+        queryId: row.queryId,
+        parentCancelledBeforeBegin: Boolean(row.cancelledBeforeBegin),
+        cycleEnd: row.cycleEnd ?? null,
+        ...requery,
+      })),
+    ),
+  };
+}
+
 /**
  * The row of counted query `index` (its parent fetch is `logEntry.parentSeq`,
  * its cycle end `logEntry.cycleEnd`). Throws `[precheck]` when the product
@@ -1081,15 +1233,16 @@ export function traceQueryRow({
   );
   const inWindow = (at) => at >= parent.calledAt && at < windowEnd;
   const sameScene = (fetch) => fetch?.sceneId === parent.sceneId;
-  const fetches = all.filter((row) => inWindow(row.calledAt) && sameScene(row));
-  const api = (observation.api ?? []).filter(
+  const windowFetches = all.filter(
+    (row) => inWindow(row.calledAt) && sameScene(row),
+  );
+  const windowApi = (observation.api ?? []).filter(
     (row) => inWindow(row.calledAt) && sameScene(ownerOf(all, row)),
   );
   const generationScene = (commit) =>
     commit.fetchSeq === null || commit.fetchSeq === -1
       ? ownerOf(all, { calledAt: commit.at })
       : all.find((row) => row.seq === commit.fetchSeq);
-  const child = fetches[1] ?? null;
   // The mixing is observed until the next parent of the Scene: after a move
   // the display shows another Scene, so no commit of this Scene's
   // generations can follow (DR-CP4-TR-13).
@@ -1097,6 +1250,44 @@ export function traceQueryRow({
     nextParent?.calledAt ?? Infinity,
     observation.observedUntil,
   );
+  // 再レビュー P2: the commits stay until the next parent's call even after
+  // a move: whether the Scene's generations show anything after the move is
+  // what the mixing checks observe (N1, N29, N32), not an assumption.
+  const windowCommits = (observation.commits ?? []).filter(
+    (row) =>
+      row.at >= parent.calledAt &&
+      row.at < observedUntil &&
+      sameScene(generationScene(row)),
+  );
+  // DR-CP4-V-4: a fetch called after the cycle end (R4: the sample ended at
+  // it) is never this query's child. It leaves the k64 record with its API
+  // rows and its generation's commits (`fetchSeq` its seq, or -1 from its
+  // call on: kept, they would count for the parent's or the child's
+  // generation) and is disclosed, its mixing checked (summarizeTraceRun).
+  const late = afterCycleEnd({
+    fetches: windowFetches,
+    parent,
+    cycleEndAt: logEntry.cycleEnd?.at,
+  });
+  const lateSeqs = new Set(late.map((row) => row.seq));
+  const lateFrom = late[0]?.calledAt ?? Infinity;
+  const fetches = windowFetches.filter((row) => !lateSeqs.has(row.seq));
+  const api = windowApi.filter((row) => !lateSeqs.has(ownerOf(all, row)?.seq));
+  const commits = windowCommits.filter(
+    (row) =>
+      !lateSeqs.has(row.fetchSeq) &&
+      !(row.fetchSeq === -1 && row.at >= lateFrom),
+  );
+  const requeryAfterCycleEnd = requeryAfterCycleEndOf({
+    late,
+    all,
+    fetches: windowFetches,
+    api: windowApi,
+    commits: windowCommits,
+    cycleEndAt: logEntry.cycleEnd?.at,
+  });
+  const disclosed = requeryAfterCycleEnd ? { requeryAfterCycleEnd } : {};
+  const child = fetches[1] ?? null;
   const window = {
     endReason: logEntry.cycleEnd?.reason ?? null,
     mountedAt: parent.calledAt,
@@ -1108,15 +1299,7 @@ export function traceQueryRow({
       observedUntil,
     }),
     fetches,
-    // 再レビュー P2: the commits stay until the next parent's call even after
-    // a move: whether the Scene's generations show anything after the move is
-    // what the mixing checks observe (N1, N29, N32), not an assumption.
-    commits: (observation.commits ?? []).filter(
-      (row) =>
-        row.at >= parent.calledAt &&
-        row.at < observedUntil &&
-        sameScene(generationScene(row)),
-    ),
+    commits,
     notices: (observation.notices ?? []).filter((row) => inWindow(row.at)),
     api,
   };
@@ -1156,7 +1339,9 @@ export function traceQueryRow({
           parent,
           all,
           observation,
-          fetches,
+          // DR-CP4-V-4: the V-3 disclosure of the re-query reads the whole
+          // window (the re-query after the cycle end included).
+          fetches: windowFetches,
           logEntry,
           a3,
           startSeal,
@@ -1164,7 +1349,7 @@ export function traceQueryRow({
           materials,
           windowEnd: Math.min(windowEnd, observation.observedUntil ?? Infinity),
         });
-    if (cancelled) return cancelled;
+    if (cancelled) return { ...cancelled, ...disclosed };
     return defectRow({
       queryId,
       d2aMode,
@@ -1254,6 +1439,7 @@ export function traceQueryRow({
     traceIndex: index,
     cycleEnd: logEntry.cycleEnd ?? null,
     followUp,
+    ...disclosed,
   };
 }
 
@@ -1524,13 +1710,23 @@ export function summarizeTraceRun({
     defects.push(
       `${rows.length} counted queries, the plan has ${plan.plannedQ}`,
     );
-  const summary = summarizeTrace({
+  const classified = summarizeTrace({
     trace: { kind: plan.kind, queries: rows },
     fixedGraphMode,
     ...(Object.hasOwn(rest, "candidate")
       ? { candidate: rest.candidate, candidateHead: rest.candidateHead }
       : {}),
   });
+  // DR-CP4-V-4: a late result a re-query after the cycle end mixed into a
+  // display is FAIL (E-5) like the child's was; added, never removed.
+  const lateMixing = requeryAfterCycleEndViolations(rows);
+  const summary =
+    lateMixing.length === 0
+      ? classified
+      : {
+          ...classified,
+          violations: [...(classified.violations ?? []), ...lateMixing],
+        };
   // レビュー P2-2: a stalled attempt or a defective trace is never valid,
   // whatever its Q (a run cut at 200 of 201 planned queries must not pass).
   const statusReasons = [

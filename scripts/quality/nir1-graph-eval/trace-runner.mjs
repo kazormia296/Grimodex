@@ -99,6 +99,7 @@ import {
   devTracePlan,
   lapseIBreakdown,
   mergeNativeRecords,
+  requeryAfterCycleEndDisclosure,
   TRACE_MAINTENANCE_SEAM,
   startSealCounts,
   summarizeTraceRun,
@@ -830,6 +831,7 @@ export function traceRunRecords({
     stalled: result.stalled,
   });
   const alignment = traceAlignment({ observation, native, log: result.log });
+  const requeryAfterCycleEnd = requeryAfterCycleEndDisclosure(rows);
   return {
     rows,
     k64,
@@ -850,6 +852,9 @@ export function traceRunRecords({
     // DR-CP4-V-3: the counted parents cancelled before their begin (in Q,
     // out of U, rule 3 (i), K6/4 X12) and rule 3 (i) with them apart.
     cancelledParents: cancelledParentsDisclosure(rows),
+    // DR-CP4-V-4: the fetches called after a counted query's cycle end (no
+    // child of it; outside Q), with their publish count and late Graph.
+    requeryAfterCycleEnd,
     lapseI: {
       k64: lapseIBreakdown(k64.summary, rows),
       k62: lapseIBreakdown(k62.summary, rows),
@@ -866,6 +871,8 @@ export function traceRunRecords({
       // DR-CP4-V-3 (D): the records left out after the window, counted here
       // too (DR-CP4-V-2 (1); the details are in `native.alignment`).
       alignmentExcludedAfterWindow: alignmentExclusionSummary(alignment),
+      // DR-CP4-V-4: counted here too (the details in `requeryAfterCycleEnd`).
+      requeryAfterCycleEnd: requeryAfterCycleEnd.count,
     },
   };
 }
@@ -1548,6 +1555,7 @@ async function main() {
       native: records.native,
       requeries: records.requeries,
       cancelledParents: records.cancelledParents,
+      requeryAfterCycleEnd: records.requeryAfterCycleEnd,
       lapseI: records.lapseI,
       outsideQ: records.outsideQ,
       // TR-9: unknown is counted apart (the classifier keeps it out of U and

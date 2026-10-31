@@ -1261,3 +1261,53 @@ test("DR-CP4-V-3 (C): main は観測を hashTraceObservation で受け、observa
     /return frozenContextOf\(\{ admission, fixture, prepared, setupRaw \}\)/u,
   );
 });
+
+test("DR-CP4-V-4: 受領書の記録は cycle end の後に呼ばれた fetch を子にせず requeryAfterCycleEnd（件数と行、summary の件数）に開示し、main はそれを受領書に書く", () => {
+  const run = oneQueryRun();
+  const observation = hashTraceObservation(run.observation);
+  const context = {
+    revisions: { "rev-1": "rev-1" },
+    expectedContribution: {
+      appendedSceneIds: ["dev-added"],
+      pathAttachmentSceneIds: ["dev-b"],
+    },
+    ratification5: null,
+    materialContribution: null,
+  };
+  const recordsOf = (cycleEnd) =>
+    traceRunRecords({
+      plan: tracePlanOf(),
+      observation,
+      nativeReads: run.nativeReads,
+      counters: { runs: [] },
+      result: {
+        ...run.result,
+        log: run.result.log.map((row) => ({ ...row, cycleEnd })),
+      },
+      context,
+      querySceneId: "scene-q",
+      candidateHead: "e".repeat(40),
+    });
+  const usual = recordsOf({ reason: "child-published", at: B0 + 96.5 });
+  assert.notEqual(usual.rows[0].followUp.child, null);
+  assert.deepEqual(usual.requeryAfterCycleEnd, {
+    rule: "DR-CP4-V-4",
+    count: 0,
+    rows: [],
+  });
+  assert.equal(usual.summary.requeryAfterCycleEnd, 0);
+  const ended = recordsOf({ reason: "parent-ended", at: B0 + 61.5 });
+  assert.equal(ended.rows[0].rowError, undefined);
+  assert.equal(ended.rows[0].followUp.child, null);
+  assert.equal(ended.requeryAfterCycleEnd.count, 1);
+  assert.equal(ended.requeryAfterCycleEnd.rows[0].seq, 2);
+  assert.equal(ended.requeryAfterCycleEnd.rows[0].afterCycleEndMs, 6.5);
+  assert.equal(ended.summary.requeryAfterCycleEnd, 1);
+  assert.doesNotThrow(() => assertNoQuotePlaintext(ended, "receipt.json"));
+  const source = readFileSync(
+    new URL("./trace-runner.mjs", import.meta.url),
+    "utf8",
+  );
+  const main = source.slice(source.indexOf("async function main()"));
+  assert.match(main, /requeryAfterCycleEnd: records\.requeryAfterCycleEnd,/u);
+});

@@ -36,6 +36,8 @@ import {
   mergeNativeRecords,
   mixWindowAfter,
   nativeReadClockRange,
+  requeryAfterCycleEndDisclosure,
+  requeryAfterCycleEndViolations,
   startSealCounts,
   startSealOf,
   summarizeTraceRun,
@@ -1953,4 +1955,436 @@ test("DR-CP4-V-3: Native の読取の時計の範囲は、読取の数が counte
     nativeReadClockRange({ ...plain, observation: noUntil, native }).reason,
     /no observedUntil/u,
   );
+});
+
+// ---- DR-CP4-V-4: a fetch called after the cycle end is no child -----------
+
+/**
+ * Makes counted query `index` of an `editingTrace` the shape of the dev
+ * rehearsal's #178: the parent was cancelled after its begin (`cancelled`,
+ * `rawStatus: completed`, `graph-unavailable:cancelled`, never published),
+ * the cycle ended with it (`parent-ended`), and the product's re-query (the
+ * former child, no trigger mark, no Graph of its own) was called after the
+ * cycle end and published once.
+ */
+function cancelAfterBegin(trace, index) {
+  const B = 10_000 + index * 3_000;
+  const p = 2 * index + 1;
+  const c = 2 * index + 2;
+  const observation = trace.observation;
+  const parent = observation.fetches.find((row) => row.seq === p);
+  parent.result = {
+    ...parent.result,
+    status: "cancelled",
+    resultKind: "raw",
+    irStatus: "unavailable",
+    irReason: "cancelled",
+    completion: { outcome: "cancelled", deadlineExceeded: false },
+    graphOutcome: "graph-unavailable:cancelled",
+    graph: null,
+    irSceneIds: [],
+    finalSceneIds: ["dev-a", "dev-b"],
+  };
+  observation.commits = observation.commits.filter((row) => row.fetchSeq !== p);
+  observation.notices = observation.notices.filter(
+    (row) => !(row.kind === "graph-ready" && row.at >= B && row.at < B + 100),
+  );
+  const child = observation.fetches.find((row) => row.seq === c);
+  child.refreshTrigger = null;
+  child.result = {
+    ...child.result,
+    graphOutcome: "graph-unavailable:registration-unavailable",
+    graph: null,
+    timing: { ...child.result.timing, refreshTrigger: null },
+  };
+  trace.log.find((row) => row.parentSeq === p).cycleEnd = {
+    reason: "parent-ended",
+    at: B + 61.5,
+  };
+  return trace;
+}
+
+const graphDisplay = (label) => JSON.stringify([label, [], { edges: 1 }]);
+
+test("DR-CP4-V-4: cycle end の後に呼ばれた再 query は子にせず（v3 の #178 の形）、親の段（X11／X12）の失敗で E-6 にならず trace は valid。再 query は行と受領書に開示する", () => {
+  const n = 200;
+  const trace = cancelAfterBegin(editingTrace(n), 7);
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const longPlan = plan("editing", n - 1);
+  const rows = rowsOf(trace, n, runs, {
+    plan: longPlan,
+    materialContribution: STUB_RESOLVER,
+  });
+  assert.deepEqual(
+    rows.filter((row) => row.rowError).map((row) => row.rowError),
+    [],
+  );
+  const row = rows[7];
+  assert.equal(row.followUp.child, null);
+  assert.deepEqual(row.followUp.nativeBegins, ["pending"]);
+  assert.equal(row.followUp.parent.publishCount, 0);
+  assert.equal(row.followUp.parent.lateGraphInDisplay, false);
+  assert.equal(row.sampleEnd.fetchesInMixWindow, 0);
+  assert.deepEqual(row.requeryAfterCycleEnd, {
+    rule: "DR-CP4-V-4",
+    cycleEndAt: 31_061.5,
+    rows: [
+      {
+        seq: 16,
+        calledAt: 31_068,
+        afterCycleEndMs: 6.5,
+        refreshTrigger: null,
+        publishCount: 1,
+        lateGraphInDisplay: false,
+      },
+    ],
+  });
+  const result = classifyFollowUp(row, { context: "trace" });
+  assert.equal(result.failedStage.stage, "parent");
+  assert.equal(result.x.X11, "cancelled");
+  assert.equal(result.x.X12, "graph-unavailable:cancelled");
+  assert.equal(result.x.X6, "no-child");
+  assert.equal(Object.hasOwn(result.x, "X10"), false);
+  assert.deepEqual(result.violations, []);
+  // ほかの行は子を持ったまま（cycle end の前の子は従来どおり）。
+  for (const other of rows.filter((_, at) => at !== 7)) {
+    assert.notEqual(other.followUp.child, null);
+    assert.equal(Object.hasOwn(other, "requeryAfterCycleEnd"), false);
+  }
+  const parentSeqs = rows.map((_, at) => 2 * at + 1);
+  const events = traceEvents({
+    plan: longPlan,
+    observation: trace.observation,
+    log: trace.log,
+    parentSeqs,
+  });
+  // 再 query は Q の外のまま（K6/2 手順 7）。
+  assert.equal(
+    traceRequeries({ observation: trace.observation, parentSeqs }).counts
+      .unattributed,
+    1,
+  );
+  const k64 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+    candidate: ratification5(),
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(k64.summary.status, "valid", JSON.stringify(k64.summary));
+  assert.equal(k64.summary.regime, "k64");
+  assert.equal(k64.summary.Q, 200);
+  assert.equal(k64.summary.x.X12, 1);
+  assert.deepEqual(k64.summary.violations, []);
+  const k62 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events,
+    fixedGraphMode: "restricted",
+  });
+  assert.equal(k62.summary.status, "valid", JSON.stringify(k62.summary));
+  assert.deepEqual(k62.summary.violations, []);
+  const disclosed = requeryAfterCycleEndDisclosure(rows);
+  assert.equal(disclosed.count, 1);
+  assert.deepEqual(disclosed.rows[0], {
+    queryId: `${longPlan.traceId}#7`,
+    parentCancelledBeforeBegin: false,
+    cycleEnd: { reason: "parent-ended", at: 31_061.5 },
+    seq: 16,
+    calledAt: 31_068,
+    afterCycleEndMs: 6.5,
+    refreshTrigger: null,
+    publishCount: 1,
+    lateGraphInDisplay: false,
+  });
+  assert.deepEqual(requeryAfterCycleEndViolations(rows), []);
+});
+
+test("DR-CP4-V-4: 残余（直さない）: 子が cycle end の前に呼ばれ commit が後の形は今のまま X10（child.publishedTimes）で、K6/4 の読みは E-6 で無効", () => {
+  const n = 200;
+  const trace = cancelAfterBegin(editingTrace(n), 7);
+  // 子の呼出しを cycle end の前へ（commit は後のまま）。
+  trace.observation.fetches.find((row) => row.seq === 16).calledAt = 31_061;
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const longPlan = plan("editing", n - 1);
+  const rows = rowsOf(trace, n, runs, {
+    plan: longPlan,
+    materialContribution: STUB_RESOLVER,
+  });
+  const row = rows[7];
+  assert.equal(Object.hasOwn(row, "requeryAfterCycleEnd"), false);
+  assert.notEqual(row.followUp.child, null);
+  assert.equal(row.followUp.child.reactCommitAt, null);
+  assert.equal(
+    classifyFollowUp(row, { context: "trace" }).x.X10,
+    "missing:child.publishedTimes",
+  );
+  const k64 = summarizeTraceRun({
+    plan: longPlan,
+    rows,
+    events: traceEvents({
+      plan: longPlan,
+      observation: trace.observation,
+      log: trace.log,
+      parentSeqs: rows.map((_, at) => 2 * at + 1),
+    }),
+    fixedGraphMode: "restricted",
+    candidate: ratification5(),
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(k64.summary.status, "invalid");
+  assert.match(
+    k64.summary.invalid.join("\n"),
+    /#7 lacks its R7 follow-up records/u,
+  );
+});
+
+test("DR-CP4-V-4: cycle end の前の子は従来どおり。cycle end の後の 3 番目の fetch を足しても、その API 行と世代の commit（-1 を含む）を除いた行は足さない trace の行と同じ（開示の欄だけが増える）", () => {
+  const n = 6;
+  const plain = editingTrace(n);
+  const withLate = editingTrace(n);
+  const B = 10_000 + 2 * 3_000;
+  withLate.observation.fetches.push({
+    seq: 5_000,
+    sceneId: SCENE,
+    queryGeneration: 999,
+    refreshTrigger: null,
+    seed: SEED,
+    rawOnly: false,
+    calledAt: B + 500,
+    resolvedAt: B + 530,
+    failed: false,
+    result: k64FetchResult({
+      graphOutcome: "graph-unavailable:registration-unavailable",
+      timing: { tFetchMs: B + 500, tRawReadyMs: B + 520, tReturnMs: B + 529 },
+    }),
+  });
+  withLate.observation.api.push(
+    { ...k64Api("related_scenes_begin", B + 501, B + 510), id: 9_001 },
+    { ...k64Api("related_scenes_continue", B + 520.5, B + 528), id: 9_002 },
+  );
+  withLate.observation.commits.push(
+    { at: B + 531, fetchSeq: 5_000, loading: false, display: "late-a" },
+    // A result no fetch returned: its generation is the late fetch's.
+    { at: B + 540, fetchSeq: -1, loading: false, display: "late-a" },
+  );
+  // The late fetch's begin has its Native record (in order, after the child's).
+  const late = k64NativeRecord({
+    tBeginNs: ns(B + 502),
+    tReturnedNs: ns(B + 503),
+    begin: "unavailable",
+    reason: "registration-unavailable",
+    ticket: null,
+  });
+  const at = withLate.records.findIndex((row) => row.tBeginNs > ns(B + 502));
+  withLate.records.splice(at, 0, late);
+  withLate.records.forEach((record, seq) => {
+    record.seq = seq + 1;
+  });
+  // Its begin is left out of the counter events: the later rows' absolute
+  // counters would move (their deltas would not), not what is compared here.
+  const runsOf = (trace) =>
+    pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const plainRows = rowsOf(plain, n, runsOf(plain));
+  const lateRows = rowsOf(withLate, n, runsOf(withLate));
+  assert.deepEqual(
+    lateRows.filter((row) => row.rowError).map((row) => row.rowError),
+    [],
+  );
+  // The later rows' Native seqs move by the late begin's record only.
+  const seqFree = (row) => ({
+    ...row,
+    followUp: {
+      ...row.followUp,
+      boundary: { ...row.followUp.boundary, fromSeq: null, toSeq: null },
+    },
+  });
+  for (let index = 0; index < n; index++) {
+    if (index === 2) continue;
+    assert.deepEqual(
+      index < 2 ? lateRows[index] : seqFree(lateRows[index]),
+      index < 2 ? plainRows[index] : seqFree(plainRows[index]),
+    );
+  }
+  const { requeryAfterCycleEnd, ...rest } = lateRows[2];
+  assert.deepEqual(rest, plainRows[2]);
+  assert.deepEqual(requeryAfterCycleEnd.rows, [
+    {
+      seq: 5_000,
+      calledAt: B + 500,
+      afterCycleEndMs: 500 - 96.5,
+      refreshTrigger: null,
+      publishCount: 1,
+      lateGraphInDisplay: false,
+    },
+  ]);
+  assert.notEqual(rest.followUp.child, null);
+  assert.equal(
+    classifyFollowUp(rest, { context: "trace" }).followUp,
+    classifyFollowUp(plainRows[2], { context: "trace" }).followUp,
+  );
+});
+
+test("DR-CP4-V-4: 除いた再 query の 2 回の公開は N32、遅れた Graph の表示は N29 の違反（K6/2・K6/4 の両方の要約）。-1 の commit は親の世代に帰属させない（N1 の偽陽性なし）", () => {
+  const n = 200;
+  const trace = cancelAfterBegin(editingTrace(n), 7);
+  trace.observation.commits.push(
+    { at: 31_097, fetchSeq: 16, loading: false, display: "child-7-again" },
+    // A result no fetch returned, with Graph content: kept, it would be the
+    // parent's generation (N1) once the re-query left the record.
+    { at: 31_098, fetchSeq: -1, loading: false, display: graphDisplay("x") },
+  );
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const longPlan = plan("editing", n - 1);
+  const rows = rowsOf(trace, n, runs, {
+    plan: longPlan,
+    materialContribution: STUB_RESOLVER,
+  });
+  const row = rows[7];
+  assert.equal(row.followUp.parent.publishCount, 0);
+  assert.equal(row.followUp.parent.lateGraphInDisplay, false);
+  assert.deepEqual(classifyFollowUp(row, { context: "trace" }).violations, []);
+  assert.equal(row.requeryAfterCycleEnd.rows[0].publishCount, 3);
+  assert.equal(row.requeryAfterCycleEnd.rows[0].lateGraphInDisplay, true);
+  const expected = [
+    {
+      queryId: `${longPlan.traceId}#7`,
+      code: "N32:requery-after-cycle-end-published-more-than-once",
+      seq: 16,
+    },
+    {
+      queryId: `${longPlan.traceId}#7`,
+      code: "N29:late-graph-in-requery-after-cycle-end-display",
+      seq: 16,
+    },
+  ];
+  assert.deepEqual(requeryAfterCycleEndViolations(rows), expected);
+  const events = traceEvents({
+    plan: longPlan,
+    observation: trace.observation,
+    log: trace.log,
+    parentSeqs: rows.map((_, at) => 2 * at + 1),
+  });
+  for (const extra of [
+    {},
+    { candidate: ratification5(), candidateHead: "e".repeat(40) },
+  ]) {
+    const run = summarizeTraceRun({
+      plan: longPlan,
+      rows,
+      events,
+      fixedGraphMode: "restricted",
+      ...extra,
+    });
+    assert.deepEqual(run.summary.violations, expected);
+  }
+  // 自分の Graph が窓（D）の後に届いて表示された再 query も N29。
+  const own = cancelAfterBegin(editingTrace(n), 7);
+  const requery = own.observation.fetches.find((row) => row.seq === 16);
+  requery.result = {
+    ...requery.result,
+    graphOutcome: "graph-ready",
+    graph: K64_CHILD_RESULT.graph,
+  };
+  own.observation.commits.find((row) => row.fetchSeq === 16).display =
+    graphDisplay("own");
+  const ownRows = rowsOf(own, n, pollRuns(own.events, 9_000, 610_000, 1), {
+    plan: longPlan,
+    materialContribution: STUB_RESOLVER,
+  });
+  assert.equal(ownRows[7].requeryAfterCycleEnd.rows[0].publishCount, 1);
+  assert.equal(
+    ownRows[7].requeryAfterCycleEnd.rows[0].lateGraphInDisplay,
+    true,
+  );
+});
+
+test("DR-CP4-V-4 × V-3: begin の前に取り消された親の再 query が cycle end の後なら、V-3 の開示はそのままで requeryAfterCycleEnd を足し、違反の検査を当てる（分類は X12 のまま）", () => {
+  const n = 200;
+  const trace = cancelParent(editingTrace(n), 5);
+  trace.log.find((row) => row.parentSeq === 11).cycleEnd = {
+    reason: "parent-ended",
+    at: 25_001.5,
+  };
+  const runs = pollRuns(trace.events, 9_000, 10_000 + n * 3_000, 1);
+  const longPlan = plan("editing", n - 1);
+  const rows = rowsOf(trace, n, runs, {
+    plan: longPlan,
+    materialContribution: STUB_RESOLVER,
+  });
+  const row = rows[5];
+  assert.equal(row.followUp.requerySeq, 12);
+  assert.deepEqual(row.cancelledBeforeBegin.requery, {
+    seq: 12,
+    calledAt: 25_068,
+    began: true,
+  });
+  assert.equal(row.cancelledBeforeBegin.requeryOutsideWindow, false);
+  assert.deepEqual(row.requeryAfterCycleEnd.rows, [
+    {
+      seq: 12,
+      calledAt: 25_068,
+      afterCycleEndMs: 66.5,
+      // The result's own mark, as k64-record.mjs reads the child's.
+      refreshTrigger: "graph-ready",
+      publishCount: 1,
+      lateGraphInDisplay: false,
+    },
+  ]);
+  assert.equal(
+    classifyFollowUp(row, { context: "trace" }).x.X12,
+    "cancelled-before-begin",
+  );
+  assert.equal(
+    requeryAfterCycleEndDisclosure(rows).rows[0].parentCancelledBeforeBegin,
+    true,
+  );
+  assert.deepEqual(requeryAfterCycleEndViolations(rows), []);
+  // 同じ行の cycle end が再 query の後なら（V-3 の試験の形）、欄は足さない。
+  const before = cancelParent(editingTrace(n), 5);
+  const beforeRows = rowsOf(
+    before,
+    n,
+    pollRuns(before.events, 9_000, 610_000, 1),
+    { plan: longPlan, materialContribution: STUB_RESOLVER },
+  );
+  assert.equal(Object.hasOwn(beforeRows[5], "requeryAfterCycleEnd"), false);
+  const { requeryAfterCycleEnd, ...rest } = row;
+  assert.ok(requeryAfterCycleEnd);
+  assert.deepEqual(
+    { ...rest, cycleEnd: null },
+    { ...beforeRows[5], cycleEnd: null },
+  );
+  // 再 query の 2 回の公開は V-3 の行でも N32。
+  trace.observation.commits.push({
+    at: 25_097,
+    fetchSeq: 12,
+    loading: false,
+    display: "child-5-again",
+  });
+  const twice = rowsOf(trace, n, runs, {
+    plan: longPlan,
+    materialContribution: STUB_RESOLVER,
+  });
+  assert.deepEqual(
+    requeryAfterCycleEndViolations(twice).map((row) => row.code),
+    ["N32:requery-after-cycle-end-published-more-than-once"],
+  );
+  const run = summarizeTraceRun({
+    plan: longPlan,
+    rows: twice,
+    events: traceEvents({
+      plan: longPlan,
+      observation: trace.observation,
+      log: trace.log,
+      parentSeqs: twice.map((_, at) => 2 * at + 1),
+      cancelledParentSeqs: cancelledParentSeqsOf(twice),
+    }),
+    fixedGraphMode: "restricted",
+    candidate: ratification5(),
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(run.summary.status, "valid", JSON.stringify(run.summary));
+  assert.equal(run.summary.violations.length, 1);
 });
