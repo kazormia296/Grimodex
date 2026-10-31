@@ -1,6 +1,6 @@
 {
   "schemaVersion": "nir1-cp4-observation-prep/1",
-  "status": "frozen-before-observation",
+  "status": "draft-awaiting-s3-review-and-s4-freeze",
   "graphRuntimeObservedBeforeAuthoring": false,
   "purpose": "CP-4 が G-01〜G-08 の Graph arm と trace を最初に観測する前に固定する、測り方の事前登録（S2 の起草）。K2/4 の宣言の場所（D1）、B の seal の手順（D2）、arm ごとの D2a の mode（D10）、G-02〜G-08 の parity の unrestricted run の数、sample の予定、trace の file、K6/4 の手順のファイル、診断の run を 1 か所に置く。commit と、S3 のレビューで bytes が変わりうる file の sha256 は、S4 の観測前の commit で確定するので、ここでは placeholder（S4:<名前>）を置き、validator は status が frozen-before-observation のとき placeholder を拒み、値と file の一致を求める。この file の draft は正式の run に使えない（scripts/quality/nir1-graph/observation-prep.mjs の assertObservationPrepFormal）。S4 の freeze 記録（evals/nir1-graph/observation-prep-freeze.v1.json。統合 branch の constants.mjs の OBSERVATION_PREP_RECORD_PATH）はこの file と boundFiles を束縛する。",
   "contracts": {
@@ -21,7 +21,7 @@
       "path": "docs/plans/nir1-final-request-eval-proposal-4-draft.md",
       "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
       "confirmedCommit": "18ebc7b8de2d4f2701c573b5d91561a6cc852024",
-      "freezeCommit": "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+      "freezeCommit": "S4:k64-freeze-commit",
       "freezeNote": "K6/4 批准 7: integrator が claude/nir1-contracts に K6/4 の bytes を凍結した commit。stepOrder.phases の ②（R5 の照合の match の後、S4 の前）で作り、S4 はこの commit を埋める。② が済んでいない間は S4 に進まない。条件の判定に使う診断と (i) で判定する CP-4 の run は、この凍結の後に始めたものに限る。",
       "decidedIn": "k64-freeze-before-s4"
     },
@@ -32,7 +32,7 @@
       "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547",
       "confirmedAt": "2026-10-27 06:47 JST（推奨のまま。G-01 を含む）",
       "bytesLocation": "今は claude/seed-pin-draft にある。integrator が別の docs の PR で master の同じ path に、本文を編集せずに置く。置かれた後は eval:fixtures が sha256 を計算し直して照合する（seed-pin-addendum.mjs）。",
-      "bytesCommit": "cd04629e5f182abd51ded1af565c169ba919dc34",
+      "bytesCommit": "S4:sp1-bytes-commit",
       "bytesRule": "frozen では、SP/1 の bytes が repo の path（docs/plans/nir1-graph-case-seed-pin-proposal-1-draft.md。docs の PR #740）にあり、sha256 が確認済みの値と一致し、bytesCommit がその bytes を含む commit であることを求める（S3v3-P3-1）。S4 の freeze 記録はこの commit と sha256 を束縛する。#740 が master に入るまでは、非 frozen の間だけ file が無くてよい。"
     }
   },
@@ -129,8 +129,8 @@
     },
     "rule": "G-case の run は全 arm を restricted で測る（K6/2 確認後の記録の CP-0 の項の推奨。Graph は restricted でだけ出るので、改善の比較の基準の R+IR と R+IR+Graph の条件をそろえる）。restricted の再認可にかかった時間を arm ごとに receipt に分けて書く。この推奨を取れるのは、restricted で測る case について R と R+IR の parity が確かめられる場合に限る（下の g01 と parity）。",
     "g01": {
-      "rAndRirMode": "unrestricted",
-      "da1AcceptanceRecord": "none",
+      "rAndRirMode": "S4:g01-r-rir-mode",
+      "da1AcceptanceRecord": "S4:da1-acceptance-record",
       "conditions": [
         "(a) K3/2 の受入れ（DA-1 の最終候補）が restricted 下の R と R+IR の parity を G-01 を含めて確かめた記録の所在を、CP-4 の G-01 を測る前に da1AcceptanceRecord に書く。",
         "(b) CP-4 の G-01 の restricted の R と R+IR の membership と順位が、同じ候補で同じ版の fixture について、同じ setup の手順（mode のほかは同じ。B の seal を含み、Graph の arm は動かさない）で取った unrestricted の組（g01-eval-revision の最後の判定の組）と一致することを確かめる。",
@@ -259,14 +259,14 @@
     {
       "kind": "editing",
       "path": "evals/nir1-graph/trace-editing.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "7e72a040104dee7a90493ad7a353cfc883f1671197febd1c4f0e34a7dbfcbd0d"
+      "commit": "S4:trace-editing-commit",
+      "sha256": "S4:trace-editing-sha256"
     },
     {
       "kind": "browsing",
       "path": "evals/nir1-graph/trace-browsing.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "54e5e39153f4157da5244c1d0dab3b4528c6ab55d692e6a1c19263e44de47347"
+      "commit": "S4:trace-browsing-commit",
+      "sha256": "S4:trace-browsing-sha256"
     }
   ],
   "tracesRule": "receipt の先頭に、診断の trace と sample の予定を固定した file の commit と SHA-256 を書く（K6/2 事前登録の凍結の 2）。commit は trace の file を含み、独立 reviewer のレビューの記録とともに置いた commit で、診断の run と CP-4 の run の候補の祖先にあり、run の前に remote に push する。",
@@ -292,13 +292,9 @@
     "formal": {
       "version": "v1",
       "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "1c2428df322fa717d1a3ae5d4c99fb2dbafcbac2c8fb5b4126499dcc36cc0bea",
-      "review": {
-        "reviewer": "S3 の独立 reviewer（agent、Opus）",
-        "reviewedAt": "2026-10-30",
-        "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4"
-      }
+      "commit": "S4:k64-procedure-v1-commit",
+      "sha256": "S4:k64-procedure-v1-sha256",
+      "review": null
     },
     "promotion": [
       "S3 の独立 reviewer が draft-2 の bytes（この file の valueReasons を含む）をレビューし、記録を書く。draft は review を null にしか持てず（統合 branch の procedure-file.mjs の procedureFileErrors）、正式の版 v<N> は review（reviewer、reviewedAt、record）なしでは loader が拒み、purpose formal は draft を拒む。",
@@ -563,104 +559,140 @@
   "boundFiles": [
     {
       "path": "evals/nir1-g01/setup-addendum.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46"
+      "commit": "S4:setup-addendum-commit",
+      "sha256": "S4:setup-addendum-sha256"
     },
     {
       "path": "evals/nir1-graph/declaration-addendum.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "82b05bae92d05b3af2a73739bd14b73cf88dcdc3290e19860126c057c5552949"
+      "commit": "S4:declaration-addendum-commit",
+      "sha256": "S4:declaration-addendum-sha256"
     },
     {
       "path": "evals/nir1-graph/trace-editing.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "7e72a040104dee7a90493ad7a353cfc883f1671197febd1c4f0e34a7dbfcbd0d"
+      "commit": "S4:trace-editing-commit",
+      "sha256": "S4:trace-editing-sha256"
     },
     {
       "path": "evals/nir1-graph/trace-browsing.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "54e5e39153f4157da5244c1d0dab3b4528c6ab55d692e6a1c19263e44de47347"
+      "commit": "S4:trace-browsing-commit",
+      "sha256": "S4:trace-browsing-sha256"
     },
     {
       "path": "evals/nir1-graph/observation-prep-author-declaration.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "ed008466a96378a09c7369d136e6bde60d04434174414c205c14a7fc7063f7ab"
+      "commit": "S4:author-declaration-commit",
+      "sha256": "S4:author-declaration-sha256"
     },
     {
       "path": "evals/nir1-graph/seed-pin-addendum.v1.json",
-      "commit": "1a3bf0262e52bf03710d8ef45c85996af1cc98d6",
-      "sha256": "cf2330e283aa208ab310f44c8fda1bf2d4f0d83246967cc167076840d40022ef"
+      "commit": "S4:seed-pin-addendum-commit",
+      "sha256": "S4:seed-pin-addendum-sha256"
     }
   ],
-  "placeholders": [],
+  "placeholders": [
+    {
+      "token": "S4:k64-freeze-commit",
+      "field": "contracts.k64.freezeCommit",
+      "fill": "② で integrator が K6/4 の bytes を claude/nir1-contracts に凍結した commit（40 桁。S4 の前に存在する）"
+    },
+    {
+      "token": "S4:da1-acceptance-record",
+      "field": "d10.g01.da1AcceptanceRecord",
+      "fill": "K3/2 の受入れの G-01 の parity の記録の所在。なければ none（d10.g01.fallback を使う）"
+    },
+    {
+      "token": "S4:g01-r-rir-mode",
+      "field": "d10.g01.rAndRirMode",
+      "fill": "da1AcceptanceRecord が path なら restricted、none なら unrestricted（rAndRirModeRule）"
+    },
+    {
+      "token": "S4:trace-editing-commit",
+      "field": "traces[0].commit と boundFiles",
+      "fill": "trace-editing.v1.json の reviewed の bytes を含む commit（40 桁。観測前の commit かその祖先）"
+    },
+    {
+      "token": "S4:trace-editing-sha256",
+      "field": "traces[0].sha256 と boundFiles",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:trace-browsing-commit",
+      "field": "traces[1].commit と boundFiles",
+      "fill": "trace-browsing.v1.json の reviewed の bytes を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:trace-browsing-sha256",
+      "field": "traces[1].sha256 と boundFiles",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:k64-procedure-v1-commit",
+      "field": "k64Procedure.formal.commit",
+      "fill": "k64-procedure.v1.json を置いた commit（40 桁）"
+    },
+    {
+      "token": "S4:k64-procedure-v1-sha256",
+      "field": "k64Procedure.formal.sha256",
+      "fill": "k64-procedure.v1.json の SHA-256"
+    },
+    {
+      "token": "S4:setup-addendum-commit",
+      "field": "boundFiles[0].commit",
+      "fill": "frozen にした setup-addendum.v1.json を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:setup-addendum-sha256",
+      "field": "boundFiles[0].sha256",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:declaration-addendum-commit",
+      "field": "boundFiles[1].commit",
+      "fill": "frozen にした declaration-addendum.v1.json を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:declaration-addendum-sha256",
+      "field": "boundFiles[1].sha256",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:author-declaration-commit",
+      "field": "boundFiles[4].commit",
+      "fill": "作者の宣言の記録を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:author-declaration-sha256",
+      "field": "boundFiles[4].sha256",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:seed-pin-addendum-commit",
+      "field": "boundFiles[5].commit",
+      "fill": "frozen にした seed-pin-addendum.v1.json を含む commit（40 桁）"
+    },
+    {
+      "token": "S4:seed-pin-addendum-sha256",
+      "field": "boundFiles[5].sha256",
+      "fill": "その bytes の SHA-256"
+    },
+    {
+      "token": "S4:sp-synthetic-detection-record",
+      "field": "r5Gate.syntheticDetection.record",
+      "fill": "②' の合成の記録による検出の実行の所在（S4 の前に存在する記録。試験の commit と結果）"
+    },
+    {
+      "token": "S4:sp1-bytes-commit",
+      "field": "contracts.sp1.bytesCommit",
+      "fill": "SP/1 の確認済みの bytes を含む master の commit（40 桁。#740 の merge の後）"
+    },
+    {
+      "token": "S4:r5-check-record",
+      "field": "r5Gate.r5CheckRecord",
+      "fill": "① の R5 の照合の run の記録の所在（S4 の前に存在する）"
+    }
+  ],
   "placeholderRule": "status が draft の間は、placeholders に挙げた token だけを置ける。S4b は全部を埋め、placeholders を空にし、review を埋め、status を frozen-before-observation にする。frozen では、commit は 40 桁の 16 進、sha256 は repo の file の SHA-256 と一致しなければならない（k64Procedure.formal は v1 の file が repo にあること、SP/1 の bytes が repo にあること）。S4 の placeholder はどれも S4b の時点で既にある commit か記録を指し、参照する commit は S4b の真の祖先にする（s4Stages。S4a で bytes、S4b で埋める）。S4b の子孫になるもの（CP-4 の候補の commit）は placeholder にせず、candidate.decidedIn のとおり S5 の台帳で決める。",
   "reviewPlan": "S3 の独立 reviewer が確かめること: d1 の (ii) と順序、d2 の正規の経路、d10 の mode と parity の数と比較の規則と fallback、samplePlan、traces の長さ・密度・maintenance・期待寄与の材料・承認の操作がないこと（K6/2 手順の 4 の固定と再利用）、k64Procedure の値と r1r4WaitMs の理由、registeredForReview、diagnosticRuns、preconditions（特に R5 の seed の pin）。 SP/1 の追加: seed の pin の addendum（13 variant の問いの Scene と seed が fixture の写しであること、置き場、SP-P1〜P5 と SP-N1〜N14 の対応表）、r5Gate の matchRequires と beforeFirstGatedRun、SP-P4 が r5Gate の例外に入る根拠、stepOrder。 S2 追補（S1j-2 と TR の後）: setupReadings（L-11 の (1)〜(10) と L-12 の開き直し、variantSessions が fixture から導けること、probe と blocked の名前、measurementSpecs）、d2.variantReadings（G-08 の unusable の 3 variant だけの読み替え）、reviewerQuestions（P-4、P-S2-2〜P-S2-4）、trace の runnerReadings と contentProposals、作者の宣言の permittedRows。 S2 追補 #2（S3v6 の条件）: setupReadings の pin（master の commit）、reopen（L-24 の閉じた集合と上限）、indexBuild（L-27）、receiptFields、blocked、blockedCaseJudgement（S3 の表と harness の写しの食い違い）、samplePlan.variantExceptions と d10.parity.oneShot（P-4 の C1〜C5）、reviewerQuestions の決定と P-S2-5、trace の setupFailure と receipt の欄、作者の宣言の盲検の範囲。",
-  "review": {
-    "reviewer": "S3 の独立 reviewer（agent、Opus）",
-    "reviewedAt": "2026-10-30",
-    "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4",
-    "recordSha256": "d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7",
-    "verdict": "accept-with-conditions",
-    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たしたと DR-CP4-P-2〜P-4 に記録されている（C2 の組の数は #759、DR-CP4-Q-2 で直した）。repo の記録に、7 回目の後の S3 のレビューは無い（充足を S3 が見直した記録は無い）。7 回目が見た差分は 968f6782 と bc2500da（S2 追補 #4）で、この file はその後に追補 #5（c5d481c4）、#6（94fc8ed4）、#7（9fc5221d）、#8（8ccdccdd）、旧 S4b（b7d74950）、失効の commit（旧 S4b の placeholder を戻した）、追補 #9（S4 の凍結のやり直し。DR-CP4-P-5）と S4b' で変わり、その変更を S3 が見た記録は無い。7 回目は問い 1（P-S2-6）について、C1〜C3 の読みを予定しているユーザー通知に明記することを求めた。通知の記録は docs/plans/nir1-cp4-records/user-notification-2026-10-30.md（contracts の commit bf5b3799f9a8220d43f15e3479ad15e66b8c8928〔S4 の枝が merge commit で取り込んだ〕、SHA-256 9597f5f4db5922ed1b65b9e1ea6f9deaccd8f243d80cc9db83b618da6fc91e06）にある。確認ではなく、返答も求めていない（K の帰属、組の最少 18 の取り違えと組の上限による訂正は、その記録の 2026-10-31 の補足と訂正）。C2 の K（側ごとの上限 6）は S3 でなく integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は「K は例えば 3（dev は 2/35）。これで偏りと最小の組数（24 以上）を同時に押さえます」と書いた（24 は組の数）。側ごとの上限 6 だけでは IR を比べる組が最少 18（30−12）になり S3 の条件より緩かったので、IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）を #759（DR-CP4-Q-2）で足し、S3 の組の最少 24 を満たす（diagnosticRuns SP-P4 の comparisonRule の C2）。record は 7 回目の報告の原文の記録で、記録の冒頭によれば、原本が repo に無かったので integrator が 2026-10-30 に会話の記録から書き起こした。1〜6 回目の報告の原文は repo に無い（下の rounds）。 凍結のやり直し（DR-CP4-S4-5）: 旧 S4b（b7d7495034ee693e82b9a6e55bbcbfd433215012）の下で ④ sp-p4-1（passed）と ⑤ parity-1（incomplete-blocked。G-08/graph-index-unusable が blocked:index-state-holding）が実施され、parity-1 で見つかった harness の欠陥を DR-CP4-T-1〜T-5 で直した。ユーザーは 2026-10-31 に凍結のやり直しを確認した（contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-refreeze.md、commit bd835621、確認の範囲は Graph arm の観測の前に見つかった harness の欠陥を直す再凍結で、閾値・期待値・seam・製品の code は変えない）。旧 S4b の 2 つの試行は台帳に開示して残し、S4b' の下で取り直す。追補 #9 と S4b' を S3 が見た記録は無い（S4b' の前の独立 reviewer の確認は integrator が行う）。",
-    "rounds": [
-      {
-        "round": 1,
-        "verdict": "changes-required（P1 1、P2 4、P3 6）",
-        "summaryIn": "作者の宣言（evals/nir1-graph/observation-prep-author-declaration.v1.json）の revisions[0]",
-        "original": "repo に無い（session の scratchpad の scratchpad/s3/observation-prep-review.v1.json。作者の宣言の readFiles の SHA-256 0fea6f649171bc9f1f1200611f14df43fcd4702dc3e75552aeb2ef36bfde3dc2）"
-      },
-      {
-        "round": 2,
-        "verdict": "P2 1、P3 4（再レビュー）",
-        "summaryIn": "作者の宣言（evals/nir1-graph/observation-prep-author-declaration.v1.json）の revisions[2]",
-        "original": "repo に無い（scratchpad/s3/observation-prep-review.v2.json。readFiles の SHA-256 2eff4230439d63e3f5345713c5d8c75ef2b00d31b75d72eb327112b12b98be6f）"
-      },
-      {
-        "round": 3,
-        "verdict": "accept（P3 2）",
-        "summaryIn": "作者の宣言（evals/nir1-graph/observation-prep-author-declaration.v1.json）の revisions[3]",
-        "original": "repo に無い（scratchpad/s3/observation-prep-review.v3.json。readFiles の SHA-256 97bd4c3cf5f01a8c2d5447f0bc0da264728884418ecfcd09dd0282c0def2192b）"
-      },
-      {
-        "round": 4,
-        "verdict": "P2 1、P3 3",
-        "summaryIn": "作者の宣言（evals/nir1-graph/observation-prep-author-declaration.v1.json）の revisions[5]",
-        "original": "repo に無い（scratchpad/s3/observation-prep-review.v4.json。readFiles の SHA-256 4cd3ea8c6ae0277482512e1af7bd022e1f849507b4dfb5309b803ab910b55718）"
-      },
-      {
-        "round": 6,
-        "verdict": "accept-with-conditions（条件 P2-1〜P2-3、P3-1〜P3-4）",
-        "summaryIn": "作者の宣言（evals/nir1-graph/observation-prep-author-declaration.v1.json）の revisions[7]、この file の reviewerQuestions の record、docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-28（P-S2-2、P2-3 の integrator の決定）",
-        "original": "repo に無い（scratchpad/s3/observation-prep-review.v6.json。readFiles の SHA-256 11dd8ac0a441b8c1b00da248c6beaf116017d6350de91275247a50583d952201）"
-      },
-      {
-        "round": 7,
-        "verdict": "accept-with-conditions",
-        "summaryIn": "docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2（要旨）。条件の充足は DR-CP4-P-3、P-4",
-        "original": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1、SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。integrator が会話の記録から書き起こした原文）"
-      }
-    ],
-    "roundsNote": "5 回目の判定と記録は repo に見つからないので挙げない。reviewer はどの回も Claude の subagent（agent）で、人間ではない。どの回もユーザーの確認ではない。",
-    "userConfirmations": [
-      {
-        "contract": "K6/4",
-        "draftRef": "nir1-final-request-eval-proposal/4",
-        "contractId": "graph-eval-procedure",
-        "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3",
-        "confirmedAt": "2026-10-26 00:41 JST（integrator が処理した時刻。正確な受信時刻は会話記録の timestamp）",
-        "source": "docs/plans/nir1-continuation-2026-10.md の §10.7（Session B5）"
-      },
-      {
-        "contract": "SP/1",
-        "draftRef": "nir1-graph-case-seed-pin-proposal/1",
-        "contractId": "graph-case-seed-pin-setup",
-        "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547",
-        "confirmedAt": "2026-10-27 06:47 JST（integrator が伝えた確認の日時。正確な受信時刻は会話記録の timestamp）",
-        "source": "docs/plans/nir1-continuation-2026-10.md の §10.8（Session B6）と、この file の contracts.sp1.confirmedAt"
-      }
-    ],
-    "userConfirmationsScope": "ユーザーの確認は上の 2 つの契約（K6/4、SP/1）の bytes と、S4 の凍結のやり直し（2026-10-31。contracts の user-confirmation-2026-10-31-refreeze.md。確認したのは再凍結を行うことで、S2 や追補 #9 の内容ではない）。この記録（S2）、S2 の追補、addendum、trace、K6/4 の手順の v1、S4 の内容をユーザーが確認した記録は無い。"
-  },
+  "review": null,
   "r5Gate": {
     "check": "K6/4 R5: SP/1 の seed の pin の段を実行した variant ごとの workspace で、製品の DB から問いの Scene の pin を読み直し（workspace-db.mjs）、統合 branch の seed-pin.mjs の assertSeedPinsBeforeK64（plan frozen）が match になること。G-03 と G-08 は variant ごとの SP-P1 の記録のどれか 1 つでも match でなければ全体を match にしない（SP/1 の SP-P3）。",
     "blockedUntilMatch": [
@@ -727,11 +759,11 @@
       ],
       "rule": "SP/1 :178 は「CP-4 は、合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを、観測の前に示す」と書き、合成の記録の作り方は書かない。次の文は S2 の読みで、括弧の中の作り方（実際の setup の receipt と DB の pin の行の複製）は S2 が足した言い換え（SP/1 :178 の文ではない）。record の記録の合成の記録は実際の setup の receipt の複製ではなく、試験が凍結の fixture と最小の schema の一時の DB から作ったもの（その記録の「合成の記録の作り方」）。S2 の読み: 観測の前に、SP-N1〜N5 と SP-N9〜N13 のそれぞれを 1 件ずつ含む合成の setup の記録（実際の setup の receipt と DB の pin の行を複製し、pin の entry、数、順序、書込みの経路、pin の集合、Scene の archive、entry の project と ID、arm ごとの workspace、runner の種類、R5 の入力の出所を書き換えたもの）を、SP-P1〜P3 と run の受入れの照合の関数に通し、それぞれを期待どおりに検出し、違反の無い記録を通すことを示す。",
       "owner": "S1g-A（統合 branch の setup-driver の seed の pin の段と variant ごとの照合の試験、seed-pin.mjs と workspace-db.mjs の照合の試験）",
-      "record": "docs/plans/nir1-cp4-records/sp-synthetic-detection-record.md（commit 2d33e6a83f5f780a5af329e27352da7746d6b9c5〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕、file の SHA-256 3e11f7f807777034dcb0ff9db411d7d8db707e5650b203117c0cee63bf8fcd92）。SP/1 :178 の SP-N1〜N5、SP-N9〜N13 の合成の記録による検出の記録で、K6/4 の分類器の Negative（K6/4-N1〜N40）の記録 k64-synthetic-detection-record.md とは別。S4 の凍結のやり直しで、前の版（72dfa711、候補 82d42746、SHA-256 42609adf19680ab41a2379e994d2f690af2c2f2a699473e800c3335cd467ad9c）の取り直しの規則に当たる workspace-db.mjs、frozen-setup-driver.mjs、test-support.mjs が DR-CP4-T-1〜T-5 で変わったので、その修正を含む候補 fc7770fd67f24f974509fd7aad5e16ddebff1eb6（tree d12e9918f30b0c2e27095e0bca0383ce34d53104。harness の file は S4b' と同じ bytes）、node v24.18.0 で取り直した版（実行は S4 の builder、Claude の agent）。記録によれば、seed-pin-setup.test.mjs、seed-pin.test.mjs、receipt.test.mjs の 45 件と nir1-graph-eval の試験 572 件が pass し、検出の分岐を外す変異 23 件（前の版と同じ置換）で該当の試験がすべて落ちた。SP-N ごとの検出の assert、陽性の対照と、記録が開示した限界は前の版と同じ: 合成の記録は実際の setup の receipt の複製ではなく試験が凍結の fixture と最小の schema の一時の DB から作ったもの（S2 の syntheticDetection.rule の「実際の setup の receipt と DB の pin の行を複製し」の文と違う。SP/1 :178 自体は複製を求めず、合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを観測の前に示すとだけ書く）、SP-N4 は writer の定数の検査で実際の書込みの観測ではない（DR-CP4-R-6 (3)）、SP-N9 の entry の ID の空白・200 UTF-16 超えは productSeedOf の規則の試験だけ、SP-N10 の assertArmsShareSeedPin は run の経路に結線されていることを示していない、SP-N12 は K6/4-N16 の receipt の runnerKind の検査への対応づけ、SP-N3 の R5 の側と SP-N11 の variant の範囲（記録の「限界の開示」1〜5）。記録の取り直しの規則により、fc7770fd の後に SP-N の検出に関わる file を変えた候補では無効",
+      "record": "S4:sp-synthetic-detection-record",
       "recordRule": "②' で、統合 branch の試験（製品の runtime を使わない node の試験）を、② の後の統合 branch の commit で走らせ、試験の file と commit、各 SP-N の検出と違反の無い記録の通過を記録し、merge しない追跡される branch に push する。S4 はその既にある記録の所在を書く。",
       "decidedIn": "sp-synthetic-detection-before-s4"
     },
-    "r5CheckRecord": "docs/plans/nir1-cp4-records/r5-check-r5-1027/r5-check-record.json（commit 21ed9a9c0096df757c10f334ed97e0fd480f3df4〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕、file の SHA-256 4230ba3be42564087a65565c1504940a3922c55a3a28be0fccdb33e5314bd5ce）。run r5-1027（runId 7ad99f81-fb68-48cb-9d57-7433db9b825b）、status と gate は match、13 variant の行。候補 origin/master 7a2669ead5262cc1a1126a7ab52bf808afeb98ff。同じ directory の README.md によれば r5-check-runner.mjs --verify は verified:true（記録の receipt の path は実行時の .artifacts を指し、S4b では再計算していない）。receipts/ の 13 個の受領書の SHA-256 は記録の値と一致する（旧 S4b で確かめ、S4b' で確かめ直した）。① は seed の pin の段で止まる部分の setup（partialRun）で、DR-CP4-T-3／T-5 の待ちは部分の setup では行わず（settleFreshness が null を返す）、T-1 の測定点の freshnessFeed の読取は ① が通らない measurement-point の段にだけある。DR-CP4-T-1〜T-5 は ① の経路の動きを変えないので取り直さない（DR-CP4-S4-5）",
+    "r5CheckRecord": "S4:r5-check-record",
     "r5CheckRecordRule": "R5 の照合の run（①）の記録: S1g-A の setup-driver が、13 variant の workspace ごとに、論理 ID と runtime ID、DB から読み戻した問いの Scene の pin の行、SP-P1 の結果、assertSeedPinsBeforeK64（plan frozen）の結果、段の前後の SP-P2 の記録、使った候補の commit を receipt に書く（Graph index、B の seal、IR の状態は書かない）。integrator は receipt と要約（match か、variant ごとの結果）を merge しない追跡される branch（claude/nir1-contracts か記録の branch）に commit して push し、その所在を S4 がここに書く。match でなければ ② に進まない。",
     "r5CheckWorkspace": {
       "disposition": "discard",
