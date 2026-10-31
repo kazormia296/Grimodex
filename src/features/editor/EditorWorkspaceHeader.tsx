@@ -62,7 +62,8 @@ export function EditorWorkspaceHeader({
       className={cn(screenshotPanelId && "no-screenshot")}
       left={
         <>
-          <GrimodexLogo height={24} className="text-foreground" />
+          {/* ロゴは縮めない。左のレールが足りないときはワークスペース名が先に省略される。 */}
+          <GrimodexLogo height={24} className="shrink-0 text-foreground" />
           <WorkspaceMenu />
           <ProjectMenu
             onOpenImport={
