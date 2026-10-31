@@ -76,7 +76,10 @@ export function PlotMarkerContextMenu({
     }
     function handleKeyDown(e: KeyboardEvent) {
       if (confirming) return; // Esc はダイアログ側(Radix)が処理。
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
     }
     document.addEventListener("mousedown", handleMouseDown);
     document.addEventListener("keydown", handleKeyDown);

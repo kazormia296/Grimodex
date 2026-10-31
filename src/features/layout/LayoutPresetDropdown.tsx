@@ -52,6 +52,8 @@ export function LayoutPresetDropdown() {
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
       if (e.key === "Escape") {
+        // 外側の overlay 等が同じ Esc で一緒に閉じないよう、処理したと伝える。
+        e.preventDefault();
         if (isSaving) {
           setIsSaving(false);
           setSaveName("");

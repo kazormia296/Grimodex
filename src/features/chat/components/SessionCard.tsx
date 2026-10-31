@@ -46,7 +46,10 @@ export function SessionCard({
       }
     }
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setPopover(null);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setPopover(null);
+      }
     }
     document.addEventListener("mousedown", handleMouseDown);
     document.addEventListener("keydown", handleKeyDown);

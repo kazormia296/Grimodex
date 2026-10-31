@@ -58,7 +58,10 @@ export function TabContextMenu({
       if (!menuRef.current?.contains(e.target as Node)) onClose();
     }
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
     }
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("keydown", onKey);

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { useLayoutStore } from "@/features/layout/layoutStore";
 import { useTreeStore } from "@/features/tree/treeStore";
 import { useCursorSettingsStore } from "./cursorSettingsStore";
 import { useBackgroundStudioStore } from "./background/backgroundStudioStore";
@@ -45,6 +46,8 @@ export function ZenModeController() {
       ) {
         return;
       }
+      // overlay が開いている間の Esc は overlay が先に閉じる（一番内側から閉じる）。
+      if (useLayoutStore.getState().openOverlay !== null) return;
       event.preventDefault();
       if (useBackgroundStudioStore.getState().open) {
         useBackgroundStudioStore.getState().setOpen(false);

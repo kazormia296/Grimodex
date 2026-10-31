@@ -100,7 +100,10 @@ export function AnimatedOverlay({
     // re-established so that replay never consumes the saved opener.
     restoreEpochRef.current += 1;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCloseRef.current();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onCloseRef.current();
+      }
     };
     window.addEventListener("keydown", handler);
     return () => {

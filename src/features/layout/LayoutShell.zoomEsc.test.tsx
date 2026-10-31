@@ -117,6 +117,28 @@ describe("LayoutShell zoom Esc dismissal", () => {
     expect(container.querySelector("[data-zoom-restore-bar]")).toBeNull();
   });
 
+  it("overlay が開いている間の Escape では zoom を解かない（overlay が先に閉じる）", async () => {
+    const layout = buildDefaultLayoutState({ editorOpen: true });
+    layout.overlays = { left: { panel: "snippets" }, right: { panel: null } };
+    useLayoutStore.setState({ layout });
+    renderMaximized();
+    // 通常は開く操作が zoom を解くが、順序に依らず二重に反応しないことを実コンポーネントで確かめる。
+    act(() => {
+      useLayoutStore.setState({ openOverlay: "left" });
+    });
+    expect(useLayoutStore.getState().maximizedPanelId).toBe("editor");
+    dispatchEscape();
+    expect(useLayoutStore.getState().maximizedPanelId).toBe("editor");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(useLayoutStore.getState().openOverlay).toBeNull();
+    expect(useLayoutStore.getState().maximizedPanelId).toBe("editor");
+    // 次の Escape で zoom が解ける。
+    dispatchEscape();
+    expect(useLayoutStore.getState().maximizedPanelId).toBeNull();
+  });
+
   it("zoom していないときは Escape を消費しない", () => {
     render(<LayoutShell />);
     const event = new KeyboardEvent("keydown", {

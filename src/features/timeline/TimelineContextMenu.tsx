@@ -60,7 +60,10 @@ export function TimelineContextMenu({ node, x, y, onClose, axisMode }: Props) {
       if (!menuRef.current?.contains(e.target as Node)) onClose();
     }
     function handleKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        onClose();
+      }
     }
     document.addEventListener("mousedown", handleMouseDown);
     document.addEventListener("keydown", handleKeyDown);

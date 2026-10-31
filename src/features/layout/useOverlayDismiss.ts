@@ -18,6 +18,24 @@ export interface OverlayDismissHandlers {
   onBlurCapture: (event: React.FocusEvent) => void;
 }
 
+/** 左右の層が持つ「開く前の要素」。切り替えのとき、開く側が閉じる側の分を引き継ぐ。 */
+const openerBySide: Record<OverlayId, HTMLElement | null> = {
+  left: null,
+  right: null,
+};
+/** 直近の openOverlay の遷移が、一方から他方への切り替えだったときの「切り替え元」。 */
+let switchedFrom: OverlayId | null = null;
+useLayoutStore.subscribe((state, prev) => {
+  if (state.openOverlay === prev.openOverlay) return;
+  switchedFrom =
+    prev.openOverlay !== null && state.openOverlay !== null
+      ? prev.openOverlay
+      : null;
+});
+
+/** overlay の層と rail のつまみ。層は閉じると inert になり、つまみは押すと focus を得る。 */
+const OVERLAY_SURFACE_SELECTOR = "[data-overlay-layer],[data-overlay-knob]";
+
 /**
  * オーバーレイを閉じる条件とフォーカスの出し入れ。
  *
@@ -29,11 +47,14 @@ export interface OverlayDismissHandlers {
  *   focusout は起きるので、relatedTarget だけでは区別できない（計画 §1 の d）。
  *   focus の移り先が portal 内の React 子（focus trap 等）のこともあるので、
  *   続く focusin にも同じ印を見て、外だと確定してから閉じる。
- * - Esc は document の bubble で受け、閉じたら preventDefault する。zoom／Zen の Esc は
- *   window の listener なので、それより先に効き、二重には反応しない。
- *   IME 変換中と、Radix 等が先に消費した（defaultPrevented）Esc は奪わない。
+ * - Esc は 1 回につき「一番内側のもの」だけを閉じる。overlay の中の独自メニュー等は
+ *   document／window の listener で Esc を受け、登録順は overlay の後になりうる。
+ *   そこで overlay は window で受けても閉じるのを次の task まで遅らせ、その event の
+ *   同期的な dispatch が全部終わってから defaultPrevented を見る（内側が処理して
+ *   preventDefault していれば閉じない）。zoom／Zen の Esc は overlay が開いている間は
+ *   何もしない（overlay が先に閉じる）。IME 変換中の Esc は奪わない。
  * - 開いたらパネルの先頭の操作できる要素へ focus を移し、閉じたら開く前の要素へ戻す
- *   （消えていたらエディタ）。
+ *   （消えていたらエディタ）。左右を切り替えた間は、最初に開いたときの要素を引き継ぐ。
  */
 export function useOverlayDismiss(
   side: OverlayId,
@@ -59,10 +80,20 @@ export function useOverlayDismiss(
     const layer = layerRef.current;
     if (open && !wasOpenRef.current) {
       const active = document.activeElement;
-      openerRef.current =
-        active instanceof HTMLElement && !layer?.contains(active)
-          ? active
-          : null;
+      if (switchedFrom !== null && switchedFrom !== side) {
+        // 左右の切り替え。active は閉じる側の層の中（inert になる要素）か、押したつまみ
+        // なので使わず、最初に開いたときの要素（無ければ null = エディタ）を引き継ぐ。
+        openerRef.current = openerBySide[switchedFrom];
+      } else {
+        openerRef.current =
+          active instanceof HTMLElement &&
+          active !== document.body &&
+          !layer?.contains(active) &&
+          !active.closest("[data-overlay-layer]")
+            ? active
+            : null;
+      }
+      openerBySide[side] = openerRef.current;
       skipRestoreRef.current = false;
       const panel = layer?.querySelector<HTMLElement>("[data-overlay-panel]");
       // lazy パネルの import 前は操作できる要素がないので、パネル自身に置く。
@@ -73,19 +104,29 @@ export function useOverlayDismiss(
       const opener = openerRef.current;
       openerRef.current = null;
       const active = document.activeElement;
+      // つまみは、クリックで focus を得ても「戻す対象の外」として扱う
+      // （Chromium では button のクリックで focus が移る）。
       const focusLost =
         active === null ||
         active === document.body ||
-        (layer?.contains(active) ?? false);
+        (layer?.contains(active) ?? false) ||
+        (active instanceof Element &&
+          active.closest(OVERLAY_SURFACE_SELECTOR) !== null);
       // 別の overlay へ切り替えたときは、開く側が focus を持つ。
       const noneOpen = useLayoutStore.getState().openOverlay === null;
+      // 切り替えのときの引き継ぎのため、openerBySide は切り替えの間は消さない。
+      if (noneOpen) {
+        openerBySide.left = null;
+        openerBySide.right = null;
+      }
       if (!skipRestoreRef.current && noneOpen && focusLost) {
-        if (opener?.isConnected) opener.focus({ preventScroll: true });
-        else useLayoutStore.getState().requestEditorFocus();
+        if (opener?.isConnected && !opener.closest("[inert]")) {
+          opener.focus({ preventScroll: true });
+        } else useLayoutStore.getState().requestEditorFocus();
       }
     }
     wasOpenRef.current = open;
-  }, [open, layerRef]);
+  }, [open, side, layerRef]);
 
   // 閉じる条件。開いている間だけ listener を持つ。
   useEffect(() => {
@@ -129,6 +170,7 @@ export function useOverlayDismiss(
       dismiss(false);
     };
 
+    let escTimer: number | null = null;
     const onKeyDown = (event: KeyboardEvent) => {
       if (
         event.key !== "Escape" ||
@@ -138,8 +180,14 @@ export function useOverlayDismiss(
       ) {
         return;
       }
-      event.preventDefault();
-      dismiss(true);
+      // 閉じるのは、この event を受ける listener が全部終わった後。
+      if (escTimer !== null) window.clearTimeout(escTimer);
+      escTimer = window.setTimeout(() => {
+        escTimer = null;
+        if (event.defaultPrevented) return;
+        if (useLayoutStore.getState().openOverlay !== side) return;
+        dismiss(true);
+      }, 0);
     };
 
     document.addEventListener("pointerdown", onPointerDown);
@@ -147,16 +195,17 @@ export function useOverlayDismiss(
     document.addEventListener("keyup", onKeyUp);
     document.addEventListener("focusout", onFocusOut);
     document.addEventListener("focusin", onFocusIn);
-    document.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keydown", onKeyDown);
     return () => {
+      if (escTimer !== null) window.clearTimeout(escTimer);
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDownCapture, true);
       document.removeEventListener("keyup", onKeyUp);
       document.removeEventListener("focusout", onFocusOut);
       document.removeEventListener("focusin", onFocusIn);
-      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keydown", onKeyDown);
     };
-  }, [open, insideEvents, layerRef]);
+  }, [open, side, insideEvents, layerRef]);
 
   return {
     onPointerDownCapture: markInside,

@@ -172,7 +172,10 @@ export function EditorContextMenu({
       }
     }
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") close();
+      if (e.key === "Escape") {
+        e.preventDefault();
+        close();
+      }
     }
 
     document.addEventListener("mousedown", onMouseDown);
@@ -196,7 +199,10 @@ export function EditorContextMenu({
       }
     }
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setSnippetPickerPos(null);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSnippetPickerPos(null);
+      }
     }
 
     document.addEventListener("mousedown", onMouseDown);

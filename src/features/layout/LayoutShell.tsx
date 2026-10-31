@@ -134,6 +134,9 @@ export const LayoutShell = memo(function LayoutShell({
     if (zoomRegion === null || zenMode || editorOnly) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing) return;
+      // overlay が開いている間の Esc は overlay が先に閉じる（一番内側から閉じる）。
+      // 開く操作は zoom を解くので通常は同時にならないが、順序に依らず二重にしない。
+      if (useLayoutStore.getState().openOverlay !== null) return;
       clearMaximize();
     };
     window.addEventListener("keydown", onKeyDown);

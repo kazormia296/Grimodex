@@ -140,7 +140,10 @@ export function MessageBadge({ messageId, stopped }: MessageBadgeProps) {
       }
     }
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") setDropdown(null);
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setDropdown(null);
+      }
     }
     document.addEventListener("mousedown", onMouseDown);
     document.addEventListener("keydown", onKeyDown);
