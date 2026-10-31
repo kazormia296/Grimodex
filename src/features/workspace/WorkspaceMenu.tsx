@@ -71,19 +71,24 @@ export function WorkspaceMenu() {
   }
 
   return (
-    <div ref={menuRef} className="relative" data-tour-target="workspace-menu">
+    // ヘッダーの左のレールが足りないとき、ロゴではなくこの名前が縮んで省略される。
+    <div
+      ref={menuRef}
+      className="relative min-w-0"
+      data-tour-target="workspace-menu"
+    >
       <button
         type="button"
         data-testid="workspace-menu-trigger"
         data-workspace-open-revision={workspaceOpenRevision}
         onClick={() => setIsOpen(!isOpen)}
         disabled={workspaceBusy}
-        className="flex items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
+        className="flex max-w-full min-w-0 items-center gap-1 rounded px-2 py-1 text-sm font-medium hover:bg-accent hover:text-accent-foreground"
       >
-        <span className="max-w-40 truncate">
+        <span className="min-w-0 max-w-40 truncate">
           {activeWorkspaceName ?? t("workspaceMenu.fallback")}
         </span>
-        <span className="text-xs">▾</span>
+        <span className="shrink-0 text-xs">▾</span>
       </button>
 
       {isOpen && (
