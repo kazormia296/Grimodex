@@ -154,17 +154,35 @@ function rootWithPrep(prep) {
   return root;
 }
 
-test("the committed observation-prep files validate (draft: S4b b7d74950 revoked, awaiting S4b')", async () => {
-  // DR-CP4-S4-5: the revocation commit deletes the old freeze record and puts
-  // S2 back to its draft (S2 追補 #8's bytes); S4b' fills it again.
+test("the committed observation-prep files validate (frozen again by S4b')", async () => {
   const result = await validateNir1ObservationPrep({ repoRoot });
   assert.deepEqual(result.errors, []);
   assert.equal(result.status, "passed");
-  assert.equal(result.formalReady, false);
-  assert.equal(result.placeholders.length, 20);
+  assert.equal(result.formalReady, true);
+  assert.deepEqual(result.placeholders, []);
+  // S4 の最終関門の P2-1、DR-CP4-Q-2: the frozen S2's review states the facts
+  // (the notification record at bf5b3799, K's attribution, the pair limit).
+  // DR-CP4-S4-5: and the re-freeze (the old S4b, its two attempts, the
+  // user's confirmation of the re-freeze).
   const prep = await json(OBSERVATION_PREP_FILES.prep);
-  assert.equal(prep.review, null);
-  assert.equal(prep.status, "draft-awaiting-s3-review-and-s4-freeze");
+  for (const word of [
+    "docs/plans/nir1-cp4-records/user-notification-2026-10-30.md",
+    "bf5b3799f9a8220d43f15e3479ad15e66b8c8928",
+    "確認ではなく",
+    "integrator が #757（DR-CP4-Q-1）",
+    "#759（DR-CP4-Q-2）",
+    "組の最少 24 を満たす",
+    "DR-CP4-S4-5",
+    "b7d7495034ee693e82b9a6e55bbcbfd433215012",
+    "sp-p4-1",
+    "parity-1",
+    "user-confirmation-2026-10-31-refreeze.md",
+  ])
+    assert.ok(prep.review.conditions.includes(word), word);
+  assert.ok(!prep.review.conditions.includes("S4b の時点で repo に無い"));
+  // S4b': the SP-N record retaken on the T-1〜T-5 candidate (contracts 2d33e6a8).
+  assert.ok(prep.r5Gate.syntheticDetection.record.includes("2d33e6a8"));
+  assert.ok(prep.r5Gate.syntheticDetection.record.includes("fc7770fd"));
 });
 
 test("the draft copy of the committed S2 validates as a draft (S4 tokens, not formal)", async () => {
@@ -195,11 +213,15 @@ test("a draft with placeholders is never usable for a formal run", async () => {
   }
 });
 
-test("DR-CP4-S4-5: the committed draft (S4b revoked) is refused by the formal gate at HEAD", async () => {
-  await assert.rejects(
-    assertObservationPrepFormal({ repoRoot }),
-    /\[precheck\].*(placeholder|draft)/u,
-  );
+test("S4b': the committed frozen record passes the formal gate at HEAD (git)", async (t) => {
+  const ctx = await context();
+  if (!ctx.sourcePinGit) {
+    t.skip("shallow clone: the commits are checked by the formal gate");
+    return;
+  }
+  assert.deepEqual(await assertObservationPrepFormal({ repoRoot }), {
+    proceed: true,
+  });
 });
 
 test("setup addendum: the K2/4 table row for G-01 and the fixture digests", async () => {
