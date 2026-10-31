@@ -446,11 +446,46 @@ function compileShader(
   }
 }
 
-function createProgram(
-  gl: WebGL2RenderingContext,
+/**
+ * Paper の ShaderMount（createProgram）と同じく、fragment の mediump が fp32 未満の
+ * GPU では lowp／mediump の float を highp に上げる。Paper のシェーダーは ShaderMount
+ * でこの引き上げを前提に書かれており、fp16 のまま走らせると Liquid Metal などが
+ * 破綻して黒くなる（ANGLE の GL／Vulkan で precision 10 を報告する環境で再現）。
+ */
+export function promoteZenShaderPrecision(
   vertexSource: string,
   fragmentSource: string,
+): { vertexSource: string; fragmentSource: string } {
+  return {
+    vertexSource: vertexSource.replace(
+      /precision\s+(lowp|mediump)\s+float;/g,
+      "precision highp float;",
+    ),
+    fragmentSource: fragmentSource
+      .replace(/precision\s+(lowp|mediump)\s+float/g, "precision highp float")
+      .replace(
+        /\b(uniform|varying|attribute)\s+(lowp|mediump)\s+(\w+)/g,
+        "$1 highp $3",
+      ),
+  };
+}
+
+function needsHighpPromotion(gl: WebGL2RenderingContext): boolean {
+  const format = gl.getShaderPrecisionFormat(
+    gl.FRAGMENT_SHADER,
+    gl.MEDIUM_FLOAT,
+  );
+  return format !== null && format.precision < 23;
+}
+
+function createProgram(
+  gl: WebGL2RenderingContext,
+  rawVertexSource: string,
+  rawFragmentSource: string,
 ) {
+  const { vertexSource, fragmentSource } = needsHighpPromotion(gl)
+    ? promoteZenShaderPrecision(rawVertexSource, rawFragmentSource)
+    : { vertexSource: rawVertexSource, fragmentSource: rawFragmentSource };
   const vertex = compileShader(gl, gl.VERTEX_SHADER, vertexSource);
   let fragment: WebGLShader | null = null;
   let program: WebGLProgram | null = null;
