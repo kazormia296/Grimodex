@@ -14,7 +14,7 @@ const DIST_DIR = path.resolve("dist/assets");
  * reviewed change and can never cross the absolute product ceiling.
  */
 export const INITIAL_JS_GRAPH_BUDGET = {
-  baseline: { rawBytes: 4_219_933, gzipBytes: 1_333_359 },
+  baseline: { rawBytes: 4_230_233, gzipBytes: 1_333_359 },
   allowance: { rawBytes: 32_768, gzipBytes: 16_384 },
   // raw は 4_250_000 から 700 byte だけ上げた。チャット入力の書きかけを session／project の
   // 削除と一緒に消す処理（chatInputDraftPurge.ts）が初期 graph の store に入るため
@@ -23,7 +23,12 @@ export const INITIAL_JS_GRAPH_BUDGET = {
   // operation の IR の continue と Graph の待受けを並行に通す pair の規則が初期 graph の
   // ipcQueue.ts と tauri.ts に入るため（実測 raw 4,250,669 → 4,250,910 で +241、
   // gzip は上限の内側）。
-  absoluteMax: { rawBytes: 4_251_000, gzipBytes: 1_350_000 },
+  // raw は baseline と上限の両方を 10,300 byte 上げた。画面端のオーバーレイ（P1）の
+  // 保存データ・store action・つまみが初期 graph の layout に入るため（実測 raw
+  // 4,248,578 → 4,261,293 で +12,715、gzip は上限の内側）。層（OverlayLayer）を lazy に
+  // すると共有 module が細かい chunk に割れて全部 preload され、raw 4,286,482 に増えたので
+  // 採らなかった。
+  absoluteMax: { rawBytes: 4_261_300, gzipBytes: 1_350_000 },
 };
 const INITIAL_CSS_MAX_BYTES = 240_000;
 const INITIAL_CSS_MAX_GZIP_BYTES = 42_000;
