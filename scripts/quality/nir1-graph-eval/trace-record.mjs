@@ -484,6 +484,11 @@ export function mergeNativeRecords(reads) {
     frontLoss,
     missing,
     lost: frontLoss || gaps.length > 0 || missing > 0,
+    // DR-CP4-V-3: each read's Native clock (`clockNs`, taken by the read),
+    // in read order, for the independent clock range of the pairing.
+    clocks: reads.map((read) =>
+      Number.isSafeInteger(read?.clockNs) ? read.clockNs : null,
+    ),
   };
 }
 
@@ -519,6 +524,61 @@ function clockBracket(begins, records) {
   return { lower, upper };
 }
 
+/** The earliest renderer time a runner log row was taken at (or NaN). */
+function loggedAt(row) {
+  const times = [row?.caretAt, row?.startedAt, row?.at].filter(finite);
+  return times.length > 0 ? Math.min(...times) : NaN;
+}
+
+/**
+ * DR-CP4-V-3: the range of (Native clock − renderer clock), in ms, the
+ * runner's Native reads allow, independent of the pairing. The runner reads
+ * the Native records once after each counted query's cycle end and once after
+ * the page exported its observation (trace-runner.mjs `runTraceOperations`
+ * and the read after `exportObservation`); each read's `clockNs` was taken
+ * after the cycle end's renderer time (`cycleEnd.at`) and before the next
+ * logged operation's renderer time (an edit's caret, a move, a seal read;
+ * `observedUntil` after the last cycle), the final read after
+ * `observedUntil`. Null with the reason when the reads do not match that
+ * order (count, clock or times missing).
+ */
+export function nativeReadClockRange({ log, observation, native }) {
+  const clocks = native?.clocks;
+  const rows = log ?? [];
+  const entries = rows.filter((row) => Number.isInteger(row.parentSeq));
+  const until = observation?.observedUntil;
+  const unknown = (reason) => ({ range: null, reason });
+  if (!Array.isArray(clocks) || clocks.length !== entries.length + 1)
+    return unknown(
+      `${Array.isArray(clocks) ? clocks.length : 0} Native reads for ${entries.length} counted queries (one after each cycle end and one after the window)`,
+    );
+  if (!finite(until)) return unknown("the observation has no observedUntil");
+  const bounds = entries.map((entry) => {
+    const next = rows
+      .slice(rows.indexOf(entry) + 1)
+      .find((row) => finite(loggedAt(row)));
+    return {
+      lower: entry.cycleEnd?.at,
+      upper: next ? loggedAt(next) : until,
+    };
+  });
+  bounds.push({ lower: until, upper: Infinity });
+  let lower = -Infinity;
+  let upper = Infinity;
+  for (const [at, clock] of clocks.entries()) {
+    const bound = bounds[at];
+    if (clock === null) return unknown(`Native read ${at} has no clockNs`);
+    if (!finite(bound.lower) || !(bound.lower <= bound.upper))
+      return unknown(`Native read ${at} has no renderer time interval`);
+    const nativeMs = clock / NS_PER_MS;
+    upper = Math.min(upper, nativeMs - bound.lower);
+    if (finite(bound.upper)) lower = Math.max(lower, nativeMs - bound.upper);
+  }
+  if (!(lower <= upper))
+    return unknown(`the Native reads give an empty range [${lower}, ${upper}]`);
+  return { range: { lower, upper }, reason: null, reads: clocks.length };
+}
+
 /**
  * The seeded fetches' begin calls, in call order, paired with the Native
  * records in seq order. Unaligned (no pairing at all) when the log lost
@@ -529,9 +589,13 @@ function clockBracket(begins, records) {
  * give a consistent clock range and each such record's Native begin started
  * after the observation window closed (`observation.observedUntil`) even at
  * the range's upper end; otherwise the trace stays unaligned. The paired
- * records keep the one-to-one match.
+ * records keep the one-to-one match. DR-CP4-V-3 (レビュー P2-2): a pairing
+ * shifted by one gives a consistent range of its own, so the pairs' range
+ * must meet the Native reads' (`readClock`, nativeReadClockRange): when
+ * M > N always (no read range is unaligned), when M = N whenever the read
+ * range is known; the exclusion reads the intersection's upper end.
  */
-export function alignSeededBegins({ observation, native }) {
+export function alignSeededBegins({ observation, native, readClock = null }) {
   const fetches = [...(observation?.fetches ?? [])].sort(byCall);
   const begins = [...(observation?.api ?? [])]
     .filter((row) => row.cmd === BEGIN)
@@ -542,26 +606,52 @@ export function alignSeededBegins({ observation, native }) {
   const indexOf = new Map();
   let reason = null;
   let excludedAfterWindow = null;
+  const reads = readClock?.range ?? null;
+  const meet = (bracket) =>
+    reads
+      ? {
+          lower: Math.max(bracket.lower, reads.lower),
+          upper: Math.min(bracket.upper, reads.upper),
+        }
+      : null;
+  const consistent = (bracket) =>
+    finite(bracket.upper) &&
+    finite(bracket.lower) &&
+    bracket.lower <= bracket.upper;
+  let clock = {
+    readClockMs: reads,
+    readClockReason: readClock ? readClock.reason : "not given",
+    rangeMs: null,
+  };
   if (native?.lost === true)
     reason = `the Native log lost records (gaps ${JSON.stringify(native.gaps ?? [])}, front loss ${native.frontLoss === true})`;
   else if (begins.length > records.length)
     reason = `${begins.length} seeded begins, ${records.length} records`;
-  else if (begins.length < records.length) {
+  else if (begins.length === records.length) {
+    if (reads && begins.length > 0) {
+      const bracket = clockBracket(begins, records);
+      const both = meet(bracket);
+      clock = { ...clock, pairsMs: bracket, rangeMs: both };
+      if (!consistent(bracket) || !consistent(both))
+        reason = `${begins.length} seeded begins, ${records.length} records (the pairs' clock range [${bracket.lower}, ${bracket.upper}] ms does not meet the Native reads' [${reads.lower}, ${reads.upper}] ms)`;
+    }
+  } else {
     const paired = records.slice(0, begins.length);
     const trailing = records.slice(begins.length);
-    const bracket = clockBracket(begins, paired);
+    const pairs = clockBracket(begins, paired);
+    const bracket = meet(pairs) ?? pairs;
+    clock = { ...clock, pairsMs: pairs, rangeMs: meet(pairs) };
     const observedUntil = observation?.observedUntil;
     const lowerBoundOf = (record) =>
       finite(record?.tBeginNs)
         ? record.tBeginNs / NS_PER_MS - bracket.upper
         : NaN;
-    if (
-      begins.length === 0 ||
-      !finite(bracket.upper) ||
-      !finite(bracket.lower) ||
-      bracket.lower > bracket.upper
-    )
-      reason = `${begins.length} seeded begins, ${records.length} records (the paired begins give no consistent clock range [${bracket.lower}, ${bracket.upper}] ms)`;
+    if (begins.length === 0 || !consistent(pairs))
+      reason = `${begins.length} seeded begins, ${records.length} records (the paired begins give no consistent clock range [${pairs.lower}, ${pairs.upper}] ms)`;
+    else if (!reads)
+      reason = `${begins.length} seeded begins, ${records.length} records (no independent clock range from the Native reads: ${clock.readClockReason})`;
+    else if (!consistent(bracket))
+      reason = `${begins.length} seeded begins, ${records.length} records (the pairs' clock range [${pairs.lower}, ${pairs.upper}] ms does not meet the Native reads' [${reads.lower}, ${reads.upper}] ms)`;
     else if (!finite(observedUntil))
       reason = `${begins.length} seeded begins, ${records.length} records (the observation has no observedUntil)`;
     else if (!trailing.every((record) => lowerBoundOf(record) > observedUntil))
@@ -583,7 +673,9 @@ export function alignSeededBegins({ observation, native }) {
         })),
         lastPairedSeq: last?.seq ?? null,
         observedUntil,
-        clockBracketMs: { lower: bracket.lower, upper: bracket.upper },
+        clockBracketMs: { lower: pairs.lower, upper: pairs.upper },
+        // DR-CP4-V-3: the bound the exclusion used (pairs ∩ Native reads).
+        clockRangeMs: { lower: bracket.lower, upper: bracket.upper },
       };
     }
   }
@@ -598,9 +690,19 @@ export function alignSeededBegins({ observation, native }) {
     seededBegins: begins.length,
     records: records.length,
     excludedAfterWindow,
+    clock,
     recordOf,
     indexOf,
   };
+}
+
+/** DR-CP4-V-3: the trace's pairing with the Native reads' clock range. */
+export function traceAlignment({ observation, native, log }) {
+  return alignSeededBegins({
+    observation,
+    native,
+    readClock: nativeReadClockRange({ log, observation, native }),
+  });
 }
 
 /** The receipt's view of the alignment (DR-CP4-V-2; the maps are not data). */
@@ -611,6 +713,7 @@ export function alignmentDisclosure(alignment) {
     seededBegins: alignment.seededBegins,
     records: alignment.records,
     excludedAfterWindow: alignment.excludedAfterWindow,
+    clock: alignment.clock ?? null,
   };
 }
 
@@ -1162,7 +1265,7 @@ export function traceRows({
     return runtime;
   });
   const counted = log.filter((row) => Number.isInteger(row.parentSeq));
-  const alignment = alignSeededBegins({ observation, native });
+  const alignment = traceAlignment({ observation, native, log });
   // レビュー P1-1: the first move after each counted query ends its window.
   const moveAfter = (entry) =>
     log.slice(log.indexOf(entry) + 1).find((row) => row.op === "navigate")

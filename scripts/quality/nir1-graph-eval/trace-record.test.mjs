@@ -35,9 +35,11 @@ import {
   lapseIBreakdown,
   mergeNativeRecords,
   mixWindowAfter,
+  nativeReadClockRange,
   startSealCounts,
   startSealOf,
   summarizeTraceRun,
+  traceAlignment,
   traceEvents,
   traceQueryRow,
   traceRequeries,
@@ -1239,15 +1241,36 @@ function withRecords(trace, records) {
   };
 }
 
+/**
+ * The runner's Native reads of a synthetic trace (DR-CP4-V-3): one 1 ms after
+ * each counted query's cycle end and one 1,000 ms after `observedUntil`
+ * (after the export), each with the records begun by then and its `clockNs`
+ * (the synthetic Native clock equals the renderer's).
+ */
+function cycleReads(trace, records = trace.records) {
+  const read = (atMs) => ({
+    dropped: 0,
+    clockNs: ns(atMs),
+    records: records.filter((record) => record.tBeginNs <= ns(atMs)),
+  });
+  return [
+    ...trace.log
+      .filter((row) => Number.isInteger(row.parentSeq))
+      .map((entry) => read(entry.cycleEnd.at + 1)),
+    read(trace.observation.observedUntil + 1_000),
+  ];
+}
+
 test("DR-CP4-V-2: 観測の窓が閉じた後に始まった末尾の Native の記録だけを整列から除き、件数・seq・種別・時間を開示し、行は defect にならない", () => {
   const trace = editingTrace(3);
   const runs = pollRuns(trace.events, 9_000, 18_000, 1);
   // observedUntil は 19,000 ms。末尾の begin は窓の 200 ms 後。
   const late = withRecords(trace, [...trace.records, trailingRecord(19_200)]);
-  const merged = mergeNativeRecords([{ dropped: 0, records: late.records }]);
-  const aligned = alignSeededBegins({
+  const merged = mergeNativeRecords(cycleReads(late));
+  const aligned = traceAlignment({
     observation: late.observation,
     native: merged,
+    log: late.log,
   });
   assert.equal(aligned.aligned, true, aligned.reason);
   assert.equal(aligned.seededBegins, 6);
@@ -1270,6 +1293,10 @@ test("DR-CP4-V-2: 観測の窓が閉じた後に始まった末尾の Native の
   assert.ok(Math.abs(excluded.records[0].afterLastPairedMs - 3_131) < 1e-6);
   // 時計の差の範囲 [-0.5, 0.5] ms の上限で見ても窓の後。
   assert.deepEqual(excluded.clockBracketMs, { lower: -0.5, upper: 0.5 });
+  // DR-CP4-V-3: 読取の範囲と交わり、除外は交わりの上限で判定する。
+  assert.deepEqual(excluded.clockRangeMs, { lower: -0.5, upper: 0.5 });
+  assert.equal(aligned.clock.readClockReason, null);
+  assert.ok(aligned.clock.readClockMs.upper <= 1 + 1e-9);
   assert.ok(
     Math.abs(excluded.records[0].afterObservedUntilMsAtLeast - 199.5) < 1e-6,
   );
@@ -1279,7 +1306,7 @@ test("DR-CP4-V-2: 観測の窓が閉じた後に始まった末尾の Native の
   assert.equal(disclosed.excludedAfterWindow.count, 1);
   assert.doesNotThrow(() => JSON.stringify(disclosed));
   // 行は窓の内側の一対一の対応で作られ、除いた記録を使わない。
-  const rows = rowsOf(late, 3, runs);
+  const rows = rowsOf(late, 3, runs, { native: merged });
   for (const row of rows) {
     assert.equal(row.rowError, undefined);
     assert.deepEqual(row.followUp.nativeBegins, ["pending", "cached"]);
@@ -1298,10 +1325,10 @@ test("DR-CP4-V-2: 窓の内側の不一致は defect のまま（末尾の記録
   const trace = editingTrace(3);
   const runs = pollRuns(trace.events, 9_000, 18_000, 1);
   const check = (records, pattern, observation = trace.observation) => {
-    const native = mergeNativeRecords([
-      { dropped: 0, records: withRecords(trace, records).records },
-    ]);
-    const aligned = alignSeededBegins({ observation, native });
+    const native = mergeNativeRecords(
+      cycleReads(trace, withRecords(trace, records).records),
+    );
+    const aligned = traceAlignment({ observation, native, log: trace.log });
     assert.equal(aligned.aligned, false);
     assert.equal(aligned.excludedAfterWindow, null);
     assert.match(aligned.reason, pattern);
@@ -1738,4 +1765,192 @@ test("DR-CP4-V-3: 他の形（begin の行があるのに記録が無い、compl
   assert.ok(plainRows.every((row) => row.cancelledBeforeBegin === undefined));
   assert.deepEqual(cancelledParentSeqsOf(plainRows), []);
   assert.equal(cancelledParentsDisclosure(plainRows).count, 0);
+});
+
+// ---- DR-CP4-V-3 (レビュー P2-2): the pairing against the Native reads' clock
+
+/**
+ * Uniformly spaced seeded begins (one per counted query, `G` ms apart; the
+ * Native clock equals the renderer's), the runner log (cycle end 50 ms after
+ * each call, the next edit's caret 100 ms after) and the reads (75 ms after
+ * each call, and 10 ms after `observedUntil`).
+ */
+function uniformTrace(
+  n,
+  { gap = 1_000, extraFront = false, dropLast = false } = {},
+) {
+  const fetches = [];
+  const api = [];
+  const log = [];
+  let records = [];
+  const at = (index) => 10_000 + gap * index;
+  for (let index = 0; index < n; index++) {
+    const t = at(index);
+    fetches.push({
+      seq: index + 1,
+      seed: SEED,
+      sceneId: SCENE,
+      calledAt: t,
+      resolvedAt: t + 10,
+    });
+    api.push({
+      id: index,
+      cmd: "related_scenes_begin",
+      calledAt: t + 0.1,
+      resolvedAt: t + 5,
+    });
+    records.push({
+      tBeginNs: ns(t + 0.2),
+      tReturnedNs: ns(t + 4.9),
+      begin: "pending",
+    });
+    log.push(
+      {
+        op: "product-query",
+        index,
+        parentSeq: index + 1,
+        calledAt: t,
+        cycleEnd: { reason: "t-show-elapsed", at: t + 50 },
+      },
+      { op: "edit", caretAt: t + 100, startedAt: t + 101, endedAt: t + 110 },
+    );
+  }
+  if (extraFront)
+    records.unshift({
+      tBeginNs: ns(at(0) - gap + 0.2),
+      tReturnedNs: ns(at(0) - gap + 4.9),
+      begin: "unavailable",
+    });
+  if (dropLast) records.pop();
+  records = records.map((record, seq) => ({ ...record, seq: seq + 1 }));
+  const observedUntil = at(n - 1) + 300;
+  const read = (ms) => ({
+    dropped: 0,
+    clockNs: ns(ms),
+    records: records.filter((row) => row.tBeginNs <= ns(ms)),
+  });
+  const reads = [
+    ...Array.from({ length: n }, (_, index) => read(at(index) + 75)),
+    read(observedUntil + 10),
+  ];
+  return { observation: { fetches, api, observedUntil }, log, reads };
+}
+
+test("DR-CP4-V-3: 前方に余分な記録があって組が一様に 1 つずれた対応は、Native の読取の時計の範囲と交わらず整列の失敗（読取の範囲が無い M>N も失敗）", () => {
+  const shifted = uniformTrace(6, { extraFront: true });
+  const native = mergeNativeRecords(shifted.reads);
+  const aligned = traceAlignment({ ...shifted, native });
+  assert.equal(aligned.aligned, false);
+  assert.match(
+    aligned.reason,
+    /6 seeded begins, 7 records \(the pairs' clock range \[-1000\.1.*does not meet the Native reads'/u,
+  );
+  assert.equal(aligned.excludedAfterWindow, null);
+  assert.equal(aligned.recordOf.size, 0);
+  // 組だけの範囲は無矛盾（V-2 の検査だけでは通っていた）。
+  assert.ok(aligned.clock.pairsMs.lower <= aligned.clock.pairsMs.upper);
+  // 読取の範囲は真の差（0）の付近。
+  assert.ok(
+    aligned.clock.readClockMs.lower <= 0 &&
+      aligned.clock.readClockMs.upper >= 0,
+  );
+  // 読取の範囲が求められない（読取 1 回）M>N は除外しない。
+  const single = alignSeededBegins({
+    observation: shifted.observation,
+    native: mergeNativeRecords([shifted.reads.at(-1)]),
+    readClock: nativeReadClockRange({
+      log: shifted.log,
+      observation: shifted.observation,
+      native: mergeNativeRecords([shifted.reads.at(-1)]),
+    }),
+  });
+  assert.equal(single.aligned, false);
+  assert.match(
+    single.reason,
+    /no independent clock range from the Native reads: 1 Native reads for 6 counted queries/u,
+  );
+  assert.equal(
+    alignSeededBegins({ observation: shifted.observation, native }).aligned,
+    false,
+  );
+  // 前方の余分に加えて最後の記録が無い（M = N で一様にずれる）。読取の範囲があれば失敗。
+  const equal = uniformTrace(6, { extraFront: true, dropLast: true });
+  const equalNative = mergeNativeRecords(equal.reads);
+  const caught = traceAlignment({ ...equal, native: equalNative });
+  assert.equal(caught.aligned, false);
+  assert.match(
+    caught.reason,
+    /6 seeded begins, 6 records \(the pairs' clock range/u,
+  );
+  // 読取の範囲を渡さない単体の呼出しの M = N は従来どおり（件数と順序だけ）。
+  assert.equal(
+    alignSeededBegins({ observation: equal.observation, native: equalNative })
+      .aligned,
+    true,
+  );
+  // ずれの無い trace は通り、範囲を開示する。
+  const plain = uniformTrace(6);
+  const ok = traceAlignment({
+    ...plain,
+    native: mergeNativeRecords(plain.reads),
+  });
+  assert.equal(ok.aligned, true, ok.reason);
+  assert.ok(ok.clock.rangeMs.lower <= 0.1 && ok.clock.rangeMs.upper >= -0.1);
+  assert.deepEqual(alignmentDisclosure(ok).clock, ok.clock);
+  // 窓の内側の余分（shift の反例）も従来どおり失敗。
+  const inside = uniformTrace(6);
+  const extra = {
+    tBeginNs: ns(12_500),
+    tReturnedNs: ns(12_500.1),
+    begin: "unavailable",
+  };
+  const records = mergeNativeRecords(inside.reads).records;
+  records.splice(3, 0, extra);
+  const reseq = records.map((record, seq) => ({ ...record, seq: seq + 1 }));
+  const insideReads = inside.reads.map((read) => ({
+    ...read,
+    records: reseq.filter((row) => row.tBeginNs <= read.clockNs),
+  }));
+  assert.equal(
+    traceAlignment({ ...inside, native: mergeNativeRecords(insideReads) })
+      .aligned,
+    false,
+  );
+});
+
+test("DR-CP4-V-3: Native の読取の時計の範囲は、読取の数が counted query の数＋1 でない、clockNs が無い、cycle end の時刻が無いときは求めない", () => {
+  const plain = uniformTrace(3);
+  const native = mergeNativeRecords(plain.reads);
+  const range = nativeReadClockRange({ ...plain, native });
+  assert.equal(range.reason, null);
+  assert.equal(range.reads, 4);
+  // 読取 i: clock = t+75、区間 [t+50, t+100] → [-25, 25]。最後: [−∞, 10]。
+  assert.deepEqual(range.range, { lower: -25, upper: 10 });
+  assert.match(
+    nativeReadClockRange({
+      ...plain,
+      native: mergeNativeRecords(plain.reads.slice(1)),
+    }).reason,
+    /3 Native reads for 3 counted queries/u,
+  );
+  const noClock = plain.reads.map((read, at) =>
+    at === 1 ? { ...read, clockNs: undefined } : read,
+  );
+  assert.match(
+    nativeReadClockRange({ ...plain, native: mergeNativeRecords(noClock) })
+      .reason,
+    /read 1 has no clockNs/u,
+  );
+  const noEnd = plain.log.map((row) =>
+    row.index === 2 ? { ...row, cycleEnd: { reason: "x", at: null } } : row,
+  );
+  assert.match(
+    nativeReadClockRange({ ...plain, log: noEnd, native }).reason,
+    /read 2 has no renderer time interval/u,
+  );
+  const { observedUntil: _drop, ...noUntil } = plain.observation;
+  assert.match(
+    nativeReadClockRange({ ...plain, observation: noUntil, native }).reason,
+    /no observedUntil/u,
+  );
 });

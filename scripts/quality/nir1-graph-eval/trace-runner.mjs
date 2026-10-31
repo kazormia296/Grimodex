@@ -91,7 +91,6 @@ import {
   COUNTER_POLL_STOP_SOURCE,
   TRACE_COUNTER_KEYS,
   TRACE_RUN_SCHEMA,
-  alignSeededBegins,
   alignmentDisclosure,
   assertTraceMaterialsMatch,
   cancelledParentSeqsOf,
@@ -104,6 +103,7 @@ import {
   summarizeTraceRun,
   traceEvents,
   traceMaintenanceEnv,
+  traceAlignment,
   traceRequeries,
   traceRows,
   validateTracePlan,
@@ -1426,7 +1426,7 @@ async function main() {
         // DR-CP4-V-2: the pairing, and the records after the window it left
         // out (disclosed).
         alignment: alignmentDisclosure(
-          alignSeededBegins({ observation, native }),
+          traceAlignment({ observation, native, log: result.log }),
         ),
       },
       requeries: traceRequeries({
