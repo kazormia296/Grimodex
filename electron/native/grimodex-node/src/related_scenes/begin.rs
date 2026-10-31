@@ -301,14 +301,22 @@ fn begin_blocking(
 mod tests {
     use super::*;
 
-    /// DR-CP4-V-1 (P3): the begin launches the IR scoring once, at the end of
-    /// its Ok path: after the Raw search and the source recheck (its last
-    /// participant read), with no fallible step after it, so a failed Raw
-    /// search or a changed source launches nothing and releases the operation.
-    /// The query is stored on the operation before the Raw search, and an
+    /// DR-CP4-V-1 (P3) source-order guard, not a behaviour test: in the text
+    /// of `begin_blocking`, the IR scoring launch is defined after the query is
+    /// stored on the operation, and called once, after the Raw search, the last
+    /// participant read and the source recheck, immediately before `Ok(value)`
+    /// of the outcome closure; a failed outcome releases the operation, and an
     /// operation's IR is `pending` with its ticket.
+    ///
+    /// The behaviour itself (a failed Raw search or source recheck launches no
+    /// scoring, the first DB access of the scoring follows the src read, the
+    /// IR cosine bytes) cannot be driven at this layer: `begin` first embeds
+    /// the query through `SemanticRuntime::prepare_related_scene_query`, whose
+    /// `Embedder` loads only real ONNX model and tokenizer files
+    /// (`grimodex-semantic/src/runtime.rs` `load_embedder`) and has no test
+    /// substitute, so a test `AppState` never reaches the Raw search.
     #[test]
-    fn begin_launches_the_ir_scoring_only_at_the_end_of_the_ok_path() {
+    fn begin_ir_scoring_launch_source_order_guard() {
         let source = include_str!("begin.rs");
         let body = &source[..source.find("#[cfg(test)]").expect("tests")];
         let at = |needle: &str| {
