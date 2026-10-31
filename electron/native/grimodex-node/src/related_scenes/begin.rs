@@ -185,34 +185,46 @@ fn begin_blocking(
             source.query(),
             RAW_LIMIT,
         )?);
+        let mut scoring = None;
         if let Some(ticket) = &ticket {
             if let Some(lease) = state.related_scenes.owned(&dto.owner_key, ticket)? {
                 lock(&lease.data.result)?.query = Some(query.clone());
-                let ir_state = state.clone();
-                let ir_ticket = ticket.clone();
-                let ir_query = query.clone();
-                spawn.spawn_blocking(move || {
-                    let result = scoring::run(&ir_state, &lease, &ir_query);
-                    match result {
-                        Ok(result) => {
-                            if let Ok(mut slot) = lock(&lease.data.result) {
-                                *slot = result;
-                            }
-                        }
-                        Err(_) => {
-                            if let Ok(mut slot) = lock(&lease.data.result) {
-                                slot.response = Some(unavailable("failed"));
-                            }
-                        }
-                    }
-                    if !lease.is_live(Instant::now()) {
-                        let _ = invalidate(&ir_state, &ir_ticket, &lease);
-                    }
-                    lease.data.completed.notify_waiters();
-                    lease.data.join.notify();
-                });
+                scoring = Some((lease, ticket.clone()));
             }
         }
+        // DR-CP4-V-1 (P3): the IR scoring is launched only at the end of the
+        // Ok path below, after the Raw search and the source recheck (this
+        // begin's last participant read), so its first connection access
+        // follows them instead of sleeping on the connection mutex they hold.
+        // Every `?` before it leaves no scoring task; the operation is then
+        // released below.
+        let launch = || {
+            let Some((lease, ir_ticket)) = scoring else {
+                return;
+            };
+            let ir_state = state.clone();
+            let ir_query = query.clone();
+            spawn.spawn_blocking(move || {
+                let result = scoring::run(&ir_state, &lease, &ir_query);
+                match result {
+                    Ok(result) => {
+                        if let Ok(mut slot) = lock(&lease.data.result) {
+                            *slot = result;
+                        }
+                    }
+                    Err(_) => {
+                        if let Ok(mut slot) = lock(&lease.data.result) {
+                            slot.response = Some(unavailable("failed"));
+                        }
+                    }
+                }
+                if !lease.is_live(Instant::now()) {
+                    let _ = invalidate(&ir_state, &ir_ticket, &lease);
+                }
+                lease.data.completed.notify_waiters();
+                lease.data.join.notify();
+            });
+        };
         let hits = state
             .semantic
             .semantic_search_with_query(&query, RAW_LIMIT, None, None)?;
@@ -252,6 +264,7 @@ fn begin_blocking(
         if let Some(graph) = &graph_wire {
             value["graph"] = graph.clone();
         }
+        launch();
         Ok(value)
     })();
     // CQ-DEFER: the outcome is decided, so every commit of this begin (the
@@ -287,6 +300,7 @@ fn begin_blocking(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn raw_scores_preserve_the_original_direct_f32_json_transport() {
         #[derive(serde::Serialize)]

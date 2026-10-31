@@ -747,6 +747,49 @@ fn begin_releases_the_held_query_after_its_own_commits_and_reads() {
     assert!(!source.contains("release_after_own_commits"));
 }
 
+/// DR-CP4-V-1 (P3) source-order guard, not a behaviour test: in the text
+/// of `begin_blocking`, the IR scoring launch is defined after the query is
+/// stored on the operation, and called once, after the Raw search, the last
+/// participant read and the source recheck, immediately before `Ok(value)`
+/// of the outcome closure; a failed outcome releases the operation, and an
+/// operation's IR is `pending` with its ticket.
+///
+/// The behaviour itself (a failed Raw search or source recheck launches no
+/// scoring, the first DB access of the scoring follows the src read, the
+/// IR cosine bytes) cannot be driven at this layer: `begin` first embeds
+/// the query through `SemanticRuntime::prepare_related_scene_query`, whose
+/// `Embedder` loads only real ONNX model and tokenizer files
+/// (`grimodex-semantic/src/runtime.rs` `load_embedder`) and has no test
+/// substitute, so a test `AppState` never reaches the Raw search.
+#[test]
+fn begin_ir_scoring_launch_source_order_guard() {
+    let source = include_str!("related_scenes/begin.rs");
+    let body = &source[..source.find("#[cfg(test)]").expect("tests")];
+    let at = |needle: &str| {
+        assert_eq!(body.matches(needle).count(), 1, "{needle}");
+        body.find(needle).expect("needle")
+    };
+    let stored = at("lock(&lease.data.result)?.query = Some(query.clone());");
+    let defined = at("let launch = || {");
+    let scoring = at("scoring::run(");
+    let search = at("semantic_search_with_query(");
+    let last_read = body
+        .rfind("with_participant_read_transaction(")
+        .expect("a participant read");
+    let recheck = at("ensure!(source_current");
+    let launched = at("launch();");
+    let outcome = at("})();");
+    assert!(stored < defined && defined < scoring && scoring < search);
+    assert!(search < last_read && last_read < recheck && recheck < launched);
+    let tail = &body[launched..outcome];
+    assert_eq!(tail, "launch();\n        Ok(value)\n    ");
+    assert!(body.contains(
+        "if outcome.is_err() {\n        if let Some(ticket) = &ticket {\n            release(&state, &dto.owner_key, ticket)?;"
+    ));
+    assert!(body
+        .contains(r#"Some(ticket) => json!({"status":"pending","operationTicket":ticket}),"#));
+}
+
 // ---- (i-a) the integration: real database, the product's audit writer ---------
 
 /// What a real worker checks, in the same shape: its own connection to the
