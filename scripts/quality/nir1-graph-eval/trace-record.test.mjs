@@ -2388,3 +2388,57 @@ test("DR-CP4-V-4 × V-3: begin の前に取り消された親の再 query が cy
   assert.equal(run.summary.status, "valid", JSON.stringify(run.summary));
   assert.equal(run.summary.violations.length, 1);
 });
+
+test("DR-CP4-V-4 (レビュー P3): 取り消された親の前に begin に至った同じ場面の fetch が無いとき、再 query の帰属は古い index-ready の通知を拾わない（下限は場面の直前の fetch、無ければ親の呼出し）", () => {
+  const fetch = (seq, calledAt, extra = {}) => ({
+    seq,
+    sceneId: SCENE,
+    seed: SEED,
+    refreshTrigger: null,
+    calledAt,
+    resolvedAt: calledAt + 1,
+    result: null,
+    ...extra,
+  });
+  const kindOf = (observation) =>
+    traceRequeries({
+      observation,
+      parentSeqs: [1],
+      querySceneId: SCENE,
+      cancelledParentSeqs: [1],
+    }).rows.find((row) => row.seq === 2).kind;
+  // 取り消された親（seq 1）が場面の最初の fetch。通知はそれよりずっと前。
+  const first = {
+    fetches: [fetch(1, 1_000), fetch(2, 1_400)],
+    api: [{ cmd: "related_scenes_begin", calledAt: 1_401 }],
+    notices: [{ kind: "index-ready", at: 100 }],
+  };
+  assert.equal(kindOf(first), "unattributed");
+  // 親と再 query の間の通知は従来どおり index-ready。
+  assert.equal(
+    kindOf({
+      ...first,
+      notices: [...first.notices, { kind: "index-ready", at: 1_200 }],
+    }),
+    "index-ready",
+  );
+  // begin に至らなかった同じ場面の前の fetch（seq 9、t=50）があれば、それから見る。
+  const earlier = {
+    ...first,
+    fetches: [fetch(9, 50), ...first.fetches],
+  };
+  assert.equal(kindOf(earlier), "index-ready");
+  assert.equal(
+    kindOf({ ...earlier, notices: [{ kind: "index-ready", at: 10 }] }),
+    "unattributed",
+  );
+  // begin に至った前の fetch があるときは V-3 のまま（それから見る）。
+  assert.equal(
+    kindOf({
+      ...earlier,
+      api: [{ cmd: "related_scenes_begin", calledAt: 51 }, ...earlier.api],
+      notices: [{ kind: "index-ready", at: 60 }],
+    }),
+    "index-ready",
+  );
+});

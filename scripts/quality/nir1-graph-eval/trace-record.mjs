@@ -1537,7 +1537,8 @@ function irRetried(result) {
  * unattributed. DR-CP4-V-3: when the previous fetch of the Scene is a counted
  * parent cancelled before its begin (`cancelledParentSeqs`), the notice is
  * looked for since the Scene's fetch before it that reached its begin (the
- * attribution only; the re-query stays outside Q).
+ * attribution only; the re-query stays outside Q). DR-CP4-V-4: without one,
+ * since the Scene's fetch before it, else the cancelled parent's call.
  */
 export function traceRequeries({
   observation,
@@ -1575,15 +1576,18 @@ export function traceRequeries({
       const previous = fetches
         .slice(0, at)
         .findLast((row) => row.sceneId === fetch.sceneId);
+      // DR-CP4-V-4 (レビュー P3): without a fetch of the Scene that reached
+      // its begin before the cancelled parent, the bound is the Scene's fetch
+      // before it, else the cancelled parent's own call (never -Infinity,
+      // which would attribute every earlier notice).
+      const before = (row) =>
+        row.sceneId === fetch.sceneId && row.calledAt < previous.calledAt;
       const from = cancelled.has(previous?.seq)
-        ? fetches
+        ? (fetches
             .slice(0, at)
-            .findLast(
-              (row) =>
-                row.sceneId === fetch.sceneId &&
-                row.calledAt < previous.calledAt &&
-                began.has(row.seq),
-            )
+            .findLast((row) => before(row) && began.has(row.seq)) ??
+          fetches.slice(0, at).findLast(before) ??
+          previous)
         : previous;
       const since = from?.calledAt ?? -Infinity;
       if (
