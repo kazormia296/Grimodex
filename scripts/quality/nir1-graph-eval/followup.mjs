@@ -137,13 +137,20 @@ function ticketShape(ticket) {
  * records it with `parent.cancelledBeforeBegin`). Only the observable items
  * are recorded: the generation, the Scene and seed, the call and the return
  * of the fetch, the publish count 0, no Native begin and no child. Any other
- * shape is not this case (the usual R7 check applies, X10).
+ * shape is not this case (the usual R7 check applies, X10). DR-CP4-V-4
+ * (レビュー P3): the mark holds only with the sample's own values of that case
+ * (the fetch `cancelled` / `not-started`, the join `cancelled`, the snapshot
+ * not usable); a mark the sample contradicts is not this case either.
  */
 function cancelledBeforeBeginRecord(sample, context) {
   const record = sample?.followUp;
   const parent = record?.parent;
   return (
     context === "trace" &&
+    sample?.status === "cancelled" &&
+    sample?.rawStatus === "not-started" &&
+    sample?.graph?.outcome === "cancelled" &&
+    sample?.snapshot?.usable === false &&
     record !== null &&
     typeof record === "object" &&
     parent !== null &&
