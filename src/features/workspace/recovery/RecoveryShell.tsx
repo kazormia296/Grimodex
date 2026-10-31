@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { GrimodexLogo } from "@/components/GrimodexLogo";
 import { TitleBar } from "@/components/TitleBar";
@@ -32,6 +33,7 @@ export function RecoveryShell({
   onCandidatesUpdated,
   onRetryOpen,
 }: RecoveryShellProps) {
+  const { t } = useTranslation();
   const [candidates, setCandidates] = useState<RecoveryCandidate[]>(
     recovery?.candidates ?? [],
   );
@@ -81,7 +83,7 @@ export function RecoveryShell({
     const refreshed = await runAction("refresh", listRecoveryCandidates);
     if (!refreshed) return;
     publishCandidates(refreshed);
-    toast.success("Recovery candidates refreshed.");
+    toast.success(t("workspace.recovery.toast.refreshed"));
   }
 
   async function handleVerify(candidateId: string) {
@@ -93,7 +95,7 @@ export function RecoveryShell({
       candidate.id === verified.id ? verified : candidate,
     );
     publishCandidates(nextCandidates);
-    toast.success("Candidate verified.");
+    toast.success(t("workspace.recovery.toast.verified"));
   }
 
   async function handleRestore(candidateId: string) {
@@ -101,8 +103,7 @@ export function RecoveryShell({
       restoreRecoveryCandidate(candidateId),
     );
     if (restored === null) return;
-    const message =
-      "Restore completed. Retry opening the workspace to enter the editor.";
+    const message = t("workspace.recovery.toast.restored");
     toast.success(message);
     setNotice(message);
   }
@@ -110,7 +111,7 @@ export function RecoveryShell({
   async function handleQuarantine() {
     const fileName = await runAction("quarantine", quarantineLiveDatabase);
     if (!fileName) return;
-    const message = `Live database quarantined as ${fileName}.`;
+    const message = t("workspace.recovery.toast.quarantined", { fileName });
     toast.success(message);
     setNotice(message);
   }
@@ -118,7 +119,7 @@ export function RecoveryShell({
   async function handleExportDiagnostics() {
     const path = await runAction("diagnostics", exportSafeModeDiagnostics);
     if (!path) return;
-    const message = `Diagnostics exported to ${path}.`;
+    const message = t("workspace.recovery.toast.diagnosticsExported", { path });
     toast.success(message);
     setNotice(message);
   }
@@ -133,7 +134,7 @@ export function RecoveryShell({
       <div className="flex h-screen flex-col items-center justify-center bg-background text-foreground">
         <TitleBar />
         <p className="text-sm text-muted-foreground">
-          No recovery session is active.
+          {t("workspace.recovery.noSession")}
         </p>
       </div>
     );
@@ -149,28 +150,46 @@ export function RecoveryShell({
           <GrimodexLogo height={32} className="text-foreground" />
           <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-5">
             <p className="text-xs font-semibold uppercase tracking-[0.2em] text-destructive">
-              Recovery Shell
+              {t("workspace.recovery.band")}
             </p>
             <h1 className="mt-2 text-2xl font-semibold">
-              Workspace recovery is required
+              {t("workspace.recovery.title")}
             </h1>
             <p className="mt-3 text-sm leading-6 text-muted-foreground">
-              Grimodex did not publish a normal workspace authority. The editor,
-              Codex, chat, and all normal workspace panels are unavailable until
-              a candidate is restored and the workspace opens successfully.
+              {t("workspace.recovery.description")}
             </p>
           </div>
         </header>
 
         <section className="grid gap-3 rounded-lg border border-border bg-card p-4 text-sm">
-          <InfoRow label="Mode" value={recovery.mode} />
-          <InfoRow label="Workspace" value={recovery.workspacePath} />
-          <InfoRow label="Reason" value={recovery.reason} />
+          <InfoRow
+            label={t("workspace.recovery.info.mode")}
+            value={
+              recovery.mode === "safe-mode" ||
+              recovery.mode === "recovery-required"
+                ? t(`workspace.recovery.modes.${recovery.mode}`)
+                : recovery.mode
+            }
+          />
+          <InfoRow
+            label={t("workspace.recovery.info.workspace")}
+            value={recovery.workspacePath}
+          />
+          <InfoRow
+            label={t("workspace.recovery.info.reason")}
+            value={recovery.reason}
+          />
           {recovery.errorCode && (
-            <InfoRow label="Error code" value={recovery.errorCode} />
+            <InfoRow
+              label={t("workspace.recovery.info.errorCode")}
+              value={recovery.errorCode}
+            />
           )}
           {recovery.snapshotId && (
-            <InfoRow label="Preferred snapshot" value={recovery.snapshotId} />
+            <InfoRow
+              label={t("workspace.recovery.info.preferredSnapshot")}
+              value={recovery.snapshotId}
+            />
           )}
         </section>
 
@@ -181,7 +200,7 @@ export function RecoveryShell({
             onClick={handleRefresh}
             disabled={busy}
           >
-            Refresh candidates
+            {t("workspace.recovery.actions.refresh")}
           </Button>
           <Button
             type="button"
@@ -189,7 +208,7 @@ export function RecoveryShell({
             onClick={handleQuarantine}
             disabled={busy}
           >
-            Create quarantine copy
+            {t("workspace.recovery.actions.quarantine")}
           </Button>
           <Button
             type="button"
@@ -197,14 +216,14 @@ export function RecoveryShell({
             onClick={handleExportDiagnostics}
             disabled={busy}
           >
-            Export diagnostics
+            {t("workspace.recovery.actions.diagnostics")}
           </Button>
           <Button
             type="button"
             onClick={handleRetryOpen}
             disabled={busy || !onRetryOpen}
           >
-            Retry open
+            {t("workspace.recovery.actions.retry")}
           </Button>
         </section>
 
@@ -218,11 +237,21 @@ export function RecoveryShell({
           <table className="w-full min-w-[760px] text-left text-sm">
             <thead className="bg-muted/60 text-xs uppercase tracking-wide text-muted-foreground">
               <tr>
-                <th className="px-4 py-3 font-medium">Kind</th>
-                <th className="px-4 py-3 font-medium">Created</th>
-                <th className="px-4 py-3 font-medium">Schema</th>
-                <th className="px-4 py-3 font-medium">Checksum</th>
-                <th className="px-4 py-3 font-medium">Actions</th>
+                <th className="px-4 py-3 font-medium">
+                  {t("workspace.recovery.table.kind")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("workspace.recovery.table.created")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("workspace.recovery.table.schema")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("workspace.recovery.table.checksum")}
+                </th>
+                <th className="px-4 py-3 font-medium">
+                  {t("workspace.recovery.table.actions")}
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -232,8 +261,7 @@ export function RecoveryShell({
                     colSpan={5}
                     className="px-4 py-8 text-center text-muted-foreground"
                   >
-                    No recovery candidates were found. Export diagnostics before
-                    changing this workspace manually.
+                    {t("workspace.recovery.table.empty")}
                   </td>
                 </tr>
               ) : (
@@ -256,6 +284,25 @@ export function RecoveryShell({
   );
 }
 
+const KNOWN_KINDS: readonly string[] = [
+  "automatic-backup",
+  "manual-backup",
+  "migration-snapshot",
+];
+const KNOWN_CHECKSUMS: readonly string[] = [
+  "verified",
+  "unverified",
+  "invalid",
+];
+
+function isKnownKind(value: string): boolean {
+  return KNOWN_KINDS.includes(value);
+}
+
+function isKnownChecksum(value: string): boolean {
+  return KNOWN_CHECKSUMS.includes(value);
+}
+
 function CandidateRow({
   candidate,
   preferred,
@@ -269,6 +316,7 @@ function CandidateRow({
   onVerify: () => void;
   onRestore: () => void;
 }) {
+  const { t } = useTranslation();
   const restoreBusy = busyAction === `restore:${candidate.id}`;
   const verifyBusy = busyAction === `verify:${candidate.id}`;
   const disabled = busyAction !== null;
@@ -277,9 +325,15 @@ function CandidateRow({
     <tr className={cn(preferred && "bg-primary/5")}>
       <td className="px-4 py-3 align-top">
         <div className="flex flex-col gap-1">
-          <span className="font-medium">{candidate.kind}</span>
+          <span className="font-medium">
+            {isKnownKind(candidate.kind)
+              ? t(`workspace.recovery.kinds.${candidate.kind}`)
+              : candidate.kind}
+          </span>
           {preferred && (
-            <span className="text-xs text-primary">Recommended first</span>
+            <span className="text-xs text-primary">
+              {t("workspace.recovery.table.recommended")}
+            </span>
           )}
         </div>
       </td>
@@ -287,7 +341,7 @@ function CandidateRow({
         {candidate.createdAt}
       </td>
       <td className="px-4 py-3 align-top">
-        {candidate.schemaVersion ?? "unknown"}
+        {candidate.schemaVersion ?? t("workspace.recovery.table.unknownSchema")}
       </td>
       <td className="px-4 py-3 align-top">
         <span
@@ -301,7 +355,9 @@ function CandidateRow({
               "bg-destructive/10 text-destructive",
           )}
         >
-          {candidate.checksumStatus}
+          {isKnownChecksum(candidate.checksumStatus)
+            ? t(`workspace.recovery.checksum.${candidate.checksumStatus}`)
+            : candidate.checksumStatus}
         </span>
       </td>
       <td className="px-4 py-3 align-top">
@@ -313,7 +369,9 @@ function CandidateRow({
             onClick={onVerify}
             disabled={disabled}
           >
-            {verifyBusy ? "Verifying..." : "Verify"}
+            {verifyBusy
+              ? t("workspace.recovery.actions.verifying")
+              : t("workspace.recovery.actions.verify")}
           </Button>
           <Button
             type="button"
@@ -321,7 +379,9 @@ function CandidateRow({
             onClick={onRestore}
             disabled={disabled || candidate.checksumStatus === "invalid"}
           >
-            {restoreBusy ? "Restoring..." : "Restore"}
+            {restoreBusy
+              ? t("workspace.recovery.actions.restoring")
+              : t("workspace.recovery.actions.restore")}
           </Button>
         </div>
       </td>

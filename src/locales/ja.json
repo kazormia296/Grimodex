@@ -4615,7 +4615,61 @@
     "trustPath": "パス: {{path}}",
     "trustWarning": "信頼できるソースのワークスペースのみ開いてください。",
     "trustAndOpen": "信頼して開く",
-    "trustCancel": "キャンセル"
+    "trustCancel": "キャンセル",
+    "recovery": {
+      "band": "復旧モード",
+      "title": "ワークスペースの復旧が必要です",
+      "description": "ワークスペースを通常どおりに開けませんでした。候補を復元してワークスペースが正常に開けるまで、エディタ・Codex・チャットなど通常のパネルはすべて使えません。",
+      "noSession": "有効な復旧セッションはありません。",
+      "info": {
+        "mode": "モード",
+        "workspace": "ワークスペース",
+        "reason": "原因",
+        "errorCode": "エラーコード",
+        "preferredSnapshot": "推奨スナップショット"
+      },
+      "modes": {
+        "safe-mode": "セーフモード",
+        "recovery-required": "復旧が必要"
+      },
+      "actions": {
+        "refresh": "候補を再読込",
+        "quarantine": "隔離用の複製を作成",
+        "diagnostics": "診断情報を書き出す",
+        "retry": "開き直す",
+        "verify": "検証",
+        "verifying": "検証中...",
+        "restore": "復元",
+        "restoring": "復元中..."
+      },
+      "table": {
+        "kind": "種類",
+        "created": "作成日時",
+        "schema": "スキーマ",
+        "checksum": "チェックサム",
+        "actions": "操作",
+        "unknownSchema": "不明",
+        "recommended": "最初に試すのがおすすめ",
+        "empty": "復旧候補が見つかりませんでした。このワークスペースを手動で変更する前に、診断情報を書き出してください。"
+      },
+      "kinds": {
+        "automatic-backup": "自動バックアップ",
+        "manual-backup": "手動バックアップ",
+        "migration-snapshot": "移行前スナップショット"
+      },
+      "checksum": {
+        "verified": "検証済み",
+        "unverified": "未検証",
+        "invalid": "無効"
+      },
+      "toast": {
+        "refreshed": "復旧候補を再読込しました。",
+        "verified": "候補を検証しました。",
+        "restored": "復元が完了しました。ワークスペースを開き直すとエディタに入れます。",
+        "quarantined": "現在のデータベースを {{fileName}} として隔離しました。",
+        "diagnosticsExported": "診断情報を {{path}} に書き出しました。"
+      }
+    }
   },
   "vivliostyle": {
     "title": "本の書き出し（Vivliostyle）",

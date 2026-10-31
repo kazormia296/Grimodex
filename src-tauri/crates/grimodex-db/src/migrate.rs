@@ -1749,10 +1749,10 @@ impl Database {
             CREATE INDEX IF NOT EXISTS idx_codex_relations_from
                 ON codex_relations(from_codex_id);
             CREATE INDEX IF NOT EXISTS idx_codex_relations_to
-                ON codex_relations(to_codex_id);
-            CREATE INDEX IF NOT EXISTS idx_codex_relations_semantic_key
-                ON codex_relations(semantic_key);",
+                ON codex_relations(to_codex_id);",
         )?;
+        // idx_codex_relations_semantic_key is created by migrate_codex_relations_v7
+        // after it adds the column; a pre-v7 table has no semantic_key yet.
         Self::migrate_codex_relations_source_map_edge_id(&conn)?;
         Self::migrate_codex_relations_v7(&conn)?;
 
@@ -10143,12 +10143,7 @@ impl Database {
         conn.execute_batch(&format!("SAVEPOINT {SAVEPOINT}"))?;
         let repair = (|| -> anyhow::Result<()> {
             for (column, kind) in grimodex_core::workspace_schema::SCENE_BODY_DECLARATION_COLUMNS {
-                Self::add_column_if_missing(
-                    conn,
-                    "narrative_scene_scope_bindings",
-                    column,
-                    kind,
-                )?;
+                Self::add_column_if_missing(conn, "narrative_scene_scope_bindings", column, kind)?;
             }
             Ok(())
         })();
@@ -12039,7 +12034,11 @@ mod tests {
                 |row| row.get(0),
             )?;
             assert_eq!(non_null, 0, "the migration must not promote or backfill");
-            assert_eq!(v43_v1_binding_rows(conn)?, v1_rows, "v1 columns are byte-identical");
+            assert_eq!(
+                v43_v1_binding_rows(conn)?,
+                v1_rows,
+                "v1 columns are byte-identical"
+            );
             assert!(
                 grimodex_core::workspace_schema::has_current_schema_checkpoint_invariants(conn)?
             );
@@ -14251,6 +14250,63 @@ mod tests {
             )
             .expect("unique probe");
         assert_eq!(unique, 0, "semantic_key index must remain non-unique");
+    }
+
+    #[test]
+    fn full_migration_upgrades_pre_v7_codex_relations_without_semantic_key() {
+        // A pre-v7 workspace already has codex_relations, so its
+        // CREATE TABLE IF NOT EXISTS is a no-op. Any semantic_key index created
+        // before migrate_codex_relations_v7 adds the column aborts the whole
+        // migration ("no such column: semantic_key") and parks the workspace in
+        // Safe Mode.
+        let db = Database::new(std::path::Path::new(":memory:")).expect("open database");
+        db.migrate().expect("create current schema");
+        db.with_conn(|conn| {
+            conn.execute_batch(
+                "PRAGMA foreign_keys = OFF;
+                 DROP TABLE codex_relations;
+                 CREATE TABLE codex_relations (
+                    id                  TEXT PRIMARY KEY,
+                    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    from_codex_id       TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                    to_codex_id         TEXT NOT NULL REFERENCES codex_entries(id) ON DELETE CASCADE,
+                    relation_type       TEXT NOT NULL DEFAULT 'custom',
+                    label               TEXT,
+                    depth_hint          INTEGER,
+                    source_map_edge_id  TEXT,
+                    created_at          TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at          TEXT NOT NULL DEFAULT (datetime('now'))
+                 );
+                 PRAGMA foreign_keys = ON;
+                 PRAGMA user_version = 3;",
+            )?;
+            Ok(())
+        })
+        .expect("downgrade codex_relations to the pre-v7 shape");
+
+        db.migrate().expect("migrate pre-v7 codex_relations");
+
+        db.with_conn(|conn| {
+            let columns: Vec<String> = conn
+                .prepare("SELECT name FROM pragma_table_info('codex_relations')")?
+                .query_map([], |row| row.get(0))?
+                .collect::<Result<_, _>>()?;
+            for column in ["directionality", "inverse_label", "semantic_key", "version"] {
+                assert!(
+                    columns.iter().any(|name| name == column),
+                    "codex_relations must gain {column}"
+                );
+            }
+            let index_exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master
+                  WHERE type = 'index' AND name = 'idx_codex_relations_semantic_key'",
+                [],
+                |row| row.get(0),
+            )?;
+            assert_eq!(index_exists, 1);
+            Ok(())
+        })
+        .expect("verify upgraded codex_relations");
     }
 
     #[test]
