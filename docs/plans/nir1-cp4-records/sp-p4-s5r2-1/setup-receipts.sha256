@@ -1,0 +1,13 @@
+312ba790327b430e7ab19ff5e8e50843613be95d45fe99fd822418760cb815a4  G-01/v1  .artifacts/cp4/s5r2-g-01-v1/setup/G-01/v1/setup-receipt.json
+7badb4b6bb2f84092e228117379f8a580133427ba5d1b9316b6a7b40582057b8  G-02/base  .artifacts/cp4/s5r2-g-02-base/setup/G-02/base/setup-receipt.json
+330e7731971695c6d0c5a35f4948f3f06faf5a304ada0d7ca3cf76615313eaa0  G-03/base  .artifacts/cp4/s5r2-g-03-base/setup/G-03/base/setup-receipt.json
+c4b20fa6dd90bb148ee2fd7c0d40c8e317fcc8067d5cc4f2879926961abba989  G-03/frontier-exceeded  .artifacts/cp4/s5r2-g-03-frontier-exceeded/setup/G-03/frontier-exceeded/setup-receipt.json
+0e14b047f390ce8023764b1c84c497e5948c4bddbf3cfc0e382b1e4b62102157  G-04/base  .artifacts/cp4/s5r2-g-04-base/setup/G-04/base/setup-receipt.json
+67c5823cb696ac6db4f42c37dbe10b5f3c710808c6849a1c326c1d11e5c2e95d  G-05/base  .artifacts/cp4/s5r2-g-05-base/setup/G-05/base/setup-receipt.json
+e1691f8e6cc9d9eb433a48e722f3450d61fb35c03463cf5a2cfaa6eb3e02eb94  G-06/base  .artifacts/cp4/s5r2-g-06-base/setup/G-06/base/setup-receipt.json
+3cbf8dc56b98a37a878c05136da0a664ccdeb316914aeab6c52b070c7c6093c8  G-07/base  .artifacts/cp4/s5r2-g-07-base/setup/G-07/base/setup-receipt.json
+92367ceae3881a60c4164135243a573e8db67dd1b20c01e7df6545aac55319d5  G-08/base-usable  .artifacts/cp4/s5r2-g-08-base-usable/setup/G-08/base-usable/setup-receipt.json
+6a614ddbc88475658c5c7744a58d57de262787cddc44bf3edbd7a11b23cad19d  G-08/graph-index-unusable  .artifacts/cp4/s5r2-g-08-graph-index-unusable/setup/G-08/graph-index-unusable/setup-receipt.json
+f5ab5f8af44c3da4ea1321f6db11be39e58d3bec7bc2c601843577da2d701ccf  G-08/graph-recovered  .artifacts/cp4/s5r2-g-08-graph-recovered/setup/G-08/graph-recovered/setup-receipt.json
+c40611b43f7a2a5ea74298fda2db2a30a1f04dddd33a89740ad1346f8f1aaa8a  G-08/chronicle-index-unusable  .artifacts/cp4/s5r2-g-08-chronicle-index-unusable/setup/G-08/chronicle-index-unusable/setup-receipt.json
+4db412e88dc050eaeae99cd2ba575f1805ef1317d1724c9de9a416b14518f912  G-08/both-indexes-unusable  .artifacts/cp4/s5r2-g-08-both-indexes-unusable/setup/G-08/both-indexes-unusable/setup-receipt.json
