@@ -736,6 +736,134 @@ function git(args) {
   return execFileSync("git", args, { cwd: ROOT, encoding: "utf8" }).trim();
 }
 
+/**
+ * DR-CP4-V-3 (C): refuses a value that still carries a path quote in clear
+ * (any `quote` key at any depth); the trace writes only its sha256
+ * (`hashGraphPaths`). `[precheck]`: the run stops before writing `label`.
+ */
+export function assertNoQuotePlaintext(value, label) {
+  const stack = [{ node: value, at: "$" }];
+  const seen = new Set();
+  while (stack.length > 0) {
+    const { node, at } = stack.pop();
+    if (node === null || typeof node !== "object" || seen.has(node)) continue;
+    seen.add(node);
+    for (const [key, child] of Object.entries(node)) {
+      if (key === "quote")
+        throw new Error(
+          `[precheck] DR-CP4-V-3: ${label} would carry a path quote in clear at ${at}.${key}`,
+        );
+      stack.push({ node: child, at: `${at}.${key}` });
+    }
+  }
+  return value;
+}
+
+/** DR-CP4-V-2/V-3: the page's observation with its path quotes hashed, checked. */
+export function hashTraceObservation(pageObservation) {
+  return assertNoQuotePlaintext(
+    hashObservationPaths(pageObservation),
+    "the trace observation",
+  );
+}
+
+/**
+ * DR-CP4-V-3 (C): the receipt's records of one trace run from what the run
+ * observed (`observation` already hashed, `nativeReads` with the read after
+ * the export last, the poller's `counters`, `result` of runTraceOperations)
+ * and its `context` (devContext / frozenContext: the F6 resolver of the
+ * formal trace is `context.materialContribution`). Pure; main writes it.
+ */
+export function traceRunRecords({
+  plan,
+  observation,
+  nativeReads,
+  counters,
+  result,
+  context,
+  querySceneId,
+  candidateHead,
+}) {
+  const native = mergeNativeRecords(nativeReads);
+  const rows = traceRows({
+    plan,
+    observation,
+    log: result.log,
+    native,
+    runs: counters?.runs ?? [],
+    a3Reads: result.a3Reads,
+    startSeals: result.startSeals,
+    d2aMode: D2A_MODE,
+    ids: { revisions: context.revisions },
+    expectedContribution: context.expectedContribution,
+    materialContribution: context.materialContribution,
+  });
+  const parentSeqs = result.log
+    .filter((row) => Number.isInteger(row.parentSeq))
+    .map((row) => row.parentSeq);
+  // DR-CP4-V-3: the re-query after a parent cancelled before its begin is
+  // attributed from the fetch before it that reached its begin.
+  const cancelledParentSeqs = cancelledParentSeqsOf(rows);
+  const events = traceEvents({
+    plan,
+    observation,
+    log: result.log,
+    parentSeqs,
+    querySceneId,
+    cancelledParentSeqs,
+  });
+  const k64 = summarizeTraceRun({
+    plan,
+    rows,
+    events,
+    fixedGraphMode: D2A_MODE,
+    stalled: result.stalled,
+    candidate: context.ratification5,
+    candidateHead,
+  });
+  const k62 = summarizeTraceRun({
+    plan,
+    rows,
+    events,
+    fixedGraphMode: D2A_MODE,
+    stalled: result.stalled,
+  });
+  return {
+    rows,
+    k64,
+    k62,
+    native: {
+      dropped: native.dropped,
+      records: native.records.length,
+      // DR-CP4-V-2: the pairing, and the records after the window it left
+      // out (disclosed); DR-CP4-V-3: with the Native reads' clock range.
+      alignment: alignmentDisclosure(
+        traceAlignment({ observation, native, log: result.log }),
+      ),
+    },
+    requeries: traceRequeries({
+      observation,
+      parentSeqs,
+      querySceneId,
+      cancelledParentSeqs,
+    }).counts,
+    // DR-CP4-V-3: the counted parents cancelled before their begin (in Q,
+    // out of U, rule 3 (i), K6/4 X12) and rule 3 (i) with them apart.
+    cancelledParents: cancelledParentsDisclosure(rows),
+    lapseI: {
+      k64: lapseIBreakdown(k64.summary, rows),
+      k62: lapseIBreakdown(k62.summary, rows),
+    },
+    // S2 navigate.outsideQ.receiptCountByReason (P-S2-4).
+    outsideQ: outsideQReceiptCountByReason({
+      observation,
+      parentSeqs,
+      querySceneId,
+    }),
+    summary: { k64: k64.summary, k62: k62.summary },
+  };
+}
+
 /** The frozen admission's inputs: the build receipts and the default addon. */
 function frozenInputs(options, evalDir) {
   if (!options["product-receipt"])
@@ -898,9 +1026,24 @@ export function frozenContext({ prepared, setupRaw }) {
       path: TRACE_PROJECT.fixturePath,
     }).toString("utf8"),
   );
+  return frozenContextOf({ admission, fixture, prepared, setupRaw });
+}
+
+/**
+ * The frozen trace's context after its admission read the fixture
+ * (DR-CP4-V-3 (C): split from `frozenContext` so the formal F6 wiring, the
+ * resolver of DR-CP4-V-2 (2), is tested without a sealed admission).
+ */
+export function frozenContextOf({
+  admission,
+  fixture,
+  prepared,
+  setupRaw,
+  root = ROOT,
+}) {
   const { ids } = prepared.runtime;
   const material = traceMaterialResolver({
-    root: ROOT,
+    root,
     tracePlan: prepared.plan,
     fixture,
     ids,
@@ -1266,8 +1409,8 @@ async function main() {
       );
     await delay(FINAL_SETTLE_MS);
     // DR-CP4-V-2: the path quotes are hashed right after the page returns
-    // (material-revision.mjs; never written in clear).
-    const observation = hashObservationPaths(
+    // (material-revision.mjs; never written in clear). DR-CP4-V-3: checked.
+    const observation = hashTraceObservation(
       await page.evaluate(() => window.cp4Harness.trace.exportObservation()),
     );
     nativeReads.push(await call(addon, "nir1GraphEvalSamples"));
@@ -1286,54 +1429,30 @@ async function main() {
     session = null;
     await server.close();
     server = null;
-    await writeFile(
-      path.join(runDir, "observation.json"),
-      `${JSON.stringify({ observation, nativeReads, counters, log: result.log, a3Reads: result.a3Reads, startSeals: result.startSeals }, null, 1)}\n`,
-    );
-    const native = mergeNativeRecords(nativeReads);
-    const rows = traceRows({
-      plan,
+    const observationFile = {
       observation,
+      nativeReads,
+      counters,
       log: result.log,
-      native,
-      runs: counters.runs ?? [],
       a3Reads: result.a3Reads,
       startSeals: result.startSeals,
-      d2aMode: D2A_MODE,
-      ids: { revisions: context.revisions },
-      expectedContribution: context.expectedContribution,
-      materialContribution: context.materialContribution,
-    });
-    const parentSeqs = result.log
-      .filter((row) => Number.isInteger(row.parentSeq))
-      .map((row) => row.parentSeq);
-    // DR-CP4-V-3: the re-query after a parent cancelled before its begin is
-    // attributed from the fetch before it that reached its begin.
-    const cancelledParentSeqs = cancelledParentSeqsOf(rows);
-    const events = traceEvents({
+    };
+    assertNoQuotePlaintext(observationFile, "observation.json");
+    await writeFile(
+      path.join(runDir, "observation.json"),
+      `${JSON.stringify(observationFile, null, 1)}\n`,
+    );
+    const records = traceRunRecords({
       plan,
       observation,
-      log: result.log,
-      parentSeqs,
+      nativeReads,
+      counters,
+      result,
+      context,
       querySceneId: ids.querySceneId,
-      cancelledParentSeqs,
-    });
-    const k64 = summarizeTraceRun({
-      plan,
-      rows,
-      events,
-      fixedGraphMode: D2A_MODE,
-      stalled: result.stalled,
-      candidate: context.ratification5,
       candidateHead: candidate.commit,
     });
-    const k62 = summarizeTraceRun({
-      plan,
-      rows,
-      events,
-      fixedGraphMode: D2A_MODE,
-      stalled: result.stalled,
-    });
+    const { rows, k64, k62 } = records;
     const ownPids = [
       ...readAncestorPids(),
       ...(evidence.recordedPids ?? []).map((row) => row.pid),
@@ -1420,34 +1539,11 @@ async function main() {
         lastError: counters.lastError ?? null,
         runs: counters.runs?.length ?? null,
       },
-      native: {
-        dropped: native.dropped,
-        records: native.records.length,
-        // DR-CP4-V-2: the pairing, and the records after the window it left
-        // out (disclosed).
-        alignment: alignmentDisclosure(
-          traceAlignment({ observation, native, log: result.log }),
-        ),
-      },
-      requeries: traceRequeries({
-        observation,
-        parentSeqs,
-        querySceneId: ids.querySceneId,
-        cancelledParentSeqs,
-      }).counts,
-      // DR-CP4-V-3: the counted parents cancelled before their begin (in Q,
-      // out of U, rule 3 (i), K6/4 X12) and rule 3 (i) with them apart.
-      cancelledParents: cancelledParentsDisclosure(rows),
-      lapseI: {
-        k64: lapseIBreakdown(k64.summary, rows),
-        k62: lapseIBreakdown(k62.summary, rows),
-      },
-      // S2 navigate.outsideQ.receiptCountByReason (P-S2-4).
-      outsideQ: outsideQReceiptCountByReason({
-        observation,
-        parentSeqs,
-        querySceneId: ids.querySceneId,
-      }),
+      native: records.native,
+      requeries: records.requeries,
+      cancelledParents: records.cancelledParents,
+      lapseI: records.lapseI,
+      outsideQ: records.outsideQ,
       // TR-9: unknown is counted apart (the classifier keeps it out of U and
       // in rule 3 (i), the strict side). S2 startSeal.receipt: the reads.
       startSeal: {
@@ -1457,9 +1553,10 @@ async function main() {
       events: k64.events,
       defects: k64.defects,
       queries: rows,
-      summary: { k64: k64.summary, k62: k62.summary },
+      summary: records.summary,
       checks: { ...report.checks, problems: report.problems },
     };
+    assertNoQuotePlaintext(receipt, "receipt.json");
     await writeFile(
       path.join(runDir, "receipt.json"),
       `${JSON.stringify(receipt, null, 2)}\n`,

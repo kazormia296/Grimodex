@@ -31,7 +31,18 @@ import {
   devProcedureOptions,
   parseArgs,
   traceMaterialResolver,
+  assertNoQuotePlaintext,
+  frozenContextOf,
+  hashTraceObservation,
+  traceRunRecords,
 } from "./trace-runner.mjs";
+import {
+  K64_CHILD_RESULT,
+  k64Api,
+  k64FetchResult,
+  k64NativeRecord,
+} from "./test-support.mjs";
+import { createHash } from "node:crypto";
 import { DEV_PREVIEW_PURPOSES } from "./admission.mjs";
 import { loadFrozenSetupPlans } from "./frozen-setup-plan.mjs";
 import { typedRevisionMaterials } from "./material-revision.mjs";
@@ -887,5 +898,326 @@ test("DR-CP4-V-2: 凍結の trace の F6 の resolver は Gold と同じ G-02 ba
         ids,
       }),
     /\[precheck\] DR-CP4-V-2/u,
+  );
+});
+
+// ---- DR-CP4-V-3 (C): the formal wiring, tested so that a mutation fails ---
+
+const QUOTE = "the quote in clear";
+const B0 = 10_000;
+const nsOf = (ms) => Math.round(ms * 1e6);
+
+/** One counted query (parent graph-late, a Cached child with paths). */
+function oneQueryRun() {
+  const edge = {
+    relationType: "trained",
+    directionality: "directed",
+    from: { entityId: "e-a" },
+    to: { entityId: "e-b" },
+    evidence: [{ evidenceId: "ev-1", quote: QUOTE }],
+  };
+  const fetches = [
+    {
+      seq: 1,
+      sceneId: "scene-q",
+      queryGeneration: 100,
+      refreshTrigger: null,
+      seed: "entity-seed",
+      rawOnly: false,
+      calledAt: B0,
+      resolvedAt: B0 + 61,
+      failed: false,
+      result: k64FetchResult({
+        timing: { tFetchMs: B0, tRawReadyMs: B0 + 50, tReturnMs: B0 + 60.9 },
+      }),
+    },
+    {
+      seq: 2,
+      sceneId: "scene-q",
+      queryGeneration: 101,
+      refreshTrigger: "graph-ready",
+      seed: "entity-seed",
+      rawOnly: false,
+      calledAt: B0 + 68,
+      resolvedAt: B0 + 96,
+      failed: false,
+      paths: {
+        graphOnly: { sceneId: "s-added", edges: [edge] },
+        pathAttachments: [],
+      },
+      result: k64FetchResult({
+        ...K64_CHILD_RESULT,
+        timing: {
+          ...K64_CHILD_RESULT.timing,
+          tFetchMs: B0 + 68,
+          tRawReadyMs: B0 + 75,
+          tReturnMs: B0 + 95,
+        },
+      }),
+    },
+  ];
+  const api = [
+    k64Api("related_scenes_begin", B0 + 10, B0 + 30),
+    k64Api("related_scenes_continue", B0 + 50.5, B0 + 53),
+    k64Api("related_scenes_graph_continue", B0 + 60.85, B0 + 62, {
+      settle: "unused",
+    }),
+    k64Api("related_scenes_begin", B0 + 68.5, B0 + 70),
+    k64Api("related_scenes_continue", B0 + 75.2, B0 + 81),
+    k64Api("related_scenes_graph_continue", B0 + 75.2, B0 + 89, {
+      status: "available",
+    }),
+    k64Api("related_scenes_graph_continue", B0 + 95, B0 + 96, {
+      settle: "used",
+    }),
+  ].map((row, id) => ({ ...row, id }));
+  const records = [
+    k64NativeRecord({
+      seq: 1,
+      tBeginNs: nsOf(B0 + 15),
+      tReturnedNs: nsOf(B0 + 16),
+      ticket: {
+        ...k64NativeRecord().ticket,
+        tTicketNs: nsOf(B0 + 15.5),
+        tSettledNs: nsOf(B0 + 64),
+        freshnessStamp: {
+          attemptedAtNs: nsOf(B0 + 15.2),
+          result: "fresh",
+          matched: true,
+        },
+      },
+    }),
+    k64NativeRecord({
+      seq: 2,
+      tBeginNs: nsOf(B0 + 69),
+      tReturnedNs: nsOf(B0 + 69.5),
+      begin: "cached",
+      ticket: null,
+    }),
+  ];
+  const observation = {
+    fetches,
+    api,
+    commits: [
+      { at: B0 + 61.5, fetchSeq: 1, loading: false, display: "parent" },
+      { at: B0 + 96, fetchSeq: 2, loading: false, display: "child" },
+    ],
+    notices: [{ kind: "graph-ready", at: B0 + 67 }],
+    bodyCommits: [],
+    initialVersion: 7,
+    observedUntil: B0 + 3_000,
+  };
+  const log = [
+    {
+      op: "open-scene",
+      index: 0,
+      parentSeq: 1,
+      calledAt: B0,
+      cycleEnd: { reason: "child-published", at: B0 + 96.5 },
+    },
+  ];
+  return {
+    observation,
+    nativeReads: [
+      { dropped: 0, clockNs: nsOf(B0 + 97.5), records },
+      { dropped: 0, clockNs: nsOf(B0 + 3_001), records },
+    ],
+    result: { log, a3Reads: {}, startSeals: {}, stalled: null },
+  };
+}
+
+const tracePlanOf = () =>
+  devTracePlan({
+    kind: "editing",
+    cycles: 1,
+    querySceneId: "scene-q",
+    otherSceneId: "scene-o",
+    seedEntityId: "entity-seed",
+    materials: ["rev-1"],
+  });
+
+test("DR-CP4-V-3 (C): 観測の path の quote は page から受け取った直後に sha256 にし、平文の quote の鍵が残れば observation／receipt を書く前に [precheck]", () => {
+  const run = oneQueryRun();
+  const hashed = hashTraceObservation(run.observation);
+  const evidence = hashed.fetches[1].paths.graphOnly.edges[0].evidence[0];
+  assert.equal(Object.hasOwn(evidence, "quote"), false);
+  assert.equal(
+    evidence.quoteSha256,
+    createHash("sha256").update(QUOTE).digest("hex"),
+  );
+  assert.doesNotMatch(JSON.stringify(hashed), new RegExp(QUOTE, "u"));
+  // hash を外した観測（変異）は guard が止める。
+  assert.throws(
+    () => assertNoQuotePlaintext(run.observation, "observation.json"),
+    /\[precheck\] DR-CP4-V-3: observation.json would carry a path quote in clear at \$\.fetches\.1\.paths\.graphOnly\.edges\.0\.evidence\.0\.quote/u,
+  );
+  assert.throws(
+    () =>
+      assertNoQuotePlaintext(
+        { queries: [{ a: { quote: "x" } }] },
+        "receipt.json",
+      ),
+    /\[precheck\].*receipt\.json/u,
+  );
+  // sha256 の鍵、quote を含む他の名前は止めない。
+  assert.doesNotThrow(() =>
+    assertNoQuotePlaintext({ quoteSha256: "a", quotes: ["b"], q: null }, "x"),
+  );
+});
+
+test("DR-CP4-V-3 (C): 受領書の記録は context の F6 の resolver を行に渡し（凍結は material-revision）、resolver が無い dev は preview の単位。resolver が受け取る path は hash 済み", () => {
+  const run = oneQueryRun();
+  const observation = hashTraceObservation(run.observation);
+  const seen = [];
+  const context = {
+    revisions: { "rev-1": "rev-1" },
+    expectedContribution: {
+      appendedSceneIds: ["dev-added"],
+      pathAttachmentSceneIds: ["dev-b"],
+    },
+    ratification5: null,
+    materialContribution: (paths) => {
+      seen.push(paths);
+      return {
+        basis: "material-revision",
+        contribution: true,
+        observed: [],
+        matched: ["graph-only:s-added"],
+        unresolvedEdges: 0,
+      };
+    },
+  };
+  const records = traceRunRecords({
+    plan: tracePlanOf(),
+    observation,
+    nativeReads: run.nativeReads,
+    counters: { runs: [] },
+    result: run.result,
+    context,
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(records.rows.length, 1);
+  assert.equal(records.rows[0].rowError, undefined);
+  assert.equal(
+    records.rows[0].followUp.child.contributionBasis,
+    "material-revision",
+  );
+  assert.equal(seen.length, 1);
+  assert.doesNotMatch(JSON.stringify(seen), new RegExp(QUOTE, "u"));
+  assert.ok(seen[0].graphOnly.edges[0].evidence[0].quoteSha256);
+  assert.equal(records.native.alignment.aligned, true);
+  assert.equal(records.native.alignment.clock.readClockReason, null);
+  assert.deepEqual(records.cancelledParents.count, 0);
+  assert.doesNotThrow(() => assertNoQuotePlaintext(records, "receipt.json"));
+  const preview = traceRunRecords({
+    plan: tracePlanOf(),
+    observation,
+    nativeReads: run.nativeReads,
+    counters: { runs: [] },
+    result: run.result,
+    context: { ...context, materialContribution: null },
+    querySceneId: "scene-q",
+    candidateHead: "e".repeat(40),
+  });
+  assert.equal(
+    preview.rows[0].followUp.child.contributionBasis,
+    "scene-level-preview",
+  );
+});
+
+test("DR-CP4-V-3 (C): 凍結の context は G-02 base の resolver を materialContribution に配線し、f6 は material-revision", () => {
+  const tracePlan = JSON.parse(
+    readFileSync(
+      path.join(REPO_ROOT, "evals/nir1-graph/trace-browsing.v1.json"),
+      "utf8",
+    ),
+  );
+  const fixture = JSON.parse(
+    readFileSync(path.join(REPO_ROOT, TRACE_PROJECT.fixturePath), "utf8"),
+  );
+  const setupPlan = loadFrozenSetupPlans({
+    root: REPO_ROOT,
+    stopsAt: "complete",
+  }).find((row) => row.variantKey === "G-02/base");
+  const rt = (logical) => `rt-${logical}`;
+  const entities = {};
+  const typedRevisions = {};
+  for (const revision of typedRevisionMaterials(setupPlan).values()) {
+    typedRevisions[revision.id] = { revisionId: rt(revision.id) };
+    for (const relation of revision.relations) {
+      entities[relation.from] = rt(relation.from);
+      entities[relation.to] = rt(relation.to);
+    }
+  }
+  for (const row of fixture.entities ?? []) entities[row.id] ??= rt(row.id);
+  const ids = {
+    projectId: "rt-project",
+    querySceneId: rt(fixture.query.sceneId),
+    scenes: Object.fromEntries(
+      fixture.scenes.map((row) => [row.id, rt(row.id)]),
+    ),
+    entities,
+    typedRevisions,
+  };
+  const context = frozenContextOf({
+    root: REPO_ROOT,
+    admission: { ratification5: null },
+    fixture,
+    prepared: {
+      kind: "browsing",
+      plan: tracePlan,
+      procedure: {},
+      runtime: { ids, seed: "rt-seed", revisions: {}, materials: [] },
+      admission: { ratification5: null },
+      declaration: { sceneId: null, addendum: null },
+      spP4: null,
+      attempts: [],
+      identity: {},
+    },
+    setupRaw: { fixture: { path: TRACE_PROJECT.fixturePath, sha256: "h" } },
+  });
+  assert.equal(context.frozen, true);
+  assert.equal(context.f6.basis, "material-revision");
+  assert.deepEqual(context.f6.pairs, [
+    "g02-r-sela|g02-works-beside",
+    "g02-r-tamsin|g02-trained-tamsin",
+  ]);
+  assert.equal(typeof context.materialContribution, "function");
+  assert.equal(context.materialContribution(null).basis, "material-revision");
+});
+
+test("DR-CP4-V-3 (C): main は観測を hashTraceObservation で受け、observation.json と receipt.json を書く前に quote の guard を当て、記録を traceRunRecords に context ごと渡す", () => {
+  const source = readFileSync(
+    new URL("./trace-runner.mjs", import.meta.url),
+    "utf8",
+  );
+  const main = source.slice(source.indexOf("async function main()"));
+  assert.match(
+    main,
+    /hashTraceObservation\(\s*await page\.evaluate\(\(\) => window\.cp4Harness\.trace\.exportObservation\(\)\),?\s*\)/u,
+  );
+  assert.doesNotMatch(main, /hashObservationPaths\(/u);
+  const guardObservation = main.indexOf(
+    'assertNoQuotePlaintext(observationFile, "observation.json")',
+  );
+  const writeObservation = main.indexOf(
+    'path.join(runDir, "observation.json")',
+  );
+  assert.ok(guardObservation > 0 && guardObservation < writeObservation);
+  const guardReceipt = main.indexOf(
+    'assertNoQuotePlaintext(receipt, "receipt.json")',
+  );
+  const writeReceipt = main.indexOf(
+    'path.join(runDir, "receipt.json"),\n      `${JSON.stringify(receipt',
+  );
+  assert.ok(
+    guardReceipt > 0 && guardReceipt < writeReceipt,
+    `${guardReceipt} ${writeReceipt}`,
+  );
+  assert.match(main, /traceRunRecords\(\{[^}]*\bcontext,/u);
+  assert.match(
+    source,
+    /return frozenContextOf\(\{ admission, fixture, prepared, setupRaw \}\)/u,
   );
 });
