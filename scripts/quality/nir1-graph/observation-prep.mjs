@@ -1219,6 +1219,10 @@ const READINGS_AFTER_DEV = Object.freeze([
   // と、SP-P4 の ir-complete-pairs（C1〜C3）と K=6（DR-CP4-Q-1）。
   "g01-retry-limit",
   "sp-p4-ir-timeout-limit",
+  // S4a'（S4 の凍結のやり直し、S2 追補 #9）: DR-CP4-T-1、T-3、T-5 の待ちと、
+  // DR-CP4-T-4 (a) の V-10 READY の適用。
+  "freshness-settle",
+  "ready-probe-not-applicable",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
