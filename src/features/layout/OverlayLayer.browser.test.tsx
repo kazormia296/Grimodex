@@ -124,7 +124,7 @@ describe.each<[OverlayId]>([["left"], ["right"]])(
       // 上下は grid の内容域（center stripe と gap の下、下端は外周の余白）に合わせる。
       expect(open.top).toBe(OUTER_PAD + HORIZONTAL_STRIPE_SIZE + STRIPE_GAP);
       expect(open.bottom).toBe(HEIGHT - OUTER_PAD);
-      // 開いた層はつまみ（上段の角）を覆わない: 上端はつまみの下端以下の側にある。
+      // 開いた層はつまみ（上段の端）を覆わない: 上端はつまみの下端以下の側にある。
       const knobRect = knob.getBoundingClientRect();
       expect(open.top).toBeGreaterThanOrEqual(knobRect.bottom - 0.5);
       // 層の箱は上端まであるが padding 分は空で、つまみのクリックは層に奪われない。

@@ -62,9 +62,8 @@ export function CenterStripe({ overlayKnobs = NO_KNOBS }: CenterStripeProps) {
       leftSize: layout.regions.left.size,
       rightSize: layout.regions.right.size,
       bottomSize: layout.regions.bottom.size,
-      overlayKnobs,
     });
-    return buildCenterStripeGridTemplateColumns(metrics);
+    return buildCenterStripeGridTemplateColumns(metrics, overlayKnobs);
   }, [
     overlayKnobs,
     bottomOpen,
@@ -106,10 +105,10 @@ export function CenterStripe({ overlayKnobs = NO_KNOBS }: CenterStripeProps) {
     >
       {/* 9 列構成: stripe / gap / content / splitter。先頭の stripe 列に
           左ドック開閉トグルを置き、bands セルを下の editor 列と揃える。
-          つまみが角を使う側は stripe 列が無く、トグルを gap〜splitter の 3 列に
-          またがるセルの端に置く（幅は layoutMetrics が 36px 以上を保証する）。 */}
+          つまみのある側は 4 列が 1 列にまとまり、トグルをその端に置く
+          （幅は buildCenterStripeGridTemplateColumns が 36px 以上を保証する）。 */}
       {overlayKnobs.left ? (
-        <div className="col-span-3 flex min-h-0 min-w-0 items-center justify-start">
+        <div className="flex min-h-0 min-w-0 items-center justify-start">
           {hasLeft && (
             <div className="flex h-full w-9 shrink-0 items-center justify-center">
               <SideDockToggle region="left" />
@@ -139,7 +138,7 @@ export function CenterStripe({ overlayKnobs = NO_KNOBS }: CenterStripeProps) {
       </div>
       {/* 末尾の stripe 列に右ドック開閉トグルを置く。 */}
       {overlayKnobs.right ? (
-        <div className="col-span-3 flex min-h-0 min-w-0 items-center justify-end">
+        <div className="flex min-h-0 min-w-0 items-center justify-end">
           {hasRight && (
             <div className="flex h-full w-9 shrink-0 items-center justify-center">
               <SideDockToggle region="right" />

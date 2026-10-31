@@ -82,8 +82,6 @@
   --attribution-human: oklch(0.65 0.1 220);
   --attribution-ai: oklch(0.72 0.2 165);
   --attribution-unknown: oklch(0.72 0.14 30);
-  /* オーバーレイのつまみの色。出どころ表示の「不明」とは意味が違うので別に持つ。 */
-  --overlay-accent: oklch(0.72 0.14 30);
   /* Map note node — tinted with the app's brand accent (#534AB7). */
   --note-bg: #eeebfa;
   --note-border: #8b7fd4;
@@ -197,7 +195,6 @@
   --attribution-human: oklch(0.72 0.13 220);
   --attribution-ai: oklch(0.82 0.19 165);
   --attribution-unknown: oklch(0.8 0.16 30);
-  --overlay-accent: oklch(0.8 0.16 30);
   --note-bg: #2a2540;
   --note-border: #7a6bc4;
   /* 校閲トリアージ — ダークは同系色相を明度反転（暗面でのコントラスト確保）。 */

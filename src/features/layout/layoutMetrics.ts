@@ -32,21 +32,7 @@ export interface LayoutGridMetrics {
   leftDockPx: number;
   rightDockPx: number;
   bottomDockPx: number;
-  /**
-   * overlay のつまみを上段の角（stripe 列 × center stripe 行）に置く側。
-   * その側の center stripe は角とギャップの分だけ内側から始まる。
-   */
-  leftKnob: boolean;
-  rightKnob: boolean;
 }
-
-/** overlay のつまみを置く側（パネルのある overlay で、つまみを出せる表示のとき）。 */
-export interface OverlayKnobSides {
-  left: boolean;
-  right: boolean;
-}
-
-const NO_OVERLAY_KNOBS: OverlayKnobSides = { left: false, right: false };
 
 export interface LayoutGridMetricsInput {
   hasLeft: boolean;
@@ -59,27 +45,6 @@ export interface LayoutGridMetricsInput {
   leftSize: number;
   rightSize: number;
   bottomSize: number;
-  overlayKnobs?: OverlayKnobSides;
-}
-
-/**
- * つまみを角に置いたとき、その側に追加で確保する幅 (px)。
- * 角が stripe 列を使い、center stripe の端のドック開閉トグル（36px）は
- * その側の content 列の上に載る。content 列が無い（region が閉じている・
- * パネルが無い）ときは、トグルとギャップの分を gap 列に足して、center stripe の
- * bands を下の editor 列と揃えたままにする。
- */
-export const OVERLAY_KNOB_LEAD_PX = STRIPE_SIZE + STRIPE_GAP_PX;
-
-/**
- * つまみのために、その側で通常より余分に取る幅 (px)。store の viewport の
- * 差し引きと grid の列で同じ値を使う。
- */
-export function overlayKnobExtraPx(
-  knob: boolean,
-  contentVisible: boolean,
-): number {
-  return knob && !contentVisible ? OVERLAY_KNOB_LEAD_PX : 0;
 }
 
 export function regionContentPx(open: boolean, storedSize: number): number {
@@ -112,22 +77,11 @@ export function computeLayoutGridMetrics(
 ): LayoutGridMetrics {
   const splitterPx = regionSplitterPx();
   const gapPx = STRIPE_GAP_PX;
-  const knobs = input.overlayKnobs ?? NO_OVERLAY_KNOBS;
-  // つまみのある側は、パネルが無くても角のために stripe 列を取る。
-  const leftStripePx = input.hasLeft || knobs.left ? STRIPE_SIZE : 0;
-  const rightStripePx = input.hasRight || knobs.right ? STRIPE_SIZE : 0;
+  const leftStripePx = input.hasLeft ? STRIPE_SIZE : 0;
+  const rightStripePx = input.hasRight ? STRIPE_SIZE : 0;
   const leftContentPx = input.hasLeft && input.leftOpen ? input.leftSize : 0;
   const rightContentPx =
     input.hasRight && input.rightOpen ? input.rightSize : 0;
-  // パネルが無い側はトグルも無いので、stripe 列とギャップだけで足りる。
-  const leftLeadPx =
-    input.hasLeft && knobs.left && leftContentPx === 0
-      ? OVERLAY_KNOB_LEAD_PX
-      : 0;
-  const rightLeadPx =
-    input.hasRight && knobs.right && rightContentPx === 0
-      ? OVERLAY_KNOB_LEAD_PX
-      : 0;
 
   // center band 非表示時は、開いている side region の 1 つを `1fr` filler に
   // してグリッド全体を埋める。filler が無いと固定 px 列だけになり、ウィンドウ
@@ -170,8 +124,8 @@ export function computeLayoutGridMetrics(
     rightContentPx,
     leftSplitterPx,
     rightSplitterPx,
-    gapLeftPx: leftStripePx > 0 ? gapPx + leftLeadPx : 0,
-    gapRightPx: rightStripePx > 0 ? gapPx + rightLeadPx : 0,
+    gapLeftPx: leftStripePx > 0 ? gapPx : 0,
+    gapRightPx: rightStripePx > 0 ? gapPx : 0,
     gapRowPx: gapPx,
     centerBandVisible: input.centerBandVisible,
     centerColumnPx,
@@ -181,9 +135,37 @@ export function computeLayoutGridMetrics(
     bottomDockPx: bottomDock,
     // bottom row ↔ main 間のギャップ。閉じた bottom stripe のときも確保する。
     bottomCellPx: bottomDock + splitterPx,
-    leftKnob: knobs.left,
-    rightKnob: knobs.right,
   };
+}
+
+/** overlay のつまみを置く側（パネルのある overlay で、つまみを出せる表示のとき）。 */
+export interface OverlayKnobSides {
+  left: boolean;
+  right: boolean;
+}
+
+const NO_OVERLAY_KNOBS: OverlayKnobSides = { left: false, right: false };
+
+/**
+ * center stripe の、つまみのある側の先頭（末尾）の 1 列。
+ * つまみ（STRIPE_SIZE）とギャップは center stripe の外（LayoutShell の cstripe セル）に
+ * 置くので、その分を stripe 列と gap 列から引いた残りに、ドック開閉トグルを載せる。
+ * - region の内容が出ていれば content＋splitter の幅で、bands は editor 列と揃う。
+ * - region が閉じていればトグルの 36px だけ取り、bands はその分 editor 列より内側から始まる
+ *   （grid の列は動かさない。ユーザー判断 2026-10-31）。
+ * - パネルが無ければトグルも無いので 0px（bands はつまみとギャップの分だけ内側から）。
+ */
+function knobSideStripeColumn(
+  hasRegion: boolean,
+  splitterPx: number,
+  contentPx: number,
+  isFiller: boolean,
+): string {
+  if (!hasRegion) return "0px";
+  if (isFiller) return `minmax(${STRIPE_SIZE}px, 1fr)`;
+  if (contentPx > 0)
+    return `${Math.max(STRIPE_SIZE, contentPx + splitterPx)}px`;
+  return `${STRIPE_SIZE}px`;
 }
 
 /**
@@ -194,6 +176,7 @@ export function computeLayoutGridMetrics(
  */
 export function buildCenterStripeGridTemplateColumns(
   metrics: LayoutGridMetrics,
+  overlayKnobs: OverlayKnobSides = NO_OVERLAY_KNOBS,
 ): string {
   const leftContentColumn =
     metrics.fillerRegion === "left"
@@ -206,25 +189,39 @@ export function buildCenterStripeGridTemplateColumns(
   const centerStripeColumn =
     metrics.centerColumnPx === "0px" ? "auto" : metrics.centerColumnPx;
 
-  // つまみのある側は、角（stripe 列）とギャップの外から center stripe が始まる
-  // （LayoutShell が cell に gap の余白を取る）。stripe 列を落とし、gap 列から
-  // その余白を引いて、bands の開始位置を下の editor 列と揃える。
-  const leading = metrics.leftKnob
-    ? [`${metrics.gapLeftPx - STRIPE_GAP_PX}px`]
-    : [`${metrics.leftStripePx}px`, `${metrics.gapLeftPx}px`];
-  const trailing = metrics.rightKnob
-    ? [`${metrics.gapRightPx - STRIPE_GAP_PX}px`]
-    : [`${metrics.gapRightPx}px`, `${metrics.rightStripePx}px`];
+  // つまみのある側は、stripe／gap／content／splitter の 4 列を 1 列にまとめる。
+  const leading = overlayKnobs.left
+    ? [
+        knobSideStripeColumn(
+          metrics.leftStripePx > 0,
+          metrics.leftSplitterPx,
+          metrics.leftContentPx,
+          metrics.fillerRegion === "left",
+        ),
+      ]
+    : [
+        `${metrics.leftStripePx}px`,
+        `${metrics.gapLeftPx}px`,
+        leftContentColumn,
+        `${metrics.leftSplitterPx}px`,
+      ];
+  const trailing = overlayKnobs.right
+    ? [
+        knobSideStripeColumn(
+          metrics.rightStripePx > 0,
+          metrics.rightSplitterPx,
+          metrics.rightContentPx,
+          metrics.fillerRegion === "right",
+        ),
+      ]
+    : [
+        `${metrics.rightSplitterPx}px`,
+        rightContentColumn,
+        `${metrics.gapRightPx}px`,
+        `${metrics.rightStripePx}px`,
+      ];
 
-  return [
-    ...leading,
-    leftContentColumn,
-    `${metrics.leftSplitterPx}px`,
-    centerStripeColumn,
-    `${metrics.rightSplitterPx}px`,
-    rightContentColumn,
-    ...trailing,
-  ].join(" ");
+  return [...leading, centerStripeColumn, ...trailing].join(" ");
 }
 
 /**
@@ -272,8 +269,7 @@ export function buildLayoutGridTemplateRows(
 
 /**
  * 9 列グリッドの grid-template-areas。
- *  - center stripe は最上段を全幅で占有し、上の両角も持つ。ただし overlay の
- *    つまみがある側の角は lknob／rknob に譲る。
+ *  - center stripe は最上段を全幅で占有し、上の両角も持つ。
  *  - side stripe は main 行（＋角所有時は bottom 行）にのみ広がり、上端は
  *    content / editor の上端と一致する（gap 行ぶん center stripe の下）。
  * bottom 行の構成は角オーナーシップで切り替える:
@@ -286,10 +282,9 @@ export function buildLayoutGridTemplateRows(
 export function buildLayoutGridTemplateAreas(
   hasBottom: boolean,
   bottomCorners: BottomCornerOwnership,
-  overlayKnobs: OverlayKnobSides = NO_OVERLAY_KNOBS,
 ): string {
-  // つまみのある側は、上段の角（stripe 列）を lknob／rknob にする。
-  const cstripe = `"${overlayKnobs.left ? "lknob" : "cstripe"} cstripe cstripe cstripe cstripe cstripe cstripe cstripe ${overlayKnobs.right ? "rknob" : "cstripe"}"`;
+  const cstripe =
+    '"cstripe cstripe cstripe cstripe cstripe cstripe cstripe cstripe cstripe"';
   const gapRow = '". . . . . . . . ."';
   const main = '"lstripe . lcontent lspl editor rspl rcontent . rstripe"';
   if (!hasBottom) return `${cstripe} ${gapRow} ${main}`;

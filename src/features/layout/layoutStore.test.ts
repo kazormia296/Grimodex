@@ -1,9 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { SPLITTER_GUTTER_PX, STRIPE_SIZE } from "./layoutConstants";
-import { OVERLAY_KNOB_LEAD_PX } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
 import {
-  applyOverlayKnobsToViewport,
   buildDefaultLayoutState,
   findPanelLocation,
   getOverlays,
@@ -799,11 +797,9 @@ describe("useLayoutStore", () => {
         const all = [...collectPanels(state), ...inOverlays];
         expect(all.slice().sort()).toEqual([...TOOL_WINDOW_PANEL_IDS].sort());
         expect(new Set(all).size).toBe(all.length);
-        expect(
-          validateLayoutState(state, {
-            viewport: applyOverlayKnobsToViewport(VIEWPORT, state),
-          }).valid,
-        ).toBe(true);
+        expect(validateLayoutState(state, { viewport: VIEWPORT }).valid).toBe(
+          true,
+        );
       }
 
       it("A: overlays が消えていて、パネルが slot に戻っている。slot の配置が残る", async () => {
@@ -1793,76 +1789,6 @@ describe("overlay（画面端の左右オーバーレイ）", () => {
       store().toggleMaximizePanel("chat");
       expect(store().maximizedPanelId).toBeNull();
       expect(store().openOverlay).toBe("right");
-    });
-  });
-
-  describe("画面幅からつまみの分を引く", () => {
-    afterEach(() => {
-      vi.unstubAllGlobals();
-    });
-
-    it("overlay にパネルがあり、その側の region が閉じていると、その分だけ狭い画面として region を clamp する", () => {
-      vi.stubGlobal("innerHeight", 800);
-      vi.stubGlobal("innerWidth", 1000);
-      store().setRegionSize("left", 4000);
-      const wide = layout().regions.left.size;
-
-      // つまみ無しで (1000 - OVERLAY_KNOB_LEAD_PX) の画面と同じ結果になる
-      resetStore();
-      vi.stubGlobal("innerWidth", 1000 - OVERLAY_KNOB_LEAD_PX);
-      store().finalizeLayoutResize(); // right も同じ幅で clamp しておく
-      store().setRegionSize("left", 4000);
-      const narrow = layout().regions.left.size;
-
-      resetStore();
-      vi.stubGlobal("innerWidth", 1000);
-      store().movePanelToOverlay("chat", "right");
-      store().setRegionSize("left", 4000);
-      const withKnob = layout().regions.left.size;
-
-      expect(narrow).toBeLessThan(wide);
-      expect(withKnob).toBe(narrow);
-    });
-
-    it("applyOverlayKnobsToViewport は region の開閉とパネルの有無で差し引きを変える", () => {
-      const viewport = { width: 1000, height: 800 };
-      const withChatOverlay = () => {
-        const state = buildDefaultLayoutState({ allInactive: true });
-        for (const region of Object.values(state.regions)) {
-          for (const slot of region.slots) {
-            slot.panels = slot.panels.filter((p) => p !== "chat");
-            if (slot.activePanel === "chat") slot.activePanel = null;
-          }
-        }
-        state.overlays = { left: { panel: null }, right: { panel: "chat" } };
-        return state;
-      };
-
-      // 閉じている: 差し引く
-      const closed = withChatOverlay();
-      expect(applyOverlayKnobsToViewport(viewport, closed)).toEqual({
-        width: 1000 - OVERLAY_KNOB_LEAD_PX,
-        height: 800,
-      });
-
-      // 開いている: 差し引かない
-      const open = withChatOverlay();
-      const slot = open.regions.right.slots.find((s) => s.panels.length > 0)!;
-      slot.activePanel = slot.panels[0];
-      expect(applyOverlayKnobsToViewport(viewport, open)).toEqual(viewport);
-
-      // パネルが無い: 閉じているのと同じく差し引く
-      const empty = withChatOverlay();
-      empty.regions.right.slots = [];
-      expect(applyOverlayKnobsToViewport(viewport, empty)).toEqual({
-        width: 1000 - OVERLAY_KNOB_LEAD_PX,
-        height: 800,
-      });
-
-      // phone 幅では出さないので差し引かない
-      expect(
-        applyOverlayKnobsToViewport({ width: 500, height: 800 }, closed).width,
-      ).toBe(500);
     });
   });
 

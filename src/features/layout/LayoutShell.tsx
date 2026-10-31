@@ -28,7 +28,7 @@ import {
   computeLayoutGridMetrics,
   type ZoomRegion,
 } from "./layoutMetrics";
-import { STRIPE_GAP_PX } from "./layoutConstants";
+import { STRIPE_GAP_PX, STRIPE_SIZE } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { useZoomReveal } from "./useZoomReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
@@ -171,10 +171,8 @@ export const LayoutShell = memo(function LayoutShell({
         leftSize: layout.regions.left.size,
         rightSize: layout.regions.right.size,
         bottomSize: layout.regions.bottom.size,
-        overlayKnobs,
       }),
     [
-      overlayKnobs,
       bottomOpen,
       projectedCenterBandVisible,
       hasBottom,
@@ -263,7 +261,6 @@ export const LayoutShell = memo(function LayoutShell({
     effectiveZoomRegion === "bottom"
       ? { left: true, right: true }
       : bottomCorners,
-    overlayKnobs,
   );
 
   // zoom 中、対象 cell 以外を不可視化する。unmount はしない（DOM identity
@@ -292,7 +289,7 @@ export const LayoutShell = memo(function LayoutShell({
           破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
           実現する（useLayoutPresetCrossfade 参照）。 */}
       {/* 外側の host は grid（data-layout-shell）と overlay の層を重ねる。つまみは
-          grid の上段の角（lknob／rknob）に置き、host の幅は画面幅いっぱい。 */}
+          cstripe セルの両端に置き、host の幅は画面幅いっぱい。 */}
       <div data-overlay-host className="relative flex h-full w-full min-w-0">
         <motion.div
           ref={shellRef}
@@ -318,33 +315,33 @@ export const LayoutShell = memo(function LayoutShell({
             padding: zenMode || editorOnly ? 0 : "var(--gx-outer-pad)",
           }}
         >
+          {/* overlay のつまみは cstripe セルの両端に置き、center stripe はその内側
+            （つまみ＋ギャップの外）から始める。grid の列は動かさない。 */}
           <div
-            style={cellStyle(
-              {
-                gridArea: "cstripe",
-                // つまみの角との間のギャップ。CenterStripe の内側の列はこの分を引いて
-                // bands を editor 列に揃える（buildCenterStripeGridTemplateColumns）。
-                paddingLeft: overlayKnobs.left ? STRIPE_GAP_PX : undefined,
-                paddingRight: overlayKnobs.right ? STRIPE_GAP_PX : undefined,
-              },
-              cellHidden("chrome"),
-            )}
+            style={cellStyle({ gridArea: "cstripe" }, cellHidden("chrome"))}
             {...hiddenCellProps(cellHidden("chrome"))}
-            className="min-h-0 min-w-0"
+            className="flex min-h-0 min-w-0"
           >
-            <CenterStripe overlayKnobs={overlayKnobs} />
+            {overlayKnobs.left && (
+              <div
+                className="h-full shrink-0"
+                style={{ width: STRIPE_SIZE, marginRight: STRIPE_GAP_PX }}
+              >
+                <OverlayKnob side="left" />
+              </div>
+            )}
+            <div className="h-full min-w-0 flex-1">
+              <CenterStripe overlayKnobs={overlayKnobs} />
+            </div>
+            {overlayKnobs.right && (
+              <div
+                className="h-full shrink-0"
+                style={{ width: STRIPE_SIZE, marginLeft: STRIPE_GAP_PX }}
+              >
+                <OverlayKnob side="right" />
+              </div>
+            )}
           </div>
-
-          {overlayKnobs.left && (
-            <div style={{ gridArea: "lknob" }} className="min-h-0 min-w-0">
-              <OverlayKnob side="left" />
-            </div>
-          )}
-          {overlayKnobs.right && (
-            <div style={{ gridArea: "rknob" }} className="min-h-0 min-w-0">
-              <OverlayKnob side="right" />
-            </div>
-          )}
 
           {/* zoom 中の復帰バー。CenterStripe と同じ grid area に重ねる
             （CenterStripe 側は visibility:hidden + inert で休眠中）。 */}

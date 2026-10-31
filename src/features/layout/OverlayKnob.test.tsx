@@ -100,6 +100,8 @@ describe("OverlayKnob の右クリックメニュー", () => {
     expect(button).toHaveAttribute("aria-label", "layout.overlay.toggle");
     expect(button).toHaveAttribute("data-overlay-knob", "left");
     expect(button.textContent).toBe("");
+    // 丸い stripe 面の中にボタンがある。
+    expect(button.closest("[data-overlay-knob-surface]")).not.toBeNull();
     expect(button.querySelector("span:not([data-testid])")).toBeNull();
   });
 

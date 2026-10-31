@@ -1,4 +1,3 @@
-import { resolveViewportProfile } from "@/runtime/viewportProfile";
 import type { PanelId } from "./panelIds";
 import {
   DEFAULT_INDEX_MAP,
@@ -24,7 +23,6 @@ import {
   normalizeOpenItemRatios,
   redistributeRatiosAfterRemoval,
 } from "./layoutTrackMath";
-import { overlayKnobExtraPx } from "./layoutMetrics";
 import type {
   BottomCornerOwnership,
   CenterSegment,
@@ -304,43 +302,6 @@ export function findOverlayOfPanel(
     if (overlays[id].panel === panel) return id;
   }
   return null;
-}
-
-/**
- * overlay のつまみのために画面幅から差し引く合計 (px)。パネルを持つ overlay の側で、
- * その側の region の内容が出ていない（閉じている・パネルが無い）ときだけ数える
- * （grid の列と同じ規則。layoutMetrics の overlayKnobExtraPx）。開閉中の overlay
- * 自体は幅を取らない。
- */
-export function getOverlayKnobReserve(state: LayoutState): number {
-  const overlays = getOverlays(state);
-  let reserve = 0;
-  for (const id of OVERLAY_IDS) {
-    const region = state.regions[id];
-    const contentVisible = region.slots.some(
-      (slot) => slot.panels.length > 0 && slot.activePanel !== null,
-    );
-    reserve += overlayKnobExtraPx(overlays[id].panel !== null, contentVisible);
-  }
-  return reserve;
-}
-
-/**
- * 実画面の viewport から overlay のつまみの分を引いた、レイアウトが使える viewport。
- * phone 幅ではつまみを出さない（エディタだけの表示）ので差し引かない。
- * 差し引く前の幅で phone を判定する（差し引きで境界をまたいで phone 扱いにしない）。
- */
-export function applyOverlayKnobsToViewport(
-  viewport: { width: number; height: number },
-  state: LayoutState,
-): { width: number; height: number } {
-  if (resolveViewportProfile(viewport.width) === "phone") return viewport;
-  const reserve = getOverlayKnobReserve(state);
-  if (reserve === 0) return viewport;
-  return {
-    width: Math.max(0, viewport.width - reserve),
-    height: viewport.height,
-  };
 }
 
 function buildSlotsForRegion(

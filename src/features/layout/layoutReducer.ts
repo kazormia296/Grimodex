@@ -1,5 +1,4 @@
 import {
-  applyOverlayKnobsToViewport,
   buildRegionSizeClampContext,
   clampLayoutStateForViewport,
   findPanelLocation,
@@ -135,12 +134,9 @@ export function reduceLayout(
               : "toggle",
         ),
         state,
-        applyOverlayKnobsToViewport(
-          typeof window === "undefined"
-            ? { width: 1200, height: 800 }
-            : { width: window.innerWidth, height: window.innerHeight },
-          state,
-        ),
+        typeof window === "undefined"
+          ? { width: 1200, height: 800 }
+          : { width: window.innerWidth, height: window.innerHeight },
       );
     case "resize/live": {
       const clamped = clampRegionSize(

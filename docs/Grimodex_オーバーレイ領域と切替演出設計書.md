@@ -85,7 +85,7 @@ openOverlay: OverlayId | null;
 ### 3.2 画面の構造
 
 > 2026-10-31 の実機確認で改訂した。P1 の最初の実装は画面の両端に操作の列（rail、幅 30px）を足していたが、
-> 常に幅を取って作業域が狭くなるのが不評だった（ユーザー判断）。rail をやめ、つまみを上段の角に置く。
+> 常に幅を取って作業域が狭くなるのが不評だった（ユーザー判断）。rail をやめ、つまみを上段の端に置き、grid の列は動かさない。
 
 ```
 (●)  [◧ ┃ タブ… ┃ ◨]  (●)      ← 上段: 角のつまみ・ギャップ・center stripe
@@ -93,19 +93,19 @@ openOverlay: OverlayId | null;
  │    │   editor   │    │
 ```
 
-- **つまみ**: オーバーレイにパネルがある側だけ、grid の上段の角（side stripe 列 × center stripe 行）に、
-  置いたパネルのアイコンを丸く 1 つだけ出す（`OverlayKnob`、直径は center stripe の高さと同じ 35px）。
-  - grid-template-areas の上段の端を `lknob`／`rknob` にし、center stripe はその側だけ角とギャップの外から始まる。
+- **つまみ**: オーバーレイにパネルがある側だけ、上段（center stripe の行）の端に、置いたパネルのアイコンを
+  丸い 1 つだけの stripe として出す（`OverlayKnob`。直径は center stripe の高さと同じ 35px）。
+  - LayoutShell の cstripe セルの両端に、幅 36px（side stripe と同じ）とギャップを取って置き、center stripe はその内側から始める。
+  - **grid の列はつまみで動かさない**（2026-10-31 の実機確認でユーザー判断）。エディタ、side stripe、bottom stripe の位置は、つまみの有無で変わらない。
+  - 見た目は他の stripe と同じ（gx-panel の stripe 面と、Stripe のアイコンと同じ丸いボタン）。色で区別しない。
   - パネル名は `title` と `aria-label` に出す。縦書きの名前はやめた。
-  - Stripe のアイコン（平らなグレーの四角）とは、位置・色（琥珀）・形（丸）で区別する。
-  - 空のオーバーレイの側には角を作らず、center stripe は今までどおり全幅（決定 1）。
-- **ドック開閉トグル（◧／◨）**: center stripe の端に残す（ユーザー判断）。center stripe の bands 列は、
-  今までどおり下の editor 列と左右の端を揃える。
-  - その側の region が開いていれば、トグルは content 列の上に載るので、余分な幅は要らない。
-  - region が閉じている、またはパネルが無いときは、つまみとトグルの場所として、その側で
-    `OVERLAY_KNOB_LEAD_PX`（36px＋ギャップ）を gap 列に足す（`layoutMetrics.ts` の `overlayKnobExtraPx`）。
-- **幅の差し引き**: store は同じ規則の値を画面幅から引いてから region の大きさを clamp する
-  （`getOverlayKnobReserve`／`applyOverlayKnobsToViewport`）。grid の外を包む形はやめ、grid の中で完結する。
+  - 空のオーバーレイの側には何も出さず、center stripe は今までどおり全幅（決定 1）。
+- **ドック開閉トグル（◧／◨）**: center stripe の端に残す（ユーザー判断）。つまみのある側の center stripe の内側の列は、
+  stripe／gap／content／splitter の 4 列を 1 列にまとめ、その端にトグルを置く（`layoutMetrics.ts` の `knobSideStripeColumn`）。
+  - その側の region が開いていれば、その列は content＋splitter の幅になり、bands は下の editor 列と揃う。
+  - region が閉じていれば、その列はトグルの 36px だけになり、bands は editor 列より 36px 内側から始まる。
+  - パネルが無ければトグルも無く、bands はつまみとギャップの分（36px＋ギャップ）だけ内側から始まる。
+  - 閉じた側で bands と editor 列が揃わないのは、grid を動かさないことを優先した結果である。
 - Zen・エディタだけの表示・zoom の間は、つまみを出さず、center stripe は全幅に戻す。
 
 - **オーバーレイの層**: grid を包む要素の直下に、grid とは別の層として置き、grid と Stripe より上に重ねる。
@@ -254,8 +254,9 @@ openOverlay: OverlayId | null;
 - **単体テスト**: v3 → v4 の移行、`validateLayoutState` の一意性、overlay への移動と入れ替え、
   プリセットの `overlays`、Flip のキー操作の状態遷移（開く・めくる・決定・取り消し・窓のフォーカス喪失）。
 - **実 Chromium のテスト（`pnpm test:browser`）**:
-  - つまみが上段の角に収まり、center stripe がその側だけ角とギャップの外から始まること。
-  - つまみがあるときも、bands 列と editor 列の揃いを含む既存の幾何の不変条件（`layoutInvariants.browser.test.tsx`）が保たれること。
+  - つまみが上段の端に収まり、center stripe がその側だけつまみとギャップの外から始まること。
+  - つまみの有無で grid の列（エディタ、side stripe、bottom stripe、splitter）が変わらないこと。
+  - bands 列が、開いている側では editor 列と揃い、閉じている側・パネルの無い側では決まった量だけ内側から始まること。
   - オーバーレイを開いたときにパネルが画面の端から出て、つまみを覆わないこと。
 - **Reduced Motion**: 傾き・飛行・Flip が無効になること。
 - **手動（Wayland、IME）**:
@@ -267,7 +268,7 @@ openOverlay: OverlayId | null;
 ## 7. フェーズ
 
 1. **P1 オーバーレイの土台**:
-   - スキーマ v4 と 3 か所の移行、検証、上段の角のつまみ（当初は grid を包む rail。§3.2 の改訂を参照）、開閉（平らなスライド）、右クリックメニューでの割り当て。
+   - スキーマ v4 と 3 か所の移行、検証、上段の端のつまみ（当初は grid を包む rail。§3.2 の改訂を参照）、開閉（平らなスライド）、右クリックメニューでの割り当て。
    - 開閉のスライドにも Reduced Motion 対応を入れる（P2 に送らない）。
    - P1 の中で、§3.3 の「P1 で決めること」（Zen モード・エディタだけの表示・レイアウトのロックとの関係）を決める。
 2. **P2 オーバーレイの演出**: 開くときの姿勢、カーソルへの傾き、入力中の平坦化、背景の暗幕と奥行き。
@@ -294,7 +295,7 @@ openOverlay: OverlayId | null;
 
 | # | 項目 | 決定 |
 | --- | --- | --- |
-| 1 | 空のオーバーレイの rail | 幅を取らない（空の bottom の Stripe と同じ）。2026-10-31 に rail 自体をやめ、上段の角の丸いつまみにした（§3.2） |
+| 1 | 空のオーバーレイの rail | 幅を取らない（空の bottom の Stripe と同じ）。2026-10-31 に rail 自体をやめ、上段の端の丸いつまみにした。grid の列は動かさない（§3.2） |
 | 2 | オーバーレイの幅 | 固定（`OVERLAY_WIDTH`） |
 | 3 | 開くショートカット | 既存と重ならない範囲で決める → Mod+Alt+[ ／ Mod+Alt+] |
 | 4 | 開いたまま書けるか | 書けない。エディタにフォーカスしたら自動で閉じる |

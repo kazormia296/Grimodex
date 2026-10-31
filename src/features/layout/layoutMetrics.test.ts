@@ -7,8 +7,6 @@ import {
   buildZoomGridTemplateColumns,
   buildZoomGridTemplateRows,
   computeLayoutGridMetrics,
-  OVERLAY_KNOB_LEAD_PX,
-  overlayKnobExtraPx,
   regionContentPx,
   sideDockPx,
   sideLayoutChromePx,
@@ -228,7 +226,7 @@ describe("layoutMetrics", () => {
     expect(buildCenterStripeGridTemplateColumns(metrics)).toContain(" auto ");
   });
 
-  describe("overlay のつまみ（上段の角）", () => {
+  describe("overlay のつまみ（center stripe の両端）", () => {
     const base = {
       hasLeft: true,
       hasRight: true,
@@ -241,132 +239,123 @@ describe("layoutMetrics", () => {
       rightSize: 340,
       bottomSize: 0,
     };
+    const left = { left: true, right: false };
+    const right = { left: false, right: true };
     const both = { left: true, right: true };
-    /** "36px 12px 260px ..." のような列の並びから px の列だけを足す（fr は 0）。 */
-    const fixedPx = (columns: string) =>
-      columns
-        .split(" ")
-        .filter((c) => /^\d+(\.\d+)?px$/.test(c))
-        .reduce((sum, c) => sum + parseFloat(c), 0);
+    const none = { left: false, right: false };
+    const S = SPLITTER_GUTTER_PX;
 
-    it("OVERLAY_KNOB_LEAD_PX は stripe 1 列とギャップ 1 本", () => {
-      expect(OVERLAY_KNOB_LEAD_PX).toBe(STRIPE_SIZE + STRIPE_GAP_PX);
-      expect(overlayKnobExtraPx(true, false)).toBe(OVERLAY_KNOB_LEAD_PX);
-      expect(overlayKnobExtraPx(true, true)).toBe(0);
-      expect(overlayKnobExtraPx(false, false)).toBe(0);
-    });
-
-    it("region の内容が出ている側は、つまみがあっても列は増えない", () => {
-      const plain = computeLayoutGridMetrics(base);
-      const knobs = computeLayoutGridMetrics({ ...base, overlayKnobs: both });
-      expect(knobs.leftKnob).toBe(true);
-      expect(knobs.rightKnob).toBe(true);
-      expect(knobs.gapLeftPx).toBe(plain.gapLeftPx);
-      expect(knobs.gapRightPx).toBe(plain.gapRightPx);
-      expect(knobs.leftStripePx).toBe(STRIPE_SIZE);
-      expect(buildLayoutGridTemplateColumns(knobs)).toBe(
-        buildLayoutGridTemplateColumns(plain),
+    it("つまみが無ければ従来どおり（引数なしと none が同じ）", () => {
+      const m = computeLayoutGridMetrics(base);
+      expect(buildCenterStripeGridTemplateColumns(m, none)).toBe(
+        buildCenterStripeGridTemplateColumns(m),
       );
-      expect(sideLayoutChromePx(knobs)).toBe(sideLayoutChromePx(plain));
+      expect(buildCenterStripeGridTemplateColumns(m)).toBe(
+        buildLayoutGridTemplateColumns(m),
+      );
     });
 
-    it("region が閉じている側は、gap 列につまみとトグルの分 OVERLAY_KNOB_LEAD_PX を足す", () => {
+    it("grid の列（metrics）はつまみに影響されない", () => {
       const closed = { ...base, leftOpen: false, rightOpen: false };
-      const plain = computeLayoutGridMetrics(closed);
-      const knobs = computeLayoutGridMetrics({ ...closed, overlayKnobs: both });
-      expect(knobs.leftStripePx).toBe(STRIPE_SIZE);
-      expect(knobs.gapLeftPx).toBe(STRIPE_GAP_PX + OVERLAY_KNOB_LEAD_PX);
-      expect(knobs.gapRightPx).toBe(STRIPE_GAP_PX + OVERLAY_KNOB_LEAD_PX);
-      expect(sideLayoutChromePx(knobs) - sideLayoutChromePx(plain)).toBe(
-        OVERLAY_KNOB_LEAD_PX * 2,
+      const m = computeLayoutGridMetrics(closed);
+      // つまみの有無は metrics の入力に無く、メイングリッドの列は region の状態だけで決まる。
+      expect(buildLayoutGridTemplateColumns(m)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 0px 0px minmax(0, 1fr) 0px 0px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
       );
-      // 片側だけ
-      const leftOnly = computeLayoutGridMetrics({
-        ...closed,
-        overlayKnobs: { left: true, right: false },
-      });
-      expect(leftOnly.gapRightPx).toBe(plain.gapRightPx);
-      expect(sideLayoutChromePx(leftOnly) - sideLayoutChromePx(plain)).toBe(
-        OVERLAY_KNOB_LEAD_PX,
-      );
+      expect(Object.keys(m)).not.toContain("leftKnob");
     });
 
-    it("パネルが無い側は、角のために stripe 列とギャップだけを取る", () => {
-      const none = { ...base, hasLeft: false, hasRight: false };
-      const plain = computeLayoutGridMetrics(none);
-      const knobs = computeLayoutGridMetrics({ ...none, overlayKnobs: both });
-      expect(plain.leftStripePx).toBe(0);
-      expect(plain.gapLeftPx).toBe(0);
-      expect(knobs.leftStripePx).toBe(STRIPE_SIZE);
-      expect(knobs.rightStripePx).toBe(STRIPE_SIZE);
-      expect(knobs.gapLeftPx).toBe(STRIPE_GAP_PX);
-      expect(knobs.gapRightPx).toBe(STRIPE_GAP_PX);
-      expect(sideLayoutChromePx(knobs) - sideLayoutChromePx(plain)).toBe(
-        OVERLAY_KNOB_LEAD_PX * 2,
+    it("region が開いている側は content＋splitter の 1 列（bands は editor 列と揃う）", () => {
+      const m = computeLayoutGridMetrics(base);
+      expect(buildCenterStripeGridTemplateColumns(m, left)).toBe(
+        `${260 + S}px minmax(0, 1fr) ${S}px 340px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, right)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 260px ${S}px minmax(0, 1fr) ${340 + S}px`,
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, both)).toBe(
+        `${260 + S}px minmax(0, 1fr) ${340 + S}px`,
       );
     });
 
-    it("store の差し引き（overlayKnobExtraPx）と grid の列の増分が一致する", () => {
-      for (const hasSide of [true, false]) {
-        for (const open of [true, false]) {
-          const input = {
-            ...base,
-            hasLeft: hasSide,
-            leftOpen: open,
-            hasRight: false,
-            rightOpen: false,
-          };
-          const plain = computeLayoutGridMetrics(input);
-          const knobs = computeLayoutGridMetrics({
-            ...input,
-            overlayKnobs: { left: true, right: false },
-          });
-          expect(sideLayoutChromePx(knobs) - sideLayoutChromePx(plain)).toBe(
-            overlayKnobExtraPx(true, hasSide && open),
-          );
-        }
-      }
-    });
-
-    it("center stripe の列は、つまみのある側で stripe 列を落とし gap から余白を引く", () => {
-      const open = computeLayoutGridMetrics({
+    it("開いていても content が狭ければ、トグルの 36px を下限にする", () => {
+      const m = computeLayoutGridMetrics({
         ...base,
-        overlayKnobs: { left: true, right: false },
+        leftSize: 10,
+        rightSize: 10,
       });
-      expect(buildCenterStripeGridTemplateColumns(open)).toBe(
-        `0px 260px ${SPLITTER_GUTTER_PX}px minmax(0, 1fr) ${SPLITTER_GUTTER_PX}px 340px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+      const cols = buildCenterStripeGridTemplateColumns(m, both).split(" ");
+      expect(parseFloat(cols[0])).toBeGreaterThanOrEqual(STRIPE_SIZE);
+      expect(parseFloat(cols[cols.length - 1])).toBeGreaterThanOrEqual(
+        STRIPE_SIZE,
       );
-      const closed = computeLayoutGridMetrics({
+    });
+
+    it("region が閉じている側は、トグルの 36px だけ取る", () => {
+      const m = computeLayoutGridMetrics({
         ...base,
         leftOpen: false,
         rightOpen: false,
-        overlayKnobs: both,
       });
-      expect(buildCenterStripeGridTemplateColumns(closed)).toBe(
-        `${OVERLAY_KNOB_LEAD_PX}px 0px 0px minmax(0, 1fr) 0px 0px ${OVERLAY_KNOB_LEAD_PX}px`,
+      expect(buildCenterStripeGridTemplateColumns(m, both)).toBe(
+        `${STRIPE_SIZE}px minmax(0, 1fr) ${STRIPE_SIZE}px`,
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, left)).toBe(
+        `${STRIPE_SIZE}px minmax(0, 1fr) 0px 0px ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
       );
     });
 
-    it("center stripe の列幅 + 両側の角とギャップ = メイングリッドの列幅（bands が editor 列と揃う）", () => {
-      for (const hasSide of [true, false]) {
-        for (const open of [true, false]) {
-          const metrics = computeLayoutGridMetrics({
-            ...base,
-            hasLeft: hasSide,
-            hasRight: hasSide,
-            leftOpen: open,
-            rightOpen: open,
-            overlayKnobs: both,
-          });
-          const stripeColumns = buildCenterStripeGridTemplateColumns(metrics);
-          expect(
-            fixedPx(stripeColumns) + (STRIPE_SIZE + STRIPE_GAP_PX) * 2,
-          ).toBe(fixedPx(buildLayoutGridTemplateColumns(metrics)));
-          // 左の editor 列までの距離も一致する（列の個数が違うので先頭の和で見る）。
-          const lead = metrics.gapLeftPx - STRIPE_GAP_PX;
-          expect(parseFloat(stripeColumns)).toBe(lead);
-        }
-      }
+    it("パネルが無い側は 0px（トグルも無い）", () => {
+      const m = computeLayoutGridMetrics({
+        ...base,
+        hasLeft: false,
+        hasRight: false,
+        leftOpen: false,
+        rightOpen: false,
+      });
+      expect(buildCenterStripeGridTemplateColumns(m, both)).toBe(
+        "0px minmax(0, 1fr) 0px",
+      );
+      expect(buildCenterStripeGridTemplateColumns(m, right)).toBe(
+        "0px 0px 0px 0px minmax(0, 1fr) 0px",
+      );
+    });
+
+    it("center band 非表示で、その側が filler なら minmax(36px, 1fr)", () => {
+      const m = computeLayoutGridMetrics({ ...base, centerBandVisible: false });
+      expect(m.fillerRegion).toBe("right");
+      expect(buildCenterStripeGridTemplateColumns(m, right)).toBe(
+        `${STRIPE_SIZE}px ${STRIPE_GAP_PX}px 260px ${S}px auto minmax(${STRIPE_SIZE}px, 1fr)`,
+      );
+      // filler でない側は content＋splitter の固定幅のまま。
+      expect(buildCenterStripeGridTemplateColumns(m, left)).toBe(
+        `${260 + S}px auto 0px minmax(0, 1fr) ${STRIPE_GAP_PX}px ${STRIPE_SIZE}px`,
+      );
+    });
+
+    it("bands の左右の位置: 開=editor 列と同じ、閉=36px 内側、パネル無し=つまみ＋ギャップ分内側", () => {
+      // center stripe セルは [つまみ 36][ギャップ 12][CenterStripe] で、grid の左端から始まる。
+      const knobAndGap = STRIPE_SIZE + STRIPE_GAP_PX;
+      const bandsLeft = (m: ReturnType<typeof computeLayoutGridMetrics>) => {
+        const lead = parseFloat(
+          buildCenterStripeGridTemplateColumns(m, left).split(" ")[0],
+        );
+        return knobAndGap + lead;
+      };
+      const editorLeft = (m: ReturnType<typeof computeLayoutGridMetrics>) =>
+        m.leftStripePx + m.gapLeftPx + m.leftContentPx + m.leftSplitterPx;
+      const open = computeLayoutGridMetrics(base);
+      expect(bandsLeft(open)).toBe(editorLeft(open));
+      const closed = computeLayoutGridMetrics({ ...base, leftOpen: false });
+      expect(bandsLeft(closed) - editorLeft(closed)).toBe(STRIPE_SIZE);
+      const empty = computeLayoutGridMetrics({
+        ...base,
+        hasLeft: false,
+        leftOpen: false,
+      });
+      expect(bandsLeft(empty) - editorLeft(empty)).toBe(
+        STRIPE_SIZE + STRIPE_GAP_PX,
+      );
     });
   });
 
@@ -383,37 +372,6 @@ describe("layoutMetrics", () => {
       // gap 行に side stripe は無い（main 行から始まり content と上端が揃う）。
       expect(areas).toContain('". . . . . . . . ."');
       expect(areas).toContain(
-        '"lstripe . lcontent lspl editor rspl rcontent . rstripe"',
-      );
-    });
-
-    it("gives the top corner cell to the overlay knob on the sides that have one", () => {
-      const row = (l: string, r: string) =>
-        `"${l} cstripe cstripe cstripe cstripe cstripe cstripe cstripe ${r}"`;
-      const none = { left: false, right: false };
-      expect(buildLayoutGridTemplateAreas(false, none)).toContain(
-        row("cstripe", "cstripe"),
-      );
-      expect(
-        buildLayoutGridTemplateAreas(false, none, {
-          left: true,
-          right: false,
-        }),
-      ).toContain(row("lknob", "cstripe"));
-      expect(
-        buildLayoutGridTemplateAreas(false, none, {
-          left: false,
-          right: true,
-        }),
-      ).toContain(row("cstripe", "rknob"));
-      const both = buildLayoutGridTemplateAreas(true, none, {
-        left: true,
-        right: true,
-      });
-      expect(both).toContain(row("lknob", "rknob"));
-      // 角以外（gap 行・main 行）は変わらない。
-      expect(both).toContain('". . . . . . . . ."');
-      expect(both).toContain(
         '"lstripe . lcontent lspl editor rspl rcontent . rstripe"',
       );
     });

@@ -11,7 +11,6 @@ import {
 } from "@/screenshot-scenes/screenshotBootstrap";
 import {
   addPanelToCenterToolSegment,
-  applyOverlayKnobsToViewport,
   addPanelToSlot,
   applyAdjacentCenterSegmentPixelSizes,
   applyAdjacentSlotPixelSizes,
@@ -98,8 +97,7 @@ export function getPanelTitle(id: PanelId): string {
   return i18next.t(`layout.panel.${id}`);
 }
 
-/** 実画面の寸法（overlay のつまみの分は差し引かない。phone 判定などに使う）。 */
-function getRawViewport(): { width: number; height: number } {
+function getViewport(): { width: number; height: number } {
   const { innerWidth, innerHeight } = globalThis;
   if (!Number.isFinite(innerWidth) || !Number.isFinite(innerHeight)) {
     return { width: 1200, height: 800 };
@@ -107,18 +105,8 @@ function getRawViewport(): { width: number; height: number } {
   return { width: innerWidth, height: innerHeight };
 }
 
-/**
- * レイアウトが使える寸法。`layout` を渡すと、その overlay のつまみの分（getOverlayKnobReserve）を引く。
- * 省略時は実画面の寸法（つまみを持たない layout の前提）。
- */
-function getViewport(layout?: LayoutState): { width: number; height: number } {
-  const raw = getRawViewport();
-  return layout ? applyOverlayKnobsToViewport(raw, layout) : raw;
-}
-
 function scheduleSave(get: () => LayoutStoreState): void {
-  // phone 判定はつまみの分を引く前の幅で行う（persistence 側で validate 時に引く）。
-  scheduleLayoutSave(get, getRawViewport);
+  scheduleLayoutSave(get, getViewport);
 }
 
 /**
@@ -133,7 +121,7 @@ export function applyValidatedLayout(
   fallback: LayoutState,
   viewport?: { width: number; height: number },
 ): LayoutState {
-  const vp = viewport ?? getViewport(layout);
+  const vp = viewport ?? getViewport();
   // clampLayoutStateForViewport は内部で clone してから作業するため、
   // ここで事前に clone すると純粋な二重コピーになる (perf 2026-06-10)。
   const clamped = clampLayoutStateForViewport(layout, vp);
@@ -148,11 +136,7 @@ function hydratePersistedLayout(
   viewport: { width: number; height: number },
 ): LayoutState {
   if (resolveViewportProfile(viewport.width) !== "phone") {
-    return applyValidatedLayout(
-      layout,
-      fallback,
-      applyOverlayKnobsToViewport(viewport, layout),
-    );
+    return applyValidatedLayout(layout, fallback, viewport);
   }
   return validateLayoutState(layout).valid ? layout : fallback;
 }
@@ -665,7 +649,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       guardInlineAiPending()
     )
       return;
-    const vp = getViewport(get().layout);
+    const vp = getViewport();
     set((state) => ({
       layout: reduceLayout(state.layout, {
         type: open ? "editor/open" : "editor/close",
@@ -831,10 +815,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           overlays: { ...overlays, [id]: { panel: toolPanel } },
         };
       }
-      // つまみの分が変わるので、移動後の layout で引く。
-      return {
-        layout: applyValidatedLayout(next, state.layout, getViewport(next)),
-      };
+      return { layout: applyValidatedLayout(next, state.layout) };
     });
     scheduleSave(get);
   },
@@ -846,11 +827,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       const restored = restorePanelFromOverlayInLayout(state.layout, toolPanel);
       if (restored === state.layout) return state;
       return {
-        layout: applyValidatedLayout(
-          restored,
-          state.layout,
-          getViewport(restored),
-        ),
+        layout: applyValidatedLayout(restored, state.layout),
       };
     });
     scheduleSave(get);
@@ -1129,8 +1106,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         index,
         state.hiddenStripePanels,
       );
-      // overlay から移すとつまみの分が変わるので、移動後の layout で引く。
-      const vp = getViewport(moved);
+      const vp = getViewport();
       if (moved.center.editorOpen) {
         const clamped = clampLayoutStateForViewport(moved, vp);
         if (
@@ -1163,7 +1139,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         insertIndex,
         state.hiddenStripePanels,
       );
-      const vp = getViewport(moved);
+      const vp = getViewport();
       // 分割で editor が最低幅(MIN_EDITOR_SIZE)を割り込む場合は追加を拒否する。
       if (region === "center" && moved.center.editorOpen) {
         const clamped = clampLayoutStateForViewport(moved, vp);
@@ -1182,7 +1158,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   reorderPanelInSlot: (panel, region, slotId, insertIndex) => {
     if (panel === "editor" || get().layoutLocked) return;
     const toolPanel = panel as ToolWindowPanelId;
-    const vp = getViewport(get().layout);
+    const vp = getViewport();
     set((state) => {
       const location = findPanelLocation(state.layout, toolPanel);
       if (!location || location.slot.id !== slotId) return state;
@@ -1223,7 +1199,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   setRegionSizeLive: (region, size, viewport) => {
     if (get().layoutLocked) return;
-    const vp = viewport ?? getViewport(get().layout);
+    const vp = viewport ?? getViewport();
     set((state) => ({
       layout: reduceLayout(state.layout, {
         type: "resize/live",
@@ -1236,7 +1212,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   nudgeRegionSize: (region, deltaPx, viewport) => {
     if (get().layoutLocked || deltaPx === 0) return;
-    const vp = viewport ?? getViewport(get().layout);
+    const vp = viewport ?? getViewport();
     set((state) => {
       const regionState = state.layout.regions[region];
       const current = regionState.size;
@@ -1364,7 +1340,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
 
   finalizeLayoutResize: () => {
     if (get().layoutLocked) return;
-    const vp = getViewport(get().layout);
+    const vp = getViewport();
     set((state) => ({
       layout: applyValidatedLayout(
         clampLayoutStateForViewport(cloneLayoutState(state.layout), vp),
@@ -1388,7 +1364,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
   },
 
   restoreViewportBaseline: (baseline, viewport) => {
-    const vp = viewport ?? getViewport(baseline.layout);
+    const vp = viewport ?? getViewport();
     set((state) => ({
       layout: applyValidatedLayout(baseline.layout, state.layout, vp),
       activePresetId: baseline.activePresetId,
@@ -1617,7 +1593,6 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       const builtin = resolveBuiltinPresetState(presetId, vp, override);
       if (!builtin) return;
       const hidden = resolveBuiltinPresetHiddenPanels(presetId, override);
-      // viewport はつまみの分を引くため、適用する layout から求める。
       set({
         layout: applyValidatedLayout(
           detachHidden(ensureLayoutStateV3(builtin), hidden),

@@ -2,11 +2,7 @@ import type { GlobalSettings } from "@/lib/globalSettings/GlobalSettings";
 import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 import { recordLayoutSnapshot } from "@/features/timelapse/captureLayout";
 import { resolveViewportProfile } from "@/runtime/viewportProfile";
-import {
-  applyOverlayKnobsToViewport,
-  cloneLayoutState,
-  validateLayoutState,
-} from "./layoutStateUtils";
+import { cloneLayoutState, validateLayoutState } from "./layoutStateUtils";
 import {
   type BuiltinPresetOverride,
   type CustomLayoutPreset,
@@ -74,11 +70,7 @@ export function scheduleSave(
         builtinPresetOverrides,
         hiddenStripePanels,
       } = get();
-      if (
-        !validateLayoutState(layout, {
-          viewport: applyOverlayKnobsToViewport(currentViewport, layout),
-        }).valid
-      )
+      if (!validateLayoutState(layout, { viewport: currentViewport }).valid)
         return;
 
       recordLayoutSnapshot({

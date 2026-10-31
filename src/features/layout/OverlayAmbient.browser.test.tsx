@@ -81,7 +81,7 @@ describe("overlay with ambient background (real Chromium)", () => {
   beforeEach(setup);
 
   it.each([false, true])(
-    "keeps the knob in the grid's top corner without painting a band (background %s)",
+    "keeps the knob at the end of the center stripe row, as a round stripe surface, without painting a band (background %s)",
     async (ambient) => {
       const { container } = renderHost(ambient);
       await frame();
@@ -95,17 +95,22 @@ describe("overlay with ambient background (real Chromium)", () => {
       const stripe = container.querySelector<HTMLElement>(
         "[data-center-stripe]",
       )!;
-      // つまみのセルは grid の直下の子（上段の角）。
-      expect(cell.parentElement!.parentElement).toBe(grid);
-      expect(cell.parentElement!.style.gridArea).toBe("lknob");
+      // つまみのセルは cstripe セルの先頭の箱（grid の領域は増やさない）。
+      expect(cell.parentElement!.parentElement!.parentElement).toBe(grid);
+      expect(cell.parentElement!.parentElement!.style.gridArea).toBe("cstripe");
       const cellRect = cell.getBoundingClientRect();
       const gridRect = grid.getBoundingClientRect();
       expect(cellRect.left).toBe(gridRect.left + 14);
       expect(cellRect.top).toBe(stripe.getBoundingClientRect().top);
       // 背景の有無に関わらず、grid の canvas 色の帯をつまみの外に作らない。
       expect(isTransparent(getComputedStyle(cell).backgroundColor)).toBe(true);
-      // つまみ自体の面は透けすぎない（琥珀色の面）。
-      expect(isTransparent(getComputedStyle(knob).backgroundColor)).toBe(false);
+      // 面は他の stripe と同じ gx-panel の stripe 面で、背景の WebGL Glass の対象になる。
+      const surface = knob.closest<HTMLElement>("[data-overlay-knob-surface]")!;
+      expect(surface.classList.contains("gx-panel")).toBe(true);
+      expect(surface.getAttribute("data-ambient-glass-surface")).toBe("stripe");
+      expect(surface.getBoundingClientRect().width).toBe(35);
+      expect(surface.getBoundingClientRect().height).toBe(35);
+      expect(getComputedStyle(surface).borderRadius).not.toBe("0px");
       expect(isTransparent(getComputedStyle(grid).backgroundColor)).toBe(
         ambient,
       );
