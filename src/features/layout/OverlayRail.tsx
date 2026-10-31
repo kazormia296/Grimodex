@@ -58,8 +58,7 @@ export const OverlayRail = memo(function OverlayRail({
       className="relative shrink-0"
       style={{
         width: OVERLAY_RAIL_SIZE,
-        // grid の背景（canvas）と同じ色で、rail が境目に見えないようにする。
-        background: "var(--gx-canvas-bg)",
+        // 背景色は index.css（grid と同じ canvas 色。背景有効時は grid と一緒に透明）。
         paddingTop: OVERLAY_CONTENT_TOP_CSS,
       }}
     >

@@ -1,4 +1,5 @@
 import { memo, Suspense, useRef } from "react";
+import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
 import { useReducedMotion } from "@/lib/animation";
 import {
   OVERLAY_CONTENT_TOP_CSS,
@@ -32,6 +33,9 @@ interface OverlayLayerProps {
  * - 開閉は layout を変えない。PanelChromeMenu（最大化・折りたたみ）は付けない。
  * - 閉じる条件（外の pointerdown／Tab で外へ／Esc）と focus の出し入れは
  *   useOverlayDismiss。
+ * - 層自身も Fluid Glass の root（data-workspace-glass-root）にする。層は grid の
+ *   glass root の外（兄弟）にあるので、そうしないと背景を有効にしたときに
+ *   overlay のパネルだけ Glass の規則（index.css）が効かない。
  * - slide は root（overflow clip の窓）の中でパネルを translateX する。
  *   clip-path ではなく overflow を使うのは、clip-path が Backdrop Root になって
  *   中の Glass を背景から切り離すため（layoutAnimation.ts の REGION_OPEN_CLIP と同じ理由）。
@@ -43,6 +47,7 @@ export const OverlayLayer = memo(function OverlayLayer({
   const panel = useLayoutStore((s) => getOverlays(s.layout)[side].panel);
   const open = useLayoutStore((s) => s.openOverlay === side);
   const reduced = useReducedMotion();
+  const glass = useZenGlassConfig();
   const layerRef = useRef<HTMLDivElement>(null);
   const dismissHandlers = useOverlayDismiss(side, layerRef);
 
@@ -66,19 +71,27 @@ export const OverlayLayer = memo(function OverlayLayer({
       data-state={open ? "open" : "closed"}
       aria-hidden={!open}
       inert={!open}
+      data-workspace-glass-root
+      data-workspace-fluid-glass={glass.enabled ? "true" : "false"}
+      data-workspace-fluid-glass-refraction={glass.refraction}
       {...dismissHandlers}
       className="pointer-events-none absolute z-40 overflow-clip"
-      style={{
-        top: 0,
-        bottom: 0,
-        [side]: railOffset,
-        // パネルの幅は OVERLAY_WIDTH（画面幅の半分で頭打ち）。影の余白を内側に足す。
-        width: `calc(min(${OVERLAY_WIDTH}px, 50%) + ${SHADOW_ROOM_PX}px)`,
-        paddingTop: zenMode ? "var(--gx-outer-pad)" : OVERLAY_CONTENT_TOP_CSS,
-        paddingBottom: "var(--gx-outer-pad)",
-        visibility: open ? "visible" : "hidden",
-        transition: transitions.layer,
-      }}
+      style={
+        {
+          "--workspace-fluid-glass-blur": `${glass.blur}px`,
+          "--workspace-fluid-glass-saturate": glass.saturation,
+          "--workspace-fluid-glass-shine": glass.shine,
+          top: 0,
+          bottom: 0,
+          [side]: railOffset,
+          // パネルの幅は OVERLAY_WIDTH（画面幅の半分で頭打ち）。影の余白を内側に足す。
+          width: `calc(min(${OVERLAY_WIDTH}px, 50%) + ${SHADOW_ROOM_PX}px)`,
+          paddingTop: zenMode ? "var(--gx-outer-pad)" : OVERLAY_CONTENT_TOP_CSS,
+          paddingBottom: "var(--gx-outer-pad)",
+          visibility: open ? "visible" : "hidden",
+          transition: transitions.layer,
+        } as React.CSSProperties
+      }
     >
       <div
         data-overlay-panel={side}
