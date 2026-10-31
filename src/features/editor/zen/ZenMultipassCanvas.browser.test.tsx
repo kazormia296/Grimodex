@@ -3533,3 +3533,89 @@ describe("ZenBlurResearchCanvas research options", () => {
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
   });
 });
+
+describe("ZenMultipassCanvas shader precision", () => {
+  async function captureCompiledSources(mediumPrecisionBits: number) {
+    const sources: string[] = [];
+    const proto = WebGL2RenderingContext.prototype;
+    const originalFormat = proto.getShaderPrecisionFormat;
+    const precisionSpy = vi
+      .spyOn(proto, "getShaderPrecisionFormat")
+      .mockImplementation(function (
+        this: WebGL2RenderingContext,
+        shaderType: GLenum,
+        precisionType: GLenum,
+      ) {
+        if (precisionType === this.MEDIUM_FLOAT) {
+          return {
+            precision: mediumPrecisionBits,
+            rangeMin: 14,
+            rangeMax: 14,
+          } as WebGLShaderPrecisionFormat;
+        }
+        return originalFormat.call(this, shaderType, precisionType);
+      });
+    const originalSource = proto.shaderSource;
+    const sourceSpy = vi
+      .spyOn(proto, "shaderSource")
+      .mockImplementation(function (
+        this: WebGL2RenderingContext,
+        shader: WebGLShader,
+        source: string,
+      ) {
+        sources.push(source);
+        originalSource.call(this, shader, source);
+      });
+    const onRendererStatusChange = vi.fn();
+    try {
+      const { unmount } = render(
+        <div style={{ position: "relative", width: 240, height: 160 }}>
+          <ZenShaderSurface
+            config={{ ...ZEN_SHADER_DEFAULTS, shader: "liquid-metal" }}
+            playing={false}
+            webGlSupported
+            webGlContextAttributes={WEBGL_ATTRIBUTES}
+            onRendererStatusChange={onRendererStatusChange}
+          />
+        </div>,
+      );
+      await waitFor(() =>
+        expect(onRendererStatusChange).toHaveBeenLastCalledWith("webgl"),
+      );
+      unmount();
+    } finally {
+      precisionSpy.mockRestore();
+      sourceSpy.mockRestore();
+    }
+    return sources;
+  }
+
+  it("promotes mediump shaders to highp when mediump is below fp32 (Liquid Metal turned black)", async () => {
+    const sources = await captureCompiledSources(10);
+    expect(sources.length).toBeGreaterThan(0);
+    for (const source of sources) {
+      expect(source).not.toMatch(/precision\s+(lowp|mediump)\s+float/);
+      expect(source).not.toMatch(
+        /\b(uniform|varying|attribute)\s+(lowp|mediump)\s/,
+      );
+    }
+    expect(
+      sources.some(
+        (source) =>
+          source.includes("precision highp float") &&
+          source.includes("u_shiftRed"),
+      ),
+    ).toBe(true);
+  });
+
+  it("leaves shader precision untouched when mediump already has fp32 precision", async () => {
+    const sources = await captureCompiledSources(23);
+    expect(
+      sources.some(
+        (source) =>
+          /precision\s+mediump\s+float/.test(source) &&
+          source.includes("u_shiftRed"),
+      ),
+    ).toBe(true);
+  });
+});
