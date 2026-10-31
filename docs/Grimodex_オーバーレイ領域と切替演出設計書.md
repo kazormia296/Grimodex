@@ -84,22 +84,30 @@ openOverlay: OverlayId | null;
 
 ### 3.2 画面の構造
 
-LayoutShell の grid（`layoutMetrics.ts` L179-200 の 9 列）には手を入れず、その外側を包む。
+> 2026-10-31 の実機確認で改訂した。P1 の最初の実装は画面の両端に操作の列（rail、幅 30px）を足していたが、
+> 常に幅を取って作業域が狭くなるのが不評だった（ユーザー判断）。rail をやめ、つまみを上段の角に置く。
 
 ```
-lrail | [ 今の 9 列の grid（lstripe … rstripe）] | rrail
+(●)  [◧ ┃ タブ… ┃ ◨]  (●)      ← 上段: 角のつまみ・ギャップ・center stripe
+ S    ┌────────────┐    S
+ │    │   editor   │    │
 ```
 
-- grid に渡す画面幅から rail の幅を引くだけにする（`clampLayoutStateForViewport`、`layoutStateUtils.ts` L676 に渡す幅を減らす）。
-  rail があることは「画面が rail の幅だけ狭い」ことと同じになる。
-- そのため、幅の計算（`OUTER_PAD_PX * 2` を使う L315／L606／L709 と `getCenterHorizontalReserve`）、
-  grid-template-areas、角の描画、zoom のセル、幾何の不変条件テスト（`layoutInvariants.browser.test.tsx`）は変えずに済む。
-- 11 列に広げる案は、これらをすべて動かし、テストも rail の有無で 2 系統にする必要があるため採らない。
+- **つまみ**: オーバーレイにパネルがある側だけ、grid の上段の角（side stripe 列 × center stripe 行）に、
+  置いたパネルのアイコンを丸く 1 つだけ出す（`OverlayKnob`、直径は center stripe の高さと同じ 35px）。
+  - grid-template-areas の上段の端を `lknob`／`rknob` にし、center stripe はその側だけ角とギャップの外から始まる。
+  - パネル名は `title` と `aria-label` に出す。縦書きの名前はやめた。
+  - Stripe のアイコン（平らなグレーの四角）とは、位置・色（琥珀）・形（丸）で区別する。
+  - 空のオーバーレイの側には角を作らず、center stripe は今までどおり全幅（決定 1）。
+- **ドック開閉トグル（◧／◨）**: center stripe の端に残す（ユーザー判断）。center stripe の bands 列は、
+  今までどおり下の editor 列と左右の端を揃える。
+  - その側の region が開いていれば、トグルは content 列の上に載るので、余分な幅は要らない。
+  - region が閉じている、またはパネルが無いときは、つまみとトグルの場所として、その側で
+    `OVERLAY_KNOB_LEAD_PX`（36px＋ギャップ）を gap 列に足す（`layoutMetrics.ts` の `overlayKnobExtraPx`）。
+- **幅の差し引き**: store は同じ規則の値を画面幅から引いてから region の大きさを clamp する
+  （`getOverlayKnobReserve`／`applyOverlayKnobsToViewport`）。grid の外を包む形はやめ、grid の中で完結する。
+- Zen・エディタだけの表示・zoom の間は、つまみを出さず、center stripe は全幅に戻す。
 
-- **操作の列（rail）**: 幅 `OVERLAY_RAIL_SIZE = 30`。Stripe の外側、画面の一番端に置く。
-  - panel がある間だけ幅を取り、空なら幅 0 にする（決定 1。空の bottom の Stripe を出さないのと同じ扱い）。
-  - つまみには、パネルのアイコンと縦書きの名前を出す。1 パネルだけなので、閉じていても何が入っているか読める。
-  - Stripe のアイコン（平らなグレーの四角）とは、位置・色（琥珀）・形で区別する。
 - **オーバーレイの層**: grid を包む要素の直下に、grid とは別の層として置き、grid と Stripe より上に重ねる。
   §4 の飛行のゴーストも同じ並びの層に置く。
   - DnD ハイライトとドラッグゴーストの層（LayoutShell L255-263）は、さらにその上に置く。
@@ -126,11 +134,11 @@ lrail | [ 今の 9 列の grid（lstripe … rstripe）] | rrail
 - **phone 幅**: オーバーレイを無効にし、置いているパネルは既定の領域に表示する（保存はしない。phone 幅では今も保存しない）。
 - **パネルの割り当て**:
   - ToolWindowIcon の右クリックメニューに「左のオーバーレイへ」「右のオーバーレイへ」を足す。
-  - DnD でパネルをドラッグしている間だけ、受け口を出す。空の rail は幅 0 なので、受け口はオーバーレイの層に出す。
+  - DnD でパネルをドラッグしている間だけ、受け口を出す。空の側には角が無いので、受け口はオーバーレイの層に出す。
 - **通知**: 当面は Stripe の busy の印（`ToolWindowIcon.tsx` L140）と同じ仕組みをつまみに流用する。
   「未読」の仕組みは今はないので、必要なら新しい作業として別に設計する。
 - **P1 で決めること**: Zen モード・エディタだけの表示（`LayoutShell.tsx` L54-56 の `zenMode`／`editorOnly`）と、
-  レイアウトのロック（`layoutLocked`）の間に、rail を出すか・オーバーレイを呼べるか。
+  レイアウトのロック（`layoutLocked`）の間に、つまみを出すか・オーバーレイを呼べるか。
 
 ### 3.4 見た目と動き
 
@@ -246,9 +254,9 @@ lrail | [ 今の 9 列の grid（lstripe … rstripe）] | rrail
 - **単体テスト**: v3 → v4 の移行、`validateLayoutState` の一意性、overlay への移動と入れ替え、
   プリセットの `overlays`、Flip のキー操作の状態遷移（開く・めくる・決定・取り消し・窓のフォーカス喪失）。
 - **実 Chromium のテスト（`pnpm test:browser`）**:
-  - rail と Stripe が重ならないこと。
-  - rail があるときも、既存の幾何の不変条件（`layoutInvariants.browser.test.tsx`）が保たれること。
-  - オーバーレイを開いたときにパネルが rail の内側から出ること。
+  - つまみが上段の角に収まり、center stripe がその側だけ角とギャップの外から始まること。
+  - つまみがあるときも、bands 列と editor 列の揃いを含む既存の幾何の不変条件（`layoutInvariants.browser.test.tsx`）が保たれること。
+  - オーバーレイを開いたときにパネルが画面の端から出て、つまみを覆わないこと。
 - **Reduced Motion**: 傾き・飛行・Flip が無効になること。
 - **手動（Wayland、IME）**:
   - オーバーレイを開いたままチャット欄で日本語を変換し、Esc が変換の取り消しに使われること。
@@ -259,7 +267,7 @@ lrail | [ 今の 9 列の grid（lstripe … rstripe）] | rrail
 ## 7. フェーズ
 
 1. **P1 オーバーレイの土台**:
-   - スキーマ v4 と 3 か所の移行、検証、grid を包む rail、開閉（平らなスライド）、右クリックメニューでの割り当て。
+   - スキーマ v4 と 3 か所の移行、検証、上段の角のつまみ（当初は grid を包む rail。§3.2 の改訂を参照）、開閉（平らなスライド）、右クリックメニューでの割り当て。
    - 開閉のスライドにも Reduced Motion 対応を入れる（P2 に送らない）。
    - P1 の中で、§3.3 の「P1 で決めること」（Zen モード・エディタだけの表示・レイアウトのロックとの関係）を決める。
 2. **P2 オーバーレイの演出**: 開くときの姿勢、カーソルへの傾き、入力中の平坦化、背景の暗幕と奥行き。
@@ -286,7 +294,7 @@ lrail | [ 今の 9 列の grid（lstripe … rstripe）] | rrail
 
 | # | 項目 | 決定 |
 | --- | --- | --- |
-| 1 | 空のオーバーレイの rail | 幅を取らない（空の bottom の Stripe と同じ） |
+| 1 | 空のオーバーレイの rail | 幅を取らない（空の bottom の Stripe と同じ）。2026-10-31 に rail 自体をやめ、上段の角の丸いつまみにした（§3.2） |
 | 2 | オーバーレイの幅 | 固定（`OVERLAY_WIDTH`） |
 | 3 | 開くショートカット | 既存と重ならない範囲で決める → Mod+Alt+[ ／ Mod+Alt+] |
 | 4 | 開いたまま書けるか | 書けない。エディタにフォーカスしたら自動で閉じる |

@@ -3,7 +3,7 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePostEffectRunStore } from "@/features/post-effect/runStore";
-import { OverlayRail } from "./OverlayRail";
+import { OverlayKnob } from "./OverlayKnob";
 import { ToolWindowIcon } from "./ToolWindowIcon";
 import { buildDefaultLayoutState, findPanelLocation } from "./layoutStateUtils";
 import { useLayoutStore } from "./layoutStore";
@@ -47,14 +47,14 @@ function begin() {
 
 afterEach(cleanup);
 
-describe("OverlayRail の右クリックメニュー", () => {
+describe("OverlayKnob の右クリックメニュー", () => {
   beforeEach(() => {
     usePostEffectRunStore.setState({ runs: {} });
     setOverlay("snippets");
   });
 
   async function openMenu() {
-    render(<OverlayRail side="left" />);
+    render(<OverlayKnob side="left" />);
     const user = userEvent.setup();
     await user.pointer({
       keys: "[MouseRight>]",
@@ -93,23 +93,40 @@ describe("OverlayRail の右クリックメニュー", () => {
     );
   });
 
+  it("パネル名は title に出し、丸いつまみには文字を描かない", () => {
+    render(<OverlayKnob side="left" />);
+    const button = screen.getByRole("button");
+    expect(button).toHaveAttribute("title", "layout.panel.snippets");
+    expect(button).toHaveAttribute("aria-label", "layout.overlay.toggle");
+    expect(button).toHaveAttribute("data-overlay-knob", "left");
+    expect(button.textContent).toBe("");
+    expect(button.querySelector("span:not([data-testid])")).toBeNull();
+  });
+
+  it("パネルが無い側は何も描かない", () => {
+    setOverlay(null);
+    const { container } = render(<OverlayKnob side="left" />);
+    expect(container.querySelector("[data-overlay-knob-cell]")).toBeNull();
+    expect(container.querySelector("[data-overlay-knob]")).toBeNull();
+  });
+
   it("ロック中でもつまみで開閉できる", async () => {
     setOverlay("snippets", true);
-    render(<OverlayRail side="left" />);
+    render(<OverlayKnob side="left" />);
     const user = userEvent.setup();
     await user.click(screen.getByRole("button"));
     expect(useLayoutStore.getState().openOverlay).toBe("left");
   });
 });
 
-describe("busy の印の共有（Stripe と rail）", () => {
+describe("busy の印の共有（Stripe とつまみ）", () => {
   beforeEach(() => {
     usePostEffectRunStore.setState({ runs: {} });
   });
 
-  it("校閲の実行中は rail のつまみにも印が出て、終端で消える", () => {
+  it("校閲の実行中はつまみにも印が出て、終端で消える", () => {
     setOverlay("kouetsu");
-    render(<OverlayRail side="left" />);
+    render(<OverlayKnob side="left" />);
     expect(screen.queryByTestId("overlay-busy-badge")).toBeNull();
     act(() => begin());
     expect(screen.getByTestId("overlay-busy-badge")).toBeInTheDocument();
@@ -119,18 +136,18 @@ describe("busy の印の共有（Stripe と rail）", () => {
 
   it("kouetsu 以外のつまみには出さない", () => {
     setOverlay("snippets");
-    render(<OverlayRail side="left" />);
+    render(<OverlayKnob side="left" />);
     act(() => begin());
     expect(screen.queryByTestId("overlay-busy-badge")).toBeNull();
   });
 
-  it("同じ実行で Stripe のアイコンと rail のつまみの両方に出る", () => {
+  it("同じ実行で Stripe のアイコンと つまみの両方に出る", () => {
     setOverlay("kouetsu");
     const layout = buildDefaultLayoutState({ allInactive: true });
     const slotId = findPanelLocation(layout, "scenes")!.slot.id;
     render(
       <>
-        <OverlayRail side="left" />
+        <OverlayKnob side="left" />
         <ToolWindowIcon
           region="left"
           panelId="kouetsu"

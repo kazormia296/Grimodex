@@ -1,7 +1,7 @@
 /**
  * 背景（ambient）を有効にしたときの overlay の見た目（実 Chromium）。
- * rail は grid と一緒に透明になり、overlay のパネルには grid のパネルと同じ
- * Fluid Glass の規則が効く。happy-dom は CSS の cascade を計算しないためここで測る。
+ * つまみは grid の上段の角に載り（背景の有無で位置が変わらず、背景も grid の外に出ない）、
+ * overlay のパネルは glass root の外で backdrop-filter と幕で描く。happy-dom は CSS の cascade を計算しないためここで測る。
  */
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render } from "@testing-library/react";
@@ -80,25 +80,37 @@ const isTransparent = (color: string) =>
 describe("overlay with ambient background (real Chromium)", () => {
   beforeEach(setup);
 
-  it("keeps the rail on the canvas color when the background is off", async () => {
-    const { container } = renderHost(false);
-    await frame();
-    const rail = container.querySelector<HTMLElement>("[data-overlay-rail]")!;
-    const grid = container.querySelector<HTMLElement>("[data-layout-shell]")!;
-    expect(isTransparent(getComputedStyle(rail).backgroundColor)).toBe(false);
-    expect(getComputedStyle(rail).backgroundColor).toBe(
-      getComputedStyle(grid).backgroundColor,
-    );
-  });
-
-  it("makes the rail transparent together with the grid when the background is on", async () => {
-    const { container } = renderHost(true);
-    await frame();
-    const rail = container.querySelector<HTMLElement>("[data-overlay-rail]")!;
-    const grid = container.querySelector<HTMLElement>("[data-layout-shell]")!;
-    expect(isTransparent(getComputedStyle(grid).backgroundColor)).toBe(true);
-    expect(isTransparent(getComputedStyle(rail).backgroundColor)).toBe(true);
-  });
+  it.each([false, true])(
+    "keeps the knob in the grid's top corner without painting a band (background %s)",
+    async (ambient) => {
+      const { container } = renderHost(ambient);
+      await frame();
+      const grid = container.querySelector<HTMLElement>("[data-layout-shell]")!;
+      const cell = container.querySelector<HTMLElement>(
+        '[data-overlay-knob-cell="left"]',
+      )!;
+      const knob = container.querySelector<HTMLElement>(
+        '[data-overlay-knob="left"]',
+      )!;
+      const stripe = container.querySelector<HTMLElement>(
+        "[data-center-stripe]",
+      )!;
+      // つまみのセルは grid の直下の子（上段の角）。
+      expect(cell.parentElement!.parentElement).toBe(grid);
+      expect(cell.parentElement!.style.gridArea).toBe("lknob");
+      const cellRect = cell.getBoundingClientRect();
+      const gridRect = grid.getBoundingClientRect();
+      expect(cellRect.left).toBe(gridRect.left + 14);
+      expect(cellRect.top).toBe(stripe.getBoundingClientRect().top);
+      // 背景の有無に関わらず、grid の canvas 色の帯をつまみの外に作らない。
+      expect(isTransparent(getComputedStyle(cell).backgroundColor)).toBe(true);
+      // つまみ自体の面は透けすぎない（琥珀色の面）。
+      expect(isTransparent(getComputedStyle(knob).backgroundColor)).toBe(false);
+      expect(isTransparent(getComputedStyle(grid).backgroundColor)).toBe(
+        ambient,
+      );
+    },
+  );
 
   it("keeps the overlay out of the WebGL Glass pass and blurs above the grid instead", async () => {
     const { container } = renderHost(true);

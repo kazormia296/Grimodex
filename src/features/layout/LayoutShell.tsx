@@ -12,6 +12,7 @@ import { EditorArea } from "./EditorArea";
 import {
   findPanelLocation,
   getBottomCorners,
+  getOverlays,
   isCenterContentVisible,
 } from "./layoutStateUtils";
 import { RegionDock, SideRegionStripeColumn } from "./RegionDock";
@@ -27,13 +28,14 @@ import {
   computeLayoutGridMetrics,
   type ZoomRegion,
 } from "./layoutMetrics";
+import { STRIPE_GAP_PX } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { useZoomReveal } from "./useZoomReveal";
 import { ZoomRestoreBar } from "./ZoomRestoreBar";
 import { useRegionSegments } from "./useRegionSegments";
 import { LayoutPanelDragGhost } from "./LayoutPanelDragGhost";
 import { OverlayLayer } from "./OverlayLayer";
-import { OverlayRail } from "./OverlayRail";
+import { OverlayKnob } from "./OverlayKnob";
 import { StripeInsertIndicator } from "./StripeInsertIndicator";
 import { useLayoutPresetCrossfade } from "./useLayoutPresetCrossfade";
 import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppearance";
@@ -117,9 +119,22 @@ export const LayoutShell = memo(function LayoutShell({
   const effectiveZoomRegion: ZoomRegion | null =
     zenMode || editorOnly ? "center" : zoomRegion;
 
-  // overlay の rail（左右の端の操作の列）。Zen・エディタだけの表示・zoom 中は出さない
+  // overlay のつまみ（上段の角）。Zen・エディタだけの表示・zoom 中は出さない
   // （幅の差し引きは store 側で常に行うので、出さない間は grid が少し広いだけ）。
-  const showOverlayRails = !zenMode && !editorOnly && maximizedPanelId === null;
+  const showOverlayKnobs = !zenMode && !editorOnly && maximizedPanelId === null;
+  const overlayLeftOccupied = useLayoutStore(
+    (s) => getOverlays(s.layout).left.panel !== null,
+  );
+  const overlayRightOccupied = useLayoutStore(
+    (s) => getOverlays(s.layout).right.panel !== null,
+  );
+  const overlayKnobs = useMemo(
+    () => ({
+      left: showOverlayKnobs && overlayLeftOccupied,
+      right: showOverlayKnobs && overlayRightOccupied,
+    }),
+    [showOverlayKnobs, overlayLeftOccupied, overlayRightOccupied],
+  );
 
   // 最大化突入時の clip-path reveal（ズームっぽい展開演出）。
   useZoomReveal(zoomRegion, layout, shellRef);
@@ -156,8 +171,10 @@ export const LayoutShell = memo(function LayoutShell({
         leftSize: layout.regions.left.size,
         rightSize: layout.regions.right.size,
         bottomSize: layout.regions.bottom.size,
+        overlayKnobs,
       }),
     [
+      overlayKnobs,
       bottomOpen,
       projectedCenterBandVisible,
       hasBottom,
@@ -246,6 +263,7 @@ export const LayoutShell = memo(function LayoutShell({
     effectiveZoomRegion === "bottom"
       ? { left: true, right: true }
       : bottomCorners,
+    overlayKnobs,
   );
 
   // zoom 中、対象 cell 以外を不可視化する。unmount はしない（DOM identity
@@ -273,10 +291,9 @@ export const LayoutShell = memo(function LayoutShell({
       {/* key={crossfadeKey} による remount 方式は禁止 — 配下の全エディタ/パネルが
           破棄・再生成されフリーズする。フェードは controls の opacity 再トリガーで
           実現する（useLayoutPresetCrossfade 参照）。 */}
-      {/* 外側を lrail | grid | rrail の flex で包む。grid（data-layout-shell）は
-          残りの幅を使い、rail の幅は画面幅から差し引かれた状態で grid に渡る。 */}
+      {/* 外側の host は grid（data-layout-shell）と overlay の層を重ねる。つまみは
+          grid の上段の角（lknob／rknob）に置き、host の幅は画面幅いっぱい。 */}
       <div data-overlay-host className="relative flex h-full w-full min-w-0">
-        {showOverlayRails && <OverlayRail side="left" />}
         <motion.div
           ref={shellRef}
           data-workspace-glass-root
@@ -302,12 +319,32 @@ export const LayoutShell = memo(function LayoutShell({
           }}
         >
           <div
-            style={cellStyle({ gridArea: "cstripe" }, cellHidden("chrome"))}
+            style={cellStyle(
+              {
+                gridArea: "cstripe",
+                // つまみの角との間のギャップ。CenterStripe の内側の列はこの分を引いて
+                // bands を editor 列に揃える（buildCenterStripeGridTemplateColumns）。
+                paddingLeft: overlayKnobs.left ? STRIPE_GAP_PX : undefined,
+                paddingRight: overlayKnobs.right ? STRIPE_GAP_PX : undefined,
+              },
+              cellHidden("chrome"),
+            )}
             {...hiddenCellProps(cellHidden("chrome"))}
             className="min-h-0 min-w-0"
           >
-            <CenterStripe />
+            <CenterStripe overlayKnobs={overlayKnobs} />
           </div>
+
+          {overlayKnobs.left && (
+            <div style={{ gridArea: "lknob" }} className="min-h-0 min-w-0">
+              <OverlayKnob side="left" />
+            </div>
+          )}
+          {overlayKnobs.right && (
+            <div style={{ gridArea: "rknob" }} className="min-h-0 min-w-0">
+              <OverlayKnob side="right" />
+            </div>
+          )}
 
           {/* zoom 中の復帰バー。CenterStripe と同じ grid area に重ねる
             （CenterStripe 側は visibility:hidden + inert で休眠中）。 */}
@@ -479,7 +516,6 @@ export const LayoutShell = memo(function LayoutShell({
             <BottomCornerToggle side="right" />
           )}
         </motion.div>
-        {showOverlayRails && <OverlayRail side="right" />}
         {/* オーバーレイの層。grid と Stripe より上、DnD のハイライトとドラッグゴースト
             （fixed、z-[9998]〜）より下。エディタだけの表示（phone）では出さない。 */}
         {!editorOnly && <OverlayLayer side="left" zenMode={zenMode} />}

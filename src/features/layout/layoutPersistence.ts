@@ -3,7 +3,7 @@ import { globalSettingsRepository } from "@/lib/globalSettings/repository";
 import { recordLayoutSnapshot } from "@/features/timelapse/captureLayout";
 import { resolveViewportProfile } from "@/runtime/viewportProfile";
 import {
-  applyOverlayRailToViewport,
+  applyOverlayKnobsToViewport,
   cloneLayoutState,
   validateLayoutState,
 } from "./layoutStateUtils";
@@ -76,7 +76,7 @@ export function scheduleSave(
       } = get();
       if (
         !validateLayoutState(layout, {
-          viewport: applyOverlayRailToViewport(currentViewport, layout),
+          viewport: applyOverlayKnobsToViewport(currentViewport, layout),
         }).valid
       )
         return;

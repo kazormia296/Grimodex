@@ -1,11 +1,7 @@
 import { memo } from "react";
 import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/utils";
-import {
-  OVERLAY_CONTENT_TOP_CSS,
-  OVERLAY_RAIL_SIZE,
-  getOverlayLayerId,
-} from "./layoutConstants";
+import { HORIZONTAL_STRIPE_SIZE, getOverlayLayerId } from "./layoutConstants";
 import { findOverlayOfPanel, getOverlays } from "./layoutStateUtils";
 import { useLayoutStore } from "./layoutStore";
 import type { OverlayId } from "./layoutTypes";
@@ -18,23 +14,21 @@ import {
   ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 
-interface OverlayRailProps {
+interface OverlayKnobProps {
   side: OverlayId;
 }
 
 /**
- * 画面の一番端にある、オーバーレイの操作の列（rail）。
- * パネルが置かれている間だけ幅 OVERLAY_RAIL_SIZE を取り、つまみにパネルの
- * アイコンと縦書きの名前を出す。開閉に関わらず幅は変わらない。
+ * オーバーレイのつまみ。上段の角（side stripe 列 × center stripe 行）に、置かれた
+ * パネルのアイコンを丸く 1 つだけ出す。center stripe はこの角を譲って内側から始まる
+ * （layoutMetrics の lknob／rknob）。パネル名は title と aria-label で出す。
  *
- * 縦書き（writing-mode）の要素の中では flex の main/cross 軸が入れ替わるため、
- * 縦書きは末端の span だけにして、レイアウトは外側の横書きの button で行う。
- * Stripe のアイコン（平らなグレーの面）とは、琥珀色の縁と文字で区別する。
+ * Stripe のアイコン（平らなグレーの面）とは、琥珀色の縁と面で区別する。
  * 右クリックで「元に戻す（領域へ）」を出す（ロック中は無効）。処理中は busy の印を出す。
  */
-export const OverlayRail = memo(function OverlayRail({
+export const OverlayKnob = memo(function OverlayKnob({
   side,
-}: OverlayRailProps) {
+}: OverlayKnobProps) {
   const { t } = useTranslation();
   const panel = useLayoutStore((s) => getOverlays(s.layout)[side].panel);
   const open = useLayoutStore((s) => s.openOverlay === side);
@@ -54,13 +48,8 @@ export const OverlayRail = memo(function OverlayRail({
 
   return (
     <div
-      data-overlay-rail={side}
-      className="relative shrink-0"
-      style={{
-        width: OVERLAY_RAIL_SIZE,
-        // 背景色は index.css（grid と同じ canvas 色。背景有効時は grid と一緒に透明）。
-        paddingTop: OVERLAY_CONTENT_TOP_CSS,
-      }}
+      data-overlay-knob-cell={side}
+      className="flex h-full w-full min-w-0 items-center justify-center"
     >
       <ContextMenu>
         <ContextMenuTrigger asChild>
@@ -74,22 +63,19 @@ export const OverlayRail = memo(function OverlayRail({
             title={label}
             onClick={() => toggleOverlay(side)}
             className={cn(
-              "relative flex w-full select-none flex-col items-center gap-1.5 rounded-md border py-2 text-xs font-medium transition-colors",
+              "relative flex shrink-0 select-none items-center justify-center rounded-full border transition-colors",
               "border-[color:color-mix(in_oklch,var(--overlay-accent)_55%,transparent)]",
               "text-[color:var(--overlay-accent)]",
               open
                 ? "bg-[color:color-mix(in_oklch,var(--overlay-accent)_22%,transparent)]"
                 : "bg-[color:color-mix(in_oklch,var(--overlay-accent)_9%,transparent)] hover:bg-[color:color-mix(in_oklch,var(--overlay-accent)_16%,transparent)]",
             )}
+            style={{
+              width: HORIZONTAL_STRIPE_SIZE,
+              height: HORIZONTAL_STRIPE_SIZE,
+            }}
           >
             <Icon className="h-4 w-4 shrink-0" aria-hidden />
-            <span
-              aria-hidden
-              className="whitespace-nowrap"
-              style={{ writingMode: "vertical-rl" }}
-            >
-              {label}
-            </span>
             {busy && (
               <span
                 aria-hidden

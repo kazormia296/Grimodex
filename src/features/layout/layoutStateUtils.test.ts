@@ -20,7 +20,7 @@ import {
   DEFAULT_EDITOR_SEGMENT_ID,
   detachHiddenOverlayPanels,
   findOverlayOfPanel,
-  getOverlayRailReserve,
+  getOverlayKnobReserve,
   getOverlays,
   replacePanelInPlace,
   restorePanelFromOverlay,
@@ -35,9 +35,11 @@ import {
   DEFAULT_REGION_SIZES,
   MIN_EDITOR_SIZE,
   MIN_REGION_SIZE,
-  OVERLAY_RAIL_SIZE,
   PANEL_GAP_PX,
+  STRIPE_GAP_PX,
+  STRIPE_SIZE,
 } from "./layoutConstants";
+import { OVERLAY_KNOB_LEAD_PX } from "./layoutMetrics";
 
 const VIEWPORT = { width: 1200, height: 800 };
 const LAPTOP_VIEWPORT = { width: 1366, height: 768 };
@@ -745,7 +747,7 @@ describe("overlay: データと検証", () => {
       right: { panel: null },
     });
     expect(validateLayoutState(fixed).valid).toBe(true);
-    expect(getOverlayRailReserve(fixed)).toBe(0);
+    expect(getOverlayKnobReserve(fixed)).toBe(0);
   });
 
   it("overlay のパネルは登録済みとして数え、slot へ二重に注入しない", () => {
@@ -825,7 +827,7 @@ describe("overlay: データと検証", () => {
     }
   });
 
-  it("findOverlayOfPanel と getOverlayRailReserve は、パネルのある overlay だけ数える", () => {
+  it("findOverlayOfPanel を引ける（overlay のパネルだけ）", () => {
     const state = withOverlayPanel(
       buildDefaultLayoutState({ allInactive: true }),
       "right",
@@ -833,9 +835,61 @@ describe("overlay: データと検証", () => {
     );
     expect(findOverlayOfPanel(state, "chat")).toBe("right");
     expect(findOverlayOfPanel(state, "scenes")).toBeNull();
-    expect(getOverlayRailReserve(state)).toBe(OVERLAY_RAIL_SIZE);
-    state.overlays = { left: { panel: "codex" }, right: { panel: "chat" } };
-    expect(getOverlayRailReserve(state)).toBe(OVERLAY_RAIL_SIZE * 2);
+  });
+
+  describe("getOverlayKnobReserve", () => {
+    /** 右 region の先頭 slot のパネルを 1 つ表示する（内容が出る状態）。 */
+    function openRightRegion(state: LayoutState) {
+      const slot = state.regions.right.slots.find((s) => s.panels.length > 0)!;
+      slot.activePanel = slot.panels[0];
+    }
+
+    it("overlay にパネルが無い側は数えない", () => {
+      expect(
+        getOverlayKnobReserve(buildDefaultLayoutState({ allInactive: true })),
+      ).toBe(0);
+    });
+
+    it("region が閉じている側は、つまみとトグルの分 OVERLAY_KNOB_LEAD_PX を数える", () => {
+      const state = withOverlayPanel(
+        buildDefaultLayoutState({ allInactive: true }),
+        "right",
+        "chat",
+      );
+      expect(state.regions.right.slots.some((s) => s.panels.length > 0)).toBe(
+        true,
+      );
+      expect(getOverlayKnobReserve(state)).toBe(OVERLAY_KNOB_LEAD_PX);
+      expect(OVERLAY_KNOB_LEAD_PX).toBe(STRIPE_SIZE + STRIPE_GAP_PX);
+    });
+
+    it("region の内容が出ている側は余分に取らない", () => {
+      const state = withOverlayPanel(
+        buildDefaultLayoutState({ allInactive: true }),
+        "right",
+        "chat",
+      );
+      openRightRegion(state);
+      expect(getOverlayKnobReserve(state)).toBe(0);
+    });
+
+    it("region にパネルが無い側は、閉じている側と同じく数える", () => {
+      const state = withOverlayPanel(
+        buildDefaultLayoutState({ allInactive: true }),
+        "right",
+        "chat",
+      );
+      state.regions.right.slots = [];
+      expect(getOverlayKnobReserve(state)).toBe(OVERLAY_KNOB_LEAD_PX);
+    });
+
+    it("両側は側ごとに合算する（片側だけ開いていれば片側分）", () => {
+      const state = buildDefaultLayoutState({ allInactive: true });
+      state.overlays = { left: { panel: "codex" }, right: { panel: "chat" } };
+      expect(getOverlayKnobReserve(state)).toBe(OVERLAY_KNOB_LEAD_PX * 2);
+      openRightRegion(state);
+      expect(getOverlayKnobReserve(state)).toBe(OVERLAY_KNOB_LEAD_PX);
+    });
   });
 
   it("findPanelLocation は overlay のパネルに null を返す（zoom の対象外）", () => {

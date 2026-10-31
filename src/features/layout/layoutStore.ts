@@ -11,7 +11,7 @@ import {
 } from "@/screenshot-scenes/screenshotBootstrap";
 import {
   addPanelToCenterToolSegment,
-  applyOverlayRailToViewport,
+  applyOverlayKnobsToViewport,
   addPanelToSlot,
   applyAdjacentCenterSegmentPixelSizes,
   applyAdjacentSlotPixelSizes,
@@ -98,7 +98,7 @@ export function getPanelTitle(id: PanelId): string {
   return i18next.t(`layout.panel.${id}`);
 }
 
-/** 実画面の寸法（overlay の rail は差し引かない。phone 判定などに使う）。 */
+/** 実画面の寸法（overlay のつまみの分は差し引かない。phone 判定などに使う）。 */
 function getRawViewport(): { width: number; height: number } {
   const { innerWidth, innerHeight } = globalThis;
   if (!Number.isFinite(innerWidth) || !Number.isFinite(innerHeight)) {
@@ -108,16 +108,16 @@ function getRawViewport(): { width: number; height: number } {
 }
 
 /**
- * レイアウトが使える寸法。`layout` を渡すと、その overlay の rail 幅を引く。
- * 省略時は実画面の寸法（rail を持たない layout の前提）。
+ * レイアウトが使える寸法。`layout` を渡すと、その overlay のつまみの分（getOverlayKnobReserve）を引く。
+ * 省略時は実画面の寸法（つまみを持たない layout の前提）。
  */
 function getViewport(layout?: LayoutState): { width: number; height: number } {
   const raw = getRawViewport();
-  return layout ? applyOverlayRailToViewport(raw, layout) : raw;
+  return layout ? applyOverlayKnobsToViewport(raw, layout) : raw;
 }
 
 function scheduleSave(get: () => LayoutStoreState): void {
-  // phone 判定は rail を引く前の幅で行う（persistence 側で validate 時に引く）。
+  // phone 判定はつまみの分を引く前の幅で行う（persistence 側で validate 時に引く）。
   scheduleLayoutSave(get, getRawViewport);
 }
 
@@ -151,7 +151,7 @@ function hydratePersistedLayout(
     return applyValidatedLayout(
       layout,
       fallback,
-      applyOverlayRailToViewport(viewport, layout),
+      applyOverlayKnobsToViewport(viewport, layout),
     );
   }
   return validateLayoutState(layout).valid ? layout : fallback;
@@ -831,7 +831,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
           overlays: { ...overlays, [id]: { panel: toolPanel } },
         };
       }
-      // rail 幅が変わるので、移動後の layout で引く。
+      // つまみの分が変わるので、移動後の layout で引く。
       return {
         layout: applyValidatedLayout(next, state.layout, getViewport(next)),
       };
@@ -1129,7 +1129,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
         index,
         state.hiddenStripePanels,
       );
-      // overlay から移すと rail 幅が変わるので、移動後の layout で引く。
+      // overlay から移すとつまみの分が変わるので、移動後の layout で引く。
       const vp = getViewport(moved);
       if (moved.center.editorOpen) {
         const clamped = clampLayoutStateForViewport(moved, vp);
@@ -1617,7 +1617,7 @@ export const useLayoutStore = create<LayoutStoreState>((set, get) => ({
       const builtin = resolveBuiltinPresetState(presetId, vp, override);
       if (!builtin) return;
       const hidden = resolveBuiltinPresetHiddenPanels(presetId, override);
-      // viewport は rail 幅を引くため、適用する layout から求める。
+      // viewport はつまみの分を引くため、適用する layout から求める。
       set({
         layout: applyValidatedLayout(
           detachHidden(ensureLayoutStateV3(builtin), hidden),

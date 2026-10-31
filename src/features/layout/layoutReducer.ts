@@ -1,5 +1,5 @@
 import {
-  applyOverlayRailToViewport,
+  applyOverlayKnobsToViewport,
   buildRegionSizeClampContext,
   clampLayoutStateForViewport,
   findPanelLocation,
@@ -135,7 +135,7 @@ export function reduceLayout(
               : "toggle",
         ),
         state,
-        applyOverlayRailToViewport(
+        applyOverlayKnobsToViewport(
           typeof window === "undefined"
             ? { width: 1200, height: 800 }
             : { width: window.innerWidth, height: window.innerHeight },

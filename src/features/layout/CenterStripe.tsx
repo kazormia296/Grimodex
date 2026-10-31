@@ -8,6 +8,7 @@ import { isCenterContentVisible } from "./layoutStateUtils";
 import {
   buildCenterStripeGridTemplateColumns,
   computeLayoutGridMetrics,
+  type OverlayKnobSides,
 } from "./layoutMetrics";
 import { useLayoutStore } from "./layoutStore";
 import { useCenterSegments } from "./useCenterSegments";
@@ -18,12 +19,19 @@ function regionIsOpen(slots: { activePanel: string | null }[]): boolean {
   return slots.some((slot) => slot.activePanel !== null);
 }
 
+const NO_KNOBS: OverlayKnobSides = { left: false, right: false };
+
+interface CenterStripeProps {
+  /** overlay のつまみに角を譲る側（LayoutShell の grid と同じ値を渡す）。 */
+  overlayKnobs?: OverlayKnobSides;
+}
+
 /**
  * 中央領域の最上段に常設される水平ストライプ（§4 of layout design doc）。
  *
  * center content 列と同じ segment 順・比率で editor / center tool アイコンを並べる。
  */
-export function CenterStripe() {
+export function CenterStripe({ overlayKnobs = NO_KNOBS }: CenterStripeProps) {
   const segments = useCenterSegments();
   const regionSegments = useRegionSegments();
   const layout = useLayoutStore((s) => s.layout);
@@ -54,9 +62,11 @@ export function CenterStripe() {
       leftSize: layout.regions.left.size,
       rightSize: layout.regions.right.size,
       bottomSize: layout.regions.bottom.size,
+      overlayKnobs,
     });
     return buildCenterStripeGridTemplateColumns(metrics);
   }, [
+    overlayKnobs,
     bottomOpen,
     centerBandVisible,
     hasBottom,
@@ -95,13 +105,27 @@ export function CenterStripe() {
       style={{ gridTemplateColumns: stripeColumns }}
     >
       {/* 9 列構成: stripe / gap / content / splitter。先頭の stripe 列に
-          左ドック開閉トグルを置き、bands セルを下の editor 列と揃える。 */}
-      <div className="flex min-h-0 min-w-0 items-center justify-center">
-        {hasLeft && <SideDockToggle region="left" />}
-      </div>
-      <div aria-hidden className="min-h-0 min-w-0" />
-      <div aria-hidden className="min-h-0 min-w-0" />
-      <div aria-hidden className="min-h-0 min-w-0" />
+          左ドック開閉トグルを置き、bands セルを下の editor 列と揃える。
+          つまみが角を使う側は stripe 列が無く、トグルを gap〜splitter の 3 列に
+          またがるセルの端に置く（幅は layoutMetrics が 36px 以上を保証する）。 */}
+      {overlayKnobs.left ? (
+        <div className="col-span-3 flex min-h-0 min-w-0 items-center justify-start">
+          {hasLeft && (
+            <div className="flex h-full w-9 shrink-0 items-center justify-center">
+              <SideDockToggle region="left" />
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          <div className="flex min-h-0 min-w-0 items-center justify-center">
+            {hasLeft && <SideDockToggle region="left" />}
+          </div>
+          <div aria-hidden className="min-h-0 min-w-0" />
+          <div aria-hidden className="min-h-0 min-w-0" />
+          <div aria-hidden className="min-h-0 min-w-0" />
+        </>
+      )}
       <div
         data-center-stripe-column
         className={cn(
@@ -113,13 +137,25 @@ export function CenterStripe() {
       >
         <CenterStripeBands segments={segments} />
       </div>
-      <div aria-hidden className="min-h-0 min-w-0" />
-      <div aria-hidden className="min-h-0 min-w-0" />
-      <div aria-hidden className="min-h-0 min-w-0" />
       {/* 末尾の stripe 列に右ドック開閉トグルを置く。 */}
-      <div className="flex min-h-0 min-w-0 items-center justify-center">
-        {hasRight && <SideDockToggle region="right" />}
-      </div>
+      {overlayKnobs.right ? (
+        <div className="col-span-3 flex min-h-0 min-w-0 items-center justify-end">
+          {hasRight && (
+            <div className="flex h-full w-9 shrink-0 items-center justify-center">
+              <SideDockToggle region="right" />
+            </div>
+          )}
+        </div>
+      ) : (
+        <>
+          <div aria-hidden className="min-h-0 min-w-0" />
+          <div aria-hidden className="min-h-0 min-w-0" />
+          <div aria-hidden className="min-h-0 min-w-0" />
+          <div className="flex min-h-0 min-w-0 items-center justify-center">
+            {hasRight && <SideDockToggle region="right" />}
+          </div>
+        </>
+      )}
       {showDropZones && (
         <CenterStripeDropOverlay
           segments={dropSegments}

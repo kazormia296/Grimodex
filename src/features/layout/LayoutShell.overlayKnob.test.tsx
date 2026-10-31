@@ -26,7 +26,7 @@ vi.mock("./EditorArea", () => ({
 import { LayoutShell } from "./LayoutShell";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import { useLayoutStore } from "./layoutStore";
-import { OVERLAY_RAIL_SIZE } from "./layoutConstants";
+import { HORIZONTAL_STRIPE_SIZE } from "./layoutConstants";
 
 function setOverlayLayout(
   overlays: { left?: "snippets" | null; right?: "attribution" | null } = {
@@ -59,50 +59,97 @@ function setOverlayLayout(
   });
 }
 
-describe("LayoutShell overlay rail", () => {
+describe("LayoutShell overlay knob", () => {
   beforeEach(() => {
     setOverlayLayout();
   });
 
-  it("shows a rail only for the side that has an overlay panel", () => {
+  it("shows a knob only for the side that has an overlay panel", () => {
     const { container } = render(<LayoutShell />);
     expect(
-      container.querySelector('[data-overlay-rail="left"]'),
+      container.querySelector('[data-overlay-knob-cell="left"]'),
     ).not.toBeNull();
-    expect(container.querySelector('[data-overlay-rail="right"]')).toBeNull();
     expect(
-      container.querySelector<HTMLElement>('[data-overlay-rail="left"]')?.style
-        .width,
-    ).toBe(`${OVERLAY_RAIL_SIZE}px`);
+      container.querySelector('[data-overlay-knob-cell="right"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-overlay-knob="left"]'),
+    ).not.toBeNull();
+    expect(container.querySelector('[data-overlay-knob="right"]')).toBeNull();
   });
 
-  it("shows both rails when both overlays have a panel", () => {
+  it("puts the knob cell in the top corner grid area and sizes the knob", () => {
     act(() => setOverlayLayout({ left: "snippets", right: "attribution" }));
     const { container } = render(<LayoutShell />);
-    expect(container.querySelectorAll("[data-overlay-rail]")).toHaveLength(2);
+    for (const [side, area] of [
+      ["left", "lknob"],
+      ["right", "rknob"],
+    ] as const) {
+      const cell = container.querySelector<HTMLElement>(
+        `[data-overlay-knob-cell="${side}"]`,
+      )!;
+      expect(cell.parentElement?.style.gridArea).toContain(area);
+      const knob = cell.querySelector<HTMLElement>("[data-overlay-knob]")!;
+      expect(knob.style.width).toBe(`${HORIZONTAL_STRIPE_SIZE}px`);
+      expect(knob.style.height).toBe(`${HORIZONTAL_STRIPE_SIZE}px`);
+      expect(knob.className).toContain("rounded-full");
+    }
+    const grid = container.querySelector<HTMLElement>("[data-layout-shell]")!;
+    const areas = grid.style.gridTemplateAreas;
+    expect(areas).toContain('"lknob cstripe');
+    expect(areas).toContain('cstripe rknob"');
   });
 
-  it("shows no rail when both overlays are empty", () => {
+  it("gives only the knob side its corner when one overlay has a panel", () => {
+    const { container } = render(<LayoutShell />);
+    const areas = container.querySelector<HTMLElement>("[data-layout-shell]")!
+      .style.gridTemplateAreas;
+    expect(areas).toContain('"lknob cstripe');
+    expect(areas).not.toContain("rknob");
+    expect(areas).toContain('cstripe cstripe"');
+  });
+
+  it("gives the center stripe cell a gap from the knob corner on the knob side only", () => {
+    const { container } = render(<LayoutShell />);
+    const cell = container.querySelector<HTMLElement>(
+      "[data-center-stripe]",
+    )!.parentElement!;
+    expect(cell.style.paddingLeft).not.toBe("");
+    expect(cell.style.paddingRight).toBe("");
+  });
+
+  it("shows both knobs when both overlays have a panel", () => {
+    act(() => setOverlayLayout({ left: "snippets", right: "attribution" }));
+    const { container } = render(<LayoutShell />);
+    expect(container.querySelectorAll("[data-overlay-knob]")).toHaveLength(2);
+  });
+
+  it("shows no knob when both overlays are empty", () => {
     act(() => setOverlayLayout({}));
     const { container } = render(<LayoutShell />);
-    expect(container.querySelector("[data-overlay-rail]")).toBeNull();
+    expect(container.querySelector("[data-overlay-knob]")).toBeNull();
+    expect(container.querySelector("[data-overlay-knob-cell]")).toBeNull();
+    expect(
+      container.querySelector<HTMLElement>("[data-layout-shell]")!.style
+        .gridTemplateAreas,
+    ).not.toMatch(/knob/);
   });
 
-  it("hides the rails in Zen mode and in the editor-only projection", () => {
+  it("hides the knobs in Zen mode and in the editor-only projection", () => {
     const zen = render(<LayoutShell zenMode />);
-    expect(zen.container.querySelector("[data-overlay-rail]")).toBeNull();
+    expect(zen.container.querySelector("[data-overlay-knob]")).toBeNull();
     zen.unmount();
     const phone = render(<LayoutShell editorOnly />);
-    expect(phone.container.querySelector("[data-overlay-rail]")).toBeNull();
+    expect(phone.container.querySelector("[data-overlay-knob]")).toBeNull();
   });
 
-  it("hides the rails while a panel is zoomed and brings them back after", () => {
+  it("hides the knobs while a panel is zoomed and brings them back after", () => {
     const { container } = render(<LayoutShell />);
-    expect(container.querySelector("[data-overlay-rail]")).not.toBeNull();
+    expect(container.querySelector("[data-overlay-knob]")).not.toBeNull();
     act(() => useLayoutStore.setState({ maximizedPanelId: "editor" }));
-    expect(container.querySelector("[data-overlay-rail]")).toBeNull();
+    expect(container.querySelector("[data-overlay-knob]")).toBeNull();
     act(() => useLayoutStore.setState({ maximizedPanelId: null }));
-    expect(container.querySelector("[data-overlay-rail]")).not.toBeNull();
+    expect(container.querySelector("[data-overlay-knob]")).not.toBeNull();
   });
 
   it("keeps data-layout-shell on the grid, not on the outer wrapper", () => {
@@ -127,9 +174,9 @@ describe("LayoutShell overlay rail", () => {
     expect(knob).toHaveAttribute("aria-expanded", "false");
   });
 
-  it("Zen 中は rail なしで、ショートカット相当の showOverlay だけで層が開く", () => {
+  it("Zen 中はつまみなしで、ショートカット相当の showOverlay だけで層が開く", () => {
     const { container } = render(<LayoutShell zenMode />);
-    expect(container.querySelector("[data-overlay-rail]")).toBeNull();
+    expect(container.querySelector("[data-overlay-knob]")).toBeNull();
     act(() => useLayoutStore.getState().showOverlay("left"));
     expect(
       container.querySelector('[data-overlay-layer="left"]'),

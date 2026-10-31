@@ -167,7 +167,7 @@ describe("useOverlayDismiss", () => {
       expect(isOpen()).toBe(false);
     });
 
-    it("rail のつまみの pointerdown は対象外（つまみ自身が開閉する）", () => {
+    it("つまみの pointerdown は対象外（つまみ自身が開閉する）", () => {
       const { get } = setup();
       open();
       fireEvent.pointerDown(get("knob"));

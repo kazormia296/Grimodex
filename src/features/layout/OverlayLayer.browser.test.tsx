@@ -6,11 +6,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
 import { LayoutShell } from "./LayoutShell";
-import {
-  HORIZONTAL_STRIPE_SIZE,
-  OVERLAY_RAIL_SIZE,
-  OVERLAY_WIDTH,
-} from "./layoutConstants";
+import { HORIZONTAL_STRIPE_SIZE, OVERLAY_WIDTH } from "./layoutConstants";
 import { useLayoutStore } from "./layoutStore";
 import { buildDefaultLayoutState } from "./layoutStateUtils";
 import type { OverlayId } from "./layoutTypes";
@@ -88,7 +84,7 @@ describe.each<[OverlayId]>([["left"], ["right"]])(
     const q = (c: HTMLElement, sel: string) =>
       c.querySelector<HTMLElement>(sel)!;
 
-    it("is inert, invisible and tucked behind the rail edge while closed", async () => {
+    it("is inert, invisible and tucked past the screen edge while closed", async () => {
       const { container } = renderHost(1200);
       await frame();
       const layer = q(container, `[data-overlay-layer="${side}"]`);
@@ -96,20 +92,18 @@ describe.each<[OverlayId]>([["left"], ["right"]])(
       expect(layer.inert).toBe(true);
       expect(layer.getAttribute("aria-hidden")).toBe("true");
       expect(getComputedStyle(layer).visibility).toBe("hidden");
-      // パネルは rail の内側の端より外（画面の端側）に退いている。
+      // パネルは層の基点（画面の端から外周の余白の内側）より外に退いている。
       const rect = panel.getBoundingClientRect();
       if (side === "left") {
-        expect(rect.right).toBeLessThanOrEqual(OVERLAY_RAIL_SIZE + 0.5);
+        expect(rect.right).toBeLessThanOrEqual(OUTER_PAD + 0.5);
       } else {
-        expect(rect.left).toBeGreaterThanOrEqual(
-          1200 - OVERLAY_RAIL_SIZE - 0.5,
-        );
+        expect(rect.left).toBeGreaterThanOrEqual(1200 - OUTER_PAD - 0.5);
       }
       // 開くまでは中身を mount しない。
       expect(container.querySelector("[data-story-panel]")).toBeNull();
     });
 
-    it("slides out from the rail's inner edge to OVERLAY_WIDTH and back, without unmounting", async () => {
+    it("slides out from the outer-pad inset to OVERLAY_WIDTH and back, without unmounting", async () => {
       const { container } = renderHost(1200);
       await frame();
       const knob = q(container, `[data-overlay-knob="${side}"]`);
@@ -124,11 +118,24 @@ describe.each<[OverlayId]>([["left"], ["right"]])(
       expect(layer.id).toBe(knob.getAttribute("aria-controls"));
       const open = panel.getBoundingClientRect();
       expect(open.width).toBe(OVERLAY_WIDTH);
-      if (side === "left") expect(open.left).toBe(OVERLAY_RAIL_SIZE);
-      else expect(open.right).toBe(1200 - OVERLAY_RAIL_SIZE);
+      // 画面の端から外周の余白の内側。
+      if (side === "left") expect(open.left).toBe(OUTER_PAD);
+      else expect(open.right).toBe(1200 - OUTER_PAD);
       // 上下は grid の内容域（center stripe と gap の下、下端は外周の余白）に合わせる。
       expect(open.top).toBe(OUTER_PAD + HORIZONTAL_STRIPE_SIZE + STRIPE_GAP);
       expect(open.bottom).toBe(HEIGHT - OUTER_PAD);
+      // 開いた層はつまみ（上段の角）を覆わない: 上端はつまみの下端以下の側にある。
+      const knobRect = knob.getBoundingClientRect();
+      expect(open.top).toBeGreaterThanOrEqual(knobRect.bottom - 0.5);
+      // 層の箱は上端まであるが padding 分は空で、つまみのクリックは層に奪われない。
+      const kx = knobRect.left + knobRect.width / 2;
+      if (kx < window.innerWidth) {
+        const hitKnob = document.elementFromPoint(
+          kx,
+          knobRect.top + knobRect.height / 2,
+        );
+        expect(knob.contains(hitKnob)).toBe(true);
+      }
       expect(q(container, "[data-story-panel]")).not.toBeNull();
       // grid と Stripe より上（DnD の fixed 層 z-[9998] より下）。
       const z = Number(getComputedStyle(layer).zIndex);

@@ -3,7 +3,6 @@ import { useZenGlassConfig } from "@/features/editor/zen/useZenBackgroundAppeara
 import { useReducedMotion } from "@/lib/animation";
 import {
   OVERLAY_CONTENT_TOP_CSS,
-  OVERLAY_RAIL_SIZE,
   OVERLAY_WIDTH,
   getOverlayLayerId,
 } from "./layoutConstants";
@@ -19,13 +18,14 @@ const SHADOW_ROOM_PX = 24;
 
 interface OverlayLayerProps {
   side: OverlayId;
-  /** Zen 中は rail を出さないので、画面の端から出す。 */
+  /** Zen 中は外周の余白が無いので、画面の端そのものから出す。 */
   zenMode?: boolean;
 }
 
 /**
  * オーバーレイの本体の層。grid と Stripe より上（DnD のハイライトとドラッグゴーストの
- * 層より下）に置き、rail の内側の端から平らにスライドして出る。
+ * 層より下）に置き、画面の端から平らにスライドして出る。上端は center stripe の下で、
+ * 上段の角のつまみを隠さない。
  *
  * - 閉じている間も unmount しない（スクロール位置や入力途中の文字を残す）。
  *   visibility:hidden + inert で paint とフォーカスを止める。ただし最初に開くまでは
@@ -62,7 +62,8 @@ export const OverlayLayer = memo(function OverlayLayer({
 
   const Component = PANEL_COMPONENT_MAP[panel];
   const transitions = overlaySlideTransitions(reduced, open);
-  const railOffset = zenMode ? 0 : OVERLAY_RAIL_SIZE;
+  // 画面の端（grid の外周の余白の内側）から出す。Zen は余白なしで端から。
+  const edgeOffset = zenMode ? 0 : "var(--gx-outer-pad)";
   const hiddenX = side === "left" ? "-100%" : "100%";
 
   return (
@@ -83,7 +84,7 @@ export const OverlayLayer = memo(function OverlayLayer({
           "--workspace-fluid-glass-shine": glass.shine,
           top: 0,
           bottom: 0,
-          [side]: railOffset,
+          [side]: edgeOffset,
           // パネルの幅は OVERLAY_WIDTH（画面幅の半分で頭打ち）。影の余白を内側に足す。
           width: `calc(min(${OVERLAY_WIDTH}px, 50%) + ${SHADOW_ROOM_PX}px)`,
           paddingTop: zenMode ? "var(--gx-outer-pad)" : OVERLAY_CONTENT_TOP_CSS,

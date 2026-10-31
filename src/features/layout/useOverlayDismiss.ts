@@ -33,7 +33,7 @@ useLayoutStore.subscribe((state, prev) => {
       : null;
 });
 
-/** overlay の層と rail のつまみ。層は閉じると inert になり、つまみは押すと focus を得る。 */
+/** overlay の層とつまみ。層は閉じると inert になり、つまみは押すと focus を得る。 */
 const OVERLAY_SURFACE_SELECTOR = "[data-overlay-layer],[data-overlay-knob]";
 
 /**
@@ -42,7 +42,7 @@ const OVERLAY_SURFACE_SELECTOR = "[data-overlay-layer],[data-overlay-knob]";
  * - 外での pointerdown で閉じる。中か外かは DOM ではなく React の木で決める。
  *   Radix の menu／dialog は portal に描かれるので、DOM の包含で見ると「外」になる。
  *   層の `onPointerDownCapture` が native event に印を付け、document の listener
- *   （React の root より後に走る）がその印を見る。rail のつまみは自身が開閉するので対象外。
+ *   （React の root より後に走る）がその印を見る。つまみは自身が開閉するので対象外。
  * - Tab キーの直後に focus が層の外へ出たときだけ閉じる。プログラムの `focus()` でも
  *   focusout は起きるので、relatedTarget だけでは区別できない（計画 §1 の d）。
  *   focus の移り先が portal 内の React 子（focus trap 等）のこともあるので、

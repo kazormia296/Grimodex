@@ -80,7 +80,7 @@ export function ToolWindowIcon({
   });
 
   // 処理中はパネルを閉じていても分かるよう、アイコンにドットバッジを出す
-  // （判定は rail のつまみと共有する usePanelBusy）。
+  // （判定はつまみと共有する usePanelBusy）。
   const showBusyBadge = usePanelBusy(panelId);
 
   const label = t(`layout.panel.${panelId}`);

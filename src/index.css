@@ -82,7 +82,7 @@
   --attribution-human: oklch(0.65 0.1 220);
   --attribution-ai: oklch(0.72 0.2 165);
   --attribution-unknown: oklch(0.72 0.14 30);
-  /* オーバーレイ領域の rail（つまみ）の色。出どころ表示の「不明」とは意味が違うので別に持つ。 */
+  /* オーバーレイのつまみの色。出どころ表示の「不明」とは意味が違うので別に持つ。 */
   --overlay-accent: oklch(0.72 0.14 30);
   /* Map note node — tinted with the app's brand accent (#534AB7). */
   --note-bg: #eeebfa;
@@ -351,9 +351,7 @@ button[role="switch"][aria-checked="true"] {
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
   [data-workspace-glass-root],
 #main-content:has(> [data-editor-ambient][data-background-enabled="true"])
-  [data-editor-area],
-#main-content:has(> [data-editor-ambient][data-background-enabled="true"])
-  [data-overlay-rail] {
+  [data-editor-area] {
   background: transparent;
 }
 
@@ -695,8 +693,7 @@ button[role="switch"][aria-checked="true"] {
 }
 
 /* Canvas behind the cards — sunk below --background so cards lift off it. */
-.app-shell [data-layout-shell],
-.app-shell [data-overlay-rail] {
+.app-shell [data-layout-shell] {
   background: var(--gx-canvas-bg);
 }
 
