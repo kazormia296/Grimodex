@@ -106,8 +106,8 @@ export const K62_FREEZE = Object.freeze({
   sha256: "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8",
 });
 export const GRAPH_CASE_FREEZE = Object.freeze({
-  path: "evals/nir1-graph/freeze.v1.json",
-  sha256: "6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7",
+  path: "evals/nir1-graph/freeze.v2.json",
+  sha256: "847e98bde51ffdfe890da9fbe45653e4933ba720c1427cac5b50e6788babba6b",
 });
 export const G01_FIXTURE = Object.freeze({
   path: "evals/nir1-g01/fixture.v1.json",
@@ -115,15 +115,19 @@ export const G01_FIXTURE = Object.freeze({
   fixtureId: "nir1-g01-explicit-pin-design/1",
 });
 
-/** Frozen G-case fixture digests, copied from `freeze.v1.json` `cases`. */
+/**
+ * Frozen G-case fixture digests, copied from `freeze.v2.json` `cases` (G-04 is
+ * version 2; the version-1 G-04 and `freeze.v1.json` stay in the tree as the
+ * superseded record, DR-CP4-G4-6).
+ */
 export const FROZEN_FIXTURE_SHA256 = Object.freeze({
   [G01_FIXTURE.path]: G01_FIXTURE.sha256,
   "evals/nir1-graph/g02-directed-relation.v1.json":
     "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c",
   "evals/nir1-graph/g03-bounded-two-hop.v1.json":
     "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d",
-  "evals/nir1-graph/g04-scope-exact-unknown.v1.json":
-    "4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf",
+  "evals/nir1-graph/g04-scope-exact-unknown.v2.json":
+    "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1",
   "evals/nir1-graph/g05-current-revision-freshness.v1.json":
     "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28",
   "evals/nir1-graph/g06-evidence-anchor-path.v1.json":
@@ -154,8 +158,8 @@ export const D2A_MODES = Object.freeze(["restricted", "unrestricted"]);
  * The 13 measured variants (TASK §15.2): G-01 has one, G-02..G-08 have 12.
  * `expectedGraph` copies the frozen `expectations.graph.status`; variants
  * expected unavailable are measured for quality but never enter the (a)
- * denominator (K6/2 step 1). `declaration` marks the five K2/4 declaration
- * runs.
+ * denominator (K6/2 step 1). `declaration` marks the six K2/4 declaration
+ * runs (G-04/base is the fifth declared Scene of K2/4, DR-CP4-G4-2).
  */
 export const GRAPH_EVAL_VARIANTS = Object.freeze(
   [
@@ -185,8 +189,8 @@ export const GRAPH_EVAL_VARIANTS = Object.freeze(
       "G-04",
       "base",
       "available",
-      false,
-      "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+      true,
+      "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
     ],
     [
       "G-05",

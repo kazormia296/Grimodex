@@ -31,7 +31,8 @@ export const DEV_SHAPES = Object.freeze({
     file: `${DEV_SHAPE_ROOT}/dev-shape-g03.v1.json`,
   },
   "G-04": {
-    source: "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+    // G-04 v2 (DR-CP4-G4-1): the dev shape follows the frozen version.
+    source: "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
     file: `${DEV_SHAPE_ROOT}/dev-shape-g04.v1.json`,
   },
   "G-06": {
