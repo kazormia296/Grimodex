@@ -1212,6 +1212,39 @@ fn x15_graph_input_writers_still_dirty_the_graph_index() -> Result<()> {
     fx.expect_both_dirty("semantic epoch")
 }
 
+fn typed_publisher(db: &Database, revision: &str) -> Result<Option<String>> {
+    db.with_conn(|conn| {
+        Ok(conn.query_row(
+            "SELECT last_evaluated_run_id FROM narrative_consumer_freshness
+              WHERE project_id = ?1 AND consumer_kind = 'proposal-revision' AND consumer_key = ?2",
+            params![PROJECT, revision],
+            |row| row.get(0),
+        )?)
+    })
+}
+
+/// 18-16 (real writers). A typed Revision's Freshness is a B input: after a
+/// Codex edit (which dirties B through the feed) and a rebuild, the
+/// incremental Freshness publish of the typed consumer (a new publisher)
+/// dirties B again through the Freshness hook.
+#[test]
+fn x15_typed_revision_freshness_still_dirties_the_graph_index() -> Result<()> {
+    let fx = published()?;
+    update_codex_summary(&fx.db, "nir1-alice", "Alice, edited")?;
+    fx.expect_both_dirty("Codex edit")?;
+    let publisher_before = typed_publisher(&fx.db, &fx.revision)?;
+    while matches!(
+        super::incremental_freshness::run_incremental_freshness_cycle(&fx.db)?,
+        super::incremental_freshness::IncrementalFreshnessCycleOutcome::Processed(_)
+    ) {}
+    assert_ne!(
+        typed_publisher(&fx.db, &fx.revision)?,
+        publisher_before,
+        "a new publisher"
+    );
+    fx.expect_both_dirty("typed Revision Freshness")
+}
+
 /// 18-8. A registration lent before a body-only save stays usable after it;
 /// a Codex summary edit makes it unusable in the same commit.
 #[test]

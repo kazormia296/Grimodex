@@ -37,6 +37,8 @@ pub(crate) const INDEX_KEY: &str = "nir1-reviewed-chronicle:v1";
 pub(crate) const SOURCE_KIND: &str = "nir1-chronicle-eligibility-set";
 
 #[cfg(test)]
+mod invalidate_tests;
+#[cfg(test)]
 mod publish_tests;
 #[cfg(test)]
 mod query_tests;
