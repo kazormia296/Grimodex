@@ -269,7 +269,7 @@ K1 既定規則の適用範囲：
     - 最後の回が approve で、G-02〜G-08 をすべて approve とし、要求が残っていない。reviewer は作成者と別の read-only の担当で、Graph runtime の出力を観測していない。1 回目は、束縛したレビュー記録と判定が一致する。
     - fixture と 1 回目のレビュー記録が、承認した時点の sha256 と一致する。manifest、README、schema は、宣言した範囲（manifest の key、README の節、schema の JSON pointer）を除くと、承認した時点と一致する。
     - 束縛した hash がすべて一致し、レビュー記録が存在する。
-    - `graphRuntimeObservedBeforeFreeze` が true なら、freeze と manifest が同じ case の `postObservationRevisions` を持ち、`supersedes` が v1 の freeze を path と sha256 で束縛し、作り直した case 以外の全 case の path と sha256 が v1 の freeze の `cases` と一致し、fixtureId が `/2` の case は作り直した case だけである。false なら `postObservationRevisions` を持たない。
+    - `graphRuntimeObservedBeforeFreeze` が true なら、freeze と manifest が同じ case の `postObservationRevisions` を持ち、`supersedes` が v1 の freeze を path と sha256 で束縛し、作り直した case 以外の全 case の path と sha256 が v1 の freeze の `cases` と一致し、fixtureId が `/2` の case は作り直した case だけである。最後の回の `filesAtReview` の manifest・schema・README・1 回目のレビュー記録は v1 の freeze が束縛した sha256 で、manifest の `holdVersusBlocked` と `coverageGaps` は承認した文と列を先頭に残し（追加だけ）、README は前提条件と観測規則の規則の行を残す。false なら `postObservationRevisions` を持たない。
   - freeze がない場合は、manifest の `status` が `predeclared-awaiting-independent-expectation-review` のままであることを求める。
 - 固定した後に、束縛したファイルのどれかを変えると hash が一致せず、`pnpm eval:fixtures` が失敗する。変える必要があれば、観測の前は独立期待値レビューと freeze をやり直す。
 - 観測の後に作った版は、ユーザーの確認、freeze の `postObservationRevisions` の宣言、新しい独立期待値レビューを経たときに限り、固定済みとして扱う。前の版の file と結果は残し、前の版の freeze は bytes を変えずに残す（v2 の G-04 がこの手続きで作った版である）。
