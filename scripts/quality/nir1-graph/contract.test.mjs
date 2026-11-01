@@ -1304,6 +1304,50 @@ test("a freeze written after a runtime observation declares every rebuilt case a
       },
       "supersedes must bind",
     ],
+    [
+      (value) => {
+        const [row] = value.postObservationRevisions;
+        row.from.fixtureId = row.to.fixtureId;
+      },
+      "must name a new file and a new fixtureId",
+    ],
+    [
+      (value) => {
+        value.postObservationRevisions[0].changedFields = [];
+      },
+      "changedFields is required",
+    ],
+    [
+      (value) => {
+        value.postObservationRevisions[0].observedRuns = [""];
+      },
+      "observedRuns is required",
+    ],
+    [
+      (value) => {
+        value.graphRuntimeObservedBeforeFreeze = "yes";
+      },
+      "freeze graphRuntimeObservedBeforeFreeze must be a boolean",
+    ],
+    [
+      (value) => {
+        const files =
+          value.independentExpectationReview.rounds.at(-1).filesAtReview;
+        files.find((row) => row.path === NIR1_GRAPH_MANIFEST_PATH).sha256 =
+          "0".repeat(64);
+      },
+      "final review round must have read the superseded freeze's evals/nir1-graph/manifest.v1.json",
+    ],
+    [
+      (value) => {
+        const manifestScope =
+          value.independentExpectationReview.changesAfterApproval.find(
+            (row) => row.path === NIR1_GRAPH_MANIFEST_PATH,
+          ).scope;
+        delete manifestScope.appendOnly;
+      },
+      "change scope must bind the approved prefix of /preconditions/holdVersusBlocked, /coverageGaps",
+    ],
   ];
   for (const [edit, message] of freezeEdits) {
     await withPopulationCopy(async (temp) => {
@@ -1347,6 +1391,71 @@ test("a freeze written after a runtime observation declares every rebuilt case a
     const errors = await populationErrors(temp);
     assertError(errors, "must declare postObservationRevisions");
     assertError(errors, "must name the same cases");
+  });
+  // The manifest's record must name the freeze's from/to for the case.
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      value.postObservationRevisions[0].to.path =
+        "evals/nir1-graph/g04-scope-exact-unknown.v3.json";
+    });
+    await rebindFreeze(temp);
+    assertError(
+      await populationErrors(temp),
+      "postObservationRevisions G-04 differs from the manifest's entry",
+    );
+  });
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      value.graphRuntimeObservedBeforeFreeze = "yes";
+    });
+    await rebindFreeze(temp);
+    assertError(
+      await populationErrors(temp),
+      "manifest graphRuntimeObservedBeforeFreeze must be a boolean",
+    );
+  });
+  // Append-only text and lists keep their approved prefix, and the README
+  // keeps its rule lines, even inside a declared scope.
+  for (const [file, change, message] of [
+    [
+      NIR1_GRAPH_MANIFEST_PATH,
+      (value) => {
+        value.preconditions.holdVersusBlocked =
+          "Hold and blocked are the same.";
+      },
+      "/preconditions/holdVersusBlocked may only grow",
+    ],
+    [
+      NIR1_GRAPH_MANIFEST_PATH,
+      (value) => {
+        value.coverageGaps.splice(0, 1);
+      },
+      "/coverageGaps may only grow",
+    ],
+  ]) {
+    await withPopulationCopy(async (temp) => {
+      await editJson(temp, file, change);
+      await rebindFreeze(temp);
+      assertError(await populationErrors(temp), message);
+    });
+  }
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      value.coverageGaps.push("One more gap.");
+      value.preconditions.holdVersusBlocked += " Appended.";
+    });
+    await rebindFreeze(temp);
+    assert.deepEqual(await populationErrors(temp), []);
+  });
+  await withPopulationCopy(async (temp) => {
+    const readme = path.join(temp, NIR1_GRAPH_README_PATH);
+    const line =
+      "- 前提条件は、観測の後に足さず、外さず、読み替えない。前提条件が成り立たなくても期待値は変えない。\n";
+    const text = await readFile(readme, "utf8");
+    assert.ok(text.includes(line));
+    await writeFile(readme, text.replace(line, ""));
+    await rebindFreeze(temp);
+    assertError(await populationErrors(temp), "must keep the rule line");
   });
   await withPopulationCopy(async (temp) => {
     await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
