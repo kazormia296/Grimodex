@@ -7,7 +7,8 @@
 use rusqlite::{params, Connection};
 
 use super::invalidate::{
-    before_consumer_state_write, classify_current_revision_in_tx, suspend_current_revision_in_tx,
+    before_consumer_state_write, classify_current_revision_in_tx,
+    classify_current_revision_with_list_in_tx, suspend_current_revision_in_tx,
     CurrentRevisionIndexInput, KNOWN_NON_GRAPH_REVISION_KINDS,
 };
 use super::test_support::Fixture;
@@ -256,6 +257,65 @@ fn x15_every_graph_roster_candidate_dirties_both_indexes() {
         Ok(())
     })
     .expect("subset property");
+}
+
+/// 18-19 (the Graph side is either half). With a hypothetical known list
+/// whose entries share one half with the typed Revision, a Revision with
+/// either half typed stays `ChronicleAndGraph`: the Graph side is judged
+/// before the list and is an OR of the two halves, not an AND.
+#[test]
+fn x15_either_typed_half_wins_over_any_known_list_entry() {
+    let db = memory();
+    db.with_conn(|conn| {
+        let tx = conn.unchecked_transaction()?;
+        proposal(
+            &tx,
+            PROJECT,
+            "half-set",
+            text(TYPED_SET),
+            Surface::Path("other.surface"),
+            "draft",
+            "rev-half-set",
+        )?;
+        proposal(
+            &tx,
+            PROJECT,
+            "half-surface",
+            text("other.kind@1"),
+            Surface::Path(TYPED_SURFACE),
+            "draft",
+            "rev-half-surface",
+        )?;
+        proposal(
+            &tx,
+            PROJECT,
+            "listed",
+            text("other.kind@1"),
+            Surface::Path("other.surface"),
+            "draft",
+            "rev-listed",
+        )?;
+        let overlapping = [
+            (TYPED_SET, "other.surface"),
+            ("other.kind@1", TYPED_SURFACE),
+            ("other.kind@1", "other.surface"),
+        ];
+        for revision in ["rev-half-set", "rev-half-surface"] {
+            assert_eq!(
+                classify_current_revision_with_list_in_tx(&tx, PROJECT, revision, &overlapping)?,
+                ChronicleAndGraph,
+                "{revision}"
+            );
+        }
+        assert_eq!(
+            classify_current_revision_with_list_in_tx(&tx, PROJECT, "rev-listed", &overlapping)?,
+            ChronicleOnly,
+            "the list itself is honoured"
+        );
+        tx.rollback()?;
+        Ok(())
+    })
+    .expect("Graph side first");
 }
 
 #[test]

@@ -101,6 +101,24 @@ pub(crate) fn classify_current_revision_in_tx(
     project: &str,
     revision: &str,
 ) -> Result<CurrentRevisionIndexInput> {
+    classify_current_revision_with_list_in_tx(
+        conn,
+        project,
+        revision,
+        &KNOWN_NON_GRAPH_REVISION_KINDS,
+    )
+}
+
+/// `classify_current_revision_in_tx` over a given known list. The Graph side
+/// is judged first, so a list entry that shared a half with the typed
+/// Revision could not move a Graph-side Revision to `ChronicleOnly`; a test
+/// pins that with such a list.
+pub(crate) fn classify_current_revision_with_list_in_tx(
+    conn: &Connection,
+    project: &str,
+    revision: &str,
+    known_non_graph: &[(&str, &str)],
+) -> Result<CurrentRevisionIndexInput> {
     let sql = format!(
         "SELECT proposal_set.set_kind, extraction_run.surface_path_id, COALESCE({}, 0)
            FROM narrative_proposals proposal
@@ -127,7 +145,7 @@ pub(crate) fn classify_current_revision_in_tx(
         {
             return Ok(CurrentRevisionIndexInput::ChronicleAndGraph);
         }
-        if !KNOWN_NON_GRAPH_REVISION_KINDS
+        if !known_non_graph
             .iter()
             .any(|(kind, path)| set_kind == Some(*kind) && surface == Some(*path))
         {
