@@ -5,9 +5,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 import { loadObservationPrepContext } from "./observation-prep.mjs";
 import {
   SEED_PIN_ADDENDUM_PATH,
+  SEED_PIN_ADDENDUM_V1,
   SP1,
   SP_ACCEPTANCE_IDS,
   seedPinAddendumErrors,
@@ -125,8 +128,19 @@ test("placement: after the foreshadow/pin step, before maintenance and setupTime
   assert.ok(seedPinAddendumErrors(rowPlace, ctx).length > 0);
 });
 
-test("digests of freeze.v1.json and every fixture (SP-N8)", async () => {
+test("digests of the current freeze (freeze.v2.json) and every fixture (SP-N8)", async () => {
   const { ctx, addendum } = await load();
+  assert.equal(NIR1_GRAPH_FREEZE_PATH, "evals/nir1-graph/freeze.v2.json");
+  const v1 = JSON.parse(
+    await readFile(path.join(repoRoot, SEED_PIN_ADDENDUM_V1.path), "utf8"),
+  );
+  // The references v1 named (freeze.v1.json, G-04 v1) are not the current.
+  const oldFreeze = clone(addendum);
+  oldFreeze.references.graphCaseFreeze = clone(v1.references.graphCaseFreeze);
+  assert.ok(has(seedPinAddendumErrors(oldFreeze, ctx), /graphCaseFreeze/u));
+  const oldG04 = clone(addendum);
+  oldG04.references.fixtures["G-04"] = clone(v1.references.fixtures["G-04"]);
+  assert.ok(has(seedPinAddendumErrors(oldG04, ctx), /G-04/u));
   const freeze = clone(addendum);
   freeze.references.graphCaseFreeze.sha256 = flip(
     freeze.references.graphCaseFreeze.sha256,
@@ -236,8 +250,9 @@ test("S3v2-P2-1 / P3-1: synthetic detection for SP-N1〜N5, N9〜N13; runtime st
 
 test("S3v2-P3-4: the SP/1 digest is recomputed when its bytes are in the repository", async () => {
   const { ctx, addendum } = await load();
-  // S4a: the committed addendum is frozen, and a frozen one needs the bytes
-  // (S3v3-P3-1, the next test). The absent-bytes tolerance is a draft's.
+  // The committed v2 is a draft (frozen after S2 追補 and S4, B2b-2); a frozen
+  // one needs the bytes (S3v3-P3-1, the next test). The absent-bytes tolerance
+  // is a draft's.
   const draft = clone(addendum);
   draft.status = "draft-awaiting-independent-review";
   draft.review = null;
@@ -274,4 +289,74 @@ test("S3v3-P3-1: a frozen seed pin addendum needs the SP/1 bytes in the reposito
   assert.ok(
     has(seedPinAddendumErrors(frozen, { ...ctx, sp1Sha256: null }), /SP\/1/u),
   );
+});
+
+test("DR-CP4-G4-7 B2b-1: the new version is v1 with the references only changed, and supersedes v1's unchanged bytes", async () => {
+  const { ctx, addendum } = await load();
+  assert.equal(
+    SEED_PIN_ADDENDUM_PATH,
+    "evals/nir1-graph/seed-pin-addendum.v2.json",
+  );
+  const v1Bytes = await readFile(
+    path.join(repoRoot, SEED_PIN_ADDENDUM_V1.path),
+  );
+  assert.equal(
+    createHash("sha256").update(v1Bytes).digest("hex"),
+    SEED_PIN_ADDENDUM_V1.sha256,
+  );
+  const v1 = JSON.parse(v1Bytes);
+  assert.equal(addendum.addendumId, "nir1-graph-seed-pin-addendum/2");
+  assert.equal(addendum.status, "draft-awaiting-independent-review");
+  assert.equal(addendum.review, null);
+  // v1's meaning: no row was derived after a Graph observation (the rows
+  // are v1's; DR-CP4-G4-7 B2b-1 (B-1)).
+  assert.equal(addendum.graphRuntimeObservedBeforeAuthoring, false);
+  assert.deepEqual(addendum.seedPins, v1.seedPins);
+  assert.deepEqual(
+    {
+      path: addendum.supersedes.path,
+      sha256: addendum.supersedes.sha256,
+      commit: addendum.supersedes.commit,
+    },
+    {
+      path: SEED_PIN_ADDENDUM_V1.path,
+      sha256: SEED_PIN_ADDENDUM_V1.sha256,
+      commit: "cf1c83e3c4d491032511cb6f11fecb5699bc3ed5",
+    },
+  );
+  // Every other field is v1's once the freeze name reads back.
+  const back = clone(addendum);
+  for (const key of ["addendumId", "status", "review", "supersedes"])
+    delete back[key];
+  back.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+  back.references.fixtures["G-04"] = v1.references.fixtures["G-04"];
+  back.purpose = back.purpose.replace("freeze.v2.json", "freeze.v1.json");
+  const n8 = back.acceptance.find((row) => row.id === "SP-N8");
+  n8.check = n8.check.replace("freeze.v2.json", "freeze.v1.json");
+  const v1Back = clone(v1);
+  for (const key of ["addendumId", "status", "review"]) delete v1Back[key];
+  assert.deepEqual(back, v1Back);
+
+  // v1 itself is not the current version.
+  assert.ok(has(seedPinAddendumErrors(v1, ctx), /graphCaseFreeze/u));
+  for (const mutate of [
+    (a) => delete a.supersedes,
+    (a) => (a.supersedes.sha256 = flip(a.supersedes.sha256)),
+    (a) => (a.supersedes.path = "evals/nir1-graph/seed-pin-addendum.v3.json"),
+    (a) => (a.supersedes.commit = "cf1c83e3"),
+  ]) {
+    const mutated = clone(addendum);
+    mutate(mutated);
+    assert.ok(has(seedPinAddendumErrors(mutated, ctx), /supersedes/u));
+  }
+  for (const changed of ["1".repeat(64), null])
+    assert.ok(
+      has(
+        seedPinAddendumErrors(addendum, {
+          ...ctx,
+          supersededSeedPinAddendumSha256: changed,
+        }),
+        /supersedes/u,
+      ),
+    );
 });

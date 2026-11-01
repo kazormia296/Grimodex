@@ -17,7 +17,12 @@ import os from "node:os";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
-import { SP1 } from "./seed-pin-addendum.mjs";
+import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
+import {
+  SEED_PIN_ADDENDUM_PATH,
+  SEED_PIN_ADDENDUM_V1,
+  SP1,
+} from "./seed-pin-addendum.mjs";
 import { execFileSync } from "node:child_process";
 import {
   BLOCKED_TABLE_SOURCE,
@@ -32,6 +37,7 @@ import {
   OBSERVATION_PREP_FILES,
   PLACEHOLDER,
   S4_PROCEDURE_WORDS,
+  SETUP_ADDENDUM_V1,
   SOURCE_PINS,
   assertObservationPrepFormal,
   harnessPinOf,
@@ -1210,7 +1216,9 @@ test("the placeholder form is S4:<name> and nothing else", () => {
 });
 
 test("the frozen files the record must not change keep their freeze digests", async () => {
-  const freeze = await json("evals/nir1-graph/freeze.v1.json");
+  // The current freeze (B2a review P3-2): freeze.v2.json since G-04 v2.
+  assert.equal(NIR1_GRAPH_FREEZE_PATH, "evals/nir1-graph/freeze.v2.json");
+  const freeze = await json(NIR1_GRAPH_FREEZE_PATH);
   for (const entry of freeze.cases) {
     const bytes = await readFile(path.join(repoRoot, entry.path));
     assert.equal(sha256(bytes), entry.sha256, entry.path);
@@ -1302,6 +1310,149 @@ test("SP/1: addenda and traces point at the seed pin step", async () => {
       traceErrors(stale, ctx).some((e) => /seedPinAddendum/u.test(e)),
       file,
     );
+  }
+});
+
+test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references only changed, and supersedes v1's unchanged bytes", async () => {
+  const ctx = await context();
+  assert.equal(
+    OBSERVATION_PREP_FILES.setupAddendum,
+    "evals/nir1-g01/setup-addendum.v2.json",
+  );
+  const v1Bytes = await readFile(path.join(repoRoot, SETUP_ADDENDUM_V1.path));
+  assert.equal(sha256(v1Bytes), SETUP_ADDENDUM_V1.sha256);
+  const v1 = JSON.parse(v1Bytes);
+  const v2 = await json(OBSERVATION_PREP_FILES.setupAddendum);
+  assert.deepEqual(setupAddendumErrors(v2, ctx), []);
+  assert.equal(v2.addendumId, "nir1-g01-setup-addendum/2");
+  assert.equal(v2.status, "draft-awaiting-independent-review");
+  assert.equal(v2.review, null);
+  assert.equal(v2.graphRuntimeObservedBeforeAuthoring, false);
+  assert.deepEqual(
+    {
+      path: v2.supersedes.path,
+      sha256: v2.supersedes.sha256,
+      commit: v2.supersedes.commit,
+    },
+    {
+      path: SETUP_ADDENDUM_V1.path,
+      sha256: SETUP_ADDENDUM_V1.sha256,
+      commit: "cf1c83e3c4d491032511cb6f11fecb5699bc3ed5",
+    },
+  );
+  assert.deepEqual(
+    {
+      path: v2.references.graphCaseFreeze.path,
+      sha256: v2.references.graphCaseFreeze.sha256,
+    },
+    { path: NIR1_GRAPH_FREEZE_PATH, sha256: ctx.freeze.sha256 },
+  );
+  assert.ok(
+    v2.references.graphCaseFreeze.note.startsWith(
+      v1.references.graphCaseFreeze.note,
+    ),
+  );
+  // Every other field is v1's, the new versions' paths and the declared
+  // Scene count (K2/4 の 5 件目) read back.
+  const back = clone(v2);
+  for (const key of ["addendumId", "status", "review", "supersedes"])
+    delete back[key];
+  back.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+  back.declarationPlace.rule = back.declarationPlace.rule
+    .replace(
+      "5 つの Scene（G-01 と G-02／G-04／G-07／G-08 の追加 Scene）",
+      "4 つの Scene（G-01 と G-02／G-07／G-08 の追加 Scene）",
+    )
+    .replace(
+      OBSERVATION_PREP_FILES.declarationAddendum,
+      DECLARATION_ADDENDUM_V1.path,
+    );
+  back.seedPinStepNote = back.seedPinStepNote.replace(
+    SEED_PIN_ADDENDUM_PATH,
+    SEED_PIN_ADDENDUM_V1.path,
+  );
+  const v1Back = clone(v1);
+  for (const key of ["addendumId", "status", "review"]) delete v1Back[key];
+  assert.deepEqual(back, v1Back);
+
+  // v1 itself is not the current version (freeze.v1.json, no supersedes).
+  assert.ok(
+    setupAddendumErrors(v1, ctx).some((e) => /graphCaseFreeze/u.test(e)),
+  );
+  const oldFreeze = clone(v2);
+  oldFreeze.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+  assert.ok(
+    setupAddendumErrors(oldFreeze, ctx).some((e) => /graphCaseFreeze/u.test(e)),
+  );
+  const oldSeedPin = clone(v2);
+  oldSeedPin.seedPinStepNote = v1.seedPinStepNote;
+  assert.ok(
+    setupAddendumErrors(oldSeedPin, ctx).some((e) =>
+      /seedPinStepNote/u.test(e),
+    ),
+  );
+  for (const mutate of [
+    (a) => delete a.supersedes,
+    (a) => (a.supersedes.sha256 = flip(a.supersedes.sha256)),
+    (a) => (a.supersedes.path = SEED_PIN_ADDENDUM_V1.path),
+    (a) => (a.supersedes.commit = "cf1c83e3"),
+  ]) {
+    const mutated = clone(v2);
+    mutate(mutated);
+    assert.ok(
+      setupAddendumErrors(mutated, ctx).some((e) => /supersedes/u.test(e)),
+    );
+  }
+  for (const changed of ["1".repeat(64), null])
+    assert.ok(
+      setupAddendumErrors(v2, {
+        ...ctx,
+        supersededSetupAddendumSha256: changed,
+      }).some((e) => /supersedes/u.test(e)),
+    );
+});
+
+test("DR-CP4-G4-7 B2b-1 (P2-1 (ii)): a trace names seed-pin addendum v1 with its unchanged bytes or the current version, nothing else", async () => {
+  const ctx = await context();
+  assert.equal(
+    SEED_PIN_ADDENDUM_PATH,
+    "evals/nir1-graph/seed-pin-addendum.v2.json",
+  );
+  for (const file of [
+    OBSERVATION_PREP_FILES.traceEditing,
+    OBSERVATION_PREP_FILES.traceBrowsing,
+  ]) {
+    const trace = await json(file);
+    // The frozen traces name v1 and validate as committed.
+    assert.equal(trace.project.seedPinAddendum, SEED_PIN_ADDENDUM_V1.path);
+    assert.deepEqual(traceErrors(trace, ctx), [], file);
+    const current = clone(trace);
+    current.project.seedPinAddendum = SEED_PIN_ADDENDUM_PATH;
+    assert.deepEqual(traceErrors(current, ctx), [], file);
+    for (const named of [
+      "evals/nir1-graph/seed-pin-addendum.v3.json",
+      OBSERVATION_PREP_FILES.setupAddendum,
+      `./${SEED_PIN_ADDENDUM_V1.path}`,
+      `${SEED_PIN_ADDENDUM_V1.path} `,
+      "seed-pin-addendum.v1.json",
+      "",
+    ]) {
+      const other = clone(trace);
+      other.project.seedPinAddendum = named;
+      assert.ok(
+        traceErrors(other, ctx).some((e) => /seedPinAddendum/u.test(e)),
+        `${file}: ${named}`,
+      );
+    }
+    // v1 is accepted only while its bytes are unchanged.
+    for (const changed of ["1".repeat(64), null])
+      assert.ok(
+        traceErrors(trace, {
+          ...ctx,
+          supersededSeedPinAddendumSha256: changed,
+        }).some((e) => /seedPinAddendum/u.test(e)),
+        file,
+      );
   }
 });
 
