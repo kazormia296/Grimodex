@@ -49,12 +49,14 @@ import {
   parseK64FreezeCommit,
   sourcePinGitErrors,
   formalReferenceErrors,
+  formalReferenceRows,
   authorDeclarationErrors,
   declarationAddendumErrors,
   loadObservationPrepContext,
   observationPrepErrors,
   procedureDraftErrors,
   setupAddendumErrors,
+  supersededReferences,
   traceErrors,
   validateNir1ObservationPrep,
 } from "./observation-prep.mjs";
@@ -303,8 +305,12 @@ test("setup addendum: the K2/4 table row for G-01 and the fixture digests", asyn
   );
 
   const observed = clone(addendum);
-  observed.graphRuntimeObservedBeforeAuthoring = true;
-  assert.ok(setupAddendumErrors(observed, ctx).length > 0);
+  observed.graphRuntimeObservedBeforeAuthoring = false;
+  assert.ok(
+    setupAddendumErrors(observed, ctx).some((e) =>
+      /graphRuntimeObserved/u.test(e),
+    ),
+  );
 
   const place = clone(addendum);
   place.declarationPlace.choice = "iii";
@@ -1327,7 +1333,8 @@ test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references on
   assert.equal(v2.addendumId, "nir1-g01-setup-addendum/2");
   assert.equal(v2.status, "draft-awaiting-independent-review");
   assert.equal(v2.review, null);
-  assert.equal(v2.graphRuntimeObservedBeforeAuthoring, false);
+  // Written after a Graph runtime observation (B2b-1 review P2-1).
+  assert.equal(v2.graphRuntimeObservedBeforeAuthoring, true);
   assert.deepEqual(
     {
       path: v2.supersedes.path,
@@ -1355,7 +1362,14 @@ test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references on
   // Every other field is v1's, the new versions' paths and the declared
   // Scene count (K2/4 の 5 件目) read back.
   const back = clone(v2);
-  for (const key of ["addendumId", "status", "review", "supersedes"])
+  // The flag is v1 false, v2 true (B2b-1 review P2-1).
+  for (const key of [
+    "addendumId",
+    "status",
+    "review",
+    "supersedes",
+    "graphRuntimeObservedBeforeAuthoring",
+  ])
     delete back[key];
   back.references.graphCaseFreeze = v1.references.graphCaseFreeze;
   back.declarationPlace.rule = back.declarationPlace.rule
@@ -1372,7 +1386,13 @@ test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references on
     SEED_PIN_ADDENDUM_V1.path,
   );
   const v1Back = clone(v1);
-  for (const key of ["addendumId", "status", "review"]) delete v1Back[key];
+  for (const key of [
+    "addendumId",
+    "status",
+    "review",
+    "graphRuntimeObservedBeforeAuthoring",
+  ])
+    delete v1Back[key];
   assert.deepEqual(back, v1Back);
 
   // v1 itself is not the current version (freeze.v1.json, no supersedes).
@@ -1407,9 +1427,100 @@ test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references on
     assert.ok(
       setupAddendumErrors(v2, {
         ...ctx,
-        supersededSetupAddendumSha256: changed,
+        supersededSetupAddendum: changed && {
+          ...ctx.supersededSetupAddendum,
+          sha256: changed,
+        },
       }).some((e) => /supersedes/u.test(e)),
     );
+
+  // B2b-1 review P2-1, P3-1, P3-2: the flag true holds only for a copy of v1.
+  const copyError = (e) => /references only changed/u.test(e);
+  assert.ok(!setupAddendumErrors(v2, ctx).some(copyError));
+  for (const mutate of [
+    (a) => (a.declarationTiming = `${a.declarationTiming} 追記。`),
+    (a) => (a.declarations[0].vetoNote = "観測の後に書き直した。"),
+    (a) => (a.afterMutationReadings.retry.gapMs = 300),
+    (a) => (a.references.graphCaseFreeze.note = "freeze.v2.json を参照する。"),
+    (a) =>
+      (a.declarationPlace.rule = a.declarationPlace.rule.replace(
+        "5 つの Scene",
+        "6 つの Scene",
+      )),
+    (a) => (a.extra = true),
+  ]) {
+    const mutated = clone(v2);
+    mutate(mutated);
+    assert.equal(mutated.graphRuntimeObservedBeforeAuthoring, true);
+    assert.ok(setupAddendumErrors(mutated, ctx).some(copyError));
+  }
+  for (const id of ["nir1-g01-setup-addendum/1", "nir1-g01-setup-addendum/3"]) {
+    const mutated = clone(v2);
+    mutated.addendumId = id;
+    assert.ok(
+      setupAddendumErrors(mutated, ctx).some((e) => /addendumId/u.test(e)),
+    );
+  }
+  assert.ok(
+    setupAddendumErrors(v2, {
+      ...ctx,
+      sourcePinGit: { blobSha: () => null },
+    }).some((e) => /supersedes\.commit/u.test(e)),
+  );
+});
+
+test("B2b-1 review P3-2: the formal gate checks each addendum's superseded v1 bytes at its commit (git)", async () => {
+  const ctx = await context();
+  const rows = supersededReferences(ctx.parsed);
+  assert.deepEqual(
+    rows.map((row) => [row.path, row.sha256]),
+    [
+      [SETUP_ADDENDUM_V1.path, SETUP_ADDENDUM_V1.sha256],
+      [DECLARATION_ADDENDUM_V1.path, DECLARATION_ADDENDUM_V1.sha256],
+      [SEED_PIN_ADDENDUM_V1.path, SEED_PIN_ADDENDUM_V1.sha256],
+    ],
+  );
+  const run = (args) =>
+    execFileSync("git", args, {
+      cwd: repoRoot,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  const git = {
+    blobSha: (commit, file) => {
+      try {
+        return sha256(run(["show", `${commit}:${file}`]));
+      } catch {
+        return null;
+      }
+    },
+    isAncestor: (ancestor, descendant) => {
+      try {
+        run(["merge-base", "--is-ancestor", ancestor, descendant]);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+  };
+  const head = run(["rev-parse", "HEAD"]).toString("utf8").trim();
+  assert.deepEqual(formalReferenceErrors(rows, head, git), []);
+  // The gate's rows include them.
+  const gateRows = formalReferenceRows(
+    await json(OBSERVATION_PREP_FILES.prep),
+    ctx.parsed,
+  );
+  for (const row of rows)
+    assert.ok(
+      gateRows.some(
+        (entry) =>
+          entry.path === row.path &&
+          entry.commit === row.commit &&
+          entry.sha256 === row.sha256,
+      ),
+      row.path,
+    );
+  const wrong = rows.map((row) => ({ ...row, commit: head }));
+  assert.equal(formalReferenceErrors(wrong, head, git).length >= 3, true);
 });
 
 test("DR-CP4-G4-7 B2b-1 (P2-1 (ii)): a trace names seed-pin addendum v1 with its unchanged bytes or the current version, nothing else", async () => {
@@ -1449,7 +1560,10 @@ test("DR-CP4-G4-7 B2b-1 (P2-1 (ii)): a trace names seed-pin addendum v1 with its
       assert.ok(
         traceErrors(trace, {
           ...ctx,
-          supersededSeedPinAddendumSha256: changed,
+          supersededSeedPinAddendum: changed && {
+            ...ctx.supersededSeedPinAddendum,
+            sha256: changed,
+          },
         }).some((e) => /seedPinAddendum/u.test(e)),
         file,
       );

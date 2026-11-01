@@ -193,9 +193,11 @@ test("contract, status, review and the seed id shape (SP-N9)", async () => {
   const sha = clone(addendum);
   sha.contract.sha256 = flip(sha.contract.sha256);
   assert.ok(has(seedPinAddendumErrors(sha, ctx), /contract/u));
+  // The current version was written after a Graph runtime observation
+  // (B2b-1 review P2-1): false is refused.
   const observed = clone(addendum);
-  observed.graphRuntimeObservedBeforeAuthoring = true;
-  assert.ok(seedPinAddendumErrors(observed, ctx).length > 0);
+  observed.graphRuntimeObservedBeforeAuthoring = false;
+  assert.ok(has(seedPinAddendumErrors(observed, ctx), /graphRuntimeObserved/u));
   const reviewed = clone(addendum);
   reviewed.review = { reviewer: "x" };
   assert.ok(has(seedPinAddendumErrors(reviewed, ctx), /review/u));
@@ -308,9 +310,9 @@ test("DR-CP4-G4-7 B2b-1: the new version is v1 with the references only changed,
   assert.equal(addendum.addendumId, "nir1-graph-seed-pin-addendum/2");
   assert.equal(addendum.status, "draft-awaiting-independent-review");
   assert.equal(addendum.review, null);
-  // v1's meaning: no row was derived after a Graph observation (the rows
-  // are v1's; DR-CP4-G4-7 B2b-1 (B-1)).
-  assert.equal(addendum.graphRuntimeObservedBeforeAuthoring, false);
+  // Written after a Graph runtime observation (literal; B2b-1 review P2-1),
+  // as a copy of v1's rows.
+  assert.equal(addendum.graphRuntimeObservedBeforeAuthoring, true);
   assert.deepEqual(addendum.seedPins, v1.seedPins);
   assert.deepEqual(
     {
@@ -326,7 +328,14 @@ test("DR-CP4-G4-7 B2b-1: the new version is v1 with the references only changed,
   );
   // Every other field is v1's once the freeze name reads back.
   const back = clone(addendum);
-  for (const key of ["addendumId", "status", "review", "supersedes"])
+  // The flag is v1 false, v2 true (B2b-1 review P2-1).
+  for (const key of [
+    "addendumId",
+    "status",
+    "review",
+    "supersedes",
+    "graphRuntimeObservedBeforeAuthoring",
+  ])
     delete back[key];
   back.references.graphCaseFreeze = v1.references.graphCaseFreeze;
   back.references.fixtures["G-04"] = v1.references.fixtures["G-04"];
@@ -334,7 +343,13 @@ test("DR-CP4-G4-7 B2b-1: the new version is v1 with the references only changed,
   const n8 = back.acceptance.find((row) => row.id === "SP-N8");
   n8.check = n8.check.replace("freeze.v2.json", "freeze.v1.json");
   const v1Back = clone(v1);
-  for (const key of ["addendumId", "status", "review"]) delete v1Back[key];
+  for (const key of [
+    "addendumId",
+    "status",
+    "review",
+    "graphRuntimeObservedBeforeAuthoring",
+  ])
+    delete v1Back[key];
   assert.deepEqual(back, v1Back);
 
   // v1 itself is not the current version.
@@ -354,9 +369,71 @@ test("DR-CP4-G4-7 B2b-1: the new version is v1 with the references only changed,
       has(
         seedPinAddendumErrors(addendum, {
           ...ctx,
-          supersededSeedPinAddendumSha256: changed,
+          supersededSeedPinAddendum: changed && {
+            ...ctx.supersededSeedPinAddendum,
+            sha256: changed,
+          },
         }),
         /supersedes/u,
       ),
     );
+});
+
+test("B2b-1 review P2-1, P3-1, P3-2: the flag true holds only for a copy of v1 (references and version fields changed), id /2, a commit holding v1's bytes", async () => {
+  const { ctx, addendum } = await load();
+  const copyError = /references only changed/u;
+  const row = (a, key) =>
+    a.seedPins.find((entry) => `${entry.caseId}/${entry.variantId}` === key);
+  // A newly derived row, an added row or a changed rule is not a copy, even
+  // with the flag true.
+  for (const mutate of [
+    (a) => (row(a, "G-04/base").seedEntityId = "g04-lio"),
+    (a) => a.seedPins.push({ ...row(a, "G-04/base"), variantId: "v9" }),
+    (a) => (a.step.workspace = `${a.step.workspace} 追記。`),
+    (a) => (a.seedPinsRule = "起案者が選ぶ。"),
+    (a) => (a.purpose = a.purpose.replace("freeze.v2.json", "freeze.v3.json")),
+    (a) => (a.extra = true),
+  ]) {
+    const mutated = clone(addendum);
+    mutate(mutated);
+    assert.equal(mutated.graphRuntimeObservedBeforeAuthoring, true);
+    assert.ok(has(seedPinAddendumErrors(mutated, ctx), copyError));
+  }
+  assert.ok(!has(seedPinAddendumErrors(addendum, ctx), copyError));
+  // v1's bytes are needed to compare against.
+  assert.ok(
+    has(
+      seedPinAddendumErrors(addendum, {
+        ...ctx,
+        supersededSeedPinAddendum: null,
+      }),
+      /supersedes/u,
+    ),
+  );
+  // P3-1: the id is the second version's.
+  for (const id of [
+    "nir1-graph-seed-pin-addendum/1",
+    "nir1-graph-seed-pin-addendum/9",
+  ]) {
+    const mutated = clone(addendum);
+    mutated.addendumId = id;
+    assert.ok(has(seedPinAddendumErrors(mutated, ctx), /addendumId/u));
+  }
+  // P3-2: the commit must hold v1's bytes (git when present).
+  assert.ok(
+    has(
+      seedPinAddendumErrors(addendum, {
+        ...ctx,
+        sourcePinGit: { blobSha: () => null },
+      }),
+      /supersedes\.commit/u,
+    ),
+  );
+  assert.deepEqual(
+    seedPinAddendumErrors(addendum, {
+      ...ctx,
+      sourcePinGit: { blobSha: () => SEED_PIN_ADDENDUM_V1.sha256 },
+    }),
+    [],
+  );
 });
