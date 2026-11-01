@@ -725,6 +725,8 @@ fn x15_feed_append_dispatch_follows_the_classification() -> Result<()> {
         ),
     )?;
     fx.expect_both_dirty("origin import")?;
+    // The feed accepts a Scene key with an extra field; the classification
+    // does not treat it as a body event, so both Indexes are dirtied.
     append_probe(
         &fx.db,
         &forward(vec![event(
@@ -733,18 +735,8 @@ fn x15_feed_append_dispatch_follows_the_classification() -> Result<()> {
             "update",
             &["/content"],
         )]),
-    )
-    .map_or_else(
-        |error| {
-            assert_eq!(
-                graph(&fx.db).unwrap(),
-                before,
-                "a refused append writes nothing: {error}"
-            );
-            Ok(())
-        },
-        |()| fx.expect_both_dirty("object key with an extra field"),
     )?;
+    fx.expect_both_dirty("object key with an extra field")?;
     // Events the feed refuses leave both Indexes as they were.
     let before = graph(&fx.db)?;
     for bad in [
