@@ -711,7 +711,7 @@ test("S1j-2: 完全な setup の段は executor を持ち（[precheck] の execu
   );
 });
 
-test("K2/4 の宣言の段: 宣言の 5 run だけに、測定の workspace を開いた後・V-10 の probe と Graph arm の前に置く（setupOrder の外）", () => {
+test("K2/4 の宣言の段: 宣言の 6 run だけに、測定の workspace を開いた後・V-10 の probe と Graph arm の前に置く（setupOrder の外）", () => {
   const plans = loadFrozenSetupPlans({
     root: REPO_ROOT,
     stopsAt: SETUP_STOPS.complete,
@@ -734,6 +734,7 @@ test("K2/4 の宣言の段: 宣言の 5 run だけに、測定の workspace を�
         {
           "G-01": "g01-mira",
           "G-02": "g02-tamsin-first",
+          "G-04": "g04-lio-landing",
           "G-07": "g07-pell-dock",
           "G-08": "g08-cass-attic",
         }[plan.caseId],
@@ -861,7 +862,7 @@ test("plan の入力: 論理 ID のまま写し（runtime ID を持たない）�
   );
 });
 
-test("IR を持つ Scene を folder に包む: fixture の qualifiedIr の 10 行の Scene ごとに 1 つ、位置はその Scene の読む順の位置（論理 ID と title は harness の値）", () => {
+test("IR を持つ Scene を folder に包む: fixture の qualifiedIr の 9 行の Scene ごとに 1 つ、位置はその Scene の読む順の位置（論理 ID と title は harness の値）", () => {
   const plans = loadFrozenSetupPlans({
     root: REPO_ROOT,
     stopsAt: SETUP_STOPS.seedPin,
@@ -907,7 +908,7 @@ test("IR を持つ Scene を folder に包む: fixture の qualifiedIr の 10 �
     "G-01": ["g01-question"],
     "G-02": ["g02-attach"],
     "G-03": ["g03-c5"],
-    "G-04": ["g04-control", "g04-lio-landing"],
+    "G-04": ["g04-control"],
     "G-05": ["g05-control", "g05-xan-watch"],
     "G-06": ["g06-c6"],
     "G-07": ["g07-probe"],
@@ -915,7 +916,7 @@ test("IR を持つ Scene を folder に包む: fixture の qualifiedIr の 10 �
   });
   assert.equal(
     Object.values(byCase).reduce((sum, list) => sum + list.length, 0),
-    10,
+    9,
   );
   // IR の Scene が fixture の Scene でなければ plan を作らない。
   const g02 = fixtureOf("G-02");

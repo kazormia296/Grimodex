@@ -432,7 +432,8 @@ test("論理→runtime の対応の取り違えを拒む（Entity、Scene、Rela
       })(),
     ],
     [
-      "G-04/base",
+      // G-04 v2 は IR の Scene が 1 つなので、IR の Scene が 2 つの G-05 で試す。
+      "G-05/base",
       // 2 つ目の IR の Scene を 1 つ目の folder の a0 に入れた（読む順は同じ。親だけが違う）。
       (() => {
         const folders = [];
