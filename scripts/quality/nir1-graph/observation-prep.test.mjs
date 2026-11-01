@@ -4924,7 +4924,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
       );
       mutated += 1;
     }
-  assert.equal(mutated, 31);
+  assert.equal(mutated, 32);
   detects(
     prep,
     (copy) => observationPrepErrors(copy, ctx),
@@ -5135,6 +5135,13 @@ test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new 
     "onFixtureRevision",
     "〔事実〕",
     "〔推測〕",
+    // S4b''' の前の独立レビューの P2-2、P2-3、P3-2、C3。
+    "独立コードレビュー",
+    "v1 のまま",
+    "trace-frozen.mjs:544-545",
+    "K6/2 の手順 4",
+    "K6/4 :317",
+    "ユーザーの異議があれば止める",
   ]) {
     assert.ok(readings.limits.includes(word), word);
     detects(
@@ -5149,7 +5156,7 @@ test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new 
     );
     words += 1;
   }
-  assert.equal(words, 17);
+  assert.equal(words, 23);
   // 変異: d1.addenda、診断の run の source、SP-P4 の source を v1 に戻す。
   detects(
     prep,
@@ -5181,6 +5188,28 @@ test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new 
         "evals/nir1-graph/seed-pin-addendum.v1.json（SP/1 の受入れ SP-P4、SP-N7）"),
     /diagnosticRuns SP-P4\.source must be/u,
   );
+  // S4b''' の前の独立レビューの P3-1: the path must be followed by the note
+  // or the end, never by more of a path.
+  for (const source of [
+    "evals/nir1-graph/seed-pin-addendum.v2.json.bak",
+    "evals/nir1-graph/seed-pin-addendum.v2.json.bak（SP/1 の受入れ SP-P4、SP-N7）",
+    "evals/nir1-graph/seed-pin-addendum.v2.jsonx",
+  ])
+    detects(
+      prep,
+      check,
+      (p) =>
+        (p.diagnosticRuns.find((row) => row.id === "SP-P4").source = source),
+      /diagnosticRuns SP-P4\.source must be/u,
+    );
+  for (const source of [
+    "evals/nir1-graph/seed-pin-addendum.v2.json",
+    "evals/nir1-graph/seed-pin-addendum.v2.json（SP/1 の受入れ SP-P4、SP-N7）",
+  ]) {
+    const copy = clone(prep);
+    copy.diagnosticRuns.find((row) => row.id === "SP-P4").source = source;
+    assert.ok(!check(copy).some((e) => /SP-P4\.source/u.test(e)), source);
+  }
   // 変異: K24-G04-N1 を消すと診断の run の一覧が落ちる。
   detects(
     prep,

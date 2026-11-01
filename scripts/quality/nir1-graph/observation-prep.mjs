@@ -722,6 +722,9 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "user-confirmation-2026-11-01-g04-v2c-build.md",
     "新しい S4 の結果だけ",
     "S6 の許可リストは新しい S4b''' だけ",
+    // S4b''' の前の独立レビューの P3-3: the confirmation's scope is the
+    // integrator's reading of the record.
+    "integrator の読み",
   ],
 });
 /**
@@ -1466,6 +1469,15 @@ const G04_REVISION_LIMIT_WORDS = Object.freeze([
   "onFixtureRevision",
   "〔事実〕",
   "〔推測〕",
+  // S4b''' の前の独立レビュー（DR-CP4-S4-7 の追記 2）: the core of (f) and (h)
+  // (P3-2), the trace's declaration addendum (P2-3), K6/2 step 4 (C3) and
+  // the K6/4 :317 order deviation (P2-2, (α)).
+  "独立コードレビュー",
+  "v1 のまま",
+  "trace-frozen.mjs:544-545",
+  "K6/2 の手順 4",
+  "K6/4 :317",
+  "ユーザーの異議があれば止める",
 ]);
 /** S3v6-P3-2: the readings integrator or builders chose after dev runs. */
 const READINGS_AFTER_DEV = Object.freeze([
@@ -4144,10 +4156,17 @@ export function observationPrepErrors(prep, ctx) {
       "diagnosticRuns SP-P4 must be the seed pin parity (hybrid only, no Graph arm, no seed, 8 base variants, without/with the step, SP-N7 -> [precheck])",
     );
   // S2 追補 #11（DR-CP4-P-7）: SP-P4 is SP/1's check in the current seed pin
-  // addendum version.
+  // addendum version. S4b''' の前の独立レビューの P3-1: the path is followed
+  // by the end of the text or the note in "（", never by more of a path.
+  const p4Source = String(p4?.source ?? "");
+  const seedPath = OBSERVATION_PREP_FILES.seedPinAddendum;
   if (
     p4 &&
-    !String(p4.source ?? "").startsWith(OBSERVATION_PREP_FILES.seedPinAddendum)
+    !(
+      p4Source === seedPath ||
+      (p4Source.startsWith(seedPath) &&
+        p4Source.slice(seedPath.length).startsWith("（"))
+    )
   )
     errors.push(
       `diagnosticRuns SP-P4.source must be ${OBSERVATION_PREP_FILES.seedPinAddendum} (S2 追補 #11)`,
