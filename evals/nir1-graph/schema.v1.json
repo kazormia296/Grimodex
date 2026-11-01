@@ -40,7 +40,10 @@
     "schemaVersion": { "const": "nir1-graph-case/1" },
     "status": { "const": "predeclared-design-fixture" },
     "caseId": { "type": "string", "pattern": "^G-0[2-8]$" },
-    "fixtureId": { "type": "string", "pattern": "^nir1-g0[2-8]-[a-z0-9-]+/1$" },
+    "fixtureId": {
+      "type": "string",
+      "pattern": "^nir1-g0[2-8]-[a-z0-9-]+/[12]$"
+    },
     "sourceDocument": { "const": "docs/plans/nir1-l6-l9-execution-plan.md" },
     "sourceSection": { "$ref": "#/$defs/text" },
     "designReferences": {

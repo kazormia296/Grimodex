@@ -5,7 +5,22 @@
   "canonicalPlan": "docs/plans/nir1-l6-l9-execution-plan.md",
   "caseSchema": "evals/nir1-graph/schema.v1.json",
   "observationPolicy": "Do not change query, corpus, seed, Gold, ordering, or metrics after observing a runtime result.",
-  "graphRuntimeObservedBeforeFreeze": false,
+  "graphRuntimeObservedBeforeFreeze": true,
+  "postObservationRevisions": [
+    {
+      "caseId": "G-04",
+      "from": {
+        "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+        "fixtureId": "nir1-g04-scope-exact-unknown/1"
+      },
+      "to": {
+        "path": "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+        "fixtureId": "nir1-g04-scope-exact-unknown/2"
+      },
+      "record": "evals/nir1-graph/freeze.v2.json postObservationRevisions",
+      "meaning": "G-04 version 2 was made after Graph runtime had observed version 1 (version 1 stays in the tree with its result). Every other case keeps the bytes the version-1 freeze bound. graphRuntimeObservedBeforeFreeze is true because, when this freeze was written, every case had been run; version 2's own bytes were not run before this freeze."
+    }
+  ],
   "isolation": "Every case and every variant runs in its own fresh workspace and project built from its fixture; no Scene, Codex row, pin, Revision, Decision, Index generation, query history or artifact is shared between cases or variants. Logical IDs are namespaced by case.",
   "cases": [
     {
@@ -32,9 +47,9 @@
     },
     {
       "caseId": "G-04",
-      "path": "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
-      "fixtureId": "nir1-g04-scope-exact-unknown/1",
-      "slotClass": "ir-supplemented",
+      "path": "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+      "fixtureId": "nir1-g04-scope-exact-unknown/2",
+      "slotClass": "supplementable",
       "predeclaredImprovement": false
     },
     {
@@ -153,13 +168,13 @@
         "id": "raw-membership",
         "scope": "variant",
         "appliesTo": "Every variant of G-02..G-08.",
-        "check": "The observed R membership equals expectations.arms.raw.sceneIds: the two controls of a supplementable case, exactly eight controls of a Raw-full case, the single control of an IR-supplemented case (order only where orderPredeclared).",
+        "check": "The observed R membership equals expectations.arms.raw.sceneIds: the controls of a supplementable case (two, or the single control of G-04), exactly eight controls of a Raw-full case, the single control of an IR-supplemented case (order only where orderPredeclared).",
         "source": "measurementBoundary.rawPrediction; dense similarity cannot be checked statically (SPIKE S1)."
       },
       {
         "id": "ir-supplement-admission",
         "scope": "variant",
-        "appliesTo": "Variants with a usable Chronicle Index in a case that declares an ir-only Scene: G-04 (g04-lio-landing) and G-05 (g05-xan-watch).",
+        "appliesTo": "Variants with a usable Chronicle Index in a case that declares an ir-only Scene: G-05 (g05-xan-watch).",
         "check": "The ir-only Scene's qualified IR scores at or above the language IR floor (policies/narrative/nir1-related-scenes-ranking.json), is admitted, and the observed R+IR is R followed by that Scene in the shared slot.",
         "source": "SPIKE S1 §3.1: the G-01 control IR scored cosine 0.61294, below the en IR floor 0.66, and R+IR stayed raw."
       },
@@ -173,7 +188,7 @@
       {
         "id": "cb4-inputs",
         "scope": "added-scene",
-        "appliesTo": "Variants that declare an appended Graph-only Scene: G-02 base, G-07 base, G-08 base-usable and graph-recovered.",
+        "appliesTo": "Variants that declare an appended Graph-only Scene: G-02 base, G-04 base, G-07 base, G-08 base-usable and graph-recovered.",
         "check": "The CB-4 target-Scene reader judges the appended Scene without an explicit POV or story position, which these fixtures do not set. If CB-4 reports that such an input is required, only the appended-Scene sub-expectation is blocked.",
         "source": "SPIKE S1 §8 (K2: CB-4 v1 may require POV or story position); independent expectation review, G-02.",
         "notEvaluated": [
@@ -188,15 +203,15 @@
     "declaration": "Each variant lists exactly the preconditions that apply to it (fixture variants[].preconditions; the validator derives the required set). Preconditions are checked from setup receipts, the canonical usability probe, the R and R+IR arms and CB-4's typed result before any expectation is compared.",
     "variantScope": "An unmet variant-scope precondition records the variant as blocked:<id>, naming the first unmet precondition in definition order and recording all of them. Its expectations are not evaluated, it is excluded from macro aggregates (non-regression, path Evidence validity and forbidden-contribution denominators) and it never counts as PASS.",
     "addedSceneScope": "An unmet added-scene precondition records blocked:<id> for the appended-Scene sub-expectation only: the notEvaluated fields above are not compared, and that variant's R+IR+Graph metrics stay out of macro aggregates. Everything else is still compared, including an R+IR+Graph list that equals the observed R+IR with no other Scene.",
-    "holdVersusBlocked": "Hold means the product was measured and differs from a compared expectation, or a positive material was refused at setup. Blocked means the declared measurement condition was not produced, so nothing behind it was measured; a blocked variant can only be measured by a new fixture version after a new independent expectation review.",
+    "holdVersusBlocked": "Hold means the product was measured and differs from a compared expectation, or a positive material was refused at setup. Blocked means the declared measurement condition was not produced, so nothing behind it was measured; a blocked variant can only be measured by a new fixture version after a new independent expectation review. A fixture version made after a runtime observation is treated as frozen only with the user's confirmation, its postObservationRevisions entry in the freeze record and a new independent expectation review; the earlier version and its result are kept.",
     "closedSet": "Only these six preconditions can block, and only where a variant declares them. None is added, removed or reinterpreted after a runtime observation, and an unmet precondition never changes an expectation."
   },
   "irSupplementedCoverage": {
-    "cases": ["G-04", "G-05"],
+    "cases": ["G-05"],
     "dependsOn": "ir-supplement-admission",
     "consequence": "If every IR-supplemented variant is blocked:ir-supplement-admission, l6-l9 L7's requirement that the IR-supplemented group keeps R+IR membership, order and excerpts is unverified, and CP-4 cannot PASS.",
-    "admissionProbe": "not-run",
-    "probeOption": "Before a freeze, and only if the integrator judges it within observationPolicy, a model-only cosine probe (the pinned model and the ordered-json/1 statement serialization; no Related Scenes runtime, no Graph) may check the ir-only IR floor and the Raw prediction, and the IR summaries may be revised before freezing; the probe and its result are then recorded in the freeze record. It was not run for this freeze."
+    "admissionProbe": "run",
+    "probeOption": "Before a freeze, and only if the integrator judges it within observationPolicy, a model-only cosine probe (the pinned model and the ordered-json/1 statement serialization; no Related Scenes runtime, no Graph) may check the ir-only IR floor and the Raw prediction, and the IR summaries may be revised before freezing; the probe and its result are then recorded in the freeze record. It was not run for the version-1 freeze. Before the version-2 freeze a model-only probe was run (recorded in freeze.v2.json irSupplementAdmissionProbe): the Raw prediction of G-04 version 2, and earlier a calibration probe that also scored the G-05 ir-only IR; no IR summary was revised."
   },
   "dependencies": [
     "CP-3a appends the Graph-only Scene on a raw R+IR basis too: control IR may stay below the IR floor, the observed R+IR is then of kind raw (SPIKE S1 §5), and 'IR did not use the shared slot' means that no IR-kind row was admitted.",
@@ -208,7 +223,8 @@
     "No G-case measures a literal semantic epoch boundary (restore, Scope authority change), which invalidates every material at once; G-05 measures the superseded Revision of one material and G-08 old-generation mixing.",
     "graph.reasonClass is compared by status only until a later fixture version fixes a runtime reason mapping after CP-1.",
     "No fixture discriminates the K1 default from the DSN §2.5 deviation (N_F above 8): K1 was confirmed without the deviation, and every fixture keeps the pins of reached Entities (including pins on ineligible Scenes) at or below 8.",
-    "The IR-supplemented class depends on ir-supplement-admission (see irSupplementedCoverage)."
+    "The IR-supplemented class depends on ir-supplement-admission (see irSupplementedCoverage).",
+    "Since G-04 version 2 (made after version 1 was observed, see postObservationRevisions) is supplementable, the IR-supplemented class rests on G-05 alone. Version 1's G-04-P2 (Graph appends nothing after IR used the shared slot) has no replacement; the same rule is checked only by G-05 base (g05-pia-ridge, ir-supplement-used). G-04 version 2 measures Graph's Scope exclusion and the one-slot append, not IR recall quality."
   ],
   "existingRetrievalSeedPolicy": {
     "policyId": "nir1-retrieval-24-graph-seed/1",
@@ -225,14 +241,15 @@
   "independentExpectationReview": {
     "status": "reviewed",
     "verdict": "approve",
-    "resolution": "Round 1 was changes-required (receipt). All ten of its required changes were applied: observation-time preconditions with blocked outcomes, IR-independent R+IR (resultKind recorded only), the IR-supplemented coverage consequence, the product reveal rule, the runtime comparison classes, freeze and manifest consistency, the record of work not done in CP-0, the K1 default rule with its pin bound, the README interpretations and the freeze procedure. Fixture bodies changed only by the added precondition fields and the measurementBoundary wording. Round 2 re-derived every G-02..G-08 expectation and approved all of them with no required change. G-03 was then rebuilt for the proposal/7 Entity limit of 50 (frontier-exceeded: 54 discovered Entities against limit 50; the positive and the other negative expectations unchanged), so round 3 re-derived the G-03 expectations from the rules alone, without Graph runtime output and without the author's decision record, and approved them with no required change (approvalRecord). G-02 and G-04..G-08 keep the bytes round 2 approved.",
-    "afterApproval": "Only this block and the README section on the review and the freeze changed after the round 3 approval. The fixtures, schema.v1.json and the round 1 receipt keep the bytes round 3 approved; the validator is unchanged by this update.",
+    "resolution": "Round 1 was changes-required (receipt). All ten of its required changes were applied: observation-time preconditions with blocked outcomes, IR-independent R+IR (resultKind recorded only), the IR-supplemented coverage consequence, the product reveal rule, the runtime comparison classes, freeze and manifest consistency, the record of work not done in CP-0, the K1 default rule with its pin bound, the README interpretations and the freeze procedure. Fixture bodies changed only by the added precondition fields and the measurementBoundary wording. Round 2 re-derived every G-02..G-08 expectation and approved all of them with no required change. G-03 was then rebuilt for the proposal/7 Entity limit of 50 (frontier-exceeded: 54 discovered Entities against limit 50; the positive and the other negative expectations unchanged), so round 3 re-derived the G-03 expectations from the rules alone, without Graph runtime output and without the author's decision record, and approved them with no required change (approvalRecord). G-02 and G-04..G-08 keep the bytes round 2 approved. After Graph runtime had observed every case, G-04 was rebuilt as version 2 (IR-independent, supplementable) with the user's confirmation, so round 4 re-derived the G-04 version 2 expectations from the rules alone, without Graph runtime output, and approved them with no required change (recorded in freeze.v2.json); G-02, G-03 and G-05..G-08 keep the bytes round 3 approved.",
+    "afterApproval": "Version 1: only this block and the README section on the review and the freeze changed after the round 3 approval. Version 2: after the round 4 approval, the manifest (the G-04 entry and the enumerations of the cases each precondition and the IR-supplemented class name, without changing any id, scope or check), the README sections that repeat them and the fixtureId pattern of schema.v1.json changed; freeze.v2.json declares each scope. The other fixtures and the round 1 receipt keep the bytes round 3 approved.",
     "requiredBefore": "The first Graph runtime observation of any G-02..G-08 case.",
     "reviewer": "A read-only reviewer other than the fixture author and the agent that applied the required changes, without access to Graph runtime output.",
     "receipt": "evals/nir1-graph/independent-expectation-review.v1.json",
-    "approvalRecord": "evals/nir1-graph/freeze.v1.json independentExpectationReview (round 3, verbatim; round 2 as recorded before)",
-    "freezeRecord": "evals/nir1-graph/freeze.v1.json",
-    "freezeBinds": "sha256 of this manifest, of every G-01..G-08 fixture, of schema.v1.json and of README.md; the round 1 receipt and its sha256; the approving round 3 record (rounds 1 and 2 kept) with the sha256 of every bound file at approval and the declared scope of each later change; reviewedBy, reviewVerdict, frozenAt, baselineHead, the IR admission probe status and graphRuntimeObservedBeforeFreeze=false."
+    "approvalRecord": "evals/nir1-graph/freeze.v2.json independentExpectationReview (round 4, quoted from its record; rounds 1..3 as the version-1 freeze recorded them)",
+    "freezeRecord": "evals/nir1-graph/freeze.v2.json",
+    "supersededFreezeRecord": "evals/nir1-graph/freeze.v1.json",
+    "freezeBinds": "sha256 of this manifest, of every G-01..G-08 fixture, of schema.v1.json and of README.md; the round 1 receipt and its sha256; the approving round 4 record (rounds 1..3 kept) with the sha256 of every bound file at approval and the declared scope of each later change; reviewedBy, reviewVerdict, frozenAt, baselineHead, the IR admission probe status, graphRuntimeObservedBeforeFreeze=true with its postObservationRevisions, and the superseded version-1 freeze record (path, sha256, last commit), whose case hashes every case but G-04 keeps."
   },
   "authorValue": "not-measured"
 }

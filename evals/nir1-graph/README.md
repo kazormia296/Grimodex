@@ -1,6 +1,6 @@
 # NIR-1 C-product Graph case（G-01〜G-08）
 
-状態: **観測前に固定済み**（独立期待値レビュー済み、[`freeze.v1.json`](freeze.v1.json) で固定）。fixture の作成からレビュー、freeze まで、Graph runtime は実行しておらず、その出力も読んでいない。
+状態: **固定済み**（独立期待値レビュー済み、[`freeze.v2.json`](freeze.v2.json) で固定）。v1 の freeze（[`freeze.v1.json`](freeze.v1.json)）までは、fixture の作成からレビュー、freeze まで、Graph runtime を実行しておらず、その出力も読んでいない。v2 の freeze は、Graph runtime が v1 の全 case を観測した後に、G-04 だけを新しい版（v2）に作り直して固定し直したものである（「独立期待値レビューと freeze」を参照）。G-04 以外の fixture は v1 の freeze と同じ bytes である。
 
 このディレクトリは、C-product の評価母集団 G-02〜G-08 の fixture、Gold、事前期待値、観測時の前提条件を固定する。
 G-01 は [`evals/nir1-g01/fixture.v1.json`](../nir1-g01/fixture.v1.json) のまま変更しない。
@@ -21,11 +21,13 @@ case の class は [l6-l9 実行計画](../../docs/plans/nir1-l6-l9-execution-pl
 | G-01 | 実在Entity seedの1-hop direct                | 補完可能   | 事前指定改善（`g01-mira` の追加）              | 名前だけの seed、未知 ID                                         | `evals/nir1-g01/fixture.v1.json`         |
 | G-02 | directed Relationの向き                      | 補完可能   | 保存方向の `trained`、symmetric の両方向       | 逆向き edge、承認後に型を変えた edge                             | `g02-directed-relation.v1.json`          |
 | G-03 | bounded 2-hop path                           | Raw満杯    | 1hop と 2hop の path 付加                      | 3hop、frontier 超過（発見 54 件）                                | `g03-bounded-two-hop.v1.json`            |
-| G-04 | Scope exact／unknown                         | IR補完済み | 全軸 exact 一致                                | worldline 不一致、unresolved、unknown marker、character holder   | `g04-scope-exact-unknown.v1.json`        |
+| G-04 | Scope exact／unknown                         | 補完可能   | 全軸 exact 一致                                | worldline 不一致、unresolved、unknown marker、character holder   | `g04-scope-exact-unknown.v2.json`        |
 | G-05 | current Revision／Freshness                  | IR補完済み | 現行・承認済み・Fresh、再承認後の現行 Evidence | stale、旧 Revision だけの承認、却下、置換前 Revision の Evidence | `g05-current-revision-freshness.v1.json` |
 | G-06 | Evidence anchor／path                        | Raw満杯    | Evidence 付きの 1hop／2hop path                | Revision のない Relation、名前だけの言及、同名の別 Entity        | `g06-evidence-anchor-path.v1.json`       |
 | G-07 | strict reading-before-S2／reveal・secret境界 | 補完可能   | S2 より前の非秘密、S2 より前に開示済みの秘密   | S2 より後、S2 自身、未開示の秘密、開示先のない秘密               | `g07-reading-before-reveal.v1.json`      |
 | G-08 | Graph Index unusable fallback                | 補完可能   | usable での追加と付加、再 build 後の回復       | 部分 Graph、旧 generation、Chronicle 停止時の Graph              | `g08-graph-index-fallback.v1.json`       |
+
+G-04 の v2 は、v1（`g04-scope-exact-unknown.v1.json`。IR補完済み）の観測の後に作った版である。v1 の file と結果は残す。v2 は IR に補完させない構成で、IR の recall の品質の根拠にならない（manifest の `postObservationRevisions` と `coverageGaps`）。
 
 `manifest.v1.json` は上の 8 件、比較 arm、runtime と比較する field、観測時の前提条件、既存 24 件の seed 方針、独立期待値レビューの状態を持つ。
 `schema.v1.json` は G-02〜G-08 の形式を定める。
@@ -82,14 +84,14 @@ runtime ID の順序（edge ID、Entity ID、Scene ID）は fixture を固定す
 各 variant の `preconditions` は、その variant に当てはまる前提条件を過不足なく並べる。validator が fixture から必要な集合を導いて照合する。
 前提条件は次の 6 種だけで、定義は `manifest.v1.json` の `preconditions` にある。
 
-| id                        | 範囲        | 当てはまる variant                                                            | 確かめること                                                                                                                                                                                                                                                         |
-| ------------------------- | ----------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `b-sealed-binding`        | variant     | 全 variant                                                                    | B の sealed generation を、製品が所有する B build 経路で確立した。経路は B-ROUTE の maintenance entry（試験と journey 用の起動経路から起動してよい）か CP-2a の owner である。test 専用や診断用の publisher、SQL、注入は使わない。a153743b にこの経路は無い（S1 §5） |
-| `maintenance-enabled`     | variant     | 全 variant                                                                    | maintenance を実設定で有効にし、宣言した setup の後の sealed generation に到達した。unusable の variant では、mutation の commit より前に到達した                                                                                                                    |
-| `raw-membership`          | variant     | 全 variant                                                                    | 観測した R が `arms.raw` と一致する。補完可能は control 2 件、Raw満杯は control ちょうど 8 件、IR補完済みは control 1 件                                                                                                                                             |
-| `ir-supplement-admission` | variant     | G-04、G-05                                                                    | ir-only Scene の IR が IR floor 以上で admission され、R+IR が R の後にその Scene を置く                                                                                                                                                                             |
-| `index-state-holding`     | variant     | G-08 の unusable 3 variant                                                    | mutation の commit 後、query の時点で、canonical usability probe が宣言どおりの Index 状態を示す。通常の writer と lifecycle 制御だけで保つ                                                                                                                          |
-| `cb4-inputs`              | added-scene | 追加 1 件を持つ variant（G-02、G-07、G-08 の base-usable と graph-recovered） | fixture は POV と story time を設定しない。CB-4 がそれらを要求せずに追加 Scene を判定できる                                                                                                                                                                          |
+| id                        | 範囲        | 当てはまる variant                                                                  | 確かめること                                                                                                                                                                                                                                                         |
+| ------------------------- | ----------- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `b-sealed-binding`        | variant     | 全 variant                                                                          | B の sealed generation を、製品が所有する B build 経路で確立した。経路は B-ROUTE の maintenance entry（試験と journey 用の起動経路から起動してよい）か CP-2a の owner である。test 専用や診断用の publisher、SQL、注入は使わない。a153743b にこの経路は無い（S1 §5） |
+| `maintenance-enabled`     | variant     | 全 variant                                                                          | maintenance を実設定で有効にし、宣言した setup の後の sealed generation に到達した。unusable の variant では、mutation の commit より前に到達した                                                                                                                    |
+| `raw-membership`          | variant     | 全 variant                                                                          | 観測した R が `arms.raw` と一致する。補完可能は control 2 件（G-04 は 1 件）、Raw満杯は control ちょうど 8 件、IR補完済みは control 1 件                                                                                                                             |
+| `ir-supplement-admission` | variant     | G-05                                                                                | ir-only Scene の IR が IR floor 以上で admission され、R+IR が R の後にその Scene を置く                                                                                                                                                                             |
+| `index-state-holding`     | variant     | G-08 の unusable 3 variant                                                          | mutation の commit 後、query の時点で、canonical usability probe が宣言どおりの Index 状態を示す。通常の writer と lifecycle 制御だけで保つ                                                                                                                          |
+| `cb4-inputs`              | added-scene | 追加 1 件を持つ variant（G-02、G-04、G-07、G-08 の base-usable と graph-recovered） | fixture は POV と story time を設定しない。CB-4 がそれらを要求せずに追加 Scene を判定できる                                                                                                                                                                          |
 
 - 範囲が variant の前提条件が成り立たなければ、その variant を `blocked:<id>` と記録する。
   - 複数が成り立たなければ、定義順で最初の id を名前にし、全部を記録する。
@@ -102,9 +104,9 @@ runtime ID の順序（edge ID、Entity ID、Scene ID）は fixture を固定す
   - blocked：宣言した測定条件が成り立たず、その先を測っていない。
 - 前提条件は、観測の後に足さず、外さず、読み替えない。前提条件が成り立たなくても期待値は変えない。
   - variant が宣言していない前提条件で、観測結果を blocked にすることはできない。validator の `resolveVariantOutcome` がこれを拒否する。
-  - blocked の variant を測るには、fixture の新しい版と独立期待値レビューが要る。
+  - blocked の variant を測るには、fixture の新しい版と独立期待値レビューが要る。観測の後に作った版の扱いは「独立期待値レビューと freeze」の節にある。
 - 必須の項目（manifest の `comparison.required`）に当てはまる variant がすべて blocked なら、その項目は未検証であり、CP-4 は PASS にならない。
-  - 特に、IR補完済み（G-04、G-05）の全 variant が `blocked:ir-supplement-admission` なら、l6-l9 L7 の「後二群は membership、順位、excerpt 不変」は未検証のままである（manifest の `irSupplementedCoverage`）。
+  - 特に、IR補完済み（G-05）の全 variant が `blocked:ir-supplement-admission` なら、l6-l9 L7 の「後二群は membership、順位、excerpt 不変」は未検証のままである（manifest の `irSupplementedCoverage`）。
 
 ## 期待値を導いた規則
 
@@ -134,7 +136,7 @@ A3 の Graph 材料には適用せず、上の secret／reveal 行（既存 reve
 K1 既定規則の適用範囲：
 
 - 全 fixture で、到達 Entity の pin の総数は 8 以下である。この数には、不適格な Scene への pin も含める。
-  - 内訳は G-02 が 2、G-03 が 3、G-04 が 2、G-05 が 2、G-06 が 3、G-07 が 2、G-08 が 1〜2 である。
+  - 内訳は G-02 が 2、G-03 が 3、G-04 が 1、G-05 が 2、G-06 が 3、G-07 が 2、G-08 が 1〜2 である。
 - この数は frame に載る相異なる Scene の数の上限である。このため、N_F＝8 の切り詰めはどの期待値にも効かない。追加候補は最小 hop の 1 件で、tuple 順で最初の Eligible な Scene と一致する。
 - validator はこの上限を検査する。
 - DSN §2.5 が推奨する「両方の規則で結果が分かれる fixture」は含めない。K1 が逸脱案なしで確認されたためである。
@@ -168,7 +170,8 @@ K1 既定規則の適用範囲：
 7. **Gold**（採用）：「S2 時点で読者に開示されている情報で、答えの人物が登場する Scene」と定義する。G-01 の「到達人物が登場する以前の Scene」に揃えた。
    - 各 fixture の `goldDefinition` が case ごとの定義である。
    - pin だけの Scene、名前を口にするだけの Scene、問いを写しただけの control は、Gold 0 とする。
-   - G-04 と G-05 の第二 Gold（2）は、答えの人物が登場する別の Scene である。IR が追加枠を使った後に Graph がその Scene を追加しないことを測る負例として働く。
+   - G-05 の第二 Gold（2）は、答えの人物が登場する別の Scene である。IR が追加枠を使った後に Graph がその Scene を追加しないことを測る負例として働く。
+   - G-04 の第二 Gold（2、`g04-lio-market`）は v1 では同じ負例だった。v2 では pin を持たず、どの arm にも返らない（Gold の値は変えていない）。
 8. **IR と Graph 側 mutation の独立**（採用）：IR 失効 writer 表（実装計画 §6）に Codex の編集は入っていない。ただし IR の recipe が Codex を入力に含むかは、fixture の段階では確定できない。そこで次のように設計した。
    - IR は、Graph 側の mutation の後に作る（G-08 を除く）。
    - G-08 では、IR の後に編集する Juno を、IR を持つ control に pin せず、IR の本文や要約でも名指ししない。validator がこの条件を検査する。
@@ -182,7 +185,8 @@ K1 既定規則の適用範囲：
 - literal な semantic epoch の境界（restore、Scope authority の変更）は、G-01〜G-08 のどれも測らない。G-05 は 1 つの material の置換前 Revision を、G-08 は旧 generation の混入を測る。
 - `graph.reasonClass` は status だけを比較する。runtime の reason との対応表は、CP-1 の後に fixture の新しい版で固定するまで比較しない。
 - K1 既定規則と DSN §2.5 の逸脱案（N_F＞8）を判別する fixture はない。
-- IR補完済みの区分は、前提条件 `ir-supplement-admission` に依存する。ir-only IR の admission を事前に確かめる model-only の cosine probe は行っていない（manifest の `irSupplementedCoverage.admissionProbe` は `not-run`）。
+- IR補完済みの区分は、前提条件 `ir-supplement-admission` に依存する。v1 の freeze の前には、ir-only IR の admission を事前に確かめる model-only の cosine probe を行っていない。v2 の freeze の前には model-only の probe を当てた（G-04 v2 の Raw の予測と、G-05 の ir-only IR を含む校正。IR 要約は変えていない。manifest の `irSupplementedCoverage.admissionProbe` は `run`、記録は `freeze.v2.json` の `irSupplementAdmissionProbe`）。
+- G-04 の v2 は補完可能なので、IR補完済みの区分は G-05 だけで支える。v1 の G-04-P2（IR が共通追加枠を使った後に Graph が足さない）の代わりの検査は置かない。同じ規則は G-05 の base（`g05-pia-ridge`、`ir-supplement-used`）だけが検査する。
 
 ## 既存 24 件の seed 方針（宣言）
 
@@ -209,7 +213,7 @@ K1 既定規則の適用範囲：
 - 比較する期待値と実 runtime の結果が違えば、その結果を保持して Hold にする。正例の材料を setup で作れない場合も Hold とする。
 - 宣言した前提条件が成り立たなければ、その variant（`cb4-inputs` では追加 1 件だけ）を `blocked:<id>` と記録する。Hold でも PASS でもない。
 - fixture の改版が必要になったら、失敗を残したまま別の版を提案し、独立期待値レビューと freeze をやり直す。
-- 補完可能な case（G-02、G-07、G-08 の usable 状態）で Graph-only Scene を追加するには、target Scene 本文の開示（C-body）が要る。
+- 補完可能な case（G-02、G-04、G-07、G-08 の usable 状態）で Graph-only Scene を追加するには、target Scene 本文の開示（C-body）が要る。
   - C-body が Hold の間、これらの追加は返らず Hold になる。
   - C-body があっても、CB-4 が POV や story position を要求するなら、追加 1 件だけを `blocked:cb4-inputs` とする。
 - 既存 Scene への path 付加と Graph DTO の nodes／edges は、C-body に依存しない。
@@ -246,24 +250,30 @@ K1 既定規則の適用範囲：
   - 発見が 2 件の base と 54 件の超過は、上限の値（50）そのものは判別しない。上限ちょうど（50 は available、51 は unavailable）の N／N+1 は CQ-LIM-1 の製品側の試験で見る（P3、今回は直さない）。
   - G-02 と G-04〜G-08 は、2 回目が承認した bytes のまま変えていないので、3 回目の記録では 2 回目の approve を引き継いだ（case の `notes` に明記）。
   - 3 回目の reviewer は Graph runtime を実行しておらず、その出力も読んでいない。
+- **4 回目（G-04 v2）**：approve。Graph runtime が v1 の全 case を観測した後に、ユーザーの確認を得て G-04 を v2（IR に依存しない補完可能の構成）に作り直した。
+  - レビューの担当は fixture の作成者と別の read-only の担当（Opus）で、Graph runtime の出力（受領書、DTO、frame、graph arm、X5 の内訳）を渡されず、読んでいない。設計文書の Graph の子の要約の 1 文（子の辺は 0 件）を、導出と突き合わせの後に読んだと申告した。導出にも判定にも使っていない。
+  - G-04 v2 の期待値を規則と validator だけから導き直し、全項目で一致した。`graph` は v1 と同じ bytes である。P1・P2 はなく、P3（文章の正確さ）5 件のうち 4 件を、probe が読まない 3 欄の文章で反映した。
+  - G-02、G-03、G-05〜G-08 は 3 回目が承認した bytes のまま変えていないので、4 回目の記録では 3 回目の approve を引き継いだ。
+  - 記録の正本は `claude/nir1-contracts` の `docs/plans/nir1-cp4-records/g04-v2c-expectation-review-2026-11-01/`（commit `8857f618`）で、`freeze.v2.json` はその結論と sha256 を引用する。
 - **承認の後の変更**：期待値を持たない部分だけを変えた。
-  - manifest は `independentExpectationReview` の欄だけで、3 回の経緯を書いた。
-  - README はこの節だけである。
-  - validator は 3 回目の承認の後に変えていない（3 回目のレビューが読んだ版のまま）。
-  - fixture、`schema.v1.json`、1 回目のレビュー記録は、3 回目が承認した時点の bytes のままである。
-- **freeze**：[`freeze.v1.json`](freeze.v1.json)（`nir1-graph-freeze/1`）が次を束縛する。
-  - manifest、G-01〜G-08 の fixture、`schema.v1.json`、この README の sha256。
-  - 1 回目のレビュー記録とその sha256。最後（3 回目、承認）の記録、承認した時点の sha256、承認の後に変えた範囲。2 回目までの記録も残す。
-  - reviewer、`reviewVerdict`、`frozenAt`、`baselineHead`（a153743b）、IR admission probe の状態、`graphRuntimeObservedBeforeFreeze: false`。
+  - v1：manifest は `independentExpectationReview` の欄だけで、3 回の経緯を書いた。README はこの節だけである。validator は 3 回目の承認の後に変えていない。fixture、`schema.v1.json`、1 回目のレビュー記録は、3 回目が承認した時点の bytes のままである。
+  - v2：4 回目のレビューは、v1 の manifest・README・schema と G-04 v2 を読んだ。その後に、G-04 の行と、前提条件と IR補完済みの区分が当てはまる case の列挙（id、scope、判定の意味は変えない）、それを繰り返す README の節、schema の fixtureId の pattern（`/1` だけから `/1` か `/2`）を変えた。`freeze.v2.json` の `changesAfterApproval` が file ごとに範囲を宣言し、validator が範囲の外の一致を確かめる。validator は観測の後の版の記録を検査するように変えた。
+- **freeze**：[`freeze.v2.json`](freeze.v2.json)（`nir1-graph-freeze/1`）が次を束縛する。[`freeze.v1.json`](freeze.v1.json) は v1 の記録として bytes を変えずに残す。
+  - manifest、G-01〜G-08 の fixture（G-04 は v2）、`schema.v1.json`、この README の sha256。
+  - 1 回目のレビュー記録とその sha256。最後（4 回目、承認）の記録、承認した時点の sha256、承認の後に変えた範囲。3 回目までの記録も残す。
+  - reviewer、`reviewVerdict`、`frozenAt`、`baselineHead`、IR admission probe の状態、`graphRuntimeObservedBeforeFreeze: true` と `postObservationRevisions`（G-04 の v1 と v2、観測した run、変えた field、Graph の出力を使っていないこと、ユーザーの確認、再 probe、4 回目のレビューの記録）。
+  - 置き換えた v1 の freeze の path、sha256、最後に書いた commit（`supersedes`）。
 - **validator の検査**：
   - freeze がある場合は、次を求める。
     - manifest の `status` が `frozen-after-independent-expectation-review` で、`independentExpectationReview` の `status` が `reviewed`、`verdict` が `approve` である。freeze の `reviewVerdict` もこれと一致する。
     - 最後の回が approve で、G-02〜G-08 をすべて approve とし、要求が残っていない。reviewer は作成者と別の read-only の担当で、Graph runtime の出力を観測していない。1 回目は、束縛したレビュー記録と判定が一致する。
-    - fixture、schema、1 回目のレビュー記録が、承認した時点の sha256 と一致する。manifest と README は、宣言した範囲（manifest の key、README の節）を除くと、承認した時点と一致する。
+    - fixture と 1 回目のレビュー記録が、承認した時点の sha256 と一致する。manifest、README、schema は、宣言した範囲（manifest の key、README の節、schema の JSON pointer）を除くと、承認した時点と一致する。
     - 束縛した hash がすべて一致し、レビュー記録が存在する。
+    - `graphRuntimeObservedBeforeFreeze` が true なら、freeze と manifest が同じ case の `postObservationRevisions` を持ち、`supersedes` が v1 の freeze を path と sha256 で束縛し、作り直した case 以外の全 case の path と sha256 が v1 の freeze の `cases` と一致し、fixtureId が `/2` の case は作り直した case だけである。false なら `postObservationRevisions` を持たない。
   - freeze がない場合は、manifest の `status` が `predeclared-awaiting-independent-expectation-review` のままであることを求める。
-- 固定した後に、束縛したファイルのどれかを変えると hash が一致せず、`pnpm eval:fixtures` が失敗する。変える必要があれば、観測の前に限り、独立期待値レビューと freeze をやり直す。
-- freeze の前に Graph runtime を観測した場合は、この版を固定済みとして扱わない。
+- 固定した後に、束縛したファイルのどれかを変えると hash が一致せず、`pnpm eval:fixtures` が失敗する。変える必要があれば、観測の前は独立期待値レビューと freeze をやり直す。
+- 観測の後に作った版は、ユーザーの確認、freeze の `postObservationRevisions` の宣言、新しい独立期待値レビューを経たときに限り、固定済みとして扱う。前の版の file と結果は残し、前の版の freeze は bytes を変えずに残す（v2 の G-04 がこの手続きで作った版である）。
+- 凍結の前に Graph runtime がその版の bytes を観測した場合は、その版を固定済みとして扱わない。
 
 ## 検証
 
