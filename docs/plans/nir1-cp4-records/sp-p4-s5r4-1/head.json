@@ -1,0 +1,30 @@
+{
+  "kind": "sp-p4",
+  "k62": {
+    "freezeCommit": "af643a93eeae7f937c9cd5a9dd87a6308c96fab6",
+    "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8"
+  },
+  "k64": {
+    "freezeCommit": "5dea38af158283c2a925d68ef0d8b0771c0ea209",
+    "sha256": "d205b35f71da6db3fe94ae881e1e500941090a8261b95343a3a50def5f6323c3"
+  },
+  "observationPrep": {
+    "commit": "557e683ccd884955e220f21bd15119f115995d29",
+    "freezeRecordSha256": "b915ba91f923647a548d4917f093161741f6a05fb487a364576ba3a13b440dc8"
+  },
+  "traces": [
+    {
+      "kind": "editing",
+      "path": "evals/nir1-graph/trace-editing.v1.json",
+      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
+      "sha256": "7e72a040104dee7a90493ad7a353cfc883f1671197febd1c4f0e34a7dbfcbd0d"
+    },
+    {
+      "kind": "browsing",
+      "path": "evals/nir1-graph/trace-browsing.v1.json",
+      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
+      "sha256": "54e5e39153f4157da5244c1d0dab3b4528c6ab55d692e6a1c19263e44de47347"
+    }
+  ],
+  "runStartedAtUtc": "2026-11-01T00:11:24.903Z"
+}
