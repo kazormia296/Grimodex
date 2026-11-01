@@ -6,7 +6,7 @@
 //! Chronicle Index is a metadata row here because only its dirty flag is
 //! under test (its build is exercised in `nir1_chronicle_index`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -1293,7 +1293,7 @@ fn x15_a_lent_registration_survives_a_body_save_but_not_a_graph_input_write() ->
 /// The tables a body-only transaction must not write: the Graph Index's
 /// inputs (B's roster, typed Revisions and their Decisions, Codex, the Scene
 /// Scope bindings and registry, the semantic epoch).
-const GRAPH_INPUT_TABLES: [&str; 10] = [
+const GRAPH_INPUT_TABLES: [&str; 12] = [
     "codex_entries",
     "codex_relations",
     "narrative_proposal_sets",
@@ -1304,6 +1304,8 @@ const GRAPH_INPUT_TABLES: [&str; 10] = [
     "narrative_scope_registries",
     "narrative_semantic_epochs",
     "narrative_extraction_runs",
+    "scene_codex_pins",
+    "narrative_revision_source_basis",
 ];
 
 fn scope_columns(db: &Database) -> Result<Vec<Vec<rusqlite::types::Value>>> {
@@ -1453,61 +1455,64 @@ const SCENE_KEY_BUILDERS: [&str; 4] = [
     "tree_object_key(",
 ];
 
-/// Production source of a file without its test modules.
+/// Production source of a file: everything before its first inline test
+/// module (`#[cfg(test)]` followed by `mod name {`). A `#[cfg(test)]` module
+/// declaration (`mod name;`) does not cut the source.
 fn production_source(source: &str) -> &str {
+    const MARKER: &str = "\n#[cfg(test)]\n";
+    let mut from = 0;
+    while let Some(offset) = source[from..].find(MARKER) {
+        let at = from + offset;
+        let line = source[at + MARKER.len()..].lines().next().unwrap_or("");
+        let declaration = line
+            .trim_start_matches("pub(crate) ")
+            .trim_start_matches("pub(super) ")
+            .trim_start_matches("pub ");
+        if declaration.starts_with("mod ") && declaration.trim_end().ends_with('{') {
+            return &source[..at];
+        }
+        from = at + 1;
+    }
     source
-        .split("\n#[cfg(test)]\nmod ")
-        .next()
-        .unwrap_or(source)
 }
 
-/// 18-9 (writers). The production callers of the feed append are pinned per
-/// file, and the files that build a Scene feed object key (the only shape a
-/// body event can take) are pinned too. A new caller or a new Scene event
-/// builder fails here and must be classified: either it cannot write a
-/// body-only transaction, or it joins `x15_body_only_writers_write_no_graph_input`.
-#[test]
-fn x15_feed_append_callers_and_scene_event_builders_are_pinned() {
-    let files: [(&str, &str); 21] = [
-        (
-            "revision_restore.rs",
-            include_str!("../revision_restore.rs"),
-        ),
-        ("scene_body.rs", include_str!("../scene_body.rs")),
-        ("chronicle_bulk.rs", include_str!("../chronicle_bulk.rs")),
-        ("integrity.rs", include_str!("../integrity.rs")),
-        ("chronicle.rs", include_str!("../chronicle.rs")),
-        ("snippet_writes.rs", include_str!("../snippet_writes.rs")),
-        ("domain_writes.rs", include_str!("../domain_writes.rs")),
-        ("agent_writes.rs", include_str!("../agent_writes.rs")),
-        ("trash_bin.rs", include_str!("../trash_bin.rs")),
-        ("foreshadow.rs", include_str!("../foreshadow.rs")),
-        ("codex_writes.rs", include_str!("../codex_writes.rs")),
-        (
-            "project_snapshots.rs",
-            include_str!("../project_snapshots.rs"),
-        ),
-        ("narrative_extraction/commit.rs", include_str!("commit.rs")),
-        ("map_writes.rs", include_str!("../map_writes.rs")),
-        (
-            "narrative_extraction/scene_scope.rs",
-            include_str!("scene_scope.rs"),
-        ),
-        (
-            "narrative_extraction/change_feed.rs",
-            include_str!("change_feed.rs"),
-        ),
-        ("migrate.rs", include_str!("../migrate.rs")),
-        ("import/commit.rs", include_str!("../import/commit.rs")),
-        ("narrative_extraction/undo.rs", include_str!("undo.rs")),
-        ("plot_threads.rs", include_str!("../plot_threads.rs")),
-        (
-            "narrative_extraction/scene_body_declaration/writer.rs",
-            include_str!("scene_body_declaration/writer.rs"),
-        ),
-    ];
-    let mut callers = Vec::new();
-    let mut scene_builders = Vec::new();
+/// Test-only files: `*_tests.rs`, `tests.rs`, `test_support*` and anything
+/// under a `tests` directory of `src`.
+fn is_test_file(relative: &str) -> bool {
+    let name = relative.rsplit('/').next().unwrap_or(relative);
+    name.ends_with("_tests.rs")
+        || name == "tests.rs"
+        || name.starts_with("test_support")
+        || relative.split('/').any(|part| part == "tests")
+}
+
+fn walk_sources(dir: &std::path::Path, root: &std::path::Path, out: &mut Vec<(String, String)>) {
+    let mut entries: Vec<_> = std::fs::read_dir(dir)
+        .expect("source directory")
+        .map(|entry| entry.expect("source entry").path())
+        .collect();
+    entries.sort();
+    for path in entries {
+        if path.is_dir() {
+            walk_sources(&path, root, out);
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
+            let relative = path
+                .strip_prefix(root)
+                .expect("under src")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if !is_test_file(&relative) {
+                out.push((relative, std::fs::read_to_string(&path).expect("source")));
+            }
+        }
+    }
+}
+
+/// Feed append callers and Scene key builders of every production source
+/// file under `src`.
+fn feed_writers_in(files: &[(String, String)]) -> (BTreeMap<String, usize>, BTreeSet<String>) {
+    let mut callers = BTreeMap::new();
+    let mut scene_builders = BTreeSet::new();
     for (name, source) in files {
         let production = production_source(source);
         let calls = production
@@ -1516,68 +1521,112 @@ fn x15_feed_append_callers_and_scene_event_builders_are_pinned() {
             + production
                 .matches("append_canonical_and_narrative_change_in_tx(")
                 .count();
-        callers.push((name, calls));
+        if calls > 0 {
+            callers.insert(name.clone(), calls);
+        }
         if SCENE_KEY_BUILDERS
             .iter()
             .any(|pattern| production.contains(pattern))
         {
-            scene_builders.push(name);
+            scene_builders.insert(name.clone());
         }
     }
+    (callers, scene_builders)
+}
+
+/// The production feed append callers per file (both append functions).
+const FEED_APPEND_CALLERS: [(&str, usize); 22] = [
+    ("agent_writes.rs", 4),
+    ("chronicle.rs", 2),
+    ("chronicle_bulk.rs", 1),
+    ("codex_writes.rs", 1),
+    ("domain_writes.rs", 7),
+    ("foreshadow.rs", 1),
+    ("import/commit.rs", 1),
+    ("integrity.rs", 1),
+    ("map_writes.rs", 1),
+    ("migrate.rs", 1),
+    ("narrative_extraction/change_feed.rs", 3),
+    ("narrative_extraction/commit.rs", 1),
+    ("narrative_extraction/mod.rs", 1),
+    ("narrative_extraction/scene_body_declaration/writer.rs", 1),
+    ("narrative_extraction/scene_scope.rs", 2),
+    ("narrative_extraction/undo.rs", 4),
+    ("plot_threads.rs", 1),
+    ("project_snapshots.rs", 1),
+    ("revision_restore.rs", 1),
+    ("scene_body.rs", 1),
+    ("snippet_writes.rs", 1),
+    ("trash_bin.rs", 1),
+];
+
+/// Files that can name a Scene feed object key, and why each can or cannot
+/// write a body-only transaction.
+const SCENE_KEY_BUILDER_FILES: [(&str, &str); 11] = [
+    ("chronicle_bulk.rs", "Chronicle date paths, outside P_body"),
+    ("domain_writes.rs", "tree_node_patch and the Codex rename propagation: body-only for body fields (hook-tested); AI tree plan and folders name structural paths or component keys"),
+    ("map_writes.rs", "promotes a sticky to a new Scene: mutation create"),
+    ("narrative_extraction/application_contributions.rs", "an identity mapping of Application rows, not a feed writer"),
+    ("narrative_extraction/change_feed.rs", "the generic key mapping and the append itself (the classification lives here)"),
+    ("narrative_extraction/mod.rs", "temporal Scene patch: change kind calendar or order, never content"),
+    ("plot_threads.rs", "plot markers and branches: not Scene keys"),
+    ("project_snapshots.rs", "snapshot restore: origin restore"),
+    ("revision_restore.rs", "body version restore: origin restore"),
+    ("scene_body.rs", "the body save: body-only (hook-tested)"),
+    ("trash_bin.rs", "restore from the trash: mutation restore"),
+];
+
+fn production_files() -> Vec<(String, String)> {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    walk_sources(&root, &root, &mut files);
+    files
+}
+
+/// 18-9 (writers). Every production source file under `src` is scanned: the
+/// feed append callers and the files that build a Scene feed object key (the
+/// only shape a body event can take) must match the classified tables. A new
+/// caller or builder in any file fails here and must be classified: either it
+/// cannot write a body-only transaction, or it joins
+/// `x15_body_only_writers_write_no_graph_input`.
+#[test]
+fn x15_feed_append_callers_and_scene_event_builders_are_pinned() {
+    let files = production_files();
+    assert!(files.len() > 100, "the walk found the sources");
+    let (callers, scene_builders) = feed_writers_in(&files);
+    let expected: BTreeMap<String, usize> = FEED_APPEND_CALLERS
+        .iter()
+        .map(|(name, calls)| ((*name).to_owned(), *calls))
+        .collect();
     assert_eq!(
-        callers,
-        [
-            ("revision_restore.rs", 1),
-            ("scene_body.rs", 1),
-            ("chronicle_bulk.rs", 1),
-            ("integrity.rs", 1),
-            ("chronicle.rs", 2),
-            ("snippet_writes.rs", 1),
-            ("domain_writes.rs", 7),
-            ("agent_writes.rs", 4),
-            ("trash_bin.rs", 1),
-            ("foreshadow.rs", 1),
-            ("codex_writes.rs", 1),
-            ("project_snapshots.rs", 1),
-            ("narrative_extraction/commit.rs", 1),
-            ("map_writes.rs", 1),
-            ("narrative_extraction/scene_scope.rs", 2),
-            ("narrative_extraction/change_feed.rs", 3),
-            ("migrate.rs", 1),
-            ("import/commit.rs", 1),
-            ("narrative_extraction/undo.rs", 4),
-            ("plot_threads.rs", 1),
-            ("narrative_extraction/scene_body_declaration/writer.rs", 1),
-        ],
+        callers, expected,
         "a new feed append caller must be classified for X1-5"
     );
-    // Files that can name a Scene object key, and why each can or cannot
-    // write a body-only transaction:
-    // - revision_restore.rs: body version restore, origin `restore` (never).
-    // - scene_body.rs: the body save (body-only; hook-tested above).
-    // - chronicle_bulk.rs: Chronicle date paths, outside P_body (never).
-    // - domain_writes.rs: `tree_node_patch` and the Codex rename propagation
-    //   (body-only for body fields; hook-tested above). Its AI tree plan and
-    //   folder writers name structural paths or `component` keys.
-    // - trash_bin.rs: restore from the trash, mutation `restore` (never).
-    // - project_snapshots.rs: snapshot restore, origin `restore` (never).
-    // - map_writes.rs: promotes a sticky to a new Scene, mutation `create`.
-    // - narrative_extraction/change_feed.rs: the generic key mapping and the
-    //   append itself (the classification lives here).
-    // - plot_threads.rs: plot markers and branches, not Scene keys.
+    let expected: BTreeSet<String> = SCENE_KEY_BUILDER_FILES
+        .iter()
+        .map(|(name, _)| (*name).to_owned())
+        .collect();
     assert_eq!(
-        scene_builders,
-        [
-            "revision_restore.rs",
-            "scene_body.rs",
-            "chronicle_bulk.rs",
-            "domain_writes.rs",
-            "trash_bin.rs",
-            "project_snapshots.rs",
-            "map_writes.rs",
-            "narrative_extraction/change_feed.rs",
-            "plot_threads.rs",
-        ],
+        scene_builders, expected,
         "a new Scene feed event builder must be classified for X1-5"
     );
+}
+
+/// The scan itself: a test module declaration does not hide the production
+/// code after it, an inline test module is cut, and an unlisted caller in a
+/// new file is reported.
+#[test]
+fn x15_feed_writer_scan_detects_unlisted_callers() {
+    let declared = "fn a() {}\n#[cfg(test)]\nmod x_tests;\nfn b() { append_canonical_and_narrative_change_in_tx(c); }\n";
+    assert!(production_source(declared).contains("fn b()"));
+    let inline = "fn a() {}\n#[cfg(test)]\nmod tests {\n    append_narrative_change_transaction_in_tx(c);\n}\n";
+    assert_eq!(production_source(inline), "fn a() {}");
+    let mut files = production_files();
+    files.push((
+        "new_writer.rs".to_owned(),
+        "fn w() { append_canonical_and_narrative_change_in_tx(c); }".to_owned(),
+    ));
+    let (callers, _) = feed_writers_in(&files);
+    assert_eq!(callers.get("new_writer.rs"), Some(&1));
+    assert_eq!(callers.get("narrative_extraction/mod.rs"), Some(&1));
 }
