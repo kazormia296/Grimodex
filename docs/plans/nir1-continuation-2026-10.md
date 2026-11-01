@@ -126,6 +126,7 @@ Session B のパケットで一覧として通知する委任判断（未記録�
 - 決定の `created_at` の修正（#672。2026-10-18）: 承認と取消が同じミリ秒でも取消が効くように、決定の時刻を厳密に後にする。Full の揺れが見つけた不具合で、契約と上限は変えない。
 - NC-1（K3/3 の実装。2026-10-18 追加）: K3/3 の確認の範囲の内側にある技術判断（module の構成、試験の形、段の割当てなど）は §3.2 の形式で記録して進める。範囲の外（許可先や名前解決を許す名前の追加、閉じた集合の外の network 設定、閉じ込めを止める入口、新しい authority）は委任しない `[precheck]` で、新しい draftRef を求める。
 - DT-5、HC-1、CB-2（＋MG-1）、NC-1、DI-1c（2026-10-18〜19 に #680〜#684 で merge）: 確認済み契約の範囲内の技術判断は、各レーンの decisions 文書（[索引](nir1-lane-decisions/README.md)）に記録した。新しい数値（K1b の規則5）の記録は、DT-5 の DR-DT5-26（byte の上限と期限。draft の初期案のまま確定し、実在の local server の実測の根拠は無い）、CB-2 の DR-CB2-7 とその訂正、DI-1c の DR-DI1C-14（attempt の寿命 60 秒）、NC-1 の DR-NC1-3（LS-1 は確認済みの上限 256 接続・5000 ms のまま）。HC-1 は 1 turn の予算の数値を決めず、HC-1a の実測と推奨値（DR-HC1-12）を integrator に渡した。
+- G-04 fixture v2（案 C。2026-11-01）: DR-CP4-G4-1〜G4-6。記録先は [cp4-decisions.md](nir1-lane-decisions/cp4-decisions.md) の節「G-04 fixture v2（案 C。2026-11-01）」と PR 本文。構成（U0、I1〜I4）、K2/4 の適用範囲の 5 件目（ユーザーの確認済み。`claude/nir1-contracts` の `a7027915`）、再 probe の script の版と結果、試験と分類の範囲と結果への影響の開示、規則文の列挙の更新、観測の後に作った版の記録の形（`freeze.v2.json`、`freeze.v1.json` は不変）。設計は [nir1-g04-fixture-v2c-design-draft.md](nir1-g04-fixture-v2c-design-draft.md) と [nir1-g04-fixture-v2-design-draft.md](nir1-g04-fixture-v2-design-draft.md)。
 
 
 ### 3.3. レーンの判断記録の置き場所
