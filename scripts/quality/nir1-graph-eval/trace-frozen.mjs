@@ -537,9 +537,12 @@ export async function prepareFrozenTrace({
   };
 }
 
-/** S2's K2/4 declaration addendum for the graph cases (a bound file). */
+/**
+ * S2's K2/4 declaration addendum for the graph cases (a bound file). Version 2
+ * adds G-04 base (DR-CP4-G4-7); version 1 is kept unchanged but no longer read.
+ */
 export const DECLARATION_ADDENDUM_PATH =
-  "evals/nir1-graph/declaration-addendum.v1.json";
+  "evals/nir1-graph/declaration-addendum.v2.json";
 
 /**
  * The trace project's declared Scene (S2 `project.setup`: the K2/4

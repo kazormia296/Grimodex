@@ -1922,7 +1922,7 @@ export function completeSetupExtension({
 export const S4_REHEARSAL_FILES = Object.freeze({
   prep: "evals/nir1-graph/observation-prep.v1.json",
   setupAddendum: "evals/nir1-g01/setup-addendum.v1.json",
-  declarationAddendum: "evals/nir1-graph/declaration-addendum.v1.json",
+  declarationAddendum: "evals/nir1-graph/declaration-addendum.v2.json",
   traceEditing: "evals/nir1-graph/trace-editing.v1.json",
   traceBrowsing: "evals/nir1-graph/trace-browsing.v1.json",
   authorDeclaration:

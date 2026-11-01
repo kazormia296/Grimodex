@@ -37,7 +37,8 @@ import { loadProcedureFile } from "./procedure-file.mjs";
 /** The S2 files the formal runner reads at the S4 commit. */
 export const S2_FILES = Object.freeze({
   observationPrep: OBSERVATION_PREP_S2_PATH,
-  declarationAddendum: "evals/nir1-graph/declaration-addendum.v1.json",
+  // Version 2 adds G-04 base (DR-CP4-G4-7); version 1 is no longer read.
+  declarationAddendum: "evals/nir1-graph/declaration-addendum.v2.json",
   g01Addendum: "evals/nir1-g01/setup-addendum.v1.json",
 });
 export const FORMAL_PROCEDURE_VERSION = "v1";

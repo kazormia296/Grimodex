@@ -1,7 +1,8 @@
 // CP-4 S2: validator of the documents fixed before the first Graph observation.
 //
 //   evals/nir1-g01/setup-addendum.v1.json          K2/4 setup addendum (G-01)
-//   evals/nir1-graph/declaration-addendum.v1.json  K2/4 addendum (G-02/07/08)
+//   evals/nir1-graph/declaration-addendum.v2.json  K2/4 addendum (G-02/04/07/08;
+//                                                  v1 without G-04 is kept)
 //   evals/nir1-graph/observation-prep.v1.json      D1, D2, D10, sample plan,
 //                                                  traces, K6/4 procedure,
 //                                                  diagnostic runs
@@ -33,7 +34,7 @@ import {
 
 export const OBSERVATION_PREP_FILES = Object.freeze({
   setupAddendum: "evals/nir1-g01/setup-addendum.v1.json",
-  declarationAddendum: "evals/nir1-graph/declaration-addendum.v1.json",
+  declarationAddendum: "evals/nir1-graph/declaration-addendum.v2.json",
   prep: "evals/nir1-graph/observation-prep.v1.json",
   traceEditing: "evals/nir1-graph/trace-editing.v1.json",
   traceBrowsing: "evals/nir1-graph/trace-browsing.v1.json",
@@ -76,18 +77,54 @@ export const CONTRACTS = Object.freeze({
   }),
 });
 
-/** K2/4「setup の addendum」の表（宣言する Scene、reading、excerpt）。 */
+/**
+ * K2/4「setup の addendum」の表（宣言する Scene、reading、excerpt）。K2/4 :391
+ * は 4 つの Scene を列挙する。G-04 base（fixture v2 の g04-lio-landing）は、
+ * ユーザーの確認（K24_SCOPE_EXTENSION、contracts a7027915 の質問 3）で K2/4 の
+ * 適用範囲を広げた 5 件目で、値は fixture v2 と K2/4 の規則から導いた
+ * （DR-CP4-G4-2、G4-7）。`extension` がその行の印。
+ */
 export const K24_TABLE = Object.freeze(
   [
     ["G-01", "v1", "g01-mira", 20, 100, 78],
     ["G-02", "base", "g02-tamsin-first", 30, 100, 78],
+    ["G-04", "base", "g04-lio-landing", 20, 100, 211, true],
     ["G-07", "base", "g07-pell-dock", 40, 100, 70],
     ["G-08", "base-usable", "g08-cass-attic", 20, 100, 64],
     ["G-08", "graph-recovered", "g08-cass-attic", 20, 100, 64],
-  ].map(([caseId, variantId, sceneId, scene, query, end]) =>
-    Object.freeze({ caseId, variantId, sceneId, scene, query, end }),
+  ].map(([caseId, variantId, sceneId, scene, query, end, extension = false]) =>
+    Object.freeze({ caseId, variantId, sceneId, scene, query, end, extension }),
   ),
 );
+
+/**
+ * The user's confirmation that widened K2/4's declared Scenes to G-04 base
+ * (DR-CP4-G4-2). The values, vetoes, use-time checks and the product's
+ * authority are K2/4's, unchanged.
+ */
+export const K24_SCOPE_EXTENSION = Object.freeze({
+  decision: "DR-CP4-G4-2",
+  variants: Object.freeze(
+    K24_TABLE.filter((row) => row.extension).map(
+      (row) => `${row.caseId}/${row.variantId}`,
+    ),
+  ),
+  userConfirmation: Object.freeze({
+    record:
+      "claude/nir1-contracts:docs/plans/nir1-cp4-records/user-confirmation-2026-11-01-g04-v2c-build.md",
+    commit: "a70279156d1ea75332e2b22f9ec479a270869143",
+    sha256: "1de09724c6db736e9d688c71fe2f0d18c59eed49325bf03cbdc5ef0b726f6f5a",
+  }),
+});
+
+/**
+ * The declaration addendum v2 supersedes (bytes kept): its rows outside the
+ * rebuilt cases are copied unchanged (DR-CP4-G4-7).
+ */
+export const DECLARATION_ADDENDUM_V1 = Object.freeze({
+  path: "evals/nir1-graph/declaration-addendum.v1.json",
+  sha256: "82b05bae92d05b3af2a73739bd14b73cf88dcdc3290e19860126c057c5552949",
+});
 
 /** K2/4「宣言の値（v1 は G-01 subset）」。 */
 const DECLARATION_VALUES = Object.freeze({
@@ -207,6 +244,7 @@ const PROCEDURE_V1 =
   "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
 const GRAPH_NEGATIVES = Object.freeze([
   ["K24-G02-N1", "G-02", "base"],
+  ["K24-G04-N1", "G-04", "base"],
   ["K24-G07-N1", "G-07", "base"],
   ["K24-G08-N1", "G-08", "base-usable"],
 ]);
@@ -1667,8 +1705,8 @@ function commonAddendumErrors(errors, addendum, ctx, schemaVersion) {
   }
   if (addendum.schemaVersion !== schemaVersion)
     errors.push(`schemaVersion must be ${schemaVersion}`);
-  if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
-    errors.push("graphRuntimeObservedBeforeAuthoring must be false");
+  // graphRuntimeObservedBeforeAuthoring: each addendum checks it (false, or
+  // true only for rows of a case the freeze rebuilt after an observation).
   reviewErrors(errors, addendum, ADDENDUM_STATUSES, "addendum");
   contractErrors(errors, addendum.contract);
   freezeReferenceErrors(errors, addendum.references?.graphCaseFreeze, ctx);
@@ -1708,6 +1746,8 @@ export function setupAddendumErrors(addendum, ctx) {
     !commonAddendumErrors(errors, addendum, ctx, "nir1-c-body-setup-addendum/1")
   )
     return errors;
+  if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
+    errors.push("graphRuntimeObservedBeforeAuthoring must be false");
   fixtureIdErrors(
     errors,
     "references.g01Fixture",
@@ -1789,7 +1829,104 @@ function appendedVariants(ctx) {
   return rows;
 }
 
-/** G-02 base, G-07 base, G-08 base-usable and graph-recovered (K2/4 table). */
+/** K2/4 :391 widened by the user's confirmation (K24_SCOPE_EXTENSION). */
+function scopeExtensionErrors(errors, extension, table) {
+  const want = K24_SCOPE_EXTENSION;
+  const extended = table
+    .filter((row) => row.extension)
+    .map((row) => `${row.caseId}/${row.variantId}`);
+  if (
+    !isObject(extension) ||
+    extension.decision !== want.decision ||
+    !same(extension.variants, extended) ||
+    !same(extension.variants, want.variants) ||
+    extension.userConfirmation?.record !== want.userConfirmation.record ||
+    extension.userConfirmation?.commit !== want.userConfirmation.commit ||
+    extension.userConfirmation?.sha256 !== want.userConfirmation.sha256 ||
+    typeof extension.rule !== "string" ||
+    extension.rule.trim() === ""
+  )
+    errors.push(
+      `contractScopeExtension must name ${want.decision}, the variants ${extended.join(", ")} and the user's confirmation (${want.userConfirmation.commit}, sha256 ${want.userConfirmation.sha256})`,
+    );
+}
+
+/**
+ * Rows of a case the freeze rebuilt after a Graph runtime observation
+ * (freeze postObservationRevisions) are written after that observation: the
+ * addendum says so (graphRuntimeObservedBeforeAuthoring true, the rows in
+ * postObservationDeclarations) and copies every other row, the values and
+ * the other negatives from the v1 addendum it supersedes, whose bytes it
+ * binds (DR-CP4-G4-7). Without such rows it stays false.
+ */
+function postObservationAddendumErrors(errors, addendum, ctx) {
+  const freeze = ctx.freeze.json ?? {};
+  const rebuilt = new Set(
+    freeze.graphRuntimeObservedBeforeFreeze === true
+      ? (freeze.postObservationRevisions ?? []).map((row) => row.caseId)
+      : [],
+  );
+  const rows = Array.isArray(addendum.declarations)
+    ? addendum.declarations
+    : [];
+  const after = rows
+    .filter((row) => rebuilt.has(row.caseId))
+    .map((row) => `${row.caseId}/${row.variantId}`);
+  if (after.length === 0) {
+    if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
+      errors.push("graphRuntimeObservedBeforeAuthoring must be false");
+    if (addendum.postObservationDeclarations !== undefined)
+      errors.push(
+        "postObservationDeclarations needs a row of a case the freeze rebuilt after an observation",
+      );
+    return;
+  }
+  if (addendum.graphRuntimeObservedBeforeAuthoring !== true)
+    errors.push(
+      `graphRuntimeObservedBeforeAuthoring must be true: ${after.join(", ")} belong to a case the freeze rebuilt after a Graph runtime observation`,
+    );
+  const declared = addendum.postObservationDeclarations;
+  if (
+    !isObject(declared) ||
+    !same(declared.variants, after) ||
+    typeof declared.rule !== "string" ||
+    declared.rule.trim() === ""
+  )
+    errors.push(
+      `postObservationDeclarations.variants must be ${after.join(", ")} with its rule`,
+    );
+  const v1 = ctx.supersededDeclarationAddendum;
+  const supersedes = addendum.supersedes;
+  if (
+    !isObject(supersedes) ||
+    supersedes.path !== DECLARATION_ADDENDUM_V1.path ||
+    supersedes.sha256 !== DECLARATION_ADDENDUM_V1.sha256 ||
+    !HEX40.test(String(supersedes.commit ?? "")) ||
+    v1?.sha256 !== DECLARATION_ADDENDUM_V1.sha256
+  ) {
+    errors.push(
+      `supersedes must bind ${DECLARATION_ADDENDUM_V1.path} (sha256 ${DECLARATION_ADDENDUM_V1.sha256}, its commit), whose bytes are unchanged`,
+    );
+    return;
+  }
+  const kept = (list) =>
+    (Array.isArray(list) ? list : []).filter((row) => !rebuilt.has(row.caseId));
+  if (!same(kept(rows), kept(v1.json.declarations)))
+    errors.push(
+      "declarations outside the rebuilt cases must be the v1 addendum's rows unchanged",
+    );
+  if (
+    !same(kept(addendum.diagnosticNegatives), kept(v1.json.diagnosticNegatives))
+  )
+    errors.push(
+      "diagnosticNegatives outside the rebuilt cases must be the v1 addendum's unchanged",
+    );
+}
+
+/**
+ * G-02 base, G-04 base (the widened fifth Scene), G-07 base, G-08 base-usable
+ * and graph-recovered (K2/4 table).
+ */
 export function declarationAddendumErrors(addendum, ctx) {
   const errors = [];
   if (
@@ -1801,14 +1938,23 @@ export function declarationAddendumErrors(addendum, ctx) {
     )
   )
     return errors;
-  for (const caseId of ["G-02", "G-07", "G-08"])
+  const table = K24_TABLE.slice(1);
+  const tableCases = [...new Set(table.map((row) => row.caseId))];
+  for (const caseId of tableCases)
     fixtureIdErrors(
       errors,
       `references.fixtures.${caseId}`,
       addendum.references?.fixtures?.[caseId],
       ctx.fixtures[caseId],
     );
-  const table = K24_TABLE.slice(1);
+  if (
+    !same(Object.keys(addendum.references?.fixtures ?? {}).sort(), tableCases)
+  )
+    errors.push(
+      `references.fixtures must name exactly ${tableCases.join(", ")}`,
+    );
+  scopeExtensionErrors(errors, addendum.contractScopeExtension, table);
+  postObservationAddendumErrors(errors, addendum, ctx);
   const rows = Array.isArray(addendum.declarations)
     ? addendum.declarations
     : [];
@@ -1884,7 +2030,7 @@ export function declarationAddendumErrors(addendum, ctx) {
       if (step[key] !== false)
         errors.push(`declarationStep.${key} must be false`);
   }
-  for (const caseId of ["G-02", "G-07", "G-08"]) {
+  for (const caseId of tableCases) {
     const order = ctx.fixtures[caseId].json.measurementBoundary?.setupOrder;
     if (typeof order !== "string" || !order.includes(SETUP_ORDER_ANCHOR))
       errors.push(`${caseId} setupOrder no longer has the declaration anchor`);
@@ -3384,7 +3530,9 @@ export function observationPrepErrors(prep, ctx) {
       K24_TABLE.map((row) => `${row.caseId}/${row.variantId}`),
     )
   )
-    errors.push("d1.runs must be the five K2/4 declaration runs");
+    errors.push(
+      `d1.runs must be the ${K24_TABLE.length} K2/4 declaration runs (${K24_TABLE.map((row) => `${row.caseId}/${row.variantId}`).join(", ")})`,
+    );
   if (
     typeof prep.d2?.rule !== "string" ||
     !prep.d2.rule.includes("nir1-graph-index-build")
@@ -4280,6 +4428,16 @@ export async function loadObservationPrepContext({ repoRoot }) {
       parsed[name] = null;
     }
   }
+  let supersededDeclarationAddendum = null;
+  try {
+    const bytes = await read(DECLARATION_ADDENDUM_V1.path);
+    supersededDeclarationAddendum = {
+      sha256: sha256(bytes),
+      json: JSON.parse(bytes),
+    };
+  } catch {
+    // Absent or unreadable: the supersedes check fails closed.
+  }
   const formal = PROCEDURE_V1;
   let procedureFormal = null;
   try {
@@ -4318,6 +4476,7 @@ export async function loadObservationPrepContext({ repoRoot }) {
     productSources,
     setupAddendum: parsed.setupAddendum,
     declarationAddendum: parsed.declarationAddendum,
+    supersededDeclarationAddendum,
     procedureDraft: parsed.procedureDraft,
     procedureFormal,
     sp1Sha256,
