@@ -7,11 +7,12 @@
 // The addendum adds, outside setupOrder, one step that pins every G-case
 // variant's query Scene to the fixture's planned seed through the product's
 // upsertScenePin. This module recomputes the rows from the frozen fixtures
-// (the planned seed is copied, never chosen), checks the digests of
-// freeze.v1.json and every fixture, the placement, the one-pin rule and the
-// SP-P1..P5 / SP-N1..N14 table. It never runs Graph, IR, Raw, Electron or
+// (the planned seed is copied, never chosen), checks the digests of the
+// current Graph case freeze (NIR1_GRAPH_FREEZE_PATH) and every fixture, the
+// placement, the one-pin rule and the SP-P1..P5 / SP-N1..N14 table. It never runs Graph, IR, Raw, Electron or
 // Native and reads no runtime output; the runtime checks (DB re-read, receipt)
 // belong to the setup driver and the run admission.
+import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 
 export const SEED_PIN_ADDENDUM_PATH =
   "evals/nir1-graph/seed-pin-addendum.v1.json";
@@ -177,14 +178,14 @@ export function seedPinAddendumErrors(addendum, ctx) {
       "contract.decision2 must be include-g01 (SP/1 判断 2 was confirmed as recommended; SP-N14)",
     );
 
-  // SP-N8: digests of freeze.v1.json and every fixture it binds.
+  // SP-N8: digests of the current freeze and every fixture it binds.
   const freeze = addendum.references?.graphCaseFreeze;
   if (
-    freeze?.path !== "evals/nir1-graph/freeze.v1.json" ||
+    freeze?.path !== NIR1_GRAPH_FREEZE_PATH ||
     freeze?.sha256 !== ctx.freeze.sha256
   )
     errors.push(
-      `references.graphCaseFreeze must be freeze.v1.json with its sha256 ${ctx.freeze.sha256} (SP-N8)`,
+      `references.graphCaseFreeze must be ${NIR1_GRAPH_FREEZE_PATH} with its sha256 ${ctx.freeze.sha256} (SP-N8)`,
     );
   for (const caseId of Object.keys(ctx.fixtures).sort()) {
     const fixture = ctx.fixtures[caseId];

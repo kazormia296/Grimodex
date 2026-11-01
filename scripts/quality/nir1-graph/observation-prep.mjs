@@ -14,13 +14,16 @@
 // or Native, and reads no runtime output. It recomputes what the documents
 // copy from the contracts (the K2/4 table, K6/2 Q >= 200 and the editing
 // density, the K6/4 values) and from the frozen fixtures, and checks the
-// digests the documents reference. Files bound by freeze.v1.json are only
-// read. A draft (placeholders `S4:<name>`) validates, but is never usable for
+// digests the documents reference. The frozen fixtures are those of the
+// current Graph case freeze (contract.mjs NIR1_GRAPH_FREEZE_PATH, freeze.v2.json
+// since G-04 version 2; DR-CP4-G4-6, B1 review P3-6); they are only read.
+// Documents that still name freeze.v1.json fail closed until re-pinned. A draft (placeholders `S4:<name>`) validates, but is never usable for
 // a formal run (assertObservationPrepFormal).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 import {
   SEED_PIN_ADDENDUM_PATH,
   SP1,
@@ -1339,11 +1342,11 @@ function fixtureIdErrors(errors, label, reference, fixture) {
 function freezeReferenceErrors(errors, reference, ctx) {
   if (
     !isObject(reference) ||
-    reference.path !== "evals/nir1-graph/freeze.v1.json" ||
+    reference.path !== NIR1_GRAPH_FREEZE_PATH ||
     reference.sha256 !== ctx.freeze.sha256
   )
     errors.push(
-      `references.graphCaseFreeze must be evals/nir1-graph/freeze.v1.json with its sha256 ${ctx.freeze.sha256}`,
+      `references.graphCaseFreeze must be ${NIR1_GRAPH_FREEZE_PATH} with its sha256 ${ctx.freeze.sha256}`,
     );
 }
 
@@ -4248,7 +4251,8 @@ function cachedGit(repoRoot) {
 /** Reads every file the validators compare against. */
 export async function loadObservationPrepContext({ repoRoot }) {
   const read = (relative) => readFile(path.join(repoRoot, relative));
-  const freezeBytes = await read("evals/nir1-graph/freeze.v1.json");
+  // The current freeze (B1 review P3-6): its cases are the frozen fixtures.
+  const freezeBytes = await read(NIR1_GRAPH_FREEZE_PATH);
   const freezeJson = JSON.parse(freezeBytes);
   const frozen = new Map(
     (freezeJson.cases ?? []).map((row) => [row.caseId, row]),
