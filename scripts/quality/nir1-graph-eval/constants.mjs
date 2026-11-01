@@ -107,7 +107,7 @@ export const K62_FREEZE = Object.freeze({
 });
 export const GRAPH_CASE_FREEZE = Object.freeze({
   path: "evals/nir1-graph/freeze.v2.json",
-  sha256: "8f52f2f2b35ef7f54be11294cd2a02a7bd9a464cdb353951fecc95a031ed77b2",
+  sha256: "8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d",
 });
 export const G01_FIXTURE = Object.freeze({
   path: "evals/nir1-g01/fixture.v1.json",
