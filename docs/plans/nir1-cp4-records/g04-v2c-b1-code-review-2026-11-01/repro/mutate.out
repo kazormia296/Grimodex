@@ -1,0 +1,64 @@
+AS-EXPECTED [expect pass] baseline HEAD copy: 0 errors
+AS-EXPECTED [expect fail] G-05 bytes changed, freeze re-bound to the new G-05 hash: 1 errors
+    - nir1-graph freeze G-05 is not a declared post-observation revision, so it must keep the superseded freeze's evals/nir1-graph/g05-current-revision-freshness.v1.json bytes
+AS-EXPECTED [expect fail] G-05 declared revised in freeze only (manifest unchanged): 4 errors
+    - nir1-graph freeze and manifest postObservationRevisions must name the same cases
+    - nir1-graph freeze postObservationRevisions G-05 from must be the superseded freeze's G-05 binding
+    - nir1-graph freeze postObservationRevisions G-05 to must be the bound G-05 fixture
+AS-EXPECTED [expect fail] supersedes removed: 1 errors
+    - nir1-graph freeze supersedes must bind evals/nir1-graph/freeze.v1.json (6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7, last written by a789039a779eb4df0dec2b8b3be5e29d2bff5a5c)
+AS-EXPECTED [expect fail] superseded freeze.v1.json bytes changed: 1 errors
+    - nir1-graph freeze superseded evals/nir1-graph/freeze.v1.json must keep its pinned bytes
+AS-EXPECTED [expect fail] postObservationRevisions[0].from.sha256 wrong: 2 errors
+    - nir1-graph freeze postObservationRevisions G-04 from must be the superseded freeze's G-04 binding
+    - nir1-graph freeze postObservationRevisions G-04 earlier version evals/nir1-graph/g04-scope-exact-unknown.v1.json changed
+AS-EXPECTED [expect fail] G-04 v1 file changed (earlier version must stay): 1 errors
+    - nir1-graph freeze postObservationRevisions G-04 earlier version evals/nir1-graph/g04-scope-exact-unknown.v1.json changed
+AS-EXPECTED [expect fail] graphOutputUsed true: 1 errors
+    - nir1-graph freeze postObservationRevisions G-04 must record that no Graph runtime output was used
+AS-EXPECTED [expect fail] manifest postObservationRevisions removed: 2 errors
+    - nir1-graph manifest observed before the freeze must declare postObservationRevisions
+    - nir1-graph freeze and manifest postObservationRevisions must name the same cases
+AS-EXPECTED [expect fail] manifest G-05 slotClass changed (outside scope): 2 errors
+    - G-05 only G-01 is the predeclared Graph improvement case
+    - nir1-graph freeze evals/nir1-graph/manifest.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect fail] manifest precondition id changed (outside scope): 3 errors
+    - nir1-graph manifest preconditions must define exactly the closed precondition set in order
+    - nir1-graph manifest added-scene precondition must list the appended-Scene sub-expectation
+    - nir1-graph freeze evals/nir1-graph/manifest.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect fail] manifest cb4-inputs notEvaluated changed (outside scope): 2 errors
+    - nir1-graph manifest added-scene precondition must list the appended-Scene sub-expectation
+    - nir1-graph freeze evals/nir1-graph/manifest.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect fail] manifest closedSet changed (outside scope): 1 errors
+    - nir1-graph freeze evals/nir1-graph/manifest.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect fail] manifest ir-supplement-admission.check changed (outside scope): 1 errors
+    - nir1-graph freeze evals/nir1-graph/manifest.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect fail] manifest observationPolicy changed: 2 errors
+    - nir1-graph manifest must repeat the fixed observation policy
+    - nir1-graph freeze evals/nir1-graph/manifest.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect pass] manifest coverageGaps: an EXISTING gap deleted (inside /coverageGaps): 0 errors
+AS-EXPECTED [expect pass] manifest holdVersusBlocked rewritten (inside scope): 0 errors
+AS-EXPECTED [expect fail] schema: another property changed (outside pointer): 1 errors
+    - nir1-graph freeze evals/nir1-graph/schema.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect fail] README: unscoped section (fixture の読み方) changed: 1 errors
+    - nir1-graph freeze evals/nir1-graph/README.md changed outside its declared scope after the approving review
+AS-EXPECTED [expect pass] README: scoped section line '観測の後に足さず' removed (inside scope): 0 errors
+AS-EXPECTED [expect pass] freeze filesAtReview manifest sha set to junk (not checked vs superseded): 0 errors
+AS-EXPECTED [expect pass] approvedSha256OutsideScope recomputed after an outside-scope schema change: 0 errors
+AS-EXPECTED [expect fail] freeze graphRuntimeObservedBeforeFreeze false but manifest true: 6 errors
+    - nir1-graph freeze declares postObservationRevisions without a runtime observation before it
+    - G-04 fixtureId nir1-g04-scope-exact-unknown/2 needs a declared post-observation revision
+    - nir1-graph freeze and manifest disagree on graphRuntimeObservedBeforeFreeze
+AS-EXPECTED [expect pass] v1 mode: base manifest + freeze.v1 under the new validator: 0 errors
+AS-EXPECTED [expect fail] v1 mode: manifest adds postObservationRevisions: 3 errors
+    - nir1-graph manifest declares postObservationRevisions without a runtime observation before the freeze
+    - nir1-graph freeze manifest hash differs
+    - nir1-graph freeze evals/nir1-graph/manifest.v1.json changed outside its declared scope after the approving review
+AS-EXPECTED [expect fail] v1 mode: manifest graphRuntimeObservedBeforeFreeze true: 4 errors
+    - nir1-graph manifest observed before the freeze must declare postObservationRevisions
+    - nir1-graph freeze and manifest disagree on graphRuntimeObservedBeforeFreeze
+    - nir1-graph freeze manifest hash differs
+AS-EXPECTED [expect fail] v1 mode: README section changed outside v1's declared scope: 2 errors
+    - nir1-graph freeze README hash differs
+    - nir1-graph freeze evals/nir1-graph/README.md changed outside its declared scope after the approving review
+restored
