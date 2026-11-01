@@ -1,7 +1,7 @@
 {
   "schemaVersion": "nir1-graph-freeze/1",
   "status": "frozen-after-independent-expectation-review",
-  "frozenAt": "2026-11-01T12:14:44Z",
+  "frozenAt": "2026-11-01T12:31:14Z",
   "baselineHead": "8187fbfc9685356225956dfce83431aec9845473",
   "graphRuntimeObservedBeforeFreeze": true,
   "graphRuntimeObservedBeforeFreezeNote": "global の boolean。この freeze を書いた時点で、Graph runtime は v1 の G-01〜G-08 のすべてを観測していた（CP-4 の run）。v2 の G-04 の bytes は、この freeze の前に Graph runtime を通していない。作り直した case は postObservationRevisions にあり、ほかの case は supersedes の v1 の freeze と同じ bytes である（validator が確かめる）。",
@@ -9,12 +9,12 @@
   "reviewVerdict": "approve",
   "reviewReceipt": "evals/nir1-graph/independent-expectation-review.v1.json",
   "reviewReceiptSha256": "188a679a0bd132df3c990e808e9be9c882b6372cbff412d89c8c844183ac34fd",
-  "manifestSha256": "e8ff08c596baec63f2cd10b1063a6fc11bdd9632433233a26065cd9a08e38f91",
+  "manifestSha256": "6860d10445260a5677524f002dd994a009cc97d36d4fa4114acfb50c5974e966",
   "schemaSha256": "e565170a2b500c12e1a81d72f5fe60885b28bb4e262fabdeee29aabb358feac1",
-  "readmeSha256": "75884f5b1775b4ceeaf38985d52d7a09e14204bbec96b2c8d6f3dd9464b452ed",
+  "readmeSha256": "ef1847d86fbabbb6601454ced293d883a56ef1cd6c6d96c9367ae122ea5f0bb5",
   "irSupplementAdmissionProbe": {
-    "status": "run",
-    "reason": "v2 の freeze の前に model-only の cosine probe を当てた（Related Scenes runtime と Graph は動かしていない）。(1) G-04 v2 の Raw の予測の再 probe：script probe-v2c.mjs（cd1fd43271882a7c897699094f268d2ec94ff714c1d961fc397c7a174101ca87。確認済みの probe.mjs〔8fcc9010…〕との差は構造の条件の 1 行）を bytes ec5455a9…（最終の 96d44ec3… と probe が読む query・scenes・qualifiedIr が同じ）に 1 回当て、golden 最小 0.99688、control 0.8083、ほかの 7 Scene は最大 0.4293 で allPass（contracts g04-v2c-reprobe-2026-11-01/、a27660e0）。(2) G-05 の ir-only IR（g05-xan-watch）は、設計 A 付録 A の校正 probe（測定に数えない）で 0.7531（floor 0.66）。G-05 の bytes と IR 要約は変えていない。field の読み方（区分全体か case ごとか）は設計 C の I5 で integrator が決める。"
+    "status": "not-run",
+    "reason": "IR補完済みの区分の admission の probe（ir-only IR が floor 以上で admission されるかを凍結の前に確かめる model-only の probe）は行っていない（v1 の値のまま。DR-CP4-G4-6 の追記の I5）。事実は 3 つ：(1) IR補完済みの区分（G-05）は、その bytes を固定した v1 の freeze の前に admission の probe をしていない。(2) G-05 の ir-only IR（g05-xan-watch）の 0.7531（floor 0.66）は、G-05 を観測した後（2026-11-01）に当てた校正 probe（設計 A 付録 A）の値で、測定にも凍結前の admission の確認にも数えない。(3) v2 の freeze の前に当てた model-only の probe は、G-04 v2 の Raw の予測の再 probe だけである（v2 に ir-only は無い）：script probe-v2c.mjs（cd1fd43271882a7c897699094f268d2ec94ff714c1d961fc397c7a174101ca87。確認済みの probe.mjs〔8fcc9010…〕との差は構造の条件の 1 行）を bytes ec5455a9…（最終の 96d44ec3… と probe が読む query・scenes・qualifiedIr が同じ）に 1 回当て、golden 最小 0.99688、control 0.8083、ほかの 7 Scene は最大 0.4293 で allPass（contracts g04-v2c-reprobe-2026-11-01/、a27660e0）。Related Scenes runtime と Graph は動かしていない。G-05 の bytes と IR 要約は変えていない。"
   },
   "postObservationRevisions": [
     {
@@ -684,7 +684,7 @@
           ]
         },
         "approvedSha256OutsideScope": "7ece9f1b91ddffa1f0fe054129ce1e34a282467863304e9bd7a9c3f60e66757b",
-        "change": "Points the G-04 entry at version 2 (path, fixtureId /2, slotClass supplementable); updates only the enumerations of the cases a precondition names (raw-membership.check: a supplementable case has two controls or, for G-04, one; ir-supplement-admission.appliesTo: G-05 only; cb4-inputs.appliesTo: adds G-04 base) without changing any id, scope, notEvaluated list, closedSet or outcome rule (DR-CP4-G4-5); adds to holdVersusBlocked how a version made after an observation is frozen; sets irSupplementedCoverage.cases to [G-05] with the probe status run and its wording; adds one coverage gap (the IR-supplemented class rests on G-05, G-04-P2 has no replacement); sets graphRuntimeObservedBeforeFreeze true with postObservationRevisions; records round 4 in independentExpectationReview."
+        "change": "Points the G-04 entry at version 2 (path, fixtureId /2, slotClass supplementable); updates only the enumerations of the cases a precondition names (raw-membership.check: a supplementable case has two controls or, for G-04, one; ir-supplement-admission.appliesTo: G-05 only; cb4-inputs.appliesTo: adds G-04 base) without changing any id, scope, notEvaluated list, closedSet or outcome rule (DR-CP4-G4-5); adds to holdVersusBlocked how a version made after an observation is frozen; sets irSupplementedCoverage.cases to [G-05] with the probe status kept not-run (the version-1 value) and its wording stating which probes ran when; adds one coverage gap (the IR-supplemented class rests on G-05, G-04-P2 has no replacement); sets graphRuntimeObservedBeforeFreeze true with postObservationRevisions; records round 4 in independentExpectationReview."
       },
       {
         "path": "evals/nir1-graph/README.md",
@@ -717,15 +717,43 @@
     "ruleTextReview": {
       "status": "reviewed",
       "date": "2026-11-01",
-      "reviewer": "独立コードレビュー（B1 の独立コードレビュー）。規則文と fixture の作成者（B1）とも 4 回目の期待値レビュアーとも別の agent で、read-only。Graph runtime の出力（contracts の gold-s5r4-1/、traces-*、parity-*、negatives-*、s6-aggregation-s5r4/、s7-report-*、.artifacts/cp4/）を読んでいないと申告した。",
-      "scope": "4 回目のレビューが見ていない承認の後の改訂の全部：manifest の前提条件の列挙（raw-membership.check の件数、ir-supplement-admission.appliesTo、cb4-inputs.appliesTo）、irSupplementedCoverage（cases、admissionProbe、probeOption）、coverageGaps の追加、holdVersusBlocked に足した文、afterApproval の文、README の同じ列挙と README の「独立期待値レビューと freeze」の節の観測の後の版の規則（「観測の前に限り」→「観測の前は」、観測の後の版を固定済みとして扱う条件の追加、「この版」→「その版の bytes」）、freeze の irSupplementAdmissionProbe、schema の fixtureId の pattern。",
-      "conclusion": "id・scope・判定の意味・closedSet・notEvaluated・outcome の規則は変わっていない（範囲の外の hash を基点の bytes から計算し直して一致、変異で確認）。列挙 3 か所は変わっていない定義節から導かれる。README の観測の後の版の規則と holdVersusBlocked の新しい文は列挙の更新ではなく、観測の後の版の扱いを足す改訂（ユーザーの確認、postObservationRevisions の記録、新しい独立期待値レビューを要件とし、前の版と結果を残す）で、ユーザーが質問 2 で名指しした範囲（README:265-266、graphRuntimeObservedBeforeFreeze）と設計 A §5.3 の内側。閾値・Gold・pool・F6・X5・Hold と blocked の定義の緩和は紛れていない。admissionProbe の run は記録だけの値で、読み方は I5 として integrator に返されている。",
-      "record": {
-        "location": "B1 の独立コードレビューの記録（integrator の作業領域の review-b1.md。integrator が claude/nir1-contracts の docs/plans/nir1-cp4-records/ に写す）",
-        "sha256": "741c9e1f476e7b2883fa717ba350f6cabe0019d9034db5e6071106edb8d93e8c",
-        "contractsCommit": null
-      },
-      "notes": "ユーザーの確認の範囲の 3 は「独立期待値レビューで確かめ、記録に残す」と書く。この確認は 4 回目の期待値レビュアーではなく独立コードレビューが行い、integrator がそれを範囲の 3 の確認とした。contracts に写した後の commit はまだ無い（DR-CP4-G4-5 の追記に書く）。README の「この版」→「その版の bytes」の書き換えは、v2 の freeze の前に観測された G-02 などの v1 の bytes を、v2 の freeze で固定済みと読ませる。レビュアーはこれも質問 2 の範囲の内とした。"
+      "reviewer": "2 つの独立レビュー。(1) 独立期待値レビュー（規則文の意味の確認）：4 回目の期待値レビュアーと同じ担当（別の agent、Opus、read-only）で、規則文と fixture の作成者（B1）とは別。ユーザーの確認の範囲の 3（「独立期待値レビューで『意味が変わっていないか』を確かめ、記録に残す」）に当たる。(2) B1 の独立コードレビュー：作成者とも期待値レビュアーとも別の agent、read-only。どちらも Graph runtime の出力（contracts の gold-s5r4-1/、traces-*、parity-*、negatives-*、s6-aggregation-s5r4/、s7-report-*、.artifacts/cp4/）を読んでいないと申告した。(1) は I5 の事実の確認のために設計 A 付録 A の表（G-05 の IR の採否の回数を含む）を読んだと開示し、判定には使っていない。",
+      "scope": "4 回目のレビューが見ていない承認の後の改訂の全部：manifest の前提条件の列挙（raw-membership.check の件数、ir-supplement-admission.appliesTo、cb4-inputs.appliesTo）、irSupplementedCoverage（cases、admissionProbe、probeOption）、coverageGaps の追加、holdVersusBlocked に足した文、afterApproval の文、README の同じ列挙と README の「独立期待値レビューと freeze」の節の観測の後の版の規則、freeze の irSupplementAdmissionProbe、schema の fixtureId の pattern。(1) が読んだのは worktree claude-g04-v2c の 7635e880（基点 8187fbfc）の manifest・README・schema の差分と freeze.v2.json。",
+      "conclusion": "(1) の判定は (c)「文だけ直す点がある。規則文の意味は変わっておらず、ユーザーへの追加の確認は要らない」（reviewer の判断。integrator も同意）。manifest の前提条件 6 種の id・scope・check が比べる対象・source、notEvaluated・variantScope・addedSceneScope・closedSet は変わっていない。変わったのは当てはまる case の列挙 3 か所だけで、どれも変わっていない定義節から導ける。列挙ではない 2 つの文（holdVersusBlocked の追加文、README の観測の後の版の規則）は、基点の README:265-266 が閉じていた観測の後の固定し直しを、ユーザーの確認・postObservationRevisions・新しい独立期待値レビューを要件に条件つきで開く規則の改訂で、ユーザーが質問 2 で README:265-266 を名指しして確認したこと、設計 A §5.3 に同じ趣旨の文案があること、新しい規則が版ごとにユーザーの確認を要件にすることから、追加の確認は要らない。(2) の判定も、列挙の部分の意味は変わっていない、閾値・Gold・pool・F6・X5・Hold と blocked の定義の緩和は紛れていない。",
+      "fixedAfterReview": "(1) の直す点を、この freeze を書く前に反映した（B2a。DR-CP4-G4-6 の追記）：(a) irSupplementedCoverage.admissionProbe と irSupplementAdmissionProbe.status を run から not-run（v1 の値）に戻し、probeOption・README の対象外の節・この freeze の reason に、G-05 は v1 の freeze の前に probe していないこと、0.7531 は観測の後の校正 probe の値で凍結前の確認ではないこと、v2 の freeze の前の probe は G-04 v2 の Raw の予測だけであることを書いた。(b) README の「独立期待値レビューと freeze」の節の「凍結の前に…その版の bytes を観測した場合」を、各版はその bytes を最初に束縛した freeze で固定され、G-04 以外は freeze.v1.json が観測の前に固定した版で freeze.v2.json は同じ sha256 を引き継ぐだけ、G-04 v2 は freeze.v2.json が最初に束縛した版、と書き直し、前の行に「観測の後は束縛した fixture を同じ版のまま変えず新しい版を作る」を足し、冒頭の状態の文も同じ趣旨に改めた（文は reviewer の提案のまま。前の行の末尾の「次の行の手続きで」も提案のまま）。(c) この欄に (1) の記録を足し、(2) の contractsCommit を埋めた。",
+      "records": [
+        {
+          "review": "独立期待値レビュー（規則文の意味）",
+          "location": "claude/nir1-contracts:docs/plans/nir1-cp4-records/g04-v2c-rule-text-review-2026-11-01/",
+          "contractsCommit": "12a738acbf57dba30e23257166a3ea60bfdbd47e",
+          "files": [
+            {
+              "path": "README.md",
+              "sha256": "f57fd99bb298142efaf7e470a0415185dcbeadcc5ecb88495fd956dbe2d9d612"
+            },
+            {
+              "path": "rule-text-meaning-review.md",
+              "sha256": "d6935c065518a04a799fa82e2fecf2065ffb1230da3d245c1b60c7d2c0855d29"
+            }
+          ]
+        },
+        {
+          "review": "B1 の独立コードレビュー",
+          "location": "claude/nir1-contracts:docs/plans/nir1-cp4-records/g04-v2c-b1-code-review-2026-11-01/",
+          "contractsCommit": "f2ebdd98d524a23fd8a1eea7032a7530a8e069c6",
+          "files": [
+            {
+              "path": "README.md",
+              "sha256": "ad47b4d5a2f58a81a435b55874277394214fdf4bfcb7f434fb52f145b37cee33"
+            },
+            {
+              "path": "review-b1.md",
+              "sha256": "741c9e1f476e7b2883fa717ba350f6cabe0019d9034db5e6071106edb8d93e8c"
+            }
+          ]
+        }
+      ],
+      "notes": "閉じられない点：(i) (1) が読んだのは 7635e880 の bytes で、fixedAfterReview の文の反映の後の manifest・README・freeze は読んでいない（反映した文は reviewer の提案のまま）。(ii) 質問 2 の括弧は「当てはまる case の列挙だけ直す」と書いていたが、README:265-266 の改訂は列挙ではなく規則の改訂である（reviewer の勧めで DR-CP4-G4-6 の追記に明記した。ユーザーの再確認は要らないとの reviewer の判断に integrator が同意）。validator はこの欄を読まない（記録だけの欄で、機械の門ではない）。"
     },
     "validatorChangesAfterApproval": "contract.mjs は 4 回目が読んだ版（unboundFilesAtReview）の後に、観測の後の版の記録の検査（postObservationRevisions、supersedes、/2 の fixtureId、round ごとの reviewer、JSON pointer と preamble の変更範囲、追加だけを許す pointer の承認した prefix、README の残すべき規則の行、最後の回の filesAtReview と v1 の freeze の照合）と freeze の path（freeze.v2.json）を足した。期待値の再計算の code は変えていない。contract.test.mjs は v2 に合わせた。porter.mjs は変えていない。"
   }

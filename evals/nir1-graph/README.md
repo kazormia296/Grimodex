@@ -1,6 +1,6 @@
 # NIR-1 C-product Graph case（G-01〜G-08）
 
-状態: **固定済み**（独立期待値レビュー済み、[`freeze.v2.json`](freeze.v2.json) で固定）。v1 の freeze（[`freeze.v1.json`](freeze.v1.json)）までは、fixture の作成からレビュー、freeze まで、Graph runtime を実行しておらず、その出力も読んでいない。v2 の freeze は、Graph runtime が v1 の全 case を観測した後に、G-04 だけを新しい版（v2）に作り直して固定し直したものである（「独立期待値レビューと freeze」を参照）。G-04 以外の fixture は v1 の freeze と同じ bytes である。
+状態: **固定済み**（独立期待値レビュー済み、[`freeze.v2.json`](freeze.v2.json) で固定）。v1 の freeze（[`freeze.v1.json`](freeze.v1.json)）までは、fixture の作成からレビュー、freeze まで、Graph runtime を実行しておらず、その出力も読んでいない。v2 の freeze は、Graph runtime が v1 の全 case を観測した後に、G-04 だけを新しい版（v2）に作り直して固定し直したものである（「独立期待値レビューと freeze」を参照）。G-04 以外の fixture は、v1 の freeze が観測の前に固定した bytes のままで、v2 の freeze はその sha256 を引き継ぐ。
 
 このディレクトリは、C-product の評価母集団 G-02〜G-08 の fixture、Gold、事前期待値、観測時の前提条件を固定する。
 G-01 は [`evals/nir1-g01/fixture.v1.json`](../nir1-g01/fixture.v1.json) のまま変更しない。
@@ -185,7 +185,10 @@ K1 既定規則の適用範囲：
 - literal な semantic epoch の境界（restore、Scope authority の変更）は、G-01〜G-08 のどれも測らない。G-05 は 1 つの material の置換前 Revision を、G-08 は旧 generation の混入を測る。
 - `graph.reasonClass` は status だけを比較する。runtime の reason との対応表は、CP-1 の後に fixture の新しい版で固定するまで比較しない。
 - K1 既定規則と DSN §2.5 の逸脱案（N_F＞8）を判別する fixture はない。
-- IR補完済みの区分は、前提条件 `ir-supplement-admission` に依存する。v1 の freeze の前には、ir-only IR の admission を事前に確かめる model-only の cosine probe を行っていない。v2 の freeze の前には model-only の probe を当てた（G-04 v2 の Raw の予測と、G-05 の ir-only IR を含む校正。IR 要約は変えていない。manifest の `irSupplementedCoverage.admissionProbe` は `run`、記録は `freeze.v2.json` の `irSupplementAdmissionProbe`）。
+- IR補完済みの区分は、前提条件 `ir-supplement-admission` に依存する。ir-only IR の admission を事前に確かめる model-only の cosine probe は行っていない（manifest の `irSupplementedCoverage.admissionProbe` は `not-run`、記録は `freeze.v2.json` の `irSupplementAdmissionProbe`）。
+  - IR補完済みの区分（G-05）は、その bytes を固定した v1 の freeze の前に admission の probe をしていない。
+  - 0.7531（`g05-xan-watch` の IR）は、G-05 を観測した後（2026-11-01）に当てた校正 probe（設計 A 付録 A）の値で、測定にも凍結前の admission の確認にも数えない。
+  - v2 の freeze の前に当てた model-only の probe は、G-04 v2 の Raw の予測の再 probe だけである（v2 に ir-only は無い。contracts `g04-v2c-reprobe-2026-11-01/`、`a27660e0`）。IR 要約は変えていない。
 - G-04 の v2 は補完可能なので、IR補完済みの区分は G-05 だけで支える。v1 の G-04-P2（IR が共通追加枠を使った後に Graph が足さない）の代わりの検査は置かない。同じ規則は G-05 の base（`g05-pia-ridge`、`ir-supplement-used`）だけが検査する。
 
 ## 既存 24 件の seed 方針（宣言）
@@ -271,9 +274,9 @@ K1 既定規則の適用範囲：
     - 束縛した hash がすべて一致し、レビュー記録が存在する。
     - `graphRuntimeObservedBeforeFreeze` が true なら、freeze と manifest が同じ case の `postObservationRevisions` を持ち、`supersedes` が v1 の freeze を path と sha256 で束縛し、作り直した case 以外の全 case の path と sha256 が v1 の freeze の `cases` と一致し、fixtureId が `/2` の case は作り直した case だけである。最後の回の `filesAtReview` の manifest・schema・README・1 回目のレビュー記録は v1 の freeze が束縛した sha256 で、manifest の `holdVersusBlocked` と `coverageGaps` は承認した文と列を先頭に残し（追加だけ）、README は前提条件と観測規則の規則の行を残す。false なら `postObservationRevisions` を持たない。
   - freeze がない場合は、manifest の `status` が `predeclared-awaiting-independent-expectation-review` のままであることを求める。
-- 固定した後に、束縛したファイルのどれかを変えると hash が一致せず、`pnpm eval:fixtures` が失敗する。変える必要があれば、観測の前は独立期待値レビューと freeze をやり直す。
+- 固定した後に、束縛したファイルのどれかを変えると hash が一致せず、`pnpm eval:fixtures` が失敗する。変える必要があれば、観測の前は独立期待値レビューと freeze をやり直す。観測の後は、束縛した fixture を同じ版のまま変えず、次の行の手続きで新しい版を作る。manifest・README・schema は、その freeze が `changesAfterApproval` で宣言した範囲だけを変える。
 - 観測の後に作った版は、ユーザーの確認、freeze の `postObservationRevisions` の宣言、新しい独立期待値レビューを経たときに限り、固定済みとして扱う。前の版の file と結果は残し、前の版の freeze は bytes を変えずに残す（v2 の G-04 がこの手続きで作った版である）。
-- 凍結の前に Graph runtime がその版の bytes を観測した場合は、その版を固定済みとして扱わない。
+- fixture の各版は、その版の bytes を最初に束縛した freeze で固定される。その freeze より前に Graph runtime がその版の bytes を観測した場合は、その版を固定済みとして扱わない。G-04 以外の case は `freeze.v1.json` が観測の前に固定した版で、`freeze.v2.json` は同じ sha256 を引き継いで束縛するだけである（v2 の freeze が新たに固定したのではない。固定の後の観測は固定を取り消さない）。G-04 v2 は `freeze.v2.json` が最初に束縛した版で、その前に Graph runtime を通していない。
 
 ## 検証
 

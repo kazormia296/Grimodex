@@ -998,7 +998,11 @@ test("the freeze record and the manifest status agree in both directions", async
     const freeze = JSON.parse(await readFile(file, "utf8"));
     freeze.graphRuntimeObservedBeforeFreeze = false;
     freeze.baselineHead = "a153743b";
-    freeze.irSupplementAdmissionProbe = { status: "not-run" };
+    // The other of the two values, whichever the committed freeze records.
+    freeze.irSupplementAdmissionProbe = {
+      status:
+        freeze.irSupplementAdmissionProbe.status === "run" ? "not-run" : "run",
+    };
     await writeFile(file, JSON.stringify(freeze, null, 2));
     const result = await validateNir1GraphCases({ repoRoot: temp });
     for (const message of [
