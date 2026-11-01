@@ -1,0 +1,341 @@
+{
+  "schemaVersion": "nir1-graph-case-seed-pin-addendum/1",
+  "addendumId": "nir1-graph-seed-pin-addendum/2",
+  "status": "draft-awaiting-independent-review",
+  "graphRuntimeObservedBeforeAuthoring": false,
+  "purpose": "SP/1 の「設計」の「addendum の file」。G-01〜G-08 のすべての variant の setup に、問いの Scene から予定の seed の Entity への pin を 1 つ、製品の upsertScenePin で書く段を足す（setupOrder の外の 1 段）。freeze.v2.json が束縛しない別の file に置き、凍結した bytes、期待値、前提条件、setupTimeline、measurementPoint、K6/4 と K2/4 の内容は変えない。",
+  "contract": {
+    "draftRef": "nir1-graph-case-seed-pin-proposal/1",
+    "contractId": "graph-case-seed-pin-setup",
+    "path": "docs/plans/nir1-graph-case-seed-pin-proposal-1-draft.md",
+    "sha256": "8ccdf5345a50ab710a61039e8abd09803086bef3f8337bb83667ea9274b4e547",
+    "confirmedAt": "2026-10-27 06:47 JST。ユーザーの「推奨のまま承認する（G-01 を含む）」（integrator の伝達による）。draft の bytes は claude/seed-pin-draft にあり、この branch には無い。",
+    "decision1": "A",
+    "decision2": "include-g01"
+  },
+  "references": {
+    "graphCaseFreeze": {
+      "path": "evals/nir1-graph/freeze.v2.json",
+      "sha256": "8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d"
+    },
+    "fixtures": {
+      "G-01": {
+        "path": "evals/nir1-g01/fixture.v1.json",
+        "fixtureId": "nir1-g01-explicit-pin-design/1",
+        "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+      },
+      "G-02": {
+        "path": "evals/nir1-graph/g02-directed-relation.v1.json",
+        "fixtureId": "nir1-g02-directed-relation/1",
+        "sha256": "c9e9ea0c41e6818d19722d6e2c4255cac96b54cd55f0808f88357ad74416946c"
+      },
+      "G-03": {
+        "path": "evals/nir1-graph/g03-bounded-two-hop.v1.json",
+        "fixtureId": "nir1-g03-bounded-two-hop/1",
+        "sha256": "39aec43a66f3ede60249cc74f5524fbe8201ca20ff629c98d54fc05cc360f76d"
+      },
+      "G-04": {
+        "path": "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+        "fixtureId": "nir1-g04-scope-exact-unknown/2",
+        "sha256": "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1"
+      },
+      "G-05": {
+        "path": "evals/nir1-graph/g05-current-revision-freshness.v1.json",
+        "fixtureId": "nir1-g05-current-revision-freshness/1",
+        "sha256": "52c5ac72bf5886bcc6fc1c901575bc91e36a17c7d236191a610d5dcb31093c28"
+      },
+      "G-06": {
+        "path": "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+        "fixtureId": "nir1-g06-evidence-anchor-path/1",
+        "sha256": "acb55cbd352949ced010dbbc2e3b06fed4dad9144488172cbe76cd6105d7b40a"
+      },
+      "G-07": {
+        "path": "evals/nir1-graph/g07-reading-before-reveal.v1.json",
+        "fixtureId": "nir1-g07-reading-before-reveal/1",
+        "sha256": "385eaa732f48c10417a775430615ee4b0e245818e87b525ce7c1509ea83d12d0"
+      },
+      "G-08": {
+        "path": "evals/nir1-graph/g08-graph-index-fallback.v1.json",
+        "fixtureId": "nir1-g08-graph-index-fallback/1",
+        "sha256": "0415561e3834eff5c1f04d1a66e49177209b6755c79015d3b7944f374600a4c9"
+      }
+    }
+  },
+  "supersedes": {
+    "path": "evals/nir1-graph/seed-pin-addendum.v1.json",
+    "sha256": "cf2330e283aa208ab310f44c8fda1bf2d4f0d83246967cc167076840d40022ef",
+    "commit": "cf1c83e3c4d491032511cb6f11fecb5699bc3ed5",
+    "rule": "v1 の bytes は変えない。新しい版は v1 の参照だけを直した写しで、変えたのは references.graphCaseFreeze（freeze.v2.json）、references.fixtures.G-04（G-04 v2）、それを述べる purpose と SP-N8 の check の freeze の名前、addendumId、status、review、この supersedes だけ。pin の規則、行、順序、受入れは v1 と同じ（DR-CP4-G4-7 の B2b-1 の追記 (B-1)〜(B-3)）。"
+  },
+  "step": {
+    "writes": "問いの Scene から予定の seed の Entity（setup の receipt で runtime ID に対応付けたもの）への pin を 1 つ。",
+    "writer": "upsertScenePin",
+    "writerSource": "src/features/codex/sceneCodexPinsApi.ts（UI の store と fixture の pin を作る setup-driver と同じ関数）",
+    "tablesWritten": ["scene_codex_pins", "scene_codex_mentions"],
+    "forbiddenWriters": ["sql", "injected-state", "test-only-entry"],
+    "pinsOnQuerySceneAfterStep": 1,
+    "otherPinsUnchanged": true,
+    "fixturePinsUnchanged": true,
+    "allArmsSameWorkspace": true,
+    "workspace": "manifest の isolation のとおり、variant ごとの新しい workspace に 1 回ずつ書く。R、R+IR、R+IR+Graph の arm と、K2/4 の負例と、SP-P4 の診断は、この段を含む同じ setup の workspace（D1 (ii) ではその写し）を使う（SP-P4 の「段を省いた」側を除く）。",
+    "placement": {
+      "graphCases": {
+        "appliesTo": "G-02〜G-08 のすべての variant（G-08 の unusable の variant を含む。mutation の前）",
+        "after": "then foreshadows, foreshadow Codex links and pins",
+        "before": "maintenance enabling and the first setupTimeline step",
+        "outsideSetupOrder": true,
+        "setupTimelineStep": false,
+        "measurementPoint": false
+      },
+      "g01": {
+        "appliesTo": "G-01/v1",
+        "after": "the only fixture pin g01-mira -> g01-mira-entity, written by the normal writer",
+        "before": "typed Revision prepare and the B seal",
+        "outsideSetupOrder": true
+      }
+    }
+  },
+  "g01Reading": "SP/1 の判断 2（推奨のまま確認）: 候補 §7 の :219-220 の「唯一のpin」「他Scene/seedへのpinは作らない」は、Graph が Scene に対応付ける pin の数を固定する記述として読み、この段の seed の pin（g01-query から g01-orin への 1 つ）はそれに含めない。:237、Gold、期待値、g01-mira の唯一の pin は変えない。これは g01-eval-revision ではない。",
+  "declarationOrder": "seed の pin の段を先にする。K2/4 の宣言の段は、pin の段の後で、Graph の arm の最初の query の前（K2/4 の内容は変えない。D1 (ii) では測定の workspace を開いた後）。K2/4 の負例（宣言しない run）は、seed の pin がある workspace で取る。",
+  "seedPins": [
+    {
+      "caseId": "G-01",
+      "variantId": "v1",
+      "querySceneId": "g01-query",
+      "seedEntityId": "g01-orin",
+      "seedSource": "entitySeed.id",
+      "placement": "g01",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-02",
+      "variantId": "base",
+      "querySceneId": "g02-query",
+      "seedEntityId": "g02-orla",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-03",
+      "variantId": "base",
+      "querySceneId": "g03-query",
+      "seedEntityId": "g03-wren",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-03",
+      "variantId": "frontier-exceeded",
+      "querySceneId": "g03-query",
+      "seedEntityId": "g03-wren",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "unavailable"
+    },
+    {
+      "caseId": "G-04",
+      "variantId": "base",
+      "querySceneId": "g04-query",
+      "seedEntityId": "g04-bren",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-05",
+      "variantId": "base",
+      "querySceneId": "g05-query",
+      "seedEntityId": "g05-hale",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-06",
+      "variantId": "base",
+      "querySceneId": "g06-query",
+      "seedEntityId": "g06-maro",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-07",
+      "variantId": "base",
+      "querySceneId": "g07-query",
+      "seedEntityId": "g07-vesna",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "base-usable",
+      "querySceneId": "g08-query",
+      "seedEntityId": "g08-odile",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "graph-index-unusable",
+      "querySceneId": "g08-query",
+      "seedEntityId": "g08-odile",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "unavailable"
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "graph-recovered",
+      "querySceneId": "g08-query",
+      "seedEntityId": "g08-odile",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "available"
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "chronicle-index-unusable",
+      "querySceneId": "g08-query",
+      "seedEntityId": "g08-odile",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "unavailable"
+    },
+    {
+      "caseId": "G-08",
+      "variantId": "both-indexes-unusable",
+      "querySceneId": "g08-query",
+      "seedEntityId": "g08-odile",
+      "seedSource": "manualSeed.entityId",
+      "placement": "graph-cases",
+      "expectedGraph": "unavailable"
+    }
+  ],
+  "seedPinsRule": "問いの Scene と予定の seed は fixture の値をそのまま写した（G-02〜G-08 は query.sceneId と manualSeed.entityId、G-01 は query.sceneId と entitySeed.id）。起案者も harness も選ばない。runtime ID は setup の receipt で対応付ける。",
+  "record": [
+    "case と variant、問いの Scene と seed の論理 ID と runtime ID",
+    "書込みの経路（upsertScenePin）と pin の created_at",
+    "段の前後の問いの Scene の pin の集合と workspace の全 pin の集合",
+    "段の前後の問いの Scene の tree_nodes の version と updated_at、Scene Scope の binding の v1 の列"
+  ],
+  "r5": {
+    "check": "統合 branch の seed-pin.mjs の assertSeedPinsBeforeK64({ plan: \"frozen\", cases })",
+    "pinsReadFrom": "product-db",
+    "workspace": "この段を実行した variant ごとの workspace（R5 の照合は段の後の workspace で行う。SP/1 の批准 6）",
+    "variantRule": "G-03 と G-08 は variant ごとの SP-P1 の記録を別に残し、どれか 1 つでも match でなければ全体を match にしない。",
+    "directFetchPreviewNeverJudged": true
+  },
+  "acceptance": [
+    {
+      "id": "SP-P1",
+      "check": "各 variant の workspace で、製品の DB から問いの Scene の pin を読み直し（統合 branch の workspace-db.mjs の readQuerySceneSeedPins）、ちょうど 1 つで、entry が予定の seed の runtime ID（setup の receipt の logicalToRuntime）、問いの Scene が生きていて、entry が同じ project の Codex entry であり、seed-pin.mjs の productSeedOf が予定の seed と一致することを確かめる。",
+      "stages": ["setup-runtime"]
+    },
+    {
+      "id": "SP-P2",
+      "check": "段の前後で、workspace の全 pin の集合（fixture の pins を runtime ID に対応付けたものと seed の pin 1 つの和）、問いの Scene の tree_nodes の version と updated_at、Scene Scope の binding の v1 の列、tree の順序、registry を setup の receipt に書き、変わっていないことを照合する。",
+      "stages": ["setup-runtime"]
+    },
+    {
+      "id": "SP-P3",
+      "check": "R5: assertSeedPinsBeforeK64({ plan: \"frozen\", cases }) が match。cases は G-01〜G-08 を 1 行ずつで、pin の行は DB から読み直したもの。G-03 と G-08 は variant ごとの SP-P1 の記録を別に残し、どれか 1 つでも match でなければ全体を match にしない。",
+      "stages": ["run-admission"]
+    },
+    {
+      "id": "SP-P4",
+      "check": "診断 SP-P4（observation-prep.v1.json の diagnosticRuns）: G-01 と G-02〜G-08 の base（G-08 は base-usable）で、seed の pin の段だけを省いた setup と、段を含む setup の workspace で、seed なしの R+IR の arm を同じ手順で測り、R の membership と順位、begin の denseHits の Scene の並び、sparse の Scene の並び、R+IR の membership と順位と共通追加枠が一致することを確かめる。Graph の arm は動かさない。",
+      "stages": ["diagnostic"]
+    },
+    {
+      "id": "SP-P5",
+      "check": "Graph の arm の親の begin に graphSeedEntityId として予定の seed（runtime ID）が載り（hook の消費者の記録）、requalification が SeedChanged で落とした記録が無いことを run の receipt で確かめる。",
+      "stages": ["run-admission"]
+    },
+    {
+      "id": "SP-N1",
+      "check": "addendum の validator: 各行の seedEntityId が fixture の値（G-02〜G-08 は manualSeed.entityId、G-01 は entitySeed.id）と一致する。setup の実行: SP-P1 の productSeedOf の照合。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N2",
+      "check": "addendum の validator: case と variant ごとに 1 行だけ、pinsOnQuerySceneAfterStep が 1、fixture の pins が問いの Scene を含まない。setup の実行: SP-P1 の「ちょうど 1 つ」。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N3",
+      "check": "addendum の validator: fixture の pins が問いの Scene を含まない（段の後の最初の pin は seed の pin だけ）。setup の実行: SP-P1 の productSeedOf（製品は次の pin を試さない）。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N4",
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: writer が upsertScenePin で、SQL・注入・試験専用の入口を forbiddenWriters に挙げる。setup の実行: receipt に書込みの経路を書き、無ければ止める。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N5",
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: otherPinsUnchanged と fixturePinsUnchanged が true。setup の実行: SP-P2 の pin の集合の照合。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N6",
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: 置き場（G-02〜G-08 は foreshadow と pin の段の直後で maintenance の有効化と setupTimeline の前、G-01 は g01-mira の pin の後で typed Revision の prepare と B の seal の前）と、各 fixture の setupOrder にその錨の文があること。観測前の記録: r5Gate と stepOrder（Graph arm の実行の前）。setup の実行: receipt の段の順序。",
+      "stages": ["addendum-declaration", "setup-runtime"]
+    },
+    {
+      "id": "SP-N7",
+      "check": "診断 SP-P4 で段の前後の R か R+IR が違えば、この addendum を使わず [precheck] で止め、integrator がユーザーに返す（凍結のやり直し D1 は別の draft）。",
+      "stages": ["diagnostic"]
+    },
+    {
+      "id": "SP-N8",
+      "check": "addendum の validator: freeze.v2.json と各 fixture の SHA-256 を実 file から計算して、参照の値と freeze の cases の値に一致させる。eval:fixtures の contract.mjs が freeze を照合する。",
+      "stages": ["addendum-validator"]
+    },
+    {
+      "id": "SP-N9",
+      "check": "addendum の validator: 予定の seed の論理 ID が空・空白だけ・200 UTF-16 超でない。setup の実行: SP-P1（問いの Scene が生きている、entry が同じ project、productSeedOf が null でない）。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N10",
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: allArmsSameWorkspace が true（R、R+IR、R+IR+Graph の arm は同じ setup の workspace）。setup の実行: run の receipt の workspace の pin の集合が arm の間で同じ。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N11",
+      "check": "addendum の validator: G-01〜G-08 の全 13 variant（G-03 frontier-exceeded と G-08 の 3 つの unusable を含む）に 1 行ずつあること（行の集合）。setup の実行: 13 の workspace のそれぞれで SP-P1 を照合し、pin が無い variant を検出する。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-validator", "setup-runtime", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N12",
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: r5.directFetchPreviewNeverJudged が true。run の受入れ: 統合 branch の receipt.mjs が direct-fetch-preview の runner の receipt を集計しない。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "run-admission", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N13",
+      "check": "addendum の宣言（真偽値や名前の欄で、validator は宣言の値を確かめるだけで、違反そのものは検出しない）: r5.pinsReadFrom が product-db。run の受入れ: R5 の照合の入力を製品の DB から読み直す（workspace-db.mjs）。 合成の記録: 観測の前に、この違反を 1 件含む合成の setup の記録を照合の関数に通し、期待どおり検出することを示す（acceptanceStages の synthetic-detection）。",
+      "stages": ["addendum-declaration", "run-admission", "synthetic-detection"]
+    },
+    {
+      "id": "SP-N14",
+      "check": "addendum の validator: contract.decision2 が include-g01 で、G-01/v1 の行がある。",
+      "stages": ["addendum-validator"]
+    }
+  ],
+  "acceptanceStages": {
+    "addendum-validator": "scripts/quality/nir1-graph/seed-pin-addendum.mjs（eval:fixtures）が値か行の集合を fixture から計算し直して検出する（SP-N1〜N3、N8、N9、N11、N14 の静的な部分）",
+    "addendum-declaration": "addendum の真偽値や名前の欄（validator は宣言の値を確かめるだけで、違反そのものは実行時の段で検出する。SP-N4〜N6、N10、N12、N13）",
+    "setup-runtime": "S1g-A の setup-driver の seed の pin の段と variant ごとの照合（統合 branch）",
+    "run-admission": "正式の run の受入れ（R5 の照合、receipt の runner の種類）",
+    "diagnostic": "observation-prep.v1.json の diagnosticRuns の SP-P4",
+    "synthetic-detection": "SP/1 :178: 観測の前に、合成の記録で SP-N1〜N5、SP-N9〜N13 を期待どおりに分けることを示す。observation-prep.v1.json の r5Gate.syntheticDetection と beforeFirstGatedRun"
+  },
+  "reviewPlan": "観測前の commit の独立 reviewer が確かめること: 予定の seed が fixture の値をそのまま写したこと、置き場、pin が R／IR／Graph の対応付けを変えないというコードの読取（SP/1 の (b)(c)）、段が凍結の bytes と期待値を変えないこと、K2/4 の addendum と重ならないこと、G-case の Graph の arm の観測がまだ無いこと。",
+  "review": null,
+  "staticDetectionScope": "eval:fixtures が静的に検出するのは SP-N1〜N3、N8、N9（値）と SP-N11、N14（行の集合）だけである。SP-N4〜N6、N10、N12、N13 は addendum の宣言で、違反は setup の実行と run の受入れで検出し、合成の記録で検出力を示す。"
+}
