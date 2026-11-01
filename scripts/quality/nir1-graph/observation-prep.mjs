@@ -1487,6 +1487,9 @@ const READINGS_AFTER_DEV = Object.freeze([
   // S4a''（3 回目の凍結のやり直し、S2 追補 #10）: DR-CP4-V-3、V-4 の trace の規則
   // （最初の正式の trace と dev の稽古を見た後に integrator が決めた）。
   "trace-path-after-first-trace",
+  // S4a'''（4 回目の凍結のやり直し、S2 追補 #11）: G-04 v2 の S2 への写し（旧 S4b'' の
+  // 下の観測の後にユーザーと integrator が決めた版）。
+  "g04-v2-after-observation",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
