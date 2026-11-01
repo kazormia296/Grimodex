@@ -1,0 +1,13 @@
+4dea07ef90a17756bb0f7a6f38fc18bd397f949d52cc7187971c0f80680ab1f8  .artifacts/cp4/s5r5-g-01-v1/setup/G-01/v1/setup-receipt.json
+560900a0e9a413278434ff909966845da4f521740e2cbe17486a660ad07e52c4  .artifacts/cp4/s5r5-g-02-base/setup/G-02/base/setup-receipt.json
+830abcf0bab8a5266b96fc381fc838e3a0ccaf8833ae9de14ca1b4146547ecf7  .artifacts/cp4/s5r5-g-03-base/setup/G-03/base/setup-receipt.json
+51339786ff0b01543f7887d5364049bf34ea46b3d5fe2cb4d71975c380700718  .artifacts/cp4/s5r5-g-03-frontier-exceeded/setup/G-03/frontier-exceeded/setup-receipt.json
+d99118ac1771622cd732a0175a7d3ad6ef5296251cedb024f54221e5813984b5  .artifacts/cp4/s5r5-g-04-base/setup/G-04/base/setup-receipt.json
+c01f9bb727c0af6240ea12147d8509168aea605943c8c8389984f30356128ebd  .artifacts/cp4/s5r5-g-05-base/setup/G-05/base/setup-receipt.json
+b90952aa2058b1ad99213ba89c1ac714d0905040b81ab2081b1ee9fecf0b16a6  .artifacts/cp4/s5r5-g-06-base/setup/G-06/base/setup-receipt.json
+46e8de6559346044e50ef4cc8867a30a5dc5c2a9c775c2d0607e6a2ab4ad8a39  .artifacts/cp4/s5r5-g-07-base/setup/G-07/base/setup-receipt.json
+d8648746c2e9d31933ad8d20f98e495c33e81b7db4ef5455f9cf5ce18850b038  .artifacts/cp4/s5r5-g-08-base-usable/setup/G-08/base-usable/setup-receipt.json
+645f2a8d3882c096ef272c6c0d6d6f73be470d2a19425b0d19cbfdad09164728  .artifacts/cp4/s5r5-g-08-graph-index-unusable/setup/G-08/graph-index-unusable/setup-receipt.json
+cb01f462d6a0c25c214b057f1fdaf7738f8aa7b008d8163eea7f03eb84f6de89  .artifacts/cp4/s5r5-g-08-graph-recovered/setup/G-08/graph-recovered/setup-receipt.json
+3017ba031ba3fa34118773236207f6f90228d40ae33519192cb2deeaea4a4327  .artifacts/cp4/s5r5-g-08-chronicle-index-unusable/setup/G-08/chronicle-index-unusable/setup-receipt.json
+a51790052ecc21aad3778e7893dc550345bf87a39dedda5074c45488cb8846b4  .artifacts/cp4/s5r5-g-08-both-indexes-unusable/setup/G-08/both-indexes-unusable/setup-receipt.json

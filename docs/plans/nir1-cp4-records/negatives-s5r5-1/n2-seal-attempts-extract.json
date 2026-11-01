@@ -1,0 +1,52 @@
+{
+ "n2": {
+  "at": ".variants.G-01/v1.negative.step",
+  "sealAttempts": [
+   {
+    "attempt": 0,
+    "outcome": "not-published",
+    "waitedMs": 120045,
+    "b": {
+     "generation": 1,
+     "dirty": false
+    }
+   },
+   {
+    "attempt": 1,
+    "outcome": "not-published",
+    "waitedMs": 120106,
+    "b": {
+     "generation": 1,
+     "dirty": false
+    }
+   },
+   {
+    "attempt": 2,
+    "outcome": "not-published",
+    "waitedMs": 120067,
+    "b": {
+     "generation": 1,
+     "dirty": false
+    }
+   }
+  ],
+  "before": {
+   "b": {
+    "generation": 1,
+    "dirty": false,
+    "sourceDigest": "sha256:aa95010c28a435cda46356a8559db708bb017e19b11243e8ce96dc9ebce04fea",
+    "dependencySetDigest": "sha256:c9691e28a342063155bad0899f02a44605eef269196fc3a7694eaba103dcec0a",
+    "producerId": "nir1-reviewed-entity-relation-v1",
+    "producerVersion": "nir1-reviewed-entity-relation/v1"
+   },
+   "chronicle": {
+    "generation": 2,
+    "dirty": false,
+    "sourceDigest": "sha256:c2b93f271af92808a82414ce10792319059b5de14a9f87a667cedcf8244b7851",
+    "dependencySetDigest": "sha256:75670416ad822bf17ebae1c87ff1aabbfe4bb759e9a5912eedc04e4f61ef59a1",
+    "producerId": "nir1-reviewed-chronicle-v1",
+    "producerVersion": "nir1-reviewed-chronicle/v1"
+   }
+  }
+ }
+}

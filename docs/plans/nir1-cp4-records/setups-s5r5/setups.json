@@ -1,0 +1,15 @@
+{
+ "G-01/v1": ".artifacts/cp4/s5r5-g-01-v1/setup/G-01/v1/setup-receipt.json",
+ "G-02/base": ".artifacts/cp4/s5r5-g-02-base/setup/G-02/base/setup-receipt.json",
+ "G-03/base": ".artifacts/cp4/s5r5-g-03-base/setup/G-03/base/setup-receipt.json",
+ "G-03/frontier-exceeded": ".artifacts/cp4/s5r5-g-03-frontier-exceeded/setup/G-03/frontier-exceeded/setup-receipt.json",
+ "G-04/base": ".artifacts/cp4/s5r5-g-04-base/setup/G-04/base/setup-receipt.json",
+ "G-05/base": ".artifacts/cp4/s5r5-g-05-base/setup/G-05/base/setup-receipt.json",
+ "G-06/base": ".artifacts/cp4/s5r5-g-06-base/setup/G-06/base/setup-receipt.json",
+ "G-07/base": ".artifacts/cp4/s5r5-g-07-base/setup/G-07/base/setup-receipt.json",
+ "G-08/base-usable": ".artifacts/cp4/s5r5-g-08-base-usable/setup/G-08/base-usable/setup-receipt.json",
+ "G-08/graph-index-unusable": ".artifacts/cp4/s5r5-g-08-graph-index-unusable/setup/G-08/graph-index-unusable/setup-receipt.json",
+ "G-08/graph-recovered": ".artifacts/cp4/s5r5-g-08-graph-recovered/setup/G-08/graph-recovered/setup-receipt.json",
+ "G-08/chronicle-index-unusable": ".artifacts/cp4/s5r5-g-08-chronicle-index-unusable/setup/G-08/chronicle-index-unusable/setup-receipt.json",
+ "G-08/both-indexes-unusable": ".artifacts/cp4/s5r5-g-08-both-indexes-unusable/setup/G-08/both-indexes-unusable/setup-receipt.json"
+}
