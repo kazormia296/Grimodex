@@ -1,6 +1,7 @@
 // CP-4 S2: validator of the documents fixed before the first Graph observation.
 //
-//   evals/nir1-g01/setup-addendum.v1.json          K2/4 setup addendum (G-01)
+//   evals/nir1-g01/setup-addendum.v2.json          K2/4 setup addendum (G-01;
+//                                                  v1 is kept, references only)
 //   evals/nir1-graph/declaration-addendum.v2.json  K2/4 addendum (G-02/04/07/08;
 //                                                  v1 without G-04 is kept)
 //   evals/nir1-graph/observation-prep.v1.json      D1, D2, D10, sample plan,
@@ -10,6 +11,8 @@
 //   evals/nir1-graph/trace-browsing.v1.json
 //   evals/nir1-graph/observation-prep-author-declaration.v1.json
 //   scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json
+//   evals/nir1-graph/seed-pin-addendum.v2.json     SP/1 seed pin addendum
+//                                                  (seed-pin-addendum.mjs)
 //
 // Like contract.mjs, this module never runs Graph, IR, Raw, a model, Electron
 // or Native, and reads no runtime output. It recomputes what the documents
@@ -27,13 +30,15 @@ import path from "node:path";
 import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 import {
   SEED_PIN_ADDENDUM_PATH,
+  SEED_PIN_ADDENDUM_V1,
   SP1,
   SYNTHETIC_NEGATIVES,
   seedPinAddendumErrors,
+  seedPinAddendumPathNamedByTraceErrors,
 } from "./seed-pin-addendum.mjs";
 
 export const OBSERVATION_PREP_FILES = Object.freeze({
-  setupAddendum: "evals/nir1-g01/setup-addendum.v1.json",
+  setupAddendum: "evals/nir1-g01/setup-addendum.v2.json",
   declarationAddendum: "evals/nir1-graph/declaration-addendum.v2.json",
   prep: "evals/nir1-graph/observation-prep.v1.json",
   traceEditing: "evals/nir1-graph/trace-editing.v1.json",
@@ -124,6 +129,16 @@ export const K24_SCOPE_EXTENSION = Object.freeze({
 export const DECLARATION_ADDENDUM_V1 = Object.freeze({
   path: "evals/nir1-graph/declaration-addendum.v1.json",
   sha256: "82b05bae92d05b3af2a73739bd14b73cf88dcdc3290e19860126c057c5552949",
+});
+
+/**
+ * The G-01 setup addendum v2 supersedes (bytes kept): v2 differs from it in
+ * the references only (freeze.v2.json, the new versions' paths; DR-CP4-G4-7
+ * B2b-1 (B-1)).
+ */
+export const SETUP_ADDENDUM_V1 = Object.freeze({
+  path: "evals/nir1-g01/setup-addendum.v1.json",
+  sha256: "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46",
 });
 
 /** K2/4「宣言の値（v1 は G-01 subset）」。 */
@@ -1748,6 +1763,17 @@ export function setupAddendumErrors(addendum, ctx) {
     return errors;
   if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
     errors.push("graphRuntimeObservedBeforeAuthoring must be false");
+  const supersedes = addendum.supersedes;
+  if (
+    !isObject(supersedes) ||
+    supersedes.path !== SETUP_ADDENDUM_V1.path ||
+    supersedes.sha256 !== SETUP_ADDENDUM_V1.sha256 ||
+    !HEX40.test(String(supersedes.commit ?? "")) ||
+    ctx.supersededSetupAddendumSha256 !== SETUP_ADDENDUM_V1.sha256
+  )
+    errors.push(
+      `supersedes must bind ${SETUP_ADDENDUM_V1.path} (sha256 ${SETUP_ADDENDUM_V1.sha256}, its commit), whose bytes are unchanged`,
+    );
   fixtureIdErrors(
     errors,
     "references.g01Fixture",
@@ -2462,10 +2488,11 @@ export function traceErrors(trace, ctx) {
         );
     }
   }
-  if (project.seedPinAddendum !== SEED_PIN_ADDENDUM_PATH)
-    errors.push(
-      `project.seedPinAddendum must be ${SEED_PIN_ADDENDUM_PATH} (the product's seed comes from the SP/1 seed pin)`,
-    );
+  // The frozen traces name seed-pin-addendum.v1.json; v1 or the current
+  // version only (DR-CP4-G4-7 B2b-1 (B-2), option (ii)).
+  errors.push(
+    ...seedPinAddendumPathNamedByTraceErrors(project.seedPinAddendum, ctx),
+  );
   triggerValueErrors(errors, trace, ctx);
   if (
     trace.maintenance?.gate === undefined ||
@@ -4438,6 +4465,20 @@ export async function loadObservationPrepContext({ repoRoot }) {
   } catch {
     // Absent or unreadable: the supersedes check fails closed.
   }
+  // The v1 addenda the current versions supersede (B2b-1); null if absent.
+  const supersededSha256 = async (relative) => {
+    try {
+      return sha256(await read(relative));
+    } catch {
+      return null;
+    }
+  };
+  const supersededSetupAddendumSha256 = await supersededSha256(
+    SETUP_ADDENDUM_V1.path,
+  );
+  const supersededSeedPinAddendumSha256 = await supersededSha256(
+    SEED_PIN_ADDENDUM_V1.path,
+  );
   const formal = PROCEDURE_V1;
   let procedureFormal = null;
   try {
@@ -4477,6 +4518,8 @@ export async function loadObservationPrepContext({ repoRoot }) {
     setupAddendum: parsed.setupAddendum,
     declarationAddendum: parsed.declarationAddendum,
     supersededDeclarationAddendum,
+    supersededSetupAddendumSha256,
+    supersededSeedPinAddendumSha256,
     procedureDraft: parsed.procedureDraft,
     procedureFormal,
     sp1Sha256,

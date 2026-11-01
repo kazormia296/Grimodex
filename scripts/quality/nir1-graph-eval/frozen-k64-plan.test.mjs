@@ -169,20 +169,19 @@ test("DR-CP4-G4-7: the declared runs are the committed addenda's (G-01 and the d
   const read = (file) =>
     JSON.parse(readFileSync(path.join(REPO_ROOT, file), "utf8"));
   const committed = Object.fromEntries(
-    [
-      read("evals/nir1-g01/setup-addendum.v1.json"),
-      read(S2_FILES.declarationAddendum),
-    ].flatMap((addendum) =>
-      addendum.declarations.map((row) => [
-        `${row.caseId}/${row.variantId}`,
-        row.sceneId,
-      ]),
+    [read(S2_FILES.g01Addendum), read(S2_FILES.declarationAddendum)].flatMap(
+      (addendum) =>
+        addendum.declarations.map((row) => [
+          `${row.caseId}/${row.variantId}`,
+          row.sceneId,
+        ]),
     ),
   );
   assert.equal(
     S2_FILES.declarationAddendum,
     "evals/nir1-graph/declaration-addendum.v2.json",
   );
+  assert.equal(S2_FILES.g01Addendum, "evals/nir1-g01/setup-addendum.v2.json");
   assert.deepEqual(committed, DECLARED);
   // The plans declare exactly these runs.
   assert.deepEqual(

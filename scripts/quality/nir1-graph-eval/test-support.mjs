@@ -1921,13 +1921,13 @@ export function completeSetupExtension({
 /** The S2 files of the rehearsal (the paths of `claude/cp4-s2-observation-prep`). */
 export const S4_REHEARSAL_FILES = Object.freeze({
   prep: "evals/nir1-graph/observation-prep.v1.json",
-  setupAddendum: "evals/nir1-g01/setup-addendum.v1.json",
+  setupAddendum: "evals/nir1-g01/setup-addendum.v2.json",
   declarationAddendum: "evals/nir1-graph/declaration-addendum.v2.json",
   traceEditing: "evals/nir1-graph/trace-editing.v1.json",
   traceBrowsing: "evals/nir1-graph/trace-browsing.v1.json",
   authorDeclaration:
     "evals/nir1-graph/observation-prep-author-declaration.v1.json",
-  seedPinAddendum: "evals/nir1-graph/seed-pin-addendum.v1.json",
+  seedPinAddendum: "evals/nir1-graph/seed-pin-addendum.v2.json",
 });
 /** The declared Scene of G-02 base in the rehearsal's declaration addendum. */
 export const S4_REHEARSAL_G02_DECLARED = "g02-tamsin-first";

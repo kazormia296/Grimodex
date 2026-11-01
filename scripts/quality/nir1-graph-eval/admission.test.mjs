@@ -1386,7 +1386,7 @@ test("DR-CP4-S4-1 予行: S2 の file が束縛と違う・束縛に無い・配
           return value;
         },
       },
-      /seed-pin-addendum\.v1\.json: S2 and the freeze record bind different bytes/u,
+      /seed-pin-addendum\.v2\.json: S2 and the freeze record bind different bytes/u,
     ],
     // S2's trace row names other bytes than the freeze record binds.
     [
