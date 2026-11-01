@@ -7,7 +7,7 @@
 **CP-4 の Graph arm は、可用性を満たしたと主張しない（HOLD）**。事前登録の物差し（1%）を超えた理由は独立に 2 つ。
 
 1. **編集中の trace の失効率が 99.5%（200/201）**。すべて (i) B の封印（B の index が dirty のまま作り直されない）。事前登録は、この失効率が物差しを超えることを測る前に確定した構造として示しており（承認の失効）、規則どおり `[precheck]` でユーザーの判断に回る。
-2. **定常状態（Gold）の pool の欠落率が 11.1%（270 件中 30 件。許容は 2 件）**。欠落 30 件はすべて **G-04/base の 30/30**（X5。子の Graph は `graph-ready` だが辺が 0 件で `expectedContribution` が false のため、寄与の空の Graph〔F6〕として表示に数えられない）。残り 8 variant は 240/240 が表示された。
+2. **定常状態（Gold）の pool の欠落率が 11.1%（270 件中 30 件。許容は 2 件）**。欠落 30 件はすべて **G-04/base の 30/30**（X5。子の Graph は `graph-ready` だが辺が 0 件で `expectedContribution` が false のため、寄与の空の Graph〔F6〕として表示に数えられない）。G-04/base は fixture の前提条件 `raw-membership` が成り立たない variant（上の (B)）。残り 8 variant は 240/240 が表示された。
 
 ## 2. 測ったもの（すべて S4b''、候補 `86427ee5`、attempt 1、台帳 completed）
 
@@ -34,9 +34,17 @@
 
 補足：今回の編集 trace では、失効の原因が (i) B の封印（B の index が dirty のまま）で、「承認の失効」とは限らない。B が作り直されない理由は未調査（prep Main の stderr に `discovery failed … context-unavailable` が 3 件。DR-BSEAM-5 は別 lane への報告で未確認）。製品側の不具合なら、案 1〜3 の前に直す余地がある。
 
-**(B) G-04/base の欠落（integrator の読み取り調査から始める。確認は要らない）**
+**(B) G-04/base の欠落（原因の読み取り調査が済んだ。`s6-aggregation-s5r4/g04-base-diagnosis.md`）**
 
-G-04/base は、fixture が「IR が共通追加枠を使い、Graph は path の添付だけができる」case。子の Graph は `graph-ready`・IR は `ir-ready`・requalification は passed なのに、辺が 0 件で期待寄与が空。製品が path を返していないのか、harness の期待寄与の算出と fixture の食い違いなのかは、未調査。調査の結果、(a) 製品の欠陥なら製品の修正と再測定、(b) 事前登録の設計の食い違いなら、F6 や pool の扱いを変える新しい draftRef をあなたに確認（pool の選び直しは緩和にあたるので、integrator は行わない）。
+G-04/base は、fixture が宣言した前提条件 `raw-membership`（観測した R が `arms.raw` と一致）と `ir-supplement-admission` が観測で成り立っていない variant だった（期待の Raw は 1 件、実測は 2 件。期待された `g04-lio-landing` が R+IR に入らない）。fixture の README の規則では `blocked:raw-membership` で、期待値は評価せず、PASS に数えない。K6/4 の可用性の pool は blocked を扱わず、30/30 欠落と数えている。**製品の Graph の欠陥でも、harness の期待寄与の誤りでもない**（subagent の報告。受領書の R／R+IR の構成は integrator が確認。Graph DTO と IR の score は未確認）。現行の規則のままでは HOLD。変えるには、どちらもあなたの確認が要る。
+
+| 案 | 内容 |
+|---|---|
+| α | README の blocked の規則を可用性の pool にも及ぼし、G-04/base を pool から外す（記録上は `blocked:raw-membership`）。結果を見た後に pool を変える緩和で、K6/4 の In-scope attacks の 5・10 に当たりうる |
+| β | G-04 の fixture の新しい版（Raw の予測と IR の改訂、独立期待値レビュー、再凍結、測定のやり直し） |
+| 現状 | 何も変えず、可用性は HOLD のまま |
+
+どちらでも、閾値 1% と F6・X5 の定義は変えない前提。
 
 ## 4. 規則の読みと分析（S6 の記録 `s6-aggregation-s5r4/README.md`）
 
