@@ -69,7 +69,7 @@ use super::INCREMENTAL_FRESHNESS_CURSOR_CONSUMER_ID;
 use crate::narrative_runtime_policy::require_narrative_extraction_allowed;
 use crate::Database;
 
-const CHRONICLE_EXTRACT_SURFACE_PATH: &str = "chronicle.extract";
+pub(crate) const CHRONICLE_EXTRACT_SURFACE_PATH: &str = "chronicle.extract";
 const RUN_CANCELLED_ATTEMPT_ERROR_MESSAGE: &str = "NEX_RUN_CANCELLED: Run cancelled";
 const RUN_CANCELLED_ATTEMPT_FAILURE_CODE: &str = "NEX_RUN_CANCELLED";
 const RUN_CANCELLED_ATTEMPT_POLICY_VERSION: &str = "v1";
@@ -377,7 +377,7 @@ const CHRONICLE_RAW_OBSERVATIONS_ARTIFACT_KIND: &str = "chronicle.raw-observatio
 const CHRONICLE_WINDOW_PLAN_ARTIFACT_KIND: &str = "source.window-plan@1";
 const CHRONICLE_EVENT_CLUSTERS_ARTIFACT_KIND: &str = "chronicle.event-clusters@1";
 const CHRONICLE_EVENT_HYPOTHESES_ARTIFACT_KIND: &str = "chronicle.event-hypotheses@1";
-const CHRONICLE_PROPOSAL_SET_KIND: &str = "chronicle.extract.review@1";
+pub(crate) const CHRONICLE_PROPOSAL_SET_KIND: &str = "chronicle.extract.review@1";
 const CHRONICLE_PLAN_BINDING_FIELD: &str = "chroniclePlanTaskBinding";
 const CHRONICLE_PLAN_BINDING_KIND: &str = "chronicle.plan-proposal-set-binding@1";
 const CHRONICLE_PLAN_MANIFEST_KIND: &str = "chronicle.plan-proposal-set-manifest@1";

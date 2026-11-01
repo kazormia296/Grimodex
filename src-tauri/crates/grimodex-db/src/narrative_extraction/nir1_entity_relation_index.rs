@@ -826,6 +826,46 @@ fn in_scratch<T>(
     result.ok_or_else(|| anyhow::anyhow!("NIR1_GRAPH_SCRATCH_SCOPE_SKIPPED"))
 }
 
+/// The predicate of a Graph roster candidate over the aliases `proposal_set`
+/// and `extraction_run`: the reserved typed ProposalSet kind and the typed
+/// review surface. The roster's candidate page and the Freshness hook's
+/// classification (X1-5, `invalidate::classify_current_revision_in_tx`) both
+/// use this one fragment, so a change that widens the roster widens the
+/// Graph side of the classification too. The constants are literals with no
+/// quote, so the fragment carries no outside input.
+pub(crate) fn roster_candidate_predicate_sql() -> String {
+    format!(
+        "(proposal_set.set_kind = '{}' AND extraction_run.surface_path_id = '{}')",
+        super::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND,
+        super::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
+    )
+}
+
+/// One keyset page of Graph roster candidates (`?1` project, `?2` cursor,
+/// `?3` page size), before A2 qualification.
+pub(crate) fn roster_candidate_page_sql() -> String {
+    format!(
+        "SELECT
+                length(CAST(proposal.id AS BLOB)),
+                length(CAST(proposal.current_revision_id AS BLOB)),
+                proposal.id,
+                proposal.current_revision_id
+           FROM narrative_proposal_sets proposal_set
+           JOIN narrative_extraction_runs extraction_run
+             ON extraction_run.id = proposal_set.run_id
+            AND extraction_run.project_id = proposal_set.project_id
+           JOIN narrative_proposals proposal
+             ON proposal.proposal_set_id = proposal_set.id
+          WHERE proposal_set.project_id = ?1
+            AND {}
+            AND proposal.current_revision_id IS NOT NULL
+            AND proposal.id > ?2
+          ORDER BY proposal.id ASC
+          LIMIT ?3",
+        roster_candidate_predicate_sql()
+    )
+}
+
 fn read_eligibility_source_counted(
     conn: &Connection,
     project: &str,
@@ -855,38 +895,14 @@ fn read_eligibility_source_counted(
     let mut roster = Vec::new();
     let mut cursor = String::new();
     let mut seen_revision_ids = HashSet::new();
+    let page_sql = roster_candidate_page_sql();
     loop {
         check_graph_work(&mut control, GraphWorkStage::Page)?;
         if let Some(admission) = admission {
             admission.ensure_current(conn)?;
         }
-        let mut statement = conn.prepare(
-            "SELECT
-                    length(CAST(proposal.id AS BLOB)),
-                    length(CAST(proposal.current_revision_id AS BLOB)),
-                    proposal.id,
-                    proposal.current_revision_id
-               FROM narrative_proposal_sets proposal_set
-               JOIN narrative_extraction_runs extraction_run
-                 ON extraction_run.id = proposal_set.run_id
-                AND extraction_run.project_id = proposal_set.project_id
-               JOIN narrative_proposals proposal
-                 ON proposal.proposal_set_id = proposal_set.id
-              WHERE proposal_set.project_id = ?1
-                AND proposal_set.set_kind = ?2
-                AND extraction_run.surface_path_id = ?3
-                AND proposal.current_revision_id IS NOT NULL
-                AND proposal.id > ?4
-              ORDER BY proposal.id ASC
-              LIMIT ?5",
-        )?;
-        let mut rows = statement.query(params![
-            project,
-            super::nir1_entity_relation::NIR1_ENTITY_RELATION_SET_KIND,
-            super::nir1_entity_relation::NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH,
-            &cursor,
-            GRAPH_SOURCE_PAGE_SIZE,
-        ])?;
+        let mut statement = conn.prepare(&page_sql)?;
+        let mut rows = statement.query(params![project, &cursor, GRAPH_SOURCE_PAGE_SIZE])?;
         // LIMIT bounds pushes. Tuple slots and row strings use S for workers and Q otherwise.
         let mut page = Vec::new();
         if let Some(scratch_scope) = scratch_scope.as_deref_mut() {

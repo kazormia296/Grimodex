@@ -1,6 +1,9 @@
 use anyhow::{ensure, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
+use super::super::nir1_entity_relation::{
+    NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH, NIR1_ENTITY_RELATION_SET_KIND,
+};
 use super::super::nir1_entity_relation_index::INDEX_KEY as GRAPH_INDEX_KEY;
 use super::INDEX_KEY as CHRONICLE_INDEX_KEY;
 
@@ -33,6 +36,132 @@ pub(crate) fn suspend_project_in_tx(conn: &Connection, project: &str) -> Result<
     Ok(())
 }
 
+/// Dirty only the Chronicle IR Index. A caller uses this instead of
+/// `suspend_project_in_tx` only when a closed judgement proved, in the same
+/// transaction, that the change is an input of the Chronicle Index and not of
+/// the Graph Index (X1-5): a body-only feed transaction, or the Freshness of a
+/// Revision on the closed list of known non-Graph Revisions. Everything else
+/// keeps dirtying both.
+pub(crate) fn suspend_chronicle_index_in_tx(conn: &Connection, project: &str) -> Result<()> {
+    let has_binding: bool = conn.query_row(
+        "SELECT EXISTS(
+                 SELECT 1 FROM narrative_semantic_index_metadata
+                  WHERE project_id=?1 AND index_key=?2
+             )",
+        params![project, CHRONICLE_INDEX_KEY],
+        |row| row.get(0),
+    )?;
+    if !has_binding {
+        return Ok(());
+    }
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1 live index input mutations require a transaction"
+    );
+    conn.execute(
+        "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag=1
+         WHERE project_id=?1 AND index_key=?2",
+        params![project, CHRONICLE_INDEX_KEY],
+    )?;
+    Ok(())
+}
+
+/// The closed list of known non-Graph Revisions (X1-5): `(set_kind,
+/// surface_path_id)` pairs whose Freshness is an input of the Chronicle IR
+/// Index and not of the Graph Index. Today it is the Chronicle IR only.
+/// Adding a pair stops dirtying the Graph Index for more writes, so it needs a
+/// new confirmed contract (`[precheck]`).
+pub(crate) const KNOWN_NON_GRAPH_REVISION_KINDS: [(&str, &str); 1] = [(
+    super::super::repository::CHRONICLE_PROPOSAL_SET_KIND,
+    super::super::repository::CHRONICLE_EXTRACT_SURFACE_PATH,
+)];
+
+/// Which Indexes the Freshness of a proposal Revision feeds.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CurrentRevisionIndexInput {
+    /// No proposal of the project has the Revision current.
+    NotCurrent,
+    /// Every proposal that has it current is on the closed list of known
+    /// non-Graph Revisions, and none is on the Graph side.
+    ChronicleOnly,
+    /// A Graph-side Revision, a kind off the list, or a row that cannot be
+    /// read: both Indexes, as before X1-5.
+    ChronicleAndGraph,
+}
+
+/// Classify a Revision from every proposal of the project that has it
+/// current, read in the caller's transaction. The Graph side is a Graph
+/// roster candidate (the shared predicate) or either half of it (the
+/// reserved typed ProposalSet kind, or the typed review surface), so it
+/// contains every roster candidate. Only an all-known non-Graph set of rows is
+/// `ChronicleOnly`; a missing Run, an empty or non-text value, or a kind off
+/// the list is `ChronicleAndGraph`.
+pub(crate) fn classify_current_revision_in_tx(
+    conn: &Connection,
+    project: &str,
+    revision: &str,
+) -> Result<CurrentRevisionIndexInput> {
+    classify_current_revision_with_list_in_tx(
+        conn,
+        project,
+        revision,
+        &KNOWN_NON_GRAPH_REVISION_KINDS,
+    )
+}
+
+/// `classify_current_revision_in_tx` over a given known list. The Graph side
+/// is judged first, so a list entry that shared a half with the typed
+/// Revision could not move a Graph-side Revision to `ChronicleOnly`; a test
+/// pins that with such a list.
+pub(crate) fn classify_current_revision_with_list_in_tx(
+    conn: &Connection,
+    project: &str,
+    revision: &str,
+    known_non_graph: &[(&str, &str)],
+) -> Result<CurrentRevisionIndexInput> {
+    let sql = format!(
+        "SELECT proposal_set.set_kind, extraction_run.surface_path_id, COALESCE({}, 0)
+           FROM narrative_proposals proposal
+           JOIN narrative_proposal_sets proposal_set
+             ON proposal_set.id = proposal.proposal_set_id
+           LEFT JOIN narrative_extraction_runs extraction_run
+             ON extraction_run.id = proposal_set.run_id
+            AND extraction_run.project_id = proposal_set.project_id
+          WHERE proposal_set.project_id = ?1 AND proposal.current_revision_id = ?2",
+        super::super::nir1_entity_relation_index::roster_candidate_predicate_sql()
+    );
+    let mut statement = conn.prepare(&sql)?;
+    let mut rows = statement.query(params![project, revision])?;
+    let mut current = false;
+    let mut all_known_non_graph = true;
+    while let Some(row) = rows.next()? {
+        current = true;
+        let set_kind = row.get_ref(0)?.as_str().ok();
+        let surface = row.get_ref(1)?.as_str().ok();
+        let roster_candidate = row.get_ref(2)?.as_i64().ok() != Some(0);
+        if roster_candidate
+            || set_kind == Some(NIR1_ENTITY_RELATION_SET_KIND)
+            || surface == Some(NIR1_ENTITY_RELATION_REVIEW_SURFACE_PATH)
+        {
+            return Ok(CurrentRevisionIndexInput::ChronicleAndGraph);
+        }
+        if !known_non_graph
+            .iter()
+            .any(|(kind, path)| set_kind == Some(*kind) && surface == Some(*path))
+        {
+            all_known_non_graph = false;
+        }
+    }
+    Ok(match (current, all_known_non_graph) {
+        (false, _) => CurrentRevisionIndexInput::NotCurrent,
+        (true, true) => CurrentRevisionIndexInput::ChronicleOnly,
+        (true, false) => CurrentRevisionIndexInput::ChronicleAndGraph,
+    })
+}
+
+/// The Freshness hook: a change of a current proposal Revision's Freshness
+/// dirties the Indexes it feeds (X1-5). Both, unless the Revision is proved
+/// in this transaction to be a known non-Graph Revision only.
 pub(crate) fn suspend_current_revision_in_tx(
     conn: &Connection,
     project: &str,
@@ -42,14 +171,11 @@ pub(crate) fn suspend_current_revision_in_tx(
     if consumer_kind != "proposal-revision" {
         return Ok(());
     }
-    let current:bool = conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM narrative_proposals p JOIN narrative_proposal_sets s ON s.id=p.proposal_set_id
-         WHERE s.project_id=?1 AND p.current_revision_id=?2)",params![project,consumer_key],|row|row.get(0),
-    )?;
-    if current {
-        suspend_project_in_tx(conn, project)?;
+    match classify_current_revision_in_tx(conn, project, consumer_key)? {
+        CurrentRevisionIndexInput::NotCurrent => Ok(()),
+        CurrentRevisionIndexInput::ChronicleOnly => suspend_chronicle_index_in_tx(conn, project),
+        CurrentRevisionIndexInput::ChronicleAndGraph => suspend_project_in_tx(conn, project),
     }
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

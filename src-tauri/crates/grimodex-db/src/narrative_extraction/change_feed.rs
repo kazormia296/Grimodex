@@ -2466,6 +2466,67 @@ pub fn append_canonical_and_narrative_change_in_tx(
     })
 }
 
+/// The closed set of body paths (P_body) a body-only transaction may name:
+/// exactly the paths the body save writes, with and without sidecars (X1-5).
+/// Adding a path here stops dirtying the Graph Index for more writes, so it
+/// needs a new confirmed contract (`[precheck]`).
+pub(crate) const SCENE_BODY_ONLY_CHANGED_PATHS: [&str; 10] = [
+    "/authorshipSpans",
+    "/beatMentions",
+    "/beatPovOverrides",
+    "/charCount",
+    "/content",
+    "/foreshadowPayoffs",
+    "/foreshadowSetups",
+    "/placedBeatPreview",
+    "/unplacedBeatPreview",
+    "/unplacedBeatsDoc",
+];
+
+/// True only for a body-only feed transaction (X1-5, a closed allow-list):
+/// a forward transaction by a human or an AI apply whose events are at least
+/// one Scene body event and otherwise only Scene body declaration events. A
+/// Scene body event has the object key `{"kind":"scene","sceneId":…}` and
+/// nothing else, change kind `content`, mutation kind `update`, and a
+/// non-empty set of changed paths inside `SCENE_BODY_ONLY_CHANGED_PATHS`.
+/// Anything else (a foreshadow association, a path outside the set, another
+/// kind, create/delete/restore, undo/redo, another origin, an event that
+/// cannot be classified, no event) is not body-only. This reads the events
+/// itself and does not rely on `validate_event` having run.
+pub(crate) fn transaction_is_scene_body_only(
+    input: &AppendNarrativeChangeTransactionInput,
+) -> bool {
+    input.cause_kind == NarrativeChangeCauseKind::Forward
+        && matches!(
+            input.origin,
+            NarrativeChangeOrigin::Human | NarrativeChangeOrigin::AiApply
+        )
+        && input.events.iter().any(is_scene_body_only_event)
+        && input.events.iter().all(|event| {
+            is_scene_body_only_event(event)
+                || super::scene_body_declaration::is_scene_body_declaration_event(&event.object_key)
+        })
+}
+
+fn is_scene_body_only_event(event: &NarrativeChangeEventInput) -> bool {
+    let Some(key) = event.object_key.as_object() else {
+        return false;
+    };
+    key.len() == 2
+        && key.get("kind").and_then(Value::as_str) == Some("scene")
+        && key
+            .get("sceneId")
+            .and_then(Value::as_str)
+            .is_some_and(|scene_id| !scene_id.is_empty())
+        && event.change_kind == "content"
+        && event.mutation_kind == "update"
+        && !event.changed_paths.is_empty()
+        && event
+            .changed_paths
+            .iter()
+            .all(|path| SCENE_BODY_ONLY_CHANGED_PATHS.contains(&path.as_str()))
+}
+
 /// Append a project-scoped feed transaction inside the caller's existing
 /// SQLite transaction. This function never opens or commits a transaction.
 pub fn append_narrative_change_transaction_in_tx(
@@ -2854,8 +2915,18 @@ pub fn append_narrative_change_transaction_in_tx(
 
     // A declaration of a Scene's body is not an input of the Chronicle IR
     // Index or the Graph Index (C17), so a transaction made only of those
-    // events leaves both alone. Every other transaction still dirties them.
-    if !super::scene_body_declaration::events_are_only_scene_body_declarations(&input.events) {
+    // events leaves both alone. A body-only transaction (X1-5) changes the
+    // Chronicle IR Index's input (the body Source) but no Graph Index input,
+    // so it dirties the Chronicle Index alone. Every other transaction still
+    // dirties both.
+    if super::scene_body_declaration::events_are_only_scene_body_declarations(&input.events) {
+        // Neither Index reads a declaration.
+    } else if transaction_is_scene_body_only(&input) {
+        super::nir1_chronicle_index::invalidate::suspend_chronicle_index_in_tx(
+            conn,
+            &input.project_id,
+        )?;
+    } else {
         super::nir1_chronicle_index::invalidate::suspend_project_in_tx(conn, &input.project_id)?;
     }
     Ok(AppendNarrativeChangeTransactionResult {

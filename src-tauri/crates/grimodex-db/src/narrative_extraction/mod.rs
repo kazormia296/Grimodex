@@ -169,6 +169,8 @@ mod scope_dependency_projection;
 mod scene_scope_projection_tests;
 #[cfg(test)]
 mod scope_storage_authority_tests;
+#[cfg(test)]
+mod graph_index_dirty_tests;
 #[cfg(feature = "native-current-human-capture")]
 pub use nir1_history_context::{HistoryContextStage, NativeNir1HistoryDraft};
 #[cfg(feature = "nir1-final-request-eval")]
