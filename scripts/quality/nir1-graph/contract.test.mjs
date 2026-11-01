@@ -14,6 +14,7 @@ import {
   NIR1_GRAPH_README_PATH,
   NIR1_GRAPH_REVIEW_RECEIPT_PATH,
   NIR1_GRAPH_SCHEMA_PATH,
+  NIR1_GRAPH_SUPERSEDED_FREEZE,
   NIR1_G01_FIXTURE_PATH,
   NIR1_L6L9_PLAN_PATH,
   NIR1_RANKING_POLICY_PATH,
@@ -74,6 +75,10 @@ async function copyPopulation(temp) {
     NIR1_GRAPH_README_PATH,
     NIR1_GRAPH_REVIEW_RECEIPT_PATH,
     NIR1_GRAPH_FREEZE_PATH,
+    NIR1_GRAPH_SUPERSEDED_FREEZE.path,
+    ...(
+      (await readJson(NIR1_GRAPH_FREEZE_PATH)).postObservationRevisions ?? []
+    ).map((row) => row.from.path),
     NIR1_L6L9_PLAN_PATH,
     NIR1_RANKING_POLICY_PATH,
     NIR1_RETRIEVAL_MANIFEST_PATH,
@@ -132,14 +137,20 @@ function assertError(errors, message) {
   );
 }
 
-test("the fixed G-01..G-08 population validates and is frozen without any Graph runtime result", async () => {
+test("the fixed G-01..G-08 population validates and is frozen without any Graph runtime result for the bytes it froze", async () => {
   const result = await validateNir1GraphCases({ repoRoot: root });
   assert.deepEqual(result.errors, []);
   assert.deepEqual(
     result.cases.map((row) => row.caseId),
     GRAPH_CASE_IDS,
   );
-  assert.equal(result.manifest.graphRuntimeObservedBeforeFreeze, false);
+  // Version 2 of the freeze follows the observation of version 1: only G-04
+  // was rebuilt, and the version-1 freeze record keeps its bytes.
+  assert.equal(result.manifest.graphRuntimeObservedBeforeFreeze, true);
+  assert.deepEqual(
+    result.manifest.postObservationRevisions.map((row) => row.caseId),
+    ["G-04"],
+  );
   assert.deepEqual(
     [...new Set(result.cases.map((row) => row.slotClass))].sort(),
     [...SLOT_CLASSES].sort(),
@@ -155,8 +166,24 @@ test("the fixed G-01..G-08 population validates and is frozen without any Graph 
     APPROVING_REVIEW_VERDICT,
   );
   const freeze = await readJson(NIR1_GRAPH_FREEZE_PATH);
-  assert.equal(freeze.graphRuntimeObservedBeforeFreeze, false);
-  assert.equal(freeze.baselineHead, "a153743b3f672b7274bdd748f15ef9c216dc9961");
+  assert.equal(freeze.graphRuntimeObservedBeforeFreeze, true);
+  assert.equal(freeze.baselineHead, "8187fbfc9685356225956dfce83431aec9845473");
+  assert.equal(
+    sha256(await readFile(path.join(root, NIR1_GRAPH_SUPERSEDED_FREEZE.path))),
+    NIR1_GRAPH_SUPERSEDED_FREEZE.sha256,
+  );
+  const previous = await readJson(NIR1_GRAPH_SUPERSEDED_FREEZE.path);
+  assert.equal(previous.graphRuntimeObservedBeforeFreeze, false);
+  assert.equal(
+    previous.baselineHead,
+    "a153743b3f672b7274bdd748f15ef9c216dc9961",
+  );
+  const g04 = result.cases.find((row) => row.caseId === "G-04");
+  assert.equal(g04.fixtureId, "nir1-g04-scope-exact-unknown/2");
+  assert.equal(
+    g04.sha256,
+    "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1",
+  );
 });
 
 test("G-01 stays the unchanged predeclared fixture", async () => {
@@ -252,7 +279,6 @@ test("Raw-full and IR-supplemented cases never append a Graph-only Scene", async
   for (const [caseId, blocked] of [
     ["G-03", "g03-hollis-ward"],
     ["G-06", "g06-bram-galley"],
-    ["G-04", "g04-lio-market"],
     ["G-05", "g05-pia-ridge"],
   ]) {
     const value = await fixture(caseId);
@@ -537,11 +563,63 @@ test("Graph unusable falls back to R+IR and Chronicle unusable to exact R with n
   );
 });
 
+test("G-04 version 2 is supplementable: Graph appends the one Scene pinned to Lio, and a second Lio pin or IR on an answer Scene is refused", async () => {
+  const value = await fixture("G-04");
+  assert.equal(value.fixtureId, "nir1-g04-scope-exact-unknown/2");
+  assert.equal(value.slotClass, "supplementable");
+  assert.deepEqual(await errorsFor(value), []);
+  const base = variant(value, "base");
+  const result = evaluateGraphCaseVariant(value, base);
+  assert.equal(result.computed.added?.sceneId, "g04-lio-landing");
+  assert.deepEqual(result.computed.finalSceneIds, [
+    "g04-control",
+    "g04-lio-landing",
+  ]);
+  assert.equal(result.computed.framePinCount, 1);
+  assert.deepEqual(result.computed.blocked, []);
+  assert.equal(base.expectations.arms.rPlusIr.irSupplementSceneId, null);
+  assert.deepEqual(base.expectations.arms.rPlusIr.sceneIds, ["g04-control"]);
+  assert.deepEqual(
+    value.qualifiedIr.map((row) => row.sceneId),
+    ["g04-control"],
+  );
+  assert.ok(!value.scenes.some((row) => row.role === "ir-only"));
+  // The Graph DTO stays the version-1 bytes.
+  const v1 = await readJson("evals/nir1-graph/g04-scope-exact-unknown.v1.json");
+  assert.deepEqual(
+    base.expectations.graph,
+    variant(v1, "base").expectations.graph,
+  );
+
+  const twoPins = structuredClone(value);
+  twoPins.pins.push({
+    sceneId: "g04-lio-market",
+    entryId: "g04-lio",
+    source: "scene_codex_pins",
+  });
+  assertError(
+    await errorsFor(twoPins),
+    "several new Scenes share the minimum hop",
+  );
+  const answerIr = structuredClone(value);
+  answerIr.qualifiedIr.push({
+    sceneId: "g04-lio-landing",
+    summary: "Bren set Lio down on the far stones.",
+    actuality: "actual",
+    attribution: "narrator",
+    narrativeFrame: "story-world",
+  });
+  assertError(
+    await errorsFor(answerIr),
+    "qualified IR may only target control or ir-only Scenes",
+  );
+});
+
 test("R+IR result kind is a recorded-only prediction except where an IR supplement is admitted", async () => {
   const raw = structuredClone(await fixture("G-02"));
   variant(raw, "base").expectations.arms.rPlusIr.resultKind = "raw";
   assert.deepEqual(await errorsFor(raw), []);
-  const supplement = structuredClone(await fixture("G-04"));
+  const supplement = structuredClone(await fixture("G-05"));
   variant(supplement, "base").expectations.arms.rPlusIr.resultKind = "raw";
   assert.ok(
     (await errorsFor(supplement)).some((error) =>
@@ -564,12 +642,26 @@ test("every variant declares exactly its observation-time preconditions", async 
   const declared = async (caseId, variantId) =>
     variant(await fixture(caseId), variantId).preconditions;
   assert.deepEqual(
-    (await declared("G-04", "base")).map((row) => [row.id, row.sceneId]),
+    (await declared("G-05", "base")).map((row) => [row.id, row.sceneId]),
     [
       ["b-sealed-binding", undefined],
       ["maintenance-enabled", undefined],
       ["raw-membership", undefined],
-      ["ir-supplement-admission", "g04-lio-landing"],
+      ["ir-supplement-admission", "g05-xan-watch"],
+    ],
+  );
+  // G-04 version 2 declares no ir-only Scene; its appended Scene needs CB-4.
+  assert.deepEqual(
+    (await declared("G-04", "base")).map((row) => [
+      row.id,
+      row.scope,
+      row.sceneId,
+    ]),
+    [
+      ["b-sealed-binding", "variant", undefined],
+      ["maintenance-enabled", "variant", undefined],
+      ["raw-membership", "variant", undefined],
+      ["cb4-inputs", "added-scene", "g04-lio-landing"],
     ],
   );
   assert.ok(
@@ -593,7 +685,7 @@ test("every variant declares exactly its observation-time preconditions", async 
     }
   }
 
-  const missing = structuredClone(await fixture("G-04"));
+  const missing = structuredClone(await fixture("G-05"));
   variant(missing, "base").preconditions = variant(
     missing,
     "base",
@@ -637,9 +729,9 @@ test("every variant declares exactly its observation-time preconditions", async 
 });
 
 test("an unmet precondition blocks instead of Hold, and only a declared one can", async () => {
-  const g04 = variant(await fixture("G-04"), "base");
+  const g05 = variant(await fixture("G-05"), "base");
   assert.deepEqual(
-    resolveVariantOutcome(g04, { unmet: ["ir-supplement-admission"] }),
+    resolveVariantOutcome(g05, { unmet: ["ir-supplement-admission"] }),
     {
       outcome: "blocked:ir-supplement-admission",
       unmet: ["ir-supplement-admission"],
@@ -827,9 +919,19 @@ test("the freeze binds the manifest, every fixture, the schema, the README and t
       "nir1-graph freeze review receipt hash differs",
     ],
     [
-      "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+      "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
       (text) => `${text}\n`,
       "nir1-graph freeze does not bind G-04",
+    ],
+    [
+      NIR1_GRAPH_SUPERSEDED_FREEZE.path,
+      (text) => `${text}\n`,
+      `superseded ${NIR1_GRAPH_SUPERSEDED_FREEZE.path} must keep its pinned bytes`,
+    ],
+    [
+      "evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+      (text) => `${text}\n`,
+      "earlier version evals/nir1-graph/g04-scope-exact-unknown.v1.json changed",
     ],
   ];
   for (const [file, change, message] of drifts) {
@@ -894,13 +996,21 @@ test("the freeze record and the manifest status agree in both directions", async
   await withPopulationCopy(async (temp) => {
     const file = path.join(temp, NIR1_GRAPH_FREEZE_PATH);
     const freeze = JSON.parse(await readFile(file, "utf8"));
-    freeze.graphRuntimeObservedBeforeFreeze = true;
+    freeze.graphRuntimeObservedBeforeFreeze = false;
     freeze.baselineHead = "a153743b";
-    freeze.irSupplementAdmissionProbe = { status: "run" };
+    // The other of the two values, whichever the committed freeze records.
+    freeze.irSupplementAdmissionProbe = {
+      status:
+        freeze.irSupplementAdmissionProbe.status === "run" ? "not-run" : "run",
+    };
     await writeFile(file, JSON.stringify(freeze, null, 2));
     const result = await validateNir1GraphCases({ repoRoot: temp });
     for (const message of [
-      "must record no Graph runtime observation",
+      "declares postObservationRevisions without a runtime observation",
+      "disagree on graphRuntimeObservedBeforeFreeze",
+      "G-04 fixtureId nir1-g04-scope-exact-unknown/2 needs a declared post-observation revision",
+      // Without a post-observation record only the version-1 scopes apply.
+      "may change after the approving review only by json-keys",
       "baselineHead must be a full commit id",
       "disagree on the IR admission probe",
     ])
@@ -981,6 +1091,18 @@ test("the freeze follows an approving review by a read-only reviewer other than 
     ],
     [
       (value) => {
+        finalRound(value).reviewer.graphRuntimeOutputObserved = true;
+      },
+      "review round 4 reviewer must not have observed Graph runtime output",
+    ],
+    [
+      (value) => {
+        finalRound(value).reviewer.distinctFromFixtureAuthor = false;
+      },
+      "review round 4 reviewer must be distinct from the fixture author",
+    ],
+    [
+      (value) => {
         value.independentExpectationReview.rounds[0].verdict =
           APPROVING_REVIEW_VERDICT;
       },
@@ -1018,15 +1140,33 @@ test("the freeze follows an approving review by a read-only reviewer other than 
   });
 });
 
-test("after the approving review only the manifest review block and declared README sections may change", async () => {
+test("after the approving review only the declared manifest pointers, README sections and schema pattern may change", async () => {
   const freeze = await readJson(NIR1_GRAPH_FREEZE_PATH);
   const changes = freeze.independentExpectationReview.changesAfterApproval;
   const scopeOf = (file) => changes.find((row) => row.path === file)?.scope;
-  assert.deepEqual(scopeOf(NIR1_GRAPH_MANIFEST_PATH), {
-    kind: "json-keys",
-    keys: ["independentExpectationReview"],
+  assert.deepEqual(scopeOf(NIR1_GRAPH_MANIFEST_PATH)?.kind, "json-pointers");
+  for (const pointer of [
+    "/cases/3",
+    "/preconditions/definitions/2/check",
+    "/preconditions/definitions/3/appliesTo",
+    "/preconditions/definitions/5/appliesTo",
+    "/irSupplementedCoverage/cases",
+  ])
+    assert.ok(scopeOf(NIR1_GRAPH_MANIFEST_PATH).pointers.includes(pointer));
+  // The closed set, ids, scopes and outcome rules stay outside every scope.
+  for (const pointer of scopeOf(NIR1_GRAPH_MANIFEST_PATH).pointers)
+    assert.ok(
+      !/closedSet|outcomes|variantScope|addedSceneScope|notEvaluated|\/id$|\/scope$/.test(
+        pointer,
+      ),
+      pointer,
+    );
+  assert.deepEqual(scopeOf(NIR1_GRAPH_SCHEMA_PATH), {
+    kind: "json-pointers",
+    pointers: ["/properties/fixtureId/pattern"],
   });
   assert.equal(scopeOf(NIR1_GRAPH_README_PATH)?.kind, "markdown-sections");
+  assert.equal(scopeOf(NIR1_GRAPH_README_PATH)?.preamble, true);
 
   await withPopulationCopy(async (temp) => {
     const readme = path.join(temp, NIR1_GRAPH_README_PATH);
@@ -1058,9 +1198,22 @@ test("after the approving review only the manifest review block and declared REA
       "manifest.v1.json changed outside its declared scope",
     ],
     [
+      NIR1_GRAPH_MANIFEST_PATH,
+      (text) => {
+        const value = JSON.parse(text);
+        value.preconditions.closedSet = `${value.preconditions.closedSet} Edited.`;
+        return JSON.stringify(value, null, 2);
+      },
+      "manifest.v1.json changed outside its declared scope",
+    ],
+    [
       NIR1_GRAPH_SCHEMA_PATH,
-      compact,
-      "schema.v1.json differs from the bytes the approving review saw",
+      (text) => {
+        const value = JSON.parse(text);
+        value.properties.caseId.pattern = "^G-0[1-8]$";
+        return JSON.stringify(value, null, 2);
+      },
+      "schema.v1.json changed outside its declared scope",
     ],
     [
       "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
@@ -1082,10 +1235,14 @@ test("after the approving review only the manifest review block and declared REA
       const declared = value.independentExpectationReview.changesAfterApproval;
       declared
         .find((row) => row.path === NIR1_GRAPH_MANIFEST_PATH)
-        .scope.keys.push("comparison");
+        .scope.pointers.push("/preconditions/closedSet");
+      declared.find((row) => row.path === NIR1_GRAPH_SCHEMA_PATH).scope = {
+        kind: "json-keys",
+        keys: ["$defs"],
+      };
       declared.push({
-        path: NIR1_GRAPH_SCHEMA_PATH,
-        scope: { kind: "json-keys", keys: ["$defs"] },
+        path: "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+        scope: { kind: "json-keys", keys: ["scenes"] },
         approvedSha256OutsideScope: "0".repeat(64),
         change: "None.",
       });
@@ -1093,11 +1250,226 @@ test("after the approving review only the manifest review block and declared REA
     const errors = await populationErrors(temp);
     assertError(
       errors,
-      "may change after the approving review only in independentExpectationReview",
+      "manifest.v1.json may change after the approving review only at",
     );
     assertError(
       errors,
-      `declares a change to ${NIR1_GRAPH_SCHEMA_PATH}, which keeps its approved bytes`,
+      "schema.v1.json may change after the approving review only by json-pointers",
+    );
+    assertError(
+      errors,
+      "declares a change to evals/nir1-graph/g06-evidence-anchor-path.v1.json, which keeps its approved bytes",
+    );
+  });
+});
+
+test("a freeze written after a runtime observation declares every rebuilt case and keeps every other case's version-1 bytes", async () => {
+  const freeze = await readJson(NIR1_GRAPH_FREEZE_PATH);
+  assert.deepEqual(freeze.supersedes.freezeRecord, {
+    path: NIR1_GRAPH_SUPERSEDED_FREEZE.path,
+    sha256: NIR1_GRAPH_SUPERSEDED_FREEZE.sha256,
+  });
+  const [g04] = freeze.postObservationRevisions;
+  assert.equal(g04.caseId, "G-04");
+  assert.equal(g04.graphOutputUsed, false);
+  assert.equal(
+    g04.from.sha256,
+    "4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf",
+  );
+
+  const freezeEdits = [
+    [
+      (value) => {
+        value.postObservationRevisions = [];
+      },
+      "must declare postObservationRevisions for every rebuilt case",
+    ],
+    [
+      (value) => {
+        value.postObservationRevisions[0].graphOutputUsed = true;
+      },
+      "must record that no Graph runtime output was used",
+    ],
+    [
+      (value) => {
+        value.postObservationRevisions[0].userConfirmation = {};
+      },
+      "userConfirmation must name its record and commit",
+    ],
+    [
+      (value) => {
+        value.postObservationRevisions[0].from.sha256 = "0".repeat(64);
+      },
+      "from must be the superseded freeze's G-04 binding",
+    ],
+    [
+      (value) => {
+        value.supersedes.freezeRecordCommit = "0".repeat(40);
+      },
+      "supersedes must bind",
+    ],
+    [
+      (value) => {
+        const [row] = value.postObservationRevisions;
+        row.from.fixtureId = row.to.fixtureId;
+      },
+      "must name a new file and a new fixtureId",
+    ],
+    [
+      (value) => {
+        value.postObservationRevisions[0].changedFields = [];
+      },
+      "changedFields is required",
+    ],
+    [
+      (value) => {
+        value.postObservationRevisions[0].observedRuns = [""];
+      },
+      "observedRuns is required",
+    ],
+    [
+      (value) => {
+        value.graphRuntimeObservedBeforeFreeze = "yes";
+      },
+      "freeze graphRuntimeObservedBeforeFreeze must be a boolean",
+    ],
+    [
+      (value) => {
+        const files =
+          value.independentExpectationReview.rounds.at(-1).filesAtReview;
+        files.find((row) => row.path === NIR1_GRAPH_MANIFEST_PATH).sha256 =
+          "0".repeat(64);
+      },
+      "final review round must have read the superseded freeze's evals/nir1-graph/manifest.v1.json",
+    ],
+    [
+      (value) => {
+        const manifestScope =
+          value.independentExpectationReview.changesAfterApproval.find(
+            (row) => row.path === NIR1_GRAPH_MANIFEST_PATH,
+          ).scope;
+        delete manifestScope.appendOnly;
+      },
+      "change scope must bind the approved prefix of /preconditions/holdVersusBlocked, /coverageGaps",
+    ],
+  ];
+  for (const [edit, message] of freezeEdits) {
+    await withPopulationCopy(async (temp) => {
+      await editJson(temp, NIR1_GRAPH_FREEZE_PATH, edit);
+      assertError(await populationErrors(temp), message);
+    });
+  }
+
+  // A case that is not declared must keep its version-1 bytes even when the
+  // new freeze and the review rebind it.
+  await withPopulationCopy(async (temp) => {
+    const file = path.join(
+      temp,
+      "evals/nir1-graph/g06-evidence-anchor-path.v1.json",
+    );
+    await writeFile(file, `${await readFile(file, "utf8")}\n`);
+    await rebindFreeze(temp);
+    await editJson(temp, NIR1_GRAPH_FREEZE_PATH, (value) => {
+      for (const row of value.independentExpectationReview.rounds.at(-1)
+        .filesAtReview)
+        if (row.path.endsWith("g06-evidence-anchor-path.v1.json"))
+          row.sha256 = value.cases.find((c) => c.caseId === "G-06").sha256;
+    });
+    assertError(
+      await populationErrors(temp),
+      "G-06 is not a declared post-observation revision",
+    );
+  });
+  await withPopulationCopy(async (temp) => {
+    await rm(path.join(temp, NIR1_GRAPH_SUPERSEDED_FREEZE.path));
+    assertError(
+      await populationErrors(temp),
+      `superseded ${NIR1_GRAPH_SUPERSEDED_FREEZE.path} must stay in the repository`,
+    );
+  });
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      delete value.postObservationRevisions;
+    });
+    await rebindFreeze(temp);
+    const errors = await populationErrors(temp);
+    assertError(errors, "must declare postObservationRevisions");
+    assertError(errors, "must name the same cases");
+  });
+  // The manifest's record must name the freeze's from/to for the case.
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      value.postObservationRevisions[0].to.path =
+        "evals/nir1-graph/g04-scope-exact-unknown.v3.json";
+    });
+    await rebindFreeze(temp);
+    assertError(
+      await populationErrors(temp),
+      "postObservationRevisions G-04 differs from the manifest's entry",
+    );
+  });
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      value.graphRuntimeObservedBeforeFreeze = "yes";
+    });
+    await rebindFreeze(temp);
+    assertError(
+      await populationErrors(temp),
+      "manifest graphRuntimeObservedBeforeFreeze must be a boolean",
+    );
+  });
+  // Append-only text and lists keep their approved prefix, and the README
+  // keeps its rule lines, even inside a declared scope.
+  for (const [file, change, message] of [
+    [
+      NIR1_GRAPH_MANIFEST_PATH,
+      (value) => {
+        value.preconditions.holdVersusBlocked =
+          "Hold and blocked are the same.";
+      },
+      "/preconditions/holdVersusBlocked may only grow",
+    ],
+    [
+      NIR1_GRAPH_MANIFEST_PATH,
+      (value) => {
+        value.coverageGaps.splice(0, 1);
+      },
+      "/coverageGaps may only grow",
+    ],
+  ]) {
+    await withPopulationCopy(async (temp) => {
+      await editJson(temp, file, change);
+      await rebindFreeze(temp);
+      assertError(await populationErrors(temp), message);
+    });
+  }
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      value.coverageGaps.push("One more gap.");
+      value.preconditions.holdVersusBlocked += " Appended.";
+    });
+    await rebindFreeze(temp);
+    assert.deepEqual(await populationErrors(temp), []);
+  });
+  await withPopulationCopy(async (temp) => {
+    const readme = path.join(temp, NIR1_GRAPH_README_PATH);
+    const line =
+      "- 前提条件は、観測の後に足さず、外さず、読み替えない。前提条件が成り立たなくても期待値は変えない。\n";
+    const text = await readFile(readme, "utf8");
+    assert.ok(text.includes(line));
+    await writeFile(readme, text.replace(line, ""));
+    await rebindFreeze(temp);
+    assertError(await populationErrors(temp), "must keep the rule line");
+  });
+  await withPopulationCopy(async (temp) => {
+    await editJson(temp, NIR1_GRAPH_MANIFEST_PATH, (value) => {
+      value.cases.find((row) => row.caseId === "G-06").fixtureId =
+        "nir1-g06-evidence-anchor-path/2";
+    });
+    await rebindFreeze(temp);
+    assertError(
+      await populationErrors(temp),
+      "G-06 fixtureId nir1-g06-evidence-anchor-path/2 needs a declared post-observation revision",
     );
   });
 });

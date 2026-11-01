@@ -2,19 +2,141 @@
 // (draftRef nir1-graph-case-seed-pin-proposal/1, contractId
 // graph-case-seed-pin-setup, confirmed 2026-10-27).
 //
-//   evals/nir1-graph/seed-pin-addendum.v1.json
+//   evals/nir1-graph/seed-pin-addendum.v2.json  (references freeze.v2.json and
+//                                               G-04 v2; v1 is kept, its bytes
+//                                               unchanged; DR-CP4-G4-7 B2b-1)
 //
 // The addendum adds, outside setupOrder, one step that pins every G-case
 // variant's query Scene to the fixture's planned seed through the product's
 // upsertScenePin. This module recomputes the rows from the frozen fixtures
-// (the planned seed is copied, never chosen), checks the digests of
-// freeze.v1.json and every fixture, the placement, the one-pin rule and the
-// SP-P1..P5 / SP-N1..N14 table. It never runs Graph, IR, Raw, Electron or
+// (the planned seed is copied, never chosen), checks the digests of the
+// current Graph case freeze (NIR1_GRAPH_FREEZE_PATH) and every fixture, the
+// placement, the one-pin rule and the SP-P1..P5 / SP-N1..N14 table. It never runs Graph, IR, Raw, Electron or
 // Native and reads no runtime output; the runtime checks (DB re-read, receipt)
 // belong to the setup driver and the run admission.
+import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 
 export const SEED_PIN_ADDENDUM_PATH =
-  "evals/nir1-graph/seed-pin-addendum.v1.json";
+  "evals/nir1-graph/seed-pin-addendum.v2.json";
+
+/**
+ * The version the current addendum supersedes (bytes kept). It differs from
+ * the current one in the references only (freeze.v1.json, G-04 v1). The frozen
+ * trace files name it (DR-CP4-G4-7 B2b-1 (B-2)).
+ */
+export const SEED_PIN_ADDENDUM_V1 = Object.freeze({
+  path: "evals/nir1-graph/seed-pin-addendum.v1.json",
+  sha256: "cf2330e283aa208ab310f44c8fda1bf2d4f0d83246967cc167076840d40022ef",
+});
+/** The current version's id (v1 is nir1-graph-seed-pin-addendum/1). */
+export const SEED_PIN_ADDENDUM_ID = "nir1-graph-seed-pin-addendum/2";
+
+/**
+ * A new version written after a Graph runtime observation that copies v1
+ * (B2b-1 review P2-1): `supersedes` binds v1's path and sha256 at a commit
+ * that holds those bytes (git, when the repository has it; the formal gate
+ * always checks), and the version, read back through `readBack` (which puts
+ * v1's references and wording back), equals v1 outside the version fields.
+ * A version with a newly derived row fails here even with the flag true.
+ */
+const VERSION_FIELDS = Object.freeze([
+  "addendumId",
+  "status",
+  "review",
+  "supersedes",
+  "graphRuntimeObservedBeforeAuthoring",
+]);
+export function supersededCopyErrors(errors, addendum, v1, superseded, git) {
+  const supersedes = addendum.supersedes;
+  if (
+    !isObject(supersedes) ||
+    supersedes.path !== v1.path ||
+    supersedes.sha256 !== v1.sha256 ||
+    !HEX40.test(String(supersedes.commit ?? "")) ||
+    superseded?.sha256 !== v1.sha256
+  ) {
+    errors.push(
+      `supersedes must bind ${v1.path} (sha256 ${v1.sha256}, its commit), whose bytes are unchanged`,
+    );
+    return;
+  }
+  if (git && git.blobSha(supersedes.commit, v1.path) !== v1.sha256)
+    errors.push(
+      `supersedes.commit ${supersedes.commit} does not hold ${v1.path} with sha256 ${v1.sha256}`,
+    );
+  if (addendum.graphRuntimeObservedBeforeAuthoring !== true)
+    errors.push(
+      "graphRuntimeObservedBeforeAuthoring must be true: this version was written after a Graph runtime observation (its content is v1's, checked as a copy)",
+    );
+  let back;
+  try {
+    back = v1.readBack(JSON.parse(JSON.stringify(addendum)));
+  } catch (error) {
+    errors.push(
+      `the version must be ${v1.path} with the references only changed (${error.message})`,
+    );
+    return;
+  }
+  const original = JSON.parse(JSON.stringify(superseded.json ?? {}));
+  for (const key of VERSION_FIELDS) {
+    delete back[key];
+    delete original[key];
+  }
+  const keys = [...new Set([...Object.keys(back), ...Object.keys(original)])];
+  const differing = keys.filter((key) => !same(back[key], original[key]));
+  if (differing.length > 0)
+    errors.push(
+      `the version must be ${v1.path} with the references only changed; ${differing.join(", ")} differ (a newly derived row needs its own rule)`,
+    );
+}
+
+/** Replaces `from` (exactly once) in `text`, or throws. */
+export function readBackOnce(text, from, to, label) {
+  if (typeof text !== "string" || text.split(from).length !== 2)
+    throw new Error(`${label} must name ${from} once`);
+  return text.replace(from, to);
+}
+
+const SEED_PIN_V1_COPY = Object.freeze({
+  ...SEED_PIN_ADDENDUM_V1,
+  readBack(copy) {
+    const v1 = this.json;
+    copy.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+    copy.references.fixtures["G-04"] = v1.references.fixtures["G-04"];
+    copy.purpose = readBackOnce(
+      copy.purpose,
+      "freeze.v2.json",
+      "freeze.v1.json",
+      "purpose",
+    );
+    const n8 = copy.acceptance.find((row) => row.id === "SP-N8");
+    n8.check = readBackOnce(
+      n8.check,
+      "freeze.v2.json",
+      "freeze.v1.json",
+      "SP-N8 check",
+    );
+    return copy;
+  },
+});
+
+/**
+ * The seed pin addendum paths a trace may name: the current one, or v1 while
+ * its bytes are unchanged (ctx.supersededSeedPinAddendum.sha256). The trace
+ * runs on G-02 and reads only the general step and the G-02/base row, which
+ * v1 and the current version share (DR-CP4-G4-7 B2b-1 (B-2), option (ii)).
+ */
+export function seedPinAddendumPathNamedByTraceErrors(named, ctx) {
+  if (named === SEED_PIN_ADDENDUM_PATH) return [];
+  if (
+    named === SEED_PIN_ADDENDUM_V1.path &&
+    ctx.supersededSeedPinAddendum?.sha256 === SEED_PIN_ADDENDUM_V1.sha256
+  )
+    return [];
+  return [
+    `project.seedPinAddendum must be ${SEED_PIN_ADDENDUM_PATH} or ${SEED_PIN_ADDENDUM_V1.path} with its unchanged sha256 ${SEED_PIN_ADDENDUM_V1.sha256} (the product's seed comes from the SP/1 seed pin)`,
+  ];
+}
 
 /**
  * SP/1 bytes (confirmed 2026-10-27 06:47 JST). The bytes live on
@@ -85,6 +207,7 @@ const STATUSES = Object.freeze([
   "draft-awaiting-independent-review",
   "frozen-after-independent-review",
 ]);
+const HEX40 = /^[0-9a-f]{40}$/u;
 const HEX64 = /^[0-9a-f]{64}$/u;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z)?$/u;
 const SEED_UTF16_MAX = 200;
@@ -137,8 +260,8 @@ export function seedPinAddendumErrors(addendum, ctx) {
   if (!isObject(addendum)) return ["seed pin addendum must be an object"];
   if (addendum.schemaVersion !== "nir1-graph-case-seed-pin-addendum/1")
     errors.push("schemaVersion must be nir1-graph-case-seed-pin-addendum/1");
-  if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
-    errors.push("graphRuntimeObservedBeforeAuthoring must be false");
+  if (addendum.addendumId !== SEED_PIN_ADDENDUM_ID)
+    errors.push(`addendumId must be ${SEED_PIN_ADDENDUM_ID}`);
   if (!STATUSES.includes(addendum.status))
     errors.push(`status must be one of ${STATUSES.join(", ")}`);
   if (addendum.status === STATUSES[1]) {
@@ -177,14 +300,28 @@ export function seedPinAddendumErrors(addendum, ctx) {
       "contract.decision2 must be include-g01 (SP/1 判断 2 was confirmed as recommended; SP-N14)",
     );
 
-  // SP-N8: digests of freeze.v1.json and every fixture it binds.
+  // The current version supersedes v1, whose bytes stay unchanged, and was
+  // written after a Graph runtime observation as a copy of v1 with the
+  // references changed (B2b-1; review P2-1, P3-2).
+  supersededCopyErrors(
+    errors,
+    addendum,
+    { ...SEED_PIN_V1_COPY, json: ctx.supersededSeedPinAddendum?.json },
+    ctx.supersededSeedPinAddendum,
+    ctx.sourcePinGit,
+  );
+
+  // SP-N8: digests of the current freeze and every fixture it binds. SP/1
+  // :123 and :170 name freeze.v1.json; SP-N8 is read as "the freeze and the
+  // fixtures the addendum binds match the files", and the freeze is the current
+  // one (DR-CP4-G4-7 B2b-1 (B-3)).
   const freeze = addendum.references?.graphCaseFreeze;
   if (
-    freeze?.path !== "evals/nir1-graph/freeze.v1.json" ||
+    freeze?.path !== NIR1_GRAPH_FREEZE_PATH ||
     freeze?.sha256 !== ctx.freeze.sha256
   )
     errors.push(
-      `references.graphCaseFreeze must be freeze.v1.json with its sha256 ${ctx.freeze.sha256} (SP-N8)`,
+      `references.graphCaseFreeze must be ${NIR1_GRAPH_FREEZE_PATH} with its sha256 ${ctx.freeze.sha256} (SP-N8)`,
     );
   for (const caseId of Object.keys(ctx.fixtures).sort()) {
     const fixture = ctx.fixtures[caseId];

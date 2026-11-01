@@ -682,16 +682,20 @@ requirements:
       - evals/nir1-graph/g02-directed-relation.v1.json
       - evals/nir1-graph/g03-bounded-two-hop.v1.json
       - evals/nir1-graph/g04-scope-exact-unknown.v1.json
+      - evals/nir1-graph/g04-scope-exact-unknown.v2.json
       - evals/nir1-graph/g05-current-revision-freshness.v1.json
       - evals/nir1-graph/g06-evidence-anchor-path.v1.json
       - evals/nir1-graph/g07-reading-before-reveal.v1.json
       - evals/nir1-graph/g08-graph-index-fallback.v1.json
       - evals/nir1-graph/independent-expectation-review.v1.json
       - evals/nir1-graph/freeze.v1.json
+      - evals/nir1-graph/freeze.v2.json
       - scripts/quality/nir1-graph/contract.mjs
       - scripts/quality/nir1-graph/porter.mjs
       - evals/nir1-g01/setup-addendum.v1.json
+      - evals/nir1-g01/setup-addendum.v2.json
       - evals/nir1-graph/declaration-addendum.v1.json
+      - evals/nir1-graph/declaration-addendum.v2.json
       - evals/nir1-graph/observation-prep.v1.json
       - evals/nir1-graph/trace-editing.v1.json
       - evals/nir1-graph/trace-browsing.v1.json
@@ -701,6 +705,7 @@ requirements:
       - evals/nir1-graph/observation-prep-freeze.v1.json
       - scripts/quality/nir1-graph/observation-prep.mjs
       - evals/nir1-graph/seed-pin-addendum.v1.json
+      - evals/nir1-graph/seed-pin-addendum.v2.json
       - scripts/quality/nir1-graph/seed-pin-addendum.mjs
       - test-fixtures/nir1-df06-plain-chat.json
       - src/prompts/ja/chatSystem.ts

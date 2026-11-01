@@ -468,7 +468,8 @@ test("S1j-2 qualified-ir の取り違えと optional story inputs を拒む（Ch
   assert.equal(extra.receipt.status, "blocked");
   assert.match(extra.receipt.precheck.message, /optional story input/u);
   // The recorded child of another Scene, or another decision, is refused.
-  const { plan, receipt } = await completeSetup("G-04/base");
+  // G-05/base has two qualifiedIr Scenes (G-04 v2 has one, DR-CP4-G4-4).
+  const { plan, receipt } = await completeSetup("G-05/base");
   assert.equal(receipt.status, "setup-complete", receipt.errors.join("\n"));
   const cold = path.resolve(REPO_ROOT, receipt.coldDatabase.path);
   const rows = readChronicleSetupRows(cold, receipt.logicalToRuntime.projectId);
@@ -611,7 +612,7 @@ test("S1j-2 Chronicle の入口は session で限る: 抽出・child・承認は
   );
 });
 
-test("S1j-2 setup 専用の Main の表は fixture から導く: plan の行と fixture の qualifiedIr が同じ 10 行（G-01〜G-08）", () => {
+test("S1j-2 setup 専用の Main の表は fixture から導く: plan の行と fixture の qualifiedIr が同じ 9 行（G-01〜G-08）", () => {
   const sources = [];
   const seen = new Set();
   for (const variant of GRAPH_EVAL_VARIANTS) {
@@ -626,7 +627,7 @@ test("S1j-2 setup 専用の Main の表は fixture から導く: plan の行と 
   }
   const fromFixtures = irTableRows(sources);
   const fromPlans = setupIrRowsOfPlans(COMPLETE);
-  assert.equal(fromFixtures.length, 10);
+  assert.equal(fromFixtures.length, 9);
   const key = (row) => `${row.caseId}/${row.id}`;
   assert.deepEqual(
     [...fromPlans].sort((x, y) => (key(x) < key(y) ? -1 : 1)),
@@ -718,7 +719,7 @@ test("S1j-2 P-0: B の generation が来なければ seal の session を開き�
       );
 });
 
-test("レビュー P3 (a): 凍結した材料の 1 variant の run でも、setup 専用の Main の表は 13 variant の plan の全行（10 行）から作る", async () => {
+test("レビュー P3 (a): 凍結した材料の 1 variant の run でも、setup 専用の Main の表は 13 variant の plan の全行（9 行）から作る", async () => {
   const root = scratch("cp4-s1j2-shared-");
   const files = {
     "dist/index.html": "index",
@@ -774,7 +775,7 @@ test("レビュー P3 (a): 凍結した材料の 1 variant の run でも、setu
   });
   assert.equal(built.length, 1);
   assert.equal(built[0].source, "frozen");
-  assert.equal(built[0].rows.length, 10);
+  assert.equal(built[0].rows.length, 9);
   assert.deepEqual(
     [...new Set(built[0].rows.map((row) => row.caseId))].sort(),
     ["G-01", "G-02", "G-03", "G-04", "G-05", "G-06", "G-07", "G-08"],

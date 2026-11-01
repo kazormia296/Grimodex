@@ -47,6 +47,7 @@ test("the catalog is the 13 frozen variants with their frozen digests and Graph 
     [
       "G-01/v1",
       "G-02/base",
+      "G-04/base",
       "G-07/base",
       "G-08/base-usable",
       "G-08/graph-recovered",
@@ -771,7 +772,8 @@ test("P2-5: a frozen variant is loaded by digest and case ID", async () => {
     variantKey: "G-04/base",
   });
   assert.equal(loaded.caseId, "G-04");
-  assert.equal(loaded.expectations.irSupplementSceneId, "g04-lio-landing");
+  // G-04 v2 (DR-CP4-G4-1): IR leaves the shared slot unused.
+  assert.equal(loaded.expectations.irSupplementSceneId, null);
   assert.equal(loaded.expectations.rawOrderPredeclared, true);
   const fake = await mkdtemp(path.join(tmpdir(), "cp4-frozen-"));
   try {

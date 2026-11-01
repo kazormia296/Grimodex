@@ -5,9 +5,12 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import test from "node:test";
+import { createHash } from "node:crypto";
+import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 import { loadObservationPrepContext } from "./observation-prep.mjs";
 import {
   SEED_PIN_ADDENDUM_PATH,
+  SEED_PIN_ADDENDUM_V1,
   SP1,
   SP_ACCEPTANCE_IDS,
   seedPinAddendumErrors,
@@ -125,8 +128,19 @@ test("placement: after the foreshadow/pin step, before maintenance and setupTime
   assert.ok(seedPinAddendumErrors(rowPlace, ctx).length > 0);
 });
 
-test("digests of freeze.v1.json and every fixture (SP-N8)", async () => {
+test("digests of the current freeze (freeze.v2.json) and every fixture (SP-N8)", async () => {
   const { ctx, addendum } = await load();
+  assert.equal(NIR1_GRAPH_FREEZE_PATH, "evals/nir1-graph/freeze.v2.json");
+  const v1 = JSON.parse(
+    await readFile(path.join(repoRoot, SEED_PIN_ADDENDUM_V1.path), "utf8"),
+  );
+  // The references v1 named (freeze.v1.json, G-04 v1) are not the current.
+  const oldFreeze = clone(addendum);
+  oldFreeze.references.graphCaseFreeze = clone(v1.references.graphCaseFreeze);
+  assert.ok(has(seedPinAddendumErrors(oldFreeze, ctx), /graphCaseFreeze/u));
+  const oldG04 = clone(addendum);
+  oldG04.references.fixtures["G-04"] = clone(v1.references.fixtures["G-04"]);
+  assert.ok(has(seedPinAddendumErrors(oldG04, ctx), /G-04/u));
   const freeze = clone(addendum);
   freeze.references.graphCaseFreeze.sha256 = flip(
     freeze.references.graphCaseFreeze.sha256,
@@ -179,9 +193,11 @@ test("contract, status, review and the seed id shape (SP-N9)", async () => {
   const sha = clone(addendum);
   sha.contract.sha256 = flip(sha.contract.sha256);
   assert.ok(has(seedPinAddendumErrors(sha, ctx), /contract/u));
+  // The current version was written after a Graph runtime observation
+  // (B2b-1 review P2-1): false is refused.
   const observed = clone(addendum);
-  observed.graphRuntimeObservedBeforeAuthoring = true;
-  assert.ok(seedPinAddendumErrors(observed, ctx).length > 0);
+  observed.graphRuntimeObservedBeforeAuthoring = false;
+  assert.ok(has(seedPinAddendumErrors(observed, ctx), /graphRuntimeObserved/u));
   const reviewed = clone(addendum);
   reviewed.review = { reviewer: "x" };
   assert.ok(has(seedPinAddendumErrors(reviewed, ctx), /review/u));
@@ -236,8 +252,9 @@ test("S3v2-P2-1 / P3-1: synthetic detection for SP-N1〜N5, N9〜N13; runtime st
 
 test("S3v2-P3-4: the SP/1 digest is recomputed when its bytes are in the repository", async () => {
   const { ctx, addendum } = await load();
-  // S4a: the committed addendum is frozen, and a frozen one needs the bytes
-  // (S3v3-P3-1, the next test). The absent-bytes tolerance is a draft's.
+  // The committed v2 is a draft (frozen after S2 追補 and S4, B2b-2); a frozen
+  // one needs the bytes (S3v3-P3-1, the next test). The absent-bytes tolerance
+  // is a draft's.
   const draft = clone(addendum);
   draft.status = "draft-awaiting-independent-review";
   draft.review = null;
@@ -273,5 +290,165 @@ test("S3v3-P3-1: a frozen seed pin addendum needs the SP/1 bytes in the reposito
   );
   assert.ok(
     has(seedPinAddendumErrors(frozen, { ...ctx, sp1Sha256: null }), /SP\/1/u),
+  );
+});
+
+test("DR-CP4-G4-7 B2b-1: the new version is v1 with the references only changed, and supersedes v1's unchanged bytes", async () => {
+  const { ctx, addendum } = await load();
+  assert.equal(
+    SEED_PIN_ADDENDUM_PATH,
+    "evals/nir1-graph/seed-pin-addendum.v2.json",
+  );
+  const v1Bytes = await readFile(
+    path.join(repoRoot, SEED_PIN_ADDENDUM_V1.path),
+  );
+  assert.equal(
+    createHash("sha256").update(v1Bytes).digest("hex"),
+    SEED_PIN_ADDENDUM_V1.sha256,
+  );
+  const v1 = JSON.parse(v1Bytes);
+  assert.equal(addendum.addendumId, "nir1-graph-seed-pin-addendum/2");
+  // DR-CP4-S4-7 (2b): frozen on the B2b-1 independent code review (contracts
+  // 294f708f); the reviewer saw b998056a, the fix (flag) came after.
+  assert.equal(addendum.status, "frozen-after-independent-review");
+  assert.equal(
+    addendum.review.recordSha256,
+    "ff4f43753bb29e013d93698b19e14abc533207d44caa30be5d864d8e12ddf403",
+  );
+  assert.ok(
+    addendum.review.record.includes("294f708fc2e02ebbe10257533193de711a1f5bed"),
+  );
+  for (const word of [
+    "b998056a0b41901ecf25bbcc3233321fdbcbb27ca50241110e1c7707a28c94e8",
+    "cf79d0abbe1871b0603e27f878172e2c4f0d4a18c3abedc78c7fd6627ecbed06",
+    "直した後の bytes を reviewer が見直した記録は無い",
+    "独立期待値レビューでもない",
+  ])
+    assert.ok(addendum.review.conditions.includes(word), word);
+  // Written after a Graph runtime observation (literal; B2b-1 review P2-1),
+  // as a copy of v1's rows.
+  assert.equal(addendum.graphRuntimeObservedBeforeAuthoring, true);
+  assert.deepEqual(addendum.seedPins, v1.seedPins);
+  assert.deepEqual(
+    {
+      path: addendum.supersedes.path,
+      sha256: addendum.supersedes.sha256,
+      commit: addendum.supersedes.commit,
+    },
+    {
+      path: SEED_PIN_ADDENDUM_V1.path,
+      sha256: SEED_PIN_ADDENDUM_V1.sha256,
+      commit: "cf1c83e3c4d491032511cb6f11fecb5699bc3ed5",
+    },
+  );
+  // Every other field is v1's once the freeze name reads back.
+  const back = clone(addendum);
+  // The flag is v1 false, v2 true (B2b-1 review P2-1).
+  for (const key of [
+    "addendumId",
+    "status",
+    "review",
+    "supersedes",
+    "graphRuntimeObservedBeforeAuthoring",
+  ])
+    delete back[key];
+  back.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+  back.references.fixtures["G-04"] = v1.references.fixtures["G-04"];
+  back.purpose = back.purpose.replace("freeze.v2.json", "freeze.v1.json");
+  const n8 = back.acceptance.find((row) => row.id === "SP-N8");
+  n8.check = n8.check.replace("freeze.v2.json", "freeze.v1.json");
+  const v1Back = clone(v1);
+  for (const key of [
+    "addendumId",
+    "status",
+    "review",
+    "graphRuntimeObservedBeforeAuthoring",
+  ])
+    delete v1Back[key];
+  assert.deepEqual(back, v1Back);
+
+  // v1 itself is not the current version.
+  assert.ok(has(seedPinAddendumErrors(v1, ctx), /graphCaseFreeze/u));
+  for (const mutate of [
+    (a) => delete a.supersedes,
+    (a) => (a.supersedes.sha256 = flip(a.supersedes.sha256)),
+    (a) => (a.supersedes.path = "evals/nir1-graph/seed-pin-addendum.v3.json"),
+    (a) => (a.supersedes.commit = "cf1c83e3"),
+  ]) {
+    const mutated = clone(addendum);
+    mutate(mutated);
+    assert.ok(has(seedPinAddendumErrors(mutated, ctx), /supersedes/u));
+  }
+  for (const changed of ["1".repeat(64), null])
+    assert.ok(
+      has(
+        seedPinAddendumErrors(addendum, {
+          ...ctx,
+          supersededSeedPinAddendum: changed && {
+            ...ctx.supersededSeedPinAddendum,
+            sha256: changed,
+          },
+        }),
+        /supersedes/u,
+      ),
+    );
+});
+
+test("B2b-1 review P2-1, P3-1, P3-2: the flag true holds only for a copy of v1 (references and version fields changed), id /2, a commit holding v1's bytes", async () => {
+  const { ctx, addendum } = await load();
+  const copyError = /references only changed/u;
+  const row = (a, key) =>
+    a.seedPins.find((entry) => `${entry.caseId}/${entry.variantId}` === key);
+  // A newly derived row, an added row or a changed rule is not a copy, even
+  // with the flag true.
+  for (const mutate of [
+    (a) => (row(a, "G-04/base").seedEntityId = "g04-lio"),
+    (a) => a.seedPins.push({ ...row(a, "G-04/base"), variantId: "v9" }),
+    (a) => (a.step.workspace = `${a.step.workspace} 追記。`),
+    (a) => (a.seedPinsRule = "起案者が選ぶ。"),
+    (a) => (a.purpose = a.purpose.replace("freeze.v2.json", "freeze.v3.json")),
+    (a) => (a.extra = true),
+  ]) {
+    const mutated = clone(addendum);
+    mutate(mutated);
+    assert.equal(mutated.graphRuntimeObservedBeforeAuthoring, true);
+    assert.ok(has(seedPinAddendumErrors(mutated, ctx), copyError));
+  }
+  assert.ok(!has(seedPinAddendumErrors(addendum, ctx), copyError));
+  // v1's bytes are needed to compare against.
+  assert.ok(
+    has(
+      seedPinAddendumErrors(addendum, {
+        ...ctx,
+        supersededSeedPinAddendum: null,
+      }),
+      /supersedes/u,
+    ),
+  );
+  // P3-1: the id is the second version's.
+  for (const id of [
+    "nir1-graph-seed-pin-addendum/1",
+    "nir1-graph-seed-pin-addendum/9",
+  ]) {
+    const mutated = clone(addendum);
+    mutated.addendumId = id;
+    assert.ok(has(seedPinAddendumErrors(mutated, ctx), /addendumId/u));
+  }
+  // P3-2: the commit must hold v1's bytes (git when present).
+  assert.ok(
+    has(
+      seedPinAddendumErrors(addendum, {
+        ...ctx,
+        sourcePinGit: { blobSha: () => null },
+      }),
+      /supersedes\.commit/u,
+    ),
+  );
+  assert.deepEqual(
+    seedPinAddendumErrors(addendum, {
+      ...ctx,
+      sourcePinGit: { blobSha: () => SEED_PIN_ADDENDUM_V1.sha256 },
+    }),
+    [],
   );
 });

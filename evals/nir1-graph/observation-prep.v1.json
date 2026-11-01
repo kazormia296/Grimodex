@@ -42,8 +42,8 @@
       "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
     },
     "graphCaseFreeze": {
-      "path": "evals/nir1-graph/freeze.v1.json",
-      "sha256": "6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7"
+      "path": "evals/nir1-graph/freeze.v2.json",
+      "sha256": "8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d"
     }
   },
   "candidate": {
@@ -55,12 +55,13 @@
     "choice": "ii",
     "rule": "K2/4「Main の一回限りの確認」の「測定の workspace」の (ii)。測定に使う workspace を開いた後、その workspace で seed つきの query（V-10 の READY の確認の probe と warm-up を含む）を 1 件も出す前に、製品 Main の body declaration CI seam を通して宣言する。宣言の直前と直後の Index の metadata、workspace ID、canonical locator の digest、宣言の token、binding の digest を測定の receipt に書き、Graph arm の最初の query の前に照合する（違えば [precheck]）。",
     "addenda": [
-      "evals/nir1-g01/setup-addendum.v1.json",
-      "evals/nir1-graph/declaration-addendum.v1.json"
+      "evals/nir1-g01/setup-addendum.v2.json",
+      "evals/nir1-graph/declaration-addendum.v2.json"
     ],
     "runs": [
       "G-01/v1",
       "G-02/base",
+      "G-04/base",
       "G-07/base",
       "G-08/base-usable",
       "G-08/graph-recovered"
@@ -259,13 +260,13 @@
     {
       "kind": "editing",
       "path": "evals/nir1-graph/trace-editing.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
       "sha256": "7e72a040104dee7a90493ad7a353cfc883f1671197febd1c4f0e34a7dbfcbd0d"
     },
     {
       "kind": "browsing",
       "path": "evals/nir1-graph/trace-browsing.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
       "sha256": "54e5e39153f4157da5244c1d0dab3b4528c6ab55d692e6a1c19263e44de47347"
     }
   ],
@@ -322,6 +323,11 @@
     ],
     "limits": "(1) editing の trace の失効 (i)：〔実測〕旧 S4b' の下の正式の editing（trace-editing-s5r3-1）に修正後の harness を当て直すと（DR-CP4-V-3 の当て直し）、K6/2 は valid（Q=201）だが U=1、失効 (i) は 200（そのうち begin の前の取消し 3）。開始時の封印は、B が 201 件中 200 件で generation=1・dirty=true（2 回の読みの before・after とも。残りの 1 件〔integrator によれば #0〕は generation=1・dirty=false で current）、Chronicle は generation が 3 から 202 まで進み、開始時に dirty=true が 200 件、dirty=false が 1 件だった。〔実測〕prep の Main の stderr（prep-main-stderr.log）に [narrative-maintenance] discovery failed: … NEX_VALIDATION_TERMINATED:context-unavailable: Chronicle eligibility requires a caller-owned validation context が editing と browsing で各 3 回出ており、editing の測定 Main の stderr（measure-main-stderr.log）にはこの行が無い（browsing の測定 Main の stderr は抜粋に含まれない）。出所は integrator が観測の実物から数えた抜粋（contracts の docs/plans/nir1-cp4-records/traces-s5r3-1/start-seal-extract.json、commit acc5ec71c4af240b7455341e623f0ca9fb4df7b9、SHA-256 9c00be9566bef7e2aa7431c6a3cb1a07b342444a89cecec0358ecc783436d9c3）で、実物の SHA-256 は editing の observation.json c192bca3a88f64b52696a722a042b61a7cbb324b38e981912a26e2c5a6447a62、editing の prep-main-stderr.log c0535bd17efb580b89f4154ce5ee6a24185ccf1ebfa4ca41ce37dcc35537776a、editing の measure-main-stderr.log 0cbaaf1fbb0782dd65ede1b7dcebe992e281f2b0e91dc28540396d8b8b893dec、browsing の prep-main-stderr.log 6e587eb41cb139b9cece5796376cada49ff024b350908180db2315be99f9eddf（実物はローカルの .artifacts にあり repo に無い。S4 の builder は S4a'' の後にこの抜粋を読み、実物は開いていない）。〔推測。確かめていない〕B が作り直されない原因は未確認で、prep の Main の discovery の失敗との関係は integrator の推測。DR-BSEAM-5（bseam-decisions.md。「別 lane への報告（未確認）」：制御なしの Main の discovery は、sealed の Graph／Chronicle の binding が Verify の入力にあると context-unavailable で失敗する）が述べる形に当たるかも確かめていない。新しい S4 の下の editing の (b) も、harness の不備でなく測定の結果として HOLD または [precheck] になりうる。閾値・判定はそのために変えない。 (2) 規則の時期と決めた人：下の規則はどれも、最初の（無効だった）正式の trace（旧 S4b' の下の trace-editing-s5r3-1／trace-browsing-s5r3-1。凍結した G-02/base の Graph arm を含む）を見た後に決めた。(a) advisor に諮ったのは 2 つだけ：TP-4 の規則 P-b（begin の前に取り消された counted parent。DR-CP4-V-3 (A)。正式の editing の observation.json の読取と dev の稽古の後）と、TP-5 の規則（cycle end の後に呼ばれた fetch を子にしない。DR-CP4-V-4 (A)。稽古 tfx-trace-editing-v3 の observation.json の読取の後）で、どちらも integrator が advisor の助言に基づき決めた。(b) TP-1 の末尾の窓の外の記録の除外（V-2 (1)）、TP-2 の F-6 の resolver の配線（V-2 (2)）、TP-3 の parseArgs の既定（V-2 (3)）は、integrator の依頼の範囲の配線の修正として harness の修正を担当した builder が設計した（正式の trace の observation.json の読取の後。advisor には諮っていない）。(c) TP-1 の独立の時計の同期（V-3 (B)）と、受領書の記録の組立ての切り出し・quote の guard・除外の件数の開示（V-3 (C)(D)）は、1 回目の独立レビューの P2-2 と P3 への対応として builder が設計した（advisor には諮っていない）。(d) TP-4 の印と sample 側の値の照合（V-4 (B1)）、TP-6 の guard を大文字小文字・複数形・入れ子に広げること（V-4 (B2)）、再 query の帰属の下限（V-4 (B3)）は、2 回目の独立レビューの P3 で、反映の範囲を integrator が決め、builder が実装した（advisor には諮っていない）。TP-6 の guard の引締め（値だけで許可する形）と TP-5 の境界の試験は、3 回目の独立レビューの P3 への builder の対応。向き：TP-1、TP-4、TP-5 は invalid だった trace を valid にする向きの規則で、trace の有効性の側には動く（invalid → valid）。ただし率と判定を成功側へ動かすものは無く、成功の方向へ動く判定は無い（取り消された親は Q に残り、U の外で失効 (i)・X12。除いた再 query は Q の外のまま。違反の検査は足すだけ。TP-1 の除外は末尾の窓の外だけで、窓の内側の検査は弱めない）。TP-2 の F-6 の配線は Gold の経路と同じ規則を trace にも当てるもので、TP-3 は起動の既定の修正。 (3) 凍結の前の観測：旧 S4b' の下では、凍結した G-case の Graph arm を含む run（⑤ gold-s5r3-1、K24-G01-N2〜N4、trace の 2 件）が走った。新しい freeze record の graphRuntimeObservedBeforeFreeze: false は契約（scripts/quality/nir1-retrieval/contract.mjs）が固定する形の値で、この凍結の前に凍結した G-case の Graph の実行出力が無かったことは意味しない。ユーザーは Gold と negative の観測の後であることを示された上で、直して凍結し直し全部やり直すことを確認した（contracts 8913f127）。旧 S4b' の下の run は開示に残し、新しい S4 の結果だけを使う（旧新から選ばない）。"
   },
+  "g04RevisionReadings": {
+    "status": "S2 追補 #11（DR-CP4-P-7）で、G-04 fixture v2（案 C。DR-CP4-G4-1〜G4-7）の導入による S2 の pin し直しと、その開示を、新しい S4 の観測の前に写したもの（写しは S4 の 4 回目の凍結のやり直しの builder〔B2b-2、Claude の agent〕が cp4-decisions.md の DR-CP4-G4-1〜G4-7、S4-7、P-7 の行と contracts の記録から書いた）。閾値、Gold、pool の作り方、δ、F6／X5 の定義、fixture の bytes、trace の file は変えない。S3 がこの欄を見た記録は無い。",
+    "rule": "Graph case の材料は references.graphCaseFreeze（evals/nir1-graph/freeze.v2.json）が束縛する。G-04 は v2（evals/nir1-graph/g04-scope-exact-unknown.v2.json、nir1-g04-scope-exact-unknown/2、96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1）、ほかの case は freeze.v1.json と同じ sha256。boundFiles は宣言の addendum v2（evals/nir1-graph/declaration-addendum.v2.json）、seed-pin addendum v2（evals/nir1-graph/seed-pin-addendum.v2.json）、G-01 の setup addendum v2（evals/nir1-g01/setup-addendum.v2.json）を束縛し、v1 の 3 file と freeze.v1.json は bytes を変えずに残る（新しい版の supersedes が path・sha256・commit で束縛する）。harness の G-04 v2 の変更は setupReadings.source.pins の g4-b1-post-observation-freeze、g4-b1-freeze-v2-constants、g4-b2a-declaration-v2-path、g4-b2b1-addendum-v2-paths の bytes。正式の run はこの束縛と食い違えば [precheck]。",
+    "limits": "(a) 観測の後の版：〔事実〕G-04 v2 は、旧 S4b''（557e683ccd884955e220f21bd15119f115995d29）の下で凍結した G-case の Graph arm を含む run（④ SP-P4、⑤ の parity・Gold・negative・trace）が走り、S6／S7 で CP-4 の Graph arm が HOLD になった後に作った版である（ユーザーの確認 contracts a7027915、user-confirmation-2026-11-01-g04-v2c-build.md）。構成の選択は v1 の前提（IR が g04-lio-landing を補完する）が実測で成り立たなかったことを知った上で行い、IR を採らない前提を与えられた事実として設計した。v2 は IR に依存しない構成なので、G-04 v2 の結果は IR の recall の根拠にならない。期待値は規則だけから導き、独立期待値レビュー（contracts 8857f618）が全項目の一致を確かめた。凍結前の再 probe（contracts a27660e0、1 回）は合格したが、rv-unknown の Raw 0.4293 は条件 0.43 との余裕が 0.0007 だった（DR-CP4-G4-3）。 (b) 失う検査と区分：v1 の G-04-P2 は v2 で廃止し（同じ規則は G-05 base が検査する。代わりの検査は置かない）、G-04 での path の付加の検査も無くなる（付加は G-02、G-03、G-05〜G-08 が持つ）。manifest の irSupplementedCoverage.cases は [\"G-05\"] になり、IR補完済みの区分の根拠は G-05 の 1 case だけになる（G-05/base が blocked:ir-supplement-admission なら CP-4 は PASS にならない。v1 の G-04 が blocked だった時と帰結は同じ）。 (c) pool への影響：〔事実〕v1 の G-04/base は K6/4 の pool の欠落 30/270 の唯一の原因だった（ユーザーの確認の記録 a7027915 の質問 4 の文）。v2 はその case を外すのではなく作り直す版で、v1 の file と結果（blocked:raw-membership）は残す。閾値 1%、pool の作り方、F6・X5 の定義は変えない。〔推測〕規則の上では Graph が g04-lio-landing を足すので pool の寄与は true になる見込みで、1% の判定は Graph に有利な向きに動きうる（case が blocked:raw-membership でも pool では寄与ありになりうる。DR-CP4-G4-4 (3)）。S7 は v1 と v2 の両方を並べる（ユーザーの確認の質問 4）。 (d) K2/4 の適用範囲：宣言の対象に g04-lio-landing を 5 件目として加えた（ユーザーの確認の質問 3。宣言の値・veto・利用時の判定・製品の authority の中身は変えない。DR-CP4-G4-2）。d1.runs は 6 run になり、診断の負例に K24-G04-N1 を足した。 (e) 規則文の改訂：manifest の preconditions.definitions の 3 つの文と README の同じ列挙は列挙の更新、README:265-266（と manifest の holdVersusBlocked の追加文）は列挙ではなく規則の改訂である（観測の後の固定し直しを、ユーザーの確認、freeze の postObservationRevisions、新しい独立期待値レビューを要件に条件つきで開く。ユーザーの確認の質問 2、DR-CP4-G4-7 の (0-d)）。規則文の意味の独立期待値レビュー（contracts 12a738ac）は 7635e880 の bytes を読み、反映の後の bytes は読んでいない。 (f) 新しい版の addendum：seed-pin addendum v2 と G-01 の setup addendum v2 は、v1 の参照だけを直した写し（直したのは freeze、G-04 の fixture、それを述べる文、宣言する Scene の数 4→5、互いの path と、graphRuntimeObservedBeforeAuthoring を字義どおり true にしたこと〔77acdf2a。B2b-1 の独立コードレビューの P2-1〕）で、行・値・受入れは v1 と同じ（DR-CP4-G4-7 の B2b-1 の追記 (B-1)）。宣言の addendum v2 は G-04 base の行と K24-G04-N1 を足した版。3 つとも独立コードレビュー（contracts 33042487、294f708f）の記録で凍結した（独立期待値レビューではない。各 file の review に、reviewer が読んだ bytes と凍結の bytes の違いを書いた）。宣言の addendum v2 の K2/4 :418 の独立 reviewer の記録は、その後の S4b''' の前の独立レビュー（contracts e42e99900f80a3e10f58702f6eaa884e3e478649 の review-s4pre.md、de0ccae2…。凍結の版 ec0f1b85… について G-04 base の行を規則から導き直し、:418 の 3 点を確かめた）で、integrator の判断でこの file の review に束縛し直した（fdb1fc9b。凍結が :418 の記録の前で早すぎたことの訂正で、reviewPlan の「以後変えない」の例外。seed-pin v2 と setup v2 の review は変えていない）。 (g) 旧 S4b'' の下の観測：旧 S4b'' の下の run は開示に残し、S6 の集計と S7 の判定に入れず、新しい S4 の結果の選択に使わない（S6 の許可リストは新しい S4b''' だけ。DR-CP4-S4-7 の運用条件）。旧 S4b'' の下でも凍結した G-case の Graph arm が走ったので、freeze record の graphRuntimeObservedBeforeFreeze: false は契約の固定した形の値で、字義と事実が合わない（traceRunnerReadings.limits (3) と同じ）。 (h) trace と onFixtureRevision：r5Gate.onFixtureRevision は fixture の改版で addendum と trace の新しい版を作ると書くが、trace 2 file（trace-editing.v1.json、trace-browsing.v1.json）は v1 のまま（DR-CP4-G4-7 の B2b-1 の追記 (B-2) の (ii)、integrator の判断。trace は G-02 の project で動き、G-04 にも freeze にも依存しない。trace が名指す seed-pin addendum の path は v1 か現行の版だけを受け、v1 は bytes が v1 の sha256 のときに限る）。trace の project.setup の文は宣言の addendum v1（evals/nir1-graph/declaration-addendum.v1.json）も名指すが、trace の runner（trace-frozen.mjs:544-545 の DECLARATION_ADDENDUM_PATH）は宣言の addendum v2 を読む。G-02 base の宣言の行は v1 と v2 で同じ値（S4b''' の前の独立レビューが JSON で一致を確かめた）なので測定は変わらない。trace を作り直さないより強い根拠は K6/2 の手順 4（nir1-final-request-eval-proposal-2-draft.md:696）の「固定と再利用」（:702。「(iii) では CP-4 の receipt を見た後に trace を作り直さない。作り直せるのは、不備…があるときだけ」）で、trace は旧 S4b'' の下で既に取られ、参照を直すだけの新しい版はこの文の作り直しに当たり、許される不備のどれでもない（integrator の判断。S4b''' の前の独立レビューの C3）。この読みは S3 の確認の範囲の外。onFixtureRevision の文と判断の食い違いは、規則の文を書き換えずに開示した（DR-CP4-S4-7 の (C) と追記 2）。 (i) K6/4 :317 の順からの逸脱：〔事実〕K6/4（nir1-final-request-eval-proposal-4-draft.md）:317 は「G-case の seed の pin の照合（R5）は、この凍結の前に済ませる」と書き、K6/4 の凍結は 5dea38af（2026-10-27T09:11:20Z）。① の記録（r5-check-r5-1027、contracts 21ed9a9c）は G-04 v1 で setup したもので、G-04 v2 の setup では通らないので、integrator が 13 variant すべてを枝の最終の commit で S4b''' の前に取り直す。新しい ① は K6/4 の凍結の後になり、:317 の順の字義を満たさない。r5Gate.r5CheckWorkspace.rule の [precheck] で integrator に回し、integrator は (α) 逸脱を開示して進むことを選び、(β) K6/4 の同じ bytes での凍結し直しを採らなかった（理由：:317 は見出し「確認後の記録（この draft の外で行う。台帳への取り込みの提案）」〔:312〕の下の手順の提案で判定の条項ではない、① は Graph arm を走らせない観測前の G-04 v2 の setup の照合である、(β) は constants.mjs の K64_FREEZE.freezeCommit が変わり SP-N の記録をもう一度取り直すことになる）。K6/4 の bytes（d205b35f…）、値、判定は変えない。② の記録 k64-freeze-record.md は v1 の ①（21ed9a9c）を前提に書かれている。ユーザーには事前に確認していない。確認済みの契約の順序条項からの逸脱で、ユーザーの異議があれば止める（DR-CP4-S4-7 の追記 2）。 決めた人と出所：構成・規則文の改訂・K2/4 の 5 件目・結果への影響の開示はユーザーの確認（a7027915）、I1〜I6、trace の扱い、flag の読み、宣言の addendum v2 の :418 の記録の束縛、K6/4 :317 の順の逸脱 (α) は integrator の判断（DR-CP4-G4-1〜G4-7、DR-CP4-S4-7 の追記 2）、pin し直しと葉ごとの判断は B2b-2 の builder（DR-CP4-P-7。read-only の advisor に諮った）。この欄を書いた builder は測定の受領書を読んでいない。"
+  },
   "k64Procedure": {
     "draft": {
       "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json",
@@ -344,7 +350,7 @@
     "formal": {
       "version": "v1",
       "path": "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
       "sha256": "1c2428df322fa717d1a3ae5d4c99fb2dbafcbac2c8fb5b4126499dcc36cc0bea",
       "review": {
         "reviewer": "S3 の独立 reviewer（agent、Opus）",
@@ -391,7 +397,7 @@
   "diagnosticRuns": [
     {
       "id": "K24-G01-N1",
-      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "source": "evals/nir1-g01/setup-addendum.v2.json",
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-01/v1",
       "declare": false,
@@ -400,7 +406,7 @@
     },
     {
       "id": "K24-G01-N2",
-      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "source": "evals/nir1-g01/setup-addendum.v2.json",
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-01/v1",
       "declare": true,
@@ -409,7 +415,7 @@
     },
     {
       "id": "K24-G01-N3",
-      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "source": "evals/nir1-g01/setup-addendum.v2.json",
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-01/v1",
       "declare": true,
@@ -418,7 +424,7 @@
     },
     {
       "id": "K24-G01-N4",
-      "source": "evals/nir1-g01/setup-addendum.v1.json",
+      "source": "evals/nir1-g01/setup-addendum.v2.json",
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-01/v1",
       "declare": true,
@@ -427,7 +433,7 @@
     },
     {
       "id": "K24-G02-N1",
-      "source": "evals/nir1-graph/declaration-addendum.v1.json",
+      "source": "evals/nir1-graph/declaration-addendum.v2.json",
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-02/base",
       "declare": false,
@@ -435,8 +441,17 @@
       "mutationAfterDeclaration": null
     },
     {
+      "id": "K24-G04-N1",
+      "source": "evals/nir1-graph/declaration-addendum.v2.json",
+      "runKind": "g-case-diagnostic-negative",
+      "variant": "G-04/base",
+      "declare": false,
+      "schedule": "samplePlan と同じ。",
+      "mutationAfterDeclaration": null
+    },
+    {
       "id": "K24-G07-N1",
-      "source": "evals/nir1-graph/declaration-addendum.v1.json",
+      "source": "evals/nir1-graph/declaration-addendum.v2.json",
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-07/base",
       "declare": false,
@@ -445,7 +460,7 @@
     },
     {
       "id": "K24-G08-N1",
-      "source": "evals/nir1-graph/declaration-addendum.v1.json",
+      "source": "evals/nir1-graph/declaration-addendum.v2.json",
       "runKind": "g-case-diagnostic-negative",
       "variant": "G-08/base-usable",
       "declare": false,
@@ -461,7 +476,7 @@
     },
     {
       "id": "SP-P4",
-      "source": "evals/nir1-graph/seed-pin-addendum.v1.json（SP/1 の受入れ SP-P4、SP-N7）",
+      "source": "evals/nir1-graph/seed-pin-addendum.v2.json（SP/1 の受入れ SP-P4、SP-N7）",
       "runKind": "seed-pin-parity",
       "arms": ["hybrid"],
       "graphArm": false,
@@ -569,7 +584,7 @@
             ]
           }
         ],
-        "switchRule": "S3 の 7 回目が P-S2-6 を条件つき（e、C1〜C3）で決め、C1〜C3 を実装した harness の PR #757（squash 43e3f40b、DR-CP4-Q-1）が master に入った。S2 は追補 #6 でその commit に pin し直し、inForce を ir-complete-pairs にした（DR-CP4-P-3）。#759（DR-CP4-Q-2）が C2 に組の上限を足し、S2 は追補 #8 で pin し直した（規則の切替ではない）。SP/1 の本文と seed-pin-addendum.v1.json の SP-P4 の check の文は変えない（C1〜C3 を満たすので SP/1 の逸脱でない）。harness の規則か上限がまた変われば、S2 が pin し直して読みを改めるまで validator が落ちる。",
+        "switchRule": "S3 の 7 回目が P-S2-6 を条件つき（e、C1〜C3）で決め、C1〜C3 を実装した harness の PR #757（squash 43e3f40b、DR-CP4-Q-1）が master に入った。S2 は追補 #6 でその commit に pin し直し、inForce を ir-complete-pairs にした（DR-CP4-P-3）。#759（DR-CP4-Q-2）が C2 に組の上限を足し、S2 は追補 #8 で pin し直した（規則の切替ではない）。SP/1 の本文と seed-pin-addendum.v2.json の SP-P4 の check の文（v1 と同じ文。新しい版は参照だけを直した写し）は変えない（C1〜C3 を満たすので SP/1 の逸脱でない）。harness の規則か上限がまた変われば、S2 が pin し直して読みを改めるまで validator が落ちる。",
         "receiptReading": {
           "rule": "receipt（sp-p4-receipt.json）の design は spP4ReceiptDesign の rule（SP_P4_COMPARISON_RULE）、irTimeoutLimit（SP_P4_IR_TIMEOUT_LIMIT）と irTimeoutPairLimit（SP_P4_IR_TIMEOUT_PAIR_LIMIT）。variants[].sides[side].attempts[].ir.measured は spP4IrDisclosure の samples、notReady、timeoutExcluded、timeoutExcludedRate（measured の sample が 0 なら null）、timeoutLimit、timeoutPairLimit。受け入れた試行の側の stability は assertSpP4WorkspaceStable の rule、measured、irReady、irNotReady、irCompared、irTimeoutExcluded、irTimeoutLimit（不安定なら unstable と instability）。variants[].comparison は compareSpP4Variant の irCompletePairs（両側とも ir-ready の組。開示）、irComparedPairs（IR を比べた組）、irTimeouts（without と with の外した数）、irTimeoutLimit、irExcludedPairs（IR の欄を比べなかった組の数）、irTimeoutPairLimit、undefinedReason（ir-timeout-limit、ir-timeout-pair-limit か no-ir-complete-pair）。readSpP4Gate は記録の値を信じず、sample から導き直して比べる。",
           "design": ["rule", "irTimeoutLimit", "irTimeoutPairLimit"],
@@ -614,34 +629,34 @@
   ],
   "boundFiles": [
     {
-      "path": "evals/nir1-g01/setup-addendum.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
-      "sha256": "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46"
+      "path": "evals/nir1-g01/setup-addendum.v2.json",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
+      "sha256": "fd6b0c3cabb2713f58c6883bc6d3062e4db967517351d3dd4d3eefd204cc84b8"
     },
     {
-      "path": "evals/nir1-graph/declaration-addendum.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
-      "sha256": "82b05bae92d05b3af2a73739bd14b73cf88dcdc3290e19860126c057c5552949"
+      "path": "evals/nir1-graph/declaration-addendum.v2.json",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
+      "sha256": "bbe3379fc519ae4d67fc7b79a6458c46c92efedbd530aa8b788a66a9f3e80699"
     },
     {
       "path": "evals/nir1-graph/trace-editing.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
       "sha256": "7e72a040104dee7a90493ad7a353cfc883f1671197febd1c4f0e34a7dbfcbd0d"
     },
     {
       "path": "evals/nir1-graph/trace-browsing.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
       "sha256": "54e5e39153f4157da5244c1d0dab3b4528c6ab55d692e6a1c19263e44de47347"
     },
     {
       "path": "evals/nir1-graph/observation-prep-author-declaration.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
-      "sha256": "95bb2cf203e67d988c03c2d57ebc8d59fe82a570671d41faede205d203bc3392"
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
+      "sha256": "99c6e387589a9928418c87f783d65ddb69f6625e8487d3b05c468f60413d398f"
     },
     {
-      "path": "evals/nir1-graph/seed-pin-addendum.v1.json",
-      "commit": "f7a427893a1ae78a6c17daf2a7d528423375bbe8",
-      "sha256": "cf2330e283aa208ab310f44c8fda1bf2d4f0d83246967cc167076840d40022ef"
+      "path": "evals/nir1-graph/seed-pin-addendum.v2.json",
+      "commit": "02ede6bb609b20fa54e1a729032cc38065d2ce58",
+      "sha256": "3e4334cc358070d2dfc963420b748b85334014071a264d34bc2d03ee2c215b1b"
     }
   ],
   "placeholders": [],
@@ -653,7 +668,7 @@
     "record": "docs/plans/nir1-cp4-records/s3-review-7-observation-prep.md（commit a1fd9f64e7cab52b8aeb00ea372f54dd5f09e7d1〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕の bytes。SHA-256 d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7。S3 の 7 回目の独立レビュー〔対象は S2 追補 #4 の 968f6782 と bc2500da〕の報告の原文。判定は accept-with-conditions）。判定の要旨と条件の充足は docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-P-2〜P-4",
     "recordSha256": "d0b33ab58b1075c30ec7cf891f17f59c358af4de503dc9d8581233b2ad679cd7",
     "verdict": "accept-with-conditions",
-    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たしたと DR-CP4-P-2〜P-4 に記録されている（C2 の組の数は #759、DR-CP4-Q-2 で直した）。repo の記録に、7 回目の後の S3 のレビューは無い（充足を S3 が見直した記録は無い）。7 回目が見た差分は 968f6782 と bc2500da（S2 追補 #4）で、この file はその後に追補 #5（c5d481c4）、#6（94fc8ed4）、#7（9fc5221d）、#8（8ccdccdd）、旧 S4b（b7d74950）、失効の commit（旧 S4b の placeholder を戻した）、追補 #9（S4 の凍結のやり直し。DR-CP4-P-5）、旧 S4b'（9f52e7da）、失効の commit（旧 S4b' の placeholder を戻した）、追補 #10（3 回目の凍結のやり直し。DR-CP4-P-6）とその訂正、S4b'' で変わり、その変更を S3 が見た記録は無い。7 回目は問い 1（P-S2-6）について、C1〜C3 の読みを予定しているユーザー通知に明記することを求めた。通知の記録は docs/plans/nir1-cp4-records/user-notification-2026-10-30.md（contracts の commit bf5b3799f9a8220d43f15e3479ad15e66b8c8928〔S4 の枝が merge commit で取り込んだ〕、SHA-256 9597f5f4db5922ed1b65b9e1ea6f9deaccd8f243d80cc9db83b618da6fc91e06）にある。確認ではなく、返答も求めていない（K の帰属、組の最少 18 の取り違えと組の上限による訂正は、その記録の 2026-10-31 の補足と訂正）。C2 の K（側ごとの上限 6）は S3 でなく integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は「K は例えば 3（dev は 2/35）。これで偏りと最小の組数（24 以上）を同時に押さえます」と書いた（24 は組の数）。側ごとの上限 6 だけでは IR を比べる組が最少 18（30−12）になり S3 の条件より緩かったので、IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）を #759（DR-CP4-Q-2）で足し、S3 の組の最少 24 を満たす（diagnosticRuns SP-P4 の comparisonRule の C2）。record は 7 回目の報告の原文の記録で、記録の冒頭によれば、原本が repo に無かったので integrator が 2026-10-30 に会話の記録から書き起こした。1〜6 回目の報告の原文は repo に無い（下の rounds）。 凍結のやり直し（DR-CP4-S4-5）: 旧 S4b（b7d7495034ee693e82b9a6e55bbcbfd433215012）の下で ④ sp-p4-1（passed）と ⑤ parity-1（incomplete-blocked。G-08/graph-index-unusable が blocked:index-state-holding）が実施され、parity-1 で見つかった harness の欠陥を DR-CP4-T-1〜T-5 で直した。ユーザーは 2026-10-31 に凍結のやり直しを確認した（contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-refreeze.md、commit bd835621、確認の範囲は Graph arm の観測の前に見つかった harness の欠陥を直す再凍結で、閾値・期待値・seam・製品の code は変えない）。旧 S4b の 2 つの試行は台帳に開示して残し、S4b' の下で取り直す。追補 #9 と S4b' を S3 が見た記録は無い（S4b' の前の独立 reviewer の確認は integrator が行う）。 3 回目の凍結のやり直し（DR-CP4-S4-6）: 旧 S4b'（9f52e7da37b84603424d0b7e6ecee8e019d1c7c9）の下で ④ sp-p4-s5r-1（候補 94bb9b83）と sp-p4-s5r2-1（候補 ed8e3fb9）が C2 で停止し、IR の経路の短縮（DR-CP4-V-1、#768）を入れた候補 0b1984dd で sp-p4-s5r3-1 が passed、⑤ parity-s5r3-1 と gold-s5r3-1 が completed、K24-G01-N2〜N4 が established、(b) trace の trace-editing-s5r3-1 と trace-browsing-s5r3-1 が harness の trace の経路の不備で invalid になった（contracts の traces-s5r3-1/README.md）。不備を DR-CP4-V-2〜V-4 で直した。ユーザーは 2026-10-31 に「直して S4 を凍結し直し、全部やり直す」を確認した（contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-trace-refreeze.md、commit 8913f127。Gold と negative の観測の後の再凍結であることを示された上での確認で、閾値・期待値・seam・製品の code は変えない）。正式の測定はローカルで行う（user-confirmation-2026-10-31-measure-locally.md、commit 68180464）。旧 S4b' の下の run は台帳に開示して残し、S4b'' の下で取り直し、新しい S4 の結果だけを使う。S4b'' の前の独立 reviewer（integrator が依頼。P1 なし、条件つきで merge 可）の指摘 P2-1、P3-1、P3-2 と、integrator が観測の実物で確かめた editing の事実（contracts acc5ec71 の start-seal-extract.json。discovery failed は prep の Main の stderr にあり測定 Main には無い）は、traceRunnerReadings.limits の訂正で反映した。追補 #10 とその訂正、S4b'' を S3 が見た記録は無い。",
+    "conditions": "7 回目の条件（P2-2、P3-1〜P3-3、P-S2-6 の C1〜C3）は、S2 の追補 #5〜#7 と harness の #757 で満たしたと DR-CP4-P-2〜P-4 に記録されている（C2 の組の数は #759、DR-CP4-Q-2 で直した）。repo の記録に、7 回目の後の S3 のレビューは無い（充足を S3 が見直した記録は無い）。7 回目が見た差分は 968f6782 と bc2500da（S2 追補 #4）で、この file はその後に追補 #5（c5d481c4）、#6（94fc8ed4）、#7（9fc5221d）、#8（8ccdccdd）、旧 S4b（b7d74950）、失効の commit（旧 S4b の placeholder を戻した）、追補 #9（S4 の凍結のやり直し。DR-CP4-P-5）、旧 S4b'（9f52e7da）、失効の commit（旧 S4b' の placeholder を戻した）、追補 #10（3 回目の凍結のやり直し。DR-CP4-P-6）とその訂正、旧 S4b''（557e683c）、失効の commit（旧 S4b'' の placeholder を戻した。d50b0a48）、追補 #11（4 回目の凍結のやり直し。DR-CP4-P-7）とその訂正、S4b''' で変わり、その変更を S3 が見た記録は無い。7 回目は問い 1（P-S2-6）について、C1〜C3 の読みを予定しているユーザー通知に明記することを求めた。通知の記録は docs/plans/nir1-cp4-records/user-notification-2026-10-30.md（contracts の commit bf5b3799f9a8220d43f15e3479ad15e66b8c8928〔S4 の枝が merge commit で取り込んだ〕、SHA-256 9597f5f4db5922ed1b65b9e1ea6f9deaccd8f243d80cc9db83b618da6fc91e06）にある。確認ではなく、返答も求めていない（K の帰属、組の最少 18 の取り違えと組の上限による訂正は、その記録の 2026-10-31 の補足と訂正）。C2 の K（側ごとの上限 6）は S3 でなく integrator が #757（DR-CP4-Q-1）で決めた。S3 の 7 回目の C2 は「K は例えば 3（dev は 2/35）。これで偏りと最小の組数（24 以上）を同時に押さえます」と書いた（24 は組の数）。側ごとの上限 6 だけでは IR を比べる組が最少 18（30−12）になり S3 の条件より緩かったので、IR を外した組の上限 6（SP_P4_IR_TIMEOUT_PAIR_LIMIT）を #759（DR-CP4-Q-2）で足し、S3 の組の最少 24 を満たす（diagnosticRuns SP-P4 の comparisonRule の C2）。record は 7 回目の報告の原文の記録で、記録の冒頭によれば、原本が repo に無かったので integrator が 2026-10-30 に会話の記録から書き起こした。1〜6 回目の報告の原文は repo に無い（下の rounds）。 凍結のやり直し（DR-CP4-S4-5）: 旧 S4b（b7d7495034ee693e82b9a6e55bbcbfd433215012）の下で ④ sp-p4-1（passed）と ⑤ parity-1（incomplete-blocked。G-08/graph-index-unusable が blocked:index-state-holding）が実施され、parity-1 で見つかった harness の欠陥を DR-CP4-T-1〜T-5 で直した。ユーザーは 2026-10-31 に凍結のやり直しを確認した（contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-refreeze.md、commit bd835621、確認の範囲は Graph arm の観測の前に見つかった harness の欠陥を直す再凍結で、閾値・期待値・seam・製品の code は変えない）。旧 S4b の 2 つの試行は台帳に開示して残し、S4b' の下で取り直す。追補 #9 と S4b' を S3 が見た記録は無い（S4b' の前の独立 reviewer の確認は integrator が行う）。 3 回目の凍結のやり直し（DR-CP4-S4-6）: 旧 S4b'（9f52e7da37b84603424d0b7e6ecee8e019d1c7c9）の下で ④ sp-p4-s5r-1（候補 94bb9b83）と sp-p4-s5r2-1（候補 ed8e3fb9）が C2 で停止し、IR の経路の短縮（DR-CP4-V-1、#768）を入れた候補 0b1984dd で sp-p4-s5r3-1 が passed、⑤ parity-s5r3-1 と gold-s5r3-1 が completed、K24-G01-N2〜N4 が established、(b) trace の trace-editing-s5r3-1 と trace-browsing-s5r3-1 が harness の trace の経路の不備で invalid になった（contracts の traces-s5r3-1/README.md）。不備を DR-CP4-V-2〜V-4 で直した。ユーザーは 2026-10-31 に「直して S4 を凍結し直し、全部やり直す」を確認した（contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-trace-refreeze.md、commit 8913f127。Gold と negative の観測の後の再凍結であることを示された上での確認で、閾値・期待値・seam・製品の code は変えない）。正式の測定はローカルで行う（user-confirmation-2026-10-31-measure-locally.md、commit 68180464）。旧 S4b' の下の run は台帳に開示して残し、S4b'' の下で取り直し、新しい S4 の結果だけを使う。S4b'' の前の独立 reviewer（integrator が依頼。P1 なし、条件つきで merge 可）の指摘 P2-1、P3-1、P3-2 と、integrator が観測の実物で確かめた editing の事実（contracts acc5ec71 の start-seal-extract.json。discovery failed は prep の Main の stderr にあり測定 Main には無い）は、traceRunnerReadings.limits の訂正で反映した。追補 #10 とその訂正、S4b'' を S3 が見た記録は無い。 4 回目の凍結のやり直し（DR-CP4-S4-7）: 旧 S4b''（557e683ccd884955e220f21bd15119f115995d29）の下で ④ SP-P4 と ⑤ の trace・parity・Gold・negative が走り、S6／S7 で CP-4 の Graph arm が HOLD になった（DR-CP4-S6-1。編集中の失効と、G-04/base の pool の欠落 30/270）。その後ユーザーは G-04 の新しい版 v2（案 C。IR に依存しない構成）の作成を確認した（contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-11-01-g04-v2c-build.md、commit a7027915。ユーザーの回答は 4 問の選択肢で、S2 追補と S4 の凍結し直しを含むのは記録の integrator の読み）。G-04 v2 と S2 追補 #11 に当てた独立レビューは、どれも S3 のレビューではなく、別の agent（Opus、read-only）による次の記録：fixture v2 の独立期待値レビュー（8857f618、受入れ可）、規則文の意味の独立期待値レビュー（12a738ac。7635e880 の bytes について意味の不変）、B1 の独立コードレビュー（f2ebdd98）、B2a の独立コードレビュー（33042487）、B2b-1 の独立コードレビュー（294f708f）、S4b''' の前の独立レビュー（e42e99900f80a3e10f58702f6eaa884e3e478649、review-s4pre.md、cedbd867..eae0c79d が対象、修正してから受入れ可、P1 なし、P2×3、P3×6。宣言の addendum v2 の K2/4 :418 の確認を含む）。コードレビューの 4 つはどれも修正してから受入れ可で、指摘は反映した（DR-CP4-G4-7、S4-7 の追記 2）。反映の後の bytes（fdb1fc9b、5e0c5f05、02ede6bb）を reviewer が見直した記録は無い。① の記録は G-04 v2 の setup で取り直し（r5-check-r5-1102、56d4ec54）、②' の SP-N の記録も取り直した（20ccd115）。この 2 つの contracts の commit は、s4StagesRule の (a) の手順と違い、S4 の枝に merge commit で取り込んでおらず S4b''' の祖先ではない（integrator の指示で S4b''' を候補 179139b4 の子にした。hash と sha256 で引く）。新しい ① は K6/4 の凍結 5dea38af の後で、K6/4 :317 の順からの逸脱は integrator の判断で開示して進む（ユーザーには事前に確認していない。確認済みの契約の順序条項からの逸脱で、ユーザーの異議があれば止める。g04RevisionReadings.limits (i)）。旧 S4b'' の下の run は台帳と contracts の記録に開示して残し、S6／S7 に入れず、新しい S4 の結果だけを使う。追補 #11 とその訂正、S4a'''、S4b''' を S3 が見た記録は無い。",
     "rounds": [
       {
         "round": 1,
@@ -711,7 +726,7 @@
         "source": "docs/plans/nir1-continuation-2026-10.md の §10.8（Session B6）と、この file の contracts.sp1.confirmedAt"
       }
     ],
-    "userConfirmationsScope": "ユーザーの確認は上の 2 つの契約（K6/4、SP/1）の bytes と、S4 の凍結のやり直し（2026-10-31。contracts の user-confirmation-2026-10-31-refreeze.md。確認したのは再凍結を行うことで、S2 や追補 #9 の内容ではない）と、3 回目の凍結のやり直し（2026-10-31。contracts の user-confirmation-2026-10-31-trace-refreeze.md と、測定の場所を置き換えた user-confirmation-2026-10-31-measure-locally.md。確認したのは trace の不備を直して凍結し直し、全部やり直すこととローカルで測ることで、S2 や追補 #10 の内容ではない）。この記録（S2）、S2 の追補、addendum、trace、K6/4 の手順の v1、S4 の内容をユーザーが確認した記録は無い。"
+    "userConfirmationsScope": "ユーザーの確認は上の 2 つの契約（K6/4、SP/1）の bytes と、S4 の凍結のやり直し（2026-10-31。contracts の user-confirmation-2026-10-31-refreeze.md。確認したのは再凍結を行うことで、S2 や追補 #9 の内容ではない）と、3 回目の凍結のやり直し（2026-10-31。contracts の user-confirmation-2026-10-31-trace-refreeze.md と、測定の場所を置き換えた user-confirmation-2026-10-31-measure-locally.md。確認したのは trace の不備を直して凍結し直し、全部やり直すこととローカルで測ることで、S2 や追補 #10 の内容ではない）。この記録（S2）、S2 の追補、addendum、trace、K6/4 の手順の v1、S4 の内容をユーザーが確認した記録は無い。 4 回目の凍結のやり直し（2026-11-01。contracts の user-confirmation-2026-11-01-g04-v2c-build.md、a7027915）について、ユーザーが答えたのは G-04 v2 の構成、規則文の改訂、K2/4 の適用範囲の 5 件目、結果への影響の開示の 4 問で、S2 追補・S4 の凍結し直し・X1-5 の候補での再測定を含むのは integrator の読み。K6/4 :317 の順からの逸脱（新しい ① が K6/4 の凍結の後）はユーザーに事前に確認していない。"
   },
   "r5Gate": {
     "check": "K6/4 R5: SP/1 の seed の pin の段を実行した variant ごとの workspace で、製品の DB から問いの Scene の pin を読み直し（workspace-db.mjs）、統合 branch の seed-pin.mjs の assertSeedPinsBeforeK64（plan frozen）が match になること。G-03 と G-08 は variant ごとの SP-P1 の記録のどれか 1 つでも match でなければ全体を match にしない（SP/1 の SP-P3）。",
@@ -760,7 +775,7 @@
       }
     ],
     "onFixtureRevision": "CP-0 が G-case の fixture を改版するか、SP/1 の段のほかに setup に段を足したら、新しい fixture の sha256 を引く addendum（K2/4 の 2 件と seed の pin の 1 件）と trace の新しい版を作り、独立 reviewer のレビューを受け直してから観測前の commit をやり直す（K2/4 :419-420、K6/2 手順の 4）。この版（v1）は使わず、消さずに残す。SP-N7 で凍結のやり直し（SP/1 の D1）になった場合も同じ。",
-    "currentFinding": "凍結した G-01〜G-08 の fixture は query の Scene に pin を持たない（SP/1 の事実 (e) と同じ）。SP/1 が 2026-10-27 に確認され、seed の pin の段（evals/nir1-graph/seed-pin-addendum.v1.json）で扱う。R5 が match になるのは、その段を実行した workspace で照合が通った後である（setup の段の実装は S1g-A、照合と SP-P4 は未実行）。",
+    "currentFinding": "凍結した G-01〜G-08 の fixture は query の Scene に pin を持たない（SP/1 の事実 (e) と同じ）。SP/1 が 2026-10-27 に確認され、seed の pin の段（evals/nir1-graph/seed-pin-addendum.v2.json。v1 の参照だけを freeze.v2.json と G-04 v2 に直した新しい版で、行と規則は v1 と同じ。S2 追補 #11）で扱う。R5 が match になるのは、その段を実行した workspace で照合が通った後である（setup の段の実装は S1g-A、照合と SP-P4 は未実行）。",
     "matchRequires": ["seed-pin-step-executed-workspace", "product-db-reread"],
     "beforeFirstGatedRun": ["sp-p4-seed-pin-parity", "sp-negative-synthetic"],
     "beforeFirstGatedRunRule": "blockedUntilMatch のどの実行よりも前に、②' の合成の記録による検出（SP/1 :178）と ④ の SP-P4 の診断を終える。SP-P4 で段の前後の R か R+IR が違えば（SP-N7）、seed の pin の addendum を使わず [precheck] で止め、Graph arm を含む実行を始めない（SP/1 の批准 7）。合成の記録で SP-N1〜N5、N9〜N13 を分けられなければ、S4 に進まない（K6/4 の「CP-4 の分類器は合成の記録で検出力を示してから使う」と同じ型）。",
@@ -779,11 +794,11 @@
       ],
       "rule": "SP/1 :178 は「CP-4 は、合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを、観測の前に示す」と書き、合成の記録の作り方は書かない。次の文は S2 の読みで、括弧の中の作り方（実際の setup の receipt と DB の pin の行の複製）は S2 が足した言い換え（SP/1 :178 の文ではない）。record の記録の合成の記録は実際の setup の receipt の複製ではなく、試験が凍結の fixture と最小の schema の一時の DB から作ったもの（その記録の「合成の記録の作り方」）。S2 の読み: 観測の前に、SP-N1〜N5 と SP-N9〜N13 のそれぞれを 1 件ずつ含む合成の setup の記録（実際の setup の receipt と DB の pin の行を複製し、pin の entry、数、順序、書込みの経路、pin の集合、Scene の archive、entry の project と ID、arm ごとの workspace、runner の種類、R5 の入力の出所を書き換えたもの）を、SP-P1〜P3 と run の受入れの照合の関数に通し、それぞれを期待どおりに検出し、違反の無い記録を通すことを示す。",
       "owner": "S1g-A（統合 branch の setup-driver の seed の pin の段と variant ごとの照合の試験、seed-pin.mjs と workspace-db.mjs の照合の試験）",
-      "record": "docs/plans/nir1-cp4-records/sp-synthetic-detection-record.md（commit 2d33e6a83f5f780a5af329e27352da7746d6b9c5〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕、file の SHA-256 3e11f7f807777034dcb0ff9db411d7d8db707e5650b203117c0cee63bf8fcd92）。SP/1 :178 の SP-N1〜N5、SP-N9〜N13 の合成の記録による検出の記録で、K6/4 の分類器の Negative（K6/4-N1〜N40）の記録 k64-synthetic-detection-record.md とは別。S4 の凍結のやり直しで、前の版（72dfa711、候補 82d42746、SHA-256 42609adf19680ab41a2379e994d2f690af2c2f2a699473e800c3335cd467ad9c）の取り直しの規則に当たる workspace-db.mjs、frozen-setup-driver.mjs、test-support.mjs が DR-CP4-T-1〜T-5 で変わったので、その修正を含む候補 fc7770fd67f24f974509fd7aad5e16ddebff1eb6（tree d12e9918f30b0c2e27095e0bca0383ce34d53104。SP-N の検出に関わる file は S4b'' と同じ bytes。3 回目の凍結のやり直しの DR-CP4-V-2〜V-4 が変えた trace-record.mjs、trace-runner.mjs、followup.mjs、renderer/cp4-trace-probe.tsx と試験 3 つは、記録の取り直しの規則の file に当たらないので取り直さない。DR-CP4-S4-6）、node v24.18.0 で取り直した版（実行は S4 の builder、Claude の agent）。記録によれば、seed-pin-setup.test.mjs、seed-pin.test.mjs、receipt.test.mjs の 45 件と nir1-graph-eval の試験 572 件が pass し、検出の分岐を外す変異 23 件（前の版と同じ置換）で該当の試験がすべて落ちた。SP-N ごとの検出の assert、陽性の対照と、記録が開示した限界は前の版と同じ: 合成の記録は実際の setup の receipt の複製ではなく試験が凍結の fixture と最小の schema の一時の DB から作ったもの（S2 の syntheticDetection.rule の「実際の setup の receipt と DB の pin の行を複製し」の文と違う。SP/1 :178 自体は複製を求めず、合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを観測の前に示すとだけ書く）、SP-N4 は writer の定数の検査で実際の書込みの観測ではない（DR-CP4-R-6 (3)）、SP-N9 の entry の ID の空白・200 UTF-16 超えは productSeedOf の規則の試験だけ、SP-N10 の assertArmsShareSeedPin は run の経路に結線されていることを示していない、SP-N12 は K6/4-N16 の receipt の runnerKind の検査への対応づけ、SP-N3 の R5 の側と SP-N11 の variant の範囲（記録の「限界の開示」1〜5）。記録の取り直しの規則により、fc7770fd の後に SP-N の検出に関わる file を変えた候補では無効",
+      "record": "docs/plans/nir1-cp4-records/sp-synthetic-detection-record.md（commit 20ccd115fd171377f06690cc31533a00b795b0a0〔claude/nir1-contracts。この枝は S4b''' の祖先に取り込んでいない（integrator の指示で S4b''' を候補 179139b4 の子にした）ので hash で引く〕、file の SHA-256 aef7c0a187c89ab491bead1d851e91dd5a9d67a293180a180e01aa4adff78e34）。SP/1 :178 の SP-N1〜N5、SP-N9〜N13 の合成の記録による検出の記録で、K6/4 の分類器の Negative（K6/4-N1〜N40）の記録 k64-synthetic-detection-record.md とは別。4 回目の凍結のやり直し（DR-CP4-S4-7）で、前の版（2d33e6a8、候補 fc7770fd、SHA-256 3e11f7f807777034dcb0ff9db411d7d8db707e5650b203117c0cee63bf8fcd92）の取り直しの規則に当たる constants.mjs（最後に変えた commit d06f080e）と test-support.mjs（同 c5b46714）が G-04 fixture v2 の導入で変わったので、候補 179139b4926a6ef249da78b56e581c2fd7c083de（tree 2dadf4f6d3001636fc388f12bd5db2751c1fb25e。S4b''' はこの候補の子で、規則の 16 file と試験の bytes は同じ）で、integrator（Claude）が node v24.18.0 で取り直した版。記録によれば、seed-pin-setup.test.mjs、seed-pin.test.mjs、receipt.test.mjs の 45 件と nir1-graph-eval の試験 602 件が pass し、検出の分岐を外す変異 23 件で該当の試験がすべて落ちた（当たった数はすべて 1）。変異の道具は前の版の scratchpad が失われていたので、表の置換から作り直した（sp-synthetic-detection-tools-2026-11-02/。元の道具と bytes まで同じかは確かめていない。作り直しで判断を入れた 2 か所は記録に書かれている）。SP-N ごとの検出の assert、陽性の対照と、記録が開示した限界は前の版と同じ: 合成の記録は実際の setup の receipt の複製ではなく試験が凍結の fixture と最小の schema の一時の DB から作ったもの（S2 の syntheticDetection.rule の「実際の setup の receipt と DB の pin の行を複製し」の文と違う。SP/1 :178 自体は複製を求めず、合成の記録で SP-N1〜SP-N5、SP-N9〜SP-N13 を期待どおりに分けることを観測の前に示すとだけ書く）、SP-N4 は writer の定数の検査で実際の書込みの観測ではない（DR-CP4-R-6 (3)）、SP-N9 の entry の ID の空白・200 UTF-16 超えは productSeedOf の規則の試験だけ、SP-N10 の assertArmsShareSeedPin は run の経路に結線されていることを示していない、SP-N12 は K6/4-N16 の receipt の runnerKind の検査への対応づけ、SP-N3 の R5 の側と SP-N11 の variant の範囲（記録の「限界の開示」1〜5）。記録の取り直しの規則により、179139b4 の後に SP-N の検出に関わる file を変えた候補では無効",
       "recordRule": "②' で、統合 branch の試験（製品の runtime を使わない node の試験）を、② の後の統合 branch の commit で走らせ、試験の file と commit、各 SP-N の検出と違反の無い記録の通過を記録し、merge しない追跡される branch に push する。S4 はその既にある記録の所在を書く。",
       "decidedIn": "sp-synthetic-detection-before-s4"
     },
-    "r5CheckRecord": "docs/plans/nir1-cp4-records/r5-check-r5-1027/r5-check-record.json（commit 21ed9a9c0096df757c10f334ed97e0fd480f3df4〔claude/nir1-contracts。S4 の枝が merge commit で取り込んだ〕、file の SHA-256 4230ba3be42564087a65565c1504940a3922c55a3a28be0fccdb33e5314bd5ce）。run r5-1027（runId 7ad99f81-fb68-48cb-9d57-7433db9b825b）、status と gate は match、13 variant の行。候補 origin/master 7a2669ead5262cc1a1126a7ab52bf808afeb98ff。同じ directory の README.md によれば r5-check-runner.mjs --verify は verified:true（記録の receipt の path は実行時の .artifacts を指し、S4b では再計算していない）。receipts/ の 13 個の受領書の SHA-256 は記録の値と一致する（旧 S4b で確かめ、S4b' と S4b'' で確かめ直した）。① は seed の pin の段で止まる部分の setup（partialRun）で、DR-CP4-T-3／T-5 の待ちは部分の setup では行わず（settleFreshness が null を返す）、T-1 の測定点の freshnessFeed の読取は ① が通らない measurement-point の段にだけある。DR-CP4-T-1〜T-5 は ① の経路の動きを変えないので取り直さない（DR-CP4-S4-5）。DR-CP4-V-2〜V-4 は trace の経路の修正で、① の閉包（r5-check-runner.mjs の静的な import）に入るのは followup.mjs だけ。その変更は trace の文脈（context が trace）で begin の前に取り消された親の印を持つ記録にだけ効き（DR-CP4-V-3 (A)、V-4 (B1)）、① の経路の動きを変えないので取り直さない（DR-CP4-S4-6）",
+    "r5CheckRecord": "docs/plans/nir1-cp4-records/r5-check-r5-1102/r5-check-record.json（commit 56d4ec54ae576665ce5561698fca59881926d2e8〔claude/nir1-contracts。この枝は S4b''' の祖先に取り込んでいない（integrator の指示で S4b''' を候補 179139b4 の子にした）ので hash で引く〕、file の SHA-256 fa04baa444163b89d76beae467120366c5da55ca8e77a827eb597b06ad601f90）。run r5-1102（runId 8fb525ed-be32-4df4-8f92-1bffba4ca24d）、status と gate は match、13 variant の行（どれも setup-through-seed-pin、SP-P1 match）。候補 179139b4926a6ef249da78b56e581c2fd7c083de（tree 2dadf4f6d3001636fc388f12bd5db2751c1fb25e、clean）。同じ directory の README.md によれば r5-check-runner.mjs --verify は verified:true（実行は integrator、実 Electron）。receipts/ の 13 個の受領書の SHA-256 は記録の gate.rows の setupReceiptSha256 と一致する（S4b''' で確かめた）。前の記録（r5-check-r5-1027、commit 21ed9a9c、候補 7a2669ea）は G-04 v1 の setup で、G-04 v2 の setup では verifyR5CheckRecord が SP-P2 を計算し直して通らないので使わない（DR-CP4-S4-7）。新しい ① は K6/4 の凍結 5dea38af の後で、K6/4 :317 の順を満たさない（g04RevisionReadings.limits (i)。ユーザーには事前に確認していない。異議があれば止める）。",
     "r5CheckRecordRule": "R5 の照合の run（①）の記録: S1g-A の setup-driver が、13 variant の workspace ごとに、論理 ID と runtime ID、DB から読み戻した問いの Scene の pin の行、SP-P1 の結果、assertSeedPinsBeforeK64（plan frozen）の結果、段の前後の SP-P2 の記録、使った候補の commit を receipt に書く（Graph index、B の seal、IR の状態は書かない）。integrator は receipt と要約（match か、variant ごとの結果）を merge しない追跡される branch（claude/nir1-contracts か記録の branch）に commit して push し、その所在を S4 がここに書く。match でなければ ② に進まない。",
     "r5CheckWorkspace": {
       "disposition": "discard",
@@ -814,7 +829,7 @@
     "S2 追補 #2（S6）: trace の setupFailure（G-02 base が上限内の開き直しで setup-complete に届かなければ (b) は未測定、CP-4 の可用性は HOLD、project は差し替えない）、runnerReadings.startSeal.receipt（seal-read の時刻と回数、CDP の now() の開示）、navigate.outsideQ.receiptCountByReason（completed 以外の理由ごとの数）を trace の receipt に入れる。",
     "S2 追補 #4（DR-CP4-N-14 (5)。実行は integrator）: 試行の台帳（.artifacts/cp4/attempts/<run 名>.json。ignore 対象）を、各試行の前（status started）と後（finishedAtUtc の後）に claude/nir1-contracts の docs/plans/nir1-cp4-records/attempts/<run 名>.json へ写して commit し、force を使わずに push する。写した file の sha256 を receipt の priorAttempts.thisAttempt.fileSha256AtStart と次の試行の receipt の priorAttempts の各行の fileSha256 に照合してから集計する（d10.parity.receipt）。",
     "S2 追補 #4（DR-CP4-N-14 (2)(3)）: Gold の run は d10.parity.selection の唯一の completed の parity だけを使い、d10.parity.fallback は配線しない（Gold は [precheck] で止まる）。",
-    "S2 追補 #4（DR-CP4-O-5 (ii)(iii)(iv)(ix)、O-7）: SP-P4 は diagnosticRuns の sparseReading、supplementSlot、retakeScope、comparisonRule（S2 追補 #6 で inForce ir-complete-pairs。C1〜C3 と側ごとの上限 SP_P4_IR_TIMEOUT_LIMIT は #757、組の上限 SP_P4_IR_TIMEOUT_PAIR_LIMIT は #759 の harness。current は in force でない）のとおり。K24-G01-N2〜N4 は evals/nir1-g01/setup-addendum.v1.json の afterMutationReadings（対照と sample の判定、聞き直しの規則、mutation の後の開き直し）のとおり。trace は runnerReadings.setupReceipt と runnerReadings.r5Check のとおり。"
+    "S2 追補 #4（DR-CP4-O-5 (ii)(iii)(iv)(ix)、O-7）: SP-P4 は diagnosticRuns の sparseReading、supplementSlot、retakeScope、comparisonRule（S2 追補 #6 で inForce ir-complete-pairs。C1〜C3 と側ごとの上限 SP_P4_IR_TIMEOUT_LIMIT は #757、組の上限 SP_P4_IR_TIMEOUT_PAIR_LIMIT は #759 の harness。current は in force でない）のとおり。K24-G01-N2〜N4 は evals/nir1-g01/setup-addendum.v2.json（v1 と同じ afterMutationReadings） の afterMutationReadings（対照と sample の判定、聞き直しの規則、mutation の後の開き直し）のとおり。trace は runnerReadings.setupReceipt と runnerReadings.r5Check のとおり。"
   ],
   "stepOrder": {
     "graphCases": [
@@ -847,10 +862,10 @@
     "phasesRule": "① R5 の照合の run（setup は seed の pin の段と SP-P2 の記録まで、と製品の DB の読取だけ）→ ② K6/4 の凍結（claude/nir1-contracts への commit と push、server 側の時刻の記録。K6/4 :317）→ ②' 合成の記録による検出（製品の runtime を使わない node の試験。S1g-A の setup-driver と照合の関数の試験の実行記録）→ ③ S4（観測前の commit。2 段: S4a で bytes、S4b で placeholder を埋めて frozen。②、②'、① の記録を束縛）→ ④ SP-P4 の診断 → ⑤ Graph arm を含む実行。① が match でなければ ② に、② が済まなければ ②' と S4 に、②' が済まなければ S4 に進まない。"
   },
   "s4Stages": ["s4a-bytes", "s4b-fill-and-freeze"],
-  "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。 S4 の手順（S2 追補 #7、DR-CP4-S4-1）: (a) S4 の枝は origin/claude/nir1-contracts を merge commit で取り込み（force や rebase をしない）、S4b が参照する ①（R5 の照合の記録の commit）、②（K6/4 の凍結の commit）、②'（合成の記録の commit）を S4b の真の祖先にする。(b) S4 の PR は squash や rebase でなく merge commit（gh pr merge --merge）で master に入れる（squash や rebase では参照した hash が master の祖先に残らず、全件が落ちる）。(c) 実行時の正式の入口は assertObservationPrepFormal（S2 の validator。参照した commit の bytes と真の祖先の検査）を呼ばないので、integrator が S4 の手順の中で S4b の commit に対してこれを実行し、通ってから ④ に進む。(d) 正式の入口（diagnostic-runner.mjs の SP-P4、trace-frozen.mjs、frozen-k64-admission.mjs）は S2 の file を freeze record（evals/nir1-graph/observation-prep-freeze.v1.json）として読まず、admission.mjs の readAdmittedObservationPrep で候補の HEAD の blob を読み、その sha256 が freeze record の boundFiles の束縛と一致し、S2 の status が frozen-before-observation で placeholders が空、S2 の boundFiles（配列）と traces の各行の sha256 が freeze record の束縛と同じことを確かめてから parse する。違えば [precheck]。 (e) 凍結のやり直し（S2 追補 #9、DR-CP4-S4-5）: 旧 S4b（b7d7495034ee693e82b9a6e55bbcbfd433215012）は、⑤ parity-1 で見つかった harness の欠陥（DR-CP4-T-1〜T-5）を直すために失効させた（ユーザーの確認は contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-refreeze.md）。契約は freeze record が観測前の commit で導入されること（admission.mjs の recordIntroducedByCommit＝親のどれにも record が無い）を求めるので、失効の commit が旧 record を消して S2 を draft に戻し、S4a' の後の S4b' が同じ path に新しい record を導入する（contract.mjs と admission.mjs は変えない）。旧 S4b を観測前の commit に指定しても、新しい候補の HEAD の record の bytes が旧 S4b の record と違うので止まる。旧 S4b で取った試行（sp-p4-1、parity-1）は台帳に開示して残し、S4b' の下で取り直す（台帳の key は S4 の commit を含む）。Graph arm の観測の後に見つかった欠陥による再凍結は、この確認の範囲に含まれず、改めてユーザーの確認が要る。 (f) 3 回目の凍結のやり直し（S2 追補 #10、DR-CP4-S4-6）: 旧 S4b'（9f52e7da37b84603424d0b7e6ecee8e019d1c7c9）は、その下の ⑤ (b) trace が harness の trace の経路の不備（DR-CP4-V-2〜V-4）で invalid になったので失効させた（ユーザーの確認は contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-trace-refreeze.md。正式の測定はローカルで行う：user-confirmation-2026-10-31-measure-locally.md）。(e) と同じく、失効の commit が旧 record を消して S2 を draft に戻し、S4a'' の後の S4b'' が同じ path に新しい record を導入する。旧 S4b と旧 S4b' を観測前の commit に指定しても、新しい候補の HEAD の record の bytes が違うので止まる。旧 S4b' の下の run（sp-p4-s5r-1、sp-p4-s5r2-1、sp-p4-s5r3-1、parity-s5r3-1、gold-s5r3-1、K24-G01-N2〜N4、trace の 2 件）は台帳に開示して残し、新しい S4 の結果だけを使う。この確認は Gold と negative の観測の後の再凍結を含む（(e) の最後の文の確認に当たる）。",
+  "s4StagesRule": "S4 は 2 段の commit にする。S4a は frozen にした addendum、trace、K6/4 の手順の v1、作者の宣言の bytes を置く commit、S4b は S4a の commit と各 sha256 で placeholder を埋め、placeholders を空にして status を frozen-before-observation にする commit。commit は自分の hash を書けないので、S4b が参照する commit はどれも S4b の真の祖先（S4a か、それより前の ①、②、②' の commit）である。正式の run の門（assertObservationPrepFormal）は、参照した commit がその path の bytes を持ち、検査する commit の真の祖先であることを確かめる。 S4 の手順（S2 追補 #7、DR-CP4-S4-1）: (a) S4 の枝は origin/claude/nir1-contracts を merge commit で取り込み（force や rebase をしない）、S4b が参照する ①（R5 の照合の記録の commit）、②（K6/4 の凍結の commit）、②'（合成の記録の commit）を S4b の真の祖先にする。(b) S4 の PR は squash や rebase でなく merge commit（gh pr merge --merge）で master に入れる（squash や rebase では参照した hash が master の祖先に残らず、全件が落ちる）。(c) 実行時の正式の入口は assertObservationPrepFormal（S2 の validator。参照した commit の bytes と真の祖先の検査）を呼ばないので、integrator が S4 の手順の中で S4b の commit に対してこれを実行し、通ってから ④ に進む。(d) 正式の入口（diagnostic-runner.mjs の SP-P4、trace-frozen.mjs、frozen-k64-admission.mjs）は S2 の file を freeze record（evals/nir1-graph/observation-prep-freeze.v1.json）として読まず、admission.mjs の readAdmittedObservationPrep で候補の HEAD の blob を読み、その sha256 が freeze record の boundFiles の束縛と一致し、S2 の status が frozen-before-observation で placeholders が空、S2 の boundFiles（配列）と traces の各行の sha256 が freeze record の束縛と同じことを確かめてから parse する。違えば [precheck]。 (e) 凍結のやり直し（S2 追補 #9、DR-CP4-S4-5）: 旧 S4b（b7d7495034ee693e82b9a6e55bbcbfd433215012）は、⑤ parity-1 で見つかった harness の欠陥（DR-CP4-T-1〜T-5）を直すために失効させた（ユーザーの確認は contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-refreeze.md）。契約は freeze record が観測前の commit で導入されること（admission.mjs の recordIntroducedByCommit＝親のどれにも record が無い）を求めるので、失効の commit が旧 record を消して S2 を draft に戻し、S4a' の後の S4b' が同じ path に新しい record を導入する（contract.mjs と admission.mjs は変えない）。旧 S4b を観測前の commit に指定しても、新しい候補の HEAD の record の bytes が旧 S4b の record と違うので止まる。旧 S4b で取った試行（sp-p4-1、parity-1）は台帳に開示して残し、S4b' の下で取り直す（台帳の key は S4 の commit を含む）。Graph arm の観測の後に見つかった欠陥による再凍結は、この確認の範囲に含まれず、改めてユーザーの確認が要る。 (f) 3 回目の凍結のやり直し（S2 追補 #10、DR-CP4-S4-6）: 旧 S4b'（9f52e7da37b84603424d0b7e6ecee8e019d1c7c9）は、その下の ⑤ (b) trace が harness の trace の経路の不備（DR-CP4-V-2〜V-4）で invalid になったので失効させた（ユーザーの確認は contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-10-31-trace-refreeze.md。正式の測定はローカルで行う：user-confirmation-2026-10-31-measure-locally.md）。(e) と同じく、失効の commit が旧 record を消して S2 を draft に戻し、S4a'' の後の S4b'' が同じ path に新しい record を導入する。旧 S4b と旧 S4b' を観測前の commit に指定しても、新しい候補の HEAD の record の bytes が違うので止まる。旧 S4b' の下の run（sp-p4-s5r-1、sp-p4-s5r2-1、sp-p4-s5r3-1、parity-s5r3-1、gold-s5r3-1、K24-G01-N2〜N4、trace の 2 件）は台帳に開示して残し、新しい S4 の結果だけを使う。この確認は Gold と negative の観測の後の再凍結を含む（(e) の最後の文の確認に当たる）。 (g) 4 回目の凍結のやり直し（S2 追補 #11、DR-CP4-S4-7）: 旧 S4b''（557e683ccd884955e220f21bd15119f115995d29）の下の観測の後に G-04 の新しい版 v2（案 C。DR-CP4-G4-1〜G4-7）を作り、S2 の pin（references.graphCaseFreeze、boundFiles の addendum 3 件、harness の 4 file）が変わったので、旧 S4b'' を失効させた（ユーザーの確認は contracts の docs/plans/nir1-cp4-records/user-confirmation-2026-11-01-g04-v2c-build.md。ユーザーの回答は 4 問の選択肢で、記録の「確認の範囲」は integrator の読み。integrator の読みの確認の範囲 1 に S2 追補と S4 の凍結し直しを含む）。(e)(f) と同じく、失効の commit が旧 record を消して S2 を draft に戻し、S4a''' の後の S4b''' が同じ path に新しい record を導入する。旧 S4b、旧 S4b'、旧 S4b'' を観測前の commit に指定しても、新しい候補の HEAD の record の bytes が違うので止まる。旧 S4b'' の下の run は台帳と contracts の記録に開示して残し、S6 の集計と S7 の判定に入れず、新しい S4 の結果だけを使う（S6 の許可リストは新しい S4b''' だけ）。integrator の読みでは、この確認は Gold・negative・trace の観測の後の再凍結を含む（(e) の最後の文の確認に当たる）。① は K6/4 の凍結の後に取り直す（K6/4 :317 の順からの逸脱。g04RevisionReadings.limits (i)）。",
   "setupReadings": {
     "source": {
-      "decisions": "master（950751d0）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28（開き直しの正本は L-24、blocked の写しの表の正本は L-28、Index の build の定数は L-27）、DR-CP4-N-14（parity の固定と試行の台帳）、DR-CP4-O-1〜O-18（S5-B の配線。S2 に写す読みの正本は O-5、K24-G01-N2〜N4 は O-6／O-14／O-15、SP-P4 は O-7）と、TR-1〜TR-14。S2 追補 #4 の決定は DR-CP4-P-1。S2 追補 #5 の決定と S3 の 7 回目の判定は DR-CP4-P-2。SP-P4 の C1〜C3 と K24-G01 の負例の開示（#757）は DR-CP4-Q-1、S2 追補 #6 の決定は DR-CP4-P-3。S4 の予行（正式の入口が S2 の file を freeze record の束縛と照合して読む。#758）は DR-CP4-S4-1、S2 追補 #7 の決定は DR-CP4-P-4。SP-P4 の IR を外した組の上限（#759。DR-CP4-Q-1 の K＝6 の説明の取り違えの訂正）は DR-CP4-Q-2。S4 の凍結のやり直し（⑤ parity-1 の G-08/graph-index-unusable の blocked の後、ユーザーの確認 contracts bd835621）の harness の修正（測定の process と完全な setup の Freshness と maintenance の待ち、V-10 READY の適用。枝 claude/cp4-freshness-settle の b0df31f0 と 354b1ba6）は DR-CP4-T-1〜T-5（T-2 は調査、T-4 は決定 (a)）、S2 追補 #9 の決定は DR-CP4-P-5、再凍結の設計（旧 S4b の失効の commit と S4b' の再導入）は DR-CP4-S4-5。旧 S4b' の下の ⑤ (b) trace が harness の trace の経路の不備で invalid になった後（ユーザーの確認 contracts 8913f127）の harness の修正（末尾の窓の外の Native の記録の除外と独立の時計の同期、凍結の trace の F-6 の resolver の配線、parseArgs の既定、begin の前に取り消された counted parent、cycle end の後の fetch、quote の平文の guard。枝 claude/cp4-trace-path-fix の 262be7a9、527589b6、2854aa31、759a4679）は DR-CP4-V-2〜V-4、S2 追補 #10 の決定は DR-CP4-P-6、3 回目の凍結のやり直し（旧 S4b' の失効の commit と S4b'' の再導入）は DR-CP4-S4-6",
+      "decisions": "master（950751d0）の docs/plans/nir1-lane-decisions/cp4-decisions.md の DR-CP4-L-1〜L-15、L-18〜L-24、L-27、L-28（開き直しの正本は L-24、blocked の写しの表の正本は L-28、Index の build の定数は L-27）、DR-CP4-N-14（parity の固定と試行の台帳）、DR-CP4-O-1〜O-18（S5-B の配線。S2 に写す読みの正本は O-5、K24-G01-N2〜N4 は O-6／O-14／O-15、SP-P4 は O-7）と、TR-1〜TR-14。S2 追補 #4 の決定は DR-CP4-P-1。S2 追補 #5 の決定と S3 の 7 回目の判定は DR-CP4-P-2。SP-P4 の C1〜C3 と K24-G01 の負例の開示（#757）は DR-CP4-Q-1、S2 追補 #6 の決定は DR-CP4-P-3。S4 の予行（正式の入口が S2 の file を freeze record の束縛と照合して読む。#758）は DR-CP4-S4-1、S2 追補 #7 の決定は DR-CP4-P-4。SP-P4 の IR を外した組の上限（#759。DR-CP4-Q-1 の K＝6 の説明の取り違えの訂正）は DR-CP4-Q-2。S4 の凍結のやり直し（⑤ parity-1 の G-08/graph-index-unusable の blocked の後、ユーザーの確認 contracts bd835621）の harness の修正（測定の process と完全な setup の Freshness と maintenance の待ち、V-10 READY の適用。枝 claude/cp4-freshness-settle の b0df31f0 と 354b1ba6）は DR-CP4-T-1〜T-5（T-2 は調査、T-4 は決定 (a)）、S2 追補 #9 の決定は DR-CP4-P-5、再凍結の設計（旧 S4b の失効の commit と S4b' の再導入）は DR-CP4-S4-5。旧 S4b' の下の ⑤ (b) trace が harness の trace の経路の不備で invalid になった後（ユーザーの確認 contracts 8913f127）の harness の修正（末尾の窓の外の Native の記録の除外と独立の時計の同期、凍結の trace の F-6 の resolver の配線、parseArgs の既定、begin の前に取り消された counted parent、cycle end の後の fetch、quote の平文の guard。枝 claude/cp4-trace-path-fix の 262be7a9、527589b6、2854aa31、759a4679）は DR-CP4-V-2〜V-4、S2 追補 #10 の決定は DR-CP4-P-6、3 回目の凍結のやり直し（旧 S4b' の失効の commit と S4b'' の再導入）は DR-CP4-S4-6。G-04 fixture v2（案 C。IR に依存しない構成、K2/4 の適用範囲の 5 件目、規則文の改訂、観測の後に作った版の記録、宣言・seed-pin・G-01 の setup の addendum の新しい版）は DR-CP4-G4-1〜G4-7、S2 追補 #11 の決定は DR-CP4-P-7、4 回目の凍結のやり直し（旧 S4b'' の失効の commit と S4b''' の再導入）は DR-CP4-S4-7",
       "pins": [
         {
           "role": "s1j2-blocked-map",
@@ -921,12 +936,8 @@
         {
           "role": "t14-k64-freeze",
           "commit": "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
-          "pr": "#746（K6/4 の凍結の commit を K64_FREEZE.freezeCommit に固定）。正式の入口の閉包のうち #746 で最後に変わった constants.mjs（FROZEN_FIXTURE_SHA256、K64_FREEZE）と receipt.mjs を足し、ancestor から bytes の pin にした（S2 追補 #5、P-S2-9 (b)）",
+          "pr": "#746（K6/4 の凍結の commit を K64_FREEZE.freezeCommit に固定）。正式の入口の閉包のうち #746 で最後に変わった constants.mjs（FROZEN_FIXTURE_SHA256、K64_FREEZE）と receipt.mjs を足し、ancestor から bytes の pin にした（S2 追補 #5、P-S2-9 (b)）。S2 追補 #11（DR-CP4-P-7）: constants.mjs は G-04 fixture v2 の枝で変わったので g4-b1-freeze-v2-constants の pin へ移した（この pin は receipt.mjs を持つ）",
           "files": [
-            {
-              "path": "scripts/quality/nir1-graph-eval/constants.mjs",
-              "sha256": "579959656ee9961931bf89d8d374e5c6e058e3de0ee195502c52ec873f2c0326"
-            },
             {
               "path": "scripts/quality/nir1-graph-eval/receipt.mjs",
               "sha256": "77a181a9f6ee430a2fe3c647ccba206f2e1f34dae0e605081fe86ccbd53aebe8"
@@ -1026,20 +1037,12 @@
         {
           "role": "s4-rehearsal-admission",
           "commit": "82d427465b16a12809c6f93adad74ac97859c85a",
-          "pr": "#758（S4 の予行。正式の入口が S2 の observation-prep を S4 の freeze record の束縛と sha256 で照合して読む〔admission.mjs の readAdmittedObservationPrep〕。DR-CP4-S4-1）。この pin は #758 で最後に変わった file（試験の file と試験専用の test-support.mjs を除く admission.mjs、frozen-k64-admission.mjs、trace-frozen.mjs と、harness の外の scripts/quality/nir1-retrieval/contract.mjs。S2 追補 #7、DR-CP4-P-4。#758 でも変わった diagnostic-runner.mjs は #759 でまた変わったので、S2 追補 #8 で sp-p4-ir-pair-limit の pin へ移した）",
+          "pr": "#758（S4 の予行。正式の入口が S2 の observation-prep を S4 の freeze record の束縛と sha256 で照合して読む〔admission.mjs の readAdmittedObservationPrep〕。DR-CP4-S4-1）。この pin は #758 で最後に変わった file（試験の file と試験専用の test-support.mjs を除く admission.mjs、frozen-k64-admission.mjs、trace-frozen.mjs と、harness の外の scripts/quality/nir1-retrieval/contract.mjs。S2 追補 #7、DR-CP4-P-4。#758 でも変わった diagnostic-runner.mjs は #759 でまた変わったので、S2 追補 #8 で sp-p4-ir-pair-limit の pin へ移した）。S2 追補 #11（DR-CP4-P-7）: frozen-k64-admission.mjs と trace-frozen.mjs は G-04 fixture v2 の枝で変わったので g4-b2b1-addendum-v2-paths と g4-b2a-declaration-v2-path の pin へ移した",
           "check": "bytes",
           "files": [
             {
               "path": "scripts/quality/nir1-graph-eval/admission.mjs",
               "sha256": "e0b3877f0d118936348db948546e7c125710b1de9c07732b55b1d3f0efba4e14"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
-              "sha256": "021bb096b34c901288bd748a4e06edf18f55df4da178fb9b9cd5c8af5a8974ca"
-            },
-            {
-              "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
-              "sha256": "b1ecee05b1a14a914b98b22110b5ad2932806fb921a5951b082abbb8851f42e2"
             },
             {
               "path": "scripts/quality/nir1-retrieval/contract.mjs",
@@ -1140,6 +1143,54 @@
             {
               "path": "scripts/quality/nir1-graph-eval/trace-runner.mjs",
               "sha256": "0b438cb88f0b473d4c0f526755bdab4205153b325dc167e919a52e58fb8435c8"
+            }
+          ]
+        },
+        {
+          "role": "g4-b1-post-observation-freeze",
+          "commit": "7bd785fe084d0d370fb3c23860f68b31688684ed",
+          "pr": "G-04 fixture v2（案 C）の B1（枝 claude/g04-v2c-fixture。DR-CP4-G4-6 と B1 の独立コードレビューの指摘の修正）。観測の後に作った版の freeze の検査（postObservationRevisions、changesAfterApproval の範囲、最後の回の filesAtReview と v1 の freeze の照合）。この pin は G-04 v2 の枝で最後に変わった scripts/quality/nir1-graph/contract.mjs（S2 追補 #11、DR-CP4-P-7。同じ枝の 49827b96 も変えた）。commit は branch の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph/contract.mjs",
+              "sha256": "ef60007ae9fd28ac08692a78c5930f2dd7cf4146b4c3308c8541cbdebd25739d"
+            }
+          ]
+        },
+        {
+          "role": "g4-b1-freeze-v2-constants",
+          "commit": "d06f080e5966e81949317e673c47620d44d51d42",
+          "pr": "G-04 fixture v2 の B1／B2a（枝 claude/g04-v2c-fixture。DR-CP4-G4-2、G4-6、G4-7）。harness の GRAPH_CASE_FREEZE を freeze.v2.json（8958dc73…）に、FROZEN_FIXTURE_SHA256 の G-04 を v2（96d44ec3…）に、GRAPH_EVAL_VARIANTS の G-04/base の declaration を true にした（f3b34eb0、b3c1df48 と、最後の d06f080e）。K64_FREEZE は変わらない。この pin は constants.mjs（S2 追補 #11、DR-CP4-P-7）。commit は branch の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/constants.mjs",
+              "sha256": "00150071d688cca889d369a7505c95f453bd9787ce8de6b7b536d0da68fa2e40"
+            }
+          ]
+        },
+        {
+          "role": "g4-b2a-declaration-v2-path",
+          "commit": "2bf48fad6d29fc60af2255bacab292031ff15725",
+          "pr": "G-04 fixture v2 の B2a（枝 claude/g04-v2c-fixture。DR-CP4-G4-7 (2)）。trace-frozen.mjs の DECLARATION_ADDENDUM_PATH を宣言の addendum v2 にした。この pin は trace-frozen.mjs（S2 追補 #11、DR-CP4-P-7）。commit は branch の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/trace-frozen.mjs",
+              "sha256": "08289bb1c4ce8df2368342a2e09eccba49994320fe5679d49ca01c976a4167e5"
+            }
+          ]
+        },
+        {
+          "role": "g4-b2b1-addendum-v2-paths",
+          "commit": "c5b46714054c040cbe5c270ad657f6252b82eaeb",
+          "pr": "G-04 fixture v2 の B2b-1（枝 claude/g04-v2c-fixture。DR-CP4-G4-7 の B2b-1 の追記 (B-6)）。frozen-k64-admission.mjs の S2_FILES の宣言の addendum と G-01 の setup addendum を新しい版にした（宣言の addendum は B2a の 2bf48fad、setup は c5b46714）。この pin は frozen-k64-admission.mjs（S2 追補 #11、DR-CP4-P-7）。commit は branch の commit で、S4 の PR を merge commit で入れると master の祖先になる",
+          "check": "bytes",
+          "files": [
+            {
+              "path": "scripts/quality/nir1-graph-eval/frozen-k64-admission.mjs",
+              "sha256": "32fa43c28b307a1ea765242c475fdc674506a5d99f9e224d8af7ed0c44a6960f"
             }
           ]
         },
@@ -1338,14 +1389,9 @@
         {
           "role": "cq-lim-graph-limits",
           "commit": "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
-          "pr": "#678（CQ-LIM-1〜4。Graph の query と worker の上限）。この pin は正式の入口の閉包のうち harness の外の eval 専用の script で、この PR で最後に変わったもの（nir1-graph/contract.mjs。S2 追補 #7、DR-CP4-P-4）",
-          "check": "bytes",
-          "files": [
-            {
-              "path": "scripts/quality/nir1-graph/contract.mjs",
-              "sha256": "56f15d8e15a491714ae54bcddae5b0543362e32dec5f049276ce6d6af8949356"
-            }
-          ]
+          "pr": "#678（CQ-LIM-1〜4。Graph の query と worker の上限）。この pin は正式の入口の閉包のうち harness の外の eval 専用の script で、この PR で最後に変わったもの（nir1-graph/contract.mjs。S2 追補 #7、DR-CP4-P-4）。S2 追補 #11（DR-CP4-P-7）: nir1-graph/contract.mjs は G-04 fixture v2 の枝で変わったので g4-b1-post-observation-freeze の pin へ移し、この pin は祖先の確認だけにした",
+          "check": "ancestor",
+          "files": []
         },
         {
           "role": "dp-h-unknown-scope",
@@ -1360,7 +1406,7 @@
           ]
         }
       ],
-      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。check が bytes の pin は、files の sha256 が pin した commit の bytes で、S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめる。check が ancestor の pin（製品の修正、T14、CI の改善、bytes を後の pin に移した PR）は、S5 の候補がその commit を祖先に持つことを確かめる。どちらも違えば [precheck]（runnerHandoff）。bytes の pin の file は、master でその file を最後に変えた commit（squash の後の hash）の pin が持ち、同じ path を 2 つの pin に置かない。追補 #4 では、追補 #3 の pin（b1a87b0b）の後に #754 と #756 が変えた harness の file のうち、試験の file（*.test.mjs と s5b-test-support.mjs）を除く全部を bytes の pin に足した（厳しい側。DR-CP4-P-1）。起動時間の gate の改善（#753）と maintenance の所有の解放（#755）は ancestor の pin に追記した。validator は blockedCaseJudgement を、BLOCKED_TABLE_SOURCE（s5b-diagnostics-wiring の pin の frozen-setup-driver.mjs）の bytes（その commit から読むか、同じ sha256 の作業 tree の file）の BLOCKED_CONTRACT_TABLE から導き直して照合し、bytes の pin の sha256 を pin した commit の bytes と、各 pin の commit が記録の HEAD の祖先であることを git で確かめる（shallow な clone では確かめず、正式の gate では必ず確かめる）。 追補 #5（S3 の 7 回目の P2-2、P-S2-9 の決定 b。DR-CP4-P-2）では、正式の入口（diagnostic-runner.mjs、trace-runner.mjs、frozen-k64-run.mjs、frozen-setup-driver.mjs、r5-check-runner.mjs）の閉包（静的な import と、harness の path の文字列で参照される file〔renderer の入口、cp4-harness.html の script、launcher が起動する electron-observer.entry.mjs〕をたどる。試験の file と文書は含めない）の harness の file のうち pin に無かった 36 file（静的な import の閉包の 28 file と、renderer の 7 file と electron-observer.entry.mjs）を、master でその file を最後に変えた commit の bytes の pin に足した（その commit の role が無ければ足した）。閉包の file がどの pin にも無ければ試験が落ちる。harness の directory の外の import は追補 #5 では pin しなかった（追補 #7 で改めた）。 追補 #6（DR-CP4-P-3）では、#757（43e3f40b）が変えた harness の file（試験の file を除く diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs）を s5b-diagnostics-wiring の pin から新しい role の sp-p4-ir-timeout の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 950751d0..43e3f40b で変わっていない。validator は harness の定数（HARNESS_CONSTANTS）を、その file を持つ pin の commit の bytes から読む（frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE と SP_P4_IR_TIMEOUT_LIMIT は sp-p4-ir-timeout、frozen-setup-driver.mjs と g01-negatives.mjs の定数と BLOCKED_CONTRACT_TABLE は s5b-diagnostics-wiring）。 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）では、#758（82d42746）で最後に変わった admission.mjs、diagnostic-runner.mjs、frozen-k64-admission.mjs、trace-frozen.mjs を s5b-diagnostics-wiring と sp-p4-ir-timeout の pin から新しい role の s4-rehearsal-admission の pin に移した（試験専用の test-support.mjs は pin しない）。ほかの pin の file は 43e3f40b..82d42746 で変わっていない。さらに、正式の入口の静的な import の閉包を harness の directory の外までたどり、外の eval 専用の script（scripts/quality/nir1-retrieval の contract.mjs、acceptance-policy.mjs、candidate-policy.mjs、paired.mjs、standard-build-receipt.mjs、standard-build.mjs、scripts/quality/nir1-graph の contract.mjs と porter.mjs、scripts/quality/run-nir1-retrieval.mjs、scripts/quality/nir1-packing/final-request/architecture.mjs の 10 file）を、master でその file を最後に変えた commit の bytes の pin に足した（P-S2-9 の決定 b〔harness の directory の閉包〕を厳しい側へ拡張した。S5 の admission は pin に挙がった file しか照合しないため、外の eval 専用の script が S4 の後に変わっても止まらない穴を閉じる）。閉包は closureExclusions の file（共有の CI 基盤と製品。製品は製品の build の受領書が束縛する）で止め、そこから先はたどらない。閉包の外の eval 専用の file がどの pin にも無い、または closureExclusions に無い共有基盤・製品の file が閉包に入ると試験が落ちる。 追補 #9（DR-CP4-P-5、S4 の凍結のやり直し。DR-CP4-S4-5）では、DR-CP4-T-1〜T-5 の harness の修正で最後に変わった 4 file（試験の file と試験専用の test-support.mjs を除く frozen-setup-driver.mjs、workspace-db.mjs、frozen-k64-plan.mjs、frozen-k64-run.mjs）を s5a-graph-arm-runner と s5b-diagnostics-wiring の pin から、新しい role の t3-t5-setup-freshness-settle（b0df31f0）と t1-t4-measurement-settle-ready（354b1ba6）の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 906da641..354b1ba6 で変わっていない（S4 の #761 が変えた手順の file と S2 の validator は pin の対象でない）。この 2 つの commit は S4 の branch の祖先の branch の commit で、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。squash や rebase で入れると hash が master の祖先に残らず、formal gate と S5 の admission が止まる（閉じる側）。この 2 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる（ほかの pin は従来どおり master の祖先）。validator は frozen-setup-driver.mjs の FRESHNESS_SETTLE_WAIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export const）、frozen-k64-run.mjs の FRESHNESS_SETTLE_LIMIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export しない module の定数。名前が setup と同じなので RUN_ の別名で読む）、frozen-k64-plan.mjs の readyProbeOf を、その file を持つ pin の commit の bytes から読み、setupReadings.freshnessSettle と readyProbe と照合する。 追補 #10（DR-CP4-P-6、3 回目の凍結のやり直し。DR-CP4-S4-6）では、DR-CP4-V-2〜V-4 の harness の trace の経路の修正（枝 claude/cp4-trace-path-fix、基点 master a02c9c98）で最後に変わった 4 file（試験の file を除く。`git diff --name-only a02c9c98 759a4679 -- scripts` の非試験の全部）を、trace-runner（35537447。renderer/cp4-trace-probe.tsx と trace-record.mjs）、s5b-diagnostics-wiring（950751d0。trace-runner.mjs）、p1-harness-core（865a3e2b。followup.mjs）の pin から、新しい role の v2-trace-probe-paths（262be7a9f53834a8d2b2f4d2751757519b94c9d1、renderer/cp4-trace-probe.tsx）、v4-trace-record-requery（527589b6ca374d8c4e3933f6ec0b35632ca7cd2d、trace-record.mjs）、v4-followup-cancelled-match（2854aa31da9b172b3e6d5a847267fbc76b9accf6、followup.mjs）、v4-trace-runner-quote-guard（759a4679a7b90d25c13bc9a8517f8a64df43adda、trace-runner.mjs） の pin に移した（どれもその file を最後に変えた commit。`git log -1 759a4679 -- <file>`。同じ path を 2 つの pin に置かない）。ほかの pin の file は 354b1ba6..759a4679 で変わっていない。この 4 つの commit は S4 の branch の祖先の branch の commit で、追補 #9 の 2 つの pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる（squash や rebase では formal gate と S5 の admission が止まる。閉じる側）。この 6 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数（HARNESS_CONSTANTS、HARNESS_MODULE_CONSTANTS）と readyProbeOf を読む file は変わっていない（読み元の pin も同じ）。",
+      "pinRule": "pin は master に入った commit だけにする（rebase で到達できない commit は使わない。S3v6-P2-1）。check が bytes の pin は、files の sha256 が pin した commit の bytes で、S5 は候補の harness の同じ path の file がこの bytes と同じであることを確かめる。check が ancestor の pin（製品の修正、T14、CI の改善、bytes を後の pin に移した PR）は、S5 の候補がその commit を祖先に持つことを確かめる。どちらも違えば [precheck]（runnerHandoff）。bytes の pin の file は、master でその file を最後に変えた commit（squash の後の hash）の pin が持ち、同じ path を 2 つの pin に置かない。追補 #4 では、追補 #3 の pin（b1a87b0b）の後に #754 と #756 が変えた harness の file のうち、試験の file（*.test.mjs と s5b-test-support.mjs）を除く全部を bytes の pin に足した（厳しい側。DR-CP4-P-1）。起動時間の gate の改善（#753）と maintenance の所有の解放（#755）は ancestor の pin に追記した。validator は blockedCaseJudgement を、BLOCKED_TABLE_SOURCE（s5b-diagnostics-wiring の pin の frozen-setup-driver.mjs）の bytes（その commit から読むか、同じ sha256 の作業 tree の file）の BLOCKED_CONTRACT_TABLE から導き直して照合し、bytes の pin の sha256 を pin した commit の bytes と、各 pin の commit が記録の HEAD の祖先であることを git で確かめる（shallow な clone では確かめず、正式の gate では必ず確かめる）。 追補 #5（S3 の 7 回目の P2-2、P-S2-9 の決定 b。DR-CP4-P-2）では、正式の入口（diagnostic-runner.mjs、trace-runner.mjs、frozen-k64-run.mjs、frozen-setup-driver.mjs、r5-check-runner.mjs）の閉包（静的な import と、harness の path の文字列で参照される file〔renderer の入口、cp4-harness.html の script、launcher が起動する electron-observer.entry.mjs〕をたどる。試験の file と文書は含めない）の harness の file のうち pin に無かった 36 file（静的な import の閉包の 28 file と、renderer の 7 file と electron-observer.entry.mjs）を、master でその file を最後に変えた commit の bytes の pin に足した（その commit の role が無ければ足した）。閉包の file がどの pin にも無ければ試験が落ちる。harness の directory の外の import は追補 #5 では pin しなかった（追補 #7 で改めた）。 追補 #6（DR-CP4-P-3）では、#757（43e3f40b）が変えた harness の file（試験の file を除く diagnostic-runner.mjs、frozen-diagnostics.mjs、g01-negative-run.mjs）を s5b-diagnostics-wiring の pin から新しい role の sp-p4-ir-timeout の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 950751d0..43e3f40b で変わっていない。validator は harness の定数（HARNESS_CONSTANTS）を、その file を持つ pin の commit の bytes から読む（frozen-diagnostics.mjs の SP_P4_COMPARISON_RULE と SP_P4_IR_TIMEOUT_LIMIT は sp-p4-ir-timeout、frozen-setup-driver.mjs と g01-negatives.mjs の定数と BLOCKED_CONTRACT_TABLE は s5b-diagnostics-wiring）。 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）では、#758（82d42746）で最後に変わった admission.mjs、diagnostic-runner.mjs、frozen-k64-admission.mjs、trace-frozen.mjs を s5b-diagnostics-wiring と sp-p4-ir-timeout の pin から新しい role の s4-rehearsal-admission の pin に移した（試験専用の test-support.mjs は pin しない）。ほかの pin の file は 43e3f40b..82d42746 で変わっていない。さらに、正式の入口の静的な import の閉包を harness の directory の外までたどり、外の eval 専用の script（scripts/quality/nir1-retrieval の contract.mjs、acceptance-policy.mjs、candidate-policy.mjs、paired.mjs、standard-build-receipt.mjs、standard-build.mjs、scripts/quality/nir1-graph の contract.mjs と porter.mjs、scripts/quality/run-nir1-retrieval.mjs、scripts/quality/nir1-packing/final-request/architecture.mjs の 10 file）を、master でその file を最後に変えた commit の bytes の pin に足した（P-S2-9 の決定 b〔harness の directory の閉包〕を厳しい側へ拡張した。S5 の admission は pin に挙がった file しか照合しないため、外の eval 専用の script が S4 の後に変わっても止まらない穴を閉じる）。閉包は closureExclusions の file（共有の CI 基盤と製品。製品は製品の build の受領書が束縛する）で止め、そこから先はたどらない。閉包の外の eval 専用の file がどの pin にも無い、または closureExclusions に無い共有基盤・製品の file が閉包に入ると試験が落ちる。 追補 #9（DR-CP4-P-5、S4 の凍結のやり直し。DR-CP4-S4-5）では、DR-CP4-T-1〜T-5 の harness の修正で最後に変わった 4 file（試験の file と試験専用の test-support.mjs を除く frozen-setup-driver.mjs、workspace-db.mjs、frozen-k64-plan.mjs、frozen-k64-run.mjs）を s5a-graph-arm-runner と s5b-diagnostics-wiring の pin から、新しい role の t3-t5-setup-freshness-settle（b0df31f0）と t1-t4-measurement-settle-ready（354b1ba6）の pin に移した（同じ path を 2 つの pin に置かない）。ほかの pin の file は 906da641..354b1ba6 で変わっていない（S4 の #761 が変えた手順の file と S2 の validator は pin の対象でない）。この 2 つの commit は S4 の branch の祖先の branch の commit で、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。squash や rebase で入れると hash が master の祖先に残らず、formal gate と S5 の admission が止まる（閉じる側）。この 2 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる（ほかの pin は従来どおり master の祖先）。validator は frozen-setup-driver.mjs の FRESHNESS_SETTLE_WAIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export const）、frozen-k64-run.mjs の FRESHNESS_SETTLE_LIMIT_MS と FRESHNESS_SETTLE_INTERVAL_MS（export しない module の定数。名前が setup と同じなので RUN_ の別名で読む）、frozen-k64-plan.mjs の readyProbeOf を、その file を持つ pin の commit の bytes から読み、setupReadings.freshnessSettle と readyProbe と照合する。 追補 #10（DR-CP4-P-6、3 回目の凍結のやり直し。DR-CP4-S4-6）では、DR-CP4-V-2〜V-4 の harness の trace の経路の修正（枝 claude/cp4-trace-path-fix、基点 master a02c9c98）で最後に変わった 4 file（試験の file を除く。`git diff --name-only a02c9c98 759a4679 -- scripts` の非試験の全部）を、trace-runner（35537447。renderer/cp4-trace-probe.tsx と trace-record.mjs）、s5b-diagnostics-wiring（950751d0。trace-runner.mjs）、p1-harness-core（865a3e2b。followup.mjs）の pin から、新しい role の v2-trace-probe-paths（262be7a9f53834a8d2b2f4d2751757519b94c9d1、renderer/cp4-trace-probe.tsx）、v4-trace-record-requery（527589b6ca374d8c4e3933f6ec0b35632ca7cd2d、trace-record.mjs）、v4-followup-cancelled-match（2854aa31da9b172b3e6d5a847267fbc76b9accf6、followup.mjs）、v4-trace-runner-quote-guard（759a4679a7b90d25c13bc9a8517f8a64df43adda、trace-runner.mjs） の pin に移した（どれもその file を最後に変えた commit。`git log -1 759a4679 -- <file>`。同じ path を 2 つの pin に置かない）。ほかの pin の file は 354b1ba6..759a4679 で変わっていない。この 4 つの commit は S4 の branch の祖先の branch の commit で、追補 #9 の 2 つの pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる（squash や rebase では formal gate と S5 の admission が止まる。閉じる側）。この 6 つに限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数（HARNESS_CONSTANTS、HARNESS_MODULE_CONSTANTS）と readyProbeOf を読む file は変わっていない（読み元の pin も同じ）。 追補 #11（DR-CP4-P-7、4 回目の凍結のやり直し。DR-CP4-S4-7）では、G-04 fixture v2（案 C。枝 claude/g04-v2c-fixture、基点 master 8187fbfc）で最後に変わった 4 file（`SOURCE_PINS` の各 path の pin の commit の bytes と cedbd867 の bytes の比較で違ったもの）を、cq-lim-graph-limits（a789039a。scripts/quality/nir1-graph/contract.mjs）、t14-k64-freeze（9e1a564e。constants.mjs）、s4-rehearsal-admission（82d42746。trace-frozen.mjs と frozen-k64-admission.mjs）の pin から、新しい role の g4-b1-post-observation-freeze（7bd785fe084d0d370fb3c23860f68b31688684ed、scripts/quality/nir1-graph/contract.mjs）、g4-b1-freeze-v2-constants（d06f080e5966e81949317e673c47620d44d51d42、constants.mjs）、g4-b2a-declaration-v2-path（2bf48fad6d29fc60af2255bacab292031ff15725、trace-frozen.mjs）、g4-b2b1-addendum-v2-paths（c5b46714054c040cbe5c270ad657f6252b82eaeb、frozen-k64-admission.mjs）の pin に移した（どれもその file を最後に変えた commit。`git log -1 cedbd867 -- <file>`。同じ path を 2 つの pin に置かない）。cq-lim-graph-limits は file が無くなったので ancestor の pin にした（#751 の s1j2-blocked-map と同じ）。ほかの pin の file は 8187fbfc..cedbd867 で変わっていない。この 4 つの commit は S4 の branch の commit で、追補 #9、#10 の 6 つの pin と同じく、S4 の PR を merge commit（gh pr merge --merge）で入れると hash のまま master の祖先になる。この 10 に限り、S4 の PR の merge の前は試験が pin の commit を記録の HEAD の祖先として確かめ、merge の後は master の祖先として確かめる。harness の定数と K64_FREEZE は constants.mjs を持つ新しい pin の bytes から読む（K64_FREEZE.freezeCommit は 5dea38af のまま）。S2 validator（observation-prep.mjs、seed-pin-addendum.mjs）、fixture、manifest、README、schema は pin でなく、references.graphCaseFreeze と freeze の sha256、boundFiles が束縛する。",
       "closureExclusions": [
         {
           "path": "electron/main/rendererContainment.ts",
@@ -1384,7 +1430,7 @@
         }
       ]
     },
-    "status": "harness の読み（integrator の決定 B1〜B4、P-0、P-3、P-5、P-6、S1j-2 のレビューの修正）を観測の前に S2 に写したもの。master の harness（source.pins）に合わせた。fixture、契約、閾値、setupOrder、setupTimeline、measurementPoint は変えない。S3 のレビューの記録は S4 で review に書く（7 回目が見た差分は 968f6782 と bc2500da で、その後の追補 #5〜#9 の変更を S3 が見た記録は無い。追補 #9 は S4 の凍結のやり直しで DR-CP4-T-1〜T-5 の harness〔b0df31f0、354b1ba6〕に合わせ、追補 #10 は 3 回目の凍結のやり直しで DR-CP4-V-2〜V-4 の harness〔262be7a9、527589b6、2854aa31、759a4679〕に pin し直した。追補 #10 の trace の読みは traceRunnerReadings にある）。",
+    "status": "harness の読み（integrator の決定 B1〜B4、P-0、P-3、P-5、P-6、S1j-2 のレビューの修正）を観測の前に S2 に写したもの。master の harness（source.pins）に合わせた。fixture、契約、閾値、setupOrder、setupTimeline、measurementPoint は変えない。S3 のレビューの記録は S4 で review に書く（7 回目が見た差分は 968f6782 と bc2500da で、その後の追補 #5〜#9 の変更を S3 が見た記録は無い。追補 #9 は S4 の凍結のやり直しで DR-CP4-T-1〜T-5 の harness〔b0df31f0、354b1ba6〕に合わせ、追補 #10 は 3 回目の凍結のやり直しで DR-CP4-V-2〜V-4 の harness〔262be7a9、527589b6、2854aa31、759a4679〕に pin し直した。追補 #10 の trace の読みは traceRunnerReadings にある。追補 #11 は 4 回目の凍結のやり直しで G-04 fixture v2 の harness〔7bd785fe、d06f080e、2bf48fad、c5b46714〕に pin し直した。G-04 v2 の開示は g04RevisionReadings にある）。",
     "rule": "⑤ の評価の run の setup（完全な setup）は、この欄の session の分け方、probe、blocked の名前、測定の仕様に従う。① R5 の照合の run は author の session の seed の pin の段で止まり、2 つ目以降の session を使わない（r5Gate.exempt）。setup の受領書は status setup-complete で、items の receipt に挙げた欄を持つ。食い違えば setup の不備として [precheck]。",
     "items": [
       {

@@ -40,6 +40,10 @@
 // explanations or design predictions and are never compared with runtime.
 // The freeze record is accepted only after an approving independent
 // expectation review whose approved bytes it binds (validateApprovingReview).
+// A freeze written after Graph runtime observed the population
+// (graphRuntimeObservedBeforeFreeze true) must declare every case it rebuilt
+// in postObservationRevisions and bind the superseded freeze record, whose
+// case hashes every other case keeps (validatePostObservationFreeze).
 import { createHash } from "node:crypto";
 import { access, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -49,7 +53,18 @@ import { ftsQueryTokens, lexicalConflict, lexicalTokens } from "./porter.mjs";
 
 export const NIR1_GRAPH_MANIFEST_PATH = "evals/nir1-graph/manifest.v1.json";
 export const NIR1_GRAPH_SCHEMA_PATH = "evals/nir1-graph/schema.v1.json";
-export const NIR1_GRAPH_FREEZE_PATH = "evals/nir1-graph/freeze.v1.json";
+export const NIR1_GRAPH_FREEZE_PATH = "evals/nir1-graph/freeze.v2.json";
+/**
+ * The version-1 freeze record that the current freeze supersedes (DR-CP4-G4-6).
+ * Its bytes stay in the repository unchanged: other records bind its sha256,
+ * and the current freeze proves against it that every case but the rebuilt
+ * ones keeps its version-1 bytes. `commit` is the last commit that wrote it.
+ */
+export const NIR1_GRAPH_SUPERSEDED_FREEZE = Object.freeze({
+  path: "evals/nir1-graph/freeze.v1.json",
+  sha256: "6080530adc0a7d2d45896005664f6f498d5f28c3eeed517875f8f599faa8bae7",
+  commit: "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
+});
 export const NIR1_GRAPH_README_PATH = "evals/nir1-graph/README.md";
 export const NIR1_GRAPH_REVIEW_RECEIPT_PATH =
   "evals/nir1-graph/independent-expectation-review.v1.json";
@@ -108,6 +123,55 @@ export const CHANGE_AFTER_APPROVAL_SCOPES = Object.freeze({
     allowed: Object.freeze(["independentExpectationReview"]),
   }),
   [NIR1_GRAPH_README_PATH]: Object.freeze({ kind: "markdown-sections" }),
+});
+
+/**
+ * The scopes a freeze written after a runtime observation may declare instead
+ * (DR-CP4-G4-5, DR-CP4-G4-6): the rebuilt case's manifest entry, the
+ * enumerations of the cases each precondition and the IR-supplemented class
+ * name (never a precondition id, scope, notEvaluated list, the closed set or
+ * the outcome rules), the post-observation record, the README sections that
+ * repeat them (and the status preamble), and the schema's fixtureId pattern.
+ * Each pointer is an RFC 6901 JSON pointer into the parsed document.
+ */
+export const POST_OBSERVATION_CHANGE_SCOPES = Object.freeze({
+  [NIR1_GRAPH_MANIFEST_PATH]: Object.freeze({
+    kind: "json-pointers",
+    allowed: Object.freeze([
+      "/graphRuntimeObservedBeforeFreeze",
+      "/postObservationRevisions",
+      "/cases/3",
+      "/preconditions/definitions/2/check",
+      "/preconditions/definitions/3/appliesTo",
+      "/preconditions/definitions/5/appliesTo",
+      "/preconditions/holdVersusBlocked",
+      "/irSupplementedCoverage/cases",
+      "/irSupplementedCoverage/admissionProbe",
+      "/irSupplementedCoverage/probeOption",
+      "/coverageGaps",
+      "/independentExpectationReview",
+    ]),
+    // These may only grow: the approved text or list stays their prefix.
+    appendOnly: Object.freeze([
+      "/preconditions/holdVersusBlocked",
+      "/coverageGaps",
+    ]),
+  }),
+  [NIR1_GRAPH_README_PATH]: Object.freeze({
+    kind: "markdown-sections",
+    preamble: true,
+    // Rule lines inside the declared sections that must stay verbatim.
+    requiredLines: Object.freeze([
+      "- 前提条件は、観測の後に足さず、外さず、読み替えない。前提条件が成り立たなくても期待値は変えない。",
+      "  - variant が宣言していない前提条件で、観測結果を blocked にすることはできない。validator の `resolveVariantOutcome` がこれを拒否する。",
+      "- 観測した後に、query、corpus、seed、Gold、順序、指標、fixture、前提条件を変えない。",
+      "- 比較する期待値と実 runtime の結果が違えば、その結果を保持して Hold にする。正例の材料を setup で作れない場合も Hold とする。",
+    ]),
+  }),
+  [NIR1_GRAPH_SCHEMA_PATH]: Object.freeze({
+    kind: "json-pointers",
+    allowed: Object.freeze(["/properties/fixtureId/pattern"]),
+  }),
 });
 
 /**
@@ -1918,9 +1982,22 @@ function validateManifest(manifest, retrievalManifest, errors) {
     );
   if (manifest.observationPolicy !== NIR1_GRAPH_OBSERVATION_POLICY)
     errors.push("nir1-graph manifest must repeat the fixed observation policy");
-  if (manifest.graphRuntimeObservedBeforeFreeze !== false)
+  if (manifest.graphRuntimeObservedBeforeFreeze === false) {
+    if (manifest.postObservationRevisions !== undefined)
+      errors.push(
+        "nir1-graph manifest declares postObservationRevisions without a runtime observation before the freeze",
+      );
+  } else if (manifest.graphRuntimeObservedBeforeFreeze === true) {
+    if (
+      !Array.isArray(manifest.postObservationRevisions) ||
+      manifest.postObservationRevisions.length === 0
+    )
+      errors.push(
+        "nir1-graph manifest observed before the freeze must declare postObservationRevisions",
+      );
+  } else
     errors.push(
-      "nir1-graph manifest must record that Graph runtime output was not observed",
+      "nir1-graph manifest graphRuntimeObservedBeforeFreeze must be a boolean",
     );
   if (!/\bfresh workspace\b/.test(manifest.isolation ?? ""))
     errors.push(
@@ -2034,10 +2111,41 @@ function markdownSectionHeading(part) {
   return part.slice(3, end === -1 ? part.length : end).trim();
 }
 
+/** RFC 6901 reference tokens of a JSON pointer, or null when malformed. */
+function pointerTokens(pointer) {
+  if (typeof pointer !== "string" || !pointer.startsWith("/")) return null;
+  return pointer
+    .slice(1)
+    .split("/")
+    .map((token) => token.replaceAll("~1", "/").replaceAll("~0", "~"));
+}
+
+/**
+ * Removes the value a JSON pointer names: an object member is deleted, an
+ * array element is replaced by null so that later indexes keep their meaning.
+ * A pointer whose target is absent (a member added after approval) is a no-op.
+ */
+function dropPointer(root, pointer) {
+  const tokens = pointerTokens(pointer);
+  if (tokens === null) throw new Error(`malformed JSON pointer ${pointer}`);
+  let parent = root;
+  for (const token of tokens.slice(0, -1)) {
+    if (parent === null || typeof parent !== "object") return;
+    parent = parent[token];
+  }
+  if (parent === null || typeof parent !== "object") return;
+  const last = tokens.at(-1);
+  if (!Object.hasOwn(parent, last)) return;
+  if (Array.isArray(parent)) parent[Number(last)] = null;
+  else delete parent[last];
+}
+
 /**
  * The content of a bound file outside the declared scope of a change made
  * after the approving review: a JSON document without the declared top-level
- * keys, or a Markdown document without the declared `## ` sections.
+ * keys or JSON pointers, or a Markdown document without the declared `## `
+ * sections (and without the text before the first section when the scope
+ * declares the preamble).
  */
 export function contentOutsideScope(bytes, scope) {
   if (scope?.kind === "json-keys") {
@@ -2045,11 +2153,20 @@ export function contentOutsideScope(bytes, scope) {
     for (const key of scope.keys) delete value[key];
     return JSON.stringify(value);
   }
+  if (scope?.kind === "json-pointers") {
+    const value = JSON.parse(bytes);
+    for (const pointer of scope.pointers) dropPointer(value, pointer);
+    return JSON.stringify(value);
+  }
   if (scope?.kind === "markdown-sections") {
     const drop = new Set(scope.headings);
     return String(bytes)
       .split(/^(?=## )/m)
-      .filter((part) => !drop.has(markdownSectionHeading(part)))
+      .filter((part, index) => {
+        const heading = markdownSectionHeading(part);
+        if (heading === null) return !(index === 0 && scope.preamble === true);
+        return !drop.has(heading);
+      })
       .join("");
   }
   throw new Error(`unknown change scope kind ${scope?.kind}`);
@@ -2060,6 +2177,30 @@ function nonEmptyString(value) {
 }
 
 /** A declared post-approval scope is well formed and allowed for its file. */
+/** The value a JSON pointer names, or undefined. */
+function valueAtPointer(root, pointer) {
+  const tokens = pointerTokens(pointer);
+  if (tokens === null) return undefined;
+  let value = root;
+  for (const token of tokens) {
+    if (value === null || typeof value !== "object") return undefined;
+    if (!Object.hasOwn(value, token)) return undefined;
+    value = value[token];
+  }
+  return value;
+}
+
+/**
+ * The digest of the first `length` characters (string) or items (array) of
+ * an append-only value; the approved value is the prefix the freeze binds.
+ */
+export function appendOnlyPrefixSha256(value, length) {
+  if (typeof value === "string") return sha256(value.slice(0, length));
+  if (Array.isArray(value))
+    return sha256(JSON.stringify(value.slice(0, length)));
+  return null;
+}
+
 function changeScopeErrors(file, bytes, scope, allowed) {
   if (scope?.kind !== allowed.kind)
     return [
@@ -2073,6 +2214,49 @@ function changeScopeErrors(file, bytes, scope, allowed) {
       ];
     return [];
   }
+  if (allowed.kind === "json-pointers") {
+    const pointers = Array.isArray(scope.pointers) ? scope.pointers : [];
+    if (
+      pointers.length === 0 ||
+      new Set(pointers).size !== pointers.length ||
+      pointers.some((pointer) => !allowed.allowed.includes(pointer))
+    )
+      return [
+        `${file} may change after the approving review only at ${allowed.allowed.join(", ")}`,
+      ];
+    const required = (allowed.appendOnly ?? []).filter((pointer) =>
+      pointers.includes(pointer),
+    );
+    const rows = Array.isArray(scope.appendOnly) ? scope.appendOnly : [];
+    if (
+      stableJson(rows.map((row) => row?.pointer).sort()) !==
+      stableJson([...required].sort())
+    )
+      return [
+        `${file} change scope must bind the approved prefix of ${required.join(", ")}`,
+      ];
+    const value = JSON.parse(bytes);
+    const errors = [];
+    for (const row of rows) {
+      const current = valueAtPointer(value, row.pointer);
+      if (
+        !Number.isInteger(row.approvedLength) ||
+        row.approvedLength < 0 ||
+        current === undefined ||
+        current.length < row.approvedLength ||
+        appendOnlyPrefixSha256(current, row.approvedLength) !==
+          row.approvedSha256
+      )
+        errors.push(
+          `${file} ${row.pointer} may only grow after the approving review (its approved prefix changed)`,
+        );
+    }
+    return errors;
+  }
+  if (scope.preamble !== undefined && scope.preamble !== true)
+    return [`${file} change scope preamble must be true when present`];
+  if (scope.preamble === true && allowed.preamble !== true)
+    return [`${file} may not change its preamble after the approving review`];
   const headings = Array.isArray(scope.headings) ? scope.headings : [];
   const present = new Set(
     String(bytes)
@@ -2085,7 +2269,10 @@ function changeScopeErrors(file, bytes, scope, allowed) {
     headings.some((heading) => !present.has(heading))
   )
     return [`${file} change scope must name existing ## sections`];
-  return [];
+  const lines = new Set(String(bytes).split("\n"));
+  return (allowed.requiredLines ?? [])
+    .filter((line) => !lines.has(line))
+    .map((line) => `${file} must keep the rule line: ${line}`);
 }
 
 /**
@@ -2095,7 +2282,14 @@ function changeScopeErrors(file, bytes, scope, allowed) {
  * output, earlier rounds are the bound receipt, and every bound file keeps its
  * approved bytes except a declared, allowed scope of the manifest or README.
  */
-function validateApprovingReview(freeze, manifest, receipt, bound, errors) {
+function validateApprovingReview(
+  freeze,
+  manifest,
+  receipt,
+  bound,
+  errors,
+  scopes = CHANGE_AFTER_APPROVAL_SCOPES,
+) {
   const fail = (message) => errors.push(`nir1-graph freeze ${message}`);
   const record = freeze.independentExpectationReview;
   if (record === null || typeof record !== "object") {
@@ -2119,6 +2313,25 @@ function validateApprovingReview(freeze, manifest, receipt, bound, errors) {
   }
   if (rounds.some((round, index) => round?.round !== index + 1))
     fail("review rounds must be numbered from 1 in order");
+  // A round run by another reviewer records its own reviewer block.
+  for (const round of rounds) {
+    if (round?.reviewer === undefined) continue;
+    const own = round.reviewer ?? {};
+    if (own.role !== freeze.reviewedBy)
+      fail(`review round ${round?.round} reviewer.role must be reviewedBy`);
+    if (!nonEmptyString(own.model))
+      fail(`review round ${round?.round} reviewer.model is required`);
+    if (own.distinctFromFixtureAuthor !== true)
+      fail(
+        `review round ${round?.round} reviewer must be distinct from the fixture author`,
+      );
+    if (own.readOnly !== true)
+      fail(`review round ${round?.round} reviewer must be read-only`);
+    if (own.graphRuntimeOutputObserved !== false)
+      fail(
+        `review round ${round?.round} reviewer must not have observed Graph runtime output`,
+      );
+  }
   const final = rounds.at(-1) ?? {};
   if (
     final.verdict !== APPROVING_REVIEW_VERDICT ||
@@ -2187,7 +2400,7 @@ function validateApprovingReview(freeze, manifest, receipt, bound, errors) {
         fail(`declares a change to ${file}, which keeps its approved bytes`);
       continue;
     }
-    const allowed = CHANGE_AFTER_APPROVAL_SCOPES[file];
+    const allowed = scopes[file];
     if (!allowed) {
       fail(`${file} differs from the bytes the approving review saw`);
       continue;
@@ -2213,6 +2426,172 @@ function validateApprovingReview(freeze, manifest, receipt, bound, errors) {
         `${file} changed outside its declared scope after the approving review`,
       );
   }
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+/**
+ * A freeze written after Graph runtime observed the population. It declares
+ * each rebuilt case (postObservationRevisions, repeated by the manifest), binds
+ * the superseded version-1 freeze record, which stays in the repository with
+ * its pinned bytes, and every case it did not rebuild keeps the path and
+ * sha256 that record bound. Only a rebuilt case may carry a fixtureId of a
+ * later version. Returns the rebuilt case IDs.
+ */
+async function validatePostObservationFreeze(
+  repoRoot,
+  { freeze, manifest, caseHashes },
+  errors,
+) {
+  const fail = (message) => errors.push(`nir1-graph freeze ${message}`);
+  const rows = Array.isArray(freeze.postObservationRevisions)
+    ? freeze.postObservationRevisions
+    : [];
+  if (rows.length === 0) {
+    fail(
+      "observed before the freeze must declare postObservationRevisions for every rebuilt case",
+    );
+    return new Set();
+  }
+  const revised = new Set(rows.map((row) => row?.caseId));
+  if (revised.size !== rows.length)
+    fail("postObservationRevisions lists a case twice");
+  const declared = Array.isArray(manifest.postObservationRevisions)
+    ? manifest.postObservationRevisions
+    : [];
+  if (
+    stableJson(declared.map((row) => row?.caseId)) !==
+    stableJson(rows.map((row) => row?.caseId))
+  )
+    fail("and manifest postObservationRevisions must name the same cases");
+
+  const block = freeze.supersedes ?? {};
+  const superseded = NIR1_GRAPH_SUPERSEDED_FREEZE;
+  if (
+    block.freezeRecord?.path !== superseded.path ||
+    block.freezeRecord?.sha256 !== superseded.sha256 ||
+    block.freezeRecordCommit !== superseded.commit
+  )
+    fail(
+      `supersedes must bind ${superseded.path} (${superseded.sha256}, last written by ${superseded.commit})`,
+    );
+  let previous = null;
+  try {
+    const bytes = await readFile(path.join(repoRoot, superseded.path));
+    if (sha256(bytes) !== superseded.sha256)
+      fail(`superseded ${superseded.path} must keep its pinned bytes`);
+    else previous = JSON.parse(bytes);
+  } catch {
+    fail(`superseded ${superseded.path} must stay in the repository`);
+  }
+  const previousCases = new Map(
+    (previous?.cases ?? []).map((entry) => [entry.caseId, entry]),
+  );
+  if (previous && previous.graphRuntimeObservedBeforeFreeze !== false)
+    fail(
+      "superseded freeze must be one written before any runtime observation",
+    );
+  // The review of a post-observation revision reads the bytes the superseded
+  // freeze bound (its later changes are declared in changesAfterApproval).
+  if (previous) {
+    const final =
+      freeze.independentExpectationReview?.rounds?.at(-1)?.filesAtReview ?? [];
+    const reviewed = new Map(final.map((row) => [row?.path, row?.sha256]));
+    for (const [file, digest] of [
+      [NIR1_GRAPH_MANIFEST_PATH, previous.manifestSha256],
+      [NIR1_GRAPH_SCHEMA_PATH, previous.schemaSha256],
+      [NIR1_GRAPH_README_PATH, previous.readmeSha256],
+      [previous.reviewReceipt, previous.reviewReceiptSha256],
+    ])
+      if (reviewed.get(file) !== digest)
+        fail(
+          `final review round must have read the superseded freeze's ${file} (${digest})`,
+        );
+  }
+
+  for (const caseId of GRAPH_CASE_IDS) {
+    const current = caseHashes.get(caseId);
+    const before = previousCases.get(caseId);
+    if (!current || !before) continue;
+    if (revised.has(caseId)) continue;
+    if (current.path !== before.path || current.sha256 !== before.sha256)
+      fail(
+        `${caseId} is not a declared post-observation revision, so it must keep the superseded freeze's ${before.path} bytes`,
+      );
+  }
+  const manifestCases = new Map(
+    (manifest.cases ?? []).map((entry) => [entry.caseId, entry]),
+  );
+  for (const entry of manifest.cases ?? []) {
+    if (!/\/1$/.test(entry.fixtureId ?? "") && !revised.has(entry.caseId))
+      fail(
+        `${entry.caseId} fixtureId ${entry.fixtureId} needs a declared post-observation revision`,
+      );
+  }
+
+  for (const row of rows) {
+    const caseId = row?.caseId;
+    const label = `postObservationRevisions ${caseId}`;
+    if (!GRAPH_CASE_IDS.slice(1).includes(caseId)) {
+      fail(`${label} must name one of G-02..G-08`);
+      continue;
+    }
+    const before = previousCases.get(caseId);
+    const current = caseHashes.get(caseId);
+    const entry = manifestCases.get(caseId);
+    const from = row.from ?? {};
+    const to = row.to ?? {};
+    if (before && (from.path !== before.path || from.sha256 !== before.sha256))
+      fail(`${label} from must be the superseded freeze's ${caseId} binding`);
+    if (current && (to.path !== current.path || to.sha256 !== current.sha256))
+      fail(`${label} to must be the bound ${caseId} fixture`);
+    if (entry && to.fixtureId !== entry.fixtureId)
+      fail(`${label} to.fixtureId must be the manifest fixtureId`);
+    if (
+      !nonEmptyString(from.fixtureId) ||
+      from.fixtureId === to.fixtureId ||
+      from.path === to.path
+    )
+      fail(`${label} must name a new file and a new fixtureId`);
+    if (typeof from.path === "string" && SHA256_HEX.test(from.sha256 ?? "")) {
+      try {
+        const kept = await readFile(path.join(repoRoot, from.path));
+        if (sha256(kept) !== from.sha256)
+          fail(`${label} earlier version ${from.path} changed`);
+      } catch {
+        fail(
+          `${label} earlier version ${from.path} must stay in the repository`,
+        );
+      }
+    }
+    const manifestRow = declared.find((item) => item?.caseId === caseId);
+    if (
+      manifestRow &&
+      (manifestRow.from?.path !== from.path ||
+        manifestRow.from?.fixtureId !== from.fixtureId ||
+        manifestRow.to?.path !== to.path ||
+        manifestRow.to?.fixtureId !== to.fixtureId)
+    )
+      fail(`${label} differs from the manifest's entry`);
+    if (row.graphOutputUsed !== false)
+      fail(`${label} must record that no Graph runtime output was used`);
+    for (const field of ["changedFields", "observedRuns"]) {
+      if (
+        !Array.isArray(row[field]) ||
+        row[field].length === 0 ||
+        row[field].some((item) => !nonEmptyString(item))
+      )
+        fail(`${label} ${field} is required`);
+    }
+    for (const field of ["userConfirmation", "expectationReview"]) {
+      if (
+        !nonEmptyString(row[field]?.record) ||
+        !nonEmptyString(row[field]?.commit)
+      )
+        fail(`${label} ${field} must name its record and commit`);
+    }
+  }
+  return revised;
 }
 
 async function validateFreeze(
@@ -2250,8 +2629,36 @@ async function validateFreeze(
     errors.push("nir1-graph freeze schemaVersion must be nir1-graph-freeze/1");
   if (freeze.status !== MANIFEST_STATUS.frozen)
     errors.push("nir1-graph freeze status is invalid");
-  if (freeze.graphRuntimeObservedBeforeFreeze !== false)
-    errors.push("nir1-graph freeze must record no Graph runtime observation");
+  let scopes = CHANGE_AFTER_APPROVAL_SCOPES;
+  if (freeze.graphRuntimeObservedBeforeFreeze === false) {
+    if (freeze.postObservationRevisions !== undefined)
+      errors.push(
+        "nir1-graph freeze declares postObservationRevisions without a runtime observation before it",
+      );
+    for (const entry of manifest.cases ?? []) {
+      if (!/\/1$/.test(entry.fixtureId ?? ""))
+        errors.push(
+          `${entry.caseId} fixtureId ${entry.fixtureId} needs a declared post-observation revision`,
+        );
+    }
+  } else if (freeze.graphRuntimeObservedBeforeFreeze === true) {
+    await validatePostObservationFreeze(
+      repoRoot,
+      { freeze, manifest, caseHashes },
+      errors,
+    );
+    scopes = POST_OBSERVATION_CHANGE_SCOPES;
+  } else
+    errors.push(
+      "nir1-graph freeze graphRuntimeObservedBeforeFreeze must be a boolean",
+    );
+  if (
+    freeze.graphRuntimeObservedBeforeFreeze !==
+    manifest.graphRuntimeObservedBeforeFreeze
+  )
+    errors.push(
+      "nir1-graph freeze and manifest disagree on graphRuntimeObservedBeforeFreeze",
+    );
   if (freeze.manifestSha256 !== sha256(manifestBytes))
     errors.push("nir1-graph freeze manifest hash differs");
   if (freeze.schemaSha256 !== sha256(schemaBytes))
@@ -2296,7 +2703,14 @@ async function validateFreeze(
     bound.set(receipt.path, { sha256: receipt.sha256, bytes: receipt.bytes });
   for (const { path: casePath, sha256: digest } of caseHashes.values())
     bound.set(casePath, { sha256: digest });
-  validateApprovingReview(freeze, manifest, receipt?.value, bound, errors);
+  validateApprovingReview(
+    freeze,
+    manifest,
+    receipt?.value,
+    bound,
+    errors,
+    scopes,
+  );
   const probe = freeze.irSupplementAdmissionProbe?.status;
   if (!["not-run", "run"].includes(probe))
     errors.push(

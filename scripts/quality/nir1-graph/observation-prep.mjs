@@ -1,7 +1,9 @@
 // CP-4 S2: validator of the documents fixed before the first Graph observation.
 //
-//   evals/nir1-g01/setup-addendum.v1.json          K2/4 setup addendum (G-01)
-//   evals/nir1-graph/declaration-addendum.v1.json  K2/4 addendum (G-02/07/08)
+//   evals/nir1-g01/setup-addendum.v2.json          K2/4 setup addendum (G-01;
+//                                                  v1 is kept, references only)
+//   evals/nir1-graph/declaration-addendum.v2.json  K2/4 addendum (G-02/04/07/08;
+//                                                  v1 without G-04 is kept)
 //   evals/nir1-graph/observation-prep.v1.json      D1, D2, D10, sample plan,
 //                                                  traces, K6/4 procedure,
 //                                                  diagnostic runs
@@ -9,28 +11,37 @@
 //   evals/nir1-graph/trace-browsing.v1.json
 //   evals/nir1-graph/observation-prep-author-declaration.v1.json
 //   scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json
+//   evals/nir1-graph/seed-pin-addendum.v2.json     SP/1 seed pin addendum
+//                                                  (seed-pin-addendum.mjs)
 //
 // Like contract.mjs, this module never runs Graph, IR, Raw, a model, Electron
 // or Native, and reads no runtime output. It recomputes what the documents
 // copy from the contracts (the K2/4 table, K6/2 Q >= 200 and the editing
 // density, the K6/4 values) and from the frozen fixtures, and checks the
-// digests the documents reference. Files bound by freeze.v1.json are only
-// read. A draft (placeholders `S4:<name>`) validates, but is never usable for
+// digests the documents reference. The frozen fixtures are those of the
+// current Graph case freeze (contract.mjs NIR1_GRAPH_FREEZE_PATH, freeze.v2.json
+// since G-04 version 2; DR-CP4-G4-6, B1 review P3-6); they are only read.
+// Documents that still name freeze.v1.json fail closed until re-pinned. A draft (placeholders `S4:<name>`) validates, but is never usable for
 // a formal run (assertObservationPrepFormal).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { NIR1_GRAPH_FREEZE_PATH } from "./contract.mjs";
 import {
   SEED_PIN_ADDENDUM_PATH,
+  SEED_PIN_ADDENDUM_V1,
   SP1,
   SYNTHETIC_NEGATIVES,
+  readBackOnce,
   seedPinAddendumErrors,
+  seedPinAddendumPathNamedByTraceErrors,
+  supersededCopyErrors,
 } from "./seed-pin-addendum.mjs";
 
 export const OBSERVATION_PREP_FILES = Object.freeze({
-  setupAddendum: "evals/nir1-g01/setup-addendum.v1.json",
-  declarationAddendum: "evals/nir1-graph/declaration-addendum.v1.json",
+  setupAddendum: "evals/nir1-g01/setup-addendum.v2.json",
+  declarationAddendum: "evals/nir1-graph/declaration-addendum.v2.json",
   prep: "evals/nir1-graph/observation-prep.v1.json",
   traceEditing: "evals/nir1-graph/trace-editing.v1.json",
   traceBrowsing: "evals/nir1-graph/trace-browsing.v1.json",
@@ -73,18 +84,106 @@ export const CONTRACTS = Object.freeze({
   }),
 });
 
-/** K2/4「setup の addendum」の表（宣言する Scene、reading、excerpt）。 */
+/**
+ * K2/4「setup の addendum」の表（宣言する Scene、reading、excerpt）。K2/4 :391
+ * は 4 つの Scene を列挙する。G-04 base（fixture v2 の g04-lio-landing）は、
+ * ユーザーの確認（K24_SCOPE_EXTENSION、contracts a7027915 の質問 3）で K2/4 の
+ * 適用範囲を広げた 5 件目で、値は fixture v2 と K2/4 の規則から導いた
+ * （DR-CP4-G4-2、G4-7）。`extension` がその行の印。
+ */
 export const K24_TABLE = Object.freeze(
   [
     ["G-01", "v1", "g01-mira", 20, 100, 78],
     ["G-02", "base", "g02-tamsin-first", 30, 100, 78],
+    ["G-04", "base", "g04-lio-landing", 20, 100, 211, true],
     ["G-07", "base", "g07-pell-dock", 40, 100, 70],
     ["G-08", "base-usable", "g08-cass-attic", 20, 100, 64],
     ["G-08", "graph-recovered", "g08-cass-attic", 20, 100, 64],
-  ].map(([caseId, variantId, sceneId, scene, query, end]) =>
-    Object.freeze({ caseId, variantId, sceneId, scene, query, end }),
+  ].map(([caseId, variantId, sceneId, scene, query, end, extension = false]) =>
+    Object.freeze({ caseId, variantId, sceneId, scene, query, end, extension }),
   ),
 );
+
+/**
+ * The user's confirmation that widened K2/4's declared Scenes to G-04 base
+ * (DR-CP4-G4-2). The values, vetoes, use-time checks and the product's
+ * authority are K2/4's, unchanged.
+ */
+export const K24_SCOPE_EXTENSION = Object.freeze({
+  decision: "DR-CP4-G4-2",
+  variants: Object.freeze(
+    K24_TABLE.filter((row) => row.extension).map(
+      (row) => `${row.caseId}/${row.variantId}`,
+    ),
+  ),
+  userConfirmation: Object.freeze({
+    record:
+      "claude/nir1-contracts:docs/plans/nir1-cp4-records/user-confirmation-2026-11-01-g04-v2c-build.md",
+    commit: "a70279156d1ea75332e2b22f9ec479a270869143",
+    sha256: "1de09724c6db736e9d688c71fe2f0d18c59eed49325bf03cbdc5ef0b726f6f5a",
+  }),
+});
+
+/**
+ * The declaration addendum v2 supersedes (bytes kept): its rows outside the
+ * rebuilt cases are copied unchanged (DR-CP4-G4-7).
+ */
+export const DECLARATION_ADDENDUM_V1 = Object.freeze({
+  path: "evals/nir1-graph/declaration-addendum.v1.json",
+  sha256: "82b05bae92d05b3af2a73739bd14b73cf88dcdc3290e19860126c057c5552949",
+});
+
+/**
+ * The G-01 setup addendum v2 supersedes (bytes kept): v2 differs from it in
+ * the references only (freeze.v2.json, the new versions' paths; DR-CP4-G4-7
+ * B2b-1 (B-1)).
+ */
+export const SETUP_ADDENDUM_V1 = Object.freeze({
+  path: "evals/nir1-g01/setup-addendum.v1.json",
+  sha256: "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46",
+});
+/** The current version's id (v1 is nir1-g01-setup-addendum/1). */
+export const SETUP_ADDENDUM_ID = "nir1-g01-setup-addendum/2";
+const SETUP_V1_SCENES = "4 つの Scene（G-01 と G-02／G-07／G-08 の追加 Scene）";
+const SETUP_V2_SCENES =
+  "5 つの Scene（G-01 と G-02／G-04／G-07／G-08 の追加 Scene）";
+
+/**
+ * The setup addendum v2 read back to v1: v1's freeze reference (the note may
+ * only add to v1's), the declaration addendum's path and Scene count (K2/4 の
+ * 5 件目, DR-CP4-G4-2) and the seed pin addendum's path (B2b-1 review P2-1).
+ */
+const SETUP_V1_COPY = Object.freeze({
+  ...SETUP_ADDENDUM_V1,
+  readBack(copy) {
+    const v1 = this.json;
+    const note = copy.references.graphCaseFreeze?.note;
+    if (
+      typeof note !== "string" ||
+      !note.startsWith(v1.references.graphCaseFreeze.note)
+    )
+      throw new Error("references.graphCaseFreeze.note must keep v1's note");
+    copy.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+    copy.declarationPlace.rule = readBackOnce(
+      readBackOnce(
+        copy.declarationPlace.rule,
+        SETUP_V2_SCENES,
+        SETUP_V1_SCENES,
+        "declarationPlace.rule",
+      ),
+      OBSERVATION_PREP_FILES.declarationAddendum,
+      DECLARATION_ADDENDUM_V1.path,
+      "declarationPlace.rule",
+    );
+    copy.seedPinStepNote = readBackOnce(
+      copy.seedPinStepNote,
+      SEED_PIN_ADDENDUM_PATH,
+      SEED_PIN_ADDENDUM_V1.path,
+      "seedPinStepNote",
+    );
+    return copy;
+  },
+});
 
 /** K2/4「宣言の値（v1 は G-01 subset）」。 */
 const DECLARATION_VALUES = Object.freeze({
@@ -204,6 +303,7 @@ const PROCEDURE_V1 =
   "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json";
 const GRAPH_NEGATIVES = Object.freeze([
   ["K24-G02-N1", "G-02", "base"],
+  ["K24-G04-N1", "G-04", "base"],
   ["K24-G07-N1", "G-07", "base"],
   ["K24-G08-N1", "G-08", "base-usable"],
 ]);
@@ -322,10 +422,11 @@ export const SOURCE_PINS = Object.freeze(
       ["build-receipt-check.mjs", "renderer/trace-cycle.ts", "trace-seal.mjs"],
     ],
     ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105", []],
+    // S2 追補 #11（DR-CP4-P-7）: constants.mjs moved to the G-04 v2 pin.
     [
       "t14-k64-freeze",
       "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
-      ["constants.mjs", "receipt.mjs"],
+      ["receipt.mjs"],
     ],
     ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775", []],
     ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
@@ -371,15 +472,12 @@ export const SOURCE_PINS = Object.freeze(
     // S2 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）: #758 last changed these five
     // (nir1-retrieval/contract.mjs is outside the harness directory;
     // diagnostic-runner.mjs moved to sp-p4-ir-pair-limit in S2 追補 #8).
+    // S2 追補 #11（DR-CP4-P-7）: frozen-k64-admission.mjs and trace-frozen.mjs
+    // moved to the G-04 v2 pins.
     [
       "s4-rehearsal-admission",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      [
-        "admission.mjs",
-        "frozen-k64-admission.mjs",
-        "trace-frozen.mjs",
-        "scripts/quality/nir1-retrieval/contract.mjs",
-      ],
+      ["admission.mjs", "scripts/quality/nir1-retrieval/contract.mjs"],
     ],
     // S2 追補 #8（DR-CP4-Q-2）: #759 last changes these two (the pair limit).
     // The commit is #759's squash on master (the same bytes as the PR head).
@@ -431,6 +529,35 @@ export const SOURCE_PINS = Object.freeze(
       "v4-trace-runner-quote-guard",
       "759a4679a7b90d25c13bc9a8517f8a64df43adda",
       ["trace-runner.mjs"],
+    ],
+    // S2 追補 #11（DR-CP4-P-7、DR-CP4-S4-7）: the G-04 fixture v2 changes
+    // (branch claude/g04-v2c-fixture, base master 8187fbfc). Each file is held
+    // by the branch commit that last changes it: 7bd785fe (B1, the
+    // post-observation freeze checks in nir1-graph/contract.mjs), d06f080e
+    // (B1/B2a, GRAPH_CASE_FREEZE, FROZEN_FIXTURE_SHA256 and G-04's
+    // declaration in constants.mjs), 2bf48fad (B2a, the declaration addendum
+    // v2 path in trace-frozen.mjs) and c5b46714 (B2b-1, the S2 files of
+    // frozen-k64-admission.mjs). Like the T-1〜T-5 and V-2〜V-4 pins, S4's PR
+    // brings them to master with its merge commit, never a squash.
+    [
+      "g4-b1-post-observation-freeze",
+      "7bd785fe084d0d370fb3c23860f68b31688684ed",
+      ["scripts/quality/nir1-graph/contract.mjs"],
+    ],
+    [
+      "g4-b1-freeze-v2-constants",
+      "d06f080e5966e81949317e673c47620d44d51d42",
+      ["constants.mjs"],
+    ],
+    [
+      "g4-b2a-declaration-v2-path",
+      "2bf48fad6d29fc60af2255bacab292031ff15725",
+      ["trace-frozen.mjs"],
+    ],
+    [
+      "g4-b2b1-addendum-v2-paths",
+      "c5b46714054c040cbe5c270ad657f6252b82eaeb",
+      ["frozen-k64-admission.mjs"],
     ],
     [
       "pr1-native-eval-feature",
@@ -509,11 +636,9 @@ export const SOURCE_PINS = Object.freeze(
       "2b68fd4df67599ca2f277fc94f94956de463381e",
       ["scripts/quality/run-nir1-retrieval.mjs"],
     ],
-    [
-      "cq-lim-graph-limits",
-      "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
-      ["scripts/quality/nir1-graph/contract.mjs"],
-    ],
+    // S2 追補 #11（DR-CP4-P-7）: nir1-graph/contract.mjs moved to the G-04 v2
+    // pin, so this pin only checks the ancestor (like s1j2-blocked-map).
+    ["cq-lim-graph-limits", "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c", []],
     [
       "dp-h-unknown-scope",
       "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
@@ -585,6 +710,21 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "DR-CP4-V-2〜V-4",
     "user-confirmation-2026-10-31-trace-refreeze.md",
     "新しい S4 の結果だけ",
+  ],
+  // S2 追補 #11（DR-CP4-S4-7）: (g) the fourth re-freeze — the old S4b'' is
+  // revoked after G-04 v2 was made following its observation (the S2 pins
+  // change), with the user's confirmation on record; only the new S4's
+  // results are used and S6 allows the new S4b''' alone.
+  g: [
+    "DR-CP4-S4-7",
+    "557e683ccd884955e220f21bd15119f115995d29",
+    "G-04 の新しい版 v2",
+    "user-confirmation-2026-11-01-g04-v2c-build.md",
+    "新しい S4 の結果だけ",
+    "S6 の許可リストは新しい S4b''' だけ",
+    // S4b''' の前の独立レビューの P3-3: the confirmation's scope is the
+    // integrator's reading of the record.
+    "integrator の読み",
   ],
 });
 /**
@@ -1284,6 +1424,61 @@ const TRACE_RUNNER_LIMIT_WORDS = Object.freeze([
   "prep の Main の stderr",
   "acc5ec71c4af240b7455341e623f0ca9fb4df7b9",
 ]);
+/**
+ * S2 追補 #11（DR-CP4-P-7）: the G-04 v2 pins and the files the
+ * g04RevisionReadings rule binds.
+ */
+const G04_REVISION_PIN_ROLES = Object.freeze([
+  "g4-b1-post-observation-freeze",
+  "g4-b1-freeze-v2-constants",
+  "g4-b2a-declaration-v2-path",
+  "g4-b2b1-addendum-v2-paths",
+]);
+const G04_REVISION_RULE_FILES = Object.freeze([
+  "evals/nir1-graph/freeze.v2.json",
+  "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+  "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1",
+  "evals/nir1-graph/declaration-addendum.v2.json",
+  "evals/nir1-graph/seed-pin-addendum.v2.json",
+  "evals/nir1-g01/setup-addendum.v2.json",
+]);
+/**
+ * S2 追補 #11 (a)〜(h): what the limits disclose — the version made after the
+ * observation under the old S4b'' (no IR recall evidence), the checks lost
+ * and the IR-supplemented class left to G-05, the pool (30/270, rebuilt not
+ * removed, v1 and v2 side by side in S7), K2/4's fifth Scene, the rule
+ * revision of README:265-266, the reference-only new addendum versions, the
+ * old observation never used to choose results, and the trace left at v1
+ * against onFixtureRevision — facts and guesses kept apart.
+ */
+const G04_REVISION_LIMIT_WORDS = Object.freeze([
+  "557e683ccd884955e220f21bd15119f115995d29",
+  "a7027915",
+  "IR の recall の根拠にならない",
+  "G-04-P2",
+  "irSupplementedCoverage",
+  "30/270",
+  "作り直す",
+  "S7 は v1 と v2 の両方を並べる",
+  "5 件目",
+  "README:265-266",
+  "規則の改訂",
+  "参照だけ",
+  "結果の選択に使わない",
+  "graphRuntimeObservedBeforeFreeze",
+  "onFixtureRevision",
+  "〔事実〕",
+  "〔推測〕",
+  // S4b''' の前の独立レビュー（DR-CP4-S4-7 の追記 2）: the core of (f) and (h)
+  // (P3-2), the trace's declaration addendum (P2-3), K6/2 step 4 (C3) and
+  // the K6/4 :317 order deviation (P2-2, (α)).
+  "独立コードレビュー",
+  "v1 のまま",
+  "trace-frozen.mjs:544-545",
+  "K6/2 の手順 4",
+  "K6/4 :317",
+  "ユーザーの異議があれば止める",
+]);
 /** S3v6-P3-2: the readings integrator or builders chose after dev runs. */
 const READINGS_AFTER_DEV = Object.freeze([
   "reopen-triggers",
@@ -1304,6 +1499,9 @@ const READINGS_AFTER_DEV = Object.freeze([
   // S4a''（3 回目の凍結のやり直し、S2 追補 #10）: DR-CP4-V-3、V-4 の trace の規則
   // （最初の正式の trace と dev の稽古を見た後に integrator が決めた）。
   "trace-path-after-first-trace",
+  // S4a'''（4 回目の凍結のやり直し、S2 追補 #11）: G-04 v2 の S2 への写し（旧 S4b'' の
+  // 下の観測の後にユーザーと integrator が決めた版）。
+  "g04-v2-after-observation",
 ]);
 
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
@@ -1339,11 +1537,11 @@ function fixtureIdErrors(errors, label, reference, fixture) {
 function freezeReferenceErrors(errors, reference, ctx) {
   if (
     !isObject(reference) ||
-    reference.path !== "evals/nir1-graph/freeze.v1.json" ||
+    reference.path !== NIR1_GRAPH_FREEZE_PATH ||
     reference.sha256 !== ctx.freeze.sha256
   )
     errors.push(
-      `references.graphCaseFreeze must be evals/nir1-graph/freeze.v1.json with its sha256 ${ctx.freeze.sha256}`,
+      `references.graphCaseFreeze must be ${NIR1_GRAPH_FREEZE_PATH} with its sha256 ${ctx.freeze.sha256}`,
     );
 }
 
@@ -1664,8 +1862,8 @@ function commonAddendumErrors(errors, addendum, ctx, schemaVersion) {
   }
   if (addendum.schemaVersion !== schemaVersion)
     errors.push(`schemaVersion must be ${schemaVersion}`);
-  if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
-    errors.push("graphRuntimeObservedBeforeAuthoring must be false");
+  // graphRuntimeObservedBeforeAuthoring: each addendum checks it (false, or
+  // true only for rows of a case the freeze rebuilt after an observation).
   reviewErrors(errors, addendum, ADDENDUM_STATUSES, "addendum");
   contractErrors(errors, addendum.contract);
   freezeReferenceErrors(errors, addendum.references?.graphCaseFreeze, ctx);
@@ -1705,6 +1903,17 @@ export function setupAddendumErrors(addendum, ctx) {
     !commonAddendumErrors(errors, addendum, ctx, "nir1-c-body-setup-addendum/1")
   )
     return errors;
+  if (addendum.addendumId !== SETUP_ADDENDUM_ID)
+    errors.push(`addendumId must be ${SETUP_ADDENDUM_ID}`);
+  // Written after a Graph runtime observation as a copy of v1 with the
+  // references changed (flag true; B2b-1 review P2-1, P3-2).
+  supersededCopyErrors(
+    errors,
+    addendum,
+    { ...SETUP_V1_COPY, json: ctx.supersededSetupAddendum?.json },
+    ctx.supersededSetupAddendum,
+    ctx.sourcePinGit,
+  );
   fixtureIdErrors(
     errors,
     "references.g01Fixture",
@@ -1786,7 +1995,104 @@ function appendedVariants(ctx) {
   return rows;
 }
 
-/** G-02 base, G-07 base, G-08 base-usable and graph-recovered (K2/4 table). */
+/** K2/4 :391 widened by the user's confirmation (K24_SCOPE_EXTENSION). */
+function scopeExtensionErrors(errors, extension, table) {
+  const want = K24_SCOPE_EXTENSION;
+  const extended = table
+    .filter((row) => row.extension)
+    .map((row) => `${row.caseId}/${row.variantId}`);
+  if (
+    !isObject(extension) ||
+    extension.decision !== want.decision ||
+    !same(extension.variants, extended) ||
+    !same(extension.variants, want.variants) ||
+    extension.userConfirmation?.record !== want.userConfirmation.record ||
+    extension.userConfirmation?.commit !== want.userConfirmation.commit ||
+    extension.userConfirmation?.sha256 !== want.userConfirmation.sha256 ||
+    typeof extension.rule !== "string" ||
+    extension.rule.trim() === ""
+  )
+    errors.push(
+      `contractScopeExtension must name ${want.decision}, the variants ${extended.join(", ")} and the user's confirmation (${want.userConfirmation.commit}, sha256 ${want.userConfirmation.sha256})`,
+    );
+}
+
+/**
+ * Rows of a case the freeze rebuilt after a Graph runtime observation
+ * (freeze postObservationRevisions) are written after that observation: the
+ * addendum says so (graphRuntimeObservedBeforeAuthoring true, the rows in
+ * postObservationDeclarations) and copies every other row, the values and
+ * the other negatives from the v1 addendum it supersedes, whose bytes it
+ * binds (DR-CP4-G4-7). Without such rows it stays false.
+ */
+function postObservationAddendumErrors(errors, addendum, ctx) {
+  const freeze = ctx.freeze.json ?? {};
+  const rebuilt = new Set(
+    freeze.graphRuntimeObservedBeforeFreeze === true
+      ? (freeze.postObservationRevisions ?? []).map((row) => row.caseId)
+      : [],
+  );
+  const rows = Array.isArray(addendum.declarations)
+    ? addendum.declarations
+    : [];
+  const after = rows
+    .filter((row) => rebuilt.has(row.caseId))
+    .map((row) => `${row.caseId}/${row.variantId}`);
+  if (after.length === 0) {
+    if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
+      errors.push("graphRuntimeObservedBeforeAuthoring must be false");
+    if (addendum.postObservationDeclarations !== undefined)
+      errors.push(
+        "postObservationDeclarations needs a row of a case the freeze rebuilt after an observation",
+      );
+    return;
+  }
+  if (addendum.graphRuntimeObservedBeforeAuthoring !== true)
+    errors.push(
+      `graphRuntimeObservedBeforeAuthoring must be true: ${after.join(", ")} belong to a case the freeze rebuilt after a Graph runtime observation`,
+    );
+  const declared = addendum.postObservationDeclarations;
+  if (
+    !isObject(declared) ||
+    !same(declared.variants, after) ||
+    typeof declared.rule !== "string" ||
+    declared.rule.trim() === ""
+  )
+    errors.push(
+      `postObservationDeclarations.variants must be ${after.join(", ")} with its rule`,
+    );
+  const v1 = ctx.supersededDeclarationAddendum;
+  const supersedes = addendum.supersedes;
+  if (
+    !isObject(supersedes) ||
+    supersedes.path !== DECLARATION_ADDENDUM_V1.path ||
+    supersedes.sha256 !== DECLARATION_ADDENDUM_V1.sha256 ||
+    !HEX40.test(String(supersedes.commit ?? "")) ||
+    v1?.sha256 !== DECLARATION_ADDENDUM_V1.sha256
+  ) {
+    errors.push(
+      `supersedes must bind ${DECLARATION_ADDENDUM_V1.path} (sha256 ${DECLARATION_ADDENDUM_V1.sha256}, its commit), whose bytes are unchanged`,
+    );
+    return;
+  }
+  const kept = (list) =>
+    (Array.isArray(list) ? list : []).filter((row) => !rebuilt.has(row.caseId));
+  if (!same(kept(rows), kept(v1.json.declarations)))
+    errors.push(
+      "declarations outside the rebuilt cases must be the v1 addendum's rows unchanged",
+    );
+  if (
+    !same(kept(addendum.diagnosticNegatives), kept(v1.json.diagnosticNegatives))
+  )
+    errors.push(
+      "diagnosticNegatives outside the rebuilt cases must be the v1 addendum's unchanged",
+    );
+}
+
+/**
+ * G-02 base, G-04 base (the widened fifth Scene), G-07 base, G-08 base-usable
+ * and graph-recovered (K2/4 table).
+ */
 export function declarationAddendumErrors(addendum, ctx) {
   const errors = [];
   if (
@@ -1798,14 +2104,23 @@ export function declarationAddendumErrors(addendum, ctx) {
     )
   )
     return errors;
-  for (const caseId of ["G-02", "G-07", "G-08"])
+  const table = K24_TABLE.slice(1);
+  const tableCases = [...new Set(table.map((row) => row.caseId))];
+  for (const caseId of tableCases)
     fixtureIdErrors(
       errors,
       `references.fixtures.${caseId}`,
       addendum.references?.fixtures?.[caseId],
       ctx.fixtures[caseId],
     );
-  const table = K24_TABLE.slice(1);
+  if (
+    !same(Object.keys(addendum.references?.fixtures ?? {}).sort(), tableCases)
+  )
+    errors.push(
+      `references.fixtures must name exactly ${tableCases.join(", ")}`,
+    );
+  scopeExtensionErrors(errors, addendum.contractScopeExtension, table);
+  postObservationAddendumErrors(errors, addendum, ctx);
   const rows = Array.isArray(addendum.declarations)
     ? addendum.declarations
     : [];
@@ -1881,7 +2196,7 @@ export function declarationAddendumErrors(addendum, ctx) {
       if (step[key] !== false)
         errors.push(`declarationStep.${key} must be false`);
   }
-  for (const caseId of ["G-02", "G-07", "G-08"]) {
+  for (const caseId of tableCases) {
     const order = ctx.fixtures[caseId].json.measurementBoundary?.setupOrder;
     if (typeof order !== "string" || !order.includes(SETUP_ORDER_ANCHOR))
       errors.push(`${caseId} setupOrder no longer has the declaration anchor`);
@@ -2313,10 +2628,11 @@ export function traceErrors(trace, ctx) {
         );
     }
   }
-  if (project.seedPinAddendum !== SEED_PIN_ADDENDUM_PATH)
-    errors.push(
-      `project.seedPinAddendum must be ${SEED_PIN_ADDENDUM_PATH} (the product's seed comes from the SP/1 seed pin)`,
-    );
+  // The frozen traces name seed-pin-addendum.v1.json; v1 or the current
+  // version only (DR-CP4-G4-7 B2b-1 (B-2), option (ii)).
+  errors.push(
+    ...seedPinAddendumPathNamedByTraceErrors(project.seedPinAddendum, ctx),
+  );
   triggerValueErrors(errors, trace, ctx);
   if (
     trace.maintenance?.gate === undefined ||
@@ -3235,6 +3551,32 @@ function traceRunnerReadingErrors(errors, readings) {
     );
 }
 
+/**
+ * S2 追補 #11（DR-CP4-P-7）: the G-04 v2 readings — the rule naming the four
+ * G-04 v2 pins and the v2 files S2 binds, and the limits (a)〜(h).
+ */
+function g04RevisionReadingErrors(errors, readings) {
+  if (!isObject(readings)) {
+    errors.push("g04RevisionReadings is required (S2 追補 #11、DR-CP4-P-7)");
+    return;
+  }
+  const unnamed = [
+    ...G04_REVISION_PIN_ROLES,
+    ...G04_REVISION_RULE_FILES,
+  ].filter((word) => !String(readings.rule ?? "").includes(word));
+  if (!nonBlank(readings.status) || unnamed.length > 0)
+    errors.push(
+      `g04RevisionReadings.rule must bind the pins ${G04_REVISION_PIN_ROLES.join(", ")} and the files ${G04_REVISION_RULE_FILES.join(", ")} (S2 追補 #11)`,
+    );
+  const missing = G04_REVISION_LIMIT_WORDS.filter(
+    (word) => !String(readings.limits ?? "").includes(word),
+  );
+  if (missing.length > 0)
+    errors.push(
+      `g04RevisionReadings.limits must disclose ${missing.join(", ")} (S2 追補 #11、DR-CP4-P-7)`,
+    );
+}
+
 /** S2 追補: the points S2 hands to S3 (undecided in a draft, decided when frozen). */
 function reviewerQuestionErrors(errors, questions, frozen) {
   const rows = Array.isArray(questions) ? questions : [];
@@ -3375,13 +3717,25 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "d1.choice must be ii and equal both addenda's declarationPlace",
     );
+  // S2 追補 #11（DR-CP4-P-7）: d1 names the current addendum versions.
+  if (
+    !same(prep.d1?.addenda, [
+      OBSERVATION_PREP_FILES.setupAddendum,
+      OBSERVATION_PREP_FILES.declarationAddendum,
+    ])
+  )
+    errors.push(
+      `d1.addenda must be ${OBSERVATION_PREP_FILES.setupAddendum} and ${OBSERVATION_PREP_FILES.declarationAddendum} (S2 追補 #11)`,
+    );
   if (
     !same(
       prep.d1?.runs,
       K24_TABLE.map((row) => `${row.caseId}/${row.variantId}`),
     )
   )
-    errors.push("d1.runs must be the five K2/4 declaration runs");
+    errors.push(
+      `d1.runs must be the ${K24_TABLE.length} K2/4 declaration runs (${K24_TABLE.map((row) => `${row.caseId}/${row.variantId}`).join(", ")})`,
+    );
   if (
     typeof prep.d2?.rule !== "string" ||
     !prep.d2.rule.includes("nir1-graph-index-build")
@@ -3392,6 +3746,7 @@ export function observationPrepErrors(prep, ctx) {
   d2ReadingErrors(errors, prep.d2?.variantReadings, ctx);
   setupReadingErrors(errors, prep.setupReadings, ctx);
   traceRunnerReadingErrors(errors, prep.traceRunnerReadings);
+  g04RevisionReadingErrors(errors, prep.g04RevisionReadings);
   reviewerQuestionErrors(errors, prep.reviewerQuestions, frozen);
 
   // D10: modes and parity.
@@ -3744,11 +4099,18 @@ export function observationPrepErrors(prep, ctx) {
   const ids = (prep.diagnosticRuns ?? []).map((row) => row.id);
   if (!same(ids, DIAGNOSTIC_IDS))
     errors.push(`diagnosticRuns must be ${DIAGNOSTIC_IDS.join(", ")}`);
+  // S2 追補 #11（DR-CP4-P-7）: each row's source is the addendum it copies.
   const negatives = [
-    ...(ctx.setupAddendum?.diagnosticNegatives ?? []),
-    ...(ctx.declarationAddendum?.diagnosticNegatives ?? []),
+    ...(ctx.setupAddendum?.diagnosticNegatives ?? []).map((row) => [
+      row,
+      OBSERVATION_PREP_FILES.setupAddendum,
+    ]),
+    ...(ctx.declarationAddendum?.diagnosticNegatives ?? []).map((row) => [
+      row,
+      OBSERVATION_PREP_FILES.declarationAddendum,
+    ]),
   ];
-  for (const negative of negatives) {
+  for (const [negative, source] of negatives) {
     const row = (prep.diagnosticRuns ?? []).find(
       (run) => run.id === negative.id,
     );
@@ -3759,6 +4121,8 @@ export function observationPrepErrors(prep, ctx) {
       row.mutationAfterDeclaration !== negative.mutationAfterDeclaration
     )
       errors.push(`diagnosticRuns ${negative.id} must match its addendum row`);
+    else if (row.source !== source)
+      errors.push(`diagnosticRuns ${negative.id}.source must be ${source}`);
   }
 
   const p4 = (prep.diagnosticRuns ?? []).find((run) => run.id === "SP-P4");
@@ -3790,6 +4154,22 @@ export function observationPrepErrors(prep, ctx) {
   )
     errors.push(
       "diagnosticRuns SP-P4 must be the seed pin parity (hybrid only, no Graph arm, no seed, 8 base variants, without/with the step, SP-N7 -> [precheck])",
+    );
+  // S2 追補 #11（DR-CP4-P-7）: SP-P4 is SP/1's check in the current seed pin
+  // addendum version. S4b''' の前の独立レビューの P3-1: the path is followed
+  // by the end of the text or the note in "（", never by more of a path.
+  const p4Source = String(p4?.source ?? "");
+  const seedPath = OBSERVATION_PREP_FILES.seedPinAddendum;
+  if (
+    p4 &&
+    !(
+      p4Source === seedPath ||
+      (p4Source.startsWith(seedPath) &&
+        p4Source.slice(seedPath.length).startsWith("（"))
+    )
+  )
+    errors.push(
+      `diagnosticRuns SP-P4.source must be ${OBSERVATION_PREP_FILES.seedPinAddendum} (S2 追補 #11)`,
     );
   spP4ReadingErrors(errors, p4, prep, ctx);
 
@@ -4248,7 +4628,8 @@ function cachedGit(repoRoot) {
 /** Reads every file the validators compare against. */
 export async function loadObservationPrepContext({ repoRoot }) {
   const read = (relative) => readFile(path.join(repoRoot, relative));
-  const freezeBytes = await read("evals/nir1-graph/freeze.v1.json");
+  // The current freeze (B1 review P3-6): its cases are the frozen fixtures.
+  const freezeBytes = await read(NIR1_GRAPH_FREEZE_PATH);
   const freezeJson = JSON.parse(freezeBytes);
   const frozen = new Map(
     (freezeJson.cases ?? []).map((row) => [row.caseId, row]),
@@ -4276,6 +4657,28 @@ export async function loadObservationPrepContext({ repoRoot }) {
       parsed[name] = null;
     }
   }
+  let supersededDeclarationAddendum = null;
+  try {
+    const bytes = await read(DECLARATION_ADDENDUM_V1.path);
+    supersededDeclarationAddendum = {
+      sha256: sha256(bytes),
+      json: JSON.parse(bytes),
+    };
+  } catch {
+    // Absent or unreadable: the supersedes check fails closed.
+  }
+  // The v1 addenda the current versions supersede (B2b-1); null if absent
+  // or unreadable (the supersedes checks fail closed).
+  const superseded = async (relative) => {
+    try {
+      const bytes = await read(relative);
+      return { sha256: sha256(bytes), json: JSON.parse(bytes) };
+    } catch {
+      return null;
+    }
+  };
+  const supersededSetupAddendum = await superseded(SETUP_ADDENDUM_V1.path);
+  const supersededSeedPinAddendum = await superseded(SEED_PIN_ADDENDUM_V1.path);
   const formal = PROCEDURE_V1;
   let procedureFormal = null;
   try {
@@ -4314,6 +4717,9 @@ export async function loadObservationPrepContext({ repoRoot }) {
     productSources,
     setupAddendum: parsed.setupAddendum,
     declarationAddendum: parsed.declarationAddendum,
+    supersededDeclarationAddendum,
+    supersededSetupAddendum,
+    supersededSeedPinAddendum,
     procedureDraft: parsed.procedureDraft,
     procedureFormal,
     sp1Sha256,
@@ -4435,6 +4841,46 @@ export function formalReferenceErrors(rows, head, git) {
 }
 
 /**
+ * The (path, commit, sha256) of the v1 bytes each current addendum version
+ * supersedes, as the formal gate checks them against git (B2b-1 review P3-2).
+ */
+export function supersededReferences(parsed) {
+  return [
+    [parsed?.setupAddendum, SETUP_ADDENDUM_V1],
+    [parsed?.declarationAddendum, DECLARATION_ADDENDUM_V1],
+    [parsed?.seedPinAddendum, SEED_PIN_ADDENDUM_V1],
+  ].map(([document, v1]) => ({
+    path: v1.path,
+    commit: document?.supersedes?.commit,
+    sha256: v1.sha256,
+  }));
+}
+
+/**
+ * The (path, commit, sha256) rows the formal gate checks against git: the
+ * traces, S2's boundFiles, the superseded v1 addenda, the K6/4 procedure and
+ * the SP/1 bytes.
+ */
+export function formalReferenceRows(prep, addenda) {
+  return [
+    ...prep.traces,
+    ...prep.boundFiles,
+    // The v1 bytes each new addendum version supersedes (B2b-1 review P3-2).
+    ...supersededReferences(addenda),
+    {
+      path: prep.k64Procedure.formal.path,
+      commit: prep.k64Procedure.formal.commit,
+      sha256: prep.k64Procedure.formal.sha256,
+    },
+    {
+      path: SP1.path,
+      commit: prep.contracts.sp1.bytesCommit,
+      sha256: SP1.sha256,
+    },
+  ];
+}
+
+/**
  * The gate a formal CP-4 Graph run passes before its first query: every
  * document frozen and reviewed, no placeholder, and (git) each referenced
  * commit holds the referenced bytes and is an ancestor of `head`.
@@ -4455,20 +4901,16 @@ export async function assertObservationPrepFormal({
   const prep = JSON.parse(
     await readFile(path.join(repoRoot, OBSERVATION_PREP_FILES.prep), "utf8"),
   );
-  const references = [
-    ...prep.traces,
-    ...prep.boundFiles,
-    {
-      path: prep.k64Procedure.formal.path,
-      commit: prep.k64Procedure.formal.commit,
-      sha256: prep.k64Procedure.formal.sha256,
-    },
-    {
-      path: SP1.path,
-      commit: prep.contracts.sp1.bytesCommit,
-      sha256: SP1.sha256,
-    },
-  ];
+  const addenda = {};
+  for (const name of [
+    "setupAddendum",
+    "declarationAddendum",
+    "seedPinAddendum",
+  ])
+    addenda[name] = JSON.parse(
+      await readFile(path.join(repoRoot, OBSERVATION_PREP_FILES[name]), "utf8"),
+    );
+  const references = formalReferenceRows(prep, addenda);
   const head = execFileSync(
     "git",
     ["rev-parse", "--verify", `${headRef}^{commit}`],

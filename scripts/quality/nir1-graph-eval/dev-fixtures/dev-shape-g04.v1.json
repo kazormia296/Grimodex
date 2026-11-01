@@ -241,10 +241,6 @@
       "entryId": "dvs4-12"
     },
     {
-      "sceneId": "dvs4-9",
-      "entryId": "dvs4-12"
-    },
-    {
       "sceneId": "dvs4-7",
       "entryId": "dvs4-13"
     },
@@ -266,13 +262,6 @@
     {
       "sceneId": "dvs4-7",
       "summary": "Dev G-04 text 34: the bramble nutmeg basket lantern bramble nutmeg line.",
-      "actuality": "actual",
-      "attribution": "narrator",
-      "narrativeFrame": "story-world"
-    },
-    {
-      "sceneId": "dvs4-8",
-      "summary": "Dev G-04 text 35: the cedar gusty saffron kestrel meadow fennel line.",
       "actuality": "actual",
       "attribution": "narrator",
       "narrativeFrame": "story-world"
@@ -392,8 +381,8 @@
           "scope": "variant"
         },
         {
-          "id": "ir-supplement-admission",
-          "scope": "variant",
+          "id": "cb4-inputs",
+          "scope": "added-scene",
           "sceneId": "dvs4-8"
         }
       ]
