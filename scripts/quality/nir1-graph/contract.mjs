@@ -151,10 +151,22 @@ export const POST_OBSERVATION_CHANGE_SCOPES = Object.freeze({
       "/coverageGaps",
       "/independentExpectationReview",
     ]),
+    // These may only grow: the approved text or list stays their prefix.
+    appendOnly: Object.freeze([
+      "/preconditions/holdVersusBlocked",
+      "/coverageGaps",
+    ]),
   }),
   [NIR1_GRAPH_README_PATH]: Object.freeze({
     kind: "markdown-sections",
     preamble: true,
+    // Rule lines inside the declared sections that must stay verbatim.
+    requiredLines: Object.freeze([
+      "- 前提条件は、観測の後に足さず、外さず、読み替えない。前提条件が成り立たなくても期待値は変えない。",
+      "  - variant が宣言していない前提条件で、観測結果を blocked にすることはできない。validator の `resolveVariantOutcome` がこれを拒否する。",
+      "- 観測した後に、query、corpus、seed、Gold、順序、指標、fixture、前提条件を変えない。",
+      "- 比較する期待値と実 runtime の結果が違えば、その結果を保持して Hold にする。正例の材料を setup で作れない場合も Hold とする。",
+    ]),
   }),
   [NIR1_GRAPH_SCHEMA_PATH]: Object.freeze({
     kind: "json-pointers",
@@ -2165,6 +2177,30 @@ function nonEmptyString(value) {
 }
 
 /** A declared post-approval scope is well formed and allowed for its file. */
+/** The value a JSON pointer names, or undefined. */
+function valueAtPointer(root, pointer) {
+  const tokens = pointerTokens(pointer);
+  if (tokens === null) return undefined;
+  let value = root;
+  for (const token of tokens) {
+    if (value === null || typeof value !== "object") return undefined;
+    if (!Object.hasOwn(value, token)) return undefined;
+    value = value[token];
+  }
+  return value;
+}
+
+/**
+ * The digest of the first `length` characters (string) or items (array) of
+ * an append-only value; the approved value is the prefix the freeze binds.
+ */
+export function appendOnlyPrefixSha256(value, length) {
+  if (typeof value === "string") return sha256(value.slice(0, length));
+  if (Array.isArray(value))
+    return sha256(JSON.stringify(value.slice(0, length)));
+  return null;
+}
+
 function changeScopeErrors(file, bytes, scope, allowed) {
   if (scope?.kind !== allowed.kind)
     return [
@@ -2188,7 +2224,34 @@ function changeScopeErrors(file, bytes, scope, allowed) {
       return [
         `${file} may change after the approving review only at ${allowed.allowed.join(", ")}`,
       ];
-    return [];
+    const required = (allowed.appendOnly ?? []).filter((pointer) =>
+      pointers.includes(pointer),
+    );
+    const rows = Array.isArray(scope.appendOnly) ? scope.appendOnly : [];
+    if (
+      stableJson(rows.map((row) => row?.pointer).sort()) !==
+      stableJson([...required].sort())
+    )
+      return [
+        `${file} change scope must bind the approved prefix of ${required.join(", ")}`,
+      ];
+    const value = JSON.parse(bytes);
+    const errors = [];
+    for (const row of rows) {
+      const current = valueAtPointer(value, row.pointer);
+      if (
+        !Number.isInteger(row.approvedLength) ||
+        row.approvedLength < 0 ||
+        current === undefined ||
+        current.length < row.approvedLength ||
+        appendOnlyPrefixSha256(current, row.approvedLength) !==
+          row.approvedSha256
+      )
+        errors.push(
+          `${file} ${row.pointer} may only grow after the approving review (its approved prefix changed)`,
+        );
+    }
+    return errors;
   }
   if (scope.preamble !== undefined && scope.preamble !== true)
     return [`${file} change scope preamble must be true when present`];
@@ -2206,7 +2269,10 @@ function changeScopeErrors(file, bytes, scope, allowed) {
     headings.some((heading) => !present.has(heading))
   )
     return [`${file} change scope must name existing ## sections`];
-  return [];
+  const lines = new Set(String(bytes).split("\n"));
+  return (allowed.requiredLines ?? [])
+    .filter((line) => !lines.has(line))
+    .map((line) => `${file} must keep the rule line: ${line}`);
 }
 
 /**
@@ -2425,6 +2491,23 @@ async function validatePostObservationFreeze(
     fail(
       "superseded freeze must be one written before any runtime observation",
     );
+  // The review of a post-observation revision reads the bytes the superseded
+  // freeze bound (its later changes are declared in changesAfterApproval).
+  if (previous) {
+    const final =
+      freeze.independentExpectationReview?.rounds?.at(-1)?.filesAtReview ?? [];
+    const reviewed = new Map(final.map((row) => [row?.path, row?.sha256]));
+    for (const [file, digest] of [
+      [NIR1_GRAPH_MANIFEST_PATH, previous.manifestSha256],
+      [NIR1_GRAPH_SCHEMA_PATH, previous.schemaSha256],
+      [NIR1_GRAPH_README_PATH, previous.readmeSha256],
+      [previous.reviewReceipt, previous.reviewReceiptSha256],
+    ])
+      if (reviewed.get(file) !== digest)
+        fail(
+          `final review round must have read the superseded freeze's ${file} (${digest})`,
+        );
+  }
 
   for (const caseId of GRAPH_CASE_IDS) {
     const current = caseHashes.get(caseId);
