@@ -2476,6 +2476,11 @@ test("S2 追補 #2 P2-1: setupReadings pin master commits and copy L-24's closed
       "v4-trace-record-requery",
       "v4-followup-cancelled-match",
       "v4-trace-runner-quote-guard",
+      // S2 追補 #11（G-04 fixture v2。4 回目の凍結のやり直し、DR-CP4-P-7）。
+      "g4-b1-post-observation-freeze",
+      "g4-b1-freeze-v2-constants",
+      "g4-b2a-declaration-v2-path",
+      "g4-b2b1-addendum-v2-paths",
       // S2 追補 #5（P-S2-9 (b)。正式の入口の閉包の file を最後に変えた commit）。
       "pr1-native-eval-feature",
       "p1-harness-core",
@@ -2994,8 +2999,9 @@ test("S2 追補 #3: blockedCaseJudgement equals the pinned harness's BLOCKED_CON
 const H4 = "scripts/quality/nir1-graph-eval/";
 const ORPHAN = "0123456789abcdef0123456789abcdef01234567";
 /**
- * S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）: the pins at branch commits that
- * S4's PR brings to master with its merge commit (gh pr merge --merge).
+ * S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）／#11（DR-CP4-P-7）: the pins at
+ * branch commits that S4's PR brings to master with its merge commit (gh pr
+ * merge --merge).
  */
 const BRANCH_PIN_ROLES = new Set([
   "t3-t5-setup-freshness-settle",
@@ -3004,6 +3010,10 @@ const BRANCH_PIN_ROLES = new Set([
   "v4-trace-record-requery",
   "v4-followup-cancelled-match",
   "v4-trace-runner-quote-guard",
+  "g4-b1-post-observation-freeze",
+  "g4-b1-freeze-v2-constants",
+  "g4-b2a-declaration-v2-path",
+  "g4-b2b1-addendum-v2-paths",
 ]);
 const gitText = (args) =>
   execFileSync("git", args, { cwd: repoRoot, encoding: "utf8" }).trim();
@@ -3077,7 +3087,7 @@ test("S2 追補 #4 (A): each pin is a master commit and each bytes pin holds tha
   );
 });
 
-test("S2 追補 #4／#6／#7／#9／#10 (A): the bytes pins hold every non-test harness file #754, #756, #757, #758, #759, T-1〜T-5 and V-2〜V-4 changed, each at the commit that last changed it", async (t) => {
+test("S2 追補 #4／#6／#7／#9／#10／#11 (A): the bytes pins hold every non-test harness file #754, #756, #757, #758, #759, T-1〜T-5, V-2〜V-4 and the G-04 v2 closure files changed, each at the commit that last changed it", async (t) => {
   const ctx = await context();
   if (!ctx.sourcePinGit) {
     t.skip("shallow clone");
@@ -3101,6 +3111,23 @@ test("S2 追補 #4／#6／#7／#9／#10 (A): the bytes pins hold every non-test 
   const t4 = SOURCE_PINS.find(
     (pin) => pin.role === "t1-t4-measurement-settle-ready",
   );
+  // S2 追補 #11（DR-CP4-P-7）: the four G-04 v2 pins (branch claude/g04-v2c-fixture,
+  // base master 8187fbfc); the newest (B2b-1, c5b46714) is where every pin's
+  // last change is read now. The earlier ranges keep their tips; a file of an
+  // earlier range that the G-04 v2 branch changed again is held by a G-04 v2
+  // pin.
+  const g4Pins = SOURCE_PINS.filter((pin) => pin.role.startsWith("g4-"));
+  assert.deepEqual(
+    g4Pins.map((pin) => pin.role),
+    [
+      "g4-b1-post-observation-freeze",
+      "g4-b1-freeze-v2-constants",
+      "g4-b2a-declaration-v2-path",
+      "g4-b2b1-addendum-v2-paths",
+    ],
+  );
+  const newest = g4Pins.at(-1);
+  const g4Paths = g4Pins.flatMap((pin) => pin.paths);
   const master = gitText(["rev-parse", "refs/remotes/origin/master"]);
   // S2 追補 #9（DR-CP4-P-5）／#10（DR-CP4-P-6）: the two T-1〜T-5 pins and
   // the four V-2〜V-4 pins are branch commits that S4's PR brings to master
@@ -3156,6 +3183,7 @@ test("S2 追補 #4／#6／#7／#9／#10 (A): the bytes pins hold every non-test 
     ].includes(pin.role),
   )
     .flatMap((pin) => pin.paths)
+    .concat(g4Paths.filter((file) => changed.includes(file)))
     .filter((file) => file.startsWith(H4))
     .sort();
   assert.deepEqual(held, changed);
@@ -3190,7 +3218,13 @@ test("S2 追補 #4／#6／#7／#9／#10 (A): the bytes pins hold every non-test 
         "scripts",
       ]),
     ),
-    [...rehearsal.paths, `${H4}diagnostic-runner.mjs`].sort(),
+    [
+      ...rehearsal.paths,
+      `${H4}diagnostic-runner.mjs`,
+      // S2 追補 #11: moved to the G-04 v2 pins.
+      `${H4}frozen-k64-admission.mjs`,
+      `${H4}trace-frozen.mjs`,
+    ].sort(),
   );
   // #759 が変えた試験と文書以外の file は 2 つで、すべて sp-p4-ir-pair-limit の pin にある。
   assert.deepEqual(
@@ -3259,13 +3293,35 @@ test("S2 追補 #4／#6／#7／#9／#10 (A): the bytes pins hold every non-test 
     assert.ok(ctx.sourcePinGit.isAncestor(t4.commit, pin.commit), pin.role);
     assert.equal(pin.paths.length, 1, pin.role);
   }
+  // S2 追補 #11: G-04 v2（master 8187fbfc から枝の c5b46714 まで）が変えた試験以外の
+  // scripts の file は 8 つ。4 つは正式の入口の閉包にあり、それぞれを最後に変えた枝の
+  // commit の 4 つの新しい pin にある。残りは S2 validator の 2 file（pin でなく S2 の
+  // 束縛が対象）と、閉包の外の dev の形の写し 2 file。
+  const g4Base = "8187fbfc9685356225956dfce83431aec9845473";
+  assert.ok(ctx.sourcePinGit.isAncestor(g4Base, g4Pins[0].commit));
+  assert.deepEqual(
+    nonTest(
+      gitText(["diff", "--name-only", g4Base, newest.commit, "--", "scripts"]),
+    ),
+    [
+      ...g4Paths,
+      "scripts/quality/nir1-graph/observation-prep.mjs",
+      "scripts/quality/nir1-graph/seed-pin-addendum.mjs",
+      `${H4}dev-fixtures/dev-shape-g04.v1.json`,
+      `${H4}dev-shape-fixture.mjs`,
+    ].sort(),
+  );
+  for (const pin of g4Pins) {
+    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, newest.commit), pin.role);
+    assert.equal(pin.paths.length, 1, pin.role);
+  }
   for (const pin of SOURCE_PINS)
     for (const file of pin.paths) {
       const last = gitText([
         "log",
         "-1",
         "--format=%H",
-        tip.commit,
+        newest.commit,
         "--",
         file,
       ]);
@@ -3278,8 +3334,8 @@ test("S2 追補 #4／#6／#7／#9／#10 (A): the bytes pins hold every non-test 
   // ancestor の pin は PR の squash の commit（#753、#755 ほか）。
   for (const pin of SOURCE_PINS)
     assert.ok(
-      ctx.sourcePinGit.isAncestor(pin.commit, tip.commit),
-      `${pin.role} precedes ${tip.commit}`,
+      ctx.sourcePinGit.isAncestor(pin.commit, newest.commit),
+      `${pin.role} precedes ${newest.commit}`,
     );
   // 変異: path を 2 つの pin に置く、pin から file を外す、check を変える。
   const prep = await json(OBSERVATION_PREP_FILES.prep);
@@ -3971,7 +4027,9 @@ const ADDENDUM5_FILES = Object.freeze({
   // S2 追補 #10: cp4-trace-probe.tsx と followup.mjs は V-2〜V-4 の pin に移った。
   "v2-trace-probe-paths": ["renderer/cp4-trace-probe.tsx"],
   "v4-followup-cancelled-match": ["followup.mjs"],
-  "t14-k64-freeze": ["constants.mjs", "receipt.mjs"],
+  // S2 追補 #11: constants.mjs は G-04 v2 の pin に移った。
+  "t14-k64-freeze": ["receipt.mjs"],
+  "g4-b1-freeze-v2-constants": ["constants.mjs"],
   "pr1-native-eval-feature": ["native-architecture.mjs"],
   "p1-harness-core": [
     "admission-facts.mjs",
@@ -4557,7 +4615,9 @@ const ADDENDUM7_OUTSIDE = Object.freeze({
     "scripts/quality/nir1-retrieval/paired.mjs",
   ],
   "da1-route-isolation": ["scripts/quality/run-nir1-retrieval.mjs"],
-  "cq-lim-graph-limits": ["scripts/quality/nir1-graph/contract.mjs"],
+  // S2 追補 #11: nir1-graph/contract.mjs は G-04 v2 の pin に移った（cq-lim-graph-limits
+  // は ancestor の pin になった）。
+  "g4-b1-post-observation-freeze": ["scripts/quality/nir1-graph/contract.mjs"],
   "dp-h-unknown-scope": [
     "scripts/quality/nir1-packing/final-request/architecture.mjs",
   ],
@@ -4734,18 +4794,27 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
     (pin) => pin.role === "s4-rehearsal-admission",
   );
   assert.equal(rehearsal.commit, "82d427465b16a12809c6f93adad74ac97859c85a");
+  // S2 追補 #11: #758 の frozen-k64-admission.mjs と trace-frozen.mjs は G-04 v2 の
+  // pin に移った（枝の pin は、S4 の PR の merge の前は記録の HEAD で最後に変えた commit）。
   const targets = {
     ...ADDENDUM7_OUTSIDE,
     "s4-rehearsal-admission": rehearsal.paths,
+    "g4-b2a-declaration-v2-path": [`${H4}trace-frozen.mjs`],
+    "g4-b2b1-addendum-v2-paths": [`${H4}frozen-k64-admission.mjs`],
   };
   let mutated = 0;
   for (const [role, files] of Object.entries(targets)) {
     const pin = SOURCE_PINS.find((row) => row.role === role);
     assert.equal(pin.check, "bytes", role);
-    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, master), role);
+    const tip =
+      BRANCH_PIN_ROLES.has(role) &&
+      !ctx.sourcePinGit.isAncestor(pin.commit, master)
+        ? ctx.sourcePinGit.head
+        : master;
+    assert.ok(ctx.sourcePinGit.isAncestor(pin.commit, tip), role);
     for (const file of files) {
       assert.equal(
-        gitText(["log", "-1", "--format=%H", master, "--", file]),
+        gitText(["log", "-1", "--format=%H", tip, "--", file]),
         pin.commit,
         file,
       );
@@ -4780,15 +4849,21 @@ test("S2 追補 #7: each added eval script and each #758 file is pinned at the m
       "950751d040b29b6d78a067a003dc19b196cfb692",
       "s4-rehearsal-admission",
     ],
+    // S2 追補 #11: G-04 v2 の pin に移った 3 file を元の pin の bytes と比べると落ちる。
     [
       "frozen-k64-admission.mjs",
-      "950751d040b29b6d78a067a003dc19b196cfb692",
-      "s4-rehearsal-admission",
+      "82d427465b16a12809c6f93adad74ac97859c85a",
+      "g4-b2b1-addendum-v2-paths",
     ],
     [
       "trace-frozen.mjs",
-      "950751d040b29b6d78a067a003dc19b196cfb692",
-      "s4-rehearsal-admission",
+      "82d427465b16a12809c6f93adad74ac97859c85a",
+      "g4-b2a-declaration-v2-path",
+    ],
+    [
+      "constants.mjs",
+      "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
+      "g4-b1-freeze-v2-constants",
     ],
     [
       "diagnostic-runner.mjs",
@@ -4818,7 +4893,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
   const prep = await json(OBSERVATION_PREP_FILES.prep);
   assert.deepEqual(observationPrepErrors(prep, ctx), []);
   // S2 追補 #9（DR-CP4-S4-5）: (e) the re-freeze. S2 追補 #10（DR-CP4-S4-6）:
-  // (f) the third re-freeze.
+  // (f) the third re-freeze. S2 追補 #11（DR-CP4-S4-7）: (g) the fourth.
   assert.deepEqual(Object.keys(S4_PROCEDURE_WORDS), [
     "a",
     "b",
@@ -4826,6 +4901,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
     "d",
     "e",
     "f",
+    "g",
   ]);
   let mutated = 0;
   for (const [item, words] of Object.entries(S4_PROCEDURE_WORDS))
@@ -4839,7 +4915,7 @@ test("S2 追補 #7 (DR-CP4-S4-1): s4StagesRule states S4's procedure (merge comm
       );
       mutated += 1;
     }
-  assert.equal(mutated, 25);
+  assert.equal(mutated, 31);
   detects(
     prep,
     (copy) => observationPrepErrors(copy, ctx),
@@ -4941,6 +5017,171 @@ test("S2 追補 #10（DR-CP4-P-6）: traceRunnerReadings copy DR-CP4-V-2〜V-4 (
       /traceRunnerReadings\.limits must disclose/u,
     );
   }
+});
+
+test("S2 追補 #11（DR-CP4-P-7）: S2 binds G-04 v2 (freeze.v2, the three new addendum versions, the four G-04 v2 pins) and g04RevisionReadings disclose (a)〜(h)", async () => {
+  const ctx = await context();
+  const prep = await json(OBSERVATION_PREP_FILES.prep);
+  const check = (copy) => observationPrepErrors(copy, ctx);
+  assert.deepEqual(check(prep), []);
+  // 葉ごとの判断（DR-CP4-P-7 (2)）: v2 に直した葉。
+  assert.deepEqual(prep.references.graphCaseFreeze, {
+    path: "evals/nir1-graph/freeze.v2.json",
+    sha256: "8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d",
+  });
+  assert.deepEqual(prep.d1.addenda, [
+    "evals/nir1-g01/setup-addendum.v2.json",
+    "evals/nir1-graph/declaration-addendum.v2.json",
+  ]);
+  assert.ok(prep.d1.runs.includes("G-04/base"));
+  const g04 = prep.diagnosticRuns.find((row) => row.id === "K24-G04-N1");
+  assert.equal(g04.source, "evals/nir1-graph/declaration-addendum.v2.json");
+  assert.ok(
+    prep.diagnosticRuns
+      .find((row) => row.id === "SP-P4")
+      .source.startsWith("evals/nir1-graph/seed-pin-addendum.v2.json"),
+  );
+  assert.ok(
+    prep.r5Gate.currentFinding.includes(
+      "evals/nir1-graph/seed-pin-addendum.v2.json",
+    ),
+  );
+  assert.ok(
+    prep.runnerHandoff[20].includes("evals/nir1-g01/setup-addendum.v2.json"),
+  );
+  for (const row of prep.placeholders)
+    assert.ok(!/addendum\.v1\.json/u.test(row.fill), row.token);
+  // v1 のまま残した葉（S3 が見た時点の事実）と、同じ path の freeze 記録。
+  assert.ok(
+    prep.reviewerQuestions[5].grounds[0].includes("seed-pin-addendum.v1.json"),
+  );
+  assert.ok(
+    prep.reviewerQuestions[6].grounds[0].includes("setup-addendum.v1.json"),
+  );
+  assert.ok(prep.preconditions[3].includes("observation-prep-freeze.v1.json"));
+  // 変異: 欄を消す、rule から pin の role と file を消す、limits の語を消す。
+  detects(
+    prep,
+    check,
+    (p) => delete p.g04RevisionReadings,
+    /g04RevisionReadings is required/u,
+  );
+  const readings = prep.g04RevisionReadings;
+  for (const word of [
+    "g4-b1-post-observation-freeze",
+    "g4-b1-freeze-v2-constants",
+    "g4-b2a-declaration-v2-path",
+    "g4-b2b1-addendum-v2-paths",
+    "evals/nir1-graph/freeze.v2.json",
+    "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+    "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1",
+    "evals/nir1-graph/declaration-addendum.v2.json",
+    "evals/nir1-graph/seed-pin-addendum.v2.json",
+    "evals/nir1-g01/setup-addendum.v2.json",
+  ]) {
+    assert.ok(readings.rule.includes(word), word);
+    detects(
+      prep,
+      check,
+      (p) =>
+        (p.g04RevisionReadings.rule = p.g04RevisionReadings.rule.replaceAll(
+          word,
+          "",
+        )),
+      /g04RevisionReadings\.rule must bind/u,
+    );
+  }
+  for (const role of [
+    "g4-b1-post-observation-freeze",
+    "g4-b1-freeze-v2-constants",
+    "g4-b2a-declaration-v2-path",
+    "g4-b2b1-addendum-v2-paths",
+  ])
+    assert.ok(
+      SOURCE_PINS.some((pin) => pin.role === role),
+      role,
+    );
+  detects(
+    prep,
+    check,
+    (p) => (p.g04RevisionReadings.status = " "),
+    /g04RevisionReadings\.rule must bind/u,
+  );
+  let words = 0;
+  for (const word of [
+    "557e683ccd884955e220f21bd15119f115995d29",
+    "a7027915",
+    "IR の recall の根拠にならない",
+    "G-04-P2",
+    "irSupplementedCoverage",
+    "30/270",
+    "作り直す",
+    "S7 は v1 と v2 の両方を並べる",
+    "5 件目",
+    "README:265-266",
+    "規則の改訂",
+    "参照だけ",
+    "結果の選択に使わない",
+    "graphRuntimeObservedBeforeFreeze",
+    "onFixtureRevision",
+    "〔事実〕",
+    "〔推測〕",
+  ]) {
+    assert.ok(readings.limits.includes(word), word);
+    detects(
+      prep,
+      check,
+      (p) =>
+        (p.g04RevisionReadings.limits = p.g04RevisionReadings.limits.replaceAll(
+          word,
+          "",
+        )),
+      /g04RevisionReadings\.limits must disclose/u,
+    );
+    words += 1;
+  }
+  assert.equal(words, 17);
+  // 変異: d1.addenda、診断の run の source、SP-P4 の source を v1 に戻す。
+  detects(
+    prep,
+    check,
+    (p) => (p.d1.addenda[0] = "evals/nir1-g01/setup-addendum.v1.json"),
+    /d1\.addenda must be/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.diagnosticRuns.find((row) => row.id === "K24-G04-N1").source =
+        "evals/nir1-graph/declaration-addendum.v1.json"),
+    /diagnosticRuns K24-G04-N1\.source must be/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.diagnosticRuns.find((row) => row.id === "K24-G01-N2").source =
+        "evals/nir1-g01/setup-addendum.v1.json"),
+    /diagnosticRuns K24-G01-N2\.source must be/u,
+  );
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.diagnosticRuns.find((row) => row.id === "SP-P4").source =
+        "evals/nir1-graph/seed-pin-addendum.v1.json（SP/1 の受入れ SP-P4、SP-N7）"),
+    /diagnosticRuns SP-P4\.source must be/u,
+  );
+  // 変異: K24-G04-N1 を消すと診断の run の一覧が落ちる。
+  detects(
+    prep,
+    check,
+    (p) =>
+      (p.diagnosticRuns = p.diagnosticRuns.filter(
+        (row) => row.id !== "K24-G04-N1",
+      )),
+    /diagnosticRuns must be/u,
+  );
 });
 
 test("S2 追補 #9（DR-CP4-T-1、T-3、T-5）: freshnessSettle copies the pinned harness's waits (setup 60 s／250 ms with maintenance stillness, measurement 15 s／100 ms) and maps the measurement's exhaustion to the existing blocked rows", async () => {

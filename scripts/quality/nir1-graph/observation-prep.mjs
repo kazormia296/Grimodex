@@ -422,10 +422,11 @@ export const SOURCE_PINS = Object.freeze(
       ["build-receipt-check.mjs", "renderer/trace-cycle.ts", "trace-seal.mjs"],
     ],
     ["b-route-seam-fix", "c06dc17ec86fa968c87176aece12b4a1d67e2105", []],
+    // S2 追補 #11（DR-CP4-P-7）: constants.mjs moved to the G-04 v2 pin.
     [
       "t14-k64-freeze",
       "9e1a564efe5d7ac9d72d3c4008a6d9677b2b6d6f",
-      ["constants.mjs", "receipt.mjs"],
+      ["receipt.mjs"],
     ],
     ["freshness-requeue-fix", "02837f02bb9df82da6dc65b3d237bf17840ad775", []],
     ["startup-gate-io-settle", "26764b433e6299db960f608bb99e4332949d39a3", []],
@@ -471,15 +472,12 @@ export const SOURCE_PINS = Object.freeze(
     // S2 追補 #7（DR-CP4-S4-1、DR-CP4-P-4）: #758 last changed these five
     // (nir1-retrieval/contract.mjs is outside the harness directory;
     // diagnostic-runner.mjs moved to sp-p4-ir-pair-limit in S2 追補 #8).
+    // S2 追補 #11（DR-CP4-P-7）: frozen-k64-admission.mjs and trace-frozen.mjs
+    // moved to the G-04 v2 pins.
     [
       "s4-rehearsal-admission",
       "82d427465b16a12809c6f93adad74ac97859c85a",
-      [
-        "admission.mjs",
-        "frozen-k64-admission.mjs",
-        "trace-frozen.mjs",
-        "scripts/quality/nir1-retrieval/contract.mjs",
-      ],
+      ["admission.mjs", "scripts/quality/nir1-retrieval/contract.mjs"],
     ],
     // S2 追補 #8（DR-CP4-Q-2）: #759 last changes these two (the pair limit).
     // The commit is #759's squash on master (the same bytes as the PR head).
@@ -531,6 +529,35 @@ export const SOURCE_PINS = Object.freeze(
       "v4-trace-runner-quote-guard",
       "759a4679a7b90d25c13bc9a8517f8a64df43adda",
       ["trace-runner.mjs"],
+    ],
+    // S2 追補 #11（DR-CP4-P-7、DR-CP4-S4-7）: the G-04 fixture v2 changes
+    // (branch claude/g04-v2c-fixture, base master 8187fbfc). Each file is held
+    // by the branch commit that last changes it: 7bd785fe (B1, the
+    // post-observation freeze checks in nir1-graph/contract.mjs), d06f080e
+    // (B1/B2a, GRAPH_CASE_FREEZE, FROZEN_FIXTURE_SHA256 and G-04's
+    // declaration in constants.mjs), 2bf48fad (B2a, the declaration addendum
+    // v2 path in trace-frozen.mjs) and c5b46714 (B2b-1, the S2 files of
+    // frozen-k64-admission.mjs). Like the T-1〜T-5 and V-2〜V-4 pins, S4's PR
+    // brings them to master with its merge commit, never a squash.
+    [
+      "g4-b1-post-observation-freeze",
+      "7bd785fe084d0d370fb3c23860f68b31688684ed",
+      ["scripts/quality/nir1-graph/contract.mjs"],
+    ],
+    [
+      "g4-b1-freeze-v2-constants",
+      "d06f080e5966e81949317e673c47620d44d51d42",
+      ["constants.mjs"],
+    ],
+    [
+      "g4-b2a-declaration-v2-path",
+      "2bf48fad6d29fc60af2255bacab292031ff15725",
+      ["trace-frozen.mjs"],
+    ],
+    [
+      "g4-b2b1-addendum-v2-paths",
+      "c5b46714054c040cbe5c270ad657f6252b82eaeb",
+      ["frozen-k64-admission.mjs"],
     ],
     [
       "pr1-native-eval-feature",
@@ -609,11 +636,9 @@ export const SOURCE_PINS = Object.freeze(
       "2b68fd4df67599ca2f277fc94f94956de463381e",
       ["scripts/quality/run-nir1-retrieval.mjs"],
     ],
-    [
-      "cq-lim-graph-limits",
-      "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c",
-      ["scripts/quality/nir1-graph/contract.mjs"],
-    ],
+    // S2 追補 #11（DR-CP4-P-7）: nir1-graph/contract.mjs moved to the G-04 v2
+    // pin, so this pin only checks the ancestor (like s1j2-blocked-map).
+    ["cq-lim-graph-limits", "a789039a779eb4df0dec2b8b3be5e29d2bff5a5c", []],
     [
       "dp-h-unknown-scope",
       "e2d22b89c92b9de9585d273349e516e9df6ee5b7",
@@ -685,6 +710,18 @@ export const S4_PROCEDURE_WORDS = Object.freeze({
     "DR-CP4-V-2〜V-4",
     "user-confirmation-2026-10-31-trace-refreeze.md",
     "新しい S4 の結果だけ",
+  ],
+  // S2 追補 #11（DR-CP4-S4-7）: (g) the fourth re-freeze — the old S4b'' is
+  // revoked after G-04 v2 was made following its observation (the S2 pins
+  // change), with the user's confirmation on record; only the new S4's
+  // results are used and S6 allows the new S4b''' alone.
+  g: [
+    "DR-CP4-S4-7",
+    "557e683ccd884955e220f21bd15119f115995d29",
+    "G-04 の新しい版 v2",
+    "user-confirmation-2026-11-01-g04-v2c-build.md",
+    "新しい S4 の結果だけ",
+    "S6 の許可リストは新しい S4b''' だけ",
   ],
 });
 /**
@@ -1383,6 +1420,52 @@ const TRACE_RUNNER_LIMIT_WORDS = Object.freeze([
   // stderr (not the measurement Main's), with the extract as the source.
   "prep の Main の stderr",
   "acc5ec71c4af240b7455341e623f0ca9fb4df7b9",
+]);
+/**
+ * S2 追補 #11（DR-CP4-P-7）: the G-04 v2 pins and the files the
+ * g04RevisionReadings rule binds.
+ */
+const G04_REVISION_PIN_ROLES = Object.freeze([
+  "g4-b1-post-observation-freeze",
+  "g4-b1-freeze-v2-constants",
+  "g4-b2a-declaration-v2-path",
+  "g4-b2b1-addendum-v2-paths",
+]);
+const G04_REVISION_RULE_FILES = Object.freeze([
+  "evals/nir1-graph/freeze.v2.json",
+  "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+  "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1",
+  "evals/nir1-graph/declaration-addendum.v2.json",
+  "evals/nir1-graph/seed-pin-addendum.v2.json",
+  "evals/nir1-g01/setup-addendum.v2.json",
+]);
+/**
+ * S2 追補 #11 (a)〜(h): what the limits disclose — the version made after the
+ * observation under the old S4b'' (no IR recall evidence), the checks lost
+ * and the IR-supplemented class left to G-05, the pool (30/270, rebuilt not
+ * removed, v1 and v2 side by side in S7), K2/4's fifth Scene, the rule
+ * revision of README:265-266, the reference-only new addendum versions, the
+ * old observation never used to choose results, and the trace left at v1
+ * against onFixtureRevision — facts and guesses kept apart.
+ */
+const G04_REVISION_LIMIT_WORDS = Object.freeze([
+  "557e683ccd884955e220f21bd15119f115995d29",
+  "a7027915",
+  "IR の recall の根拠にならない",
+  "G-04-P2",
+  "irSupplementedCoverage",
+  "30/270",
+  "作り直す",
+  "S7 は v1 と v2 の両方を並べる",
+  "5 件目",
+  "README:265-266",
+  "規則の改訂",
+  "参照だけ",
+  "結果の選択に使わない",
+  "graphRuntimeObservedBeforeFreeze",
+  "onFixtureRevision",
+  "〔事実〕",
+  "〔推測〕",
 ]);
 /** S3v6-P3-2: the readings integrator or builders chose after dev runs. */
 const READINGS_AFTER_DEV = Object.freeze([
@@ -3453,6 +3536,32 @@ function traceRunnerReadingErrors(errors, readings) {
     );
 }
 
+/**
+ * S2 追補 #11（DR-CP4-P-7）: the G-04 v2 readings — the rule naming the four
+ * G-04 v2 pins and the v2 files S2 binds, and the limits (a)〜(h).
+ */
+function g04RevisionReadingErrors(errors, readings) {
+  if (!isObject(readings)) {
+    errors.push("g04RevisionReadings is required (S2 追補 #11、DR-CP4-P-7)");
+    return;
+  }
+  const unnamed = [
+    ...G04_REVISION_PIN_ROLES,
+    ...G04_REVISION_RULE_FILES,
+  ].filter((word) => !String(readings.rule ?? "").includes(word));
+  if (!nonBlank(readings.status) || unnamed.length > 0)
+    errors.push(
+      `g04RevisionReadings.rule must bind the pins ${G04_REVISION_PIN_ROLES.join(", ")} and the files ${G04_REVISION_RULE_FILES.join(", ")} (S2 追補 #11)`,
+    );
+  const missing = G04_REVISION_LIMIT_WORDS.filter(
+    (word) => !String(readings.limits ?? "").includes(word),
+  );
+  if (missing.length > 0)
+    errors.push(
+      `g04RevisionReadings.limits must disclose ${missing.join(", ")} (S2 追補 #11、DR-CP4-P-7)`,
+    );
+}
+
 /** S2 追補: the points S2 hands to S3 (undecided in a draft, decided when frozen). */
 function reviewerQuestionErrors(errors, questions, frozen) {
   const rows = Array.isArray(questions) ? questions : [];
@@ -3593,6 +3702,16 @@ export function observationPrepErrors(prep, ctx) {
     errors.push(
       "d1.choice must be ii and equal both addenda's declarationPlace",
     );
+  // S2 追補 #11（DR-CP4-P-7）: d1 names the current addendum versions.
+  if (
+    !same(prep.d1?.addenda, [
+      OBSERVATION_PREP_FILES.setupAddendum,
+      OBSERVATION_PREP_FILES.declarationAddendum,
+    ])
+  )
+    errors.push(
+      `d1.addenda must be ${OBSERVATION_PREP_FILES.setupAddendum} and ${OBSERVATION_PREP_FILES.declarationAddendum} (S2 追補 #11)`,
+    );
   if (
     !same(
       prep.d1?.runs,
@@ -3612,6 +3731,7 @@ export function observationPrepErrors(prep, ctx) {
   d2ReadingErrors(errors, prep.d2?.variantReadings, ctx);
   setupReadingErrors(errors, prep.setupReadings, ctx);
   traceRunnerReadingErrors(errors, prep.traceRunnerReadings);
+  g04RevisionReadingErrors(errors, prep.g04RevisionReadings);
   reviewerQuestionErrors(errors, prep.reviewerQuestions, frozen);
 
   // D10: modes and parity.
@@ -3964,11 +4084,18 @@ export function observationPrepErrors(prep, ctx) {
   const ids = (prep.diagnosticRuns ?? []).map((row) => row.id);
   if (!same(ids, DIAGNOSTIC_IDS))
     errors.push(`diagnosticRuns must be ${DIAGNOSTIC_IDS.join(", ")}`);
+  // S2 追補 #11（DR-CP4-P-7）: each row's source is the addendum it copies.
   const negatives = [
-    ...(ctx.setupAddendum?.diagnosticNegatives ?? []),
-    ...(ctx.declarationAddendum?.diagnosticNegatives ?? []),
+    ...(ctx.setupAddendum?.diagnosticNegatives ?? []).map((row) => [
+      row,
+      OBSERVATION_PREP_FILES.setupAddendum,
+    ]),
+    ...(ctx.declarationAddendum?.diagnosticNegatives ?? []).map((row) => [
+      row,
+      OBSERVATION_PREP_FILES.declarationAddendum,
+    ]),
   ];
-  for (const negative of negatives) {
+  for (const [negative, source] of negatives) {
     const row = (prep.diagnosticRuns ?? []).find(
       (run) => run.id === negative.id,
     );
@@ -3979,6 +4106,8 @@ export function observationPrepErrors(prep, ctx) {
       row.mutationAfterDeclaration !== negative.mutationAfterDeclaration
     )
       errors.push(`diagnosticRuns ${negative.id} must match its addendum row`);
+    else if (row.source !== source)
+      errors.push(`diagnosticRuns ${negative.id}.source must be ${source}`);
   }
 
   const p4 = (prep.diagnosticRuns ?? []).find((run) => run.id === "SP-P4");
@@ -4010,6 +4139,15 @@ export function observationPrepErrors(prep, ctx) {
   )
     errors.push(
       "diagnosticRuns SP-P4 must be the seed pin parity (hybrid only, no Graph arm, no seed, 8 base variants, without/with the step, SP-N7 -> [precheck])",
+    );
+  // S2 追補 #11（DR-CP4-P-7）: SP-P4 is SP/1's check in the current seed pin
+  // addendum version.
+  if (
+    p4 &&
+    !String(p4.source ?? "").startsWith(OBSERVATION_PREP_FILES.seedPinAddendum)
+  )
+    errors.push(
+      `diagnosticRuns SP-P4.source must be ${OBSERVATION_PREP_FILES.seedPinAddendum} (S2 追補 #11)`,
     );
   spP4ReadingErrors(errors, p4, prep, ctx);
 
