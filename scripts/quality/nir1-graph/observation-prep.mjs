@@ -33,8 +33,10 @@ import {
   SEED_PIN_ADDENDUM_V1,
   SP1,
   SYNTHETIC_NEGATIVES,
+  readBackOnce,
   seedPinAddendumErrors,
   seedPinAddendumPathNamedByTraceErrors,
+  supersededCopyErrors,
 } from "./seed-pin-addendum.mjs";
 
 export const OBSERVATION_PREP_FILES = Object.freeze({
@@ -139,6 +141,48 @@ export const DECLARATION_ADDENDUM_V1 = Object.freeze({
 export const SETUP_ADDENDUM_V1 = Object.freeze({
   path: "evals/nir1-g01/setup-addendum.v1.json",
   sha256: "ade7c40256c159f2da1341cfa885401542f6d6621a99ca394bcdb255b7271f46",
+});
+/** The current version's id (v1 is nir1-g01-setup-addendum/1). */
+export const SETUP_ADDENDUM_ID = "nir1-g01-setup-addendum/2";
+const SETUP_V1_SCENES = "4 つの Scene（G-01 と G-02／G-07／G-08 の追加 Scene）";
+const SETUP_V2_SCENES =
+  "5 つの Scene（G-01 と G-02／G-04／G-07／G-08 の追加 Scene）";
+
+/**
+ * The setup addendum v2 read back to v1: v1's freeze reference (the note may
+ * only add to v1's), the declaration addendum's path and Scene count (K2/4 の
+ * 5 件目, DR-CP4-G4-2) and the seed pin addendum's path (B2b-1 review P2-1).
+ */
+const SETUP_V1_COPY = Object.freeze({
+  ...SETUP_ADDENDUM_V1,
+  readBack(copy) {
+    const v1 = this.json;
+    const note = copy.references.graphCaseFreeze?.note;
+    if (
+      typeof note !== "string" ||
+      !note.startsWith(v1.references.graphCaseFreeze.note)
+    )
+      throw new Error("references.graphCaseFreeze.note must keep v1's note");
+    copy.references.graphCaseFreeze = v1.references.graphCaseFreeze;
+    copy.declarationPlace.rule = readBackOnce(
+      readBackOnce(
+        copy.declarationPlace.rule,
+        SETUP_V2_SCENES,
+        SETUP_V1_SCENES,
+        "declarationPlace.rule",
+      ),
+      OBSERVATION_PREP_FILES.declarationAddendum,
+      DECLARATION_ADDENDUM_V1.path,
+      "declarationPlace.rule",
+    );
+    copy.seedPinStepNote = readBackOnce(
+      copy.seedPinStepNote,
+      SEED_PIN_ADDENDUM_PATH,
+      SEED_PIN_ADDENDUM_V1.path,
+      "seedPinStepNote",
+    );
+    return copy;
+  },
 });
 
 /** K2/4「宣言の値（v1 は G-01 subset）」。 */
@@ -1761,19 +1805,17 @@ export function setupAddendumErrors(addendum, ctx) {
     !commonAddendumErrors(errors, addendum, ctx, "nir1-c-body-setup-addendum/1")
   )
     return errors;
-  if (addendum.graphRuntimeObservedBeforeAuthoring !== false)
-    errors.push("graphRuntimeObservedBeforeAuthoring must be false");
-  const supersedes = addendum.supersedes;
-  if (
-    !isObject(supersedes) ||
-    supersedes.path !== SETUP_ADDENDUM_V1.path ||
-    supersedes.sha256 !== SETUP_ADDENDUM_V1.sha256 ||
-    !HEX40.test(String(supersedes.commit ?? "")) ||
-    ctx.supersededSetupAddendumSha256 !== SETUP_ADDENDUM_V1.sha256
-  )
-    errors.push(
-      `supersedes must bind ${SETUP_ADDENDUM_V1.path} (sha256 ${SETUP_ADDENDUM_V1.sha256}, its commit), whose bytes are unchanged`,
-    );
+  if (addendum.addendumId !== SETUP_ADDENDUM_ID)
+    errors.push(`addendumId must be ${SETUP_ADDENDUM_ID}`);
+  // Written after a Graph runtime observation as a copy of v1 with the
+  // references changed (flag true; B2b-1 review P2-1, P3-2).
+  supersededCopyErrors(
+    errors,
+    addendum,
+    { ...SETUP_V1_COPY, json: ctx.supersededSetupAddendum?.json },
+    ctx.supersededSetupAddendum,
+    ctx.sourcePinGit,
+  );
   fixtureIdErrors(
     errors,
     "references.g01Fixture",
@@ -4465,20 +4507,18 @@ export async function loadObservationPrepContext({ repoRoot }) {
   } catch {
     // Absent or unreadable: the supersedes check fails closed.
   }
-  // The v1 addenda the current versions supersede (B2b-1); null if absent.
-  const supersededSha256 = async (relative) => {
+  // The v1 addenda the current versions supersede (B2b-1); null if absent
+  // or unreadable (the supersedes checks fail closed).
+  const superseded = async (relative) => {
     try {
-      return sha256(await read(relative));
+      const bytes = await read(relative);
+      return { sha256: sha256(bytes), json: JSON.parse(bytes) };
     } catch {
       return null;
     }
   };
-  const supersededSetupAddendumSha256 = await supersededSha256(
-    SETUP_ADDENDUM_V1.path,
-  );
-  const supersededSeedPinAddendumSha256 = await supersededSha256(
-    SEED_PIN_ADDENDUM_V1.path,
-  );
+  const supersededSetupAddendum = await superseded(SETUP_ADDENDUM_V1.path);
+  const supersededSeedPinAddendum = await superseded(SEED_PIN_ADDENDUM_V1.path);
   const formal = PROCEDURE_V1;
   let procedureFormal = null;
   try {
@@ -4518,8 +4558,8 @@ export async function loadObservationPrepContext({ repoRoot }) {
     setupAddendum: parsed.setupAddendum,
     declarationAddendum: parsed.declarationAddendum,
     supersededDeclarationAddendum,
-    supersededSetupAddendumSha256,
-    supersededSeedPinAddendumSha256,
+    supersededSetupAddendum,
+    supersededSeedPinAddendum,
     procedureDraft: parsed.procedureDraft,
     procedureFormal,
     sp1Sha256,
@@ -4641,6 +4681,46 @@ export function formalReferenceErrors(rows, head, git) {
 }
 
 /**
+ * The (path, commit, sha256) of the v1 bytes each current addendum version
+ * supersedes, as the formal gate checks them against git (B2b-1 review P3-2).
+ */
+export function supersededReferences(parsed) {
+  return [
+    [parsed?.setupAddendum, SETUP_ADDENDUM_V1],
+    [parsed?.declarationAddendum, DECLARATION_ADDENDUM_V1],
+    [parsed?.seedPinAddendum, SEED_PIN_ADDENDUM_V1],
+  ].map(([document, v1]) => ({
+    path: v1.path,
+    commit: document?.supersedes?.commit,
+    sha256: v1.sha256,
+  }));
+}
+
+/**
+ * The (path, commit, sha256) rows the formal gate checks against git: the
+ * traces, S2's boundFiles, the superseded v1 addenda, the K6/4 procedure and
+ * the SP/1 bytes.
+ */
+export function formalReferenceRows(prep, addenda) {
+  return [
+    ...prep.traces,
+    ...prep.boundFiles,
+    // The v1 bytes each new addendum version supersedes (B2b-1 review P3-2).
+    ...supersededReferences(addenda),
+    {
+      path: prep.k64Procedure.formal.path,
+      commit: prep.k64Procedure.formal.commit,
+      sha256: prep.k64Procedure.formal.sha256,
+    },
+    {
+      path: SP1.path,
+      commit: prep.contracts.sp1.bytesCommit,
+      sha256: SP1.sha256,
+    },
+  ];
+}
+
+/**
  * The gate a formal CP-4 Graph run passes before its first query: every
  * document frozen and reviewed, no placeholder, and (git) each referenced
  * commit holds the referenced bytes and is an ancestor of `head`.
@@ -4661,20 +4741,16 @@ export async function assertObservationPrepFormal({
   const prep = JSON.parse(
     await readFile(path.join(repoRoot, OBSERVATION_PREP_FILES.prep), "utf8"),
   );
-  const references = [
-    ...prep.traces,
-    ...prep.boundFiles,
-    {
-      path: prep.k64Procedure.formal.path,
-      commit: prep.k64Procedure.formal.commit,
-      sha256: prep.k64Procedure.formal.sha256,
-    },
-    {
-      path: SP1.path,
-      commit: prep.contracts.sp1.bytesCommit,
-      sha256: SP1.sha256,
-    },
-  ];
+  const addenda = {};
+  for (const name of [
+    "setupAddendum",
+    "declarationAddendum",
+    "seedPinAddendum",
+  ])
+    addenda[name] = JSON.parse(
+      await readFile(path.join(repoRoot, OBSERVATION_PREP_FILES[name]), "utf8"),
+    );
+  const references = formalReferenceRows(prep, addenda);
   const head = execFileSync(
     "git",
     ["rev-parse", "--verify", `${headRef}^{commit}`],
