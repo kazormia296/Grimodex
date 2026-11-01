@@ -702,6 +702,7 @@ requirements:
       - evals/nir1-graph/observation-prep-author-declaration.v1.json
       - scripts/quality/nir1-graph-eval/procedure/k64-procedure.draft-2.json
       - scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json
+      - evals/nir1-graph/observation-prep-freeze.v1.json
       - scripts/quality/nir1-graph/observation-prep.mjs
       - evals/nir1-graph/seed-pin-addendum.v1.json
       - evals/nir1-graph/seed-pin-addendum.v2.json
