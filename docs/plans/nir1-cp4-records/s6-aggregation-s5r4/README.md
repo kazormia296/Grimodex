@@ -7,7 +7,7 @@
 ## 1. 許可リストと集計の対象
 
 - 台帳 `attempts/*-s5r4-1.json` の 8 件はすべて `s4Commit` が `557e683ccd884955e220f21bd15119f115995d29`、status `completed`、attempt 1。許可リストはこの `s4Commit` だけ。旧 S4b `b7d74950` と旧 S4b' `9f52e7da` の run（`sp-p4-1`、`parity-1`、`*-s5r-*`、`*-s5r2-*`、`*-s5r3-*`）は集計に入れない（`s4-revocation-9f52e7da-2026-11-01.md`）。
-- `selectReceiptsForAggregation`（`receipt.mjs`）に S4b'' の 28 件の受領書を通すと、`g-case-gold` 13、`g-case-parity-unrestricted` 12、`g-case-diagnostic-negative` 3 の計 28 件が入る（窓の評価はすべて clean）。**trace の受領書 2 件は `runner-is-not-the-k64-hook-consumer` で除かれる**。関数が受領書全体の `runnerKind` を要求するのに、trace の受領書は query ごとに `runnerKind` を持ち（198 件が `k64-hook-consumer`、残り 3 件は begin の前に取り消された親で follow-up が無い）、全体では持たないため。trace の query は 201 件とも `followUp.issuedVia` が `product-hook` で、R5 は要約の検査で確かめられている。`receipt.mjs` は S2 に pin 済みなので変えず、trace は下の 3 のとおり別に扱う。
+- `selectReceiptsForAggregation`（`receipt.mjs`）に S4b'' の 28 件の受領書を通すと、`g-case-gold` 13、`g-case-parity-unrestricted` 12、`g-case-diagnostic-negative` 3 の計 28 件が入る（窓の評価はすべて clean）。**trace の受領書 2 件は `runner-is-not-the-k64-hook-consumer` で除かれる**。関数が受領書全体の `runnerKind` を要求するのに、trace の受領書は query ごとに `runnerKind` を持ち（browsing は 201 件とも `k64-hook-consumer`。editing は 198 件が `k64-hook-consumer`、残り 3 件は `runnerKind` が無い）、全体では持たないため。trace の query は両方とも 201 件すべてで `followUp.issuedVia` が `product-hook` で、R5 は要約の検査で確かめられている。`receipt.mjs` は S2 に pin 済みなので変えず、trace は下の 3 のとおり別に扱う。
 
 ## 2. 事前登録の規則
 
@@ -37,7 +37,7 @@
 | browsing | 受領書（K6/2） | 201／201 | — | 0 | 窓外 201（201/201、**超える**） | freshness（171） |
 | browsing | 再計算（K6/4） | 201／201 | 201 | 0 | 欠落 0 | なし |
 
-- editing の失効 200 件はすべて (i) B の封印（`i-b-seal`）。再計算の follow-up の失効は `parent-ticket-registration-unavailable` 5 件。X の内訳は X1 5、X3 196、X4 196、X6 196、X11 1、X12 194（X12 は begin の前の取り消し 3 件を含む）。K6/4 の `violations` は両 trace とも空。
+- editing の失効 200 件はすべて (i) B の封印（`i-b-seal`）。再計算の follow-up の失効は `parent-ticket-registration-unavailable` 5 件。X の内訳は X1 5、X3 196、X4 196、X6 196、X11 1、X12 194。K6/4 の `violations` は両 trace とも空。
 - **失効率（編集）はどちらの読みでも物差しを超える**ので、規則どおり `[precheck]` でユーザーの判断に回る。browsing は K6/4 の読みでは物差しの内側、K6/2 の読みでは窓外 100% で物差しを超える。
 
 ## 5. 規則の当てはめ（判定ではなく、規則が指す先）
