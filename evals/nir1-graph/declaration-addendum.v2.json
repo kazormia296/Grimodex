@@ -185,7 +185,7 @@
     "measurementPoint": false,
     "fixtureChanged": false,
     "setupOrderChanged": false,
-    "rule": "4 件の fixture（G-02、G-04 v2、G-07、G-08）の measurementBoundary.setupOrder は同じ文で、宣言の段を持たない。この文は freeze.v1.json が束縛するので書き換えず、この addendum もこの文に段を足さない。宣言の段は setupOrder の外で、「foreshadows, foreshadow Codex links and pins」の段の後、Graph arm の最初の query の前に挟む 1 段である。setupOrder の各段の順序と内容、setupTimeline、measurementPoint は変えない。宣言の段は setupTimeline の step にも measurementPoint にも数えない。declarationPlace の (ii) により、実際には setupTimeline と measurementPoint の後、測定の workspace を開いた後、その workspace で seed つきの query（V-10 の probe と warm-up を含む）を出す前に置く（K2/4 :406 は setupTimeline の step の前でも後でもよいとする）。",
+    "rule": "4 件の fixture（G-02、G-04 v2、G-07、G-08）の measurementBoundary.setupOrder は同じ文で、宣言の段を持たない。この文は freeze.v2.json が束縛する（G-02、G-07、G-08 は freeze.v1.json と同じ bytes、G-04 v2 は freeze.v2.json が最初に束縛した版で同じ文）ので書き換えず、この addendum もこの文に段を足さない。宣言の段は setupOrder の外で、「foreshadows, foreshadow Codex links and pins」の段の後、Graph arm の最初の query の前に挟む 1 段である。setupOrder の各段の順序と内容、setupTimeline、measurementPoint は変えない。宣言の段は setupTimeline の step にも measurementPoint にも数えない。declarationPlace の (ii) により、実際には setupTimeline と measurementPoint の後、測定の workspace を開いた後、その workspace で seed つきの query（V-10 の probe と warm-up を含む）を出す前に置く（K2/4 :406 は setupTimeline の step の前でも後でもよいとする）。",
     "setupOrderConstraint": "setupOrder の「Do not change tree order, registry or Scene Scope after the first typed revision is prepared」の Scene Scope は、setupOrder の「every explicit Scene Scope」の段が設定する明示 A1 の値を指す。宣言の writer は tree order と registry を書かず、v1 の列と A1 の意味の列も書かない（C15）ので、宣言が setupTimeline の後に入ってもこの制約に当たらない。観測前の commit の reviewer は、宣言の段の前後で tree order、registry、v1 の列、A1 の値、Index の metadata が変わらないことの確かめ方（測定の receipt の照合）を確かめる。"
   },
   "graphRecovered": {
@@ -214,7 +214,7 @@
   "afterDeclaration": "宣言の後は、その Scene の本文、title、A1、順序、その Scene を含む folder の構造と、project の registry を変えない（folder の構造の変更は X1-1 で配下の Scene の v1 を進める）。宣言は行の v1 の列（updated_at を含む）を書き換えないので Scope authority の revision を変えず、その kind の event だけの transaction は Index を dirty にしない（C8、C11、C15、C17）。",
   "recordPreconditions": "G-02、G-04 v2、G-07、G-08 の fixture は POV、story time、Chronicle event を設定しない。v1 の story は independent を宣言するので story の位置は要らない。POV は、記録があれば veto になるだけで、明示の POV は要らない。reading-before は、fixture の reading order（追加 Scene は 20〜40、G-04 の g04-lio-landing は 20、query は 100）を setup が実現した読む順から、live な project Scope authority で導く。",
   "cb4Inputs": "宣言の値は story と POV が independent なので、CB-4 は story position も POV も要求しない。G-02 base、G-04 base、G-07 base、G-08 の base-usable と graph-recovered の前提条件 cb4-inputs は成り立つ。宣言がなく追加 Scene が返らないことは cb4-inputs に当たらず、期待値と違うので Hold になる。",
-  "unchanged": "CP-0 が freeze した query、Scene、Gold、期待値、前提条件、setupTimeline、variant のまま（declarations の excerpt の範囲は freeze 済みの期待値である）。R と R+IR の setup は変えない。",
+  "unchanged": "CP-0 が freeze した（G-04 は freeze.v2.json が固定した v2 の）query、Scene、Gold、期待値、前提条件、setupTimeline、variant のまま（declarations の excerpt の範囲は freeze 済みの期待値である）。R と R+IR の setup は変えない。",
   "diagnosticNegatives": [
     {
       "id": "K24-G02-N1",
