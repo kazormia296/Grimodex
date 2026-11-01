@@ -995,3 +995,10 @@ branch `claude/g04-v2c-fixture`、基点 `a7679acd`（B2a の終わり）。B2a 
   - ◆ `boundFiles[0]`（setup v1、`ade7c402…`）、`[1]`（宣言 v1、`82b05bae…`）、`[5]`（seed-pin v1、`cf2330e2…`）の path と sha256：v2 に直す（validator が求める）。
   - `reviewerQuestions[5].grounds[0]`、`[5].subQuestions[0]`（seed-pin v1 の SP-P4 の check と SP-N7「変えていない」）、`reviewerQuestions[6].grounds[0]`（setup v1 の K24-G01-N2〜N4）：S3 が見た時点の事実の記録。案：v1 の事実として残す。
   - `purpose`、`preconditions[3]`、`s4StagesRule`：名指すのは S4 の freeze 記録 `observation-prep-freeze.v1.json`（superseded の addendum ではない）。S4 の凍結し直しで記録の file を同じ path で作るか新しい版にするかによる。B2b-2 と S4 で決める。
+
+**B2b-1 の独立コードレビューの反映の結果（2026-11-01）**：
+
+- commit：DR `359513c4` → flag と note `77acdf2a` → validator `2437737a` → 試験 `109a8d78`。
+- 新しい版の最終の sha256：seed-pin addendum v2 `cf79d0abbe1871b0603e27f878172e2c4f0d4a18c3abedc78c7fd6627ecbed06`、setup addendum v2 `18964170a5ecadfa2c87cb61170fb42412a404208deb6c77675f72e36aae7224`（上の「B2b-1 の実装後の結果」の `b998056a…`、`9dbc5d6c…` を置き換える。変えたのは flag と note の空白だけ）。宣言の addendum v2 は `8d6e967e…` のまま。
+- 変異：worktree の外の写しで新しい検査を 1 つずつ外すと、足した試験のどれかが落ちる（写しの比較、flag の true、`supersedes.commit` の git の照合、2 つの `addendumId`、setup の note の先頭の一致、正式の門の行から superseded の v1 を外す、の 7 個）。
+- 検証（Node 24.18.0。Node 22.23.3 でも同じ数）：`nir1-graph` 124 件中 100 pass、24 fail（B2b-1 の終わりは 122 件中 98。足した試験 2 件は通り、落ちる 24 件は名前まで同じで、どれも S2 の pin し直しで直る種類）。`nir1-graph-eval` 602/602、`impact-map`＋`eval-fixtures` 52/52、`quality-workflow` 23/23。`eval:fixtures` は exit 1 で、落ちるのは nir1ObservationPrep の S2 の誤り 8 件だけ。変えた code・試験・JSON の prettier と eslint は通る。
