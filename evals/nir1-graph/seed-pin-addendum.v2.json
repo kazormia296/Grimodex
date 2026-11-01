@@ -1,7 +1,7 @@
 {
   "schemaVersion": "nir1-graph-case-seed-pin-addendum/1",
   "addendumId": "nir1-graph-seed-pin-addendum/2",
-  "status": "draft-awaiting-independent-review",
+  "status": "frozen-after-independent-review",
   "graphRuntimeObservedBeforeAuthoring": true,
   "purpose": "SP/1 の「設計」の「addendum の file」。G-01〜G-08 のすべての variant の setup に、問いの Scene から予定の seed の Entity への pin を 1 つ、製品の upsertScenePin で書く段を足す（setupOrder の外の 1 段）。freeze.v2.json が束縛しない別の file に置き、凍結した bytes、期待値、前提条件、setupTimeline、measurementPoint、K6/4 と K2/4 の内容は変えない。",
   "contract": {
@@ -336,6 +336,13 @@
     "synthetic-detection": "SP/1 :178: 観測の前に、合成の記録で SP-N1〜N5、SP-N9〜N13 を期待どおりに分けることを示す。observation-prep.v1.json の r5Gate.syntheticDetection と beforeFirstGatedRun"
   },
   "reviewPlan": "観測前の commit の独立 reviewer が確かめること: 予定の seed が fixture の値をそのまま写したこと、置き場、pin が R／IR／Graph の対応付けを変えないというコードの読取（SP/1 の (b)(c)）、段が凍結の bytes と期待値を変えないこと、K2/4 の addendum と重ならないこと、G-case の Graph の arm の観測がまだ無いこと。",
-  "review": null,
+  "review": {
+    "reviewer": "B2b-1 の独立コードレビューの reviewer（別の agent、Opus、read-only。Graph runtime を実行せず、測定の受領書を読んでいない）",
+    "reviewedAt": "2026-11-01",
+    "record": "docs/plans/nir1-cp4-records/g04-v2c-b2b1-code-review-2026-11-01/review-b2b1.md（commit 294f708fc2e02ebbe10257533193de711a1f5bed〔claude/nir1-contracts。この枝は master に merge しないので hash で引く〕の bytes。SHA-256 ff4f43753bb29e013d93698b19e14abc533207d44caa30be5d864d8e12ddf403。B2b-1〔claude/g04-v2c-fixture の a7679acd..5591f37a、5 commit〕の独立コードレビューの報告の本文。判定は (b) 修正してから受入れ可、P1 なし、P2×1、P3×5）。同じ directory の README.md（SHA-256 ad83db1cdb09a35aef81ca4cc6e5c325ca6011f06635e3a3dd2dbad138e03208）は integrator の要旨",
+    "recordSha256": "ff4f43753bb29e013d93698b19e14abc533207d44caa30be5d864d8e12ddf403",
+    "verdict": "(b) 修正してから受入れ可（P1 なし、P2×1、P3×5）",
+    "conditions": "reviewer が読んだこの file の bytes は 5591f37a の版（SHA-256 b998056a0b41901ecf25bbcc3233321fdbcbb27ca50241110e1c7707a28c94e8）で、v1 と JSON の葉を比べ、変わった葉は参照・それを述べる文・版の欄だけで内容の変更は無いこと、v1 の bytes が変わっていないことを確かめた。指摘のうち P2-1（flag を字義どおり true にする） を B2b-1 が直し（77acdf2a。integrator の判断。cp4-decisions.md の「B2b-1 の独立コードレビューの反映」）、SHA-256 は cf79d0abbe1871b0603e27f878172e2c4f0d4a18c3abedc78c7fd6627ecbed06 になった。直した後の bytes を reviewer が見直した記録は無い。直したのは graphRuntimeObservedBeforeAuthoring だけで、v1 の写しの条件（supersedes が v1 を束縛し、版の欄と参照を除いて v1 に読み戻すと一致する）は validator が確かめる。cf79d0ab… の後、この file を変えた commit はこの凍結のほかに無い。これは独立コードレビュー（実装と文書の差分の正しさと迂回路を見るレビュー）で、S3 の独立レビューでも、fixture の独立期待値レビューでもない。reviewer はどの回も Claude の subagent（agent）で、人間ではなく、ユーザーの確認でもない。凍結（2026-11-01、B2b-2〔S4 の 4 回目の凍結のやり直し、DR-CP4-S4-7〕の builder、Claude の agent）で変えたのは status と review の 2 つの欄だけで、ほかの bytes は下に書いた凍結の前の sha256 の bytes と同じ。"
+  },
   "staticDetectionScope": "eval:fixtures が静的に検出するのは SP-N1〜N3、N8、N9（値）と SP-N11、N14（行の集合）だけである。SP-N4〜N6、N10、N12、N13 は addendum の宣言で、違反は setup の実行と run の受入れで検出し、合成の記録で検出力を示す。"
 }

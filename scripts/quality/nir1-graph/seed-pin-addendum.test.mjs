@@ -308,8 +308,23 @@ test("DR-CP4-G4-7 B2b-1: the new version is v1 with the references only changed,
   );
   const v1 = JSON.parse(v1Bytes);
   assert.equal(addendum.addendumId, "nir1-graph-seed-pin-addendum/2");
-  assert.equal(addendum.status, "draft-awaiting-independent-review");
-  assert.equal(addendum.review, null);
+  // DR-CP4-S4-7 (2b): frozen on the B2b-1 independent code review (contracts
+  // 294f708f); the reviewer saw b998056a, the fix (flag) came after.
+  assert.equal(addendum.status, "frozen-after-independent-review");
+  assert.equal(
+    addendum.review.recordSha256,
+    "ff4f43753bb29e013d93698b19e14abc533207d44caa30be5d864d8e12ddf403",
+  );
+  assert.ok(
+    addendum.review.record.includes("294f708fc2e02ebbe10257533193de711a1f5bed"),
+  );
+  for (const word of [
+    "b998056a0b41901ecf25bbcc3233321fdbcbb27ca50241110e1c7707a28c94e8",
+    "cf79d0abbe1871b0603e27f878172e2c4f0d4a18c3abedc78c7fd6627ecbed06",
+    "直した後の bytes を reviewer が見直した記録は無い",
+    "独立期待値レビューでもない",
+  ])
+    assert.ok(addendum.review.conditions.includes(word), word);
   // Written after a Graph runtime observation (literal; B2b-1 review P2-1),
   // as a copy of v1's rows.
   assert.equal(addendum.graphRuntimeObservedBeforeAuthoring, true);

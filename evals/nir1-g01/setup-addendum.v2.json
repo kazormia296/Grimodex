@@ -1,7 +1,7 @@
 {
   "schemaVersion": "nir1-c-body-setup-addendum/1",
   "addendumId": "nir1-g01-setup-addendum/2",
-  "status": "draft-awaiting-independent-review",
+  "status": "frozen-after-independent-review",
   "graphRuntimeObservedBeforeAuthoring": true,
   "purpose": "K2/4 の「setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）」の G-01 の分。宣言する Scene と値、期待する excerpt の範囲、宣言の時期と場所、診断用の負例を、G-01 の R+IR+Graph（本文の開示を含む）を観測するどの実行よりも前に固定する。fixture v1 は変えない。",
   "contract": {
@@ -200,7 +200,14 @@
   ],
   "diagnosticNegativeRule": "負例は Gold ではなく診断用の期待値で、Gold の run とは別の run で行い、結果は診断として記録するだけで、case の判定（pass、hold、blocked）に数えない。",
   "reviewPlan": "観測前の commit の独立 reviewer（S3）が確かめること: g01-mira が v1 の subset で宣言できること（veto に当たる記録も POV もない）、宣言の段が fixture v1 の期待値と前提条件を変えないこと、診断用の負例、K2/4 の表との一致、参照した sha256。確かめた記録は観測前の commit に束縛し（review の欄に記録の path と sha256 を書き、status を frozen-after-independent-review にする）、この file は以後変えない。",
-  "review": null,
+  "review": {
+    "reviewer": "B2b-1 の独立コードレビューの reviewer（別の agent、Opus、read-only。Graph runtime を実行せず、測定の受領書を読んでいない）",
+    "reviewedAt": "2026-11-01",
+    "record": "docs/plans/nir1-cp4-records/g04-v2c-b2b1-code-review-2026-11-01/review-b2b1.md（commit 294f708fc2e02ebbe10257533193de711a1f5bed〔claude/nir1-contracts。この枝は master に merge しないので hash で引く〕の bytes。SHA-256 ff4f43753bb29e013d93698b19e14abc533207d44caa30be5d864d8e12ddf403。B2b-1〔claude/g04-v2c-fixture の a7679acd..5591f37a、5 commit〕の独立コードレビューの報告の本文。判定は (b) 修正してから受入れ可、P1 なし、P2×1、P3×5）。同じ directory の README.md（SHA-256 ad83db1cdb09a35aef81ca4cc6e5c325ca6011f06635e3a3dd2dbad138e03208）は integrator の要旨",
+    "recordSha256": "ff4f43753bb29e013d93698b19e14abc533207d44caa30be5d864d8e12ddf403",
+    "verdict": "(b) 修正してから受入れ可（P1 なし、P2×1、P3×5）",
+    "conditions": "reviewer が読んだこの file の bytes は 5591f37a の版（SHA-256 9dbc5d6c343c878db4eabb9c348dbafe34f01c7840ace14033c309682605c03b）で、v1 と JSON の葉を比べ、変わった葉は参照・それを述べる文・版の欄だけで内容の変更は無いこと、v1 の bytes が変わっていないことを確かめた。指摘のうち P2-1（flag を字義どおり true にする）と P3-4（note の空白） を B2b-1 が直し（77acdf2a。integrator の判断。cp4-decisions.md の「B2b-1 の独立コードレビューの反映」）、SHA-256 は 18964170a5ecadfa2c87cb61170fb42412a404208deb6c77675f72e36aae7224 になった。直した後の bytes を reviewer が見直した記録は無い。直したのは graphRuntimeObservedBeforeAuthoring と references.graphCaseFreeze.note の句点の後の空白 だけで、v1 の写しの条件（supersedes が v1 を束縛し、版の欄と参照を除いて v1 に読み戻すと一致する）は validator が確かめる。18964170… の後、この file を変えた commit はこの凍結のほかに無い。これは独立コードレビュー（実装と文書の差分の正しさと迂回路を見るレビュー）で、S3 の独立レビューでも、fixture の独立期待値レビューでもない。reviewer はどの回も Claude の subagent（agent）で、人間ではなく、ユーザーの確認でもない。凍結（2026-11-01、B2b-2〔S4 の 4 回目の凍結のやり直し、DR-CP4-S4-7〕の builder、Claude の agent）で変えたのは status と review の 2 つの欄だけで、ほかの bytes は下に書いた凍結の前の sha256 の bytes と同じ。"
+  },
   "seedPinStepNote": "SP/1（nir1-graph-case-seed-pin-proposal/1。2026-10-27 に確認）の seed の pin の段（evals/nir1-graph/seed-pin-addendum.v2.json）を先に置き、この addendum の宣言の段はその後に置く。G-02〜G-08 の seed の pin の段は setupOrder の「foreshadows, foreshadow Codex links and pins」の段の直後（maintenance の有効化と setupTimeline の前）、G-01 は g01-mira の pin の後（typed Revision の prepare と B の seal の前）にある。宣言の段は declarationPlace (ii) のとおり測定の workspace を開いた後、Graph の arm の最初の query の前で、K2/4 の内容（宣言する Scene、値、期待値、負例）は変えない。診断用の負例（宣言しない run を含む）も seed の pin の段を含む workspace で取る（SP/1 の設計: Graph が要求された状態の負例になる）。",
   "afterMutationReadings": {
     "status": "S2 追補 #4 の提案（DR-CP4-O-6 の対照の読み、O-14／O-15 の聞き直しの規則、O-5 (v)(vii)(xi)、O-9、O-17。DR-CP4-P-1）。S3 の 7 回目が追補 #4 の版を確かめた（observation-prep.v1.json の reviewerQuestions P-S2-7 と P-S2-8 の決定 a。判定は accept-with-conditions で、この file の review）。7 回目の後に、K24-G01-N4 の beforeDeclaration（追補 #5、c5d481c4）と、この節の retry.rule と graphTries（追補 #6、94fc8ed4）が変わり、その変更を S3 が見た記録は無い。数値は harness の定数（scripts/quality/nir1-graph-eval/g01-negatives.mjs の G01_CONTROL_ATTEMPTS、G01_SAMPLE_ATTEMPTS、G01_CONTROL_GAP_MS、G01_GRAPH_READY_WAIT_MS。master 950751d0）を正とした（O-6 の「最大 10 回、間隔 1.2 s」と O-15 の「30 回」は古い文面）。",

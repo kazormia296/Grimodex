@@ -420,8 +420,26 @@ test("DR-CP4-G4-7: the declaration addendum v2 references G-04 v2 and freeze.v2,
     "evals/nir1-graph/declaration-addendum.v2.json",
   );
   assert.equal(addendum.addendumId, "nir1-graph-declaration-addendum/2");
-  assert.equal(addendum.status, "draft-awaiting-independent-review");
-  assert.equal(addendum.review, null);
+  // DR-CP4-S4-7 (2b): frozen on the B2a and B2b-1 independent code reviews
+  // (contracts 33042487 and 294f708f), never called an expectation review.
+  assert.equal(addendum.status, "frozen-after-independent-review");
+  assert.equal(
+    addendum.review.recordSha256,
+    "b6b164ffdaf1a20c131b704047d0cd7774b8f42b1832b11136c5367db3ad2d9a",
+  );
+  for (const word of [
+    "330424871a8594a493d0cb0d8ee6028f89bdcf03",
+    "294f708fc2e02ebbe10257533193de711a1f5bed",
+  ])
+    assert.ok(addendum.review.record.includes(word), word);
+  for (const word of [
+    "c3207d69",
+    "8d6e967e18b299e7c4e8dfb4f0653cab13d7fd2caf154ce0033532441f1c2a4f",
+    "K2/4 :418 の独立 reviewer の記録はまだ無い",
+    "独立期待値レビューでもない",
+    "status と review の 2 つの欄だけ",
+  ])
+    assert.ok(addendum.review.conditions.includes(word), word);
   assert.deepEqual(Object.keys(addendum.references.fixtures), [
     "G-02",
     "G-04",
@@ -1300,8 +1318,23 @@ test("DR-CP4-G4-7 B2b-1: the G-01 setup addendum v2 is v1 with the references on
   const v2 = await json(OBSERVATION_PREP_FILES.setupAddendum);
   assert.deepEqual(setupAddendumErrors(v2, ctx), []);
   assert.equal(v2.addendumId, "nir1-g01-setup-addendum/2");
-  assert.equal(v2.status, "draft-awaiting-independent-review");
-  assert.equal(v2.review, null);
+  // DR-CP4-S4-7 (2b): frozen on the B2b-1 independent code review (contracts
+  // 294f708f); the reviewer saw 9dbc5d6c, the fix (flag, note) came after.
+  assert.equal(v2.status, "frozen-after-independent-review");
+  assert.equal(
+    v2.review.recordSha256,
+    "ff4f43753bb29e013d93698b19e14abc533207d44caa30be5d864d8e12ddf403",
+  );
+  assert.ok(
+    v2.review.record.includes("294f708fc2e02ebbe10257533193de711a1f5bed"),
+  );
+  for (const word of [
+    "9dbc5d6c343c878db4eabb9c348dbafe34f01c7840ace14033c309682605c03b",
+    "18964170a5ecadfa2c87cb61170fb42412a404208deb6c77675f72e36aae7224",
+    "直した後の bytes を reviewer が見直した記録は無い",
+    "独立期待値レビューでもない",
+  ])
+    assert.ok(v2.review.conditions.includes(word), word);
   // Written after a Graph runtime observation (B2b-1 review P2-1).
   assert.equal(v2.graphRuntimeObservedBeforeAuthoring, true);
   assert.deepEqual(
