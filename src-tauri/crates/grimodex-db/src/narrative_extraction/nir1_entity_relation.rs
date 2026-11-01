@@ -9500,7 +9500,10 @@ pub(super) mod tests {
                 session_id: "graph-source-session".into(),
                 event_uid: event_uid.clone(),
                 node_id: "nir1".into(),
-                patch: json!({"content":"graph source writer mutation"})
+                // A title is outside the body paths, so the patch is not a
+                // body-only transaction and dirties B (X1-5). A content-only
+                // patch leaves B clean (`graph_index_dirty_tests`).
+                patch: json!({"title":"graph source writer mutation"})
                     .as_object()
                     .cloned()
                     .ok_or_else(|| anyhow::anyhow!("source patch must be an object"))?,

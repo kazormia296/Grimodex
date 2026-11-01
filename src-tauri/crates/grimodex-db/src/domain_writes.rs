@@ -3018,7 +3018,42 @@ fn append_tree_feed(
         .transaction_id)
 }
 
-fn tree_patch_path(key: &str) -> Option<&'static str> {
+/// The wire keys `tree_node_patch` accepts and the columns they write. Every
+/// key also has a feed path in `tree_patch_path`, so a patch cannot write a
+/// column that its feed event does not name (a test pins the one-to-one map;
+/// X1-5 classifies body-only transactions from those paths).
+pub(crate) const TREE_NODE_PATCH_COLUMNS: [(&str, &str); 28] = [
+    ("parentId", "parent_id"),
+    ("title", "title"),
+    ("synopsis", "synopsis"),
+    ("intent", "intent"),
+    ("sortOrder", "sort_order"),
+    ("storyTimeOrder", "story_time_order"),
+    ("storyTimeLabel", "story_time_label"),
+    ("povCharacterId", "pov_character_id"),
+    ("locationId", "location_id"),
+    ("chronicleStartTime", "chronicle_start_time"),
+    ("chronicleStartMinute", "chronicle_start_minute"),
+    ("chronicleStartGranularity", "chronicle_start_granularity"),
+    ("chronicleEndTime", "chronicle_end_time"),
+    ("chronicleEndMinute", "chronicle_end_minute"),
+    ("chronicleEndGranularity", "chronicle_end_granularity"),
+    ("chroniclePrecision", "chronicle_precision"),
+    ("status", "status"),
+    ("content", "content"),
+    ("unplacedBeatsDoc", "unplaced_beats_doc"),
+    ("charCount", "char_count"),
+    ("unplacedBeatPreview", "unplaced_beat_preview"),
+    ("placedBeatPreview", "placed_beat_preview"),
+    ("sourceUri", "source_uri"),
+    ("sourceMtime", "source_mtime"),
+    ("archivedAt", "archived_at"),
+    ("contextMode", "context_mode"),
+    ("aliases", "aliases"),
+    ("excludedAliases", "excluded_aliases"),
+];
+
+pub(crate) fn tree_patch_path(key: &str) -> Option<&'static str> {
     match key {
         "parentId" => Some("/parentId"),
         "title" => Some("/title"),
@@ -3668,36 +3703,7 @@ pub fn tree_node_patch_with_authority(
             "tree node patch undoJournalId does not match canonical authority context"
         );
     }
-    let columns = [
-        ("parentId", "parent_id"),
-        ("title", "title"),
-        ("synopsis", "synopsis"),
-        ("intent", "intent"),
-        ("sortOrder", "sort_order"),
-        ("storyTimeOrder", "story_time_order"),
-        ("storyTimeLabel", "story_time_label"),
-        ("povCharacterId", "pov_character_id"),
-        ("locationId", "location_id"),
-        ("chronicleStartTime", "chronicle_start_time"),
-        ("chronicleStartMinute", "chronicle_start_minute"),
-        ("chronicleStartGranularity", "chronicle_start_granularity"),
-        ("chronicleEndTime", "chronicle_end_time"),
-        ("chronicleEndMinute", "chronicle_end_minute"),
-        ("chronicleEndGranularity", "chronicle_end_granularity"),
-        ("chroniclePrecision", "chronicle_precision"),
-        ("status", "status"),
-        ("content", "content"),
-        ("unplacedBeatsDoc", "unplaced_beats_doc"),
-        ("charCount", "char_count"),
-        ("unplacedBeatPreview", "unplaced_beat_preview"),
-        ("placedBeatPreview", "placed_beat_preview"),
-        ("sourceUri", "source_uri"),
-        ("sourceMtime", "source_mtime"),
-        ("archivedAt", "archived_at"),
-        ("contextMode", "context_mode"),
-        ("aliases", "aliases"),
-        ("excludedAliases", "excluded_aliases"),
-    ];
+    let columns = TREE_NODE_PATCH_COLUMNS;
     let mut assignments = Vec::new();
     let mut params = Vec::new();
     for (wire_name, sql_name) in columns {

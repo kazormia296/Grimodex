@@ -33,6 +33,36 @@ pub(crate) fn suspend_project_in_tx(conn: &Connection, project: &str) -> Result<
     Ok(())
 }
 
+/// Dirty only the Chronicle IR Index. A caller uses this instead of
+/// `suspend_project_in_tx` only when a closed judgement proved, in the same
+/// transaction, that the change is an input of the Chronicle Index and not of
+/// the Graph Index (X1-5): a body-only feed transaction, or the Freshness of a
+/// Revision on the closed list of known non-Graph Revisions. Everything else
+/// keeps dirtying both.
+pub(crate) fn suspend_chronicle_index_in_tx(conn: &Connection, project: &str) -> Result<()> {
+    let has_binding: bool = conn.query_row(
+        "SELECT EXISTS(
+                 SELECT 1 FROM narrative_semantic_index_metadata
+                  WHERE project_id=?1 AND index_key=?2
+             )",
+        params![project, CHRONICLE_INDEX_KEY],
+        |row| row.get(0),
+    )?;
+    if !has_binding {
+        return Ok(());
+    }
+    ensure!(
+        !conn.is_autocommit(),
+        "NIR1 live index input mutations require a transaction"
+    );
+    conn.execute(
+        "UPDATE narrative_semantic_index_metadata SET dirty_cache_flag=1
+         WHERE project_id=?1 AND index_key=?2",
+        params![project, CHRONICLE_INDEX_KEY],
+    )?;
+    Ok(())
+}
+
 pub(crate) fn suspend_current_revision_in_tx(
     conn: &Connection,
     project: &str,
