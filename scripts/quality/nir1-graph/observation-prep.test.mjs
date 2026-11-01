@@ -422,22 +422,31 @@ test("DR-CP4-G4-7: the declaration addendum v2 references G-04 v2 and freeze.v2,
   assert.equal(addendum.addendumId, "nir1-graph-declaration-addendum/2");
   // DR-CP4-S4-7 (2b): frozen on the B2a and B2b-1 independent code reviews
   // (contracts 33042487 and 294f708f), never called an expectation review.
+  // DR-CP4-S4-7 の追記 2 (D): the K2/4 :418 record is the S4b''' pre-review
+  // (contracts e42e9990), bound to review over the frozen bytes ec0f1b85.
   assert.equal(addendum.status, "frozen-after-independent-review");
+  assert.equal(addendum.review.reviewedAt, "2026-11-02");
   assert.equal(
     addendum.review.recordSha256,
-    "b6b164ffdaf1a20c131b704047d0cd7774b8f42b1832b11136c5367db3ad2d9a",
+    "de0ccae2290bea5be4cab09ab763925f7e0fa32121b028480f3395cc05721176",
   );
   for (const word of [
+    "g04-v2c-s4pre-review-2026-11-02/review-s4pre.md",
+    "e42e99900f80a3e10f58702f6eaa884e3e478649",
+    "K2/4 :418 の独立 reviewer の確認の記録",
     "330424871a8594a493d0cb0d8ee6028f89bdcf03",
     "294f708fc2e02ebbe10257533193de711a1f5bed",
   ])
     assert.ok(addendum.review.record.includes(word), word);
   for (const word of [
+    "ec0f1b858efde5c45b0e50a5dd040d2d2c375cfafbcefc09aa956e345c99f7a5",
+    ":418 の reviewer の確認の 3 点",
+    "早すぎた",
     "c3207d69",
     "8d6e967e18b299e7c4e8dfb4f0653cab13d7fd2caf154ce0033532441f1c2a4f",
     "K2/4 :418 の独立 reviewer の記録はまだ無い",
     "独立期待値レビューでもない",
-    "status と review の 2 つの欄だけ",
+    "上に書いた凍結の前の sha256",
   ])
     assert.ok(addendum.review.conditions.includes(word), word);
   assert.deepEqual(Object.keys(addendum.references.fixtures), [
