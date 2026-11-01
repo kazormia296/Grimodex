@@ -1,0 +1,94 @@
+{
+ "script": {
+  "path": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04v2/probe.mjs",
+  "sha256": "8fcc9010c35de49b84fc3dabdaccf489854b885a75e4d12d8a9feb193816ce21"
+ },
+ "candidatesFile": {
+  "path": "author/cand.json",
+  "sha256": "5415993a81ca42af05203af20d93393d2a49a7d52a6da43742de4c1318797bc8"
+ },
+ "candidatesDeclared": [
+  {
+   "order": 1,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, the river's ferryman, carried Lio across and set her down on the far stones at dusk.",
+   "textSha256": "726f3bc1992a2f428e44ecc4bf43654d0bef88a078bcf7c4fd8ee32074947c35"
+  },
+  {
+   "order": 2,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, the ferryman, carried Lio across the river to the far stones at dusk.",
+   "textSha256": "388b195023dd8424e4a936d9bd6706922d5e62e73c591e654023e41cc6af8fda"
+  },
+  {
+   "order": 3,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, who runs a flat ferry, carried Lio across the river and set her on the far stones at dusk.",
+   "textSha256": "e875c007f290eddd3b15debf529308f8154d9e1e8111199733c1798d8dcd15f1"
+  },
+  {
+   "order": 4,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Chalk tallies lined a weathered post beside a quiet dock.",
+   "textSha256": "450107adb43444231b83830c4139ece4661f04908e16702e9b61befeff8e9686"
+  },
+  {
+   "order": 5,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Notches crowded a pale wooden post by the harbor wall.",
+   "textSha256": "f4e5a5beff8637b8ff84ec7b005629b982511981e887c82d97627981236357b2"
+  },
+  {
+   "order": 6,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Rows of tally marks covered a gray post in the sun.",
+   "textSha256": "b5d2dcb4b19ffad1ab4b52154f0471dbb085f8aabc577874033545f40c3e7dc4"
+  },
+  {
+   "order": 7,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "Rain dripped from the eaves of a silent inn.",
+   "textSha256": "3edf6ec72d3ed4b4fcb5bf66ce0cd9d4252441c677f940cbb16822dab1e183f5"
+  },
+  {
+   "order": 8,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "Dry leaves gathered on the steps of a shuttered inn.",
+   "textSha256": "a81ac395d7fa80cac0809a322d13161ebbb680b25cf146033736939e2fb6edd9"
+  },
+  {
+   "order": 9,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "A cold hearth sat beneath dusty beams in the inn.",
+   "textSha256": "5227a409432d0696376ffcf58c7d1666b5ede4ce1ddcb8cf63fd8de864ef0cdc"
+  }
+ ],
+ "at": "2026-11-01T09:25:45.993Z"
+}

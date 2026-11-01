@@ -1,0 +1,234 @@
+== 候補（測定の前に記録） ==
+  #1 irSummary:g04-lio-landing sha256=726f3bc1992a2f428e44ecc4bf43654d0bef88a078bcf7c4fd8ee32074947c35 "Bren, the river's ferryman, carried Lio across and set her down on the far stones at dusk."
+  #2 irSummary:g04-lio-landing sha256=388b195023dd8424e4a936d9bd6706922d5e62e73c591e654023e41cc6af8fda "Bren, the ferryman, carried Lio across the river to the far stones at dusk."
+  #3 irSummary:g04-lio-landing sha256=e875c007f290eddd3b15debf529308f8154d9e1e8111199733c1798d8dcd15f1 "Bren, who runs a flat ferry, carried Lio across the river and set her on the far stones at dusk."
+  #4 sceneBody:g04-rv-match sha256=450107adb43444231b83830c4139ece4661f04908e16702e9b61befeff8e9686 "Chalk tallies lined a weathered post beside a quiet dock."
+  #5 sceneBody:g04-rv-match sha256=f4e5a5beff8637b8ff84ec7b005629b982511981e887c82d97627981236357b2 "Notches crowded a pale wooden post by the harbor wall."
+  #6 sceneBody:g04-rv-match sha256=b5d2dcb4b19ffad1ab4b52154f0471dbb085f8aabc577874033545f40c3e7dc4 "Rows of tally marks covered a gray post in the sun."
+  #7 sceneBody:g04-rv-unknown sha256=3edf6ec72d3ed4b4fcb5bf66ce0cd9d4252441c677f940cbb16822dab1e183f5 "Rain dripped from the eaves of a silent inn."
+  #8 sceneBody:g04-rv-unknown sha256=a81ac395d7fa80cac0809a322d13161ebbb680b25cf146033736939e2fb6edd9 "Dry leaves gathered on the steps of a shuttered inn."
+  #9 sceneBody:g04-rv-unknown sha256=5227a409432d0696376ffcf58c7d1666b5ede4ce1ddcb8cf63fd8de864ef0cdc "A cold hearth sat beneath dusty beams in the inn."
+script sha256=8fcc9010c35de49b84fc3dabdaccf489854b885a75e4d12d8a9feb193816ce21
+tool={"transformers":"4.3.2","onnxruntimeNode":"1.30.0","node":"v24.18.0","nodeModules":"/tmp/onnxprobe/node_modules"} model=4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b tokenizer=d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66
+golden n=7 avg=0.99747 min=0.99688 ok=true
+fixture sha256=4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf
+== base ==
+median=0.4259 median+gap=0.4759 max=0.8083 hasWinner=true
+  Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+  Raw 0.4925 g04-rv-match       role=review   gold=0 gate=false relRescue=true >=0.46=true
+  Raw 0.4390 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+  Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+  Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+  IR  0.6614 g04-control        role=control >=floor=true
+  IR  0.5559 g04-lio-landing    role=ir-only >=floor=false
+  [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.5559 margin=-0.1341
+  [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4925 margin=-0.0625
+  [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+  [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+  [FAIL] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4390 margin=-0.0090
+  [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+  [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+  [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+  [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match","sceneBody:g04-rv-unknown"] outsideAllowed=[] stopRequired=false
+== 候補 #1 irSummary:g04-lio-landing sha256=726f3bc1992a2f428e44ecc4bf43654d0bef88a078bcf7c4fd8ee32074947c35 targetPass=false 
+   median=0.4259 median+gap=0.4759 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4925 g04-rv-match       role=review   gold=0 gate=false relRescue=true >=0.46=true
+     Raw 0.4390 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.6621 g04-lio-landing    role=ir-only >=floor=true
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.6621 margin=-0.0279
+     [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4925 margin=-0.0625
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [FAIL] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4390 margin=-0.0090
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match","sceneBody:g04-rv-unknown"] outsideAllowed=[] stopRequired=false
+== 候補 #2 irSummary:g04-lio-landing sha256=388b195023dd8424e4a936d9bd6706922d5e62e73c591e654023e41cc6af8fda targetPass=false 
+   median=0.4259 median+gap=0.4759 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4925 g04-rv-match       role=review   gold=0 gate=false relRescue=true >=0.46=true
+     Raw 0.4390 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.6768 g04-lio-landing    role=ir-only >=floor=true
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.6768 margin=-0.0132
+     [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4925 margin=-0.0625
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [FAIL] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4390 margin=-0.0090
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match","sceneBody:g04-rv-unknown"] outsideAllowed=[] stopRequired=false
+== 候補 #3 irSummary:g04-lio-landing sha256=e875c007f290eddd3b15debf529308f8154d9e1e8111199733c1798d8dcd15f1 targetPass=false 
+   median=0.4259 median+gap=0.4759 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4925 g04-rv-match       role=review   gold=0 gate=false relRescue=true >=0.46=true
+     Raw 0.4390 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.6490 g04-lio-landing    role=ir-only >=floor=false
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.6490 margin=-0.0410
+     [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4925 margin=-0.0625
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [FAIL] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4390 margin=-0.0090
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match","sceneBody:g04-rv-unknown"] outsideAllowed=[] stopRequired=false
+== 候補 #4 sceneBody:g04-rv-match sha256=450107adb43444231b83830c4139ece4661f04908e16702e9b61befeff8e9686 targetPass=true 
+   median=0.4085 median+gap=0.4585 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4390 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3908 g04-rv-match       role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.5559 g04-lio-landing    role=ir-only >=floor=false
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.5559 margin=-0.1341
+     [PASS] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.3908 margin=0.0392
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [FAIL] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4390 margin=-0.0090
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-unknown"] outsideAllowed=[] stopRequired=false
+== 候補 #5 sceneBody:g04-rv-match sha256=f4e5a5beff8637b8ff84ec7b005629b982511981e887c82d97627981236357b2 targetPass=false 
+   median=0.4259 median+gap=0.4759 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4390 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4357 g04-rv-match       role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.5559 g04-lio-landing    role=ir-only >=floor=false
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.5559 margin=-0.1341
+     [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4357 margin=-0.0057
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [FAIL] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4390 margin=-0.0090
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match","sceneBody:g04-rv-unknown"] outsideAllowed=[] stopRequired=false
+== 候補 #6 sceneBody:g04-rv-match sha256=b5d2dcb4b19ffad1ab4b52154f0471dbb085f8aabc577874033545f40c3e7dc4 targetPass=true 
+   median=0.4236 median+gap=0.4736 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4390 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.4224 g04-rv-match       role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.5559 g04-lio-landing    role=ir-only >=floor=false
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.5559 margin=-0.1341
+     [PASS] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4224 margin=0.0076
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [FAIL] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4390 margin=-0.0090
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-unknown"] outsideAllowed=[] stopRequired=false
+== 候補 #7 sceneBody:g04-rv-unknown sha256=3edf6ec72d3ed4b4fcb5bf66ce0cd9d4252441c677f940cbb16822dab1e183f5 targetPass=true 
+   median=0.4259 median+gap=0.4759 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4925 g04-rv-match       role=review   gold=0 gate=false relRescue=true >=0.46=true
+     Raw 0.4293 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.5559 g04-lio-landing    role=ir-only >=floor=false
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.5559 margin=-0.1341
+     [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4925 margin=-0.0625
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [PASS] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4293 margin=0.0007
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match"] outsideAllowed=[] stopRequired=false
+== 候補 #8 sceneBody:g04-rv-unknown sha256=a81ac395d7fa80cac0809a322d13161ebbb680b25cf146033736939e2fb6edd9 targetPass=true 
+   median=0.4085 median+gap=0.4585 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4925 g04-rv-match       role=review   gold=0 gate=false relRescue=true >=0.46=true
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3746 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.5559 g04-lio-landing    role=ir-only >=floor=false
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.5559 margin=-0.1341
+     [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4925 margin=-0.0625
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [PASS] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.3746 margin=0.0554
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match"] outsideAllowed=[] stopRequired=false
+== 候補 #9 sceneBody:g04-rv-unknown sha256=5227a409432d0696376ffcf58c7d1666b5ede4ce1ddcb8cf63fd8de864ef0cdc targetPass=true 
+   median=0.4173 median+gap=0.4673 max=0.8083 hasWinner=true
+     Raw 0.8083 g04-control        role=control  gold=0 gate=true relRescue=true >=0.46=true
+     Raw 0.4925 g04-rv-match       role=review   gold=0 gate=false relRescue=true >=0.46=true
+     Raw 0.4271 g04-rv-unresolved  role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.4248 g04-lio-market     role=answer   gold=2 gate=false relRescue=false >=0.46=false
+     Raw 0.4098 g04-rv-unknown     role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3923 g04-rv-alt         role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3697 g04-rv-holder      role=review   gold=0 gate=false relRescue=false >=0.46=false
+     Raw 0.3597 g04-lio-landing    role=ir-only  gold=3 gate=false relRescue=false >=0.46=false
+     IR  0.6614 g04-control        role=control >=floor=true
+     IR  0.5559 g04-lio-landing    role=ir-only >=floor=false
+     [FAIL] irSummary:g04-lio-landing    IR cos >= 0.69     value=0.5559 margin=-0.1341
+     [FAIL] sceneBody:g04-rv-match       Raw cos <= 0.43    value=0.4925 margin=-0.0625
+     [PASS] sceneBody:g04-rv-alt         Raw cos <= 0.43    value=0.3923 margin=0.0377
+     [PASS] sceneBody:g04-rv-unresolved  Raw cos <= 0.43    value=0.4271 margin=0.0029
+     [PASS] sceneBody:g04-rv-unknown     Raw cos <= 0.43    value=0.4098 margin=0.0202
+     [PASS] sceneBody:g04-rv-holder      Raw cos <= 0.43    value=0.3697 margin=0.0603
+     [PASS] controlRaw:g04-control       Raw cos >= 0.54    value=0.8083 margin=0.2683
+     [PASS] sceneBody:g04-lio-landing    Raw cos <= 0.43    value=0.3597 margin=0.0703
+     [PASS] sceneBody:g04-lio-market     Raw cos <= 0.43    value=0.4248 margin=0.0052
+   allPass=false failing=["irSummary:g04-lio-landing","sceneBody:g04-rv-match"] outsideAllowed=[] stopRequired=false

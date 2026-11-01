@@ -1,0 +1,74 @@
+[
+ {
+  "order": 1,
+  "target": {
+   "kind": "irSummary",
+   "sceneId": "g04-lio-landing"
+  },
+  "text": "Bren, the river's ferryman, carried Lio across and set her down on the far stones at dusk."
+ },
+ {
+  "order": 2,
+  "target": {
+   "kind": "irSummary",
+   "sceneId": "g04-lio-landing"
+  },
+  "text": "Bren, the ferryman, carried Lio across the river to the far stones at dusk."
+ },
+ {
+  "order": 3,
+  "target": {
+   "kind": "irSummary",
+   "sceneId": "g04-lio-landing"
+  },
+  "text": "Bren, who runs a flat ferry, carried Lio across the river and set her on the far stones at dusk."
+ },
+ {
+  "order": 4,
+  "target": {
+   "kind": "sceneBody",
+   "sceneId": "g04-rv-match"
+  },
+  "text": "Chalk tallies lined a weathered post beside a quiet dock."
+ },
+ {
+  "order": 5,
+  "target": {
+   "kind": "sceneBody",
+   "sceneId": "g04-rv-match"
+  },
+  "text": "Notches crowded a pale wooden post by the harbor wall."
+ },
+ {
+  "order": 6,
+  "target": {
+   "kind": "sceneBody",
+   "sceneId": "g04-rv-match"
+  },
+  "text": "Rows of tally marks covered a gray post in the sun."
+ },
+ {
+  "order": 7,
+  "target": {
+   "kind": "sceneBody",
+   "sceneId": "g04-rv-unknown"
+  },
+  "text": "Rain dripped from the eaves of a silent inn."
+ },
+ {
+  "order": 8,
+  "target": {
+   "kind": "sceneBody",
+   "sceneId": "g04-rv-unknown"
+  },
+  "text": "Dry leaves gathered on the steps of a shuttered inn."
+ },
+ {
+  "order": 9,
+  "target": {
+   "kind": "sceneBody",
+   "sceneId": "g04-rv-unknown"
+  },
+  "text": "A cold hearth sat beneath dusty beams in the inn."
+ }
+]

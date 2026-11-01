@@ -1,0 +1,2551 @@
+{
+ "probe": "nir1-g04-v2-admission-probe",
+ "note": "model-only の予測。測定に数えない。sparse（FTS5）と RRF の順位は再現しない。語彙の検査は pnpm eval:fixtures に任せる。",
+ "startedAt": "2026-11-01T09:25:45.965Z",
+ "script": {
+  "path": "/tmp/claude-1000/-home-grimodex-Grimodex/dd1afc24-5546-4b01-b89b-6ba9b38e5b63/scratchpad/g04v2/probe.mjs",
+  "sha256": "8fcc9010c35de49b84fc3dabdaccf489854b885a75e4d12d8a9feb193816ce21"
+ },
+ "tool": {
+  "transformers": "4.3.2",
+  "onnxruntimeNode": "1.30.0",
+  "node": "v24.18.0",
+  "nodeModules": "/tmp/onnxprobe/node_modules"
+ },
+ "model": {
+  "path": "/home/grimodex/.cache/gdx-nir1/grimodex-product-6x99bC/user-data/models/bge-small-en-v15/model_int8.onnx",
+  "sha256": "4f1831710bec8904589cf50c58ad4d9ed3e66386f4973173c13f1e9d3ae8e44b",
+  "tokenizerPath": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/src-tauri/resources/semantic/bge-small-en-v15/tokenizer.json",
+  "tokenizerSha256": "d241a60d5e8f04cc1b2b3e9ef7a4921b27bf526d9f6050ab90f9267a1f9e5c66",
+  "sha256MatchesExpected": true,
+  "tokenizerSha256MatchesExpected": true
+ },
+ "rules": {
+  "floorEn": 0.66,
+  "gateEn": 0.51,
+  "rescueFloor": 0.46,
+  "relativeGap": 0.05,
+  "delta": 0.03,
+  "pass": {
+   "irOnlyIrMin": 0.69,
+   "controlRawMin": 0.54,
+   "otherRawMax": 0.43
+  },
+  "median": "selectRelatedScenes.ts:77-81（偶数長は中央 2 値の平均）。合否は中央値に依存させない（参考列だけ）",
+  "controlIr": "条件にしない（README:165）。値だけ出す"
+ },
+ "fixture": {
+  "path": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/evals/nir1-graph/g04-scope-exact-unknown.v1.json",
+  "sha256": "4d002261b1230d2a3fd355d97bb53a146f94515f3c513872337e7176a893abcf"
+ },
+ "candidatesFile": {
+  "path": "author/cand.json",
+  "sha256": "5415993a81ca42af05203af20d93393d2a49a7d52a6da43742de4c1318797bc8"
+ },
+ "candidatesDeclared": [
+  {
+   "order": 1,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, the river's ferryman, carried Lio across and set her down on the far stones at dusk.",
+   "textSha256": "726f3bc1992a2f428e44ecc4bf43654d0bef88a078bcf7c4fd8ee32074947c35"
+  },
+  {
+   "order": 2,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, the ferryman, carried Lio across the river to the far stones at dusk.",
+   "textSha256": "388b195023dd8424e4a936d9bd6706922d5e62e73c591e654023e41cc6af8fda"
+  },
+  {
+   "order": 3,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, who runs a flat ferry, carried Lio across the river and set her on the far stones at dusk.",
+   "textSha256": "e875c007f290eddd3b15debf529308f8154d9e1e8111199733c1798d8dcd15f1"
+  },
+  {
+   "order": 4,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Chalk tallies lined a weathered post beside a quiet dock.",
+   "textSha256": "450107adb43444231b83830c4139ece4661f04908e16702e9b61befeff8e9686"
+  },
+  {
+   "order": 5,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Notches crowded a pale wooden post by the harbor wall.",
+   "textSha256": "f4e5a5beff8637b8ff84ec7b005629b982511981e887c82d97627981236357b2"
+  },
+  {
+   "order": 6,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Rows of tally marks covered a gray post in the sun.",
+   "textSha256": "b5d2dcb4b19ffad1ab4b52154f0471dbb085f8aabc577874033545f40c3e7dc4"
+  },
+  {
+   "order": 7,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "Rain dripped from the eaves of a silent inn.",
+   "textSha256": "3edf6ec72d3ed4b4fcb5bf66ce0cd9d4252441c677f940cbb16822dab1e183f5"
+  },
+  {
+   "order": 8,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "Dry leaves gathered on the steps of a shuttered inn.",
+   "textSha256": "a81ac395d7fa80cac0809a322d13161ebbb680b25cf146033736939e2fb6edd9"
+  },
+  {
+   "order": 9,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "A cold hearth sat beneath dusty beams in the inn.",
+   "textSha256": "5227a409432d0696376ffcf58c7d1666b5ede4ce1ddcb8cf63fd8de864ef0cdc"
+  }
+ ],
+ "golden": {
+  "path": "/home/grimodex/worktrees/Grimodex/claude-cp4-s5cand/src-tauri/tests/fixtures/bge_small_en_v15_golden.json",
+  "sha256": "07503388555e5d41e25d9e93a04cbd14027c35044c0fcc6a4faa4d522a8f4eb2",
+  "n": 7,
+  "avg": 0.9974662238388845,
+  "min": 0.9968832084375118,
+  "requiredMin": 0.995,
+  "ok": true,
+  "queryPrefix": "",
+  "documentPrefix": ""
+ },
+ "base": {
+  "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+  "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+  "poolMedian": 0.4259488574347733,
+  "poolMax": 0.8082700214005755,
+  "hasWinner": true,
+  "medianPlusGap": 0.4759488574347733,
+  "pool": [
+   {
+    "id": "g04-rv-match",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.49251680682449855,
+    "gate": false,
+    "atOrAboveRescueFloor": true,
+    "relativeRescue": true,
+    "predictedRawDense": true,
+    "bodySha256": "3fcc1e25bd3a4cf3d68d48d8dd6c1845fc9f43f141cf067d0d0495e1294c774c",
+    "body": "Tally marks covered a wooden post near a jetty."
+   },
+   {
+    "id": "g04-rv-alt",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.3923244369682964,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+    "body": "Lanterns burned under a violet sky in a town of mirrors."
+   },
+   {
+    "id": "g04-rv-unresolved",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.4271246139168129,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+    "body": "Dust settled over a map with torn edges."
+   },
+   {
+    "id": "g04-rv-unknown",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.43897511051618027,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "100ceabcacb6fdc11a8aa214f00a0137ee0380adb27389e1fa688c6e6331c07c",
+    "body": "Wind tugged at a shutter on an empty inn."
+   },
+   {
+    "id": "g04-rv-holder",
+    "role": "review",
+    "gold": 0,
+    "cos": 0.36968084667906037,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+    "body": "Mott counted coins alone in a locked booth."
+   },
+   {
+    "id": "g04-control",
+    "role": "control",
+    "gold": 0,
+    "cos": 0.8082700214005755,
+    "gate": true,
+    "atOrAboveRescueFloor": true,
+    "relativeRescue": true,
+    "predictedRawDense": true,
+    "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+    "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+   },
+   {
+    "id": "g04-lio-landing",
+    "role": "ir-only",
+    "gold": 3,
+    "cos": 0.3597386943164853,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+    "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+   },
+   {
+    "id": "g04-lio-market",
+    "role": "answer",
+    "gold": 2,
+    "cos": 0.42477310095273363,
+    "gate": false,
+    "atOrAboveRescueFloor": false,
+    "relativeRescue": false,
+    "predictedRawDense": false,
+    "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+    "body": "Lio weighed lamp oil into small jars for a line of buyers."
+   }
+  ],
+  "ir": [
+   {
+    "sceneId": "g04-control",
+    "role": "control",
+    "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+    "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+    "cos": 0.6614226929073889,
+    "atOrAboveFloor": true
+   },
+   {
+    "sceneId": "g04-lio-landing",
+    "role": "ir-only",
+    "statement": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+    "statementSha256": "df47259131017d602247c35af2316951d5e8dcc0df1a3b7ba4d38a721f67cc5c",
+    "cos": 0.5559180901730832,
+    "atOrAboveFloor": false
+   }
+  ],
+  "items": [
+   {
+    "item": "irSummary:g04-lio-landing",
+    "condition": "IR cos >= 0.69",
+    "value": 0.5559180901730832,
+    "pass": false,
+    "margin": -0.1340819098269167
+   },
+   {
+    "item": "sceneBody:g04-rv-match",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.49251680682449855,
+    "pass": false,
+    "margin": -0.06251680682449856
+   },
+   {
+    "item": "sceneBody:g04-rv-alt",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.3923244369682964,
+    "pass": true,
+    "margin": 0.03767556303170361
+   },
+   {
+    "item": "sceneBody:g04-rv-unresolved",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.4271246139168129,
+    "pass": true,
+    "margin": 0.0028753860831871036
+   },
+   {
+    "item": "sceneBody:g04-rv-unknown",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.43897511051618027,
+    "pass": false,
+    "margin": -0.008975110516180274
+   },
+   {
+    "item": "sceneBody:g04-rv-holder",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.36968084667906037,
+    "pass": true,
+    "margin": 0.06031915332093962
+   },
+   {
+    "item": "controlRaw:g04-control",
+    "condition": "Raw cos >= 0.54",
+    "value": 0.8082700214005755,
+    "pass": true,
+    "margin": 0.26827002140057543
+   },
+   {
+    "item": "sceneBody:g04-lio-landing",
+    "role": "ir-only",
+    "gold": 3,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.3597386943164853,
+    "pass": true,
+    "margin": 0.07026130568351469
+   },
+   {
+    "item": "sceneBody:g04-lio-market",
+    "role": "answer",
+    "gold": 2,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.42477310095273363,
+    "pass": true,
+    "margin": 0.0052268990472663646
+   }
+  ],
+  "structural": {
+   "irOnlyIrRows": 1,
+   "controlScenes": 1,
+   "ok": true
+  },
+  "allPass": false,
+  "failingItems": [
+   "irSummary:g04-lio-landing",
+   "sceneBody:g04-rv-match",
+   "sceneBody:g04-rv-unknown"
+  ],
+  "failingOutsideAllowed": [],
+  "stopRequired": false,
+  "allowedItems": [
+   "irSummary:g04-lio-landing",
+   "sceneBody:g04-rv-match",
+   "sceneBody:g04-rv-alt",
+   "sceneBody:g04-rv-unresolved",
+   "sceneBody:g04-rv-unknown",
+   "sceneBody:g04-rv-holder"
+  ]
+ },
+ "candidateResults": [
+  {
+   "order": 1,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, the river's ferryman, carried Lio across and set her down on the far stones at dusk.",
+   "textSha256": "726f3bc1992a2f428e44ecc4bf43654d0bef88a078bcf7c4fd8ee32074947c35",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "irSummary:g04-lio-landing",
+    "condition": "IR cos >= 0.69",
+    "value": 0.6620537257024401,
+    "pass": false,
+    "margin": -0.027946274297559803
+   },
+   "targetPass": false,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.4259488574347733,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.4759488574347733,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.49251680682449855,
+      "gate": false,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "3fcc1e25bd3a4cf3d68d48d8dd6c1845fc9f43f141cf067d0d0495e1294c774c",
+      "body": "Tally marks covered a wooden post near a jetty."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.43897511051618027,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "100ceabcacb6fdc11a8aa214f00a0137ee0380adb27389e1fa688c6e6331c07c",
+      "body": "Wind tugged at a shutter on an empty inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren, the river's ferryman, carried Lio across and set her down on the far stones at dusk.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "32840181018047946541d8dfc4ffa503a467e673fa147bead4b5c46def401994",
+      "cos": 0.6620537257024401,
+      "atOrAboveFloor": true
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.6620537257024401,
+      "pass": false,
+      "margin": -0.027946274297559803
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.49251680682449855,
+      "pass": false,
+      "margin": -0.06251680682449856
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.43897511051618027,
+      "pass": false,
+      "margin": -0.008975110516180274
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-unknown"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 2,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, the ferryman, carried Lio across the river to the far stones at dusk.",
+   "textSha256": "388b195023dd8424e4a936d9bd6706922d5e62e73c591e654023e41cc6af8fda",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "irSummary:g04-lio-landing",
+    "condition": "IR cos >= 0.69",
+    "value": 0.676770305940013,
+    "pass": false,
+    "margin": -0.013229694059986974
+   },
+   "targetPass": false,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.4259488574347733,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.4759488574347733,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.49251680682449855,
+      "gate": false,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "3fcc1e25bd3a4cf3d68d48d8dd6c1845fc9f43f141cf067d0d0495e1294c774c",
+      "body": "Tally marks covered a wooden post near a jetty."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.43897511051618027,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "100ceabcacb6fdc11a8aa214f00a0137ee0380adb27389e1fa688c6e6331c07c",
+      "body": "Wind tugged at a shutter on an empty inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren, the ferryman, carried Lio across the river to the far stones at dusk.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "19c33a8ef4be2d09947c0789c9e56aad9e0022551878278fb1b87e78c9c660b4",
+      "cos": 0.676770305940013,
+      "atOrAboveFloor": true
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.676770305940013,
+      "pass": false,
+      "margin": -0.013229694059986974
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.49251680682449855,
+      "pass": false,
+      "margin": -0.06251680682449856
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.43897511051618027,
+      "pass": false,
+      "margin": -0.008975110516180274
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-unknown"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 3,
+   "target": {
+    "kind": "irSummary",
+    "sceneId": "g04-lio-landing"
+   },
+   "text": "Bren, who runs a flat ferry, carried Lio across the river and set her on the far stones at dusk.",
+   "textSha256": "e875c007f290eddd3b15debf529308f8154d9e1e8111199733c1798d8dcd15f1",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "irSummary:g04-lio-landing",
+    "condition": "IR cos >= 0.69",
+    "value": 0.6490193466282904,
+    "pass": false,
+    "margin": -0.04098065337170953
+   },
+   "targetPass": false,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.4259488574347733,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.4759488574347733,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.49251680682449855,
+      "gate": false,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "3fcc1e25bd3a4cf3d68d48d8dd6c1845fc9f43f141cf067d0d0495e1294c774c",
+      "body": "Tally marks covered a wooden post near a jetty."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.43897511051618027,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "100ceabcacb6fdc11a8aa214f00a0137ee0380adb27389e1fa688c6e6331c07c",
+      "body": "Wind tugged at a shutter on an empty inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren, who runs a flat ferry, carried Lio across the river and set her on the far stones at dusk.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "459a35caea4680064d92ab411034688e6d1a6c5f1cb8b6e6794a6e5521a20c86",
+      "cos": 0.6490193466282904,
+      "atOrAboveFloor": false
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.6490193466282904,
+      "pass": false,
+      "margin": -0.04098065337170953
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.49251680682449855,
+      "pass": false,
+      "margin": -0.06251680682449856
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.43897511051618027,
+      "pass": false,
+      "margin": -0.008975110516180274
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-unknown"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 4,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Chalk tallies lined a weathered post beside a quiet dock.",
+   "textSha256": "450107adb43444231b83830c4139ece4661f04908e16702e9b61befeff8e9686",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "sceneBody:g04-rv-match",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.39080226555185377,
+    "pass": true,
+    "margin": 0.039197734448146226
+   },
+   "targetPass": true,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.408548768960515,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.458548768960515,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.39080226555185377,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "450107adb43444231b83830c4139ece4661f04908e16702e9b61befeff8e9686",
+      "body": "Chalk tallies lined a weathered post beside a quiet dock."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.43897511051618027,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "100ceabcacb6fdc11a8aa214f00a0137ee0380adb27389e1fa688c6e6331c07c",
+      "body": "Wind tugged at a shutter on an empty inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "df47259131017d602247c35af2316951d5e8dcc0df1a3b7ba4d38a721f67cc5c",
+      "cos": 0.5559180901730832,
+      "atOrAboveFloor": false
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.5559180901730832,
+      "pass": false,
+      "margin": -0.1340819098269167
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.39080226555185377,
+      "pass": true,
+      "margin": 0.039197734448146226
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.43897511051618027,
+      "pass": false,
+      "margin": -0.008975110516180274
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-unknown"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 5,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Notches crowded a pale wooden post by the harbor wall.",
+   "textSha256": "f4e5a5beff8637b8ff84ec7b005629b982511981e887c82d97627981236357b2",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "sceneBody:g04-rv-match",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.4356538271583317,
+    "pass": false,
+    "margin": -0.005653827158331681
+   },
+   "targetPass": false,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.4259488574347733,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.4759488574347733,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4356538271583317,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "f4e5a5beff8637b8ff84ec7b005629b982511981e887c82d97627981236357b2",
+      "body": "Notches crowded a pale wooden post by the harbor wall."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.43897511051618027,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "100ceabcacb6fdc11a8aa214f00a0137ee0380adb27389e1fa688c6e6331c07c",
+      "body": "Wind tugged at a shutter on an empty inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "df47259131017d602247c35af2316951d5e8dcc0df1a3b7ba4d38a721f67cc5c",
+      "cos": 0.5559180901730832,
+      "atOrAboveFloor": false
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.5559180901730832,
+      "pass": false,
+      "margin": -0.1340819098269167
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4356538271583317,
+      "pass": false,
+      "margin": -0.005653827158331681
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.43897511051618027,
+      "pass": false,
+      "margin": -0.008975110516180274
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-unknown"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 6,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-match"
+   },
+   "text": "Rows of tally marks covered a gray post in the sun.",
+   "textSha256": "b5d2dcb4b19ffad1ab4b52154f0471dbb085f8aabc577874033545f40c3e7dc4",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "sceneBody:g04-rv-match",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.42244498186390733,
+    "pass": true,
+    "margin": 0.007555018136092662
+   },
+   "targetPass": true,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.42360904140832045,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.47360904140832044,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.42244498186390733,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "b5d2dcb4b19ffad1ab4b52154f0471dbb085f8aabc577874033545f40c3e7dc4",
+      "body": "Rows of tally marks covered a gray post in the sun."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.43897511051618027,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "100ceabcacb6fdc11a8aa214f00a0137ee0380adb27389e1fa688c6e6331c07c",
+      "body": "Wind tugged at a shutter on an empty inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "df47259131017d602247c35af2316951d5e8dcc0df1a3b7ba4d38a721f67cc5c",
+      "cos": 0.5559180901730832,
+      "atOrAboveFloor": false
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.5559180901730832,
+      "pass": false,
+      "margin": -0.1340819098269167
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42244498186390733,
+      "pass": true,
+      "margin": 0.007555018136092662
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.43897511051618027,
+      "pass": false,
+      "margin": -0.008975110516180274
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-unknown"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 7,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "Rain dripped from the eaves of a silent inn.",
+   "textSha256": "3edf6ec72d3ed4b4fcb5bf66ce0cd9d4252441c677f940cbb16822dab1e183f5",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "sceneBody:g04-rv-unknown",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.42929090649108914,
+    "pass": true,
+    "margin": 0.0007090935089108519
+   },
+   "targetPass": true,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.4259488574347733,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.4759488574347733,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.49251680682449855,
+      "gate": false,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "3fcc1e25bd3a4cf3d68d48d8dd6c1845fc9f43f141cf067d0d0495e1294c774c",
+      "body": "Tally marks covered a wooden post near a jetty."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.42929090649108914,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3edf6ec72d3ed4b4fcb5bf66ce0cd9d4252441c677f940cbb16822dab1e183f5",
+      "body": "Rain dripped from the eaves of a silent inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "df47259131017d602247c35af2316951d5e8dcc0df1a3b7ba4d38a721f67cc5c",
+      "cos": 0.5559180901730832,
+      "atOrAboveFloor": false
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.5559180901730832,
+      "pass": false,
+      "margin": -0.1340819098269167
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.49251680682449855,
+      "pass": false,
+      "margin": -0.06251680682449856
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42929090649108914,
+      "pass": true,
+      "margin": 0.0007090935089108519
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 8,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "Dry leaves gathered on the steps of a shuttered inn.",
+   "textSha256": "a81ac395d7fa80cac0809a322d13161ebbb680b25cf146033736939e2fb6edd9",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "sceneBody:g04-rv-unknown",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.37456920915648106,
+    "pass": true,
+    "margin": 0.05543079084351893
+   },
+   "targetPass": true,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.408548768960515,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.458548768960515,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.49251680682449855,
+      "gate": false,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "3fcc1e25bd3a4cf3d68d48d8dd6c1845fc9f43f141cf067d0d0495e1294c774c",
+      "body": "Tally marks covered a wooden post near a jetty."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.37456920915648106,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "a81ac395d7fa80cac0809a322d13161ebbb680b25cf146033736939e2fb6edd9",
+      "body": "Dry leaves gathered on the steps of a shuttered inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "df47259131017d602247c35af2316951d5e8dcc0df1a3b7ba4d38a721f67cc5c",
+      "cos": 0.5559180901730832,
+      "atOrAboveFloor": false
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.5559180901730832,
+      "pass": false,
+      "margin": -0.1340819098269167
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.49251680682449855,
+      "pass": false,
+      "margin": -0.06251680682449856
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.37456920915648106,
+      "pass": true,
+      "margin": 0.05543079084351893
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  },
+  {
+   "order": 9,
+   "target": {
+    "kind": "sceneBody",
+    "sceneId": "g04-rv-unknown"
+   },
+   "text": "A cold hearth sat beneath dusty beams in the inn.",
+   "textSha256": "5227a409432d0696376ffcf58c7d1666b5ede4ce1ddcb8cf63fd8de864ef0cdc",
+   "targetAllowed": true,
+   "targetItem": {
+    "item": "sceneBody:g04-rv-unknown",
+    "role": "review",
+    "gold": 0,
+    "condition": "Raw cos <= 0.43",
+    "value": 0.4098252073827212,
+    "pass": true,
+    "margin": 0.02017479261727878
+   },
+   "targetPass": true,
+   "evaluation": {
+    "query": "Which earlier scene shows whom my chosen ferryman carried across?",
+    "querySha256": "1759f9bfd2db6d0ef5d5c009a3515ad2e1f7dd7db318ead1850d2d080fdbdbea",
+    "poolMedian": 0.41729915416772745,
+    "poolMax": 0.8082700214005755,
+    "hasWinner": true,
+    "medianPlusGap": 0.46729915416772744,
+    "pool": [
+     {
+      "id": "g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.49251680682449855,
+      "gate": false,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "3fcc1e25bd3a4cf3d68d48d8dd6c1845fc9f43f141cf067d0d0495e1294c774c",
+      "body": "Tally marks covered a wooden post near a jetty."
+     },
+     {
+      "id": "g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.3923244369682964,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "1fbd0468fc046530d9a7e6f26f47d8c40b36bfa1b9a4fb190f342775f2370c0f",
+      "body": "Lanterns burned under a violet sky in a town of mirrors."
+     },
+     {
+      "id": "g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4271246139168129,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "0050d5e0015be732346346457e382b4982c07d23656ab0c489d12198ed2448af",
+      "body": "Dust settled over a map with torn edges."
+     },
+     {
+      "id": "g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.4098252073827212,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "5227a409432d0696376ffcf58c7d1666b5ede4ce1ddcb8cf63fd8de864ef0cdc",
+      "body": "A cold hearth sat beneath dusty beams in the inn."
+     },
+     {
+      "id": "g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "cos": 0.36968084667906037,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "3a59268f4a2bfc6ced6a5758b1598263da023511ed3b00a8f4cb97344fd5478a",
+      "body": "Mott counted coins alone in a locked booth."
+     },
+     {
+      "id": "g04-control",
+      "role": "control",
+      "gold": 0,
+      "cos": 0.8082700214005755,
+      "gate": true,
+      "atOrAboveRescueFloor": true,
+      "relativeRescue": true,
+      "predictedRawDense": true,
+      "bodySha256": "816390da934b457cd53b9d198806c2ce22d176dd24483145bbb9351d3a708f68",
+      "body": "A ferry post held a copied line: Which earlier scene shows whom my chosen ferryman carried across? No one answered it."
+     },
+     {
+      "id": "g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "cos": 0.3597386943164853,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "4f804ede268918b6d90716f0c86e285d7cec00225d5462f24fd9ff4cb0ee04f0",
+      "body": "Market bells rang late because of rain. Lio counted coins for lamp oil beside a stall of onions. At dusk Bren set her down on the far stones and pushed off again into the mist. A baker swept flour from his step."
+     },
+     {
+      "id": "g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "cos": 0.42477310095273363,
+      "gate": false,
+      "atOrAboveRescueFloor": false,
+      "relativeRescue": false,
+      "predictedRawDense": false,
+      "bodySha256": "730c0a93f03e7ac24d25c075f8ba493318252957a7864d578dd28ff1ff1958d2",
+      "body": "Lio weighed lamp oil into small jars for a line of buyers."
+     }
+    ],
+    "ir": [
+     {
+      "sceneId": "g04-control",
+      "role": "control",
+      "statement": "{\"summary\":\"A ferry post displayed an unanswered question about whom a ferryman had carried across.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "1f0a9942f486203fce92f0e998fd8242513955427d961db3f2ca9314ccaab892",
+      "cos": 0.6614226929073889,
+      "atOrAboveFloor": true
+     },
+     {
+      "sceneId": "g04-lio-landing",
+      "role": "ir-only",
+      "statement": "{\"summary\":\"Bren ferried Lio across the river at dusk and left her on the far bank.\",\"actuality\":\"actual\",\"attribution\":\"narrator\",\"narrativeFrame\":\"story-world\"}",
+      "statementSha256": "df47259131017d602247c35af2316951d5e8dcc0df1a3b7ba4d38a721f67cc5c",
+      "cos": 0.5559180901730832,
+      "atOrAboveFloor": false
+     }
+    ],
+    "items": [
+     {
+      "item": "irSummary:g04-lio-landing",
+      "condition": "IR cos >= 0.69",
+      "value": 0.5559180901730832,
+      "pass": false,
+      "margin": -0.1340819098269167
+     },
+     {
+      "item": "sceneBody:g04-rv-match",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.49251680682449855,
+      "pass": false,
+      "margin": -0.06251680682449856
+     },
+     {
+      "item": "sceneBody:g04-rv-alt",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3923244369682964,
+      "pass": true,
+      "margin": 0.03767556303170361
+     },
+     {
+      "item": "sceneBody:g04-rv-unresolved",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4271246139168129,
+      "pass": true,
+      "margin": 0.0028753860831871036
+     },
+     {
+      "item": "sceneBody:g04-rv-unknown",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.4098252073827212,
+      "pass": true,
+      "margin": 0.02017479261727878
+     },
+     {
+      "item": "sceneBody:g04-rv-holder",
+      "role": "review",
+      "gold": 0,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.36968084667906037,
+      "pass": true,
+      "margin": 0.06031915332093962
+     },
+     {
+      "item": "controlRaw:g04-control",
+      "condition": "Raw cos >= 0.54",
+      "value": 0.8082700214005755,
+      "pass": true,
+      "margin": 0.26827002140057543
+     },
+     {
+      "item": "sceneBody:g04-lio-landing",
+      "role": "ir-only",
+      "gold": 3,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.3597386943164853,
+      "pass": true,
+      "margin": 0.07026130568351469
+     },
+     {
+      "item": "sceneBody:g04-lio-market",
+      "role": "answer",
+      "gold": 2,
+      "condition": "Raw cos <= 0.43",
+      "value": 0.42477310095273363,
+      "pass": true,
+      "margin": 0.0052268990472663646
+     }
+    ],
+    "structural": {
+     "irOnlyIrRows": 1,
+     "controlScenes": 1,
+     "ok": true
+    },
+    "allPass": false,
+    "failingItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match"
+    ],
+    "failingOutsideAllowed": [],
+    "stopRequired": false,
+    "allowedItems": [
+     "irSummary:g04-lio-landing",
+     "sceneBody:g04-rv-match",
+     "sceneBody:g04-rv-alt",
+     "sceneBody:g04-rv-unresolved",
+     "sceneBody:g04-rv-unknown",
+     "sceneBody:g04-rv-holder"
+    ]
+   }
+  }
+ ],
+ "finishedAt": "2026-11-01T09:25:46.475Z"
+}

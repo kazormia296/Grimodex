@@ -1,0 +1,32 @@
+{
+  "items": [
+    {
+      "item": "A",
+      "target": { "kind": "irSummary", "sceneId": "g04-lio-landing" },
+      "candidates": [
+        "Bren, the river's ferryman, carried Lio across and set her down on the far stones at dusk.",
+        "Bren, the ferryman, carried Lio across the river to the far stones at dusk.",
+        "Bren, who runs a flat ferry, carried Lio across the river and set her on the far stones at dusk."
+      ]
+    },
+    {
+      "item": "B",
+      "target": { "kind": "sceneBody", "sceneId": "g04-rv-match" },
+      "candidates": [
+        "Chalk tallies lined a weathered post beside a quiet dock.",
+        "Notches crowded a pale wooden post by the harbor wall.",
+        "Rows of tally marks covered a gray post in the sun."
+      ]
+    },
+    {
+      "item": "C",
+      "target": { "kind": "sceneBody", "sceneId": "g04-rv-unknown" },
+      "candidates": [
+        "Rain dripped from the eaves of a silent inn.",
+        "Dry leaves gathered on the steps of a shuttered inn.",
+        "A cold hearth sat beneath dusty beams in the inn."
+      ]
+    }
+  ],
+  "selfCheck": "長さ（手で数えたコードポイント数）: A=90/75/96（47〜106）、B=57/54/51（24〜70）、C=44/52/48（21〜61）。全候補が陳述文1文。A は query だけの語（scene, earlier, chosen, shows）と疑問詞を使わず、本文（dusk, set her down on the far stones）と Codex（ferry, river）から言える内容で G-05 の『役割名詞＋行為動詞』の形にそろえた。B・C は題・本文の4文字以上の各語を query の語（which, earlier, scene, shows, whom, chosen, ferryman, carried, across）と stem 一致・4文字以上の接頭辞・5文字以上の共通接頭辞で手判定し、共有なし（最長の共通接頭辞は shuttered/shows の 'sh'、eaves/earlier の 'ea'、wooden/whom 等の 'w' で2文字以下）。B・C に Entity 名（Bren, Lio, Kit, Ora, Tam, Sel, Mott）と Scope・知識の持ち主に関わる語（時間・世界線・層・読者・別の・未解決・不明など）を含まない。題（Tally post／Empty inn）と矛盾しない情景文。"
+}
