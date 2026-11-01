@@ -1,0 +1,26 @@
+{
+  "schemaVersion": "nir1-cp4-observation-prep-freeze/1",
+  "graphRuntimeObservedBeforeFreeze": false,
+  "k62": {
+    "freezeCommit": "af643a93eeae7f937c9cd5a9dd87a6308c96fab6",
+    "sha256": "4ccca08314c022fd969308fa969e6fcb3e2c439fe12757bfec0e901b905676f8"
+  },
+  "graphCaseFreeze": {
+    "path": "evals/nir1-graph/freeze.v2.json",
+    "sha256": "8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d"
+  },
+  "g01Fixture": {
+    "path": "evals/nir1-g01/fixture.v1.json",
+    "sha256": "996ef1c05b261a1d17618fea26342eb63418c050ae39246bb8b67c705ac84e79"
+  },
+  "boundFiles": {
+    "evals/nir1-graph/observation-prep.v1.json": "9cc881ba966c908494385117b21c0eaa0cbca105fbbafe0216bba79bde1bc562",
+    "evals/nir1-g01/setup-addendum.v2.json": "fd6b0c3cabb2713f58c6883bc6d3062e4db967517351d3dd4d3eefd204cc84b8",
+    "evals/nir1-graph/declaration-addendum.v2.json": "bbe3379fc519ae4d67fc7b79a6458c46c92efedbd530aa8b788a66a9f3e80699",
+    "evals/nir1-graph/trace-editing.v1.json": "7e72a040104dee7a90493ad7a353cfc883f1671197febd1c4f0e34a7dbfcbd0d",
+    "evals/nir1-graph/trace-browsing.v1.json": "54e5e39153f4157da5244c1d0dab3b4528c6ab55d692e6a1c19263e44de47347",
+    "evals/nir1-graph/observation-prep-author-declaration.v1.json": "99c6e387589a9928418c87f783d65ddb69f6625e8487d3b05c468f60413d398f",
+    "evals/nir1-graph/seed-pin-addendum.v2.json": "3e4334cc358070d2dfc963420b748b85334014071a264d34bc2d03ee2c215b1b",
+    "scripts/quality/nir1-graph-eval/procedure/k64-procedure.v1.json": "1c2428df322fa717d1a3ae5d4c99fb2dbafcbac2c8fb5b4126499dcc36cc0bea"
+  }
+}
