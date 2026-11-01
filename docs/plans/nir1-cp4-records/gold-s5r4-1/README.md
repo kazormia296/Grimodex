@@ -31,7 +31,7 @@ graph arm の measured 390 件（13 variant × 30。全件 `status: completed`�
 ## 条件
 
 - 候補 `86427ee53a73e669e34631c5774fbd56960ac050`（tree `5ed0204d363c52659dcd072d46ef5c693be0722c`、clean）、`--prep-commit 557e683c…`、`--k62-commit af643a93…`、`--k64-commit 5dea38af…`、`--keep-test-worktree` は候補の worktree、`--sp-p4-receipt` は `sp-p4-s5r4-1/sp-p4-receipt.json`。標準 build・評価 build・13 setup は `sp-p4-s5r4-1/README.md` のとおり（同じもの）。
-- 機械：開始前に `wait-quiet.sh 3` が 3 回連続の静けさを確認した（parity の終了の約 1 分後に開始）。この run は窓の sampler を持たず、測定中の他の process の記録は無い。run の後の X socket と Xvfb の残りは、negative の後にまとめて確認する。
+- 機械：開始前に `wait-quiet.sh 3` が 3 回連続の静けさを確認した（parity の終了の約 1 分後に開始）。窓の sampler（約 20 秒間隔）の記録が受領書の `environment.windowSamples` にあり、13 件（13 variant）の `windowAssessment` は全件 `clean: true`（違反 0・欠け 0）。sample 118 件で `otherMeasurements` と `buildProcesses` は常に空、`sameWorktreeBuild` は 0 件、`heavySlotsInUse` の最大は 0、lock は常に読めた。1 分 load average の最大は 2.85（run 自身の Electron を含む）、CPU の PSI（some avg10）の最大は 0.36%。`environment.x11` は run の前後で X socket が増減していない（新しい entry 0 件）。（run の後の Xvfb・electron の残りの確認は、negative の後に行った。`negatives-s5r4-1/README.md`。）
 
 ## 次
 

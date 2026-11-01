@@ -36,3 +36,7 @@ graph arm の measured 390 件（13 variant × 30）：
 ## 次
 
 - negative（K24-G01-N2／N3／N4、`--run-kind negative --negative <id>`、G-01/v1 だけ）→ trace → S6 の集計（`s4Commit=b7d74950` を除く）→ S7。
+
+## 訂正（2026-11-01、integrator）
+
+- 「条件」の節の「この run は窓の sampler を持たない（持たず）」は誤りだった。この記録の受領書（このディレクトリの `*.receipt.json`）には窓の sampler の記録がある。窓の sampler（約 20 秒間隔）の記録が受領書の `environment.windowSamples` にあり、13 件（13 variant）の `windowAssessment` は全件 `clean: true`（違反 0・欠け 0）。sample 120 件で `otherMeasurements` と `buildProcesses` は常に空、`sameWorktreeBuild` は 0 件、`heavySlotsInUse` の最大は 0、lock は常に読めた。1 分 load average の最大は 5.09（run 自身の Electron を含む）、CPU の PSI（some avg10）の最大は 1.65%。`environment.x11` は run の前後で X socket が増減していない（新しい entry 0 件）。旧 S4b' の下の記録で、S6 の集計と S7 の判定には入れない（`s4-revocation-9f52e7da-2026-11-01.md`）。

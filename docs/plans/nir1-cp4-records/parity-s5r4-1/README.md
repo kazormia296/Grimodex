@@ -12,7 +12,7 @@
 ## 条件
 
 - 候補 `86427ee53a73e669e34631c5774fbd56960ac050`（tree `5ed0204d363c52659dcd072d46ef5c693be0722c`、clean）、`--prep-commit 557e683c…`、`--k62-commit af643a93…`、`--k64-commit 5dea38af…`、`--keep-test-worktree` は候補の worktree。標準 build の受領書・評価 build・13 setup の受領書は `sp-p4-s5r4-1/README.md` と同じ（`setups.json` は台帳に 13 の sha256 として記録）。
-- 機械：開始前に `wait-quiet.sh 3` が 3 回連続の静けさを確認した。この run は窓の sampler を持たず、測定中の他の process の記録は無い。run の後の X socket と Xvfb の残りの確認は、Gold の開始が続いたため、Gold の後にまとめて行う。
+- 機械：開始前に `wait-quiet.sh 3` が 3 回連続の静けさを確認した。窓の sampler（約 20 秒間隔）の記録が受領書の `environment.windowSamples` にあり、12 件（12 variant）の `windowAssessment` は全件 `clean: true`（違反 0・欠け 0）。sample 41 件で `otherMeasurements` と `buildProcesses` は常に空、`sameWorktreeBuild` は 0 件、`heavySlotsInUse` の最大は 0、lock は常に読めた。1 分 load average の最大は 3.11（run 自身の Electron を含む）、CPU の PSI（some avg10）の最大は 0.52%。`environment.x11` は run の前後で X socket が増減していない（新しい entry 0 件）。（run の後の Xvfb・electron の残りの確認は、negative の後に行った。`negatives-s5r4-1/README.md`。）
 - これは「この候補と S4 commit の完了した parity」の 1 回目。`selectParity` は完了した parity が 2 つ以上あると Gold の比較対象を選ばず `[precheck]` で止まるので、**この候補では parity をもう取らない**。
 
 ## 次

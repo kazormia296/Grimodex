@@ -28,3 +28,7 @@
 ## 次
 
 - trace（`trace-editing.v1.json`、`trace-browsing.v1.json`）→ S6 の集計（`selectReceiptsForAggregation`、`s4Commit=b7d74950` の受領書を除く）→ S7。
+
+## 訂正（2026-11-01、integrator）
+
+- 「条件」の節の「この run は窓の sampler を持たない（持たず）」は誤りだった。この記録の受領書（このディレクトリの `*.receipt.json`）には窓の sampler の記録がある。窓の sampler（約 20 秒間隔）の記録が受領書の `environment.windowSamples` にあり、3 件（3 run）の `windowAssessment` は全件 `clean: true`（違反 0・欠け 0）。sample 12 件で `otherMeasurements` と `buildProcesses` は常に空、`sameWorktreeBuild` は 0 件、`heavySlotsInUse` の最大は 0、lock は常に読めた。1 分 load average の最大は 0.87（run 自身の Electron を含む）、CPU の PSI（some avg10）の最大は 0.15%。`environment.x11` は run の前後で X socket が増減していない（新しい entry 0 件）。旧 S4b' の下の記録で、S6 の集計と S7 の判定には入れない（`s4-revocation-9f52e7da-2026-11-01.md`）。
