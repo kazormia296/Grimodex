@@ -2,7 +2,7 @@
   "schemaVersion": "nir1-graph-case-seed-pin-addendum/1",
   "addendumId": "nir1-graph-seed-pin-addendum/2",
   "status": "draft-awaiting-independent-review",
-  "graphRuntimeObservedBeforeAuthoring": false,
+  "graphRuntimeObservedBeforeAuthoring": true,
   "purpose": "SP/1 の「設計」の「addendum の file」。G-01〜G-08 のすべての variant の setup に、問いの Scene から予定の seed の Entity への pin を 1 つ、製品の upsertScenePin で書く段を足す（setupOrder の外の 1 段）。freeze.v2.json が束縛しない別の file に置き、凍結した bytes、期待値、前提条件、setupTimeline、measurementPoint、K6/4 と K2/4 の内容は変えない。",
   "contract": {
     "draftRef": "nir1-graph-case-seed-pin-proposal/1",

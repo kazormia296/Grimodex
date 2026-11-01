@@ -2,7 +2,7 @@
   "schemaVersion": "nir1-c-body-setup-addendum/1",
   "addendumId": "nir1-g01-setup-addendum/2",
   "status": "draft-awaiting-independent-review",
-  "graphRuntimeObservedBeforeAuthoring": false,
+  "graphRuntimeObservedBeforeAuthoring": true,
   "purpose": "K2/4 の「setup の addendum（G-01 と、G-02／G-07／G-08 の追加 Scene）」の G-01 の分。宣言する Scene と値、期待する excerpt の範囲、宣言の時期と場所、診断用の負例を、G-01 の R+IR+Graph（本文の開示を含む）を観測するどの実行よりも前に固定する。fixture v1 は変えない。",
   "contract": {
     "draftRef": "nir1-c-body-disclosure-proposal/4",
@@ -29,7 +29,7 @@
     "graphCaseFreeze": {
       "path": "evals/nir1-graph/freeze.v2.json",
       "sha256": "8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d",
-      "note": "K2/4 :390 の 45d8a055… は CQ-LIM-4（#678、a789039a）が G-03 と freeze を作り直す前の値。K2/4 :390 と :418 は、proposal/7 が確認されて CQ-LIM-4 が freeze.v1.json を作り直した場合は作り直した後の sha256 を引くとする（proposal/7 は 2026-10-17 の Session B2 で確認、続行計画 §10.4 と :633）。G-01 の fixture v1 はこの作り直しで変わっていない（freeze.v1.json の cases の G-01 の sha256 と一致）。 G-04 v2 を束縛する freeze.v2.json（DR-CP4-G4-6）は、G-01 を含む G-04 以外の case の path と sha256 を freeze.v1.json の cases から引き継ぐ（G-01 の fixture v1 の sha256 は freeze.v2.json の cases の G-01 と一致）。"
+      "note": "K2/4 :390 の 45d8a055… は CQ-LIM-4（#678、a789039a）が G-03 と freeze を作り直す前の値。K2/4 :390 と :418 は、proposal/7 が確認されて CQ-LIM-4 が freeze.v1.json を作り直した場合は作り直した後の sha256 を引くとする（proposal/7 は 2026-10-17 の Session B2 で確認、続行計画 §10.4 と :633）。G-01 の fixture v1 はこの作り直しで変わっていない（freeze.v1.json の cases の G-01 の sha256 と一致）。G-04 v2 を束縛する freeze.v2.json（DR-CP4-G4-6）は、G-01 を含む G-04 以外の case の path と sha256 を freeze.v1.json の cases から引き継ぐ（G-01 の fixture v1 の sha256 は freeze.v2.json の cases の G-01 と一致）。"
     }
   },
   "supersedes": {
