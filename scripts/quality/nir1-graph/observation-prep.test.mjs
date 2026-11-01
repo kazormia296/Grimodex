@@ -21,10 +21,12 @@ import { SP1 } from "./seed-pin-addendum.mjs";
 import { execFileSync } from "node:child_process";
 import {
   BLOCKED_TABLE_SOURCE,
+  DECLARATION_ADDENDUM_V1,
   EVAL_CLOSURE_EXCLUSIONS,
   FORMAL_HARNESS_ENTRIES,
   HARNESS_CONSTANTS,
   HARNESS_MODULE_CONSTANTS,
+  K24_SCOPE_EXTENSION,
   K24_TABLE,
   K64_FREEZE_SOURCE,
   OBSERVATION_PREP_FILES,
@@ -377,6 +379,181 @@ test("declaration addendum: G-02/G-07/G-08 rows, declaration step outside setupO
     declarationAddendumErrors(negatives, ctx).some((e) =>
       /diagnosticNegatives/u.test(e),
     ),
+  );
+});
+
+test("DR-CP4-G4-7: K24_TABLE has the six rows, G-04 base the widened fifth Scene derived from fixture v2", async () => {
+  assert.deepEqual(
+    K24_TABLE.map((row) => [
+      `${row.caseId}/${row.variantId}`,
+      row.sceneId,
+      row.scene,
+      row.query,
+      row.end,
+      row.extension,
+    ]),
+    [
+      ["G-01/v1", "g01-mira", 20, 100, 78, false],
+      ["G-02/base", "g02-tamsin-first", 30, 100, 78, false],
+      ["G-04/base", "g04-lio-landing", 20, 100, 211, true],
+      ["G-07/base", "g07-pell-dock", 40, 100, 70, false],
+      ["G-08/base-usable", "g08-cass-attic", 20, 100, 64, false],
+      ["G-08/graph-recovered", "g08-cass-attic", 20, 100, 64, false],
+    ],
+  );
+  assert.deepEqual(K24_SCOPE_EXTENSION.variants, ["G-04/base"]);
+  assert.equal(
+    K24_SCOPE_EXTENSION.userConfirmation.commit,
+    "a70279156d1ea75332e2b22f9ec479a270869143",
+  );
+  // The G-04 row is the fixture's, not another row's values.
+  const ctx = await context();
+  const g04 = ctx.fixtures["G-04"];
+  assert.equal(g04.path, "evals/nir1-graph/g04-scope-exact-unknown.v2.json");
+  assert.equal(g04.json.fixtureId, "nir1-g04-scope-exact-unknown/2");
+  const base = g04.json.variants.find((v) => v.id === "base");
+  const row = K24_TABLE.find((r) => r.caseId === "G-04");
+  const scene = g04.json.scenes.find((s) => s.id === row.sceneId);
+  assert.equal(
+    base.expectations.arms.rPlusIrPlusGraph.appendedSceneId,
+    row.sceneId,
+  );
+  assert.equal(scene.readingOrder, row.scene);
+  assert.equal(g04.json.query.readingOrder, row.query);
+  assert.deepEqual(
+    base.expectations.addedScene.sceneExcerpt.canonicalUtf16Range,
+    {
+      start: 0,
+      end: row.end,
+    },
+  );
+  assert.deepEqual(g04.json.foreshadows, []);
+  assert.ok(!g04.json.qualifiedIr.some((ir) => ir.sceneId === row.sceneId));
+});
+
+test("DR-CP4-G4-7: the declaration addendum v2 references G-04 v2 and freeze.v2, and copies v1's other rows", async () => {
+  const ctx = await context();
+  const addendum = await json(OBSERVATION_PREP_FILES.declarationAddendum);
+  assert.equal(
+    OBSERVATION_PREP_FILES.declarationAddendum,
+    "evals/nir1-graph/declaration-addendum.v2.json",
+  );
+  assert.equal(addendum.addendumId, "nir1-graph-declaration-addendum/2");
+  assert.equal(addendum.status, "draft-awaiting-independent-review");
+  assert.equal(addendum.review, null);
+  assert.deepEqual(Object.keys(addendum.references.fixtures), [
+    "G-02",
+    "G-04",
+    "G-07",
+    "G-08",
+  ]);
+  assert.deepEqual(addendum.references.fixtures["G-04"], {
+    path: "evals/nir1-graph/g04-scope-exact-unknown.v2.json",
+    fixtureId: "nir1-g04-scope-exact-unknown/2",
+    sha256: "96d44ec362f30352d6cb971c208f2ab71aed944d008cab9eb65ca2ab57c218e1",
+  });
+  assert.equal(
+    addendum.references.graphCaseFreeze.path,
+    "evals/nir1-graph/freeze.v2.json",
+  );
+  assert.equal(addendum.references.graphCaseFreeze.sha256, ctx.freeze.sha256);
+  assert.ok(
+    !addendum.variantsWithoutDeclaration.variants.includes("G-04/base"),
+  );
+  assert.deepEqual(
+    addendum.diagnosticNegatives.map((row) => row.id),
+    ["K24-G02-N1", "K24-G04-N1", "K24-G07-N1", "K24-G08-N1"],
+  );
+  // v1 is kept byte for byte.
+  assert.equal(
+    sha256(await readFile(path.join(repoRoot, DECLARATION_ADDENDUM_V1.path))),
+    DECLARATION_ADDENDUM_V1.sha256,
+  );
+  const v1 = await json(DECLARATION_ADDENDUM_V1.path);
+  assert.deepEqual(
+    addendum.declarations.filter((row) => row.caseId !== "G-04"),
+    v1.declarations,
+  );
+
+  const errorsOf = (mutate) => {
+    const copy = clone(addendum);
+    mutate(copy);
+    return declarationAddendumErrors(copy, ctx);
+  };
+  const refused = (mutate, pattern) =>
+    assert.ok(
+      errorsOf(mutate).some((e) => pattern.test(e)),
+      String(pattern),
+    );
+  refused((a) => delete a.references.fixtures["G-04"], /G-04/u);
+  refused(
+    (a) =>
+      (a.references.graphCaseFreeze.path = "evals/nir1-graph/freeze.v1.json"),
+    /graphCaseFreeze/u,
+  );
+  refused(
+    (a) => (a.declarations = a.declarations.filter((r) => r.caseId !== "G-04")),
+    /G-04\/base/u,
+  );
+  refused(
+    (a) =>
+      (a.declarations.find((r) => r.caseId === "G-04").expectedExcerpt.end =
+        210),
+    /G-04\/base expected excerpt/u,
+  );
+  refused(
+    (a) =>
+      (a.declarations.find((r) => r.caseId === "G-04").readingOrder.scene = 30),
+    /G-04\/base readingOrder/u,
+  );
+  refused(
+    (a) => a.variantsWithoutDeclaration.variants.splice(2, 0, "G-04/base"),
+    /variantsWithoutDeclaration/u,
+  );
+  refused(
+    (a) =>
+      (a.diagnosticNegatives = a.diagnosticNegatives.filter(
+        (r) => r.id !== "K24-G04-N1",
+      )),
+    /diagnosticNegatives/u,
+  );
+  // Written after the observation: the flag, the rows and the v1 copy.
+  refused(
+    (a) => (a.graphRuntimeObservedBeforeAuthoring = false),
+    /graphRuntimeObservedBeforeAuthoring must be true/u,
+  );
+  refused(
+    (a) => (a.postObservationDeclarations.variants = []),
+    /postObservationDeclarations/u,
+  );
+  refused((a) => delete a.supersedes, /supersedes/u);
+  refused(
+    (a) => (a.supersedes.sha256 = flip(a.supersedes.sha256)),
+    /supersedes/u,
+  );
+  refused(
+    (a) => (a.declarations.find((r) => r.caseId === "G-07").vetoNote = "x"),
+    /v1 addendum's rows unchanged/u,
+  );
+  refused(
+    (a) =>
+      (a.diagnosticNegatives.find((r) => r.caseId === "G-02").expectation =
+        "x"),
+    /v1 addendum's unchanged/u,
+  );
+  // The widened K2/4 scope names the user's confirmation.
+  refused(
+    (a) => (a.contractScopeExtension.userConfirmation.commit = "a7027915"),
+    /contractScopeExtension/u,
+  );
+  refused((a) => delete a.contractScopeExtension, /contractScopeExtension/u);
+  // The v1 shape (no G-04 row) stays false and needs no v1 copy.
+  const v1Errors = declarationAddendumErrors(v1, ctx);
+  assert.ok(
+    !v1Errors.some((e) => /graphRuntimeObservedBeforeAuthoring/u.test(e)),
+  );
+  assert.ok(
+    v1Errors.some((e) => /declarations is missing G-04\/base/u.test(e)),
   );
 });
 

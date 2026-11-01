@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import test from "node:test";
 import { GRAPH_EVAL_VARIANTS } from "./constants.mjs";
+import { S2_FILES } from "./frozen-k64-admission.mjs";
 import { F6_FORMAL_BASIS, F6_PREVIEW_BASIS } from "./followup.mjs";
 import {
   ONE_SHOT_RECEIPT_LABEL,
@@ -53,9 +54,11 @@ const ONE_SHOT = [
   "G-08/chronicle-index-unusable",
   "G-08/both-indexes-unusable",
 ];
+/** The six K2/4 declaration runs (G-04/base is the fifth Scene, DR-CP4-G4-2). */
 const DECLARED = {
   "G-01/v1": "g01-mira",
   "G-02/base": "g02-tamsin-first",
+  "G-04/base": "g04-lio-landing",
   "G-07/base": "g07-pell-dock",
   "G-08/base-usable": "g08-cass-attic",
   "G-08/graph-recovered": "g08-cass-attic",
@@ -161,6 +164,37 @@ const ADDENDA = [
 
 const specs = () =>
   formalRunPlan({ plans: PLANS, prep: s2Prep(), addenda: ADDENDA });
+
+test("DR-CP4-G4-7: the declared runs are the committed addenda's (G-01 and the declaration addendum v2)", () => {
+  const read = (file) =>
+    JSON.parse(readFileSync(path.join(REPO_ROOT, file), "utf8"));
+  const committed = Object.fromEntries(
+    [
+      read("evals/nir1-g01/setup-addendum.v1.json"),
+      read(S2_FILES.declarationAddendum),
+    ].flatMap((addendum) =>
+      addendum.declarations.map((row) => [
+        `${row.caseId}/${row.variantId}`,
+        row.sceneId,
+      ]),
+    ),
+  );
+  assert.equal(
+    S2_FILES.declarationAddendum,
+    "evals/nir1-graph/declaration-addendum.v2.json",
+  );
+  assert.deepEqual(committed, DECLARED);
+  // The plans declare exactly these runs.
+  assert.deepEqual(
+    Object.fromEntries(
+      PLANS.filter((plan) => plan.declaration).map((plan) => [
+        plan.variantKey,
+        plan.declaration.sceneId,
+      ]),
+    ),
+    DECLARED,
+  );
+});
 
 test("DR-CP4-N-1: 13 variant の run の仕様を plan と S2 の値から導く（kind、宣言、one-shot、holding）", () => {
   const rows = specs();
