@@ -28,7 +28,6 @@ use super::{
     update_narrative_scene_scope, update_narrative_scene_scope_registry,
     NarrativeSceneScopeRegistryUpdatePayload, NarrativeSceneScopeUpdatePayload,
 };
-use crate::agent_writes::{agent_codex_update_impl, AgentCodexUpdatePayload};
 use crate::change_events::AppendChangeEvent;
 use crate::domain_writes::{
     apply_codex_rename, tree_node_create, tree_node_delete, tree_node_patch, tree_patch_path,
@@ -1040,38 +1039,18 @@ fn codex_version(db: &Database, entry: &str) -> Result<i64> {
     })
 }
 
+/// The tracked Codex writer, reached through the semantic-core boundary's
+/// typed writer bridge (`codex_operations`).
 fn update_codex_summary(db: &Database, entry: &str, summary: &str) -> Result<()> {
     let base_version = codex_version(db, entry)?;
-    agent_codex_update_impl(
+    super::codex_operations::test_agent_codex_update_for_change_feed(
         db,
-        AgentCodexUpdatePayload {
-            project_id: PROJECT.to_owned(),
-            session_id: "x15-codex-session".to_owned(),
-            surface: None,
-            entry_id: entry.to_owned(),
-            base_version,
-            type_slug: None,
-            name: None,
-            summary: Some(summary.to_owned()),
-            content: None,
-            timelapse_doc_step_coverage: None,
-            aliases: None,
-            excluded_aliases: None,
-            readings: None,
-            tags_cache: None,
-            parent_id: None,
-            context_mode: None,
-            icon: None,
-            children_budget: None,
-            notes: None,
-            model: None,
-            chat_message_id: None,
-            trace_id: None,
-            authorship_spans: None,
-            authorship_span_lanes: None,
-        },
-    )?;
-    Ok(())
+        PROJECT,
+        "x15-codex-session",
+        entry,
+        base_version,
+        summary,
+    )
 }
 
 fn rename_payload(tag: &str, updates: Vec<CodexRenameUndoUpdate>) -> CodexRenameApplyPayload {
