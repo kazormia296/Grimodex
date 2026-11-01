@@ -1,0 +1,22 @@
+seed-pin v1 as is: [
+  'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d (SP-N8)',
+  'references.fixtures.G-04 must be evals/nir1-graph/g04-scope-exact-unknown.v2.json with its frozen sha256 (SP-N8)'
+]
+seed-pin refs only -> v2: []
+seed-pin G-04 rows (v1 file): [{"caseId":"G-04","variantId":"base","querySceneId":"g04-query","seedEntityId":"g04-bren","seedSource":"manualSeed.entityId","placement":"graph-cases","expectedGraph":"available"}]
+setup v1 as is: [
+  'references.graphCaseFreeze must be evals/nir1-graph/freeze.v2.json with its sha256 8958dc736d67418cab4c183ab68131f723536bcc72cdf96944cd39e3fd4b127d'
+]
+setup refs only -> v2: []
+setup addendum mentions freeze.v1: 3
+setup addendum mentions g04: 0
+setup addendum mentions G-04: 0
+setup addendum mentions declaration-addendum.v1: 1
+setup addendum mentions seed-pin-addendum.v1: 1
+setup addendum mentions 4 つの Scene: 1
+setup addendum mentions 5 run: 0
+seed-pin addendum mentions freeze.v1: 3
+seed-pin addendum mentions g04: 4
+seed-pin addendum mentions G-04: 2
+seed-pin addendum mentions 4d002261: 1
+seed-pin addendum mentions 6080530a: 1

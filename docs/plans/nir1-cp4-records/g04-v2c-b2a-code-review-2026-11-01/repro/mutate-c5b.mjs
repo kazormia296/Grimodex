@@ -1,0 +1,11 @@
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+const root = process.argv[2];
+const { declarationAddendumErrors, loadObservationPrepContext } = await import(pathToFileURL(path.join(root, "scripts/quality/nir1-graph/observation-prep.mjs")));
+const ctx = await loadObservationPrepContext({ repoRoot: root });
+const a = JSON.parse(JSON.stringify(ctx.parsed.declarationAddendum));
+a.declarations.find((r) => r.caseId === "G-02").vetoNote = "変更";
+a.postObservationDeclarations.variants = ["G-02/base", "G-04/base"];
+const c = { ...ctx, freeze: { ...ctx.freeze, json: JSON.parse(JSON.stringify(ctx.freeze.json)) } };
+c.freeze.json.postObservationRevisions.push({ caseId: "G-02" });
+console.log("C5b (freeze が G-02 も作り直したと書き、addendum も合わせる＋G-02 の vetoNote 改変):", declarationAddendumErrors(a, c));
