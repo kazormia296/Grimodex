@@ -98,8 +98,16 @@ describe("Related Scenes Graph seed wiring (CP-3b S1)", () => {
     expect(h.fetch).toHaveBeenCalledTimes(1);
     // Exactly the options before CP-3b: `fetchRelatedPastScenes` then sends
     // begin's five keys only (fetchRelatedScenes.nir1.test.ts, CP-3a).
+    // LP-A1 (DR-WF-10) adds the local `onBeginDecision` callback, which never
+    // reaches begin's arguments.
     expect(optionKeys(0)).toEqual(
-      ["isCurrent", "mode", "queryGeneration", "signal"].sort(),
+      [
+        "isCurrent",
+        "mode",
+        "onBeginDecision",
+        "queryGeneration",
+        "signal",
+      ].sort(),
     );
     expect(h.fetch.mock.calls[0][0]).toBe("s2");
   });

@@ -74,6 +74,16 @@ export function useNir1RelatedScenes(enabled: boolean) {
   // Whether the running generation was itself a `graph-ready` refresh: only
   // the first refresh of such a chain skips the debounce (P2-A, DR-RSJ-6).
   const startedByGraphReady = useRef(false);
+  // LP-A1 (DR-WF-9〜11): the `index-ready` notice is judged synchronously, not
+  // through React state. `indexReadyHold` is the generation that will send
+  // begin and has not yet (a notice there is only noted: the begin it sends
+  // comes after the notice). `indexReadyRearm` restarts the plain 400 ms timer
+  // of the query effect while it waits. Neither is a `graph-ready` mark.
+  const indexReadyHold = useRef<{
+    generation: number;
+    noticed: boolean;
+  } | null>(null);
+  const indexReadyRearm = useRef<(() => void) | null>(null);
   const queryKey = useRef<readonly unknown[] | null>(null);
   const carried = useRef<{
     value: Nir1RelatedScenesFetchResult;
@@ -145,8 +155,15 @@ export function useNir1RelatedScenes(enabled: boolean) {
       })
       .catch(() => {});
     void listenRelatedScenesIndexReady((readyProject) => {
-      if (!disposed && readyProject === projectId)
-        setRefresh((value) => value + 1);
+      if (disposed || readyProject !== projectId) return;
+      const hold = indexReadyHold.current;
+      if (hold !== null && hold.generation === current.current) {
+        hold.noticed = true;
+        return;
+      }
+      const rearm = indexReadyRearm.current;
+      if (rearm !== null) rearm();
+      else setRefresh((value) => value + 1);
     })
       .then(async (release) => {
         await graphReady;
@@ -165,6 +182,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
       unlistenGraph?.();
       graphReadyGeneration.current = null;
       graphReadyDuringFetch.current = null;
+      indexReadyHold.current = null;
       setListening(false);
     };
   }, [enabled, sceneId, projectId, workspace, openRevision]);
@@ -238,6 +256,8 @@ export function useNir1RelatedScenes(enabled: boolean) {
       graphReadyGeneration.current = null;
       fetchingGeneration.current = generation;
       graphReadyDuringFetch.current = null;
+      // A `rawOnly` run never sends begin: a notice refreshes it (DR-WF-11).
+      indexReadyHold.current = rawOnly ? null : { generation, noticed: false };
       setLoading(true);
       observeNir1RelatedScenesQuery(sceneId);
       const isCurrent = () => current.current === generation && !disposed;
@@ -263,6 +283,20 @@ export function useNir1RelatedScenes(enabled: boolean) {
       seed: string | null,
       trigger: "graph-ready" | null,
     ) => {
+      // Ends this generation's hold; whether a notice came while it was held.
+      const releaseHold = () => {
+        const hold = indexReadyHold.current;
+        if (hold?.generation !== generation) return false;
+        indexReadyHold.current = null;
+        return hold.noticed;
+      };
+      // Called synchronously right before begin is sent (true), or when the
+      // fetch takes a path with no begin (false): a notice held for such a
+      // generation refreshes now, as it did before (DR-WF-10・11).
+      const onBeginDecision = (sendsBegin: boolean) => {
+        if (releaseHold() && !sendsBegin && isCurrent())
+          setRefresh((count) => count + 1);
+      };
       void fetchRelatedPastScenes(sceneId, {
         mode: "hybrid",
         ...(rawOnly ? { rawOnly: true } : {}),
@@ -271,6 +305,7 @@ export function useNir1RelatedScenes(enabled: boolean) {
         isCurrent,
         ...(seed !== null ? { graphSeedEntityId: seed } : {}),
         ...(trigger !== null ? { refreshTrigger: trigger } : {}),
+        onBeginDecision,
       })
         .then((value) => {
           const readyDuringFetch = graphReadyDuringFetch.current === generation;
@@ -278,8 +313,16 @@ export function useNir1RelatedScenes(enabled: boolean) {
             fetchingGeneration.current = null;
             graphReadyDuringFetch.current = null;
           }
+          const missedIndexReady = releaseHold();
           if (disposed || current.current !== generation) {
             value.session?.release();
+            return;
+          }
+          // DR-WF-11: it ended without sending begin after a notice. Query
+          // again instead of showing it, as the notice did before LP-A1.
+          if (missedIndexReady) {
+            value.session?.release();
+            setRefresh((count) => count + 1);
             return;
           }
           published = value;
@@ -337,9 +380,11 @@ export function useNir1RelatedScenes(enabled: boolean) {
             fetchingGeneration.current = null;
             graphReadyDuringFetch.current = null;
           }
+          const missedIndexReady = releaseHold();
           if (!disposed && current.current === generation) {
             dropCarried();
             setFetch(null);
+            if (missedIndexReady) setRefresh((count) => count + 1);
           }
         })
         .finally(() => {
@@ -348,12 +393,23 @@ export function useNir1RelatedScenes(enabled: boolean) {
     };
     // DR-RSJ-6: the first `graph-ready` refresh runs at once; the Graph it
     // waits for is cached already. Every other start keeps the debounce.
-    timer = setTimeout(
-      () => run(false, byGraphReady ? "graph-ready" : null),
-      byGraphReady && !chained ? 0 : FETCH_DEBOUNCE_MS,
-    );
+    const first = () => {
+      if (indexReadyRearm.current === rearm) indexReadyRearm.current = null;
+      run(false, byGraphReady ? "graph-ready" : null);
+    };
+    // LP-A1 (DR-WF-9): an `index-ready` notice restarts only this plain 400 ms
+    // timer, in place. The `graph-ready` timers, `recoverRaw` and the timeout
+    // retry are not registered; a notice there refreshes as before.
+    const rearm = () => {
+      clearTimeout(timer);
+      timer = setTimeout(first, FETCH_DEBOUNCE_MS);
+    };
+    if (!byGraphReady) indexReadyRearm.current = rearm;
+    timer = setTimeout(first, byGraphReady && !chained ? 0 : FETCH_DEBOUNCE_MS);
     return () => {
       disposed = true;
+      if (indexReadyRearm.current === rearm) indexReadyRearm.current = null;
+      indexReadyHold.current = null;
       clearTimeout(timer);
       abort.abort();
       // The shown result is carried to the next run, which keeps or drops it

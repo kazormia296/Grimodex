@@ -128,6 +128,7 @@ function fetchHybrid(
     graphSeedEntityId?: string;
     rawOnly?: boolean;
     refreshTrigger?: "graph-ready";
+    onBeginDecision?: (sendsBegin: boolean) => void;
   } = {},
 ) {
   const response = fetchRelatedPastScenes("current", {
@@ -928,5 +929,67 @@ describe("follow-up の子の Graph の窓と timing の印（K6/4 の批准 12�
     const plain = await fetchHybrid();
     expect(plain.timing.refreshTrigger).toBeNull();
     expect(plain.timing.graphWindowMs).toBeNull();
+  });
+});
+
+// LP-A1（DR-WF-9・10）：begin を送るかの印は、`beginRelatedScenes` を呼ぶ直前に同期で
+// 立てる。begin の引数は変えない。begin を送らない分岐では false を知らせる。
+describe("begin を送るかの印（LP-A1）", () => {
+  it("begin を呼ぶ直前に同期で true を 1 回知らせ、begin の引数は変えない", async () => {
+    const decisions: boolean[] = [];
+    h.begin.mockImplementation(async () => {
+      expect(decisions).toEqual([true]);
+      return beginResponse();
+    });
+    await fetchHybrid({ onBeginDecision: (value) => decisions.push(value) });
+    expect(decisions).toEqual([true]);
+    expect(h.begin).toHaveBeenCalledExactlyOnceWith({
+      expectedWorkspacePath: "/workspace/one",
+      projectId: "p1",
+      currentSceneId: "current",
+      query: "保存された本文",
+    });
+  });
+
+  it("listener が無い（listener-unavailable）と begin を送らず false を知らせる", async () => {
+    h.listenReady.mockRejectedValue(new Error("no bridge"));
+    const decisions: boolean[] = [];
+    h.semantic.mockImplementation(async () => {
+      expect(decisions).toEqual([false]);
+      return hits;
+    });
+    const response = await fetchHybrid({
+      onBeginDecision: (value) => decisions.push(value),
+    });
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(decisions).toEqual([false]);
+    expect(response.status).toBe("completed");
+  });
+
+  it("Raw の取り直し（rawOnly）は begin を送らず false を知らせる", async () => {
+    const decisions: boolean[] = [];
+    await fetchHybrid({
+      rawOnly: true,
+      onBeginDecision: (value) => decisions.push(value),
+    });
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(decisions).toEqual([false]);
+  });
+
+  it("begin の前に取り消された fetch は何も知らせない", async () => {
+    const controller = new AbortController();
+    const source = deferred<string>();
+    h.load.mockReturnValue(source.promise);
+    const decisions: boolean[] = [];
+    const pending = fetchHybrid({
+      signal: controller.signal,
+      onBeginDecision: (value) => decisions.push(value),
+    });
+    await drain();
+    controller.abort();
+    source.resolve(doc("保存された本文"));
+    expect((await pending).status).toBe("cancelled");
+    expect(h.begin).not.toHaveBeenCalled();
+    expect(decisions).toEqual([]);
   });
 });
