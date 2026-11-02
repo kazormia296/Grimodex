@@ -392,3 +392,17 @@ commit：`4e3d6442`（gate の module と単体試験）、`983197da`（Graph �
 **9.3 の不変条件 (1) の訂正**：「区間は高々 1 つ」は、コードでは区間を数（`sections: u32`）で持つ。製品の呼出し元は supervised だけで、TS の scheduler は直列なので実際には高々 1 だが、gate は 2 本以上でも正しく数える（Graph は数が 0 のときだけ窓を開く）。
 
 **検証（この節の直しの後）**：`heavy.sh cargo test … --lib`（全体）、gate 関係の試験、`cargo check --features …,nir1-graph-eval --lib --tests`（通過）、`cargo clippy --all-targets … -- -D warnings -A clippy::nonminimal_bool`（警告なし。`nonminimal_bool` は既存の `nir1_local_entry_tests.rs:136` の rust 1.96 の lint で、master の CI は成功。この lane は触らない）、`rustfmt --check`（新しい差分なし）、`native-architecture.mjs`（ok）、`narrativeFreshness.test.ts`（17 passed）。全体は 762 passed、0 failed、7 ignored（`9d923ce3` の内容）。
+
+**hosted の canonical Quick（PR #777、head `59c5415e`）の flake への対応（2026-11-03）**
+
+- 事実：`nir1_graph_product::tests::gate::an_owner_panic_ends_the_window_of_its_query` が `left: (1, 0)` で 1 回落ちた（同じ head の ci.yml の Electron native job は成功）。原因は試験の前提で、製品の欠陥ではない。owner thread の `deliver`（panic の unwind の `SessionGuard` を含む）は、結果を設定して通知した**後に**、ticket の lock の外で窓を Drop する（GATE-6 の設計どおり）。別 thread の試験が結果を見た直後に窓の数を読むと、Drop より先に読める。製品では窓が数 µs 遅れて終わるだけ（期限 500 ms・天井もある）。
+- 方針（integrator）：製品の順序は変えず、試験を直す。
+- 掃いた結果：「別 thread が結果を見て、すぐ lease・区間・待ちの数を assert する」箇所で、**数が減る向き**を見ていたのは次の 2 つだけで、どちらも `wait_until(.. live == (0, 0))` に替えた。`an_unavailable_answer_and_a_cancellation_end_the_window`（owner の `deliver(Unavailable)`）と `an_owner_panic_ends_the_window_of_its_query`（unwind の `deliver(Failed)`）。
+- 直さない箇所（どれも競合しない）：
+  - 窓が**残っている**ことの assert（`(1, 0)` など）は、窓が結果より前（admit の前）に付き、結果の後に放す者がいないので競合しない。
+  - この thread 自身が `finish`／`drop(ticket)`／`declare`／edge／`close_for_shutdown`／cache の破棄を呼んだ直後の assert は同期に放される。
+  - cache への移しは、lease が局所の変数を経て `store_late_cache` に入る間も gate から消えないので、`cache_len == 1` の後の `live == 1` は競合しない。
+  - counter（`windows_opened`、`graph_waited`、`graph_wait_expired`）は、窓が開く前に加算されるか、`join` の後に読む。
+  - gate の単体試験は 1 thread（手動の時計）。system clock の試験は `join` の後に読む。
+  - 実 DB の試験は await／`join` の後に counter だけを読む。`related_scenes/graph_tests.rs` の窓の試験は、この thread の `declare`／`release_window`／`start` だけで数を動かす。
+- 再現と確認：同じ test binary を `taskset -c 0`（1 CPU）、`--test-threads=16` で回した。直す前は `nir1_graph_product::tests::gate` を 100 回回して 25 回落ちた（owner の panic 13、unavailable 12。ほかの試験は 0）。直した後は filter `gate`（gate の単体、owner の gate、名に gate を含むほかの試験の 60 件）を 100 回回して 0 回。
