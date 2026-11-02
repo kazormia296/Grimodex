@@ -1072,4 +1072,5 @@ DR-CP4-S6-1（S4b''・候補 `86427ee5`）の次の測定。S4b'''（`60bf9dc44a
 
 - 診断の枝 `claude/cp4-lp-diag` は、gate（`claude/cp4-lp-gate` の `59c5415e`。PR #777、DR-CQD-GATE-1〜10）を `b828fa26` で取り込み、`2e1c8815` で gate の counter（`GraphOwnerDiagnostics.gate`）と held query の窓の有無を `lpd` に出すようにした（schema `nir1-lpd-diag/2`。`nir1-graph-eval` の下だけ。gate の file は読むだけ）。
 - 第 3 回（run `lpd-diag-3`）と第 4・5 回（同じ build）の記録は contracts の `docs/plans/nir1-cp4-records/diag-lpd-2026-11-02/README.md` の「第 3 回」（`f273a83c`）と「第 4・5 回」（`83dc4e3d`）。設計への反映は `nir1-cp4-lapse-lane-design-draft.md` の改訂 2（§3.4）。
-- 規則 (1)〜(6)（dev 専用・merge しない・push しない・正式の測定に数えず集計・閾値の選択に使わない・正式の候補は master に merge した直しだけから作る）は変わらない。(6) の取込みに gate が加わっただけ。
+- 規則 (1)〜(6) は変わらない（dev 専用・正式の測定に数えず集計・閾値の選択に使わない・正式の候補は master に merge した直しだけから作る。診断の枝は push しない〔信頼境界の列〕）。(6) の取込みに gate が加わっただけ。
+- **規則 (4) の用途の広がり**：元の本文は診断を『分岐を決めて直し方（LP-B／LP-S／LP-C）を選ぶためにだけ』使うと書いた。第 3〜5 回は、選んだ gate の**効果の確認**に使った。根拠はユーザーの確認 `b14a92d6` の読み 4（効果の確認は、診断の枝に修正を取り込んだ dev run で行う。正式の測定に数えない）と `02a8555a`（dev run をあと 2 回）。用途が広がっただけで、正式の測定に数えず集計・閾値の選択に使わない点は同じ。
