@@ -17,7 +17,7 @@
    | LP-C | 4 | 4 | child の begin 後の Main 側の再検査が `invalidated` を返す | Main 側までは確認済み。分岐は未確定 |
    | LP-S | 4 | 4 | query の時点で親の ticket が `stale`（identity の drift の系統） | 経路は推論。LP-B と同系統の可能性（推測） |
 
-3. **LP-A は renderer の hook だけの変更**で、契約に触れない。しかし**効果は部分的**：失効率は K6/2 の読みで 8→0、K6/4 の読みで 15→7（3.48%）、窓外率は約 6.0%（U 内 12/201。#139 が直る begin の後の分岐まで入れても 11/201＝5.5%）。
+3. **LP-A は renderer の hook だけの変更**で、契約に触れない。しかし**効果は部分的**：失効率は K6/2 の読みで 8→0、K6/4 の読みで 15→7（3.48%）、窓外率は約 5.5%（U 内 11/201。#139 も直る見込み。未測定）。
 4. **LP-B／LP-C／LP-S は、診断（eval build の計装による dev run）が先**。しかも**効果のある直し方は 2 種類しかない**：(ii) worker の再構築の待ち窓と backoff を drift のときだけ免除する（worker 起動の rate limit という**防御の緩和**）、または (iii) registration／requalification の identity を B の入力に絞る（**proof の定義の変更**。契約の改訂で、委任の外）。待ち窓を免除しない再試行は、Graph が T_late（100 ms）を超えて X3 に移るだけで、**表示は増えない**。
 5. 3 つの線を全部当てても、LP-S の 4 件が残れば窓外率は 4/201≈2.0% で、**HOLD が残る見込み**がある。「失効の別 lane」は、HOLD を解くための設計とは限らない。ユーザーの判断材料として §6 に出す。
 6. 緩和（失効の読みの変更など）は採らない。列挙は §5。
@@ -38,7 +38,7 @@
 
 - 8 件は同じ形：`related-scenes:index-ready` の通知の 3.4〜4.5 ms 後に親の fetch が呼ばれ、1.1〜1.4 ms（2 件は約 40 ms）で `cancelled`（`rawStatus: not-started`、begin の API 行なし）。約 404 ms 後（#187 だけ 452.7 ms）に同じ鍵の再 query が出て、begin・公開・`graph-ready` の子まで完走する。8 件とも開始時の封印は `current`、A3 は eligible。編集の向きは関係しない。
 - 前の正式の run（#48・#72・#200）と dev の稽古（4 件）にも同じ 1 ms 幅の署名が記録されている（DR-CP4-V-3）。3 回の run で再現する系統的な race。
-- 通知の遅れは二峰（起点を封印の読取の開始にすると、150〜250 ms が 149 件、400〜666 ms が 9 件。起点を終了にすると件数が少し動く）。遅い 9 件は tree の更新から 400 ms の timer の発火より後になり、`run()` の開始〜begin の前の窓に落ちる。**9 件目は #139**（通知の 0.1 ms 後に呼出し、begin の IPC が 63.6 ms かかって begin した後に取り消された。K6/2 は「その他」、K6/4 は X11）。
+- 通知の遅れは二峰（起点を封印の読取の開始にすると、150〜250 ms が 149 件、400〜666 ms が 9 件。起点を終了にすると件数が少し動く）。遅い 9 件は tree の更新から 400 ms の timer の発火より後になり、`run()` の開始〜begin の前の窓に落ちる。**9 件目は #139**（通知の 0.1 ms **後**に fetch の呼出し＝通知は begin の前。begin の IPC が 63.6 ms かかって begin した後に、描画の commit の cleanup で取り消された。K6/2 は「その他」、K6/4 は X11）。
 - 正常な cycle でも、通知は debounce を張り直している（182 件が直前の通知から 390〜420 ms 後に出る）。通知が最初の timer の発火より前に来るので無害。
 - 取消しの経路：
   1. `useNir1RelatedScenes.ts:147-150`：`index-ready` の listener が状態を見ずに `setRefresh`。
@@ -54,7 +54,7 @@
 
 ### 2.3 案 LP-A1（推奨）：begin を一度も送っていない世代を、`index-ready` で取り消さない
 
-**最小の形を先に取る**。初版の「begin を送った後は公開してから 1 回 refresh」の分岐は、今は abort している世代を**表示する**ように変えるので、根拠が足りない（レビュー P1-1）。8 件はすべて begin の前なので、**この分岐は後の段（必要が測定で示されたとき）に回す**。#139（begin の後に取消し）はこの最小の形では直らない。
+**最小の形を先に取る**。初版の「begin を送った後は公開してから 1 回 refresh」の分岐は、今は abort している世代を**表示する**ように変えるので、根拠が足りない（レビュー P1-1）。8 件はすべて begin の前なので、**この分岐は後の段（必要が測定で示されたとき）に回す**。**#139 も、通知が fetch の呼出しの前（＝begin の前）に来ているので、この形で取り消されなくなる見込み**（未測定。初版は『直らない』と書いたが、独立コードレビューの指摘で取り違えと分かった。hold は `run()` の開始から掛かるので、通知が seed の読取中に来ても掛かる）。
 
 - 変更箇所：`src/features/related-scenes/useNir1RelatedScenes.ts` だけ。`index-ready` の listener を、React の state を通さず同期で判定する。世代を 3 種に分ける（P1-2）：
   1. **begin を送る世代で、まだ送っていない**（timer の待ち、または `run()` の開始〜begin の前の in-flight）：取り消さない。これから送る begin は通知の後になる。
@@ -67,7 +67,7 @@
 - **hook の source の literal を変えない**（P2-4）：`scripts/quality/nir1-graph/observation-prep.mjs:2342-2373` は hook の source に `const FETCH_DEBOUNCE_MS = (\d+);`（値 400）と `byGraphReady && !chained ? 0 : FETCH_DEBOUNCE_MS` が含まれることを検査する（trace file の `productTriggers`）。変えると trace file の作り直し・観測前の再固定になる。試験か lint で守る。
 - 効果の見込み（失効率と窓外率を並べて書く。P3-4）：
   - 失効率：K6/2 の読みで 8→0。K6/4 の読みで 15→7（7/201＝3.48%）。
-  - 窓外率：8 件が U に入って表示されるので、表示されない全体は 20→12、U 内は 12/201＝約 6.0%（U が 193→201 に増える）。#139 が直る begin の後の分岐まで入れても 11/201＝5.5%。**どちらも物差しを超えたまま**。
+  - 窓外率：8 件が U に入って表示され、#139 も直る見込みなので、表示されない全体は 20→11、U 内は 11/201＝約 5.5%（U が 193→201 に増える）。**物差しを超えたまま**。
   - 分類が移るだけの部分：通知が親の `[tFetch, begin]` の間に来る場合、失効 (i)／X12 から X7（その他）に移る（`followup.mjs:585-594`）。8 件と #139 は通知が `tFetch` より前なので移らない。
   - 取り消されなくなった 8 件が別の follow-up の失敗（X1／X5 など）に移る率は、正常な query の基準率（約 7/193）なら 0〜1 件。
 - リスクと試験：
@@ -113,7 +113,7 @@
 
 ## 4. 順序と手順
 
-1. **LP-A1 を先に**：確度が最も高く、renderer だけで、契約に触れない。実装 → hook の試験 → 独立コードレビュー → PR。ただし効果は部分的（失効率 15→7、窓外率は約 6.0% で物差しの外）。
+1. **LP-A1 を先に**：確度が最も高く、renderer だけで、契約に触れない。実装 → hook の試験 → 独立コードレビュー → PR。ただし効果は部分的（失効率 15→7、窓外率は約 5.5% で物差しの外）。
 2. **診断（LP-D）**：**dev 専用の未 merge の枝**（DR-CP4-LPD-1。`native-architecture.mjs` が S2 の bytes pin で、eval module の外への hook を許さないため。検査も pin も変えず、master に入れず、正式の候補にしない）で、eval build（`nir1-graph-eval` feature。製品 build に symbol も文字列も無い）に、(a) worker の登録の `Ok(false)` の分岐（上の全部）と query の時点の drift、(b) `await_request` の `Invalidated` の出所、(c) Main の commit の時刻と、child の begin の時点で connection を持つ処理、(d) 製品の `read_seal` と harness の startSeal の差、を記録する計装を足し、dev run（台帳なし、正式の測定に数えない）で LP-B・LP-S・LP-C の分岐を決める。静かなマシンが要る（race の再現のため）。
 3. **LP-B／LP-S／LP-C の修正**を、診断の結果に従って。LP-B2（防御の緩和）と LP-B3／LP-C1／LP-C2（契約の改訂）は、ユーザーに確認するまで実装しない。
 4. **新しい候補での再測定**：製品を変えるので候補の commit が変わる。admission は機械的には通る（S2 の pin に製品の file が無い。台帳の key は〔候補の commit、S4 の commit、run の種類〕なので、新しい候補では SP-P4 の上限 2 も数え直しになる）。足すべき条件（P2-5）：
