@@ -376,3 +376,19 @@ commit：`4e3d6442`（gate の module と単体試験）、`983197da`（Graph �
 - T_late への影響（Graph の 100 ms の待ちが当たった回）は未測定（9.1）。
 - 守るのは同じ process の Freshness の commit だけ。保存、Chronicle の build、別の begin の audit、maintenance、MCP の別 process、D-final の経路の窓は対象外（F10 の一般形は残る）。
 - 拡張案 X+（publish の前の checkpoint）は採っていない。区間の in-flight で Graph が 100 ms を超えて待つ回は、今と同じ drift に戻る。
+
+### 9.6. 独立 review（Opus、read-only。P1 なし）への対応と訂正（2026-11-02。9.1〜9.5 の本文は直さない）
+
+| 指摘 | 対応 | commit |
+|---|---|---|
+| P2-1 天井の起点 `blocked_since` と番 `turn_until` が、`Stopped` の戻りと `invalidate_all` で残る（切替・edge の後の最初の Freshness が古い起点から即 `Overridden` になり、新しい窓に予約・publish が入りうる） | 直した。`Stopped` の分岐と `invalidate_all` で両方を消す（`GateCore::end_streak`）。`Deferred` の後に起点を残すのは設計どおり（累計の天井）で変えない。手動の時計の試験 2 件（停止、edge）を足し、直す前に内部の状態と挙動（`overridden`）の両方で落ちること、直した後に通ることを確かめた。変異 M14（停止で消さない）と M15（edge で消さない）で落ちる | `cc69cb7c` |
+| P2-2 実 DB の天井の試験（admit 10 ms／ceiling 60 ms）は、負荷で最初の起床が 60 ms を超えると延期 0 回で落ちる | 直した。ceiling 500 ms（admit 10 ms のまま、上限 1,000 回）。実時計に頼る下限の assert をほかに見直し、閉じた製品の試験の 50 ms の assert（P3-5）を直した。ほかの実 DB／owner の試験は長い上限（admit 20 s など）か、上限そのものを待つ形で、下限に頼らない | `9d923ce3` |
+| P3-3 全列挙の試験の共存の免除が sticky | 直した。免除は「live の section に override のものがある間」だけにした。あわせて、天井 300 ms にして override に 4 操作以内で届くようにした（前の形では 4 操作で override に届かず、免除の分岐が未検査だった）。変異 M17（免除しない）で落ちる | `9d923ce3` |
+| P3-4 9.5 の 2 番「restore の cycle が重なりうる」は不正確 | **訂正**：製品で body を呼ぶのは supervised（`run_narrative_freshness_cycle_supervised`）だけで、`run_narrative_freshness_cycle_inner` と restore の試験の呼出しは `cfg(test)` の中。区間を数で持つ理由は「再入に強い（将来 2 本目の呼出し元ができても区間を取りこぼさない）」にとどめる | この docs の commit |
+| P3-5 `include_str!` の source の順序の試験、実時間 50 ms の assert | 50 ms の assert は「待たなかったこと」（`freshness_blocked_for_test` が false、counter が既定値）の検査に替えた。source の順序の試験は、`await_request` に挙動で届く試験が無い（operation の registry と IR operation が要る）ので理由を書いて残した。`release_window` 自体は挙動の試験がある。整形が変われば `find` が失敗して落ちる（黙って通らない） | `9d923ce3` |
+| P3-6 `window_settled` の `(Some, Some(Unused))` の腕を消しても落ちる試験が無い | 試験を足した：cache に入れられない（lifecycle の epoch が動いた）unused の答えが、答え→宣言、宣言→答えのどちらの順でも窓を放す。変異 M16（腕を消す）で落ちる | `9d923ce3` |
+| P3-7 不活性でも cycle ごとに `spawn_blocking` が 1 回増える | 変更しない。**既知・許容**：戻り値と挙動は同じで、cycle ごとに数 µs の blocking pool の 1 回 | — |
+
+**9.3 の不変条件 (1) の訂正**：「区間は高々 1 つ」は、コードでは区間を数（`sections: u32`）で持つ。製品の呼出し元は supervised だけで、TS の scheduler は直列なので実際には高々 1 だが、gate は 2 本以上でも正しく数える（Graph は数が 0 のときだけ窓を開く）。
+
+**検証（この節の直しの後）**：`heavy.sh cargo test … --lib`（全体）、gate 関係の試験、`cargo check --features …,nir1-graph-eval --lib --tests`（通過）、`cargo clippy --all-targets … -- -D warnings -A clippy::nonminimal_bool`（警告なし。`nonminimal_bool` は既存の `nir1_local_entry_tests.rs:136` の rust 1.96 の lint で、master の CI は成功。この lane は触らない）、`rustfmt --check`（新しい差分なし）、`native-architecture.mjs`（ok）、`narrativeFreshness.test.ts`（17 passed）。全体は 762 passed、0 failed、7 ignored（`9d923ce3` の内容）。
