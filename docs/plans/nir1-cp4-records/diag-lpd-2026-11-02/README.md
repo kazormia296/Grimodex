@@ -94,3 +94,61 @@ integrator だけが見る診断。**正式の測定に数えず、集計・閾�
 - (ii) `freshness_token` から feed の位置を外す：child の群にしか効かず、A3 の identity、D-final の ref、`edge_holds` の契約を変える（契約の改訂。委任の外）。
 - (iii-a) drift の後に 1 回だけ再試行する：requery の測定上の読みが未確認。
 - 閾値・Gold・失効の読みの緩和は推奨しない。
+
+---
+
+# 第 3 回（run `lpd-diag-3`）：gate を取り込んだ build で、表示の欠落が 11 → 0 件になった（dev 専用。CP-4 の結果ではない）
+
+2026-11-03（JST）00:02〜00:12。診断の枝 `claude/cp4-lp-diag` の HEAD `2e1c8815`（master `8dd7a9c0`＋診断の計装＋gate `59c5415e` の merge＋gate の counter の出力）。同じ手順（eval build → feature つき worker → 静けさの確認〔load 0.53〕→ 編集 trace 200 cycle、Q=201、setup は `lpd-diag-setup` を再利用）。`.node` sha256 `52142ddf…2a90b`、worker sha256 `d0deb469…6647`（Main の path と eval-build が bytes 一致）。記録：`observation.json` sha256 `a02c25ed…ec46f3`（49.3 MB）、`receipt.json` sha256 `c4359432…a0520`。置き場所は diag worktree の `.artifacts/cp4/lpd-diag-3/`。第 1・2 回と同じく dev fixture（S4b''' の凍結 trace と同じではない）、受領書の `k64` が `invalid` なのも同じ理由（dev preview の F6）。**正式の測定に数えず、集計・閾値の選択に使わない**（DR-CP4-LPD-1 (4)）。
+
+gate の branch は、この run の後に試験の直しの 2 commit（`f0519ace`、`e7d6fe4a`。`nir1_graph_gate_tests.rs` と DR だけ）が入った。製品コードは `59c5415e` と同じなので、この run の build は PR #777 の head の製品コードと同じ。
+
+## 結果（Q=201）
+
+| 区分 | 第 1 回 | 第 2 回 | **第 3 回（gate）** |
+|---|---|---|---|
+| 親の ticket が available | 198 | 198 | **201** |
+| 親の ticket の失敗（登録の拒否、stale） | 3 | 3 | **0** |
+| child の合流が available | 190 | 190 | **201** |
+| child の合流の無効化（`assemble-unavailable`） | 8 | 8 | **0** |
+| `graph-ready` の通知 | 198 | 198 | **201** |
+| prepare の失敗 | 1 | 3 | **0** |
+| 表示されなかった合計 | 11（5.5%） | 11（5.5%） | **0（0%）** |
+
+- 前の 2 回と同じ割合（約 5.5%）が続くと仮定したとき、201 件で 0 件になる確率は約 0.945^201 ≈ 1e-5 で、偶然とは読みにくい。ただし **dev の 1 回（N=1）**で、正式の候補での割合は再測定まで不明。
+- 仮説（欠落 11 → 0〜2 件／run）の範囲に入った。仮説は外れなかった。
+
+## gate の counter（run 全体の累計。`nativeReads[201].lpd.gate`）
+
+| counter | 値 | 読み |
+|---|---|---|
+| `windowsOpened` | 201 | 全 query で Graph の窓（lease）を開いた |
+| `graphWaited` | 8 | Graph が in-flight の Freshness の区間を待った回（うち `gate-opened-after-wait` 8 件） |
+| `graphWaitExpired` | 0 | Graph の待ちが 100 ms を超えて窓なしで進んだ回は無い |
+| `waitedAdmit` | 13 | Freshness の cycle が窓の終了を待ってから入った回 |
+| `deferred` | 0 | Freshness が 250 ms の待ちを超えて延期された回は無い |
+| `overridden` | 0 | 累計 1 s の天井で lease を無視した回は無い |
+| `stopped`／`leaseExpired` | 0／0 | lifecycle の停止・lease の期限切れは無い |
+
+窓の outcome（`records[].ticket.lpd.window.outcome`）：`gate-opened` 193、`gate-opened-after-wait` 8。
+
+## 副作用の確認（T_late への影響）
+
+ticket の発行から settle までの所要（ms）：
+
+| | p50 | p90 | p99 | max | 150 ms 超の件数 |
+|---|---|---|---|---|---|
+| 第 1 回 | 33.2 | 42.4 | 294.4 | 315.1 | 7 |
+| 第 2 回 | 33.3 | 37.1 | 287.1 | 322.5 | 6 |
+| 第 3 回 | 33.5 | 37.7 | 322.1 | 414.6 | 4 |
+
+- 中央値と p90 は変わらない。150 ms 超の遅れ（ticket の発行から prepare の開始まで約 140〜390 ms）は**第 1・2 回にもあった**（7 件、6 件）。gate が作った遅れではない。第 3 回の 4 件（seq 235、299、349、399）は、すべて `gate-opened-after-wait` で、max が第 2 回より約 90 ms 長い（322.5 → 414.6）。Graph の待ち（上限 100 ms）が足された分と読める【推論】。
+- 遅れの原因は未調査。第 2 回の stale／unavailable 2 件（seq 81、195）もこの遅い群に入っていた。**『prepare の開始までの約 250〜350 ms』は、Freshness の cycle が長く続いたあとに Graph の読みが始まる群の可能性がある**【推測。未確認】。確かめるなら、遅い群の Freshness の cycle の長さを記録する。
+- 窓の長さ（lease を持っていた時間）：p50 0.0 ms、p99 9.9 ms、max 48.0 ms。
+- `deferred` が 0 なので、Freshness が TS の再 poll で 1 s 遅れた回は無い。
+
+## 限界（この run が確かめていないこと）
+
+- dev fixture・1 回・200 cycle。run ごとの揺れは未測定（もう 1〜2 回回せば揺れの幅が見える）。
+- 残る隙間は未検証：(i) 窓を開く時に区間が in-flight で 100 ms を超える場合（`graphWaitExpired`＝0 なので起きなかった）、(ii) child の合流が 500 ms を超える場合（`leaseExpired`＝0）、(iii) 保存・audit・D-final など Freshness 以外の commit。
+- 正式の再測定（新しい候補。S4 の扱いは未確認）はしていない。Gold、N2／N4（blocked）、K6/4 の検出力の記録は動かしていない。
