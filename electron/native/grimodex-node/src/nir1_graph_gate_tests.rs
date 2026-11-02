@@ -347,9 +347,9 @@ fn a_closed_product_never_opens_a_window_and_freshness_never_waits() {
         begin_deferred(&fixture),
         GraphBegin::Unavailable(GraphUnavailable::NotActivated)
     ));
-    let started = Instant::now();
+    // Freshness entered without waiting (no wall-clock bound: review P3-5).
     drop(enter(&fixture));
-    assert!(started.elapsed() < Duration::from_millis(50));
+    assert!(!gate(&fixture).freshness_blocked_for_test());
     assert_eq!(fixture.diagnostics().gate, Default::default());
     assert_eq!(live(&fixture), (0, 0));
 }
@@ -380,4 +380,48 @@ fn a_window_attached_to_a_ticket_settled_meanwhile_ends_at_once() {
     assert_eq!(shared.commit_gate.live_for_test().0, 1);
     open.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Stale));
     assert_eq!(shared.commit_gate.live_for_test().0, 0);
+}
+
+/// Review P3-6: an available answer declared unused that cannot be cached
+/// (its lifecycle epoch moved) is settled: its window ends, in either order of
+/// the answer and the declaration.
+#[test]
+fn an_unused_answer_that_cannot_be_cached_ends_its_window() {
+    for answer_first in [true, false] {
+        let shared = Arc::new(Shared::new());
+        shared
+            .commit_gate
+            .set_limits_for_test(limits(Duration::from_secs(20)));
+        let key = CacheKey {
+            binding: LiveBinding::new("/workspace", "workspace-id", 1, 0),
+            caller_epoch: 1,
+            project_id: PROJECT.into(),
+            query_scene_id: SCENE.into(),
+            seed_entity_id: "entity".into(),
+        };
+        let ticket = TicketShared::new(Arc::clone(&shared), key, 0, false);
+        ticket.attach_window(shared.commit_gate.open_window(|| true).expect("window"));
+        // Not cacheable any more; the gate itself is left as it is.
+        shared.edge_epoch.fetch_add(1, Ordering::SeqCst);
+        let answer = GraphTicketOutcome::Available(Arc::new(projection(&Nir1GraphRequest {
+            project_id: PROJECT.into(),
+            query_scene_id: SCENE.into(),
+            seed_entity_id: "entity".into(),
+        })));
+        if answer_first {
+            ticket.deliver(answer);
+            assert_eq!(shared.commit_gate.live_for_test().0, 1, "not joined yet");
+            ticket.finish(GraphTicketUse::Unused);
+        } else {
+            ticket.finish(GraphTicketUse::Unused);
+            assert_eq!(shared.commit_gate.live_for_test().0, 1, "no answer yet");
+            ticket.deliver(answer);
+        }
+        assert_eq!(
+            shared.commit_gate.live_for_test().0,
+            0,
+            "answer first: {answer_first}"
+        );
+        assert!(lock(&shared.cache).is_none());
+    }
 }

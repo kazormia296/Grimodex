@@ -1366,7 +1366,10 @@ mod narrative_freshness_restore_lock_tests {
             state: Arc::clone(&state),
         };
         let gate = state.nir1_graph.commit_gate();
-        gate.set_limits_for_test(gate_limits(10, 60));
+        // Review P2-2: the ceiling is far above one admit wait, so a slow
+        // first wake still defers at least once; each call defers after about
+        // 10 ms, so the ceiling comes after about 50 calls (bound: 1,000).
+        gate.set_limits_for_test(gate_limits(10, 500));
         let _window = gate.open_window(|| true).expect("window");
         let mut deferred = 0;
         let processed = loop {
@@ -1378,7 +1381,7 @@ mod narrative_freshness_restore_lock_tests {
             );
             if result.get("deferred").is_some() {
                 deferred += 1;
-                assert!(deferred < 100, "the ceiling never came");
+                assert!(deferred < 1_000, "the ceiling never came");
                 continue;
             }
             break result;

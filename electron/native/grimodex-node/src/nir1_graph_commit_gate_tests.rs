@@ -417,11 +417,22 @@ fn every_window_must_end_before_freshness_enters_without_an_override() {
 fn every_short_sequence_keeps_the_invariants() {
     const OPS: usize = 7;
     let mut sequences = 0;
+    let mut overrides = 0;
     for code in 0..OPS.pow(4) {
-        let fixture = Fixture::new();
+        // A ceiling just above one admit wait, so an override (and the
+        // coexistence it allows) is reachable within four operations.
+        let fixture = Fixture::with(
+            GateLimits {
+                ceiling: ms(300),
+                ..GateLimits::default()
+            },
+            None,
+        );
         let mut leases: Vec<WindowLease> = Vec::new();
-        let mut sections: Vec<FreshnessSection> = Vec::new();
-        let mut overridden = false;
+        // Each held section remembers whether it was an override: only a
+        // live overridden section may share the gate with a live window
+        // (review P3-3: the exemption is per section, not sticky).
+        let mut sections: Vec<(FreshnessSection, bool)> = Vec::new();
         let mut digits = code;
         for _ in 0..4 {
             let op = digits % OPS;
@@ -450,11 +461,11 @@ fn every_short_sequence_keeps_the_invariants() {
                             0,
                             "{code}: admitted over a window"
                         );
-                        sections.push(section);
+                        sections.push((section, false));
                     }
                     FreshnessAdmission::Overridden(section) => {
-                        overridden = true;
-                        sections.push(section);
+                        overrides += 1;
+                        sections.push((section, true));
                     }
                     FreshnessAdmission::Deferred => {}
                     FreshnessAdmission::Stopped => panic!("{code}: no stop here"),
@@ -469,8 +480,8 @@ fn every_short_sequence_keeps_the_invariants() {
             let (live, live_sections) = fixture.gate.live_for_test();
             if live > 0 && live_sections > 0 {
                 assert!(
-                    overridden,
-                    "{code}: a section and a window without an override"
+                    sections.iter().any(|(_, overridden)| *overridden),
+                    "{code}: a section and a window without a live override"
                 );
             }
             fixture.core(|core| assert_eq!(core.graph_waiters, 0, "{code}: a waiter left behind"));
@@ -485,6 +496,7 @@ fn every_short_sequence_keeps_the_invariants() {
         sequences += 1;
     }
     assert_eq!(sequences, OPS.pow(4));
+    assert!(overrides > 0, "the enumeration reaches an override");
 }
 
 /// The product clock: a window that ends wakes a waiting Freshness at once

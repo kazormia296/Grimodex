@@ -468,6 +468,11 @@ fn a_cache_hit_keeps_its_window_until_the_join_or_a_declaration_ends_it() {
 /// right after the claim and ended right after the live requalification
 /// (`assemble`), before the rest of the checks (source order, as the join
 /// itself is not reachable without the IPC registry).
+///
+/// Kept on purpose (review P3-5): no behavioural test reaches
+/// `await_request` (it needs the operation registry and an IR operation), and
+/// `release_window` itself is tested by behaviour above. A reformatting of
+/// these lines makes a `find` fail loudly here, never pass silently.
 #[test]
 fn the_join_ends_a_cache_hits_window_right_after_its_requalification() {
     let source = include_str!("graph.rs");
