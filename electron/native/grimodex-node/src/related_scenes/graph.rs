@@ -29,9 +29,10 @@
 //! once the gate, the lease and the declaration have been looked at again.
 use super::graph_response::{self, ClickEntry};
 use super::*;
+use crate::nir1_graph_commit_gate::WindowLease;
 use crate::nir1_graph_product::{
-    GraphBegin, GraphQuery, GraphTicket, GraphTicketOutcome, GraphTicketUse, GraphTicketWaiter,
-    GraphUnavailable,
+    CachedGraph, GraphBegin, GraphQuery, GraphTicket, GraphTicketOutcome, GraphTicketUse,
+    GraphTicketWaiter, GraphUnavailable,
 };
 use grimodex_db::narrative_extraction::nir1_graph::worker_projection::Nir1GraphProjection;
 use std::sync::Condvar;
@@ -83,8 +84,9 @@ enum GraphSlot {
     /// The owner accepted the query; the ticket settles exactly once.
     Pending(GraphTicket),
     /// The owner's single-entry cache hit. It is not authority; the await
-    /// carries it into the same verification as a fresh result.
-    Cached(Arc<Nir1GraphProjection>),
+    /// carries it into the same verification as a fresh result. The window
+    /// (LP-GATE) it was made in stays open until that verification is over.
+    Cached(Arc<Nir1GraphProjection>, Option<WindowLease>),
     /// The renderer's declaration, or a cancellation. The ticket is finished
     /// (with the first declaration; later ones are ignored).
     Settled,
@@ -213,7 +215,9 @@ impl GraphState {
             GraphBegin::Pending(ticket) => (GraphSlot::Pending(ticket), graph_pending()),
             // A cache hit also answers `pending`: it is re-verified in the
             // await like any result, and `begin` has no Raw selection yet (D2).
-            GraphBegin::Cached(projection) => (GraphSlot::Cached(projection), graph_pending()),
+            GraphBegin::Cached(CachedGraph { projection, window }) => {
+                (GraphSlot::Cached(projection, window), graph_pending())
+            }
             GraphBegin::Unavailable(reason) => {
                 (GraphSlot::NotStarted(reason), graph_unavailable(reason))
             }
@@ -271,7 +275,7 @@ impl GraphState {
     pub(super) fn declare(&self, use_: GraphTicketUse) {
         let ticket = {
             let mut inner = lock_inner(&self.inner);
-            let running = matches!(inner.slot, GraphSlot::Pending(_) | GraphSlot::Cached(_));
+            let running = matches!(inner.slot, GraphSlot::Pending(_) | GraphSlot::Cached(..));
             if running {
                 match std::mem::replace(&mut inner.slot, GraphSlot::Settled) {
                     GraphSlot::Pending(ticket) => Some(ticket),
@@ -286,6 +290,17 @@ impl GraphState {
         }
     }
 
+    /// LP-GATE (DR-CQD-GATE-6 (g)): the join of a cache hit is over (or will
+    /// not happen); its Graph window ends. A pending ticket keeps its window
+    /// until the ticket settles. Idempotent.
+    pub(super) fn release_window(&self) {
+        let ended = match &mut lock_inner(&self.inner).slot {
+            GraphSlot::Cached(_, window) => window.take(),
+            _ => None,
+        };
+        drop(ended);
+    }
+
     pub(super) fn is_settled(&self) -> bool {
         matches!(lock_inner(&self.inner).slot, GraphSlot::Settled)
     }
@@ -298,7 +313,7 @@ impl GraphState {
         match &inner.slot {
             GraphSlot::NotStarted(reason) => return Claim::Reply(*reason),
             GraphSlot::Settled => return Claim::Reply(GraphUnavailable::Cancelled),
-            GraphSlot::Pending(_) | GraphSlot::Cached(_) => {}
+            GraphSlot::Pending(_) | GraphSlot::Cached(..) => {}
         }
         if inner.claimed {
             return Claim::Reply(GraphUnavailable::Cancelled);
@@ -314,7 +329,7 @@ impl GraphState {
         let edge_epoch = inner.edge_epoch;
         let source = match &inner.slot {
             GraphSlot::Pending(ticket) => AwaitSource::Ticket(ticket.waiter()),
-            GraphSlot::Cached(projection) => AwaitSource::Cached(Arc::clone(projection)),
+            GraphSlot::Cached(projection, _) => AwaitSource::Cached(Arc::clone(projection)),
             GraphSlot::NotStarted(_) | GraphSlot::Settled => {
                 return Claim::Reply(GraphUnavailable::Cancelled)
             }
@@ -680,6 +695,8 @@ async fn await_request(
         }
         Claim::Await(plan) => plan,
     };
+    // LP-GATE: the window of a cache hit ends with this join, on every exit.
+    let window = CachedWindowRelease(lease.clone());
     let waiting = {
         let state = Arc::clone(&state);
         let lease = lease.clone();
@@ -731,6 +748,8 @@ async fn await_request(
         })
         .await
     };
+    // The live requalification has read what it compares: the window ends.
+    drop(window);
     let assembled = match assembled {
         Ok(Ok(assembled)) => assembled,
         Ok(Err(error)) => {
@@ -762,6 +781,15 @@ async fn await_request(
     }
     graph_response::keep_click(&lease.data.graph, click);
     Ok(wire)
+}
+
+/// LP-GATE: ends the Graph window of a cache hit when its join is over.
+struct CachedWindowRelease(Lease);
+
+impl Drop for CachedWindowRelease {
+    fn drop(&mut self) {
+        self.0.data.graph.release_window();
+    }
 }
 
 /// The unavailable answer of an await that ended in `reason`; an operation

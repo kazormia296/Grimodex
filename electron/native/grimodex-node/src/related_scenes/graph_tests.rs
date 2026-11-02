@@ -412,6 +412,88 @@ fn a_cache_hit_answers_pending_and_waits_for_nothing() {
     assert!(started.elapsed() < Duration::from_millis(500));
 }
 
+/// LP-GATE (DR-CQD-GATE-6 (e)(g)(h)): a cache hit's slot carries the Graph
+/// window its answer was made in; the join ends it (`release_window`), and so
+/// does a declaration that settles the slot.
+#[test]
+fn a_cache_hit_keeps_its_window_until_the_join_or_a_declaration_ends_it() {
+    let fixture = Fixture::new();
+    let gate = fixture.state.nir1_graph.commit_gate();
+    gate.set_limits_for_test(crate::nir1_graph_commit_gate::GateLimits {
+        lease_max: Duration::from_secs(60),
+        ..Default::default()
+    });
+    let first = fixture.pending();
+    first.set_dense_scene_ids(dense(&[]));
+    let plan = plan_of(first.claim(&[]));
+    assert!(matches!(
+        await_graph(
+            &fixture.state,
+            &first,
+            &plan,
+            Duration::from_secs(2),
+            live_ir(IrState::Available),
+        ),
+        GraphAwait::Ready(_)
+    ));
+    assert_eq!(gate.live_for_test().0, 1, "the answer keeps its window");
+    first.declare(GraphTicketUse::Unused);
+    assert_eq!(gate.live_for_test().0, 1, "moved into the cache");
+    let second = GraphState::default();
+    start_released(&second, &fixture.state);
+    assert_eq!(gate.live_for_test().0, 1, "moved into the child's slot");
+    second.release_window();
+    assert_eq!(gate.live_for_test().0, 0, "the join ends it");
+    second.release_window();
+    // A declaration on a cache hit that still holds its window ends it too.
+    let third = fixture.pending();
+    third.set_dense_scene_ids(dense(&[]));
+    let plan = plan_of(third.claim(&[]));
+    let _ = await_graph(
+        &fixture.state,
+        &third,
+        &plan,
+        Duration::from_secs(2),
+        live_ir(IrState::Available),
+    );
+    third.declare(GraphTicketUse::Unused);
+    let fourth = GraphState::default();
+    start_released(&fourth, &fixture.state);
+    assert_eq!(gate.live_for_test().0, 1);
+    fourth.declare(GraphTicketUse::Cancelled);
+    assert_eq!(gate.live_for_test().0, 0);
+}
+
+/// LP-GATE: in `await_request` the window of a cache hit is put under a guard
+/// right after the claim and ended right after the live requalification
+/// (`assemble`), before the rest of the checks (source order, as the join
+/// itself is not reachable without the IPC registry).
+///
+/// Kept on purpose (review P3-5): no behavioural test reaches
+/// `await_request` (it needs the operation registry and an IR operation), and
+/// `release_window` itself is tested by behaviour above. A reformatting of
+/// these lines makes a `find` fail loudly here, never pass silently.
+#[test]
+fn the_join_ends_a_cache_hits_window_right_after_its_requalification() {
+    let source = include_str!("graph.rs");
+    let body = &source[source
+        .find("async fn await_request(")
+        .expect("await_request")..];
+    let body = &body[..body.find("\n}\n").expect("end of await_request")];
+    let claim = body.find("Claim::Await(plan) => plan,").expect("claim");
+    let guard = body
+        .find("let window = CachedWindowRelease(lease.clone());")
+        .expect("the guard");
+    let assemble = body
+        .find("graph_response::assemble(&state, &lease, &projection, &raw_scene_ids)")
+        .expect("assemble");
+    let release = body.find("drop(window);").expect("the release");
+    let classify = body
+        .find("let assembled = match assembled {")
+        .expect("classify");
+    assert!(claim < guard && guard < assemble && assemble < release && release < classify);
+}
+
 // ---- RS-JOIN: the IR arrival and the IR continue (DR-RSJ-3, DR-RSJ-4) -------
 
 /// A `Cached` slot of a second operation, as the child query of H5 has.
