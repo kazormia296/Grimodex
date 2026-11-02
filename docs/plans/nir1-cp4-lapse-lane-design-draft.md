@@ -96,8 +96,8 @@
 
 ### 3.2 LP-S：親の ticket が `stale`（4 件。traceIndex 8・26・142・167）
 
-- 受領書から：worker は READY まで行った（`preparesReady` が増えた）が、`serve_query`（`nir1_graph_product.rs:2642`）の stamp0≠stamp1 で `Stale`。失効には分類されない（「その他」）が、**U 内の表示の欠落**として窓外率に数えられる。
-- 推論：query の時点の `Stale` は、`RegistrationDrift`（`nir1_graph.rs:1131-1147`。identity の drift か `NIR1_GRAPH_QUERY_DRIFT`）→ category `Stale`（`worker_frame.rs:614`）の経路がある。LP-B と同じ `data_version` の drift の系統の可能性が高い（推測。受領書からは分岐が決まらない）。「prepare の窓の中の commit」が、登録の窓の後・query の前にずれただけ、という読み。
+- 受領書から：worker は READY まで行った（`preparesReady` が増えた）。4 件とも `freshnessStamp.result` は `stamp0-missing`（`matched: null`）。`serve_query`（`nir1_graph_product.rs` の `match (stamp0, stamp1)`）は両方 Some で違うときだけ `Stale` を返すので、**この 4 件ではその比較は走っていない**（調査 B の最初の読み『stamp0≠stamp1 で Stale』は誤り。診断 run の起案時に起案者が受領書で確認）。なお `stamp0-missing` は編集 trace の 201 件中 187 件に出る（child の 4 件も同じ）ので、識別力は無い。失効には分類されない（「その他」）が、**U 内の表示の欠落**として窓外率に数えられる。
+- 推論：比較が走っていないので、`Stale` は worker の query の時点の判定に由来する。`RegistrationDrift`（`nir1_graph.rs:1131-1147`。identity の drift か `NIR1_GRAPH_QUERY_DRIFT`）→ category `Stale`（`worker_frame.rs:614`）の経路がある。LP-B と同じ `data_version` の drift の系統の可能性が高い（推測。受領書からは分岐が決まらない）。「prepare の窓の中の commit」が、登録の窓の後・query の前にずれただけ、という読み。
 - 案：LP-B と同じ 4 択（再試行は ≥1 s の待ちを伴うので、免除なしでは表示は増えない）。診断（LP-D）に query の時点の drift を入れる。
 
 ### 3.3 LP-C：child の合流の無効化（4 件。traceIndex 95・160・178・190）
@@ -114,7 +114,7 @@
 ## 4. 順序と手順
 
 1. **LP-A1 を先に**：確度が最も高く、renderer だけで、契約に触れない。実装 → hook の試験 → 独立コードレビュー → PR。ただし効果は部分的（失効率 15→7、窓外率は約 6.0% で物差しの外）。
-2. **診断（LP-D）**：eval build（`nir1-graph-eval` feature。製品 build に symbol も文字列も無い）に、(a) worker の登録の `Ok(false)` の分岐（上の全部）と query の時点の drift、(b) `await_request` の `Invalidated` の出所、(c) Main の commit の時刻と、child の begin の時点で connection を持つ処理、(d) 製品の `read_seal` と harness の startSeal の差、を記録する計装を足し、dev run（台帳なし、正式の測定に数えない）で LP-B・LP-S・LP-C の分岐を決める。静かなマシンが要る（race の再現のため）。
+2. **診断（LP-D）**：**dev 専用の未 merge の枝**（DR-CP4-LPD-1。`native-architecture.mjs` が S2 の bytes pin で、eval module の外への hook を許さないため。検査も pin も変えず、master に入れず、正式の候補にしない）で、eval build（`nir1-graph-eval` feature。製品 build に symbol も文字列も無い）に、(a) worker の登録の `Ok(false)` の分岐（上の全部）と query の時点の drift、(b) `await_request` の `Invalidated` の出所、(c) Main の commit の時刻と、child の begin の時点で connection を持つ処理、(d) 製品の `read_seal` と harness の startSeal の差、を記録する計装を足し、dev run（台帳なし、正式の測定に数えない）で LP-B・LP-S・LP-C の分岐を決める。静かなマシンが要る（race の再現のため）。
 3. **LP-B／LP-S／LP-C の修正**を、診断の結果に従って。LP-B2（防御の緩和）と LP-B3／LP-C1／LP-C2（契約の改訂）は、ユーザーに確認するまで実装しない。
 4. **新しい候補での再測定**：製品を変えるので候補の commit が変わる。admission は機械的には通る（S2 の pin に製品の file が無い。台帳の key は〔候補の commit、S4 の commit、run の種類〕なので、新しい候補では SP-P4 の上限 2 も数え直しになる）。足すべき条件（P2-5）：
    - (a) ⑤ の全部（SP-P4、parity、Gold、N2〜N4、trace 2 本）をやり直す。Gold は同じ候補と S4 の parity を要求する。`22b74a25` の Gold（pool 270/270）は持ち越せず、**Gold が後退する危険**もある。
