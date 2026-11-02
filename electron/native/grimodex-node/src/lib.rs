@@ -54,6 +54,7 @@ mod test_link_stubs;
 mod typed_writers;
 mod workspace_lifecycle_view;
 use lifecycle_failure_diagnostics::{FailureClass, Producer};
+use nir1_graph_commit_gate::FreshnessAdmission;
 
 use std::io::Write;
 use std::ops::{Deref, DerefMut};
@@ -1228,6 +1229,275 @@ mod narrative_freshness_restore_lock_tests {
         drop(state);
         drop(cleanup);
         assert!(!root.exists(), "fixture must clean up");
+    }
+
+    // ---- LP-GATE (DR-CQD-GATE-2, 5, 7, 9): the cycle at the Graph window gate ----
+
+    /// Runs, Attempts and cursors: what a reservation or a publication writes.
+    fn race_runs(authority: &PinnedWorkspaceDb) -> (i64, i64, i64) {
+        authority
+            .db()
+            .with_conn(|conn| {
+                Ok(conn.query_row(
+                    "SELECT (SELECT COUNT(*) FROM narrative_extraction_runs),
+                            (SELECT COUNT(*) FROM narrative_extraction_attempts),
+                            (SELECT COUNT(*) FROM narrative_change_cursors)",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?)
+            })
+            .expect("runs")
+    }
+
+    fn gate_limits(
+        admit_wait_ms: u64,
+        ceiling_ms: u64,
+    ) -> crate::nir1_graph_commit_gate::GateLimits {
+        crate::nir1_graph_commit_gate::GateLimits {
+            lease_max: Duration::from_secs(60),
+            admit_wait: Duration::from_millis(admit_wait_ms),
+            ceiling: Duration::from_millis(ceiling_ms),
+            ..Default::default()
+        }
+    }
+
+    fn cycle_json(result: Option<String>) -> serde_json::Value {
+        serde_json::from_str(&result.expect("a cycle result")).expect("result JSON")
+    }
+
+    #[tokio::test]
+    async fn freshness_is_deferred_before_any_work_while_a_graph_window_is_open() {
+        let (cleanup, root, state, authority) = freshness_publish_race_workspace("gate-defer");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        let gate = state.nir1_graph.commit_gate();
+        gate.set_limits_for_test(gate_limits(30, 10_000));
+        let window = gate
+            .open_window(|| true)
+            .expect("an idle gate opens a window");
+        let before = race_runs(&authority);
+
+        let result = cycle_json(
+            backend
+                .run_narrative_freshness_cycle()
+                .await
+                .expect("a deferral is not a failure"),
+        );
+        assert_eq!(
+            result,
+            serde_json::json!({"hasMore": true, "noWrite": true, "deferred": "graph-window"})
+        );
+        assert_eq!(
+            race_runs(&authority),
+            before,
+            "a deferred cycle reserves, evaluates and publishes nothing"
+        );
+        assert!(matches!(
+            state
+                .workspace_lifecycle
+                .lifecycle_snapshot()
+                .expect("lifecycle")
+                .state,
+            LifecycleState::Ready(_)
+        ));
+        assert_eq!(state.nir1_graph.diagnostics().gate.deferred, 1);
+
+        drop(window);
+        let next = cycle_json(
+            backend
+                .run_narrative_freshness_cycle()
+                .await
+                .expect("the next cycle"),
+        );
+        assert_eq!(next["throughSequenceInclusive"], 1, "{next}");
+        assert_eq!(race_cursor_and_attempt(&authority).0, 1);
+
+        drop(authority);
+        let active = state.ws.inner.lock().expect("workspace state").take();
+        drop(active);
+        drop(backend);
+        drop(state);
+        drop(cleanup);
+        assert!(!root.exists(), "fixture must clean up");
+    }
+
+    #[tokio::test]
+    async fn freshness_enters_in_the_same_call_once_the_window_ends() {
+        let (cleanup, _root, state, authority) = freshness_publish_race_workspace("gate-wake");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        let gate = state.nir1_graph.commit_gate();
+        gate.set_limits_for_test(gate_limits(20_000, 40_000));
+        let window = gate.open_window(|| true).expect("window");
+        let closer = {
+            let gate = Arc::clone(&gate);
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while !gate.freshness_blocked_for_test() {
+                    assert!(Instant::now() < deadline, "Freshness never waited");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                drop(window);
+            })
+        };
+        let started = Instant::now();
+        let result = cycle_json(
+            backend
+                .run_narrative_freshness_cycle()
+                .await
+                .expect("the cycle"),
+        );
+        closer.join().expect("closer");
+        assert_eq!(result["throughSequenceInclusive"], 1, "{result}");
+        assert!(started.elapsed() < Duration::from_secs(10));
+        let counters = state.nir1_graph.diagnostics().gate;
+        assert_eq!((counters.waited_admit, counters.deferred), (1, 0));
+        drop(authority);
+        let _ = state.ws.inner.lock().expect("workspace state").take();
+        drop(cleanup);
+    }
+
+    #[tokio::test]
+    async fn freshness_goes_on_at_the_ceiling_while_a_window_stays_open() {
+        let (cleanup, _root, state, authority) = freshness_publish_race_workspace("gate-ceiling");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        let gate = state.nir1_graph.commit_gate();
+        gate.set_limits_for_test(gate_limits(10, 60));
+        let _window = gate.open_window(|| true).expect("window");
+        let mut deferred = 0;
+        let processed = loop {
+            let result = cycle_json(
+                backend
+                    .run_narrative_freshness_cycle()
+                    .await
+                    .expect("the cycle"),
+            );
+            if result.get("deferred").is_some() {
+                deferred += 1;
+                assert!(deferred < 100, "the ceiling never came");
+                continue;
+            }
+            break result;
+        };
+        assert_eq!(processed["throughSequenceInclusive"], 1, "{processed}");
+        assert!(deferred >= 1);
+        assert_eq!(state.nir1_graph.diagnostics().gate.overridden, 1);
+        drop(authority);
+        let _ = state.ws.inner.lock().expect("workspace state").take();
+        drop(cleanup);
+    }
+
+    #[tokio::test]
+    async fn a_freshness_wait_stopped_by_shutdown_does_no_work() {
+        let (cleanup, _root, state, authority) = freshness_publish_race_workspace("gate-stop");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        let gate = state.nir1_graph.commit_gate();
+        gate.set_limits_for_test(gate_limits(20_000, 40_000));
+        let _window = gate.open_window(|| true).expect("window");
+        state
+            .workspace_shutdown_requested
+            .store(true, std::sync::atomic::Ordering::Release);
+        let before = race_runs(&authority);
+        let result = backend
+            .run_narrative_freshness_cycle()
+            .await
+            .expect("a stopped wait is not a failure");
+        assert_eq!(result, None);
+        assert_eq!(race_runs(&authority), before);
+        assert_eq!(state.nir1_graph.diagnostics().gate.stopped, 1);
+        state
+            .workspace_shutdown_requested
+            .store(false, std::sync::atomic::Ordering::Release);
+        drop(authority);
+        let _ = state.ws.inner.lock().expect("workspace state").take();
+        drop(cleanup);
+    }
+
+    /// A window that would open while a cycle is between its evaluation and its
+    /// publication waits for the whole cycle (the section), so the publication
+    /// never lands inside it.
+    #[tokio::test]
+    async fn a_graph_window_waits_for_the_cycle_in_flight_to_publish() {
+        let (cleanup, _root, state, authority) = freshness_publish_race_workspace("gate-inflight");
+        let backend = Backend {
+            state: Arc::clone(&state),
+        };
+        let gate = state.nir1_graph.commit_gate();
+        gate.set_limits_for_test(crate::nir1_graph_commit_gate::GateLimits {
+            lease_max: Duration::from_secs(60),
+            graph_wait: Duration::from_secs(20),
+            ..Default::default()
+        });
+        let opened: Arc<std::sync::Mutex<Option<(Instant, i64)>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let callback_ended: Arc<std::sync::Mutex<Option<Instant>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let graph_thread: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let _race = {
+            let gate = Arc::clone(&gate);
+            let opened = Arc::clone(&opened);
+            let callback_ended = Arc::clone(&callback_ended);
+            let graph_thread = Arc::clone(&graph_thread);
+            let reader = Arc::clone(&authority);
+            grimodex_db::narrative_extraction::incremental_freshness_publish_race_for_test::arm(
+                authority.db(),
+                move |_db| {
+                    // Between evaluation and publication: a Graph tries to open.
+                    let thread = {
+                        let gate = Arc::clone(&gate);
+                        let opened = Arc::clone(&opened);
+                        let reader = Arc::clone(&reader);
+                        std::thread::spawn(move || {
+                            let window = gate.open_window(|| true).expect("a window");
+                            let ack = race_cursor_and_attempt(&reader).0;
+                            *opened.lock().expect("opened") = Some((Instant::now(), ack));
+                            drop(window);
+                        })
+                    };
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while gate.graph_waiters_for_test() == 0 {
+                        assert!(Instant::now() < deadline, "the Graph never waited");
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                    std::thread::sleep(Duration::from_millis(30));
+                    assert!(
+                        opened.lock().expect("opened").is_none(),
+                        "no window mid-cycle"
+                    );
+                    *callback_ended.lock().expect("ended") = Some(Instant::now());
+                    *graph_thread.lock().expect("thread") = Some(thread);
+                },
+            )
+        };
+        let result = cycle_json(
+            backend
+                .run_narrative_freshness_cycle()
+                .await
+                .expect("the cycle"),
+        );
+        assert_eq!(result["throughSequenceInclusive"], 1, "{result}");
+        let thread = graph_thread
+            .lock()
+            .expect("thread")
+            .take()
+            .expect("graph thread");
+        thread.join().expect("graph thread");
+        let (opened_at, ack_seen) = opened.lock().expect("opened").expect("the window opened");
+        assert!(opened_at > callback_ended.lock().expect("ended").expect("callback ran"));
+        assert_eq!(ack_seen, 1, "the window opened after the publication");
+        let counters = state.nir1_graph.diagnostics().gate;
+        assert_eq!((counters.graph_waited, counters.graph_wait_expired), (1, 0));
+        drop(_race);
+        drop(authority);
+        let _ = state.ws.inner.lock().expect("workspace state").take();
+        drop(cleanup);
     }
 
     #[tokio::test]
@@ -6159,6 +6429,31 @@ fn revalidate_narrative_workspace_after_cycle<'a>(
     }))
 }
 
+/// LP-GATE: what stops a Freshness call waiting at the Graph window gate.
+/// Process atomics only (it is read under the gate's leaf mutex).
+fn narrative_freshness_gate_stopped(state: &AppState) -> bool {
+    state
+        .ws
+        .switching
+        .load(std::sync::atomic::Ordering::Acquire)
+        || state
+            .workspace_shutdown_requested
+            .load(std::sync::atomic::Ordering::Acquire)
+        || state.nir1_graph.is_closed()
+}
+
+/// LP-GATE (DR-CQD-GATE-7): a cycle deferred by the Graph window gate did no
+/// work. The shape is the requeue's: `hasMore` makes the Main scheduler retry
+/// after its backlog delay instead of its idle poll.
+fn narrative_freshness_deferred_result() -> String {
+    serde_json::json!({
+        "hasMore": true,
+        "noWrite": true,
+        "deferred": "graph-window",
+    })
+    .to_string()
+}
+
 fn run_narrative_freshness_cycle_body(
     state: &AppState,
     after_cycle: impl FnOnce(),
@@ -7374,6 +7669,32 @@ impl Backend {
 
     async fn run_narrative_freshness_cycle_supervised(self) -> Result<Option<String>> {
         let state = Arc::clone(&self.state);
+        // LP-GATE (DR-CQD-GATE-2): the whole cycle, from the recovery
+        // reconciliation to the last write, is one section of the Graph window
+        // gate. While a held Related Scenes query's window is open the cycle
+        // waits (bounded) and is then deferred before any work: no database,
+        // permit or workspace operation is touched, and the scheduler retries
+        // after its backlog delay. The section is held here and by both
+        // blocking closures, so it ends when the last of them is done.
+        let section = {
+            let gate = state.nir1_graph.commit_gate();
+            let stop_state = Arc::clone(&state);
+            let admission = run_blocking(move || {
+                Ok(gate.enter_freshness(|| narrative_freshness_gate_stopped(&stop_state)))
+            })
+            .await?;
+            match admission {
+                FreshnessAdmission::Admitted(section) | FreshnessAdmission::Overridden(section) => {
+                    Arc::new(section)
+                }
+                FreshnessAdmission::Deferred => {
+                    return Ok(Some(narrative_freshness_deferred_result()))
+                }
+                // A switch or a shutdown: the same answer as a cycle that
+                // finds the workspace switching.
+                FreshnessAdmission::Stopped => return Ok(None),
+            }
+        };
         // Freshness can be the only scheduled producer after it transfers a
         // failed execution to a descriptor. Reconcile that exact root before
         // asking the shared core for a new maintenance permit; otherwise a
@@ -7382,8 +7703,12 @@ impl Backend {
         // recovery.
         let recovery_reconciliation = {
             let recovery_state = Arc::clone(&state);
-            run_blocking(move || reconcile_maintenance_recovery_with_open_lock(&recovery_state))
-                .await?
+            let recovery_section = Arc::clone(&section);
+            run_blocking(move || {
+                let _section = recovery_section;
+                reconcile_maintenance_recovery_with_open_lock(&recovery_state)
+            })
+            .await?
         };
         if recovery_reconciliation.is_some() {
             let snapshot = state
@@ -7440,7 +7765,9 @@ impl Backend {
         // Keep the permit in the async supervisor. A cancelled blocking task
         // therefore cannot consume it before JoinError is observed.
         let worker_state = Arc::clone(&state);
+        let worker_section = Arc::clone(&section);
         let worker_join = napi::tokio::task::spawn_blocking(move || {
+            let _section = worker_section;
             catch_unwind(AssertUnwindSafe(|| {
                 #[cfg(test)]
                 worker_state.narrative_maintenance_recovery_gate.observe_workspace_worker_probe();
