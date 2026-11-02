@@ -101,10 +101,12 @@ const late = () => result({ graphOutcome: "graph-late" });
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 /** A fetch that stays in flight; `begin()` stands in for the begin decision. */
@@ -122,6 +124,10 @@ function heldFetch() {
     finish: (value: Nir1RelatedScenesFetchResult) =>
       act(async () => {
         done.resolve(value);
+      }),
+    fail: () =>
+      act(async () => {
+        done.reject(new Error("fetch rejected"));
       }),
     aborted: () => options.signal?.aborted === true,
   };
@@ -302,6 +308,20 @@ describe("index-ready で今どおり取り直す世代（LP-A1）", () => {
     expect(h.fetch).toHaveBeenCalledTimes(2);
   });
 
+  it("通知を受けた世代の fetch が begin の前に reject しても、通知を落とさず取り直す（catch の安全網）", async () => {
+    const held = heldFetch();
+    const view = renderHook(() => useNir1RelatedScenes(true));
+    await advance(0);
+    await advance(400);
+    await indexReady();
+    expect(held.aborted()).toBe(false);
+    await held.fail();
+    expect(view.result.current.fetch).toBeNull();
+    await advance(400);
+    expect(h.fetch).toHaveBeenCalledTimes(2);
+    expect(optionsOf(1)?.rawOnly).toBeUndefined();
+  });
+
   it("Raw の取り直し（recoverRaw）の timer の待ちの通知は、full の run で IR を戻す", async () => {
     const owned = session();
     h.fetch.mockResolvedValueOnce(result({ session: owned.session }));
@@ -416,7 +436,9 @@ describe("index-ready は graph-ready の経路に干渉しない（LP-A1、DR-W
     ["index-ready が先", ["index", "graph"]],
     ["graph-ready が先", ["graph", "index"]],
   ] as const)(
-    "表示済みで 2 つの通知が 1 回の描画にまとまると子になる（DR-WF-8 (a)、%s）",
+    // characterization：表示済みは hold も rearm も無く、LP-A1 の前と同じ
+    // `setRefresh` を通る（変更前の hook でも通る）。新しい分岐の判定は試さない。
+    "表示済みで 2 つの通知が 1 回の描画にまとまると子になる（DR-WF-8 (a) の characterization、%s）",
     async (_label, order) => {
       h.fetch.mockResolvedValueOnce(late());
       renderHook(() => useNir1RelatedScenes(true));
