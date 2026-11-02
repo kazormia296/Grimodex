@@ -330,7 +330,7 @@ commit：`4e3d6442`（gate の module と単体試験）、`983197da`（Graph �
 | 置き場所 | 試験 |
 |---|---|
 | `nir1_graph_commit_gate_tests.rs`（手動の時計。待ちは時刻を進めるだけで、hook が「待ちの間の他者」を演じる） | 空の gate、延期と番、待ちの中の解放で同じ呼出しの中で入る、期限、天井（0→250、260→510、520→770 が延期、780→1000 で overridden）、停止（番なし）、Graph の待ちが新しい区間を止める・番の間は止めない、区間の終わりで窓が開く、予算を超えたら窓なし、番の間の Graph の待ち、番の中の再試行が Graph より先、取消、edge と close、unwind、複数の窓、長さ 4 × 7 操作の全列挙（2,401 列）で不変条件、system clock での notify の起床 |
-| `nir1_graph_gate_tests.rs`（owner、fake worker） | 窓が admit（S0）の前に開いて used まで残る、unavailable と取消で放す、unused → cache → child の Cached へ切れずに移る、使えない cache の破棄、edge と shutdown、admit の間の取消、owner の panic、区間の in-flight を待つ、予算を超えたら窓なしで admit、Freshness が窓を待って終わりで入る、閉じた製品で窓が 0・Freshness が待たない |
+| `nir1_graph_gate_tests.rs`（owner、fake worker） | 窓が admit（S0）の前に開いて used まで残る、unavailable と取消で放す、unused → cache → child の Cached へ切れずに移る、使えない cache の破棄、edge と shutdown、admit の間の取消、owner の panic、区間の in-flight を待つ、予算を超えたら窓なしで admit、Freshness が窓を待って終わりで入る、閉じた製品で窓が 0・Freshness が待たない、窓を開いた後・付ける前に決着した ticket は窓をその場で放す（`attach_window`） |
 | `related_scenes/graph_tests.rs` | Cached の slot の窓が `release_window` と `declare` で終わる。`await_request` の guard と `drop(window)` の位置（source の順序） |
 | `lib.rs`（実 DB、`Backend::run_narrative_freshness_cycle`） | 窓の間は延期の JSON で、Run／Attempt／cursor の数が不変・lifecycle は Ready、窓の終わりで同じ呼出しの中で入る、天井で進む、shutdown の停止で `null`、評価と publish の間に開こうとした窓が publish の後まで待つ（publish の後の ack を見る） |
 | `electron/main/narrativeFreshness.test.ts` | 延期の結果の後は 10 ms で再予約し idle poll に戻らない、observation に `deferred` の key が出ず digest は null、延期をまたぐ wake と quiesce |
@@ -351,14 +351,16 @@ commit：`4e3d6442`（gate の module と単体試験）、`983197da`（Graph �
 | M10 edge で lease を無効にしない | `a_shutdown_and_an_edge_end_every_window` |
 | M11 区間を cycle の前に閉じる | `a_graph_window_waits_for_the_cycle_in_flight_to_publish`（実 DB） |
 | M12 合流の後に Cached の窓を放さない | `a_cache_hit_keeps_its_window_until_the_join_or_a_declaration_ends_it` |
+| M13 `attach_window` が決着済みの ticket にも窓を残す | `a_window_attached_to_a_ticket_settled_meanwhile_ends_at_once`（実装の後の advisor の指摘で足した試験） |
 | MT（TS）延期の結果では再予約を早めない | `retries a cycle deferred by the Graph window gate after the backlog delay` |
 
 **実行した検証**
 
 | コマンド | 結果 |
 |---|---|
-| `heavy.sh cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features licensing,legacy-keyring-migration --lib` | 758 passed、0 failed、7 ignored（変異の前） |
+| `heavy.sh cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features licensing,legacy-keyring-migration --lib` | 758 passed、0 failed、7 ignored（変異の前。rustfmt の整形の前の bytes）。最終の内容での再実行は下の行 |
 | 同 `-- nir1_graph related_scenes freshness`（変異の復元の後） | 248 passed、0 failed、5 ignored |
+| 同（全体。最終の内容＝M13 の試験を足した後、変異の復元の後） | 759 passed、0 failed、7 ignored |
 | `heavy.sh cargo check … --features licensing,legacy-keyring-migration,nir1-graph-eval --lib --tests` | 通った（eval の build を壊していない） |
 | `heavy.sh cargo clippy … --all-targets --features licensing,legacy-keyring-migration -- -D warnings` | この lane の file に警告なし。**既存の 1 件**（`nir1_local_entry_tests.rs:136` の `clippy::nonminimal_bool`。rust 1.96 の lint。この lane は触っていない）で exit 101 |
 | `rustfmt --check`（変更した file） | 新しい差分なし（基点の既存の差分は触っていない。`nir1_graph_product.rs` は基点の 15 か所が 13 か所に減った＝書き直した行の分） |
