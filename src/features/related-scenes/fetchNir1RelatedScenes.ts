@@ -209,6 +209,7 @@ export async function fetchNir1RelatedPastScenes(
     if (!listening) {
       if (!options.rawOnly && session.stopReason !== "listener-unavailable")
         return output("cancelled", "invalidated");
+      options.onBeginDecision?.(false);
       const denseHits = await semanticSearch({
         projectId,
         query,
@@ -234,6 +235,8 @@ export async function fetchNir1RelatedPastScenes(
         options.rawOnly ? "invalidated" : "failed",
       );
     }
+    // LP-A1（DR-WF-9）：begin を送る印は呼出しの直前に同期で立てる。
+    options.onBeginDecision?.(true);
     const response = await beginRelatedScenes({
       expectedWorkspacePath: workspace.path,
       projectId,
