@@ -353,3 +353,31 @@ fn a_closed_product_never_opens_a_window_and_freshness_never_waits() {
     assert_eq!(fixture.diagnostics().gate, Default::default());
     assert_eq!(live(&fixture), (0, 0));
 }
+
+/// DR-CQD-GATE-6: a window that reaches a ticket settled in the meantime (a
+/// cancellation between the window's opening and its attachment) ends at
+/// once; an unsettled ticket keeps it until it settles.
+#[test]
+fn a_window_attached_to_a_ticket_settled_meanwhile_ends_at_once() {
+    let shared = Arc::new(Shared::new());
+    shared
+        .commit_gate
+        .set_limits_for_test(limits(Duration::from_secs(20)));
+    let key = CacheKey {
+        binding: LiveBinding::new("/workspace", "workspace-id", 1, 0),
+        caller_epoch: 1,
+        project_id: PROJECT.into(),
+        query_scene_id: SCENE.into(),
+        seed_entity_id: "entity".into(),
+    };
+    let settled = TicketShared::new(Arc::clone(&shared), key.clone(), 0, false);
+    let window = shared.commit_gate.open_window(|| true).expect("window");
+    settled.finish(GraphTicketUse::Cancelled);
+    settled.attach_window(window);
+    assert_eq!(shared.commit_gate.live_for_test().0, 0);
+    let open = TicketShared::new(Arc::clone(&shared), key, 0, false);
+    open.attach_window(shared.commit_gate.open_window(|| true).expect("window"));
+    assert_eq!(shared.commit_gate.live_for_test().0, 1);
+    open.deliver(GraphTicketOutcome::Unavailable(GraphUnavailable::Stale));
+    assert_eq!(shared.commit_gate.live_for_test().0, 0);
+}
