@@ -68,3 +68,29 @@ integrator だけが見る診断。**正式の測定に数えず、集計・閾�
 1. **child の 8 件は identity（`ReadIdentity`）ではなく、A3 の `freshness_token` が feed の位置と Run の id を束縛していることが原因**。X1-5 が「本文だけの保存で B を dirty にしない」とした後も、本文の保存は feed を 1 transaction 進め、incremental Freshness が Run を進めるので、**Graph の答えを作ってから合流までの間にその cycle が入ると token が合わなくなる**。
 2. **親の drift と child の token の不一致は、同じ上流（別の接続の commit＝本文の保存に続く incremental Freshness の cycle など）から来ている可能性がある**【推測。未確認】。確かめるには、incremental Freshness の cycle の commit の窓を記録して、失敗した 11 件の窓（登録・query・合流）と突き合わせる。
 3. 案 1（登録の identity の絞り込み）は child の 8 件に効かない。効きうる直し方は 2 種類：(i) `freshness_token` から B と無関係な動く成分（feed の位置、Run の id）を外す（契約・要件の改訂。X1-5 と同じ型）、(ii) Graph の query の窓の間は、incremental Freshness など background の commit を出さない（lifecycle／scheduling。契約を変えない見込み）。(ii) が通れば 3 群（登録の拒否、stale、child の無効化）をまとめて直せる可能性がある。
+
+---
+
+# 背景の commit の調査（read-only。診断 2 回の DB と記録の突き合わせ。2026-11-02）
+
+調査の本文は scratchpad の `lapse-lane/survey/s7-background-commits.md`（付録に 22 件の個別表）。時刻の写像（DB の ms の timestamp → native の時計）の誤差は ±5 ms で、**直接の計装ではなく状況証拠**。
+
+## 要点
+
+1. **欠落 22/22 件（2 回の run の 11＋11）で、Graph の窓に incremental Freshness の cycle の commit が重なっていた。**
+   - child の合流の無効化：16/16 で、publish（cursor の ack）の commit が token の窓〔worker の query の開始→合流の終わり〕の中。成功した 378 件では 0 件。
+   - 親の登録の拒否：4/4 で、予約か publish の commit が登録の窓の中。ただし窓に commit が入っても通った件が 7 件あり、必要条件にとどまる。
+   - stale：2/2 で、予約の commit が query の窓（約 5 ms）の中。
+2. **期待値が実測と合う。** Freshness の scheduler は 1 s の idle poll（`electron/main/narrativeFreshness.ts:14-17`）で、保存との位相は 0〜1000 ms にほぼ一様。幅 W ms の窓に当たる確率は約 W/1000。token の窓（約 40 ms）→ 4.0%＝8.0/201（実測 8、8）。登録＋query の窓 → 約 1.4〜2.2%（実測 3、3）。
+3. **`freshness_token` で動いた成分は `feed_acknowledged_through_sequence` だけ**（`last_evaluated_run_id` は NULL のまま。203 本の Run はどれも `affectedEdgeCount=0`）。head は保存（query の約 590 ms 前）で既に動いている。→ worker の snapshot（ack＝N−1、head＝N。pending の 1 件は本文だけで無関係なので Eligible）と、合流の live の読み（ack＝N）の違いは ack だけ。
+4. **Graph の query の窓の間、背景の Freshness の commit を止める仕組みは無い**（前景の preempt は maintenance の接続が Main の mutex を譲るだけ。D′ は begin 自身の audit の commit の後まで待つだけ。Freshness の quiesce は workspace の切替専用）。
+5. 保存 1 回あたりの背景の commit：保存 1、Chronicle の build 1（保存＋約 180 ms。query の前に終わる＝LP-A1 の効果と合う）、Freshness の予約 1＋publish 1、audit は begin ごと（D′ が prepare より前に終わらせる）。idle の poll は書き込まない【推論】。
+6. **先行の予告**：X1 /3 の F10 と「X1 が直さない問題」（`nir1-scene-scope-projection-proposal-3-draft.md` :57）、D2b の XF-9 が、『返却時の再検証が canonical Freshness の feed の位置を比べること』と『commit のたびに READY の worker が古くなること』を、X1 の外に残る問題として書いていた。
+
+## 直し方の候補（調査の整理。integrator の評価は別に）
+
+- **(iii-d) 保存の直後に Freshness を起こす**（Main の scheduler の wake。保存の feed append の後に 10 ms 程度で cycle を回す）：最小の変更。Freshness の cycle が query（保存の約 430〜850 ms 後）より十分前に終わり、窓に入らない。この trace の 3 群すべてに効く見込み。lifecycle／scheduling の判断で、契約を変えない見込み。
+- (i) Graph の窓の lease で Freshness の予約の前に gate する：一般解。timeout と延期の上限が要る。
+- (ii) `freshness_token` から feed の位置を外す：child の群にしか効かず、A3 の identity、D-final の ref、`edge_holds` の契約を変える（契約の改訂。委任の外）。
+- (iii-a) drift の後に 1 回だけ再試行する：requery の測定上の読みが未確認。
+- 閾値・Gold・失効の読みの緩和は推奨しない。
