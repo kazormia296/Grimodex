@@ -152,3 +152,62 @@ ticket の発行から settle までの所要（ms）：
 - dev fixture・1 回・200 cycle。run ごとの揺れは未測定（もう 1〜2 回回せば揺れの幅が見える）。
 - 残る隙間は未検証：(i) 窓を開く時に区間が in-flight で 100 ms を超える場合（`graphWaitExpired`＝0 なので起きなかった）、(ii) child の合流が 500 ms を超える場合（`leaseExpired`＝0）、(iii) 保存・audit・D-final など Freshness 以外の commit。
 - 正式の再測定（新しい候補。S4 の扱いは未確認）はしていない。Gold、N2／N4（blocked）、K6/4 の検出力の記録は動かしていない。
+
+---
+
+# 第 4・5 回（run `lpd-diag-4`、`lpd-diag-5`）：同じ build でもう 2 回。603 件で欠落 1 件（dev 専用。CP-4 の結果ではない）
+
+2026-11-03（JST）01:13 と 01:23 の開始（UTC 16:13:47 と 16:23:57）。第 3 回と同じ build（診断の枝 HEAD `2e1c8815`、`.node`・worker は第 3 回と同じ bytes）、同じ手順（静けさの確認 → 編集 trace 200 cycle、Q=201、setup は再利用）。ユーザーの確認：`user-confirmation-2026-11-03-lapse-next-steps.md`（`02a8555a`）。記録：第 4 回 `observation.json` sha256 `b96b135b…8a973b38`（49.3 MB）、`receipt.json` `a3c89e73…f5784ccb`。第 5 回 `observation.json` `0b137d9d…b0b2bc21`（49.3 MB）、`receipt.json` `7d04d7e8…39e9548d`。置き場所は diag worktree の `.artifacts/cp4/lpd-diag-4/`、`lpd-diag-5/`。受領書の status は第 3 回と同じ `invalid`（dev preview の F6）。**正式の測定に数えず、集計・閾値の選択に使わない**（DR-CP4-LPD-1 (4)）。
+
+## 結果（Q=201。第 3 回と並べる）
+
+| 区分 | 第 3 回 | 第 4 回 | 第 5 回 | gate の 3 回 | （参考）gate なしの第 1・2 回 |
+|---|---|---|---|---|---|
+| 親の ticket が available | 201 | 201 | 201 | 603 | 396／402 |
+| 親の ticket の失敗 | 0 | 0 | 0 | 0 | 6 |
+| child の合流が available | 201 | 200 | 201 | 602 | 380／402 |
+| child の合流の無効化 | 0 | **1** | 0 | **1** | 16 |
+| `graph-ready` の通知 | 201 | 201 | 201 | 603 | 396 |
+| prepare の失敗 | 0 | 0 | 0 | 0 | 4 |
+| 表示されなかった合計 | 0 | **1** | 0 | **1／603（0.17%）** | 22／402（5.47%） |
+
+- 3 回の合計 1/603 から言える本当の割合の 95% 上限は、片側で約 0.8%、両側で約 0.9%（Clopper–Pearson の計算。おおよその見積もり）。物差し 1% は下回るが、余裕は小さい（0 件だったときの見込み約 0.5% よりも広い）。**dev の 3 回で、正式の候補の割合ではない。**
+- 第 4 回の 1 件は、gate の**設計に書いた『残る隙間』の 1 番**が実際に起きたもの（下）。
+
+## 第 4 回の欠落 1 件（ticket seq 385）
+
+- 親の ticket は available。Graph の待ちが上限 100 ms で尽きた（window の開始から終了まで 100.07 ms、outcome `gate-wait-expired`。`graphWaitExpired` 1）→ **窓（lease）なしで進んだ**（`cachedBegins` の `window: false`）。ticket の発行から settle まで 227.2 ms（窓の開始まで 108 ms、待ち 100 ms、prepare の開始から settle まで約 19 ms）。
+- child の合流（seq 386）は `assemble-unavailable`、`dropped = path-not-current`、`path.stage = edge-holds-false`、**`tokenMismatch = ["freshness-token"]` だけ**、`feedHeadSequence == feedAcknowledgedThroughSequence = 212`。第 2 回の child の 8 件と同じ形（Freshness の commit が worker の答えと合流の間に入った）。
+- 読み：窓を開く時点で Freshness の区間が in-flight で、その残りが 100 ms を超えた。T_late（確認済み 100 ms）を守るために Graph の待ちを 100 ms に切っている設計（gate の DR §9.1、GATE-2）の**予定された代償**。Freshness の cycle が 100 ms を超えて続く回が実在することを示す【推論】。
+
+## gate の counter（run 全体の累計）
+
+| counter | 第 3 回 | 第 4 回 | 第 5 回 |
+|---|---|---|---|
+| `windowsOpened` | 201 | 200 | 201 |
+| `graphWaited` | 8 | 5 | 2 |
+| `graphWaitExpired` | 0 | **1** | 0 |
+| `waitedAdmit` | 13 | 10 | 7 |
+| `leaseExpired` | 0 | **2** | 0 |
+| `deferred`／`overridden`／`stopped` | 0／0／0 | 0／0／0 | 0／0／0 |
+
+- 窓の outcome：第 4 回 `gate-opened` 195、`gate-opened-after-wait` 5、`gate-wait-expired` 1。第 5 回 `gate-opened` 199、`gate-opened-after-wait` 2。
+- **`leaseExpired` 2（第 4 回、seq 27 と 93）**：child の合流の開始が settle の約 836 ms と約 749 ms 後で、lease の期限 500 ms を超えた（gate の『残る隙間』の 2 番）。**2 件とも合流は成功した**（その間に Freshness の token の変動が無かった）。第 5 回の合流の開始の遅れは最大 278 ms。
+- Freshness 側：`deferred` 0、`overridden` 0 が 3 回とも続いた（Freshness が 250 ms の待ちを超えて延期された回、天井 1 s で lease を無視した回は無い）。
+
+## 副作用（T_late への影響）
+
+| | p50 | p90 | p99 | max | 150 ms 超の件数 |
+|---|---|---|---|---|---|
+| 第 3 回 | 33.5 | 37.7 | 322.1 | 414.6 | 4（すべて after-wait） |
+| 第 4 回 | 33.1 | 36.9 | 311.3 | 341.4 | 6（after-wait 5、wait-expired 1） |
+| 第 5 回 | 33.4 | 39.5 | 240.3 | 278.6 | 4（**すべて `gate-opened`＝gate の待ちが関与しない**） |
+
+- 中央値は 3 回とも 33 ms 台で、第 1・2 回（33.2、33.3）と変わらない。
+- 第 5 回の 150 ms 超の 4 件は gate の待ちを伴わない。**遅い群（ticket の発行から prepare の開始まで約 140〜390 ms）は gate の待ちだけでは説明できない**。第 4 回は遅い 6 件がすべて gate の待ちに当たったが、第 5 回はそうでない。原因は未調査のまま。
+
+## 限界
+
+- dev fixture・計装の入った build・3 回（603 件）。run ごとの揺れは小さく見える（0／1／0）が、正式の候補では未確認。
+- 残る隙間は 1 番が 1 回、2 番が 2 回見えた。3 番（Freshness 以外の commit）と 4 番（天井）は、この 3 回の範囲では欠落を作らなかった。
+- 正式の再測定（新しい候補。S4 の扱い）、Gold、N2／N4（blocked）、K6/4 の検出力の記録は動かしていない。
