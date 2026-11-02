@@ -250,3 +250,159 @@ notifier の panic の順（P3-4）を落とす試験は足していない（順
 検証（最終の内容に対して）：`cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --lib -- nir1_graph related_scenes` を負荷の下（suite の並列実行）で 2 回続けて実行し、2 回とも 194 passed、0 failed、5 ignored（opt-in）。clippy（`--lib --tests`）は各 commit で警告なし。`rustfmt --check` は変更した file で master に元からある差分（`nir1_graph_product.rs` の 13 か所、`nir1_graph_product_tests.rs` の既存の差分）だけ。
 
 未実施：(ii)（実 Electron。§6.8 の 1〜9）、cold start と 2 窓の往復の実測、Quick／Full。
+
+## 9. Graph の窓の gate（CP-4 の失効 lane。2026-11-02。mutation の前に記録）
+
+出所：CP-4 の診断 2 回と背景の commit の調査（contracts `docs/plans/nir1-cp4-records/diag-lpd-2026-11-02/README.md`）。編集 trace の表示の欠落 22/22 件（11＋11）で、D′ の held query の窓（登録、query、token の合流）に incremental Freshness の cycle の commit（予約または publish）が重なっていた。Graph の窓の間、Freshness の commit を止める仕組みは無い。ユーザーは案 2（Graph の窓の間、Freshness の commit を待たせる gate）を選んだ（contracts `docs/plans/nir1-cp4-records/user-confirmation-2026-11-02-lapse-gate-plan2.md`。範囲は設計、独立 review、実装、実装の review、PR まで。契約・authority、IPC 契約、保存範囲、送信先、閾値・Gold・失効の読み、防御の緩和は含まない）。この lane は AGENTS の委任レーンの一覧に名の無い CP-4 の lane で、上のユーザーの確認を第一の根拠とし、その範囲の中の worker／owner／lifecycle の技術判断だけをここに記録する。設計は read-only の 3 案（X：native 側の lease、Y：Main の TS 側の推定、Z：双方向の握手）を比べ、案 X を土台に integrator が修正した。基点は master `8dd7a9c0`、branch `claude/cp4-lp-gate`。file:line は基点のもの。
+
+### 9.1. 着手前の確認（結果）
+
+| 確認 | 結果 |
+|---|---|
+| (a) 確認台帳と確認済み契約に、Freshness の遅れの上限を閾値として固定したものが無いこと | **無い**。`docs/plans/nir1-continuation-2026-10.md` §1 の U・SB- の行（SB-1〜SB-15、SB-X1Q6、SB-X1A1B）に Freshness の遅れの値は無い。`docs/plans/` と `policies/` を `Freshness`／`鮮度` × `以内｜遅れの上限｜latency｜N ms／秒以内` で grep して、該当は無かった。K6/4 の確認済みの値（T_late 100 ms＝Raw-ready から `graph-ready` の通知まで、W_f 100 ms＝取り直しの Raw-ready から Graph の到着まで、T_show 2 s、1%）はどれも Graph の表示の時間で、Freshness の cycle の時刻ではない。近い数値は `MAX_SCHEDULER_LIVENESS_AGE` 5 s（`c2zc_canonical_cutover.rs`。scheduler の liveness の上限で、遅延の閾値ではない）と、harness の `FRESHNESS_SETTLE_LIMIT_MS` 15 s（`frozen-k64-run.mjs:131`。測定の前の hang guard。DR-CP4-T-1）だけで、どちらも閾値ではない |
+| (b) CP-4 の harness と S2 の pin が、Freshness の cycle の回数や時刻を数えていないこと | **数えていない**。`scripts/quality/nir1-graph-eval/` と `scripts/quality/nir1-graph/` が Freshness を読むのは、測定の前の `waitFreshnessSettled`（`frozen-k64-run.mjs:723`、`workspace-db.mjs:170` の `readFreshnessFeed`＝feed の head と cursor の ack の比較。上限 15 s、間隔 100 ms）と、測定点の feed の位置の記録（:828）だけ。`narrative_extraction_runs` の読み、cycle の数、cycle の時刻の判定は無い。`FRESHNESS_REASONS`（`join.mjs:16`。stale／warming）は Graph の ticket の理由で、延期はこの理由を作らない（延期は Freshness の戻り値で、Graph の ticket に出ない）。測定の前は Graph の窓が開いていないので、settle の待ちに gate は効かない。延期は受領書の判定・admission を変えない |
+| 製品：`PendingUnknown`（未 ack の 1,024 sequence〔16 page × 64〕／4,096 event。`revision_eligibility/pending.rs:17-19`） | 影響しない見込み【推論】。延期の上限は 1 回の窓で 500 ms、累計の天井 1 s。lease は Related Scenes の held query 1 回につき 1 本で、held query は `rebuild_min_interval`（1 s）ごとに高々 1 回 prepare するので、lease の duty は 1 s に 500 ms 以下。lease の外では今と同じく backlog の 10 ms ごとに 32 sequence（`MAX_CANONICAL_SEQUENCES_PER_BATCH`）を処理する。未 ack が 1,024 を超えるには、今より 1 s 程度長い遅れの間に約 1,000 sequence の書込みが要る。超えても `pending::read` は `PendingUnknown`（閉じる側）で、誤った開示にはならない |
+| 製品：B（Chronicle の Index）の qualification と `index-ready` の順序 | 順序は変わらない。遅れうる【確認済み：`nir1_chronicle_index/build.rs:141-145`、:220-223】。B の build は前の pool の入力と新しい入力の両方で `pending::read` が Ok であることを求め、関連する未 ack の変化があれば `PendingChange` → `related_scenes/build.rs:178` の `Retry`（250 ms 後に再試行）になる。だから関連する変化の ack が延期されると、B の publish と `index-ready` はその分（最大で窓 1 つの 500 ms、天井 1 s）遅れうる。`index-ready` は B の publish の直後に同じ loop で出る（`build.rs:44-49`）ので、publish と通知の順序は変わらない。この trace では本文だけの保存は B に無関係（X1-5）で、B は query の約 400 ms 前に終わる（S7 §1）ので影響は無い |
+| 製品：T_late（確認済み 100 ms） | 閾値は変えない。Graph が in-flight の Freshness の区間を待つ（上限 100 ms）回は、親の `store_late_cache` → `graph-ready` の通知がその分遅れ、T_late（観測の max 57.3 ms）を超えうる。頻度は「窓の開始時に区間が in-flight」の確率（約 1%）× 区間の残りが長い確率で、0.1% 未満と見込む【推論】。gate が無ければ同じ回は登録の drift で閉じる側に落ちるので、悪くはならない。100 ms は X 案の 300 ms を縮めた integrator の判断（9.2 の GATE-4） |
+
+### 9.2. 判断の表
+
+| ID | 日付 | レーン／PR | 判断 | 信頼境界（actor・防御・受信先・受入れ） | 代替案 | advisor | 除外6項目への該当 | owner/lifecycle matrix | 状態 |
+|---|---|---|---|---|---|---|---|---|---|
+| DR-CQD-GATE-1 | 2026-11-02 | CP-4 失効 lane（`claude/cp4-lp-gate`） | **置き場所**。新しい module `electron/native/grimodex-node/src/nir1_graph_commit_gate.rs` に `GraphCommitGate`（leaf の `Mutex` 1 つと `Condvar` 1 つ。durable にしない）を置き、Graph の owner の `Shared`（`nir1_graph_product.rs:465`）が `Arc` で持つ。`Nir1GraphProductOwner::commit_gate()` で取り出す。共有の `grimodex-db`、TS の製品コード、`ipcContract.ts`、preload、`index.d.ts`、schema／migration は変えない | actor は同じ process の Freshness の blocking thread と Graph の owner thread と合流の blocking thread だけ。gate が持つのは id、時刻、数だけで、本文・ID・文字列を持たない。renderer からは届かない（gate を触る IPC は無い）。新しい受信先・保存・送信先は無い | 案 Y（Main の TS が IPC の系列から窓を推定する）：窓の頭（prepare の開始）と in-flight の publish を TS から止められず、renderer の振る舞いが変わると黙って効かなくなる。案 Z（握手）：構造は同型で、Graph の待ち 25 ms と「直近」の推定を足す分だけ複雑。どちらも土台にしない（Z の飢え防止だけ GATE-5 で取り込む） | integrator の brief（X を土台にする修正）と、実装前の advisor（2026-11-02。DR の置き場所、印と waiter の扱い、漏れの順序、eval の識別子の注意） | 該当なし | 9.3 | 記録済み |
+| DR-CQD-GATE-2 | 2026-11-02 | 同 | **Freshness の区間は cycle 全体**。`run_narrative_freshness_cycle_supervised`（`lib.rs:7374`）の先頭、recovery の reconcile（:7382-7386）の前で、blocking thread で gate に入る。`Admitted`／`Overridden` なら区間（RAII、`Arc`）を async の stack と 2 つの blocking の closure（reconcile の `run_blocking` :7384、body の `spawn_blocking` :7442）に clone して持ち、どの出口（return、`Err`、panic の unwind、async の task の drop）でも最後の clone の Drop で閉じる。区間の中には予約、評価の中の lease の更新、publish、requeue、heartbeat と cutover、CI の quiescence の読みが全部入る。publish の前に gate を再確認しない（区間が in-flight の間は Graph が lease を取らないので、予約の後に窓は開かない）。`FreshnessLifecycleControl::check` は使わない（その `Err` は recovery への移譲になる） | 延期は DB に触れず、permit も workspace operation も取らない。Freshness の authority、cursor、Run の扱いは変えない | (i) 予約の前と publish の前で 2 回見る（共有の Rust に checkpoint が要り、publish の前で待つと Run と cursor の lease を持ったまま待つ。拡張案 X+ として残す）。(ii) body の先頭に置く（Z。reconcile の commit が gate の外に残る） | 同上 | 該当なし | 9.3 | 記録済み |
+| DR-CQD-GATE-3 | 2026-11-02 | 同 | **Graph の窓の始まり**。`build_worker`（`nir1_graph_product.rs:2163`）の中、`wait_rebuild_window`（:2171-2177）が通った後、`admit`（:2178。stamp0 を読む）の前。`held.is_some()`（D′ の held query。`run_deferred` :2275 から）のときだけ。D′ の保留の間（`await_release` :2312）と rebuild の窓の間は lease を取らない。D-final の `begin`（`build_and_serve`、READY の長い idle）には窓を開かない | owner thread は gate を待つ間、slot・cache・ticket の lock を持たない。gate の待ちは失敗に数えない（`consecutive_failures` に触れない） | 窓を `admit` の後に開く：stamp0 から prepare の開始までの commit を守れない。D-final も覆う：READY の最長 120 s の間 Freshness が止まる | 同上 | 該当なし | 9.3 | 記録済み |
+| DR-CQD-GATE-4 | 2026-11-02 | 同 | **Graph の待ちと、上限を超えたとき（integrator の修正）**。Graph は窓を開く前に、Freshness の区間が in-flight か、Freshness の番（GATE-5 の印）の間は待つ。両方で 1 つの予算 **100 ms**（X 案の 300 ms を縮めた。T_late の余裕を食わないため）。待つ間は Graph の待ち（`graph_waiters`）を立て、Freshness は新しい区間を始めない（印の間を除く）。待ちの刻みは 10 ms で、刻みごとに ticket の取消と edge／close を見る。取消・edge なら lease なしで返り、後の既存の検査で Exit。**予算を超えたら lease を取らずに（窓なしで）進む**（X 案の「上限の後に lease を取る」は採らない）。その窓は今と同じく drift しうる（stamp、worker の drift、requalification の閉じる側の検査は変えない。誤表示にならない） | 鮮度の判定（`ReadIdentity`、stamp、`edge_holds`）は変えない（DR-CQD-8 の F10 の防御と矛盾しない。gate は commit の時機だけを動かす） | 上限の後に lease を取る（X）：後続の Freshness を止めるだけで、in-flight の区間の commit は防げない | 同上 | 該当なし | 9.3 | 記録済み |
+| DR-CQD-GATE-5 | 2026-11-02 | 同 | **Freshness の待ちと飢え防止（Z から取り込む）**。Freshness は有効な lease が 1 本でもあるか、Graph の待ちが立っていれば待つ。1 回の呼出しの中で **250 ms** 待っても入れなければ『延期』を返し、**延期の印（50 ms）**を立てる。印の間は (i) Graph は新しい窓を開かず待つ（GATE-4 の予算の中）、(ii) Freshness の入場は Graph の待ちを無視する（lease が無ければ入る）。印は区間を取ったときに消える。最初に待たされてから累計 **1 s**（天井）で、lease を無視して区間を取る（`overridden`）。lifecycle の停止（`ws.switching`、`workspace_shutdown_requested`、owner の closed）は刻み（10 ms）ごとに見て、すぐ延期で返す（印は立てない） | 延期の上限があるので、gate の bug（放し忘れ）でも Freshness は最大 1 s ごとに進む | 印を置かない（X のまま）：再予約の 10 ms の間に次の窓が開くと、天井まで延期が続きうる。Freshness が lease を待つ間（印の前）も新しい窓を止める（Z の Parked）：brief の範囲の外の追加で、別の query の窓を窓なしにする回が増える。採らない | 同上（advisor の指摘：印の間の Graph の待ちを Freshness の入場の条件に数えると、互いを待って印の 50 ms まで止まる） | 該当なし | 9.3 | 記録済み |
+| DR-CQD-GATE-6 | 2026-11-02 | 同 | **lease の移り方と放す点**。lease は RAII（`WindowLease`。期限 **500 ms**）で、ticket → late cache → child の Cached の合流と move する。放す点（どれも冪等、最初のものが放す）：(a) `TicketShared::deliver`（:917）の `Unavailable`、(b) `finish(Cancelled)`（:946。renderer の cancel、operation の lease の終わり、begin の `Err`、ticket の Drop、`DeferredRelease` の Drop）、(c) `finish(Used)`、(d) `finish(Unused)`／`deliver(Available)` で cache を埋めるときは `store_late_cache`（:637）へ move し `CacheEntry` に入れる（cacheable でなければ Drop。outcome の無い `finish(Unused)` では放さない）、(e) `take_usable_cache`（:611）の hit で projection と一緒に `GraphBegin::Cached(CachedGraph{projection, window})` → `GraphSlot::Cached`（`related_scenes/graph.rs:87`）へ、(f) cache の破棄（quarantine の clear :2032-2036、置換 :643、使えない entry :629-631、quarantine 中の store :640）、(g) 合流の終わり：`await_request`（`graph.rs:660`）の `Claim::Await` の後に Cached の slot の lease を放す guard を置き、`assemble`（:725-733）の直後かそれより前の exit で放す（Pending の slot は (a)〜(d) に任せる）、(h) `GraphState::declare`（:271）が Cached を Settled に置き換えるとき、(i) lifecycle の edge（`GraphEdgeObserver` :1019）と `Shared::close`（:665）で gate の lease を全部無効にして notify、(j) 期限 500 ms で数えなくなる、(k) D-final の `GraphBegin::Cached`（`nir1_graph_dfinal.rs:325`）はその場で放す。**不変条件**：決着した ticket（outcome と disposition の両方がある、または Cancelled）は lease を持たない。`deliver`／`finish` の早期 return（既に決着）でも lease を取り出して放す。窓を付けるとき（`attach_window`）に ticket が既に決着していれば、その場で放す | lease の漏れは期限 500 ms と天井 1 s で無害化される（Freshness が止まるのは最大 500 ms） | lease を await の guard だけで放す（Pending の slot も）：native の合流の後に renderer が unused を出して cache を埋める場合の分け方が要る。採らない | 同上（advisor の指摘：G0 → 格納 → 取消の検査 → Exit の間に `finish(Cancelled)` が先に走る順序で、`deliver` の早期 return が lease を残す） | 該当なし | 9.3 | 記録済み |
+| DR-CQD-GATE-7 | 2026-11-02 | 同 | **延期の戻り値**：`Ok(Some({"hasMore":true,"noWrite":true,"deferred":"graph-window"}))`。`quiescenceState` を含めない（DB を読まない）。TS の製品コードは変えない。根拠【確認済み】：`freshnessCycleObservation`（`electron/main/narrativeFreshness.ts:121-155`）は未知の key を拒まず、`heldProjectId` は null、`cutoverNotReady` は false で検査を通る。`batchHasMore` が true なので次は `BACKLOG_DELAY_MS`（10 ms。:261-263）で、1 s の idle poll（:230）に戻らない。`nextCycleGuardStateDigest` は `hasMore` で null（:292-298）、`getQuiescenceState` の `hasMore` は true になり、CI の静けさは延期の間に成立しない（保守的）。`onCycleCompleted` の observation は TS が固定の key で組み立てる（:302-315）ので `deferred` の key は CI の held writer に届かず、writer は `hasMore !== false` を `null`（記録しない）にする（`narrativeMaintenanceCiSeam.ts:1450-1458`）。既存の requeue の結果（`lib.rs:6242-6251`、`{"hasMore":true,"requeued":true,...}`）と同じ形の拡張。もう 1 つの呼出し元の評価の harness（`nir1_final_request_eval/harness/workspace.rs:762`）は `hasMore` が false になるまで有限回 loop するだけで、D-final の評価で D′ の窓を開かない | IPC 契約の変更ではない（`runNarrativeFreshnessCycle` は main 専用の N-API method で `ipcContract.ts` に無い。JSON の key を 1 つ足すだけ） | `null` を返す：1 s の idle poll に戻る。延期で `cycleGeneration` を進めない TS の整理：本質ではないので入れない | 同上 | 該当なし | 9.3 | 記録済み |
+| DR-CQD-GATE-8 | 2026-11-02 | 同 | **counter**：`GraphOwnerDiagnostics` に `gate_deferred`、`gate_waited_admit`、`gate_overridden`、`gate_lease_expired`、`gate_graph_waited`、`gate_graph_wait_expired`、`gate_windows_opened` を足す（counter だけ。文字列・ID なし）。**eval の計装はこの PR に入れない**（`cfg(feature = "nir1-graph-eval")` の hook を足さない。`scripts/quality/nir1-graph-eval/native-architecture.mjs` が eval module の外の hook と識別子〔`_for_eval`、`eval_*`、`BeginProbe` など〕を許さないため。DR-CP4-LPD-1。gate の観測は診断の枝〔dev 専用〕で後から足す） | counter だけ（post-B §4.4） | — | 同上 | 該当なし | — | 記録済み |
+| DR-CQD-GATE-9 | 2026-11-02 | 同 | **試験の形**。gate は時計と待ちを trait で注入できる形にし（偽の時計は待ちの代わりに時刻を進める）、状態機械（取る・待つ・上限・延期・印・天井・RAII の放し・期限）を sleep に頼らず決定的に試す。競合の再現は owner の試験 module（`nir1_graph_deferred_tests.rs`）の fake worker と `admit_hook_for_test` で行う。Native の Freshness の試験は gate が supervised の先頭にあるので、`#[cfg(test)] run_narrative_freshness_cycle_inner`（gate を通らない）ではなく `Backend::run_narrative_freshness_cycle`（`lib.rs:1170` の形）を呼ぶ。TS は `narrativeFreshness.test.ts` に延期の結果 → 10 ms の再予約の試験を足す。変異（判定の反転、放し忘れ、上限の除去など）は 1 つずつ入れて落ちることを確かめ、sha256 と touch で戻す（§6.5 の失敗の再発防止） | 試験だけ。製品の経路に seam を足さない（`cfg(test)` の hook は既存のものを使う） | 実 Electron の再現：この branch では走らせない（診断の枝の dev run で確かめる） | 同上 | 該当なし | — | 記録済み |
+| DR-CQD-GATE-10 | 2026-11-02 | 同 | **不活性**。Graph が公開されていない間（`PRODUCT_GRAPH_PUBLISHED=false`、`admit_and_route` が slot より前に `NotActivated` で返す :1118-1119）は held query が生まれず、lease は 0 本。Freshness の追加の仕事は cycle ごとの mutex 1 回と空の判定だけで、戻り値と挙動は今と同じ | 製品の挙動は Graph が閉じている間は不変 | — | 同上 | 該当なし | — | 記録済み |
+
+代替案のうち、brief と調査（S7 §4）で比べた残りの 2 つ：(iii-d) **保存の直後に Freshness を起こす（案 1）**：最小だが保存の時機に頼り、保存以外の引き金（別の window、AI の書込み、連続した編集）には効かない。ユーザーは案 2 を選んだ（「2から行きましょう」）。(ii) **token から feed の位置を外す（案 3）**：child の群にしか効かず、A3 の identity、D-final の ref、`edge_holds` の契約の改訂になる（委任の外）。どちらも採らない。
+
+### 9.3. owner／lifecycle matrix（GDX-PRECHECK-001。egress なし、subprocess なし、background／async lifecycle を変える）
+
+| 事象 | Freshness 側 | Graph 側 | gate の状態 |
+|---|---|---|---|
+| Freshness の cycle の開始 | supervised の先頭で gate に入る。lease も Graph の待ちも無い（印の間は Graph の待ちを数えない）→ 区間を取る | 待っていれば、区間の終わりまで（予算 100 ms） | 区間 1 つ（scheduler は直列） |
+| Freshness の延期 | 250 ms 待っても入れない → 延期の JSON、DB に触れない。印 50 ms | 印の間は新しい窓を開かず待つ | 印が立つ。天井の時計（最初に待たされた時刻）は残る |
+| Freshness の天井 | 累計 1 s → lease を無視して区間を取る（`overridden`） | その窓は今と同じく drift しうる | 区間と lease が並ぶ（唯一の例外） |
+| Freshness の終了 | 区間の最後の clone の Drop（成功、`Err`、panic、JoinError、async の drop）で閉じ、notify | 待っていた Graph が起きる | 区間 0 |
+| Freshness が open_lock を待つ（reconcile、revalidate） | 区間を持ったまま待つ | Graph の待ちは 100 ms で切れ、窓なしで進む | — |
+| Graph の窓の開き | `build_worker` の rebuild の窓の後、`admit` の前（held だけ）。区間・印が無ければ lease を取る | — | lease +1（期限 500 ms） |
+| Graph の窓の閉じ | — | GATE-6 の (a)〜(k) | lease −1 |
+| ticket の取消（renderer、lease の終わり、begin の `Err`、Drop） | — | 待ちの間：刻みで見て lease なしで返る。後：`finish(Cancelled)` で放す | lease −1 |
+| lifecycle の edge（workspace の切替、restore、unavailable） | `ws.switching` を刻みで見て延期で返す（TS の quiesce は `inFlightCompletion` を待つだけなので、待ちは最大 1 刻み。flag が立つ前に TS が待ち始める順では最大 250 ms） | edge の observer が epoch を進め、gate の lease を全部無効にして notify。owner thread は既存の `edge_or_closed` で exit | lease 0 |
+| shutdown（`ShutdownRequested`、`Shared::close`） | `workspace_shutdown_requested` と owner の closed を刻みで見て延期で返す。dispose は `inFlightCompletion` を待つ | closed、epoch +1、gate の lease を全部無効にして notify | lease 0。以後 lease を取らない |
+| crash（process ごと） | gate は memory だけ | 同左 | 何も残らない |
+| Graph が不活性 | mutex 1 回で区間を取る | held query が生まれない | lease 0 |
+
+不変条件：(1) 区間は高々 1 つ。(2) 区間と有効な lease が同時に立つのは、Freshness が天井で進んだときだけ（Graph は区間が in-flight の間は lease を取らず、予算を超えたときも lease を取らない）。(3) 待ちの向き：区間を持つ Freshness は何も待たない。待つ Freshness は区間を持たない。待つ Graph は窓の lease を持たない。すべての待ちに上限がある。(4) gate の mutex は leaf（中で他の lock を取らず、notifier も呼ばない）。slot・cache・ticket・`GraphInner` のどの lock の下で `WindowLease` を Drop しても順序は破れない。(5) 決着した ticket は lease を持たない。
+
+### 9.4. threat model（技術的。確認済みの actor・防御・受信先の範囲内）
+
+| 脅威 | 防御 |
+|---|---|
+| lease の漏れによる Freshness の停止（DoS） | lease の期限 500 ms、天井 1 s、RAII（unwind でも Drop）、edge／close での全無効、決着した ticket は lease を持たない |
+| Graph の窓の引き延ばし（renderer の往復、連続の query） | lease は held query 1 回につき 1 本で期限 500 ms。renderer の引数は lease の数・期限を変えない（gate に IPC は無い）。天井 1 s で Freshness は進む |
+| deadlock | 9.3 の不変条件 (3)(4)。待ちは全部有界 |
+| 鮮度の隠蔽 | 鮮度の判定は触らない。上限を超えた窓は今と同じ drift（閉じる側） |
+| privacy・保存・外向きの通信 | 増えない。gate は memory の id・時刻・数だけ |
+
+### 9.5. 実装後の追記（2026-11-02。9.1〜9.4 の本文は直さない）
+
+commit：`4e3d6442`（gate の module と単体試験）、`983197da`（Graph 側：窓の開きと lease の運び）、`b75cd870`（Freshness 側：cycle 全体の区間と延期）、`609261c6`（TS の試験）。
+
+**DR からの調整（実装で決めたこと）**
+
+1. **lifecycle の停止は延期ではなく `null`**（GATE-5 の「すぐ延期で返す」を訂正）。待ちの間に `ws.switching`、`workspace_shutdown_requested`、owner の closed を見たら `FreshnessAdmission::Stopped` で、supervised は `Ok(None)`（今日の「切替中の cycle」と同じ答え）を返す。印は立てない。`hasMore` を返すと、切替の間に 10 ms ごとの再予約が続くため。
+2. **区間は数（`sections: u32`）**。restore の後の Freshness（`lib.rs` の restore の経路）が scheduler の cycle と重なりうるので、Option でなく数にした。Graph は数が 0 のときだけ窓を開く。
+3. **counter は `GraphOwnerDiagnostics.gate`（`GateCounters`）にまとめた**（GATE-8 の `gate_*` の個別の field の代わり）。`deferred`、`waited_admit`、`overridden`、`stopped`、`lease_expired`、`windows_opened`、`graph_waited`、`graph_wait_expired`。文字列・ID なし。
+4. **Freshness の番は延期の後の 50 ms だけ**。Freshness が lease を待っている間（印の前）は新しい窓を止めない（GATE-5 の代替案のとおり）。番の間、Freshness の入場は Graph の待ちを数えない。
+5. **`GraphBegin::Cached(CachedGraph { projection, window })`**（1 field の struct。`Deref<Target = Nir1GraphProjection>`）。`Cached(_)` の match（eval module を含む）は無修正。直したのは `related_scenes/graph.rs`、`nir1_graph_dfinal.rs`、`nir1_graph_product_tests.rs` だけ。eval の識別子・`cfg(feature = "nir1-graph-eval")` は足していない。
+6. **gate の値は leaf の Mutex に置き、試験だけが `set_limits_for_test` で替える**（製品は定数のまま）。owner と実 DB の試験は長い値（lease 60 s など）で負荷の下の揺れを避け、上限の挙動は手動の時計の単体試験で確かめる。
+7. **窓の終わりの (g)** は `await_request` の `Claim::Await` の直後に guard（`CachedWindowRelease`）を作り、`assemble` の `spawn_blocking` が返った直後に `drop` する。early return でも guard の Drop で放す。
+
+**追加した試験**
+
+| 置き場所 | 試験 |
+|---|---|
+| `nir1_graph_commit_gate_tests.rs`（手動の時計。待ちは時刻を進めるだけで、hook が「待ちの間の他者」を演じる） | 空の gate、延期と番、待ちの中の解放で同じ呼出しの中で入る、期限、天井（0→250、260→510、520→770 が延期、780→1000 で overridden）、停止（番なし）、Graph の待ちが新しい区間を止める・番の間は止めない、区間の終わりで窓が開く、予算を超えたら窓なし、番の間の Graph の待ち、番の中の再試行が Graph より先、取消、edge と close、unwind、複数の窓、長さ 4 × 7 操作の全列挙（2,401 列）で不変条件、system clock での notify の起床 |
+| `nir1_graph_gate_tests.rs`（owner、fake worker） | 窓が admit（S0）の前に開いて used まで残る、unavailable と取消で放す、unused → cache → child の Cached へ切れずに移る、使えない cache の破棄、edge と shutdown、admit の間の取消、owner の panic、区間の in-flight を待つ、予算を超えたら窓なしで admit、Freshness が窓を待って終わりで入る、閉じた製品で窓が 0・Freshness が待たない、窓を開いた後・付ける前に決着した ticket は窓をその場で放す（`attach_window`） |
+| `related_scenes/graph_tests.rs` | Cached の slot の窓が `release_window` と `declare` で終わる。`await_request` の guard と `drop(window)` の位置（source の順序） |
+| `lib.rs`（実 DB、`Backend::run_narrative_freshness_cycle`） | 窓の間は延期の JSON で、Run／Attempt／cursor の数が不変・lifecycle は Ready、窓の終わりで同じ呼出しの中で入る、天井で進む、shutdown の停止で `null`、評価と publish の間に開こうとした窓が publish の後まで待つ（publish の後の ack を見る） |
+| `electron/main/narrativeFreshness.test.ts` | 延期の結果の後は 10 ms で再予約し idle poll に戻らない、observation に `deferred` の key が出ず digest は null、延期をまたぐ wake と quiesce |
+
+**落ちることを確かめた変異**（1 つずつ入れて対象の試験を走らせ、元の bytes に戻して sha256 を照合し、touch した。script は scratch の `gateimpl/mut/run.py`）
+
+| 変異 | 落ちた試験 |
+|---|---|
+| M1 Freshness の入場で lease を見ない | 全列挙、`a_live_window_defers_…`、`freshness_is_deferred_before_any_work_…`（実 DB） |
+| M2 lease の Drop が放さない | 全列挙、`a_held_query_opens_its_window_…`、`a_window_that_ends_wakes_…` |
+| M3 Freshness の待ちの上限（250 ms）を外す | `a_live_window_defers_…`、`freshness_is_deferred_…` |
+| M4 予算を超えても lease を取る（X 案の形） | `past_its_budget_…`（gate と owner の 2 件） |
+| M5 延期の印を立てない | `a_live_window_defers_…`、`the_graph_waits_out_freshnesss_turn_…`、`freshness_retrying_in_its_turn_…` |
+| M6 印の間も Freshness が Graph の待ちに譲る | `a_waiting_graph_holds_new_sections_back_…`、`freshness_retrying_in_its_turn_…` |
+| M7 窓を admit の後に開く | `a_held_query_opens_its_window_before_the_admission_…` |
+| M8 finish で決着した ticket の窓を放さない | `a_cancellation_during_the_admission_ends_the_window_it_raced` |
+| M9 cache へ移すときに窓を落とす | `an_unused_answer_carries_its_window_through_the_cache_to_the_child` |
+| M10 edge で lease を無効にしない | `a_shutdown_and_an_edge_end_every_window` |
+| M11 区間を cycle の前に閉じる | `a_graph_window_waits_for_the_cycle_in_flight_to_publish`（実 DB） |
+| M12 合流の後に Cached の窓を放さない | `a_cache_hit_keeps_its_window_until_the_join_or_a_declaration_ends_it` |
+| M13 `attach_window` が決着済みの ticket にも窓を残す | `a_window_attached_to_a_ticket_settled_meanwhile_ends_at_once`（実装の後の advisor の指摘で足した試験） |
+| MT（TS）延期の結果では再予約を早めない | `retries a cycle deferred by the Graph window gate after the backlog delay` |
+
+**実行した検証**
+
+| コマンド | 結果 |
+|---|---|
+| `heavy.sh cargo test --manifest-path electron/native/grimodex-node/Cargo.toml --features licensing,legacy-keyring-migration --lib` | 758 passed、0 failed、7 ignored（変異の前。rustfmt の整形の前の bytes）。最終の内容での再実行は下の行 |
+| 同 `-- nir1_graph related_scenes freshness`（変異の復元の後） | 248 passed、0 failed、5 ignored |
+| 同（全体。最終の内容＝M13 の試験を足した後、変異の復元の後） | 759 passed、0 failed、7 ignored |
+| `heavy.sh cargo check … --features licensing,legacy-keyring-migration,nir1-graph-eval --lib --tests` | 通った（eval の build を壊していない） |
+| `heavy.sh cargo clippy … --all-targets --features licensing,legacy-keyring-migration -- -D warnings` | この lane の file に警告なし。**既存の 1 件**（`nir1_local_entry_tests.rs:136` の `clippy::nonminimal_bool`。rust 1.96 の lint。この lane は触っていない）で exit 101 |
+| `rustfmt --check`（変更した file） | 新しい差分なし（基点の既存の差分は触っていない。`nir1_graph_product.rs` は基点の 15 か所が 13 か所に減った＝書き直した行の分） |
+| `pnpm exec vitest run --config vitest.electron.config.ts electron/main/narrativeFreshness.test.ts`（と CI seam の試験） | 17 passed（2 file で 47 passed） |
+| `pnpm exec tsc -p electron/tsconfig.json --noEmit`、eslint、prettier（変更した TS） | 通った（prettier は基点の既存の 1 行を直さずに残した） |
+| `pnpm eval:fixtures` | errors 0 |
+| `node --test scripts/quality/nir1-graph/observation-prep.test.mjs` | 82 passed |
+| `node scripts/quality/nir1-graph-eval/native-architecture.mjs` | `native architecture ok`（eval の hook を入れていない） |
+
+**未検証・残る risk**
+
+- 実 Electron と診断の枝の dev run（効果の確認：欠落 11 → 0〜2 の見込み、`deferred`／`graph_wait_expired`／`overridden` の数）はしていない。gate の観測は診断の枝で後から足す（GATE-8）。
+- T_late への影響（Graph の 100 ms の待ちが当たった回）は未測定（9.1）。
+- 守るのは同じ process の Freshness の commit だけ。保存、Chronicle の build、別の begin の audit、maintenance、MCP の別 process、D-final の経路の窓は対象外（F10 の一般形は残る）。
+- 拡張案 X+（publish の前の checkpoint）は採っていない。区間の in-flight で Graph が 100 ms を超えて待つ回は、今と同じ drift に戻る。
+
+### 9.6. 独立 review（Opus、read-only。P1 なし）への対応と訂正（2026-11-02。9.1〜9.5 の本文は直さない）
+
+| 指摘 | 対応 | commit |
+|---|---|---|
+| P2-1 天井の起点 `blocked_since` と番 `turn_until` が、`Stopped` の戻りと `invalidate_all` で残る（切替・edge の後の最初の Freshness が古い起点から即 `Overridden` になり、新しい窓に予約・publish が入りうる） | 直した。`Stopped` の分岐と `invalidate_all` で両方を消す（`GateCore::end_streak`）。`Deferred` の後に起点を残すのは設計どおり（累計の天井）で変えない。手動の時計の試験 2 件（停止、edge）を足し、直す前に内部の状態と挙動（`overridden`）の両方で落ちること、直した後に通ることを確かめた。変異 M14（停止で消さない）と M15（edge で消さない）で落ちる | `cc69cb7c` |
+| P2-2 実 DB の天井の試験（admit 10 ms／ceiling 60 ms）は、負荷で最初の起床が 60 ms を超えると延期 0 回で落ちる | 直した。ceiling 500 ms（admit 10 ms のまま、上限 1,000 回）。実時計に頼る下限の assert をほかに見直し、閉じた製品の試験の 50 ms の assert（P3-5）を直した。ほかの実 DB／owner の試験は長い上限（admit 20 s など）か、上限そのものを待つ形で、下限に頼らない | `9d923ce3` |
+| P3-3 全列挙の試験の共存の免除が sticky | 直した。免除は「live の section に override のものがある間」だけにした。あわせて、天井 300 ms にして override に 4 操作以内で届くようにした（前の形では 4 操作で override に届かず、免除の分岐が未検査だった）。変異 M17（免除しない）で落ちる | `9d923ce3` |
+| P3-4 9.5 の 2 番「restore の cycle が重なりうる」は不正確 | **訂正**：製品で body を呼ぶのは supervised（`run_narrative_freshness_cycle_supervised`）だけで、`run_narrative_freshness_cycle_inner` と restore の試験の呼出しは `cfg(test)` の中。区間を数で持つ理由は「再入に強い（将来 2 本目の呼出し元ができても区間を取りこぼさない）」にとどめる | この docs の commit |
+| P3-5 `include_str!` の source の順序の試験、実時間 50 ms の assert | 50 ms の assert は「待たなかったこと」（`freshness_blocked_for_test` が false、counter が既定値）の検査に替えた。source の順序の試験は、`await_request` に挙動で届く試験が無い（operation の registry と IR operation が要る）ので理由を書いて残した。`release_window` 自体は挙動の試験がある。整形が変われば `find` が失敗して落ちる（黙って通らない） | `9d923ce3` |
+| P3-6 `window_settled` の `(Some, Some(Unused))` の腕を消しても落ちる試験が無い | 試験を足した：cache に入れられない（lifecycle の epoch が動いた）unused の答えが、答え→宣言、宣言→答えのどちらの順でも窓を放す。変異 M16（腕を消す）で落ちる | `9d923ce3` |
+| P3-7 不活性でも cycle ごとに `spawn_blocking` が 1 回増える | 変更しない。**既知・許容**：戻り値と挙動は同じで、cycle ごとに数 µs の blocking pool の 1 回 | — |
+
+**9.3 の不変条件 (1) の訂正**：「区間は高々 1 つ」は、コードでは区間を数（`sections: u32`）で持つ。製品の呼出し元は supervised だけで、TS の scheduler は直列なので実際には高々 1 だが、gate は 2 本以上でも正しく数える（Graph は数が 0 のときだけ窓を開く）。
+
+**検証（この節の直しの後）**：`heavy.sh cargo test … --lib`（全体）、gate 関係の試験、`cargo check --features …,nir1-graph-eval --lib --tests`（通過）、`cargo clippy --all-targets … -- -D warnings -A clippy::nonminimal_bool`（警告なし。`nonminimal_bool` は既存の `nir1_local_entry_tests.rs:136` の rust 1.96 の lint で、master の CI は成功。この lane は触らない）、`rustfmt --check`（新しい差分なし）、`native-architecture.mjs`（ok）、`narrativeFreshness.test.ts`（17 passed）。全体は 762 passed、0 failed、7 ignored（`9d923ce3` の内容）。
+
+**hosted の canonical Quick（PR #777、head `59c5415e`）の flake への対応（2026-11-03）**
+
+- 事実：`nir1_graph_product::tests::gate::an_owner_panic_ends_the_window_of_its_query` が `left: (1, 0)` で 1 回落ちた（同じ head の ci.yml の Electron native job は成功）。原因は試験の前提で、製品の欠陥ではない。owner thread の `deliver`（panic の unwind の `SessionGuard` を含む）は、結果を設定して通知した**後に**、ticket の lock の外で窓を Drop する（GATE-6 の設計どおり）。別 thread の試験が結果を見た直後に窓の数を読むと、Drop より先に読める。製品では窓が数 µs 遅れて終わるだけ（期限 500 ms・天井もある）。
+- 方針（integrator）：製品の順序は変えず、試験を直す。
+- 掃いた結果：「別 thread が結果を見て、すぐ lease・区間・待ちの数を assert する」箇所で、**数が減る向き**を見ていたのは次の 2 つだけで、どちらも `wait_until(.. live == (0, 0))` に替えた。`an_unavailable_answer_and_a_cancellation_end_the_window`（owner の `deliver(Unavailable)`）と `an_owner_panic_ends_the_window_of_its_query`（unwind の `deliver(Failed)`）。
+- 直さない箇所（どれも競合しない）：
+  - 窓が**残っている**ことの assert（`(1, 0)` など）は、窓が結果より前（admit の前）に付き、結果の後に放す者がいないので競合しない。
+  - この thread 自身が `finish`／`drop(ticket)`／`declare`／edge／`close_for_shutdown`／cache の破棄を呼んだ直後の assert は同期に放される。
+  - cache への移しは、lease が局所の変数を経て `store_late_cache` に入る間も gate から消えないので、`cache_len == 1` の後の `live == 1` は競合しない。
+  - counter（`windows_opened`、`graph_waited`、`graph_wait_expired`）は、窓が開く前に加算されるか、`join` の後に読む。
+  - gate の単体試験は 1 thread（手動の時計）。system clock の試験は `join` の後に読む。
+  - 実 DB の試験は await／`join` の後に counter だけを読む。`related_scenes/graph_tests.rs` の窓の試験は、この thread の `declare`／`release_window`／`start` だけで数を動かす。
+- 再現と確認：同じ test binary を `taskset -c 0`（1 CPU）、`--test-threads=16` で回した。直す前は `nir1_graph_product::tests::gate` を 100 回回して 25 回落ちた（owner の panic 13、unavailable 12。ほかの試験は 0）。直した後は filter `gate`（gate の単体、owner の gate、名に gate を含むほかの試験の 60 件）を 100 回回して 0 回。

@@ -646,8 +646,8 @@ fn late_unused_result_fills_the_single_entry_cache_and_notifies() {
     });
     assert_eq!(lock(&notices).clone(), vec![PROJECT.to_string()]);
     match fixture.begin("entity") {
-        GraphBegin::Cached(projection) => {
-            assert_eq!(projection.graph.seed_entity_id, "entity");
+        GraphBegin::Cached(cached) => {
+            assert_eq!(cached.graph.seed_entity_id, "entity");
         }
         _ => panic!("the late result must be served once from the cache"),
     }
@@ -1324,6 +1324,7 @@ fn cache_entry_is_usable_only_before_ttl_with_the_same_epochs() {
         })),
         stored_at,
         edge_epoch: 7,
+        window: None,
     };
     assert!(cache_entry_usable(
         &entry,
@@ -2394,3 +2395,7 @@ fn a_lifecycle_edge_moves_the_ready_signal_and_the_edge_epoch() {
 /// CQ-DEFER: the held Related Scenes query (`begin_deferred`).
 #[path = "nir1_graph_deferred_tests.rs"]
 mod deferred;
+
+/// LP-GATE: the Graph window gate on the held query's path.
+#[path = "nir1_graph_gate_tests.rs"]
+mod gate;

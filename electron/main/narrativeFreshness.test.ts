@@ -376,6 +376,99 @@ describe("createNarrativeFreshnessScheduler", () => {
     expect(warn).toHaveBeenCalledOnce();
   });
 
+  // LP-GATE (DR-CQD-GATE-7): Native defers a cycle while a Graph window is
+  // open and answers with the requeue's shape. The scheduler must retry after
+  // its backlog delay, never fall back to the idle poll, and never treat the
+  // deferral as quiescence.
+  it("retries a cycle deferred by the Graph window gate after the backlog delay", async () => {
+    const deferredCycle = JSON.stringify({
+      hasMore: true,
+      noWrite: true,
+      deferred: "graph-window",
+    });
+    const idle = JSON.stringify({
+      hasMore: false,
+      noWrite: true,
+      quiescenceState: { stateDigest: "digest" },
+    });
+    const runNarrativeFreshnessCycle = vi
+      .fn()
+      .mockResolvedValueOnce(deferredCycle)
+      .mockResolvedValueOnce(deferredCycle)
+      .mockResolvedValue(idle);
+    const onCycleCompleted = vi.fn();
+    const { scheduler, warn } = createScheduler(
+      { runNarrativeFreshnessCycle },
+      vi.fn(),
+      { onCycleCompleted },
+    );
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+    expect(onCycleCompleted).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        hasMore: true,
+        noWrite: true,
+        heldProjectId: null,
+        cutoverNotReady: false,
+        timerScheduled: true,
+        nextCycleGuardStateDigest: null,
+      }),
+    );
+    expect(
+      Object.keys(onCycleCompleted.mock.lastCall?.[0] ?? {}),
+    ).not.toContain("deferred");
+    expect(scheduler.getQuiescenceState?.()).toMatchObject({
+      hasMore: true,
+      timerScheduled: true,
+      nextCycleGuardStateDigest: null,
+    });
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS - 1);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(3);
+    expect(scheduler.getQuiescenceState?.()).toMatchObject({
+      hasMore: false,
+      nextCycleGuardStateDigest: "digest",
+    });
+    // Back to the idle poll only after a real idle result.
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS - 1);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(4);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("keeps a wake and a workspace quiesce across a deferred cycle", async () => {
+    const first = deferred<string | null>();
+    const deferredCycle = JSON.stringify({
+      hasMore: true,
+      noWrite: true,
+      deferred: "graph-window",
+    });
+    const runNarrativeFreshnessCycle = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValue(null);
+    const { scheduler } = createScheduler({ runNarrativeFreshnessCycle });
+    scheduler.start();
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS);
+    scheduler.handleBackendEvent("related-scenes:invalidated", {
+      queryBinding: "query-1",
+    });
+    const quiesce = scheduler.quiesceForWorkspaceSwitch?.();
+    first.resolve(deferredCycle);
+    const lease = await quiesce;
+    await vi.advanceTimersByTimeAsync(IDLE_POLL_INTERVAL_MS * 2);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledOnce();
+    expect(scheduler.getQuiescenceState?.().wakePending).toBe(true);
+    await lease?.resume(true);
+    await vi.advanceTimersByTimeAsync(BACKLOG_DELAY_MS);
+    expect(runNarrativeFreshnessCycle).toHaveBeenCalledTimes(2);
+  });
+
   it("disposeはpending/in-flight完了後のcycleを抑止する", async () => {
     const first = deferred<string | null>();
     const runNarrativeFreshnessCycle = vi.fn().mockReturnValue(first.promise);
