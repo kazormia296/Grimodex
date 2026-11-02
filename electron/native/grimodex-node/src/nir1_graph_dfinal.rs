@@ -37,7 +37,8 @@ use grimodex_db::{
 
 use crate::{
     nir1_graph_product::{
-        GraphBegin, GraphQuery, GraphTicket, GraphTicketOutcome, GraphTicketUse, GraphUnavailable,
+        CachedGraph, GraphBegin, GraphQuery, GraphTicket, GraphTicketOutcome, GraphTicketUse,
+        GraphUnavailable,
     },
     state::AppState,
 };
@@ -322,7 +323,11 @@ pub(crate) fn request_graph(
         // Read before `begin`, so a READY that lands in between is not lost.
         let signal = owner.ready_signal_generation();
         let wait_kind = match owner.begin(context.state, query.clone()) {
-            GraphBegin::Cached(projection) => {
+            GraphBegin::Cached(cached) => {
+                // D-final opens no Graph window (DR-CQD-GATE-3): one that came
+                // with a held query's cached answer ends here.
+                let CachedGraph { projection, window } = cached;
+                drop(window);
                 return reached(Nir1GraphCandidates::from_projection(&projection));
             }
             GraphBegin::Pending(ticket) => {

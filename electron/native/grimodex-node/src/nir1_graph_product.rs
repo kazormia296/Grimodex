@@ -49,6 +49,7 @@ use grimodex_db::{
     },
 };
 
+use crate::nir1_graph_commit_gate::{GateCounters, GraphCommitGate, WindowLease};
 use crate::nir1_graph_dfinal::GraphWaitPlan;
 use crate::state::AppState;
 
@@ -185,8 +186,24 @@ pub(crate) enum GraphBegin {
     Pending(GraphTicket),
     /// The single-entry next-query cache hit. The caller must re-verify it
     /// through DSN §2.3 before use; the cache is never authority.
-    Cached(Arc<Nir1GraphProjection>),
+    Cached(CachedGraph),
     Unavailable(GraphUnavailable),
+}
+
+/// LP-GATE (DR-CQD-GATE-6): a cache hit, with the Graph window its answer was
+/// made in, if that window is still open. The window travels to the join that
+/// re-verifies the projection and ends there (or wherever this is dropped).
+pub(crate) struct CachedGraph {
+    pub(crate) projection: Arc<Nir1GraphProjection>,
+    pub(crate) window: Option<WindowLease>,
+}
+
+impl std::ops::Deref for CachedGraph {
+    type Target = Nir1GraphProjection;
+
+    fn deref(&self) -> &Nir1GraphProjection {
+        &self.projection
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -422,6 +439,8 @@ pub(crate) struct GraphOwnerDiagnostics {
     /// CQ-DEFER: READY workers retired unqueried because they were prepared
     /// before the begin's own commits.
     pub(crate) stale_ready_retired: u64,
+    /// LP-GATE: the Graph window gate's counters (DR-CQD-GATE-8).
+    pub(crate) gate: GateCounters,
 }
 
 #[derive(Debug, Default)]
@@ -492,6 +511,9 @@ struct Shared {
     /// CQ-DEFER: `DEFERRED_RELEASE_LIMIT` in production; a test installs a
     /// shorter one. A leaf lock, read before the slot is taken.
     deferred_limit: Mutex<Duration>,
+    /// LP-GATE (DR-CQD-GATE-1): the Graph window gate the Freshness cycle
+    /// enters. Its mutex is a leaf.
+    commit_gate: Arc<GraphCommitGate>,
     diagnostics: DiagnosticCounters,
     #[cfg(test)]
     publication_open_for_test: AtomicBool,
@@ -531,6 +553,7 @@ impl Shared {
             config: Mutex::new(GraphOwnerConfig::default()),
             dfinal_wait: Mutex::new(GraphWaitPlan::default()),
             deferred_limit: Mutex::new(DEFERRED_RELEASE_LIMIT),
+            commit_gate: GraphCommitGate::new(),
             diagnostics: DiagnosticCounters::default(),
             #[cfg(test)]
             publication_open_for_test: AtomicBool::new(false),
@@ -614,7 +637,7 @@ impl Shared {
         edge_epoch: u64,
         now: Instant,
         ttl: Duration,
-    ) -> Option<Arc<Nir1GraphProjection>> {
+    ) -> Option<CachedGraph> {
         let mut cache = lock(&self.cache);
         if self.quarantined.load(Ordering::SeqCst) {
             *cache = None;
@@ -622,9 +645,11 @@ impl Shared {
         }
         match cache.as_ref() {
             Some(entry) if cache_entry_usable(entry, key, edge_epoch, now, ttl) => {
-                let projection = Arc::clone(&entry.projection);
-                *cache = None;
-                Some(projection)
+                let entry = cache.take()?;
+                Some(CachedGraph {
+                    projection: entry.projection,
+                    window: entry.window,
+                })
             }
             Some(_) => {
                 *cache = None;
@@ -634,7 +659,15 @@ impl Shared {
         }
     }
 
-    fn store_late_cache(&self, key: &CacheKey, edge_epoch: u64, projection: Arc<Nir1GraphProjection>) {
+    /// `window` is the Graph window the projection was made in (LP-GATE): it
+    /// stays open while the entry waits for its join, and ends with the entry.
+    fn store_late_cache(
+        &self,
+        key: &CacheKey,
+        edge_epoch: u64,
+        projection: Arc<Nir1GraphProjection>,
+        window: Option<WindowLease>,
+    ) {
         {
             let mut cache = lock(&self.cache);
             if self.quarantined.load(Ordering::SeqCst) {
@@ -645,6 +678,7 @@ impl Shared {
                 projection,
                 stored_at: Instant::now(),
                 edge_epoch,
+                window,
             });
         }
         bump(&self.diagnostics.late_cached);
@@ -665,6 +699,8 @@ impl Shared {
     fn close(&self) {
         self.closed.store(true, Ordering::SeqCst);
         self.edge_epoch.fetch_add(1, Ordering::SeqCst);
+        // LP-GATE: no window outlives the owner; a waiting Freshness wakes.
+        self.commit_gate.invalidate_all(true);
         {
             let mut slot = lock(&self.slot);
             if let Some(session) = slot.session.as_ref() {
@@ -739,6 +775,8 @@ struct CacheEntry {
     projection: Arc<Nir1GraphProjection>,
     stored_at: Instant,
     edge_epoch: u64,
+    /// LP-GATE: the window the projection was made in, until its join.
+    window: Option<WindowLease>,
 }
 
 struct SlotState {
@@ -885,6 +923,32 @@ struct TicketShared {
 struct TicketState {
     outcome: Option<(GraphTicketOutcome, Instant)>,
     disposition: Option<GraphTicketUse>,
+    /// LP-GATE (DR-CQD-GATE-6): the Graph window of a held query, from the
+    /// owner's prepare until the answer is joined, cached or discarded. A
+    /// settled ticket never holds one.
+    window: Option<WindowLease>,
+}
+
+impl TicketState {
+    /// True once nothing of this ticket can still be joined or cached: an
+    /// unavailable outcome, a used or cancelled declaration, or an unused one
+    /// with its outcome in. Its window, if any, must end.
+    fn window_settled(&self) -> bool {
+        matches!(
+            (&self.outcome, self.disposition),
+            (Some((GraphTicketOutcome::Unavailable(_), _)), _)
+                | (_, Some(GraphTicketUse::Cancelled | GraphTicketUse::Used))
+                | (Some(_), Some(GraphTicketUse::Unused))
+        )
+    }
+
+    fn take_settled_window(&mut self) -> Option<WindowLease> {
+        if self.window_settled() {
+            self.window.take()
+        } else {
+            None
+        }
+    }
 }
 
 impl TicketShared {
@@ -893,6 +957,7 @@ impl TicketShared {
             state: Mutex::new(TicketState {
                 outcome: None,
                 disposition: None,
+                window: None,
             }),
             resolved: Condvar::new(),
             cancel: AtomicBool::new(false),
@@ -916,14 +981,19 @@ impl TicketShared {
     /// the single-entry cache and fires the notifier once.
     fn deliver(&self, outcome: GraphTicketOutcome) {
         let mut candidate = None;
+        let ended;
         {
             let mut state = lock(&self.state);
             if state.outcome.is_some() {
+                // Settled already: a window that is still here ends now.
+                let ended = state.take_settled_window();
+                drop(state);
+                drop(ended);
                 return;
             }
             if let GraphTicketOutcome::Available(projection) = &outcome {
                 if state.disposition == Some(GraphTicketUse::Unused) && self.cacheable() {
-                    candidate = Some(Arc::clone(projection));
+                    candidate = Some((Arc::clone(projection), state.window.take()));
                 }
             }
             // A stale or busy answer leaves the demand unserved, exactly as a
@@ -935,19 +1005,42 @@ impl TicketShared {
                 self.owner.mark_unserved(&self.cache_key.project_id);
             }
             state.outcome = Some((outcome, Instant::now()));
+            ended = state.take_settled_window();
         }
         self.resolved.notify_all();
-        if let Some(projection) = candidate {
+        drop(ended);
+        if let Some((projection, window)) = candidate {
             self.owner
-                .store_late_cache(&self.cache_key, self.edge_epoch, projection);
+                .store_late_cache(&self.cache_key, self.edge_epoch, projection, window);
         }
+    }
+
+    /// LP-GATE: keeps the held query's Graph window on this ticket, or ends
+    /// it at once when the ticket is settled already (a cancellation that
+    /// raced the window's opening).
+    fn attach_window(&self, window: WindowLease) {
+        let ended = {
+            let mut state = lock(&self.state);
+            if state.window_settled() {
+                Some(window)
+            } else {
+                state.window = Some(window);
+                None
+            }
+        };
+        drop(ended);
     }
 
     fn finish(&self, use_: GraphTicketUse) {
         let mut candidate = None;
+        let ended;
         {
             let mut state = lock(&self.state);
             if state.disposition.is_some() {
+                // Settled already: a window that is still here ends now.
+                let ended = state.take_settled_window();
+                drop(state);
+                drop(ended);
                 return;
             }
             state.disposition = Some(use_);
@@ -960,19 +1053,25 @@ impl TicketShared {
                     ));
                 }
                 GraphTicketUse::Unused => {
-                    if let Some((GraphTicketOutcome::Available(projection), _)) = &state.outcome {
-                        if self.cacheable() {
-                            candidate = Some(Arc::clone(projection));
+                    let projection = match &state.outcome {
+                        Some((GraphTicketOutcome::Available(projection), _)) => {
+                            Some(Arc::clone(projection))
                         }
+                        _ => None,
+                    };
+                    if let Some(projection) = projection.filter(|_| self.cacheable()) {
+                        candidate = Some((projection, state.window.take()));
                     }
                 }
                 GraphTicketUse::Used => {}
             }
+            ended = state.take_settled_window();
         }
         self.resolved.notify_all();
-        if let Some(projection) = candidate {
+        drop(ended);
+        if let Some((projection, window)) = candidate {
             self.owner
-                .store_late_cache(&self.cache_key, self.edge_epoch, projection);
+                .store_late_cache(&self.cache_key, self.edge_epoch, projection, window);
         }
         // No lock of this ticket is held here: ticket -> slot is never nested.
         if self.deferred && use_ == GraphTicketUse::Cancelled {
@@ -1028,6 +1127,11 @@ impl WorkspaceLifecycleObserver for GraphEdgeObserver {
             // Transitions, unavailability and future edges retire by epoch only.
             _ => {}
         }
+        // LP-GATE: a window does not outlive its lifecycle epoch. The epoch
+        // moved above, so a window opened from here on is refused too.
+        self.shared
+            .commit_gate
+            .invalidate_all(self.shared.closed.load(Ordering::SeqCst));
         {
             let slot = lock(&self.shared.slot);
             if let Some(session) = slot.session.as_ref() {
@@ -1139,11 +1243,9 @@ impl Nir1GraphProductOwner {
             seed_entity_id: query.seed_entity_id.clone(),
         };
         let config = shared.config();
-        if let Some(projection) =
-            shared.take_usable_cache(&cache_key, epoch, now, config.cache_ttl)
-        {
+        if let Some(cached) = shared.take_usable_cache(&cache_key, epoch, now, config.cache_ttl) {
             bump(&shared.diagnostics.cache_hits);
-            return GraphBegin::Cached(projection);
+            return GraphBegin::Cached(cached);
         }
         let key = GraphKey {
             binding,
@@ -1222,6 +1324,12 @@ impl Nir1GraphProductOwner {
 
     pub(crate) fn is_closed(&self) -> bool {
         self.shared.closed.load(Ordering::SeqCst)
+    }
+
+    /// LP-GATE (DR-CQD-GATE-1): the gate the Freshness cycle enters before
+    /// any of its work.
+    pub(crate) fn commit_gate(&self) -> Arc<GraphCommitGate> {
+        Arc::clone(&self.shared.commit_gate)
     }
 
     /// CP-2b: called once, by the Backend constructor, with the path Main
@@ -1379,6 +1487,7 @@ impl Nir1GraphProductOwner {
             deferred_expired: read(&d.deferred_expired),
             deferred_dropped: read(&d.deferred_dropped),
             stale_ready_retired: read(&d.stale_ready_retired),
+            gate: self.shared.commit_gate.counters(),
         }
     }
 
@@ -2174,6 +2283,18 @@ fn build_worker(
         } else {
             GraphUnavailable::Invalidated
         });
+    }
+    // LP-GATE (DR-CQD-GATE-3, 4): a held query's window opens here, before the
+    // S0 stamp, once no Freshness cycle is in flight. The window then follows
+    // the answer to its join. Past the wait budget the query goes on without
+    // one, as before the gate; a cancellation or an edge is caught below.
+    if let Some(ticket) = held {
+        let window = shared.commit_gate.open_window(|| {
+            !ticket.cancel.load(Ordering::SeqCst) && !edge_or_closed(&shared, epoch)
+        });
+        if let Some(window) = window {
+            ticket.attach_window(window);
+        }
     }
     let Some((snapshot, core, stamp)) = admit(context, key, epoch) else {
         return Built::Exit(GraphUnavailable::Invalidated);
