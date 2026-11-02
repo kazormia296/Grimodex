@@ -1071,5 +1071,5 @@ DR-CP4-S6-1（S4b''・候補 `86427ee5`）の次の測定。S4b'''（`60bf9dc44a
 ### DR-CP4-LPD-1 の追記（2026-11-03。上の行の本文は直さない）
 
 - 診断の枝 `claude/cp4-lp-diag` は、gate（`claude/cp4-lp-gate` の `59c5415e`。PR #777、DR-CQD-GATE-1〜10）を `b828fa26` で取り込み、`2e1c8815` で gate の counter（`GraphOwnerDiagnostics.gate`）と held query の窓の有無を `lpd` に出すようにした（schema `nir1-lpd-diag/2`。`nir1-graph-eval` の下だけ。gate の file は読むだけ）。
-- 第 3 回（run `lpd-diag-3`）の記録は contracts の `docs/plans/nir1-cp4-records/diag-lpd-2026-11-02/README.md` の「第 3 回」（`f273a83c`）。設計への反映は `nir1-cp4-lapse-lane-design-draft.md` の改訂 2（§3.4）。
+- 第 3 回（run `lpd-diag-3`）と第 4・5 回（同じ build）の記録は contracts の `docs/plans/nir1-cp4-records/diag-lpd-2026-11-02/README.md` の「第 3 回」（`f273a83c`）と「第 4・5 回」（`83dc4e3d`）。設計への反映は `nir1-cp4-lapse-lane-design-draft.md` の改訂 2（§3.4）。
 - 規則 (1)〜(6)（dev 専用・merge しない・push しない・正式の測定に数えず集計・閾値の選択に使わない・正式の候補は master に merge した直しだけから作る）は変わらない。(6) の取込みに gate が加わっただけ。

@@ -35,7 +35,7 @@
 
 3. **原因は 1 つの上流に絞れた**（dev の診断 2 回と時刻の突き合わせ）：欠落 22/22 件（第 1・2 回の 11＋11）で、Graph の窓（登録・query・child の合流の token）に incremental Freshness の cycle の commit（予約か publish）が重なっていた。直接の計装ではなく、時刻の写像（±5 ms）による状況証拠。
 4. そこで **LP-B／LP-S／LP-C の個別の直しは採らず、共通の gate（LP-GATE）で扱う**ことになった（ユーザーの確認 `b14a92d6`）。gate は、Graph の窓の間、Freshness の cycle を native の lease で待たせ、上限で延期する。契約・IPC・閾値・Gold・読みは変えない。PR #777（**OPEN**、head `e7d6fe4a`、merge は `fd764de5` の条件つきで許可済み）。個別案の評価は §3.1〜3.3 に「なぜ採らなかったか」として残す。
-5. **dev の第 3 回**（gate を取り込んだ dev build、N=1、dev 専用・**CP-4 の結果ではない**）で、表示の欠落は 11/201 → **0/201**。ただし 1 回の dev の結果で、正式の候補での割合は再測定まで分からない。**第 4・5 回は未了**。
+5. **dev の第 3〜5 回**（gate を取り込んだ同じ dev build で 3 回、dev 専用・**CP-4 の結果ではない**）で、表示の欠落は 11/201（第 1・2 回の各回、5.5%）→ **0／1／0 /201（3 回で 1/603＝0.17%）**。1 件は第 4 回の child の合流の無効化で、gate の設計に書いた『残る隙間』の 1 番（Graph の待ちが上限 100 ms で尽きて窓なしで進み、`freshness-token` が動いた。§3.5）。603 件から言える本当の割合の 95% 上限は約 0.8%（片側。両側なら約 0.9%。おおよその見積もり）で、物差し 1% を下回るが余裕は小さい。dev の結果で、正式の候補での割合は再測定まで分からない。
 6. **残る隙間**がある（§3.5）：窓を開くときに Freshness の区間が in-flight で 100 ms を超える場合、child の合流が lease の期限 500 ms を超える場合、Freshness 以外の commit（保存・audit・D-final など。F10 の一般形）。stale と #139 は dev で 0 だったが、正式の測定では未確認。
 7. **正式の再測定はしていない。** 再測定の実行、S4 の扱い、候補単位の S6 の許可リスト、Gold の後退の危険、N2／N4 の扱いは、手順案を示してユーザーに確認する（§4、§6）。緩和（失効の読みの変更など）は採らない。列挙は §5。
 
@@ -195,18 +195,32 @@
   gate の counter（run 全体の累計）：`windowsOpened` 201、`graphWaited` 8、`graphWaitExpired` 0、`waitedAdmit` 13、`deferred` 0、`overridden` 0、`stopped` 0、`leaseExpired` 0。窓の outcome は `gate-opened` 193、`gate-opened-after-wait` 8。
 
 - 第 3 回の副作用（README の数値）：ticket の発行から settle までの p50 は 33.2／33.3／33.5 ms（第 1／2／3 回）で変わらない。150 ms 超の件数は 7／6／4。この遅い群（ticket の発行から prepare の開始まで約 140〜390 ms）は **gate の前の第 1・2 回にもあった**。ただし **max は 322.5 ms（第 2 回）→ 414.6 ms（第 3 回）に伸びた**。第 3 回の遅い 4 件はすべて `gate-opened-after-wait` で、Graph の待ち（上限 100 ms）が足された分と読める（推論）。遅い群の原因は未調査。窓の長さ（lease を持っていた時間）は p50 0.0 ms、p99 9.9 ms、max 48.0 ms。
-- 読み方：前の 2 回の割合（約 5.5%）が続くと仮定すると、201 件で 0 件の確率は約 1e-5 で、偶然とは読みにくい（README）。一方、1 回の 0/201 から言える本当の割合の 95% 上限は約 1.5%（3/201。おおよその見積もり。`02a8555a` の「提示した事実」）で、物差し 1% より上を排除できない。**『0 件だから解決した』『正式な測定で通る』とは言えない。** 第 4・5 回（同じ build でもう 2 回）は**未了**。
+- 読み方（第 3 回の時点）：前の 2 回の割合（約 5.5%）が続くと仮定すると、201 件で 0 件の確率は約 1e-5 で、偶然とは読みにくい（README）。一方、1 回の 0/201 から言える本当の割合の 95% 上限は約 1.5%（3/201）で、物差し 1% より上を排除できなかった。そこで同じ build でもう 2 回回した（下）。
+
+**第 4・5 回（同じ build。README の第 4・5 回、contracts `83dc4e3d`）**：
+
+  | 区分 | 第 3 回 | 第 4 回 | 第 5 回 | gate の 3 回 | （参考）gate なしの第 1・2 回 |
+  |---|---|---|---|---|---|
+  | 親の ticket の失敗 | 0 | 0 | 0 | 0 | 6 |
+  | child の合流の無効化 | 0 | **1** | 0 | **1** | 16 |
+  | 表示されなかった合計 | 0 | **1** | 0 | **1／603（0.17%）** | 22／402（5.47%） |
+
+  - gate の counter：第 4 回は `graphWaited` 5、**`graphWaitExpired` 1**、**`leaseExpired` 2**、`waitedAdmit` 10。第 5 回は `graphWaited` 2、`waitedAdmit` 7、そのほかは 0。`deferred`／`overridden`／`stopped` は 3 回とも 0。
+  - **第 4 回の 1 件（ticket seq 385）**：Graph の待ちが 100 ms で尽きて（`gate-wait-expired`）窓なしで進み、child の合流が `tokenMismatch = ["freshness-token"]` だけで `edge-holds-false`（feed の head＝ack＝212。第 2 回の child の 8 件と同じ形）。窓を開く時点で Freshness の区間が in-flight で、残りが 100 ms を超えた回があった、と読める【推論】。これは §3.5 の 1 番で、T_late を守るために待ちを 100 ms に切った設計の**予定された代償**。
+  - **`leaseExpired` 2（第 4 回 seq 27・93）**：child の合流の開始が settle の約 836 ms／749 ms 後で lease の期限 500 ms を超えた（§3.5 の 2 番）。2 件とも合流は成功した。
+  - ticket の settle の p50 は 33.5／33.1／33.4 ms（第 3／4／5 回）で変わらない。150 ms 超の遅い群は第 5 回に 4 件あり、**4 件とも gate の待ちを伴わない**。遅い群は gate の待ちだけでは説明できない（原因は未調査）。
+  - 603 件から言える本当の割合の 95% 上限は約 0.8%（片側。Clopper–Pearson。おおよその見積もり）。**『解決した』『正式な測定で通る』とは言えない**（dev fixture、計装の入った build、3 回）。
 
 ### 3.5 残る隙間（改訂 2 で追加）
 
 gate が覆わない、または dev の第 3 回で起きなかっただけのもの。
 
-1. **窓を開くときに Freshness の区間が in-flight で、残りが 100 ms を超える場合**：Graph は窓なしで進み、今と同じく drift しうる（閉じる側。誤表示にはならない）。第 3 回は `graphWaitExpired` 0 で起きなかった。拡張案 X+（publish の前の checkpoint）は採っていない（GATE-2 の代替案）。
-2. **child の合流が lease の期限 500 ms を超える場合**：lease は数えられなくなり、Freshness が入りうる。第 3 回は `leaseExpired` 0。
+1. **窓を開くときに Freshness の区間が in-flight で、残りが 100 ms を超える場合**：Graph は窓なしで進み、今と同じく drift しうる（閉じる側。誤表示にはならない）。**第 3・5 回は `graphWaitExpired` 0 だったが、第 4 回で 1 回起きた**（ticket seq 385。child の合流が `freshness-token` の不一致で無効化され、表示の欠落 1 件。603 件中 1 件）。拡張案 X+（publish の前の checkpoint）は採っていない（GATE-2 の代替案）。
+2. **child の合流が lease の期限 500 ms を超える場合**：lease は数えられなくなり、Freshness が入りうる。第 3・5 回は `leaseExpired` 0、第 4 回は 2（合流の開始が settle の約 836 ms／749 ms 後。2 件とも合流は成功）。
 3. **Freshness 以外の commit**（保存、Chronicle の build、別の begin の audit、maintenance、MCP の別 process、D-final の経路の窓）：gate は同じ process の Freshness の commit だけを守る。F10 の一般形は残る（§9.5 の「未検証・残る risk」）。
-4. **天井（1 s）で Freshness が lease を無視して進んだ回**：その窓は今と同じく drift しうる。第 3 回は `overridden` 0。
+4. **天井（1 s）で Freshness が lease を無視して進んだ回**：その窓は今と同じく drift しうる。第 3〜5 回は `overridden` 0。
 5. **T_late への影響**：Graph の待ち（上限 100 ms）が当たった回は、親の `graph-ready` の通知がその分遅れる。頻度は 0.1% 未満と見込む（GATE の §9.1。推論）。正式の測定では未確認。
-6. **stale 4 と #139**：dev の第 3 回では 0（親の ticket 201/201 available、child の合流 201/201 available、`graph-ready` 201 の総数から導いた 0。#139 型の区分は README に無い）。正式の測定では未確認。
+6. **stale 4 と #139**：dev の第 3〜5 回では 0（第 3 回の導き方：親の ticket 201/201 available、child の合流 201/201 available、`graph-ready` 201 の総数から導いた 0。#139 型の区分は README に無い）。正式の測定では未確認。
 7. run ごとの揺れ、dev fixture と S4b''' の凍結 trace の違い、計装の入った build と正式の候補の bytes の違い（DR-CP4-LPD-1 の限界）。
 
 ## 4. 順序と手順
@@ -217,7 +231,7 @@ gate が覆わない、または dev の第 3 回で起きなかっただけの�
 2. **診断（LP-D）**：第 1〜3 回は済み（dev 専用の枝 `claude/cp4-lp-diag`。DR-CP4-LPD-1。台帳なし、正式の測定に数えない）。改訂 1 の計装の項目 (a)〜(d) のうち、(a) 登録の分岐と query の時点の drift、(b) `Invalidated` の出所は決まった（§3.0）。(c) Main の commit の時刻は DB の timestamp との突き合わせ（±5 ms）で補った。(d) 製品の `read_seal` と harness の startSeal の差は、登録の拒否が `inner = null`・`seal = null` の post-flight の drift だったので主因ではないと読む（推論）。
 3. **gate（LP-GATE）**：PR #777 を merge する（`fd764de5` の条件つきで許可済み。条件を満たさなければ merge せずに報告）。
 4. **master の Full**：gate の merge の後、master の canonical Full を回して結果を見る（`fd764de5` の読みの 3 で、通常の検証に含まれる）。
-5. **dev run の追加 2 回**（第 4・5 回。`02a8555a`）：同じ build で `lpd-diag-4`、`lpd-diag-5`。dev 専用・正式の測定に数えない。静かなマシンが要る。**未了**。
+5. **dev run の追加 2 回**（第 4・5 回。`02a8555a`）：済み。同じ build で `lpd-diag-4`、`lpd-diag-5`。dev 専用・正式の測定に数えない。結果は §3.4（603 件で欠落 1。第 4 回の 1 件は『残る隙間』の 1 番）。
 6. **正式な再測定の手順案をユーザーに出す**（`02a8555a` の 1：結果を報告した後に手順案を出す。**再測定の実行は含まれない**）。手順案に書くこと：
    - (a) 新しい候補（gate と LP-A1 を含む master）で ⑤ の全部（SP-P4、parity、Gold、N2〜N4、trace 2 本）をやり直す。Gold は同じ候補と S4 の parity を要求する。`22b74a25` の Gold（pool 270/270）は持ち越せず、**Gold が後退する危険**もある。
    - (b) S6 の許可リストは `s4Commit` だけで絞る。同じ S4b''' の下に `22b74a25` と新しい候補の受領書が並ぶので、run の前に**候補の単位の許可リスト**を DR に登録する（「旧新から選ばない」。DR-CP4-S4-7 の運用条件 (2)〜(4)）。
@@ -269,7 +283,7 @@ gate が覆わない、または dev の第 3 回で起きなかっただけの�
 
 **確かめられなかった点**：
 
-1. 第 3 回の 0/201 は **1 回の dev の結果**（dev fixture、計装の入った build）。run ごとの揺れは未測定。第 4・5 回は未了。
+1. 第 3〜5 回の合計 1/603 は **dev の 3 回の結果**（dev fixture、計装の入った build）。run ごとの揺れは 0／1／0 と小さく見えるが、正式の候補では未確認。
 2. 正式の候補（gate と LP-A1 を含む master）での表示の欠落の件数。正式の再測定はしていない。
 3. §3.5 の隙間（区間の in-flight が 100 ms を超える、合流が 500 ms を超える、Freshness 以外の commit、天井）が正式の測定で現れるか。
 4. stale 4 と #139 が正式の測定で 0 になるか。
@@ -297,4 +311,5 @@ gate が覆わない、または dev の第 3 回で起きなかっただけの�
 - §3：3.0（原因の確定）、3.4（LP-GATE）、3.5（残る隙間）を足した。3.1〜3.3 は改訂 1 の評価を残し、「診断の結果」と「なぜ採らなかったか」を足した（個別の直しは gate に統合）。
 - §4：現在地に合わせた（gate の merge → master の Full → dev run の追加 2 回 → 正式な再測定の手順案）。再測定の実行・S4・N2／N4・K6/4 の記録の取り直しはユーザーの確認が要る、と明記した。
 - §5：緩和の列挙に「dev の診断を正式の測定の代わりに数える」を足した。§6：確認済みと未確認を分けた。§7：事実・推論・未確認を分けて更新した。
+- 追補（診断 第 4・5 回の後）：§要点の 5、§3.4（第 4・5 回の表と読み）、§3.5（1 番が 1 回、2 番が 2 回起きた）、§4 の 5、§7 を、同じ build の 603 件（欠落 1）に更新した。第 4 回の 1 件は gate の設計に書いた『残る隙間』の 1 番で、設計の予定された代償。
 - 契約・閾値・Gold・読み・harness は変えていない。
