@@ -43,6 +43,12 @@ export interface Nir1RelatedScenesFetchOptions {
    * その合流にだけ Graph の窓 W_f を渡す（K6/4 の批准 12、DR-WF-3）。
    */
   readonly refreshTrigger?: "graph-ready";
+  /**
+   * LP-A1（DR-WF-9・10）：begin を送るかが決まった時点で、同じ task の中で同期に
+   * 呼ぶ。`true` は `beginRelatedScenes` を呼ぶ直前、`false` は begin を送らない
+   * 分岐（`rawOnly`、`listener-unavailable`）に入る時。IPC の引数には入らない。
+   */
+  readonly onBeginDecision?: (sendsBegin: boolean) => void;
 }
 
 export interface Nir1RelatedScenesFetchResult {
