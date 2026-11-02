@@ -153,6 +153,11 @@ impl GateCore {
         self.turn_until = None;
     }
 
+    fn end_streak(&mut self) {
+        self.blocked_since = None;
+        self.turn_until = None;
+    }
+
     fn end_section(&mut self) {
         self.sections = self.sections.saturating_sub(1);
     }
@@ -322,6 +327,11 @@ impl GraphCommitGate {
                 return FreshnessAdmission::Overridden(self.section());
             }
             if stop() {
+                // A stopped wait ends the streak (review P2-1): the next
+                // Freshness after a switch or a shutdown counts its ceiling
+                // and holds a turn afresh. A deferral keeps both (it is the
+                // streak the ceiling bounds).
+                core.end_streak();
                 drop(core);
                 bump(&self.counters.stopped);
                 return FreshnessAdmission::Stopped;
@@ -419,6 +429,9 @@ impl GraphCommitGate {
         {
             let mut core = self.lock();
             core.leases.clear();
+            // The windows Freshness was waiting for are gone: so is its streak
+            // and its turn (review P2-1).
+            core.end_streak();
             if close {
                 core.closed = true;
             }

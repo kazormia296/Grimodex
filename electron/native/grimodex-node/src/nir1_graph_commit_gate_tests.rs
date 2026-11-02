@@ -540,3 +540,43 @@ fn a_window_that_ends_wakes_a_waiting_freshness_on_the_system_clock() {
     );
     assert_eq!(gate.live_for_test(), (0, 0));
 }
+
+/// Review P2-1: a wait that ends without a section (a lifecycle stop, or an
+/// edge that drops every lease) ends the ceiling's streak. Otherwise the first
+/// Freshness call after a workspace switch would count from the old start and
+/// be overridden into the first new window.
+#[test]
+fn a_stop_ends_the_ceilings_streak_and_the_turn() {
+    let fixture = Fixture::new();
+    let _old = fixture.open().expect("window");
+    assert_eq!(kind(&fixture.enter()), "deferred");
+    assert_eq!(kind(&fixture.gate.enter_freshness(|| true)), "stopped");
+    fixture.core(|core| {
+        assert_eq!(core.blocked_since, None, "a stop ends the streak");
+        assert_eq!(core.turn_until, None, "a stop ends the turn");
+    });
+    fixture.advance(FRESHNESS_BLOCK_CEILING + ms(100));
+    let _new = fixture.open().expect("a window after the switch");
+    assert_eq!(
+        kind(&fixture.enter()),
+        "deferred",
+        "the new window is not overridden by the old streak"
+    );
+    assert_eq!(fixture.gate.counters().overridden, 0);
+}
+
+#[test]
+fn an_edge_ends_the_ceilings_streak_and_the_turn() {
+    let fixture = Fixture::new();
+    let _old = fixture.open().expect("window");
+    assert_eq!(kind(&fixture.enter()), "deferred");
+    fixture.gate.invalidate_all(false);
+    fixture.core(|core| {
+        assert_eq!(core.blocked_since, None, "an edge ends the streak");
+        assert_eq!(core.turn_until, None, "an edge ends the turn");
+    });
+    fixture.advance(FRESHNESS_BLOCK_CEILING + ms(100));
+    let _new = fixture.open().expect("a window after the edge");
+    assert_eq!(kind(&fixture.enter()), "deferred");
+    assert_eq!(fixture.gate.counters().overridden, 0);
+}
