@@ -112,11 +112,11 @@ fn an_unavailable_answer_and_a_cancellation_end_the_window() {
         wait_answered(&ticket),
         GraphTicketOutcome::Unavailable(_)
     ));
-    assert_eq!(
-        live(&fixture),
-        (0, 0),
-        "an unavailable answer ends its window"
-    );
+    // The owner thread drops the window after it publishes the answer (outside
+    // the ticket's lock), so this thread may see the answer first.
+    wait_until("an unavailable answer to end its window", || {
+        live(&fixture) == (0, 0)
+    });
     drop(ticket);
     wait_until("the session's end", || {
         fixture.kind() == GraphSlotKind::Empty
@@ -261,7 +261,11 @@ fn an_owner_panic_ends_the_window_of_its_query() {
         wait_answered(&ticket),
         GraphTicketOutcome::Unavailable(GraphUnavailable::Failed)
     ));
-    assert_eq!(live(&fixture), (0, 0));
+    // The unwinding owner thread drops the window after it publishes the
+    // failure (outside the ticket's lock): wait for it, do not race it.
+    wait_until("the panicked query's window to end", || {
+        live(&fixture) == (0, 0)
+    });
 }
 
 #[test]
